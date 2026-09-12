@@ -23,6 +23,8 @@ function makeTree(): UseFileTreeReturn {
     loadingPaths: new Set(),
     initialLoading: false,
     loadError: null,
+    showIgnoredDirsSupported: true,
+    storeKey: 'test-store',
     toggleFolder: vi.fn(),
     collapseAll: vi.fn(),
     refresh: vi.fn(async () => undefined),
