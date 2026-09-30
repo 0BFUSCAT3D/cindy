@@ -467,13 +467,18 @@ export function pickSessionRuntimeFallback(params: {
   // web_search_call may be serializable by a bridge while the next native search
   // remains unsupported. Generic fallback has no task/request capability proof,
   // so keep Codex on its current transport instead of silently introducing a bridge.
-  const currentCompatibility = currentProvider
-    ? resolveCodexCompatibilityWireProtocol(currentProvider, params.current.agentKind, currentModel)
+  // Explicit model routes override provider defaults in the actual Codex route.
+  const effectiveWireProtocol = (provider: ProviderView, model: CatalogModel): string =>
+    model.route?.wireProtocol ??
+    resolveCodexCompatibilityWireProtocol(provider, params.current.agentKind, model) ??
+    provider.routing.codex?.wireProtocol ?? 'openai-responses';
+  const currentCompatibility = currentProvider && currentModel
+    ? effectiveWireProtocol(currentProvider, currentModel)
     : null;
   const compatibleProvider = (provider: ProviderView, model: CatalogModel): boolean =>
     params.current.agentKind !== 'codex' || (
       currentProvider !== undefined && currentModel !== undefined &&
-      resolveCodexCompatibilityWireProtocol(provider, params.current.agentKind, model) === currentCompatibility
+      effectiveWireProtocol(provider, model) === currentCompatibility
     );
 
   for (const provider of rail) {
