@@ -2478,6 +2478,8 @@
           "runtimeAdvanced": "詳細設定",
           "openaiImages": "OpenAI Images API を使用",
           "openaiImagesHint": "この接続のアドレスと API Key で /images/generations と /images/edits を呼び出します。有効にすると、プロバイダーの画像接続はこの接続のみになります。不足するモデル ID は手動で追加し、モデル詳細で画像機能を指定してください。",
+          "xaiVideos": "xAI 互換の動画 API を使用",
+          "xaiVideosHint": "この接続のアドレスと API キーで動画タスクを送信・確認します。有効にすると、この接続がプロバイダーの唯一の動画接続になります。不足するモデル ID を追加し、モデル詳細で動画機能を設定してください。",
           "runtimeSupportsImageGeneration": "画像の生成と編集に対応",
           "runtimeSupportsImageGenerationHelpLabel": "画像の生成と編集への対応について",
           "runtimeSupportsImageGenerationConditionTitle": "適用条件",
@@ -2726,6 +2728,13 @@
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "カタログに情報なし",
           "capability": "機能",
+          "videoCapability": {
+            "label": "動画機能",
+            "default": "モデルカタログに従う",
+            "generate": "テキストから動画",
+            "edit": "テキスト・画像から動画",
+            "hint": "{{agent}} の動画接続に適用します。API が対応する機能のみ設定してください。保存後、Art の詳細を開き直してください。"
+          },
           "imageCapability": {
             "label": "画像機能",
             "default": "モデルカタログに従う",

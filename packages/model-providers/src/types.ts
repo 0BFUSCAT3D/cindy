@@ -201,6 +201,8 @@ export interface RoutingDescriptor {
   supportsImageGeneration?: boolean;
   /** Explicit standalone image API; independent of chat wire and Codex hosted tools. */
   imageApi?: "openai-images";
+  /** Explicit standalone async video API, independent of the chat protocol. */
+  videoApi?: "xai-videos";
   /** Enterprise BYOK image model binding used by the Codex Images route. */
   imageModel?: { wireModel: string; litellmModel: string; supportsEdit: boolean };
   /** 真实上游 base URL（direct 时是供应商自家；gateway 时是 XD 网关 base）。 */
@@ -773,6 +775,7 @@ export interface CustomProviderRuntimeConfig {
   supportsImageGeneration?: boolean;
   /** Opt-in to standalone OpenAI Images generation/edits on this runtime's connection. */
   imageApi?: "openai-images";
+  videoApi?: "xai-videos";
   /** 用户模型；contextWindow 可由预设带入，缺省时由 `buildUserProvider` 补保守默认。 */
   models: ProviderRuntimeModelConfig[];
   /**

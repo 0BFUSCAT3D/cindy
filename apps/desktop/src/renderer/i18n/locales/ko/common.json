@@ -2478,6 +2478,8 @@
           "runtimeAdvanced": "고급",
           "openaiImages": "OpenAI Images API 사용",
           "openaiImagesHint": "이 연결의 주소와 API Key로 /images/generations 및 /images/edits를 호출합니다. 활성화하면 이 연결이 제공자의 유일한 이미지 연결이 됩니다. 누락된 모델 ID는 수동으로 추가한 후 모델 상세에서 이미지 기능을 지정하세요.",
+          "xaiVideos": "xAI 호환 동영상 API 사용",
+          "xaiVideosHint": "이 연결의 주소와 API Key로 동영상 작업을 제출하고 조회합니다. 활성화하면 이 연결이 제공자의 유일한 동영상 연결이 됩니다. 누락된 모델 ID를 추가한 후 모델 상세에서 동영상 기능을 지정하세요.",
           "runtimeSupportsImageGeneration": "이미지 생성 및 편집 지원",
           "runtimeSupportsImageGenerationHelpLabel": "이미지 생성 및 편집 지원 정보",
           "runtimeSupportsImageGenerationConditionTitle": "적용 조건",
@@ -2726,6 +2728,13 @@
           "tokensApprox": "tokens (약 {{approx}})",
           "catalogMissing": "카탈로그에 없음",
           "capability": "기능",
+          "videoCapability": {
+            "label": "동영상 기능",
+            "default": "모델 목록 따르기",
+            "generate": "텍스트로 동영상 생성",
+            "edit": "텍스트 및 이미지로 동영상 생성",
+            "hint": "{{agent}} 동영상 연결에 적용합니다. API가 지원하는 기능만 지정하세요. 저장 후 Art 상세를 다시 여세요."
+          },
           "imageCapability": {
             "label": "이미지 기능",
             "default": "모델 카탈로그 따르기",

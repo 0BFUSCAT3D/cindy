@@ -137,6 +137,7 @@ export function providerViewToCustomProviderConfig(p: ProviderView): CustomProvi
         ? { supportsImageGeneration: true }
         : {}),
       ...(routing?.imageApi ? { imageApi: routing.imageApi } : {}),
+      ...(routing?.videoApi ? { videoApi: routing.videoApi } : {}),
       models: models.map((model) => customProviderModelConfigFromCatalogModel(model, agent)),
       ...(routing?.headerOverride && Object.keys(routing.headerOverride).length > 0
         ? { headers: { ...routing.headerOverride } }

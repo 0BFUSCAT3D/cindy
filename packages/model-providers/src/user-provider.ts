@@ -477,6 +477,7 @@ export function buildUserProvider(
       rt.supportsImageGeneration,
     );
     if (rt.imageApi === "openai-images") routing[agent]!.imageApi = rt.imageApi;
+    if (rt.videoApi === "xai-videos") routing[agent]!.videoApi = rt.videoApi;
     const followsPreset =
       presetRuntime &&
       withoutTrailingSlashes(resolvedBaseUrl) ===
@@ -710,16 +711,18 @@ export function buildUserProvider(
     >
   > = {};
   const imageAgents = agents.filter((agent) => routing[agent]?.imageApi === "openai-images");
+  const videoAgents = agents.filter((agent) => routing[agent]?.videoApi === "xai-videos");
   for (const [agent, list] of Object.entries(models)) {
     for (const model of list ?? []) {
       const field = providerMediaField(model.mode);
       if (!field) continue;
       // Explicit Images membership owns media routing, independent of chat harness order.
       // Keep the old projection for connections that have never opted into Images.
-      if (field === "imageModels" && imageAgents.length && !imageAgents.includes(agent as AgentKind)) continue;
+      const owners = field === "imageModels" ? imageAgents : field === "videoModels" ? videoAgents : [];
+      if (owners.length && !owners.includes(agent as AgentKind)) continue;
       const items = (mediaLists[field] ??= []);
       const existing = items.find((item) => item.id === model.id);
-      if (existing && field === "imageModels" && imageAgents.length) {
+      if (existing && owners.length) {
         // A legacy/manual config with two owners is ambiguous. Never pick a key by order.
         delete existing.sourceAgent;
       }

@@ -515,6 +515,28 @@ describe('custom-provider-store CRUD (per-runtime)', () => {
     await updateCustomProvider(config.id, { ...config, runtimes: { pi: runtime } });
     expect((await getCustomProvider(config.id))?.runtimes.pi?.imageApi).toBeUndefined();
   });
+  it('round-trips an explicit standalone Videos API independently of chat wire and hosted tools', async () => {
+    mountDb();
+    const config = {
+      id: 'standalone-videos', name: 'Standalone videos',
+      runtimes: { pi: {
+        baseUrl: 'http://127.0.0.1:8080/v1', wireProtocol: 'openai-chat' as const,
+        videoApi: 'xai-videos' as const,
+        models: [{ id: 'private-video', name: 'Video', mode: 'video_generation' }],
+      } },
+    };
+    expect(validateCustomProviderConfig(config)).toEqual({ ok: true });
+    expect(validateCustomProviderConfig({
+      ...config, runtimes: { pi: { ...config.runtimes.pi, videoApi: 'private-cli' } },
+    }).ok).toBe(false);
+    await createCustomProvider(config);
+    const stored = await getCustomProvider(config.id);
+    expect(stored?.runtimes.pi?.videoApi).toBe('xai-videos');
+    expect(stored?.runtimes.pi?.supportsImageGeneration).toBeUndefined();
+    const { videoApi: _removed, ...runtime } = config.runtimes.pi;
+    await updateCustomProvider(config.id, { ...config, runtimes: { pi: runtime } });
+    expect((await getCustomProvider(config.id))?.runtimes.pi?.videoApi).toBeUndefined();
+  });
 
   it('accepts image generation only for a Codex runtime with an OpenAI Responses route', () => {
     const model = { id: 'image-chat', name: 'Image Chat' };

@@ -513,11 +513,16 @@ import {
 } from './byokImageChannel.js';
 import { createCustomImageChannel, registerCustomImageChannels } from './customImageChannel.js';
 import { readByokCredential, readByokInferenceBase } from '../model-access/byokCredentials.js';
+import type { AgentKind } from '@cindy/model-providers';
+import { resolveCustomMediaConnection, isCustomVideoProvider } from './customMediaConnection.js';
+import { videoConnectionRevision } from '../cindy-media/customVideoProtocol.js';
 import { createXaiVideoProvider } from '../cindy-proxy-media/video/providers/xai.js';
 import * as blobStore from '../cindy-media/blobStore.js';
 import {
   configureProviderMediaRuntime,
   listProviderMediaModels,
+  type ProviderMediaRuntimeModel,
+  type ProviderVideoConnection,
 } from '../cindy-media/providerMediaRuntime.js';
 import { loadPluginMediaAvailability } from './pluginMediaCatalogFallback.js';
 import * as ledger from '../cindy-media/ledger.js';
@@ -3703,7 +3708,7 @@ function getMediaPreferenceConfig(capability: GhostMediaCapability): CindyMediaP
       providerName,
       group: providerName,
       ...(provider?.routing ? { routing: provider.routing } : {}),
-      supportsEdit: supportsMediaCapability(model.modalities, 'image.edit'),
+      supportsEdit: supportsMediaCapability(model.modalities, kind === 'image' ? 'image.edit' : 'video.image_to_video'),
     };
   });
   const gatewayModels: CindyMediaPreferenceModel[] = selectExecutableCoreMediaModels(
@@ -4472,22 +4477,23 @@ function listLocalProviderMediaModels(respectDisplaySwitch = false) {
  * provider runtime. Keep their catalog projection beside the image projection
  * so Art can read the same provider-owned models that Settings displays.
  */
-function listLocalProviderVideoModels(respectDisplaySwitch = false) {
+function listLocalProviderVideoModels(respectDisplaySwitch = false): ProviderMediaRuntimeModel[] {
   const access = readModelDisableOverrides();
   const registry = getVideoProviderRegistry();
-  if (!registry) return [];
   return getActiveCatalog().providers.flatMap((provider) => {
     if (
       provider.id === 'xd' ||
       isProviderDisabled(access, provider.id) ||
-      !isVideoCatalogProviderReady(provider.id)
+      (!isVideoCatalogProviderReady(provider.id) && !isCustomVideoProvider(provider))
     ) {
       return [];
     }
     return (provider.videoModels ?? []).flatMap((model) => {
       if (
         isModelDisabled(access, provider.id, model.id) ||
-        !registry.hasAlias(model.id, provider.id) ||
+        (isCustomVideoProvider(provider)
+          ? !resolveCustomVideoConnection(provider.id, model.id)
+          : !registry?.hasAlias(model.id, provider.id)) ||
         (respectDisplaySwitch &&
           !isCatalogMediaModelVisible(provider.id, model.id, model.defaultEnabled))
       ) {
@@ -4504,6 +4510,7 @@ function listLocalProviderVideoModels(respectDisplaySwitch = false) {
           name: model.name,
           providerId: provider.id,
           mode: 'video_generation' as const,
+          ...(isCustomVideoProvider(provider) ? { videoProtocol: 'xai-videos' as const } : {}),
           modalities: { input: [...modalities.input], output: [...modalities.output] },
           ...(model.officialDocs ? { officialDocs: model.officialDocs } : {}),
         },
@@ -4512,7 +4519,32 @@ function listLocalProviderVideoModels(respectDisplaySwitch = false) {
   });
 }
 
+function resolveCustomVideoConnection(providerId: string, modelId: string): ProviderVideoConnection | null {
+  const options = {
+    getProvider: () => getActiveCatalog().providers.find(provider => provider.id === providerId),
+    readApiKey: (agent: AgentKind) => readCustomProviderKey(providerId, agent),
+    isOwnerBoundaryPending: () => isGhostBoundaryPending(),
+  };
+  const binding = resolveCustomMediaConnection(options, modelId, 'video');
+  if (!binding) return null;
+  const owner = activeOwnerScopeKey();
+  const revision = videoConnectionRevision(providerId, modelId, binding);
+  return {
+    baseUrl: binding.baseUrl,
+    headers: binding.headers,
+    revision,
+    assertCurrent: () => {
+      const current = resolveCustomMediaConnection(options, modelId, 'video');
+      if (isGhostBoundaryPending() || owner !== activeOwnerScopeKey() || !current ||
+          revision !== videoConnectionRevision(providerId, modelId, current)) {
+        throw new Error('视频连接或账号已改变，本次操作已停止；请恢复原连接后查询原任务');
+      }
+    },
+  };
+}
+
 configureProviderMediaRuntime({
+  resolveVideoConnection: resolveCustomVideoConnection,
   listModels: () => listLocalProviderMediaModels(true),
   listVideoModels: () => listLocalProviderVideoModels(true),
   listExecutableModels: () => listLocalProviderMediaModels(false),

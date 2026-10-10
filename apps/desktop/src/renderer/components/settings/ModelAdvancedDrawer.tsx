@@ -290,17 +290,25 @@ export function ModelAdvancedDrawer({
   const imageCapability = imageModel?.userModelConfig?.mode === 'image_generation'
     ? imageModel.userModelConfig.modalities?.input.includes('image') ? 'edit' : 'generate'
     : 'default';
-  const setImageCapability = async (value: string) => {
-    if (imageCapabilitySaving || !imageAgent || !imageModel || !['default', 'generate', 'edit'].includes(value)) return;
+  const videoAgents = canEditProtocol
+    ? provider.agents.filter(agent => provider.routing?.[agent]?.videoApi === 'xai-videos') : [];
+  const videoAgent = videoAgents.length === 1 ? videoAgents[0] : undefined;
+  const videoModel = videoAgent ? row?.byAgent[videoAgent] : undefined;
+  const videoCapability = videoModel?.userModelConfig?.mode === 'video_generation'
+    ? videoModel.userModelConfig.modalities?.input.includes('image') ? 'edit' : 'generate' : 'default';
+  const setImageCapability = async (value: string, kind: 'image' | 'video' = 'image') => {
+    const agent = kind === 'image' ? imageAgent : videoAgent;
+    const sourceModel = kind === 'image' ? imageModel : videoModel;
+    if (imageCapabilitySaving || !agent || !sourceModel || !['default', 'generate', 'edit'].includes(value)) return;
     const config = providerViewToCustomProviderConfig(provider);
-    const model = config.runtimes[imageAgent]?.models.find(item => item.id === imageModel.id);
+    const model = config.runtimes[agent]?.models.find(item => item.id === sourceModel.id);
     if (!model) return;
     if (value === 'default') {
       delete model.mode;
       delete model.modalities;
     } else {
-      model.mode = 'image_generation';
-      model.modalities = { input: value === 'edit' ? ['text', 'image'] : ['text'], output: ['image'] };
+      model.mode = kind === 'image' ? 'image_generation' : 'video_generation';
+      model.modalities = { input: value === 'edit' ? ['text', 'image'] : ['text'], output: [kind] };
     }
     setImageCapabilitySaving(true);
     try {
@@ -383,7 +391,7 @@ export function ModelAdvancedDrawer({
     );
   }
 
-  const capabilityModel = imageModel ?? primaryModel;
+  const capabilityModel = primaryModel.mode === 'video_generation' ? videoModel ?? primaryModel : imageModel ?? videoModel ?? primaryModel;
   const vision = imageModel?.modalities
     ? imageModel.modalities.input.includes('image') ? 'vision' : 'no-vision'
     : primaryModel.supportsImageInput !== undefined
@@ -887,6 +895,31 @@ export function ModelAdvancedDrawer({
                         </Row>
                         <p className="text-12 leading-5 text-[var(--text-tertiary)]">
                           {t('settings.providers.models.advanced.imageCapability.hint', { agent: AGENT_LABEL[imageAgent!] })}
+                        </p>
+                      </>
+                    )}
+                    {videoModel && (
+                      <>
+                        <Row label={t('settings.providers.models.advanced.videoCapability.label')}>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button type="button" disabled={imageCapabilitySaving || !selectionAvailable || paymentRequired}
+                                aria-label={t('settings.providers.models.advanced.videoCapability.label')}
+                                className="rounded-full px-2 py-1 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]">
+                                {t(`settings.providers.models.advanced.videoCapability.${videoCapability}`)} <ChevronDown size={12} className="inline" aria-hidden />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent className="z-[10003]" align="start">
+                              <DropdownMenuRadioGroup value={videoCapability} onValueChange={value => void setImageCapability(value, 'video')}>
+                                {(['default', 'generate', 'edit'] as const).map(value => (
+                                  <DropdownMenuRadioItem key={value} value={value}>{t(`settings.providers.models.advanced.videoCapability.${value}`)}</DropdownMenuRadioItem>
+                                ))}
+                              </DropdownMenuRadioGroup>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </Row>
+                        <p className="text-12 leading-5 text-[var(--text-tertiary)]">
+                          {t('settings.providers.models.advanced.videoCapability.hint', { agent: AGENT_LABEL[videoAgent!] })}
                         </p>
                       </>
                     )}
