@@ -85,6 +85,29 @@ async function waitForInitialDialogFocus(): Promise<void> {
   await waitFor(() => expect(document.activeElement).toBe(nameInput));
 }
 
+it('selects one Images owner while preserving other runtime endpoints, models and credentials', async () => {
+  const initial: CustomProviderConfig = {
+    id: 'relay', name: 'Relay', auth: { method: 'apiKey' }, runtimes: {
+      pi: { baseUrl: 'https://pi.example.test/v1', models: [{ id: 'image', name: 'Image' }] },
+      codex: { baseUrl: 'https://codex.example.test/v1', imageApi: 'openai-images', models: [{ id: 'image', name: 'Image' }] },
+    },
+  };
+  customProviderMocks.readCustomProviderKey.mockResolvedValue('invalid-test-key');
+  const user = userEvent.setup();
+  render(<ProviderConnectionDialog initial={initial} focusAgent="pi" onSaved={vi.fn()} onClose={vi.fn()} />);
+  await waitForInitialDialogFocus();
+  await user.click(screen.getByLabelText('settings.providers.custom.fields.openaiImages'));
+  await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+  await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce());
+  const [config, keys] = customProviderMocks.updateCustomProvider.mock.calls[0]!;
+  expect(config.runtimes.pi.imageApi).toBe('openai-images');
+  expect(config.runtimes.codex.imageApi).toBeUndefined();
+  expect(config.runtimes.codex.baseUrl).toBe(initial.runtimes.codex!.baseUrl);
+  expect(config.runtimes.codex.models).toEqual(initial.runtimes.codex!.models);
+  expect(keys).toEqual({});
+  expect(initial.runtimes.codex!.imageApi).toBe('openai-images');
+});
+
 function modelRoutedCodexProvider(): CustomProviderConfig {
   return {
     id: 'glm-coding-plan',

@@ -214,7 +214,6 @@ function providerImageGuide(
       mode: 'sync',
       media: [
         { path: ['image'], encoding: 'base64', kind: 'image' },
-        { path: ['url'], encoding: 'url', kind: 'image' },
       ],
     },
     instructions: edit
@@ -1123,7 +1122,13 @@ async function materializeSyncInvocation(
     throw new MediaInvocationError('MEDIA_RESULT_INVALID', '同步媒体调用缺少同步响应说明');
   }
   try {
-    const media = await materializeResults(response, responseGuide.media, scope, db);
+    // Client channels may return an arbitrary CDN URL. Keep it out of the
+    // persisted server-guide contract, which requires a trusted host list.
+    // With no trusted hosts, the existing download gate requires approval.
+    const extractors: readonly MediaResultExtractor[] = isClientProviderInvocation(invocation)
+      ? [{ path: ['url'], encoding: 'url', kind: 'image' }, ...responseGuide.media]
+      : responseGuide.media;
+    const media = await materializeResults(response, extractors, scope, db);
     assertAuthScope(scope, invocation.owner);
     return persistCompletedInvocation(invocation, media, scope, db);
   } catch (error) {

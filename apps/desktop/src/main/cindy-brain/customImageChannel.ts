@@ -147,6 +147,8 @@ export function createCustomImageChannel(opts: CustomImageChannelOptions): Image
         editPath: '/images/edits',
       },
       brandLabel: opts.getProvider()?.name,
+      // Same complete-response budget as Core's image guide, before JSON/base64 allocation.
+      maxResponseBytes: 32 * 1024 * 1024,
       logger: opts.logger,
       // Custom credential headers must never follow a redirect to another endpoint.
       fetchImplementation: (url, init) => {

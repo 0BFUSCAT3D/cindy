@@ -83,6 +83,47 @@ function harness(initial = provider()) {
 }
 
 describe('standalone custom OpenAI Images', () => {
+  it.each(['claude-code', 'codex'] as const)('binds duplicate model IDs to the explicitly enabled Images connection, not %s', async (agent) => {
+    const source = buildUserProvider({
+      id: 'relay', name: 'Relay', auth: { method: 'apiKey' },
+      runtimes: {
+        [agent]: { baseUrl: 'https://chat.example.invalid/v1', models: [{ id: MODEL, name: 'Chat copy', mode: 'image_generation' }] },
+        pi: { baseUrl: 'https://images.example.invalid/v1', imageApi: 'openai-images', models: [{ id: MODEL, name: 'Image', mode: 'image_generation' }] },
+      },
+    });
+    const h = harness(source);
+    expect(source.imageModels?.[0]?.sourceAgent).toBe('pi');
+    expect(h.channel.isModelReady?.(MODEL)).toBe(true);
+    await h.channel.generateImage({ model: MODEL, prompt: 'red circle' });
+    expect(h.fetchImplementation.mock.calls[0]?.[0]).toBe('https://images.example.invalid/v1/images/generations');
+    expect(h.readApiKey).not.toHaveBeenCalledWith(agent);
+  });
+
+  it('does not choose credentials when multiple Images connections declare the same model', () => {
+    const source = buildUserProvider({
+      id: 'relay', name: 'Relay', auth: { method: 'apiKey' },
+      runtimes: Object.fromEntries(['pi', 'codex'].map(agent => [agent, {
+        baseUrl: `https://${agent}.example.invalid/v1`, imageApi: 'openai-images',
+        models: [{ id: MODEL, name: 'Image', mode: 'image_generation' }],
+      }])),
+    });
+    const h = harness(source);
+    expect(h.channel.isModelReady?.(MODEL)).toBe(false);
+    expect(h.readApiKey).not.toHaveBeenCalled();
+  });
+
+  it('bounds custom response bytes before JSON parsing', async () => {
+    const h = harness();
+    const cancel = vi.fn();
+    h.fetchImplementation.mockResolvedValue(new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(32 * 1024 * 1024 + 1)); },
+      cancel,
+    })));
+    await expect(h.channel.generateImage({ model: MODEL, prompt: 'circle' })).rejects.toThrow(/response.*limit/i);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(h.fetchImplementation).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['https://relay.example.invalid', 'https://relay.example.invalid/v1/images/generations'],
     ['https://relay.example.invalid/v1/', 'https://relay.example.invalid/v1/images/generations'],

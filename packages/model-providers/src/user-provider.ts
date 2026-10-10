@@ -709,12 +709,21 @@ export function buildUserProvider(
       "imageModels" | "videoModels" | "audioModels" | "embeddingModels"
     >
   > = {};
+  const imageAgents = agents.filter((agent) => routing[agent]?.imageApi === "openai-images");
   for (const [agent, list] of Object.entries(models)) {
     for (const model of list ?? []) {
       const field = providerMediaField(model.mode);
       if (!field) continue;
+      // Explicit Images membership owns media routing, independent of chat harness order.
+      // Keep the old projection for connections that have never opted into Images.
+      if (field === "imageModels" && imageAgents.length && !imageAgents.includes(agent as AgentKind)) continue;
       const items = (mediaLists[field] ??= []);
-      if (!items.some((item) => item.id === model.id))
+      const existing = items.find((item) => item.id === model.id);
+      if (existing && field === "imageModels" && imageAgents.length) {
+        // A legacy/manual config with two owners is ambiguous. Never pick a key by order.
+        delete existing.sourceAgent;
+      }
+      if (!existing)
         items.push({
           ...pickModelMetadata(model),
           id: model.id,

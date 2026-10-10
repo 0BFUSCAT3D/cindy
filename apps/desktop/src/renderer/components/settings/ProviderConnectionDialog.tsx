@@ -2546,10 +2546,15 @@ export function ProviderConnectionDialog({
                         checked={f.imageApi === 'openai-images'}
                         onChange={(event) => {
                           const enabled = event.currentTarget.checked;
-                          patch(activeTab, (runtime) => ({
-                            ...runtime,
-                            imageApi: enabled ? 'openai-images' : undefined,
-                          }));
+                          // One explicit media owner per provider; other chat routes and keys stay intact.
+                          setRtSynced((prev) => Object.fromEntries(
+                            Object.entries(prev).map(([agent, runtime]) => [agent, {
+                              ...runtime,
+                              imageApi: agent === activeTab && enabled
+                                ? 'openai-images'
+                                : enabled || agent === activeTab ? undefined : runtime.imageApi,
+                            }]),
+                          ) as Record<DialogAgentKind, RuntimeFields>);
                         }}
                         className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--settings-menu-text-selected)]"
                       />

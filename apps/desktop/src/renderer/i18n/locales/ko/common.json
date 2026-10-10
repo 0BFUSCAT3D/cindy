@@ -2477,7 +2477,7 @@
           "modelSupportsImageInputHelp": "모델이 실제로 시각 입력을 지원할 때만 켜세요. 저장 후 새 Pi 작업부터 적용됩니다.",
           "runtimeAdvanced": "고급",
           "openaiImages": "OpenAI Images API 사용",
-          "openaiImagesHint": "이 연결이 /images/generations와 /images/edits를 제공할 때만 켜세요. Art는 이 연결의 주소, 키, 이미지 모델을 사용합니다. 채팅 API 호환성만으로는 이미지를 생성할 수 없습니다.",
+          "openaiImagesHint": "이 연결의 주소와 API Key로 /images/generations 및 /images/edits를 호출합니다. 활성화하면 이 연결이 제공자의 유일한 이미지 연결이 됩니다. 누락된 모델 ID는 수동으로 추가한 후 모델 상세에서 이미지 기능을 지정하세요.",
           "runtimeSupportsImageGeneration": "이미지 생성 및 편집 지원",
           "runtimeSupportsImageGenerationHelpLabel": "이미지 생성 및 편집 지원 정보",
           "runtimeSupportsImageGenerationConditionTitle": "적용 조건",
@@ -2726,6 +2726,13 @@
           "tokensApprox": "tokens (약 {{approx}})",
           "catalogMissing": "카탈로그에 없음",
           "capability": "기능",
+          "imageCapability": {
+            "label": "이미지 기능",
+            "default": "모델 카탈로그 따르기",
+            "generate": "이미지 생성",
+            "edit": "이미지 생성 및 편집",
+            "hint": "{{agent}}의 이미지 연결에 적용됩니다. API가 실제로 지원하는 기능만 지정하세요. 저장 후 Art 상세 페이지를 다시 여세요."
+          },
           "capabilityHint": "이 공급업체가 명시한 기능을 우선합니다. 이미지 지원 정보가 없으면 모델 이름으로 추정합니다.",
           "imageInput": "이미지 입력",
           "supported": "지원",

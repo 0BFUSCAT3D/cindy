@@ -2477,7 +2477,7 @@
           "modelSupportsImageInputHelp": "僅在該模型確實支援視覺輸入時開啟。儲存後新建 Pi 任務生效。",
           "runtimeAdvanced": "進階",
           "openaiImages": "使用 OpenAI Images 介面",
-          "openaiImagesHint": "僅在此連線提供 /images/generations 和 /images/edits 時開啟。Art 使用此連線的位址、金鑰和圖片模型；相容對話介面並不代表支援產生圖片。",
+          "openaiImagesHint": "使用此連線的位址和 API Key 呼叫 /images/generations 與 /images/edits。開啟後，此連線將作為供應商唯一的圖片連線。缺少的模型可手動新增 ID，再到模型詳情宣告圖片能力。",
           "runtimeSupportsImageGeneration": "支援圖片生成與編輯",
           "runtimeSupportsImageGenerationHelpLabel": "瞭解圖片生成與編輯支援",
           "runtimeSupportsImageGenerationConditionTitle": "適用條件",
@@ -2726,6 +2726,13 @@
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "目錄未提供",
           "capability": "能力",
+          "imageCapability": {
+            "label": "圖片能力",
+            "default": "跟隨模型目錄",
+            "generate": "圖片生成",
+            "edit": "圖片生成與編輯",
+            "hint": "套用於 {{agent}} 的圖片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
           "capabilityHint": "優先使用目前供應商宣告的能力；未宣告時，圖片能力參考模型名稱。",
           "imageInput": "圖片輸入",
           "supported": "支援",

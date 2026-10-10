@@ -2477,7 +2477,7 @@
           "modelSupportsImageInputHelp": "モデルが実際に画像入力へ対応している場合のみ有効にしてください。保存後、新しい Pi タスクで反映されます。",
           "runtimeAdvanced": "詳細設定",
           "openaiImages": "OpenAI Images API を使用",
-          "openaiImagesHint": "この接続が /images/generations と /images/edits を提供する場合のみ有効にしてください。Art はこの接続のアドレス、キー、画像モデルを使用します。チャット API との互換性だけでは画像を生成できません。",
+          "openaiImagesHint": "この接続のアドレスと API Key で /images/generations と /images/edits を呼び出します。有効にすると、プロバイダーの画像接続はこの接続のみになります。不足するモデル ID は手動で追加し、モデル詳細で画像機能を指定してください。",
           "runtimeSupportsImageGeneration": "画像の生成と編集に対応",
           "runtimeSupportsImageGenerationHelpLabel": "画像の生成と編集への対応について",
           "runtimeSupportsImageGenerationConditionTitle": "適用条件",
@@ -2726,6 +2726,13 @@
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "カタログに情報なし",
           "capability": "機能",
+          "imageCapability": {
+            "label": "画像機能",
+            "default": "モデルカタログに従う",
+            "generate": "画像生成",
+            "edit": "画像生成と編集",
+            "hint": "{{agent}} の画像接続に適用します。API が実際に対応する機能のみを指定してください。保存後に Art の詳細を開き直してください。"
+          },
           "capabilityHint": "このプロバイダーが宣言した機能を優先します。画像対応が未宣言の場合はモデル名から推定します。",
           "imageInput": "画像入力",
           "supported": "対応",

@@ -2483,7 +2483,7 @@
           "modelSupportsImageInputHelp": "Enable only when the model actually accepts visual input. Start a new Pi task after saving.",
           "runtimeAdvanced": "Advanced",
           "openaiImages": "Use OpenAI Images API",
-          "openaiImagesHint": "Enable only if this connection provides /images/generations and /images/edits. Art uses this connection’s address, key and image models. Chat API compatibility alone is insufficient.",
+          "openaiImagesHint": "Uses this connection’s address and API key for /images/generations and /images/edits. Enabling it selects this as the provider’s only Images connection. Add missing model IDs manually, then declare their image capability in model details.",
           "runtimeSupportsImageGeneration": "Supports image generation and editing",
           "runtimeSupportsImageGenerationHelpLabel": "About image generation and editing support",
           "runtimeSupportsImageGenerationConditionTitle": "When to enable",
@@ -2733,6 +2733,13 @@
           "tokensApprox": "tokens (~{{approx}})",
           "catalogMissing": "Not in the catalog",
           "capability": "Capabilities",
+          "imageCapability": {
+            "label": "Image capability",
+            "default": "Follow model catalog",
+            "generate": "Image generation",
+            "edit": "Image generation and editing",
+            "hint": "Applies to the {{agent}} Images connection. Only declare capabilities the API actually supports. Reopen Art details after saving."
+          },
           "capabilityHint": "Uses capabilities declared by this provider. Image support falls back to model naming when undeclared.",
           "imageInput": "Image input",
           "supported": "Supported",

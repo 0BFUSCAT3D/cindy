@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SsrFBlockedError } from '@cindy/browser-control-runtime/ssrf-runtime';
 import type { MediaCapability } from '@cindy/model-providers';
+import { parsePreparedMediaInvocationGuide } from '../../../shared/mediaInvocation.js';
 
 interface MockPreparedGuide extends Record<string, unknown> {
   modelId: string;
@@ -483,6 +484,11 @@ describe('Cindy Core media invocation state and security boundary', () => {
     });
     expect(mocks.guide).not.toHaveBeenCalled();
 
+    // The real DB parses the serialized snapshot again before dispatch.
+    expect(parsePreparedMediaInvocationGuide(
+      JSON.parse(JSON.stringify(mocks.rows.get(prepared.invocation_id as string)?.guide)),
+    )).toMatchObject({ ok: true });
+
     await expect(
       callCindyMedia({
         action: 'request',
@@ -549,6 +555,9 @@ describe('Cindy Core media invocation state and security boundary', () => {
     });
     const invocationId = prepared.invocation_id as string;
     mocks.confirm.mockResolvedValue(false);
+    expect(parsePreparedMediaInvocationGuide(
+      JSON.parse(JSON.stringify(mocks.rows.get(invocationId)?.guide)),
+    )).toMatchObject({ ok: true });
     expect(await callCindyMedia({
       action: 'request', invocationId, body: { prompt: 'red circle' },
     })).toMatchObject({ ok: false, errorCode: 'MEDIA_DOWNLOAD_DENIED', retryable: false, invocation_id: invocationId });
