@@ -2476,6 +2476,8 @@
           "modelSupportsImageInput": "画像入力に対応",
           "modelSupportsImageInputHelp": "モデルが実際に画像入力へ対応している場合のみ有効にしてください。保存後、新しい Pi タスクで反映されます。",
           "runtimeAdvanced": "詳細設定",
+          "openaiImages": "OpenAI Images API を使用",
+          "openaiImagesHint": "この接続が /images/generations と /images/edits を提供する場合のみ有効にしてください。Art はこの接続のアドレス、キー、画像モデルを使用します。チャット API との互換性だけでは画像を生成できません。",
           "runtimeSupportsImageGeneration": "画像の生成と編集に対応",
           "runtimeSupportsImageGenerationHelpLabel": "画像の生成と編集への対応について",
           "runtimeSupportsImageGenerationConditionTitle": "適用条件",

@@ -198,7 +198,7 @@ function providerImageGuide(
     schemaVersion: MODEL_ACCESS_INVOCATION_GUIDE_SCHEMA_VERSION,
     guideId: CLIENT_PROVIDER_IMAGE_GUIDE_ID,
     modelId: model.id,
-    revision: '2',
+    revision: '3',
     connection: { providerId: model.providerId },
     capability,
     request: {
@@ -212,7 +212,10 @@ function providerImageGuide(
     },
     response: {
       mode: 'sync',
-      media: [{ path: ['image'], encoding: 'base64', kind: 'image' }],
+      media: [
+        { path: ['image'], encoding: 'base64', kind: 'image' },
+        { path: ['url'], encoding: 'url', kind: 'image' },
+      ],
     },
     instructions: edit
       ? '必填 prompt 和 image。image 可传一条 Cindy 本地媒体引用或引用数组。尺寸与质量参数见 inputSchema；不要丢弃用户的明确要求。'
@@ -1020,6 +1023,23 @@ async function submitProviderInvocation(
       signal: AbortSignal.timeout(invocation.guide.request.timeoutMs),
     });
     assertAuthScope(scope, invocation.owner);
+    if ('url' in result) {
+      // Persist the successful generation before downloading. A denied/failed
+      // CDN download can resume this result without paying for another image.
+      const response = { url: result.url };
+      const responseJson = JSON.stringify(response);
+      const persisted = await transitionMediaInvocation(
+        { id: invocation.id, owner: invocation.owner, from: 'submitting', to: 'pending', responseJson },
+        db,
+      );
+      assertAuthScope(scope, invocation.owner);
+      if (!persisted) {
+        return submissionOutcomeUnknown('第三方媒体已生成，但本地未能保存结果；不要自动重提');
+      }
+      return materializeSyncInvocation(
+        { ...invocation, state: 'pending', responseJson }, response, scope, db,
+      );
+    }
     if (
       result.buffer.byteLength === 0 ||
       result.buffer.byteLength > MAX_IMAGE_RESULT_BYTES ||
@@ -1082,11 +1102,11 @@ async function submitProviderInvocation(
     log.warn('provider media submission failed after claim', {
       providerId,
       modelId: providerModel.id,
-      error: error instanceof Error ? error.message : String(error),
+      error: mediaErrorForLog(error),
     });
     return submissionOutcomeUnknown(
       error instanceof Error
-        ? `第三方媒体请求未能确认结果：${error.message}`
+        ? `第三方媒体请求未能确认结果：${mediaErrorForLog(error)}`
         : '第三方媒体请求未能确认结果；不要自动重提',
     );
   }
@@ -1307,6 +1327,9 @@ async function submitInvocation(
     const media = persistedResponse(invocation);
     if (!media || typeof media !== 'object' || Array.isArray(media)) {
       return failure('MEDIA_RESULT_INVALID', '第三方媒体调用保存的结果不合法');
+    }
+    if ('url' in media) {
+      return materializeSyncInvocation(invocation, media, scope, db);
     }
     return persistCompletedInvocation(invocation, media as Record<string, unknown>, scope, db);
   }

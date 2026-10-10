@@ -2482,6 +2482,8 @@
           "modelSupportsImageInput": "Supports image input",
           "modelSupportsImageInputHelp": "Enable only when the model actually accepts visual input. Start a new Pi task after saving.",
           "runtimeAdvanced": "Advanced",
+          "openaiImages": "Use OpenAI Images API",
+          "openaiImagesHint": "Enable only if this connection provides /images/generations and /images/edits. Art uses this connection’s address, key and image models. Chat API compatibility alone is insufficient.",
           "runtimeSupportsImageGeneration": "Supports image generation and editing",
           "runtimeSupportsImageGenerationHelpLabel": "About image generation and editing support",
           "runtimeSupportsImageGenerationConditionTitle": "When to enable",

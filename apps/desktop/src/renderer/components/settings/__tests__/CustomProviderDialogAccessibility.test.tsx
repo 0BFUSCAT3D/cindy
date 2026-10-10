@@ -50,6 +50,36 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+it('retains standalone Images on edit and saves only the selected runtime when toggled off', async () => {
+  const initial: CustomProviderConfig = {
+    id: 'images', name: 'Images', auth: { method: 'apiKey' },
+    runtimes: { pi: {
+      baseUrl: 'https://images.example.test/v1', wireProtocol: 'openai-chat',
+      imageApi: 'openai-images',
+      models: [{ id: 'gpt-image-2', name: 'Image', mode: 'image_generation' }],
+    } },
+  };
+  customProviderMocks.readCustomProviderKey.mockResolvedValue('invalid-test-key');
+  const user = userEvent.setup();
+  render(<ProviderConnectionDialog initial={initial} focusAgent="pi" onSaved={vi.fn()} onClose={vi.fn()} />);
+  await waitForInitialDialogFocus();
+  const checkbox = screen.getByLabelText('settings.providers.custom.fields.openaiImages');
+  expect((checkbox as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+  await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledOnce());
+  expect(customProviderMocks.updateCustomProvider.mock.calls[0]?.[0].runtimes.pi).toMatchObject({
+    imageApi: 'openai-images',
+  });
+  cleanup();
+  render(<ProviderConnectionDialog initial={initial} focusAgent="pi" onSaved={vi.fn()} onClose={vi.fn()} />);
+  await waitForInitialDialogFocus();
+  await user.click(screen.getByLabelText('settings.providers.custom.fields.openaiImages'));
+  await user.click(screen.getByRole('button', { name: 'settings.providers.custom.save' }));
+  await waitFor(() => expect(customProviderMocks.updateCustomProvider).toHaveBeenCalledTimes(2));
+  expect(customProviderMocks.updateCustomProvider.mock.calls[1]?.[0].runtimes.pi.imageApi).toBeUndefined();
+  expect(initial.runtimes.pi?.imageApi).toBe('openai-images');
+});
+
 async function waitForInitialDialogFocus(): Promise<void> {
   const nameInput = screen.getByPlaceholderText('settings.providers.custom.fields.namePlaceholder');
   await waitFor(() => expect(document.activeElement).toBe(nameInput));

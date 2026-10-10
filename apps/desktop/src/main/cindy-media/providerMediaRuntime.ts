@@ -21,10 +21,10 @@ export interface ProviderMediaRuntimeRequest extends ImageParameters {
   signal?: AbortSignal;
 }
 
-export interface ProviderMediaRuntimeResult {
+export type ProviderMediaRuntimeResult = {
   buffer: Buffer;
   mimeType: string;
-}
+} | { url: string };
 
 interface ProviderMediaRuntime {
   listModels(): ProviderMediaRuntimeModel[];

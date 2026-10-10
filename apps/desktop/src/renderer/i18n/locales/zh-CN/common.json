@@ -2476,6 +2476,8 @@
           "modelSupportsImageInput": "支持图片输入",
           "modelSupportsImageInputHelp": "仅在该模型确实支持视觉输入时开启。保存后新建 Pi 任务生效。",
           "runtimeAdvanced": "高级",
+          "openaiImages": "使用 OpenAI Images 接口",
+          "openaiImagesHint": "仅在此连接提供 /images/generations 和 /images/edits 时开启。Art 使用此连接的地址、密钥和图片模型；兼容对话接口并不代表支持出图。",
           "runtimeSupportsImageGeneration": "支持图片生成与编辑",
           "runtimeSupportsImageGenerationHelpLabel": "了解图片生成与编辑支持",
           "runtimeSupportsImageGenerationConditionTitle": "适用条件",

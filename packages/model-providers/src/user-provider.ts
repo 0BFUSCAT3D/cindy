@@ -476,6 +476,7 @@ export function buildUserProvider(
       rt.piCatalogProviderId,
       rt.supportsImageGeneration,
     );
+    if (rt.imageApi === "openai-images") routing[agent]!.imageApi = rt.imageApi;
     const followsPreset =
       presetRuntime &&
       withoutTrailingSlashes(resolvedBaseUrl) ===

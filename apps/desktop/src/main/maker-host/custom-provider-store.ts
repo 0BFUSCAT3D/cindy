@@ -231,6 +231,9 @@ function validateRuntime(agent: string, rt: unknown): ValidationResult {
   if (r.supportsImageGeneration === true && agent !== 'codex') {
     return invalid(`runtime '${agent}' supportsImageGeneration requires Codex`);
   }
+  if (r.imageApi !== undefined && r.imageApi !== 'openai-images') {
+    return invalid(`runtime '${agent}' imageApi must be openai-images`);
+  }
   if (!Array.isArray(r.models)) return invalid(`runtime '${agent}' models must be an array`);
   for (const m of r.models) {
     if (!m || typeof m !== 'object') return invalid(`runtime '${agent}' model must be an object`);
@@ -634,6 +637,7 @@ function normalizeRuntime(
   if (agent === 'codex' && rt.supportsImageGeneration === true) {
     out.supportsImageGeneration = true;
   }
+  if (rt.imageApi === 'openai-images') out.imageApi = rt.imageApi;
   if (agent !== 'pi' && rt.requestPath && rt.requestPath.trim()) {
     out.requestPath = rt.requestPath.trim();
   }
@@ -855,6 +859,7 @@ function parseRuntimes(raw: string): Partial<Record<AgentKind, CustomProviderRun
     if (agent === 'codex' && r.supportsImageGeneration === true) {
       entry.supportsImageGeneration = true;
     }
+    if (r.imageApi === 'openai-images') entry.imageApi = r.imageApi;
     if (agent !== 'pi' && isProviderRequestPath(r.requestPath)) {
       entry.requestPath = r.requestPath;
     }

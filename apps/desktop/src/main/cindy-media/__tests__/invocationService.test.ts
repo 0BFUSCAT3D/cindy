@@ -512,6 +512,61 @@ describe('Cindy Core media invocation state and security boundary', () => {
     expect(mocks.providerInvoke).toHaveBeenCalledTimes(1);
   });
 
+  it('redacts provider error credentials and never resubmits an uncertain paid request', async () => {
+    const model = { id: 'gpt-image-2', name: 'Image', providerId: 'custom-relay',
+      mode: 'image_generation', imageProtocol: 'openai',
+      modalities: { input: ['text', 'image'], output: ['image'] } };
+    mocks.models.mockResolvedValue([model]);
+    mocks.providerModel.mockReturnValue(model);
+    mocks.providerInvoke.mockRejectedValue(new Error(
+      'HTTP 403: Bearer invalid-test-secret-123456789 https://relay.example.com/?key=secret',
+    ));
+    const prepared = await callCindyMedia({
+      action: 'prepare', providerId: model.providerId, modelId: model.id, capability: 'image.generate',
+    });
+    const result = await callCindyMedia({
+      action: 'request', invocationId: prepared.invocation_id as string, body: { prompt: 'circle' },
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: 'SUBMISSION_OUTCOME_UNKNOWN' });
+    expect(result.message).toContain('HTTP 403');
+    expect(result.message).not.toContain('invalid-test-secret');
+    expect(result.message).not.toContain('key=secret');
+    await callCindyMedia({ action: 'request', invocationId: prepared.invocation_id as string,
+      body: { prompt: 'circle' } });
+    expect(mocks.providerInvoke).toHaveBeenCalledOnce();
+  });
+
+  it('persists a custom Images URL before download and resumes it without another paid invocation', async () => {
+    const model = { id: 'gpt-image-2', name: 'Image', providerId: 'custom-relay',
+      mode: 'image_generation', imageProtocol: 'openai',
+      modalities: { input: ['text', 'image'], output: ['image'] } };
+    mocks.models.mockResolvedValue([model]);
+    mocks.providerModel.mockReturnValue(model);
+    const url = 'https://cdn.example.com/generated.png?signature=opaque';
+    mocks.providerInvoke.mockResolvedValue({ url });
+    const prepared = await callCindyMedia({
+      action: 'prepare', providerId: model.providerId, modelId: model.id, capability: 'image.generate',
+    });
+    const invocationId = prepared.invocation_id as string;
+    mocks.confirm.mockResolvedValue(false);
+    expect(await callCindyMedia({
+      action: 'request', invocationId, body: { prompt: 'red circle' },
+    })).toMatchObject({ ok: false, errorCode: 'MEDIA_DOWNLOAD_DENIED', retryable: false, invocation_id: invocationId });
+    expect(mocks.rows.get(invocationId)).toMatchObject({ state: 'pending', responseJson: JSON.stringify({ url }) });
+    expect(mocks.outboundFetch).not.toHaveBeenCalled();
+
+    mocks.confirm.mockResolvedValue(true);
+    mocks.outboundFetch.mockResolvedValue(new Response(PNG, { headers: { 'Content-Type': 'image/png' } }));
+    expect(await callCindyMedia({
+      action: 'request', invocationId, body: { prompt: 'ignored; already generated' },
+    })).toMatchObject({ ok: true, status: 'complete', xdt_image_urls: [`cindy-media://blobs/${'a'.repeat(64)}.png`] });
+    expect(mocks.providerInvoke).toHaveBeenCalledTimes(1);
+    expect(mocks.outboundFetch).toHaveBeenCalledTimes(1);
+    expect(mocks.outboundFetch.mock.calls[0]?.[1]?.headers).toBeUndefined();
+    expect(mocks.guardedOutboundFetch).toHaveBeenCalledOnce();
+    expect(mocks.ingestMedia).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['openai', 'account/gpt-image-2.5-sunburst', { size: '1760x3824', quality: 'max' }, { size: '1760x3824', quality: 'max' }],
     ['gemini', 'gemini/gemini-3-pro-image', { aspect_ratio: '16:9', resolution: '4k' }, { aspectRatio: '16:9', resolution: '4K' }],

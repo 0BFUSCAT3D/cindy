@@ -26,6 +26,8 @@ export class GatewayImageError extends Error {
 
 export interface CreateGatewayImageClientOptions {
   getApiKey(): CindyProxyMediaMaybePromise<string | null>;
+  /** Host-owned connection headers; used by standalone custom Images connections. */
+  getRequestHeaders?(): CindyProxyMediaMaybePromise<Record<string, string>>;
   proxy: CindyProxyMediaProxyConfig;
   fetchImplementation?: typeof fetch;
   logger?: LiziMcpLogger;
@@ -204,6 +206,11 @@ export function createGatewayImageClient(opts: CreateGatewayImageClientOptions):
     return key;
   }
 
+  async function requestHeaders(): Promise<Record<string, string>> {
+    if (opts.getRequestHeaders) return { ...await opts.getRequestHeaders() };
+    return { Authorization: `Bearer ${await requireApiKey()}` };
+  }
+
   function assertSizeQualityAllowed(params: { size?: string; quality?: string }): void {
     if (allowSizeQuality) return;
     if (params.size !== undefined || params.quality !== undefined) {
@@ -219,7 +226,7 @@ export function createGatewayImageClient(opts: CreateGatewayImageClientOptions):
     signal?: AbortSignal,
   ): Promise<GatewayImageResponse> {
     assertSizeQualityAllowed(params);
-    const apiKey = await requireApiKey();
+    const headers = await requestHeaders();
     const body: Record<string, unknown> = {
       model: params.model,
       prompt: params.prompt,
@@ -237,7 +244,7 @@ export function createGatewayImageClient(opts: CreateGatewayImageClientOptions):
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          ...headers,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
@@ -257,7 +264,7 @@ export function createGatewayImageClient(opts: CreateGatewayImageClientOptions):
       throw new GatewayImageError(`${brandLabel} 图像通道不支持改图,请换支持改图的模型`, 400);
     }
     assertSizeQualityAllowed(params);
-    const apiKey = await requireApiKey();
+    const headers = await requestHeaders();
     if (params.imagePaths.length === 0) {
       throw new GatewayImageError('image_edit requires at least 1 image', 400);
     }
@@ -285,9 +292,7 @@ export function createGatewayImageClient(opts: CreateGatewayImageClientOptions):
       editUrl,
       {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: form as unknown as BodyInit,
         signal,
       },

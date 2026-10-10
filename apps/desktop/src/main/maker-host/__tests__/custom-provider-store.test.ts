@@ -493,6 +493,29 @@ describe('validateCustomProviderConfig (per-runtime)', () => {
 });
 
 describe('custom-provider-store CRUD (per-runtime)', () => {
+  it('round-trips an explicit standalone Images API independently of chat wire and hosted tools', async () => {
+    mountDb();
+    const config = {
+      id: 'standalone-images', name: 'Standalone images',
+      runtimes: { pi: {
+        baseUrl: 'http://127.0.0.1:8080/v1', wireProtocol: 'openai-chat' as const,
+        imageApi: 'openai-images' as const,
+        models: [{ id: 'gpt-image-2', name: 'Image', mode: 'image_generation' }],
+      } },
+    };
+    expect(validateCustomProviderConfig(config)).toEqual({ ok: true });
+    expect(validateCustomProviderConfig({
+      ...config, runtimes: { pi: { ...config.runtimes.pi, imageApi: 'private-cli' } },
+    }).ok).toBe(false);
+    await createCustomProvider(config);
+    const stored = await getCustomProvider(config.id);
+    expect(stored?.runtimes.pi?.imageApi).toBe('openai-images');
+    expect(stored?.runtimes.pi?.supportsImageGeneration).toBeUndefined();
+    const { imageApi: _removed, ...runtime } = config.runtimes.pi;
+    await updateCustomProvider(config.id, { ...config, runtimes: { pi: runtime } });
+    expect((await getCustomProvider(config.id))?.runtimes.pi?.imageApi).toBeUndefined();
+  });
+
   it('accepts image generation only for a Codex runtime with an OpenAI Responses route', () => {
     const model = { id: 'image-chat', name: 'Image Chat' };
     expect(
