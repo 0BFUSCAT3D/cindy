@@ -76,6 +76,7 @@ interface MediaConnection {
   pathPrefix?: string;
   headers?: Record<string, string>;
   assertCurrent?(): void;
+  beforeSubmit?(): void;
 }
 
 class MediaInvocationError extends Error {
@@ -275,7 +276,16 @@ function resolveInvocationConnection(invocation: StoredMediaInvocation): MediaCo
     catch { throw new MediaInvocationError('CONNECTION_CHANGED', '视频连接或账号已改变，本次操作已停止'); }
   };
   assertCurrent();
-  return { ...connection, apiKey: '', pathPrefix: new URL(connection.baseUrl).pathname.replace(/\/+$/, ''), assertCurrent };
+  return {
+    ...connection, apiKey: '', pathPrefix: new URL(connection.baseUrl).pathname.replace(/\/+$/, ''), assertCurrent,
+    beforeSubmit: () => {
+      // Re-read executable membership after reference reads and the database claim.
+      // Paid task polling/recovery remains independent of the model's enable switch.
+      if (!resolveProviderMediaModel(invocation.guide.connection.providerId, invocation.modelId, invocation.capability)) {
+        throw new MediaInvocationError('MODEL_NOT_AVAILABLE', '该模型或来源已停用或不再支持本次能力，本次生成未发出');
+      }
+    },
+  };
 }
 
 function resolveConnection(providerId: string): MediaConnection {
@@ -491,6 +501,7 @@ async function dispatchRequest(input: {
       params: mediaRequestParamsForLog(input.body ?? {}),
     });
     input.connection.assertCurrent?.();
+    if (input.operation === 'submit') input.connection.beforeSubmit?.();
     dispatched = true;
     const response = await outboundFetch(url, {
       method: input.method,
@@ -1436,6 +1447,12 @@ async function submitInvocation(
   }
   const requestBody = await prepareRequestBody(validatedBody, invocation.guide);
   assertAuthScope(scope, invocation.owner);
+  if (isClientVideoInvocation(invocation)) {
+    // Managed refs have now become data URLs with their actual stored media MIME.
+    const { model: _injectedModel, ...videoBody } = requestBody;
+    try { validateCustomVideoBody(videoBody, invocation.capability === 'video.image_to_video'); }
+    catch (error) { throw new MediaInvocationError('REQUEST_INVALID', (error as Error).message); }
+  }
   let connection: MediaConnection;
   try {
     connection = resolveInvocationConnection(invocation);
@@ -1588,9 +1605,9 @@ async function submitInvocation(
     };
   } catch (error) {
     const expected = error instanceof MediaInvocationError ? error : null;
-    // 本地组装失败（#5081）：请求从未出站、无费用，把 invocation 放回 prepared，
+    // 本地组装失败或提交前模型已停用：请求从未出站、无费用，把 invocation 放回 prepared，
     // 让同一 invocation_id 可以直接再次 request；其余失败仍进入 failed / unknown。
-    const buildFailed = expected?.code === 'REQUEST_BUILD_FAILED';
+    const buildFailed = expected?.code === 'REQUEST_BUILD_FAILED' || expected?.code === 'MODEL_NOT_AVAILABLE';
     const restored = await transitionMediaInvocation(
       {
         id: invocation.id,

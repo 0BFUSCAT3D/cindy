@@ -65,8 +65,8 @@ export function validateCustomVideoBody(body: Record<string, unknown>, image: bo
   if (Object.keys(body).some(key => !allowed.has(key))) throw new Error('视频请求包含当前协议不支持的字段');
   if (typeof body.prompt !== 'string' || !body.prompt.trim()) throw new Error('视频请求必须提供 prompt');
   if (body.duration !== undefined && (!Number.isInteger(body.duration) || Number(body.duration) < 1 || Number(body.duration) > 15)) throw new Error('视频时长必须为 1–15 秒的整数');
-  if (body.resolution !== undefined && !['480p', '720p', '1080p'].includes(String(body.resolution))) throw new Error('视频分辨率不受支持');
-  if (body.aspect_ratio !== undefined && !['16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3'].includes(String(body.aspect_ratio))) throw new Error('视频画幅不受支持');
+  if (body.resolution !== undefined && (typeof body.resolution !== 'string' || !['480p', '720p', '1080p'].includes(body.resolution))) throw new Error('视频分辨率不受支持');
+  if (body.aspect_ratio !== undefined && (typeof body.aspect_ratio !== 'string' || !['16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3'].includes(body.aspect_ratio))) throw new Error('视频画幅不受支持');
   if (image) {
     const ref = body.image as Record<string, unknown> | undefined;
     if (!ref || Array.isArray(ref) || Object.keys(ref).length !== 1 || typeof ref.url !== 'string' || !ref.url) throw new Error('图生视频必须提供一张图片: image: {url}');

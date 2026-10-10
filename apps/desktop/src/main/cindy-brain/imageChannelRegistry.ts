@@ -65,6 +65,8 @@ export function decodeImageResponse(res: ImageChannelResult): { buffer: Buffer; 
  */
 export interface ImageChannel {
   imageProtocol?: ImageProtocol;
+  /** False for Core-only channels whose URL results the legacy decoder cannot consume. */
+  legacyCompatible?: boolean;
   /** 执行凭证是否就绪。false ⇒ 该来源整段不进 cindy 白名单。 */
   ready(): boolean;
   /** A multi-runtime connection can be executable for only some of its image models. */
@@ -117,6 +119,12 @@ export class ImageChannelRegistry {
     const channel = this.channels.get(providerId);
     return channel?.ready() === true &&
       (modelId === undefined || channel.isModelReady?.(modelId) !== false);
+  }
+
+  /** The frozen synchronous plugin API only accepts channels with legacy results. */
+  isProviderLegacyReady(providerId: string, modelId?: string): boolean {
+    return this.channels.get(providerId)?.legacyCompatible !== false &&
+      this.isProviderReady(providerId, modelId);
   }
 
   /** 编辑操作清单派生用:就绪且 supportsEdit !== false。 */

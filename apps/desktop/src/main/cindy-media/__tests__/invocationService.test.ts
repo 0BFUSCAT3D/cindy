@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   dbOwnerId: 'media-user-0',
   transitionDbs: [] as unknown[],
   failTransitionTo: null as string | null,
+  onClaim: vi.fn(),
   recover: vi.fn<(owner: string, db: unknown) => Promise<number>>(async () => 0),
   prune: vi.fn(async () => undefined),
   rows: new Map<string, Record<string, unknown>>(),
@@ -184,6 +185,7 @@ vi.mock('../mediaInvocationStore.js', () => ({
     const row = mocks.rows.get(id);
     if (!row || row.owner !== owner || row.state !== from) return false;
     row.state = to;
+    if (to === 'submitting') mocks.onClaim();
     row.updatedAt = Date.now();
     if (taskId) row.taskId = taskId;
     if (responseJson) row.responseJson = responseJson;
@@ -280,6 +282,7 @@ describe('Cindy Core media invocation state and security boundary', () => {
     mocks.providerModel.mockReset();
     mocks.providerInvoke.mockReset();
     mocks.videoConnection.mockReset();
+    mocks.onClaim.mockReset();
     mocks.guide.mockReset();
     mocks.outboundFetch.mockReset();
     mocks.release.mockClear();
@@ -323,6 +326,49 @@ describe('Cindy Core media invocation state and security boundary', () => {
     mocks.videoConnection.mockReturnValue(connection);
     return connection;
   }
+
+  it.each(['reference-read', 'claim'] as const)('rechecks custom video availability after %s before paying, and preserves prepared', async boundary => {
+    setupCustomVideo();
+    const p = await callCindyMedia({ action: 'prepare', providerId: 'relay', modelId: 'private-video', capability: 'video.image_to_video' });
+    const invocationId = p.invocation_id as string;
+    const stopSource = () => { mocks.providerModel.mockReturnValue(null); };
+    mocks.readBlob.mockImplementation(async () => {
+      if (boundary === 'reference-read') stopSource();
+      return { buffer: PNG, mimeType: 'image/png' };
+    });
+    if (boundary === 'claim') mocks.onClaim.mockImplementationOnce(stopSource);
+    expect(await callCindyMedia({ action: 'request', invocationId, body: {
+      prompt: 'cat waves', image: { url: `cindy-media://blobs/${'a'.repeat(64)}.png` },
+    } })).toMatchObject({ errorCode: 'MODEL_NOT_AVAILABLE', outcomeKnown: true });
+    expect(mocks.outboundFetch).not.toHaveBeenCalled();
+    expect(mocks.rows.get(invocationId)?.state).toBe('prepared');
+  });
+
+  it('can retrieve an already paid custom video after its model is disabled', async () => {
+    setupCustomVideo();
+    const p = await callCindyMedia({ action: 'prepare', providerId: 'relay', modelId: 'private-video', capability: 'video.generate' });
+    const invocationId = p.invocation_id as string;
+    mocks.outboundFetch.mockResolvedValueOnce(Response.json({ request_id: 'paid-task' }))
+      .mockResolvedValueOnce(Response.json({ status: 'done', video: { url: '/videos/paid-task/content' } }))
+      .mockResolvedValueOnce(new Response(MP4, { headers: { 'content-type': 'video/mp4' } }));
+    mocks.ingestMedia.mockResolvedValue({ url: `cindy-media://blobs/${'a'.repeat(64)}.mp4` });
+    await callCindyMedia({ action: 'request', invocationId, body: { prompt: 'cat' } });
+    mocks.providerModel.mockReturnValue(null);
+    expect(await callCindyMedia({ action: 'poll', invocationId })).toMatchObject({ status: 'complete' });
+    expect(mocks.outboundFetch.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+  });
+
+  it.each(['video/mp4', 'audio/mpeg', 'image/gif'])('rejects %s as an image-to-video reference before claiming or paying', async mimeType => {
+    setupCustomVideo();
+    mocks.readBlob.mockResolvedValue({ buffer: PNG, mimeType });
+    const p = await callCindyMedia({ action: 'prepare', providerId: 'relay', modelId: 'private-video', capability: 'video.image_to_video' });
+    const invocationId = p.invocation_id as string;
+    expect(await callCindyMedia({ action: 'request', invocationId, body: {
+      prompt: 'cat waves', image: { url: `cindy-media://blobs/${'a'.repeat(64)}.png` },
+    } })).toMatchObject({ errorCode: mimeType === 'image/gif' ? 'MEDIA_INPUT_INVALID' : 'REQUEST_INVALID' });
+    expect(mocks.outboundFetch).not.toHaveBeenCalled();
+    expect(mocks.rows.get(invocationId)?.state).toBe('prepared');
+  });
 
   it.each([['video.generate', false], ['video.image_to_video', false], ['video.generate', true], ['video.image_to_video', true]] as const)('custom %s persists one paid task and ingests video (private content=%s)', async (capability, privateContent) => {
     setupCustomVideo();

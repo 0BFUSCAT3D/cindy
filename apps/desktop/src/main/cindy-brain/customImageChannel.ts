@@ -86,6 +86,7 @@ export function createCustomImageChannel(opts: CustomImageChannelOptions): Image
 
   return {
     imageProtocol: 'openai',
+    legacyCompatible: false,
     ready,
     isModelReady: (model) => connection(model) !== null,
     generateImage: (params) => invoke('generate', { ...params, imagePaths: [] }),

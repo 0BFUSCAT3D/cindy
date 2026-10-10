@@ -3621,8 +3621,7 @@ function getCatalogMediaConfig(
       // managed URL/base64 handling; keep new sources out of the frozen legacy API.
       kind === 'image'
         ? (providerId) =>
-            !registeredCustomImageAccounts.has(providerId) &&
-            (imageRegistry?.isProviderReady(providerId) ?? false)
+            imageRegistry?.isProviderLegacyReady(providerId) ?? false
         : kind === 'video'
           ? isVideoCatalogProviderReady
           : isXdGatewayProviderReady,
@@ -4672,12 +4671,12 @@ export function getGhostCindySlot(): GhostCindySlot {
         const videoRegistry = capability.startsWith('video.') ? getVideoProviderRegistry() : null;
         // Core 专用选型不能交给旧执行器。复用存量配置迁移，确保回退后
         // 用户保存的 provider + modelId 与实际执行一致，不影响 Core 清单。
-        const executableConfig = capability.startsWith('video.')
-          ? filterLegacyCindyMediaConfig(
-              config,
-              (model) => videoRegistry?.hasAlias(model.modelId, model.providerId) ?? false,
-            )
-          : config;
+        const executableConfig = filterLegacyCindyMediaConfig(
+          config,
+          (model) => capability.startsWith('video.')
+            ? videoRegistry?.hasAlias(model.modelId, model.providerId) ?? false
+            : getImageChannelRegistry().isProviderLegacyReady(model.providerId, model.modelId),
+        );
         const selected = resolveAndMigrateGhostMediaPreference(
           ghostId,
           mediaCapability,

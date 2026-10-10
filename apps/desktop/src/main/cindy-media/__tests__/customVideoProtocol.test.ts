@@ -51,7 +51,7 @@ describe('custom xAI Videos protocol', () => {
     ]) expect(videoConnectionRevision('relay', model.id, changed)).not.toBe(revision);
   });
 
-  it.each([{ fps: 30 }, { audio: false }, { duration: 16 }, { duration: 1.5 }, { resolution: '4k' }, { image: { url: 'https://example.com/p.png' } }])('rejects unsupported generation parameters before payment: %j', extra => {
+  it.each([{ fps: 30 }, { audio: false }, { duration: 16 }, { duration: 1.5 }, { resolution: '4k' }, { resolution: ['480p'] }, { aspect_ratio: ['16:9'] }, { image: { url: 'https://example.com/p.png' } }])('rejects unsupported generation parameters before payment: %j', extra => {
     expect(() => validateCustomVideoBody({ prompt: 'cat', ...extra }, false)).toThrow();
   });
   it('requires exactly one image and leaves implicit aspect ratio to the upstream', () => {
