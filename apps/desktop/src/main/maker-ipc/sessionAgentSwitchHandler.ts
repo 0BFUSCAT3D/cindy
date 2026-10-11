@@ -432,6 +432,88 @@ export async function applySetModelThenCancelAgentSwitchIntent<T>(
   return result;
 }
 
+/**
+ * 打开任务时 Agent 没能启动、要换到另一个位置重新打开(供应商组启动阶段换电脑，docs/product-rules/provider-groups.md §6)：
+ * 原生会话在原来那个位置上，换过去不能续接，与换电脑同一套交接——全量交接 + 全新原生会话 + 分隔条。没有开着的会话
+ * (这次就是要打开它)，也不在这里启动：调用方正在启动 Agent，按返回后的任务记录接着打开，这次发送带上交接。
+ * `sharedRelocation`：位置仍是同一个分享、由分享者的组换一台(分隔条不写电脑名称)。
+ */
+export async function relocateForFreshStart(
+  deps: Pick<
+    MakerSessionAgentSwitchHandlerDeps,
+    | 'getSessionRow'
+    | 'listMessagesForHandoff'
+    | 'applyAgentSwitchToDb'
+    | 'setSessionProvider'
+    | 'insertBoundaryMessage'
+    | 'setPendingHandoff'
+    | 'readPendingHandoffGeneration'
+    | 'describeAgentDevice'
+    | 'log'
+  >,
+  params: {
+    sessionId: string;
+    agentDeviceId: string | null;
+    providerId: string | null;
+    /** 原来那个位置(调用方可能已把任务记录改到了目标位置)；不给 = 按任务记录。 */
+    from?: { agentDeviceId: string | null; providerId: string | null };
+    sharedRelocation?: boolean;
+  },
+): Promise<void> {
+  const { sessionId, agentDeviceId, providerId } = params;
+  const row = await deps.getSessionRow(sessionId);
+  if (!row || row.status === 'deleted') throwIpcError('NOT_FOUND', `Session ${sessionId} not found`);
+  if (!row.model) throwIpcError('PRECONDITION_FAILED', `Session ${sessionId} has no model to relocate`);
+  const model = row.model;
+  const dbKind = normalizeDbAgentKind(row.agentKind);
+  const handoffGeneration = deps.readPendingHandoffGeneration?.(sessionId);
+  const handoff = buildHandoffText(await deps.listMessagesForHandoff(sessionId), {
+    fromLabel: `${agentEngineLabel(dbKind)} (on a different computer)`,
+    toLabel: agentEngineLabel(dbKind),
+    sessionId,
+  });
+  const fromAgentDeviceId = params.from ? params.from.agentDeviceId : row.agentDeviceId ?? null;
+  const fromProviderId = params.from ? params.from.providerId : row.providerId;
+  await deps.applyAgentSwitchToDb(sessionId, {
+    agentKind: dbKind,
+    model,
+    providerId,
+    sdkSessionId: null,
+    agentDeviceId,
+  });
+  deps.setSessionProvider(sessionId, providerId);
+  const boundaryContent: AgentSwitchBoundaryContent = {
+    fromAgentKind: dbKind,
+    toAgentKind: dbKind,
+    fromModel: row.model,
+    toModel: row.model,
+    fromProviderId,
+    toProviderId: providerId,
+    fromSdkSessionId: row.sdkSessionId,
+    handoff,
+    resumed: false,
+    consumed: false,
+    fromAgentDeviceId,
+    toAgentDeviceId: agentDeviceId,
+    fromAgentDeviceName: params.sharedRelocation ? null : deps.describeAgentDevice?.(fromAgentDeviceId) ?? null,
+    toAgentDeviceName: params.sharedRelocation ? null : deps.describeAgentDevice?.(agentDeviceId) ?? null,
+  };
+  try {
+    await deps.insertBoundaryMessage(sessionId, boundaryContent);
+  } catch (err) {
+    deps.log.warn('agent-switch: boundary message insert failed on fresh-start relocation (degraded)', {
+      sessionId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  deps.setPendingHandoff(sessionId, handoff, handoffGeneration);
+  deps.log.info('agent-switch: relocated for a fresh start', {
+    sessionId,
+    handoffChars: handoff.length,
+    agentDeviceChange: params.sharedRelocation ? 'reassigned-by-provider-group' : agentDeviceId ? 'other-device' : 'task-device',
+  });
+}
+
 /** 业务体(纯依赖注入,单测直接调):校验 → 交接 → 提交 → 重建。 */
 export async function performSessionAgentSwitch(
   deps: MakerSessionAgentSwitchHandlerDeps,

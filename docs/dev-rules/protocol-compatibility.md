@@ -862,8 +862,8 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
 - G 只在持有凭证时才换电脑：分享暂停、删除、撤权等来自 O 本身的错误没有凭证，照旧交回原有处理。
 - **续接回到原来那台、那台接不下时同样发凭证**(2026-10-11)：G 续接一个经组运行过的任务(带 `resumeSessionId`)，O 只能回到
   当初那台(会话在那台上)；那台接不下、且按同一个判定是那台的问题时，O 在 `start-failed` **之前**追加同一条凭证状态。G 的
-  `startRemote` 在任务开始之前也会取走凭证(`takeGroupSwitchState`)，随后的打开失败按「没送出去」交给同一条自动交接，
-  带凭证作为全新任务重新打开。没有新字段；旧 G 只看到原来的启动失败。组为受邀者的全新任务选中 O 本机、O 的 Agent 却没能
+  `startRemote` 在任务开始之前也会取走凭证(`takeGroupSwitchState`)；随后的打开失败由 G 的启动重试认领凭证
+  (`claimGuestStartSwitch`)，先交接(全量交接 + 全新原生会话)，再在同一个分享位置带凭证作为全新任务重新打开，只试这一次。没有新字段；旧 G 只看到原来的启动失败。组为受邀者的全新任务选中 O 本机、O 的 Agent 却没能
   启动时，O 与组内电脑接不下一样在启动阶段换下一台(受邀者无感，旧 G 同样享受)。
 - 不改 relay、服务器与数据库。实现：`remote-agent/host/runHost.ts`(暂存与发凭证、校验凭证)、`host/groupRelay.ts`、
   `provider-group/guestRelay.ts`(运行中失败的冷却)、`provider-group/guestSwitch.ts` 与 `provider-group/service.ts`(G 侧凭证与

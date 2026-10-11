@@ -363,6 +363,8 @@ interface Run {
    * 支持的受邀者发「需要换一台」凭证，它交接(带上上下文)后作为全新任务重新打开，组再换一台(§6.1)。
    */
   groupResumed?: boolean;
+  /** 本机这次运行经隧道告诉了控制端已打开、还没关掉的 WebSocket 连接(换去中转时补发关闭)。 */
+  localWs?: Set<string>;
   /** 本机 Agent 上一次报来的「正在运行一轮」。 */
   turnRunning?: boolean;
 }
@@ -975,9 +977,15 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       run.virtualRoot = payload.virtualWorkspace ? mirrorRoot : undefined;
       const tunnel = await createRunTunnel({
         http: (request, signal) => reverseHttp(run, request, signal),
-        wsOpen: (connId, wsPath) => append(run, { t: 'ws', connId, kind: 'open', path: wsPath }),
+        wsOpen: (connId, wsPath) => {
+          (run.localWs ??= new Set()).add(connId);
+          append(run, { t: 'ws', connId, kind: 'open', path: wsPath });
+        },
         wsMessage: (connId, data) => append(run, { t: 'ws', connId, kind: 'message', data }),
-        wsClose: (connId) => append(run, { t: 'ws', connId, kind: 'close' }),
+        wsClose: (connId) => {
+          run.localWs?.delete(connId);
+          append(run, { t: 'ws', connId, kind: 'close' });
+        },
       });
       run.tunnel = tunnel;
       if (run.closing) return;
@@ -1100,6 +1108,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     run.guestRoute = undefined;
     await run.tunnel?.close().catch(() => undefined);
     run.tunnel = undefined;
+    // 本机这次尝试里已告诉受邀者打开的连接一并关掉(隧道关闭不会逐个回调)；中转的连接编号带尝试前缀，不会撞上。
+    for (const connId of run.localWs ?? []) append(run, { t: 'ws', connId, kind: 'close' });
+    run.localWs = undefined;
     const { memberKey, agentDeviceId, providerId, sameAccount } = next;
     await startRelay(run, payload, { memberKey, agentDeviceId, providerId, sameAccount }, {
       fresh: true,

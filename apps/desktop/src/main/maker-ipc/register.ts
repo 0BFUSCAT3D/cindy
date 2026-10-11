@@ -63,7 +63,7 @@ import {
 } from '../provider-group/service.js';
 import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
-import { providerGroupSwitchCause, providerGroupUndeliveredSendSignals } from '../provider-group/failurePolicy.js';
+import { providerGroupSwitchCause } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
 import {
   isRemoteProviderInvocationAllowed,
@@ -941,6 +941,7 @@ import {
   performSessionAgentSwitch,
   projectPendingAgentSwitchIntent,
   registerMakerSessionAgentSwitchHandler,
+  relocateForFreshStart,
   settleSystemRouteSwitchIntent,
   type MakerSessionAgentSwitchHandlerDeps,
 } from './sessionAgentSwitchHandler.js';
@@ -3653,10 +3654,11 @@ export function applyDirectoryGrants(
         return accepted;
       },
       persist: (patch) => persistSessionFields(sessionId, patch),
-      // 远程 Agent 正在跑一轮时不当场关：那台只是暂时连不上，本机执行器已回到原来的目录(文件读写由本机执行器
-      // 把关)，库里也还是原来那份；这一轮结束后再重建。当场关会把进行中的一轮杀掉，且不是那台电脑的问题，
-      // 供应商组也不会换电脑(docs/product-rules/provider-groups.md §6.1「本机的操作不打断进行中的远程一轮」)。
-      terminate: () => (sess?.agentDeviceId && sess.isTurnRunning()
+      // 附加目录：远程 Agent 正在跑一轮时不当场关——本机执行器先改、回滚时已回到原来的目录(文件读写由本机执行器
+      // 把关)，库里也还是原来那份，那台只是暂时连不上；这一轮结束后再重建。当场关会把进行中的一轮杀掉，且不是那台
+      // 电脑的问题，供应商组也不会换电脑(docs/product-rules/provider-groups.md §6.1「本机的操作不打断进行中的远程一轮」)。
+      // 可写目录不在此列：本机执行器在对方确认后才改，回滚不到时可能留着更宽的可写目录，照旧当场关。
+      terminate: () => (axis === 'extraDirs' && sess?.agentDeviceId && sess.isTurnRunning()
         ? maker.closeSessionIfCurrent(sess, 'runtime-refresh', { afterCurrentTurn: true })
         : maker.closeSession(sessionId)),
     });
@@ -7895,6 +7897,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       } catch (error) {
         // 供应商组刚分配的电脑没能启动 Agent(连不上、登录失效等)：换组里下一台再试，
         // 每台最多一次；不该换或没有下一台时照常报错。
+        const failedRoute = { agentDeviceId: o.agentDeviceId ?? null, providerId: o.providerId ?? null };
         const next = providerGroupStart && providerGroupService
           ? await providerGroupService.nextAfterStartFailure(providerGroupStart, error).catch((retryError) => {
               log.warn('provider group: choosing the next computer failed', {
@@ -7904,7 +7907,32 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               return null;
             })
           : null;
-        if (!next) throw error;
+        // 分享来的供应商被分享者建成了组：续接回到原来那台却接不下时，组所在电脑发来「需要换一台」凭证
+        // (provider-groups.md §6.1 分享的人)：同一个分享位置带交接重新打开，打开时带回凭证，由组换一台。
+        const guestRelocation = !next && o.id && o.resumeSessionId && isProviderShareAgentDeviceId(o.agentDeviceId)
+          && providerGroupService?.claimGuestStartSwitch(o.id) === true;
+        if (!next && !guestRelocation) throw error;
+        // 有原生会话要续接：会话在原来那台上，换过去先交接(全量交接 + 全新原生会话 + 分隔条)，这次发送带上交接，
+        // 不拿原来那台的会话 id 去别处打开(那边认不出，会悄悄开一个没有上下文的新会话)。
+        if (o.id && o.resumeSessionId) {
+          const target = next
+            ? next.route
+            : { agentDeviceId: o.agentDeviceId ?? null, providerId: o.providerId ?? null };
+          await relocateForFreshStart(agentSwitchDeps, {
+            sessionId: o.id,
+            agentDeviceId: target.agentDeviceId,
+            providerId: target.providerId,
+            from: failedRoute,
+            ...(guestRelocation ? { sharedRelocation: true } : {}),
+          });
+          o.resumeSessionId = undefined;
+          if (o.vendorOptions) {
+            const fresh = { ...o.vendorOptions };
+            for (const key of ['resumeSessionAt', 'forkSession', 'threadId', 'tailTurnsToDrop']) delete fresh[key];
+            o.vendorOptions = fresh;
+          }
+        }
+        if (!next) continue;
         providerGroupStart = next;
         o.agentDeviceId = next.route.agentDeviceId ?? undefined;
         o.providerId = next.route.providerId;
@@ -16810,11 +16838,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       providerGroupService?.mayHandleTurnError(sessionId, signals)
         ? providerGroupSwitchCause(signals, 'run')
         : null,
-    // 已落库的消息在打开任务时就没送出去(Agent 没能启动等)：与运行中失败同一条换电脑流程(§6.1)。
-    providerGroupUndeliveredSendSignals: (sessionId, failure) => {
-      const signals = providerGroupUndeliveredSendSignals(failure);
-      return signals && providerGroupService?.mayHandleTurnError(sessionId, signals) ? signals : null;
-    },
     onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
       // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
       if (!providerGroupService) {
@@ -16851,6 +16874,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             armHoldTimer();
             inputCoordinator.setProviderGroupSwitchHoldProgress(sessionId, holdId, null);
           },
+          // 续跑马上交出去：不再计「久久没有结局」，免得续跑途中把错误放出来(协同 Worker 会因此回报两次)。
+          continuing: () => clearTimeout(holdTimer),
         };
         armHoldTimer();
       }
@@ -17287,14 +17312,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       autoResumeBookkeeping.surfaceSuppressedErrorForRetry(sessionId, item.clientId);
     },
     persistTerminalSendError: (sessionId, message) => {
-      const data = {
-        message,
-        ...(isPiPromptRpcTimeoutError({ message }) ? { reason: 'pi-prompt-timeout' } : {}),
-      };
-      // 供应商组正为这次没送出去的失败换电脑(与终态错误同一套)：error 行先暂存，没换成时再落。
-      const holdId = agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(sessionId) ?? null;
-      if (holdId !== null && providerGroupHeldErrors.stash(sessionId, holdId, data, null)) return;
-      onTurnErrorEvent(sessionId, data, null);
+      onTurnErrorEvent(
+        sessionId,
+        {
+          message,
+          ...(isPiPromptRpcTimeoutError({ message }) ? { reason: 'pi-prompt-timeout' } : {}),
+        },
+        null,
+      );
     },
     onUnconfirmedAutoResumeTurn: (sessionId, item) => {
       const attemptToken = autoResumeAttemptToken(item);

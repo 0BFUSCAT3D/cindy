@@ -6,6 +6,7 @@ import {
   createPendingAgentSwitchRegistry,
   performSessionAgentSwitch,
   registerMakerSessionAgentSwitchHandler,
+  relocateForFreshStart,
   settleSystemRouteSwitchIntent,
   type AgentSwitchSessionRow,
   type MakerSessionAgentSwitchHandlerDeps,
@@ -1600,5 +1601,84 @@ describe('换到供应商组那一项：由组选一台能用的电脑(provider-
     );
     expect(row.model).toBe('claude-opus-5-5');
     expect(pending.get('s1')).toBeUndefined();
+  });
+});
+
+describe('relocateForFreshStart (opening a task elsewhere when its own computer failed to start)', () => {
+  it('drops the native session, records the move from the failed computer and leaves a full handoff for the next send', async () => {
+    const { deps, calls } = makeDeps({
+      // 调用方已把任务记录改到了目标位置；from 给出真正失败的那台。
+      getSessionRow: vi.fn(async () => makeRow({ agentDeviceId: 'studio', providerId: 'anthropic-1' })),
+      describeAgentDevice: vi.fn((id: string | null) => (id ? `PC ${id}` : null)),
+    });
+    await relocateForFreshStart(deps, {
+      sessionId: 's1',
+      agentDeviceId: 'studio',
+      providerId: 'anthropic-1',
+      from: { agentDeviceId: 'mini', providerId: 'anthropic' },
+    });
+
+    // 不关会话、不 bootstrap：启动重试自己接着打开。
+    expect(calls).toEqual(['db', 'provider', 'boundary', 'pending']);
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', {
+      agentKind: 'cc',
+      model: 'claude-fable-5',
+      providerId: 'anthropic-1',
+      sdkSessionId: null,
+      agentDeviceId: 'studio',
+    });
+    const boundary = vi.mocked(deps.insertBoundaryMessage).mock.calls[0][1];
+    expect(boundary).toMatchObject({
+      fromAgentKind: 'cc',
+      toAgentKind: 'cc',
+      fromProviderId: 'anthropic',
+      toProviderId: 'anthropic-1',
+      fromAgentDeviceId: 'mini',
+      toAgentDeviceId: 'studio',
+      fromAgentDeviceName: 'PC mini',
+      toAgentDeviceName: 'PC studio',
+      fromSdkSessionId: 'sdk-old',
+      resumed: false,
+    });
+    const handoff = vi.mocked(deps.setPendingHandoff).mock.calls[0][1];
+    expect(handoff).toContain('你好!');
+    expect(boundary.handoff).toBe(handoff);
+  });
+
+  it('hides computer names when the provider group of a share picks the computer', async () => {
+    const { deps } = makeDeps({
+      getSessionRow: vi.fn(async () => makeRow({ agentDeviceId: 'share:s1', providerId: 'anthropic' })),
+      describeAgentDevice: vi.fn(() => 'Friend PC'),
+    });
+    await relocateForFreshStart(deps, {
+      sessionId: 's1',
+      agentDeviceId: 'share:s1',
+      providerId: 'anthropic',
+      sharedRelocation: true,
+    });
+    const boundary = vi.mocked(deps.insertBoundaryMessage).mock.calls[0][1];
+    expect(boundary.fromAgentDeviceName).toBeNull();
+    expect(boundary.toAgentDeviceName).toBeNull();
+    expect(deps.setPendingHandoff).toHaveBeenCalledTimes(1);
+  });
+
+  it('still leaves the handoff when the boundary row cannot be written', async () => {
+    const { deps, calls } = makeDeps({
+      insertBoundaryMessage: vi.fn(async () => {
+        throw new Error('disk full');
+      }),
+    });
+    await relocateForFreshStart(deps, { sessionId: 's1', agentDeviceId: 'studio', providerId: 'xd' });
+    expect(calls).toEqual(['db', 'provider', 'pending']);
+  });
+
+  it('refuses a task that is gone or has no model', async () => {
+    const gone = makeDeps({ getSessionRow: vi.fn(async () => null) });
+    await expect(relocateForFreshStart(gone.deps, { sessionId: 's1', agentDeviceId: 'studio', providerId: 'xd' }))
+      .rejects.toMatchObject({ message: expect.stringContaining('not found') });
+    const noModel = makeDeps({ getSessionRow: vi.fn(async () => makeRow({ model: null })) });
+    await expect(relocateForFreshStart(noModel.deps, { sessionId: 's1', agentDeviceId: 'studio', providerId: 'xd' }))
+      .rejects.toBeTruthy();
+    expect(noModel.deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
   });
 });

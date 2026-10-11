@@ -190,13 +190,27 @@ describe('assignBeforeStart', () => {
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
   });
 
-  it('does not move an old task at start while its native session must be resumed (that needs a handoff)', async () => {
+  it('returns a start context for an old task whose native session must be resumed, so a failed reopen moves it', async () => {
+    // 换过去前的交接(全量交接 + 全新原生会话)由 register 的启动重试做，这里只负责选下一台。
     const h = harness({ row: { sdkSessionId: 'native-1' } });
     h.deps.hasAssistantHistory.mockResolvedValue(true);
     h.deps.hasLiveSession.mockReturnValue(false);
-    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
-    // 仍纳入组：打开失败、运行中失败走带交接的自动换电脑。
+    const context = await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL });
+    expect(context).toMatchObject({ member: { key: LOCAL.key } });
     expect(h.bindings.get('s1')?.memberKey).toBe(LOCAL.key);
+
+    const next = await h.service.nextAfterStartFailure(
+      context!,
+      new Error('[REMOTE_AGENT_UNAVAILABLE] remote computer is gone'),
+    );
+    expect(next?.member.key).toBe(MINI.key);
+  });
+
+  it('keeps a native-session task where it is while its session is still open', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' } });
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
+    h.deps.hasLiveSession.mockReturnValue(true);
+    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
   });
 
   it('keeps an old task on its current computer but returns a start context after its live session is gone', async () => {
@@ -1230,6 +1244,24 @@ describe('onTurnError for a shared user (the sharer’s group picks the computer
     expect(h.deps.continueSession).not.toHaveBeenCalled();
     expect(h.deps.fallback).toHaveBeenCalledWith('s1', { sdkError: 'rate_limit' }, 4);
   });
+
+  it('lets a failed reopen claim the token so the group computer picks another computer for the fresh start', () => {
+    const none = guestHarness();
+    expect(none.service.claimGuestStartSwitch('s1')).toBe(false);
+
+    const h = guestHarness();
+    h.guestSwitch.offer('s1', 'token-aaaaaaaaaaaaaaaa');
+    expect(h.service.claimGuestStartSwitch('s1')).toBe(true);
+    // 凭证留给接下来这次重新打开带上。
+    expect(h.guestSwitch.takeForOpen('s1')).toBe('token-aaaaaaaaaaaaaaaa');
+    // 同一个凭证只换一次。
+    expect(h.service.claimGuestStartSwitch('s1')).toBe(false);
+
+    const tookOver = guestHarness();
+    tookOver.guestSwitch.offer('s1', 'token-aaaaaaaaaaaaaaaa');
+    tookOver.service.noteUserAction('s1');
+    expect(tookOver.service.claimGuestStartSwitch('s1')).toBe(false);
+  });
 });
 
 describe('no error while switching (mayHandleTurnError + hooks)', () => {
@@ -1277,6 +1309,19 @@ describe('no error while switching (mayHandleTurnError + hooks)', () => {
     expect(hooks.resumed).toHaveBeenCalledTimes(1);
     expect(hooks.beforeFallback).not.toHaveBeenCalled();
     expect(h.deps.fallback).not.toHaveBeenCalled();
+  });
+
+  it('tells the caller right before the continuation is handed over (so it stops its give-up timer)', async () => {
+    const order: string[] = [];
+    const h = harness();
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.deps.continueSession.mockImplementationOnce(async () => {
+      order.push('continue');
+      return 'resumed' as const;
+    });
+    const hooks = { continuing: vi.fn(() => { order.push('continuing'); }), resumed: vi.fn(() => { order.push('resumed'); }) };
+    await h.service.onTurnError('s1', LIMIT, 7, hooks);
+    expect(order).toEqual(['continuing', 'continue', 'resumed']);
   });
 
   it('lets the caller surface the error right before handing back to the existing handling', async () => {

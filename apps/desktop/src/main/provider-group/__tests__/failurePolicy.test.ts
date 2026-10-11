@@ -9,11 +9,9 @@ import { describe, expect, it } from 'vitest';
 import {
   decideProviderGroupFailure,
   describeProviderGroupFailure,
-  PROVIDER_GROUP_AGENT_START_FAILED_REASON,
   PROVIDER_GROUP_SUPERSEDED_ERROR,
   PROVIDER_GROUP_UNAVAILABLE_ERROR,
   providerGroupFailureSignals,
-  providerGroupUndeliveredSendSignals,
   type ProviderGroupFailurePhase,
 } from '../failurePolicy';
 import type { InterruptedTurnErrorSignals } from '../../maker-ipc/interruptedTurnAutoResume';
@@ -157,40 +155,6 @@ describe('providerGroupFailureSignals', () => {
     expect(providerGroupFailureSignals('boom')).toEqual({ message: 'boom' });
     expect(providerGroupFailureSignals({ sdkError: 'rate_limit' })).toEqual({ sdkError: 'rate_limit' });
     expect(providerGroupFailureSignals(null)).toEqual({});
-  });
-});
-
-describe('providerGroupUndeliveredSendSignals', () => {
-  it('treats an agent that did not start for a stored message as a start failure', () => {
-    const signals = providerGroupUndeliveredSendSignals({
-      kind: 'host-send', accepted: false, code: 'LAZY_CREATE_FAILED', message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone',
-    });
-    expect(signals).toEqual({ message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone', reason: PROVIDER_GROUP_AGENT_START_FAILED_REASON });
-    expect(decideProviderGroupFailure(signals, 'run')).toEqual(switchTo('unavailable', 'lost'));
-  });
-
-  it('keeps start-phase rules for the start failure (local admission errors stay)', () => {
-    const signals = providerGroupUndeliveredSendSignals({
-      kind: 'host-send', accepted: false, code: 'LAZY_CREATE_FAILED', message: '[PRECONDITION_FAILED] model disabled',
-    });
-    expect(decideProviderGroupFailure(signals, 'run')).toEqual(stay('task-state'));
-    // 展示文案带宿主错误码前缀时同样看里面那层。
-    expect(decideProviderGroupFailure({ message: 'LAZY_CREATE_FAILED: [PRECONDITION_FAILED] x', reason: PROVIDER_GROUP_AGENT_START_FAILED_REASON }, 'run'))
-      .toEqual(stay('task-state'));
-  });
-
-  it('accepts link failures where the request was never sent', () => {
-    const error = Object.assign(new Error('[REMOTE_AGENT_UNAVAILABLE] target device offline'), { code: 'DEVICE_OFFLINE' });
-    expect(providerGroupUndeliveredSendSignals(error)?.reason).toBe(PROVIDER_GROUP_AGENT_START_FAILED_REASON);
-  });
-
-  it('never re-sends when delivery is unknown (timeouts) or the failure is not about starting', () => {
-    expect(providerGroupUndeliveredSendSignals(Object.assign(new Error('[REMOTE_AGENT_UNAVAILABLE] timed out'), { code: 'TIMEOUT' })))
-      .toBeNull();
-    expect(providerGroupUndeliveredSendSignals({ kind: 'host-send', accepted: false, code: 'WORKDIR_MISSING', message: 'x' }))
-      .toBeNull();
-    expect(providerGroupUndeliveredSendSignals({ kind: 'session-dispatch', accepted: false, reason: 'cancelled-before-dispatch' }))
-      .toBeNull();
   });
 });
 

@@ -441,15 +441,6 @@ export interface AgentInputCoordinatorDeps {
     item: AgentInputQueuedMessage,
   ) => AutoResumeAgentSwitchCause | null;
   /**
-   * **纯判定**：已落库的消息没能派发出去(打开任务时 Agent 没能启动、链路已断请求没发出去)时，这次失败要不要交给
-   * 供应商组换电脑(与终态错误同一条路：`providerGroupSwitchCandidate` 登记先不呈现，再 `onUsageLimitedTurnError`)。
-   * 返回判定用的字段；送达不明(请求超时等)或不归供应商组管时返回 null，照原有方式报错。
-   */
-  providerGroupUndeliveredSendSignals?: (
-    sessionId: string,
-    failure: unknown,
-  ) => InterruptedTurnErrorSignals | null;
-  /**
    * **纯判定**：这条 terminal error 有没有可能被自愈接管（`isInterruptedTurnError`）。
    * 不消耗额度、不排期、无副作用。
    *
@@ -5192,17 +5183,11 @@ export class AgentInputCoordinator {
       latest.activeTurn = null;
       this.notifyRejectedUserTurn(sessionId, head);
       this.notifyUndispatchedUserTurn(sessionId, head, 'failed');
-      // 确定没送达的失败交给供应商组换电脑(与终态错误同一条路，先登记先不呈现，再 emit)。
-      const groupSignals = !rewound && !schedulerOrigin
-        ? this.providerGroupUndeliveredSignals(sessionId, err)
-        : null;
-      if (groupSignals) this.holdForProviderGroupSwitch(sessionId, latest, head, latest.error!, groupSignals);
       if (!rewound) {
         this.persistTerminalSendError(sessionId, latest.error!);
         this.notifyPersistedSendRejected(sessionId, latest.error!);
       }
       this.emit(sessionId);
-      if (groupSignals) this.notifyUsageLimitedTurnError(sessionId, head, latest.error!, groupSignals);
       // 派发边界刚刚放开,队里可能还压着别的消息 —— 用户那条路靠 clearError 顺带唤醒,
       // scheduler 这条没有人点,必须自己唤一次。
       if (schedulerOrigin) this.scheduleDrain(sessionId, 'scheduler-prompt-cancelled');
@@ -5351,17 +5336,11 @@ export class AgentInputCoordinator {
         ...logFields,
       },
     );
-    // 确定没送达的失败(打开任务时 Agent 没能启动等)交给供应商组换电脑：先登记先不呈现，再 emit。
-    const groupSignals = !cancelledByUserBoundary && !rewoundScheduler && !schedulerOrigin
-      ? this.providerGroupUndeliveredSignals(sessionId, result)
-      : null;
-    if (groupSignals) this.holdForProviderGroupSwitch(sessionId, latest, item, message, groupSignals);
     if (!cancelledByUserBoundary && !rewoundScheduler) {
       this.persistTerminalSendError(sessionId, message);
       this.notifyPersistedSendRejected(sessionId, message);
     }
     this.emit(sessionId);
-    if (groupSignals) this.notifyUsageLimitedTurnError(sessionId, item, message, groupSignals);
     // activeTurn 上面已置空,但队里可能还压着别的消息 —— 用户那条路靠 clearError 顺带
     // 唤醒,scheduler 这条没有 recovery、没有人点,必须自己唤一次(review #944 第十轮 P1)。
     if (schedulerOrigin) this.scheduleDrain(sessionId, 'scheduler-prompt-cancelled');
@@ -6573,21 +6552,6 @@ export class AgentInputCoordinator {
       this.deps.onResumableTurnErrorDiscarded?.(sessionId, options);
     } catch (err) {
       log.warn('onResumableTurnErrorDiscarded failed', { sessionId, error: errorMessage(err) });
-    }
-  }
-
-  /** 已落库却没派发出去的这次失败要不要交给供应商组换电脑(`providerGroupUndeliveredSendSignals`)。 */
-  private providerGroupUndeliveredSignals(
-    sessionId: string,
-    failure: unknown,
-  ): InterruptedTurnErrorSignals | null {
-    const classify = this.deps.providerGroupUndeliveredSendSignals;
-    if (!classify) return null;
-    try {
-      return classify(sessionId, failure);
-    } catch (err) {
-      log.warn('providerGroupUndeliveredSendSignals failed', { sessionId, error: errorMessage(err) });
-      return null;
     }
   }
 

@@ -554,14 +554,18 @@ describe('old tasks already running on the group computer', () => {
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
   });
 
-  it('does not move an old task at start when its native session must be resumed (that needs a handoff)', async () => {
+  it('lets a failed reopen move an old task whose native session must be resumed (register hands it off first)', async () => {
     const h = harness({ row: { sdkSessionId: 'native-1' }, live: false, picks: [STUDIO] });
-    expect(await h.service.assignBeforeStart(START)).toBeNull();
-    // 仍纳入组：之后打开失败、运行中失败走带交接的自动换电脑。
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
+    const context = await h.service.assignBeforeStart(START);
+    expect(context).toMatchObject({ member: { key: OWNER_LOCAL.key }, groupDeviceId: OWNER });
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER });
-    const unreadable = harness({ row: { sdkSessionId: 'native-1' }, live: false });
-    unreadable.remote.readGroup.mockResolvedValueOnce(undefined);
-    expect(await unreadable.service.assignBeforeStart(START)).toBeNull();
+
+    const next = await h.service.nextAfterStartFailure(
+      context!,
+      new Error('[REMOTE_AGENT_UNAVAILABLE] group computer is gone'),
+    );
+    expect(next?.route).toEqual({ agentDeviceId: STUDIO.agentDeviceId, providerId: STUDIO.providerId });
   });
 
   it('returns a start context for an old task whose live session is gone, so startup failure can move it', async () => {

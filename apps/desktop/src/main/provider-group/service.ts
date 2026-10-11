@@ -261,6 +261,11 @@ export interface ProviderGroupService {
    * 读不到状态或没有下一台时不动，照常发送。
    */
   beforeSend(sessionId: string, options?: ProviderGroupBeforeSendOptions): Promise<void>;
+  /**
+   * 分享的人这边：续接一个经分享者的组运行过的任务时 Agent 没能启动，组所在电脑随启动失败发来了「需要换一台」凭证
+   * (§6.1)：取走凭证、登记给下一次打开，返回 true，调用方带交接后在同一个分享位置重新打开，由组换一台。
+   */
+  claimGuestStartSwitch(sessionId: string): boolean;
   /** 用户亲自接手：这一轮重新从头试。 */
   noteUserAction(sessionId: string): void;
   /**
@@ -288,6 +293,8 @@ export interface ProviderGroupTurnErrorHooks {
   reconnecting?(attempt: number, maxAttempts: number): void;
   /** 等过原电脑但没等到，开始换电脑。 */
   switching?(): void;
+  /** 马上要把续跑交出去(之后不再有「久久没有结局」)：调用方停掉兜底计时，续跑途中不会再把错误放出来。 */
+  continuing?(): void;
 }
 
 /** 发送前检查组内电脑状态的上限：读不到就照常发送，不让一台卡住的电脑拖慢每次发送。 */
@@ -551,9 +558,12 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     return outcome === 'back';
   }
 
-  /** 换过去失败只是因为这台电脑连不上那台(那台本身可能没问题)：值得等它恢复。 */
+  /**
+   * 换过去失败只是因为这台电脑连不上那台(那台本身可能没问题)：值得等它恢复。只认「只是连接断了」——「可能连不上」的
+   * 那几个错误码也用来包装对方的各种拒绝(如 Agent 没能启动)，等下去只会对同一台反复交接。
+   */
   function isUnreachableTarget(decision: ProviderGroupFailureDecision): boolean {
-    return decision.action === 'switch' && decision.connection !== null;
+    return decision.action === 'switch' && decision.connection === 'lost';
   }
 
   /**
@@ -576,12 +586,11 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   }
 
   /**
-   * 运行过的任务这次打开能不能在启动阶段直接换到组里下一台：要重新打开(没有开着的会话)，而且没有原生会话要续接。
-   * 有原生会话时它在原来那台上，换过去必须带交接，不能拿着原来那台的会话 id 去别处打开(那边认不出，会悄悄开一个
-   * 没有上下文的新会话)。
+   * 运行过的任务这次打开能不能在启动阶段换到组里下一台：要重新打开(没有开着的会话)。有原生会话要续接时，调用方
+   * 换过去前先做交接(register 的启动重试：全量交接 + 全新原生会话)，不拿原来那台的会话 id 去别处打开。
    */
-  function mayReopenElsewhere(sessionId: string, row: ProviderGroupSessionRow): boolean {
-    return deps.hasLiveSession?.(sessionId) === false && !row.sdkSessionId;
+  function mayReopenElsewhere(sessionId: string): boolean {
+    return deps.hasLiveSession?.(sessionId) === false;
   }
 
   /** 这一轮结束(放弃换电脑、用户接手)：下一轮重新从头试、重新等。 */
@@ -1049,6 +1058,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (!isCurrent()) return;
     const continueToken = deps.rearmContinue(sessionId, lease, deps.now());
     if (continueToken === null) return;
+    hooks?.continuing?.();
     const outcome = await deps.continueSession(sessionId, continueToken, {
       reason: USAGE_LIMIT_RESET_AUTO_RESUME_REASON,
       attempt: 1,
@@ -1188,6 +1198,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (!isCurrent()) return;
       const continueToken = deps.rearmContinue(sessionId, lease, deps.now());
       if (continueToken === null) return;
+      hooks?.continuing?.();
       const outcome = await deps.continueSession(sessionId, continueToken, {
         reason: USAGE_LIMIT_RESET_AUTO_RESUME_REASON,
         attempt: 1,
@@ -1293,6 +1304,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       if (!isCurrent()) return;
       const continueToken = deps.rearmContinue(sessionId, lease, deps.now());
       if (continueToken === null) return;
+      hooks?.continuing?.();
       const outcome = await deps.continueSession(sessionId, continueToken, {
         reason: USAGE_LIMIT_RESET_AUTO_RESUME_REASON,
         attempt: 1,
@@ -1318,9 +1330,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const source = remoteSource(ownerDeviceId);
     const groupProviderId = row.providerId;
     // 只给从没运行过的任务按策略选电脑；已经运行过的任务先纳入组并留在原电脑。
-    // 已经运行过、但这次要重新打开、而且没有要续接的原生会话(回退或清空后)：仍是启动阶段，返回启动上下文，
-    // 启动失败时直接试组内下一台(反正都是全新会话)。有原生会话要续接的不在启动阶段换：会话在原来那台上，
-    // 换过去要带交接，交给发送前检查与失败后的自动换电脑(都走交接)。
+    // 已经运行过、但这次要重新打开：仍是启动阶段，返回启动上下文，启动失败时试组内下一台；有原生会话要续接时
+    // 换过去先带交接(register 的启动重试)，不拿原来那台的会话 id 去别处打开。
     // 问不到组所在电脑时照常启动，出错时再补。
     const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
     // 已经明确解除过这个组的老任务不再询问组所在电脑，也不自动纳回。
@@ -1329,7 +1340,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       ? await withTimeout(source.readGroup(groupProviderId), PROVIDER_GROUP_ADOPT_TIMEOUT_MS)
       : await source.readGroup(groupProviderId).catch(() => undefined);
     if (config === undefined) {
-      if (!hasRun || !mayReopenElsewhere(sessionId, row)) return null;
+      if (!hasRun || !mayReopenElsewhere(sessionId)) return null;
       // §6：启动时问不到组所在电脑照常启动；若这次启动失败，带着原路由在失败路径再读组，
       // 让老任务仍能纳入组并尝试下一台。此时不能写绑定，成功启动就继续作为普通远程任务。
       const placeholder = pendingMember(providerGroupMemberKey(null, row.providerId), row.providerId, null);
@@ -1352,9 +1363,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       const current = currentKey ? config.members.find((member) => member.key === currentKey) : undefined;
       if (!current) return null;
       if (!(await adopt(sessionId, source, groupProviderId, current.key))) return null;
-      // Live session 仍在时，运行中错误交给 failover；只有需要重新打开、又没有原生会话要续接时才让启动
-      // 失败路径直接换下一台，避免把正常运行中的老任务提前迁走、把要续接的会话不带交接地开到别处。
-      if (!mayReopenElsewhere(sessionId, row)) return null;
+      // Live session 仍在时，运行中错误交给 failover；只有需要重新打开时才让启动失败路径换下一台(要续接的
+      // 原生会话换过去先带交接)，避免把正常运行中的老任务提前迁走。
+      if (!mayReopenElsewhere(sessionId)) return null;
       const route = source.routeOf(current, null);
       return {
         sessionId,
@@ -1408,7 +1419,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           .catch(() => undefined);
         const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
         if (config === undefined) {
-          if (!mayReopenElsewhere(sessionId, row)) return null;
+          if (!mayReopenElsewhere(sessionId)) return null;
           const member = pendingMember(
             existingBinding.memberKey,
             row.providerId ?? existingBinding.providerId,
@@ -1433,10 +1444,10 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           return null;
         });
         // 从没运行过的任务(上次全部没能启动、重启应用后再打开等)：带上启动上下文，这次启动失败时仍能
-        // 换组里下一台。已经运行过的任务在原来那台上有原生会话，换电脑要走交接(发送前检查、失败后的自动换电脑)；
-        // 没有原生会话要续接(回退或清空后)时仍属于启动阶段，失败后直接换下一台。
+        // 换组里下一台。已经运行过的任务要重新打开时同样属于启动阶段，失败后换下一台；有原生会话要续接的换过去先
+        // 带交接(register 的启动重试)。
         if (!current) return null;
-        if (hasRun && !mayReopenElsewhere(sessionId, row)) return null;
+        if (hasRun && !mayReopenElsewhere(sessionId)) return null;
         const localProviderId = current.kind === 'local' && !source.ownerDeviceId ? row.providerId : binding.providerId;
         return {
           sessionId,
@@ -1456,13 +1467,13 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       const config = groupProviderId ? deps.readGroup(groupProviderId) : null;
       if (!groupProviderId || !config) return null;
       // 已经运行过的任务(建组前就在用、回退或清空等清掉了原生会话)不按策略挪走：留在本机并纳入组。
-      // live session 仍在时之后的运行中错误走 failover；没有原生会话要续接时，这次启动失败要能直接换下一台。
+      // live session 仍在时之后的运行中错误走 failover；要重新打开时这次启动失败换下一台(要续接的先带交接)。
       const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
       if (hasRun) {
         const local = config.members.find((member) => member.kind === 'local');
         if (!local) return null;
         if (!(await adopt(sessionId, localSource, groupProviderId, local.key))) return null;
-        if (!mayReopenElsewhere(sessionId, row)) return null;
+        if (!mayReopenElsewhere(sessionId)) return null;
         return {
           sessionId,
           groupProviderId,
@@ -1725,6 +1736,12 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       } finally {
         done();
       }
+    },
+
+    claimGuestStartSwitch(sessionId) {
+      const claimed = deps.guestSwitch?.claim(sessionId) === true;
+      if (claimed) deps.log.info('provider group: reopening a shared task through the sharer’s group after it did not start', { sessionId });
+      return claimed;
     },
 
     noteUserAction(sessionId) {

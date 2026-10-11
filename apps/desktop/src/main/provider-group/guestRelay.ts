@@ -102,7 +102,9 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
       // 与本机自己的任务同一个判定(failurePolicy)：换到哪台都一样的不换，那台账号的问题记进组的状态；
       // 连不上、起不来不记进组的状态，下次选电脑时现读那台(状态以本机读到的为准，2026-10-11)。
       const signals = providerGroupFailureSignals(error);
-      const decision = decideProviderGroupFailure(signals, 'start');
+      // 按运行中的口径判：错误来自那台电脑(它的 Agent、它的准入)，不是受邀者这个任务此刻的状态，Cindy 自己的错误码
+      // (参数不对、不支持等)在那台上同样说明是那台的问题，换下一台。
+      const decision = decideProviderGroupFailure(signals, 'run');
       deps.log.info?.('provider group: failure decision', {
         phase: 'start',
         relay: true,

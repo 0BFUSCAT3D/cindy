@@ -206,16 +206,13 @@ export function decideProviderGroupFailure(
     return { action: 'stay', why: 'no-signal' };
   }
 
-  // 已落库的消息在打开任务时就没送出去：按启动阶段判定。
-  const effectivePhase = reason === PROVIDER_GROUP_AGENT_START_FAILED_REASON ? 'start' : phase;
-
   // ── 不是那台电脑的问题 ──
   if (message === PROVIDER_GROUP_SUPERSEDED_ERROR) return { action: 'stay', why: 'user' };
   // 本机主动关掉了还在运行的会话(本机的操作，不是那台的问题)。
   if (message.startsWith(SESSION_CLOSED_MID_TURN_MESSAGE)) return { action: 'stay', why: 'local' };
   const code = errorCodeOf(message);
   if (code === 'REMOTE_AGENT_GROUP_UNAVAILABLE') return { action: 'stay', why: 'group-unavailable' };
-  if (effectivePhase !== 'run' && code && TASK_STATE_CODES.has(code)) return { action: 'stay', why: 'task-state' };
+  if (phase !== 'run' && code && TASK_STATE_CODES.has(code)) return { action: 'stay', why: 'task-state' };
 
   // ── 换到哪台都一样 ──
   const stayReason = STAY_REASONS.get(reason);
@@ -259,30 +256,6 @@ export function decideProviderGroupFailure(
 
   // ── 其余：那台出了别的问题，换 ──
   return switchTo('failed', null);
-}
-
-/**
- * 已落库的用户消息确定没有送到 Agent 的失败(打开任务时 Agent 没能启动、发送时链路已断而请求根本没发出去)：
- * 当作这一轮还没有产出就失败，交给与运行中失败同一条换电脑流程(换过去后重发原消息)。送达不明的(请求超时等)
- * 返回 null：可能已经在跑，重发会让同一条消息执行两次(§6.1)。
- */
-export const PROVIDER_GROUP_AGENT_START_FAILED_REASON = 'provider_group_agent_start_failed';
-
-const UNDELIVERED_HOST_SEND_CODES = new Set(['LAZY_CREATE_FAILED', 'REHYDRATE_FAILED']);
-/** 设备互联在请求发出之前就拒绝的(没有连接、对方离线)：确定没送达。超时、断在半路的不算。 */
-const UNDELIVERED_LINK_CODES = new Set(['DEVICE_OFFLINE', 'NOT_CONNECTED', 'LINK_NOT_OPEN', 'DEVICE_LINK_DEVICE_OFFLINE']);
-
-export function providerGroupUndeliveredSendSignals(failure: unknown): InterruptedTurnErrorSignals | null {
-  if (!failure || typeof failure !== 'object') return null;
-  const record = failure as { kind?: unknown; code?: unknown; message?: unknown };
-  const message = typeof record.message === 'string' ? record.message : '';
-  if (record.kind === 'host-send' && typeof record.code === 'string' && UNDELIVERED_HOST_SEND_CODES.has(record.code)) {
-    return { message, reason: PROVIDER_GROUP_AGENT_START_FAILED_REASON };
-  }
-  if (failure instanceof Error && typeof record.code === 'string' && UNDELIVERED_LINK_CODES.has(record.code)) {
-    return { message, reason: PROVIDER_GROUP_AGENT_START_FAILED_REASON };
-  }
-  return null;
 }
 
 /** 运行中、启动阶段换下一台用的简写：不换返回 null。 */
