@@ -6497,9 +6497,10 @@ function MarkdownSessionLinkSpan({
         message.clientId === session.messageClientId || message.id === session.messageClientId
       ))
     : null;
-  const messageLabel = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+  const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+  const messageLabel = messageText ? compactSessionMessageLabel(messageText) : '';
   const title = session.messageClientId
-    ? (messageLabel ? compactSessionMessageLabel(messageLabel) : i18n.t('message.renderer.messageChipFallback'))
+    ? messageLabel || i18n.t('message.renderer.messageChipFallback')
     : explicit
       ?? sessionLinkTitles?.[session.sessionId]
       ?? i18n.t('message.renderer.sessionChipFallback');

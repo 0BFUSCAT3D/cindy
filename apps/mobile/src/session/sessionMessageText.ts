@@ -45,9 +45,36 @@ function markdownPlainText(text: string): string {
   }).join(' ');
 }
 
+// 附着在前一个字符上的码点:组合符、ZWJ、变体选择符、肤色修饰、标签字符。
+const CLUSTER_EXTEND = /^[\p{M}\u200D\uFE0E\uFE0F\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]$/u;
+const REGIONAL_INDICATOR = /^[\u{1F1E6}-\u{1F1FF}]$/u;
+
+/**
+ * 按用户看到的字符分组(Hermes 没有 Intl.Segmenter):覆盖 ZWJ 家庭 / 肤色 / 国旗 /
+ * 组合附加符,截断时不把一个 emoji 拆成两半。
+ */
+function displayCharacters(text: string): string[] {
+  const clusters: string[] = [];
+  let joinNext = false;
+  let regionalRun = 0;
+  for (const codePoint of text) {
+    const last = clusters.length - 1;
+    const regional = REGIONAL_INDICATOR.test(codePoint);
+    if (last >= 0 && (joinNext || CLUSTER_EXTEND.test(codePoint) || (regional && regionalRun % 2 === 1))) {
+      clusters[last] += codePoint;
+    } else {
+      clusters.push(codePoint);
+    }
+    regionalRun = regional ? regionalRun + 1 : 0;
+    joinNext = codePoint === '\u200D';
+  }
+  return clusters;
+}
+
+/** 引用 chip 的可见摘要;没有可读文字(如只有无说明图片)时返回空串,由调用方给中性占位。 */
 export function compactSessionMessageLabel(text: string): string {
-  const compact = markdownPlainText(text).replace(/\s+/g, ' ').trim() || text.replace(/\s+/g, ' ').trim();
-  const chars = Array.from(compact);
+  const compact = markdownPlainText(text).replace(/\s+/g, ' ').trim();
+  const chars = displayCharacters(compact);
   if (chars.length <= MESSAGE_LABEL_MAX_CHARS) return compact;
   return `${chars.slice(0, MESSAGE_LABEL_MAX_CHARS - 1).join('').trimEnd()}…`;
 }

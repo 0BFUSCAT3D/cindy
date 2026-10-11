@@ -35,6 +35,22 @@ describe('mobile session message labels', () => {
     expect(Array.from(compactSessionMessageLabel('😀'.repeat(40)))).toHaveLength(24);
   });
 
+  it('returns no label when the message has no readable text, never the raw Markdown source', () => {
+    expect(compactSessionMessageLabel('![](cindy-media://blobs/abc)')).toBe('');
+    expect(compactSessionMessageLabel('  \n ')).toBe('');
+  });
+
+  it('truncates by visible characters without splitting multi-codepoint emoji', () => {
+    const flag = '🇨🇳';
+    const family = '👨‍👩‍👧';
+    const skin = '👍🏽';
+    expect(compactSessionMessageLabel(`${'a'.repeat(22)}${flag}bb`)).toBe(`${'a'.repeat(22)}${flag}…`);
+    expect(compactSessionMessageLabel(`${'a'.repeat(22)}${family}bb`)).toBe(`${'a'.repeat(22)}${family}…`);
+    expect(compactSessionMessageLabel(`${'a'.repeat(22)}${skin}bb`)).toBe(`${'a'.repeat(22)}${skin}…`);
+    expect(compactSessionMessageLabel(`${flag}${flag}`)).toBe(`${flag}${flag}`);
+    expect(compactSessionMessageLabel(`${'a'.repeat(23)}e\u0301`)).toBe(`${'a'.repeat(23)}e\u0301`);
+  });
+
   it('splits message anchors while preserving adjacent punctuation and whole-session links', () => {
     expect(splitAnchoredSessionMessageLinks(
       'See cindy://session/s-1?message=m-2, then cindy://session/s-3.',
