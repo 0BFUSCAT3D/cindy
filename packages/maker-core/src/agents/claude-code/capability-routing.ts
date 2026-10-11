@@ -162,6 +162,9 @@ export function buildClaudeDisallowedTools(
  * only the server's tools would leave its server instructions in the prompt;
  * a denied server is never connected. Claude merges this list with the user's
  * own deny list instead of replacing it.
+ *
+ * Like `skillOverrides`, the deny matches by server name only, so host policy
+ * names only harness-specific servers such as `claude.ai ` account connectors.
  */
 export function buildClaudeDeniedMcpServers(
   policy: CapabilityRoutingPolicy | undefined,
