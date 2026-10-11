@@ -74,10 +74,21 @@ export function browserViewportScript(viewport: BrowserViewport): string {
     const paintCanvas = () => {
       const root = document.documentElement;
       if (!root || !document.body || root[painted]) return;
+      // Computed colors keep the channels of a transparent color (rgba(255, 0, 0, 0)); read alpha.
+      const zeroAlpha = color => {
+        if (color === 'transparent') return true;
+        const open = color.indexOf('(');
+        const close = color.lastIndexOf(')');
+        if (open < 0 || close < open) return false;
+        const channels = color.slice(open + 1, close);
+        const slash = channels.lastIndexOf('/');
+        const commas = channels.split(',');
+        const alpha = slash >= 0 ? channels.slice(slash + 1) : commas.length === 4 ? commas[3] : null;
+        return alpha !== null && parseFloat(alpha) === 0;
+      };
       const bare = element => {
         const style = getComputedStyle(element);
-        const color = style.backgroundColor;
-        return (color === 'transparent' || color === 'rgba(0, 0, 0, 0)') && style.backgroundImage === 'none';
+        return zeroAlpha(style.backgroundColor) && style.backgroundImage === 'none';
       };
       if (!bare(root) || !bare(document.body)) return;
       root.style.backgroundColor = 'Canvas';

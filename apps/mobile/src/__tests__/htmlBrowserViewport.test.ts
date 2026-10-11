@@ -121,7 +121,14 @@ describe('page canvas fallback', () => {
     run();
     expect(document.documentElement.style.backgroundColor.toLowerCase()).toBe('canvas');
   });
+  it.each(['rgba(255, 0, 0, 0)', 'rgb(255 0 0 / 0)', 'color(srgb 1 0 0 / 0%)', 'transparent'])('treats zero-alpha %s as no background', (color) => {
+    page({ backgroundColor: color }, { backgroundColor: color });
+    run();
+    expect(document.documentElement.style.backgroundColor.toLowerCase()).toBe('canvas');
+  });
   it.each([
+    ['opaque black', { backgroundColor: 'rgb(0, 0, 0)' }, {}],
+    ['translucent body', {}, { backgroundColor: 'rgba(0, 0, 0, 0.5)' }],
     ['html color', { backgroundColor: 'rgb(17, 22, 27)' }, {}],
     ['body color', {}, { backgroundColor: 'rgb(17, 22, 27)' }],
     ['body gradient', {}, { backgroundImage: 'linear-gradient(red, blue)' }],
