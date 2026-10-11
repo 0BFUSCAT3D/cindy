@@ -151,6 +151,15 @@ describe('provider group guest relay planner', () => {
     expect(env.router.markCooling.mock.calls.length).toBe(calls);
   });
 
+  it('does not switch or cool a member when Claude reaches its output limit', () => {
+    const env = setup([MINI, FRIEND]);
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    expect(env.relay.noteRunFailure('anthropic', mini, {
+      sdkError: 'max_output_tokens', message: 'SDK request failed',
+    })).toBe(false);
+    expect(env.router.markCooling).not.toHaveBeenCalled();
+  });
+
   it('cools until the reported reset time, trusting it at most 8 days', () => {
     const router = { markCooling: vi.fn() } as unknown as ProviderGroupRouter & { markCooling: ReturnType<typeof vi.fn> };
     let resetAt = 1_000 + 3 * 60 * 60_000;

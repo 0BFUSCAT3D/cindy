@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay';
 import { createProviderGroupExternalLoad } from '../../provider-group/externalLoad';
 import type { ProviderGroupRouter } from '../../provider-group/router';
+import { decideProviderGroupFailure } from '../../provider-group/failurePolicy';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
@@ -700,6 +701,26 @@ describe('provider group "switch to another computer" for shared users', () => {
     expect(switchTokenIn(declared.stream)).toBeUndefined();
     expect(env.relay.plan).toHaveBeenCalledTimes(2);
     await declared.client.close('close', 'navigation');
+  });
+
+  it.each(['local', 'member'] as const)('forwards the Claude output limit from %s without offering another computer', async (kind) => {
+    const env = setup({
+      plans: [kind === 'local' ? { kind: 'local' } : { kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+      switchWorthy: (failure) => decideProviderGroupFailure(failure, 'run').action === 'switch',
+    });
+    const guest = await openAsGuest(env, GUEST_A, openPayload(SESSION, { acceptsGroupSwitch: true }));
+    const data = { sdkError: 'max_output_tokens', message: 'SDK request failed', isTerminal: true };
+    const record = kind === 'local' ? env.ownerStarted[0] : env.memberStarted.mini[0];
+    record.emit({ type: 'error', data } as AgentEvent);
+    await waitFor(() => guest.stream.some((item) => item.t === 'event' && item.event.type === 'error'));
+    expect(guest.stream).toContainEqual(expect.objectContaining({ t: 'event', event: expect.objectContaining({ type: 'error', data }) }));
+    expect(env.relay.noteRunFailure).toHaveBeenCalledWith(
+      'shared-provider', expect.anything(), expect.objectContaining({ sdkError: 'max_output_tokens' }),
+    );
+    expect(switchTokenIn(guest.stream)).toBeUndefined();
+    expect(env.relay.plan).toHaveBeenCalledTimes(1);
+    expect(env.memberStarted.studio).toHaveLength(0);
+    await guest.client.close('close', 'navigation');
   });
 
   it('also offers another computer when the group ran the task on the group computer itself', async () => {

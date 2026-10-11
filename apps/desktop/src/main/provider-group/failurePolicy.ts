@@ -5,7 +5,7 @@
  * 组内电脑的失败、协同 Worker。路径只负责「拿到这次失败」与「执行决定」，不再各自判断换不换、等不等、记不记进组。
  *
  * 默认换(2026-10-11 用户确认：出问题就换，除非换到哪台都一样)。不换的只有：
- * - 换到哪台都一样：上下文超出上限、请求本身无效、内容被拒、工具循环被拦、权限确认被拒、本机准入(模型停用等)；
+ * - 换到哪台都一样：上下文或输出超出上限、请求本身无效、内容被拒、工具循环被拦、权限确认被拒、本机准入(模型停用等)；
  * - 不是那台电脑的问题：本机主动关掉了会话、用户已经接手、任务此刻的状态不允许(在运行、已删除等)。
  *
  * 换的时候再分两件事：
@@ -217,6 +217,8 @@ export function decideProviderGroupFailure(
   // ── 换到哪台都一样 ──
   const stayReason = STAY_REASONS.get(reason);
   if (stayReason) return { action: 'stay', why: stayReason };
+  // Claude 的终态错误保留 SDK tag，不一定带 output-limit reason；输出上限换到哪台都一样。
+  if (signals.sdkError === 'max_output_tokens') return { action: 'stay', why: 'context' };
   if (signals.toolLoop) return { action: 'stay', why: 'tool-loop' };
   if (USER_DECISION_TEXT.test(message)) return { action: 'stay', why: 'user' };
   if (TOOL_FAILURE_TEXT.test(message)) return { action: 'stay', why: 'local' };

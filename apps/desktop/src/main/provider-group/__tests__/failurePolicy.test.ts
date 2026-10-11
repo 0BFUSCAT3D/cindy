@@ -100,6 +100,8 @@ describe('decideProviderGroupFailure — any computer would fail the same way (s
     ['Codex context window', { codexErrorInfo: 'contextWindowExceeded', message: 'x' }, 'context'],
     ['Codex history oversized', { reason: 'codex_history_oversized', message: 'x' }, 'context'],
     ['output limit', { reason: 'output-limit', message: 'x' }, 'context'],
+    ['Claude output limit without a reason or message', { sdkError: 'max_output_tokens' }, 'context'],
+    ['Claude output limit with opaque terminal wording', { sdkError: 'max_output_tokens', message: 'SDK request failed', reason: 'api_error' }, 'context'],
     ['invalid request', { sdkError: 'invalid_request', message: 'messages: field required' }, 'invalid-request'],
     ['HTTP 400', { errorStatus: 400, message: 'bad request' }, 'invalid-request'],
     ['HTTP 413', { errorStatus: 413, message: 'too large' }, 'invalid-request'],
