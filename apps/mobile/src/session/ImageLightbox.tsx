@@ -1172,6 +1172,14 @@ const LightboxPage = memo(function LightboxPage({
     fullFailedTerminally: !retryable && !!uri && failedFullUri === uri,
   });
 
+  // 取件成功但 mime 非图片(unsupported)时 displayUriFor 恒为 null,若只认
+  // status==='error' 会永远停在 spinner —— 一并视为失败,给到重试按钮。
+  const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
+  // 没有原图地址、也不会再有(取件失败 / 不支持 / 无取件途径):给失败文案与重试。
+  const pageFailed = layers.showFailure || (!uri && (
+    resolveState?.status === 'error' || resolvedUnsupported || (!retryable && !media.previewable)
+  ));
+
   const reportZoomed = useCallback((value: boolean) => {
     onZoomChange(value);
   }, [onZoomChange]);
@@ -1280,9 +1288,12 @@ const LightboxPage = memo(function LightboxPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutSize?.width, layoutSize?.height, width, height]);
 
-  // 翻走 / 换图时复位缩放与位移,避免回到本页时残留上次的缩放态。
+  // 翻走 / 换图时复位缩放与位移,避免回到本页时残留上次的缩放态。失败态同样
+  // 复位:加载中放大了垫底图、随后取件失败时手势层被卸掉,不复位就停在「已放大」,
+  // 父层锁着翻页、失败页又没有双击可缩回,只能关掉重开。
+  const transformReset = !active || pageFailed;
   useEffect(() => {
-    if (active) return;
+    if (!transformReset) return;
     scale.value = 1;
     savedScale.value = 1;
     translateX.value = 0;
@@ -1300,9 +1311,11 @@ const LightboxPage = memo(function LightboxPage({
     dragY.value = 0;
     chromeHidden.value = 0;
     onChromeBusy(false);
-    // 共享值的写入不需要依赖追踪,这里只关心 active 翻转时机
+    // 只有活跃页拥有父层的翻页锁;非活跃页复位不能改写当前页的放大状态。
+    if (active) onZoomChange(false);
+    // 共享值的写入不需要依赖追踪,这里只关心复位条件的翻转时机
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [transformReset]);
 
   const gesture = useMemo(() => {
     // 新手势接管当前帧,必须同时停掉缩放与两轴位移,避免旧动画继续推着图片走。
@@ -1682,13 +1695,6 @@ const LightboxPage = memo(function LightboxPage({
     ],
   }));
 
-  // 取件成功但 mime 非图片(unsupported)时 displayUriFor 恒为 null,若只认
-  // status==='error' 会永远停在 spinner —— 一并视为失败,给到重试按钮。
-  const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
-  // 没有原图地址、也不会再有(取件失败 / 不支持 / 无取件途径):给失败文案与重试。
-  const pageFailed = layers.showFailure || (!uri && (
-    resolveState?.status === 'error' || resolvedUnsupported || (!retryable && !media.previewable)
-  ));
 
   // 标注 overlay 的锚定矩形(contain 1x):其中心恒等于容器中心,与图片层共用
   // 同一 translate/scale transform 时缩放中心一致,视觉完全跟随(纯函数,可单测)。

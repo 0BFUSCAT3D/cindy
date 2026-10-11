@@ -145,10 +145,10 @@ export function collectMobileMessageGalleryImages(
         item.childItems.forEach(visitItem);
         break;
       case 'tool_media':
-        // tool 产出媒体的独立渲染项(所属 tool_group 内同一批 tool 消息的再呈现,
-        // 回合结束后才出现):用户点的通常是这块,单独成组,点它翻的就是这块里
-        // 看得到的图 / 视频。同一 url 也在 tool_group 所在组里,两处各按点击来源取组。
-        item.tools.forEach((tool, index) => visitMessage(tool, `${item.key}:tool:${index}`, false));
+        // tool 产出媒体的独立渲染项(所属 tool_group 内同一批 tool 消息的再呈现):
+        // 图片已随 tool_group 路径进图集,这里 no-op,保证每个 url 只属于一个组。
+        // 从这块点开时来源 key 不在图集里,按 url 唯一命中 tool_group 所在组;
+        // 回合结束重组后来源 key 失效(work- → work-summary-)也同样按 url 找回。
         break;
       case 'todo':
         // todo 卡无图片,no-op。
@@ -193,10 +193,10 @@ export function galleryImageIndexForPayload(
  * 内的图片 / 视频子集(同一条消息多张才可横滑翻页,跨轮次不串,产品决策 2026-07-08)。
  *
  * 所属消息优先用点击来源(sourceGroupKey:点开时所在的顶层 render item):同一
- * url 常会再次出现在后面的消息里(例如 Agent 读图后工具结果里显示同一个文件),
- * 只凭 url 反查会命中多个组。来源不在图集里(tool_media 等不收图的独立块)或
- * 调用方没给来源时才按 url 反查:唯一命中一组取该组;命中多组无法判定点的是
- * 哪条消息 → 保守退化单图,绝不错开到别的消息的图组(review P2)。
+ * url 可能再次出现在后面的消息里,只凭 url 反查会命中多个组。来源不在图集里
+ * (tool_media 等不收图的独立块、回合结束重组后失效的旧 key)或调用方没给来源
+ * 时按 url 反查:唯一命中一组取该组;命中多组无法判定点的是哪条消息 → 保守
+ * 退化单图,绝不错开到别的消息的图组(review P2)。
  * 完全不在图集里(理论兜底)→ 同样退化单图。
  */
 export function lightboxImagesForPayload(

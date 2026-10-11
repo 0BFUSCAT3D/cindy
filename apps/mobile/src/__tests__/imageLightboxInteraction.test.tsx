@@ -1033,6 +1033,35 @@ describe("chrome toggle, loading and video pages", () => {
     expect(runtime.nodes.get("message.imageLightboxAnnotateButton").disabled).toBe(false);
   });
 
+  it("unlocks paging when the original fails after the placeholder was zoomed", async () => {
+    const url = "xdt-image://cache/broken.png";
+    const image = {
+      key: "broken", title: "Broken", url,
+      payload: { kind: "media", media: { kind: "image", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    const failures = new Map<string, (error: Error) => void>();
+    const resolver = vi.fn((media: { url: string; thumbnail?: boolean }) => (media.thumbnail
+      ? Promise.resolve({ url: "file:///thumb.png", previewable: true })
+      : new Promise((_resolve, reject) => { failures.set(media.url, reject); })));
+    const fail = (error: Error) => failures.get(url)!(error);
+    await act(async () => {
+      const nextUrl = "xdt-image://cache/next.png";
+      const next = {
+        key: "next", title: "Next", url: nextUrl,
+        payload: { kind: "media", media: { kind: "image", url: nextUrl, previewable: false } },
+      } as ImageLightboxProps["images"][number];
+      mount({ images: [image, next], initialUrl: url, onResolveRemoteMedia: resolver as never });
+    });
+    act(() => runtime.nodes.get("message.imageLightboxPreviewLayer").onLoad({ source: { width: 160, height: 90 } }));
+    doubleTapAtCorner();
+    finishAnimations();
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(false);
+
+    await act(async () => { fail(new Error("gone")); });
+    expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(true);
+    expect(runtime.nodes.get("FlatList").scrollEnabled).toBe(true);
+  });
+
   it("plays video pages with the native player, falls back to the web player and releases on close", async () => {
     const url = "xdt-video://cache/clip.mp4";
     const video = {
