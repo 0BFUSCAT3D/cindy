@@ -25,6 +25,7 @@ import {
 } from '@cindy/model-providers';
 
 import { resolveNewTaskDefaultRoute } from '../../shared/draftModelCalibration.js';
+import { activeOwnerScopeKey } from '../appSessionState.js';
 import { resolveScheduledModelSelection, type ScheduledModelSelection } from '../maker-ipc/scheduledModelSelection';
 import { getDesktopProviderService } from './createDesktopProviderService.js';
 import {
@@ -123,7 +124,7 @@ export async function resolveDefaultScheduleRoute(
   return resolveNewTaskDefaultRoute({
     providers: views,
     agent,
-    draft: getNewTaskDraftSelection(agent),
+    draft: getNewTaskDraftSelection(activeOwnerScopeKey(), agent),
     requiredProviderId: preferredProviderId,
   });
 }
@@ -139,7 +140,7 @@ export async function resolveNewTaskDefaultModelRoute(
   return resolveNewTaskDefaultRoute({
     providers: await listTrustedDefaultRouteProviders(),
     agent,
-    draft: getNewTaskDraftSelection(agent),
+    draft: getNewTaskDraftSelection(activeOwnerScopeKey(), agent),
     requiredProviderId,
   });
 }
