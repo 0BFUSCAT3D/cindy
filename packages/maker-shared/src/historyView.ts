@@ -32,6 +32,8 @@ export interface HistoryMessageSource {
   agentMeta?: object | null;
   /** Host outline only; transferred in work summaries, never as a replacement body. */
   historyArtifacts?: HistoryFileArtifact[];
+  /** Host outline only: changes when the hidden body is rewritten; hashed into revisions. */
+  historyContentStamp?: string;
 }
 
 /** Both endpoints are real host message IDs, inclusive, in host database order. */

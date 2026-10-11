@@ -40,16 +40,19 @@ function host(source: HistoryMessageSource[]) {
   };
   const reader = createHistoryViewReader({
     list,
-    // Mirrors historyOutlineContent: bodies stay on disk, only grouping facts are read.
+    // Mirrors historyOutlineContent + historyOutlineContentStamp: bodies stay on disk,
+    // only grouping facts and a body stamp are read.
     outline: async (sid, opts) => (await list(sid, opts)).map((row) => {
+      const body = typeof row.content === 'string' ? row.content : JSON.stringify(row.content);
+      const stamped = { ...row, historyContentStamp: `${body.length}:${body.slice(-24)}` };
       const content = row.content as { toolName?: string; toolUseId?: string; input?: Record<string, unknown> };
-      if (row.role === 'thinking') return { ...row, content: { isRedacted: true } };
-      if (row.role === 'tool_result') return { ...row, content: '' };
+      if (row.role === 'thinking') return { ...stamped, content: { isRedacted: true } };
+      if (row.role === 'tool_result') return { ...stamped, content: '' };
       if (row.role === 'tool_use') {
-        return { ...row, content: { toolName: content.toolName, toolUseId: content.toolUseId,
+        return { ...stamped, content: { toolName: content.toolName, toolUseId: content.toolUseId,
           input: { file_path: content.input?.file_path, path: content.input?.path, command: content.input?.command } } };
       }
-      return row;
+      return stamped;
     }),
     hydrate: async (_sid, ids) => source.filter((row) => ids.includes(row.id)),
     revision: async () => `db:${writes}`,
@@ -63,6 +66,12 @@ function host(source: HistoryMessageSource[]) {
   return {
     write(...rows: HistoryMessageSource[]) {
       source.push(...rows);
+      writes += 1;
+    },
+    /** In-place body rewrite, like a later full tool result or a background completion. */
+    rewrite(id: string, content: unknown) {
+      const row = source.find((value) => value.id === id)!;
+      row.content = content;
       writes += 1;
     },
     async page(): Promise<{ page: HistoryViewPage<HistoryMessageSource>; shape: HistoryPageShape }> {
@@ -204,5 +213,48 @@ describe('running work lines', () => {
     expect(thinkingDeltaUpdatesWorkLine('s', delta('c'))).toBe(false);
     expect(thinkingDeltaUpdatesWorkLine('s', delta('d', 'b2'))).toBe(true);
     expect(thinkingDeltaUpdatesWorkLine('s', { sessionId: 's', event: { type: 'tool_use', data: {} } })).toBe(false);
+  });
+
+  it('measures the thinking line after the projection collapses whitespace, across chunks', () => {
+    const delta = (text: string) => ({ sessionId: 'w', event: { type: 'thinking', data: { stage: 'delta', blockId: 'b', text } } });
+    // Leading whitespace is invisible: nothing to send yet, and it does not use up the line.
+    expect(thinkingDeltaUpdatesWorkLine('w', delta(' '.repeat(160)))).toBe(false);
+    expect(thinkingDeltaUpdatesWorkLine('w', delta('Now a useful thought'))).toBe(true);
+    // A run split across chunks still collapses to one space; slow output keeps updating.
+    for (let n = 0; n < 20; n += 1) {
+      expect(thinkingDeltaUpdatesWorkLine('w', delta('\n\n   '))).toBe(false);
+      expect(thinkingDeltaUpdatesWorkLine('w', delta('word'))).toBe(true);
+    }
+    // Once more than a line is known, further text cannot change what is shown.
+    for (let n = 0; n < 20; n += 1) thinkingDeltaUpdatesWorkLine('w', delta(' more'));
+    expect(thinkingDeltaUpdatesWorkLine('w', delta(' and more'))).toBe(false);
+  });
+
+  it('refreshes when a completed group hidden body is rewritten while another group runs', async () => {
+    const source = [user(0), toolUse(1, 'Bash', { command: 'pnpm build' }), toolResult(2, 1, 'summary'),
+      assistant(3, 'Build started, checking tests.'), toolUse(4, 'Read', { file_path: '/repo/a.ts' })];
+    const h = host(source);
+    setHistoryWorkPageReader((sid, onShape) => h.reader.page(sid, undefined, true, { workLines: true, onShape }));
+    const delivered = await h.page();
+    expect(delivered.page.items.filter((item) => item.type === 'work')).toHaveLength(2);
+    // Only the completed group's tool result changes: its outline body is still empty.
+    h.rewrite('m2', `summary\n${'full build log '.repeat(200)}`);
+    expect((await buildHistoryWorkPatch('s', delivered.shape)).kind).toBe('refresh');
+  });
+
+  it('widens past repeated reads so five display lines survive de-duplication', async () => {
+    const source = [user(0)];
+    let n = 1;
+    for (const file of ['/a', '/b', '/c', '/d', '/e', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z',
+      '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z', '/z']) {
+      source.push(toolUse(n, 'Read', { file_path: file }), toolResult(n + 1, n, `contents of ${file}`));
+      n += 2;
+    }
+    source.push(thinking(n, '   '));
+    const { page } = await host(source).page();
+    const running = page.items.at(-1);
+    if (running?.type !== 'work') throw new Error('missing running item');
+    expect(running.summary.lines!.map((line) => line.kind === 'tool' && line.descriptor.kind === 'file' ? line.descriptor.filePath : line.kind))
+      .toEqual(['/b', '/c', '/d', '/e', '/z']);
   });
 });

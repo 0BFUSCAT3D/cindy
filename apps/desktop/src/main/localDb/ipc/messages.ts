@@ -23,7 +23,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { createId } from '@paralleldrive/cuid2';
-import { historyOutlineContent, withHistoryArtifacts } from './historyViewOutline';
+import { historyOutlineContent, historyOutlineContentStamp, withHistoryArtifacts } from './historyViewOutline';
 import { historyViewLeaves, isHistoryViewUnavailable } from '@cindy/maker-shared/message-window';
 
 import { getDbClient, getCurrentDbClientSnapshot } from '../client/current';
@@ -320,7 +320,7 @@ export async function readMessagesList(sessionId: unknown, opts: unknown, skipIm
     const rows = await db
       .select({
         ...getMessageSelectFields(),
-        ...(outline ? { content: historyOutlineContent() } : {}),
+        ...(outline ? { content: historyOutlineContent(), historyContentStamp: historyOutlineContentStamp() } : {}),
         rowid: messageRowid,
       })
       .from(messages)
@@ -333,7 +333,9 @@ export async function readMessagesList(sessionId: unknown, opts: unknown, skipIm
     const orderedRows = afterCursor ? rows.slice().reverse() : rows;
     const restored = await restoreTaskImageRows(imageDbClient, orderedRows);
     const listed = await hydrateLegacyUserTurnCosts(restored.map(messageToCamelWithRowid));
-    return outline ? listed.map(withHistoryArtifacts) : listed;
+    if (!outline) return listed;
+    const stamps = new Map(orderedRows.map((row) => [row.id, (row as { historyContentStamp?: string }).historyContentStamp]));
+    return listed.map((row) => withHistoryArtifacts({ ...row, historyContentStamp: stamps.get(row.id) ?? undefined }));
 }
 
 export function registerMessageIpc(

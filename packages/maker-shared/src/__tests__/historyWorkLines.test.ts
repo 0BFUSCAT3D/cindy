@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HistoryViewController } from '../historyViewController.js';
 import type { HistoryMessageSource, HistoryViewPage, HistoryWorkPatch, HistoryWorkSummary } from '../historyView.js';
 import { renderHistoryView } from '../historyViewRender.js';
-import { HISTORY_WORK_LINES_MAX_BYTES, projectHistoryWorkLines } from '../historyWorkLines.js';
+import { HISTORY_WORK_LINE_MAX_BYTES, HISTORY_WORK_LINES_MAX_BYTES, projectHistoryWorkLines } from '../historyWorkLines.js';
 
 let n = 0;
 function row(role: string, content: unknown, extra: Partial<HistoryMessageSource> = {}): HistoryMessageSource {
@@ -62,8 +62,25 @@ describe('projectHistoryWorkLines', () => {
     expect(line.kind === 'thinking' && line.text.startsWith('first second')).toBe(true);
     const wide = Array.from({ length: 5 }, (_, index) => tool('mcp__srv__do_it', { query: `${index}${'界'.repeat(2000)}` }));
     const lines = projectHistoryWorkLines(wide, true);
-    expect(lines.length).toBeGreaterThan(0);
+    expect(lines).toHaveLength(5);
     expect(Buffer.byteLength(JSON.stringify(lines), 'utf8')).toBeLessThanOrEqual(HISTORY_WORK_LINES_MAX_BYTES);
+  });
+
+  it.each([
+    ['ASCII', (index: number) => `/repo/${'nested/'.repeat(40)}file${index}.ts`],
+    ['CJK', (index: number) => `/仓库/${'深层目录/'.repeat(60)}文件${index}.ts`],
+  ])('keeps every real file_change line, including the newest, inside the byte budget (%s paths)', (_label, path) => {
+    const change = (count: number) => tool('file_change', { changes: Array.from({ length: count }, (_, index) => ({
+      path: path(index), kind: { type: 'update', move_path: path(index + 100) }, diff: '+x\n'.repeat(500),
+    })) });
+    const lines = projectHistoryWorkLines([change(20), change(20), change(3), change(20), change(15)], true);
+    expect(lines).toHaveLength(5);
+    expect(Buffer.byteLength(JSON.stringify(lines), 'utf8')).toBeLessThanOrEqual(HISTORY_WORK_LINES_MAX_BYTES);
+    for (const line of lines) expect(Buffer.byteLength(JSON.stringify(line), 'utf8')).toBeLessThanOrEqual(HISTORY_WORK_LINE_MAX_BYTES);
+    const newest = lines.at(-1)!;
+    if (newest.kind !== 'tool') throw new Error('expected a tool line');
+    // The count a multi-file row shows survives the reduction.
+    expect(newest.descriptor.kind === 'fileChange' ? newest.descriptor.changes.length : newest.descriptor.kind).toBe(15);
   });
 });
 

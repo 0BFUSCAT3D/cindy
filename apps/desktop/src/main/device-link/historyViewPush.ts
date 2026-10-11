@@ -94,17 +94,33 @@ export async function buildHistoryWorkPatch(sessionId: string, delivered: Histor
 
 /**
  * Folded thinking deltas normally produce no notice. A work-line controller still needs
- * the opening of the thought, so deltas notify until that single line can no longer change.
+ * the opening of the thought, so deltas notify while its visible line can still change.
+ * The visible prefix follows the line projection: leading and trailing whitespace is
+ * dropped and every whitespace run becomes one space, including runs split across chunks.
  */
-const thinkingLineChars = new Map<string, { blockId: unknown; chars: number }>();
+const thinkingLinePrefixes = new Map<string, { blockId: unknown; visible: string; pendingSpace: boolean }>();
 export function thinkingDeltaUpdatesWorkLine(sessionId: string, payload: unknown): boolean {
   const event = record(record(payload)?.event);
   const data = record(event?.data);
   if (event?.type !== 'thinking' || data?.stage !== 'delta') return false;
-  const current = thinkingLineChars.get(sessionId);
-  const before = current && current.blockId === data.blockId ? current.chars : 0;
-  thinkingLineChars.delete(sessionId);
-  thinkingLineChars.set(sessionId, { blockId: data.blockId, chars: before + (typeof data.text === 'string' ? data.text.length : 0) });
-  if (thinkingLineChars.size > 256) thinkingLineChars.delete(thinkingLineChars.keys().next().value!);
-  return before < HISTORY_WORK_LINE_TEXT_CHARS;
+  const current = thinkingLinePrefixes.get(sessionId);
+  const state = current && current.blockId === data.blockId
+    ? current : { blockId: data.blockId, visible: '', pendingSpace: false };
+  const before = state.visible;
+  // One character past the line length decides whether the line shows an ellipsis.
+  const text = typeof data.text === 'string' ? data.text : '';
+  for (let index = 0; index < text.length && state.visible.length <= HISTORY_WORK_LINE_TEXT_CHARS; index += 1) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      state.pendingSpace = state.visible.length > 0;
+      continue;
+    }
+    if (state.pendingSpace) state.visible += ' ';
+    state.pendingSpace = false;
+    state.visible += char;
+  }
+  thinkingLinePrefixes.delete(sessionId);
+  thinkingLinePrefixes.set(sessionId, state);
+  if (thinkingLinePrefixes.size > 256) thinkingLinePrefixes.delete(thinkingLinePrefixes.keys().next().value!);
+  return state.visible !== before;
 }

@@ -4,12 +4,15 @@ import { isDeliveryProseText } from '@cindy/maker-shared/message-render';
 import { parseMessageToolUse } from '@cindy/maker-shared/message-normalize';
 import {
   HISTORY_VIEW_PAGE_BYTES, HISTORY_VIEW_PAGE_ITEMS, HISTORY_DETAIL_PAGE_BYTES,
-  projectHistoryView, projectHistoryWorkLines, historySubagentScopes, mapHistoryViewMessages, historyWorkSummaries,
-  type HistoryMessageSource, type HistoryViewItem, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkReference,
+  HISTORY_WORK_LINE_LIMIT, projectHistoryView, projectHistoryWorkLines, historySubagentScopes, mapHistoryViewMessages, historyWorkSummaries,
+  type HistoryMessageSource, type HistoryWorkLine, type HistoryViewItem, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkReference,
 } from '@cindy/maker-shared/message-window';
 
 export const MAX_HISTORY_SCAN_ROWS = 2000;
 const MAX_HISTORY_SCAN_BYTES = 8 * 1024 * 1024;
+const WORK_LINE_SOURCE_BATCH = 24;
+/** Bounds the bodies read for one running preview; a longer duplicate run shows fewer lines. */
+const MAX_WORK_LINE_SOURCE_ROWS = 384;
 
 interface ReadOptions { limit: number; before?: string; after?: string }
 
@@ -190,17 +193,23 @@ export function createHistoryViewReader<T extends HistoryMessageSource>(deps: Hi
       if (options.workLines && !before) {
         const rows = [...raw, ...live];
         for (const item of items.filter(isRunningLeafWork)) {
-          const range = item.summary.preview ?? item.summary;
-          const start = rows.findIndex((row) => row.id === range.firstMessageId);
-          const end = rows.findIndex((row) => row.id === range.lastMessageId);
-          let tail = start < 0 || end < start ? [] : rows.slice(start, end + 1);
+          const start = rows.findIndex((row) => row.id === item.summary.firstMessageId);
+          const end = rows.findIndex((row) => row.id === item.summary.lastMessageId);
           try {
-            if (outlined) {
-              const full = new Map((await deps.hydrate!(sessionId, tail.filter((row) => !row.id.startsWith('history-live:'))
-                .map((row) => row.id))).map((row) => [row.id, row]));
-              tail = tail.map((row) => full.get(row.id) ?? row);
+            // Repeated reads and empty thoughts are dropped by the projection, so a fixed
+            // source tail can yield fewer lines than are visible. Widen from the end until
+            // five display lines exist or the group starts, hydrating each row only once.
+            const full = new Map<string, T>();
+            let lines: HistoryWorkLine[] = [];
+            for (let take = WORK_LINE_SOURCE_BATCH; start >= 0 && end >= start; take *= 2) {
+              const from = Math.max(start, end + 1 - Math.min(take, MAX_WORK_LINE_SOURCE_ROWS));
+              const tail = rows.slice(from, end + 1);
+              const missing = outlined ? tail.filter((row) => !row.id.startsWith('history-live:') && !full.has(row.id)) : [];
+              if (missing.length) for (const row of await deps.hydrate!(sessionId, missing.map((row) => row.id))) full.set(row.id, row);
+              lines = projectHistoryWorkLines(tail.map((row) => full.get(row.id) ?? row), true);
+              if (lines.length >= HISTORY_WORK_LINE_LIMIT || from === start || take >= MAX_WORK_LINE_SOURCE_ROWS) break;
             }
-            item.summary.lines = projectHistoryWorkLines(tail, true);
+            item.summary.lines = lines;
           } catch {
             // Lines are a display hint. A range changing mid-read keeps the page usable;
             // the next activity notice recomputes them.

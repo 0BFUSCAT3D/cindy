@@ -20,10 +20,16 @@ import {
 export const HISTORY_WORK_LINE_LIMIT = 5;
 /** One rendered line never shows more; longer values only cost bytes. */
 export const HISTORY_WORK_LINE_TEXT_CHARS = 160;
-const DESCRIPTOR_TEXT_CHARS = 300;
-const DESCRIPTOR_LIST_ITEMS = 20;
 /** UTF-8 budget for the whole window, so one patch stays a small push. */
 export const HISTORY_WORK_LINES_MAX_BYTES = 6 * 1024;
+/** Each line fits its share of the window, so five lines always fit together. */
+export const HISTORY_WORK_LINE_MAX_BYTES = Math.floor(HISTORY_WORK_LINES_MAX_BYTES / HISTORY_WORK_LINE_LIMIT);
+/** Descriptor reductions tried in order until the whole line fits its byte share. */
+const DESCRIPTOR_LIMITS = [
+  { text: 300, items: 20 },
+  { text: 80, items: 4 },
+  { text: 40, items: 1 },
+] as const;
 
 export type HistoryWorkLine =
   | {
@@ -49,14 +55,24 @@ function cut(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
-/** Display facts only: diffs are dropped, strings and lists bounded. */
-function liteDescriptor(value: unknown): unknown {
-  if (typeof value === 'string') return cut(value, DESCRIPTOR_TEXT_CHARS);
-  if (Array.isArray(value)) return value.slice(0, DESCRIPTOR_LIST_ITEMS).map(liteDescriptor);
+/** A list keeps at most this many entries, so counts such as "edited N files" stay exact up to it. */
+const DESCRIPTOR_LIST_ENTRIES = 20;
+
+/**
+ * Display facts only: diffs are dropped, strings and lists bounded. Entries past
+ * `limits.items` become empty shells that only keep a list's length: a row reads list
+ * entries only when there is exactly one, and a remote line opens its group on click.
+ */
+function liteDescriptor(value: unknown, limits: { text: number; items: number }): unknown {
+  if (typeof value === 'string') return cut(value, limits.text);
+  if (Array.isArray(value)) {
+    return value.slice(0, DESCRIPTOR_LIST_ENTRIES)
+      .map((entry, index) => index < limits.items ? liteDescriptor(entry, limits) : {});
+  }
   if (!value || typeof value !== 'object') return value;
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    result[key] = key === 'diff' ? '' : liteDescriptor(entry);
+    result[key] = key === 'diff' ? '' : liteDescriptor(entry, limits);
   }
   return result;
 }
@@ -143,20 +159,34 @@ export function projectHistoryWorkLines(
       ? { ...resolved, intent: activity.intentOverride }
       : resolved;
     const record = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : null;
-    const ghost = /(?:^|:|__)ghost_call$/.test(toolName) && typeof record?.ghost_id === 'string'
-      ? { id: cut(record.ghost_id, DESCRIPTOR_TEXT_CHARS), tool: cut(typeof record.tool === 'string' ? record.tool : '', DESCRIPTOR_TEXT_CHARS) }
-      : undefined;
+    const hasError = activity.toolResult !== undefined && isToolResultFailureLike(descriptor, activity.toolResult);
+    for (const limits of DESCRIPTOR_LIMITS) {
+      const ghost = /(?:^|:|__)ghost_call$/.test(toolName) && typeof record?.ghost_id === 'string'
+        ? { id: cut(record.ghost_id, limits.text), tool: cut(typeof record.tool === 'string' ? record.tool : '', limits.text) }
+        : undefined;
+      const line: HistoryWorkLine = {
+        kind: 'tool',
+        key: activity.key,
+        toolName: cut(toolName, limits.text),
+        descriptor: liteDescriptor(descriptor, limits) as ToolUseDescriptor,
+        status: activity.status,
+        ...(hasError ? { hasError: true as const } : {}),
+        ...(ghost ? { ghost } : {}),
+      };
+      if (utf8Length(JSON.stringify(line)) <= HISTORY_WORK_LINE_MAX_BYTES) return line;
+    }
+    // Nothing descriptive fits: the tool name alone still reports the activity and its state.
+    const last = DESCRIPTOR_LIMITS[DESCRIPTOR_LIMITS.length - 1].text;
     return {
       kind: 'tool',
       key: activity.key,
-      toolName: cut(toolName, DESCRIPTOR_TEXT_CHARS),
-      descriptor: liteDescriptor(descriptor) as ToolUseDescriptor,
+      toolName: cut(toolName, last),
+      descriptor: { kind: 'generic', toolName: cut(toolName, last) },
       status: activity.status,
-      ...(activity.toolResult !== undefined && isToolResultFailureLike(descriptor, activity.toolResult) ? { hasError: true as const } : {}),
-      ...(ghost ? { ghost } : {}),
+      ...(hasError ? { hasError: true as const } : {}),
     };
   });
-  // Older lines give way first; the newest line always fits after the per-field caps.
-  while (lines.length > 1 && utf8Length(JSON.stringify(lines)) > HISTORY_WORK_LINES_MAX_BYTES) lines.shift();
+  // Every line is within its share, so this only guards the invariant itself.
+  while (lines.length > 0 && utf8Length(JSON.stringify(lines)) > HISTORY_WORK_LINES_MAX_BYTES) lines.shift();
   return lines;
 }

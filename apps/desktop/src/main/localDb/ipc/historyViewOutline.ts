@@ -63,6 +63,15 @@ export function historyOutlineContent(): SQL<string> {
 }
 
 
+/**
+ * A cheap fact that changes when a hidden body is rewritten in place (a later full tool
+ * result, a background completion). The outline already reads every body, so length and
+ * tail cost nothing extra; grouping revisions hash it, and it never reaches the wire.
+ */
+export function historyOutlineContentStamp(): SQL<string> {
+  return sql<string>`length(${messages.content}) || ':' || substr(${messages.content}, -24)`;
+}
+
 /** File content/patches never cross the outline query; commands yield only paths on the wire. */
 export function withHistoryArtifacts<T extends HistoryMessageSource>(row: T): T & Pick<HistoryMessageSource, 'historyArtifacts'> {
   if (row.role !== 'tool_use') return row;
