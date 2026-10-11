@@ -1,3 +1,4 @@
+import { randomUUID } from 'expo-crypto';
 import { useAuth } from '@/auth/AuthContext';
 import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -232,7 +233,7 @@ function RemoteResourceResolverScreenContent() {
         onClosed={() => {
           const sessionId = pendingHistory.current; pendingHistory.current = null;
           profileOpenRef.current = false;
-          if (sessionId) router.push({ pathname: '/sessions/[sessionId]', params: { sessionId, deviceId, deviceName, resourceCollectionId: collectionId, resourceId, resourceKind, openSearch: '1' } });
+          if (sessionId) router.push({ pathname: '/sessions/[sessionId]', params: { sessionId, deviceId, deviceName, resourceCollectionId: collectionId, resourceId, resourceKind, openSearch: '1', openSearchRequest: randomUUID() } });
           else setAttempt(value => value + 1);
         }}
         onOpenSearch={historySessionId ? () => { pendingHistory.current = historySessionId; setProfileOpen(false); } : undefined}

@@ -1,3 +1,4 @@
+import { useSessionHistorySearch } from '@/session/useSessionHistorySearch';
 import { responseSpeedActivity, responseSpeedHistory } from "@cindy/maker-shared/usage-format";
 import type { ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
 import { modelNeedsReselection } from '@/session/modelReselection';
@@ -989,6 +990,7 @@ export default function SessionScreen() {
     focusRequestKey?: string;
     visualFocusComposer?: string;
     openSearch?: string;
+    openSearchRequest?: string;
     visualOpenSearch?: string;
     visualSearchQuery?: string;
   }>();
@@ -1445,7 +1447,8 @@ export default function SessionScreen() {
     // 首段音频到达时与 listening 同批交接;停止、取消和错误也在这里收回 pending。
     setVoiceStartPending(false);
   }, []);
-  const [searchOpen, setSearchOpen] = useState(readRouteParam(params.openSearch) === '1');
+  const [searchOpen, setSearchOpen] = useSessionHistorySearch(
+    readRouteParam(params.openSearch), readRouteParam(params.openSearchRequest));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [menuInitialView, setMenuInitialView] = useState<SessionMenuView>('menu');
   const [sessionSearchPendingOpen, setSessionSearchPendingOpen] = useState(false);

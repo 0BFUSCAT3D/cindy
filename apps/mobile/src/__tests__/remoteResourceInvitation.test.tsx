@@ -2,6 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+vi.mock('expo-crypto', () => ({ randomUUID: vi.fn(() => 'history-request') }));
 const h = vi.hoisted(() => ({
   router: { replace: vi.fn(), push: vi.fn() }, generation: 1,
   params: { collectionId: 'teammates', resourceId: 'bot-1', resourceKind: 'bot', deviceId: 'mac', deviceName: 'Mac' },
@@ -140,5 +141,5 @@ it('opens existing history after the failed teammate settings close', async () =
   await act(async () => (container.querySelector('[data-testid="remoteResourceResolver.settings"]') as HTMLButtonElement).click());
   expect(h.router.push).not.toHaveBeenCalled();
   await act(async () => (container.querySelector('[data-testid="profile-history"]') as HTMLButtonElement).click());
-  expect(h.router.push).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/sessions/[sessionId]', params: expect.objectContaining({ sessionId: 'chat-1', deviceId: 'mac', openSearch: '1' }) }));
+  expect(h.router.push).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/sessions/[sessionId]', params: expect.objectContaining({ sessionId: 'chat-1', deviceId: 'mac', openSearch: '1', openSearchRequest: 'history-request' }) }));
 });
