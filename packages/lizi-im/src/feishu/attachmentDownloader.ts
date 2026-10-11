@@ -30,18 +30,42 @@ export interface DownloadResult {
   unsupported: UnsupportedEntry[];
 }
 
+export interface DownloadOptions {
+  /**
+   * 群历史上下文用(只进模型、不落库): 图片按可回收缓存写入(staging), 不复用
+   * 也不固定已有缓存 —— 否则没有任务引用的 blob 永远不会被回收。
+   */
+  history?: boolean;
+}
+
+/** 下载期间账号已换代(登出/切号): 不写、已写的回滚 —— 旧账号附件不落进新账号目录。 */
+class StaleAccountError extends Error {
+  constructor() {
+    super('account changed during download');
+  }
+}
+
 export async function downloadAttachments(
   client: Lark.Client,
   messageId: string,
   refs: AttachmentRef[],
+  options: DownloadOptions = {},
 ): Promise<DownloadResult> {
   const log = getLog();
   const attachments: IMAttachment[] = [];
   const unsupported: UnsupportedEntry[] = [];
+  const scope = getHost().accountScope;
+  const accountToken = scope?.capture();
+  const ctx: DownloadContext = {
+    history: options.history === true,
+    assertAccountCurrent: () => {
+      if (scope && !scope.isCurrent(accountToken)) throw new StaleAccountError();
+    },
+  };
 
   for (const ref of refs) {
     try {
-      const one = await downloadOne(client, messageId, ref);
+      const one = await downloadOne(client, messageId, ref, ctx);
       if ('attachment' in one) attachments.push(one.attachment);
       else unsupported.push(one.unsupported);
     } catch (err) {
@@ -56,6 +80,26 @@ export async function downloadAttachments(
   }
 
   return { attachments, unsupported };
+}
+
+interface DownloadContext {
+  history: boolean;
+  assertAccountCurrent: () => void;
+}
+
+/** 写入 host 后再复查账号; 已换代则回滚本次写入并按换代处理。 */
+async function keepIfAccountCurrent<T>(
+  ctx: DownloadContext,
+  written: T,
+  discard: (() => Promise<void>) | undefined,
+): Promise<T> {
+  try {
+    ctx.assertAccountCurrent();
+  } catch (err) {
+    await discard?.().catch(() => undefined);
+    throw err;
+  }
+  return written;
 }
 
 type SingleResult =
@@ -74,6 +118,7 @@ async function downloadOne(
   client: Lark.Client,
   messageId: string,
   ref: AttachmentRef,
+  ctx: DownloadContext,
 ): Promise<SingleResult> {
   const host = getHost();
   const label = ref.kind === 'file' ? ref.fileName : '图片';
@@ -82,7 +127,8 @@ async function downloadOne(
     const media = host.media;
     if (!media) return { unsupported: { type: 'image', label } };
     try {
-      const cached = await media.getCachedImage('feishu', ref.imageKey);
+      // 历史上下文不复用缓存: 命中会把 blob 固定为用户附件, 而这里不会有任务引用。
+      const cached = ctx.history ? null : await media.getCachedImage('feishu', ref.imageKey);
       if (cached) {
         return {
           attachment: {
@@ -104,7 +150,18 @@ async function downloadOne(
     if (!HOST_CACHEABLE_IMAGE_MIMES.has(mime)) {
       return { unsupported: { type: 'image', label: `不支持的图片格式（${mime || '未知'}）` } };
     }
-    const put = await media.cacheImage({ integration: 'feishu', token: ref.imageKey, buffer, mimeType: mime });
+    ctx.assertAccountCurrent();
+    const put = await keepIfAccountCurrent(
+      ctx,
+      await media.cacheImage({
+        integration: 'feishu',
+        token: ref.imageKey,
+        buffer,
+        mimeType: mime,
+        ...(ctx.history ? { staging: true } : {}),
+      }),
+      undefined,
+    );
     return {
       attachment: {
         kind: 'image',
@@ -133,7 +190,9 @@ async function downloadOne(
     const avMime = ref.video && !mime.startsWith('video/') ? 'video/mp4' : mime;
     if (cacheMedia) {
       try {
-        const stored = await cacheMedia({ integration: 'feishu', token: ref.fileKey, buffer, mimeType: avMime });
+        ctx.assertAccountCurrent();
+        const written = await cacheMedia({ integration: 'feishu', token: ref.fileKey, buffer, mimeType: avMime });
+        const stored = await keepIfAccountCurrent(ctx, written, written.discard);
         return {
           attachment: {
             kind: 'file',
@@ -143,14 +202,17 @@ async function downloadOne(
             url: stored.url,
           },
         };
-      } catch {
+      } catch (err) {
+        if (err instanceof StaleAccountError) throw err;
         // 总仓拒收该音视频格式: 视频消息标不支持; 以普通文件发来的继续按文件暂存。
       }
     }
     if (ref.video || !host.files) return { unsupported: { type: 'media', label } };
   }
 
-  const staged = await host.files!.stage({ integration: 'feishu', buffer, fileName: ref.fileName });
+  ctx.assertAccountCurrent();
+  const written = await host.files!.stage({ integration: 'feishu', buffer, fileName: ref.fileName });
+  const staged = await keepIfAccountCurrent(ctx, written, written.discard);
   return {
     attachment: { kind: 'file', absPath: staged.absPath, originalName: ref.fileName, mimeType: mime },
   };

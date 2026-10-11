@@ -3030,3 +3030,46 @@ describe('TelegramIM 音视频与群历史媒体', () => {
     expect(api.calls.filter((c) => c.method === 'getFile' && c.params.file_id === 'v101')).toEqual([]);
   });
 });
+
+describe('TelegramIM 群历史图片', () => {
+  it('群历史图片按可回收缓存写入, 不复用也不固定已有缓存', async () => {
+    const cacheImage = vi.fn(async ({ token }: { token: string }) => ({
+      absPath: path.join(tmpDir, `img-${token}`),
+      url: `cindy-media://blobs/${token}.jpg`,
+      discard: async () => undefined,
+    }));
+    const getCachedImage = vi.fn(async () => null);
+    ctx.host.media = { cacheImage, getCachedImage, resolveMediaUrl: () => null };
+    await connect();
+    const origCall = api.call.bind(api);
+    api.call = (async (method: string, params?: Record<string, unknown>, signal?: AbortSignal) => {
+      if (method === 'getFile') return { file_id: params?.file_id, file_path: `p/${String(params?.file_id)}` } as never;
+      return origCall(method, params, signal);
+    }) as typeof api.call;
+    vi.stubGlobal('fetch', async () => new Response(Buffer.from('jpg')));
+    try {
+      api.pushUpdates([
+        {
+          update_id: 120,
+          message: {
+            message_id: 120,
+            from: { id: 222, is_bot: false, first_name: 'Tom' },
+            chat: { id: -100200, type: 'supergroup', title: 'Ops' },
+            date: nowSec(5),
+            photo: [{ file_id: 'ph-120', file_unique_id: 'u', width: 10, height: 10 }],
+          },
+        },
+      ]);
+      await vi.waitFor(() =>
+        expect(api.calls.filter((c) => c.method === 'getUpdates').length).toBeGreaterThan(1),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      const history = await im.collectGroupHistoryMedia('-100200', ['120']);
+      expect(history.attachments).toHaveLength(1);
+      expect(getCachedImage).not.toHaveBeenCalled();
+      expect(cacheImage).toHaveBeenCalledWith(expect.objectContaining({ token: 'ph-120', staging: true }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

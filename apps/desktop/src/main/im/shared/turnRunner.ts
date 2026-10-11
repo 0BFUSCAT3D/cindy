@@ -842,9 +842,6 @@ export function createTurnRunner(
       target = created.target;
     }
     const row = target.row;
-    // 入站非媒体文件此刻才知道归哪个任务: 先从暂存区移入该任务的附件目录, 再把
-    // 路径交给模型与落库(原地改写 absPath, 早落库已移过的不再动)。
-    await adoptStagedInboundFiles(row.id, [...attachments, ...(args.contextAttachments ?? [])]);
     const allowedFileRoots = resolveTurnFileRoots(row.workingDir, row.remoteHostId);
     let followTarget: ImDefaultRoute | null | undefined = null;
     if (!target.authChecked) {
@@ -1085,6 +1082,9 @@ export function createTurnRunner(
       );
     }
 
+    // 入站非媒体文件此刻才确定归哪个任务(授权等早退都已过): 暂存的移入该任务的
+    // 附件目录, 早落库已归到别的任务的复制一份, 再把路径交给模型与落库(原地改写 absPath)。
+    await adoptStagedInboundFiles(row.id, [...attachments, ...(args.contextAttachments ?? [])]);
     const autoReviewReferences = imAutoReviewReferences({
       attachments,
       replyContext: args.replyContext,

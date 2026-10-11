@@ -202,6 +202,11 @@ export interface NormalizeContext {
    * 配置换代(登出/换账号)时逐个调用, 不把旧账号的媒体留在新账号的仓里。
    */
   stagedDiscards?: Array<() => Promise<void>>;
+  /**
+   * 群历史上下文(只进模型、不落库, 没有任务引用): 图片按可回收缓存写入, 不复用
+   * 也不固定已有缓存 —— 否则这些 blob 永远不会被回收。
+   */
+  history?: boolean;
 }
 
 /**
@@ -470,7 +475,7 @@ export async function collectGroupHistoryMedia(
     const author = displayNameOf(m.from);
     const sink: IMAttachment[] = [];
     const failed: IMUnsupportedEntry[] = [];
-    await collectMedia(m, { ...ctx, contextId: '' }, sink, failed);
+    await collectMedia(m, { ...ctx, contextId: '', history: true }, sink, failed);
     unavailable.push(...failed.map((entry) => `群历史附件 ${entry.label}（${author}）：${entry.type}`));
     picked.push(...sink.map((att) => ({ ...att, author })));
   }
@@ -494,7 +499,7 @@ async function downloadTelegramFile(
 ): Promise<IMAttachment | null> {
   try {
     const kind = mimeType.startsWith('image/') ? ('image' as const) : ('file' as const);
-    if (kind === 'image' && ctx.media) {
+    if (kind === 'image' && ctx.media && !ctx.history) {
       const cached = await ctx.media.getCachedImage('telegram', fileId);
       if (cached) {
         return { kind, absPath: cached.absPath, originalName, mimeType: cached.mimeType, url: cached.url };
@@ -516,7 +521,9 @@ async function downloadTelegramFile(
           token: fileId,
           buffer,
           mimeType: mimeType.toLowerCase(),
+          ...(ctx.history ? { staging: true } : {}),
         });
+        if (promoted.discard) ctx.stagedDiscards?.push(promoted.discard);
         return { kind, absPath: promoted.absPath, originalName, mimeType, url: promoted.url };
       } catch {
         return null;

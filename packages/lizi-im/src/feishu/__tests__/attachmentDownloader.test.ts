@@ -70,9 +70,12 @@ function makeFiles() {
 
 const silentLog: Logger = { ...defaultLogger('im:feishu:test'), error: () => {} };
 
-function wireHost(opts: { media?: IMHostMediaCache; files?: IMHostFileStaging } = {}): void {
+function wireHost(
+  opts: { media?: IMHostMediaCache; files?: IMHostFileStaging; accountScope?: IMHost['accountScope'] } = {},
+): void {
   const host = {
     paths: { feishuMediaDir: legacyDir },
+    ...(opts.accountScope ? { accountScope: opts.accountScope } : {}),
     ...(opts.media ? { media: opts.media } : {}),
     ...(opts.files ? { files: opts.files } : {}),
     secrets: {
@@ -316,5 +319,70 @@ describe('downloadAttachments: 文件 → host 暂存, 音视频 → 媒体总�
       { type: 'download_failed:file', label: '下载失败 report.pdf（disk full）' },
     ]);
     expect(result.attachments).toEqual([expect.objectContaining({ kind: 'image', absPath: '/blobs/img_1.png' })]);
+  });
+});
+
+describe('downloadAttachments: 账号换代与群历史', () => {
+  function switchableScope() {
+    let current = 1;
+    return {
+      scope: {
+        capture: () => current,
+        isCurrent: (token: unknown) => token === current,
+        run: async <T,>(_token: unknown, op: () => Promise<T>) => op(),
+      },
+      switchAccount: () => {
+        current += 1;
+      },
+    };
+  }
+
+  it('下载期间换账号: 不写入 host, 标为下载失败', async () => {
+    const files = makeFiles();
+    const { scope, switchAccount } = switchableScope();
+    wireHost({ media: makeMedia(), files, accountScope: scope });
+    const get = vi.fn(async () => {
+      switchAccount();
+      return { getReadableStream: () => Readable.from([Buffer.from('pdf')]), headers: { 'content-type': 'application/pdf' } };
+    });
+    const client = { im: { v1: { messageResource: { get } } } } as unknown as Lark.Client;
+
+    const result = await downloadAttachments(client, 'om_1', [pdfRef]);
+
+    expect(files.stage).not.toHaveBeenCalled();
+    expect(result.attachments).toEqual([]);
+    expect(result.unsupported).toEqual([expect.objectContaining({ type: 'download_failed:file' })]);
+  });
+
+  it('写入 host 后才发现换账号: 回滚本次暂存', async () => {
+    const { scope, switchAccount } = switchableScope();
+    const discard = vi.fn(async () => {});
+    const files = {
+      stage: vi.fn<IMHostFileStaging['stage']>(async ({ fileName }) => {
+        switchAccount();
+        return { absPath: `/staged/${fileName}`, discard };
+      }),
+    };
+    wireHost({ media: makeMedia(), files, accountScope: scope });
+    const { client } = makeClient(Buffer.from('pdf'), 'application/pdf');
+
+    const result = await downloadAttachments(client, 'om_1', [pdfRef]);
+
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(result.attachments).toEqual([]);
+  });
+
+  it('群历史: 图片按可回收缓存写入, 不复用/固定已有缓存', async () => {
+    const media = makeMedia({
+      getCachedImage: vi.fn(async () => ({ absPath: '/blobs/hit.png', url: CINDY_URL, mimeType: 'image/png' })),
+    });
+    wireHost({ media, files: makeFiles() });
+    const { client } = makeClient(PNG_BYTES, 'image/png');
+
+    const result = await downloadAttachments(client, 'om_1', [imageRef], { history: true });
+
+    expect(media.getCachedImage).not.toHaveBeenCalled();
+    expect(media.cacheImage).toHaveBeenCalledWith(expect.objectContaining({ staging: true }));
+    expect(result.attachments).toHaveLength(1);
   });
 });

@@ -774,7 +774,8 @@ export class FeishuIM extends BaseIM implements ChannelIM {
         })),
       };
     }
-    return downloadAttachments(c, messageId, refs);
+    // 只供群历史上下文: 图片按可回收缓存写入(只进模型、不落库, 没有任务引用)。
+    return downloadAttachments(c, messageId, refs, { history: true });
   }
 
   /**

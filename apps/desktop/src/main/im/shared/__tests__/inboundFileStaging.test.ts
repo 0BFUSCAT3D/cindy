@@ -49,7 +49,18 @@ describe('inbound file staging', () => {
     expect(sanitizeInboundFileName('../../etc/passwd')).toBe('passwd');
     expect(sanitizeInboundFileName('a<b>:c.pdf')).toBe('a_b__c.pdf');
     expect(sanitizeInboundFileName('...')).toBe('attachment');
-    expect(sanitizeInboundFileName(`${'x'.repeat(300)}.docx`)).toHaveLength(120);
+    const longAscii = sanitizeInboundFileName(`${'x'.repeat(300)}.docx`);
+    expect(Buffer.byteLength(longAscii)).toBeLessThanOrEqual(200);
+    expect(longAscii.endsWith('.docx')).toBe(true);
+  });
+
+  it('truncates long CJK names by UTF-8 bytes so the staged file name stays under 255 bytes', async () => {
+    const name = `${'报'.repeat(80)}.pdf`;
+    const safe = sanitizeInboundFileName(name);
+    expect(Buffer.byteLength(safe)).toBeLessThanOrEqual(200);
+    expect(safe.endsWith('.pdf')).toBe(true);
+    const staged = await stageInboundFile({ integration: 'telegram', buffer: Buffer.from('x'), fileName: name });
+    expect(Buffer.byteLength(path.basename(staged.absPath))).toBeLessThanOrEqual(255);
   });
 
   it('moves staged files into the task directory in place and is idempotent', async () => {
@@ -65,8 +76,26 @@ describe('inbound file staging', () => {
     expect(outside.absPath).toBe('/blobs/x.mp4');
 
     const adopted = attachment.absPath;
-    await adoptStagedInboundFiles('session-2', [attachment]);
+    await adoptStagedInboundFiles('session-1', [attachment]);
     expect(attachment.absPath).toBe(adopted);
+  });
+
+  it('copies a file already adopted by another task, leaving that task its own copy', async () => {
+    const staged = await stageInboundFile({ integration: 'telegram', buffer: Buffer.from('doc'), fileName: 'a.pdf' });
+    const attachment = { kind: 'file' as const, absPath: staged.absPath, originalName: 'a.pdf', mimeType: 'x' };
+    await adoptStagedInboundFiles('task-a', [attachment]);
+    const inA = attachment.absPath;
+
+    await adoptStagedInboundFiles('task-b', [attachment]);
+    expect(path.dirname(attachment.absPath)).toBe(
+      path.join(holder.root, 'im-attachments', 'telegram', 'sessions', 'task-b'),
+    );
+    expect(path.basename(attachment.absPath).endsWith('-a.pdf')).toBe(true);
+    expect(fs.readFileSync(inA, 'utf8')).toBe('doc');
+    expect(fs.readFileSync(attachment.absPath, 'utf8')).toBe('doc');
+
+    await removeImSessionAttachmentDirs('task-a');
+    expect(fs.existsSync(attachment.absPath)).toBe(true);
   });
 
   it('refuses session ids that would escape the sessions root', async () => {

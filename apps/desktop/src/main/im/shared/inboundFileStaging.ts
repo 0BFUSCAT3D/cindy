@@ -40,21 +40,42 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1_000;
 type Integration = Parameters<IMHostFileStaging['stage']>[0]['integration'];
 
 const lastSweepAt = new Map<string, number>();
+const UUID_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i;
 
 function isWithin(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-/** 平台文件名不可信: 去路径分隔与保留字符、截断, 保留扩展名。 */
+/**
+ * 文件名(不含 `<uuid>-` 前缀)的 UTF-8 字节上限。常见文件系统单个文件名上限
+ * 255 字节, 再减去 37 字节前缀并留余量 —— 中文名按字符截断会超限(ENAMETOOLONG)。
+ */
+const MAX_NAME_BYTES = 200;
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let out = '';
+  let bytes = 0;
+  for (const ch of value) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (bytes + size > maxBytes) break;
+    out += ch;
+    bytes += size;
+  }
+  return out;
+}
+
+/** 平台文件名不可信: 去路径分隔与保留字符、按 UTF-8 字节截断, 保留扩展名。 */
 export function sanitizeInboundFileName(name: string): string {
   const base = path.basename(name.replace(/\\/g, '/'));
   // eslint-disable-next-line no-control-regex
   const cleaned = base.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').replace(/^\.+/, '').trim();
   if (!cleaned) return 'attachment';
-  if (cleaned.length <= 120) return cleaned;
-  const ext = path.extname(cleaned).slice(0, 16);
-  return `${cleaned.slice(0, 120 - ext.length)}${ext}`;
+  if (Buffer.byteLength(cleaned, 'utf8') <= MAX_NAME_BYTES) return cleaned;
+  const rawExt = path.extname(cleaned);
+  const ext = Buffer.byteLength(rawExt, 'utf8') <= 16 ? rawExt : '';
+  const stem = cleaned.slice(0, cleaned.length - rawExt.length);
+  return `${truncateUtf8(stem, MAX_NAME_BYTES - Buffer.byteLength(ext, 'utf8'))}${ext}` || 'attachment';
 }
 
 function stagingDir(integration: Integration): string {
@@ -108,9 +129,12 @@ export async function stageInboundFile(params: {
 export const inboundFileStaging: IMHostFileStaging = { stage: stageInboundFile };
 
 /**
- * 把仍在 staging 里的附件移入该任务的附件目录, 原地改写 absPath。幂等: 不在
- * staging 的附件(媒体总仓、历史目录、已移入的)原样不动。移动失败保留暂存路径
- * (文件仍可读, 只是不随任务清理), 不阻断本轮。
+ * 让附件落在**该任务自己的**附件目录, 原地改写 absPath:
+ *   - 仍在 staging 的: 移入(rename; 跨卷等失败时复制后删暂存);
+ *   - 已在别的任务目录的(早落库归到 A、派发时换到 B): 复制一份给本任务, A 的
+ *     落库记录仍指向它自己那份 —— 删除任一任务都不影响另一个;
+ *   - 媒体总仓、历史目录、已在本任务目录的: 不动。
+ * 移入失败时保留原路径(文件仍可读), 不阻断本轮。
  */
 export async function adoptStagedInboundFiles(
   sessionId: string,
@@ -121,18 +145,35 @@ export async function adoptStagedInboundFiles(
   for (const attachment of attachments) {
     const source = path.resolve(attachment.absPath);
     if (!isWithin(root, source)) continue;
-    const [integration, bucket, ...rest] = path.relative(root, source).split(path.sep);
-    if (bucket !== STAGING_DIR || rest.length !== 1 || !integration) continue;
+    const parts = path.relative(root, source).split(path.sep);
+    const [integration, bucket] = parts;
+    const fileName = parts[parts.length - 1];
+    const fromStaging = bucket === STAGING_DIR && parts.length === 3;
+    const fromOtherSession =
+      bucket === SESSIONS_DIR && parts.length === 4 && parts[2] !== sessionId;
+    if (!integration || !fileName || (!fromStaging && !fromOtherSession)) continue;
     const sessionsRoot = path.resolve(root, integration, SESSIONS_DIR);
     const targetDir = path.resolve(sessionsRoot, sessionId);
     if (!isWithin(sessionsRoot, targetDir)) continue;
-    const target = path.join(targetDir, rest[0]);
+    const target = path.join(
+      targetDir,
+      fromStaging ? fileName : `${randomUUID()}-${fileName.replace(UUID_PREFIX, '')}`,
+    );
     try {
       await fs.mkdir(targetDir, { recursive: true });
-      await fs.rename(source, target);
+      if (fromStaging) {
+        try {
+          await fs.rename(source, target);
+        } catch {
+          await fs.copyFile(source, target);
+          await fs.rm(source, { force: true }).catch(() => undefined);
+        }
+      } else {
+        await fs.copyFile(source, target);
+      }
       attachment.absPath = target;
     } catch (err) {
-      log.warn('adopt staged IM file failed (kept in staging)', {
+      log.warn('adopt IM inbound file failed (kept original path)', {
         sessionId,
         err: err instanceof Error ? err.message : String(err),
       });
