@@ -39,7 +39,7 @@ export async function selectReviewWorkspace(
     buttons: [
       t('review.workspaceSelection.current'),
       t('review.workspaceSelection.choose'),
-      t('common.cancel'),
+      t('review.workspaceSelection.cancel'),
     ],
     defaultId: 1,
     cancelId: 2,

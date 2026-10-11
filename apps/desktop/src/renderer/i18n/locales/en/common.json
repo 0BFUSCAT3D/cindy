@@ -14128,6 +14128,7 @@
       "cancel": "Cancel"
     },
     "workspaceSelection": {
+      "cancel": "Cancel",
       "title": "Choose code to review",
       "message": "No code diff is available in this directory. Review the current code, or select the directory where you worked.",
       "current": "Review this directory",

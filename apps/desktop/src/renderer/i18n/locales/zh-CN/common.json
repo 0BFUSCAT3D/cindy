@@ -14075,6 +14075,7 @@
       "cancel": "取消"
     },
     "workspaceSelection": {
+      "cancel": "取消",
       "title": "选择要审查的代码",
       "message": "这个目录没有可用的代码差异。可以审查当前代码，或选择实际开发的目录。",
       "current": "审查当前目录",

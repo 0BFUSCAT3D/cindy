@@ -14075,6 +14075,7 @@
       "cancel": "取消"
     },
     "workspaceSelection": {
+      "cancel": "取消",
       "title": "選擇要審查的程式碼",
       "message": "這個目錄沒有可用的程式碼差異。可以審查目前程式碼，或選擇實際開發的目錄。",
       "current": "審查目前目錄",
