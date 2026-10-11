@@ -1603,6 +1603,18 @@ describe('pi translator', () => {
     expect(usage.turnDurationMs).toEqual(expect.any(Number));
   });
 
+  it('queues a price tier only for assistant message starts', () => {
+    const ctx = createPiTranslateContext(noopLogger);
+    const { queue } = makeQueue();
+    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+    // Pi starts the prompt and each tool result as messages too.
+    translatePiEvent(ev({ type: 'message_start', message: { role: 'user', content: 'hi' } }), queue, ctx);
+    translatePiEvent(ev({ type: 'message_start', message: { role: 'toolResult', content: [] } }), queue, ctx);
+    expect(ctx.pendingPriceVariants).toHaveLength(0);
+    translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant', content: [] } }), queue, ctx);
+    expect(ctx.pendingPriceVariants).toHaveLength(1);
+  });
+
   it('omits timestamp-derived timing after a suspend-sized heartbeat gap', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
     try {
