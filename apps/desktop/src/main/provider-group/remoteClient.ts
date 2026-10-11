@@ -4,7 +4,7 @@
  * 组所在电脑是旧版本(`CHANNEL_NOT_ALLOWED`)或这个供应商已经没有组时，`pick` 返回 `none`，调用方照常
  * 直接在组所在电脑上运行；其他失败原样抛出，由调用方决定(分配阶段按连不上组所在电脑处理)。
  */
-import { PROVIDER_GROUP_REMOTE_CHANNEL } from '@cindy/device-link';
+import { MAX_FRAME_BYTES, MAX_TRANSPORT_MESSAGE_BYTES, PROVIDER_GROUP_REMOTE_CHANNEL } from '@cindy/device-link';
 
 import {
   parseProviderGroupRemotePick,
@@ -19,6 +19,9 @@ import {
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+
+/** 留出 invoke 路由头的空间，同时适配可靠传输和旧端普通帧；预算按 JSON 的 UTF-8 字节数计。 */
+export const PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES = Math.min(MAX_FRAME_BYTES, MAX_TRANSPORT_MESSAGE_BYTES) - 64 * 1024;
 
 export type ProviderGroupRemoteInvoke = (
   deviceId: string,
@@ -106,27 +109,42 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
 
     async usage(ownerDeviceId, report, beforeSend) {
       try {
-        const rows = providerGroupUsageRowsForWire(report.rows);
-        if (rows.length <= PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) {
-          beforeSend?.();
-          await call(ownerDeviceId, { action: 'usage', seq: report.seq, sinceDay: report.sinceDay, rows }, beforeSend);
-          return;
-        }
-        if (rows.length > PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS) {
+        if (report.rows.length > PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS) {
           throwIpcError('INVALID_PARAMS', 'provider group usage report exceeds ledger limit');
         }
-        for (let offset = 0; offset < rows.length; offset += PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) {
+        const rows = providerGroupUsageRowsForWire(report.rows);
+        // 每行只序列化一次，包含转义字符的实际开销；避免按字符数低估，也避免反复序列化整批。
+        const rowBytes = rows.map((row) => Buffer.byteLength(JSON.stringify(row), 'utf8'));
+        const request = { action: 'usage', seq: report.seq, sinceDay: report.sinceDay, rows: [] as unknown[][] };
+        const singleBytes = Buffer.byteLength(JSON.stringify(request), 'utf8')
+          + rowBytes.reduce((total, bytes) => total + bytes, 0) + Math.max(0, rows.length - 1);
+        if (rows.length <= PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS && singleBytes <= PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES) {
           beforeSend?.();
-          const part = rows.slice(offset, offset + PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS);
-          const raw = await call(ownerDeviceId, {
-            action: 'usage-part', seq: report.seq, sinceDay: report.sinceDay, offset, total: rows.length, rows: part,
-          }, beforeSend);
+          await call(ownerDeviceId, { ...request, rows }, beforeSend);
+          return;
+        }
+        for (let offset = 0; offset < rows.length;) {
+          const request = {
+            action: 'usage-part', seq: report.seq, sinceDay: report.sinceDay, offset, total: rows.length, rows: [] as unknown[][],
+          };
+          let bytes = Buffer.byteLength(JSON.stringify(request), 'utf8');
+          let end = offset;
+          while (end < rows.length && end - offset < PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) {
+            const added = rowBytes[end]! + (end > offset ? 1 : 0);
+            if (bytes + added > PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES) break;
+            bytes += added;
+            end++;
+          }
+          if (end === offset) throwIpcError('INVALID_PARAMS', 'provider group usage row exceeds transport budget');
+          beforeSend?.();
+          const raw = await call(ownerDeviceId, { ...request, rows: rows.slice(offset, end) }, beforeSend);
           const ack = raw as { seq?: unknown; received?: unknown; committed?: unknown } | null;
-          if (!ack || ack.seq !== report.seq || ack.received !== offset + part.length
-            || typeof ack.committed !== 'boolean' || (!ack.committed && offset + part.length === rows.length)) {
+          if (!ack || ack.seq !== report.seq || ack.received !== end
+            || typeof ack.committed !== 'boolean' || (!ack.committed && end === rows.length)) {
             throwIpcError('PRECONDITION_FAILED', 'provider group usage report part was not acknowledged');
           }
           if (ack.committed) return;
+          offset = end;
         }
       } catch (error) {
         // 有组、但还不认识用量报告的旧版本：按不支持处理(调用方之后再试)。

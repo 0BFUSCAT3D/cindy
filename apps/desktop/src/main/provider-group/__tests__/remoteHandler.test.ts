@@ -3,6 +3,7 @@
  * 目录只给同账号电脑补组摘要。
  */
 import { describe, expect, it, vi } from 'vitest';
+import { encodeReliableFrames, MAX_FRAME_BYTES, MAX_TRANSPORT_MESSAGE_BYTES, PROVIDER_GROUP_REMOTE_CHANNEL, type Envelope } from '@cindy/device-link';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import {
@@ -12,7 +13,7 @@ import {
   PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS,
   type ProviderGroupRemoteUsageRow,
 } from '../../../shared/providerGroup';
-import { createProviderGroupRemoteClient, ProviderGroupRemoteUnsupportedError, type ProviderGroupRemoteInvoke } from '../remoteClient';
+import { createProviderGroupRemoteClient, PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES, ProviderGroupRemoteUnsupportedError, type ProviderGroupRemoteInvoke } from '../remoteClient';
 import {
   createProviderGroupExternalLoad,
   PROVIDER_GROUP_LEASE_TTL_MS,
@@ -313,6 +314,41 @@ describe('完整用量报告分批传输', () => {
     failLastPart = false;
     await client.usage('mini', { seq: 2, sinceDay: null, rows });
     expect(d.replaceReportedUsage).toHaveBeenCalledWith('laptop', null, rows);
+  });
+
+  it.each([
+    { count: 2000, modelPrefix: '\u0000'.repeat(504), label: '行数未超限但转义后超限' },
+    { count: PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS + 2, modelPrefix: '模'.repeat(504), label: 'UTF-8 多字节长字段' },
+  ])('$label 按字节切批，真实传输帧合法，收齐后完整替换一次', async ({ count, modelPrefix }) => {
+    const longRows = Array.from({ length: count }, (_, i) => ({
+      ...usageRow(i), day: '2026-10-11', providerId: 'p'.repeat(128),
+      memberKey: `device:${'d'.repeat(164)}:${'p'.repeat(128)}`,
+      model: modelPrefix + String(i).padStart(8, '0'),
+    }));
+    const d = deps();
+    let received = 0;
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, channel, args) => {
+      const request = args[0] as { action: string; offset: number; rows: unknown[] };
+      expect(request.action).toBe('usage-part');
+      expect(request.offset).toBe(received);
+      expect(request.rows.length).toBeLessThanOrEqual(PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS);
+      expect(Buffer.byteLength(JSON.stringify(request), 'utf8')).toBeLessThanOrEqual(PROVIDER_GROUP_USAGE_REQUEST_MAX_BYTES);
+      const env: Envelope = { v: 1, kind: 'invoke', dst: 'mini', id: 'request-id', payload: { channel, args } };
+      expect(channel).toBe(PROVIDER_GROUP_REMOTE_CHANNEL);
+      expect(Buffer.byteLength(JSON.stringify(env.payload), 'utf8')).toBeLessThan(MAX_TRANSPORT_MESSAGE_BYTES);
+      expect(Buffer.byteLength(JSON.stringify(env), 'utf8')).toBeLessThan(MAX_FRAME_BYTES);
+      for (const frame of encodeReliableFrames(env, 'usage-test', received + 1)) {
+        expect(Buffer.byteLength(JSON.stringify(frame), 'utf8')).toBeLessThan(MAX_FRAME_BYTES);
+      }
+      expect(d.replaceReportedUsage).not.toHaveBeenCalled();
+      received += request.rows.length;
+      return { ok: true, result: await handleProviderGroupRemote(d, 'laptop', request) };
+    });
+    await createProviderGroupRemoteClient(invoke).usage('mini', { seq: 1, sinceDay: '2026-10-10', rows: longRows });
+    expect(invoke.mock.calls.length).toBeGreaterThan(1);
+    expect(received).toBe(count);
+    expect(d.replaceReportedUsage).toHaveBeenCalledTimes(1);
+    expect(d.replaceReportedUsage).toHaveBeenCalledWith('laptop', '2026-10-10', longRows);
   });
 
   it('旧端拒绝新动作，发送方按不支持处理，不回退到部分替换', async () => {
