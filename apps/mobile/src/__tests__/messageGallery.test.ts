@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   collectMobileMessageGalleryImages,
   galleryImageIndexForPayload,
@@ -9,6 +9,12 @@ import { buildMobileMessageRenderItems } from '@/session/messageRenderModel';
 import type { RemoteMessage } from '@/session/types';
 import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl } from '@/session/messageMarkdown';
 import { buildMediaPayload } from '@/session/messagePayload';
+
+const durableThumbs = vi.hoisted(() => new Map<string, string>());
+vi.mock('@/session/sentAttachmentThumbStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/sentAttachmentThumbStore')>()),
+  getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
+}));
 
 function messageItem(key: string, message: Partial<MobileMessageRenderItem & { message: unknown }>['message']): MobileMessageRenderItem {
   return {
@@ -452,5 +458,21 @@ describe('message gallery', () => {
       ['xdt-image://cache/a.png', undefined],
       ['xdt-image://cache/b.png', 'file:///local/b.jpg'],
     ]);
+  });
+
+  it('prefers the persisted local copy over the outbox file that is cleaned up after delivery', () => {
+    durableThumbs.set('cindy-oss-attach://b', 'file:///documents/sent-attachment-thumbs/b.jpg');
+    try {
+      const gallery = collectMobileMessageGalleryImages([
+        messageItem('m-sent', { attachments: [
+          { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false },
+        ] }),
+      ], undefined, undefined, undefined, () => (
+        { attachmentId: 'att-b', name: 'b.png', sourceRef: 'cindy-oss-attach://b', uri: 'file:///outbox/b.jpg' }
+      ));
+      expect(gallery[0].previewUri).toBe('file:///documents/sent-attachment-thumbs/b.jpg');
+    } finally {
+      durableThumbs.clear();
+    }
   });
 });

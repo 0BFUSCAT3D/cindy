@@ -95,12 +95,14 @@ export function collectMobileMessageGalleryImages(
       const payload = buildAttachmentPayload(attachment);
       if (payload.kind !== 'media') return;
       // 与气泡 MediaPreview 同源取本地图:被控端物化后 url 已换成远程引用,
-      // 但手机本地仍留着发送时的那张,查看器用它垫底。
+      // 但手机本地仍留着发送时的那张,查看器用它垫底。持久副本优先:发送预览多指向
+      // 发件箱上传文件,消息送达后即被清理(气泡靠加载失败再换持久副本兜住);
+      // 只有持久副本尚未写好的发送窗口才用它。
       const localPreview = attachment.kind === 'image' && clientId
         ? getSentImagePreview?.(clientId, imageIndex, displayAttachment.name, undefined, displayAttachment.sha256, displayAttachment.uri)
         : undefined;
       const previewUri = attachment.kind === 'image' && displayAttachment.uri
-        ? localPreview?.uri ?? getSentAttachmentThumbUri(localPreview?.sourceRef ?? displayAttachment.uri)
+        ? getSentAttachmentThumbUri(localPreview?.sourceRef ?? displayAttachment.uri) ?? localPreview?.uri
         : null;
       push(`${keyPrefix}:attachment:${index}`, attachment.name, payload, previewUri);
     });
