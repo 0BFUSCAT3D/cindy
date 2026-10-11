@@ -3,7 +3,7 @@
  *
  * 每行另带 `byMember`：这一行里各台组内电脑分别用了多少(组内电脑的稳定键，本机是 `local`，转给组内电脑的是
  * 那台的键)。行的键与合计仍是原来那套，旧版本读到时照常累计合计、原样带着 `byMember` 写回，降级不丢用量；
- * 合计比各台之和多出来的部分(加这个字段之前记的，或降级期间旧版本记的)读出来算没区分电脑(null)。
+ * 合计比各台之和多出来的部分(加这个字段之前记的、降级期间旧版本记的，或单行分布超容量的)读出来算没区分电脑(null)。
  *
  * Agent 在分享者电脑上运行，这里的数据最准，也不经过服务端。文件放在 userData/remote-agent 下，
  * 原子替换写入；分享与成员 id 由服务端生成、全局唯一，查询时只返回当前账号拥有的分享。
@@ -79,13 +79,12 @@ function addCounters(target: Counters, source: Counters): void {
   for (const key of COUNTERS) target[key] += source[key];
 }
 
-/** 读盘时校验 `byMember`；格式不对就整个丢掉(那一行全部算没区分电脑，合计不受影响)。 */
+/** 读盘时校验 `byMember`；超出容量时保留前面的分布，其余算没区分电脑，合计不受影响。 */
 function parseByMember(value: unknown): Record<string, Counters> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > MAX_MEMBERS_PER_ROW) return undefined;
-  const out: Record<string, Counters> = {};
-  for (const [key, counters] of entries) {
+  const out: Record<string, Counters> = Object.create(null);
+  for (const [key, counters] of entries.slice(0, MAX_MEMBERS_PER_ROW)) {
     if (!MEMBER_KEY.test(key) || !counters || typeof counters !== 'object') return undefined;
     const record = counters as Record<string, unknown>;
     if (!COUNTERS.every((field) => isCount(record[field]))) return undefined;
@@ -190,9 +189,13 @@ export function createProviderShareUsageStore(filePath: string, options: { now?:
         };
         addCounters(row, counters);
         if (memberKey) {
-          row.byMember ??= {};
-          const member = (row.byMember[memberKey] ??= emptyCounters());
-          addCounters(member, counters);
+          row.byMember ??= Object.create(null) as Record<string, Counters>;
+          const member = row.byMember[memberKey];
+          if (member) addCounters(member, counters);
+          else if (Object.keys(row.byMember).length < MAX_MEMBERS_PER_ROW) {
+            row.byMember[memberKey] = { ...counters };
+          }
+          // 已有电脑继续累计；容量满时新电脑只加行合计，查询按没区分电脑返回，不挤掉已存的分布。
         }
         row.lastAt = at;
         map.set(key, row);

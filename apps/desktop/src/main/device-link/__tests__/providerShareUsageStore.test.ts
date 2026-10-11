@@ -75,6 +75,70 @@ describe('provider share usage store', () => {
     expect(after.find((model) => model.memberKey === null)).toMatchObject({ turns: 5, inputTokens: 50 });
   });
 
+  it('keeps existing computer distributions and all counters after exceeding the per-row capacity and restarting', async () => {
+    const now = new Date(2026, 9, 11, 12).getTime();
+    const file = path.join(dir, 'usage.json');
+    const store = createProviderShareUsageStore(file, { now: () => now });
+    const usage = (memberKey: string, turns = 1) => ({
+      kind: 'claude-code', providerId: 'anthropic', memberKey, samples: [{
+        ...sample('opus', turns * 10, turns * 5, turns),
+        cacheReadTokens: turns * 2, cacheCreateTokens: turns * 3, sdkCostUsd: turns * 0.01,
+      }],
+    });
+    for (let i = 0; i < 512; i++) store.record('s', 'm', usage(`device:d${i}:anthropic`));
+    store.record('s', 'm', usage('device:overflow:anthropic', 2));
+    // 满容量后已有键仍能更新，不能因为新键溢出而丢掉已记的电脑。
+    store.record('s', 'm', usage('device:d0:anthropic', 3));
+    const before = store.query(new Set(['s']), 'all');
+    expect(before[0]!.models).toHaveLength(513);
+    expect(before[0]!.models.find((model) => model.memberKey === 'device:d0:anthropic')).toMatchObject({ turns: 4 });
+    expect(before[0]!.models.find((model) => model.memberKey === null)).toMatchObject({ turns: 2, inputTokens: 20 });
+    await store.flush();
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { rows: Array<{ byMember: Record<string, unknown>; turns: number }> };
+    expect(Object.keys(saved.rows[0]!.byMember)).toHaveLength(512);
+    expect(saved.rows[0]!.byMember).not.toHaveProperty('device:overflow:anthropic');
+    expect(saved.rows[0]!.turns).toBe(517);
+    const reloaded = createProviderShareUsageStore(file, { now: () => now });
+    expect(reloaded.query(new Set(['s']), 'all')).toEqual(before);
+    const models = before[0]!.models;
+    for (const [field, total] of [
+      ['turns', 517], ['inputTokens', 5170], ['outputTokens', 2585],
+      ['cacheReadTokens', 1034], ['cacheCreateTokens', 1551], ['sdkCostUsd', 5.17],
+    ] as const) {
+      expect(models.reduce((sum, model) => sum + model[field], 0)).toBeCloseTo(total);
+    }
+    reloaded.record('s', 'm', usage('device:overflow:anthropic'));
+    reloaded.record('s', 'm', usage('device:d511:anthropic'));
+    const after = reloaded.query(new Set(['s']), 'all');
+    expect(after[0]!.models.find((model) => model.memberKey === null)).toMatchObject({ turns: 3 });
+    expect(after[0]!.models.find((model) => model.memberKey === 'device:d511:anthropic')).toMatchObject({ turns: 2 });
+    await reloaded.flush();
+    expect(createProviderShareUsageStore(file, { now: () => now }).query(new Set(['s']), 'all')).toEqual(after);
+  });
+
+  it('recovers the stored distributions from an older oversized byMember row without losing its total', async () => {
+    const now = new Date(2026, 9, 11, 12).getTime();
+    const file = path.join(dir, 'usage.json');
+    const counters = { turns: 1, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0 };
+    fs.writeFileSync(file, JSON.stringify({ version: 1, rows: [{
+      day: '2026-10-11', shareId: 's', memberId: 'm', kind: 'claude-code', providerId: 'anthropic', model: 'opus',
+      ...counters, turns: 513, inputTokens: 5130, outputTokens: 2565, lastAt: now,
+      byMember: Object.fromEntries(Array.from({ length: 513 }, (_, i) => [`device:d${i}:anthropic`, counters])),
+    }] }));
+    const store = createProviderShareUsageStore(file, { now: () => now });
+    const models = store.query(new Set(['s']), 'all')[0]!.models;
+    expect(models.filter((model) => model.memberKey !== null)).toHaveLength(512);
+    expect(models.find((model) => model.memberKey === null)).toMatchObject({ turns: 1, inputTokens: 10, outputTokens: 5 });
+    store.record('s', 'm', { kind: 'claude-code', providerId: 'anthropic', memberKey: 'device:d0:anthropic', samples: [sample('opus', 20, 10, 2)] });
+    const after = store.query(new Set(['s']), 'all');
+    expect(after[0]!.models.find((model) => model.memberKey === 'device:d0:anthropic')).toMatchObject({ turns: 3 });
+    await store.flush();
+    expect(createProviderShareUsageStore(file, { now: () => now }).query(new Set(['s']), 'all')).toEqual(after);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { rows: Array<{ byMember: Record<string, unknown>; turns: number }> };
+    expect(Object.keys(saved.rows[0]!.byMember)).toHaveLength(512);
+    expect(saved.rows[0]!.turns).toBe(515);
+  });
+
   it('starts from an empty ledger when the file is corrupt and drops malformed rows', () => {
     const file = path.join(dir, 'usage.json');
     fs.writeFileSync(file, '{not json');

@@ -965,7 +965,9 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
     不回退成部分 `usage` 报告。行数和字节数都在预算内才继续使用原动作。小报告无需双方同时更新，大报告在 O 更新后补报。
   - `maker:provider:list`、relay、帧限制、服务器与数据库都不变。
   - 降级：已发布的受邀者账本(`provider-share-usage.json`)行键与合计不变，各台组内电脑的分布放在行里的 `byMember`，旧版本
-    照常累计合计并原样写回，降级不丢用量(降级期间记的回来后算没区分电脑)。按使用方的账本(`provider-usage-by-party.json`)
+    照常累计合计并原样写回，降级不丢用量(降级期间记的回来后算没区分电脑)。`byMember` 每行保留最多 512 个电脑键；
+    满容量后已有电脑继续累计，新电脑只加行合计、查询算没区分电脑；旧文件已超容量时保留前 512 个分布，其余仍计入总量。
+    写入、重启和再次落盘都不丢整行分布，回归见 `device-link/__tests__/providerShareUsageStore.test.ts`。按使用方的账本(`provider-usage-by-party.json`)
     还没进正式版：从带这次改动的构建降到它之前的构建时，同一天同模型分在几台电脑的行会合成一行(只剩其中一台的数)，
     `group` / `reported` 行也会被当成「我的其他电脑」，属于已知的降级损失。
 - 实现：`apps/desktop/src/main/provider-group/usageReporter.ts`、`usageReportRuntime.ts`、`remoteHandler.ts`(`usage`)、
