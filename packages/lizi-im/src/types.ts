@@ -131,7 +131,13 @@ export interface IMHostMediaCache {
     mimeType: string;
     /** Keep the blob reclaimable until the transport confirms account ownership after the write. */
     staging?: boolean;
-  }): Promise<{ absPath: string; url: string; discard?: () => Promise<void> }>;
+  }): Promise<{
+    absPath: string;
+    url: string;
+    /** host 按真实字节核验后的规范 MIME(调用方写进附件时以它为准, 不用自己推断的值)。 */
+    mimeType?: string;
+    discard?: () => Promise<void>;
+  }>;
   /**
    * 其它 Cindy 托管媒体入总仓。未提供时 transport 必须降级为 unsupported，
    * 不得新增写入冻结的 `cc-agent/*-media` 历史目录。

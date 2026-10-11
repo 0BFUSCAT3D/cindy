@@ -528,7 +528,13 @@ async function downloadTelegramFile(
           staging: true,
         });
         if (promoted.discard) ctx.stagedDiscards?.push(promoted.discard);
-        return { kind, absPath: promoted.absPath, originalName, mimeType, url: promoted.url };
+        return {
+          kind,
+          absPath: promoted.absPath,
+          originalName,
+          mimeType: promoted.mimeType ?? mimeType,
+          url: promoted.url,
+        };
       } catch {
         return null;
       }

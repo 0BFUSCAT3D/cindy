@@ -925,7 +925,7 @@ export class WecomIM extends BaseIM implements TextChannelIM {
           kind: "image",
           absPath: stored.absPath,
           originalName: filename,
-          mimeType,
+          mimeType: stored.mimeType ?? mimeType,
           url: stored.url,
         },
         discard: stored.discard,

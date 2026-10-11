@@ -93,6 +93,7 @@ const host: IMHost = {
       return {
         absPath: hit.absPath,
         url: hit.url,
+        mimeType: hit.mimeType,
         ...(staging ? { discard: hit.rollbackRef } : {}),
       };
     },

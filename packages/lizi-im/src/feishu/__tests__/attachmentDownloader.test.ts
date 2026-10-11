@@ -150,17 +150,37 @@ describe('downloadAttachments: 图片 → 媒体总仓', () => {
     ]);
   });
 
-  it('白名单外图片 mime(svg):标不支持, 不入仓', async () => {
-    const media = makeMedia();
+  it('响应头没给类型的图片也交 host 按真实字节核验, 附件 MIME 用 host 核验结果', async () => {
+    const media = makeMedia({
+      cacheImage: vi.fn(async ({ token }: { token: string }) => ({
+        absPath: `/blobs/${token}.png`,
+        url: CINDY_URL,
+        mimeType: 'image/png',
+      })),
+    });
+    wireHost({ media, files: makeFiles() });
+    const { client } = makeClient(PNG_BYTES, 'application/octet-stream');
+
+    const result = await downloadAttachments(client, 'om_1', [imageRef]);
+
+    expect(media.cacheImage).toHaveBeenCalledTimes(1);
+    expect(result.attachments).toEqual([expect.objectContaining({ kind: 'image', mimeType: 'image/png' })]);
+  });
+
+  it('host 按字节核验拒收(如 svg): 标不支持, 不入仓', async () => {
+    const media = makeMedia({
+      cacheImage: vi.fn(async () => {
+        throw new Error('IM inbound image bytes do not match a supported media type');
+      }),
+    });
     wireHost({ media, files: makeFiles() });
     const { client } = makeClient(Buffer.from('<svg/>'), 'image/svg+xml');
 
     const result = await downloadAttachments(client, 'om_1', [imageRef]);
 
-    expect(media.cacheImage).not.toHaveBeenCalled();
     expect(result).toEqual({
       attachments: [],
-      unsupported: [{ type: 'image', label: '不支持的图片格式（image/svg+xml）' }],
+      unsupported: [{ type: 'image', label: '不支持的图片格式（图片）' }],
     });
   });
 
@@ -172,24 +192,6 @@ describe('downloadAttachments: 图片 → 媒体总仓', () => {
 
     expect(get).not.toHaveBeenCalled();
     expect(result).toEqual({ attachments: [], unsupported: [{ type: 'image', label: '图片' }] });
-  });
-
-  it('cacheImage 抛错:标下载失败, 不回落老目录', async () => {
-    const media = makeMedia({
-      cacheImage: vi.fn(async () => {
-        throw new Error('db not ready');
-      }),
-    });
-    wireHost({ media });
-    const { client, get } = makeClient(PNG_BYTES, 'image/png');
-
-    const result = await downloadAttachments(client, 'om_1', [imageRef]);
-
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      attachments: [],
-      unsupported: [{ type: 'download_failed:image', label: '图片下载失败（db not ready）' }],
-    });
   });
 });
 

@@ -123,9 +123,6 @@ type SingleResult =
   | { attachment: IMAttachment }
   | { unsupported: UnsupportedEntry };
 
-/** host 总仓能收的图片 mime(与 cindy-media blobStore 图片白名单对齐)。 */
-const HOST_CACHEABLE_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
-
 /**
  * 单个附件: 图片与音视频入 cindy-media 总仓(host.media), 其余文件交 host 暂存
  * (host.files, 路由到任务后移入任务附件目录)。host 缺对应能力或总仓拒收格式时
@@ -226,8 +223,10 @@ async function downloadOne(
 }
 
 /**
- * 图片入总仓: 白名单外格式标不支持; 落库前一律可回收暂存(staging) —— 换代可回滚,
- * 消息落库时由 host pin 成用户附件, 群历史(只进模型)则一直保持可回收。
+ * 图片入总仓: 收不收由 host 按真实字节核验决定(响应头常缺或给 octet-stream, 不在
+ * 这里按头部预筛), 拒收标不支持; 附件 MIME 用 host 核验后的值。落库前一律可回收
+ * 暂存(staging) —— 换代可回滚, 消息落库时由 host pin 成用户附件, 群历史(只进模型)
+ * 则一直保持可回收。
  */
 async function storeImage(
   ctx: DownloadContext,
@@ -238,18 +237,20 @@ async function storeImage(
   label: string,
   originalNameOf: (absPath: string) => string,
 ): Promise<SingleResult> {
-  if (!HOST_CACHEABLE_IMAGE_MIMES.has(mime)) {
-    return { unsupported: { type: 'image', label: `不支持的图片格式（${mime || '未知'}）` } };
-  }
   ctx.assertAccountCurrent();
-  const written = await media.cacheImage({ integration: 'feishu', token, buffer, mimeType: mime, staging: true });
+  let written: Awaited<ReturnType<typeof media.cacheImage>>;
+  try {
+    written = await media.cacheImage({ integration: 'feishu', token, buffer, mimeType: mime, staging: true });
+  } catch {
+    return { unsupported: { type: 'image', label: `不支持的图片格式（${label}）` } };
+  }
   const put = await keepIfAccountCurrent(ctx, written, written.discard);
   return {
     attachment: {
       kind: 'image',
       absPath: put.absPath,
       originalName: originalNameOf(put.absPath),
-      mimeType: mime,
+      mimeType: put.mimeType ?? mime,
       url: put.url,
     },
   };

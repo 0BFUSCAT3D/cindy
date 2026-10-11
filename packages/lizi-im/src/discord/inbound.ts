@@ -107,7 +107,13 @@ export async function normalizeDmMessage(
         // 落库前一律可回收暂存(staging): 换代可回滚; 消息落库时由 host pin 成用户附件。
         const promoted = await ctx.media!.cacheImage({ integration: 'discord', token, buffer, mimeType, staging: true });
         if (promoted.discard) ctx.stagedDiscards?.push(promoted.discard);
-        attachments.push({ kind: 'image', absPath: promoted.absPath, originalName, mimeType, url: promoted.url });
+        attachments.push({
+          kind: 'image',
+          absPath: promoted.absPath,
+          originalName,
+          mimeType: promoted.mimeType ?? mimeType,
+          url: promoted.url,
+        });
       } else if (destination === 'av') {
         const stored = await ctx.media!.cacheMedia!({ integration: 'discord', token, buffer, mimeType });
         if (stored.discard) ctx.stagedDiscards?.push(stored.discard);
