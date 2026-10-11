@@ -525,7 +525,9 @@ async function dispatchRequest(input: {
       durationMs: Date.now() - startedAt,
     });
     const buffer = await readBoundedResponse(response, input.maxResponseBytes);
-    input.connection.assertCurrent?.();
+    // A successful paid response belongs to the original invocation even if
+    // its connection changed in flight. Save it before guarding later reads.
+    if (input.operation === 'poll') input.connection.assertCurrent?.();
     if (!response.ok) {
       const message = providerErrorMessage(buffer);
       if (response.status >= 500) {
@@ -1537,6 +1539,7 @@ async function submitInvocation(
           '上游结果已生成，但本地未能保存结果；不要自动重提',
         );
       }
+      connection.assertCurrent?.();
       assertAuthScope(scope, invocation.owner);
       return materializeSyncInvocation(
         { ...invocation, state: 'pending', responseJson },
@@ -1596,6 +1599,7 @@ async function submitInvocation(
         '上游任务已创建，但本地未能保存任务 id；不要自动重提',
       );
     }
+    connection.assertCurrent?.();
     assertAuthScope(scope, invocation.owner);
     return {
       ok: true,
@@ -1605,21 +1609,22 @@ async function submitInvocation(
     };
   } catch (error) {
     const expected = error instanceof MediaInvocationError ? error : null;
-    // 本地组装失败或提交前模型已停用：请求从未出站、无费用，把 invocation 放回 prepared，
+    // 本地组装失败、提交前模型停用或连接变化：请求从未出站、无费用，把 invocation 放回 prepared，
     // 让同一 invocation_id 可以直接再次 request；其余失败仍进入 failed / unknown。
-    const buildFailed = expected?.code === 'REQUEST_BUILD_FAILED' || expected?.code === 'MODEL_NOT_AVAILABLE';
+    // 已保存结果为 pending 时，submitting 条件更新不匹配，不回退已付费任务。
+    const notSubmitted = expected?.code === 'REQUEST_BUILD_FAILED' || expected?.code === 'MODEL_NOT_AVAILABLE' || expected?.code === 'CONNECTION_CHANGED';
     const restored = await transitionMediaInvocation(
       {
         id: invocation.id,
         owner: invocation.owner,
         from: 'submitting',
-        to: buildFailed ? 'prepared' : expected?.outcomeUnknown ? 'unknown' : 'failed',
+        to: notSubmitted ? 'prepared' : expected?.outcomeUnknown ? 'unknown' : 'failed',
       },
       db,
     ).catch(() => false);
     if (expected) {
       if (expected.outcomeUnknown) return submissionOutcomeUnknown(expected.message);
-      if (buildFailed && restored) {
+      if (notSubmitted && restored) {
         return failure(expected.code, `${expected.message}；同一 invocation_id 可直接再次 request`, true, {
           outcomeKnown: true,
         });

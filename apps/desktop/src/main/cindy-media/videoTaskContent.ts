@@ -5,6 +5,17 @@ import { outboundFetch } from '../maker-host/outbound-fetch.js';
 import { MediaDownloadError } from './mediaDownload.js';
 import type { ProviderVideoConnection } from './providerMediaRuntime.js';
 
+const DISK_RESERVE_BYTES = 256n * 1024n * 1024n;
+
+async function availableDownloadBytes(directory: string): Promise<bigint> {
+  try {
+    const space = await fs.statfs(directory, { bigint: true });
+    return space.bavail * space.bsize - DISK_RESERVE_BYTES;
+  } catch {
+    throw new MediaDownloadError('MEDIA_DOWNLOAD_UNAVAILABLE', '无法确认视频临时文件的可用磁盘空间，生成结果已保留');
+  }
+}
+
 /** A private task resource, never an arbitrary URL authorized to receive an API key. */
 export function isVideoTaskContentRef(raw: string, taskId: string, baseUrl: string): boolean {
   if (!/^[a-zA-Z0-9_-]{1,256}$/.test(taskId)) return false;
@@ -48,6 +59,10 @@ export async function fetchVideoTaskContent(
       if (!response.ok) throw new MediaDownloadError(response.status >= 500 || [408, 425, 429].includes(response.status) ? 'MEDIA_DOWNLOAD_FAILED' : 'MEDIA_DOWNLOAD_UNAVAILABLE', `原视频任务的内容接口返回 HTTP ${response.status}，生成结果已保留`);
       if (!response.body) throw new MediaDownloadError('MEDIA_RESULT_INVALID', '视频内容为空');
       tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-media-video-task-'));
+      // Bound actual streamed bytes by disk capacity, preserving room for the
+      // managed-store copy. Do not restore the old in-memory media size limit.
+      const maxBytes = (await availableDownloadBytes(tempDir)) / 2n;
+      let writtenBytes = 0n;
       const filePath = path.join(tempDir, 'result');
       const file = await fs.open(filePath, 'wx', 0o600);
       const reader = response.body.getReader();
@@ -58,9 +73,15 @@ export async function fetchVideoTaskContent(
           connection.assertCurrent();
           signal?.throwIfAborted();
           resetIdle();
+          const chunkBytes = BigInt(value.byteLength);
+          const nextBytes = writtenBytes + chunkBytes;
+          if (nextBytes > maxBytes || nextBytes + chunkBytes > await availableDownloadBytes(tempDir)) {
+            throw new MediaDownloadError('MEDIA_DOWNLOAD_UNAVAILABLE', '视频下载所需空间超过可用磁盘预算，生成结果已保留；请清理空间后读取原任务，不要重新生成');
+          }
           await file.writeFile(value);
+          writtenBytes = nextBytes;
         }
-      } finally { reader.releaseLock(); await file.close(); }
+      } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); await file.close(); }
       connection.assertCurrent();
       signal?.throwIfAborted();
       const completedDir = tempDir;
