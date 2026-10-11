@@ -553,6 +553,33 @@ describe("image viewer gesture lifecycle", () => {
     expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
   });
 
+  it("keeps the pinch in charge when a pan that started first ends mid-pinch", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    // 单指先拖,第二根手指落下开始捏合
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: 10, changeY: 0 });
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    const pinched = visual();
+    // 平移在捏合进行中收到位移并结束:不叠加、不滑行,也不改写捏合起点
+    fire(pan(), "onChange", { changeX: 40, changeY: 0 });
+    fire(pan(), "onFinalize", { velocityX: 2000, velocityY: 0 });
+    expect(runtime.values.some((v) => v.animation?.decay)).toBe(false);
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    expect(visual().y).toBeCloseTo(pinched.y, 6);
+    fire(pinch(), "onFinalize");
+    finishAnimations();
+    // 平移后画面位移 (-185,-375),焦点 (50,-100) 下的图片点 p = (F - T) / 2.5 = (94, 110)
+    const after = transform();
+    expect(after.scale).toBe(3);
+    expect(after.x + 94 * after.scale).toBeCloseTo(50, 6);
+    expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
+  });
+
   it("lets the remaining finger keep dragging after the first one lifts", () => {
     mount();
     doubleTapAtCorner();
