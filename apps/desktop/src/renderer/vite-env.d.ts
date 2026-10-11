@@ -806,7 +806,6 @@ interface CCAgentPermissionDismissedPayload {
 }
 
 interface CCAgentStatusUpdate {
-  responseSpeed?: import("@cindy/maker-shared/usage-format").ResponseSpeedSnapshot;
   sessionId: string;
   status: string;
   tokenUsage: number;

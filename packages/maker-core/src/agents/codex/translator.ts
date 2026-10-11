@@ -1,4 +1,3 @@
-import { ResponseSpeedTracker } from '../shared/response-speed.js';
 /**
  * Codex app-server v2 Notification → maker-core 语义 AgentEvent 翻译器。
  *
@@ -81,9 +80,6 @@ export interface CodexRuntimeState {
   /** item.id → agentMessage 已 emit 文本字符长度(citation 归一化后的空间,见 handleAgentMessage)。 */
   itemTextLen: Map<string, number>;
   /** Current model-active interval start; null while tools/approvals own the turn. */
-  responseSpeed: ResponseSpeedTracker;
-  /** Tool inputs arrive after generation, so whole-turn usage cannot calibrate only observed text. */
-  responseSpeedHasUnobservedOutput: boolean;
   generationStartedAt: number | null;
   /** Tool/approval boundaries currently owning the turn. Generation resumes after all finish. */
   generationPendingToolIds: Set<string>;
@@ -134,8 +130,6 @@ export function newCodexRuntimeState(): CodexRuntimeState {
     reasoningStartedAt: new Map(),
     reasoningTextLen: new Map(),
     itemTextLen: new Map(),
-    responseSpeed: new ResponseSpeedTracker(),
-    responseSpeedHasUnobservedOutput: false,
     generationStartedAt: null,
     generationPendingToolIds: new Set(),
     generationDurationMs: 0,
@@ -172,7 +166,6 @@ function sampleCodexGenerationHeartbeat(rt: CodexRuntimeState, now = Date.now())
     now - previous > CODEX_GENERATION_HEARTBEAT_MS + CODEX_GENERATION_SUSPEND_GAP_MS
   ) {
     rt.generationTimingReliable = false;
-    rt.responseSpeed.invalidate();
   }
   rt.generationHeartbeatAt = now;
 }
@@ -196,7 +189,6 @@ export function resetCodexGenerationTiming(rt: CodexRuntimeState): void {
   rt.generationOutputDurationMs = 0;
   rt.generationTurnId = null;
   rt.generationTimingReliable = true;
-  rt.responseSpeedHasUnobservedOutput = false;
 }
 
 function closeCodexGenerationInterval(rt: CodexRuntimeState, endedAt: number): void {
@@ -220,7 +212,6 @@ export function beginCodexGenerationTurn(
   if (rt.generationTurnId !== turnId) {
     resetCodexGenerationTiming(rt);
     rt.generationTurnId = turnId;
-    rt.responseSpeed.reset('turn', startedAt);
   }
   if (rt.generationStartedAt === null && rt.generationPendingToolIds.size === 0) {
     rt.generationStartedAt = startedAt;
@@ -266,7 +257,6 @@ export function pauseCodexGeneration(
     return;
   }
   if (rt.generationPendingToolIds.has(pauseId)) return;
-  rt.responseSpeed.pause(pausedAt);
   if (rt.generationPendingToolIds.size === 0) closeCodexGenerationInterval(rt, pausedAt);
   rt.generationPendingToolIds.add(pauseId);
 }
@@ -282,12 +272,6 @@ export function resumeCodexGeneration(
     return;
   }
   if (rt.generationPendingToolIds.size === 0) rt.generationStartedAt = resumedAt;
-  // Completion of the last tool/approval is a locally observed waiting
-  // boundary, not evidence that the next model response has started. Preserve
-  // a parallel response that already resumed on an actual output delta.
-  if (rt.generationPendingToolIds.size === 0 && rt.responseSpeed.snapshot(resumedAt).phase === 'paused') {
-    rt.responseSpeed.beginRequest(resumedAt);
-  }
   if (rt.generationPendingToolIds.size === 0) startCodexGenerationHeartbeat(rt);
 }
 
@@ -340,12 +324,10 @@ function noteCodexGenerationBoundary(
   }
   const pauseId = `item:${item.id}`;
   if (phase === 'started') {
-    if (item.type !== 'contextCompaction') rt.responseSpeed.toolStarted(pauseId);
     pauseCodexGeneration(rt, turnId, pauseId, receivedAt);
     return;
   }
   if (phase !== 'completed') return;
-  rt.responseSpeed.toolEnded(pauseId);
   resumeCodexGeneration(rt, turnId, pauseId, receivedAt);
 }
 
@@ -360,8 +342,6 @@ interface TranslatorLog {
 export interface CodexTranslateContext {
   rt: CodexRuntimeState;
   log: TranslatorLog;
-  /** Host observed the boundary before publishing its status frame. */
-  timingObserved?: boolean;
   /**
    * Maker Memory flush 观察器 — codex contextCompaction completed 时调,
    * controller 重置 fired 阈值 (compact 后 context 又有空间, 可重新触发)。
@@ -393,30 +373,6 @@ export interface CodexTranslateContext {
 
 type ItemPhase = 'started' | 'updated' | 'completed';
 
-/** Observe before status publication without changing the established event order. */
-export function observeCodexItemTiming(
-  rt: CodexRuntimeState,
-  phase: ItemPhase,
-  notification: ItemStartedNotification['params'] | ItemUpdatedNotification['params'] | ItemCompletedNotification['params'],
-): void {
-  const item = notification.item;
-  const itemType = item?.type;
-  if (!item || typeof item !== 'object') return;
-  if (phase === 'started' && CODEX_GENERATION_PAUSE_ITEM_TYPES.has(itemType)
-    && rt.generationPendingToolIds.has(`item:${item.id}`)) return;
-  if (phase === 'started' && (itemType === 'reasoning' || CODEX_GENERATION_PAUSE_ITEM_TYPES.has(itemType))) {
-    rt.responseSpeed.content();
-  }
-  noteCodexGenerationBoundary(rt, phase, item, notification);
-  // These inputs have no argument delta/start pair. Their output tokens may be
-  // included in turn usage, but their generation time is not in our samples.
-  // Retain measured streaming estimates without scaling them by that total.
-  if ((CODEX_GENERATION_PAUSE_ITEM_TYPES.has(itemType) && itemType !== 'contextCompaction')
-    || itemType === 'fileChange' || itemType === 'plan') {
-    rt.responseSpeedHasUnobservedOutput = true;
-  }
-}
-
 export function translateItemNotification(
   phase: ItemPhase,
   notification:
@@ -436,7 +392,12 @@ export function translateItemNotification(
     ctx.log.warn('item missing type field', { phase, itemKeys: Object.keys(item) });
     return;
   }
-  if (!ctx.timingObserved) observeCodexItemTiming(ctx.rt, phase, notification);
+  noteCodexGenerationBoundary(
+    ctx.rt,
+    phase,
+    item as { id?: unknown; type?: unknown },
+    notification as { turnId?: unknown },
+  );
 
   switch (itemType) {
     case 'agentMessage':
@@ -1145,7 +1106,6 @@ function emitAgentMessageProgress(
   ctx.rt.itemRawText.set(itemId, rawText);
   ctx.rt.itemTextLen.set(itemId, emitted.length);
   if (delta.length === 0) return;
-  ctx.rt.responseSpeed.delta(delta);
   queue.push({
     type: 'text',
     data: { text: delta, isFinal: false, agentMessageId: itemId,
@@ -1361,7 +1321,6 @@ export function translateReasoningSummaryTextDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
-  ctx.rt.responseSpeed.delta(params.delta);
   ensureReasoningStarted(params.itemId, queue, ctx);
   const prevLen = ctx.rt.reasoningTextLen.get(params.itemId) ?? 0;
   ctx.rt.reasoningTextLen.set(params.itemId, prevLen + params.delta.length);
@@ -1396,7 +1355,6 @@ export function translateReasoningTextDelta(
   ctx: CodexTranslateContext,
 ): void {
   if (!params.delta) return;
-  ctx.rt.responseSpeed.delta(params.delta);
   ensureReasoningStarted(params.itemId, queue, ctx);
   const prevLen = ctx.rt.reasoningTextLen.get(params.itemId) ?? 0;
   ctx.rt.reasoningTextLen.set(params.itemId, prevLen + params.delta.length);

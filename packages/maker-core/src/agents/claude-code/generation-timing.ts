@@ -1,9 +1,7 @@
-import { ResponseSpeedTracker } from '../shared/response-speed.js';
 const CLAUDE_GENERATION_HEARTBEAT_MS = 5_000;
 const CLAUDE_GENERATION_SUSPEND_GAP_MS = 30_000;
 
 export interface ClaudeGenerationState {
-  responseSpeed: ResponseSpeedTracker;
   startedAt: number | null;
   durationMs: number;
   /** Model time sampled with the latest parent output usage. */
@@ -33,7 +31,6 @@ export interface ClaudeGenerationState {
 
 export function newClaudeGenerationState(): ClaudeGenerationState {
   return {
-    responseSpeed: new ResponseSpeedTracker('stream'),
     startedAt: null,
     durationMs: 0,
     outputDurationMs: 0,
@@ -60,7 +57,6 @@ function sampleHeartbeat(state: ClaudeGenerationState, now = Date.now()): void {
     now - previous > CLAUDE_GENERATION_HEARTBEAT_MS + CLAUDE_GENERATION_SUSPEND_GAP_MS
   ) {
     state.reliable = false;
-    state.responseSpeed.invalidate();
   }
   state.heartbeatAt = now;
 }
@@ -88,7 +84,6 @@ function closeInterval(state: ClaudeGenerationState, endedAt: number): void {
 
 export function resetClaudeGenerationTiming(state: ClaudeGenerationState): void {
   stopHeartbeat(state);
-  state.responseSpeed.reset('stream');
   state.startedAt = null;
   state.pendingToolIds.clear();
   state.settledPauseIds.clear();
@@ -119,7 +114,6 @@ export function beginClaudeGenerationAtRequestStart(
 ): void {
   for (const pauseId of state.pendingToolIds) state.settledPauseIds.add(pauseId);
   state.pendingToolIds.clear();
-  state.responseSpeed.beginRequest(startedAt);
   beginClaudeGeneration(state, startedAt);
 }
 
@@ -135,7 +129,6 @@ export function pauseClaudeGeneration(
   if (state.pendingToolIds.has(pauseId)) return;
   if (state.settledPauseIds.has(pauseId)) return;
   if (state.pendingToolIds.size === 0) {
-    state.responseSpeed.pause(pausedAt);
     // No open generation interval means we never saw message_start (or it was
     // already closed). Pausing here would resume the clock at tool_result and
     // still count earlier output tokens, so tok/s would be inflated.

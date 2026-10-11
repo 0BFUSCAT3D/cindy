@@ -1,5 +1,3 @@
-import { responseSpeedActivity, responseSpeedHistory } from "@cindy/maker-shared/usage-format";
-import type { ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { getCachedDeviceProviders } from '@/device-link/deviceProvidersCache';
 import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
@@ -10280,7 +10278,7 @@ export default function SessionScreen() {
                   例外:新建任务慢发送时这一行要说明卡在哪一步,不能被同步占位藏掉。
                   判据必须带 messageCount:syncingWhileEmpty 只要 loading 就为真,而收口后
                   还会再来几轮 load(实测日志),只看它会让已有消息的会话反复熄灭活动条。 */}
-              {!companionChat && (showComposerActivity || pendingRecoveryStatus || remoteSessionRunStatus.responseSpeed?.phase === 'complete') && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
+              {!companionChat && (showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
                 <View
                   style={[
                     styles.composerActivityFrame,
@@ -10299,7 +10297,6 @@ export default function SessionScreen() {
                     streaming={isSessionStreaming}
                     tokenUsage={composerActivityTokenUsage}
                     outputTokens={remoteSessionRunStatus.outputTokens}
-                    responseSpeed={remoteSessionRunStatus.responseSpeed}
                     generationDurationMs={remoteSessionRunStatus.generationDurationMs}
                     generationReliable={remoteSessionRunStatus.generationReliable}
                     generationActive={remoteSessionRunStatus.generationActive}
@@ -12192,7 +12189,6 @@ function ComposerActivityStatus({
   rateStartedAt = startedAt,
   streaming = false,
   tokenUsage,
-  responseSpeed,
   outputTokens,
   generationDurationMs,
   generationReliable,
@@ -12210,7 +12206,6 @@ function ComposerActivityStatus({
   rateStartedAt?: number | null;
   streaming?: boolean;
   tokenUsage: number;
-  responseSpeed?: ResponseSpeedSnapshot;
   outputTokens: number;
   generationDurationMs: number;
   generationReliable: boolean;
@@ -12241,9 +12236,8 @@ function ComposerActivityStatus({
   // Elapsed uses the local fallback. Sampling keeps the raw remote start so a
   // terminal null is not a new turn, and a local send is not the previous rate.
   const samplerStartedAt = rateStartedAt === undefined ? startedAt : rateStartedAt;
-  const legacyRateHistory = useRunningTokenRateHistory({
+  const rateHistory = useRunningTokenRateHistory({
     sessionKey,
-    generationActive,
     startedAt: samplerStartedAt,
     outputTokens,
     generationDurationMs,
@@ -12251,10 +12245,6 @@ function ComposerActivityStatus({
     streaming,
   });
 
-  const rateHistory = responseSpeed ? responseSpeedHistory(responseSpeed)
-    : generationActive === false ? { ...legacyRateHistory, latestRate: null } : legacyRateHistory;
-  const completedSpeed = !visible && responseSpeed?.phase === 'complete';
-  const speedActivity = responseSpeed ? responseSpeedActivity(responseSpeed) : null;
   if (pendingRecovery && !reconnectAttempt) {
     // 自愈 / 换电脑进行中：只显示这一行状态，不带耗时与速率(这一轮还没有结局)。
     return (
@@ -12273,29 +12263,22 @@ function ComposerActivityStatus({
       </View>
     );
   }
-  if (!visible && !completedSpeed) return null;
+  if (!visible) return null;
 
-  const elapsedText = completedSpeed
-    ? t(responseSpeed?.outcome === 'failed' ? 'session.screen.responseFailed'
-      : responseSpeed?.outcome === 'cancelled' ? 'session.screen.responseCancelled' : 'session.screen.lastGeneration')
-    : speedActivity === 'retrying' ? t('session.screen.responseRetrying')
-    : responseSpeed?.phase === 'waiting'
-    ? t('session.screen.responseWaiting', { seconds: ((responseSpeed.waitingMs + Math.max(0, Date.now() - responseSpeed.sampledAt)) / 1000).toFixed(1) })
-    : speedActivity === 'quiet' ? t('session.screen.responsePending') : formatComposerActivityElapsed(elapsed);
+  const elapsedText = formatComposerActivityElapsed(elapsed);
   const tokenCount = formatComposerActivityTokenCount(tokenUsage);
   const tokenText = t('session.screen.tokenCount', { tokens: tokenCount });
   const tokenA11yText = t('session.screen.tokenCountFull', { tokens: tokenCount });
   const showElapsedOnly = sideTaskRunning || Boolean(reconnectAttempt);
   const rateValue = formatComposerActivityRateValue(showElapsedOnly ? null : rateHistory.latestRate);
-  const canShowRateDetails = !showElapsedOnly && (Boolean(responseSpeed) || (generationReliable
+  const canShowRateDetails = !showElapsedOnly
+    && generationReliable
     && outputTokens > 0
     && Number.isFinite(outputTokens)
     && Number.isFinite(generationDurationMs)
-    && generationDurationMs > 0));
+    && generationDurationMs > 0;
   const rateText = rateValue
-    ? responseSpeed && (responseSpeed.phase !== 'complete' || responseSpeed.estimated)
-      ? t('session.screen.estimatedTokenRate', { rate: rateValue })
-      : t('session.screen.tokenRate', { rate: rateValue })
+    ? t('session.screen.tokenRate', { rate: rateValue })
     : null;
   const showUsageMeta = !showElapsedOnly && (Boolean(rateText) || tokenUsage > 0);
   const usageMeta = (
@@ -12337,15 +12320,9 @@ function ComposerActivityStatus({
             ? 'session.screen.rateLimitRetrying'
             : 'session.screen.networkReconnecting',
       )
-    // 发送等待超过阈值时,同一行先说明卡在哪一步;创建完成后回到下面的「思考中」等状态。
+    // 发送等待超过阈值时,同一行先说明卡在哪一步;创建完成后回到「思考中」。
     : slowSendPhase ? t(`session.new.slowSend.${slowSendPhase}`)
-    : t(speedActivity === 'failed' ? 'session.screen.responseFailed'
-      : speedActivity === 'cancelled' ? 'session.screen.responseCancelled'
-        : speedActivity === 'retrying' ? 'session.screen.responseRetrying'
-          : speedActivity === 'waiting' || speedActivity === 'quiet' ? 'session.screen.responsePending'
-        : speedActivity === 'tool' ? 'session.screen.toolRunning'
-          : speedActivity === 'paused' ? 'session.screen.generationPaused'
-            : speedActivity === 'generating' ? 'session.screen.responseGenerating' : 'session.screen.thinking');
+    : t('session.screen.thinking');
 
   return (
     <View
@@ -12353,15 +12330,14 @@ function ComposerActivityStatus({
       style={pillStyles.composerActivityStatus}
       testID="session.composerActivityStatus"
     >
-      {visible && <ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>
+      <ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>
         {reconnectAttempt ? (
           <Text style={[pillStyles.composerActivityStatusText, pillStyles.composerActivityProgressText]}>
             {reconnectAttempt.attempt}/{reconnectAttempt.maxAttempts}
           </Text>
         ) : null}
-      </ComposerActivityPill>}
+      </ComposerActivityPill>
       <RunningTokenRatePopover
-        responseSpeed={responseSpeed}
         key={sessionKey}
         enabled={canShowRateDetails}
         availableRegion={availableRegion}
