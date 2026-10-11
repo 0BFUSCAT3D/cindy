@@ -2723,18 +2723,23 @@ export async function resumeDeletedPiSubagentCleanup(): Promise<void> {
  */
 /**
  * 个人 IM 附件目录的删除清理是异步的, 而确定性 IM 任务删除后再来消息会把同一
- * session id 原地复活并往同一目录领养新附件 —— 真正删目录前复查任务仍是 deleted
- * (行已不存在也算), 已复活就保留; 读库失败按保留处理(宁可多留不可误删)。
+ * session id 原地复活并往同一目录领养新附件 —— 在路由锁内复查任务仍是 deleted
+ * (行已不存在也算)再删, 已复活就保留; 读库失败按保留处理(宁可多留不可误删)。
  */
 async function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
-  let row: SessionRowSnapshot | null;
-  try {
-    row = await getSessionRowSnapshotStrict(sessionId);
-  } catch {
-    return;
-  }
-  if (row && row.status !== 'deleted') return;
-  await removeImSessionAttachmentDirs(sessionId);
+  // 复查与删除整体放进任务路由锁: IM 复活同一 session id 也持这把锁, 附件只在复活
+  // 之后才领养进目录 —— 锁内看到 deleted 就不会与复活交错。调用方不 await 本函数,
+  // 不会与持锁中的状态写入互相等待。
+  await withSessionRouteLock(sessionId, async () => {
+    let row: SessionRowSnapshot | null;
+    try {
+      row = await getSessionRowSnapshotStrict(sessionId);
+    } catch {
+      return;
+    }
+    if (row && row.status !== 'deleted') return;
+    await removeImSessionAttachmentDirs(sessionId);
+  });
 }
 
 function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): void {

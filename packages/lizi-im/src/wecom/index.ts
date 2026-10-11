@@ -84,6 +84,12 @@ export interface WecomIMOptions {
 }
 
 /** Enterprise WeChat transport with durable chunked-text output. */
+/** 原生图片/视频消息的 MIME: 共用判据认出同类就用它, 否则按消息类型的默认容器。 */
+function nativeMediaMime(fileName: string, kind: "image" | "av", fallback: string): string {
+  const classified = classifyInboundAttachment(mimeTypeForFilename(fileName), fileName);
+  return classified.kind === kind ? classified.mimeType : fallback;
+}
+
 export class WecomIM extends BaseIM implements TextChannelIM {
   private readonly messageHandlers = new Set<MessageHandler>();
   private readonly statusHandlers = new Set<StatusHandler>();
@@ -741,7 +747,8 @@ export class WecomIM extends BaseIM implements TextChannelIM {
           integration: "wecom",
           token: `${frame.body!.msgid}:video`,
           buffer: downloaded.buffer,
-          mimeType: mimeTypeForFilename(originalName),
+          // 原生视频消息: 文件名无可识别扩展名时按消息类型取默认 MIME, 不交出 octet-stream。
+          mimeType: nativeMediaMime(originalName, "av", "video/mp4"),
         });
         if (!this.isCurrent(client, generation)) {
           await this.discardStagedMedia(stored.discard);
@@ -895,7 +902,8 @@ export class WecomIM extends BaseIM implements TextChannelIM {
       const downloaded = await client.downloadFile(image.url, image.aeskey);
       if (!this.isCurrent(client, generation)) return null;
       const filename = safeWecomFilename(downloaded.filename, ".jpg");
-      const mimeType = mimeTypeForFilename(filename);
+      // 原生图片消息: 文件名无可识别扩展名(如 "image")时按消息类型取默认 MIME。
+      const mimeType = nativeMediaMime(filename, "image", "image/jpeg");
       const stored = await this.host.media.cacheImage({
         integration: "wecom",
         token,

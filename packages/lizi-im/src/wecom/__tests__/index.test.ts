@@ -1068,6 +1068,38 @@ describe("WecomIM routing and ownership", () => {
     ]);
   });
 
+  it.each([
+    { event: "message.image", msgtype: "image", body: { image: { url: "https://example.invalid/i" } }, filename: "image", mime: "image/jpeg", store: "cacheImage" },
+    { event: "message.video", msgtype: "video", body: { video: { url: "https://example.invalid/v" } }, filename: "clip", mime: "video/mp4", store: "cacheMedia" },
+  ])("uses the native $msgtype default MIME when the downloaded name has no extension", async ({ event, msgtype, body, filename, mime, store }) => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    const cacheImage = vi.fn(async () => ({ absPath: "/blobs/x", url: "cindy-media://blobs/x", discard: vi.fn(async () => {}) }));
+    const cacheMedia = vi.fn(async ({ mimeType }: { mimeType: string }) => ({
+      absPath: "/blobs/x",
+      url: "cindy-media://blobs/x",
+      mimeType,
+      discard: vi.fn(async () => {}),
+    }));
+    host.files = { stage: vi.fn() };
+    host.media = { cacheImage, cacheMedia, getCachedImage: vi.fn(async () => null), resolveMediaUrl: () => null } as never;
+    const client = new FakeClient();
+    client.downloadFile.mockImplementationOnce(async () => ({ buffer: Buffer.from("x"), filename }));
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((e) => received.push(e));
+
+    await im.init();
+    client.emit(event, {
+      body: { msgid: `native-${msgtype}`, aibotid: "bot-1", chattype: "single", from: { userid: "owner" }, msgtype, ...body },
+    });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    const spy = store === "cacheImage" ? cacheImage : cacheMedia;
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ mimeType: mime }));
+    expect(received[0]?.attachments).toHaveLength(1);
+  });
+
   it("routes an inbound image file message to the media store as a staged image", async () => {
     const { host, secrets } = createHost();
     secrets.set("wecom-owner-user-id", "owner");
