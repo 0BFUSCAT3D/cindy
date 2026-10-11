@@ -542,7 +542,6 @@ import {
   bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
   hasOlderMessagesByServerCount,
-  LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
   listMessagesWithPayloadRetry,
   oldestMessageCursor,
   projectLoadedMessageWindowIncrementally,
@@ -3818,7 +3817,6 @@ export default function SessionScreen() {
               remoteSessionStore.latestMessageWindowNeedsBridge(sessionId, rows, more),
             readBefore: (before) => listMessagesWithPayloadRetry(
               (limit) => maker.listMessages(sessionId, { limit, before }),
-              LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
             ),
             isCurrent,
           });

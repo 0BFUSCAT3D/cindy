@@ -9,7 +9,6 @@ import { shouldClearOperationErrorAfterSync } from '@/session/sessionSyncErrorRe
 import {
   bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
-  LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
   shouldKeepOlderMessagesAffordance,
 } from '@/session/messagePaging';
 import { HistoryViewController, isHistoryViewUnavailable, projectHistoryView } from '@cindy/maker-shared/message-window';
@@ -125,7 +124,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     getSubscriptionIdentity: (): number | null => null, notificationResponse: null,
     syncedNotificationResponseRef: { current: null },
     shouldKeepOlderMessagesAffordance, hasOlderMessagesAfterReopen,
-    bridgeLatestMessagePage, LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
+    bridgeLatestMessagePage,
     messageWindowReconciledRef: { current: false },
     setHasOlderMessages: (value: boolean) => { state.older = value; },
     setLoading: (value: boolean) => { state.loading = value; },

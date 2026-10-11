@@ -164,7 +164,6 @@ import {
 import { createOfflineMirrorWipeQueue } from '@/device-link/offlineMirrorWipeQueue';
 import {
   bridgeLatestMessagePage,
-  LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
   listMessagesWithPayloadRetry,
   shouldKeepOlderMessagesAffordance,
 } from '@/session/messagePaging';
@@ -1874,7 +1873,6 @@ async function rebuildSessionSnapshot(
             [sessionId, { limit, before }],
             sendOpts,
           ),
-          LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
         ),
         isCurrent,
       },

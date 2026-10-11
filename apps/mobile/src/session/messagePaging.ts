@@ -221,10 +221,13 @@ export function shouldKeepOlderMessagesAffordance(page: MessagePageRetryResult):
   return page.reducedByPayloadTooLarge || hasMoreOlderMessages(page.messages, page.limit);
 }
 
-/** Older pages a reconnect may read so the latest page reaches the verified window. */
-export const LATEST_WINDOW_BRIDGE_MAX_PAGES = 5;
-/** Bridge pages use the reconnect page size; the retry ladder still shrinks oversized frames. */
-export const LATEST_WINDOW_BRIDGE_PAGE_LIMITS = [MESSAGE_PAGE_SIZE, ...MESSAGE_PAGE_RETRY_LIMITS] as const;
+/**
+ * Older pages a reconnect may read so the latest page reaches the verified window. Bridge reads
+ * use the ordinary wire ladder (`MESSAGE_PAGE_RETRY_LIMITS`, 20 rows first): an 80-row page can
+ * outlive the request deadline on a slow link, and the ladder only shrinks oversized frames, not
+ * timeouts. 20 pages keep the budget at about 400 rows.
+ */
+export const LATEST_WINDOW_BRIDGE_MAX_PAGES = 20;
 
 /**
  * 重连补同步时，最新一页可能接不上手机已验证连续的那段窗口（断线期间漏收超过一页）。
