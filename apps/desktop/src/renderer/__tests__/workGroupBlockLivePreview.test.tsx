@@ -685,11 +685,15 @@ describe('WorkGroupBlock — Host-projected running lines', () => {
     expect(container.querySelector('[data-live-work-preview]')).not.toBeNull();
     expect(screen.getByText('Checking the failing case')).toBeTruthy();
     expect(screen.queryByTestId('assistant-progress')).toBeNull();
+    // The detail body is already open, so the handoff below swaps rows without replaying its expansion.
+    const body = container.querySelector('.grid');
+    expect(body).not.toBeNull();
 
     rerender(createElement(WorkGroupBlock, {
       ...props, deferred: { ...deferred(lines), awaitingDetails: false },
     }));
     expect(container.querySelector('[data-live-work-preview]')).toBeNull();
+    expect(container.querySelector('.grid')).toBe(body);
     expect(screen.getByTestId('assistant-progress').textContent).toBe('Every detail row');
   });
 

@@ -409,8 +409,8 @@ export function WorkGroupBlock({
     recentActivities.length > MAX_LIVE_WORK_ACTIVITIES;
   const effectiveExpanded = expanded && canToggle;
   // Expanding keeps the running lines on screen until the detail read has rows to replace them.
+  // The body opens right away (spinner only), so the handoff swaps rows inside an open Collapse.
   const holdLines = effectiveExpanded && deferred?.awaitingDetails === true && !!workLines?.length;
-  const bodyOpen = effectiveExpanded && !holdLines;
   const isLivePreviewVisible =
     !compact && isStreaming && (!effectiveExpanded || holdLines)
     && (workLines ? workLines.length > 0 : liveActivities.length > 0);
@@ -540,16 +540,10 @@ export function WorkGroupBlock({
                     <ThinkingActivityRow key={activity.key} activity={activity} />
                   ),
                 )}
-            {holdLines && deferred?.loading && <Spinner size={14} />}
-            {holdLines && deferred?.failed && (
-              <Button variant="secondary" disabled={deferred.loading} onClick={deferred.retry}>
-                {t('chat.errorBanner.retry')}
-              </Button>
-            )}
           </div>
         )}
 
-        <Collapse open={bodyOpen}>
+        <Collapse open={effectiveExpanded}>
           <div
             className={cn(
               'mt-1 min-w-0 pl-3 py-[2px]',
@@ -557,7 +551,7 @@ export function WorkGroupBlock({
               'flex flex-col gap-2',
             )}
           >
-            {bodyOpen &&
+            {effectiveExpanded && !holdLines &&
               childItems.map((child) => (
                 <Fragment key={child.key}>
                   <ExpandedWorkGroupChild
