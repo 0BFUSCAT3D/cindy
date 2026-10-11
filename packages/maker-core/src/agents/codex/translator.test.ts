@@ -516,9 +516,12 @@ describe('Codex generation timing', () => {
     try {
       const rt = newCodexRuntimeState();
       beginCodexGenerationTurn(rt, 'turn-1', 1_000);
+      rt.tokenSpeed.recordDelta('a b c d e f g h i j', 1_000);
       wallClockSpy.mockReturnValue(40_000);
       finalizeCodexGenerationTurn(rt, 'turn-1', 2_000);
       expect(codexGenerationDurationMs(rt)).toBeUndefined();
+      // The suspended wall clock would dilute the live speed too.
+      expect(rt.tokenSpeed.snapshot(40_000)).toBeUndefined();
     } finally {
       wallClockSpy.mockRestore();
     }

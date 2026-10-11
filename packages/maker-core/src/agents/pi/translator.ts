@@ -347,6 +347,7 @@ function samplePiGenerationHeartbeat(ctx: PiTranslateContext, now = Date.now()):
       PI_GENERATION_HEARTBEAT_MS + PI_GENERATION_SUSPEND_GAP_MS
   ) {
     ctx.generationHeartbeatReliable = false;
+    ctx.tokenSpeed.invalidate();
   }
   ctx.generationHeartbeatAt = now;
 }

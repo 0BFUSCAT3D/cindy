@@ -94,6 +94,9 @@ describe('makerChatStore live generation at turn start', () => {
       expect(makerChatStore.getSnapshot(sessionId).agentStatus.tokenSpeed).toEqual(tokenSpeed);
       applyStatus(sessionId, { isRunning: true, tokenSpeed: { rate: 'fast' } });
       expect(makerChatStore.getSnapshot(sessionId).agentStatus.tokenSpeed).toEqual(tokenSpeed);
+      // The host withdrew the speed (suspended mid-generation): the stale reading goes too.
+      applyStatus(sessionId, { isRunning: true, generationReliable: false });
+      expect(makerChatStore.getSnapshot(sessionId).agentStatus.tokenSpeed).toBeUndefined();
       applyStatus(sessionId, { isRunning: false, status: 'Done' });
       applyStatus(sessionId, { isRunning: true, status: 'Working' });
       expect(makerChatStore.getSnapshot(sessionId).agentStatus.tokenSpeed).toBeUndefined();

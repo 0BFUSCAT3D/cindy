@@ -11,6 +11,15 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## 实时生成速度
+
+既有 maker status 可选携带 `tokenSpeed`（`rate`、`average`、`tokens`、`elapsedMs`、
+`streaming`），由主机按 Pi `pi-token-speed` 扩展算法测得；仅用于显示，不参与费用、缓存或
+上下文计数。新客户端校验数值，非法即丢弃；旧主机省略时沿用原 usage 计数路径，旧客户端忽略
+新增字段。主机检测到挂起或时钟异常时，本轮后续帧不再携带该字段并标记
+`generationReliable: false`，客户端据此丢弃已保留的速度。无需服务端更新、新通道、权限或
+数据库 migration。
+
 ## 任务列表提前同步聊天正文
 
 同账号控制端声明 `session-list-messages-v1` 后，`sessions` 订阅同时接收普通用户／助手

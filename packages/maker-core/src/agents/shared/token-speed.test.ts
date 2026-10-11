@@ -119,6 +119,20 @@ describe('TokenSpeedMeter (pi-token-speed algorithm)', () => {
     expect(lowest).toBeCloseTo(2_000, 5);
   });
 
+  it('shows nothing for the rest of a turn whose clock was invalidated, until reset', () => {
+    const meter = new TokenSpeedMeter();
+    meter.start(0);
+    meter.recordDelta('a b c d e f g h i j', 1_000);
+    meter.invalidate();
+    meter.recordDelta('a b c d e f g h i j', 300_000);
+    meter.stop(20, 301_000);
+    expect(meter.snapshot(301_000)).toBeUndefined();
+    meter.reset();
+    meter.start(0);
+    meter.recordDelta('a b c d e f g h i j', 1_000);
+    expect(meter.snapshot(1_000)?.tokens).toBe(10);
+  });
+
   it('snaps to the real output at the end and reports the average', () => {
     const meter = new TokenSpeedMeter();
     meter.start(0);

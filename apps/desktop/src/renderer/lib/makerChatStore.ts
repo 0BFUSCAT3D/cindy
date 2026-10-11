@@ -7052,8 +7052,9 @@ function mergeLiveGenerationStatus(
 > {
   // Speed belongs to the turn that produced it: a new turn drops the old value,
   // frames without the field keep the latest one (including the final average).
+  // An unreliable frame without it means the host withdrew the speed (suspend).
   const tokenSpeed = readTokenSpeedSnapshot(update.tokenSpeed)
-    ?? (isTurnStart ? undefined : previous.tokenSpeed);
+    ?? (isTurnStart || update.generationReliable === false ? undefined : previous.tokenSpeed);
   // Turn start drops leftover metrics from the previous turn, then keeps any
   // live fields carried by this same status. A reconnect-shaped first event
   // (isRunning false→true with output / duration already present) must not

@@ -2099,6 +2099,36 @@ describe('claude live token speed', () => {
     queue.end();
   });
 
+  it('withdraws the speed when the host was suspended mid-generation', async () => {
+    vi.useFakeTimers();
+    const ctx = createTranslatorCtx();
+    const queue = createAsyncQueue<AgentEvent>();
+    const stream = (event: Record<string, unknown>, at: number) => {
+      vi.setSystemTime(at);
+      translateSdkMessage({ type: 'stream_event', event }, queue, ctx);
+    };
+    stream({ type: 'message_start', message: { model: 'claude-sonnet-4.5', usage: { input_tokens: 10 } } }, 1_000);
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 1_000);
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'one two three four five' } }, 1_500);
+    expect(ctx.rt.generation.tokenSpeed.snapshot(1_500)?.tokens).toBe(5);
+    // The lid closes for five minutes: no heartbeat fires until the stream resumes.
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'six seven' } }, 301_500);
+    stream({ type: 'message_delta', usage: { output_tokens: 7 } }, 302_000);
+    vi.setSystemTime(302_000);
+    translateSdkMessage(
+      { type: 'result', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1, usage: { input_tokens: 10, output_tokens: 7 } },
+      queue,
+      ctx,
+    );
+    queue.end();
+    const events: AgentEvent[] = [];
+    for await (const event of queue) events.push(event);
+    const done = events.find((event) => event.type === 'status' && (event.data as { status?: string }).status === 'Done');
+    expect(done?.data).toMatchObject({ generationReliable: false });
+    expect(done?.data).not.toHaveProperty('tokenSpeed');
+    resetClaudeGenerationTiming(ctx.rt.generation);
+  });
+
   it('counts Write tool arguments as generated output', () => {
     const ctx = createTranslatorCtx();
     const queue = createAsyncQueue<AgentEvent>();

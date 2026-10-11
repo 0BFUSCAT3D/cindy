@@ -170,6 +170,7 @@ function sampleCodexGenerationHeartbeat(rt: CodexRuntimeState, now = Date.now())
     now - previous > CODEX_GENERATION_HEARTBEAT_MS + CODEX_GENERATION_SUSPEND_GAP_MS
   ) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
   }
   rt.generationHeartbeatAt = now;
 }
@@ -204,6 +205,7 @@ function closeCodexGenerationInterval(rt: CodexRuntimeState, endedAt: number): v
   if (startedAt === null) return;
   if (endedAt < startedAt) {
     rt.generationTimingReliable = false;
+    rt.tokenSpeed.invalidate();
     return;
   }
   rt.generationDurationMs += endedAt - startedAt;

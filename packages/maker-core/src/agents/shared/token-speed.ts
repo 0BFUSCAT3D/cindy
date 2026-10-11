@@ -44,6 +44,7 @@ export class TokenSpeedMeter {
   private events: { time: number; tokens: number }[] = [];
   private windowStartIndex = 0;
   private lastPublishAt = -Infinity;
+  private invalid = false;
 
   /** New turn: forget the previous measurement. */
   reset(): void {
@@ -59,6 +60,15 @@ export class TokenSpeedMeter {
     this.events = [];
     this.windowStartIndex = 0;
     this.lastPublishAt = -Infinity;
+    this.invalid = false;
+  }
+
+  /**
+   * The generation clock is wrong for the rest of this turn (host suspended or
+   * the clock went backwards): wall-clock time would dilute the speed, so show none.
+   */
+  invalidate(): void {
+    this.invalid = true;
   }
 
   /**
@@ -128,7 +138,7 @@ export class TokenSpeedMeter {
   }
 
   snapshot(now = Date.now()): TokenSpeedSnapshot | undefined {
-    if (!this.started || this.tokenCount <= 0) return undefined;
+    if (!this.started || this.invalid || this.tokenCount <= 0) return undefined;
     const elapsedMs = this.elapsedMs(now);
     const average = elapsedMs > 0 ? (this.tokenCount * 1_000) / elapsedMs : 0;
     return {

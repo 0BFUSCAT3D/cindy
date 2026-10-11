@@ -3300,6 +3300,9 @@ describe('remoteSessionStore', () => {
     pushMakerStatus('s1', { isRunning: true, status: 'Generating...', tokenSpeed });
     pushMakerStatus('s1', { isRunning: true, status: 'Running tool' });
     expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toEqual(tokenSpeed);
+    // The host withdrew the speed (suspended mid-generation): the stale reading goes too.
+    pushMakerStatus('s1', { isRunning: true, generationReliable: false });
+    expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toBeUndefined();
     pushMakerStatus('s1', { isRunning: false });
     remoteSessionStore.applySessionActivity('dev-1', { sessionId: 's1', phase: 'running' });
     expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toBeUndefined();

@@ -65,6 +65,7 @@ function sampleHeartbeat(state: ClaudeGenerationState, now = Date.now()): void {
     now - previous > CLAUDE_GENERATION_HEARTBEAT_MS + CLAUDE_GENERATION_SUSPEND_GAP_MS
   ) {
     state.reliable = false;
+    state.tokenSpeed.invalidate();
   }
   state.heartbeatAt = now;
 }
@@ -85,6 +86,7 @@ function closeInterval(state: ClaudeGenerationState, endedAt: number): void {
   if (startedAt === null) return;
   if (endedAt < startedAt) {
     state.reliable = false;
+    state.tokenSpeed.invalidate();
     return;
   }
   state.durationMs += endedAt - startedAt;

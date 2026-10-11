@@ -1610,6 +1610,10 @@ describe('pi translator', () => {
       const { queue, events } = makeQueue();
       translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
       translatePiEvent(ev({ type: 'message_start' }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_update', assistantMessageEvent: {
+        type: 'text_delta', contentIndex: 0, delta: 'one two three four five',
+      } }), queue, ctx);
       nowSpy.mockReturnValue(40_000);
       translatePiEvent(
         ev({
@@ -1622,6 +1626,10 @@ describe('pi translator', () => {
       translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
       const usage = (events.find((e) => e.type === 'done')!.data as { usage: Record<string, unknown> }).usage;
       expect(usage).not.toHaveProperty('durationMs');
+      // The suspended wall clock would dilute the live speed too: the host withdraws it.
+      const lastStatus = events.filter((e) => e.type === 'status').at(-1)?.data as Record<string, unknown>;
+      expect(lastStatus).toMatchObject({ generationReliable: false });
+      expect(lastStatus).not.toHaveProperty('tokenSpeed');
     } finally {
       nowSpy.mockRestore();
     }
