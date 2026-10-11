@@ -25,6 +25,7 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: (value: unknown) => value },
   AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
 }));
+vi.mock('@/theme', () => ({ useTheme: () => ({ colors: { surfaceElevated: '#FFFFFC' } }) }));
 vi.mock('@/session/useHtmlBrowserViewport', () => ({ useHtmlBrowserViewport: (insets: unknown) => ({ viewRef: { current: null }, measure() {}, script: '/* geometry only */ true;', obscuredContentInsets: insets }) }));
 vi.mock('react-native-webview', async () => {
   const { forwardRef, useEffect, useImperativeHandle } = await import('react');

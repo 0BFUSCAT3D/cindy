@@ -66,7 +66,19 @@ export function browserViewportScript(viewport: BrowserViewport): string {
       try { Object.defineProperty(window, 'cindyViewport', { configurable: true, get: () => value }); } catch {}
       window.dispatchEvent(new CustomEvent('cindyviewportchange', { detail: value }));
     };
-    const schedule = () => { if (!pending) pending = requestAnimationFrame(publish); };
+    // The native view's backing would become the canvas of pages that set no background
+    // (white text on white, or black on a dark theme). Like Safari, paint the canvas from the
+    // page's own used color scheme; any page-defined html/body background wins.
+    const paintCanvas = () => {
+      const root = document.documentElement;
+      if (!root || !document.body || root.style.backgroundColor) return;
+      const clear = element => {
+        const color = getComputedStyle(element).backgroundColor;
+        return color === 'transparent' || color === 'rgba(0, 0, 0, 0)';
+      };
+      if (clear(root) && clear(document.body)) root.style.backgroundColor = 'Canvas';
+    };
+    const schedule = () => { if (!pending) pending = requestAnimationFrame(() => { paintCanvas(); publish(); }); };
     window.addEventListener('resize', schedule);
     window.addEventListener('pageshow', schedule);
     window.addEventListener('cindy:viewport-scroll', schedule);
@@ -80,6 +92,7 @@ export function browserViewportScript(viewport: BrowserViewport): string {
       document.removeEventListener('DOMContentLoaded', schedule);
       window.visualViewport?.removeEventListener('resize', schedule);
     };
+    paintCanvas();
     publish();
   })(); true;`;
 }
