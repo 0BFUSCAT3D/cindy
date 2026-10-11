@@ -50,6 +50,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import { RemoteMediaPlayerWebView } from '@/session/mediaPlayerWebView';
+import type { MobileMediaPlayerStatus } from '@/session/mediaPlayerWebViewHtml';
 import { NativeVideoPlayer } from '@/session/NativeVideoPlayer';
 import {
   isDesktopLocalMediaUrl,
@@ -1922,22 +1923,58 @@ const LightboxVideoPage = memo(function LightboxVideoPage({
   const { t } = useTranslation();
   /** 原生播放失败的地址(换地址天然失效):退到 WebView 播放器,与文件预览一致。 */
   const [nativeFailedUri, setNativeFailedUri] = useState<string | null>(null);
+  /** WebView 兜底也播不了的地址:落失败态给重试,不能停在黑屏播放器上。 */
+  const [webFailedUri, setWebFailedUri] = useState<string | null>(null);
   const media = image.payload.media;
   const retryable = !media.previewable && isDesktopLocalMediaUrl(media.url);
   const resolvedUnsupported = resolveState?.status === 'ready' && !resolveState.media.previewable;
-  const failed = !uri && (
+  const playbackFailed = !!uri && webFailedUri === uri;
+  const failed = playbackFailed || (!uri && (
     resolveState?.status === 'error' || resolvedUnsupported || (!retryable && !media.previewable)
-  );
+  ));
   const handleNativeError = useCallback(() => {
     if (uri) setNativeFailedUri(uri);
   }, [uri]);
+  const handleWebStatus = useCallback((status: MobileMediaPlayerStatus) => {
+    if (status.state === 'error' && uri) setWebFailedUri(uri);
+  }, [uri]);
+  const retry = useCallback(() => {
+    // 播放失败的标记按地址记:重试先清掉,取件图再 forceRefresh 换新地址;
+    // 直连地址原地重新挂载原生播放器。
+    setNativeFailedUri(null);
+    setWebFailedUri(null);
+    if (retryable) onRetry(image);
+  }, [image, onRetry, retryable]);
 
   let body: React.ReactNode;
-  if (active && uri) {
+  if (failed) {
+    body = (
+      <Pressable accessible={false} onPress={onToggleChrome} style={[styles.pageFill, styles.pageCenter]}>
+        <Text style={styles.stateText}>
+          {t(mediaLoadFailureKey(resolveState?.status === 'error' ? resolveState.error : undefined))}
+        </Text>
+        {retryable || playbackFailed ? (
+          <Pressable
+            accessibilityLabel={t('message.lightbox.retry')}
+            accessibilityRole="button"
+            onPress={(event) => {
+              event.stopPropagation();
+              retry();
+            }}
+            style={styles.retryButton}
+            testID="message.imageLightboxRetryButton"
+          >
+            <Text style={styles.retryText}>{t('message.lightbox.retry')}</Text>
+          </Pressable>
+        ) : null}
+      </Pressable>
+    );
+  } else if (active && uri) {
     body = nativeFailedUri === uri || uri.startsWith('data:') ? (
       <RemoteMediaPlayerWebView
         kind="video"
         mimeType={resolveState?.status === 'ready' ? resolveState.media.mimeType : media.mimeType}
+        onStatusChange={handleWebStatus}
         style={styles.pageFill}
         testID="message.imageLightboxVideoWebPlayer"
         title={image.title}
@@ -1951,28 +1988,6 @@ const LightboxVideoPage = memo(function LightboxVideoPage({
         url={uri}
         visible={active}
       />
-    );
-  } else if (failed) {
-    body = (
-      <Pressable accessible={false} onPress={onToggleChrome} style={[styles.pageFill, styles.pageCenter]}>
-        <Text style={styles.stateText}>
-          {t(mediaLoadFailureKey(resolveState?.status === 'error' ? resolveState.error : undefined))}
-        </Text>
-        {retryable ? (
-          <Pressable
-            accessibilityLabel={t('message.lightbox.retry')}
-            accessibilityRole="button"
-            onPress={(event) => {
-              event.stopPropagation();
-              onRetry(image);
-            }}
-            style={styles.retryButton}
-            testID="message.imageLightboxRetryButton"
-          >
-            <Text style={styles.retryText}>{t('message.lightbox.retry')}</Text>
-          </Pressable>
-        ) : null}
-      </Pressable>
     );
   } else {
     body = (

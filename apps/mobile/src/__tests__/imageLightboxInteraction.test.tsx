@@ -1088,7 +1088,19 @@ describe("chrome toggle, loading and video pages", () => {
     expect(runtime.nodes.get("message.imageLightboxCloseButton")).toBeTruthy();
 
     act(() => player.onError("decode failed"));
-    expect(runtime.nodes.get("message.imageLightboxVideoWebPlayer").url).toBe(resolved.url);
+    const web = runtime.nodes.get("message.imageLightboxVideoWebPlayer");
+    expect(web.url).toBe(resolved.url);
+
+    // WebView 兜底也播不了:落失败态给重试,重试经 forceRefresh 重新取件后回到原生播放器。
+    runtime.nodes.delete("message.imageLightboxVideoPlayer");
+    act(() => web.onStatusChange({ type: "xdt-media-player/status", state: "error", error: "decode" }));
+    expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(true);
+    await act(async () => press("message.imageLightboxRetryButton"));
+    expect(resolver).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url }),
+      expect.objectContaining({ forceRefresh: true }),
+    );
+    expect(runtime.nodes.get("message.imageLightboxVideoPlayer").url).toBe(resolved.url);
 
     act(() => root.unmount());
     expect(onReleaseRemoteMedia).toHaveBeenCalledWith(url, resolved);
