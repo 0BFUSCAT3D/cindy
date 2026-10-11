@@ -402,9 +402,22 @@
     },
     "usage": {
       "title": "用量",
-      "description": "依使用方統計 {{provider}} 的用量。本機與我的其他電腦從這次更新後開始記錄。",
+      "description": "依人統計 {{provider}} 的用量。你自己的用量從這次更新後開始記錄。",
       "shareSource": "分享的人",
-      "unknownDevice": "另一台電腦"
+      "unknownDevice": "另一台電腦",
+      "descriptionGroup": "依人統計 {{provider}} 的用量，展開後依組內每台電腦分開。你自己的用量從這次更新後開始記錄。",
+      "selfTag": "你",
+      "relayName": "經 {{device}} 轉來",
+      "computerCount_other": "{{count}} 台電腦",
+      "lastUsedOn": "{{lastUsed}} · 用了 {{computers}}",
+      "unattributed": "更早的記錄",
+      "unattributedSource": "當時沒有區分電腦",
+      "removedMember": "已移出組",
+      "expandAria": "展開 {{name}} 的用量明細",
+      "collapseAria": "收起 {{name}} 的用量明細",
+      "table": {
+        "member": "組內電腦 / 模型"
+      }
     },
     "section": {
       "title": "供應商組",

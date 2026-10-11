@@ -64,6 +64,7 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
     readGroup: (id: string) => (id === 'anthropic' ? CONFIG : null),
     isRemoteAllowed: () => true,
     now: () => now,
+    replaceReportedUsage: vi.fn(),
     ...overrides,
   } satisfies ProviderGroupRemoteHandlerDeps;
   return {
@@ -140,6 +141,36 @@ describe('provider-group:remote', () => {
     expect(d.externalLoad.running('anthropic', MINI.key)).toBe(0);
   });
 
+  it('keeps the usage other computers report through its groups, except what ran here or out of order', async () => {
+    const replaceReportedUsage = vi.fn();
+    const d = deps({ replaceReportedUsage });
+    // [day, providerId, memberKey, kind, model, turns, input, output, cacheRead, cacheCreate, costUsd, lastAt]
+    const row = (providerId: string, memberKey: string) => ['2026-10-11', providerId, memberKey, 'claude-code', 'opus', 2, 30, 4, 0, 0, 0, 9_000];
+    await handleProviderGroupRemote(d, 'laptop', {
+      action: 'usage',
+      seq: 7,
+      sinceDay: '2026-10-10',
+      // 分到本机这台的本机自己记过；此刻没有组的供应商照收(组删了又建时历史不丢)。
+      rows: [row('anthropic', MINI.key), row('anthropic', 'local'), row('openai', 'device:x:openai')],
+    });
+    expect(replaceReportedUsage).toHaveBeenCalledTimes(1);
+    expect(replaceReportedUsage).toHaveBeenCalledWith('laptop', '2026-10-10', [
+      {
+        day: '2026-10-11', providerId: 'anthropic', memberKey: MINI.key, kind: 'claude-code', model: 'opus',
+        turns: 2, inputTokens: 30, outputTokens: 4, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 9_000,
+      },
+      expect.objectContaining({ providerId: 'openai', memberKey: 'device:x:openai' }),
+    ]);
+    // 乱序到达的旧报告丢弃；换了账号之后的也不收。
+    await handleProviderGroupRemote(d, 'laptop', { action: 'usage', seq: 6, sinceDay: null, rows: [] });
+    expect(replaceReportedUsage).toHaveBeenCalledTimes(1);
+    d.switchAccount();
+    await handleProviderGroupRemote(d, 'laptop', { action: 'usage', seq: 8, sinceDay: null, rows: [] });
+    expect(replaceReportedUsage).toHaveBeenCalledTimes(1);
+    await expect(handleProviderGroupRemote(d, 'laptop', { action: 'usage', seq: 9, sinceDay: null, rows: [['bad']] }))
+      .rejects.toThrow('[INVALID_PARAMS]');
+  });
+
   it('does not double count a picked task once it is reported', async () => {
     const d = deps();
     await handleProviderGroupRemote(d, 'laptop', PICK);
@@ -193,6 +224,7 @@ describe('provider-group:remote', () => {
       readGroup: () => config,
       isRemoteAllowed: () => true,
       now: () => now,
+      replaceReportedUsage: vi.fn(),
     } satisfies ProviderGroupRemoteHandlerDeps;
     const first = handleProviderGroupRemote(d, 'laptop', { ...PICK, exclude: [] });
     const second = handleProviderGroupRemote(d, 'desktop', { ...PICK, sessionId: 's2', exclude: [] });

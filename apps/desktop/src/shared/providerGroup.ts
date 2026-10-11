@@ -281,6 +281,29 @@ export interface ProviderGroupRemoteLease {
   memberKey: string;
 }
 
+/**
+ * 同账号电脑报告的一行用量：它经组所在电脑的组、在组里别的电脑上运行的部分(provider-groups.md §7)，
+ * 供应商与组内电脑都是组所在电脑的坐标，按天、Agent、模型聚合。
+ */
+export interface ProviderGroupRemoteUsageRow {
+  day: string;
+  providerId: string;
+  memberKey: string;
+  kind: string;
+  model: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  sdkCostUsd: number;
+  /** 这一行最近一次记账的时间(unix ms)。 */
+  lastAt: number;
+}
+
+/** 一次最多报告的用量行；多出来的按天从新到旧截断，旧的几天留在组所在电脑上次收到的那份。 */
+export const PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS = 3_000;
+
 export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
   | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[] }
@@ -289,7 +312,12 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string };
+  | { action: 'view'; providerId: string }
+  /**
+   * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
+   * 报过的行。seq 只增，乱序到达的旧份丢弃。
+   */
+  | { action: 'usage'; seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] };
 
 export type ProviderGroupRemotePick =
   /** 那个供应商现在没有组(组被删了或旧版本)：照常直接在组所在电脑上运行。 */
@@ -325,6 +353,31 @@ function remoteMemberKey(value: unknown): string {
 function remoteSessionId(value: unknown): string {
   if (typeof value !== 'string' || !REMOTE_SESSION_ID.test(value)) invalidRemote('invalid session id');
   return value;
+}
+
+const REMOTE_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const USAGE_NUMBER_FIELDS = ['turns', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreateTokens', 'sdkCostUsd', 'lastAt'] as const;
+
+/** 用量行按数组发送(省掉每行重复的字段名)：[day, providerId, memberKey, kind, model, ...USAGE_NUMBER_FIELDS]。 */
+export function providerGroupUsageRowsForWire(rows: readonly ProviderGroupRemoteUsageRow[]): unknown[][] {
+  return rows.map((row) => [
+    row.day, row.providerId, row.memberKey, row.kind, row.model, ...USAGE_NUMBER_FIELDS.map((field) => row[field]),
+  ]);
+}
+
+function remoteUsageRow(raw: unknown): ProviderGroupRemoteUsageRow {
+  if (!Array.isArray(raw) || raw.length !== 5 + USAGE_NUMBER_FIELDS.length) invalidRemote('invalid usage row');
+  const [day, providerId, memberKey, kind, model] = raw;
+  if (typeof day !== 'string' || !REMOTE_DAY.test(day)) invalidRemote('invalid usage day');
+  if (typeof kind !== 'string' || !REMOTE_AGENT_KINDS.has(kind)) invalidRemote('invalid agent');
+  if (typeof model !== 'string' || model.length > 512) invalidRemote('invalid model');
+  const row = { day, providerId: remoteProviderId(providerId), memberKey: remoteMemberKey(memberKey), kind, model } as ProviderGroupRemoteUsageRow;
+  USAGE_NUMBER_FIELDS.forEach((field, index) => {
+    const value = raw[5 + index];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) invalidRemote('invalid usage number');
+    row[field] = value;
+  });
+  return row;
 }
 
 /** 组所在电脑解析同账号电脑发来的请求；不合法抛 `[INVALID_PARAMS]`。 */
@@ -378,6 +431,13 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
     }
     case 'view':
       return { action: 'view', providerId: remoteProviderId(value.providerId) };
+    case 'usage': {
+      if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0) invalidRemote('invalid seq');
+      const sinceDay = value.sinceDay ?? null;
+      if (sinceDay !== null && (typeof sinceDay !== 'string' || !REMOTE_DAY.test(sinceDay))) invalidRemote('invalid since day');
+      if (!Array.isArray(value.rows) || value.rows.length > PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) invalidRemote('invalid usage rows');
+      return { action: 'usage', seq: value.seq as number, sinceDay: sinceDay as string | null, rows: value.rows.map(remoteUsageRow) };
+    }
     default:
       invalidRemote('unknown provider group action');
   }

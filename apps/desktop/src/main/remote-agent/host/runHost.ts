@@ -169,10 +169,13 @@ export interface RemoteAgentHostDeps {
    * 这些任务用过的 Agent 会话 id(按 id 存放的附属记录据此精确删除)。
    */
   purgeHostedTranscripts?(hostSessionIds: readonly string[], nativeIds: readonly string[]): Promise<void>;
-  /** 记录受邀者每一轮的用量(分享者的管理页按人、按模型展示)。只对 guest 调用。 */
-  recordGuestUsage?(controller: string, usage: { kind: RemoteAgentKind; providerId: string | null; samples: GuestUsageSample[] }): void;
+  /**
+   * 记录受邀者每一轮的用量(分享者的管理页按人、按模型、按组内电脑展示)。只对 guest 调用。
+   * memberKey：这一轮在哪台组内电脑运行——转给组内电脑的是那台的键，在本机运行的是 `local`。
+   */
+  recordGuestUsage?(controller: string, usage: RunUsageRecord): void;
   /** 记录同账号其他电脑每一轮的用量(远程与分享页按使用方展示)。只对 owner 调用。 */
-  recordOwnerUsage?(controller: string, usage: { kind: RemoteAgentKind; providerId: string | null; samples: GuestUsageSample[] }): void;
+  recordOwnerUsage?(controller: string, usage: RunUsageRecord): void;
   /**
    * 「允许被远程调用」(供应商级授权，默认关)。不提供 = 不做供应商级限制(测试 / 旧接线)。
    *  - resolve：把对方要用的来源落到本机已开放的供应商上。providerId 是字符串时只核对它是否开放；
@@ -213,6 +216,14 @@ export interface RemoteAgentHostDeps {
 }
 
 /** 受邀者任务交给的组内电脑(组所在电脑视角)。 */
+/** 一轮的用量(`meterRunUsage` 交给 recordGuestUsage / recordOwnerUsage)。 */
+export interface RunUsageRecord {
+  kind: RemoteAgentKind;
+  providerId: string | null;
+  memberKey: string;
+  samples: GuestUsageSample[];
+}
+
 export interface GroupRelayMember {
   memberKey: string;
   agentDeviceId: string;
@@ -1090,7 +1101,10 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     run.usageMeter ??= createGuestUsageMeter(run.kind);
     try {
       const samples = run.usageMeter.observe(event, model ?? '');
-      if (samples.length > 0) record(run.controller, { kind: run.kind, providerId: run.providerId ?? null, samples });
+      if (samples.length === 0) return;
+      // 转给组内电脑的记在那台名下；在本机运行的(含组里选回本机)记为本机。
+      const memberKey = run.relay?.member.memberKey ?? PROVIDER_GROUP_LOCAL_MEMBER_KEY;
+      record(run.controller, { kind: run.kind, providerId: run.providerId ?? null, memberKey, samples });
     } catch (error) {
       deps.log?.warn('remote agent usage record failed', { runId: run.id, error: String(error) });
     }

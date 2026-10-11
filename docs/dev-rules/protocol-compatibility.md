@@ -917,6 +917,38 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
   `directory.test.ts`、`remote-agent/__tests__/guestHost.test.ts`、`device-link/__tests__/providerShareDispatch.test.ts`、
   `packages/device-link/src/__tests__/providerShare.test.ts`。
 
+## 供应商组：同账号电脑报告经组的用量(2026-10-11)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §7。组所在电脑 O 的「用量」块里「自己」要等于全组的总和，
+同账号电脑 C 经 O 的组、直接连到组里别的电脑(不是 O 本身)运行的那部分 O 经手不到，由 C 报告。
+
+- **`provider-group:remote` 新增 `action: 'usage'`**(同一 channel、同一同账号 allowlist，受邀者与共享任务访客照旧
+  `CHANNEL_NOT_ALLOWED`)：`{ action: 'usage', seq, sinceDay: 'YYYY-MM-DD' | null, rows }` → `{}`。
+  - `rows` 每行是数组 `[day, providerId, memberKey, kind, model, turns, inputTokens, outputTokens, cacheReadTokens,
+    cacheCreateTokens, sdkCostUsd, lastAt]`，最多 3000 行；供应商与组内电脑都是 O 的坐标(`memberKey` 是 O 组里的稳定键)。
+    结构与校验在 `apps/desktop/src/shared/providerGroup.ts`(`parseProviderGroupRemoteRequest`、`providerGroupUsageRowsForWire`)。
+  - 语义是整体替换：O 删掉 C 报过的、`sinceDay`(含；null = 全部)起的行，再写入这一份；重复送同一份不多算。`seq` 只增
+    (C 按时间生成)，同一账号里乱序到达的旧份丢弃；换了账号之后到达的不收。
+  - O 丢掉 `memberKey === 'local'` 的行(分到 O 本身的那部分 O 自己记过)；不按此刻有没有组筛，组删了又建时整份报告
+    也不会抹掉那几个供应商的历史。
+  - C 侧：任务此刻所在电脑与供应商和绑定那台对得上才算经组(绑定没清掉的空档里不报)；每轮记进按账号的账本(`group` 行，
+    只用来报告，不算进 C 自己的供应商)，防抖 5s 报从那天起的一份；启动(账号确定)
+    后整份报一次补上次没送到的；送不到按 30s 起、最长 10 分钟退避重报；行数超上限时从最新一天往前取整天。
+- **兼容**：
+  - 旧 O(认识 `provider-group:remote`、不认识 `usage`)回 `[INVALID_PARAMS] unknown provider group action`，更早的回
+    `CHANNEL_NOT_ALLOWED`：C 都按不支持处理，30 分钟后再试，不影响任务；这部分用量在 O 上缺，直到 O 更新。
+  - 旧 C 不报：O 上缺这部分，其余照旧。
+  - `maker:provider:list`、relay、帧限制、服务器与数据库都不变。
+  - 降级：已发布的受邀者账本(`provider-share-usage.json`)行键与合计不变，各台组内电脑的分布放在行里的 `byMember`，旧版本
+    照常累计合计并原样写回，降级不丢用量(降级期间记的回来后算没区分电脑)。按使用方的账本(`provider-usage-by-party.json`)
+    还没进正式版：从带这次改动的构建降到它之前的构建时，同一天同模型分在几台电脑的行会合成一行(只剩其中一台的数)，
+    `group` / `reported` 行也会被当成「我的其他电脑」，属于已知的降级损失。
+- 实现：`apps/desktop/src/main/provider-group/usageReporter.ts`、`usageReportRuntime.ts`、`remoteHandler.ts`(`usage`)、
+  `remoteClient.ts`(`usage`)、`remoteRegistration.ts`，`apps/desktop/src/main/usage/providerPartyUsageStore.ts`
+  (`groupReport` / `replaceReported`)，`maker-ipc/sessionProviderPartyUsage.ts`(`groupUsageReportOf`)；回归见
+  `provider-group/__tests__/usageReporter.test.ts`、`remoteHandler.test.ts`、`usage/__tests__/providerPartyUsageStore.test.ts`、
+  `maker-ipc/__tests__/sessionProviderPartyUsage.test.ts`。
+
 ## 事实来源
 
 | 内容                     | 权威来源                                                                                                                                                                                   |

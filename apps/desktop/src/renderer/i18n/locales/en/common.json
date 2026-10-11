@@ -404,9 +404,23 @@
     },
     "usage": {
       "title": "Usage",
-      "description": "{{provider}} usage by who used it. This computer and your other computers are counted from this update on.",
+      "description": "{{provider}} usage by person. Your own usage is counted from this update on.",
       "shareSource": "Shared with",
-      "unknownDevice": "Another computer"
+      "unknownDevice": "Another computer",
+      "descriptionGroup": "{{provider}} usage by person. Expand a row to see each computer in the group. Your own usage is counted from this update on.",
+      "selfTag": "You",
+      "relayName": "Via {{device}}",
+      "computerCount_one": "{{count}} computer",
+      "computerCount_other": "{{count}} computers",
+      "lastUsedOn": "{{lastUsed}} · on {{computers}}",
+      "unattributed": "Earlier usage",
+      "unattributedSource": "Computer not recorded",
+      "removedMember": "Removed from the group",
+      "expandAria": "Show usage details for {{name}}",
+      "collapseAria": "Hide usage details for {{name}}",
+      "table": {
+        "member": "Computer / model"
+      }
     },
     "section": {
       "title": "Provider Group",

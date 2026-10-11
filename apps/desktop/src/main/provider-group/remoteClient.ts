@@ -9,9 +9,11 @@ import { PROVIDER_GROUP_REMOTE_CHANNEL } from '@cindy/device-link';
 import {
   parseProviderGroupRemotePick,
   parseProviderGroupRemoteView,
+  providerGroupUsageRowsForWire,
   type ProviderGroupRemoteCoolCause,
   type ProviderGroupRemoteLease,
   type ProviderGroupRemotePick,
+  type ProviderGroupRemoteUsageRow,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 
@@ -37,6 +39,8 @@ export interface ProviderGroupRemoteClient {
   }): Promise<void>;
   leases(ownerDeviceId: string, seq: number, entries: readonly ProviderGroupRemoteLease[]): Promise<void>;
   view(ownerDeviceId: string, providerId: string): Promise<ProviderGroupView>;
+  /** 报告经组、在组里别的电脑上运行的用量；组所在电脑是旧版本时抛 ProviderGroupRemoteUnsupportedError。 */
+  usage(ownerDeviceId: string, report: { seq: number; sinceDay: string | null; rows: readonly ProviderGroupRemoteUsageRow[] }): Promise<void>;
 }
 
 /** 组所在电脑没有这个通道(旧版本)：当作没有组。 */
@@ -92,6 +96,23 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
 
     async view(ownerDeviceId, providerId) {
       return parseProviderGroupRemoteView(await call(ownerDeviceId, { action: 'view', providerId }), providerId);
+    },
+
+    async usage(ownerDeviceId, report) {
+      try {
+        await call(ownerDeviceId, {
+          action: 'usage',
+          seq: report.seq,
+          sinceDay: report.sinceDay,
+          rows: providerGroupUsageRowsForWire(report.rows),
+        });
+      } catch (error) {
+        // 有组、但还不认识用量报告的旧版本：按不支持处理(调用方之后再试)。
+        if (error instanceof Error && /unknown provider group action/.test(error.message)) {
+          throw new ProviderGroupRemoteUnsupportedError();
+        }
+        throw error;
+      }
     },
   };
 }
