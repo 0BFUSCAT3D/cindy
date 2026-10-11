@@ -293,6 +293,11 @@ export interface SessionAgentSwitchResult {
   /** 新引擎 live session 是否已就绪;false 时下一条消息走 lazy-create 重试。 */
   engineReady: boolean;
   /**
+   * engineReady=false 时新会话没能启动的原因(错误原文)。供应商组换电脑据此判断是不是那台电脑的问题、要不要
+   * 换下一台(provider-group/failurePolicy)。
+   */
+  bootstrapError?: string;
+  /**
    * turn 运行中登记为 pending:切换不打断当前 turn,推迟到下一条消息发送时刻
    * 由 send 事务执行(applyPendingAgentSwitchIfIdle)。true 时 switched=false,
    * 会话状态(DB / 消息流 / chip)保持旧引擎——旧 turn 确实仍由旧引擎驱动。
@@ -829,6 +834,7 @@ export async function performSessionAgentSwitch(
     deps.setPendingHandoff(sessionId, handoff, handoffGeneration);
 
     let engineReady = true;
+    let bootstrapError: string | undefined;
     let resumed = !!parked;
     let retryPending = false;
     // resume 模式无视 skipBootstrap:只有 eager spawn 才能确定性观测 resume 失败
@@ -923,6 +929,7 @@ export async function performSessionAgentSwitch(
               await deps.bootstrapSwitchedSession(sessionId);
             } catch (err2) {
               engineReady = false;
+              bootstrapError = err2 instanceof Error ? err2.message : String(err2);
               deps.log.warn('agent-switch: fresh bootstrap after resume fallback failed', {
                 sessionId,
                 targetAgentKind,
@@ -932,6 +939,7 @@ export async function performSessionAgentSwitch(
           }
         } else {
           engineReady = false;
+          bootstrapError = err instanceof Error ? err.message : String(err);
           deps.log.warn('agent-switch: bootstrap new engine failed; next send will lazy-create', {
             sessionId,
             targetAgentKind,
@@ -957,6 +965,7 @@ export async function performSessionAgentSwitch(
       agentKind: targetAgentKind,
       model,
       engineReady,
+      ...(bootstrapError !== undefined ? { bootstrapError } : {}),
       ...(retryPending ? { retryPending: true } : {}),
     };
   });

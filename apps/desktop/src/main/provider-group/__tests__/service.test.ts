@@ -190,8 +190,18 @@ describe('assignBeforeStart', () => {
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
   });
 
-  it('keeps an old task on its current computer but returns a start context after its live session is gone', async () => {
+  it('does not move an old task at start while its native session must be resumed (that needs a handoff)', async () => {
     const h = harness({ row: { sdkSessionId: 'native-1' } });
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
+    h.deps.hasLiveSession.mockReturnValue(false);
+    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
+    // 仍纳入组：打开失败、运行中失败走带交接的自动换电脑。
+    expect(h.bindings.get('s1')?.memberKey).toBe(LOCAL.key);
+  });
+
+  it('keeps an old task on its current computer but returns a start context after its live session is gone', async () => {
+    // 运行过、但没有原生会话要续接(回退或清空后)：这次打开反正是全新会话。
+    const h = harness();
     h.deps.hasAssistantHistory.mockResolvedValue(true);
     h.deps.hasLiveSession.mockReturnValue(false);
 
@@ -696,7 +706,10 @@ describe('waiting for a computer that cannot be reached before switching (§6.1)
   });
 
   it('counts a dropped connection that is already back as one retry and continues on the same computer', async () => {
-    for (const signals of [UNREACHABLE, { reason: 'remote_agent_closed', message: 'remote agent closed' }]) {
+    for (const signals of [UNREACHABLE, {
+      reason: 'remote_agent_lost',
+      message: '[REMOTE_AGENT_UNAVAILABLE] The computer running this agent is unreachable.',
+    }]) {
       const h = onMini();
       h.probe.mockResolvedValue('ok');
       await h.service.onTurnError('s1', signals, 7, h.hooks);
@@ -1084,12 +1097,59 @@ describe('beforeSend', () => {
     expect(loose.deps.readSessionRow).not.toHaveBeenCalled();
   });
 
-  it('keeps the binding when the move fails, so the send reports the original problem', async () => {
+  it('keeps the binding when the move fails for a reason that is not about the target, so the send reports it', async () => {
     const h = harness({ offline: ['local'] });
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
-    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error('unreachable'));
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error('[SESSION_RUNNING] busy'));
     await h.service.beforeSend('s1');
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the next computer when the move fails because of the target (default: switch)', async () => {
+    const h = harness({ offline: ['local'] });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error('spawn ENOENT'));
+    await h.service.beforeSend('s1');
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
+    expect(h.bindings.get('s1')?.memberKey).not.toBe('local');
+  });
+});
+
+describe('onTurnError — one decision for every failure (failurePolicy)', () => {
+  it('switches when the agent there ends mid-turn without a terminal event (default: switch), without cooling it', async () => {
+    const h = harness();
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    await h.service.onTurnError('s1', {
+      message: 'Session event loop stopped unexpectedly without a terminal event',
+      reason: 'session_event_loop_crashed',
+    }, 7);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.deps.continueSession).toHaveBeenCalledWith('s1', 99, expect.objectContaining({
+      agentSwitch: expect.objectContaining({ cause: 'failed' }),
+    }));
+    // 不是那台账号的问题：不记进组的状态，新任务照常可以分给它。
+    expect(h.router.coolingUntil('anthropic', 'local')).toBeNull();
+  });
+
+  it('does not switch when this computer closed the running session itself', async () => {
+    const h = harness();
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    await h.service.onTurnError('s1', {
+      message: 'Session closed before the current turn delivered a terminal event',
+      reason: 'session_event_loop_crashed',
+    }, 7);
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes one decision line per failure with codes only', async () => {
+    const h = harness();
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    await h.service.onTurnError('s1', { message: '[REMOTE_AGENT_BUSY] private details', errorStatus: 503 }, 7);
+    const decision = (h.deps.log.info.mock.calls as unknown[][]).find((call) => call[0] === 'provider group: failure decision');
+    expect(decision?.[1]).toMatchObject({ sessionId: 's1', phase: 'run', action: 'switch', cause: 'unavailable', code: 'REMOTE_AGENT_BUSY' });
+    expect(JSON.stringify(decision)).not.toContain('private details');
   });
 });
 

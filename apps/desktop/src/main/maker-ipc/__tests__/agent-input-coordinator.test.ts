@@ -1002,6 +1002,7 @@ function unsupportedChatBridgeImageError(feature = "input content part 'input_im
 function createHarness(opts?: {
   getRecoveryContextSnapshot?: (sessionId: string, userClientId: string) => Promise<RecoveryContextSnapshot>;
   providerGroupSwitchCandidate?: AgentInputCoordinatorDeps['providerGroupSwitchCandidate'];
+  providerGroupUndeliveredSendSignals?: AgentInputCoordinatorDeps['providerGroupUndeliveredSendSignals'];
 }) {
   let running = false;
   let liveRunningOverride: boolean | null | 'unknown' = null;
@@ -1202,6 +1203,9 @@ function createHarness(opts?: {
     onUsageLimitedTurnError,
     ...(opts?.providerGroupSwitchCandidate
       ? { providerGroupSwitchCandidate: opts.providerGroupSwitchCandidate }
+      : {}),
+    ...(opts?.providerGroupUndeliveredSendSignals
+      ? { providerGroupUndeliveredSendSignals: opts.providerGroupUndeliveredSendSignals }
       : {}),
     noteSessionClearBoundary,
     resolveSessionReferences,
@@ -14095,6 +14099,45 @@ describe('provider group computer switch hold', () => {
     expect(latestProjection(h.projections).error).toBe(MESSAGE);
     expect(latestProjection(h.projections).autoResumePending).toBeUndefined();
     expect(h.coordinator.getProviderGroupSwitchHoldId(sid)).toBeNull();
+  });
+
+  it('hands a stored message whose agent did not start to the same switch, without showing the error', async () => {
+    const sid = 'group-hold-undelivered';
+    const signals = { message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone', reason: 'provider_group_agent_start_failed' };
+    const candidate = vi.fn<NonNullable<AgentInputCoordinatorDeps['providerGroupSwitchCandidate']>>(() => 'unavailable');
+    const undelivered = vi.fn<NonNullable<AgentInputCoordinatorDeps['providerGroupUndeliveredSendSignals']>>(() => signals);
+    const h = createHarness({ providerGroupSwitchCandidate: candidate, providerGroupUndeliveredSendSignals: undelivered });
+    h.sendToAgent.mockImplementationOnce(async (sessionId, _message, _createOpts, sendOpts) => {
+      await persistQueuedUserMessage(sessionId, sendOpts);
+      return hostSendFailure('LAZY_CREATE_FAILED', '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone');
+    });
+    h.coordinator.enqueue(sid, makeItem('q-first', 'original long task'));
+    await flush();
+
+    expect(undelivered).toHaveBeenCalledWith(sid, expect.objectContaining({ kind: 'host-send', code: 'LAZY_CREATE_FAILED' }));
+    // 与终态错误同一条路：先登记先不呈现，再交给 onUsageLimitedTurnError(供应商组据此换电脑后重发原消息)。
+    expect(h.projections.every((projection) => projection.error === null)).toBe(true);
+    expect(latestProjection(h.projections).autoResumePending).toMatchObject({ groupSwitchPending: { cause: 'unavailable' } });
+    expect(latestProjection(h.projections).recovery?.kind).toBe('active-turn');
+    expect(h.onUsageLimitedTurnError).toHaveBeenCalledWith(
+      sid,
+      expect.objectContaining({ reason: 'provider_group_agent_start_failed' }),
+      expect.objectContaining({ clientId: 'q-first' }),
+      expect.any(Number),
+    );
+  });
+
+  it('keeps the plain error for a stored message the group does not take', async () => {
+    const sid = 'group-hold-undelivered-none';
+    const h = createHarness({ providerGroupUndeliveredSendSignals: () => null });
+    h.sendToAgent.mockImplementationOnce(async (sessionId, _message, _createOpts, sendOpts) => {
+      await persistQueuedUserMessage(sessionId, sendOpts);
+      return hostSendFailure('LAZY_CREATE_FAILED', 'boom');
+    });
+    h.coordinator.enqueue(sid, makeItem('q-first', 'original long task'));
+    await flush();
+    expect(latestProjection(h.projections).error).toContain('LAZY_CREATE_FAILED');
+    expect(h.onUsageLimitedTurnError).not.toHaveBeenCalled();
   });
 
   it('ends the hold when the user takes over', async () => {

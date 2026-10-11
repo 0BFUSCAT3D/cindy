@@ -496,7 +496,9 @@ describe('old tasks already running on the group computer', () => {
   });
 
   it('retries group adoption after a startup failure when the initial group read timed out', async () => {
-    const h = harness({ row: { sdkSessionId: 'native-1' }, live: false });
+    // 运行过、但没有原生会话要续接(回退或清空后)：这次打开反正是全新会话，启动失败可以直接换下一台。
+    const h = harness({ live: false });
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
     h.remote.readGroup.mockResolvedValueOnce(undefined);
 
     const context = await h.service.assignBeforeStart(START);
@@ -513,6 +515,23 @@ describe('old tasks already running on the group computer', () => {
     );
     expect(next?.member.key).toBe(STUDIO.key);
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
+  });
+
+  it('does not release a bound task when the group computer is merely slow to answer (timeout is not "group deleted")', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ live: true });
+      h.bindings.set('s1', { providerId: 'anthropic', memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER, at: 1 });
+      // 组所在电脑一直不回(慢，或者正忙)：超时只说明读不到，不能当作组已删除。
+      h.remote.readGroup.mockImplementation(() => new Promise(() => {}));
+      const assigned = h.service.assignBeforeStart(START);
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect(await assigned).toBeNull();
+      expect(h.bindings.get('s1')).toMatchObject({ memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER });
+      expect(h.deps.markReleased).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps an existing bound task pending when its group read times out before reopening', async () => {
@@ -535,8 +554,19 @@ describe('old tasks already running on the group computer', () => {
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
   });
 
-  it('returns a start context for an old task whose live session is gone, so startup failure can move it', async () => {
+  it('does not move an old task at start when its native session must be resumed (that needs a handoff)', async () => {
     const h = harness({ row: { sdkSessionId: 'native-1' }, live: false, picks: [STUDIO] });
+    expect(await h.service.assignBeforeStart(START)).toBeNull();
+    // 仍纳入组：之后打开失败、运行中失败走带交接的自动换电脑。
+    expect(h.bindings.get('s1')).toMatchObject({ memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER });
+    const unreadable = harness({ row: { sdkSessionId: 'native-1' }, live: false });
+    unreadable.remote.readGroup.mockResolvedValueOnce(undefined);
+    expect(await unreadable.service.assignBeforeStart(START)).toBeNull();
+  });
+
+  it('returns a start context for an old task whose live session is gone, so startup failure can move it', async () => {
+    const h = harness({ live: false, picks: [STUDIO] });
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
     const context = await h.service.assignBeforeStart(START);
 
     expect(context).toMatchObject({

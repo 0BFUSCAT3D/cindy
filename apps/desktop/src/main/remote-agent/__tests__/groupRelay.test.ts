@@ -184,7 +184,8 @@ function setup(options: {
       }
       return { invoke: poller.invoke, poller };
     }),
-    noteStartFailure: vi.fn(),
+    // 与本机任务同一个判定：默认换下一台(guestRelay 的判定见 provider-group/__tests__/guestRelay.test.ts)。
+    noteStartFailure: vi.fn(() => true),
     noteRunFailure: vi.fn((_providerId: string, _member: GroupRelayMember, failure: RelayRunFailure) =>
       options.switchWorthy?.(failure) ?? true),
     trackRun: vi.fn(() => ({ setRunning: vi.fn(), release: vi.fn() })),

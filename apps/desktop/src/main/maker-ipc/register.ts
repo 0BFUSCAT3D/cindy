@@ -63,7 +63,7 @@ import {
 } from '../provider-group/service.js';
 import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
-import { classifyProviderGroupSwitchCause } from '../provider-group/switchCause.js';
+import { providerGroupSwitchCause, providerGroupUndeliveredSendSignals } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
 import {
   isRemoteProviderInvocationAllowed,
@@ -1221,6 +1221,7 @@ import {
   isDeviceLinkInvoke,
   isMobileControllerInvoke,
   readDeviceLinkInvokeSourceDevice,
+  runOutsideDeviceLinkInvokeContext,
 } from '../device-link/invoke-context.js';
 import { stampSharedTaskInput } from './sharedTaskInput.js';
 import { createSharedTaskContextUsageGuard } from './sharedTaskContextUsage.js';
@@ -3633,7 +3634,12 @@ export function applyDirectoryGrants(
         return accepted;
       },
       persist: (patch) => persistSessionFields(sessionId, patch),
-      terminate: () => maker.closeSession(sessionId),
+      // 远程 Agent 正在跑一轮时不当场关：那台只是暂时连不上，本机执行器已回到原来的目录(文件读写由本机执行器
+      // 把关)，库里也还是原来那份；这一轮结束后再重建。当场关会把进行中的一轮杀掉，且不是那台电脑的问题，
+      // 供应商组也不会换电脑(docs/product-rules/provider-groups.md §6.1「本机的操作不打断进行中的远程一轮」)。
+      terminate: () => (sess?.agentDeviceId && sess.isTurnRunning()
+        ? maker.closeSessionIfCurrent(sess, 'runtime-refresh', { afterCurrentTurn: true })
+        : maker.closeSession(sessionId)),
     });
     if (result.changed || result.rejectedCount > 0) log.info(label, {
       sessionId,
@@ -3704,6 +3710,14 @@ async function syncLibraryReadonlyExtraDir(
       const remote = await sessionIsRemote(sessionId);
       if (generation !== libraryExtraDirSyncGeneration) return 'superseded';
       const nextRoot = !remote && grantRoot && sessionId === focused ? grantRoot : null;
+      // 没有 Library 槽可撤、这次也不给：什么都不变，不碰运行中的会话。否则每次切换焦点都要把每个开着的任务的附加
+      // 目录重新下发一遍，远程 Agent 那台恰好连不上时回滚失败、会话被关，正在跑的一轮就此中断(2026-10-11 实测)。
+      // 运行时的 Library 槽只会来自已落库的那份(启动从库里读，改动先改运行时再落库，落库失败回滚)，库里没有即运行时没有。
+      if (!nextRoot) {
+        const persisted = await readSessionExtraDirsFromDb(sessionId).catch(() => null);
+        if (generation !== libraryExtraDirSyncGeneration) return 'superseded';
+        if (persisted && !persisted.some(isLibraryExtraDirSlot)) continue;
+      }
       try {
         const applied = await applyLibraryReadonlyExtraDir(sessionId, nextRoot);
         if (nextRoot && applied?.some(isLibraryExtraDirSlot)) granted = true;
@@ -9721,7 +9735,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const assertCurrent = () => {
         if (isCurrent && !isCurrent()) throw new Error(PROVIDER_GROUP_SUPERSEDED_ERROR);
       };
-      const run = async () => {
+      // 换电脑是本机的决定：即使这次发送来自手机或另一台电脑，也不继承它的 device-link 来源，否则换不过去的
+      // 原因(那台连不上等)会被降级成 PRECONDITION_FAILED，判定认不出是那台的问题，就不再试下一台。
+      const run = () => runOutsideDeviceLinkInvokeContext(async () => {
         assertCurrent();
         const result = await performSessionAgentSwitch(agentSwitchDeps, {
           sessionId,
@@ -9741,7 +9757,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
         // 同引擎同位置等情况会按 no-op 返回：没有真正换过去，按交接失败处理。
         if (!result.switched) throw new Error('provider group: the agent switch did not apply');
-      };
+        // 运行中换电脑：换过去的那台没能把 Agent 启动起来时按换不过去处理，由调用方按同一个判定换下一台，不把续跑
+        // 交给一台起不来的电脑(续跑会再失败，协同 Worker 还会一直停在运行中)。发送前换电脑随后照常 lazy-create。
+        if (!switchOptions?.beforeSend && !result.engineReady) {
+          throw new Error(result.bootstrapError || '[REMOTE_AGENT_UNAVAILABLE] the agent did not start on that computer');
+        }
+      });
       // 发送前换电脑已在发送事务里；运行中失败后的换电脑是异步触发的，与其他内部调用一样在发送锁内交接，
       // 不与用户同时发来的消息交错。
       if (switchOptions?.beforeSend) {
@@ -16768,8 +16789,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 纯判定：供应商组会先试着换电脑时，这次错误先不呈现(provider-groups.md §6.1)。
     providerGroupSwitchCandidate: (sessionId, signals) =>
       providerGroupService?.mayHandleTurnError(sessionId, signals)
-        ? classifyProviderGroupSwitchCause(signals)
+        ? providerGroupSwitchCause(signals, 'run')
         : null,
+    // 已落库的消息在打开任务时就没送出去(Agent 没能启动等)：与运行中失败同一条换电脑流程(§6.1)。
+    providerGroupUndeliveredSendSignals: (sessionId, failure) => {
+      const signals = providerGroupUndeliveredSendSignals(failure);
+      return signals && providerGroupService?.mayHandleTurnError(sessionId, signals) ? signals : null;
+    },
     onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
       // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
       if (!providerGroupService) {
@@ -17232,14 +17258,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       autoResumeBookkeeping.surfaceSuppressedErrorForRetry(sessionId, item.clientId);
     },
     persistTerminalSendError: (sessionId, message) => {
-      onTurnErrorEvent(
-        sessionId,
-        {
-          message,
-          ...(isPiPromptRpcTimeoutError({ message }) ? { reason: 'pi-prompt-timeout' } : {}),
-        },
-        null,
-      );
+      const data = {
+        message,
+        ...(isPiPromptRpcTimeoutError({ message }) ? { reason: 'pi-prompt-timeout' } : {}),
+      };
+      // 供应商组正为这次没送出去的失败换电脑(与终态错误同一套)：error 行先暂存，没换成时再落。
+      const holdId = agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(sessionId) ?? null;
+      if (holdId !== null && providerGroupHeldErrors.stash(sessionId, holdId, data, null)) return;
+      onTurnErrorEvent(sessionId, data, null);
     },
     onUnconfirmedAutoResumeTurn: (sessionId, item) => {
       const attemptToken = autoResumeAttemptToken(item);
@@ -21049,7 +21075,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               effort as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra',
             );
           },
-          terminateSession: () => maker.closeSession(sessionId),
+          // 远程 Agent 正在跑一轮、那台只是回得慢：不当场关(会把这一轮杀掉，且不是那台电脑的问题，供应商组也
+          // 不会换电脑)，这一轮结束后再按已落库的档位重建(provider-groups.md §6.1「本机的操作不打断进行中的远程一轮」)。
+          terminateSession: async () => {
+            if (sess.agentDeviceId && sess.isTurnRunning()) {
+              await maker.closeSessionIfCurrent(sess, 'runtime-refresh', { afterCurrentTurn: true });
+              return;
+            }
+            await maker.closeSession(sessionId);
+          },
         });
         if (result === 'session-terminated') {
           log.warn('set-effort: timed-out runtime session terminated for lazy rebuild', {

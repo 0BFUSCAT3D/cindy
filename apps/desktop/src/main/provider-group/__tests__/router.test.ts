@@ -93,3 +93,20 @@ describe('provider group running count', () => {
     expect(pick).toMatchObject({ kind: 'member', member: { key: SHARE_B.key } });
   });
 });
+
+describe('provider group picks for this computer’s own tasks', () => {
+  it('reserves the chosen computer until the task starts, so tasks opened together spread out', async () => {
+    const bindings: Record<string, ProviderGroupBinding> = {};
+    const running: string[] = [];
+    const router = harness({}, bindings, running);
+    const first = await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, reserveFor: 's1' });
+    const second = await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, reserveFor: 's2' });
+    expect(first.kind === 'member' && second.kind === 'member' && first.member.key !== second.member.key).toBe(true);
+
+    // 开始运行一轮之后按绑定计，不再重复计那份临时占用。
+    if (first.kind !== 'member') throw new Error('expected a member');
+    bindings.s1 = { providerId: 'anthropic', memberKey: first.member.key, at: 1 };
+    running.push('s1');
+    expect(router.running('anthropic', first.member.key)).toBe(1);
+  });
+});

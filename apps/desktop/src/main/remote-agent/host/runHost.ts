@@ -265,8 +265,11 @@ export interface RemoteAgentGroupRelayDeps {
   }): Promise<GroupRelayPlan | null>;
   /** 经设备互联连某台组内电脑的远程 Agent 通道(与本机作为控制端共用拉取器)。 */
   connect(agentDeviceId: string): { invoke: RemoteAgentInvoke; poller: RemoteAgentPoller };
-  /** 那台在启动阶段没能接下任务(连不上、登录失效等)：按组的口径冷却。 */
-  noteStartFailure(providerId: string, member: GroupRelayMember, error: unknown): void;
+  /**
+   * 那台在启动阶段没能接下任务：按组的口径判定(provider-group/failurePolicy)，那台账号的问题冷却它。返回 true =
+   * 可以换下一台；false = 换到哪台都一样(模型停用、请求无效等)，照原来的错误报给受邀者。
+   */
+  noteStartFailure(providerId: string, member: GroupRelayMember, error: unknown): boolean;
   /**
    * 那台上的任务运行中失败(终态错误，或一轮进行中任务意外结束)：问题出在那台电脑本身时按组的口径冷却它，组设置
    * 允许自动换电脑时返回 true(可以换一台)；用户停止、上下文超限等换到哪台都一样的失败返回 false。
@@ -1399,7 +1402,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         for (const connId of wsOpened) append(run, { t: 'ws', connId, kind: 'close' });
         if (run.closing || !options.fresh) break;
         tried.add(current.memberKey);
-        relayDeps.noteStartFailure(groupProviderId, current, error);
+        // 与本机自己的任务同一个判定：换到哪台都一样的失败不再换，照原来的错误报给受邀者。
+        if (!relayDeps.noteStartFailure(groupProviderId, current, error)) break;
         deps.log?.warn('remote agent: provider group computer did not take the shared task; trying the next one', {
           runId: run.id,
           member: current.memberKey,

@@ -69,7 +69,15 @@ export interface ProviderGroupPickInput {
    * 占用，不会全落到同一台。
    */
   onPicked?(memberKey: string): void;
+  /**
+   * 本机任务：选中的同一步给这个任务记上临时占用(PROVIDER_GROUP_LOCAL_PROVISIONAL_MS)，直到它开始运行一轮
+   * (之后按运行中的绑定计)。本机同时开的几个任务不会读到同一份负载、全落到同一台。
+   */
+  reserveFor?: string;
 }
+
+/** 本机任务选中后、开始运行一轮之前的临时占用时长(与同账号电脑选中后的临时占用相同)。 */
+export const PROVIDER_GROUP_LOCAL_PROVISIONAL_MS = 30_000;
 
 export type ProviderGroupPickResult =
   | { kind: 'none' }
@@ -124,6 +132,8 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
 
   const lastPicked = new Map<string, string>();
   const tried = new Map<string, { at: number; keys: Set<string> }>();
+  /** 本机任务刚选中、还没开始运行一轮的临时占用：任务 id → 那台。 */
+  const provisional = new Map<string, { providerId: string; memberKey: string; until: number }>();
 
   function currentTried(sessionId: string): Set<string> | null {
     const entry = tried.get(sessionId);
@@ -152,6 +162,15 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       if (binding.providerId === providerId && binding.memberKey === memberKey && deps.isTurnRunning(sessionId)) {
         count++;
       }
+    }
+    const now = deps.now();
+    for (const [sessionId, entry] of provisional) {
+      // 已经开始运行一轮的按上面的绑定计，不重复计；过期的放掉(没能启动等)。
+      if (entry.until <= now || deps.isTurnRunning(sessionId)) {
+        provisional.delete(sessionId);
+        continue;
+      }
+      if (entry.providerId === providerId && entry.memberKey === memberKey) count++;
     }
     return count + (deps.externalRunning?.(providerId, memberKey) ?? 0);
   }
@@ -203,6 +222,13 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       });
       if (!key) return { kind: 'unavailable', resolved };
       lastPicked.set(input.providerId, key);
+      if (input.reserveFor) {
+        provisional.set(input.reserveFor, {
+          providerId: input.providerId,
+          memberKey: key,
+          until: deps.now() + PROVIDER_GROUP_LOCAL_PROVISIONAL_MS,
+        });
+      }
       input.onPicked?.(key);
       const chosen = resolved.find((r) => r.member.key === key)!;
       return { kind: 'member', member: chosen.member, label: chosen.label, resolved };
