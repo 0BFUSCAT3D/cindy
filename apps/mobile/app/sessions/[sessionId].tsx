@@ -4441,6 +4441,18 @@ export default function SessionScreen() {
     return () => clearTimeout(timer);
   }, [composerActivitySignal, sessionId]);
   const showComposerActivity = composerActivitySignal || streamingSticky === sessionId;
+  // 自愈 / 供应商组换电脑进行中(错误先不呈现)：输入框上方与消息流里同一个说法，不显示「请求失败」(与桌面一致，
+  // docs/product-rules/provider-groups.md §6.1「换电脑期间不报错」)。
+  const pendingRecoveryStatus = useMemo(() => {
+    const pending = inputProjection.autoResumePending;
+    if (!pending) return null;
+    if (readRecord(pending.groupSwitchPending)) return { label: t('message.systemCard.autoResume.groupSwitchPending') };
+    const attempt = typeof pending.attempt === 'number' ? pending.attempt : 0;
+    const maxAttempts = typeof pending.maxAttempts === 'number' ? pending.maxAttempts : 0;
+    return attempt > 0 && maxAttempts > 0
+      ? { label: t('message.systemCard.autoResume.pendingWithProgress', { attempt, total: maxAttempts }) }
+      : { label: t('message.systemCard.autoResume.pending') };
+  }, [inputProjection.autoResumePending, t]);
   useEffect(() => {
     // 计时起点跟着去抖后的信号走:否则空隙一过 startedAt 被重置,活动条从 0s 重新数。
     setComposerActivityStartedAt(showComposerActivity ? Date.now() : null);
@@ -10197,7 +10209,7 @@ export default function SessionScreen() {
                   紧接着消息落屏时这条又要重排一次。等有内容了再显示活动条。
                   判据必须带 messageCount:syncingWhileEmpty 只要 loading 就为真,而收口后
                   还会再来几轮 load(实测日志),只看它会让已有消息的会话反复熄灭活动条。 */}
-              {!companionChat && (showComposerActivity || remoteSessionRunStatus.responseSpeed?.phase === 'complete') && !(syncingWhileEmpty && !hasRenderedMessages) ? (
+              {!companionChat && (showComposerActivity || pendingRecoveryStatus || remoteSessionRunStatus.responseSpeed?.phase === 'complete') && !(syncingWhileEmpty && !hasRenderedMessages) ? (
                 <View
                   style={[
                     styles.composerActivityFrame,
@@ -10209,6 +10221,7 @@ export default function SessionScreen() {
                     key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
                     sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
                     reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
+                    pendingRecovery={pendingRecoveryStatus}
                     sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
                     startedAt={composerActivityStartedAtMs}
                     rateStartedAt={remoteSessionRunStatus.startedAt}
@@ -12089,6 +12102,7 @@ function ComposerActivityStatus({
   availableRegion,
   sessionKey,
   reconnectAttempt,
+  pendingRecovery = null,
   sideTaskRunning,
   startedAt,
   rateStartedAt = startedAt,
@@ -12104,6 +12118,8 @@ function ComposerActivityStatus({
   availableRegion?: LayoutRect;
   sessionKey: string;
   reconnectAttempt: RemoteSessionRunStatus['reconnectAttempt'];
+  /** 自愈 / 供应商组换电脑进行中：只显示这一行状态(与消息流里的进行中行同一个说法)。 */
+  pendingRecovery?: { label: string; attempt?: number; maxAttempts?: number } | null;
   sideTaskRunning: boolean;
   startedAt: number | null;
   rateStartedAt?: number | null;
@@ -12151,6 +12167,31 @@ function ComposerActivityStatus({
     : generationActive === false ? { ...legacyRateHistory, latestRate: null } : legacyRateHistory;
   const completedSpeed = !visible && responseSpeed?.phase === 'complete';
   const speedActivity = responseSpeed ? responseSpeedActivity(responseSpeed) : null;
+  if (pendingRecovery && !reconnectAttempt) {
+    // 自愈 / 换电脑进行中：只显示这一行状态，不带耗时与速率(这一轮还没有结局)。
+    return (
+      <View
+        pointerEvents="box-none"
+        style={styles.composerActivityStatus}
+        testID="session.composerActivityStatus"
+      >
+        <View pointerEvents="none" style={[styles.composerActivityPill, styles.composerActivityPrimary]}>
+          <BlurBackdrop
+            intensity={FLOATING_CHROME_BLUR_INTENSITY}
+            overlayColor={Platform.OS === 'ios' ? 'transparent' : colors.surfaceTranslucent}
+            style={styles.composerActivityPillBackdrop}
+          />
+          <Sparkles color={colors.statusAccent} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+          <Text numberOfLines={1} style={styles.composerActivityStatusText}>{pendingRecovery.label}</Text>
+          {pendingRecovery.attempt !== undefined && pendingRecovery.maxAttempts !== undefined ? (
+            <Text style={[styles.composerActivityStatusText, styles.composerActivityProgressText]}>
+              {pendingRecovery.attempt}/{pendingRecovery.maxAttempts}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
   if (!visible && !completedSpeed) return null;
 
   const elapsedText = completedSpeed
