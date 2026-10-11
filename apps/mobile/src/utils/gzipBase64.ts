@@ -2,11 +2,29 @@
  * gzip + base64 文本解码，无业务依赖：文件浏览 readFile 与 device-link invoke
  * 结果传输编码共用。
  */
-import { ungzip } from 'pako';
+import { Inflate, ungzip } from 'pako';
 
 /** readFile 返回 contentEncoding:'gzip' 时的解码(base64 → gunzip → utf8)。 */
 export function decodeGzipBase64Text(contentBase64: string): string {
   return ungzip(base64ToUint8Array(contentBase64), { to: 'string' });
+}
+
+/** 带输出上限的解码：边解边计数，超过 maxChars 立即中止，不先整段展开。 */
+export function decodeGzipBase64TextBounded(contentBase64: string, maxChars: number): string {
+  const inflator = new Inflate({ to: 'string' });
+  const chunks: string[] = [];
+  let length = 0;
+  // `to: 'string'` delivers text chunks at runtime; @types/pako only declares binary data.
+  inflator.onData = (chunk: unknown) => {
+    if (typeof chunk !== 'string') throw new TypeError('unexpected binary chunk');
+    const text = chunk;
+    length += text.length;
+    if (length > maxChars) throw new RangeError('decompressed text exceeds limit');
+    chunks.push(text);
+  };
+  inflator.push(base64ToUint8Array(contentBase64), true);
+  if (inflator.err) throw new Error(inflator.msg || 'gzip decode failed');
+  return chunks.join('');
 }
 
 export function base64ToUint8Array(base64: string): Uint8Array {

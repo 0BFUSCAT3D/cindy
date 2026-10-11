@@ -32,8 +32,11 @@ export interface InvokeResultTransfer {
 
 /** host 注入：device-link 包保持零依赖，压缩与摘要由各端平台实现提供。 */
 export interface DeviceLinkTransferCodec {
-  /** 控制端：解开被控端的 gzip 结果。 */
-  gunzipBase64?(base64: string): string;
+  /**
+   * 控制端：解开被控端的 gzip 结果。解出的字符串超过 maxChars 时必须在继续
+   * 分配前抛错——压缩包只受传输大小限制，高压缩比结果可以展开成数百 MB。
+   */
+  gunzipBase64?(base64: string, maxChars: number): string;
   /** 被控端：压缩结果。 */
   gzipBase64?(text: string): string;
   /** 被控端：结果内容标签，须抗碰撞（如 SHA-256）。 */
@@ -42,12 +45,17 @@ export interface DeviceLinkTransferCodec {
 
 /** 小结果编码收益抵不过开销，原样发送。 */
 export const INVOKE_TRANSFER_MIN_CHARS = 4 * 1024;
+/**
+ * 编码结果的解压上限，与传输层单条逻辑消息上限同量级：更大的结果被控端不编码，
+ * 仍走原有的超限处理；控制端解压超过即判失败。
+ */
+export const INVOKE_TRANSFER_MAX_CHARS = 4 * 1024 * 1024;
 const MAX_TAG_CHARS = 128;
 /** 缓存键（channel + args）过长说明 args 本身就是大载荷，不值得缓存。 */
 const MAX_CACHE_KEY_CHARS = 4 * 1024;
 const MAX_CACHE_ENTRIES = 32;
 /** JS 字符串按 UTF-16 计，约 8MB 内存。 */
-const MAX_CACHE_CHARS = 4 * 1024 * 1024;
+const MAX_CACHE_CHARS = INVOKE_TRANSFER_MAX_CHARS;
 const MAX_INBOUND_OPTIONS = 512;
 
 export function parseInvokeTransferOptions(value: unknown): InvokeTransferOptions | null {
@@ -75,7 +83,8 @@ export function encodeInvokeResultTransfer(
   } catch {
     return payload;
   }
-  if (text === undefined || text.length < INVOKE_TRANSFER_MIN_CHARS) return payload;
+  if (text === undefined || text.length < INVOKE_TRANSFER_MIN_CHARS
+    || text.length > INVOKE_TRANSFER_MAX_CHARS) return payload;
   const tag = codec.contentTag?.(text);
   if (tag !== undefined && options.ifNoneMatch === tag) {
     return { ok: true, result: null, transfer: { tag, notModified: true } };
@@ -166,7 +175,7 @@ export class InvokeResultCache {
         value = JSON.parse(text);
       } else if (typeof transfer.gzipBase64 === 'string') {
         if (!this.codec?.gunzipBase64) throw new Error('unexpected gzip result');
-        text = this.codec.gunzipBase64(transfer.gzipBase64);
+        text = this.codec.gunzipBase64(transfer.gzipBase64, INVOKE_TRANSFER_MAX_CHARS);
         value = JSON.parse(text);
       } else {
         value = result.result;

@@ -17,4 +17,14 @@ describe('desktop device-link transfer codec', () => {
     expect(desktopTransferCodec.contentTag!('abc')).toBe(desktopTransferCodec.contentTag!('abc'));
     expect(desktopTransferCodec.contentTag!('abc')).not.toBe(desktopTransferCodec.contentTag!('abd'));
   });
+
+  it('stops decompressing once the output limit is exceeded', () => {
+    const bomb = desktopTransferCodec.gzipBase64!('a'.repeat(1_000_000));
+    expect(desktopTransferCodec.gunzipBase64!(bomb, 1_000_000)).toHaveLength(1_000_000);
+    expect(() => desktopTransferCodec.gunzipBase64!(bomb, 100_000)).toThrow();
+    // Multi-byte text is measured in JS string length, not UTF-8 bytes.
+    const cjk = desktopTransferCodec.gzipBase64!('弱'.repeat(1_000));
+    expect(desktopTransferCodec.gunzipBase64!(cjk, 1_000)).toHaveLength(1_000);
+    expect(() => desktopTransferCodec.gunzipBase64!(cjk, 999)).toThrow();
+  });
 });

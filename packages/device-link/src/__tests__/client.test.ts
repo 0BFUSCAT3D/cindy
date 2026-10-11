@@ -7696,7 +7696,7 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
   it('invoke 结果传输编码:大结果 gzip,内容未变只回 notModified,调用方拿到的结果不变', async () => {
     const codec = {
       gzipBase64: (text: string) => gzipSync(Buffer.from(text, 'utf8')).toString('base64'),
-      gunzipBase64: (base64: string) => gunzipSync(Buffer.from(base64, 'base64')).toString('utf8'),
+      gunzipBase64: (base64: string, maxChars: number) => gunzipSync(Buffer.from(base64, 'base64'), { maxOutputLength: maxChars }).toString('utf8'),
       contentTag: (text: string) => createHash('sha256').update(text).digest('base64url'),
     };
     const relay = new MemoryRelay();

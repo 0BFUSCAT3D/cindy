@@ -8,6 +8,11 @@ import type { DeviceLinkTransferCodec } from '@cindy/device-link';
  */
 export const desktopTransferCodec: DeviceLinkTransferCodec = {
   gzipBase64: (text) => gzipSync(Buffer.from(text, 'utf8'), { level: constants.Z_BEST_SPEED + 3 }).toString('base64'),
-  gunzipBase64: (base64) => gunzipSync(Buffer.from(base64, 'base64')).toString('utf8'),
+  gunzipBase64: (base64, maxChars) => {
+    // One UTF-16 unit never needs more than 3 UTF-8 bytes; zlib stops at the cap.
+    const text = gunzipSync(Buffer.from(base64, 'base64'), { maxOutputLength: maxChars * 3 }).toString('utf8');
+    if (text.length > maxChars) throw new RangeError('decompressed invoke result exceeds limit');
+    return text;
+  },
   contentTag: (text) => createHash('sha256').update(text).digest('base64url'),
 };

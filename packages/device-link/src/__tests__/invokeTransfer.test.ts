@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import {
+  INVOKE_TRANSFER_MAX_CHARS,
   INVOKE_TRANSFER_MIN_CHARS,
   InboundInvokeTransferOptions,
   InvokeResultCache,
@@ -12,7 +13,7 @@ import {
 
 const codec: Required<DeviceLinkTransferCodec> = {
   gzipBase64: (text) => gzipSync(Buffer.from(text, 'utf8')).toString('base64'),
-  gunzipBase64: (base64) => gunzipSync(Buffer.from(base64, 'base64')).toString('utf8'),
+  gunzipBase64: (base64, maxChars) => gunzipSync(Buffer.from(base64, 'base64'), { maxOutputLength: maxChars }).toString('utf8'),
   contentTag: (text) => createHash('sha256').update(text).digest('base64url'),
 };
 const large = { rows: 'a'.repeat(INVOKE_TRANSFER_MIN_CHARS * 4) };
@@ -101,5 +102,20 @@ describe('invoke result transfer encoding', () => {
     expect(inbound.get('ios', 'plain')).toBeUndefined();
     expect(inbound.get('ios', 'r-511')).toEqual({ gzip: 1 });
     expect(inbound.get('android', 'r-511')).toBeUndefined();
+  });
+
+  it('leaves results above the decode limit unencoded so the existing oversize path still applies', () => {
+    const huge = { ok: true as const, result: 'a'.repeat(INVOKE_TRANSFER_MAX_CHARS + 1) };
+    expect(encodeInvokeResultTransfer({ gzip: 1 }, huge, codec)).toBe(huge);
+  });
+
+  it('rejects a highly compressible result that expands past the limit instead of returning it', () => {
+    const cache = new InvokeResultCache(codec);
+    const prepared = cache.prepare('desktop', { channel: 'c', args: [] });
+    const bomb = codec.gzipBase64(JSON.stringify('a'.repeat(INVOKE_TRANSFER_MAX_CHARS + 16)));
+    expect(bomb.length).toBeLessThan(64 * 1024);
+    expect(prepared.decode({ ok: true, result: null, transfer: { tag: 't', gzipBase64: bomb } }))
+      .toMatchObject({ ok: false, error: { code: 'IPC_ERROR' } });
+    expect(cache.prepare('desktop', { channel: 'c', args: [] }).payload.transfer?.ifNoneMatch).toBeUndefined();
   });
 });
