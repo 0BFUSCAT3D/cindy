@@ -51,8 +51,11 @@ export function hasVisibleHistoryResult(content: unknown): boolean {
  * including an interrupted one whose `turnCompleted` is false. Pages count the
  * items this projection folds, so a narrower seal here leaves every progress line
  * of a long interrupted turn as its own page item while clients fold them all.
+ * The two renderers differ on usage without tokens (desktop seals, mobile does not);
+ * this takes the union. Folding only regroups: every visible row is still delivered
+ * and clients regroup it themselves, so an extra seal merely yields a larger page.
  */
-function completesHistoryTurn(row: HistoryMessageSource): boolean {
+export function completesHistoryTurn(row: HistoryMessageSource): boolean {
   const meta = row.agentMeta as Record<string, unknown> | null | undefined;
   if (!meta) return false;
   const positive = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0;
