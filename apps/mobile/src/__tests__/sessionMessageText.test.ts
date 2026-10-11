@@ -56,6 +56,37 @@ describe('mobile session message labels', () => {
     expect(sentSessionMessageChipLabel('***![](cindy-media://blobs/z)*** 字')).not.toContain('cindy-media');
   });
 
+  it('never exposes image syntax, <img> or managed media URIs in any wrapper / length combination', () => {
+    const longAlt = '说'.repeat(2_500);
+    const tokens = [
+      '![](cindy-media://blobs/abc)',
+      '![图](cindy-media://blobs/abc)',
+      `![${longAlt}](cindy-media://blobs/abc)`,
+      `![alt](cindy-media://blobs/${'f'.repeat(3_000)})`,
+      '<img src="cindy-media://blobs/abc" width="10">',
+      '![x](xdt-image://abc)',
+      'cindy-media://blobs/bare',
+    ];
+    const wrappers: Array<(token: string) => string> = [
+      (token) => token,
+      (token) => `**${token}**`,
+      (token) => `*${token}*`,
+      (token) => `***${token}***`,
+      (token) => `**外 *内 ${token}* 外**`,
+      (token) => `- ${token}`,
+      (token) => `| ${token} |\n| --- |`,
+      (token) => `前文 ${token} 后文`,
+    ];
+    for (const token of tokens) {
+      for (const wrap of wrappers) {
+        for (const tail of ['', '\n正文继续', `\n${'下一行\n'.repeat(1_000)}`]) {
+          const label = sentSessionMessageChipLabel(`${wrap(token)}${tail}`);
+          expect(label, `${wrap(token).slice(0, 60)}`).not.toMatch(/!\[|<img|cindy-media|xdt-image/i);
+        }
+      }
+    }
+  });
+
   it('summarizes long messages from a bounded prefix without leaking split Markdown', () => {
     const log = `**构建日志**\n${'line of output\n'.repeat(20_000)}![](cindy-media://blobs/tail)`;
     expect(sentSessionMessageChipLabel(log)).toBe('构建日志 line of output lin…');
