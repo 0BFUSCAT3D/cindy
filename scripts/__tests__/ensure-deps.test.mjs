@@ -140,7 +140,8 @@ test('electron-binary CLI leaves an incomplete install untouched when download i
     fs.mkdirSync(electronDir, { recursive: true });
     fs.writeFileSync(path.join(electronDir, 'package.json'), JSON.stringify({ name: 'electron', version: '1.0.0' }));
     const result = spawnSync(process.execPath, [path.join(root, 'scripts/ensure-deps.mjs'), '--electron-binary'], {
-      encoding: 'utf8', env: { ...process.env, ELECTRON_SKIP_BINARY_DOWNLOAD: '1' },
+      // CI 本身设置了 ELECTRON_OVERRIDE_DIST_PATH，这里显式去掉，只验证跳过下载这一路。
+      encoding: 'utf8', env: { ...process.env, ELECTRON_OVERRIDE_DIST_PATH: '', ELECTRON_SKIP_BINARY_DOWNLOAD: '1' },
     });
     assert.equal(result.status, 0);
     assert.match(result.stdout, /ELECTRON_SKIP_BINARY_DOWNLOAD/);

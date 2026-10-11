@@ -501,15 +501,30 @@ export function prepareDarwinTerminalLaunch(command, dir = os.tmpdir()) {
   };
 }
 
+// 足够覆盖启动全过程（实测一次冷启动约 0.6MB）；main/agent 日志另有按天轮转的文件。
+export const DEV_TERMINAL_LOG_MAX_BYTES = 8 * 1024 * 1024;
+
 export function desktopDevTerminalLogPath(root = rootDir) {
   return path.join(root, 'apps', 'desktop', 'logs', 'dev-terminal.log');
 }
 
 // Agent 没有 TTY 时 dev 跑在新开的 Terminal 标签页里，进程退出后标签页随之关闭，
 // 失败原因就看不到了。script(1) 继续给子进程一个 pty（electron-forge 依赖 TTY），
-// 同时把完整输出写进当前 checkout 的日志文件；退出码与子进程一致。
-export function darwinTerminalLoggedCommand(command, logPath) {
-  return `/usr/bin/script -q -F ${shellSingleQuote(logPath)} ${command}`;
+// 输出经命名管道只把前 maxBytes 写进日志、其余丢弃：dev 会把 trace 级日志镜像到
+// 终端，长期运行的实例不能让这份文件无限增长。每次启动覆盖，退出码与子进程一致。
+// 返回一个 `{ ...; }` 命令组，可以整体接在 `cd … &&` 后面；envPrefix 只作用于 script。
+export function darwinTerminalLoggedCommand(
+  command,
+  logPath,
+  { envPrefix = '', maxBytes = DEV_TERMINAL_LOG_MAX_BYTES } = {},
+) {
+  const log = shellSingleQuote(logPath);
+  const fifo = shellSingleQuote(`${logPath}.fifo`);
+  return [
+    `{ rm -f ${fifo}; mkfifo ${fifo} && { { head -c ${maxBytes} > ${log}; cat > /dev/null; } < ${fifo} & }; `,
+    `${envPrefix}/usr/bin/script -q -F ${fifo} ${command}; `,
+    `cindyDevExit=$?; rm -f ${fifo}; (exit $cindyDevExit); }`,
+  ].join('');
 }
 
 export function readDesktopDevLogTail(logPath, maxLines = 40) {
@@ -1029,7 +1044,8 @@ function launchInSystemTerminal(mode) {
     const logPath = desktopDevTerminalLogPath();
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     fs.rmSync(logPath, { force: true });
-    const command = `${darwinEnvPrefix()}${darwinStaleDevEnvUnset()}cd ${shellSingleQuote(rootDir)} && ${devEnvPrefix()}${darwinTerminalLoggedCommand(packageManagerCommand(mode), logPath)}; exitCode=$?; exit $exitCode`;
+    fs.rmSync(`${logPath}.fifo`, { force: true });
+    const command = `${darwinEnvPrefix()}${darwinStaleDevEnvUnset()}cd ${shellSingleQuote(rootDir)} && ${darwinTerminalLoggedCommand(packageManagerCommand(mode), logPath, { envPrefix: devEnvPrefix() })}; exitCode=$?; exit $exitCode`;
     const { scriptPath, args } = prepareDarwinTerminalLaunch(command);
     // osascript 在 do script 之前失败（自动化权限被拒、脚本错误）时临时脚本不会被 source，
     // 首行自删不会发生；按失败退出尽力删除，避免留下含开发环境变量的文件。
@@ -1578,6 +1594,16 @@ async function main() {
     });
   }
   const terminalLogPath = startDesktopDev(mode);
+  // 所有非 ready 的结论（启动失败、超时、ready 后进程退出导致的 WHOAMI_MISMATCH）
+  // 都先打印终端日志末尾，并在 verdict 里带上 log=。
+  const printFailedVerdict = (verdict) => {
+    const logTail = terminalLogPath ? readDesktopDevLogTail(terminalLogPath) : [];
+    if (logTail.length > 0) {
+      console.error(`==> Last ${logTail.length} lines of ${terminalLogPath}:`);
+      for (const line of logTail) console.error(`    ${line}`);
+    }
+    printDesktopDevVerdict(terminalLogPath ? { ...verdict, log: terminalLogPath } : verdict);
+  };
   if (startupStatusPath) {
     try {
       await waitForDesktopStartup(startupStatusPath);
@@ -1586,18 +1612,13 @@ async function main() {
         userDataDir: process.env.XDT_USER_DATA_DIR,
       });
       const verdict = buildDesktopDevVerdictFromWhoami(report, verdictContext);
-      printDesktopDevVerdict(verdict);
-      if (verdict.state !== 'ready') process.exit(1);
-    } catch (error) {
-      const logTail = terminalLogPath ? readDesktopDevLogTail(terminalLogPath) : [];
-      if (logTail.length > 0) {
-        console.error(`==> Last ${logTail.length} lines of ${terminalLogPath}:`);
-        for (const line of logTail) console.error(`    ${line}`);
+      if (verdict.state !== 'ready') {
+        printFailedVerdict(verdict);
+        process.exit(1);
       }
-      printDesktopDevVerdict(buildDesktopDevVerdictFromFailure(error, {
-        ...verdictContext,
-        ...(terminalLogPath ? { log: terminalLogPath } : {}),
-      }));
+      printDesktopDevVerdict(verdict);
+    } catch (error) {
+      printFailedVerdict(buildDesktopDevVerdictFromFailure(error, verdictContext));
       console.error(error instanceof Error ? error.message : error);
       process.exit(1);
     }

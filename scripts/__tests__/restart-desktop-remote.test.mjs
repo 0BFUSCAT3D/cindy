@@ -1504,10 +1504,36 @@ test("darwinStaleDevEnvUnset keeps variables this launch forwards (isolated with
 test("darwin dev terminal output is recorded through script(1) under the checkout logs", () => {
 	const logPath = desktopDevTerminalLogPath("/repo/cindy feature");
 	assert.equal(logPath, path.join("/repo/cindy feature", "apps", "desktop", "logs", "dev-terminal.log"));
-	assert.equal(
-		darwinTerminalLoggedCommand("'node' 'runner.mjs' 'remote'", logPath),
-		`/usr/bin/script -q -F '${logPath}' 'node' 'runner.mjs' 'remote'`,
-	);
+	const command = darwinTerminalLoggedCommand("'node' 'runner.mjs' 'remote'", logPath, {
+		envPrefix: "XDT_ISOLATED='1' ",
+		maxBytes: 1024,
+	});
+	assert.match(command, /^\{ /);
+	assert.match(command, /head -c 1024 > '\/repo\/cindy feature\/apps\/desktop\/logs\/dev-terminal\.log'/);
+	// 环境变量前缀必须紧贴 script，才能传给 dev 进程。
+	assert.match(command, /; XDT_ISOLATED='1' \/usr\/bin\/script -q -F '[^']+dev-terminal\.log\.fifo' 'node' 'runner\.mjs' 'remote'; /);
+	assert.match(command, /\(exit \$cindyDevExit\); \}$/);
+});
+
+test("logged terminal command keeps the child exit code and caps the log size", {
+	skip: process.platform !== "darwin" ? "script(1) flags differ outside macOS" : false,
+}, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-dev-term-"));
+	try {
+		const logPath = path.join(dir, "dev-terminal.log");
+		const child = "sh -c 'i=0; while [ $i -lt 2000 ]; do echo line-$i-$CINDY_PROBE; i=$((i+1)); done; exit 4'";
+		const logged = darwinTerminalLoggedCommand(child, logPath, { envPrefix: "CINDY_PROBE='ok' ", maxBytes: 64 });
+		const result = spawnSync("/bin/sh", ["-c", `cd / && ${logged}; echo exit=$?`], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		assert.match(result.stdout, /exit=4\s*$/);
+		assert.equal(fs.statSync(logPath).size, 64);
+		assert.match(fs.readFileSync(logPath, "utf8"), /line-0-ok/);
+		assert.equal(fs.existsSync(`${logPath}.fifo`), false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("readDesktopDevLogTail strips terminal control sequences and keeps the last lines", () => {

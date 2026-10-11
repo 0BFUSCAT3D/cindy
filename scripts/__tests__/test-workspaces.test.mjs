@@ -34,6 +34,7 @@ import {
 	expandWorkspacePatterns,
 	filterRunsByWorkspace,
 	findDependencyInstallIssues,
+	selectionNeedsElectron,
 	isIgnoredFile,
 	mapWithConcurrency,
 	normalizeRelPath,
@@ -2309,6 +2310,7 @@ test("dependency preflight explains missing installs and incomplete Electron", (
 
 		fs.mkdirSync(path.join(root, "node_modules/electron"), { recursive: true });
 		fs.writeFileSync(path.join(root, "node_modules/.modules.yaml"), "{}");
+		assert.match(findDependencyInstallIssues(root, {})[0], /node_modules\/electron/);
 		fs.writeFileSync(
 			path.join(root, "node_modules/electron/package.json"),
 			JSON.stringify({ name: "electron", version: "1.0.0" }),
@@ -2320,7 +2322,18 @@ test("dependency preflight explains missing installs and incomplete Electron", (
 			findDependencyInstallIssues(root, { ELECTRON_OVERRIDE_DIST_PATH: "/stub" }),
 			[],
 		);
+		assert.deepEqual(findDependencyInstallIssues(root, {}, { needsElectron: false }), []);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("only selections that include Desktop need the Electron binary", () => {
+	const workspaces = manifest.workspaces;
+	assert.equal(selectionNeedsElectron(workspaces), true);
+	assert.equal(selectionNeedsElectron(workspaces, { workspaces: ["apps/desktop"] }), true);
+	assert.equal(selectionNeedsElectron(workspaces, { workspaces: ["desktop", "packages/auth-client"] }), true);
+	assert.equal(selectionNeedsElectron(workspaces, { workspaces: ["packages/auth-client"] }), false);
+	assert.equal(selectionNeedsElectron(workspaces, { excludeWorkspaces: ["desktop"] }), false);
+	assert.equal(selectionNeedsElectron([{ name: "sample", cwd: "packages/sample" }]), false);
 });
