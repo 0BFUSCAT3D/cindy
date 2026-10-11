@@ -278,6 +278,7 @@ import {
   resolveRunningUsageMeta,
 } from './lib/runningTokenUsage';
 import { RunningTokenRatePopover, useRunningTokenRateHistory } from './RunningTokenRatePopover';
+import type { TokenSpeedSnapshot } from './lib/runningTokenRateHistory';
 import { matchNavigationCommandName, tryHandleNavigationCommand } from '@/lib/navigationCommands';
 import { extractIpcError } from '@/utils/ipcError';
 import { listActiveRunsForSession } from '@/features/learn/useLearnRun';
@@ -5155,6 +5156,7 @@ export function CCAgentSessionView({
                   outputTokens={agentStatus.outputTokens ?? 0}
                   generationDurationMs={agentStatus.generationDurationMs ?? 0}
                   generationReliable={agentStatus.generationReliable ?? true}
+                  tokenSpeed={agentStatus.tokenSpeed}
                   startedAt={agentStatus.startedAt}
                   visible={composerRuntimeVisible || (!pendingPlanReview && activeReconnect !== null)}
                   inputWidth={inputWidth}
@@ -6040,6 +6042,7 @@ function RunningStatusBar({
   outputTokens = 0,
   generationDurationMs = 0,
   generationReliable = true,
+  tokenSpeed,
   startedAt,
   visible,
   inputWidth,
@@ -6061,6 +6064,8 @@ function RunningStatusBar({
   outputTokens?: number;
   generationDurationMs?: number;
   generationReliable?: boolean;
+  /** Host-measured live tok/s; replaces the usage-counter estimate when present. */
+  tokenSpeed?: TokenSpeedSnapshot;
   startedAt: number | null;
   visible: boolean;
   inputWidth?: CSSProperties['width'];
@@ -6223,13 +6228,18 @@ function RunningStatusBar({
   const tokenCountText = t('chat.runningStatus.tokenCount', {
     tokens: formatRunningTokenCount(animatedTokens),
   });
+  // Host speed counts and times generation itself; usage counters stay the fallback.
+  const rateOutputTokens = tokenSpeed?.tokens ?? outputTokens;
+  const rateDurationMs = tokenSpeed?.elapsedMs ?? generationDurationMs;
+  const rateReliable = tokenSpeed ? true : generationReliable;
   const rateHistory = useRunningTokenRateHistory({
     sessionKey,
     startedAt,
     outputTokens,
     generationDurationMs,
+    tokenSpeed,
     generationReliable:
-      generationReliable &&
+      rateReliable &&
       !reconnecting &&
       !sideTaskRunning &&
       !backgroundTasksRunning &&
@@ -6237,9 +6247,9 @@ function RunningStatusBar({
   });
   const latestRate = rateHistory.latestRate;
   const usageMeta = resolveRunningUsageMeta({
-    outputTokens,
-    generationDurationMs,
-    generationReliable,
+    outputTokens: rateOutputTokens,
+    generationDurationMs: rateDurationMs,
+    generationReliable: rateReliable,
     tokenUsage,
     latestRate,
   });
@@ -6352,7 +6362,7 @@ function RunningStatusBar({
                 }
                 isTokenCount={usageMeta.kind === 'tokens'}
                 averageRate={usageMeta.kind === 'rate' ? usageMeta.rate : null}
-                outputTokens={outputTokens}
+                outputTokens={rateOutputTokens}
                 history={rateHistory}
                 onPinnedChange={setRatePanelPinned}
               />

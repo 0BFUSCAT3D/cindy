@@ -1,7 +1,13 @@
+import { TokenSpeedMeter } from '../shared/token-speed.js';
+
 const CLAUDE_GENERATION_HEARTBEAT_MS = 5_000;
 const CLAUDE_GENERATION_SUSPEND_GAP_MS = 30_000;
 
 export interface ClaudeGenerationState {
+  /** Live tok/s for the main thread (Pi extension algorithm). */
+  tokenSpeed: TokenSpeedMeter;
+  /** Main-thread content block index → tool name, for argument-delta counting. */
+  tokenSpeedToolByIndex: Map<number, string>;
   startedAt: number | null;
   durationMs: number;
   /** Model time sampled with the latest parent output usage. */
@@ -31,6 +37,8 @@ export interface ClaudeGenerationState {
 
 export function newClaudeGenerationState(): ClaudeGenerationState {
   return {
+    tokenSpeed: new TokenSpeedMeter(),
+    tokenSpeedToolByIndex: new Map(),
     startedAt: null,
     durationMs: 0,
     outputDurationMs: 0,
@@ -84,6 +92,8 @@ function closeInterval(state: ClaudeGenerationState, endedAt: number): void {
 
 export function resetClaudeGenerationTiming(state: ClaudeGenerationState): void {
   stopHeartbeat(state);
+  state.tokenSpeed.reset();
+  state.tokenSpeedToolByIndex.clear();
   state.startedAt = null;
   state.pendingToolIds.clear();
   state.settledPauseIds.clear();

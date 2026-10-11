@@ -38,6 +38,7 @@ import {
 import type { UsageTracker } from '../shared/usage-tracker.js';
 import { isModelAccessDenied } from './model-access-error.js';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
+import { isFileWritingTool } from '../shared/token-speed.js';
 import {
   beginClaudeGeneration,
   beginClaudeGenerationAtRequestStart,
@@ -343,6 +344,7 @@ function ccLiveStatus(
   return {
     status,
     ...attachLiveGeneration(ctx.tracker.snapshot(), {
+      tokenSpeed: ctx.rt.generation.tokenSpeed.snapshot(),
       outputTokens: mainTurnOutputTokens(ctx.tracker),
       durationMs: ctx.rt.generation.outputDurationMs,
       openStartedAt: ctx.rt.generation.startedAt,
@@ -1666,6 +1668,44 @@ function observeClaudeSubagentStream(
 
 // ── stream_event 子分支(content_block_delta / message_delta / message_start) ──
 
+/** Main-thread live tok/s, mirroring pi-token-speed's message_update handlers. */
+function observeClaudeTokenSpeed(
+  event: {
+    type?: string;
+    index?: number;
+    delta?: Record<string, unknown>;
+    content_block?: { type?: string; name?: string };
+  },
+  queue: EventQueue,
+  ctx: TranslateContext,
+): void {
+  const speed = ctx.rt.generation.tokenSpeed;
+  const tools = ctx.rt.generation.tokenSpeedToolByIndex;
+  const index = typeof event.index === 'number' ? event.index : 0;
+  switch (event.type) {
+    case 'message_start':
+      tools.clear();
+      return;
+    case 'content_block_start':
+      if (event.content_block?.type === 'tool_use') tools.set(index, event.content_block.name ?? '');
+      speed.start();
+      return;
+    case 'content_block_delta': {
+      const delta = event.delta;
+      const text = delta?.type === 'input_json_delta'
+        ? (isFileWritingTool(tools.get(index)) ? delta.partial_json : undefined)
+        : delta?.text ?? delta?.thinking;
+      if (typeof text === 'string' && speed.recordDelta(text)) {
+        queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Generating...', true), source: 'claude-code' });
+      }
+      return;
+    }
+    case 'content_block_stop':
+      if (tools.has(index) && !isFileWritingTool(tools.get(index))) speed.pause();
+      return;
+  }
+}
+
 function handleStreamEvent(
   msg: {
     event?: Record<string, unknown>;
@@ -1687,6 +1727,8 @@ function handleStreamEvent(
   const parentToolUseId = typeof msg.parent_tool_use_id === 'string' && msg.parent_tool_use_id
     ? msg.parent_tool_use_id
     : undefined;
+
+  if (!parentToolUseId) observeClaudeTokenSpeed(event, queue, ctx);
 
   // 冗余 add: 防 SDK 顺序契约变化 (stream_event 先于 assistant message yield), Set 幂等。
   if (event.type === 'content_block_start') {
@@ -2196,6 +2238,9 @@ function handleResult(
     resultUsage != null && segmentTotals.outputTokens === resultUsage.outputTokens,
   );
   const liveGeneration = ctx.rt.generation;
+  // Snap to this turn's streamed main-thread usage: the result aggregate can be
+  // a session total turned into a wrong delta, and a bad snap is worse than the estimate.
+  liveGeneration.tokenSpeed.stop(mainTurnOutputTokens(ctx.tracker));
   const endSnapshot = ctx.tracker.endTurn(
     resultUsage
       ? {
@@ -2477,6 +2522,7 @@ function handleResult(
     data: {
       status: 'Done',
       ...attachLiveGeneration(endSnapshot, {
+        tokenSpeed: liveGeneration.tokenSpeed.snapshot(),
         outputTokens: liveTurnOutput,
         durationMs: liveGeneration.outputDurationMs,
         openStartedAt: null,

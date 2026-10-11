@@ -1,4 +1,5 @@
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
+import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { remotePluginSetupErrorCode, type PluginSetupCommandError } from './pluginSetupCommandError';
 export type { PluginSetupCommandError } from './pluginSetupCommandError';
 import { emitTaskTagCatalog } from '@/features/task-tags/taskTagEvents';
@@ -735,6 +736,8 @@ export interface AgentStatus {
   generationActive?: boolean;
   /** False hides live TPS. Omitted on placeholder status frames. */
   generationReliable?: boolean;
+  /** Host-measured live tok/s; absent from old hosts and before the first output. */
+  tokenSpeed?: TokenSpeedSnapshot;
   /**
    * Side-channel running (mivo MJ 按钮等不走 LLM 的后台任务)。
    * RunningStatusBar 据此把 token 计数行隐藏掉, 避免显示"上一轮残留 718 tokens"
@@ -7045,8 +7048,12 @@ function mergeLiveGenerationStatus(
   previous: AgentStatus,
 ): Pick<
   AgentStatus,
-  'outputTokens' | 'generationDurationMs' | 'generationActive' | 'generationReliable'
+  'outputTokens' | 'generationDurationMs' | 'generationActive' | 'generationReliable' | 'tokenSpeed'
 > {
+  // Speed belongs to the turn that produced it: a new turn drops the old value,
+  // frames without the field keep the latest one (including the final average).
+  const tokenSpeed = readTokenSpeedSnapshot(update.tokenSpeed)
+    ?? (isTurnStart ? undefined : previous.tokenSpeed);
   // Turn start drops leftover metrics from the previous turn, then keeps any
   // live fields carried by this same status. A reconnect-shaped first event
   // (isRunning false→true with output / duration already present) must not
@@ -7070,6 +7077,7 @@ function mergeLiveGenerationStatus(
       generationDurationMs: baseline.generationDurationMs,
       generationActive: update.isRunning ? baseline.generationActive : false,
       generationReliable: baseline.generationReliable,
+      tokenSpeed,
     };
   }
   const merged = {
@@ -7087,6 +7095,7 @@ function mergeLiveGenerationStatus(
       typeof update.generationReliable === 'boolean'
         ? update.generationReliable
         : baseline.generationReliable,
+    tokenSpeed,
   };
   if (!update.isRunning) {
     return { ...merged, generationActive: false };

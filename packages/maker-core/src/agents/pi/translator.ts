@@ -32,6 +32,7 @@ import {
 import type { AgentEvent, AgentTaskUpdateEventData, UsageSnapshot } from '../../types/index.js';
 import type { AsyncQueue } from '../shared/async-queue.js';
 import { attachLiveGeneration } from '../shared/live-generation-snapshot.js';
+import { TokenSpeedMeter, isFileWritingTool } from '../shared/token-speed.js';
 import type { UsageSegment } from '../shared/usage-tracker.js';
 import {
   UPSTREAM_OVERLOAD_REASON,
@@ -160,6 +161,10 @@ export interface PiTranslateContext {
   terminalAssistantErrorEmitted: boolean;
   /** 整轮 wall-clock 起点；只用于诊断，不参与 TPS。 */
   turnWallClockStartedAt: number;
+  /** Live tok/s shown in the status bar (Pi extension algorithm). */
+  tokenSpeed: TokenSpeedMeter;
+  /** Last running status text, reused by speed-only refreshes. */
+  lastRunningStatus: string;
   generationDurationMs: number;
   /** Open generation interval start; 0 while tools/user waits own the turn. */
   generationOpenAt: number;
@@ -224,6 +229,8 @@ export function createPiTranslateContext(logger: Logger): PiTranslateContext {
     finalAssistantText: '',
     finalAssistantStopReason: null,
     turnWallClockStartedAt: 0,
+    tokenSpeed: new TokenSpeedMeter(),
+    lastRunningStatus: 'Working…',
     generationDurationMs: 0,
     generationOpenAt: 0,
     generationTimingReliable: true,
@@ -364,6 +371,7 @@ export function usageSnapshotOf(ctx: PiTranslateContext): UsageSnapshot {
       costUsd: ctx.costUsd,
     },
     {
+      tokenSpeed: ctx.tokenSpeed.snapshot(),
       outputTokens: ctx.turnOutput,
       // Pi reports output only at message_end, alongside the closed duration.
       durationMs: ctx.generationDurationMs,
@@ -380,6 +388,7 @@ function pushStatus(
   isRunning: boolean,
   extras?: Pick<AgentEvent, 'turnScope'>,
 ): void {
+  if (isRunning) ctx.lastRunningStatus = text;
   queue.push({
     type: 'status',
     data: { status: text, ...usageSnapshotOf(ctx), isRunning },
@@ -684,6 +693,7 @@ export function translatePiEvent(
       ctx.pendingAssistantError = null;
       ctx.terminalAssistantErrorEmitted = false;
       ctx.turnWallClockStartedAt = Date.now();
+      ctx.tokenSpeed.reset();
       ctx.generationDurationMs = 0;
       ctx.generationTimingReliable = true;
       stopPiGenerationHeartbeat(ctx);
@@ -717,6 +727,7 @@ export function translatePiEvent(
     case 'message_update': {
       const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
       if (!delta || typeof delta.type !== 'string') return;
+      observePiTokenSpeed(delta, queue, ctx);
       handleAssistantDelta(delta, queue, ctx);
       return;
     }
@@ -956,6 +967,7 @@ export function translatePiEvent(
       ctx.turnSettled = true;
       ctx.isStreaming = false;
       ctx.pendingPriceVariants = [];
+      ctx.tokenSpeed.stop(ctx.turnOutput);
       stopPiGenerationHeartbeat(ctx);
       const hostAbortRequested = isCurrentTurnHostAbortRequested(ctx);
       const pendingAssistantError = hostAbortRequested ? null : ctx.pendingAssistantError;
@@ -1198,6 +1210,43 @@ export function translatePiEvent(
     default:
       ctx.logger.warn('pi translator: unhandled event dropped', { type: event.type });
   }
+}
+
+/** Mirrors pi-token-speed's message_update handlers. */
+function observePiTokenSpeed(
+  delta: Record<string, unknown>,
+  queue: AsyncQueue<AgentEvent>,
+  ctx: PiTranslateContext,
+): void {
+  if (!ctx.isStreaming) return;
+  switch (delta.type) {
+    case 'text_start':
+    case 'thinking_start':
+    case 'toolcall_start':
+      ctx.tokenSpeed.start();
+      return;
+    case 'toolcall_delta':
+      if (!isFileWritingTool(piDeltaToolName(delta))) return;
+    // falls through
+    case 'text_delta':
+    case 'thinking_delta':
+      if (typeof delta.delta === 'string' && ctx.tokenSpeed.recordDelta(delta.delta)) {
+        pushStatus(queue, ctx, ctx.lastRunningStatus, true);
+      }
+      return;
+    case 'toolcall_end':
+      if (!isFileWritingTool(piDeltaToolName(delta))) ctx.tokenSpeed.pause();
+      return;
+  }
+}
+
+function piDeltaToolName(delta: Record<string, unknown>): unknown {
+  const toolCall = delta.toolCall as { name?: unknown } | undefined;
+  if (toolCall?.name !== undefined) return toolCall.name;
+  const partial = delta.partial as { content?: Array<{ type?: unknown; name?: unknown }> } | undefined;
+  const index = typeof delta.contentIndex === 'number' ? delta.contentIndex : 0;
+  const block = partial?.content?.[index];
+  return block?.type === 'toolCall' ? block.name : undefined;
 }
 
 function handleAssistantDelta(
