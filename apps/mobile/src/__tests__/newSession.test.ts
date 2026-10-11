@@ -425,6 +425,18 @@ describe('stored agent restore gating', () => {
     expect(source).toMatch(/active: true,\s+markModelChoice: hostChoiceRequest\.markModelChoice,/);
     expect(source).toContain('if (!selectedDeviceId || remoteAgentChoice || !draft.model) return;');
     expect(source).not.toContain('pickMostRecentSessionRuntime');
+    // 三个本机选择入口(供应商行 / 统一面板 / 旧端扁平列表)都写回。
+    for (const name of ['selectProviderModelRow', 'selectUnifiedModel', 'selectFlatModel']) {
+      const start = source.indexOf(`const ${name} = useCallback(`);
+      const body = source.slice(start, source.indexOf('\n  }, [', start));
+      expect(body, name).toContain('requestHostChoiceWrite(true);');
+    }
+    // 切 agent 先等被控电脑默认读完再选模型,不把目录默认当成最终选择(Greptile P1)。
+    const switchStart = source.indexOf('const switchAgent = useCallback(');
+    const switchBody = source.slice(switchStart, source.indexOf('\n  }, [', switchStart));
+    const waitAt = switchBody.indexOf('await waitHostDraftDefaults(selectedDeviceId);');
+    expect(waitAt).toBeGreaterThan(-1);
+    expect(waitAt).toBeLessThan(switchBody.indexOf('pickAgentDefaultRuntime({'));
   });
 });
 

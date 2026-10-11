@@ -1080,6 +1080,8 @@ export default function NewRemoteSessionScreen() {
   } | null>(null);
   const hostDraftDefaultsRef = useRef(hostDraftDefaults);
   hostDraftDefaultsRef.current = hostDraftDefaults;
+  // 在途读取:切 agent 时等它读完再选模型,避免先落目录默认、又因已手动切换而再也补不回来。
+  const hostDraftDefaultsLoadRef = useRef<{ deviceId: string; promise: Promise<void> } | null>(null);
   useEffect(() => {
     if (!selectedDeviceId || deviceLinkStatus !== 'online') return undefined;
     if (hostDraftDefaultsRef.current?.deviceId === selectedDeviceId) return undefined;
@@ -1092,16 +1094,30 @@ export default function NewRemoteSessionScreen() {
       }, { maxAttempts: 2 })
         .then((defaults) => hostDraftRuntimeFromDefaults(defaults, agentKind))
         .catch(() => null);
-    void Promise.all(
+    const promise = Promise.all(
       NEW_SESSION_AGENT_OPTIONS.map(async ({ kind }) => [kind, await readAgent(kind)] as const),
     ).then((entries) => {
       if (cancelled) return;
-      setHostDraftDefaults({ deviceId, byAgent: Object.fromEntries(entries) });
+      const next = { deviceId, byAgent: Object.fromEntries(entries) };
+      // 同步更新镜像:等待中的切 agent 回调在下一次渲染前就要读到结果。
+      hostDraftDefaultsRef.current = next;
+      setHostDraftDefaults(next);
     });
+    hostDraftDefaultsLoadRef.current = { deviceId, promise };
     return () => {
       cancelled = true;
     };
   }, [deviceLinkStatus, maker, openLink, selectedDeviceId]);
+  // 等该设备的被控电脑默认读完(读完、失败都算);没有在途读取(离线 / 未选设备)时不等,
+  // 按目录默认继续。effect 重跑会换一份新的在途读取,跟着等新的那份(有限次)。
+  const waitHostDraftDefaults = useCallback(async (deviceId: string) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (hostDraftDefaultsRef.current?.deviceId === deviceId) return;
+      const load = hostDraftDefaultsLoadRef.current;
+      if (!load || load.deviceId !== deviceId) return;
+      await load.promise;
+    }
+  }, []);
   const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId;
   const hostRuntimeFor = useCallback(
     (agentKind: NewSessionAgentKind): NewSessionRuntime | null => {
@@ -2886,8 +2902,9 @@ export default function NewRemoteSessionScreen() {
     explicitProviderModelSelectionRef.current = null;
     setDraft((current) =>
       reconcileRuntimeDraftWithCapabilities({ ...current, model: option.id, providerId: null }, capabilities));
+    requestHostChoiceWrite(true);
     setModelSheetOpen(false);
-  }, [capabilities]);
+  }, [capabilities, requestHostChoiceWrite]);
 
   // 选中行的 effort/fast 变更:落 draft(live 真相)+ 写草稿记忆(下次选回恢复)。
   // 记忆槽的来源 id:显式选中的来源,未显式选时用当前高亮的默认来源(activeSourceIdRef)。
@@ -4328,7 +4345,9 @@ export default function NewRemoteSessionScreen() {
       defaultPermissionModeForNewSessionAgent(nextKind);
     void confirmFullAccessChange(draft.permissionMode, nextPermissionMode, {
       restoringRememberedChoice: storedPermissionMode !== undefined,
-    }).then((confirmed) => {
+    }).then(async (confirmed) => {
+      // 被控电脑默认还在读:等读完再选模型(切换已标记手动,之后自动默认不会再补)。
+      await waitHostDraftDefaults(selectedDeviceId);
       // 确认期间设备已切换 → 放弃本次写入,新设备自己的 effect 会接管(Greptile P1)。
       if (selectedDeviceId !== selectedDeviceRef.current) return;
       // 确认期间用户又切了 agent / 手动选了模型 → 旧回调不得覆盖新选择(Greptile P1)。
@@ -4372,7 +4391,7 @@ export default function NewRemoteSessionScreen() {
         };
       });
     });
-  }, [draft.agentKind, draft.permissionMode, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, hostRuntimeFor, newSessionPreferences, selectedDeviceId]);
+  }, [draft.agentKind, draft.permissionMode, deviceProviders.providers, deviceProviders.modelVisibilityOverrides, hostRuntimeFor, newSessionPreferences, selectedDeviceId, waitHostDraftDefaults]);
 
   // 选中的 agent 在被控端未注册(如 Pi 二进制缺失)时,coerce 到首个可用来源,避免用户停在
   // 被隐藏的选项、并防止创建出注定 requireAgent 报错的会话。仅在已拉到可用集后收敛一次。
