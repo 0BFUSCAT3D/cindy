@@ -406,6 +406,12 @@
       "shareSource": "共有相手",
       "unknownDevice": "別のパソコン",
       "descriptionGroup": "{{provider}} の使用量を人ごとに表示します。展開すると、グループ内のパソコンごとに分けて表示します。あなた自身の分は、今回のアップデートから記録します。",
+      "summary": {
+        "total": "合計使用量",
+        "amount": "推定金額",
+        "people": "利用者",
+        "models": "モデル"
+      },
       "selfTag": "あなた",
       "relayName": "{{device}} 経由",
       "computerCount_other": "{{count}} 台のパソコン",

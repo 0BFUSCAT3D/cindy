@@ -406,6 +406,12 @@
       "shareSource": "分享的人",
       "unknownDevice": "另一台電腦",
       "descriptionGroup": "依人統計 {{provider}} 的用量，展開後依組內每台電腦分開。你自己的用量從這次更新後開始記錄。",
+      "summary": {
+        "total": "總用量",
+        "amount": "估算金額",
+        "people": "使用方",
+        "models": "模型"
+      },
       "selfTag": "你",
       "relayName": "經 {{device}} 轉來",
       "computerCount_other": "{{count}} 台電腦",

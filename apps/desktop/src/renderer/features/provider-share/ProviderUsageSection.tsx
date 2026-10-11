@@ -168,9 +168,26 @@ export function ProviderUsageSection({
       return next;
     });
 
+  // 和设置 → 用量历史的摘要卡保持同一阅读顺序：先看总量，再看分布。
+  // 这里只汇总已经读到的使用方；读失败的自己的账本不会被当成 0。
+  const summary = useMemo(() => {
+    const totals = summarizeShareUsage(parties.flatMap((party) => party.models));
+    const usedParties = parties.filter((party) => {
+      const partyTotals = summarizeShareUsage(party.models);
+      return partyTotals.tokens > 0 || party.models.some((model) => model.turns > 0);
+    }).length;
+    const models = new Set(
+      parties
+        .flatMap((party) => party.models)
+        .filter((model) => model.turns > 0 || model.inputTokens > 0 || model.outputTokens > 0)
+        .map((model) => `${model.kind}:${model.providerId ?? ''}:${model.model}`),
+    );
+    return { ...totals, usedParties, modelCount: models.size };
+  }, [parties]);
+
   return (
     <section className="mt-8 shrink-0" aria-labelledby="provider-usage-title">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+      <div className={cn(group ? 'mb-3 flex flex-wrap items-start gap-3' : 'mb-2 flex flex-wrap items-center gap-2')}>
         <div className="flex min-w-[240px] flex-1 flex-col gap-1">
           <h3 id="provider-usage-title" className="text-13 font-medium text-[var(--settings-section-title)]">
             {t('providerGroup.usage.title')}
@@ -186,6 +203,26 @@ export function ProviderUsageSection({
           options={RANGES.map((value) => ({ value, label: t(`providerShare.manage.members.range.${value}`) }))}
         />
       </div>
+      {group && parties.length > 0 && (
+        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4" data-testid="provider-usage-summary">
+          <UsageSummaryCell
+            value={summary.tokens > 0 ? formatShareTokens(summary.tokens) : '—'}
+            label={t('providerGroup.usage.summary.total')}
+          />
+          <UsageSummaryCell
+            value={summary.amount ? formatShareMoney(summary.amount) : '—'}
+            label={t('providerGroup.usage.summary.amount')}
+          />
+          <UsageSummaryCell
+            value={summary.usedParties > 0 ? String(summary.usedParties) : '—'}
+            label={t('providerGroup.usage.summary.people')}
+          />
+          <UsageSummaryCell
+            value={summary.modelCount > 0 ? String(summary.modelCount) : '—'}
+            label={t('providerGroup.usage.summary.models')}
+          />
+        </div>
+      )}
       <div className="overflow-hidden rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]">
         {parties.length === 0 ? (
           <p className="px-4 py-7 text-center text-13 leading-[1.5] text-[var(--text-secondary)]">
@@ -199,6 +236,8 @@ export function ProviderUsageSection({
               first={index === 0}
               open={expanded.has(party.key)}
               unavailable={party.key === 'self' && ownFailed && !own}
+              enhanced={Boolean(group)}
+              totalTokens={group ? summary.tokens : 0}
               memberKeys={group ? memberKeys : null}
               memberLabel={memberLabel}
               time={time}
@@ -211,11 +250,22 @@ export function ProviderUsageSection({
   );
 }
 
+function UsageSummaryCell({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5 rounded-lg bg-[var(--surface-chip)] px-3 py-2">
+      <span className="break-words text-16 font-medium leading-[1.4] tabular-nums text-[var(--text-primary)]">{value}</span>
+      <span className="mt-auto break-words text-12 leading-[1.5] text-[var(--text-secondary)]">{label}</span>
+    </div>
+  );
+}
+
 function UsagePartyRow({
   party,
   first,
   open,
   unavailable,
+  enhanced,
+  totalTokens,
   memberKeys,
   memberLabel,
   time,
@@ -226,6 +276,10 @@ function UsagePartyRow({
   open: boolean;
   /** 自己的账本没读出来：不写 0，免得被当成没用过。 */
   unavailable: boolean;
+  /** 供应商组专属的摘要、占比和内层明细视觉。普通供应商保持原有用量界面。 */
+  enhanced: boolean;
+  /** 所选时间段所有已读使用方的 token 总量，用来画轻量占比条。 */
+  totalTokens: number;
   /** 供应商组的组内电脑(按组里的顺序)；没有组为 null。 */
   memberKeys: readonly string[] | null;
   memberLabel: (memberKey: string | null, inGroup: boolean) => MemberLabel;
@@ -234,6 +288,7 @@ function UsagePartyRow({
 }) {
   const { t } = useTranslation();
   const totals = summarizeShareUsage(party.models);
+  const share = totals.tokens > 0 && totalTokens > 0 ? Math.max(3, Math.round((totals.tokens / totalTokens) * 100)) : 0;
   const breakdown = useMemo(
     () => (memberKeys ? groupUsageByMember(party.models, memberKeys) : null),
     [memberKeys, party.models],
@@ -252,7 +307,11 @@ function UsagePartyRow({
       data-usage-party={party.key}
       className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}
     >
-      <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+      <div className={cn(
+        enhanced
+          ? 'flex flex-wrap items-center gap-3 px-4 py-3.5 transition-colors motion-reduce:transition-none hover:bg-[var(--surface-hover)]'
+          : 'flex flex-wrap items-center gap-3 px-4 py-3',
+      )}>
         <Tip text={toggleLabel}>
           <button
             type="button"
@@ -292,7 +351,11 @@ function UsagePartyRow({
           </span>
         </div>
         {!unavailable && (
-          <div className="flex shrink-0 flex-col items-end text-12 text-[var(--text-secondary)]">
+          <div className={cn(
+            enhanced
+              ? 'flex min-w-[108px] shrink-0 flex-col items-end text-12 text-[var(--text-secondary)]'
+              : 'flex shrink-0 flex-col items-end text-12 text-[var(--text-secondary)]',
+          )}>
             <span className="text-13 font-medium text-[var(--text-primary)] [font-variant-numeric:tabular-nums]">
               {t('providerShare.manage.members.tokens', { tokens: formatShareTokens(totals.tokens) })}
             </span>
@@ -301,13 +364,29 @@ function UsagePartyRow({
                 {t('providerShare.manage.members.amount', { amount: formatShareMoney(totals.amount) })}
               </span>
             )}
+            {enhanced && share > 0 && (
+              <span aria-hidden="true" className="mt-1.5 h-1 w-16 overflow-hidden rounded-full bg-[var(--surface-chip)]">
+                <span
+                  className="block h-full rounded-full bg-[var(--text-secondary)]"
+                  style={{ width: `${share}%` }}
+                />
+              </span>
+            )}
           </div>
         )}
       </div>
       {/* 明细表与头像左缘对齐：px-4 + 展开按钮(24 - 4) + gap-3 = 48px。 */}
       {open && !unavailable && (
-        <div id={breakdownId} className="px-4 pb-3.5 sm:pl-12">
-          <table className="w-full border-collapse text-12">
+        <div
+          id={breakdownId}
+          className={cn(
+            enhanced
+              ? 'border-t border-[var(--border-default)] bg-[var(--surface)] px-3 py-3.5 sm:ml-12 sm:mr-3 sm:rounded-lg sm:border'
+              : 'px-4 pb-3.5 sm:pl-12',
+          )}
+        >
+          <div className={enhanced ? 'overflow-x-auto' : undefined}>
+            <table className={cn('w-full border-collapse text-12', enhanced && 'min-w-[560px]')}>
             <thead>
               <tr className="border-b border-[var(--border-default)] text-left text-[var(--text-secondary)]">
                 <th scope="col" className="py-1.5 pr-3 font-medium">
@@ -349,7 +428,8 @@ function UsagePartyRow({
                 )}
               </tbody>
             )}
-          </table>
+            </table>
+          </div>
           <p className="mt-2 text-12 text-[var(--text-tertiary)]">{t('providerShare.manage.members.estimateNote')}</p>
         </div>
       )}
