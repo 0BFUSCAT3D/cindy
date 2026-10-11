@@ -59,6 +59,49 @@ describe('provider group usage reporter', () => {
     reporter.dispose();
   });
 
+  it('校时让时间戳倒退时序号仍然只增，不被组所在电脑误当重复报告丢弃(greptile-apps P2, PR #5792 review)', async () => {
+    let now = 1_000_000;
+    const ledger: Record<string, ProviderGroupRemoteUsageRow[]> = { mini: [row('2026-10-10'), row('2026-10-11')] };
+    const send = vi.fn(async (_owner: string, _report: { seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] }) => undefined);
+    const reporter = createProviderGroupUsageReporter({
+      owners: () => ['mini'],
+      rows: (owner, sinceDay) => (ledger[owner] ?? []).filter((item) => !sinceDay || item.day >= sinceDay),
+      send,
+      now: () => now,
+      log: { warn: vi.fn() },
+    });
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_USAGE_STARTUP_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(1);
+    const firstSeq = send.mock.calls[0]![1].seq;
+
+    // 自动校时把系统时间改回了更早的点。
+    now -= 10_000;
+    reporter.notify('mini', '2026-10-11');
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_USAGE_DEBOUNCE_MS);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![1].seq).toBeGreaterThan(firstSeq);
+    reporter.dispose();
+  });
+
+  it('跨进程重启仍能接上:持久化的上一次已用序号做底线，重启后即使时间还没赶上也不回头(greptile-apps P2, PR #5792 review)', async () => {
+    const persisted = { last: 999_999_999 };
+    const send = vi.fn(async (_owner: string, _report: { seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] }) => undefined);
+    const reporter = createProviderGroupUsageReporter({
+      owners: () => ['mini'],
+      rows: () => [row('2026-10-11')],
+      send,
+      // 重启后系统时间还很早，按时间戳算的序号远远小于持久化的上一次。
+      now: () => 1,
+      log: { warn: vi.fn() },
+      loadLastSeq: () => persisted.last,
+      saveLastSeq: (seq) => { persisted.last = seq; },
+    });
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_USAGE_STARTUP_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![1].seq).toBeGreaterThan(999_999_999);
+    reporter.dispose();
+  });
+
   it('retries with backoff when the report does not get through, keeping the earliest day', async () => {
     const { reporter, send, warn } = setup();
     send.mockRejectedValueOnce(new Error('[REMOTE_AGENT_UNAVAILABLE] offline'));

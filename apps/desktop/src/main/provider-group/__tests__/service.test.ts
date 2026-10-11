@@ -1322,7 +1322,10 @@ describe('moving a task into a group on this computer from the model list (2026-
       agentDeviceId: null,
       current: { agentDeviceId: 'elsewhere', providerId: 'openai' },
     });
-    expect(route).toEqual({ agentDeviceId: 'mini', providerId: MINI.providerId });
+    expect(route).toMatchObject({ agentDeviceId: 'mini', providerId: MINI.providerId });
+    // 绑定推迟到调用方确认交接成功再写(PR #5792 review)：选完还没写。
+    expect(h.bindings.get('s1')).toBeUndefined();
+    await route?.commitBinding();
     expect(h.bindings.get('s1')).toMatchObject({ providerId: 'anthropic', memberKey: MINI.key });
   });
 

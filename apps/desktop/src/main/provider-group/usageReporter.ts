@@ -34,6 +34,13 @@ export interface ProviderGroupUsageReporterDeps {
   log: { warn(message: string, meta?: Record<string, unknown>): void };
   setTimeout?: (fn: () => void, ms: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
+  /**
+   * 跳过校时/重启跨进程保证序号只增(greptile-apps P2, PR #5792 review)：读进程重开前还没过期的最大
+   * 已用序号；不提供按 0 起(进程内仍单调，只是不跨进程记忆)。
+   */
+  loadLastSeq?(): number;
+  /** 每次生成新序号都落盘，下次进程重启还能接上。失败只影响重启后的起点，本次运行照常单调。 */
+  saveLastSeq?(seq: number): void;
 }
 
 export interface ProviderGroupUsageReporter {
@@ -94,10 +101,18 @@ export function createProviderGroupUsageReporter(deps: ProviderGroupUsageReporte
   const failures = new Map<string, number>();
   let counter = 0;
   let disposed = false;
+  // 校时或自动校时让系统时间倒退时，基于时间戳的序号可能比之前小，让组所在电脑在去重时误当成重复
+  // 报告丢弃(greptile-apps P2, PR #5792 review)。读进程重启前还没过期的最大已用序号做底线，每次生成
+  // 都至少比上一次大 1。
+  let lastSeq = Math.max(0, deps.loadLastSeq?.() ?? 0);
 
   function nextSeq(): number {
     counter = (counter + 1) % 1000;
-    return deps.now() * 1000 + counter;
+    const candidate = deps.now() * 1000 + counter;
+    const seq = candidate > lastSeq ? candidate : lastSeq + 1;
+    lastSeq = seq;
+    deps.saveLastSeq?.(seq);
+    return seq;
   }
 
   function arm(owner: string, ms: number): void {

@@ -76,6 +76,15 @@ export interface ProviderGroupRoute {
   providerId: string | null;
 }
 
+export interface ProviderGroupSwitchTargetResult extends ProviderGroupRoute {
+  /**
+   * 把本次挑选的组内电脑写进绑定；调用方必须等交接真正提交成功才调用——登记阶段的
+   * 校验或交接失败绝不能让绑定抢先落地，否则下一次 verifyBinding 会把这次失败的
+   * 选择当成已纳入组，悄悄开启自动换电脑(chatgpt-codex-connector P2, PR #5792 review)。
+   */
+  commitBinding(): Promise<void>;
+}
+
 export interface ProviderGroupStartContext {
   sessionId: string;
   groupProviderId: string;
@@ -232,7 +241,7 @@ export interface ProviderGroupService {
       agentDeviceId: string | null;
       current: ProviderGroupRoute;
     },
-  ): Promise<ProviderGroupRoute | null>;
+  ): Promise<ProviderGroupSwitchTargetResult | null>;
   /**
    * 纯判定(同步、无副作用)：这次终态错误会不会先由本机制试着换电脑。为 true 时输入协调器先不呈现这次错误
    * (红横幅与错误卡)：换成了就不出现，没换成再补出来(§6.1)。只看手上现成的：认得出的原因，加上已归组
@@ -1511,14 +1520,19 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       }
       const route = source.routeOf(pick.member, source.ownerDeviceId ? null : providerId);
       if (route.agentDeviceId === target.current.agentDeviceId && route.providerId !== target.current.providerId) return null;
-      await deps.writeBinding(sessionId, bindingFor(source, providerId, pick.member.key));
       deps.log.info('provider group: chose a computer for a task moved into the group', {
         sessionId,
         groupProviderId: providerId,
         member: pick.member.key,
         remote: source.ownerDeviceId !== null,
       });
-      return route;
+      // 绑定推迟到调用方确认交接真正提交成功再写：这里先返回选中的位置，调用方还要做目标
+      // 目录校验和实际交接，失败时不应该这里就持久化新绑定
+      // (chatgpt-codex-connector P2, PR #5792 review)。
+      return {
+        ...route,
+        commitBinding: () => deps.writeBinding(sessionId, bindingFor(source, providerId, pick.member.key)),
+      };
     },
 
     mayHandleTurnError(sessionId, signals) {

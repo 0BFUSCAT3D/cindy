@@ -254,11 +254,15 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
         for (const member of config.members) if (member.agentDeviceId) catalogs.delete(member.agentDeviceId);
       }
       const needsDevices = config.members.some((m) => m.kind === 'device');
-      const deviceList = needsDevices ? await readDevices().catch(() => null) : null;
+      // 设备列表读取不在这里 await：要跟各成员读取一样被下面的 settleQuickly 三秒快速选择
+      // 窗口管到(settleQuickly 的计时器在 reads 数组建好、传进去之后才启动)，否则设备列表慢或
+      // 无响应时选电脑会等它的完整网络超时，而不是三秒后继续(chatgpt-codex-connector P2,
+      // PR #5792 review)。
+      const deviceListPromise = needsDevices ? readDevices().catch(() => null) : Promise.resolve(null);
       const reads = config.members.map((member) => {
         if (member.kind === 'local') return resolveLocal(member);
         if (member.kind === 'share') return resolveShare(member);
-        return resolveDevice(member, deviceList);
+        return deviceListPromise.then((deviceList) => resolveDevice(member, deviceList));
       });
       if (options?.quickMs === undefined) return Promise.all(reads);
       return settleQuickly(config.members, reads, options);

@@ -7,6 +7,7 @@ import { createLogger } from '../logger.js';
 import { currentProviderPartyUsageStore, type ProviderPartyUsageStore } from '../usage/providerPartyUsageStore.js';
 import { getProviderGroupRemoteClient } from './runtime.js';
 import { createProviderGroupUsageReporter, type ProviderGroupUsageReporter } from './usageReporter.js';
+import { readProviderGroupUsageSeq, writeProviderGroupUsageSeq } from './usageSeqStore.js';
 
 const log = createLogger('providerGroupUsageReport');
 
@@ -29,6 +30,8 @@ export function ensureProviderGroupUsageReporter(): ProviderGroupUsageReporter |
     },
     now: () => Date.now(),
     log,
+    loadLastSeq: () => readProviderGroupUsageSeq(),
+    saveLastSeq: (seq) => writeProviderGroupUsageSeq(seq),
   });
   reporters.set(store, reporter);
   return reporter;

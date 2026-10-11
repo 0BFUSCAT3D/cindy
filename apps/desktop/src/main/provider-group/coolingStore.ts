@@ -52,11 +52,34 @@ export function readProviderGroupCooling(): ProviderGroupPersistedCooling {
   return store.read().cooling;
 }
 
-/** 整份替换(调用方只给还没到期的)；写不下去只记日志，本次运行照常避开。 */
+/**
+ * 在锁内和所在文件当前内容合并(按 provider + 成员取较晚的结束时间)，不直接用调用方
+ * 快照覆盖：连续冷却两台电脑时，早开始、后步拿到文件锁的写入不应该把已落地的那一台挤丢
+ * (greptile-apps P1, PR #5792 review)。
+ */
+function mergeCooling(
+  current: ProviderGroupPersistedCooling,
+  next: ProviderGroupPersistedCooling,
+): ProviderGroupPersistedCooling {
+  const merged: ProviderGroupPersistedCooling = {};
+  for (const providerId of new Set([...Object.keys(current), ...Object.keys(next)])) {
+    const a = current[providerId] ?? {};
+    const b = next[providerId] ?? {};
+    const entries: Record<string, number> = {};
+    for (const memberKey of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      const until = Math.max(a[memberKey] ?? 0, b[memberKey] ?? 0);
+      if (until > 0) entries[memberKey] = until;
+    }
+    if (Object.keys(entries).length > 0) merged[providerId] = entries;
+  }
+  return merged;
+}
+
+/** 合并写入(调用方只给还没到期的)；写不下去只记日志，本次运行照常避开。 */
 export function writeProviderGroupCooling(cooling: ProviderGroupPersistedCooling): void {
-  void store.updateAtomic(() => normalize({ cooling })).catch((error: unknown) => {
+  void store.updateAtomic((current) => normalize({ cooling: mergeCooling(current.value.cooling, cooling) })).catch((error: unknown) => {
     log.warn('provider group: saving cooldowns failed', { error: error instanceof Error ? error.message : String(error) });
   });
 }
 
-export const __testing = { normalize };
+export const __testing = { normalize, mergeCooling };

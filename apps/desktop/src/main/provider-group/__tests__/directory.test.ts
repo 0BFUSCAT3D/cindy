@@ -329,6 +329,29 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
     }
   });
 
+  it('设备列表本身很慢时，也受三秒快速选择窗口管——本机成员先给出结论就不等它(chatgpt-codex-connector P2, PR #5792 review)', async () => {
+    vi.useFakeTimers();
+    try {
+      const LOCAL = { key: 'local', kind: 'local' as const, agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
+      const cfg: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [LOCAL, MINI] };
+      // listDevices 永远不完成：如果设备列表读取在 settleQuickly 计时器启动前就 await，这里会永远不返回。
+      const directory = createProviderGroupDirectory(deps({ listDevices: () => new Promise<DeviceLinkDeviceView[]>(() => undefined) }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', cfg, { quickMs: 3_000, enough: (r) => r.state === 'ok' }).then(done);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledTimes(1);
+      const resolved = done.mock.calls[0][0] as Array<{ member: { key: string }; state: string; pending?: boolean }>;
+      expect(resolved.map((r) => [r.member.key, r.state, r.pending ?? false])).toEqual([
+        [LOCAL.key, 'ok', false],
+        [MINI.key, 'offline', true],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reads the latest state instead of the short-lived cache when asked', async () => {
     const readDeviceProviders = vi.fn(async () => [view('anthropic-1a2b3c4d', 'Claude')]);
     const directory = createProviderGroupDirectory(deps({ listDevices: async () => [device('mini')], readDeviceProviders }));

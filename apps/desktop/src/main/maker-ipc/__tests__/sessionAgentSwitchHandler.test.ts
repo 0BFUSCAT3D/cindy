@@ -1512,4 +1512,47 @@ describe('换到供应商组那一项：由组选一台能用的电脑(provider-
     await performSessionAgentSwitch(h.deps, { ...toGroup, applyNow: true, providerGroupRelocation: true });
     expect(h.resolveProviderGroupTarget).not.toHaveBeenCalled();
   });
+
+  it('组把这次换电脑选回了当前位置时，新模型还是要落地，不能被同引擎同位置的 no-op 悄悄丢弃(greptile-apps P1, PR #5792 review)', async () => {
+    const pending = createPendingAgentSwitchRegistry();
+    const row = makeRow({ agentKind: 'cc', model: 'claude-fable-5', providerId: 'xd', agentDeviceId: null });
+    const selectSameAgentModel = vi.fn(async (_id: string, intent: PendingAgentSwitchIntent) => {
+      row.model = intent.model;
+      row.providerId = intent.providerId ?? null;
+      return { deferred: false };
+    });
+    const resolveProviderGroupTarget = vi.fn(async () => ({ agentDeviceId: null, providerId: 'xd' }));
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      getSessionRow: vi.fn(async () => row),
+      assertAgentDeviceRouteUsable: vi.fn(async () => undefined),
+      resolveProviderGroupTarget,
+      selectSameAgentModel,
+    });
+    const toGroupNewModel = {
+      sessionId: 's1',
+      targetAgentKind: 'claude-code' as const,
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+      agentDeviceId: 'group-host',
+    };
+    await performSessionAgentSwitch(deps, toGroupNewModel);
+    expect(pending.get('s1')).toMatchObject({ model: 'claude-opus-5-5', targetAgentDeviceId: 'group-host' });
+
+    await applyPendingAgentSwitchIfIdle(deps, 's1');
+    expect(resolveProviderGroupTarget).toHaveBeenCalledWith('s1', expect.objectContaining({ agentDeviceId: 'group-host' }));
+    // 组把位置选回了当前电脑(agentDeviceId: null)，但这次提交要落地的是新模型；必须走过
+    // selectSameAgentModel 真正应用，不能让 performSessionAgentSwitch 内部的 no-op 分支将其丢弃。
+    // chosen.providerId 是组按它自己状态选定的（本例仍是 'xd'，和用户点选的 'anthropic' 不同），
+    // 重点是新模型必须走过 selectSameAgentModel 真正落地。
+    expect(selectSameAgentModel).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ model: 'claude-opus-5-5', providerId: 'xd' }),
+      true,
+      undefined,
+      undefined,
+    );
+    expect(row.model).toBe('claude-opus-5-5');
+    expect(pending.get('s1')).toBeUndefined();
+  });
 });

@@ -601,12 +601,15 @@ describe('moving a task into a group on another computer from the model list (20
     const h = harness({ picks: [STUDIO] });
     const route = await h.service.resolveSwitchTarget('s1', target);
     expect(h.remote.pick).toHaveBeenCalledWith(OWNER, expect.objectContaining({ providerId: 'anthropic', exclude: [] }));
-    expect(route).toEqual({ agentDeviceId: 'studio', providerId: 'anthropic-1a2b3c4d' });
+    expect(route).toMatchObject({ agentDeviceId: 'studio', providerId: 'anthropic-1a2b3c4d' });
+    // 绑定推迟到调用方确认交接成功再写(PR #5792 review)：选完还没写。
+    expect(h.bindings.get('s1')).toBeUndefined();
+    await route?.commitBinding();
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
 
     // 组选中的是这台电脑自己：在这台运行。
     const self = harness({ picks: [SELF] });
-    expect(await self.service.resolveSwitchTarget('s1', target)).toEqual({ agentDeviceId: null, providerId: 'anthropic' });
+    expect(await self.service.resolveSwitchTarget('s1', target)).toMatchObject({ agentDeviceId: null, providerId: 'anthropic' });
   });
 
   it('says at once when no computer in the group can run it', async () => {

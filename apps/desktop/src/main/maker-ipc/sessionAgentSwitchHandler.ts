@@ -143,7 +143,15 @@ export interface MakerSessionAgentSwitchHandlerDeps {
       /** 任务此刻的位置。 */
       current: { agentDeviceId: string | null; providerId: string | null };
     },
-  ): Promise<{ agentDeviceId: string | null; providerId: string | null } | null>;
+  ): Promise<{
+    agentDeviceId: string | null;
+    providerId: string | null;
+    /**
+     * 把这次选中的组内电脑写进绑定；调用方必须等本次切换真正提交成功再调用，
+     * 不要在选定位置后立即调(chatgpt-codex-connector P2, PR #5792 review)。
+     */
+    commitBinding?: () => Promise<void>;
+  } | null>;
   /** Same-engine choices use SET_MODEL validation; only the send boundary applies them. Caller owns the session lock. */
   selectSameAgentModel?(
     sessionId: string,
@@ -550,6 +558,8 @@ export async function performSessionAgentSwitch(
     requestedAgentDeviceId === undefined ? currentAgentDeviceId : requestedAgentDeviceId;
   // 换到供应商组那一项、要换电脑：交接反正要做，由组按它此刻的状态选一台能用的电脑，不直接落到组所在电脑本身
   // (docs/product-rules/provider-groups.md §6，2026-10-11 用户反馈)。登记意图时不选，真正提交时按那一刻的状态选。
+  let groupResolvedToCurrentPosition = false;
+  let commitProviderGroupBinding: (() => Promise<void>) | undefined;
   if (
     params.applyNow === true &&
     params.providerGroupRelocation !== true &&
@@ -568,6 +578,14 @@ export async function performSessionAgentSwitch(
       targetAgentDeviceId = chosen.agentDeviceId;
       requestedAgentDeviceId = chosen.agentDeviceId;
       normalizedProviderId = chosen.providerId;
+      // 组把这次换电脑选回了当前位置：下面会撞上同引擎同位置的 no-op 分支——但这次
+      // 提交本来就是新模型 / effort / fastMode 落地的时刻(登记意图时还没经过组选，
+      // 不是走 selectSameAgentModel 的 picker 直选)，no-op 会悄悄丢弹已选的新设置
+      // (greptile-apps P1, PR #5792 review)。标记后改走真正的同引擎模型应用路径。
+      groupResolvedToCurrentPosition = true;
+      // 绑定推迟到本次切换真正提交成功再写：下面还要做目标目录校验和实际交接，
+      // 失败时不应该已经持久化新绑定(chatgpt-codex-connector P2, PR #5792 review)。
+      commitProviderGroupBinding = chosen.commitBinding;
     }
   }
   const agentDeviceChanges = targetAgentDeviceId !== currentAgentDeviceId;
@@ -591,7 +609,10 @@ export async function performSessionAgentSwitch(
   if (fromDbKind === toDbKind && !relocating) {
     // Only picker calls stage a model choice here. Internal cross-engine apply/recovery
     // callers retain the existing same-engine no-op; send consumes staged choices below.
-    if (deps.selectSameAgentModel && !params.applyNow) {
+    // 组把换电脑的意图选回了当前位置(groupResolvedToCurrentPosition)：这次 applyNow 提交
+    // 本身就是模型 / effort / fastMode 要落地的时刻，必须走真正的同引擎模型应用路径，
+    // 不能当成已经应用过的 no-op 直接丢弹(greptile-apps P1, PR #5792 review)。
+    if (deps.selectSameAgentModel && (!params.applyNow || groupResolvedToCurrentPosition)) {
       const result = await deps.selectSameAgentModel(sessionId, {
         targetAgentKind,
         model,
@@ -601,7 +622,12 @@ export async function performSessionAgentSwitch(
         sameAgentSelection: true,
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
         ...(params.configStaged === true ? { configStaged: true } : {}),
-      }, false, params.assertSelectionCurrent, params.beforeMutation);
+      }, params.applyNow === true, params.assertSelectionCurrent, params.beforeMutation);
+      // 组选回当前位置并且模型应用真正成功(非 deferred/superseded)时才持久化新绑定；
+      // 没落地的调用不应该殊到已纳入组(chatgpt-codex-connector P2, PR #5792 review)。
+      if (groupResolvedToCurrentPosition && !result.deferred && !result.superseded) {
+        await commitProviderGroupBinding?.();
+      }
       return {
         switched: false,
         agentKind: targetAgentKind,
@@ -749,6 +775,12 @@ export async function performSessionAgentSwitch(
     });
     if (normalizedProviderId !== undefined) {
       deps.setSessionProvider(sessionId, normalizedProviderId);
+    }
+    // DB 已过 commit point，切换生效：此刻再持久化组内绑定，前面的目录校验 /
+    // closeSession / assertModelRouteUsable 任何一步抛错都不会让新绑定抔先持久化
+    // (chatgpt-codex-connector P2, PR #5792 review)。
+    if (commitProviderGroupBinding) {
+      await commitProviderGroupBinding();
     }
 
     const boundaryContent: AgentSwitchBoundaryContent = {
