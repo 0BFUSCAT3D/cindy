@@ -9,7 +9,8 @@ import type { MessagePayload } from '@/session/messagePayload';
 import { buildAttachmentPayload, buildMediaPayload, payloadMediaKindLabel } from '@/session/messagePayload';
 import type { MobileMessageRenderItem, MobileWorkChildItem } from '@/session/messageRenderModel';
 import { logUnhandledRenderItem } from '@/session/assertNever';
-import { applySentAttachmentThumbOverlay } from '@/session/sentAttachmentThumbStore';
+import { applySentAttachmentThumbOverlay, getSentAttachmentThumbUri } from '@/session/sentAttachmentThumbStore';
+import type { GetSentMessageImagePreview } from '@/session/sentMessageImagePreviews';
 import { i18n } from '@/i18n';
 import { svgAttachmentForDisplay } from '@/session/messageAttachments';
 
@@ -30,6 +31,11 @@ export interface MobileMessageGalleryImage {
    * 非聊天来源(composer 托盘 / 文件浏览器)不填,调用方自行决定集合范围。
    */
   groupKey?: string;
+  /**
+   * 手机本地已有的同图(发送时留下的预览 / 本地缩略兜底),即气泡正在显示的那张。
+   * 查看器拿它从打开那一刻垫底,原图取到前不再黑屏转圈。
+   */
+  previewUri?: string;
 }
 
 /** 可进全屏查看器翻页的媒体:图片与视频;音频仍走通用查看器。 */
@@ -42,6 +48,7 @@ export function collectMobileMessageGalleryImages(
   workdir?: string,
   remoteHostId?: string,
   sessionId?: string,
+  getSentImagePreview?: GetSentMessageImagePreview,
 ): MobileMessageGalleryImage[] {
   const images: MobileMessageGalleryImage[] = [];
   // 去重按「组内」进行(键 = groupKey + url):翻页组是单条消息,跨消息出现的
@@ -51,13 +58,18 @@ export function collectMobileMessageGalleryImages(
   // 当前顶层 render item 的 key:一条消息(气泡 / 一轮 work_group)= 一个翻页组。
   let currentGroupKey = '';
 
-  const push = (key: string, title: string, payload: Extract<MessagePayload, { kind: 'media' }>) => {
+  const push = (
+    key: string,
+    title: string,
+    payload: Extract<MessagePayload, { kind: 'media' }>,
+    previewUri?: string | null,
+  ) => {
     const url = payload.media.url.trim();
     if (!url || !isLightboxMediaKind(payload.media.kind)) return;
     const dedupeKey = `${currentGroupKey}::${url}`;
     if (seenUrls.has(dedupeKey)) return;
     seenUrls.add(dedupeKey);
-    images.push({ key, title, url, payload, groupKey: currentGroupKey });
+    images.push({ key, title, url, payload, groupKey: currentGroupKey, ...(previewUri ? { previewUri } : {}) });
   };
 
   // includeBodyImages: 只有 body 真正经 MarkdownBody 渲染的 message 气泡才收正文 Markdown 图片;
@@ -69,15 +81,28 @@ export function collectMobileMessageGalleryImages(
   );
 
   const visitMessage = (message: NormalizedRemoteMessage, keyPrefix: string, includeBodyImages: boolean) => {
+    const clientId = message.source.clientId ?? message.source.id;
+    // 与 AttachmentStrip 同口径:本地发送预览按「第几张图片附件」对位。
+    let imageIndex = -1;
     message.attachments?.forEach((rawAttachment, index) => {
       const displayAttachment = svgAttachmentForDisplay(rawAttachment, workdir, message.key, remoteHostId, sessionId);
+      if (displayAttachment.kind === 'image') imageIndex += 1;
       // 图片附件,以及按 MIME 识别成视频的文件附件(AttachmentStrip 点开同样是 media payload)。
       if (displayAttachment.kind === 'image' && !displayAttachment.uri) return;
       // 与 AttachmentStrip 同源 overlay(cindy-oss-attach:// → 本地缩略兜底):气泡
       // 点开时 initialUrl 是替换后的 file://,图集条目必须同步替换才能匹配进翻页组。
       const attachment = applySentAttachmentThumbOverlay(displayAttachment);
       const payload = buildAttachmentPayload(attachment);
-      if (payload.kind === 'media') push(`${keyPrefix}:attachment:${index}`, attachment.name, payload);
+      if (payload.kind !== 'media') return;
+      // 与气泡 MediaPreview 同源取本地图:被控端物化后 url 已换成远程引用,
+      // 但手机本地仍留着发送时的那张,查看器用它垫底。
+      const localPreview = attachment.kind === 'image' && clientId
+        ? getSentImagePreview?.(clientId, imageIndex, displayAttachment.name, undefined, displayAttachment.sha256, displayAttachment.uri)
+        : undefined;
+      const previewUri = attachment.kind === 'image' && displayAttachment.uri
+        ? localPreview?.uri ?? getSentAttachmentThumbUri(localPreview?.sourceRef ?? displayAttachment.uri)
+        : null;
+      push(`${keyPrefix}:attachment:${index}`, attachment.name, payload, previewUri);
     });
     message.media?.forEach((media, index) => pushMedia(media, `${keyPrefix}:media:${index}`));
     // 正文 Markdown 图片(![](url) / 安全 <img>)也纳入图集,点开后可与附件图片一起横滑翻页。

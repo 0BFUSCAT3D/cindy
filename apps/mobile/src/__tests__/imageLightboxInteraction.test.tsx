@@ -1033,6 +1033,23 @@ describe("chrome toggle, loading and video pages", () => {
     expect(runtime.nodes.get("message.imageLightboxAnnotateButton").disabled).toBe(false);
   });
 
+  it("backs a sent image with its local copy from the first frame when no remote thumbnail is cached", async () => {
+    const url = "xdt-image://cache/sent.png";
+    const image = {
+      key: "sent", title: "Sent", url, previewUri: "file:///sent-local.jpg",
+      payload: { kind: "media", media: { kind: "image", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    // 气泡用的是本地图,从没取过远程缩略图:缓存查询必然落空,原图仍在路上。
+    const resolver = vi.fn((media: { thumbnail?: boolean }) => (media.thumbnail
+      ? Promise.reject(new Error("not cached"))
+      : new Promise(() => undefined)));
+    await act(async () => {
+      mount({ images: [image], initialUrl: url, onResolveRemoteMedia: resolver as never });
+    });
+    expect(runtime.nodes.get("message.imageLightboxPreviewLayer").source.uri).toBe("file:///sent-local.jpg");
+    expect(runtime.nodes.has("message.imageLightboxRetryButton")).toBe(false);
+  });
+
   it("unlocks paging when the original fails after the placeholder was zoomed", async () => {
     const url = "xdt-image://cache/broken.png";
     const image = {

@@ -546,12 +546,13 @@ export const ImageLightbox = memo(function ImageLightbox({
   }, [resolveMap]);
 
   /**
-   * 该页的垫底缩略图。与原图地址相同时返回 null:磁盘缓存命中会让缩略图与
-   * 原图落到同一个 file://(缩不动的图按裸键落盘),此时垫同一张图纯属多解码
-   * 一份,且原图本就秒出。
+   * 该页的垫底缩略图。手机本地已有的同图(自己发出的图)优先:同步可用,打开第一帧
+   * 就有画面;其次是列表已取过的远程缩略图。与原图地址相同时返回 null:磁盘缓存
+   * 命中会让缩略图与原图落到同一个 file://(缩不动的图按裸键落盘),此时垫同一张图
+   * 纯属多解码一份,且原图本就秒出。
    */
   const previewUriFor = useCallback((image: MobileMessageGalleryImage): string | null => {
-    const preview = previewMap[image.url];
+    const preview = image.previewUri ?? previewMap[image.url];
     if (!preview) return null;
     return preview === displayUriFor(image) ? null : preview;
   }, [previewMap, displayUriFor]);

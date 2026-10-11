@@ -432,4 +432,25 @@ describe('message gallery', () => {
       'https://example.com/other.png',
     ]);
   });
+  it('carries the sent local image as the viewer backdrop once the host has rewritten the url', () => {
+    const calls: unknown[][] = [];
+    const gallery = collectMobileMessageGalleryImages([
+      messageItem('m-sent', { attachments: [
+        { kind: 'file', name: 'notes.md', path: '/repo/notes.md', previewable: false },
+        { kind: 'image', name: 'a.png', uri: 'xdt-image://cache/a.png', previewable: false },
+        { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false, sha256: 'sha-b' },
+      ] }),
+    ], undefined, undefined, undefined, (...args) => {
+      calls.push(args);
+      return args[1] === 1
+        ? { attachmentId: 'att-b', name: 'b.png', sourceRef: 'cindy-oss-attach://b', sha256: 'sha-b', uri: 'file:///local/b.jpg' }
+        : undefined;
+    });
+    // 预览按「第几张图片附件」对位,与气泡 AttachmentStrip 同口径(文件附件不占位)。
+    expect(calls.map((args) => args.slice(0, 3))).toEqual([['m-sent', 0, 'a.png'], ['m-sent', 1, 'b.png']]);
+    expect(gallery.map((image) => [image.url, image.previewUri])).toEqual([
+      ['xdt-image://cache/a.png', undefined],
+      ['xdt-image://cache/b.png', 'file:///local/b.jpg'],
+    ]);
+  });
 });
