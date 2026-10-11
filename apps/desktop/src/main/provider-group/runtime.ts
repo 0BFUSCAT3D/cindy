@@ -3,7 +3,7 @@
  * 这样设置页看到的「正在运行 / 冷却中」与实际分配一致。
  *
  * 目录缓存、冷却、轮询位置都属于当前账号：换账号后另起一份，旧账号还在路上的远端读取只落进旧的那份，
- * 新账号看不到旧账号的电脑与冷却。用量上限的冷却按账号落盘(coolingStore.ts)，新起的那份先读回来。
+ * 新账号看不到旧账号的电脑与冷却。冷却按账号落盘(coolingStore.ts)，新起的那份先读回来。
  * 调用方拿到的是固定的门面，每次调用按当前账号转发。
  */
 import type { ProviderView } from '@cindy/model-providers';
@@ -85,14 +85,10 @@ const directoryFacade: ProviderGroupDirectory = {
 
 const routerFacade: ProviderGroupRouter = {
   pick: (input) => runtimeForActiveOwner().router.pick(input),
-  view: (providerId, options) => runtimeForActiveOwner().router.view(providerId, options),
+  view: (providerId) => runtimeForActiveOwner().router.view(providerId),
   running: (providerId, memberKey) => runtimeForActiveOwner().router.running(providerId, memberKey),
   markCooling: (providerId, memberKey, until) => runtimeForActiveOwner().router.markCooling(providerId, memberKey, until),
-  noteFailure: (providerId, memberKey, failure) => runtimeForActiveOwner().router.noteFailure(providerId, memberKey, failure),
-  coolingUntil: (providerId, memberKey, reporter) =>
-    runtimeForActiveOwner().router.coolingUntil(providerId, memberKey, reporter),
-  isAvoided: (providerId, memberKey, reporter) => runtimeForActiveOwner().router.isAvoided(providerId, memberKey, reporter),
-  noteWorking: (providerId, memberKey, reporter) => runtimeForActiveOwner().router.noteWorking(providerId, memberKey, reporter),
+  coolingUntil: (providerId, memberKey) => runtimeForActiveOwner().router.coolingUntil(providerId, memberKey),
   markTried: (sessionId, memberKey) => runtimeForActiveOwner().router.markTried(sessionId, memberKey),
   triedThisTurn: (sessionId) => runtimeForActiveOwner().router.triedThisTurn(sessionId),
   resetTurn: (sessionId) => runtimeForActiveOwner().router.resetTurn(sessionId),

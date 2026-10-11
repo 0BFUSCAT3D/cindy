@@ -63,7 +63,7 @@ export type ProviderGroupMemberState =
   | 'full'
   /** 暂停分配。 */
   | 'paused'
-  /** 撞到用量上限后冷却中，或刚才没能使用、暂时避开(`reason: 'failed'`)。 */
+  /** 撞到用量上限后冷却中。 */
   | 'cooling'
   /** 连不上(离线、未开远程控制、分享者电脑不在线)。 */
   | 'offline'
@@ -76,9 +76,7 @@ export type ProviderGroupUnavailableReason =
   /** 供应商未连接或已停用。 */
   | 'disconnected'
   | 'share-paused'
-  | 'share-removed'
-  /** `cooling` 专用：不是用量上限，是刚才没能使用(连不上、起不来、登录失效等)，暂时避开、到点再试。 */
-  | 'failed';
+  | 'share-removed';
 
 export interface ProviderGroupMemberStatus {
   key: string;
@@ -278,12 +276,9 @@ export function readProviderGroupSummary(raw: unknown, groupProviderId: string):
   return normalizeProviderGroupConfig(raw, groupProviderId);
 }
 
-/**
- * 同账号电脑报给组所在电脑的失败原因(2026-10-11 起含连不上：`connectionLost` 时组所在电脑只让报告的那台避开它，
- * 不替全组判断；旧版本组所在电脑不认识 `unavailable`，回 `[INVALID_PARAMS]`)。
- */
-export type ProviderGroupRemoteCoolCause = 'usage-limit' | 'auth' | 'overload' | 'unavailable';
-const REMOTE_COOL_CAUSES: readonly ProviderGroupRemoteCoolCause[] = ['usage-limit', 'auth', 'overload', 'unavailable'];
+/** 换电脑的原因里，会让组所在电脑冷却那台的几种(连不上只由发现它的电脑自己避开，不替全组判断)。 */
+export type ProviderGroupRemoteCoolCause = 'usage-limit' | 'auth' | 'overload';
+const REMOTE_COOL_CAUSES: readonly ProviderGroupRemoteCoolCause[] = ['usage-limit', 'auth', 'overload'];
 
 export interface ProviderGroupRemoteLease {
   sessionId: string;
@@ -317,18 +312,8 @@ export const PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS = 3_000;
 export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
   | { action: 'pick'; sessionId: string; providerId: string; agentKind: 'claude-code' | 'codex' | 'pi'; model: string; exclude: string[] }
-  /**
-   * 那台电脑出了问题(用量上限、登录失效、服务繁忙、连不上、起不来)：组所在电脑记给全组，之后谁选电脑都先避开它；
-   * `connectionLost` = 只是报告的这台和它的连接断了，只对这台避开。
-   */
-  | {
-    action: 'cool';
-    providerId: string;
-    memberKey: string;
-    cause: ProviderGroupRemoteCoolCause;
-    resetAt?: number;
-    connectionLost?: true;
-  }
+  /** 那台电脑出了问题(用量上限、登录失效、服务繁忙)：组所在电脑冷却它，不再分新任务。 */
+  | { action: 'cool'; providerId: string; memberKey: string; cause: ProviderGroupRemoteCoolCause; resetAt?: number }
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
@@ -431,7 +416,6 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         memberKey: remoteMemberKey(value.memberKey),
         cause: cause as ProviderGroupRemoteCoolCause,
         ...(resetAt !== undefined ? { resetAt } : {}),
-        ...(value.connectionLost === true ? { connectionLost: true as const } : {}),
       };
     }
     case 'leases': {
@@ -481,9 +465,7 @@ export function parseProviderGroupRemotePick(raw: unknown, groupProviderId: stri
 }
 
 const MEMBER_STATES: readonly ProviderGroupMemberState[] = ['available', 'full', 'paused', 'cooling', 'offline', 'unavailable'];
-const UNAVAILABLE_REASONS: readonly ProviderGroupUnavailableReason[] = [
-  'provider-off', 'disconnected', 'share-paused', 'share-removed', 'failed',
-];
+const UNAVAILABLE_REASONS: readonly ProviderGroupUnavailableReason[] = ['provider-off', 'disconnected', 'share-paused', 'share-removed'];
 
 /** 同账号电脑读组所在电脑 `view` 的回包(设置页只读展示、发送前检查)；坏条目丢弃。 */
 export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: string): ProviderGroupView {

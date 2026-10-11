@@ -268,10 +268,8 @@ describe('assigning through a group on another computer', () => {
     const context = await h.service.assignBeforeStart(START);
     const next = await h.service.nextAfterStartFailure(context!, new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] gone'));
     expect(h.remote.pick).toHaveBeenLastCalledWith(OWNER, expect.objectContaining({ exclude: [STUDIO.key] }));
-    // 报给组所在电脑：只是这台连不过去，组所在电脑只让这台之后避开它，不替全组冷却那台。
-    expect(h.remote.cool).toHaveBeenCalledWith(OWNER, {
-      providerId: 'anthropic', memberKey: STUDIO.key, cause: 'unavailable', resetAt: null, connectionLost: true,
-    });
+    // 连不上只由本机自己避开，不替全组冷却那台。
+    expect(h.remote.cool).not.toHaveBeenCalled();
     expect(next?.route).toEqual({ agentDeviceId: 'share:s1', providerId: 'anthropic' });
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: SHARED.key, groupDeviceId: OWNER });
   });
@@ -334,15 +332,13 @@ describe('switching computers within a group on another computer', () => {
     expect(h.deps.fallback).not.toHaveBeenCalled();
   });
 
-  it('reports an unreachable computer so only this computer avoids it, instead of cooling it for the whole group', async () => {
+  it('only avoids an unreachable computer itself instead of cooling it for the whole group', async () => {
     const h = bound({ picks: [SELF] });
     await h.service.onTurnError('s1', { message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone' }, 3);
     // 先等它恢复：本机现读那台(组内电脑坐标照本机的写法)，重试用完才换。
     expect(h.probe).toHaveBeenCalledWith('studio', STUDIO.providerId);
     expect(h.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
-    expect(h.remote.cool).toHaveBeenCalledWith(OWNER, expect.objectContaining({
-      memberKey: STUDIO.key, cause: 'unavailable', connectionLost: true,
-    }));
+    expect(h.remote.cool).not.toHaveBeenCalled();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith('s1', expect.objectContaining({ agentDeviceId: null, providerId: 'anthropic' }), expect.anything());
   });
 
@@ -583,18 +579,14 @@ describe('old tasks already running on the group computer', () => {
   });
 });
 
-describe('a group on another computer that already knows a computer cannot be used (2026-10-11)', () => {
-  function bound(options: Parameters<typeof harness>[0] = {}) {
-    const h = harness({ row: { agentDeviceId: 'studio', providerId: STUDIO.providerId, sdkSessionId: 'native-1' }, ...options });
+describe('a group on another computer whose state shows a computer cannot be used (2026-10-11)', () => {
+  it('switches at once when the group computer shows the computer cooling down', async () => {
+    const h = harness({ row: { agentDeviceId: 'studio', providerId: STUDIO.providerId, sdkSessionId: 'native-1' }, view: { [STUDIO.key]: 'cooling' }, picks: [SELF] });
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: STUDIO.key, groupDeviceId: OWNER, at: 1 });
-    return h;
-  }
-
-  it('switches at once when the group computer already avoids it for this computer', async () => {
-    const h = bound({ view: { [STUDIO.key]: 'cooling' }, picks: [SELF] });
     h.probe.mockResolvedValue('offline');
     await h.service.onTurnError('s1', { message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone' }, 3);
     expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(h.remote.cool).not.toHaveBeenCalled();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
       's1', expect.objectContaining({ agentDeviceId: null, providerId: 'anthropic' }), expect.anything(),
     );

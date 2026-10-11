@@ -473,8 +473,6 @@
         "paused": "배정 일시 중지됨",
         "cooling": "대기 중",
         "coolingUntil": "대기 중 · {{time}}쯤 복구",
-        "failed": "방금 사용할 수 없었음",
-        "failedUntil": "방금 사용할 수 없었음 · {{time}}쯤 다시 시도",
         "offline": "오프라인",
         "unreachableHere": "이 컴퓨터에서 연결할 수 없음",
         "unavailable": {

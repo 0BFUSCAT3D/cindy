@@ -66,6 +66,8 @@ export interface ResolveMembersOptions {
    */
   quickMs?: number;
   enough?(resolved: ResolvedProviderGroupMember): boolean;
+  /** 不用短时缓存，现读设备列表与每台的目录(试过不行之后拉最新状态)。 */
+  fresh?: boolean;
 }
 
 const CATALOG_TTL_MS = 15_000;
@@ -247,6 +249,10 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
 
   return {
     async resolveMembers(_providerId, config, options) {
+      if (options?.fresh) {
+        devices = null;
+        for (const member of config.members) if (member.agentDeviceId) catalogs.delete(member.agentDeviceId);
+      }
       const needsDevices = config.members.some((m) => m.kind === 'device');
       const deviceList = needsDevices ? await readDevices().catch(() => null) : null;
       const reads = config.members.map((member) => {

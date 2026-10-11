@@ -44,7 +44,7 @@ import type { ProviderGroupDirectory } from './directory.js';
 import type { ProviderGroupGuestSwitch } from './guestSwitch.js';
 import {
   PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
-  PROVIDER_GROUP_LOCAL_REPORTER,
+  PROVIDER_GROUP_FAILURE_COOLDOWN_MS,
   PROVIDER_GROUP_TURN_WINDOW_MS,
   type ProviderGroupRouter,
 } from './router.js';
@@ -120,8 +120,6 @@ export interface ProviderGroupRemoteGroups {
     memberKey: string;
     cause: ProviderGroupRemoteCoolCause;
     resetAt: number | null;
-    /** 只是这台电脑和那台的连接断了：组所在电脑只让这台避开它。 */
-    connectionLost?: boolean;
   }): Promise<void>;
   view(ownerDeviceId: string, providerId: string): Promise<ProviderGroupView>;
   /** 忘掉组所在电脑目录的缓存(组员失败后下次现读)。 */
@@ -219,8 +217,6 @@ export interface ProviderGroupService {
   }): Promise<ProviderGroupStartContext | null>;
   /** 分配后 Agent 没能启动：换下一台，返回新的位置；不该换或没有下一台返回 null(调用方照常报错)。 */
   nextAfterStartFailure(context: ProviderGroupStartContext, error: unknown): Promise<ProviderGroupStartContext | null>;
-  /** 分配后 Agent 在那台起来了：它连得上、起得来，清掉组里对它的这类失败记录(§5)。 */
-  noteStarted(context: ProviderGroupStartContext): void;
   /**
    * 纯判定(同步、无副作用)：这次终态错误会不会先由本机制试着换电脑。为 true 时输入协调器先不呈现这次错误
    * (红横幅与错误卡)：换成了就不出现，没换成再补出来(§6.1)。只看手上现成的：认得出的原因，加上已归组
@@ -330,15 +326,9 @@ interface GroupSource {
     model: string;
     exclude: ReadonlySet<string>;
   }): Promise<SourcePick>;
-  /**
-   * 记一次这台的失败，之后所有使用方选电脑都先避开它(§5)；`connectionLost` = 只是这台电脑和它的连接断了，
-   * 只对这台电脑生效(那台真连不上时组所在电脑读它就是离线，所有使用方都会避开)。
-   */
-  cool(providerId: string, memberKey: string, cause: ProviderGroupSwitchCause, resetAt: number | null, connectionLost?: boolean): void;
-  /** 组里已经知道这台现在用不了(冷却中、刚失败过还在避开期)。 */
+  cool(providerId: string, memberKey: string, cause: ProviderGroupSwitchCause, resetAt: number | null): void;
+  /** 组的状态里这台现在冷却中(组所在电脑记着它账号的问题)。 */
   isKnownDown(providerId: string, memberKey: string): Promise<boolean>;
-  /** 刚在这台上打开了会话(换过去、启动成功)：它连得上、起得来，清掉这类失败记录。 */
-  noteWorking(providerId: string, memberKey: string): void;
   /** 发送前：这台现在该不该换掉；null = 读不到，照常发送。 */
   shouldMoveAway(providerId: string, config: ProviderGroupConfig, memberKey: string): Promise<{ reason: string } | false | null>;
   invalidate(member: ProviderGroupMember): void;
@@ -349,38 +339,31 @@ interface GroupSource {
 }
 
 /**
- * 一趟换电脑里因这台电脑连不上而跳过的组内电脑(§6.1)：组里只剩它们时挨个等它恢复再试。等回来的那台直接再试一次
- * ——组里对它的避开是这一趟刚记下的，按组的选法不会再选到它；再换不过去就重新记下(等的次数按电脑计，不会无休止地
- * 来回试)。`fallbackLabel`：等回来的那台没在这一趟的选择结果里出现过时的称呼。
+ * 一趟换电脑里因这台电脑连不上而跳过的组内电脑(§6.1)：组里只剩它们时挨个等它恢复再试。等回来的那台从这一轮
+ * 试过的名单里放出来、可以再被选中；再换不过去就重新记下(等的次数按电脑计，不会无休止地来回试)。
  */
-function createSkippedTargets(fallbackLabel: (member: ProviderGroupMember) => string) {
+function createSkippedTargets() {
   const waiting: ProviderGroupMember[] = [];
-  const labels = new Map<string, string>();
-  let comeBack: ProviderGroupMember | null = null;
+  const retrying = new Set<string>();
   return {
-    /** 这一次换到哪台：等回来的那台直接再试，否则按组的选法选。 */
-    async pick(choose: () => Promise<SourcePick>): Promise<SourcePick> {
-      const member = comeBack;
-      comeBack = null;
-      if (member) {
-        return { kind: 'member', member, label: labels.get(member.key) ?? fallbackLabel(member), labelOf: () => undefined };
-      }
-      const pick = await choose();
-      if (pick.kind === 'member') labels.set(pick.member.key, pick.label);
-      return pick;
+    /** 选电脑时排除的：这一轮试过的，去掉等回来、可以再试的。 */
+    exclusion(base: Set<string>): Set<string> {
+      for (const key of retrying) base.delete(key);
+      return base;
     },
     /** 换过去失败：连不上的记下，组里只剩它们时再等。 */
     failed(member: ProviderGroupMember, unreachable: boolean): void {
+      retrying.delete(member.key);
       if (unreachable && !waiting.some((m) => m.key === member.key)) waiting.push(member);
     },
-    /** 挨个等记下的电脑恢复(后跳过的先等)，等回来一台就返回 true，下一次直接再试它。 */
+    /** 挨个等记下的电脑恢复(后跳过的先等)，等回来一台就返回 true。 */
     async awaitAny(
       awaitOne: (member: ProviderGroupMember) => Promise<boolean>,
       isCurrent: () => boolean,
     ): Promise<boolean> {
       for (let member = waiting.pop(); member && isCurrent(); member = waiting.pop()) {
         if (await awaitOne(member)) {
-          comeBack = member;
+          retrying.add(member.key);
           return true;
         }
       }
@@ -463,9 +446,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       connectionLost?: boolean;
       /** 发送被停止：退避与现读都立刻停下。 */
       signal?: AbortSignal;
-      /**
-       * 组里已经确认这台用不了(别的使用方刚试过、冷却中、离线已久)：不等，直接 `gone`。只在确实连不上、要开始等时问。
-       */
+      /** 已经确认这台用不了(组的状态里冷却中、离线已久)：不等，直接 `gone`。只在确实连不上、要开始等时问。 */
       knownDown?: () => Promise<boolean>;
     },
   ): Promise<ReturnOutcome> {
@@ -547,9 +528,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   }
 
   /**
-   * 组里已经确认这台用不了，不用等它恢复(2026-10-11 用户确认)：组里记着它冷却中或刚失败过还在避开期(别的任务、
-   * 同账号其他电脑或分享的人刚试过)，或同账号那台离线已经超过 PROVIDER_GROUP_RECENT_DROP_MS。读不到的都按不知道，
-   * 照旧先等——刚断开的可能马上恢复。组读不到时 `source` 为 null，只看离线多久。
+   * 已经确认这台用不了，不用等它恢复(2026-10-11 用户确认：确认用不了的直接换，只有刚断开的才先等)：组的状态里它
+   * 冷却中(组所在电脑记着它账号的问题)，或同账号那台离线已经超过 PROVIDER_GROUP_RECENT_DROP_MS。读不到的按不知道，
+   * 照旧先等。组读不到时 `source` 为 null，只看离线多久。
    */
   async function knownDown(
     source: GroupSource | null,
@@ -586,10 +567,11 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     };
   }
 
-  /** 用量上限冷却到何时：报错里的重置时刻，取不到按默认时长。 */
-  function usageCoolUntil(resetAt: number | null): number {
+  function coolUntil(cause: ProviderGroupSwitchCause, resetAt: number | null): number {
     const now = deps.now();
-    return resetAt !== null && resetAt > now ? resetAt : now + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS;
+    return cause === 'usage-limit'
+      ? (resetAt !== null && resetAt > now ? resetAt : now + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS)
+      : now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS;
   }
 
   const localSource: GroupSource = {
@@ -598,7 +580,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       return deps.readGroup(providerId);
     },
     async pick({ providerId, agentKind, model, exclude }) {
-      const pick = await router.pick({ providerId, agentKind, model, exclude });
+      // 带着这一轮试过的来选：试过不行说明状态可能旧了，现读最新状态再选。
+      const pick = await router.pick({ providerId, agentKind, model, exclude, ...(exclude.size > 0 ? { fresh: true } : {}) });
       if (pick.kind !== 'member') return { kind: pick.kind };
       return {
         kind: 'member',
@@ -610,21 +593,14 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         },
       };
     },
-    cool(providerId, memberKey, cause, resetAt, connectionLost) {
-      // 记给全组：之后本机、同账号其他电脑与分享的人选电脑都先避开它。只是本机和它的连接断了的只对本机(含替分享的人
-      // 中转)生效；它真连不上时，下次读它的状态就是离线，所有使用方都会避开。
-      router.noteFailure(providerId, memberKey, {
-        cause,
-        ...(cause === 'usage-limit' ? { until: usageCoolUntil(resetAt) } : {}),
-        reporter: PROVIDER_GROUP_LOCAL_REPORTER,
-        connectionLost: connectionLost === true,
-      });
+    cool(providerId, memberKey, cause, resetAt) {
+      // 连不上只在这一轮避开，不把本机的连接故障扩散成后续全局冷却；
+      // 其它原因(额度、登录、过载)仍按组的冷却策略处理。
+      if (cause === 'unavailable') return;
+      router.markCooling(providerId, memberKey, coolUntil(cause, resetAt));
     },
     async isKnownDown(providerId, memberKey) {
-      return router.isAvoided(providerId, memberKey, PROVIDER_GROUP_LOCAL_REPORTER);
-    },
-    noteWorking(providerId, memberKey) {
-      router.noteWorking(providerId, memberKey, PROVIDER_GROUP_LOCAL_REPORTER);
+      return router.coolingUntil(providerId, memberKey) !== null;
     },
     async shouldMoveAway(providerId, config, memberKey) {
       const resolved = await withTimeout(deps.directory.resolveMembers(providerId, config), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
@@ -680,16 +656,10 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           ?? { ...pick.member, limit: 1, weight: 1, paused: false };
         return { kind: 'member', member, label: pick.label, labelOf };
       },
-      cool(providerId, memberKey, cause, resetAt, connectionLost) {
-        // 报给组所在电脑记给全组；只是这台连不过去的(connectionLost)，组所在电脑只让这台避开它。旧版本组所在电脑不收
-        // 「连不上」，只在这一轮避开。
-        void remote.cool(ownerDeviceId, {
-          providerId,
-          memberKey,
-          cause,
-          resetAt,
-          ...(connectionLost ? { connectionLost: true } : {}),
-        }).catch((error) => {
+      cool(providerId, memberKey, cause, resetAt) {
+        // 连不上只由发现它的这台电脑自己避开(这一轮已试过)，不替全组判断：可能只是这台连不过去。
+        if (cause === 'unavailable') return;
+        void remote.cool(ownerDeviceId, { providerId, memberKey, cause, resetAt }).catch((error) => {
           deps.log.warn('provider group: reporting a computer to cool down failed', { error: errorText(error) });
         });
       },
@@ -697,8 +667,6 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         const view = await remote.view(ownerDeviceId, providerId);
         return view.members.find((m) => m.key === memberKey)?.state === 'cooling';
       },
-      // 组所在电脑那边的记录到期或那台重新上线时清掉；这台对它的避开最多几分钟，不另报。
-      noteWorking() {},
       async shouldMoveAway(providerId, _config, memberKey) {
         const view = await withTimeout(remote.view(ownerDeviceId, providerId), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
         const state = view?.members.find((m) => m.key === memberKey)?.state;
@@ -1062,8 +1030,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   }
 
   /**
-   * 发送前等那台恢复(这条还没派出去)：进度交给调用方显示；发送被停止或用户接手时停下。组里已经确认那台用不了时
-   * 不等(`knownDown`)。
+   * 发送前等那台恢复(这条还没派出去)：进度交给调用方显示；发送被停止或用户接手时停下。已经确认那台用不了时
+   * 不等(`isKnownDown`)。
    */
   async function waitBeforeSend(
     sessionId: string,
@@ -1180,7 +1148,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     hooks: ProviderGroupTurnErrorHooks | undefined;
   }): Promise<void> {
     const { sessionId, signals, cause, binding, source, config, row, current, lease, isCurrent, handBack, hooks } = input;
-    source.cool(binding.providerId, current.key, cause, deps.readResetAt(signals), isProviderGroupConnectionLoss(signals));
+    source.cool(binding.providerId, current.key, cause, deps.readResetAt(signals));
     source.invalidate(current);
     const tried = router.markTried(sessionId, current.key);
     // 这条消息发出前刚换不过去的电脑不再重复去试、重复去等。
@@ -1193,18 +1161,18 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const localProviderId = current.kind === 'local' ? row.providerId : binding.providerId;
     // 分享来的电脑用分享者的昵称(不用电脑名)；读不到时为空，活动记录退回不写电脑的说法。
     let fromLabel = deps.directory.memberLabel(current);
-    const skipped = createSkippedTargets((member) => deps.directory.memberLabel(member));
+    const skipped = createSkippedTargets();
 
     for (;;) {
       if (!isCurrent()) return;
-      const pick = await skipped.pick(() => source.pick({
+      const pick = await source.pick({
         sessionId,
         providerId: binding.providerId,
         config,
         agentKind: row.agentKind,
         model: row.model,
-        exclude: switchExclusion(config, current, tried),
-      }));
+        exclude: skipped.exclusion(switchExclusion(config, current, tried)),
+      });
       // 选电脑期间用户已接手：绑定与任务记录都还没动，直接停下。
       if (!isCurrent()) return;
       if (pick.kind !== 'member') {
@@ -1247,12 +1215,11 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           error: errorText(error),
         });
         router.markTried(sessionId, pick.member.key);
-        source.cool(binding.providerId, pick.member.key, targetCause, null, isUnreachableTarget(error));
+        source.cool(binding.providerId, pick.member.key, targetCause, null);
         skipped.failed(pick.member, isUnreachableTarget(error));
         continue;
       }
       deps.log.info('provider group: switched computer', { sessionId, cause, to: pick.member.key });
-      source.noteWorking(binding.providerId, pick.member.key);
       // 交接期间用户已接手(发消息、重试、换模型、收下错误)：不替用户续跑。
       if (!isCurrent()) return;
       const continueToken = deps.rearmContinue(sessionId, lease, deps.now());
@@ -1475,7 +1442,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         return null;
       }
       if (!config?.autoSwitch) return null;
-      source.cool(context.groupProviderId, context.member.key, cause, null, isProviderGroupConnectionLoss({ message: errorText(error) }));
+      source.cool(context.groupProviderId, context.member.key, cause, null);
       source.invalidate(context.member);
       const tried = router.markTried(context.sessionId, context.member.key);
       const pick = await source.pick({
@@ -1499,12 +1466,6 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         to: pick.member.key,
       });
       return { ...context, member: pick.member, route, overrideRoute: true };
-    },
-
-    noteStarted(context) {
-      // 启动时组还没读到(纳入待定)：不知道它在组里的哪一项，不动记录。
-      if (context.pendingGroupAdoption) return;
-      sourceFor(context.groupDeviceId)?.noteWorking(context.groupProviderId, context.member.key);
     },
 
     mayHandleTurnError(sessionId, signals) {
@@ -1583,21 +1544,21 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       }
       const tried = router.markTried(sessionId, current.key);
       const localProviderId = current.kind === 'local' && !source.ownerDeviceId ? row.providerId : binding.providerId;
-      const skipped = createSkippedTargets((member) => deps.directory.memberLabel(member));
+      const skipped = createSkippedTargets();
       const failedTargets: string[] = [];
       const { run, done } = trackRun(sessionId);
       const isCurrent = () => !run.superseded && options?.signal?.aborted !== true;
       try {
         for (;;) {
           if (!isCurrent()) return;
-          const pick = await skipped.pick(() => source.pick({
+          const pick = await source.pick({
             sessionId,
             providerId: binding.providerId,
             config,
             agentKind: row.agentKind,
             model: row.model,
-            exclude: switchExclusion(config, current, tried),
-          }));
+            exclude: skipped.exclusion(switchExclusion(config, current, tried)),
+          });
           if (!isCurrent()) return;
           if (pick.kind !== 'member') {
             // 组里只剩这次因连不上而跳过的电脑：先等它们恢复再换，消息还没发出，进行中行显示「正在换一台电脑继续」。
@@ -1628,7 +1589,6 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
               to: pick.member.key,
               reason,
             });
-            source.noteWorking(binding.providerId, pick.member.key);
             return;
           } catch (error) {
             await restoreBindingAfterFailedSwitch(sessionId, source, binding.providerId, config);
@@ -1646,7 +1606,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
             });
             if (!failedTargets.includes(pick.member.key)) failedTargets.push(pick.member.key);
             router.markTried(sessionId, pick.member.key);
-            source.cool(binding.providerId, pick.member.key, targetCause, null, isUnreachableTarget(error));
+            source.cool(binding.providerId, pick.member.key, targetCause, null);
             skipped.failed(pick.member, isUnreachableTarget(error));
           }
         }

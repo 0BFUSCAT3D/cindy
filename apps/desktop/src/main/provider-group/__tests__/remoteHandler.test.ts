@@ -21,6 +21,7 @@ import type { ProviderGroupDirectory } from '../directory';
 import {
   createProviderGroupRouter,
   PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
+  PROVIDER_GROUP_FAILURE_COOLDOWN_MS,
   type ProviderGroupPickInput,
   type ProviderGroupRouter,
 } from '../router';
@@ -53,10 +54,7 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
     view: vi.fn(async () => ({ providerId: 'anthropic', config: CONFIG, members: [] })),
     running: vi.fn(() => 0),
     markCooling: vi.fn(),
-    noteFailure: vi.fn(() => 0),
     coolingUntil: vi.fn(() => null),
-    isAvoided: vi.fn(() => false),
-    noteWorking: vi.fn(),
     markTried: vi.fn(() => new Set<string>()),
     triedThisTurn: vi.fn(() => new Set<string>()),
     resetTurn: vi.fn(),
@@ -84,9 +82,8 @@ describe('provider-group:remote', () => {
   it('picks a computer, honouring what the caller already tried, and holds it briefly', async () => {
     const d = deps();
     const result = await handleProviderGroupRemote(d, 'laptop', PICK);
-    // 按发问的那台电脑选：只它连不过去的组内电脑对它避开。
     expect(d.router.pick).toHaveBeenCalledWith(expect.objectContaining({
-      providerId: 'anthropic', agentKind: 'claude-code', model: 'opus', exclude: new Set(['local']), reporter: 'laptop',
+      providerId: 'anthropic', agentKind: 'claude-code', model: 'opus', exclude: new Set(['local']),
     }));
     expect(result).toEqual({
       kind: 'member',
@@ -96,6 +93,14 @@ describe('provider-group:remote', () => {
     expect(d.externalLoad.running('anthropic', MINI.key)).toBe(1);
     d.advance(PROVIDER_GROUP_PROVISIONAL_MS + 1);
     expect(d.externalLoad.running('anthropic', MINI.key)).toBe(0);
+  });
+
+  it('reads the latest state when a computer asks again after trying some', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', { ...PICK, exclude: [] });
+    expect(d.router.pick.mock.calls[0][0].fresh).toBeUndefined();
+    await handleProviderGroupRemote(d, 'laptop', PICK);
+    expect(d.router.pick.mock.calls[1][0]).toMatchObject({ fresh: true });
   });
 
   it('answers that there is no group for providers without one or no longer open to other computers', async () => {
@@ -109,50 +114,24 @@ describe('provider-group:remote', () => {
     expect(await handleProviderGroupRemote(d, 'laptop', PICK)).toEqual({ kind: 'unavailable' });
   });
 
-  it('cools computers for usage limits up to a bounded reset time, and records other failures for the whole group', async () => {
+  it('cools computers for usage limits up to a bounded reset time, and briefly for other causes', async () => {
     const d = deps();
-    const cool = (body: Record<string, unknown>) =>
-      handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, ...body });
-    await cool({ cause: 'usage-limit', resetAt: 50_000 });
-    expect(d.router.noteFailure).toHaveBeenLastCalledWith('anthropic', MINI.key, {
-      cause: 'usage-limit', until: 50_000, reporter: 'laptop', connectionLost: false,
-    });
-    await cool({ cause: 'usage-limit', resetAt: 10_000 + 365 * 86_400_000 });
-    expect(d.router.noteFailure).toHaveBeenLastCalledWith('anthropic', MINI.key, expect.objectContaining({
-      until: 10_000 + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS,
-    }));
-    await cool({ cause: 'usage-limit' });
-    expect(d.router.noteFailure).toHaveBeenLastCalledWith('anthropic', MINI.key, expect.objectContaining({
-      until: 10_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
-    }));
-    await cool({ cause: 'auth' });
-    expect(d.router.noteFailure).toHaveBeenLastCalledWith('anthropic', MINI.key, {
-      cause: 'auth', reporter: 'laptop', connectionLost: false,
-    });
-    // 那台起不来(不是连接断了)：记给全组。
-    await cool({ cause: 'unavailable' });
-    expect(d.router.noteFailure).toHaveBeenLastCalledWith('anthropic', MINI.key, {
-      cause: 'unavailable', reporter: 'laptop', connectionLost: false,
-    });
-    // 只是那台电脑连不过去：只对它避开。
-    await cool({ cause: 'unavailable', connectionLost: true });
-    expect(d.router.noteFailure).toHaveBeenLastCalledWith('anthropic', MINI.key, {
-      cause: 'unavailable', reporter: 'laptop', connectionLost: true,
-    });
+    await handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'usage-limit', resetAt: 50_000 });
+    expect(d.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 50_000);
+    await handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'usage-limit', resetAt: 10_000 + 365 * 86_400_000 });
+    expect(d.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 10_000 + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS);
+    await handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'usage-limit' });
+    expect(d.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 10_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
+    await handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'auth' });
+    expect(d.router.markCooling).toHaveBeenLastCalledWith('anthropic', MINI.key, 10_000 + PROVIDER_GROUP_FAILURE_COOLDOWN_MS);
   });
 
-  it('refuses to cool computers outside the group and rejects causes it does not know', async () => {
+  it('refuses to cool computers outside the group and rejects causes it does not cool for', async () => {
     const d = deps();
     await handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: 'device:x:y', cause: 'auth' });
-    expect(d.router.noteFailure).not.toHaveBeenCalled();
-    await expect(handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'tool-error' }))
+    expect(d.router.markCooling).not.toHaveBeenCalled();
+    await expect(handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'unavailable' }))
       .rejects.toThrow('[INVALID_PARAMS]');
-  });
-
-  it('shows the group as the asking computer sees it', async () => {
-    const d = deps();
-    await handleProviderGroupRemote(d, 'laptop', { action: 'view', providerId: 'anthropic' });
-    expect(d.router.view).toHaveBeenCalledWith('anthropic', { reporter: 'laptop' });
   });
 
   it('counts the running tasks each computer reports and drops stale or out-of-order reports', async () => {

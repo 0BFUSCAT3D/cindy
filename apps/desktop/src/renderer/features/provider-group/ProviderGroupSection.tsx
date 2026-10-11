@@ -395,12 +395,6 @@ export function memberStatusText(
     case 'cooling': {
       // 不在今天恢复的(周上限等)带上日期，不让「约 16:00 恢复」看起来像今天就能用。
       const time = status.coolingUntil ? formatQuotaResetAt(status.coolingUntil / 1000, nowMs, locale) : null;
-      // 不是用量上限，是刚才没能使用(连不上、起不来等)：组里暂时避开它，到点再试。
-      if (status.reason === 'failed') {
-        return time
-          ? t('providerGroup.member.status.failedUntil', { time })
-          : t('providerGroup.member.status.failed');
-      }
       return time
         ? t('providerGroup.member.status.coolingUntil', { time })
         : t('providerGroup.member.status.cooling');

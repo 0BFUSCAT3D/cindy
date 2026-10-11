@@ -778,12 +778,12 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   - `pick { sessionId, providerId, agentKind, model, exclude[] }` → `{ kind: 'member', member: { key, kind, agentDeviceId, providerId }, label }`
     / `{ kind: 'unavailable' }` / `{ kind: 'none' }`(没有组或供应商没开放远程调用)。组员坐标是 O 视角(`local` = O 自己)，C 换算成
     本机位置；选中即给那台记 30s 临时占用；
-  - `cool { providerId, memberKey, cause: 'usage-limit' | 'auth' | 'overload' | 'unavailable', resetAt?, connectionLost? }` →
-    O 把那台记给全组(`resetAt` 最多信 8 天)；`connectionLost: true` = 只是 C 和那台的连接断了，O 只让 C 避开它
-    (2026-10-11 起，见下文「供应商组：失败共用」)；
+  - `cool { providerId, memberKey, cause: 'usage-limit' | 'auth' | 'overload', resetAt? }` → O 冷却那台(`resetAt` 最多信 8 天)；
+    连不上不报，只由 C 自己避开(组内状态以 O 为准，C 那边的问题不记进组里，2026-10-11)。`exclude` 非空(C 这一轮试过
+    不行再来问)时 O 不用短时缓存、现读组内电脑的最新状态再选，请求格式不变；
   - `leases { seq, entries: [{ sessionId, providerId, memberKey }] }` → 整体替换 C 正在运行的经组任务，`seq` 只增(C 按时间生成，
     重启后仍增大)，乱序旧包丢弃，150s 不刷新作废；只用于分摊负载；
-  - `view { providerId }` → 组设置与组员状态(`ProviderGroupView`)，按 C 看(只 C 连不过去的组员对 C 写 `cooling`)。
+  - `view { providerId }` → 组设置与组员状态(`ProviderGroupView`)。
   旧 O 回 `CHANNEL_NOT_ALLOWED`：`pick` 按 `none` 处理，任务照旧直接在 O 上运行。
 - **`maker:provider:list` 新增可选字段 `group`**：只对同账号调用方、只加在建了组且「允许被远程调用」的供应商上：
   `{ strategy, autoSwitch, members: [{ key, kind, agentDeviceId, providerId, label?, paused }] }`(并发上限与权重不外发)。
@@ -795,7 +795,9 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **本地数据**：C 上经另一台电脑的组分配的任务绑定存 `provider-group-remote-bindings.json`(按账号，与本机组的
   `provider-group-bindings.json` 分开，降级后旧版本读不到它，不会误认成本机的同名组)。因组内电脑被移出或组被删除而
   解除过绑定的任务按组记在 `provider-group-released.json`(按账号，2026-10-10)，老任务纳入组时据此跳过(provider-groups.md
-  §6、§9.4)；旧版本不读也不改写它，降级再升级后记录仍在。不改数据库与服务端。
+  §6、§9.4)；旧版本不读也不改写它，降级再升级后记录仍在。组所在电脑的冷却按账号存 `provider-group-cooling.json`
+  (`{ cooling: { [providerId]: { [memberKey]: until } } }`，只存未到期的，2026-10-11)，重启后照样避开；旧版本不读它。
+  不改数据库与服务端。
 - 实现：`apps/desktop/src/main/provider-group/`(`remoteHandler.ts`、`remoteClient.ts`、`externalLoad.ts`、`leaseReporter.ts`、
   `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
   `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
@@ -949,26 +951,6 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
   (`groupReport` / `replaceReported`)，`maker-ipc/sessionProviderPartyUsage.ts`(`groupUsageReportOf`)；回归见
   `provider-group/__tests__/usageReporter.test.ts`、`remoteHandler.test.ts`、`usage/__tests__/providerPartyUsageStore.test.ts`、
   `maker-ipc/__tests__/sessionProviderPartyUsage.test.ts`。
-
-## 供应商组：失败共用(2026-10-11)
-
-产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5「失败共用」、§6.1「确认用不了的不等」。组内电脑的失败由
-组所在电脑 O 记给全组，所有使用方选电脑时都先避开它。
-
-- **`provider-group:remote` 的 `cool` 新增 `cause: 'unavailable'` 与可选 `connectionLost: true`**：C 发现组员连不上、起不来时也报；
-  `connectionLost` 时 O 只让 C 避开它(按 C 的设备 id 记)，并在下次选电脑时现读那台。`pick` 与 `view` 按发来的 C 区分(不新增字段)。
-- **`ProviderGroupMemberStatus.reason` 新增 `'failed'`**(只配 `state: 'cooling'`)：刚才没能使用、暂时避开，与用量上限冷却区分。
-- **兼容**：
-  - 旧 O 不认识 `unavailable`，回 `[INVALID_PARAMS] invalid cause`：新 C 记日志、照旧只在这一轮避开；其余 `cool` 不变。
-  - 旧 C 不报 `unavailable`：O 上缺这部分记录，旧 C 照旧只在这一轮避开；O 自己的任务与替分享的人中转仍会记。
-  - 旧版本读 `view` 时丢弃不认识的 `reason`，`cooling` 照旧显示「冷却中」。
-  - `maker:provider:list`、远程 Agent open 载荷、relay、服务器与数据库都不变。
-- **本地数据**：用量上限的冷却按账号存 `provider-group-cooling.json`(`{ cooling: { [providerId]: { [memberKey]: until } } }`，只存
-  未到期的)，重启后照样避开；旧版本不读也不写它。其余失败只在内存里。
-- 实现：`apps/desktop/src/main/provider-group/router.ts`(`noteFailure` / `noteWorking` / `isAvoided`、选电脑不等慢的那台)、
-  `coolingStore.ts`、`directory.ts`(`resolveMembers` 的 `quickMs`、`offlineForMs`)、`service.ts`(`knownDown`、组来源的 `cool` /
-  `isKnownDown` / `noteWorking`)、`remoteHandler.ts`、`guestRelay.ts`；回归见同目录 `__tests__/router.failures.test.ts`、
-  `service.test.ts`、`remoteGroup.test.ts`、`remoteHandler.test.ts`、`directory.test.ts`、`scheduler.test.ts`。
 
 ## 事实来源
 

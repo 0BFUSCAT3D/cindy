@@ -473,8 +473,6 @@
         "paused": "已暫停分配",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
-        "failed": "剛才無法使用",
-        "failedUntil": "剛才無法使用 · 約 {{time}} 再試",
         "offline": "離線",
         "unreachableHere": "從這台電腦連不上",
         "unavailable": {

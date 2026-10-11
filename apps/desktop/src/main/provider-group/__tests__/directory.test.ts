@@ -329,6 +329,17 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
     }
   });
 
+  it('reads the latest state instead of the short-lived cache when asked', async () => {
+    const readDeviceProviders = vi.fn(async () => [view('anthropic-1a2b3c4d', 'Claude')]);
+    const directory = createProviderGroupDirectory(deps({ listDevices: async () => [device('mini')], readDeviceProviders }));
+    const cfg: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [MINI] };
+    await directory.resolveMembers('anthropic', cfg);
+    await directory.resolveMembers('anthropic', cfg);
+    expect(readDeviceProviders).toHaveBeenCalledTimes(1);
+    await directory.resolveMembers('anthropic', cfg, { fresh: true });
+    expect(readDeviceProviders).toHaveBeenCalledTimes(2);
+  });
+
   it('tells how long a same-account computer has been offline', async () => {
     const directory = createProviderGroupDirectory(deps({
       listDevices: async () => [
