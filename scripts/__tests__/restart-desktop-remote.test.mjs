@@ -1509,7 +1509,7 @@ test("darwin dev terminal output is recorded through script(1) under the checkou
 		maxBytes: 1024,
 	});
 	assert.match(command, /^\{ /);
-	assert.match(command, /head -c 1024 > '\/repo\/cindy feature\/apps\/desktop\/logs\/dev-terminal\.log'/);
+	assert.ok(command.includes(`head -c 1024 > '${logPath}'`), command);
 	// 环境变量前缀必须紧贴 script，才能传给 dev 进程。
 	assert.match(command, /; XDT_ISOLATED='1' \/usr\/bin\/script -q -F '[^']+dev-terminal\.log\.fifo' 'node' 'runner\.mjs' 'remote'; /);
 	assert.match(command, /\(exit \$cindyDevExit\); \}$/);
