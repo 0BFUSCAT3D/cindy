@@ -1650,7 +1650,10 @@ export default function NewRemoteSessionScreen() {
     worktreeTarget,
     worktreeSettledRef.current,
   );
-  worktreeSettledRef.current = worktreeSettled;
+  // 只在提交后记录「已展示的定论」：被放弃的并发 render 不能污染它。
+  useLayoutEffect(() => {
+    worktreeSettledRef.current = worktreeSettled;
+  }, [worktreeSettled]);
   const worktreeRowVisible = shouldShowWorktreeToggle({
     workspaceKind: draft.workspaceKind,
     workingDir: draft.workingDir,
