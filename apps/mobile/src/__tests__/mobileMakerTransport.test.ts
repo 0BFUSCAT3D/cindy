@@ -294,6 +294,7 @@ describe("mobile maker transport", () => {
   });
   it("documents the remote channels used by the mobile transport", () => {
     expect(MOBILE_MAKER_CHANNELS).toEqual([
+      "ghosts:composer-list",
       "maker:create-session",
       "maker:get-capabilities",
       "maker:provider:list",
@@ -361,6 +362,7 @@ describe("mobile maker transport", () => {
       "maker:session:enable-orca",
       "maker:session:disable-orca",
       "maker:worker:create",
+      "maker:orca:execution-devices",
       "maker:worker:switch-focus",
       "maker:worker:acknowledge-done",
       "maker:worker:archive",
@@ -393,6 +395,7 @@ describe("mobile maker transport", () => {
       "maker:input:resume",
       "maker:input:retry-last-error",
       "maker:input:clear-error",
+      "maker:input:cancel-usage-limit-wait",
       "maker:input:remove",
       "maker:input:update-text",
       "maker:input:update-content",
@@ -447,6 +450,7 @@ describe("mobile maker transport", () => {
     const { calls, maker } = harness();
     const options = { workerAgent: "codex" as const, role: "developer", label: "developer", workerPermissionMode: "auto" as const };
 
+    await maker.orca.listExecutionDevices();
     await maker.orca.getCollabPolicy("/repo", "project");
     await maker.orca.enable("lead-1", options);
     await maker.orca.createWorker({ leadSessionId: "lead-1", role: "reviewer", label: "reviewer", agent: "pi", workerPermissionMode: "auto" });
@@ -459,6 +463,7 @@ describe("mobile maker transport", () => {
     await maker.orca.disable("lead-1");
 
     expect(calls.map(({ channel, args }) => ({ channel, args }))).toEqual([
+      { channel: "maker:orca:execution-devices", args: [] },
       { channel: "maker:plugins:get-state", args: ["collab", "/repo", "project"] },
       { channel: "maker:session:enable-orca", args: ["lead-1", options] },
       { channel: "maker:worker:create", args: [{ leadSessionId: "lead-1", role: "reviewer", label: "reviewer", agent: "pi", workerPermissionMode: "auto" }] },
@@ -768,6 +773,7 @@ describe("mobile maker transport", () => {
     await maker.compactSession("s1", "focus on API design");
     await maker.input.retryLastError("s1");
     await maker.input.clearError("s1");
+    await maker.input.cancelUsageLimitWait("s1");
     await maker.input.updateText("s1", "queued-1", "updated");
     await maker.input.updateContent("s1", "queued-1", {
       clientId: "queued-1",
@@ -845,6 +851,7 @@ describe("mobile maker transport", () => {
       ["maker:compact-session", ["s1", "focus on API design"]],
       ["maker:input:retry-last-error", ["s1"]],
       ["maker:input:clear-error", ["s1"]],
+      ["maker:input:cancel-usage-limit-wait", ["s1"]],
       ["maker:input:update-text", ["s1", "queued-1", "updated"]],
       [
         "maker:input:update-content",

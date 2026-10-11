@@ -419,6 +419,100 @@ describe('remoteSessionStore', () => {
     });
   });
 
+  it('keeps the cached home projection stable across usage-only refreshes', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    const before = remoteSessionStore.getHomeSessions();
+    const beforeRow = before[0];
+    expect(beforeRow).toBeDefined();
+    expect(beforeRow).not.toHaveProperty('totalCostUsd');
+
+    remoteSessionStore.applyRemotePush('dev-1', 'usage:session-spend-changed', {
+      sessionId: 's1',
+      totalCostUsd: 2.5,
+    });
+    expect(remoteSessionStore.getHomeSessions()).toBe(before);
+    expect(remoteSessionStore.getHomeSessions()[0]).toBe(beforeRow);
+
+    // A later ordinary recompute must still reuse the projection because usage
+    // fields are intentionally absent from Home.
+    remoteSessionStore.setDeviceIdentity([{ deviceId: 'dev-1', name: 'Mac' }]);
+    expect(remoteSessionStore.getHomeSessions()).toBe(before);
+    expect(remoteSessionStore.getHomeSessions()[0]).toBe(beforeRow);
+    expect(remoteSessionStore.getHomeSessions()[0]).not.toHaveProperty('totalCostUsd');
+  });
+
+  it('black-box: repeated device refreshes keep the visible home snapshot stable', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1'), session('s2')]);
+    const before = remoteSessionStore.getHomeSessions();
+    const beforeRows = [...before];
+
+    for (let index = 0; index < 100; index += 1) {
+      remoteSessionStore.setDeviceIdentity([
+        { deviceId: 'dev-1', name: 'Mac' },
+        { deviceId: `unrelated-${index}`, name: `Other ${index}` },
+      ]);
+    }
+
+    const after = remoteSessionStore.getHomeSessions();
+    expect(after).toBe(before);
+    expect(after).toEqual(beforeRows);
+    expect(after.every((row) => !Object.prototype.hasOwnProperty.call(row, 'totalCostUsd'))).toBe(true);
+    expect(after.every((row) => !Object.prototype.hasOwnProperty.call(row, 'totalMoney'))).toBe(true);
+    expect(after.every((row) => !Object.prototype.hasOwnProperty.call(row, 'totalTokenUsage'))).toBe(true);
+  });
+
+  it('refreshes Home metadata after unchanged device refreshes and usage-only pushes', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1'), session('s2')]);
+    const before = remoteSessionStore.getHomeSessions();
+    const homeChanged = vi.fn();
+    const unsubscribe = remoteSessionStore.subscribeHomeStatus(homeChanged);
+    try {
+      remoteSessionStore.applyRemotePush('dev-1', 'usage:session-tokens-changed', { sessionId: 's1', totalTokens: 500 });
+      for (let index = 0; index < 10; index += 1) {
+        remoteSessionStore.setDeviceIdentity([
+          { deviceId: 'dev-1', name: 'Mac' },
+          { deviceId: `other-${index}`, name: 'Other' },
+        ]);
+      }
+      expect(remoteSessionStore.getHomeSessions()).toBe(before);
+      expect(homeChanged).not.toHaveBeenCalled();
+      expect(remoteSessionStore.getSessions()[0].totalTokenUsage).toBe(500);
+      expect(remoteSessionStore.getDeviceIdentity()[1].deviceId).toBe('other-9');
+
+      remoteSessionStore.applySessionPatch('dev-1', 's1', { title: 'Renamed' });
+      const renamed = remoteSessionStore.getHomeSessions();
+      expect(renamed).not.toBe(before);
+      expect(renamed[0]).toMatchObject({ id: 's1', title: 'Renamed' });
+      expect(renamed[0]).not.toHaveProperty('totalTokenUsage');
+      expect(renamed[1]).toBe(before[1]);
+      expect(homeChanged).toHaveBeenCalledTimes(1);
+
+      remoteSessionStore.renameDevice('dev-1', 'New Mac');
+      expect(remoteSessionStore.getHomeSessions().every((row) => row.deviceLinkDeviceName === 'New Mac')).toBe(true);
+      expect(homeChanged).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it.each(['remove', 'clear'] as const)('rebuilds Home after %s and reusing a session ID', (action) => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1'), session('s2')]);
+    const before = remoteSessionStore.getHomeSessions();
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s2'), session('s1')]);
+    expect(remoteSessionStore.getHomeSessions()).toEqual([before[1], before[0]]);
+    expect(remoteSessionStore.getHomeSessions()[0]).toBe(before[1]);
+
+    if (action === 'clear') remoteSessionStore.clear();
+    else remoteSessionStore.setDeviceSessions('dev-1', 'Mac', []);
+    expect(remoteSessionStore.getHomeSessions()).toEqual([]);
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    expect(remoteSessionStore.getHomeSessions()).toHaveLength(1);
+    expect(remoteSessionStore.getHomeSessions()[0]).not.toBe(before[0]);
+    expect(remoteSessionStore.getHomeSessions()[0]).toMatchObject({ id: 's1', title: 's1' });
+    remoteSessionStore.applySessionPatch('dev-1', 's1', { title: 'Restored title' });
+    expect(remoteSessionStore.getHomeSessions()[0].title).toBe('Restored title');
+  });
+
   it('removes archived sessions from the active mirror', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1'), session('s2')]);
     remoteSessionStore.applySessionPatch('dev-1', 's1', { status: 'archived' });
@@ -3198,6 +3292,23 @@ describe('remoteSessionStore', () => {
       generationActive: false,
       generationReliable: true,
     });
+  });
+
+  it('carries the host tok/s across statuses without it and clears it for the next turn', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    const tokenSpeed = { rate: 42, average: 40, tokens: 120, elapsedMs: 3_000, streaming: true };
+    pushMakerStatus('s1', { isRunning: true, status: 'Generating...', tokenSpeed });
+    pushMakerStatus('s1', { isRunning: true, status: 'Running tool' });
+    expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toEqual(tokenSpeed);
+    // The host withdrew the speed (suspended mid-generation): the stale reading goes too.
+    pushMakerStatus('s1', { isRunning: true, generationReliable: false });
+    expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toBeUndefined();
+    pushMakerStatus('s1', { isRunning: false });
+    remoteSessionStore.applySessionActivity('dev-1', { sessionId: 's1', phase: 'running' });
+    expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toBeUndefined();
+    pushMakerStatus('s1', { isRunning: false });
+    pushMakerStatus('s1', { isRunning: true, status: 'Thinking' });
+    expect(remoteSessionStore.getSessionRunStatus('s1').tokenSpeed).toBeUndefined();
   });
 
   it('clears leftover task updates on a real turn start, scoped to that session', () => {
@@ -6666,5 +6777,28 @@ describe('task tag source isolation', () => {
     });
     expect(remoteSessionStore.getSessions().find((row) => row.id === 'a')?.tags).toEqual([]);
     expect(remoteSessionStore.getSessions().find((row) => row.id === 'b')?.tags).toEqual([tag]);
+  });
+});
+
+describe('list message reuse', () => {
+  beforeEach(() => remoteSessionStore.clear());
+  it('keeps explicitly prefetched prose after leaving a task, while stale detail pushes remain blocked', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Host', [session('s1')]);
+    const authority = remoteSessionStore.enterSessionMessageDetail('s1');
+    remoteSessionStore.leaveSessionMessageDetail('s1', 'detail-blur', authority);
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', { sessionId: 's1', message: message('stale', 's1') });
+    const content = '完整正文'.repeat(2000);
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', { sessionId: 's1', listMessage: true,
+      message: { ...message('prefetched', 's1'), content } });
+    expect(remoteSessionStore.getMessages('s1').map(row => row.id)).toEqual(['prefetched']);
+    expect(remoteSessionStore.getMessages('s1')[0].content).toBe(content);
+    remoteSessionStore.enterSessionMessageDetail('s1');
+    expect(remoteSessionStore.getMessages('s1')[0].content).toBe(content);
+  });
+
+  it('does not let another device seed the same task ID', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Host', [session('s1')]);
+    remoteSessionStore.applyRemotePush('other', 'local-db:messages:created', { sessionId: 's1', listMessage: true, message: message('wrong', 's1') });
+    expect(remoteSessionStore.getMessages('s1')).toEqual([]);
   });
 });

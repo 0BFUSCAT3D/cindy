@@ -105,10 +105,7 @@ import {
   readSendFollowCancelGeneration,
   tryRequestFollowLatest,
 } from '@/components/chat/autoFollowIntent';
-import {
-  getMessageStreamIndicatorResizeTargets,
-  measureMessageStreamIndicatorClearanceOffset,
-} from '@/components/chat/messageStreamIndicatorPosition';
+import { useComposerOverlayMetrics } from './useComposerOverlayMetrics';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
 import {
   shareSelectionStore,
@@ -166,6 +163,14 @@ import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { canAccessBillingSettings } from '@/components/settings/billingVisibility';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useSelectableDevices } from '@/hooks/useControllableDevices';
+import {
+  controlledTaskAgentLocationReadable,
+  controlledTaskReadableShareIds,
+  controlledTaskSupportsAgentLocation,
+  selectControlledTaskAgentDevices,
+} from '@/lib/controlledTaskAgentLocation';
+import { resolveUsageAccountLocation } from '@/lib/usageAccountLocation';
+import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
 import {
   canExposeWritableDirsChange,
   resolveManualCompactChannel,
@@ -273,6 +278,7 @@ import {
   resolveRunningUsageMeta,
 } from './lib/runningTokenUsage';
 import { RunningTokenRatePopover, useRunningTokenRateHistory } from './RunningTokenRatePopover';
+import type { TokenSpeedSnapshot } from './lib/runningTokenRateHistory';
 import { matchNavigationCommandName, tryHandleNavigationCommand } from '@/lib/navigationCommands';
 import { extractIpcError } from '@/utils/ipcError';
 import { listActiveRunsForSession } from '@/features/learn/useLearnRun';
@@ -309,7 +315,7 @@ import {
   getDroppedFileItems,
   type DroppedFileItems,
 } from '@/lib/fileDrop';
-import { getCollaborationStartErrorMessage } from './collaborationErrors';
+import { getCollaborationStartErrorMessage, workerAgentDeviceErrorMessage } from './collaborationErrors';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
 import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { consumePendingRemoteCollab, enableRemoteCollabForSession } from './remoteCollabHandoff';
@@ -335,7 +341,6 @@ import {
   shouldRevealOrcaWorkersBeforeFirstPaint,
 } from './lib/orcaPassiveReveal';
 import { didOpenOrcaWorkersTab, revealOrcaWorkersWithRetry } from './lib/orcaWorkersRevealRetry';
-import { usageLimitScheduleNavigationState } from '@/features/scheduler/lib/usageLimitScheduleCreateIntent';
 import {
   closeOrcaWorkersTabAfterTeamEnd,
   ensureOrcaWorkersTab,
@@ -1496,10 +1501,7 @@ export function CCAgentSessionView({
   const overlayRef = useCallback((node: HTMLDivElement | null) => {
     setOverlayEl(node);
   }, []);
-  const [overlayHeight, setOverlayHeight] = useState(200);
-  const [bottomCenterClearanceOffset, setBottomCenterClearanceOffset] = useState<
-    number | undefined
-  >(undefined);
+  const { overlayHeight, bottomCenterClearanceOffset } = useComposerOverlayMetrics(overlayEl);
   const [inlinePlanVisibilityState, setInlinePlanVisibilityState] = useState<{
     sessionId: string | undefined;
     value: InlinePlanVisibility | null;
@@ -1524,42 +1526,6 @@ export function CCAgentSessionView({
     },
     [sessionId],
   );
-
-  useEffect(() => {
-    if (!overlayEl) return;
-    const measureOverlay = () => {
-      // 状态行会动态出现 / 收起，overlay 总高度不等于底部中央控件的避让边界。
-      // 空中央行仍以 composer 栈为锚；步骤 / 接管胶囊在场时改取中央组顶边，
-      // 让消息流悬浮按钮与它们纵向成栈，而不是共享同一块 32px 区域。
-      setOverlayHeight(overlayEl.offsetHeight);
-      setBottomCenterClearanceOffset(measureMessageStreamIndicatorClearanceOffset(overlayEl));
-    };
-    const ro = new ResizeObserver(measureOverlay);
-    let observedTargets = new Set<HTMLElement>();
-    const syncResizeTargetsAndMeasure = () => {
-      const nextTargets = new Set(getMessageStreamIndicatorResizeTargets(overlayEl));
-      for (const target of observedTargets) {
-        if (!nextTargets.has(target)) ro.unobserve(target);
-      }
-      for (const target of nextTargets) {
-        if (!observedTargets.has(target)) ro.observe(target);
-      }
-      observedTargets = nextTargets;
-      measureOverlay();
-    };
-
-    // Seed with the current geometry so the first paint after remount does not
-    // reuse stale state. The plan flyout is absolutely positioned and mounts
-    // only on hover/click, so its insertion does not resize the center group;
-    // resync observed targets whenever that subtree changes.
-    syncResizeTargetsAndMeasure();
-    const mutationObserver = new MutationObserver(syncResizeTargetsAndMeasure);
-    mutationObserver.observe(overlayEl, { childList: true, subtree: true });
-    return () => {
-      mutationObserver.disconnect();
-      ro.disconnect();
-    };
-  }, [overlayEl]);
 
   // F-FP-5: 点击 workingDir → 在系统文件管理器里直接打开目录(复用 shell:open-path IPC)。
   // local only:remote session 的 chip 仅作展示,不响应点击(见下方 remoteHostId 早返 +
@@ -1771,6 +1737,8 @@ export function CCAgentSessionView({
     updateSystemCardData,
     error,
     usageLimitRecovery,
+    usageLimitWait,
+    cancelUsageLimitWait,
     errorIsRecoverable,
     errorRetryText,
     disposedErrorPersistId,
@@ -2089,31 +2057,127 @@ export function CCAgentSessionView({
   // 与模型选择器同源(见下方 M35 vendor fallback effect)。本地 IPC 极快返回,有模块级缓存。
   // device-link 远程会话用被控端经隧道带来的 providers(per-provider,fast 判定与本地同口径)。
   const { providers: localProviders } = useProviders();
-  const { mode: authMode, user: authUser, dataOwnerId } = useAuth();
+  const { mode: authMode, user: authUser, dataOwnerId, deviceId: selfDeviceId } = useAuth();
   // Agent 在另一台电脑运行的任务:模型目录同样以那台为准(任务本身在本机)。
   const agentDeviceId = remoteDeviceId ? undefined : (session?.agentDeviceId ?? undefined);
   // 远程 Agent:本机任务的模型面板也列出其他电脑的供应商(选中 = 把 Agent 挪过去,下一条消息
   // 生效)。Agent 当前所在电脑与挂着的换位置目标即使掉线也保留,让用户看得到、换得回来。
   const { devices: selectableDevices } = useSelectableDevices();
   const pendingAgentDeviceId = agentSwitchIntent?.agentDeviceId;
-  const remoteAgentDevices = useMemo(
+  // 供应商分享：别人分享给我的供应商也是远程 Agent 的落点(`share:<id>`)，并进本机任务，
+  // 不进设备切换器。已暂停 / 已不在的分享只在它正是当前或即将使用的位置时保留。
+  const {
+    devices: providerShareDevices,
+    nameFor: providerShareDeviceName,
+    isReceived: isReceivedProviderShare,
+  } = useProviderShareAgentDevices([agentDeviceId, pendingAgentDeviceId]);
+  // 被控电脑上的任务 Agent 现在 / 挂着的位置是分享时:分享按账号授予,本机也收到了同一条就经本机
+  // 的分享通道读它的目录,模型按钮按分享显示(否则只能读到被控电脑自己的目录,显示「模型信息暂
+  // 不可用」)。本机没收到的分享读不到,维持原样。
+  const controlledShareIds = useMemo(
     () =>
-      remoteDeviceId || session?.remoteHostId
-        ? undefined
-        : selectableDevices
-            .filter(
-              (device) =>
-                device.online ||
-                device.deviceId === agentDeviceId ||
-                device.deviceId === pendingAgentDeviceId,
-            )
-            .map(({ deviceId, name }) => ({ deviceId, name })),
-    [selectableDevices, remoteDeviceId, session?.remoteHostId, agentDeviceId, pendingAgentDeviceId],
+      remoteDeviceId
+        ? controlledTaskReadableShareIds({
+            agentDeviceId: session?.agentDeviceId,
+            pendingAgentDeviceId,
+            isReceived: isReceivedProviderShare,
+          })
+        : undefined,
+    [remoteDeviceId, session?.agentDeviceId, pendingAgentDeviceId, isReceivedProviderShare],
   );
-  const agentDeviceName = agentDeviceId
-    ? (selectableDevices.find((device) => device.deviceId === agentDeviceId)?.name ?? null)
+  // 远程控制的被控电脑上的任务:被控电脑支持远程 Agent 时,同样列出其他电脑的供应商(与手机同一
+  // 套)。共享任务访客读到的是自己账号的设备、与任务无关,SSH 任务不支持;Agent 现在或挂着的位置
+  // 在本机读不到目录的地方(本机没收到的分享 / 本机自己)时,维持原有的被控电脑列表。
+  const controlledAgentLocation =
+    !!remoteDeviceId &&
+    !session?.remoteHostId &&
+    !isSharedTaskPeer(remoteDeviceId) &&
+    controlledTaskSupportsAgentLocation(session) &&
+    controlledTaskAgentLocationReadable({
+      agentDeviceId: session?.agentDeviceId,
+      pendingAgentDeviceId,
+      selfDeviceId,
+      ...(controlledShareIds ? { readableShareIds: controlledShareIds } : {}),
+    });
+  /** 被控电脑上的任务里 Agent 现在所在的电脑(undefined = 被控电脑本身)。 */
+  const controlledAgentDeviceId = controlledAgentLocation
+    ? (session?.agentDeviceId ?? undefined)
+    : undefined;
+  const remoteAgentDevices = useMemo(() => {
+    if (session?.remoteHostId) return undefined;
+    if (remoteDeviceId) {
+      return controlledAgentLocation
+        ? selectControlledTaskAgentDevices({
+            devices: selectableDevices,
+            controlledDeviceId: remoteDeviceId,
+            keepDeviceIds: [controlledAgentDeviceId, pendingAgentDeviceId],
+            shareDevices: [...(controlledShareIds ?? [])].map((deviceId) => ({
+              deviceId,
+              name: providerShareDeviceName(deviceId) ?? deviceId,
+            })),
+          })
+        : undefined;
+    }
+    return [
+      ...selectableDevices
+        .filter(
+          (device) =>
+            device.online ||
+            device.deviceId === agentDeviceId ||
+            device.deviceId === pendingAgentDeviceId,
+        )
+        .map(({ deviceId, name }) => ({ deviceId, name })),
+      ...providerShareDevices,
+    ];
+  }, [
+    selectableDevices,
+    providerShareDevices,
+    remoteDeviceId,
+    session?.remoteHostId,
+    controlledAgentLocation,
+    controlledAgentDeviceId,
+    controlledShareIds,
+    providerShareDeviceName,
+    agentDeviceId,
+    pendingAgentDeviceId,
+  ]);
+  const shownAgentDeviceId = agentDeviceId ?? controlledAgentDeviceId;
+  const agentDeviceName = shownAgentDeviceId
+    ? (selectableDevices.find((device) => device.deviceId === shownAgentDeviceId)?.name ??
+      providerShareDeviceName(shownAgentDeviceId))
     : null;
-  const catalogDeviceId = remoteDeviceId ?? agentDeviceId;
+  /** 被控电脑的名字(换 Agent 所在电脑时「改回那台」的确认文案用)。 */
+  const controlledDeviceName = remoteDeviceId
+    ? (session?.deviceLinkDeviceName ||
+      selectableDevices.find((device) => device.deviceId === remoteDeviceId)?.name ||
+      null)
+    : null;
+  // 底部用量 chip 按意图显示下一轮的模型与来源;余量同样读下一轮 Agent 所在那台的账号
+  // (远程 Agent,本机任务或远程控制的任务都一样),不读任务所在电脑的同名账号。
+  const usageChipProviderId = agentSwitchIntent
+    ? agentSwitchIntent.providerId
+    : (session?.providerId ?? null);
+  const usageAccount = useMemo(
+    () =>
+      resolveUsageAccountLocation({
+        taskDeviceId: remoteDeviceId,
+        agentDeviceId: session?.agentDeviceId,
+        pendingAgentDeviceId,
+        providerId: usageChipProviderId,
+        selfDeviceId,
+        sharedTaskGuest: !!remoteDeviceId && isSharedTaskPeer(remoteDeviceId),
+        remoteHostId: session?.remoteHostId,
+      }),
+    [
+      remoteDeviceId,
+      session?.agentDeviceId,
+      pendingAgentDeviceId,
+      usageChipProviderId,
+      selfDeviceId,
+      session?.remoteHostId,
+    ],
+  );
+  const catalogDeviceId = controlledAgentDeviceId ?? remoteDeviceId ?? agentDeviceId;
   const { providers: deviceProviders } = useDeviceProviders(catalogDeviceId);
   const providers = catalogDeviceId ? deviceProviders : localProviders;
   const canSwitchToClaudeSubscription = useMemo(() => {
@@ -2208,7 +2272,9 @@ export function CCAgentSessionView({
     [messages, agentStatus.isRunning, isStreaming, continuationTurnClientId, continuationInFlightProjectionCapability],
   );
   const reconnectStatus = activeReconnect
-    ? activeReconnect.attempt !== undefined && activeReconnect.maxAttempts !== undefined
+    ? activeReconnect.groupSwitchPending
+      ? t('chat.systemCard.autoResumePending.groupSwitch')
+      : activeReconnect.attempt !== undefined && activeReconnect.maxAttempts !== undefined
       ? t('chat.systemCard.autoResumePending.labelWithProgress', {
           attempt: activeReconnect.attempt,
           total: activeReconnect.maxAttempts,
@@ -2874,6 +2940,7 @@ export function CCAgentSessionView({
     workspaceKind: collabWorkspaceKind,
     workingDir: session?.workingDir,
     orcaRole: session?.orcaRole,
+    orcaRemoteWorker: !!session?.orcaRemoteLead,
     remoteHostId: session?.remoteHostId,
     // 粘滞归属:relay 瞬时重连清空注册表的窗口内不把远程会话误判成本机 —— 误判会让
     // 协同策略退回查控制端本机,读到的是另一台机器的开关。
@@ -3007,6 +3074,14 @@ export function CCAgentSessionView({
           providerId: form.providerId ?? undefined,
           delegateTask: form.initialTask || undefined,
           workerPermissionMode: form.workerPermissionMode,
+          ...(form.executionDeviceId
+            ? {
+                executionDeviceId: form.executionDeviceId,
+                ...(form.workingDir ? { workingDir: form.workingDir } : {}),
+              }
+            : {}),
+          // 首个 Worker 的 Agent 所在电脑(远程供应商)；面板只在任务所在电脑支持时才带。
+          ...(form.agentDeviceId !== undefined ? { agentDeviceId: form.agentDeviceId } : {}),
         };
         const orcaDeviceId = getStickySessionDeviceId(collabSessionId);
         if (orcaDeviceId) {
@@ -3036,9 +3111,10 @@ export function CCAgentSessionView({
         setCollabWorker(previousWorker);
         log.error('enableOrca failed', err);
         toast.error(
-          getCollaborationStartErrorMessage(err, t, {
-            remoteDevice: Boolean(remoteDeviceId),
-          }),
+          (form.agentDeviceId && workerAgentDeviceErrorMessage(err, t))
+            || getCollaborationStartErrorMessage(err, t, {
+              remoteDevice: Boolean(remoteDeviceId),
+            }),
         );
       } finally {
         setEnableBusy(false);
@@ -4232,26 +4308,6 @@ export function CCAgentSessionView({
     continueAfterSilentStop();
   }, [continueAfterSilentStop]);
 
-  const handleContinueAfterUsageReset = useCallback(() => {
-    if (!sessionId || !usageLimitRecovery || remoteDeviceId) return;
-    const requestId =
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `${sessionId}:${Date.now()}`;
-    navigate('/cc-agent/scheduled', {
-      state: usageLimitScheduleNavigationState({
-        kind: 'usage-limit-recovery',
-        requestId,
-        sessionId,
-        agentKind:
-          session?.agentKind === 'codex' || session?.agentKind === 'pi'
-            ? session.agentKind
-            : 'claude-code',
-        resetAtMs: usageLimitRecovery.resetAtMs,
-      }),
-    });
-  }, [navigate, remoteDeviceId, session?.agentKind, sessionId, usageLimitRecovery]);
-
   // 点击 Cancel 关闭报错 banner 同样是处置(用户选择不管它了)。
   const handleDismissError = useCallback(() => {
     if (sessionId) ackErrorAlertHandled(sessionId);
@@ -5101,6 +5157,7 @@ export function CCAgentSessionView({
                   outputTokens={agentStatus.outputTokens ?? 0}
                   generationDurationMs={agentStatus.generationDurationMs ?? 0}
                   generationReliable={agentStatus.generationReliable ?? true}
+                  tokenSpeed={agentStatus.tokenSpeed}
                   startedAt={agentStatus.startedAt}
                   visible={composerRuntimeVisible || (!pendingPlanReview && activeReconnect !== null)}
                   inputWidth={inputWidth}
@@ -5231,6 +5288,7 @@ export function CCAgentSessionView({
                   agentKind={session?.agentKind}
                   remoteHostId={session?.remoteHostId ?? undefined}
                   deviceLinkDeviceId={remoteDeviceId}
+                agentDeviceId={session?.agentDeviceId}
                   modelId={session?.model}
                   providerId={session?.providerId}
                   sessionSource={session?.source}
@@ -5300,14 +5358,14 @@ export function CCAgentSessionView({
                 retryText={errorRetryText}
                 onRetry={handleRetry}
                 onSilentStopContinue={handleSilentStopContinue}
-                onContinueAfterUsageReset={
-                  usageLimitRecovery && !remoteDeviceId ? handleContinueAfterUsageReset : undefined
-                }
+                usageLimitWait={usageLimitWait}
+                onCancelUsageLimitWait={cancelUsageLimitWait}
                 usageLimitRecovery={usageLimitRecovery}
                 onCancel={handleDismissError}
                 agentKind={session?.agentKind}
                 remoteHostId={session?.remoteHostId ?? undefined}
                 deviceLinkDeviceId={remoteDeviceId}
+                agentDeviceId={session?.agentDeviceId}
                 modelId={session?.model}
                 providerId={session?.providerId}
                 sessionSource={session?.source}
@@ -5542,6 +5600,7 @@ export function CCAgentSessionView({
                   initialWorkingDir={session?.workingDir}
                   remoteHostId={session?.remoteHostId ?? null}
                   deviceLinkDeviceId={rightSidebarDeviceLinkDeviceId}
+                  deviceLinkDeviceName={controlledDeviceName}
                   agentDeviceId={session?.agentDeviceId ?? null}
                   agentDeviceName={agentDeviceName}
                   {...(remoteAgentDevices ? { remoteAgentDevices } : {})}
@@ -5782,17 +5841,14 @@ export function CCAgentSessionView({
                     <TodaySpendChip
                       vendorKey={normalizeDbAgentKind(displayAgentKind)}
                       modelId={agentSwitchIntent?.model ?? session?.model ?? null}
-                      providerId={
-                        agentSwitchIntent
-                          ? agentSwitchIntent.providerId
-                          : (session?.providerId ?? null)
-                      }
+                      providerId={usageChipProviderId}
                       sessionId={sessionId}
                       sessionInitialMoney={session?.totalMoney ?? null}
                       sessionInitialCostUsd={session?.totalCostUsd ?? null}
                       sessionInitialTokens={session?.totalTokenUsage ?? null}
                       remoteHostId={session?.remoteHostId ?? null}
                       deviceLinkDeviceId={remoteDeviceId ?? null}
+                      usageAccount={usageAccount}
                     />
                     <ContextCapacityRing
                       isRunning={agentStatus.isRunning}
@@ -5893,6 +5949,14 @@ export function CCAgentSessionView({
         // openai-chat 桥接 Codex 只挂在本地 proxy),与 main 侧 remote-worker
         // guard 同规则(codex review R28)。
         sshRemote={!!session?.remoteHostId}
+        // 首个 Worker 也可放到另一台电脑：仅本机 Lead(非 SSH、Agent 也在本机)。
+        executionDevicesEnabled={
+          !remoteDeviceId && !session?.remoteHostId && !session?.agentDeviceId
+        }
+        // Worker 的 Agent 默认跟 Lead 的 Agent 所在电脑(远程供应商)，模型目录也先按那台读；
+        // 面板里列出与输入框同一份其他电脑 / 分享的供应商，可以换到本机或别处。
+        leadAgentDeviceId={agentDeviceId ?? controlledAgentDeviceId ?? null}
+        remoteAgentDevices={remoteAgentDevices}
       />
 
       {/* 来自 Automations 的入口浮动返回按钮：固定在聊天区左上角，
@@ -5979,6 +6043,7 @@ function RunningStatusBar({
   outputTokens = 0,
   generationDurationMs = 0,
   generationReliable = true,
+  tokenSpeed,
   startedAt,
   visible,
   inputWidth,
@@ -6000,6 +6065,8 @@ function RunningStatusBar({
   outputTokens?: number;
   generationDurationMs?: number;
   generationReliable?: boolean;
+  /** Host-measured live tok/s; replaces the usage-counter estimate when present. */
+  tokenSpeed?: TokenSpeedSnapshot;
   startedAt: number | null;
   visible: boolean;
   inputWidth?: CSSProperties['width'];
@@ -6162,13 +6229,18 @@ function RunningStatusBar({
   const tokenCountText = t('chat.runningStatus.tokenCount', {
     tokens: formatRunningTokenCount(animatedTokens),
   });
+  // Host speed counts and times generation itself; usage counters stay the fallback.
+  const rateOutputTokens = tokenSpeed?.tokens ?? outputTokens;
+  const rateDurationMs = tokenSpeed?.elapsedMs ?? generationDurationMs;
+  const rateReliable = tokenSpeed ? true : generationReliable;
   const rateHistory = useRunningTokenRateHistory({
     sessionKey,
     startedAt,
     outputTokens,
     generationDurationMs,
+    tokenSpeed,
     generationReliable:
-      generationReliable &&
+      rateReliable &&
       !reconnecting &&
       !sideTaskRunning &&
       !backgroundTasksRunning &&
@@ -6176,9 +6248,9 @@ function RunningStatusBar({
   });
   const latestRate = rateHistory.latestRate;
   const usageMeta = resolveRunningUsageMeta({
-    outputTokens,
-    generationDurationMs,
-    generationReliable,
+    outputTokens: rateOutputTokens,
+    generationDurationMs: rateDurationMs,
+    generationReliable: rateReliable,
     tokenUsage,
     latestRate,
   });
@@ -6291,7 +6363,7 @@ function RunningStatusBar({
                 }
                 isTokenCount={usageMeta.kind === 'tokens'}
                 averageRate={usageMeta.kind === 'rate' ? usageMeta.rate : null}
-                outputTokens={outputTokens}
+                outputTokens={rateOutputTokens}
                 history={rateHistory}
                 onPinnedChange={setRatePanelPinned}
               />

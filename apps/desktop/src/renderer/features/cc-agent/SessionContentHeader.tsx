@@ -64,10 +64,12 @@ import {
 import { isOrcaLeadSession, resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { revalidateWorkersProjection } from './hooks/workerProjectionStore';
 import { GitContextBadge } from './GitContextBadge';
+import { OrcaRemoteLeadBadge } from './OrcaRemoteLeadBadge';
 import { SessionRenameInput } from './SessionRenameInput';
 import { useSessionBoundSchedules } from '@/features/scheduler/lib/scheduleSessionBinding';
 import { ScheduleBindingBadge } from './sidebar/ScheduleBindingBadge';
 import { RemoteProjectIcon } from './sidebar/RemoteProjectIcon';
+import { VendorIcon, agentKindToVendor } from '@/components/sidebar/VendorIcon';
 import { MENU_ITEM_CLASS, MENU_ROW_CLASS } from './sidebar/menuStyles';
 import { SessionProjectMoveSubmenu } from './sidebar/SessionProjectMoveSubmenu';
 import type { SessionMoveTarget } from './sidebar/sessionMoveTarget';
@@ -78,18 +80,29 @@ import { Tip } from '@/components/ui/tooltip';
 import { TaskTagDots, TaskTagMenuSection, TaskTagEditor } from '@/features/task-tags/TaskTags';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
+import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
 
 const log = createLogger('SessionContentHeader');
 
 /**
  * 任务在本机、Agent 在同账号另一台电脑上运行:标明那台电脑，离线时如实提示(不自动改在本机跑)。
+ * 图标与侧栏同款:Agent 图标 + 右上信号波纹。
  */
-function AgentDeviceIndicator({ deviceId }: { deviceId: string }) {
+function AgentDeviceIndicator({
+  deviceId,
+  agentKind,
+}: {
+  deviceId: string;
+  agentKind: Session['agentKind'];
+}) {
   const { t } = useTranslation();
   const devices = useDeviceLinkDeviceList();
+  // 分享来的供应商(`share:<id>`)不在同账号设备列表里，名字取自已收到的分享。
+  const { nameFor: providerShareDeviceName } = useProviderShareAgentDevices();
   const device = devices?.find((item) => item.deviceId === deviceId);
-  const name = device?.name || deviceId;
+  const name = device?.name || providerShareDeviceName(deviceId) || deviceId;
   const offline = device ? !device.online : false;
+  const vendor = agentKindToVendor(agentKind);
   return (
     <Tip
       text={t(
@@ -103,10 +116,13 @@ function AgentDeviceIndicator({ deviceId }: { deviceId: string }) {
         className="inline-flex"
         style={WINDOW_NO_DRAG_STYLE}
       >
-        <RemoteProjectIcon
-          kind="agent-device"
-          connectionStatus={offline ? 'disconnected' : 'connected'}
-          className="mr-1 text-[var(--cmd-palette-item-meta)]"
+        {/* 波纹向右上溢出约 3px,右边距比其它标题前缀图标多留一些。 */}
+        <VendorIcon
+          vendor={vendor}
+          size={vendor === 'cc' ? 14 : 13}
+          remote
+          colorClassName="text-[var(--cmd-palette-item-meta)]"
+          className={cn('mr-2', offline && 'opacity-75')}
         />
       </span>
     </Tip>
@@ -195,7 +211,7 @@ export function SessionContentHeader({
     !session.deviceLinkDeviceId;
   const projectOptions = useProjectPickerOptions();
   // heartbeat schedule 绑定标识,与 SessionItem 同源数据;删除/过期后自动消失。
-  const boundSchedules = useSessionBoundSchedules(session.id);
+  const boundSchedules = useSessionBoundSchedules(session.id, session.deviceLinkDeviceId);
   const displayTitle =
     getSessionDisplayTitle(session, t('ccAgent.common.unnamedSession'), t)?.trim() ||
     t('ccAgent.sessionHeader.untitled');
@@ -570,7 +586,12 @@ export function SessionContentHeader({
       )}
       {boundSchedules.length > 0 && (
         <span style={WINDOW_NO_DRAG_STYLE}>
-          <ScheduleBindingBadge schedules={boundSchedules} size={13} className="mr-1 size-4" />
+          <ScheduleBindingBadge
+            schedules={boundSchedules}
+            deviceLinkDeviceId={session.deviceLinkDeviceId}
+            size={13}
+            className="mr-1 size-4"
+          />
         </span>
       )}
       {!isEditing && remoteIconKind && (
@@ -587,7 +608,7 @@ export function SessionContentHeader({
         </Tip>
       )}
       {!isEditing && !remoteIconKind && session.agentDeviceId && (
-        <AgentDeviceIndicator deviceId={session.agentDeviceId} />
+        <AgentDeviceIndicator deviceId={session.agentDeviceId} agentKind={session.agentKind} />
       )}
 
       {isEditing ? (
@@ -631,6 +652,8 @@ export function SessionContentHeader({
           <TaskTagDots tags={session.tags} />
         </span>
       )}
+
+      {!isEditing && <OrcaRemoteLeadBadge session={session} />}
 
       {!isEditing && !readOnly && (!sharedGuest || session.status === 'active') && (
         // 菜单打开就把归档/删除的 dirty 预检发出去:用户从展开菜单到点条目至少

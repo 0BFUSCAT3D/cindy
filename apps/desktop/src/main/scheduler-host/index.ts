@@ -42,6 +42,7 @@ import {
   broadcastSessionCreated,
   cancelSchedulerAutoResume,
   enqueueSchedulerPrompt,
+  ensureSchedulerQueueRestored,
   hasQueuedSchedulerPrompt,
   isSchedulerAutoResumePending,
   isSchedulerPromptTracked,
@@ -52,6 +53,7 @@ import {
 import { DrizzleScheduleStorage, type SchedulerDrizzleDb } from './storage';
 import { ProjectAutomationLoader } from './project-automation-loader';
 import { MakerScheduleRunner } from './runner';
+import { setSilencedRunProbe } from './silent-output';
 import { listMessagesForAgentHandoff } from '../localDb/ipc/messages.js';
 import { drainPersistQueue } from '../messagePersistBroadcaster.js';
 import { buildForcedFailureRun } from './forcedFailureRun';
@@ -143,8 +145,9 @@ async function startSchedulerInternal(deps: StartSchedulerDeps): Promise<Schedul
     resolveRouteCopyCapabilities,
     resolveDefaultModelRoute: resolveDefaultScheduleRoute,
     // 心跳撞忙排队桥:实现挂在 maker-ipc/register.ts 的 coordinator 装配处
-    // (holder 未就绪时 isSessionBusy 返回 false → runner 走原直发路径)。
+    // 先恢复快照再判忙闲；holder 未就绪时恢复返回 false，由 runner 顺延。
     schedulerQueue: {
+      ensureQueueRestored: ensureSchedulerQueueRestored,
       isSessionBusy: isSchedulerTargetSessionBusy,
       hasQueuedPrompt: hasQueuedSchedulerPrompt,
       enqueuePrompt: enqueueSchedulerPrompt,
@@ -255,6 +258,7 @@ async function startSchedulerInternal(deps: StartSchedulerDeps): Promise<Schedul
     },
   });
   _scheduler = scheduler;
+  setSilencedRunProbe((runId) => scheduler.isRunSilenced(runId));
   void getRoutineEngine().catch((error) => deps.logger.warn?.('routine startup failed', { error: String(error) }));
   _loader = loader;
   deps.logger.info?.(`[scheduler-host] started${passive ? ' (passive: auto-fire disabled)' : ''}`);
@@ -316,6 +320,7 @@ export async function resetScheduler(): Promise<void> {
       // Superseded startup rejects after stopping itself; teardown continues.
     }
   }
+  setSilencedRunProbe(null);
   if (_scheduler) {
     await _scheduler.stop();
   }

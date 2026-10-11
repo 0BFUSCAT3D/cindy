@@ -38,6 +38,7 @@ import {
 import type { UsageTracker } from '../shared/usage-tracker.js';
 import { isModelAccessDenied } from './model-access-error.js';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
+import { isFileWritingTool } from '../shared/token-speed.js';
 import {
   beginClaudeGeneration,
   beginClaudeGenerationAtRequestStart,
@@ -66,13 +67,14 @@ export interface TurnState {
   /** 本 turn 是否已收到 compact_boundary；收到后 result usage 不应覆盖 compact 后 context。 */
   sawCompactBoundary: boolean;
   /**
-   * 本 turn 是否已向 UI 推过 text event(assistant text block 或流式 text_delta)。
+   * 本 turn 主代理是否已向 UI 推过 text event(assistant text block 或流式 text_delta)。
    * handleResult 里 result.result 兜底补推的判据:整轮一个 text 都没推过时才补,
    * 避免与已推正文重复。空串不置位(见两处置位点)。
    */
   hasEmittedText: boolean;
   /**
-   * 本 turn 已推给 UI 的全部 text(assistant block + 流式 delta,按到达顺序拼接)。
+   * 本 turn 主代理已推给 UI 的 text(assistant block + 流式 delta,按到达顺序拼接)。
+   * 子代理事件仍照常推送，但不能参与主代理 result 的补发或 silent-stop 判定。
    * turn-end 时与 result.result 做前缀比对,只补 UI 缺失的尾部(末尾截断兜底),绝不重复推。
    * 这是修复 e7ea882b 盲区(末尾截断)的依据:hasEmittedText 是 per-turn 布尔,无法区分
    * "整轮全空"和"前面推过、最后一段被截断";uiEmittedText 让兜底能精确算出缺哪一段。
@@ -117,7 +119,7 @@ export interface TurnState {
   /** interrupt 置位时的 generation 快照(见 generation 注释)。 */
   interruptGeneration: number;
   /**
-   * 最近一条 assistant API 消息是否带「实质内容」(非空 text 或任何非 thinking 块;
+   * 最近一条主代理 assistant API 消息是否带「实质内容」(非空 text 或任何非 thinking 块;
    * thinking / redacted_thinking 不算)。逐条 assistant 消息覆盖写,turn end
    * 时留下的即"最后一条 assistant 消息"的判定,是 silent-stop 观测的核心依据:
    * 上游偶发用一条空内容消息收尾整个 turn(空 thinking + end_turn,或 SSE 流被
@@ -175,7 +177,7 @@ export interface RuntimeState {
   /** 明确属于 local_bash / local_workflow 的 task_id；稀疏后续帧继续排除。 */
   excludedSubagentTaskIds: Set<string>;
   /**
-   * 上一次 SDK assistant 消息提取出来的 agentMeta (uuid / sdkSessionId / model / ...).
+   * 上一次主 agent SDK assistant 消息的 agentMeta (uuid / sdkSessionId / model / ...).
    * 主 agent 的 stream_event 累积时用它补齐 transcript 锚点；subagent stream
    * 则必须按 parent_tool_use_id 隔离，不能共享这份会话级状态。
    * 老链路 agentManager.ts:2214 (session.lastAssistantMeta) 同款。
@@ -342,6 +344,7 @@ function ccLiveStatus(
   return {
     status,
     ...attachLiveGeneration(ctx.tracker.snapshot(), {
+      tokenSpeed: ctx.rt.generation.tokenSpeed.snapshot(),
       outputTokens: mainTurnOutputTokens(ctx.tracker),
       durationMs: ctx.rt.generation.outputDurationMs,
       openStartedAt: ctx.rt.generation.startedAt,
@@ -809,6 +812,7 @@ export function translateSdkMessage(
           type: 'tool_result_full',
           data: { toolUseId: pair.toolUseId, fullText: pair.fullText },
           source: 'claude-code',
+          ...(parentToolUseId ? { agentMeta: { parentUuid: parentToolUseId } } : {}),
         });
       }
       const subagentResult = extractSubagentToolResult(msg);
@@ -1066,6 +1070,8 @@ function handleSystem(
     return;
   }
   if (msg.subtype === 'api_retry') {
+    // The backoff wait is not generation time; the retried request's first block resumes.
+    ctx.rt.generation.tokenSpeed.pause();
     // SDKAPIRetryMessage 明确表示本次 API 失败仍在自动重试，不是 turn 终态。
     // 除日志外也暂存最后一次 retry 的错误详情，覆盖 SDK 没有额外发送
     // assistant.error envelope、最终 ResultMessage 又没有 result 文本的路径。
@@ -1395,6 +1401,13 @@ function assistantBlockHasSubstance(block: Record<string, unknown>): boolean {
   return true;
 }
 
+/** Both envelope and streaming text use the root-only result fallback ledger. */
+function recordRootEmittedText(ctx: TranslateContext, text: string, parentToolUseId?: string): void {
+  if (parentToolUseId || text.length === 0) return;
+  ctx.turn.hasEmittedText = true;
+  ctx.turn.uiEmittedText += text;
+}
+
 function handleAssistant(
   msg: {
     message?: { content?: Array<Record<string, unknown>> };
@@ -1459,11 +1472,12 @@ function handleAssistant(
   // 后续另一次失败误用旧 envelope 的错误详情。错误 envelope 也不能成为
   // lastAssistantMeta，避免恢复后的 fallback text 错绑到错误消息的 transcript 锚点。
   ctx.turn.pendingApiError = null;
-  ctx.rt.lastAssistantMeta = assistantMeta;
-
   const parentToolUseId = typeof msg.parent_tool_use_id === 'string' && msg.parent_tool_use_id
     ? msg.parent_tool_use_id
     : undefined;
+  // Child envelopes interleave with the root stream; they are never its
+  // transcript fallback (including when the next root wrapper omits parent).
+  if (!parentToolUseId) ctx.rt.lastAssistantMeta = assistantMeta;
   const parentStreamKey = parentToolUseId ?? CLAUDE_MAIN_USAGE_PARENT;
   const assistantRequestId = typeof assistantMeta.requestId === 'string'
     ? assistantMeta.requestId
@@ -1529,7 +1543,9 @@ function handleAssistant(
   // silent-stop 观测素材: 本条消息是否带实质内容(非空 text / 非 thinking 块)。
   // 未知块 fail-safe 为有内容，避免 SDK 新 block 被误续跑。
   // 逐条覆盖写, turn end 时留下的就是最后一条 assistant 消息的判定(见 TurnState 字段注释)。
-  ctx.turn.lastAssistantMsgHadSubstance = content.some(assistantBlockHasSubstance);
+  if (!parentToolUseId) {
+    ctx.turn.lastAssistantMsgHadSubstance = content.some(assistantBlockHasSubstance);
+  }
   for (const blockRaw of content) {
     const block = blockRaw as { type?: string; text?: string; name?: string; id?: string; input?: unknown; thinking?: string; signature?: string };
     if (block.type === 'text' && typeof block.text === 'string') {
@@ -1540,10 +1556,9 @@ function handleAssistant(
         }
       }
       const visibleText = stripInternalWebCitations(block.text);
-      ctx.turn.text += visibleText;
+      if (!parentToolUseId) ctx.turn.text += visibleText;
       if (visibleText.length > 0) {
-        ctx.turn.hasEmittedText = true;
-        ctx.turn.uiEmittedText += visibleText;
+        recordRootEmittedText(ctx, visibleText, parentToolUseId);
         queue.push({
           type: 'text',
           data: { text: visibleText, isFinal: true },
@@ -1655,6 +1670,44 @@ function observeClaudeSubagentStream(
 
 // ── stream_event 子分支(content_block_delta / message_delta / message_start) ──
 
+/** Main-thread live tok/s, mirroring pi-token-speed's message_update handlers. */
+function observeClaudeTokenSpeed(
+  event: {
+    type?: string;
+    index?: number;
+    delta?: Record<string, unknown>;
+    content_block?: { type?: string; name?: string };
+  },
+  queue: EventQueue,
+  ctx: TranslateContext,
+): void {
+  const speed = ctx.rt.generation.tokenSpeed;
+  const tools = ctx.rt.generation.tokenSpeedToolByIndex;
+  const index = typeof event.index === 'number' ? event.index : 0;
+  switch (event.type) {
+    case 'message_start':
+      tools.clear();
+      return;
+    case 'content_block_start':
+      if (event.content_block?.type === 'tool_use') tools.set(index, event.content_block.name ?? '');
+      speed.start();
+      return;
+    case 'content_block_delta': {
+      const delta = event.delta;
+      const text = delta?.type === 'input_json_delta'
+        ? (isFileWritingTool(tools.get(index)) ? delta.partial_json : undefined)
+        : delta?.text ?? delta?.thinking;
+      if (typeof text === 'string' && speed.recordDelta(text)) {
+        queue.push({ type: 'status', data: ccLiveStatus(ctx, 'Generating...', true), source: 'claude-code' });
+      }
+      return;
+    }
+    case 'content_block_stop':
+      if (tools.has(index) && !isFileWritingTool(tools.get(index))) speed.pause();
+      return;
+  }
+}
+
 function handleStreamEvent(
   msg: {
     event?: Record<string, unknown>;
@@ -1676,6 +1729,8 @@ function handleStreamEvent(
   const parentToolUseId = typeof msg.parent_tool_use_id === 'string' && msg.parent_tool_use_id
     ? msg.parent_tool_use_id
     : undefined;
+
+  if (!parentToolUseId) observeClaudeTokenSpeed(event, queue, ctx);
 
   // 冗余 add: 防 SDK 顺序契约变化 (stream_event 先于 assistant message yield), Set 幂等。
   if (event.type === 'content_block_start') {
@@ -1745,8 +1800,7 @@ function handleStreamEvent(
       const visibleDelta = holdStandaloneStopTokenDelta(buffer, delta.text);
       ctx.rt.streamStopTokenByKey.set(streamKey, buffer);
       if (visibleDelta && visibleDelta.length > 0) {
-        ctx.turn.hasEmittedText = true;
-        ctx.turn.uiEmittedText += visibleDelta;
+        recordRootEmittedText(ctx, visibleDelta, parentToolUseId);
         queue.push({
           type: 'text',
           data: { text: visibleDelta, isFinal: false },
@@ -2186,6 +2240,9 @@ function handleResult(
     resultUsage != null && segmentTotals.outputTokens === resultUsage.outputTokens,
   );
   const liveGeneration = ctx.rt.generation;
+  // Snap to this turn's streamed main-thread usage: the result aggregate can be
+  // a session total turned into a wrong delta, and a bad snap is worse than the estimate.
+  liveGeneration.tokenSpeed.stop(mainTurnOutputTokens(ctx.tracker));
   const endSnapshot = ctx.tracker.endTurn(
     resultUsage
       ? {
@@ -2453,7 +2510,12 @@ function handleResult(
         // renderer 消费方(IM/orca)的兜底文案。
         : { message: '任务执行失败（模型未返回错误详情）。', isTerminal: true, reason: 'turn-failed' },
       source: 'claude-code',
-      ...(pendingApiError?.agentMeta ? { agentMeta: pendingApiError.agentMeta } : {}),
+      // ResultMessage terminates the whole query. A child API envelope can
+      // explain its failure, but must not turn this terminal event into a child
+      // event or attach the child's transcript anchor to the root error.
+      ...(pendingApiError?.agentMeta && !pendingApiError.agentMeta.parentUuid
+        ? { agentMeta: pendingApiError.agentMeta }
+        : {}),
     });
   }
   // turn end status: isRunning=false + status='Done'; 数值全部走 endSnapshot
@@ -2462,6 +2524,7 @@ function handleResult(
     data: {
       status: 'Done',
       ...attachLiveGeneration(endSnapshot, {
+        tokenSpeed: liveGeneration.tokenSpeed.snapshot(),
         outputTokens: liveTurnOutput,
         durationMs: liveGeneration.outputDurationMs,
         openStartedAt: null,

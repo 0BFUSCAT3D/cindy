@@ -103,6 +103,7 @@ type RemoteHostSnapshot = {
   };
   status: import('@cindy/maker-remote-ssh').RemoteStatus;
   lastError?: string;
+  hostKeyMismatch?: import('@cindy/maker-remote-ssh').HostSnapshot['hostKeyMismatch'];
   lastAuthLabel?: string;
   statusChangedAt: number;
   autoConnect: boolean;
@@ -637,6 +638,8 @@ interface OrcaWorkerRecord {
     permissionMode: string;
     fastMode: boolean;
     sdkSessionId?: string;
+    /** Worker 的 Agent 在另一台电脑或分享上运行(远程供应商)；null = 任务所在电脑。旧端缺省。 */
+    agentDeviceId?: string | null;
   };
 }
 
@@ -813,6 +816,8 @@ interface CCAgentStatusUpdate {
   generationDurationMs?: number;
   generationActive?: boolean;
   generationReliable?: boolean;
+  /** Host-measured live tok/s (Pi extension algorithm); old hosts omit it. */
+  tokenSpeed?: import('@cindy/maker-shared/usage-format').TokenSpeedSnapshot;
   isRunning: boolean;
   /** Host-owned SDK boundary claim; a claimed `status(false)` is not product idle. */
   turnContinuationId?: number;
@@ -1133,6 +1138,8 @@ type CindyMediaPreferenceKind = {
 };
 
 type ElectronLocalDbSessionListOptions = {
+  /** Local list continuation; does not change the default capped query. */
+  before?: { updatedAt: number; id: string };
   includePinned?: boolean;
   fresh?: boolean;
   usageHistory?: boolean;
@@ -1908,6 +1915,8 @@ interface ElectronAPI {
   windowBehavior: {
     getLoginItem: () => Promise<import('../shared/loginItem').LoginItemState>;
     setLoginItem: (enabled: boolean) => Promise<import('../shared/loginItem').LoginItemState>;
+    getMenubarState: () => Promise<import('../shared/menubarQuota').MenubarState>;
+    setMenubarEnabled: (enabled: boolean) => Promise<import('../shared/menubarQuota').MenubarState>;
     setSwallowActivationClick: (enabled: boolean) => Promise<{ ok: true }>;
     getWindowsCloseBehavior: () => Promise<'quit' | 'tray' | null>;
     setWindowsCloseBehavior: (behavior: 'quit' | 'tray') => Promise<'quit' | 'tray'>;
@@ -2675,6 +2684,7 @@ interface ElectronAPI {
       mtimeMs: number;
       remoteHostId?: string | null;
       deviceId?: string | null;
+      requestId?: string;
     }) => Promise<{ ok: true; cachePath: string; stale: boolean } | { ok: false; message: string }>;
     readCached: (params: {
       cachePath: string;
@@ -2699,11 +2709,11 @@ interface ElectronAPI {
         received: number;
         total: number;
         phase?: 'pack' | 'upload' | 'download' | 'extract';
-        /** chatDownload 发起时带的请求 id(其它取回不带)。 */
+        /** fetchRemote / chatFetch / chatDownload 发起时带的请求 id。 */
         requestId?: string;
       }) => void,
     ) => () => void;
-    /** 聊天流文件取回:远端绝对路径 → 本地缓存副本(进度经 onTransferProgress,relPath 键 = absPath)。 */
+    /** 聊天流文件取回:远端绝对路径 → 本地缓存副本(进度经 onTransferProgress,按 requestId 关联)。 */
     previewHtml: (params: {
       origin:
         | { kind: 'local' }
@@ -2716,6 +2726,7 @@ interface ElectronAPI {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
       absPath: string;
+      requestId?: string;
     }) => Promise<
       | { ok: true; cachePath: string; stale: boolean; size: number }
       | {
@@ -2948,7 +2959,9 @@ interface ElectronAPI {
         | { type: 'share-import'; filePath: string }
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
-        | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
+        | { type: 'chat-invite'; token: string }
+        | { type: 'provider-share-join'; link: string }
+        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => void,
   ) => () => void;
 
@@ -2965,7 +2978,9 @@ interface ElectronAPI {
     | { type: 'share-import'; filePath: string }
     | { type: 'provider-import'; importId: string }
     | { type: 'shared-task-join'; invitation: string; server: string }
-    | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string }
+    | { type: 'chat-invite'; token: string }
+    | { type: 'provider-share-join'; link: string }
+    | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' }
     | null
   >;
 
@@ -3933,6 +3948,23 @@ interface ElectronAPI {
     host(command: import('@cindy/device-link').SharedTaskHostCommand): Promise<unknown>;
     account(command: import('@cindy/device-link').SharedTaskAccountCommand): Promise<unknown>;
   };
+  providerShare: {
+    command<C extends import('../shared/providerShare').ProviderShareCommand>(
+      command: C,
+    ): Promise<import('../shared/providerShare').ProviderShareCommandResult[C['action']]>;
+    onOwnedChanged(cb: () => void): () => void;
+    onReceivedChanged(cb: (received: import('@cindy/device-link').ProviderShareReceived[]) => void): () => void;
+    onRequested(cb: (event: import('../shared/providerShare').ProviderShareRequestedEvent) => void): () => void;
+    onSettled(cb: (event: import('../shared/providerShare').ProviderShareSettledEvent) => void): () => void;
+    onOpenJoin(cb: (event: { link: string }) => void): () => void;
+    onOpenManage(cb: (event: { providerId: string }) => void): () => void;
+  };
+  providerGroup: {
+    command<C extends import('../shared/providerGroup').ProviderGroupCommand>(
+      command: C,
+    ): Promise<import('../shared/providerGroup').ProviderGroupCommandResult<C>>;
+    onChanged(cb: (event: { providerId: string }) => void): () => void;
+  };
   deviceLink: {
     taskMigration: (deviceId: string | null, request: import('@cindy/device-link').TaskMigrationRequest) => Promise<import('@cindy/device-link').TaskMigrationView>;
     getState: () => Promise<{
@@ -4043,6 +4075,7 @@ interface ElectronAPI {
         expectedOwnerToken?: string,
         expectedAccountCounter?: number,
         historyView?: string,
+        mergeListMessage?: boolean,
       ) => Promise<{ ok: true; invalidation?: number }>;
       getSessionList: () => Promise<{
         devices: Array<{
@@ -4104,6 +4137,7 @@ interface ElectronAPI {
       agentProxy?: AgentProxyPrefPayload | null;
     }) => Promise<{ host: RemoteHostSnapshot }>;
     remove: (id: string) => Promise<{ ok: true }>;
+    reviewHostKey: (id: string) => Promise<{ updated: boolean }>;
     connect: (id: string) => Promise<{ host: RemoteHostSnapshot | null }>;
     disconnect: (id: string) => Promise<{ host: RemoteHostSnapshot | null }>;
     onStatusChanged: (cb: (snap: RemoteHostSnapshot) => void) => () => void;
@@ -4795,6 +4829,11 @@ interface ElectronAPI {
         session: import('@/lib/ccAgent.types').Session;
       }>;
       history: (botId: string) => Promise<unknown[]>;
+      todos: {
+        list: (botId:string) => Promise<{items:import('@cindy/maker-shared/teammate-todo').TeammateTodo[];version:1}>;
+        update: (botId:string, patch:import('@cindy/maker-shared/teammate-todo').TodoPatch) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo>;
+        act: (botId:string, input:{id:string;revision:number;requestId:string;locale?:string}) => Promise<import('@cindy/maker-shared/teammate-todo').TeammateTodo | null>;
+      };
       workbench: {
         get: (botId: string) => Promise<import('../shared/botWorkbench').BotWorkbench | null>;
         addDirectory: (
@@ -5058,6 +5097,8 @@ interface ElectronAPI {
       archiveWorker: (leadSessionId: string, workerId: string) => Promise<unknown>;
       endTeam: (leadSessionId: string) => Promise<unknown>;
       getCollaborationSettings: () => Promise<unknown>;
+      /** 可放 Worker 的同账号其他电脑(`{ devices: OrcaExecutionDeviceView[] }`)。 */
+      listExecutionDevices: () => Promise<unknown>;
       setCollaborationSetting: (key: string, value: number) => Promise<unknown>;
       resetCollaborationSettings: () => Promise<unknown>;
     };
@@ -5956,6 +5997,12 @@ interface ElectronAPI {
         workerPermissionMode?: 'auto' | 'bypassPermissions';
         /** 新建 Lead 专用：等首条输入 accepted 且可查询后再派任务。 */
         deferDelegateTask?: boolean;
+        /** 首个 Worker 放到同账号另一台电脑运行；缺省 = 本机。 */
+        executionDeviceId?: string;
+        /** 运行设备上的工作目录；缺省由那台分配。 */
+        workingDir?: string;
+        /** 首个 Worker 的 Agent 所在电脑(远程供应商)；null = 任务所在电脑，缺省 = 跟 Lead。 */
+        agentDeviceId?: string | null;
       },
     ) => Promise<{
       teamId: string;
@@ -6120,6 +6167,11 @@ interface ElectronAPI {
         opts?: { expectedClearBoundaryMs?: number | null },
       ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
       clearError: (
+        sessionId: string,
+        opts?: { expectedClearBoundaryMs?: number | null },
+      ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
+      /** 取消账号限额重置后的自动继续(错误与重试保留)。 */
+      cancelUsageLimitWait: (
         sessionId: string,
         opts?: { expectedClearBoundaryMs?: number | null },
       ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
@@ -6807,6 +6859,10 @@ interface ElectronAPI {
       getCodexRateLimits: (
         providerId?: string,
       ) => Promise<import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitsResult>;
+      consumeCodexRateLimitReset: (
+        idempotencyKey: string,
+        providerId?: string,
+      ) => Promise<import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitResetResult>;
       /** Cindy AI /models 下发的 XD 原生报价。 */
       getModelPricing: () => Promise<import('../shared/regionalMoney').ModelPricingCatalog | null>;
       onModelPricingChanged: (
