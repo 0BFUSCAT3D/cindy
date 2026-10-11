@@ -134,6 +134,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
               testID="filePreview.browser.editAddress"
               modifiers={[
                 buttonStyle("plain"),
+                disabled(p.pending === true),
                 frame({ maxWidth: Infinity, height: size }),
                 accessibilityLabel(
                   `${t("files.preview.browserAddress")}: ${p.address}`,
@@ -281,6 +282,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
             modifiers={[
               ...circle,
               menuOrder("fixed"),
+              disabled(p.pending === true),
               accessibilityLabel(t("files.preview.browserMore")),
             ]}
           >

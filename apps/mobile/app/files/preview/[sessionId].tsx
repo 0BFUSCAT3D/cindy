@@ -563,6 +563,7 @@ export default function RemoteFilePreviewScreen() {
     // HTML opens straight into the floating browser chrome; the classic header would flash first.
     if (richTextKindOf(pendingPath) === 'html') {
       const retry = () => { setError(null); setRecoveryEpoch((epoch) => epoch + 1); };
+      // Pending disables address editing and the menu, so these handlers stay unreachable.
       const noop = () => {};
       return (
         <SafeAreaView edges={[]} style={styles.safeArea} testID="filePreview.screen">
@@ -585,6 +586,7 @@ export default function RemoteFilePreviewScreen() {
             canGoForward={false}
             source={false}
             busy
+            pending
             loading={!error}
             onClose={() => goBackGuarded(router)}
             onBack={noop}

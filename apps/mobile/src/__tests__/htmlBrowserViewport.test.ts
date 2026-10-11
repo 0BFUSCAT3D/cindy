@@ -99,3 +99,36 @@ describe('page-local viewport contract', () => {
     expect((window as any).cindyViewport.version).toBe(1);
   });
 });
+
+describe('page canvas fallback', () => {
+  const painted = Symbol.for('cindy.browserViewport.canvas');
+  const page = (root: Partial<CSSStyleDeclaration>, body: Partial<CSSStyleDeclaration> = {}) => {
+    const computed = (style: Partial<CSSStyleDeclaration>) => ({ backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none', ...style });
+    vi.stubGlobal('getComputedStyle', (element: Element) => computed(element === document.documentElement ? root : body));
+  };
+  afterEach(() => {
+    document.documentElement.style.backgroundColor = '';
+    delete (document.documentElement as any)[painted];
+  });
+  it('paints the canvas from the page color scheme when html and body set no background', () => {
+    page({});
+    run();
+    expect(document.documentElement.style.backgroundColor.toLowerCase()).toBe('canvas');
+  });
+  it('treats an inline transparent html background as no background', () => {
+    document.documentElement.style.backgroundColor = 'transparent';
+    page({ backgroundColor: 'transparent' });
+    run();
+    expect(document.documentElement.style.backgroundColor.toLowerCase()).toBe('canvas');
+  });
+  it.each([
+    ['html color', { backgroundColor: 'rgb(17, 22, 27)' }, {}],
+    ['body color', {}, { backgroundColor: 'rgb(17, 22, 27)' }],
+    ['body gradient', {}, { backgroundImage: 'linear-gradient(red, blue)' }],
+    ['html image', { backgroundImage: 'url("bg.png")' }, {}],
+  ])('leaves a page-defined background alone (%s)', (_, root, body) => {
+    page(root, body);
+    run();
+    expect(document.documentElement.style.backgroundColor).toBe('');
+  });
+});

@@ -69,14 +69,19 @@ export function browserViewportScript(viewport: BrowserViewport): string {
     // The native view's backing would become the canvas of pages that set no background
     // (white text on white, or black on a dark theme). Like Safari, paint the canvas from the
     // page's own used color scheme; any page-defined html/body background wins.
+    // A background image (gradients included) counts as a page background too.
+    const painted = Symbol.for('cindy.browserViewport.canvas');
     const paintCanvas = () => {
       const root = document.documentElement;
-      if (!root || !document.body || root.style.backgroundColor) return;
-      const clear = element => {
-        const color = getComputedStyle(element).backgroundColor;
-        return color === 'transparent' || color === 'rgba(0, 0, 0, 0)';
+      if (!root || !document.body || root[painted]) return;
+      const bare = element => {
+        const style = getComputedStyle(element);
+        const color = style.backgroundColor;
+        return (color === 'transparent' || color === 'rgba(0, 0, 0, 0)') && style.backgroundImage === 'none';
       };
-      if (clear(root) && clear(document.body)) root.style.backgroundColor = 'Canvas';
+      if (!bare(root) || !bare(document.body)) return;
+      root.style.backgroundColor = 'Canvas';
+      root[painted] = true;
     };
     const schedule = () => { if (!pending) pending = requestAnimationFrame(() => { paintCanvas(); publish(); }); };
     window.addEventListener('resize', schedule);

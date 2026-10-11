@@ -15,7 +15,7 @@ controls and the area before the first paint match Light or Dark mode. The
 WebView stays hidden until its first document finishes loading. The native
 backing would otherwise become the canvas of a page that sets no background.
 Like Safari, the viewport script therefore paints `html` with the CSS `Canvas`
-system color, but only when both `html` and `body` are transparent. Unstyled
+system color, but only when neither `html` nor `body` has a background color or image (an inline `transparent` still counts as none). Unstyled
 pages stay light. Pages that declare `color-scheme` follow the system appearance.
 Pages that set their own background are left unchanged. The floating controls tint their glass
 with the app theme. Untinted glass adapts to the page behind it and would
