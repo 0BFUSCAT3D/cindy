@@ -5,6 +5,8 @@ import {
   lightboxImagesForPayload,
 } from '@/session/messageGallery';
 import type { MobileMessageRenderItem } from '@/session/messageRenderModel';
+import { buildMobileMessageRenderItems } from '@/session/messageRenderModel';
+import type { RemoteMessage } from '@/session/types';
 import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl } from '@/session/messageMarkdown';
 import { buildMediaPayload } from '@/session/messagePayload';
 
@@ -107,7 +109,7 @@ describe('message gallery', () => {
     ]);
   });
 
-  it('collects user image attachments and tool media images in render order', () => {
+  it('collects user image attachments and tool media images and videos in render order', () => {
     const items: MobileMessageRenderItem[] = [
       messageItem('m1', {
         attachments: [
@@ -140,6 +142,7 @@ describe('message gallery', () => {
     expect(gallery.map((item) => [item.title, item.url, item.payload.media.previewable])).toEqual([
       ['user.png', 'https://example.com/user.png', true],
       ['tool.png', 'xdt-image://cache/tool.png', false],
+      ['tool.mp4', 'xdt-video://cache/tool.mp4', false],
     ]);
     expect(galleryImageIndexForPayload(gallery, gallery[1].payload)).toBe(1);
   });
@@ -312,6 +315,96 @@ describe('message gallery', () => {
     expect(unique.map((image) => image.url)).toEqual([
       'https://example.com/dup.png',
       'https://example.com/a2.png',
+    ]);
+  });
+
+  it('同一 url 后来又出现在别的消息里,按点击来源仍翻原消息的整组(不再退化单图)', () => {
+    const items: MobileMessageRenderItem[] = [
+      messageItem('m1', {
+        attachments: [
+          { kind: 'image', name: 'shot.png', uri: 'xdt-image://cache/shot.png', previewable: false },
+          { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false },
+        ],
+      }),
+      // 之后 Agent 读同一个文件,工具结果里又出现同一张图。
+      messageItem('m2', {
+        media: [{ kind: 'image', url: 'xdt-image://cache/shot.png', title: 'shot.png', previewable: false }],
+      }),
+    ];
+    const gallery = collectMobileMessageGalleryImages(items);
+    const shot = gallery[0].payload;
+
+    expect(lightboxImagesForPayload(gallery, shot, 'm1').map((image) => image.url)).toEqual([
+      'xdt-image://cache/shot.png',
+      'xdt-image://cache/b.png',
+    ]);
+    expect(lightboxImagesForPayload(gallery, shot, 'm2').map((image) => image.url)).toEqual([
+      'xdt-image://cache/shot.png',
+    ]);
+    // 来源不在图集里 / 没有来源:按 url 反查,多组命中仍保守退化单图。
+    expect(lightboxImagesForPayload(gallery, shot, 'unknown')).toHaveLength(1);
+    expect(lightboxImagesForPayload(gallery, shot)).toHaveLength(1);
+  });
+
+  it('回合结束后「工作过程」嵌套分组里的工具图仍在图集里,点开照常翻页', () => {
+    const row = (i: number, role: string, content: unknown, toolUseId?: string): RemoteMessage => ({
+      id: `r${i}`, clientId: `r${i}`, sessionId: 's', role, content, toolUseId,
+      createdAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}Z`, agentMeta: null,
+    } as RemoteMessage);
+    const rows: RemoteMessage[] = [row(0, 'user', 'make images')];
+    let n = 1;
+    for (let k = 0; k < 5; k++) {
+      rows.push(row(n++, 'tool_use', { toolName: 'gen', toolUseId: `u${k}`, input: {} }, `u${k}`));
+      rows.push(row(n++, 'tool_result', JSON.stringify({ xdt_image_url: `xdt-image://cache/img${k}.png` }), `u${k}`));
+      if (k === 1) rows.push(row(n++, 'assistant', 'Two are done, continuing with the remaining three images now.'));
+    }
+    rows.push(row(n++, 'assistant', 'All five images are ready.'));
+    const later = ['xdt-image://cache/img2.png', 'xdt-image://cache/img3.png', 'xdt-image://cache/img4.png'];
+
+    for (const isSessionStreaming of [true, false]) {
+      const items = buildMobileMessageRenderItems(rows, { isSessionStreaming });
+      const gallery = collectMobileMessageGalleryImages(items);
+      const block = items.find((item) => item.type === 'tool_media' && item.tools.some(
+        (tool) => tool.media?.some((media) => media.url === later[0]),
+      ))!;
+      // 每个 url 只属于一个组(工具媒体块不另收),url 反查不会因多组命中而退化单图。
+      expect(gallery.filter((image) => image.url === later[0])).toHaveLength(1);
+      const entry = gallery.find((image) => image.url === later[0])!;
+      // 从独立的工具媒体块点开:来源不在图集里,按 url 找回所属的工作过程组。
+      expect(lightboxImagesForPayload(gallery, entry.payload, block.key).map((image) => image.url)).toEqual(later);
+      // 从展开的「工作过程」点开。
+      expect(lightboxImagesForPayload(gallery, entry.payload, entry.groupKey).map((image) => image.url)).toEqual(later);
+    }
+
+    // 查看器打开期间回合结束重组:流式时记下的来源 key 在结束后的图集里已不存在,
+    // 仍按 url 找回同一组,不退化单图(review P1)。
+    const streamingGallery = collectMobileMessageGalleryImages(buildMobileMessageRenderItems(rows, { isSessionStreaming: true }));
+    const streamingKey = streamingGallery.find((image) => image.url === later[0])!.groupKey!;
+    const settledGallery = collectMobileMessageGalleryImages(buildMobileMessageRenderItems(rows, { isSessionStreaming: false }));
+    expect(settledGallery.some((image) => image.groupKey === streamingKey)).toBe(false);
+    const settled = settledGallery.find((image) => image.url === later[0])!;
+    expect(lightboxImagesForPayload(settledGallery, settled.payload, streamingKey).map((image) => image.url)).toEqual(later);
+  });
+
+  it('收同一条消息里的视频,与图片一起翻页', () => {
+    const items: MobileMessageRenderItem[] = [
+      messageItem('m1', {
+        attachments: [
+          { kind: 'image', name: 'a.png', uri: 'https://example.com/a.png', previewable: true },
+        ],
+        media: [{ kind: 'video', url: 'xdt-video://cache/clip.mp4', title: 'clip.mp4', previewable: false }],
+      }),
+      messageItem('m2', {
+        attachments: [
+          { kind: 'image', name: 'b.png', uri: 'https://example.com/b.png', previewable: true },
+        ],
+      }),
+    ];
+    const gallery = collectMobileMessageGalleryImages(items);
+    const clip = gallery.find((image) => image.payload.media.kind === 'video')!;
+    expect(lightboxImagesForPayload(gallery, clip.payload, 'm1').map((image) => image.url)).toEqual([
+      'https://example.com/a.png',
+      'xdt-video://cache/clip.mp4',
     ]);
   });
 
