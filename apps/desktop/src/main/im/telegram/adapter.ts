@@ -171,7 +171,12 @@ export function buildTelegramAdapter(
       const historyMedia = event.ambient
         ? { attachments: [], unavailable: [] }
         : await telegramIm
-            .collectGroupHistoryMedia(lane.chatId, assembly.messageIds ?? [])
+            .collectGroupHistoryMedia(
+              lane.chatId,
+              assembly.messageIds ?? [],
+              // 触发消息的相册成员与被引消息已随本轮附件送达, 由 transport 排除。
+              event.raw as Parameters<TelegramIM['collectGroupHistoryMedia']>[2],
+            )
             .catch(() => ({ attachments: [], unavailable: [] }));
       const historyMediaNote = buildTelegramHistoryMediaNote({
         provided: historyMedia.attachments,

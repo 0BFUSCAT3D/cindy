@@ -2992,7 +2992,7 @@ describe('TelegramIM 音视频与群历史媒体', () => {
     expect((await im.collectGroupHistoryMedia('-100300', ['80'])).attachments).toEqual([]);
   });
 
-  it('已随本轮送达(引用)的媒体出池; 受保护群的媒体不入池', async () => {
+  it('本轮已随附件送达的被引消息/相册成员不重复补; 媒体不随轮次出池; 受保护群不入池', async () => {
     const events: IMMessageEvent[] = [];
     im.onMessage((e) => events.push(e));
     await connect();
@@ -3006,7 +3006,36 @@ describe('TelegramIM 音视频与群历史媒体', () => {
     expect(events[0].replyContext?.attachmentCount).toBe(1);
 
     await new Promise((r) => setTimeout(r, 20));
-    expect((await im.collectGroupHistoryMedia('-100200', ['90', '92'])).attachments).toEqual([]);
+    // 同一轮: 被引消息已送达, 排除。
+    expect((await im.collectGroupHistoryMedia('-100200', ['90', '92'], reply.message)).attachments).toEqual([]);
+    // 轮次若被拒(游标未推进), 下次触发仍能补齐 —— 不随轮次出池。
+    expect((await im.collectGroupHistoryMedia('-100200', ['90'])).attachments.map((a) => a.originalName)).toEqual([
+      'IMG_90.MP4',
+    ]);
+    // 受保护群从不入池。
+    expect((await im.collectGroupHistoryMedia('-100200', ['92'])).attachments).toEqual([]);
+  });
+
+  it('原生视频的平台 MIME 不可靠时按扩展名纠正后交给媒体总仓', async () => {
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    enableDownloads();
+    api.pushUpdates([
+      {
+        update_id: 130,
+        message: {
+          message_id: 130,
+          from: { id: 111, is_bot: false, first_name: 'U' },
+          chat: { id: 111, type: 'private' },
+          date: nowSec(5),
+          video: { file_id: 'v130', file_name: 'clip.mp4', mime_type: 'application/octet-stream', file_size: 10 },
+        },
+      },
+    ]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(cachedMedia).toEqual([{ token: 'v130', mimeType: 'video/mp4' }]);
+    expect(events[0].unsupported).toEqual([]);
   });
 
   it('群历史媒体按最新优先分配名额, 超出的写明原因', async () => {

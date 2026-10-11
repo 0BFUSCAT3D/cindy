@@ -400,6 +400,24 @@ describe('downloadAttachments: 账号换代与群历史', () => {
     expect(result.attachments).toEqual([]);
   });
 
+  it('图片写入期间换账号: 回滚本次缓存写入', async () => {
+    const { scope, switchAccount } = switchableScope();
+    const discard = vi.fn(async () => {});
+    const media = makeMedia({
+      cacheImage: vi.fn(async () => {
+        switchAccount();
+        return { absPath: '/blobs/img_1.png', url: CINDY_URL, discard };
+      }),
+    });
+    wireHost({ media, files: makeFiles(), accountScope: scope });
+    const { client } = makeClient(PNG_BYTES, 'image/png');
+
+    const result = await downloadAttachments(client, 'om_1', [imageRef], { history: true });
+
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(result.attachments).toEqual([]);
+  });
+
   it('群历史: 图片按可回收缓存写入, 不复用/固定已有缓存', async () => {
     const media = makeMedia({
       getCachedImage: vi.fn(async () => ({ absPath: '/blobs/hit.png', url: CINDY_URL, mimeType: 'image/png' })),

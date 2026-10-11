@@ -168,7 +168,7 @@ describe('Telegram group history media', () => {
       unsupported: [],
       speaker: { id: '222', name: 'Tom', isOwner: false },
     } as never);
-    expect(collectGroupHistoryMedia).toHaveBeenCalledWith('-100200', ['80']);
+    expect(collectGroupHistoryMedia).toHaveBeenCalledWith('-100200', ['80'], undefined);
     expect(result?.contextAttachments).toEqual([
       { kind: 'file', absPath: '/tmp/IMG_80.MP4', originalName: 'IMG_80.MP4', mimeType: 'video/mp4' },
     ]);

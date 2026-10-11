@@ -239,27 +239,25 @@ export function replyContextOf(
   };
 }
 
-/** voice / audio / video / video_note → 下载用的文件名与 MIME(缺省按 Telegram 默认容器)。 */
+/**
+ * voice / audio / video / video_note → 下载用的文件名与 MIME。平台 MIME 不是音视频
+ * (缺失或 octet-stream)时按扩展名纠正, 再不行按 Telegram 默认容器。
+ */
 function audioVideoFilesOf(
   m: TgMessage,
 ): Array<{ file: TgMediaFile; name: string; mimeType: string }> {
   const out: Array<{ file: TgMediaFile; name: string; mimeType: string }> = [];
   if (m.voice) {
-    out.push({ file: m.voice, name: `voice-${m.message_id}.ogg`, mimeType: m.voice.mime_type ?? 'audio/ogg' });
+    const name = `voice-${m.message_id}.ogg`;
+    out.push({ file: m.voice, name, mimeType: audioVideoMimeOf(m.voice.mime_type, name) ?? 'audio/ogg' });
   }
   if (m.audio) {
-    out.push({
-      file: m.audio,
-      name: m.audio.file_name ?? `audio-${m.message_id}.mp3`,
-      mimeType: m.audio.mime_type ?? 'audio/mpeg',
-    });
+    const name = m.audio.file_name ?? `audio-${m.message_id}.mp3`;
+    out.push({ file: m.audio, name, mimeType: audioVideoMimeOf(m.audio.mime_type, name) ?? 'audio/mpeg' });
   }
   if (m.video) {
-    out.push({
-      file: m.video,
-      name: m.video.file_name ?? `video-${m.message_id}.mp4`,
-      mimeType: m.video.mime_type ?? 'video/mp4',
-    });
+    const name = m.video.file_name ?? `video-${m.message_id}.mp4`;
+    out.push({ file: m.video, name, mimeType: audioVideoMimeOf(m.video.mime_type, name) ?? 'video/mp4' });
   }
   if (m.video_note) {
     out.push({ file: m.video_note, name: `video-note-${m.message_id}.mp4`, mimeType: 'video/mp4' });

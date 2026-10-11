@@ -152,17 +152,14 @@ async function downloadOne(
       return { unsupported: { type: 'image', label: `不支持的图片格式（${mime || '未知'}）` } };
     }
     ctx.assertAccountCurrent();
-    const put = await keepIfAccountCurrent(
-      ctx,
-      await media.cacheImage({
-        integration: 'feishu',
-        token: ref.imageKey,
-        buffer,
-        mimeType: mime,
-        ...(ctx.history ? { staging: true } : {}),
-      }),
-      undefined,
-    );
+    const writtenImage = await media.cacheImage({
+      integration: 'feishu',
+      token: ref.imageKey,
+      buffer,
+      mimeType: mime,
+      ...(ctx.history ? { staging: true } : {}),
+    });
+    const put = await keepIfAccountCurrent(ctx, writtenImage, writtenImage.discard);
     return {
       attachment: {
         kind: 'image',

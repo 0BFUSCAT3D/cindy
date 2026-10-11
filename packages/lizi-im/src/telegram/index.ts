@@ -353,9 +353,10 @@ export class TelegramIM extends BaseIM implements ChannelIM {
    */
   private readonly activeStreamRounds = new Map<string, number>();
   /**
-   * 群里尚未交给 bot 的媒体消息(`${botId}:${chatId}:${messageId}` → 原消息),
-   * 插入序即时间序, 超出 GROUP_MEDIA_POOL_MAX 淘汰最旧。受保护群不入池。
-   * 触发消息自身/相册成员/被引消息已随本轮附件送达, 出池避免二次注入。
+   * 群里收到的媒体消息(`${botId}:${chatId}:${messageId}` → 原消息), 插入序即时间序,
+   * 超出 GROUP_MEDIA_POOL_MAX 淘汰最旧, 超龄不取。受保护群不入池。不随轮次出池:
+   * 轮次被拒时群窗口游标不推进, 下次触发还要能补齐; 已受理轮次由游标防重复注入,
+   * 同一轮里已随附件送达的(相册成员、被引消息)由 collectGroupHistoryMedia 排除。
    */
   private readonly groupMediaPool = new Map<string, TgMessage>();
   /** 非 owner 礼貌回应的 per-user 冷却(userId → 上次回应 ts)。 */
@@ -1331,13 +1332,21 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   async collectGroupHistoryMedia(
     chatId: string,
     messageIds: readonly string[],
+    /** 本轮触发消息(event.raw): 它的相册成员与被引消息已随本轮附件送达, 不重复补。 */
+    trigger?: Pick<TgMessage, 'media_group_id' | 'reply_to_message'>,
   ): Promise<{ attachments: Array<IMAttachment & { author: string }>; unavailable: string[] }> {
     const api = this.api;
     if (!api || messageIds.length === 0) return { attachments: [], unavailable: [] };
     const cutoff = Date.now() - GROUP_MEDIA_POOL_TTL_MS;
+    const repliedId = trigger?.reply_to_message?.message_id;
     const messages = messageIds
       .map((id) => this.groupMediaPool.get(this.groupMediaKey(chatId, id)))
       .filter((m): m is TgMessage => m !== undefined && m.date * 1_000 >= cutoff)
+      .filter(
+        (m) =>
+          m.message_id !== repliedId &&
+          (trigger?.media_group_id === undefined || m.media_group_id !== trigger.media_group_id),
+      )
       .sort((a, b) => a.message_id - b.message_id);
     if (messages.length === 0) return { attachments: [], unavailable: [] };
     const generation = this.configVersion;
@@ -1517,9 +1526,6 @@ export class TelegramIM extends BaseIM implements ChannelIM {
       if (this.disposing || this.configVersion !== acceptedConfigVersion) {
         await this.discardStagedMedia(stagedDiscards);
         return;
-      }
-      for (const delivered of [m, ...siblings, ...(m.reply_to_message ? [m.reply_to_message] : [])]) {
-        this.groupMediaPool.delete(this.groupMediaKey(String(m.chat.id), String(delivered.message_id)));
       }
       this.emitMessage({
         ...event,
