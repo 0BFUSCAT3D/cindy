@@ -74,9 +74,16 @@ describe('history read ahead after a list refresh', () => {
     // The same version is not read again; a newer update is.
     await prefetchRemoteHistories(DEVICE, reader, () => true);
     expect(reader.readHistoryView).toHaveBeenCalledTimes(1);
+    // Clearing the disk cache (sign-out, account switch) invalidates that record.
+    await clearHistoryDisk();
+    reader.readHistoryView.mockClear();
+    await prefetchRemoteHistories(DEVICE, reader, () => true);
+    expect(reader.readHistoryView.mock.calls.map(([sessionId]) => sessionId)).toContain('s');
+    expect(await readHistoryDisk(historyDiskAuthority(DEVICE, 's'))).not.toBeNull();
+    reader.readHistoryView.mockClear();
     remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', '2026-10-11T00:00:20.000Z')]);
     await prefetchRemoteHistories(DEVICE, reader, () => true);
-    expect(reader.readHistoryView).toHaveBeenCalledTimes(2);
+    expect(reader.readHistoryView.mock.calls.map(([sessionId]) => sessionId)).toEqual(['s']);
   });
 
   it('leaves a mounted task to its own view and stops on a Host without history view', async () => {

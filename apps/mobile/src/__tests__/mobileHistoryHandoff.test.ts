@@ -223,4 +223,35 @@ describe('mobile history handoff', () => {
     view.setActive(false);
     expect(view.getSnapshot().stale).toBe(true);
   });
+
+  it('keeps a shown tail row when a page read before it arrived replaces the stale snapshot', async () => {
+    const at = (id: string, second: number): RemoteMessage => ({
+      id, clientId: id, sessionId: 's', role: 'assistant', content: id, toolUseId: null,
+      createdAt: `2026-09-08T00:00:0${second}Z`, agentMeta: null,
+    });
+    let pageRows = [at('a1', 1)];
+    const view = new HistoryViewController<RemoteMessage>({
+      page: async () => ({ version: 1, items: projectHistoryView(pageRows, false), hasMore: false, nextCursor: null }),
+      details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }),
+      expanded: async () => undefined,
+    });
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({ items: projectHistoryView([at('a1', 1)], false), details: new Map(),
+      expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null }));
+    const handoff = createHandoff();
+    const reply = at('reply', 5);
+    expect(handoff.reconcile(view.getSnapshot(), [at('a1', 1), reply]).tail).toEqual(new Set(['reply']));
+    // The Host read its latest page before the reply was saved.
+    view.setActive(true);
+    await view.refresh();
+    expect(view.getSnapshot().stale).toBe(false);
+    const fresh = handoff.reconcile(view.getSnapshot(), [at('a1', 1), reply]);
+    expect(fresh.messages.map((row) => row.clientId)).toEqual(['a1', 'reply']);
+    // Covered by history: leaves the tail. Removed from the raw store: not revived.
+    pageRows = [at('a1', 1), reply];
+    await view.refresh(false, true);
+    expect(handoff.reconcile(view.getSnapshot(), [at('a1', 1), reply]).tail.size).toBe(0);
+    expect(handoff.reconcile(view.getSnapshot(), [at('a1', 1)]).messages.map((row) => row.clientId)).toEqual(['a1', 'reply']);
+    view.setActive(false);
+  });
 });

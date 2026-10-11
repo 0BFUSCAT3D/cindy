@@ -17,9 +17,9 @@ import { remoteSessionStore } from './remoteSessionStore';
 
 type Reader = Pick<MobileMakerTransport, 'readHistoryView'>;
 
-// Activity version already read ahead, per device and task. Memory only: a new app
-// run checks the disk snapshot again before reading anything.
-const prefetchedAt = new Map<string, string>();
+// Activity version already read ahead, per device and task, valid only while the disk entry it
+// was written to is current (sign-out, account switch and cache clears invalidate it). Memory only.
+const prefetchedAt = new Map<string, { version: string; current(): boolean }>();
 const keyFor = (deviceId: string, sessionId: string) => JSON.stringify([deviceId, sessionId]);
 const running = new Map<string, { again: boolean }>();
 
@@ -47,7 +47,10 @@ export async function prefetchRemoteHistories(
           eligible: (session) => session.status === 'active' && session.pendingLocalCreation !== true
             && remoteSessionStore.getSessionRetention(session.id) === 'regular'
             && !isRemoteHistoryViewMounted(deviceId, session.id),
-          prefetchedAt: (sessionId) => prefetchedAt.get(keyFor(deviceId, sessionId)),
+          prefetchedAt: (sessionId) => {
+            const entry = prefetchedAt.get(keyFor(deviceId, sessionId));
+            return entry?.current() ? entry.version : undefined;
+          },
         },
       );
       for (const session of candidates) {
@@ -68,7 +71,7 @@ export async function prefetchRemoteHistories(
           dropDetachedRemoteHistoryView(deviceId, session.id);
         }
         const version = historyPrefetchVersion(session);
-        if (version !== undefined) prefetchedAt.set(keyFor(deviceId, session.id), version);
+        if (version !== undefined) prefetchedAt.set(keyFor(deviceId, session.id), { version, current: authority.current });
       }
     }
   } catch {

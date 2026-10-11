@@ -1045,6 +1045,14 @@ function clearSessionMessageCache(sessionId: string, deviceId?: string): void {
   void replaceCachedSessionMessages(resolvedDeviceId, sessionId, []).catch(() => undefined);
 }
 
+/** Track list-only rows within the current window; budget/retention trims drop their keys. */
+function retainListMessageKeys(sessionId: string, added: string): void {
+  const present = new Set((messages.get(sessionId) ?? []).map(messageKey));
+  const keys = new Set([...(listMessageKeys.get(sessionId) ?? []), added].filter((key) => present.has(key)));
+  if (keys.size > 0) listMessageKeys.set(sessionId, keys);
+  else listMessageKeys.delete(sessionId);
+}
+
 function invalidateSessionMessageWindowState(
   sessionId: string,
   requestRefresh: boolean,
@@ -1143,7 +1151,10 @@ function discardTransportOwnedPendingSessionState(
     ));
     if (nextMessages.length !== existingMessages.length) {
       if (nextMessages.length > 0) messages.set(sessionId, nextMessages);
-      else messages.delete(sessionId);
+      else {
+        messages.delete(sessionId);
+        listMessageKeys.delete(sessionId);
+      }
       changed = true;
     }
   }
@@ -1256,6 +1267,7 @@ function enforceRegularMessageBudget(): boolean {
     // 标志来自消息数组缓存与 pending identity，不再为每次流式文本重复扫描整窗。
     if (candidate.hasProtectedRows) continue;
     if (!messages.delete(candidate.sessionId)) continue;
+    listMessageKeys.delete(candidate.sessionId);
     clearRemoteHistoryViews(undefined, candidate.sessionId);
     pendingMessagePreviewSessionIds.add(candidate.sessionId);
     forgetWindowCoverage(candidate.sessionId);
@@ -3855,11 +3867,6 @@ export const remoteSessionStore = {
     options: SessionMessageWriteOptions = {},
   ): void {
     if (!options.listMessage && !messageWriteAllowed(sessionId, options.authority)) return;
-    if (options.listMessage) {
-      const keys = listMessageKeys.get(sessionId) ?? new Set<string>();
-      keys.add(messageKey(message));
-      listMessageKeys.set(sessionId, keys);
-    }
     let changed = flushPendingTextDelta(sessionId);
     changed = settleInputProjectionFromMessages(sessionId, [message]) || changed;
     const reanchorAfterMessage = options.hostTimeAuthoritative !== false && message.role === 'user';
@@ -3903,6 +3910,7 @@ export const remoteSessionStore = {
       applyMessageWriteRetention(sessionId);
       emit();
     }
+    if (options.listMessage) retainListMessageKeys(sessionId, messageKey(message));
   },
 
   /**
@@ -4523,6 +4531,7 @@ export const remoteSessionStore = {
           // session 页面挂载/useSyncExternalStore 检测到 pending 后仍会重新调 load()，
           // 触发同步失效 → metaChanged=true → 整窗替换，error 卡正常浮现。
           messages.delete(sessionId);
+          listMessageKeys.delete(sessionId);
           sessionMessageSyncMarkers.delete(sessionId);
           // 连续性结论随窗口一起失效:rewind 可能删掉中间的行,清空/回收更是整窗重来。
           // 重置为未知,下一次最新窗口同步会重建(见 sessionWindowCoverage)。

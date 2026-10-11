@@ -349,6 +349,11 @@ describe('冷缓存 hydrate', () => {
       // The same version is not read again.
       await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
       expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(1);
+      // A cleared mirror entry invalidates that record.
+      clearCachedMessages(DEVICE_ID, s);
+      getMessages.mockResolvedValue({ messages: [], invalidation: 0, ownerToken: cachedOwnerToken, accountCounter: 0 } as CachedRead);
+      await makerChatStore.prefetchRemoteHistories(DEVICE_ID);
+      expect(invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(2);
     } finally {
       getMessages.mockReset();
       getMessages.mockImplementation(async (deviceId: string, sessionId: string) => ({

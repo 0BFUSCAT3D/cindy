@@ -152,7 +152,7 @@ import {
   requestRemoteReseed,
 } from '@/features/device-link/remoteProjectsStore';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
-import { clearCachedMessages, readCachedMessages, persistListMessage } from '@/features/device-link/mirrorCacheClient';
+import { clearCachedMessages, readCachedMessages, persistListMessage, sessionCacheInvalidationToken } from '@/features/device-link/mirrorCacheClient';
 import {
   noteRemoteSessionSyncCompleted,
   noteRemoteSessionSyncStarted,
@@ -11611,8 +11611,9 @@ function createRemoteHistoryView(sessionId: string) {
   return view;
 }
 
-// Activity version already read ahead, per device and task (memory only).
-const remoteHistoryPrefetchedAt = new Map<string, string>();
+// Activity version already read ahead, per device and task, valid only while that mirror entry
+// is current (account switch or cache invalidation resets it). Memory only.
+const remoteHistoryPrefetchedAt = new Map<string, { version: string; owner: ReturnType<typeof getDataOwnerGeneration>; token: number }>();
 const remoteHistoryPrefetchRuns = new Map<string, { again: boolean }>();
 
 /**
@@ -11635,10 +11636,15 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
       state.again = false;
       const candidates = selectHistoryPrefetchSessions(remoteProjectsStore.getDeviceSessions(deviceId, 'active'), {
         eligible: (session) => session.status === 'active' && session.source !== 'scheduler' && !getRemoteHistoryView(session.id),
-        prefetchedAt: (sessionId) => remoteHistoryPrefetchedAt.get(key(sessionId)),
+        prefetchedAt: (sessionId) => {
+          const entry = remoteHistoryPrefetchedAt.get(key(sessionId));
+          return entry && isDataOwnerGenerationCurrent(entry.owner)
+            && entry.token === sessionCacheInvalidationToken(sessionId) ? entry.version : undefined;
+        },
       });
       for (const session of candidates) {
         if (!isCurrent(session.id)) continue;
+        const token = sessionCacheInvalidationToken(session.id);
         const previous = await readRemoteHistoryCache<HistoryChatMessage>(deviceId, session.id);
         if (!historySnapshotCovers(previous, session)) {
           // Capture write authority before the read, like an open view does.
@@ -11659,7 +11665,9 @@ async function prefetchRemoteHistories(deviceId: string): Promise<void> {
           write(historySnapshotFromPage({ ...page, items }, previous));
         }
         const version = historyPrefetchVersion(session);
-        if (version !== undefined) remoteHistoryPrefetchedAt.set(key(session.id), version);
+        if (version !== undefined) {
+          remoteHistoryPrefetchedAt.set(key(session.id), { version, owner, token });
+        }
       }
     }
   } catch {

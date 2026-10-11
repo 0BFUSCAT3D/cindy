@@ -33,12 +33,14 @@ const EMPTY = new Set<string>();
  */
 export class HistoryViewHandoff<T extends HistoryMessageSource> {
   private readonly pending = new Set<string>();
+  // Shown below a stale snapshot. A later page read before such a row existed must not hide it.
+  private readonly tail = new Set<string>();
   private ready = false;
 
   constructor(private readonly streaming: (row: T) => boolean) {}
 
   reconcile(snapshot: HistoryViewSnapshot<T>, raw: readonly T[]) {
-    if (this.ready && !snapshot.ready) this.pending.clear();
+    if (this.ready && !snapshot.ready) { this.pending.clear(); this.tail.clear(); }
     this.ready = snapshot.ready;
     const available = historyViewLeaves(snapshot.items).flatMap((item) => item.type === 'messages' ? item.messages : []);
     for (const detail of snapshot.details.values()) available.push(...detail.messages);
@@ -56,17 +58,15 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
       const known = history.get(row.clientId);
       history.set(row.clientId, known ? liveContentWithHistoryOrder(row, known) : row);
     }
-    let tail: Set<string> = EMPTY;
-    if (snapshot.stale) {
-      const endMs = historyViewEndMs(snapshot);
-      for (const row of raw) {
-        if ((row.role !== 'user' && row.role !== 'assistant') || history.has(row.clientId)
-          || !(Date.parse(row.createdAt) > endMs)) continue;
-        if (tail === EMPTY) tail = new Set();
-        tail.add(row.clientId);
-        history.set(row.clientId, row);
-      }
+    // A row leaves the tail once history covers it or the raw store drops it (delete/rewind).
+    for (const id of this.tail) if (!current.has(id) || history.has(id)) this.tail.delete(id);
+    const endMs = snapshot.stale ? historyViewEndMs(snapshot) : 0;
+    for (const row of raw) {
+      if ((row.role !== 'user' && row.role !== 'assistant') || history.has(row.clientId)) continue;
+      if (snapshot.stale && Date.parse(row.createdAt) > endMs) this.tail.add(row.clientId);
+      if (this.tail.has(row.clientId)) history.set(row.clientId, row);
     }
+    const tail = this.tail.size ? new Set(this.tail) : EMPTY;
     const messages = [...history.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.rowid ?? 0) - (b.rowid ?? 0));
     return { messages, pending, tail };
   }
