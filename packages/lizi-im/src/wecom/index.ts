@@ -37,6 +37,7 @@ import {
   escapeWecomMarkdown,
 } from "./codec.js";
 import {
+  isAudioVideoFilename,
   mimeTypeForFilename,
   stageWecomDownload,
   readWecomOutboundFile,
@@ -651,6 +652,39 @@ export class WecomIM extends BaseIM implements TextChannelIM {
         const downloaded = await client.downloadFile(file.url, file.aeskey);
         if (!this.isCurrent(client, generation)) {
           return unsupportedPayload("file:stale", "文件下载已取消");
+        }
+        // 以文件消息发来的音视频同样只进媒体总仓; 总仓不可用或拒收格式时标不支持,
+        // 不回落文件暂存(媒体规则: 媒体统一由 cindy-media 记账与回收)。
+        const originalName = safeWecomFilename(downloaded.filename);
+        const mimeType = mimeTypeForFilename(originalName);
+        if (isAudioVideoFilename(originalName) || mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
+          const cacheMedia = this.host.media?.cacheMedia;
+          if (!cacheMedia) {
+            return unsupportedPayload("file:unsupported-media", `音视频文件暂不支持：${originalName}`);
+          }
+          let stored: Awaited<ReturnType<typeof cacheMedia>>;
+          try {
+            stored = await cacheMedia({
+              integration: "wecom",
+              token: `${frame.body!.msgid}:file`,
+              buffer: downloaded.buffer,
+              mimeType,
+            });
+          } catch {
+            return unsupportedPayload("file:unsupported-media", `音视频格式暂不支持：${originalName}`);
+          }
+          if (!this.isCurrent(client, generation)) {
+            await this.discardStagedMedia(stored.discard);
+            return unsupportedPayload("file:stale", "文件下载已取消");
+          }
+          return {
+            text: "",
+            attachments: [
+              { kind: "file", absPath: stored.absPath, originalName, mimeType: stored.mimeType, url: stored.url },
+            ],
+            unsupported: [],
+            discard: stored.discard,
+          };
         }
         const { discard, ...staged } = await stageWecomDownload({
           files,

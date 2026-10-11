@@ -204,10 +204,11 @@ async function downloadOne(
         };
       } catch (err) {
         if (err instanceof StaleAccountError) throw err;
-        // 总仓拒收该音视频格式: 视频消息标不支持; 以普通文件发来的继续按文件暂存。
+        // 总仓拒收该音视频格式(mkv / flac 等): 落到下方标不支持。
       }
     }
-    if (ref.video || !host.files) return { unsupported: { type: 'media', label } };
+    // 音视频只进媒体总仓 —— 不论以视频消息还是普通文件发来, 都不回落文件暂存。
+    return { unsupported: { type: 'media', label } };
   }
 
   ctx.assertAccountCurrent();

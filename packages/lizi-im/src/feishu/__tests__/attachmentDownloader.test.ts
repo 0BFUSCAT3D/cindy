@@ -257,7 +257,7 @@ describe('downloadAttachments: 文件 → host 暂存, 音视频 → 媒体总�
     expect(result).toEqual({ attachments: [], unsupported: [{ type: 'media', label: 'demo.mp4' }] });
   });
 
-  it('以普通文件发来的音频:总仓拒收时回落 host 文件暂存', async () => {
+  it('以普通文件发来的音频:总仓拒收时标不支持, 不回落文件暂存', async () => {
     const media = makeMedia({
       cacheMedia: vi.fn(async () => {
         throw new Error('unsupported mime type');
@@ -272,10 +272,23 @@ describe('downloadAttachments: 文件 → host 暂存, 音视频 → 媒体总�
     ]);
 
     expect(media.cacheMedia).toHaveBeenCalledTimes(1);
-    expect(files.stage).toHaveBeenCalledWith(expect.objectContaining({ integration: 'feishu', fileName: 'song.flac' }));
-    expect(result.attachments).toEqual([
-      { kind: 'file', absPath: '/staged/song.flac', originalName: 'song.flac', mimeType: 'audio/flac' },
+    expect(files.stage).not.toHaveBeenCalled();
+    expect(result).toEqual({ attachments: [], unsupported: [{ type: 'media', label: 'song.flac' }] });
+  });
+
+  it('以普通文件发来的视频:host 没有 cacheMedia 时标不支持, 不进文件暂存', async () => {
+    const media = makeMedia();
+    delete (media as Partial<typeof media>).cacheMedia;
+    const files = makeFiles();
+    wireHost({ media, files });
+    const { client } = makeClient(Buffer.from('mkv'), 'video/x-matroska');
+
+    const result = await downloadAttachments(client, 'om_5', [
+      { kind: 'file', fileKey: 'file_m', fileName: 'clip.mkv' },
     ]);
+
+    expect(files.stage).not.toHaveBeenCalled();
+    expect(result).toEqual({ attachments: [], unsupported: [{ type: 'media', label: 'clip.mkv' }] });
   });
 
   it('host 无文件暂存:普通文件标不支持且不下载', async () => {

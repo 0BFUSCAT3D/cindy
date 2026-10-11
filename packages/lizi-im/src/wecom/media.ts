@@ -88,6 +88,19 @@ export async function resolveAllowedWecomOutboundFile(
   return null;
 }
 
+/**
+ * 入站文件是否为音视频(按扩展名; 覆盖 MIME 表之外的常见容器)。音视频只进媒体
+ * 总仓, 不进文件暂存; 只用于入站分流, 不改变出站的媒体类型判断。
+ */
+const AUDIO_VIDEO_EXTENSIONS = new Set([
+  ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".flv", ".wmv", ".3gp",
+  ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".amr", ".silk",
+]);
+
+export function isAudioVideoFilename(filename: string | undefined): boolean {
+  return AUDIO_VIDEO_EXTENSIONS.has(path.extname(filename ?? "").toLowerCase());
+}
+
 export function mimeTypeForFilename(filename: string | undefined): string {
   const extension = path.extname(filename ?? "").toLowerCase();
   return MIME_BY_EXTENSION[extension] ?? "application/octet-stream";

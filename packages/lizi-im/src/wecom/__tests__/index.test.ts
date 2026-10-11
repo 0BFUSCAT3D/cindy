@@ -1068,6 +1068,57 @@ describe("WecomIM routing and ownership", () => {
     ]);
   });
 
+  it.each([
+    { name: "clip.mp4", accepted: true },
+    { name: "clip.mkv", accepted: false },
+  ])("routes an inbound $name file message to the media store only", async ({ name, accepted }) => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    const stage = vi.fn();
+    const cacheMedia = vi.fn(async ({ mimeType }: { mimeType: string }) => {
+      if (!accepted) throw new Error("unsupported mime type");
+      return { absPath: "/blobs/v.mp4", url: "cindy-media://blobs/v.mp4", mimeType, discard: vi.fn(async () => {}) };
+    });
+    host.files = { stage };
+    host.media = {
+      cacheImage: vi.fn(),
+      cacheMedia,
+      getCachedImage: vi.fn(async () => null),
+      resolveMediaUrl: () => null,
+    } as never;
+    const client = new FakeClient();
+    client.downloadFile.mockImplementationOnce(async () => ({ buffer: Buffer.from("v"), filename: name }));
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
+
+    await im.init();
+    client.emit("message.file", {
+      body: {
+        msgid: `av-file-${name}`,
+        aibotid: "bot-1",
+        chattype: "single",
+        from: { userid: "owner" },
+        msgtype: "file",
+        file: { url: "https://example.invalid/file" },
+      },
+    });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    expect(stage).not.toHaveBeenCalled();
+    expect(cacheMedia).toHaveBeenCalledTimes(1);
+    if (accepted) {
+      expect(received[0]?.attachments).toEqual([
+        { kind: "file", absPath: "/blobs/v.mp4", originalName: name, mimeType: "video/mp4", url: "cindy-media://blobs/v.mp4" },
+      ]);
+    } else {
+      expect(received[0]?.attachments).toEqual([]);
+      expect(received[0]?.unsupported).toEqual([
+        { type: "file:unsupported-media", label: `音视频格式暂不支持：${name}` },
+      ]);
+    }
+  });
+
   it("does not download an inbound image when host.media is missing", async () => {
     const { host, secrets } = createHost();
     secrets.set("wecom-owner-user-id", "owner");
