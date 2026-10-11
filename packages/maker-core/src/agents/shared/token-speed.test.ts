@@ -94,6 +94,31 @@ describe('TokenSpeedMeter (pi-token-speed algorithm)', () => {
     expect(meter.snapshot(90_000)!.elapsedMs).toBe(1_500);
   });
 
+  it('does not credit output from before a short pause to the time after it', () => {
+    const meter = new TokenSpeedMeter();
+    meter.start(0);
+    // 100 tok/s for a second, a 100ms tool call, then 10 tokens over 100ms.
+    for (let t = 100; t <= 1_000; t += 100) meter.recordDelta('a b c d e f g h i j', t);
+    meter.pause(1_000);
+    meter.start(1_100);
+    meter.recordDelta('a b c d e f g h i j', 1_200);
+    expect(meter.snapshot(1_200)!.rate).toBeCloseTo(100, 5);
+  });
+
+  it('keeps measuring from the token before the window across compaction', () => {
+    const meter = new TokenSpeedMeter();
+    meter.start(0);
+    // Two one-token deltas per ms is a steady 2000 tok/s; the stream crosses the
+    // compaction threshold while the window's first event is still inside the window.
+    let lowest = Infinity;
+    for (let t = 1; t <= 8_000; t += 1) {
+      meter.recordDelta('a', t);
+      meter.recordDelta('a', t);
+      if (t >= 1_500) lowest = Math.min(lowest, meter.snapshot(t)!.rate);
+    }
+    expect(lowest).toBeCloseTo(2_000, 5);
+  });
+
   it('snaps to the real output at the end and reports the average', () => {
     const meter = new TokenSpeedMeter();
     meter.start(0);

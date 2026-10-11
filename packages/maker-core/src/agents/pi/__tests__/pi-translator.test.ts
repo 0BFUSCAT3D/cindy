@@ -2282,6 +2282,32 @@ describe('pi translator live token speed', () => {
     }
   });
 
+  it('leaves the retry backoff out of generation time', () => {
+    vi.useFakeTimers();
+    try {
+      const ctx = createPiTranslateContext(noopLogger);
+      const { queue, events } = makeQueue();
+      const update = (assistantMessageEvent: Record<string, unknown>, at: number) => {
+        vi.setSystemTime(at);
+        translatePiEvent(ev({ type: 'message_update', assistantMessageEvent }), queue, ctx);
+      };
+      vi.setSystemTime(1_000);
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      update({ type: 'text_start', contentIndex: 0 }, 1_000);
+      update({ type: 'text_delta', contentIndex: 0, delta: 'one two three four five' }, 1_500);
+      vi.setSystemTime(1_500);
+      translatePiEvent(ev({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, errorMessage: 'HTTP status 529: overloaded' }), queue, ctx);
+      // 10s backoff, then the retried request streams again.
+      update({ type: 'text_start', contentIndex: 0 }, 11_500);
+      update({ type: 'text_delta', contentIndex: 0, delta: 'six seven eight nine ten' }, 12_000);
+      vi.setSystemTime(12_000);
+      translatePiEvent(ev({ type: 'agent_settled' }), queue, ctx);
+      expect(speedOf(events.filter((e) => e.type === 'status').at(-1))).toMatchObject({ tokens: 10, elapsedMs: 1_000 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('counts file-writing tool arguments and starts each turn fresh', () => {
     vi.useFakeTimers();
     try {

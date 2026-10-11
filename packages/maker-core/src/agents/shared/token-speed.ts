@@ -87,8 +87,9 @@ export class TokenSpeedMeter {
     this.tokenCount += tokens;
     this.events.push({ time: now, tokens });
     if (this.windowStartIndex >= COMPACTION_THRESHOLD) {
-      this.events.splice(0, this.windowStartIndex);
-      this.windowStartIndex = 0;
+      // Keep the event before the window: it bounds the span of the window's first token.
+      this.events.splice(0, this.windowStartIndex - 1);
+      this.windowStartIndex = 1;
     }
     this.tps = this.windowTps(now) ?? this.tps;
     if (now - this.lastPublishAt < PUBLISH_INTERVAL_MS) return false;
@@ -108,6 +109,8 @@ export class TokenSpeedMeter {
     this.paused = false;
     this.pausedMs += now - this.startPause;
     this.resumedAt = now;
+    // Pre-pause output must not count toward the post-pause window, whose span starts here.
+    this.windowStartIndex = this.events.length;
   }
 
   /** Turn end. `realOutputTokens` replaces the estimate when the provider reported it. */

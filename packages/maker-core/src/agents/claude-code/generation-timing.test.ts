@@ -2077,6 +2077,28 @@ describe('claude live token speed', () => {
     expect(ctx.rt.generation.tokenSpeed.snapshot()).toBeUndefined();
   });
 
+  it('leaves the API retry backoff out of generation time', () => {
+    vi.useFakeTimers();
+    const ctx = createTranslatorCtx();
+    const queue = createAsyncQueue<AgentEvent>();
+    const send = (msg: Record<string, unknown>, at: number) => {
+      vi.setSystemTime(at);
+      translateSdkMessage(msg as never, queue, ctx);
+    };
+    const stream = (event: Record<string, unknown>, at: number) => send({ type: 'stream_event', event }, at);
+    stream({ type: 'message_start', message: { model: 'claude-sonnet-4.5', usage: { input_tokens: 10 } } }, 1_000);
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 1_000);
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'one two three four' } }, 1_500);
+    send({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 3, retry_delay_ms: 10_000, error_status: 529, error: 'overloaded' }, 1_500);
+    // 10s backoff, then the retried request streams again.
+    stream({ type: 'message_start', message: { model: 'claude-sonnet-4.5', usage: { input_tokens: 10 } } }, 11_500);
+    stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 11_500);
+    stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'five six seven eight' } }, 12_000);
+    expect(ctx.rt.generation.tokenSpeed.snapshot(12_000)).toMatchObject({ tokens: 8, elapsedMs: 1_000 });
+    resetClaudeGenerationTiming(ctx.rt.generation);
+    queue.end();
+  });
+
   it('counts Write tool arguments as generated output', () => {
     const ctx = createTranslatorCtx();
     const queue = createAsyncQueue<AgentEvent>();

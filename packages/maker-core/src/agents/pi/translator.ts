@@ -1056,6 +1056,8 @@ export function translatePiEvent(
     }
 
     case 'auto_retry_start': {
+      // The backoff wait is not generation time; the retried request's first block resumes.
+      ctx.tokenSpeed.pause();
       // A provider retry may begin without a matching message_end for the
       // failed request. Drop any stale latch so the next request samples its
       // own tariff at message_start.
