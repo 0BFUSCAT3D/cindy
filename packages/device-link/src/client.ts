@@ -751,8 +751,11 @@ export class DeviceLinkClient {
   private networkChangeHintedAt = 0;
   private networkProbeNextAllowedAt = 0;
   private connectionStartedAt = 0;
-  /** Wall clock of the current connect attempt; unlike timers it keeps counting through app suspension. */
-  private connectionStartedWallAt = 0;
+  /**
+   * Wall-clock deadline of the current attempt's active watchdog (token wait, then
+   * each handshake window). Unlike timers it keeps counting through app suspension.
+   */
+  private connectAttemptDeadlineWallAt = 0;
   /** 当前连接的代号,用于丢弃过期 socket 的事件回调 */
   private connEpoch = 0;
   /** 本轮连接的最后一条 socket error message(升级失败 401 只在 error 事件里可见) */
@@ -877,7 +880,7 @@ export class DeviceLinkClient {
       opts?.keepInFlightAttempt
       && this.status === 'connecting'
       && !this.reconnectTimer
-      && Date.now() - this.connectionStartedWallAt < this.effectiveHandshakeTimeoutMs()
+      && Date.now() < this.connectAttemptDeadlineWallAt
     ) {
       this.log.debug(`connectNow(${reason}) kept in-flight connect attempt`);
       return;
@@ -1862,7 +1865,7 @@ export class DeviceLinkClient {
     this.clearNetworkProbe();
     this.resetLegacyInboundQueue();
     this.connectionStartedAt = this.monotonicNow();
-    this.connectionStartedWallAt = Date.now();
+    this.connectAttemptDeadlineWallAt = Date.now() + this.timing.getTokenTimeoutMs + this.effectiveHandshakeTimeoutMs();
     this.setStatus('connecting');
     const epoch = ++this.connEpoch;
     this.lastSocketErrorMessage = null;
@@ -2064,6 +2067,8 @@ export class DeviceLinkClient {
   private armHandshakeTimeout(epoch: number): void {
     if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
     const timeoutMs = this.effectiveHandshakeTimeoutMs();
+    // keepInFlightAttempt judges by the same deadline the watchdog enforces.
+    this.connectAttemptDeadlineWallAt = Date.now() + timeoutMs;
     this.handshakeTimer = setTimeout(() => {
       this.handshakeTimer = null;
       if (this.stopped || epoch !== this.connEpoch || this.status === 'online') return;

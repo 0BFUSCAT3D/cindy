@@ -6191,6 +6191,31 @@ describe('DeviceLinkClient', () => {
     h.client.stop();
   });
 
+  it('connectNow keepInFlightAttempt:慢升级后 hello/ack 新窗口内回前台仍保留连接', async () => {
+    vi.useFakeTimers();
+    // A 1ms token budget keeps the token phase from masking the handshake deadline.
+    const h = makeHarness({ timing: { handshakeTimeoutMs: 15, getTokenTimeoutMs: 1, pingIntervalMs: 60_000 } });
+    try {
+      h.client.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const socket = h.current();
+      await vi.advanceTimersByTimeAsync(12);
+      socket.emit('open'); // the watchdog re-arms a full hello/ack window here
+      await vi.advanceTimersByTimeAsync(10); // 22ms since connect(), 10ms into the new window
+      h.client.connectNow('appstate-active', { keepInFlightAttempt: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.sockets).toHaveLength(1);
+      expect(socket.terminated).toBe(false);
+      socket.push({ v: PROTOCOL_VERSION, kind: 'hello-ack', payload: {
+        serverProtocolVersion: PROTOCOL_VERSION, deviceId: 'dev-self', userId: 'u1',
+      } });
+      expect(h.client.getStatus()).toBe('online');
+    } finally {
+      h.client.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('connectNow keepInFlightAttempt:挂起后超过握手窗口的旧尝试与退避等待照常立即重连', async () => {
     const h = makeHarness({ timing: { handshakeTimeoutMs: 12_000, reconnectBaseMs: 10_000, reconnectMaxMs: 30_000 } });
     const realNow = Date.now;
