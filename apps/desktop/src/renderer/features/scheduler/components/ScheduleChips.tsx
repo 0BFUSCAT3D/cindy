@@ -1114,7 +1114,7 @@ export function ModelEffortChip({
   // 触发器(trigger)展示用:仍按 openai-codex/ 与 codex/ 折扣模型的 XD 网关来源可见性过滤,算出当前
   // 选中模型名。下拉内容本体改用聊天的 ModelSelectorContent(它内部按来源/api-key 自行
   // 过滤 + 分组),这里只为 trigger 文案保留最小化 model 解析。
-  const { providers } = useProviders();
+  const { providers, loading: providersLoading } = useProviders();
   const xdConnected = providers.some((p) => p.id === 'xd' && p.connected);
   const availableModels = caps.capabilities?.availableModels;
   const models = useMemo(
@@ -1134,7 +1134,9 @@ export function ModelEffortChip({
     effort: effortValue,
   });
   const followsSessionModel = usesBoundSessionModel({ followSession, model: modelValue });
-  const effectiveId = followsSessionModel ? '' : modelValue || getScheduleDefaultModel(agentKind);
+  const effectiveId = followsSessionModel
+    ? ''
+    : modelValue || getScheduleDefaultModel(agentKind, providersLoading ? undefined : providers);
   const current = models.find((m) => m.id === effectiveId);
   const sourceId = effectiveSourceIdForModel(providers, providerId || null, effectiveId, agentKind);
   const source = providers.find((provider) => provider.id === sourceId);

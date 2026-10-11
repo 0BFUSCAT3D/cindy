@@ -175,6 +175,24 @@ export function getWorkerDefaultsFromNewMaker(
 }
 
 /**
+ * 新建任务草稿里该 Harness 的模型与来源，以及是否由用户显式选过(无人值守入口按新建任务
+ * 口径解析默认模型用,见 shared/draftModelCalibration resolveNewTaskDefaultRoute)。
+ * 缓存未就绪 → null。
+ */
+export function getNewTaskDraftSelection(
+  agent: 'claude-code' | 'codex' | 'pi',
+): { model?: string; providerId?: string | null; chosenByUser: boolean } | null {
+  if (!cache) return null;
+  const vendor: VendorKey = agent === 'claude-code' ? 'cc' : agent;
+  const prefs = cache.lastByVendor[vendor];
+  return {
+    model: prefs?.model,
+    providerId: prefs?.providerId,
+    chosenByUser: cache.modelChosenByVendor?.[vendor] === true,
+  };
+}
+
+/**
  * device-link 远程草稿镜像用:取某 vendor 在 New Maker 草稿里的**当前完整选择**
  * (model/effort/fast/permission/source)+ **整张 per-model 记忆表**。与
  * getWorkerDefaultsFromNewMaker 的区别:

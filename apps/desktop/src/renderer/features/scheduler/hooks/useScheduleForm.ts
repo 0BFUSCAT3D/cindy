@@ -10,7 +10,9 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type { CreateScheduleInput, Schedule, ScheduleTemplate, ScheduleWorkspaceKind } from '@cindy/maker-scheduler';
-import { getPersistedVendorModel } from '@/state/newMakerDraft';
+import type { ProviderView } from '@cindy/model-providers';
+import { getDraft, getPersistedVendorModel } from '@/state/newMakerDraft';
+import { resolveNewTaskDefaultRoute } from '@/lib/draftModelCalibration';
 import type { Session } from '@/lib/ccAgent.types';
 import {
   EFFORT_VALUES,
@@ -146,31 +148,34 @@ export function getScheduleAgentPrefs(agentKind: ScheduleFormState['agentKind'])
 }
 
 /**
- * 调度任务的冷启动兜底模型 —— 故意**不**跟对话的 Opus 默认
- * (modelDefinitions.ts getDefaultModelForVendor):自动化是无人值守反复执行的
- * 场景,默认不该是最贵的模型,要 Opus 的用户会显式选。
- * ⚠️ 必须与 scheduler-host/runner.ts defaultModelFor 保持一致
- * (runner 对 MCP 建的 / 历史遗留空 model 任务兜同一个值,UI 显示 ≠ 实际运行
- * 的事故见 2026-06 踩坑:任务里看着选了 Opus 4.8,实际每次跑 4.7)。
- */
-export function schedulerFallbackModel(agentKind: ScheduleFormState['agentKind']): string {
-  // Pi 的来源/模型来自动态连接目录；没有能与 providerId 解耦的静态默认。
-  return agentKind === 'codex' ? 'gpt-5.5' : agentKind === 'pi' ? '' : 'claude-sonnet-4-6';
-}
-
-/**
  * 新任务的默认模型,三级回退:
  *   1. 上次建自动化任务时选的模型(scheduleFormPrefs,任务维度记忆)
  *   2. 对话上次选择的模型(newMakerDraft 真实持久化值 —— 与新建对话同源,
  *      跟着用户实际在用的模型走)
- *   3. 成本保守冷启动兜底(schedulerFallbackModel)
+ *   3. 新建任务默认(shared/draftModelCalibration resolveNewTaskDefaultRoute,与 runner
+ *      对空 model 任务的实时解析同源)。不写死型号:供应商清单未到位(`providers` 缺省)
+ *      或一个可用来源都没有时返回 '',由表单在清单到位后回填。
  */
-export function getScheduleDefaultModel(agentKind: ScheduleFormState['agentKind']): string {
+export function getScheduleDefaultModel(
+  agentKind: ScheduleFormState['agentKind'],
+  providers?: readonly ProviderView[],
+): string {
   const prefs = getScheduleAgentPrefs(agentKind);
   if (prefs.model.trim()) return prefs.model;
-  const chatLast = getPersistedVendorModel(agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc');
+  const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
+  const chatLast = getPersistedVendorModel(vendor);
   if (chatLast.trim()) return chatLast;
-  return schedulerFallbackModel(agentKind);
+  if (!providers) return '';
+  const draft = getDraft();
+  return resolveNewTaskDefaultRoute({
+    providers,
+    agent: agentKind,
+    draft: {
+      model: draft.lastByVendor[vendor]?.model,
+      providerId: draft.lastByVendor[vendor]?.providerId,
+      chosenByUser: draft.modelChosenByVendor[vendor] === true,
+    },
+  })?.model ?? '';
 }
 
 export function rememberScheduleFormPrefs(form: ScheduleFormState): void {
@@ -199,8 +204,8 @@ function makeDefaultForm(): ScheduleFormState {
   return {
     ...DEFAULT_FORM,
     agentKind: prefs.agentKind,
-    // 三级回退:任务上次选择 → 对话上次选择 → 成本保守兜底,保证新任务
-    // 表单的 model 永远是显式值(所见即所存,不再依赖 chip 的显示回退)。
+    // 三级回退:任务上次选择 → 对话上次选择 → 新建任务默认;清单未到位时先留空,
+    // 由 ScheduleFormDialog 在清单到位后回填显式值(所见即所存)。
     model: getScheduleDefaultModel(prefs.agentKind),
     // providerId 空 = 跟随原生默认来源（no-break）。沿用任务维度记忆;UI 显示时
     // 用 form.providerId || nativeDefaultSourceId(agentKind) 算高亮来源。

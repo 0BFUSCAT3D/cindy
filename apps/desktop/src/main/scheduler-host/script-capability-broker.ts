@@ -9,7 +9,6 @@ import { validateFsRelPath } from '../cindy-brain/fsSlot.js';
 import { tryGetOrcaCollabService } from '../maker-ipc/register.js';
 import type { ScriptCapabilityBroker, ScriptCapabilityCall } from './script-runner';
 // model 兜底与 runner 同源(2026-06 曾因多份拷贝不同步导致 UI 显示与实跑模型不一致)
-import { defaultModelFor } from './model-defaults.js';
 
 type DispatchEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
@@ -362,16 +361,15 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
           fail('INVALID_ARGS', 'bound scripts can only dispatch to their target session');
         }
         const explicitProviderId = schedule.providerId?.trim() || null;
-        const dynamicDefaultRoute = !schedule.model?.trim() && schedule.agentKind === 'pi'
+        // 留空按新建任务口径实时解析默认模型，不写死型号。
+        const dynamicDefaultRoute = !schedule.model?.trim()
           ? await this.deps.resolveDefaultModelRoute?.(
               schedule.agentKind,
               explicitProviderId,
             ) ?? null
           : null;
-        const model = schedule.model?.trim()
-          || dynamicDefaultRoute?.model
-          || defaultModelFor(schedule.agentKind);
-        if (!model) fail('PRECONDITION_FAILED', 'Pi has no connected model source');
+        const model = schedule.model?.trim() || dynamicDefaultRoute?.model;
+        if (!model) fail('PRECONDITION_FAILED', `${schedule.agentKind} has no connected model source`);
         const result = await service.sendToSession({
           targetSessionId: schedule.targetSessionId ?? requestedTarget,
           message: requireString(params, 'message'),

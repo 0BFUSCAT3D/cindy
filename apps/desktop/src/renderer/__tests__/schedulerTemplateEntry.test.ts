@@ -178,7 +178,19 @@ vi.mock('@/hooks/useProviders', () => ({
 
 vi.mock('@/state/newMakerDraft', () => ({
   getPersistedVendorModel: () => '',
+  getDraft: () => ({ lastByVendor: {}, modelChosenByVendor: {} }),
 }));
+
+/** 新建任务默认(第三级回退)从这份已连接来源里挑:唯一可用的 claude-code 模型。 */
+const DEFAULT_CLAUDE_PROVIDER = {
+  id: 'xd', name: 'Cindy', source: 'builtin', connected: true, agents: ['claude-code'],
+  auth: { method: 'oauth' }, access: { kind: 'managed' },
+  routing: { 'claude-code': { upstream: 'https://gateway.example', authStrategy: 'none' } },
+  models: { 'claude-code': [{
+    id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextWindow: 200_000, sortOrder: 0,
+    efforts: ['medium', 'high'], defaultEffort: 'medium', supportsFastMode: false, status: 'active',
+  }] },
+} as unknown as ProviderView;
 
 vi.mock('@/features/scheduler/components/ScheduleChips', async () => {
   const React = await import('react');
@@ -202,7 +214,7 @@ vi.mock('@/features/scheduler/components/ScheduleChips', async () => {
 });
 
 beforeEach(() => {
-  modelFixtures.providers = [];
+  modelFixtures.providers = [DEFAULT_CLAUDE_PROVIDER];
   modelFixtures.sessionReferences.clear();
   createSchedule.mockImplementation(async (input) => ({ id: 'created-schedule', ...input }));
   routerMocks.location.pathname = '/cc-agent/scheduled';
