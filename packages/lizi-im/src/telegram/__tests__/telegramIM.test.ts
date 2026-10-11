@@ -2719,3 +2719,151 @@ describe('TelegramIM', () => {
     expect(ctx.secrets.has('telegram-owner-user-id')).toBe(false);
   });
 });
+
+describe('TelegramIM 音视频与群历史媒体', () => {
+  /** getFile 给出 file_path、文件下载 fetch 返回固定字节 —— 让下载真正落盘。 */
+  function enableDownloads(): string[] {
+    const fetched: string[] = [];
+    const origCall = api.call.bind(api);
+    api.call = (async (method: string, params?: Record<string, unknown>, signal?: AbortSignal) => {
+      if (method === 'getFile') {
+        api.calls.push({ method, params: params ?? {} });
+        return { file_id: params?.file_id, file_path: `media/${String(params?.file_id)}` } as never;
+      }
+      return origCall(method, params, signal);
+    }) as typeof api.call;
+    vi.stubGlobal('fetch', async (url: string) => {
+      fetched.push(url);
+      return new Response(Buffer.from('media-bytes'));
+    });
+    return fetched;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function groupVideo(messageId: number, extra: Record<string, unknown> = {}): TgUpdate {
+    return {
+      update_id: messageId,
+      message: {
+        message_id: messageId,
+        from: { id: 222, is_bot: false, first_name: 'Tom' },
+        chat: { id: -100200, type: 'supergroup', title: 'Ops' },
+        date: nowSec(10),
+        video: { file_id: `v${messageId}`, file_name: `IMG_${messageId}.MP4`, mime_type: 'video/mp4', file_size: 1024 },
+        ...extra,
+      },
+    };
+  }
+
+  it('私聊视频按文件下载交给模型, 不再标 unsupported', async () => {
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    enableDownloads();
+    api.pushUpdates([
+      {
+        update_id: 70,
+        message: {
+          message_id: 70,
+          from: { id: 111, is_bot: false, first_name: 'U' },
+          chat: { id: 111, type: 'private' },
+          date: nowSec(5),
+          caption: '看看这个视频',
+          video: { file_id: 'vid-70', mime_type: 'video/mp4', file_size: 2048 },
+        },
+      },
+    ]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0].unsupported).toEqual([]);
+    expect(events[0].attachments).toHaveLength(1);
+    expect(events[0].attachments[0]).toMatchObject({ kind: 'file', originalName: 'video-70.mp4', mimeType: 'video/mp4' });
+    expect(fs.readFileSync(events[0].attachments[0].absPath, 'utf8')).toBe('media-bytes');
+  });
+
+  it('超过 Bot API 20MB 下载上限的视频标 oversize, 不调用 getFile', async () => {
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    enableDownloads();
+    api.pushUpdates([
+      {
+        update_id: 71,
+        message: {
+          message_id: 71,
+          from: { id: 111, is_bot: false, first_name: 'U' },
+          chat: { id: 111, type: 'private' },
+          date: nowSec(5),
+          video: { file_id: 'big', file_name: 'big.mp4', file_size: 21 * 1024 * 1024 },
+        },
+      },
+    ]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0].attachments).toEqual([]);
+    expect(events[0].unsupported).toEqual([{ type: 'oversize', label: 'big.mp4' }]);
+    expect(api.calls.some((c) => c.method === 'getFile')).toBe(false);
+  });
+
+  it('先发视频、再单独 @bot: 群历史媒体可按上下文消息 id 补齐下载', async () => {
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    enableDownloads();
+    api.pushUpdates([groupVideo(80), groupMessage({ text: '能鉴定吗', fromId: 222, messageId: 81, mentionBot: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    // 触发消息本身不带附件 —— 视频在前一条消息里。
+    expect(events[0].attachments).toEqual([]);
+
+    const history = await im.collectGroupHistoryMedia('-100200', ['80', '81']);
+    expect(history.unavailable).toEqual([]);
+    expect(history.attachments).toHaveLength(1);
+    expect(history.attachments[0]).toMatchObject({
+      kind: 'file',
+      originalName: 'IMG_80.MP4',
+      mimeType: 'video/mp4',
+      author: 'Tom',
+    });
+    // 不在上下文 id 里的消息不下载; 其它群同 id 不串。
+    expect((await im.collectGroupHistoryMedia('-100200', ['81'])).attachments).toEqual([]);
+    expect((await im.collectGroupHistoryMedia('-100300', ['80'])).attachments).toEqual([]);
+  });
+
+  it('已随本轮送达(引用)的媒体出池; 受保护群的媒体不入池', async () => {
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    enableDownloads();
+    const video = groupVideo(90);
+    const reply = groupMessage({ text: '这个', fromId: 111, messageId: 91, mentionBot: true });
+    reply.message!.reply_to_message = video.message;
+    api.pushUpdates([video, reply, groupVideo(92, { has_protected_content: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0].attachments.map((a) => a.originalName)).toEqual(['IMG_90.MP4']);
+    expect(events[0].replyContext?.attachmentCount).toBe(1);
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await im.collectGroupHistoryMedia('-100200', ['90', '92'])).attachments).toEqual([]);
+  });
+
+  it('群历史媒体按最新优先分配名额, 超出的写明原因', async () => {
+    await connect();
+    enableDownloads();
+    const updates = [1, 2, 3, 4, 5].map((i) => groupVideo(100 + i));
+    api.pushUpdates(updates);
+    await vi.waitFor(() =>
+      expect(api.calls.filter((c) => c.method === 'getUpdates').length).toBeGreaterThan(1),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const history = await im.collectGroupHistoryMedia('-100200', ['101', '102', '103', '104', '105']);
+    expect(history.attachments.map((a) => a.originalName)).toEqual([
+      'IMG_102.MP4',
+      'IMG_103.MP4',
+      'IMG_104.MP4',
+      'IMG_105.MP4',
+    ]);
+    expect(history.unavailable).toEqual(['另有 1 个更早的群历史附件超过数量上限，未提供']);
+    // 超出名额的不下载(只下载 4 个)。
+    expect(api.calls.filter((c) => c.method === 'getFile' && c.params.file_id === 'v101')).toEqual([]);
+  });
+});

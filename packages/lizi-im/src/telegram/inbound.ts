@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { IMAttachment, IMHostMediaCache, IMMessageEvent, IMUnsupportedEntry } from '../types.js';
-import type { TelegramApiClient, TgFile, TgMessage, TgMessageEntity, TgUser } from './api.js';
+import type { TelegramApiClient, TgFile, TgMediaFile, TgMessage, TgMessageEntity, TgUser } from './api.js';
 import { encodeMessageId } from './codec.js';
 
 /** Bot API getFile 的官方下载上限(20MB), 超过标注 oversize 不下载。 */
@@ -57,8 +57,10 @@ export function groupWindowEntryOf(m: TgMessage): Omit<TelegramGroupWindowEntry,
   const fileNames: string[] = [];
   if (m.document?.file_name) fileNames.push(m.document.file_name);
   if (m.photo && m.photo.length > 0) fileNames.push('photo');
-  if (m.video?.file_name) fileNames.push(m.video.file_name);
-  if (m.audio?.file_name) fileNames.push(m.audio.file_name);
+  if (m.video) fileNames.push(m.video.file_name ?? 'video');
+  if (m.video_note) fileNames.push('video note');
+  if (m.audio) fileNames.push(m.audio.file_name ?? 'audio');
+  if (m.voice) fileNames.push('voice message');
   return {
     chatId: String(m.chat.id),
     threadId: laneThreadIdOf(m),
@@ -222,6 +224,41 @@ export function replyContextOf(
   };
 }
 
+/** voice / audio / video / video_note → 下载用的文件名与 MIME(缺省按 Telegram 默认容器)。 */
+function audioVideoFilesOf(
+  m: TgMessage,
+): Array<{ file: TgMediaFile; name: string; mimeType: string }> {
+  const out: Array<{ file: TgMediaFile; name: string; mimeType: string }> = [];
+  if (m.voice) {
+    out.push({ file: m.voice, name: `voice-${m.message_id}.ogg`, mimeType: m.voice.mime_type ?? 'audio/ogg' });
+  }
+  if (m.audio) {
+    out.push({
+      file: m.audio,
+      name: m.audio.file_name ?? `audio-${m.message_id}.mp3`,
+      mimeType: m.audio.mime_type ?? 'audio/mpeg',
+    });
+  }
+  if (m.video) {
+    out.push({
+      file: m.video,
+      name: m.video.file_name ?? `video-${m.message_id}.mp4`,
+      mimeType: m.video.mime_type ?? 'video/mp4',
+    });
+  }
+  if (m.video_note) {
+    out.push({ file: m.video_note, name: `video-note-${m.message_id}.mp4`, mimeType: 'video/mp4' });
+  }
+  return out;
+}
+
+/** 消息是否带可下载媒体(照片/文件/音视频) — 群历史媒体池的入池判据。 */
+export function hasDownloadableMedia(m: TgMessage): boolean {
+  return Boolean(
+    (m.photo && m.photo.length > 0) || m.document || m.voice || m.audio || m.video || m.video_note,
+  );
+}
+
 /** 单条消息的媒体收集(相册聚合时对每个成员各调一次)。 */
 async function collectMedia(
   m: TgMessage,
@@ -230,10 +267,18 @@ async function collectMedia(
   unsupported: IMUnsupportedEntry[],
 ): Promise<void> {
   if (m.sticker) unsupported.push({ type: 'sticker', label: m.sticker.emoji ?? 'sticker' });
-  if (m.voice) unsupported.push({ type: 'audio', label: 'voice message' });
-  if (m.audio) unsupported.push({ type: 'audio', label: m.audio.file_name ?? 'audio' });
-  if (m.video) unsupported.push({ type: 'video', label: m.video.file_name ?? 'video' });
-  if (m.video_note) unsupported.push({ type: 'video', label: 'video note' });
+
+  // 音视频按普通文件交给模型(file block 给可读路径, Agent 可自行抽帧/转写),
+  // 不再整类标 unsupported。Bot API 只能下载 20MB 以内的文件, 超出仍标 oversize。
+  for (const media of audioVideoFilesOf(m)) {
+    if ((media.file.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
+      unsupported.push({ type: 'oversize', label: media.name });
+      continue;
+    }
+    const downloaded = await downloadTelegramFile(ctx, media.file.file_id, media.name, media.mimeType);
+    if (downloaded) attachments.push(downloaded);
+    else unsupported.push({ type: 'download', label: media.name });
+  }
 
   if (m.photo && m.photo.length > 0) {
     // photo 数组是同图多分辨率, 取最大一档。
@@ -252,10 +297,6 @@ async function collectMedia(
     const mime = m.document.mime_type ?? 'application/octet-stream';
     if ((m.document.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: name });
-    } else if (mime.startsWith('audio/')) {
-      unsupported.push({ type: 'audio', label: name });
-    } else if (mime.startsWith('video/')) {
-      unsupported.push({ type: 'video', label: name });
     } else {
       const downloaded = await downloadTelegramFile(ctx, m.document.file_id, name, mime);
       if (downloaded) attachments.push(downloaded);
@@ -264,7 +305,7 @@ async function collectMedia(
   }
 }
 
-/** 被引消息的媒体(仅 photo/document, 上限 3)并入本 turn — 官方 bot 同款语义。 */
+/** 被引消息的媒体(上限 3)并入本 turn — 官方 bot 同款语义。 */
 const MAX_REPLY_ATTACHMENTS = 3;
 
 async function collectReplyMedia(
@@ -285,7 +326,7 @@ async function collectReplyMedia(
   return attachments.length - before;
 }
 
-/** 私聊消息/群触发消息 → IMMessageEvent(下载图片与文档附件, 相册成员并入)。 */
+/** 私聊消息/群触发消息 → IMMessageEvent(下载图片、文件与音视频附件, 相册成员并入)。 */
 export async function normalizeMessage(m: TgMessage, ctx: NormalizeContext): Promise<IMMessageEvent> {
   const attachments: IMAttachment[] = [];
   const unsupported: IMUnsupportedEntry[] = [];
@@ -337,6 +378,52 @@ export async function normalizeMessage(m: TgMessage, ctx: NormalizeContext): Pro
       : {}),
     raw: m,
   };
+}
+
+/** 单次群历史媒体注入上限 — 与飞书群上下文(HISTORY_IMAGE_MAX / HISTORY_FILE_MAX)同口径。 */
+export const GROUP_HISTORY_IMAGE_MAX = 6;
+export const GROUP_HISTORY_FILE_MAX = 4;
+
+/**
+ * 群历史媒体(触发前群里别人/自己先发、还没交给 bot 的图片/文件/音视频)下载。
+ * messages 按时间正序传入; 名额从最新往旧分配, **先占名额再下载** —— 超出名额的
+ * 不下载, 只汇总成一条原因。返回时翻回时间正序。下载失败/超限逐条写进 unavailable
+ * (文件名等是第三方文本, 由调用方放进数据块)。
+ */
+export async function collectGroupHistoryMedia(
+  messages: TgMessage[],
+  ctx: Pick<NormalizeContext, 'api' | 'mediaDir' | 'media'>,
+): Promise<{ attachments: Array<IMAttachment & { author: string }>; unavailable: string[] }> {
+  const picked: Array<IMAttachment & { author: string }> = [];
+  const unavailable: string[] = [];
+  let images = 0;
+  let files = 0;
+  let overQuota = 0;
+  for (const m of [...messages].reverse()) {
+    const isImage = expectedAttachmentKind(m) === 'image';
+    if (isImage ? images >= GROUP_HISTORY_IMAGE_MAX : files >= GROUP_HISTORY_FILE_MAX) {
+      overQuota++;
+      continue;
+    }
+    if (isImage) images++;
+    else files++;
+    const author = displayNameOf(m.from);
+    const sink: IMAttachment[] = [];
+    const failed: IMUnsupportedEntry[] = [];
+    await collectMedia(m, { ...ctx, contextId: '' }, sink, failed);
+    unavailable.push(...failed.map((entry) => `群历史附件 ${entry.label}（${author}）：${entry.type}`));
+    picked.push(...sink.map((att) => ({ ...att, author })));
+  }
+  unavailable.reverse();
+  if (overQuota > 0) unavailable.push(`另有 ${overQuota} 个更早的群历史附件超过数量上限，未提供`);
+  return { attachments: picked.reverse(), unavailable };
+}
+
+/** 下载前预判附件类别(占名额用): 照片与 image/* 文档进图片额度, 其余进文件额度。 */
+function expectedAttachmentKind(m: TgMessage): 'image' | 'file' {
+  if (m.photo && m.photo.length > 0) return 'image';
+  if (m.document?.mime_type?.startsWith('image/')) return 'image';
+  return 'file';
 }
 
 async function downloadTelegramFile(
