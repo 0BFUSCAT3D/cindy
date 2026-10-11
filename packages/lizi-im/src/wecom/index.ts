@@ -38,6 +38,7 @@ import {
   escapeWecomMarkdown,
 } from "./codec.js";
 import {
+  MAX_MEDIA_BYTES,
   mimeTypeForFilename,
   stageWecomDownload,
   readWecomOutboundFile,
@@ -664,6 +665,10 @@ export class WecomIM extends BaseIM implements TextChannelIM {
         const originalName = safeWecomFilename(downloaded.filename);
         const classified = classifyInboundAttachment(mimeTypeForFilename(originalName), originalName);
         if (classified.kind !== "file") {
+          // 与文件暂存同一入站上限(stageWecomDownload 的 MAX_MEDIA_BYTES), 媒体分支不得绕过。
+          if (downloaded.buffer.length > MAX_MEDIA_BYTES) {
+            return unsupportedPayload("file:oversize", `文件超过大小上限：${originalName}`);
+          }
           const media = this.host.media;
           const store =
             classified.kind === "image"

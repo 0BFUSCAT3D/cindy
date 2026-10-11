@@ -1100,6 +1100,31 @@ describe("WecomIM routing and ownership", () => {
     expect(received[0]?.attachments).toHaveLength(1);
   });
 
+  it("applies the 50MB inbound cap to file messages routed to the media store", async () => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    const cacheMedia = vi.fn();
+    host.files = { stage: vi.fn() };
+    host.media = { cacheImage: vi.fn(), cacheMedia, getCachedImage: vi.fn(async () => null), resolveMediaUrl: () => null } as never;
+    const client = new FakeClient();
+    client.downloadFile.mockImplementationOnce(async () => ({
+      buffer: Buffer.alloc(50 * 1024 * 1024 + 1),
+      filename: "big.mp4",
+    }));
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((e) => received.push(e));
+
+    await im.init();
+    client.emit("message.file", {
+      body: { msgid: "big-av", aibotid: "bot-1", chattype: "single", from: { userid: "owner" }, msgtype: "file", file: { url: "https://example.invalid/f" } },
+    });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    expect(cacheMedia).not.toHaveBeenCalled();
+    expect(received[0]?.unsupported).toEqual([{ type: "file:oversize", label: "文件超过大小上限：big.mp4" }]);
+  });
+
   it("routes an inbound image file message to the media store as a staged image", async () => {
     const { host, secrets } = createHost();
     secrets.set("wecom-owner-user-id", "owner");

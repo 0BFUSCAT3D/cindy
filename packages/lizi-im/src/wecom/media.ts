@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { IMHostFileStaging } from "../types.js";
 
-const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
+export const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const WINDOWS_RESERVED_FILENAME_STEMS = new Set([
   "CON",

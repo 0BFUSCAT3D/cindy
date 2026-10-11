@@ -25,6 +25,7 @@ import {
 import { TencentIlinkTransport } from '@cindy/wechat-ilink';
 
 import { inboundFileStaging } from './shared/inboundFileStaging';
+import { verifiedInboundMediaMime } from './shared/inboundMediaVerify';
 import { createLogger } from '../logger';
 import { resolveSafe as resolveXdtImageUrl } from '../imageCacheStore';
 import { resolveSafe as resolveCindyMediaUrl } from '../cindy-media/blobStore';
@@ -84,7 +85,7 @@ const host: IMHost = {
         cacheKey: integrationCacheKey(integration, token),
         integration,
         buffer,
-        mimeType,
+        mimeType: verifiedInboundMediaMime(buffer, mimeType, 'image'),
         // 常规入站图直接按用户附件保存；需要跨账户竞态保护的 transport 可先
         // 以可回收 staging 写入，确认归属后由消息落库的 pinBlob 提升为用户附件。
         isCache: staging === true,
@@ -100,7 +101,7 @@ const host: IMHost = {
         cacheKey: integrationCacheKey(integration, token),
         integration,
         buffer,
-        mimeType,
+        mimeType: verifiedInboundMediaMime(buffer, mimeType, 'av'),
         // IM 入站媒体最终属于用户附件；在消息落库挂 session owner 前先按
         // 可回收暂存处理，失效账户只回滚本次新增的 cache ref。
         isCache: true,
