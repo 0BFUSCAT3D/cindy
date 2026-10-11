@@ -38,6 +38,7 @@ import { Slider } from '@/components/ui/slider';
 import { extractIpcError } from '@/utils/ipcError';
 import { FontFamilyPicker, type FontPreset } from './FontFamilyPicker';
 import { LayoutResetControl } from './LayoutResetControl';
+import { WallpaperSection } from './WallpaperSection';
 
 const log = createLogger('settings/AppearanceSection');
 
@@ -622,6 +623,8 @@ export function AppearanceSection() {
         ) : null}
       </div>
 
+      <WallpaperSection />
+
       <div id="settings-search-settings-appearance-font-uiFamily-label"
         className={cn(
           'flex flex-col gap-[14px] rounded-xl p-5',
@@ -798,7 +801,7 @@ export function AppearanceSection() {
           'border border-[var(--settings-theme-card-border)]',
         )}
       >
-        <div className="flex items-center justify-between gap-3">
+        <div className="cindy-segmented-row">
           <div className="flex min-w-0 flex-col gap-1">
             <p id="settings-search-settings-appearance-sidebarCardMode-label"
               className="text-13 font-medium text-[var(--settings-section-sublabel)]"
@@ -823,7 +826,7 @@ export function AppearanceSection() {
           />
         </div>
 
-        <div className="flex items-center justify-between gap-3">
+        <div className="cindy-segmented-row">
           <div className="flex min-w-0 flex-col gap-1">
             <p id="settings-search-settings-appearance-sidebarMainListMode-label"
               className="text-13 font-medium text-[var(--settings-section-sublabel)]"
@@ -847,7 +850,7 @@ export function AppearanceSection() {
           />
         </div>
 
-        <div className="flex items-center justify-between gap-3">
+        <div className="cindy-segmented-row">
           <div className="flex min-w-0 flex-col gap-1">
             <p id="settings-search-settings-appearance-ghostPanelRestore-label"
               className="text-13 font-medium text-[var(--settings-section-sublabel)]"

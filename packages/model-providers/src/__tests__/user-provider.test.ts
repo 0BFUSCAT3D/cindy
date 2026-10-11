@@ -307,6 +307,53 @@ describe("buildUserProvider (per-runtime)", () => {
   });
 
   it.each(["claude-code", "codex", "pi"] as const)(
+    "%s inherits GPT-6 Sol/Luna reasoning for an unknown custom supplier",
+    (agent) => {
+      for (const id of ["gpt-6-sol", "gpt-6-luna", "openai/gpt-6-sol", "openai/gpt-6-luna"]) {
+        const config: CustomProviderConfig = {
+          id: "custom-xdtai",
+          name: "XDTAI",
+          runtimes: {
+            [agent]: {
+              baseUrl: "https://custom.example/v1",
+              models: [{ id, name: id, discoveredMetadata: { supportsImageInput: true } }],
+            },
+          },
+        };
+        const before = structuredClone(config);
+        const oldRegistry = structuredClone(BUNDLED_CATALOG.modelRegistry!);
+        oldRegistry.baseModels = oldRegistry.baseModels?.filter(
+          (model) => !["openai/gpt-6-sol", "openai/gpt-6-luna"].includes(model.id),
+        );
+        oldRegistry.models = oldRegistry.models.filter(
+          (model) => !["openai/gpt-6-sol", "openai/gpt-6-luna"].includes(model.modelRef ?? model.id),
+        );
+        // Without current-generation catalog data, compatible Responses routes now
+        // inherit the previous generation; Messages/Chat do not borrow its protocol.
+        expect(buildUserProvider(config, { modelRegistry: oldRegistry }).models[agent]?.[0])
+          .toMatchObject(agent === 'codex'
+            ? { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' }
+            : { efforts: [], defaultEffort: null });
+        const provider = buildUserProvider(config, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+        expect(provider.models[agent]?.[0]).toMatchObject({
+          id,
+          efforts: ["low", "medium", "high", "xhigh", "max"],
+          defaultEffort: "medium",
+        });
+        expect(provider.routing[agent]?.upstream).toBe("https://custom.example/v1");
+        expect(config).toEqual(before);
+        const stored = config.runtimes[agent]!.models[0];
+        stored.discoveredMetadata = { efforts: ["low", "high"] };
+        expect(buildUserProvider(config, { modelRegistry: BUNDLED_CATALOG.modelRegistry }).models[agent]?.[0])
+          .toMatchObject({ efforts: ["low", "high"], defaultEffort: "low" });
+        stored.reasoning = false;
+        expect(buildUserProvider(config, { modelRegistry: BUNDLED_CATALOG.modelRegistry }).models[agent]?.[0])
+          .toMatchObject({ efforts: [], defaultEffort: null });
+      }
+    },
+  );
+
+  it.each(["claude-code", "codex", "pi"] as const)(
     "%s leaves unknown reasoning unspecified and preserves declared capabilities",
     (agent) => {
       for (const modelRegistry of [
@@ -380,6 +427,19 @@ describe("buildUserProvider (per-runtime)", () => {
         expect(provider.models[agent]?.[0].userModelConfig).not.toHaveProperty(
           "reasoning",
         );
+        // 没有任何来源声明过档位:[] 只是占位,准入不得当成明确无档位(#5535)。
+        // Pi 例外:Pi 运行时按 efforts 物化 reasoning,放行的档位不会生效,所以不标「未知」。
+        if (agent === "pi") {
+          expect(provider.models[agent]?.[0]).not.toHaveProperty("effortsUnknown");
+        } else {
+          expect(provider.models[agent]?.[0]).toMatchObject({ effortsUnknown: true });
+        }
+        // 发现元数据、显式 reasoning:true 与 reasoning:false 都算已声明,不带「未知」标记。
+        for (const index of [1, 2, 3]) {
+          expect(provider.models[agent]?.[index]).not.toHaveProperty(
+            "effortsUnknown",
+          );
+        }
       }
     },
   );
@@ -584,6 +644,7 @@ describe("buildUserProvider (per-runtime)", () => {
       id: "custom/my-model",
       efforts: [],
       defaultEffort: null,
+      effortsUnknown: true,
     });
   });
 
@@ -1705,6 +1766,34 @@ describe('imported model native engine defaults', () => {
     } });
     expect(agents.map(agent => provider.models[agent]?.[0]?.defaultEnabled)).toEqual(expected);
   });
+
+  it.each([
+    [null, 'openai-responses', null, [false, false, true]],
+    ['anthropic-messages', 'openai-responses', 'anthropic-messages', [true, false, true]],
+    ['openai-responses', 'anthropic-messages', 'openai-responses', [false, true, true]],
+    [undefined, 'anthropic-messages', 'anthropic-messages', [true, false, true]],
+    [undefined, undefined, 'openai-responses', [false, true, true]],
+  ] as const)('applies current native declaration %s ahead of live %s and bundled fallback',
+    (declaration, live, expectedApi, expectedEnabled) => {
+      const agents = ['claude-code', 'codex', 'pi'] as const;
+      const config: CustomProviderConfig = {
+        id: 'native-default-test', name: 'Test',
+        runtimes: Object.fromEntries(agents.map(agent => [agent, {
+          baseUrl: 'https://example.com/v1',
+          wireProtocol: agent === 'claude-code' ? 'anthropic-messages' : 'openai-responses',
+          models: [{ id: 'gpt-6', name: 'GPT 6', discoveredMetadata: { nativeApi: live } }],
+        }])),
+      };
+      const provider = buildUserProvider(config, { modelRegistry: {
+        schemaVersion: 5, updatedAt: '2026-09-24T00:00:00Z',
+        models: [{ id: 'gpt-6', name: 'GPT 6', nativeApi: declaration, routes: [{
+          providerId: config.id, modelId: 'gpt-6', agents: ['claude-code', 'codex'],
+        }] }],
+      } });
+      expect(agents.map(agent => provider.models[agent]?.[0]?.nativeApi)).toEqual(agents.map(() => expectedApi));
+      expect(agents.map(agent => provider.models[agent]?.[0]?.defaultEnabled)).toEqual(expectedEnabled);
+      expect(config.runtimes?.codex?.models[0].discoveredMetadata?.nativeApi).toBe(live);
+    });
 
   it('preserves explicit configuration defaults', () => {
     const provider = buildUserProvider({ id: 'explicit-defaults', name: 'Test', runtimes: {

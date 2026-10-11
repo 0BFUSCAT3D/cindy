@@ -13,11 +13,14 @@ import {
   DeviceLinkError,
   DEVICE_LINK_CAPABILITY_COMPACT_MESSAGE_HISTORY_V1,
   CONTROLLER_CAPABILITY_SET_MODEL_EXPLICIT_PROVIDER_NULL_V1,
+  DEVICE_LINK_CAPABILITY_BACKGROUND_LINK_V1,
   DL_SUBSCRIBE_CHANNEL,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
   type InvokeResultPayload,
+  SessionMessageReuse,
 } from '@cindy/device-link';
+import { versionMessageBody } from '../sessionMessageReuse';
 
 vi.mock('electron', () => ({
   app: {
@@ -298,6 +301,26 @@ describe('history detail interest', () => {
 });
 
 describe('[14] sendInvokeResultSafe — 结果超限兜底', () => {
+  it.each(['local-db:messages:list', 'local-db:messages:view'])('keeps cached prose exact when %s needs oversized tool fallback', (channel) => {
+    const cache = new SessionMessageReuse();
+    const prose = { id: 'prose', clientId: 'prose', role: 'assistant', content: '完整正文'.repeat(2000) };
+    cache.receive('host', 'local-db:messages:created', { sessionId: 's1', message: versionMessageBody(prose) });
+    const request = cache.prepare('host', { channel, args: ['s1'] });
+    const rows = [prose, { id: 'tool', role: 'tool_result', content: 'x'.repeat(MAX_FRAME_BYTES) }];
+    const value = channel.endsWith(':list') ? rows : { items: [{ type: 'messages', key: 'rows', messages: rows }], hasMore: false };
+    const sendInvokeResult = vi.fn().mockImplementationOnce(() => { throw tooLarge(); });
+    __testing.sendInvokeResultSafe(mkClient({ sendInvokeResult }) as never, 'host', 'reuse-large',
+      { ok: true, result: value }, channel, request.payload.args);
+    const sent = sendInvokeResult.mock.calls.at(-1)![2] as InvokeResultPayload;
+    expect(sent.ok).toBe(true);
+    if (!sent.ok) throw new Error('Expected compact success');
+    const decoded = request.decode(sent.result) as typeof rows | { items: { messages: typeof rows }[] };
+    const restored = Array.isArray(decoded) ? decoded : decoded.items[0].messages;
+    expect(restored[0].content).toBe(prose.content);
+    expect(restored[1].content.length).toBeLessThan(MAX_FRAME_BYTES);
+    expect(JSON.stringify(sent)).not.toContain(prose.content);
+  });
+
   it('消息页首发抛 PAYLOAD_TOO_LARGE → 先压缩超大消息内容并重发 ok:true,不冒泡', () => {
     const sendInvokeResult = vi.fn().mockImplementationOnce(() => {
       throw tooLarge();
@@ -783,6 +806,44 @@ describe('[13] forwardPush — 转发失败 best-effort,不冒泡', () => {
     expect(subscriptions.__testing.topicsOf('ctrl-legacy')).toEqual(['*']);
   });
 
+  it('background link-open never installs the legacy wildcard or lights the controlled banner', () => {
+    const client = mkClient();
+    __testing.setActiveClient(client as never);
+
+    __testing.handleLinkOpen(client as never, 'ctrl-background', 'open-1', {
+      controllerName: 'Desktop',
+      protocolVersion: 1,
+      appVersion: '1.0.0',
+      capabilities: [DEVICE_LINK_CAPABILITY_BACKGROUND_LINK_V1],
+    });
+
+    expect(client.sendLinkAccept).toHaveBeenCalledWith(
+      'ctrl-background',
+      'open-1',
+      expect.objectContaining({
+        capabilities: expect.arrayContaining([DEVICE_LINK_CAPABILITY_BACKGROUND_LINK_V1]),
+      }),
+    );
+    expect(subscriptions.__testing.topicsOf('ctrl-background')).toEqual([]);
+    expect(subscriptions.getControlControllers()).toEqual([]);
+    expect(subscriptions.getUpdateRelaunchControllers()).toEqual([]);
+    __testing.forwardPush('local-db:messages:created', { sessionId: 's1', id: 'm1' });
+    expect(client.sendPush).not.toHaveBeenCalled();
+
+    // 之后用户真正开始控制:显式 subscribe 照常生效。
+    const result = __testing.handleSubscriptionFrame('ctrl-background', {
+      channel: DL_SUBSCRIBE_CHANNEL,
+      args: [{ topics: ['session:s1'] }],
+    });
+    expect(result).toEqual({ ok: true, result: { ok: true } });
+    __testing.forwardPush('local-db:messages:created', { sessionId: 's1', id: 'm1' });
+    expect(client.sendPush).toHaveBeenCalledWith(
+      'ctrl-background',
+      'local-db:messages:created',
+      { sessionId: 's1', id: 'm1' },
+    );
+  });
+
   it('remembered modern link-open waits for an explicit subscribe frame', () => {
     const client = mkClient();
     __testing.setActiveClient(client as never);
@@ -968,6 +1029,19 @@ describe('background database admission covers the complete remote list lifecycl
       expect(currentDbRpcAdmissionClass()).toBe('interactive');
     },
   );
+
+  it('runs cross-device usage row reads under background admission', async () => {
+    const admissions: string[] = [];
+    registry.register('maker:usage:device-rows', () => {
+      admissions.push(currentDbRpcAdmissionClass());
+      return { format: 'usage-device-rows-v1', oversize: true };
+    });
+    expect(
+      await runInvoke('ctrl-1', { channel: 'maker:usage:device-rows', args: [{ sinceDay: '2026-09-25' }] }),
+    ).toMatchObject({ ok: true });
+    expect(admissions).toEqual(['background']);
+    expect(currentDbRpcAdmissionClass()).toBe('interactive');
+  });
 
   it('keeps sending interactive while an unrelated background list is awaiting permission checks', async () => {
     let finish!: () => void;

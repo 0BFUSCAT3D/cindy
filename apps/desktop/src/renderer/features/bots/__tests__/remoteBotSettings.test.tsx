@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   REMOTE_RESOURCE_CHANGED_CHANNEL,
@@ -146,9 +146,22 @@ async function open() {
   const view = render(<RemoteBotSettings bot={bot} beforeCloseRef={close} onDeleted={vi.fn()} />);
   await waitFor(() => expect(screen.getByRole('button', { name: 'Models' })).toBeTruthy());
   fireEvent.click(screen.getByRole('button', { name: 'Models' }));
-  await waitFor(() => expect(screen.getByText('Choose account')).toBeTruthy());
+  await waitFor(() => expect(screen.getAllByText('Choose account').length).toBeGreaterThan(0));
   return view;
 }
+it('saves an independent task route to the owning host without changing the primary', async () => {
+  const remote = resource();
+  remote.actions[0].fields.push({ id: 'taskModel', label: 'Task model', kind: 'multiline' }, { id: 'taskFollowsPrimary', label: 'Inherit primary', kind: 'toggle' });
+  Object.assign(remote.blocks[0].data.values, { taskModel: JSON.stringify(chain), taskFollowsPrimary: true });
+  h.invoke.mockImplementation(async (_: string, channel: string) => channel === REMOTE_RESOURCE_GET_CHANNEL ? remote : { effects: [] });
+  await open();
+  expect(h.model.deviceId).toBe('host');
+  fireEvent.click(within(screen.getByTestId('bot-task-model-controls')).getByText('Choose account'));
+  fireEvent.click(screen.getByText('bots.save'));
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, [expect.objectContaining({
+    input: { taskFollowsPrimary: false, taskModel: JSON.stringify([{ harness: 'codex', model: 'gpt-6', providerId: 'openai:remote-account', effort: 'high', fastMode: true }]) },
+  })]));
+});
 it('saves the complete model route on the selected host using a renewed opaque action', async () => {
   await open();
   expect(h.model.deviceId).toBe('host');
@@ -177,20 +190,45 @@ it('saves the complete model route on the selected host using a renewed opaque a
     ]),
   );
 });
-it('preserves a dirty model draft and blocks closing when the save fails', async () => {
+it('preserves a dirty model draft when the save fails', async () => {
   await open();
   fireEvent.click(screen.getByText('Choose account'));
   h.invoke.mockImplementation(async (_: string, channel: string) => {
     if (channel === REMOTE_RESOURCE_INVOKE_CHANNEL) throw new Error('offline');
     return resource();
   });
+  fireEvent.click(screen.getByText('bots.save'));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('saveFailed'));
+  expect(h.model.value[0].providerId).toBe('openai:remote-account');
+});
+it('applies a draft only through Save and asks before closing or going back without it', async () => {
+  await open();
+  fireEvent.click(screen.getByText('Choose account'));
+  h.confirm.mockResolvedValueOnce(false);
   let result: unknown;
   await act(async () => {
     result = await close.current?.();
   });
   expect(result).toBe(false);
+  expect(h.confirm).toHaveBeenLastCalledWith(
+    expect.objectContaining({ description: 'bots.remoteSettings.leaveDescription' }),
+    expect.anything(),
+  );
   expect(h.model.value[0].providerId).toBe('openai:remote-account');
-  expect(screen.getByRole('alert').textContent).toContain('saveFailed');
+  h.confirm.mockResolvedValueOnce(false);
+  fireEvent.click(screen.getByRole('button', { name: 'bots.settingsBack' }));
+  await waitFor(() => expect(h.confirm).toHaveBeenCalledTimes(2));
+  expect(screen.getAllByText('Choose account').length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole('button', { name: 'bots.settingsBack' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Models' })).toBeTruthy());
+  await act(async () => {
+    result = await close.current?.();
+  });
+  expect(result).toBe(true);
+  expect(h.confirm).toHaveBeenCalledTimes(3);
+  expect(h.invoke.mock.calls.some((call) => call[1] === REMOTE_RESOURCE_INVOKE_CHANNEL)).toBe(
+    false,
+  );
 });
 it('retains the selected account across a disconnect and does not send an offline save', async () => {
   const view = await open();
@@ -202,6 +240,7 @@ it('retains the selected account across a disconnect and does not send an offlin
       onDeleted={vi.fn()}
     />,
   );
+  h.confirm.mockResolvedValueOnce(false);
   let result: unknown;
   await act(async () => {
     result = await close.current?.();
@@ -253,23 +292,22 @@ it('does not treat a refresh failure after a save receipt as an unsaved draft', 
     .mockResolvedValueOnce(resource())
     .mockResolvedValueOnce({ effects: [] })
     .mockRejectedValueOnce(new Error('read failed'));
+  fireEvent.click(screen.getByText('bots.save'));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('loadFailed'));
   let result: unknown;
   await act(async () => {
     result = await close.current?.();
   });
   expect(result).toBe(true);
-  await act(async () => {
-    result = await close.current?.();
-  });
-  expect(result).toBe(true);
+  expect(h.confirm).not.toHaveBeenCalled();
   expect(
     h.invoke.mock.calls.filter((call) => call[1] === REMOTE_RESOURCE_INVOKE_CHANNEL),
   ).toHaveLength(1);
 });
 
-it.each(['save', 'back'])(
-  'recovers the saved revision before further edits after %s and a failed refresh',
-  async (trigger) => {
+it(
+  'recovers the saved revision before further edits after save and a failed refresh',
+  async () => {
     await open();
     fireEvent.click(screen.getByText('Choose account'));
     const savedChain = h.model.value;
@@ -278,22 +316,16 @@ it.each(['save', 'back'])(
       .mockResolvedValueOnce(resource())
       .mockResolvedValueOnce({ effects: [] })
       .mockRejectedValueOnce(new Error('post-save read failed'));
-    fireEvent.click(screen.getByText(trigger === 'save' ? 'bots.save' : 'bots.settingsBack'));
+    fireEvent.click(screen.getByText('bots.save'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('loadFailed'));
     await waitFor(() =>
       expect((screen.getByText('bots.memory.useLatest') as HTMLButtonElement).disabled).toBe(false),
     );
-    if (trigger === 'save') {
-      expect(h.model.disabled).toBe(true);
-      // Even a callback from portaled picker content cannot create an unsavable draft.
-      act(() => h.model.onChange(nextChain));
-      expect(h.model.value).toEqual(savedChain);
-      expect((screen.getByText('bots.save') as HTMLButtonElement).disabled).toBe(true);
-    } else {
-      expect((screen.getByRole('button', { name: 'Models' }) as HTMLButtonElement).disabled).toBe(
-        true,
-      );
-    }
+    expect(h.model.disabled).toBe(true);
+    // Even a callback from portaled picker content cannot create an unsavable draft.
+    act(() => h.model.onChange(nextChain));
+    expect(h.model.value).toEqual(savedChain);
+    expect((screen.getByText('bots.save') as HTMLButtonElement).disabled).toBe(true);
     expect(await close.current?.()).toBe(true);
     h.invoke.mockRejectedValueOnce(new Error('retry still unavailable'));
     fireEvent.click(screen.getByText('bots.memory.useLatest'));
@@ -319,7 +351,6 @@ it.each(['save', 'back'])(
     });
     fireEvent.click(screen.getByText('bots.memory.useLatest'));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-    if (trigger === 'back') fireEvent.click(screen.getByRole('button', { name: 'Models' }));
     await waitFor(() => expect(h.model.disabled).toBe(false));
     act(() => h.model.onChange(nextChain));
     fireEvent.click(screen.getByText('bots.save'));
@@ -488,13 +519,17 @@ it('blocks returning and closing immediately while a selected portrait is decodi
   );
   await act(async () => finish());
   expect(h.portrait.disabled).toBe(false);
+  h.confirm.mockResolvedValueOnce(false);
   await act(async () => {
     canClose = await close.current?.();
   });
-  expect(canClose).toBe(true);
-  expect(h.invoke).toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, [
-    expect.objectContaining({ input: { avatarImageBase64: '/9j/2Q==' } }),
-  ]);
+  expect(canClose).toBe(false);
+  fireEvent.click(screen.getByText('bots.save'));
+  await waitFor(() =>
+    expect(h.invoke).toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, [
+      expect.objectContaining({ input: { avatarImageBase64: '/9j/2Q==' } }),
+    ]),
+  );
 });
 it('reports failed portrait conversion and releases the navigation guard without writing an avatar', async () => {
   let fail!: (error: Error) => void;
@@ -619,12 +654,12 @@ it.each(['gallery', 'file'])(
     expect(h.portrait.disabled).toBe(true);
     await act(async () => decodes.shift()!());
     expect(h.portrait.disabled).toBe(false);
-    await act(async () => {
-      canClose = await close.current?.();
-    });
-    expect(canClose).toBe(true);
-    expect(h.invoke).toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, [
-      expect.objectContaining({ input: { avatarImageBase64: '/9j/2Q==' } }),
-    ]);
+    fireEvent.click(screen.getByText('bots.save'));
+    await waitFor(() =>
+      expect(h.invoke).toHaveBeenCalledWith('host', REMOTE_RESOURCE_INVOKE_CHANNEL, [
+        expect.objectContaining({ input: { avatarImageBase64: '/9j/2Q==' } }),
+      ]),
+    );
+    await waitFor(async () => expect(await close.current?.()).toBe(true));
   },
 );

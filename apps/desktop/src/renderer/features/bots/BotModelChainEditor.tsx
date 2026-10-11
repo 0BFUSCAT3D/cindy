@@ -8,7 +8,6 @@ import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { providerAccountLabel, providerDisplayName } from '@/lib/providerDisplayName';
 import { useAvailableAgents } from '@/hooks/useAvailableAgents';
 import type { MakerVendor } from '@/lib/ccAgent.types';
-import { cn } from '@/lib/utils';
 import {
   BOT_MODEL_CHAIN_MAX,
   type BotHarness,
@@ -43,6 +42,7 @@ export function BotModelChainEditor({
   label,
   onRestoreDefault,
   onNavigateToProviders,
+  allowFallbacks = true,
 }: {
   value: BotModelRoute[];
   onChange: (next: BotModelRoute[]) => void;
@@ -54,6 +54,7 @@ export function BotModelChainEditor({
   label?: string;
   onRestoreDefault?: () => void;
   onNavigateToProviders?: () => void;
+  allowFallbacks?: boolean;
 }) {
   const { t } = useBotTranslation();
   const { availableVendors, loaded } = useAvailableAgents(deviceId);
@@ -177,7 +178,7 @@ export function BotModelChainEditor({
           0,
         )}
       </div>
-      <details
+      {allowFallbacks && <details
         className="mt-1 text-12 text-[var(--text-tertiary)]"
         onToggle={(event) => setExpanded(event.currentTarget.open)}
       >
@@ -277,7 +278,7 @@ export function BotModelChainEditor({
             ) : null}
           </div>
         ) : null}
-      </details>
+      </details>}
     </div>
   );
 }

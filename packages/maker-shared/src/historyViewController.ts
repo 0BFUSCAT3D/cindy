@@ -230,7 +230,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
       const completed = this.state.details.get(summary.key);
       if (completed?.complete && completed.revision === summary.revision && !patch.complete) return;
       const details = new Map(this.state.details);
-      details.set(summary.key, { messages: collected.length ? collected : (existing?.messages ?? []), revision: summary.revision,
+      // A reread keeps the previous window until it settles. Publishing each
+      // incoming page would replace the old window with a partial slice of the
+      // new range: the rendered list collapses to the first page and shifts a
+      // bottom-pinned stream before the tail lands.
+      const settled = patch.complete === true;
+      const messages = !settled && existing?.messages?.length ? existing.messages
+        : collected.length ? collected : (existing?.messages ?? []);
+      details.set(summary.key, { messages, revision: summary.revision,
         lastMessageId: summary.lastMessageId, loading: true, complete: false, error: null, ...patch });
       this.publish({ details });
     };
@@ -271,13 +278,14 @@ export class HistoryViewController<T extends HistoryMessageSource> {
         if (item.type === 'messages') {
           const found = item.messages.find((row) => row.clientId === clientId);
           if (found) return found;
-        } else if (!tried.has(item.key) && targetMs >= item.summary.startedAtMs && targetMs <= item.summary.endedAtMs) {
-          tried.add(item.key);
-          const summary = item.summary;
+        }
+        const summary = item.type === 'work' ? item.summary : item.deferred;
+        if (summary && !tried.has(summary.key) && targetMs >= summary.startedAtMs && targetMs <= summary.endedAtMs) {
+          tried.add(summary.key);
           const current = () => this.active && generation === this.generation
             && historyWorkSummaries(this.state.items).some((value) => value.key === summary.key && value.revision === summary.revision
               && value.firstMessageId === summary.firstMessageId && value.lastMessageId === summary.lastMessageId);
-          const cached = this.state.details.get(item.key);
+          const cached = this.state.details.get(summary.key);
           let messages = cached?.complete && cached.revision === summary.revision ? [...cached.messages] : [];
           if (!messages.length && this.networkAvailable) {
             // Search reads the bounded range without changing user expansion memory
@@ -294,7 +302,7 @@ export class HistoryViewController<T extends HistoryMessageSource> {
             }
             if (!current()) return null;
             const details = new Map(this.state.details);
-            details.set(item.key, { messages, revision: summary.revision, lastMessageId: summary.lastMessageId,
+            details.set(summary.key, { messages, revision: summary.revision, lastMessageId: summary.lastMessageId,
               loading: false, complete: true, error: null });
             this.publish({ details });
           }

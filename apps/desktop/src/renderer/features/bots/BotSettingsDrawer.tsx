@@ -29,6 +29,8 @@ export function BotSettingsDrawer() {
     : (bots.find((candidate) => candidate.id === match?.params.botId) ?? null);
   const open = searchParams.get('settings') === '1' && (bot !== null || !!remoteBot);
 
+  const requestedPage = searchParams.get('settingsPage');
+  const initialPage = requestedPage === 'memory' || requestedPage === 'capabilities' ? requestedPage : 'home';
   const allowNavigation = useRef(false);
   const pendingGuard = useRef<Promise<boolean> | null>(null);
   const beforeCloseRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -76,10 +78,17 @@ export function BotSettingsDrawer() {
       navigate('/bots', { replace: true });
       return;
     }
+    // A paused or failed teammate has no chat behind the drawer: its page reopens
+    // settings, so dropping the query alone would bounce straight back. Close to the list.
+    if (bot && bot.status !== 'active') {
+      navigate('/bots/list', { replace: true });
+      return;
+    }
     setSearchParams(
       (current) => {
         const next = new URLSearchParams(current);
         next.delete('settings');
+        next.delete('settingsPage');
         return next;
       },
       { replace: true },
@@ -96,9 +105,14 @@ export function BotSettingsDrawer() {
     <Dialog.Root open={open} onOpenChange={(next) => !next && close()}>
       <Dialog.Portal>
         {/* Keep portaled controls inside the overlay’s React tree so its scroll lock allows them. */}
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[var(--overlay-modal)]">
+        <Dialog.Overlay className="modal-scrim fixed inset-0 z-50">
           <Dialog.Content
+            onPointerDownOutside={(event) => event.preventDefault()}
             aria-describedby={undefined}
+            // CJK IME: Escape during composition only cancels the candidate.
+            onEscapeKeyDown={(event) => {
+              if (event.isComposing || event.keyCode === 229) event.preventDefault();
+            }}
             className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-[var(--border-default)] bg-[var(--surface)] outline-none"
           >
             <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
@@ -114,8 +128,9 @@ export function BotSettingsDrawer() {
             </header>
             {remoteBot ? (
               <RemoteBotSettings
-                key={`${remoteBot.deviceId}:${remoteBot.id}`}
+                key={`${remoteBot.deviceId}:${remoteBot.id}:${open}:${initialPage}`}
                 bot={remoteBot}
+                initialPage={initialPage}
                 beforeCloseRef={beforeCloseRef}
                 onDeleted={() => {
                   allowNavigation.current = true;
@@ -125,7 +140,8 @@ export function BotSettingsDrawer() {
             ) : bot ? (
               <BotPronounProvider bot={bot}>
                 <BotSettings
-                  key={bot.id}
+                  key={`${bot.id}:${open}:${initialPage}`}
+                  initialPage={initialPage}
                   beforeCloseRef={beforeCloseRef}
                   bot={bot}
                   onBack={performClose}

@@ -2,7 +2,8 @@
  * ImageLightbox — IM 级全屏图片查看器。
  * ---------------------------------------------------------------------------
  * 点缩略图直接全屏黑底看图,交互对齐主流 IM:
- *   - 双指捏合绕焦点缩放(1x~4x);放大后单指平移(钳制在 contain 后的图片边界内)
+ *   - 双指捏合绕焦点缩放(1x~4x,可捏过两端再弹回);放大后单指平移,
+ *     越过图片边界有橡皮筋阻尼,松手带惯性滑行、越界弹回(对齐系统相册)
  *   - 双击在 1x / 2.5x 间切换并落到点击点;1x 单击关闭
  *   - 1x 下竖直下滑跟手关闭(位移 + 背景渐隐),横滑翻会话内图片集
  *   - 放大后单指只平移;单击不关(双击缩回,或先回到 1x 再单击/下滑)
@@ -19,6 +20,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   Platform,
@@ -31,13 +33,14 @@ import {
 import { Text } from '@/components/AppText';
 import { MessageSquarePlus, Pen, Share as ShareIcon, Undo2, X } from 'lucide-react-native';
 import Svg, { Path } from 'react-native-svg';
-import { fontWeight, iconSize, iconStroke, motionDuration, radius, typeScale } from '@/theme';
+import { fontWeight, iconSize, iconStroke, lineHeight, motionDuration, radius, typeScale } from '@/theme';
 import { Gesture, GestureDetector, GestureHandlerRootView } from '@/platform/gestureHandler';
 import Animated, {
   cancelAnimation,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
+  withDecay,
   withSpring,
   withTiming,
   type SharedValue,
@@ -47,6 +50,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { MobileMessageGalleryImage } from '@/session/messageGallery';
 import {
   isDesktopLocalMediaUrl,
+  mediaLoadFailureKey,
   type MobileResolvedRemoteMedia,
   type ResolveRemoteMediaFn,
 } from '@/session/remoteMedia';
@@ -54,9 +58,8 @@ import {
   bakeLightboxOrigin,
   canShareLightboxImage,
   compensateLightboxOrigin,
-  clampLightboxScale,
   clampLightboxTranslation,
-  clampLightboxVisualPan,
+  dragLightboxVisualPan,
   isLightboxZoomed,
   lightboxBackgroundOpacity,
   lightboxContainedSize,
@@ -65,24 +68,35 @@ import {
   lightboxInitialIndex,
   lightboxPageIndex,
   lightboxPageLabel,
+  lightboxPanRelease,
+  lightboxPinchAnchor,
   lightboxPinchOrigin,
+  lightboxPinchSettle,
+  lightboxPinchTranslation,
+  LIGHTBOX_MAX_SCALE,
+  LIGHTBOX_MIN_SCALE,
   LIGHTBOX_TAP_MAX_DISTANCE,
   nextDoubleTapScale,
   reclampLightboxPan,
+  rubberBandLightboxScale,
   shouldCloseLightboxOnTap,
   shouldDismissLightbox,
+  unrubberLightboxScale,
 } from '@/session/imageLightboxModel';
 import {
   ANNOTATION_OUTLINE_COLOR,
-  ANNOTATION_OUTLINE_WIDTH_RATIO,
   ANNOTATION_STROKE_COLOR,
   annotationBaseRect,
   annotationDisplayRect,
+  annotationMinPointDistanceForRect,
+  annotationOutlineWidth,
+  annotationStrokesEqual,
   annotationStrokeToSvgPath,
   annotationStrokeWidth,
   canAnnotateImageMime,
   normalizeAnnotationPoint,
   shouldAppendAnnotationPoint,
+  shouldDiscardInterruptedStroke,
   type AnnotationStroke,
 } from '@/session/imageAnnotationModel';
 
@@ -90,13 +104,16 @@ import {
 // retaining the lightbox's native gesture transforms.
 const AnimatedImage = Animated.createAnimatedComponent(Image);
 
+/** 越界 / 捏过两端松手的回弹:接近临界阻尼,约 0.3s 落定,几乎不来回晃。 */
+const LIGHTBOX_SETTLE_SPRING = { damping: 30, stiffness: 260, mass: 1 } as const;
+
 // 缩略图垫底**不**挂在取件态里:它要跨过 loading → ready 的边界继续垫住原图
 // 下载那一段(见 lightboxImageLayers),挂进 loading 分支会在取件完成的瞬间
 // 结构性丢失,把第二段空档裸露成纯黑。垫底地址单独存 previewMap。
 type PageResolveState =
   | { status: 'loading' }
   | { status: 'ready'; media: MobileResolvedRemoteMedia }
-  | { status: 'error' };
+  | { status: 'error'; error?: unknown };
 
 /** 宿主注入的底部操作(文件浏览器:复制路径/发送到会话);回调收当前活跃页。 */
 export interface ImageLightboxAction {
@@ -131,13 +148,24 @@ export interface ImageLightboxAnnotationConfig {
     image: MobileMessageGalleryImage,
     displayUri: string,
     strokes: AnnotationStroke[],
-    context: { mimeType?: string },
+    /** naturalWidth / naturalHeight:查看器已解码的图片尺寸(未加载完成时缺省)。 */
+    context: { mimeType?: string; naturalWidth?: number; naturalHeight?: number },
   ) => void | Promise<void>;
   /**
    * 某页的既有笔迹(托盘带标注图再编辑):打开/翻页时叠加显示,进入标注模式
    * 可继续画或撤销。不提供 = 全部从空白开始。
    */
   initialStrokesFor?: (image: MobileMessageGalleryImage) => readonly AnnotationStroke[] | undefined;
+  /**
+   * 某页此刻暂不能进入标注的原因(可选;返回 undefined = 可以)。有原因时画笔
+   * 按钮置灰但仍可点,点按弹出该说明(如托盘附件的上一次修改尚未上传完成)。
+   */
+  annotationBlockedReason?: (image: MobileMessageGalleryImage) => string | undefined;
+  /**
+   * 进入标注模式时调用(可选):宿主据此提前准备提交所需资源(烧录 WebView
+   * 预热)。返回的释放函数在退出标注 / 关闭查看器时调用。
+   */
+  prewarm?: () => () => void;
 }
 
 export interface ImageLightboxProps {
@@ -167,6 +195,11 @@ export interface ImageLightboxProps {
   showFileHeader?: boolean;
   /** 圈点标注(可选):见 {@link ImageLightboxAnnotationConfig}。 */
   annotation?: ImageLightboxAnnotationConfig;
+  /**
+   * 打开即进入标注模式(需同时提供 annotation;对齐桌面 autoAnnotate)。
+   * 为标注而开的临时图(如图表导出)用:放弃标注(取消 / 返回)直接关闭查看器。
+   */
+  autoAnnotate?: boolean;
 }
 
 // memo:父层(消息列表)在流式回复期间每 token 重渲染,props 全部引用稳定
@@ -181,6 +214,7 @@ export const ImageLightbox = memo(function ImageLightbox({
   extraActions,
   showFileHeader,
   annotation,
+  autoAnnotate = false,
 }: ImageLightboxProps) {
   const { t } = useTranslation();
   const { width, height } = useWindowDimensions();
@@ -205,7 +239,9 @@ export const ImageLightbox = memo(function ImageLightbox({
   }, []);
 
   // ---- 圈点标注状态(仅活跃页;笔迹归一化存储,显示/烧录共用同一映射)----
-  const [isAnnotating, setIsAnnotating] = useState(false);
+  // autoAnnotate 只作初值:打开即进标注(对齐桌面)。
+  const autoAnnotateActive = autoAnnotate && !!annotation;
+  const [isAnnotating, setIsAnnotating] = useState(autoAnnotateActive);
   const [annotationSubmitting, setAnnotationSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const sharingRef = useRef(false);
@@ -213,10 +249,20 @@ export const ImageLightbox = memo(function ImageLightbox({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const [strokes, setStrokes] = useState<AnnotationStroke[]>([]);
+  // 取消 / 返回回调经 ref 读最新笔迹与文案:它们进入手势 deps(onRequestClose),
+  // 不能因每次作画 / 父层重渲染而让整张手势图重建。
+  const strokesRef = useRef(strokes);
+  strokesRef.current = strokes;
+  const tRef = useRef(t);
+  tRef.current = t;
   const [draftStroke, setDraftStroke] = useState<AnnotationStroke | null>(null);
   /** url → 图片自然尺寸(LightboxPage onLoad 上报;overlay 与坐标换算的基准)。 */
   const [naturalSizes, setNaturalSizes] = useState<Record<string, { width: number; height: number }>>({});
   const draftStrokeRef = useRef<AnnotationStroke | null>(null);
+  /** 进行中一笔的屏幕路径长度(容器坐标,px)与上一个原始触点:判定捏合误触。 */
+  const draftScreenLengthRef = useRef(0);
+  const draftLastScreenPointRef = useRef<{ x: number; y: number } | null>(null);
+  const discardConfirmOpenRef = useRef(false);
   const activeImageForDraw = images[activeIndex] ?? null;
   const activeNaturalSize = activeImageForDraw ? naturalSizes[activeImageForDraw.key] ?? null : null;
 
@@ -240,12 +286,18 @@ export const ImageLightbox = memo(function ImageLightbox({
     const initial = image ? annotation?.initialStrokesFor?.(image) : undefined;
     setStrokes(initial ? [...initial] : []);
     draftStrokeRef.current = null;
+    draftLastScreenPointRef.current = null;
+    draftScreenLengthRef.current = 0;
     setDraftStroke(null);
     // annotation 语义上只在打开时取一次快照,翻页时按新页(key)重取
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIndex, activeImageKeyForStrokes]);
 
-  /** 画笔落点(容器坐标 + 当页 transform 状态,LightboxPage 手势经 runOnJS 上抛)。 */
+  /**
+   * 画笔落点(容器坐标 + 当页 transform 状态,LightboxPage 手势经 runOnJS 上抛)。
+   * end 带手势是否正常结束:第二根手指落下会让单指画笔手势被取消,此时屏幕
+   * 路径很短的半笔是捏合起手的误触(点 / 小短线),丢弃;点按与真正的笔画照常落笔。
+   */
   const handleDrawPoint = useCallback((
     phase: 'start' | 'move' | 'end',
     pointX: number,
@@ -253,13 +305,17 @@ export const ImageLightbox = memo(function ImageLightbox({
     translateX: number,
     translateY: number,
     scale: number,
+    gestureSucceeded = true,
   ) => {
     if (submittingRef.current) return;
     if (phase === 'end') {
       const draft = draftStrokeRef.current;
+      const screenLength = draftScreenLengthRef.current;
       draftStrokeRef.current = null;
+      draftLastScreenPointRef.current = null;
+      draftScreenLengthRef.current = 0;
       setDraftStroke(null);
-      if (draft && draft.points.length > 0) {
+      if (draft && draft.points.length > 0 && !shouldDiscardInterruptedStroke(gestureSucceeded, screenLength)) {
         setStrokes((prev) => [...prev, draft]);
       }
       return;
@@ -272,30 +328,94 @@ export const ImageLightbox = memo(function ImageLightbox({
     if (!point) return;
     if (phase === 'start') {
       draftStrokeRef.current = { points: [point] };
+      draftLastScreenPointRef.current = { x: pointX, y: pointY };
+      draftScreenLengthRef.current = 0;
       setDraftStroke(draftStrokeRef.current);
       return;
     }
     const draft = draftStrokeRef.current;
     if (!draft) return;
-    if (!shouldAppendAnnotationPoint(draft, point)) return;
-    draftStrokeRef.current = { points: [...draft.points, point] };
+    const lastScreen = draftLastScreenPointRef.current;
+    if (lastScreen) draftScreenLengthRef.current += Math.hypot(pointX - lastScreen.x, pointY - lastScreen.y);
+    draftLastScreenPointRef.current = { x: pointX, y: pointY };
+    // 最小点距按屏幕像素换算:放大作画保精度,1x 不逐事件记录。
+    if (!shouldAppendAnnotationPoint(draft, point, annotationMinPointDistanceForRect(rect))) return;
+    // 原地追加(O(1)),只换外层引用触发重渲染;落笔 / 提交后草稿引用即被置空,
+    // 已提交的笔迹不会再被改动。
+    draft.points.push(point);
+    draftStrokeRef.current = { points: draft.points };
     setDraftStroke(draftStrokeRef.current);
   }, [activeNaturalSize, width, height]);
 
   const undoLastStroke = useCallback(() => {
     setStrokes((prev) => prev.slice(0, -1));
     draftStrokeRef.current = null;
+    draftLastScreenPointRef.current = null;
+    draftScreenLengthRef.current = 0;
     setDraftStroke(null);
   }, []);
 
-  const exitAnnotationMode = useCallback(() => {
+  /**
+   * 放弃标注:恢复到该页既有笔迹并退出标注模式。autoAnnotate 宿主(为标注而开
+   * 的临时图)留在查看器没有意义,直接关闭(对齐桌面)。
+   */
+  const discardAnnotation = useCallback(() => {
+    if (autoAnnotateActive) {
+      onCloseRef.current();
+      return;
+    }
     const image = images[activeIndex];
     const initial = image ? annotation?.initialStrokesFor?.(image) : undefined;
     setStrokes(initial ? [...initial] : []);
     draftStrokeRef.current = null;
+    draftLastScreenPointRef.current = null;
+    draftScreenLengthRef.current = 0;
     setDraftStroke(null);
     setIsAnnotating(false);
-  }, [activeIndex, images, annotation]);
+  }, [activeIndex, images, annotation, autoAnnotateActive]);
+
+  /**
+   * 取消 / 返回:笔迹与打开时一致则直接放弃(与以往完全相同);有未保存的改动
+   * 先确认,避免误触丢掉整张图的圈点。
+   */
+  const exitAnnotationMode = useCallback(() => {
+    if (submittingRef.current) return;
+    const image = images[activeIndex];
+    const baseline = (image ? annotation?.initialStrokesFor?.(image) : undefined) ?? EMPTY_STROKES;
+    const changed = !!draftStrokeRef.current?.points.length
+      || !annotationStrokesEqual(strokesRef.current, baseline);
+    if (!changed) {
+      discardAnnotation();
+      return;
+    }
+    if (discardConfirmOpenRef.current) return;
+    discardConfirmOpenRef.current = true;
+    const settle = () => { discardConfirmOpenRef.current = false; };
+    const t = tRef.current;
+    Alert.alert(
+      t('message.lightbox.discardAnnotationTitle'),
+      t('message.lightbox.discardAnnotationBody'),
+      [
+        { text: t('message.lightbox.continueAnnotating'), style: 'cancel', onPress: settle },
+        {
+          text: t('message.lightbox.discardAnnotation'),
+          style: 'destructive',
+          onPress: () => {
+            settle();
+            discardAnnotation();
+          },
+        },
+      ],
+      { cancelable: true, onDismiss: settle },
+    );
+  }, [activeIndex, images, annotation, discardAnnotation]);
+
+  // 标注模式期间让宿主预热提交资源(烧录 WebView);退出 / 关闭时释放。
+  const prewarmAnnotation = annotation?.prewarm;
+  useEffect(() => {
+    if (!isAnnotating || !prewarmAnnotation) return undefined;
+    return prewarmAnnotation();
+  }, [isAnnotating, prewarmAnnotation]);
 
   // 每 url 只自动强制重取一次(Image 加载失败自愈),防 onError↔重取死循环;
   // 重试按钮的显式 forceRefresh 不受此限制。
@@ -335,8 +455,8 @@ export const ImageLightbox = memo(function ImageLightbox({
       .then((resolved) => {
         setResolveMap((prev) => ({ ...prev, [key]: { status: 'ready', media: resolved } }));
       })
-      .catch(() => {
-        setResolveMap((prev) => ({ ...prev, [key]: { status: 'error' } }));
+      .catch((error: unknown) => {
+        setResolveMap((prev) => ({ ...prev, [key]: { status: 'error', error } }));
       });
     // 垫底缩略图:列表里这张图已经解码好了,拿来从打开那一刻接住画面,一直垫到
     // 原图 onLoad(见 lightboxImageLayers)。写入**不看取件态** —— 原图可能在同
@@ -453,6 +573,24 @@ export const ImageLightbox = memo(function ImageLightbox({
     && canAnnotateImageMime(activeMimeType)
     && !activeLooksGif
     && !activeLooksSvg;
+  // 画笔要等图片自然尺寸就位(坐标换算基准),否则进入标注后作画静默无效:
+  // 此前按钮置灰禁用,与撤销的禁用态同观感。宿主给出暂不可标注的原因时,按钮
+  // 同样置灰但可点,点按说明原因(否则用户不知道为什么不能画)。
+  const annotateReady = annotateVisible && !!activeNaturalSize;
+  const annotateBlockedReason = annotateReady && activeImage
+    ? annotation?.annotationBlockedReason?.(activeImage)
+    : undefined;
+  const annotateEnabled = annotateReady && !annotateBlockedReason;
+  const enterAnnotationMode = useCallback(() => {
+    if (!annotateReady || submittingRef.current || sharingRef.current) return;
+    // 点按时重新询问宿主:替换上传可能在上次渲染后已落定,避免弹出过期原因。
+    const blockedReason = activeImage ? annotation?.annotationBlockedReason?.(activeImage) : undefined;
+    if (blockedReason) {
+      Alert.alert(t('message.lightbox.annotateUnavailableTitle'), blockedReason);
+      return;
+    }
+    setIsAnnotating(true);
+  }, [annotateReady, activeImage, annotation, t]);
   // 独立直发(发送到对话):不要求可标注——gif 等不可画的图同样能转发。
   const directSubmitVisible = !!annotation?.allowDirectSubmit && !!activeImage && !!activeUri;
 
@@ -470,6 +608,9 @@ export const ImageLightbox = memo(function ImageLightbox({
     void Promise.resolve()
       .then(() => annotation.onSubmit(activeImage, activeUri, submittedStrokes, {
         mimeType: activeMimeType,
+        ...(activeNaturalSize
+          ? { naturalWidth: activeNaturalSize.width, naturalHeight: activeNaturalSize.height }
+          : {}),
       }))
       .then(() => onCloseRef.current())
       .catch(() => {
@@ -479,12 +620,12 @@ export const ImageLightbox = memo(function ImageLightbox({
         submittingRef.current = false;
         setAnnotationSubmitting(false);
       });
-  }, [annotation, activeImage, activeUri, activeMimeType, strokes]);
+  }, [annotation, activeImage, activeUri, activeMimeType, activeNaturalSize, strokes]);
 
   // Android 物理返回键触发 Modal.onRequestClose,不受手势层/按钮层的
   // isAnnotating 禁用覆盖(review 发现:会绕开"标注模式中关闭均禁用"保护
-  // 直接整体关闭 lightbox,未保存笔迹丢失)。标注中改为退出标注模式,
-  // 提交中忽略返回键,非标注态才走原始关闭。
+  // 直接整体关闭 lightbox,未保存笔迹丢失)。标注中改为退出标注模式(有改动
+  // 先确认;autoAnnotate 放弃即关闭),提交中忽略返回键,非标注态才走原始关闭。
   const handleRequestClose = useCallback(() => {
     if (submittingRef.current) return;
     if (isAnnotating) {
@@ -565,7 +706,8 @@ export const ImageLightbox = memo(function ImageLightbox({
               width={width}
             />
           )}
-          scrollEnabled={!zoomed && !isAnnotating && !annotationSubmitting && images.length > 1}
+          // 单图同样开启:iOS 横向拖到边缘有系统回弹,与多图首尾页手感一致。
+          scrollEnabled={!zoomed && !isAnnotating && !annotationSubmitting}
           showsHorizontalScrollIndicator={false}
           windowSize={3}
         />
@@ -682,15 +824,23 @@ export const ImageLightbox = memo(function ImageLightbox({
               <View style={styles.actionBarPill}>
                 {annotateVisible ? (
                   <Pressable
-                    accessibilityLabel={t('message.lightbox.annotateImage')}
-                    disabled={annotationSubmitting || sharing}
+                    accessibilityHint={annotateBlockedReason}
+                    accessibilityLabel={annotateBlockedReason
+                      ? t('message.lightbox.annotateImageUnavailable')
+                      : t('message.lightbox.annotateImage')}
+                    accessibilityState={{ disabled: !annotateReady }}
+                    disabled={annotationSubmitting || sharing || !annotateReady}
                     hitSlop={8}
-                    onPress={() => setIsAnnotating(true)}
+                    onPress={enterAnnotationMode}
                     style={styles.actionItem}
                     testID="message.imageLightboxAnnotateButton"
                   >
-                    <Pen color="#ffffff" size={iconSize.action} strokeWidth={iconStroke.regular} />
-                    <Text style={styles.actionLabel}>{t('message.lightbox.annotate')}</Text>
+                    <Pen
+                      color={annotateEnabled ? '#ffffff' : 'rgba(255,255,255,0.35)'}
+                      size={iconSize.action}
+                      strokeWidth={iconStroke.regular}
+                    />
+                    <Text style={[styles.actionLabel, !annotateEnabled && styles.actionLabelDisabled]}>{t('message.lightbox.annotate')}</Text>
                   </Pressable>
                 ) : null}
                 {extraActions.map((action) => (
@@ -738,15 +888,23 @@ export const ImageLightbox = memo(function ImageLightbox({
               <View style={styles.actionBarPill}>
                 {annotateVisible ? (
                   <Pressable
-                    accessibilityLabel={t('message.lightbox.annotateImage')}
-                    disabled={annotationSubmitting || sharing}
+                    accessibilityHint={annotateBlockedReason}
+                    accessibilityLabel={annotateBlockedReason
+                      ? t('message.lightbox.annotateImageUnavailable')
+                      : t('message.lightbox.annotateImage')}
+                    accessibilityState={{ disabled: !annotateReady }}
+                    disabled={annotationSubmitting || sharing || !annotateReady}
                     hitSlop={8}
-                    onPress={() => setIsAnnotating(true)}
+                    onPress={enterAnnotationMode}
                     style={styles.actionItem}
                     testID="message.imageLightboxAnnotateButton"
                   >
-                    <Pen color="#ffffff" size={iconSize.action} strokeWidth={iconStroke.regular} />
-                    <Text style={styles.actionLabel}>
+                    <Pen
+                      color={annotateEnabled ? '#ffffff' : 'rgba(255,255,255,0.35)'}
+                      size={iconSize.action}
+                      strokeWidth={iconStroke.regular}
+                    />
+                    <Text style={[styles.actionLabel, !annotateEnabled && styles.actionLabelDisabled]}>
                       {t('message.lightbox.annotate')}
                     </Text>
                   </Pressable>
@@ -846,7 +1004,8 @@ const LightboxPage = memo(function LightboxPage({
   naturalSize: { width: number; height: number } | null;
   /** 捏合/平移开始与结束时通知父层开关 chrome 触摸。 */
   onChromeBusy(busy: boolean): void;
-  /** 画笔事件(容器坐标 + 当页 transform 快照),UI 线程经 runOnJS 上抛。 */
+  /** 画笔事件(容器坐标 + 当页 transform 快照),UI 线程经 runOnJS 上抛;
+   *  end 附带手势是否正常结束(第二根手指落下会让画笔手势被取消)。 */
   onDrawPoint: (
     phase: 'start' | 'move' | 'end',
     pointX: number,
@@ -854,6 +1013,7 @@ const LightboxPage = memo(function LightboxPage({
     translateX: number,
     translateY: number,
     scale: number,
+    gestureSucceeded?: boolean,
   ) => void;
   /** 原生 Image 加载失败(悬空 key 404 等)→ 上抛做一次性 forceRefresh 自愈。
    *  带 image 参数的稳定引用;是否接线由本页按 retryable 判定。 */
@@ -879,11 +1039,22 @@ const LightboxPage = memo(function LightboxPage({
   const originY = useSharedValue(0);
   const startFocalX = useSharedValue(0);
   const startFocalY = useSharedValue(0);
+  /** 捏合开始时的画面倍率:锚定位移按它与当前倍率之差推算。 */
+  const pinchStartScale = useSharedValue(1);
   const displayedW = useSharedValue(width);
   const displayedH = useSharedValue(height);
+  /** 捏合最后的焦点(容器坐标):捏过最大倍率松手时绕它缩回。 */
+  const lastFocalX = useSharedValue(0);
+  const lastFocalY = useSharedValue(0);
   const pinchBusy = useSharedValue(0);
   const panBusy = useSharedValue(0);
   const doubleTapBusy = useSharedValue(0);
+  /** 平移松手后的惯性滑行 / 越界回弹进行中:手指按下即可接住。 */
+  const panSettling = useSharedValue(0);
+  /** 本次按下接住了滑行;若没形成拖动就抬手,要补一次回弹,不能停在越界处。 */
+  const panCaught = useSharedValue(0);
+  /** 松手回弹(springToTransform)进行中:位移已有一致的目标,平移松手不另起回弹;落定前锁住翻页。 */
+  const zoomSettling = useSharedValue(0);
   const dragY = useSharedValue(0);
   /**
    * 已 onLoad 成功的原图地址。存地址而不是 boolean:换图 / 强制重取换 url 后
@@ -918,6 +1089,51 @@ const LightboxPage = memo(function LightboxPage({
     onZoomChange(value);
   }, [onZoomChange]);
 
+  /**
+   * 倍率与位移一起弹到合法落点。三者同一弹簧、零初速:归一化进度逐帧相同,
+   * 画面上 p·s + T 线性插值,焦点下那一点全程不漂。调用前 origin 必须已归零。
+   * 手势松手与尺寸变化(回弹途中原图尺寸到达)共用,翻页锁与落定上报只在这一处。
+   */
+  const springToTransform = useCallback((target: { scale: number; x: number; y: number }) => {
+    'worklet';
+    savedScale.value = target.scale;
+    savedTranslateX.value = target.x;
+    savedTranslateY.value = target.y;
+    const scaleMoves = scale.value !== target.scale;
+    const xMoves = translateX.value !== target.x;
+    const yMoves = translateY.value !== target.y;
+    if (!scaleMoves && !xMoves && !yMoves) {
+      zoomSettling.value = 0;
+      runOnJS(reportZoomed)(isLightboxZoomed(target.scale));
+      return;
+    }
+    // 先置标记、先锁翻页,再启动动画:减少动态效果下回调会在赋值时同步执行,
+    // 落定上报必须是最后一次(与双击路径一致)。回到 1x 的回弹期间锁住翻页,
+    // 否则缩小松手后立刻横划会被翻页抢走、在回弹中途切走当前图。
+    zoomSettling.value = 1;
+    runOnJS(reportZoomed)(true);
+    // 落定回调只挂在一条动画上;被新手势打断(finished=false)时由接管方负责翻页锁。
+    const onSettled = (finished?: boolean) => {
+      'worklet';
+      if (!finished) return;
+      zoomSettling.value = 0;
+      runOnJS(reportZoomed)(isLightboxZoomed(savedScale.value));
+    };
+    if (scaleMoves) scale.value = withSpring(target.scale, LIGHTBOX_SETTLE_SPRING, onSettled);
+    if (xMoves) {
+      translateX.value = withSpring(target.x, LIGHTBOX_SETTLE_SPRING, scaleMoves ? undefined : onSettled);
+    }
+    if (yMoves) {
+      translateY.value = withSpring(
+        target.y,
+        LIGHTBOX_SETTLE_SPRING,
+        scaleMoves || xMoves ? undefined : onSettled,
+      );
+    }
+    // 共享值引用恒定,只随 reportZoomed 重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportZoomed]);
+
   useEffect(() => {
     const size = lightboxContainedSize(
       width,
@@ -944,6 +1160,21 @@ const LightboxPage = memo(function LightboxPage({
       );
       savedTranslateX.value = next.x;
       savedTranslateY.value = next.y;
+      return;
+    }
+    // 松手回弹途中:直接改 live 会打断回弹,落定回调不触发,翻页一直锁着、倍率
+    // 也可能停在范围外。把目标收进新边界,从当前帧重新发起同一次回弹。
+    if (zoomSettling.value) {
+      const next = reclampLightboxPan(
+        savedTranslateX.value,
+        savedTranslateY.value,
+        width,
+        height,
+        savedScale.value,
+        size.width,
+        size.height,
+      );
+      springToTransform({ scale: savedScale.value, x: next.x, y: next.y });
       return;
     }
     const next = reclampLightboxPan(
@@ -976,6 +1207,9 @@ const LightboxPage = memo(function LightboxPage({
     pinchBusy.value = 0;
     panBusy.value = 0;
     doubleTapBusy.value = 0;
+    panSettling.value = 0;
+    panCaught.value = 0;
+    zoomSettling.value = 0;
     dragY.value = 0;
     chromeHidden.value = 0;
     onChromeBusy(false);
@@ -988,6 +1222,9 @@ const LightboxPage = memo(function LightboxPage({
     const stopTransformAnimation = () => {
       'worklet';
       doubleTapBusy.value = 0;
+      panSettling.value = 0;
+      panCaught.value = 0;
+      zoomSettling.value = 0;
       cancelAnimation(scale);
       cancelAnimation(translateX);
       cancelAnimation(translateY);
@@ -1003,30 +1240,61 @@ const LightboxPage = memo(function LightboxPage({
       chromeHidden.value = withTiming(0, { duration: motionDuration.fast });
       runOnJS(onChromeBusy)(false);
     };
-    const bakePinchOrigin = () => {
+    const settlePinch = () => {
       'worklet';
       const bakedX = bakeLightboxOrigin(translateX.value, originX.value, scale.value);
       const bakedY = bakeLightboxOrigin(translateY.value, originY.value, scale.value);
       originX.value = 0;
       originY.value = 0;
-      if (!isLightboxZoomed(scale.value)) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
-        translateX.value = withTiming(0);
-        translateY.value = withTiming(0);
-        savedTranslateX.value = 0;
-        savedTranslateY.value = 0;
-        runOnJS(reportZoomed)(false);
+      translateX.value = bakedX;
+      translateY.value = bakedY;
+      springToTransform(lightboxPinchSettle({
+        scale: scale.value,
+        translateX: bakedX,
+        translateY: bakedY,
+        focalX: lightboxPinchOrigin(lastFocalX.value, width),
+        focalY: lightboxPinchOrigin(lastFocalY.value, height),
+        containerWidth: width,
+        containerHeight: height,
+        displayedWidth: displayedW.value,
+        displayedHeight: displayedH.value,
+      }));
+    };
+    /** 单轴松手:越界弹簧回边界;边界内有速度则惯性滑行,滑到边界由橡皮筋衰减冲过再回。 */
+    const releasePanAxis = (
+      value: SharedValue<number>,
+      velocity: number,
+      containerSize: number,
+      displayedSize: number,
+    ) => {
+      'worklet';
+      const release = lightboxPanRelease(value.value, velocity, containerSize, scale.value, displayedSize);
+      if (release.kind === 'settle') {
+        value.value = withSpring(release.to, { ...LIGHTBOX_SETTLE_SPRING, velocity });
+      } else if (release.kind === 'fling') {
+        value.value = withDecay({ velocity, clamp: [release.min, release.max], rubberBandEffect: true });
+      }
+    };
+    const settlePan = (velocityX: number, velocityY: number) => {
+      'worklet';
+      // 倍率回弹被拖动打断时可能停在两端之外:连同位移按画面中心收回合法落点。
+      if (scale.value > LIGHTBOX_MAX_SCALE || scale.value < LIGHTBOX_MIN_SCALE) {
+        springToTransform(lightboxPinchSettle({
+          scale: scale.value,
+          translateX: translateX.value,
+          translateY: translateY.value,
+          focalX: 0,
+          focalY: 0,
+          containerWidth: width,
+          containerHeight: height,
+          displayedWidth: displayedW.value,
+          displayedHeight: displayedH.value,
+        }));
         return;
       }
-      const cx = clampLightboxTranslation(bakedX, width, scale.value, displayedW.value);
-      const cy = clampLightboxTranslation(bakedY, height, scale.value, displayedH.value);
-      translateX.value = cx;
-      translateY.value = cy;
-      savedTranslateX.value = cx;
-      savedTranslateY.value = cy;
-      savedScale.value = scale.value;
-      runOnJS(reportZoomed)(true);
+      releasePanAxis(translateX, velocityX, width, displayedW.value);
+      releasePanAxis(translateY, velocityY, height, displayedH.value);
+      panSettling.value = 1;
     };
 
     // 焦点捏合:起点锁定 origin,缩放绕焦点;浏览态跟手质心,标注态只改 scale
@@ -1043,38 +1311,61 @@ const LightboxPage = memo(function LightboxPage({
         // 下滑半途改捏合:关掉正在进行的 dismiss 位移,不把图和背景留在半透明上。
         dragY.value = 0;
         dismissY.value = 0;
-        savedScale.value = scale.value;
-        originX.value = lightboxPinchOrigin(event.focalX, width);
-        originY.value = lightboxPinchOrigin(event.focalY, height);
+        // 倍率起点存「手指量」而非画面量:回弹途中再捏时画面可能处在橡皮筋区,
+        // 直接当起点会让第一帧按阻尼重新映射而跳一下。
+        savedScale.value = unrubberLightboxScale(scale.value);
+        // 锚点取手指下那一点的图片坐标,已放大 / 平移后二次捏合才绕手指缩放。
+        const bakedX = bakeLightboxOrigin(translateX.value, originX.value, scale.value);
+        const bakedY = bakeLightboxOrigin(translateY.value, originY.value, scale.value);
+        originX.value = lightboxPinchAnchor(event.focalX, width, bakedX, scale.value);
+        originY.value = lightboxPinchAnchor(event.focalY, height, bakedY, scale.value);
         // 已放大时 origin 会立刻贡献 origin*(1-scale);扣掉等量位移,二次捏合不跳。
-        translateX.value = compensateLightboxOrigin(translateX.value, originX.value, scale.value);
-        translateY.value = compensateLightboxOrigin(translateY.value, originY.value, scale.value);
-        savedTranslateX.value = translateX.value;
-        savedTranslateY.value = translateY.value;
+        translateX.value = compensateLightboxOrigin(bakedX, originX.value, scale.value);
+        translateY.value = compensateLightboxOrigin(bakedY, originY.value, scale.value);
+        // 起点存 bake 后的画面位移(几何量);每帧按当前倍率的边界换算手指量,
+        // 不跨倍率复用起始倍率下的换算结果(见 lightboxPinchTranslation)。
+        savedTranslateX.value = bakedX;
+        savedTranslateY.value = bakedY;
+        pinchStartScale.value = scale.value;
         startFocalX.value = event.focalX;
         startFocalY.value = event.focalY;
+        lastFocalX.value = event.focalX;
+        lastFocalY.value = event.focalY;
       })
       .onChange((event) => {
-        scale.value = clampLightboxScale(savedScale.value * event.scale);
+        // 捏过 1x / 最大倍率不再硬卡:阻尼继续缩放,松手再弹回(settlePinch)。
+        scale.value = rubberBandLightboxScale(savedScale.value * event.scale);
+        lastFocalX.value = event.focalX;
+        lastFocalY.value = event.focalY;
         if (annotating) return;
-        // 画面中心钳制,再补偿回 raw。origin≠0 时不能钳 raw。
-        const next = clampLightboxVisualPan(
-          savedTranslateX.value + (event.focalX - startFocalX.value),
-          savedTranslateY.value + (event.focalY - startFocalY.value),
-          originX.value,
-          originY.value,
-          width,
-          height,
-          scale.value,
-          displayedW.value,
-          displayedH.value,
-        );
+        // 锚点跟手;越过图片边界按当前倍率的边界阻尼而不是硬钳,焦点附近捏合时
+        // 图不再「粘」在边上,回弹途中再捏时锚点也不从手指下滑开。
+        const next = {
+          x: lightboxPinchTranslation(
+            savedTranslateX.value,
+            originX.value,
+            pinchStartScale.value,
+            scale.value,
+            event.focalX - startFocalX.value,
+            width,
+            displayedW.value,
+          ),
+          y: lightboxPinchTranslation(
+            savedTranslateY.value,
+            originY.value,
+            pinchStartScale.value,
+            scale.value,
+            event.focalY - startFocalY.value,
+            height,
+            displayedH.value,
+          ),
+        };
         translateX.value = next.x;
         translateY.value = next.y;
       })
       .onFinalize(() => {
         if (!pinchBusy.value) return;
-        bakePinchOrigin();
+        settlePinch();
         pinchBusy.value = 0;
         maybeShowChrome();
       });
@@ -1086,7 +1377,17 @@ const LightboxPage = memo(function LightboxPage({
       .minPointers(annotating ? 2 : 1)
       .maxPointers(annotating ? 2 : 1)
       .onTouchesDown((_event, state) => {
-        if (!annotating && !isLightboxZoomed(scale.value)) state.fail();
+        if (!annotating && !isLightboxZoomed(scale.value)) {
+          state.fail();
+          return;
+        }
+        // 手指按住正在滑行 / 回弹的图:就地停住,对齐系统相册的「接住」手感。
+        if (panSettling.value) {
+          cancelAnimation(translateX);
+          cancelAnimation(translateY);
+          panSettling.value = 0;
+          panCaught.value = 1;
+        }
       })
       .onStart(() => {
         panBusy.value = 1;
@@ -1097,10 +1398,13 @@ const LightboxPage = memo(function LightboxPage({
       })
       .onChange((event) => {
         // 标注双指 pan 与 off-center pinch Simultaneous,origin 常非 0;
-        // 浏览单指 pan 的 origin 已 bake 归零,helper 退化为钳 raw。
-        const next = clampLightboxVisualPan(
-          translateX.value + event.changeX,
-          translateY.value + event.changeY,
+        // 浏览单指 pan 的 origin 已 bake 归零。越界部分走橡皮筋:到了边缘仍可
+        // 继续拖(越拖越沉),松手再弹回(settlePan)。
+        const next = dragLightboxVisualPan(
+          translateX.value,
+          translateY.value,
+          event.changeX,
+          event.changeY,
           originX.value,
           originY.value,
           width,
@@ -1112,15 +1416,27 @@ const LightboxPage = memo(function LightboxPage({
         translateX.value = next.x;
         translateY.value = next.y;
       })
-      .onFinalize(() => {
+      .onFinalize((event) => {
         // Tap 也会让未激活的 Pan 走 FAILED → finalize。它不拥有位移,
         // 不能把双击缩回的 saved=0 覆盖成动画中途的旧偏移。
-        if (!panBusy.value) return;
+        if (!panBusy.value) {
+          // 接住滑行后没拖就抬手:图可能停在越界处,补一次回弹。双击 / 捏合
+          // 已接管时由它们负责落点(stopTransformAnimation 会清掉 panCaught)。
+          if (panCaught.value && !pinchBusy.value && !doubleTapBusy.value) {
+            panCaught.value = 0;
+            settlePan(0, 0);
+          }
+          return;
+        }
         savedTranslateX.value = translateX.value;
         savedTranslateY.value = translateY.value;
         panBusy.value = 0;
-        if (!pinchBusy.value)
-          runOnJS(reportZoomed)(isLightboxZoomed(scale.value));
+        if (!pinchBusy.value) {
+          // 回弹进行中时位移已随之弹向一致落点,这里不另起动画抢它。
+          if (!zoomSettling.value) settlePan(event.velocityX ?? 0, event.velocityY ?? 0);
+          // 回弹(含刚由 settlePan 发起的)由 springToTransform 管翻页锁,落定时再上报。
+          if (!zoomSettling.value) runOnJS(reportZoomed)(isLightboxZoomed(scale.value));
+        }
         maybeShowChrome();
       });
 
@@ -1227,7 +1543,8 @@ const LightboxPage = memo(function LightboxPage({
       });
 
     // 画笔:单指跟手采点(worklet 只搬运坐标 + transform 快照,归一化在 JS 侧
-    // 纯函数完成);第二根手指落下时本手势自然结束,已画的半笔照常落笔。
+    // 纯函数完成);第二根手指落下时本手势被取消(success=false):已画出一段的
+    // 半笔照常落笔,屏幕路径极短的(捏合起手误触的点 / 小短线)由 JS 侧丢弃。
     const panDraw = Gesture.Pan()
       .enabled(annotating && !interactionDisabled)
       .maxPointers(1)
@@ -1238,8 +1555,8 @@ const LightboxPage = memo(function LightboxPage({
       .onUpdate((event) => {
         runOnJS(onDrawPoint)('move', event.x, event.y, translateX.value, translateY.value, scale.value);
       })
-      .onFinalize(() => {
-        runOnJS(onDrawPoint)('end', 0, 0, 0, 0, 1);
+      .onFinalize((_event, success) => {
+        runOnJS(onDrawPoint)('end', 0, 0, 0, 0, 1, success);
       });
 
     return Gesture.Simultaneous(
@@ -1261,6 +1578,7 @@ const LightboxPage = memo(function LightboxPage({
     reportZoomed,
     onDrawPoint,
     onChromeBusy,
+    springToTransform,
   ]);
 
   const imageStyle = useAnimatedStyle(() => ({
@@ -1285,14 +1603,43 @@ const LightboxPage = memo(function LightboxPage({
     () => (naturalSize ? annotationBaseRect(width, height, naturalSize.width, naturalSize.height) : null),
     [naturalSize, width, height],
   );
-  const overlayStrokes = useMemo<readonly AnnotationStroke[]>(
-    () => (annotationDraftStroke ? [...annotationStrokes, annotationDraftStroke] : annotationStrokes),
-    [annotationStrokes, annotationDraftStroke],
-  );
-  const overlayVisible = !!uri && !!annotationBase && !!naturalSize && overlayStrokes.length > 0;
+  const overlayVisible = !!uri && !!annotationBase && !!naturalSize
+    && (annotationStrokes.length > 0 || !!annotationDraftStroke);
   const overlayStrokeWidth = naturalSize
     ? annotationStrokeWidth(naturalSize.width, naturalSize.height)
     : 0;
+  const overlayOutlineWidth = annotationOutlineWidth(overlayStrokeWidth);
+  // 已落笔迹的两层 path 元素按(笔迹, 尺寸)记忆:作画时每个 move 只重算进行中
+  // 那一笔,已有笔迹的 path 字符串与元素引用不变,React 直接跳过它们。
+  const committedOutlinePaths = useMemo(() => (naturalSize
+    ? annotationStrokes.map((stroke, index) => (
+      <Path
+        d={annotationStrokeToSvgPath(stroke, naturalSize.width, naturalSize.height)}
+        fill="none"
+        key={`outline-${index}`}
+        stroke={ANNOTATION_OUTLINE_COLOR}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={overlayOutlineWidth}
+      />
+    ))
+    : null), [annotationStrokes, naturalSize, overlayOutlineWidth]);
+  const committedStrokePaths = useMemo(() => (naturalSize
+    ? annotationStrokes.map((stroke, index) => (
+      <Path
+        d={annotationStrokeToSvgPath(stroke, naturalSize.width, naturalSize.height)}
+        fill="none"
+        key={`stroke-${index}`}
+        stroke={ANNOTATION_STROKE_COLOR}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={overlayStrokeWidth}
+      />
+    ))
+    : null), [annotationStrokes, naturalSize, overlayStrokeWidth]);
+  const draftPathD = naturalSize && annotationDraftStroke
+    ? annotationStrokeToSvgPath(annotationDraftStroke, naturalSize.width, naturalSize.height)
+    : null;
 
   return (
     <View style={{ height, width }}>
@@ -1368,28 +1715,30 @@ const LightboxPage = memo(function LightboxPage({
                   viewBox={`0 0 ${naturalSize.width} ${naturalSize.height}`}
                   width="100%"
                 >
-                  {overlayStrokes.map((stroke, index) => (
+                  {committedOutlinePaths}
+                  {draftPathD ? (
                     <Path
-                      d={annotationStrokeToSvgPath(stroke, naturalSize.width, naturalSize.height)}
+                      d={draftPathD}
                       fill="none"
-                      key={`outline-${index}`}
+                      key="outline-draft"
                       stroke={ANNOTATION_OUTLINE_COLOR}
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      strokeWidth={Math.round(overlayStrokeWidth * ANNOTATION_OUTLINE_WIDTH_RATIO)}
+                      strokeWidth={overlayOutlineWidth}
                     />
-                  ))}
-                  {overlayStrokes.map((stroke, index) => (
+                  ) : null}
+                  {committedStrokePaths}
+                  {draftPathD ? (
                     <Path
-                      d={annotationStrokeToSvgPath(stroke, naturalSize.width, naturalSize.height)}
+                      d={draftPathD}
                       fill="none"
-                      key={`stroke-${index}`}
+                      key="stroke-draft"
                       stroke={ANNOTATION_STROKE_COLOR}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={overlayStrokeWidth}
                     />
-                  ))}
+                  ) : null}
                 </Svg>
               </Animated.View>
             ) : null}
@@ -1409,7 +1758,7 @@ const LightboxPage = memo(function LightboxPage({
           (!retryable && !media.previewable) ? (
             <>
               <Text style={styles.stateText}>
-                {t('message.lightbox.loadFailed')}
+                {t(mediaLoadFailureKey(resolveState?.status === 'error' ? resolveState.error : undefined))}
               </Text>
               {retryable || layers.showFailure ? (
                 <Pressable
@@ -1484,6 +1833,7 @@ const styles = StyleSheet.create({
   pageLabel: {
     color: 'rgba(255, 255, 255, 0.85)',
     fontSize: typeScale.footnote,
+    lineHeight: lineHeight.caption,
     fontVariant: ['tabular-nums'],
   },
   fileHeader: {
@@ -1493,10 +1843,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     width: '100%',
   },
-  fileHeaderDone: { color: '#ffffff', fontSize: typeScale.bodyLarge, fontWeight: fontWeight.semibold },
+  fileHeaderDone: { color: '#ffffff', fontSize: typeScale.bodyLarge, lineHeight: lineHeight.bodyLarge, fontWeight: fontWeight.medium },
   fileHeaderTitleCol: { alignItems: 'center', flex: 1, gap: 2, minWidth: 0 },
-  fileHeaderTitle: { color: '#ffffff', fontSize: typeScale.body, fontWeight: fontWeight.semibold },
-  fileHeaderMeta: { color: 'rgba(255,255,255,0.64)', fontSize: typeScale.caption },
+  fileHeaderTitle: { color: '#ffffff', fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.semibold },
+  fileHeaderMeta: { color: 'rgba(255,255,255,0.64)', fontSize: typeScale.caption, lineHeight: lineHeight.caption },
   fileHeaderShareSpacer: { width: 20 },
   actionBar: {
     alignItems: 'center',
@@ -1532,6 +1882,7 @@ const styles = StyleSheet.create({
   actionLabel: {
     color: 'rgba(255,255,255,0.72)',
     fontSize: typeScale.micro,
+    lineHeight: lineHeight.micro,
     textAlign: 'center',
   },
   actionDivider: {
@@ -1540,7 +1891,7 @@ const styles = StyleSheet.create({
     width: StyleSheet.hairlineWidth,
   },
   actionLabelDisabled: { color: 'rgba(255,255,255,0.35)' },
-  stateText: { color: 'rgba(255, 255, 255, 0.85)', fontSize: typeScale.code },
+  stateText: { color: 'rgba(255, 255, 255, 0.85)', fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall },
   retryButton: {
     borderColor: 'rgba(255, 255, 255, 0.5)',
     borderRadius: radius.pill, // 圆形按钮语义用 pill(胶囊,RN 截半)
@@ -1549,5 +1900,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 8,
   },
-  retryText: { color: '#ffffff', fontSize: typeScale.code },
+  retryText: { color: '#ffffff', fontSize: typeScale.bodySmall, lineHeight: lineHeight.bodySmall },
 });

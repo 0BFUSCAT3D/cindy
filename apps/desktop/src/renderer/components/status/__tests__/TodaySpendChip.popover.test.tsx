@@ -403,6 +403,45 @@ describe('TodaySpendChip Claude subscription popover', () => {
     expect(trigger.textContent).toContain('Opus 周限 剩余 66%');
   });
 
+  it('告警时只把达到条件的剩余百分比染红，其余段与任务价值保持常色', () => {
+    const estimatedValueMoney = usdMoney(7.82, 'value-estimate');
+    mocks.sessionUsage = {
+      actualMoney: null,
+      estimatedValueMoney,
+      totalMoney: estimatedValueMoney,
+    };
+    mocks.claudeSnapshot = {
+      source: 'oauth-endpoint',
+      fiveHour: { utilization: 88, severity: 'warning' },
+      sevenDay: { utilization: 20 },
+    };
+
+    renderClaudeSubscriptionChip();
+
+    const trigger = screen.getByRole('button', { name: '打开 Claude 用量页面' });
+    expect(trigger.className).not.toContain('error-fg');
+    const red = Array.from(trigger.querySelectorAll('[class*="error-fg"]'));
+    expect(red.map((el) => el.textContent)).toEqual(['12%']);
+    expect(trigger.textContent).toContain('5h 剩余 12%');
+    expect(trigger.textContent).toContain('周限 剩余 80%');
+    expect(trigger.textContent).toContain('本任务价值 $7.82');
+  });
+
+  it('受限但 chip 上没有达到条件的数字时整条变红兜底', () => {
+    mocks.claudeSnapshot = {
+      source: 'unified-headers',
+      rateLimitStatus: 'rejected',
+      fiveHour: { utilization: 30 },
+      sevenDay: { utilization: 20 },
+    };
+
+    renderClaudeSubscriptionChip();
+
+    const trigger = screen.getByRole('button', { name: '打开 Claude 用量页面' });
+    expect(trigger.className).toContain('error-fg');
+    expect(trigger.querySelector('[class*="error-fg"]')).toBeNull();
+  });
+
   it('完整渲染 Codex app-server 的两个权威窗口', () => {
     mocks.codexAuthInjection = 'oauth-bearer';
     mocks.codexSnapshot = {
@@ -923,6 +962,7 @@ describe('TodaySpendChip Claude subscription popover', () => {
           ({
             id,
             auth: { method: 'oauth', native: 'codex' },
+            openAiAccount: { source: 'oauth', identity: `${id}@example.com` },
           }) as ProviderView,
       );
       mocks.accountSnapshots = {
@@ -942,6 +982,8 @@ describe('TodaySpendChip Claude subscription popover', () => {
       );
       act(() => screen.getByRole('button', { name: '打开 Codex 用量页面' }).focus());
       expect(within(screen.getByTestId('quota-hover-card')).getByText('Pro')).toBeTruthy();
+      expect(screen.getByText('account-a@example.com')).toBeTruthy();
+      expect(screen.queryByText('account-b@example.com')).toBeNull();
 
       view.rerender(
         <TodaySpendChip
@@ -955,6 +997,11 @@ describe('TodaySpendChip Claude subscription popover', () => {
         '39%',
       );
       expect(screen.queryByTestId('quota-hover-card')).toBeNull();
+
+      fireEvent.mouseEnter(screen.getByRole('button', { name: '打开 Codex 用量页面' }));
+      act(() => vi.advanceTimersByTime(300));
+      expect(screen.getByText('account-b@example.com')).toBeTruthy();
+      expect(screen.queryByText('account-a@example.com')).toBeNull();
 
       view.rerender(
         <TodaySpendChip
@@ -985,6 +1032,31 @@ describe('TodaySpendChip Claude subscription popover', () => {
       );
       expect(screen.queryByRole('button', { name: '打开 Codex 用量页面' })).toBeNull();
     }
+  });
+
+  it.each([
+    ['codex', 'openai', 'gpt-6-astra', 'openAiAccount'],
+    ['cc', 'anthropic', 'claude-opus-5', 'subscriptionAccount'],
+    ['pi', 'xai', 'xai/grok-4.6', 'subscriptionAccount'],
+  ] as const)('默认 %s 订阅显示对应账号身份', (vendorKey, id, modelId, accountField) => {
+    mocks.codexAuthInjection = 'oauth-bearer';
+    mocks.providers = [
+      {
+        id,
+        name: id,
+        source: 'builtin',
+        connected: true,
+        agents: [],
+        auth: { method: 'oauth' },
+        routing: {},
+        models: {},
+        [accountField]: { source: 'oauth', identity: `${id}@example.com` },
+      },
+    ];
+    render(<TodaySpendChip vendorKey={vendorKey} modelId={modelId} />);
+    fireEvent.mouseEnter(screen.getByRole('button'));
+    act(() => vi.advanceTimersByTime(300));
+    expect(screen.getByText(`${id}@example.com`)).toBeTruthy();
   });
 
   it('ChatGPT 动态窗口和套餐渲染为与 Claude 相同的进度条', () => {

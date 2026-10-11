@@ -68,7 +68,12 @@ import {
   readCodexDiscoveredModels,
   readCodexDiscoveredModelsForAuthRefresh,
 } from './codex-model-discovery.js';
-import { loadAnthropicModelsFromDiskCache } from './model-discovery/anthropic.js';
+import {
+  hasAnthropicDiscoveredModels,
+  loadAnthropicModelsFromDiskCache,
+  refreshAnthropicModelsFromProbe,
+  requestAnthropicModelProbe,
+} from './model-discovery/anthropic.js';
 import {
   clearXaiDiscoveredModels,
   loadXaiModelsFromDiskCache,
@@ -158,10 +163,15 @@ function fetchText(url: string, timeoutMs: number): Promise<string> {
       }, timeoutMs);
 
       request.on('response', (response) => {
+        response.on('error', (err) => {
+          clearTimeout(timer);
+          settle(() => reject(err));
+        });
         if (response.statusCode !== 200) {
           clearTimeout(timer);
-          response.on('data', () => {});
           settle(() => reject(new Error(`catalog fetch HTTP ${response.statusCode}`)));
+          // No error body is needed; draining after clearing the timer can hang.
+          request.abort();
           return;
         }
         response.on('data', (chunk) => {
@@ -170,10 +180,6 @@ function fetchText(url: string, timeoutMs: number): Promise<string> {
         response.on('end', () => {
           clearTimeout(timer);
           settle(() => resolve(body));
-        });
-        response.on('error', (err) => {
-          clearTimeout(timer);
-          settle(() => reject(err));
         });
       });
       request.on('error', (err) => {
@@ -926,8 +932,12 @@ function refreshAnthropicCatalogAfterClaim(): Promise<void> {
 
   const flight = (async () => {
     // 启动期的磁盘清单加载可能因尚未绑定而早退,认领后补一次;失败保留已有目录,
-    // 不把连接态读取整条打穿。之后由会话 init 的 SDK 捕获刷新(Cindy 不带订阅凭证拉清单)。
+    // 不把连接态读取整条打穿。成员只来自 SDK 清单:有缓存时后台刷新即可;没有缓存时
+    // 要等主动读取完成,否则 waitForDiscovery 的调用方(Orca 路由、定时任务解析)会拿到
+    // 空目录。读取失败同样不打穿连接态读取。
     await loadAnthropicModelsFromDiskCache().catch(() => undefined);
+    if (hasAnthropicDiscoveredModels()) requestAnthropicModelProbe();
+    else await refreshAnthropicModelsFromProbe().catch(() => false);
   })();
   anthropicClaimDiscoveryInflight = flight;
   const clear = () => {
@@ -971,10 +981,11 @@ export function getDesktopSelectableCatalog(): Catalog {
 }
 
 /** 进程内单例：注入 active-catalog（同步读）+ 实时连接状态读取器。 */
-export function getDesktopProviderService(): ProviderService {
+export function getDesktopProviderService(options: { allowSideEffects?: boolean } = {}): ProviderService {
   const authState = getAuthState();
   const ownerId = getActiveAppSession().dataOwnerId;
   if (
+    options.allowSideEffects !== false &&
     authState.mode === 'cloud' &&
     ownerId &&
     authState.user?.id === ownerId &&
@@ -996,7 +1007,8 @@ export function getDesktopProviderService(): ProviderService {
       xd: () => getAppCapabilities().canUseCindyGateway && readClaudeApiKey() != null,
       // Claude/Codex 是原生 Harness，可继承本机 CLI 凭证；xAI 是下游 provider，
       // 只能读取已经由 Cindy OAuth 明确绑定的 token，禁止在连接态读取时自动认领。
-      anthropic: async ({ allowSideEffects, waitForDiscovery }) => {
+      anthropic: async ({ allowSideEffects, waitForDiscovery, snapshotOnly }) => {
+        if (snapshotOnly) return hasClaudeNativeLogin();
         // 自愈会写绑定文件、读凭证作用域缓存并发起带凭证的上游请求。listProviders 这条通道
         // 同时服务 device-link 与可能不受信的渲染上下文,所以副作用只在本机主页面发起时
         // 才放行,其余降级为纯读(PR #548 review)。
@@ -1011,7 +1023,7 @@ export function getDesktopProviderService(): ProviderService {
           hasClaudeNativeLoginUnbound,
           () => {
             // 启动期的 loadAnthropicModelsFromDiskCache 因当时未绑定而早退了:认领成功时
-            // 把上次成功的清单摆出来,否则只剩 Registry presence(PR #548 review)。
+            // 把上次成功的清单摆出来并主动读一次最新清单(PR #548 review)。
             return refreshAnthropicCatalogAfterClaim();
           },
           waitForDiscovery === true,

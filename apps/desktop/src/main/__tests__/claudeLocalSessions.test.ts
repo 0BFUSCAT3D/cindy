@@ -88,6 +88,8 @@ function createLocalDb(): Database.Database {
       feishu_bot_app_id TEXT,
       used_project_context INTEGER NOT NULL DEFAULT 0,
       extra_dirs TEXT NOT NULL DEFAULT '[]',
+      writable_dirs TEXT NOT NULL DEFAULT '[]',
+      remote_host_id TEXT,
       list_preview TEXT,
       list_preview_role TEXT,
       list_message_count INTEGER,
@@ -354,6 +356,32 @@ describe('parseClaudeCodeMessageLine', () => {
       sdkSessionId,
     });
     expect(rows[0].agentMeta).not.toHaveProperty('parentUuid');
+  });
+
+  it.each([
+    ['claude-haiku-5-5', 'claude-haiku-5-5'],
+    ['claude-haiku-5-5[1m]', 'claude-haiku-5-5'],
+    ['claude-sonnet-5-5', 'claude-sonnet-5-5'],
+    ['claude-sonnet-5-5[1m]', 'claude-sonnet-5-5'],
+  ])('keeps the 5.5 generation for %s instead of folding it into an older model', (model, expected) => {
+    const rows = parseClaudeCodeMessageLine(
+      line({
+        type: 'assistant',
+        uuid: `assistant-${model}`,
+        message: {
+          id: `msg-${model}`,
+          model,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      }),
+      10,
+      sdkSessionId,
+      'claude-sonnet-4-6',
+    );
+
+    expect(rows[0].agentMeta).toMatchObject({ model: expected });
   });
 
   it('normalizes opus-4-8 full model id to short form', () => {
@@ -1013,6 +1041,14 @@ describe('parseClaudeCodeMessageLine', () => {
       expect(result).toMatchObject({ scanned: 1, inserted: 1, updated: 0 });
       const rows = db.prepare('SELECT id, title FROM sessions ORDER BY id').all();
       expect(rows).toEqual([{ id: `claude-${sdkSessionId}`, title: 'import me' }]);
+      db.prepare(`UPDATE sessions SET status='archived', working_dir='/moved-project',
+        extra_dirs='["/reference"]', writable_dirs='["/output"]', updated_at=1`).run();
+      expect((await scanExternalClaudeCodeSessions()).candidates.find(item => item.id === sdkSessionId))
+        .toMatchObject({ archived: true, cwd: '/moved-project', extraDirs: ['/reference'], writableDirs: ['/output'] });
+      await importExternalClaudeCodeSessions([sdkSessionId]);
+      expect(db.prepare('SELECT status, working_dir, extra_dirs, writable_dirs FROM sessions').get()).toEqual({
+        status: 'archived', working_dir: '/moved-project', extra_dirs: '["/reference"]', writable_dirs: '["/output"]',
+      });
     } finally {
       homedir.mockRestore();
       resetLocalDb();

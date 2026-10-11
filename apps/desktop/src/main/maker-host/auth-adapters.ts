@@ -1,3 +1,4 @@
+import { cindyManagedSkillRoots, listCindyManagedSkills } from './managed-skills.js';
 import { retainInvalidatedProviderPresentation, retainProviderPresentationAfterAuthChange } from './provider-presentation-store.js';
 import { subscriptionAccountKind, subscriptionAccountState } from './subscription-account-auth.js';
 /**
@@ -42,7 +43,7 @@ import { prepareSharedGlobalSkillLinks } from './shared-global-skills.js';
 import { PreparationCache } from './preparation-cache.js';
 import {
   prepareBuiltInSkills,
-  refreshBuiltInClaudeSkillLinks,
+  migrateBuiltInGlobalSkillLinks,
   resolveBundledSystemSkillsRoot,
 } from './built-in-skills.js';
 import {
@@ -86,7 +87,8 @@ import {
 import { CLAUDE_PROVIDER_AUTH_PLACEHOLDER_KEY, isAnthropicWireModel } from './claude-gateway-config.js';
 import { hasClaudeNativeLogin } from './claude-native-auth.js';
 import { disconnectClaudeNativeLogin, readClaudeNativeLogin } from './claude-native-connection.js';
-import { claudeCliConfigDirOverride, claudeCliNetworkEnv } from './claude-native-cli.js';
+import { claudeCliNetworkEnv } from './claude-native-cli.js';
+import { ensureLegacyClaudeConfigMigrated } from './claude-legacy-config-migration.js';
 import { isAnthropicCompatProxyHandleReady } from './anthropic-compat-proxy-host.js';
 import { claudeUpstreamEndpoint } from './runtime-configs.js';
 import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
@@ -105,6 +107,7 @@ import {
   bindNativeProviderAuth,
   claimDetectedNativeProviderAuth,
   isNativeProviderAuthBound,
+  captureNativeProviderAuthorizationGeneration,
   isNativeProviderAuthRevoked,
   isNativeProviderAuthSelfAuthorized,
   isNativeProviderAuthSharedSystemCredential,
@@ -264,6 +267,14 @@ export function chatgptAccountIdFromIdToken(idToken: string): string | null {
   if (workspaceId) return workspaceId;
   const sub = readChatgptIdTokenClaims(idToken)?.sub;
   return typeof sub === 'string' && sub.length > 0 ? sub : null;
+}
+
+/** HTTP header identity only; workspace/recovery checks must keep the strict parser. */
+export function chatgptAccountIdFromTokens(
+  tokens: { account_id?: unknown; id_token?: unknown } | undefined,
+): string | null {
+  if (typeof tokens?.account_id === 'string' && tokens.account_id.length > 0) return tokens.account_id;
+  return typeof tokens?.id_token === 'string' ? chatgptAccountIdFromIdToken(tokens.id_token) : null;
 }
 
 /**
@@ -620,26 +631,17 @@ export class DesktopClaudeAuthAdapter implements AuthAdapter {
           userDataDir: app.getPath('userData'),
           appDataDir: app.getPath('appData'),
         });
+        const migrationWarnings = preparedBuiltIns.projectionSafe
+          ? await migrateBuiltInGlobalSkillLinks({ userDataDir: app.getPath('userData'), appDataDir: app.getPath('appData') })
+          : [];
         const sharedProjection = await prepareSharedGlobalSkillLinks({
           assertOwnerStable: () => assertGhostSkillProjectionBoundaryStableForOwner(ownerId),
         });
-        // Publication already established a usable Claude projection before
-        // switching the active pointer. Reconcile once more after the generic
-        // palette sync so a newly surfaced user-owned ~/.claude winner keeps
-        // precedence; atomic link replacement preserves the usable projection
-        // if this optional refinement fails.
-        const claudePaletteProjection = preparedBuiltIns.projectionSafe
-          ? await refreshBuiltInClaudeSkillLinks({
-              userDataDir: app.getPath('userData'),
-              appDataDir: app.getPath('appData'),
-              descriptors: preparedBuiltIns.descriptors,
-            })
-          : { warnings: [] };
         return {
           warnings: [
             ...preparedBuiltIns.warnings,
+            ...migrationWarnings,
             ...sharedProjection.warnings,
-            ...claudePaletteProjection.warnings,
           ],
         };
       });
@@ -739,14 +741,10 @@ export class DesktopClaudeAuthAdapter implements AuthAdapter {
         else env.ANTHROPIC_API_KEY = CLAUDE_PROVIDER_AUTH_PLACEHOLDER_KEY;
       }
     }
-    // dev 多实例隔离:设了 XDT_USER_DATA_DIR(device-link 本地联调跑多实例)时,把
-    // Claude Code 的配置目录也切到 userData 下。否则多实例共用全局 ~/.claude
-    // (~/.claude.json / projects 下的 transcripts)会互相干扰,无法当作两台独立设备。
-    // 仅 dev(非 packaged)生效,生产忽略;auth 走 ANTHROPIC_API_KEY,重定向 config
-    // dir 不影响鉴权。process.env 路线行不通(CLAUDE_CONFIG_DIR 在 boot 期被
-    // stripSensitiveAnthropicEnv 清掉),故经 getAuthEnv 注入子进程 env(覆盖优先)。
-    const configDir = claudeCliConfigDirOverride();
-    if (configDir) env.CLAUDE_CONFIG_DIR = configDir;
+    // 所有来源都用 CLI 默认配置目录(dev 多实例与正式版一致,不设 CLAUDE_CONFIG_DIR):
+    // 订阅会话的凭证库按配置目录区分,隔离会看不到本机已有的 Claude Code 登录。
+    // 旧版 dev 隔离在 <userData>/claude-home 的转录,拉起 CLI 前补拷到默认目录供 resume。
+    await ensureLegacyClaudeConfigMigrated();
     return env;
   }
 
@@ -924,10 +922,10 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
 
   /**
    * Plugin capability enforcement is always rechecked after concurrent callers
-   * settle. Only successful Skill/rules preparation has a 30-second TTL.
+   * settle. Skill projections also refresh at each launch so a removed or
+   * disabled approved source cannot survive in a cached Codex discovery root.
    */
   private readonly pendingAssetsPrep = new PreparationCache(0);
-  private readonly skillAssetsPrep = new PreparationCache(30_000);
 
   /**
    * 进行中的 reconcileWithSystemCodex 调用 —— 多个调用点 (构造 / getState / getAuthEnv /
@@ -1365,18 +1363,15 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
   async ensureGlobalCodexAssets(): Promise<void> {
     const scope = preparationScope();
     await this.pendingAssetsPrep.ensure(scope.key, async () => {
-      await this.skillAssetsPrep.ensure(scope.key, async () => {
-        const success = await this.runEnsureGlobalCodexSkills(scope.ownerId);
-        return success && scope.current();
-      });
+      await this.runEnsureGlobalCodexSkills(scope.ownerId);
       await this.runEnsureGlobalCodexPlugins();
       return true;
     });
   }
 
   private async runEnsureGlobalCodexSkills(ownerId: string | null): Promise<boolean> {
-    // Load-bearing order: Codex skill linking scans ~/.agents/skills, so shared
-    // links must populate that directory before prepareCodexGlobalSkillsLinks runs.
+    // Prepare the private built-in roots before Codex snapshots discovery.
+    await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
     const sharedOutcome = await withSharedGlobalSkillProjectionMutation(ownerId, () =>
       prepareSharedGlobalSkillLinks({
         assertOwnerStable: () => assertGhostSkillProjectionBoundaryStableForOwner(ownerId),
@@ -1387,7 +1382,9 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     );
 
     const [skillsOutcome, rulesOutcome] = await Promise.all([
-      prepareCodexGlobalSkillsLinks(this.codexHome).then(
+      withSharedGlobalSkillProjectionMutation(ownerId, async () =>
+        prepareCodexGlobalSkillsLinks(this.codexHome, { managedRoots: await cindyManagedSkillRoots(), managedSkills: await listCindyManagedSkills() }),
+      ).then(
         (r) => ({ ok: true as const, label: 'skills' as const, warnings: r.warnings }),
         (err: Error) => ({ ok: false as const, label: 'skills' as const, err }),
       ),
@@ -1398,6 +1395,8 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     ]);
 
     const outcomes = [sharedOutcome, skillsOutcome, rulesOutcome];
+    // A failed verified catalog must not fall back to yesterday's projections.
+    if (!skillsOutcome.ok) throw skillsOutcome.err;
     for (const outcome of outcomes) {
       if (!outcome.ok) {
         assetPrepLog.warn('prepare Codex global asset failed', {
@@ -1708,6 +1707,39 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
   captureCredentialGeneration(): string | null {
     const fingerprint = currentCodexCredentialGeneration(path.join(this.codexHome, 'auth.json'));
     return fingerprint ? JSON.stringify(fingerprint) : null;
+  }
+
+  /** Bind a host-owned request to the same credential and durable authorization as native Codex. */
+  captureOAuthDispatchProof(accessToken: string, accountId: string | null, providerId = 'openai'): (() => boolean) | null {
+    const independent = providerId !== 'openai';
+    const authenticated = () => independent
+      ? codexAccountState(providerId).authenticated : this.hasCodexOAuthLoginReadOnly();
+    if (!authenticated()) return null;
+    const home = independent ? codexAccountHome(providerId) : this.codexHome;
+    const authPath = path.join(home, 'auth.json');
+    const credential = () => {
+      const value = currentCodexCredentialGeneration(authPath);
+      return value ? JSON.stringify(value) : null;
+    };
+    // Independent accounts authorize against their existing account record;
+    // inherited OpenAI uses the native provider authorization record.
+    const authorization = () => independent
+      ? JSON.stringify(currentCodexCredentialGeneration(path.join(home, 'account.json')))
+      : captureNativeProviderAuthorizationGeneration('openai');
+    const credentialGeneration = credential();
+    const authorizationGeneration = authorization();
+    if (!credentialGeneration || !authorizationGeneration || authorizationGeneration === 'null') return null;
+    try {
+      const raw = fs.readFileSync(authPath, 'utf8');
+      const auth = JSON.parse(raw) as { tokens?: { access_token?: unknown; account_id?: unknown; id_token?: unknown } };
+      if (auth.tokens?.access_token !== accessToken || chatgptAccountIdFromTokens(auth.tokens) !== accountId) return null;
+    } catch {
+      return null;
+    }
+    const isCurrent = () => authenticated()
+      && credential() === credentialGeneration
+      && authorization() === authorizationGeneration;
+    return isCurrent() ? isCurrent : null;
   }
 
   /** Bracket one account-level RPC with compare-and-commit recovery confirmation. */
@@ -2464,7 +2496,11 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
 
   async getAuthEnv(options?: AuthAdapterOptions): Promise<Record<string, string>> {
     if (isCodexAccountProvider(options?.providerId)) {
-      return { CODEX_HOME: await prepareCodexAccountHome(options!.providerId!) };
+      const ownerId = getActiveAppSession().dataOwnerId;
+      await desktopClaudeAuthAdapter.ensureSharedGlobalSkills();
+      return { CODEX_HOME: await withSharedGlobalSkillProjectionMutation(ownerId, async () =>
+        prepareCodexAccountHome(options!.providerId!, await cindyManagedSkillRoots(), await listCindyManagedSkills()),
+      ) };
     }
     this.ensureInvalidationMarkerLoaded();
     await this.ensureGlobalCodexAssets();
