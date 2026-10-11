@@ -200,11 +200,10 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null;
       const resolved = await deps.directory.resolveMembers(input.providerId, config, {
         quickMs: PROVIDER_GROUP_PICK_QUICK_MS,
-        // 已经有一台能用、没满、可以分的电脑：不再等慢的那几台。
+        // 已经有一台能用、可以分的电脑(满载仍可接)：不再等慢的那几台。未满优先由调度器决定。
         enough: (r) => usable(r)
           && !r.member.paused
-          && !input.exclude?.has(r.member.key)
-          && memberRunning(input.providerId, r) < r.member.limit,
+          && !input.exclude?.has(r.member.key),
         ...(input.fresh ? { fresh: true } : {}),
       });
       const schedulable: SchedulableMember[] = resolved.map((r) => ({
