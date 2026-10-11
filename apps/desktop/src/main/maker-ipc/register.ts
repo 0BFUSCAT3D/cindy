@@ -1692,16 +1692,33 @@ const providerGroupHeldWorkerTerminals = createProviderGroupHeldWorkerTerminals<
   log: (message, meta) => log.info(message, meta),
 });
 
-/** 换电脑这一趟有了结局：换成了(续跑已发出)两份暂存都丢掉。 */
+/**
+ * 换成了、续跑已进队但还没派发出去的那次登记(任务 → 登记 id)：协同 Worker 暂存的终态等续跑真正派发出去才丢掉；
+ * 续跑没派出去(打开那台又失败、被丢弃)时把这次异常终止回报给 Lead，Worker 不会一直停在运行中。
+ */
+const providerGroupContinuationHolds = new Map<string, number>();
+
+/** 换电脑这一趟有了结局：换成了(续跑已进队)错误不再落；Worker 的终态等续跑派发出去再丢(见上)。 */
 function discardProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
   providerGroupHeldErrors.discard(sessionId, holdId);
+  if (providerGroupHeldWorkerTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
 }
 
 /** 不再换了(交回原有处理、用户接手、迟迟没有结局)：放出错误，并把 Worker 的异常终止回报给 Lead。 */
 function releaseProviderGroupHeld(sessionId: string, holdId: number): void {
   providerGroupHeldErrors.release(sessionId, holdId);
+  // 已换成、续跑在路上的那次由续跑的派发结果结算。
+  if (providerGroupContinuationHolds.get(sessionId) === holdId) return;
   providerGroupHeldWorkerTerminals.release(sessionId, holdId);
+}
+
+/** 换电脑后的续跑有了派发结果：派发出去了丢掉 Worker 暂存的终态，没派出去回报给 Lead。 */
+function settleProviderGroupContinuation(sessionId: string, dispatched: boolean): void {
+  const holdId = providerGroupContinuationHolds.get(sessionId);
+  if (holdId === undefined) return;
+  providerGroupContinuationHolds.delete(sessionId);
+  if (dispatched) providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
+  else providerGroupHeldWorkerTerminals.release(sessionId, holdId);
 }
 
 /** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
@@ -1776,6 +1793,8 @@ function settleUndispatchedInterruptedAutoResume(
   // 额度重置后的自动继续不走中断自愈记账(sessionTotal 刻意为 0),只需恢复原错误与手动重试入口。
   if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {
     agentInputCoordinatorHolder?.restoreAutoResumeRecovery(sessionId, item.clientId, null);
+    // 供应商组换电脑后的续跑没派出去：协同 Worker 的这次异常终止回报给 Lead。
+    settleProviderGroupContinuation(sessionId, false);
     return false;
   }
   const attemptToken = autoResumeAttemptToken(item);
@@ -16811,10 +16830,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 不让等的时间吃掉换电脑的时间(到点放出会把协同 Worker 的异常终止回报给 Lead)。
         const armHoldTimer = () => {
           clearTimeout(holdTimer);
-          holdTimer = setTimeout(
-            () => releaseProviderGroupHeld(sessionId, holdId),
-            PROVIDER_GROUP_SWITCH_HOLD_MAX_MS,
-          );
+          holdTimer = setTimeout(() => {
+            // 协同 Worker：到点把这次异常终止回报给 Lead 之后，这一趟换电脑就此停下——Lead 已据此重新安排，
+            // 再换过去续跑会让它收到两份互相矛盾的结果。普通任务照旧：错误先放出来，换成了照常续跑。
+            const worker = providerGroupHeldWorkerTerminals.has(sessionId, holdId);
+            releaseProviderGroupHeld(sessionId, holdId);
+            if (worker) providerGroupService?.noteUserAction(sessionId);
+          }, PROVIDER_GROUP_SWITCH_HOLD_MAX_MS);
         };
         // 协同 Worker 的终态与 error 行按同一次登记结算：换成了不回报这次异常终止，没换成才回报给 Lead。
         hooks = {
@@ -17146,6 +17168,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settleQueuedAttachmentPersistenceFailure(sessionId, item.clientId, opts.retainForRetry);
     },
     onDispatchedUserTurn: async (sessionId, item, preVendorDispatchAt): Promise<void> => {
+      // 供应商组换电脑后的续跑派发出去了：协同 Worker 暂存的那次终态不再回报(续跑那一轮结束时照常回报结果)。
+      if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {
+        settleProviderGroupContinuation(sessionId, true);
+      }
       await settleTodoDispatch(sessionId, item.clientId, true);
       botDelegationServiceHolder?.confirmQueuedSessionInputDispatched(sessionId, item.clientId);
       welcomeDispatchReceipts.settle(sessionId, item.clientId, true);
@@ -17234,8 +17260,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         { source: 'enqueue', clientId: item.clientId },
       );
     },
-    onAutomaticEnqueue: (sessionId) => {
+    onAutomaticEnqueue: (sessionId, item) => {
       contextOverflowRolloverHolder?.cancelRecovery(sessionId);
+      // 协同消息(Lead 给 Worker 派活、Worker 的回报到达 Lead)：供应商组按「有人接手」处理——这一趟换电脑停下，
+      // 那条消息开始新的一轮(provider-groups.md §6.1「协同任务」)。不重置中断自愈的预算。
+      if (item?.origin?.kind === 'orca') providerGroupService?.noteUserAction(sessionId);
       // Orca 等自动输入会推进同一会话，必须撤销旧 retry owner，避免它消费这轮事件；
       // 但预算充值仍只发生在真人消息的持久化路径，自动输入不会重置 episode。
       autoResumeBookkeeping.supersedeUnclaimedErrorForUserIntervention(sessionId);
