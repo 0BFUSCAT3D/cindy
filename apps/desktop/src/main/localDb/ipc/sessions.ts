@@ -2498,7 +2498,7 @@ export async function deleteBotProfileAndDetachSessionsInDb(
       void imageCacheStore.removeSession(id).catch((error) => {
         log.warn('Bot task image cleanup failed', { sessionId: id, error: String(error) });
       });
-      void removeImSessionAttachmentDirs(id).catch((error) => {
+      void removeImAttachmentsIfStillDeleted(id).catch((error) => {
         log.warn('Bot task attachment cleanup failed', { sessionId: id, error: String(error) });
       });
       void removeDeletedSessionMediaRefs(id, db).catch((error) => {
@@ -2721,6 +2721,22 @@ export async function resumeDeletedPiSubagentCleanup(): Promise<void> {
  * delete additionally stops and removes detached PI Subagents owned by the
  * parent task. All status writers must pass through this helper.
  */
+/**
+ * 个人 IM 附件目录的删除清理是异步的, 而确定性 IM 任务删除后再来消息会把同一
+ * session id 原地复活并往同一目录领养新附件 —— 真正删目录前复查任务仍是 deleted
+ * (行已不存在也算), 已复活就保留; 读库失败按保留处理(宁可多留不可误删)。
+ */
+async function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
+  let row: SessionRowSnapshot | null;
+  try {
+    row = await getSessionRowSnapshotStrict(sessionId);
+  } catch {
+    return;
+  }
+  if (row && row.status !== 'deleted') return;
+  await removeImSessionAttachmentDirs(sessionId);
+}
+
 function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): void {
   if (status !== 'deleted' && status !== 'archived') return;
   if (status === 'deleted') {
@@ -2732,7 +2748,7 @@ function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): vo
     });
     scheduleDeletedPiSubagentCleanup(sessionId);
     // 个人 IM 渠道(含微信)入站文件随任务删除清理 —— 归档保留, 与微信既有口径一致。
-    void removeImSessionAttachmentDirs(sessionId).catch((err) => {
+    void removeImAttachmentsIfStillDeleted(sessionId).catch((err) => {
       log.warn('IM session attachment cleanup failed', {
         sessionId,
         err: err instanceof Error ? err.message : String(err),

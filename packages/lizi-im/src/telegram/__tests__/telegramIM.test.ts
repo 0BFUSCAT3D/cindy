@@ -3144,3 +3144,52 @@ describe('TelegramIM 入站分类', () => {
     }
   });
 });
+
+describe('TelegramIM 群历史名额与分类一致', () => {
+  it('octet-stream 的 .png 文档按图片额度计, 不挤掉真实文件', async () => {
+    const cacheImage = vi.fn(async ({ token }: { token: string }) => ({
+      absPath: path.join(tmpDir, `img-${token}`),
+      url: `cindy-media://blobs/${token}.png`,
+      discard: async () => undefined,
+    }));
+    const stage = vi.fn(async ({ fileName }: { fileName: string }) => ({
+      absPath: path.join(tmpDir, `staged-${fileName}`),
+      discard: async () => undefined,
+    }));
+    ctx.host.media = { cacheImage, getCachedImage: vi.fn(async () => null), resolveMediaUrl: () => null };
+    ctx.host.files = { stage };
+    await connect();
+    const origCall = api.call.bind(api);
+    api.call = (async (method: string, params?: Record<string, unknown>, signal?: AbortSignal) => {
+      if (method === 'getFile') return { file_id: params?.file_id, file_path: `p/${String(params?.file_id)}` } as never;
+      return origCall(method, params, signal);
+    }) as typeof api.call;
+    vi.stubGlobal('fetch', async () => new Response(Buffer.from('x')));
+    try {
+      const doc = (id: number, name: string, mime: string): TgUpdate => ({
+        update_id: id,
+        message: {
+          message_id: id,
+          from: { id: 222, is_bot: false, first_name: 'Tom' },
+          chat: { id: -100200, type: 'supergroup', title: 'Ops' },
+          date: nowSec(5),
+          document: { file_id: `d${id}`, file_unique_id: `u${id}`, file_name: name, mime_type: mime },
+        },
+      });
+      api.pushUpdates([
+        doc(150, 'report.pdf', 'application/pdf'),
+        ...[151, 152, 153, 154, 155].map((id) => doc(id, `p${id}.png`, 'application/octet-stream')),
+      ]);
+      await vi.waitFor(() =>
+        expect(api.calls.filter((c) => c.method === 'getUpdates').length).toBeGreaterThan(1),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      const history = await im.collectGroupHistoryMedia('-100200', ['150', '151', '152', '153', '154', '155']);
+      expect(history.unavailable).toEqual([]);
+      expect(history.attachments.filter((a) => a.kind === 'image')).toHaveLength(5);
+      expect(history.attachments.map((a) => a.originalName)).toContain('report.pdf');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

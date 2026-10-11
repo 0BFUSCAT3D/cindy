@@ -460,6 +460,39 @@ describe('downloadAttachments: 账号换代与群历史', () => {
     expect(result.attachments).toEqual([expect.objectContaining({ kind: 'image', originalName: 'scan.PNG' })]);
   });
 
+  it('批次最后一项写完后才换账号: 整批已写入的一并回滚', async () => {
+    const { scope, switchAccount } = switchableScope();
+    const discards = [vi.fn(async () => {}), vi.fn(async () => {})];
+    let n = 0;
+    const files = {
+      stage: vi.fn<IMHostFileStaging['stage']>(async ({ fileName }) => ({
+        absPath: `/staged/${fileName}`,
+        discard: discards[n++]!,
+      })),
+    };
+    wireHost({ media: makeMedia(), files, accountScope: scope });
+    const get = vi.fn(async () => ({
+      getReadableStream: () => Readable.from([Buffer.from('pdf')]),
+      headers: { 'content-type': 'application/pdf' },
+    }));
+    const client = { im: { v1: { messageResource: { get } } } } as unknown as Lark.Client;
+    const second = { kind: 'file' as const, fileKey: 'file_2', fileName: 'b.pdf' };
+    // 第二项写入完成、逐项复查通过之后, 收口前换代。
+    files.stage.mockImplementationOnce(async ({ fileName }) => ({ absPath: `/staged/${fileName}`, discard: discards[n++]! }));
+    files.stage.mockImplementationOnce(async ({ fileName }) => {
+      const result = { absPath: `/staged/${fileName}`, discard: discards[n++]! };
+      queueMicrotask(switchAccount);
+      return result;
+    });
+
+    const result = await downloadAttachments(client, 'om_9', [pdfRef, second]);
+
+    expect(discards[0]).toHaveBeenCalledTimes(1);
+    expect(discards[1]).toHaveBeenCalledTimes(1);
+    expect(result.attachments).toEqual([]);
+    expect(result.unsupported).toHaveLength(2);
+  });
+
   it('群历史: 图片按可回收缓存写入, 不复用/固定已有缓存', async () => {
     const media = makeMedia({
       getCachedImage: vi.fn(async () => ({ absPath: '/blobs/hit.png', url: CINDY_URL, mimeType: 'image/png' })),

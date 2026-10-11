@@ -62,6 +62,7 @@ export async function downloadAttachments(
     assertAccountCurrent: () => {
       if (scope && !scope.isCurrent(accountToken)) throw new StaleAccountError();
     },
+    discards: [],
   };
 
   for (const ref of refs) {
@@ -80,12 +81,26 @@ export async function downloadAttachments(
     }
   }
 
+  // 批次收口再核一次账号: 最后一项写入之后才换代时, 整批已写入的一并回滚 ——
+  // 旧账号的附件不留给新账号, 也不交出一个会被丢弃的事件却留下写入。
+  if (scope && !scope.isCurrent(accountToken)) {
+    await Promise.all(ctx.discards.map((discard) => discard().catch(() => undefined)));
+    return {
+      attachments: [],
+      unsupported: refs.map((ref) => ({
+        type: `download_failed:${ref.kind}`,
+        label: `${ref.kind === 'file' ? ref.fileName : '图片'} 下载已取消（账号已切换）`,
+      })),
+    };
+  }
   return { attachments, unsupported };
 }
 
 interface DownloadContext {
   history: boolean;
   assertAccountCurrent: () => void;
+  /** 本批已成功写入 host 的回滚句柄(批次收口时换代则整批回滚)。 */
+  discards: Array<() => Promise<void>>;
 }
 
 /** 写入 host 后再复查账号; 已换代则回滚本次写入并按换代处理。 */
@@ -100,6 +115,7 @@ async function keepIfAccountCurrent<T>(
     await discard?.().catch(() => undefined);
     throw err;
   }
+  if (discard) ctx.discards.push(discard);
   return written;
 }
 

@@ -480,10 +480,16 @@ export async function collectGroupHistoryMedia(
   return { attachments: picked.reverse(), unavailable };
 }
 
-/** 下载前预判附件类别(占名额用): 照片与 image/* 文档进图片额度, 其余进文件额度。 */
+/**
+ * 下载前预判附件类别(占名额用): 照片与经共用判据归为图片的文档进图片额度, 其余进
+ * 文件额度 —— 与实际下载分流同一判据(classifyInboundAttachment), 不另立规则。
+ */
 function expectedAttachmentKind(m: TgMessage): 'image' | 'file' {
   if (m.photo && m.photo.length > 0) return 'image';
-  if (m.document?.mime_type?.startsWith('image/')) return 'image';
+  if (m.document) {
+    const name = m.document.file_name ?? `document-${m.message_id}`;
+    if (classifyInboundAttachment(m.document.mime_type, name).kind === 'image') return 'image';
+  }
   return 'file';
 }
 
