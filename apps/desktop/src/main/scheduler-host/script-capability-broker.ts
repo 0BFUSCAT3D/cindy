@@ -201,6 +201,26 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
     ) => Promise<{ model: string; providerId: string | null; catalogKnown?: boolean } | null>;
   } = {}) {}
 
+  /** 新建任务的配置:模型留空时按新建任务口径实时解析,不写死型号。 */
+  private async createDefaultsFor(schedule: Schedule) {
+    const explicitProviderId = schedule.providerId?.trim() || null;
+    const dynamicDefaultRoute = !schedule.model?.trim()
+      ? await this.deps.resolveDefaultModelRoute?.(schedule.agentKind, explicitProviderId) ?? null
+      : null;
+    const model = schedule.model?.trim() || dynamicDefaultRoute?.model;
+    if (!model) fail('PRECONDITION_FAILED', `${schedule.agentKind} has no connected model source`);
+    return {
+      agentKind: schedule.agentKind,
+      model,
+      providerId: explicitProviderId ?? dynamicDefaultRoute?.providerId ?? null,
+      effort: schedule.effort as DispatchEffort | undefined,
+      fastMode: !!schedule.fastMode,
+      workingDir: schedule.workingDir ?? '',
+      workspaceKind: 'project' as const,
+      permissionMode: 'bypassPermissions' as const,
+    };
+  }
+
   /**
    * runner 判定本轮 fire 终结(drain 截止/abort/超时放弃等待在途调用)时调用:
    * 让**本 run** 的残留脚本通道 callId 立即失去写盘授权,不等 pipeDispatcher
@@ -360,31 +380,14 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
         if (schedule.targetSessionId && requestedTarget && requestedTarget !== schedule.targetSessionId) {
           fail('INVALID_ARGS', 'bound scripts can only dispatch to their target session');
         }
-        const explicitProviderId = schedule.providerId?.trim() || null;
-        // 留空按新建任务口径实时解析默认模型，不写死型号。
-        const dynamicDefaultRoute = !schedule.model?.trim()
-          ? await this.deps.resolveDefaultModelRoute?.(
-              schedule.agentKind,
-              explicitProviderId,
-            ) ?? null
-          : null;
-        const model = schedule.model?.trim() || dynamicDefaultRoute?.model;
-        if (!model) fail('PRECONDITION_FAILED', `${schedule.agentKind} has no connected model source`);
+        const targetSessionId = schedule.targetSessionId ?? requestedTarget;
         const result = await service.sendToSession({
-          targetSessionId: schedule.targetSessionId ?? requestedTarget,
+          targetSessionId,
           message: requireString(params, 'message'),
           title: typeof params.title === 'string' ? params.title : undefined,
           useWorktree: false,
-          createDefaults: {
-            agentKind: schedule.agentKind,
-            model,
-            providerId: explicitProviderId ?? dynamicDefaultRoute?.providerId ?? null,
-            effort: schedule.effort as DispatchEffort | undefined,
-            fastMode: !!schedule.fastMode,
-            workingDir: schedule.workingDir ?? '',
-            workspaceKind: 'project',
-            permissionMode: 'bypassPermissions',
-          },
+          // 投递到已有任务时沿用该任务自己的配置,只有新建任务才需要默认路由。
+          ...(targetSessionId ? {} : { createDefaults: await this.createDefaultsFor(schedule) }),
         });
         if (!result.ok) fail(result.errorCode, result.message);
         return {

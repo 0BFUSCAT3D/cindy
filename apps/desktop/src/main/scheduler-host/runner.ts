@@ -1087,11 +1087,11 @@ export class MakerScheduleRunner implements ScheduleRunner {
         `schedule route unavailable: Claude Code has no connected source for model "${model}"`,
       );
     }
-    // 实时解析出的默认来源要显式写入会话(Pi 由自己的模型选择链路落来源),
-    // 否则 spawn 凭证、聊天选择器与落库会各自重新猜一次默认来源。
+    // 实时解析出的默认来源要与模型成对写入会话(含心跳绑定会话首次解析默认时;Pi 由自己的
+    // 模型选择链路落来源),否则 spawn 凭证、聊天选择器、落库与下一次运行会各自重新猜一次默认来源。
     const materializedDefaultProviderId =
       shouldMaterializeFreshClaudeProvider ||
-      (!isHeartbeat && followsNewTaskDefault && !explicitProviderId && effectiveAgentKind !== 'pi')
+      (followsNewTaskDefault && !explicitProviderId && effectiveAgentKind !== 'pi')
         ? (dynamicDefaultRoute?.providerId ?? null)
         : null;
     let routinePermissions =
@@ -1519,8 +1519,9 @@ export class MakerScheduleRunner implements ScheduleRunner {
     //   - heartbeat 且留空 → 沿用绑定会话的来源:hydrate 只在内存无条目时写,**不覆盖**
     //     用户在聊天里刚切的更新值(runner 绕过了 register 的 hydrate funnel,冷 resume
     //     时内存为空,这一步把 DB 里的 provider_id 补回来 → honor 聊天所选来源)。
-    //   - 非 heartbeat Claude 且留空 → 把实时解析出的默认来源显式写入，确保 spawn
-    //     credential mode、proxy 路由、coordinator baseline 与落库使用同一个 provider。
+    //   - 非 heartbeat Claude 留空,或本轮按新建任务口径解析了默认模型(含心跳)→ 把实时
+    //     解析出的默认来源显式写入，确保 spawn credential mode、proxy 路由、coordinator
+    //     baseline 与落库使用同一个 provider。
     //   - fresh 显式模型选择 → 同步本轮解析来源，避免入队后把新 handle 的已选路由
     //     误判成凭证切换；不把本轮默认来源回写到自动化偏好。
     //   - 其它非 heartbeat 且留空 → 保持既有默认路由语义。
@@ -1581,10 +1582,15 @@ export class MakerScheduleRunner implements ScheduleRunner {
         // 下次 fire 读到的 meta.model 必须跟实际运行一致（4.4.1 已 setModel）。
         // 同 effort: 复用路径 setModel 失败时跳过, 留给下次 fire 重试。
         model: heartbeatModelChanged && modelSwitchApplied ? model : undefined,
-        // 显式来源或 fresh Claude 物化出的默认来源都要落 sessions.provider_id ——
-        // 聊天 picker、下次 heartbeat / 冷 resume 与本轮真实凭证/endpoint 才不会漂移。
-        // heartbeat 留空时仍不写,保留绑定会话自己的 provider_id。
-        providerId: explicitProviderId ?? materializedDefaultProviderId ?? undefined,
+        // 显式来源或物化出的默认来源都要落 sessions.provider_id —— 聊天 picker、下次
+        // heartbeat / 冷 resume 与本轮真实凭证/endpoint 才不会漂移。心跳只在默认模型
+        // 同轮落库成功时写(模型与来源成对);其余心跳留空不写,保留绑定会话自己的 provider_id。
+        providerId:
+          explicitProviderId ??
+          (!isHeartbeat || (heartbeatModelChanged && modelSwitchApplied)
+            ? materializedDefaultProviderId
+            : null) ??
+          undefined,
         // 回退分配了对话工作区的会话按 'dialogue' 落库 —— 侧边栏才会归入
         // "对话"分组(覆盖存量 workspaceKind='project' 但无目录的旧任务)。
         workspaceKind: !isHeartbeat

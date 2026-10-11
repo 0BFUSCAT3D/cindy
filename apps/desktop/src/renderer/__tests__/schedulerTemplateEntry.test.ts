@@ -290,6 +290,8 @@ describe('Scheduler template entry', () => {
         recurring: true,
         agentKind: 'claude-code',
         model: 'claude-sonnet-4-6',
+        // 新建任务默认的来源与模型成对落库,runner 不再把空来源重新解析成别的来源。
+        providerId: 'xd',
         notify: { desktop: true, feishu: false, wecomGroup: false },
       }),
     );

@@ -148,34 +148,45 @@ export function getScheduleAgentPrefs(agentKind: ScheduleFormState['agentKind'])
 }
 
 /**
- * 新任务的默认模型,三级回退:
+ * 新任务的默认模型(及第三级回退时与之成对的来源),三级回退:
  *   1. 上次建自动化任务时选的模型(scheduleFormPrefs,任务维度记忆)
  *   2. 对话上次选择的模型(newMakerDraft 真实持久化值 —— 与新建对话同源,
  *      跟着用户实际在用的模型走)
  *   3. 新建任务默认(shared/draftModelCalibration resolveNewTaskDefaultRoute,与 runner
  *      对空 model 任务的实时解析同源)。不写死型号:供应商清单未到位(`providers` 缺省)
- *      或一个可用来源都没有时返回 '',由表单在清单到位后回填。
+ *      或一个可用来源都没有时返回 '',由表单在清单到位后回填。第三级返回的来源必须与模型
+ *      一起落到表单:只存模型会让 runner 把空来源重新解析成原生默认(可能是网关)。
+ *      一、二级只给模型,来源沿用表单既有的记忆语义。
  */
+export function getScheduleDefaultRoute(
+  agentKind: ScheduleFormState['agentKind'],
+  providers?: readonly ProviderView[],
+): { model: string; providerId: string | null } {
+  const prefs = getScheduleAgentPrefs(agentKind);
+  if (prefs.model.trim()) return { model: prefs.model, providerId: null };
+  const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
+  const chatLast = getPersistedVendorModel(vendor);
+  if (chatLast.trim()) return { model: chatLast, providerId: null };
+  if (!providers) return { model: '', providerId: null };
+  const draft = getDraft();
+  return (
+    resolveNewTaskDefaultRoute({
+      providers,
+      agent: agentKind,
+      draft: {
+        model: draft.lastByVendor[vendor]?.model,
+        providerId: draft.lastByVendor[vendor]?.providerId,
+        chosenByUser: draft.modelChosenByVendor[vendor] === true,
+      },
+    }) ?? { model: '', providerId: null }
+  );
+}
+
 export function getScheduleDefaultModel(
   agentKind: ScheduleFormState['agentKind'],
   providers?: readonly ProviderView[],
 ): string {
-  const prefs = getScheduleAgentPrefs(agentKind);
-  if (prefs.model.trim()) return prefs.model;
-  const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
-  const chatLast = getPersistedVendorModel(vendor);
-  if (chatLast.trim()) return chatLast;
-  if (!providers) return '';
-  const draft = getDraft();
-  return resolveNewTaskDefaultRoute({
-    providers,
-    agent: agentKind,
-    draft: {
-      model: draft.lastByVendor[vendor]?.model,
-      providerId: draft.lastByVendor[vendor]?.providerId,
-      chosenByUser: draft.modelChosenByVendor[vendor] === true,
-    },
-  })?.model ?? '';
+  return getScheduleDefaultRoute(agentKind, providers).model;
 }
 
 export function rememberScheduleFormPrefs(form: ScheduleFormState): void {

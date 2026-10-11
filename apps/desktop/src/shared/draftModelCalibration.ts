@@ -291,8 +291,12 @@ export function resolveNewTaskDefaultRoute(args: {
     );
     if (providerId) return { model: draftModel, providerId };
   }
-  // 与新建任务一致：清单发现失败的来源不拿来做自动默认（全部失败时才退回）。
-  const healthy = scoped.filter((provider) => !provider.modelDiscoveryFailure);
+  // 与新建任务一致：没有任何模型 / 来源偏好时，清单发现失败的来源不拿来做自动默认
+  // （全部失败时才退回）；有偏好时不过滤，暂时的发现失败不能把用户记着的来源换掉。
+  const healthy =
+    required || draft?.providerId || draft?.chosenByUser
+      ? scoped
+      : scoped.filter((provider) => !provider.modelDiscoveryFailure);
   const candidates = healthy.length > 0 ? healthy : scoped;
   const calibrate = (preferredProviderId: string | null) =>
     calibrateDraftModel({

@@ -1268,10 +1268,12 @@ describe('MakerScheduleRunner model selection', () => {
 
       expect(opts.model).toBe('claude-opus-5-5');
       expect(h.setModel).toHaveBeenCalledWith('claude-opus-5-5');
+      // 解析出的来源与模型成对写入会话,重启后的下一次运行不会退回隐式来源。
+      expect(mocks.setSessionProvider).toHaveBeenCalledWith('scheduler-session', 'anthropic');
       expect(mocks.backfillSessionMeta).toHaveBeenCalledWith(
         expect.anything(),
         'scheduler-session',
-        expect.objectContaining({ model: 'claude-opus-5-5' }),
+        expect.objectContaining({ model: 'claude-opus-5-5', providerId: 'anthropic' }),
         expect.anything(),
       );
     });

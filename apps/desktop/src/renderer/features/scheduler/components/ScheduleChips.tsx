@@ -44,7 +44,7 @@ import {
   SUPPORTED_INTERVAL_MINUTES,
   type CodexScheduleConfig,
 } from '../lib/cronCodexPreset';
-import { getScheduleDefaultModel, type EffortValue } from '../hooks/useScheduleForm';
+import { getScheduleDefaultRoute, type EffortValue } from '../hooks/useScheduleForm';
 import {
   isFollowingSessionSelection,
   PENDING_SESSION_ID,
@@ -1134,11 +1134,15 @@ export function ModelEffortChip({
     effort: effortValue,
   });
   const followsSessionModel = usesBoundSessionModel({ followSession, model: modelValue });
-  const effectiveId = followsSessionModel
-    ? ''
-    : modelValue || getScheduleDefaultModel(agentKind, providersLoading ? undefined : providers);
+  // 模型留空时显示与表单回填同源的默认路由(模型与来源成对)。
+  const defaultRoute =
+    followsSessionModel || modelValue
+      ? null
+      : getScheduleDefaultRoute(agentKind, providersLoading ? undefined : providers);
+  const effectiveId = followsSessionModel ? '' : modelValue || defaultRoute?.model || '';
+  const effectiveProviderId = providerId || defaultRoute?.providerId || null;
   const current = models.find((m) => m.id === effectiveId);
-  const sourceId = effectiveSourceIdForModel(providers, providerId || null, effectiveId, agentKind);
+  const sourceId = effectiveSourceIdForModel(providers, effectiveProviderId, effectiveId, agentKind);
   const source = providers.find((provider) => provider.id === sourceId);
   const catalogModel = source ? getModel(source, effectiveId, agentKind) : undefined;
   const effectiveEffort = effortValue || catalogModel?.defaultEffort || current?.defaultEffort || '';
@@ -1164,9 +1168,9 @@ export function ModelEffortChip({
   const activeSourceId = useMemo(
     () =>
       effectiveId
-        ? effectiveSourceIdForModel(providers, providerId || null, effectiveId, agentKind)
+        ? effectiveSourceIdForModel(providers, effectiveProviderId, effectiveId, agentKind)
         : null,
-    [providers, providerId, effectiveId, agentKind],
+    [providers, effectiveProviderId, effectiveId, agentKind],
   );
   const activeProvider = providers.find((p) => p.id === activeSourceId);
 

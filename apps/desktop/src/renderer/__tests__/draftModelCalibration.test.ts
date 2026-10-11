@@ -858,6 +858,23 @@ describe('resolveNewTaskDefaultRoute(无人值守入口的新建任务默认)', 
     ).toEqual({ model: 'claude-sonnet-5', providerId: 'xd' });
   });
 
+  it('清单发现失败的来源:没有偏好时跳过,草稿记着该来源时保留', () => {
+    const failing = {
+      ...provider('anthropic', true, { 'claude-code': [model('claude-opus-5-5')] }, 'subscription'),
+      modelDiscoveryFailure: { kind: 'unauthorized' },
+    } as unknown as ProviderView;
+    expect(
+      resolveNewTaskDefaultRoute({ providers: [gatewayWithoutOpus, failing], agent: 'claude-code' }),
+    ).toEqual({ model: 'claude-sonnet-5', providerId: 'xd' });
+    expect(
+      resolveNewTaskDefaultRoute({
+        providers: [gatewayWithoutOpus, failing],
+        agent: 'claude-code',
+        draft: { providerId: 'anthropic', chosenByUser: false },
+      }),
+    ).toEqual({ model: 'claude-opus-5-5', providerId: 'anthropic' });
+  });
+
   it('一个可用来源都没有 → null,不编造型号', () => {
     expect(
       resolveNewTaskDefaultRoute({ providers: [disconnectedAnthropic], agent: 'claude-code' }),

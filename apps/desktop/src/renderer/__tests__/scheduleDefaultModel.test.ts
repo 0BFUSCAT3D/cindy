@@ -144,6 +144,19 @@ describe('getScheduleDefaultModel 三级回退', () => {
     expect(getScheduleDefaultModel('codex', PROVIDERS)).toBe('gpt-6-luna');
   });
 
+  it('三级:默认模型与来源成对返回,一二级只给模型', async () => {
+    const { getScheduleDefaultRoute } = await loadModule();
+    expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+    });
+    seedSchedulePrefs('claude-haiku-4-5');
+    expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
+      model: 'claude-haiku-4-5',
+      providerId: null,
+    });
+  });
+
   it('三级:供应商清单未到位时留空,等清单到位再回填', async () => {
     const { getScheduleDefaultModel } = await loadModule();
     expect(getScheduleDefaultModel('claude-code')).toBe('');

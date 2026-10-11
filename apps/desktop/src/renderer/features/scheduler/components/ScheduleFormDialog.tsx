@@ -25,7 +25,7 @@ import { applyTemplateParams } from '@cindy/maker-scheduler/template-engine';
 import { ScriptCapabilityMultiSelect } from './ScriptCapabilityMultiSelect';
 
 import {
-  getScheduleDefaultModel,
+  getScheduleDefaultRoute,
   rememberScheduleFormPrefs,
   useScheduleForm,
   deriveRunMode,
@@ -451,9 +451,12 @@ export function ScheduleFormDialog({
   useEffect(() => {
     if (form.targetSessionId.trim()) return;
     if (form.model) return;
-    const model = getScheduleDefaultModel(form.agentKind, providersLoading ? undefined : providers);
-    if (model) setField('model', model);
-  }, [form.model, form.agentKind, form.targetSessionId, setField, providers, providersLoading]);
+    const route = getScheduleDefaultRoute(form.agentKind, providersLoading ? undefined : providers);
+    if (!route.model) return;
+    setField('model', route.model);
+    // 第三级默认的来源与模型成对回填;用户已指定的来源不覆盖。
+    if (route.providerId && !form.providerId.trim()) setField('providerId', route.providerId);
+  }, [form.model, form.agentKind, form.targetSessionId, form.providerId, setField, providers, providersLoading]);
 
   useEffect(() => {
     if (form.modelAgentKind || !currentModelEfforts || !form.effort) return;
