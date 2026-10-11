@@ -1546,7 +1546,9 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     else delete nextConfig.gender;
   }
   const normalizedNextConfig = normalizeBotModelCapabilitiesOrThrow(nextConfig);
-  if (botProfileModelSelectionChanged(previous, normalizedNextConfig)) {
+  // Legacy chain-only profiles gain mirrored fields during normalization.
+  // Compare the same representation so unrelated edits do not validate stale routes.
+  if (botProfileModelSelectionChanged(normalizeBotModelCapabilitiesOrThrow(previous), normalizedNextConfig)) {
     const primary = (await readEffectiveBotModelChain(normalizedNextConfig))[0];
     owner.assertCurrent();
     if (!primary || !await validateTaskModel(primary)) {

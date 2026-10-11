@@ -748,6 +748,29 @@ describe('Bot canonical Session lifecycle', () => {
     } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
   });
 
+  it.each(['rename', 'skills'])('allows legacy chain-only profile maintenance with an unavailable provider: %s', async edit => {
+    const id = 'legacy-chain-only';
+    await invoke('local-db:bots:create', { id, name: 'Legacy' });
+    const route: BotModelRoute = { harness: 'pi', providerId: 'deleted-provider', model: 'legacy-model', effort: 'high', fastMode: false };
+    h.sqlite!.prepare('UPDATE bot_profile_versions SET capabilities_json = ? WHERE bot_id = ?')
+      .run(JSON.stringify({ modelChain: [route] }), id);
+    const control = await import('../../../maker-ipc/appDefaultModelControl.js');
+    vi.mocked(control.validateTaskModel).mockClear().mockResolvedValue(false);
+    try {
+      const patch = edit === 'rename' ? { name: 'Renamed legacy' } : { skills: ['legacy-skill'] };
+      const saved = await invoke('local-db:bots:update', { id, ...patch });
+      expect(saved.capabilities.modelChain).toEqual([route]);
+      if (edit === 'rename') expect(saved.name).toBe('Renamed legacy');
+      else expect(saved.skills).toEqual(['legacy-skill']);
+      expect(control.validateTaskModel).not.toHaveBeenCalled();
+      // Actual model changes must still pass live validation.
+      await expect(invoke('local-db:bots:update', { id, capabilities: {
+        modelChainOverride: [{ ...route, model: 'another-unavailable-model' }],
+      } })).rejects.toThrow('Model route unavailable');
+      expect(control.validateTaskModel).toHaveBeenCalled();
+    } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
+  });
+
   it('preserves explicit creation selections under the new capability contract', async () => {
     const created = await invoke('local-db:bots:create', {
       id: 'selected-bot', name: 'Selected Bot',
