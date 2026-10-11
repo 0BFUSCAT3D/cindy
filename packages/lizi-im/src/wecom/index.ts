@@ -13,6 +13,7 @@ import {
   type WsFrame,
 } from "@wecom/aibot-node-sdk";
 
+import { audioVideoMimeOf } from "../audioVideo.js";
 import { BaseIM } from "../BaseIM.js";
 import type { ImFinalOutput, TextChannelIM } from "../channelIM.js";
 import type { Logger } from "../logger.js";
@@ -37,7 +38,6 @@ import {
   escapeWecomMarkdown,
 } from "./codec.js";
 import {
-  isAudioVideoFilename,
   mimeTypeForFilename,
   stageWecomDownload,
   readWecomOutboundFile,
@@ -656,8 +656,8 @@ export class WecomIM extends BaseIM implements TextChannelIM {
         // 以文件消息发来的音视频同样只进媒体总仓; 总仓不可用或拒收格式时标不支持,
         // 不回落文件暂存(媒体规则: 媒体统一由 cindy-media 记账与回收)。
         const originalName = safeWecomFilename(downloaded.filename);
-        const mimeType = mimeTypeForFilename(originalName);
-        if (isAudioVideoFilename(originalName) || mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
+        const avMime = audioVideoMimeOf(mimeTypeForFilename(originalName), originalName);
+        if (avMime) {
           const cacheMedia = this.host.media?.cacheMedia;
           if (!cacheMedia) {
             return unsupportedPayload("file:unsupported-media", `音视频文件暂不支持：${originalName}`);
@@ -668,7 +668,7 @@ export class WecomIM extends BaseIM implements TextChannelIM {
               integration: "wecom",
               token: `${frame.body!.msgid}:file`,
               buffer: downloaded.buffer,
-              mimeType,
+              mimeType: avMime,
             });
           } catch {
             return unsupportedPayload("file:unsupported-media", `音视频格式暂不支持：${originalName}`);

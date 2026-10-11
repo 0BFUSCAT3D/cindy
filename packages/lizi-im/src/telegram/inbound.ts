@@ -17,6 +17,7 @@ import type {
   IMUnsupportedEntry,
 } from '../types.js';
 import type { TelegramApiClient, TgFile, TgMediaFile, TgMessage, TgMessageEntity, TgUser } from './api.js';
+import { audioVideoMimeOf } from '../audioVideo.js';
 import { encodeMessageId } from './codec.js';
 
 /** Bot API getFile 的官方下载上限(20MB), 超过标注 oversize 不下载。 */
@@ -266,10 +267,6 @@ function audioVideoFilesOf(
   return out;
 }
 
-function isAudioVideoMime(mimeType: string): boolean {
-  return mimeType.startsWith('video/') || mimeType.startsWith('audio/');
-}
-
 /**
  * 单个音视频: 20MB 内下载并经 host.media.cacheMedia 入媒体总仓。host 不提供
  * cacheMedia 或总仓拒收该格式时标 video/audio 不支持 — 不降级写 legacy 目录
@@ -356,8 +353,9 @@ async function collectMedia(
   if (m.document) {
     const name = m.document.file_name ?? `document-${m.message_id}`;
     const mime = m.document.mime_type ?? 'application/octet-stream';
-    if (isAudioVideoMime(mime)) {
-      await collectAudioVideo(ctx, m.document, name, mime, attachments, unsupported);
+    const avMime = audioVideoMimeOf(mime, name);
+    if (avMime) {
+      await collectAudioVideo(ctx, m.document, name, avMime, attachments, unsupported);
     } else if ((m.document.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: name });
     } else if (!mime.startsWith('image/') && !ctx.files) {

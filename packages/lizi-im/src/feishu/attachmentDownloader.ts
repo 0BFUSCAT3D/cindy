@@ -16,6 +16,7 @@ import type { Readable } from 'node:stream';
 
 import type { IMAttachment } from '../types.js';
 import { getHost, getLog } from './moduleScope.js';
+import { audioVideoMimeOf } from '../audioVideo.js';
 import { mimeFromHeaders, streamToBuffer } from './mediaStore.js';
 import type {
   AttachmentRef,
@@ -173,9 +174,10 @@ async function downloadOne(
     };
   }
 
-  // 没有受控去处就不下载: 视频要媒体总仓, 其余文件要文件暂存。
-  if (ref.video ? !host.media?.cacheMedia : !host.files) {
-    return { unsupported: { type: ref.video ? 'media' : 'file', label } };
+  // 没有受控去处就不下载: 音视频(视频消息或按扩展名)要媒体总仓, 其余文件要文件暂存。
+  const avByName = ref.video || audioVideoMimeOf(undefined, ref.fileName) !== null;
+  if (avByName ? !host.media?.cacheMedia : !host.files) {
+    return { unsupported: { type: avByName ? 'media' : 'file', label } };
   }
   if (ref.fileSize !== undefined && ref.fileSize > MAX_FILE_SIZE) {
     return { unsupported: oversizeEntry(label, ref.fileSize)! };
@@ -185,9 +187,11 @@ async function downloadOne(
   if (oversize) return { unsupported: oversize };
   const mime = mimeType.toLowerCase() || 'application/octet-stream';
 
-  if (ref.video || mime.startsWith('video/') || mime.startsWith('audio/')) {
+  // MIME 与扩展名任一命中即音视频(资源响应常缺 Content-Type 或给 octet-stream)。
+  const detectedAv = audioVideoMimeOf(mime, ref.fileName);
+  if (ref.video || detectedAv) {
     const cacheMedia = host.media?.cacheMedia;
-    const avMime = ref.video && !mime.startsWith('video/') ? 'video/mp4' : mime;
+    const avMime = detectedAv ?? 'video/mp4';
     if (cacheMedia) {
       try {
         ctx.assertAccountCurrent();

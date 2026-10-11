@@ -7,6 +7,7 @@ import type {
   IMMessageEvent,
   IMUnsupportedEntry,
 } from '../types.js';
+import { audioVideoMimeOf } from '../audioVideo.js';
 import { encodeMessageId } from './codec.js';
 
 const MAX_INBOUND_FILE_BYTES = 50 * 1024 * 1024;
@@ -75,13 +76,11 @@ export async function normalizeDmMessage(
     const mimeType = (attachment.contentType ?? inferMimeType(originalName)).split(';')[0].trim().toLowerCase();
     // 平台附件 id 全局唯一, 缺失时退 `msgId-序号` —— host 据此免重下。
     const token = attachment.id ?? `${m.id}-${i}`;
-    const destination = mimeType.startsWith('image/')
-      ? 'image'
-      : mimeType.startsWith('audio/') || mimeType.startsWith('video/')
-        ? 'av'
-        : 'file';
+    // MIME 与扩展名任一命中即音视频(contentType 常缺或给 octet-stream)。
+    const avMime = mimeType.startsWith('image/') ? null : audioVideoMimeOf(mimeType, originalName);
+    const destination = mimeType.startsWith('image/') ? 'image' : avMime ? 'av' : 'file';
     const unsupportedType =
-      destination === 'av' ? (mimeType.startsWith('audio/') ? 'audio' : 'video') : destination;
+      destination === 'av' ? (avMime!.startsWith('audio/') ? 'audio' : 'video') : destination;
 
     if (attachment.size > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: originalName });
@@ -111,7 +110,7 @@ export async function normalizeDmMessage(
         const promoted = await ctx.media!.cacheImage({ integration: 'discord', token, buffer, mimeType });
         attachments.push({ kind: 'image', absPath: promoted.absPath, originalName, mimeType, url: promoted.url });
       } else if (destination === 'av') {
-        const stored = await ctx.media!.cacheMedia!({ integration: 'discord', token, buffer, mimeType });
+        const stored = await ctx.media!.cacheMedia!({ integration: 'discord', token, buffer, mimeType: avMime! });
         if (stored.discard) ctx.stagedDiscards?.push(stored.discard);
         attachments.push({
           kind: 'file',

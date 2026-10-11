@@ -276,6 +276,21 @@ describe('downloadAttachments: 文件 → host 暂存, 音视频 → 媒体总�
     expect(result).toEqual({ attachments: [], unsupported: [{ type: 'media', label: 'song.flac' }] });
   });
 
+  it('响应没给类型(octet-stream)时按扩展名识别音视频, 送进媒体总仓', async () => {
+    const media = makeMedia();
+    const files = makeFiles();
+    wireHost({ media, files });
+    const { client } = makeClient(Buffer.from('mp4'), 'application/octet-stream');
+
+    const result = await downloadAttachments(client, 'om_6', [
+      { kind: 'file', fileKey: 'file_o', fileName: 'record.MP4' },
+    ]);
+
+    expect(files.stage).not.toHaveBeenCalled();
+    expect(media.cacheMedia).toHaveBeenCalledWith(expect.objectContaining({ token: 'file_o', mimeType: 'video/mp4' }));
+    expect(result.attachments).toEqual([expect.objectContaining({ originalName: 'record.MP4', mimeType: 'video/mp4' })]);
+  });
+
   it('以普通文件发来的视频:host 没有 cacheMedia 时标不支持, 不进文件暂存', async () => {
     const media = makeMedia();
     delete (media as Partial<typeof media>).cacheMedia;
