@@ -64,7 +64,7 @@ import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
 import { recomputePrRefsForSession } from '../../git-context/prRefsStore';
 import * as imageCacheStore from '../../imageCacheStore';
 import { removeSessionRefsIfDeleted as removeDeletedSessionMediaRefs } from '../../cindy-media/ledger';
-import { removeImSessionAttachmentDirs } from '../../im/shared/inboundFileStaging';
+import { imAttachmentsRoot, removeImSessionAttachmentDirs } from '../../im/shared/inboundFileStaging';
 import { upsertRecentWorkdir } from './recentWorkdirs';
 import { createLogger } from '../../logger';
 import {
@@ -2722,23 +2722,29 @@ export async function resumeDeletedPiSubagentCleanup(): Promise<void> {
  * parent task. All status writers must pass through this helper.
  */
 /**
- * 个人 IM 附件目录的删除清理是异步的, 而确定性 IM 任务删除后再来消息会把同一
- * session id 原地复活并往同一目录领养新附件 —— 在路由锁内复查任务仍是 deleted
- * (行已不存在也算)再删, 已复活就保留; 读库失败按保留处理(宁可多留不可误删)。
+ * 个人 IM 附件目录的删除清理是异步的, 两类后到事件都不能让它删错:
+ *   - 同账号内, 确定性 IM 任务删除后再来消息会把同一 session id 原地复活并往同一目录
+ *     领养新附件 —— 在路由锁内复查任务仍是 deleted(行不存在也算)再删, 复活就保留;
+ *     读库失败按保留处理(宁可多留不可误删);
+ *   - 删除后切换账号, 另一账号可能有同 id 的任务 —— 目录根与账号作用域都在发起删除时
+ *     同步捕获: 只删发起账号自己的目录; 账号已切走时发起账号的任务不可能再被复活,
+ *     不再读(新账号的)库, 直接按捕获的根目录清理。
+ * 本函数须在发起删除的同步上下文里调用(捕获发生在第一个 await 之前)。
  */
-async function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
-  // 复查与删除整体放进任务路由锁: IM 复活同一 session id 也持这把锁, 附件只在复活
-  // 之后才领养进目录 —— 锁内看到 deleted 就不会与复活交错。调用方不 await 本函数,
-  // 不会与持锁中的状态写入互相等待。
-  await withSessionRouteLock(sessionId, async () => {
-    let row: SessionRowSnapshot | null;
-    try {
-      row = await getSessionRowSnapshotStrict(sessionId);
-    } catch {
-      return;
+function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
+  const ownerScope = captureOwnerScope();
+  const root = imAttachmentsRoot();
+  return withSessionRouteLock(sessionId, async () => {
+    if (isOwnerScopeCurrent(ownerScope)) {
+      let row: SessionRowSnapshot | null;
+      try {
+        row = await getSessionRowSnapshotStrict(sessionId);
+      } catch {
+        return;
+      }
+      if (row && row.status !== 'deleted') return;
     }
-    if (row && row.status !== 'deleted') return;
-    await removeImSessionAttachmentDirs(sessionId);
+    await removeImSessionAttachmentDirs(sessionId, root);
   });
 }
 

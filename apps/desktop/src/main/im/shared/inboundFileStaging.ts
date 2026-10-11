@@ -182,9 +182,19 @@ export async function adoptStagedInboundFiles(
   }
 }
 
-/** 任务删除: 清掉所有渠道下该任务的附件目录(含微信)。 */
-export async function removeImSessionAttachmentDirs(sessionId: string): Promise<void> {
-  const root = path.resolve(ownerScopedImUserDataPath(ROOT_DIR));
+/** 当前账号的 im-attachments 根目录(异步清理应在发起时同步捕获, 不在执行时重新解析)。 */
+export function imAttachmentsRoot(): string {
+  return path.resolve(ownerScopedImUserDataPath(ROOT_DIR));
+}
+
+/**
+ * 任务删除: 清掉所有渠道下该任务的附件目录(含微信)。`root` 由发起删除的一方捕获
+ * 传入 —— 执行时账号可能已切换, 不能按当前账号重新解析。
+ */
+export async function removeImSessionAttachmentDirs(
+  sessionId: string,
+  root: string = imAttachmentsRoot(),
+): Promise<void> {
   let integrations: string[];
   try {
     integrations = await fs.readdir(root);

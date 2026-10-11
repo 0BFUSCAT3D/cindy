@@ -15,6 +15,7 @@ vi.mock('../../../logger', () => ({
 
 import {
   adoptStagedInboundFiles,
+  imAttachmentsRoot,
   removeImSessionAttachmentDirs,
   resetInboundFileStagingForTests,
   sanitizeInboundFileName,
@@ -118,6 +119,26 @@ describe('inbound file staging', () => {
     expect(fs.existsSync(path.join(holder.root, 'im-attachments', 'telegram', 'sessions', 'gone'))).toBe(false);
     expect(fs.existsSync(path.join(holder.root, 'im-attachments', 'wechat', 'sessions', 'gone'))).toBe(false);
     expect(fs.existsSync(keep)).toBe(true);
+  });
+
+  it('removes only under the root captured by the deleting account, not the current one', async () => {
+    const accountA = imAttachmentsRoot();
+    const dirA = path.join(accountA, 'telegram', 'sessions', 'same-id');
+    fs.mkdirSync(dirA, { recursive: true });
+
+    // 删除后切到账号 B: 当前根目录变了, B 有同 id 的任务附件。
+    const previousRoot = holder.root;
+    holder.root = fs.mkdtempSync(path.join(os.tmpdir(), 'im-inbound-files-b-'));
+    const dirB = path.join(imAttachmentsRoot(), 'telegram', 'sessions', 'same-id');
+    fs.mkdirSync(dirB, { recursive: true });
+    fs.writeFileSync(path.join(dirB, 'b.pdf'), 'b');
+
+    await removeImSessionAttachmentDirs('same-id', accountA);
+    expect(fs.existsSync(dirA)).toBe(false);
+    expect(fs.readFileSync(path.join(dirB, 'b.pdf'), 'utf8')).toBe('b');
+
+    fs.rmSync(holder.root, { recursive: true, force: true });
+    holder.root = previousRoot;
   });
 
   it('sweeps unclaimed staging files past the age limit on the next stage', async () => {
