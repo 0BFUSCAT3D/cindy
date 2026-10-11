@@ -30,6 +30,7 @@ import {
   pickAgentDefaultRuntime,
   pickInitialNewSessionWorkspace,
   hostDraftRuntimeFromDefaults,
+  isHostDraftDefaultsReady,
   pickNewSessionDefaultDevice,
   resolveNewSessionAutoDefault,
   resolveRecentModelAndProvider,
@@ -130,6 +131,14 @@ describe('hostDraftRuntimeFromDefaults', () => {
     expect(hostDraftRuntimeFromDefaults(null, 'claude-code')).toBeNull();
     expect(hostDraftRuntimeFromDefaults('claude-opus-5-5', 'claude-code')).toBeNull();
     expect(hostDraftRuntimeFromDefaults({ model: '  ' }, 'claude-code')).toBeNull();
+  });
+
+  it('treats a snapshot without worktreeEnabled as not ready yet (host renderer cache not pushed)', () => {
+    expect(isHostDraftDefaultsReady({})).toBe(false);
+    expect(isHostDraftDefaultsReady({ providerModelMemory: {} })).toBe(false);
+    expect(isHostDraftDefaultsReady(null)).toBe(false);
+    expect(isHostDraftDefaultsReady({ worktreeEnabled: false })).toBe(true);
+    expect(isHostDraftDefaultsReady({ worktreeEnabled: true, model: 'm' })).toBe(true);
   });
 
   it('leaves a never-chosen host seed to the catalog regional default, like the desktop controller', () => {
@@ -420,7 +429,7 @@ describe('stored agent restore gating', () => {
     const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
     // 读:与桌面远程新建同一读源,三个 agent 一次读齐。
     expect(source).toContain('return maker.getNewMakerDefaults(agentKind);');
-    expect(source).toContain('.then((defaults) => hostDraftRuntimeFromDefaults(defaults, agentKind))');
+    expect(source).toContain('return hostDraftRuntimeFromDefaults(defaults, agentKind);');
     // 写:本页的模型选择写回被控电脑;远程 Agent 的模型属于另一台电脑,不写回。
     expect(source).toMatch(/active: true,\s+markModelChoice: hostChoiceRequest\.markModelChoice,/);
     expect(source).toContain('if (!selectedDeviceId || remoteAgentChoice || !draft.model) return;');
@@ -431,6 +440,12 @@ describe('stored agent restore gating', () => {
       const body = source.slice(start, source.indexOf('\n  }, [', start));
       expect(body, name).toContain('requestHostChoiceWrite(true);');
     }
+    // 被控端刚启动回 {} 时有限次重读,不当成「从未选过模型」(Codex P1)。
+    expect(source).toContain('if (defaults === undefined || isHostDraftDefaultsReady(defaults) || attempt >= 2) {');
+    // 本页写回的选择优先于读取结果,晚到的旧读取不能把它覆盖(Codex P1)。
+    const runtimeForStart = source.indexOf('const hostRuntimeFor = useCallback(');
+    const runtimeForBody = source.slice(runtimeForStart, source.indexOf('\n  );', runtimeForStart));
+    expect(runtimeForBody.indexOf('hostChoiceOverridesRef.current.get(deviceId)')).toBeLessThan(runtimeForBody.indexOf('current.byAgent[agentKind]'));
     // 切 agent 先等被控电脑默认读完再选模型,不把目录默认当成最终选择(Greptile P1)。
     const switchStart = source.indexOf('const switchAgent = useCallback(');
     const switchBody = source.slice(switchStart, source.indexOf('\n  }, [', switchStart));

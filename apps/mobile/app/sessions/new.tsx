@@ -212,6 +212,7 @@ import {
   parseNewSessionDeviceOptions,
   pickAgentDefaultRuntime,
   hostDraftRuntimeFromDefaults,
+  isHostDraftDefaultsReady,
   pickInitialNewSessionWorkspace,
   pickNewSessionDefaultDevice,
   resolveNewSessionAutoDefault,
@@ -1087,13 +1088,22 @@ export default function NewRemoteSessionScreen() {
     if (hostDraftDefaultsRef.current?.deviceId === selectedDeviceId) return undefined;
     const deviceId = selectedDeviceId;
     let cancelled = false;
-    const readAgent = (agentKind: NewSessionAgentKind) =>
-      withTransientRemoteRetry(async () => {
-        await openLink(deviceId);
-        return maker.getNewMakerDefaults(agentKind);
-      }, { maxAttempts: 2 })
-        .then((defaults) => hostDraftRuntimeFromDefaults(defaults, agentKind))
-        .catch(() => null);
+    const readAgent = async (agentKind: NewSessionAgentKind) => {
+      for (let attempt = 0; ; attempt += 1) {
+        const defaults = await withTransientRemoteRetry(async () => {
+          await openLink(deviceId);
+          return maker.getNewMakerDefaults(agentKind);
+        }, { maxAttempts: 2 }).catch(() => undefined);
+        if (cancelled) return null;
+        // 被控端刚启动、渲染进程还没推来草稿时回 {}:稍后重读,不把它当成「从未选过模型」;
+        // 有限次后(含不带该字段的旧被控端)按无默认处理。读取失败不重读。
+        if (defaults === undefined || isHostDraftDefaultsReady(defaults) || attempt >= 2) {
+          return hostDraftRuntimeFromDefaults(defaults, agentKind);
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+        if (cancelled) return null;
+      }
+    };
     const promise = Promise.all(
       NEW_SESSION_AGENT_OPTIONS.map(async ({ kind }) => [kind, await readAgent(kind)] as const),
     ).then((entries) => {
@@ -1119,10 +1129,16 @@ export default function NewRemoteSessionScreen() {
     }
   }, []);
   const hostDefaultsSettled = !!selectedDeviceId && hostDraftDefaults?.deviceId === selectedDeviceId;
+  // 本页已写回被控电脑的选择(按设备、agent):优先于读取结果,避免选择前发出的读取
+  // 晚到后把旧模型带回来(切到别的 agent 再切回时)。
+  const hostChoiceOverridesRef = useRef(new Map<string, Partial<Record<NewSessionAgentKind, NewSessionRuntime>>>());
   const hostRuntimeFor = useCallback(
     (agentKind: NewSessionAgentKind): NewSessionRuntime | null => {
+      const deviceId = selectedDeviceRef.current;
+      const chosen = hostChoiceOverridesRef.current.get(deviceId)?.[agentKind];
+      if (chosen) return chosen;
       const current = hostDraftDefaultsRef.current;
-      return current && current.deviceId === selectedDeviceRef.current
+      return current && current.deviceId === deviceId
         ? current.byAgent[agentKind] ?? null
         : null;
     },
@@ -1151,10 +1167,12 @@ export default function NewRemoteSessionScreen() {
       ...(effort ? { effort } : {}),
       fast: fastMode,
     }).catch(() => undefined);
-    // 本页镜像同步更新:切到别的 agent 再切回时取到刚才的选择。
-    setHostDraftDefaults((current) => current?.deviceId === selectedDeviceId
-      ? { ...current, byAgent: { ...current.byAgent, [agentKind]: { agentKind, model, effort, providerId } } }
-      : current);
+    // 记下本页选择:切到别的 agent 再切回时取到它,不被在途或更早的读取结果覆盖。
+    const overrides = hostChoiceOverridesRef.current;
+    overrides.set(selectedDeviceId, {
+      ...overrides.get(selectedDeviceId),
+      [agentKind]: { agentKind, model, effort, providerId },
+    });
   }, [draft, hostChoiceRequest, maker, remoteAgentChoice, selectedDeviceId]);
   // selectedDeviceId 的渲染期镜像:异步回调(权限确认 .then)提交前比对触发时捕获的设备,
   // 不一致即放弃写入 —— 防止确认弹窗期间用户切了设备,回调把旧设备的来源/配置写进草稿

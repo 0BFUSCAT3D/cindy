@@ -712,6 +712,16 @@ function findSectionModelRow(
 }
 
 /**
+ * 被控电脑的新建任务默认回包是否已就绪。被控端只有在渲染进程推来草稿镜像后才回
+ * worktreeEnabled;刚启动时回 {}(或只有模型预设),这时不能当成「从未选过模型」,
+ * 调用方应稍后重读。旧被控端同样不带该字段,由调用方有限次重读后按无默认处理。
+ */
+export function isHostDraftDefaultsReady(defaults: unknown): boolean {
+  return !!defaults && typeof defaults === 'object'
+    && Object.prototype.hasOwnProperty.call(defaults, 'worktreeEnabled');
+}
+
+/**
  * 被控电脑「新建任务默认」(maker:get-new-maker-defaults 回包)→ 该 agent 的默认运行配置。
  * 与桌面远程新建同一读源(deviceLinkDraftDefaults):在某台电脑上新建任务,默认就是那台电脑上
  * 新建任务时用户上次选的模型;不再从任务列表推断(自动化 / 测试任务会被误当成「最近使用」)。
