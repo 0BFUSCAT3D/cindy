@@ -212,6 +212,41 @@ function isSkillFromPluginDistribution(
   return false;
 }
 
+function hasCodexPluginIdentity(pluginId: string | undefined): boolean {
+  return !!pluginId && parseCodexPluginCacheIdentity(pluginId) !== null;
+}
+
+/**
+ * Whether Codex enforces a host route: through thread config and Skill config
+ * here, or through the desktop's provenance-preserving plugin overlay for
+ * explicit-only sources. Keep this in step with those builders; a route that
+ * fails it would be ignored or rejected at session start.
+ */
+export function isCodexCapabilityRouteEnforced(
+  directive: CapabilityRouteOverride,
+): boolean {
+  if (!isCodexHarnessPluginDirective(directive)) return false;
+  const { surface, id, containerId, artifactId } = directive.source;
+  if (directive.invocation === 'disabled') {
+    switch (surface) {
+      case 'plugin':
+        return hasCodexPluginIdentity(id);
+      case 'skill':
+        return hasCodexPluginIdentity(containerId) && !!artifactId;
+      case 'mcp':
+        return true;
+      default:
+        return false;
+    }
+  }
+  if (directive.invocation === 'explicit-only') {
+    if (!hasCodexPluginIdentity(containerId)) return false;
+    if (surface === 'skill') return true;
+    if (surface === 'mcp') return !!artifactId && artifactId !== id;
+  }
+  return false;
+}
+
 /**
  * Remove replacement-arbitration routes that the selected Codex host cannot
  * satisfy. Compatibility-only restrictions without a replacement remain in

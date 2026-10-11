@@ -67,9 +67,7 @@ export function buildClaudeAskUserQuestionCallerProvenanceHooks(): Partial<Recor
 function isClaudeSkillDirective(directive: CapabilityRouteOverride): boolean {
   return (
     directive.source.surface === 'skill' &&
-    directive.source.harness === CLAUDE_CODE_HARNESS_ID &&
-    (directive.source.kind === 'harness-builtin' ||
-      directive.source.kind === 'harness-plugin')
+    isClaudeCapabilityRouteEnforced(directive)
   );
 }
 
@@ -100,6 +98,73 @@ export function buildClaudeSkillOverrides(
     }
   }
   return overrides;
+}
+
+/**
+ * Whether this adapter turns a host route into a Claude Code control. The
+ * builders below select routes through this same predicate, so the route
+ * support check cannot drift from what is actually applied.
+ */
+export function isClaudeCapabilityRouteEnforced(
+  directive: CapabilityRouteOverride,
+): boolean {
+  if (
+    !isHarnessOwnedCapabilitySource(directive.source) ||
+    directive.source.harness !== CLAUDE_CODE_HARNESS_ID
+  ) {
+    return false;
+  }
+  switch (directive.source.surface) {
+    case 'skill':
+      return true;
+    case 'mcp':
+      return directive.invocation !== 'auto';
+    case 'tool':
+      // Claude can only remove a built-in tool outright; plugin tools are MCP.
+      return (
+        directive.source.kind === 'harness-builtin' &&
+        directive.invocation === 'disabled'
+      );
+    default:
+      return false;
+  }
+}
+
+function isDisabledClaudeSource(
+  directive: CapabilityRouteOverride,
+  surface: 'tool' | 'mcp',
+): boolean {
+  return (
+    isClaudeCapabilityRouteEnforced(directive) &&
+    directive.source.surface === surface &&
+    directive.invocation === 'disabled'
+  );
+}
+
+/**
+ * Disabled Claude built-in tools, passed as SDK `disallowedTools`. Claude Code
+ * drops a disallowed tool and its description from the model-facing list.
+ */
+export function buildClaudeDisallowedTools(
+  policy: CapabilityRoutingPolicy | undefined,
+): string[] {
+  return (policy?.overrides ?? [])
+    .filter((directive) => isDisabledClaudeSource(directive, 'tool'))
+    .map((directive) => directive.source.id);
+}
+
+/**
+ * Disabled MCP servers, passed as flag-settings `deniedMcpServers`. Denying
+ * only the server's tools would leave its server instructions in the prompt;
+ * a denied server is never connected. Claude merges this list with the user's
+ * own deny list instead of replacing it.
+ */
+export function buildClaudeDeniedMcpServers(
+  policy: CapabilityRoutingPolicy | undefined,
+): Array<{ serverName: string }> {
+  return (policy?.overrides ?? [])
+    .filter((directive) => isDisabledClaudeSource(directive, 'mcp'))
+    .map((directive) => ({ serverName: directive.source.id }));
 }
 
 export interface ClaudeRemoteToolGuard {
@@ -144,10 +209,8 @@ export function buildClaudeRemoteToolGuards(
   if (!policy) return [];
   return policy.overrides.flatMap((directive) => {
     if (
-      !isHarnessOwnedCapabilitySource(directive.source) ||
-      directive.source.harness !== CLAUDE_CODE_HARNESS_ID ||
       directive.source.surface !== 'mcp' ||
-      directive.invocation === 'auto'
+      !isClaudeCapabilityRouteEnforced(directive)
     ) {
       return [];
     }
@@ -181,10 +244,8 @@ export function buildClaudeLocalToolGuardHooks(
   if (
     !policy?.overrides.some(
       (directive) =>
-        isHarnessOwnedCapabilitySource(directive.source) &&
-        directive.source.harness === CLAUDE_CODE_HARNESS_ID &&
         directive.source.surface === 'mcp' &&
-        directive.invocation !== 'auto',
+        isClaudeCapabilityRouteEnforced(directive),
     )
   ) {
     return {};
