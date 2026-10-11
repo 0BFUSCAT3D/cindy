@@ -48,6 +48,13 @@ describe('mobile session message labels', () => {
     expect(sentSessionMessageChipLabel('  \n ')).toBe('');
   });
 
+  it('summarizes long messages from a bounded prefix without leaking split Markdown', () => {
+    const log = `**构建日志**\n${'line of output\n'.repeat(20_000)}![](cindy-media://blobs/tail)`;
+    expect(sentSessionMessageChipLabel(log)).toBe('构建日志 line of output lin…');
+    const longLine = `开头说明 ${'x'.repeat(5_000)}`;
+    expect(sentSessionMessageChipLabel(longLine).startsWith('开头说明 x')).toBe(true);
+  });
+
   it('truncates by visible characters without splitting multi-codepoint emoji', () => {
     const flag = '🇨🇳';
     const family = '👨‍👩‍👧';

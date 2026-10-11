@@ -6497,8 +6497,11 @@ function MarkdownSessionLinkSpan({
         message.clientId === session.messageClientId || message.id === session.messageClientId
       ))
     : null;
-  const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
-  const messageLabel = messageText ? sentSessionMessageChipLabel(messageText) : '';
+  // 消息数组更新(流式 / 列表重渲)时,目标消息没变就不重算摘要。
+  const messageLabel = useMemo(() => {
+    const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+    return messageText ? sentSessionMessageChipLabel(messageText) : '';
+  }, [targetMessage]);
   const title = session.messageClientId
     ? messageLabel || i18n.t('message.renderer.messageChipFallback')
     : explicit
