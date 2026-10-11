@@ -3509,11 +3509,11 @@ function MessageBubble({
     && item.message.kind === 'user'
     && !isFirstUserMessage
   );
+  // 对齐桌面:任务运行中也保留删除入口,点了由页面提示等回复结束,不让菜单项时有时无。
   const canDelete = !!(
     showCompletedActionBar
     && clientId
     && actions.onDeleteMessage
-    && actions.isSessionStreaming !== true
     && (item.message.kind === 'user' || item.message.kind === 'assistant')
   );
   const canCopyLink = !!(showCompletedActionBar && clientId && actions.onCopyMessageLink);

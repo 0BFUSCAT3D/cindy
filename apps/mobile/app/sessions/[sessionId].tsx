@@ -9257,6 +9257,8 @@ export default function SessionScreen() {
 
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;
+    // 运行中能否删由被控端判定:点停止后本地运行态可能晚于被控端收敛,
+    // 不能拿它挡住已经停下的任务。被控端拒绝(SESSION_RUNNING)时再提示等回复结束。
     Alert.alert(t('session.screen.deleteMessageTitle'), t('session.screen.deleteMessageBody'), [
       { text: t('session.common.cancel'), style: 'cancel' },
       {
@@ -9279,7 +9281,12 @@ export default function SessionScreen() {
                 deviceId,
               );
             } catch (err) {
-              setError(formatRemoteError(err));
+              const formatted = formatRemoteError(err);
+              if (formatted.includes('SESSION_RUNNING')) {
+                Alert.alert(t('session.screen.deleteMessageBusy'));
+              } else {
+                setError(formatted);
+              }
             } finally {
               setMessageActionBusy(null);
             }
