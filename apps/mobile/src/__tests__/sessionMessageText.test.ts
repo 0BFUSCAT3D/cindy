@@ -3,6 +3,7 @@ import { formatQuoteForSend } from '@cindy/maker-shared/chat-quotes';
 import {
   compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
+  sentSessionMessageChipLabel,
   splitAnchoredSessionMessageLinks,
 } from '@/session/sessionMessageText';
 import type { RemoteMessage } from '@/session/types';
@@ -26,29 +27,36 @@ describe('mobile session message labels', () => {
   });
 
   it('shows anchored message labels as short plain text instead of raw Markdown', () => {
-    const label = compactSessionMessageLabel(
+    const label = sentSessionMessageChipLabel(
       '**1. 深色·打开过程**：第一帧\n\n![深色-打开过程](cindy-media://blobs/0b12b71b6dcbf531eb89a2ed3b9ba7b1)',
     );
     expect(label).toBe('1. 深色·打开过程：第一帧 深色-打开过程');
-    expect(compactSessionMessageLabel('上次我用的是 Claude Code 自带的 `SendUserFile` 发文件，工具返回了已送达'))
+    expect(sentSessionMessageChipLabel('上次我用的是 Claude Code 自带的 `SendUserFile` 发文件，工具返回了已送达'))
       .toBe('上次我用的是 Claude Code 自带的…');
-    expect(Array.from(compactSessionMessageLabel('😀'.repeat(40)))).toHaveLength(24);
+    expect(Array.from(sentSessionMessageChipLabel('😀'.repeat(40)))).toHaveLength(24);
+  });
+
+  it('keeps composer and task-title labels at the original length and text', () => {
+    const title = `任务 *标题* ${'长'.repeat(60)}`;
+    expect(compactSessionMessageLabel(title)).toBe(title);
+    expect(compactSessionMessageLabel('![](cindy-media://blobs/abc)')).toBe('![](cindy-media://blobs/abc)');
+    expect(compactSessionMessageLabel('x'.repeat(300))).toHaveLength(240);
   });
 
   it('returns no label when the message has no readable text, never the raw Markdown source', () => {
-    expect(compactSessionMessageLabel('![](cindy-media://blobs/abc)')).toBe('');
-    expect(compactSessionMessageLabel('  \n ')).toBe('');
+    expect(sentSessionMessageChipLabel('![](cindy-media://blobs/abc)')).toBe('');
+    expect(sentSessionMessageChipLabel('  \n ')).toBe('');
   });
 
   it('truncates by visible characters without splitting multi-codepoint emoji', () => {
     const flag = '🇨🇳';
     const family = '👨‍👩‍👧';
     const skin = '👍🏽';
-    expect(compactSessionMessageLabel(`${'a'.repeat(22)}${flag}bb`)).toBe(`${'a'.repeat(22)}${flag}…`);
-    expect(compactSessionMessageLabel(`${'a'.repeat(22)}${family}bb`)).toBe(`${'a'.repeat(22)}${family}…`);
-    expect(compactSessionMessageLabel(`${'a'.repeat(22)}${skin}bb`)).toBe(`${'a'.repeat(22)}${skin}…`);
-    expect(compactSessionMessageLabel(`${flag}${flag}`)).toBe(`${flag}${flag}`);
-    expect(compactSessionMessageLabel(`${'a'.repeat(23)}e\u0301`)).toBe(`${'a'.repeat(23)}e\u0301`);
+    expect(sentSessionMessageChipLabel(`${'a'.repeat(22)}${flag}bb`)).toBe(`${'a'.repeat(22)}${flag}…`);
+    expect(sentSessionMessageChipLabel(`${'a'.repeat(22)}${family}bb`)).toBe(`${'a'.repeat(22)}${family}…`);
+    expect(sentSessionMessageChipLabel(`${'a'.repeat(22)}${skin}bb`)).toBe(`${'a'.repeat(22)}${skin}…`);
+    expect(sentSessionMessageChipLabel(`${flag}${flag}`)).toBe(`${flag}${flag}`);
+    expect(sentSessionMessageChipLabel(`${'a'.repeat(23)}e\u0301`)).toBe(`${'a'.repeat(23)}e\u0301`);
   });
 
   it('splits message anchors while preserving adjacent punctuation and whole-session links', () => {

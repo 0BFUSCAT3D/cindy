@@ -268,8 +268,8 @@ import {
   sourcePluginLabel,
 } from '@/session/messageSourceLabels';
 import {
-  compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
+  sentSessionMessageChipLabel,
 } from '@/session/sessionMessageText';
 import { buildMobileMarkdownTableColumnWidths } from '@/session/messageTableLayout';
 import { buildPayloadHeaderLayout, buildPayloadModalSafeArea } from '@/session/payloadHeaderLayout';
@@ -6498,7 +6498,7 @@ function MarkdownSessionLinkSpan({
       ))
     : null;
   const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
-  const messageLabel = messageText ? compactSessionMessageLabel(messageText) : '';
+  const messageLabel = messageText ? sentSessionMessageChipLabel(messageText) : '';
   const title = session.messageClientId
     ? messageLabel || i18n.t('message.renderer.messageChipFallback')
     : explicit

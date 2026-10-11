@@ -8,9 +8,10 @@ import {
 } from '@/session/sessionLinks';
 import type { RemoteMessage } from '@/session/types';
 
-// 手机端消息锚点 chip 是正文里的行内 span,没法像桌面 pill 那样按宽度单行省略;
+const MESSAGE_LABEL_MAX_CHARS = 240;
+// 已发送气泡里的消息锚点 chip 是正文里的行内 span,没法像桌面 pill 那样按宽度单行省略;
 // 按字数截到约一行气泡宽,完整正文仍可点进目标消息查看。
-const MESSAGE_LABEL_MAX_CHARS = 24;
+const SENT_MESSAGE_CHIP_MAX_CHARS = 24;
 
 /** Readable text only; never stringify tool/SDK metadata into a reference chip. */
 export function mobileSessionMessageDisplayText(message: RemoteMessage): string | null {
@@ -71,12 +72,21 @@ function displayCharacters(text: string): string[] {
   return clusters;
 }
 
-/** 引用 chip 的可见摘要;没有可读文字(如只有无说明图片)时返回空串,由调用方给中性占位。 */
 export function compactSessionMessageLabel(text: string): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= MESSAGE_LABEL_MAX_CHARS) return compact;
+  return `${compact.slice(0, MESSAGE_LABEL_MAX_CHARS - 1)}…`;
+}
+
+/**
+ * 已发送消息里引用 chip 的可见摘要(仅渲染用,不进输入框 atom / 发送数据);
+ * 没有可读文字(如只有无说明图片)时返回空串,由调用方给中性占位。
+ */
+export function sentSessionMessageChipLabel(text: string): string {
   const compact = markdownPlainText(text).replace(/\s+/g, ' ').trim();
   const chars = displayCharacters(compact);
-  if (chars.length <= MESSAGE_LABEL_MAX_CHARS) return compact;
-  return `${chars.slice(0, MESSAGE_LABEL_MAX_CHARS - 1).join('').trimEnd()}…`;
+  if (chars.length <= SENT_MESSAGE_CHIP_MAX_CHARS) return compact;
+  return `${chars.slice(0, SENT_MESSAGE_CHIP_MAX_CHARS - 1).join('').trimEnd()}…`;
 }
 
 export type AnchoredSessionMessageTextPart =
