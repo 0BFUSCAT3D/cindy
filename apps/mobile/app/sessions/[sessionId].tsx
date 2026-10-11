@@ -4454,11 +4454,12 @@ export default function SessionScreen() {
     setComposerActivityStartedAt(showComposerActivity ? Date.now() : null);
   }, [showComposerActivity, sessionId]);
   // 新建任务这一轮从新建页点发送时起算:进任务页、电脑开始运行(远端 startedAt 晚于点击)
-  // 都不归零,直到活动行熄灭(本轮结束)才放开。按会话绑定,换会话不泄漏。
+  // 都不归零,直到活动行熄灭(本轮结束)才放开。按会话绑定:侧栏原地切到别的任务即丢弃,
+  // 切回来不会拿旧创建起点续算(同一 SessionScreen 实例复用,review P2)。
   const [creationTurnStart, setCreationTurnStart] = useState<{ sessionId: string; startedAt: number } | null>(null);
   useEffect(() => {
     if (creationStartedAt !== null && sessionId) setCreationTurnStart({ sessionId, startedAt: creationStartedAt });
-    else if (!showComposerActivity) setCreationTurnStart(null);
+    else setCreationTurnStart((prev) => (prev?.sessionId === sessionId && showComposerActivity ? prev : null));
   }, [creationStartedAt, sessionId, showComposerActivity]);
   const creationTurnStartedAt = creationTurnStart?.sessionId === sessionId ? creationTurnStart.startedAt : null;
   const composerActivityStartedAtMs = creationTurnStartedAt ?? remoteSessionRunStatus.startedAt ?? composerActivityStartedAt;

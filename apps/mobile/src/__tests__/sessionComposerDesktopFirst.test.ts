@@ -256,6 +256,8 @@ describe('mobile session composer desktop-first surface', () => {
     // The creation turn keeps counting from the tap on the new-task page; a later remote start must not rewind it.
     expect(source).toContain('const composerActivityStartedAtMs = creationTurnStartedAt ?? remoteSessionRunStatus.startedAt ?? composerActivityStartedAt;');
     expect(activityPillSource).toContain("accessibilityLiveRegion={live ? 'polite' : 'none'}");
+    // An in-place drawer switch reuses the screen: another task must drop the retained creation start.
+    expect(source).toContain('setCreationTurnStart((prev) => (prev?.sessionId === sessionId && showComposerActivity ? prev : null));');
     expect(source).not.toContain('<SlowSendNotice');
     expect(activityPillSource).toContain('composerActivityPrimary');
     expect(activityPillSource).toContain('color: colors.statusAccent');
