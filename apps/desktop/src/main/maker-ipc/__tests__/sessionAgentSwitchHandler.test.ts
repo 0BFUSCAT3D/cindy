@@ -1444,3 +1444,72 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     });
   });
 });
+
+describe('换到供应商组那一项：由组选一台能用的电脑(provider-groups.md §6)', () => {
+  function groupHarness(resolve: MakerSessionAgentSwitchHandlerDeps['resolveProviderGroupTarget']) {
+    const pending = createPendingAgentSwitchRegistry();
+    const row = makeRow({ agentDeviceId: null, providerId: 'xd' });
+    const resolveProviderGroupTarget = vi.fn(resolve);
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      getSessionRow: vi.fn(async () => row),
+      assertAgentDeviceRouteUsable: vi.fn(async () => undefined),
+      resolveProviderGroupTarget,
+    });
+    return { deps, pending, resolveProviderGroupTarget };
+  }
+  const toGroup = {
+    sessionId: 's1',
+    targetAgentKind: 'claude-code',
+    model: 'claude-opus-5-5',
+    providerId: 'anthropic',
+    agentDeviceId: 'group-host',
+  };
+
+  it('登记时不选，发送时按组此刻的状态选一台，换到那台', async () => {
+    const h = groupHarness(async () => ({ agentDeviceId: 'office-pc', providerId: 'anthropic-2' }));
+    await performSessionAgentSwitch(h.deps, toGroup);
+    expect(h.resolveProviderGroupTarget).not.toHaveBeenCalled();
+    expect(h.pending.get('s1')).toMatchObject({ targetAgentDeviceId: 'group-host' });
+
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.resolveProviderGroupTarget).toHaveBeenCalledWith('s1', {
+      agentKind: 'claude-code',
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+      agentDeviceId: 'group-host',
+      current: { agentDeviceId: null, providerId: 'xd' },
+    });
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentDeviceId: 'office-pc',
+      providerId: 'anthropic-2',
+    }));
+    expect(h.pending.get('s1')).toBeUndefined();
+  });
+
+  it('不是组那一项时照用户选的位置换', async () => {
+    const h = groupHarness(async () => null);
+    await performSessionAgentSwitch(h.deps, toGroup);
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentDeviceId: 'group-host',
+      providerId: 'anthropic',
+    }));
+  });
+
+  it('组里都不能用：不换、不发，意图留着', async () => {
+    const h = groupHarness(async () => {
+      throw new Error('[REMOTE_AGENT_GROUP_UNAVAILABLE] no computer in the provider group can run this task right now');
+    });
+    await performSessionAgentSwitch(h.deps, toGroup);
+    await expect(applyPendingAgentSwitchIfIdle(h.deps, 's1')).rejects.toThrow('REMOTE_AGENT_GROUP_UNAVAILABLE');
+    expect(h.deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
+    expect(h.pending.get('s1')).toBeDefined();
+  });
+
+  it('供应商组自己换电脑时不再经组选一次', async () => {
+    const h = groupHarness(async () => ({ agentDeviceId: 'office-pc', providerId: 'anthropic-2' }));
+    await performSessionAgentSwitch(h.deps, { ...toGroup, applyNow: true, providerGroupRelocation: true });
+    expect(h.resolveProviderGroupTarget).not.toHaveBeenCalled();
+  });
+});

@@ -127,6 +127,23 @@ export interface AgentSwitchSessionRow {
 const AGENT_DEVICE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 export interface MakerSessionAgentSwitchHandlerDeps {
+  /**
+   * 任务要换到供应商组那一项(组所在电脑上那个建了组的供应商)时，由组按它的状态选一台能用的电脑
+   * (docs/product-rules/provider-groups.md §6)：返回选中那台的位置；不是组那一项或组读不到返回 null(照用户选的位置)；
+   * 组里都不能用时抛错。只在真正提交(applyNow)、要换电脑时调用。缺省 = 不经组选。
+   */
+  resolveProviderGroupTarget?(
+    sessionId: string,
+    target: {
+      agentKind: 'claude-code' | 'codex' | 'pi';
+      model: string;
+      providerId: string | null;
+      /** 用户选的位置(null = 任务所在电脑)。 */
+      agentDeviceId: string | null;
+      /** 任务此刻的位置。 */
+      current: { agentDeviceId: string | null; providerId: string | null };
+    },
+  ): Promise<{ agentDeviceId: string | null; providerId: string | null } | null>;
   /** Same-engine choices use SET_MODEL validation; only the send boundary applies them. Caller owns the session lock. */
   selectSameAgentModel?(
     sessionId: string,
@@ -475,7 +492,7 @@ export async function performSessionAgentSwitch(
   ) {
     throwIpcError('INVALID_PARAMS', 'agentDeviceId must be a device id or null');
   }
-  const requestedAgentDeviceId = rawAgentDeviceId as string | null | undefined;
+  let requestedAgentDeviceId = rawAgentDeviceId as string | null | undefined;
   // 必须在第一个 await 前快照：跨窗口 / 跨设备写入即使 set→clear 回到同值，修订号也会变化。
   const pendingRevisionAtStart = deps.pendingSwitches?.revision?.(sessionId);
   let normalizedProviderId =
@@ -529,8 +546,30 @@ export async function performSessionAgentSwitch(
   const fromDbKind: DbAgentKind = normalizeDbAgentKind(row.agentKind);
   const toDbKind: DbAgentKind = makerToDbAgentKind(targetAgentKind);
   const currentAgentDeviceId = row.agentDeviceId ?? null;
-  const targetAgentDeviceId =
+  let targetAgentDeviceId =
     requestedAgentDeviceId === undefined ? currentAgentDeviceId : requestedAgentDeviceId;
+  // 换到供应商组那一项、要换电脑：交接反正要做，由组按它此刻的状态选一台能用的电脑，不直接落到组所在电脑本身
+  // (docs/product-rules/provider-groups.md §6，2026-10-11 用户反馈)。登记意图时不选，真正提交时按那一刻的状态选。
+  if (
+    params.applyNow === true &&
+    params.providerGroupRelocation !== true &&
+    targetAgentDeviceId !== currentAgentDeviceId &&
+    deps.resolveProviderGroupTarget
+  ) {
+    const chosen = await deps.resolveProviderGroupTarget(sessionId, {
+      agentKind: targetAgentKind,
+      model,
+      providerId: typeof normalizedProviderId === 'string' ? normalizedProviderId : null,
+      agentDeviceId: targetAgentDeviceId,
+      current: { agentDeviceId: currentAgentDeviceId, providerId: row.providerId ?? null },
+    });
+    throwIfAgentSwitchAborted(signal);
+    if (chosen) {
+      targetAgentDeviceId = chosen.agentDeviceId;
+      requestedAgentDeviceId = chosen.agentDeviceId;
+      normalizedProviderId = chosen.providerId;
+    }
+  }
   const agentDeviceChanges = targetAgentDeviceId !== currentAgentDeviceId;
   // 位置不变的强制换电脑(只认内部 applyNow 调用，且 Agent 在另一台电脑上)：交接、提交、分隔条都按换电脑处理。
   const forcedRelocation =

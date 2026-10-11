@@ -218,6 +218,22 @@ export interface ProviderGroupService {
   /** 分配后 Agent 没能启动：换下一台，返回新的位置；不该换或没有下一台返回 null(调用方照常报错)。 */
   nextAfterStartFailure(context: ProviderGroupStartContext, error: unknown): Promise<ProviderGroupStartContext | null>;
   /**
+   * 用户在模型选择里把任务换到组那一项、要换电脑(§6，2026-10-11 用户反馈)：交接反正要做，按组此刻的状态选一台能用的
+   * 电脑(与新任务同一套组策略)，写好绑定，返回那台的位置。`target` 是用户选的位置：不是组那一项(没有组、分享来的供应商)
+   * 或组读不到时返回 null，照用户选的位置换；组里都不能用时抛 PROVIDER_GROUP_UNAVAILABLE_ERROR。选中的就是任务此刻所在
+   * 那台电脑、但供应商不同时也返回 null(同一台电脑上换供应商不走这条路)。
+   */
+  resolveSwitchTarget(
+    sessionId: string,
+    target: {
+      agentKind: AgentKind;
+      model: string;
+      providerId: string | null;
+      agentDeviceId: string | null;
+      current: ProviderGroupRoute;
+    },
+  ): Promise<ProviderGroupRoute | null>;
+  /**
    * 纯判定(同步、无副作用)：这次终态错误会不会先由本机制试着换电脑。为 true 时输入协调器先不呈现这次错误
    * (红横幅与错误卡)：换成了就不出现，没换成再补出来(§6.1)。只看手上现成的：认得出的原因，加上已归组
    * (本机的组要开着自动换电脑、组里还有别的电脑；另一台电脑上的组交给随后的异步判断)，或组所在电脑已发来
@@ -1466,6 +1482,43 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         to: pick.member.key,
       });
       return { ...context, member: pick.member, route, overrideRoute: true };
+    },
+
+    async resolveSwitchTarget(sessionId, target) {
+      const { providerId, agentDeviceId } = target;
+      if (!providerId) return null;
+      const source = agentDeviceId === null
+        ? (deps.readGroup(providerId) ? localSource : null)
+        : (deps.remote && !isProviderShareAgentDeviceId(agentDeviceId) ? remoteSource(agentDeviceId) : null);
+      if (!source) return null;
+      const config = await withTimeout(source.readGroup(providerId), PROVIDER_GROUP_ADOPT_TIMEOUT_MS);
+      if (!config) return null;
+      const pick = await source.pick({
+        sessionId,
+        providerId,
+        config,
+        agentKind: target.agentKind,
+        model: target.model,
+        exclude: new Set(),
+      }).catch((error): SourcePick => {
+        deps.log.warn('provider group: asking the group computer failed', { sessionId, error: errorText(error) });
+        return { kind: 'none' };
+      });
+      if (pick.kind === 'none') return null;
+      if (pick.kind === 'unavailable') {
+        deps.log.warn('provider group: no computer available for a task moved into the group', { sessionId, providerId });
+        throw new Error(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+      }
+      const route = source.routeOf(pick.member, source.ownerDeviceId ? null : providerId);
+      if (route.agentDeviceId === target.current.agentDeviceId && route.providerId !== target.current.providerId) return null;
+      await deps.writeBinding(sessionId, bindingFor(source, providerId, pick.member.key));
+      deps.log.info('provider group: chose a computer for a task moved into the group', {
+        sessionId,
+        groupProviderId: providerId,
+        member: pick.member.key,
+        remote: source.ownerDeviceId !== null,
+      });
+      return route;
     },
 
     mayHandleTurnError(sessionId, signals) {

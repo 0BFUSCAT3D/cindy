@@ -592,3 +592,34 @@ describe('a group on another computer whose state shows a computer cannot be use
     );
   });
 });
+
+describe('moving a task into a group on another computer from the model list (2026-10-11)', () => {
+  const CURRENT = { agentDeviceId: 'elsewhere', providerId: 'openai' };
+  const target = { agentKind: 'claude-code' as const, model: MODEL, providerId: 'anthropic', agentDeviceId: OWNER, current: CURRENT };
+
+  it('asks the group computer which computer to use instead of going to the group computer itself', async () => {
+    const h = harness({ picks: [STUDIO] });
+    const route = await h.service.resolveSwitchTarget('s1', target);
+    expect(h.remote.pick).toHaveBeenCalledWith(OWNER, expect.objectContaining({ providerId: 'anthropic', exclude: [] }));
+    expect(route).toEqual({ agentDeviceId: 'studio', providerId: 'anthropic-1a2b3c4d' });
+    expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
+
+    // 组选中的是这台电脑自己：在这台运行。
+    const self = harness({ picks: [SELF] });
+    expect(await self.service.resolveSwitchTarget('s1', target)).toEqual({ agentDeviceId: null, providerId: 'anthropic' });
+  });
+
+  it('says at once when no computer in the group can run it', async () => {
+    const h = harness({ picks: ['unavailable'] });
+    await expect(h.service.resolveSwitchTarget('s1', target)).rejects.toThrow(PROVIDER_GROUP_UNAVAILABLE_ERROR);
+    expect(h.bindings.size).toBe(0);
+  });
+
+  it('keeps the chosen place when it is not a group or the group computer cannot be read', async () => {
+    expect(await harness({ config: null }).service.resolveSwitchTarget('s1', target)).toBeNull();
+    expect(await harness({ config: undefined }).service.resolveSwitchTarget('s1', target)).toBeNull();
+    expect(await harness({ picks: ['none'] }).service.resolveSwitchTarget('s1', target)).toBeNull();
+    // 分享来的供应商不是同账号的组。
+    expect(await harness().service.resolveSwitchTarget('s1', { ...target, agentDeviceId: 'share:s9' })).toBeNull();
+  });
+});

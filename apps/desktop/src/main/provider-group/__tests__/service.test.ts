@@ -1310,3 +1310,31 @@ describe('using the state the group keeps (2026-10-11)', () => {
     expect(h.router.coolingUntil('anthropic', MINI.key)).toBeNull();
   });
 });
+
+describe('moving a task into a group on this computer from the model list (2026-10-11)', () => {
+  it('picks a computer by the group state, skipping one that is cooling down', async () => {
+    const h = harness({ members: [LOCAL, MINI, STUDIO], row: { agentDeviceId: 'elsewhere', providerId: 'openai', sdkSessionId: 'native' } });
+    h.router.markCooling('anthropic', 'local', 2_000_000);
+    const route = await h.service.resolveSwitchTarget('s1', {
+      agentKind: 'claude-code',
+      model: MODEL,
+      providerId: 'anthropic',
+      agentDeviceId: null,
+      current: { agentDeviceId: 'elsewhere', providerId: 'openai' },
+    });
+    expect(route).toEqual({ agentDeviceId: 'mini', providerId: MINI.providerId });
+    expect(h.bindings.get('s1')).toMatchObject({ providerId: 'anthropic', memberKey: MINI.key });
+  });
+
+  it('leaves a provider without a group alone', async () => {
+    const h = harness();
+    expect(await h.service.resolveSwitchTarget('s1', {
+      agentKind: 'claude-code',
+      model: MODEL,
+      providerId: 'openai',
+      agentDeviceId: null,
+      current: { agentDeviceId: 'elsewhere', providerId: 'openai' },
+    })).toBeNull();
+    expect(h.bindings.size).toBe(0);
+  });
+});

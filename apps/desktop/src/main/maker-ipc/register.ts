@@ -9536,6 +9536,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   const agentSwitchDeps: MakerSessionAgentSwitchHandlerDeps = {
+    // 换到供应商组那一项时由组选一台能用的电脑(provider-groups.md §6)。
+    resolveProviderGroupTarget: (sessionId, target) =>
+      providerGroupService ? providerGroupService.resolveSwitchTarget(sessionId, target) : Promise.resolve(null),
     withSessionLock: withSendToSessionLock,
     // 停用轴边界裁决:目标路由被停用 → 抛错;隐式默认落点被停用 → 返回启用替代来源。
     // Agent 在另一台电脑运行的任务：目标模型属于那台的目录，由那台的 Agent 启动时裁决(选择时另
