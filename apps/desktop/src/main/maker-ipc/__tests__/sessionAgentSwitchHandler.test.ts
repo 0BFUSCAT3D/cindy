@@ -1497,6 +1497,52 @@ describe('换到供应商组那一项：由组选一台能用的电脑(provider-
     }));
   });
 
+  it('绑定保存失败不重放已提交的跨电脑切换，仍保留交接并消费意图', async () => {
+    const commitBinding = vi.fn(async () => { throw new Error('binding file lock timeout'); });
+    const h = groupHarness(async () => ({ agentDeviceId: 'office-pc', providerId: 'anthropic-2', commitBinding }));
+    await performSessionAgentSwitch(h.deps, toGroup);
+    await expect(applyPendingAgentSwitchIfIdle(h.deps, 's1', { bootstrapAfterSwitch: true })).resolves.toBeUndefined();
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledTimes(1);
+    expect(h.deps.insertBoundaryMessage).toHaveBeenCalledWith('s1', expect.objectContaining({
+      fromAgentDeviceId: null, toAgentDeviceId: 'office-pc', handoff: expect.stringContaining('你好'),
+    }));
+    expect(h.deps.setPendingHandoff).toHaveBeenCalledWith('s1', expect.stringContaining('你好'), undefined);
+    expect(h.deps.bootstrapSwitchedSession).toHaveBeenCalledTimes(1);
+    expect(h.pending.get('s1')).toBeUndefined();
+    expect(h.deps.log.warn).toHaveBeenCalledWith(
+      'agent-switch: provider group binding save failed after switch committed',
+      { sessionId: 's1', err: 'binding file lock timeout' },
+    );
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledTimes(1);
+    expect(commitBinding).toHaveBeenCalledTimes(1);
+  });
+
+  it('切换提交失败时不写组绑定，保留选择等待重试', async () => {
+    const commitBinding = vi.fn(async () => undefined);
+    const h = groupHarness(async () => ({ agentDeviceId: 'office-pc', providerId: 'anthropic-2', commitBinding }));
+    vi.mocked(h.deps.applyAgentSwitchToDb).mockRejectedValueOnce(new Error('db write failed'));
+    await performSessionAgentSwitch(h.deps, toGroup);
+    await expect(applyPendingAgentSwitchIfIdle(h.deps, 's1')).rejects.toThrow('db write failed');
+    expect(commitBinding).not.toHaveBeenCalled();
+    expect(h.pending.get('s1')).toBeDefined();
+    expect(h.deps.setPendingHandoff).not.toHaveBeenCalled();
+  });
+
+  it('组选回当前位置：模型已应用后绑定失败不保留或重放选择', async () => {
+    const commitBinding = vi.fn(async () => { throw new Error('disk write failed'); });
+    const h = groupHarness(async () => ({ agentDeviceId: null, providerId: 'xd', commitBinding }));
+    const select = vi.fn(async () => ({ deferred: false }));
+    h.deps.selectSameAgentModel = select;
+    await performSessionAgentSwitch(h.deps, toGroup);
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.pending.get('s1')).toBeUndefined();
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(commitBinding).toHaveBeenCalledTimes(1);
+    expect(h.deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
+  });
+
   it('组里都不能用：不换、不发，意图留着', async () => {
     const h = groupHarness(async () => {
       throw new Error('[REMOTE_AGENT_GROUP_UNAVAILABLE] no computer in the provider group can run this task right now');

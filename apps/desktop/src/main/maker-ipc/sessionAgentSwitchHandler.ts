@@ -560,6 +560,17 @@ export async function performSessionAgentSwitch(
   // (docs/product-rules/provider-groups.md §6，2026-10-11 用户反馈)。登记意图时不选，真正提交时按那一刻的状态选。
   let groupResolvedToCurrentPosition = false;
   let commitProviderGroupBinding: (() => Promise<void>) | undefined;
+  // 切换已提交后，绑定文件失败不能把整次切换当成未发生，否则重试会丢掉原电脑的交接。
+  async function commitBindingAfterSwitch(): Promise<void> {
+    try {
+      await commitProviderGroupBinding?.();
+    } catch (error) {
+      deps.log.warn('agent-switch: provider group binding save failed after switch committed', {
+        sessionId,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   if (
     params.applyNow === true &&
     params.providerGroupRelocation !== true &&
@@ -626,7 +637,7 @@ export async function performSessionAgentSwitch(
       // 组选回当前位置并且模型应用真正成功(非 deferred/superseded)时才持久化新绑定；
       // 没落地的调用不应该殊到已纳入组(chatgpt-codex-connector P2, PR #5792 review)。
       if (groupResolvedToCurrentPosition && !result.deferred && !result.superseded) {
-        await commitProviderGroupBinding?.();
+        await commitBindingAfterSwitch();
       }
       return {
         switched: false,
@@ -780,7 +791,7 @@ export async function performSessionAgentSwitch(
     // closeSession / assertModelRouteUsable 任何一步抛错都不会让新绑定抔先持久化
     // (chatgpt-codex-connector P2, PR #5792 review)。
     if (commitProviderGroupBinding) {
-      await commitProviderGroupBinding();
+      await commitBindingAfterSwitch();
     }
 
     const boundaryContent: AgentSwitchBoundaryContent = {
