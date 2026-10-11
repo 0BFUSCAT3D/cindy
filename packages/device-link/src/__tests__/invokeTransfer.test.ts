@@ -1,0 +1,105 @@
+import { createHash } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import { describe, expect, it } from 'vitest';
+import {
+  INVOKE_TRANSFER_MIN_CHARS,
+  InboundInvokeTransferOptions,
+  InvokeResultCache,
+  encodeInvokeResultTransfer,
+  parseInvokeTransferOptions,
+  type DeviceLinkTransferCodec,
+} from '../invokeTransfer.js';
+
+const codec: Required<DeviceLinkTransferCodec> = {
+  gzipBase64: (text) => gzipSync(Buffer.from(text, 'utf8')).toString('base64'),
+  gunzipBase64: (base64) => gunzipSync(Buffer.from(base64, 'base64')).toString('utf8'),
+  contentTag: (text) => createHash('sha256').update(text).digest('base64url'),
+};
+const large = { rows: 'a'.repeat(INVOKE_TRANSFER_MIN_CHARS * 4) };
+
+describe('invoke result transfer encoding', () => {
+  it('accepts only the documented request options', () => {
+    expect(parseInvokeTransferOptions(undefined)).toBeNull();
+    expect(parseInvokeTransferOptions({ gzip: true })).toBeNull();
+    expect(parseInvokeTransferOptions({ ifNoneMatch: '' })).toBeNull();
+    expect(parseInvokeTransferOptions({ ifNoneMatch: 'x'.repeat(129) })).toBeNull();
+    expect(parseInvokeTransferOptions({ gzip: 1, ifNoneMatch: 'tag', extra: 1 })).toEqual({ gzip: 1, ifNoneMatch: 'tag' });
+  });
+
+  it('leaves small results, errors and already-encoded results unchanged', () => {
+    const small = { ok: true as const, result: { id: 1 } };
+    expect(encodeInvokeResultTransfer({ gzip: 1 }, small, codec)).toBe(small);
+    const failure = { ok: false as const, error: { code: 'IPC_ERROR' as const, message: 'x' } };
+    expect(encodeInvokeResultTransfer({ gzip: 1 }, failure, codec)).toBe(failure);
+    const encoded = { ok: true as const, result: null, transfer: { tag: 't', notModified: true as const } };
+    expect(encodeInvokeResultTransfer({ gzip: 1 }, encoded, codec)).toBe(encoded);
+  });
+
+  it('keeps an incompressible result plain but still tags it', () => {
+    let seed = 1;
+    const noise = Array.from({ length: INVOKE_TRANSFER_MIN_CHARS * 2 }, () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return String.fromCharCode(33 + (seed % 90));
+    }).join('');
+    const payload = { ok: true as const, result: noise };
+    const out = encodeInvokeResultTransfer({ gzip: 1 }, payload, codec);
+    expect(out).toEqual({ ok: true, result: noise, transfer: { tag: expect.any(String) } });
+  });
+
+  it('host without gzip support only tags, and answers a matching tag with notModified', () => {
+    const tagOnly = { contentTag: codec.contentTag };
+    const first = encodeInvokeResultTransfer({ gzip: 1 }, { ok: true, result: large }, tagOnly);
+    expect(first.ok && first.result).toEqual(large);
+    const tag = first.ok ? first.transfer?.tag : undefined;
+    expect(tag).toEqual(expect.any(String));
+    expect(encodeInvokeResultTransfer({ ifNoneMatch: tag }, { ok: true, result: large }, tagOnly))
+      .toEqual({ ok: true, result: null, transfer: { tag, notModified: true } });
+  });
+
+  it('controller decodes against the snapshot fixed at request time', () => {
+    const cache = new InvokeResultCache(codec);
+    const request = { channel: 'maker:provider:list', args: [] };
+    const first = cache.prepare('desktop', request);
+    expect(first.payload).toEqual({ ...request, transfer: { gzip: 1 } });
+    const encoded = encodeInvokeResultTransfer({ gzip: 1 }, { ok: true, result: large }, codec);
+    expect(first.decode(encoded)).toEqual({ ok: true, result: large });
+
+    const second = cache.prepare('desktop', request);
+    const tag = second.payload.transfer?.ifNoneMatch;
+    expect(tag).toEqual(expect.any(String));
+    // Evicting everything after the request was sent must not lose the snapshot.
+    cache.clear();
+    expect(second.decode({ ok: true, result: null, transfer: { tag, notModified: true } }))
+      .toEqual({ ok: true, result: large });
+    // Another peer or other args never reuse this entry.
+    expect(cache.prepare('laptop', request).payload.transfer?.ifNoneMatch).toBeUndefined();
+  });
+
+  it('turns an unexpected notModified into an error instead of returning stale data', () => {
+    const cache = new InvokeResultCache(codec);
+    const prepared = cache.prepare('desktop', { channel: 'c', args: [] });
+    expect(prepared.decode({ ok: true, result: null, transfer: { tag: 'other', notModified: true } }))
+      .toMatchObject({ ok: false, error: { code: 'IPC_ERROR' } });
+  });
+
+  it('bounds the controller cache by entry count', () => {
+    const cache = new InvokeResultCache(codec);
+    for (let i = 0; i < 40; i += 1) {
+      const prepared = cache.prepare('desktop', { channel: 'c', args: [i] });
+      prepared.decode(encodeInvokeResultTransfer({ gzip: 1 }, { ok: true, result: large }, codec));
+    }
+    expect(cache.prepare('desktop', { channel: 'c', args: [0] }).payload.transfer?.ifNoneMatch).toBeUndefined();
+    expect(cache.prepare('desktop', { channel: 'c', args: [39] }).payload.transfer?.ifNoneMatch).toEqual(expect.any(String));
+  });
+
+  it('host keeps a bounded record of request options', () => {
+    const inbound = new InboundInvokeTransferOptions();
+    inbound.record('ios', 'old', { channel: 'c', args: [], transfer: { gzip: 1 } });
+    inbound.record('ios', 'plain', { channel: 'c', args: [] });
+    for (let i = 0; i < 512; i += 1) inbound.record('ios', `r-${i}`, { channel: 'c', args: [], transfer: { gzip: 1 } });
+    expect(inbound.get('ios', 'old')).toBeUndefined();
+    expect(inbound.get('ios', 'plain')).toBeUndefined();
+    expect(inbound.get('ios', 'r-511')).toEqual({ gzip: 1 });
+    expect(inbound.get('android', 'r-511')).toBeUndefined();
+  });
+});

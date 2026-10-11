@@ -1,6 +1,12 @@
 import { isPeerResetRetryableInvoke, isBackgroundInvoke, bypassInvokeScheduling } from './invokePolicy.js';
 import { InvokeScheduler } from './invokeScheduler.js';
 import { SessionMessageReuse } from './sessionMessageReuse.js';
+import {
+  InboundInvokeTransferOptions,
+  InvokeResultCache,
+  encodeInvokeResultTransfer,
+  type DeviceLinkTransferCodec,
+} from './invokeTransfer.js';
 import { decodeScopedEnvelope, encodeScopedEnvelope, type ScopeSupport } from './providerShareEnvelope.js';
 import { isProviderSharePeer } from './providerSharePeer.js';
 import { isSharedTaskPeer } from './sharedTaskPeer.js';
@@ -16,6 +22,7 @@ import {
   MAX_FRAME_BYTES,
   SERVER_CAPABILITY_NOTIFY,
   DeviceLinkError,
+  isScopedPeer,
   type Envelope,
   type HelloPayload,
   type HelloAckPayload,
@@ -53,7 +60,10 @@ import {
   makeTransportSkipPayload,
   parseTransportAck,
   parseTransportPayload,
+  reliableRetryDelayMs,
+  updateRetransmitEstimate,
   byteLength,
+  type RetransmitEstimate,
 } from './transport.js';
 import { MAKER_EVENT_BATCH_CHANNEL } from './topics.js';
 
@@ -252,6 +262,12 @@ export interface DeviceLinkClientOptions {
    * 由 host 重开 link 后最多重试一次。写请求和长执行请求不走这条路径。
    */
   peerResetReadRetry?: boolean;
+  /**
+   * invoke 结果传输编码（gzip 与内容标签，见 invokeTransfer.ts）。控制端提供
+   * gunzipBase64 才声明可解 gzip；被控端提供 gzipBase64 / contentTag 才编码。
+   * 不传时 wire 行为与旧版完全相同。
+   */
+  transferCodec?: DeviceLinkTransferCodec;
   /** 测试注入:覆盖重连/心跳的时间参数 */
   timing?: Partial<DeviceLinkTiming>;
 }
@@ -642,6 +658,8 @@ interface PeerTransportState {
   recoveryNeedsAck: boolean;
   /** 本轮恢复探测已写出的帧数（含 replay 与恢复期内首发）。 */
   recoveryFramesSent: number;
+  /** ACK round-trip estimate for this peer; survives link resets on the same network path. */
+  rtt: RetransmitEstimate;
   recoveryTrace: RecoveryTrace | null;
   /** latest-wins 腾位驱逐的聚合计数(自上次告警起),仅服务日志聚合。 */
   pushAdmissionDropCount: number;
@@ -802,6 +820,7 @@ export class DeviceLinkClient {
 
   constructor(opts: DeviceLinkClientOptions) {
     this.opts = opts;
+    this.invokeResultCache = new InvokeResultCache(opts.transferCodec);
     this.timing = { ...DEFAULT_TIMING, ...opts.timing };
     this.log = opts.logger ?? {
       debug: () => {},
@@ -989,6 +1008,8 @@ export class DeviceLinkClient {
 
   stop(): void {
     this.messageReuse.clear();
+    this.invokeResultCache.clear();
+    this.inboundInvokeTransfer.clear();
     if (this.stopped) return;
     this.stopped = true;
     this.clearTimers();
@@ -1380,12 +1401,15 @@ export class DeviceLinkClient {
   ): Promise<InvokeResultPayload> {
     if (this.status !== 'online') throw new DeviceLinkError('NOT_CONNECTED', 'not connected to relay');
     const reuse = this.messageReuse.prepare(dst, payload);
+    const tagged = requestSessionTagCatalog(reuse.payload);
+    // Scoped cross-account peers keep the plain wire format.
+    const transfer = isScopedPeer(dst) ? null : this.invokeResultCache.prepare(dst, tagged);
     const send = () => {
       // Admission may wait: validate caller ownership/cancellation after dequeue,
       // synchronously before creating the request or retaining a transport frame.
       options?.preSend?.();
       return this.request(
-        { v: PROTOCOL_VERSION, kind: 'invoke', dst, payload: requestSessionTagCatalog(reuse.payload) },
+        { v: PROTOCOL_VERSION, kind: 'invoke', dst, payload: transfer?.payload ?? tagged },
         'invoke-result',
         timeoutMs,
       );
@@ -1393,7 +1417,9 @@ export class DeviceLinkClient {
     const env = await (bypassInvokeScheduling(payload) ? send() : this.invokeScheduler.run(
       dst, isBackgroundInvoke(payload.channel), Math.min(timeoutMs ?? this.timing.requestTimeoutMs, 30_000), send,
     ));
-    const result = env.payload as InvokeResultPayload;
+    const result = transfer
+      ? transfer.decode(env.payload as InvokeResultPayload)
+      : env.payload as InvokeResultPayload;
     return result.ok
       ? {
           ...result,
@@ -1404,6 +1430,8 @@ export class DeviceLinkClient {
 
   /** 被控端:回 invoke-result(对应入站 invoke 的 id) */
   sendInvokeResult(dst: string, requestId: string, payload: InvokeResultPayload): void {
+    const transfer = this.opts.transferCodec ? this.inboundInvokeTransfer.get(dst, requestId) : undefined;
+    if (transfer) payload = encodeInvokeResultTransfer(transfer, payload, this.opts.transferCodec!);
     const peer = this.peerTransport.get(dst);
     const env: Envelope = { v: PROTOCOL_VERSION, kind: 'invoke-result', id: requestId, dst, payload };
     // 死锁绕行:relay 在线但控制链路未就绪时,result 不能只进可靠队列等一个可能永远
@@ -2860,8 +2888,13 @@ export class DeviceLinkClient {
   }
 
   private readonly messageReuse = new SessionMessageReuse();
+  private readonly invokeResultCache: InvokeResultCache;
+  private readonly inboundInvokeTransfer = new InboundInvokeTransferOptions();
 
   private emitFrame(env: Envelope): boolean | Promise<boolean> {
+    if (env.kind === 'invoke' && env.src && env.id && !isScopedPeer(env.src)) {
+      this.inboundInvokeTransfer.record(env.src, env.id, env.payload);
+    }
     if (env.kind === 'push' && env.src) {
       const push = env.payload as { channel: string; payload: unknown };
       this.messageReuse.receive(env.src, push.channel, push.payload);
@@ -3568,6 +3601,7 @@ export class DeviceLinkClient {
         lastDuplicateOpenRepairAt: Number.NEGATIVE_INFINITY,
         recoveryNeedsAck: false,
         recoveryFramesSent: 0,
+        rtt: { srttMs: null, rttVarMs: 0 },
         recoveryTrace: null,
         pushAdmissionDropCount: 0,
         pushAdmissionDropLogAt: 0,
@@ -3859,20 +3893,33 @@ export class DeviceLinkClient {
     if (ackSeq > peer.nextSeq - 1 || ackSeq <= peer.highestAckSeq) return;
     peer.highestAckSeq = ackSeq;
     this.logRecoveryStage(src, 'ack-received', ` ack=${ackSeq}`, false);
+    let rttSample: number | null = null;
     for (const [seq, pending] of peer.pending) {
       if (seq > ackSeq) break;
       if (pending.envelope.id) {
         this.discardOutboundRouteAttemptsForId(src, pending.envelope.id);
       }
+      // Measured from the first write of this round (replay restarts it), so a
+      // slow link still yields samples after its frames were retried; the latest
+      // message in the ACK gives the tightest one. Large messages measure
+      // transfer time, which byte pacing already covers.
+      if (pending.firstSentAt !== undefined && pending.bytes <= RELIABLE_RETRY_BYTES_PER_INTERVAL) {
+        rttSample = this.monotonicNow() - pending.firstSentAt;
+      }
       peer.pending.delete(seq);
       peer.pendingBytes -= pending.bytes;
     }
+    if (rttSample !== null) updateRetransmitEstimate(peer.rtt, rttSample);
     if (peer.recoveryNeedsAck) {
       peer.confirmedGapRepair = null;
       peer.recoveryNeedsAck = false;
       peer.recoveryFramesSent = 0;
       this.logRecoveryStage(src, 'recovery-probe-acked', ` ack=${ackSeq}`);
-      this.retryPending(src, { ignoreInterval: true });
+      // Lift the probe budget only. The recovery pass just wrote the head
+      // frames; resending them before their retry delay doubles the replay on
+      // the slow links that caused the reset (a link-confirm ACK lands within
+      // milliseconds of that pass).
+      this.retryPending(src, { ignoreInterval: false });
     } else {
       const repair = peer.confirmedGapRepair;
       if (repair && ackSeq >= repair.awaitingSeq) {
@@ -4217,9 +4264,11 @@ export class DeviceLinkClient {
         RELIABLE_RETRY_MAX_SIZE_INTERVALS,
         Math.ceil(pending.bytes / RELIABLE_RETRY_BYTES_PER_INTERVAL),
       );
-      const retryDelayMs = this.timing.transportRetryIntervalMs * Math.max(
+      const retryDelayMs = reliableRetryDelayMs(
+        peer.rtt,
+        this.timing.transportRetryIntervalMs,
         sizeIntervals,
-        Math.min(4, 2 ** Math.max(0, pending.attempts - 1)),
+        pending.attempts,
       );
       if (pending.sent && !opts.ignoreInterval && now - pending.lastSentAt < retryDelayMs) {
         // A large head frame may still be inside its byte-based cooldown while

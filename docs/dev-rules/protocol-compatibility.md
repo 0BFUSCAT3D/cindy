@@ -48,6 +48,25 @@ known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机�
 传输去重仅保留有界内存，两端持久展示缓存继续使用原有账号隔离与删除屏障。
 不修改 relay、不新增权限、数据库 migration 或 Mobile 原生指纹。
 
+## invoke 结果传输编码（弱网减流量）
+
+控制端 `invoke` payload 可选携带 `transfer: { gzip?: 1, ifNoneMatch?: string }`：注入了解压
+能力就声明 `gzip: 1`；本机持有同一被控端、同一 channel 与 args 的上一份大结果时，带上它的
+内容标签。被控端照常执行 handler，只改写发出的 ok 结果：序列化后不小于 4 KiB 的结果附带
+`transfer.tag`（SHA-256）；标签与 `ifNoneMatch` 相同时回 `{ result: null, transfer: { tag,
+notModified: true } }`；否则在控制端声明可解且压缩确有收益时回 `{ result: null, transfer:
+{ tag, gzipBase64 } }`。共享 DeviceLinkClient 在交给调用方之前还原成普通结果，并只用发请求
+时固定的缓存快照还原，回包前被淘汰也不影响；标签对不上时返回错误，不返回旧数据。
+
+handler 每次都执行，`notModified` 只省略字节完全相同的结果，因此对所有 channel 语义不变，
+不需要逐 channel 登记。控制端缓存按设备、channel、args 键控，最多 32 条、约 8 MB，只在内存，
+随客户端 `stop()` 清空；共享任务与供应商分享等跨账号 peer 不使用该编码。旧被控端忽略
+`transfer` 回普通结果；旧控制端从不携带 `transfer`，被控端也就不会编码。Desktop（同时作为
+被控端与控制端）注入 zlib 与 SHA-256，Mobile 只注入 pako 解压（已有依赖，不改原生指纹）。
+relay 不解析隧道 payload，无服务端改动、数据库 migration 或部署顺序要求。实现见
+`packages/device-link/src/invokeTransfer.ts`，回归见同目录 `__tests__/invokeTransfer.test.ts`
+与 `client.test.ts`「invoke 结果传输编码」。
+
 ## 群执行终态与错误展示
 
 发送前拒绝、SDK 错误、正常完成和宿主超时进入同一个执行收尾入口；首个终态及提交正文固定，
