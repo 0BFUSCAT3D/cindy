@@ -1,7 +1,7 @@
 # Windows 窗口恢复对照
 
 为 [Cindy #5627](https://github.com/makecindy/cindy/issues/5627) 提供不依赖提报者的
-Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本只安装到 CI 临时目录。
+Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本只安装到独立临时目录。
 
 ## 假设与版本选择
 
@@ -15,17 +15,30 @@ Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本�
 后续的 [#54311](https://releases.electronjs.org/pr/54311) 修复“重新开启节流后仍继续绘制”，
 与本实验的关闭节流方向不同，43.7.9 不能被当作包含所有相关修复。
 
-## 按需运行
+## 手动运行
 
-- **PR 合并前**：给同仓 PR 加 `test:windows-render-recovery` 标签，触发一次默认对照。
-  移除并重新加标签可重跑；普通 push 不触发。每轮对应 Actions 记录中的 commit，
-  后续修改不会使旧结果自动成为新 HEAD 的验证结果。
-- **进入默认分支后**：Actions → Windows render recovery comparison → Run workflow。
-  默认恢复后保持 900 秒不操作；`hidden_seconds=8100` 可覆盖约 2 小时 15 分钟隐藏。
-- 8 组矩阵：2 个 Electron 版本 × hide/minimize × BrowserWindow/WebContentsView。
+保留独立脚本供有明确新证据目标时手动运行，不提供 GitHub Actions workflow 或标签触发。
+在 Windows PowerShell 中，从仓库根目录运行一组对照（需 Node.js 22 与 npm）：
+
+```powershell
+$probeVersion = '41.10.3' # 另一候选版本为 43.7.9
+$env:RENDER_PROBE_ELECTRON_DIR = Join-Path ([System.IO.Path]::GetTempPath()) ('cindy-render-electron-' + [guid]::NewGuid())
+npm install --prefix "$env:RENDER_PROBE_ELECTRON_DIR" --ignore-scripts --no-audit --no-fund "electron@$probeVersion"
+if ($LASTEXITCODE -ne 0) { throw 'Electron package installation failed' }
+node "$env:RENDER_PROBE_ELECTRON_DIR/node_modules/electron/install.js"
+if ($LASTEXITCODE -ne 0) { throw 'Electron binary installation failed' }
+$env:RENDER_PROBE_SCENARIO = 'minimize' # 或 hide
+$env:RENDER_PROBE_SURFACE = 'window' # 或 view
+$env:RENDER_PROBE_IDLE_SECONDS = '900'
+$env:RENDER_PROBE_HIDDEN_SECONDS = '3'
+node apps/desktop/scripts/render-recovery/run.mjs
+```
+
+- 默认恢复后保持 900 秒不操作；`RENDER_PROBE_HIDDEN_SECONDS=8100` 可覆盖约 2 小时 15 分钟隐藏。
+- 完整对照为 8 组：2 个 Electron 版本 × hide/minimize × BrowserWindow/WebContentsView。
   Windows 使用无边框 Acrylic 窗口；WebContentsView 用例对应上游修复的直接回归形状。
 - 独立安装 Electron，不安装整仓依赖，不加载 Cindy、账号、任务、UU 或真实业务内容。
-  不关闭 GPU、不改变系统设置；记录 runner 的实际 GPU 功能状态。
+  不关闭 GPU、不改变系统设置；记录运行环境的实际 GPU 功能状态。
 
 执行顺序：先证明基线色块和原生输入正常，再隐藏/最小化、关闭节流、等待隐藏时长、恢复，
 然后保持 15 分钟不截图、不注入输入、不 resize、不刷新。最后读取页面状态，先保存截图，
@@ -33,7 +46,7 @@ Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本�
 计数，不更新 DOM，也没有常驻动画。
 避免探测动作维持渲染，掩盖延迟帧回收问题。
 
-每组上传合成页面的 `baseline.png`、`after-idle.png`、`events.jsonl` 和 `report.json`。
+每组在输出目录保存合成页面的 `baseline.png`、`after-idle.png`、`events.jsonl` 和 `report.json`。
 报告包含原生显隐、节流值、renderer 身份、页面可见性、timer、rAF、截图色块及输入结果。
 输入前后检查承载窗口焦点；失焦时 `inputResponded=null`，不把无效输入探针判为失败，
 也不主动聚焦来唤醒画面。像素正常但输入无法判断时为 `inconclusive`；真实像素不匹配仍为 `failed`。
@@ -49,7 +62,7 @@ Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本�
 | `inconclusive` / exit 2 | 基线不具备检测条件、窗口操作未生效、仅 rAF 超时、进程退出或探测超时；不能记为通过 |
 
 - 41 失败、43 通过：支持接入上游修复，接着验证完整 Cindy 的升级兼容性。
-- 两版都通过：没有复现，不能关闭 #5627；可跑长隐藏参数，仍需保留实际环境差异。
+- 两版都通过：没有复现，不能关闭 #5627；先确认环境覆盖与新证据目标，不重复运行等价对照。
 - 两版都失败：先看截图、原生状态和退出记录，区分测试环境限制与候选版本仍有问题。
 - Windows runner 是虚拟机，不能代表提报者的 Windows 11、显示驱动、多显示器或 UU 环境。
   测试用注入的原生输入，不证明远程软件或真实鼠标输入链路正常。
@@ -58,6 +71,18 @@ Electron 渲染实验。生产 Electron pin 暂时保持 41.10.3；候选版本�
 42/43 的兼容性检查重点还包括 Electron 二进制安装时机、macOS 通知签名要求、
 offscreen 默认缩放、`NativeImage.toBitmap()` 色彩空间和文件对话框默认目录变化。
 本轮实验和诊断修正不引入自动重载，也不改变后台任务运行策略。
+
+## 已完成的实验
+
+2026-10-09 的 [Windows 对照 run 37922969329](https://github.com/makecindy/cindy/actions/runs/37922969329)
+使用提交 `02c6f362f82288f9d2df1c9eb69ec9a2af17c17a`，8 份报告已逐份核验：
+41.10.3 与 43.7.9 各 4/4 通过，恢复后实际静置 899.993–900.025 秒，
+基线与恢复后的像素、rAF、输入焦点及点击响应均正常，未观察到恢复差异。
+8 组均为 `gpu_compositing=disabled_software`、`rasterization=disabled_software`，
+没有覆盖硬件 GPU 合成路径；这不是 #5627 已修复或应升级生产 Electron 的证据。
+
+实验完成后移除了专用 workflow，保留手动脚本与本节结论。原始截图和报告仍受历史
+Actions artifact 的保留期限约束；对应运行的默认保留期为 14 天。
 
 ## 本地检查脚本
 
