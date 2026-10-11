@@ -372,7 +372,7 @@ import {
 } from '../localDb/ipc/messages.js';
 import { invalidateWorkersByLeadSingleFlight } from '../localDb/ipc/orcaWorkerListSingleFlight.js';
 import { messageToCamel, setSessionRuntimeProjector } from '../localDb/mapper.js';
-import { visibleMessageTextForConversationSearch } from '../localDb/conversationSearch.pure.js';
+import { visibleMessageText, visibleMessageTextForConversationSearch } from '../localDb/conversationSearch.pure.js';
 import { buildReviewPrompt } from '../reviewer/reviewPrompt.js';
 import { resolveReviewScope, withSessionReviewWorkspace } from '../git-review/scopeResolver.js';
 import { selectReviewWorkspace, shouldSelectReviewWorkspace } from '../reviewer/reviewWorkspaceSelection.js';
@@ -8964,7 +8964,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       .orderBy(desc(messages.createdAt), desc(messages.id))
       .limit(8);
     for (const row of rows) {
-      const text = visibleMessageTextForConversationSearch('assistant', row.content);
+      const text = visibleMessageText('assistant', row.content);
       if (text) return text;
     }
     return '';
