@@ -1086,7 +1086,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       reserve: true,
     }).catch(() => null);
     if (next?.kind !== 'member' || run.closing) {
-      next?.load?.release();
+      if (next && next.kind !== 'unavailable') next.load?.release();
       return false;
     }
     deps.log?.warn('remote agent: this computer did not start the shared task; trying the next computer in the provider group', {
