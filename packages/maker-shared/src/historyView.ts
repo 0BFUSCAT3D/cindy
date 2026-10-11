@@ -1,3 +1,5 @@
+import type { HistoryWorkLine } from './historyWorkLines.js';
+
 /** Reading projections never replace persisted messages or the agent transcript. */
 export const HISTORY_VIEW_VERSION = 1 as const;
 export const HISTORY_VIEW_PAGE_ITEMS = 20;
@@ -53,6 +55,11 @@ export interface HistoryWorkSummary extends HistoryWorkReference {
   model?: string;
   /** Existing detail endpoint can read just the visible desktop tail. */
   preview?: HistoryWorkSummary;
+  /**
+   * Latest single-line activities of a running range, already projected by the Host.
+   * Present only when the controller asked for `workLines`; old Hosts omit it.
+   */
+  lines?: HistoryWorkLine[];
   startedAtMs: number;
   endedAtMs: number;
   isStreaming: boolean;
@@ -69,6 +76,8 @@ export interface DeferredHistoryWork {
   revision?: string;
   setVisible?(expanded: boolean, preview: boolean): void;
   previewComplete?: boolean;
+  /** Host-projected running lines; when present a folded preview needs no detail read. */
+  lines?: readonly HistoryWorkLine[];
   expanded: boolean;
   loading: boolean;
   failed: boolean;
@@ -104,6 +113,20 @@ export interface HistoryViewPage<TMessage extends HistoryMessageSource> {
   nextCursor: string | null;
   hasMore: boolean;
 }
+
+/**
+ * Host → controller replacement of one running top-level work item. The Host sends it
+ * only when everything else on the latest page is unchanged since its last delivery to
+ * that controller; `baseRevision` is the item revision that delivery carried.
+ */
+export interface HistoryWorkPatch {
+  version: typeof HISTORY_VIEW_VERSION;
+  sessionId: string;
+  baseRevision: string;
+  item: { type: 'work'; key: string; summary: HistoryWorkSummary };
+}
+
+export const HISTORY_WORK_PATCH_CHANNEL = 'maker:history-work-patch';
 
 export interface HistoryDetailPage<TMessage extends HistoryMessageSource> {
   version: typeof HISTORY_VIEW_VERSION;
