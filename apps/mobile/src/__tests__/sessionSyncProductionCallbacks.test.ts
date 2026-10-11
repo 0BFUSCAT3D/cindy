@@ -270,6 +270,19 @@ describe('production session recovery callbacks', () => {
     expect(f.state.rows.map((row) => row.id)).toEqual(['m1', 'm2']);
   });
 
+  it('does not commit an unbridged window when a bridge read fails', async () => {
+    const f = fixture(true);
+    const cached = f.state.rows;
+    f.store.latestMessageWindowNeedsBridge.mockReturnValue(true);
+    f.maker.listMessages
+      .mockResolvedValueOnce({ ...page, messages: [{ id: 'm2', clientId: 'm2' }], limit: 1 })
+      .mockRejectedValueOnce(new Error('INVOKE_TIMEOUT'));
+    await f.sync().catch(() => undefined);
+    expect(f.store.setLatestMessageWindow).not.toHaveBeenCalled();
+    expect(f.state.rows).toBe(cached);
+    expect(f.state.syncError).not.toBeNull();
+  });
+
   it('accepts a history view without certifying sparse rows as a complete raw window', async () => {
     const f = fixture();
     f.bindings.historyView.view.getSnapshot = () => ({ ready: true, error: null });

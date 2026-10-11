@@ -3815,9 +3815,10 @@ export default function SessionScreen() {
           return bridgeLatestMessagePage(latest, {
             needsBridge: (rows, more) =>
               remoteSessionStore.latestMessageWindowNeedsBridge(sessionId, rows, more),
-            readBefore: (before) => listMessagesWithPayloadRetry(
+            // 与最新页同一套瞬态重试；仍失败时整轮同步失败，不提交接不上的窗口。
+            readBefore: (before) => retryRead(() => listMessagesWithPayloadRetry(
               (limit) => maker.listMessages(sessionId, { limit, before }),
-            ),
+            )),
             isCurrent,
           });
         },

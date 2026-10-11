@@ -706,7 +706,7 @@ describe('messagePaging', () => {
       expect(shouldKeepOlderMessagesAffordance(bridged)).toBe(true);
     });
 
-    it('stops at the page budget, at history start, on failure, or when superseded', async () => {
+    it('stops at the page budget, at history start, or when superseded', async () => {
       const capped = await bridgeLatestMessagePage(page([8, 9]), {
         needsBridge: reachesM3, readBefore: host, isCurrent: () => true, maxPages: 1,
       });
@@ -720,11 +720,14 @@ describe('messagePaging', () => {
 
       const latest = page([8, 9]);
       await expect(bridgeLatestMessagePage(latest, {
-        needsBridge: reachesM3, readBefore: () => Promise.reject(new Error('offline')), isCurrent: () => true,
-      })).resolves.toBe(latest);
-      await expect(bridgeLatestMessagePage(latest, {
         needsBridge: reachesM3, readBefore: host, isCurrent: () => false,
       })).resolves.toBe(latest);
+    });
+
+    it('fails the snapshot when a bridge read fails, so recovery retries instead of committing a gap', async () => {
+      await expect(bridgeLatestMessagePage(page([8, 9]), {
+        needsBridge: reachesM3, readBefore: () => Promise.reject(new Error('INVOKE_TIMEOUT')), isCurrent: () => true,
+      })).rejects.toThrow('INVOKE_TIMEOUT');
     });
   });
 });

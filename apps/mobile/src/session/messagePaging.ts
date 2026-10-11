@@ -232,8 +232,9 @@ export const LATEST_WINDOW_BRIDGE_MAX_PAGES = 20;
 /**
  * 重连补同步时，最新一页可能接不上手机已验证连续的那段窗口（断线期间漏收超过一页）。
  * 直接提交会让 store 丢掉旧历史、列表整段变短（见 setLatestMessageWindow 的 moreBeyondWindow）。
- * 这里在提交前沿 before 继续往前读，直到 `needsBridge` 判定已接上、历史到头、读失败或达到页数上限，
- * 再把这几页合成一页返回；接不上时与原来一样按最新一页处置。没有补读时原样返回 `latest`。
+ * 这里在提交前沿 before 继续往前读，直到 `needsBridge` 判定已接上、历史到头或达到页数上限，
+ * 再把这几页合成一页返回；预算用尽仍接不上时与原来一样按最新一页处置。没有补读时原样返回 `latest`。
+ * 补读请求失败时向上抛出，与最新页读取失败同等对待：本轮不提交，交给调用方既有的同步重试。
  */
 export async function bridgeLatestMessagePage(
   latest: MessagePageRetryResult,
@@ -255,13 +256,9 @@ export async function bridgeLatestMessagePage(
   ) {
     const before = oldestMessageCursor(messages);
     if (!before) break;
-    let older: MessagePageRetryResult;
-    try {
-      older = await options.readBefore(before);
-    } catch {
-      // Bridging only improves continuity; a failed read keeps the original latest-page outcome.
-      break;
-    }
+    // A failed bridge read fails this snapshot like a failed latest read: committing the
+    // unbridged page would drop the verified segment and hide the failure from recovery retries.
+    const older = await options.readBefore(before);
     pages += 1;
     const known = new Set(messages.map((message) => message.id));
     messages = [...older.messages.filter((message) => !known.has(message.id)), ...messages];
