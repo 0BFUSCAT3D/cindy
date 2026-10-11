@@ -1,7 +1,7 @@
 import { readEffectiveBotModelChain } from '../../maker-host/bot-model-chain-settings-store.js';
 import type { RemoteResourceHostContext } from '../../device-link/remoteResourceRegistry.js';
 import { botRemoteResourceFromSource } from './botRemoteResourceProjection.js';
-import { inspectAppDefaultModel } from '../../maker-ipc/appDefaultModelControl.js';
+import { resolveAvailableTaskModels } from '../../maker-ipc/appDefaultModelControl.js';
 import type { BotModelRoute } from '../../../shared/botModelChain.js';
 import { createBotRemoteSettingsResource } from './botRemoteSettingsResource.js';
 import { createBotProfile, createBotCanonicalSession, getBotMemoryService, getBotRemoteResourceSource, getBotRemoteSettingsSource, setBotProfileAvatar, updateBotProfile } from './bots.js';
@@ -14,18 +14,11 @@ import { decodeBotAvatarImage } from './botAvatarSelection.js';
 import { runRegisteredBotLifecycleAction } from '../../maker-ipc/botLifecycleService.js';
 import { listBotSettingsCapabilities, validateBotCapabilityAdditions } from '../../maker-host/index.js';
 
-function isRouteAvailable(route: BotModelRoute, catalog: Awaited<ReturnType<typeof inspectAppDefaultModel>>) {
-  const entry = catalog.available.find(item => item.route.harness === route.harness && item.route.model === route.model && item.route.providerId === route.providerId);
-  return !!entry && (!route.effort || entry.efforts.some(effort => effort === route.effort)) && (!route.fastMode || entry.supportsFastMode);
-}
-
 async function validateModelChain(chain: BotModelRoute[]) {
   const scope = activeOwnerScopeKey();
-  const catalog = await inspectAppDefaultModel();
+  const resolved = await resolveAvailableTaskModels(chain);
   if (isAppSessionBoundaryPending() || scope !== activeOwnerScopeKey()) throwIpcError('PRECONDITION_FAILED', 'Account changed');
-  for (const route of chain) {
-    if (!isRouteAvailable(route, catalog)) throwIpcError('INVALID_PARAMS', 'Model route unavailable');
-  }
+  if (resolved.some(route => !route)) throwIpcError('INVALID_PARAMS', 'Model route unavailable');
 }
 
 /** Composition only: profile transactions, skill reads and lifecycle stay with their existing owners. */
@@ -55,11 +48,11 @@ const getEditor = createBotRemoteEditors({ ...deps,
     const chain = await readEffectiveBotModelChain({});
     deps.assertOwner(owner);
     if (!chain.length) return [];
-    const catalog = await inspectAppDefaultModel();
+    const [primary] = await resolveAvailableTaskModels(chain.slice(0, 1));
     deps.assertOwner(owner);
     // Creation shows the primary only. Do not silently promote a backup or
     // rewrite the persisted default when its primary is no longer usable.
-    return isRouteAvailable(chain[0]!, catalog) ? chain : [];
+    return primary ? [primary, ...chain.slice(1)] : [];
   },
   async create(input) {
     const owner = deps.owner(); deps.assertOwner(owner);

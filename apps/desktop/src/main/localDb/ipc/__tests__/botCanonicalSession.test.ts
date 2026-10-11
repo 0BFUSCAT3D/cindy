@@ -704,18 +704,18 @@ describe('Bot canonical Session lifecycle', () => {
     expect(capabilities.mcpServers).toEqual([]);
   });
 
-  it.each(['available', 'disconnected', 'deleted'])('checks the Desktop invitation selection at submission: %s', async state => {
+  it.each(['available', 'implicit', 'disconnected', 'deleted'])('checks the Desktop invitation selection at submission: %s', async state => {
     const control = await import('../../../maker-ipc/appDefaultModelControl.js');
     const real = await vi.importActual<typeof control>('../../../maker-ipc/appDefaultModelControl.js');
     vi.mocked(control.validateTaskModel).mockImplementation(real.validateTaskModel);
     try {
-      const route: BotModelRoute = { harness: 'pi', providerId: 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+      const route: BotModelRoute = { harness: 'pi', providerId: state === 'implicit' ? null : 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
       if (state === 'disconnected') h.providers[0]!.connected = false;
       if (state === 'deleted') h.providers = [];
       const before = h.sqlite!.prepare('SELECT id FROM bot_profiles').all();
       const creating = invoke('local-db:bots:create', { id: 'desktop-selected', name: 'Selected', prepareInvitation: true,
         capabilities: { modelChainOverride: [route] } });
-      if (state === 'available') await expect(creating).resolves.toMatchObject({ id: 'desktop-selected' });
+      if ((state === 'available' || state === 'implicit')) await expect(creating).resolves.toMatchObject({ id: 'desktop-selected' });
       else {
         await expect(creating).rejects.toThrow('Model route unavailable');
         expect(h.sqlite!.prepare('SELECT id FROM bot_profiles').all()).toEqual(before);
@@ -1101,9 +1101,9 @@ describe('Bot canonical Session lifecycle', () => {
     expect((await invoke('local-db:bots:get', created.id)).avatar).toBe(created.avatar);
   });
 
-  it.each(['available', 'disconnected', 'deleted'])('advertises a live mobile creation default: %s', async state => {
+  it.each(['available', 'implicit', 'disconnected', 'deleted'])('advertises a live mobile creation default: %s', async state => {
     const { botRemoteManagement } = await import('../botRemoteManagement');
-    const route: BotModelRoute = { harness: 'pi', providerId: 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+    const route: BotModelRoute = { harness: 'pi', providerId: state === 'implicit' ? null : 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
     const readDefault = vi.spyOn(modelSettings, 'readEffectiveBotModelChain').mockResolvedValue([route]);
     try {
       if (state === 'disconnected') h.providers[0]!.connected = false;
@@ -1111,7 +1111,7 @@ describe('Bot canonical Session lifecycle', () => {
       const resource = await botRemoteManagement.getEditor({ controllerDeviceId: 'mobile-default-test' }, 'create', 'en');
       const data = resource.blocks?.find(block => block.id === 'create')?.data as { creationModelChain: string };
       expect(data.creationModelChain)
-        .toBe(JSON.stringify(state === 'available' ? [route] : []));
+        .toBe(JSON.stringify((state === 'available' || state === 'implicit') ? [{ ...route, providerId: 'xd' }] : []));
       expect(await modelSettings.readEffectiveBotModelChain({})).toEqual([route]);
     } finally { readDefault.mockRestore(); }
   });
