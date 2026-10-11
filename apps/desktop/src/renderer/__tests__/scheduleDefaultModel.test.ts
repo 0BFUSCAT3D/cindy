@@ -144,7 +144,7 @@ describe('getScheduleDefaultModel 三级回退', () => {
     expect(getScheduleDefaultModel('codex', PROVIDERS)).toBe('gpt-6-luna');
   });
 
-  it('三级:默认模型与来源成对返回,一二级只给模型', async () => {
+  it('三级:默认模型与来源成对返回;一级没记来源时为 null', async () => {
     const { getScheduleDefaultRoute } = await loadModule();
     expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
       model: 'claude-opus-5-5',
@@ -154,6 +154,16 @@ describe('getScheduleDefaultModel 三级回退', () => {
     expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
       model: 'claude-haiku-4-5',
       providerId: null,
+    });
+  });
+
+  it('二级:对话里显式选过的模型带上它记着的来源', async () => {
+    const draft = await import('@/state/newMakerDraft');
+    draft.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });
+    const { getScheduleDefaultRoute } = await loadModule();
+    expect(getScheduleDefaultRoute('claude-code', PROVIDERS)).toEqual({
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
     });
   });
 

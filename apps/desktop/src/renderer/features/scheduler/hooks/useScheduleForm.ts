@@ -156,19 +156,22 @@ export function getScheduleAgentPrefs(agentKind: ScheduleFormState['agentKind'])
  *      对空 model 任务的实时解析同源)。不写死型号:供应商清单未到位(`providers` 缺省)
  *      或一个可用来源都没有时返回 '',由表单在清单到位后回填。第三级返回的来源必须与模型
  *      一起落到表单:只存模型会让 runner 把空来源重新解析成原生默认(可能是网关)。
- *      一、二级只给模型,来源沿用表单既有的记忆语义。
+ * 三级都返回与模型成对的来源(一级取任务记忆的来源,二级取对话草稿记着的来源),
+ * 没有记来源时为 null(跟随原生默认)。
  */
 export function getScheduleDefaultRoute(
   agentKind: ScheduleFormState['agentKind'],
   providers?: readonly ProviderView[],
 ): { model: string; providerId: string | null } {
   const prefs = getScheduleAgentPrefs(agentKind);
-  if (prefs.model.trim()) return { model: prefs.model, providerId: null };
+  if (prefs.model.trim()) return { model: prefs.model, providerId: prefs.providerId || null };
   const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
-  const chatLast = getPersistedVendorModel(vendor);
-  if (chatLast.trim()) return { model: chatLast, providerId: null };
-  if (!providers) return { model: '', providerId: null };
   const draft = getDraft();
+  const chatLast = getPersistedVendorModel(vendor);
+  if (chatLast.trim()) {
+    return { model: chatLast, providerId: draft.lastByVendor[vendor]?.providerId || null };
+  }
+  if (!providers) return { model: '', providerId: null };
   return (
     resolveNewTaskDefaultRoute({
       providers,
