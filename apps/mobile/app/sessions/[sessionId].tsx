@@ -539,8 +539,10 @@ import {
   type MobileVoiceDictionaryLearningTracker,
 } from '@/session/mobileVoiceDictionaryLearning';
 import {
+  bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
   hasOlderMessagesByServerCount,
+  LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
   listMessagesWithPayloadRetry,
   oldestMessageCursor,
   projectLoadedMessageWindowIncrementally,
@@ -3800,7 +3802,7 @@ export default function SessionScreen() {
             return { messages: [], limit: 20, reducedByPayloadTooLarge: false };
           }
           if (!isHistoryViewUnavailable(viewState.error)) throw viewState.error;
-          return retryRead(() => listMessagesWithPayloadRetry(
+          const latest = await retryRead(() => listMessagesWithPayloadRetry(
           (limit) => runSessionMessagesSnapshotSingleFlight(
             snapshotScope,
             limit,
@@ -3809,6 +3811,17 @@ export default function SessionScreen() {
           ),
           isReopen ? REOPEN_MESSAGE_WINDOW_LIMITS : undefined,
         ));
+          // 整窗替换不保留旧段，无需补读。
+          if (options.replaceMessages) return latest;
+          return bridgeLatestMessagePage(latest, {
+            needsBridge: (rows, more) =>
+              remoteSessionStore.latestMessageWindowNeedsBridge(sessionId, rows, more),
+            readBefore: (before) => listMessagesWithPayloadRetry(
+              (limit) => maker.listMessages(sessionId, { limit, before }),
+              LATEST_WINDOW_BRIDGE_PAGE_LIMITS,
+            ),
+            isCurrent,
+          });
         },
         isCurrent,
         commitMessages: (history) => {
