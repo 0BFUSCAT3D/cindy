@@ -10,17 +10,21 @@ import {
   parseProviderGroupRemotePick,
   parseProviderGroupRemoteView,
   providerGroupUsageRowsForWire,
+  PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS,
+  PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS,
   type ProviderGroupRemoteCoolCause,
   type ProviderGroupRemoteLease,
   type ProviderGroupRemotePick,
   type ProviderGroupRemoteUsageRow,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
 
 export type ProviderGroupRemoteInvoke = (
   deviceId: string,
   channel: string,
   args: unknown[],
+  options?: { preSend?: () => void },
 ) => Promise<{ ok: boolean; result?: unknown; error?: { code?: string; message?: string } }>;
 
 export interface ProviderGroupRemoteClient {
@@ -40,7 +44,7 @@ export interface ProviderGroupRemoteClient {
   leases(ownerDeviceId: string, seq: number, entries: readonly ProviderGroupRemoteLease[]): Promise<void>;
   view(ownerDeviceId: string, providerId: string): Promise<ProviderGroupView>;
   /** 报告经组、在组里别的电脑上运行的用量；组所在电脑是旧版本时抛 ProviderGroupRemoteUnsupportedError。 */
-  usage(ownerDeviceId: string, report: { seq: number; sinceDay: string | null; rows: readonly ProviderGroupRemoteUsageRow[] }): Promise<void>;
+  usage(ownerDeviceId: string, report: { seq: number; sinceDay: string | null; rows: readonly ProviderGroupRemoteUsageRow[] }, beforeSend?: () => void): Promise<void>;
 }
 
 /** 组所在电脑没有这个通道(旧版本)：当作没有组。 */
@@ -52,8 +56,10 @@ export class ProviderGroupRemoteUnsupportedError extends Error {
 }
 
 export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvoke): ProviderGroupRemoteClient {
-  async function call(ownerDeviceId: string, request: Record<string, unknown>): Promise<unknown> {
-    const result = await invoke(ownerDeviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [request]);
+  async function call(ownerDeviceId: string, request: Record<string, unknown>, preSend?: () => void): Promise<unknown> {
+    const result = preSend
+      ? await invoke(ownerDeviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [request], { preSend })
+      : await invoke(ownerDeviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [request]);
     if (result.ok) return result.result;
     if (result.error?.code === 'CHANNEL_NOT_ALLOWED') throw new ProviderGroupRemoteUnsupportedError();
     const message = result.error?.message ?? 'provider group request failed';
@@ -98,14 +104,30 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
       return parseProviderGroupRemoteView(await call(ownerDeviceId, { action: 'view', providerId }), providerId);
     },
 
-    async usage(ownerDeviceId, report) {
+    async usage(ownerDeviceId, report, beforeSend) {
       try {
-        await call(ownerDeviceId, {
-          action: 'usage',
-          seq: report.seq,
-          sinceDay: report.sinceDay,
-          rows: providerGroupUsageRowsForWire(report.rows),
-        });
+        const rows = providerGroupUsageRowsForWire(report.rows);
+        if (rows.length <= PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) {
+          beforeSend?.();
+          await call(ownerDeviceId, { action: 'usage', seq: report.seq, sinceDay: report.sinceDay, rows }, beforeSend);
+          return;
+        }
+        if (rows.length > PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS) {
+          throwIpcError('INVALID_PARAMS', 'provider group usage report exceeds ledger limit');
+        }
+        for (let offset = 0; offset < rows.length; offset += PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) {
+          beforeSend?.();
+          const part = rows.slice(offset, offset + PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS);
+          const raw = await call(ownerDeviceId, {
+            action: 'usage-part', seq: report.seq, sinceDay: report.sinceDay, offset, total: rows.length, rows: part,
+          }, beforeSend);
+          const ack = raw as { seq?: unknown; received?: unknown; committed?: unknown } | null;
+          if (!ack || ack.seq !== report.seq || ack.received !== offset + part.length
+            || typeof ack.committed !== 'boolean' || (!ack.committed && offset + part.length === rows.length)) {
+            throwIpcError('PRECONDITION_FAILED', 'provider group usage report part was not acknowledged');
+          }
+          if (ack.committed) return;
+        }
       } catch (error) {
         // 有组、但还不认识用量报告的旧版本：按不支持处理(调用方之后再试)。
         if (error instanceof Error && /unknown provider group action/.test(error.message)) {

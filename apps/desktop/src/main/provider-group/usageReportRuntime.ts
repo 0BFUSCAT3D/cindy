@@ -25,8 +25,10 @@ export function ensureProviderGroupUsageReporter(): ProviderGroupUsageReporter |
     rows: (owner, sinceDay) => store.groupReport(owner, sinceDay),
     send: async (owner, report) => {
       // 只在这个账号还是当前账号时发：别的账号的连接上不发这份，之后照常重试。
-      if (currentProviderPartyUsageStore() !== store) throw new Error('account is not active');
-      await getProviderGroupRemoteClient().usage(owner, report);
+      await getProviderGroupRemoteClient().usage(owner, report, () => {
+        // 大报告的每一批都重查，上一批在途时换账号不能在新账号的连接上继续发送旧账本。
+        if (currentProviderPartyUsageStore() !== store) throw new Error('account is not active');
+      });
     },
     now: () => Date.now(),
     log,

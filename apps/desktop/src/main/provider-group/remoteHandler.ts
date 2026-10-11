@@ -17,10 +17,12 @@ import {
   type ProviderGroupConfig,
   type ProviderGroupRemotePick,
   type ProviderGroupRemoteUsageRow,
+  type ProviderGroupUsagePartAck,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS, PROVIDER_GROUP_FAILURE_COOLDOWN_MS } from './router.js';
 import type { ProviderGroupOwnerScope } from './runtime.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
 
 /** 报告来的重置时刻最多信多远(账号用量上限最长按周重置)，避免一台电脑被异常时刻长期冷却。 */
 export const PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS = 8 * 24 * 60 * 60_000;
@@ -38,6 +40,17 @@ export interface ProviderGroupRemoteHandlerDeps {
 
 /** 每个账号、每台报告来的电脑最近收下的用量报告序号(乱序到达的旧份丢弃)。按账号的负载对象区分账号。 */
 const usageReportSeqs = new WeakMap<object, Map<string, number>>();
+
+/** 每个账号、每台报告电脑只暂存一份；断开后保留旧账本，后续完整报告会重发。 */
+interface PendingUsageReport {
+  seq: number;
+  sinceDay: string | null;
+  total: number;
+  rows: ProviderGroupRemoteUsageRow[];
+  lastAt: number;
+}
+const pendingUsageReports = new WeakMap<object, Map<string, PendingUsageReport>>();
+export const PROVIDER_GROUP_USAGE_PART_TTL_MS = 10 * 60_000;
 
 /**
  * 给同账号电脑的 `maker:provider:list` 补组摘要与运行数，都只加在仍允许被远程调用的供应商上：
@@ -85,7 +98,7 @@ export async function handleProviderGroupRemote(
   deps: ProviderGroupRemoteHandlerDeps,
   controller: string,
   raw: unknown,
-): Promise<ProviderGroupRemotePick | ProviderGroupView | Record<string, never>> {
+): Promise<ProviderGroupRemotePick | ProviderGroupView | ProviderGroupUsagePartAck | Record<string, never>> {
   const request = parseProviderGroupRemoteRequest(raw);
   const scope = deps.scope();
   switch (request.action) {
@@ -128,20 +141,56 @@ export async function handleProviderGroupRemote(
       if (!deps.isRemoteAllowed(request.providerId)) return { providerId: request.providerId, config: null, members: [] };
       return scope.router.view(request.providerId);
     }
-    case 'usage': {
+    case 'usage':
+    case 'usage-part': {
       if (!scope.isCurrent()) return {};
       let seqs = usageReportSeqs.get(scope.externalLoad);
       if (!seqs) {
         seqs = new Map();
         usageReportSeqs.set(scope.externalLoad, seqs);
       }
-      if ((seqs.get(controller) ?? -1) >= request.seq) return {};
-      seqs.set(controller, request.seq);
+      const ack = (committed: boolean): ProviderGroupUsagePartAck | Record<string, never> =>
+        request.action === 'usage-part'
+          ? { seq: request.seq, received: request.offset + request.rows.length, committed }
+          : {};
+      if ((seqs.get(controller) ?? -1) >= request.seq) return ack(true);
+      let incoming = request.rows;
+      let pending = pendingUsageReports.get(scope.externalLoad);
+      if (request.action === 'usage-part') {
+        if (!pending) {
+          pending = new Map();
+          pendingUsageReports.set(scope.externalLoad, pending);
+        }
+        const now = deps.now();
+        for (const [device, report] of pending) {
+          if (now - report.lastAt >= PROVIDER_GROUP_USAGE_PART_TTL_MS) pending.delete(device);
+        }
+        let report = pending.get(controller);
+        if (!report || report.seq < request.seq) {
+          if (request.offset !== 0) throwIpcError('PRECONDITION_FAILED', 'usage report must restart from first part');
+          report = { seq: request.seq, sinceDay: request.sinceDay, total: request.total, rows: [], lastAt: now };
+          pending.set(controller, report);
+        }
+        if (report.seq !== request.seq || report.total !== request.total || report.sinceDay !== request.sinceDay
+          || request.offset !== report.rows.length) {
+          throwIpcError('PRECONDITION_FAILED', 'usage report part does not match pending report');
+        }
+        // 未收齐时不动账本，下一批失败、进程重启或换账号都不会用半份覆盖完整记录。
+        incoming = [...report.rows, ...request.rows];
+        if (incoming.length < report.total) {
+          report.rows = incoming;
+          report.lastAt = now;
+          return ack(false);
+        }
+      }
       // 分到本机这台的那部分本机自己记过，报来的不再算一次。不按现在有没有组筛：组删了又建、这次整份报告时
       // 那几个供应商的历史也要留着(报告整体替换那台从 sinceDay 起的全部行)。
-      const rows = request.rows.filter((row) => row.memberKey !== PROVIDER_GROUP_LOCAL_MEMBER_KEY);
+      const rows = incoming.filter((row) => row.memberKey !== PROVIDER_GROUP_LOCAL_MEMBER_KEY);
       deps.replaceReportedUsage(controller, request.sinceDay, rows);
-      return {};
+      // 只有替换成功才记去重序号；落盘入口抛错时同一份仍能重试。
+      seqs.set(controller, request.seq);
+      if ((pending?.get(controller)?.seq ?? Infinity) <= request.seq) pending?.delete(controller);
+      return ack(true);
     }
   }
 }

@@ -8,10 +8,7 @@
  * - 送不到(离线、断线)按退避稍后重报；对方是还不认识用量报告的旧版本时隔得更久再试；
  * - 只影响用量显示，失败只记日志，不影响任务。
  */
-import {
-  PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS,
-  type ProviderGroupRemoteUsageRow,
-} from '../../shared/providerGroup.js';
+import type { ProviderGroupRemoteUsageRow } from '../../shared/providerGroup.js';
 import { ProviderGroupRemoteUnsupportedError } from './remoteClient.js';
 
 export const PROVIDER_GROUP_USAGE_DEBOUNCE_MS = 5_000;
@@ -58,36 +55,6 @@ function earlier(a: Pending | undefined, b: Pending): Pending {
   return a < b ? a : b;
 }
 
-/**
- * 行数超过一次报告的上限时，从最新的一天往前取整天，取到放不下为止；返回实际报告的起始日。
- * 更早的几天对方留着上次收到的那份。
- */
-export function fitUsageReport(
-  rows: readonly ProviderGroupRemoteUsageRow[],
-  sinceDay: string | null,
-  max = PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS,
-): { sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] } {
-  if (rows.length <= max) return { sinceDay, rows: [...rows] };
-  const byDay = new Map<string, ProviderGroupRemoteUsageRow[]>();
-  for (const row of rows) {
-    const list = byDay.get(row.day);
-    if (list) list.push(row);
-    else byDay.set(row.day, [row]);
-  }
-  const days = [...byDay.keys()].sort().reverse();
-  const out: ProviderGroupRemoteUsageRow[] = [];
-  let first: string | null = null;
-  for (const day of days) {
-    const dayRows = byDay.get(day)!;
-    if (out.length + dayRows.length > max) break;
-    out.push(...dayRows);
-    first = day;
-  }
-  // 单单一天就超了上限(不现实)：只报这一天里最新的那些行。
-  if (first === null && days[0]) return { sinceDay: days[0], rows: byDay.get(days[0])!.slice(0, max) };
-  return { sinceDay: first, rows: out };
-}
-
 export function createProviderGroupUsageReporter(deps: ProviderGroupUsageReporterDeps): ProviderGroupUsageReporter {
   const schedule = deps.setTimeout ?? ((fn, ms) => {
     const timer = setTimeout(fn, ms);
@@ -130,10 +97,11 @@ export function createProviderGroupUsageReporter(deps: ProviderGroupUsageReporte
     const since = pending.get(owner);
     if (since === undefined) return;
     pending.delete(owner);
-    const fitted = fitUsageReport(deps.rows(owner, since === 'all' ? null : since), since === 'all' ? null : since);
     inFlight.add(owner);
     try {
-      await deps.send(owner, { seq: nextSeq(), ...fitted });
+      const sinceDay = since === 'all' ? null : since;
+      // 完整快照由 remoteClient 按帧上限分批发送；不能截断单日或丢掉尚未报告的旧日期。
+      await deps.send(owner, { seq: nextSeq(), sinceDay, rows: deps.rows(owner, sinceDay) });
       failures.delete(owner);
     } catch (error) {
       // 没送到：把这次的起始日并回去，稍后整段重报。

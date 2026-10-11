@@ -6,6 +6,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import {
+  parseProviderGroupRemoteRequest,
+  providerGroupUsageRowsForWire,
+  PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS,
+  PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS,
+  type ProviderGroupRemoteUsageRow,
+} from '../../../shared/providerGroup';
+import { createProviderGroupRemoteClient, ProviderGroupRemoteUnsupportedError, type ProviderGroupRemoteInvoke } from '../remoteClient';
+import {
   createProviderGroupExternalLoad,
   PROVIDER_GROUP_LEASE_TTL_MS,
   PROVIDER_GROUP_PROVISIONAL_MS,
@@ -14,6 +22,7 @@ import {
   decorateProviderListWithGroups,
   handleProviderGroupRemote,
   PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS,
+  PROVIDER_GROUP_USAGE_PART_TTL_MS,
   sharedProviderGroupSize,
   type ProviderGroupRemoteHandlerDeps,
 } from '../remoteHandler';
@@ -255,6 +264,160 @@ describe('provider-group:remote', () => {
     for (const raw of [null, { action: 'nope' }, { ...PICK, agentKind: 'x' }, { ...PICK, sessionId: '../x' }, { action: 'leases', seq: -1, entries: [] }]) {
       await expect(handleProviderGroupRemote(deps(), 'laptop', raw)).rejects.toThrow('[INVALID_PARAMS]');
     }
+  });
+});
+
+describe('完整用量报告分批传输', () => {
+  const usageRow = (i: number): ProviderGroupRemoteUsageRow => ({
+    day: i === 0 ? '2026-10-10' : '2026-10-11', providerId: 'anthropic', memberKey: MINI.key,
+    kind: 'claude-code', model: `model-${i}`, turns: 1, inputTokens: i + 1, outputTokens: 1,
+    cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0, lastAt: 1,
+  });
+  const rows = Array.from({ length: PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS + 2 }, (_, i) => usageRow(i));
+  const part = (seq: number, offset: number, sinceDay: string | null = null) => ({
+    action: 'usage-part', seq, sinceDay, offset, total: rows.length,
+    rows: providerGroupUsageRowsForWire(rows.slice(offset, offset + PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS)),
+  });
+
+  it('单日超过 3000 行时每帧仍受上限约束，收齐前保留旧记录，最后完整替换一次', async () => {
+    let received = [usageRow(9000)];
+    const replace = vi.fn<ProviderGroupRemoteHandlerDeps['replaceReportedUsage']>((_controller, _sinceDay, incoming) => { received = incoming; });
+    const d = deps({ replaceReportedUsage: replace });
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args) => {
+      const request = args[0] as { rows: unknown[]; offset: number };
+      expect(request.rows.length).toBeLessThanOrEqual(PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS);
+      if (request.offset > 0) {
+        expect(replace).not.toHaveBeenCalled();
+        expect(received).toEqual([usageRow(9000)]);
+      }
+      return { ok: true, result: await handleProviderGroupRemote(d, 'laptop', request) };
+    });
+    await createProviderGroupRemoteClient(invoke).usage('mini', { seq: 1, sinceDay: null, rows });
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(received).toEqual(rows);
+    // 完成后的旧份重送不再次记账。
+    expect(await handleProviderGroupRemote(d, 'laptop', part(1, 0))).toMatchObject({ committed: true });
+    expect(replace).toHaveBeenCalledTimes(1);
+  });
+
+  it('中途断开不改旧账本，新序号从头重报可完整恢复', async () => {
+    const d = deps();
+    let failLastPart = true;
+    const client = createProviderGroupRemoteClient(async (_device, _channel, args) => {
+      if (failLastPart && (args[0] as { offset: number }).offset > 0) throw new Error('offline');
+      return { ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]) };
+    });
+    await expect(client.usage('mini', { seq: 1, sinceDay: null, rows })).rejects.toThrow('offline');
+    expect(d.replaceReportedUsage).not.toHaveBeenCalled();
+    failLastPart = false;
+    await client.usage('mini', { seq: 2, sinceDay: null, rows });
+    expect(d.replaceReportedUsage).toHaveBeenCalledWith('laptop', null, rows);
+  });
+
+  it('旧端拒绝新动作，发送方按不支持处理，不回退到部分替换', async () => {
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async () => ({ ok: false, error: { message: '[INVALID_PARAMS] unknown provider group action' } }));
+    await expect(createProviderGroupRemoteClient(invoke).usage('mini', { seq: 1, sinceDay: null, rows }))
+      .rejects.toBeInstanceOf(ProviderGroupRemoteUnsupportedError);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke.mock.calls[0]![2][0]).toMatchObject({ action: 'usage-part' });
+  });
+
+  it('小报告继续使用旧端可识别的 usage 动作', async () => {
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args) => {
+      expect(args[0]).toMatchObject({ action: 'usage', sinceDay: '2026-10-11' });
+      return { ok: true, result: {} };
+    });
+    await createProviderGroupRemoteClient(invoke).usage('mini', { seq: 1, sinceDay: '2026-10-11', rows: [usageRow(1)] });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('缺批、乱序、改起始日及超限参数都不更新账本', async () => {
+    const d = deps();
+    await expect(handleProviderGroupRemote(d, 'laptop', part(1, 3000))).rejects.toThrow('PRECONDITION_FAILED');
+    await handleProviderGroupRemote(d, 'laptop', part(1, 0));
+    await expect(handleProviderGroupRemote(d, 'laptop', part(1, 3000, '2026-10-11'))).rejects.toThrow('PRECONDITION_FAILED');
+    for (const invalid of [
+      { ...part(1, 0), total: PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS + 1 },
+      { ...part(1, 0), offset: -1 },
+      { ...part(1, 0), offset: 0.5 },
+      { ...part(1, 0), rows: [] },
+      { ...part(1, 0), rows: providerGroupUsageRowsForWire(rows) },
+    ]) expect(() => parseProviderGroupRemoteRequest(invalid)).toThrow('INVALID_PARAMS');
+    expect(d.replaceReportedUsage).not.toHaveBeenCalled();
+  });
+
+  it('暂存过期或接收端重启后不能用尾批覆盖整份，要求重新开始', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', part(1, 0));
+    d.advance(PROVIDER_GROUP_USAGE_PART_TTL_MS);
+    await expect(handleProviderGroupRemote(d, 'laptop', part(1, 3000))).rejects.toThrow('PRECONDITION_FAILED');
+    const restarted = deps();
+    await expect(handleProviderGroupRemote(restarted, 'laptop', part(1, 3000))).rejects.toThrow('PRECONDITION_FAILED');
+    expect(d.replaceReportedUsage).not.toHaveBeenCalled();
+    expect(restarted.replaceReportedUsage).not.toHaveBeenCalled();
+  });
+
+  it('两台报告电脑的暂存独立，新的整份报告使旧分批报告作废', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', part(1, 0));
+    await handleProviderGroupRemote(d, 'phone-controller', part(1, 0));
+    await handleProviderGroupRemote(d, 'phone-controller', part(1, 3000));
+    expect(d.replaceReportedUsage).toHaveBeenCalledWith('phone-controller', null, rows);
+    await handleProviderGroupRemote(d, 'laptop', { action: 'usage', seq: 2, sinceDay: null, rows: [] });
+    await handleProviderGroupRemote(d, 'laptop', part(1, 3000));
+    expect(d.replaceReportedUsage).toHaveBeenCalledTimes(2);
+    expect(d.replaceReportedUsage).toHaveBeenLastCalledWith('laptop', null, []);
+  });
+
+  it('换账号或账号已失效时不继续发送、不提交旧账号的暂存', async () => {
+    const d = deps();
+    let current = true;
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args) => {
+      const result = await handleProviderGroupRemote(d, 'laptop', args[0]);
+      current = false;
+      return { ok: true, result };
+    });
+    await expect(createProviderGroupRemoteClient(invoke).usage('mini', { seq: 1, sinceDay: null, rows }, () => {
+      if (!current) throw new Error('account changed');
+    })).rejects.toThrow('account changed');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    d.switchAccount();
+    await handleProviderGroupRemote(d, 'laptop', part(1, 3000));
+    expect(d.replaceReportedUsage).not.toHaveBeenCalled();
+    // 新账号是另一份 scope，不会承接旧账号首批。
+    await expect(handleProviderGroupRemote(deps(), 'laptop', part(1, 3000))).rejects.toThrow('PRECONDITION_FAILED');
+  });
+
+  it('接收端没有确认收齐时，发送方不会假报成功', async () => {
+    const client = createProviderGroupRemoteClient(async () => ({ ok: true, result: {} }));
+    await expect(client.usage('mini', { seq: 1, sinceDay: null, rows })).rejects.toThrow('PRECONDITION_FAILED');
+  });
+
+  it('每批账号复验传到 invoke 的真实发送边界，等待建链期间换账号保留旧账本', async () => {
+    const d = deps();
+    let current = true;
+    const invoke = vi.fn<ProviderGroupRemoteInvoke>(async (_device, _channel, args, options) => {
+      // 模拟实际后台 invoke 在发送前的异步建链/排队；调用入口的检查此时已经通过。
+      await Promise.resolve();
+      current = false;
+      options?.preSend?.();
+      return { ok: true, result: await handleProviderGroupRemote(d, 'laptop', args[0]) };
+    });
+    await expect(createProviderGroupRemoteClient(invoke).usage('mini', { seq: 1, sinceDay: null, rows }, () => {
+      if (!current) throw new Error('account changed before dispatch');
+    })).rejects.toThrow('account changed before dispatch');
+    expect(d.replaceReportedUsage).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('账本替换抛错不记已提交序号，同一个尾批可以重试', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', part(1, 0));
+    vi.mocked(d.replaceReportedUsage).mockImplementationOnce(() => { throw new Error('store failure'); });
+    await expect(handleProviderGroupRemote(d, 'laptop', part(1, 3000))).rejects.toThrow('store failure');
+    await expect(handleProviderGroupRemote(d, 'laptop', part(1, 3000))).resolves.toMatchObject({ committed: true });
+    expect(d.replaceReportedUsage).toHaveBeenLastCalledWith('laptop', null, rows);
   });
 });
 

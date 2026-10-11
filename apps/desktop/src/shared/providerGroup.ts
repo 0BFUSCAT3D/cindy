@@ -306,8 +306,16 @@ export interface ProviderGroupRemoteUsageRow {
   lastAt: number;
 }
 
-/** 一次最多报告的用量行；多出来的按天从新到旧截断，旧的几天留在组所在电脑上次收到的那份。 */
+/** 单次请求的行数上限；完整报告超过此值时用 usage-part 分批收齐后再替换。 */
 export const PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS = 3_000;
+/** 完整报告的上限，与按使用方账本的保留行数一致；不提高单帧上限。 */
+export const PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS = 20_000;
+
+export interface ProviderGroupUsagePartAck {
+  seq: number;
+  received: number;
+  committed: boolean;
+}
 
 export type ProviderGroupRemoteRequest =
   /** 新任务该用组里哪台；选中即给那台记一个短暂的占用，同时开的几个任务不会全落到同一台。 */
@@ -322,7 +330,9 @@ export type ProviderGroupRemoteRequest =
    * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
    * 报过的行。seq 只增，乱序到达的旧份丢弃。
    */
-  | { action: 'usage'; seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] };
+  | { action: 'usage'; seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] }
+  /** 新动作防止旧端忽略分批字段后把半份报告当整份替换。offset 从 0 开始，收齐 total 才提交。 */
+  | { action: 'usage-part'; seq: number; sinceDay: string | null; offset: number; total: number; rows: ProviderGroupRemoteUsageRow[] };
 
 export type ProviderGroupRemotePick =
   /** 那个供应商现在没有组(组被删了或旧版本)：照常直接在组所在电脑上运行。 */
@@ -436,12 +446,19 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
     }
     case 'view':
       return { action: 'view', providerId: remoteProviderId(value.providerId) };
-    case 'usage': {
+    case 'usage':
+    case 'usage-part': {
       if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0) invalidRemote('invalid seq');
       const sinceDay = value.sinceDay ?? null;
       if (sinceDay !== null && (typeof sinceDay !== 'string' || !REMOTE_DAY.test(sinceDay))) invalidRemote('invalid since day');
       if (!Array.isArray(value.rows) || value.rows.length > PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS) invalidRemote('invalid usage rows');
-      return { action: 'usage', seq: value.seq as number, sinceDay: sinceDay as string | null, rows: value.rows.map(remoteUsageRow) };
+      const report = { seq: value.seq as number, sinceDay: sinceDay as string | null, rows: value.rows.map(remoteUsageRow) };
+      if (value.action === 'usage') return { action: 'usage', ...report };
+      if (!Number.isSafeInteger(value.total) || (value.total as number) < 1
+        || (value.total as number) > PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS) invalidRemote('invalid usage total');
+      if (!Number.isSafeInteger(value.offset) || (value.offset as number) < 0
+        || report.rows.length === 0 || (value.offset as number) + report.rows.length > (value.total as number)) invalidRemote('invalid usage offset');
+      return { action: 'usage-part', ...report, offset: value.offset as number, total: value.total as number };
     }
     default:
       invalidRemote('unknown provider group action');

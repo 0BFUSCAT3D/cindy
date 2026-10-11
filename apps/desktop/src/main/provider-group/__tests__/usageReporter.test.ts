@@ -8,7 +8,6 @@ import type { ProviderGroupRemoteUsageRow } from '../../../shared/providerGroup'
 import { ProviderGroupRemoteUnsupportedError } from '../remoteClient';
 import {
   createProviderGroupUsageReporter,
-  fitUsageReport,
   PROVIDER_GROUP_USAGE_DEBOUNCE_MS,
   PROVIDER_GROUP_USAGE_RETRY_MIN_MS,
   PROVIDER_GROUP_USAGE_STARTUP_DELAY_MS,
@@ -145,14 +144,16 @@ describe('provider group usage reporter', () => {
     expect(send).toHaveBeenCalledTimes(2);
     reporter.dispose();
   });
-});
 
-describe('fitUsageReport', () => {
-  it('keeps whole days from the newest when there are too many rows', () => {
-    const rows = [row('2026-10-09'), row('2026-10-10'), row('2026-10-10', 2), row('2026-10-11')];
-    expect(fitUsageReport(rows, null, 10)).toEqual({ sinceDay: null, rows });
-    const fitted = fitUsageReport(rows, null, 3);
-    expect(fitted.sinceDay).toBe('2026-10-10');
-    expect(fitted.rows.map((item) => item.day).sort()).toEqual(['2026-10-10', '2026-10-10', '2026-10-11']);
+  it('单日超过 3000 行仍发送完整报告，失败后从原起始日重报', async () => {
+    const { reporter, send, ledger } = setup(['mini']);
+    ledger.mini = [row('2026-10-10'), ...Array.from({ length: 3001 }, (_, i) => ({ ...row('2026-10-11'), model: `model-${i}` }))];
+    send.mockRejectedValueOnce(new Error('part transfer interrupted'));
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_USAGE_STARTUP_DELAY_MS);
+    expect(send.mock.calls[0]![1]).toMatchObject({ sinceDay: null, rows: ledger.mini });
+    await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_USAGE_RETRY_MIN_MS);
+    expect(send.mock.calls[1]![1]).toMatchObject({ sinceDay: null, rows: ledger.mini });
+    expect(send.mock.calls[1]![1].seq).toBeGreaterThan(send.mock.calls[0]![1].seq);
+    reporter.dispose();
   });
 });
