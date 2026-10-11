@@ -2739,6 +2739,27 @@ describe('TelegramIM 音视频与群历史媒体', () => {
     return fetched;
   }
 
+  /** 媒体总仓桩: 只收白名单 MIME, 落到临时目录。 */
+  const MEDIA_STORE_MIMES = new Set(['video/mp4', 'video/quicktime', 'audio/ogg', 'audio/mpeg']);
+  let cachedMedia: Array<{ token: string; mimeType: string }>;
+  beforeEach(() => {
+    cachedMedia = [];
+    ctx.host.media = {
+      cacheImage: async () => {
+        throw new Error('not used');
+      },
+      getCachedImage: async () => null,
+      resolveMediaUrl: () => null,
+      cacheMedia: async ({ token, buffer, mimeType }) => {
+        if (!MEDIA_STORE_MIMES.has(mimeType)) throw new Error(`unsupported mime type: ${mimeType}`);
+        const absPath = path.join(tmpDir, `blob-${cachedMedia.length}`);
+        fs.writeFileSync(absPath, buffer);
+        cachedMedia.push({ token, mimeType });
+        return { absPath, url: `cindy-media://blobs/${token}`, mimeType, discard: async () => undefined };
+      },
+    };
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -2757,7 +2778,7 @@ describe('TelegramIM 音视频与群历史媒体', () => {
     };
   }
 
-  it('私聊视频按文件下载交给模型, 不再标 unsupported', async () => {
+  it('私聊视频入媒体总仓后按文件交给模型, 不写 legacy 媒体目录', async () => {
     const events: IMMessageEvent[] = [];
     im.onMessage((e) => events.push(e));
     await connect();
@@ -2778,8 +2799,44 @@ describe('TelegramIM 音视频与群历史媒体', () => {
     await vi.waitFor(() => expect(events).toHaveLength(1));
     expect(events[0].unsupported).toEqual([]);
     expect(events[0].attachments).toHaveLength(1);
-    expect(events[0].attachments[0]).toMatchObject({ kind: 'file', originalName: 'video-70.mp4', mimeType: 'video/mp4' });
+    expect(events[0].attachments[0]).toMatchObject({
+      kind: 'file',
+      originalName: 'video-70.mp4',
+      mimeType: 'video/mp4',
+      url: 'cindy-media://blobs/vid-70',
+    });
     expect(fs.readFileSync(events[0].attachments[0].absPath, 'utf8')).toBe('media-bytes');
+    expect(cachedMedia).toEqual([{ token: 'vid-70', mimeType: 'video/mp4' }]);
+    expect(fs.readdirSync(tmpDir).filter((name) => name.endsWith('.mp4'))).toEqual([]);
+  });
+
+  it('host 不提供媒体总仓或总仓拒收格式时标不支持, 不降级写 legacy 目录', async () => {
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    enableDownloads();
+    const dm = (messageId: number, extra: Record<string, unknown>): TgUpdate => ({
+      update_id: messageId,
+      message: {
+        message_id: messageId,
+        from: { id: 111, is_bot: false, first_name: 'U' },
+        chat: { id: 111, type: 'private' },
+        date: nowSec(5),
+        ...extra,
+      },
+    });
+    api.pushUpdates([
+      dm(72, { document: { file_id: 'mkv', file_unique_id: 'mkv-u', file_name: 'clip.mkv', mime_type: 'video/x-matroska' } }),
+    ]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0].attachments).toEqual([]);
+    expect(events[0].unsupported).toEqual([{ type: 'video', label: 'clip.mkv' }]);
+
+    delete ctx.host.media;
+    api.pushUpdates([dm(73, { voice: { file_id: 'voice-73', mime_type: 'audio/ogg' } })]);
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+    expect(events[1].unsupported).toEqual([{ type: 'audio', label: 'voice-73.ogg' }]);
+    expect(fs.readdirSync(tmpDir).filter((name) => /\.(mkv|ogg)$/.test(name))).toEqual([]);
   });
 
   it('超过 Bot API 20MB 下载上限的视频标 oversize, 不调用 getFile', async () => {

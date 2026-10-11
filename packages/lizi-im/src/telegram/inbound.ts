@@ -193,6 +193,11 @@ export interface NormalizeContext {
   laneUserId?: string;
   /** 相册(media_group)同组的其余消息 — 媒体并入本事件, 不各起一轮 turn。 */
   siblings?: TgMessage[];
+  /**
+   * 音视频经 host.media.cacheMedia 暂存入媒体总仓后的回滚句柄。调用方在下载期间
+   * 配置换代(登出/换账号)时逐个调用, 不把旧账号的媒体留在新账号的仓里。
+   */
+  stagedDiscards?: Array<() => Promise<void>>;
 }
 
 /**
@@ -252,6 +257,59 @@ function audioVideoFilesOf(
   return out;
 }
 
+function isAudioVideoMime(mimeType: string): boolean {
+  return mimeType.startsWith('video/') || mimeType.startsWith('audio/');
+}
+
+/**
+ * 单个音视频: 20MB 内下载并经 host.media.cacheMedia 入媒体总仓。host 不提供
+ * cacheMedia 或总仓拒收该格式时标 video/audio 不支持 — 不降级写 legacy 目录
+ * (媒体规则: `cc-agent/*-media` 是冻结的历史兼容层)。
+ */
+async function collectAudioVideo(
+  ctx: NormalizeContext,
+  file: { file_id: string; file_size?: number },
+  name: string,
+  mimeType: string,
+  attachments: IMAttachment[],
+  unsupported: IMUnsupportedEntry[],
+): Promise<void> {
+  const type = mimeType.startsWith('audio/') ? 'audio' : 'video';
+  const cacheMedia = ctx.media?.cacheMedia;
+  if (!cacheMedia) {
+    unsupported.push({ type, label: name });
+    return;
+  }
+  if ((file.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
+    unsupported.push({ type: 'oversize', label: name });
+    return;
+  }
+  const buffer = await fetchTelegramFileBytes(ctx, file.file_id);
+  if (!buffer) {
+    unsupported.push({ type: 'download', label: name });
+    return;
+  }
+  try {
+    const stored = await cacheMedia({
+      integration: 'telegram',
+      token: file.file_id,
+      buffer,
+      mimeType: mimeType.split(';')[0].trim().toLowerCase(),
+    });
+    if (stored.discard) ctx.stagedDiscards?.push(stored.discard);
+    attachments.push({
+      kind: 'file',
+      absPath: stored.absPath,
+      originalName: name,
+      mimeType: stored.mimeType,
+      url: stored.url,
+    });
+  } catch {
+    // 总仓只收白名单格式(mp4/webm/mov/mp3/m4a/ogg/wav 等), 其余如实标不支持。
+    unsupported.push({ type, label: name });
+  }
+}
+
 /** 消息是否带可下载媒体(照片/文件/音视频) — 群历史媒体池的入池判据。 */
 export function hasDownloadableMedia(m: TgMessage): boolean {
   return Boolean(
@@ -268,16 +326,10 @@ async function collectMedia(
 ): Promise<void> {
   if (m.sticker) unsupported.push({ type: 'sticker', label: m.sticker.emoji ?? 'sticker' });
 
-  // 音视频按普通文件交给模型(file block 给可读路径, Agent 可自行抽帧/转写),
-  // 不再整类标 unsupported。Bot API 只能下载 20MB 以内的文件, 超出仍标 oversize。
+  // 音视频以 file block(可读路径)交给模型, Agent 可自行抽帧/转写。字节进
+  // cindy-media 总仓(内容寻址/引用记账/统一回收), 不写冻结的 cc-agent 目录。
   for (const media of audioVideoFilesOf(m)) {
-    if ((media.file.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
-      unsupported.push({ type: 'oversize', label: media.name });
-      continue;
-    }
-    const downloaded = await downloadTelegramFile(ctx, media.file.file_id, media.name, media.mimeType);
-    if (downloaded) attachments.push(downloaded);
-    else unsupported.push({ type: 'download', label: media.name });
+    await collectAudioVideo(ctx, media.file, media.name, media.mimeType, attachments, unsupported);
   }
 
   if (m.photo && m.photo.length > 0) {
@@ -295,7 +347,9 @@ async function collectMedia(
   if (m.document) {
     const name = m.document.file_name ?? `document-${m.message_id}`;
     const mime = m.document.mime_type ?? 'application/octet-stream';
-    if ((m.document.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
+    if (isAudioVideoMime(mime)) {
+      await collectAudioVideo(ctx, m.document, name, mime, attachments, unsupported);
+    } else if ((m.document.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: name });
     } else {
       const downloaded = await downloadTelegramFile(ctx, m.document.file_id, name, mime);
@@ -392,7 +446,7 @@ export const GROUP_HISTORY_FILE_MAX = 4;
  */
 export async function collectGroupHistoryMedia(
   messages: TgMessage[],
-  ctx: Pick<NormalizeContext, 'api' | 'mediaDir' | 'media'>,
+  ctx: Pick<NormalizeContext, 'api' | 'mediaDir' | 'media' | 'stagedDiscards'>,
 ): Promise<{ attachments: Array<IMAttachment & { author: string }>; unavailable: string[] }> {
   const picked: Array<IMAttachment & { author: string }> = [];
   const unavailable: string[] = [];
@@ -440,19 +494,8 @@ async function downloadTelegramFile(
         return { kind, absPath: cached.absPath, originalName, mimeType: cached.mimeType, url: cached.url };
       }
     }
-    // getFile 与下载 fetch 同在轮询循环的 await 链上 — 两跳都必须带超时,
-    // 否则任一悬死连接(TCP 半开/代理黑洞)会卡住全部入站直到进程重启。
-    const file = await ctx.api.call<TgFile>(
-      'getFile',
-      { file_id: fileId },
-      AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    );
-    if (!file.file_path) return null;
-    const res = await fetch(ctx.api.fileUrl(file.file_path), {
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    const buffer = Buffer.from(await res.arrayBuffer());
+    const buffer = await fetchTelegramFileBytes(ctx, fileId);
+    if (!buffer) return null;
 
     if (kind === 'image' && ctx.media) {
       try {
@@ -466,8 +509,8 @@ async function downloadTelegramFile(
       } catch {
         // 图片新写入必须留在 cindy-media 总仓(内容寻址/引用记账/统一回收,
         // 媒体规则 25) — host 仓拒收/未就绪时丢弃该附件, 不落无治理的
-        // legacy 目录; 消息正文照常送达。非图类文件走下方 legacy 目录,
-        // 与 feishu/discord 通道同口径(cindy-media 目前只收图)。
+        // legacy 目录; 消息正文照常送达。音视频走 collectAudioVideo 入总仓;
+        // 其余非媒体文件仍走下方 legacy 目录, 与 feishu/discord 通道同口径。
         return null;
       }
     }
@@ -476,6 +519,27 @@ async function downloadTelegramFile(
     const dest = uniquePath(ctx.mediaDir, sanitizeFilename(originalName));
     fs.writeFileSync(dest, buffer);
     return { kind, absPath: dest, originalName, mimeType };
+  } catch {
+    return null;
+  }
+}
+
+/** getFile + 下载字节; 任一跳失败返回 null。 */
+async function fetchTelegramFileBytes(ctx: NormalizeContext, fileId: string): Promise<Buffer | null> {
+  try {
+    // getFile 与下载 fetch 同在轮询循环的 await 链上 — 两跳都必须带超时,
+    // 否则任一悬死连接(TCP 半开/代理黑洞)会卡住全部入站直到进程重启。
+    const file = await ctx.api.call<TgFile>(
+      'getFile',
+      { file_id: fileId },
+      AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    );
+    if (!file.file_path) return null;
+    const res = await fetch(ctx.api.fileUrl(file.file_path), {
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
   } catch {
     return null;
   }

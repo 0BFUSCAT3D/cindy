@@ -1345,11 +1345,31 @@ export class TelegramIM extends BaseIM implements ChannelIM {
       .filter((m): m is TgMessage => m !== undefined && m.date * 1_000 >= cutoff)
       .sort((a, b) => a.message_id - b.message_id);
     if (messages.length === 0) return { attachments: [], unavailable: [] };
-    return collectGroupHistoryMedia(messages, {
+    const generation = this.configVersion;
+    const stagedDiscards: Array<() => Promise<void>> = [];
+    const collected = await collectGroupHistoryMedia(messages, {
       api,
       mediaDir: this.mediaDir,
+      stagedDiscards,
       ...(this.host.media ? { media: this.host.media } : {}),
     });
+    if (this.disposing || this.configVersion !== generation) {
+      await this.discardStagedMedia(stagedDiscards);
+      return { attachments: [], unavailable: [] };
+    }
+    return collected;
+  }
+
+  /** 下载期间配置换代: 回滚本次暂存进媒体总仓的音视频(尽力而为, 失败只记日志)。 */
+  private async discardStagedMedia(discards: Array<() => Promise<void>>): Promise<void> {
+    for (const discard of discards) {
+      try {
+        await discard();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.warn(`telegram staged media discard failed: ${msg}`);
+      }
+    }
   }
 
   private clearPendingAlbums(): void {
@@ -1402,14 +1422,19 @@ export class TelegramIM extends BaseIM implements ChannelIM {
       // 附件下载可达数秒 — 快照受理时的配置, 完成后配置已换代就丢弃
       // (与 Discord 的 acceptedContext 模式同口径)。
       const acceptedConfigVersion = this.configVersion;
+      const stagedDiscards: Array<() => Promise<void>> = [];
       const event = await normalizeMessage(m, {
         api: this.requireApi(),
         contextId: String(this.botId),
         mediaDir: this.mediaDir,
+        stagedDiscards,
         ...(siblings.length > 0 ? { siblings } : {}),
         ...(this.host.media ? { media: this.host.media } : {}),
       });
-      if (this.disposing || this.configVersion !== acceptedConfigVersion) return;
+      if (this.disposing || this.configVersion !== acceptedConfigVersion) {
+        await this.discardStagedMedia(stagedDiscards);
+        return;
+      }
       if (this.behaviorOf().replyQuoteDm === 'first') {
         this.queueReplyTarget(String(m.from.id), String(m.message_id));
       }
@@ -1483,16 +1508,21 @@ export class TelegramIM extends BaseIM implements ChannelIM {
         );
       }
       const acceptedConfigVersion = this.configVersion;
+      const stagedDiscards: Array<() => Promise<void>> = [];
       const event = await normalizeMessage(m, {
         api: this.requireApi(),
         contextId: String(this.botId),
         mediaDir: this.mediaDir,
         overrideText: trigger.text,
         laneUserId,
+        stagedDiscards,
         ...(siblings.length > 0 ? { siblings } : {}),
         ...(this.host.media ? { media: this.host.media } : {}),
       });
-      if (this.disposing || this.configVersion !== acceptedConfigVersion) return;
+      if (this.disposing || this.configVersion !== acceptedConfigVersion) {
+        await this.discardStagedMedia(stagedDiscards);
+        return;
+      }
       for (const delivered of [m, ...siblings, ...(m.reply_to_message ? [m.reply_to_message] : [])]) {
         this.groupMediaPool.delete(this.groupMediaKey(String(m.chat.id), String(delivered.message_id)));
       }
