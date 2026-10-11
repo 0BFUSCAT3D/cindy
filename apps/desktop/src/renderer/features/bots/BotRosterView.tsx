@@ -1,3 +1,4 @@
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, type DataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { useAuth } from '@/contexts/AuthContext';
 import { BotImportForm } from './BotImportForm';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,16 @@ import { addBotProfileAndWait, BotModelSelectionRequiredError, getEffectiveBotMo
 import { useProviders } from '@/hooks/useProviders';
 import { BotModelChainEditor } from './BotModelChainEditor';
 import type { BotModelRoute } from '../../../shared/botModelChain';
+
+// Only the provider-setup detour retains a draft; ordinary close/unmount discards it.
+let providerSetupDraft: {
+  owner: DataOwnerGeneration;
+  dataOwnerId: string | null;
+  name: string;
+  portrait?: string;
+  initialPortrait: number;
+  modelOverride: BotModelRoute[] | null;
+} | null = null;
 
 interface BotRosterViewProps {
   onCreated?: (bot: BotProfile) => void;
@@ -28,11 +39,15 @@ export function BotRosterView({ onCreated, onClose, restoreFocus, inline = false
   const bots = useBotProfiles();
   useProviders();
   useSyncExternalStore(subscribeBotGlobalModel, () => JSON.stringify(getEffectiveBotModelChain()));
-  const [modelOverride, setModelOverride] = useState<BotModelRoute[] | null>(null);
+  const [restoredDraft] = useState(() => providerSetupDraft
+    && providerSetupDraft.dataOwnerId === dataOwnerId
+    && isDataOwnerGenerationCurrent(providerSetupDraft.owner) ? providerSetupDraft : null);
+  useEffect(() => { providerSetupDraft = null; }, []);
+  const [modelOverride, setModelOverride] = useState<BotModelRoute[] | null>(restoredDraft?.modelOverride ?? null);
   const [importing, setImporting] = useState(false);
-  const [name, setName] = useState('');
-  const [portrait, setPortrait] = useState<string>();
-  const [initialPortrait] = useState(() => Math.floor(Math.random() * BOT_PORTRAIT_COUNT));
+  const [name, setName] = useState(restoredDraft?.name ?? '');
+  const [portrait, setPortrait] = useState<string | undefined>(restoredDraft?.portrait);
+  const [initialPortrait] = useState(() => restoredDraft?.initialPortrait ?? Math.floor(Math.random() * BOT_PORTRAIT_COUNT));
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
@@ -105,7 +120,10 @@ export function BotRosterView({ onCreated, onClose, restoreFocus, inline = false
             disabled={creating}
             allowFallbacks={false}
             onChange={(routes) => { setModelOverride(routes); setError(null); }}
-            onNavigateToProviders={() => navigate('/settings?tab=providers')}
+            onNavigateToProviders={() => {
+              providerSetupDraft = { owner: getDataOwnerGeneration(), dataOwnerId, name, portrait, initialPortrait, modelOverride };
+              navigate('/settings?tab=providers');
+            }}
           />
           <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">
             {t(modelOverride ? 'bots.guided.modelForThisBot' : 'bots.guided.modelFollowsDefault')}
