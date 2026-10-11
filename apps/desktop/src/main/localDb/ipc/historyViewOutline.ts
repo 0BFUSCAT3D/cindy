@@ -64,9 +64,10 @@ export function historyOutlineContent(): SQL<string> {
 
 
 /**
- * A cheap fact that changes when a hidden body is rewritten in place (a later full tool
- * result, a background completion). The outline already reads every body, so length and
- * tail cost nothing extra; grouping revisions hash it, and it never reaches the wire.
+ * An approximate fact that changes when a hidden body is rewritten in place (a later full
+ * tool result, a background completion). The outline already reads every body, so length
+ * and tail add CPU but no IO; grouping revisions hash it, and it never reaches the wire.
+ * A rewrite with the same length and the same last 24 characters is not detected.
  */
 export function historyOutlineContentStamp(): SQL<string> {
   return sql<string>`length(${messages.content}) || ':' || substr(${messages.content}, -24)`;
