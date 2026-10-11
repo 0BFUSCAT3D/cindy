@@ -28,8 +28,8 @@ export function SlowSendNotice({ startedAt, phase }: { startedAt: number | null;
   const styles = useThemedStyles(makeComposerActivityPillStyles);
   if (!useSlowSendVisible(startedAt)) return null;
   return (
-    <View accessibilityLiveRegion="polite" pointerEvents="none" style={styles.composerActivityStatus} testID="session.slowSendNotice">
-      <ComposerActivityPill label={t(`session.new.slowSend.${phase}`)} />
+    <View pointerEvents="none" style={styles.composerActivityStatus} testID="session.slowSendNotice">
+      <ComposerActivityPill label={t(`session.new.slowSend.${phase}`)} live />
     </View>
   );
 }

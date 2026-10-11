@@ -249,10 +249,13 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('function formatComposerActivityRateValue');
     // The primary pill is shared with the new-task slow-send notice so both read as one status line.
     const activityPillSource = readTextLf(resolve(process.cwd(), 'src/session/ComposerActivityPill.tsx'), 'utf8');
-    expect(source).toContain('<ComposerActivityPill label={activityText}>');
+    expect(source).toContain('<ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>');
     // A slow new-task send speaks through the same row, then continues in place as "思考中".
     expect(source).toContain('const composerActivitySignal = isSessionStreaming || messageHandoffActive || creationRunning;');
     expect(source).toContain('slowSendPhase={creationSlowPhase}');
+    // The creation turn keeps counting from the tap on the new-task page; a later remote start must not rewind it.
+    expect(source).toContain('const composerActivityStartedAtMs = creationTurnStartedAt ?? remoteSessionRunStatus.startedAt ?? composerActivityStartedAt;');
+    expect(activityPillSource).toContain("accessibilityLiveRegion={live ? 'polite' : 'none'}");
     expect(source).not.toContain('<SlowSendNotice');
     expect(activityPillSource).toContain('composerActivityPrimary');
     expect(activityPillSource).toContain('color: colors.statusAccent');

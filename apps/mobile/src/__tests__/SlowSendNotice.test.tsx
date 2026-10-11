@@ -7,14 +7,14 @@ import { i18n } from '@/i18n';
 
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
-  return { View: ({ children, accessibilityLiveRegion }: { children?: ReactNode; accessibilityLiveRegion?: string }) =>
-    createElement('div', { 'aria-live': accessibilityLiveRegion }, children) };
+  return { View: ({ children }: { children?: ReactNode }) => createElement('div', null, children) };
 });
 // The pill itself is the task page's "思考中" pill; here only its label matters.
 vi.mock('@/session/ComposerActivityPill', async () => {
   const { createElement } = await import('react');
   return {
-    ComposerActivityPill: ({ label }: { label: string }) => createElement('span', { 'data-pill': 'activity' }, label),
+    ComposerActivityPill: ({ label, live }: { label: string; live?: boolean }) =>
+      createElement('span', { 'data-pill': 'activity', 'aria-live': live ? 'polite' : undefined }, label),
     makeComposerActivityPillStyles: () => ({}),
   };
 });
@@ -54,7 +54,7 @@ describe('SlowSendNotice', () => {
     act(() => root.render(<SlowSendNotice startedAt={0} phase="connecting" />));
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(host.textContent).toBe('正在连接电脑…');
-    expect(host.querySelector('div')?.getAttribute('aria-live')).toBe('polite');
+    expect(host.querySelector('[data-pill="activity"]')?.getAttribute('aria-live')).toBe('polite');
     expect(host.querySelector('[data-pill="activity"]')?.textContent).toBe('正在连接电脑…');
     act(() => root.render(<SlowSendNotice startedAt={0} phase="sending" />));
     expect(host.textContent).toBe('正在发送消息…');

@@ -6,15 +6,18 @@ import { BlurBackdrop, FLOATING_CHROME_BLUR_INTENSITY } from '@/session/BlurBack
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 
-/** The composer's "思考中" pill; send progress reuses it so both read as one status line. */
-export function ComposerActivityPill({ label, children }: { label: string; children?: ReactNode }) {
+/**
+ * The composer's "思考中" pill; send progress reuses it so both read as one status line.
+ * `live` announces label changes (slow-send phases) without reading the per-second timer beside it.
+ */
+export function ComposerActivityPill({ label, live = false, children }: { label: string; live?: boolean; children?: ReactNode }) {
   const styles = useThemedStyles(makeComposerActivityPillStyles);
   const { colors } = useTheme();
   return (
     <View pointerEvents="none" style={[styles.composerActivityPill, styles.composerActivityPrimary]}>
       <BlurBackdrop intensity={FLOATING_CHROME_BLUR_INTENSITY} overlayColor={composerActivityPillOverlayColor(colors)} style={styles.composerActivityPillBackdrop} />
       <Sparkles color={colors.statusAccent} size={iconSize.sm} strokeWidth={iconStroke.regular} />
-      <Text numberOfLines={1} style={styles.composerActivityStatusText}>{label}</Text>
+      <Text accessibilityLiveRegion={live ? 'polite' : 'none'} numberOfLines={1} style={styles.composerActivityStatusText}>{label}</Text>
       {children}
     </View>
   );
