@@ -8191,6 +8191,7 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
   it('新确认阶段:确认重试全部丢失后超时重置 peer,通知控制端重开而非永久等待', async () => {
     const relay = new MemoryRelay();
     const host = makeRelayClient(relay, 'desktop', {
+      handshakeTimeoutMs: 20,
       transportRetryIntervalMs: 20,
       transportMaxRetryAttempts: 3,
     });
@@ -8398,6 +8399,192 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     }
   }
 
+  it('expires an unsent request as local backpressure and never replays its command', async () => {
+    await withFakeTimers(async (h, advance) => {
+      const socket = h.current();
+      const reset = vi.fn();
+      h.client.onPeerTransportReset(reset);
+      socket.bufferedAmount = 700 * 1024;
+      const result = h.client.invoke('dev-b', { channel: 'maker:send', args: ['never-send'] }, 59_000)
+        .catch((error: unknown) => error);
+      await advance(10_000);
+      expect(await result).toMatchObject({ code: 'BACKPRESSURE', inFlight: false });
+      socket.bufferedAmount = 0;
+      await advance(250);
+      const frames = socket.sent.filter(env => env.kind === 'invoke' && env.dst === 'dev-b');
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.every(env => isTransportSkipPayload(JSON.parse(parseTransportPayload(env.payload)!.data)))).toBe(true);
+      const healthy = h.client.invoke('dev-c', { channel: 'local-db:sessions:list', args: [] });
+      const request = socket.sent.at(-1)!;
+      socket.push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'dev-c', id: request.id,
+        payload: { ok: true, result: ['healthy'] } });
+      await expect(healthy).resolves.toMatchObject({ result: ['healthy'] });
+      expect(reset).not.toHaveBeenCalled();
+      expect(socket.closed).toBeNull();
+    }, { pingIntervalMs: 600_000 });
+  });
+
+  it.each(['stop', 'closeLink'] as const)('reports partial writes separately from unsent commands on %s', async (action) => {
+    await withFakeTimers(async (h, advance) => {
+      const socket = h.current();
+      const send = socket.send.bind(socket);
+      let chunks = 0;
+      const writer = vi.spyOn(socket, 'send').mockImplementation(data => {
+        if (JSON.parse(data).kind === 'invoke' && ++chunks === 2) throw new Error('socket write interrupted');
+        send(data);
+      });
+      const written = h.client.invoke('dev-b', { channel: 'maker:send', args: ['x'.repeat(200 * 1024)] }, 12_000)
+        .catch((error: unknown) => error);
+      expect(chunks).toBe(2);
+      expect(socket.sent.filter(env => env.kind === 'invoke')).toHaveLength(1);
+      writer.mockRestore();
+      socket.bufferedAmount = 700 * 1024;
+      const queued = h.client.invoke('dev-b', { channel: 'maker:send', args: ['never-send'] }, 12_000)
+        .catch((error: unknown) => error);
+      if (action === 'stop') h.client.stop();
+      else h.client.closeLink('dev-b', 'user');
+      expect(await written).toMatchObject({ code: 'NOT_CONNECTED', inFlight: true });
+      expect(await queued).toMatchObject({ code: 'NOT_CONNECTED', inFlight: false });
+      expect(await written).not.toBe(await queued);
+      await advance(13_000);
+    }, { pingIntervalMs: 600_000 });
+  });
+
+  it.each([true, false])('gives a queued request its response budget without renewing it on retries (reply=%s)', async (reply) => {
+    await withFakeTimers(async (h, advance) => {
+      const socket = h.current();
+      socket.bufferedAmount = 700 * 1024;
+      let settled = false;
+      const result = h.client.invoke('dev-b', { channel: 'local-db:sessions:list', args: [] }, 12_000)
+        .then(value => { settled = true; return value; }, error => { settled = true; return error; });
+      await advance(9_000);
+      socket.bufferedAmount = 0;
+      await advance(250);
+      const request = socket.sent.find(env => env.kind === 'invoke' && env.dst === 'dev-b')!;
+      expect(request).toBeDefined();
+      await advance(11_000);
+      expect(settled).toBe(false); // Original 12s deadline must not consume 9s of local queuing.
+      expect(socket.sent.filter(env => env.id === request.id).length).toBeGreaterThan(1);
+      if (reply) {
+        encodeReliableFrames({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'dev-b', id: request.id,
+          payload: { ok: true, result: ['arrived'] },
+        }, 'remote-stream', 1).forEach(frame => socket.push(frame));
+        await advance(1);
+        expect(await result).toMatchObject({ result: ['arrived'] });
+      } else {
+        await advance(1_001);
+        expect(await result).toMatchObject({ code: 'INVOKE_TIMEOUT', inFlight: true });
+      }
+      expect(h.sockets).toHaveLength(1);
+    }, { pingIntervalMs: 600_000 });
+  });
+
+  it.each(['disconnect', 'restart'])('retires only unsent reliable commands on %s and preserves the written request', async (mode) => {
+    await withFakeTimers(async (h, advance) => {
+      const socket = h.current();
+      const written = h.client.invoke('dev-b', { channel: 'maker:send', args: ['already-written'] }, 12_000);
+      const request = socket.sent.at(-1)!;
+      socket.bufferedAmount = 700 * 1024;
+      const queued = h.client.invoke('dev-b', { channel: 'maker:send', args: ['never-send'] }, 12_000)
+        .catch((error: unknown) => error);
+      if (mode === 'disconnect') socket.emit('close', 1006, 'offline');
+      else h.client.restartConnection('test-resume');
+      await advance(1_001);
+      expect(await queued).toMatchObject({ code: 'NOT_CONNECTED', inFlight: false });
+      h.current().ack();
+      const linked = establishInboundReliableLink(h, 'remote-stream');
+      await advance(1);
+      await linked;
+      encodeReliableFrames({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'dev-b', id: request.id,
+        payload: { ok: true, result: 'receipt' },
+      }, 'remote-stream', 1).forEach(frame => h.current().push(frame));
+      await advance(1);
+      await expect(written).resolves.toMatchObject({ result: 'receipt' });
+      expect(h.current().sent.some(env => JSON.stringify(env.payload).includes('never-send'))).toBe(false);
+    }, { pingIntervalMs: 600_000 });
+  });
+
+  it.each([false, true])('waits for a slow link confirmation without disturbing another peer (learned RTT=%s)', async (learnedRtt) => {
+    await withFakeTimers(async (h, advance) => {
+      const clock = vi.spyOn(h.client as unknown as { monotonicNow(): number }, 'monotonicNow')
+        .mockImplementation(() => Date.now());
+      try {
+        const socket = h.current();
+        const reset = vi.fn();
+        h.client.onPeerTransportReset(reset);
+        if (learnedRtt) {
+          h.client.sendInvokeResult('dev-b', 'rtt-sample', { ok: true, result: true });
+          const meta = parseTransportPayload(socket.sent.at(-1)!.payload)!.meta;
+          await advance(5_000);
+          socket.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-b', payload: {
+            channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL, payload: { streamId: meta.streamId, ackSeq: meta.seq },
+          } });
+        }
+        const linked = establishInboundReliableLink(h, 'changed-stream', 1, 'dev-b', [
+          DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT, DEVICE_LINK_CAPABILITY_TRANSPORT_TIMEOUT_CLOSE,
+          DEVICE_LINK_CAPABILITY_RELIABLE_LINK_CONFIRM,
+        ]);
+        await advance(1);
+        await linked;
+        const accept = socket.sent.filter(env => env.kind === 'link-accept').at(-1)!;
+        const payload = accept.payload as LinkAcceptPayload;
+        await advance(learnedRtt ? 40_000 : 25_000);
+        expect(reset).not.toHaveBeenCalled();
+        expect(h.client.isLinkReady('dev-b')).toBe(false);
+        const healthy = h.client.invoke('dev-c', { channel: 'local-db:sessions:list', args: [] });
+        const request = socket.sent.at(-1)!;
+        socket.push({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'dev-c', id: request.id,
+          payload: { ok: true, result: ['healthy'] } });
+        await expect(healthy).resolves.toMatchObject({ result: ['healthy'] });
+        socket.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-b', payload: {
+          channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL,
+          payload: { streamId: payload.transportStreamId, ackSeq: (payload.transportBaseSeq ?? 1) - 1, linkRequestId: accept.id },
+        } });
+        expect(h.client.isLinkReady('dev-b')).toBe(true);
+        await advance(30_000); // The confirmation deadline must have been cancelled.
+        expect(reset).not.toHaveBeenCalled();
+        expect(h.sockets).toHaveLength(1);
+      } finally { clock.mockRestore(); }
+    }, { pingIntervalMs: 600_000 });
+  });
+
+  it('bounds a missing confirmation at 30s while another reliable peer completes its request', async () => {
+    await withFakeTimers(async (h, advance) => {
+      const socket = h.current();
+      const healthyLink = establishInboundReliableLink(h, 'healthy-stream', 1, 'dev-c');
+      await advance(1);
+      await healthyLink;
+      const reset = vi.fn();
+      h.client.onPeerTransportReset(reset);
+      const linked = establishInboundReliableLink(h, 'changed-stream', 1, 'dev-b', [
+        DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT, DEVICE_LINK_CAPABILITY_TRANSPORT_TIMEOUT_CLOSE,
+        DEVICE_LINK_CAPABILITY_RELIABLE_LINK_CONFIRM,
+      ]);
+      await advance(1);
+      await linked;
+      const healthy = h.client.invoke('dev-c', { channel: 'local-db:sessions:list', args: [] }, 60_000);
+      const request = socket.sent.at(-1)!;
+      const meta = parseTransportPayload(request.payload)!.meta;
+      socket.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-c', payload: {
+        channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL,
+        payload: { streamId: meta.streamId, ackSeq: meta.seq },
+      } });
+      await advance(29_000);
+      expect(reset).not.toHaveBeenCalled();
+      await advance(1_000);
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(socket.sent.some(env => env.kind === 'link-close' && env.dst === 'dev-b')).toBe(true);
+      encodeReliableFrames({ v: PROTOCOL_VERSION, kind: 'invoke-result', src: 'dev-c', id: request.id,
+        payload: { ok: true, result: ['healthy'] },
+      }, 'healthy-stream', 1).forEach(frame => socket.push(frame));
+      await advance(1);
+      await expect(healthy).resolves.toMatchObject({ result: ['healthy'] });
+      expect(h.client.isLinkReady('dev-c')).toBe(true);
+      expect(socket.closed).toBeNull();
+      expect(h.sockets).toHaveLength(1);
+    }, { pingIntervalMs: 600_000 });
+  });
+
   it('holds a large future response locally until ACK frees receive slots, then sends without the 30s retry wait', async () => {
     await withFakeTimers(async (h, advance) => {
       const ws = h.current();
@@ -8448,7 +8635,7 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
       const outcome = h.client.invoke('dev-b', { channel: 'maker:list-active', args: [] }, 100)
         .catch((error: unknown) => error);
       await advance(101);
-      expect(await outcome).toMatchObject({ code: 'INVOKE_TIMEOUT' });
+      expect(await outcome).toMatchObject({ code: 'BACKPRESSURE', inFlight: false });
       expect(ws.sent.some(e => e.kind === 'invoke')).toBe(false);
       const meta = parseTransportPayload(ws.sent.find(e => e.id === 'held-15')!.payload)!.meta;
       ws.push({ v: PROTOCOL_VERSION, kind: 'push', src: 'dev-b', payload: {

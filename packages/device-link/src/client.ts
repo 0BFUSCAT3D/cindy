@@ -61,6 +61,7 @@ import {
   parseTransportAck,
   parseTransportPayload,
   reliableRetryDelayMs,
+  retransmitBaseMs,
   updateRetransmitEstimate,
   byteLength,
   type RetransmitEstimate,
@@ -134,6 +135,8 @@ const HANDSHAKE_TIMEOUT_WIDEN_AFTER = 2;
 /** 「link 未就绪收到可靠帧」通知的 per-peer 节流(见 onReliableFrameBeforeLink)。 */
 const STALE_LINK_NOTIFY_THROTTLE_MS = 30_000;
 const SLOW_REQUEST_WARN_MS = 1_000;
+/** Local transport admission must not consume a remote handler's response budget. */
+const REQUEST_SEND_WAIT_MAX_MS = 10_000;
 // Stop bulk writes well before the native socket's hard limit. Control envelopes
 // retain the hard-limit headroom; healthy sockets that drain immediately stay unpaced.
 const SOCKET_DATA_HIGH_WATER_BYTES = 512 * 1024;
@@ -514,8 +517,9 @@ export type InboundFrameHandler = (env: Envelope) => unknown | Promise<unknown>;
 interface PendingRequest {
   /** Timers may be suspended; retire an overdue request before replaying its payload. */
   expireIfOverdue(): boolean;
-  /** Diagnostics only: first successful socket write, not a delivery receipt. */
+  /** First successful socket write starts the response budget; never a delivery receipt. */
   noteFirstWrite?: () => void;
+  hasWritten(): boolean;
   resolve(env: Envelope): void;
   reject(err: DeviceLinkError): void;
   timer: ReturnType<typeof setTimeout>;
@@ -1601,6 +1605,9 @@ export class DeviceLinkClient {
     const startedAt = Date.now();
     const startedMonotonicAt = this.monotonicNow();
     let firstWriteAt: number | undefined;
+    const sendWaitMs = env.kind === 'invoke' ? Math.min(timeout, REQUEST_SEND_WAIT_MAX_MS) : timeout;
+    let deadlineMonotonicAt = startedMonotonicAt + sendWaitMs;
+    let deadlineWallAt = startedAt + sendWaitMs;
     const requestDescription = `${this.describeRequest(env, expectKind)} request=${id.slice(0, 8)}`;
 
     const logFinished = (outcome: 'ok' | 'timeout' | 'error', err?: DeviceLinkError): void => {
@@ -1633,9 +1640,14 @@ export class DeviceLinkClient {
         if (env.dst) this.settleOutboundRouteAttemptsForId(env.dst, id);
         if (env.dst && env.kind === 'invoke') this.dropReliablePendingForRequest(env.dst, id);
         logFinished('timeout');
-        reject(new DeviceLinkError('INVOKE_TIMEOUT', `no ${expectKind} within ${timeout}ms`));
+        // No physical write is local backpressure, not evidence against the peer.
+        const err = firstWriteAt === undefined
+          ? new DeviceLinkError('BACKPRESSURE', `request expired before socket write within ${sendWaitMs}ms`)
+          : new DeviceLinkError('INVOKE_TIMEOUT', `no ${expectKind} within ${timeout}ms after first socket write`);
+        err.inFlight = firstWriteAt !== undefined;
+        reject(err);
       };
-      const timer = setTimeout(expire, timeout);
+      let timer = setTimeout(expire, sendWaitMs);
 
       const pendingRequest: PendingRequest = {
         expireIfOverdue: () => {
@@ -1643,12 +1655,25 @@ export class DeviceLinkClient {
           // clock reaching the budget retires this request: wall time covers
           // suspension, monotonic time covers wall-clock rollback. A forward
           // wall correction may expire early, but must not replay stale writes.
-          if (this.monotonicNow() - startedMonotonicAt < timeout
-            && Date.now() - startedAt < timeout) return false;
+          if (this.monotonicNow() < deadlineMonotonicAt
+            && Date.now() < deadlineWallAt) return false;
           expire();
           return true;
         },
-        noteFirstWrite: () => { firstWriteAt ??= this.monotonicNow(); },
+        noteFirstWrite: () => {
+          if (firstWriteAt !== undefined) return;
+          firstWriteAt = this.monotonicNow();
+          // Only the first write can move the deadline. Replays and partial writes
+          // cannot extend it; total transport lifetime is at most sendWaitMs + timeout.
+          deadlineMonotonicAt = Math.min(firstWriteAt + timeout, startedMonotonicAt + sendWaitMs + timeout);
+          deadlineWallAt = Math.min(Date.now() + timeout, startedAt + sendWaitMs + timeout);
+          clearTimeout(timer);
+          timer = setTimeout(expire, Math.max(0, Math.min(
+            deadlineMonotonicAt - this.monotonicNow(), deadlineWallAt - Date.now(),
+          )));
+          pendingRequest.timer = timer;
+        },
+        hasWritten: () => firstWriteAt !== undefined,
         resolve: (frame) => {
           clearTimeout(timer);
           logFinished('ok');
@@ -1656,8 +1681,12 @@ export class DeviceLinkClient {
         },
         reject: (err) => {
           clearTimeout(timer);
-          logFinished('error', err);
-          reject(err);
+          // Batch failures can share an error, but each request has its own
+          // delivery status (including partial writes). Never mutate the shared error.
+          const failure = new DeviceLinkError(err.code, err.message);
+          failure.inFlight = firstWriteAt !== undefined;
+          logFinished('error', failure);
+          reject(failure);
         },
         timer,
         expectKind,
@@ -1685,7 +1714,6 @@ export class DeviceLinkClient {
             'PEER_RESET',
             `peer link reset before ${expectKind}; host may retry this read once`,
           );
-          err.inFlight = true;
           pendingRequest.reject(err);
         };
       }
@@ -1710,8 +1738,7 @@ export class DeviceLinkClient {
           err instanceof DeviceLinkError
             ? err
             : new DeviceLinkError('INTERNAL', err instanceof Error ? err.message : String(err));
-        logFinished('error', deviceLinkErr);
-        reject(deviceLinkErr);
+        pendingRequest.reject(deviceLinkErr);
       }
     });
   }
@@ -1724,20 +1751,18 @@ export class DeviceLinkClient {
 
   private failAllPending(err: DeviceLinkError): void {
     this.invokeScheduler.clear(err);
-    // pending 里的请求全部已经 sendEnvelope 成功(in-flight):打上标记,
-    // 让控制端的重试逻辑知道「请求可能已送达对端,只是响应丢了」,
-    // 与发送前本地拒绝的 NOT_CONNECTED 区分开。
-    err.inFlight = true;
-    for (const [, p] of this.pending) p.reject(err);
+    for (const pending of this.pending.values()) {
+      pending.reject(err);
+    }
     this.pending.clear();
   }
 
   private failNonReliablePending(err: DeviceLinkError): void {
     this.invokeScheduler.clear(err);
-    err.inFlight = true;
     for (const [id, pending] of this.pending) {
-      if (pending.reliableDst) continue;
+      if (pending.reliableDst && pending.hasWritten()) continue;
       this.pending.delete(id);
+      if (pending.reliableDst) this.dropReliablePendingForRequest(pending.reliableDst, id);
       pending.reject(err);
     }
   }
@@ -4434,6 +4459,13 @@ export class DeviceLinkClient {
       + ` conn=${this.connEpoch}`,
     );
     const attempts = normalizeTransportRetryAttempts(this.timing.transportMaxRetryAttempts);
+    // Accept + confirmation crosses the same slow path as a handshake. Keep a
+    // cold-path allowance and reuse the peer RTT estimate once available; this
+    // single timer stays bounded and retains the existing recovery policy.
+    const confirmationTimeoutMs = Math.max(
+      this.timing.handshakeTimeoutMs * 2,
+      retransmitBaseMs(peer.rtt, normalizeTransportRetryInterval(this.timing.transportRetryIntervalMs)) * attempts,
+    );
     confirmation.timer = setTimeout(() => {
       confirmation.timer = null;
       if (
@@ -4449,7 +4481,7 @@ export class DeviceLinkClient {
         + ` request=${requestId.slice(0, 8)}; resetting peer link`,
       );
       this.handleReliableRetryExhausted(dst, confirmation.minimumAckSeq);
-    }, normalizeTransportRetryInterval(this.timing.transportRetryIntervalMs) * attempts);
+    }, confirmationTimeoutMs);
   }
 
   /**
@@ -4792,7 +4824,6 @@ export class DeviceLinkClient {
       peer.pendingBytes = 0;
     }
     const err = new DeviceLinkError('NOT_CONNECTED', message);
-    err.inFlight = true;
     for (const [id, pending] of this.pending) {
       if (pending.reliableDst !== dst) continue;
       this.pending.delete(id);
