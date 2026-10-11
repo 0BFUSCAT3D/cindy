@@ -42,6 +42,7 @@ describe('mergeCooling', () => {
     expect(mergeCooling(
       { anthropic: { 'device:mini:a': 1_000 } },
       { anthropic: { 'device:studio:a': 2_000 } },
+      0,
     )).toEqual({
       anthropic: { 'device:mini:a': 1_000, 'device:studio:a': 2_000 },
     });
@@ -53,12 +54,14 @@ describe('mergeCooling', () => {
     expect(mergeCooling(
       { anthropic: { 'device:mini:a': 5_000 } },
       { anthropic: { 'device:mini:a': 3_000 } },
+      0,
     )).toEqual({
       anthropic: { 'device:mini:a': 5_000 },
     });
     expect(mergeCooling(
       { anthropic: { 'device:mini:a': 3_000 } },
       { anthropic: { 'device:mini:a': 5_000 } },
+      0,
     )).toEqual({
       anthropic: { 'device:mini:a': 5_000 },
     });
@@ -68,7 +71,16 @@ describe('mergeCooling', () => {
     expect(mergeCooling(
       { anthropic: { a: 1 } },
       { openai: { b: 2 } },
+      0,
     )).toEqual({ anthropic: { a: 1 }, openai: { b: 2 } });
+  });
+
+  it('到期条目从两份快照移除，未到期的并发冷却保留较晚结束时间', () => {
+    expect(mergeCooling(
+      { anthropic: { old: 99, boundary: 100, active: 200 }, openai: { old: 1 } },
+      { anthropic: { stale: 50, active: 150, fresh: 300 } },
+      100,
+    )).toEqual({ anthropic: { active: 200, fresh: 300 } });
   });
 });
 
@@ -93,10 +105,31 @@ describe('writeProviderGroupCooling (real file)', () => {
   it('keeps an earlier cooldown instead of discarding it on the next write (greptile-apps P1)', async () => {
     // 模拟 PR 场景:两台电脑先后撞上限额。修复前的实现每次 updateAtomic 都是整份覆盖,
     // 谁最后拿到锁谁就是最终结果;修复后每次写入在锁内和当前文件内容合并,谁先谁后都不会挤丢对方。
-    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:studio:a': 2_000 } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:mini:a': 1_000 } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(coolingStore.readProviderGroupCooling().anthropic).toEqual({ 'device:studio:a': 2_000, 'device:mini:a': 1_000 });
+    const now = Date.now();
+    const studioUntil = now + 120_000;
+    const miniUntil = now + 60_000;
+    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:studio:a': studioUntil } });
+    coolingStore.writeProviderGroupCooling({ anthropic: { 'device:mini:a': miniUntil } });
+    await vi.waitFor(() => {
+      expect(coolingStore.readProviderGroupCooling().anthropic).toEqual({ 'device:studio:a': studioUntil, 'device:mini:a': miniUntil });
+    });
+  });
+
+  it('旧文件的 512 个已过期成员释放容量，新成员冷却写盘并在重启后保留', async () => {
+    const now = Date.now();
+    const expired = Object.fromEntries(Array.from({ length: PROVIDER_GROUP_STORAGE_MEMBER_CAP }, (_, i) => [`device:old${i}:openai`, now - 1000]));
+    const file = path.join(tmpDir, 'provider-group-cooling.json');
+    // 模拟旧版已经写满的文件；当前新版写入不能再把过期条目并回来。
+    const current = coolingStore.readProviderGroupCooling();
+    fs.writeFileSync(file, JSON.stringify({ cooling: { ...current, openai: expired } }));
+    const next = { 'device:new:openai': now + 60_000 };
+    coolingStore.writeProviderGroupCooling({ openai: next });
+    await vi.waitFor(() => {
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).cooling.openai).toEqual(next);
+    });
+    vi.resetModules();
+    const restarted = await import('../coolingStore.js');
+    expect(restarted.readProviderGroupCooling().openai).toEqual(next);
+    expect(restarted.readProviderGroupCooling().anthropic).toEqual(current.anthropic);
   });
 });

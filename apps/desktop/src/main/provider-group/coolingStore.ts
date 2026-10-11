@@ -54,11 +54,12 @@ export function readProviderGroupCooling(): ProviderGroupPersistedCooling {
 /**
  * 在锁内和所在文件当前内容合并(按 provider + 成员取较晚的结束时间)，不直接用调用方
  * 快照覆盖：连续冷却两台电脑时，早开始、后步拿到文件锁的写入不应该把已落地的那一台挤丢
- * (greptile-apps P1, PR #5792 review)。
+ * (greptile-apps P1, PR #5792 review)。合并时移除到期记录，避免旧成员永久占满存储边界。
  */
 function mergeCooling(
   current: ProviderGroupPersistedCooling,
   next: ProviderGroupPersistedCooling,
+  now = Date.now(),
 ): ProviderGroupPersistedCooling {
   const merged: ProviderGroupPersistedCooling = {};
   for (const providerId of new Set([...Object.keys(current), ...Object.keys(next)])) {
@@ -67,7 +68,7 @@ function mergeCooling(
     const entries: Record<string, number> = {};
     for (const memberKey of new Set([...Object.keys(a), ...Object.keys(b)])) {
       const until = Math.max(a[memberKey] ?? 0, b[memberKey] ?? 0);
-      if (until > 0) entries[memberKey] = until;
+      if (until > now) entries[memberKey] = until;
     }
     if (Object.keys(entries).length > 0) merged[providerId] = entries;
   }
