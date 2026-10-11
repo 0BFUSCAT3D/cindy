@@ -751,6 +751,8 @@ export class DeviceLinkClient {
   private networkChangeHintedAt = 0;
   private networkProbeNextAllowedAt = 0;
   private connectionStartedAt = 0;
+  /** Wall clock of the current connect attempt; unlike timers it keeps counting through app suspension. */
+  private connectionStartedWallAt = 0;
   /** 当前连接的代号,用于丢弃过期 socket 的事件回调 */
   private connEpoch = 0;
   /** 本轮连接的最后一条 socket error message(升级失败 401 只在 error 事件里可见) */
@@ -858,11 +860,28 @@ export class DeviceLinkClient {
    * 只有显式用户意图(移动端回前台)传 overrideCongestionCooldown 保留立即重连;
    * 被 park 的调用方等冷却计时器到点自然重连(封顶 congestionBackoffMaxMs)。
    */
-  connectNow(reason = 'connect-now', opts?: { overrideCongestionCooldown?: boolean }): void {
+  connectNow(
+    reason = 'connect-now',
+    opts?: { overrideCongestionCooldown?: boolean; keepInFlightAttempt?: boolean },
+  ): void {
     // online 时强制重建请用 restartConnection —— 它才是「半开假活」场景的入口,
     // 且已包含 resetLinkStateForReconnect(此处曾有一个等价的 { force } 分支,
     // 生产代码从未使用,只有测试在调,故收敛为单一入口)。
     if (this.status === 'online') return;
+    // A foreground flicker (Face ID, notification, Control Center) re-fires this
+    // within seconds. Restarting a handshake that is still inside its window only
+    // throws away the progress made on a slow link (2026-10-12 in-flight Wi-Fi:
+    // 5 of 5 such restarts discarded a 1–3s old attempt). Wall time covers app
+    // suspension, so an attempt that sat frozen in the background is restarted.
+    if (
+      opts?.keepInFlightAttempt
+      && this.status === 'connecting'
+      && !this.reconnectTimer
+      && Date.now() - this.connectionStartedWallAt < this.effectiveHandshakeTimeoutMs()
+    ) {
+      this.log.debug(`connectNow(${reason}) kept in-flight connect attempt`);
+      return;
+    }
     if (this.stopped) {
       // stopped → 等价 start():全新生命周期不背上一世代的拥塞冷却(review P1,
       // 与 start() 的清零语义对齐)。
@@ -1843,6 +1862,7 @@ export class DeviceLinkClient {
     this.clearNetworkProbe();
     this.resetLegacyInboundQueue();
     this.connectionStartedAt = this.monotonicNow();
+    this.connectionStartedWallAt = Date.now();
     this.setStatus('connecting');
     const epoch = ++this.connEpoch;
     this.lastSocketErrorMessage = null;

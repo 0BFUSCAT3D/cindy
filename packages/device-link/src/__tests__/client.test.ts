@@ -6167,6 +6167,59 @@ describe('DeviceLinkClient', () => {
     h.client.stop();
   });
 
+  it('connectNow keepInFlightAttempt:回前台闪烁不丢弃仍在握手窗口内的连接', async () => {
+    const h = makeHarness({ timing: { handshakeTimeoutMs: 12_000 } });
+    h.client.start();
+    await tick();
+    expect(h.sockets.length).toBe(1);
+    expect(h.client.getStatus()).toBe('connecting');
+
+    h.client.connectNow('appstate-active', { keepInFlightAttempt: true });
+    await tick();
+    expect(h.sockets.length).toBe(1);
+    h.current().ack();
+    expect(h.client.getStatus()).toBe('online');
+
+    // Without the opt-in (e.g. a network change) the attempt is still restarted.
+    h.current().emit('close', 1006);
+    h.client.connectNow('network-change');
+    await tick();
+    const before = h.sockets.length;
+    h.client.connectNow('network-change');
+    await tick();
+    expect(h.sockets.length).toBe(before + 1);
+    h.client.stop();
+  });
+
+  it('connectNow keepInFlightAttempt:挂起后超过握手窗口的旧尝试与退避等待照常立即重连', async () => {
+    const h = makeHarness({ timing: { handshakeTimeoutMs: 12_000, reconnectBaseMs: 10_000, reconnectMaxMs: 30_000 } });
+    const realNow = Date.now;
+    try {
+      h.client.start();
+      await tick();
+      expect(h.sockets.length).toBe(1);
+      // App suspended mid-handshake: timers froze, wall time moved on.
+      const resumedAt = realNow() + 60_000;
+      Date.now = () => resumedAt;
+      h.client.connectNow('appstate-active', { keepInFlightAttempt: true });
+      await tick();
+      expect(h.sockets.length).toBe(2);
+      Date.now = realNow;
+
+      // A parked backoff timer is not an in-flight attempt.
+      h.current().ack();
+      h.current().emit('close', 1006);
+      await tick(20);
+      const parked = h.sockets.length;
+      h.client.connectNow('appstate-active', { keepInFlightAttempt: true });
+      await tick();
+      expect(h.sockets.length).toBe(parked + 1);
+    } finally {
+      Date.now = realNow;
+      h.client.stop();
+    }
+  });
+
   it('connectNow:online 时为空操作,不打断健康连接', async () => {
     const h = makeHarness();
     h.client.start();
