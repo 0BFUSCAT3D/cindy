@@ -6796,6 +6796,23 @@ describe('list message reuse', () => {
     expect(remoteSessionStore.getMessages('s1')[0].content).toBe(content);
   });
 
+  it('merges the disk window under list-only rows when the task opens', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Host', [session('s1')]);
+    const at = (id: string, createdAt: string) => messageAt(id, 's1', createdAt);
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', { sessionId: 's1', listMessage: true,
+      message: at('prefetched', '2026-01-01T00:00:09.000Z') });
+    remoteSessionStore.enterSessionMessageDetail('s1');
+    remoteSessionStore.hydrateMessagesIfEmpty('s1', [
+      at('older', '2026-01-01T00:00:01.000Z'), { ...at('prefetched', '2026-01-01T00:00:09.000Z'), content: 'cached copy' },
+    ]);
+    expect(remoteSessionStore.getMessages('s1').map(row => [row.id, row.content])).toEqual([
+      ['older', 'hello'], ['prefetched', 'hello'],
+    ]);
+    // Only a list-only mirror merges; a loaded window keeps the existing "if empty" rule.
+    remoteSessionStore.hydrateMessagesIfEmpty('s1', [at('ignored', '2026-01-01T00:00:00.000Z')]);
+    expect(remoteSessionStore.getMessages('s1').map(row => row.id)).toEqual(['older', 'prefetched']);
+  });
+
   it('does not let another device seed the same task ID', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Host', [session('s1')]);
     remoteSessionStore.applyRemotePush('other', 'local-db:messages:created', { sessionId: 's1', listMessage: true, message: message('wrong', 's1') });
