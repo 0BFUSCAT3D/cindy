@@ -1677,6 +1677,7 @@ export function MessageRenderer({
           chatFilePathContext?.workdir,
           chatFilePathContext?.remoteHostId,
           chatFilePathContext?.sessionId,
+          getSentImagePreview,
         )
       : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sentThumbsVersion 是 collect 内部读的全局 store 的失效信号
@@ -1684,6 +1685,7 @@ export function MessageRenderer({
       chatFilePathContext?.remoteHostId,
       chatFilePathContext?.sessionId,
       chatFilePathContext?.workdir,
+      getSentImagePreview,
       imageLightboxOpen,
       listData,
       sentThumbsVersion,
@@ -1702,7 +1704,8 @@ export function MessageRenderer({
       return p.key === n.key
         && p.url === n.url
         && p.payload.media.url === n.payload.media.url
-        && p.payload.media.previewable === n.payload.media.previewable;
+        && p.payload.media.previewable === n.payload.media.previewable
+        && p.previewUri === n.previewUri;
     })) {
       return prev;
     }

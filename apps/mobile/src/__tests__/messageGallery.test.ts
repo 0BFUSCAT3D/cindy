@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   collectMobileMessageGalleryImages,
   galleryImageIndexForPayload,
@@ -9,6 +9,12 @@ import { buildMobileMessageRenderItems } from '@/session/messageRenderModel';
 import type { RemoteMessage } from '@/session/types';
 import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl } from '@/session/messageMarkdown';
 import { buildMediaPayload } from '@/session/messagePayload';
+
+const durableThumbs = vi.hoisted(() => new Map<string, string>());
+vi.mock('@/session/sentAttachmentThumbStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/session/sentAttachmentThumbStore')>()),
+  getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
+}));
 
 function messageItem(key: string, message: Partial<MobileMessageRenderItem & { message: unknown }>['message']): MobileMessageRenderItem {
   return {
@@ -431,5 +437,42 @@ describe('message gallery', () => {
       'https://example.com/same.png',
       'https://example.com/other.png',
     ]);
+  });
+  it('carries the sent local image as the viewer backdrop once the host has rewritten the url', () => {
+    const calls: unknown[][] = [];
+    const gallery = collectMobileMessageGalleryImages([
+      messageItem('m-sent', { attachments: [
+        { kind: 'file', name: 'notes.md', path: '/repo/notes.md', previewable: false },
+        { kind: 'image', name: 'a.png', uri: 'xdt-image://cache/a.png', previewable: false },
+        { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false, sha256: 'sha-b' },
+      ] }),
+    ], undefined, undefined, undefined, (...args) => {
+      calls.push(args);
+      return args[1] === 1
+        ? { attachmentId: 'att-b', name: 'b.png', sourceRef: 'cindy-oss-attach://b', sha256: 'sha-b', uri: 'file:///local/b.jpg' }
+        : undefined;
+    });
+    // 预览按「第几张图片附件」对位,与气泡 AttachmentStrip 同口径(文件附件不占位)。
+    expect(calls.map((args) => args.slice(0, 3))).toEqual([['m-sent', 0, 'a.png'], ['m-sent', 1, 'b.png']]);
+    expect(gallery.map((image) => [image.url, image.previewUri])).toEqual([
+      ['xdt-image://cache/a.png', undefined],
+      ['xdt-image://cache/b.png', 'file:///local/b.jpg'],
+    ]);
+  });
+
+  it('prefers the persisted local copy over the outbox file that is cleaned up after delivery', () => {
+    durableThumbs.set('cindy-oss-attach://b', 'file:///documents/sent-attachment-thumbs/b.jpg');
+    try {
+      const gallery = collectMobileMessageGalleryImages([
+        messageItem('m-sent', { attachments: [
+          { kind: 'image', name: 'b.png', uri: 'xdt-image://cache/b.png', previewable: false },
+        ] }),
+      ], undefined, undefined, undefined, () => (
+        { attachmentId: 'att-b', name: 'b.png', sourceRef: 'cindy-oss-attach://b', uri: 'file:///outbox/b.jpg' }
+      ));
+      expect(gallery[0].previewUri).toBe('file:///documents/sent-attachment-thumbs/b.jpg');
+    } finally {
+      durableThumbs.clear();
+    }
   });
 });
