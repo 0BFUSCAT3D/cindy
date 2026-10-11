@@ -317,6 +317,7 @@ import {
 } from '@cindy/maker-shared/agent-task';
 import {
   buildMessageActionBarPresentation,
+  formatToolRowText,
   summarizeMessageBubblePresentation,
   summarizeTodoCardPresentation,
   summarizeToolGroupPresentation,
@@ -418,6 +419,7 @@ import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 import { mobileToolRowWording } from '@/i18n/toolWording';
+import type { HistoryWorkLine } from '@cindy/maker-shared/message-window';
 
 const MESSAGE_CONTROL_HIT_SLOP = { bottom: 10, left: 10, right: 10, top: 10 };
 const MESSAGE_CONTROL_TOUCH_SIZE = 44;
@@ -3717,7 +3719,6 @@ function MessageBubble({
         presentation.density === 'compact' && styles.bubbleCompact,
         presentation.density === 'rich' && styles.bubbleRich,
         isUser ? styles.userBubble : styles.agentBubble,
-        actions.companion && isUser && styles.companionUserBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
       ]}
@@ -4728,6 +4729,9 @@ function WorkGroupCard({
   ].filter(Boolean).join(' · ');
   const onToggle = item.deferred?.setVisible ? toggleExpanded : item.deferred?.toggle ?? toggleExpanded;
   const pluginWork = actions.companionPluginWork?.get(item.key);
+  // The Host projects running lines for this view; folded groups render them as they are,
+  // without building the hidden activity tree or reading any work details.
+  const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;
   return (
     <>
     {pluginWork ? <PluginInvocationHeader plugins={pluginWork.plugins} running={pluginWork.running}
@@ -4737,6 +4741,13 @@ function WorkGroupCard({
       chevronPosition={header.chevronPosition}
       chevronSize={header.chevronSize}
       controlledExpanded={expanded}
+      collapsedBody={lines?.length ? (
+        <Rail layout={layout}>
+          <View style={styles.workActivityStack}>
+            {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+          </View>
+        </Rail>
+      ) : undefined}
       onControlledToggle={onToggle}
       title={title}
       subtitle={header.subtitle ?? undefined}
@@ -4792,6 +4803,48 @@ function WorkGroupCard({
     </>
   );
 }
+
+/** One Host-projected running line; pressing it opens the whole work group. */
+const WorkLineRow = memo(function WorkLineRow({
+  line,
+  onPress,
+}: {
+  line: HistoryWorkLine;
+  onPress: () => void;
+}) {
+  const { colors } = useTheme();
+  const { i18n } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const label = useMemo(
+    () => (line.kind === 'tool' ? formatToolRowText(line.descriptor, mobileToolRowWording).label || line.toolName : line.text),
+    [i18n.language, line],
+  );
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [line.kind === 'tool' ? styles.toolRowHeader : styles.workThinkingRow, pressed && styles.pressed]}
+      testID="message.workLine"
+    >
+      {line.kind === 'tool' ? (
+        <>
+          <ToolRowStatusIcon hasError={line.hasError === true} status={line.status} />
+          <Text numberOfLines={1} style={[styles.toolName, styles.toolNameFlex]}>{label}</Text>
+        </>
+      ) : (
+        <>
+          <View style={stylesStatic.workActivityIconSlot}>
+            <Sparkles color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+          </View>
+          <Text numberOfLines={1} style={[styles.workActivityText, styles.italicText, styles.workThinkingText]}>
+            <ThinkingInlineText content={label} />
+          </Text>
+        </>
+      )}
+    </Pressable>
+  );
+});
 
 /** The clock must not re-render an expanded group's entire activity tree. */
 function WorkGroupElapsed({ sinceIso }: { sinceIso: string | undefined }) {
@@ -4971,6 +5024,7 @@ function FoldablePanel({
   title,
   subtitle,
   children,
+  collapsedBody,
   controlledExpanded,
   defaultExpanded = false,
   layout,
@@ -4992,6 +5046,8 @@ function FoldablePanel({
   title: string;
   subtitle?: string;
   children: ReactNode;
+  /** Running work lines shown under a folded header; the full body is still built only when expanded. */
+  collapsedBody?: ReactNode;
   /** Controlled mode used by work groups. */
   controlledExpanded?: boolean;
   /** 仅无 blockId 的本地 state 路径生效;blockId 存在时由共享记忆决定(默认折叠)。 */
@@ -5074,6 +5130,18 @@ function FoldablePanel({
             },
         ]}>
           {children}
+        </View>
+      ) : collapsedBody ? (
+        <View style={[
+          styles.foldBody,
+          variant === 'plain'
+            ? styles.foldBodyPlain
+            : {
+              paddingBottom: layout.foldBodyPaddingBottom,
+              paddingHorizontal: layout.foldBodyPaddingHorizontal,
+            },
+        ]}>
+          {collapsedBody}
         </View>
       ) : null}
     </View>
@@ -8659,11 +8727,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     marginTop: spacing.sm,
     textAlign: 'center',
   },
-  companionUserBubble: { borderColor: colors.border },
   userBubble: {
     alignSelf: 'flex-end',
     backgroundColor: colors.surfaceElevated,
-    borderColor: colors.borderStrong,
+    borderColor: colors.border,
     maxWidth: '86%',
     minWidth: 0,
     overflow: 'hidden',
