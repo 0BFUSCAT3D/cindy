@@ -391,8 +391,9 @@ export function settleWorktreeEligibilityForDisplay(
  *  - 必须是 project + 已选目录;
  *  - 定论为 eligible 才显示；从未有定论(首次探测中)不显示;
  *  - 确认不合格(ineligible)隐藏，创建按普通会话放行(2026-08-07 裁决);
- *  - 已勾选但创建被拦住时(老端 unsupported、恢复中、探测失败)保留显示，
- *    让用户看到原因并能关掉，不把用户锁在 fail-closed 状态。
+ *  - 已勾选但创建被拦住时(老端 unsupported、恢复中、探测失败)必须显示，
+ *    让用户看到原因并能关掉，不把用户锁在 fail-closed 状态。实时恢复中 / 探测失败
+ *    优先于沿用的旧定论(含旧 ineligible)，因为创建门禁按实时资格拦截。
  */
 export function shouldShowWorktreeToggle(input: {
   workspaceKind: 'project' | 'dialogue';
@@ -405,10 +406,10 @@ export function shouldShowWorktreeToggle(input: {
 }): boolean {
   if (input.workspaceKind !== 'project' || input.workingDir.trim().length === 0) return false;
   if (input.settled?.status === 'eligible') return true;
-  if (!input.enabled || input.settled?.status === 'ineligible') return false;
-  return input.settled?.status === 'unsupported'
-    || input.eligibility.status === 'recovering'
-    || input.eligibility.status === 'detect-failed';
+  if (!input.enabled) return false;
+  return input.eligibility.status === 'recovering'
+    || input.eligibility.status === 'detect-failed'
+    || input.settled?.status === 'unsupported';
 }
 
 /**

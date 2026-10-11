@@ -1705,11 +1705,11 @@ export default function NewRemoteSessionScreen() {
   // 2026-09-11: show this draft's explicit choice, otherwise the last host mirror.
   // Eligibility failures still cannot silently downgrade an enabled worktree.
   const worktreeChecked = worktreeEnabled;
-  // 进行中状态(检测环境、同步设置)不显示 caption:文案一闪即逝会让界面上下跳动；
-  // 开关在途时已禁用，只有需要用户知道的失败/阻塞原因才显示。
-  const worktreeCaptionKey = worktreeEligibility.status === 'probing'
-    ? null
-    : worktreeEligibilityCaptionKey(worktreeEligibility);
+  // caption 会多占一行、把上方选择器顶起，只在它解释「已勾选但创建被拦」时显示：
+  // 探测中不显示；未勾选时创建不受资格影响，恢复中 / 探测失败也不显示。
+  const worktreeCaptionKey = worktreeEnabled && worktreeEligibility.status !== 'probing'
+    ? worktreeEligibilityCaptionKey(worktreeEligibility)
+    : null;
   const worktreeCreateBlocked = shouldBlockNewSessionCreateForWorktree({
     applicable: worktreeApplicable,
     enabled: worktreeEnabled,

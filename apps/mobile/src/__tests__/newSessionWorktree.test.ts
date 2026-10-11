@@ -515,6 +515,17 @@ describe('shouldShowWorktreeToggle / caption key', () => {
     expect(show({ status: 'probing' }, true, { status: 'ineligible', reason: 'notGitRepo' })).toBe(false);
   });
 
+  it('已勾选时实时恢复中 / 探测失败优先于沿用的旧 ineligible：创建被拦就必须露出关闭入口', () => {
+    const notGit: NewSessionWorktreeSettledEligibility = { status: 'ineligible', reason: 'notGitRepo' };
+    for (const live of [{ status: 'recovering' }, { status: 'detect-failed' }] as const) {
+      expect(shouldBlockNewSessionCreateForWorktree({
+        applicable: true, enabled: true, eligibility: live, preferenceSaving: false,
+      })).toBe(true);
+      expect(show(live, true, notGit)).toBe(true);
+      expect(show(live, false, notGit)).toBe(false);
+    }
+  });
+
   it('确认不合格(ineligible)时开关行隐藏,即使记忆为 ON(2026-08-07 裁决)', () => {
     for (const reason of ['gitMissing', 'notGitRepo', 'alreadyInWorktree'] as const) {
       expect(show({ status: 'ineligible', reason }, true)).toBe(false);
