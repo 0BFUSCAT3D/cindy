@@ -167,15 +167,30 @@ export function commandUsesUserDataDir(command, userDataDir) {
 }
 
 /**
+ * 进程是否属于 ownRootDir 这份 checkout。Cindy 托管的 `.cindy-worktrees/<name>`
+ * 嵌在主 checkout 目录里，只看路径前缀会把托管 worktree 的 dev 当成主 checkout
+ * 自己的进程（主仓 restart 误杀并行实例、userData 冲突门漏检）。归属以命中的
+ * 最深 checkout 为准：同时命中嵌套在 ownRootDir 下的其他 worktree 时不算自己的。
+ */
+export function commandBelongsToCheckout(command, ownRootDir, checkoutPaths = []) {
+  if (!commandContainsPath(command, ownRootDir)) return false;
+  const own = stripTrailingSlashes(normalize(ownRootDir));
+  return !checkoutPaths.some((candidate) => {
+    const normalized = stripTrailingSlashes(normalize(candidate));
+    return normalized.startsWith(`${own}/`) && commandContainsPath(command, candidate);
+  });
+}
+
+/**
  * 重启的 kill 作用域:只收当前 checkout(ownRootDir)自己的 dev 进程。其他
  * worktree / 命名沙箱一律保留 ——「重启」的语义是重启这份 checkout 的实例,
  * 不是清场(2026-07-30 约束:PI 沙箱启动器曾全灭掉并行的 tgbot-review 沙箱)。
  */
-export function partitionDesktopDevProcesses(processes, ownRootDir) {
+export function partitionDesktopDevProcesses(processes, ownRootDir, checkoutPaths = []) {
   const targets = [];
   const preserved = [];
   for (const proc of processes) {
-    (commandContainsPath(proc.command, ownRootDir) ? targets : preserved).push(proc);
+    (commandBelongsToCheckout(proc.command, ownRootDir, checkoutPaths) ? targets : preserved).push(proc);
   }
   return { targets, preserved };
 }
@@ -486,6 +501,34 @@ export function prepareDarwinTerminalLaunch(command, dir = os.tmpdir()) {
   };
 }
 
+export function desktopDevTerminalLogPath(root = rootDir) {
+  return path.join(root, 'apps', 'desktop', 'logs', 'dev-terminal.log');
+}
+
+// Agent 没有 TTY 时 dev 跑在新开的 Terminal 标签页里，进程退出后标签页随之关闭，
+// 失败原因就看不到了。script(1) 继续给子进程一个 pty（electron-forge 依赖 TTY），
+// 同时把完整输出写进当前 checkout 的日志文件；退出码与子进程一致。
+export function darwinTerminalLoggedCommand(command, logPath) {
+  return `/usr/bin/script -q -F ${shellSingleQuote(logPath)} ${command}`;
+}
+
+export function readDesktopDevLogTail(logPath, maxLines = 40) {
+  let text;
+  try {
+    text = fs.readFileSync(logPath, 'utf8');
+  } catch {
+    return [];
+  }
+  const lines = text
+    // ANSI 转义、script(1) 写入的 ^D／退格等控制字符都去掉，只保留可读文本。
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\][^\x07]*\x07/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.split('\r').at(-1).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trimEnd())
+    .filter((line) => line.trim() !== '');
+  return lines.slice(-maxLines);
+}
+
 function osascriptCloseDarwinTerminalTtyArgs(ttyPath) {
   return closeDarwinTerminalTtyScript
     .flatMap((line) => ['-e', line])
@@ -742,14 +785,15 @@ export function shouldRefuseHostedRestart(ancestor, {
   preserveRunning,
   ownRootDir,
   isolated = false,
+  checkoutPaths = [],
 }) {
   if (!ancestor || preserveRunning) return false;
-  if (commandContainsPath(ancestor.command, ownRootDir)) return true;
+  if (commandBelongsToCheckout(ancestor.command, ownRootDir, checkoutPaths)) return true;
   return isolated !== true;
 }
 
-export function hostedRestartRefusal(ancestor, { ownRootDir }) {
-  return commandContainsPath(ancestor.command, ownRootDir)
+export function hostedRestartRefusal(ancestor, { ownRootDir, checkoutPaths = [] }) {
+  return commandBelongsToCheckout(ancestor.command, ownRootDir, checkoutPaths)
     ? {
       code: 'HOSTED_RESTART_REFUSED',
       message: "Refusing to restart from within this checkout's desktop dev process tree.",
@@ -982,7 +1026,10 @@ function launchInSystemTerminal(mode) {
   }
 
   if (process.platform === 'darwin') {
-    const command = `${darwinEnvPrefix()}${darwinStaleDevEnvUnset()}cd ${shellSingleQuote(rootDir)} && ${devEnvPrefix()}${packageManagerCommand(mode)}; exitCode=$?; exit $exitCode`;
+    const logPath = desktopDevTerminalLogPath();
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.rmSync(logPath, { force: true });
+    const command = `${darwinEnvPrefix()}${darwinStaleDevEnvUnset()}cd ${shellSingleQuote(rootDir)} && ${devEnvPrefix()}${darwinTerminalLoggedCommand(packageManagerCommand(mode), logPath)}; exitCode=$?; exit $exitCode`;
     const { scriptPath, args } = prepareDarwinTerminalLaunch(command);
     // osascript 在 do script 之前失败（自动化权限被拒、脚本错误）时临时脚本不会被 source，
     // 首行自删不会发生；按失败退出尽力删除，避免留下含开发环境变量的文件。
@@ -1007,19 +1054,20 @@ function launchInSystemTerminal(mode) {
       throw new Error('Failed to open Terminal.app');
     }
     console.log(`==> Opened desktop ${mode} dev in a new Terminal window.`);
-    return;
+    console.log(`==> Dev terminal output is also written to ${logPath}`);
+    return logPath;
   }
 
   console.warn('==> Non-interactive terminal detected, but no system terminal launcher is configured for this platform.');
   console.warn('==> Falling back to current process; this may fail if electron-forge requires a TTY.');
+  return null;
 }
 
 function startDesktopDev(mode) {
   console.log(`==> Starting desktop ${mode} dev...`);
 
   if (!hasInteractiveTty() && (process.platform === 'win32' || process.platform === 'darwin')) {
-    launchInSystemTerminal(mode);
-    return;
+    return launchInSystemTerminal(mode) ?? null;
   }
 
   const child = spawn(process.execPath, [path.join(rootDir, 'scripts', 'desktop-dev-runner.mjs'), mode], {
@@ -1035,6 +1083,7 @@ function startDesktopDev(mode) {
     if (signal) process.kill(process.pid, signal);
     process.exit(code ?? 0);
   });
+  return null;
 }
 
 function createStartupStatusPath() {
@@ -1313,13 +1362,16 @@ async function main() {
   }
   if (startupConfig) ensureDesktopEnv();
 
+  const checkoutPaths = repositoryWorktreePaths();
+  const belongsToThisCheckout = (proc) => commandBelongsToCheckout(proc.command, rootDir, checkoutPaths);
   const devAncestor = findDevAncestor();
   if (shouldRefuseHostedRestart(devAncestor, {
     preserveRunning,
     ownRootDir: rootDir,
     isolated: hasIsolationIntent(argv, process.env),
+    checkoutPaths,
   })) {
-    const refusal = hostedRestartRefusal(devAncestor, { ownRootDir: rootDir });
+    const refusal = hostedRestartRefusal(devAncestor, { ownRootDir: rootDir, checkoutPaths });
     exitWithFailure(
       refusal.code,
       refusal.message,
@@ -1383,7 +1435,7 @@ async function main() {
   }
   if (!preserveRunning) {
     const conflicts = listDesktopDevProcesses().filter(
-      (proc) => !commandContainsPath(proc.command, rootDir)
+      (proc) => !belongsToThisCheckout(proc)
         && commandUsesUserDataDir(proc.command, targetUserDataDir),
     );
     if (conflicts.length > 0) {
@@ -1414,7 +1466,7 @@ async function main() {
 
   const allTargets = listDesktopDevProcesses();
   // kill 作用域 = 当前 checkout。其他 worktree / 命名沙箱的实例一律保留。
-  const ownScope = partitionDesktopDevProcesses(allTargets, rootDir);
+  const ownScope = partitionDesktopDevProcesses(allTargets, rootDir, checkoutPaths);
   const targets = replaceRunningRoot
     ? allTargets.filter((proc) => commandContainsPath(proc.command, replaceRunningRoot))
     : ownScope.targets;
@@ -1484,7 +1536,7 @@ async function main() {
 
     // 等待/强杀同样限定在本 checkout —— 不带过滤器会把其他 checkout 仍在跑的
     // 实例当成"顽固进程"逐个 SIGKILL 掉。
-    const matchesOwnRoot = (proc) => commandContainsPath(proc.command, rootDir);
+    const matchesOwnRoot = belongsToThisCheckout;
     const remainingAfterTerm = await waitForDesktopDevProcessesToExit(gracefulTimeoutMs, matchesOwnRoot);
     if (remainingAfterTerm.length > 0) {
       console.log(`==> Force stopping ${remainingAfterTerm.length} stubborn Cindy desktop dev process(es)...`);
@@ -1525,7 +1577,7 @@ async function main() {
       isolationName: process.env.XDT_ISOLATED_NAME || '',
     });
   }
-  startDesktopDev(mode);
+  const terminalLogPath = startDesktopDev(mode);
   if (startupStatusPath) {
     try {
       await waitForDesktopStartup(startupStatusPath);
@@ -1537,7 +1589,15 @@ async function main() {
       printDesktopDevVerdict(verdict);
       if (verdict.state !== 'ready') process.exit(1);
     } catch (error) {
-      printDesktopDevVerdict(buildDesktopDevVerdictFromFailure(error, verdictContext));
+      const logTail = terminalLogPath ? readDesktopDevLogTail(terminalLogPath) : [];
+      if (logTail.length > 0) {
+        console.error(`==> Last ${logTail.length} lines of ${terminalLogPath}:`);
+        for (const line of logTail) console.error(`    ${line}`);
+      }
+      printDesktopDevVerdict(buildDesktopDevVerdictFromFailure(error, {
+        ...verdictContext,
+        ...(terminalLogPath ? { log: terminalLogPath } : {}),
+      }));
       console.error(error instanceof Error ? error.message : error);
       process.exit(1);
     }

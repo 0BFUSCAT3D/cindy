@@ -28,6 +28,10 @@ import {
 	formatDesktopStartupFailure,
 	inspectSharedUserDataRegion,
 	partitionDesktopDevProcesses,
+	commandBelongsToCheckout,
+	darwinTerminalLoggedCommand,
+	desktopDevTerminalLogPath,
+	readDesktopDevLogTail,
 	productionUserDataDir,
 	readDesktopStartupStatus,
 	parseWorktreePaths,
@@ -232,6 +236,31 @@ test("restart kill scope only targets the checkout that runs the script", () => 
 	const { targets, preserved } = partitionDesktopDevProcesses(processes, ownRoot);
 	assert.deepEqual(targets.map((proc) => proc.pid), [1, 3]);
 	assert.deepEqual(preserved.map((proc) => proc.pid), [2]);
+});
+
+test("restart from the main checkout keeps dev instances of nested managed worktrees", () => {
+	const mainRoot = path.resolve("/repo/cindy-src");
+	const nestedRoot = path.join(mainRoot, ".cindy-worktrees", "fierce-newton");
+	const checkoutPaths = [mainRoot, nestedRoot];
+	const processes = [
+		{ pid: 1, command: `${path.join(mainRoot, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")} .` },
+		{ pid: 2, command: `${path.join(nestedRoot, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")} .` },
+	];
+
+	const fromMain = partitionDesktopDevProcesses(processes, mainRoot, checkoutPaths);
+	assert.deepEqual(fromMain.targets.map((proc) => proc.pid), [1]);
+	assert.deepEqual(fromMain.preserved.map((proc) => proc.pid), [2]);
+	const fromNested = partitionDesktopDevProcesses(processes, nestedRoot, checkoutPaths);
+	assert.deepEqual(fromNested.targets.map((proc) => proc.pid), [2]);
+	assert.equal(commandBelongsToCheckout(processes[1].command, mainRoot, checkoutPaths), false);
+	assert.equal(
+		shouldRefuseHostedRestart(processes[1], { ownRootDir: mainRoot, isolated: true, checkoutPaths }),
+		false,
+	);
+	assert.equal(
+		shouldRefuseHostedRestart(processes[0], { ownRootDir: mainRoot, isolated: true, checkoutPaths }),
+		true,
+	);
 });
 
 test("userData conflict detection matches exact sandbox dirs only", () => {
@@ -1217,6 +1246,26 @@ test("isolated failures do not suggest another isolated start", () => {
 	assert.equal(verdict.mode, "isolated");
 });
 
+test("userData conflicts in the shared dev sandbox suggest a per-worktree sandbox", () => {
+	const verdict = buildDesktopDevVerdictFromFailure(
+		new Error("Target userData is already in use by another checkout's dev instance: /x"),
+		{ isolated: true, sandbox: "dev", code: "USERDATA_IN_USE" },
+	);
+	assert.equal(verdict.code, "USERDATA_IN_USE");
+	assert.equal(verdict.next, ISOLATED_RESTART_NEXT);
+});
+
+test("failure verdict carries the dev terminal log path", () => {
+	const verdict = buildDesktopDevVerdictFromFailure(new Error("boom"), {
+		isolated: true,
+		log: "/repo/cindy-feature/apps/desktop/logs/dev-terminal.log",
+	});
+	assert.match(
+		formatDesktopDevVerdict(verdict),
+		/^log=\/repo\/cindy-feature\/apps\/desktop\/logs\/dev-terminal\.log$/m,
+	);
+});
+
 test("inferDesktopDevFailureCode reads tagged startup failures", () => {
 	assert.equal(inferDesktopDevFailureCode("[SINGLE_INSTANCE_OWNED] owned"), "SINGLE_INSTANCE_OWNED");
 	assert.equal(
@@ -1450,4 +1499,29 @@ test("darwinStaleDevEnvUnset keeps variables this launch forwards (isolated with
 	// 被转发的值与被清除的键互不重叠:同一次命令里不会先赋值再 unset。
 	const forwarded = devEnvPrefix(env, "darwin");
 	for (const key of keys) assert.ok(!forwarded.includes(`${key}=`), `${key} both forwarded and unset`);
+});
+
+test("darwin dev terminal output is recorded through script(1) under the checkout logs", () => {
+	const logPath = desktopDevTerminalLogPath("/repo/cindy feature");
+	assert.equal(logPath, path.join("/repo/cindy feature", "apps", "desktop", "logs", "dev-terminal.log"));
+	assert.equal(
+		darwinTerminalLoggedCommand("'node' 'runner.mjs' 'remote'", logPath),
+		`/usr/bin/script -q -F '${logPath}' 'node' 'runner.mjs' 'remote'`,
+	);
+});
+
+test("readDesktopDevLogTail strips terminal control sequences and keeps the last lines", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-dev-log-"));
+	try {
+		const logPath = path.join(dir, "dev-terminal.log");
+		fs.writeFileSync(
+			logPath,
+			"\x04\b\bstart\r\n\x1b[32mvite ready\x1b[0m\r\nprogress 1\rprogress 2\r\n\r\nError: boom\r\n",
+		);
+		assert.deepEqual(readDesktopDevLogTail(logPath), ["start", "vite ready", "progress 2", "Error: boom"]);
+		assert.deepEqual(readDesktopDevLogTail(logPath, 2), ["progress 2", "Error: boom"]);
+		assert.deepEqual(readDesktopDevLogTail(path.join(dir, "missing.log")), []);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
