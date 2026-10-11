@@ -217,34 +217,86 @@ function hasCodexPluginIdentity(pluginId: string | undefined): boolean {
 }
 
 /**
- * Whether Codex enforces a host route: through thread config and Skill config
- * here, or through the desktop's provenance-preserving plugin overlay for
- * explicit-only sources. Keep this in step with those builders; a route that
- * fails it would be ignored or rejected at session start.
+ * The Skill catalog target hidden by a disabled Codex plugin or Skill route.
+ * Throws when the route lacks the plugin identity Codex needs to find it.
+ */
+function codexSkillDisableTarget(
+  directive: CapabilityRouteOverride,
+): CodexSkillDisableTarget {
+  const pluginId = directive.source.surface === 'plugin'
+    ? directive.source.id
+    : directive.source.containerId;
+  if (!pluginId) {
+    const requiredField = directive.source.surface === 'plugin'
+      ? 'source.id'
+      : 'source.containerId';
+    throw new Error(
+      `Cannot disable Codex Skill ${directive.source.id}: ${requiredField} is required`,
+    );
+  }
+  const plugin = parseCodexPluginCacheIdentity(pluginId);
+  if (!plugin) {
+    throw new Error(
+      `Cannot enforce disabled Codex Skill routing for ${directive.source.id}: expected plugin id in <name>@<marketplace> form`,
+    );
+  }
+  const skillArtifactId = directive.source.surface === 'skill'
+    ? directive.source.artifactId
+    : undefined;
+  if (directive.source.surface === 'skill' && !skillArtifactId) {
+    throw new Error(
+      `Cannot disable Codex Skill ${directive.source.id}: source.artifactId is required`,
+    );
+  }
+  return {
+    plugin,
+    ...(skillArtifactId ? { skillArtifactId } : {}),
+  };
+}
+
+/**
+ * Whether the desktop's provenance-preserving plugin overlay narrows this
+ * explicit-only route locally. The overlay builder selects routes through this
+ * same predicate.
+ */
+export function isCodexExplicitOnlyOverlayRoute(
+  directive: CapabilityRouteOverride,
+): boolean {
+  if (
+    !isCodexHarnessPluginDirective(directive) ||
+    directive.invocation !== 'explicit-only' ||
+    !hasCodexPluginIdentity(directive.source.containerId)
+  ) {
+    return false;
+  }
+  const { surface, id, artifactId } = directive.source;
+  return surface === 'skill' ||
+    (surface === 'mcp' && !!artifactId && artifactId !== id);
+}
+
+/**
+ * Whether Codex enforces a host route. Built from the same helpers the Skill
+ * config builder and the desktop overlay use, so the route support check
+ * cannot drift from what a session actually applies.
  */
 export function isCodexCapabilityRouteEnforced(
   directive: CapabilityRouteOverride,
 ): boolean {
-  if (!isCodexHarnessPluginDirective(directive)) return false;
-  const { surface, id, containerId, artifactId } = directive.source;
-  if (directive.invocation === 'disabled') {
-    switch (surface) {
-      case 'plugin':
-        return hasCodexPluginIdentity(id);
-      case 'skill':
-        return hasCodexPluginIdentity(containerId) && !!artifactId;
-      case 'mcp':
-        return true;
-      default:
-        return false;
+  if (isDisabledCodexSkillSourceDirective(directive)) {
+    try {
+      codexSkillDisableTarget(directive);
+      return true;
+    } catch {
+      return false;
     }
   }
-  if (directive.invocation === 'explicit-only') {
-    if (!hasCodexPluginIdentity(containerId)) return false;
-    if (surface === 'skill') return true;
-    if (surface === 'mcp') return !!artifactId && artifactId !== id;
+  if (
+    isCodexHarnessPluginDirective(directive) &&
+    directive.invocation === 'disabled'
+  ) {
+    return directive.source.surface === 'mcp';
   }
-  return false;
+  return isCodexExplicitOnlyOverlayRoute(directive);
 }
 
 /**
@@ -288,35 +340,7 @@ export function buildCodexCapabilitySkillConfigOverrides(
   const targets: CodexSkillDisableTarget[] = [];
   for (const directive of policy?.overrides ?? []) {
     if (!isDisabledCodexSkillSourceDirective(directive)) continue;
-    const pluginId = directive.source.surface === 'plugin'
-      ? directive.source.id
-      : directive.source.containerId;
-    if (!pluginId) {
-      const requiredField = directive.source.surface === 'plugin'
-        ? 'source.id'
-        : 'source.containerId';
-      throw new Error(
-        `Cannot disable Codex Skill ${directive.source.id}: ${requiredField} is required`,
-      );
-    }
-    const plugin = parseCodexPluginCacheIdentity(pluginId);
-    if (!plugin) {
-      throw new Error(
-        `Cannot enforce disabled Codex Skill routing for ${directive.source.id}: expected plugin id in <name>@<marketplace> form`,
-      );
-    }
-    const skillArtifactId = directive.source.surface === 'skill'
-      ? directive.source.artifactId
-      : undefined;
-    if (directive.source.surface === 'skill' && !skillArtifactId) {
-      throw new Error(
-        `Cannot disable Codex Skill ${directive.source.id}: source.artifactId is required`,
-      );
-    }
-    targets.push({
-      plugin,
-      ...(skillArtifactId ? { skillArtifactId } : {}),
-    });
+    targets.push(codexSkillDisableTarget(directive));
   }
   if (targets.length === 0) return {};
 

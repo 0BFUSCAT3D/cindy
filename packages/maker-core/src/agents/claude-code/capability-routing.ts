@@ -74,8 +74,12 @@ function isClaudeSkillDirective(directive: CapabilityRouteOverride): boolean {
 /**
  * Translate host routing policy into Claude Code's native per-skill listing
  * controls. `user-invocable-only` removes a skill from implicit model context
- * while preserving exact `/name` invocation. User and project skills are never
- * overridden here, even if a host policy accidentally names one.
+ * while preserving exact `/name` invocation.
+ *
+ * Claude matches `skillOverrides` by name only and cannot tell a harness Skill
+ * from a user or project Skill of the same name. Host policy therefore names
+ * only harness-specific Skills (namespaced plugin Skills or vendor-specific
+ * built-in names), never generic names such as `design`.
  */
 export function buildClaudeSkillOverrides(
   policy: CapabilityRoutingPolicy | undefined,
