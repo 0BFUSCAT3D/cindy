@@ -86,6 +86,18 @@ vi.mock("react-native", async () => {
     },
   };
 });
+vi.mock("@/session/NativeVideoPlayer", async () => ({
+  NativeVideoPlayer: (props: any) => {
+    runtime.nodes.set(props.testID ?? "NativeVideoPlayer", props);
+    return null;
+  },
+}));
+vi.mock("@/session/mediaPlayerWebView", async () => ({
+  RemoteMediaPlayerWebView: (props: any) => {
+    runtime.nodes.set(props.testID ?? "RemoteMediaPlayerWebView", props);
+    return null;
+  },
+}));
 vi.mock("@/components/AppText", async () => ({
   Text: (await import("react-native")).Text,
 }));
@@ -956,5 +968,101 @@ describe("annotation drawing", () => {
     press("message.imageLightboxSendToChatButton");
     await act(async () => { await Promise.resolve(); });
     expect(onSubmit.mock.calls[0][3]).toMatchObject({ naturalWidth: 400, naturalHeight: 800 });
+  });
+});
+
+describe("chrome toggle, loading and video pages", () => {
+  const singleTap = () =>
+    gestures().find((g) => g.kind === "Tap" && g.options.numberOfTaps === 1)!;
+  const chrome = () => runtime.nodes.get("message.imageLightboxChrome");
+  const chromeOpacity = () => chrome().style[1].current.opacity;
+
+  it("toggles the chrome on single tap instead of closing, at any zoom", () => {
+    const { props } = mount();
+    fire(singleTap(), "onEnd", {}, true);
+    finishAnimations();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(chrome().pointerEvents).toBe("none");
+    expect(chromeOpacity()).toBe(0);
+
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(singleTap(), "onEnd", {}, true);
+    finishAnimations();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(chrome().pointerEvents).toBe("box-none");
+    expect(chromeOpacity()).toBe(1);
+  });
+
+  it("lets the placeholder zoom and shows the tools disabled while the original is loading", async () => {
+    const url = "xdt-image://cache/photo.png";
+    const image = {
+      key: "remote", title: "Photo", url,
+      payload: { kind: "media", media: { kind: "image", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    let finish!: (media: unknown) => void;
+    const resolver = vi.fn((media: { thumbnail?: boolean }) => (media.thumbnail
+      ? Promise.resolve({ url: "file:///thumb.png", previewable: true })
+      : new Promise((resolve) => { finish = resolve; })));
+    runtime.gesture = null;
+    await act(async () => {
+      mount({
+        images: [image], initialUrl: url, onResolveRemoteMedia: resolver as never, onShareImage: vi.fn(),
+        annotation: { submitLabel: "Send", allowDirectSubmit: true, onSubmit: vi.fn() },
+      });
+    });
+
+    expect(runtime.gesture).not.toBeNull();
+    const preview = () => runtime.nodes.get("message.imageLightboxPreviewLayer");
+    expect(preview().source.uri).toBe("file:///thumb.png");
+    expect(runtime.nodes.get("message.imageLightboxShareButton").disabled).toBe(true);
+    expect(runtime.nodes.get("message.imageLightboxSendToChatButton").disabled).toBe(true);
+    expect(runtime.nodes.get("message.imageLightboxAnnotateButton").disabled).toBe(true);
+
+    act(() => preview().onLoad({ source: { width: 160, height: 90 } }));
+    doubleTapAtCorner();
+    finishAnimations();
+    expect(preview().style[1].current.transform[4].scale).toBe(2.5);
+
+    await act(async () => {
+      finish({ url: "file:///full.png", previewable: true, mimeType: "image/png" });
+    });
+    act(() => runtime.nodes.get("Image").onLoad({ source: { width: 1600, height: 900 } }));
+    expect(runtime.nodes.get("message.imageLightboxShareButton").disabled).toBe(false);
+    expect(runtime.nodes.get("message.imageLightboxSendToChatButton").disabled).toBe(false);
+    expect(runtime.nodes.get("message.imageLightboxAnnotateButton").disabled).toBe(false);
+  });
+
+  it("plays video pages with the native player, falls back to the web player and releases on close", async () => {
+    const url = "xdt-video://cache/clip.mp4";
+    const video = {
+      key: "video", title: "clip.mp4", url,
+      payload: { kind: "media", media: { kind: "video", url, previewable: false } },
+    } as ImageLightboxProps["images"][number];
+    const resolved = { url: "https://cdn.invalid/clip.mp4", previewable: true, mimeType: "video/mp4" };
+    const resolver = vi.fn(async (media: { thumbnail?: boolean }) => {
+      if (media.thumbnail) throw new Error("no thumb");
+      return resolved;
+    });
+    const onReleaseRemoteMedia = vi.fn();
+    const onShareImage = vi.fn();
+    await act(async () => {
+      mount({
+        images: [video], initialUrl: url, onResolveRemoteMedia: resolver as never,
+        onReleaseRemoteMedia, onShareImage,
+      });
+    });
+    const player = runtime.nodes.get("message.imageLightboxVideoPlayer");
+    expect(player.url).toBe(resolved.url);
+    expect(player.visible).toBe(true);
+    expect(runtime.nodes.has("message.imageLightboxShareButton")).toBe(false);
+    expect(runtime.nodes.get("message.imageLightboxCloseButton")).toBeTruthy();
+
+    act(() => player.onError("decode failed"));
+    expect(runtime.nodes.get("message.imageLightboxVideoWebPlayer").url).toBe(resolved.url);
+
+    act(() => root.unmount());
+    expect(onReleaseRemoteMedia).toHaveBeenCalledWith(url, resolved);
+    root = createRoot(document.createElement("div"));
   });
 });

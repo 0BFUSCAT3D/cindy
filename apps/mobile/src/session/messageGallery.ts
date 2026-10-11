@@ -6,13 +6,17 @@ import {
 } from '@/session/messageMarkdown';
 import type { NormalizedRemoteMessage, NormalizedToolMedia } from '@/session/messageNormalize';
 import type { MessagePayload } from '@/session/messagePayload';
-import { buildAttachmentPayload, buildMediaPayload } from '@/session/messagePayload';
+import { buildAttachmentPayload, buildMediaPayload, payloadMediaKindLabel } from '@/session/messagePayload';
 import type { MobileMessageRenderItem, MobileWorkChildItem } from '@/session/messageRenderModel';
 import { logUnhandledRenderItem } from '@/session/assertNever';
 import { applySentAttachmentThumbOverlay } from '@/session/sentAttachmentThumbStore';
 import { i18n } from '@/i18n';
 import { svgAttachmentForDisplay } from '@/session/messageAttachments';
 
+/**
+ * 全屏查看器的一页:图片或视频(同一条消息里的图片与视频可连续横滑;名字沿用
+ * Image 是历史原因,composer 托盘 / 文件浏览器来源只放图片)。
+ */
 export interface MobileMessageGalleryImage {
   key: string;
   title: string;
@@ -26,6 +30,11 @@ export interface MobileMessageGalleryImage {
    * 非聊天来源(composer 托盘 / 文件浏览器)不填,调用方自行决定集合范围。
    */
   groupKey?: string;
+}
+
+/** 可进全屏查看器翻页的媒体:图片与视频;音频仍走通用查看器。 */
+export function isLightboxMediaKind(kind: string): kind is 'image' | 'video' {
+  return kind === 'image' || kind === 'video';
 }
 
 export function collectMobileMessageGalleryImages(
@@ -44,7 +53,7 @@ export function collectMobileMessageGalleryImages(
 
   const push = (key: string, title: string, payload: Extract<MessagePayload, { kind: 'media' }>) => {
     const url = payload.media.url.trim();
-    if (!url || payload.media.kind !== 'image') return;
+    if (!url || !isLightboxMediaKind(payload.media.kind)) return;
     const dedupeKey = `${currentGroupKey}::${url}`;
     if (seenUrls.has(dedupeKey)) return;
     seenUrls.add(dedupeKey);
@@ -62,7 +71,8 @@ export function collectMobileMessageGalleryImages(
   const visitMessage = (message: NormalizedRemoteMessage, keyPrefix: string, includeBodyImages: boolean) => {
     message.attachments?.forEach((rawAttachment, index) => {
       const displayAttachment = svgAttachmentForDisplay(rawAttachment, workdir, message.key, remoteHostId, sessionId);
-      if (displayAttachment.kind !== 'image' || !displayAttachment.uri) return;
+      // 图片附件,以及按 MIME 识别成视频的文件附件(AttachmentStrip 点开同样是 media payload)。
+      if (displayAttachment.kind === 'image' && !displayAttachment.uri) return;
       // 与 AttachmentStrip 同源 overlay(cindy-oss-attach:// → 本地缩略兜底):气泡
       // 点开时 initialUrl 是替换后的 file://,图集条目必须同步替换才能匹配进翻页组。
       const attachment = applySentAttachmentThumbOverlay(displayAttachment);
@@ -95,8 +105,10 @@ export function collectMobileMessageGalleryImages(
   };
 
   const pushMedia = (media: NormalizedToolMedia, key: string) => {
-    if (media.kind !== 'image') return;
-    const title = media.title || media.url.split('/').pop() || i18n.t('message.renderer.imageFallbackTitle');
+    if (!isLightboxMediaKind(media.kind)) return;
+    const title = media.title || media.url.split('/').pop() || (media.kind === 'video'
+      ? payloadMediaKindLabel('video')
+      : i18n.t('message.renderer.imageFallbackTitle'));
     const payload = buildMediaPayload(media, title);
     if (payload.kind === 'media') push(key, title, payload);
   };
@@ -108,7 +120,12 @@ export function collectMobileMessageGalleryImages(
     }
     if (child.type === 'tool_group') {
       child.tools.forEach((tool, index) => visitMessage(tool, `${child.key}:tool:${index}`, false));
+      return;
     }
+    // 回合结束后「工作过程」会按正文切成嵌套的 work_group(createCompletedWorkGroup):
+    // 必须递归,否则嵌套段里的图在回合结束那一刻从图集里消失——点开只剩单图,
+    // 流式中却能翻(「开始能滑、过一会儿不行」的根因)。
+    if (child.type === 'work_group') child.children.forEach(visitChild);
   };
 
   const visitItem = (item: MobileMessageRenderItem) => {
@@ -128,8 +145,10 @@ export function collectMobileMessageGalleryImages(
         item.childItems.forEach(visitItem);
         break;
       case 'tool_media':
-        // tool 产出媒体的独立渲染项(所属 tool_group 内同一批 tool 消息的再呈现):
-        // 图片已随 tool_group 路径进图集(push 亦按 url 去重),这里 no-op 防双计。
+        // tool 产出媒体的独立渲染项(所属 tool_group 内同一批 tool 消息的再呈现,
+        // 回合结束后才出现):用户点的通常是这块,单独成组,点它翻的就是这块里
+        // 看得到的图 / 视频。同一 url 也在 tool_group 所在组里,两处各按点击来源取组。
+        item.tools.forEach((tool, index) => visitMessage(tool, `${item.key}:tool:${index}`, false));
         break;
       case 'todo':
         // todo 卡无图片,no-op。
@@ -163,7 +182,7 @@ export function galleryImageIndexForPayload(
   images: readonly MobileMessageGalleryImage[],
   payload: MessagePayload | null,
 ): number {
-  if (!payload || payload.kind !== 'media' || payload.media.kind !== 'image') return -1;
+  if (!payload || payload.kind !== 'media' || !isLightboxMediaKind(payload.media.kind)) return -1;
   const url = payload.media.url.trim();
   if (!url) return -1;
   return images.findIndex((image) => image.url === url);
@@ -171,18 +190,26 @@ export function galleryImageIndexForPayload(
 
 /**
  * 全屏查看器的图片集:被打开的图在会话图集里 → 取它**所属消息**(groupKey)
- * 内的图片子集(同一条消息多图才可横滑翻页,跨轮次不串,产品决策 2026-07-08);
- * 同一 url 出现在多条消息(多个组)时,payload 只有 url、无法判定点的是哪条
- * 消息 → 保守退化为单图集合,绝不错开到别的消息的图组(review P2)。
+ * 内的图片 / 视频子集(同一条消息多张才可横滑翻页,跨轮次不串,产品决策 2026-07-08)。
+ *
+ * 所属消息优先用点击来源(sourceGroupKey:点开时所在的顶层 render item):同一
+ * url 常会再次出现在后面的消息里(例如 Agent 读图后工具结果里显示同一个文件),
+ * 只凭 url 反查会命中多个组。来源不在图集里(tool_media 等不收图的独立块)或
+ * 调用方没给来源时才按 url 反查:唯一命中一组取该组;命中多组无法判定点的是
+ * 哪条消息 → 保守退化单图,绝不错开到别的消息的图组(review P2)。
  * 完全不在图集里(理论兜底)→ 同样退化单图。
  */
 export function lightboxImagesForPayload(
   images: readonly MobileMessageGalleryImage[],
   payload: Extract<MessagePayload, { kind: 'media' }>,
+  sourceGroupKey?: string | null,
 ): MobileMessageGalleryImage[] {
   const url = payload.media.url.trim();
   const matches = url ? images.filter((image) => image.url === url) : [];
   if (matches.length > 0) {
+    if (sourceGroupKey && matches.some((image) => image.groupKey === sourceGroupKey)) {
+      return images.filter((image) => image.groupKey === sourceGroupKey);
+    }
     const groupKey = matches[0].groupKey;
     // 组信息缺失(非聊天来源构造的集合)保持整集语义,由调用方决定范围。
     if (groupKey === undefined) return [...images];
