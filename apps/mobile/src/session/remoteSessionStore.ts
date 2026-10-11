@@ -1,4 +1,4 @@
-import { readResponseSpeedSnapshot, stopResponseSpeed, retryResponseSpeed, resumeResponseSpeed, mergeResponseSpeedStatus, type ResponseSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
 import {
   createContext,
@@ -149,10 +149,11 @@ export interface RemoteSessionRunStatus {
   status: string;
   tokenUsage: number;
   outputTokens: number;
-  responseSpeed?: ResponseSpeedSnapshot;
   generationDurationMs: number;
   generationActive: boolean;
   generationReliable: boolean;
+  /** 电脑端测得的实时速度（Pi 扩展算法）；旧版电脑不发。 */
+  tokenSpeed?: TokenSpeedSnapshot;
 }
 
 export interface RemoteSessionReconnectAttempt {
@@ -1281,17 +1282,31 @@ const mergedSessionById = new Map<string, RemoteSession>();
 // live usage. Usage pushes must not rebuild Home's grouping/localization tree.
 let homeSessions: RemoteSession[] = [];
 const SESSION_USAGE_FIELDS = new Set(['totalMoney', 'totalCostUsd', 'totalTokenUsage']);
+const homeSessionProjectionCache = new Map<string, {
+  source: RemoteSession;
+  projected: RemoteSession;
+}>();
 
 function reconcileHomeSessions(): void {
-  const previous = new Map(homeSessions.map((session) => [session.id, session]));
+  const activeSessionIds = new Set<string>();
   const next = mergedSessions.map((session) => {
+    activeSessionIds.add(session.id);
+    const cached = homeSessionProjectionCache.get(session.id);
+    if (cached?.source === session) return cached.projected;
+
     const projected = { ...session };
     delete projected.totalMoney;
     delete projected.totalCostUsd;
     delete projected.totalTokenUsage;
-    const old = previous.get(session.id);
-    return old && remoteSessionEqual(old, projected) ? old : projected;
+    const stableProjected = cached && remoteSessionEqual(cached.projected, projected)
+      ? cached.projected
+      : projected;
+    homeSessionProjectionCache.set(session.id, { source: session, projected: stableProjected });
+    return stableProjected;
   });
+  for (const sessionId of homeSessionProjectionCache.keys()) {
+    if (!activeSessionIds.has(sessionId)) homeSessionProjectionCache.delete(sessionId);
+  }
   if (sameElementRefs(homeSessions, next)) return;
   homeSessions = next;
   bumpHomeStatusVersion();
@@ -1544,8 +1559,9 @@ function recomputeSessions(): void {
   for (const { session, physicalDeviceId } of byId.values()) {
     const prev = prevById.get(session.id);
     const projected = applyPendingTitlePreview(session);
-    if (!prev || !remoteSessionEqual(prev, projected)) pendingMessagePreviewSessionIds.add(session.id);
-    next.push(prev && remoteSessionEqual(prev, projected) ? prev : projected);
+    const same = prev !== undefined && remoteSessionEqual(prev, projected);
+    if (!same) pendingMessagePreviewSessionIds.add(session.id);
+    next.push(same ? prev : projected);
     sessionDeviceIndex.set(session.id, physicalDeviceId);
   }
   for (const sessionId of [...sessionLiveActivity.keys()]) {
@@ -1555,10 +1571,13 @@ function recomputeSessions(): void {
   // 权威标题落地、明确失败撤回、归档/删除、设备移除、clear() 才会丢掉。
   // 数组级同样调和:全部元素引用与序都未变时保留旧数组引用——useRemoteSessions 的
   // useSyncExternalStore 快照经 Object.is 即可短路,消费屏对无关 emit 零重渲染。
-  mergedSessions = sameElementRefs(mergedSessions, next) ? mergedSessions : next;
+  const sessionsChanged = !sameElementRefs(mergedSessions, next);
+  if (sessionsChanged) mergedSessions = next;
   mergedSessionById.clear();
   for (const session of mergedSessions) mergedSessionById.set(session.id, session);
-  reconcileHomeSessions();
+  // Usage-only patches bypass this projection and cannot change Home fields.
+  // Reuse the list comparison above to skip its scan and allocations entirely.
+  if (sessionsChanged) reconcileHomeSessions();
   let liveRowsReanchored = false;
   for (const session of mergedSessions) {
     bindPendingHostAnchorSendAt(session.id, session.userSendAt);
@@ -4728,15 +4747,6 @@ export const remoteSessionStore = {
       ? clearSessionReconnectAttempt(sessionId)
       : false;
     const fullMessageWriteAllowed = fromList || messageWriteAllowed(sessionId);
-    const outputData = isRecord(event.data) ? event.data : null;
-    if (((type === 'text' || type === 'thinking') && readString(outputData, 'text')) || type === 'tool_use') {
-      const current = readSessionRunStatus(sessionId);
-      const responseSpeed = resumeResponseSpeed(current.responseSpeed);
-      if (responseSpeed !== current.responseSpeed) {
-        writeSessionRunStatus(sessionId, { ...current, responseSpeed });
-        emit();
-      }
-    }
     if (type === 'text') {
       if (!fullMessageWriteAllowed) {
         if (reconnectCleared) emit();
@@ -4819,20 +4829,11 @@ export const remoteSessionStore = {
           }
         }
       }
-      const terminalData = isRecord(event.data) ? event.data : null;
-      const rawTurn = isRecord(terminalData?.raw) ? terminalData.raw : null;
-      const current = readSessionRunStatus(sessionId);
-      const cancelled = (!current.isRunning && current.responseSpeed?.outcome === 'cancelled') ||
-        terminalData?.cancelled === true || terminalData?.status === 'cancelled' ||
-        terminalData?.reason === 'send_cancelled_before_acceptance' ||
-        terminalData?.reason === 'turn_continuation_cancelled' ||
-        terminalData?.reason === 'user_stop_unconfirmed_wake_tasks';
-      const failed = !cancelled && (isTerminalMakerErrorEvent(event) || rawTurn?.status === 'failed' || terminalData?.status === 'failed');
-      const terminalErrorChanged = writeSessionRunStatus(sessionId, {
-        ...current,
-        ...(cancelled ? { hasTerminalError: false } : failed ? { hasTerminalError: true } : {}),
-        responseSpeed: stopResponseSpeed(current.responseSpeed, cancelled ? 'cancelled' : failed ? 'failed' : undefined),
-      });
+      const terminalErrorChanged = isTerminalMakerErrorEvent(event)
+        && writeSessionRunStatus(sessionId, {
+          ...readSessionRunStatus(sessionId),
+          hasTerminalError: true,
+        });
       this.setSessionRunning(
         sessionId,
         false,
@@ -4859,7 +4860,6 @@ export const remoteSessionStore = {
         ...current,
         isRunning: true,
         reconnectAttempt,
-        responseSpeed: data?.willRetry === true ? retryResponseSpeed(current.responseSpeed) : current.responseSpeed,
         startedAt: current.startedAt ?? Date.now(),
       });
       if (changed || textFlushed) emit();
@@ -5011,6 +5011,10 @@ export const remoteSessionStore = {
       const generationReliable = typeof data?.generationReliable === 'boolean'
         ? data.generationReliable
         : (isTurnStart ? true : current.generationReliable);
+      // 速度属于产生它的那一轮：新一轮清掉，没带字段的帧沿用最近一次（含收尾平均）。
+      // 标记不可靠又不带速度的帧，表示电脑端撤回了速度（休眠／时钟异常）。
+      const tokenSpeed = readTokenSpeedSnapshot(data?.tokenSpeed)
+        ?? (isTurnStart || data?.generationReliable === false ? undefined : current.tokenSpeed);
       // maker turn 边界 false→true 时清掉上一轮残留的 live task updates:它们是 turn 级
       // live 状态,残留到下一轮会被渲染层的孤儿兜底当作"仍在运行的子 agent"追加到消息流
       // 末尾(桌面端靠 idle demote / clear 清,手机 store 是常驻单例,只能在 turn 边界收口)。
@@ -5037,11 +5041,10 @@ export const remoteSessionStore = {
         status: rawStatus ?? current.status,
         tokenUsage,
         outputTokens,
-        responseSpeed: mergeResponseSpeedStatus(current.responseSpeed,
-          readResponseSpeedSnapshot(data?.responseSpeed, Date.now()), isRunning, isTurnStart),
         generationDurationMs,
         generationActive,
         generationReliable,
+        tokenSpeed,
       };
       if (
         writeSessionRunStatus(sessionId, next)
@@ -5211,6 +5214,7 @@ export const remoteSessionStore = {
     pendingTitlePreview.clear();
     mergedSessions = [];
     mergedSessionById.clear();
+    homeSessionProjectionCache.clear();
     if (homeSessions.length > 0) {
       homeSessions = [];
       bumpHomeStatusVersion();
@@ -5619,7 +5623,7 @@ function clearLiveGenerationOnWideRunStart(
   return {
     ...next,
     outputTokens: 0,
-    responseSpeed: undefined,
+    tokenSpeed: undefined,
     generationDurationMs: 0,
     generationActive: false,
     generationReliable: true,
@@ -5640,9 +5644,6 @@ function writeMakerTurnRunning(sessionId: string, running: boolean): boolean {
 
 function writeSessionRunStatus(sessionId: string, next: RemoteSessionRunStatus): boolean {
   const current = readSessionRunStatus(sessionId);
-  if (!next.isRunning && next.responseSpeed?.phase !== 'complete') {
-    next = { ...next, responseSpeed: stopResponseSpeed(next.responseSpeed), generationActive: false };
-  }
   if (next.isRunning && !current.isRunning && current.hasTerminalError) {
     next = { ...next, hasTerminalError: false };
   }

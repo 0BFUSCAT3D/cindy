@@ -1,5 +1,5 @@
-import { readResponseSpeedSnapshot, stopResponseSpeed, retryResponseSpeed, resumeResponseSpeed, mergeResponseSpeedStatus, type ResponseSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
+import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { remotePluginSetupErrorCode, type PluginSetupCommandError } from './pluginSetupCommandError';
 export type { PluginSetupCommandError } from './pluginSetupCommandError';
 import { emitTaskTagCatalog } from '@/features/task-tags/taskTagEvents';
@@ -731,12 +731,13 @@ export interface AgentStatus {
   /** Turn-cumulative output tokens for live TPS. */
   outputTokens?: number;
   /** Generation-only milliseconds including any open interval at emit time. */
-  responseSpeed?: ResponseSpeedSnapshot;
   generationDurationMs?: number;
   /** True while the model currently owns the turn. */
   generationActive?: boolean;
   /** False hides live TPS. Omitted on placeholder status frames. */
   generationReliable?: boolean;
+  /** Host-measured live tok/s; absent from old hosts and before the first output. */
+  tokenSpeed?: TokenSpeedSnapshot;
   /**
    * Side-channel running (mivo MJ 按钮等不走 LLM 的后台任务)。
    * RunningStatusBar 据此把 token 计数行隐藏掉, 避免显示"上一轮残留 718 tokens"
@@ -5576,18 +5577,10 @@ export function handleStreamEvent(
   const hasCodexReconnectRecoveryOutput = isCodexReconnectRecoveryOutput(event);
   const shouldClearCodexReconnectPendingCard =
     event.type === 'error' ? !isCodexReconnectProgress : hasCodexReconnectRecoveryOutput;
-  const resumedSpeed = ((event.type === 'text' || event.type === 'thinking') &&
-    typeof (event.data as { text?: unknown })?.text === 'string' &&
-    Boolean((event.data as { text: string }).text)) ||
-    (event.type === 'tool_use' && hasCodexReconnectRecoveryOutput)
-    ? resumeResponseSpeed(inputState.agentStatus.responseSpeed) : inputState.agentStatus.responseSpeed;
-  const stateBeforeReconnectCleanup = resumedSpeed === inputState.agentStatus.responseSpeed &&
-    (!hasCodexReconnectRecoveryOutput || inputState.recoverableError == null) ? inputState : {
-    ...inputState,
-    recoverableError: hasCodexReconnectRecoveryOutput ? null : inputState.recoverableError,
-    agentStatus: resumedSpeed === inputState.agentStatus.responseSpeed ? inputState.agentStatus
-      : { ...inputState.agentStatus, responseSpeed: resumedSpeed },
-  };
+  const stateBeforeReconnectCleanup =
+    !hasCodexReconnectRecoveryOutput || inputState.recoverableError == null
+      ? inputState
+      : { ...inputState, recoverableError: null };
   const messagesAfterReconnectCleanup = shouldClearCodexReconnectPendingCard
     ? removeCodexReconnectPendingCard(stateBeforeReconnectCleanup.messages)
     : stateBeforeReconnectCleanup.messages;
@@ -6240,15 +6233,14 @@ export function handleStreamEvent(
       });
 
       const terminalData = event.data as
-        | { cancelled?: unknown; status?: unknown; reason?: unknown; plan?: unknown; raw?: { id?: unknown; status?: unknown } }
+        | { cancelled?: unknown; reason?: unknown; plan?: unknown; raw?: { id?: unknown; status?: unknown } }
         | null
         | undefined;
       const terminalTurnId = typeof terminalData?.raw?.id === 'string' ? terminalData.raw.id : null;
       const terminalTurnStatus =
         typeof terminalData?.raw?.status === 'string' ? terminalData.raw.status : null;
       const terminalCancelled =
-        terminalData?.cancelled === true || terminalData?.status === 'cancelled' ||
-        terminalData?.reason === 'send_cancelled_before_acceptance' ||
+        terminalData?.cancelled === true ||
         terminalData?.reason === 'turn_continuation_cancelled' ||
         terminalData?.reason === 'user_stop_unconfirmed_wake_tasks';
       const doneMessages =
@@ -6305,10 +6297,6 @@ export function handleStreamEvent(
         turnStoppedByUser: state.turnStoppedByUser || terminalCancelled,
         agentStatus: {
           ...state.agentStatus,
-          responseSpeed: stopResponseSpeed(state.agentStatus.responseSpeed,
-            state.turnStoppedByUser || terminalCancelled ? 'cancelled'
-              : terminalTurnStatus === 'failed' || terminalData?.status === 'failed' || finalized.error ? 'failed' : undefined),
-          generationActive: false,
           isRunning: false,
           startedAt: null,
         },
@@ -6425,8 +6413,6 @@ export function handleStreamEvent(
                     isRunning: true,
                     startedAt: state.agentStatus.startedAt ?? Date.now(),
                   }),
-              responseSpeed: (event.data as { willRetry?: boolean })?.willRetry === true
-                ? retryResponseSpeed(state.agentStatus.responseSpeed) : state.agentStatus.responseSpeed,
             },
           };
         }
@@ -6446,8 +6432,6 @@ export function handleStreamEvent(
           isStreaming: true,
           agentStatus: {
             ...state.agentStatus,
-            responseSpeed: (event.data as { willRetry?: boolean })?.willRetry === true
-              ? retryResponseSpeed(state.agentStatus.responseSpeed) : state.agentStatus.responseSpeed,
             isRunning: true,
             startedAt: state.agentStatus.startedAt ?? Date.now(),
           },
@@ -6540,10 +6524,6 @@ export function handleStreamEvent(
         // 初始 "Let's go" 文案上 shimmer 闪个不停（done 路径有同样的复位）。
         agentStatus: {
           ...state.agentStatus,
-          responseSpeed: suppressAutoResumeBroadcastError || isPlannedUpgradeClose
-            ? stopResponseSpeed(state.agentStatus.responseSpeed)
-            : stopResponseSpeed(state.agentStatus.responseSpeed, state.turnStoppedByUser ? 'cancelled' : 'failed'),
-          generationActive: false,
           isRunning: false,
           startedAt: null,
         },
@@ -7056,8 +7036,6 @@ function forceFinalizeOnSessionClosed(state: SessionChatState): SessionChatState
     turnStoppedByUser: false,
     agentStatus: {
       ...finalized.agentStatus,
-      responseSpeed: stopResponseSpeed(finalized.agentStatus.responseSpeed),
-      generationActive: false,
       isRunning: false,
       startedAt: null,
     },
@@ -7070,15 +7048,19 @@ function mergeLiveGenerationStatus(
   previous: AgentStatus,
 ): Pick<
   AgentStatus,
-  'outputTokens' | 'generationDurationMs' | 'generationActive' | 'generationReliable' | 'responseSpeed'
+  'outputTokens' | 'generationDurationMs' | 'generationActive' | 'generationReliable' | 'tokenSpeed'
 > {
+  // Speed belongs to the turn that produced it: a new turn drops the old value,
+  // frames without the field keep the latest one (including the final average).
+  // An unreliable frame without it means the host withdrew the speed (suspend).
+  const tokenSpeed = readTokenSpeedSnapshot(update.tokenSpeed)
+    ?? (isTurnStart || update.generationReliable === false ? undefined : previous.tokenSpeed);
   // Turn start drops leftover metrics from the previous turn, then keeps any
   // live fields carried by this same status. A reconnect-shaped first event
   // (isRunning false→true with output / duration already present) must not
   // zero the values that just arrived.
   const baseline = isTurnStart
     ? {
-        responseSpeed: undefined,
         outputTokens: 0,
         generationDurationMs: 0,
         generationActive: false,
@@ -7092,17 +7074,14 @@ function mergeLiveGenerationStatus(
     typeof update.generationReliable === 'boolean';
   if (!hasLiveFields) {
     return {
-      responseSpeed: mergeResponseSpeedStatus(previous.responseSpeed,
-        readResponseSpeedSnapshot(update.responseSpeed, Date.now()), update.isRunning, isTurnStart),
       outputTokens: baseline.outputTokens,
       generationDurationMs: baseline.generationDurationMs,
       generationActive: update.isRunning ? baseline.generationActive : false,
       generationReliable: baseline.generationReliable,
+      tokenSpeed,
     };
   }
   const merged = {
-    responseSpeed: mergeResponseSpeedStatus(previous.responseSpeed,
-        readResponseSpeedSnapshot(update.responseSpeed, Date.now()), update.isRunning, isTurnStart),
     outputTokens:
       typeof update.outputTokens === 'number' ? update.outputTokens : baseline.outputTokens,
     generationDurationMs:
@@ -7117,6 +7096,7 @@ function mergeLiveGenerationStatus(
       typeof update.generationReliable === 'boolean'
         ? update.generationReliable
         : baseline.generationReliable,
+    tokenSpeed,
   };
   if (!update.isRunning) {
     return { ...merged, generationActive: false };
@@ -15639,8 +15619,6 @@ function stopSession(
         costUsd: s.agentStatus.costUsd,
         contextTokens: s.agentStatus.contextTokens,
         contextWindow: s.agentStatus.contextWindow,
-        responseSpeed: stopResponseSpeed(s.agentStatus.responseSpeed, 'cancelled'),
-        generationActive: false,
         isRunning: false,
         startedAt: null,
       },
