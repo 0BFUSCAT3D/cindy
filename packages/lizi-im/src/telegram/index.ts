@@ -310,7 +310,6 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   private disposing = false;
   /** sendRichMessage 方法不可用(404)后的永久 latch(本实例生命周期内)。 */
   private richSendDisabled = false;
-  private readonly mediaDir: string;
   /** 相册聚合缓冲 — key `${chatId}:${mediaGroupId}`。 */
   private readonly pendingAlbums = new Map<string, PendingAlbum>();
   /**
@@ -374,10 +373,6 @@ export class TelegramIM extends BaseIM implements ChannelIM {
     private readonly opts: TelegramIMOptions = {},
   ) {
     super('telegram', host);
-    if (!host.paths.telegramMediaDir) {
-      throw new Error('IMHost.paths.telegramMediaDir is required to wire the telegram channel');
-    }
-    this.mediaDir = host.paths.telegramMediaDir;
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -1349,9 +1344,9 @@ export class TelegramIM extends BaseIM implements ChannelIM {
     const stagedDiscards: Array<() => Promise<void>> = [];
     const collected = await collectGroupHistoryMedia(messages, {
       api,
-      mediaDir: this.mediaDir,
       stagedDiscards,
       ...(this.host.media ? { media: this.host.media } : {}),
+      ...(this.host.files ? { files: this.host.files } : {}),
     });
     if (this.disposing || this.configVersion !== generation) {
       await this.discardStagedMedia(stagedDiscards);
@@ -1426,10 +1421,10 @@ export class TelegramIM extends BaseIM implements ChannelIM {
       const event = await normalizeMessage(m, {
         api: this.requireApi(),
         contextId: String(this.botId),
-        mediaDir: this.mediaDir,
         stagedDiscards,
         ...(siblings.length > 0 ? { siblings } : {}),
         ...(this.host.media ? { media: this.host.media } : {}),
+        ...(this.host.files ? { files: this.host.files } : {}),
       });
       if (this.disposing || this.configVersion !== acceptedConfigVersion) {
         await this.discardStagedMedia(stagedDiscards);
@@ -1512,12 +1507,12 @@ export class TelegramIM extends BaseIM implements ChannelIM {
       const event = await normalizeMessage(m, {
         api: this.requireApi(),
         contextId: String(this.botId),
-        mediaDir: this.mediaDir,
         overrideText: trigger.text,
         laneUserId,
         stagedDiscards,
         ...(siblings.length > 0 ? { siblings } : {}),
         ...(this.host.media ? { media: this.host.media } : {}),
+        ...(this.host.files ? { files: this.host.files } : {}),
       });
       if (this.disposing || this.configVersion !== acceptedConfigVersion) {
         await this.discardStagedMedia(stagedDiscards);

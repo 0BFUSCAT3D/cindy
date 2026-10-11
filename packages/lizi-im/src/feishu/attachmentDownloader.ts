@@ -2,8 +2,8 @@
  * feishu/attachmentDownloader.ts
  * ---------------------------------------------------------------------------
  * Take the AttachmentRef[] parsed by `incomingContent` → download via lark
- * `im.v1.messageResource.get` → save under `host.paths.feishuMediaDir/{kind}/`
- * → return standardised IMAttachment[] for emit upstream.
+ * `im.v1.messageResource.get` → 图片/音视频入 host 媒体总仓, 其余文件交 host
+ * 文件暂存 → return standardised IMAttachment[] for emit upstream.
  *
  * Files larger than 30MB are dropped into `unsupported` (model + IPC can't
  * handle larger blobs sensibly). Per-attachment errors are isolated; a single
@@ -15,13 +15,8 @@ import type * as Lark from '@larksuiteoapi/node-sdk';
 import type { Readable } from 'node:stream';
 
 import type { IMAttachment } from '../types.js';
-import { getLog } from './moduleScope.js';
-import {
-  getOrDownload,
-  mimeFromHeaders,
-  streamToBuffer,
-  type MediaResult,
-} from './mediaStore.js';
+import { getHost, getLog } from './moduleScope.js';
+import { mimeFromHeaders, streamToBuffer } from './mediaStore.js';
 import type {
   AttachmentRef,
   UnsupportedEntry,
@@ -67,56 +62,104 @@ type SingleResult =
   | { attachment: IMAttachment }
   | { unsupported: UnsupportedEntry };
 
+/** host 总仓能收的图片 mime(与 cindy-media blobStore 图片白名单对齐)。 */
+const HOST_CACHEABLE_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/**
+ * 单个附件: 图片与音视频入 cindy-media 总仓(host.media), 其余文件交 host 暂存
+ * (host.files, 路由到任务后移入任务附件目录)。host 缺对应能力或总仓拒收格式时
+ * 如实标不支持 —— 不写 `cc-agent/feishu-media`(冻结的历史兼容层, 只读)。
+ */
 async function downloadOne(
   client: Lark.Client,
   messageId: string,
   ref: AttachmentRef,
 ): Promise<SingleResult> {
-  const token = ref.kind === 'image' ? ref.imageKey : ref.fileKey;
-  const sdkType: 'image' | 'file' = ref.kind;
-  const givenExt =
-    ref.kind === 'file' ? path.extname(ref.fileName).toLowerCase() : undefined;
+  const host = getHost();
+  const label = ref.kind === 'file' ? ref.fileName : '图片';
 
-  const result = await getOrDownload(
-    token,
-    ref.kind,
-    async (key) => fetchMessageResource(client, messageId, key, sdkType),
-    givenExt && givenExt.length > 0 ? givenExt : undefined,
-  );
-
-  if (result.bytes > MAX_FILE_SIZE) {
-    const sizeMb = (result.bytes / 1024 / 1024).toFixed(1);
-    const name = ref.kind === 'file' ? ref.fileName : '图片';
+  if (ref.kind === 'image') {
+    const media = host.media;
+    if (!media) return { unsupported: { type: 'image', label } };
+    try {
+      const cached = await media.getCachedImage('feishu', ref.imageKey);
+      if (cached) {
+        return {
+          attachment: {
+            kind: 'image',
+            absPath: cached.absPath,
+            originalName: `${ref.imageKey}${path.extname(cached.absPath)}`,
+            mimeType: cached.mimeType,
+            url: cached.url,
+          },
+        };
+      }
+    } catch {
+      // host 索引查询失败: 继续下载。
+    }
+    const { buffer, mimeType } = await fetchMessageResource(client, messageId, ref.imageKey, 'image');
+    const oversize = oversizeEntry(label, buffer.byteLength);
+    if (oversize) return { unsupported: oversize };
+    const mime = mimeType.toLowerCase();
+    if (!HOST_CACHEABLE_IMAGE_MIMES.has(mime)) {
+      return { unsupported: { type: 'image', label: `不支持的图片格式（${mime || '未知'}）` } };
+    }
+    const put = await media.cacheImage({ integration: 'feishu', token: ref.imageKey, buffer, mimeType: mime });
     return {
-      unsupported: {
-        type: 'oversize',
-        label: `${name} 超过 30MB（实际 ${sizeMb}MB）`,
+      attachment: {
+        kind: 'image',
+        absPath: put.absPath,
+        originalName: `${ref.imageKey}${path.extname(put.absPath)}`,
+        mimeType: mime,
+        url: put.url,
       },
     };
   }
 
-  const originalName =
-    ref.kind === 'file' ? ref.fileName : `${ref.imageKey}${path.extname(result.absPath)}`;
+  // 没有受控去处就不下载: 视频要媒体总仓, 其余文件要文件暂存。
+  if (ref.video ? !host.media?.cacheMedia : !host.files) {
+    return { unsupported: { type: ref.video ? 'media' : 'file', label } };
+  }
+  if (ref.fileSize !== undefined && ref.fileSize > MAX_FILE_SIZE) {
+    return { unsupported: oversizeEntry(label, ref.fileSize)! };
+  }
+  const { buffer, mimeType } = await fetchMessageResource(client, messageId, ref.fileKey, 'file');
+  const oversize = oversizeEntry(label, buffer.byteLength);
+  if (oversize) return { unsupported: oversize };
+  const mime = mimeType.toLowerCase() || 'application/octet-stream';
 
+  if (ref.video || mime.startsWith('video/') || mime.startsWith('audio/')) {
+    const cacheMedia = host.media?.cacheMedia;
+    const avMime = ref.video && !mime.startsWith('video/') ? 'video/mp4' : mime;
+    if (cacheMedia) {
+      try {
+        const stored = await cacheMedia({ integration: 'feishu', token: ref.fileKey, buffer, mimeType: avMime });
+        return {
+          attachment: {
+            kind: 'file',
+            absPath: stored.absPath,
+            originalName: ref.fileName,
+            mimeType: stored.mimeType,
+            url: stored.url,
+          },
+        };
+      } catch {
+        // 总仓拒收该音视频格式: 视频消息标不支持; 以普通文件发来的继续按文件暂存。
+      }
+    }
+    if (ref.video || !host.files) return { unsupported: { type: 'media', label } };
+  }
+
+  const staged = await host.files!.stage({ integration: 'feishu', buffer, fileName: ref.fileName });
   return {
-    attachment: deriveAttachment(ref.kind, result, originalName),
+    attachment: { kind: 'file', absPath: staged.absPath, originalName: ref.fileName, mimeType: mime },
   };
 }
 
-function deriveAttachment(
-  kind: 'image' | 'file',
-  result: MediaResult,
-  originalName: string,
-): IMAttachment {
-  return {
-    kind,
-    absPath: result.absPath,
-    originalName,
-    mimeType: result.mimeType,
-    // 仅媒体总仓地址(cindy-media://)透传给 host 落库挂引用;老 xdt-image
-    // 地址保持历史行为不进落库 content(避免改变既有渲染面)。
-    ...(result.xdtImageUrl.startsWith('cindy-media://') ? { url: result.xdtImageUrl } : {}),
-  };
+function oversizeEntry(name: string, bytes: number): UnsupportedEntry | null {
+  if (bytes <= MAX_FILE_SIZE) return null;
+  const sizeMb = (bytes / 1024 / 1024).toFixed(1);
+  return { type: 'oversize', label: `${name} 超过 30MB（实际 ${sizeMb}MB）` };
 }
 
 async function fetchMessageResource(

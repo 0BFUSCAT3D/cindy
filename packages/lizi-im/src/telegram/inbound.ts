@@ -9,10 +9,13 @@
  *   3. detectGroupTrigger: 群消息是否@到本 bot / 回复本 bot(触发一轮 turn)。
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-
-import type { IMAttachment, IMHostMediaCache, IMMessageEvent, IMUnsupportedEntry } from '../types.js';
+import type {
+  IMAttachment,
+  IMHostFileStaging,
+  IMHostMediaCache,
+  IMMessageEvent,
+  IMUnsupportedEntry,
+} from '../types.js';
 import type { TelegramApiClient, TgFile, TgMediaFile, TgMessage, TgMessageEntity, TgUser } from './api.js';
 import { encodeMessageId } from './codec.js';
 
@@ -185,8 +188,9 @@ function escapeRegExp(value: string): string {
 export interface NormalizeContext {
   api: TelegramApiClient;
   contextId: string;
-  mediaDir: string;
   media?: IMHostMediaCache;
+  /** 非媒体文件暂存; 未提供时这类文件标不支持(不写 legacy 目录)。 */
+  files?: IMHostFileStaging;
   /** 群触发时替换 text 的干净文本(已剥@提及);私聊传 undefined。 */
   overrideText?: string;
   /** 群触发时 senderId 用 lane id;私聊 undefined。 */
@@ -194,7 +198,7 @@ export interface NormalizeContext {
   /** 相册(media_group)同组的其余消息 — 媒体并入本事件, 不各起一轮 turn。 */
   siblings?: TgMessage[];
   /**
-   * 音视频经 host.media.cacheMedia 暂存入媒体总仓后的回滚句柄。调用方在下载期间
+   * 音视频(host.media.cacheMedia)与非媒体文件(host.files.stage)暂存后的回滚句柄。调用方在下载期间
    * 配置换代(登出/换账号)时逐个调用, 不把旧账号的媒体留在新账号的仓里。
    */
   stagedDiscards?: Array<() => Promise<void>>;
@@ -351,6 +355,8 @@ async function collectMedia(
       await collectAudioVideo(ctx, m.document, name, mime, attachments, unsupported);
     } else if ((m.document.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: name });
+    } else if (!mime.startsWith('image/') && !ctx.files) {
+      unsupported.push({ type: 'file', label: name });
     } else {
       const downloaded = await downloadTelegramFile(ctx, m.document.file_id, name, mime);
       if (downloaded) attachments.push(downloaded);
@@ -446,7 +452,7 @@ export const GROUP_HISTORY_FILE_MAX = 4;
  */
 export async function collectGroupHistoryMedia(
   messages: TgMessage[],
-  ctx: Pick<NormalizeContext, 'api' | 'mediaDir' | 'media' | 'stagedDiscards'>,
+  ctx: Pick<NormalizeContext, 'api' | 'media' | 'files' | 'stagedDiscards'>,
 ): Promise<{ attachments: Array<IMAttachment & { author: string }>; unavailable: string[] }> {
   const picked: Array<IMAttachment & { author: string }> = [];
   const unavailable: string[] = [];
@@ -494,10 +500,16 @@ async function downloadTelegramFile(
         return { kind, absPath: cached.absPath, originalName, mimeType: cached.mimeType, url: cached.url };
       }
     }
+    // 没有可写的受控去处就不下载(图片要媒体总仓, 其余要文件暂存)。
+    if (kind === 'image' ? !ctx.media : !ctx.files) return null;
     const buffer = await fetchTelegramFileBytes(ctx, fileId);
     if (!buffer) return null;
 
-    if (kind === 'image' && ctx.media) {
+    if (kind === 'image') {
+      // 图片新写入必须留在 cindy-media 总仓(内容寻址/引用记账/统一回收,
+      // 媒体规则 25) — host 仓拒收/未就绪时丢弃该附件, 不落无治理的
+      // legacy 目录; 消息正文照常送达。
+      if (!ctx.media) return null;
       try {
         const promoted = await ctx.media.cacheImage({
           integration: 'telegram',
@@ -507,18 +519,15 @@ async function downloadTelegramFile(
         });
         return { kind, absPath: promoted.absPath, originalName, mimeType, url: promoted.url };
       } catch {
-        // 图片新写入必须留在 cindy-media 总仓(内容寻址/引用记账/统一回收,
-        // 媒体规则 25) — host 仓拒收/未就绪时丢弃该附件, 不落无治理的
-        // legacy 目录; 消息正文照常送达。音视频走 collectAudioVideo 入总仓;
-        // 其余非媒体文件仍走下方 legacy 目录, 与 feishu/discord 通道同口径。
         return null;
       }
     }
 
-    fs.mkdirSync(ctx.mediaDir, { recursive: true });
-    const dest = uniquePath(ctx.mediaDir, sanitizeFilename(originalName));
-    fs.writeFileSync(dest, buffer);
-    return { kind, absPath: dest, originalName, mimeType };
+    // 非媒体文件交 host 暂存(路由到任务后移入任务附件目录); 不写 legacy 目录。
+    if (!ctx.files) return null;
+    const staged = await ctx.files.stage({ integration: 'telegram', buffer, fileName: originalName });
+    ctx.stagedDiscards?.push(staged.discard);
+    return { kind, absPath: staged.absPath, originalName, mimeType };
   } catch {
     return null;
   }
@@ -543,20 +552,4 @@ async function fetchTelegramFileBytes(ctx: NormalizeContext, fileId: string): Pr
   } catch {
     return null;
   }
-}
-
-function sanitizeFilename(name: string): string {
-  return name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120) || 'attachment';
-}
-
-function uniquePath(dir: string, filename: string): string {
-  const ext = path.extname(filename);
-  const base = filename.slice(0, filename.length - ext.length);
-  let candidate = path.join(dir, filename);
-  let index = 1;
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(dir, `${base}-${index}${ext}`);
-    index += 1;
-  }
-  return candidate;
 }

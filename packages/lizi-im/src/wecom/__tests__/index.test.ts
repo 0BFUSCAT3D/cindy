@@ -900,15 +900,22 @@ describe("WecomIM routing and ownership", () => {
     expect(client.downloadFile).not.toHaveBeenCalled();
   });
 
-  it("does not persist an inbound file after the transport generation changes", async () => {
+  it("does not stage an inbound file after the transport generation changes", async () => {
     const { host, secrets } = createHost();
     secrets.set("wecom-owner-user-id", "owner");
-    const mediaDir = join(tmpdir(), `cindy-wecom-stale-${randomUUID()}`);
-    host.paths.wecomMediaDir = mediaDir;
+    const legacyDir = join(tmpdir(), `cindy-wecom-stale-${randomUUID()}`);
+    host.paths.wecomMediaDir = legacyDir;
+    const stage = vi.fn(async () => ({
+      absPath: "C:\\staged\\report.txt",
+      discard: vi.fn(async () => {}),
+    }));
+    host.files = { stage };
     const client = new FakeClient();
     const download = deferred<Awaited<ReturnType<FakeClient["downloadFile"]>>>();
     client.downloadFile.mockImplementationOnce(() => download.promise);
     const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
 
     try {
       await im.init();
@@ -929,10 +936,166 @@ describe("WecomIM routing and ownership", () => {
       await flush();
       await flush();
 
-      expect(existsSync(mediaDir)).toBe(false);
+      expect(stage).not.toHaveBeenCalled();
+      expect(received).toEqual([]);
+      expect(existsSync(legacyDir)).toBe(false);
     } finally {
-      await rm(mediaDir, { recursive: true, force: true });
+      await rm(legacyDir, { recursive: true, force: true });
     }
+  });
+
+  it("stages inbound files through host.files instead of the legacy media dir", async () => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    const legacyDir = join(tmpdir(), `cindy-wecom-legacy-${randomUUID()}`);
+    host.paths.wecomMediaDir = legacyDir;
+    const discard = vi.fn(async () => {});
+    const stage = vi.fn(async () => ({ absPath: "C:\\staged\\report.txt", discard }));
+    host.files = { stage };
+    const client = new FakeClient();
+    client.downloadFile.mockResolvedValueOnce({
+      buffer: Buffer.from("file"),
+      filename: "../report.txt",
+    });
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
+
+    try {
+      await im.init();
+      client.emit("message.file", {
+        body: {
+          msgid: "file-1",
+          aibotid: "bot-1",
+          chattype: "single",
+          from: { userid: "owner" },
+          msgtype: "file",
+          file: { url: "https://example.invalid/file" },
+        },
+      });
+      await vi.waitFor(() => expect(received).toHaveLength(1));
+
+      expect(stage).toHaveBeenCalledWith({
+        integration: "wecom",
+        buffer: Buffer.from("file"),
+        fileName: "report.txt",
+      });
+      expect(received[0]?.attachments).toEqual([
+        {
+          kind: "file",
+          absPath: "C:\\staged\\report.txt",
+          originalName: "report.txt",
+          mimeType: "text/plain",
+        },
+      ]);
+      expect(received[0]?.unsupported).toEqual([]);
+      expect(discard).not.toHaveBeenCalled();
+      expect(existsSync(legacyDir)).toBe(false);
+    } finally {
+      await rm(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("discards file staging when the owning account closes during the write", async () => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    const accountToken = { id: 1 };
+    let accountActive = true;
+    host.accountScope = {
+      capture: () => (accountActive ? accountToken : null),
+      isCurrent: (token) => accountActive && token === accountToken,
+      run: async (_token, operation) => operation(),
+    };
+    const client = new FakeClient();
+    client.downloadFile.mockResolvedValueOnce({
+      buffer: Buffer.from("file"),
+      filename: "report.txt",
+    });
+    const staged = deferred<{ absPath: string; discard: () => Promise<void> }>();
+    const discard = vi.fn(async () => {});
+    const stage = vi.fn(() => staged.promise);
+    host.files = { stage };
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
+
+    await im.init();
+    client.emit("message.file", {
+      body: {
+        msgid: "stale-staged-file",
+        aibotid: "bot-1",
+        chattype: "single",
+        from: { userid: "owner" },
+        msgtype: "file",
+        file: { url: "https://example.invalid/file" },
+      },
+    });
+    await vi.waitFor(() => expect(stage).toHaveBeenCalledOnce());
+
+    accountActive = false;
+    staged.resolve({ absPath: "C:\\staged\\report.txt", discard });
+    await vi.waitFor(() => expect(discard).toHaveBeenCalledOnce());
+    await flush();
+
+    expect(received).toEqual([]);
+  });
+
+  it("reports inbound files unsupported without downloading when host.files is missing", async () => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    const client = new FakeClient();
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
+
+    await im.init();
+    client.emit("message.file", {
+      body: {
+        msgid: "no-staging-file",
+        aibotid: "bot-1",
+        chattype: "single",
+        from: { userid: "owner" },
+        msgtype: "file",
+        file: { url: "https://example.invalid/file" },
+      },
+    });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    expect(client.downloadFile).not.toHaveBeenCalled();
+    expect(received[0]?.attachments).toEqual([]);
+    expect(received[0]?.unsupported).toEqual([
+      { type: "file:unsupported", label: "文件暂不支持" },
+    ]);
+  });
+
+  it("does not download an inbound image when host.media is missing", async () => {
+    const { host, secrets } = createHost();
+    secrets.set("wecom-owner-user-id", "owner");
+    host.files = { stage: vi.fn() };
+    const client = new FakeClient();
+    const im = new WecomIM(host, { clientFactory: () => client as never });
+    const received: IMMessageEvent[] = [];
+    im.onMessage((event) => received.push(event));
+
+    await im.init();
+    client.emit("message.image", {
+      body: {
+        msgid: "no-media-image",
+        aibotid: "bot-1",
+        chattype: "single",
+        from: { userid: "owner" },
+        msgtype: "image",
+        image: { url: "https://example.invalid/image" },
+      },
+    });
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    expect(client.downloadFile).not.toHaveBeenCalled();
+    expect(host.files.stage).not.toHaveBeenCalled();
+    expect(received[0]?.attachments).toEqual([]);
+    expect(received[0]?.unsupported).toEqual([
+      { type: "image:download-failed", label: "图片下载失败" },
+    ]);
   });
 
   it("does not cache an inbound video after the transport generation changes", async () => {

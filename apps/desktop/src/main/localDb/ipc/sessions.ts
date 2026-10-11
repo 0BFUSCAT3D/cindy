@@ -64,7 +64,7 @@ import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
 import { recomputePrRefsForSession } from '../../git-context/prRefsStore';
 import * as imageCacheStore from '../../imageCacheStore';
 import { removeSessionRefsIfDeleted as removeDeletedSessionMediaRefs } from '../../cindy-media/ledger';
-import { removeWechatSessionAttachmentDir } from '../../im/wechat/mediaStaging';
+import { removeImSessionAttachmentDirs } from '../../im/shared/inboundFileStaging';
 import { upsertRecentWorkdir } from './recentWorkdirs';
 import { createLogger } from '../../logger';
 import {
@@ -2197,12 +2197,6 @@ export async function patchSessionMetaInDb(
         err: err instanceof Error ? err.message : String(err),
       });
     });
-    void removeWechatSessionAttachmentDir(sessionId).catch((err) => {
-      log.warn('WeChat session attachment cleanup failed', {
-        sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    });
   }
   cleanupSessionTerminalArtifacts(sessionId, patch.status);
   scheduleWorktreeRecycleForStatusChange(sessionId, patch.status, { ownerScope, mediaDb: db });
@@ -2504,7 +2498,7 @@ export async function deleteBotProfileAndDetachSessionsInDb(
       void imageCacheStore.removeSession(id).catch((error) => {
         log.warn('Bot task image cleanup failed', { sessionId: id, error: String(error) });
       });
-      void removeWechatSessionAttachmentDir(id).catch((error) => {
+      void removeImSessionAttachmentDirs(id).catch((error) => {
         log.warn('Bot task attachment cleanup failed', { sessionId: id, error: String(error) });
       });
       void removeDeletedSessionMediaRefs(id, db).catch((error) => {
@@ -2737,6 +2731,13 @@ function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): vo
       });
     });
     scheduleDeletedPiSubagentCleanup(sessionId);
+    // 个人 IM 渠道(含微信)入站文件随任务删除清理 —— 归档保留, 与微信既有口径一致。
+    void removeImSessionAttachmentDirs(sessionId).catch((err) => {
+      log.warn('IM session attachment cleanup failed', {
+        sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
   const attachRoot = path.join(app.getPath('userData'), 'hook-attachments');
   const attachDir = path.join(attachRoot, sessionId);

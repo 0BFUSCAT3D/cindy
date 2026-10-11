@@ -24,6 +24,7 @@ import {
 } from '@cindy/im';
 import { TencentIlinkTransport } from '@cindy/wechat-ilink';
 
+import { inboundFileStaging } from './shared/inboundFileStaging';
 import { createLogger } from '../logger';
 import { resolveSafe as resolveXdtImageUrl } from '../imageCacheStore';
 import { resolveSafe as resolveCindyMediaUrl } from '../cindy-media/blobStore';
@@ -144,6 +145,9 @@ const host: IMHost = {
     },
     fetchRemoteImage: (url, maxBytes) => fetchPublicImageBytes(url, maxBytes),
   },
+  // 入站非媒体文件: 按账号暂存, 路由到任务后由 turnRunner 移入任务附件目录;
+  // 不再写下方 paths 里的 cc-agent/*-media(冻结的历史兼容层, 仅供读取旧消息)。
+  files: inboundFileStaging,
   secrets: ownerScopedImSecrets,
   ipc: {
     throwIpcError,

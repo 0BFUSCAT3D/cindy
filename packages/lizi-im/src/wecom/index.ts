@@ -38,7 +38,7 @@ import {
 } from "./codec.js";
 import {
   mimeTypeForFilename,
-  persistWecomDownload,
+  stageWecomDownload,
   readWecomOutboundFile,
   resolveAllowedWecomOutboundFile,
   safeWecomFilename,
@@ -91,7 +91,6 @@ export class WecomIM extends BaseIM implements TextChannelIM {
   private readonly pendingResponses = new Map<string, PendingResponse[]>();
   private readonly inboundTails = new Map<string, Promise<void>>();
   private readonly seenMessageIds = new Set<string>();
-  private readonly mediaDir: string;
   private readonly now: () => number;
   private client: WSClient | null = null;
   private status: IMStatus = { kind: "idle" };
@@ -106,12 +105,6 @@ export class WecomIM extends BaseIM implements TextChannelIM {
     private readonly options: WecomIMOptions = {},
   ) {
     super("wecom", host);
-    if (!host.paths.wecomMediaDir) {
-      throw new Error(
-        "IMHost.paths.wecomMediaDir is required to wire the WeCom channel",
-      );
-    }
-    this.mediaDir = host.paths.wecomMediaDir;
     this.now = options.now ?? Date.now;
   }
 
@@ -650,21 +643,26 @@ export class WecomIM extends BaseIM implements TextChannelIM {
     await this.emitInbound(frame, client, generation, async () => {
       const file = frame.body?.file;
       if (!file) return unsupportedPayload("file", "文件内容缺失");
+      const files = this.host.files;
+      if (!files) {
+        return unsupportedPayload("file:unsupported", "文件暂不支持");
+      }
       try {
         const downloaded = await client.downloadFile(file.url, file.aeskey);
         if (!this.isCurrent(client, generation)) {
           return unsupportedPayload("file:stale", "文件下载已取消");
         }
-        const persisted = await persistWecomDownload({
-          mediaDir: this.mediaDir,
+        const { discard, ...staged } = await stageWecomDownload({
+          files,
           buffer: downloaded.buffer,
           filename: downloaded.filename,
           shouldKeep: () => this.isCurrent(client, generation),
         });
         return {
           text: "",
-          attachments: [{ kind: "file", ...persisted }],
+          attachments: [{ kind: "file", ...staged }],
           unsupported: [],
+          discard,
         };
       } catch (error) {
         this.log.warn("failed to stage inbound file", safeError(error));
@@ -843,42 +841,34 @@ export class WecomIM extends BaseIM implements TextChannelIM {
         },
       };
     }
+    // 图片只进 cindy-media 总仓; host 未提供时不下载, 不写 legacy 目录。
+    if (!this.host.media) return null;
     try {
       const downloaded = await client.downloadFile(image.url, image.aeskey);
       if (!this.isCurrent(client, generation)) return null;
       const filename = safeWecomFilename(downloaded.filename, ".jpg");
       const mimeType = mimeTypeForFilename(filename);
-      if (this.host.media) {
-        const stored = await this.host.media.cacheImage({
-          integration: "wecom",
-          token,
-          buffer: downloaded.buffer,
-          mimeType,
-          staging: true,
-        });
-        if (!this.isCurrent(client, generation)) {
-          await this.discardStagedMedia(stored.discard);
-          return null;
-        }
-        return {
-          attachment: {
-            kind: "image",
-            absPath: stored.absPath,
-            originalName: filename,
-            mimeType,
-            url: stored.url,
-          },
-          discard: stored.discard,
-        };
-      }
-      const persisted = await persistWecomDownload({
-        mediaDir: this.mediaDir,
+      const stored = await this.host.media.cacheImage({
+        integration: "wecom",
+        token,
         buffer: downloaded.buffer,
-        filename,
-        fallbackExtension: ".jpg",
-        shouldKeep: () => this.isCurrent(client, generation),
+        mimeType,
+        staging: true,
       });
-      return { attachment: { kind: "image", ...persisted } };
+      if (!this.isCurrent(client, generation)) {
+        await this.discardStagedMedia(stored.discard);
+        return null;
+      }
+      return {
+        attachment: {
+          kind: "image",
+          absPath: stored.absPath,
+          originalName: filename,
+          mimeType,
+          url: stored.url,
+        },
+        discard: stored.discard,
+      };
     } catch (error) {
       this.log.warn("failed to stage inbound image", safeError(error));
       return null;
