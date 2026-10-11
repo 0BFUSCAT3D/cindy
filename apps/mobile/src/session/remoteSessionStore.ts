@@ -242,6 +242,9 @@ const newMakerWorktreeBranchPreferences = new Map<
   Map<string, Exclude<RemoteNewMakerWorktreeBranchPreference, null>>
 >();
 const messages = new Map<string, RemoteMessage[]>();
+// Rows a never-opened session received from list pushes. While the mirror holds only these,
+// it is not a loaded window: opening the task still merges the disk cache underneath them.
+const listMessageKeys = new Map<string, Set<string>>();
 // The maker event is broadcast before its async DB create/update completes. Keep the latest
 // plan snapshot briefly in the session mirror so a late initial `messages:created` row cannot
 // overwrite a newer live state with the first stale 0/N snapshot.
@@ -420,7 +423,10 @@ const sessionMessageSyncMarkers = new Map<string, SessionMessageSyncMarker>();
  * 冷开 hydrate 与空洞补齐 `mergeMessages` 刻意不登记:前者来源不明;后者补的是窗口内部的洞,补完
  * 要算准新区间得先确认窗口里没有别的洞——而这正是补齐本身在解决的问题(保守不动的代价是补回来
  * 的段可能在下一次满页同步时被丢弃,下次打开会重新补,方向上是安全的那一侧)。
- * 清空 / rewind / 会话回收一律删除(重置为未知),下次最新窗口同步会重建。
+ * 清空 / rewind / 会话回收一律删除(重置为未知),下次最新窗口同步会重建。被控端提示漏推
+ * (`resyncRequired`)只收缩到下界那一点(见 `narrowWindowCoverageToStart`):行没有被改写,只是
+ * `until` 不再可信。最新页接不上时,同步方先沿 before 补读到上界再提交(`bridgeLatestMessagePage`),
+ * 接上的旧段得以保留;补读不到才按未知处置。
  *
  * 事实自检:最新页若在 `[since, until]` 内带来窗口没有的行,说明旧结论已被服务端事实推翻(桌面侧
  * 改写历史、迟到落库等),当次按"未知"处置,见 `joinableWindowCoverage`。
@@ -462,6 +468,18 @@ function newestCreatedAt(list: readonly RemoteMessage[]): string | undefined {
 
 function forgetWindowCoverage(sessionId: string): void {
   sessionWindowCoverage.delete(sessionId);
+}
+
+/**
+ * 被控端提示漏推(`resyncRequired`):订阅内的推送不再完整,`until` 可能已被漏推之后的 push 越过空洞
+ * 往后推,区间内部不能再信。但区间下界那一行确实来自权威页,只保留这一点 —— 下一次最新窗口同步
+ * 必须补读到 `since`、用权威页重新覆盖整段后才能相接(见 `latestMessageWindowNeedsBridge`),
+ * 补读不到时与整段遗忘相同。整段遗忘会让满页同步直接丢掉用户正在看的旧历史。
+ */
+function narrowWindowCoverageToStart(sessionId: string): void {
+  const current = sessionWindowCoverage.get(sessionId);
+  if (!current) return;
+  sessionWindowCoverage.set(sessionId, { since: current.since, until: current.since, liveTailTrusted: false });
 }
 
 /**
@@ -689,6 +707,11 @@ const sessionDeviceIndex = new Map<string, string>();
 // 检测到自身 sessionId 被加入时调 load() 触发整窗刷新(含 error 行),避免先清空导致空白帧。
 const pendingRefreshSessions = new Set<string>();
 const reseedHandlers = new Map<string, Set<() => void>>();
+// A whole-list read after app start or a reconnect reseed may follow a gap in live pushes.
+// Listeners read changed tasks ahead; ordinary list refreshes while pushes flow do not fire.
+const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
+const sessionListRefreshArmed = new Set<string>();
+const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
 const homeStatusSubs = new Set<() => void>();
 const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();
@@ -1038,11 +1061,20 @@ function clearSessionMessageCache(sessionId: string, deviceId?: string): void {
   void replaceCachedSessionMessages(resolvedDeviceId, sessionId, []).catch(() => undefined);
 }
 
+/** Track list-only rows within the current window; budget/retention trims drop their keys. */
+function retainListMessageKeys(sessionId: string, added: string): void {
+  const present = new Set((messages.get(sessionId) ?? []).map(messageKey));
+  const keys = new Set([...(listMessageKeys.get(sessionId) ?? []), added].filter((key) => present.has(key)));
+  if (keys.size > 0) listMessageKeys.set(sessionId, keys);
+  else listMessageKeys.delete(sessionId);
+}
+
 function invalidateSessionMessageWindowState(
   sessionId: string,
   requestRefresh: boolean,
 ): boolean {
   let changed = messages.delete(sessionId);
+  listMessageKeys.delete(sessionId);
   changed = livePlanSnapshots.delete(sessionId) || changed;
   changed = sessionTaskUpdates.delete(sessionId) || changed;
   changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
@@ -1135,7 +1167,10 @@ function discardTransportOwnedPendingSessionState(
     ));
     if (nextMessages.length !== existingMessages.length) {
       if (nextMessages.length > 0) messages.set(sessionId, nextMessages);
-      else messages.delete(sessionId);
+      else {
+        messages.delete(sessionId);
+        listMessageKeys.delete(sessionId);
+      }
       changed = true;
     }
   }
@@ -1248,6 +1283,7 @@ function enforceRegularMessageBudget(): boolean {
     // 标志来自消息数组缓存与 pending identity，不再为每次流式文本重复扫描整窗。
     if (candidate.hasProtectedRows) continue;
     if (!messages.delete(candidate.sessionId)) continue;
+    listMessageKeys.delete(candidate.sessionId);
     clearRemoteHistoryViews(undefined, candidate.sessionId);
     pendingMessagePreviewSessionIds.add(candidate.sessionId);
     forgetWindowCoverage(candidate.sessionId);
@@ -3267,6 +3303,11 @@ export const remoteSessionStore = {
   },
 
   setDeviceSessions(deviceId: string, deviceName: string, rawSessions: readonly RemoteSession[]): void {
+    if (!sessionListRefreshSeen.has(deviceId) || sessionListRefreshArmed.has(deviceId)) {
+      sessionListRefreshSeen.add(deviceId);
+      sessionListRefreshArmed.delete(deviceId);
+      for (const listener of sessionListRefreshListeners) listener(deviceId);
+    }
     let nextSessions = rawSessions.map((s) => stamp(s, deviceId, deviceName));
     const existing = shards.get(deviceId);
     if (existing) {
@@ -3495,11 +3536,17 @@ export const remoteSessionStore = {
     if (retentionForSession(sessionId) === 'schedule') return;
     if (!messageWriteAllowed(sessionId, options.authority)) return;
     const textFlushed = flushPendingTextDelta(sessionId);
-    if ((messages.get(sessionId)?.length ?? 0) > 0) {
+    const existing = messages.get(sessionId) ?? [];
+    const listKeys = listMessageKeys.get(sessionId);
+    listMessageKeys.delete(sessionId);
+    const listOnly = existing.length > 0 && !!listKeys
+      && existing.every((message) => listKeys.has(messageKey(message)));
+    if (existing.length > 0 && !listOnly) {
       if (textFlushed) emit();
       return;
     }
-    const next = normalizeMessages(list);
+    const existingKeys = new Set(existing.map(messageKey));
+    const next = normalizeMessages([...list.filter((message) => !existingKeys.has(messageKey(message))), ...existing]);
     if (next.length === 0) {
       if (textFlushed) emit();
       return;
@@ -3508,6 +3555,26 @@ export const remoteSessionStore = {
     applyMessageWriteRetention(sessionId);
     bumpMessageVersion(sessionId);
     emit();
+  },
+
+  /**
+   * 这一页最新窗口是否值得先往前补读：满页、窗口里有已验证连续段，但本页最旧行晚于该段上界 ——
+   * 直接提交时 `joinableWindowCoverage` 判不相接，`setLatestMessageWindow` 会丢掉整段旧历史。
+   * 补读到本页最旧行不晚于上界后就能相接（区间内的事实自检仍由提交时判定）。schedule 窗口本就
+   * 按条数裁剪，不补读。
+   */
+  latestMessageWindowNeedsBridge(
+    sessionId: string,
+    list: readonly RemoteMessage[],
+    moreBeyondWindow: boolean,
+  ): boolean {
+    if (!moreBeyondWindow || retentionForSession(sessionId) === 'schedule') return false;
+    if ((messages.get(sessionId) ?? []).length === 0) return false;
+    const coverage = sessionWindowCoverage.get(sessionId);
+    const pageOldest = oldestCreatedAt(list);
+    return coverage !== undefined
+      && pageOldest !== undefined
+      && pageOldest.localeCompare(coverage.until) > 0;
   },
 
   setLatestMessageWindow(
@@ -3879,6 +3946,7 @@ export const remoteSessionStore = {
       applyMessageWriteRetention(sessionId);
       emit();
     }
+    if (options.listMessage) retainListMessageKeys(sessionId, messageKey(message));
   },
 
   /**
@@ -4388,7 +4456,7 @@ export const remoteSessionStore = {
         }),
         invalidateHistory: (sessionId) => {
           sessionMessageSyncMarkers.delete(sessionId);
-          forgetWindowCoverage(sessionId);
+          narrowWindowCoverageToStart(sessionId);
           pendingRefreshSessions.add(sessionId);
           bumpMessageVersion(sessionId);
           emit();
@@ -4499,6 +4567,7 @@ export const remoteSessionStore = {
           // session 页面挂载/useSyncExternalStore 检测到 pending 后仍会重新调 load()，
           // 触发同步失效 → metaChanged=true → 整窗替换，error 卡正常浮现。
           messages.delete(sessionId);
+          listMessageKeys.delete(sessionId);
           sessionMessageSyncMarkers.delete(sessionId);
           // 连续性结论随窗口一起失效:rewind 可能删掉中间的行,清空/回收更是整窗重来。
           // 重置为未知,下一次最新窗口同步会重建(见 sessionWindowCoverage)。
@@ -5166,6 +5235,7 @@ export const remoteSessionStore = {
     newMakerWorktreePreferences.clear();
     newMakerWorktreeBranchPreferences.clear();
     messages.clear();
+    listMessageKeys.clear();
     emptySessionMessageStructureTokens.clear();
     livePlanSnapshots.clear();
     if (pendingInteractions.size > 0) {
@@ -5211,6 +5281,8 @@ export const remoteSessionStore = {
     nextSessionAccessOrder = 0;
     sessionDeviceIndex.clear();
     reseedHandlers.clear();
+    sessionListRefreshArmed.clear();
+    sessionListRefreshSeen.clear();
     pendingTitlePreview.clear();
     mergedSessions = [];
     mergedSessionById.clear();
@@ -5243,7 +5315,14 @@ export const remoteSessionStore = {
   },
 
   requestReseed(deviceId: string): void {
+    sessionListRefreshArmed.add(deviceId);
     reseedHandlers.get(deviceId)?.forEach((handler) => handler());
+  },
+
+  /** Whole-list reads that may follow missed pushes (first read per app run, reconnect reseed). */
+  onSessionListRefreshAfterGap(listener: (deviceId: string) => void): () => void {
+    sessionListRefreshListeners.add(listener);
+    return () => { sessionListRefreshListeners.delete(listener); };
   },
 
   getSessionDeviceId(sessionId: string): string | undefined {

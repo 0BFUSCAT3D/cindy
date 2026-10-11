@@ -177,6 +177,7 @@ import {
 } from '@/session/userMessageCollapse';
 import {
   collectMobileMessageGalleryImages,
+  isLightboxMediaKind,
   lightboxImagesForPayload,
   type MobileMessageGalleryImage,
 } from '@/session/messageGallery';
@@ -683,6 +684,12 @@ interface MessageActions {
   /** 「从手机「X」发送」设备标签点击:打开设备详情;设备已删除时由宿主提示。 */
   onOpenSourceDevice?: (deviceId: string) => void;
   onOpenPayload?: (payload: MessagePayload) => void;
+  /**
+   * 带点击来源打开:sourceGroupKey 为点开时所在的顶层 render item key,看图器据此
+   * 确定「同一条消息」的翻页范围。顶层列表项把 onOpenPayload 包成它(见
+   * RenderListItemView),组件内照常调 onOpenPayload。
+   */
+  onOpenPayloadFromItem?: (payload: MessagePayload, sourceGroupKey: string) => void;
   onLoadToolInput?: (ref: MobileToolInputProjection) => Promise<MobileToolInputDetail>;
   onBlockingOverlayChange?: (blocked: boolean) => void;
   onMessageActionSheetOpenChange?: (clientId: string, open: boolean) => void;
@@ -1075,6 +1082,16 @@ export function MessageRenderer({
     return () => cancelAnimationFrame(frame);
   }, [acknowledgeCompanionRead, companion, onCompanionReadThrough, isAwayFromBottom]);
   const [payload, setPayload] = useState<MessagePayload | null>(null);
+  /** 当前 payload 的点击来源(顶层 render item key);看图器按它取同一条消息的图集。 */
+  const [payloadSourceGroupKey, setPayloadSourceGroupKey] = useState<string | null>(null);
+  const openPayload = useCallback((next: MessagePayload) => {
+    setPayloadSourceGroupKey(null);
+    setPayload(next);
+  }, []);
+  const openPayloadFromItem = useCallback((next: MessagePayload, sourceGroupKey: string) => {
+    setPayloadSourceGroupKey(sourceGroupKey);
+    setPayload(next);
+  }, []);
   const payloadRef = useRef(payload);
   payloadRef.current = payload;
   const openMessageActionSheetsRef = useRef(new Set<string>());
@@ -1652,7 +1669,8 @@ export function MessageRenderer({
   // hydrate / 新注册后 gallery 需要重建,否则点开气泡本地图时 initialUrl 对不上图集条目。
   const sentThumbsVersion = useSentAttachmentThumbsVersion();
   const chatFilePathContext = useContext(ChatFilePathContext);
-  const imageLightboxOpen = historyActive && payload?.kind === 'media' && payload.media.kind === 'image';
+  // 图片与视频都进全屏查看器,两者在同一图集里横滑互翻;音频等仍走通用查看器。
+  const imageLightboxOpen = historyActive && payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind);
   const galleryImages = useMemo(
     () => (imageLightboxOpen
       ? collectMobileMessageGalleryImages(
@@ -1677,8 +1695,8 @@ export function MessageRenderer({
   // 避免取件 effect / FlatList / LightboxPage memo 每帧全部失效。
   const lightboxImagesRef = useRef<readonly MobileMessageGalleryImage[] | null>(null);
   const lightboxImages = useMemo(() => {
-    if (!(payload?.kind === 'media' && payload.media.kind === 'image') || !galleryImages) return null;
-    const next = lightboxImagesForPayload(galleryImages, payload);
+    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) return null;
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey);
     const prev = lightboxImagesRef.current;
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
@@ -1691,7 +1709,7 @@ export function MessageRenderer({
     }
     lightboxImagesRef.current = next;
     return next;
-  }, [galleryImages, imageLightboxOpen, payload]);
+  }, [galleryImages, imageLightboxOpen, payload, payloadSourceGroupKey]);
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
@@ -1750,7 +1768,8 @@ export function MessageRenderer({
     onPreviewRewind,
     onEnterShareSelection,
     onShareableMessageViewChange: handleShareableMessageViewChange,
-    onOpenPayload: setPayload,
+    onOpenPayload: openPayload,
+    onOpenPayloadFromItem: openPayloadFromItem,
     onLoadToolInput,
     onMessageActionSheetOpenChange: handleMessageActionSheetOpenChange,
     onResolveRemoteMedia,
@@ -1801,6 +1820,8 @@ export function MessageRenderer({
     handleShareableMessageViewChange,
     handleMessageActionSheetOpenChange,
     onResolveRemoteMedia,
+    openPayload,
+    openPayloadFromItem,
     pendingSend,
     getSentImagePreview,
     shareSelectionActive,
@@ -2741,6 +2762,13 @@ export function MessageRenderer({
   // native detach/attach batches and try to mount a child that still belongs to
   // the previous row. listperf keeps the DEV-only override for explicit A/Bs.
   const recycleItems = __DEV__ ? devRecycleItems === true : false;
+  // 贴底跟随时数据变化不做可见位置锚定：重连补同步会整批替换 / 丢弃尾部行，锚定会把旧的可见行
+  // 钉在原屏幕位置，先露出新内容的开头（甚至列表顶部）再被贴底跟随拉回，表现为「跳一下又跳回来」。
+  // 不锚定时内容变短由原生滚动范围直接截到新底部，变长由贴底跟随补滚。读历史（离开底部，或
+  // 「加载更早」事务进行中——它可能由自动补齐在贴底时发起）仍靠锚定保住正在看的行。
+  // readingOlderRef 在事务开始与结束时都会伴随一次重渲染（loadingEarlier / 事务收尾的 state），
+  // 这里在渲染期读取它足以让 prepend 那次数据提交带上锚定。
+  const anchorVisibleRowsOnDataChange = isAwayFromBottom || readingOlderRef.current;
 
   return (
     // chat-text-quote:Provider 恒挂载(值可为 null),避免启用态翻转时整棵消息树
@@ -2776,12 +2804,12 @@ export function MessageRenderer({
         // 二分实锤,3.3.2 / 3.3.3 均复现)。
         alignItemsAtEnd
         maintainScrollAtEnd={false}
-        // iOS always uses LegendList/RN's atomic data/size anchoring. Android history prepends
-        // temporarily disable the whole prop because RN exposes one native switch: leaving either
-        // flag on would race the app-owned key/offset correction there.
+        // iOS uses LegendList/RN's atomic data/size anchoring while reading history. Android history
+        // prepends temporarily disable the whole prop because RN exposes one native switch: leaving
+        // either flag on would race the app-owned key/offset correction there.
         maintainVisibleContentPosition={historyPrependNativeMvcpDisabled
           ? false
-          : { data: true, size: true }}
+          : { data: anchorVisibleRowsOnDataChange, size: true }}
         contentContainerStyle={[
           styles.messages,
           { paddingBottom: bottomPadding, paddingTop: topPadding },
@@ -2854,13 +2882,14 @@ export function MessageRenderer({
           {hasNewMessages ? <View style={styles.scrollToBottomDot} testID="message.newMessageDot" /> : null}
         </MessageListActionButton>
       ) : null}
-      {historyActive && payload?.kind === 'media' && payload.media.kind === 'image' && lightboxImages ? (
-        // 图片走 IM 级全屏查看器(手势缩放/下滑关闭/横滑翻页);其余 payload 走通用查看器。
+      {imageLightboxOpen && payload?.kind === 'media' && lightboxImages ? (
+        // 图片 / 视频走 IM 级全屏查看器(手势缩放/下滑关闭/横滑翻页);其余 payload 走通用查看器。
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
           initialUrl={payload.media.url}
           onClose={closePayload}
+          onReleaseRemoteMedia={onReleaseRemoteMedia}
           onResolveRemoteMedia={onResolveRemoteMedia}
           onShareImage={onShareImage}
         />
@@ -3055,9 +3084,15 @@ const RenderListItemView = memo(function RenderListItemView({
 }) {
   const isViewable = useMessageListItemVisible(item.key);
   const heavyContentVisible = focused || isViewable;
+  // 本项(含 work_group / subagent 内层)点开的 payload 都带上顶层 key 作来源:
+  // 看图器按它取「同一条消息」的图集,不靠 url 反查(同一 url 会再出现在后面的消息里)。
+  const openPayloadFromItem = actions.onOpenPayloadFromItem;
+  const itemActions = useMemo(() => (openPayloadFromItem
+    ? { ...actions, onOpenPayload: (next: MessagePayload) => openPayloadFromItem(next, item.key) }
+    : actions), [actions, item.key, openPayloadFromItem]);
   return (
     <MessageHeavyContentVisibilityContext.Provider value={heavyContentVisible}>
-      <RenderItemView actions={actions} focused={focused} item={item} />
+      <RenderItemView actions={itemActions} focused={focused} item={item} />
     </MessageHeavyContentVisibilityContext.Provider>
   );
 });
@@ -7640,7 +7675,7 @@ function MessagePayloadBody({
   if (payload.kind === 'media') {
     const resolved = remoteState.status === 'ready' ? remoteState.media : null;
     const displayUrl = resolved?.url ?? payload.media.url;
-    // 图片 payload 已分流到 ImageLightbox 全屏查看器,本查看器只承载 video/audio/其它媒体。
+    // 聊天里的图片 / 视频已分流到 ImageLightbox 全屏查看器,本查看器主要承载音频与其它媒体。
     const playerKind = payload.media.kind === 'video' || payload.media.kind === 'audio' ? payload.media.kind : null;
     const canInlinePlayer = playerKind !== null
       && isDirectPreviewableMediaUrl(displayUrl)

@@ -714,6 +714,10 @@ export function translatePiEvent(
       return;
 
     case 'message_start': {
+      // Pi also starts user prompts and tool results; only assistant messages are
+      // model requests that queue a price tier and open generation timing.
+      const role = (event.message as { role?: string } | undefined)?.role;
+      if (role && role !== 'assistant') return;
       ctx.thinkingBlocks.clear();
       ctx.streamStopTokenByIndex.clear();
       const message = event.message as { usage?: PiUsage } | undefined;
