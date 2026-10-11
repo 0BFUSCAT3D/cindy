@@ -723,6 +723,31 @@ describe('Bot canonical Session lifecycle', () => {
     } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
   });
 
+  it.each(['available', 'implicit', 'disconnected', 'deleted'])('validates the primary route before Desktop settings persist: %s', async state => {
+    await invoke('local-db:bots:create', { id: 'desktop-settings', name: 'Settings' });
+    const before = h.sqlite!.prepare("SELECT * FROM bot_profile_versions WHERE bot_id = 'desktop-settings'").all();
+    const control = await import('../../../maker-ipc/appDefaultModelControl.js');
+    const real = await vi.importActual<typeof control>('../../../maker-ipc/appDefaultModelControl.js');
+    vi.mocked(control.validateTaskModel).mockImplementation(real.validateTaskModel);
+    try {
+      const route: BotModelRoute = { harness: 'pi', providerId: state === 'implicit' ? null : 'xd', model: 'z-ai/glm-5.3-flash', effort: 'high', fastMode: false };
+      if (state === 'disconnected') h.providers[0]!.connected = false;
+      if (state === 'deleted') h.providers = [];
+      // A stale backup must not prevent saving a usable primary.
+      const modelChainOverride = [route, { ...route, model: 'stale-backup' }];
+      const saving = invoke('local-db:bots:update', { id: 'desktop-settings', capabilities: { modelChainOverride } });
+      if (state === 'available' || state === 'implicit') {
+        await expect(saving).resolves.toMatchObject({ capabilities: { modelChainOverride } });
+      } else {
+        await expect(saving).rejects.toThrow('Model route unavailable');
+        expect(h.sqlite!.prepare("SELECT * FROM bot_profile_versions WHERE bot_id = 'desktop-settings'").all()).toEqual(before);
+        // Unrelated profile edits remain possible with an unavailable stored route.
+        await expect(invoke('local-db:bots:update', { id: 'desktop-settings', name: 'Renamed' }))
+          .resolves.toMatchObject({ name: 'Renamed' });
+      }
+    } finally { vi.mocked(control.validateTaskModel).mockResolvedValue(true); }
+  });
+
   it('preserves explicit creation selections under the new capability contract', async () => {
     const created = await invoke('local-db:bots:create', {
       id: 'selected-bot', name: 'Selected Bot',

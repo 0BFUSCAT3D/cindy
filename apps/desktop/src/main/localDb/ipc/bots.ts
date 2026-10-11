@@ -1546,6 +1546,14 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     else delete nextConfig.gender;
   }
   const normalizedNextConfig = normalizeBotModelCapabilitiesOrThrow(nextConfig);
+  if (botProfileModelSelectionChanged(previous, normalizedNextConfig)) {
+    const primary = (await readEffectiveBotModelChain(normalizedNextConfig))[0];
+    owner.assertCurrent();
+    if (!primary || !await validateTaskModel(primary)) {
+      throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
+    owner.assertCurrent();
+  }
   if (JSON.stringify(previous.taskModelOverride ?? null) !== JSON.stringify(normalizedNextConfig.taskModelOverride ?? null)) {
     const taskModel = readBotTaskModelOverride(normalizedNextConfig.taskModelOverride);
     if (taskModel && !await validateTaskModel(taskModel)) {
