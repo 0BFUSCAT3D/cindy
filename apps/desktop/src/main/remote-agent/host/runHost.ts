@@ -154,6 +154,12 @@ export interface GuestProviderRouteBinding {
   release(): void;
 }
 
+/** 同账号托管任务的来源登记；仅当前运行能更新或撤销它。 */
+export interface OwnerProviderRouteBinding {
+  setProvider(providerId: string): void;
+  release(): void;
+}
+
 export interface RemoteAgentHostDeps {
   isAgentAvailable(kind: RemoteAgentKind): boolean;
   startHosted(input: HostedStartInput): Promise<AgentSessionHandle>;
@@ -187,6 +193,8 @@ export interface RemoteAgentHostDeps {
     resolve(kind: RemoteAgentKind, model: string, providerId: string | null | undefined, controller: string): Promise<string | null>;
     isAllowed(providerId: string, controller: string): boolean;
   };
+  /** 同账号任务也须在启动前登记已核对开放的来源，不能只把 providerId 传给 Agent。 */
+  bindOwnerProviderRoute?(hostSessionId: string, providerId: string): OwnerProviderRouteBinding;
   /**
    * 受邀者任务的出站边界(只对 guest 调用；不提供 = 不接受受邀者)。启动前登记任务用的供应商：本机
    * proxy 只让这条任务的请求经这个供应商、用它提供的模型。release 在任务结束时调用。
@@ -336,6 +344,9 @@ interface Run {
   providerId?: string;
   /** 受邀者任务的出站登记，任务结束时撤销。 */
   guestRoute?: GuestProviderRouteBinding;
+  ownerRoute?: OwnerProviderRouteBinding;
+  /** 换模型/来源串行，避免失败回滚覆盖后一次选择。 */
+  modelChange?: Promise<void>;
   usageMeter?: ReturnType<typeof createGuestUsageMeter>;
   lastState?: string;
   stateTimer?: ReturnType<typeof setInterval>;
@@ -1013,6 +1024,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
           return;
         }
         guestProvider = { providerId: run.providerId, modelIds: [...binding.modelIds], routeToken: binding.routeToken };
+      } else if (run.providerId) {
+        run.ownerRoute = deps.bindOwnerProviderRoute?.(hostSessionId, run.providerId);
       }
       const handle = await deps.startHosted({
         kind: run.kind,
@@ -1106,6 +1119,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     run.groupLoad = undefined;
     run.guestRoute?.release();
     run.guestRoute = undefined;
+    run.ownerRoute?.release();
+    run.ownerRoute = undefined;
     await run.tunnel?.close().catch(() => undefined);
     run.tunnel = undefined;
     // 本机这次尝试里已告诉受邀者打开的连接一并关掉(隧道关闭不会逐个回调)；中转的连接编号带尝试前缀，不会撞上。
@@ -1605,6 +1620,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     // Agent 已关：撤销受邀者的出站登记，之后这条任务的请求一律被本机 proxy 拒绝。
     run.guestRoute?.release();
     run.guestRoute = undefined;
+    run.ownerRoute?.release();
+    run.ownerRoute = undefined;
     await run.tunnel?.close().catch(() => undefined);
     // 收尾事件绕过 closing 判断直接写入。
     if (!skipClosedEvent) run.log.append({ t: 'closed', reason });
@@ -1647,9 +1664,18 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   }
 
   async function call(run: Run, callId: string, method: RemoteAgentMethod, payload: RemoteAgentPayload): Promise<void> {
+    if (method !== 'setModel') return callOnHandle(run, callId, method, payload);
+    const change = (run.modelChange ?? Promise.resolve()).then(() => callOnHandle(run, callId, method, payload));
+    run.modelChange = change.catch(() => undefined);
+    await change;
+  }
+
+  async function callOnHandle(run: Run, callId: string, method: RemoteAgentMethod, payload: RemoteAgentPayload): Promise<void> {
     if (run.relay?.started) return relayCall(run, run.relay, callId, method, payload);
     const handle = run.handle;
+    let rollbackProvider: (() => void) | undefined;
     try {
+      if (run.closing) fail('REMOTE_AGENT_EXPIRED', 'task has ended');
       if (!handle) fail('REMOTE_AGENT_UNAVAILABLE', 'agent has not started');
       const raw = await resolvePayload(run.controller, payload);
       const args = takeGroupNewRound(run, method, Array.isArray(raw) ? raw : []);
@@ -1710,8 +1736,21 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         });
         callArgs = [message, opts];
       }
-      const value = await (target as (...a: unknown[]) => unknown).apply(handle, callArgs);
-      if (nextProviderId) run.providerId = nextProviderId;
+      if (run.closing) fail('REMOTE_AGENT_EXPIRED', 'task has ended');
+      if (nextProviderId && run.ownerRoute && run.providerId) {
+        const binding = run.ownerRoute;
+        const previousProviderId = run.providerId;
+        binding.setProvider(nextProviderId);
+        rollbackProvider = () => binding.setProvider(previousProviderId);
+      }
+      let value: unknown;
+      try {
+        value = await (target as (...a: unknown[]) => unknown).apply(handle, callArgs);
+      } catch (error) {
+        rollbackProvider?.();
+        throw error;
+      }
+      if (nextProviderId && !run.closing) run.providerId = nextProviderId;
       append(run, { t: 'result', callId, ok: true, ...(value !== undefined ? { value: JSON.parse(JSON.stringify(value)) } : {}) });
     } catch (error) {
       append(run, { t: 'result', callId, ok: false, error: remoteAgentErrorInfo(error) });
