@@ -48,6 +48,14 @@ describe('mobile session message labels', () => {
     expect(sentSessionMessageChipLabel('  \n ')).toBe('');
   });
 
+  it('strips images nested inside emphasis, strong and raw <img> tags', () => {
+    expect(sentSessionMessageChipLabel('**![](cindy-media://blobs/abc)**')).toBe('');
+    expect(sentSessionMessageChipLabel('*![图](cindy-media://blobs/x)* 后文')).toBe('图 后文');
+    expect(sentSessionMessageChipLabel('**<img src="cindy-media://blobs/x">** 尾')).toBe('尾');
+    expect(sentSessionMessageChipLabel('**加粗 ![说明](cindy-media://blobs/y) 中**')).toBe('加粗 说明 中');
+    expect(sentSessionMessageChipLabel('***![](cindy-media://blobs/z)*** 字')).not.toContain('cindy-media');
+  });
+
   it('summarizes long messages from a bounded prefix without leaking split Markdown', () => {
     const log = `**构建日志**\n${'line of output\n'.repeat(20_000)}![](cindy-media://blobs/tail)`;
     expect(sentSessionMessageChipLabel(log)).toBe('构建日志 line of output lin…');

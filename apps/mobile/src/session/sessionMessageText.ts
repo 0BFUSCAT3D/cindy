@@ -1,5 +1,9 @@
 import { joinChatQuoteTextSegments, parseChatQuoteSegments } from '@cindy/maker-shared/chat-quotes';
-import { parseMobileMarkdown, type MobileMarkdownInline } from '@/session/messageMarkdown';
+import {
+  parseMobileMarkdown,
+  parseMobileMarkdownInlines,
+  type MobileMarkdownInline,
+} from '@/session/messageMarkdown';
 import { normalizeRemoteMessages } from '@/session/messageNormalize';
 import {
   createSessionLinkPattern,
@@ -33,8 +37,23 @@ export function mobileSessionMessageDisplayText(message: RemoteMessage): string 
   return text || null;
 }
 
-function inlinesPlainText(inlines: readonly MobileMarkdownInline[]): string {
-  return inlines.map((inline) => (inline.type === 'image' ? inline.alt : inline.text)).join('');
+const MAX_EMPHASIS_REPARSE_DEPTH = 4;
+
+/**
+ * 解析器把加粗 / 斜体 / 删除线里的内容当整段文字交出(内嵌图片、`<img>`、嵌套强调都不展开),
+ * 摘要里需要再解析一层,否则 `**![](cindy-media://…)**` 又会露出原文。
+ */
+function inlinesPlainText(inlines: readonly MobileMarkdownInline[], depth = 0): string {
+  return inlines.map((inline) => {
+    if (inline.type === 'image') return inline.alt;
+    const emphasized = inline.type === 'strong'
+      || inline.type === 'emphasis'
+      || inline.type === 'strikethrough'
+      || (inline.type !== 'code' && (inline.marks?.length ?? 0) > 0);
+    return emphasized && depth < MAX_EMPHASIS_REPARSE_DEPTH
+      ? inlinesPlainText(parseMobileMarkdownInlines(inline.text), depth + 1)
+      : inline.text;
+  }).join('');
 }
 
 /** 被引用消息常是带图片 / 强调的 Markdown;chip 只显示读得懂的单行摘要,不露 `**`、`![](…)`。 */
