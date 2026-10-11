@@ -1606,13 +1606,18 @@ describe('pi translator', () => {
   it('queues a price tier only for assistant message starts', () => {
     const ctx = createPiTranslateContext(noopLogger);
     const { queue } = makeQueue();
-    translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
-    // Pi starts the prompt and each tool result as messages too.
-    translatePiEvent(ev({ type: 'message_start', message: { role: 'user', content: 'hi' } }), queue, ctx);
-    translatePiEvent(ev({ type: 'message_start', message: { role: 'toolResult', content: [] } }), queue, ctx);
-    expect(ctx.pendingPriceVariants).toHaveLength(0);
-    translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant', content: [] } }), queue, ctx);
-    expect(ctx.pendingPriceVariants).toHaveLength(1);
+    try {
+      translatePiEvent(ev({ type: 'agent_start' }), queue, ctx);
+      // Pi starts the prompt and each tool result as messages too.
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'user', content: 'hi' } }), queue, ctx);
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'toolResult', content: [] } }), queue, ctx);
+      expect(ctx.pendingPriceVariants).toHaveLength(0);
+      translatePiEvent(ev({ type: 'message_start', message: { role: 'assistant', content: [] } }), queue, ctx);
+      expect(ctx.pendingPriceVariants).toHaveLength(1);
+    } finally {
+      // The assistant start arms the generation heartbeat.
+      disposePiTranslateContext(ctx);
+    }
   });
 
   it('omits timestamp-derived timing after a suspend-sized heartbeat gap', () => {
