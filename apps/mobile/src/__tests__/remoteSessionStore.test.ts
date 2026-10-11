@@ -5730,8 +5730,34 @@ describe('任务消息内存治理', () => {
     expect(rows.at(-1)?.id).toBe('s1-m-99');
   });
 
+  it('后台运行中的 regular 任务持续收到列表推送，内存窗口不超过一页', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    remoteSessionStore.setSessionRunning('s1', true);
+    const pushed = manyMessages('s1', 300);
+    for (const row of pushed) {
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', listMessage: true, message: row,
+      });
+    }
+    const rows = remoteSessionStore.getMessages('s1');
+    expect(rows).toHaveLength(80);
+    expect(rows.at(-1)?.id).toBe('s1-m-299');
+  });
+
+  it('正在看的 regular 任务不受后台单窗上限影响', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    remoteSessionStore.setSessionRunning('s1', true);
+    const authority = remoteSessionStore.enterSessionMessageDetail('s1');
+    remoteSessionStore.setMessages('s1', manyMessages('s1', 120), { authority });
+    remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+      sessionId: 's1', listMessage: true, message: messageAt('s1-new', 's1', '2026-01-01T01:00:00.000Z'),
+    });
+    expect(remoteSessionStore.getMessages('s1')).toHaveLength(121);
+  });
+
   it('regular 全局 LRU 不淘汰当前详情，且总量压回约 800 条', () => {
-    const sessions = Array.from({ length: 9 }, (_, index) => session(`s${index}`));
+    // 后台任务各自封顶一页(80)，要 11 个以上后台任务才会触发全局淘汰。
+    const sessions = Array.from({ length: 13 }, (_, index) => session(`s${index}`));
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', sessions);
     remoteSessionStore.enterSessionMessageDetail('s0');
     for (const item of sessions) {
@@ -5748,17 +5774,17 @@ describe('任务消息内存治理', () => {
   });
 
   it('notifies an evicted session preview subscriber when another session exceeds the LRU budget', () => {
-    const sessions = Array.from({ length: 9 }, (_, index) => session(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => session(`s${index}`));
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', sessions);
     const previewChanged = vi.fn();
     const unsubscribe = remoteSessionStore.subscribeSessionMessagePreview('s0', previewChanged);
     try {
-      remoteSessionStore.setMessages('s0', manyMessages('s0', 100));
+      remoteSessionStore.setMessages('s0', manyMessages('s0', 80));
       expect(remoteSessionStore.getSessionMessagePreview('s0')).toBeDefined();
       previewChanged.mockClear();
 
       for (const item of sessions.slice(1)) {
-        remoteSessionStore.setMessages(item.id, manyMessages(item.id, 100));
+        remoteSessionStore.setMessages(item.id, manyMessages(item.id, 80));
       }
 
       expect(remoteSessionStore.getMessages('s0')).toEqual([]);
@@ -5796,18 +5822,18 @@ describe('任务消息内存治理', () => {
   });
 
   it('regular LRU 只淘汰可重取正文，不丢尚未落盘的本地系统卡', () => {
-    const sessions = Array.from({ length: 9 }, (_, index) => session(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => session(`s${index}`));
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', sessions);
     const localCard = {
       ...messageAt('mobile-system-local-only', 's0', '2025-12-31T23:59:59.000Z'),
       role: 'system' as const,
     };
-    remoteSessionStore.setMessages('s0', [localCard, ...manyMessages('s0', 99)]);
+    remoteSessionStore.setMessages('s0', [localCard, ...manyMessages('s0', 79)]);
     for (const item of sessions.slice(1)) {
-      remoteSessionStore.setMessages(item.id, manyMessages(item.id, 100));
+      remoteSessionStore.setMessages(item.id, manyMessages(item.id, 80));
     }
 
-    expect(remoteSessionStore.getMessages('s0')).toHaveLength(100);
+    expect(remoteSessionStore.getMessages('s0')).toHaveLength(80);
     expect(remoteSessionStore.getMessages('s0').some((row) => row.id === localCard.id)).toBe(true);
   });
 

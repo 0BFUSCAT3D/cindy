@@ -171,6 +171,7 @@ import type { InputProjection, PendingInteraction, RemoteMessage } from '@/sessi
 import { prepareVisualMockDeviceLinkContext } from '@/debug/visualMock';
 import { meterDeviceLinkInvokes, recordDeviceLinkPush } from '@/debug/deviceLinkTraffic';
 import { decodeGzipBase64TextBounded } from '@/utils/gzipBase64';
+import { jankMetricsEnabled, recordInvokeSent, recordPushHandled } from '@/debug/jankMetrics';
 
 export interface DeviceLinkContextValue {
   status: DeviceLinkStatus;
@@ -1167,7 +1168,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
         }
       };
     };
-    const offFrame = client.onFrame((env) => routeFrame(env, {
+    const offFrame = client.onFrame((env) => routeFrameMeasured(env, {
       currentDataOwnerId: currentDataOwnerIdRef.current,
       onAccessRevoked: (deviceId) => {
         clearOnePresenceWipeTimer(presenceWipeTimersRef.current, deviceId);
@@ -1637,13 +1638,30 @@ function VisualMockDeviceLinkProvider({ children }: { children: ReactNode }) {
   return <DeviceLinkContext.Provider value={value}>{children}</DeviceLinkContext.Provider>;
 }
 
-export function routeFrame(env: Envelope, handlers: {
+type RouteFrameHandlers = {
   currentDataOwnerId?: string | null;
   onAccessRevoked?: (deviceId: string) => void;
   onLinkClosed?: (deviceId: string, reason?: string) => void;
   onProviderChanged?: (deviceId: string) => void;
   onAgentsChanged?: (deviceId: string) => void;
-} = {}): void {
+};
+
+/** routeFrame plus per-channel push handling time while local diagnostics record. */
+function routeFrameMeasured(env: Envelope, handlers: RouteFrameHandlers): void {
+  if (!jankMetricsEnabled() || env.kind !== 'push') {
+    routeFrame(env, handlers);
+    return;
+  }
+  const started = performance.now();
+  try {
+    routeFrame(env, handlers);
+  } finally {
+    const channel = (env.payload as PushPayload | null)?.channel;
+    recordPushHandled(typeof channel === 'string' ? channel : '(unknown)', performance.now() - started);
+  }
+}
+
+export function routeFrame(env: Envelope, handlers: RouteFrameHandlers = {}): void {
   const peerLinkClosed = handlePeerLinkCloseFrame(
     env,
     (deviceId, reason) => handlers.onLinkClosed?.(deviceId, reason),
@@ -2027,6 +2045,7 @@ async function sendInvoke<T>(
   args: unknown[],
   opts?: SendInvokeOptions,
 ): Promise<T> {
+  recordInvokeSent(channel);
   // 熔断门禁放在连接等待之前:open 时快速失败,不消耗 1.5s 重连等待也不上管道。
   // 同一轮显式 fan-out 复用 cohort;普通调用省略时每次 acquire 都是独立观测。
   const slot = acquireDeviceSendSlot(deviceId, opts?.responsivenessCohort, {
