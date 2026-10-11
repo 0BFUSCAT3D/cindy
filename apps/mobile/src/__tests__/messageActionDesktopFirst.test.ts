@@ -19,11 +19,10 @@ describe('mobile message actions desktop-first surface', () => {
     expect(source).toContain('<MessageActionSheet');
     expect(source).toContain('buildMobileMessageMenu({');
     expect(source).toContain("&& (item.message.kind === 'user' || item.message.kind === 'assistant')");
-    // 对齐桌面:运行中不隐藏删除,由页面在点按时提示等回复结束。
-    expect(source).not.toContain('&& actions.isSessionStreaming !== true');
+    // 运行中删除入口的可见性与 SESSION_RUNNING 识别由
+    // messageSourceLabelsRender / remoteStatus 的行为测试覆盖。
     const screenSource = readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
-    expect(screenSource).toContain("if (formatted.includes('SESSION_RUNNING')) {");
-    expect(screenSource).toContain("Alert.alert(t('session.screen.deleteMessageBusy'));");
+    expect(screenSource).toContain('if (isSessionRunningRemoteError(err)) {');
     expect(source).toContain('hitSlop={MESSAGE_CONTROL_HIT_SLOP}');
     expect(source).toContain('buttonSize={actionBar.buttonSize}');
     expect(source).toContain('iconSize={actionBar.iconSize}');

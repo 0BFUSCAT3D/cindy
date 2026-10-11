@@ -130,6 +130,7 @@ import {
   humanizeRemoteError,
   isAutoRecoveringRemoteError,
   isPreconditionFailedRemoteError,
+  isSessionRunningRemoteError,
 } from '@/device-link/remoteStatus';
 import { agentAuthGateHint, agentAuthGateVerdict } from '@/session/agentAuthGate';
 import { isTransientRemoteError, withTransientRemoteRetry } from '@/device-link/remoteRetry';
@@ -9281,11 +9282,10 @@ export default function SessionScreen() {
                 deviceId,
               );
             } catch (err) {
-              const formatted = formatRemoteError(err);
-              if (formatted.includes('SESSION_RUNNING')) {
+              if (isSessionRunningRemoteError(err)) {
                 Alert.alert(t('session.screen.deleteMessageBusy'));
               } else {
-                setError(formatted);
+                setError(formatRemoteError(err));
               }
             } finally {
               setMessageActionBusy(null);
