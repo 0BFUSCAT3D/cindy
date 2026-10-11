@@ -364,6 +364,16 @@ function transform() {
     scale: style.transform[4].scale,
   };
 }
+/** 画面位移(origin 折进 translate 后):捏合中途重新锚定会改 raw translate,画面不变。 */
+function visual() {
+  const t = runtime.nodes.get("Image").style[1].current.transform;
+  const scale = t[4].scale;
+  return {
+    x: t[0].translateX + t[2].translateX * (1 - scale),
+    y: t[1].translateY + t[3].translateY * (1 - scale),
+    scale,
+  };
+}
 const press = (id: string) =>
   act(() => runtime.nodes.get(id).onPress({ stopPropagation: vi.fn() }));
 const doubleTapAtCorner = () => fire(doubleTap(), "onEnd", { x: 330, y: 650 });
@@ -515,6 +525,73 @@ describe("image viewer gesture lifecycle", () => {
     expect(after.scale).toBe(3);
     expect(after.x + 98 * after.scale).toBeCloseTo(50, 6);
     expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("does not jump when the fingers lift one at a time", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    const pinched = visual();
+    // 先抬一指:焦点跳到余下那根手指上(半个指距),倍率不变,画面不能跟着跳。
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 1.2, numberOfPointers: 1 });
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    expect(visual().y).toBeCloseTo(pinched.y, 6);
+    expect(visual().scale).toBeCloseTo(pinched.scale, 6);
+    // 余下那根手指激活的单指平移不能叠加位移,松手也不另起惯性滑行。
+    fire(pan(), "onStart");
+    fire(pan(), "onChange", { changeX: 40, changeY: 0 });
+    expect(visual().x).toBeCloseTo(pinched.x, 6);
+    fire(pinch(), "onFinalize");
+    fire(pan(), "onFinalize", { velocityX: 2000, velocityY: 0 });
+    expect(runtime.values.some((v) => v.animation?.decay)).toBe(false);
+    finishAnimations();
+    const after = transform();
+    expect(after.scale).toBe(3);
+    expect(after.x + 98 * after.scale).toBeCloseTo(50, 6);
+    expect(after.y + 110 * after.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("lets the remaining finger keep dragging after the first one lifts", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 1.2, numberOfPointers: 1 });
+    const lifted = visual();
+    fire(pinch(), "onChange", { focalX: 330, focalY: 290, scale: 1.2, numberOfPointers: 1 });
+    expect(visual().y).toBeCloseTo(lifted.y - 10, 6);
+    expect(visual().x).toBeCloseTo(lifted.x, 6);
+  });
+
+  it("settles an over-zoom around the two-finger focal, not the last remaining finger", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 2.4, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 2.4, numberOfPointers: 1 });
+    fire(pinch(), "onFinalize");
+    finishAnimations();
+    const settled = transform();
+    expect(settled.scale).toBe(4);
+    expect(settled.x + 98 * settled.scale).toBeCloseTo(50, 6);
+    expect(settled.y + 110 * settled.scale).toBeCloseTo(-100, 6);
+  });
+
+  it("re-anchors when the gesture's own scale baseline resets with the pointer count", () => {
+    mount();
+    doubleTapAtCorner();
+    finishAnimations();
+    fire(pinch(), "onStart", { focalX: 250, focalY: 300, numberOfPointers: 2 });
+    fire(pinch(), "onChange", { focalX: 250, focalY: 300, scale: 1.2, numberOfPointers: 2 });
+    const before = visual();
+    // 指数变化那一帧手势倍率回到 1:画面倍率不能跟着掉回 2.5x。
+    fire(pinch(), "onChange", { focalX: 330, focalY: 300, scale: 1, numberOfPointers: 1 });
+    expect(visual().scale).toBeCloseTo(before.scale, 6);
+    expect(visual().x).toBeCloseTo(before.x, 6);
   });
 
   it("keeps the point under the fingers when pinching during an edge rebound", () => {
