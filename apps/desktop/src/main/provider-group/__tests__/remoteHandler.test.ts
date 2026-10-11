@@ -8,6 +8,7 @@ import { encodeReliableFrames, MAX_FRAME_BYTES, MAX_TRANSPORT_MESSAGE_BYTES, PRO
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import {
   parseProviderGroupRemoteRequest,
+  parseProviderGroupRemoteSessionGroup,
   providerGroupUsageRowsForWire,
   PROVIDER_GROUP_REMOTE_MAX_USAGE_ROWS,
   PROVIDER_GROUP_REMOTE_MAX_USAGE_REPORT_ROWS,
@@ -75,6 +76,7 @@ function deps(overrides: Partial<ProviderGroupRemoteHandlerDeps> = {}) {
     isRemoteAllowed: () => true,
     now: () => now,
     replaceReportedUsage: vi.fn(),
+    sessionGroup: vi.fn(async () => null),
     ...overrides,
   } satisfies ProviderGroupRemoteHandlerDeps;
   return {
@@ -243,12 +245,37 @@ describe('provider-group:remote', () => {
       isRemoteAllowed: () => true,
       now: () => now,
       replaceReportedUsage: vi.fn(),
+      sessionGroup: async () => null,
     } satisfies ProviderGroupRemoteHandlerDeps;
     const first = handleProviderGroupRemote(d, 'laptop', { ...PICK, exclude: [] });
     const second = handleProviderGroupRemote(d, 'desktop', { ...PICK, sessionId: 's2', exclude: [] });
     release();
     const picked = (await Promise.all([first, second])).map((r) => (r as { member?: { key: string } }).member?.key);
     expect(new Set(picked).size).toBe(2);
+  });
+
+  it('answers which group a task on this computer belongs to, read-only', async () => {
+    const sessionGroup = vi.fn(async (sessionId: string) =>
+      (sessionId === 's1' ? { groupDeviceId: 'studio', providerId: 'anthropic' } : null));
+    const d = deps({ sessionGroup });
+    expect(await handleProviderGroupRemote(d, 'phone', { action: 'session-group', sessionId: 's1' }))
+      .toEqual({ group: { groupDeviceId: 'studio', providerId: 'anthropic' } });
+    expect(await handleProviderGroupRemote(d, 'phone', { action: 'session-group', sessionId: 's2' }))
+      .toEqual({ group: null });
+    // 只读：不碰分配器与负载，也不看这台有没有组。
+    expect(d.router.pick).not.toHaveBeenCalled();
+    expect(d.router.markCooling).not.toHaveBeenCalled();
+    await expect(handleProviderGroupRemote(d, 'phone', { action: 'session-group', sessionId: '../x' }))
+      .rejects.toThrow('[INVALID_PARAMS]');
+    // 问的一方读回包：格式不对一律按没归组。
+    expect(parseProviderGroupRemoteSessionGroup({ group: { groupDeviceId: null, providerId: 'anthropic' } }))
+      .toEqual({ groupDeviceId: null, providerId: 'anthropic' });
+    expect(parseProviderGroupRemoteSessionGroup({ group: { providerId: 'anthropic' } }))
+      .toEqual({ groupDeviceId: null, providerId: 'anthropic' });
+    for (const bad of [null, {}, { group: null }, { group: { groupDeviceId: 'share:x', providerId: 'a' } },
+      { group: { groupDeviceId: 'studio', providerId: '../a' } }, { group: { groupDeviceId: 3, providerId: 'a' } }]) {
+      expect(parseProviderGroupRemoteSessionGroup(bad)).toBeNull();
+    }
   });
 
   it('drops a pick when the account changed while it waited for the directory', async () => {

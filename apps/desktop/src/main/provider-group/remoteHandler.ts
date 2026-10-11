@@ -7,6 +7,8 @@
  *
  * 只服务同账号电脑(dispatch 已拒绝受邀者与共享任务访客)，且只对仍「允许被远程调用」的供应商提供组：
  * 没开放的供应商对其他电脑本来就不可见。
+ *
+ * 另有一个只读查询发给任务所在的电脑(不论它有没有组)：手机与远程控制问这台电脑上的某个任务此刻归哪个组(§10)。
  */
 import { PROVIDER_RUNNING_TURNS_FIELD } from '@cindy/device-link';
 
@@ -16,7 +18,9 @@ import {
   providerGroupSummaryForWire,
   type ProviderGroupConfig,
   type ProviderGroupRemotePick,
+  type ProviderGroupRemoteSessionGroup,
   type ProviderGroupRemoteUsageRow,
+  type ProviderGroupSessionGroup,
   type ProviderGroupUsagePartAck,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
@@ -36,6 +40,8 @@ export interface ProviderGroupRemoteHandlerDeps {
   now(): number;
   /** 同账号电脑报告来的用量：整体替换那台从 sinceDay 起的行(记进当前账号的按使用方账本)。 */
   replaceReportedUsage(controller: string, sinceDay: string | null, rows: ProviderGroupRemoteUsageRow[]): void;
+  /** 这台电脑上的任务此刻归哪个组(只读本机记录，读不到为 null)。 */
+  sessionGroup(sessionId: string): Promise<ProviderGroupSessionGroup>;
 }
 
 /** 每个账号、每台报告来的电脑最近收下的用量报告序号(乱序到达的旧份丢弃)。按账号的负载对象区分账号。 */
@@ -98,8 +104,11 @@ export async function handleProviderGroupRemote(
   deps: ProviderGroupRemoteHandlerDeps,
   controller: string,
   raw: unknown,
-): Promise<ProviderGroupRemotePick | ProviderGroupView | ProviderGroupUsagePartAck | Record<string, never>> {
+): Promise<
+  ProviderGroupRemotePick | ProviderGroupView | ProviderGroupUsagePartAck | ProviderGroupRemoteSessionGroup | Record<string, never>
+> {
   const request = parseProviderGroupRemoteRequest(raw);
+  if (request.action === 'session-group') return { group: await deps.sessionGroup(request.sessionId) };
   const scope = deps.scope();
   switch (request.action) {
     case 'pick': {

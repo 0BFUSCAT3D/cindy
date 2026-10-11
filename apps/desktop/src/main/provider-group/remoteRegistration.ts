@@ -12,7 +12,11 @@ import {
   sharedProviderGroupSize,
   type ProviderGroupRemoteHandlerDeps,
 } from './remoteHandler.js';
-import { getProviderGroupOwnerScope, readProviderRunningTurnsByProvider } from './runtime.js';
+import {
+  getProviderGroupOwnerScope,
+  readProviderGroupOfSession,
+  readProviderRunningTurnsByProvider,
+} from './runtime.js';
 import { readProviderGroup } from './store.js';
 
 export function registerProviderGroupRemoteHandler(): void {
@@ -23,6 +27,7 @@ export function registerProviderGroupRemoteHandler(): void {
     now: () => Date.now(),
     replaceReportedUsage: (controller, sinceDay, rows) =>
       currentProviderPartyUsageStore().replaceReported(controller, sinceDay, rows),
+    sessionGroup: readProviderGroupOfSession,
   };
   setProviderGroupRemoteHandler({
     handle: (controller, raw) => handleProviderGroupRemote(deps, controller, raw),

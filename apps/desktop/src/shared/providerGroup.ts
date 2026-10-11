@@ -332,7 +332,17 @@ export type ProviderGroupRemoteRequest =
    */
   | { action: 'usage'; seq: number; sinceDay: string | null; rows: ProviderGroupRemoteUsageRow[] }
   /** 新动作防止旧端忽略分批字段后把半份报告当整份替换。offset 从 0 开始，收齐 total 才提交。 */
-  | { action: 'usage-part'; seq: number; sinceDay: string | null; offset: number; total: number; rows: ProviderGroupRemoteUsageRow[] };
+  | { action: 'usage-part'; seq: number; sinceDay: string | null; offset: number; total: number; rows: ProviderGroupRemoteUsageRow[] }
+  /**
+   * 只读：这台电脑上的某个任务此刻归哪个组(手机与远程控制的模型列表用，provider-groups.md §10)。
+   * 发给任务所在的电脑，不是组所在电脑。
+   */
+  | { action: 'session-group'; sessionId: string };
+
+/** `session-group` 的回包：坐标是任务所在电脑视角(`groupDeviceId` 为 null = 那台自己建的组)。 */
+export interface ProviderGroupRemoteSessionGroup {
+  group: ProviderGroupSessionGroup;
+}
 
 export type ProviderGroupRemotePick =
   /** 那个供应商现在没有组(组被删了或旧版本)：照常直接在组所在电脑上运行。 */
@@ -460,6 +470,8 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         || report.rows.length === 0 || (value.offset as number) + report.rows.length > (value.total as number)) invalidRemote('invalid usage offset');
       return { action: 'usage-part', ...report, offset: value.offset as number, total: value.total as number };
     }
+    case 'session-group':
+      return { action: 'session-group', sessionId: remoteSessionId(value.sessionId) };
     default:
       invalidRemote('unknown provider group action');
   }
@@ -479,6 +491,22 @@ export function parseProviderGroupRemotePick(raw: unknown, groupProviderId: stri
     member: { key: member.key, kind: member.kind, agentDeviceId: member.agentDeviceId, providerId: member.providerId },
     label,
   };
+}
+
+/** 读任务所在电脑 `session-group` 的回包；格式不对按没归组处理。坐标仍是那台电脑视角。 */
+export function parseProviderGroupRemoteSessionGroup(raw: unknown): ProviderGroupSessionGroup {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const group = (raw as Record<string, unknown>).group;
+  if (!group || typeof group !== 'object' || Array.isArray(group)) return null;
+  const value = group as Record<string, unknown>;
+  const groupDeviceId = value.groupDeviceId ?? null;
+  if (groupDeviceId !== null && (
+    typeof groupDeviceId !== 'string'
+    || !DEVICE_ID_PATTERN.test(groupDeviceId)
+    || isProviderShareAgentDeviceId(groupDeviceId)
+  )) return null;
+  if (!isProviderGroupProviderId(value.providerId)) return null;
+  return { groupDeviceId, providerId: value.providerId };
 }
 
 const MEMBER_STATES: readonly ProviderGroupMemberState[] = ['available', 'full', 'paused', 'cooling', 'offline', 'unavailable'];
