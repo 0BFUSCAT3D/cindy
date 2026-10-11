@@ -13,6 +13,9 @@ import path from 'node:path';
 import { REMOTE_AGENT_MAX_RUNS_PER_CONTROLLER } from '@cindy/device-link';
 import type { AgentEvent, AgentSessionHandle } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay';
+import { createProviderGroupExternalLoad } from '../../provider-group/externalLoad';
+import type { ProviderGroupRouter } from '../../provider-group/router';
 
 import { RemoteAgentPoller } from '../controller/poller';
 import { RemoteAgentRunClient } from '../controller/runClient';
@@ -147,6 +150,22 @@ async function waitFor(condition: () => boolean, ms = 3_000): Promise<void> {
 const MEMBER_MINI: GroupRelayMember = { memberKey: 'device:mini:anthropic-2', agentDeviceId: 'mini', providerId: 'anthropic-2', sameAccount: true };
 const MEMBER_STUDIO: GroupRelayMember = { memberKey: 'device:studio:anthropic', agentDeviceId: 'studio', providerId: 'anthropic', sameAccount: true };
 
+/** 真实组启动判定接到三端 harness，验证本机与中转启动入口确实服从任务错误和自动切换开关。 */
+function startFailurePolicy(autoSwitch: boolean) {
+  const router = { markCooling: vi.fn() } as unknown as ProviderGroupRouter;
+  const externalLoad = createProviderGroupExternalLoad({ now: Date.now });
+  return createProviderGroupGuestRelay({
+    scope: () => ({ router, externalLoad, isCurrent: () => true }),
+    readGroup: () => ({ strategy: 'order', autoSwitch, members: [
+      { key: 'local', kind: 'local', agentDeviceId: null, providerId: 'shared-provider', limit: 4, weight: 1, paused: false },
+      ...[MEMBER_MINI, MEMBER_STUDIO].map((m) => ({ key: m.memberKey, kind: 'device' as const, agentDeviceId: m.agentDeviceId, providerId: m.providerId, limit: 4, weight: 1, paused: false })),
+    ] }),
+    connect: () => { throw new Error('not used for failure decisions'); },
+    now: Date.now,
+    log: { warn: vi.fn() },
+  }).noteStartFailure;
+}
+
 function setup(options: {
   plans?: GroupRelayPlan[];
   miniCapable?: boolean;
@@ -187,7 +206,7 @@ function setup(options: {
       return { invoke: poller.invoke, poller };
     }),
     // 与本机任务同一个判定：默认换下一台(guestRelay 的判定见 provider-group/__tests__/guestRelay.test.ts)。
-    noteStartFailure: vi.fn(() => true),
+    noteStartFailure: vi.fn<RemoteAgentGroupRelayDeps['noteStartFailure']>(() => true),
     noteRunFailure: vi.fn((_providerId: string, _member: GroupRelayMember, failure: RelayRunFailure) =>
       options.switchWorthy?.(failure) ?? true),
     trackRun: vi.fn(() => ({ setRunning: vi.fn(), release: vi.fn() })),
@@ -321,6 +340,35 @@ describe('provider group relay for shared users', () => {
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set(['local']) }));
     await client.close('close', 'navigation');
   });
+
+  it.each(['local', 'remote', 'old-peer'] as const)('关闭自动换电脑后 %s 启动失败不尝试下一台', async (kind) => {
+    const env = setup({
+      ...(kind === 'local' ? { owner: { failStart: true } } : { mini: { failStart: true } }),
+      ...(kind === 'old-peer' ? { miniCapable: false } : {}),
+      plans: [kind === 'local' ? { kind: 'local' } : { kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+    });
+    env.relay.noteStartFailure.mockImplementation(startFailurePolicy(false));
+    await expect(openAsGuest(env, GUEST_A, openPayload(SESSION))).rejects.toThrow();
+    expect(env.relay.noteStartFailure).toHaveBeenCalledTimes(1);
+    expect(env.relay.plan).toHaveBeenCalledTimes(1);
+    expect(env.memberStarted.studio).toHaveLength(0);
+  });
+
+  it.each(['INVALID_PARAMS', 'SESSION_RUNNING', 'PRECONDITION_FAILED'])(
+    '中转启动的 %s 任务错误不会逐台重试', async (code) => {
+      const env = setup({
+        plans: [{ kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+        intercept: async (_device, request, forward) => {
+          if (request.op === 'open') throw new Error(`[${code}] task cannot start`);
+          return forward();
+        },
+      });
+      env.relay.noteStartFailure.mockImplementation(startFailurePolicy(true));
+      await expect(openAsGuest(env, GUEST_A, openPayload(SESSION))).rejects.toThrow(code);
+      expect(env.relay.plan).toHaveBeenCalledTimes(1);
+      expect(env.memberStarted.studio).toHaveLength(0);
+    },
+  );
 
   it('runs locally when the group picks this computer, and refuses when no computer can run it', async () => {
     const local = setup({ plans: [{ kind: 'local' }] });
@@ -562,15 +610,21 @@ describe('provider group "switch to another computer" for shared users', () => {
     await reopened.client.close('close', 'navigation');
   });
 
-  it('asks the shared user to hand off when the computer that ran the conversation cannot reopen it', async () => {
+  it.each([
+    { code: 'REMOTE_AGENT_UNAVAILABLE', autoSwitch: true, offersSwitch: true },
+    { code: 'INVALID_PARAMS', autoSwitch: true, offersSwitch: false },
+    { code: 'SESSION_RUNNING', autoSwitch: true, offersSwitch: false },
+    { code: 'REMOTE_AGENT_UNAVAILABLE', autoSwitch: false, offersSwitch: false },
+  ])('续接的 $code 错误，autoSwitch=$autoSwitch，是否发换电脑凭证=$offersSwitch', async ({ code, autoSwitch, offersSwitch }) => {
     let failResume = false;
     const env = setup({
       intercept: async (_agentDeviceId, request, forward) => {
-        if (failResume && request.op === 'open') throw new Error('[REMOTE_AGENT_UNAVAILABLE] gone');
+        if (failResume && request.op === 'open') throw new Error(`[${code}] cannot reopen`);
         return forward();
       },
       plans: [{ kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
     });
+    env.relay.noteStartFailure.mockImplementation(startFailurePolicy(autoSwitch));
     const first = await openAsGuest(env, GUEST_A, openPayload(SESSION, { acceptsGroupSwitch: true }));
     const nativeId = first.started.id as string;
     await first.client.close('close', 'navigation');
@@ -589,8 +643,11 @@ describe('provider group "switch to another computer" for shared users', () => {
     await expect(client.open('claude-code', openPayload(SESSION, { acceptsGroupSwitch: true, options: { resumeSessionId: nativeId } })))
       .rejects.toThrow();
     // 续接只能回到原来那台：那台接不下时凭证排在启动失败前面，受邀者交接后作为全新任务重新打开，组换一台。
-    expect(stream.some((state) => typeof state.providerGroupSwitch === 'string')).toBe(true);
-    expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
+    expect(stream.some((state) => typeof state.providerGroupSwitch === 'string')).toBe(offersSwitch);
+    expect(env.relay.plan).toHaveBeenCalledTimes(offersSwitch ? 2 : 1);
+    if (offersSwitch) {
+      expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
+    }
   });
 
   it('accepts a token only once, and only from the shared user and task it was sent to', async () => {

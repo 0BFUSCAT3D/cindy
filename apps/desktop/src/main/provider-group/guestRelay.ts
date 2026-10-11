@@ -92,19 +92,20 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
     connect: (agentDeviceId) => deps.connect(agentDeviceId),
 
     noteStartFailure(providerId, member: GroupRelayMember, error) {
+      const config = deps.readGroup(providerId);
+      if (!config?.members.some((m) => m.key === member.memberKey)) return false;
       const message = errorText(error);
       // 同账号那台太旧、还不能按受邀者隔离：不冷却它(本机自己的任务照常分过去)，只是一阵子不再给它受邀者的任务。
       // 分享来的电脑本来就把本机当受邀者隔离，不会因为这个原因接不下(真接不下时按下面的判定换下一台)。
       if (member.sameAccount && /REMOTE_AGENT_PEER_TOO_OLD|REMOTE_AGENT_UNSUPPORTED/.test(message)) {
         incapable.set(member.agentDeviceId, deps.now() + PROVIDER_GROUP_GUEST_INCAPABLE_MS);
-        return true;
+        return config.autoSwitch;
       }
       // 与本机自己的任务同一个判定(failurePolicy)：换到哪台都一样的不换，那台账号的问题记进组的状态；
       // 连不上、起不来不记进组的状态，下次选电脑时现读那台(状态以本机读到的为准，2026-10-11)。
       const signals = providerGroupFailureSignals(error);
-      // 按运行中的口径判：错误来自那台电脑(它的 Agent、它的准入)，不是受邀者这个任务此刻的状态，Cindy 自己的错误码
-      // (参数不对、不支持等)在那台上同样说明是那台的问题，换下一台。
-      const decision = decideProviderGroupFailure(signals, 'run');
+      // 尚未启动的任务按 start 判：参数和任务状态错误换到哪台都一样；成员能力差异仍按兼容错误码处理。
+      const decision = decideProviderGroupFailure(signals, 'start');
       deps.log.info?.('provider group: failure decision', {
         phase: 'start',
         relay: true,
@@ -120,7 +121,8 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
           now + (decision.cause === 'usage-limit' ? PROVIDER_GROUP_DEFAULT_COOLDOWN_MS : PROVIDER_GROUP_FAILURE_COOLDOWN_MS),
         );
       }
-      return true;
+      // 账号问题仍冷却，关闭自动换电脑时把原错误交给受邀者，与运行中的口径一致。
+      return config.autoSwitch;
     },
 
     noteRunFailure(providerId, member: GroupRelayMember, failure) {

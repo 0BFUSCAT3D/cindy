@@ -1070,7 +1070,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   async function offerSwitchAfterResumeFailure(run: Run, member: GroupRelayMember, error: unknown, model: string): Promise<void> {
     if (!run.acceptsGroupSwitch || run.closing) return;
     const message = error instanceof Error ? error.message : String(error);
-    const token = await groupSwitchOfferFor(run, member, { message }, model).catch(() => null);
+    const token = await groupSwitchOfferFor(run, member, { message }, model, 'start').catch(() => null);
     if (token && !run.closing) append(run, { t: 'state', state: { [GROUP_SWITCH_STATE_KEY]: token } });
   }
 
@@ -1223,7 +1223,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
   }
 
   /**
-   * 受邀者任务在组内电脑(含本机这一台)上运行中失败：问题出在那台时按组的口径冷却它；受邀者声明了支持、组里还有
+   * 受邀者任务在组内电脑(含本机这一台)上失败：按启动或运行阶段的同一判定，问题出在那台时按组的口径冷却它；受邀者声明了支持、组里还有
    * 能接的电脑(这一轮换下来的不算)时返回一张「需要换一台」凭证，调用方把它排在那次错误前面送出。
    */
   async function groupSwitchOfferFor(
@@ -1231,10 +1231,14 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     member: GroupRelayMember,
     failure: RelayRunFailure,
     model: string,
+    phase: 'start' | 'run' = 'run',
   ): Promise<string | null> {
     const relayDeps = deps.groupRelay;
     if (!relayDeps || !run.providerId || !run.hostSessionId) return null;
-    if (!relayDeps.noteRunFailure(run.providerId, member, failure)) return null;
+    const canSwitch = phase === 'start'
+      ? relayDeps.noteStartFailure(run.providerId, member, failure.message ?? '')
+      : relayDeps.noteRunFailure(run.providerId, member, failure);
+    if (!canSwitch) return null;
     // 旧版受邀者不认识这个状态：照旧只转出原来的错误。
     if (!run.acceptsGroupSwitch) return null;
     const exclude = noteGroupSwitchTried(run, member);

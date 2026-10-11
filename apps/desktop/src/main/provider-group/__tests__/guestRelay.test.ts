@@ -92,6 +92,38 @@ describe('provider group guest relay planner', () => {
     expect(env.router.markCooling.mock.calls[0][2]).toBeLessThan(1_000 + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS);
   });
 
+  it.each(['INVALID_PARAMS', 'SESSION_RUNNING', 'PRECONDITION_FAILED', 'NOT_FOUND', 'UNSUPPORTED_CAPABILITY', 'WORKDIR_MISSING'])(
+    '启动阶段的任务级 %s 错误原样返回，不换电脑也不冷却', (code) => {
+      const env = setup([MINI, FRIEND]);
+      const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+      expect(env.relay.noteStartFailure('anthropic', mini, new Error(`[${code}] task cannot start`))).toBe(false);
+      expect(env.router.markCooling).not.toHaveBeenCalled();
+    },
+  );
+
+  it('成员能力差异仍允许换电脑，组已删除或成员已移出时停止', () => {
+    const env = setup([MINI, FRIEND]);
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    expect(env.relay.noteStartFailure('anthropic', mini, new Error('[REMOTE_AGENT_PEER_TOO_OLD] old'))).toBe(true);
+    expect(env.relay.noteStartFailure('anthropic', { ...mini, sameAccount: false }, new Error('[REMOTE_AGENT_MODEL_UNAVAILABLE] model'))).toBe(true);
+    expect(env.relay.noteStartFailure('openai', mini, new Error('agent failed'))).toBe(false);
+    expect(env.relay.noteStartFailure('anthropic', { ...mini, memberKey: 'device:gone:anthropic' }, new Error('401 unauthorized'))).toBe(false);
+    expect(env.router.markCooling).not.toHaveBeenCalled();
+  });
+
+  it('关闭自动换电脑后，本机、远端启动和兼容失败都不切换，账号问题仍冷却', () => {
+    const env = setup([LOCAL, MINI, FRIEND], { ...CONFIG, autoSwitch: false });
+    for (const picked of [LOCAL, MINI, FRIEND]) {
+      const target = { memberKey: picked.key, agentDeviceId: picked.agentDeviceId ?? 'owner', providerId: picked.providerId, sameAccount: picked.kind === 'device' };
+      expect(env.relay.noteStartFailure('anthropic', target, new Error('agent failed'))).toBe(false);
+      expect(env.relay.noteStartFailure('anthropic', target, new Error('401 unauthorized'))).toBe(false);
+    }
+    expect(env.router.markCooling).toHaveBeenCalledTimes(3);
+    const mini = { memberKey: MINI.key, agentDeviceId: 'mini', providerId: MINI.providerId, sameAccount: true };
+    expect(env.relay.noteStartFailure('anthropic', mini, new Error('[REMOTE_AGENT_PEER_TOO_OLD] old'))).toBe(false);
+    expect(env.router.markCooling).toHaveBeenCalledTimes(3);
+  });
+
   it('reads the latest state when choosing again after a computer did not work', async () => {
     const env = setup([MINI, FRIEND]);
     await env.relay.plan(PLAN);
