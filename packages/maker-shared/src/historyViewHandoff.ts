@@ -1,4 +1,4 @@
-import { historyViewLeaves, type HistoryMessageSource } from './historyView.js';
+import { historyViewLeaves, historyWorkSummaries, type HistoryMessageSource } from './historyView.js';
 import type { HistoryViewSnapshot } from './historyViewController.js';
 
 /** Live content may be newer, but its provisional timestamp must not replace known history order. */
@@ -7,9 +7,29 @@ export function liveContentWithHistoryOrder<T extends HistoryMessageSource>(live
   return { ...live, createdAt: history.createdAt, rowid: history.rowid };
 }
 
+/** Latest moment the snapshot covers: its newest row or the end of its newest work run. */
+export function historyViewEndMs<T extends HistoryMessageSource>(snapshot: Pick<HistoryViewSnapshot<T>, 'items'>): number {
+  let endMs = 0;
+  for (const item of historyViewLeaves(snapshot.items)) {
+    if (item.type !== 'messages') continue;
+    for (const row of item.messages) {
+      const ms = Date.parse(row.createdAt);
+      if (Number.isFinite(ms)) endMs = Math.max(endMs, ms);
+    }
+  }
+  for (const summary of historyWorkSummaries(snapshot.items)) endMs = Math.max(endMs, summary.endedAtMs);
+  return endMs;
+}
+
+const EMPTY = new Set<string>();
+
 /** View-local identities only; message bodies remain in the existing raw store.
  * A finalized live row stays visible until history takes over. Removing it from
  * the raw store (delete/rewind/clear) cancels the handoff rather than reviving it.
+ *
+ * A stale snapshot (restored from disk, or kept while the view was away) may end
+ * before user/assistant rows the raw store already received. Those rows form the
+ * `tail` and are shown after the snapshot until the next page read covers them.
  */
 export class HistoryViewHandoff<T extends HistoryMessageSource> {
   private readonly pending = new Set<string>();
@@ -31,12 +51,23 @@ export class HistoryViewHandoff<T extends HistoryMessageSource> {
       else if (history.has(row.clientId) && !this.streaming(history.get(row.clientId)!)) this.pending.delete(row.clientId);
     }
     const pending = new Set(this.pending);
-    if (!snapshot.ready) return { messages: raw, pending };
+    if (!snapshot.ready) return { messages: raw, pending, tail: EMPTY };
     for (const row of raw) if (pending.has(row.clientId)) {
       const known = history.get(row.clientId);
       history.set(row.clientId, known ? liveContentWithHistoryOrder(row, known) : row);
     }
+    let tail: Set<string> = EMPTY;
+    if (snapshot.stale) {
+      const endMs = historyViewEndMs(snapshot);
+      for (const row of raw) {
+        if ((row.role !== 'user' && row.role !== 'assistant') || history.has(row.clientId)
+          || !(Date.parse(row.createdAt) > endMs)) continue;
+        if (tail === EMPTY) tail = new Set();
+        tail.add(row.clientId);
+        history.set(row.clientId, row);
+      }
+    }
     const messages = [...history.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.rowid ?? 0) - (b.rowid ?? 0));
-    return { messages, pending };
+    return { messages, pending, tail };
   }
 }

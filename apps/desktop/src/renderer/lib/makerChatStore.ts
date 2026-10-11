@@ -35,7 +35,7 @@ import { parsePluginConnectionInput } from '@cindy/device-link';
  * - User-initiated stopSession (NOT called on session switch anymore)
  */
 
-import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
+import { HISTORY_WORK_PATCH_CHANNEL, HistoryViewController, isHistoryViewUnavailable, mapHistoryViewMessages, historyViewLeaves, historyWorkSummaries, historyPrefetchVersion, historySnapshotCovers, historySnapshotFromPage, selectHistoryPrefetchSessions, type HistoryViewPage, type HistoryDetailPage, type HistoryWorkPatch } from '@cindy/maker-shared/message-window';
 import type { CindyRegion } from '@cindy/maker-shared/brand-identity';
 import { SESSION_SYNC_CHANNEL } from '@cindy/device-link';
 import { isRemoteTextDelta, readRemoteTextSnapshot, reconcileRemoteText, consumeRemoteSessionSync } from '@cindy/maker-shared/message-window';
@@ -11611,6 +11611,64 @@ function createRemoteHistoryView(sessionId: string) {
   return view;
 }
 
+// Activity version already read ahead, per device and task (memory only).
+const remoteHistoryPrefetchedAt = new Map<string, string>();
+const remoteHistoryPrefetchRuns = new Map<string, { again: boolean }>();
+
+/**
+ * After a list read that may follow missed pushes (bootstrap/reconnect), read the latest
+ * history page of recently changed tasks into the mirror a task restores on open. Open tasks
+ * read their own view. Sequential and best effort: a failed read waits for the next refresh.
+ */
+async function prefetchRemoteHistories(deviceId: string): Promise<void> {
+  const run = remoteHistoryPrefetchRuns.get(deviceId);
+  if (run) { run.again = true; return; }
+  const state = { again: true };
+  remoteHistoryPrefetchRuns.set(deviceId, state);
+  const owner = getDataOwnerGeneration();
+  const key = (sessionId: string) => JSON.stringify([deviceId, sessionId]);
+  const isCurrent = (sessionId: string) => isDataOwnerGenerationCurrent(owner)
+    && !isRemoteDeviceMarkedDisconnected(deviceId)
+    && remoteProjectsStore.getSessionDeviceId(sessionId) === deviceId;
+  try {
+    while (state.again) {
+      state.again = false;
+      const candidates = selectHistoryPrefetchSessions(remoteProjectsStore.getDeviceSessions(deviceId, 'active'), {
+        eligible: (session) => session.status === 'active' && session.source !== 'scheduler' && !getRemoteHistoryView(session.id),
+        prefetchedAt: (sessionId) => remoteHistoryPrefetchedAt.get(key(sessionId)),
+      });
+      for (const session of candidates) {
+        if (!isCurrent(session.id)) continue;
+        const previous = await readRemoteHistoryCache<HistoryChatMessage>(deviceId, session.id);
+        if (!historySnapshotCovers(previous, session)) {
+          // Capture write authority before the read, like an open view does.
+          const write = remoteHistoryCacheWriter(deviceId, session.id);
+          let page: HistoryViewPage<Message>;
+          try {
+            page = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:messages:view',
+              [session.id, { lazyDetails: true }]) as HistoryViewPage<Message>;
+          } catch (error) {
+            // A Host without the history view serves tasks the old way; nothing to read ahead.
+            if (isHistoryViewUnavailable(error)) return;
+            throw error;
+          }
+          if (page == null || !isCurrent(session.id) || getRemoteHistoryView(session.id)) continue;
+          const items = mapHistoryViewMessages(page.items, (rows: Message[]) => mapServerMessages(rows).map((row) => ({
+            ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
+          })));
+          write(historySnapshotFromPage({ ...page, items }, previous));
+        }
+        const version = historyPrefetchVersion(session);
+        if (version !== undefined) remoteHistoryPrefetchedAt.set(key(session.id), version);
+      }
+    }
+  } catch {
+    // Offline or slow Host: the task opens through its normal read; the next refresh retries.
+  } finally {
+    remoteHistoryPrefetchRuns.delete(deviceId);
+  }
+}
+
 function ensureInitialMessages(sessionId: string): void {
   const state = getOrCreateState(sessionId);
   const deviceId = remoteProjectsStore.getSessionDeviceId(sessionId);
@@ -17618,6 +17676,7 @@ export const makerChatStore = {
   /** 输入框推荐后台完成资格的 non-creating 终态快照。 */
   getPromptRecommendationCompletionStatus,
   ensureInitialMessages,
+  prefetchRemoteHistories,
   reloadMessages,
   /** 消息菜单:本地移除一次删除动作覆盖的整轮记录。 */
   removeMessagesByClientIds,

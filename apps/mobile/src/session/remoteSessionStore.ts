@@ -241,6 +241,9 @@ const newMakerWorktreeBranchPreferences = new Map<
   Map<string, Exclude<RemoteNewMakerWorktreeBranchPreference, null>>
 >();
 const messages = new Map<string, RemoteMessage[]>();
+// Rows a never-opened session received from list pushes. While the mirror holds only these,
+// it is not a loaded window: opening the task still merges the disk cache underneath them.
+const listMessageKeys = new Map<string, Set<string>>();
 // The maker event is broadcast before its async DB create/update completes. Keep the latest
 // plan snapshot briefly in the session mirror so a late initial `messages:created` row cannot
 // overwrite a newer live state with the first stale 0/N snapshot.
@@ -688,6 +691,11 @@ const sessionDeviceIndex = new Map<string, string>();
 // 检测到自身 sessionId 被加入时调 load() 触发整窗刷新(含 error 行),避免先清空导致空白帧。
 const pendingRefreshSessions = new Set<string>();
 const reseedHandlers = new Map<string, Set<() => void>>();
+// A whole-list read after app start or a reconnect reseed may follow a gap in live pushes.
+// Listeners read changed tasks ahead; ordinary list refreshes while pushes flow do not fire.
+const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
+const sessionListRefreshArmed = new Set<string>();
+const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
 const homeStatusSubs = new Set<() => void>();
 const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();
@@ -1042,6 +1050,7 @@ function invalidateSessionMessageWindowState(
   requestRefresh: boolean,
 ): boolean {
   let changed = messages.delete(sessionId);
+  listMessageKeys.delete(sessionId);
   changed = livePlanSnapshots.delete(sessionId) || changed;
   changed = sessionTaskUpdates.delete(sessionId) || changed;
   changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
@@ -3266,6 +3275,11 @@ export const remoteSessionStore = {
   },
 
   setDeviceSessions(deviceId: string, deviceName: string, rawSessions: readonly RemoteSession[]): void {
+    if (!sessionListRefreshSeen.has(deviceId) || sessionListRefreshArmed.has(deviceId)) {
+      sessionListRefreshSeen.add(deviceId);
+      sessionListRefreshArmed.delete(deviceId);
+      for (const listener of sessionListRefreshListeners) listener(deviceId);
+    }
     let nextSessions = rawSessions.map((s) => stamp(s, deviceId, deviceName));
     const existing = shards.get(deviceId);
     if (existing) {
@@ -3494,11 +3508,17 @@ export const remoteSessionStore = {
     if (retentionForSession(sessionId) === 'schedule') return;
     if (!messageWriteAllowed(sessionId, options.authority)) return;
     const textFlushed = flushPendingTextDelta(sessionId);
-    if ((messages.get(sessionId)?.length ?? 0) > 0) {
+    const existing = messages.get(sessionId) ?? [];
+    const listKeys = listMessageKeys.get(sessionId);
+    listMessageKeys.delete(sessionId);
+    const listOnly = existing.length > 0 && !!listKeys
+      && existing.every((message) => listKeys.has(messageKey(message)));
+    if (existing.length > 0 && !listOnly) {
       if (textFlushed) emit();
       return;
     }
-    const next = normalizeMessages(list);
+    const existingKeys = new Set(existing.map(messageKey));
+    const next = normalizeMessages([...list.filter((message) => !existingKeys.has(messageKey(message))), ...existing]);
     if (next.length === 0) {
       if (textFlushed) emit();
       return;
@@ -3835,6 +3855,11 @@ export const remoteSessionStore = {
     options: SessionMessageWriteOptions = {},
   ): void {
     if (!options.listMessage && !messageWriteAllowed(sessionId, options.authority)) return;
+    if (options.listMessage) {
+      const keys = listMessageKeys.get(sessionId) ?? new Set<string>();
+      keys.add(messageKey(message));
+      listMessageKeys.set(sessionId, keys);
+    }
     let changed = flushPendingTextDelta(sessionId);
     changed = settleInputProjectionFromMessages(sessionId, [message]) || changed;
     const reanchorAfterMessage = options.hostTimeAuthoritative !== false && message.role === 'user';
@@ -5181,6 +5206,7 @@ export const remoteSessionStore = {
     newMakerWorktreePreferences.clear();
     newMakerWorktreeBranchPreferences.clear();
     messages.clear();
+    listMessageKeys.clear();
     emptySessionMessageStructureTokens.clear();
     livePlanSnapshots.clear();
     if (pendingInteractions.size > 0) {
@@ -5226,6 +5252,8 @@ export const remoteSessionStore = {
     nextSessionAccessOrder = 0;
     sessionDeviceIndex.clear();
     reseedHandlers.clear();
+    sessionListRefreshArmed.clear();
+    sessionListRefreshSeen.clear();
     pendingTitlePreview.clear();
     mergedSessions = [];
     mergedSessionById.clear();
@@ -5258,7 +5286,14 @@ export const remoteSessionStore = {
   },
 
   requestReseed(deviceId: string): void {
+    sessionListRefreshArmed.add(deviceId);
     reseedHandlers.get(deviceId)?.forEach((handler) => handler());
+  },
+
+  /** Whole-list reads that may follow missed pushes (first read per app run, reconnect reseed). */
+  onSessionListRefreshAfterGap(listener: (deviceId: string) => void): () => void {
+    sessionListRefreshListeners.add(listener);
+    return () => { sessionListRefreshListeners.delete(listener); };
   },
 
   getSessionDeviceId(sessionId: string): string | undefined {

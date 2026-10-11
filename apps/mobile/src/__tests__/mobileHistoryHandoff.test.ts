@@ -182,4 +182,45 @@ describe('mobile history handoff', () => {
     expect(createHandoff().reconcile(view.getSnapshot(), [row('answer')]).pending.size).toBe(0);
     view.setActive(false);
   });
+
+  it('shows rows received after a stale cached snapshot until the fresh page covers them', async () => {
+    const at = (id: string, role: RemoteMessage['role'], second: number, content = id): RemoteMessage => ({
+      id, clientId: id, sessionId: 's', role, content, toolUseId: null,
+      createdAt: `2026-09-08T00:00:${String(second).padStart(2, '0')}Z`, agentMeta: null,
+    });
+    const cached = [at('q1', 'user', 0), at('a1', 'assistant', 1)];
+    const later = [at('q2', 'user', 5, 'asked on the computer'), at('a2', 'assistant', 6, 'prefetched reply')];
+    const local = at('mobile-system-pwd', 'system', 7);
+    let release!: () => void;
+    const view = new HistoryViewController<RemoteMessage>({
+      page: () => new Promise((resolve) => {
+        release = () => resolve({ version: 1, items: projectHistoryView([...cached, ...later], false), hasMore: false, nextCursor: null });
+      }),
+      details: async () => ({ version: 1, messages: [], hasMore: false, nextCursor: null }),
+      expanded: async () => undefined,
+    });
+    view.setActive(false);
+    await view.restoreCachedView(async () => ({
+      items: projectHistoryView(cached, false), details: new Map(), expanded: new Set(),
+      nextCursor: null, hasMore: false, loading: false, ready: true, error: null,
+    }));
+    const handoff = createHandoff();
+    const render = () => {
+      const state = handoff.reconcile(view.getSnapshot(), [...cached, ...later, local]);
+      return buildMobileHistoryRenderItems({ view, snapshot: view.getSnapshot(), messages: state.messages,
+        pendingHandoff: state.pending, staleTail: state.tail, streaming: false, sessionId: 's',
+      }).filter(item => item.type === 'message').map(item => item.message.source.clientId);
+    };
+    expect(view.getSnapshot().stale).toBe(true);
+    expect(render()).toEqual(['q1', 'a1', 'q2', 'a2']);
+    view.setActive(true);
+    expect(render()).toEqual(['q1', 'a1', 'q2', 'a2']);
+    release();
+    await view.refresh();
+    expect(view.getSnapshot().stale).toBe(false);
+    expect(handoff.reconcile(view.getSnapshot(), [...cached, ...later]).tail.size).toBe(0);
+    expect(render()).toEqual(['q1', 'a1', 'q2', 'a2']);
+    view.setActive(false);
+    expect(view.getSnapshot().stale).toBe(true);
+  });
 });
