@@ -6,16 +6,19 @@
  * retained size, and the diagnostic tick logs and resets them. Only fixed channel names and numbers
  * are kept: no payloads, arguments, device ids or session ids.
  *
+ * Field names must survive `serializeMobileDebugRecord`, which redacts keys such as `messages` and
+ * anything containing `token`; channel names are therefore values, never object keys.
+ *
  * Disabled (the default) every record call is a single boolean check.
  */
 
 export interface RemoteSessionStoreSizeMetrics {
   /** Sessions holding an in-memory message window. */
-  sessions: number;
-  messages: number;
+  sessionCount: number;
+  messageCount: number;
   /** Largest single in-memory window, the one every push to that task re-sorts. */
-  maxSessionMessages: number;
-  storeSubscribers: number;
+  maxSessionMessageCount: number;
+  subscriberCount: number;
 }
 
 interface ChannelTiming {
@@ -23,6 +26,9 @@ interface ChannelTiming {
   totalMs: number;
   maxMs: number;
 }
+
+type ChannelTimingRow = { channel: string } & ChannelTiming;
+type ChannelCountRow = { channel: string; count: number };
 
 const TOP_CHANNELS = 6;
 
@@ -63,15 +69,13 @@ export function setRemoteSessionStoreSizeSource(
   storeSizeSource = source;
 }
 
-function topChannels<T>(
-  map: Map<string, T>,
-  weight: (value: T) => number,
-): Record<string, T> {
-  return Object.fromEntries(
-    [...map]
-      .sort((left, right) => weight(right[1]) - weight(left[1]))
-      .slice(0, TOP_CHANNELS),
-  );
+function topChannels<T extends { channel: string }>(
+  rows: T[],
+  weight: (row: T) => number,
+): T[] {
+  return rows
+    .sort((left, right) => weight(right) - weight(left))
+    .slice(0, TOP_CHANNELS);
 }
 
 /** Read and reset the interval counters. */
@@ -79,27 +83,36 @@ export function takeJankMetrics(): {
   store: RemoteSessionStoreSizeMetrics | null;
   pushCount: number;
   pushMs: number;
-  pushes: Record<string, ChannelTiming>;
+  pushes: ChannelTimingRow[];
   invokeCount: number;
-  invokes: Record<string, number>;
+  invokes: ChannelCountRow[];
 } {
   let pushCount = 0;
   let pushMs = 0;
-  for (const entry of pushes.values()) {
+  const pushRows: ChannelTimingRow[] = [];
+  for (const [channel, entry] of pushes) {
     pushCount += entry.count;
     pushMs += entry.totalMs;
-    entry.totalMs = Math.round(entry.totalMs);
-    entry.maxMs = Math.round(entry.maxMs);
+    pushRows.push({
+      channel,
+      count: entry.count,
+      totalMs: Math.round(entry.totalMs),
+      maxMs: Math.round(entry.maxMs),
+    });
   }
   let invokeCount = 0;
-  for (const count of invokes.values()) invokeCount += count;
+  const invokeRows: ChannelCountRow[] = [];
+  for (const [channel, count] of invokes) {
+    invokeCount += count;
+    invokeRows.push({ channel, count });
+  }
   const snapshot = {
     store: storeSizeSource?.() ?? null,
     pushCount,
     pushMs: Math.round(pushMs),
-    pushes: topChannels(pushes, (entry) => entry.totalMs),
+    pushes: topChannels(pushRows, (row) => row.totalMs),
     invokeCount,
-    invokes: topChannels(invokes, (count) => count),
+    invokes: topChannels(invokeRows, (row) => row.count),
   };
   pushes = new Map();
   invokes = new Map();

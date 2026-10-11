@@ -721,7 +721,7 @@ setRemoteSessionStoreSizeSource(() => {
     total += list.length;
     max = Math.max(max, list.length);
   }
-  return { sessions: messages.size, messages: total, maxSessionMessages: max, storeSubscribers: subs.size };
+  return { sessionCount: messages.size, messageCount: total, maxSessionMessageCount: max, subscriberCount: subs.size };
 });
 const homeStatusSubs = new Set<() => void>();
 const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();

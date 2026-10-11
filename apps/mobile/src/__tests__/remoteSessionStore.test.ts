@@ -5744,6 +5744,25 @@ describe('任务消息内存治理', () => {
     expect(rows.at(-1)?.id).toBe('s1-m-299');
   });
 
+  it('后台单窗上限只裁可重取的行，保留本地系统卡', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
+    remoteSessionStore.setSessionRunning('s1', true);
+    const localCard = {
+      ...messageAt('mobile-system-local-only', 's1', '2025-12-31T23:59:59.000Z'),
+      role: 'system' as const,
+    };
+    remoteSessionStore.setMessages('s1', [localCard]);
+    for (const row of manyMessages('s1', 200)) {
+      remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {
+        sessionId: 's1', listMessage: true, message: row,
+      });
+    }
+    const rows = remoteSessionStore.getMessages('s1');
+    expect(rows).toHaveLength(80);
+    expect(rows.some((row) => row.id === localCard.id)).toBe(true);
+    expect(rows.at(-1)?.id).toBe('s1-m-199');
+  });
+
   it('正在看的 regular 任务不受后台单窗上限影响', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1')]);
     remoteSessionStore.setSessionRunning('s1', true);
