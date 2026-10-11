@@ -170,6 +170,7 @@ import {
 import type { InputProjection, PendingInteraction, RemoteMessage } from '@/session/types';
 import { prepareVisualMockDeviceLinkContext } from '@/debug/visualMock';
 import { meterDeviceLinkInvokes, recordDeviceLinkPush } from '@/debug/deviceLinkTraffic';
+import { decodeGzipBase64TextBounded } from '@/utils/gzipBase64';
 
 export interface DeviceLinkContextValue {
   status: DeviceLinkStatus;
@@ -950,6 +951,8 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       }),
       createWebSocket: createRnWebSocket,
       logger: mobileDeviceLinkLogger,
+      // 弱网减流量：声明可解 gzip，大结果压缩、内容未变的结果只回标记（被控端支持时）。
+      transferCodec: { gunzipBase64: decodeGzipBase64TextBounded },
       // Mobile 具备按 deviceId 独立 openLink/订阅/快照恢复能力。可靠 ACK
       // 耗尽时只复位该 peer，共享 WSS 和其它远端继续工作；恢复仍只使用所有
       // Desktop 版本都支持的 link-open，不增加 wire/capability 要求。
@@ -1332,7 +1335,10 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
       releaseTopics: releaseHeavyTopics,
       pendingTransitions: () => [...backgroundTransitions.current],
       stop: () => client.stop(),
-      connect: () => client.connectNow('appstate-active', { overrideCongestionCooldown: true }),
+      connect: () => client.connectNow('appstate-active', {
+        overrideCongestionCooldown: true,
+        keepInFlightAttempt: true,
+      }),
       graceMs: BACKGROUND_STOP_GRACE_MS,
       releaseWaitMs: BACKGROUND_FINAL_UNSUBSCRIBE_WAIT_MS,
       suspendMs: BACKGROUND_SUSPEND_SUSPECT_MS,
