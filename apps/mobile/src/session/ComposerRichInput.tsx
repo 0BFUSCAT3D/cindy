@@ -223,11 +223,11 @@ const ComposerWebInput = forwardRef<ComposerRichInputHandle, ComposerRichInputPr
           webSignatureRef.current = JSON.stringify(value);
           applyDocument(value, true, composerCaretPosition(value, offset));
         },
-        // The WebView editor can only move its caret by focusing; getSelection keeps
-        // the remembered insertion point until the user focuses the editor.
-        applyDocumentAndSetSelection: (value) => {
+        // Restores the caret only if the editor is already focused; otherwise
+        // getSelection keeps the remembered insertion point until the user taps it.
+        applyDocumentAndSetSelection: (value, offset) => {
           webSignatureRef.current = JSON.stringify(value);
-          applyDocument(value);
+          applyDocument(value, false, composerCaretPosition(value, offset));
         },
         blur: () => {
           pendingFocusRef.current = false;

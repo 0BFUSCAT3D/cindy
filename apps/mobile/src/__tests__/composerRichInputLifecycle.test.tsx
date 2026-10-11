@@ -287,7 +287,7 @@ it('applies the final dictation document without focusing and keeps the remember
   act(() => ref.current?.rememberSelection('voice suffix', { start: 5, end: 5 }));
   act(() => ref.current?.applyDocumentAndSetSelection(textComposerDocument('voice suffix'), 5));
   expect(page.document).toEqual(textComposerDocument('voice suffix'));
-  expect(page.applyDocument.mock.lastCall?.slice(1, 3)).toEqual([false, null]);
+  expect(page.applyDocument.mock.lastCall?.slice(1, 3)).toEqual([false, { nodeIndex: 0, offset: 5 }]);
   expect(page.focus).not.toHaveBeenCalled();
   expect(ref.current?.getSelection('voice suffix')).toEqual({ start: 5, end: 5 });
 });
