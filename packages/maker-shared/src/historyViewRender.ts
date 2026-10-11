@@ -165,6 +165,7 @@ export function renderHistoryView<T extends HistoryMessageSource, TItem>(options
       revision: summaries.map((summary) => summary.revision).join('|'),
       previewComplete: summaries.every((summary) => summary.preview?.firstMessageId === summary.firstMessageId),
       ...(lines ? { lines } : {}),
+      awaitingDetails: states.some((state) => !state?.complete && !state?.messages.length),
       loading: states.some((state) => state?.loading), failed: states.some((state) => !!state?.error),
       setVisible,
       toggle: () => setVisible(!expanded, false),

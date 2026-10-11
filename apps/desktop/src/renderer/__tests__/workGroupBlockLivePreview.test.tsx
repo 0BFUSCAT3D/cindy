@@ -672,6 +672,27 @@ describe('WorkGroupBlock — Host-projected running lines', () => {
     expect(remote.setVisible).toHaveBeenLastCalledWith(true, false);
   });
 
+  it('keeps the Host lines on screen after expanding until detail rows arrive', () => {
+    const lines = [{ kind: 'thinking' as const, key: 'c2', text: 'Checking the failing case' }];
+    const props = {
+      blockId: 'work:remote-hold', isStreaming: true,
+      childItems: [rendered('detail', 'Every detail row')],
+    };
+    const { container, rerender } = render(createElement(WorkGroupBlock, {
+      ...props, deferred: { ...deferred(lines), awaitingDetails: true },
+    }));
+    clickGroup('chat.workGroup.working');
+    expect(container.querySelector('[data-live-work-preview]')).not.toBeNull();
+    expect(screen.getByText('Checking the failing case')).toBeTruthy();
+    expect(screen.queryByTestId('assistant-progress')).toBeNull();
+
+    rerender(createElement(WorkGroupBlock, {
+      ...props, deferred: { ...deferred(lines), awaitingDetails: false },
+    }));
+    expect(container.querySelector('[data-live-work-preview]')).toBeNull();
+    expect(screen.getByTestId('assistant-progress').textContent).toBe('Every detail row');
+  });
+
   it('keeps the detail preview for a Host that sends no lines', () => {
     const remote = deferred();
     render(createElement(WorkGroupBlock, {

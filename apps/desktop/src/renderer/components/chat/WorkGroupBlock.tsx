@@ -408,8 +408,11 @@ export function WorkGroupBlock({
     hasBeyondPreviewChild ||
     recentActivities.length > MAX_LIVE_WORK_ACTIVITIES;
   const effectiveExpanded = expanded && canToggle;
+  // Expanding keeps the running lines on screen until the detail read has rows to replace them.
+  const holdLines = effectiveExpanded && deferred?.awaitingDetails === true && !!workLines?.length;
+  const bodyOpen = effectiveExpanded && !holdLines;
   const isLivePreviewVisible =
-    !compact && isStreaming && !effectiveExpanded
+    !compact && isStreaming && (!effectiveExpanded || holdLines)
     && (workLines ? workLines.length > 0 : liveActivities.length > 0);
   // 完成态只计算一次完整摘要；运行态保持折叠时走上面的反向 latest-five
   // 热路径，用户主动展开后才投影全部历史。
@@ -537,10 +540,16 @@ export function WorkGroupBlock({
                     <ThinkingActivityRow key={activity.key} activity={activity} />
                   ),
                 )}
+            {holdLines && deferred?.loading && <Spinner size={14} />}
+            {holdLines && deferred?.failed && (
+              <Button variant="secondary" disabled={deferred.loading} onClick={deferred.retry}>
+                {t('chat.errorBanner.retry')}
+              </Button>
+            )}
           </div>
         )}
 
-        <Collapse open={effectiveExpanded}>
+        <Collapse open={bodyOpen}>
           <div
             className={cn(
               'mt-1 min-w-0 pl-3 py-[2px]',
@@ -548,7 +557,7 @@ export function WorkGroupBlock({
               'flex flex-col gap-2',
             )}
           >
-            {effectiveExpanded &&
+            {bodyOpen &&
               childItems.map((child) => (
                 <Fragment key={child.key}>
                   <ExpandedWorkGroupChild
