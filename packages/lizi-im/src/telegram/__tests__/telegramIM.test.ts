@@ -3102,3 +3102,45 @@ describe('TelegramIM 群历史图片', () => {
     }
   });
 });
+
+describe('TelegramIM 入站分类', () => {
+  it('document 平台 MIME 不可靠时按扩展名识别图片, 进媒体总仓而不是文件暂存', async () => {
+    const cacheImage = vi.fn(async ({ token }: { token: string }) => ({
+      absPath: path.join(tmpDir, `img-${token}`),
+      url: `cindy-media://blobs/${token}.jpg`,
+      discard: async () => undefined,
+    }));
+    const stage = vi.fn();
+    ctx.host.media = { cacheImage, getCachedImage: vi.fn(async () => null), resolveMediaUrl: () => null };
+    ctx.host.files = { stage };
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    const origCall = api.call.bind(api);
+    api.call = (async (method: string, params?: Record<string, unknown>, signal?: AbortSignal) => {
+      if (method === 'getFile') return { file_id: params?.file_id, file_path: `p/${String(params?.file_id)}` } as never;
+      return origCall(method, params, signal);
+    }) as typeof api.call;
+    vi.stubGlobal('fetch', async () => new Response(Buffer.from('jpg')));
+    try {
+      api.pushUpdates([
+        {
+          update_id: 140,
+          message: {
+            message_id: 140,
+            from: { id: 111, is_bot: false, first_name: 'U' },
+            chat: { id: 111, type: 'private' },
+            date: nowSec(5),
+            document: { file_id: 'doc-140', file_unique_id: 'u', file_name: 'scan.JPG', mime_type: 'application/octet-stream' },
+          },
+        },
+      ]);
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(stage).not.toHaveBeenCalled();
+      expect(cacheImage).toHaveBeenCalledWith(expect.objectContaining({ token: 'doc-140', mimeType: 'image/jpeg', staging: true }));
+      expect(events[0].attachments).toEqual([expect.objectContaining({ kind: 'image', originalName: 'scan.JPG' })]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

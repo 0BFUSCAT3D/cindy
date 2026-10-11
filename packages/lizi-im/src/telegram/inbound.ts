@@ -17,7 +17,7 @@ import type {
   IMUnsupportedEntry,
 } from '../types.js';
 import type { TelegramApiClient, TgFile, TgMediaFile, TgMessage, TgMessageEntity, TgUser } from './api.js';
-import { audioVideoMimeOf } from '../audioVideo.js';
+import { audioVideoMimeOf, classifyInboundAttachment } from '../inboundKind.js';
 import { encodeMessageId } from './codec.js';
 
 /** Bot API getFile 的官方下载上限(20MB), 超过标注 oversize 不下载。 */
@@ -350,16 +350,16 @@ async function collectMedia(
 
   if (m.document) {
     const name = m.document.file_name ?? `document-${m.message_id}`;
-    const mime = m.document.mime_type ?? 'application/octet-stream';
-    const avMime = audioVideoMimeOf(mime, name);
-    if (avMime) {
-      await collectAudioVideo(ctx, m.document, name, avMime, attachments, unsupported);
+    // 去处只由共用判据决定(MIME 与扩展名任一命中)。
+    const classified = classifyInboundAttachment(m.document.mime_type, name);
+    if (classified.kind === 'av') {
+      await collectAudioVideo(ctx, m.document, name, classified.mimeType, attachments, unsupported);
     } else if ((m.document.file_size ?? 0) > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: name });
-    } else if (!mime.startsWith('image/') && !ctx.files) {
-      unsupported.push({ type: 'file', label: name });
+    } else if (classified.kind === 'image' ? !ctx.media : !ctx.files) {
+      unsupported.push({ type: classified.kind, label: name });
     } else {
-      const downloaded = await downloadTelegramFile(ctx, m.document.file_id, name, mime);
+      const downloaded = await downloadTelegramFile(ctx, m.document.file_id, name, classified.mimeType);
       if (downloaded) attachments.push(downloaded);
       else unsupported.push({ type: 'download', label: name });
     }
@@ -517,7 +517,9 @@ async function downloadTelegramFile(
           token: fileId,
           buffer,
           mimeType: mimeType.toLowerCase(),
-          ...(ctx.history ? { staging: true } : {}),
+          // 落库前一律可回收暂存: 换代可回滚; 消息落库时由 host pin 成用户附件,
+          // 群历史(只进模型)则一直保持可回收。
+          staging: true,
         });
         if (promoted.discard) ctx.stagedDiscards?.push(promoted.discard);
         return { kind, absPath: promoted.absPath, originalName, mimeType, url: promoted.url };

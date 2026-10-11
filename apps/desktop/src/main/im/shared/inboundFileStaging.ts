@@ -11,7 +11,8 @@
  * 生命周期:
  *   - transport 经 `IMHost.files.stage` 写入 staging(下载时还不知道归哪个任务);
  *   - turnRunner 在任务确定后、把路径交给模型/落库之前调用 `adoptStagedInboundFiles`
- *     原地改写 absPath 为任务目录下的路径;
+ *     原地改写 absPath 为任务目录下的路径 —— 只领养触发消息自己的附件(会落库);
+ *     群历史附件只进本轮模型、不落库, 留在 staging 按龄回收;
  *   - 任务删除时 `removeImSessionAttachmentDirs` 清掉所有渠道下该任务的目录;
  *   - 没被任何任务领走的 staging 文件(消息被丢弃/拒绝)在下次暂存时按龄清理。
  *

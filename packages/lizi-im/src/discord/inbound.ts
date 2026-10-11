@@ -1,4 +1,3 @@
-import path from 'node:path';
 
 import type {
   IMAttachment,
@@ -7,7 +6,7 @@ import type {
   IMMessageEvent,
   IMUnsupportedEntry,
 } from '../types.js';
-import { audioVideoMimeOf } from '../audioVideo.js';
+import { classifyInboundAttachment } from '../inboundKind.js';
 import { encodeMessageId } from './codec.js';
 
 const MAX_INBOUND_FILE_BYTES = 50 * 1024 * 1024;
@@ -73,14 +72,12 @@ export async function normalizeDmMessage(
   for (let i = 0; i < messageAttachments.length; i += 1) {
     const attachment = messageAttachments[i];
     const originalName = attachment.name ?? attachment.filename ?? attachment.id ?? 'attachment';
-    const mimeType = (attachment.contentType ?? inferMimeType(originalName)).split(';')[0].trim().toLowerCase();
     // 平台附件 id 全局唯一, 缺失时退 `msgId-序号` —— host 据此免重下。
     const token = attachment.id ?? `${m.id}-${i}`;
-    // MIME 与扩展名任一命中即音视频(contentType 常缺或给 octet-stream)。
-    const avMime = mimeType.startsWith('image/') ? null : audioVideoMimeOf(mimeType, originalName);
-    const destination = mimeType.startsWith('image/') ? 'image' : avMime ? 'av' : 'file';
+    // 去处只由共用判据决定(MIME 与扩展名任一命中; contentType 常缺或给 octet-stream)。
+    const { kind: destination, mimeType } = classifyInboundAttachment(attachment.contentType, originalName);
     const unsupportedType =
-      destination === 'av' ? (avMime!.startsWith('audio/') ? 'audio' : 'video') : destination;
+      destination === 'av' ? (mimeType.startsWith('audio/') ? 'audio' : 'video') : destination;
 
     if (attachment.size > MAX_INBOUND_FILE_BYTES) {
       unsupported.push({ type: 'oversize', label: originalName });
@@ -107,10 +104,12 @@ export async function normalizeDmMessage(
     }
     try {
       if (destination === 'image') {
-        const promoted = await ctx.media!.cacheImage({ integration: 'discord', token, buffer, mimeType });
+        // 落库前一律可回收暂存(staging): 换代可回滚; 消息落库时由 host pin 成用户附件。
+        const promoted = await ctx.media!.cacheImage({ integration: 'discord', token, buffer, mimeType, staging: true });
+        if (promoted.discard) ctx.stagedDiscards?.push(promoted.discard);
         attachments.push({ kind: 'image', absPath: promoted.absPath, originalName, mimeType, url: promoted.url });
       } else if (destination === 'av') {
-        const stored = await ctx.media!.cacheMedia!({ integration: 'discord', token, buffer, mimeType: avMime! });
+        const stored = await ctx.media!.cacheMedia!({ integration: 'discord', token, buffer, mimeType });
         if (stored.discard) ctx.stagedDiscards?.push(stored.discard);
         attachments.push({
           kind: 'file',
@@ -163,45 +162,6 @@ function hasValues<T>(source: unknown): source is { values(): IterableIterator<T
     'values' in source &&
     typeof (source as { values?: unknown }).values === 'function'
   );
-}
-
-function inferMimeType(filename: string): string {
-  const ext = path.extname(filename).toLowerCase();
-  switch (ext) {
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg';
-    case '.png':
-      return 'image/png';
-    case '.gif':
-      return 'image/gif';
-    case '.webp':
-      return 'image/webp';
-    case '.txt':
-      return 'text/plain';
-    case '.json':
-      return 'application/json';
-    case '.pdf':
-      return 'application/pdf';
-    case '.zip':
-      return 'application/zip';
-    case '.mp4':
-      return 'video/mp4';
-    case '.mov':
-      return 'video/quicktime';
-    case '.webm':
-      return 'video/webm';
-    case '.mp3':
-      return 'audio/mpeg';
-    case '.m4a':
-      return 'audio/mp4';
-    case '.ogg':
-      return 'audio/ogg';
-    case '.wav':
-      return 'audio/wav';
-    default:
-      return 'application/octet-stream';
-  }
 }
 
 function isVoiceMessage(m: MessageLike): boolean {

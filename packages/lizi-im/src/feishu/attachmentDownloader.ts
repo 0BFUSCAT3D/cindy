@@ -16,7 +16,7 @@ import type { Readable } from 'node:stream';
 
 import type { IMAttachment } from '../types.js';
 import { getHost, getLog } from './moduleScope.js';
-import { audioVideoMimeOf } from '../audioVideo.js';
+import { audioVideoMimeOf, classifyInboundAttachment, type InboundKind } from '../inboundKind.js';
 import { mimeFromHeaders, streamToBuffer } from './mediaStore.js';
 import type {
   AttachmentRef,
@@ -147,48 +147,37 @@ async function downloadOne(
     const { buffer, mimeType } = await fetchMessageResource(client, messageId, ref.imageKey, 'image');
     const oversize = oversizeEntry(label, buffer.byteLength);
     if (oversize) return { unsupported: oversize };
-    const mime = mimeType.toLowerCase();
-    if (!HOST_CACHEABLE_IMAGE_MIMES.has(mime)) {
-      return { unsupported: { type: 'image', label: `不支持的图片格式（${mime || '未知'}）` } };
-    }
-    ctx.assertAccountCurrent();
-    const writtenImage = await media.cacheImage({
-      integration: 'feishu',
-      token: ref.imageKey,
-      buffer,
-      mimeType: mime,
-      ...(ctx.history ? { staging: true } : {}),
-    });
-    const put = await keepIfAccountCurrent(ctx, writtenImage, writtenImage.discard);
-    return {
-      attachment: {
-        kind: 'image',
-        absPath: put.absPath,
-        originalName: `${ref.imageKey}${path.extname(put.absPath)}`,
-        mimeType: mime,
-        url: put.url,
-      },
-    };
+    return storeImage(ctx, media, ref.imageKey, buffer, mimeType.toLowerCase(), label, (absPath) =>
+      `${ref.imageKey}${path.extname(absPath)}`,
+    );
   }
 
-  // 没有受控去处就不下载: 音视频(视频消息或按扩展名)要媒体总仓, 其余文件要文件暂存。
-  const avByName = ref.video || audioVideoMimeOf(undefined, ref.fileName) !== null;
-  if (avByName ? !host.media?.cacheMedia : !host.files) {
-    return { unsupported: { type: avByName ? 'media' : 'file', label } };
-  }
+  // 去处只由共用判据决定(视频消息恒为音视频; 其余 MIME 与扩展名任一命中)。没有受控
+  // 去处就不下载: 图片/音视频要媒体总仓, 其余文件要文件暂存。
+  const canStore = (kind: InboundKind['kind']): boolean =>
+    kind === 'image' ? Boolean(host.media) : kind === 'av' ? Boolean(host.media?.cacheMedia) : Boolean(host.files);
+  const unsupportedType = (kind: InboundKind['kind']): string =>
+    kind === 'image' ? 'image' : kind === 'av' ? 'media' : 'file';
+  const byName = ref.video ? 'av' : classifyInboundAttachment(undefined, ref.fileName).kind;
+  if (!canStore(byName)) return { unsupported: { type: unsupportedType(byName), label } };
   if (ref.fileSize !== undefined && ref.fileSize > MAX_FILE_SIZE) {
     return { unsupported: oversizeEntry(label, ref.fileSize)! };
   }
   const { buffer, mimeType } = await fetchMessageResource(client, messageId, ref.fileKey, 'file');
   const oversize = oversizeEntry(label, buffer.byteLength);
   if (oversize) return { unsupported: oversize };
-  const mime = mimeType.toLowerCase() || 'application/octet-stream';
+  const classified: InboundKind = ref.video
+    ? { kind: 'av', mimeType: audioVideoMimeOf(mimeType, ref.fileName) ?? 'video/mp4' }
+    : classifyInboundAttachment(mimeType, ref.fileName);
+  if (!canStore(classified.kind)) return { unsupported: { type: unsupportedType(classified.kind), label } };
 
-  // MIME 与扩展名任一命中即音视频(资源响应常缺 Content-Type 或给 octet-stream)。
-  const detectedAv = audioVideoMimeOf(mime, ref.fileName);
-  if (ref.video || detectedAv) {
+  if (classified.kind === 'image') {
+    return storeImage(ctx, host.media!, ref.fileKey, buffer, classified.mimeType, label, () => ref.fileName);
+  }
+
+  if (classified.kind === 'av') {
     const cacheMedia = host.media?.cacheMedia;
-    const avMime = detectedAv ?? 'video/mp4';
+    const avMime = classified.mimeType;
     if (cacheMedia) {
       try {
         ctx.assertAccountCurrent();
@@ -216,7 +205,37 @@ async function downloadOne(
   const written = await host.files!.stage({ integration: 'feishu', buffer, fileName: ref.fileName });
   const staged = await keepIfAccountCurrent(ctx, written, written.discard);
   return {
-    attachment: { kind: 'file', absPath: staged.absPath, originalName: ref.fileName, mimeType: mime },
+    attachment: { kind: 'file', absPath: staged.absPath, originalName: ref.fileName, mimeType: classified.mimeType },
+  };
+}
+
+/**
+ * 图片入总仓: 白名单外格式标不支持; 落库前一律可回收暂存(staging) —— 换代可回滚,
+ * 消息落库时由 host pin 成用户附件, 群历史(只进模型)则一直保持可回收。
+ */
+async function storeImage(
+  ctx: DownloadContext,
+  media: NonNullable<ReturnType<typeof getHost>['media']>,
+  token: string,
+  buffer: Buffer,
+  mime: string,
+  label: string,
+  originalNameOf: (absPath: string) => string,
+): Promise<SingleResult> {
+  if (!HOST_CACHEABLE_IMAGE_MIMES.has(mime)) {
+    return { unsupported: { type: 'image', label: `不支持的图片格式（${mime || '未知'}）` } };
+  }
+  ctx.assertAccountCurrent();
+  const written = await media.cacheImage({ integration: 'feishu', token, buffer, mimeType: mime, staging: true });
+  const put = await keepIfAccountCurrent(ctx, written, written.discard);
+  return {
+    attachment: {
+      kind: 'image',
+      absPath: put.absPath,
+      originalName: originalNameOf(put.absPath),
+      mimeType: mime,
+      url: put.url,
+    },
   };
 }
 

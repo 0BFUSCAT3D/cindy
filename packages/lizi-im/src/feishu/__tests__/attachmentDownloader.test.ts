@@ -117,6 +117,8 @@ describe('downloadAttachments: 图片 → 媒体总仓', () => {
       token: 'img_1',
       buffer: PNG_BYTES,
       mimeType: 'image/png',
+      // 落库前一律可回收暂存, 换代可回滚。
+      staging: true,
     });
     expect(result).toEqual({
       attachments: [
@@ -339,7 +341,11 @@ describe('downloadAttachments: 文件 → host 暂存, 音视频 → 媒体总�
     const files = makeFiles();
     files.stage.mockRejectedValueOnce(new Error('disk full'));
     wireHost({ media, files });
-    const { client } = makeClient(PNG_BYTES, 'image/png');
+    const get = vi.fn(async ({ params }: { params: { type: string } }) => ({
+      getReadableStream: () => Readable.from([params.type === 'image' ? PNG_BYTES : Buffer.from('pdf')]),
+      headers: { 'content-type': params.type === 'image' ? 'image/png' : 'application/pdf' },
+    }));
+    const client = { im: { v1: { messageResource: { get } } } } as unknown as Lark.Client;
 
     const result = await downloadAttachments(client, 'om_7', [pdfRef, imageRef]);
 
@@ -416,6 +422,42 @@ describe('downloadAttachments: 账号换代与群历史', () => {
 
     expect(discard).toHaveBeenCalledTimes(1);
     expect(result.attachments).toEqual([]);
+  });
+
+  it('普通(非群历史)图片写入期间换账号: 同样回滚', async () => {
+    const { scope, switchAccount } = switchableScope();
+    const discard = vi.fn(async () => {});
+    const media = makeMedia({
+      cacheImage: vi.fn(async () => {
+        switchAccount();
+        return { absPath: '/blobs/img_1.png', url: CINDY_URL, discard };
+      }),
+    });
+    wireHost({ media, files: makeFiles(), accountScope: scope });
+    const { client } = makeClient(PNG_BYTES, 'image/png');
+
+    const result = await downloadAttachments(client, 'om_1', [imageRef]);
+
+    expect(media.cacheImage).toHaveBeenCalledWith(expect.objectContaining({ staging: true }));
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(result.attachments).toEqual([]);
+  });
+
+  it('以普通文件发来、响应没给类型的图片: 按扩展名进媒体总仓, 不进文件暂存', async () => {
+    const media = makeMedia();
+    const files = makeFiles();
+    wireHost({ media, files });
+    const { client } = makeClient(PNG_BYTES, 'application/octet-stream');
+
+    const result = await downloadAttachments(client, 'om_8', [
+      { kind: 'file', fileKey: 'file_p', fileName: 'scan.PNG' },
+    ]);
+
+    expect(files.stage).not.toHaveBeenCalled();
+    expect(media.cacheImage).toHaveBeenCalledWith(
+      expect.objectContaining({ token: 'file_p', mimeType: 'image/png', staging: true }),
+    );
+    expect(result.attachments).toEqual([expect.objectContaining({ kind: 'image', originalName: 'scan.PNG' })]);
   });
 
   it('群历史: 图片按可回收缓存写入, 不复用/固定已有缓存', async () => {

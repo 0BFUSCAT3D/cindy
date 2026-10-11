@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { audioVideoMimeOf } from '../audioVideo.js';
+import { audioVideoMimeOf, classifyInboundAttachment } from '../inboundKind.js';
 
 describe('audioVideoMimeOf', () => {
   it('trusts an audio/video MIME and normalizes parameters', () => {
@@ -18,5 +18,19 @@ describe('audioVideoMimeOf', () => {
     expect(audioVideoMimeOf('application/pdf', 'report.pdf')).toBeNull();
     expect(audioVideoMimeOf('application/octet-stream', 'archive.zip')).toBeNull();
     expect(audioVideoMimeOf(undefined, undefined)).toBeNull();
+  });
+});
+
+describe('classifyInboundAttachment', () => {
+  it.each([
+    ['image/PNG', 'x.bin', 'image', 'image/png'],
+    ['application/octet-stream', 'scan.JPG', 'image', 'image/jpeg'],
+    [undefined, 'photo.webp', 'image', 'image/webp'],
+    ['application/octet-stream', 'clip.mp4', 'av', 'video/mp4'],
+    ['audio/ogg', 'voice.bin', 'av', 'audio/ogg'],
+    ['application/pdf', 'report.pdf', 'file', 'application/pdf'],
+    [undefined, 'archive.zip', 'file', 'application/octet-stream'],
+  ])('%s + %s → %s (%s)', (mime, name, kind, mimeType) => {
+    expect(classifyInboundAttachment(mime, name)).toEqual({ kind, mimeType });
   });
 });

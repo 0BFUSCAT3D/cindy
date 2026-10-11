@@ -1084,7 +1084,9 @@ export function createTurnRunner(
 
     // 入站非媒体文件此刻才确定归哪个任务(授权等早退都已过): 暂存的移入该任务的
     // 附件目录, 早落库已归到别的任务的复制一份, 再把路径交给模型与落库(原地改写 absPath)。
-    await adoptStagedInboundFiles(row.id, [...attachments, ...(args.contextAttachments ?? [])]);
+    // 只领养触发消息自己的附件 —— 任务目录里只放落库消息引用的文件; 群历史附件
+    // (contextAttachments)只进本轮模型、不落库, 留在暂存区按龄回收。
+    await adoptStagedInboundFiles(row.id, attachments);
     const autoReviewReferences = imAutoReviewReferences({
       attachments,
       replyContext: args.replyContext,

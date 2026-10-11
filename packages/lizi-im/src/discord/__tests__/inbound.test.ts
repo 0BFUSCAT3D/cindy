@@ -80,6 +80,27 @@ describe('normalizeDmMessage', () => {
     expect(channelLess).toBeNull();
   });
 
+  it('classifies octet-stream attachments by extension (image → media store, never file staging)', async () => {
+    const download = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const media = makeMedia();
+    const files = makeFiles();
+
+    const event = (await normalizeDmMessage(
+      message({
+        attachments: [
+          { id: 'att-o', name: 'scan.JPG', url: 'https://cdn.example/scan', size: 10, contentType: 'application/octet-stream' },
+        ],
+      }),
+      { contextId: 'app-1', download, media, files },
+    ))!;
+
+    expect(files.stage).not.toHaveBeenCalled();
+    expect(media.cacheImage.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ token: 'att-o', mimeType: 'image/jpeg', staging: true }),
+    );
+    expect(event.attachments).toEqual([expect.objectContaining({ kind: 'image', originalName: 'scan.JPG' })]);
+  });
+
   it('routes image attachments into the host media store (no legacy dir)', async () => {
     const download = vi.fn(async () => new Uint8Array([1, 2, 3]));
     const media = makeMedia();
@@ -106,6 +127,7 @@ describe('normalizeDmMessage', () => {
       token: 'att-1',
       buffer: new Uint8Array([1, 2, 3]),
       mimeType: 'image/png',
+      staging: true,
     });
     expect(event.attachments).toEqual([
       {
