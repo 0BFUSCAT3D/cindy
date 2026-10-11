@@ -6715,7 +6715,6 @@ const MessageItem = memo(function MessageItem({
           sharedAuthorMemberId={message.sharedAuthorMemberId}
           workingDir={workingDir}
           content={message.content}
-          sessionReferences={message.sessionReferences}
           quotesEncoded={message.quotesEncoded}
           agentReferences={message.agentReferences}
           pastedTextRanges={message.pastedTextRanges}

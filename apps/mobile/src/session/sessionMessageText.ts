@@ -1,4 +1,5 @@
 import { joinChatQuoteTextSegments, parseChatQuoteSegments } from '@cindy/maker-shared/chat-quotes';
+import { parseMobileMarkdown, type MobileMarkdownInline } from '@/session/messageMarkdown';
 import { normalizeRemoteMessages } from '@/session/messageNormalize';
 import {
   createSessionLinkPattern,
@@ -7,7 +8,9 @@ import {
 } from '@/session/sessionLinks';
 import type { RemoteMessage } from '@/session/types';
 
-const MESSAGE_LABEL_MAX_CHARS = 240;
+// 手机端消息锚点 chip 是正文里的行内 span,没法像桌面 pill 那样按宽度单行省略;
+// 按字数截到约一行气泡宽,完整正文仍可点进目标消息查看。
+const MESSAGE_LABEL_MAX_CHARS = 24;
 
 /** Readable text only; never stringify tool/SDK metadata into a reference chip. */
 export function mobileSessionMessageDisplayText(message: RemoteMessage): string | null {
@@ -27,10 +30,26 @@ export function mobileSessionMessageDisplayText(message: RemoteMessage): string 
   return text || null;
 }
 
+function inlinesPlainText(inlines: readonly MobileMarkdownInline[]): string {
+  return inlines.map((inline) => (inline.type === 'image' ? inline.alt : inline.text)).join('');
+}
+
+/** 被引用消息常是带图片 / 强调的 Markdown;chip 只显示读得懂的单行摘要,不露 `**`、`![](…)`。 */
+function markdownPlainText(text: string): string {
+  return parseMobileMarkdown(text).map((block) => {
+    if (block.type === 'table') {
+      return [block.header, ...block.rows.map((row) => row.cells)]
+        .map((cells) => cells.map(inlinesPlainText).join(' ')).join(' ');
+    }
+    return 'inlines' in block ? inlinesPlainText(block.inlines) : block.text;
+  }).join(' ');
+}
+
 export function compactSessionMessageLabel(text: string): string {
-  const compact = text.replace(/\s+/g, ' ').trim();
-  if (compact.length <= MESSAGE_LABEL_MAX_CHARS) return compact;
-  return `${compact.slice(0, MESSAGE_LABEL_MAX_CHARS - 1)}…`;
+  const compact = markdownPlainText(text).replace(/\s+/g, ' ').trim() || text.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(compact);
+  if (chars.length <= MESSAGE_LABEL_MAX_CHARS) return compact;
+  return `${chars.slice(0, MESSAGE_LABEL_MAX_CHARS - 1).join('').trimEnd()}…`;
 }
 
 export type AnchoredSessionMessageTextPart =

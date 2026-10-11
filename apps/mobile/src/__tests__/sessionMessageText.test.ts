@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { formatQuoteForSend } from '@cindy/maker-shared/chat-quotes';
 import {
+  compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
   splitAnchoredSessionMessageLinks,
 } from '@/session/sessionMessageText';
@@ -22,6 +23,16 @@ describe('mobile session message labels', () => {
 
   it('does not stringify tool metadata', () => {
     expect(mobileSessionMessageDisplayText(message({ role: 'tool_use', content: { secret: true } }))).toBeNull();
+  });
+
+  it('shows anchored message labels as short plain text instead of raw Markdown', () => {
+    const label = compactSessionMessageLabel(
+      '**1. 深色·打开过程**：第一帧\n\n![深色-打开过程](cindy-media://blobs/0b12b71b6dcbf531eb89a2ed3b9ba7b1)',
+    );
+    expect(label).toBe('1. 深色·打开过程：第一帧 深色-打开过程');
+    expect(compactSessionMessageLabel('上次我用的是 Claude Code 自带的 `SendUserFile` 发文件，工具返回了已送达'))
+      .toBe('上次我用的是 Claude Code 自带的…');
+    expect(Array.from(compactSessionMessageLabel('😀'.repeat(40)))).toHaveLength(24);
   });
 
   it('splits message anchors while preserving adjacent punctuation and whole-session links', () => {
