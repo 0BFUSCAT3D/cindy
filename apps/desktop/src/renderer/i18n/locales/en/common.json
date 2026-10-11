@@ -478,6 +478,8 @@
         "paused": "Assignments paused",
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
+        "failed": "Couldn’t be used just now",
+        "failedUntil": "Couldn’t be used just now · retry around {{time}}",
         "offline": "Offline",
         "unreachableHere": "Can’t reach it from this computer",
         "unavailable": {

@@ -23,6 +23,18 @@ describe('pickProviderGroupMember', () => {
     expect(pickProviderGroupMember(members, 'order', { exclude: new Set(['c', 'd']) })).toBeNull();
   });
 
+  it('puts computers that failed recently behind the rest, so a computer that never takes a task is not always picked first', () => {
+    // 一直接不下任务的那台运行数最少：最少占用 / 按顺序都不再先选它。
+    const members = [m('broken', { suspect: true }), m('a', { running: 2 }), m('b', { running: 1 })];
+    expect(pickProviderGroupMember(members, 'least')).toBe('b');
+    expect(pickProviderGroupMember(members, 'order')).toBe('a');
+    // 没失败过的都满了：先试有空位的那台，再不行才分给最空的。
+    expect(pickProviderGroupMember([m('broken', { suspect: true }), m('a', { running: 4 })], 'least')).toBe('broken');
+    expect(pickProviderGroupMember([m('broken', { suspect: true, running: 5 }), m('a', { running: 4 })], 'least')).toBe('a');
+    // 只剩它时照样分给它。
+    expect(pickProviderGroupMember([m('broken', { suspect: true })], 'least')).toBe('broken');
+  });
+
   it('least busy picks the computer running the fewest tasks, ties by list order', () => {
     expect(pickProviderGroupMember([m('a', { running: 2 }), m('b', { running: 1 }), m('c', { running: 1 })], 'least')).toBe('b');
   });

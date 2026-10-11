@@ -473,6 +473,8 @@
         "paused": "已暂停分配",
         "cooling": "冷却中",
         "coolingUntil": "冷却中 · 约 {{time}} 恢复",
+        "failed": "刚才没能使用",
+        "failedUntil": "刚才没能使用 · 约 {{time}} 再试",
         "offline": "不在线",
         "unreachableHere": "从这台电脑连不上",
         "unavailable": {

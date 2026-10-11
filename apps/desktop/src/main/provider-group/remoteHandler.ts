@@ -2,8 +2,8 @@
  * 组所在电脑处理同账号其他电脑的 `provider-group:remote` 请求(docs/product-rules/provider-groups.md §4–§6)。
  *
  * 那台电脑上的任务选了本机的这个供应商：先来问该用组里哪台，再自己直接连过去运行；出问题时报告
- * 需要冷却的电脑，运行期间报告正在跑的任务，让本机的分配看到全组真实的负载；每轮结束后报告在组里别的电脑上
- * 用掉的用量，「远程与分享」页的用量才算得全(§7)。
+ * 那台电脑(本机记给全组，之后谁选电脑都先避开它；只是它连不过去的只对它避开)，运行期间报告正在跑的任务，让本机的
+ * 分配看到全组真实的负载；每轮结束后报告在组里别的电脑上用掉的用量，「远程与分享」页的用量才算得全(§7)。
  *
  * 只服务同账号电脑(dispatch 已拒绝受邀者与共享任务访客)，且只对仍「允许被远程调用」的供应商提供组：
  * 没开放的供应商对其他电脑本来就不可见。
@@ -19,7 +19,7 @@ import {
   type ProviderGroupRemoteUsageRow,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
-import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS, PROVIDER_GROUP_FAILURE_COOLDOWN_MS } from './router.js';
+import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } from './router.js';
 import type { ProviderGroupOwnerScope } from './runtime.js';
 
 /** 报告来的重置时刻最多信多远(账号用量上限最长按周重置)，避免一台电脑被异常时刻长期冷却。 */
@@ -97,6 +97,8 @@ export async function handleProviderGroupRemote(
         agentKind: request.agentKind,
         model: request.model,
         exclude: new Set(request.exclude),
+        // 只有那台电脑连不过去的组内电脑对它避开。
+        reporter: controller,
         // 选中的同一步记上临时占用：同时来的几个请求不会读到同一份负载、全落到同一台。
         onPicked: (memberKey) => scope.externalLoad.recordPick(controller, request.sessionId, providerId, memberKey),
       });
@@ -115,8 +117,14 @@ export async function handleProviderGroupRemote(
           request.resetAt !== undefined && request.resetAt > now ? request.resetAt : now + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
           now + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS,
         )
-        : now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS;
-      scope.router.markCooling(request.providerId, request.memberKey, until);
+        : undefined;
+      // 记给全组；只是那台电脑和它的连接断了的只对那台电脑避开(本机下次现读它，真连不上时就是离线，大家都会避开)。
+      scope.router.noteFailure(request.providerId, request.memberKey, {
+        cause: request.cause,
+        ...(until !== undefined ? { until } : {}),
+        reporter: controller,
+        connectionLost: request.connectionLost === true,
+      });
       return {};
     }
     case 'leases':
@@ -124,7 +132,8 @@ export async function handleProviderGroupRemote(
       return {};
     case 'view': {
       if (!deps.isRemoteAllowed(request.providerId)) return { providerId: request.providerId, config: null, members: [] };
-      return scope.router.view(request.providerId);
+      // 按那台电脑看：只它连不过去的组内电脑对它显示为刚才没能使用。
+      return scope.router.view(request.providerId, { reporter: controller });
     }
     case 'usage': {
       if (!scope.isCurrent()) return {};

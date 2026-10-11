@@ -7881,6 +7881,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertAccess?.();
       }
     }
+    // 供应商组分到的那台起来了：组里之前对它的「连不上 / 起不来」记录作废，之后照常分给它。
+    if (providerGroupStart) providerGroupService?.noteStarted(providerGroupStart);
     await markProjectContextIfNeeded(session.id, didInjectProjectContext);
     wireSessionToIpc(session);
     markOrcaMcpHydratedIfNeeded(session.id, o);

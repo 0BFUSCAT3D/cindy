@@ -279,3 +279,68 @@ describe('probe (waiting for a computer to come back, §6.1)', () => {
     expect(d.readDeviceProviders).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('resolving members quickly when choosing a computer (2026-10-11)', () => {
+  const MINI = { key: 'device:mini:anthropic-1a2b3c4d', kind: 'device' as const, agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false };
+  const SLOW = { key: 'device:slow:anthropic', kind: 'device' as const, agentDeviceId: 'slow', providerId: 'anthropic', label: 'Slow PC', limit: 4, weight: 1, paused: false };
+  const config: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [SLOW, MINI] };
+
+  function slowDeps(): ProviderGroupDirectoryDeps {
+    return deps({
+      listDevices: async () => [device('mini'), device('slow')],
+      readDeviceProviders: vi.fn((id: string) => id === 'slow'
+        ? new Promise<ProviderView[]>(() => undefined)
+        : Promise.resolve([view('anthropic-1a2b3c4d', 'Claude')])),
+    });
+  }
+
+  it('stops waiting for a slow computer once one that can take the task is known', async () => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(slowDeps());
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', config, { quickMs: 3_000, enough: (r) => r.state === 'ok' }).then(done);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledTimes(1);
+      const resolved = done.mock.calls[0][0] as Array<{ member: { key: string }; state: string; pending?: boolean; label: string }>;
+      expect(resolved.map((r) => [r.member.key, r.state, r.pending ?? false])).toEqual([
+        [SLOW.key, 'offline', true],
+        [MINI.key, 'ok', false],
+      ]);
+      expect(resolved[0].label).toBe('Slow PC');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps waiting when none of the computers read so far can take the task', async () => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(slowDeps());
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', config, { quickMs: 3_000, enough: () => false }).then(done);
+      await vi.advanceTimersByTimeAsync(10_000);
+      // 不会因为慢就当作都不能用。
+      expect(done).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('tells how long a same-account computer has been offline', async () => {
+    const directory = createProviderGroupDirectory(deps({
+      listDevices: async () => [
+        device('mini'),
+        device('off', { online: false, lastSeenAt: new Date(10_000).toISOString() }),
+        device('never', { online: false, lastSeenAt: null }),
+      ],
+      now: () => 250_000,
+    }));
+    expect(await directory.offlineForMs?.('off')).toBe(240_000);
+    expect(await directory.offlineForMs?.('mini')).toBeNull();
+    expect(await directory.offlineForMs?.('never')).toBeNull();
+    expect(await directory.offlineForMs?.('share:s1')).toBeNull();
+  });
+});

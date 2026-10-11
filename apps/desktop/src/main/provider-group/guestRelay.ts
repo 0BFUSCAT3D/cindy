@@ -14,9 +14,9 @@ import type { RelayRunFailure } from '../remote-agent/host/groupRelay.js';
 import type { GroupRelayLoad, GroupRelayMember, RemoteAgentGroupRelayDeps } from '../remote-agent/host/runHost.js';
 import type { RemoteAgentInvoke, RemoteAgentPoller } from '../remote-agent/controller/runClient.js';
 import { PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS } from './remoteHandler.js';
-import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS, PROVIDER_GROUP_FAILURE_COOLDOWN_MS } from './router.js';
+import { PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } from './router.js';
 import type { ProviderGroupOwnerScope } from './runtime.js';
-import { classifyProviderGroupSwitchCause } from './switchCause.js';
+import { classifyProviderGroupSwitchCause, isProviderGroupConnectionLoss } from './switchCause.js';
 
 /** 同账号电脑不支持接受受邀者任务时，多久内不再试它。 */
 export const PROVIDER_GROUP_GUEST_INCAPABLE_MS = 10 * 60_000;
@@ -98,12 +98,12 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
       }
       const cause = classifyProviderGroupSwitchCause({ message });
       if (!cause) return;
-      const now = deps.now();
-      deps.scope().router.markCooling(
-        providerId,
-        member.memberKey,
-        now + (cause === 'usage-limit' ? PROVIDER_GROUP_DEFAULT_COOLDOWN_MS : PROVIDER_GROUP_FAILURE_COOLDOWN_MS),
-      );
+      // 记给全组：本机、同账号其他电脑与别的受邀者之后都先避开它；只是本机连不过去的只对本机(含中转)生效。
+      deps.scope().router.noteFailure(providerId, member.memberKey, {
+        cause,
+        ...(cause === 'usage-limit' ? { until: deps.now() + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } : {}),
+        connectionLost: isProviderGroupConnectionLoss({ message }),
+      });
     },
 
     noteRunFailure(providerId, member: GroupRelayMember, failure) {
@@ -119,8 +119,12 @@ export function createProviderGroupGuestRelay(deps: ProviderGroupGuestRelayDeps)
         ? (resetAt !== null && resetAt > now
             ? Math.min(resetAt, now + PROVIDER_GROUP_MAX_REMOTE_COOLDOWN_MS)
             : now + PROVIDER_GROUP_DEFAULT_COOLDOWN_MS)
-        : now + PROVIDER_GROUP_FAILURE_COOLDOWN_MS;
-      deps.scope().router.markCooling(providerId, member.memberKey, until);
+        : undefined;
+      deps.scope().router.noteFailure(providerId, member.memberKey, {
+        cause,
+        ...(until !== undefined ? { until } : {}),
+        connectionLost: isProviderGroupConnectionLoss(failure),
+      });
       // 冷却照常(之后的新任务避开它)；组设置里关掉了自动换电脑时不发凭证，受邀者照现有方式看到错误(§6.1)。
       return config.autoSwitch;
     },

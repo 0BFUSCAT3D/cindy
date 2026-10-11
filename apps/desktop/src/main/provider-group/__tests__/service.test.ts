@@ -11,10 +11,15 @@ import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/p
 import type { ProviderGroupBinding, ProviderGroupRef } from '../bindings';
 import type { ProviderGroupDirectory, ResolvedMemberState, ResolvedProviderGroupMember } from '../directory';
 import { createProviderGroupGuestSwitch, PROVIDER_GROUP_SWITCH_OFFER_TTL_MS } from '../guestSwitch';
-import { createProviderGroupRouter, PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } from '../router';
+import {
+  createProviderGroupRouter,
+  PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
+  PROVIDER_GROUP_FAILURE_COOLDOWN_MS,
+} from '../router';
 import {
   createProviderGroupService,
   PROVIDER_GROUP_PRE_SEND_FAILED_TTL_MS,
+  PROVIDER_GROUP_RECENT_DROP_MS,
   PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS,
   PROVIDER_GROUP_SUPERSEDED_ERROR,
   PROVIDER_GROUP_UNAVAILABLE_ERROR,
@@ -724,7 +729,8 @@ describe('waiting for a computer that cannot be reached before switching (§6.1)
     await local.service.onTurnError('s1', { message: '[REMOTE_AGENT_UNAVAILABLE] gone' }, 1);
     expect(local.probe).not.toHaveBeenCalled();
     expect(local.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
-    expect(local.router.coolingUntil('anthropic', 'local')).toBeNull();
+    // 那台起不来：记给全组，之后谁选电脑都先避开它(2026-10-11)。
+    expect(local.router.coolingUntil('anthropic', 'local')).not.toBeNull();
 
     const limited = onMini();
     await limited.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, limited.hooks);
@@ -936,13 +942,19 @@ describe('beforeSend when the next computer cannot be reached from here', () => 
     expect(late.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
     expect(late.bindings.get('s1')?.memberKey).toBe(MINI.key);
 
-    // 下一条消息发送前重新记：上一条换不过去的不带过来。
+    // 下一条消息：刚等过没等回来的那台在避开期里(组里已确认用不了)，不再去试、去等；避开期过了照常再试。
     const next = coolingLocal();
     next.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
     next.probe.mockResolvedValue('offline');
     await next.service.beforeSend('s1');
+    expect(next.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
     next.service.noteUserAction('s1');
     next.probe.mockResolvedValue('ok');
+    await next.service.beforeSend('s1');
+    expect(next.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(next.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+    next.advance(PROVIDER_GROUP_FAILURE_COOLDOWN_MS + 1);
+    next.service.noteUserAction('s1');
     await next.service.beforeSend('s1');
     expect(next.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
     expect(next.bindings.get('s1')?.memberKey).toBe(MINI.key);
@@ -1245,5 +1257,71 @@ describe('no error while switching (mayHandleTurnError + hooks)', () => {
     await h.service.onTurnError('s1', LIMIT, 7, hooks);
     expect(hooks.resumed).not.toHaveBeenCalled();
     expect(h.deps.cancelContinue).toHaveBeenCalledWith('s1', 99);
+  });
+});
+
+describe('not waiting for a computer the group already knows cannot be used (2026-10-11)', () => {
+  const UNREACHABLE = { message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] unreachable' };
+
+  function onMini() {
+    const h = harness({ members: [MINI, LOCAL], row: { agentDeviceId: 'mini', providerId: MINI.providerId } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: MINI.key, at: 1 });
+    const hooks = { reconnecting: vi.fn(), switching: vi.fn(), resumed: vi.fn(), beforeFallback: vi.fn() };
+    return { ...h, hooks };
+  }
+
+  it('switches at once when another task already found that computer unusable', async () => {
+    const h = onMini();
+    h.probe.mockResolvedValue('offline');
+    h.router.noteFailure('anthropic', MINI.key, { cause: 'unavailable', connectionLost: true });
+    await h.service.onTurnError('s1', UNREACHABLE, 7, h.hooks);
+    expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(h.hooks.reconnecting).not.toHaveBeenCalled();
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.bindings.get('s1')?.memberKey).toBe('local');
+  });
+
+  it('switches at once when that computer has been offline for a while, but still waits for one that just dropped', async () => {
+    const long = onMini();
+    long.probe.mockResolvedValue('offline');
+    long.deps.directory.offlineForMs = vi.fn(async () => PROVIDER_GROUP_RECENT_DROP_MS + 1);
+    await long.service.onTurnError('s1', UNREACHABLE, 7, long.hooks);
+    expect(long.deps.sleep).not.toHaveBeenCalled();
+    expect(long.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+
+    const just = onMini();
+    just.probe.mockResolvedValue('offline');
+    just.deps.directory.offlineForMs = vi.fn(async () => 5_000);
+    await just.service.onTurnError('s1', UNREACHABLE, 7, just.hooks);
+    expect(just.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+  });
+
+  it('moves a task off a computer that has been offline for a while before sending, without waiting', async () => {
+    const h = harness({ offline: [MINI.key], row: { agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', sdkSessionId: 'native' } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: MINI.key, at: 1 });
+    h.deps.directory.offlineForMs = vi.fn(async () => 60 * 60_000);
+    const progress = vi.fn();
+    await h.service.beforeSend('s1', { progress });
+    expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(progress.mock.calls.map(([state]) => state)).toEqual(['switching']);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.bindings.get('s1')?.memberKey).not.toBe(MINI.key);
+  });
+
+  it('sends the next new task straight to a computer that works after one failed to start', async () => {
+    const h = harness({ members: [MINI, LOCAL] });
+    const first = await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL });
+    expect(first?.member.key).toBe(MINI.key);
+    const next = await h.service.nextAfterStartFailure(first!, new Error('[REMOTE_AGENT_UNAVAILABLE] the agent did not start'));
+    expect(next?.member.key).toBe('local');
+    h.service.noteStarted(next!);
+    // 另一个新任务：不再先去试起不来的那台。
+    h.row.agentDeviceId = null;
+    h.row.providerId = 'anthropic';
+    const other = await h.service.assignBeforeStart({ sessionId: 's2', agentKind: 'claude-code', model: MODEL });
+    expect(other?.member.key).toBe('local');
+    // 那台后来起来了：它的记录作废，照常参与分配。
+    h.service.noteStarted({ ...first!, sessionId: 's3' });
+    expect(h.router.isAvoided('anthropic', MINI.key)).toBe(false);
   });
 });

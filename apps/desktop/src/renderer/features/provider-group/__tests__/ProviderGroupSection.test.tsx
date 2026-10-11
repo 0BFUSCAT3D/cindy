@@ -274,4 +274,12 @@ describe('memberStatusText', () => {
     expect(memberStatusText(t, cooling(new Date(2026, 9, 15, 16, 0).getTime()), 'en-US', now))
       .toBe('providerGroup.member.status.coolingUntil:{"time":"Oct 15 16:00"}');
   });
+
+  it('says a computer could not be used just now instead of calling it a usage cooldown', () => {
+    const now = new Date(2026, 9, 11, 9, 30).getTime();
+    expect(memberStatusText(t, { ...cooling(new Date(2026, 9, 11, 9, 35).getTime()), reason: 'failed' }, 'en-US', now))
+      .toBe('providerGroup.member.status.failedUntil:{"time":"09:35"}');
+    expect(memberStatusText(t, { ...cooling(0), coolingUntil: undefined, reason: 'failed' }, 'en-US', now))
+      .toBe('providerGroup.member.status.failed');
+  });
 });

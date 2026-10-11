@@ -473,6 +473,8 @@
         "paused": "割り当て停止中",
         "cooling": "クールダウン中",
         "coolingUntil": "クールダウン中 · {{time}} ごろ回復",
+        "failed": "先ほど使えませんでした",
+        "failedUntil": "先ほど使えませんでした · {{time}} ごろ再試行",
         "offline": "オフライン",
         "unreachableHere": "このパソコンから接続できません",
         "unavailable": {

@@ -36,6 +36,8 @@ export interface ProviderGroupRemoteClient {
     memberKey: string;
     cause: ProviderGroupRemoteCoolCause;
     resetAt?: number | null;
+    /** 只是这台和那台的连接断了：组所在电脑只让这台避开它。 */
+    connectionLost?: boolean;
   }): Promise<void>;
   leases(ownerDeviceId: string, seq: number, entries: readonly ProviderGroupRemoteLease[]): Promise<void>;
   view(ownerDeviceId: string, providerId: string): Promise<ProviderGroupView>;
@@ -87,6 +89,7 @@ export function createProviderGroupRemoteClient(invoke: ProviderGroupRemoteInvok
         memberKey: input.memberKey,
         cause: input.cause,
         ...(typeof input.resetAt === 'number' ? { resetAt: input.resetAt } : {}),
+        ...(input.connectionLost ? { connectionLost: true } : {}),
       });
     },
 
