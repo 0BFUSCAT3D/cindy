@@ -135,19 +135,25 @@ describe('downloadAttachments: 图片 → 媒体总仓', () => {
   });
 
   it('总仓已有同 token:免下载直接复用', async () => {
-    const media = makeMedia({
-      getCachedImage: vi.fn(async () => ({ absPath: '/blobs/cached.webp', url: CINDY_URL, mimeType: 'image/webp' })),
-    });
-    wireHost({ media });
-    const { client, get } = makeClient(PNG_BYTES, 'image/png');
+    const cachedPath = path.join(legacyDir, '..', `cached-${Date.now()}.webp`);
+    fs.writeFileSync(cachedPath, Buffer.from('webp'));
+    try {
+      const media = makeMedia({
+        getCachedImage: vi.fn(async () => ({ absPath: cachedPath, url: CINDY_URL, mimeType: 'image/webp' })),
+      });
+      wireHost({ media });
+      const { client, get } = makeClient(PNG_BYTES, 'image/png');
 
-    const result = await downloadAttachments(client, 'om_1', [imageRef]);
+      const result = await downloadAttachments(client, 'om_1', [imageRef]);
 
-    expect(get).not.toHaveBeenCalled();
-    expect(media.cacheImage).not.toHaveBeenCalled();
-    expect(result.attachments).toEqual([
-      { kind: 'image', absPath: '/blobs/cached.webp', originalName: 'img_1.webp', mimeType: 'image/webp', url: CINDY_URL },
-    ]);
+      expect(get).not.toHaveBeenCalled();
+      expect(media.cacheImage).not.toHaveBeenCalled();
+      expect(result.attachments).toEqual([
+        { kind: 'image', absPath: cachedPath, originalName: 'img_1.webp', mimeType: 'image/webp', url: CINDY_URL },
+      ]);
+    } finally {
+      fs.rmSync(cachedPath, { force: true });
+    }
   });
 
   it('响应头没给类型的图片也交 host 按真实字节核验, 附件 MIME 用 host 核验结果', async () => {
@@ -165,6 +171,26 @@ describe('downloadAttachments: 图片 → 媒体总仓', () => {
 
     expect(media.cacheImage).toHaveBeenCalledTimes(1);
     expect(result.attachments).toEqual([expect.objectContaining({ kind: 'image', mimeType: 'image/png' })]);
+  });
+
+  it('缓存命中的图片同样套 30MB 上限(升级前缓存可能存有超限图片)', async () => {
+    const bigPath = path.join(legacyDir, '..', `big-cached-${Date.now()}.png`);
+    fs.writeFileSync(bigPath, Buffer.alloc(MAX_FILE_SIZE + 1));
+    try {
+      const media = makeMedia({
+        getCachedImage: vi.fn(async () => ({ absPath: bigPath, url: CINDY_URL, mimeType: 'image/png' })),
+      });
+      wireHost({ media, files: makeFiles() });
+      const { client, get } = makeClient(PNG_BYTES, 'image/png');
+
+      const result = await downloadAttachments(client, 'om_1', [imageRef]);
+
+      expect(get).not.toHaveBeenCalled();
+      expect(result.attachments).toEqual([]);
+      expect(result.unsupported).toEqual([expect.objectContaining({ type: 'oversize' })]);
+    } finally {
+      fs.rmSync(bigPath, { force: true });
+    }
   });
 
   it('host 按字节核验拒收(如 svg): 标不支持, 不入仓', async () => {

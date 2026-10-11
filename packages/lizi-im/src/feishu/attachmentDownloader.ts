@@ -10,6 +10,7 @@
  * failed download does not block the rest.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import type * as Lark from '@larksuiteoapi/node-sdk';
 import type { Readable } from 'node:stream';
@@ -144,6 +145,9 @@ async function downloadOne(
       // 历史上下文不复用缓存: 命中会把 blob 固定为用户附件, 而这里不会有任务引用。
       const cached = ctx.history ? null : await media.getCachedImage('feishu', ref.imageKey);
       if (cached) {
+        // 升级前的缓存可能存有超限图片(旧路径写入缓存后才按字节拒收): 命中也套同一上限。
+        const cachedOversize = oversizeEntry(label, fs.statSync(cached.absPath).size);
+        if (cachedOversize) return { unsupported: cachedOversize };
         return {
           attachment: {
             kind: 'image',
