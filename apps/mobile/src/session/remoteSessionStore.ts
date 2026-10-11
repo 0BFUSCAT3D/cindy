@@ -714,6 +714,8 @@ const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
 const sessionListRefreshArmed = new Set<string>();
 const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
+const homeStatusSubs = new Set<() => void>();
+const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();
 setRemoteSessionStoreSizeSource(() => {
   let total = 0;
   let max = 0;
@@ -721,10 +723,17 @@ setRemoteSessionStoreSizeSource(() => {
     total += list.length;
     max = Math.max(max, list.length);
   }
-  return { sessionCount: messages.size, messageCount: total, maxSessionMessageCount: max, subscriberCount: subs.size };
+  let previewSubscribers = 0;
+  for (const listeners of sessionMessagePreviewSubs.values()) previewSubscribers += listeners.size;
+  return {
+    sessionCount: messages.size,
+    messageCount: total,
+    maxSessionMessageCount: max,
+    subscriberCount: subs.size,
+    homeStatusSubscriberCount: homeStatusSubs.size,
+    previewSubscriberCount: previewSubscribers,
+  };
 });
-const homeStatusSubs = new Set<() => void>();
-const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();
 const pendingMessagePreviewSessionIds = new Set<string>();
 let homeStatusNotifyPending = false;
 let notifyAllMessagePreviewsPending = false;

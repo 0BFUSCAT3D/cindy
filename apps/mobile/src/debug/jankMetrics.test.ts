@@ -13,6 +13,8 @@ const store = {
   messageCount: 120,
   maxSessionMessageCount: 80,
   subscriberCount: 40,
+  homeStatusSubscriberCount: 12,
+  previewSubscriberCount: 30,
 };
 
 describe("jank metrics", () => {

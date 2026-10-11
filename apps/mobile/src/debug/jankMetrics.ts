@@ -18,7 +18,12 @@ export interface RemoteSessionStoreSizeMetrics {
   messageCount: number;
   /** Largest single in-memory window, the one every push to that task re-sorts. */
   maxSessionMessageCount: number;
+  /** Full-store subscribers: every store change notifies each of them. */
   subscriberCount: number;
+  /** Home rows' status channel, separate from the full store. */
+  homeStatusSubscriberCount: number;
+  /** Per-task message preview listeners, summed across tasks. */
+  previewSubscriberCount: number;
 }
 
 interface ChannelTiming {

@@ -4,6 +4,7 @@ import { clampLiveRowCreatedAt } from '@/session/messagePaging';
 import { MOBILE_TOOL_INPUT_PROJECTION_THRESHOLD_BYTES } from '@/session/messageToolPayloadProjection';
 import { remoteSessionStore, resolveSessionWriteDevices, sessionPendingWrites } from '@/session/remoteSessionStore';
 import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession } from '@/session/types';
+import { setJankMetricsEnabled, takeJankMetrics } from '@/debug/jankMetrics';
 
 function session(id: string, patch: Partial<RemoteSession> = {}): RemoteSession {
   return {
@@ -6950,5 +6951,34 @@ describe('list message reuse', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Host', [session('s1')]);
     remoteSessionStore.applyRemotePush('other', 'local-db:messages:created', { sessionId: 's1', listMessage: true, message: message('wrong', 's1') });
     expect(remoteSessionStore.getMessages('s1')).toEqual([]);
+  });
+});
+
+describe('jank metrics store size', () => {
+  beforeEach(() => remoteSessionStore.clear());
+
+  it('counts full-store, home status and per-task preview subscribers separately', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Host', [session('s1'), session('s2')]);
+    remoteSessionStore.setMessages('s1', [message('m1', 's1'), message('m2', 's1')]);
+    const before = takeJankMetrics().store!;
+    const unsubscribe = [
+      remoteSessionStore.subscribe(() => undefined),
+      remoteSessionStore.subscribeHomeStatus(() => undefined),
+      remoteSessionStore.subscribeHomeStatus(() => undefined),
+      remoteSessionStore.subscribeSessionMessagePreview('s1', () => undefined),
+      remoteSessionStore.subscribeSessionMessagePreview('s2', () => undefined),
+      remoteSessionStore.subscribeSessionMessagePreview('s2', () => undefined),
+    ];
+    setJankMetricsEnabled(true);
+    try {
+      const store = takeJankMetrics().store!;
+      expect(store).toMatchObject({ sessionCount: 1, messageCount: 2, maxSessionMessageCount: 2 });
+      expect(store.subscriberCount - before.subscriberCount).toBe(1);
+      expect(store.homeStatusSubscriberCount - before.homeStatusSubscriberCount).toBe(2);
+      expect(store.previewSubscriberCount - before.previewSubscriberCount).toBe(3);
+    } finally {
+      setJankMetricsEnabled(false);
+      for (const off of unsubscribe) off();
+    }
   });
 });
