@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HistoryViewController } from '../historyViewController.js';
-import type { HistoryMessageSource, HistoryViewPage, HistoryWorkPatch, HistoryWorkSummary } from '../historyView.js';
+import type { HistoryDetailPage, HistoryMessageSource, HistoryViewPage, HistoryWorkPatch, HistoryWorkSummary } from '../historyView.js';
 import { renderHistoryView } from '../historyViewRender.js';
 import { HISTORY_WORK_LINE_MAX_BYTES, HISTORY_WORK_LINES_MAX_BYTES, projectHistoryWorkLines } from '../historyWorkLines.js';
 
@@ -105,7 +105,7 @@ describe('HistoryViewController.applyWorkPatch', () => {
   async function fixture() {
     const transport = {
       page: vi.fn(async () => page([answer, { type: 'work', key: 'work-c1', summary: summary('work-c1', 'r1', []) }])),
-      details: vi.fn(async () => ({ version: 1 as const, messages: [], hasMore: false, nextCursor: null })),
+      details: vi.fn(async (): Promise<HistoryDetailPage<HistoryMessageSource>> => ({ version: 1, messages: [], hasMore: false, nextCursor: null })),
       expanded: vi.fn(async () => undefined),
     };
     const view = new HistoryViewController(transport);
@@ -179,8 +179,8 @@ describe('HistoryViewController.applyWorkPatch', () => {
 
   it('reports a group as awaiting details until its first detail rows land', async () => {
     const { view, transport } = await fixture();
-    let finish!: (value: { version: 1; messages: HistoryMessageSource[]; hasMore: false; nextCursor: null }) => void;
-    transport.details.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    let finish!: (value: HistoryDetailPage<HistoryMessageSource>) => void;
+    transport.details.mockImplementationOnce(() => new Promise<HistoryDetailPage<HistoryMessageSource>>((resolve) => { finish = resolve; }));
     type Item = { key: string; ids: string[]; children?: Item[]; deferred?: { awaitingDetails?: boolean } };
     const awaiting = () => renderHistoryView<HistoryMessageSource, Item>({
       view, snapshot: view.getSnapshot(), liveMessages: [], streaming: true,
