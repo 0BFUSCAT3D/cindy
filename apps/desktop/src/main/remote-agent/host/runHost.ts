@@ -353,6 +353,16 @@ interface Run {
   acceptsGroupSwitch?: boolean;
   /** 本机是组所在电脑、组选中了本机这一台来运行受邀者的任务：计入本机这一台的负载。 */
   groupLoad?: GroupRelayLoad;
+  /**
+   * 本机是组所在电脑、组为受邀者的全新任务(不是续接)选中了本机这一台：本机 Agent 没能启动时与组内电脑一样换下一台
+   * (`avoid` = 这一轮已经试过、不再回去的组内电脑)。
+   */
+  groupFreshStart?: { avoid: readonly string[] };
+  /**
+   * 本机是组所在电脑、受邀者续接一个经组运行过的任务：续接只能回到原来那台(会话在那台上)。那台接不下时给声明了
+   * 支持的受邀者发「需要换一台」凭证，它交接(带上上下文)后作为全新任务重新打开，组再换一台(§6.1)。
+   */
+  groupResumed?: boolean;
   /** 本机 Agent 上一次报来的「正在运行一轮」。 */
   turnRunning?: boolean;
 }
@@ -1036,9 +1046,67 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       (run.stateTimer as { unref?: () => void }).unref?.();
       void pumpEvents(run, handle);
     } catch (error) {
+      if (await relayAfterLocalStartFailure(run, payload, error)) return;
+      if (run.groupResumed && run.providerId) {
+        await offerSwitchAfterResumeFailure(run, localGroupMember(run.providerId), error, payload.options.model);
+      }
       append(run, { t: 'start-failed', error: remoteAgentErrorInfo(error) });
       await finishRun(run, 'start-failed', 'navigation', false);
     }
+  }
+
+  /**
+   * 续接回到原来那台、那台却接不下：与运行中失败同一个判定，那台的问题时给声明了支持的受邀者发凭证(排在启动失败
+   * 前面)。受邀者那边据此交接后作为全新任务重新打开，组换一台；不发凭证时受邀者照原来看到启动失败。
+   */
+  async function offerSwitchAfterResumeFailure(run: Run, member: GroupRelayMember, error: unknown, model: string): Promise<void> {
+    if (!run.acceptsGroupSwitch || run.closing) return;
+    const message = error instanceof Error ? error.message : String(error);
+    const token = await groupSwitchOfferFor(run, member, { message }, model).catch(() => null);
+    if (token && !run.closing) append(run, { t: 'state', state: { [GROUP_SWITCH_STATE_KEY]: token } });
+  }
+
+  /**
+   * 组为受邀者的全新任务选中了本机这一台，本机 Agent 却没能启动：与组内电脑接不下一样(同一个判定)换组里下一台，
+   * 受邀者无感。放掉本机这次尝试占的出站登记、隧道与负载后交给中转；没有下一台或不该换时返回 false，照常报错。
+   */
+  async function relayAfterLocalStartFailure(run: Run, payload: RemoteAgentOpenPayload, error: unknown): Promise<boolean> {
+    const relayDeps = deps.groupRelay;
+    const start = run.groupFreshStart;
+    if (!relayDeps || !start || !run.providerId || run.closing || run.handle) return false;
+    run.groupFreshStart = undefined;
+    const local = localGroupMember(run.providerId);
+    if (!relayDeps.noteStartFailure(run.providerId, local, error)) return false;
+    const tried = new Set<string>([...start.avoid, local.memberKey]);
+    const next = await relayDeps.plan({
+      kind: run.kind,
+      model: payload.options.model,
+      providerId: run.providerId,
+      exclude: tried,
+      reserve: true,
+    }).catch(() => null);
+    if (next?.kind !== 'member' || run.closing) {
+      next?.load?.release();
+      return false;
+    }
+    deps.log?.warn('remote agent: this computer did not start the shared task; trying the next computer in the provider group', {
+      runId: run.id,
+      to: next.memberKey,
+      error: String(error),
+    });
+    run.groupLoad?.release();
+    run.groupLoad = undefined;
+    run.guestRoute?.release();
+    run.guestRoute = undefined;
+    await run.tunnel?.close().catch(() => undefined);
+    run.tunnel = undefined;
+    const { memberKey, agentDeviceId, providerId, sameAccount } = next;
+    await startRelay(run, payload, { memberKey, agentDeviceId, providerId, sameAccount }, {
+      fresh: true,
+      avoid: [...tried],
+      ...(next.load ? { load: next.load } : {}),
+    });
+    return true;
   }
 
   async function pumpEvents(run: Run, handle: AgentSessionHandle): Promise<void> {
@@ -1052,8 +1120,9 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         if (run.closing) break;
         lastEventType = event.type;
         meterRunUsage(run, handle.model, event);
-        if (run.acceptsGroupSwitch) {
-          // 受邀者的任务按组分到了本机这一台：本机运行中失败时同样可以换一台(凭证排在错误前面)。
+        // 受邀者的任务按组分到了本机这一台：本机运行中失败时同样按组的口径冷却(旧版受邀者也一样)，声明了支持的
+        // 还可以换一台(凭证排在错误前面)。
+        if (run.acceptsGroupSwitch || run.groupLoad) {
           const failure = relayRunFailureOf(event);
           if (failure) {
             groupTurnFailed = true;
@@ -1400,7 +1469,12 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         load.release();
         // 这次尝试里受邀者那边已经打开的连接全部关掉，下一次尝试的连接编号不同。
         for (const connId of wsOpened) append(run, { t: 'ws', connId, kind: 'close' });
-        if (run.closing || !options.fresh) break;
+        if (run.closing) break;
+        // 续接只能回到原来那台：那台接不下时请受邀者交接后重新打开，由组换一台(凭证排在启动失败前面)。
+        if (!options.fresh) {
+          await offerSwitchAfterResumeFailure(run, current, error, backend.model ?? payload.options.model);
+          break;
+        }
         tried.add(current.memberKey);
         // 与本机自己的任务同一个判定：换到哪台都一样的失败不再换，照原来的错误报给受邀者。
         if (!relayDeps.noteStartFailure(groupProviderId, current, error)) break;
@@ -1418,6 +1492,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         }).catch(() => null);
         if (next?.kind === 'local' && deps.isAgentAvailable(run.kind) && !run.closing) {
           if (next.load) run.groupLoad = next.load;
+          // 本机这一台也起不来时同样换下一台(这一轮试过的不再回去)。
+          run.groupFreshStart = { avoid: [...tried] };
           await startRun(run, payload);
           return;
         }
@@ -2010,6 +2086,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         runs.set(key(controller, request.runId), run);
         ensureSweep();
         deps.log?.info('remote agent run opened', { runId: run.id, agent: run.kind, ...(relayTo ? { relayed: true } : {}) });
+        if (groupRouted && payload.options.resumeSessionId) run.groupResumed = true;
         if (relayTo) {
           const member = relayTo;
           // 先登记再中转：中转中途失败时，分享删除也能找到并清理(含通知那台组内电脑)。
@@ -2023,6 +2100,8 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
               await finishRun(run, 'start-failed', 'navigation', false);
             });
         } else {
+          // 组为受邀者的全新任务选中了本机这一台：本机起不来时与组内电脑一样换下一台。
+          if (groupRouted && !payload.options.resumeSessionId) run.groupFreshStart = { avoid };
           void startRun(run, payload);
         }
         return {};

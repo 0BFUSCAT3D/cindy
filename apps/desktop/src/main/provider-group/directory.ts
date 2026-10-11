@@ -107,6 +107,16 @@ export interface ProviderGroupDirectory {
 export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): ProviderGroupDirectory {
   const catalogs = new Map<string, { at: number; ok: boolean; promise: Promise<ProviderView[]> }>();
   let devices: { at: number; promise: Promise<readonly DeviceLinkDeviceView[]> } | null = null;
+  /**
+   * 分享来的电脑从什么时候起被看到离线(分享列表的 hostOnline 快照)：分享没有最后在线时刻，按本机第一次看到离线
+   * 算，只会少算不会多算。用于「离线已久就不再等它恢复」(与同账号电脑同一条规则)。
+   */
+  const shareOfflineSince = new Map<string, number>();
+
+  function noteShareOnline(shareId: string, online: boolean): void {
+    if (online) shareOfflineSince.delete(shareId);
+    else if (!shareOfflineSince.has(shareId)) shareOfflineSince.set(shareId, deps.now());
+  }
 
   function readCatalog(agentDeviceId: string): Promise<ProviderView[]> {
     const now = deps.now();
@@ -182,6 +192,7 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     const ownerName = share.owner.displayName;
     const label = ownerName;
     if (share.status === 'paused') return { member, label, ownerName, state: 'unavailable', reason: 'share-paused' };
+    noteShareOnline(shareId, share.hostOnline);
     if (!share.hostOnline && !options?.readThroughOffline) return { member, label, ownerName, state: 'offline' };
     let views: ProviderView[];
     try {
@@ -190,6 +201,9 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       const reason = SHARE_REASON.exec(error instanceof Error ? error.message : '')?.[1];
       if (reason === 'PAUSED') return { member, label, ownerName, state: 'unavailable', reason: 'share-paused' };
       if (reason === 'REMOVED') return { member, label, ownerName, state: 'unavailable', reason: 'share-removed' };
+      // 分享者电脑拒绝了(对方关了远程控制或这个供应商的「允许被远程调用」)：那台在线，只是现在不接，
+      // 不是连不上，不用等它恢复(与同账号电脑关了远程调用同一口径)。
+      if (reason === 'UNAVAILABLE') return { member, label, ownerName, state: 'unavailable', reason: 'provider-off' };
       return { member, label, ownerName, state: 'offline' };
     }
     const resolved = withView(member, label, ownerName, views);
@@ -269,7 +283,14 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     },
 
     async offlineForMs(agentDeviceId) {
-      if (isProviderShareAgentDeviceId(agentDeviceId)) return null;
+      if (isProviderShareAgentDeviceId(agentDeviceId)) {
+        const shareId = agentDeviceId.slice(PROVIDER_SHARE_AGENT_DEVICE_PREFIX.length);
+        const share = deps.listReceivedShares().find((s) => s.shareId === shareId);
+        if (!share) return null;
+        noteShareOnline(shareId, share.hostOnline);
+        const since = shareOfflineSince.get(shareId);
+        return since === undefined ? null : Math.max(0, deps.now() - since);
+      }
       const deviceList = await readDevices().catch(() => null);
       const device = deviceList?.find((d) => d.deviceId === agentDeviceId);
       if (!device || device.online || !device.lastSeenAt) return null;

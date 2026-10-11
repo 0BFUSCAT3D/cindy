@@ -153,6 +153,8 @@ function setup(options: {
   switchWorthy?: (failure: RelayRunFailure) => boolean;
   /** mini 这台的 Agent 表现。 */
   mini?: { failStart?: boolean; endImmediately?: boolean };
+  /** 组所在电脑本机的 Agent 表现(组选中本机这一台时)。 */
+  owner?: { failStart?: boolean };
   /** 截住组所在电脑发给组内电脑的请求(模拟回包丢失、应答慢)。 */
   intercept?: (agentDeviceId: string, request: Record<string, unknown>, forward: () => Promise<unknown>) => Promise<unknown>;
 } = {}) {
@@ -198,6 +200,7 @@ function setup(options: {
     trust: (controller) => (controller.startsWith('share-') ? 'guest' : 'owner'),
     purge: async () => undefined,
     groupRelay: relay,
+    ...options.owner,
   });
   return { owner, members, memberStarted, ownerStarted, relay };
 }
@@ -306,6 +309,16 @@ describe('provider group relay for shared users', () => {
     expect(env.memberStarted.studio).toHaveLength(1);
     expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', MEMBER_MINI, expect.any(Error));
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
+    await client.close('close', 'navigation');
+  });
+
+  it('moves on to the next computer when this computer was picked but its agent does not start', async () => {
+    const env = setup({ owner: { failStart: true }, plans: [{ kind: 'local' }, { kind: 'member', ...MEMBER_MINI }] });
+    const { client } = await openAsGuest(env, GUEST_A, openPayload(SESSION));
+    expect(env.memberStarted.mini).toHaveLength(1);
+    // 与组内电脑接不下同一个判定；换下一台时不再回到本机这一台。
+    expect(env.relay.noteStartFailure).toHaveBeenCalledWith('shared-provider', expect.objectContaining({ memberKey: 'local' }), expect.any(Error));
+    expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set(['local']) }));
     await client.close('close', 'navigation');
   });
 
@@ -547,6 +560,37 @@ describe('provider group "switch to another computer" for shared users', () => {
     expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
     expect(env.memberStarted.studio).toHaveLength(1);
     await reopened.client.close('close', 'navigation');
+  });
+
+  it('asks the shared user to hand off when the computer that ran the conversation cannot reopen it', async () => {
+    let failResume = false;
+    const env = setup({
+      intercept: async (_agentDeviceId, request, forward) => {
+        if (failResume && request.op === 'open') throw new Error('[REMOTE_AGENT_UNAVAILABLE] gone');
+        return forward();
+      },
+      plans: [{ kind: 'member', ...MEMBER_MINI }, { kind: 'member', ...MEMBER_STUDIO }],
+    });
+    const first = await openAsGuest(env, GUEST_A, openPayload(SESSION, { acceptsGroupSwitch: true }));
+    const nativeId = first.started.id as string;
+    await first.client.close('close', 'navigation');
+    await waitFor(() => env.members.mini.runCount() === 0);
+
+    failResume = true;
+    const poller = new RemoteAgentPoller(async (args) => jsonRoundTrip(await env.owner.handle(GUEST_A, jsonRoundTrip(args[0]))));
+    const stream: Array<Record<string, unknown>> = [];
+    const client = new RemoteAgentRunClient(runId(), poller, {
+      onEvent: () => undefined,
+      onState: (state) => { stream.push(state); },
+      onRequest: async () => ({ type: 'callback', value: undefined }),
+      onWs: () => undefined,
+      onClosed: () => undefined,
+    }, () => `33333333-3333-4333-8333-${String(runSeq).padStart(12, '0')}`);
+    await expect(client.open('claude-code', openPayload(SESSION, { acceptsGroupSwitch: true, options: { resumeSessionId: nativeId } })))
+      .rejects.toThrow();
+    // 续接只能回到原来那台：那台接不下时凭证排在启动失败前面，受邀者交接后作为全新任务重新打开，组换一台。
+    expect(stream.some((state) => typeof state.providerGroupSwitch === 'string')).toBe(true);
+    expect(env.relay.plan).toHaveBeenLastCalledWith(expect.objectContaining({ exclude: new Set([MEMBER_MINI.memberKey]) }));
   });
 
   it('accepts a token only once, and only from the shared user and task it was sent to', async () => {

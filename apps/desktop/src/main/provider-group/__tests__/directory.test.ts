@@ -378,3 +378,29 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
     expect(await directory.offlineForMs?.('share:s1')).toBeNull();
   });
 });
+
+describe('shared computers that refuse or stay offline', () => {
+  it('treats a sharer refusing this account as unavailable, not offline (no waiting for it to come back)', async () => {
+    const directory = createProviderGroupDirectory(deps({
+      listReceivedShares: () => [share('s5')],
+      readDeviceProviders: vi.fn(async () => {
+        throw new Error('[REMOTE_AGENT_SHARE_UNAVAILABLE] the shared provider is not available right now');
+      }),
+    }));
+    expect(await directory.probe('share:s5', 'anthropic')).toBe('unavailable');
+  });
+
+  it('tells how long a shared computer has been seen offline, so a long-gone one is not waited for', async () => {
+    let now = 1_000;
+    let online = false;
+    const directory = createProviderGroupDirectory(deps({
+      now: () => now,
+      listReceivedShares: () => [share('s6', { hostOnline: online })],
+    }));
+    expect(await directory.offlineForMs!('share:s6')).toBe(0);
+    now += 150_000;
+    expect(await directory.offlineForMs!('share:s6')).toBe(150_000);
+    online = true;
+    expect(await directory.offlineForMs!('share:s6')).toBeNull();
+  });
+});
