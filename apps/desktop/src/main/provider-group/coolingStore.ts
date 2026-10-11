@@ -6,7 +6,7 @@
 import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
-import { isProviderGroupProviderId } from '../../shared/providerGroup.js';
+import { isProviderGroupProviderId, PROVIDER_GROUP_STORAGE_MEMBER_CAP } from '../../shared/providerGroup.js';
 import type { ProviderGroupPersistedCooling } from './router.js';
 
 interface CoolingFile {
@@ -16,7 +16,6 @@ interface CoolingFile {
 const MEMBER_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,300}$/;
 /** 防止损坏文件无限膨胀的存储边界，远高于实际用量。 */
 const MAX_PROVIDERS = 1024;
-const MAX_MEMBERS_PER_PROVIDER = 256;
 
 function normalize(raw: unknown): CoolingFile {
   const source = (raw as Partial<CoolingFile> | null)?.cooling;
@@ -27,7 +26,7 @@ function normalize(raw: unknown): CoolingFile {
     if (!isProviderGroupProviderId(providerId) || !members || typeof members !== 'object' || Array.isArray(members)) continue;
     const entries: Record<string, number> = {};
     for (const [memberKey, until] of Object.entries(members as Record<string, unknown>)) {
-      if (Object.keys(entries).length >= MAX_MEMBERS_PER_PROVIDER) break;
+      if (Object.keys(entries).length >= PROVIDER_GROUP_STORAGE_MEMBER_CAP) break;
       if (!MEMBER_KEY_PATTERN.test(memberKey) || typeof until !== 'number' || !Number.isFinite(until) || until <= 0) continue;
       entries[memberKey] = until;
     }

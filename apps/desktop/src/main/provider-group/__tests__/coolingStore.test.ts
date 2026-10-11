@@ -7,7 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+
+import { PROVIDER_GROUP_STORAGE_MEMBER_CAP } from '../../../shared/providerGroup.js';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-group-cooling-store-test-'));
 
@@ -21,6 +23,17 @@ vi.mock('../../appSessionState.js', () => ({
 }));
 
 const coolingStore = await import('../coolingStore.js');
+afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+describe('冷却记录的成员边界', () => {
+  it('保留配置允许的全部成员，仍拒绝超出存储边界的条目', () => {
+    const members = Object.fromEntries(Array.from({ length: PROVIDER_GROUP_STORAGE_MEMBER_CAP + 1 }, (_, i) => [`device:d${i}:anthropic`, 5000]));
+    const result = coolingStore.__testing.normalize({ cooling: { anthropic: members } }).cooling.anthropic!;
+    expect(Object.keys(result)).toHaveLength(PROVIDER_GROUP_STORAGE_MEMBER_CAP);
+    expect(result[`device:d${PROVIDER_GROUP_STORAGE_MEMBER_CAP - 1}:anthropic`]).toBe(5000);
+    expect(result).not.toHaveProperty(`device:d${PROVIDER_GROUP_STORAGE_MEMBER_CAP}:anthropic`);
+  });
+});
 
 describe('mergeCooling', () => {
   const { mergeCooling } = coolingStore.__testing;
@@ -60,6 +73,23 @@ describe('mergeCooling', () => {
 });
 
 describe('writeProviderGroupCooling (real file)', () => {
+  it('512 个最长合法键的冷却全部写入并在重启读取后保留，文件大小预算也足够', async () => {
+    const providerId = 'p'.repeat(128);
+    const members = Object.fromEntries(Array.from({ length: PROVIDER_GROUP_STORAGE_MEMBER_CAP }, (_, i) => [
+      `device:${String(i).padStart(164, 'd')}:${providerId}`, Number.MAX_VALUE,
+    ]));
+    coolingStore.writeProviderGroupCooling({ [providerId]: members });
+    const file = path.join(tmpDir, 'provider-group-cooling.json');
+    await vi.waitFor(() => {
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).cooling[providerId]).toEqual(members);
+    });
+    expect(fs.statSync(file).size).toBeLessThan(1024 * 1024);
+    // 新实例没有旧 store 的缓存，直接从实际文件恢复。
+    vi.resetModules();
+    const restarted = await import('../coolingStore.js');
+    expect(restarted.readProviderGroupCooling()[providerId]).toEqual(members);
+  });
+
   it('keeps an earlier cooldown instead of discarding it on the next write (greptile-apps P1)', async () => {
     // 模拟 PR 场景:两台电脑先后撞上限额。修复前的实现每次 updateAtomic 都是整份覆盖,
     // 谁最后拿到锁谁就是最终结果;修复后每次写入在锁内和当前文件内容合并,谁先谁后都不会挤丢对方。
@@ -67,8 +97,6 @@ describe('writeProviderGroupCooling (real file)', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     coolingStore.writeProviderGroupCooling({ anthropic: { 'device:mini:a': 1_000 } });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(coolingStore.readProviderGroupCooling()).toEqual({
-      anthropic: { 'device:studio:a': 2_000, 'device:mini:a': 1_000 },
-    });
+    expect(coolingStore.readProviderGroupCooling().anthropic).toEqual({ 'device:studio:a': 2_000, 'device:mini:a': 1_000 });
   });
 });
