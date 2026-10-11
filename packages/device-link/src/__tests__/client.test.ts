@@ -9825,6 +9825,64 @@ describe('定时重发的单趟预算(TRANSPORT_RETRY_PASS_BUDGET)', () => {
     });
   }, 10_000);
 
+  it('重连后未在本轮重发就被确认的消息不把离线时长算进往返估计', async () => {
+    await withFakeTimers(async (h, advance) => {
+      const internals = h.client as unknown as {
+        monotonicNow(): number;
+        peerTransport: Map<string, { sendPhase: string; receiveReady: boolean; rtt: { srttMs: number | null } }>;
+      };
+      const realNow = internals.monotonicNow.bind(h.client);
+      let offset = 0;
+      internals.monotonicNow = () => realNow() + offset;
+      h.client.sendInvokeResult('dev-b', 'before-0', { ok: true, result: 0 });
+      h.client.sendInvokeResult('dev-b', 'before-1', { ok: true, result: 1 });
+      const ws = h.current();
+      const seqs = [...sendsBySeq(ws).keys()].sort((a, b) => a - b);
+      const streamId = parseTransportPayload(ws.sent.find((env) => env.kind === 'invoke-result')!.payload)!.meta.streamId;
+      internals.peerTransport.get('dev-b')!.sendPhase = 'down';
+      internals.peerTransport.get('dev-b')!.receiveReady = false;
+      offset = 60_000; // long offline gap
+
+      const id = `inbound-link-${++inboundLinkId}`;
+      const off = h.client.onFrame((env) => {
+        if (env.kind !== 'link-open' || env.id !== id || !env.src) return;
+        h.client.sendLinkAccept(env.src, env.id, { appVersion: '1', allowlistHash: 'hash' });
+      });
+      ws.push({
+        v: PROTOCOL_VERSION,
+        kind: 'link-open',
+        id,
+        src: 'dev-b',
+        payload: {
+          controllerName: 'Remote',
+          protocolVersion: 1,
+          appVersion: '1',
+          capabilities: [DEVICE_LINK_CAPABILITY_RELIABLE_TRANSPORT, DEVICE_LINK_CAPABILITY_TRANSPORT_TIMEOUT_CLOSE],
+          transportStreamId: 'remote-stream-2',
+          transportBaseSeq: 1,
+        },
+      });
+      await advance(1);
+      off();
+      // The replay budget only re-wrote the head; the tail was delivered before the drop.
+      expect(seqs.map((seq) => sendsBySeq(ws).get(seq))).toEqual([2, 1]);
+      ws.push({
+        v: PROTOCOL_VERSION,
+        kind: 'push',
+        src: 'dev-b',
+        payload: { channel: DEVICE_LINK_TRANSPORT_ACK_CHANNEL, payload: { streamId, ackSeq: seqs[1] } },
+      });
+      await advance(1);
+      const srtt = internals.peerTransport.get('dev-b')!.rtt.srttMs;
+      expect(srtt === null || srtt < 1_000).toBe(true);
+    }, {
+      pingIntervalMs: 600_000,
+      transportRetryIntervalMs: 10_000,
+      transportRetryPassBudget: 1,
+      transportMaxRetryAttempts: 50,
+    });
+  }, 10_000);
+
   it('多 peer 拓扑:慢链路 peer 的往返估计只放宽它自己的重发,另一个 peer 节奏不变', async () => {
     await withFakeTimers(async (h, advance) => {
       const linked = establishInboundReliableLink(h, 'stream-c', 1, 'dev-c');

@@ -1828,8 +1828,7 @@ export class DeviceLinkClient {
       peer.pendingBytes += skipBytes - pending.bytes;
       pending.envelope = skipEnvelope;
       pending.bytes = skipBytes;
-      pending.attempts = 0;
-      pending.lastSentAt = 0;
+      resetReliableSendRound(pending);
       pending.sent = false;
       // **定向**发这一帧,不借道 retryPending:后者从队头遍历,skip 前面若压着超过预算的
       // pending,预算会在到达它之前用完 —— 注释说的「立刻发」就没发生,而接收端正等这个
@@ -4571,10 +4570,7 @@ export class DeviceLinkClient {
     if (peer.pending.size === 0) return;
     if (resumedLink || peer.lastReplayEpoch !== this.connEpoch) {
       peer.lastReplayEpoch = this.connEpoch;
-      for (const pending of peer.pending.values()) {
-        pending.attempts = 0;
-        pending.lastSentAt = 0;
-      }
+      for (const pending of peer.pending.values()) resetReliableSendRound(pending);
     }
     if (peer.recoveryTrace) peer.recoveryTrace.replayThroughSeq = peer.nextSeq - 1;
     this.retryPending(dst, { ignoreInterval: true });
@@ -5124,6 +5120,17 @@ function isValidInboundEnvelope(value: Envelope): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Start a new send round. firstSentAt belongs to the round: a message the peer
+ * acknowledges before it is written again in this round (ACK lost across a
+ * reconnect) must not turn the offline gap into an RTT sample.
+ */
+function resetReliableSendRound(pending: PendingReliableMessage): void {
+  pending.attempts = 0;
+  pending.lastSentAt = 0;
+  pending.firstSentAt = undefined;
 }
 
 function isReliableKind(kind: Envelope['kind']): kind is 'invoke' | 'invoke-result' | 'push' {
