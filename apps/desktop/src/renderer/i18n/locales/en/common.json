@@ -479,6 +479,7 @@
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
         "offline": "Offline",
+        "unreachableHere": "Can’t reach it from this computer",
         "unavailable": {
           "provider-off": "“Allow remote use” is off for this provider on that computer",
           "disconnected": "Provider not connected or turned off",

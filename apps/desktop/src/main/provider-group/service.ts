@@ -281,6 +281,12 @@ export const PROVIDER_GROUP_PROBE_TIMEOUT_MS = 10_000;
 /** 纳入老任务时问组所在电脑的上限：读不到就照常启动 / 交回原有处理，出错时再补。 */
 export const PROVIDER_GROUP_ADOPT_TIMEOUT_MS = 3_000;
 
+/**
+ * 发送前换不过去的电脑，留给这条消息随后的失败多久：消息发到原电脑后通常几秒内就失败(如撞用量上限)，
+ * 那次换电脑不再重复去试、重复去等；超过这个时间再失败时那台可能已恢复，照常再试。
+ */
+export const PROVIDER_GROUP_PRE_SEND_FAILED_TTL_MS = 2 * 60_000;
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === 'string' ? error : '';
 }
@@ -325,6 +331,40 @@ interface GroupSource {
 }
 
 /**
+ * 一趟换电脑里因这台电脑连不上而跳过的组内电脑(§6.1)：组里只剩它们时挨个等它恢复再试。等回来的那台从这一轮
+ * 试过的名单里放出来、可以再被选中；再换不过去就重新记下(等的次数按电脑计，不会无休止地来回试)。
+ */
+function createSkippedTargets() {
+  const waiting: ProviderGroupMember[] = [];
+  const retrying = new Set<string>();
+  return {
+    /** 选电脑时排除的：这一轮试过的，去掉等回来、可以再试的。 */
+    exclusion(base: Set<string>): Set<string> {
+      for (const key of retrying) base.delete(key);
+      return base;
+    },
+    /** 换过去失败：连不上的记下，组里只剩它们时再等。 */
+    failed(member: ProviderGroupMember, unreachable: boolean): void {
+      retrying.delete(member.key);
+      if (unreachable && !waiting.some((m) => m.key === member.key)) waiting.push(member);
+    },
+    /** 挨个等记下的电脑恢复(后跳过的先等)，等回来一台就返回 true。 */
+    async awaitAny(
+      awaitOne: (member: ProviderGroupMember) => Promise<boolean>,
+      isCurrent: () => boolean,
+    ): Promise<boolean> {
+      for (let member = waiting.pop(); member && isCurrent(); member = waiting.pop()) {
+        if (await awaitOne(member)) {
+          retrying.add(member.key);
+          return true;
+        }
+      }
+      return false;
+    },
+  };
+}
+
+/**
  * 等原电脑恢复的结局：`reachable` 现读一次就连得上(不是连不上的问题，没等)；`back` 等过之后恢复了；
  * `gone` 那台本身不能用了(供应商关掉、登录失效、分享暂停等)或重试用完；`stopped` 等的途中用户接手。
  */
@@ -335,10 +375,15 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   /** 进行中的自动换电脑：用户亲自接手(发消息、重试、换模型)时标记作废。只在换电脑期间登记。 */
   const runningSwitches = new Map<string, Set<{ superseded: boolean }>>();
   /**
-   * 这一轮等过原电脑几次：每台各算，运行中失败与发送前共用一份，那台反复掉线也不会无休止地等下去。
-   * 用户接手即重新计；距上一次重试超过一轮的时限(30 分钟)也重新计。
+   * 这一轮等过每台电脑几次(原电脑与要换过去的那台各算)：运行中失败与发送前共用一份，那台反复掉线也不会无休止地
+   * 等下去。用户接手即重新计；距上一次重试超过一轮的时限(30 分钟)也重新计。
    */
-  const reconnects = new Map<string, { memberKey: string; used: number; at: number }>();
+  const reconnects = new Map<string, Map<string, { used: number; at: number }>>();
+  /**
+   * 发送前换不过去的电脑(目标电脑本身的问题)：这条消息随后在原电脑上失败时，那次换电脑直接跳过它们。单独记，
+   * 不放在这一轮试过的名单里——用户亲自发的消息被接受时会重开一轮(noteUserAction)，那份名单随之清空。
+   */
+  const preSendFailed = new Map<string, { keys: string[]; at: number }>();
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   /** 等 `promise`，但发送被停止时立刻返回 undefined(不再干等退避或一次慢的现读)。 */
@@ -361,15 +406,15 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     });
   }
 
-  /** 记一次等原电脑的重试，返回这是第几次；这一轮已用完返回 null。 */
+  /** 记一次等那台电脑的重试，返回这是第几次；这一轮已用完返回 null。 */
   function nextReconnectAttempt(sessionId: string, memberKey: string): number | null {
     const now = deps.now();
-    const previous = reconnects.get(sessionId);
-    const used = previous && previous.memberKey === memberKey && now - previous.at <= PROVIDER_GROUP_TURN_WINDOW_MS
-      ? previous.used
-      : 0;
+    const perMember = reconnects.get(sessionId) ?? new Map<string, { used: number; at: number }>();
+    const previous = perMember.get(memberKey);
+    const used = previous && now - previous.at <= PROVIDER_GROUP_TURN_WINDOW_MS ? previous.used : 0;
     if (used >= PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS) return null;
-    reconnects.set(sessionId, { memberKey, used: used + 1, at: now });
+    perMember.set(memberKey, { used: used + 1, at: now });
+    reconnects.set(sessionId, perMember);
     return used + 1;
   }
 
@@ -435,6 +480,33 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       }
       if (state === 'unavailable') return 'gone';
     }
+  }
+
+  /**
+   * 要换过去的那台从这台电脑连不上(断线、不响应；组所在电脑那边看它可能是正常的)：组里还有别的电脑时先换别的，
+   * 只剩它时不急着报错，先等它恢复再试(§6.1)。刚换过去失败，当作已知连不上：先按退避等一会儿再现读，与等原电脑
+   * 同一套退避，次数按电脑计，那台「看着连得上却换不过去」时最多也只试这几次。返回 true = 它回来了，可以再试。
+   */
+  async function awaitSkippedTarget(
+    sessionId: string,
+    source: GroupSource,
+    member: ProviderGroupMember,
+    localProviderId: string | null,
+    isCurrent: () => boolean,
+    onAttempt: () => void,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const route = source.routeOf(member, localProviderId);
+    const outcome = await awaitReturn(sessionId, route, member.key, isCurrent, onAttempt, {
+      knownOffline: true,
+      ...(signal ? { signal } : {}),
+    });
+    return outcome === 'back';
+  }
+
+  /** 换过去失败只是因为这台电脑连不上那台(那台本身可能没问题)：值得等它恢复。 */
+  function isUnreachableTarget(error: unknown): boolean {
+    return isProviderGroupConnectionLoss({ message: errorText(error) });
   }
 
   /** 这一轮结束(放弃换电脑、用户接手)：下一轮重新从头试、重新等。 */
@@ -1019,10 +1091,17 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     source.cool(binding.providerId, current.key, cause, deps.readResetAt(signals));
     source.invalidate(current);
     const tried = router.markTried(sessionId, current.key);
+    // 这条消息发出前刚换不过去的电脑不再重复去试、重复去等。
+    const preSend = preSendFailed.get(sessionId);
+    preSendFailed.delete(sessionId);
+    if (preSend && deps.now() - preSend.at <= PROVIDER_GROUP_PRE_SEND_FAILED_TTL_MS) {
+      for (const key of preSend.keys) router.markTried(sessionId, key);
+    }
     // 换回本机时：原本就在本机的保留原来的来源写法(可能是隐式来源)，否则用组所属的供应商。
     const localProviderId = current.kind === 'local' ? row.providerId : binding.providerId;
     // 分享来的电脑用分享者的昵称(不用电脑名)；读不到时为空，活动记录退回不写电脑的说法。
     let fromLabel = deps.directory.memberLabel(current);
+    const skipped = createSkippedTargets();
 
     for (;;) {
       if (!isCurrent()) return;
@@ -1032,11 +1111,18 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         config,
         agentKind: row.agentKind,
         model: row.model,
-        exclude: switchExclusion(config, current, tried),
+        exclude: skipped.exclusion(switchExclusion(config, current, tried)),
       });
       // 选电脑期间用户已接手：绑定与任务记录都还没动，直接停下。
       if (!isCurrent()) return;
       if (pick.kind !== 'member') {
+        // 组里只剩这一轮因连不上而跳过的电脑：先等它们恢复再试，都等不到才交回原有的报错。
+        if (pick.kind === 'unavailable') {
+          const back = await skipped.awaitAny((member) =>
+            awaitSkippedTarget(sessionId, source, member, localProviderId, isCurrent, () => hooks?.switching?.()), isCurrent);
+          if (!isCurrent()) return;
+          if (back) continue;
+        }
         deps.log.info('provider group: no computer left to switch to', { sessionId, cause, tried: tried.size });
         resetRound(sessionId);
         handBack();
@@ -1070,6 +1156,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         });
         router.markTried(sessionId, pick.member.key);
         source.cool(binding.providerId, pick.member.key, targetCause, null);
+        skipped.failed(pick.member, isUnreachableTarget(error));
         continue;
       }
       deps.log.info('provider group: switched computer', { sessionId, cause, to: pick.member.key });
@@ -1347,6 +1434,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     },
 
     async beforeSend(sessionId, options) {
+      // 每次发送前重新记：上一条消息发送前换不过去的电脑不带到这一条。
+      preSendFailed.delete(sessionId);
       if (!deps.readBinding(sessionId) || deps.isTurnRunning(sessionId)) return;
       // 读组设置也算进发送前检查的上限：组所在电脑断线或不响应时保留绑定、照常发送，不等默认的请求超时。
       const bound = await withTimeout(loadBound(sessionId), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
@@ -1391,37 +1480,75 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         options?.progress?.('switching');
       }
       const tried = router.markTried(sessionId, current.key);
-      const pick = await source.pick({
-        sessionId,
-        providerId: binding.providerId,
-        config,
-        agentKind: row.agentKind,
-        model: row.model,
-        exclude: switchExclusion(config, current, tried),
-      });
-      if (pick.kind !== 'member') {
-        router.resetTurn(sessionId);
-        return;
-      }
       const localProviderId = current.kind === 'local' && !source.ownerDeviceId ? row.providerId : binding.providerId;
-      const route = source.routeOf(pick.member, localProviderId);
-      await deps.writeBinding(sessionId, bindingFor(source, binding.providerId, pick.member.key));
+      const skipped = createSkippedTargets();
+      const failedTargets: string[] = [];
+      const { run, done } = trackRun(sessionId);
+      const isCurrent = () => !run.superseded && options?.signal?.aborted !== true;
       try {
-        await deps.switchAgentLocation(sessionId, {
-          agentKind: row.agentKind,
-          model: row.model,
-          providerId: route.providerId,
-          agentDeviceId: route.agentDeviceId,
-        }, { beforeSend: true });
-        deps.log.info('provider group: moved a task before sending', {
-          sessionId,
-          from: current.key,
-          to: pick.member.key,
-          reason,
-        });
-      } catch (error) {
-        await restoreBindingAfterFailedSwitch(sessionId, source, binding.providerId, config);
-        deps.log.warn('provider group: moving a task before sending failed', { sessionId, error: errorText(error) });
+        for (;;) {
+          if (!isCurrent()) return;
+          const pick = await source.pick({
+            sessionId,
+            providerId: binding.providerId,
+            config,
+            agentKind: row.agentKind,
+            model: row.model,
+            exclude: skipped.exclusion(switchExclusion(config, current, tried)),
+          });
+          if (!isCurrent()) return;
+          if (pick.kind !== 'member') {
+            // 组里只剩这次因连不上而跳过的电脑：先等它们恢复再换，消息还没发出，进行中行显示「正在换一台电脑继续」。
+            if (pick.kind === 'unavailable') {
+              const back = await skipped.awaitAny((member) => awaitSkippedTarget(
+                sessionId, source, member, localProviderId, isCurrent, () => options?.progress?.('switching'), options?.signal,
+              ), isCurrent);
+              if (!isCurrent()) return;
+              if (back) continue;
+            }
+            // 没换成：照常发到原电脑。换过去失败的电脑记下来，这条消息随后失败时不再重复去试、重复去等。
+            if (failedTargets.length === 0) router.resetTurn(sessionId);
+            else preSendFailed.set(sessionId, { keys: failedTargets, at: deps.now() });
+            return;
+          }
+          const route = source.routeOf(pick.member, localProviderId);
+          await deps.writeBinding(sessionId, bindingFor(source, binding.providerId, pick.member.key));
+          try {
+            await deps.switchAgentLocation(sessionId, {
+              agentKind: row.agentKind,
+              model: row.model,
+              providerId: route.providerId,
+              agentDeviceId: route.agentDeviceId,
+            }, { beforeSend: true });
+            deps.log.info('provider group: moved a task before sending', {
+              sessionId,
+              from: current.key,
+              to: pick.member.key,
+              reason,
+            });
+            return;
+          } catch (error) {
+            await restoreBindingAfterFailedSwitch(sessionId, source, binding.providerId, config);
+            // 只有目标电脑本身的问题才换下一台；与目标无关的失败(任务在运行、已删除等)照常发到原电脑。
+            const targetCause = classifyProviderGroupSwitchCause({ message: errorText(error) });
+            if (!targetCause || !isCurrent()) {
+              deps.log.warn('provider group: moving a task before sending failed', { sessionId, error: errorText(error) });
+              if (failedTargets.length > 0 && isCurrent()) preSendFailed.set(sessionId, { keys: failedTargets, at: deps.now() });
+              return;
+            }
+            deps.log.warn('provider group: moving a task before sending failed; trying the next one', {
+              sessionId,
+              member: pick.member.key,
+              error: errorText(error),
+            });
+            if (!failedTargets.includes(pick.member.key)) failedTargets.push(pick.member.key);
+            router.markTried(sessionId, pick.member.key);
+            source.cool(binding.providerId, pick.member.key, targetCause, null);
+            skipped.failed(pick.member, isUnreachableTarget(error));
+          }
+        }
+      } finally {
+        done();
       }
     },
 

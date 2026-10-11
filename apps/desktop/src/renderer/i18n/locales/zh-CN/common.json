@@ -474,6 +474,7 @@
         "cooling": "冷却中",
         "coolingUntil": "冷却中 · 约 {{time}} 恢复",
         "offline": "不在线",
+        "unreachableHere": "从这台电脑连不上",
         "unavailable": {
           "provider-off": "那台电脑没有对这个供应商打开「允许被远程调用」",
           "disconnected": "供应商未连接或已停用",

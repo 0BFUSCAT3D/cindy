@@ -474,6 +474,7 @@
         "cooling": "クールダウン中",
         "coolingUntil": "クールダウン中 · {{time}} ごろ回復",
         "offline": "オフライン",
+        "unreachableHere": "このパソコンから接続できません",
         "unavailable": {
           "provider-off": "そのパソコンでこのプロバイダーの「リモート利用を許可」がオフです",
           "disconnected": "プロバイダーが未接続か無効です",

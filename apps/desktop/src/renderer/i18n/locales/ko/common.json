@@ -474,6 +474,7 @@
         "cooling": "대기 중",
         "coolingUntil": "대기 중 · {{time}}쯤 복구",
         "offline": "오프라인",
+        "unreachableHere": "이 컴퓨터에서 연결할 수 없음",
         "unavailable": {
           "provider-off": "그 컴퓨터에서 이 제공자의 원격 사용 허용이 꺼져 있습니다",
           "disconnected": "제공자가 연결되지 않았거나 꺼져 있습니다",

@@ -14,6 +14,7 @@ import { createProviderGroupGuestSwitch, PROVIDER_GROUP_SWITCH_OFFER_TTL_MS } fr
 import { createProviderGroupRouter, PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } from '../router';
 import {
   createProviderGroupService,
+  PROVIDER_GROUP_PRE_SEND_FAILED_TTL_MS,
   PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS,
   PROVIDER_GROUP_SUPERSEDED_ERROR,
   PROVIDER_GROUP_UNAVAILABLE_ERROR,
@@ -461,8 +462,9 @@ describe('onTurnError (automatic switch)', () => {
     // 交接失败时旧会话可能已关闭：原令牌失效，用重新登记的候选交回原有处理。
     none.deps.leaseRecovery.mockReturnValueOnce(LEASE).mockReturnValue(null);
     none.deps.rearmContinue.mockReturnValue(42);
-    none.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
-    await flush();
+    await none.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+    // 组里只剩这台连不上的：先等它几次(§6.1)，都换不过去才交回。
+    expect(none.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
     expect(none.deps.rearmContinue).toHaveBeenCalledWith('s1', LEASE, null);
     expect(none.deps.fallback).toHaveBeenCalledWith('s1', { sdkError: 'rate_limit' }, 42);
     expect(none.bindings.get('s1')?.memberKey).toBe('local');
@@ -767,6 +769,183 @@ describe('waiting for a computer that cannot be reached before switching (§6.1)
     await h.service.onTurnError('s1', UNREACHABLE, 8, h.hooks);
     expect(h.hooks.reconnecting.mock.calls.map(([attempt]) => attempt)).toEqual([1, 2]);
     expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+  });
+});
+
+describe('waiting for the computer to switch to when this computer cannot reach it (§6.1)', () => {
+  const UNREACHABLE_TARGET = '[REMOTE_AGENT_DEVICE_UNREACHABLE] the computer that would run the agent is not reachable';
+
+  function onLocal(members: ProviderGroupMember[] = [LOCAL, MINI]) {
+    const h = harness({ members });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    const hooks = { reconnecting: vi.fn(), switching: vi.fn(), resumed: vi.fn(), beforeFallback: vi.fn() };
+    return { ...h, hooks };
+  }
+
+  it('waits for the only other computer instead of reporting the error, then switches once it is back', async () => {
+    const h = onLocal();
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    h.probe.mockResolvedValueOnce('offline').mockResolvedValueOnce('ok');
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, h.hooks);
+    // 刚换过去失败：先退避再现读，第二次现读时它回来了。
+    expect(h.deps.sleep).toHaveBeenCalledTimes(2);
+    expect(h.probe).toHaveBeenCalledWith('mini', MINI.providerId);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
+    expect(h.deps.switchAgentLocation.mock.calls[1][1]).toMatchObject({ agentDeviceId: 'mini' });
+    expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
+    expect(h.deps.continueSession).toHaveBeenCalledWith('s1', 99, expect.objectContaining({
+      agentSwitch: expect.objectContaining({ to: `${MINI.key}-name`, cause: 'usage-limit' }),
+    }));
+    // 等的期间仍显示「正在换一台电脑继续」(每次重试重新计「久久没有结局」的时间)，不改成「重新连接中」。
+    expect(h.hooks.switching).toHaveBeenCalledTimes(2);
+    expect(h.hooks.reconnecting).not.toHaveBeenCalled();
+    expect(h.hooks.resumed).toHaveBeenCalledTimes(1);
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+    // 连不上只在这一轮避开，不冷却那台。
+    expect(h.router.coolingUntil('anthropic', MINI.key)).toBeNull();
+  });
+
+  it('hands back to the existing handling after the retries when that computer never comes back', async () => {
+    const h = onLocal();
+    h.deps.switchAgentLocation.mockRejectedValue(new Error(UNREACHABLE_TARGET));
+    h.probe.mockResolvedValue('offline');
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, h.hooks);
+    expect(h.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+    expect(h.hooks.beforeFallback).toHaveBeenCalledTimes(1);
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+    expect(h.bindings.get('s1')?.memberKey).toBe('local');
+  });
+
+  it('tries a computer that looks reachable but still cannot be switched to only a few times', async () => {
+    const h = onLocal();
+    h.deps.switchAgentLocation.mockRejectedValue(new Error(UNREACHABLE_TARGET));
+    h.probe.mockResolvedValue('ok');
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, h.hooks);
+    // 第一次换 + 每次等回来再试一次，等的次数用完就交回。
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1 + PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+    expect(h.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+    expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves on to another computer without waiting when one can take the task', async () => {
+    const h = onLocal([LOCAL, MINI, STUDIO]);
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, h.hooks);
+    expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(h.bindings.get('s1')?.memberKey).toBe(STUDIO.key);
+    expect(h.deps.continueSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not wait for a computer whose handoff failed for a reason other than reaching it', async () => {
+    const h = onLocal();
+    h.deps.switchAgentLocation.mockRejectedValue(new Error('[REMOTE_AGENT_MODEL_UNAVAILABLE] that computer does not offer this model'));
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, h.hooks);
+    expect(h.deps.sleep).not.toHaveBeenCalled();
+    expect(h.probe).not.toHaveBeenCalled();
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting once the user takes over: no switch, no hand back', async () => {
+    const h = onLocal();
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    h.deps.sleep.mockImplementationOnce(async () => {
+      h.service.noteUserAction('s1');
+    });
+    h.probe.mockResolvedValue('ok');
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, h.hooks);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+  });
+});
+
+describe('beforeSend when the next computer cannot be reached from here', () => {
+  const UNREACHABLE_TARGET = '[REMOTE_AGENT_DEVICE_UNREACHABLE] the computer that would run the agent is not reachable';
+
+  function coolingLocal(members: ProviderGroupMember[] = [LOCAL, MINI]) {
+    const h = harness({ members, row: { sdkSessionId: 'native' } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.router.markCooling('anthropic', 'local', 2_000_000);
+    return h;
+  }
+
+  it('tries the next computer instead of sending to the one that is cooling down', async () => {
+    const h = coolingLocal([LOCAL, MINI, STUDIO]);
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    await h.service.beforeSend('s1');
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
+    expect(h.bindings.get('s1')?.memberKey).toBe(STUDIO.key);
+    expect(h.deps.sleep).not.toHaveBeenCalled();
+  });
+
+  it('waits for the only other computer before sending, then moves there', async () => {
+    const h = coolingLocal();
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    h.probe.mockResolvedValueOnce('offline').mockResolvedValueOnce('ok');
+    const progress = vi.fn();
+    await h.service.beforeSend('s1', { progress });
+    expect(h.deps.sleep).toHaveBeenCalledTimes(2);
+    expect(progress.mock.calls.map(([state]) => state)).toEqual(['switching', 'switching']);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
+    expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+  });
+
+  it('stops waiting at once when the send is stopped', async () => {
+    const h = coolingLocal();
+    h.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    const controller = new AbortController();
+    h.deps.sleep.mockImplementationOnce(async () => {
+      controller.abort();
+    });
+    h.probe.mockResolvedValue('ok');
+    await h.service.beforeSend('s1', { signal: controller.signal });
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.bindings.get('s1')?.memberKey).toBe('local');
+  });
+
+  it('does not try or wait for that computer again when the message then fails on the original one', async () => {
+    const h = coolingLocal();
+    h.deps.switchAgentLocation.mockRejectedValue(new Error(UNREACHABLE_TARGET));
+    h.probe.mockResolvedValue('offline');
+    await h.service.beforeSend('s1');
+    expect(h.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+    expect(h.bindings.get('s1')?.memberKey).toBe('local');
+    // 用户亲自发的消息被接受时落库，算用户接手、重开一轮(生产里 beforeSend 之后才发生)。
+    h.service.noteUserAction('s1');
+    // 消息照常发到原电脑、撞了用量上限：刚才试过、等过的那台不再重复去试、重复去等，直接交回原有处理。
+    await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.deps.sleep).toHaveBeenCalledTimes(PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
+    expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries that computer again when the message fails long after it was sent, or on the next message', async () => {
+    const late = coolingLocal();
+    late.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    late.probe.mockResolvedValue('offline');
+    await late.service.beforeSend('s1');
+    late.service.noteUserAction('s1');
+    // 过了两分钟才失败：那台可能已恢复，照常再试。
+    late.advance(PROVIDER_GROUP_PRE_SEND_FAILED_TTL_MS + 1);
+    late.probe.mockResolvedValue('ok');
+    await late.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+    expect(late.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
+    expect(late.bindings.get('s1')?.memberKey).toBe(MINI.key);
+
+    // 下一条消息发送前重新记：上一条换不过去的不带过来。
+    const next = coolingLocal();
+    next.deps.switchAgentLocation.mockRejectedValueOnce(new Error(UNREACHABLE_TARGET));
+    next.probe.mockResolvedValue('offline');
+    await next.service.beforeSend('s1');
+    next.service.noteUserAction('s1');
+    next.probe.mockResolvedValue('ok');
+    await next.service.beforeSend('s1');
+    expect(next.deps.switchAgentLocation).toHaveBeenCalledTimes(2);
+    expect(next.bindings.get('s1')?.memberKey).toBe(MINI.key);
   });
 });
 

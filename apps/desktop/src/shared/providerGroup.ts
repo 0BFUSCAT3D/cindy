@@ -94,6 +94,11 @@ export interface ProviderGroupMemberStatus {
   paused: boolean;
   /** 冷却到何时(unix ms)。 */
   coolingUntil?: number;
+  /**
+   * 另一台电脑上的组：组所在电脑那边看它能用，这台电脑却连不上(provider-groups.md §10)。只由这台电脑的主进程
+   * 按自己的连接情况补上，不来自组所在电脑的回包。
+   */
+  unreachableHere?: boolean;
 }
 
 export interface ProviderGroupView {

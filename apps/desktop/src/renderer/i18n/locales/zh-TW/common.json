@@ -474,6 +474,7 @@
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
+        "unreachableHere": "從這台電腦連不上",
         "unavailable": {
           "provider-off": "那臺電腦沒有對這個供應商開啟「允許遠端呼叫」",
           "disconnected": "供應商未連線或已停用",
