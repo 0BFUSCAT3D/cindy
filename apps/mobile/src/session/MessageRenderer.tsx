@@ -409,6 +409,7 @@ import { latexToUnicodeApproximation } from '@cindy/maker-shared/math-markdown';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 import { iconSize, iconStroke, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
 import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
@@ -3334,6 +3335,7 @@ function MessageBubble({
   item: MobileMessageItem;
   actions: MessageActions & { firstUserMessageClientId?: string };
 }) {
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
   const styles = useThemedStyles(makeStyles);
   const { colors, mode } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -3715,6 +3717,7 @@ function MessageBubble({
         isUser ? styles.userBubble : styles.agentBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
+        isUser && !item.message.systemCardType && userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
       ]}
       testID={isUser ? 'message.userBubble' : 'message.agentBubble'}
     >
