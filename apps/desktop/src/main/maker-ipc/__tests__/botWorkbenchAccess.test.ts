@@ -516,6 +516,24 @@ describe('workbench snapshot', () => {
     expect(result.workbench).toMatchObject({ truncated: false, totalTasks: 0, totalCandidates: 55, candidatesTruncated: true });
   });
 
+  it('caps responsible tasks and discovery candidates independently without reading candidate bodies', async () => {
+    const NOW = 100 * 24 * 60 * 60 * 1000;
+    const owned = Array.from({ length: 35 }, (_, n) => `owned-${n}`);
+    const { access, deps } = setup({
+      now: () => NOW,
+      readResponsibleSessionIds: vi.fn(async () => owned),
+      listProjectTasks: vi.fn(async () => [...owned, ...Array.from({ length: 45 }, (_, n) => `candidate-${n}`)]
+        .map((id, n) => ({ id, title: id, workingDir: PROJECT, agentKind: 'cc', summary: null, lastActiveAt: NOW - n }))),
+      listExternalCandidates: sessions(),
+    });
+    const result = await access.get({ callerSessionId: 'bot-main' });
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.workbench.tasks).toHaveLength(30);
+    expect(result.workbench.candidates).toHaveLength(40);
+    expect(result.workbench).toMatchObject({ totalTasks: 35, truncated: true, totalCandidates: 45, candidatesTruncated: true });
+    expect(vi.mocked(deps.readSessionDigest).mock.calls.map(([id]) => id)).toEqual(owned.slice(0, 30));
+  });
+
   it('keeps going without a brief when building it fails', async () => {
     const { access } = setup({ readBrief: vi.fn(async () => { throw new Error('git missing'); }) });
     const result = await access.get({ callerSessionId: 'bot-main' });

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { botProfileDir } from '../botProfileFolder.js';
-import { readTaskResponsibilities, responsibleSessionIds, setTaskResponsibility } from '../botTaskResponsibility.js';
+import { collectTaskResponsibilityScopes, readTaskResponsibilities, responsibleSessionIds, setTaskResponsibility } from '../botTaskResponsibility.js';
 
 // Lock mechanics have their own cross-process suite; exercise this store's guarded write.
 vi.mock('../../device-link/crossProcessLock.js', () => ({
@@ -50,4 +50,15 @@ describe('task responsibility', () => {
     expect(await readTaskResponsibilities(root, 'one')).toEqual({});
     expect(await fs.readdir(botProfileDir(root, 'one'))).toEqual([]);
   });
+});
+
+it('keeps healthy companions visible while failing closed for a damaged release store', async () => {
+  await setTaskResponsibility(root, 'healthy', 'owned', true, () => {});
+  await setTaskResponsibility(root, 'damaged', 'created', false, () => {});
+  const file = path.join(botProfileDir(root, 'damaged'), 'task-responsibility.v1.json');
+  await fs.writeFile(file, '{broken');
+  const scopes = await collectTaskResponsibilityScopes(['damaged', 'healthy'], async (botId) =>
+    responsibleSessionIds(botId === 'damaged' ? ['created'] : [], await readTaskResponsibilities(root, botId)));
+  expect(scopes).toEqual([{ botId: 'healthy', directories: [], sessionIds: ['owned'] }]);
+  expect(await fs.readFile(file, 'utf8')).toBe('{broken');
 });

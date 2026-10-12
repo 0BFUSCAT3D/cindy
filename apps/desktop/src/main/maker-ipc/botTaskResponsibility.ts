@@ -70,3 +70,18 @@ export async function setTaskResponsibility(
     assertCurrent();
   });
 }
+
+/** Fail closed for a damaged companion, without removing other companions' marks. */
+export async function collectTaskResponsibilityScopes(
+  botIds: readonly string[], readIds: (botId: string) => Promise<string[]>,
+): Promise<Array<{ botId: string; directories: string[]; sessionIds: string[] }>> {
+  const scopes = await Promise.all(botIds.map(async (botId) => {
+    try {
+      return { botId, directories: [], sessionIds: await readIds(botId) };
+    } catch {
+      // Do not fall back to creation evidence: a damaged file may contain releases.
+      return { botId, directories: [], sessionIds: [] };
+    }
+  }));
+  return scopes.filter((scope) => scope.sessionIds.length > 0);
+}

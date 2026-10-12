@@ -540,9 +540,13 @@ Todo 是伙伴维护的事务清单：既包含用户交办，也允许从已授
   目录 mtime、`.git/HEAD` 或 `.git/index` 变化即失效。
 - **理解（伙伴侧工具）**：
   - `get_workbench`：每个项目带 brief；`tasks` 只给逐任务负责的 Cindy 任务（最多 30 条），
-    含真实状态、判断与有界 digest；伙伴自建任务不限目录或活动时间。`candidates` 另给最多 40 条
+    含真实状态、判断与有界 digest；伙伴自建任务不限目录或活动时间。`candidates` 独立给最多 40 条
     项目发现元数据（ID、来源、标题、项目），不表示责任、不读取普通候选任务正文。需要内容时明确调用
     `read_workbench_task`。PR / issue / 建议判断、例行任务与已授权项目自动化沿用已有来源。
+    工作台界面的负责列表沿用更新时间倒序（同时间按 ID 倒序）的稳定分页；本机可信 Renderer
+    通过既有 `sessions:list` 的可选 `ids` 精确子集参数先过滤再选页，活跃与归档分别读取。
+    该参数最多 10000 个 ID，不用于 usageHistory / includePinned，远端调用不接受；普通列表不传时行为不变。
+    侧栏逐伙伴隔离责任读取错误：损坏伙伴不显示标记且不回退认领，其余伙伴保留真实标记；不改写坏文件。
     项目很多时前 8 个现算 brief，其余为 null。`totalTasks/truncated` 仅计负责的任务；发现用 `totalCandidates/candidatesTruncated/olderCount` 独立报告。
   - `read_workbench_task`：digest 不够判断时才用；只读一件会话最近的用户 / 助手文字（约 4000 字），
     本机会话只读转录头尾，不写库、不导入。PR / issue / 建议没有对话记录，返回 `TASK_NOT_READABLE`。

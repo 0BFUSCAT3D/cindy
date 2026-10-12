@@ -57,6 +57,8 @@ const getInFlight = new Map<string, Promise<Session>>();
 export type SessionListOptions = {
   /** Local list continuation; does not change the default capped query. */
   before?: { updatedAt: number; id: string };
+  /** Local renderer-only exact subset, filtered before sorting and pagination. */
+  ids?: string[];
   includePinned?: boolean;
   /** forceRefresh / status 重拉：绕开 main 侧 in-flight 合并。 */
   fresh?: boolean;
@@ -150,11 +152,6 @@ export function get(id: string): Promise<Session> {
     },
   );
   return request;
-}
-
-/** Bounded metadata lookup for already verified task IDs. Missing rows are omitted. */
-export async function getMany(ids: string[]): Promise<Session[]> {
-  return wrap(window.electronAPI.localDb.sessions.getMany(ids));
 }
 
 /** Resolve scheduler-held ids against live, archived, deleted, and missing rows. */

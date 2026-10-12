@@ -547,7 +547,7 @@ export function createBotWorkbenchAccess(deps: BotWorkbenchAccessDeps) {
       const cindy = all.filter((candidate) => candidate.row && candidate.responsible).slice(0, WORKBENCH_TOOL_MAX_CINDY_TASKS);
       const external = all
         .filter((candidate) => !candidate.responsible)
-        .slice(0, WORKBENCH_TOOL_MAX_TASKS - cindy.length);
+        .slice(0, WORKBENCH_TOOL_MAX_TASKS);
       const shown = cindy.sort((a, b) => b.lastActiveMs - a.lastActiveMs);
       const tasks = await Promise.all(
         shown.map(async (candidate) => {

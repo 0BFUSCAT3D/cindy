@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SESSION_READ_BATCH_LIMIT } from '../../../shared/sessionRead';
 import type { Session } from '@/lib/ccAgent.types';
 import * as sessionService from '@/lib/sessionService';
 import {
@@ -47,7 +46,9 @@ export function useWorkbenchSessionPages(
             ...(patch._count ? { _count: { ...current._count, ...patch._count } } : {}),
           });
       }
-      return [...next.values()].filter((row) => row.status === status && (!allowed || allowed.has(row.id)));
+      return [...next.values()]
+        .filter((row) => row.status === status && (!allowed || allowed.has(row.id)))
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     },
     [status, allowed],
   );
@@ -74,19 +75,12 @@ export function useWorkbenchSessionPages(
         // have been deleted or moved while disconnected. Never scan unseen history.
         for (; fetched < pages;) {
           let page: Session[];
-          if (ids) {
-            const offset = (refresh ? fetched : pageCount.current) * PAGE_SIZE;
-            const wanted = ids.slice(offset, offset + PAGE_SIZE);
+          if (ids?.length === 0) {
             page = [];
-            for (let start = 0; start < wanted.length; start += SESSION_READ_BATCH_LIMIT) {
-              page.push(...await sessionService.getMany(wanted.slice(start, start + SESSION_READ_BATCH_LIMIT)));
-              if (version !== generation.current || !isDataOwnerGenerationCurrent(owner)) return;
-            }
-            more = offset + PAGE_SIZE < ids.length;
           } else {
-            page = await sessionService.list(PAGE_SIZE, status, { fresh: true, before });
-            more = page.length === PAGE_SIZE;
+            page = await sessionService.list(PAGE_SIZE, status, { fresh: true, before, ...(ids ? { ids } : {}) });
           }
+          more = page.length === PAGE_SIZE;
           if (version !== generation.current || !isDataOwnerGenerationCurrent(owner)) return;
           collected.push(...page);
           fetched++;

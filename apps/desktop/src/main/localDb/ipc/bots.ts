@@ -65,6 +65,7 @@ import {
 import { syncBotProfileFromFolder } from '../../maker-ipc/botProfileFolderSync.js';
 import { requestBotRuntimeEpochRefresh } from '../../maker-ipc/botRuntimeEpochRefreshSignal.js';
 import { createLogger } from '../../logger.js';
+import { collectTaskResponsibilityScopes } from '../../maker-ipc/botTaskResponsibility.js';
 import {
   addBotWorkbenchDirectory,
   broadcastBotWorkbenchChanged,
@@ -2176,14 +2177,13 @@ export function registerBotIpc(): void {
       .select({ id: botProfiles.id })
       .from(botProfiles)
       .where(eq(botProfiles.status, 'active'));
-    const scopes = await Promise.all(bots.map(async (bot) => ({
-      botId: bot.id,
-      // Older renderers receive an empty discovery field rather than claiming projects.
-      directories: [],
-      sessionIds: await readBotResponsibleSessionIds(owner.userDataDir, bot.id),
-    })));
+    // Older renderers receive empty directories rather than claiming projects.
+    const scopes = await collectTaskResponsibilityScopes(
+      bots.map((bot) => bot.id),
+      (botId) => readBotResponsibleSessionIds(owner.userDataDir, botId),
+    );
     owner.assertCurrent();
-    return scopes.filter((scope) => scope.sessionIds.length > 0);
+    return scopes;
   });
   // 工作台详情视图:只读一件任务的最近内容(有界)。范围限于该伙伴已接手的项目,
   // 外部会话只读转录尾部,不写库、不导入。
