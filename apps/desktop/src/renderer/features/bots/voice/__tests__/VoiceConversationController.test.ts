@@ -14,6 +14,8 @@ function fixture() {
   let calls = 0;
   const api = {
     models: vi.fn(async () => []),
+    preference: vi.fn(async () => ({ selection: null, customized: false })),
+    setPreference: vi.fn(async () => ({ selection: null, customized: false })),
     start: vi.fn(async () => ({ callId: `call-${++calls}` })),
     audio: vi.fn(),
     finishUtterance: vi.fn(async () => {}),
@@ -238,4 +240,28 @@ describe('companion voice loop', () => {
     expect(f.api.speak).not.toHaveBeenCalled();
     f.controller.end();
   });
+});
+
+it('keeps the ordinary final text and stops voice on a BYOK synthesis failure without fallback or resend', async () => {
+  const f = fixture();
+  f.api.speak.mockRejectedValueOnce(new Error('upstream error'));
+  await f.controller.start({
+    ...selection,
+    providerId: 'byok',
+    agent: 'codex',
+    protocol: 'openai',
+  });
+  f.utterance();
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce());
+  await Promise.resolve();
+  const messages = [user(), reply()];
+  f.controller.updateMessages(messages);
+  await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe('error'));
+  expect(f.controller.getSnapshot().error).toBe('speech');
+  expect(f.microphone.stop).toHaveBeenCalledOnce();
+  expect(messages[1]).toEqual(reply());
+  expect(f.api.start).toHaveBeenCalledOnce();
+  expect(f.api.speak).toHaveBeenCalledOnce();
+  expect(f.send).toHaveBeenCalledOnce();
+  f.controller.end();
 });

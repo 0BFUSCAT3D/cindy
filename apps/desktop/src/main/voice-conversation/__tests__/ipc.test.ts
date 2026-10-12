@@ -32,6 +32,7 @@ vi.mock('../../maker-host/active-catalog.js', () => ({
   }),
 }));
 vi.mock('../../secrets/providerSecretStore.js', () => ({
+  readCustomProviderKey: () => null,
   getProviderSecretStore: () => ({ get: () => 'test-key' }),
 }));
 vi.mock('../../model-access/effectiveEndpoint.js', () => ({
@@ -52,6 +53,7 @@ vi.mock('../../utility-model/oneShotCandidates.js', () => ({
   isProviderModelRouteDisabled: () => false,
 }));
 
+import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { registerVoiceConversationIpc } from '../index.js';
 const sender = (id = 1) => ({ sender: { id, once: vi.fn() } });
 const call = (name: string, ...args: unknown[]) =>
@@ -62,7 +64,13 @@ beforeEach(() => {
   h.trusted.mockReset();
   h.append.mockReset();
   h.boundary = false;
+  let settings = normalizeVoiceInputSettings({});
   registerVoiceConversationIpc({
+    getSettings: () => settings,
+    updateSettings: (patch) => {
+      settings = normalizeVoiceInputSettings({ ...settings, ...patch });
+      return settings;
+    },
     hasDictation: () => false,
     createProvider: async () => ({
       start: async () => {},
@@ -124,4 +132,29 @@ it('refuses a start during an account transition, malformed voice parameters and
   await expect(
     call('speak', { callId: 'call', requestId: 'x', text: 'x'.repeat(4097) }),
   ).rejects.toThrow();
+});
+
+it('saves and resets one companion without overwriting another, and guards settings IPC', async () => {
+  const choice = {
+    providerId: 'byok',
+    agent: 'codex',
+    modelId: 'tts',
+    voice: 'nova',
+    protocol: 'openai',
+  };
+  await call('set-preference', 'bot-a', choice);
+  await call('set-preference', 'bot-b', { ...choice, voice: 'alloy' });
+  expect(await call('preference', 'bot-a')).toEqual({ selection: choice, customized: true });
+  await call('set-preference', 'bot-a', null);
+  expect(await call('preference', 'bot-a')).toEqual({ selection: null, customized: false });
+  expect(await call('preference', 'bot-b')).toMatchObject({ selection: { voice: 'alloy' } });
+  h.boundary = true;
+  await expect(call('preference', 'bot-b')).rejects.toThrow();
+  await expect(call('set-preference', 'bot-b', null)).rejects.toThrow();
+  h.boundary = false;
+  h.trusted.mockImplementation(() => {
+    throw new Error('untrusted');
+  });
+  await expect(call('preference', 'bot-b')).rejects.toThrow('untrusted');
+  await expect(call('set-preference', 'bot-b', null)).rejects.toThrow('untrusted');
 });

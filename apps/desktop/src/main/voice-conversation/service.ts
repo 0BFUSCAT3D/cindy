@@ -1,4 +1,5 @@
 import { VoiceConversationInput, type AsrProvider, type AudioTrace } from '@cindy/voice-input-core';
+import { voiceModelKey, type VoiceConversationSelection } from '../../shared/voiceConversation.js';
 import type {
   VoiceConversationEvent,
   VoiceConversationModel,
@@ -27,7 +28,7 @@ export class VoiceConversationService {
       assertCompanion(botId: string, sessionId: string): Promise<void>;
       models(): VoiceConversationModel[];
       createProvider(): Promise<AsrProvider>;
-      connection(): SpeechConnection;
+      connection(selection: VoiceConversationSelection): SpeechConnection;
       fetch: typeof fetch;
       emit(sender: number, event: VoiceConversationEvent): void;
     },
@@ -39,8 +40,10 @@ export class VoiceConversationService {
 
   async start(sender: number, selection: VoiceConversationStart): Promise<{ callId: string }> {
     if (this.call || this.deps.hasDictation()) throw new Error('busy');
-    if (!this.models().some((model) => model.id === selection.modelId))
+    if (!this.models().some((model) => voiceModelKey(model) === voiceModelKey(selection)))
       throw new Error('model_unavailable');
+    const binding = this.deps.connection(selection);
+    const bindingIdentity = JSON.stringify(binding);
     const id = selection.callId;
     const owner = this.deps.owner();
     if (!acquireVoiceConversationLease(id)) throw new Error('busy');
@@ -63,12 +66,13 @@ export class VoiceConversationService {
       },
     });
     const speech = new SpeechSynthesisSession({
-      connection: this.deps.connection,
+      connection: () => binding,
       fetch: this.deps.fetch,
       assertCurrent: () => {
         assertCurrent();
-        if (!this.models().some((model) => model.id === selection.modelId))
-          throw new Error('model_unavailable');
+        // Resolving the selected binding rechecks its current catalog, route and key.
+        if (JSON.stringify(this.deps.connection(selection)) !== bindingIdentity)
+          throw new Error('connection_changed');
       },
     });
     this.call = { id, owner, sender, selection, input, speech };

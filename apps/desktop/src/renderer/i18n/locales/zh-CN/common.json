@@ -9317,7 +9317,7 @@
       "voice": "音色",
       "voiceHint": "填写所选模型支持的音色名称，例如 alloy。",
       "modelUnavailable": "之前选择的朗读模型已不可用，请重新选择。",
-      "noModels": "当前账号还没有可用的朗读模型，开放后即可开始语音对话。",
+      "noModels": "暂无可用的语音合成模型。请在设置中连接供应商并启用模型，然后刷新。",
       "catalogError": "语音设置读取或保存失败，请重试。",
       "start": "开始说话",
       "resume": "继续",
@@ -9344,7 +9344,14 @@
         "microphone": "麦克风已停止，请检查权限和设备连接后继续。",
         "send": "这条消息未被接收，文字已保留。",
         "speech": "回复朗读失败，文字回复仍保留在对话中。请检查朗读模型和音色。"
-      }
+      },
+      "voiceIdHint": "填写该供应商账号可用的音色 ID。",
+      "preferenceHint": "模型和音色仅为当前伙伴保存。",
+      "resetPreference": "恢复默认",
+      "preferenceError": "未能读取或保存语音设置，请重试。",
+      "protocol": "语音接口",
+      "protocolOpenai": "OpenAI 兼容",
+      "protocolHint": "选择该连接使用的语音接口，不影响对话接口。"
     }
   },
   "common": {

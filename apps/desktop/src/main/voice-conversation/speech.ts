@@ -1,13 +1,7 @@
-export type SpeechConnection = { baseUrl: string; apiKey: string };
-
-/** Safe, fixed-protocol errors: upstream bodies and credentials never cross IPC. */
-export class SpeechError extends Error {
-  constructor(readonly code: 'unavailable' | 'request' | 'format' | 'cancelled') {
-    super(code);
-  }
-}
-
-/** OpenAI-compatible speech transport. Reads are pulled by playback for bounded buffering. */
+import { miniMaxPcmStream, speechRequest, type SpeechConnection } from './speechProtocols.js';
+import { SpeechError } from './speechError.js';
+export type { SpeechConnection } from './speechProtocols.js';
+/** PCM speech transport with provider adapters. Reads are pulled by playback for bounded buffering. */
 export class SpeechSynthesisSession {
   private epoch = 0;
   private controller: AbortController | null = null;
@@ -33,26 +27,20 @@ export class SpeechSynthesisSession {
     this.cancel();
     const epoch = this.epoch;
     this.deps.assertCurrent();
-    const { baseUrl, apiKey } = this.deps.connection();
-    const url = new URL(baseUrl.replace(/\/+$/, '') + '/audio/speech');
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !apiKey)
-      throw new SpeechError('unavailable');
+    const connection = this.deps.connection();
+    const { url, body } = speechRequest(connection, input);
     const controller = new AbortController();
     this.controller = controller;
     this.requestId = input.requestId;
     const timer = setTimeout(() => controller.abort(), 30_000);
+    let response: Response | undefined;
     try {
-      const response = await this.deps.fetch(url, {
+      response = await this.deps.fetch(url, {
         method: 'POST',
         redirect: 'error',
         signal: controller.signal,
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: input.modelId,
-          voice: input.voice,
-          input: input.text,
-          response_format: 'pcm',
-        }),
+        headers: { ...connection.headers, 'Content-Type': 'application/json' },
+        body,
       });
       this.deps.assertCurrent();
       if (epoch !== this.epoch || controller.signal.aborted) {
@@ -66,15 +54,23 @@ export class SpeechSynthesisSession {
       const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
       if (
         !contentType ||
-        !['audio/pcm', 'audio/x-pcm', 'application/octet-stream'].includes(contentType)
+        !(
+          connection.protocol === 'minimax'
+            ? ['text/event-stream', 'application/json']
+            : ['audio/pcm', 'audio/x-pcm', 'application/octet-stream']
+        ).includes(contentType)
       ) {
         await response.body.cancel();
         throw new SpeechError('format');
       }
-      this.reader = response.body.getReader();
-      // This sample rate is the OpenAI PCM protocol contract, not guessed from model mode.
+      this.reader = (
+        connection.protocol === 'minimax' ? miniMaxPcmStream(response.body) : response.body
+      ).getReader();
+      // All three adapters request 24 kHz mono PCM; this is not inferred from model mode.
       return { sampleRate: 24_000 };
     } catch (error) {
+      if (response?.body && !response.body.locked)
+        void response.body.cancel().catch(() => undefined);
       if (epoch === this.epoch) this.cancel();
       throw error instanceof SpeechError ? error : new SpeechError('request');
     } finally {
@@ -83,7 +79,12 @@ export class SpeechSynthesisSession {
   }
 
   async read(requestId: string): Promise<{ pcm: ArrayBuffer; done: boolean }> {
-    this.deps.assertCurrent();
+    try {
+      this.deps.assertCurrent();
+    } catch (error) {
+      this.cancel();
+      throw error;
+    }
     if (requestId !== this.requestId || !this.reader || this.reading)
       throw new SpeechError('cancelled');
     const reader = this.reader;

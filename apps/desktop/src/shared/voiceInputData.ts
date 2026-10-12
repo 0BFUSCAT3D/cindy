@@ -1,4 +1,4 @@
-import { normalizeVoiceConversationSelection, type VoiceConversationSelection } from './voiceConversation';
+import { normalizeVoiceConversationPreferences, normalizeVoiceConversationSelection, type VoiceConversationSelection } from './voiceConversation';
 import type {
   DictationDictionaryAdviceInput,
   DictationDictionaryLearningAction,
@@ -81,6 +81,8 @@ export interface VoiceInputDictionaryCandidate {
 export interface VoiceInputSettings {
   /** Explicit speech selection; absent means follow the available catalog. */
   conversationSelection?: VoiceConversationSelection | null;
+  /** Per-companion overrides; absence inherits the default without copying it. */
+  conversationSelections?: Record<string, VoiceConversationSelection | null>;
   language: VoiceInputLanguage;
   microphoneDeviceId: string | null;
   muteSystemAudio: boolean;
@@ -521,6 +523,7 @@ export function normalizeVoiceInputSettings(
   const defaults = getDefaultVoiceInputSettings(platform, region);
   if (!raw || typeof raw !== 'object') return defaults;
   const candidate = raw as Partial<VoiceInputSettings>;
+  const conversationSelections = normalizeVoiceConversationPreferences(candidate.conversationSelections);
   const legacyPlayStartSound = (candidate as { playStartSound?: unknown }).playStartSound;
   const shortcut =
     'shortcut' in candidate
@@ -529,6 +532,7 @@ export function normalizeVoiceInputSettings(
   return {
     ...(normalizeVoiceConversationSelection(candidate.conversationSelection)
       ? { conversationSelection: normalizeVoiceConversationSelection(candidate.conversationSelection) } : {}),
+    ...(Object.keys(conversationSelections).length ? { conversationSelections } : {}),
     language: isVoiceInputLanguage(candidate.language) ? candidate.language : defaults.language,
     microphoneDeviceId:
       typeof candidate.microphoneDeviceId === 'string' && candidate.microphoneDeviceId.trim().length > 0

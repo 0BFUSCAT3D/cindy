@@ -1,8 +1,11 @@
 import { ipcMain, webContents, type IpcMainInvokeEvent } from 'electron';
 import type { AsrProvider } from '@cindy/voice-input-core';
-import { normalizeVoiceConversationSelection } from '../../shared/voiceConversation.js';
+import {
+  normalizeVoiceConversationSelection,
+  type VoiceConversationPreference,
+} from '../../shared/voiceConversation.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
-import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
+import { getProviderSecretStore, readCustomProviderKey } from '../secrets/providerSecretStore.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
 import { getAppCapabilities } from '../appCapabilities.js';
@@ -12,7 +15,9 @@ import { isProviderModelRouteDisabled } from '../utility-model/oneShotCandidates
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { requireObject, requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { VoiceConversationService } from './service.js';
-import { speechModels } from './models.js';
+import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from './models.js';
+import { companionVoicePreference, updateCompanionVoicePreference } from './preferences.js';
+import type { VoiceInputSettings } from '../../shared/voiceInputData.js';
 
 function boundedString(value: unknown, name: string, limit: number): string {
   const text = requireString(value, name);
@@ -24,7 +29,22 @@ function boundedString(value: unknown, name: string, limit: number): string {
 export function registerVoiceConversationIpc(deps: {
   createProvider(): Promise<AsrProvider>;
   hasDictation(): boolean;
+  getSettings(): VoiceInputSettings;
+  updateSettings(patch: Partial<VoiceInputSettings>): VoiceInputSettings;
 }): void {
+  const catalogDeps = (): SpeechCatalogDeps => {
+    if (isAppSessionBoundaryPending()) throw new Error('changing_account');
+    return {
+      catalog: getActiveCatalog(),
+      gatewayAllowed: getAppCapabilities().canUseCindyGateway,
+      disabled: isProviderModelRouteDisabled,
+      readKey: readCustomProviderKey,
+      gatewayConnection: () => ({
+        baseUrl: effectiveXdGatewayBaseUrl(),
+        apiKey: getProviderSecretStore().get('xd') ?? '',
+      }),
+    };
+  };
   const service = new VoiceConversationService({
     ...deps,
     owner: () => (isAppSessionBoundaryPending() ? 'changing-account' : activeOwnerScopeKey()),
@@ -33,17 +53,8 @@ export function registerVoiceConversationIpc(deps: {
       if (bot.hiddenAt !== null || bot.canonicalSessionId !== sessionId)
         throw new Error('invalid_companion');
     },
-    models: () =>
-      speechModels(getActiveCatalog(), getAppCapabilities().canUseCindyGateway, (id) =>
-        isProviderModelRouteDisabled('xd', id),
-      ),
-    connection: () => {
-      if (!getAppCapabilities().canUseCindyGateway) throw new Error('unavailable');
-      return {
-        baseUrl: effectiveXdGatewayBaseUrl(),
-        apiKey: getProviderSecretStore().get('xd') ?? '',
-      };
-    },
+    models: () => speechModels(catalogDeps()),
+    connection: (selection) => resolveSpeechConnection(catalogDeps(), selection),
     fetch: outboundFetch,
     emit: (sender, event) => {
       const target = webContents.fromId(sender);
@@ -65,6 +76,29 @@ export function registerVoiceConversationIpc(deps: {
     });
   };
   handle('models', () => service.models());
+  const preferenceBot = async (
+    raw: unknown,
+    action: (botId: string) => VoiceConversationPreference,
+  ): Promise<VoiceConversationPreference> => {
+    if (isAppSessionBoundaryPending()) throw new Error('changing_account');
+    const owner = activeOwnerScopeKey();
+    const botId = boundedString(raw, 'botId', 256);
+    const bot = await getBotRemoteResourceSource(botId);
+    if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== owner || bot.hiddenAt !== null)
+      throw new Error('invalid_companion');
+    return action(botId);
+  };
+  handle('preference', (_event, raw) =>
+    preferenceBot(raw, (botId) => companionVoicePreference(deps.getSettings(), botId)),
+  );
+  handle('set-preference', (_event, raw, value) =>
+    preferenceBot(raw, (botId) => {
+      const selection = value === null ? null : normalizeVoiceConversationSelection(value);
+      if (selection === undefined) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
+      const map = updateCompanionVoicePreference(deps.getSettings(), botId, selection);
+      return companionVoicePreference(deps.updateSettings({ conversationSelections: map }), botId);
+    }),
+  );
   handle('start', async (event, raw) => {
     if (isAppSessionBoundaryPending()) throw new Error('changing_account');
     const value = requireObject(raw);

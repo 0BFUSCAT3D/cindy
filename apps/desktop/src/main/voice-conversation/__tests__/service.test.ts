@@ -29,7 +29,11 @@ function fixture() {
     assertCompanion: vi.fn(async () => {}),
     models: vi.fn(() => [{ id: 'tts', name: 'Speech' }]),
     createProvider: vi.fn(async () => provider),
-    connection: () => ({ baseUrl: 'https://gateway.test/v1', apiKey: 'test-key' }),
+    connection: vi.fn(() => ({
+      baseUrl: 'https://gateway.test/v1',
+      protocol: 'openai' as const,
+      headers: { authorization: 'Bearer test-key' },
+    })),
     fetch: vi.fn(
       async () =>
         new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/pcm' } }),
@@ -78,7 +82,9 @@ describe('local companion call ownership', () => {
   it('rechecks catalog eligibility before speech dispatch', async () => {
     const { service, deps } = fixture();
     const { callId } = await service.start(1, selection);
-    deps.models.mockReturnValue([]);
+    deps.connection.mockImplementation(() => {
+      throw new Error('model_unavailable');
+    });
     await expect(service.speak(1, callId, 'request', 'hello')).rejects.toThrow('model_unavailable');
     expect(deps.fetch).not.toHaveBeenCalled();
   });
@@ -100,4 +106,36 @@ describe('local companion call ownership', () => {
     expect(provider.start).not.toHaveBeenCalled();
     expect(provider.dispose).toHaveBeenCalledOnce();
   });
+});
+
+it('pins the selected connection and stops before sending to changed credentials or endpoints', async () => {
+  const { service, deps } = fixture();
+  await service.start(1, selection);
+  deps.connection.mockReturnValue({
+    baseUrl: 'https://changed.test/v1',
+    protocol: 'openai',
+    headers: { authorization: 'Bearer different-key' },
+  });
+  await expect(service.speak(1, selection.callId, 'req', 'private reply')).rejects.toThrow(
+    'connection_changed',
+  );
+  expect(deps.fetch).not.toHaveBeenCalled();
+});
+
+it('cancels an existing body when credentials change before a PCM read', async () => {
+  const { service, deps } = fixture();
+  const cancelled = vi.fn();
+  deps.fetch.mockImplementation(
+    async () =>
+      new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), {
+        headers: { 'Content-Type': 'audio/pcm' },
+      }),
+  );
+  await service.start(1, selection);
+  await service.speak(1, selection.callId, 'req', 'hello');
+  deps.connection.mockImplementation(() => {
+    throw new Error('model_unavailable');
+  });
+  await expect(service.readSpeech(1, selection.callId, 'req')).rejects.toThrow('model_unavailable');
+  expect(cancelled).toHaveBeenCalledOnce();
 });

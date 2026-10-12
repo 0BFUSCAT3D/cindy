@@ -9355,7 +9355,7 @@
       "voice": "Voice",
       "voiceHint": "Use a voice name supported by the selected model, such as alloy.",
       "modelUnavailable": "The saved speech model is unavailable. Choose another model.",
-      "noModels": "No speech model is available for this account yet. You can start when one becomes available.",
+      "noModels": "No usable speech model. Connect a speech provider in Settings, enable a model, then refresh here.",
       "catalogError": "Could not load or save speech settings. Please try again.",
       "start": "Start talking",
       "resume": "Resume",
@@ -9382,7 +9382,14 @@
         "microphone": "Microphone stopped. Check its permission and connection, then resume.",
         "send": "This message was not accepted. Your text is kept below.",
         "speech": "Could not read the reply aloud. The text reply remains in the conversation. Check the speech model and voice."
-      }
+      },
+      "voiceIdHint": "Enter a voice ID available to this provider account.",
+      "preferenceHint": "The model and voice are saved for this companion only.",
+      "resetPreference": "Use defaults",
+      "preferenceError": "Could not load or save voice settings. Please try again.",
+      "protocol": "Speech API",
+      "protocolOpenai": "OpenAI compatible",
+      "protocolHint": "Choose the speech API used by this connection. The chat API is unchanged."
     }
   },
   "common": {

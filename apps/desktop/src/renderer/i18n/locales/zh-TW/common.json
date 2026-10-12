@@ -9317,7 +9317,7 @@
       "voice": "音色",
       "voiceHint": "填入所選模型支援的音色名稱，例如 alloy。",
       "modelUnavailable": "先前選擇的朗讀模型已無法使用，請重新選擇。",
-      "noModels": "目前帳號還沒有可用的朗讀模型，開放後即可開始語音對話。",
+      "noModels": "暫無可用的語音合成模型。請在設定中連接供應商並啟用模型，然後重新整理。",
       "catalogError": "語音設定讀取或儲存失敗，請重試。",
       "start": "開始說話",
       "resume": "繼續",
@@ -9344,7 +9344,14 @@
         "microphone": "麥克風已停止，請檢查權限和裝置連線後繼續。",
         "send": "這則訊息未被接收，文字已保留。",
         "speech": "回覆朗讀失敗，文字回覆仍保留在對話中。請檢查朗讀模型和音色。"
-      }
+      },
+      "voiceIdHint": "填寫該供應商帳號可用的音色 ID。",
+      "preferenceHint": "模型和音色僅為目前夥伴儲存。",
+      "resetPreference": "恢復預設",
+      "preferenceError": "無法讀取或儲存語音設定，請重試。",
+      "protocol": "語音介面",
+      "protocolOpenai": "OpenAI 相容",
+      "protocolHint": "選擇此連接使用的語音介面，不影響對話介面。"
     }
   },
   "common": {

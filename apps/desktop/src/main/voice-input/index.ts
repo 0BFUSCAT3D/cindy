@@ -1881,6 +1881,8 @@ export function registerVoiceInputIpc(): void {
   registerVoiceInputDataStoreIpc();
   let pendingDictationStarts = 0;
   registerVoiceConversationIpc({
+    getSettings: () => voiceInputDataStore.getSettings(),
+    updateSettings: patch => voiceInputDataStore.updateSettings(patch),
     hasDictation: () => activeByWebContentsId.size > 0 || pendingDictationStarts > 0 || systemAudioMuteGuard.hasPendingOrActiveMute,
     createProvider: async () => {
       const owner = activeOwnerScopeKey();

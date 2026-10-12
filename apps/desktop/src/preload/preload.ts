@@ -1595,6 +1595,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   voiceConversation: {
     models: () => ipcRenderer.invoke('voice-conversation:models'),
+    preference: (botId) => ipcRenderer.invoke('voice-conversation:preference', botId),
+    setPreference: (botId, selection) => ipcRenderer.invoke('voice-conversation:set-preference', botId, selection),
     start: (input) => ipcRenderer.invoke('voice-conversation:start', input),
     audio: (input) => ipcRenderer.send('voice-conversation:audio', input),
     finishUtterance: (callId) => ipcRenderer.invoke('voice-conversation:finish-utterance', callId),
