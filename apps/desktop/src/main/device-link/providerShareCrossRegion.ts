@@ -101,14 +101,15 @@ function markerPath(): string | null {
   return userDataDir ? path.join(userDataDir, 'remote-agent', MARKER_FILE) : null;
 }
 
-function readMarkers(): Record<string, Region[]> {
+function readMarkers(field: 'accounts' | 'knownAccounts' = 'accounts'): Record<string, Region[]> {
   const file = markerPath();
   if (!file) return {};
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; accounts?: unknown };
-    if (parsed.version !== 1 || !parsed.accounts || typeof parsed.accounts !== 'object') return {};
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; accounts?: unknown; knownAccounts?: unknown };
+    const records = parsed[field];
+    if (parsed.version !== 1 || !records || typeof records !== 'object') return {};
     const out: Record<string, Region[]> = {};
-    for (const [key, value] of Object.entries(parsed.accounts as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(records as Record<string, unknown>)) {
       if (!/^[a-f0-9]{64}$/.test(key) || !Array.isArray(value)) continue;
       out[key] = value.filter((item): item is Region => item === 'cn' || item === 'global');
     }
@@ -122,6 +123,12 @@ async function writeMarker(account: string, region: Region, present: boolean): P
   const file = markerPath();
   if (!file) return;
   const markers = readMarkers();
+  const knownAccounts = readMarkers('knownAccounts');
+  // 保留 Main 已确认的跨区往来，不含凭证。旧版活动标记同时是合法的历史证据。
+  for (const [key, active] of Object.entries(markers)) {
+    knownAccounts[key] = [...new Set([...(knownAccounts[key] ?? []), ...active])];
+  }
+  if (present) knownAccounts[account] = [...new Set([...(knownAccounts[account] ?? []), region])];
   const regions = new Set(markers[account] ?? []);
   if (present) regions.add(region);
   else regions.delete(region);
@@ -130,7 +137,7 @@ async function writeMarker(account: string, region: Region, present: boolean): P
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await fsp.mkdir(path.dirname(file), { recursive: true });
   try {
-    await fsp.writeFile(tmp, JSON.stringify({ version: 1, accounts: markers }), { encoding: 'utf8', mode: 0o600 });
+    await fsp.writeFile(tmp, JSON.stringify({ version: 1, accounts: markers, knownAccounts }), { encoding: 'utf8', mode: 0o600 });
     await fsp.rename(tmp, file);
   } finally {
     await fsp.rm(tmp, { force: true }).catch(() => undefined);
@@ -367,11 +374,12 @@ export function getCrossRegionReceived(): ProviderShareReceived[] {
   return runtime ? [...runtime.regions.values()].flatMap((state) => state.shares) : [];
 }
 
-/** 空名单会移除发现标记；残留收藏仍可请求重新核对。复用现有请求合并与失败退避。 */
+/** 空名单会移除活动标记；收藏只提示核对 Main 曾确认有往来的区域，不能授权新的跨区请求。 */
 export function ensureCrossRegionReceivedForFavorites(regions: readonly Region[]): void {
   const rt = runtime;
   const region = peerRegion();
   if (!rt || !current(rt) || !regions.includes(region)) return;
+  if (!readMarkers()[rt.account]?.includes(region) && !readMarkers('knownAccounts')[rt.account]?.includes(region)) return;
   const state = rt.regions.get(region);
   if (!state?.loaded && !state?.refreshing && !state?.timer) void refreshRegion(rt, region);
 }

@@ -18,6 +18,8 @@ const state = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
   clients: [] as Array<{ opts: Record<string, unknown>; started: boolean; stopped: boolean }>,
   localReceivedError: false,
+  userId: 'user-1',
+  identityCards: [] as string[],
 }));
 
 vi.mock('electron', () => ({ app: { getVersion: () => '0.0.0-test' } }));
@@ -25,12 +27,12 @@ vi.mock('ws', () => ({ default: class {} }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() }) }));
 vi.mock('../../appSessionState.js', () => ({
   isAppSessionBoundaryPending: () => false,
-  getActiveDataOwnerPushStamp: () => ({ dataOwnerId: 'user-1', ownerGeneration: 1 }),
+  getActiveDataOwnerPushStamp: () => ({ dataOwnerId: state.userId, ownerGeneration: 1 }),
 }));
 vi.mock('../../authManager.js', () => ({
   getActiveAuthRealm: () => 'cn',
   getAuthState: () => ({ isAuthenticated: true }),
-  getCurrentUserId: () => 'user-1',
+  getCurrentUserId: () => state.userId,
   getDeviceId: () => 'device-1',
 }));
 vi.mock('../../clientEndpointsService.js', () => ({
@@ -49,14 +51,17 @@ vi.mock('../../serverApiClient.js', () => ({
   },
 }));
 vi.mock('../providerShareApi.js', () => ({
-  providerShareOwnerKey: () => 'user-1',
+  providerShareOwnerKey: () => state.userId,
   providerShareApi: {
     listReceived: async () => {
       if (state.localReceivedError) throw new Error('local unavailable');
       return [{ ...share, shareId: 'share-local', memberId: 'member-local', owner: { ...share.owner, region: 'cn' } }];
     },
   },
-  fetchIdentityCard: async (purpose: string, nonce: string) => `card:${purpose}:${nonce}`,
+  fetchIdentityCard: async (purpose: string, nonce: string) => {
+    state.identityCards.push(purpose);
+    return `card:${purpose}:${nonce}`;
+  },
   rethrowProviderShareError: (error: unknown) => { throw error; },
   sha256Hex: (value: string) => `h(${value})`.padEnd(64, '0').slice(0, 64).replace(/[^a-f0-9]/g, 'a'),
 }));
@@ -101,6 +106,8 @@ beforeEach(() => {
   state.responses = new Map();
   state.clients = [];
   state.localReceivedError = false;
+  state.userId = 'user-1';
+  state.identityCards = [];
 });
 afterEach(() => {
   stopProviderShareGuest();
@@ -110,9 +117,33 @@ afterEach(() => {
 });
 
 describe('cross-region provider share', () => {
+  it('does not send identity cards for forged favorite hints or another account history', async () => {
+    const probe = async () => {
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+      await refreshReceivedShares('test');
+      for (let i = 0; i < 3; i += 1) {
+        getReceivedSharesSnapshot({ ownerStamp: { dataOwnerId: state.userId, ownerGeneration: 1 }, regions: ['global'] });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(state.identityCards).toEqual([]);
+      expect(state.calls).toEqual([]);
+      expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
+      stopProviderShareGuest();
+    };
+    await probe();
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    state.userId = 'user-2';
+    state.calls = [];
+    state.identityCards = [];
+    await probe();
+  });
+
   it('recovers a revoked region from favorite hints after its marker is removed and the runtime restarts', async () => {
     state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
     await crossRegionSendRequest('global', TOKEN);
+    // 旧版没有历史字段：删除活动标记前必须保留它的 Main 往来证据。
+    fs.writeFileSync(path.join(dir, 'remote-agent', 'provider-share-regions.json'), JSON.stringify({ version: 1, accounts: __testing.readMarkers() }));
     state.responses.set('/session', { credential: null, expiresAt: null, shares: [] });
     startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
     await refreshReceivedShares('test');
@@ -137,6 +168,9 @@ describe('cross-region provider share', () => {
   });
 
   it('keeps network backoff when favorite recovery is requested repeatedly', async () => {
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    state.calls = [];
     startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
     await refreshReceivedShares('test');
     const recovery = { ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 1 }, regions: ['global'] as const };

@@ -141,6 +141,16 @@ export function ensureProviderShareReceivedStarted(): void {
     });
 }
 
+/** AuthContext 的同账号修复不会重挂宿主，generation 更新时仍须重新核对收藏。 */
+export function refreshProviderShareFavoriteMembership(): void {
+  if (!receivedStarted) {
+    ensureProviderShareReceivedStarted();
+    return;
+  }
+  const api = providerShareApi();
+  if (api) refreshFavoriteMembership(api);
+}
+
 /** 主动再取一次(退出分享后立即刷新列表；推送仍会随后到达)。 */
 export function refreshProviderShareReceived(): void {
   const api = providerShareApi();
