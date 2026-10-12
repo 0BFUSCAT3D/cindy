@@ -116,6 +116,12 @@ describe('provider-group:remote', () => {
     expect(d.router.view).toHaveBeenLastCalledWith('anthropic', { includeGuestSupport: true });
   });
 
+  it('does not let a remote request claim the local-task preference', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', { ...PICK, localTask: true });
+    expect(d.router.pick.mock.calls[0][0].localTask).toBeUndefined();
+  });
+
   it('picks a computer, honouring what the caller already tried, and holds it briefly', async () => {
     const d = deps();
     const result = await handleProviderGroupRemote(d, 'laptop', PICK);

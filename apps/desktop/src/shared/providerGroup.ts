@@ -45,7 +45,7 @@ export interface ProviderGroupMember {
   /** 并发上限：只统计经本组分到这台的任务。 */
   limit: number;
   weight: number;
-  /** 暂停分配(本机即「关掉本机」)：不再给它分新任务，正在运行的不受影响。 */
+  /** 暂停组内新任务分配；本机成员只暂停接收外部新任务，不影响本机自用或已有任务。 */
   paused: boolean;
 }
 

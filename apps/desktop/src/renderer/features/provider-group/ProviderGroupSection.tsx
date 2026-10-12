@@ -303,7 +303,9 @@ function MemberRow({
                 style={{ background: ready ? 'var(--remote-status-ready)' : 'var(--remote-status-disconnected)' }}
               />
               {/* 运行数是状态，上限是设置：各说一次，不再出现「0 / 10」与下拉里重复同一个上限。 */}
-              <span>{memberStatusText(t, status, i18n.language)}</span>
+              <span>{member.kind === 'local' && status?.state === 'paused'
+                ? t('providerGroup.member.status.pausedLocal')
+                : memberStatusText(t, status, i18n.language)}</span>
               {appendRunning && (
                 <>
                   <span aria-hidden="true">·</span>
@@ -338,7 +340,9 @@ function MemberRow({
           <Switch
             checked={!member.paused}
             disabled={disabled}
-            aria-label={t('providerGroup.member.assignAria', { name: label })}
+            aria-label={t(member.kind === 'local'
+              ? 'providerGroup.member.assignLocalAria'
+              : 'providerGroup.member.assignAria', { name: label })}
             onCheckedChange={(on) => onChange({ paused: !on })}
           />
           {member.kind === 'local' ? (
