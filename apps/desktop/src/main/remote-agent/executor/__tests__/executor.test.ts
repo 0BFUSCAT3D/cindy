@@ -704,6 +704,34 @@ describe('shared provider credentials', () => {
     await executor.close();
   });
 
+  it.each(['normal', 'plan'] as const)('revokes temporary credential approvals when leaving %s mode', async (mode) => {
+    const confirm = vi.fn<() => Promise<ExecutorConfirmation>>()
+      .mockResolvedValueOnce('session').mockResolvedValue(false);
+    const { executor, gate } = sharedExecutor(mode, confirm);
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=1');
+    const read: ExecutorAction = { kind: 'read', path: env };
+    const write: ExecutorAction = { kind: 'write', path: env };
+    const command: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const unrelated: ExecutorAction = { kind: 'write', path: path.join(outside, 'plain.txt') };
+    try {
+      expect(text(await executor.callTool('Read', { file_path: env }))).toBe('1\tTOKEN=1');
+      expect(executor.check(write).ok).toBe(true);
+      // Session consent is already active when these approvals are recorded.
+      gate.recordApproval(command);
+      gate.recordApproval(unrelated);
+      executor.setGateMode(mode === 'normal' ? 'plan' : 'normal');
+      expect(executor.check(unrelated).ok).toBe(true);
+      for (const action of [read, write, command]) expect(executor.check(action).ok).toBe(false);
+      executor.setGateMode('full');
+      for (const action of [read, write, command]) expect(executor.check(action).ok).toBe(false);
+      expect((await executor.callTool('Read', { file_path: env })).isError).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(2);
+    } finally {
+      await executor.close();
+    }
+  });
+
   it('does not grant credentials from a cancelled, closed or outdated confirmation', async () => {
     for (const end of ['cancel', 'close', 'permission-change']) {
       let answer!: (result: ExecutorConfirmation) => void;

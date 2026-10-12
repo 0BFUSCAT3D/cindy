@@ -53,6 +53,7 @@ interface Approval {
   kind: 'path' | 'exec' | 'fetch';
   key: string;
   expiresAt: number;
+  credential: boolean;
 }
 
 export function executorGateModeFor(
@@ -111,6 +112,8 @@ export class ExecutorGate {
 
   setMode(mode: ExecutorGateMode): void {
     this.credentialsAllowedForSession = false;
+    // 同一路径的临时批准也必须撤销，否则它会在 TTL 内绕过恢复后的凭证确认。
+    this.approvals = this.approvals.filter((approval) => !approval.credential);
     this.mode = mode;
   }
 
@@ -126,7 +129,11 @@ export class ExecutorGate {
   /** 本机用户在确认卡上允许了一个操作后调用。 */
   recordApproval(action: ExecutorAction): void {
     this.prune();
-    this.approvals.push({ ...approvalOf(action), expiresAt: this.now() + EXECUTOR_APPROVAL_TTL_MS });
+    this.approvals.push({
+      ...approvalOf(action),
+      expiresAt: this.now() + EXECUTOR_APPROVAL_TTL_MS,
+      credential: this.isCredentialAction(action),
+    });
     if (this.approvals.length > MAX_APPROVALS) this.approvals.splice(0, this.approvals.length - MAX_APPROVALS);
   }
 
@@ -135,7 +142,11 @@ export class ExecutorGate {
    * 真实目标再判一次)、目录级读取的根本身是凭证目录，或命令读取 / 打出凭证。
    */
   needsCredentialConsent(action: ExecutorAction): boolean {
-    if (!this.options.confirmCredentials || this.credentialsAllowedForSession) return false;
+    return !this.credentialsAllowedForSession && this.isCredentialAction(action);
+  }
+
+  private isCredentialAction(action: ExecutorAction): boolean {
+    if (!this.options.confirmCredentials) return false;
     if (action.kind === 'fetch') return false;
     if (action.kind === 'exec') {
       return isShareCredentialCommand(action.command, this.workspace.allRoots(), { cwd: action.cwd, platform: process.platform });
