@@ -651,8 +651,10 @@ describe('hasRealBinding / agentKind 映射', () => {
 
 describe('resolveTemplateAgentFields', () => {
   const defaults = {
-    getDefaultModel: (agentKind: ScheduleFormState['agentKind']) =>
-      agentKind === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+    getDefaultRoute: (agentKind: ScheduleFormState['agentKind']) =>
+      agentKind === 'codex'
+        ? { model: 'gpt-5.5', providerId: null }
+        : { model: 'claude-sonnet-4-6', providerId: null },
     getAgentPrefs: (agentKind: ScheduleFormState['agentKind']) =>
       agentKind === 'codex'
         ? { providerId: 'openai', effort: 'high' as const, fastMode: true }
@@ -679,6 +681,20 @@ describe('resolveTemplateAgentFields', () => {
       effort: 'medium',
       fastMode: false,
     });
+  });
+
+  it('跨 agent 用默认路由时来源与模型成对,任务记忆的来源优先', () => {
+    const withRoute = {
+      getDefaultRoute: () => ({ model: 'claude-opus-5-5', providerId: 'anthropic' }),
+      getAgentPrefs: () => ({ providerId: '', effort: '' as const, fastMode: false }),
+    };
+    const form = makeForm({ agentKind: 'codex', model: 'gpt-5.5', providerId: 'openai' });
+    expect(resolveTemplateAgentFields(form, makeTemplate({ agentKind: 'claude-code' }), withRoute))
+      .toMatchObject({ model: 'claude-opus-5-5', providerId: 'anthropic' });
+    expect(resolveTemplateAgentFields(form, makeTemplate({ agentKind: 'claude-code' }), {
+      ...withRoute,
+      getAgentPrefs: () => ({ providerId: 'xd', effort: '' as const, fastMode: false }),
+    })).toMatchObject({ model: 'claude-opus-5-5', providerId: 'xd' });
   });
 
   it('模板显式给 model/provider/effort/fast 时优先使用模板值', () => {

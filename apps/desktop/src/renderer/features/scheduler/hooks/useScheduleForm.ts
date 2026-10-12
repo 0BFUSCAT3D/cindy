@@ -215,15 +215,16 @@ export function rememberScheduleFormPrefs(form: ScheduleFormState): void {
 function makeDefaultForm(): ScheduleFormState {
   const prefs = loadScheduleFormPrefs();
   const agentPrefs = prefs.lastByAgent[prefs.agentKind] ?? EMPTY_AGENT_PREFS;
+  // 三级回退:任务上次选择 → 对话上次选择 → 新建任务默认;清单未到位时先留空,
+  // 由 ScheduleFormDialog 在清单到位后回填显式值(所见即所存)。模型与来源成对应用。
+  const defaultRoute = getScheduleDefaultRoute(prefs.agentKind);
   return {
     ...DEFAULT_FORM,
     agentKind: prefs.agentKind,
-    // 三级回退:任务上次选择 → 对话上次选择 → 新建任务默认;清单未到位时先留空,
-    // 由 ScheduleFormDialog 在清单到位后回填显式值(所见即所存)。
-    model: getScheduleDefaultModel(prefs.agentKind),
-    // providerId 空 = 跟随原生默认来源（no-break）。沿用任务维度记忆;UI 显示时
-    // 用 form.providerId || nativeDefaultSourceId(agentKind) 算高亮来源。
-    providerId: agentPrefs.providerId,
+    model: defaultRoute.model,
+    // providerId 空 = 跟随原生默认来源（no-break）。任务维度记忆优先,否则取默认路由
+    // 成对的来源;UI 显示时用 form.providerId || nativeDefaultSourceId(agentKind) 算高亮来源。
+    providerId: agentPrefs.providerId || defaultRoute.providerId || '',
     effort: agentPrefs.effort,
     fastMode: agentPrefs.fastMode,
     workspaceKind: prefs.workspaceKind,
@@ -356,7 +357,7 @@ export function useScheduleForm(initial: Schedule | null = null): UseScheduleFor
   const applyTemplateAgentFields = useCallback((template: ScheduleTemplate) => {
     setForm((f) => {
       const selection = resolveTemplateAgentFields(f, template, {
-        getDefaultModel: getScheduleDefaultModel,
+        getDefaultRoute: getScheduleDefaultRoute,
         getAgentPrefs: getScheduleAgentPrefs,
       });
       // A template that supplies a model is an explicit selection, even while following a bound task.

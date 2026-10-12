@@ -167,6 +167,17 @@ describe('getScheduleDefaultModel 三级回退', () => {
     });
   });
 
+  it('表单初始化一次性应用二级回退的模型与来源', async () => {
+    const draft = await import('@/state/newMakerDraft');
+    draft.patchVendorPrefs('cc', { model: 'claude-opus-5-5', providerId: 'anthropic' });
+    const { makeFormFromSchedule } = await loadModule();
+    expect(makeFormFromSchedule(null)).toMatchObject({
+      agentKind: 'claude-code',
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+    });
+  });
+
   it('三级:供应商清单未到位时留空,等清单到位再回填', async () => {
     const { getScheduleDefaultModel } = await loadModule();
     expect(getScheduleDefaultModel('claude-code')).toBe('');

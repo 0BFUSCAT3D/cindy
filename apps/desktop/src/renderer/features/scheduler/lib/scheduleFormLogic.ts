@@ -386,7 +386,10 @@ export function sessionAgentKindToScheduleAgentKind(
 }
 
 interface TemplateAgentDefaults {
-  getDefaultModel: (agentKind: ScheduleFormState['agentKind']) => string;
+  /** 目标 agent 的默认模型及与之成对的来源(null = 跟随原生默认)。 */
+  getDefaultRoute: (
+    agentKind: ScheduleFormState['agentKind'],
+  ) => { model: string; providerId: string | null };
   getAgentPrefs: (
     agentKind: ScheduleFormState['agentKind'],
   ) => Pick<ScheduleFormState, 'providerId' | 'effort' | 'fastMode'>;
@@ -403,11 +406,17 @@ export function resolveTemplateAgentFields(
   const templateModel = typeof template.model === 'string' ? template.model.trim() : '';
   const templateProviderId = typeof template.providerId === 'string' ? template.providerId.trim() : undefined;
   const templateEffort = template.effort && isEffortValue(template.effort) ? template.effort : undefined;
+  // 模板没给模型、换了 agent 时用默认路由:模型与来源成对,任务记忆的来源优先。
+  const defaultRoute = agentChanged && !templateModel ? defaults.getDefaultRoute(agentKind) : null;
 
   return {
     agentKind,
-    model: templateModel || (agentChanged ? defaults.getDefaultModel(agentKind) : form.model),
-    providerId: templateProviderId ?? (agentChanged ? (agentPrefs?.providerId ?? '') : form.providerId),
+    model: templateModel || (agentChanged ? (defaultRoute?.model ?? '') : form.model),
+    providerId:
+      templateProviderId ??
+      (agentChanged
+        ? agentPrefs?.providerId || defaultRoute?.providerId || ''
+        : form.providerId),
     effort: templateEffort ?? (agentChanged ? (agentPrefs?.effort ?? '') : form.effort),
     fastMode: template.fastMode ?? (agentChanged ? (agentPrefs?.fastMode ?? false) : form.fastMode),
   };
