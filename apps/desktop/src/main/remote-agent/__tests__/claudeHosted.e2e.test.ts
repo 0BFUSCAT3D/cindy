@@ -10,16 +10,16 @@ import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createAnthropicCompatProxy } from '@cindy/anthropic-compat-proxy';
+import { createAnthropicCompatProxy, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
 import { ClaudeCodeAgent, type AgentDeps, type AgentEvent, type InteractionRequest, type Logger } from '@cindy/maker-core';
 import { buildUserProvider } from '@cindy/model-providers';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { remoteAgentEventMapper } from '../controller/eventMap';
 import { startRemoteAgentSession } from '../controller/startRemote';
 import { createRemoteAgentHost } from '../host/runHost';
 import { hostedStartOptions } from '../host/service';
-import { setCustomProviders } from '../../maker-host/active-catalog';
+import { getActiveCatalog, setCustomProviders } from '../../maker-host/active-catalog';
 import { createModelRoutingTransform, setClaudeProxyGatewayKeyReader, setClaudeProxySessionIdResolver } from '../../maker-host/anthropic-compat-proxy-host';
 import { setCustomProviderKeyReader } from '../../maker-host/provider-route';
 import { bindHostedSessionProvider, clearAllSessionProviders } from '../../maker-host/session-provider-store';
@@ -297,53 +297,88 @@ describe.skipIf(!available)('remote agent with a real Claude Code', () => {
     expect(last.results[3].isError).toBe(true);
   });
 
-  it.each(['claude-sonnet-4-5-20250929', 'hosted-shared-model'])('routes the first real Claude SDK model request for %s to its selected provider', { timeout: 120_000 }, async (model) => {
+  async function withProviderProxy(
+    model: string,
+    use: (proxyEndpoint: string, fallbackRequests: string[]) => Promise<void>,
+    createProxy = createAnthropicCompatProxy,
+  ): Promise<void> {
     const fallbackRequests: string[] = [];
     const fallback = createServer((req, res) => {
       if (req.method === 'POST' && req.url?.startsWith('/v1/messages')) fallbackRequests.push(req.url);
       req.resume();
       res.writeHead(200, { 'content-type': 'text/event-stream' }).end(text('FALLBACK'));
     });
-    await new Promise<void>((resolve) => fallback.listen(0, '127.0.0.1', resolve));
-    const address = fallback.address();
-    if (!address || typeof address === 'string') throw new Error('fallback server has no port');
-    const fallbackEndpoint = `http://127.0.0.1:${address.port}`;
-    setCustomProviders(['selected', 'other'].map((id) => buildUserProvider({
-      id, name: id,
-      runtimes: { 'claude-code': {
-        baseUrl: id === 'selected' ? endpoint : fallbackEndpoint,
-        wireProtocol: 'anthropic-messages', models: [{ id: model, name: model }],
-      } },
-    })));
-    setCustomProviderKeyReader((id) => `${id}-native-test-key`);
-    setClaudeProxyGatewayKeyReader(() => 'fake-test-key');
-    const proxy = await createAnthropicCompatProxy({
-      upstream: fallbackEndpoint,
-      routingTransform: createModelRoutingTransform(),
-    });
+    let proxy: ProxyHandle | undefined;
     try {
+      await new Promise<void>((resolve, reject) => {
+        fallback.once('error', reject);
+        fallback.listen(0, '127.0.0.1', () => {
+          fallback.removeListener('error', reject);
+          resolve();
+        });
+      });
+      const address = fallback.address();
+      if (!address || typeof address === 'string') throw new Error('fallback server has no port');
+      const fallbackEndpoint = `http://127.0.0.1:${address.port}`;
+      setCustomProviders(['selected', 'other'].map((id) => buildUserProvider({
+        id, name: id,
+        runtimes: { 'claude-code': {
+          baseUrl: id === 'selected' ? endpoint : fallbackEndpoint,
+          wireProtocol: 'anthropic-messages', models: [{ id: model, name: model }],
+        } },
+      })));
+      setCustomProviderKeyReader((id) => `${id}-native-test-key`);
+      setClaudeProxyGatewayKeyReader(() => 'fake-test-key');
+      proxy = await createProxy({ upstream: fallbackEndpoint, routingTransform: createModelRoutingTransform() });
+      await use(proxy.url, fallbackRequests);
+    } finally {
+      try {
+        await proxy?.dispose();
+      } finally {
+        try {
+          if (fallback.listening) await new Promise<void>((resolve) => fallback.close(() => resolve()));
+        } finally {
+          setClaudeProxySessionIdResolver(() => null);
+          setClaudeProxyGatewayKeyReader(() => null);
+          setCustomProviderKeyReader(() => null);
+          setCustomProviders([]);
+          clearAllSessionProviders();
+        }
+      }
+    }
+  }
+
+  it('cleans up the fallback server and provider settings when proxy startup fails', async () => {
+    let fallbackEndpoint = '';
+    const use = vi.fn(async () => {});
+    const createProxy = vi.fn<typeof createAnthropicCompatProxy>(async (options) => {
+      if (typeof options.upstream !== 'string') throw new Error('expected a literal test upstream');
+      fallbackEndpoint = options.upstream;
+      throw new Error('proxy startup failed');
+    });
+    await expect(withProviderProxy('hosted-shared-model', use, createProxy)).rejects.toThrow('proxy startup failed');
+    expect(createProxy).toHaveBeenCalledOnce();
+    expect(use).not.toHaveBeenCalled();
+    expect(getActiveCatalog().providers.some((provider) => provider.id === 'selected' || provider.id === 'other')).toBe(false);
+    await expect(fetch(fallbackEndpoint)).rejects.toThrow();
+  });
+
+  it.each(['claude-sonnet-4-5-20250929', 'hosted-shared-model'])('routes the first real Claude SDK model request for %s to its selected provider', { timeout: 120_000 }, async (model) => {
+    await withProviderProxy(model, async (proxyEndpoint, fallbackRequests) => {
       requests.length = 0;
       steps = [];
       if (model.startsWith('claude-')) {
-        await run('bypassPermissions', undefined, { endpoint: proxy.url, model, providerId: 'selected', resolveHostedId: false });
+        await run('bypassPermissions', undefined, { endpoint: proxyEndpoint, model, providerId: 'selected', resolveHostedId: false });
         expect(fallbackRequests.length).toBeGreaterThan(0);
         expect(requests).toEqual([]);
         fallbackRequests.length = 0;
       }
-      await run('bypassPermissions', undefined, { endpoint: proxy.url, model, providerId: 'selected' });
+      await run('bypassPermissions', undefined, { endpoint: proxyEndpoint, model, providerId: 'selected' });
       expect(requests.length).toBeGreaterThan(0);
       expect(requests[0].sdkSessionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(requests[0].sdkSessionId).not.toBe('cc-hosted-bypassPermissions');
       expect(requests.every((request) => request.apiKey === 'selected-native-test-key')).toBe(true);
       expect(fallbackRequests).toEqual([]);
-    } finally {
-      await proxy.dispose();
-      await new Promise<void>((resolve) => fallback.close(() => resolve()));
-      setClaudeProxySessionIdResolver(() => null);
-      setClaudeProxyGatewayKeyReader(() => null);
-      setCustomProviderKeyReader(() => null);
-      setCustomProviders([]);
-      clearAllSessionProviders();
-    }
+    });
   });
 });
