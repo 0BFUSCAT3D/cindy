@@ -20,6 +20,7 @@ const {
   buildShareImageFooter,
   expandScrollableBlocks,
   inlineCloneImages,
+  prepareShareMessageClone,
   queryShareableMessageIds,
   redactTextNodes,
   stripCloneAnchors,
@@ -75,6 +76,45 @@ describe('stripMessageSources', () => {
     expect(el.textContent).not.toMatch(/张三|自动化|手机|Slack/);
     expect(el.textContent).toContain('帮我看下这个报错');
     expect(el.textContent).toContain('正文内容');
+  });
+});
+
+describe('prepareShareMessageClone', () => {
+  // 只发 $指令 的用户消息:气泡内只有插件标注行,气泡本身也打了来源标记。
+  const chipOnlyMessage = () =>
+    root(`
+      <div ${SHARE_MESSAGE_ATTR}="m1" data-user-msg-id="m1">
+        <div class="bubble" ${SHARE_SOURCE_ATTR}>
+          <div ${SHARE_SOURCE_ATTR}><button aria-expanded="false">GitHub 已调用</button></div>
+        </div>
+        <div ${SHARE_EXCLUDE_ATTR}><button>复制</button></div>
+      </div>
+    `).firstElementChild as HTMLElement;
+
+  it('清洗后没有内容的消息返回 null,不在图里留空白或空图', () => {
+    expect(prepareShareMessageClone(chipOnlyMessage())).toBeNull();
+  });
+
+  it('插件标注去掉后保留正文,且不改动原节点', () => {
+    const node = root(`
+      <div ${SHARE_MESSAGE_ATTR}="m1">
+        <div class="bubble">
+          <div ${SHARE_SOURCE_ATTR} class="border-b"><button aria-expanded="false">GitHub</button></div>
+          <div>帮我过审这个 PR</div>
+        </div>
+      </div>
+    `).firstElementChild as HTMLElement;
+    const clone = prepareShareMessageClone(node);
+    expect(clone?.textContent?.trim()).toBe('帮我过审这个 PR');
+    expect(clone?.querySelector('.border-b')).toBeNull();
+    expect(clone?.hasAttribute(SHARE_MESSAGE_ATTR)).toBe(false);
+    expect(node.querySelector(`[${SHARE_SOURCE_ATTR}]`)).not.toBeNull();
+  });
+
+  it('只有图片附件的消息照常保留', () => {
+    const node = root(`<div><img src="data:image/png;base64,AAAA" alt="" /></div>`)
+      .firstElementChild as HTMLElement;
+    expect(prepareShareMessageClone(node)).not.toBeNull();
   });
 });
 

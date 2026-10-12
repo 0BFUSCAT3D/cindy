@@ -135,6 +135,22 @@ export function stripCloneAnchors(root: HTMLElement): void {
   }
 }
 
+/**
+ * 克隆一条消息并做完全部清洗(交互件、来源标注、收起态、锚点)。清洗后没有可见
+ * 内容(无文字、无图)就返回 null:例如只发了 `$指令` 的消息,插件标注被剥掉后
+ * 只剩空壳,留着会在图里占一段空白,单独分享时更会生成只有页脚的空图。
+ */
+export function prepareShareMessageClone(node: HTMLElement): HTMLElement | null {
+  const clone = node.cloneNode(true) as HTMLElement;
+  stripInteractiveElements(clone);
+  stripMessageSources(clone);
+  expandCollapsedMessages(clone);
+  stripCloneAnchors(clone);
+  const hasText = (clone.textContent ?? '').trim().length > 0;
+  const hasMedia = clone.querySelector('img, svg, canvas, video') !== null;
+  return hasText || hasMedia ? clone : null;
+}
+
 const REDACTION_SCOPE_TAGS = new Set([
   'ADDRESS',
   'ARTICLE',
@@ -542,18 +558,26 @@ export async function buildShareImageBlob({
 
   try {
     let prevIndex: number | null = null;
+    let appendedCount = 0;
     for (const [i, node] of sourceNodes.entries()) {
       const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
-      if (prevIndex !== null && currentIndex !== null && currentIndex - prevIndex > 1) {
-        stage.appendChild(buildShareImageGapMarker());
+      const clone = prepareShareMessageClone(node);
+      // 清洗后为空的消息本身是选中项,跳过它不算「跳选」:不加断点标记,但推进序号。
+      if (clone) {
+        if (
+          appendedCount > 0 &&
+          prevIndex !== null &&
+          currentIndex !== null &&
+          currentIndex - prevIndex > 1
+        ) {
+          stage.appendChild(buildShareImageGapMarker());
+        }
+        stage.appendChild(clone);
+        appendedCount += 1;
       }
-      stage.appendChild(node.cloneNode(true) as HTMLElement);
       prevIndex = currentIndex;
     }
-    stripInteractiveElements(stage);
-    stripMessageSources(stage);
-    expandCollapsedMessages(stage);
-    stripCloneAnchors(stage);
+    if (appendedCount === 0) throw new ShareImageNoContentError();
     redactTextNodes(stage);
 
     // 品牌素材是同源打包资源,html-to-image 本可自行内联;预先转掉是为了把
