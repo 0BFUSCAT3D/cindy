@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderShareReceived } from '@cindy/device-link';
+import { parseModelFavorites, providerShareParsers, type ProviderShareReceived } from '@cindy/device-link';
+import type { ModelFavoritesHostApi } from '../../shared/modelFavoritesSync';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import {
   __resetForTest, addModelFavorite, listModelFavorites, setModelFavoritesOwner, useModelFavorites,
@@ -10,6 +11,7 @@ import {
   parseProviderShareFavoriteSource, providerShareFavoriteSource, reconcileProviderShareFavorites,
   useProviderShareFavorites, useProviderShareFavoriteCleanupFailed,
 } from '@/state/providerShareFavorites';
+import { useModelFavoritesHost } from '@/state/useModelFavoritesHost';
 
 const share = (shareId = 's1', memberId = 'm1'): ProviderShareReceived => ({
   shareId, memberId, providerId: 'anthropic', providerLabel: 'Anthropic',
@@ -29,9 +31,52 @@ beforeEach(() => {
   setModelFavoritesOwner('recipient');
   publish([share(), share('s2', 'm2')]);
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('recipient-owned shared model favorites', () => {
+  it('keeps long local sources out of legacy remote replies without removing stored favorites', () => {
+    const received = providerShareParsers.received({ ...share('s'.repeat(128), 'm'.repeat(128)), providerId: 'p'.repeat(256) });
+    publish([received]);
+    const view = mount(`share:${received.shareId}`);
+    act(() => view.result.current.store.add({ ...config, providerId: received.providerId }));
+    act(() => { addModelFavorite(config); });
+    const onRequest = vi.fn<ModelFavoritesHostApi['onRequest']>().mockReturnValue(() => {});
+    const reply = vi.fn<ModelFavoritesHostApi['reply']>();
+    vi.stubGlobal('electronAPI', { modelFavoritesHost: { onRequest, reply, ready: vi.fn(), changed: vi.fn() } });
+    renderHook(() => useModelFavoritesHost());
+    const request = onRequest.mock.calls[0]![0];
+    act(() => request({ requestId: 'get', expiresAt: Date.now() + 1000, ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 } }));
+    const items = reply.mock.calls[0]![0].items;
+    expect(parseModelFavorites(items)).toEqual([expect.objectContaining(config)]);
+    expect(listModelFavorites()).toHaveLength(2);
+    expect(view.result.current.items).toHaveLength(1);
+  });
+
+  it.each(['p'.repeat(256), '"\\'.repeat(128), '\ud800'.repeat(256)])('supports protocol-valid maximum identifiers including JSON escaping (%#)', (providerId) => {
+    const received = providerShareParsers.received({ ...share('s'.repeat(128), 'm'.repeat(128)), providerId });
+    const source = providerShareFavoriteSource(received);
+    expect(source.length).toBeGreaterThan(512);
+    expect(parseProviderShareFavoriteSource(source)).toEqual({
+      shareId: received.shareId, memberId: received.memberId, providerId, region: 'global',
+    });
+    addModelFavorite(config);
+    publish([received]);
+    const view = mount(`share:${received.shareId}`);
+    const longConfig = { ...config, providerId };
+    act(() => view.result.current.store.add(longConfig));
+    act(() => { setModelFavoritesOwner('other'); setModelFavoritesOwner('recipient'); });
+    expect(view.result.current.items).toEqual([{ ...longConfig, uid: expect.any(String) }]);
+    const uid = view.result.current.items[0]!.uid;
+    act(() => view.result.current.store.update(uid, { effort: 'low' }));
+    expect(view.result.current.items[0]?.effort).toBe('low');
+    act(() => publish([received]));
+    expect(view.result.current.items).toHaveLength(1);
+    const failed = renderHook(() => useProviderShareFavoriteCleanupFailed());
+    act(() => publish([]));
+    expect(failed.result.current).toBe(false);
+    expect(listModelFavorites()).toEqual([expect.objectContaining(config)]);
+  });
+
   it.each(['cn', 'global'] as const)('keeps %s favorites usable and cleans only confirmed regions when the other region fails to load', (region) => {
     const localShare = { ...share(), owner: { ...share().owner, region } };
     const peerRegion = region === 'cn' ? 'global' as const : 'cn' as const;

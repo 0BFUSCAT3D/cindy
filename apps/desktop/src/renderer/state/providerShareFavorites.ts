@@ -8,6 +8,7 @@ import {
 import type { ProviderShareReceivedSnapshot } from '../../shared/providerShare';
 import {
   accessHostModelFavorites,
+  LOCAL_FAVORITE_PROVIDER_ID_MAX_LENGTH,
   type ModelFavoriteConfig,
   type ModelFavoriteItem,
 } from './modelFavorites';
@@ -17,13 +18,13 @@ const PREFIX = 'provider-share-favorite:';
 type Source = { shareId: string; memberId: string; providerId: string; region: ProviderShareReceived['owner']['region'] };
 
 /**
- * 复用受邀者账号的收藏存储和同步协议。providerId 是带分享/成员身份的存储键，
+ * 复用受邀者账号的收藏存储；远程同步保留既有长度约束。providerId 是带分享/成员身份的存储键，
  * 只在对应分享的选择器里投影为真实 providerId，绝不用于模型请求。
  * 老客户端不认识这个来源时不会把它误认成本机同名供应商。
  */
 export function providerShareFavoriteSource(source: Pick<ProviderShareReceived, 'shareId' | 'memberId' | 'providerId' | 'owner'>): string {
   const key = PREFIX + JSON.stringify([source.shareId, source.memberId, source.providerId, source.owner.region]);
-  if (!source.shareId || !source.memberId || !source.providerId || key.length > 512)
+  if (!source.shareId || !source.memberId || !source.providerId || key.length > LOCAL_FAVORITE_PROVIDER_ID_MAX_LENGTH)
     throw new Error('Invalid shared favorite source');
   return key;
 }
