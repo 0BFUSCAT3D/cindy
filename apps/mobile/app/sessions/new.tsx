@@ -7,7 +7,7 @@ import { retainOutboxFile, durableOutboxUploadUri, removeRetainedOutboxFiles, ou
 import { buildOutboxItem, createOutboxClientId } from '@/session/sessionOutbox';
 import type { DurableOutboxRecord } from '@/session/durableOutbox';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
-import { sessionMatchesProjectDir } from '@cindy/maker-shared/mobile-home';
+import { workspacePathsEqual } from '@/session/workspaceSelection';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { takeRefinementContextTail } from '@cindy/voice-input-core';
 import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
@@ -6798,7 +6798,7 @@ export default function NewRemoteSessionScreen() {
                 <View>
                   {recentWorkspaces.map((workspace) => {
                     const selected = draft.workspaceKind === 'project'
-                      && sessionMatchesProjectDir(draft.workingDir, workspace.workingDir);
+                      && workspacePathsEqual(draft.workingDir, workspace.workingDir);
                     return (
                       <Pressable
                         accessibilityLabel={t('session.new.selectProjectNamed', { title: workspace.title })}

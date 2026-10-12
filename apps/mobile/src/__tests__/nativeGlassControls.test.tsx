@@ -385,6 +385,21 @@ it.each(["light", "dark"])("selects equivalent remote Windows workspaces without
     .toBe("false");
 });
 
+it.each([
+  ["/repo", "/repo/.cindy-worktrees/branch"],
+  ["D:/repo", "d:\\repo\\.cindy-worktrees\\branch"],
+])("does not mark %s selected for a remembered worktree directory", (base, worktree) => {
+  const props = directoryProps({
+    page: "workspace", workingDir: worktree, workspaces: [{ title: "repo", workingDir: base }],
+  });
+  const host = mount(<NewTaskSelectionSheet {...props} />);
+  const row = host.querySelector('[data-testid="newSession.workspaceProjectOption"]') as HTMLButtonElement;
+  expect(row.getAttribute("aria-pressed")).toBe("false");
+  expect(props.workingDir).toBe(worktree);
+  act(() => row.click());
+  expect(props.onProject).toHaveBeenCalledExactlyOnceWith(base);
+});
+
 it.each(["light", "dark"])("gives the current-folder label a contrasting color and keeps selection working in %s", (mode) => {
   state.mode = mode;
   const props = directoryProps();

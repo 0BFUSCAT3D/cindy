@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
-import { sessionMatchesProjectDir } from "@cindy/maker-shared/mobile-home";
+import { workspacePathsEqual } from "./workspaceSelection";
 import {
   ArrowUp,
   ChevronRight,
@@ -116,7 +116,7 @@ export function NewTaskSelectionSheet(p: NewTaskSelectionSheetProps) {
                 leading={icon(Folder)}
                 selected={
                   p.workspaceKind === "project" &&
-                  sessionMatchesProjectDir(p.workingDir, workspace.workingDir)
+                  workspacePathsEqual(p.workingDir, workspace.workingDir)
                 }
                 disabled={p.busy}
                 onPress={() => p.onProject(workspace.workingDir)}
