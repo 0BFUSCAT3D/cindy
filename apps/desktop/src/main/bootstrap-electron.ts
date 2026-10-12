@@ -566,6 +566,13 @@ import { isIpcError } from '../shared/ipc-errors';
 import { readFileBytesForPreview } from './fileReadBytes.js';
 import { copyPngToClipboard } from './pngClipboard.js';
 import { COPY_PNG_TO_CLIPBOARD_CHANNEL } from '../shared/pngClipboard.js';
+import { copyTextToClipboard } from './textClipboard.js';
+import { COPY_TEXT_TO_CLIPBOARD_CHANNEL } from '../shared/textClipboard.js';
+import {
+  readLinuxClipboardSnapshot,
+  supportsLinuxClipboard,
+  writeLinuxClipboard,
+} from './remote-desktop/linuxClipboardNative';
 import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
@@ -1096,6 +1103,7 @@ import {
   suspendAllGhosts,
   waitForGhostMutations,
 } from './cindy-brain/index.js';
+import { installedGhostStoragePart } from '../shared/pluginIdentity.js';
 import { setCodexImageAuthBinding } from './cindy-brain/codexImageAuthBinding.js';
 import { listActiveClaudeBackgroundActivitySessions } from './maker-host/claude-session-background-activity.js';
 import { registerRelaunchBusyActivityIpc } from './relaunchBusyActivityIpc.js';
@@ -2274,14 +2282,14 @@ const ghostPanelWindowsController = new GhostPanelWindowsController({
   createWindow: (ghostId) => {
     const ghost = getGhostManager()
       .list()
-      .find((g) => g.manifest.id === ghostId);
+      .find((g) => installedGhostStoragePart(g) === ghostId);
     const title = ghost?.manifest.panel?.title ?? ghost?.manifest.name ?? ghostId;
     return createGhostPanelWindow(ghostId, title);
   },
   isGhostDetachable: (ghostId) => {
     const ghost = getGhostManager()
       .list()
-      .find((g) => g.manifest.id === ghostId);
+      .find((g) => installedGhostStoragePart(g) === ghostId);
     return (
       ghost !== undefined &&
       ghost.enabled !== false &&
@@ -7779,6 +7787,29 @@ const registerIpcHandlers = () => {
     }),
   );
 
+  // Hyprland may drop Chromium clipboard writes; reuse the remote-desktop
+  // data-control writer there. Local only; never route this to a remote host.
+  // Focused app-content is the local-intent check; skip the remote lock probe.
+  ipcMain.handle(COPY_TEXT_TO_CLIPBOARD_CHANNEL, (event, params) =>
+    copyTextToClipboard(event, params, {
+      assertTrustedSender: assertTrustedAppRendererEvent,
+      assertFocusedSender: (senderEvent) => {
+        const win = BrowserWindow.fromWebContents(senderEvent.sender);
+        if (!isFocusedAppContentWindow(win)) {
+          throwIpcError('PERMISSION_DENIED', '此操作只能在 Cindy 主窗口聚焦时发起');
+        }
+      },
+      write: (text) =>
+        supportsLinuxClipboard()
+          ? writeLinuxClipboard({ text }, () => true, { checkLock: false })
+          : clipboard.writeText(text),
+      read: async () =>
+        supportsLinuxClipboard()
+          ? (await readLinuxClipboardSnapshot(false, { checkLock: false })).content.text
+          : clipboard.readText(),
+    }),
+  );
+
   // ── Native clipboard helpers (media:copy-to-clipboard) ──
   //
   // Electron's `clipboard.writeImage` writes raw bitmap data — pastable in
@@ -9066,6 +9097,14 @@ app.on('ready', async () => {
           });
         }
         return;
+      }
+      if (getActiveAppSession().dataOwnerId === userId) {
+        void getGhostManager().retryInterruptedMutationsAfterDbReady().catch((error) => {
+          dbClientLog.warn('ghost mutation recovery after DB readiness failed', {
+            userId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
       checkDatabaseSizeWarningAtStartup();
       // Bot recovery is owner-scoped and must start only after DbClient
