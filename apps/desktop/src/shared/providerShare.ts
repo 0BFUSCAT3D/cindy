@@ -19,6 +19,12 @@ export interface ProviderShareReceivedSnapshot {
   received: readonly ProviderShareReceived[];
 }
 
+/** 本机收藏作为重启后的查询线索，不作为授权或撤权依据。 */
+export interface ProviderShareFavoriteRecovery {
+  ownerStamp: DataOwnerPushStamp;
+  regions: readonly ProviderShareReceived['owner']['region'][];
+}
+
 export const PROVIDER_SHARE_IPC = {
   /** Renderer → Main：全部操作走同一个命令通道。 */
   COMMAND: 'provider-share:command',
@@ -130,7 +136,7 @@ export type ProviderShareCommand =
   | { action: 'approve' | 'reject'; requestId: string }
   | { action: 'set-member'; memberId: string; status: 'pause' | 'resume' | 'remove' }
   | { action: 'received' }
-  | { action: 'received-snapshot' }
+  | { action: 'received-snapshot'; favoriteRecovery?: ProviderShareFavoriteRecovery }
   | { action: 'preview'; link: string }
   | { action: 'send-request'; link: string }
   | { action: 'get-request'; requestId: string }

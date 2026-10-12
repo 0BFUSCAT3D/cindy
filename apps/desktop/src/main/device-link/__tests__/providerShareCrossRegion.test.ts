@@ -110,6 +110,45 @@ afterEach(() => {
 });
 
 describe('cross-region provider share', () => {
+  it('recovers a revoked region from favorite hints after its marker is removed and the runtime restarts', async () => {
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    state.responses.set('/session', { credential: null, expiresAt: null, shares: [] });
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    await refreshProviderShareCrossRegion('global');
+    expect(__testing.readMarkers()).toEqual({});
+    stopProviderShareGuest();
+    state.calls = [];
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
+    getReceivedSharesSnapshot({ ownerStamp: { dataOwnerId: 'other', ownerGeneration: 1 }, regions: ['global'] });
+    getReceivedSharesSnapshot({ ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 0 }, regions: ['global'] });
+    await Promise.resolve();
+    expect(state.calls).toEqual([]);
+    const recovery = { ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 1 }, regions: ['global'] as const };
+    // 立即返回本区域快照；多个窗口同时恢复只发一次对方区域请求。
+    expect(getReceivedSharesSnapshot(recovery).confirmedRegions).toEqual(['cn']);
+    getReceivedSharesSnapshot(recovery);
+    await refreshProviderShareCrossRegion('global');
+    expect(getReceivedSharesSnapshot(recovery).confirmedRegions).toEqual(['cn', 'global']);
+    expect(state.calls.filter((call) => call.path.endsWith('/session'))).toHaveLength(1);
+  });
+
+  it('keeps network backoff when favorite recovery is requested repeatedly', async () => {
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    const recovery = { ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 1 }, regions: ['global'] as const };
+    getReceivedSharesSnapshot(recovery);
+    await refreshProviderShareCrossRegion('global');
+    expect(state.calls).toHaveLength(1);
+    for (let i = 0; i < 5; i += 1) getReceivedSharesSnapshot(recovery);
+    await Promise.resolve();
+    expect(state.calls).toHaveLength(1);
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
+  });
+
   it.each(['local', 'peer'] as const)('confirms the available region independently when %s list loading fails', async (failed) => {
     state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
     await crossRegionSendRequest('global', TOKEN);

@@ -367,6 +367,15 @@ export function getCrossRegionReceived(): ProviderShareReceived[] {
   return runtime ? [...runtime.regions.values()].flatMap((state) => state.shares) : [];
 }
 
+/** 空名单会移除发现标记；残留收藏仍可请求重新核对。复用现有请求合并与失败退避。 */
+export function ensureCrossRegionReceivedForFavorites(regions: readonly Region[]): void {
+  const rt = runtime;
+  const region = peerRegion();
+  if (!rt || !current(rt) || !regions.includes(region)) return;
+  const state = rt.regions.get(region);
+  if (!state?.loaded && !state?.refreshing && !state?.timer) void refreshRegion(rt, region);
+}
+
 /** 只确认已成功返回名单的区域，失败区域不能阻塞其它区域的收藏。 */
 export function getConfirmedCrossRegionReceivedRegions(): Region[] {
   const rt = runtime;

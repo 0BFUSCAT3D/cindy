@@ -29,6 +29,7 @@ import {
   type ProviderPartyUsageView,
 } from '../../shared/providerShare.js';
 import { getDeviceId } from '../authManager.js';
+import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
@@ -236,8 +237,14 @@ function parseCommand(raw: unknown): ProviderShareCommand {
     }
     case 'received':
       return { action: 'received' };
-    case 'received-snapshot':
-      return { action: 'received-snapshot' };
+    case 'received-snapshot': {
+      if (value.favoriteRecovery === undefined) return { action: 'received-snapshot' };
+      const recovery = value.favoriteRecovery as Record<string, unknown> | null;
+      if (!recovery || !isDataOwnerPushStamp(recovery.ownerStamp) || !Array.isArray(recovery.regions) ||
+          recovery.regions.length > 2 || !recovery.regions.every((region) => region === 'cn' || region === 'global'))
+        throwIpcError('INVALID_PARAMS', 'Invalid favorite recovery');
+      return { action: 'received-snapshot', favoriteRecovery: { ownerStamp: recovery.ownerStamp, regions: recovery.regions } };
+    }
     case 'preview':
     case 'send-request':
       return { action: value.action, link: text(value.link, 'link', 4096) };
@@ -393,7 +400,7 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
       if (running) void refreshReceivedShares('ui');
       return getReceivedShares();
     case 'received-snapshot':
-      return getReceivedSharesSnapshot();
+      return getReceivedSharesSnapshot(command.favoriteRecovery);
     case 'preview':
       return previewProviderShare(command.link);
     case 'send-request':

@@ -51,9 +51,17 @@ const subscribe = (listener: () => void) => {
 };
 const getSnapshot = () => snapshot;
 
+/** 原收藏就是未完成清理的持久线索，不依赖另写一份可能同样失败的清理队列。 */
+export function getProviderShareFavoriteRegions(ownerId: string | null): Source['region'][] {
+  return [...new Set(accessHostModelFavorites(ownerId).flatMap((item) => {
+    const source = parseProviderShareFavoriteSource(item.providerId);
+    return source ? [source.region] : [];
+  }))];
+}
+
 /** 可用来源立即发布；仅清理 Main 已确认完整名单的区域，未知区域的收藏保留。 */
-export function reconcileProviderShareFavorites(next: ProviderShareReceivedSnapshot): void {
-  if (!next || !isDataOwnerPushStampCurrent(next.ownerStamp)) return;
+export function reconcileProviderShareFavorites(next: ProviderShareReceivedSnapshot): boolean {
+  if (!next || !isDataOwnerPushStampCurrent(next.ownerStamp)) return false;
   let cleanupFailed = false;
   try {
     const items = accessHostModelFavorites(next.ownerStamp.dataOwnerId);
@@ -68,6 +76,7 @@ export function reconcileProviderShareFavorites(next: ProviderShareReceivedSnaps
   }
   snapshot = { membership: next, cleanupFailed };
   for (const listener of listeners) listener();
+  return !cleanupFailed;
 }
 
 export function useProviderShareFavoriteCleanupFailed(): boolean {

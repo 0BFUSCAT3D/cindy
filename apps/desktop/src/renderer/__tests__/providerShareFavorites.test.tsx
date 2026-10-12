@@ -17,8 +17,9 @@ const share = (shareId = 's1', memberId = 'm1'): ProviderShareReceived => ({
   owner: { displayName: 'Owner', avatarUrl: null, region: 'global' },
 });
 const config = { providerId: 'anthropic', modelId: 'opus', agent: 'cc' as const, effort: 'high' as const, fast: true as const };
-const publish = (received: ProviderShareReceived[], confirmed = true, dataOwnerId = 'recipient', ownerGeneration = 1) =>
+const publish = (received: ProviderShareReceived[], confirmed = true, dataOwnerId = 'recipient', ownerGeneration = 1) => {
   reconcileProviderShareFavorites({ received, confirmedRegions: confirmed ? ['global', 'cn'] : [], ownerStamp: { dataOwnerId, ownerGeneration } });
+};
 const mount = (deviceId = 'share:s1') => renderHook(() => useProviderShareFavorites(deviceId, useModelFavorites()));
 
 beforeEach(() => {
@@ -39,8 +40,9 @@ describe('recipient-owned shared model favorites', () => {
     addModelFavorite({ ...config, providerId: providerShareFavoriteSource(peerShare) });
     publish([], false);
     const view = mount();
-    const update = (received: ProviderShareReceived[], confirmedRegions: Array<'cn' | 'global'>) =>
+    const update = (received: ProviderShareReceived[], confirmedRegions: Array<'cn' | 'global'>) => {
       reconcileProviderShareFavorites({ received, confirmedRegions, ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 } });
+    };
     act(() => update([localShare], [region]));
     act(() => view.result.current.store.add(config));
     expect(view.result.current.items).toHaveLength(1);

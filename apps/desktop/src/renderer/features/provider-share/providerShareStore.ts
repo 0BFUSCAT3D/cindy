@@ -18,7 +18,7 @@ import { getCachedDeviceProviders } from '@/hooks/useDeviceProviders';
 import { refreshRemoteCatalogSnapshot } from '@/lib/remoteCatalogSnapshot';
 import { createLogger } from '@/lib/logger';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
-import { reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
+import { getProviderShareFavoriteRegions, reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
 
 import type {
   ProviderShareOwnerState,
@@ -81,13 +81,37 @@ function setReceived(next: readonly ProviderShareReceived[]): void {
 }
 
 let membershipRequest = 0;
+let membershipRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let membershipFailures = 0;
 function refreshFavoriteMembership(api: ProviderShareApi): void {
+  if (membershipRetryTimer) clearTimeout(membershipRetryTimer);
+  membershipRetryTimer = null;
   const request = ++membershipRequest;
   const owner = getDataOwnerGeneration();
-  void api.command({ action: 'received-snapshot' }).then((snapshot) => {
-    if (request === membershipRequest && isDataOwnerGenerationCurrent(owner))
-      reconcileProviderShareFavorites(snapshot);
-  }).catch(() => undefined); // 读失败不是撤权，下次分享快照到达时再核对。
+  const current = () => request === membershipRequest && isDataOwnerGenerationCurrent(owner);
+  const retry = () => {
+    if (!current()) return;
+    const delay = Math.min(60_000, 5_000 * 2 ** Math.min(membershipFailures++, 4));
+    membershipRetryTimer = setTimeout(() => {
+      membershipRetryTimer = null;
+      if (current()) refreshFavoriteMembership(api);
+    }, delay);
+  };
+  void (async () => {
+    try {
+      let regions: ProviderShareReceived['owner']['region'][] = [];
+      try { regions = getProviderShareFavoriteRegions(owner.dataOwnerId); }
+      catch { /* 清理器会报告存储错误并安排重试；读取恢复后再补齐区域线索。 */ }
+      const snapshot = await api.command({
+        action: 'received-snapshot',
+        favoriteRecovery: { ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation }, regions },
+      });
+      if (!current()) return;
+      const cleaned = reconcileProviderShareFavorites(snapshot);
+      if (!cleaned || regions.some((region) => !snapshot.confirmedRegions.includes(region))) retry();
+      else membershipFailures = 0;
+    } catch { retry(); } // 读失败不是撤权，重取最新名单而不是重放旧删除。
+  })();
 }
 
 /** 启动已收到分享的同步(幂等)。Preload 不可用(测试 / 旧窗口)时什么都不做。 */
@@ -113,6 +137,7 @@ export function ensureProviderShareReceivedStarted(): void {
       log.debug('provider share received list unavailable', {
         error: error instanceof Error ? error.message : String(error),
       });
+      if (receivedPushSeq === seqAtRequest) refreshFavoriteMembership(api);
     });
 }
 
@@ -209,6 +234,9 @@ export function resetProviderShareStoreForTests(): void {
   receivedStarted = false;
   receivedPushSeq = 0;
   membershipRequest += 1;
+  if (membershipRetryTimer) clearTimeout(membershipRetryTimer);
+  membershipRetryTimer = null;
+  membershipFailures = 0;
   receivedSubscribers.clear();
   pendingRequests = [];
   pendingSubscribers.clear();
