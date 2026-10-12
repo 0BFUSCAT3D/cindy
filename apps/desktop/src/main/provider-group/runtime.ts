@@ -7,6 +7,8 @@
  * 调用方拿到的是固定的门面，每次调用按当前账号转发。
  */
 import type { ProviderView } from '@cindy/model-providers';
+import { REMOTE_AGENT_CHANNEL, parseRemoteAgentCaps } from '@cindy/device-link';
+import { app } from 'electron';
 import type { ClaudeSubscriptionUsageSnapshot } from '../../shared/claudeSubscriptionUsage.js';
 
 import { activeOwnerScopeKey } from '../appSessionState.js';
@@ -66,6 +68,7 @@ function runtimeForActiveOwner(): OwnerRuntime {
   const directory = createProviderGroupDirectory({
     listLocalProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
     localDeviceName: () => deviceName(),
+    localAppVersion: () => app.getVersion(),
     listDevices: async () => (await handleListDevices(deviceDirectoryDeps())).devices,
     readDeviceProviders: (agentDeviceId) => readDeviceProviderViews(remoteBackgroundInvoke, agentDeviceId),
     listReceivedShares: () => getReceivedShares(),
@@ -78,6 +81,13 @@ function runtimeForActiveOwner(): OwnerRuntime {
   const externalLoad = createProviderGroupExternalLoad({ now: () => Date.now() });
   const router = createProviderGroupRouter({
     directory,
+    readCaps: async (member) => {
+      if (activeOwnerScopeKey() !== owner) throw new Error('The account changed');
+      const reply = await remoteBackgroundInvoke(member.agentDeviceId!, REMOTE_AGENT_CHANNEL, [{ op: 'caps' }]);
+      if (activeOwnerScopeKey() !== owner) throw new Error('The account changed');
+      if (!reply.ok) throw new Error('Could not read computer capabilities');
+      return parseRemoteAgentCaps(reply.result);
+    },
     readGroup: readProviderGroup,
     listBindings: listProviderGroupBindings,
     isTurnRunning: (sessionId) => isTurnRunning(sessionId),
@@ -109,7 +119,11 @@ const directoryFacade: ProviderGroupDirectory = {
 
 const routerFacade: ProviderGroupRouter = {
   pick: (input) => runtimeForActiveOwner().router.pick(input),
-  view: (providerId, model) => runtimeForActiveOwner().router.view(providerId, model),
+  view: async (providerId, options) => {
+    const runtime = runtimeForActiveOwner();
+    const view = await runtime.router.view(providerId, options);
+    return activeOwnerScopeKey() === runtime.owner ? view : { providerId, config: null, members: [] };
+  },
   running: (providerId, memberKey) => runtimeForActiveOwner().router.running(providerId, memberKey),
   markCooling: (providerId, memberKey, until) => runtimeForActiveOwner().router.markCooling(providerId, memberKey, until),
   coolingUntil: (providerId, memberKey) => runtimeForActiveOwner().router.coolingUntil(providerId, memberKey),

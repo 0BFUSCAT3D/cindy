@@ -983,7 +983,7 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
 ## 供应商分享：受邀者不看分享者的电脑名，组只给台数(2026-10-10)
 
 产品规则见 [`provider-sharing.md`](../product-rules/provider-sharing.md) §5.1、§6 与 [`provider-groups.md`](../product-rules/provider-groups.md)
-§8、§9.7、§10。受邀者只知道是谁分享的、分享的是哪个供应商；建了组时只知道背后是个组、有几台。
+§8、§9.7、§10。受邀者只知道是谁分享的、分享的是哪个供应商；本节登记组台数，2026-10-12 增加的匿名状态见下一节。
 
 - **分享投影里的 `maker:provider:list` 新增可选 `groupSize`**(正整数，1–512)：分享者把这个供应商建了组、且仍「允许被远程调用」
   时，`projectProviderListForShare` 按本机组设置填上(目录里原有的值一律先去掉)。`scrubSharedProvider` 在分享者电脑、受邀者电脑
@@ -1000,6 +1000,40 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
   (`sharedProviderGroupSize`)、`provider-group/directory.ts`(`memberLabel`)、`device-link/providerShareRuntime.ts`；回归见
   `device-link/__tests__/providerShareDispatch.test.ts`、`provider-group/__tests__/remoteHandler.test.ts`、`directory.test.ts`、
   `packages/device-link/src/__tests__/providerShare.test.ts`。
+
+## 供应商分享：按需查看匿名组状态(2026-10-12)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §8、§9.7、§10。
+
+- 受邀者读现有 `maker:provider:list` 时可在 `args[0]` 加 `includeSharedGroupStatus: true`。只在分享详情使用；
+  普通目录读取不探测组员，避免组之间相互读取目录时递归。供应商始终取实际分享授权，不信任请求中指定的供应商。
+- 新分享者在这一条供应商上附加可选 `groupStatus`：长度与 `groupSize` 一致的状态数组，只允许
+  `available / busy / cooling / offline / paused / unavailable / needs-update / unknown`。序号由界面按数组位置生成，
+  不传组员名称、标识、来源、任务数或用量；不扩展 `provider-group:remote` 的受邀者权限。
+- 由实际受邀者分配器读取组状态并按同一能力条件检查能否接分享任务，状态与能力读取各有 3 秒等待上限；
+  超时／失败为未知，不改变分配与冷却。读取期间组设置或账号变化丢弃快照，分享撤销后不返回在途结果。
+  `scrubSharedProvider` 在各跳按白名单重建数组；不合法的单项替换为 `unknown`，长度不符则不带字段。
+- 匿名能力探测按当前账号运行期共用最多 4 个物理在途槽，同电脑跨刷新复用查询；等待超时不释放仍在途的槽，
+  未发出的排队查询 3 秒后取消。已结算的能力结果短存 15 秒，迟到结果可供下一次详情读取使用；不缓存组状态，
+  不跨账号复用或继续发出旧账号的排队查询，不改变底层 device-link 超时、重连或 wire 格式。
+- 兼容：旧分享者忽略查询选项，新受邀者显示未提供状态；旧受邀者不发选项、行为不变。手机沿用目录清洗但
+  本期不增加状态入口。无组的供应商不带状态，不改服务器、relay、数据库或既有 channel 白名单。
+- 实现：`provider-group/sharedStatus.ts`、`guestRelay.ts`、`device-link/dispatch.ts`、
+  `packages/device-link/src/providerShareCatalog.ts`；回归：`sharedStatus.test.ts`、`providerShareDispatch.test.ts`、
+  `providerShare.test.ts`、`SharedProviderGroupStatus.test.tsx`。
+
+## 同账号供应商组：版本与分享兼容提示(2026-10-12)
+
+- 同账号组详情的 view 请求可选带 includeGuestSupport: true，才按现有远程 Agent 能力查询核对能否接收分享任务。
+  普通状态与任务分配不增加能力探测，不修改实际分配、冷却或权限。单台查询最多等 3 秒，失败或超时为未知。
+- 能力读取器跟随当前账号的组 router 运行期，跨详情刷新、跨组按电脑复用在途查询与 15 秒短缓存，最多 4 个物理在途槽。
+  等待超时不释放仍在途的槽，未发出的排队查询到期取消；迟到结果供下一次详情读取使用，避免后续电脑反复排队超时。
+  不跨账号复用，不缓存忙闲等组状态，不改变底层 device-link 超时、重连或 wire 格式。回归见 `router.test.ts`。
+- 成员状态可选携带 appVersion（不超过 64 字符的应用版本）与 guestSupport（supported / needs-update / unknown）。
+  本机版本由应用提供，同账号设备版本复用设备目录；分享来源没有版本则省略。能力按真实声明判断，不按版本号猜测。
+- 新端白名单解析；旧组所在电脑忽略选项、未带字段时不推断版本或兼容状态，未知信息放在悬停说明里，旧控制端忽略新增字段。
+  成员信息仍只对同账号可读，受邀者匿名状态数组不携带这些字段。异步查询期间换账号或撤销远程调用权限后丢弃回包。
+  没有新 channel、服务器改动或数据库迁移。回归覆盖目录、组状态、同账号请求解析及本机和远程两处界面。
 
 ## 供应商分享：受邀者自己的运行数(2026-10-10)
 
