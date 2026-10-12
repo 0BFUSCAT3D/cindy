@@ -5,6 +5,8 @@ import type { ProviderGroupConfig, ProviderGroupGuestSupport, ProviderGroupMembe
 import type { ProviderGroupOwnerScope } from './runtime.js';
 
 export const SHARED_GROUP_STATUS_TIMEOUT_MS = 3_000;
+export const SHARED_GROUP_STATUS_CAPS_CONCURRENCY = 4;
+export const SHARED_GROUP_STATUS_CAPS_CACHE_MS = 15_000;
 
 export interface SharedGroupStatusDeps {
   scope(): ProviderGroupOwnerScope;
@@ -25,17 +27,59 @@ async function readWithin<T>(read: () => Promise<T>): Promise<T | null> {
   }
 }
 
-/** 一次详情读取内按电脑合并能力查询；沿用真正接收分享任务时的能力条件。 */
+const sharedSupportReaders = new WeakMap<ProviderGroupOwnerScope['router'], ReturnType<typeof createGuestSupportReader>>();
+
+/** 按电脑合并有界能力探测，保留物理在途槽与短缓存；沿用真正接收分享任务时的能力条件。 */
 export function createGuestSupportReader(readCaps: SharedGroupStatusDeps['readCaps']) {
-  const caps = new Map<string, Promise<RemoteAgentCaps | null>>();
+  const caps = new Map<string, { promise: Promise<RemoteAgentCaps | null>; expiresAt: number }>();
+  const queued = new Set<() => void>();
+  let active = 0;
+  function drain() {
+    for (const start of queued) {
+      if (active >= SHARED_GROUP_STATUS_CAPS_CONCURRENCY) break;
+      start();
+    }
+  }
   return async (member: ProviderGroupMember): Promise<ProviderGroupGuestSupport> => {
     if (!member.agentDeviceId) return 'supported';
+    const now = Date.now();
+    for (const [agentDeviceId, entry] of caps) {
+      if (entry.expiresAt <= now) caps.delete(agentDeviceId);
+    }
     let pending = caps.get(member.agentDeviceId);
     if (!pending) {
-      pending = readWithin(() => readCaps(member));
+      const agentDeviceId = member.agentDeviceId;
+      const promise = new Promise<RemoteAgentCaps | null>((resolve) => {
+        const cancel = () => {
+          queued.delete(start);
+          clearTimeout(timer);
+          caps.delete(agentDeviceId);
+          resolve(null);
+        };
+        const start = () => {
+          if (Date.now() >= now + SHARED_GROUP_STATUS_TIMEOUT_MS) {
+            cancel();
+            return;
+          }
+          queued.delete(start);
+          clearTimeout(timer);
+          active += 1;
+          void Promise.resolve().then(() => readCaps(member)).catch(() => null).then(resolve).finally(() => {
+            active -= 1;
+            drain();
+          });
+        };
+        const timer = setTimeout(cancel, SHARED_GROUP_STATUS_TIMEOUT_MS);
+        queued.add(start);
+        drain();
+      });
+      const entry = { promise, expiresAt: Infinity };
+      void promise.then(() => { entry.expiresAt = Date.now() + SHARED_GROUP_STATUS_CAPS_CACHE_MS; });
+      pending = entry;
       caps.set(member.agentDeviceId, pending);
     }
-    const capability = await pending;
+    const promise = pending.promise;
+    const capability = await readWithin(() => promise);
     if (!capability) return 'unknown';
     return capability.virtualWorkspace === true && (member.kind !== 'device' || capability.guestRelay === true)
       ? 'supported' : 'needs-update';
@@ -48,7 +92,11 @@ export async function readSharedGroupStatus(deps: SharedGroupStatusDeps, provide
   if (!config) return null;
   const view = await readWithin(() => scope.router.view(providerId));
   if (!scope.isCurrent()) return null;
-  const readSupport = createGuestSupportReader(deps.readCaps);
+  const readSupport = sharedSupportReaders.get(scope.router) ?? createGuestSupportReader(async (member) => {
+    if (!scope.isCurrent()) throw new Error('The account changed');
+    return deps.readCaps(member);
+  });
+  sharedSupportReaders.set(scope.router, readSupport);
   const states = await Promise.all(config.members.map(async (member): Promise<ProviderShareGroupState> => {
     if (member.paused) return 'paused';
     const status = view?.members.find((item) => item.key === member.key);
