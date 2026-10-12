@@ -38,16 +38,15 @@ import {
   buildMessageRenderItems,
   type MessageRenderNormalizedMessage,
 } from '@cindy/maker-shared/message-render';
-import { readTokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 
 import {
+  applyStatusTokenRate,
   createTurnActivity,
   markActivityWriting,
   pushThinkingStep,
   pushToolStep,
   renderActivity,
   setActivityNotice,
-  setActivityTokenRate,
   setInteractionNotice,
   type TurnActivityState,
 } from './turnActivity.js';
@@ -722,14 +721,7 @@ export function createTurnPresenter(options: TurnPresenterOptions): TurnPresente
       return setActivityNotice(activity, notice);
     },
     applyStatus(ev: AgentEvent): boolean {
-      const data = ev.data as { generationReliable?: unknown; tokenSpeed?: unknown } | null;
-      if (!data || typeof data !== 'object') return false;
-      // 与桌面运行状态栏同口径: 宿主判定读数不可靠时隐藏, 而不是显示一个错数。
-      if (data.generationReliable === false) return setActivityTokenRate(activity, null);
-      const speed = readTokenSpeedSnapshot(data.tokenSpeed);
-      // 占位帧 / 首个输出之前没有读数: 保留上一个值, 避免工具执行间隙头部来回闪。
-      if (!speed || speed.rate <= 0) return false;
-      return setActivityTokenRate(activity, speed.rate);
+      return applyStatusTokenRate(activity, ev.data);
     },
     seal(): void {
       body.seal();

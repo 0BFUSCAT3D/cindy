@@ -2,6 +2,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyStatusTokenRate,
+  clearRunningIndicators,
   createTurnActivity,
   formatThinkingStep,
   formatToolStep,
@@ -192,6 +194,30 @@ describe('renderActivity', () => {
       expect(setActivityTokenRate(activity, missing)).toBe(true);
       expect(renderActivity(activity, 5_000)).not.toContain('tok/s');
     }
+  });
+
+  it('reads tok/s from status data and clears running indicators at closure', () => {
+    const activity = createTurnActivity(0);
+    pushToolStep(activity, 'Read', { file_path: '/x/relay.ts' }, 'read-1');
+    const speed = { rate: 54.6, average: 50, tokens: 200, elapsedMs: 4_000, streaming: true };
+
+    expect(applyStatusTokenRate(activity, { tokenSpeed: speed })).toBe(true);
+    expect(activity.tokenRate).toBe(55);
+    // 占位帧 / 0 读数 / 非对象: 保留上一个值。
+    expect(applyStatusTokenRate(activity, {})).toBe(false);
+    expect(applyStatusTokenRate(activity, { tokenSpeed: { ...speed, rate: 0 } })).toBe(false);
+    expect(applyStatusTokenRate(activity, null)).toBe(false);
+    expect(activity.tokenRate).toBe(55);
+    // 不可靠读数: 隐藏。
+    expect(applyStatusTokenRate(activity, { generationReliable: false, tokenSpeed: speed })).toBe(true);
+    expect(activity.tokenRate).toBeNull();
+
+    applyStatusTokenRate(activity, { tokenSpeed: speed });
+    setActivityNotice(activity, '模型服务繁忙，正在自动重试（1/4）…');
+    clearRunningIndicators(activity);
+    expect(activity.notice).toBeNull();
+    expect(activity.tokenRate).toBeNull();
+    expect(activity.totalSteps).toBe(1);
   });
 
   it('emits no chrome for a text-only quick answer', () => {

@@ -10,6 +10,7 @@
 
 import { summarizeToolUseText } from '@cindy/maker-shared/message-presentation';
 import { tokenizeThinkingText } from '@cindy/maker-shared/thinking-text';
+import { readTokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 
 /** Keep parity with the desktop/mobile running work preview. */
 export const MAX_VISIBLE_STEPS = 5;
@@ -147,6 +148,32 @@ export function setActivityTokenRate(activity: TurnActivityState, rate: number |
   if (activity.tokenRate === next) return false;
   activity.tokenRate = next;
   return true;
+}
+
+/**
+ * 用一条 status 事件的 data 更新头部 tok/s —— 所有渠道路径(官方 bot、个人 IM、
+ * 自动任务转播)共用这一个判据。返回头部是否变化。
+ *
+ * - generationReliable === false: 隐藏, 与桌面运行状态栏同口径(不显示错数);
+ * - 占位帧 / 首个输出之前的 0 读数 / 坏数据: 保留上一个值, 避免工具执行间隙头部来回闪。
+ */
+export function applyStatusTokenRate(activity: TurnActivityState, data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const record = data as { generationReliable?: unknown; tokenSpeed?: unknown };
+  if (record.generationReliable === false) return setActivityTokenRate(activity, null);
+  const speed = readTokenSpeedSnapshot(record.tokenSpeed);
+  if (!speed || speed.rate <= 0) return false;
+  return setActivityTokenRate(activity, speed.rate);
+}
+
+/**
+ * 收口时清掉只在运行中才成立的指示(重试说明、当前 tok/s)。凡是会把过程区冻结进
+ * 终稿的收口路径都要调它, 否则失败卡片会永久显示"仍在重试"或一个已经不存在的速度。
+ * 「等你确认」那一行由交互收口自行负责, 这里不碰。
+ */
+export function clearRunningIndicators(activity: TurnActivityState): void {
+  activity.notice = null;
+  activity.tokenRate = null;
 }
 
 /** 有真实进展 = 上一条状态说明(如"正在重试")已过期。 */

@@ -1110,6 +1110,42 @@ describe('turnRunner 自动任务转播(scheduler turn → 远程控制 thread)'
     });
   });
 
+  it('scheduler 转播卡的头部同样带出 tok/s, status 本身不开卡', async () => {
+    const stub = streamingHandleStub();
+    mocks.slackIm.startStreamingText.mockResolvedValue(stub);
+    const h = await attachAndIdle();
+    const status = (rate: number): AgentEvent =>
+      withOrigin({
+        type: 'status',
+        data: {
+          status: 'Running',
+          isRunning: true,
+          tokenSpeed: { rate, average: rate, tokens: 300, elapsedMs: 3_000, streaming: true },
+        },
+      });
+
+    // 转播卡还没开: status 不建卡、不报错。
+    h.emit(status(80));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mocks.slackIm.startStreamingText).not.toHaveBeenCalled();
+
+    h.emit(withOrigin({ type: 'tool_use', data: { toolName: 'Read', input: { file_path: '/x/a.ts' } } }));
+    h.emit(status(97.6));
+    h.emit(withOrigin({ type: 'text', data: { text: '检查中', isFinal: false } }));
+    await vi.waitFor(() => {
+      const lastReplace = stub.replace.mock.calls.at(-1)?.[0] as string;
+      expect(lastReplace).toContain('· 98 tok/s');
+      expect(lastReplace).toContain('读取 a.ts');
+    });
+
+    h.emit(withOrigin({ type: 'done', data: {} }));
+    await vi.waitFor(() => {
+      const finalBody = (stub.finalize.mock.calls.at(-1) as unknown[] | undefined)?.[0] as string;
+      expect(finalBody).toContain('检查中');
+      expect(finalBody).not.toContain('tok/s');
+    });
+  });
+
   it('非 scheduler 的 stray(desktop 自发 turn,无 turnOrigin)→ 不转播', async () => {
     const stub = streamingHandleStub();
     mocks.slackIm.startStreamingText.mockResolvedValue(stub);
