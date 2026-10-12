@@ -871,7 +871,10 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
     不行再来问)时 O 不用短时缓存、现读组内电脑的最新状态再选，请求格式不变；
   - `leases { seq, entries: [{ sessionId, providerId, memberKey }] }` → 整体替换 C 正在运行的经组任务，`seq` 只增(C 按时间生成，
     重启后仍增大)，乱序旧包丢弃，150s 不刷新作废；只用于分摊负载；
-  - `view { providerId }` → 组设置与组员状态(`ProviderGroupView`)。
+  - `view { providerId, model? }` → 组设置与组员状态(`ProviderGroupView`)；省略 `model` 时只按组级状态返回，
+    发送前检查带上当前模型时，组所在电脑按该模型重新计算额度。带 `model` 的回包回显同一个 `model`，调用方只在回显一致时
+    使用模型级状态；旧组所在电脑忽略这个可选字段、没有回显时只沿用离线、不可用和组级冷却等不依赖模型的状态，
+    对可用或满载状态按模型额度未知处理，不会把旧端的组级可用状态误当成模型级状态。
   - `session-group { sessionId }`(只读，2026-10-11)→ `{ group: { groupDeviceId, providerId } | null }`：发给**任务所在的电脑**
     (不论它有没有组)，回答这个任务此刻归哪个组，坐标是那台视角(`groupDeviceId` 为 null = 那台自己建的组)。手机与桌面远程控制
     的模型列表据此把归组的任务显示在组那一项下、在组那一项里选模型时留在此刻运行的那台(provider-groups.md §10)。不读写分配器、
@@ -895,6 +898,25 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - 实现：`apps/desktop/src/main/provider-group/`(`remoteHandler.ts`、`remoteClient.ts`、`externalLoad.ts`、`leaseReporter.ts`、
   `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
   `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
+
+## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
+再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+
+- **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
+  旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
+  旧控制端连接新组所在电脑也能使用新策略。组所在电脑降级后按 `least` 分配，旧版再次保存组设置会写回 `least`。
+- **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
+  订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
+  避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+- **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
+  分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
+  的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
+  或凭证访问。
+- 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、`runtime.ts`、
+  `router.ts`、`remoteClient.ts`、`remoteHandler.ts`、`service.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
+  `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。
 
 ## 供应商组：受邀者经组所在电脑中转(P2b)
 

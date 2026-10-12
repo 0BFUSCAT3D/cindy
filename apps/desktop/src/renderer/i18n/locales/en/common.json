@@ -441,11 +441,13 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
+      "usage": "Usage Balancing",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
         "order": "Earlier in the list first",
-        "weight": "Split by weight"
+        "weight": "Split by weight",
+        "usage": "Balance 5-hour and weekly usage"
       }
     },
     "autoSwitch": {

@@ -18,6 +18,7 @@ import type { ProviderGroupConfig, ProviderGroupMember, ProviderGroupView } from
 import type { ProviderGroupBinding } from './bindings.js';
 import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from './directory.js';
 import { pickProviderGroupMember, type SchedulableMember } from './scheduler.js';
+import { providerGroupUsageState } from './usage.js';
 
 /** 撞到用量上限但拿不到重置时刻时，默认冷却多久。 */
 export const PROVIDER_GROUP_DEFAULT_COOLDOWN_MS = 30 * 60_000;
@@ -91,7 +92,7 @@ export type ProviderGroupPickResult =
 
 export interface ProviderGroupRouter {
   pick(input: ProviderGroupPickInput): Promise<ProviderGroupPickResult>;
-  view(providerId: string): Promise<ProviderGroupView>;
+  view(providerId: string, model?: string): Promise<ProviderGroupView>;
   /** 经本组分到这台、正在运行的任务数。 */
   running(providerId: string, memberKey: string): number;
   markCooling(providerId: string, memberKey: string, until: number): void;
@@ -202,7 +203,8 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       const config = deps.readGroup(input.providerId);
       if (!config) return { kind: 'none' };
       const usable = (r: ResolvedProviderGroupMember) =>
-        offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null;
+        offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null
+        && !providerGroupUsageState(r.claudeUsage, input.model, deps.now()).limited;
       const ownLocal = (r: ResolvedProviderGroupMember) => input.localTask === true && r.member.kind === 'local';
       const paused = (r: ResolvedProviderGroupMember) => r.member.paused && !ownLocal(r);
       const local = input.localTask === true ? config.members.find((m) => m.kind === 'local') : undefined;
@@ -233,6 +235,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
         running: memberRunning(input.providerId, r),
         limit: r.member.limit,
         weight: r.member.weight,
+        usagePercent: providerGroupUsageState(r.claudeUsage, input.model, deps.now()).usagePercent,
       }));
       const preferred = resolved.find((r) => ownLocal(r) && usable(r) && !input.exclude?.has(r.member.key));
       const key = preferred?.member.key ?? pickProviderGroupMember(schedulable, config.strategy, {
@@ -255,21 +258,26 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       return { kind: 'member', member: chosen.member, label: chosen.label, resolved };
     },
 
-    async view(providerId) {
+    async view(providerId, model) {
       const config = deps.readGroup(providerId);
       if (!config) return { providerId, config: null, members: [] };
       const resolved = await deps.directory.resolveMembers(providerId, config);
       return {
         providerId,
         config,
+        ...(model ? { model } : {}),
         members: resolved.map((r) => {
-          const until = coolingUntil(providerId, r.member.key);
+          const quota = providerGroupUsageState(r.claudeUsage, model, deps.now());
+          const remembered = coolingUntil(providerId, r.member.key);
+          const until = quota.limited && quota.resetAtMs === null ? null
+            : remembered === null ? quota.resetAtMs
+            : quota.resetAtMs === null ? remembered : Math.max(remembered, quota.resetAtMs);
           const count = memberRunning(providerId, r);
           const state = r.member.paused
             ? 'paused' as const
             : r.state !== 'ok'
               ? r.state
-              : until !== null
+              : until !== null || quota.limited
                 ? 'cooling' as const
                 : count >= r.member.limit
                   ? 'full' as const
