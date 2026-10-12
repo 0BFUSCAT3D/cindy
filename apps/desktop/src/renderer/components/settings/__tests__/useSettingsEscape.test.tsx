@@ -5,11 +5,13 @@
  */
 import * as Dialog from '@radix-ui/react-dialog';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { useRef, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TAB_IDS } from '@/lib/tabLabels';
 import { PluginDetailTopBar } from '@/features/plugin/PluginDetailTopBar';
+import { PluginManagementLayout } from '@/features/plugin/PluginManagementLayout';
 import { SettingsSidebarNav } from '../SettingsSidebarNav';
 import { useSettingsEscape } from '../useSettingsEscape';
 
@@ -104,6 +106,44 @@ describe('useSettingsEscape', () => {
 
     pressEscape(search);
     expect(document.activeElement).toBe(document.body);
+    expect(onEscape).not.toHaveBeenCalled();
+
+    pressEscape();
+    expect(onEscape).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a non-empty plugin search first, then leaves the field, then exits', () => {
+    const onEscape = vi.fn();
+    function PluginSearch() {
+      const [query, setQuery] = useState('calendar');
+      return (
+        <PluginManagementLayout
+          activeTab="plugins"
+          query={query}
+          onQueryChange={setQuery}
+          searchPlaceholder="Search plugins"
+          clearSearchLabel="Clear plugin search"
+        >
+          <span>Plugins</span>
+        </PluginManagementLayout>
+      );
+    }
+    render(
+      <MemoryRouter>
+        <Harness onEscape={onEscape}>
+          <PluginSearch />
+        </Harness>
+      </MemoryRouter>,
+    );
+    const search = screen.getByRole('textbox', { name: 'Search plugins' }) as HTMLInputElement;
+    search.focus();
+
+    pressEscape(search);
+    expect(search.value).toBe('');
+    expect(document.activeElement).toBe(search);
+
+    pressEscape(search);
+    expect(document.activeElement).not.toBe(search);
     expect(onEscape).not.toHaveBeenCalled();
 
     pressEscape();

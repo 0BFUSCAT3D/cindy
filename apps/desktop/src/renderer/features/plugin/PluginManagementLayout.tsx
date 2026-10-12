@@ -203,6 +203,8 @@ export function PluginManagementHeader({
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
                 if (event.key !== 'Escape') return;
+                // 认领这一下 Esc：外层（设置页）不再接着失焦或退出。
+                event.preventDefault();
                 if (query) {
                   onQueryChange('');
                 } else {
