@@ -13,7 +13,13 @@ vi.mock('../desktopProcessIdentity', async (importOriginal) => ({
   readDesktopProcessIdentity: readIdentity,
 }));
 
-import { acquireWorktreeRuntimeLease, releaseWorktreeRuntimeLease, readWorktreeRuntimePaths, retryPendingWorktreeRuntimeLeaseReleases } from '../worktree/runtimeLeases';
+import {
+  acquireWorktreeRuntimeLease,
+  reclaimOrphanedWorktreeRuntimeLeases,
+  releaseWorktreeRuntimeLease,
+  readWorktreeRuntimePaths,
+  retryPendingWorktreeRuntimeLeaseReleases,
+} from '../worktree/runtimeLeases';
 import { physicalWorktreeKey, withWorktreeResourceLock } from '../worktree/resourceLock';
 import { createLinkedWorktreeMetadata } from './fixtures/linkedWorktree';
 import { seedLegacySharedRuntimeLease } from './fixtures/legacySharedRuntimeLease';
@@ -409,6 +415,17 @@ describe('worktree runtime evidence and physical locks', () => {
     });
     expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
     await releaseWorktreeRuntimeLease(lease);
+    expect(await readWorktreeRuntimePaths()).toEqual(new Set());
+  });
+
+  it('reclaims a dead-owner lease only through explicit orphan cancellation', async () => {
+    const lease = (await acquireWorktreeRuntimeLease('orphan', worktree))!;
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('owner is gone'), { code: 'ESRCH' });
+    });
+    expect(await readWorktreeRuntimePaths()).toEqual(new Set([await physicalWorktreeKey(worktree)]));
+    await expect(reclaimOrphanedWorktreeRuntimeLeases(worktree)).resolves.toBe(1);
+    await expect(fs.stat(lease.file)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readWorktreeRuntimePaths()).toEqual(new Set());
   });
 

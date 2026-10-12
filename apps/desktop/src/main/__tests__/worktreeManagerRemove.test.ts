@@ -1,8 +1,10 @@
 // Normal archive/deletion coverage moved to managedWorktreeRecycle.test.ts:
 // non-mutating content snapshots replace the former stash/reapply contract.
+const reclaimOrphanedRuntimeLeasesMock = vi.hoisted(() => vi.fn(async () => 0));
 vi.mock('../worktree/runtimeLeases', () => ({
   readWorktreeRuntimePaths: async () => new Set(),
   acquireWorktreeRuntimeLease: async () => {}, releaseWorktreeRuntimeLease: async () => {},
+  reclaimOrphanedWorktreeRuntimeLeases: reclaimOrphanedRuntimeLeasesMock,
 }));
 /**
  * removeWorktreeForSession / discardPrecreatedWorktree 删除守卫回归:
@@ -134,6 +136,7 @@ describe('removeWorktreeForSession', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    reclaimOrphanedRuntimeLeasesMock.mockReset().mockResolvedValue(0);
     storeMap.clear();
     cancelledIds.clear();
     pendingSafeDirectoryCleanups.length = 0;
@@ -325,6 +328,21 @@ describe('removeWorktreeForSession', () => {
     expect(cancelledIds.has('s1')).toBe(true);
     expect(storeMap.get('s1')).toBe(meta);
     expect(gitExecMock).not.toHaveBeenCalledWith(['worktree', 'remove', meta.path], BASE_REPO);
+  });
+
+  it('cancellation rechecks live references after reclaiming a dead-owner lease', async () => {
+    const meta = { ...makeMeta('orphan'), recoveryKey: 'recovery-key-orphan-123456' };
+    storeMap.set(meta.sessionId, meta);
+    reclaimOrphanedRuntimeLeasesMock.mockResolvedValue(1);
+
+    await expect(manager.cancelPrecreatedWorktree(
+      meta.sessionId,
+      { recoveryKey: meta.recoveryKey },
+      { canRemove: async () => true },
+    )).resolves.toEqual({ status: 'discarded', branchDeleted: false });
+
+    expect(reclaimOrphanedRuntimeLeasesMock).toHaveBeenCalledWith(meta.path);
+    expect(storeMap.has(meta.sessionId)).toBe(false);
   });
 
   it.each(['discard', 'cancel'])('%s waits for an in-flight create before deciding the record is absent', async (operation) => {

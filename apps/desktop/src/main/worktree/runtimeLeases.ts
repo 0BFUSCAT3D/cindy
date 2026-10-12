@@ -300,3 +300,56 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
   }
   return paths;
 }
+
+/**
+ * Remove runtime leases left by a dead owner for an explicitly cancelled,
+ * unclaimed pre-created worktree.
+ *
+ * Normal recycle deliberately keeps leases from dead processes because they
+ * may belong to a detached child.  A pre-created worktree has no claimed
+ * session yet, and the caller has already fenced late creation under the
+ * session lock.  In that narrow path, a lease whose recorded owner PID is no
+ * longer alive is stale evidence rather than an active borrower.  Malformed
+ * leases and leases owned by a live PID remain protective.
+ */
+export async function reclaimOrphanedWorktreeRuntimeLeases(
+  worktreePath: string,
+): Promise<number> {
+  const target = await physicalWorktreeKey(worktreePath);
+  let reclaimed = 0;
+  for (const directory of [runtimeRoot(), sharedRuntimeRoot()]) {
+    let names: string[];
+    try {
+      names = await fs.readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      continue;
+    }
+    for (const name of names) {
+      if (!leaseNamePattern.test(name)) continue;
+      const file = path.join(directory, name);
+      try {
+        const value = JSON.parse(await fs.readFile(file, 'utf8')) as {
+          version?: unknown;
+          pid?: unknown;
+          path?: unknown;
+        };
+        if (value.version !== 1 || typeof value.pid !== 'number'
+          || !Number.isInteger(value.pid) || value.pid <= 0
+          || typeof value.path !== 'string'
+          || await physicalWorktreeKey(value.path) !== target
+          || pidMayBeAlive(value.pid)) {
+          continue;
+        }
+        await fs.unlink(file);
+        reclaimed += 1;
+      } catch (error) {
+        // A concurrent release may win the race.  Any other read/parse/write
+        // failure stays protective and is retried by the normal maintenance
+        // path rather than authorizing deletion.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+      }
+    }
+  }
+  return reclaimed;
+}

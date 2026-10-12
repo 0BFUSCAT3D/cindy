@@ -16,6 +16,7 @@ vi.mock('../worktree/runtimeLeases', () => ({
   readWorktreeRuntimePaths: async () => new Set(),
   acquireWorktreeRuntimeLease: async () => ({}),
   releaseWorktreeRuntimeLease: async () => {},
+  reclaimOrphanedWorktreeRuntimeLeases: async () => 0,
 }));
 const includeMock = vi.hoisted(() => vi.fn(async () => []));
 
