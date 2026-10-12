@@ -94,6 +94,7 @@ export function VoiceSpeakerFilterCard({
 
   const showDetails = supported && status !== null && (enabled || status.enrolled);
   const modelsReady = status?.modelState === 'ready';
+  if (window.electronAPI.platform !== 'darwin' && window.electronAPI.platform !== 'win32') return null;
 
   return (
     <section
