@@ -111,16 +111,20 @@ describe('createWorktree naming authority', () => {
     const checkout = new Promise<{ stdout: string; stderr: string }>((resolve) => {
       finishCheckout = () => resolve({ stdout: '', stderr: '' });
     });
+    const stagedPids = [4241, 4242, 4243];
+    let stagedIndex = 0;
     gitExecMock.mockImplementation((args: string[], cwd?: string, opts?: { onSpawn?: (pid: number) => void }) => {
-      if (args[0] === 'checkout' && args.includes(':(exclude).sivi')) {
-        opts?.onSpawn?.(4242);
-        return checkout;
+      if (opts?.onSpawn && (args[0] === 'ls-tree' || args[0] === 'checkout')) {
+        opts.onSpawn(stagedPids[stagedIndex++]!);
       }
+      if (args[0] === 'ls-tree') return { stdout: 'AGENTS.md\\n', stderr: '' };
+      if (args[0] === 'checkout' && args.includes(':(exclude).sivi')) return checkout;
       return previousGit(args, cwd, opts);
     });
     try {
       await expect(create('background')).resolves.toMatchObject({ ok: true });
-      expect(checkoutLease.record).toHaveBeenCalledExactlyOnceWith({}, 4242);
+      expect(checkoutLease.record).toHaveBeenCalledTimes(3);
+      expect(checkoutLease.record.mock.calls.map((call) => call[1])).toEqual(stagedPids);
       expect(checkoutLease.release).not.toHaveBeenCalled();
     } finally {
       finishCheckout();

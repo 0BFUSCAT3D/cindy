@@ -189,6 +189,16 @@ describe('gitExec timeoutMs', () => {
     await expect(isGitProcessTreeAlive(4242)).resolves.toBe(true);
   });
 
+  it('keeps a lease when the Windows snapshot has already lost the checkout root', async () => {
+    setPlatform('win32');
+    const state = installExecFileMock();
+    state.psTable = [];
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+    });
+    await expect(isGitProcessTreeAlive(4242)).resolves.toBe(true);
+  });
+
   it('records the spawned checkout PID before completion', async () => {
     const state = installExecFileMock();
     const onSpawn = vi.fn();

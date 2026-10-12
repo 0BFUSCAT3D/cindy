@@ -138,9 +138,15 @@ export function recordWorktreeRuntimeLeaseChild(lease: WorktreeRuntimeLease, chi
       pid?: unknown;
       path?: unknown;
       childPid?: unknown;
+      childPids?: unknown;
     };
     if (value.version !== 1 || value.pid !== process.pid || value.path !== lease.physicalPath) return;
-    fsSync.writeFileSync(lease.file, JSON.stringify({ ...value, childPid }), { mode: 0o600 });
+    const childPids = [
+      ...(Array.isArray(value.childPids) ? value.childPids : []),
+      ...(typeof value.childPid === 'number' ? [value.childPid] : []),
+      childPid,
+    ].filter((pid, index, all): pid is number => Number.isInteger(pid) && pid > 0 && all.indexOf(pid) === index);
+    fsSync.writeFileSync(lease.file, JSON.stringify({ ...value, childPid, childPids }), { mode: 0o600 });
   } catch {
     // Missing or partially written child evidence must stay protective.
   }
@@ -354,14 +360,20 @@ export async function reclaimOrphanedWorktreeRuntimeLeases(
           pid?: unknown;
           path?: unknown;
           childPid?: unknown;
+          childPids?: unknown;
         };
+        const childPids = Array.isArray(value.childPids)
+          ? value.childPids.filter((pid): pid is number => typeof pid === 'number' && Number.isInteger(pid) && pid > 0)
+          : typeof value.childPid === 'number' && Number.isInteger(value.childPid) && value.childPid > 0
+            ? [value.childPid]
+            : [];
         if (value.version !== 1 || typeof value.pid !== 'number'
           || !Number.isInteger(value.pid) || value.pid <= 0
           || typeof value.path !== 'string'
           || await physicalWorktreeKey(value.path) !== target
           || pidMayBeAlive(value.pid)
-          || typeof value.childPid !== 'number' || !Number.isInteger(value.childPid)
-          || value.childPid <= 0 || await isGitProcessTreeAlive(value.childPid)) {
+          || childPids.length === 0
+          || (await Promise.all(childPids.map((pid) => isGitProcessTreeAlive(pid))).then((alive) => alive.some(Boolean)))) {
           continue;
         }
         await fs.unlink(file);

@@ -177,6 +177,9 @@ export async function isGitProcessTreeAlive(pid: number): Promise<boolean> {
   if (pidMayBeAliveForGit(pid)) return true;
   const rows = await queryWin32ProcessTable();
   if (!rows) return true;
+  // Once the root has exited, a Windows snapshot may have already reparented
+  // or dropped its descendants. Missing ancestry cannot prove the tree is gone.
+  if (!rows.some((row) => row.pid === pid)) return true;
   const descendants = new Set([pid]);
   let changed = true;
   while (changed) {
