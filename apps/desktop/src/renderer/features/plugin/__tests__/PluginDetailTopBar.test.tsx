@@ -49,7 +49,7 @@ describe('PluginDetailTopBar', () => {
     render(<Harness onBack={onBack} />);
 
     const event = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
-    window.dispatchEvent(event);
+    document.dispatchEvent(event);
 
     expect(onBack).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
@@ -60,7 +60,7 @@ describe('PluginDetailTopBar', () => {
     const onBack = vi.fn();
     render(<Harness onBack={onBack} />);
 
-    fireEvent.keyDown(window, { key: 'Escape', metaKey: true });
+    fireEvent.keyDown(document, { key: 'Escape', metaKey: true });
 
     const input = document.createElement('input');
     document.body.appendChild(input);
@@ -69,7 +69,7 @@ describe('PluginDetailTopBar', () => {
 
     const consumed = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
     consumed.preventDefault();
-    window.dispatchEvent(consumed);
+    document.dispatchEvent(consumed);
 
     expect(onBack).not.toHaveBeenCalled();
   });
@@ -80,7 +80,7 @@ describe('PluginDetailTopBar', () => {
       const onBack = vi.fn();
       render(<Harness onBack={onBack} />);
 
-      fireEvent.keyDown(window, { key: 'Escape', [flag]: true });
+      fireEvent.keyDown(document, { key: 'Escape', [flag]: true });
 
       expect(onBack).not.toHaveBeenCalled();
     },

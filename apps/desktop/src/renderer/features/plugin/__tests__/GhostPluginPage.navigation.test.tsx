@@ -161,7 +161,7 @@ describe('plugin page return navigation', () => {
       if (method === 'button') {
         fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.detail.backToList' }));
       } else {
-        fireEvent.keyDown(window, { key: 'Escape' });
+        fireEvent.keyDown(document.body, { key: 'Escape' });
       }
 
       expect(screen.getByRole('main').scrollTop).toBe(640);
@@ -177,7 +177,7 @@ describe('plugin page return navigation', () => {
   it('restores ordinary catalog navigation without a pending recommendation', async () => {
     render(page('/plugins'));
     await openFromCatalog();
-    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(screen.getByRole('main').scrollTop).toBe(640);
     expect(getPendingPluginSuggestion()).toBeNull();
   });
@@ -198,7 +198,7 @@ describe('plugin page return navigation', () => {
     mounted.rerender(page(`/plugins?recommendation=${nonce}`));
     await waitFor(() => expect(loadDetail).toHaveBeenCalledTimes(2));
 
-    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
     await act(async () => {
       finishRefresh({ ...detail, name: 'Refreshed Plugin' });
     });
