@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 /**
  * PR 徽标在本机 gh 缺失 / 未登录时的引导判定(prGuidanceFor / prFailureCopyKey)
  * 与输入框预填事件总线(insertPromptIntoComposer / subscribePromptInsert)。

@@ -64,6 +64,10 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    sequence: { sequencer: path.resolve(__dirname, 'scripts/unit-test-sequencer.mjs') },
+    ...(process.env.CI && process.env.XDT_UNIT_TEST_SHARD ? {
+      reporters: ['default', path.resolve(__dirname, 'scripts/ci-timing-reporter.mjs')],
+    } : {}),
     // Main-process tests do real IO (loopback HTTP servers, git subprocesses,
     // heavy module imports through the vite-node transform). On Windows those
     // are markedly slower and, under the full desktop suite's worker-pool

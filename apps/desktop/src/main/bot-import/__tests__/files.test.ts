@@ -75,17 +75,56 @@ it('hashes binary contents and checkpoints compactly without invoking Buffer.toJ
 });
 
 it('reads every resource in a skill with more than 4096 small files', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-many-files-'));
+  // 文件数量回归走完整遍历/读取/预算逻辑，以流式内存句柄消除 4100 次
+  // Windows 小文件落盘。真实文件系统、目录和链接语义由相邻用例覆盖。
+  const root = path.resolve(os.tmpdir(), 'cindy-import-many-files');
+  let opened = 0, closed = 0;
+  const directory = vi.spyOn(fs, 'opendir').mockResolvedValue({
+    async *[Symbol.asyncIterator]() {
+      for (let index = 0; index < 4100; index++) {
+        yield { name: `resource-${index}.txt`, isDirectory: () => false, isSymbolicLink: () => false };
+      }
+    },
+  } as unknown as Awaited<ReturnType<typeof fs.opendir>>);
+  const realpath = vi.spyOn(fs, 'realpath').mockImplementation(async file => path.resolve(String(file)));
+  const open = vi.spyOn(fs, 'open').mockImplementation(async file => {
+    const index = Number(path.basename(String(file)).match(/^resource-(\d+)\.txt$/)![1]);
+    const content = Buffer.from(`Resource ${index}`);
+    opened++;
+    return {
+      stat: async () => ({ isFile: () => true, size: content.length, mode: 0o600 }),
+      read: async (buffer: Buffer, offset: number, length: number, position: number) => ({
+        bytesRead: content.copy(buffer, offset, position, position + length), buffer,
+      }),
+      close: async () => { closed++; },
+    } as unknown as Awaited<ReturnType<typeof fs.open>>;
+  });
   try {
-    for (let first = 0; first < 4100; first += 32) await Promise.all(Array.from({ length: Math.min(32, 4100 - first) }, (_, offset) => {
-      const index = first + offset;
-      return fs.writeFile(path.join(root, `resource-${index}.txt`), `Resource ${index}`);
-    }));
     const files = await readImportTree(root, undefined, createImportBudget());
     expect(files).toHaveLength(4100);
     expect(files.find(file => file.name === 'resource-4099.txt')?.bytes.toString()).toBe('Resource 4099');
+    expect(new Set(files.map(file => file.name)).size).toBe(4100);
+    for (const file of files) expect(file.bytes.toString()).toBe(`Resource ${file.name.match(/\d+/)![0]}`);
+    expect(opened).toBe(4100);
+    expect(closed).toBe(opened);
+  } finally { open.mockRestore(); realpath.mockRestore(); directory.mockRestore(); }
+});
+
+it('reads small resources from real nested directories and preserves executable metadata', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-real-files-'));
+  try {
+    await fs.mkdir(path.join(root, 'nested'));
+    await Promise.all(Array.from({ length: 32 }, (_, index) =>
+      fs.writeFile(path.join(root, index % 2 ? 'nested' : '', `resource-${index}.txt`), `Resource ${index}`)));
+    const files = await readImportTree(root, undefined, createImportBudget());
+    expect(files).toHaveLength(32);
+    for (const file of files) {
+      expect(file.bytes.toString()).toBe(`Resource ${file.name.match(/\d+/)![0]}`);
+      const stat = await fs.stat(path.join(root, file.name));
+      expect(file.executable).toBe((stat.mode & 0o111) !== 0);
+    }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
-}, 180_000);
+});
 
 it('charges metadata for empty files and stops streaming instead of retaining unlimited errors', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-empty-files-'));

@@ -12,6 +12,7 @@ import manifest, {
   unitTestShardArgs,
 } from "../test-workspaces.config.mjs";
 import { nodeWebstorageEnabled } from "../shared/node-webstorage.mjs";
+import { partitionByTiming } from "../shared/timing-shards.mjs";
 import {
 	acquireTestGateLock,
 	classifyTestGateLockProbeError,
@@ -131,8 +132,34 @@ test("client CI owns the complete Desktop Git integration tier", () => {
 	assert.ok(job, "client CI must define an independent git-integration job");
 	assert.match(
 		job[1],
-		/^\s{6}- name: Run Desktop Git integration tests\n\s{8}run: pnpm test:git-integration$/m,
+		/^\s{8}run: pnpm run test:workspaces --tier git-integration$/m,
 	);
+});
+
+test("timing shards preserve every selected specification exactly once regardless of collection order", () => {
+	const files = Array.from({ length: 21 }, (_, index) => ({ id: `standard:file-${index}`, ms: index < 3 ? 100_000 - index * 10_000 : 3000 }));
+	for (const count of [1, 2, 3, 30]) {
+		const options = { count, key: file => file.id, weight: file => file.ms };
+		const shards = partitionByTiming(files, options);
+		assert.deepEqual(shards, partitionByTiming([...files].reverse(), options));
+		assert.equal(new Set(shards.flat().map(file => file.id)).size, files.length);
+		assert.deepEqual(shards.flat().map(file => file.id).sort(), files.map(file => file.id).sort());
+		assert.ok(shards.every(shard => shard.length <= Math.ceil(files.length / count)));
+	}
+});
+
+test("timing shards distribute long files and account for other steps on the first job", () => {
+	const files = [100, 90, 80, 10, 10, 10].map((ms, index) => ({ id: `file-${index}`, ms }));
+	const options = { count: 2, key: file => file.id, weight: file => file.ms };
+	const shards = partitionByTiming(files, options);
+	const totals = shards.map(shard => shard.reduce((sum, file) => sum + file.ms, 0));
+	assert.ok(Math.abs(totals[0] - totals[1]) <= 80);
+	const offset = partitionByTiming(files, { ...options, overhead: [100, 0] });
+	assert.ok(offset[1].includes(files[0]));
+	assert.deepEqual(partitionByTiming([], options), [[], []]);
+	assert.throws(() => partitionByTiming([files[0], files[0]], options), /Duplicate/);
+	assert.throws(() => partitionByTiming(files, { ...options, overhead: [NaN] }), /overhead/);
+	assert.throws(() => partitionByTiming(files, { ...options, weight: () => 0 }), /weight/);
 });
 
 test("client CI no longer builds model-access protocol for consumers", () => {
@@ -1747,6 +1774,11 @@ test("createWorkspaceRunReporter keeps passing output concise and flushes failed
 	reporter.onCommandComplete({
 		run,
 		stage: "test",
+		commandResult: { output: "many passing file lines\n\x1b[32mCI_TIMING 21 files; wall 10.0s\x1b[0m\n", exitCode: 0 },
+	});
+	reporter.onCommandComplete({
+		run,
+		stage: "test",
 		commandResult: { output: "failed output", exitCode: 1 },
 	});
 	timestamp = 2_250;
@@ -1758,6 +1790,7 @@ test("createWorkspaceRunReporter keeps passing output concise and flushes failed
 	assert.equal(
 		writes.join(""),
 		"START packages/a unit\n" +
+			"CI_TIMING 21 files; wall 10.0s\n" +
 			"\n[packages/a unit test]\nfailed output\n" +
 			"FAIL COMMAND_FAILED packages/a unit (1.5s)\n",
 	);

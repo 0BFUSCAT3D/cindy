@@ -126,6 +126,8 @@ jobs:
         shard: [1, 2]
     env:
       XDT_UNIT_TEST_SHARD: ${{ matrix.shard }}/2
+      # 第一分片还运行 Pi integration 与 DB 回归，按近期额外耗时预留负载。
+      XDT_DESKTOP_SHARD_OVERHEAD_MS: '90000,0'
 
     steps:
       - name: Checkout client
@@ -163,6 +165,15 @@ jobs:
       - name: Run client and package unit test shard
         # package script 会传递 npm_execpath，让子进程复用当前 pnpm 入口。
         run: pnpm run test:workspaces --tier unit
+
+      - name: Upload Desktop test timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-timings-linux-${{ matrix.shard }}
+          path: tmp/ci-timings/*.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       # 真实进程与 Unix socket 覆盖独立执行一次，不混入日常 unit 或两个分片。
       - name: Run Pi manager integration tests
@@ -203,6 +214,8 @@ jobs:
         shard: [1, 2]
     env:
       XDT_UNIT_TEST_SHARD: ${{ matrix.shard }}/2
+      # 第一分片的 runner 自测与 DB 回归近期合计约 210s。
+      XDT_DESKTOP_SHARD_OVERHEAD_MS: '210000,0'
 
     steps:
       - name: Checkout client
@@ -240,6 +253,15 @@ jobs:
         # 通过 package script 传递
         # npm_execpath，避免 Windows 子进程退回 PATH 上的 pnpm.cmd。
         run: pnpm run test:workspaces --tier unit
+
+      - name: Upload Desktop test timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-timings-windows-${{ matrix.shard }}
+          path: tmp/ci-timings/*.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       # localDb suites are outside the unit tier; exercise these DB boundaries on both OSes.
       - name: Run companion database regressions
@@ -291,4 +313,5 @@ jobs:
         run: pnpm install:ripgrep
 
       - name: Run Desktop Git integration tests
-        run: pnpm test:git-integration
+        # runner 自测已由 verify-checks 执行；保留完整 Git tier，避免重复自测。
+        run: pnpm run test:workspaces --tier git-integration

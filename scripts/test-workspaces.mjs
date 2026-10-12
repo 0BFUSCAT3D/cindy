@@ -742,9 +742,15 @@ export function createWorkspaceRunReporter({
 		},
 		onCommandComplete({ run, stage, commandResult }) {
 			// Successful Vitest workspaces can contain thousands of per-file lines.
-			// The elapsed PASS line is sufficient; retain full output only when a
-			// command fails so diagnostics stay available without flooding CI logs.
-			if (commandResult.exitCode === 0 || !commandResult.output) return;
+			// Keep the elapsed PASS line and the concise timing summary; retain
+			// full output on failure so diagnostics remain available.
+			if (!commandResult.output) return;
+			if (commandResult.exitCode === 0) {
+				const timing = commandResult.output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)
+					.filter(line => line.startsWith('CI_TIMING '));
+				if (timing.length) stdout.write(`${timing.join('\n')}\n`);
+				return;
+			}
 			const output = commandResult.output.endsWith("\n")
 				? commandResult.output
 				: `${commandResult.output}\n`;

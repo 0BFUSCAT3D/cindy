@@ -17,7 +17,7 @@ type Registry = {
   readonly size: number;
 };
 
-// 每个用例都经 freshCodexProxyHost() 的 vi.resetModules() + 动态 import 重新加载
+// 有状态用例经 freshCodexProxyHost() 的 vi.resetModules() + 动态 import 重新加载
 // 整条 SUT 模块链(maker-core / compat-proxy / bridges)。首个用例还要承担全部
 // 依赖的首次编译加载，满载 CI 上会超出 vitest 默认 5s。只放宽本文件的预算，
 // 断言与流程不变。
@@ -184,8 +184,11 @@ async function freshCodexProxyHost() {
 // 冷启动,不属于任何断言 —— 文件级 beforeAll 先把模块图焐热(hook 超时独立计;
 // Windows 给 120s,其它平台仍 60s),之后各用例里 resetModules + import 只剩模块
 // 求值开销,回到默认超时内。
+// 路由能力的参数矩阵只调用纯函数，复用首次加载的引用；代理、供应商和认证
+// 生命周期用例仍重新加载模块，避免共享它们的可变状态。
+let pureRouteHost: typeof import('../codex-proxy-host.js');
 beforeAll(async () => {
-  await import('../codex-proxy-host.js');
+  pureRouteHost = await import('../codex-proxy-host.js');
 }, process.platform === 'win32' ? 120_000 : 60_000);
 
 
@@ -747,7 +750,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
   });
 
   it('does not forward unsupported passthrough fields into the translator', async () => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     const capabilities = chatBridgeCapabilitiesForRoute(
       'https://api.deepseek.com/v1',
       'deepseek-chat',
@@ -762,7 +765,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     'https://api.moonshot.cn/v1',
     'https://api.moonshot.ai/v1/',
   ])('enables image_url only for Kimi K3 on official Moonshot host: %s', async (upstream) => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     expect(chatBridgeCapabilitiesForRoute(upstream, 'kimi-k3').imageInput).toBe('image_url');
   });
 
@@ -775,7 +778,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
   ] as const)(
     'reasoning_content 历史回传只对官方 DeepSeek 路由开启 (#3441): %s %s → %s',
     async (upstream, model, expected) => {
-      const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+      const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
       expect(chatBridgeCapabilitiesForRoute(upstream, model).reasoningHistoryField).toBe(expected);
     },
   );
@@ -786,7 +789,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://api.kimi.com/coding/v1', 'kimi-for-coding'],
     ['https://api.kimi.com/coding/v1', 'kimi-for-coding-highspeed'],
   ])('enables image_url for Kimi Code coding-plan route: %s / %s (#2732)', async (upstream, model) => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
@@ -798,7 +801,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
   ])('coalesces leading system for loopback chat upstreams: %s / %s (#3531)', async (providerId, upstream) => {
     // 本地模板运行器(Qwen3 系 Jinja 模板)硬校验 system 在首,消息中段的
     // system/developer 直接 500;回环上游一律 coalesce,不再限 Qwen3.8 白名单。
-    const { chatBridgeSystemMessagePolicyForRoute } = await freshCodexProxyHost();
+    const { chatBridgeSystemMessagePolicyForRoute } = pureRouteHost;
     expect(chatBridgeSystemMessagePolicyForRoute(providerId, upstream)).toBe('coalesce-leading');
   });
 
@@ -810,7 +813,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['my-custom-remote', 'https://127.example.com/v1'],
     ['my-custom-remote', 'not-a-url'],
   ])('keeps preserve for non-loopback chat upstreams: %s / %s (#3531)', async (providerId, upstream) => {
-    const { chatBridgeSystemMessagePolicyForRoute } = await freshCodexProxyHost();
+    const { chatBridgeSystemMessagePolicyForRoute } = pureRouteHost;
     expect(chatBridgeSystemMessagePolicyForRoute(providerId, upstream)).toBeUndefined();
   });
 
@@ -818,7 +821,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260628'],
     ['https://ark.ap-southeast-1.volces.com/api/v3/', 'doubao-seed-1-6-vision-260615'],
   ])('enables image_url for Doubao Seed on official Volcengine Ark host: %s (#771)', async (upstream, model) => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
@@ -832,7 +835,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen3.8-max'],
     ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen3.8-flash'],
   ])('enables image_url for Qwen on official DashScope host: %s / %s', async (upstream, model) => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
@@ -842,7 +845,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://api.moonshot.cn/v1', 'kimi-k2.7-code-highspeed'],
     ['https://api.moonshot.cn/v1', 'kimi-k2.6'],
   ])('enables image_url for Kimi on official Moonshot host: %s / %s', async (upstream, model) => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
@@ -874,7 +877,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://example.com/v1', 'qwen3.7-plus'],
     ['https://coding.dashscope.aliyuncs.com/v1', 'qwen3-coder-next'],
   ])('keeps image input disabled for non-matching route %s / %s', async (upstream, model) => {
-    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    const { chatBridgeCapabilitiesForRoute } = pureRouteHost;
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBeUndefined();
   });
 
