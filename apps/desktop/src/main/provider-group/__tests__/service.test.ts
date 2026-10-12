@@ -152,6 +152,43 @@ async function flush() {
   for (let i = 0; i < 60; i++) await Promise.resolve();
 }
 
+describe('own tasks after this computer becomes available again', () => {
+  it.each([false, true].flatMap((paused) =>
+    (['start', 'turn', 'before-send', 'healthy'] as const).map((phase) => ({ paused, phase })),
+  ))('prefers local only when another choice is needed ($phase, paused=$paused)', async ({ paused, phase }) => {
+    const h = harness({ members: [MINI, STUDIO, { ...LOCAL, paused }], offline: [LOCAL.key] });
+    // 数据库读取返回快照，后续保存路由不会修改已经读出的行。
+    h.deps.readSessionRow.mockImplementation(async () => ({ ...h.row }));
+    const context = await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL });
+    expect(context?.member.key).toBe(MINI.key);
+    h.offline.delete(LOCAL.key);
+
+    if (phase === 'start') {
+      const next = await h.service.nextAfterStartFailure(context!, new Error('[REMOTE_AGENT_UNAVAILABLE] failed to start'));
+      expect(next?.member.key).toBe(LOCAL.key);
+    } else if (phase === 'turn') {
+      await h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+      expect(h.deps.continueSession).toHaveBeenCalledTimes(1);
+    } else {
+      if (phase === 'before-send') h.router.markCooling('anthropic', MINI.key, 2_000_000);
+      await h.service.beforeSend('s1');
+    }
+
+    if (phase === 'healthy') {
+      expect(h.row.agentDeviceId).toBe('mini');
+      expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
+      expect(h.deps.persistRoute).toHaveBeenCalledTimes(1);
+      expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    } else {
+      // 组顺序本来会选仍可用的 STUDIO；本机自用故障重选仍优先已恢复的本机。
+      expect(h.row).toMatchObject({ agentDeviceId: null, providerId: 'anthropic' });
+      expect(h.bindings.get('s1')?.memberKey).toBe(LOCAL.key);
+      if (phase !== 'start') expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    }
+    expect(h.config.members[2].paused).toBe(paused);
+  });
+});
+
 describe('assignBeforeStart', () => {
   it('keeps an own task local when this computer is paused for incoming tasks', async () => {
     const h = harness({ members: [{ ...LOCAL, paused: true }, MINI] });

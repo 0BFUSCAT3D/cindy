@@ -655,6 +655,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         providerId,
         agentKind,
         model,
+        // 本机自用每次需要选电脑时都优先本机，含故障重选；正常运行的已有绑定不走 pick。
         localTask: true,
         exclude,
         reserveFor: sessionId,

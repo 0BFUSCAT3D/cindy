@@ -62,7 +62,7 @@ export interface ProviderGroupPickInput {
   agentKind: AgentKind;
   model: string;
   /**
-   * 仅本机任务入口设置：本机可用时优先本机，不受对外暂停分配或负载影响。
+   * 仅本机任务入口设置：初次分配与故障重选时，本机可用就优先本机，不受对外暂停分配或负载影响。
    * 远程请求与分享中转不传，也不从请求载荷读取。
    */
   localTask?: true;
