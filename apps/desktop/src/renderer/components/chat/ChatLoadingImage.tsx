@@ -27,8 +27,7 @@ function ImageLoad({ onLoad, style, className, ...props }: ComponentProps<'img'>
         {...props}
         className={cn(
           className,
-          loaded &&
-            'motion-safe:animate-in motion-safe:fade-in [animation-duration:var(--motion-fast)] [animation-timing-function:var(--motion-ease-out)]',
+          loaded && 'motion-safe:animate-fade-in',
         )}
         style={loaded ? style : { ...style, display: 'none' }}
         onLoad={(event) => {
