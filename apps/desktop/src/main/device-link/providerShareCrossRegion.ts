@@ -69,6 +69,7 @@ interface RegionState {
   timer: ReturnType<typeof setTimeout> | null;
   /** 连续失败次数，用于退避重试(网络或对方区域暂时不可用时不让分享整段消失)。 */
   failures: number;
+  loaded: boolean;
 }
 
 interface Runtime {
@@ -276,7 +277,7 @@ function refreshRegion(rt: Runtime, region: Region): Promise<void> {
   let state = rt.regions.get(region);
   if (state?.refreshing) return state.refreshing;
   if (!state) {
-    state = { region, apiBase: '', credential: null, expiresAt: 0, shares: [], client: null, refreshing: null, timer: null, failures: 0 };
+    state = { region, apiBase: '', credential: null, expiresAt: 0, shares: [], client: null, refreshing: null, timer: null, failures: 0, loaded: false };
     rt.regions.set(region, state);
   }
   const target = state;
@@ -302,6 +303,7 @@ function refreshRegion(rt: Runtime, region: Region): Promise<void> {
       state.credential = credential;
       state.expiresAt = expiresAt;
       state.shares = shares;
+      state.loaded = true;
       if (shares.length === 0 || !credential) {
         state.client?.stop();
         state.client = null;
@@ -363,6 +365,12 @@ export function refreshProviderShareCrossRegion(region: Region): Promise<void> {
 
 export function getCrossRegionReceived(): ProviderShareReceived[] {
   return runtime ? [...runtime.regions.values()].flatMap((state) => state.shares) : [];
+}
+
+/** 只确认已成功返回名单的区域，失败区域不能阻塞其它区域的收藏。 */
+export function getConfirmedCrossRegionReceivedRegions(): Region[] {
+  const rt = runtime;
+  return rt && current(rt) ? [...rt.regions.values()].filter((state) => state.loaded).map((state) => state.region) : [];
 }
 
 function stateForShare(shareId: string): RegionState | null {

@@ -12,6 +12,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNewMakerRouteState';
 import { toast } from '@/lib/toast';
+import { useProviderShareFavoriteCleanupFailed } from '@/state/providerShareFavorites';
 
 import type { ProviderShareSettledEvent } from '../../../shared/providerShare';
 import { ProviderShareApplyDialog, isProviderShareRequestTrackedByDialog } from './ProviderShareApplyDialog';
@@ -31,6 +32,10 @@ const SETTLED_TOAST_MS = 6000;
 
 export function ProviderShareGlobalHost() {
   const { t } = useTranslation();
+  const favoriteCleanupFailed = useProviderShareFavoriteCleanupFailed();
+  useEffect(() => {
+    if (favoriteCleanupFailed) toast.error(t('newChat.modelSelector.unified.favoritesCleanupFailed'));
+  }, [favoriteCleanupFailed, t]);
   const navigate = useNavigate();
   const location = useLocation();
   const navigateRef = useRef(navigate);

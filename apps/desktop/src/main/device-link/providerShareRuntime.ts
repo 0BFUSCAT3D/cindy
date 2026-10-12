@@ -48,6 +48,7 @@ import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import {
   getReceivedShares,
+  getReceivedSharesSnapshot,
   leaveProviderShare,
   previewProviderShare,
   refreshReceivedShares,
@@ -235,6 +236,8 @@ function parseCommand(raw: unknown): ProviderShareCommand {
     }
     case 'received':
       return { action: 'received' };
+    case 'received-snapshot':
+      return { action: 'received-snapshot' };
     case 'preview':
     case 'send-request':
       return { action: value.action, link: text(value.link, 'link', 4096) };
@@ -389,6 +392,8 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
     case 'received':
       if (running) void refreshReceivedShares('ui');
       return getReceivedShares();
+    case 'received-snapshot':
+      return getReceivedSharesSnapshot();
     case 'preview':
       return previewProviderShare(command.link);
     case 'send-request':

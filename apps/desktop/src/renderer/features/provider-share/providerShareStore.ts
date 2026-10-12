@@ -17,6 +17,8 @@ import type { ProviderShareReceived } from '@cindy/device-link';
 import { getCachedDeviceProviders } from '@/hooks/useDeviceProviders';
 import { refreshRemoteCatalogSnapshot } from '@/lib/remoteCatalogSnapshot';
 import { createLogger } from '@/lib/logger';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import { reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
 
 import type {
   ProviderShareOwnerState,
@@ -78,6 +80,16 @@ function setReceived(next: readonly ProviderShareReceived[]): void {
   for (const listener of receivedSubscribers) listener();
 }
 
+let membershipRequest = 0;
+function refreshFavoriteMembership(api: ProviderShareApi): void {
+  const request = ++membershipRequest;
+  const owner = getDataOwnerGeneration();
+  void api.command({ action: 'received-snapshot' }).then((snapshot) => {
+    if (request === membershipRequest && isDataOwnerGenerationCurrent(owner))
+      reconcileProviderShareFavorites(snapshot);
+  }).catch(() => undefined); // 读失败不是撤权，下次分享快照到达时再核对。
+}
+
 /** 启动已收到分享的同步(幂等)。Preload 不可用(测试 / 旧窗口)时什么都不做。 */
 export function ensureProviderShareReceivedStarted(): void {
   if (receivedStarted) return;
@@ -87,6 +99,7 @@ export function ensureProviderShareReceivedStarted(): void {
   api.onReceivedChanged((list) => {
     receivedPushSeq += 1;
     setReceived(Array.isArray(list) ? list : []);
+    refreshFavoriteMembership(api);
   });
   const seqAtRequest = receivedPushSeq;
   void api
@@ -94,6 +107,7 @@ export function ensureProviderShareReceivedStarted(): void {
     .then((list) => {
       if (receivedPushSeq !== seqAtRequest) return;
       setReceived(list);
+      refreshFavoriteMembership(api);
     })
     .catch((error: unknown) => {
       log.debug('provider share received list unavailable', {
@@ -112,6 +126,7 @@ export function refreshProviderShareReceived(): void {
     .then((list) => {
       if (receivedPushSeq !== seqAtRequest) return;
       setReceived(list);
+      refreshFavoriteMembership(api);
     })
     .catch(() => undefined);
 }
@@ -193,6 +208,7 @@ export function resetProviderShareStoreForTests(): void {
   receivedSnapshot = { received: [], loaded: false };
   receivedStarted = false;
   receivedPushSeq = 0;
+  membershipRequest += 1;
   receivedSubscribers.clear();
   pendingRequests = [];
   pendingSubscribers.clear();

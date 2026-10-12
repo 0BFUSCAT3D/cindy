@@ -17,11 +17,16 @@ const state = vi.hoisted(() => ({
   calls: [] as Array<{ path: string; opts: Record<string, unknown> }>,
   responses: new Map<string, unknown>(),
   clients: [] as Array<{ opts: Record<string, unknown>; started: boolean; stopped: boolean }>,
+  localReceivedError: false,
 }));
 
 vi.mock('electron', () => ({ app: { getVersion: () => '0.0.0-test' } }));
 vi.mock('ws', () => ({ default: class {} }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() }) }));
+vi.mock('../../appSessionState.js', () => ({
+  isAppSessionBoundaryPending: () => false,
+  getActiveDataOwnerPushStamp: () => ({ dataOwnerId: 'user-1', ownerGeneration: 1 }),
+}));
 vi.mock('../../authManager.js', () => ({
   getActiveAuthRealm: () => 'cn',
   getAuthState: () => ({ isAuthenticated: true }),
@@ -29,6 +34,7 @@ vi.mock('../../authManager.js', () => ({
   getDeviceId: () => 'device-1',
 }));
 vi.mock('../../clientEndpointsService.js', () => ({
+  getClientEndpoint: () => LOCAL,
   loadClientEndpointsForRealm: async () => ({}),
   getClientEndpointForRealm: (region: string) => (region === 'global' ? PEER : LOCAL),
 }));
@@ -43,6 +49,13 @@ vi.mock('../../serverApiClient.js', () => ({
   },
 }));
 vi.mock('../providerShareApi.js', () => ({
+  providerShareOwnerKey: () => 'user-1',
+  providerShareApi: {
+    listReceived: async () => {
+      if (state.localReceivedError) throw new Error('local unavailable');
+      return [{ ...share, shareId: 'share-local', memberId: 'member-local', owner: { ...share.owner, region: 'cn' } }];
+    },
+  },
   fetchIdentityCard: async (purpose: string, nonce: string) => `card:${purpose}:${nonce}`,
   rethrowProviderShareError: (error: unknown) => { throw error; },
   sha256Hex: (value: string) => `h(${value})`.padEnd(64, '0').slice(0, 64).replace(/[^a-f0-9]/g, 'a'),
@@ -65,11 +78,14 @@ import {
   crossRegionOfIntent,
   crossRegionSendRequest,
   getCrossRegionReceived,
+  getConfirmedCrossRegionReceivedRegions,
+  refreshProviderShareCrossRegion,
   isCrossRegionProviderShareTarget,
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
 } from '../providerShareCrossRegion';
 import { providerShareHostPeer } from '@cindy/device-link';
+import { getReceivedSharesSnapshot, refreshReceivedShares, startProviderShareGuest, stopProviderShareGuest } from '../providerShareGuest';
 
 const share = {
   shareId: 'share-x', memberId: 'member-x', providerId: 'openai', providerLabel: 'OpenAI', hostDeviceId: 'owner-pc',
@@ -84,14 +100,43 @@ beforeEach(() => {
   state.calls = [];
   state.responses = new Map();
   state.clients = [];
+  state.localReceivedError = false;
 });
 afterEach(() => {
+  stopProviderShareGuest();
   stopProviderShareCrossRegion();
   __testing.setUserDataDir(null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('cross-region provider share', () => {
+  it.each(['local', 'peer'] as const)('confirms the available region independently when %s list loading fails', async (failed) => {
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    state.localReceivedError = failed === 'local';
+    if (failed === 'local') state.responses.set('/session', { credential: CREDENTIAL, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), shares: [share] });
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    await refreshProviderShareCrossRegion('global');
+    const snapshot = getReceivedSharesSnapshot();
+    expect(snapshot.confirmedRegions).toEqual([failed === 'local' ? 'global' : 'cn']);
+    expect(snapshot.received.map((item) => item.shareId)).toEqual([failed === 'local' ? 'share-x' : 'share-local']);
+  });
+
+  it('does not confirm an incomplete or failed peer list for favorite cleanup', async () => {
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    startProviderShareCrossRegion({ changed: vi.fn() }, { userDataDir: dir });
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
+    await refreshProviderShareCrossRegion('global');
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
+    state.responses.set('/session', { credential: null, expiresAt: null, deviceId: 'x:cn:abc', shares: [] });
+    await refreshProviderShareCrossRegion('global');
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual(['global']);
+    stopProviderShareCrossRegion();
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
+  });
   it('only accepts the two official regions', async () => {
     await expect(crossRegionOfIntent({ invitation: TOKEN, server: LOCAL }, LOCAL)).resolves.toBeNull();
     await expect(crossRegionOfIntent({ invitation: TOKEN, server: PEER }, LOCAL)).resolves.toBe('global');

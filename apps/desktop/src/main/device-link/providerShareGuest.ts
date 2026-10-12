@@ -19,8 +19,9 @@ import {
   type ProviderShareRequestState,
 } from '@cindy/device-link';
 
-import { isAppSessionBoundaryPending } from '../appSessionState.js';
-import { getAuthState } from '../authManager.js';
+import { getActiveDataOwnerPushStamp, isAppSessionBoundaryPending } from '../appSessionState.js';
+import type { ProviderShareReceivedSnapshot } from '../../shared/providerShare.js';
+import { getActiveAuthRealm, getAuthState } from '../authManager.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
@@ -33,6 +34,7 @@ import {
   crossRegionSendRequest,
   crossRegionWithdraw,
   getCrossRegionReceived,
+  getConfirmedCrossRegionReceivedRegions,
   refreshProviderShareCrossRegion,
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
@@ -236,6 +238,18 @@ export function noteProviderShareAccessFailure(): void {
 
 export function getReceivedShares(): readonly ProviderShareReceived[] {
   return allReceived(runtime);
+}
+
+export function getReceivedSharesSnapshot(): ProviderShareReceivedSnapshot {
+  const rt = runtime;
+  const valid = !!rt && current(rt);
+  return {
+    ownerStamp: getActiveDataOwnerPushStamp(),
+    confirmedRegions: valid
+      ? [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()]
+      : [],
+    received: valid ? allReceived(rt) : [],
+  };
 }
 
 // ─── 加入 ────────────────────────────────────────────────────────

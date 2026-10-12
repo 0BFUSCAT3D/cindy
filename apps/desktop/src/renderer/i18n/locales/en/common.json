@@ -9782,6 +9782,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "Loading models from that computer…",
         "favoritesGroup": "Favorites",
+        "favoritesSaveFailed": "Could not save favorite changes",
+        "favoritesCleanupFailed": "Could not remove favorites for revoked provider shares",
         "favoritesEmpty": "No favorites yet — hover a model and hit ☆ to pin it here",
         "addFavorite": "Save to favorites",
         "customize": "Customize",
