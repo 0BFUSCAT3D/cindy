@@ -95,6 +95,15 @@ ElevenLabs 及兼容转发的[模型列表响应](https://elevenlabs.io/docs/api
 `model_info.mode` 和用户类型覆盖仍优先。只解析能力，不推断 `nativeApi`。
 直连目录鉴权可复用自定义请求头 `xi-api-key`；没有新增凭证存储或 TTS 执行器。
 
+2026-10-12 同步 Server 公共 Registry：新增 OpenAI TTS-1 / HD 和 Mini TTS 日期快照、
+ElevenLabs、MiniMax Speech、Qwen TTS / Qwen Audio TTS、CosyVoice 共 30 个准确型号，
+连同原有 Mini TTS 共 31 个语音合成公共条目。每条只使用官方 API ID 的精确别名，
+带有官方文档链接；不同日期和变体保留各自身份，原始上游 ID 不被改写。
+流式语音合成仍声明 `audio_speech`，名称中的 `realtime` 不代表实时音频对话。
+Server 正本和本离线副本以相同 revision 整表同步；未增加供应商成员、路由、价格或协议
+声明，也不把官方旧型号收录等同于账号仍可调用。没有新 schema 或能力协商依赖，
+目录数据两端可独立合并；本记录不代表服务端已部署或对应 TTS 执行器已实现。
+
 显式媒体类型不套用聊天协议的名称前缀规则（例如 `gpt-*`）；语音协议缺失仍保持未知，
 不凭 `audio_speech` 推断具体厂商协议。模型的原生协议资料与连接的聊天 `wireProtocol`
 是两件事，保留资料不会新增语音合成执行器。

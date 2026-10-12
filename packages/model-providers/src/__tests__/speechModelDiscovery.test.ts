@@ -54,6 +54,23 @@ describe('BYOK speech discovery and projection', () => {
     expect(provider([]).audioModels).toBeUndefined();
   });
 
+  it('projects public speech IDs and aliases through discovery without changing their wire identity', () => {
+    const ids = registry.baseModels!.filter(model => model.defaults.mode === 'audio_speech')
+      .flatMap(model => [model.id, ...model.aliases]);
+    const models = mergeDiscoveredRuntimeModels([], parseModelsListResponse({
+      data: ids.map(id => ({ id })),
+    })!);
+    const p = provider(models);
+    expect(p.audioModels?.map(model => model.id)).toEqual(ids);
+    for (const model of p.models.codex!) {
+      expect(model.mode).toBe('audio_speech');
+      expect(model.modalities).toEqual({ input: ['text'], output: ['audio'] });
+      expect(model.nativeApi).toBeUndefined();
+      expect(isAgentSelectableModel(model, { userProvider: true })).toBe(false);
+    }
+    expect(provider([]).audioModels).toBeUndefined();
+  });
+
   it('preserves manual type, name and visibility overrides across conflicting discovery', () => {
     const original: ProviderRuntimeModelConfig[] = [{ id: 'gpt-private', name: 'My Voice',
       mode: 'audio_speech', nativeApi: 'openai-audio-speech', defaultEnabled: false }];
@@ -100,12 +117,18 @@ describe('ElevenLabs speech capability discovery', () => {
     { value: false, mode: 'other' },
     { value: undefined, mode: undefined },
     { value: 'true', mode: undefined },
-  ])('does not advertise TTS for capability $value', ({ value, mode }) => {
+  ])('keeps explicit capability $value separate from public Registry defaults', ({ value, mode }) => {
     const discovered = parseModelsListResponse(response({ can_do_text_to_speech: value }))!;
     expect(discovered[0].discoveredMetadata?.mode).toBe(mode);
     const p = provider(mergeDiscoveredRuntimeModels([], discovered));
-    expect(p.audioModels).toBeUndefined();
-    if (value === false) expect(isAgentSelectableModel(p.models.codex![0], { userProvider: true })).toBe(false);
+    if (value === false) {
+      expect(p.audioModels).toBeUndefined();
+      expect(isAgentSelectableModel(p.models.codex![0], { userProvider: true })).toBe(false);
+    } else {
+      // Missing/invalid capability is not a denial: this exact official ID now has
+      // a public TTS declaration, while the raw discovery still has no mode.
+      expect(p.audioModels?.[0]).toMatchObject({ id: modelId, mode: 'audio_speech' });
+    }
   });
 
   it.each([
