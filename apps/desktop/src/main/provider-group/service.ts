@@ -1,7 +1,7 @@
 /**
  * 供应商组接到任务生命周期上的三个点(docs/product-rules/provider-groups.md §6)：
  *
- * 1. **分配**：新任务第一次启动 Agent 前(bootstrapSession)，按组策略选一台组内电脑，把选择写回
+ * 1. **分配**：新任务第一次启动 Agent 前(bootstrapSession)，本机组优先本机，其余按组策略选电脑，把选择写回
  *    任务记录与绑定；Agent 还没开始运行就失败(连不上、登录失效、启动失败)时直接换下一台。
  * 2. **自动换电脑**：运行中因那台电脑的原因失败(终态错误)时，交接到组里下一台并继续这一轮；
  *    同一轮每台最多试一次，全部失败才交回原有的报错 / 等额度重置流程。那台是连不上(离线、断线)时先等它
@@ -655,6 +655,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         providerId,
         agentKind,
         model,
+        // 本机自用每次需要选电脑时都优先本机，含故障重选；正常运行的已有绑定不走 pick。
+        localTask: true,
         exclude,
         reserveFor: sessionId,
         ...(exclude.size > 0 ? { fresh: true } : {}),
@@ -960,18 +962,19 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   /**
    * 登记一次进行中的换电脑：用户在途中接手(重试、发消息、换模型)或那次错误已不是当前状态时，之后的每一步都停手。
    * `handBack` 在不再换电脑时交回原有的报错与额度重置后自动继续；之前的交接若已关掉旧会话，换一个对当前状态
-   * 有效的令牌。
+   * 有效的令牌。`run` 在取得句柄时就已登记(failover)，取得之后、开始之前的检查期间用户接手同样停手：一步都不做。
    */
   async function withSwitchRun(
     sessionId: string,
     signals: InterruptedTurnErrorSignals,
     token: number,
     lease: object,
+    run: { superseded: boolean },
     hooks: ProviderGroupTurnErrorHooks | undefined,
     body: (isCurrent: () => boolean, handBack: () => void) => Promise<void>,
   ): Promise<void> {
-    const { run, done } = trackRun(sessionId);
     const isCurrent = () => !run.superseded && deps.isLeaseCurrent(sessionId, lease);
+    if (!isCurrent()) return;
     const handBack = () => {
       if (!isCurrent()) return;
       hooks?.beforeFallback?.();
@@ -983,8 +986,6 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     } catch (error) {
       deps.log.warn('provider group: automatic switch failed', { sessionId, error: errorText(error) });
       handBack();
-    } finally {
-      done();
     }
   }
 
@@ -997,12 +998,35 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   ): Promise<boolean> {
     const decision = decide(sessionId, signals, 'run');
     if (decision.action !== 'switch') return false;
+    // 交接会关闭旧会话(关闭撤销限额等待)：先取得这次错误的重试入口。终态错误后会话也可能在下面的检查期间自己关闭
+    // (drain 宽限到点关闭重建)，所以在第一次 await 之前取得；同时登记这一趟，下面检查期间用户接手(发消息、重试、
+    // 换模型)或新一轮都让它停手(run.superseded / isLeaseCurrent)。
+    const lease = deps.leaseRecovery(sessionId, token);
+    const { run, done } = trackRun(sessionId);
+    try {
+      return await failoverRun(sessionId, signals, token, hooks, decision, lease, run);
+    } finally {
+      done();
+    }
+  }
+
+  async function failoverRun(
+    sessionId: string,
+    signals: InterruptedTurnErrorSignals,
+    token: number,
+    hooks: ProviderGroupTurnErrorHooks | undefined,
+    decision: ProviderGroupFailureDecision & { action: 'switch' },
+    lease: object | null,
+    run: { superseded: boolean },
+  ): Promise<boolean> {
     const { cause } = decision;
     if (!deps.readBinding(sessionId) && !(await adoptOnFailure(sessionId))) {
-      return guestFailover(sessionId, signals, token, cause, hooks);
+      return guestFailover(sessionId, signals, token, lease, run, cause, hooks);
     }
     const bound = await loadBound(sessionId);
-    if (!bound) return decision.connection ? reconnectWithoutGroup(sessionId, signals, token, decision, hooks) : false;
+    if (!bound) {
+      return decision.connection ? reconnectWithoutGroup(sessionId, signals, token, lease, run, decision, hooks) : false;
+    }
     const { binding, source, config } = bound;
     if (!config) {
       await releaseDeletedGroup(sessionId, groupOf(source, binding.providerId));
@@ -1014,11 +1038,10 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (!row?.model || row.remoteHostId) return false;
     const current = await verifyBinding(sessionId, source, binding, config, row);
     if (!current) return false;
-    // 交接会关闭旧会话(关闭撤销限额等待)：先取得这次错误的重试入口。用户已接手时什么都不做。
-    const lease = deps.leaseRecovery(sessionId, token);
+    // 用户已接手时什么都不做。
     if (!lease) return true;
     const boundRow = { ...row, model: row.model };
-    await withSwitchRun(sessionId, signals, token, lease, hooks, async (isCurrent, handBack) => {
+    await withSwitchRun(sessionId, signals, token, lease, run, hooks, async (isCurrent, handBack) => {
       // 连不上先等那台恢复：恢复了留在原电脑继续这一轮(不交接)，等不到再换。
       if (decision.connection) {
         let waited = false;
@@ -1078,6 +1101,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     sessionId: string,
     signals: InterruptedTurnErrorSignals,
     token: number,
+    lease: object | null,
+    run: { superseded: boolean },
     decision: ProviderGroupFailureDecision & { action: 'switch' },
     hooks: ProviderGroupTurnErrorHooks | undefined,
   ): Promise<boolean> {
@@ -1087,9 +1112,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const row = await deps.readSessionRow(sessionId);
     if (!row?.model || row.remoteHostId || !row.agentDeviceId || !row.providerId) return false;
     const route = { agentDeviceId: row.agentDeviceId, providerId: row.providerId };
-    const lease = deps.leaseRecovery(sessionId, token);
     if (!lease) return true;
-    await withSwitchRun(sessionId, signals, token, lease, hooks, async (isCurrent, handBack) => {
+    await withSwitchRun(sessionId, signals, token, lease, run, hooks, async (isCurrent, handBack) => {
       const outcome = await awaitReturn(sessionId, route, binding.memberKey, isCurrent, (attempt) => {
         hooks?.reconnecting?.(attempt, PROVIDER_GROUP_RECONNECT_MAX_ATTEMPTS);
       }, {
@@ -1163,6 +1187,8 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     sessionId: string,
     signals: InterruptedTurnErrorSignals,
     token: number,
+    lease: object | null,
+    run: { superseded: boolean },
     cause: ProviderGroupFailureCause,
     hooks: ProviderGroupTurnErrorHooks | undefined,
   ): Promise<boolean> {
@@ -1173,13 +1199,13 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (!row?.model || row.remoteHostId || !shareRoute || !isProviderShareAgentDeviceId(shareRoute)) return false;
     if (!(await deps.isFailoverEligible(sessionId))) return false;
     if (!guestSwitch.claim(sessionId)) return false;
-    const lease = deps.leaseRecovery(sessionId, token);
-    if (!lease) {
+    // 检查期间用户已接手或错误已被新的一轮接管：不换，作废刚登记给下一次打开的凭证。
+    if (!lease || run.superseded || !deps.isLeaseCurrent(sessionId, lease)) {
       guestSwitch.release(sessionId);
       return true;
     }
     const model = row.model;
-    await withSwitchRun(sessionId, signals, token, lease, hooks, async (isCurrent, handBack) => {
+    await withSwitchRun(sessionId, signals, token, lease, run, hooks, async (isCurrent, handBack) => {
       try {
         // 位置仍是同一个分享：强制重新交接、新建会话，打开时带上凭证，由组所在电脑换一台。
         await deps.switchAgentLocation(sessionId, {
@@ -1636,8 +1662,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       const row = await deps.readSessionRow(sessionId);
       if (!row?.model || row.remoteHostId) return;
       const current = await verifyBinding(sessionId, source, binding, config, row);
-      // 暂停分配只影响新任务，已在那台的任务不挪走。
-      if (!current || current.paused) return;
+      // 本机的暂停只限制接外部新任务，本机自用仍照常检查故障并恢复。
+      // 其他组员的暂停继续保持既有任务位置。
+      if (!current || (current.paused && !(source.ownerDeviceId === null && current.kind === 'local'))) return;
       const cached = await source.shouldMoveAway(binding.providerId, config, current.key);
       if (cached === null) return;
       let reason = cached ? cached.reason : null;
