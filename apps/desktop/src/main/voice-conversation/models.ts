@@ -41,6 +41,13 @@ function apiBase(raw: string): URL | null {
   }
 }
 
+/**
+ * Future Registry protocol/parameter metadata must describe the actual provider/model
+ * route, not a model family. Coordinate server declarations, client validation and the
+ * bundled copy; metadata alone neither installs an executor nor grants model access.
+ * Preserve undefined/null and explicit user-choice semantics during that migration.
+ * See docs/product-rules/companion-voice-mode.md, "后续扩展计划".
+ */
 function nativeProtocol(catalog: Catalog, providerId: string, model: ProviderMediaModel) {
   const declared =
     model.nativeApi !== undefined

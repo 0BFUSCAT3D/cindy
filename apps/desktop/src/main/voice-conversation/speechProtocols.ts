@@ -8,6 +8,12 @@ export type SpeechConnection = {
 };
 export type SpeechInput = { modelId: string; voice: string; text: string };
 
+/**
+ * Follow-up before adding more native protocols: extract these branches and response
+ * decoders into protocol adapters, with shared UI/Main parameter validation and a
+ * common audio/completion/cancellation contract. Keep wire serialization in code.
+ * See docs/product-rules/companion-voice-mode.md, "后续扩展计划".
+ */
 export function speechRequest(
   connection: SpeechConnection,
   input: SpeechInput,
