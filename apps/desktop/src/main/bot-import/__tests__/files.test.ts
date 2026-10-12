@@ -74,9 +74,9 @@ it('hashes binary contents and checkpoints compactly without invoking Buffer.toJ
   } finally { stringifyBuffer.mockRestore(); }
 });
 
-it('reads every resource in a skill with more than 4096 small files', async () => {
-  // 文件数量回归走完整遍历/读取/预算逻辑，以流式内存句柄消除 4100 次
-  // Windows 小文件落盘。真实文件系统、目录和链接语义由相邻用例覆盖。
+it('reads every streamed resource and closes all handles beyond 4096 files', async () => {
+  // 内存用例检查完整读取、预算与句柄关闭；真实目录超过 4096 项的
+  // 枚举边界由相邻原生文件用例单独覆盖。
   const root = path.resolve(os.tmpdir(), 'cindy-import-many-files');
   let opened = 0, closed = 0;
   const directory = vi.spyOn(fs, 'opendir').mockResolvedValue({
@@ -109,6 +109,23 @@ it('reads every resource in a skill with more than 4096 small files', async () =
     expect(closed).toBe(opened);
   } finally { open.mockRestore(); realpath.mockRestore(); directory.mockRestore(); }
 });
+
+it('reads every native resource in a directory with more than 4096 small files', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-native-many-files-'));
+  try {
+    for (let first = 0; first < 4100; first += 32) {
+      await Promise.all(Array.from({ length: Math.min(32, 4100 - first) }, (_, offset) => {
+        const index = first + offset;
+        return fs.writeFile(path.join(root, `resource-${index}.txt`), `Resource ${index}`, { mode: 0o600 });
+      }));
+    }
+    const files = await readImportTree(root, undefined, createImportBudget());
+    expect(files).toHaveLength(4100);
+    expect(new Set(files.map(file => file.name)).size).toBe(4100);
+    expect(files.find(file => file.name === 'resource-4099.txt')?.bytes.toString()).toBe('Resource 4099');
+    for (const file of files) expect(file.bytes.toString()).toBe(`Resource ${file.name.match(/\d+/)![0]}`);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+}, 180_000);
 
 it('reads small resources from real nested directories and preserves executable metadata', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-import-real-files-'));
