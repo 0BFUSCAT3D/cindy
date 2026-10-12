@@ -12,6 +12,8 @@ use std::{
     path::PathBuf,
 };
 
+const MAX_ACL_RESTORE_RECORD_BYTES: usize = 1_048_576;
+
 pub struct Approval {
     pub application: PathBuf,
     pub user_sid: String,
@@ -153,15 +155,21 @@ fn read_restore_record(directory: &std::path::Path) -> Result<Option<security::A
     security::check_paths(vec![restore.clone()])?;
     let mut bytes = Vec::new();
     fs::File::open(&restore)?
-        .take(1_048_577)
+        .take((MAX_ACL_RESTORE_RECORD_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > 1_048_576 {
-        return denied();
-    }
+    validate_restore_record_size(&bytes)?;
     Ok(Some(security::AclSnapshot::decode(&bytes)?))
 }
 
+fn validate_restore_record_size(bytes: &[u8]) -> Result<()> {
+    if bytes.len() > MAX_ACL_RESTORE_RECORD_BYTES {
+        return denied();
+    }
+    Ok(())
+}
+
 fn write_protected_record(directory: &std::path::Path, name: &str, bytes: &[u8]) -> Result<()> {
+    validate_restore_record_size(bytes)?;
     let record = directory.join(name);
     let temporary = directory.join(format!("{name}.new"));
     if temporary.exists() {
@@ -483,6 +491,11 @@ mod tests {
         assert_eq!(std::fs::read(&record).unwrap(), b"next-restore");
         assert!(!temporary.exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn restore_record_size_limit_is_shared_by_read_and_write() {
+        assert!(validate_restore_record_size(&vec![0; MAX_ACL_RESTORE_RECORD_BYTES]).is_ok());
+        assert!(validate_restore_record_size(&vec![0; MAX_ACL_RESTORE_RECORD_BYTES + 1]).is_err());
     }
     #[test]
     fn first_install_restore_record_is_written_before_hardening() {
