@@ -21,9 +21,11 @@ export function CindyMakeSessionGate({ sessionId, children }: {
   useEffect(() => {
     if (CINDY_MAKE_ENABLED || !sessionId || knownSource !== undefined) return;
     let cancelled = false;
-    void getSessionFor(sessionId).catch(() => null).then(session => {
-      if (!cancelled) setLoaded({ id: sessionId, source: session?.source ?? null });
-    });
+    void getSessionFor(sessionId).then(session => {
+      if (!cancelled && session?.id === sessionId) {
+        setLoaded({ id: session.id, source: session.source ?? null });
+      }
+    }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [sessionId, knownSource]);
 

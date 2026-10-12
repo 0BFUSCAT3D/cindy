@@ -432,7 +432,10 @@ export function CCAgentSidebarUpper() {
       : allSessionsForAttentionRaw.filter((session) => !isCindyMakeSource(session.source)),
     [allSessionsForAttentionRaw],
   );
-  const remoteProjectSessionsRaw = useRemoteProjectSessions();
+  const remoteProjectSessionsRaw = useSyncExternalStore(
+    remoteProjectsStore.subscribe,
+    remoteProjectsStore.getMergedRemoteSessions,
+  );
   const remoteProjectSessions = useMemo(
     () => CINDY_MAKE_ENABLED
       ? remoteProjectSessionsRaw
@@ -761,7 +764,8 @@ export function CCAgentSidebarUpper() {
               <ExpandedView
                 sessionsHook={sessionsHook}
                 allSessionsForAttention={allSessionsForAttention}
-                remoteSessionsForNotification={remoteProjectSessions}
+                allSessionsForNotification={allSessionsForAttentionRaw}
+                remoteSessionsForNotification={remoteProjectSessionsRaw}
                 navigate={navigate}
                 activeSessionId={activeSessionId}
                 // 兜底直接用路由参数而非 filesSession?.id:filesSession 只从本地
@@ -812,6 +816,7 @@ type SessionsHook = ReturnType<typeof useCCSessions>;
 interface ExpandedProps {
   sessionsHook: SessionsHook;
   allSessionsForAttention: Session[];
+  allSessionsForNotification: Session[];
   remoteSessionsForNotification: Session[];
   navigate: ReturnType<typeof useNavigate>;
   activeSessionId: string | undefined;
@@ -853,6 +858,7 @@ const CONFIRM_INITIAL: ConfirmState = {
 function ExpandedView({
   sessionsHook,
   allSessionsForAttention,
+  allSessionsForNotification,
   remoteSessionsForNotification,
   navigate,
   activeSessionId,
@@ -871,12 +877,6 @@ function ExpandedView({
       ? sessionsHook.sessions
       : sessionsHook.sessions.filter((session) => !isCindyMakeSource(session.source)),
     [sessionsHook.sessions],
-  );
-  const visibleRemoteSessionsForNotification = useMemo(
-    () => CINDY_MAKE_ENABLED
-      ? remoteSessionsForNotification
-      : remoteSessionsForNotification.filter((session) => !isCindyMakeSource(session.source)),
-    [remoteSessionsForNotification],
   );
   const { refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
   const {
@@ -1153,10 +1153,10 @@ function ExpandedView({
   sessionsRef.current = sessions;
   // 通知不能只查当前侧栏桶：活跃筛选、归档切换和远程会话镜像都可能让目标
   // 不在 sessionsRef 里。保留同步查找和原有兜底，避免标题解析影响通知发送。
-  const allSessionsForNotificationRef = useRef(allSessionsForAttention);
-  allSessionsForNotificationRef.current = allSessionsForAttention;
-  const remoteSessionsForNotificationRef = useRef(visibleRemoteSessionsForNotification);
-  remoteSessionsForNotificationRef.current = visibleRemoteSessionsForNotification;
+  const allSessionsForNotificationRef = useRef(allSessionsForNotification);
+  allSessionsForNotificationRef.current = allSessionsForNotification;
+  const remoteSessionsForNotificationRef = useRef(remoteSessionsForNotification);
+  remoteSessionsForNotificationRef.current = remoteSessionsForNotification;
   // 通知文案里的「尚未起名」兜底。走 ref 与 sessionsRef 同款:fireSessionNotification
   // 是 `[]` 依赖的稳定回调,直接闭包 t 会钉住首次渲染的语言。
   const unnamedLabelRef = useRef('');
@@ -1168,6 +1168,7 @@ function ExpandedView({
         allSessionsForNotificationRef.current,
         remoteSessionsForNotificationRef.current,
       ]);
+      if (!CINDY_MAKE_ENABLED && session && isCindyMakeSource(session.source)) return;
       // Orca worker 自身状态翻转不发独立通知 —— 等 lead 接到 worker_report 处理完
       // 再以 lead 名义统一推一条，避免同一事件双重打扰。语义上用户应回到 lead 主对话
       // 查看，而非跳到 worker 实现细节；与 effectiveRunningSessionIds 的角色聚合口径一致。
