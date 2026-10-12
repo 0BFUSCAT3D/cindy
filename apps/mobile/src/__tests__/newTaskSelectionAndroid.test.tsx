@@ -183,3 +183,15 @@ it("keeps workspace choices and blocks them while busy", () => {
   click("workspaceBrowseOption");
   expect(props.onBrowse).toHaveBeenCalledOnce();
 });
+
+it("selects an equivalent remote Windows path and sends the original workspace path", () => {
+  render({ page: "workspace", workingDir: "d:\\PROJECT\\" });
+  const row = container.querySelector('[data-testid="newSession.workspaceProjectOption"]')!;
+  expect(row.getAttribute("aria-pressed")).toBe("true");
+  click("workspaceProjectOption");
+  expect(props.onProject).toHaveBeenCalledExactlyOnceWith("D:/project");
+  render({ workspaceKind: "dialogue" });
+  expect(row.getAttribute("aria-pressed")).toBe("false");
+  render({ workspaceKind: "project", workingDir: "D:/different" });
+  expect(row.getAttribute("aria-pressed")).toBe("false");
+});
