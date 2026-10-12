@@ -20,6 +20,9 @@ Registry 同步新增：
   原生协议 OpenAI Responses；`meta/muse-wonder-` 家族规则与 Muse Spark 同形态。
 - **Muse Wonder Full 不登记**：官方说明它只在 Muse Code 订阅中提供，不经 Model API；把 API 档位设为
   `max` 也不等于 Full。
+- Codex 发送档位时原本只对 Seed 2.1 Pro、GLM-5.2 保留 `minimal`，其余收敛为 `low`；本批把
+  `meta/muse-wonder-1.0` 与官方 ID `muse-wonder-1.0` 加入同一白名单，使目录开放的 `minimal` 原样下发。
+  Claude Code 本身没有 `minimal`（对所有型号映射为 `low`），Pi 原样透传。
 
 成员仍以 Gateway `/models` 为准：核验时本机 XD 价格缓存（2026-10-13）只有 `meta/muse-spark-1.3`，
 没有 Wonder，因此本批只是资料先行，Gateway 上架前选择器不会出现该型号。默认推荐、排序与默认显示均未改。
