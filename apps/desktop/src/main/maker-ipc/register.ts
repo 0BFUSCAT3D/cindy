@@ -861,6 +861,7 @@ import {
   normalizeUserMessage,
   materializeDirectSendOssAttachments,
   materializeQueuedOssAttachmentsDeferred,
+  collectQueuedAttachmentRefs,
 } from './normalizeAttachments.js';
 import { QueuedAttachmentOwnershipRegistry } from './queuedAttachmentOwnership.js';
 import { prepareRemoteReviewAttachments } from './reviewRemoteInput.js';
@@ -18447,7 +18448,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         sid,
         parsed.clientId,
         materialized.cleanupLocalMaterialization,
-        { cleanupAfterDurable: materialized.cleanupAfterAcceptance },
+        {
+          cleanupAfterDurable: materialized.cleanupAfterAcceptance,
+          mediaRefs: materialized.materializedRefs,
+        },
       );
       let acceptedByCoordinator = false;
       try {
@@ -18665,6 +18669,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             cleanupAfterAcceptance: undefined,
             cleanupBeforeAcceptance: undefined,
             cleanupLocalMaterialization: undefined,
+            materializedRefs: undefined,
           }
         : await materializeQueuedOssAttachmentsDeferred(sid, parsed);
       const attachmentOwnerId = steeringStoredQueueItem
@@ -18673,7 +18678,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             sid,
             parsed.clientId,
             materialized.cleanupLocalMaterialization,
-            { cleanupAfterDurable: materialized.cleanupAfterAcceptance },
+            {
+              cleanupAfterDurable: materialized.cleanupAfterAcceptance,
+              mediaRefs: materialized.materializedRefs,
+            },
           );
       let acceptedByCoordinator = false;
       let previousAttachmentOwnerId: string | null = null;
@@ -19039,7 +19047,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         sid,
         cid,
         materialized.cleanupLocalMaterialization,
-        { cleanupAfterDurable: materialized.cleanupAfterAcceptance },
+        {
+          cleanupAfterDurable: materialized.cleanupAfterAcceptance,
+          mediaRefs: materialized.materializedRefs,
+        },
       );
       let acceptedByCoordinator = false;
       try {
@@ -19077,14 +19088,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         );
         acceptedByCoordinator = result.updated;
         if (result.updated) {
-          // The replacement supersedes any older local materialisation owned by
-          // this clientId. Keep the new owner alive for the queue item's later
-          // persistence/discard boundary, but release old refs now.
-          if (attachmentOwnerId) {
-            queuedAttachmentOwnership.activateCurrentOwner(sid, cid, attachmentOwnerId);
+          // The replacement supersedes older local materialisations owned by
+          // this clientId, except media it still carries: an edit that keeps an
+          // attachment creates no new copy, so the existing owner must survive
+          // or the queued item would point at a deleted blob. Release only the
+          // owners whose media the edit dropped.
+          const replacementRefs = collectQueuedAttachmentRefs(update);
+          const survivingOwnerId = queuedAttachmentOwnership.retainReferencedOwners(
+            sid,
+            cid,
+            attachmentOwnerId,
+            (ref) => replacementRefs.has(ref),
+          );
+          if (survivingOwnerId) {
+            queuedAttachmentOwnership.activateCurrentOwner(sid, cid, survivingOwnerId);
           }
-          discardQueuedAttachmentOwnership(sid, cid, attachmentOwnerId ?? undefined);
-          markQueuedAttachmentDurableAfterSnapshot(sid, cid, attachmentOwnerId);
+          discardQueuedAttachmentOwnership(sid, cid, survivingOwnerId ?? undefined);
+          markQueuedAttachmentDurableAfterSnapshot(sid, cid, survivingOwnerId);
         } else {
           await materialized.cleanupBeforeAcceptance?.();
           if (attachmentOwnerId) {

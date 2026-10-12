@@ -81,7 +81,9 @@ import {
   materializeDirectSendOssAttachments,
   normalizeUserMessage,
   materializeQueuedOssAttachmentsDeferred,
+  collectQueuedAttachmentRefs,
 } from '../maker-ipc/normalizeAttachments';
+import { QueuedAttachmentOwnershipRegistry } from '../maker-ipc/queuedAttachmentOwnership';
 import { buildAttachmentOssRef } from '../../shared/attachmentOssRef';
 import { buildPeerAttachmentRef } from '@cindy/device-link';
 
@@ -103,6 +105,38 @@ describe('peer attachment materialization', () => {
     expect(ingestMedia).toHaveBeenCalledOnce();
     expect(downloadToFile).not.toHaveBeenCalled();
     expect(removeRemote).not.toHaveBeenCalled();
+  });
+
+  it('keeps the local copy when a queue edit saves the same attachment again', async () => {
+    const metadata = { ticket: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', size: 11, sha256: ATTACHMENT_SHA256, mimeType: 'image/png' };
+    const ref = buildPeerAttachmentRef(metadata);
+    const enqueued = await materializeQueuedOssAttachmentsDeferred('sess-1', {
+      files: [{ path: ref, url: ref, mimeType: 'image/png', category: 'image', ext: '.png' }],
+      persistedContent: JSON.stringify({ text: 'before', images: [{ url: ref }] }),
+    });
+    expect(enqueued.materializedRefs).toContain(BLOB_URL);
+    const registry = new QueuedAttachmentOwnershipRegistry();
+    const cleanup = vi.fn(enqueued.cleanupLocalMaterialization);
+    const ownerId = registry.register('sess-1', 'client-1', cleanup, {
+      mediaRefs: enqueued.materializedRefs,
+    });
+    registry.activateCurrentOwner('sess-1', 'client-1', ownerId!);
+
+    // The edit only changes text; the attachment is already host-managed, so no new copy exists.
+    const queued = enqueued.item as { files: unknown[]; persistedContent: string };
+    const edited = await materializeQueuedOssAttachmentsDeferred('sess-1', {
+      files: queued.files,
+      persistedContent: JSON.stringify({ ...JSON.parse(queued.persistedContent), text: 'after' }),
+    });
+    expect(edited.cleanupLocalMaterialization).toBeUndefined();
+    const replacementRefs = collectQueuedAttachmentRefs(edited.item);
+    const survivor = registry.retainReferencedOwners('sess-1', 'client-1', null, (value) =>
+      replacementRefs.has(value),
+    );
+    await registry.discardClient('sess-1', 'client-1', survivor ?? undefined);
+
+    expect(survivor).toBe(ownerId);
+    expect(cleanup).not.toHaveBeenCalled();
   });
 });
 

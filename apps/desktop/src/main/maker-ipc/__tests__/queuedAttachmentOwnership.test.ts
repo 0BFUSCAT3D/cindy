@@ -171,6 +171,65 @@ describe('QueuedAttachmentOwnershipRegistry', () => {
     expect(registry.getCurrentOwnerId('session-1', 'client-1')).toBeNull();
   });
 
+  it('keeps the current owner when a queue edit still references its media without a new copy', async () => {
+    const cleanup = vi.fn(async () => {});
+    const registry = new QueuedAttachmentOwnershipRegistry();
+    const ownerId = registry.register('session-1', 'client-1', cleanup, {
+      mediaRefs: ['cindy-media://blobs/a.png', '/blobs/a.png'],
+    });
+    registry.activateCurrentOwner('session-1', 'client-1', ownerId!);
+
+    const survivor = registry.retainReferencedOwners(
+      'session-1',
+      'client-1',
+      null,
+      (ref) => ref === 'cindy-media://blobs/a.png',
+    );
+    await registry.discardClient('session-1', 'client-1', survivor ?? undefined);
+
+    expect(survivor).toBe(ownerId);
+    expect(cleanup).not.toHaveBeenCalled();
+    await registry.discardClient('session-1', 'client-1');
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds a still-referenced owner into the edit owner and drops unreferenced media', async () => {
+    const keptLocal = vi.fn(async () => {});
+    const keptRemote = vi.fn(async () => {});
+    const droppedLocal = vi.fn(async () => {});
+    const newLocal = vi.fn(async () => {});
+    const registry = new QueuedAttachmentOwnershipRegistry();
+    const keptOwnerId = registry.register('session-1', 'client-1', keptLocal, {
+      cleanupAfterDurable: keptRemote,
+      mediaRefs: ['cindy-media://blobs/kept.png'],
+    });
+    registry.activateCurrentOwner('session-1', 'client-1', keptOwnerId!);
+    registry.register('session-1', 'client-1', droppedLocal, {
+      mediaRefs: ['cindy-media://blobs/dropped.png'],
+    });
+    const newOwnerId = registry.register('session-1', 'client-1', newLocal, {
+      mediaRefs: ['cindy-media://blobs/new.png'],
+    });
+
+    const replacement = new Set(['cindy-media://blobs/kept.png', 'cindy-media://blobs/new.png']);
+    const survivor = registry.retainReferencedOwners('session-1', 'client-1', newOwnerId, (ref) =>
+      replacement.has(ref),
+    );
+    registry.activateCurrentOwner('session-1', 'client-1', survivor!);
+    await registry.discardClient('session-1', 'client-1', survivor!);
+
+    expect(survivor).toBe(newOwnerId);
+    expect(droppedLocal).toHaveBeenCalledTimes(1);
+    expect(keptLocal).not.toHaveBeenCalled();
+    expect(newLocal).not.toHaveBeenCalled();
+
+    await registry.markDurable('session-1', 'client-1', survivor!);
+    expect(keptRemote).toHaveBeenCalledTimes(1);
+    await registry.settleDurable('session-1', 'client-1');
+    expect(keptLocal).not.toHaveBeenCalled();
+    expect(newLocal).not.toHaveBeenCalled();
+  });
+
   it('does not clean a duplicate materialisation that was never accepted', async () => {
     const acceptedCleanup = vi.fn(async () => {});
     const duplicateCleanup = vi.fn(async () => {});

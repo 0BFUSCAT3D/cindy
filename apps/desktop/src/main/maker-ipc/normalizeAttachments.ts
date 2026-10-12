@@ -595,6 +595,8 @@ async function materializeQueuedOssAttachmentsInternal(
   cleanupAfterAcceptance?: () => void;
   cleanupBeforeAcceptance?: () => Promise<void>;
   cleanupLocalMaterialization?: () => Promise<void>;
+  /** Host-managed URLs and absolute paths created for this item's local copies. */
+  materializedRefs?: string[];
 }> {
   if (!item || typeof item !== 'object') return { item };
   const it = item as { files?: unknown; persistedContent?: unknown };
@@ -793,7 +795,13 @@ async function materializeQueuedOssAttachmentsInternal(
             cleanupAfterAcceptance: cleanupOss,
             cleanupBeforeAcceptance,
             ...(localCleanupCallbacks.length > 0
-              ? { cleanupLocalMaterialization: cleanupLocalMaterializations }
+              ? {
+                  cleanupLocalMaterialization: cleanupLocalMaterializations,
+                  materializedRefs: [...byRef.values()].flatMap((entry) => [
+                    entry.url,
+                    entry.absPath,
+                  ]),
+                }
               : {}),
           }
         : {}),
@@ -821,8 +829,45 @@ export async function materializeQueuedOssAttachmentsDeferred(
   cleanupAfterAcceptance?: () => void;
   cleanupBeforeAcceptance?: () => Promise<void>;
   cleanupLocalMaterialization?: () => Promise<void>;
+  materializedRefs?: string[];
 }> {
   return materializeQueuedOssAttachmentsInternal(sessionId, item);
+}
+
+/**
+ * Every attachment reference a queued item still carries: `files[]` url/path
+ * plus the persisted envelope's images[].url / files[].path. A queue edit
+ * compares these with each owner's `materializedRefs` so unchanged attachments
+ * keep their local copy.
+ */
+export function collectQueuedAttachmentRefs(item: unknown): Set<string> {
+  const refs = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === 'string' && value) refs.add(value);
+  };
+  const it = (item && typeof item === 'object' ? item : {}) as {
+    files?: unknown;
+    persistedContent?: unknown;
+  };
+  for (const file of Array.isArray(it.files) ? it.files : []) {
+    if (!file || typeof file !== 'object') continue;
+    add((file as SerializedFileLike).url);
+    add((file as SerializedFileLike).path);
+  }
+  if (typeof it.persistedContent === 'string') {
+    try {
+      const parsed = JSON.parse(it.persistedContent) as { images?: unknown; files?: unknown };
+      for (const image of Array.isArray(parsed?.images) ? parsed.images : []) {
+        if (image && typeof image === 'object') add((image as { url?: unknown }).url);
+      }
+      for (const file of Array.isArray(parsed?.files) ? parsed.files : []) {
+        if (file && typeof file === 'object') add((file as { path?: unknown }).path);
+      }
+    } catch {
+      // Plain-text persisted content carries no attachment references.
+    }
+  }
+  return refs;
 }
 
 /**

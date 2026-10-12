@@ -8,11 +8,18 @@ export type QueuedAttachmentOwnershipOptions = {
    * failure may run it.
    */
   cleanupAfterDurable?: QueuedAttachmentCleanup;
+  /**
+   * Host-managed references (managed URL and absolute path) this owner's local
+   * materialisation produced. A queue edit keeps an owner whose references the
+   * replacement still carries instead of discarding it as superseded.
+   */
+  mediaRefs?: readonly string[];
 };
 
 type QueuedAttachmentOwnership = {
   cleanup: QueuedAttachmentCleanup;
   cleanupAfterDurable?: QueuedAttachmentCleanup;
+  mediaRefs: Set<string>;
   durableBoundaryReached: boolean;
   persistenceInFlight: boolean;
   discardRequested: boolean;
@@ -68,6 +75,7 @@ export class QueuedAttachmentOwnershipRegistry {
     clientOwnership.owners.set(ownerId, {
       cleanup: cleanup ?? (() => {}),
       ...(options?.cleanupAfterDurable ? { cleanupAfterDurable: options.cleanupAfterDurable } : {}),
+      mediaRefs: new Set(options?.mediaRefs ?? []),
       durableBoundaryReached: false,
       persistenceInFlight: false,
       discardRequested: false,
@@ -94,6 +102,57 @@ export class QueuedAttachmentOwnershipRegistry {
     if (!clientOwnership) return;
     clientOwnership.currentOwnerId =
       ownerId && clientOwnership.owners.has(ownerId) ? ownerId : null;
+  }
+
+  /**
+   * Queue edit: fold every superseded owner whose local media the replacement
+   * still references into one surviving owner, so the later superseded-owner
+   * discard releases only media the edit actually dropped. The survivor is
+   * `keepOwnerId` (the edit's own materialisation) or, when the edit created
+   * none, the first referenced existing owner. Returns the survivor id, which
+   * the caller activates and excludes from its discard.
+   */
+  retainReferencedOwners(
+    sessionId: string,
+    clientId: string,
+    keepOwnerId: string | null,
+    isReferenced: (ref: string) => boolean,
+  ): string | null {
+    const clientOwnership = this.ownership.get(sessionId)?.get(clientId);
+    if (!clientOwnership) return null;
+    let survivorId = keepOwnerId && clientOwnership.owners.has(keepOwnerId) ? keepOwnerId : null;
+    for (const [ownerId, owner] of [...clientOwnership.owners]) {
+      if (ownerId === survivorId || ![...owner.mediaRefs].some(isReferenced)) continue;
+      if (!survivorId) {
+        survivorId = ownerId;
+        continue;
+      }
+      const survivor = clientOwnership.owners.get(survivorId)!;
+      const survivorCleanup = survivor.cleanup;
+      survivor.cleanup = async () => {
+        await survivorCleanup();
+        await owner.cleanup();
+      };
+      const pendingRemote = owner.durableBoundaryReached ? undefined : owner.cleanupAfterDurable;
+      if (pendingRemote) {
+        const survivorRemote = survivor.cleanupAfterDurable;
+        survivor.cleanupAfterDurable = survivorRemote
+          ? async () => {
+              await survivorRemote();
+              await pendingRemote();
+            }
+          : pendingRemote;
+        // The folded remote source has not been released yet; the caller's
+        // next durable mark must run it.
+        survivor.durableBoundaryReached = false;
+      }
+      for (const ref of owner.mediaRefs) survivor.mediaRefs.add(ref);
+      survivor.persistenceInFlight ||= owner.persistenceInFlight;
+      survivor.discardRequested ||= owner.discardRequested;
+      clientOwnership.owners.delete(ownerId);
+      if (clientOwnership.currentOwnerId === ownerId) clientOwnership.currentOwnerId = survivorId;
+    }
+    return survivorId;
   }
 
   getCurrentOwnerId(sessionId: string, clientId: string): string | null {
