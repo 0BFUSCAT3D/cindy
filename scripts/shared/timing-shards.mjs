@@ -8,11 +8,9 @@ export function partitionByTiming(files, { count, key, weight, overhead = [] }) 
   if (new Set(ordered.map(row => row.key)).size !== files.length) throw new Error('Duplicate test specification');
   if (ordered.some(row => !Number.isFinite(row.weight) || row.weight <= 0)) throw new Error('Invalid test weight');
   ordered.sort((a, b) => b.weight - a.weight || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const limit = Math.ceil(files.length / count);
   for (const row of ordered) {
     let selected = -1;
     for (let index = 0; index < count; index++) {
-      if (shards[index].length >= limit) continue;
       if (selected < 0 || totals[index] < totals[selected]
         || totals[index] === totals[selected] && shards[index].length < shards[selected].length) selected = index;
     }

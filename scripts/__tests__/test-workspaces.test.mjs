@@ -144,8 +144,23 @@ test("timing shards preserve every selected specification exactly once regardles
 		assert.deepEqual(shards, partitionByTiming([...files].reverse(), options));
 		assert.equal(new Set(shards.flat().map(file => file.id)).size, files.length);
 		assert.deepEqual(shards.flat().map(file => file.id).sort(), files.map(file => file.id).sort());
-		assert.ok(shards.every(shard => shard.length <= Math.ceil(files.length / count)));
 	}
+});
+
+test("timing shards balance cost when one long file outweighs several short files", () => {
+	const files = [100, 10, 10, 10, 10].map((ms, index) => ({ id: `file-${index}`, ms }));
+	const shards = partitionByTiming(files, { count: 2, key: file => file.id, weight: file => file.ms });
+	assert.deepEqual(shards.map(shard => shard.length), [1, 4]);
+	assert.deepEqual(shards.map(shard => shard.reduce((sum, file) => sum + file.ms, 0)), [100, 40]);
+});
+
+test("timing shards compensate for job overhead even when file counts differ", () => {
+	const files = Array.from({ length: 6 }, (_, index) => ({ id: `file-${index}`, ms: 10 }));
+	const overhead = [40, 0];
+	const shards = partitionByTiming(files, { count: 2, key: file => file.id, weight: file => file.ms, overhead });
+	assert.deepEqual(shards.map(shard => shard.length), [1, 5]);
+	assert.deepEqual(shards.map((shard, index) => overhead[index] + shard.reduce((sum, file) => sum + file.ms, 0)), [50, 50]);
+	assert.deepEqual(shards.flat().map(file => file.id).sort(), files.map(file => file.id).sort());
 });
 
 test("timing shards distribute long files and account for other steps on the first job", () => {

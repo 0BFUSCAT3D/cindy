@@ -115,9 +115,12 @@ it('reads small resources from real nested directories and preserves executable 
   try {
     await fs.mkdir(path.join(root, 'nested'));
     await Promise.all(Array.from({ length: 32 }, (_, index) =>
-      fs.writeFile(path.join(root, index % 2 ? 'nested' : '', `resource-${index}.txt`), `Resource ${index}`)));
+      fs.writeFile(path.join(root, index % 2 ? 'nested' : '', `resource-${index}.txt`), `Resource ${index}`, { mode: 0o600 })));
+    if (process.platform !== 'win32') await fs.chmod(path.join(root, 'nested', 'resource-1.txt'), 0o700);
     const files = await readImportTree(root, undefined, createImportBudget());
     expect(files).toHaveLength(32);
+    expect(files.find(file => file.name === 'resource-0.txt')?.executable).toBe(false);
+    if (process.platform !== 'win32') expect(files.find(file => file.name === 'nested/resource-1.txt')?.executable).toBe(true);
     for (const file of files) {
       expect(file.bytes.toString()).toBe(`Resource ${file.name.match(/\d+/)![0]}`);
       const stat = await fs.stat(path.join(root, file.name));
