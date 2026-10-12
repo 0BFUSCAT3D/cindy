@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// Exercise the fixture parsing helpers without mounting the browser hook.
 
 import { describe, expect, it, vi } from 'vitest';
 

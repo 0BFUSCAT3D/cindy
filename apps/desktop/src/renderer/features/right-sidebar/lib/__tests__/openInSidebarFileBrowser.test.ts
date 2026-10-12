@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// Store and window routing are injected below; this suite checks command logic.
 
 /**
  * openInSidebarFileBrowser — 覆盖聊天文件 / 目录 chip 打开 RSB 文件浏览器的

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// Store and window routing are injected below; this suite checks command logic.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 

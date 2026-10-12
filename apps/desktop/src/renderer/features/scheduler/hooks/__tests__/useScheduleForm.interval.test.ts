@@ -1,7 +1,7 @@
 /**
  * Schedule -> form 回填回归：相对间隔是调度引擎的权威模式，不能被陈旧 cronExpr 覆盖。
  *
- * @vitest-environment jsdom
+ * Only schedule-to-form mapping is exercised; the browser hook is not mounted.
  */
 
 import { describe, expect, it } from 'vitest';

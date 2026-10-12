@@ -234,23 +234,9 @@ export default {
     // Mobile has enough test files to become the critical path at one worker.
     // Give it the full worker budget, but never overlap it with other workspaces.
     requiredUnitWorkspace('mobile', 'apps/mobile', { workers: 4, execution: 'exclusive' }),
-    requiredUnitWorkspace('@cindy/anthropic-compat-proxy', 'packages/anthropic-compat-proxy'),
-    requiredUnitWorkspace('@cindy/anthropic-responses-bridge', 'packages/anthropic-responses-bridge'),
-    requiredUnitWorkspace('@cindy/responses-anthropic-bridge', 'packages/responses-anthropic-bridge'),
-    requiredUnitWorkspace('@cindy/model-compat', 'packages/model-compat'),
-    requiredUnitWorkspace('@cindy/responses-chat-bridge', 'packages/responses-chat-bridge'),
-    requiredUnitWorkspace('@cindy/auth-client', 'packages/auth-client'),
-    requiredUnitWorkspace('@cindy/browser-control-runtime', 'packages/browser-control-runtime'),
-    requiredUnitWorkspace('cindy-tools', 'packages/cindy-tools'),
-    requiredUnitWorkspace('@cindy/device-link', 'packages/device-link'),
-    noCollectableWorkspace('@cindy/embedding-client', 'packages/embedding-client'),
-    requiredUnitWorkspace('@cindy/file-browser-core', 'packages/file-browser-core'),
-    noCollectableWorkspace('@cindy/github-client', 'packages/github-client'),
-    noCollectableWorkspace('@cindy/gitlab-client', 'packages/gitlab-client'),
-    noCollectableWorkspace('@cindy/heartbeat-client', 'packages/heartbeat-client'),
-    requiredUnitWorkspace('@cindy/im', 'packages/lizi-im'),
-    requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
-    requiredUnitWorkspace('@cindy/maker-cc-manager', 'packages/maker-cc-manager'),
+    // Start the slowest packages first within the existing four-workspace budget.
+    // Windows CI run 38210710002: maker-core 152-214s, design-tokens 24-94s,
+    // browser-control-runtime 11-62s, mcps 44-65s. Desktop/Mobile stay exclusive.
     // Stays on forks: palette-scanner's tests stub HOME and the scanner resolves
     // it through os.homedir(), which a worker thread cannot see (see
     // UNIT_POOL_DEFAULT above).
@@ -281,6 +267,24 @@ export default {
         },
       },
     },
+    requiredUnitWorkspace('@cindy/design-tokens', 'packages/design-tokens'),
+    requiredUnitWorkspace('@cindy/browser-control-runtime', 'packages/browser-control-runtime'),
+    requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
+    requiredUnitWorkspace('@cindy/anthropic-compat-proxy', 'packages/anthropic-compat-proxy'),
+    requiredUnitWorkspace('@cindy/anthropic-responses-bridge', 'packages/anthropic-responses-bridge'),
+    requiredUnitWorkspace('@cindy/responses-anthropic-bridge', 'packages/responses-anthropic-bridge'),
+    requiredUnitWorkspace('@cindy/model-compat', 'packages/model-compat'),
+    requiredUnitWorkspace('@cindy/responses-chat-bridge', 'packages/responses-chat-bridge'),
+    requiredUnitWorkspace('@cindy/auth-client', 'packages/auth-client'),
+    requiredUnitWorkspace('cindy-tools', 'packages/cindy-tools'),
+    requiredUnitWorkspace('@cindy/device-link', 'packages/device-link'),
+    noCollectableWorkspace('@cindy/embedding-client', 'packages/embedding-client'),
+    requiredUnitWorkspace('@cindy/file-browser-core', 'packages/file-browser-core'),
+    noCollectableWorkspace('@cindy/github-client', 'packages/github-client'),
+    noCollectableWorkspace('@cindy/gitlab-client', 'packages/gitlab-client'),
+    noCollectableWorkspace('@cindy/heartbeat-client', 'packages/heartbeat-client'),
+    requiredUnitWorkspace('@cindy/im', 'packages/lizi-im'),
+    requiredUnitWorkspace('@cindy/maker-cc-manager', 'packages/maker-cc-manager'),
     requiredUnitWorkspace('@cindy/maker-remote-ssh', 'packages/maker-remote-ssh'),
     // 轮 42:新包 maker-pi-manager(TS 单例 pi daemon)已随 SSH remote 交付;
     // 漏登记会让 test-workspaces 的 manifest 覆盖校验失败(全量门禁拒跑)。
@@ -326,6 +330,5 @@ export default {
     noCollectableWorkspace('@cindy/device-link-protocol', 'packages/device-link-protocol'),
     requiredUnitWorkspace('@cindy/plugin-protocol', 'packages/plugin-protocol'),
     requiredUnitWorkspace('@cindy/slack-hook-protocol', 'packages/slack-hook-protocol'),
-    requiredUnitWorkspace('@cindy/design-tokens', 'packages/design-tokens'),
   ],
 };

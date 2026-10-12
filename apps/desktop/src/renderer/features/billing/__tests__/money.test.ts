@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// Currency formatting uses Intl only; no browser environment is needed.
 
 import { describe, expect, it } from 'vitest';
 

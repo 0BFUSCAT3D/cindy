@@ -1,5 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// These tests inject voice/input runners and exercise the real hold/scroll pumps.
+// Loading the native voice service here also initializes the unrelated maker host.
+// Fail on accidental use so this boundary cannot silently replace covered behavior.
+vi.mock('../../voice-input/global.js', () => {
+  const unexpectedNativeInput = () => {
+    throw new Error('This suite must inject its voice and system input runners');
+  };
+  return {
+    runMacTextInsertionHelperCommand: unexpectedNativeInput,
+    spawnMacTextInsertionHelper: unexpectedNativeInput,
+    triggerGlobalVoiceInputFromHardware: unexpectedNativeInput,
+  };
+});
+
 import { joystickScrollSpeed } from '../../../shared/workLouderCodexScroll.js';
 import {
   WINDOWS_WHEEL_DELTA,
