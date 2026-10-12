@@ -814,6 +814,25 @@ describe('shared provider credentials', () => {
     expect(checked).toEqual(['git log -p', 'git log -p']);
   });
 
+  it('does not let a safe git credential check satisfy plan-mode command approval', async () => {
+    const gitCredentials = {
+      provesSafe: async () => true,
+    } as unknown as GitCredentialHistory;
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('plan', asked, gitCredentials);
+    const action: ExecutorAction = { kind: 'exec', command: 'git remote show origin', cwd: project };
+    try {
+      expect(gate.authorize(action).ok).toBe(false);
+      expect(await executor.confirm(action)).toBe(true);
+      expect(gate.authorize(action).ok).toBe(false);
+      expect(asked).not.toHaveBeenCalled();
+      gate.recordApproval(action);
+      expect(gate.authorize(action).ok).toBe(true);
+    } finally {
+      await executor.close();
+    }
+  });
+
   it('leaves credential files out of Pi searches unless the searched path itself was allowed', async () => {
     const { executor } = sharedExecutor('full', async () => true);
     fs.writeFileSync(path.join(project, '.env'), 'API_KEY=secret\n');

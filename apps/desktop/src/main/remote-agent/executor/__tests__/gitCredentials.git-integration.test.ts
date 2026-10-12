@@ -189,6 +189,33 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'git show blob-tag -- src')).toBe(false);
   });
 
+  it('does not trust path-limited full diffs or commits outside the scanned history', async () => {
+    const history = new GitCredentialHistory();
+    const visible = git('rev-parse', 'HEAD').trim();
+    expect(await provesSafe(history, 'git log -p')).toBe(true);
+
+    write('.aws/credentials');
+    git('add', '.aws/credentials');
+    const hiddenTree = git('write-tree').trim();
+    git('reset', '-q', 'HEAD', '--', '.aws/credentials');
+    fs.rmSync(path.join(repo, '.aws', 'credentials'));
+    const hidden = execFileSync('git', ['commit-tree', hiddenTree, '-p', visible], {
+      cwd: repo,
+      encoding: 'utf8',
+      input: 'hidden\n',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
+    expect(await provesSafe(history, 'git show ' + hidden)).toBe(false);
+
+    const fullDiffHistory = new GitCredentialHistory();
+    write('README.md', 'changed\n');
+    write('.aws/credentials');
+    git('add', '-A');
+    git('commit', '-q', '--no-gpg-sign', '-m', 'mixed');
+    expect(await provesSafe(fullDiffHistory, 'git log -p -- README.md')).toBe(true);
+    expect(await provesSafe(fullDiffHistory, 'git log -p --full-diff -- README.md')).toBe(false);
+  });
+
   it('lets commands that print the git config run only while the config holds no secrets', async () => {
     const history = new GitCredentialHistory();
     const token = 'ghp_0123456789abcdefghijABCDEFGHIJ012345';
@@ -216,6 +243,16 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'git config --list')).toBe(true);
     git('config', '--global', 'sendemail.smtppass', 'hunter2');
     expect(await provesSafe(history, 'git config --list')).toBe(false);
+    expect(await provesSafe(history, 'HOME=' + path.join(root, 'other-home') + ' git config --list')).toBe(false);
+    expect(await provesSafe(history, 'XDG_CONFIG_HOME=' + path.join(root, 'other-config') + ' git remote -v')).toBe(false);
+  });
+
+  it('fails closed for path selectors that exceed the bounded matcher', async () => {
+    const history = new GitCredentialHistory();
+    const selector = 'a*'.repeat(20) + 'b';
+    const started = Date.now();
+    expect(await provesSafe(history, 'git log -p -- ' + selector)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('keeps asking where the scan does not reach', async () => {

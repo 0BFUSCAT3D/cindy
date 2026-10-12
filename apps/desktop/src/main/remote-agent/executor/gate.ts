@@ -99,6 +99,7 @@ export interface ExecutorGateOptions {
 export class ExecutorGate {
   private mode: ExecutorGateMode;
   private approvals: Approval[] = [];
+  private credentialExemptions: Approval[] = [];
   private credentialsAllowedForSession = false;
 
   constructor(
@@ -112,6 +113,7 @@ export class ExecutorGate {
 
   setMode(mode: ExecutorGateMode): void {
     this.credentialsAllowedForSession = false;
+    this.credentialExemptions = [];
     // 同一路径的临时批准也必须撤销，否则它会在 TTL 内绕过恢复后的凭证确认。
     this.approvals = this.approvals.filter((approval) => !approval.credential);
     this.mode = mode;
@@ -135,6 +137,19 @@ export class ExecutorGate {
       credential: this.isCredentialAction(action),
     });
     if (this.approvals.length > MAX_APPROVALS) this.approvals.splice(0, this.approvals.length - MAX_APPROVALS);
+  }
+
+  recordCredentialExemption(action: ExecutorAction): void {
+    if (!this.isCredentialAction(action)) return;
+    this.prune();
+    this.credentialExemptions.push({
+      ...approvalOf(action),
+      expiresAt: this.now() + EXECUTOR_APPROVAL_TTL_MS,
+      credential: true,
+    });
+    if (this.credentialExemptions.length > MAX_APPROVALS) {
+      this.credentialExemptions.splice(0, this.credentialExemptions.length - MAX_APPROVALS);
+    }
   }
 
   /**
@@ -164,7 +179,8 @@ export class ExecutorGate {
   }
 
   authorize(action: ExecutorAction): ExecutorGateDecision {
-    const credential = this.needsCredentialConsent(action);
+    let credential = this.needsCredentialConsent(action);
+    if (credential && this.consumeCredentialExemption(action)) credential = false;
     if (this.mode === 'full' && !credential) return { ok: true, elevated: true };
     // 抓取网页：本机用户批准过这个地址就放开内网。公网样式的域名也可能解析到内网(公司内网域名)，
     // 只看地址文本判定为不必问，但抓取时会按 DNS 结果被拦下。
@@ -216,8 +232,18 @@ export class ExecutorGate {
     return true;
   }
 
+  private consumeCredentialExemption(action: ExecutorAction): boolean {
+    this.prune();
+    const { kind, key } = approvalOf(action);
+    const index = this.credentialExemptions.findIndex((approval) => approval.kind === kind && approval.key === key);
+    if (index < 0) return false;
+    this.credentialExemptions.splice(index, 1);
+    return true;
+  }
+
   private prune(): void {
     const t = this.now();
     this.approvals = this.approvals.filter((approval) => approval.expiresAt > t);
+    this.credentialExemptions = this.credentialExemptions.filter((approval) => approval.expiresAt > t);
   }
 }

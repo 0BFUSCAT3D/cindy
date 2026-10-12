@@ -167,7 +167,7 @@ export class RemoteExecutor {
     if (gitCheck && await gitCheck) {
       // 核实期间任务结束、请求被取消或权限已切换：同样不放行。
       if (this.closed || signal?.aborted || permissionGeneration !== this.permissionGeneration) return false;
-      this.gate.recordApproval(action);
+      this.gate.recordCredentialExemption(action);
       return true;
     }
     const allowed = await this.opts.confirm(action).catch(() => false);

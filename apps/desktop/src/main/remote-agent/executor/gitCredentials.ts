@@ -27,6 +27,8 @@ const QUERY_TIMEOUT_MS = 15_000;
 /** 记下的凭证类路径上限：超过时不再逐个比对限定路径，按读得到处理。 */
 const MAX_CREDENTIAL_PATHS = 4_096;
 const MAX_REPOS = 16;
+const MAX_PATHSPEC_LENGTH = 256;
+const MAX_PATHSPEC_WILDCARDS = 8;
 
 /** 交给这里核实的查看内容的子命令；git cat-file 直接读对象，不在内。 */
 const CONTENT_SUBCOMMANDS: ReadonlySet<string> = new Set(['diff', 'show', 'log', 'whatchanged', 'grep', 'status']);
@@ -45,6 +47,7 @@ const UNCOVERED_OPTION = /^--(?:no-i|rec|sub|alt|std)/;
 const PSEUDO_REF = /(?:ORIG|FETCH|MERGE|CHERRY_PICK|REVERT|REBASE|BISECT)_HEAD|AUTO_MERGE/;
 /** 命令里改 git 的仓库、暂存区或对象位置的环境变量。 */
 const GIT_ENV_ASSIGNMENT = /\bGIT_[A-Z0-9_]*\s*=/i;
+const GIT_CONFIG_ENV_ASSIGNMENT = /\b(?:HOME|XDG_CONFIG_HOME)\s*=/i;
 /** 列出历史里每个路径(每个路径至少在某次提交里以新增出现)。 */
 const HISTORY_PATHS = ['log', '-m', '--root', '--no-renames', '--diff-filter=A', '--name-only', '--format=', '-z', '--no-show-signature'];
 /**
@@ -202,27 +205,81 @@ async function exists(target: string): Promise<boolean> {
   return fsp.stat(target).then(() => true, () => false);
 }
 
+type PathspecToken =
+  | { kind: 'star' }
+  | { kind: 'any' }
+  | { kind: 'literal'; value: string };
+
+function pathspecIsTooComplex(spec: string): boolean {
+  let wildcardCount = 0;
+  for (const char of spec) {
+    if (char === '*' || char === '?' || char === '[') wildcardCount += 1;
+  }
+  return spec.length > MAX_PATHSPEC_LENGTH || wildcardCount > MAX_PATHSPEC_WILDCARDS;
+}
+
+function pathspecIsTooComplexForRead(read: GitRead): boolean {
+  if (!PATHSPEC_SUBCOMMANDS.has(read.sub)) return false;
+  const separator = read.args.indexOf('--');
+  if (separator < 0 || separator === read.args.length - 1) return false;
+  return read.args.slice(separator + 1).some(pathspecIsTooComplex);
+}
+
+function compilePathspec(spec: string): PathspecToken[] {
+  const tokens: PathspecToken[] = [];
+  for (let index = 0; index < spec.length; index += 1) {
+    const char = spec.charAt(index);
+    if (char === '*') tokens.push({ kind: 'star' });
+    else if (char === '?') tokens.push({ kind: 'any' });
+    else if (char === '[') {
+      tokens.push({ kind: 'any' });
+      const close = spec.indexOf(']', index + 2);
+      if (close > 0) index = close;
+    } else tokens.push({ kind: 'literal', value: char });
+  }
+  return tokens;
+}
+
+function globMatches(tokens: readonly PathspecToken[], value: string): boolean {
+  let patternIndex = 0;
+  let valueIndex = 0;
+  let lastStarIndex = -1;
+  let starValueIndex = 0;
+  while (valueIndex < value.length) {
+    const token = tokens[patternIndex];
+    if (token?.kind === 'literal' && token.value === value.charAt(valueIndex)) {
+      patternIndex += 1;
+      valueIndex += 1;
+    } else if (token?.kind === 'any') {
+      patternIndex += 1;
+      valueIndex += 1;
+    } else if (token?.kind === 'star') {
+      lastStarIndex = patternIndex;
+      starValueIndex = valueIndex;
+      patternIndex += 1;
+    } else if (lastStarIndex >= 0) {
+      patternIndex = lastStarIndex + 1;
+      starValueIndex += 1;
+      valueIndex = starValueIndex;
+    } else {
+      return false;
+    }
+  }
+  while (tokens[patternIndex]?.kind === 'star') patternIndex += 1;
+  return patternIndex === tokens.length;
+}
+
 /**
  * git 路径限定是否可能选中 file(都已转小写，相对仓库根)：不含通配符时是这个路径本身或它下面的文件；
  * 含通配符时 `*` 可跨目录，方括号放宽为任意一个字符，上层目录被选中也算(只会多判、不会漏判)。
  */
 function pathspecCouldSelect(spec: string): (file: string) => boolean {
   if (!/[*?[]/.test(spec)) return (file) => spec === '' || file === spec || file.startsWith(`${spec}/`);
-  let source = '';
-  for (let index = 0; index < spec.length; index += 1) {
-    const char = spec.charAt(index);
-    if (char === '*') source += '.*';
-    else if (char === '?') source += '.';
-    else if (char === '[') {
-      source += '.';
-      const close = spec.indexOf(']', index + 2);
-      if (close > 0) index = close;
-    } else source += char.replace(/[.+^${}()|\\/-]/g, '\\$&');
-  }
-  const pattern = new RegExp(`^${source}$`, 's');
+  if (pathspecIsTooComplex(spec)) return () => false;
+  const tokens = compilePathspec(spec);
   return (file) => {
     for (let end = file.length; end > 0; end = file.lastIndexOf('/', end - 1)) {
-      if (pattern.test(file.slice(0, end))) return true;
+      if (globMatches(tokens, file.slice(0, end))) return true;
     }
     return false;
   };
@@ -233,6 +290,8 @@ function pathspecsAvoid(read: GitRead, cwd: string, top: string, credentials: Re
   if (!PATHSPEC_SUBCOMMANDS.has(read.sub)) return false;
   const separator = read.args.indexOf('--');
   if (separator < 0 || separator === read.args.length - 1) return false;
+  if (pathspecIsTooComplexForRead(read)) return false;
+  if (read.args.slice(0, separator).some((arg) => arg === '--full-diff' || arg.startsWith('--full-diff='))) return false;
   // `--` 前带 `:` 的是 <提交>:<路径> 这类直接指定的对象，不受后面的路径限定。
   if (read.args.slice(0, separator).some((arg) => !arg.startsWith('-') && arg.includes(':'))) return false;
   const files = [...credentials].map((file) => file.toLowerCase());
@@ -243,6 +302,45 @@ function pathspecsAvoid(read: GitRead, cwd: string, top: string, credentials: Re
     const selects = pathspecCouldSelect(path.relative(top, target).split(path.sep).join('/').toLowerCase());
     return !files.some(selects);
   });
+}
+
+function revisionOperands(read: GitRead): string[] {
+  if (!SHOWN_FILES[read.sub] && !PATHSPEC_SUBCOMMANDS.has(read.sub)) return [];
+  const separator = read.args.indexOf('--');
+  const args = read.args.slice(0, separator < 0 ? read.args.length : separator);
+  return args.flatMap((arg) => {
+    if (arg.startsWith('-')) return [];
+    return arg.split(/\.\.\.?/).filter(Boolean);
+  });
+}
+
+async function revisionsAreCovered(
+  read: GitRead,
+  cwd: string,
+  tips: ReadonlySet<string>,
+  deadline: number,
+): Promise<boolean> {
+  for (const revision of revisionOperands(read)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const commit = await git(['rev-parse', '--verify', '--quiet', revision + '^{commit}'], cwd, { timeoutMs: remaining })
+      .then((output) => output.trim(), () => '');
+    if (!commit) continue;
+    if (tips.has(commit)) continue;
+    let covered = false;
+    for (const tip of tips) {
+      const tipRemaining = deadline - Date.now();
+      if (tipRemaining <= 0) return false;
+      const isAncestor = await git(['merge-base', '--is-ancestor', commit, tip], cwd, { timeoutMs: tipRemaining })
+        .then(() => true, () => false);
+      if (isAncestor) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) return false;
+  }
+  return true;
 }
 
 /**
@@ -348,7 +446,7 @@ export class GitCredentialHistory {
 
   /** 这些 git 调用(credentials.ts shareCredentialGitReads 的结果)在本机核实后都读不到、打不出凭证。 */
   async provesSafe(command: string, reads: readonly GitRead[], signal?: AbortSignal): Promise<boolean> {
-    if (reads.length === 0 || GIT_ENV_ASSIGNMENT.test(command)) return false;
+    if (reads.length === 0 || GIT_ENV_ASSIGNMENT.test(command) || GIT_CONFIG_ENV_ASSIGNMENT.test(command)) return false;
     for (const read of reads) {
       const check = CONFIG_SUBCOMMANDS.has(read.sub) ? configReadProvesSafe(read) : this.readProvesSafe(read, signal);
       if (signal?.aborted || !(await check.catch(() => false))) return false;
@@ -361,6 +459,7 @@ export class GitCredentialHistory {
     if (!read.cwd || !CONTENT_SUBCOMMANDS.has(read.sub)) return false;
     if (read.args.some((arg) => /[$`]/.test(arg) || UNCOVERED_OPTION.test(arg) || PSEUDO_REF.test(arg))) return false;
     const cwd = await fsp.realpath(read.cwd);
+    if (pathspecIsTooComplexForRead(read)) return false;
     const [topLine, commonLine] = (await git(['rev-parse', '--show-toplevel', '--git-common-dir'], cwd)).split(/\r?\n/);
     if (!topLine || !commonLine) return false;
     const top = path.resolve(topLine);
@@ -375,7 +474,8 @@ export class GitCredentialHistory {
     const history = await this.waitForHistory(top, commonDir, deadline, signal);
     if (history) {
       const credentials = new Set([...history.credentials, ...index]);
-      if (credentials.size === 0 || pathspecsAvoid(read, cwd, top, credentials)) return true;
+      if (await revisionsAreCovered(read, cwd, history.tips, deadline)
+        && (credentials.size === 0 || pathspecsAvoid(read, cwd, top, credentials))) return true;
     }
     // 仓库里有凭证类文件(或还没扫完)：按这条命令实际会显示的文件再核对一次，与等扫描共用同一个时限。
     const remaining = deadline - Date.now();
