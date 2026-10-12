@@ -538,6 +538,26 @@ describe('mobileVoiceInput', () => {
     await expect(buffered.requestJson(refineRequest)).rejects.toThrow('64000');
   });
 
+  it.each([
+    ['one oversized event with little output', `data: ${JSON.stringify({
+      padding: 'x'.repeat(64_001),
+      choices: [{ delta: { content: '{"text":"短"}' } }],
+    })}\n\n`],
+    ['endless framing-only events', `data: ${JSON.stringify({
+      id: 'chatcmpl-EXxrC3CJkbLLnU1qOjh6Hn6s6iSdr',
+      object: 'chat.completion.chunk',
+      created: 1791763622,
+      model: 'gpt-5.4-mini',
+      choices: [{ index: 0, delta: {} }],
+    })}\n\n`.repeat(12_000)],
+  ])('bounds the response when the gateway sends %s', async (_case, sse) => {
+    const streamed = longRefinementClient({ body: new Response(sse).body });
+    const buffered = longRefinementClient({ body: undefined, text: async () => sse });
+
+    await expect(streamed.requestJson(refineRequest)).rejects.toThrow(/\d{5,} 字符/);
+    await expect(buffered.requestJson(refineRequest)).rejects.toThrow(/\d{5,} 字符/);
+  });
+
   it('surfaces managed refine HTTP error details', async () => {
     const fetchCloud = vi.fn(async () => ({
       ok: false,

@@ -14,11 +14,13 @@ const log = createLogger('voice-input:refine-model:litellm');
 
 const DISABLE_REFINER_PREWARM = process.env.XDT_VOICE_INPUT_DISABLE_REFINER_PREWARM === '1';
 const REFINER_TIMING_ENABLED = process.env.XDT_VOICE_INPUT_REFINER_TIMING === '1';
-// Caps the model's output text, not the SSE bytes: each event wraps one or two
-// characters in ~180 chars of JSON, so a byte cap rejects any refinement over
-// ~550 characters. Also caps one unterminated SSE event, the only other part
-// of the stream that is held in memory.
+// Caps the model's output text and any single SSE event. The whole stream gets
+// a far larger cap: each event wraps one or two characters in ~180 chars of
+// JSON, so a 64K stream cap rejected every refinement over ~550 characters.
+// 2M still bounds endless framing-only events (each chunk rearms the idle
+// timeout) while staying ~10x above the managed server's 1,024-token output.
 const MAX_RESPONSE_CHARS = 64_000;
+const MAX_STREAM_CHARS = 2_000_000;
 
 // Own pool for the LiteLLM proxy host (tuning lives in refinerHttpDispatcher.ts).
 const refinerDispatcher = createRefinerHttpDispatcher();
@@ -299,11 +301,13 @@ async function readStreamingChatCompletion(input: {
       input.onChunk();
       const chunk = decoder.decode(value, { stream: true });
       rawChars += chunk.length;
+      assertResponseWithinLimit(rawChars, MAX_STREAM_CHARS);
       buf += normalizeSseLineEndings(chunk);
       let idx = buf.indexOf('\n\n');
       while (idx >= 0) {
         const block = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
+        assertResponseWithinLimit(block.length);
         const event = parseSseBlock(block);
         if (event) {
           if (!servedModel && isRecord(event.data) && typeof event.data.model === 'string' && event.data.model) {
@@ -357,11 +361,11 @@ async function readStreamingChatCompletion(input: {
   };
 }
 
-function assertResponseWithinLimit(chars: number): void {
-  if (chars <= MAX_RESPONSE_CHARS) return;
+function assertResponseWithinLimit(chars: number, max = MAX_RESPONSE_CHARS): void {
+  if (chars <= max) return;
   // Runaway generation: the channel works, the model is flooding.
   throw markRefinerModelOutputError(
-    new Error(`LiteLLM refinement response exceeded ${MAX_RESPONSE_CHARS} characters`),
+    new Error(`LiteLLM refinement response exceeded ${max} characters`),
   );
 }
 
