@@ -15,6 +15,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 import { cn } from '@/lib/utils';
 import { formatCompactTokens, formatModelShort } from '@/lib/usageFormat';
@@ -71,6 +72,7 @@ export function buildUsageTaskRows(
   }
   const rows: UsageTaskRow[] = [];
   for (const task of history.tasks) {
+    if (!CINDY_MAKE_ENABLED && isCindyMakeSource(task.source)) continue;
     const tokens = tokensByTask.get(task.taskKey) ?? 0;
     if (tokens > 0) rows.push({ ...task, tokens });
   }

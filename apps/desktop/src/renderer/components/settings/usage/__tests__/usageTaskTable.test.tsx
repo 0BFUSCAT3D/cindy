@@ -86,6 +86,29 @@ describe('buildUsageTaskRows', () => {
     expect(buildUsageTaskRows(payload, 'all').map((r) => r.taskKey)).toContain('laptop:b');
   });
 
+  it.each(['local', 'laptop'])('filters Make tasks on %s before ranking without changing usage records', (deviceId) => {
+    const ordinary = Array.from({ length: 10 }, (_, index) => ({
+      ...task(deviceId, 'ordinary-' + index),
+      source: index % 2 === 0 ? null : undefined,
+    }));
+    const hidden = ['cindy-make', 'cindy-make-merge'].map((source) => ({
+      ...task(deviceId, source),
+      source,
+    }));
+    const daily = [...hidden, ...ordinary].map((entry, index) => ({
+      day: '2026-09-26',
+      taskKey: entry.taskKey,
+      tokens: 100 - index,
+    }));
+    const input = history(daily, [...hidden, ...ordinary]);
+
+    expect(buildUsageTaskRows(input, 'today').map((row) => row.taskKey)).toEqual(
+      ordinary.slice(0, 8).map((entry) => entry.taskKey),
+    );
+    expect(input.taskDaily).toEqual(daily);
+    expect(input.tasks).toEqual([...hidden, ...ordinary]);
+  });
+
   it('reports the coverage start only when the range reaches before the first record', () => {
     expect(usageTaskCoverageStart(payload, 'all')).toBe('2026-09-10');
     expect(usageTaskCoverageStart(payload, '30d')).toBe('2026-09-10');
