@@ -101,11 +101,11 @@ function markerPath(): string | null {
   return userDataDir ? path.join(userDataDir, 'remote-agent', MARKER_FILE) : null;
 }
 
-function readMarkers(field: 'accounts' | 'knownAccounts' = 'accounts'): Record<string, Region[]> {
+function readMarkers(field: 'accounts' | 'emptyAccounts' = 'accounts'): Record<string, Region[]> {
   const file = markerPath();
   if (!file) return {};
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; accounts?: unknown; knownAccounts?: unknown };
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; accounts?: unknown; emptyAccounts?: unknown };
     const records = parsed[field];
     if (parsed.version !== 1 || !records || typeof records !== 'object') return {};
     const out: Record<string, Region[]> = {};
@@ -119,16 +119,17 @@ function readMarkers(field: 'accounts' | 'knownAccounts' = 'accounts'): Record<s
   }
 }
 
-async function writeMarker(account: string, region: Region, present: boolean): Promise<void> {
+async function writeMarker(account: string, region: Region, present: boolean, confirmedEmpty = false): Promise<void> {
   const file = markerPath();
   if (!file) return;
   const markers = readMarkers();
-  const knownAccounts = readMarkers('knownAccounts');
-  // 保留 Main 已确认的跨区往来，不含凭证。旧版活动标记同时是合法的历史证据。
-  for (const [key, active] of Object.entries(markers)) {
-    knownAccounts[key] = [...new Set([...(knownAccounts[key] ?? []), ...active])];
-  }
-  if (present) knownAccounts[account] = [...new Set([...(knownAccounts[account] ?? []), region])];
+  // 服务端确认的空名单只供本地收藏清理，绝不授予跨区联网能力。新申请使旧结论失效。
+  const emptyAccounts = readMarkers('emptyAccounts');
+  const emptyRegions = new Set(emptyAccounts[account] ?? []);
+  if (confirmedEmpty && !present) emptyRegions.add(region);
+  else emptyRegions.delete(region);
+  if (emptyRegions.size > 0) emptyAccounts[account] = [...emptyRegions];
+  else delete emptyAccounts[account];
   const regions = new Set(markers[account] ?? []);
   if (present) regions.add(region);
   else regions.delete(region);
@@ -137,7 +138,7 @@ async function writeMarker(account: string, region: Region, present: boolean): P
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await fsp.mkdir(path.dirname(file), { recursive: true });
   try {
-    await fsp.writeFile(tmp, JSON.stringify({ version: 1, accounts: markers, knownAccounts }), { encoding: 'utf8', mode: 0o600 });
+    await fsp.writeFile(tmp, JSON.stringify({ version: 1, accounts: markers, emptyAccounts }), { encoding: 'utf8', mode: 0o600 });
     await fsp.rename(tmp, file);
   } finally {
     await fsp.rm(tmp, { force: true }).catch(() => undefined);
@@ -279,12 +280,16 @@ function scheduleRefresh(rt: Runtime, state: RegionState): void {
   (state.timer as { unref?: () => void }).unref?.();
 }
 
+function initialRegionState(region: Region, loaded = false): RegionState {
+  return { region, apiBase: '', credential: null, expiresAt: 0, shares: [], client: null, refreshing: null, timer: null, failures: 0, loaded };
+}
+
 /** 用新名片换取这台电脑在对方区域的分享列表与连接凭证。 */
 function refreshRegion(rt: Runtime, region: Region): Promise<void> {
   let state = rt.regions.get(region);
   if (state?.refreshing) return state.refreshing;
   if (!state) {
-    state = { region, apiBase: '', credential: null, expiresAt: 0, shares: [], client: null, refreshing: null, timer: null, failures: 0, loaded: false };
+    state = initialRegionState(region);
     rt.regions.set(region, state);
   }
   const target = state;
@@ -314,8 +319,11 @@ function refreshRegion(rt: Runtime, region: Region): Promise<void> {
       if (shares.length === 0 || !credential) {
         state.client?.stop();
         state.client = null;
-        await writeMarker(rt.account, region, false).catch(() => undefined);
-      } else if (!state.client) {
+      }
+      await writeMarker(rt.account, region, shares.length > 0 && !!credential, shares.length === 0).catch((error) =>
+        log.warn('cross-region marker write failed', { error: String(error) }));
+      if (!current(rt)) return;
+      if (shares.length > 0 && credential && !state.client) {
         state.client = createClient(rt, state);
       }
       scheduleRefresh(rt, state);
@@ -344,8 +352,13 @@ export function startProviderShareCrossRegion(events: CrossRegionEvents, options
   if (!account) return;
   const rt: Runtime = { events, account, regions: new Map(), stopped: false };
   runtime = rt;
+  const activeRegions = readMarkers()[account] ?? [];
+  // 清理失败或未完成就退出时，下次只恢复本地空名单，不向对方区域发送身份。
+  for (const region of readMarkers('emptyAccounts')[account] ?? []) {
+    if (region === peerRegion() && !activeRegions.includes(region)) rt.regions.set(region, initialRegionState(region, true));
+  }
   // 只联系标记过的区域(本账号在那里发过申请或加入过分享)。
-  for (const region of readMarkers()[account] ?? []) {
+  for (const region of activeRegions) {
     if (region !== peerRegion()) continue;
     void refreshRegion(rt, region);
   }
@@ -374,12 +387,12 @@ export function getCrossRegionReceived(): ProviderShareReceived[] {
   return runtime ? [...runtime.regions.values()].flatMap((state) => state.shares) : [];
 }
 
-/** 空名单会移除活动标记；收藏只提示核对 Main 曾确认有往来的区域，不能授权新的跨区请求。 */
+/** 收藏不能恢复已撤销的跨区联网资格；已确认空名单由启动路径在本地恢复。 */
 export function ensureCrossRegionReceivedForFavorites(regions: readonly Region[]): void {
   const rt = runtime;
   const region = peerRegion();
   if (!rt || !current(rt) || !regions.includes(region)) return;
-  if (!readMarkers()[rt.account]?.includes(region) && !readMarkers('knownAccounts')[rt.account]?.includes(region)) return;
+  if (!readMarkers()[rt.account]?.includes(region)) return;
   const state = rt.regions.get(region);
   if (!state?.loaded && !state?.refreshing && !state?.timer) void refreshRegion(rt, region);
 }

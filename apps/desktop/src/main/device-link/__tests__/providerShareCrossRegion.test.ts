@@ -133,38 +133,69 @@ describe('cross-region provider share', () => {
     await probe();
     state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
     await crossRegionSendRequest('global', TOKEN);
+    const oldHistory = __testing.readMarkers();
+    fs.writeFileSync(path.join(dir, 'remote-agent', 'provider-share-regions.json'), JSON.stringify({ version: 1, accounts: {}, knownAccounts: oldHistory }));
+    state.calls = [];
+    state.identityCards = [];
+    await probe(); // 历史往来不能作为联网资格，也不能被当作服务端空名单。
     state.userId = 'user-2';
     state.calls = [];
     state.identityCards = [];
     await probe();
   });
 
-  it('recovers a revoked region from favorite hints after its marker is removed and the runtime restarts', async () => {
+  it('restores confirmed empty membership locally after restart without granting favorite hints network access', async () => {
     state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
     await crossRegionSendRequest('global', TOKEN);
-    // 旧版没有历史字段：删除活动标记前必须保留它的 Main 往来证据。
+    // 兼容旧版活动标记；服务端空名单与撤销联网资格在同一次写入中保存。
     fs.writeFileSync(path.join(dir, 'remote-agent', 'provider-share-regions.json'), JSON.stringify({ version: 1, accounts: __testing.readMarkers() }));
     state.responses.set('/session', { credential: null, expiresAt: null, shares: [] });
     startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
     await refreshReceivedShares('test');
     await refreshProviderShareCrossRegion('global');
     expect(__testing.readMarkers()).toEqual({});
-    stopProviderShareGuest();
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'remote-agent', 'provider-share-regions.json'), 'utf8'));
+    expect(Object.values(saved.emptyAccounts)).toEqual([['global']]);
+    expect(saved.knownAccounts).toBeUndefined();
     state.calls = [];
+    state.identityCards = [];
+    const recovery = { ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 1 }, regions: ['global'] as const };
+    for (let restart = 0; restart < 3; restart += 1) {
+      stopProviderShareGuest();
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+      await refreshReceivedShares('test');
+      // 首次读取即可清理失败残留；之后伪造收藏、多窗口查询和再重启也不会发身份名片。
+      expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn', 'global']);
+      expect(getReceivedSharesSnapshot(recovery).confirmedRegions).toEqual(['cn', 'global']);
+      getReceivedSharesSnapshot(recovery);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(state.calls).toEqual([]);
+      expect(state.identityCards).toEqual([]);
+      expect(state.clients).toEqual([]);
+    }
+    state.userId = 'user-2';
     startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
     await refreshReceivedShares('test');
     expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
-    getReceivedSharesSnapshot({ ownerStamp: { dataOwnerId: 'other', ownerGeneration: 1 }, regions: ['global'] });
-    getReceivedSharesSnapshot({ ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 0 }, regions: ['global'] });
-    await Promise.resolve();
-    expect(state.calls).toEqual([]);
-    const recovery = { ownerStamp: { dataOwnerId: 'user-1', ownerGeneration: 1 }, regions: ['global'] as const };
-    // 立即返回本区域快照；多个窗口同时恢复只发一次对方区域请求。
-    expect(getReceivedSharesSnapshot(recovery).confirmedRegions).toEqual(['cn']);
-    getReceivedSharesSnapshot(recovery);
+  });
+
+  it('invalidates a saved empty list on a new application and never infers revocation from missing credentials', async () => {
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    state.responses.set('/session', { credential: null, expiresAt: null, shares: [] });
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
     await refreshProviderShareCrossRegion('global');
-    expect(getReceivedSharesSnapshot(recovery).confirmedRegions).toEqual(['cn', 'global']);
-    expect(state.calls.filter((call) => call.path.endsWith('/session'))).toHaveLength(1);
+    await crossRegionSendRequest('global', TOKEN);
+    state.responses.delete('/session');
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    await refreshProviderShareCrossRegion('global');
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
+    state.responses.set('/session', { credential: null, expiresAt: null, shares: [share] });
+    await refreshProviderShareCrossRegion('global');
+    startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
+    await refreshReceivedShares('test');
+    expect(getReceivedSharesSnapshot().confirmedRegions).toEqual(['cn']);
   });
 
   it('keeps network backoff when favorite recovery is requested repeatedly', async () => {
