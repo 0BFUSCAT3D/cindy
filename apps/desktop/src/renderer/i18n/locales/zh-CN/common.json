@@ -5118,6 +5118,7 @@
         "online": "已连接"
       },
       "connectionIssue": {
+        "device-removed": "设备已从账号中移除，请在本设备退出后重新登录。",
         "auth-failed": "登录已失效，请重新登录",
         "replaced": "连接被另一处相同设备顶替",
         "too-many-connections": "同账号连接数已达上限",
@@ -5140,7 +5141,9 @@
       "renameConfirm": "确认",
       "renameCancel": "取消",
       "delete": "删除",
-      "deleteOnlineHint": "在线设备无法删除",
+      "deleteTitle": "删除“{{name}}”？",
+      "deleteMessage": "将此设备从账号中移除并断开远程连接。设备上的任务和文件会保留，重新登录后可再次加入。",
+      "deleteOnlineHint": "当前服务端尚不支持移除在线设备，请待服务升级后重试。",
       "error": {
         "unavailable": "设备互联服务暂不可用(服务端未启用或网络异常)",
         "listFailed": "设备列表获取失败"
@@ -5157,7 +5160,7 @@
         "keepAwakeToggleFailed": "切换保持唤醒失败",
         "renameFailed": "重命名失败",
         "deleted": "设备已删除",
-        "deleteOnline": "设备在线，无法删除",
+        "deleteOnline": "当前服务端尚不支持移除在线设备，请待服务升级后重试。",
         "deleteFailed": "删除失败",
         "disconnected": "已断开所有远程连接",
         "disconnectFailed": "断开远程连接失败",

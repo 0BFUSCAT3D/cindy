@@ -5118,6 +5118,7 @@
         "online": "已連線"
       },
       "connectionIssue": {
+        "device-removed": "裝置已從帳號中移除，請在本裝置登出後重新登入。",
         "auth-failed": "登入已失效，請重新登入",
         "replaced": "連線被另一處相同裝置頂替",
         "too-many-connections": "同帳號連線數已達上限",
@@ -5140,7 +5141,9 @@
       "renameConfirm": "確認",
       "renameCancel": "取消",
       "delete": "刪除",
-      "deleteOnlineHint": "線上裝置無法刪除",
+      "deleteTitle": "刪除「{{name}}」？",
+      "deleteMessage": "將此裝置從帳號中移除並中斷遠端連線。裝置上的任務和檔案會保留，重新登入後可再次加入。",
+      "deleteOnlineHint": "目前伺服器尚不支援移除線上裝置，請待服務升級後重試。",
       "error": {
         "unavailable": "裝置互聯服務暫不可用(服務端未啟用或網路異常)",
         "listFailed": "裝置列表獲取失敗"
@@ -5157,7 +5160,7 @@
         "keepAwakeToggleFailed": "切換保持喚醒失敗",
         "renameFailed": "重新命名失敗",
         "deleted": "裝置已刪除",
-        "deleteOnline": "裝置線上，無法刪除",
+        "deleteOnline": "目前伺服器尚不支援移除線上裝置，請待服務升級後重試。",
         "deleteFailed": "刪除失敗",
         "disconnected": "已斷開所有遠端連線",
         "disconnectFailed": "斷開遠端連線失敗",

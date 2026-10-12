@@ -233,6 +233,17 @@ export function renameDeviceLinkDevice(deviceId: string, name: string): void {
   subs.forEach((fn) => fn());
 }
 
+/** Apply confirmed deletion even for an already-offline device; its presence
+ * snapshot may not otherwise trigger a directory refresh. */
+export function removeDeviceLinkDevice(deviceId: string): void {
+  loadGeneration += 1;
+  if (devices?.some(device => device.deviceId === deviceId)) {
+    devices = devices.filter(device => device.deviceId !== deviceId);
+    subs.forEach(fn => fn());
+  }
+  refreshImpl?.();
+}
+
 function ensureStarted(): void {
   if (started) return;
   started = true;
