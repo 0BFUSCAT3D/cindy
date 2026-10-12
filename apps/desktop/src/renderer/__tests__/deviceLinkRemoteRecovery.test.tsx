@@ -199,6 +199,60 @@ describe('multi-device recovery lifecycle', () => {
     expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(2);
   });
 
+  /** slow 首次 subscribe 报 BUSY,第二次(周期补订)交给返回的 deferred 手动收尾。 */
+  async function startPendingResubscribe() {
+    const retry = deferred<object>();
+    let slowCalls = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    subscribe.mockImplementation((peer: string) => {
+      if (peer !== 'slow') return Promise.resolve({});
+      slowCalls += 1;
+      if (slowCalls === 1) {
+        return Promise.reject(new Error('[DEVICE_LINK_BUSY] request expired before socket write'));
+      }
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const pending = slowCalls === 2 ? retry.promise : Promise.resolve({});
+      return pending.finally(() => {
+        inFlight -= 1;
+      });
+    });
+    renderHook(() => useDeviceLinkRemoteProjects());
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(2);
+    return { retry, maxInFlight: () => maxInFlight };
+  }
+
+  it('a late resubscribe revocation cannot remove a device that re-entered', async () => {
+    const { retry } = await startPendingResubscribe();
+    act(() => control(false));
+    act(() => control(true));
+    await settle();
+    retry.reject(new Error('[DEVICE_LINK_ACCESS_REVOKED] old connection'));
+    await settle();
+    expect(revokedDevicesStore.has('slow')).toBe(false);
+    expect(remoteProjectsStore.hasDevice('slow')).toBe(true);
+    // The re-entered lifecycle still runs its own full bootstrap after the stale request.
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(3);
+  });
+
+  it('a bootstrap requested during resubscribe waits instead of subscribing concurrently', async () => {
+    const { retry, maxInFlight } = await startPendingResubscribe();
+    act(() =>
+      listeners.onResponsivenessChanged({ deviceId: 'slow', unresponsive: false, recovered: true }),
+    );
+    await settle();
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(2);
+    retry.resolve({});
+    await settle();
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(3);
+    expect(maxInFlight()).toBe(1);
+  });
+
   it('unsupported sessions subscribe is not retried', async () => {
     subscribe.mockImplementation((peer: string) =>
       peer === 'slow'
