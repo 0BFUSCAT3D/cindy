@@ -2532,6 +2532,7 @@ export class PluginMarketService {
     const { target, ghost, matchesUpdateRoute, installState } = this.serverMarketBinding(plugin, local);
     return {
       ...(plugin.usageStatistics ? { usageStatistics: plugin.usageStatistics } : {}),
+      ...(plugin.downloadStatistics ? { downloadStatistics: plugin.downloadStatistics } : {}),
       pluginId: plugin.id,
       ghostId: plugin.ghostId,
       ...deliveryNamespaceFields(target),

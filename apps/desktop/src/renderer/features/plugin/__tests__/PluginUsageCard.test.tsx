@@ -94,6 +94,7 @@ it.each([
   const detail = {
     sourceType,
     scope,
+    downloadStatistics: { requestCount: '12' },
     usageStatistics: {
       installationCount: '12',
       usageCount: '10',
@@ -104,3 +105,31 @@ it.each([
   const view = render(<PluginSharedUsage detail={detail} />);
   expect(view.container.textContent).toBe('');
 });
+
+it.each(['public', 'organization'] as const)(
+  'shows only the cumulative download value in %s without invented installs or usage',
+  (scope) => {
+    const detail = {
+      sourceType: 'server',
+      scope,
+      downloadStatistics: { requestCount: '123456', last7DaysRequestCount: '12' },
+    } as PluginMarketItem;
+    const view = render(<PluginSharedUsage detail={detail} />);
+    expect(screen.getByText('settings.ghosts.usage.downloads 123,456')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('installs');
+    expect(view.container.textContent).not.toContain('uses');
+    expect(view.container.textContent).not.toContain('last7Days');
+    view.rerender(
+      <PluginSharedUsage detail={{ ...detail, downloadStatistics: { requestCount: '0' } }} />,
+    );
+    expect(screen.getByText('settings.ghosts.usage.downloads 0')).toBeTruthy();
+    view.rerender(
+      <PluginSharedUsage
+        detail={{ ...detail, downloadStatistics: { requestCount: '18446744073709551615' } }}
+      />,
+    );
+    expect(
+      screen.getByText('settings.ghosts.usage.downloads 18,446,744,073,709,551,615'),
+    ).toBeTruthy();
+  },
+);

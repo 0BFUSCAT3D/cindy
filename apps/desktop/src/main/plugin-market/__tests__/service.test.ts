@@ -1051,6 +1051,14 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(runtime.install).not.toHaveBeenCalled();
   });
 
+  it('passes exact server download statistics through snapshots and details', async () => {
+    const downloadStatistics = { requestCount: '18446744073709551615', last7DaysRequestCount: '12' };
+    const item = { ...summary(), downloadStatistics };
+    const h = harness([item]);
+    await expect(h.service.snapshot()).resolves.toMatchObject({ items: [{ downloadStatistics }] });
+    await expect(h.service.detail(item.id)).resolves.toMatchObject({ downloadStatistics });
+  });
+
   it('remembers the listed organization prefix after a successful snapshot', async () => {
     const item = summary();
     const h = harness([item]);

@@ -93,7 +93,27 @@ export interface PluginReleaseDetail extends PluginReleaseSummary {
   manifest: GhostManifest & { namespace?: string | null };
 }
 
-/** Plugin 列表项；只含市场展示和版本对账所需的摘要。 */
+/** Optional aggregate of successfully issued client download URLs, not completed installs. */
+export interface PluginDownloadStatistics {
+  /** Decimal count of successfully issued download URLs across all releases. */
+  requestCount: string;
+  /** Rolling 168 hours; optional for compatibility with older servers. */
+  last7DaysRequestCount?: string;
+}
+
+/** Preserve exact counters while allowing older servers to omit statistics. */
+export function parsePluginDownloadStatistics(value: unknown): PluginDownloadStatistics | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const isCount = (count: unknown): count is string =>
+    typeof count === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(count);
+  if (!isCount(raw.requestCount)) return undefined;
+  return {
+    requestCount: raw.requestCount,
+    ...(isCount(raw.last7DaysRequestCount) ? { last7DaysRequestCount: raw.last7DaysRequestCount } : {}),
+  };
+}
+
 /** Optional, already-authorized audience aggregate. Downloads are not install receipts. */
 export interface PluginUsageStatistics {
   installationCount: string;
@@ -113,6 +133,7 @@ export function parsePluginUsageStatistics(value: unknown): PluginUsageStatistic
     usageCountLast7Days: raw.usageCountLast7Days as string, asOf: raw.asOf };
 }
 
+/** Plugin 列表项；只含市场展示和版本对账所需的摘要。 */
 export interface VisiblePluginSummary {
   /** plugin-server 生成的永久资源 ID，也是客户端管理安装实例的主键。 */
   id: string;
@@ -134,6 +155,7 @@ export interface VisiblePluginSummary {
   /** 服务端为该客户端选择的 Release；优先 current，不兼容时回退到历史兼容版本。 */
   currentRelease: PluginReleaseSummary;
   usageStatistics?: PluginUsageStatistics;
+  downloadStatistics?: PluginDownloadStatistics;
 }
 
 /** Plugin 详情；展示字段必须与 `currentRelease.manifest` 保持一致。 */
@@ -158,6 +180,7 @@ export interface VisiblePluginDetail {
   /** 服务端为该客户端选择的 Release，包含完整 manifest。 */
   currentRelease: PluginReleaseDetail;
   usageStatistics?: PluginUsageStatistics;
+  downloadStatistics?: PluginDownloadStatistics;
 }
 
 /** 清理通告支持的处置动作；解析器会跳过动作未知的通告（未来扩展位）。 */
@@ -382,15 +405,18 @@ function parseVisiblePluginBase(
 function parseVisiblePluginSummary(value: unknown, index: number): VisiblePluginSummary {
   const path = `plugins[${index}]`;
   const { raw, ...base } = parseVisiblePluginBase(value, path);
+  const downloadStatistics = parsePluginDownloadStatistics(raw.downloadStatistics);
   return {
     ...base,
     ...(parsePluginUsageStatistics(raw.usageStatistics) ? { usageStatistics: parsePluginUsageStatistics(raw.usageStatistics) } : {}),
+    ...(downloadStatistics ? { downloadStatistics } : {}),
     currentRelease: parseReleaseSummary(raw.currentRelease, `${path}.currentRelease`),
   };
 }
 
 function parseVisiblePluginDetail(value: unknown, path: string): VisiblePluginDetail {
   const { raw, ...parsed } = parseVisiblePluginBase(value, path);
+  const downloadStatistics = parsePluginDownloadStatistics(raw.downloadStatistics);
   const currentRelease = parseReleaseDetail(
     raw.currentRelease,
     parsed.ghostId,
@@ -420,6 +446,7 @@ function parseVisiblePluginDetail(value: unknown, path: string): VisiblePluginDe
   return {
     ...parsed,
     ...(parsePluginUsageStatistics(raw.usageStatistics) ? { usageStatistics: parsePluginUsageStatistics(raw.usageStatistics) } : {}),
+    ...(downloadStatistics ? { downloadStatistics } : {}),
     currentRelease,
   };
 }

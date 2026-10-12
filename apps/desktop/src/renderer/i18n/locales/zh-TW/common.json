@@ -6699,6 +6699,8 @@
         "localSince": "{{device}} · 從 {{time}} 開始記錄",
         "clearTitle": "清除此插件的使用記錄？",
         "clearDescription": "清除本機目前帳戶的呼叫記錄及任務關聯，後續呼叫重新開始記錄。已共享的累計統計不會撤回。",
+        "downloads": "下載",
+        "downloadExplanation": "累計下載請求次數：成功取得安裝包下載位址後計一次，包括更新、重新安裝及重新取得位址的重試；不代表成功安裝次數。",
         "installs": "安裝",
         "uses": "使用",
         "sharedUnavailable": "暫時無法使用",

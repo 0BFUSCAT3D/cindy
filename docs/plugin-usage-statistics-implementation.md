@@ -23,8 +23,8 @@
 
 ## 服务端依赖与协议
 
-现有 `PluginDownload` 仍是获取下载地址次数，本次没有把它当作安装回执。没有重新使用已关闭的
-#2310/#2337 分支，也没有修改服务端。
+现有 `PluginDownload` 是获取下载地址次数，不是安装回执。没有重新使用已关闭的
+#2310/#2337 分支。初次个人记录实施未修改服务端；后续累计下载接入见下节。
 
 现有 v2 列表和详情可选扩展 `usageStatistics`，不提升 `PLUGIN_API_SCHEMA_VERSION`：
 
@@ -83,3 +83,29 @@ outbox 文件、定时发送器、联网重试或对历史个人记录的补传�
 - 在本 worktree 独立 Electron 开发版中通过前端热更新查看真实 TapTap Maker 详情，Light/Dark
   均已目检无统计时的头部；截图位于 `apps/desktop/logs/plugin-usage-acceptance/shared-usage-followup/`。
   服务端当前未提供统计，带数字与新图标的真实市场状态尚未实机验证；没有伪造市场数字。
+
+## 2026-10-12 接入累计下载
+
+用户要求接入 Platform 已有的累计数字。实际核对服务端 main `8e0ae149` 和 release 后，
+确认后台统计为下载地址签发次数：`downloadStatistics.requestCount`（累计）和
+`downloadStatistics.last7DaysRequestCount`（滚动 168 小时）。客户端头部只显示累计“下载”，
+使用 `ArrowDownToLine`，提示说明包括更新、重装和重新请求地址的重试，不代表安装成功。
+
+- 客户端沿 `PluginMarketApi` → v2 协议解析 → 市场服务投影 → 详情组件传递同名字段。
+  精确字符串用 BigInt 格式化，无 Number 精度损失；缺失或无效字段隐藏，明确的 0 正常显示。
+  不合成成功安装或使用次数；个人/custom 插件不展示共享下载数。
+- 服务端独立本地分支 `/Users/huangxiaowen/Developer/cindy-server` 的
+  `feat/plugin-client-download-statistics`，给 `/api/plugins` 列表和详情加可选字段，
+  复用已有 `pluginDownloadStatistics` 批量聚合，不新增表、上报或 Platform 凭证。
+  企业统计在原可见性/部门/角色门禁通过后查询；统计读取失败省略字段，不伪造 0。
+- 服务端契约与客户端一致，schemaVersion 仍为 2；旧服务不发字段时客户端继续正常工作。
+  两仓均只在本地实现，未推送、创建 PR 或部署。线上数字显示仍取决于服务端发布此扩展。
+
+验证：客户端协议包 128 项、三个受影响 Desktop 测试文件 192 项通过；服务端协议包
+145 项、plugin-server 609 项通过（41 项数据库集成测试未配置安全数据库而跳过）。
+两仓协议类型检查、plugin-server 与 Desktop 类型检查、相关 ESLint、五语完整性、术语与 diff 检查通过。
+独立 Global Electron 沙箱启动返回 `DESKTOP_DEV_VERDICT=ready`，当前代码下真实 TapTap Maker
+详情的缺失指标隐藏在 Light/Dark 均已目检，截图在
+`apps/desktop/logs/plugin-usage-acceptance/cumulative-download/market-{light,dark}.png`。
+线上服务尚未返回下载统计，带数字的生产数据联调未完成，不将测试中的 123 当成实际累计数。
+本次未运行客户端整仓全量测试；按影响面完成协议包与市场/详情定向验证，完整门禁待后续 PR CI。

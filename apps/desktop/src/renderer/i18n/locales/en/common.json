@@ -6724,6 +6724,8 @@
         "localSince": "{{device}} · Recording since {{time}}",
         "clearTitle": "Clear this Plugin’s usage records?",
         "clearDescription": "Remove call records and Session links for this account on this computer. New calls start a fresh history. Shared totals already received by the server are not withdrawn.",
+        "downloads": "Downloads",
+        "downloadExplanation": "Cumulative download URL requests. Each successfully issued package URL counts once, including updates, reinstalls and retries that request a new URL. This is not a count of completed installations.",
         "installs": "Installs",
         "uses": "Uses",
         "sharedUnavailable": "Unavailable",
