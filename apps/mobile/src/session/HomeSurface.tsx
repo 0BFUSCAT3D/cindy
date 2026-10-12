@@ -4377,30 +4377,6 @@ function HomeSessionRowInner({
             {selected ? <Text style={styles.selectionMarkText}>✓</Text> : null}
           </View>
         ) : null}
-        {group && !selectionMode ? (
-          // 展开箭头放行首,与项目组的折叠交互一致(chevron → 图标 → 标题);
-          // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
-          <Pressable
-            accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
-            accessibilityRole="button"
-            hitSlop={{ bottom: 12, left: 12, right: 4, top: 12 }}
-            onPress={(event) => {
-              // 防御性阻断:避免 chevron 点击同时触发父行 onPress(有需关注内容时父行
-              // 是"直开 primary 会话",双触发会边展开边跳页)。与设备菜单重命名按钮同款处理。
-              event.stopPropagation();
-              onToggleAutomationGroup?.(group.key);
-            }}
-            onPressIn={() => prepareDisclosure(true)}
-            style={styles.sessionGroupChevronCell}
-            testID={`${testID}.automationGroupChevron`}
-          >
-            {groupExpanded ? (
-              <ChevronDown color={colors.textSecondary} size={iconSize.xl} strokeWidth={iconStroke.regular} />
-            ) : (
-              <ChevronRight color={colors.textSecondary} size={iconSize.xl} strokeWidth={iconStroke.regular} />
-            )}
-          </Pressable>
-        ) : null}
         <View style={[
           styles.sessionIconCell,
           !showPreviewLine && styles.sessionIconCellSingleLine,
@@ -4441,6 +4417,31 @@ function HomeSessionRowInner({
                 {item.title}
               </Text>
               <TaskTagDots tags={item.session.tags} surfaceColor={colors.surface} />
+              {group && !selectionMode ? (
+                // 展开箭头紧跟标题(对齐桌面 AutomationSessionGroupItem):不占行首,组行的图标 /
+                // 标题与同级普通任务对齐,展开后的子行(deepIndented)才能稳定比组行深一档。
+                // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
+                <Pressable
+                  accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
+                  accessibilityRole="button"
+                  hitSlop={{ bottom: 14, left: 10, right: 14, top: 14 }}
+                  onPress={(event) => {
+                    // 防御性阻断:避免 chevron 点击同时触发父行 onPress(有需关注内容时父行
+                    // 是"直开 primary 会话",双触发会边展开边跳页)。与设备菜单重命名按钮同款处理。
+                    event.stopPropagation();
+                    onToggleAutomationGroup?.(group.key);
+                  }}
+                  onPressIn={() => prepareDisclosure(true)}
+                  style={styles.sessionGroupChevronCell}
+                  testID={`${testID}.automationGroupChevron`}
+                >
+                  {groupExpanded ? (
+                    <ChevronDown color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+                  ) : (
+                    <ChevronRight color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+                  )}
+                </Pressable>
+              ) : null}
             </View>
             {sourceLabel ? (
               <Text
@@ -5139,13 +5140,13 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
 
   sessionGroupChevronCell: {
-    // 自动化组行行首的展开箭头列:与项目组行首 chevron 对齐(尺寸 22、次级色),
-    // 垂直对齐标题行(与 sessionIconCell 同一基线)。
+    // 自动化组行标题后的展开箭头:跟随标题文字,长标题截断时不被挤掉;
+    // 与标题同一行垂直居中(sessionTitleRow 已 alignItems center)。
     alignItems: 'center',
-    justifyContent: 'flex-start',
-    marginRight: -spacing.xs,
-    paddingTop: 23,
-    width: 22,
+    flexShrink: 0,
+    height: 24,
+    justifyContent: 'center',
+    width: 20,
   },
 
   // 右侧状态槽(替代时间位):18×18 定位槽把点与 spinner 居中到同一锚点;
