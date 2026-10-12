@@ -32,8 +32,12 @@ const LOCAL = member('local', 'local', null);
 const SHARE_A = member('share:a:anthropic', 'share', 'share:a', 2);
 const SHARE_B = member('share:b:anthropic', 'share', 'share:b');
 
-function harness(reported: Record<string, number>, bindings: Record<string, ProviderGroupBinding> = {}, running: string[] = []) {
-  const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [SHARE_A, SHARE_B, LOCAL] };
+function harness(
+  reported: Record<string, number>,
+  bindings: Record<string, ProviderGroupBinding> = {},
+  running: string[] = [],
+  config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [SHARE_A, SHARE_B, LOCAL] },
+) {
   const directory: ProviderGroupDirectory = {
     async resolveMembers(_providerId, current) {
       return current.members.map((m): ResolvedProviderGroupMember => ({
@@ -65,6 +69,35 @@ function harness(reported: Record<string, number>, bindings: Record<string, Prov
     random: () => 0,
   });
 }
+
+describe('own tasks and incoming tasks', () => {
+  it.each(['least', 'order', 'round', 'weight'] as const)('keeps own tasks local under %s even when paused and full', async (strategy) => {
+    const config: ProviderGroupConfig = { strategy, autoSwitch: true, members: [SHARE_A, { ...LOCAL, paused: true }] };
+    const router = harness({ [LOCAL.key]: 8 }, {}, [], config);
+    const input = { providerId: 'anthropic', agentKind: 'claude-code' as const, model: MODEL };
+    expect(await router.pick({ ...input, localTask: true })).toMatchObject({ kind: 'member', member: { key: LOCAL.key } });
+    expect(await router.pick(input)).toMatchObject({ kind: 'member', member: { key: SHARE_A.key } });
+    expect(config.members[1].paused).toBe(true);
+  });
+
+  it('does not reset incoming round-robin allocation when an own task stays local', async () => {
+    const config: ProviderGroupConfig = { strategy: 'round', autoSwitch: true, members: [SHARE_A, SHARE_B, LOCAL] };
+    const router = harness({}, {}, [], config);
+    const input = { providerId: 'anthropic', agentKind: 'claude-code' as const, model: MODEL };
+    expect(await router.pick(input)).toMatchObject({ kind: 'member', member: { key: SHARE_A.key } });
+    expect(await router.pick({ ...input, localTask: true })).toMatchObject({ kind: 'member', member: { key: LOCAL.key } });
+    expect(await router.pick(input)).toMatchObject({ kind: 'member', member: { key: SHARE_B.key } });
+  });
+
+  it.each(['cooling', 'excluded'] as const)('falls back to the group when this computer is %s', async (reason) => {
+    const router = harness({ [LOCAL.key]: 0, [SHARE_A.key]: 1 });
+    if (reason === 'cooling') router.markCooling('anthropic', LOCAL.key, 100_000);
+    expect(await router.pick({
+      providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, localTask: true,
+      ...(reason === 'excluded' ? { exclude: new Set([LOCAL.key]) } : {}),
+    })).toMatchObject({ kind: 'member', member: { key: SHARE_B.key } });
+  });
+});
 
 describe('provider group running count', () => {
   it('shows what a shared computer reports for this account, including tasks that did not go through the group', async () => {
@@ -141,6 +174,19 @@ describe('provider group quick picks with busy usable computers', () => {
     });
     return { router, config };
   }
+
+  it('does not wait for remote catalogs when this computer can run its own task', async () => {
+    vi.useFakeTimers();
+    try {
+      const { router, config } = quickRouter(8, null);
+      config.members[0] = { ...LOCAL, paused: true };
+      expect(await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, localTask: true }))
+        .toMatchObject({ kind: 'member', member: { key: LOCAL.key } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each([
     { label: 'a full local computer while both remote catalogs stall', localLoad: 4, fastLoad: null, expected: LOCAL.key },

@@ -1,7 +1,7 @@
 /**
  * 供应商组接到任务生命周期上的三个点(docs/product-rules/provider-groups.md §6)：
  *
- * 1. **分配**：新任务第一次启动 Agent 前(bootstrapSession)，按组策略选一台组内电脑，把选择写回
+ * 1. **分配**：新任务第一次启动 Agent 前(bootstrapSession)，本机组优先本机，其余按组策略选电脑，把选择写回
  *    任务记录与绑定；Agent 还没开始运行就失败(连不上、登录失效、启动失败)时直接换下一台。
  * 2. **自动换电脑**：运行中因那台电脑的原因失败(终态错误)时，交接到组里下一台并继续这一轮；
  *    同一轮每台最多试一次，全部失败才交回原有的报错 / 等额度重置流程。那台是连不上(离线、断线)时先等它
@@ -655,6 +655,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         providerId,
         agentKind,
         model,
+        localTask: true,
         exclude,
         reserveFor: sessionId,
         ...(exclude.size > 0 ? { fresh: true } : {}),
@@ -1636,8 +1637,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       const row = await deps.readSessionRow(sessionId);
       if (!row?.model || row.remoteHostId) return;
       const current = await verifyBinding(sessionId, source, binding, config, row);
-      // 暂停分配只影响新任务，已在那台的任务不挪走。
-      if (!current || current.paused) return;
+      // 本机的暂停只限制接外部新任务，本机自用仍照常检查故障并恢复。
+      // 其他组员的暂停继续保持既有任务位置。
+      if (!current || (current.paused && !(source.ownerDeviceId === null && current.kind === 'local'))) return;
       const cached = await source.shouldMoveAway(binding.providerId, config, current.key);
       if (cached === null) return;
       let reason = cached ? cached.reason : null;

@@ -61,6 +61,11 @@ export interface ProviderGroupPickInput {
   providerId: string;
   agentKind: AgentKind;
   model: string;
+  /**
+   * 仅本机任务入口设置：本机可用时优先本机，不受对外暂停分配或负载影响。
+   * 远程请求与分享中转不传，也不从请求载荷读取。
+   */
+  localTask?: true;
   exclude?: ReadonlySet<string>;
   /** 现读组内电脑的最新状态，不用短时缓存(试过不行、带着这一轮试过的来选时)。 */
   fresh?: boolean;
@@ -198,29 +203,42 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       if (!config) return { kind: 'none' };
       const usable = (r: ResolvedProviderGroupMember) =>
         offersModel(r, input.agentKind, input.model) && coolingUntil(input.providerId, r.member.key) === null;
-      const resolved = await deps.directory.resolveMembers(input.providerId, config, {
-        quickMs: PROVIDER_GROUP_PICK_QUICK_MS,
-        // 已经有一台能用、可以分的电脑(满载仍可接)：不再等慢的那几台。未满优先由调度器决定。
-        enough: (r) => usable(r)
-          && !r.member.paused
-          && !input.exclude?.has(r.member.key),
-        ...(input.fresh ? { fresh: true } : {}),
-      });
+      const ownLocal = (r: ResolvedProviderGroupMember) => input.localTask === true && r.member.kind === 'local';
+      const paused = (r: ResolvedProviderGroupMember) => r.member.paused && !ownLocal(r);
+      const local = input.localTask === true ? config.members.find((m) => m.kind === 'local') : undefined;
+      // 本机优先时先只读本机状态，避免等待远端目录，或因远端先返回而提前分配到别处。
+      let resolved = local && !input.exclude?.has(local.key) && coolingUntil(input.providerId, local.key) === null
+        ? await deps.directory.resolveMembers(
+            input.providerId, { ...config, members: [local] }, input.fresh ? { fresh: true } : undefined,
+          )
+        : [];
+      if (!resolved.some(usable)) {
+        resolved = await deps.directory.resolveMembers(input.providerId, config, {
+          quickMs: PROVIDER_GROUP_PICK_QUICK_MS,
+          // 已经有一台能用、可以分的电脑(满载仍可接)：不再等慢的那几台。未满优先由调度器决定。
+          enough: (r) => usable(r)
+            && !paused(r)
+            && !input.exclude?.has(r.member.key),
+          ...(input.fresh ? { fresh: true } : {}),
+        });
+      }
       const schedulable: SchedulableMember[] = resolved.map((r) => ({
         key: r.member.key,
         usable: usable(r),
-        paused: r.member.paused,
+        paused: paused(r),
         running: memberRunning(input.providerId, r),
         limit: r.member.limit,
         weight: r.member.weight,
       }));
-      const key = pickProviderGroupMember(schedulable, config.strategy, {
+      const preferred = resolved.find((r) => ownLocal(r) && usable(r) && !input.exclude?.has(r.member.key));
+      const key = preferred?.member.key ?? pickProviderGroupMember(schedulable, config.strategy, {
         exclude: input.exclude,
         lastPicked: lastPicked.get(input.providerId) ?? null,
         random: deps.random,
       });
       if (!key) return { kind: 'unavailable', resolved };
-      lastPicked.set(input.providerId, key);
+      // 本机优先不参与组策略轮询，避免本机自用打断外部任务的分配顺序。
+      if (!preferred) lastPicked.set(input.providerId, key);
       if (input.reserveFor) {
         provisional.set(input.reserveFor, {
           providerId: input.providerId,
