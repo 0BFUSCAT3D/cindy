@@ -112,6 +112,15 @@ describe('prepareShareMessageClone', () => {
     expect(node.querySelector(`[${SHARE_SOURCE_ATTR}]`)).not.toBeNull();
   });
 
+  it('只有音频播放器或分隔线等非文字内容的消息照常保留', () => {
+    for (const html of [
+      '<div><p><audio controls src="xdt-audio://a.mp3"></audio></p></div>',
+      '<div><div class="markdown"><hr /></div></div>',
+    ]) {
+      expect(prepareShareMessageClone(root(html).firstElementChild as HTMLElement)).not.toBeNull();
+    }
+  });
+
   it('只有图片附件的消息照常保留', () => {
     const node = root(`<div><img src="data:image/png;base64,AAAA" alt="" /></div>`)
       .firstElementChild as HTMLElement;

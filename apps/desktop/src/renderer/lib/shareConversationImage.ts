@@ -136,9 +136,16 @@ export function stripCloneAnchors(root: HTMLElement): void {
 }
 
 /**
- * 克隆一条消息并做完全部清洗(交互件、来源标注、收起态、锚点)。清洗后没有可见
- * 内容(无文字、无图)就返回 null:例如只发了 `$指令` 的消息,插件标注被剥掉后
- * 只剩空壳,留着会在图里占一段空白,单独分享时更会生成只有页脚的空图。
+ * 纯布局容器标签:清洗后若只剩这些且没有文字,就是空壳。判空用「只剩容器」而不是
+ * 「有某几种媒体」—— 音频播放器、分隔线等非文字元素种类多且会增加,白名单漏一种
+ * 就会把整条有内容的消息误删。
+ */
+const SHARE_LAYOUT_ONLY_TAGS = new Set(['DIV', 'SPAN', 'P', 'SECTION', 'BR']);
+
+/**
+ * 克隆一条消息并做完全部清洗(交互件、来源标注、收起态、锚点)。清洗后没有文字、
+ * 也只剩纯布局容器时返回 null:例如只发了 `$指令` 的消息,插件标注被剥掉后只剩
+ * 空壳,留着会在图里占一段空白,单独分享时更会生成只有页脚的空图。
  */
 export function prepareShareMessageClone(node: HTMLElement): HTMLElement | null {
   const clone = node.cloneNode(true) as HTMLElement;
@@ -146,9 +153,11 @@ export function prepareShareMessageClone(node: HTMLElement): HTMLElement | null 
   stripMessageSources(clone);
   expandCollapsedMessages(clone);
   stripCloneAnchors(clone);
-  const hasText = (clone.textContent ?? '').trim().length > 0;
-  const hasMedia = clone.querySelector('img, svg, canvas, video') !== null;
-  return hasText || hasMedia ? clone : null;
+  if ((clone.textContent ?? '').trim().length > 0) return clone;
+  const hasNonLayoutElement = Array.from(clone.querySelectorAll('*')).some(
+    (el) => !SHARE_LAYOUT_ONLY_TAGS.has(el.tagName),
+  );
+  return hasNonLayoutElement ? clone : null;
 }
 
 const REDACTION_SCOPE_TAGS = new Set([
