@@ -627,6 +627,130 @@ describe('shared provider credentials', () => {
     expect(gate.authorize({ kind: 'read', path: path.join(project, 'cloud', 'credentials') }).ok).toBe(false);
   });
 
+  it('resolves a public-file operand through a directory link before full-access authorization', async () => {
+    const secretDir = path.join(outside, '.aws');
+    fs.mkdirSync(secretDir);
+    fs.writeFileSync(path.join(secretDir, 'example.pub'), 'PRIVATE_FIXTURE=linked-content');
+    fs.symlinkSync(secretDir, path.join(project, 'public'), process.platform === 'win32' ? 'junction' : 'dir');
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('full', asked);
+    const action: ExecutorAction = { kind: 'exec', command: 'cat public/example.pub', cwd: project };
+    try {
+      expect(gate.authorize(action).ok).toBe(false);
+      expect(await executor.confirm(action)).toBe(false);
+      expect(asked).toHaveBeenCalledExactlyOnceWith(action);
+      expect(gate.authorize(action).ok).toBe(false);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.runIf(posix)('checks an exempt operand again when its symlink target changes', async () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=changed-target');
+    fs.writeFileSync(path.join(project, 'ordinary.txt'), 'public fixture');
+    const link = path.join(project, '.env.example');
+    fs.symlinkSync('ordinary.txt', link);
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('full', asked);
+    const action: ExecutorAction = { kind: 'exec', command: 'cat .env.example', cwd: project };
+    try {
+      expect(gate.authorize(action).ok).toBe(true);
+      expect(text(await executor.callTool('Bash', { command: action.command }))).toContain('public fixture');
+      expect(asked).not.toHaveBeenCalled();
+      fs.rmSync(link);
+      fs.symlinkSync('.env', link);
+      expect(gate.authorize(action).ok).toBe(false);
+      const denied = await executor.callTool('Bash', { command: action.command });
+      expect(denied.isError).toBe(true);
+      expect(text(denied)).not.toContain('PRIVATE_FIXTURE=changed-target');
+      expect(asked).toHaveBeenCalledExactlyOnceWith(action);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.runIf(posix)('does not reuse a Git exemption or ordinary approval after a template link changes', async () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=changed-during-probe');
+    fs.writeFileSync(path.join(project, 'ordinary.txt'), 'public fixture');
+    const link = path.join(project, '.env.example');
+    fs.symlinkSync('ordinary.txt', link);
+    const asked = vi.fn(async () => false);
+    const history = {
+      provesSafe: vi.fn(async () => {
+        fs.rmSync(link);
+        fs.symlinkSync('.env', link);
+        return true;
+      }),
+    } as unknown as GitCredentialHistory;
+    const { gate, executor } = sharedExecutor('full', asked, history);
+    const ordinary: ExecutorAction = { kind: 'exec', command: 'cat .env.example', cwd: project };
+    const compound: ExecutorAction = { kind: 'exec', command: 'git diff && cat .env.example', cwd: project };
+    gate.recordApproval(ordinary);
+    gate.recordCredentialExemption(compound);
+    try {
+      expect(await executor.confirm(compound)).toBe(false);
+      expect(asked).toHaveBeenCalledExactlyOnceWith(compound);
+      expect(gate.authorize(compound).ok).toBe(false);
+      expect(gate.authorize(ordinary).ok).toBe(false);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('resolves ordinary templates in the actual shell directory and keeps local tasks unchanged', () => {
+    const templates = path.join(project, 'templates');
+    fs.mkdirSync(templates);
+    fs.writeFileSync(path.join(templates, '.env.example'), 'PUBLIC_FIXTURE=example');
+    fs.writeFileSync(path.join(project, 'README.md'), 'documentation');
+    const { gate, workspace } = sharedExecutor('full');
+    for (const command of [
+      'cat templates/.env.example',
+      'cat < templates/.env.example',
+      'cd templates && cat .env.example',
+      'grep -f templates/.env.example README.md',
+    ]) {
+      expect(gate.authorize({ kind: 'exec', command, cwd: project }).ok, command).toBe(true);
+    }
+    for (const command of [
+      'cat missing/.env.example',
+      'cat templates/.env.*',
+      'cat templates/../templates/.env.example',
+      'cd "$DIR" && cat .env.example',
+      'ln -sf .env templates/.env.example && cat templates/.env.example',
+      'HOME=/other cat templates/.env.example',
+      'unknown-reader --input templates/.env.example',
+    ]) {
+      const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+      expect(gate.authorize(action).ok, command).toBe(false);
+      expect(gate.credentialGitReads(action), command).toBeNull();
+      expect(new ExecutorGate(workspace, 'full').authorize(action).ok, command).toBe(true);
+    }
+  });
+
+  it.runIf(posix)('keeps consent for broken template links and linked auxiliary reader inputs', () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=auxiliary-input');
+    fs.writeFileSync(path.join(project, 'README.md'), 'documentation');
+    fs.symlinkSync('.env', path.join(project, '.env.example'));
+    fs.symlinkSync('missing', path.join(project, '.env.sample'));
+    const escaped = 'literal' + String.fromCharCode(92) + '.env.example';
+    fs.writeFileSync(path.join(project, escaped), 'public fixture');
+    const { gate } = sharedExecutor('full');
+    for (const command of [
+      'cat .env.sample',
+      'grep -f .env.example README.md',
+      'sed -f .env.example README.md',
+      'git grep -f .env.example -- README.md',
+      'git blame --contents .env.example README.md',
+      'git diff && cat < .env.example',
+      'sh -c "cat .env.example"',
+      'cat ' + escaped,
+    ]) {
+      const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+      expect(gate.authorize(action).ok, command).toBe(false);
+      expect(gate.credentialGitReads(action), command).toBeNull();
+    }
+  });
+
   it('asks on this computer and goes ahead only with what the user allowed', async () => {
     const asked: ExecutorAction[] = [];
     let answer = true;

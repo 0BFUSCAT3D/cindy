@@ -187,7 +187,9 @@ export class RemoteExecutor {
     const history = this.opts.gitCredentials;
     if (!history || action.kind !== 'exec') return null;
     const reads = this.gate.credentialGitReads(action);
-    return reads ? history.provesSafe(action.command, reads, signal).catch(() => false) : null;
+    return reads ? history.provesSafe(action.command, reads, signal)
+      .then((safe) => safe && this.gate.credentialGitReads(action) !== null)
+      .catch(() => false) : null;
   }
 
   /** 检查上限；凭证类操作没有批准时先在本机问一次。 */

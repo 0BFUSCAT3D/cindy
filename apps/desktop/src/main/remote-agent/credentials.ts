@@ -42,7 +42,32 @@ const LOGIN_FILE = /(?:^|[\\/])(?:auth|\.credentials)\.json$/i;
 const NON_SECRET_FILE_NAME =
   /(^|[\\/\s'"=:<>|;&(])(?:\.env\.(?:example|sample|template)|[^\\/\s'"=:<>|;&()]*\.pub)(?=$|[\s'"|;&()<>])/gi;
 
-type ShareCommandOptions = Pick<CredentialCommandOptions, 'cwd' | 'platform'>;
+type ShareCommandOptions = Pick<CredentialCommandOptions, 'cwd' | 'platform'> & {
+  resolveFilePath?: (operand: string, cwd: string) => string;
+};
+
+function credentialCommandOptions(opts: ShareCommandOptions): CredentialCommandOptions {
+  const { resolveFilePath, ...commandOptions } = opts;
+  if (!resolveFilePath) return { ...commandOptions, sourceFileSelectors: true };
+  let checkedPaths = 0;
+  return {
+    ...commandOptions,
+    sourceFileSelectors: true,
+    credentialTextTransform: shareCredentialText,
+    fileReadRequiresConsent: ({ operand, cwd, priorSegmentsMayMutate }) => {
+      checkedPaths += 1;
+      if (!cwd || priorSegmentsMayMutate || checkedPaths > 64 || PARENT_SEGMENT.test(operand)
+        || operand.includes(String.fromCharCode(92)) || /^~[^/]/.test(operand)
+        || /[$\x60*?{}\[\]]/.test(operand)) return true;
+      if (isShareCredentialPath(operand)) return true;
+      try {
+        return isShareCredentialPath(resolveFilePath(operand, cwd));
+      } catch {
+        return true;
+      }
+    },
+  };
+}
 
 /**
  * 换掉配置目录里说明类子路径的目录名，和按惯例不含密钥的文件名，让本机凭证规则不再因为它们命中；
@@ -98,7 +123,7 @@ function printsStoredCredentials(read: GitRead): boolean {
 }
 
 /**
- * 命令是否读取、打出或直接写着凭证(只看命令文本：脚本文件里读的、编码后再解开的认不出来)。会打出 git
+ * 命令是否读取、打出或直接写着凭证(可由执行器核实文件目标；脚本文件里读的、编码后再解开的认不出来)。会打出 git
  * 配置的命令(git remote -v、git config --list 等)也算，配置里没有密钥时由执行器核实后放行。
  */
 export function isShareCredentialCommand(
@@ -107,9 +132,8 @@ export function isShareCredentialCommand(
   opts: ShareCommandOptions = {},
 ): boolean {
   return commandSpellsOutSecret(command)
-    || shellCommandReadsCredentials(shareCredentialText(command), workspaceRoots, {
-      ...opts,
-      sourceFileSelectors: true,
+    || shellCommandReadsCredentials(opts.resolveFilePath ? command : shareCredentialText(command), workspaceRoots, {
+      ...credentialCommandOptions(opts),
       gitConfigRead: () => false,
     });
 }
@@ -130,9 +154,8 @@ export function shareCredentialGitReads(
     reads.push(read);
     return true;
   };
-  const needsConsent = shellCommandReadsCredentials(shareCredentialText(command), workspaceRoots, {
-    ...opts,
-    sourceFileSelectors: true,
+  const needsConsent = shellCommandReadsCredentials(opts.resolveFilePath ? command : shareCredentialText(command), workspaceRoots, {
+    ...credentialCommandOptions(opts),
     gitContentRead: collect,
     gitConfigRead: (read) => !printsStoredCredentials(read) && collect(read),
   });

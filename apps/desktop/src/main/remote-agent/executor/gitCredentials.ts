@@ -10,7 +10,7 @@
  *  - 还不行时(git diff、git show、git log)，按原命令只列出会显示的文件，其中没有凭证类文件也算读不到。
  * 认不出 git 在哪个仓库里跑、仓库带子模块、比较仓库外的文件、超过等待时限，都按读得到处理，照旧弹卡。
  * 会打出 git 配置的命令(git remote -v、git config --list 等)按本机生效的配置核对其中没有密钥。
- * 与命令文本判定一样只防误发：直接写出底层对象名(git show <blob>)、在前面的命令里改 GIT_DIR 之类的认不出。
+ * 与命令文本判定一样只防误发：不能解析为提交的对象、replacement refs 与前段可能改状态时不授予豁免。
  */
 import { spawn } from 'node:child_process';
 import fsp from 'node:fs/promises';
@@ -107,7 +107,7 @@ function git(
   opts: { stdin?: string; onRecord?: (record: string) => boolean | void; timeoutMs?: number } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', [...args], {
+    const child = spawn('git', ['--no-replace-objects', ...args], {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' },
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -304,10 +304,33 @@ function pathspecsAvoid(read: GitRead, cwd: string, top: string, credentials: Re
   });
 }
 
-function revisionOperands(read: GitRead): string[] {
+function revisionOperands(read: GitRead): string[] | null {
   if (!SHOWN_FILES[read.sub] && !PATHSPEC_SUBCOMMANDS.has(read.sub)) return [];
   const separator = read.args.indexOf('--');
   const args = read.args.slice(0, separator < 0 ? read.args.length : separator);
+  if (read.sub === 'grep') {
+    let patternProvided = false;
+    const revisions: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === '-e' || arg === '--regexp') {
+        if (args[index + 1] === undefined) return null;
+        index += 1;
+        patternProvided = true;
+      } else if (/^(?:-e.+|--regexp=)/.test(arg)) {
+        patternProvided = true;
+      } else if (arg === '--cached' || arg === '--line-number' || /^-[nivwhHlLcoqEGFP]+$/.test(arg)) {
+        continue;
+      } else if (arg.startsWith('-')) {
+        return null;
+      } else if (!patternProvided) {
+        patternProvided = true;
+      } else {
+        revisions.push(arg);
+      }
+    }
+    return patternProvided ? revisions : null;
+  }
   return args.flatMap((arg) => {
     if (arg.startsWith('-')) return [];
     return arg.split(/\.\.\.?/).filter(Boolean);
@@ -320,12 +343,14 @@ async function revisionsAreCovered(
   tips: ReadonlySet<string>,
   deadline: number,
 ): Promise<boolean> {
-  for (const revision of revisionOperands(read)) {
+  const revisions = revisionOperands(read);
+  if (!revisions) return false;
+  for (const revision of revisions) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
     const commit = await git(['rev-parse', '--verify', '--quiet', revision + '^{commit}'], cwd, { timeoutMs: remaining })
       .then((output) => output.trim(), () => '');
-    if (!commit) continue;
+    if (!commit) return false;
     if (tips.has(commit)) continue;
     let covered = false;
     for (const tip of tips) {
@@ -471,6 +496,13 @@ export class GitCredentialHistory {
     if (!topLine || !commonLine) return false;
     const top = path.resolve(topLine);
     const commonDir = path.resolve(cwd, commonLine);
+    if (process.env.GIT_REPLACE_REF_BASE !== undefined) return false;
+    const replacementTimeout = deadline - Date.now();
+    if (replacementTimeout <= 0) return false;
+    const replacements = await git(['for-each-ref', '--format=%(refname)', 'refs/replace'], top, {
+      timeoutMs: replacementTimeout,
+    });
+    if (replacements.trim()) return false;
     // 指向仓库外的文件时 git diff 不经仓库、直接比较文件。
     if (read.sub === 'diff' && read.args.some((arg) => !arg.startsWith('-') && isOutside(top, path.resolve(cwd, arg)))) {
       return false;

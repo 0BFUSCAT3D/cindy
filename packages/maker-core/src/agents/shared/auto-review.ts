@@ -3252,6 +3252,12 @@ export type GitRead = {
  * (apps/desktop/src/main/remote-agent/credentials.ts)。本机任务的自动审查不传，判定不变。
  */
 export type CredentialCommandOptions = ShellReviewOptions & {
+  credentialTextTransform?: (text: string) => string;
+  fileReadRequiresConsent?: (read: {
+    operand: string;
+    cwd?: string;
+    priorSegmentsMayMutate: boolean;
+  }) => boolean;
   /** rg -g、grep --include 这类搜索范围只选中源码与文档扩展名时不算读取凭证。 */
   sourceFileSelectors?: boolean;
   /**
@@ -5437,12 +5443,14 @@ function readerOptionValueIsSensitive(
   value: string | undefined,
   isSensitiveOperand: (value: string) => boolean,
   selectorCouldMatch: (value: string) => boolean = selectorCouldMatchCredential,
+  fileReadRequiresConsent?: (value: string) => boolean,
 ): boolean {
   if (kind === 'selector') return selectorCouldMatch(value ?? '');
   if (!value || (kind !== 'data-file' && kind !== 'aux-file' && kind !== 'aux-file-list')) return false;
   const operands = kind === 'aux-file-list' ? value.split(/[:;]/) : [value];
-  return operands.some((operand) =>
-    isSensitiveOperand(operand) || selectorCouldMatchCredential(operand));
+  return operands.some((operand) => fileReadRequiresConsent
+    ? fileReadRequiresConsent(operand)
+    : isSensitiveOperand(operand) || selectorCouldMatchCredential(operand));
 }
 
 function readerArgumentsReadDotenv(
@@ -5451,6 +5459,8 @@ function readerArgumentsReadDotenv(
   isSensitiveOperand: (value: string) => boolean = isDotenvCredentialPath,
   platform: NodeJS.Platform = process.platform,
   selectorCouldMatch: (value: string) => boolean = selectorCouldMatchCredential,
+  fileReadRequiresConsent?: (value: string) => boolean,
+  checkPositionalFiles = true,
 ): boolean {
   let dataArgumentProvided = !FIRST_DATA_ARGUMENT_BINS.has(bin);
   let optionsEnded = false;
@@ -5473,12 +5483,14 @@ function readerArgumentsReadDotenv(
           const secondValue = attached === undefined ? args[index + 2] : args[index + 1];
           if (nameValue === undefined || secondValue === undefined) return true;
           if (kind === 'named-file'
-            && readerOptionValueIsSensitive('data-file', secondValue, isSensitiveOperand)) return true;
+            && readerOptionValueIsSensitive('data-file', secondValue, isSensitiveOperand,
+              selectorCouldMatch, fileReadRequiresConsent)) return true;
           index += attached === undefined ? 2 : 1;
           continue;
         }
         const value = attached ?? args[index + 1];
-        const isSensitive = readerOptionValueIsSensitive(kind, value, isSensitiveOperand, selectorCouldMatch);
+        const isSensitive = readerOptionValueIsSensitive(kind, value, isSensitiveOperand,
+          selectorCouldMatch, fileReadRequiresConsent);
         if (kind !== 'data' && isSensitive) return true;
         if (attached === undefined) index += 1;
         if (kind === 'data' || kind === 'data-file') dataArgumentProvided = true;
@@ -5493,7 +5505,8 @@ function readerArgumentsReadDotenv(
         if (!kind) continue;
         const attached = token.slice(optionIndex + 1) || undefined;
         const value = attached ?? args[index + 1];
-        const isSensitive = readerOptionValueIsSensitive(kind, value, isSensitiveOperand, selectorCouldMatch);
+        const isSensitive = readerOptionValueIsSensitive(kind, value, isSensitiveOperand,
+          selectorCouldMatch, fileReadRequiresConsent);
         if (kind !== 'data' && isSensitive) return true;
         if (attached === undefined) index += 1;
         if (kind === 'data' || kind === 'data-file') dataArgumentProvided = true;
@@ -5508,7 +5521,9 @@ function readerArgumentsReadDotenv(
       dataArgumentProvided = true;
       continue;
     }
-    if (shellOperandCouldMatchDotenv(token, isSensitiveOperand)) return true;
+    if (fileReadRequiresConsent && checkPositionalFiles
+      ? fileReadRequiresConsent(token)
+      : shellOperandCouldMatchDotenv(token, isSensitiveOperand)) return true;
   }
   return false;
 }
@@ -5842,7 +5857,10 @@ function isGitExcludePathspec(value: string): boolean {
   return value.startsWith(':!') || value.startsWith(':^');
 }
 
-function gitBlameContentsReadDotenv(args: readonly string[]): boolean {
+function gitBlameContentsReadDotenv(
+  args: readonly string[],
+  fileReadRequiresConsent: (value: string) => boolean = shellOperandCouldMatchDotenv,
+): boolean {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (token === '--') break;
@@ -5854,7 +5872,7 @@ function gitBlameContentsReadDotenv(args: readonly string[]): boolean {
     if (!isContentsOption) continue;
     const attached = equalsIndex >= 0 ? token.slice(equalsIndex + 1) : undefined;
     const value = attached ?? args[index + 1];
-    if (value && shellOperandCouldMatchDotenv(value)) return true;
+    if (value && fileReadRequiresConsent(value)) return true;
     if (attached === undefined) index += 1;
   }
   return false;
@@ -6211,6 +6229,7 @@ function priorShellSegmentsMayMutate(
   workspaceRoots: string[],
   opts: ShellReviewOptions,
   segmentCwds: readonly (string | undefined)[],
+  allowResolvedDirectoryChanges = false,
 ): boolean {
   for (let index = 0; index < segmentIndex; index += 1) {
     const segmentCwd = segmentCwds[index];
@@ -6223,6 +6242,10 @@ function priorShellSegmentsMayMutate(
     // for a later credential exemption even though its output is otherwise read-only.
     const tokens = stripShellControlTokens(tokenize(segments[index].text));
     const unwrapped = unwrapCommand(tokens, segmentOpts.cwd ?? workspaceRoots[0], segmentOpts.cwdUnknown === true);
+    if (allowResolvedDirectoryChanges && !process.env.CDPATH
+      && tokens[0] === 'cd' && tokens.length === 2 && !tokens[1].startsWith('-')
+      && segments[index].separatorAfter === 'and' && segmentCwds[index + 1] !== undefined
+      && !segmentHasSideEffectRedirectOrSubstitution(segments[index].text)) continue;
     const invocation = unwrapped.tokens[0] && executableName(unwrapped.tokens[0]) === 'git'
       ? parseGitInvocation(unwrapped.tokens, workspaceRoots, segmentOpts)
       : undefined;
@@ -6252,16 +6275,16 @@ function shellCommandReadsDotenv(
   depth = 0,
 ): boolean {
   if (depth >= MAX_EXEC_REVIEW_DEPTH) return true;
-  const selectorCouldMatch = opts.sourceFileSelectors ? shareSelectorCouldMatchCredential : selectorCouldMatchCredential;
+  const credentialText = opts.credentialTextTransform ?? ((text: string) => text);
+  const selectorMatcher = opts.sourceFileSelectors ? shareSelectorCouldMatchCredential : selectorCouldMatchCredential;
+  const selectorCouldMatch = (value: string) => selectorMatcher(credentialText(value));
   const segments = splitExecutableSegments(command);
-  // 只有调用方要核实 git 调用时才需要各段的目录。
-  const segmentCwds = opts.gitContentRead || opts.gitConfigRead ? segmentWorkingDirs(segments, workspaceRoots, opts) : [];
+  // 调用方核实 Git 或文件读取时需要各段的实际目录。
+  const segmentCwds = opts.gitContentRead || opts.gitConfigRead || opts.fileReadRequiresConsent
+    ? segmentWorkingDirs(segments, workspaceRoots, opts) : [];
   for (const [segmentIndex, { text: segment }] of segments.entries()) {
     const inputRedirections = parseShellInputRedirections(segment);
     if (inputRedirections.hasUnresolvedTarget) return true;
-    const readsCredentialInput = inputRedirections.targets.some(
-      (target) => shellOperandCouldMatchDotenv(target),
-    );
     const inspectionCommand = inputRedirections.targets.length > 0
       ? parseShellInputRedirections(segment, true).command
       : inputRedirections.command;
@@ -6275,11 +6298,26 @@ function shellCommandReadsDotenv(
     const bin = executableName(tokens[0] ?? '');
     const sharesGitCredentialChecks = opts.gitContentRead !== undefined || opts.gitConfigRead !== undefined;
     const configOverride = bin === 'git' && gitUsesConfigOverride(tokens);
-    const priorMutation = sharesGitCredentialChecks
+    const priorMutation = sharesGitCredentialChecks || opts.fileReadRequiresConsent
       ? priorShellSegmentsMayMutate(segments, segmentIndex, workspaceRoots, opts, segmentCwds)
         || segmentHasSideEffectRedirectOrSubstitution(segment)
         || configOverride
       : false;
+    const priorFileMutation = opts.fileReadRequiresConsent
+      ? priorShellSegmentsMayMutate(segments, segmentIndex, workspaceRoots, opts, segmentCwds, true)
+        || segmentHasSideEffectRedirectOrSubstitution(segment)
+        || rawTokens[0] !== tokens[0]
+      : false;
+    const fileReadRequiresConsent = opts.fileReadRequiresConsent
+      ? (operand: string) => opts.fileReadRequiresConsent!({
+        operand,
+        cwd: depth === 0 ? segmentCwds[segmentIndex] : undefined,
+        priorSegmentsMayMutate: priorFileMutation,
+      }) : undefined;
+    const readsCredentialInput = inputRedirections.targets.some((target) => fileReadRequiresConsent
+      ? fileReadRequiresConsent(target)
+      : shellOperandCouldMatchDotenv(credentialText(target)));
+    if (fileReadRequiresConsent && readsCredentialInput) return true;
 
     // xargs and parallel construct the real argv from stdin. The command that eventually reads
     // a repository or credential file is therefore outside this static scan; shared-provider
@@ -6331,7 +6369,7 @@ function shellCommandReadsDotenv(
       // Inline programs are not shell argv, so a Python/Node reader such as
       // `open(".env")` never reaches the reader-specific path parser. Keep
       // credential path patterns visible in these payloads before recursing.
-      if (inlinePayloadMentionsCredentialPath(payload)) return true;
+      if (inlinePayloadMentionsCredentialPath(opts.fileReadRequiresConsent ? payload : credentialText(payload))) return true;
       if (shellCommandReadsCredentials(payload, workspaceRoots, opts, depth + 1)) return true;
     }
 
@@ -6347,14 +6385,18 @@ function shellCommandReadsDotenv(
     if (bin === 'git') {
       const invocation = parseGitInvocation(tokens, workspaceRoots, opts);
       if (!invocation?.sub || !SAFE_GIT_SUBCOMMANDS.has(invocation.sub)) continue;
+      const credentialArgs = invocation.args.map(credentialText);
       if (readsCredentialInput) return true;
       if (invocation.sub === 'grep') {
         if (gitGrepExpandsSearchScope(invocation.args)) return true;
-        if (readerArgumentsReadDotenv('grep', invocation.args, isGitDotenvOperand)) return true;
-      } else if ((invocation.sub === 'blame' && gitBlameContentsReadDotenv(invocation.args))
+        if (readerArgumentsReadDotenv('grep', fileReadRequiresConsent ? invocation.args : credentialArgs,
+          (operand) => isGitDotenvOperand(credentialText(operand)), opts.platform ?? process.platform,
+          selectorCouldMatch, fileReadRequiresConsent, false)) return true;
+      } else if ((invocation.sub === 'blame' && gitBlameContentsReadDotenv(invocation.args,
+        fileReadRequiresConsent ?? ((operand) => shellOperandCouldMatchDotenv(credentialText(operand)))))
         || ((invocation.sub === 'log' || invocation.sub === 'whatchanged' || invocation.sub === 'show')
-          && gitLineRangeReadsDotenv(invocation.args))
-        || gitArgumentsReadDotenv(invocation.args)) {
+          && gitLineRangeReadsDotenv(credentialArgs))
+        || gitArgumentsReadDotenv(credentialArgs)) {
         return true;
       }
       if (gitContentReadWithoutPath(invocation.sub, invocation.args)
@@ -6369,14 +6411,18 @@ function shellCommandReadsDotenv(
       continue;
     }
 
-    if (!DOTENV_FILE_READER_BINS.has(bin)) continue;
+    if (!DOTENV_FILE_READER_BINS.has(bin)) {
+      if (fileReadRequiresConsent && credentialText(segment) !== segment) return true;
+      continue;
+    }
     if (readsCredentialInput) return true;
     const args = tokens.slice(1);
     if (grepRecursesIntoPotentialDotenv(bin, args, selectorCouldMatch)) return true;
     if (bin === 'ag' && agSearchesPotentialCredential(args)) return true;
     if (bin === 'rg' && rgSearchesPotentialDotenv(args, selectorCouldMatch)) return true;
     if (readerArgumentsReadDotenv(
-      bin, args, isDotenvCredentialPath, opts.platform ?? process.platform, selectorCouldMatch)) return true;
+      bin, args, isDotenvCredentialPath, opts.platform ?? process.platform,
+      selectorCouldMatch, fileReadRequiresConsent)) return true;
   }
   return false;
 }
@@ -6441,7 +6487,7 @@ export function shellCommandReadsCredentials(
   // 超长命令解析器不展开扫描，按需要确认处理(与 classifyShellCommand 同样不放过)。
   if (command.length > MAX_AUTO_REVIEW_ACTION_TEXT_CHARS) return true;
   if (shellCommandReadsDotenv(command, workspaceRoots, opts, depth)) return true;
-  const variants = deterministicScanVariants(command);
+  const variants = deterministicScanVariants(opts.credentialTextTransform?.(command) ?? command);
   return matchesAnyVariant(CREDENTIAL_ALWAYS_ASK_PATTERNS, variants) || fetchesCloudMetadata(variants.quotesOnly);
 }
 

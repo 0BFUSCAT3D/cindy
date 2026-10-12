@@ -4722,6 +4722,46 @@ describe('shellCommandReadsCredentials — 只认凭证那一部分红线', () =
 
 // 两个附加选项只供供应商分享的受邀者任务用(apps/desktop/src/main/remote-agent/credentials.ts)。
 describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
+  it('passes original reader operands, redirects and auxiliary files to the sharing path check', () => {
+    for (const command of ['cat .env.example', 'cat < .env.example', 'grep -f .env.example README.md']) {
+      const checked: string[] = [];
+      expect(shellCommandReadsCredentials(command, roots, {
+        cwd: '/repo',
+        platform: 'linux',
+        credentialTextTransform: (text) => text.replaceAll('.env.example', 'example'),
+        fileReadRequiresConsent: (read) => {
+          checked.push(read.operand);
+          return read.operand === '.env.example';
+        },
+      }), command).toBe(true);
+      expect(checked, command).toContain('.env.example');
+    }
+    expect(shellCommandReadsCredentials('cat .env.example', roots, {
+      credentialTextTransform: (text) => text.replaceAll('.env.example', 'example'),
+      fileReadRequiresConsent: () => false,
+    })).toBe(false);
+    expect(shellCommandReadsCredentials('cat .env.example', roots)).toBe(true);
+  });
+
+  it('binds sharing file checks to the segment directory and invalidates preceding mutations', () => {
+    for (const [command, expected] of [
+      ['cd /repo/examples && cat example.pub', { cwd: '/repo/examples', priorSegmentsMayMutate: false }],
+      ['ln -sf .env example.pub && cat example.pub', { cwd: '/repo', priorSegmentsMayMutate: true }],
+      ['HOME=/other cat example.pub', { cwd: '/repo', priorSegmentsMayMutate: true }],
+      ['cd "$DIR" && cat example.pub', { cwd: undefined }],
+    ] as const) {
+      const checked: unknown[] = [];
+      shellCommandReadsCredentials(command, roots, {
+        cwd: '/repo',
+        platform: 'linux',
+        fileReadRequiresConsent: (read) => {
+          checked.push(read);
+          return true;
+        },
+      });
+      expect(checked, command).toEqual([expect.objectContaining({ operand: 'example.pub', ...expected })]);
+    }
+  });
   const sourceSearches = [
     "rg -n 'API_KEY' --glob '*.ts'",
     "rg -g '*.{ts,tsx}' token src",

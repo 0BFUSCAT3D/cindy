@@ -244,6 +244,66 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(fullDiffHistory, 'git log -p --full-diff -- README.md')).toBe(false);
   });
 
+  it('keeps confirmation for a dangling credential blob outside every scanned commit', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    write('.env', 'PRIVATE_FIXTURE=unreachable-content\n');
+    const blob = git('hash-object', '-w', '.env').trim();
+    fs.rmSync(path.join(repo, '.env'));
+    expect(git('ls-files', '--', '.env')).toBe('');
+    expect(git('rev-list', '--all', '--reflog', '--objects')).not.toContain(blob);
+    expect(git('show', blob)).toContain('PRIVATE_FIXTURE=unreachable-content');
+    for (const command of ['git show ' + blob, 'git show ' + blob + ' -- README.md']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('does not use replaced objects to prove the original history has no credentials', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    const safe = git('rev-parse', 'HEAD').trim();
+    write('.env', 'PRIVATE_FIXTURE=original-history\n');
+    git('add', '.env');
+    git('commit', '-q', '--no-gpg-sign', '-m', 'original credentials');
+    const original = git('rev-parse', 'HEAD').trim();
+    git('replace', original, safe);
+    git('reset', '--mixed', '-q', 'HEAD');
+    expect(git('ls-files', '--', '.env')).toBe('');
+    expect(git('show', 'HEAD')).not.toContain('PRIVATE_FIXTURE=original-history');
+    expect(git('--no-replace-objects', 'show', 'HEAD')).toContain('PRIVATE_FIXTURE=original-history');
+    for (const command of ['git --no-replace-objects show HEAD', 'git show HEAD']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+    git('replace', '-d', original);
+    vi.stubEnv('GIT_REPLACE_REF_BASE', 'refs/custom-replace/');
+    git('replace', original, safe);
+    expect(await provesSafe(history, 'git --no-replace-objects show HEAD')).toBe(false);
+    await requiresCredentialConfirmation(history, 'git --no-replace-objects show HEAD');
+  });
+
+  it.runIf(process.platform !== 'win32')('does not exempt a tracked template symlink to an ignored credential file', async () => {
+    write('.gitignore', '.env\n');
+    write('.env', 'PRIVATE_FIXTURE=symlink-target\n');
+    fs.rmSync(path.join(repo, '.env.example'));
+    fs.symlinkSync('.env', path.join(repo, '.env.example'));
+    git('add', '.gitignore', '.env.example');
+    git('commit', '-q', '--no-gpg-sign', '-m', 'template link');
+    expect(git('ls-files', '--', '.env')).toBe('');
+    expect(git('ls-files', '--stage', '--', '.env.example')).toMatch(/^120000 /);
+    const history = new GitCredentialHistory();
+    for (const command of [
+      'cat .env.example',
+      'cat < .env.example',
+      'git diff && cat .env.example',
+      'git grep -f .env.example -- README.md',
+      'git blame --contents .env.example README.md',
+    ]) {
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
   it('does not exempt a git read after an earlier shell segment may change state', async () => {
     const history = new GitCredentialHistory();
     expect(await provesSafe(history, 'git add -A && git diff --cached')).toBe(false);
