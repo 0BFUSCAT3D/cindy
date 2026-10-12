@@ -14,6 +14,10 @@ const log = createLogger('voice-input:refine-model:litellm');
 
 const DISABLE_REFINER_PREWARM = process.env.XDT_VOICE_INPUT_DISABLE_REFINER_PREWARM === '1';
 const REFINER_TIMING_ENABLED = process.env.XDT_VOICE_INPUT_REFINER_TIMING === '1';
+// Caps the model's output text, not the SSE bytes: each event wraps one or two
+// characters in ~180 chars of JSON, so a byte cap rejects any refinement over
+// ~550 characters. Also caps one unterminated SSE event, the only other part
+// of the stream that is held in memory.
 const MAX_RESPONSE_CHARS = 64_000;
 
 // Own pool for the LiteLLM proxy host (tuning lives in refinerHttpDispatcher.ts).
@@ -295,12 +299,6 @@ async function readStreamingChatCompletion(input: {
       input.onChunk();
       const chunk = decoder.decode(value, { stream: true });
       rawChars += chunk.length;
-      if (rawChars > MAX_RESPONSE_CHARS) {
-        // Runaway generation: the channel works, the model is flooding.
-        throw markRefinerModelOutputError(
-          new Error(`LiteLLM refinement response exceeded ${MAX_RESPONSE_CHARS} characters`),
-        );
-      }
       buf += normalizeSseLineEndings(chunk);
       let idx = buf.indexOf('\n\n');
       while (idx >= 0) {
@@ -319,6 +317,7 @@ async function readStreamingChatCompletion(input: {
           const delta = extractDeltaContent(event.data);
           if (delta) {
             content += delta;
+            assertResponseWithinLimit(content.length);
             input.onTextContent(content);
           }
           const chunkUsage = extractUsageSummary(event.data);
@@ -326,6 +325,7 @@ async function readStreamingChatCompletion(input: {
         }
         idx = buf.indexOf('\n\n');
       }
+      assertResponseWithinLimit(buf.length);
     }
     if (buf.trim()) {
       const event = parseSseBlock(buf);
@@ -336,6 +336,7 @@ async function readStreamingChatCompletion(input: {
         const delta = extractDeltaContent(event.data);
         if (delta) {
           content += delta;
+          assertResponseWithinLimit(content.length);
           input.onTextContent(content);
         }
         const chunkUsage = extractUsageSummary(event.data);
@@ -354,6 +355,14 @@ async function readStreamingChatCompletion(input: {
     rawChars,
     bodyAt: performance.now(),
   };
+}
+
+function assertResponseWithinLimit(chars: number): void {
+  if (chars <= MAX_RESPONSE_CHARS) return;
+  // Runaway generation: the channel works, the model is flooding.
+  throw markRefinerModelOutputError(
+    new Error(`LiteLLM refinement response exceeded ${MAX_RESPONSE_CHARS} characters`),
+  );
 }
 
 function parseSseBlock(block: string): ParsedSseBlock | null {

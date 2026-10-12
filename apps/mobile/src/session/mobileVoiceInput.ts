@@ -121,6 +121,10 @@ interface CloudVoiceDeps {
   fetch?: typeof fetch;
 }
 
+// Caps the model's output text, not the SSE bytes: each event wraps one or two
+// characters in ~180 chars of JSON, so a byte cap rejects any refinement over
+// ~550 characters. Also caps one unterminated SSE event, the only other part
+// of a stream that is held in memory.
 const MAX_REFINER_RESPONSE_CHARS = 64_000;
 const MAX_ERROR_DETAIL_CHARS = 1_000;
 
@@ -396,17 +400,16 @@ export class MobileLiteLlmTextModelClient implements TextModelClient {
     }
     const buffered = await readBufferedResponseText(response);
     if (buffered.trim()) {
-      if (buffered.length > MAX_REFINER_RESPONSE_CHARS) {
-        throw new Error(i18n.t('composer.voice.refineResponseTooLarge', { max: MAX_REFINER_RESPONSE_CHARS }));
-      }
       const streamedContent = readBufferedChatCompletion(buffered, input.onTextSnapshot);
       if (streamedContent) return parseJsonObject(streamedContent) as T;
       const payload = parseJsonObject(buffered);
       const content = extractChatCompletionContent(payload);
+      assertRefinerResponseWithinLimit(content.length);
       return parseJsonObject(content) as T;
     }
     const payload = await response.json().catch(() => null);
     const content = extractChatCompletionContent(payload);
+    assertRefinerResponseWithinLimit(content.length);
     return parseJsonObject(content) as T;
   }
 }
@@ -459,7 +462,6 @@ async function readStreamingChatCompletion(
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
-  let rawChars = 0;
   let lastSnapshot = '';
   let streamError: string | null = null;
 
@@ -468,10 +470,6 @@ async function readStreamingChatCompletion(
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      rawChars += chunk.length;
-      if (rawChars > MAX_REFINER_RESPONSE_CHARS) {
-        throw new Error(i18n.t('composer.voice.refineResponseTooLarge', { max: MAX_REFINER_RESPONSE_CHARS }));
-      }
       buffer += normalizeSseLineEndings(chunk);
       let splitAt = buffer.indexOf('\n\n');
       while (splitAt >= 0) {
@@ -487,6 +485,7 @@ async function readStreamingChatCompletion(
           const delta = extractDeltaContent(event.data);
           if (delta) {
             content += delta;
+            assertRefinerResponseWithinLimit(content.length);
             const snapshot = extractJsonStringFieldSnapshot(content, 'text');
             if (snapshot && snapshot !== lastSnapshot) {
               lastSnapshot = snapshot;
@@ -496,6 +495,7 @@ async function readStreamingChatCompletion(
         }
         splitAt = buffer.indexOf('\n\n');
       }
+      assertRefinerResponseWithinLimit(buffer.length);
     }
 
     if (buffer.trim()) {
@@ -503,6 +503,7 @@ async function readStreamingChatCompletion(
       const delta = event ? extractDeltaContent(event.data) : '';
       if (delta) {
         content += delta;
+        assertRefinerResponseWithinLimit(content.length);
         const snapshot = extractJsonStringFieldSnapshot(content, 'text');
         if (snapshot && snapshot !== lastSnapshot) onTextSnapshot?.(snapshot);
       }
@@ -612,11 +613,17 @@ function applyChatCompletionEvent(
   const delta = extractDeltaContent(event.data);
   if (!delta) return;
   state.content += delta;
+  assertRefinerResponseWithinLimit(state.content.length);
   const snapshot = extractJsonStringFieldSnapshot(state.content, 'text');
   if (snapshot && snapshot !== state.lastSnapshot) {
     state.lastSnapshot = snapshot;
     onTextSnapshot?.(snapshot);
   }
+}
+
+function assertRefinerResponseWithinLimit(chars: number): void {
+  if (chars <= MAX_REFINER_RESPONSE_CHARS) return;
+  throw new Error(i18n.t('composer.voice.refineResponseTooLarge', { max: MAX_REFINER_RESPONSE_CHARS }));
 }
 
 function parseSseBlock(block: string): ParsedSseBlock | null {
