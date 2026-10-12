@@ -1,5 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+
+function optimizedDependencies(project) {
+  const cacheDir = project.vite.config.cacheDir;
+  if (!fs.existsSync(cacheDir)) return [];
+  return fs.readdirSync(cacheDir, { recursive: true }).filter(file => path.basename(file) === '_metadata.json')
+    .map(file => ({
+      project: project.name,
+      metadata: file.replaceAll('\\', '/'),
+      dependencies: Object.keys(JSON.parse(fs.readFileSync(path.join(cacheDir, file), 'utf8')).optimized ?? {}),
+    }));
+}
 
 export default class CiTimingReporter {
   onInit(ctx) {
@@ -25,6 +37,14 @@ export default class CiTimingReporter {
     });
     const report = {
       version: 1, platform: process.platform, shard: this.ctx.config.shard,
+      runtime: {
+        node: process.version, cpu: os.cpus()[0]?.model,
+        availableParallelism: os.availableParallelism(), maxWorkers: this.ctx.config.maxWorkers, pool: this.ctx.config.pool,
+      },
+      prebundle: {
+        enabled: process.env.CINDY_TEST_PREBUNDLE === 'on',
+        optimized: this.ctx.projects.flatMap(optimizedDependencies),
+      },
       wallMs: performance.now() - this.started, reason, unhandledErrors: errors.length, files,
     };
     const output = path.resolve(this.ctx.config.root, '../../tmp/ci-timings',

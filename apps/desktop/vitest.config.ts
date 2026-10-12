@@ -6,6 +6,19 @@ import TimingSequencer from './scripts/unit-test-sequencer.mjs';
 
 const clientBuildEnv = desktopClientBuildEnv({ allowEnvOverride: false });
 const cliTestExclude = parseVitestCliExclude(process.argv.slice(2));
+// Opt-in CI experiment. Keep workspace code and React's singleton runtime
+// external so the comparison changes only loading of shared third-party deps.
+const prebundleDependencies = process.env.CINDY_TEST_PREBUNDLE === 'on';
+const commonDependencies = [
+  'lucide-react', 'react-router-dom', 'react-i18next', 'i18next',
+  '@radix-ui/react-dialog', '@radix-ui/react-alert-dialog', '@radix-ui/react-select',
+  'drizzle-orm', 'drizzle-orm/sqlite-core', 'zod',
+];
+const dependencyOptimizer = {
+  enabled: prebundleDependencies,
+  include: prebundleDependencies ? commonDependencies : [],
+  exclude: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+};
 const desktopTestInclude = [
   'src/main/__tests__/**/*.test.ts',
   'src/main/**/__tests__/**/*.test.ts',
@@ -27,6 +40,7 @@ const gitIntegrationTestInclude = [
 ];
 
 export default defineConfig({
+  ...(prebundleDependencies ? { cacheDir: path.resolve(__dirname, 'node_modules/.vite-unit-prebundle') } : {}),
   define: {
     // 业务端点烘焙 define 已随端点清单重构退役;测试固定值统一走
     // src/test/vitest/clientEndpointsFixture.ts,不再从生产配置取"真值"。
@@ -65,6 +79,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    deps: { optimizer: { ssr: dependencyOptimizer, web: dependencyOptimizer } },
     sequence: { sequencer: TimingSequencer },
     ...(process.env.CI && process.env.XDT_UNIT_TEST_SHARD ? {
       reporters: ['default', path.resolve(__dirname, 'scripts/ci-timing-reporter.mjs')],
