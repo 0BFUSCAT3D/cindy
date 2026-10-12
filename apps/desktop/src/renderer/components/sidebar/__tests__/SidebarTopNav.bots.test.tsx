@@ -253,12 +253,16 @@ describe('Sidebar teammate return action', () => {
         visible: ['automations', 'search'],
       });
       render(<Harness initialPath="/cc-agent" />);
+      // Hover never moves focus: whatever had it (here the search row) keeps it throughout.
+      const focused = screen.getByRole('button', { name: 'Search row' });
+      act(() => { focused.focus(); });
       const more = screen.getByRole('button', { name: 'sidebar.navigation.more' });
       fireEvent.mouseEnter(more);
       expect(screen.queryByRole('menu')).toBeNull();
       act(() => { vi.advanceTimersByTime(100); });
       const menu = screen.getByRole('menu');
       expect(within(menu).getByRole('menuitem', { name: 'sidebar.tabs.plugins' })).toBeTruthy();
+      expect(document.activeElement).toBe(focused);
       // A click on the already open trigger keeps the menu.
       fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
       expect(screen.getByRole('menu')).toBeTruthy();
@@ -270,9 +274,23 @@ describe('Sidebar teammate return action', () => {
       fireEvent.mouseLeave(menu);
       act(() => { vi.advanceTimersByTime(300); });
       expect(screen.queryByRole('menu')).toBeNull();
+      expect(document.activeElement).toBe(focused);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('still moves focus into More when it is opened from the keyboard', () => {
+    setSidebarNavigationPrefs(OWNER, {
+      order: ['automations', 'plugins', 'bots', 'search'],
+      visible: ['automations', 'search'],
+    });
+    render(<Harness initialPath="/cc-agent" />);
+    const more = screen.getByRole('button', { name: 'sidebar.navigation.more' });
+    act(() => { more.focus(); });
+    fireEvent.keyDown(more, { key: 'Enter' });
+    const menu = screen.getByRole('menu');
+    expect(menu.contains(document.activeElement)).toBe(true);
   });
 
   it('keeps checked entries out of More', () => {
