@@ -476,7 +476,7 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
-        "pausedLocal": "已暫停接收外部新任務，本機仍可自用",
+        "pausedLocal": "已暫停接收外部新任務",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",

@@ -476,7 +476,7 @@
         "idle": "대기 중",
         "full": "한도 도달",
         "paused": "배정 일시 중지됨",
-        "pausedLocal": "다른 컴퓨터의 새 작업 수신 중지 · 이 컴퓨터에서는 계속 사용 가능",
+        "pausedLocal": "다른 컴퓨터의 새 작업 수신 중지",
         "cooling": "대기 중",
         "coolingUntil": "대기 중 · {{time}}쯤 복구",
         "offline": "오프라인",

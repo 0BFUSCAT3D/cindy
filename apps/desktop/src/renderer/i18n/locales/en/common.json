@@ -481,7 +481,7 @@
         "idle": "Idle",
         "full": "Full",
         "paused": "Assignments paused",
-        "pausedLocal": "Not accepting new tasks from other computers; local use still available",
+        "pausedLocal": "Not accepting new tasks from other computers",
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
         "offline": "Offline",
