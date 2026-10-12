@@ -42,6 +42,7 @@ import {
 import type { ProviderGroupBinding, ProviderGroupRef } from './bindings.js';
 import type { ProviderGroupDirectory } from './directory.js';
 import type { ProviderGroupGuestSwitch } from './guestSwitch.js';
+import { providerGroupUsageState } from './usage.js';
 import {
   PROVIDER_GROUP_DEFAULT_COOLDOWN_MS,
   PROVIDER_GROUP_FAILURE_COOLDOWN_MS,
@@ -129,7 +130,7 @@ export interface ProviderGroupRemoteGroups {
     cause: ProviderGroupRemoteCoolCause;
     resetAt: number | null;
   }): Promise<void>;
-  view(ownerDeviceId: string, providerId: string): Promise<ProviderGroupView>;
+  view(ownerDeviceId: string, providerId: string, model?: string): Promise<ProviderGroupView>;
   /** 忘掉组所在电脑目录的缓存(组员失败后下次现读)。 */
   invalidate(ownerDeviceId: string): void;
 }
@@ -366,7 +367,7 @@ interface GroupSource {
   /** 组的状态里这台现在冷却中(组所在电脑记着它账号的问题)。 */
   isKnownDown(providerId: string, memberKey: string): Promise<boolean>;
   /** 发送前：这台现在该不该换掉；null = 读不到，照常发送。 */
-  shouldMoveAway(providerId: string, config: ProviderGroupConfig, memberKey: string): Promise<{ reason: string } | false | null>;
+  shouldMoveAway(providerId: string, config: ProviderGroupConfig, memberKey: string, model: string): Promise<{ reason: string } | false | null>;
   invalidate(member: ProviderGroupMember): void;
   /** 任务记录里 Agent 的位置对应组里哪一项(组所在电脑视角的键)；不对应任何组员返回 null。 */
   memberKeyOf(groupProviderId: string, row: ProviderGroupSessionRow): Promise<string | null>;
@@ -679,11 +680,12 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     async isKnownDown(providerId, memberKey) {
       return router.coolingUntil(providerId, memberKey) !== null;
     },
-    async shouldMoveAway(providerId, config, memberKey) {
+    async shouldMoveAway(providerId, config, memberKey, model) {
       const resolved = await withTimeout(deps.directory.resolveMembers(providerId, config), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
       const state = resolved?.find((r) => r.member.key === memberKey);
       if (!state) return null;
-      const cooling = router.coolingUntil(providerId, memberKey) !== null;
+      const cooling = router.coolingUntil(providerId, memberKey) !== null
+        || providerGroupUsageState(state.claudeUsage, model, deps.now()).limited;
       if (state.state === 'ok' && !cooling) return false;
       return { reason: cooling ? 'cooling' : state.state };
     },
@@ -744,10 +746,11 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         const view = await remote.view(ownerDeviceId, providerId);
         return view.members.find((m) => m.key === memberKey)?.state === 'cooling';
       },
-      async shouldMoveAway(providerId, _config, memberKey) {
-        const view = await withTimeout(remote.view(ownerDeviceId, providerId), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
+      async shouldMoveAway(providerId, _config, memberKey, model) {
+        const view = await withTimeout(remote.view(ownerDeviceId, providerId, model), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
         const state = view?.members.find((m) => m.key === memberKey)?.state;
         if (!state) return null;
+        if (view?.model !== model && state !== 'offline' && state !== 'unavailable' && state !== 'cooling') return null;
         return state === 'offline' || state === 'unavailable' || state === 'cooling' ? { reason: state } : false;
       },
       invalidate() {
@@ -1665,7 +1668,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       // 本机的暂停只限制接外部新任务，本机自用仍照常检查故障并恢复。
       // 其他组员的暂停继续保持既有任务位置。
       if (!current || (current.paused && !(source.ownerDeviceId === null && current.kind === 'local'))) return;
-      const cached = await source.shouldMoveAway(binding.providerId, config, current.key);
+      const cached = await source.shouldMoveAway(binding.providerId, config, current.key, row.model);
       if (cached === null) return;
       let reason = cached ? cached.reason : null;
       const currentRoute = source.routeOf(current, row.providerId);

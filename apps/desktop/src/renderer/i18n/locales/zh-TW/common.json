@@ -438,11 +438,13 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
+      "usage": "用量均衡",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例"
+        "weight": "依權重比例",
+        "usage": "按5小時和每週用量分配"
       }
     },
     "autoSwitch": {
@@ -1061,7 +1063,6 @@
       "back": "返回",
       "usageTitle": "用量",
       "wideCaptionMoney_other": "近 {{n}} 天 · 訂閱等值估算",
-      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
       "scopeLocal": "這台電腦",
       "scopeAll": "所有裝置",
       "noUsage": "沒有用量",
@@ -1072,13 +1073,9 @@
       },
       "dailyAverage": "日均",
       "paid": "實付",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最高單日",
       "range7": "7 天",
       "range30": "30 天",
       "range90": "90 天",
-      "metricMoney": "金額",
-      "metricTokens": "Token",
       "listModels_other": "近 {{n}} 天模型",
       "listTasks": "今天的任務",
       "today": "今天",

@@ -14,8 +14,8 @@ export const PROVIDER_GROUP_IPC = {
   CHANGED: 'provider-group:changed',
 } as const;
 
-export type ProviderGroupStrategy = 'least' | 'round' | 'order' | 'weight';
-export const PROVIDER_GROUP_STRATEGIES: readonly ProviderGroupStrategy[] = ['least', 'round', 'order', 'weight'];
+export type ProviderGroupStrategy = 'least' | 'round' | 'order' | 'weight' | 'usage';
+export const PROVIDER_GROUP_STRATEGIES: readonly ProviderGroupStrategy[] = ['least', 'round', 'order', 'weight', 'usage'];
 
 export type ProviderGroupMemberKind = 'local' | 'device' | 'share';
 
@@ -106,6 +106,8 @@ export interface ProviderGroupView {
   /** null = 还没有组。 */
   config: ProviderGroupConfig | null;
   members: ProviderGroupMemberStatus[];
+  /** 发送前按指定模型重新计算状态时由组所在电脑回显。 */
+  model?: string;
 }
 
 export type ProviderGroupCandidateBlock =
@@ -325,7 +327,7 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string }
+  | { action: 'view'; providerId: string; model?: string }
   /**
    * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
    * 报过的行。seq 只增，乱序到达的旧份丢弃。
@@ -454,8 +456,16 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
         }),
       };
     }
-    case 'view':
-      return { action: 'view', providerId: remoteProviderId(value.providerId) };
+    case 'view': {
+      if (value.model !== undefined && (typeof value.model !== 'string' || !value.model || value.model.length > 512)) {
+        invalidRemote('invalid model');
+      }
+      return {
+        action: 'view',
+        providerId: remoteProviderId(value.providerId),
+        ...(value.model !== undefined ? { model: value.model } : {}),
+      };
+    }
     case 'usage':
     case 'usage-part': {
       if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0) invalidRemote('invalid seq');
@@ -517,6 +527,9 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
   const empty: ProviderGroupView = { providerId: groupProviderId, config: null, members: [] };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty;
   const value = raw as Record<string, unknown>;
+  const model = typeof value.model === 'string' && value.model.length > 0 && value.model.length <= 512
+    ? value.model
+    : undefined;
   const config = normalizeProviderGroupConfig(value.config, groupProviderId);
   if (!config) return empty;
   const keys = new Set(config.members.map((m) => m.key));
@@ -548,5 +561,5 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       ...(coolingUntil !== undefined ? { coolingUntil } : {}),
     }];
   });
-  return { providerId: groupProviderId, config, members };
+  return { providerId: groupProviderId, config, members, ...(model ? { model } : {}) };
 }

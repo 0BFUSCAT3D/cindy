@@ -438,11 +438,13 @@
       "round": "順番に",
       "order": "並び順",
       "weight": "重み付け",
+      "usage": "使用量で分散",
       "description": {
         "least": "空いているパソコンへ",
         "round": "順番に割り当て",
         "order": "上のパソコンを優先",
-        "weight": "重みの比率で"
+        "weight": "重みの比率で",
+        "usage": "5時間・週間の使用量で分散"
       }
     },
     "autoSwitch": {
@@ -1061,7 +1063,6 @@
       "back": "戻る",
       "usageTitle": "使用量",
       "wideCaptionMoney_other": "直近 {{n}} 日 · サブスク換算",
-      "wideCaptionTokens_other": "直近 {{n}} 日 · Token",
       "scopeLocal": "このコンピュータ",
       "scopeAll": "すべてのデバイス",
       "noUsage": "使用量なし",
@@ -1072,13 +1073,9 @@
       },
       "dailyAverage": "1 日平均",
       "paid": "支払額",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最多の日",
       "range7": "7 日",
       "range30": "30 日",
       "range90": "90 日",
-      "metricMoney": "金額",
-      "metricTokens": "Token",
       "listModels_other": "直近 {{n}} 日のモデル",
       "listTasks": "今日のタスク",
       "today": "今日",
