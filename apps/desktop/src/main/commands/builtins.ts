@@ -385,6 +385,7 @@ export function registerBuiltinDesktopCommands(
     registry.register(
       createMakeDoctorCommand({
         name,
+        isVisible: () => false,
         description: () =>
           t(name === 'cindy-make' ? 'cindyMake.description' : 'cindyMakeDoctor.description'),
         environment: (ctx) =>

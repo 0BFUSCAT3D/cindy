@@ -51,6 +51,16 @@ function response(results: ConversationSearchResultItem[]): ConversationSearchRe
 }
 
 describe('merge and stamp', () => {
+  it('excludes hidden Make sources before limiting indexed or reused remote hits', () => {
+    const page = response([
+      result('make', 100, { source: 'cindy-make', deviceLinkDeviceId: 'dev-a' }),
+      result('merge', 99, { source: 'cindy-make-merge', deviceLinkDeviceId: 'dev-a' }),
+      result('ordinary', 1, { source: 'desktop', deviceLinkDeviceId: 'dev-a' }),
+    ]);
+    expect(mergeConversationSearchFanout([page], 1).results.map(item => item.session.id)).toEqual(['ordinary']);
+    expect(remoteResultsFromFanoutPages([page]).map(item => item.session.id)).toEqual(['ordinary']);
+    expect(filterResultsByRequestFilters(page, {}).results.map(item => item.session.id)).toEqual(['ordinary']);
+  });
   it('keeps same-id hits from different devices and stamps origin', () => {
     const remote = stampRemoteSearchResponse(response([result('same', 10)]), {
       deviceId: 'dev-a',

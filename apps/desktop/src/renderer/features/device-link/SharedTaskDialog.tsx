@@ -14,6 +14,7 @@ import { Textarea } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import type { Session } from '@/lib/ccAgent.types';
+import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { toast } from '@/lib/toast';
 import { bindSharedTaskPushOwner, resetRemoteDataOwnerPushFence } from '@/lib/remoteDataOwnerPushFence';
 import { remoteProjectsStore, isRemoteDeviceMarkedDisconnected } from './remoteProjectsStore';
@@ -258,9 +259,11 @@ export function SharedTaskDialog({ open, onOpenChange, session, returnFocus, ini
     const item = await window.electronAPI.sharedTask.account({ action: 'get', sharedTaskId }) as SharedTaskDetail;
     if (!current()) return;
     const peer = sharedTaskHostPeer(item.sharedTaskId, item.hostDeviceId);
-    const existing = remoteProjectsStore.getMergedRemoteSessions().find(s => s.id === item.sessionId && s.deviceLinkDeviceId === peer);
+    const existing = remoteProjectsStore.getVisibleMergedRemoteSessions().find(s => s.id === item.sessionId && s.deviceLinkDeviceId === peer);
     if (existing && !isRemoteDeviceMarkedDisconnected(peer)) {
-      navigate('/cc-agent/' + encodeURIComponent(item.sessionId)); onOpenChange(false); return;
+      const route = await resolveSessionRoute(item.sessionId, existing);
+      if (current()) { navigate(route); onOpenChange(false); }
+      return;
     }
     bindSharedTaskPushOwner(peer, item.ownerAccountId);
     await window.electronAPI.deviceLink.openLink(peer);
@@ -268,10 +271,12 @@ export function SharedTaskDialog({ open, onOpenChange, session, returnFocus, ini
     const remoteSession = await window.electronAPI.deviceLink.invoke(peer, 'local-db:sessions:get', [item.sessionId]) as Session;
     if (!current() || remoteSession?.id !== item.sessionId) return;
     remoteProjectsStore.setDeviceSessions(peer, item.title, [remoteSession]);
-    navigate('/cc-agent/' + encodeURIComponent(item.sessionId)); onOpenChange(false);
+    const route = await resolveSessionRoute(item.sessionId, remoteSession);
+    if (current()) { navigate(route); onOpenChange(false); }
   };
   const openTask = (sharedTaskId: string) => void run(current => enterTask(sharedTaskId, current));
   const openOwnedTask = (item: SharedTaskOwnedItem) => void run(async current => {
+    let targetSession: Session | null = null;
     if (!item.local) {
       await window.electronAPI.deviceLink.openLink(item.hostDeviceId);
       if (!current()) return;
@@ -279,10 +284,12 @@ export function SharedTaskDialog({ open, onOpenChange, session, returnFocus, ini
       const remoteSession = await window.electronAPI.deviceLink.invoke(item.hostDeviceId, 'local-db:sessions:get', [item.sessionId]) as Session | null;
       if (!current()) return;
       if (!readIsCurrent() || remoteSession?.id !== item.sessionId) throw new Error('Remote session is unavailable');
+      targetSession = remoteSession;
       remoteProjectsStore.mergeDeviceSessions(item.hostDeviceId, deviceName(item), [readIsCurrent.mergeActivity(remoteSession)]);
       remoteProjectsStore.pinSessionOrigin(item.hostDeviceId, item.sessionId);
     }
-    if (current()) { navigate('/cc-agent/' + encodeURIComponent(item.sessionId)); onOpenChange(false); }
+    const route = await resolveSessionRoute(item.sessionId, targetSession);
+    if (current()) { navigate(route); onOpenChange(false); }
   });
   useEffect(() => {
     if (!open || !isAuthenticated || !initialInvitation || invitation !== initialInvitation

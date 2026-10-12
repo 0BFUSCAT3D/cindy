@@ -1,5 +1,6 @@
 import { projectDraftSessionTitle } from './sessionTitle.js';
 import { collapseWorktreeDirForGrouping } from './worktreePaths.js';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from './cindyMakeFeature.js';
 
 /**
  * 任务搜索的跨端契约与纯合并函数。
@@ -155,6 +156,7 @@ export function remoteResultsFromFanoutPages(
   const byKey = new Map<string, ConversationSearchResultItem>();
   for (const page of pages) {
     for (const item of page.results) {
+      if (!CINDY_MAKE_ENABLED && isCindyMakeSource(item.session.source)) continue;
       if (!item.session.deviceLinkDeviceId) continue;
       const key = conversationSearchResultKey(item);
       const existing = byKey.get(key);
@@ -174,6 +176,7 @@ export function mergeConversationSearchFanout(
   const byKey = new Map<string, ConversationSearchResultItem>();
   for (const page of pages) {
     for (const item of page.results) {
+      if (!CINDY_MAKE_ENABLED && isCindyMakeSource(item.session.source)) continue;
       const key = conversationSearchResultKey(item);
       const existing = byKey.get(key);
       if (!existing || item.rankScore > existing.rankScore) {
@@ -224,6 +227,7 @@ export function filterResultsByRequestFilters(
   return {
     ...response,
     results: response.results.filter((item) => {
+      if (!CINDY_MAKE_ENABLED && isCindyMakeSource(item.session.source)) return false;
       if (!matchesWorkingDirSet(item.session.workingDir, allowedDirs)) return false;
       if (item.session.orcaRole === 'worker') return false;
       if (!matchesStatus(item.session.status, status)) return false;

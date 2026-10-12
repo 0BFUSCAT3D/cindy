@@ -1,3 +1,5 @@
+import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
+
 export const SESSION_SOURCES = [
   'desktop',
   'feishu',
@@ -83,8 +85,7 @@ export const DESKTOP_VISIBLE_SESSION_SOURCES: SessionSource[] = [
   'review',
   'shared',
   'plugin',
-  'cindy-make',
-  'cindy-make-merge',
+  ...(CINDY_MAKE_ENABLED ? (['cindy-make', 'cindy-make-merge'] as const) : []),
 ];
 
 export function normalizeSessionSource(source: unknown): SessionSource {

@@ -12,7 +12,7 @@ const state = vi.hoisted(() => ({ account: vi.fn(), host: vi.fn(), openLink: vi.
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, args?: { title?: string }) => key + (args?.title ? ':' + args.title : '') }) }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ dataOwnerId: 'guest', isAuthenticated: true, user: { name: 'Account Guest' } }) }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
-vi.mock('../remoteProjectsStore', () => ({ remoteProjectsStore: { getDeviceName: () => undefined, setDeviceSessions: state.setSessions, mergeDeviceSessions: state.mergeSessions, pinSessionOrigin: state.pin, captureSessionRead: state.captureRead, removeDevice: state.removeDevice, getMergedRemoteSessions: state.getSessions }, isRemoteDeviceMarkedDisconnected: () => false }));
+vi.mock('../remoteProjectsStore', () => ({ remoteProjectsStore: { getDeviceName: () => undefined, setDeviceSessions: state.setSessions, mergeDeviceSessions: state.mergeSessions, pinSessionOrigin: state.pin, captureSessionRead: state.captureRead, removeDevice: state.removeDevice, getVisibleMergedRemoteSessions: state.getSessions }, isRemoteDeviceMarkedDisconnected: () => false }));
 vi.mock('@/lib/remoteDataOwnerPushFence', () => ({ bindSharedTaskPushOwner: state.bind, resetRemoteDataOwnerPushFence: state.reset }));
 const owned = [
   { sharedTaskId: 'own-1', sessionId: 'local-task', ownerAccountId: 'guest', hostDeviceId: 'pc', revision: 1, title: 'First owned task', local: true },

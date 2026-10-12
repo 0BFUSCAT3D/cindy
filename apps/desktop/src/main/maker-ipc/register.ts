@@ -737,6 +737,7 @@ import {
 import { readXaiSubscriptionUsageSnapshotForDeviceLink, readClaudeSubscriptionUsageSnapshotForDeviceLink } from './usage.js';
 import { requireEnum, requireObject, throwIpcError } from '../utils/ipcValidate.js';
 import { applyPersistedCindyMakeMarker } from './cindyMakeSessionStart.js';
+import { assertCindyMakeEnabled, assertCindyMakeSessionAvailable } from '../cindy-make/featureGate.js';
 import { CINDY_MAKE_SESSION_SOURCE } from '../../shared/cindyMakeSession.js';
 import { cindyMakeManager } from '../cindy-make/manager.js';
 import { assertCindyMakeWorkspace, withCindyMakeProjectUse } from '../cindy-make/projectAccess.js';
@@ -6883,6 +6884,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   ipcMain.handle(MAKER_INVOKE.EXECUTE_DESKTOP_COMMAND, async (e, name: unknown, ctx: unknown) => {
     if (name === 'cindy-make-doctor' || name === 'cindy-make') {
       assertTrustedAppRendererEvent(e);
+      assertCindyMakeEnabled();
       if (ctx != null && (typeof ctx !== 'object' || Array.isArray(ctx)))
         throwIpcError('INVALID_PARAMS', 'Invalid Make context');
     }
@@ -7366,7 +7368,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   async function assertReviewExternalInputAllowed(sessionId: string): Promise<void> {
-    await assertReviewSessionExternalInputAllowed(sessionId, readSessionSource);
+    const source = await readSessionSource(sessionId);
+    assertCindyMakeSessionAvailable(source);
+    await assertReviewSessionExternalInputAllowed(sessionId, async () => source);
   }
 
   async function assertReviewSettingsUnlocked(sessionId: string): Promise<void> {
@@ -7792,6 +7796,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     didInjectProjectContext: boolean;
   }> {
     assertAccess?.();
+    await applyPersistedCindyMakeMarker(o, readSessionSource);
+    assertAccess?.();
     // 协同远端 Worker 的代理任务行只承接计槽与回报，真实任务在运行设备上，绝不在本机起 Agent。
     if (o.id && await orcaRemoteWorkersForHost?.isRemoteWorker(o.id)) {
       throw new Error('[PRECONDITION_FAILED] this Worker runs on another device and cannot start locally');
@@ -7834,7 +7840,6 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
     assertAccess?.();
     await applyPersistedReviewMode(o);
-    await applyPersistedCindyMakeMarker(o, readSessionSource);
     const didInjectOrcaInstructions = o.reviewMode === true ? false : applyOrcaInstructions(o);
     const didInjectProjectContext =
       o.reviewMode === true ? false : await applyProjectContextInjection(o);
@@ -10157,6 +10162,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
      */
     source?: { origin?: unknown; sourcePlugin?: unknown; persistedText?: string },
   ): Promise<SessionSendResult> {
+    assertCindyMakeSessionAvailable(await readSessionSource(session.id));
     const dispatchMergeTurn = prepareUpstreamMergeTurn(session.id);
     if (!session.remoteHostId && isCindyMakeWorktreePath(app.getPath('userData'), session.workDir)) {
       if (cindyMakeManager.isTaskPreparing(session.id))
@@ -15796,6 +15802,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
         .where(eq(sessions.id, sessionId))
         .limit(1);
+      assertCindyMakeSessionAvailable(botInput?.source);
       const blocked = botSessionInputBlockReason(botInput ?? null);
       if (args[2] && typeof args[2] === 'object') {
         if (botInput?.source === 'bot' && ['canonical', 'delegation', 'group'].includes(botInput.role ?? '')) {

@@ -77,6 +77,15 @@ const studio: ConversationSearchDeviceOrigin = {
 };
 
 describe('searchConversationsAcrossDevices', () => {
+  it('excludes Make hits returned by an older desktop before the result limit', async () => {
+    const indexed = indexedPage(['make', 'merge', 'ordinary']);
+    indexed.results[0].session.source = 'cindy-make';
+    indexed.results[1].session.source = 'cindy-make-merge';
+    const page = await searchConversationsAcrossDevices([studio], { query: 'needle', limit: 1 }, {
+      invoke: vi.fn(async () => indexed) as ConversationSearchInvoke, getCachedSessions: () => [],
+    });
+    expect(page.results.map(item => item.session.id)).toEqual(['ordinary']);
+  });
   it('stamps indexed hits and keeps one device failure from wiping the rest', async () => {
     const invoke = vi.fn(async (deviceId: string, channel: string) => {
       if (channel !== 'local-db:conversations:search') throw new Error(`unexpected ${channel}`);
@@ -208,6 +217,14 @@ describe('searchConversationsAcrossDevices', () => {
 });
 
 describe('searchCachedDeviceSessions', () => {
+  it('excludes Make titles and previews from the cache', () => {
+    const page = searchCachedDeviceSessions(studio, { query: 'needle', limit: 1 }, [
+      session({ id: 'make', title: 'needle', source: 'cindy-make' }),
+      session({ id: 'merge', title: 'Other', preview: 'needle', source: 'cindy-make-merge' }),
+      session({ id: 'ordinary', title: 'Needle notes', source: 'desktop' }),
+    ]);
+    expect(page.results.map(item => item.session.id)).toEqual(['ordinary']);
+  });
   it('matches the current device only', () => {
     const page = searchCachedDeviceSessions(
       studio,

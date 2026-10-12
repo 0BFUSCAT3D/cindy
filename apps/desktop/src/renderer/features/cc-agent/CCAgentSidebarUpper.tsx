@@ -44,6 +44,7 @@ import {
 import { useNavigate, useMatch, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -422,8 +423,20 @@ export function CCAgentSidebarUpper() {
   const filter = useSidebarFilter(hiddenProjectKeys, sidebarSettingsSnapshot);
   const includeArchived = filter.status;
   const sessionsHook = useCCSessions({ includeArchived });
-  const { sessions: allSessionsForAttention } = useCCSessions({ includeArchived: 'all' });
-  const remoteProjectSessions = useRemoteProjectSessions();
+  const { sessions: allSessionsForAttentionRaw } = useCCSessions({ includeArchived: 'all' });
+  const allSessionsForAttention = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? allSessionsForAttentionRaw
+      : allSessionsForAttentionRaw.filter((session) => !isCindyMakeSource(session.source)),
+    [allSessionsForAttentionRaw],
+  );
+  const remoteProjectSessionsRaw = useRemoteProjectSessions();
+  const remoteProjectSessions = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? remoteProjectSessionsRaw
+      : remoteProjectSessionsRaw.filter((session) => !isCindyMakeSource(session.source)),
+    [remoteProjectSessionsRaw],
+  );
   const remoteDevices = useRemoteDevices();
   const selectedMachineId = useEffectiveSelectedMachineId();
   const searchProjectSessions = useMemo(
@@ -571,6 +584,7 @@ export function CCAgentSidebarUpper() {
   }, [filter.status, remoteDevices, selectedMachineId]);
   const sessionsWithRemote = useMemo(
     () => selectVisibleSessions(sessionsHook.sessions, remoteProjectSessions, selectedMachineId)
+      .filter((session) => CINDY_MAKE_ENABLED || !isCindyMakeSource(session.source))
       .filter(session => !session.deviceLinkDeviceId || !isSharedTaskPeer(session.deviceLinkDeviceId)),
     [sessionsHook.sessions, remoteProjectSessions, selectedMachineId],
   );
@@ -850,7 +864,19 @@ function ExpandedView({
   const { t, i18n } = useTranslation();
   const location = useLocation();
   const localPlatform = window.electronAPI.platform;
-  const { sessions, refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
+  const sessions = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? sessionsHook.sessions
+      : sessionsHook.sessions.filter((session) => !isCindyMakeSource(session.source)),
+    [sessionsHook.sessions],
+  );
+  const visibleRemoteSessionsForNotification = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? remoteSessionsForNotification
+      : remoteSessionsForNotification.filter((session) => !isCindyMakeSource(session.source)),
+    [remoteSessionsForNotification],
+  );
+  const { refreshSessions, patchLocal, effectiveIncludeArchived } = sessionsHook;
   const {
     hiddenProjectKeys,
     setProjectHidden,
@@ -1127,8 +1153,8 @@ function ExpandedView({
   // 不在 sessionsRef 里。保留同步查找和原有兜底，避免标题解析影响通知发送。
   const allSessionsForNotificationRef = useRef(allSessionsForAttention);
   allSessionsForNotificationRef.current = allSessionsForAttention;
-  const remoteSessionsForNotificationRef = useRef(remoteSessionsForNotification);
-  remoteSessionsForNotificationRef.current = remoteSessionsForNotification;
+  const remoteSessionsForNotificationRef = useRef(visibleRemoteSessionsForNotification);
+  remoteSessionsForNotificationRef.current = visibleRemoteSessionsForNotification;
   // 通知文案里的「尚未起名」兜底。走 ref 与 sessionsRef 同款:fireSessionNotification
   // 是 `[]` 依赖的稳定回调,直接闭包 t 会钉住首次渲染的语言。
   const unnamedLabelRef = useRef('');
@@ -1290,7 +1316,13 @@ function ExpandedView({
   // device-link 跨设备远程控制:被控设备的会话(内存层,已打 deviceLinkDeviceId 标记)
   // 与本地会话一视同仁并入同一份列表 → groupSessions 自动归到独立 device: 远程项目。
   // 远端会话不在本地 DB,故走独立 store,不污染 sessionsStore / 本地链路。
-  const remoteProjectSessions = useRemoteProjectSessions();
+  const remoteProjectSessionsRaw = useRemoteProjectSessions();
+  const remoteProjectSessions = useMemo(
+    () => CINDY_MAKE_ENABLED
+      ? remoteProjectSessionsRaw
+      : remoteProjectSessionsRaw.filter((session) => !isCindyMakeSource(session.source)),
+    [remoteProjectSessionsRaw],
+  );
   // 机器切换栏选中机器后整体过滤:本机 → 只本地会话;远程 → 只该机器会话。
   // 过滤在源头做,下游 grouping / pinned / projects / dialogues / date-grouped / search 自动继承。
   const selectedMachineId = useEffectiveSelectedMachineId();

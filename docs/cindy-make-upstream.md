@@ -1,5 +1,16 @@
 # Cindy Make 上游 PR 查询
 
+## 当前可用性（2026-10-12）
+
+按用户裁决，Cindy Make 对所有用户关闭：桌面与手机不展示标签、设置、创建入口、
+制作任务或相关搜索结果；旧链接不能打开制作界面，已有制作与上游合并任务不能继续执行。
+主进程同时拒绝源码准备、生成、测试、版本切换和相关命令。已有源码、任务历史与个人版文件保留。
+
+共享开关见 [cindyMakeFeature](../packages/maker-shared/src/cindyMakeFeature.ts)，
+执行边界见 [featureGate](../apps/desktop/src/main/cindy-make/featureGate.ts) 与
+[回归测试](../apps/desktop/src/main/maker-ipc/__tests__/cindyMakeFeatureGate.test.ts)。
+下文记录保留实现的行为，当前不作为开放入口的依据。
+
 查询目标是与用户需求相关、但当前运行的 Cindy 尚未确认包含的 PR，不是全部 Issue，
 也不是仅查询未合并或未发布内容。关键词命中只表示可能相关，不保证满足需求。
 

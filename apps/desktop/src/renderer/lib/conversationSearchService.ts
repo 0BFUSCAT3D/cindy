@@ -222,7 +222,7 @@ export function searchConversations(
       window.electronAPI.deviceLink.invoke(deviceId, channel, args),
     listCachedRemoteSessions: (deviceId) =>
       remoteProjectsStore
-        .getMergedRemoteSessions()
+        .getVisibleMergedRemoteSessions()
         .filter((session) => session.deviceLinkDeviceId === deviceId),
   });
 }

@@ -136,6 +136,26 @@ function pending(kind: string, requestId?: string, persistId?: string): PendingI
 describe('remoteSessionStore', () => {
   beforeEach(() => remoteSessionStore.clear());
 
+  it('keeps Make mirrors for transport while excluding them from visible session snapshots', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [
+      session('make', { source: 'cindy-make' }),
+      session('merge', { source: 'cindy-make-merge' }),
+      session('ordinary', { source: 'desktop' }),
+    ]);
+    expect(remoteSessionStore.getSessions()).toHaveLength(3);
+    expect(remoteSessionStore.getSessionDeviceId('make')).toBe('dev-1');
+    const visible = remoteSessionStore.getVisibleSessions();
+    expect(visible.map(item => item.id)).toEqual(['ordinary']);
+    remoteSessionStore.applySessionPatch('dev-1', 'make', { totalCostUsd: 1 });
+    expect(remoteSessionStore.getVisibleSessions()).toBe(visible);
+    remoteSessionStore.applySessionPatch('dev-1', 'ordinary', { totalCostUsd: 2 });
+    expect(remoteSessionStore.getVisibleSessions()[0].totalCostUsd).toBe(2);
+    remoteSessionStore.applySessionPatch('dev-1', 'ordinary', { source: 'cindy-make-merge' });
+    expect(remoteSessionStore.getVisibleSessions()).toEqual([]);
+    remoteSessionStore.clear();
+    expect(remoteSessionStore.getVisibleSessions()).toEqual([]);
+  });
+
   it('releases a large persisted tool input when the matching result is appended', () => {
     remoteSessionStore.setMessages('s1', [{
       ...message('tool-use', 's1'),

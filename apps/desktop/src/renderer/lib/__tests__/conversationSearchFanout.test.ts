@@ -283,6 +283,16 @@ describe('shouldReleaseConversationSearchLock', () => {
 });
 
 describe('merge and stamp', () => {
+  it('excludes hidden Make tasks from indexed and reused remote results before limiting', () => {
+    const page = response([
+      result('make', 100, { source: 'cindy-make', deviceLinkDeviceId: 'dev-a' }),
+      result('merge', 99, { source: 'cindy-make-merge', deviceLinkDeviceId: 'dev-a' }),
+      result('ordinary', 1, { source: 'desktop', deviceLinkDeviceId: 'dev-a' }),
+    ]);
+    expect(mergeConversationSearchFanout([page], 1).results.map(item => item.session.id)).toEqual(['ordinary']);
+    expect(remoteResultsFromFanoutPages([page]).map(item => item.session.id)).toEqual(['ordinary']);
+    expect(filterResultsByRequestFilters(page, {}).results.map(item => item.session.id)).toEqual(['ordinary']);
+  });
   it('keeps same-id hits from different devices and stamps origin', () => {
     const remote = stampRemoteSearchResponse(response([result('same', 10)]), {
       deviceId: 'dev-a',
@@ -301,6 +311,15 @@ describe('merge and stamp', () => {
 });
 
 describe('searchCachedSessionsByTitle', () => {
+  it('excludes both Make sources from cached titles even if explicitly requested', () => {
+    const rows = [
+      session({ id: 'make', title: 'needle', source: 'cindy-make' }),
+      session({ id: 'merge', title: 'needle', source: 'cindy-make-merge' }),
+      session({ id: 'ordinary', title: 'Needle notes', source: 'desktop' }),
+    ];
+    expect(searchCachedSessionsByTitle(rows, { query: 'needle', limit: 1 }).results.map(item => item.session.id)).toEqual(['ordinary']);
+    expect(searchCachedSessionsByTitle(rows, { query: 'needle', filters: { sessionIds: ['make', 'merge'] } }).results).toEqual([]);
+  });
   it('excludes active and archived companions before ranking and limiting title matches', () => {
     const rows = [
       session({ id: 'bot-active', title: 'needle', source: 'bot' }),

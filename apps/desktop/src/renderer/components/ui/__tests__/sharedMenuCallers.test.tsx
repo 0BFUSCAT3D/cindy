@@ -115,7 +115,7 @@ describe('right sidebar · add tab', () => {
       'rightSidebar.tabs.kinds.fileBrowser',
     );
     await chooseByKeyboard(1);
-    expect(onAdd).toHaveBeenCalledWith('cindy-make');
+    expect(onAdd).toHaveBeenCalledWith('review');
     expect(screen.queryByRole('menu')).toBeNull();
     // Esc / select returns focus to the "+" button.
     expect(document.activeElement).toBe(add);
