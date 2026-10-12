@@ -11,10 +11,11 @@ import {
   VStack,
 } from "@expo/ui/swift-ui";
 import { Folder, Monitor, Pin, type LucideIcon } from "lucide-react-native";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 import { Text } from "@/components/AppText";
 import { QuietSyncIndicator } from "@/components/QuietSyncIndicator";
 import { TaskTagDots } from './TaskTags';
+import { useDoubleTap } from './useDoubleTap';
 import {
   accessibilityHint,
   accessibilityElement,
@@ -31,22 +32,28 @@ import {
 import {
   iconSize,
   iconStroke,
-  radius,
+  lineHeight,
   spacing,
   typeScale,
   fontWeight,
   useTheme,
 } from "@/theme";
-import { BlurBackdrop } from "./BlurBackdrop";
+import { BlurBackdrop, FLOATING_CHROME_BLUR_INTENSITY } from "./BlurBackdrop";
+import { edgeBlurMask } from "./edgeBlurMask";
 import type {
   SessionHeaderNativeActionsProps,
   SessionHeaderNativeBackProps,
   SessionHeaderNativeTitleProps,
 } from "./SessionHeaderNativeControls";
 
-/** A stationary, feathered backdrop: scrolling content passes beneath it. */
-export function SessionHeaderNativeBlur({ height, edge = 'top', inset = 0 }: { height: number; edge?: 'top' | 'bottom'; inset?: number }) {
+/**
+ * A stationary, feathered backdrop: scrolling content passes beneath it.
+ * `height` is the chrome area; the blur is solid over most of it and eases out
+ * across its content-side edge (see edgeBlurMask).
+ */
+export function SessionHeaderNativeBlur({ height: chromeHeight, edge = 'top', inset = 0 }: { height: number; edge?: 'top' | 'bottom'; inset?: number }) {
   const { mode } = useTheme();
+  const mask = edgeBlurMask(chromeHeight, edge);
   return (
     <View
       pointerEvents="none"
@@ -56,7 +63,7 @@ export function SessionHeaderNativeBlur({ height, edge = 'top', inset = 0 }: { h
         ...(edge === 'top' ? { top: inset } : { bottom: inset }),
         left: 0,
         right: 0,
-        height,
+        height: mask.height,
         zIndex: 9,
       }}
     >
@@ -64,7 +71,7 @@ export function SessionHeaderNativeBlur({ height, edge = 'top', inset = 0 }: { h
         <Mask modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity })]}>
           <RNHostView>
             <View style={{ flex: 1 }}>
-              <BlurBackdrop intensity={55} overlayColor="transparent" />
+              <BlurBackdrop intensity={FLOATING_CHROME_BLUR_INTENSITY} overlayColor="transparent" />
             </View>
           </RNHostView>
           <Mask.Content>
@@ -72,10 +79,9 @@ export function SessionHeaderNativeBlur({ height, edge = 'top', inset = 0 }: { h
               modifiers={[
                 foregroundStyle({
                   type: "linearGradient",
-                  // Mask colors encode alpha only; they never tint the content.
-                  colors: edge === 'top' ? ["black", "transparent"] : ["transparent", "black"],
-                  startPoint: { x: 0.5, y: 0 },
-                  endPoint: { x: 0.5, y: 1 },
+                  colors: mask.colors,
+                  startPoint: mask.startPoint,
+                  endPoint: mask.endPoint,
                 }),
               ]}
             />
@@ -89,16 +95,16 @@ export function SessionHeaderNativeBlur({ height, edge = 'top', inset = 0 }: { h
 export function SessionHeaderNativeTitle({ title,
   tags,
   onTagsPress,
+  onTitleDoubleTap,
   pinned, syncing, syncingImmediately, notice }: SessionHeaderNativeTitleProps) {
   const { colors } = useTheme();
+  const handleTitlePress = useDoubleTap(onTitleDoubleTap);
   const style = {
     alignSelf: 'center' as const,
     maxWidth: '100%' as const,
-    borderRadius: radius.pill,
     minHeight: 44,
     justifyContent: "center" as const,
-    paddingHorizontal: spacing.md,
-    overflow: "hidden" as const,
+    paddingHorizontal: spacing.xs / 2,
   };
   const label = (
     <Text
@@ -107,6 +113,7 @@ export function SessionHeaderNativeTitle({ title,
       style={{
         color: colors.textPrimary,
         fontSize: typeScale.body,
+        lineHeight: lineHeight.body,
         fontWeight: fontWeight.semibold,
         textAlign: "center",
         flexShrink: 1,
@@ -119,26 +126,28 @@ export function SessionHeaderNativeTitle({ title,
   );
   return (
     <View style={{ flex: 1, minWidth: 0, justifyContent: 'center' }}>
-      <View style={style}>
-        <BlurBackdrop intensity={20} overlayColor={colors.surfaceTranslucent} />
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs }}>
+      {/* 双击标题改名;不参与读屏焦点,读屏用户从「任务详情」进入重命名。 */}
+      <Pressable accessible={false} disabled={!onTitleDoubleTap} onPress={handleTitlePress}
+        style={style} testID="session.titleArea">
+        {/* The title sits directly on the bar: no capsule material behind it. */}
+        <View style={{ flexDirection: "row", minWidth: 0, alignItems: "center", justifyContent: "center", gap: spacing.xs }}>
           {pinned ? <Pin color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} /> : null}
           {label}
           <TaskTagDots
             tags={tags}
             maxVisible={7}
-            surfaceColor={colors.surfaceTranslucent}
+            surfaceColor={colors.surface}
             onPress={onTagsPress}
           />
           <QuietSyncIndicator active={syncing} immediate={syncingImmediately} />
         </View>
         {notice ? (
           <Text numberOfLines={1} testID="session.headerNotice"
-            style={{ color: colors.textSecondary, fontSize: typeScale.micro, textAlign: "center" }}>
+            style={{ color: colors.textSecondary, fontSize: typeScale.micro, lineHeight: lineHeight.micro, textAlign: "center" }}>
             {notice}
           </Text>
         ) : null}
-      </View>
+      </Pressable>
     </View>
   );
 }
@@ -160,6 +169,7 @@ export function SessionHeaderNativeActions({
   onDetails,
   onDesktop,
   onAction,
+  detailsOnly = false,
 }: SessionHeaderNativeActionsProps) {
   const { colors, mode } = useTheme();
   const groupStyle = useNativeGlassGroupStyle();
@@ -173,12 +183,13 @@ export function SessionHeaderNativeActions({
       colorScheme={mode}
       seedColor={colors.textPrimary}
       ignoreSafeArea="all"
-      style={{ width: navigationChrome.target * 3, height: navigationChrome.target }}
+      style={{ width: navigationChrome.target * (detailsOnly ? 1 : 3), height: navigationChrome.target }}
     >
       <HStack
         spacing={0}
         modifiers={groupStyle}
       >
+        {detailsOnly ? null : <>
         <Button
           onPress={onDesktop}
           testID="session.remoteDesktop"
@@ -204,6 +215,7 @@ export function SessionHeaderNativeActions({
         >
           <SessionHeaderIcon icon={Folder} color={colors.textPrimary} />
         </Button>
+        </>}
         <Button
           label={moreLabel}
           systemImage="ellipsis"

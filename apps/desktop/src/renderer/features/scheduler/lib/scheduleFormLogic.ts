@@ -46,6 +46,25 @@ export function isExplicitScheduleModelUnavailable(
 }
 
 /**
+ * First required template parameter the scheduler engine would reject.
+ * Empty string is not "provided" and falls back to a non-empty default, matching
+ * applyTemplateParams. Whitespace is provided: the engine inserts it as-is.
+ */
+export function missingRequiredTemplateParamLabel(
+  template: Pick<ScheduleTemplate, 'parameters'>,
+  values: Record<string, string>,
+): string | null {
+  for (const parameter of template.parameters ?? []) {
+    if (!parameter.required) continue;
+    const raw = values[parameter.key];
+    const provided = Object.prototype.hasOwnProperty.call(values, parameter.key) && raw !== '';
+    const hasDefault = parameter.default !== undefined && parameter.default !== '';
+    if (!provided && !hasDefault) return parameter.label || parameter.key;
+  }
+  return null;
+}
+
+/**
  * Resolve the provider represented by the schedule picker. An empty stored
  * providerId means "use the effective source", not "use the utility fallback
  * chain", so generation must materialize that source before crossing IPC.
@@ -367,7 +386,11 @@ export function sessionAgentKindToScheduleAgentKind(
 }
 
 interface TemplateAgentDefaults {
-  getDefaultModel: (agentKind: ScheduleFormState['agentKind']) => string;
+  /** 目标 agent 在给定来源内的默认模型及与之成对的来源(null = 跟随原生默认)。 */
+  getDefaultRoute: (
+    agentKind: ScheduleFormState['agentKind'],
+    preferredProviderId?: string | null,
+  ) => { model: string; providerId: string | null };
   getAgentPrefs: (
     agentKind: ScheduleFormState['agentKind'],
   ) => Pick<ScheduleFormState, 'providerId' | 'effort' | 'fastMode'>;
@@ -384,11 +407,22 @@ export function resolveTemplateAgentFields(
   const templateModel = typeof template.model === 'string' ? template.model.trim() : '';
   const templateProviderId = typeof template.providerId === 'string' ? template.providerId.trim() : undefined;
   const templateEffort = template.effort && isEffortValue(template.effort) ? template.effort : undefined;
+  // 模板没给模型、换了 agent 时用默认路由:限定在模板 / 任务记忆的来源内,模型与来源整对应用。
+  const defaultRoute =
+    agentChanged && !templateModel
+      ? defaults.getDefaultRoute(agentKind, templateProviderId ?? (agentPrefs?.providerId || null))
+      : null;
 
   return {
     agentKind,
-    model: templateModel || (agentChanged ? defaults.getDefaultModel(agentKind) : form.model),
-    providerId: templateProviderId ?? (agentChanged ? (agentPrefs?.providerId ?? '') : form.providerId),
+    model: templateModel || (agentChanged ? (defaultRoute?.model ?? '') : form.model),
+    providerId:
+      templateProviderId ??
+      (agentChanged
+        ? defaultRoute
+          ? (defaultRoute.providerId ?? '')
+          : (agentPrefs?.providerId ?? '')
+        : form.providerId),
     effort: templateEffort ?? (agentChanged ? (agentPrefs?.effort ?? '') : form.effort),
     fastMode: template.fastMode ?? (agentChanged ? (agentPrefs?.fastMode ?? false) : form.fastMode),
   };

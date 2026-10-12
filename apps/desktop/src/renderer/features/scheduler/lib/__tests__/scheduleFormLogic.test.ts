@@ -16,7 +16,7 @@
  * @vitest-environment node
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Schedule, ScheduleTemplate } from '@cindy/maker-scheduler';
 import type { ProviderView } from '@cindy/model-providers';
 
@@ -31,6 +31,7 @@ import {
   deriveRunMode,
   hasRealBinding,
   isExplicitScheduleModelUnavailable,
+  missingRequiredTemplateParamLabel,
   isFollowingSessionSelection,
   needsBoundSessionGenerationRouteResolution,
   resolveScheduleGenerationProviderId,
@@ -650,8 +651,11 @@ describe('hasRealBinding / agentKind 映射', () => {
 
 describe('resolveTemplateAgentFields', () => {
   const defaults = {
-    getDefaultModel: (agentKind: ScheduleFormState['agentKind']) =>
-      agentKind === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+    // 与真实实现同口径:默认路由限定在给定来源内并整对返回。
+    getDefaultRoute: (agentKind: ScheduleFormState['agentKind'], preferred?: string | null) => ({
+      model: agentKind === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+      providerId: preferred ?? null,
+    }),
     getAgentPrefs: (agentKind: ScheduleFormState['agentKind']) =>
       agentKind === 'codex'
         ? { providerId: 'openai', effort: 'high' as const, fastMode: true }
@@ -678,6 +682,26 @@ describe('resolveTemplateAgentFields', () => {
       effort: 'medium',
       fastMode: false,
     });
+  });
+
+  it('跨 agent 用默认路由时整对应用,并限定在任务记忆 / 模板的来源内', () => {
+    const getDefaultRoute = vi.fn((_agent: string, preferred?: string | null) =>
+      preferred === 'xd'
+        ? { model: 'claude-sonnet-5', providerId: 'xd' }
+        : { model: 'claude-opus-5-5', providerId: 'anthropic' });
+    const withRoute = {
+      getDefaultRoute,
+      getAgentPrefs: () => ({ providerId: '', effort: '' as const, fastMode: false }),
+    };
+    const form = makeForm({ agentKind: 'codex', model: 'gpt-5.5', providerId: 'openai' });
+    expect(resolveTemplateAgentFields(form, makeTemplate({ agentKind: 'claude-code' }), withRoute))
+      .toMatchObject({ model: 'claude-opus-5-5', providerId: 'anthropic' });
+    // 任务只记了来源(没记模型):默认模型必须由这个来源提供。
+    expect(resolveTemplateAgentFields(form, makeTemplate({ agentKind: 'claude-code' }), {
+      ...withRoute,
+      getAgentPrefs: () => ({ providerId: 'xd', effort: '' as const, fastMode: false }),
+    })).toMatchObject({ model: 'claude-sonnet-5', providerId: 'xd' });
+    expect(getDefaultRoute).toHaveBeenLastCalledWith('claude-code', 'xd');
   });
 
   it('模板显式给 model/provider/effort/fast 时优先使用模板值', () => {
@@ -933,5 +957,37 @@ describe('script lifecycle serialization', () => {
     expect(input.workingDir).toBe('/watcher');
     expect(input.preRunHook?.command).toBe('node /watcher/gate.mjs');
     expect(buildScheduleInput(makeForm({ executionMode: 'script', targetSessionId: '__pending__' })).targetSessionId).toBeUndefined();
+  });
+});
+
+describe('missingRequiredTemplateParamLabel', () => {
+  const radar = {
+    parameters: [
+      { key: 'topic', label: '关注主题', type: 'string', required: true },
+    ],
+  } as ScheduleTemplate;
+  const competitors = {
+    parameters: [
+      { key: 'competitors', label: '竞品名单', type: 'string', required: true },
+    ],
+  } as ScheduleTemplate;
+
+  it('returns the visible label when a required parameter is empty', () => {
+    expect(missingRequiredTemplateParamLabel(radar, {})).toBe('关注主题');
+    expect(missingRequiredTemplateParamLabel(competitors, { competitors: '   ' })).toBeNull();
+  });
+
+  it('accepts a filled value or a non-empty default', () => {
+    expect(missingRequiredTemplateParamLabel(radar, { topic: 'AI Agent' })).toBeNull();
+    expect(missingRequiredTemplateParamLabel({
+      parameters: [
+        { key: 'topic', label: '关注主题', type: 'string', required: true, default: 'AI' },
+      ],
+    } as ScheduleTemplate, {})).toBeNull();
+    expect(missingRequiredTemplateParamLabel({
+      parameters: [
+        { key: 'suite', label: 'Suite', type: 'string', required: true, default: 'full' },
+      ],
+    } as ScheduleTemplate, { suite: '' })).toBeNull();
   });
 });

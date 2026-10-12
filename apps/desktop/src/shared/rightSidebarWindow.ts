@@ -40,6 +40,14 @@ export interface RsbWindowContext {
 /** main → 子窗口的命令推送(如主窗终端快捷键转发 / detached RSB 内定位文件)。 */
 export type RsbWindowCommand =
   | { type: 'open-routines-tab'; sessionId: string; botId: string }
+  /** 伙伴主任务页的工作台初始化或用户显式打开。 */
+  | {
+      type: 'open-bot-workbench-tab';
+      sessionId: string;
+      botId: string;
+      /** True is an explicit header click; absent keeps passive first-visit behavior. */
+      focusTab?: boolean;
+    }
   | { type: 'open-terminal'; sessionId: string }
   | { type: 'toggle-review-tab'; sessionId: string }
   | { type: 'open-web-browser'; sessionId: string; url: string }

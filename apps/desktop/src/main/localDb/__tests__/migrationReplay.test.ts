@@ -103,6 +103,20 @@ function columnNames(db: Database.Database, tableName: string): string[] {
 }
 
 describeMigrationReplay('migration replay', () => {
+  it.each(['missing', 'legacy', 'partial'])('replays remote report persistence with %s Worker schema', (shape) => {
+    const { db, cleanup } = createTempDb();
+    try {
+      db.exec("CREATE TABLE migration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE migration_history (seq INTEGER PRIMARY KEY, file_name TEXT NOT NULL, content_hash TEXT NOT NULL, applied_at INTEGER NOT NULL)");
+      if (shape !== 'missing') db.exec(`CREATE TABLE orca_workers (id TEXT PRIMARY KEY${shape === 'partial' ? ', pending_remote_report TEXT' : ''}); INSERT INTO orca_workers (id) VALUES ('worker-1');`);
+      const result = runMigrationReplay(db, { drizzleDir: drizzleDir(), currentVersion: 124 });
+      expect(result.applied.map((migration) => migration.seq)).toEqual([125]);
+      expect(tableExists(db, 'orca_remote_opens')).toBe(true);
+      if (shape !== 'missing') {
+        expect(columnNames(db, 'orca_workers')).toEqual(expect.arrayContaining(['pending_remote_report', 'remote_stop_confirmed_at']));
+        expect(db.prepare('SELECT id FROM orca_workers').all()).toEqual([{ id: 'worker-1' }]);
+      }
+    } finally { cleanup(); }
+  });
   it('commits the complete fresh schema and task presets in one outer transaction', () => {
     const { db, cleanup } = createTempDb();
     try {
@@ -227,6 +241,15 @@ describeMigrationReplay('migration replay', () => {
       expect(tableExists(db, 'wechat_outbox')).toBe(true);
       expect(tableExists(db, 'wechat_file_attachments')).toBe(true);
       expect(tableExists(db, 'schedule_session_latest_runs')).toBe(true);
+      expect(tableExists(db, 'bot_groups')).toBe(true);
+      expect(tableExists(db, 'bot_group_members')).toBe(true);
+      expect(tableExists(db, 'bot_group_messages')).toBe(true);
+      expect(indexExists(db, 'uniq_bot_group_messages_group_sequence')).toBe(true);
+      expect(indexExists(db, 'uniq_bot_group_messages_group_client')).toBe(true);
+      expect(indexExists(db, 'idx_bot_group_members_bot')).toBe(true);
+      expect(tableExists(db, 'bot_group_plans')).toBe(true);
+      expect(tableExists(db, 'bot_group_plan_steps')).toBe(true);
+      expect(indexExists(db, 'idx_bot_group_plans_group_created')).toBe(true);
       expect(indexExists(db, 'idx_messages_active_error_tail')).toBe(true);
       expect(indexExists(db, 'idx_schedule_runs_running_schedule')).toBe(true);
       expect(indexExists(db, 'idx_schedule_runs_running_heartbeat')).toBe(true);

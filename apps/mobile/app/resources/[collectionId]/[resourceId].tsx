@@ -1,6 +1,7 @@
+import { randomUUID } from 'expo-crypto';
 import { useAuth } from '@/auth/AuthContext';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -11,20 +12,27 @@ import { startFocusedTopicSubscription } from '@/device-link/focusedTopicSubscri
 import { Text } from '@/components/AppText';
 import { MainWindowActionButton, MainWindowEmptyState } from '@/components/MobilePrimitives';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
-import { getRemoteResource, invokeRemoteResourceAction, type RemoteResourceHostTarget } from '@/device-link/remoteResources';
+import { getRemoteResource, invokeRemoteResourceAction, isMobileRemoteCollectionSupported, type RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { formatRemoteError } from '@/device-link/remoteStatus';
 import { SimpleStackHeader, simpleScreenSafeAreaEdges } from '@/platform/chrome';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import type { RemoteSession } from '@/session/types';
-import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
-import { iconSize, spacing, typeScale } from '@/theme/tokens';
+import { fontWeight, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { iconSize, lineHeight, spacing, typeScale } from '@/theme/tokens';
 import { goBackGuarded } from '@/utils/backGuard';
+import { CompanionProfileSheet } from '@/session/CompanionProfileSheet';
 
 function firstParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
 export default function RemoteResourceResolverScreen() {
+  const params = useLocalSearchParams<{ collectionId?: string | string[] }>();
+  if (!isMobileRemoteCollectionSupported(firstParam(params.collectionId))) return <Redirect href="/devices" />;
+  return <RemoteResourceResolverScreenContent />;
+}
+
+function RemoteResourceResolverScreenContent() {
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
@@ -54,13 +62,26 @@ export default function RemoteResourceResolverScreen() {
   const [error, setError] = useState<string | null>(null);
   const [preparation, setPreparation] = useState<{ binding: string; resource: RemoteResource; stage: string } | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileOpenRef = useRef(false);
+  const pendingHistory = useRef<string | null>(null);
+  useEffect(() => {
+    profileOpenRef.current = false;
+    pendingHistory.current = null;
+    setProfileOpen(false);
+  }, [binding, deviceId, resourceId]);
+  // Scoped to the resource binding so another teammate never inherits this notice.
+  const [retryFailed, setRetryFailed] = useState<string | null>(null);
   const retryLock = useRef(false);
   const visiblePreparation = preparation?.binding === binding ? preparation : null;
+  const historyTarget = visiblePreparation?.resource.links.find(link => link.rel === 'conversation')?.target as RemoteSessionLinkTarget | undefined;
+  const historySessionId = historyTarget?.kind === 'session' && typeof historyTarget.sessionId === 'string' ? historyTarget.sessionId : null;
   const [attempt, setAttempt] = useState(0);
   const resolveGenerationRef = useRef(0);
 
   const resolveConversation = useCallback(async () => {
     const generation = ++resolveGenerationRef.current;
+    if (profileOpenRef.current) return true;
     setError(null);
     if (!collectionId || !resourceId || !resourceKind || !deviceId) {
       setError(t('devices.resources.noHosts'));
@@ -75,13 +96,14 @@ export default function RemoteResourceResolverScreen() {
         kind: resourceKind,
       }, i18n.language);
       if (resolveGenerationRef.current !== generation || currentBinding.current !== binding) return;
+      // Do not navigate away from an in-progress model edit when preparation recovers.
+      if (profileOpenRef.current) return true;
       const invitation = response.blocks?.find(block => block.id === 'invitation' && block.primitive === 'status');
       const stage = (invitation?.data as { stage?: string } | undefined)?.stage;
       if (resourceKind === 'bot' && stage && stage !== 'ready') {
         setPreparation({ binding, resource: response, stage });
         return stage !== 'failed';
       }
-      setPreparation(null);
       const link = response.links.find((item) => item.rel === 'conversation');
       const target = link?.target as RemoteSessionLinkTarget | undefined;
       if (!target || target.kind !== 'session' || typeof target.sessionId !== 'string') {
@@ -90,9 +112,11 @@ export default function RemoteResourceResolverScreen() {
       }
       const session = await invoke<RemoteSession>(deviceId, 'local-db:sessions:get', [target.sessionId]);
       if (resolveGenerationRef.current !== generation || currentBinding.current !== binding) return;
+      if (profileOpenRef.current) return true;
       if (!session || session.id !== target.sessionId || (resourceKind === 'bot' && session.source !== 'bot')) throw new Error(t('devices.resources.noConversation'));
       const existingOrigin = remoteSessionStore.getSessionDeviceId(session.id);
       if (existingOrigin && existingOrigin !== deviceId) throw new Error(t('devices.resources.noConversation'));
+      setPreparation(null);
       remoteSessionStore.upsertDeviceSession(deviceId, deviceName, session);
       router.replace({
         pathname: '/sessions/[sessionId]',
@@ -106,6 +130,7 @@ export default function RemoteResourceResolverScreen() {
         },
       });
     } catch (cause) {
+      if (profileOpenRef.current) return true;
       if (resolveGenerationRef.current === generation && currentBinding.current === binding) setError(formatRemoteError(cause));
     }
   }, [binding, collectionId, deviceId, deviceName, host, i18n.language, invoke, resourceId, resourceKind, router, t]);
@@ -141,12 +166,13 @@ export default function RemoteResourceResolverScreen() {
   const retryInvitation = async () => {
     const action = visiblePreparation?.resource.actions?.find(item => !item.disabled);
     if (!action || retryLock.current) return;
-    retryLock.current = true; setRetrying(true);
+    retryLock.current = true; setRetrying(true); setRetryFailed(null);
     try {
       await invokeRemoteResourceAction(invoke, host, { collectionId, resourceRef: visiblePreparation!.resource.ref, actionId: action.id }, i18n.language);
       if (currentBinding.current === binding) setAttempt(value => value + 1);
-    } catch (cause) {
-      if (currentBinding.current === binding) setError(formatRemoteError(cause));
+    } catch {
+      // Keep the preparation (and its completed work) visible; only this retry failed.
+      if (currentBinding.current === binding) setRetryFailed(binding);
     } finally { retryLock.current = false; setRetrying(false); }
   };
 
@@ -178,11 +204,22 @@ export default function RemoteResourceResolverScreen() {
         <View style={styles.center} testID="remoteResourceResolver.preparation">
           <RemoteCompanionAvatar avatar={visiblePreparation.resource.display.avatar} deviceId={deviceId} name={resolveRemoteText(visiblePreparation.resource.display.title, i18n.language)} online={status === 'online'} size={iconSize.glyph} />
           <Text style={styles.preparationTitle}>{t('devices.companions.invitation.waiting', { name: resolveRemoteText(visiblePreparation.resource.display.title, i18n.language) })}</Text>
-          {visiblePreparation.stage !== 'failed' && <ActivityIndicator color={colors.textSecondary} />}
-          <Text style={styles.muted}>{t(`devices.companions.invitation.${visiblePreparation.stage}`, { name: resolveRemoteText(visiblePreparation.resource.display.title, i18n.language) })}</Text>
-          {visiblePreparation.stage === 'failed' && visiblePreparation.resource.actions?.some(action => !action.disabled) && (
+          {/* Desktop BotInvitationWelcome: reassurance (or the failure) first, then the live stage. */}
+          <Text style={styles.muted}>{t(visiblePreparation.stage === 'failed' ? 'devices.companions.invitation.failed' : 'devices.companions.invitation.background')}</Text>
+          {visiblePreparation.stage !== 'failed' ? (
+            <View accessibilityLiveRegion="polite" style={styles.preparationStage} testID="remoteResourceResolver.preparationStage">
+              <ActivityIndicator color={colors.textSecondary} />
+              <Text style={styles.preparationStageText}>{t(`devices.companions.invitation.${visiblePreparation.stage === 'ready' ? 'welcome' : visiblePreparation.stage}`, { name: resolveRemoteText(visiblePreparation.resource.display.title, i18n.language) })}</Text>
+            </View>
+          ) : visiblePreparation.resource.actions?.some(action => !action.disabled) ? (
             <MainWindowActionButton action={{ label: retrying ? t('devices.resources.resolving') : t('devices.resources.retry'), onPress: () => { void retryInvitation(); }, testID: 'remoteResourceResolver.retryInvitation' }} />
-          )}
+          ) : null}
+          {retryFailed === binding ? <Text accessibilityRole="alert" style={styles.muted} testID="remoteResourceResolver.retryInvitationFailed">{t('devices.companions.invitation.retryFailed')}</Text> : null}
+          <MainWindowActionButton action={{
+            label: t('devices.companionProfile.settingsTitle'),
+            onPress: () => { profileOpenRef.current = true; setProfileOpen(true); },
+            testID: 'remoteResourceResolver.settings',
+          }} />
         </View>
       ) : (
         <View style={styles.center}>
@@ -190,6 +227,20 @@ export default function RemoteResourceResolverScreen() {
           <Text style={styles.muted}>{t('devices.resources.resolving')}</Text>
         </View>
       )}
+      {visiblePreparation ? <CompanionProfileSheet
+        visible={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onClosed={() => {
+          const sessionId = pendingHistory.current; pendingHistory.current = null;
+          profileOpenRef.current = false;
+          if (sessionId) router.push({ pathname: '/sessions/[sessionId]', params: { sessionId, deviceId, deviceName, resourceCollectionId: collectionId, resourceId, resourceKind, openSearch: '1', openSearchRequest: randomUUID() } });
+          else setAttempt(value => value + 1);
+        }}
+        onOpenSearch={historySessionId ? () => { pendingHistory.current = historySessionId; setProfileOpen(false); } : undefined}
+        resource={visiblePreparation.resource}
+        collectionId={collectionId} deviceId={deviceId} deviceName={deviceName} online={status === 'online'}
+        onDeleted={() => goBackGuarded(router)}
+      /> : null}
     </SafeAreaView>
   );
 }
@@ -198,6 +249,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   safeArea: { backgroundColor: colors.surface, flex: 1 },
   center: { alignItems: 'center', flex: 1, gap: spacing.lg, justifyContent: 'center', padding: spacing.xl },
   content: { flex: 1, gap: spacing.lg, justifyContent: 'center', padding: spacing.xl },
-  preparationTitle: { color: colors.textPrimary, fontSize: typeScale.title, textAlign: 'center' },
-  muted: { textAlign: 'center', color: colors.textSecondary, fontSize: typeScale.footnote },
+  preparationTitle: { color: colors.textPrimary, fontSize: typeScale.title, lineHeight: lineHeight.title, fontWeight: fontWeight.semibold, textAlign: 'center' },
+  muted: { textAlign: 'center', color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
+  preparationStage: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  preparationStageText: { color: colors.textPrimary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption },
 });

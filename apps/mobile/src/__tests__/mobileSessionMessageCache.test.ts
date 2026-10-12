@@ -18,6 +18,8 @@ vi.mock('@/session/messageCacheStorage', () => ({
     clear: vi.fn(async (prefix: string) => {
       for (const key of store.keys()) if (key.startsWith(`${prefix}.`)) store.delete(key);
     }),
+    migrateLegacy: vi.fn(async () => {}),
+    legacyKeys: vi.fn(async (prefix: string) => [...store.keys()].filter((key) => key.startsWith(`${prefix}.`))),
     multiRemove: vi.fn(async (keys: readonly string[]) => {
       for (const key of keys) store.delete(key);
     }),
@@ -64,6 +66,39 @@ function makeSession(id: string, patch: Partial<RemoteSession> = {}): RemoteSess
 }
 
 describe('mobileSessionMessageCache', () => {
+  it('migrates every legacy cache entry through the per-key queue, even before login', async () => {
+    const storage = (await import('@/session/messageCacheStorage')).messageCacheStorage;
+    const { migrateLegacySessionMessageCache } = await import('@/session/mobileSessionMessageCache');
+    store.set('xdt.mobileSessionMessageCache.v1.a', '[]');
+    store.set('xdt.mobileSessionMessageCache.v1.b', '[]');
+    store.set('unrelated', 'keep');
+    vi.mocked(storage.migrateLegacy).mockClear();
+    await migrateLegacySessionMessageCache();
+    expect(vi.mocked(storage.migrateLegacy).mock.calls.map(([key]) => key)).toEqual([
+      'xdt.mobileSessionMessageCache.v1.a', 'xdt.mobileSessionMessageCache.v1.b',
+    ]);
+    expect(storage.removeItem).not.toHaveBeenCalled();
+  });
+
+  it('a logout clear cancels legacy migrations still waiting in the queue', async () => {
+    const storage = (await import('@/session/messageCacheStorage')).messageCacheStorage;
+    const { migrateLegacySessionMessageCache, clearCachedSessionMessages } = await import('@/session/mobileSessionMessageCache');
+    store.set('xdt.mobileSessionMessageCache.v1.a', '[]');
+    let release!: () => void;
+    vi.mocked(storage.legacyKeys).mockImplementationOnce(async (prefix: string) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return [...store.keys()].filter((key) => key.startsWith(`${prefix}.`));
+    });
+    vi.mocked(storage.migrateLegacy).mockClear();
+    const migration = migrateLegacySessionMessageCache();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    const clearing = clearCachedSessionMessages();
+    release();
+    await Promise.all([migration, clearing]);
+    expect(storage.migrateLegacy).not.toHaveBeenCalled();
+    expect(store.has('xdt.mobileSessionMessageCache.v1.a')).toBe(false);
+  });
+
   it('logout waits for a migrating read and removes its late write', async () => {
     const storage = (await import('@/session/messageCacheStorage')).messageCacheStorage;
     const { getCachedSessionMessages, clearCachedSessionMessages } = await import('@/session/mobileSessionMessageCache');
@@ -142,6 +177,19 @@ describe('mobileSessionMessageCache', () => {
     expect(cached.map((m) => m.id)).toEqual(['a', 'b']);
     expect(cached[0].content).toBe('first');
     expect(cached[1].content).toBe('second');
+  });
+
+  it('merges list messages without losing earlier history and serializes rapid updates', async () => {
+    const { cacheSessionMessages, cacheSessionListMessage, getCachedSessionMessages } = await import('@/session/mobileSessionMessageCache');
+    await cacheSessionMessages('host-a', 'session-1', [makeMessage({ id: 'old', clientId: 'old', createdAt: isoAt(1) })]);
+    const content = '未截断的聊天正文。'.repeat(2000);
+    await Promise.all([
+      cacheSessionListMessage('host-a', 'session-1', makeMessage({ id: 'new', clientId: 'new', createdAt: isoAt(2), content: 'first' })),
+      cacheSessionListMessage('host-a', 'session-1', makeMessage({ id: 'new', clientId: 'new', createdAt: isoAt(2), content })),
+    ]);
+    const rows = await getCachedSessionMessages('host-a', 'session-1');
+    expect(rows.map(row => row.id)).toEqual(['old', 'new']);
+    expect(rows[1].content).toBe(content);
   });
 
   it('returns [] for missing cache or blank ids', async () => {
@@ -426,7 +474,7 @@ describe('mobileSessionMessageCache', () => {
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
     remoteSessionStore.clear();
-    const sessions = Array.from({ length: 9 }, (_, index) => makeSession(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => makeSession(`s${index}`));
     remoteSessionStore.setDeviceSessions('host-a', 'Mac', sessions);
     const cached = makeMessage({ id: 'cached-s0', sessionId: 's0', createdAt: isoAt(1) });
     await cacheSessionMessages('host-a', 's0', [cached]);
@@ -434,7 +482,7 @@ describe('mobileSessionMessageCache', () => {
     for (const item of sessions) {
       remoteSessionStore.setMessages(
         item.id,
-        Array.from({ length: 100 }, (_, index) => makeMessage({
+        Array.from({ length: 80 }, (_, index) => makeMessage({
           id: `${item.id}-${index}`,
           sessionId: item.id,
           createdAt: isoAt(index),
@@ -582,7 +630,7 @@ describe('mobileSessionMessageCache', () => {
       await import('@/session/mobileSessionMessageCache');
     const { remoteSessionStore } = await import('@/session/remoteSessionStore');
     remoteSessionStore.clear();
-    const sessions = Array.from({ length: 9 }, (_, index) => makeSession(`s${index}`));
+    const sessions = Array.from({ length: 13 }, (_, index) => makeSession(`s${index}`));
     remoteSessionStore.setDeviceSessions('host-a', 'Mac', sessions);
     const cached = makeMessage({
       id: 'deleted-row',
@@ -594,7 +642,7 @@ describe('mobileSessionMessageCache', () => {
     for (const item of sessions) {
       remoteSessionStore.setMessages(
         item.id,
-        Array.from({ length: 100 }, (_, index) => makeMessage({
+        Array.from({ length: 80 }, (_, index) => makeMessage({
           id: `${item.id}-${index}`,
           sessionId: item.id,
           createdAt: isoAt(index),

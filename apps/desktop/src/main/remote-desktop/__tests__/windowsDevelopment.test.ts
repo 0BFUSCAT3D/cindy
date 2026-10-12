@@ -267,4 +267,3 @@ describe('Dev Windows desktop components', () => {
     expect(await isolated.installed()).toEqual(prepared);
   });
 });
-
