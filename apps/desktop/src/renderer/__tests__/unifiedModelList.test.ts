@@ -69,6 +69,19 @@ afterEach(() => {
 });
 
 describe('buildUnionRows', () => {
+  it('classifies ElevenLabs capability declarations as TTS or other in model management', () => {
+    const projected = buildUserProvider({ id: 'elevenlabs-byok', name: 'Speech', runtimes: { codex: {
+      baseUrl: 'https://api.elevenlabs.io/v1', models: mergeDiscoveredRuntimeModels([], parseModelsListResponse([
+        { model_id: 'eleven_multilingual_v2', can_do_text_to_speech: true },
+        { model_id: 'voice-conversion', can_do_text_to_speech: false },
+      ])!),
+    } } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+    const rows = buildUnionRows({ ...projected, connected: true } as ProviderView);
+    expect(rows).toHaveLength(2);
+    expect(managementKindsOfRow(rows.find(row => row.id === 'eleven_multilingual_v2')!, true)).toEqual(['tts']);
+    expect(managementKindsOfRow(rows.find(row => row.id === 'voice-conversion')!, true)).toEqual(['other']);
+  });
+
   it('groups discovered BYOK speech models as TTS and keeps the normal disabled management state', () => {
     const projected = buildUserProvider({ id: 'speech-byok', name: 'Speech', runtimes: { codex: {
       baseUrl: 'https://speech.example.test/v1', models: mergeDiscoveredRuntimeModels([], parseModelsListResponse({ data: [

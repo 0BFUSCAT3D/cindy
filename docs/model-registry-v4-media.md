@@ -88,6 +88,13 @@
 型号改成语音模型。不提供类型的服务可在连接设置中手动指定「语音合成」；同一 ID
 可更新类型，「自动识别」删除类型覆盖，重新使用发现快照／目录资料。
 
+ElevenLabs 及兼容转发的[模型列表响应](https://elevenlabs.io/docs/api-reference/models/list)
+以匹配的 `model_id` 和布尔 `can_do_text_to_speech` 声明能力：`true` 归一为
+`audio_speech`；明确 `false` 归为 `other`，避免刷新继续保留旧 TTS 分类，也不推断
+聊天或语音识别能力。缺失／非法值不补类型，沿用已有缺项继承；接口显式 `mode` /
+`model_info.mode` 和用户类型覆盖仍优先。只解析能力，不推断 `nativeApi`。
+直连目录鉴权可复用自定义请求头 `xi-api-key`；没有新增凭证存储或 TTS 执行器。
+
 显式媒体类型不套用聊天协议的名称前缀规则（例如 `gpt-*`）；语音协议缺失仍保持未知，
 不凭 `audio_speech` 推断具体厂商协议。模型的原生协议资料与连接的聊天 `wireProtocol`
 是两件事，保留资料不会新增语音合成执行器。

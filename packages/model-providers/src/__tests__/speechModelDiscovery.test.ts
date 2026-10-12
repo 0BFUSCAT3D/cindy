@@ -81,6 +81,77 @@ describe('BYOK speech discovery and projection', () => {
   });
 });
 
+describe('ElevenLabs speech capability discovery', () => {
+  const modelId = 'eleven_multilingual_v2';
+  const response = (fields: Record<string, unknown> = {}) => [{ model_id: modelId, name: 'Eleven Multilingual v2', ...fields }];
+
+  it('projects the explicit TTS capability into audioModels, including through compatible relays', () => {
+    const discovered = parseModelsListResponse(response({ can_do_text_to_speech: true }),
+      'https://speech-relay.example.test/v1/models')!;
+    expect(discovered[0]).toMatchObject({ id: modelId,
+      discoveredMetadata: { name: 'Eleven Multilingual v2', mode: 'audio_speech' } });
+    const p = provider(mergeDiscoveredRuntimeModels([], discovered));
+    expect(p.audioModels).toEqual([expect.objectContaining({ id: modelId, mode: 'audio_speech' })]);
+    expect(p.audioModels?.[0].nativeApi).toBeUndefined();
+    expect(isAgentSelectableModel(p.models.codex![0], { userProvider: true })).toBe(false);
+  });
+
+  it.each([
+    { value: false, mode: 'other' },
+    { value: undefined, mode: undefined },
+    { value: 'true', mode: undefined },
+  ])('does not advertise TTS for capability $value', ({ value, mode }) => {
+    const discovered = parseModelsListResponse(response({ can_do_text_to_speech: value }))!;
+    expect(discovered[0].discoveredMetadata?.mode).toBe(mode);
+    const p = provider(mergeDiscoveredRuntimeModels([], discovered));
+    expect(p.audioModels).toBeUndefined();
+    if (value === false) expect(isAgentSelectableModel(p.models.codex![0], { userProvider: true })).toBe(false);
+  });
+
+  it.each([
+    { fields: { mode: 'chat' }, mode: 'chat' },
+    { fields: { model_info: { mode: 'audio_transcription' } }, mode: 'audio_transcription' },
+  ])('keeps explicit $mode ahead of the vendor capability', ({ fields, mode }) => {
+    const discovered = parseModelsListResponse(response({ can_do_text_to_speech: true, ...fields }))!;
+    expect(discovered[0].discoveredMetadata?.mode).toBe(mode);
+  });
+
+  it('does not apply the vendor capability without a matching model_id', () => {
+    const discovered = parseModelsListResponse([
+      { id: 'chat-one', can_do_text_to_speech: true },
+      { id: 'chat-two', model_id: modelId, can_do_text_to_speech: false },
+    ])!;
+    const p = provider(mergeDiscoveredRuntimeModels([], discovered));
+    expect(p.audioModels).toBeUndefined();
+    for (const model of p.models.codex!) {
+      expect(model.mode).toBeUndefined();
+      expect(isAgentSelectableModel(model, { userProvider: true })).toBe(true);
+    }
+  });
+
+  it('refreshes true to false, keeps sparse snapshots, and preserves user overrides', () => {
+    const tts = parseModelsListResponse(response({ can_do_text_to_speech: true }))!;
+    const noTts = parseModelsListResponse(response({ can_do_text_to_speech: false }))!;
+    const sparse = parseModelsListResponse(response())!;
+    const models = mergeDiscoveredRuntimeModels([], tts);
+    expect(provider(mergeDiscoveredRuntimeModels(models, sparse)).audioModels?.[0].mode).toBe('audio_speech');
+    const refreshed = mergeDiscoveredRuntimeModels(models, noTts);
+    const p = provider(refreshed);
+    expect(p.audioModels).toBeUndefined();
+    expect(p.models.codex![0].mode).toBe('other');
+    expect(isAgentSelectableModel(p.models.codex![0], { userProvider: true })).toBe(false);
+    expect(provider(mergeDiscoveredRuntimeModels(refreshed, sparse)).models.codex![0].mode).toBe('other');
+    expect(provider(mergeDiscoveredRuntimeModels(refreshed, tts)).audioModels?.[0].mode).toBe('audio_speech');
+
+    const manual = mergeDiscoveredRuntimeModels([{ ...models[0], name: 'My voice',
+      mode: 'audio_speech', defaultEnabled: false }], noTts);
+    expect(manual[0]).toMatchObject({ name: 'My voice', mode: 'audio_speech', defaultEnabled: false,
+      discoveredMetadata: { mode: 'other' } });
+    expect(provider(manual).audioModels?.[0].mode).toBe('audio_speech');
+    expect(provider([{ ...manual[0], mode: undefined }]).audioModels).toBeUndefined();
+  });
+});
+
 describe('media native API metadata', () => {
   it('preserves known media protocols and explicit unknown, and rejects arbitrary protocols', () => {
     expect(validModelMetadata({ nativeApi: 'openai-audio-speech' })).toBe(true);
