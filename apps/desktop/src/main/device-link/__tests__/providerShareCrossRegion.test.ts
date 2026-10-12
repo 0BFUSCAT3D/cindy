@@ -3,6 +3,7 @@
  * 401 登出本账号；只有发过申请或加入过分享的账号才会联系对方区域；凭证只在内存里。
  */
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -98,6 +99,12 @@ const share = {
   hostOnline: true, hostCapable: true,
 };
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 let dir: string;
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-share-x-'));
@@ -110,6 +117,7 @@ beforeEach(() => {
   state.identityCards = [];
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   stopProviderShareGuest();
   stopProviderShareCrossRegion();
   __testing.setUserDataDir(null);
@@ -117,6 +125,111 @@ afterEach(() => {
 });
 
 describe('cross-region provider share', () => {
+  it('serializes marker read-modify-write across accounts and regions', async () => {
+    const firstAccount = 'a'.repeat(64);
+    const secondAccount = 'b'.repeat(64);
+    await __testing.writeMarker(firstAccount, 'global', true);
+    const entered = deferred();
+    const release = deferred();
+    const rename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, 'rename').mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return rename(...args);
+    });
+    const first = __testing.writeMarker(firstAccount, 'global', false, true);
+    await entered.promise;
+    const second = __testing.writeMarker(secondAccount, 'cn', true);
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(__testing.readMarkers()).toEqual({ [secondAccount]: ['cn'] });
+    expect(__testing.readMarkers('emptyAccounts')).toEqual({ [firstAccount]: ['global'] });
+  });
+
+  it('continues queued marker writes after a storage failure', async () => {
+    const account = 'a'.repeat(64);
+    vi.spyOn(fsp, 'rename').mockRejectedValueOnce(new Error('temporary storage failure'));
+    const failed = __testing.writeMarker(account, 'global', false, true);
+    const next = __testing.writeMarker(account, 'global', true);
+    await expect(failed).rejects.toThrow('temporary storage failure');
+    await next;
+    expect(__testing.readMarkers()).toEqual({ [account]: ['global'] });
+    expect(__testing.readMarkers('emptyAccounts')).toEqual({});
+  });
+
+  it.each(['response', 'write'] as const)('keeps a new application when the old empty %s completes late', async (phase) => {
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    const active = __testing.readMarkers();
+    const oldResponse = deferred<unknown>();
+    const freshResponse = deferred<unknown>();
+    const writeEntered = deferred();
+    const releaseWrite = deferred();
+    state.responses.set('/session', oldResponse.promise);
+    const changed = vi.fn();
+    startProviderShareCrossRegion({ changed }, { userDataDir: dir });
+    const oldRefresh = refreshProviderShareCrossRegion('global');
+    await vi.waitFor(() => expect(state.calls.some((call) => call.path.endsWith('/session'))).toBe(true));
+    if (phase === 'write') {
+      const writeFile = fsp.writeFile.bind(fsp);
+      vi.spyOn(fsp, 'writeFile').mockImplementationOnce(async (...args) => {
+        await writeFile(...args);
+        writeEntered.resolve();
+        await releaseWrite.promise;
+      });
+      oldResponse.resolve({ credential: null, expiresAt: null, shares: [] });
+      await writeEntered.promise;
+    }
+    state.responses.set('/session', freshResponse.promise);
+    const application = crossRegionSendRequest('global', TOKEN);
+    // Request parsing only crosses microtasks before queuing its disk write.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
+    if (phase === 'response') await application;
+    oldResponse.resolve({ credential: null, expiresAt: null, shares: [] });
+    releaseWrite.resolve();
+    await Promise.all([application, oldRefresh]);
+    expect(__testing.readMarkers()).toEqual(active);
+    expect(__testing.readMarkers('emptyAccounts')).toEqual({});
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual([]);
+    expect(changed).not.toHaveBeenCalled();
+    // A pending application alone must not trigger another empty list lookup.
+    expect(state.calls.filter((call) => call.path.endsWith('/session'))).toHaveLength(1);
+    freshResponse.resolve({ credential: CREDENTIAL, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), shares: [share] });
+    await refreshProviderShareCrossRegion('global');
+    expect(getCrossRegionReceived()).toEqual([share]);
+    expect(changed).toHaveBeenCalledOnce();
+    expect(__testing.readMarkers()).toEqual(active);
+    stopProviderShareCrossRegion();
+    startProviderShareCrossRegion({ changed: vi.fn() }, { userDataDir: dir });
+    await refreshProviderShareCrossRegion('global');
+    expect(getCrossRegionReceived()).toEqual([share]);
+  });
+
+  it('keeps existing membership confirmed and refreshes approval behind an obsolete request', async () => {
+    state.responses.set('/requests', { requestId: 'r1', status: 'pending', pairingCode: '0042', expiresAt: new Date().toISOString(), requestToken: TOKEN });
+    await crossRegionSendRequest('global', TOKEN);
+    state.responses.set('/session', { credential: CREDENTIAL, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), shares: [share] });
+    startProviderShareCrossRegion({ changed: vi.fn() }, { userDataDir: dir });
+    await refreshProviderShareCrossRegion('global');
+    const staleResponse = deferred<unknown>();
+    state.responses.set('/session', staleResponse.promise);
+    const pending = refreshProviderShareCrossRegion('global');
+    await vi.waitFor(() => expect(state.calls.filter((call) => call.path.endsWith('/session'))).toHaveLength(2));
+    await crossRegionSendRequest('global', TOKEN);
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual(['global']);
+    const newShare = { ...share, shareId: 'new-share', memberId: 'new-member' };
+    state.responses.set('/session', { credential: CREDENTIAL, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), shares: [share, newShare] });
+    const approved = refreshProviderShareCrossRegion('global');
+    const anotherWindow = refreshProviderShareCrossRegion('global');
+    staleResponse.resolve({ credential: null, expiresAt: null, shares: [] });
+    await Promise.all([pending, approved, anotherWindow]);
+    expect(state.calls.filter((call) => call.path.endsWith('/session'))).toHaveLength(3);
+    expect(getCrossRegionReceived()).toEqual([share, newShare]);
+    expect(getConfirmedCrossRegionReceivedRegions()).toEqual(['global']);
+    expect(__testing.readMarkers('emptyAccounts')).toEqual({});
+  });
+
   it('does not send identity cards for forged favorite hints or another account history', async () => {
     const probe = async () => {
       startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() }, { userDataDir: dir });
