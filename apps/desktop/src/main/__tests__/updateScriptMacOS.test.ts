@@ -106,6 +106,12 @@ describe('buildMacOSUpdateScript structure', () => {
     expect(script).toContain('] && [ "$OPEN_EXIT" -ne 0 ]; then');
   });
 
+  it('finds the top-level app bundle without GNU-only find options', () => {
+    expect(script).toContain('for candidate in "/tmp/xdt-maker-update-1"/*.app; do');
+    expect(script).toContain('if [ -d "$candidate" ]; then');
+    expect(script).not.toContain('-maxdepth');
+  });
+
   it('marks update-launched candidates so the app can recover presentation after unlock', () => {
     const openLines = script.split('\n').filter((line) => /^\s*open /.test(line));
     expect(openLines).toHaveLength(2);
