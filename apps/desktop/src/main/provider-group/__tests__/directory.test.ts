@@ -298,6 +298,7 @@ describe('probe (waiting for a computer to come back, §6.1)', () => {
 
 describe('resolving members quickly when choosing a computer (2026-10-11)', () => {
   const MINI = { key: 'device:mini:anthropic-1a2b3c4d', kind: 'device' as const, agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false };
+  const OTHER = { key: 'device:other:anthropic-1a2b3c4d', kind: 'device' as const, agentDeviceId: 'other', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false };
   const SLOW = { key: 'device:slow:anthropic', kind: 'device' as const, agentDeviceId: 'slow', providerId: 'anthropic', label: 'Slow PC', limit: 4, weight: 1, paused: false };
   const config: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [SLOW, MINI] };
 
@@ -336,10 +337,12 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
     try {
       const usage = new Promise<null>(() => undefined);
       const directory = createProviderGroupDirectory(deps({
-        readClaudeUsage: vi.fn(async () => usage),
+        listDevices: async () => [device('mini'), device('other')],
+        readDeviceProviders: vi.fn(async () => [view('anthropic-1a2b3c4d', 'Claude')]),
+        readClaudeUsage: vi.fn(async (member: ProviderGroupMember) => member.key === MINI.key ? usage : null),
       }));
       const done = vi.fn();
-      void directory.resolveMembers('anthropic', { strategy: 'usage', autoSwitch: true, members: [MINI] }, {
+      void directory.resolveMembers('anthropic', { strategy: 'usage', autoSwitch: true, members: [MINI, OTHER] }, {
         quickMs: 3_000,
         enough: (r) => r.state === 'ok',
       }).then(done);
@@ -348,8 +351,10 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
       await vi.advanceTimersByTimeAsync(1);
       expect(done).toHaveBeenCalledTimes(1);
       const resolved = done.mock.calls[0][0] as Array<{ state: string; pending?: boolean; claudeUsage?: unknown }>;
-      expect(resolved).toHaveLength(1);
-      expect(resolved[0]).toMatchObject({ state: 'ok' });
+      expect(resolved).toMatchObject([
+        { member: { key: MINI.key }, state: 'ok' },
+        { member: { key: OTHER.key }, state: 'ok' },
+      ]);
       expect(resolved[0].pending).toBeUndefined();
       expect(resolved[0].claudeUsage).toBeUndefined();
     } finally {

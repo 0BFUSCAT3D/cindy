@@ -291,6 +291,7 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       // 无响应时选电脑会等它的完整网络超时，而不是三秒后继续(chatgpt-codex-connector P2,
       // PR #5792 review)。
       const deviceListPromise = needsDevices ? readDevices().catch(() => null) : Promise.resolve(null);
+      // 额度补充读取可能慢于快速选路窗口：保留基础目录结果，避免已知可用的成员被误判成待定或离线。
       const partialReads = config.members.map((member) => {
         if (member.kind === 'local') return resolveLocal(member, options?.includeLocalRunning);
         if (member.kind === 'share') return resolveShare(member);
