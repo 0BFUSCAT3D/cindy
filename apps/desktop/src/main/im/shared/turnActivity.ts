@@ -58,6 +58,11 @@ export interface TurnActivityState {
    * 只由交互挂起/收口显式设置与清除, 进展事件一律不动它。
    */
   interactionNotice: string | null;
+  /**
+   * 宿主实测的当前输出速度(tok/s, 已取整), 与桌面运行状态栏同源(status 事件的
+   * tokenSpeed)。尚无可靠读数时为 null, 头部就不显示这一段。
+   */
+  tokenRate: number | null;
 }
 
 /** Replay/delta bookkeeping stays private and is never serialized with card state. */
@@ -83,6 +88,7 @@ export function createTurnActivity(startedAt: number): TurnActivityState {
     writing: false,
     notice: null,
     interactionNotice: null,
+    tokenRate: null,
   };
   internalStateByActivity.set(activity, {
     seenKeys: new Set(),
@@ -129,6 +135,17 @@ export function setInteractionNotice(
   const next = notice && notice.trim().length > 0 ? truncate(notice, STEP_LABEL_MAX) : null;
   if (activity.interactionNotice === next) return false;
   activity.interactionNotice = next;
+  return true;
+}
+
+/**
+ * 设置 / 清除头部的 tok/s。非正数与非有限值一律视为"没有读数"。返回是否变化,
+ * 语义同 setActivityNotice; 速度只随 ticker 带出, 调用方不必为它单独刷帧。
+ */
+export function setActivityTokenRate(activity: TurnActivityState, rate: number | null): boolean {
+  const next = rate !== null && Number.isFinite(rate) && rate > 0 ? Math.round(rate) : null;
+  if (activity.tokenRate === next) return false;
+  activity.tokenRate = next;
   return true;
 }
 
@@ -238,10 +255,11 @@ export function renderActivity(activity: TurnActivityState, now: number): string
   if (activity.totalSteps === 0 && activity.notice === null && activity.interactionNotice === null)
     return '';
   const elapsed = formatElapsed(now - activity.startedAt);
+  const rate = activity.tokenRate !== null ? ` · ${activity.tokenRate} tok/s` : '';
   const lines = [
     activity.totalSteps > 0
-      ? `⚙️ 工作中 · ${activity.totalSteps} 项 · ${elapsed}`
-      : `⚙️ 工作中 · ${elapsed}`,
+      ? `⚙️ 工作中 · ${activity.totalSteps} 项 · ${elapsed}${rate}`
+      : `⚙️ 工作中 · ${elapsed}${rate}`,
   ];
   const last = activity.recentSteps.length - 1;
   activity.recentSteps.forEach((step, index) => {

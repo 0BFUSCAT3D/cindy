@@ -38,6 +38,7 @@ import {
   buildMessageRenderItems,
   type MessageRenderNormalizedMessage,
 } from '@cindy/maker-shared/message-render';
+import { readTokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 
 import {
   createTurnActivity,
@@ -46,6 +47,7 @@ import {
   pushToolStep,
   renderActivity,
   setActivityNotice,
+  setActivityTokenRate,
   setInteractionNotice,
   type TurnActivityState,
 } from './turnActivity.js';
@@ -329,6 +331,8 @@ export interface TurnPresenter {
   applyThinking(ev: AgentEvent): boolean;
   /** 非终止重试 error → 单行状态说明。返回状态行是否变化。 */
   applyRetryNotice(ev: AgentEvent): boolean;
+  /** status 事件: 更新头部 tok/s(只改状态, 由 ticker 带出)。返回头部是否变化。 */
+  applyStatus(ev: AgentEvent): boolean;
   /** done: 封存本轮尾段(segments); buffer 无操作。 */
   seal(): void;
   /** 新交互请求边界(segments); buffer 无操作。 */
@@ -716,6 +720,16 @@ export function createTurnPresenter(options: TurnPresenterOptions): TurnPresente
       const notice = turnRetryNotice(ev.data, { channel: options.channel });
       if (notice === null) return false;
       return setActivityNotice(activity, notice);
+    },
+    applyStatus(ev: AgentEvent): boolean {
+      const data = ev.data as { generationReliable?: unknown; tokenSpeed?: unknown } | null;
+      if (!data || typeof data !== 'object') return false;
+      // 与桌面运行状态栏同口径: 宿主判定读数不可靠时隐藏, 而不是显示一个错数。
+      if (data.generationReliable === false) return setActivityTokenRate(activity, null);
+      const speed = readTokenSpeedSnapshot(data.tokenSpeed);
+      // 占位帧 / 首个输出之前没有读数: 保留上一个值, 避免工具执行间隙头部来回闪。
+      if (!speed || speed.rate <= 0) return false;
+      return setActivityTokenRate(activity, speed.rate);
     },
     seal(): void {
       body.seal();

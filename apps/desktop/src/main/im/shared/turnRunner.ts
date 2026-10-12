@@ -2499,7 +2499,11 @@ export function createTurnRunner(
           return handleTurnErrorAsync(state, userId, event.data);
         case 'session_id':
           return persistSdkSessionId(localSessionId, event.data);
-        // tool_result (summary) / status / thinking / etc. → not surfaced
+        case 'status':
+          // 只记头部 tok/s; 由 activity ticker 带出, 不为速度读数单独刷卡片。
+          turn.presenter.applyStatus(event);
+          return;
+        // tool_result (summary) / thinking / etc. → not surfaced
         default:
           return;
       }
