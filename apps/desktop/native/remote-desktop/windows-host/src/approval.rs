@@ -498,6 +498,32 @@ mod tests {
         assert!(validate_restore_record_size(&vec![0; MAX_ACL_RESTORE_RECORD_BYTES + 1]).is_err());
     }
     #[test]
+    fn oversized_restore_record_is_rejected_before_creating_a_temporary_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "cindy-lock-record-limit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let record = directory.join(installation::ACL_RESTORE);
+        let temporary = directory.join(format!("{}.new", installation::ACL_RESTORE));
+        fs::write(&record, b"previous-restore").unwrap();
+        let result = write_protected_record(
+            &directory,
+            installation::ACL_RESTORE,
+            &vec![0; MAX_ACL_RESTORE_RECORD_BYTES + 1],
+        );
+        let previous = fs::read(&record).unwrap();
+        let temporary_exists = temporary.exists();
+        fs::remove_dir_all(&directory).unwrap();
+        assert!(result.is_err());
+        assert_eq!(previous, b"previous-restore");
+        assert!(!temporary_exists);
+    }
+    #[test]
     fn first_install_restore_record_is_written_before_hardening() {
         let install = include_str!("approval.rs")
             .split("pub fn install(")

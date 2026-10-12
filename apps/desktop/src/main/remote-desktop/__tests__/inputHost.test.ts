@@ -81,10 +81,15 @@ describe('native input lifecycle', () => {
       queueMicrotask(() => c.child.stdout.emit('data', Buffer.from('ready\n')));
       return c.typed;
     });
-    const host = new DesktopInputHost(vi.fn(), {
-      resolveBinary: async () => '/test/helper',
-      spawn,
-    });
+    const prepare = vi.fn(() => true);
+    const host = new DesktopInputHost(
+      vi.fn(),
+      {
+        resolveBinary: async () => '/test/helper',
+        spawn,
+      },
+      prepare,
+    );
     await host.start('1');
     host.input([{ kind: 'key', code: 'ControlLeft', down: true }]);
     await flush();
@@ -96,6 +101,7 @@ describe('native input lifecycle', () => {
       '[{"kind":"release"}]\n',
       expect.any(Function),
     );
+    expect(prepare).toHaveBeenCalledOnce();
     expect(openWindowsDesktopConnection).not.toHaveBeenCalled();
     expect(c.child.stdin.end).not.toHaveBeenCalled();
     host.stop();
@@ -146,7 +152,8 @@ describe('native input lifecycle', () => {
       .mockResolvedValueOnce(previous)
       .mockImplementationOnce(() => new Promise((resolve) => (open = resolve)));
     const failure = vi.fn();
-    const host = new DesktopInputHost(failure);
+    const prepare = vi.fn(() => true);
+    const host = new DesktopInputHost(failure, undefined, prepare);
     await host.start('1');
     host.rebindForDesktopChange();
     host.rebindForDesktopChange();
@@ -155,6 +162,7 @@ describe('native input lifecycle', () => {
     open(next);
     await flush();
     expect(openWindowsDesktopConnection).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenCalledTimes(2);
     expect(next.request).not.toHaveBeenCalled();
     expect(failure).not.toHaveBeenCalled();
     host.stop();
