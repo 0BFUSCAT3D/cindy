@@ -245,6 +245,36 @@ describe('Sidebar teammate return action', () => {
     expect(screen.queryByRole('button', { name: 'Search row' })).toBeNull();
   });
 
+  it('opens More on hover, stays open on click, and closes once the pointer leaves', () => {
+    vi.useFakeTimers();
+    try {
+      setSidebarNavigationPrefs(OWNER, {
+        order: ['automations', 'plugins', 'bots', 'search'],
+        visible: ['automations', 'search'],
+      });
+      render(<Harness initialPath="/cc-agent" />);
+      const more = screen.getByRole('button', { name: 'sidebar.navigation.more' });
+      fireEvent.mouseEnter(more);
+      expect(screen.queryByRole('menu')).toBeNull();
+      act(() => { vi.advanceTimersByTime(100); });
+      const menu = screen.getByRole('menu');
+      expect(within(menu).getByRole('menuitem', { name: 'sidebar.tabs.plugins' })).toBeTruthy();
+      // A click on the already open trigger keeps the menu.
+      fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+      expect(screen.getByRole('menu')).toBeTruthy();
+      // Crossing from the trigger into the menu keeps it open.
+      fireEvent.mouseLeave(more);
+      fireEvent.mouseEnter(menu);
+      act(() => { vi.advanceTimersByTime(300); });
+      expect(screen.getByRole('menu')).toBeTruthy();
+      fireEvent.mouseLeave(menu);
+      act(() => { vi.advanceTimersByTime(300); });
+      expect(screen.queryByRole('menu')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps checked entries out of More', () => {
     setSidebarNavigationPrefs(OWNER, {
       order: ['automations', 'plugins', 'bots', 'search'],
