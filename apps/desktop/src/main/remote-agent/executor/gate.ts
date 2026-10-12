@@ -14,7 +14,7 @@
  *    只认本机用户刚批准过的同一地址；批准过的地址抓取时放开内网(域名也可能解析到内网)；
  *  - 计划模式：只允许读取、抓取网页和静态可证只读的命令，其余同样要本机用户批准过；
  *  - 供应商分享的受邀者任务：内容会经过分享者的电脑，凭证类的读写与读取凭证的命令即使在全权下
- *    也只认本机用户批准过的同一操作(credentials.ts)。
+ *    也要本机用户确认；用户可明确允许当前任务后续的凭证操作(credentials.ts)。
  * 批准记录只在短时间内有效；命令与抓取的批准用一次即失效，路径批准在有效期内覆盖同一路径的读写
  * (编辑会先读后写)。
  */
@@ -98,6 +98,7 @@ export interface ExecutorGateOptions {
 export class ExecutorGate {
   private mode: ExecutorGateMode;
   private approvals: Approval[] = [];
+  private credentialsAllowedForSession = false;
 
   constructor(
     private readonly workspace: ExecutorWorkspace,
@@ -109,7 +110,13 @@ export class ExecutorGate {
   }
 
   setMode(mode: ExecutorGateMode): void {
+    this.credentialsAllowedForSession = false;
     this.mode = mode;
+  }
+
+  /** 本机用户在凭证确认卡上选择了「本任务总是允许」。授权随执行器关闭或权限档变化失效。 */
+  allowCredentialsForSession(): void {
+    if (this.options.confirmCredentials) this.credentialsAllowedForSession = true;
   }
 
   getMode(): ExecutorGateMode {
@@ -128,7 +135,7 @@ export class ExecutorGate {
    * 真实目标再判一次)、目录级读取的根本身是凭证目录，或命令读取 / 打出凭证。
    */
   needsCredentialConsent(action: ExecutorAction): boolean {
-    if (!this.options.confirmCredentials) return false;
+    if (!this.options.confirmCredentials || this.credentialsAllowedForSession) return false;
     if (action.kind === 'fetch') return false;
     if (action.kind === 'exec') {
       return isShareCredentialCommand(action.command, this.workspace.allRoots(), { cwd: action.cwd, platform: process.platform });
