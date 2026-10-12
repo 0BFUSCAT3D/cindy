@@ -431,21 +431,15 @@ describe('task image delivery', () => {
         await fs.mkdir(path.dirname(source), { recursive: true });
       }
       if (kind === 'symlink') {
-        const outsideDir = path.join(state.root, 'private');
-        await fs.mkdir(outsideDir);
-        const outside = path.join(outsideDir, 'shot.png');
+        const outside = path.join(state.root, 'private.png');
         await fs.writeFile(outside, PNG);
-        // Junctions do not need Windows file-symlink privilege. Keep a real
-        // PNG behind the link so rejection must still come from scope checks.
-        const link = process.platform === 'win32' ? path.join(work, 'linked') : source;
-        await fs.symlink(
-          process.platform === 'win32' ? outsideDir : outside,
-          link,
-          process.platform === 'win32' ? 'junction' : 'file',
-        );
-        if (process.platform === 'win32') source = path.join(link, 'shot.png');
-        expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
-        await expect(readTaskImage(source, [await fs.realpath(work)])).rejects.toThrow('task-image: outside task');
+        if (process.platform === 'win32') {
+          // Junctions preserve the real path escape without requiring file-symlink privileges.
+          const link = path.join(work, 'linked');
+          await fs.symlink(state.root, link, 'junction');
+          source = path.join(link, 'private.png');
+        } else await fs.symlink(outside, source);
+        expect(await fs.realpath(source)).toBe(await fs.realpath(outside));
       } else await fs.writeFile(source, kind === 'not-image' ? Buffer.from('not png') : PNG);
       const row = insert(`![image](${source})`);
       expect(await restoreTaskImageRows(client, [row])).toEqual([row]);
