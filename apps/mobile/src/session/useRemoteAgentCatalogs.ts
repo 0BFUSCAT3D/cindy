@@ -217,6 +217,7 @@ export function useRemoteAgentCatalogs(input: {
         deviceId: device.deviceId,
         name: device.name,
         status: state?.status ?? (device.canOpen ? 'loading' : 'error'),
+        ...(device.canOpen ? {} : { offline: true as const }),
         providers: payload ? remoteAgentProviders(payload.providers) : [],
         ...(payload?.modelVisibilityOverrides !== undefined
           ? { modelVisibilityOverrides: payload.modelVisibilityOverrides }

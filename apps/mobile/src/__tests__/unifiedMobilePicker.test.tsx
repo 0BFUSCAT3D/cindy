@@ -548,14 +548,14 @@ const studioCatalog = {
   providers:[{id:'account',name:'Studio Provider',models:{},connected:true,logoKind:'anthropic'}],
 };
 const remoteId = 'remote:["device-studio-mac","account"]';
-async function mountRemote(selectedDeviceId:string|null,onSelect=vi.fn(async()=>true)) {
+async function mountRemote(selectedDeviceId:string|null,onSelect=vi.fn(async()=>true),catalog:any=studioCatalog) {
   const onClose=vi.fn();
   await act(async()=>root.render(createElement(UnifiedModelPickerSheet,{
     visible:true,onClose,providers:[{id:'account',name:'Provider',models:{},connected:true}],agentKind:'codex',capabilities:{hasFastMode:true},
     activeModelId:'codex/model',selectedProviderId:'account',selectedEffort:'medium',selectedFastMode:false,
     existingSessionRoute:true,modelMemory:{getEffort:()=>undefined,getFast:()=>undefined,setEffort:vi.fn(),setFast:vi.fn()},
     unified:{scope:'user-device',agents:['codex','claude-code'],loadCapabilities:async()=>({hasFastMode:true}),onSelect,
-      remote:{catalogs:[studioCatalog],selectedDeviceId}},
+      remote:{catalogs:[catalog],selectedDeviceId}},
   } as any)));
   return {onSelect,onClose};
 }
@@ -658,6 +658,29 @@ it('removes and edits another computer\'s favorite without losing its location',
   expect(test.view.options.isFavorite).toBe(true);
   await act(async()=>test.view.options.onFavorite());
   expect(test.save).toHaveBeenLastCalledWith(expect.objectContaining({favorites:[]}));
+});
+it('adjusts parameters from another computer\'s favorite details without changing the copy',async()=>{
+  test.prefs.favorites=[{uid:'remote',providerId:studioSource,modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  const {onSelect}=await mountRemote(null);
+  await act(async()=>test.view.onOptions(test.view.groups[0].rows[0]));
+  expect(test.view.options.isFavorite).toBe(true);
+  await act(async()=>test.view.options.onChange({...test.view.options.row.config,effort:'high'}));
+  // 详情跟着调整走,原收藏不变、星标回到空心,并提示原收藏保留。
+  expect(test.view.options.row.config.effort).toBe('high');
+  expect(test.view.options.isFavorite).toBe(false);
+  expect(test.view.options.notice).toBe('models.unified.originalFavoriteKept');
+  expect(test.view.options.canReset).toBe(true);
+  expect(test.save).not.toHaveBeenCalled();
+  expect(onSelect).not.toHaveBeenCalled();
+  await act(async()=>test.view.options.onReset());
+  expect(test.view.options.row.config.effort).toBe('medium');
+  expect(test.view.options.isFavorite).toBe(true);
+});
+it('hides favorites of a computer that is only listed because the Agent was there and it went offline',async()=>{
+  test.prefs.favorites=[{uid:'remote',providerId:studioSource,modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];
+  await mountRemote(null,undefined,{...studioCatalog,offline:true});
+  expect(test.view.groups.some((g:any)=>g.key==='favorites')).toBe(false);
+  expect(test.save).not.toHaveBeenCalled();
 });
 it('hides a favorite whose computer is not in the list without deleting it',async()=>{
   test.prefs.favorites=[{uid:'away',providerId:'agent-device-favorite:["device-offline","account"]',modelId:'codex/model',agent:'codex',effort:'medium',fast:false}];

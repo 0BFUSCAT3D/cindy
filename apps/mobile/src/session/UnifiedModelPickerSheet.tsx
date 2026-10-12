@@ -612,12 +612,14 @@ export function UnifiedModelPickerSheet(
     rows: directory.entries.map((entry) => makeRemoteRow(directory, entry)),
   }));
   // 收藏和本机收藏排在同一节里:位置编在 providerId 里的,到那台电脑的目录里找模型,
-  // 点开即在那台运行。那台电脑此刻不在列表里(离线 / 没开放远程调用)时先不显示,收藏本身保留。
+  // 点开即在那台运行。那台电脑离线(包括只因任务的 Agent 在那台、靠缓存留在列表里)或没开放远程调用时
+  // 先不显示,收藏本身保留。
   const favorites = prefs.value.favorites.flatMap((item) => {
     const source = parseAgentDeviceFavoriteSource(item.providerId);
     if (source) {
       const directory = remoteDirectories.find(
-        (value) => value.catalog.deviceId === source.deviceId,
+        (value) =>
+          value.catalog.deviceId === source.deviceId && !value.catalog.offline,
       );
       const entry = directory?.entries.find(
         (value) =>
@@ -895,7 +897,14 @@ export function UnifiedModelPickerSheet(
           ))
         )
           return;
-        if (!isCurrent() || row.selected) return;
+        if (!isCurrent()) return;
+        // 从收藏打开的详情显示的是那份副本(target.config),与本机收藏一样跟着调整走;原收藏不变。
+        if (target?.config) {
+          setTarget({ ...target, config });
+          if (matchingFavorite && !reset)
+            setNotice(t("models.unified.originalFavoriteKept"));
+        }
+        if (row.selected) return;
         setRemoteConfigs((current) => {
           const next = new Map(current);
           if (reset) next.delete(key);
