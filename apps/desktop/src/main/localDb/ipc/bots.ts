@@ -1,3 +1,5 @@
+import { todoAccess } from '../../maker-ipc/botTodoAccess.js';
+import type { TodoPatch } from '@cindy/maker-shared/teammate-todo';
 /** Cindy Bots 的 main-side 权威数据边界。
  *
  * Bot profile 与 Session 归属只在这里写入 SQLite；renderer 只读取投影，
@@ -1544,6 +1546,16 @@ export async function updateBotProfile(raw: unknown, expectedVersion?: number,
     else delete nextConfig.gender;
   }
   const normalizedNextConfig = normalizeBotModelCapabilitiesOrThrow(nextConfig);
+  // Legacy chain-only profiles gain mirrored fields during normalization.
+  // Compare the same representation so unrelated edits do not validate stale routes.
+  if (botProfileModelSelectionChanged(normalizeBotModelCapabilitiesOrThrow(previous), normalizedNextConfig)) {
+    const primary = (await readEffectiveBotModelChain(normalizedNextConfig))[0];
+    owner.assertCurrent();
+    if (!primary || !await validateTaskModel(primary)) {
+      throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
+    owner.assertCurrent();
+  }
   if (JSON.stringify(previous.taskModelOverride ?? null) !== JSON.stringify(normalizedNextConfig.taskModelOverride ?? null)) {
     const taskModel = readBotTaskModelOverride(normalizedNextConfig.taskModelOverride);
     if (taskModel && !await validateTaskModel(taskModel)) {
@@ -1830,6 +1842,17 @@ export function registerBotIpc(): void {
 
   ipcMain.handle('local-db:bots:create', async (event, raw: unknown) => {
     assertTrustedAppRendererEvent(event);
+    const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    if (body.prepareInvitation === true) {
+      const owner = captureBotOperationOwner();
+      const capabilities = body.capabilities && typeof body.capabilities === 'object' && !Array.isArray(body.capabilities)
+        ? body.capabilities as Record<string, unknown> : {};
+      const [primary] = await readEffectiveBotModelChain(capabilities);
+      owner.assertCurrent();
+      const available = primary && await validateTaskModel(primary);
+      owner.assertCurrent();
+      if (!available) throwIpcError('INVALID_PARAMS', 'Model route unavailable');
+    }
     return createBotProfile(raw);
   });
 
@@ -2122,6 +2145,17 @@ export function registerBotIpc(): void {
     owner.assertCurrent();
     return workbench;
   });
+  for (const operation of ['list', 'update', 'act'] as const) {
+    ipcMain.handle(`local-db:bots:todos:${operation}`, async (event, rawBotId: unknown, input: unknown) => {
+      assertTrustedAppRendererEvent(event);
+      const owner = captureBotOperationOwner();
+      const access = await todoAccess(readText(rawBotId, 'botId', 128, true));
+      owner.assertCurrent();
+      const result = operation === 'list' ? await access.list() : operation === 'update' ? await access.patch(input as TodoPatch)
+        : await access.act((input as {id:string}).id, (input as {revision:number}).revision, (input as {requestId:string}).requestId,(input as {locale?:string}).locale);
+      owner.assertCurrent();return result;
+    });
+  }
   ipcMain.handle('local-db:bots:workbench:add-directory', async (event, rawBotId: unknown, rawPath: unknown) => {
     assertTrustedAppRendererEvent(event);
     const botId = readText(rawBotId, 'botId', 128, true);
