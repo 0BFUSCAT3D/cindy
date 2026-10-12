@@ -154,6 +154,33 @@ describe('useSettingsEscape', () => {
     expect(onEscape).not.toHaveBeenCalled();
   });
 
+  it('does not let a held Escape auto-repeat past the layer its first press closed', () => {
+    vi.stubGlobal('electronAPI', {
+      platform: 'darwin',
+      getFullscreenState: () => Promise.resolve(false),
+      onFullscreenChange: () => () => {},
+    });
+    const onEscape = vi.fn();
+    const onBack = vi.fn();
+    const { rerender } = render(<Harness onEscape={onEscape} />);
+    rerender(
+      <Harness onEscape={onEscape}>
+        <PluginDetailTopBar label="Plugins" onBack={onBack} scrolled={false} />
+      </Harness>,
+    );
+
+    pressEscape();
+    expect(onBack).toHaveBeenCalledTimes(1);
+    rerender(<Harness onEscape={onEscape} />);
+
+    pressEscape(document.body, { repeat: true });
+    pressEscape(document.body, { repeat: true });
+    expect(onEscape).not.toHaveBeenCalled();
+
+    pressEscape();
+    expect(onEscape).toHaveBeenCalledTimes(1);
+  });
+
   it('yields to a layer outside settings, an open morph popover and the help panel', () => {
     const onEscape = vi.fn();
     const { rerender } = render(<Harness onEscape={onEscape} />);
@@ -178,6 +205,7 @@ describe('useSettingsEscape', () => {
   it.each([
     ['isComposing', { isComposing: true }],
     ['IME keyCode 229', { keyCode: 229 }],
+    ['auto-repeat', { repeat: true }],
     ['altKey', { altKey: true }],
     ['ctrlKey', { ctrlKey: true }],
     ['metaKey', { metaKey: true }],
