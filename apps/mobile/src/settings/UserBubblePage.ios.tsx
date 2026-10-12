@@ -26,7 +26,6 @@ import {
 import {
   USER_BUBBLE_PRESETS,
   parseUserBubblePreference,
-  resolveUserBubbleColors,
   userBubbleSeed,
   type UserBubblePreference,
 } from "@cindy/maker-shared";
@@ -45,7 +44,10 @@ import {
   spacing,
   typeScale,
 } from "@/theme";
-import { useUserBubbleAppearance } from "@/theme/userBubblePreference";
+import {
+  resolveMobileUserBubbleColors,
+  useUserBubbleAppearance,
+} from "@/theme/userBubblePreference";
 import { goBackGuarded } from "@/utils/backGuard";
 import { UserBubbleHueSlider, hexToHue, hueToHex } from "./UserBubbleHueSlider";
 
@@ -76,7 +78,7 @@ export function UserBubblePage() {
   // 拖动中的颜色只留在本页;松手才写全局偏好,避免所有已挂载的会话气泡逐帧重绘。
   const [draft, setDraft] = useState<string | null>(null);
   const bubble = draft
-    ? resolveUserBubbleColors(parseUserBubblePreference(draft), mode)
+    ? resolveMobileUserBubbleColors(parseUserBubblePreference(draft), mode, colors)
     : saved;
   const custom = preference.startsWith("#");
   // 偏好异步加载,首帧可能还是 default;起点在点按「自定义颜色」时再取。
@@ -94,10 +96,14 @@ export function UserBubblePage() {
   }, [preference]);
   const [dragging, setDragging] = useState(false);
   const label = (name: string) => t(`settings.appearance.userBubble.${name}`);
-  const select = (next: UserBubblePreference) => {
-    if (next === preference) return;
+  // 写入失败时内存里已是新值,所以「重试」要强制再写一次,不能被「没变化」跳过。
+  const select = (next: UserBubblePreference, force = false) => {
+    if (!force && next === preference) return;
     void setPreference(next).catch(() =>
-      Alert.alert(label("title"), label("saveFailed")),
+      Alert.alert(label("title"), label("saveFailed"), [
+        { text: label("cancel"), style: "cancel" },
+        { text: label("retry"), onPress: () => select(next, true) },
+      ]),
     );
   };
   return (
@@ -152,7 +158,7 @@ export function UserBubblePage() {
               testID="settings.userBubble.presets"
             >
               {USER_BUBBLE_PRESETS.map((id) => {
-                const swatch = resolveUserBubbleColors(id, mode);
+                const swatch = resolveMobileUserBubbleColors(id, mode, colors);
                 return (
                   <HStack key={id} spacing={spacing.md} modifiers={[tag(id)]}>
                     <Circle

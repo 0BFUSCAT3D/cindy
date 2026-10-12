@@ -411,6 +411,7 @@ import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTrans
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 import { iconSize, iconStroke, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
 import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
+import { isOwnUserBubble } from './userBubbleOwnership';
 import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
@@ -3371,6 +3372,7 @@ function MessageBubble({
   actions: MessageActions & { firstUserMessageClientId?: string };
 }) {
   const { colors: userBubbleColors } = useUserBubbleAppearance();
+  const { user: viewer } = useAuth();
   const styles = useThemedStyles(makeStyles);
   const { colors, mode } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -3752,7 +3754,9 @@ function MessageBubble({
         isUser ? styles.userBubble : styles.agentBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
-        isUser && !item.message.systemCardType && userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
+        isUser && !item.message.systemCardType && userBubbleColors
+          && isOwnUserBubble(item.message, { accountId: viewer?.id, remoteDeviceId: actions.remoteDeviceId })
+          && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
       ]}
       testID={isUser ? 'message.userBubble' : 'message.agentBubble'}
     >

@@ -70,25 +70,61 @@ export function userBubbleSeed(
 
 /**
  * Presets stay soft; custom colors are tinted more so the chosen hue reads clearly.
- * Dark tint is capped so theme text keeps >= 7:1 contrast even on a white seed.
+ * The derived foreground keeps >= 7:1. Callers pass the theme text colors that are
+ * actually drawn inside the bubble (body, secondary, inline code...); the tint is
+ * reduced until every one of them keeps >= 4.5:1. Zero tint is the theme-neutral
+ * surface, which those roles already satisfy.
  */
 const tint = {
   preset: { light: 0.16, dark: 0.13 },
   custom: { light: 0.3, dark: 0.18 },
 };
+const FOREGROUND_MIN_CONTRAST = 7;
+const TEXT_ROLE_MIN_CONTRAST = 4.5;
+function luminance(hex: string): number {
+  const [r, g, b] = rgb(hex)
+    .map((v) => v / 255)
+    .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return r * 0.2126 + g * 0.7152 + b * 0.0722;
+}
+export function contrastRatio(a: string, b: string): number {
+  const [x, y] = [luminance(a), luminance(b)];
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
 export function resolveUserBubbleColors(
   preference: UserBubblePreference,
   mode: "light" | "dark",
+  textRoles: readonly string[] = [],
 ) {
   const seed = userBubbleSeed(preference);
   if (!seed) return null;
   const channels = rgb(seed);
   const dark = mode === "dark";
-  const strength = tint[preference.startsWith("#") ? "custom" : "preset"][mode];
-  const background = toHex(
-    channels.map((v) => (dark ? 27 + v * strength : 255 - (255 - v) * strength)),
-  );
   const foreground = toHex(Array(3).fill(dark ? 232 : 38));
+  const mix = (strength: number) =>
+    toHex(
+      channels.map((v) =>
+        dark ? 27 + v * strength : 255 - (255 - v) * strength,
+      ),
+    );
+  const readable = (background: string) =>
+    contrastRatio(background, foreground) >= FOREGROUND_MIN_CONTRAST &&
+    textRoles.every(
+      (role) => contrastRatio(background, role) >= TEXT_ROLE_MIN_CONTRAST,
+    );
+  let strength = tint[preference.startsWith("#") ? "custom" : "preset"][mode];
+  if (!readable(mix(strength))) {
+    // Luminance moves monotonically with strength, so the largest readable tint is a bisection.
+    let low = 0;
+    let high = strength;
+    for (let i = 0; i < 16; i += 1) {
+      const middle = (low + high) / 2;
+      if (readable(mix(middle))) low = middle;
+      else high = middle;
+    }
+    strength = low;
+  }
+  const background = mix(strength);
   const border = toHex(rgb(background).map((v) => (dark ? v + 22 : v - 24)));
   return { background, foreground, border };
 }

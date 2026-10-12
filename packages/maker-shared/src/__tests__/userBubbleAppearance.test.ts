@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   USER_BUBBLE_PRESETS,
+  bubbleHueColor,
+  contrastRatio,
   parseUserBubblePreference,
   resolveUserBubbleColors,
+  type UserBubblePreference,
 } from "../userBubbleAppearance";
 
 function luminance(hex: string) {
@@ -44,5 +47,39 @@ describe("personal message bubble appearance", () => {
         ).toBeGreaterThanOrEqual(7);
       }
     }
+  });
+  it("keeps every text role drawn in the bubble readable, tinting only as far as needed", () => {
+    // Body, secondary and inline-code text of the mobile themes (light / dark).
+    const roles = {
+      light: ["#0F0F0F", "#4D4D4A", "#686864"],
+      dark: ["#EDEDED", "#BDBDBD", "#999999"],
+    } as const;
+    const custom: UserBubblePreference[] = [
+      "#000000",
+      "#ffffff",
+      "#ff0000",
+      "#00ff00",
+      "#0000ff",
+      ...Array.from(
+        { length: 36 },
+        (_, i) => bubbleHueColor(i * 10) as `#${string}`,
+      ),
+    ];
+    for (const mode of ["light", "dark"] as const) {
+      for (const preference of [...USER_BUBBLE_PRESETS.slice(1), ...custom]) {
+        const { background } = resolveUserBubbleColors(
+          preference,
+          mode,
+          roles[mode],
+        )!;
+        for (const role of roles[mode]) {
+          expect(contrastRatio(background, role)).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+    // A color that already reads well keeps its full tint.
+    expect(resolveUserBubbleColors("sage", "light", roles.light)).toEqual(
+      resolveUserBubbleColors("sage", "light"),
+    );
   });
 });

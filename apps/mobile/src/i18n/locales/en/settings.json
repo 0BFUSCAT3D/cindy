@@ -49,7 +49,9 @@
       "sampleAssistant": "Sure, let’s work through your ideas together.",
       "hint": "Colors adjust to light and dark mode so text stays easy to read. Saved on this device only.",
       "customHint": "Drag along the color strip to choose a hue. Colors adjust to light and dark mode so text stays easy to read. Saved on this device only.",
-      "saveFailed": "The color is applied for now but could not be saved. Please try again.",
+      "saveFailed": "The color is applied for now but could not be saved.",
+      "retry": "Retry",
+      "cancel": "Cancel",
       "reset": "Reset to default",
       "apply": "Apply",
       "hex": "Color value"

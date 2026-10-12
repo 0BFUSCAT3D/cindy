@@ -6,6 +6,24 @@ import {
   type UserBubblePreference,
 } from "@cindy/maker-shared";
 import { useTheme } from "./ThemeProvider";
+import type { ThemeColors, ThemeMode } from "./tokens";
+
+/** 气泡里实际会画出的文字色(正文、次要、弱提示、行内代码);底色按它们收敛到可读。 */
+export function resolveMobileUserBubbleColors(
+  preference: UserBubblePreference,
+  mode: ThemeMode,
+  colors: Pick<
+    ThemeColors,
+    "textPrimary" | "textSecondary" | "textTertiary" | "chatInlineCodeText"
+  >,
+) {
+  return resolveUserBubbleColors(preference, mode, [
+    colors.textPrimary,
+    colors.textSecondary,
+    colors.textTertiary,
+    colors.chatInlineCodeText,
+  ]);
+}
 
 const key = "cindy.mobile.user-bubble.v1";
 let current: UserBubblePreference = "default";
@@ -54,7 +72,7 @@ export function saveUserBubblePreference(
   return write;
 }
 export function useUserBubbleAppearance() {
-  const { mode } = useTheme();
+  const { mode, colors } = useTheme();
   const preference = useSyncExternalStore(
     subscribe,
     () => current,
@@ -67,6 +85,6 @@ export function useUserBubbleAppearance() {
     preference,
     setPreference: saveUserBubblePreference,
     mode,
-    colors: resolveUserBubbleColors(preference, mode),
+    colors: resolveMobileUserBubbleColors(preference, mode, colors),
   };
 }

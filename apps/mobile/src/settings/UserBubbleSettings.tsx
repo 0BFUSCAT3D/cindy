@@ -13,7 +13,6 @@ import {
   USER_BUBBLE_PRESETS,
   bubbleHueColor,
   parseUserBubblePreference,
-  resolveUserBubbleColors,
   userBubbleSeed,
   type UserBubblePreference,
 } from "@cindy/maker-shared";
@@ -37,7 +36,10 @@ import {
   spacing,
   typeScale,
 } from "@/theme";
-import { useUserBubbleAppearance } from "@/theme/userBubblePreference";
+import {
+  resolveMobileUserBubbleColors,
+  useUserBubbleAppearance,
+} from "@/theme/userBubblePreference";
 
 export function UserBubbleSettings() {
   const { t } = useTranslation();
@@ -60,7 +62,10 @@ export function UserBubbleSettings() {
   const label = (name: string) => t(`settings.appearance.userBubble.${name}`);
   const select = (next: UserBubblePreference) => {
     void setPreference(next).catch(() =>
-      Alert.alert(label("title"), label("saveFailed")),
+      Alert.alert(label("title"), label("saveFailed"), [
+        { text: label("cancel"), style: "cancel" },
+        { text: label("retry"), onPress: () => select(next) },
+      ]),
     );
   };
   return (
@@ -114,7 +119,7 @@ export function UserBubbleSettings() {
             </View>
             <View style={styles.grid}>
               {USER_BUBBLE_PRESETS.map((id) => {
-                const palette = resolveUserBubbleColors(id, mode);
+                const palette = resolveMobileUserBubbleColors(id, mode, colors);
                 return (
                   <Pressable
                     key={id}
