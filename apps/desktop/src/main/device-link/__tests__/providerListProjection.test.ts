@@ -12,8 +12,9 @@
  *   3. models[agent] 只投影可执行模型并保持旧 Mobile 结构；可用模型的 Fast 字段照常透传。
  *   4. disabled runtime 在控制端仍保持禁用，不会被共享 registry 重新列为可选。
  *   5. 品牌只以非敏感 logoKind 透传;重命名 preset 仍可识别,upstream 绝不泄漏。
- * 只 mock electron(app)+ logger,与同目录 dispatchSendSafety.test 同范式。
+ * 保留真实投影，复用 dispatch 服务边界替身以免加载未参与断言的运行时。
  */
+import '../../../test/vitest/dispatchServiceBoundaries';
 import { describe, it, expect, vi } from 'vitest';
 import { connectedProvidersForAgent, pickRecommendedAgent, type ProviderView } from '@cindy/model-providers';
 import { TEST_XD_GATEWAY_BASE_URL as XD_GATEWAY_BASE_URL } from '../../../test/vitest/clientEndpointsFixture';

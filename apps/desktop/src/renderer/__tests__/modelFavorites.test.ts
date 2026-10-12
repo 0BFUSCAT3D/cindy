@@ -20,6 +20,13 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
+// Reuse real validation helpers; resetModules() still recreates the preference
+// stores and storage listeners needed by restart and multi-window regressions.
+vi.mock('@cindy/model-providers', async (importOriginal) =>
+  importOriginal<typeof import('@cindy/model-providers')>());
+vi.mock('@cindy/device-link', async (importOriginal) =>
+  importOriginal<typeof import('@cindy/device-link')>());
+
 class MemLocalStorage {
   private store = new Map<string, string>();
   /**

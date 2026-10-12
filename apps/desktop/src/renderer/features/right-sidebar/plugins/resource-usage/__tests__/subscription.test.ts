@@ -1,11 +1,13 @@
-// @vitest-environment jsdom
-
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('resource usage subscription', () => {
   beforeEach(() => {
+    // The subscription only talks to the preload bridge.
+    vi.stubGlobal('window', {});
     vi.resetModules();
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it('引用计数只触发一次订阅，并处理 invoke rejection', async () => {
     const subscribe = vi.fn().mockRejectedValue(new Error('window closed'));

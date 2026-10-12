@@ -1,3 +1,4 @@
+import '../../../test/vitest/dispatchServiceBoundaries';
 import { sharedTaskGuestPeer } from '@cindy/device-link';
 /**
  * dispatchWeakNetwork.test.ts — 被控端弱网收尾行为契约。
@@ -9,7 +10,7 @@ import { sharedTaskGuestPeer } from '@cindy/device-link';
  *     只做慢速 TTL 出清;ws-online 事件触发立即投递。
  *  3. outbox 条目保留时长按 channel 的控制端等待预算收窄(×2,封顶全局
  *     120s):控制端早已超时放弃的回包不再白占两分钟配额。
- * mock 面与 dispatchSendSafety.test.ts 一致:只 mock electron + settings。
+ * 复用 dispatch 服务边界替身，连接状态与重试逻辑仍使用真实实现。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {

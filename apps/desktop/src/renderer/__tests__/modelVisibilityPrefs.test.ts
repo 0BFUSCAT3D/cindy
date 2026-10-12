@@ -19,6 +19,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { buildUserProvider, unifiedModelEntries, type ProviderView } from '@cindy/model-providers';
 
+// Reuse real validation helpers; renderer preference and owner state must
+// still be reconstructed by resetModules() in the initialization regressions.
+vi.mock('@cindy/model-providers', async (importOriginal) =>
+  importOriginal<typeof import('@cindy/model-providers')>());
+vi.mock('@cindy/device-link', async (importOriginal) =>
+  importOriginal<typeof import('@cindy/device-link')>());
+
 class MemLocalStorage {
   private store = new Map<string, string>();
   getItem(k: string): string | null {

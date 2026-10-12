@@ -7,8 +7,9 @@
  *  2. 无损与保序:批内事件是原 payload 原样序列,顺序即产生顺序,不跨会话合并;
  *  3. 到量即发:条数上限不等窗口(长思考不把单帧撑大到需要分片);
  *  4. 生命周期:退订该会话 / link-close / 控制端离线都不再投递;背压不丢事件。
- * mock 面与 dispatchSendSafety.test.ts 一致:只 mock electron + settings。
+ * 复用 dispatch 服务边界替身，门禁、订阅与微批转发仍使用真实实现。
  */
+import '../../../test/vitest/dispatchServiceBoundaries';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   DeviceLinkError,

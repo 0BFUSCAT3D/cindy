@@ -15,6 +15,7 @@
  *
  * 直击 Bug 1(远程浏览的新目录建会话):fresh 真实目录 → 放行到 handler;不存在路径 → 拒。
  */
+import '../../test/vitest/dispatchServiceBoundaries';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';

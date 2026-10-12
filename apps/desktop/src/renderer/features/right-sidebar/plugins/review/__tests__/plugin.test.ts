@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 /**
  * review plugin 注册 + state 序列化 / 反序列化容错单测。
  *

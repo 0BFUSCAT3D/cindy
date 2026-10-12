@@ -6,8 +6,9 @@
  *        其它 channel 回紧凑错误结果,控制端确定性失败(而非干等 30s 超时)。
  *   [13] forwardPush:转发 push 给某控制端抛错 → per-dst 接住,绝不冒泡回 broadcastToAllWindows
  *        (否则被控端本机 renderer 漏收事件),也不拖垮其它控制端的转发。
- * 只 mock electron(app)+ logger;subscriptions 用真实模块(注册控制端订阅)。
+ * 复用 dispatch 服务边界替身；subscriptions 用真实模块(注册控制端订阅)。
  */
+import '../../../test/vitest/dispatchServiceBoundaries';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   DeviceLinkError,

@@ -15,6 +15,11 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// Keep the real, stateless catalog helpers across resetModules(). Draft,
+// capability and owner stores still reload for every persistence fixture.
+vi.mock('@cindy/model-providers', async (importOriginal) =>
+  importOriginal<typeof import('@cindy/model-providers')>());
+
 class MemLocalStorage {
   private store = new Map<string, string>();
   getItem(k: string): string | null {

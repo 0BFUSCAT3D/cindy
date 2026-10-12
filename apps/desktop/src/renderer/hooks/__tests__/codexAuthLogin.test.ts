@@ -1,6 +1,4 @@
-// @vitest-environment jsdom
-
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -12,8 +10,12 @@ function deferred<T>() {
 
 describe('triggerCodexLoginOnce', () => {
   beforeEach(() => {
+    // Only the preload bridge is used; no browser DOM or event APIs are involved.
+    vi.stubGlobal('window', {});
     vi.resetModules();
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it('coalesces only the same mode and serializes a conflicting mode after cancellation', async () => {
     const browser = deferred<{ authenticated: boolean }>();

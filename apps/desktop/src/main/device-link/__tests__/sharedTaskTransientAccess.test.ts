@@ -1,3 +1,4 @@
+import '../../../test/vitest/dispatchServiceBoundaries';
 import { sharedTaskGuestPeer } from '@cindy/device-link';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PLUGIN_OAUTH_CHANNEL, PROTOCOL_VERSION, SHARED_TASK_CAPABILITY, type SharedTaskDetail } from '@cindy/device-link';
