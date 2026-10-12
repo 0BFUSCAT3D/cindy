@@ -176,6 +176,10 @@ export function createToolLoopReviewer(deps: ToolLoopReviewerDeps): ToolLoopRevi
       systemPrompt: TOOL_LOOP_REVIEW_SYSTEM_PROMPT,
       responseInstructions: RESPONSE_INSTRUCTIONS,
       validateResponse: (text) => parseToolLoopReviewDecision(text) !== null,
+      // 钉了路线(受邀者会话)就只走它，失败按 stop，不回落到本机辅助模型链。
+      ...(request.route
+        ? { providerId: request.route.providerId, agentKind: request.agentKind, model: request.route.model }
+        : {}),
     });
     if (!result.ok) return 'stop';
     return parseToolLoopReviewDecision(result.text) ?? 'stop';

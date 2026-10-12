@@ -200,6 +200,25 @@ describe('tool loop reviewer', () => {
       .validateResponse;
     expect(validate('STOP')).toBe(true);
     expect(validate('I think it is fine')).toBe(false);
+    const opts = (requestText.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+    expect(opts).not.toHaveProperty('providerId');
+    expect(opts).not.toHaveProperty('model');
+  });
+
+  it('pins a routed review to the given provider and model', async () => {
+    const requestText = vi.fn(async () => okResult('CONTINUE'));
+    const reviewer = createToolLoopReviewer({ requestText });
+    const routed: ToolLoopReviewRequest = {
+      ...request,
+      agentKind: 'claude-code',
+      route: { providerId: 'shared-provider', model: 'shared-model' },
+    };
+    await expect(reviewer(routed, { signal: new AbortController().signal })).resolves.toBe('continue');
+    expect(requestText).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      providerId: 'shared-provider',
+      agentKind: 'claude-code',
+      model: 'shared-model',
+    }));
   });
 
   it('falls back to stop when no model answers usefully', async () => {
