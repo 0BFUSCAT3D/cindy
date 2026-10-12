@@ -325,7 +325,7 @@ enum Fmt {
   static func clockTime(_ date: Date, locale: String) -> String {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: locale)
-    formatter.setLocalizedDateFormatFromTemplate("MMMd EEE HH:mm")
+    formatter.setLocalizedDateFormatFromTemplate("EEE HH:mm")
     return formatter.string(from: date)
   }
 }
@@ -419,6 +419,9 @@ final class MenubarStore: ObservableObject {
   /// Natural height of the manage page; the panel takes it instead of the main page's height.
   @Published var manageContentHeight: CGFloat = 0
   @Published var shakeId: String?
+  /// Set when the panel opens on a short screen (13–14" laptops at default scaling): tubes,
+  /// rings and the task list tighten so the main page stays well clear of the Dock.
+  @Published var short = false
 
   var strings: [String: String] { view?.strings ?? [:] }
 
@@ -452,13 +455,13 @@ final class MenubarStore: ObservableObject {
     if width != narrowWidth { narrowWidth = width }
   }
 
-  /// Five or more tubes use the full 404pt; fewer give width back, down to 340pt, which still
-  /// fits the captions, task rows and the month card.
+  /// Five or more tubes use the full 368pt; fewer give width back, down to 320pt, which still
+  /// fits the captions, task rows and the month card in every language.
   static func narrowWidth(tubes: Int) -> CGFloat {
     switch tubes {
-    case ...2: return 340
-    case 3: return 356
-    case 4: return 380
+    case ...2: return 320
+    case 3: return 332
+    case 4: return 350
     default: return StatusController.narrowWidth
     }
   }
@@ -545,7 +548,7 @@ final class MenubarPanel: NSPanel {
 /// Rounded, frosted backing for the panel. Uses the system popover material so the panel
 /// reads like other menu bar extras in both appearances.
 final class PanelBackgroundView: NSVisualEffectView {
-  static let radius: CGFloat = 26
+  static let radius: CGFloat = 20
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -572,10 +575,20 @@ final class PanelBackgroundView: NSVisualEffectView {
 
 @MainActor
 final class StatusController: NSObject, NSWindowDelegate {
-  static let narrowWidth: CGFloat = 404
-  static let wideWidth: CGFloat = 820
+  static let narrowWidth: CGFloat = 368
+  static let wideWidth: CGFloat = 760
+  private static let wideHeight: CGFloat = 620
   private static let screenGap: CGFloat = 6
   private static let sideMargin: CGFloat = 12
+  /// Screens with less visible height than this get the short layout.
+  private static let shortScreenHeight: CGFloat = 1000
+  /// The panel never takes more than this share of the visible height, so it reads as a
+  /// menu and not a window; anything longer scrolls between the fixed header and footer.
+  private static let heightShare: CGFloat = 0.86
+  /// Preview mode only: forces the short layout regardless of the screen.
+  var forceShort = false
+  /// Preview mode only: focus moving to another app must not close the panel mid-snapshot.
+  var pinned = false
 
   let store: MenubarStore
   private let statusItem: NSStatusItem
@@ -692,6 +705,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     isOpen = true
     closing = false
     let panel = ensurePanel()
+    let screen = statusAnchor()?.screen ?? NSScreen.main ?? NSScreen.screens.first
+    let short = forceShort || (screen.map { $0.visibleFrame.height < Self.shortScreenHeight } ?? false)
+    if store.short != short { store.short = short }
     store.page = .main
     store.fillToken += 1
     layoutPanel(for: .main, animated: false)
@@ -801,14 +817,14 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
     let visible = screen.visibleFrame
     let top = min(buttonRect.minY, visible.maxY) - Self.screenGap
-    let maxHeight = max(320, top - visible.minY - Self.sideMargin)
+    let maxHeight = max(320, min(top - visible.minY - Self.sideMargin, (visible.height * Self.heightShare).rounded(.down)))
     let wide = page == .wide
     let width = min(wide ? Self.wideWidth : store.narrowWidth, visible.width - Self.sideMargin * 2)
     let right = min(visible.maxX - Self.sideMargin, buttonRect.midX + store.narrowWidth / 2)
     let x = max(visible.minX + Self.sideMargin, right - width)
     let height: CGFloat
     if wide {
-      height = min(maxHeight, 806)
+      height = min(maxHeight, Self.wideHeight)
     } else {
       var natural = store.mainContentHeight > 0 ? store.mainContentHeight : 640
       if case .detail = page { natural = max(natural, store.detailContentHeight) }
@@ -849,7 +865,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     removeMonitors()
     outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
       Task { @MainActor in
-        guard let self else { return }
+        guard let self, !self.pinned else { return }
         // The menu bar reports a press on our own status item here too, and a quick tap may
         // never reach the item's action. Close on the press and let `toggle` skip that click.
         if self.statusAnchor()?.rect.contains(NSEvent.mouseLocation) == true {
@@ -917,14 +933,20 @@ final class StatusController: NSObject, NSWindowDelegate {
       return
     }
     // Clicking another app: behave like a menu.
-    if isOpen { close() }
+    if isOpen && !pinned { close() }
   }
 
   /// Preview mode only: open without a click so screenshots show the panel.
   func openForPreview(page: Page) {
+    pinned = true
     open()
-    store.page = page
-    layoutPanel(for: page, animated: false)
+    // `open` may retry until the status item is placed and then shows the main page; switch
+    // pages only after it has settled.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+      guard let self else { return }
+      self.store.page = page
+      self.layoutPanel(for: page, animated: false)
+    }
   }
 }
 
@@ -1003,9 +1025,9 @@ struct IconButton: View {
   var body: some View {
     Button(action: action) {
       Image(systemName: systemName)
-        .font(.system(size: 13, weight: .medium))
+        .font(.system(size: 12, weight: .medium))
         .rotationEffect(.degrees(rotation))
-        .frame(width: 32, height: 32)
+        .frame(width: 28, height: 28)
         .foregroundStyle(hovering ? Palette.ink : Palette.ink2)
         .background(Circle().fill(hovering ? Palette.ink5 : .clear))
         .contentShape(Circle())
@@ -1020,7 +1042,7 @@ struct IconButton: View {
 struct InkPillButton: View {
   let title: String
   var shortcut: String? = nil
-  var height: CGFloat = 34
+  var height: CGFloat = 30
   var fullWidth = false
   var disabled = false
   let action: () -> Void
@@ -1028,12 +1050,12 @@ struct InkPillButton: View {
   var body: some View {
     Button(action: action) {
       HStack(spacing: 8) {
-        Text(title).font(.system(size: 12.5, weight: .semibold))
+        Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
         if let shortcut {
-          Text(shortcut).font(.system(size: 12.5, weight: .medium)).opacity(0.55)
+          Text(shortcut).font(.system(size: 12, weight: .medium)).opacity(0.55)
         }
       }
-      .padding(.horizontal, 16)
+      .padding(.horizontal, 14)
       .frame(height: height)
       .frame(maxWidth: fullWidth ? .infinity : nil)
       .foregroundStyle(Palette.onInk)
@@ -1055,7 +1077,7 @@ struct PressScaleStyle: ButtonStyle {
 }
 
 struct Tile<Content: View>: View {
-  var radius: CGFloat = 20
+  var radius: CGFloat = 14
   @ViewBuilder let content: Content
 
   var body: some View {
@@ -1118,15 +1140,15 @@ struct TubeView: View {
   let emphasized: Bool
   let index: Int
   let fillToken: Int
+  var height: CGFloat = 96
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var shown = true
 
-  private static let height: CGFloat = 116
   private static let inset: CGFloat = 3
-  private static let outerRadius: CGFloat = 15
+  private static let outerRadius: CGFloat = 13
 
   var body: some View {
-    let wellHeight = Self.height - Self.inset * 2
+    let wellHeight = height - Self.inset * 2
     let fraction = max(0, min(1, fill ?? 0))
     let liquid = fraction > 0 ? max(3, fraction * wellHeight) : 0
     ZStack {
@@ -1157,8 +1179,8 @@ struct TubeView: View {
           .strokeBorder(emphasized ? Palette.ink : Palette.ink4, lineWidth: emphasized ? 1.5 : 0.5)
       }
     }
-    .frame(maxWidth: 46)
-    .frame(height: Self.height)
+    .frame(maxWidth: 40)
+    .frame(height: height)
     .onChange(of: fillToken) { replay() }
     .onAppear { replay() }
   }
@@ -1226,17 +1248,18 @@ struct MainPage: View {
 
   private var topBar: some View {
     HStack(spacing: 0) {
-      Wordmark().frame(height: 15)
+      Wordmark().frame(height: 13)
       TimelineView(.periodic(from: .now, by: 15)) { context in
         Text(updatedText(now: context.date))
-          .font(.system(size: 11.5))
+          .font(.system(size: 11))
           .foregroundStyle(Palette.ink3)
-          .padding(.leading, 10)
+          .lineLimit(1)
+          .padding(.leading, 8)
       }
       Spacer(minLength: 0)
       RefreshButton(store: store)
     }
-    .padding(EdgeInsets(top: 22, leading: 22, bottom: 10, trailing: 22))
+    .padding(EdgeInsets(top: 14, leading: 18, bottom: 4, trailing: 12))
   }
 
   private func updatedText(now: Date) -> String {
@@ -1250,8 +1273,8 @@ struct MainPage: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Headline(primary: view.headlinePrimary, secondary: view.headlineSecondary)
-        .padding(EdgeInsets(top: 20, leading: 24, bottom: 2, trailing: 24))
+      Headline(primary: view.headlinePrimary, secondary: view.headlineSecondary, short: store.short)
+        .padding(EdgeInsets(top: store.short ? 6 : 10, leading: 20, bottom: 0, trailing: 20))
 
       // Only sources with a level get a tube; the rest (not read yet, pay-as-you-go) are
       // listed as quiet rows so an empty tube never stands in for missing data.
@@ -1259,26 +1282,27 @@ struct MainPage: View {
       let unmeasured = view.sources.filter { $0.fill == nil }
       if !measured.isEmpty {
         Cells(store: store, cells: measured)
-          .padding(.horizontal, 22)
-          .padding(.top, 22)
+          .padding(.horizontal, 16)
+          .padding(.top, store.short ? 10 : 14)
       }
       if !unmeasured.isEmpty {
         UnmeasuredSources(store: store, cells: unmeasured)
-          .padding(.horizontal, 14)
-          .padding(.top, measured.isEmpty ? 18 : 8)
+          .padding(.horizontal, 10)
+          .padding(.top, measured.isEmpty ? 12 : 4)
       }
 
       Caption(title: store.s("tasks"), detail: view.taskSummary) {
-        TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"), showsTokens: store.narrowWidth >= 380)
+        TaskTotal(tasks: view.tasks, tokenUnit: store.s("tokenUnit"), showsTokens: store.narrowWidth >= 350)
       }
-      .padding(EdgeInsets(top: 28, leading: 24, bottom: 12, trailing: 24))
+      .padding(EdgeInsets(top: store.short ? 14 : 18, leading: 20, bottom: 6, trailing: 20))
 
       TaskList(store: store, tasks: view.tasks, controller: controller)
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 10)
 
       MonthCard(store: store, view: view)
-        .padding(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
+        .padding(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 12))
     }
+    .frame(width: store.narrowWidth, alignment: .leading)
   }
 
   private var foot: some View {
@@ -1289,7 +1313,7 @@ struct MainPage: View {
         store.go(.manage)
       }
     }
-    .padding(EdgeInsets(top: 12, leading: 18, bottom: 18, trailing: 18))
+    .padding(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 10))
   }
 }
 
@@ -1301,28 +1325,28 @@ struct GatePage: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Wordmark().frame(height: 15)
-        .padding(EdgeInsets(top: 22, leading: 22, bottom: 0, trailing: 22))
+      Wordmark().frame(height: 13)
+        .padding(EdgeInsets(top: 18, leading: 18, bottom: 0, trailing: 18))
 
       Image(systemName: "person.crop.circle")
-        .font(.system(size: 30, weight: .regular))
+        .font(.system(size: 26, weight: .regular))
         .foregroundStyle(Palette.ink3)
         .accessibilityHidden(true)
-        .padding(EdgeInsets(top: 30, leading: 24, bottom: 14, trailing: 24))
+        .padding(EdgeInsets(top: 22, leading: 20, bottom: 10, trailing: 20))
 
       Text(store.s("gateTitle"))
-        .font(.system(size: 22, weight: .semibold))
-        .tracking(-0.4)
+        .font(.system(size: 19, weight: .semibold))
+        .tracking(-0.3)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityAddTraits(.isHeader)
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 20)
 
       Text(store.s("gateBody"))
-        .font(.system(size: 13))
-        .lineSpacing(3)
+        .font(.system(size: 12.5))
+        .lineSpacing(2)
         .foregroundStyle(Palette.ink3)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(EdgeInsets(top: 8, leading: 24, bottom: 0, trailing: 24))
+        .padding(EdgeInsets(top: 6, leading: 20, bottom: 0, trailing: 20))
 
       HStack(spacing: 6) {
         InkPillButton(title: store.s("openApp"), shortcut: "⌘O") { controller.openApp() }
@@ -1331,7 +1355,7 @@ struct GatePage: View {
           store.go(.manage)
         }
       }
-      .padding(EdgeInsets(top: 26, leading: 18, bottom: 18, trailing: 18))
+      .padding(EdgeInsets(top: 20, leading: 12, bottom: 12, trailing: 10))
     }
     .frame(maxWidth: .infinity, alignment: .topLeading)
     .fixedSize(horizontal: false, vertical: true)
@@ -1360,7 +1384,7 @@ struct Wordmark: View {
         .aspectRatio(contentMode: .fit)
         .accessibilityLabel("Cindy")
     } else {
-      Text("Cindy").font(.system(size: 15, weight: .bold)).foregroundStyle(Palette.ink)
+      Text("Cindy").font(.system(size: 13, weight: .bold)).foregroundStyle(Palette.ink)
     }
   }
 }
@@ -1395,17 +1419,18 @@ struct RefreshButton: View {
 struct Headline: View {
   let primary: String
   let secondary: String?
+  var short = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 3) {
+    VStack(alignment: .leading, spacing: 1) {
       Text(primary)
-        .font(.system(size: 26, weight: .semibold))
-        .tracking(-0.6)
-        .lineSpacing(2)
+        .font(.system(size: short ? 19 : 21, weight: .semibold))
+        .tracking(-0.5)
+        .lineSpacing(1)
       if let secondary {
         Text(secondary)
-          .font(.system(size: 20, weight: .semibold))
-          .tracking(-0.4)
+          .font(.system(size: short ? 14.5 : 16, weight: .semibold))
+          .tracking(-0.3)
           .foregroundStyle(Palette.ink3)
       }
     }
@@ -1422,8 +1447,8 @@ struct Caption<Trailing: View>: View {
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(title).font(.system(size: 13, weight: .semibold)).tracking(-0.1)
-      Text(detail).font(.system(size: 12)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1)
+      Text(title).font(.system(size: 12.5, weight: .semibold)).tracking(-0.1).lineLimit(1).fixedSize()
+      Text(detail).font(.system(size: 11.5)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1)
       Spacer(minLength: 4)
       trailing
     }
@@ -1435,9 +1460,9 @@ struct Cells: View {
   let cells: [MBCell]
 
   var body: some View {
-    HStack(alignment: .top, spacing: cells.count > 6 ? 6 : 10) {
+    HStack(alignment: .top, spacing: cells.count > 6 ? 4 : 8) {
       ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
-        CellView(cell: cell, index: index, fillToken: store.fillToken) {
+        CellView(cell: cell, index: index, fillToken: store.fillToken, tubeHeight: store.short ? 76 : 96) {
           store.go(.detail(cell.id))
         }
       }
@@ -1474,25 +1499,25 @@ struct UnmeasuredRow: View {
   var body: some View {
     Button(action: action) {
       HStack(spacing: 10) {
-        LogoView(svg: cell.logoSvg, size: 13)
-          .frame(width: 26, height: 26)
-          .background(RoundedRectangle(cornerRadius: 8, style: .circular).fill(Palette.ink5))
+        LogoView(svg: cell.logoSvg, size: 12)
+          .frame(width: 24, height: 24)
+          .background(RoundedRectangle(cornerRadius: 7, style: .circular).fill(Palette.ink5))
         Text(cell.name)
-          .font(.system(size: 13, weight: .semibold))
+          .font(.system(size: 12.5, weight: .semibold))
           .tracking(-0.1)
           .lineLimit(1)
         Spacer(minLength: 8)
         Text(status)
-          .font(.system(size: 12))
+          .font(.system(size: 11.5))
           .foregroundStyle(Palette.ink3)
           .lineLimit(1)
         Image(systemName: "chevron.right")
           .font(.system(size: 10, weight: .semibold))
           .foregroundStyle(Palette.ink4)
       }
-      .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 12))
-      .background(RoundedRectangle(cornerRadius: 12, style: .circular).fill(hovering ? Palette.ink5 : .clear))
-      .contentShape(RoundedRectangle(cornerRadius: 12, style: .circular))
+      .padding(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
+      .background(RoundedRectangle(cornerRadius: 10, style: .circular).fill(hovering ? Palette.ink5 : .clear))
+      .contentShape(RoundedRectangle(cornerRadius: 10, style: .circular))
     }
     .buttonStyle(.plain)
     .onHover { hovering in withAnimation(.easeOut(duration: 0.15)) { self.hovering = hovering } }
@@ -1504,38 +1529,41 @@ struct CellView: View {
   let cell: MBCell
   let index: Int
   let fillToken: Int
+  var tubeHeight: CGFloat = 96
   let action: () -> Void
   @State private var hovering = false
 
   var body: some View {
     Button(action: action) {
-      VStack(spacing: 9) {
-        valueLabel.frame(height: 20)
+      VStack(spacing: 7) {
+        valueLabel.frame(height: 18)
         TubeView(
           fill: cell.kind == "payg" ? nil : cell.fill,
           level: cell.level,
           reserve: cell.reserve,
           emphasized: cell.emphasized,
           index: index,
-          fillToken: fillToken
+          fillToken: fillToken,
+          height: tubeHeight
         )
-        VStack(spacing: 5) {
-          LogoView(svg: cell.logoSvg, size: 13)
+        VStack(spacing: 4) {
+          LogoView(svg: cell.logoSvg, size: 12)
           Text(cell.name)
-            .font(.system(size: 11))
+            .font(.system(size: 10.5))
             .foregroundStyle(Palette.ink2)
             .lineLimit(1)
             .truncationMode(.tail)
         }
         Text(cell.when)
-          .font(.system(size: 10.5, weight: .medium))
+          .font(.system(size: 10, weight: .medium))
           .foregroundStyle(Palette.level(cell.whenLevel) ?? Palette.ink2)
           .lineLimit(1)
-          .frame(height: 15)
+          .minimumScaleFactor(0.85)
+          .frame(height: 14)
           .padding(.top, -4)
       }
-      .padding(.top, 6)
-      .padding(.bottom, 4)
+      .padding(.top, 4)
+      .padding(.bottom, 2)
       .frame(maxWidth: .infinity)
       .contentShape(Rectangle())
       .offset(y: hovering ? -3 : 0)
@@ -1552,18 +1580,22 @@ struct CellView: View {
     if let value = cell.value {
       HStack(alignment: .firstTextBaseline, spacing: 1) {
         Text(value)
-          .font(.system(size: cell.kind == "balance" ? 13 : 15, weight: .semibold))
+          .font(.system(size: cell.kind == "balance" ? 12.5 : 14, weight: .semibold))
           .tracking(cell.kind == "balance" ? -0.2 : -0.3)
+          .lineLimit(1)
+          .minimumScaleFactor(0.8)
         if let unit = cell.valueUnit {
-          Text(unit).font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.ink3)
+          Text(unit).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Palette.ink3)
         }
       }
       .monospacedDigit()
       .foregroundStyle(Palette.level(cell.level) ?? Palette.ink)
     } else if let label = cell.valueLabel {
       Text(label)
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: 10.5, weight: .semibold))
         .foregroundStyle(Palette.ink2)
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
         .padding(.top, 3)
     }
   }
@@ -1582,7 +1614,7 @@ struct TaskTotal: View {
     let tokens = tasks.reduce(0) { $0 + $1.tokens }
     (Text(Fmt.money(money)).foregroundColor(Palette.ink).fontWeight(.semibold)
       + Text(showsTokens ? " · \(Fmt.tokens(tokens)) \(tokenUnit)" : ""))
-      .font(.system(size: 12))
+      .font(.system(size: 11.5))
       .foregroundStyle(Palette.ink3)
       .monospacedDigit()
       .lineLimit(1)
@@ -1597,16 +1629,18 @@ struct TaskList: View {
   var body: some View {
     let sorted = tasks.sorted { $0.value > $1.value }
     let total = max(0.0001, sorted.reduce(0) { $0 + $1.value })
-    let top = Array(sorted.prefix(3))
-    let rest = Array(sorted.dropFirst(3))
-    VStack(spacing: 2) {
+    // A short screen keeps two rows; the rest are one click away on the usage page.
+    let shown = store.short ? 2 : 3
+    let top = Array(sorted.prefix(shown))
+    let rest = Array(sorted.dropFirst(shown))
+    VStack(spacing: 0) {
       if sorted.isEmpty {
         Text(store.s("noTasksToday"))
-          .font(.system(size: 12))
+          .font(.system(size: 11.5))
           .foregroundStyle(Palette.ink3)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 10)
-          .padding(.vertical, 6)
+          .padding(.vertical, 4)
       }
       ForEach(top) { task in
         TaskRow(store: store, task: task, share: task.value / total) {
@@ -1637,11 +1671,11 @@ struct TaskRow: View {
 
   var body: some View {
     Button(action: action) {
-      HStack(alignment: .center, spacing: 11) {
+      HStack(alignment: .center, spacing: 10) {
         TaskIcon(svg: task.logoSvg, running: task.running)
         VStack(alignment: .leading, spacing: 1) {
           Text(task.title)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 12.5, weight: .semibold))
             .tracking(-0.1)
             .lineLimit(1)
           metaLine
@@ -1649,18 +1683,18 @@ struct TaskRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         VStack(alignment: .trailing, spacing: 1) {
           Text(Fmt.money(task.value))
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 13.5, weight: .semibold))
             .tracking(-0.3)
           Text("\(Int((share * 100).rounded()))%")
-            .font(.system(size: 10.5, weight: .medium))
+            .font(.system(size: 10, weight: .medium))
             .foregroundStyle(Palette.ink3)
         }
         .monospacedDigit()
       }
-      .padding(EdgeInsets(top: 9, leading: 10, bottom: 11, trailing: 10))
+      .padding(EdgeInsets(top: 6, leading: 10, bottom: 8, trailing: 10))
       .background(alignment: .bottomLeading) { shareBar }
-      .background(RoundedRectangle(cornerRadius: 16, style: .circular).fill(hovering ? Palette.ink5 : .clear))
-      .contentShape(RoundedRectangle(cornerRadius: 16, style: .circular))
+      .background(RoundedRectangle(cornerRadius: 12, style: .circular).fill(hovering ? Palette.ink5 : .clear))
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .circular))
     }
     .buttonStyle(.plain)
     .onHover { hovering in withAnimation(.easeOut(duration: 0.15)) { self.hovering = hovering } }
@@ -1670,13 +1704,14 @@ struct TaskRow: View {
 
   private var shareBar: some View {
     GeometryReader { geometry in
-      let width = geometry.size.width - 55 - 10
+      // Starts under the title: 10pt inset + 28pt icon + 10pt gap.
+      let width = geometry.size.width - 48 - 10
       ZStack(alignment: .leading) {
         Capsule().fill(Palette.ink5)
         Capsule().fill(Palette.ink3).frame(width: max(4, width * share))
       }
       .frame(width: max(0, width), height: 2)
-      .offset(x: 55, y: geometry.size.height - 4 - 2)
+      .offset(x: 48, y: geometry.size.height - 3 - 2)
     }
   }
 
@@ -1692,13 +1727,13 @@ struct TaskRow: View {
             .foregroundStyle(Palette.ink2)
           Text(" · " + task.meta).foregroundStyle(Palette.ink3)
         }
-        .font(.system(size: 11))
+        .font(.system(size: 10.5))
         .monospacedDigit()
         .lineLimit(1)
       }
     } else {
       Text(task.idleStatus + " · " + task.meta)
-        .font(.system(size: 11))
+        .font(.system(size: 10.5))
         .foregroundStyle(Palette.ink3)
         .monospacedDigit()
         .lineLimit(1)
@@ -1714,10 +1749,10 @@ struct TaskIcon: View {
 
   var body: some View {
     ZStack {
-      RoundedRectangle(cornerRadius: 12, style: .circular).fill(Palette.ink5)
-      LogoView(svg: svg, size: 15)
+      RoundedRectangle(cornerRadius: 9, style: .circular).fill(Palette.ink5)
+      LogoView(svg: svg, size: 13)
       if running && !reduceMotion {
-        RoundedRectangle(cornerRadius: 14, style: .circular)
+        RoundedRectangle(cornerRadius: 11, style: .circular)
           .strokeBorder(Palette.ink3, lineWidth: 1)
           .padding(-3)
           .scaleEffect(pulse ? 1.12 : 0.92)
@@ -1727,7 +1762,7 @@ struct TaskIcon: View {
           }
       }
     }
-    .frame(width: 34, height: 34)
+    .frame(width: 28, height: 28)
   }
 }
 
@@ -1738,7 +1773,7 @@ struct BreathingDot: View {
   var body: some View {
     Circle()
       .fill(Palette.ink2)
-      .frame(width: 6, height: 6)
+      .frame(width: 5, height: 5)
       .opacity(dim ? 0.2 : 1)
       .onAppear {
         guard animate else { return }
@@ -1760,9 +1795,9 @@ struct MoreRow: View {
         Spacer()
         Text(value + " ›").monospacedDigit()
       }
-      .font(.system(size: 12))
+      .font(.system(size: 11.5))
       .foregroundStyle(hovering ? Palette.ink : Palette.ink3)
-      .padding(.vertical, 6)
+      .padding(.vertical, 4)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -1787,29 +1822,33 @@ struct MonthCard: View {
       store.wideList = .models
       store.go(.wide)
     } label: {
-      HStack(spacing: 14) {
+      HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
           Text(store.s(scope == "local" ? "monthScopeLocal" : "monthScopeAll"))
-            .font(.system(size: 11))
+            .font(.system(size: 10.5))
             .foregroundStyle(Palette.ink3)
+            .lineLimit(1)
           Text(Fmt.money(total))
-            .font(.system(size: 20, weight: .bold))
-            .tracking(-0.6)
+            .font(.system(size: 17, weight: .bold))
+            .tracking(-0.5)
             .monospacedDigit()
+            .lineLimit(1)
         }
+        .fixedSize()
         UsageChart(days: days, daily: last, money: true, compact: true, selection: .constant(nil))
-          .frame(height: 34)
-        HStack(spacing: 5) {
-          Text(store.s("expand"))
-          Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+          .frame(height: 28)
+        HStack(spacing: 4) {
+          Text(store.s("expand")).lineLimit(1)
+          Image(systemName: "arrow.up.right").font(.system(size: 8.5, weight: .semibold))
         }
-        .font(.system(size: 12, weight: .semibold))
+        .font(.system(size: 11.5, weight: .semibold))
         .foregroundStyle(Palette.ink2)
+        .fixedSize()
       }
-      .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
-      .background(RoundedRectangle(cornerRadius: 18, style: .circular).fill(Palette.tile))
-      .overlay(RoundedRectangle(cornerRadius: 18, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
-      .contentShape(RoundedRectangle(cornerRadius: 18, style: .circular))
+      .padding(EdgeInsets(top: 9, leading: 12, bottom: 9, trailing: 12))
+      .background(RoundedRectangle(cornerRadius: 14, style: .circular).fill(Palette.tile))
+      .overlay(RoundedRectangle(cornerRadius: 14, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
+      .contentShape(RoundedRectangle(cornerRadius: 14, style: .circular))
       .offset(y: hovering ? -1 : 0)
     }
     .buttonStyle(.plain)
@@ -1900,7 +1939,7 @@ struct UsageChart: View {
         AxisMarks(values: axisLabels.map { dates[$0.0] }) { value in
           AxisValueLabel(anchor: .top) {
             if let date = value.as(Date.self), let label = axisLabels.first(where: { dates[$0.0] == date })?.1 {
-              Text(label).font(.system(size: 10.5)).foregroundStyle(Palette.ink3)
+              Text(label).font(.system(size: 10)).foregroundStyle(Palette.ink3)
             }
           }
         }
@@ -1984,15 +2023,17 @@ struct RingArc: Shape {
 struct RingsView: View {
   let rings: [MBRing]
   let fillToken: Int
+  var size: CGFloat = 196
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var shown = true
 
   var body: some View {
-    let lineWidth: CGFloat = rings.count > 1 ? 14 : 16
-    let gap: CGFloat = 4
+    // Line width follows the ring size so the nested rings keep the same proportions.
+    let lineWidth: CGFloat = (size * (rings.count > 1 ? 0.06 : 0.068)).rounded()
+    let gap: CGFloat = 3
     ZStack {
       ForEach(Array(rings.enumerated()), id: \.offset) { index, ring in
-        let inset = 4 + CGFloat(index) * (lineWidth + gap)
+        let inset = 3 + CGFloat(index) * (lineWidth + gap)
         ZStack {
           Circle()
             .strokeBorder(Palette.ink5, lineWidth: lineWidth)
@@ -2004,7 +2045,7 @@ struct RingsView: View {
         .padding(inset)
       }
     }
-    .frame(width: 240, height: 240)
+    .frame(width: size, height: size)
     .onAppear { replay() }
     .onChange(of: fillToken) { replay() }
   }
@@ -2026,70 +2067,76 @@ struct DetailPage: View {
   var body: some View {
     ScrollView(.vertical, showsIndicators: false) {
       VStack(alignment: .leading, spacing: 0) {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
           IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
-          LogoView(svg: detail.logoSvg, size: 15)
-          Text(detail.title).font(.system(size: 14, weight: .semibold))
-          Text(detail.plan).font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.ink3)
+          LogoView(svg: detail.logoSvg, size: 13)
+          Text(detail.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+          Text(detail.plan).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Palette.ink3).lineLimit(1)
           Spacer(minLength: 0)
         }
-        .padding(EdgeInsets(top: 18, leading: 18, bottom: 0, trailing: 18))
+        .padding(EdgeInsets(top: 12, leading: 10, bottom: 0, trailing: 14))
 
+        let ring: CGFloat = store.short ? 160 : 188
         ZStack {
-          RingsView(rings: detail.rings, fillToken: store.fillToken)
-          VStack(spacing: 6) {
+          RingsView(rings: detail.rings, fillToken: store.fillToken, size: ring)
+          VStack(spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 2) {
               Text(detail.bigValue)
-                .font(.system(size: detail.bigCompact ? 46 : 64, weight: .light))
-                .tracking(detail.bigCompact ? -2 : -3)
+                .font(.system(size: (detail.bigCompact ? 36 : 50) * ring / 188, weight: .light))
+                .tracking(detail.bigCompact ? -1.4 : -2.2)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
               if let unit = detail.bigUnit {
-                Text(unit).font(.system(size: 22)).foregroundStyle(Palette.ink3)
+                Text(unit).font(.system(size: 17 * ring / 188)).foregroundStyle(Palette.ink3)
               }
             }
             .monospacedDigit()
             .foregroundStyle(detail.bigColor.map(Palette.named) ?? Palette.ink)
-            Text(detail.bigCaption).font(.system(size: 12)).foregroundStyle(Palette.ink3)
+            Text(detail.bigCaption).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
           }
+          .frame(maxWidth: ring - 44)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 20)
+        .padding(.top, 10)
         .accessibilityElement(children: .combine)
 
         if !detail.legend.isEmpty {
-          HStack(spacing: 16) {
+          HStack(spacing: 12) {
             ForEach(detail.legend, id: \.self) { item in
-              HStack(spacing: 6) {
-                Circle().fill(Palette.named(item.color)).frame(width: 8, height: 8)
-                Text(item.label)
+              HStack(spacing: 5) {
+                Circle().fill(Palette.named(item.color)).frame(width: 7, height: 7)
+                Text(item.label).lineLimit(1)
               }
             }
           }
-          .font(.system(size: 11.5))
+          .font(.system(size: 11))
           .foregroundStyle(Palette.ink2)
           .monospacedDigit()
           .frame(maxWidth: .infinity)
-          .padding(.top, 14)
+          .padding(.horizontal, 16)
+          .padding(.top, 10)
         }
 
         sayText
-          .font(.system(size: 19, weight: .semibold))
-          .tracking(-0.4)
-          .lineSpacing(3)
+          .font(.system(size: 15.5, weight: .semibold))
+          .tracking(-0.3)
+          .lineSpacing(2)
           .fixedSize(horizontal: false, vertical: true)
-          .padding(EdgeInsets(top: 22, leading: 28, bottom: 0, trailing: 28))
+          .padding(EdgeInsets(top: 14, leading: 20, bottom: 0, trailing: 20))
 
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
           ForEach(detail.facts, id: \.self) { fact in
             FactCard(fact: fact)
           }
         }
-        .padding(EdgeInsets(top: 22, leading: 22, bottom: 24, trailing: 22))
+        .padding(EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
 
-        InkPillButton(title: detail.actionLabel, height: 40, fullWidth: true, disabled: detail.action.kind == "none") {
+        InkPillButton(title: detail.actionLabel, height: 32, fullWidth: true, disabled: detail.action.kind == "none") {
           controller.emitAndClose(["type": "detail-action", "sourceId": detail.id])
         }
-        .padding(EdgeInsets(top: 0, leading: 22, bottom: 24, trailing: 22))
+        .padding(EdgeInsets(top: 0, leading: 14, bottom: 14, trailing: 14))
       }
+      .frame(width: store.narrowWidth, alignment: .leading)
       .background(GeometryReader { inner in
         Color.clear
           .onAppear { report(inner.size.height) }
@@ -2103,10 +2150,12 @@ struct DetailPage: View {
     if abs(store.detailContentHeight - natural) > 0.5 { store.detailContentHeight = natural }
   }
 
+  /// Chinese and Japanese run sentences together; other languages need a space between them.
   private var sayText: Text {
     var text = Text(detail.sayPrimary)
     if let secondary = detail.saySecondary {
-      text = text + Text(secondary).foregroundColor(Palette.ink3)
+      let joined = store.locale.hasPrefix("zh") || store.locale.hasPrefix("ja")
+      text = text + Text((joined ? "" : " ") + secondary).foregroundColor(Palette.ink3)
     }
     return text
   }
@@ -2117,20 +2166,20 @@ struct FactCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text(fact.label).font(.system(size: 11)).foregroundStyle(Palette.ink3)
+      Text(fact.label).font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
       Text(fact.value)
-        .font(.system(size: fact.value.count > 14 ? 13 : 17, weight: .semibold))
-        .tracking(fact.value.count > 14 ? 0 : -0.4)
+        .font(.system(size: fact.value.count > 14 ? 12 : 15, weight: .semibold))
+        .tracking(fact.value.count > 14 ? 0 : -0.3)
         .monospacedDigit()
         .lineLimit(1)
         .minimumScaleFactor(0.8)
-        .padding(.top, fact.value.count > 14 ? 5 : 3)
-      Text(fact.sub).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1).padding(.top, 1)
+        .padding(.top, fact.value.count > 14 ? 4 : 2)
+      Text(fact.sub).font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1).padding(.top, 1)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(EdgeInsets(top: 13, leading: 14, bottom: 13, trailing: 14))
-    .background(RoundedRectangle(cornerRadius: 16, style: .circular).fill(Palette.tile))
-    .overlay(RoundedRectangle(cornerRadius: 16, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
+    .padding(EdgeInsets(top: 9, leading: 11, bottom: 9, trailing: 11))
+    .background(RoundedRectangle(cornerRadius: 12, style: .circular).fill(Palette.tile))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
   }
 }
 
@@ -2154,7 +2203,7 @@ struct WidePage: View {
     let total = byHarness.reduce(0, +)
     HStack(alignment: .top, spacing: 0) {
       sidebar(days: days, daily: daily, byHarness: byHarness, total: total, note: data?.note ?? "")
-        .frame(width: 260)
+        .frame(width: 236)
         .frame(maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .trailing) { Rectangle().fill(Palette.line).frame(width: 0.5) }
       ScrollView(.vertical, showsIndicators: false) {
@@ -2168,23 +2217,25 @@ struct WidePage: View {
             selection: $selection,
             axisLabels: axisLabels(days: days)
           )
-          .frame(height: 306)
-          .padding(.top, 22)
+          .frame(height: store.short ? 220 : 260)
+          .padding(.top, 16)
           Picker("", selection: $store.wideList) {
             Text(store.s("listModels", ["n": String(range)])).tag(WideList.models)
             Text(store.s("listTasks")).tag(WideList.tasks)
           }
           .pickerStyle(.segmented)
           .labelsHidden()
+          .controlSize(.small)
           .fixedSize()
-          .padding(.top, 22)
+          .padding(.top, 16)
           if store.wideList == .models {
             modelList(data?.models[String(range)] ?? [])
           } else {
             taskList
           }
         }
-        .padding(EdgeInsets(top: 20, leading: 24, bottom: 22, trailing: 24))
+        .padding(EdgeInsets(top: 14, leading: 20, bottom: 18, trailing: 20))
+        .frame(width: StatusController.wideWidth - 236, alignment: .leading)
       }
     }
     .onChange(of: store.wideRange) { selection = nil }
@@ -2207,49 +2258,50 @@ struct WidePage: View {
   @ViewBuilder
   private func sidebar(days: [String], daily: [MBDaily], byHarness: [Double], total: Double, note: String) -> some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 6) {
+      HStack(spacing: 4) {
         IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
-        Text(store.s("usageTitle")).font(.system(size: 14, weight: .bold))
+        Text(store.s("usageTitle")).font(.system(size: 13, weight: .bold)).lineLimit(1)
       }
+      .padding(.leading, -6)
       if let selection, selection < daily.count {
         selectedSummary(day: days[selection], row: daily[selection])
       } else {
         Text(format(total))
-          .font(.system(size: 52, weight: .semibold))
-          .tracking(-2.4)
+          .font(.system(size: 42, weight: .semibold))
+          .tracking(-1.8)
           .monospacedDigit()
           .lineLimit(1)
           .minimumScaleFactor(0.6)
-          .padding(.top, 26)
+          .padding(.top, 18)
         Text(store.s(store.wideMoney ? "wideCaptionMoney" : "wideCaptionTokens", ["n": String(store.wideRange)])
           + "\n" + store.s(store.wideScope == "local" ? "scopeLocal" : "scopeAll"))
-          .font(.system(size: 12))
+          .font(.system(size: 11.5))
           .foregroundStyle(Palette.ink3)
-          .frame(minHeight: 36, alignment: .topLeading)
-          .padding(.top, 8)
+          .frame(minHeight: 34, alignment: .topLeading)
+          .padding(.top, 6)
       }
-      subStats(daily: daily, total: total).padding(.top, 22)
-      harnessList(byHarness: byHarness, total: total).padding(.top, 28)
-      Spacer(minLength: 20)
+      subStats(daily: daily, total: total).padding(.top, 16)
+      harnessList(byHarness: byHarness, total: total).padding(.top, 20)
+      Spacer(minLength: 16)
       Text(note)
-        .font(.system(size: 11))
+        .font(.system(size: 10.5))
         .foregroundStyle(Palette.ink3)
         .lineSpacing(4)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(EdgeInsets(top: 20, leading: 22, bottom: 22, trailing: 22))
+    .padding(EdgeInsets(top: 14, leading: 18, bottom: 18, trailing: 18))
   }
 
   @ViewBuilder
   private func selectedSummary(day: String, row: MBDaily) -> some View {
     let values = store.wideMoney ? row.money : row.tokens
     Text(format(values.reduce(0, +)))
-      .font(.system(size: 52, weight: .semibold))
-      .tracking(-2.4)
+      .font(.system(size: 42, weight: .semibold))
+      .tracking(-1.8)
       .monospacedDigit()
       .lineLimit(1)
       .minimumScaleFactor(0.6)
-      .padding(.top, 26)
+      .padding(.top, 18)
     VStack(alignment: .leading, spacing: 2) {
       let date = Fmt.day(day)
       Text(Fmt.monthDay(date, locale: store.locale) + " " + Fmt.weekday(date, locale: store.locale))
@@ -2266,17 +2318,17 @@ struct WidePage: View {
         }
       }
     }
-    .font(.system(size: 12))
+    .font(.system(size: 11.5))
     .foregroundStyle(Palette.ink3)
     .monospacedDigit()
-    .frame(minHeight: 36, alignment: .topLeading)
-    .padding(.top, 8)
+    .frame(minHeight: 34, alignment: .topLeading)
+    .padding(.top, 6)
   }
 
   @ViewBuilder
   private func subStats(daily: [MBDaily], total: Double) -> some View {
     let range = Double(max(1, store.wideRange))
-    HStack(alignment: .top, spacing: 18) {
+    HStack(alignment: .top, spacing: 14) {
       if store.wideMoney {
         stat(store.s("dailyAverage"), Fmt.money(total / range))
         stat(store.s("paid"), Fmt.money(daily.reduce(0) { $0 + $1.paid }))
@@ -2290,8 +2342,8 @@ struct WidePage: View {
 
   private func stat(_ label: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 2) {
-      Text(label).font(.system(size: 11)).foregroundStyle(Palette.ink3)
-      Text(value).font(.system(size: 16, weight: .semibold)).tracking(-0.3).monospacedDigit()
+      Text(label).font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
+      Text(value).font(.system(size: 14, weight: .semibold)).tracking(-0.3).monospacedDigit().lineLimit(1)
     }
   }
 
@@ -2302,48 +2354,69 @@ struct WidePage: View {
         .frame(height: 6)
         .padding(.top, 10)
       ForEach(harnessOrder, id: \.index) { harness in
-        HStack(spacing: 10) {
-          Circle().fill(Palette.harness(harness.key)).frame(width: 9, height: 9)
-          Text(store.s("harness." + harness.key)).frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: 8) {
+          Circle().fill(Palette.harness(harness.key)).frame(width: 8, height: 8)
+          Text(store.s("harness." + harness.key)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
           Text("\(Int((byHarness[harness.index] / max(total, 0.0001) * 100).rounded()))%")
-            .font(.system(size: 12))
+            .font(.system(size: 11))
             .foregroundStyle(Palette.ink3)
           Text(format(byHarness[harness.index]))
             .fontWeight(.semibold)
-            .frame(width: 70, alignment: .trailing)
+            .frame(width: 62, alignment: .trailing)
         }
-        .font(.system(size: 13))
+        .font(.system(size: 12))
         .monospacedDigit()
-        .padding(.vertical, 9)
+        .padding(.vertical, 6)
       }
     }
   }
 
+  /// Three segmented controls fit one row in Chinese; longer languages turn the scope into a
+  /// pop-up so the row never pushes the page wider than the panel.
   private var controls: some View {
-    HStack(spacing: 8) {
-      Picker("", selection: $store.wideRange) {
-        Text(store.s("range7")).tag(7)
-        Text(store.s("range30")).tag(30)
-        Text(store.s("range90")).tag(90)
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 6) {
+        rangePicker
+        metricPicker
+        scopePicker.pickerStyle(.segmented).fixedSize()
       }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .fixedSize()
-      Picker("", selection: $store.wideMoney) {
-        Text(store.s("metricMoney")).tag(true)
-        Text(store.s("metricTokens")).tag(false)
+      HStack(spacing: 6) {
+        rangePicker
+        metricPicker
+        Spacer(minLength: 0)
+        scopePicker.pickerStyle(.menu).fixedSize()
       }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .fixedSize()
-      Picker("", selection: $store.wideScope) {
-        Text(store.s("scopeLocal")).tag("local")
-        Text(store.s("scopeAll")).tag("all")
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .fixedSize()
     }
+    .controlSize(.small)
+  }
+
+  private var rangePicker: some View {
+    Picker("", selection: $store.wideRange) {
+      Text(store.s("range7")).tag(7)
+      Text(store.s("range30")).tag(30)
+      Text(store.s("range90")).tag(90)
+    }
+    .pickerStyle(.segmented)
+    .labelsHidden()
+    .fixedSize()
+  }
+
+  private var metricPicker: some View {
+    Picker("", selection: $store.wideMoney) {
+      Text(store.s("metricMoney")).tag(true)
+      Text(store.s("metricTokens")).tag(false)
+    }
+    .pickerStyle(.segmented)
+    .labelsHidden()
+    .fixedSize()
+  }
+
+  private var scopePicker: some View {
+    Picker("", selection: $store.wideScope) {
+      Text(store.s("scopeLocal")).tag("local")
+      Text(store.s("scopeAll")).tag("all")
+    }
+    .labelsHidden()
   }
 
   private func axisLabels(days: [String]) -> [(Int, String)] {
@@ -2371,7 +2444,7 @@ struct WidePage: View {
       .filter { $0.1 > 0 }
       .sorted { $0.1 > $1.1 }
       .prefix(8)
-    LazyVGrid(columns: [GridItem(.flexible(), spacing: 24), GridItem(.flexible(), spacing: 24)], alignment: .leading, spacing: 4) {
+    LazyVGrid(columns: [GridItem(.flexible(), spacing: 20), GridItem(.flexible(), spacing: 20)], alignment: .leading, spacing: 2) {
       ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
         HStack(spacing: 10) {
           Text("\(index + 1)").font(.system(size: 11)).foregroundStyle(Palette.ink3).frame(width: 16, alignment: .leading)
@@ -2379,19 +2452,19 @@ struct WidePage: View {
           Text(row.0.name).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
           Text(format(row.1)).fontWeight(.semibold)
         }
-        .font(.system(size: 12.5))
+        .font(.system(size: 12))
         .monospacedDigit()
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 0.5) }
       }
     }
-    .padding(.top, 22)
+    .padding(.top, 14)
     .animation(Motion.quick, value: store.wideMoney)
   }
 
   private var taskList: some View {
     let tasks = view.tasks.sorted { $0.value > $1.value }
-    return VStack(spacing: 4) {
+    return VStack(spacing: 2) {
       if tasks.isEmpty {
         Text(store.s("noTasksToday")).font(.system(size: 12)).foregroundStyle(Palette.ink3).frame(maxWidth: .infinity, alignment: .leading)
       }
@@ -2405,7 +2478,7 @@ struct WidePage: View {
         .help(task.title)
       }
     }
-    .padding(.top, 22)
+    .padding(.top, 14)
   }
 }
 
@@ -2427,13 +2500,13 @@ struct WideTaskRow: View {
         let status = task.running && task.startedAtMs != nil
           ? store.s("running") + " " + Fmt.clock(context.date.timeIntervalSince1970 - (task.startedAtMs ?? 0) / 1000)
           : task.idleStatus
-        Text(status + " · " + task.meta).font(.system(size: 11.5)).foregroundStyle(Palette.ink3).lineLimit(1)
+        Text(status + " · " + task.meta).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
       }
-      Text(Fmt.money(task.value)).fontWeight(.semibold).frame(width: 64, alignment: .trailing)
+      Text(Fmt.money(task.value)).fontWeight(.semibold).frame(width: 60, alignment: .trailing)
     }
-    .font(.system(size: 12.5))
+    .font(.system(size: 12))
     .monospacedDigit()
-    .padding(.vertical, 7)
+    .padding(.vertical, 6)
     .contentShape(Rectangle())
     .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 0.5) }
   }
@@ -2477,22 +2550,23 @@ struct ManagePage: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 6) {
+      HStack(spacing: 4) {
         IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
-        Text(store.s("manageTitle")).font(.system(size: 14, weight: .bold))
+        Text(store.s("manageTitle")).font(.system(size: 13, weight: .bold)).lineLimit(1)
         Spacer(minLength: 0)
         Button { store.go(.main) } label: {
           Text(store.s("done"))
-            .font(.system(size: 12.5, weight: .semibold))
+            .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(Palette.onInk)
-            .padding(.horizontal, 14)
-            .frame(height: 30)
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .frame(height: 26)
             .background(Capsule().fill(Palette.ink))
         }
         .buttonStyle(PressScaleStyle())
         .keyboardShortcut(.defaultAction)
       }
-      .padding(EdgeInsets(top: 18, leading: 18, bottom: 10, trailing: 18))
+      .padding(EdgeInsets(top: 12, leading: 10, bottom: 8, trailing: 14))
       .background(GeometryReader { g in
         Color.clear
           .onAppear { headerHeight = g.size.height }
@@ -2516,18 +2590,18 @@ struct ManagePage: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: 4) {
         Text(store.s("manageHero"))
-          .font(.system(size: 24, weight: .semibold))
-          .tracking(-0.5)
+          .font(.system(size: 19, weight: .semibold))
+          .tracking(-0.4)
           .fixedSize(horizontal: false, vertical: true)
         Text(store.s("manageHeroSub"))
-          .font(.system(size: 14, weight: .medium))
+          .font(.system(size: 12, weight: .medium))
           .foregroundStyle(Palette.ink3)
-          .lineSpacing(3)
+          .lineSpacing(2)
           .fixedSize(horizontal: false, vertical: true)
       }
-      .padding(EdgeInsets(top: 18, leading: 24, bottom: 0, trailing: 24))
+      .padding(EdgeInsets(top: 8, leading: 18, bottom: 0, trailing: 18))
 
       section(store.s("sources"), store.s("sourcesShown", [
         "a": String(view.manage.filter { !$0.hidden }.count),
@@ -2537,19 +2611,13 @@ struct ManagePage: View {
 
       section(store.s("statusIcon"), store.s("statusIconSub"))
       StatusPreview(store: store, view: view)
-        .padding(.horizontal, 16)
-      Picker("", selection: Binding(
-        get: { view.settings.statusText },
-        set: { Bridge.emitSettings(["statusText": $0]) }
-      )) {
-        Text(store.s("statusIconMode.icon")).tag("icon")
-        Text(store.s("statusIconMode.lowest")).tag("lowest")
-        Text(store.s("statusIconMode.today")).tag("today")
-        Text(store.s("statusIconMode.task")).tag("task")
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .padding(EdgeInsets(top: 12, leading: 16, bottom: 0, trailing: 16))
+        .padding(.horizontal, 12)
+      // Four labels never fit one segmented row in every language; two columns always do.
+      ChoiceGrid(
+        options: ["icon", "lowest", "today", "task"].map { ($0, store.s("statusIconMode." + $0)) },
+        selected: view.settings.statusText
+      ) { Bridge.emitSettings(["statusText": $0]) }
+      .padding(EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12))
 
       section(store.s("other"), nil)
       Tile {
@@ -2564,58 +2632,70 @@ struct ManagePage: View {
               .toggleStyle(.switch).controlSize(.small).labelsHidden()
           }
           Divider().overlay(Palette.line)
-          settingRow(store.s("usageScope"), nil) {
-            Picker("", selection: Binding(get: { view.settings.scope }, set: { Bridge.emitSettings(["scope": $0]) })) {
-              Text(store.s("scopeLocal")).tag("local")
-              Text(store.s("scopeAll")).tag("all")
+          // The picker moves under its title when the two labels don't fit beside it.
+          ViewThatFits(in: .horizontal) {
+            settingRow(store.s("usageScope"), nil) { scopePicker }
+            VStack(alignment: .leading, spacing: 6) {
+              Text(store.s("usageScope")).font(.system(size: 12.5))
+              scopePicker
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-            .fixedSize()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
           }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 1)
       }
-      .padding(.horizontal, 16)
+      .padding(.horizontal, 12)
 
       Button { controller.emitAndClose(["type": "open-provider-settings"]) } label: {
         Text(store.s("manageFoot"))
-          .font(.system(size: 11.5))
+          .font(.system(size: 11))
           .foregroundStyle(Palette.ink3)
-          .lineSpacing(4)
+          .lineSpacing(3)
           .multilineTextAlignment(.leading)
           .fixedSize(horizontal: false, vertical: true)
       }
       .buttonStyle(.plain)
-      .padding(EdgeInsets(top: 20, leading: 24, bottom: 22, trailing: 24))
+      .padding(EdgeInsets(top: 14, leading: 18, bottom: 16, trailing: 18))
     }
+    .frame(width: store.narrowWidth, alignment: .leading)
+  }
+
+  private var scopePicker: some View {
+    Picker("", selection: Binding(get: { view.settings.scope }, set: { Bridge.emitSettings(["scope": $0]) })) {
+      Text(store.s("scopeLocal")).tag("local")
+      Text(store.s("scopeAll")).tag("all")
+    }
+    .pickerStyle(.segmented)
+    .labelsHidden()
+    .controlSize(.small)
+    .fixedSize()
   }
 
   private func section(_ title: String, _ detail: String?) -> some View {
-    HStack(alignment: .firstTextBaseline) {
-      Text(title).font(.system(size: 13, weight: .semibold))
-      Spacer()
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(title).font(.system(size: 12.5, weight: .semibold)).lineLimit(1).fixedSize()
+      Spacer(minLength: 0)
       if let detail {
-        Text(detail).font(.system(size: 11.5)).foregroundStyle(Palette.ink3).monospacedDigit()
+        Text(detail).font(.system(size: 11)).foregroundStyle(Palette.ink3).monospacedDigit().lineLimit(1).truncationMode(.tail)
       }
     }
-    .padding(EdgeInsets(top: 26, leading: 24, bottom: 10, trailing: 24))
+    .padding(EdgeInsets(top: 16, leading: 18, bottom: 6, trailing: 18))
   }
 
   private func settingRow<Control: View>(_ title: String, _ sub: String?, @ViewBuilder control: () -> Control) -> some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       VStack(alignment: .leading, spacing: 1) {
-        Text(title).font(.system(size: 13))
+        Text(title).font(.system(size: 12.5)).fixedSize(horizontal: false, vertical: true)
         if let sub {
-          Text(sub).font(.system(size: 11)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
+          Text(sub).font(.system(size: 10.5)).foregroundStyle(Palette.ink3).fixedSize(horizontal: false, vertical: true)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
-    .padding(.vertical, 11)
+    .padding(.vertical, 8)
   }
 
   private var sourceList: some View {
@@ -2636,9 +2716,58 @@ struct ManagePage: View {
           .onDrop(of: [.text], delegate: ReorderDropDelegate(target: row.id, store: store, dragging: $dragging))
         }
       }
-      .padding(4)
+      .padding(3)
     }
-    .padding(.horizontal, 16)
+    .padding(.horizontal, 12)
+  }
+}
+
+/// Exclusive choice laid out in two columns of equal chips; used where a segmented control
+/// would be wider than the panel in some languages.
+struct ChoiceGrid: View {
+  let options: [(id: String, label: String)]
+  let selected: String
+  let choose: (String) -> Void
+
+  var body: some View {
+    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+      ForEach(options, id: \.id) { option in
+        ChoiceChip(label: option.label, selected: option.id == selected) { choose(option.id) }
+      }
+    }
+    .accessibilityElement(children: .contain)
+  }
+}
+
+struct ChoiceChip: View {
+  let label: String
+  let selected: Bool
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Text(label)
+        .font(.system(size: 12, weight: selected ? .semibold : .regular))
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+        .padding(.horizontal, 8)
+        .foregroundStyle(selected ? Palette.onInk : Palette.ink2)
+        .background(
+          RoundedRectangle(cornerRadius: 9, style: .circular)
+            .fill(selected ? Palette.ink : (hovering ? Palette.ink5 : Palette.tile))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 9, style: .circular)
+            .strokeBorder(selected ? Color.clear : Palette.line, lineWidth: 0.5)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .circular))
+    }
+    .buttonStyle(PressScaleStyle())
+    .onHover { hovering in withAnimation(Motion.quick) { self.hovering = hovering } }
+    .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
   }
 }
 
@@ -2674,29 +2803,30 @@ struct ManageRow: View {
   @State private var shake: CGFloat = 0
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 9) {
       Image(systemName: "line.3.horizontal")
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(Palette.ink3)
-        .frame(width: 16, height: 28)
+        .frame(width: 14, height: 24)
         .accessibilityHidden(true)
       ZStack {
-        RoundedRectangle(cornerRadius: 10, style: .circular).fill(Palette.ink5)
-        LogoView(svg: row.logoSvg, size: 15)
+        RoundedRectangle(cornerRadius: 8, style: .circular).fill(Palette.ink5)
+        LogoView(svg: row.logoSvg, size: 13)
       }
-      .frame(width: 30, height: 30)
+      .frame(width: 26, height: 26)
       .opacity(row.hidden ? 0.4 : 1)
       VStack(alignment: .leading, spacing: 0) {
-        Text(row.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-        Text(row.subtitle).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
+        Text(row.title).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
+        Text(row.subtitle).font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .opacity(row.hidden ? 0.4 : 1)
       Text(row.value)
-        .font(.system(size: 12))
+        .font(.system(size: 11.5))
         .foregroundStyle(Palette.ink3)
         .monospacedDigit()
-        .padding(.trailing, 4)
+        .lineLimit(1)
+        .fixedSize()
       Toggle("", isOn: Binding(get: { !row.hidden }, set: { _ in store.toggleHidden(row) }))
         .toggleStyle(.switch)
         .controlSize(.small)
@@ -2704,11 +2834,12 @@ struct ManageRow: View {
         .offset(x: shake)
         .accessibilityLabel(store.s("showSource", ["name": row.title]))
     }
-    .padding(EdgeInsets(top: 9, leading: 6, bottom: 9, trailing: 10))
-    .background(RoundedRectangle(cornerRadius: 16, style: .circular).fill(hovering ? Palette.ink5 : .clear))
+    .padding(EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 8))
+    .background(RoundedRectangle(cornerRadius: 11, style: .circular).fill(hovering ? Palette.ink5 : .clear))
     .overlay(alignment: .top) {
+      // Starts under the title: 6pt inset + 14pt handle + 9pt + 26pt logo + 9pt.
       if showDivider {
-        Rectangle().fill(Palette.line).frame(height: 0.5).padding(.leading, 58).padding(.trailing, 12)
+        Rectangle().fill(Palette.line).frame(height: 0.5).padding(.leading, 64).padding(.trailing, 10)
       }
     }
     .opacity(dragging ? 0.35 : 1)
@@ -2744,35 +2875,38 @@ struct StatusPreview: View {
       wallpaper(dark: dark)
       HStack(spacing: 4) {
         Spacer()
-        Image(systemName: "wifi").font(.system(size: 13, weight: .semibold)).opacity(0.5).padding(.horizontal, 8)
-        HStack(spacing: 6) {
+        Image(systemName: "wifi").font(.system(size: 12, weight: .semibold)).opacity(0.5).padding(.horizontal, 6)
+        HStack(spacing: 5) {
           if let icon = Logos.statusIcon {
-            Image(nsImage: icon).renderingMode(.template).resizable().frame(width: 18, height: 18)
+            Image(nsImage: icon).renderingMode(.template).resizable().frame(width: 16, height: 16)
           }
           if !text.isEmpty {
-            Text(text).font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+            Text(text).font(.system(size: 12, weight: .semibold)).monospacedDigit().lineLimit(1).fixedSize()
           }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 24)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(dark ? Color.white.opacity(0.18) : Color.black.opacity(0.11)))
+        .padding(.horizontal, 7)
+        .frame(height: 22)
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(dark ? Color.white.opacity(0.18) : Color.black.opacity(0.11)))
+        .layoutPriority(1)
         TimelineView(.periodic(from: .now, by: 30)) { context in
           Text(Fmt.clockTime(context.date, locale: store.locale))
-            .font(.system(size: 13, weight: .medium))
+            .font(.system(size: 12, weight: .medium))
             .monospacedDigit()
+            .lineLimit(1)
             .opacity(0.8)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 6)
         }
       }
       .foregroundStyle(dark ? Color(white: 0.957) : Color(white: 0.063))
-      .padding(.horizontal, 14)
-      .frame(height: 30)
+      .padding(.horizontal, 10)
+      .frame(height: 26)
       .background(.ultraThinMaterial)
-      .padding(.top, 22)
+      .padding(.top, 16)
     }
-    .frame(height: 96)
-    .clipShape(RoundedRectangle(cornerRadius: 20, style: .circular))
-    .overlay(RoundedRectangle(cornerRadius: 20, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
+    .frame(height: 68)
+    .frame(maxWidth: .infinity)
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .circular))
+    .overlay(RoundedRectangle(cornerRadius: 14, style: .circular).strokeBorder(Palette.line, lineWidth: 0.5))
     .animation(Motion.quick, value: text)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(text.isEmpty ? "Cindy" : "Cindy \(text)")
@@ -2832,6 +2966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       if value == "manage" { page = .manage }
       if value.hasPrefix("detail:") { page = .detail(String(value.dropFirst(7))) }
     }
+    if args.contains("--short") { controller?.forceShort = true }
     if let index = args.firstIndex(of: "--list"), index + 1 < args.count, args[index + 1] == "tasks" {
       store.wideList = .tasks
     }
