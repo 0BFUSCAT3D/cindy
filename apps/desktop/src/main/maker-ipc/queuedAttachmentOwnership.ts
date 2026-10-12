@@ -308,6 +308,15 @@ export class QueuedAttachmentOwnershipRegistry {
     return this.discardWhere(sessionId, clientId, (ownerId) => ownerId !== keepOwnerId);
   }
 
+  /**
+   * Discard every owner except the coordinator's current one, resolved when
+   * this runs rather than when the discard was scheduled.
+   */
+  discardSuperseded(sessionId: string, clientId: string): Promise<void> {
+    const currentOwnerId = this.getCurrentOwnerId(sessionId, clientId);
+    return this.discardWhere(sessionId, clientId, (ownerId) => ownerId !== currentOwnerId);
+  }
+
   discardSpecific(sessionId: string, clientId: string, ownerId: string): Promise<void> {
     return this.discardWhere(sessionId, clientId, (candidate) => candidate === ownerId);
   }

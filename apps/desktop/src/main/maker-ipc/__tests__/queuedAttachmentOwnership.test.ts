@@ -239,6 +239,41 @@ describe('QueuedAttachmentOwnershipRegistry', () => {
     expect(remote).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves a deferred superseded discard against the owner current when it runs', async () => {
+    const firstLocal = vi.fn(async () => {});
+    const secondLocal = vi.fn(async () => {});
+    const registry = new QueuedAttachmentOwnershipRegistry();
+    const firstOwnerId = registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/first.png'], cleanup: firstLocal }],
+    });
+    registry.activateCurrentOwner('session-1', 'client-1', firstOwnerId!);
+
+    // Edit 1 keeps the first image; its discard waits for the queue snapshot.
+    registry.retainReferencedOwners('session-1', 'client-1', null, (ref) =>
+      ref === 'cindy-media://blobs/first.png',
+    );
+    // Edit 2 is accepted meanwhile: it keeps the first image and adds a new one.
+    const secondOwnerId = registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/second.png'], cleanup: secondLocal }],
+    });
+    const edit2Refs = new Set(['cindy-media://blobs/first.png', 'cindy-media://blobs/second.png']);
+    const survivor = registry.retainReferencedOwners('session-1', 'client-1', secondOwnerId, (ref) =>
+      edit2Refs.has(ref),
+    );
+    registry.activateCurrentOwner('session-1', 'client-1', survivor!);
+
+    // Both deferred discards now run; neither may release media edit 2 still uses.
+    await registry.discardSuperseded('session-1', 'client-1');
+    await registry.discardSuperseded('session-1', 'client-1');
+
+    expect(survivor).toBe(secondOwnerId);
+    expect(firstLocal).not.toHaveBeenCalled();
+    expect(secondLocal).not.toHaveBeenCalled();
+    await registry.discardClient('session-1', 'client-1');
+    expect(firstLocal).toHaveBeenCalledTimes(1);
+    expect(secondLocal).toHaveBeenCalledTimes(1);
+  });
+
   it('does not clean a duplicate materialisation that was never accepted', async () => {
     const acceptedCleanup = vi.fn(async () => {});
     const duplicateCleanup = vi.fn(async () => {});
