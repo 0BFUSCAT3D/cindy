@@ -446,6 +446,9 @@ import { getSessionFsSnapshot, getSessionRowSnapshot } from '../localDb/ipc/sess
 import { getTeamByWorkerSession } from '../localDb/orcaTeamStore.js';
 import { getDirDepositVault, getSaveDepositVault, isPathInsideDir } from './dirDeposit.js';
 import { readInstalledGhostManifestSnapshot } from '../installedGhostManifest.js';
+import { registerPluginUsageIpc } from '../plugin-usage/ipc.js';
+import { currentPluginUsageService } from '../plugin-usage/current.js';
+import { pluginUsageIdentity } from '../plugin-usage/identity.js';
 import {
   ghostManifestDigest,
   PluginMarketLedger,
@@ -1998,6 +2001,20 @@ export function getGhostPipeDispatcher(): GhostPipeDispatcher {
         return r.ok ? { ok: true } : { ok: false, reason: r.reason };
       },
       sendToGhost: (ghostId, payload) => sendToGhostLogic(ghostId, payload),
+      prepareUsage: (ghost, callId, toolName, sessionId) => {
+        const service = currentPluginUsageService();
+        if (!service) return null;
+        if (ghost.approval.state !== 'approved') return null;
+        const handle = service.captureBound(ghost.manifest.id, ghost.approval.revision);
+        if (!handle) {
+          void bindPluginUsage(ghost);
+          return null;
+        }
+        return {
+          accepted: occurredAt => service.accept(handle, callId, toolName, sessionId ?? null, occurredAt),
+          settled: outcome => service.settle(handle, callId, outcome),
+        };
+      },
       log,
     });
   }
@@ -2990,6 +3007,38 @@ function pluginMarketAuthorizationTargetFor(ghostId: string): { ghostId: string;
   if (ghost) return { ghostId: ghost.manifest.id, ...deliveryNamespaceFields(ghost) };
   const identity = parsePluginInstanceId(ghostId);
   return identity ?? { ghostId };
+}
+
+/** Reuse the verified install ledger; an official label never establishes distribution identity. */
+function readPluginUsageIdentity(ghost: InstalledGhost) {
+  try {
+    const result = readInstalledGhostManifestSnapshot(ghost.dir, GHOST_INSTALL_MANIFEST_MAX_BYTES);
+    return pluginUsageIdentity(ghost, getPluginMarketLedger().installationForGhost(ghost.manifest.id),
+      result.ok ? installedMarketManifestIdentity(result.snapshot) : null,
+      pluginUsageServerRoot());
+  } catch { return null; }
+}
+
+function pluginUsageServerRoot(): string {
+  try { return getClientEndpoint('pluginApiBaseUrl').replace(/\/+$/, ''); }
+  catch { return ''; }
+}
+
+async function bindPluginUsage(ghost: InstalledGhost, previousRevision?: string): Promise<void> {
+  const service = currentPluginUsageService();
+  const identity = service && readPluginUsageIdentity(ghost);
+  if (!service || !identity) return;
+  try { await service.bind(identity, previousRevision); }
+  catch { log.warn('plugin usage binding unavailable'); }
+}
+
+/** Initialize generations before normal tool traffic; no old call is buffered for later replay. */
+export async function refreshPluginUsageBindings(): Promise<void> {
+  const scope = activeOwnerScopeKey();
+  for (const ghost of getGhostManager().list()) {
+    if (activeOwnerScopeKey() !== scope || isAppSessionBoundaryPending()) return;
+    await bindPluginUsage(ghost);
+  }
 }
 
 /** Read Manifest and byte identity together from one installed ghost.json snapshot. */
@@ -6434,6 +6483,7 @@ export async function installAndDock(
     registrySource?: 'market' | 'manual' | 'agent-forge' | 'legacy' | 'builtin';
     pluginId?: string | null;
     beforePackagePlacement?: () => void;
+    deferUsageBinding?: boolean;
   },
 ): Promise<InstalledGhost> {
   return withGhostInstallLock(opts.ghostId, () => installAndDockLocked(manager, lizFilePath, opts));
@@ -6453,6 +6503,7 @@ async function installAndDockLocked(
     registrySource?: 'market' | 'manual' | 'agent-forge' | 'legacy' | 'builtin';
     pluginId?: string | null;
     beforePackagePlacement?: () => void;
+    deferUsageBinding?: boolean;
   },
 ): Promise<InstalledGhost> {
   // 确认依据的 manifest 必须就是 expectedPackageSha256 钉住的那份包；锁内现读受体
@@ -6512,6 +6563,7 @@ async function installAndDockLocked(
   }
   // 常驻意识(launch: resident)且装入即开启:立刻拉起电子脑。
   spawnIfResident(result.ghost);
+  if (!opts.deferUsageBinding) await bindPluginUsage(result.ghost);
   return result.ghost;
 }
 
@@ -6700,6 +6752,8 @@ async function updateLocalGhostPackageLocked(
     throwInstallError(result.rejection);
   }
   runtime.resetFuse(instanceId);
+  await bindPluginUsage(result.ghost,
+    !detachMarketRecord && previousGhost?.approval.state === 'approved' ? previousGhost.approval.revision : undefined);
   const store = getLayoutStore();
   const docked = layoutWithGhostPanel(store.getLayout(), result.ghost.manifest, installedGhostStoragePart(result.ghost));
   if (docked) {
@@ -7042,10 +7096,12 @@ async function installOrUpdateMarketGhostPackageLocked(
         expectedPackageSha256: inspected.packageSha256,
         consent: { decision: expected.consent, manifest: inspected.manifest },
         beforePackagePlacement: expected.beforeCommitInLock,
+        deferUsageBinding: true,
         ...(trustOverride ? { trustOverride } : {}),
         namespace: marketNamespace,
       });
       await expected.afterCommitInLock?.(installedGhost, commitEvidence);
+      await bindPluginUsage(installedGhost);
       return installedGhost;
     }
 
@@ -7128,6 +7184,7 @@ async function installOrUpdateMarketGhostPackageLocked(
     }
     spawnIfResident(result.ghost);
     await expected.afterCommitInLock?.(result.ghost, commitEvidence);
+    await bindPluginUsage(result.ghost);
     return result.ghost;
   } finally {
     releaseMutation?.();
@@ -7206,6 +7263,8 @@ async function uninstallGhostAndCleanupLocked(
       const result = await mutation.uninstall(relId, { notify: false });
       if ('rejection' in result) throwUninstallError(result.rejection);
     }));
+    try { await currentPluginUsageService()?.detach(storagePart); }
+    catch { log.warn('plugin usage uninstall binding unavailable'); }
     await pluginDownloads.removePlugin(storagePart, downloadRoot, downloadScope).catch(err => log.warn('plugin download cache cleanup failed', { id: storagePart, error: String(err) }));
     removeGhostSecrets(storagePart);
     removeGhostKvBestEffort(
@@ -9118,6 +9177,15 @@ export function registerGhostIpc(): void {
     if (typeof id !== 'string' || !isGhostInstanceId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
     return getGhostLibraryOverview(id);
   });
+  registerPluginUsageIpc({
+    ipcMain, assertTrusted: assertTrustedAppRendererEvent, service: currentPluginUsageService,
+    identity: id => {
+      requireGhostAvailableForActiveSession(id);
+      const ghost = getGhostManager().list().find(g => g.manifest.id === id);
+      return ghost ? readPluginUsageIdentity(ghost) : null;
+    },
+    warn: () => log.warn('plugin usage IPC unavailable'),
+  });
   ipcMain.handle('ghosts:library-pick-location', async (event, id: unknown) => {
     assertTrustedAppRendererEvent(event);
     if (typeof id !== 'string' || !isGhostInstanceId(id)) throwIpcError('INVALID_PARAMS', '非法插件 id');
@@ -9325,6 +9393,7 @@ export function registerGhostIpc(): void {
             requireGhostAvailableForActiveSession(id);
             return getGhostPipeDispatcher().callGhostTool({
               ghostId: id,
+              recordUsage: false,
               tool: request.tool,
               args: args as Record<string, unknown>,
             });

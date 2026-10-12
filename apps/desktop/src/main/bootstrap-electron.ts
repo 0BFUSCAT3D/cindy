@@ -1,3 +1,4 @@
+import { flushPluginUsageLifecycle } from './plugin-usage/current.js';
 import { registerAccessibilitySupportIpc } from './accessibility-support-ipc.js';
 import { prepareImportedAutomation, finishImportedAutomation } from './bot-import/automationRuntime.js';
 import { ensureImportedAutomationReady, recoverCompanionImports } from './bot-import/host.js';
@@ -1097,6 +1098,7 @@ import {
   isGhostAvailableForActiveSession,
   reconcileGhostOauthAccountsForActiveOwner,
   refreshGhostLocalization,
+  refreshPluginUsageBindings,
   registerGhostIpc,
   runStableOwnerPostCommitTask,
   setGhostNodeRuntimeStartAttemptContextReader,
@@ -2092,6 +2094,7 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
         ),
       });
       await flushPluginTaskLifecycle();
+      await flushPluginUsageLifecycle();
       await lifecycleDbClientManager.dispose(reason);
     } finally {
       releaseEndedSuppression();
@@ -2118,6 +2121,7 @@ async function teardownAuthAccountBoundary(reason: string): Promise<void> {
   });
   try {
     await flushPluginTaskLifecycle();
+    await flushPluginUsageLifecycle();
     await lifecycleDbClientManager.dispose(reason);
   } finally {
     try {
@@ -2466,6 +2470,8 @@ authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId 
   // Signed-out is a real stable scope for account-free bundled provisioning.
   // Market and OAuth are owner-private follow-ups and stay behind this gate.
   if (dataOwnerId === null) return needsRetry ? 'failed' : 'completed';
+  if (activeOwnerScopeKey() !== scopeKey || isAppSessionBoundaryPending()) return 'deferred';
+  await refreshPluginUsageBindings();
   let deferred = false;
   const marketOutcome = await syncDefaultMarketPlugins();
   if (marketOutcome === 'failed') needsRetry = true;
@@ -9127,6 +9133,7 @@ app.on('ready', async () => {
           });
         });
       }
+      await refreshPluginUsageBindings();
       checkDatabaseSizeWarningAtStartup();
       // Bot recovery is owner-scoped and must start only after DbClient
       // takeover. registerMakerIpc also invokes this once its services exist,
@@ -10058,6 +10065,7 @@ onQuit('git-context', () => disposeGitContext(), 'async');
 // Post-async 阶段: 串行跑, 确保依赖 async 阶段产物的清理 (WAL checkpoint by close)。
 onQuit('db-client', async () => {
   await flushPluginTaskLifecycle();
+  await flushPluginUsageLifecycle();
   await lifecycleDbClientManager.dispose('quit');
 }, 'post-async');
 onQuit('local-db-close', () => localDbCloseDb(), 'post-async');

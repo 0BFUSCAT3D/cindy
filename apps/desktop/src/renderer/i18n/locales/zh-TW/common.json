@@ -6681,6 +6681,34 @@
           "requirements": "需要 Apple Silicon Mac、macOS 15 或更新版本及完整 Xcode。",
           "dataNotice": "原模擬器的裝置和應用程式資料不會被刪除。安裝 Baguette 不會自動遷移裝置、App 或登入狀態。"
         }
+      },
+      "usage": {
+        "title": "個人使用記錄",
+        "explanationLabel": "統計口徑",
+        "explanation": "僅統計本機目前帳戶成功派發的工具呼叫，失敗、逾時或取消也計入。近 7 天為滾動 168 小時；面板、Skill 與除錯操作不計入。記錄預設保留，清除後重新開始。",
+        "clear": "清除記錄",
+        "loading": "正在讀取記錄…",
+        "unavailable": "個人記錄暫時無法使用",
+        "retry": "重試",
+        "lastUsed": "最近使用",
+        "last7Days": "近 7 天呼叫",
+        "never": "尚未使用",
+        "tasks": "參與任務",
+        "noTasks": "暫無可查看的參與任務",
+        "untitled": "未命名任務",
+        "localSince": "{{device}} · 從 {{time}} 開始記錄",
+        "clearTitle": "清除此插件的使用記錄？",
+        "clearDescription": "清除本機目前帳戶的呼叫記錄及任務關聯，後續呼叫重新開始記錄。已共享的累計統計不會撤回。",
+        "installs": "安裝",
+        "uses": "使用",
+        "sharedUnavailable": "暫時無法使用",
+        "sharedExplanation": "{{scope}}共享累計。安裝按成功安裝回執計數，普通更新不增加，解除安裝不扣除；使用按成功派發的工具呼叫計數（含失敗、逾時和取消）。不代表目前安裝人數，也不包含面板或 Skill 操作。伺服器尚未提供統計時不顯示為 0。",
+        "asOf": "統計時間：{{time}}",
+        "sharedScope": {
+          "public": "公開插件",
+          "organization": "目前有權查看此企業插件的使用者"
+        },
+        "refresh": "重新整理記錄"
       }
     },
     "mcp": {

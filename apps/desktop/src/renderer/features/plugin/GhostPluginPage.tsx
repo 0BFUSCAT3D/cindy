@@ -129,6 +129,9 @@ import {
 } from './PluginManagementLayout';
 import { usePluginListScrollRestoration } from './lib/usePluginListScrollRestoration';
 import { GhostPagePanelHost } from './GhostPagePanelHost';
+import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
+import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
+import { createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
 import { GhostPluginDetailView } from './GhostPluginDetailView';
 import {
   currentMainViewVisibilityOwner,
@@ -428,6 +431,12 @@ export function GhostPluginPage({
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { confirm } = useConfirmDialog();
+  const [openUsageTask] = useState(() => createSessionEntryNavigator({
+    resolveBotRoute: id => resolveBotRouteForSessionEntry(id, { readProfiles: getBotProfiles, loadProfiles: ensureBotProfilesLoaded }),
+    openBotRoute: route => navigate(route),
+    openOrdinary: (id, _messageId, isLatest) => { void resolveSessionRoute(id).then(route => { if (isLatest()) navigate(route); }); },
+  }));
+
   const showPluginMarketActionError = useCallback(
     async (error: unknown) => {
       // 用户在安装确认框里取消不是失败，不弹错误提示。
@@ -436,7 +445,7 @@ export function GhostPluginPage({
     },
     [t],
   );
-  const { user, mode, dataOwnerId } = useAuth();
+  const { user, mode, dataOwnerId, dataOwnerGeneration } = useAuth();
   const [recommendationNonce] = useState(() => searchParams.get('recommendation'));
   const pendingRecommendation = useSyncExternalStore(
     subscribePendingPluginSuggestion,
@@ -1668,6 +1677,9 @@ export function GhostPluginPage({
           {recommendationNotice}
           <div className="min-h-0 flex-1">
             <GhostPluginDetailView
+              usageOwnerKey={`${panelOwnerKey}:${dataOwnerGeneration}`}
+              onOpenUsageTask={openUsageTask}
+              confirmClearUsage={() => confirm({ title: t('settings.ghosts.usage.clearTitle'), description: t('settings.ghosts.usage.clearDescription'), confirmText: t('settings.ghosts.usage.clear'), confirmVariant: 'destructive' })}
               ghost={selectedGhost}
               detail={selectedDetail}
               panelStatus={panelStatus}

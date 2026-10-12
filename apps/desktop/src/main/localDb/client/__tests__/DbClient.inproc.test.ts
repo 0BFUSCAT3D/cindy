@@ -137,6 +137,16 @@ describe('DbClient in-proc fallback', () => {
       }),
     ]);
 
+    const usageMigration = fs.readFileSync(new URL('../../../../../drizzle/0126_dazzling_pyro.sql', import.meta.url), 'utf8');
+    for (const statement of usageMigration.split('--> statement-breakpoint').filter(s => s.trim())) await client.exec(statement);
+    const identity = { ghostId: 'inproc-plugin', displayName: 'Test', revision: 'revision', sourceKind: 'manual' as const,
+      stableKey: null, pluginId: null, organizationId: null, sourceKey: null, serverRoot: null, version: '1.0', releaseId: null };
+    const handle = await client.tx('pluginUsage.execute', { action: 'bind', identity, newId: 'inproc-subject', now: 1 });
+    await client.tx('pluginUsage.execute', { action: 'accept', handle: handle!, callId: 'inproc-call', toolName: 'tool', sessionId: null, occurredAt: 2 });
+    await client.tx('pluginUsage.execute', { action: 'clear', subjectId: handle!.subjectId, now: 3 });
+    await client.tx('pluginUsage.execute', { action: 'settle', handle: handle!, callId: 'inproc-call', outcome: 'failed' });
+    expect(await client.queryOne('SELECT COUNT(*) AS n FROM plugin_usage_events')).toEqual({ n: 0 });
+
     const sourceId = `inproc-source-${Date.now()}`;
     await expect(
       client.tx('embedding.enqueue', {

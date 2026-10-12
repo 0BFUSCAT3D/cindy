@@ -1649,6 +1649,10 @@ interface ElectronAPI {
     /** 面板错误态「重载意识」:清熔断记账 + 重新拉起沙箱。 */
     reload: (id: string) => Promise<{ state: string }>;
     /** Library(持久作品库)设置面:概览/选位置/绑定/迁移/回默认/解绑/删除。 */
+    usageSummary: (id: string) => Promise<import('../shared/pluginUsage').PluginUsageSummary | null>;
+    usageHistory: () => Promise<{ subjectId: string; ghostId: string; displayName: string; sourceKind: string }[]>;
+    usageHistorySummary: (subjectId: string) => Promise<import('../shared/pluginUsage').PluginUsageSummary | null>;
+    clearUsage: (subjectId: string | null) => Promise<void>;
     libraryOverview: (id: string) => Promise<import('../shared/ghost').GhostLibraryOverview>;
     libraryPickLocation: (id: string) => Promise<{
       ok: boolean;

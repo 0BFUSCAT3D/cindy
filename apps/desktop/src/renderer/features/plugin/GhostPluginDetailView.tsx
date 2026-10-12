@@ -29,6 +29,7 @@ import {
 import { useTranslation } from 'react-i18next';
 
 import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
+import { PluginUsageCard } from './PluginUsageCard';
 import { GhostLibrarySection } from './GhostLibrarySection';
 import { PluginTaskPrefs } from '@/cindy-brain/PluginTaskPrefs';
 import { GhostSettingsWebview } from '@/cindy-brain/GhostSettingsWebview';
@@ -65,6 +66,9 @@ interface GhostPluginDetailViewProps {
   panelStatus: string | null;
   enabledOverride?: boolean;
   onBack: () => void;
+  usageOwnerKey?: string;
+  onOpenUsageTask?: (sessionId: string) => void;
+  confirmClearUsage?: () => Promise<boolean>;
   onToggle: (enabled: boolean) => void;
   /** 主动作:面板型「使用」/ 指令或 Host 能力型「对话」;纯工具型不渲染主按钮。 */
   onUse: () => void;
@@ -108,6 +112,9 @@ export function GhostPluginDetailView({
   onBack,
   onToggle,
   onUse,
+  usageOwnerKey,
+  onOpenUsageTask,
+  confirmClearUsage,
   mainViewSidebarVisible = true,
   onMainViewSidebarVisibleChange,
   onUpdate,
@@ -419,6 +426,8 @@ export function GhostPluginDetailView({
             </div>
           ) : null}
         </header>
+
+        {ghost ? <PluginUsageCard key={`${usageOwnerKey ?? "local"}:${ghost.manifest.id}`} ghostId={ghost.manifest.id} onOpenTask={onOpenUsageTask} confirmClear={confirmClearUsage} /> : null}
 
         {hasConfiguration ? (
           <section

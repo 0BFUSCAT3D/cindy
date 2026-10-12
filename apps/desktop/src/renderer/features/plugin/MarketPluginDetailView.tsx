@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ghostPermissionItems } from '../../../shared/ghost';
 import type { PluginMarketDetail } from '../../../shared/pluginMarket';
+import { PluginSharedUsage } from './PluginSharedUsage';
 import { GhostPluginIcon } from './GhostPluginIcon';
 import { usePluginMarketIcon } from './lib/usePluginMarketIcon';
 import { pluginPresentationOrigin } from './lib/pluginMarketPresentation';
@@ -77,6 +78,7 @@ export function MarketPluginDetailView({
                 <span>{t(`settings.ghosts.market.scope.${presentationOrigin}`)}</span>
                 <span aria-hidden="true">·</span>
                 <span>v{detail.version}</span>
+                <PluginSharedUsage detail={detail} />
                 {detail.author ? (
                   <>
                     <span aria-hidden="true">·</span>

@@ -94,6 +94,25 @@ export interface PluginReleaseDetail extends PluginReleaseSummary {
 }
 
 /** Plugin 列表项；只含市场展示和版本对账所需的摘要。 */
+/** Optional, already-authorized audience aggregate. Downloads are not install receipts. */
+export interface PluginUsageStatistics {
+  installationCount: string;
+  usageCount: string;
+  usageCountLast7Days: string;
+  asOf: string;
+}
+
+/** Invalid optional metrics never make an otherwise compatible marketplace unavailable. */
+export function parsePluginUsageStatistics(value: unknown): PluginUsageStatistics | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const keys = ['installationCount', 'usageCount', 'usageCountLast7Days'] as const;
+  if (keys.some(key => typeof raw[key] !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(raw[key] as string))) return undefined;
+  if (typeof raw.asOf !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*Z$/.test(raw.asOf) || !Number.isFinite(Date.parse(raw.asOf))) return undefined;
+  return { installationCount: raw.installationCount as string, usageCount: raw.usageCount as string,
+    usageCountLast7Days: raw.usageCountLast7Days as string, asOf: raw.asOf };
+}
+
 export interface VisiblePluginSummary {
   /** plugin-server 生成的永久资源 ID，也是客户端管理安装实例的主键。 */
   id: string;
@@ -114,6 +133,7 @@ export interface VisiblePluginSummary {
   defaultInstall: boolean;
   /** 服务端为该客户端选择的 Release；优先 current，不兼容时回退到历史兼容版本。 */
   currentRelease: PluginReleaseSummary;
+  usageStatistics?: PluginUsageStatistics;
 }
 
 /** Plugin 详情；展示字段必须与 `currentRelease.manifest` 保持一致。 */
@@ -137,6 +157,7 @@ export interface VisiblePluginDetail {
   defaultInstall: boolean;
   /** 服务端为该客户端选择的 Release，包含完整 manifest。 */
   currentRelease: PluginReleaseDetail;
+  usageStatistics?: PluginUsageStatistics;
 }
 
 /** 清理通告支持的处置动作；解析器会跳过动作未知的通告（未来扩展位）。 */
@@ -363,6 +384,7 @@ function parseVisiblePluginSummary(value: unknown, index: number): VisiblePlugin
   const { raw, ...base } = parseVisiblePluginBase(value, path);
   return {
     ...base,
+    ...(parsePluginUsageStatistics(raw.usageStatistics) ? { usageStatistics: parsePluginUsageStatistics(raw.usageStatistics) } : {}),
     currentRelease: parseReleaseSummary(raw.currentRelease, `${path}.currentRelease`),
   };
 }
@@ -397,6 +419,7 @@ function parseVisiblePluginDetail(value: unknown, path: string): VisiblePluginDe
   }
   return {
     ...parsed,
+    ...(parsePluginUsageStatistics(raw.usageStatistics) ? { usageStatistics: parsePluginUsageStatistics(raw.usageStatistics) } : {}),
     currentRelease,
   };
 }
