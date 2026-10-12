@@ -456,6 +456,10 @@ function configEntryHoldsSecret(key: string, value: string): boolean {
  * (系统、全局、仓库，含 include)核对它会打出的那些项里没有密钥。读别的配置文件(-f / --blob)的不核对。
  */
 async function configReadProvesSafe(read: GitRead): Promise<boolean> {
+  if (read.sub === 'remote') {
+    const actionIndex = read.args.findIndex((arg) => !arg.startsWith('-'));
+    if (read.args[actionIndex] === 'show' && read.args[actionIndex + 1] !== '-n') return false;
+  }
   const configSources = ['--file', '--blob', '--global', '--system', '--local', '--worktree'];
   if (!read.cwd || read.args.some((arg) => {
     if (/[$`]/.test(arg) || /^-[^-]*f/.test(arg)) return true;

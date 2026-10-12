@@ -2,7 +2,7 @@
  * 供应商分享的受邀者任务：git 查看内容的命令在本机核实仓库读不到凭证类文件时不弹卡(gitCredentials.ts)。
  * 用真实的 git 仓库验证扫描范围(历史、reflog、stash、暂存区)与各种照旧弹卡的情况。
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -487,6 +487,47 @@ describe('GitCredentialHistory', () => {
     ]) {
       expect(await provesSafe(history, command), command).toBe(false);
     }
+  });
+
+  it('keeps consent for remote queries that can run transport helpers', async () => {
+    vi.stubEnv('GIT_SSH_COMMAND', undefined);
+    vi.stubEnv('GIT_PROXY_COMMAND', undefined);
+    const history = new GitCredentialHistory();
+    const credentialFile = path.join(root, '.env');
+    const helperFile = path.join(root, 'transport-helper.cjs');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=transport-helper\n');
+    fs.writeFileSync(helperFile, 'process.stderr.write(require("node:fs").readFileSync('
+      + JSON.stringify(credentialFile) + '));\nprocess.exit(1);\n');
+    write('transport-fixture.cjs', fs.readFileSync(helperFile, 'utf8'));
+    const helper = [process.execPath, helperFile].map((file) => JSON.stringify(file.split(path.sep).join('/'))).join(' ');
+    git('remote', 'add', 'origin', 'ssh://example.invalid/repository');
+    for (const variant of [
+      { config: 'core.sshCommand', env: 'GIT_SSH_COMMAND', url: 'ssh://example.invalid/repository', helper },
+      { config: 'core.gitProxy', env: 'GIT_PROXY_COMMAND', url: 'git://transport-fixture.cjs/repository', helper: process.execPath },
+    ]) {
+      git('remote', 'set-url', 'origin', variant.url);
+      git('config', variant.config, variant.helper);
+      for (const source of ['config', 'environment']) {
+        if (source === 'environment') {
+          git('config', '--unset', variant.config);
+          vi.stubEnv(variant.env, variant.helper);
+        }
+        const output = spawnSync('git', ['remote', 'show', 'origin'], { cwd: repo, encoding: 'utf8', timeout: 5_000 });
+        expect(output.error).toBeUndefined();
+        expect(output.stderr).toContain('PRIVATE_FIXTURE=transport-helper');
+        expect(await provesSafe(history, 'git remote show origin'), variant.config + ':' + source).toBe(false);
+        await requiresCredentialConfirmation(history, 'git remote show origin');
+        const local = spawnSync('git', ['remote', 'show', '-n', 'origin'], { cwd: repo, encoding: 'utf8', timeout: 5_000 });
+        expect(local.status).toBe(0);
+        expect(local.stdout + local.stderr).not.toContain('PRIVATE_FIXTURE=transport-helper');
+        expect(await provesSafe(history, 'git remote show -n origin')).toBe(true);
+        expect(await provesSafe(history, 'git remote -v')).toBe(true);
+        expect(await provesSafe(history, 'git remote get-url origin')).toBe(true);
+      }
+      vi.stubEnv(variant.env, undefined);
+    }
+    expect(await provesSafe(history, 'git remote show origin')).toBe(false);
+    expect(await provesSafe(history, 'git remote show -- -n')).toBe(false);
   });
 
   it('lets commands that print the git config run only while the config holds no secrets', async () => {
