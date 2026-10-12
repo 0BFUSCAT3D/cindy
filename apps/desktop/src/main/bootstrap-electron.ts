@@ -566,6 +566,13 @@ import { isIpcError } from '../shared/ipc-errors';
 import { readFileBytesForPreview } from './fileReadBytes.js';
 import { copyPngToClipboard } from './pngClipboard.js';
 import { COPY_PNG_TO_CLIPBOARD_CHANNEL } from '../shared/pngClipboard.js';
+import { copyTextToClipboard } from './textClipboard.js';
+import { COPY_TEXT_TO_CLIPBOARD_CHANNEL } from '../shared/textClipboard.js';
+import {
+  readLinuxClipboardSnapshot,
+  supportsLinuxClipboard,
+  writeLinuxClipboard,
+} from './remote-desktop/linuxClipboardNative';
 import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
@@ -7777,6 +7784,29 @@ const registerIpcHandlers = () => {
       assertTrustedSender: assertTrustedAppRendererEvent,
       decode: (bytes) => nativeImage.createFromBuffer(bytes),
       write: (data) => clipboard.write(data),
+    }),
+  );
+
+  // Hyprland may drop Chromium clipboard writes; reuse the remote-desktop
+  // data-control writer there. Local only; never route this to a remote host.
+  // Focused app-content is the local-intent check; skip the remote lock probe.
+  ipcMain.handle(COPY_TEXT_TO_CLIPBOARD_CHANNEL, (event, params) =>
+    copyTextToClipboard(event, params, {
+      assertTrustedSender: assertTrustedAppRendererEvent,
+      assertFocusedSender: (senderEvent) => {
+        const win = BrowserWindow.fromWebContents(senderEvent.sender);
+        if (!isFocusedAppContentWindow(win)) {
+          throwIpcError('PERMISSION_DENIED', '此操作只能在 Cindy 主窗口聚焦时发起');
+        }
+      },
+      write: (text) =>
+        supportsLinuxClipboard()
+          ? writeLinuxClipboard({ text }, () => true, { checkLock: false })
+          : clipboard.writeText(text),
+      read: async () =>
+        supportsLinuxClipboard()
+          ? (await readLinuxClipboardSnapshot(false, { checkLock: false })).content.text
+          : clipboard.readText(),
     }),
   );
 
