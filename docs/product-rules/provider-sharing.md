@@ -281,9 +281,30 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
      关闭、重新打开任务或切换权限档后恢复确认，不扩展到其他任务或供应商分享。原权限档的其他限制仍然生效，
      启动同步仍排除凭证文件。确认卡说明内容会经过分享者或其安排的电脑，以及这项授权的范围与失效时机。
      确认卡与 Agent 的确认走同一通道，手机远控与 IM 也能处理；
-   - 命令只能按命令文本识别（脚本里读的、编码后再解开的认不出来），是防误发，不是防恶意。
+   - 命令只能按命令文本识别（脚本里读的、编码后再解开的认不出来），是防误发，不是防恶意；
+   - 减少误弹（2026-10-12 用户裁决）。**以下几条只用于这张分享任务的确认卡**，本机任务、同账号远程供应商与
+     自动审查的判定都不变：
+     - `.env.example` / `.env.sample` / `.env.template` 与公钥 `*.pub` 按惯例不含密钥，不算凭证类文件
+       （读取、启动时同步都照普通文件）；放在凭证目录里（如 `~/.ssh/id_rsa.pub`）时仍算；
+     - 按扩展名缩小范围的搜索不算读取凭证：rg 的 `-g '*.ts'`、grep 的 `--include='*.md'` 这类只选中源码
+       与文档文件的写法，字面上能选中 `.env.ts`、`id_rsa.ts`，但这类名字是代码模块。直接写出像凭证的
+       文件名、`*.json` / `*.txt` / `*.sh` 这类可能存放凭证的格式、扩展名不确定的写法（`*.ts*`）仍要确认；
+     - git 查看内容的命令（`git diff`、`git show`、`git log -p`、`git grep`）只看命令文本时按可能读到
+       提交进仓库的凭证处理，执行前先在受邀者电脑上核实，读不到凭证类文件就不弹卡：仓库所有分支、标签、
+       stash 与 reflog 的历史和暂存区里从没有凭证类文件；或命令用 `--` 限定的路径碰不到这些文件；或
+       （`git diff` / `git show` / `git log`）按原命令只列出会显示的文件，其中没有凭证类文件。认不出 git
+       在哪个仓库里跑、仓库带子模块、比较仓库外的文件、核实超过 8 秒，都照旧弹卡；仓库的扫描结果留在
+       内存里给后面的命令用。直接写出底层对象名（如 `git show <文件对象>`）之类的写法同样认不出；
+     - 打出 git 配置的命令（`git remote -v` / `get-url` / `show`、读 `git config`、`git var -l`）按受邀者
+       电脑上生效的 git 配置核实：要打出的那些项里没有密钥（地址里嵌的令牌或密码、`http.extraHeader`、
+       密码与令牌类配置项）就不弹卡，有才确认；
+   - 再收紧（2026-10-12 用户裁决），同样只用于分享任务：命令里直接写着密钥（`https://用户:密码@`、
+     地址里的令牌、`Authorization` 头的取值、常见服务的令牌格式与私钥）、用 `<提交>:<路径>` 写出凭证类文件
+     （`git show HEAD:.aws/credentials`）、`git credential fill` 这类打出保存的登录凭证的命令都要确认。
    同账号远程供应商不受影响：与本机一致，项目与个人配置里的符号链接一律跟随，不额外确认。
-   实现：`apps/desktop/src/main/remote-agent/{credentials.ts,executor/gate.ts,controller/projectFiles.ts}`。
+   实现：`apps/desktop/src/main/remote-agent/{credentials.ts,executor/gate.ts,executor/executor.ts,executor/gitCredentials.ts,controller/projectFiles.ts}`；
+   命令判定复用 `packages/maker-core/src/agents/shared/auto-review.ts` 的 `shellCommandReadsCredentials`，
+   上面的命令放宽与 git 核实通过它只有分享任务才传的选项（`CredentialCommandOptions`）实现，不传时判定不变。
 
 ## 10. 与现有规则的关系
 
@@ -311,7 +332,10 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
 9. 中国大陆版与 Global 账号之间能完成同样的申请、审批、使用与撤销；合规开关关闭时跨区链接给出
    明确提示，同区域分享不受影响。
 10. 受邀者任务启动时不带凭证类文件；任务中读写凭证类文件或执行读取凭证的命令，即使在完全访问下也
-    要受邀者在本机确认后才执行（§9 第 7 条）。
+    要受邀者在本机确认后才执行（§9 第 7 条）。`rg -g '*.ts'` 这类只按源码扩展名缩小范围的搜索、读
+    `.env.example` 与 `*.pub`、在没有凭证类文件的仓库里（或只涉及普通文件时）跑 `git diff` / `git log -p`、
+    配置里没有密钥时跑 `git remote -v` 都不弹确认卡；命令里直接写着密钥、`git credential fill` 要确认；
+    本机任务与同账号远程供应商的确认不受影响。
 11. Light 与 Dark 两种模式都已实现。
 
 ## 12. 后续可选

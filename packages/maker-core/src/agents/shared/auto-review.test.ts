@@ -17,9 +17,11 @@ import {
   isProtectedSystemPath,
   reviewAction,
   shellCommandReadsCredentials,
+  type GitRead,
 } from './auto-review.js';
 
 const roots = ['/repo', '/extra'];
+const toForwardSlashes = (value: string) => value.replace(/\\/g, '/');
 
 describe('reviewAction — 非 shell 动作', () => {
   it('read / session-state → auto-approve', () => {
@@ -4715,5 +4717,104 @@ describe('shellCommandReadsCredentials — 只认凭证那一部分红线', () =
       expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
     }
     expect(shellCommandReadsCredentials('', roots)).toBe(false);
+  });
+});
+
+// 两个附加选项只供供应商分享的受邀者任务用(apps/desktop/src/main/remote-agent/credentials.ts)。
+describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
+  const sourceSearches = [
+    "rg -n 'API_KEY' --glob '*.ts'",
+    "rg -g '*.{ts,tsx}' token src",
+    "rg -g '*.tsx' -g '!*.test.tsx' secret",
+    "grep -rn --include='*.md' token .",
+  ];
+
+  it('不传选项时判定不变：按扩展名缩小范围的搜索与 git 查看内容照旧必问(本机自动审查同此)', () => {
+    for (const command of [...sourceSearches, 'git diff', 'git log -p', 'git grep -n token']) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(true);
+      expect(classifyShellCommand(command, roots), command).toBe('prompt-each-time');
+    }
+  });
+
+  it('sourceFileSelectors：只选中源码与文档扩展名的搜索不算读取凭证', () => {
+    for (const command of sourceSearches) {
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true }), command).toBe(false);
+    }
+    for (const command of [
+      // 文件名本身像凭证、可能存放凭证的格式、扩展名不确定、搜索目标就是凭证。
+      "rg -g '.env.ts' KEY",
+      "rg -g 'server.key.ts' KEY",
+      "rg -g '.ssh/**/*.ts' KEY",
+      "rg -g '*.json' KEY",
+      "grep -rn --include='*.sh' KEY .",
+      "rg -g '*.ts*' KEY",
+      "rg -g '*.t[s]' KEY",
+      "rg -g '*.ts' KEY .env",
+      'grep -rn KEY .',
+      'rg --hidden KEY',
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true }), command).toBe(true);
+    }
+  });
+
+  it('gitContentRead：git 查看内容先问调用方，并带上 git 实际运行的目录', () => {
+    const reads: GitRead[] = [];
+    const record = (read: GitRead) => {
+      reads.push(read);
+      return true;
+    };
+    expect(shellCommandReadsCredentials('git log -p -- src/app.ts', roots, { gitContentRead: record })).toBe(false);
+    expect(shellCommandReadsCredentials('cd /repo/packages/a && git diff', roots, { gitContentRead: record })).toBe(false);
+    expect(shellCommandReadsCredentials('cd "$DIR" && git diff', roots, { gitContentRead: record })).toBe(false);
+    expect(shellCommandReadsCredentials('(cd /repo/a && ls); git diff', roots, { gitContentRead: record })).toBe(false);
+    expect(reads.map(({ sub, args }) => ({ sub, args }))).toEqual([
+      { sub: 'log', args: ['-p', '--', 'src/app.ts'] },
+      { sub: 'diff', args: [] },
+      { sub: 'diff', args: [] },
+      { sub: 'diff', args: [] },
+    ]);
+    expect(reads.map(({ cwd }) => cwd && toForwardSlashes(cwd))).toEqual(['/repo', '/repo/packages/a', undefined, undefined]);
+    // 调用方没核实时照旧算；还有别的理由时不受影响。
+    expect(shellCommandReadsCredentials('git diff', roots, { gitContentRead: () => false })).toBe(true);
+    expect(shellCommandReadsCredentials('git diff && cat .env', roots, { gitContentRead: () => true })).toBe(true);
+    expect(shellCommandReadsCredentials('git diff -- .env', roots, { gitContentRead: () => true })).toBe(true);
+  });
+
+  it('gitConfigRead：会打出 git 配置或保存的凭证的调用交给调用方', () => {
+    const printing = [
+      'git remote -v',
+      'git remote get-url origin',
+      'git remote show origin',
+      'git config --list',
+      'git config --get remote.origin.url',
+      'git config user.name',
+      'git var -l',
+      'printf "protocol=https\\nhost=github.com\\n" | git credential fill',
+      'git-credential-store get',
+      'git -c credential.helper=store credential fill',
+    ];
+    // 不传选项时判定不变(本机自动审查同此)。
+    for (const command of printing.slice(0, 7)) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+    }
+    expect(classifyShellCommand('git remote -v', roots)).toBe('auto-approve');
+    const reads: GitRead[] = [];
+    for (const command of printing) {
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitConfigRead: (read) => {
+          reads.push(read);
+          return false;
+        },
+      }), command).toBe(true);
+    }
+    expect(reads.map(({ sub }) => sub)).toEqual([
+      'remote', 'remote', 'remote', 'config', 'config', 'config', 'var', 'credential', 'credential', 'credential',
+    ]);
+    // 全局选项认不出时只粗找子命令，目录按认不出。
+    expect(reads[9]?.cwd).toBeUndefined();
+    expect(reads[0]?.cwd && toForwardSlashes(reads[0].cwd)).toBe('/repo');
+    for (const command of ['git remote', 'git remote add origin https://github.com/a/b.git', 'git config user.name Me', 'git status']) {
+      expect(shellCommandReadsCredentials(command, roots, { gitConfigRead: () => false }), command).toBe(false);
+    }
   });
 });

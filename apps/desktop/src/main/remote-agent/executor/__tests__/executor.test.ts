@@ -8,6 +8,7 @@ import { handleExecMcpRequest } from '../ccMcp';
 import { RemoteExecutor, type ExecutorConfirmation } from '../executor';
 import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor, type ExecutorAction } from '../gate';
 import type { PdfTextExtractor } from '../files';
+import type { GitCredentialHistory } from '../gitCredentials';
 import { findWindowsGitBash, truncateOutput } from '../shell';
 import type { GuardedFetch } from '../webFetch';
 import { ExecutorWorkspace } from '../workspace';
@@ -581,6 +582,7 @@ describe('shared provider credentials', () => {
   function sharedExecutor(
     mode: ReturnType<typeof executorGateModeFor>,
     confirm?: (action: ExecutorAction) => Promise<ExecutorConfirmation>,
+    gitCredentials?: GitCredentialHistory,
   ) {
     const workspace = new ExecutorWorkspace({ workingDir: project });
     const gate = new ExecutorGate(workspace, mode, Date.now, { confirmCredentials: true });
@@ -590,6 +592,7 @@ describe('shared provider credentials', () => {
       rgPath: RG,
       tempDir: path.join(root, 'tmp'),
       ...(confirm ? { confirm } : {}),
+      ...(gitCredentials ? { gitCredentials } : {}),
     });
     return { executor, gate, workspace };
   }
@@ -778,6 +781,37 @@ describe('shared provider credentials', () => {
     } finally {
       await executor.close();
     }
+  });
+
+  it('lets git commands run without asking once this computer has checked they cannot show credentials', async () => {
+    const asked: ExecutorAction[] = [];
+    const checked: string[] = [];
+    let safe = true;
+    const gitCredentials = {
+      provesSafe: async (command: string) => {
+        checked.push(command);
+        return safe;
+      },
+    } as unknown as GitCredentialHistory;
+    const { executor, gate } = sharedExecutor('full', async (action) => {
+      asked.push(action);
+      return false;
+    }, gitCredentials);
+    const log: ExecutorAction = { kind: 'exec', command: 'git log -p', cwd: project };
+    expect(gate.authorize(log).ok).toBe(false);
+    expect(await executor.confirm(log)).toBe(true);
+    expect(gate.authorize(log).ok).toBe(true);
+    expect(asked).toEqual([]);
+    // 核实不了时照旧问；命令还读别的凭证、或打出保存的凭证时不交给核实。
+    safe = false;
+    expect(await executor.confirm(log)).toBe(false);
+    expect(asked).toEqual([log]);
+    const withEnv: ExecutorAction = { kind: 'exec', command: 'git log -p && cat .env', cwd: project };
+    const fill: ExecutorAction = { kind: 'exec', command: 'git credential fill', cwd: project };
+    expect(await executor.confirm(withEnv)).toBe(false);
+    expect(await executor.confirm(fill)).toBe(false);
+    expect(asked).toEqual([log, withEnv, fill]);
+    expect(checked).toEqual(['git log -p', 'git log -p']);
   });
 
   it('leaves credential files out of Pi searches unless the searched path itself was allowed', async () => {

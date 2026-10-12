@@ -20,9 +20,9 @@
  */
 import path from 'node:path';
 
-import { classifyShellCommand, reviewAction } from '@cindy/maker-core';
+import { classifyShellCommand, reviewAction, type GitRead } from '@cindy/maker-core';
 
-import { isShareCredentialCommand, isShareCredentialPath } from '../credentials';
+import { isShareCredentialCommand, isShareCredentialPath, shareCredentialGitReads } from '../credentials';
 import { realPathOrAncestor, type ExecutorWorkspace } from './workspace';
 
 /**
@@ -152,6 +152,15 @@ export class ExecutorGate {
       return isShareCredentialCommand(action.command, this.workspace.allRoots(), { cwd: action.cwd, platform: process.platform });
     }
     return isShareCredentialPath(path.resolve(action.path)) || isShareCredentialPath(realPathOrAncestor(action.path));
+  }
+
+  /**
+   * 命令要按凭证确认、但只是因为 git 查看内容或打出 git 配置时，返回这些 git 调用(执行器在本机核实读不到
+   * 凭证后可以不问)；其余情况返回 null。
+   */
+  credentialGitReads(action: ExecutorAction): GitRead[] | null {
+    if (!this.options.confirmCredentials || action.kind !== 'exec') return null;
+    return shareCredentialGitReads(action.command, this.workspace.allRoots(), { cwd: action.cwd, platform: process.platform });
   }
 
   authorize(action: ExecutorAction): ExecutorGateDecision {

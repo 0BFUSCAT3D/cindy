@@ -1,10 +1,12 @@
 /**
  * 供应商分享的受邀者任务里「凭证类」的判定：沿用本机凭证规则，但配置目录里的说明类内容(Skill、
- * 子代理、命令、规则、个人说明)不算凭证。
+ * 子代理、命令、规则、个人说明)、.env 模板与公钥不算凭证，只按源码扩展名缩小范围的搜索不算读取凭证，
+ * git 查看内容交给执行器在本机核实。
  */
+import { isSensitiveCredentialPath, shellCommandReadsCredentials } from '@cindy/maker-core';
 import { describe, expect, it } from 'vitest';
 
-import { isShareCredentialCommand, isShareCredentialPath } from '../credentials';
+import { isShareCredentialCommand, isShareCredentialPath, shareCredentialGitReads } from '../credentials';
 
 describe('isShareCredentialPath', () => {
   it('keeps the credential rules of local tasks', () => {
@@ -75,5 +77,125 @@ describe('isShareCredentialCommand', () => {
     }
     // 含 `..` 时不放宽。
     expect(isShareCredentialCommand('cat ~/.claude/skills/../settings.json', roots)).toBe(true);
+  });
+
+  it('lets searches narrowed to source and doc extensions run', () => {
+    for (const command of [
+      "rg -n 'API_KEY' --glob '*.ts'",
+      "rg -g '*.{ts,tsx}' token src",
+      "grep -rn --include='*.md' token .",
+    ]) {
+      expect(isShareCredentialCommand(command, roots), command).toBe(false);
+    }
+    for (const command of ["rg -g '*.json' KEY", "rg -g '.env.ts' KEY", 'grep -rn KEY .']) {
+      expect(isShareCredentialCommand(command, roots), command).toBe(true);
+    }
+  });
+});
+
+describe('templates and public keys', () => {
+  const roots = ['/repo'];
+
+  it('are not credentials, unless they sit in a credential folder', () => {
+    for (const target of [
+      '/repo/.env.example',
+      '/repo/apps/web/.env.sample',
+      '/repo/.ENV.TEMPLATE',
+      '/repo/deploy/id_rsa.pub',
+      '/repo/keys/server.key.pub',
+      'C:\\repo\\id_ed25519.pub',
+    ]) {
+      expect(isShareCredentialPath(target), target).toBe(false);
+      // 本机规则不变。
+      expect(isSensitiveCredentialPath(target), target).toBe(true);
+    }
+    for (const target of [
+      '/home/me/.ssh/id_rsa.pub',
+      'C:\\Users\\me\\.ssh\\id_rsa.pub',
+      '/repo/.env.example.local',
+      '/repo/deploy/id_rsa.pub.bak',
+      '/repo/.env',
+      '/repo/deploy/id_rsa',
+    ]) {
+      expect(isShareCredentialPath(target), target).toBe(true);
+    }
+  });
+
+  it('can be read by commands', () => {
+    for (const command of ['cat .env.example', 'head -5 apps/web/.env.sample', 'cat deploy/id_rsa.pub', "rg -g '.env.example' KEY"]) {
+      expect(isShareCredentialCommand(command, roots), command).toBe(false);
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(true);
+    }
+    for (const command of ['cat ~/.ssh/id_rsa.pub', 'cat .env.example .env', 'cat id_rsa.pub id_rsa']) {
+      expect(isShareCredentialCommand(command, roots), command).toBe(true);
+    }
+  });
+});
+
+describe('shareCredentialGitReads', () => {
+  const roots = ['/repo'];
+
+  it('hands over git commands that need confirmation only because they show content', () => {
+    expect(shareCredentialGitReads('git log -p -- src/app.ts', roots, { cwd: '/repo' })).toMatchObject([
+      { sub: 'log', args: ['-p', '--', 'src/app.ts'] },
+    ]);
+    expect(shareCredentialGitReads('git diff && git show HEAD', roots, { cwd: '/repo' })).toHaveLength(2);
+    // 还有别的理由，或本来就不用确认：不交给核实。
+    expect(shareCredentialGitReads('git diff && cat .env', roots, { cwd: '/repo' })).toBeNull();
+    expect(shareCredentialGitReads('git show HEAD:.env', roots, { cwd: '/repo' })).toBeNull();
+    expect(shareCredentialGitReads('git status', roots, { cwd: '/repo' })).toBeNull();
+    expect(shareCredentialGitReads('pnpm test', roots, { cwd: '/repo' })).toBeNull();
+  });
+
+  it('hands over git commands that print the git config, but not ones that print saved logins', () => {
+    for (const command of ['git remote -v', 'git config --list', 'git config --get remote.origin.url']) {
+      expect(isShareCredentialCommand(command, roots, { cwd: '/repo' }), command).toBe(true);
+      expect(shareCredentialGitReads(command, roots, { cwd: '/repo' }), command).toHaveLength(1);
+    }
+    for (const command of ['git credential fill', 'git credential-osxkeychain get', 'git remote -v && cat .env']) {
+      expect(isShareCredentialCommand(command, roots, { cwd: '/repo' }), command).toBe(true);
+      expect(shareCredentialGitReads(command, roots, { cwd: '/repo' }), command).toBeNull();
+    }
+  });
+});
+
+describe('secrets written in the command', () => {
+  const roots = ['/repo'];
+  const token = 'ghp_0123456789abcdefghijABCDEFGHIJ012345';
+
+  it('need confirmation, only in shared provider tasks', () => {
+    for (const command of [
+      `git remote set-url origin https://me:${token}@github.com/a/b.git`,
+      'git clone https://oauth2:glpat-AbCdEfGhIjKlMnOpQrSt@gitlab.com/a/b.git',
+      `git push https://${token}@github.com/a/b.git`,
+      `git -c http.extraHeader="Authorization: Bearer ${token}" pull`,
+      'git log -S AKIAIOSFODNN7EXAMPLE',
+      `curl -H "Authorization: token ${token}" https://api.github.com/user`,
+      'psql postgres://app:hunter2secret@db.internal/app',
+      // <提交>:<路径> 写出以点开头的凭证类文件，scp 式地址同理。
+      'git show HEAD:.aws/credentials',
+      'git show main:.npmrc',
+      'scp build-host:.npmrc .',
+    ]) {
+      expect(isShareCredentialCommand(command, roots), command).toBe(true);
+      expect(shareCredentialGitReads(command, roots), command).toBeNull();
+      // 本机规则不变。
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+    }
+  });
+
+  it('leave ordinary addresses and words alone', () => {
+    for (const command of [
+      'git clone git@github.com:a/b.git',
+      'git clone https://github.com/a/b.git',
+      'git push origin main',
+      'git commit -m "fix sk-learn import"',
+      "git log --format='%h: %s' -5",
+      'curl http://localhost:3000/api',
+      'git show HEAD:src/app.ts',
+      'git show HEAD:.env.example',
+    ]) {
+      expect(isShareCredentialCommand(command, roots), command).toBe(false);
+    }
   });
 });
