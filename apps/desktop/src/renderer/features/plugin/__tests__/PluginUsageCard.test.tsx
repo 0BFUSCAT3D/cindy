@@ -65,10 +65,10 @@ it('distinguishes unavailable from actual zero with no invented usage', async ()
   await screen.findByText('settings.ghosts.usage.never');
   expect(screen.getByText('0')).toBeTruthy();
 });
-it('only shows authorized server aggregates and keeps missing fields distinct from zero', () => {
+it('hides missing shared statistics and preserves an explicitly reported zero', () => {
   const detail = { sourceType: 'server', scope: 'public' } as PluginMarketItem;
   const view = render(<PluginSharedUsage detail={detail} />);
-  expect(screen.getAllByText(/sharedUnavailable/)).toHaveLength(2);
+  expect(view.container.childElementCount).toBe(0);
   view.rerender(
     <PluginSharedUsage
       detail={{
@@ -83,6 +83,24 @@ it('only shows authorized server aggregates and keeps missing fields distinct fr
     />,
   );
   expect(screen.getByText('settings.ghosts.usage.installs 0')).toBeTruthy();
-  view.rerender(<PluginSharedUsage detail={{ ...detail, sourceType: 'git-market' }} />);
+  expect(screen.getByText('settings.ghosts.usage.uses 10')).toBeTruthy();
+  view.rerender(<PluginSharedUsage detail={detail} />);
+  expect(view.container.childElementCount).toBe(0);
+});
+it.each([
+  ['git-market', 'public'],
+  ['server', 'personal'],
+])('hides aggregates outside the authorized scope (%s, %s)', (sourceType, scope) => {
+  const detail = {
+    sourceType,
+    scope,
+    usageStatistics: {
+      installationCount: '12',
+      usageCount: '10',
+      usageCountLast7Days: '5',
+      asOf: '2026-10-12T00:00:00.000Z',
+    },
+  } as PluginMarketItem;
+  const view = render(<PluginSharedUsage detail={detail} />);
   expect(view.container.textContent).toBe('');
 });
