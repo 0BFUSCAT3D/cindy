@@ -5,8 +5,10 @@ import { Tip } from '@/components/ui/tooltip';
 
 import type { ProviderGroupMemberStatus } from '../../../shared/providerGroup';
 
+type VersionStatus = Pick<ProviderGroupMemberStatus, 'appVersion' | 'guestSupport'>;
+
 /** 版本和更新提示并入名称行，未知信息只在悬停说明中展开。 */
-export function GroupMemberVersion({ status }: { status: ProviderGroupMemberStatus | undefined }) {
+export function GroupMemberVersion({ status }: { status: VersionStatus | undefined }) {
   const { t } = useTranslation();
   const needsUpdate = status?.guestSupport === 'needs-update';
   if (!status?.appVersion && !needsUpdate) return null;
@@ -22,7 +24,7 @@ export function GroupMemberVersion({ status }: { status: ProviderGroupMemberStat
 
 /** 整个名称按钮可悬停或聚焦查看说明，不额外增加按钮或常驻信息行。 */
 export function GroupMemberDetailsButton({ status, ...props }: {
-  status: ProviderGroupMemberStatus | undefined;
+  status: VersionStatus | undefined;
 } & ComponentPropsWithoutRef<'button'>) {
   const { t } = useTranslation();
   const details = [status?.appVersion

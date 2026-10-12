@@ -8,8 +8,10 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { cn } from '@/lib/utils';
 
+import { readProviderGroupAppVersion } from '../../../shared/providerGroup';
 import type {
   ProviderGroupConfig,
   ProviderGroupMember,
@@ -25,24 +27,45 @@ const REFRESH_INTERVAL_MS = 15_000;
 
 function useRemoteProviderGroupView(deviceId: string, providerId: string) {
   const [view, setView] = useState<ProviderGroupView | null>(null);
+  const [versions, setVersions] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [failed, setFailed] = useState(false);
   const seq = useRef(0);
 
   const reload = useCallback(async () => {
     const current = ++seq.current;
+    const owner = getDataOwnerGeneration();
+    const canApply = () => current === seq.current && isDataOwnerGenerationCurrent(owner);
+    // 旧组所在电脑不回 appVersion；查看端已有的同账号设备目录仍能提供版本。
+    // 与状态独立读取，设备目录慢或失败时不挡住组状态，也不为此增加一套轮询。
+    const readVersions = async () => {
+      try {
+        const { devices } = await window.electronAPI.deviceLink.listDevices();
+        if (!canApply()) return;
+        const next = new Map<string, string>();
+        for (const device of devices) {
+          const version = readProviderGroupAppVersion(device.appVersion);
+          if (version) next.set(device.deviceId, version);
+        }
+        setVersions(next);
+      } catch {
+        if (canApply()) setVersions(new Map());
+      }
+    };
+    void readVersions();
     try {
       const next = await window.electronAPI.providerGroup.command({ action: 'remote-view', deviceId, providerId });
-      if (current !== seq.current) return;
+      if (!canApply()) return;
       setView(next);
       setFailed(false);
     } catch {
-      if (current !== seq.current) return;
+      if (!canApply()) return;
       setFailed(true);
     }
   }, [deviceId, providerId]);
 
   useEffect(() => {
     setView(null);
+    setVersions(new Map());
     setFailed(false);
     void reload();
     const timer = window.setInterval(() => void reload(), REFRESH_INTERVAL_MS);
@@ -52,7 +75,7 @@ function useRemoteProviderGroupView(deviceId: string, providerId: string) {
     };
   }, [reload]);
 
-  return { view, failed };
+  return { view, versions, failed };
 }
 
 export function RemoteProviderGroupMembers({
@@ -66,7 +89,7 @@ export function RemoteProviderGroupMembers({
   config: ProviderGroupConfig;
 }) {
   const { t } = useTranslation();
-  const { view, failed } = useRemoteProviderGroupView(deviceId, providerId);
+  const { view, versions, failed } = useRemoteProviderGroupView(deviceId, providerId);
   const members = view?.config?.members ?? config.members;
   return (
     <section
@@ -83,6 +106,9 @@ export function RemoteProviderGroupMembers({
             key={member.key}
             member={member}
             status={view?.members.find((m) => m.key === member.key)}
+            // local 指组所在电脑，不是查看端；分享来源不能按同账号设备查版本。
+            appVersion={member.kind === 'local' ? versions.get(deviceId)
+              : member.kind === 'device' && member.agentDeviceId ? versions.get(member.agentDeviceId) : undefined}
             first={index === 0}
             ownerDeviceId={deviceId}
           />
@@ -100,11 +126,13 @@ export function RemoteProviderGroupMembers({
 function MemberRow({
   member,
   status,
+  appVersion,
   first,
   ownerDeviceId,
 }: {
   member: ProviderGroupMember;
   status: ProviderGroupMemberStatus | undefined;
+  appVersion?: string;
   first: boolean;
   /** 组所在电脑：组里的「组所在电脑自己」读它的账号额度。 */
   ownerDeviceId: string;
@@ -131,6 +159,7 @@ function MemberRow({
   const [quotaOpen, setQuotaOpen] = useState(false);
   const quotaId = useId();
   const selfDeviceId = useOptionalAuthDeviceId();
+  const versionStatus = appVersion ? { ...status, appVersion } : status;
   return (
     <div
       data-testid="remote-provider-group-member"
@@ -139,7 +168,7 @@ function MemberRow({
       className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}
     >
       <GroupMemberDetailsButton
-        status={status}
+        status={versionStatus}
         type="button"
         aria-expanded={quotaOpen}
         aria-controls={quotaOpen ? quotaId : undefined}
@@ -155,7 +184,7 @@ function MemberRow({
         <span className={cn('flex min-w-0 flex-1 flex-col gap-0.5', member.paused && 'opacity-60')}>
           <span className="flex min-w-0 flex-wrap items-baseline gap-2 text-13">
             <span className="truncate font-medium text-[var(--text-primary)]">{label}</span>
-            <GroupMemberVersion status={status} />
+            <GroupMemberVersion status={versionStatus} />
             <span className="text-12 text-[var(--text-secondary)]">{source}</span>
             <ChevronRight
               aria-hidden="true"
