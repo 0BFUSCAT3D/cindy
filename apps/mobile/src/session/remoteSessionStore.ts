@@ -75,6 +75,7 @@ import type { InputProjection, PendingInteraction, RemoteMessage, RemoteSession 
 import { clampLiveRowCreatedAt, compareMessageOrder, MESSAGE_PAGE_SIZE } from '@/session/messagePaging';
 import { normalizeRemoteMoney } from '@/session/remoteMoney';
 import { projectLargeSettledToolInputs } from '@/session/messageToolPayloadProjection';
+import { setRemoteSessionStoreSizeSource } from '@/debug/jankMetrics';
 
 interface DeviceShard {
   deviceId: string;
@@ -715,6 +716,24 @@ const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
 const homeStatusSubs = new Set<() => void>();
 const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();
+setRemoteSessionStoreSizeSource(() => {
+  let total = 0;
+  let max = 0;
+  for (const list of messages.values()) {
+    total += list.length;
+    max = Math.max(max, list.length);
+  }
+  let previewSubscribers = 0;
+  for (const listeners of sessionMessagePreviewSubs.values()) previewSubscribers += listeners.size;
+  return {
+    sessionCount: messages.size,
+    messageCount: total,
+    maxSessionMessageCount: max,
+    subscriberCount: subs.size,
+    homeStatusSubscriberCount: homeStatusSubs.size,
+    previewSubscriberCount: previewSubscribers,
+  };
+});
 const pendingMessagePreviewSessionIds = new Set<string>();
 let homeStatusNotifyPending = false;
 let notifyAllMessagePreviewsPending = false;
@@ -1297,10 +1316,27 @@ function enforceRegularMessageBudget(): boolean {
   return changed;
 }
 
+/**
+ * A regular task nobody is looking at still receives list pushes while it runs,
+ * and running tasks are exempt from the global LRU budget. Without a per-task
+ * cap that window grows for as long as the app stays alive, and every push
+ * copies and re-sorts all of it. Keep only the latest page; reopening the task
+ * re-syncs from the host like any other trimmed window.
+ */
+function hiddenRegularWindowOverCap(sessionId: string, list: readonly RemoteMessage[]): boolean {
+  return list.length > MESSAGE_PAGE_SIZE
+    && retentionForSession(sessionId) === 'regular'
+    && !sessionMessageLifecycle.isVisible(sessionId)
+    && !sessionMessageLifecycle.hasLocalWork(sessionId);
+}
+
 function applyMessageWriteRetention(sessionId: string): void {
   touchSessionAccess(sessionId);
   const current = messages.get(sessionId);
-  if (current && retentionForSession(sessionId) === 'schedule') {
+  if (current && (
+    retentionForSession(sessionId) === 'schedule'
+    || hiddenRegularWindowOverCap(sessionId, current)
+  )) {
     const trimmed = trimMessageWindow(sessionId, current);
     if (!remoteMessageListsEqual(current, trimmed)) {
       forgetWindowCoverage(sessionId);
