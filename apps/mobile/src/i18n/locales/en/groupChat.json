@@ -204,6 +204,7 @@
     "loadFailed": "Can’t load this group chat right now. Try again.",
     "loadOlder": "Load Earlier Messages",
     "attachmentFailed": "Couldn’t open the attachment. Try again.",
+    "attachmentName": "Attachment",
     "previewUnavailable": "Preview unavailable",
     "endpointUnavailable": "Group chat service configuration is unavailable. Please retry."
   }

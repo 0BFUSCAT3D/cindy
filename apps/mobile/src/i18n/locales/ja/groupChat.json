@@ -204,6 +204,7 @@
     "loadFailed": "グループチャットを読み込めません。もう一度お試しください。",
     "loadOlder": "以前のメッセージを読み込む",
     "attachmentFailed": "添付ファイルを開けませんでした。もう一度お試しください。",
+    "attachmentName": "添付ファイル",
     "previewUnavailable": "プレビューを読み込めません",
     "endpointUnavailable": "グループチャットのサービス設定を利用できません。再試行してください。"
   }
