@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 import { desktopClientBuildEnv } from '../../scripts/shared/client-endpoint-build-env.mjs';
 import { parseVitestCliExclude } from './src/test/vitest/cliExclude';
+import TimingSequencer from './scripts/unit-test-sequencer.mjs';
 
 const clientBuildEnv = desktopClientBuildEnv({ allowEnvOverride: false });
 const cliTestExclude = parseVitestCliExclude(process.argv.slice(2));
@@ -64,7 +65,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    sequence: { sequencer: path.resolve(__dirname, 'scripts/unit-test-sequencer.mjs') },
+    sequence: { sequencer: TimingSequencer },
     ...(process.env.CI && process.env.XDT_UNIT_TEST_SHARD ? {
       reporters: ['default', path.resolve(__dirname, 'scripts/ci-timing-reporter.mjs')],
     } : {}),
