@@ -12,6 +12,12 @@ vi.mock('@/lib/modelDefinitions', () => ({
 vi.mock('../botReadState', () => ({
   getBotLastReadAtMap: () => ({}), pruneBotReadState: vi.fn(), seedMissingBotReadState: vi.fn(),
 }));
+// Model settings and locale hydration do not exercise recent-task suggestions.
+// Keep the real locale/owner stores, but avoid bootstrapping sessionsStore for
+// every resetModules(). The welcome-context suite covers those integrations.
+vi.mock('../botWelcomeContext', () => ({
+  readCachedBotWelcomeContext: () => undefined,
+}));
 
 const route = (model: string) => ({ harness: 'pi' as const, model, providerId: 'xd', effort: '', fastMode: false });
 const saved = { modelChain: [route('saved')], isCustomized: true };
