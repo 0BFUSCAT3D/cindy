@@ -936,7 +936,9 @@ final class StatusController: NSObject, NSWindowDelegate {
   }
 
   /// Preview mode only: open without a click so screenshots show the panel.
-  func openForPreview(page: Page) {
+  /// `ready` runs once the requested page is showing, so a snapshot timed from it never
+  /// captures the main page instead.
+  func openForPreview(page: Page, ready: @escaping () -> Void) {
     pinned = true
     open()
     // `open` may retry until the status item is placed and then shows the main page; switch
@@ -945,6 +947,7 @@ final class StatusController: NSObject, NSWindowDelegate {
       guard let self else { return }
       self.store.page = page
       self.layoutPanel(for: page, animated: false)
+      ready()
     }
   }
 }
@@ -2408,7 +2411,7 @@ struct UsagePage: View {
         emptyRow(store.s("noTasksToday"))
       }
       ForEach(tasks) { task in
-        UsageTaskRow(task: task) {
+        UsageTaskRow(task: task, runningLabel: store.s("running")) {
           controller.emitAndClose(["type": "open-session", "sessionId": task.sessionId])
         }
       }
@@ -2427,6 +2430,7 @@ struct UsagePage: View {
 
 struct UsageTaskRow: View {
   let task: MBTask
+  let runningLabel: String
   let action: () -> Void
   @State private var hovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2434,9 +2438,15 @@ struct UsageTaskRow: View {
   var body: some View {
     Button(action: action) {
       HStack(spacing: 8) {
-        // A running task's harness dot breathes; one dot carries both facts.
+        // A running task's harness dot breathes; one dot carries both facts. With Reduce
+        // Motion the dot stays still, so a ring marks it as running instead.
         if task.running {
           BreathingDot(animate: !reduceMotion, color: Palette.harness(task.harness), size: 6)
+            .overlay {
+              if reduceMotion {
+                Circle().strokeBorder(Palette.harness(task.harness).opacity(0.5), lineWidth: 1.5).frame(width: 11, height: 11)
+              }
+            }
         } else {
           Circle().fill(Palette.harness(task.harness)).frame(width: 6, height: 6)
         }
@@ -2453,7 +2463,9 @@ struct UsageTaskRow: View {
     .buttonStyle(.plain)
     .onHover { hovering in withAnimation(Motion.quick) { self.hovering = hovering } }
     .help(task.title)
-    .accessibilityLabel("\(task.title), \(Fmt.money(task.value))")
+    .accessibilityLabel(task.running
+      ? "\(task.title), \(runningLabel), \(Fmt.money(task.value))"
+      : "\(task.title), \(Fmt.money(task.value))")
   }
 }
 
@@ -2924,13 +2936,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       snapshotDelay = value
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-      self?.controller?.openForPreview(page: page)
-      guard let window = NSApp.windows.first(where: { $0 is MenubarPanel }) else { return }
-      FileHandle.standardError.write(Data("menubar: preview window \(window.windowNumber)\n".utf8))
-      guard let snapshotPath else { return }
-      DispatchQueue.main.asyncAfter(deadline: .now() + snapshotDelay) {
-        Self.writeSnapshot(of: window, to: snapshotPath)
-        NSApp.terminate(nil)
+      self?.controller?.openForPreview(page: page) {
+        guard let window = NSApp.windows.first(where: { $0 is MenubarPanel }) else { return }
+        FileHandle.standardError.write(Data("menubar: preview window \(window.windowNumber)\n".utf8))
+        guard let snapshotPath else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + snapshotDelay) {
+          Self.writeSnapshot(of: window, to: snapshotPath)
+          NSApp.terminate(nil)
+        }
       }
     }
   }
