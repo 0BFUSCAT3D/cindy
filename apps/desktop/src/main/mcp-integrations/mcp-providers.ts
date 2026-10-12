@@ -76,6 +76,7 @@ import {
 } from '../maker-ipc/botSkillService.js';
 import {
   addBotWorkbenchProjectForCaller,
+  captureBotCreatedTaskResponsibility,
   removeBotWorkbenchProjectForCaller,
   runBotWorkbenchTool,
   type BotWorkbenchSendDeps,
@@ -690,7 +691,8 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             || model !== undefined
             || effort !== undefined
             || fast !== undefined;
-          return await svc.sendToSession({
+          const recordCreation = targetSessionId ? null : await captureBotCreatedTaskResponsibility(dispatcherSessionId);
+          const result = await svc.sendToSession({
             targetSessionId,
             message,
             dispatcherSessionId,
@@ -709,6 +711,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
                 }
               : {}),
           });
+          if (result.ok && result.wakeKind === 'created' && recordCreation) {
+            try { await recordCreation(result.targetSessionId); }
+            catch { return { ...result, responsibilityRecorded: false }; }
+          }
+          return result;
         } catch (err) {
           return { ok: false, errorCode: 'INTERNAL', message: err instanceof Error ? err.message : String(err) };
         }
@@ -921,6 +928,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             return {ok:true,...await access.ingest(input as Parameters<typeof access.ingest>[0])};
           } catch(error) { return {ok:false,errorCode:error instanceof TodoError ? error.code : 'INTERNAL',message:error instanceof Error?error.message:'INTERNAL'}; }
         },
+        setResponsibility: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.setResponsibility(params)),
         get: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.get(params)),
         read: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.read(params)),
         set: (params) => runBotWorkbenchTool(workbenchSend, (access) => access.set(params)),
