@@ -1,5 +1,7 @@
 import {
   buildUserProvider,
+  BUNDLED_CATALOG,
+  findBaseModel,
   type ProviderPreset,
   isAgentSelectableModel,
   isLoopbackProviderUrl,
@@ -29,7 +31,8 @@ export interface ProviderConnectionTestSignatureFields extends ProviderModelFetc
 
 export function firstProviderChatModel<T extends { id: string; mode?: string; discoveredMetadata?: { mode?: string } }>(models: readonly T[]): T | undefined {
   return models.find((model) => model.id.trim().length > 0 && isAgentSelectableModel(
-    { id: model.id, group: 'custom', mode: model.mode ?? model.discoveredMetadata?.mode },
+    { id: model.id, group: 'custom', mode: model.mode ?? model.discoveredMetadata?.mode ??
+      findBaseModel(BUNDLED_CATALOG.modelRegistry, model.id.trim())?.defaults.mode },
     { userProvider: true },
   ));
 }

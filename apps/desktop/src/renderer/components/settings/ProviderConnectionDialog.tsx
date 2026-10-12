@@ -35,6 +35,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
+import { Select } from '@/components/ui/select';
 import { FormField } from '@/components/ui/form-field';
 import { Tip } from '@/components/ui/tooltip';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -440,6 +441,7 @@ export function ProviderConnectionDialog({
   }, [fieldError]);
   const [name, setName] = useState(initial?.name ?? '');
   const [manualModel, setManualModel] = useState('');
+  const [manualModelMode, setManualModelMode] = useState('inherit');
   const [rt, setRt] = useState<Record<DialogAgentKind, RuntimeFields>>(() => initRuntimes(initial));
   const [activeTab, setActiveTab] = useState<DialogAgentKind>(
     () =>
@@ -1168,6 +1170,7 @@ export function ProviderConnectionDialog({
   );
 
   const f = rt[activeTab];
+  const mediaOnly = f.models.some(model => model.id.trim()) && !firstProviderChatModel(f.models);
   const boundPreset = presets.find(preset => preset.id === f.catalogPresetId);
   const templateBound = Boolean(f.catalogPresetId);
   const endpointTemplate = boundPreset?.runtimes[activeTab]?.baseUrl;
@@ -1359,6 +1362,7 @@ export function ProviderConnectionDialog({
             id: m.id.trim(),
             name: m.name.trim(),
             mode: m.mode,
+            nativeApi: m.nativeApi,
             modalities: m.modalities,
             officialDocs: m.officialDocs,
             discoveredMetadata: m.discoveredMetadata,
@@ -1403,6 +1407,7 @@ export function ProviderConnectionDialog({
                 m.discoveredMetadata ?? { contextWindow: m.contextWindow }),
               discoveredCost: m.discoveredCost,
               mode: cur?.mode,
+              nativeApi: cur?.nativeApi,
               modalities: cur?.modalities,
               officialDocs: cur?.officialDocs,
               nameExplicit: cur ? (cur.nameExplicit ?? !cur.discoveredMetadata) : undefined,
@@ -1490,6 +1495,7 @@ export function ProviderConnectionDialog({
         id: m.id,
         name: latest?.name.trim() ? latest.name.trim() : m.name,
         mode: latest ? latest.mode : m.mode,
+        nativeApi: latest ? latest.nativeApi : m.nativeApi,
         modalities: latest?.modalities ?? m.modalities,
         officialDocs: latest?.officialDocs ?? m.officialDocs,
         discoveredMetadata: m.discoveredMetadata ?? latest?.discoveredMetadata,
@@ -1517,6 +1523,7 @@ export function ProviderConnectionDialog({
           id,
           name: m.name.trim() || id,
           mode: m.mode,
+          nativeApi: m.nativeApi,
           modalities: m.modalities,
           officialDocs: m.officialDocs,
           discoveredMetadata: m.discoveredMetadata,
@@ -1618,6 +1625,7 @@ export function ProviderConnectionDialog({
           id: m.id.trim(),
           name: m.name.trim(),
           mode: m.mode,
+          nativeApi: m.nativeApi,
           modalities: m.modalities,
           officialDocs: m.officialDocs,
           discoveredMetadata: m.discoveredMetadata,
@@ -2401,13 +2409,33 @@ export function ProviderConnectionDialog({
                       onChange={setManualModel} />
                         )}
                   </FormField>
+                  <FormField id={fieldId(`${activeTab}:manualModelMode`)}
+                    label={t('settings.providers.custom.fields.modelType')}
+                    hint={t('settings.providers.connection.manualModelTypeHint')}>
+                    {(control) => (
+                      <Select {...control} label={t('settings.providers.custom.fields.modelType')}
+                        value={manualModelMode} onValueChange={setManualModelMode}
+                        options={[
+                          { value: 'inherit', label: t('settings.providers.connection.modelTypeAutomatic') },
+                          { value: 'chat', label: t('settings.providers.models.kindFilter.chat') },
+                          ...([
+                            ['image_generation', 'image'], ['video_generation', 'video'],
+                            ['audio_speech', 'tts'], ['audio_transcription', 'stt'],
+                            ['audio_generation', 'audio'], ['realtime', 'realtime'], ['embedding', 'embedding'],
+                          ] as const).map(([value, category]) => ({ value, label: t(`newChat.modelSelector.category.${category}`) })),
+                        ]} />
+                    )}
+                  </FormField>
                   <Button variant="secondary" disabled={!manualModel.trim()} onClick={() => {
                     const ids = [...new Set(manualModel.split(/[,\n]/).map((id) => id.trim()).filter(Boolean))];
                     patch(activeTab, (runtime) => ({ ...runtime, models: [
-                      ...runtime.models.filter((model) => model.id.trim()),
-                      ...ids.filter((id) => !runtime.models.some((model) => model.id === id)).map((id) => ({ id, name: id })),
+                      ...runtime.models.filter((model) => model.id.trim()).map(model =>
+                        ids.includes(model.id) ? { ...model, mode: manualModelMode === 'inherit' ? undefined : manualModelMode } : model),
+                      ...ids.filter((id) => !runtime.models.some((model) => model.id === id))
+                        .map((id) => ({ id, name: id, ...(manualModelMode === 'inherit' ? {} : { mode: manualModelMode }) })),
                     ] }));
                     setManualModel('');
+                    setManualModelMode('inherit');
                     setFieldError(null);
                   }}>{t('settings.providers.custom.fields.addModel')}</Button>
                 </div>
@@ -2676,7 +2704,7 @@ export function ProviderConnectionDialog({
                     用户只补 key。列表已按厂商首字母分组排序（同厂商国内/海外相邻，按构建区域排序）。 */}
             {authMode !== 'oauth' && (
               <div className="flex min-h-[32px] flex-wrap items-center gap-2.5">
-                    <Button
+                    {!mediaOnly && <Button
                       variant="secondary"
                       size="sm"
                       compact
@@ -2687,7 +2715,7 @@ export function ProviderConnectionDialog({
                     >
                       <Plug size={13} />
                       {t('settings.providers.custom.test.button')}
-                    </Button>
+                    </Button>}
                     {/* 预设模板（仅新建态、有预设时显示）：下拉选择，选中即预填 baseUrl / 模型清单，
                         用户只补 key。列表已按厂商首字母分组排序（同厂商国内/海外相邻，按构建区域排序）。 */}
                     <Button
@@ -2703,7 +2731,7 @@ export function ProviderConnectionDialog({
                       <RefreshCw size={13} />
                       {t('settings.providers.custom.fetch.button')}
                     </Button>
-                {test[activeTab].status === 'ok' && (
+                {!mediaOnly && test[activeTab].status === 'ok' && (
                   <span
                     className="flex items-center gap-1 text-12"
                     style={{ color: 'var(--remote-status-ready)' }}
@@ -2712,9 +2740,14 @@ export function ProviderConnectionDialog({
                     {t('settings.providers.custom.test.ok', { ms: test[activeTab].latencyMs ?? 0 })}
                   </span>
                 )}
-                {test[activeTab].status === 'fail' && (
+                {!mediaOnly && test[activeTab].status === 'fail' && (
                   <span className="text-12 text-[var(--error-fg)]">
                     {t(`providerError.${test[activeTab].code ?? 'UNKNOWN'}`)}
+                  </span>
+                )}
+                {mediaOnly && (
+                  <span className="w-full text-12 text-[var(--text-secondary)]">
+                    {t('settings.providers.connection.mediaOnlyTestHint')}
                   </span>
                 )}
               </div>

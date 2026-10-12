@@ -3464,7 +3464,10 @@
       "connection": {
         "modelCount": "{{count}} models configured",
         "modelsAutomatic": "Model details are imported automatically. Adjust individual models in the model list.",
-        "manualModel": "Model IDs (if discovery is unavailable)"
+        "manualModel": "Model IDs (if discovery is unavailable)",
+        "modelTypeAutomatic": "Detect Automatically",
+        "manualModelTypeHint": "Use the same ID to update its type. Automatic detection restores the catalog type.",
+        "mediaOnlyTestHint": "This connection has only non-chat models. Fetch the model list to check catalog access; model execution is not tested here."
       },
       "byok": {
         "managed": "Managed by your organization",

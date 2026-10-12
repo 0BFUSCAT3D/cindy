@@ -38,9 +38,14 @@ it('isolates excess additions and duplicate tags without discarding valid local 
 import {
   BUNDLED_CATALOG,
   buildUserProvider,
+  isAgentSelectableModel,
+  mergeDiscoveredRuntimeModels,
+  parseModelsListResponse,
   type Catalog,
+  type CustomProviderConfig,
   type ModelRegistry,
 } from '@cindy/model-providers';
+import { validateCustomProviderConfig } from '../custom-provider-store.js';
 import {
   getActiveCatalog,
   getActiveLocalModelCatalog,
@@ -108,6 +113,35 @@ afterEach(() => {
   setActiveCatalog(BUNDLED_CATALOG);
 });
 describe('metadata layers through the active catalog', () => {
+  it('keeps BYOK speech metadata through config validation, JSON persistence and active catalog refresh', () => {
+    const discovered = parseModelsListResponse({ data: [{ id: 'gpt-private-voice',
+      mode: 'audio_speech', native_api: 'openai-audio-speech' }] })!;
+    const config: CustomProviderConfig = { id: 'speech-one', name: 'Speech', runtimes: {
+      codex: { baseUrl: 'https://speech.example.test/v1', wireProtocol: 'openai-chat',
+        models: mergeDiscoveredRuntimeModels([], discovered) },
+    } };
+    expect(validateCustomProviderConfig(config)).toEqual({ ok: true });
+    const restored = JSON.parse(JSON.stringify(config)) as CustomProviderConfig;
+    const other: CustomProviderConfig = { ...restored, id: 'speech-two', runtimes: {
+      codex: { ...restored.runtimes.codex!, models: [{ id: 'gpt-private-voice', name: 'Chat', mode: 'chat' }] },
+    } };
+    const publish = () => setCustomProviders([restored, other].map(c =>
+      buildUserProvider(c, { modelRegistry: BUNDLED_CATALOG.modelRegistry })));
+    setActiveCatalog(BUNDLED_CATALOG);
+    publish();
+    for (let refresh = 0; refresh < 2; refresh++) {
+      const active = getActiveCatalog();
+      const speech = active.providers.find(p => p.id === restored.id)!;
+      expect(speech.audioModels?.[0]).toMatchObject({ id: 'gpt-private-voice', mode: 'audio_speech',
+        nativeApi: 'openai-audio-speech', sourceAgent: 'codex' });
+      expect(isAgentSelectableModel(speech.models.codex![0], { userProvider: true })).toBe(false);
+      expect(active.providers.find(p => p.id === other.id)?.audioModels).toBeUndefined();
+      restored.runtimes.codex!.models = mergeDiscoveredRuntimeModels(restored.runtimes.codex!.models,
+        [{ id: 'gpt-private-voice', name: 'Sparse refresh' }]);
+      publish();
+    }
+  });
+
   it.each(['absent', 'legacy', 'empty'] as const)(
     'applies local overrides after %s registry fallback',
     (kind) => {

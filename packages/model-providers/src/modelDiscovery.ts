@@ -72,7 +72,9 @@ export function parseModelsListResponse(
                 ? (item as { key: string }).key
                 : typeof (item as { model_name?: unknown }).model_name === 'string'
                   ? (item as { model_name: string }).model_name
-                  : google ? google.name.slice('models/'.length) : null
+                  : typeof (item as { model_id?: unknown }).model_id === 'string'
+                    ? (item as { model_id: string }).model_id
+                    : google ? google.name.slice('models/'.length) : null
           : null;
     if (!id || seen.has(id)) continue;
     seen.add(id);

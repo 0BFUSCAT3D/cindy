@@ -24,6 +24,15 @@ const fields = {
   ],
 };
 
+it('excludes exact public speech identities from chat probes without guessing unknown names', () => {
+  const speech = { id: 'gpt-4o-mini-tts' };
+  const unknown = { id: 'private-tts-service' };
+  expect(firstProviderChatModel([speech])).toBeUndefined();
+  expect(firstProviderChatModel([speech, unknown])).toBe(unknown);
+  expect(firstProviderChatModel([{ ...unknown, mode: 'audio_speech' }])).toBeUndefined();
+  expect(firstProviderChatModel([{ ...speech, mode: 'chat' }])?.id).toBe(speech.id);
+});
+
 describe('providerModelFetchRequestSignature', () => {
   it('invalidates an in-flight result when the auth mode changes', () => {
     expect(providerModelFetchRequestSignature(fields, 'apiKey')).not.toBe(

@@ -23,6 +23,7 @@ import {
 import { __resetForTest, setModelVisibilityOwner } from '@/state/modelVisibilityPrefs';
 
 import type { CatalogModel, ProviderView } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, mergeDiscoveredRuntimeModels, parseModelsListResponse } from '@cindy/model-providers';
 
 function model(id: string, contextWindow = 100_000): CatalogModel {
   return { id, name: id, contextWindow, efforts: [], defaultEffort: null } as CatalogModel;
@@ -68,6 +69,25 @@ afterEach(() => {
 });
 
 describe('buildUnionRows', () => {
+  it('groups discovered BYOK speech models as TTS and keeps the normal disabled management state', () => {
+    const projected = buildUserProvider({ id: 'speech-byok', name: 'Speech', runtimes: { codex: {
+      baseUrl: 'https://speech.example.test/v1', models: mergeDiscoveredRuntimeModels([], parseModelsListResponse({ data: [
+        { id: 'chat-model', mode: 'chat' },
+        { id: 'speech-model', mode: 'audio_speech', native_api: 'openai-audio-speech' },
+      ] })!),
+    } } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+    const view = { ...projected, connected: true } as ProviderView;
+    const rows = buildUnionRows(view);
+    expect(rows).toHaveLength(2);
+    const speech = rows.find(row => row.id === 'speech-model')!;
+    expect(managementKindsOfRow(speech, true)).toEqual(['tts']);
+    expect(isCapabilityRow(speech, true)).toBe(true);
+    expect(isRowDisabled(speech)).toBe(false);
+    view.models.codex![1].disabled = true;
+    view.audioModels![0].disabled = true;
+    expect(isRowDisabled(buildUnionRows(view).find(row => row.id === 'speech-model')!)).toBe(true);
+  });
+
   it('同 id 跨 agent 合并;行序 = 首 agent 目录序 + 后续 agent 独占追加', () => {
     const rows = buildUnionRows(provider);
     expect(rows.map((r) => r.id)).toEqual(['shared', 'cc-only', 'codex-only']);
