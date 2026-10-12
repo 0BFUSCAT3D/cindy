@@ -975,6 +975,7 @@ import { sanitizeSourceName } from '@cindy/maker-shared/message-source';
 import { UI_ACTION_TRIGGER_PREFIX } from '@cindy/maker-shared/synthetic-trigger';
 import {
   createContextOverflowRollover,
+  canContinueContextRecovery,
   hasModelWindowContextToProtect,
   isContextOverflowErrorData,
   isOversizedHistoryErrorData,
@@ -15935,29 +15936,43 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         : withCindyMakeProjectUse(app.getPath('userData'), botInput?.workingDir, () => sendToAgentAcceptedUnlocked(...args));
     });
   };
+  // Shared by pre-send pressure checks and the final automatic-continuation gate.
+  // A stale/archived link must not turn a delegated or deleted companion into a direct chat.
+  const readContextRecoverySession = async (sessionId: string) => {
+    const [row] = await getDbClient()
+      .drizzle.select({
+        status: sessions.status,
+        source: sessions.source,
+        botRole: botSessionLinks.role,
+        botLinkArchivedAt: botSessionLinks.archivedAt,
+        botStatus: botProfiles.status,
+        botHiddenAt: botProfiles.hiddenAt,
+        agentKind: sessions.agentKind,
+        remoteHostId: sessions.remoteHostId,
+        clearedAt: sessions.clearedAt,
+        sdkSessionId: sessions.sdkSessionId,
+        contextTokens: sessions.contextTokens,
+        contextWindow: sessions.contextWindow,
+        model: sessions.model,
+        providerId: sessions.providerId,
+        workingDir: sessions.workingDir,
+      })
+      .from(sessions)
+      .leftJoin(botSessionLinks, eq(botSessionLinks.sessionId, sessions.id))
+      .leftJoin(botProfiles, eq(botProfiles.id, botSessionLinks.botId))
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    if (!row) return null;
+    return {
+      ...row,
+      botRole: row.botStatus === 'active' && !row.botHiddenAt && row.botLinkArchivedAt === null
+        ? row.botRole : null,
+    };
+  };
   contextOverflowRolloverHolder = createContextOverflowRollover({
     hasExternalRecoveryOwner: (sessionId) =>
       isHeadlessGhostSetupTurn(sessionId) || !!bindingStore.findByTarget(sessionId),
-    getSessionRow: async (sessionId) => {
-      const [row] = await getDbClient()
-        .drizzle.select({
-          status: sessions.status,
-          source: sessions.source,
-          agentKind: sessions.agentKind,
-          remoteHostId: sessions.remoteHostId,
-          clearedAt: sessions.clearedAt,
-          sdkSessionId: sessions.sdkSessionId,
-          contextTokens: sessions.contextTokens,
-          contextWindow: sessions.contextWindow,
-          model: sessions.model,
-          providerId: sessions.providerId,
-          workingDir: sessions.workingDir,
-        })
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
-        .limit(1);
-      return row ?? null;
-    },
+    getSessionRow: readContextRecoverySession,
     classifyCodexHistory: async (threadId) => {
       const ownerScope = captureDataOwnerBroadcastScope();
       const dbSnapshot = getCurrentDbClientSnapshot();
@@ -16132,9 +16147,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             content: recovery.sourceUserContent,
           })
         : undefined;
-      if (recovery?.continueFromHistory &&
-        (row.source !== 'desktop' || isHeadlessGhostSetupTurn(sessionId) || bindingStore.findByTarget(sessionId))) {
-        return { accepted: false };
+      if (recovery?.continueFromHistory) {
+        const current = await readContextRecoverySession(sessionId);
+        if (!current || !canContinueContextRecovery(current) || current.status !== 'active'
+          || isHeadlessGhostSetupTurn(sessionId) || bindingStore.findByTarget(sessionId)) {
+          return { accepted: false };
+        }
       }
       const sendReplay = () => sendToAgentAcceptedUnlocked(
         sessionId,
