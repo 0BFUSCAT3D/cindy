@@ -21,6 +21,8 @@ import {
   type ProviderGroupUnavailableReason,
 } from '../../shared/providerGroup.js';
 import type { DeviceLinkDeviceView } from '../../shared/deviceLinkIpc.js';
+import type { ClaudeSubscriptionUsageSnapshot } from '../../shared/claudeSubscriptionUsage.js';
+import { providerWeeklyQuotaSource } from '../../shared/providerQuotaSource.js';
 import { isSameProvider } from './matching.js';
 
 export interface ProviderGroupDirectoryDeps {
@@ -35,6 +37,9 @@ export interface ProviderGroupDirectoryDeps {
   isMobilePlatform(platform: string | null): boolean;
   /** 本机这个供应商正在运行一轮的任务数(localLoad.ts)；不提供或读不到时为 null。 */
   localRunning?(providerId: string): Promise<number | null>;
+  /** Same-account subscription snapshots only; absence/failure keeps the member usable. */
+  readClaudeUsage?(member: ProviderGroupMember): Promise<ClaudeSubscriptionUsageSnapshot | null>;
+  invalidateUsage?(): void;
   now(): number;
 }
 
@@ -53,6 +58,8 @@ export interface ResolvedProviderGroupMember {
    * 分享来的电脑报来本账号(每台电脑)在那里的数。那台较旧给不出时没有。
    */
   reportedRunning?: number;
+  /** Internal only: never included in the group wire projection or shared with guests. */
+  claudeUsage?: ClaudeSubscriptionUsageSnapshot | null;
   /**
    * 选电脑时到点还没读完(那台慢或不响应)：这次按不能用算，不代表读到了离线；读取照常在后台完成、留在缓存里。
    */
@@ -239,12 +246,19 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
   async function settleQuickly(
     members: readonly ProviderGroupMember[],
     reads: readonly Promise<ResolvedProviderGroupMember>[],
+    partialReads: readonly Promise<ResolvedProviderGroupMember>[],
     options: ResolveMembersOptions,
   ): Promise<ResolvedProviderGroupMember[]> {
     const settled: Array<ResolvedProviderGroupMember | undefined> = new Array(reads.length);
+    const partial: Array<ResolvedProviderGroupMember | undefined> = new Array(partialReads.length);
     reads.forEach((read, index) => {
       void read.then((value) => {
         settled[index] = value;
+      }, () => undefined);
+    });
+    partialReads.forEach((read, index) => {
+      void read.then((value) => {
+        partial[index] = value;
       }, () => undefined);
     });
     const all = Promise.all(reads);
@@ -259,14 +273,16 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       clearTimeout(timer);
     }
     const enough = options.enough;
-    if (!enough || !settled.some((value) => value !== undefined && enough(value))) return all;
-    return members.map((member, index) => settled[index] ?? pendingMember(member));
+    const resolved = members.map((member, index) => settled[index] ?? partial[index] ?? pendingMember(member));
+    if (!enough || !resolved.some(enough)) return all;
+    return resolved;
   }
 
   return {
     async resolveMembers(_providerId, config, options) {
       if (options?.fresh) {
         devices = null;
+        deps.invalidateUsage?.();
         for (const member of config.members) if (member.agentDeviceId) catalogs.delete(member.agentDeviceId);
       }
       const needsDevices = config.members.some((m) => m.kind === 'device');
@@ -275,13 +291,22 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       // 无响应时选电脑会等它的完整网络超时，而不是三秒后继续(chatgpt-codex-connector P2,
       // PR #5792 review)。
       const deviceListPromise = needsDevices ? readDevices().catch(() => null) : Promise.resolve(null);
-      const reads = config.members.map((member) => {
+      // 额度补充读取可能慢于快速选路窗口：保留基础目录结果，避免已知可用的成员被误判成待定或离线。
+      const partialReads = config.members.map((member) => {
         if (member.kind === 'local') return resolveLocal(member, options?.includeLocalRunning);
         if (member.kind === 'share') return resolveShare(member);
         return deviceListPromise.then((deviceList) => resolveDevice(member, deviceList));
       });
+      const reads = partialReads.map(async (read, index) => {
+        const member = config.members[index]!;
+        const resolved = await read;
+        if (member.kind === 'share' || resolved.state !== 'ok' || !resolved.view?.auth
+          || providerWeeklyQuotaSource(resolved.view) !== 'claude' || !deps.readClaudeUsage) return resolved;
+        const claudeUsage = await deps.readClaudeUsage(member).catch(() => null);
+        return { ...resolved, claudeUsage };
+      });
       if (options?.quickMs === undefined) return Promise.all(reads);
-      return settleQuickly(config.members, reads, options);
+      return settleQuickly(config.members, reads, partialReads, options);
     },
 
     async offlineForMs(agentDeviceId) {
@@ -382,6 +407,7 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     },
 
     invalidate(agentDeviceId) {
+      deps.invalidateUsage?.();
       if (agentDeviceId === undefined) {
         catalogs.clear();
         devices = null;

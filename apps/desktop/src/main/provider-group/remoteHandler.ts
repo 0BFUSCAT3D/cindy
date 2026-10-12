@@ -148,7 +148,7 @@ export async function handleProviderGroupRemote(
       return {};
     case 'view': {
       if (!deps.isRemoteAllowed(request.providerId)) return { providerId: request.providerId, config: null, members: [] };
-      return scope.router.view(request.providerId);
+      return scope.router.view(request.providerId, request.model);
     }
     case 'usage':
     case 'usage-part': {
