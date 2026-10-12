@@ -1,7 +1,7 @@
 import { addOrFocusSingletonTab, addTab, ensureHydrated, getBucket, reorderTabs } from '../store';
 import { routeSidebarCommand } from './detachedSidebarRouting';
 import { requestRightSidebarVisibility } from './sidebarCommands';
-import { readPanelCollapsed, readPanelCollapsedRecord, writePanelCollapsed } from '@/layout/collapsePrefs';
+import { clearPanelCollapsedRecord, readPanelCollapsed, readPanelCollapsedRecord, writePanelCollapsed } from '@/layout/collapsePrefs';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 
 /** 工作台排在最前(工作台 / 文件 / 浏览器),其余标签保持原顺序。 */
@@ -41,8 +41,19 @@ export async function ensureBotWorkbenchTab(
   }
   // Use the existing per-session layout record as the first-visit marker. Commit
   // the default before async tab creation so a later user close wins permanently.
-  writePanelCollapsed('right-tabs', { sessionId }, false);
-  const tab = await addTab(sessionId, 'bot-workbench', { botId });
+  const defaultRevision = writePanelCollapsed('right-tabs', { sessionId }, false);
+  let tab;
+  try {
+    tab = await addTab(sessionId, 'bot-workbench', { botId });
+  } catch (error) {
+    // A failed default is not a user choice. Do not erase a later close or a
+    // successful manual reopen while this INSERT was waiting.
+    if (defaultRevision !== undefined && isDataOwnerGenerationCurrent(owner) && getBucket(sessionId).hydrated
+      && !getBucket(sessionId).tabs.some((candidate) => candidate.kind === 'bot-workbench')) {
+      clearPanelCollapsedRecord('right-tabs', { sessionId }, false, defaultRevision);
+    }
+    throw error;
+  }
   if (!isCurrent() || !getBucket(sessionId).tabs.some((candidate) => candidate.id === tab.id)) return;
   await moveWorkbenchToFront(sessionId, tab.id);
   if (isCurrent() && readPanelCollapsedRecord('right-tabs', { sessionId }) !== true
@@ -60,6 +71,9 @@ export async function openBotWorkbenchTab(sessionId: string, botId: string): Pro
   const owner = getDataOwnerGeneration();
   const route = await routeSidebarCommand({ type: 'open-bot-workbench-tab', sessionId, botId, focusTab: true });
   if (!isDataOwnerGenerationCurrent(owner)) return;
+  // The detached receiver activates the tab but its visibility listener is a
+  // no-op for open. The main window must also bring an already open host forward.
+  if (route === 'routed') requestRightSidebarVisibility('open', { sessionId });
   if (route === 'attached') {
     await ensureHydrated(sessionId);
     if (!isDataOwnerGenerationCurrent(owner)) return;

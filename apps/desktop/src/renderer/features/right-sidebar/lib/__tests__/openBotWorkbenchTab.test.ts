@@ -158,6 +158,21 @@ describe('bot workbench layout preference', () => {
     expect(getBucket('bot-main').tabs).toEqual([]);
   });
 
+  it.each(['none', 'closed', 'opened'] as const)('failed default creation retries only without a newer user choice (%s)', async (choice) => {
+    const wait = deferred();
+    ipc.upsert.mockImplementationOnce(async () => { await wait.promise; throw new Error('temporary storage failure'); });
+    const init = ensureBotWorkbenchTab('bot-main', 'bot-1');
+    const rejected = expect(init).rejects.toThrow('temporary storage failure');
+    await vi.waitFor(() => expect(ipc.upsert).toHaveBeenCalled());
+    if (choice !== 'none') writePanelCollapsed('right-tabs', { sessionId: 'bot-main' }, choice === 'closed');
+    wait.resolve(); await rejected;
+    expect(readPanelCollapsedRecord('right-tabs', { sessionId: 'bot-main' })).toBe(choice === 'none' ? null : choice === 'closed');
+    expect(visibility).not.toHaveBeenCalled();
+    _resetStore(); await ensureBotWorkbenchTab('bot-main', 'bot-1'); await ensureHydrated('bot-main');
+    expect(getBucket('bot-main').tabs).toHaveLength(choice === 'none' ? 1 : 0);
+    expect(visibility).toHaveBeenCalledTimes(choice === 'none' ? 1 : 0);
+  });
+
   it('routes passive detached first visits without reopening, and skips them after a recorded close', async () => {
     vi.mocked(routeSidebarCommand).mockResolvedValue('queued');
     await ensureBotWorkbenchTab('bot-main', 'bot-1');
@@ -173,6 +188,6 @@ describe('bot workbench layout preference', () => {
     vi.mocked(routeSidebarCommand).mockResolvedValue('routed');
     await openBotWorkbenchTab('bot-main', 'bot-1');
     expect(routeSidebarCommand).toHaveBeenCalledWith({ type: 'open-bot-workbench-tab', sessionId: 'bot-main', botId: 'bot-1', focusTab: true });
-    expect(visibility).not.toHaveBeenCalled();
+    expect(visibility).toHaveBeenCalledWith('open', { sessionId: 'bot-main' });
   });
 });
