@@ -4422,34 +4422,35 @@ function HomeSessionRowInner({
                 {item.title}
               </Text>
               <TaskTagDots tags={item.session.tags} surfaceColor={colors.surface} />
-              {group && groupChevronVisible ? (
-                // 展开箭头紧跟标题(对齐桌面 AutomationSessionGroupItem):不占行首,组行的图标 /
-                // 标题与同级普通任务对齐,展开后的子行(deepIndented)才能稳定比组行深一档。
-                // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
-                // 热区 44×44 由箭头自身尺寸承担,不靠 hitSlop:hitSlop 会被父容器边界截掉
-                // (长标题把箭头挤到标题组右边缘时右侧、标题行 30 高时上下)。纵向见
-                // sessionTitleRowGroupHit;横向负左外边距让图标仍贴近标题。
-                <Pressable
-                  accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
-                  accessibilityRole="button"
-                  onPress={(event) => {
-                    // 防御性阻断:避免 chevron 点击同时触发父行 onPress(有需关注内容时父行
-                    // 是"直开 primary 会话",双触发会边展开边跳页)。与设备菜单重命名按钮同款处理。
-                    event.stopPropagation();
-                    onToggleAutomationGroup?.(group.key);
-                  }}
-                  onPressIn={() => prepareDisclosure(true)}
-                  style={styles.sessionGroupChevronCell}
-                  testID={`${testID}.automationGroupChevron`}
-                >
-                  {groupExpanded ? (
-                    <ChevronDown color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
-                  ) : (
-                    <ChevronRight color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
-                  )}
-                </Pressable>
-              ) : null}
             </View>
+            {group && groupChevronVisible ? (
+              // 展开箭头紧跟标题(对齐桌面 AutomationSessionGroupItem):不占行首,组行的图标 /
+              // 标题与同级普通任务对齐,展开后的子行(deepIndented)才能稳定比组行深一档。
+              // 独立热区:即使组行点击直开会话(有需关注内容时),点箭头仍然是展开 / 收起。
+              // 热区 44×44 由箭头自身尺寸承担,不靠 hitSlop(会被父容器边界截掉)。箭头不放进
+              // 标题组:标题组里的标签色球不收缩(最多 32 个),会把组内箭头挤出边界被截掉;
+              // 作为标题行的不收缩子项,标题组先收缩,箭头始终完整。纵向见 sessionTitleRowGroupHit。
+              <Pressable
+                accessibilityLabel={groupExpanded ? t('devices.list.a11y.collapse', { title: item.title }) : t('devices.list.a11y.expand', { title: item.title })}
+                accessibilityRole="button"
+                onPress={(event) => {
+                  // 防御性阻断:避免 chevron 点击同时触发父行 onPress(有需关注内容时父行
+                  // 是"直开 primary 会话",双触发会边展开边跳页)。与设备菜单重命名按钮同款处理。
+                  event.stopPropagation();
+                  onToggleAutomationGroup?.(group.key);
+                }}
+                onPressIn={() => prepareDisclosure(true)}
+                style={styles.sessionGroupChevronCell}
+                testID={`${testID}.automationGroupChevron`}
+              >
+                {groupExpanded ? (
+                  <ChevronDown color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+                ) : (
+                  <ChevronRight color={colors.textSecondary} size={iconSize.lg} strokeWidth={iconStroke.regular} />
+                )}
+              </Pressable>
+            ) : null}
+            {groupChevronVisible ? <View style={styles.sessionTitleSpacer} /> : null}
             {sourceLabel ? (
               <Text
                 ellipsizeMode="tail"
@@ -5149,9 +5150,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
 
   sessionGroupChevronCell: {
-    // 自动化组行标题后的展开箭头:跟随标题文字,长标题截断时不被挤掉;
-    // 自身即 44×44 点击区(图标居中),负左外边距吃掉部分组内间距与标题尾部,
-    // 让图标视觉上贴近标题;右侧完整留在标题组内,不会被父容器截掉。
+    // 自动化组行标题后的展开箭头:标题行的不收缩子项,长标题 / 多标签时标题组先收缩;
+    // 自身即 44×44 点击区(图标居中),负左外边距吃掉部分行内间距,让图标视觉上贴近标题。
     alignItems: 'center',
     flexShrink: 0,
     height: GROUP_CHEVRON_HIT_SIZE,
@@ -5165,7 +5165,12 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     marginVertical: -(GROUP_CHEVRON_HIT_SIZE - SESSION_TITLE_ROW_HEIGHT) / 2,
   },
   sessionTitleClusterGroupHit: {
-    alignSelf: 'stretch',
+    // 组行标题组按内容宽度、可收缩,让箭头紧跟其后;右侧余量交给 sessionTitleSpacer。
+    flex: 0,
+    flexShrink: 1,
+  },
+  sessionTitleSpacer: {
+    flex: 1,
   },
 
   // 右侧状态槽(替代时间位):18×18 定位槽把点与 spinner 居中到同一锚点;
