@@ -177,6 +177,42 @@ describe('multi-device recovery lifecycle', () => {
     expect(subscribe).toHaveBeenCalledExactlyOnceWith('slow', ['sessions']);
   });
 
+  it('transient sessions subscribe failure is retried by the periodic reconcile', async () => {
+    subscribe.mockImplementation((peer: string) =>
+      peer === 'slow' && subscribe.mock.calls.filter(([p]) => p === 'slow').length === 1
+        ? Promise.reject(new Error('[DEVICE_LINK_BUSY] request expired before socket write'))
+        : Promise.resolve({}),
+    );
+    renderHook(() => useDeviceLinkRemoteProjects());
+    await settle();
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(1);
+    // The list still bootstraps; only live pushes (running activity / island) were missing.
+    expect(remoteProjectsStore.hasDevice('slow')).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(2);
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'healthy')).toHaveLength(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(2);
+  });
+
+  it('unsupported sessions subscribe is not retried', async () => {
+    subscribe.mockImplementation((peer: string) =>
+      peer === 'slow'
+        ? Promise.reject(new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] old peer'))
+        : Promise.resolve({}),
+    );
+    renderHook(() => useDeviceLinkRemoteProjects());
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(subscribe.mock.calls.filter(([peer]) => peer === 'slow')).toHaveLength(1);
+  });
+
   it('late initial settings cannot undo a disable notification', async () => {
     const initial = deferred<object>();
     getState.mockReturnValue(initial.promise);

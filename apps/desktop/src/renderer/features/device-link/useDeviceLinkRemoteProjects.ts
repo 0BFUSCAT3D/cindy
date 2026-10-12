@@ -394,10 +394,25 @@ export function useDeviceLinkRemoteProjects(
       string,
       { promise: Promise<void>; rerun: boolean; name: string; lifecycleEpoch: number }
     >();
+    /**
+     * sessions 订阅瞬时失败(如重连瞬间 DEVICE_LINK_BUSY)、待周期对账补订的设备。
+     * 列表靠周期 sessions:list 仍会刷新,但运行活动(侧栏运行图标、灵动岛)只走 sessions push;
+     * 不补订就会一直「列表可见、运行状态全无」,直到下一次重连 / 熔断恢复重跑 bootstrap。
+     */
+    const sessionsSubscribeRetry = new Set<string>();
 
     /** 隧道调用是否因「访问权限已被撤销」失败(被控端逐设备黑名单)。 */
     const isAccessRevoked = (err: unknown): boolean =>
       extractIpcError(err)?.code === 'DEVICE_LINK_ACCESS_REVOKED';
+    /** 被控端明确不支持 / 已关闭被控时,重试 sessions 订阅没有意义。 */
+    const isPermanentSubscribeError = (err: unknown): boolean => {
+      const code = extractIpcError(err)?.code;
+      return (
+        code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED' ||
+        code === 'DEVICE_LINK_REMOTE_DISABLED' ||
+        code === 'DEVICE_LINK_VERSION_MISMATCH'
+      );
+    };
 
     const cancelDeviceReseeds = (deviceId: string): void => {
       for (const [key, pending] of reseedTimers) {
@@ -444,6 +459,7 @@ export function useDeviceLinkRemoteProjects(
       evictTaskTagCatalog(deviceId);
       clearArchivedSessionRetry(deviceId);
       eligible.delete(deviceId);
+      sessionsSubscribeRetry.delete(deviceId);
       revokedDevicesStore.markRevoked(deviceId);
       remoteProjectsStore.removeDevice(deviceId);
       removeRemoteSessionActivityForDevice(deviceId);
@@ -457,7 +473,8 @@ export function useDeviceLinkRemoteProjects(
 
     /**
      * 订阅 sessions topic(push 驱动列表)+ bootstrap 拉一次全量。subscribe 失败不阻断
-     * bootstrap(退化为「快照可见、live 更新缺失」;被控端/控制端同版本时不会发生)。
+     * bootstrap(暂时退化为「快照可见、live 更新缺失」);瞬时失败记入 sessionsSubscribeRetry,
+     * 由周期对账补订,永久不支持的被控端不重试。
      * 任一步返回 ACCESS_REVOKED → 标记已撤销并移除该设备;全程无撤销 → 清掉残留标记(恢复收尾)。
      */
     const canBootstrap = (deviceId: string, lifecycleEpoch: number): boolean =>
@@ -481,9 +498,12 @@ export function useDeviceLinkRemoteProjects(
       };
       try {
         await window.electronAPI.deviceLink.subscribe(deviceId, ['sessions']);
+        sessionsSubscribeRetry.delete(deviceId);
       } catch (err) {
         if (!canContinue()) return;
         if (isAccessRevoked(err)) return void handleRevoked(deviceId);
+        if (isPermanentSubscribeError(err)) sessionsSubscribeRetry.delete(deviceId);
+        else sessionsSubscribeRetry.add(deviceId);
         if (!disposed) log.debug(`subscribe(sessions) failed for ${deviceId.slice(0, 8)}`, err);
       }
       if (!canContinue()) return;
@@ -575,6 +595,7 @@ export function useDeviceLinkRemoteProjects(
         }
       } else {
         const wasEligible = eligible.delete(d.deviceId);
+        sessionsSubscribeRetry.delete(d.deviceId);
         const action = resolveIneligibleRemoteProjectAction({
           wasEligible,
           hasCachedShard: remoteProjectsStore.hasDevice(d.deviceId),
@@ -721,6 +742,28 @@ export function useDeviceLinkRemoteProjects(
       () => (linkOnline ? [...eligible].filter(([id]) => !unresponsiveDevicesStore.has(id)) : []),
       async (deviceId, name) => {
         log.debug(`sessions refresh trigger=periodic window=${windowRole} peer=${deviceId.slice(0, 8)} visible=${periodicReconcileActiveRef.current}`);
+        // bootstrap 在途时由它自己订阅,避免两路并发 subscribe 的失败回滚误撤对方刚记的引用。
+        if (sessionsSubscribeRetry.has(deviceId) && !bootstrapTasks.has(deviceId)) {
+          // 补订成功后被控端会定向重放当前活动快照,运行图标与灵动岛随之恢复。
+          try {
+            await window.electronAPI.deviceLink.subscribe(deviceId, ['sessions']);
+            sessionsSubscribeRetry.delete(deviceId);
+            if (disposed || !eligible.has(deviceId)) {
+              // 补订在途时设备已离场 / 窗口已卸载:那边的 unsubscribe 早于本次成功,补退一次免留引用。
+              window.electronAPI.deviceLink.unsubscribe(deviceId, ['sessions']).catch(() => {});
+              return 'superseded';
+            }
+            log.debug(`subscribe(sessions) recovered for ${deviceId.slice(0, 8)}`);
+          } catch (err) {
+            if (disposed || !eligible.has(deviceId)) return 'superseded';
+            if (isAccessRevoked(err)) {
+              handleRevoked(deviceId);
+              return 'revoked';
+            }
+            if (isPermanentSubscribeError(err)) sessionsSubscribeRetry.delete(deviceId);
+            log.debug(`subscribe(sessions) retry failed for ${deviceId.slice(0, 8)}`, err);
+          }
+        }
         // sessions:list 是 200 条有界窗口；refresh 层会保留窗口外 active 行，并有界补查
         // 缺席缓存 id 的终态，不能直接把响应缺席解释成删除。
         const result = await refreshRemoteDeviceSessions(deviceId, name, {
