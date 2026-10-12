@@ -21,6 +21,21 @@ vi.mock('../store.js', () => ({ readProviderGroup: () => null }));
 const { getProviderGroupDirectory, getProviderGroupOwnerScope, getProviderGroupRouter } = await import('../runtime.js');
 
 describe('provider group runtime', () => {
+  it('does not return the previous owner’s details after an account change', async () => {
+    owner = 'detail-owner';
+    const scope = getProviderGroupOwnerScope();
+    const read = vi.spyOn(scope.router, 'view').mockImplementationOnce(async (providerId) => {
+      owner = 'next-detail-owner';
+      return {
+        providerId, config: { strategy: 'least', autoSwitch: true, members: [] },
+        members: [{ key: 'local', kind: 'local', label: 'private', state: 'available', running: 0, limit: 4, weight: 1, paused: false }],
+      };
+    });
+    expect(await getProviderGroupRouter().view('anthropic', { includeGuestSupport: true }))
+      .toEqual({ providerId: 'anthropic', config: null, members: [] });
+    read.mockRestore();
+  });
+
   it('keeps cooling and round state per account behind stable handles', () => {
     const router = getProviderGroupRouter();
     expect(getProviderGroupRouter()).toBe(router);

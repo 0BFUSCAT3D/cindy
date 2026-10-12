@@ -15,6 +15,7 @@ import {
 } from '../../shared/providerShare.js';
 import {
   providerGroupMemberKey,
+  readProviderGroupAppVersion,
   type ProviderGroupCandidate,
   type ProviderGroupConfig,
   type ProviderGroupMember,
@@ -28,6 +29,7 @@ export interface ProviderGroupDirectoryDeps {
   listLocalProviders(): Promise<ProviderView[]>;
   /** 本机设备名。 */
   localDeviceName(): string;
+  localAppVersion?(): string;
   listDevices(): Promise<readonly DeviceLinkDeviceView[]>;
   /** 那台电脑允许被远程调用的供应商；读不到时抛错(带 `[REMOTE_AGENT_SHARE_*]` 前缀时保留原因)。 */
   readDeviceProviders(agentDeviceId: string): Promise<ProviderView[]>;
@@ -44,6 +46,7 @@ export interface ResolvedProviderGroupMember {
   member: ProviderGroupMember;
   label: string;
   ownerName?: string;
+  appVersion?: string;
   state: ResolvedMemberState;
   reason?: ProviderGroupUnavailableReason;
   /** 那台电脑上的这个供应商(state 为 ok 时一定有)。 */
@@ -153,10 +156,12 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
 
   async function resolveLocal(member: ProviderGroupMember): Promise<ResolvedProviderGroupMember> {
     const label = deps.localDeviceName();
+    const appVersion = readProviderGroupAppVersion(deps.localAppVersion?.());
+    const base = { member, label, ...(appVersion ? { appVersion } : {}) };
     const view = await localGroupProvider(member.providerId);
-    if (!view || !view.connected || view.suspended) return { member, label, state: 'unavailable', reason: 'disconnected' };
+    if (!view || !view.connected || view.suspended) return { ...base, state: 'unavailable', reason: 'disconnected' };
     const reportedRunning = await deps.localRunning?.(member.providerId).catch(() => null);
-    return { member, label, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
+    return { ...base, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
   }
 
   async function resolveDevice(
@@ -166,16 +171,18 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     const deviceId = member.agentDeviceId!;
     const device = deviceList?.find((d) => d.deviceId === deviceId);
     const label = device?.name || member.label || deviceId;
-    if (!device || !isControllable(device)) return { member, label, state: 'offline' };
+    const appVersion = readProviderGroupAppVersion(device?.appVersion);
+    const version = appVersion ? { appVersion } : {};
+    if (!device || !isControllable(device)) return { member, label, ...version, state: 'offline' };
     let views: ProviderView[];
     try {
       views = await readCatalog(deviceId);
     } catch {
-      return { member, label, state: 'offline' };
+      return { member, label, ...version, state: 'offline' };
     }
     const resolved = withView(member, label, undefined, views);
     const reportedRunning = resolved.view ? readProviderRunningTurns(resolved.view) : null;
-    return reportedRunning === null ? resolved : { ...resolved, reportedRunning };
+    return { ...resolved, ...version, ...(reportedRunning === null ? {} : { reportedRunning }) };
   }
 
   async function resolveShare(

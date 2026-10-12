@@ -85,6 +85,10 @@ export interface ProviderGroupMemberStatus {
   label: string;
   /** 分享来的电脑：分享者昵称。 */
   ownerName?: string;
+  /** Cindy 应用版本；缺失表示旧端或分享来源未提供，不是 remote-agent 协议版本。 */
+  appVersion?: string;
+  /** 仅描述接收分享任务的能力，不改变主人自己的可用状态。 */
+  guestSupport?: ProviderGroupGuestSupport;
   state: ProviderGroupMemberState;
   reason?: ProviderGroupUnavailableReason;
   /** 经本组分到这台、正在运行的任务数。 */
@@ -106,6 +110,14 @@ export interface ProviderGroupView {
   /** null = 还没有组。 */
   config: ProviderGroupConfig | null;
   members: ProviderGroupMemberStatus[];
+}
+
+export type ProviderGroupGuestSupport = 'supported' | 'needs-update' | 'unknown';
+
+/** 设备目录中的应用版本只用于展示，拒绝异常长字符串和非版本文本。 */
+export function readProviderGroupAppVersion(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length <= 64 && /^[0-9]+[.][0-9]+[.][0-9]+(?:[-+][0-9A-Za-z.+-]+)?$/.test(value)
+    ? value : undefined;
 }
 
 export type ProviderGroupCandidateBlock =
@@ -325,7 +337,7 @@ export type ProviderGroupRemoteRequest =
   /** 这台电脑经组运行、正在跑的任务(整体替换上一份；seq 只增，乱序到达的旧份丢弃)。 */
   | { action: 'leases'; seq: number; entries: ProviderGroupRemoteLease[] }
   /** 组内电脑的状态(发送前检查、设置页展示)。 */
-  | { action: 'view'; providerId: string }
+  | { action: 'view'; providerId: string; includeGuestSupport?: true }
   /**
    * 这台电脑经组、在组里别的电脑上运行的用量(组所在电脑经手不到)：整体替换这台从 sinceDay 起(含；null = 全部)
    * 报过的行。seq 只增，乱序到达的旧份丢弃。
@@ -455,7 +467,10 @@ export function parseProviderGroupRemoteRequest(raw: unknown): ProviderGroupRemo
       };
     }
     case 'view':
-      return { action: 'view', providerId: remoteProviderId(value.providerId) };
+      return {
+        action: 'view', providerId: remoteProviderId(value.providerId),
+        ...(value.includeGuestSupport === true ? { includeGuestSupport: true } : {}),
+      };
     case 'usage':
     case 'usage-part': {
       if (!Number.isSafeInteger(value.seq) || (value.seq as number) < 0) invalidRemote('invalid seq');
@@ -533,12 +548,17 @@ export function parseProviderGroupRemoteView(raw: unknown, groupProviderId: stri
       ? item.reason as ProviderGroupUnavailableReason
       : undefined;
     const ownerName = normalizeLabel(item.ownerName);
+    const appVersion = readProviderGroupAppVersion(item.appVersion);
+    const guestSupport = ['supported', 'needs-update', 'unknown'].includes(item.guestSupport as string)
+      ? item.guestSupport as ProviderGroupGuestSupport : undefined;
     const coolingUntil = typeof item.coolingUntil === 'number' && Number.isFinite(item.coolingUntil) ? item.coolingUntil : undefined;
     return [{
       key: member.key,
       kind: member.kind,
       label: normalizeLabel(item.label) ?? member.label ?? member.key,
       ...(ownerName ? { ownerName } : {}),
+      ...(appVersion ? { appVersion } : {}),
+      ...(guestSupport ? { guestSupport } : {}),
       state,
       ...(reason ? { reason } : {}),
       running: count(item.running, 10_000),

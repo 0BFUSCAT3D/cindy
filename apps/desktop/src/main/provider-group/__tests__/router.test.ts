@@ -3,13 +3,14 @@
  * 设置页与分配用同一个数，取它与经组计数中较大的。
  */
 import type { ProviderView } from '@cindy/model-providers';
+import type { RemoteAgentCaps } from '@cindy/device-link';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import type { ProviderGroupBinding } from '../bindings';
 import type { DeviceLinkDeviceView } from '../../../shared/deviceLinkIpc';
 import { createProviderGroupDirectory, type ProviderGroupDirectory, type ResolvedProviderGroupMember } from '../directory';
-import { createProviderGroupRouter, PROVIDER_GROUP_PICK_QUICK_MS } from '../router';
+import { createProviderGroupRouter, PROVIDER_GROUP_PICK_QUICK_MS, type ProviderGroupRouterDeps } from '../router';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -32,7 +33,7 @@ const LOCAL = member('local', 'local', null);
 const SHARE_A = member('share:a:anthropic', 'share', 'share:a', 2);
 const SHARE_B = member('share:b:anthropic', 'share', 'share:b');
 
-function harness(reported: Record<string, number>, bindings: Record<string, ProviderGroupBinding> = {}, running: string[] = []) {
+function harness(reported: Record<string, number>, bindings: Record<string, ProviderGroupBinding> = {}, running: string[] = [], overrides: Partial<ProviderGroupRouterDeps> = {}) {
   const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [SHARE_A, SHARE_B, LOCAL] };
   const directory: ProviderGroupDirectory = {
     async resolveMembers(_providerId, current) {
@@ -63,10 +64,35 @@ function harness(reported: Record<string, number>, bindings: Record<string, Prov
     isTurnRunning: (sessionId) => running.includes(sessionId),
     now: () => 1_000,
     random: () => 0,
+    ...overrides,
   });
 }
 
 describe('provider group running count', () => {
+  it('only probes sharing support for details and keeps an older computer usable by its owner', async () => {
+    const device = member('device:old:anthropic', 'device', 'old');
+    const readCaps = vi.fn(async () => ({ virtualWorkspace: true }) as RemoteAgentCaps);
+    const router = harness({}, {}, [], {
+      readGroup: () => ({ strategy: 'least', autoSwitch: true, members: [device] }), readCaps,
+    });
+    expect(await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL })).toMatchObject({ kind: 'member' });
+    await router.view('anthropic');
+    expect(readCaps).not.toHaveBeenCalled();
+    const details = await router.view('anthropic', { includeGuestSupport: true });
+    expect(details.members[0]).toMatchObject({ state: 'available', guestSupport: 'needs-update' });
+    expect(readCaps).toHaveBeenCalledTimes(1);
+    expect(await router.pick({ providerId: 'anthropic', agentKind: 'claude-code', model: MODEL })).toMatchObject({ kind: 'member' });
+    expect(router.coolingUntil('anthropic', device.key)).toBeNull();
+  });
+
+  it('reports failed capability checks as unknown without changing ordinary availability', async () => {
+    const router = harness({}, {}, [], { readCaps: async () => { throw new Error('offline'); } });
+    const details = await router.view('anthropic', { includeGuestSupport: true });
+    expect(details.members.map((m) => [m.state, m.guestSupport])).toEqual([
+      ['available', 'unknown'], ['available', 'unknown'], ['available', 'supported'],
+    ]);
+  });
+
   it('shows what a shared computer reports for this account, including tasks that did not go through the group', async () => {
     const router = harness({ [SHARE_A.key]: 2, [SHARE_B.key]: 1 });
     const members = (await router.view('anthropic')).members;

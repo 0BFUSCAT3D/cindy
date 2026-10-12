@@ -100,6 +100,19 @@ describe('listCandidates', () => {
 });
 
 describe('resolveMembers', () => {
+  it('uses actual local and advertised device versions, including offline devices; never invents a share version', async () => {
+    const directory = createProviderGroupDirectory(deps({ localAppVersion: () => '0.1.104-beta' }));
+    const members: ProviderGroupConfig['members'] = [
+      { key: 'local', kind: 'local', agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false },
+      { key: 'mini', kind: 'device', agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d', limit: 4, weight: 1, paused: false },
+      { key: 'off', kind: 'device', agentDeviceId: 'off', providerId: 'anthropic', limit: 4, weight: 1, paused: false },
+      { key: 'share', kind: 'share', agentDeviceId: 'share:s1', providerId: 'anthropic', limit: 4, weight: 1, paused: false },
+    ];
+    const resolved = await directory.resolveMembers('anthropic', { strategy: 'least', autoSwitch: true, members });
+    expect(resolved.map((m) => m.appVersion)).toEqual(['0.1.104-beta', '1.0.0', '1.0.0', undefined]);
+    expect(resolved[2].state).toBe('offline');
+  });
+
   it('reports each member with a state and reason', async () => {
     const directory = createProviderGroupDirectory(deps({
       listReceivedShares: () => [share('s1'), share('s2', { status: 'paused' })],

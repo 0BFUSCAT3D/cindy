@@ -18,6 +18,7 @@ import type {
 } from '../../../shared/providerGroup';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
+import { GroupMemberVersion } from './GroupMemberVersion';
 import { memberStatusText } from './ProviderGroupSection';
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -183,6 +184,7 @@ function MemberRow({
               </>
             )}
           </span>
+          <GroupMemberVersion status={status} />
         </span>
       </button>
       {quotaOpen && (

@@ -41,6 +41,7 @@ import {
 } from '../../../shared/providerGroup';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
+import { GroupMemberVersion } from './GroupMemberVersion';
 import { ProviderGroupAddDialog } from './ProviderGroupAddDialog';
 import { useProviderGroup } from './useProviderGroup';
 
@@ -310,6 +311,7 @@ function MemberRow({
                 </>
               )}
             </span>
+            <GroupMemberVersion status={status} />
           </span>
         </button>
         <div className="flex shrink-0 items-center gap-1.5">
