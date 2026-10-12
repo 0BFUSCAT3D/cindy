@@ -2776,7 +2776,10 @@ export class Session {
       this.terminalEventObservedKind === 'done';
     // A late leftover error must not replace N+1's result-only success,
     // nor fan-out as a current-generation failure to lifecycle / IPC listeners.
-    const lateErrorAfterDoneSnapshot = event.type === 'error' && sameGenerationDone;
+    // A provider-initiated turn reuses the generation whose done was already
+    // seen: its own terminal error is not a leftover of that done.
+    const lateErrorAfterDoneSnapshot =
+      event.type === 'error' && sameGenerationDone && this.unsolicitedTurnGeneration !== this.turnGeneration;
     const reservationWindowLeftover =
       isTerminal &&
       !isBackgroundEvent &&

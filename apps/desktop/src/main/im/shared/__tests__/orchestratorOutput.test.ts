@@ -106,6 +106,16 @@ describe('background output route recovery', () => {
     expect(mocks.attach).not.toHaveBeenCalled();
   });
 
+  it('relays no harness wake-up for a logged-out account or a disconnected channel', () => {
+    mocks.capture.mockReturnValue(null);
+    void publishProviderInitiatedTurn(session);
+    expect(mocks.note).not.toHaveBeenCalled();
+    mocks.capture.mockReturnValue(1);
+    mocks.status.mockReturnValue({ kind: 'disconnected' });
+    void publishProviderInitiatedTurn(session);
+    expect(mocks.note).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])('uses stable Discord identity for cold route (takeover: %s)', async (attached) => {
     mocks.status.mockReturnValue({ kind: 'connected', appId: 'display#0000' });
     mocks.limit.mockResolvedValue([{ source: 'discord', status: 'active', imBotContextId: 'bot', imUserId: 'user' }]);

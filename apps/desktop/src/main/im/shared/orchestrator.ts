@@ -55,8 +55,12 @@ onChannelTurn(async (session, phase, source) => {
   if (source === 'provider-wake') {
     // No send precedes a harness wake-up: its first event fans out right after this synchronous
     // call. Only output already wired for a channel can be marked in time; a cold route restored
-    // after the row query would relay from mid-turn, so it is not attempted.
-    for (const orchestrator of registry.values()) orchestrator.turnRunner.noteChannelTurnSource(session, source);
+    // after the row query would relay from mid-turn, so it is not attempted. Same admission as
+    // below: a logged-out or replaced account, or a disconnected channel, relays nothing.
+    if (captureImAccountGeneration() === null) return;
+    for (const orchestrator of registry.values()) {
+      if (orchestrator.adapter.im.getStatus().kind === 'connected') orchestrator.turnRunner.noteChannelTurnSource(session, source);
+    }
     return;
   }
   const generation = captureImAccountGeneration();

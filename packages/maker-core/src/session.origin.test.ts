@@ -1806,6 +1806,34 @@ describe('Session provider-initiated turns (harness wake-ups)', () => {
     await session.close();
   });
 
+  it('settles a provider-initiated turn that ends in an error as a failure, not as the earlier success', async () => {
+    const h = createControllableHandle({ agentKind: 'claude-code' });
+    const session = makeSession(h.handle, 'claude-code');
+    const terminals: string[] = [];
+    session.setTurnLifecycleObserver({
+      beforeProviderStart: () => undefined,
+      onUndispatched: () => undefined,
+      onTerminal: ({ event }) => { terminals.push(event.type); },
+      onProviderInitiatedTurn: () => undefined,
+    });
+    const seen: string[] = [];
+    session.onEvent((event) => seen.push(event.type));
+
+    await session.send('launch background agents', { origin: SCHED_ORIGIN });
+    await h.emit({ type: 'done', data: {} });
+    // A late error right after that done is still the previous turn's leftover.
+    await h.emit({ type: 'error', data: { message: 'late' } });
+    expect(terminals).toEqual(['done']);
+
+    h.setTurnRunning(true);
+    await h.emit({ type: 'text', data: { text: 'woke up' } }, { keepRunning: true });
+    await h.emit({ type: 'error', data: { message: 'wake failed' } });
+    await h.emit({ type: 'done', data: {} });
+    expect(terminals.slice(1, 2)).toEqual(['error']);
+    expect(seen.filter((type) => type === 'error').length).toBeGreaterThan(0);
+    await session.close();
+  });
+
   it('never announces sent turns, subagent output, idle tails or claimed continuations', async () => {
     const h = createControllableHandle({ agentKind: 'claude-code' });
     const session = makeSession(h.handle, 'claude-code');

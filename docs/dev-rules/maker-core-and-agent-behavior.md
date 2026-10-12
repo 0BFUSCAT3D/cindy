@@ -415,7 +415,9 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   在该轮首个事件分发给监听者之前同步调用 `SessionTurnLifecycleObserver.onProviderInitiatedTurn`，
   每轮一次，终态后清除；子代理事件、后台事件、claim 挡住的续跑段不触发。同一产品轮次接受过
   插话时，收口后第一个无发送的轮次归插话（分不出插话是否已被原轮次吸收，宁可漏报）。桌面用它把这类轮次回传到 IM（`maker-ipc/channelTurnSignal.ts`）；
-  回调必须同步决定，异步查询会从轮次中途开始观察。回归见 `session.origin.test.ts`。
+  回调必须同步决定，异步查询会从轮次中途开始观察；桌面侧与普通回传一样只在 IM 账号仍有效、渠道已连接时标记。
+  该轮沿用的 generation 已记过上一轮的 `done`，唤醒轮自己的终止 error 不按「done 之后的迟到 error」过滤，
+  照常按失败收口（唤醒输出之前到达的迟到 error 仍过滤）。回归见 `session.origin.test.ts`。
 
 ### Auto 模式的同范围自动跟进
 
