@@ -440,11 +440,13 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
+      "usage": "用量均衡",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
         "order": "排前面的优先",
-        "weight": "按权重比例"
+        "weight": "按权重比例",
+        "usage": "按5小时和每周用量分配"
       }
     },
     "autoSwitch": {

@@ -19,6 +19,11 @@ describe('providerGroupMemberKey', () => {
 });
 
 describe('normalizeProviderGroupConfig', () => {
+  it('round-trips the opt-in usage strategy without changing the default', () => {
+    expect(normalizeProviderGroupConfig({ strategy: 'usage', members: [{ kind: 'local' }] }, 'anthropic')?.strategy).toBe('usage');
+    expect(normalizeProviderGroupConfig({ members: [{ kind: 'local' }] }, 'anthropic')?.strategy).toBe('least');
+  });
+
   it('keeps valid members, fills defaults and pins the local member to the group provider', () => {
     const config = normalizeProviderGroupConfig({
       strategy: 'round',

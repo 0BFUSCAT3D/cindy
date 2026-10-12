@@ -7,7 +7,7 @@ import type { ProviderView } from '@cindy/model-providers';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DeviceLinkDeviceView } from '../../../shared/deviceLinkIpc';
-import type { ProviderGroupConfig } from '../../../shared/providerGroup';
+import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import { createProviderGroupDirectory, type ProviderGroupDirectoryDeps } from '../directory';
 
 const view = (id: string, name: string, patch: Partial<ProviderView> = {}): ProviderView => ({
@@ -100,6 +100,22 @@ describe('listCandidates', () => {
 });
 
 describe('resolveMembers', () => {
+  it('reads quota only for available Claude subscriptions on this account’s computers', async () => {
+    const readClaudeUsage = vi.fn(async (_member: ProviderGroupMember) => ({ updatedAt: 1_000, fiveHour: { utilization: 25 } }));
+    const directory = createProviderGroupDirectory(deps({ readClaudeUsage }));
+    const member = (kind: 'local' | 'device' | 'share', agentDeviceId: string | null, providerId: string) => ({
+      key: `${kind}:${agentDeviceId}:${providerId}`, kind, agentDeviceId, providerId, limit: 4, weight: 1, paused: false,
+    });
+    const members = [member('local', null, 'anthropic'), member('device', 'mini', 'anthropic-1a2b3c4d'),
+      member('device', 'mini', 'deepseek'), member('device', 'off', 'anthropic'), member('share', 'share:s1', 'anthropic')];
+    const result = await directory.resolveMembers('anthropic', { strategy: 'usage', autoSwitch: true, members });
+    expect(readClaudeUsage).toHaveBeenCalledTimes(2);
+    expect(readClaudeUsage).toHaveBeenCalledWith(members[0]);
+    expect(readClaudeUsage).toHaveBeenCalledWith(members[1]);
+    expect(result[0].claudeUsage?.fiveHour?.utilization).toBe(25);
+    expect(result[4]).not.toHaveProperty('claudeUsage');
+  });
+
   it('reports each member with a state and reason', async () => {
     const directory = createProviderGroupDirectory(deps({
       listReceivedShares: () => [share('s1'), share('s2', { status: 'paused' })],

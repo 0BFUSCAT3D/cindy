@@ -8,6 +8,7 @@ import type { ProviderView } from '@cindy/model-providers';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
+import type { ClaudeSubscriptionUsageSnapshot } from '../../../shared/claudeSubscriptionUsage';
 import type { ProviderGroupBinding, ProviderGroupRef } from '../bindings';
 import type { ProviderGroupDirectory, ResolvedMemberState, ResolvedProviderGroupMember } from '../directory';
 import { createProviderGroupGuestSwitch, PROVIDER_GROUP_SWITCH_OFFER_TTL_MS } from '../guestSwitch';
@@ -53,6 +54,7 @@ function harness(options: {
   autoSwitch?: boolean;
   /** 这些组内电脑上的同名模型不能用于新会话(停用、退役、需要付费)。 */
   unusableModel?: Record<string, Record<string, unknown>>;
+  usage?: Record<string, ClaudeSubscriptionUsageSnapshot>;
 } = {}) {
   let now = 1_000_000;
   const config: ProviderGroupConfig = {
@@ -73,7 +75,7 @@ function harness(options: {
     async resolveMembers(_providerId, current) {
       return current.members.map((m): ResolvedProviderGroupMember => offline.has(m.key)
         ? { member: m, label: m.key, state: 'offline' }
-        : { member: m, label: `${m.key}-name`, state: 'ok', view: view(m.providerId, options.unusableModel?.[m.key]) });
+        : { member: m, label: `${m.key}-name`, state: 'ok', view: view(m.providerId, options.unusableModel?.[m.key]), claudeUsage: options.usage?.[m.key] });
     },
     async listCandidates() {
       return [];
@@ -1079,6 +1081,14 @@ describe('beforeSend', () => {
     expect(done).toHaveBeenCalledTimes(1);
     expect(h.probe).toHaveBeenCalledTimes(1);
     expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+  });
+
+  it('moves before sending when the current account’s quota is already exhausted without a prior error', async () => {
+    const h = harness({ usage: { local: { updatedAt: 1_000_000, fiveHour: { utilization: 100, resetsAt: 3_000 }, sevenDay: { utilization: 10, resetsAt: 80_000 } } } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1_000_000 });
+    await h.service.beforeSend('s1');
+    expect(h.row.agentDeviceId).toBe('mini');
+    expect(h.router.coolingUntil('anthropic', 'local')).toBeNull();
   });
 
   it('moves a task off a computer that is cooling down', async () => {

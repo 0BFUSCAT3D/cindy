@@ -872,6 +872,24 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
   `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
 
+## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
+再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+
+- **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
+  旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
+  旧控制端连接新组所在电脑也能使用新策略。组所在电脑降级后按 `least` 分配，旧版再次保存组设置会写回 `least`。
+- **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
+  订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
+  避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+- **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 或供应商目录，不传给受邀者；
+  分享来的成员不调用此通道。同账号 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，当前模型专属
+  周窗口只用于选路，不改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist 或凭证访问。
+- 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、
+  `runtime.ts`、`router.ts`、`scheduler.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
+  `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。
+
 ## 供应商组：受邀者经组所在电脑中转(P2b)
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §4「分享的人(中转)」、§8、§9。受邀者 G 用组所在电脑 O

@@ -440,11 +440,13 @@
       "round": "順番に",
       "order": "並び順",
       "weight": "重み付け",
+      "usage": "使用量で分散",
       "description": {
         "least": "空いているパソコンへ",
         "round": "順番に割り当て",
         "order": "上のパソコンを優先",
-        "weight": "重みの比率で"
+        "weight": "重みの比率で",
+        "usage": "5時間・週間の使用量で分散"
       }
     },
     "autoSwitch": {

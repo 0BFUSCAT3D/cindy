@@ -14,8 +14,8 @@ export const PROVIDER_GROUP_IPC = {
   CHANGED: 'provider-group:changed',
 } as const;
 
-export type ProviderGroupStrategy = 'least' | 'round' | 'order' | 'weight';
-export const PROVIDER_GROUP_STRATEGIES: readonly ProviderGroupStrategy[] = ['least', 'round', 'order', 'weight'];
+export type ProviderGroupStrategy = 'least' | 'round' | 'order' | 'weight' | 'usage';
+export const PROVIDER_GROUP_STRATEGIES: readonly ProviderGroupStrategy[] = ['least', 'round', 'order', 'weight', 'usage'];
 
 export type ProviderGroupMemberKind = 'local' | 'device' | 'share';
 
