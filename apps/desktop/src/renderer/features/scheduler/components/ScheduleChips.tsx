@@ -1138,7 +1138,7 @@ export function ModelEffortChip({
   const defaultRoute =
     followsSessionModel || modelValue
       ? null
-      : getScheduleDefaultRoute(agentKind, providersLoading ? undefined : providers);
+      : getScheduleDefaultRoute(agentKind, providersLoading ? undefined : providers, providerId);
   const effectiveId = followsSessionModel ? '' : modelValue || defaultRoute?.model || '';
   const effectiveProviderId = providerId || defaultRoute?.providerId || null;
   const current = models.find((m) => m.id === effectiveId);

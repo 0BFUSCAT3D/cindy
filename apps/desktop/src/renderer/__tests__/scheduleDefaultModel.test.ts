@@ -178,6 +178,23 @@ describe('getScheduleDefaultModel 三级回退', () => {
     });
   });
 
+  it('只记了来源时,默认模型限定在该来源内,且与它整对返回', async () => {
+    memStorage.setItem(
+      SCHEDULE_PREFS_KEY,
+      JSON.stringify({
+        agentKind: 'claude-code', workspaceKind: 'dialogue', workingDir: '', useWorktree: false,
+        lastByAgent: { 'claude-code': { model: '', providerId: 'xd', effort: '', fastMode: false } },
+      }),
+    );
+    const { getScheduleDefaultRoute, makeFormFromSchedule } = await loadModule();
+    expect(getScheduleDefaultRoute('claude-code', PROVIDERS, 'xd')).toEqual({
+      model: 'claude-sonnet-5',
+      providerId: 'xd',
+    });
+    // 清单未到位:先保留记着的来源,等清单到位在该来源内回填模型。
+    expect(makeFormFromSchedule(null)).toMatchObject({ model: '', providerId: 'xd' });
+  });
+
   it('三级:供应商清单未到位时留空,等清单到位再回填', async () => {
     const { getScheduleDefaultModel } = await loadModule();
     expect(getScheduleDefaultModel('claude-code')).toBe('');

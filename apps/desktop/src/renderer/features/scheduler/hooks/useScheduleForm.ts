@@ -156,32 +156,42 @@ export function getScheduleAgentPrefs(agentKind: ScheduleFormState['agentKind'])
  *      对空 model 任务的实时解析同源)。不写死型号:供应商清单未到位(`providers` 缺省)
  *      或一个可用来源都没有时返回 '',由表单在清单到位后回填。第三级返回的来源必须与模型
  *      一起落到表单:只存模型会让 runner 把空来源重新解析成原生默认(可能是网关)。
+ * 不变量:返回值是原子的 (模型, 来源) 对,调用方整对应用,不拿别处的来源去拼模型。
  * 三级都返回与模型成对的来源(一级取任务记忆的来源,二级取对话草稿记着的来源),
- * 没有记来源时为 null(跟随原生默认)。
+ * 没有记来源时为 null(跟随原生默认)。`preferredProviderId` 是表单 / 模板已定下的来源:
+ * 给定时只接受同一来源的一、二级结果,第三级只在该来源内挑,保证模型一定由这个来源提供。
  */
 export function getScheduleDefaultRoute(
   agentKind: ScheduleFormState['agentKind'],
   providers?: readonly ProviderView[],
+  preferredProviderId?: string | null,
 ): { model: string; providerId: string | null } {
+  const preferred = preferredProviderId?.trim() || null;
+  const compatible = (providerId: string | null) => !preferred || providerId === preferred;
   const prefs = getScheduleAgentPrefs(agentKind);
-  if (prefs.model.trim()) return { model: prefs.model, providerId: prefs.providerId || null };
+  const prefsProviderId = prefs.providerId || null;
+  if (prefs.model.trim() && compatible(prefsProviderId)) {
+    return { model: prefs.model, providerId: prefsProviderId };
+  }
   const vendor = agentKind === 'codex' ? 'codex' : agentKind === 'pi' ? 'pi' : 'cc';
   const draft = getDraft();
   const chatLast = getPersistedVendorModel(vendor);
-  if (chatLast.trim()) {
-    return { model: chatLast, providerId: draft.lastByVendor[vendor]?.providerId || null };
+  const chatProviderId = draft.lastByVendor[vendor]?.providerId || null;
+  if (chatLast.trim() && compatible(chatProviderId)) {
+    return { model: chatLast, providerId: chatProviderId };
   }
-  if (!providers) return { model: '', providerId: null };
+  if (!providers) return { model: '', providerId: preferred };
   return (
     resolveNewTaskDefaultRoute({
       providers,
       agent: agentKind,
+      requiredProviderId: preferred,
       draft: {
         model: draft.lastByVendor[vendor]?.model,
         providerId: draft.lastByVendor[vendor]?.providerId,
         chosenByUser: draft.modelChosenByVendor[vendor] === true,
       },
-    }) ?? { model: '', providerId: null }
+    }) ?? { model: '', providerId: preferred }
   );
 }
 
@@ -217,14 +227,14 @@ function makeDefaultForm(): ScheduleFormState {
   const agentPrefs = prefs.lastByAgent[prefs.agentKind] ?? EMPTY_AGENT_PREFS;
   // 三级回退:任务上次选择 → 对话上次选择 → 新建任务默认;清单未到位时先留空,
   // 由 ScheduleFormDialog 在清单到位后回填显式值(所见即所存)。模型与来源成对应用。
-  const defaultRoute = getScheduleDefaultRoute(prefs.agentKind);
+  const defaultRoute = getScheduleDefaultRoute(prefs.agentKind, undefined, agentPrefs.providerId);
   return {
     ...DEFAULT_FORM,
     agentKind: prefs.agentKind,
     model: defaultRoute.model,
-    // providerId 空 = 跟随原生默认来源（no-break）。任务维度记忆优先,否则取默认路由
-    // 成对的来源;UI 显示时用 form.providerId || nativeDefaultSourceId(agentKind) 算高亮来源。
-    providerId: agentPrefs.providerId || defaultRoute.providerId || '',
+    // providerId 空 = 跟随原生默认来源（no-break）。默认路由已限定在任务记忆的来源内,
+    // 整对应用;UI 显示时用 form.providerId || nativeDefaultSourceId(agentKind) 算高亮来源。
+    providerId: defaultRoute.providerId ?? '',
     effort: agentPrefs.effort,
     fastMode: agentPrefs.fastMode,
     workspaceKind: prefs.workspaceKind,
@@ -357,7 +367,8 @@ export function useScheduleForm(initial: Schedule | null = null): UseScheduleFor
   const applyTemplateAgentFields = useCallback((template: ScheduleTemplate) => {
     setForm((f) => {
       const selection = resolveTemplateAgentFields(f, template, {
-        getDefaultRoute: getScheduleDefaultRoute,
+        getDefaultRoute: (agentKind, preferredProviderId) =>
+          getScheduleDefaultRoute(agentKind, undefined, preferredProviderId),
         getAgentPrefs: getScheduleAgentPrefs,
       });
       // A template that supplies a model is an explicit selection, even while following a bound task.

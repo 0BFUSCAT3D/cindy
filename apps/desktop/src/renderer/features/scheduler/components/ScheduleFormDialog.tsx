@@ -451,10 +451,14 @@ export function ScheduleFormDialog({
   useEffect(() => {
     if (form.targetSessionId.trim()) return;
     if (form.model) return;
-    const route = getScheduleDefaultRoute(form.agentKind, providersLoading ? undefined : providers);
+    // 默认路由限定在表单已选的来源内,模型与来源成对回填(已选来源保持不变)。
+    const route = getScheduleDefaultRoute(
+      form.agentKind,
+      providersLoading ? undefined : providers,
+      form.providerId,
+    );
     if (!route.model) return;
     setField('model', route.model);
-    // 第三级默认的来源与模型成对回填;用户已指定的来源不覆盖。
     if (route.providerId && !form.providerId.trim()) setField('providerId', route.providerId);
   }, [form.model, form.agentKind, form.targetSessionId, form.providerId, setField, providers, providersLoading]);
 
