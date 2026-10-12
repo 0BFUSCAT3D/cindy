@@ -216,9 +216,27 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(fullDiffHistory, 'git log -p --full-diff -- README.md')).toBe(false);
   });
 
+  it('does not exempt a git read after an earlier shell segment may change state', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git add -A && git diff --cached')).toBe(false);
+    // A read-only segment before another read does not invalidate the probe.
+    expect(await provesSafe(history, 'git diff && git diff --cached')).toBe(true);
+  });
+
+  it('does not exempt a git read hidden behind shell substitution or xargs', async () => {
+    const history = new GitCredentialHistory();
+    for (const command of [
+      'git diff $(git add -A)',
+      'git diff ' + String.fromCharCode(96) + 'git add -A' + String.fromCharCode(96),
+      'git diff >(git add -A)',
+    ]) {
+      expect(await provesSafe(history, command), command).toBe(false);
+    }
+  });
+
   it('lets commands that print the git config run only while the config holds no secrets', async () => {
     const history = new GitCredentialHistory();
-    const token = 'ghp_0123456789abcdefghijABCDEFGHIJ012345';
+    const token = ['ghp_', '0123456789abcdefghijABCDEFGHIJ012345'].join('');
     const printing = ['git remote -v', 'git remote get-url origin', 'git config --list', 'git config --get remote.origin.url'];
     git('remote', 'add', 'origin', 'https://github.com/a/b.git');
     for (const command of [...printing, 'git config user.name']) {

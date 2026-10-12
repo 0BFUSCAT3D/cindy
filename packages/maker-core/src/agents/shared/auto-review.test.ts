@@ -4774,6 +4774,76 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
       { sub: 'diff', args: [] },
     ]);
     expect(reads.map(({ cwd }) => cwd && toForwardSlashes(cwd))).toEqual(['/repo', '/repo/packages/a', undefined, undefined]);
+    const compoundReads: GitRead[] = [];
+    expect(shellCommandReadsCredentials('git add -A && git diff --cached', roots, {
+      gitContentRead: (read) => {
+        compoundReads.push(read);
+        return true;
+      },
+    })).toBe(false);
+    expect(compoundReads).toEqual([expect.objectContaining({
+      sub: 'diff',
+      priorSegmentsMayMutate: true,
+    })]);
+    for (const command of [
+      'git diff $(git add -A)',
+      'git diff ' + String.fromCharCode(96) + 'git add -A' + String.fromCharCode(96),
+      'git diff >(git add -A)',
+      'git diff > .cache',
+    ]) {
+      const sideEffectReads: GitRead[] = [];
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitContentRead: (read) => {
+          sideEffectReads.push(read);
+          return true;
+        },
+      }), command).toBe(false);
+      expect(sideEffectReads, command).toEqual([expect.objectContaining({ priorSegmentsMayMutate: true })]);
+    }
+    for (const command of [
+      'printf item | xargs git diff',
+      'xargs sh -c "git diff"',
+      "env -S 'git diff'",
+      "env --split-string='git diff'",
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitContentRead: () => true,
+        gitConfigRead: () => true,
+      }), command).toBe(true);
+    }
+    for (const command of ['echo "$(git diff)"', 'cat <(git diff)', "sh -c 'git diff'"]) {
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitContentRead: () => true,
+        gitConfigRead: () => true,
+      }), command).toBe(true);
+    }
+    for (const command of [
+      "find . -exec sh -c 'git diff' {} \\;",
+      "python -c 'git diff'",
+      "node -e 'git diff'",
+      "eval 'git diff'",
+      "awk 'BEGIN { system(\"git diff\") }'",
+      "perl -e 'system(\"git diff\")'",
+      "bash -lc 'git diff'",
+      "sh -xec 'git diff'",
+      "bash --command='git diff'",
+      'echo "$(git.exe diff)"',
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitContentRead: () => true,
+        gitConfigRead: () => true,
+      }), command).toBe(true);
+    }
+    for (const command of [
+      "sh -c 'cat .env'",
+      "python -c 'open(\".env\").read()'",
+      'echo "$(cat .env)"',
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitContentRead: () => true,
+        gitConfigRead: () => true,
+      }), command).toBe(true);
+    }
     // 调用方没核实时照旧算；还有别的理由时不受影响。
     expect(shellCommandReadsCredentials('git diff', roots, { gitContentRead: () => false })).toBe(true);
     expect(shellCommandReadsCredentials('git diff && cat .env', roots, { gitContentRead: () => true })).toBe(true);
@@ -4815,6 +4885,22 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     expect(reads[0]?.cwd && toForwardSlashes(reads[0].cwd)).toBe('/repo');
     for (const command of ['git remote', 'git remote add origin https://github.com/a/b.git', 'git config user.name Me', 'git status']) {
       expect(shellCommandReadsCredentials(command, roots, { gitConfigRead: () => false }), command).toBe(false);
+    }
+    for (const command of [
+      'git -c include.path=/tmp/secret-config config --list',
+      'git --config-env include.path=GIT_INCLUDE_PATH config --list',
+    ]) {
+      const overrideReads: GitRead[] = [];
+      expect(shellCommandReadsCredentials(command, roots, {
+        gitConfigRead: (read) => {
+          overrideReads.push(read);
+          return true;
+        },
+      }), command).toBe(false);
+      expect(overrideReads, command).toEqual([expect.objectContaining({
+        sub: 'config',
+        priorSegmentsMayMutate: true,
+      })]);
     }
   });
 });

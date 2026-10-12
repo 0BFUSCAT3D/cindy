@@ -157,19 +157,60 @@ describe('shareCredentialGitReads', () => {
       expect(shareCredentialGitReads(command, roots, { cwd: '/repo' }), command).toBeNull();
     }
   });
+
+  it('does not exempt git reads that override the config source', () => {
+    for (const command of [
+      'git -c include.path=/tmp/secret-config config --list',
+      'git --config-env include.path=GIT_INCLUDE_PATH config --list',
+      'git diff $(git add -A)',
+    ]) {
+      expect(isShareCredentialCommand(command, roots, { cwd: '/repo' }), command).toBe(true);
+      expect(shareCredentialGitReads(command, roots, { cwd: '/repo' }), command).toEqual(
+        expect.arrayContaining([expect.objectContaining({ priorSegmentsMayMutate: true })]),
+      );
+    }
+  });
+
+  it('keeps dynamically constructed xargs and parallel commands behind confirmation', () => {
+    for (const command of [
+      'printf item | xargs git diff',
+      'xargs sh -c "git diff"',
+      'find . -print0 | parallel -0 git diff',
+      "env -S 'git diff'",
+      "env --split-string='git diff'",
+      'echo "$(git diff)"',
+      'cat <(git diff)',
+      "sh -c 'git diff'",
+      "find . -exec sh -c 'git diff' {} \\;",
+      "python -c 'git diff'",
+      "node -e 'git diff'",
+      "eval 'git diff'",
+      "awk 'BEGIN { system(\"git diff\") }'",
+      "perl -e 'system(\"git diff\")'",
+      "bash -lc 'git diff'",
+      "sh -xec 'git diff'",
+      "bash --command='git diff'",
+      'echo "$(git.exe diff)"',
+    ]) {
+      expect(isShareCredentialCommand(command, roots, { cwd: '/repo' }), command).toBe(true);
+      expect(shareCredentialGitReads(command, roots, { cwd: '/repo' }), command).toBeNull();
+    }
+  });
 });
 
 describe('secrets written in the command', () => {
   const roots = ['/repo'];
-  const token = 'ghp_0123456789abcdefghijABCDEFGHIJ012345';
+  const token = ['ghp_', '0123456789abcdefghijABCDEFGHIJ012345'].join('');
 
   it('need confirmation, only in shared provider tasks', () => {
     for (const command of [
       `git remote set-url origin https://me:${token}@github.com/a/b.git`,
-      'git clone https://oauth2:glpat-AbCdEfGhIjKlMnOpQrSt@gitlab.com/a/b.git',
+      'git clone https://oauth2:'
+        + ['glpat-', 'AbCdEfGhIjKlMnOpQrSt'].join('')
+        + '@gitlab.com/a/b.git',
       `git push https://${token}@github.com/a/b.git`,
       `git -c http.extraHeader="Authorization: Bearer ${token}" pull`,
-      'git log -S AKIAIOSFODNN7EXAMPLE',
+      'git log -S ' + ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
       `curl -H "Authorization: token ${token}" https://api.github.com/user`,
       'psql postgres://app:hunter2secret@db.internal/app',
       // <提交>:<路径> 写出以点开头的凭证类文件，scp 式地址同理。
