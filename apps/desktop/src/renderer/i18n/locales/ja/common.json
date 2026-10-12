@@ -468,6 +468,7 @@
       "weightAria": "{{name}} の重み",
       "weightOption": "重み {{weight}}",
       "assignAria": "{{name}} に割り当てる",
+      "assignLocalAria": "{{name}} で他のパソコンからの新しいタスクを受け付ける",
       "moreAria": "{{name}} の他の操作",
       "remove": "グループから外す",
       "status": {
@@ -475,6 +476,7 @@
         "idle": "待機中",
         "full": "上限に到達",
         "paused": "割り当て停止中",
+        "pausedLocal": "他のパソコンからの新しいタスクは受付停止中。このパソコンでは引き続き利用できます",
         "cooling": "クールダウン中",
         "coolingUntil": "クールダウン中 · {{time}} ごろ回復",
         "offline": "オフライン",

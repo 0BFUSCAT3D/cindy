@@ -468,6 +468,7 @@
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
       "assignAria": "給 {{name}} 分配任務",
+      "assignLocalAria": "允許 {{name}} 接收外部新任務",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
@@ -475,6 +476,7 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
+        "pausedLocal": "已暫停接收外部新任務，本機仍可自用",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
