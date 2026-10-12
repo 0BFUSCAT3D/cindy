@@ -124,7 +124,7 @@ describe('mobile message actions desktop-first surface', () => {
     const end = source.indexOf('function FoldablePanel', start);
     const workGroupSource = source.slice(start, end);
     const expandedBodyStart = workGroupSource.indexOf('{expanded ? (');
-    const childrenMapStart = workGroupSource.indexOf('{item.children.map((child) => {');
+    const childrenMapStart = workGroupSource.indexOf('{!holdLines && item.children.map((child) => {');
 
     // 运行中用状态图标,结束后回到桌面同款 Layers 工作摘要图标。
     expect(source).toContain('Layers,');
@@ -137,8 +137,11 @@ describe('mobile message actions desktop-first surface', () => {
     // 单行活动（deferred.lines），既不读工作明细，也不在本机重新解析工具输入。
     expect(workGroupSource).not.toContain('defaultExpanded');
     expect(workGroupSource).toContain('controlledExpanded={expanded}');
-    expect(workGroupSource).toContain('const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;');
-    expect(workGroupSource).toContain('collapsedBody={lines?.length ? (');
+    // 展开后在明细读到之前继续显示这几行，不先清空再重新出现。
+    expect(workGroupSource).toContain('const lines = isStreaming ? item.deferred?.lines : undefined;');
+    expect(workGroupSource).toContain("const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;");
+    expect(workGroupSource).toContain('collapsedBody={lineRows ? <Rail layout={layout}>{lineRows}</Rail> : undefined}');
+    expect(workGroupSource).toContain('{holdLines && lineRows}');
     expect(workGroupSource).toContain('<WorkLineRow key={line.key} line={line} onPress={onToggle} />');
     expect(workGroupSource).toContain('formatToolRowText(line.descriptor, mobileToolRowWording)');
     expect(workGroupSource).not.toContain('summarizeToolUseText');
