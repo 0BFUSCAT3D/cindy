@@ -14,6 +14,7 @@ import os from 'node:os';
 import { tryPeerInvoke } from './filePeer';
 import { assertBackgroundLinkAccepted, linkOpenCapabilities } from './backgroundLink';
 import { deviceName, initializeDeviceName } from './deviceName';
+import { desktopTransferCodec } from './transferCodec';
 import { watchNetworkChanges } from './networkChanges';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
@@ -677,6 +678,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
   };
   client = new DeviceLinkClient({
     getWsUrl: wsUrl,
+    transferCodec: desktopTransferCodec,
     getToken: async () => {
       // Prepare the name before the first hello without blocking Electron's main thread.
       await deviceNameReady;

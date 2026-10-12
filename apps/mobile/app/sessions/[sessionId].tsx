@@ -13,6 +13,7 @@ import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome
 import { keyboardControlRegion, type LayoutRect } from '@/platform/windowGeometry';
 import { useAdaptiveWindow, PaneViewportProvider } from '@/platform/AdaptiveWindowContext';
 import { useSessionHeaderHeight } from '@/session/useSessionHeaderHeight';
+import { useDoubleTap } from '@/session/useDoubleTap';
 import { sessionPaneLayout } from '@/session/sessionPaneLayout';
 import { ComposerExpandButton } from '@/session/ComposerExpandButton';
 import { nativeComposerAvailable } from '@/session/ComposerNativeInput';
@@ -130,6 +131,7 @@ import {
   humanizeRemoteError,
   isAutoRecoveringRemoteError,
   isPreconditionFailedRemoteError,
+  isSessionRunningRemoteError,
 } from '@/device-link/remoteStatus';
 import { agentAuthGateHint, agentAuthGateVerdict } from '@/session/agentAuthGate';
 import { isTransientRemoteError, withTransientRemoteRetry } from '@/device-link/remoteRetry';
@@ -209,7 +211,7 @@ import {
   SessionMenuSheet,
   type SessionExtraDirBrowserState,
 } from '@/session/SessionMenuSheet';
-import type { SessionMenuView } from '@/session/sessionMenu';
+import { sessionMenuAllowsRename, type SessionMenuView } from '@/session/sessionMenu';
 import { SessionSearchNative } from '@/session/SessionSearchNative';
 import { useHostManagedSession } from '@/session/hostManagedSession';
 import {
@@ -540,6 +542,7 @@ import {
   type MobileVoiceDictionaryLearningTracker,
 } from '@/session/mobileVoiceDictionaryLearning';
 import {
+  bridgeLatestMessagePage,
   hasOlderMessagesAfterReopen,
   hasOlderMessagesByServerCount,
   listMessagesWithPayloadRetry,
@@ -3804,7 +3807,7 @@ export default function SessionScreen() {
             return { messages: [], limit: 20, reducedByPayloadTooLarge: false };
           }
           if (!isHistoryViewUnavailable(viewState.error)) throw viewState.error;
-          return retryRead(() => listMessagesWithPayloadRetry(
+          const latest = await retryRead(() => listMessagesWithPayloadRetry(
           (limit) => runSessionMessagesSnapshotSingleFlight(
             snapshotScope,
             limit,
@@ -3813,6 +3816,17 @@ export default function SessionScreen() {
           ),
           isReopen ? REOPEN_MESSAGE_WINDOW_LIMITS : undefined,
         ));
+          // 整窗替换不保留旧段，无需补读。
+          if (options.replaceMessages) return latest;
+          return bridgeLatestMessagePage(latest, {
+            needsBridge: (rows, more) =>
+              remoteSessionStore.latestMessageWindowNeedsBridge(sessionId, rows, more),
+            // 与最新页同一套瞬态重试；仍失败时整轮同步失败，不提交接不上的窗口。
+            readBefore: (before) => retryRead(() => listMessagesWithPayloadRetry(
+              (limit) => maker.listMessages(sessionId, { limit, before }),
+            )),
+            isCurrent,
+          });
         },
         isCurrent,
         commitMessages: (history) => {
@@ -9248,6 +9262,8 @@ export default function SessionScreen() {
 
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;
+    // 运行中能否删由被控端判定:点停止后本地运行态可能晚于被控端收敛,
+    // 不能拿它挡住已经停下的任务。被控端拒绝(SESSION_RUNNING)时再提示等回复结束。
     Alert.alert(t('session.screen.deleteMessageTitle'), t('session.screen.deleteMessageBody'), [
       { text: t('session.common.cancel'), style: 'cancel' },
       {
@@ -9270,7 +9286,11 @@ export default function SessionScreen() {
                 deviceId,
               );
             } catch (err) {
-              setError(formatRemoteError(err));
+              if (isSessionRunningRemoteError(err)) {
+                Alert.alert(t('session.screen.deleteMessageBusy'));
+              } else {
+                setError(formatRemoteError(err));
+              }
             } finally {
               setMessageActionBusy(null);
             }
@@ -9369,6 +9389,10 @@ export default function SessionScreen() {
               }}
               onOpenSettings={() => openSessionMenu('menu')}
               onOpenUsage={() => openSessionMenu('info')}
+              onTitleDoubleTap={currentSession && !isDeviceAccessRevoked
+                && sessionMenuAllowsRename(currentSession, sessionManagedByHost)
+                ? () => openSessionMenu('rename')
+                : undefined}
               onOpenRemoteDesktop={() => {
                 if (!deviceId) return;
                 guardedPush({
@@ -10564,6 +10588,7 @@ function SessionHeaderBar({
   onOpenSettings,
   onOpenUsage,
   onOpenRemoteDesktop,
+  onTitleDoubleTap,
   onToggleSearch,
   pendingCount,
   queueCount,
@@ -10595,6 +10620,8 @@ function SessionHeaderBar({
   onOpenSettings(): void;
   onOpenUsage(): void;
   onOpenRemoteDesktop(): void;
+  /** 双击标题直接打开重命名;不可重命名时不传。 */
+  onTitleDoubleTap?: () => void;
   onToggleSearch(): void;
   pendingCount: number;
   queueCount: number;
@@ -10640,6 +10667,8 @@ function SessionHeaderBar({
     session: currentSession,
   });
   const nativeHeader = Platform.OS === 'ios';
+  const titleDoubleTap = sharedTaskEnded ? undefined : onTitleDoubleTap;
+  const handleTitlePress = useDoubleTap(titleDoubleTap);
   const systemBack = useSystemNavigationBack();
   const headerWindow = useWindowDimensions();
   const headerInsets = useSafeAreaInsets();
@@ -10673,6 +10702,7 @@ function SessionHeaderBar({
             minWidth: 0, flexShrink: 1, overflow: 'hidden', justifyContent: 'center' }}>
             <SessionHeaderNativeTitle title={title} pinned={!messageOnly && !!currentSession?.pinnedAt}
               tags={isDeviceAccessRevoked ? undefined : currentSession?.tags} onTagsPress={onOpenSettings}
+              onTitleDoubleTap={titleDoubleTap}
               syncing={syncing} syncingImmediately={syncingImmediately} notice={notice} />
           </View>
         ),
@@ -10743,12 +10773,15 @@ function SessionHeaderBar({
         title={sharedTaskEnded ? t('sharedTask.ended') : title}
           tags={isDeviceAccessRevoked ? undefined : currentSession?.tags}
           onTagsPress={onOpenSettings}
+          onTitleDoubleTap={titleDoubleTap}
         pinned={!messageOnly && !!currentSession?.pinnedAt}
         syncing={syncing}
         syncingImmediately={syncingImmediately}
         notice={notice}
       /> : (
-      <View style={styles.sessionHeaderTextBlock}>
+      // 双击标题改名;不参与读屏焦点,读屏用户从「任务详情」进入重命名。
+      <Pressable accessible={false} disabled={!titleDoubleTap} onPress={handleTitlePress}
+        style={styles.sessionHeaderTextBlock} testID="session.titleArea">
         <View style={styles.sessionHeaderTitleRow}>
           {!messageOnly && currentSession?.pinnedAt ? (
             <Pin
@@ -10772,7 +10805,7 @@ function SessionHeaderBar({
             {notice}
           </Text>
         ) : null}
-      </View>
+      </Pressable>
       )}
 
       {sharedTaskEnded || systemBack ? null : nativeHeader ? (
