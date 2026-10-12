@@ -411,6 +411,8 @@ type DiscordBotSessionAuthCheckWire = {
 type LocalDbSessionListOptions = {
   /** Local list continuation; does not change the default capped query. */
   before?: { updatedAt: number; id: string };
+  /** Local renderer-only exact subset, filtered before sorting and pagination. */
+  ids?: string[];
   includePinned?: boolean;
   fresh?: boolean;
   usageHistory?: boolean;
