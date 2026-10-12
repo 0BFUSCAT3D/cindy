@@ -241,13 +241,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "还没有分享给任何人。生成分享链接发给对方，对方申请、你同意后会出现在这里。",
         "table": {
-          "model": "模型",
           "turns": "消息",
           "input": "输入",
           "output": "输出",
           "amount": "估算金额"
         },
-        "noUsage": "这段时间没有用量",
         "estimateNote": "金额按本地单价估算，不代表供应商实际账单。"
       },
       "removeConfirm": {
@@ -422,7 +420,7 @@
       "expandAria": "展开 {{name}} 的用量明细",
       "collapseAria": "收起 {{name}} 的用量明细",
       "table": {
-        "member": "组内电脑 / 模型"
+        "member": "电脑 / 模型"
       }
     },
     "section": {

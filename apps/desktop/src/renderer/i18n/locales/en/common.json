@@ -243,13 +243,11 @@
         "collapseAria": "Collapse {{name}}’s Model Usage",
         "empty": "You haven’t shared with anyone yet. Create a share link and send it; once they request access and you approve, they’ll appear here.",
         "table": {
-          "model": "Model",
           "turns": "Messages",
           "input": "Input",
           "output": "Output",
           "amount": "Est. Cost"
         },
-        "noUsage": "No usage in this period",
         "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill."
       },
       "removeConfirm": {

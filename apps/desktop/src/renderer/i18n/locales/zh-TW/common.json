@@ -241,13 +241,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "還沒有分享給任何人。產生分享連結傳給對方，對方申請、你同意後會出現在這裡。",
         "table": {
-          "model": "模型",
           "turns": "訊息",
           "input": "輸入",
           "output": "輸出",
           "amount": "估算金額"
         },
-        "noUsage": "這段時間沒有用量",
         "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。"
       },
       "removeConfirm": {
@@ -422,7 +420,7 @@
       "expandAria": "展開 {{name}} 的用量明細",
       "collapseAria": "收起 {{name}} 的用量明細",
       "table": {
-        "member": "組內電腦 / 模型"
+        "member": "電腦 / 模型"
       }
     },
     "section": {
