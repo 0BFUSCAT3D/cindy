@@ -26,6 +26,7 @@ import { Select } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tip } from '@/components/ui/tooltip';
 import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
+import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
@@ -42,6 +43,7 @@ import {
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
 import { GroupMemberDetailsButton, GroupMemberVersion } from './GroupMemberVersion';
+import { providerWeeklyQuotaSource } from '../../../shared/providerQuotaSource';
 import { ProviderGroupAddDialog } from './ProviderGroupAddDialog';
 import { useProviderGroup } from './useProviderGroup';
 
@@ -52,6 +54,9 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
   const group = useProviderGroup(providerId, { live: true });
+  const { providers } = useProviders();
+  const provider = providers.find((entry) => entry.id === providerId);
+  const supportsUsage = provider && providerWeeklyQuotaSource({ ...provider, connected: true, suspended: false }) === 'claude';
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const config = group.view?.config ?? null;
@@ -174,7 +179,7 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
                 value={config.strategy}
                 onValueChange={(strategy: ProviderGroupStrategy) => void save({ ...config, strategy })}
                 aria-label={t('providerGroup.strategy.label')}
-                options={PROVIDER_GROUP_STRATEGIES.map((value) => ({
+                options={PROVIDER_GROUP_STRATEGIES.filter((value) => value !== 'usage' || supportsUsage || config.strategy === 'usage').map((value) => ({
                   value,
                   label: t(`providerGroup.strategy.${value}`),
                   disabled: saving,

@@ -11,6 +11,21 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## 手机直连群的设置管理
+
+现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
+声明该能力，手机读取最新群详情和已有成员角色后才开放管理。设置动作可带
+`expectedRevision`，Host 在调用服务前核验，群信息 PATCH 和归档继续携带该编辑版本给
+Chat Server。新增资源动作 `add-member` (`botId`) 只邀请一个本机可见伙伴，不替换成员名单；
+移出仍使用已有 `remove-member` 和 actor ID。旧手机忽略能力并保留原动作；新版手机遇到旧
+Host 显示更新提示。账号切换、关闭设置、断连或撤销设备使旧读取和未发出的操作失效。
+管理电脑按当前群 ID 精确读取，不以截断的群列表作为存在性门槛。普通内容刷新保留同一次
+设置页已核实的管理资格，实际发送前仍复核电脑身份和最新权限；新详情确认撤权或群不可见后禁用。
+Chat Server 返回的 `REVISION_CONFLICT` 保留为公开错误码，新手机显示冲突提示并保留草稿，
+旧客户端沿用未知错误码的通用失败提示，不自动重试写操作。
+复用原有 collection、channel、订阅、账号和群权限，不扩 IPC allowlist、relay、服务端
+schema、数据库或 Mobile 原生指纹。完整管理需要两端客户端更新。
+
 ## 实时生成速度
 
 既有 maker status 可选携带 `tokenSpeed`（`rate`、`average`、`tokens`、`elapsedMs`、
@@ -856,7 +871,10 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
     不行再来问)时 O 不用短时缓存、现读组内电脑的最新状态再选，请求格式不变；
   - `leases { seq, entries: [{ sessionId, providerId, memberKey }] }` → 整体替换 C 正在运行的经组任务，`seq` 只增(C 按时间生成，
     重启后仍增大)，乱序旧包丢弃，150s 不刷新作废；只用于分摊负载；
-  - `view { providerId }` → 组设置与组员状态(`ProviderGroupView`)。
+  - `view { providerId, model? }` → 组设置与组员状态(`ProviderGroupView`)；省略 `model` 时只按组级状态返回，
+    发送前检查带上当前模型时，组所在电脑按该模型重新计算额度。带 `model` 的回包回显同一个 `model`，调用方只在回显一致时
+    使用模型级状态；旧组所在电脑忽略这个可选字段、没有回显时只沿用离线、不可用和组级冷却等不依赖模型的状态，
+    对可用或满载状态按模型额度未知处理，不会把旧端的组级可用状态误当成模型级状态。
   - `session-group { sessionId }`(只读，2026-10-11)→ `{ group: { groupDeviceId, providerId } | null }`：发给**任务所在的电脑**
     (不论它有没有组)，回答这个任务此刻归哪个组，坐标是那台视角(`groupDeviceId` 为 null = 那台自己建的组)。手机与桌面远程控制
     的模型列表据此把归组的任务显示在组那一项下、在组那一项里选模型时留在此刻运行的那台(provider-groups.md §10)。不读写分配器、
@@ -880,6 +898,25 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - 实现：`apps/desktop/src/main/provider-group/`(`remoteHandler.ts`、`remoteClient.ts`、`externalLoad.ts`、`leaseReporter.ts`、
   `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
   `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
+
+## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
+再按所选策略分配；新策略 `usage` 只用于 Claude Code 订阅组。
+
+- **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
+  旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
+  旧控制端连接新组所在电脑也能使用新策略。组所在电脑降级后按 `least` 分配，旧版再次保存组设置会写回 `least`。
+- **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
+  订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
+  避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
+- **隐私与状态**：额度快照只留在组所在电脑的内部目录中，不加入 `ProviderGroupView` 的额度字段或供应商目录，不传给受邀者；
+  分享来的成员不调用此通道。同账号不带 `model` 的 `view` 仅复用已有 `cooling` / `coolingUntil` 表达总窗口耗尽，带 `model`
+  的发送前查询只在回显模型一致时临时表达该模型的额度状态，不能改变其他模型的可用性。账号切换时丢弃旧读取，不扩大 allowlist
+  或凭证访问。
+- 不新增 channel，不改 relay、服务器、数据库或持久冷却格式。实现：`provider-group/usage.ts`、`directory.ts`、`runtime.ts`、
+  `router.ts`、`remoteClient.ts`、`remoteHandler.ts`、`service.ts`；额度判定与自动继续复用 `shared/accountUsageLimit.ts`。回归见
+  `provider-group/__tests__/usage.test.ts`、`router.usage.test.ts`、`runtime.test.ts` 与 `scheduler.test.ts`。
 
 ## 供应商组：受邀者经组所在电脑中转(P2b)
 

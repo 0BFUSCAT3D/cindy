@@ -9,6 +9,7 @@
 import type { ProviderView } from '@cindy/model-providers';
 import { REMOTE_AGENT_CHANNEL, parseRemoteAgentCaps } from '@cindy/device-link';
 import { app } from 'electron';
+import type { ClaudeSubscriptionUsageSnapshot } from '../../shared/claudeSubscriptionUsage.js';
 
 import { activeOwnerScopeKey } from '../appSessionState.js';
 import { readProviderGroupSummary, type ProviderGroupSessionGroup } from '../../shared/providerGroup.js';
@@ -27,6 +28,7 @@ import { createProviderGroupRemoteClient, type ProviderGroupRemoteClient } from 
 import { createProviderGroupRouter, type ProviderGroupRouter } from './router.js';
 import type { ProviderGroupRemoteGroups } from './service.js';
 import { readProviderGroup } from './store.js';
+import { createProviderGroupUsageReader } from './usage.js';
 
 interface OwnerRuntime {
   owner: string;
@@ -39,10 +41,30 @@ let current: OwnerRuntime | null = null;
 let isTurnRunning: (sessionId: string) => boolean = () => false;
 let localLoad: (() => Promise<ReadonlyMap<string, number>>) | null = null;
 let sessionGroupReader: ((sessionId: string) => Promise<ProviderGroupSessionGroup>) | null = null;
+let claudeUsageReader: ((providerId: string) => Promise<ClaudeSubscriptionUsageSnapshot | null>) | null = null;
 
 function runtimeForActiveOwner(): OwnerRuntime {
   const owner = activeOwnerScopeKey();
   if (current?.owner === owner) return current;
+  const usage = createProviderGroupUsageReader({
+    readLocal: (providerId) => claudeUsageReader?.(providerId) ?? Promise.resolve(null),
+    readRemote: async (deviceId, providerId) => {
+      const result = await remoteBackgroundInvoke(deviceId, 'maker:usage:claude-subscription', [providerId], {
+        preSend: () => {
+          if (activeOwnerScopeKey() !== owner) throw new Error('provider group account changed');
+        },
+      });
+      if (!result.ok) return null;
+      const raw = result.result;
+      if (!raw || typeof raw !== 'object') return null;
+      const echoedProvider = (raw as { providerId?: unknown }).providerId;
+      // Old peers may ignore account selection: never mistake their default account for a named one.
+      if (echoedProvider !== undefined ? echoedProvider !== providerId : providerId !== 'anthropic') return null;
+      return raw;
+    },
+    isCurrent: () => activeOwnerScopeKey() === owner,
+    now: () => Date.now(),
+  });
   const directory = createProviderGroupDirectory({
     listLocalProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
     localDeviceName: () => deviceName(),
@@ -52,6 +74,8 @@ function runtimeForActiveOwner(): OwnerRuntime {
     listReceivedShares: () => getReceivedShares(),
     isMobilePlatform: (platform) => isMobilePlatform(platform),
     localRunning: async (providerId) => (await readProviderRunningTurnsByProvider())?.get(providerId) ?? null,
+    readClaudeUsage: (member) => usage.read(member),
+    invalidateUsage: () => usage.invalidate(),
     now: () => Date.now(),
   });
   const externalLoad = createProviderGroupExternalLoad({ now: () => Date.now() });
@@ -162,7 +186,7 @@ export function getProviderGroupRemoteGroups(): ProviderGroupRemoteGroups {
     },
     pick: (ownerDeviceId, input) => client.pick(ownerDeviceId, input),
     cool: (ownerDeviceId, input) => client.cool(ownerDeviceId, input),
-    view: (ownerDeviceId, providerId) => client.view(ownerDeviceId, providerId),
+    view: (ownerDeviceId, providerId, model) => client.view(ownerDeviceId, providerId, model),
     invalidate: (ownerDeviceId) => directoryFacade.invalidate(ownerDeviceId),
   };
 }
@@ -190,6 +214,11 @@ export async function readProviderGroupOfSession(sessionId: string): Promise<Pro
 /** register 装配会话表后注入：这台电脑上每个供应商正在运行一轮的任务数(localLoad.ts)。 */
 export function setProviderGroupLocalLoad(probe: (() => Promise<ReadonlyMap<string, number>>) | null): void {
   localLoad = probe;
+}
+
+/** Reuse the CLI-backed subscription reader without importing the IPC adapter into routing. */
+export function setProviderGroupClaudeUsageReader(reader: typeof claudeUsageReader): void {
+  claudeUsageReader = reader;
 }
 
 /** 这台电脑上每个供应商正在运行一轮的任务数；还没装配或读不到时返回 null(调用方照旧只算经组的)。 */

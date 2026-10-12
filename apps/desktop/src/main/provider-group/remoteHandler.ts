@@ -148,7 +148,12 @@ export async function handleProviderGroupRemote(
       return {};
     case 'view': {
       if (!deps.isRemoteAllowed(request.providerId)) return { providerId: request.providerId, config: null, members: [] };
-      const view = await scope.router.view(request.providerId, { includeGuestSupport: request.includeGuestSupport === true });
+      const options = request.model !== undefined
+        ? request.includeGuestSupport === true
+          ? { model: request.model, includeGuestSupport: true }
+          : request.model
+        : { includeGuestSupport: request.includeGuestSupport === true };
+      const view = await scope.router.view(request.providerId, options);
       return scope.isCurrent() && deps.isRemoteAllowed(request.providerId)
         ? view : { providerId: request.providerId, config: null, members: [] };
     }

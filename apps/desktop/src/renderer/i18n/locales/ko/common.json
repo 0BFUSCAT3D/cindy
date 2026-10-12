@@ -462,11 +462,13 @@
       "round": "순환",
       "order": "순서대로",
       "weight": "가중치",
+      "usage": "사용량 균형",
       "description": {
         "least": "가장 여유로운 컴퓨터로",
         "round": "차례대로 배정",
         "order": "목록 앞쪽 우선",
-        "weight": "가중치 비율로"
+        "weight": "가중치 비율로",
+        "usage": "5시간·주간 사용량에 따라 배정"
       }
     },
     "autoSwitch": {
@@ -1092,7 +1094,6 @@
       "back": "뒤로",
       "usageTitle": "사용량",
       "wideCaptionMoney_other": "최근 {{n}}일 · 구독 환산",
-      "wideCaptionTokens_other": "최근 {{n}}일 · Token",
       "scopeLocal": "이 컴퓨터",
       "scopeAll": "모든 기기",
       "noUsage": "사용량 없음",
@@ -1103,13 +1104,9 @@
       },
       "dailyAverage": "하루 평균",
       "paid": "실제 결제",
-      "tokenUnitTitle": "Token",
-      "peakDay": "최고 하루",
       "range7": "7일",
       "range30": "30일",
       "range90": "90일",
-      "metricMoney": "금액",
-      "metricTokens": "Token",
       "listModels_other": "최근 {{n}}일 모델",
       "listTasks": "오늘의 작업",
       "today": "오늘",
