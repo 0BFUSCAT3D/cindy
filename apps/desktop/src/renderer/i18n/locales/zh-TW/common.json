@@ -2114,7 +2114,8 @@
         "basics": "基礎",
         "refinement": "潤色",
         "preferences": "偏好",
-        "usageData": "用量"
+        "usageData": "用量",
+        "speakerFilter": "聲紋過濾"
       },
       "serviceSource": {
         "label": "語音服務",
@@ -2410,6 +2411,80 @@
         "toast": {
           "copied": "已複製",
           "copyFailed": "複製失敗"
+        }
+      },
+      "speakerFilter": {
+        "label": "辨識我的聲音",
+        "hint": "語音輸入時將旁人的聲音靜音，只把你說的話送去辨識。需要先錄製聲紋；別人和你同時說話時無法完全濾掉。",
+        "ariaLabel": "切換辨識我的聲音",
+        "unsupported": "這台電腦的系統暫不支援聲紋辨識。",
+        "privacy": "聲紋只儲存在這台電腦上並加密保存，不會上傳，也不會同步到其他裝置。",
+        "actionFailed": "操作失敗，請稍後再試。",
+        "model": {
+          "needed": "首次使用需要下載約 {{size}} 的辨識模型。",
+          "download": "下載",
+          "downloading": "正在下載辨識模型（{{done}} / {{total}}）",
+          "cancel": "取消",
+          "retry": "重試",
+          "failed": {
+            "network": "辨識模型下載失敗，請檢查網路後重試。",
+            "disk": "辨識模型無法儲存，請檢查磁碟空間後重試。",
+            "checksum": "下載的辨識模型驗證未通過，請重試。",
+            "unavailable": "暫時無法取得辨識模型，請稍後再試。"
+          }
+        },
+        "profile": {
+          "missing": "尚未錄製聲紋",
+          "missingHint": "錄製聲紋後才會生效，大約需要 20 秒。",
+          "enrolled": "已錄製聲紋",
+          "enrolledAt": "{{date}} 錄製",
+          "enroll": "錄製聲紋",
+          "reenroll": "重新錄製",
+          "delete": "刪除聲紋",
+          "deleted": "聲紋已刪除",
+          "deleteConfirm": {
+            "title": "刪除聲紋？",
+            "description": "刪除後語音輸入不再過濾旁人的聲音，直到你重新錄製。",
+            "confirm": "刪除",
+            "cancel": "取消"
+          }
+        },
+        "strictness": {
+          "label": "靈敏度",
+          "hint": "越嚴格越不容易放進旁人的聲音，但在吵雜環境中也更容易剪掉你自己的話。",
+          "options": {
+            "relaxed": "寬鬆",
+            "standard": "標準",
+            "strict": "嚴格"
+          }
+        },
+        "enroll": {
+          "title": "錄製聲紋",
+          "description": "請在平常使用語音輸入的地方，用平常的語氣朗讀下面 {{clips}} 段文字，每段錄音 {{seconds}} 秒。錄音時請不要讓別人說話。",
+          "stepsAriaLabel": "朗讀段落",
+          "step": "第 {{current}} / {{total}} 段",
+          "record": "開始朗讀",
+          "rerecord": "重錄這段",
+          "recording": "正在錄音，還剩 {{seconds}} 秒",
+          "recorded": "這段已錄好",
+          "cancel": "取消",
+          "submit": "完成",
+          "done": "聲紋已錄製",
+          "passages": {
+            "p1": "今天上午我先整理一下這週的工作安排，下午再把需要討論的問題列出來，傳給大家提前看看。",
+            "p2": "如果明天天氣不錯，我們可以早點出發，路上順便買些水果和零食，中午就在公園裡吃飯。",
+            "p3": "請幫我把這段內容改得更簡潔一些，保留關鍵數字和結論，然後用三到五句話總結重點。"
+          },
+          "errors": {
+            "too_short": "第 {{index}} 段裡說話的時間太短，請重錄這段，朗讀時不要停頓太久。",
+            "no_embedding": "第 {{index}} 段沒能辨識出聲紋，請重錄這段。",
+            "inconsistent": "第 {{index}} 段和其他幾段不像同一個人，可能混入了別人的聲音或噪音，請重錄這段。",
+            "models_missing": "辨識模型尚未下載完成，請稍後再試。",
+            "storage_unavailable": "系統鑰匙圈暫時無法使用，聲紋無法加密儲存，請稍後再試。",
+            "failed": "產生聲紋失敗，請重試。",
+            "microphone": "無法使用麥克風，請檢查麥克風權限和裝置。",
+            "noAudio": "麥克風沒有傳來聲音，請檢查裝置後重試。"
+          }
         }
       }
     },

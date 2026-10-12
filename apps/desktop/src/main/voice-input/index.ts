@@ -155,6 +155,7 @@ import {
   type VoiceInputConnectionTestResult,
 } from '../../shared/voiceInputConnectionTest.js';
 import { runSerializedVoiceInputConnectionTest } from './voiceInputConnectionTest.js';
+import { getSpeakerFilterService, registerVoiceSpeakerFilterIpc } from './speaker/index.js';
 
 const log = createLogger('voice-input');
 let customAsrCredentialRevision = 0;
@@ -1876,6 +1877,7 @@ export async function transcribeVoiceInputAudioFile(
  */
 export function registerVoiceInputIpc(): void {
   registerVoiceInputDataStoreIpc();
+  registerVoiceSpeakerFilterIpc();
   if (!appRestoreRegistered) {
     appRestoreRegistered = true;
     app.once('before-quit', () => {
@@ -2342,9 +2344,12 @@ export function registerVoiceInputIpc(): void {
       if (runId) emit({ type: 'timeline', runId, event: timelineEvent });
     });
 
+    // "Recognize my voice": undefined unless enabled, enrolled and the models are on disk.
+    const audioGate = getSpeakerFilterService().createGate(voiceInputDataStore.getSettings());
     const controller = new VoiceInputController({
       asr: provider,
       refiner,
+      audioGate,
       pauseRefinementEnabled: true,
       recoveryErrorMessage: voiceContext ? getVoiceInputRateLimitMessage : undefined,
       logger,
@@ -2430,6 +2435,7 @@ export function registerVoiceInputIpc(): void {
         refiner: refiner ? effectiveRefinerProfile?.model : undefined,
         refinerProvider: refiner ? effectiveRefinerProfile?.id : undefined,
         refinerChain: refiner ? readyRefinerProfiles.map((profile) => profile.id) : undefined,
+        speakerFilter: Boolean(audioGate),
         refinementEnabled: Boolean(refiner),
         refinementRequested: shouldRefine,
         refinementContext: refiner ? summarizeRefinementContext(refinementContext) : undefined,

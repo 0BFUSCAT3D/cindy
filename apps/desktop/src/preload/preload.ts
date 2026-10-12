@@ -29,6 +29,11 @@ import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
 import { DEVICE_LINK_PUSH } from '../shared/deviceLinkIpc';
 import { PROVIDER_SHARE_IPC, type ProviderShareCommand } from '../shared/providerShare';
 import { PROVIDER_GROUP_IPC, type ProviderGroupCommand } from '../shared/providerGroup';
+import {
+  VOICE_SPEAKER_FILTER_CHANNELS,
+  type VoiceSpeakerEnrollResult,
+  type VoiceSpeakerFilterStatus,
+} from '../shared/voiceSpeakerFilter';
 import type { MobileCodexRateLimitsResult, MobileCodexRateLimitResetResult } from '@cindy/maker-shared/device-link-contract';
 import type { AppearanceSettings } from '../shared/appearanceSettings';
 import type { DialogueWorkspaceSettingsState } from '../shared/dialogueWorkspaceSettings';
@@ -664,6 +669,7 @@ const fanOutVoiceInputDictionaryLearningEvidence = createIpcFanOut(
   'voice-input:dictionary-learning-evidence',
 );
 const fanOutVoiceInputDataChanged = createIpcFanOut('voice-input:data-changed');
+const fanOutVoiceSpeakerStatusChanged = createIpcFanOut(VOICE_SPEAKER_FILTER_CHANNELS.statusChanged);
 // 挂起/锁屏 → renderer 释放 fast activation 的保活麦克风(见 shared/voiceInputPowerIpc)。
 const fanOutVoiceInputPowerStateChange = createIpcFanOut(VOICE_INPUT_POWER_STATE_CHANNEL);
 // 应用级快捷键 override 变化广播 (设置页改绑 / reset 后 main 推全量 overrides,
@@ -1724,6 +1730,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       throwVoiceInputSyncError(result);
     },
     onDataChanged: fanOutVoiceInputDataChanged,
+    speakerFilter: {
+      getStatus: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.getStatus),
+      downloadModels: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.downloadModels),
+      cancelDownload: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.cancelDownload),
+      enroll: (clips: ArrayBuffer[]): Promise<VoiceSpeakerEnrollResult> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.enroll, { clips }),
+      deleteProfile: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.deleteProfile),
+      onStatusChanged: fanOutVoiceSpeakerStatusChanged,
+    },
     // options.suspend 表示「录制期挂起」这个意图。main 侧会丢掉与存盘不一致的同步请求
     // (过时的广播回声),而挂起传的 null 恰恰故意与存盘不同,必须能区分开。
     setGlobalShortcut: (

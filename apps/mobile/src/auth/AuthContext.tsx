@@ -127,6 +127,7 @@ import { updateCredentialAccessToken } from '@/remote-desktop/credentialIdentity
 import { clearCachedSessionMessages } from '@/session/mobileSessionMessageCache';
 import { clearHistoryDisk } from '@/session/remoteHistoryDiskCache';
 import { clearAllMobileVoiceCredentials } from '@/session/mobileVoiceCredentialStore';
+import { clearMobileSpeakerFilterForAccount } from '@/session/mobileSpeakerFilterStorage';
 import {
   clearAllMobileVoiceDictionaryCaches,
   setMobileVoiceDictionaryAccountScope,
@@ -2940,6 +2941,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 词典缓存按 host 设备分区、不含账号身份:同一台电脑在两个账号下是同一个
     // deviceId,不清就会让下一个账号读到上一个账号的词条并发给润色模型。
     await clearAllMobileVoiceDictionaryCaches().catch(() => undefined);
+    // 声纹是这个账号的生物特征数据,随账号的其他本机数据一起清;模型文件不含账号数据,保留。
+    await clearMobileSpeakerFilterForAccount(invitationHistoryAccountKey);
     await clearCachedSessionMessages().catch(() => undefined);
     await clearHistoryDisk();
     // 首页设备+会话快照与消息缓存一样属于账号数据,登出必须清掉。
