@@ -468,6 +468,7 @@
       "weightAria": "{{name}}의 가중치",
       "weightOption": "가중치 {{weight}}",
       "assignAria": "{{name}}에 배정",
+      "assignLocalAria": "{{name}}에서 다른 컴퓨터의 새 작업 수신 허용",
       "moreAria": "{{name}} 추가 작업",
       "remove": "그룹에서 제외",
       "status": {
@@ -475,6 +476,7 @@
         "idle": "대기 중",
         "full": "한도 도달",
         "paused": "배정 일시 중지됨",
+        "pausedLocal": "다른 컴퓨터의 새 작업 수신 중지",
         "cooling": "대기 중",
         "coolingUntil": "대기 중 · {{time}}쯤 복구",
         "offline": "오프라인",

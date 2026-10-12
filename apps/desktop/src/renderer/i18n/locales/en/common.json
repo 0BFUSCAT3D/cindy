@@ -473,6 +473,7 @@
       "weightAria": "Weight for {{name}}",
       "weightOption": "Weight {{weight}}",
       "assignAria": "Assign tasks to {{name}}",
+      "assignLocalAria": "Allow {{name}} to accept new tasks from other computers",
       "moreAria": "More actions for {{name}}",
       "remove": "Remove from Group",
       "status": {
@@ -480,6 +481,7 @@
         "idle": "Idle",
         "full": "Full",
         "paused": "Assignments paused",
+        "pausedLocal": "Not accepting new tasks from other computers",
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
         "offline": "Offline",

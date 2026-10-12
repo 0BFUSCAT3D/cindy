@@ -468,6 +468,7 @@
       "weightAria": "{{name}} 的权重",
       "weightOption": "权重 {{weight}}",
       "assignAria": "给 {{name}} 分配任务",
+      "assignLocalAria": "允许 {{name}} 接收外部新任务",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出组",
       "status": {
@@ -475,6 +476,7 @@
         "idle": "空闲",
         "full": "已满",
         "paused": "已暂停分配",
+        "pausedLocal": "已暂停接收外部新任务",
         "cooling": "冷却中",
         "coolingUntil": "冷却中 · 约 {{time}} 恢复",
         "offline": "不在线",
