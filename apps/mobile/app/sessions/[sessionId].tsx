@@ -8930,7 +8930,8 @@ export default function SessionScreen() {
     // 同一解析):re-link 后两者可能不同,按路由 id 落 shard 会让归档移行落空、回滚插错 shard。
     const { rpcDeviceId, shardId } = resolveSessionWriteDevices(sessionId, session, deviceId)
       ?? { rpcDeviceId: deviceId, shardId: deviceId };
-    if (patch.status === 'archived' || patch.status === 'deleted') {
+    const leavesDetailScreen = patch.status === 'archived' || patch.status === 'deleted';
+    if (leavesDetailScreen) {
       goBackToHome();
     }
     // 写序登记、出网链路、对账/回滚全部对齐首页字段级契约(review P1/P2 多轮:守卫
@@ -8978,7 +8979,7 @@ export default function SessionScreen() {
             // NOT_FOUND proves that the remote row is gone, so retire the
             // local mirror instead of restoring a row that can never sync.
             remoteSessionStore.applySessionPatch(shardId, sessionId, { status: 'deleted' });
-            goBackToHome();
+            if (!leavesDetailScreen) goBackToHome();
             return;
           }
           if (fields.includes('status')) {

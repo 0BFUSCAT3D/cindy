@@ -9,13 +9,15 @@ const gitExecMock = vi.fn();
 const storeMap = new Map<string, WorktreeMeta>();
 const storeSetMock = vi.fn();
 const profile = vi.hoisted(() => ({ root: '' }));
+const checkoutLease = vi.hoisted(() => ({ record: vi.fn(), release: vi.fn() }));
 vi.mock('electron', () => ({ app: { getPath: () => profile.root } }));
 vi.mock('../localDb/client/current', () => ({ getDbClient: () => ({ readLocalWorktreeReferences: async () => [] }) }));
 vi.mock('../worktree/piSubagentReferences', () => ({ readPiSubagentWorktreeReferences: async () => new Map() }));
 vi.mock('../worktree/runtimeLeases', () => ({
   readWorktreeRuntimePaths: async () => new Set(),
   acquireWorktreeRuntimeLease: async () => ({}),
-  releaseWorktreeRuntimeLease: async () => {},
+  recordWorktreeRuntimeLeaseChild: checkoutLease.record,
+  releaseWorktreeRuntimeLease: checkoutLease.release,
   reclaimOrphanedWorktreeRuntimeLeases: async () => 0,
 }));
 const includeMock = vi.hoisted(() => vi.fn(async () => []));
@@ -102,6 +104,29 @@ describe('createWorktree naming authority', () => {
       sourceBranch: 'main',
     });
   }
+
+  it('records the background checkout child and holds its lease until completion', async () => {
+    const previousGit = gitExecMock.getMockImplementation()!;
+    let finishCheckout!: () => void;
+    const checkout = new Promise<{ stdout: string; stderr: string }>((resolve) => {
+      finishCheckout = () => resolve({ stdout: '', stderr: '' });
+    });
+    gitExecMock.mockImplementation((args: string[], cwd?: string, opts?: { onSpawn?: (pid: number) => void }) => {
+      if (args[0] === 'checkout' && args.includes(':(exclude).sivi')) {
+        opts?.onSpawn?.(4242);
+        return checkout;
+      }
+      return previousGit(args, cwd, opts);
+    });
+    try {
+      await expect(create('background')).resolves.toMatchObject({ ok: true });
+      expect(checkoutLease.record).toHaveBeenCalledExactlyOnceWith({}, 4242);
+      expect(checkoutLease.release).not.toHaveBeenCalled();
+    } finally {
+      finishCheckout();
+    }
+    await vi.waitFor(() => expect(checkoutLease.release).toHaveBeenCalledExactlyOnceWith({}));
+  });
 
   it.each(['', '   \t'])('generates a meaningful final name for blank input %j', async (name) => {
     const result = await create(name);

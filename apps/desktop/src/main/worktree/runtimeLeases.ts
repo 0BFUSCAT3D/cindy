@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
@@ -125,6 +126,23 @@ async function releaseRuntimeKeepSentinel(lease: WorktreeRuntimeLease): Promise<
 
 export async function releaseWorktreeRuntimeLease(lease: WorktreeRuntimeLease): Promise<void> {
   await releaseRuntimeLeaseFile(lease);
+}
+
+/** Record the detached git child that is still using a checkout lease. */
+export function recordWorktreeRuntimeLeaseChild(lease: WorktreeRuntimeLease, childPid: number): void {
+  if (!Number.isInteger(childPid) || childPid <= 0) return;
+  try {
+    const value = JSON.parse(fsSync.readFileSync(lease.file, 'utf8')) as {
+      version?: unknown;
+      pid?: unknown;
+      path?: unknown;
+      childPid?: unknown;
+    };
+    if (value.version !== 1 || value.pid !== process.pid || value.path !== lease.physicalPath) return;
+    fsSync.writeFileSync(lease.file, JSON.stringify({ ...value, childPid }), { mode: 0o600 });
+  } catch {
+    // Missing or partially written child evidence must stay protective.
+  }
 }
 
 async function removeRuntimeLeaseFile(lease: WorktreeRuntimeLease): Promise<void> {
@@ -308,9 +326,9 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
  * Normal recycle deliberately keeps leases from dead processes because they
  * may belong to a detached child.  A pre-created worktree has no claimed
  * session yet, and the caller has already fenced late creation under the
- * session lock.  In that narrow path, a lease whose recorded owner PID is no
- * longer alive is stale evidence rather than an active borrower.  Malformed
- * leases and leases owned by a live PID remain protective.
+ * session lock. Reclaim only a recorded checkout child whose owner and child
+ * have both exited. Older leases without child evidence, malformed records,
+ * and unknown process liveness remain protective.
  */
 export async function reclaimOrphanedWorktreeRuntimeLeases(
   worktreePath: string,
@@ -333,12 +351,15 @@ export async function reclaimOrphanedWorktreeRuntimeLeases(
           version?: unknown;
           pid?: unknown;
           path?: unknown;
+          childPid?: unknown;
         };
         if (value.version !== 1 || typeof value.pid !== 'number'
           || !Number.isInteger(value.pid) || value.pid <= 0
           || typeof value.path !== 'string'
           || await physicalWorktreeKey(value.path) !== target
-          || pidMayBeAlive(value.pid)) {
+          || pidMayBeAlive(value.pid)
+          || typeof value.childPid !== 'number' || !Number.isInteger(value.childPid)
+          || value.childPid <= 0 || pidMayBeAlive(value.childPid)) {
           continue;
         }
         await fs.unlink(file);

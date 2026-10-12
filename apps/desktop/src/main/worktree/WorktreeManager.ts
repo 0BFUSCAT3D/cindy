@@ -47,6 +47,7 @@ import { recycleManagedWorktree } from './managedRecycle';
 import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import {
   acquireWorktreeRuntimeLease,
+  recordWorktreeRuntimeLeaseChild,
   reclaimOrphanedWorktreeRuntimeLeases,
   releaseWorktreeRuntimeLease,
 } from './runtimeLeases';
@@ -754,6 +755,7 @@ const STAGE_CHECKOUT_PATHS = [
  */
 async function stageCheckout(
   worktreePath: string,
+  onCheckoutChildSpawn?: (pid: number) => void,
 ): Promise<{ fullCheckoutPromise: Promise<void> }> {
   const t0 = Date.now();
 
@@ -802,7 +804,7 @@ async function stageCheckout(
   const fullCheckoutPromise = gitExec(
     ['checkout', 'HEAD', '--', '.', ':(exclude).claude', ':(exclude).sivi'],
     worktreePath,
-    { extraEnv: { LC_ALL: 'C' } },
+    { extraEnv: { LC_ALL: 'C' }, onSpawn: onCheckoutChildSpawn },
   )
     .then(() => {
       log.info(
@@ -1168,7 +1170,10 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
       const checkoutLease = await acquireWorktreeRuntimeLease(`checkout:${req.sessionId}`, worktreePath);
       if (!checkoutLease) throw new Error('managed checkout runtime lease is missing');
       try {
-        const stageRes = await timed('stage checkout', () => stageCheckout(worktreePath));
+        const stageRes = await timed('stage checkout', () => stageCheckout(
+          worktreePath,
+          (pid) => recordWorktreeRuntimeLeaseChild(checkoutLease, pid),
+        ));
         bgPromise = stageRes.fullCheckoutPromise.finally(() => releaseWorktreeRuntimeLease(checkoutLease));
       } catch (err) {
         await releaseWorktreeRuntimeLease(checkoutLease);

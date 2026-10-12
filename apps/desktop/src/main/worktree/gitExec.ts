@@ -83,6 +83,8 @@ export interface GitExecOpts {
    * 省略 = 不超时。
    */
   timeoutMs?: number;
+  /** Called immediately after the git child is spawned. */
+  onSpawn?: (pid: number) => void;
 }
 
 /** POSIX 超时后 SIGTERM → SIGKILL 的宽限期:给 git 留出清理 .lock 的时间窗。 */
@@ -271,6 +273,7 @@ function execFileOnce(
           resolveWithResult({ stdout: stdoutStr, stderr: stderrStr });
         },
       );
+      if (child.pid !== undefined) opts?.onSpawn?.(child.pid);
     } catch (error) {
       const cause = error instanceof Error ? error : new Error(String(error));
       rejectWithGitError(

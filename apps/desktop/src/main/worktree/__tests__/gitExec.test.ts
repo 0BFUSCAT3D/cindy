@@ -178,6 +178,15 @@ afterEach(() => {
 });
 
 describe('gitExec timeoutMs', () => {
+  it('records the spawned checkout PID before completion', async () => {
+    const state = installExecFileMock();
+    const onSpawn = vi.fn();
+    const result = gitExec(['checkout', 'HEAD', '--', '.'], undefined, { onSpawn });
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith(state.child.pid);
+    state.gitCb!(null, '', '');
+    await expect(result).resolves.toEqual({ stdout: '', stderr: '' });
+  });
+
   it('stdout ENOTCONN 先完成整树清理，再收口为 GitExecError', async () => {
     setPlatform('win32');
     const state = installExecFileMock();
