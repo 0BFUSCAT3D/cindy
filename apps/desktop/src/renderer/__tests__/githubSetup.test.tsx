@@ -35,7 +35,8 @@ describe('GitHub setup UI', () => {
     await screen.findByText(`${key}.stages.preparing.title`);
     await screen.findByText(`${key}.stages.unavailable.title`);
     await screen.findByText(`${key}.done`, {}, { timeout: 2000 });
-    expect(connected).toHaveBeenCalledOnce();
+    // The connected notification runs in an effect after the DOM update.
+    await waitFor(() => expect(connected).toHaveBeenCalledOnce());
   });
   it('ignores outside clicks during authorization but still allows explicit cancellation', async () => {
     const close = vi.fn();
