@@ -389,11 +389,11 @@ struct LogoView: View {
 enum Page: Equatable {
   case main
   case detail(String)
-  case wide
+  case usage
   case manage
 }
 
-enum WideList: String {
+enum UsageList: String {
   case models
   case tasks
 }
@@ -405,10 +405,8 @@ final class MenubarStore: ObservableObject {
   /// Bumped every time the panel opens; tubes and rings replay their fill from zero.
   @Published var fillToken = 0
   @Published var refreshing = false
-  @Published var wideRange = 30
-  @Published var wideMoney = true
-  @Published var wideScope = "all"
-  @Published var wideList: WideList = .models
+  @Published var usageRange = 30
+  @Published var usageList: UsageList = .models
   /// Manage list order while the user drags, before main echoes the saved settings back.
   @Published var draftOrder: [String]?
   @Published var mainContentHeight: CGFloat = 0
@@ -416,6 +414,8 @@ final class MenubarStore: ObservableObject {
   @Published var narrowWidth: CGFloat = StatusController.narrowWidth
   /// Natural height of the open detail page; the panel grows to fit it when main is shorter.
   @Published var detailContentHeight: CGFloat = 0
+  /// Natural height of the usage page; the panel takes it instead of the main page's height.
+  @Published var usageContentHeight: CGFloat = 0
   /// Natural height of the manage page; the panel takes it instead of the main page's height.
   @Published var manageContentHeight: CGFloat = 0
   @Published var shakeId: String?
@@ -441,16 +441,14 @@ final class MenubarStore: ObservableObject {
   var locale: String { view?.locale ?? "en" }
 
   func apply(_ next: MBView) {
-    let firstView = view == nil
     Fmt.symbol = next.moneySymbol
     view = next
     if refreshing { refreshing = false }
     if let draft = draftOrder, draft == next.settings.order || draftMatches(next) {
       draftOrder = nil
     }
-    if firstView { wideScope = next.settings.scope }
     if case .detail(let id) = page, next.details[id] == nil { page = .main }
-    if next.gate != nil, page == .wide { page = .main }
+    if next.gate != nil, page == .usage { page = .main }
     let width = Self.narrowWidth(tubes: next.gate == nil ? next.sources.filter { $0.fill != nil }.count : 0)
     if width != narrowWidth { narrowWidth = width }
   }
@@ -472,7 +470,6 @@ final class MenubarStore: ObservableObject {
   }
 
   func go(_ next: Page) {
-    if next == .wide, let view { wideScope = view.settings.scope }
     withAnimation(Motion.page) { page = next }
   }
 
@@ -576,8 +573,6 @@ final class PanelBackgroundView: NSVisualEffectView {
 @MainActor
 final class StatusController: NSObject, NSWindowDelegate {
   static let narrowWidth: CGFloat = 368
-  static let wideWidth: CGFloat = 760
-  private static let wideHeight: CGFloat = 620
   private static let screenGap: CGFloat = 6
   private static let sideMargin: CGFloat = 12
   /// Screens with less visible height than this get the short layout.
@@ -630,7 +625,7 @@ final class StatusController: NSObject, NSWindowDelegate {
       .removeDuplicates()
       .receive(on: RunLoop.main)
       .sink { [weak self] _ in
-        guard let self, self.isOpen, self.store.page != .wide else { return }
+        guard let self, self.isOpen else { return }
         self.layoutPanel(for: self.store.page, animated: false)
       }
       .store(in: &cancellables)
@@ -639,7 +634,7 @@ final class StatusController: NSObject, NSWindowDelegate {
       .dropFirst()
       .receive(on: RunLoop.main)
       .sink { [weak self] _ in
-        guard let self, self.isOpen, self.store.page != .wide else { return }
+        guard let self, self.isOpen else { return }
         self.layoutPanel(for: self.store.page, animated: true)
       }
       .store(in: &cancellables)
@@ -657,6 +652,14 @@ final class StatusController: NSObject, NSWindowDelegate {
       .sink { [weak self] _ in
         guard let self, self.isOpen, case .detail = self.store.page else { return }
         self.layoutPanel(for: self.store.page, animated: true)
+      }
+      .store(in: &cancellables)
+    store.$usageContentHeight
+      .removeDuplicates()
+      .receive(on: RunLoop.main)
+      .sink { [weak self] _ in
+        guard let self, self.isOpen, self.store.page == .usage else { return }
+        self.layoutPanel(for: .usage, animated: true)
       }
       .store(in: &cancellables)
   }
@@ -790,8 +793,6 @@ final class StatusController: NSObject, NSWindowDelegate {
     return panel
   }
 
-  /// Keeps the panel's right edge under the status item (inside the screen) and its top just
-  /// below the menu bar; the wide page grows to the left like the prototype.
   /// The status button's rect on screen, or nil while the item is not placed yet.
   private func statusAnchor() -> (rect: NSRect, screen: NSScreen)? {
     guard let button = statusItem.button, let buttonWindow = button.window else { return nil }
@@ -802,6 +803,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     return (rect, screen)
   }
 
+  /// Keeps the panel's right edge under the status item (inside the screen) and its top just
+  /// below the menu bar. Every page shares the narrow width; a detail page may grow the
+  /// panel, and the usage and manage pages take their own height.
   private func targetFrame(for page: Page) -> NSRect? {
     let buttonRect: NSRect
     let screen: NSScreen
@@ -818,19 +822,14 @@ final class StatusController: NSObject, NSWindowDelegate {
     let visible = screen.visibleFrame
     let top = min(buttonRect.minY, visible.maxY) - Self.screenGap
     let maxHeight = max(320, min(top - visible.minY - Self.sideMargin, (visible.height * Self.heightShare).rounded(.down)))
-    let wide = page == .wide
-    let width = min(wide ? Self.wideWidth : store.narrowWidth, visible.width - Self.sideMargin * 2)
+    let width = min(store.narrowWidth, visible.width - Self.sideMargin * 2)
     let right = min(visible.maxX - Self.sideMargin, buttonRect.midX + store.narrowWidth / 2)
     let x = max(visible.minX + Self.sideMargin, right - width)
-    let height: CGFloat
-    if wide {
-      height = min(maxHeight, Self.wideHeight)
-    } else {
-      var natural = store.mainContentHeight > 0 ? store.mainContentHeight : 640
-      if case .detail = page { natural = max(natural, store.detailContentHeight) }
-      if page == .manage, store.manageContentHeight > 0 { natural = store.manageContentHeight }
-      height = min(maxHeight, natural)
-    }
+    var natural = store.mainContentHeight > 0 ? store.mainContentHeight : 640
+    if case .detail = page { natural = max(natural, store.detailContentHeight) }
+    if page == .usage, store.usageContentHeight > 0 { natural = store.usageContentHeight }
+    if page == .manage, store.manageContentHeight > 0 { natural = store.manageContentHeight }
+    let height = min(maxHeight, natural)
     return NSRect(x: x, y: top - height, width: width, height: height)
   }
 
@@ -1003,9 +1002,9 @@ struct PanelRoot: View {
           .frame(width: store.narrowWidth)
           .transition(.move(edge: .trailing).combined(with: .opacity))
       }
-      if store.page == .wide {
-        WidePage(store: store, view: view, controller: controller)
-          .frame(width: StatusController.wideWidth)
+      if store.page == .usage {
+        UsagePage(store: store, view: view, controller: controller)
+          .frame(width: store.narrowWidth)
           .transition(.move(edge: .trailing).combined(with: .opacity))
       }
     }
@@ -1652,8 +1651,8 @@ struct TaskList: View {
           label: store.s("moreTasks", ["n": String(rest.count)]),
           value: Fmt.money(rest.reduce(0) { $0 + $1.value })
         ) {
-          store.wideList = .tasks
-          store.go(.wide)
+          store.usageList = .tasks
+          store.go(.usage)
         }
         .padding(.horizontal, 10)
       }
@@ -1768,12 +1767,14 @@ struct TaskIcon: View {
 
 struct BreathingDot: View {
   let animate: Bool
+  var color: Color = Palette.ink2
+  var size: CGFloat = 5
   @State private var dim = false
 
   var body: some View {
     Circle()
-      .fill(Palette.ink2)
-      .frame(width: 5, height: 5)
+      .fill(color)
+      .frame(width: size, height: size)
       .opacity(dim ? 0.2 : 1)
       .onAppear {
         guard animate else { return }
@@ -1819,8 +1820,8 @@ struct MonthCard: View {
     let days = Array(view.usage.days.suffix(30))
     let total = last.reduce(0) { $0 + $1.money.reduce(0, +) }
     Button {
-      store.wideList = .models
-      store.go(.wide)
+      store.usageList = .models
+      store.go(.usage)
     } label: {
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
@@ -2183,332 +2184,276 @@ struct FactCard: View {
   }
 }
 
-// MARK: - Wide usage page
+// MARK: - Usage page
 
-struct WidePage: View {
+/// Usage over 7/30/90 days at the panel's own width: one total, one chart, the harness split
+/// and a short list. It slides in like a detail page instead of turning into a dashboard.
+struct UsagePage: View {
   @ObservedObject var store: MenubarStore
   let view: MBView
   let controller: StatusController
   @State private var selection: Int?
 
-  private var scopeData: MBScopeData? { view.usage.scopes[store.wideScope] ?? view.usage.scopes["all"] }
+  private var scope: String { view.settings.scope }
+  private var scopeData: MBScopeData? { view.usage.scopes[scope] ?? view.usage.scopes["all"] }
 
   var body: some View {
     let data = scopeData
-    let range = store.wideRange
-    let allDays = view.usage.days
-    let days = Array(allDays.suffix(range))
+    let range = store.usageRange
+    let days = Array(view.usage.days.suffix(range))
     let daily = Array((data?.daily ?? []).suffix(range))
     let byHarness = harnessTotals(daily)
     let total = byHarness.reduce(0, +)
-    HStack(alignment: .top, spacing: 0) {
-      sidebar(days: days, daily: daily, byHarness: byHarness, total: total, note: data?.note ?? "")
-        .frame(width: 236)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .overlay(alignment: .trailing) { Rectangle().fill(Palette.line).frame(width: 0.5) }
-      ScrollView(.vertical, showsIndicators: false) {
-        VStack(alignment: .leading, spacing: 0) {
-          controls
-          UsageChart(
-            days: days,
-            daily: daily,
-            money: store.wideMoney,
-            compact: false,
-            selection: $selection,
-            axisLabels: axisLabels(days: days)
-          )
-          .frame(height: store.short ? 220 : 260)
-          .padding(.top, 16)
-          Picker("", selection: $store.wideList) {
-            Text(store.s("listModels", ["n": String(range)])).tag(WideList.models)
-            Text(store.s("listTasks")).tag(WideList.tasks)
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .controlSize(.small)
-          .fixedSize()
-          .padding(.top, 16)
-          if store.wideList == .models {
+    ScrollView(.vertical, showsIndicators: false) {
+      VStack(alignment: .leading, spacing: 0) {
+        header
+        summary(days: days, daily: daily, total: total)
+          .padding(EdgeInsets(top: 8, leading: 18, bottom: 0, trailing: 18))
+        UsageChart(days: days, daily: daily, money: true, compact: false, selection: $selection)
+          .frame(height: store.short ? 84 : 100)
+          .padding(EdgeInsets(top: 12, leading: 18, bottom: 0, trailing: 18))
+        dateRange(days: days)
+          .padding(EdgeInsets(top: 4, leading: 18, bottom: 0, trailing: 18))
+        harnessSplit(byHarness: byHarness, total: total)
+          .padding(EdgeInsets(top: 14, leading: 18, bottom: 0, trailing: 18))
+        Picker("", selection: $store.usageList) {
+          Text(store.s("listModels", ["n": String(range)])).tag(UsageList.models)
+          Text(store.s("listTasks")).tag(UsageList.tasks)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
+        .padding(EdgeInsets(top: 16, leading: 14, bottom: 4, trailing: 14))
+        Group {
+          if store.usageList == .models {
             modelList(data?.models[String(range)] ?? [])
           } else {
             taskList
           }
         }
-        .padding(EdgeInsets(top: 14, leading: 20, bottom: 18, trailing: 20))
-        .frame(width: StatusController.wideWidth - 236, alignment: .leading)
+        .padding(.horizontal, 10)
+        if let note = data?.note, !note.isEmpty {
+          Text(note)
+            .font(.system(size: 10.5))
+            .foregroundStyle(Palette.ink3)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(EdgeInsets(top: 12, leading: 18, bottom: 16, trailing: 18))
+        }
+      }
+      .frame(width: store.narrowWidth, alignment: .leading)
+      .background(GeometryReader { inner in
+        Color.clear
+          .onAppear { report(inner.size.height) }
+          .onChange(of: inner.size.height) { _, height in report(height) }
+      })
+    }
+    .onChange(of: store.usageRange) { selection = nil }
+  }
+
+  private func report(_ height: CGFloat) {
+    let natural = (height + 1).rounded(.up)
+    if abs(store.usageContentHeight - natural) > 0.5 { store.usageContentHeight = natural }
+  }
+
+  private var header: some View {
+    HStack(spacing: 4) {
+      IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
+      Text(store.s("usageTitle")).font(.system(size: 13, weight: .bold)).lineLimit(1)
+      Spacer(minLength: 8)
+      Picker("", selection: $store.usageRange) {
+        Text(store.s("range7")).tag(7)
+        Text(store.s("range30")).tag(30)
+        Text(store.s("range90")).tag(90)
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .controlSize(.small)
+      .fixedSize()
+    }
+    .padding(EdgeInsets(top: 12, leading: 10, bottom: 0, trailing: 14))
+  }
+
+  /// The total, or the hovered day's amount and its harness split.
+  @ViewBuilder
+  private func summary(days: [String], daily: [MBDaily], total: Double) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      if let selection, selection < daily.count {
+        let row = daily[selection]
+        let date = Fmt.day(days[selection])
+        bigNumber(Fmt.money(row.money.reduce(0, +)))
+        caption(Fmt.monthDay(date, locale: store.locale) + " " + Fmt.weekday(date, locale: store.locale))
+        let present = harnessOrder.filter { row.money[$0.index] > 0 }
+        caption(present.isEmpty
+          ? store.s("noUsage")
+          : present.map { "\(store.s("harness." + $0.key)) \(Fmt.money(row.money[$0.index]))" }.joined(separator: " · "))
+      } else {
+        bigNumber(Fmt.money(total))
+        caption(store.s("wideCaptionMoney", ["n": String(store.usageRange)]) + " · " + store.s(scope == "local" ? "scopeLocal" : "scopeAll"))
+        caption(stats(daily: daily, total: total))
       }
     }
-    .onChange(of: store.wideRange) { selection = nil }
+  }
+
+  private func bigNumber(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 28, weight: .semibold))
+      .tracking(-1)
+      .monospacedDigit()
+      .lineLimit(1)
+      .minimumScaleFactor(0.7)
+      .contentTransition(.numericText())
+      .animation(Motion.quick, value: text)
+  }
+
+  private func caption(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 11))
+      .foregroundStyle(Palette.ink3)
+      .monospacedDigit()
+      .lineLimit(1)
+      .truncationMode(.tail)
+  }
+
+  private func stats(daily: [MBDaily], total: Double) -> String {
+    let range = Double(max(1, store.usageRange))
+    let paid = daily.reduce(0) { $0 + $1.paid }
+    let tokens = daily.reduce(0) { $0 + $1.tokens.reduce(0, +) }
+    return [
+      "\(store.s("dailyAverage")) \(Fmt.money(total / range))",
+      "\(store.s("paid")) \(Fmt.money(paid))",
+      "\(Fmt.tokens(tokens)) \(store.s("tokenUnit"))",
+    ].joined(separator: " · ")
   }
 
   private func harnessTotals(_ daily: [MBDaily]) -> [Double] {
     var totals = [0.0, 0.0, 0.0]
     for day in daily {
-      for j in 0..<3 {
-        totals[j] += store.wideMoney ? day.money[j] : day.tokens[j]
-      }
+      for j in 0..<3 { totals[j] += day.money[j] }
     }
     return totals
   }
 
-  private func format(_ value: Double) -> String {
-    store.wideMoney ? Fmt.money(value) : Fmt.tokens(value)
-  }
-
+  /// One thin bar and three columns: name and share above, amount below.
   @ViewBuilder
-  private func sidebar(days: [String], daily: [MBDaily], byHarness: [Double], total: Double, note: String) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 4) {
-        IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
-        Text(store.s("usageTitle")).font(.system(size: 13, weight: .bold)).lineLimit(1)
-      }
-      .padding(.leading, -6)
-      if let selection, selection < daily.count {
-        selectedSummary(day: days[selection], row: daily[selection])
-      } else {
-        Text(format(total))
-          .font(.system(size: 42, weight: .semibold))
-          .tracking(-1.8)
+  private func harnessSplit(byHarness: [Double], total: Double) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HarnessBar(values: harnessOrder.map { ($0.key, byHarness[$0.index]) })
+        .frame(height: 4)
+      HStack(alignment: .top, spacing: 0) {
+        ForEach(Array(harnessOrder.enumerated()), id: \.element.index) { position, harness in
+          if position > 0 { Spacer(minLength: 10) }
+          VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 5) {
+              Circle().fill(Palette.harness(harness.key)).frame(width: 6, height: 6)
+              Text(store.s("harness." + harness.key)).lineLimit(1)
+              Text("\(Int((byHarness[harness.index] / max(total, 0.0001) * 100).rounded()))%")
+                .foregroundStyle(Palette.ink3)
+            }
+            .font(.system(size: 10.5))
+            .foregroundStyle(Palette.ink2)
+            Text(Fmt.money(byHarness[harness.index]))
+              .font(.system(size: 13, weight: .semibold))
+              .padding(.leading, 11)
+          }
           .monospacedDigit()
-          .lineLimit(1)
-          .minimumScaleFactor(0.6)
-          .padding(.top, 18)
-        Text(store.s(store.wideMoney ? "wideCaptionMoney" : "wideCaptionTokens", ["n": String(store.wideRange)])
-          + "\n" + store.s(store.wideScope == "local" ? "scopeLocal" : "scopeAll"))
-          .font(.system(size: 11.5))
-          .foregroundStyle(Palette.ink3)
-          .frame(minHeight: 34, alignment: .topLeading)
-          .padding(.top, 6)
-      }
-      subStats(daily: daily, total: total).padding(.top, 16)
-      harnessList(byHarness: byHarness, total: total).padding(.top, 20)
-      Spacer(minLength: 16)
-      Text(note)
-        .font(.system(size: 10.5))
-        .foregroundStyle(Palette.ink3)
-        .lineSpacing(4)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(EdgeInsets(top: 14, leading: 18, bottom: 18, trailing: 18))
-  }
-
-  @ViewBuilder
-  private func selectedSummary(day: String, row: MBDaily) -> some View {
-    let values = store.wideMoney ? row.money : row.tokens
-    Text(format(values.reduce(0, +)))
-      .font(.system(size: 42, weight: .semibold))
-      .tracking(-1.8)
-      .monospacedDigit()
-      .lineLimit(1)
-      .minimumScaleFactor(0.6)
-      .padding(.top, 18)
-    VStack(alignment: .leading, spacing: 2) {
-      let date = Fmt.day(day)
-      Text(Fmt.monthDay(date, locale: store.locale) + " " + Fmt.weekday(date, locale: store.locale))
-        .fontWeight(.semibold)
-        .foregroundStyle(Palette.ink)
-      let present = harnessOrder.filter { values[$0.index] > 0 }
-      if present.isEmpty {
-        Text(store.s("noUsage"))
-      }
-      ForEach(present, id: \.index) { harness in
-        HStack(spacing: 4) {
-          Circle().fill(Palette.harness(harness.key)).frame(width: 7, height: 7)
-          Text("\(store.s("harness." + harness.key)) \(format(values[harness.index]))")
+          .fixedSize()
         }
       }
     }
-    .font(.system(size: 11.5))
+    .accessibilityElement(children: .combine)
+  }
+
+  /// First day on the left, "Today" on the right; hovering the chart names the exact day.
+  private func dateRange(days: [String]) -> some View {
+    HStack {
+      if let first = days.first {
+        Text(Fmt.monthDay(Fmt.day(first), locale: store.locale))
+      }
+      Spacer(minLength: 0)
+      Text(store.s("today"))
+    }
+    .font(.system(size: 10))
     .foregroundStyle(Palette.ink3)
     .monospacedDigit()
-    .frame(minHeight: 34, alignment: .topLeading)
-    .padding(.top, 6)
-  }
-
-  @ViewBuilder
-  private func subStats(daily: [MBDaily], total: Double) -> some View {
-    let range = Double(max(1, store.wideRange))
-    HStack(alignment: .top, spacing: 14) {
-      if store.wideMoney {
-        stat(store.s("dailyAverage"), Fmt.money(total / range))
-        stat(store.s("paid"), Fmt.money(daily.reduce(0) { $0 + $1.paid }))
-        stat(store.s("tokenUnitTitle"), Fmt.tokens(daily.reduce(0) { $0 + $1.tokens.reduce(0, +) }))
-      } else {
-        stat(store.s("dailyAverage"), Fmt.tokens(total / range))
-        stat(store.s("peakDay"), Fmt.tokens(daily.map { $0.tokens.reduce(0, +) }.max() ?? 0))
-      }
-    }
-  }
-
-  private func stat(_ label: String, _ value: String) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label).font(.system(size: 10.5)).foregroundStyle(Palette.ink3).lineLimit(1)
-      Text(value).font(.system(size: 14, weight: .semibold)).tracking(-0.3).monospacedDigit().lineLimit(1)
-    }
-  }
-
-  @ViewBuilder
-  private func harnessList(byHarness: [Double], total: Double) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HarnessBar(values: harnessOrder.map { ($0.key, byHarness[$0.index]) })
-        .frame(height: 6)
-        .padding(.top, 10)
-      ForEach(harnessOrder, id: \.index) { harness in
-        HStack(spacing: 8) {
-          Circle().fill(Palette.harness(harness.key)).frame(width: 8, height: 8)
-          Text(store.s("harness." + harness.key)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-          Text("\(Int((byHarness[harness.index] / max(total, 0.0001) * 100).rounded()))%")
-            .font(.system(size: 11))
-            .foregroundStyle(Palette.ink3)
-          Text(format(byHarness[harness.index]))
-            .fontWeight(.semibold)
-            .frame(width: 62, alignment: .trailing)
-        }
-        .font(.system(size: 12))
-        .monospacedDigit()
-        .padding(.vertical, 6)
-      }
-    }
-  }
-
-  /// Three segmented controls fit one row in Chinese; longer languages turn the scope into a
-  /// pop-up so the row never pushes the page wider than the panel.
-  private var controls: some View {
-    ViewThatFits(in: .horizontal) {
-      HStack(spacing: 6) {
-        rangePicker
-        metricPicker
-        scopePicker.pickerStyle(.segmented).fixedSize()
-      }
-      HStack(spacing: 6) {
-        rangePicker
-        metricPicker
-        Spacer(minLength: 0)
-        scopePicker.pickerStyle(.menu).fixedSize()
-      }
-    }
-    .controlSize(.small)
-  }
-
-  private var rangePicker: some View {
-    Picker("", selection: $store.wideRange) {
-      Text(store.s("range7")).tag(7)
-      Text(store.s("range30")).tag(30)
-      Text(store.s("range90")).tag(90)
-    }
-    .pickerStyle(.segmented)
-    .labelsHidden()
-    .fixedSize()
-  }
-
-  private var metricPicker: some View {
-    Picker("", selection: $store.wideMoney) {
-      Text(store.s("metricMoney")).tag(true)
-      Text(store.s("metricTokens")).tag(false)
-    }
-    .pickerStyle(.segmented)
-    .labelsHidden()
-    .fixedSize()
-  }
-
-  private var scopePicker: some View {
-    Picker("", selection: $store.wideScope) {
-      Text(store.s("scopeLocal")).tag("local")
-      Text(store.s("scopeAll")).tag("all")
-    }
-    .labelsHidden()
-  }
-
-  private func axisLabels(days: [String]) -> [(Int, String)] {
-    let every = store.wideRange == 7 ? 1 : store.wideRange == 30 ? 7 : 21
-    var labels: [(Int, String)] = []
-    for (i, day) in days.enumerated() where (days.count - 1 - i) % every == 0 {
-      let date = Fmt.day(day)
-      let label: String
-      if i == days.count - 1 {
-        label = store.s("today")
-      } else if store.wideRange == 7 {
-        label = Fmt.weekday(date, locale: store.locale)
-      } else {
-        label = Fmt.monthDay(date, locale: store.locale)
-      }
-      labels.append((i, label))
-    }
-    return labels
+    .accessibilityHidden(true)
   }
 
   @ViewBuilder
   private func modelList(_ models: [MBModelUsage]) -> some View {
-    let rows = models
-      .map { ($0, store.wideMoney ? $0.money : $0.tokens) }
-      .filter { $0.1 > 0 }
-      .sorted { $0.1 > $1.1 }
-      .prefix(8)
-    LazyVGrid(columns: [GridItem(.flexible(), spacing: 20), GridItem(.flexible(), spacing: 20)], alignment: .leading, spacing: 2) {
-      ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-        HStack(spacing: 10) {
-          Text("\(index + 1)").font(.system(size: 11)).foregroundStyle(Palette.ink3).frame(width: 16, alignment: .leading)
-          Circle().fill(Palette.harness(row.0.harness)).frame(width: 7, height: 7)
-          Text(row.0.name).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
-          Text(format(row.1)).fontWeight(.semibold)
+    let rows = models.filter { $0.money > 0 }.sorted { $0.money > $1.money }.prefix(5)
+    VStack(spacing: 0) {
+      if rows.isEmpty {
+        emptyRow(store.s("noUsage"))
+      }
+      ForEach(Array(rows.enumerated()), id: \.offset) { _, model in
+        HStack(spacing: 8) {
+          Circle().fill(Palette.harness(model.harness)).frame(width: 6, height: 6)
+          Text(model.name).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+          Text(Fmt.money(model.money)).fontWeight(.semibold)
         }
         .font(.system(size: 12))
         .monospacedDigit()
-        .padding(.vertical, 6)
-        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 0.5) }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
       }
     }
-    .padding(.top, 14)
-    .animation(Motion.quick, value: store.wideMoney)
   }
 
   private var taskList: some View {
     let tasks = view.tasks.sorted { $0.value > $1.value }
-    return VStack(spacing: 2) {
+    return VStack(spacing: 0) {
       if tasks.isEmpty {
-        Text(store.s("noTasksToday")).font(.system(size: 12)).foregroundStyle(Palette.ink3).frame(maxWidth: .infinity, alignment: .leading)
+        emptyRow(store.s("noTasksToday"))
       }
-      ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
-        Button {
+      ForEach(tasks) { task in
+        UsageTaskRow(task: task) {
           controller.emitAndClose(["type": "open-session", "sessionId": task.sessionId])
-        } label: {
-          WideTaskRow(store: store, index: index, task: task)
         }
-        .buttonStyle(.plain)
-        .help(task.title)
       }
     }
-    .padding(.top, 14)
+  }
+
+  private func emptyRow(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 12))
+      .foregroundStyle(Palette.ink3)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 8)
+      .frame(height: 26)
   }
 }
 
-struct WideTaskRow: View {
-  @ObservedObject var store: MenubarStore
-  let index: Int
+struct UsageTaskRow: View {
   let task: MBTask
+  let action: () -> Void
+  @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    HStack(spacing: 10) {
-      Text("\(index + 1)").font(.system(size: 11)).foregroundStyle(Palette.ink3).frame(width: 16, alignment: .leading)
-      Circle().fill(Palette.harness(task.harness)).frame(width: 7, height: 7)
-      HStack(spacing: 5) {
-        if task.running { BreathingDot(animate: true) }
-        Text(task.title).lineLimit(1).truncationMode(.tail)
+    Button(action: action) {
+      HStack(spacing: 8) {
+        // A running task's harness dot breathes; one dot carries both facts.
+        if task.running {
+          BreathingDot(animate: !reduceMotion, color: Palette.harness(task.harness), size: 6)
+        } else {
+          Circle().fill(Palette.harness(task.harness)).frame(width: 6, height: 6)
+        }
+        Text(task.title).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+        Text(Fmt.money(task.value)).fontWeight(.semibold)
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      TimelineView(.periodic(from: .now, by: 1)) { context in
-        let status = task.running && task.startedAtMs != nil
-          ? store.s("running") + " " + Fmt.clock(context.date.timeIntervalSince1970 - (task.startedAtMs ?? 0) / 1000)
-          : task.idleStatus
-        Text(status + " · " + task.meta).font(.system(size: 11)).foregroundStyle(Palette.ink3).lineLimit(1)
-      }
-      Text(Fmt.money(task.value)).fontWeight(.semibold).frame(width: 60, alignment: .trailing)
+      .font(.system(size: 12))
+      .monospacedDigit()
+      .padding(.horizontal, 8)
+      .frame(height: 26)
+      .background(RoundedRectangle(cornerRadius: 8, style: .circular).fill(hovering ? Palette.ink5 : .clear))
+      .contentShape(Rectangle())
     }
-    .font(.system(size: 12))
-    .monospacedDigit()
-    .padding(.vertical, 6)
-    .contentShape(Rectangle())
-    .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 0.5) }
+    .buttonStyle(.plain)
+    .onHover { hovering in withAnimation(Motion.quick) { self.hovering = hovering } }
+    .help(task.title)
+    .accessibilityLabel("\(task.title), \(Fmt.money(task.value))")
   }
 }
 
@@ -2962,13 +2907,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var page: Page = .main
     if let index = args.firstIndex(of: "--page"), index + 1 < args.count {
       let value = args[index + 1]
-      if value == "wide" { page = .wide }
+      if value == "usage" || value == "wide" { page = .usage }
       if value == "manage" { page = .manage }
       if value.hasPrefix("detail:") { page = .detail(String(value.dropFirst(7))) }
     }
     if args.contains("--short") { controller?.forceShort = true }
     if let index = args.firstIndex(of: "--list"), index + 1 < args.count, args[index + 1] == "tasks" {
-      store.wideList = .tasks
+      store.usageList = .tasks
     }
     var snapshotPath: String?
     if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
