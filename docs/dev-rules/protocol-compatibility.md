@@ -1430,6 +1430,7 @@ Mobile 对所有预创建恢复记录（含未收到创建回包的 `reserved`�
 | DeepSeek、Qwen、Kimi、GLM | Chat Completions   | Pi 本地目录对应 provider；不使用同名聚合商条目            |
 | 腾讯 HY                   | Chat Completions   | Cindy 原有 HY3 协议声明；Pi HY4 的协议记录交叉核对        |
 | Muse Spark                | OpenAI Responses   | Cindy 原有 Muse Spark 1.2 声明；Pi 同型号协议记录交叉核对 |
+| Muse Wonder               | OpenAI Responses   | Meta Model API 官方模型页，与 Muse Spark 同用 Responses   |
 
 新增家族规则仅匹配指定 provider 路由与命名空间，不能扩到任意 BYOM 或同名聚合商。
 精确条目可覆盖家族规则。当前本地维护的 Registry 条目均有显式协议声明；
