@@ -15,8 +15,10 @@ export default class TimingSequencer extends BaseSequencer {
 
   weight(file) {
     const relative = path.relative(this.ctx.config.root, file.moduleId).replaceAll('\\', '/');
-    // Historical logs contain test/hook time only; allow for per-file loading.
-    return snapshot.fileOverheadMs + (snapshot.testDurationMs[relative] ?? 0);
+    // Include collection, DOM setup and harness preparation: on CI these cost
+    // more than the assertions. New files use a conservative loading estimate.
+    const durations = snapshot.durationMsByPlatform[process.platform] ?? snapshot.durationMsByPlatform.linux;
+    return snapshot.fileOverheadMs + (durations[relative] ?? snapshot.defaultDurationMs);
   }
 
   async shard(files) {
