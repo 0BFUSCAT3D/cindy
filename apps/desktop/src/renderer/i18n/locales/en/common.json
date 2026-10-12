@@ -2459,7 +2459,7 @@
         },
         "profile": {
           "missing": "No voiceprint yet",
-          "missingHint": "Record your voiceprint to turn this on. It takes about 20 seconds.",
+          "missingHint": "Record your voiceprint to enable filtering. It takes about 20 seconds.",
           "enrolled": "Voiceprint recorded",
           "enrolledAt": "Recorded {{date}}",
           "enroll": "Record voiceprint",
