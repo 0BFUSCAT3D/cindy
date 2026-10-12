@@ -4,13 +4,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useWorkbenchSessionPages } from '../useWorkbenchSessionPages';
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
+  getMany: vi.fn(),
   generation: 1,
   patch: null as any,
   reset: null as any,
   refresh: null as any,
   snapshot: [] as any[],
 }));
-vi.mock('@/lib/sessionService', () => ({ list: mocks.list }));
+vi.mock('@/lib/sessionService', () => ({ list: mocks.list, getMany: mocks.getMany }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => mocks.generation,
   isDataOwnerGenerationCurrent: (g: number) => g === mocks.generation,
@@ -46,6 +47,7 @@ const page = Array.from({ length: 200 }, (_, n) => ({
 }));
 beforeEach(() => {
   mocks.list.mockReset();
+  mocks.getMany.mockReset();
   mocks.generation = 1;
   mocks.snapshot = [];
 });
@@ -161,4 +163,24 @@ it('does not resurrect a sidebar deletion when an older list response arrives', 
   });
   await act(async () => resolve([page[0]]));
   expect(result.current.rows).toEqual([]);
+});
+
+it('reads exact responsibility IDs across directories and archives, excludes same-project bystanders', async () => {
+  mocks.getMany.mockResolvedValue([{ ...page[0], id: 'owned', workingDir: '/elsewhere' }]);
+  const { result, rerender } = renderHook(({ ids }) => useWorkbenchSessionPages('bot', 'archived', true, ids),
+    { initialProps: { ids: ['owned'] } });
+  await waitFor(() => expect(result.current.rows.map(r => r.id)).toEqual(['owned']));
+  expect(mocks.list).not.toHaveBeenCalled();
+  expect(mocks.getMany).toHaveBeenCalledWith(['owned']);
+  act(() => mocks.patch('unrelated', { status: 'archived' }, { ...page[1], id: 'unrelated' }));
+  expect(result.current.rows.map(r => r.id)).toEqual(['owned']);
+  rerender({ ids: [] });
+  await waitFor(() => expect(result.current.rows).toEqual([]));
+});
+it('does not infer tasks from a host without responsibility IDs', async () => {
+  const { result } = renderHook(() => useWorkbenchSessionPages('old-host', 'active', true, []));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.rows).toEqual([]);
+  expect(mocks.getMany).not.toHaveBeenCalled();
+  expect(mocks.list).not.toHaveBeenCalled();
 });

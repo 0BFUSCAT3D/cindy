@@ -152,6 +152,11 @@ export function get(id: string): Promise<Session> {
   return request;
 }
 
+/** Bounded metadata lookup for already verified task IDs. Missing rows are omitted. */
+export async function getMany(ids: string[]): Promise<Session[]> {
+  return wrap(window.electronAPI.localDb.sessions.getMany(ids));
+}
+
 /** Resolve scheduler-held ids against live, archived, deleted, and missing rows. */
 export async function resolveReferences(sessionIds: readonly string[]): Promise<SessionReference[]> {
   return wrap(window.electronAPI.localDb.sessions.resolveReferences(Array.from(sessionIds)));
