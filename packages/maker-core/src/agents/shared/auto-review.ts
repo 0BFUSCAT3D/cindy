@@ -5711,6 +5711,20 @@ function agSearchesPotentialCredential(args: readonly string[]): boolean {
   return hidden && recursive && !filenameOnly;
 }
 
+function searchFollowsSymlinks(bin: string, args: readonly string[]): boolean {
+  for (const token of args) {
+    if (token === '--') break;
+    if (bin === 'rg' && (token === '--follow' || /^-[^-]*L/.test(token))) return true;
+    if (bin === 'ag' && (token === '--follow' || /^-[^-]*f/.test(token))) return true;
+    if (bin === 'grep' || bin === 'egrep' || bin === 'fgrep') {
+      if (/^-[^-]*R/.test(token)) return true;
+      const name = token.split('=')[0];
+      if (name.startsWith('--') && '--dereference-recursive'.startsWith(name)) return true;
+    }
+  }
+  return false;
+}
+
 function rgSearchesPotentialDotenv(
   args: readonly string[],
   selectorCouldMatch: (value: string) => boolean = selectorCouldMatchCredential,
@@ -6163,10 +6177,9 @@ function gitPrintsConfig(sub: string, args: readonly string[]): boolean {
   if (sub !== 'config') return false;
   if (args.some((arg) => GIT_CONFIG_READS.test(arg))) return true;
   if (args.some((arg) => GIT_CONFIG_WRITES.has(arg))) return false;
-  // 只写了键名的是读取(`git config user.name`)，键名加取值是写入；-f / --blob 的取值不算。
+  if (args.some((arg) => arg.startsWith('-') && arg !== '--')) return true;
   const positionals = args.filter((arg) => !arg.startsWith('-')).length;
-  const fileValues = args.filter((arg) => arg === '-f' || arg === '--file' || arg === '--blob').length;
-  return positionals - fileValues <= 1;
+  return positionals <= 1;
 }
 
 /**
@@ -6204,13 +6217,14 @@ function gitConfigReadOf(
 }
 
 /**
- * 这些 Git 全局选项会在本次调用里改变配置来源或配置值。执行器的核实命令不带它们，
+ * 这些 Git 全局选项会在本次调用里改变仓库上下文、配置来源或配置值。执行器的核实命令不带它们，
  * 因而不能把核实结果套到实际调用上；分享任务直接保留凭证确认卡。
  */
 function gitUsesConfigOverride(tokens: readonly string[]): boolean {
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token === '--') break;
+    if (token === '--bare') return true;
     if (token === '-c' || token.startsWith('-c') && !token.startsWith('-C')) return true;
     if (token === '--config-env' || token.startsWith('--config-env=')) return true;
   }
@@ -6399,7 +6413,9 @@ function shellCommandReadsDotenv(
         || gitArgumentsReadDotenv(credentialArgs)) {
         return true;
       }
-      if (gitContentReadWithoutPath(invocation.sub, invocation.args)
+      const probesShowObject = opts.gitContentRead !== undefined && invocation.sub === 'show'
+        && !gitShowHasOnlySafeObjectPaths(invocation.args);
+      if ((gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject)
         && classifyGit(tokens, segment, workspaceRoots, opts) === 'auto-approve'
         && !opts.gitContentRead?.({
           sub: invocation.sub,
@@ -6417,6 +6433,7 @@ function shellCommandReadsDotenv(
     }
     if (readsCredentialInput) return true;
     const args = tokens.slice(1);
+    if (opts.sourceFileSelectors && searchFollowsSymlinks(bin, args)) return true;
     if (grepRecursesIntoPotentialDotenv(bin, args, selectorCouldMatch)) return true;
     if (bin === 'ag' && agSearchesPotentialCredential(args)) return true;
     if (bin === 'rg' && rgSearchesPotentialDotenv(args, selectorCouldMatch)) return true;

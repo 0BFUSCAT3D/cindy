@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -596,6 +597,33 @@ describe('shared provider credentials', () => {
     });
     return { executor, gate, workspace };
   }
+
+  it.runIf(posix)('keeps source-filter searches from following a link into credentials without consent', async () => {
+    fs.writeFileSync(path.join(project, '.env'), 'PRIVATE_FIXTURE=followed-link');
+    fs.symlinkSync('.env', path.join(project, 'safe.ts'));
+    const output = execFileSync(RG, ['--follow', '-g', '*.ts', 'PRIVATE_FIXTURE', '.'], { cwd: project, encoding: 'utf8' });
+    expect(output).toContain('PRIVATE_FIXTURE=followed-link');
+    const asked = vi.fn(async () => false);
+    const { gate, executor } = sharedExecutor('full', asked);
+    try {
+      const safe: ExecutorAction = { kind: 'exec', command: "rg -g '*.ts' PRIVATE_FIXTURE .", cwd: project };
+      expect(gate.authorize(safe).ok).toBe(true);
+      for (const command of [
+        "rg --follow -g '*.ts' PRIVATE_FIXTURE .",
+        "rg -nL -g '*.ts' PRIVATE_FIXTURE .",
+        "grep -R --include='*.ts' PRIVATE_FIXTURE .",
+        "grep --dereference-r --include='*.ts' PRIVATE_FIXTURE .",
+      ]) {
+        const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+        expect(gate.authorize(action).ok, command).toBe(false);
+        expect(await executor.confirm(action), command).toBe(false);
+        expect(gate.authorize(action).ok, command).toBe(false);
+      }
+      expect(asked).toHaveBeenCalledTimes(4);
+    } finally {
+      await executor.close();
+    }
+  });
 
   it('holds credential reads, writes and commands even with full access, and nothing else', () => {
     const { gate, workspace } = sharedExecutor('full');

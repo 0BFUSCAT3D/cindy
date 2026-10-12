@@ -134,6 +134,7 @@ export function isShareCredentialCommand(
   return commandSpellsOutSecret(command)
     || shellCommandReadsCredentials(opts.resolveFilePath ? command : shareCredentialText(command), workspaceRoots, {
       ...credentialCommandOptions(opts),
+      gitContentRead: () => false,
       gitConfigRead: () => false,
     });
 }

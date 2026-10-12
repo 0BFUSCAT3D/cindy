@@ -253,7 +253,27 @@ describe('GitCredentialHistory', () => {
     expect(git('ls-files', '--', '.env')).toBe('');
     expect(git('rev-list', '--all', '--reflog', '--objects')).not.toContain(blob);
     expect(git('show', blob)).toContain('PRIVATE_FIXTURE=unreachable-content');
-    for (const command of ['git show ' + blob, 'git show ' + blob + ' -- README.md']) {
+    for (const command of [
+      'git show ' + blob,
+      'git show ' + blob + ' -- README.md',
+      'git show -s ' + blob,
+      'git show --name-only ' + blob,
+    ]) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('keeps consent when implicit HEAD names a blob instead of a commit', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git show')).toBe(true);
+    write('.env', 'PRIVATE_FIXTURE=implicit-blob\n');
+    const blob = git('hash-object', '-w', '.env').trim();
+    git('update-ref', 'refs/tags/fixture-blob', blob);
+    git('symbolic-ref', 'HEAD', 'refs/tags/fixture-blob');
+    for (const args of [[], ['-s'], ['--name-only'], ['--', 'README.md']]) {
+      expect(git('show', ...args)).toContain('PRIVATE_FIXTURE=implicit-blob');
+      const command = 'git show ' + args.join(' ');
       expect(await provesSafe(history, command), command).toBe(false);
       await requiresCredentialConfirmation(history, command);
     }
@@ -300,6 +320,75 @@ describe('GitCredentialHistory', () => {
       'git grep -f .env.example -- README.md',
       'git blame --contents .env.example README.md',
     ]) {
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('keeps consent when --bare selects a different repository in the same directory', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    const bare = path.join(root, 'bare');
+    git('init', '--bare', '-q', bare);
+    for (const entry of fs.readdirSync(bare)) {
+      expect(fs.existsSync(path.join(repo, entry))).toBe(false);
+      fs.cpSync(path.join(bare, entry), path.join(repo, entry), { recursive: true });
+    }
+    write('.env', 'PRIVATE_FIXTURE=bare-history\n');
+    git('--bare', 'config', 'user.email', 'fixture@example.com');
+    git('--bare', 'config', 'user.name', 'Fixture');
+    const blob = git('--bare', 'hash-object', '-w', '.env').trim();
+    const tree = execFileSync('git', ['--bare', 'mktree'], {
+      cwd: repo, encoding: 'utf8', input: '100644 blob ' + blob + '\t.env\n',
+    }).trim();
+    const revision = git('--bare', 'commit-tree', tree, '-m', 'bare fixture').trim();
+    git('--bare', 'update-ref', 'HEAD', revision);
+    git('--bare', 'config', 'http.extraHeader', 'PRIVATE_FIXTURE=bare-config');
+    expect(git('show', 'HEAD', '--')).not.toContain('PRIVATE_FIXTURE=bare-history');
+    expect(git('--bare', 'show', 'HEAD')).toContain('PRIVATE_FIXTURE=bare-history');
+    expect(git('config', '--list')).not.toContain('PRIVATE_FIXTURE=bare-config');
+    expect(git('--bare', 'config', '--list')).toContain('PRIVATE_FIXTURE=bare-config');
+    for (const command of ['git --bare show HEAD', 'git --bare config --list']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('keeps consent for attached, abbreviated and clustered config-source flags', async () => {
+    const file = path.join(root, 'alternate.config');
+    fs.writeFileSync(file, '[http]\nextraHeader = PRIVATE_FIXTURE=alternate-config\n');
+    const blob = git('hash-object', '-w', file).trim();
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git config --list')).toBe(true);
+    for (const args of [
+      ['-f' + file, '--list'],
+      ['-lf' + file],
+      ['--fil=' + file, '--list'],
+      ['--fil', file, '--list'],
+      ['--blo=' + blob, '--list'],
+      ['--fil', file, 'http.extraHeader'],
+      ['--file', file, '--type', 'path', 'http.extraHeader'],
+      ['-f' + file, '--type', 'path', 'http.extraHeader'],
+      ['--blo', blob, 'http.extraHeader'],
+    ]) {
+      expect(git('config', ...args)).toContain('PRIVATE_FIXTURE=alternate-config');
+      const command = 'git config ' + args.map((arg) => JSON.stringify(arg)).join(' ');
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('keeps consent for implicit config reads with value-taking options and stdin sources', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git config --type path user.name')).toBe(true);
+    git('config', 'user.password', 'PRIVATE_FIXTURE=implicit-config');
+    expect(git('config', '--type', 'path', 'user.password')).toContain('PRIVATE_FIXTURE=implicit-config');
+    await requiresCredentialConfirmation(history, 'git config --type path user.password');
+    if (process.platform === 'win32') return;
+    const input = '[http]\nextraHeader = PRIVATE_FIXTURE=stdin-config\n';
+    for (const args of [['--fil', '/dev/stdin', 'http.extraHeader'], ['-f/dev/stdin', '--type', 'path', 'http.extraHeader']]) {
+      const output = execFileSync('git', ['config', ...args], { cwd: repo, input, encoding: 'utf8' });
+      expect(output).toContain('PRIVATE_FIXTURE=stdin-config');
+      const command = "printf '[http]\\nextraHeader = PRIVATE_FIXTURE=stdin-config\\n' | git config " + args.join(' ');
       await requiresCredentialConfirmation(history, command);
     }
   });

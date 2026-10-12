@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   classifyShellCommand,
@@ -4825,6 +4825,61 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
         expect(reads, command).toEqual([expect.objectContaining({ usesInheritedGitRuntime: executable === 'git' })]);
       }
     }
+  });
+
+  it('keeps sharing source searches behind consent when they follow symbolic links', () => {
+    for (const command of [
+      "rg --follow -g '*.ts' token .",
+      "rg -nL -g '*.ts' token .",
+      "grep -Rn --include='*.md' token .",
+      "grep --dereference-recursive --include='*.md' token .",
+      "grep --dereference-r --include='*.md' token .",
+      "egrep -Rn --include='*.md' token .",
+      "fgrep --dereference-r --include='*.md' token .",
+      "ag -uf token .",
+    ]) {
+      const localDecision = shellCommandReadsCredentials(command, roots);
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: false }), command).toBe(localDecision);
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true }), command).toBe(true);
+    }
+  });
+
+  it('marks sharing Git probes unsafe when --bare changes the repository context', () => {
+    for (const subcommand of ['show HEAD', 'config --list']) {
+      const command = 'git --bare ' + subcommand;
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(subcommand === 'show HEAD');
+      const collect = vi.fn(() => false);
+      expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect, gitConfigRead: collect }), command).toBe(true);
+      expect(collect, command).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        cwd: undefined,
+        priorSegmentsMayMutate: true,
+      }));
+    }
+  });
+
+  it('checks sharing implicit config reads even when flags take positional values', () => {
+    for (const command of [
+      'git config --fil /tmp/config http.extraHeader',
+      'git config -f/tmp/config --type path http.extraHeader',
+      'git config --type path user.password',
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+      const collect = vi.fn(() => false);
+      expect(shellCommandReadsCredentials(command, roots, { gitConfigRead: collect }), command).toBe(true);
+      expect(collect, command).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sub: 'config' }));
+    }
+  });
+
+  it('checks sharing git show object types even when patch output is suppressed', () => {
+    for (const command of ['git show -s deadbeef', 'git show --name-only deadbeef', 'git show --no-patch']) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+      const collect = vi.fn(() => false);
+      expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect }), command).toBe(true);
+      expect(collect, command).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sub: 'show' }));
+    }
+    const collect = vi.fn(() => false);
+    expect(shellCommandReadsCredentials('git show -s HEAD:src/app.ts', roots, { gitContentRead: collect })).toBe(false);
+    expect(collect).not.toHaveBeenCalled();
   });
 
   it('gitContentRead：git 查看内容先问调用方，并带上 git 实际运行的目录', () => {

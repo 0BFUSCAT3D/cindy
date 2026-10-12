@@ -345,6 +345,7 @@ async function revisionsAreCovered(
 ): Promise<boolean> {
   const revisions = revisionOperands(read);
   if (!revisions) return false;
+  if (read.sub === 'show' && revisions.length === 0) revisions.push('HEAD');
   for (const revision of revisions) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
@@ -382,17 +383,22 @@ async function shownFilesArgs(read: GitRead, cwd: string): Promise<string[] | nu
   const resolves = (spec: string) => git(['rev-parse', '--verify', '--quiet', spec], cwd).then(() => true, () => false);
   const separator = read.args.indexOf('--');
   let insertAt = separator < 0 ? read.args.length : separator;
+  let sawCommit = false;
   for (let index = 0; index < insertAt; index += 1) {
     const arg = read.args[index];
     if (arg.startsWith('-')) continue;
     const range = arg.split(/\.\.\.?/);
     if (range.length > 1) {
-      for (const side of objectsMustBeCommits ? range.filter(Boolean) : []) {
-        if (!(await resolves(`${side}^{commit}`))) return null;
+      for (const side of objectsMustBeCommits ? range : []) {
+        if (!(await resolves((side || 'HEAD') + '^{commit}'))) return null;
       }
+      sawCommit = objectsMustBeCommits;
       continue;
     }
-    if (await resolves(`${arg}^{commit}`)) continue;
+    if (await resolves(`${arg}^{commit}`)) {
+      sawCommit = true;
+      continue;
+    }
     if (await resolves(arg)) {
       if (objectsMustBeCommits) return null;
       continue;
@@ -400,6 +406,7 @@ async function shownFilesArgs(read: GitRead, cwd: string): Promise<string[] | nu
     // 既不是提交也不是别的对象、又是存在的路径：git 从这里起都按路径处理。
     if (await exists(path.resolve(cwd, arg))) insertAt = index;
   }
+  if (read.sub === 'show' && !sawCommit && !(await resolves('HEAD^{commit}'))) return null;
   if (!cannotTakeNextAsValue(read.args[insertAt - 1])) return null;
   return [listing.sub, ...read.args.slice(0, insertAt), ...listing.args, ...read.args.slice(insertAt)];
 }
@@ -449,7 +456,12 @@ function configEntryHoldsSecret(key: string, value: string): boolean {
  * (系统、全局、仓库，含 include)核对它会打出的那些项里没有密钥。读别的配置文件(-f / --blob)的不核对。
  */
 async function configReadProvesSafe(read: GitRead): Promise<boolean> {
-  if (!read.cwd || read.args.some((arg) => /[$`]/.test(arg) || /^(?:-f|--file|--blob)(?:=|$)/.test(arg))) return false;
+  const configSources = ['--file', '--blob', '--global', '--system', '--local', '--worktree'];
+  if (!read.cwd || read.args.some((arg) => {
+    if (/[$`]/.test(arg) || /^-[^-]*f/.test(arg)) return true;
+    const name = arg.split('=')[0].replace(/^--no-/, '--');
+    return name.startsWith('--') && name.length > 2 && configSources.some((option) => option.startsWith(name));
+  })) return false;
   const cwd = await fsp.realpath(read.cwd);
   const key = requestedConfigKey(read);
   const entries = (await git(['config', '--list', '-z'], cwd)).split('\0').filter(Boolean);
