@@ -331,6 +331,32 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
     }
   });
 
+  it('keeps an available computer when its quota read outlives the quick selection window', async () => {
+    vi.useFakeTimers();
+    try {
+      const usage = new Promise<null>(() => undefined);
+      const directory = createProviderGroupDirectory(deps({
+        readClaudeUsage: vi.fn(async () => usage),
+      }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', { strategy: 'usage', autoSwitch: true, members: [MINI] }, {
+        quickMs: 3_000,
+        enough: (r) => r.state === 'ok',
+      }).then(done);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toHaveBeenCalledTimes(1);
+      const resolved = done.mock.calls[0][0] as Array<{ state: string; pending?: boolean; claudeUsage?: unknown }>;
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0]).toMatchObject({ state: 'ok' });
+      expect(resolved[0].pending).toBeUndefined();
+      expect(resolved[0].claudeUsage).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps waiting when none of the computers read so far can take the task', async () => {
     vi.useFakeTimers();
     try {

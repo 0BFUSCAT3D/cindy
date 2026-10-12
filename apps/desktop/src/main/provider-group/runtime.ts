@@ -109,7 +109,7 @@ const directoryFacade: ProviderGroupDirectory = {
 
 const routerFacade: ProviderGroupRouter = {
   pick: (input) => runtimeForActiveOwner().router.pick(input),
-  view: (providerId) => runtimeForActiveOwner().router.view(providerId),
+  view: (providerId, model) => runtimeForActiveOwner().router.view(providerId, model),
   running: (providerId, memberKey) => runtimeForActiveOwner().router.running(providerId, memberKey),
   markCooling: (providerId, memberKey, until) => runtimeForActiveOwner().router.markCooling(providerId, memberKey, until),
   coolingUntil: (providerId, memberKey) => runtimeForActiveOwner().router.coolingUntil(providerId, memberKey),
@@ -172,7 +172,7 @@ export function getProviderGroupRemoteGroups(): ProviderGroupRemoteGroups {
     },
     pick: (ownerDeviceId, input) => client.pick(ownerDeviceId, input),
     cool: (ownerDeviceId, input) => client.cool(ownerDeviceId, input),
-    view: (ownerDeviceId, providerId) => client.view(ownerDeviceId, providerId),
+    view: (ownerDeviceId, providerId, model) => client.view(ownerDeviceId, providerId, model),
     invalidate: (ownerDeviceId) => directoryFacade.invalidate(ownerDeviceId),
   };
 }

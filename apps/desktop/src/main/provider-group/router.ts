@@ -87,7 +87,7 @@ export type ProviderGroupPickResult =
 
 export interface ProviderGroupRouter {
   pick(input: ProviderGroupPickInput): Promise<ProviderGroupPickResult>;
-  view(providerId: string): Promise<ProviderGroupView>;
+  view(providerId: string, model?: string): Promise<ProviderGroupView>;
   /** 经本组分到这台、正在运行的任务数。 */
   running(providerId: string, memberKey: string): number;
   markCooling(providerId: string, memberKey: string, until: number): void;
@@ -236,16 +236,16 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       return { kind: 'member', member: chosen.member, label: chosen.label, resolved };
     },
 
-    async view(providerId) {
+    async view(providerId, model) {
       const config = deps.readGroup(providerId);
       if (!config) return { providerId, config: null, members: [] };
       const resolved = await deps.directory.resolveMembers(providerId, config);
       return {
         providerId,
         config,
+        ...(model ? { model } : {}),
         members: resolved.map((r) => {
-          // General windows affect the whole account; a scoped model limit must not block other models.
-          const quota = providerGroupUsageState(r.claudeUsage, null, deps.now());
+          const quota = providerGroupUsageState(r.claudeUsage, model, deps.now());
           const remembered = coolingUntil(providerId, r.member.key);
           const until = quota.limited && quota.resetAtMs === null ? null
             : remembered === null ? quota.resetAtMs

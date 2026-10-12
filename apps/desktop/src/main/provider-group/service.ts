@@ -130,7 +130,7 @@ export interface ProviderGroupRemoteGroups {
     cause: ProviderGroupRemoteCoolCause;
     resetAt: number | null;
   }): Promise<void>;
-  view(ownerDeviceId: string, providerId: string): Promise<ProviderGroupView>;
+  view(ownerDeviceId: string, providerId: string, model?: string): Promise<ProviderGroupView>;
   /** 忘掉组所在电脑目录的缓存(组员失败后下次现读)。 */
   invalidate(ownerDeviceId: string): void;
 }
@@ -744,10 +744,11 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         const view = await remote.view(ownerDeviceId, providerId);
         return view.members.find((m) => m.key === memberKey)?.state === 'cooling';
       },
-      async shouldMoveAway(providerId, _config, memberKey) {
-        const view = await withTimeout(remote.view(ownerDeviceId, providerId), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
+      async shouldMoveAway(providerId, _config, memberKey, model) {
+        const view = await withTimeout(remote.view(ownerDeviceId, providerId, model), PROVIDER_GROUP_BEFORE_SEND_TIMEOUT_MS);
         const state = view?.members.find((m) => m.key === memberKey)?.state;
         if (!state) return null;
+        if (view?.model !== model && state !== 'offline' && state !== 'unavailable' && state !== 'cooling') return null;
         return state === 'offline' || state === 'unavailable' || state === 'cooling' ? { reason: state } : false;
       },
       invalidate() {

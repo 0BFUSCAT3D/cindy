@@ -244,12 +244,19 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
   async function settleQuickly(
     members: readonly ProviderGroupMember[],
     reads: readonly Promise<ResolvedProviderGroupMember>[],
+    partialReads: readonly Promise<ResolvedProviderGroupMember>[],
     options: ResolveMembersOptions,
   ): Promise<ResolvedProviderGroupMember[]> {
     const settled: Array<ResolvedProviderGroupMember | undefined> = new Array(reads.length);
+    const partial: Array<ResolvedProviderGroupMember | undefined> = new Array(partialReads.length);
     reads.forEach((read, index) => {
       void read.then((value) => {
         settled[index] = value;
+      }, () => undefined);
+    });
+    partialReads.forEach((read, index) => {
+      void read.then((value) => {
+        partial[index] = value;
       }, () => undefined);
     });
     const all = Promise.all(reads);
@@ -264,8 +271,9 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       clearTimeout(timer);
     }
     const enough = options.enough;
-    if (!enough || !settled.some((value) => value !== undefined && enough(value))) return all;
-    return members.map((member, index) => settled[index] ?? pendingMember(member));
+    if (!enough || (!settled.some((value) => value !== undefined && enough(value))
+      && !partial.some((value) => value !== undefined && enough(value)))) return all;
+    return members.map((member, index) => settled[index] ?? partial[index] ?? pendingMember(member));
   }
 
   return {
@@ -281,17 +289,22 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       // 无响应时选电脑会等它的完整网络超时，而不是三秒后继续(chatgpt-codex-connector P2,
       // PR #5792 review)。
       const deviceListPromise = needsDevices ? readDevices().catch(() => null) : Promise.resolve(null);
-      const reads = config.members.map(async (member) => {
+      const partialReads = config.members.map(async (member) => {
         const resolved = member.kind === 'local' ? await resolveLocal(member)
           : member.kind === 'share' ? await resolveShare(member)
             : await resolveDevice(member, await deviceListPromise);
+        return resolved;
+      });
+      const reads = partialReads.map(async (read, index) => {
+        const member = config.members[index]!;
+        const resolved = await read;
         if (member.kind === 'share' || resolved.state !== 'ok' || !resolved.view?.auth
           || providerWeeklyQuotaSource(resolved.view) !== 'claude' || !deps.readClaudeUsage) return resolved;
         const claudeUsage = await deps.readClaudeUsage(member).catch(() => null);
         return { ...resolved, claudeUsage };
       });
       if (options?.quickMs === undefined) return Promise.all(reads);
-      return settleQuickly(config.members, reads, options);
+      return settleQuickly(config.members, reads, partialReads, options);
     },
 
     async offlineForMs(agentDeviceId) {

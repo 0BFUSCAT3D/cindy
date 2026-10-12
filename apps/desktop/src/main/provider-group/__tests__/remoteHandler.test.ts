@@ -126,6 +126,12 @@ describe('provider-group:remote', () => {
     expect(await handleProviderGroupRemote(d, 'laptop', PICK)).toEqual({ kind: 'unavailable' });
   });
 
+  it('passes the optional model through the remote state query', async () => {
+    const d = deps();
+    await handleProviderGroupRemote(d, 'laptop', { action: 'view', providerId: 'anthropic', model: 'opus' });
+    expect(d.router.view).toHaveBeenCalledWith('anthropic', 'opus');
+  });
+
   it('cools computers for usage limits up to a bounded reset time, and briefly for other causes', async () => {
     const d = deps();
     await handleProviderGroupRemote(d, 'laptop', { action: 'cool', providerId: 'anthropic', memberKey: MINI.key, cause: 'usage-limit', resetAt: 50_000 });

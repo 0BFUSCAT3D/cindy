@@ -78,6 +78,8 @@ describe('provider-group quota routing', () => {
     expect(await h.pick(OPUS)).toMatchObject({ kind: 'member', member: { key: remote } });
     expect(await h.pick(SONNET)).toMatchObject({ kind: 'member', member: { key: 'local' } });
     expect((await h.router.view('anthropic')).members[0].state).toBe('available');
+    expect((await h.router.view('anthropic', OPUS)).members[0].state).toBe('cooling');
+    expect((await h.router.view('anthropic', SONNET)).members[0].state).toBe('available');
     expect(h.router.coolingUntil('anthropic', 'local')).toBeNull();
   });
 

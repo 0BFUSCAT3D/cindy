@@ -77,9 +77,10 @@ function harness(options: {
       return { kind: 'member' as const, member: { key, kind, agentDeviceId, providerId }, label: next.label! };
     }),
     cool: vi.fn(async () => undefined),
-    view: vi.fn(async (): Promise<ProviderGroupView> => ({
+    view: vi.fn(async (_ownerDeviceId: string, _providerId: string, model?: string): Promise<ProviderGroupView> => ({
       providerId: 'anthropic',
       config: config ?? null,
+      ...(model ? { model } : {}),
       members: (config?.members ?? []).map((m) => ({
         key: m.key,
         kind: m.kind,
@@ -474,6 +475,12 @@ describe('switching computers within a group on another computer', () => {
     const healthy = bound();
     await healthy.service.beforeSend('s1');
     expect(healthy.deps.switchAgentLocation).not.toHaveBeenCalled();
+  });
+
+  it('asks the group computer for the bound model when checking before send', async () => {
+    const h = bound();
+    await h.service.beforeSend('s1');
+    expect(h.remote.view).toHaveBeenCalledWith(OWNER, 'anthropic', MODEL);
   });
 });
 
