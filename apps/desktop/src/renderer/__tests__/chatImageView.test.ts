@@ -39,13 +39,32 @@ afterEach(() => {
 
 describe('ChatImageView', () => {
   describe.each(['user-attached', 'tool-output'] as const)('%s diagnostics', (variant) => {
+    it('keeps a loading frame until decode and resets it for a different source', () => {
+      const props = { filename: 'a.png', variant };
+      const { rerender } = render(React.createElement(ChatImageView, {
+        ...props, src: 'cindy-remote-media://m/device/a',
+      }));
+      expect(screen.getByRole('status').getAttribute('aria-label')).toBe('chat.imageMissing.loading');
+      expect(screen.getByAltText('a.png').style.display).toBe('none');
+      fireEvent.load(screen.getByAltText('a.png'));
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.getByRole('button', { name: 'a.png' }).style.display).toBe('');
+      rerender(React.createElement(ChatImageView, {
+        ...props, src: 'cindy-remote-media://m/device/b',
+      }));
+      expect(screen.getByRole('status')).toBeTruthy();
+      expect(screen.getByAltText('a.png').style.display).toBe('none');
+      fireEvent.load(screen.getByAltText('a.png'));
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
     it.each(['xdt-image://images/a.png', 'cindy-media://blobs/a.png'])(
       'confirms missing bytes via preload for %s',
       async (src) => {
         const read = vi.fn().mockRejectedValue(new Error('[NOT_FOUND] Image file not found'));
         vi.stubGlobal('electronAPI', { readCachedImageAsBase64: read });
         render(React.createElement(ChatImageView, { src, filename: 'a.png', variant }));
-        fireEvent.error(screen.getByRole('button', { name: 'a.png' }));
+        fireEvent.error(screen.getByAltText('a.png'));
         await waitFor(() => expect(screen.getByTestId('image-failure').dataset.status).toBe('missing'));
         expect(read).toHaveBeenCalledExactlyOnceWith({ url: src });
       },
@@ -59,11 +78,11 @@ describe('ChatImageView', () => {
       render(React.createElement(ChatImageView, {
         src: 'cindy-media://blobs/a.png', filename: 'a.png', variant,
       }));
-      fireEvent.error(screen.getByRole('button', { name: 'a.png' }));
+      fireEvent.error(screen.getByAltText('a.png'));
       expect(screen.getByTestId('image-failure').dataset.status).toBe('unavailable');
       fireEvent(window, new Event(event));
-      expect(screen.getByRole('button', { name: 'a.png' })).toBeTruthy();
-      fireEvent.error(screen.getByRole('button', { name: 'a.png' }));
+      expect(screen.getByAltText('a.png')).toBeTruthy();
+      fireEvent.error(screen.getByAltText('a.png'));
       await act(async () => { reject(new Error('[NOT_FOUND] Stale result')); });
       expect(read).toHaveBeenCalledTimes(2);
       expect(screen.getByTestId('image-failure').dataset.status).toBe('unavailable');
@@ -76,11 +95,11 @@ describe('ChatImageView', () => {
     vi.stubGlobal('electronAPI', { readCachedImageAsBase64: read });
     const props = { filename: 'a.png', variant: 'tool-output' as const };
     const { rerender } = render(React.createElement(ChatImageView, { ...props, src: 'xdt-image://images/a.png' }));
-    fireEvent.error(screen.getByRole('button', { name: 'a.png' }));
+    fireEvent.error(screen.getByAltText('a.png'));
     const remote = 'cindy-remote-media://m/device/a';
     rerender(React.createElement(ChatImageView, { ...props, src: remote }));
     await act(async () => { reject(new Error('[NOT_FOUND] Stale local result')); });
-    expect(screen.getByRole('button', { name: 'a.png' }).getAttribute('src')).toBe(remote);
+    expect(screen.getByAltText('a.png').getAttribute('src')).toBe(remote);
     expect(read).toHaveBeenCalledTimes(1);
   });
 
@@ -92,12 +111,13 @@ describe('ChatImageView', () => {
       src: 'cindy-remote-media://m/device/a', filename: 'a.png', variant: 'tool-output',
     }));
     for (const delay of [2000, 4000, 8000]) {
-      fireEvent.error(screen.getByRole('button', { name: 'a.png' }));
+      fireEvent.error(screen.getByAltText('a.png'));
       expect(screen.getByTestId('image-failure').dataset.status).toBe('unavailable');
       act(() => vi.advanceTimersByTime(delay));
-      expect(screen.getByRole('button', { name: 'a.png' })).toBeTruthy();
+      expect(screen.getByAltText('a.png')).toBeTruthy();
+      expect(screen.getByRole('status')).toBeTruthy();
     }
-    fireEvent.error(screen.getByRole('button', { name: 'a.png' }));
+    fireEvent.error(screen.getByAltText('a.png'));
     act(() => vi.advanceTimersByTime(60000));
     expect(screen.getByTestId('image-failure').dataset.status).toBe('unavailable');
     expect(read).not.toHaveBeenCalled();
@@ -113,7 +133,7 @@ describe('ChatImageView', () => {
       }),
     );
 
-    fireEvent.error(screen.getByRole('button', { name: 'shot.png' }));
+    fireEvent.error(screen.getByAltText('shot.png'));
     expect(screen.queryByRole('button', { name: 'shot.png' })).toBeNull();
     expect(screen.getByText('shot.png')).toBeTruthy();
 
@@ -126,7 +146,7 @@ describe('ChatImageView', () => {
       }),
     );
 
-    const image = screen.getByRole('button', { name: 'shot.png' });
+    const image = screen.getByAltText('shot.png');
     expect(image.getAttribute('src')).toBe('cindy-remote-media://m/device/shot');
   });
 
@@ -147,6 +167,7 @@ describe('ChatImageView', () => {
         modelFile: { provider: 'cindy', url: 'cindy-media://blobs/' + 'a'.repeat(64) + '.glb', format },
       }),
     );
+    fireEvent.load(screen.getByAltText('preview.png'));
     fireEvent.click(screen.getByRole('button', { name: 'preview.png' }));
     expect(screen.queryByTestId('model-lightbox') !== null).toBe(opensModel);
   });
@@ -166,6 +187,7 @@ describe('ChatImageView', () => {
         },
       }),
     );
+    fireEvent.load(screen.getByAltText('preview.png'));
     fireEvent.click(screen.getByRole('button', { name: 'preview.png' }));
     expect(screen.queryByTestId('model-lightbox')).not.toBeNull();
   });
@@ -173,6 +195,7 @@ describe('ChatImageView', () => {
     render(React.createElement(ChatImageView, {
       src: 'xdt-image://control/keyboard.png', filename: 'keyboard.png', variant: 'tool-output',
     }));
+    fireEvent.load(screen.getByAltText('keyboard.png'));
     const trigger = screen.getByRole('button', { name: 'keyboard.png' });
     trigger.focus();
     fireEvent.keyDown(trigger, { key });
