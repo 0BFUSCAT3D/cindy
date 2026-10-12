@@ -270,7 +270,7 @@ describe('shared production image interactions', () => {
     expect(screen.getByRole('status').getAttribute('aria-label')).toBe(label('chat.imageMissing.loading'));
     expect(img.style.display).toBe('none');
     fireEvent.load(img);
-    expect(screen.queryByRole('status')).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
     expect(img.style.display).toBe('');
     await copyFromMenu(img);
     await waitFor(() => expect(nativeCopy).toHaveBeenCalled());

@@ -39,14 +39,21 @@ afterEach(() => {
 
 describe('ChatImageView', () => {
   describe.each(['user-attached', 'tool-output'] as const)('%s diagnostics', (variant) => {
-    it('keeps a loading frame until decode and resets it for a different source', () => {
+    it('keeps a loading frame until decode and resets it for a different source', async () => {
       const props = { filename: 'a.png', variant };
       const { rerender } = render(React.createElement(ChatImageView, {
         ...props, src: 'cindy-remote-media://m/device/a',
       }));
       expect(screen.getByRole('status').getAttribute('aria-label')).toBe('chat.imageMissing.loading');
       expect(screen.getByAltText('a.png').style.display).toBe('none');
-      fireEvent.load(screen.getByAltText('a.png'));
+      const image = screen.getByAltText('a.png') as HTMLImageElement;
+      let finishDecode!: () => void;
+      image.decode = vi.fn(() => new Promise<void>((resolve) => { finishDecode = resolve; }));
+      fireEvent.load(image);
+      expect(image.decode).toHaveBeenCalledOnce();
+      expect(screen.getByRole('status')).toBeTruthy();
+      expect(image.style.display).toBe('none');
+      await act(async () => { finishDecode(); });
       expect(screen.queryByRole('status')).toBeNull();
       expect(screen.getByRole('button', { name: 'a.png' }).style.display).toBe('');
       rerender(React.createElement(ChatImageView, {
@@ -56,6 +63,41 @@ describe('ChatImageView', () => {
       expect(screen.getByAltText('a.png').style.display).toBe('none');
       fireEvent.load(screen.getByAltText('a.png'));
       expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it.each(['resolve', 'reject'] as const)('ignores a late decode %s after changing source', async (outcome) => {
+      const props = { filename: 'a.png', variant };
+      const { rerender } = render(React.createElement(ChatImageView, {
+        ...props, src: 'cindy-remote-media://m/device/a',
+      }));
+      const oldImage = screen.getByAltText('a.png') as HTMLImageElement;
+      let finishDecode!: () => void;
+      oldImage.decode = vi.fn(() => new Promise<void>((resolve, reject) => {
+        finishDecode = outcome === 'resolve' ? resolve : () => reject(new Error('Stale decode'));
+      }));
+      fireEvent.load(oldImage);
+      rerender(React.createElement(ChatImageView, {
+        ...props, src: 'cindy-remote-media://m/device/b',
+      }));
+      await act(async () => { finishDecode(); });
+      expect(screen.queryByTestId('image-failure')).toBeNull();
+      expect(screen.getByRole('status')).toBeTruthy();
+      expect(screen.getByAltText('a.png').getAttribute('src')).toBe('cindy-remote-media://m/device/b');
+      fireEvent.load(screen.getByAltText('a.png'));
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it('routes decode failure through the existing image diagnostics', async () => {
+      const read = vi.fn().mockRejectedValue(new Error('[NOT_FOUND] Image file not found'));
+      vi.stubGlobal('electronAPI', { readCachedImageAsBase64: read });
+      const src = 'cindy-media://blobs/a.png';
+      render(React.createElement(ChatImageView, { src, filename: 'a.png', variant }));
+      const image = screen.getByAltText('a.png') as HTMLImageElement;
+      image.decode = vi.fn().mockRejectedValue(new Error('Decode failed'));
+      fireEvent.load(image);
+      await waitFor(() => expect(screen.getByTestId('image-failure').dataset.status).toBe('missing'));
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(read).toHaveBeenCalledExactlyOnceWith({ url: src });
     });
 
     it.each(['xdt-image://images/a.png', 'cindy-media://blobs/a.png'])(

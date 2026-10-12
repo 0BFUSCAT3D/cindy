@@ -32,7 +32,23 @@ function ImageLoad({ onLoad, style, className, ...props }: ComponentProps<'img'>
         )}
         style={loaded ? style : { ...style, display: 'none' }}
         onLoad={(event) => {
-          setLoaded(true);
+          const image = event.currentTarget;
+          if (typeof image.decode === 'function') {
+            void image.decode().then(
+              () => {
+                if (image.isConnected) setLoaded(true);
+              },
+              () => {
+                // Reuse the existing error/retry path; a replaced image must not
+                // report a late decode failure against the new source.
+                if (!image.isConnected) return;
+                setLoaded(true);
+                image.dispatchEvent(new Event('error'));
+              },
+            );
+          } else {
+            setLoaded(true);
+          }
           onLoad?.(event);
         }}
       />
