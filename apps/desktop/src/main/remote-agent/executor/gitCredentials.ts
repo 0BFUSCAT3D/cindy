@@ -49,16 +49,16 @@ const PSEUDO_REF = /(?:ORIG|FETCH|MERGE|CHERRY_PICK|REVERT|REBASE|BISECT)_HEAD|A
 const GIT_ENV_ASSIGNMENT = /\bGIT_[A-Z0-9_]*\s*=/i;
 const GIT_CONFIG_ENV_ASSIGNMENT = /\b(?:HOME|XDG_CONFIG_HOME)\s*=/i;
 /** 列出历史里每个路径(每个路径至少在某次提交里以新增出现)。 */
-const HISTORY_PATHS = ['log', '-m', '--root', '--no-renames', '--diff-filter=A', '--name-only', '--format=', '-z', '--no-show-signature'];
+const HISTORY_PATHS = ['log', '-m', '--root', '--no-renames', '--diff-filter=A', '--name-only', '--format=', '-z', '--no-show-signature', '--no-textconv', '--no-ext-diff'];
 /**
  * 按原命令只列出会显示的文件(插在原有选项之后，后出现的输出格式生效，见 shownFilesArgs)。合并提交按
  * 每个父提交分别列、不认改名，只会多列。git grep 的选项不能放在搜索词之后，不在内。
  */
 const SHOWN_FILES: Readonly<Record<string, { sub: string; args: readonly string[] }>> = {
-  diff: { sub: 'diff', args: ['--name-only', '--no-renames', '--no-relative', '--no-color', '-z'] },
-  show: { sub: 'show', args: ['--name-only', '--format=', '-m', '--no-renames', '--no-relative', '--no-color', '-z'] },
-  log: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z'] },
-  whatchanged: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z'] },
+  diff: { sub: 'diff', args: ['--name-only', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
+  show: { sub: 'show', args: ['--name-only', '--format=', '-m', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
+  log: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
+  whatchanged: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
 };
 /** 会在文件名列表里夹进别的内容的输出选项：碰到就不这样核对。 */
 const MIXED_OUTPUT_OPTION = /^--(?:graph|stat|numstat|shortstat|dirstat|summary|raw|name-|check|compact-summary|patch-with|line-prefix)/;
@@ -70,7 +70,7 @@ const VALUELESS_OPTIONS: ReadonlySet<string> = new Set([
   '-p', '-u', '--patch', '-W', '--function-context', '--cached', '--staged', '--merge-base', '-R',
   '-a', '--text', '-w', '-b', '--ignore-all-space', '--ignore-space-change', '--ignore-blank-lines',
   '--minimal', '--patience', '--histogram', '--word-diff', '--color-words', '--color', '--no-color',
-  '--no-ext-diff', '--no-prefix', '--full-index', '--binary', '-M', '-C', '-B', '--find-renames', '--no-renames',
+  '--no-ext-diff', '--no-textconv', '--no-prefix', '--full-index', '--binary', '-M', '-C', '-B', '--find-renames', '--no-renames',
   '-m', '-c', '--cc', '--root', '--follow', '--full-diff', '--all', '--branches', '--tags', '--remotes',
   '--no-merges', '--merges', '--first-parent', '--reverse', '--oneline', '--decorate', '--no-decorate',
   '--abbrev-commit', '--source', '--left-right', '--date-order', '--topo-order', '-g', '--walk-reflogs',
@@ -476,6 +476,27 @@ async function configReadProvesSafe(read: GitRead): Promise<boolean> {
   });
 }
 
+async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
+  if (!['diff', 'show', 'log', 'whatchanged', 'status'].includes(read.sub)) return true;
+  const disabled = new Set<string>();
+  for (const arg of read.args) {
+    if (arg !== '--no-textconv' && arg !== '--no-ext-diff') break;
+    disabled.add(arg);
+  }
+  const textconvEnabled = !disabled.has('--no-textconv');
+  const externalDiffEnabled = !disabled.has('--no-ext-diff');
+  if (externalDiffEnabled && process.env.GIT_EXTERNAL_DIFF !== undefined) return false;
+  if (!textconvEnabled && !externalDiffEnabled) return true;
+  const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs })).split('\0');
+  return !entries.some((entry) => {
+    const newline = entry.indexOf('\n');
+    if (newline < 0 || !entry.slice(newline + 1).trim()) return false;
+    const key = entry.slice(0, newline);
+    return (textconvEnabled && /^diff\..+\.textconv$/i.test(key))
+      || (externalDiffEnabled && (/^diff\..+\.command$/i.test(key) || key.toLowerCase() === 'diff.external'));
+  });
+}
+
 export class GitCredentialHistory {
   private readonly repos = new Map<string, RepoEntry>();
 
@@ -484,6 +505,8 @@ export class GitCredentialHistory {
   /** 这些 git 调用(credentials.ts shareCredentialGitReads 的结果)在本机核实后都读不到、打不出凭证。 */
   async provesSafe(command: string, reads: readonly GitRead[], signal?: AbortSignal): Promise<boolean> {
     if (reads.length === 0 || GIT_ENV_ASSIGNMENT.test(command) || GIT_CONFIG_ENV_ASSIGNMENT.test(command)) return false;
+    if (['BASH_ENV', 'ENV', 'ZDOTDIR'].some((key) => process.env[key] !== undefined)
+      || Object.keys(process.env).some((key) => key.startsWith('BASH_FUNC_'))) return false;
     const searchPath = process.env.PATH;
     if (!searchPath || searchPath.split(path.delimiter).some((entry) => !path.isAbsolute(entry))) return false;
     if (reads.some((read) => read.usesInheritedGitRuntime !== true)) return false;
@@ -515,6 +538,8 @@ export class GitCredentialHistory {
       timeoutMs: replacementTimeout,
     });
     if (replacements.trim()) return false;
+    const helperTimeout = deadline - Date.now();
+    if (helperTimeout <= 0 || !(await diffHelpersCannotRun(read, cwd, helperTimeout))) return false;
     // 指向仓库外的文件时 git diff 不经仓库、直接比较文件。
     if (read.sub === 'diff' && read.args.some((arg) => !arg.startsWith('-') && isOutside(top, path.resolve(cwd, arg)))) {
       return false;

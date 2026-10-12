@@ -6398,7 +6398,11 @@ function shellCommandReadsDotenv(
 
     if (bin === 'git') {
       const invocation = parseGitInvocation(tokens, workspaceRoots, opts);
-      if (!invocation?.sub || !SAFE_GIT_SUBCOMMANDS.has(invocation.sub)) continue;
+      if (!invocation?.sub || !SAFE_GIT_SUBCOMMANDS.has(invocation.sub)) {
+        if (sharesGitCredentialChecks && !invocation?.sub
+          && tokens.slice(1).some((arg) => /^(?:diff|show|log|whatchanged|grep|cat-file|status|blame)$/.test(arg))) return true;
+        continue;
+      }
       const credentialArgs = invocation.args.map(credentialText);
       if (readsCredentialInput) return true;
       if (invocation.sub === 'grep') {
@@ -6415,9 +6419,12 @@ function shellCommandReadsDotenv(
       }
       const probesShowObject = opts.gitContentRead !== undefined && invocation.sub === 'show'
         && !gitShowHasOnlySafeObjectPaths(invocation.args);
-      if ((gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject)
-        && classifyGit(tokens, segment, workspaceRoots, opts) === 'auto-approve'
-        && !opts.gitContentRead?.({
+      const readsContent = gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject;
+      const checksContent = readsContent || (sharesGitCredentialChecks
+        && /^(?:diff|show|log|whatchanged|grep|cat-file|status|blame)$/.test(invocation.sub));
+      const canProbe = checksContent && classifyGit(tokens, segment, workspaceRoots, opts) === 'auto-approve';
+      if (checksContent && sharesGitCredentialChecks && !canProbe) return true;
+      if (readsContent && canProbe && !opts.gitContentRead?.({
           sub: invocation.sub,
           args: invocation.args,
           cwd: configOverride ? undefined : gitInvocationCwd(tokens, segmentCwds[segmentIndex]),

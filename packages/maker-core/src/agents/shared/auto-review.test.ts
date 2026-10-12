@@ -4857,6 +4857,24 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     }
   });
 
+  it('keeps sharing content reads behind consent when Git parsing or readonly classification fails', () => {
+    for (const command of [
+      'git --git-dir=/repo/.git --work-tree=/repo diff --cached',
+      'git diff --ext-diff --cached',
+      'git diff --textconv --cached',
+      'git diff --ext-diff -- README.md',
+      'git show --textconv HEAD:README.md',
+      'git cat-file --textconv HEAD:README.md',
+      'git log --name-only --ext-diff HEAD',
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+      const collect = vi.fn(() => true);
+      expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect, gitConfigRead: collect }), command).toBe(true);
+      expect(collect, command).not.toHaveBeenCalled();
+    }
+    expect(shellCommandReadsCredentials('git --version', roots, { gitContentRead: () => true, gitConfigRead: () => true })).toBe(false);
+  });
+
   it('checks sharing implicit config reads even when flags take positional values', () => {
     for (const command of [
       'git config --fil /tmp/config http.extraHeader',

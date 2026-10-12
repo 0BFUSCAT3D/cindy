@@ -386,9 +386,9 @@ describe('GitCredentialHistory', () => {
     if (process.platform === 'win32') return;
     const input = '[http]\nextraHeader = PRIVATE_FIXTURE=stdin-config\n';
     for (const args of [['--fil', '/dev/stdin', 'http.extraHeader'], ['-f/dev/stdin', '--type', 'path', 'http.extraHeader']]) {
-      const output = execFileSync('git', ['config', ...args], { cwd: repo, input, encoding: 'utf8' });
+      const command = 'printf ' + JSON.stringify(input) + ' | git config ' + args.join(' ');
+      const output = execFileSync('sh', ['-c', command], { cwd: repo, encoding: 'utf8' });
       expect(output).toContain('PRIVATE_FIXTURE=stdin-config');
-      const command = "printf '[http]\\nextraHeader = PRIVATE_FIXTURE=stdin-config\\n' | git config " + args.join(' ');
       await requiresCredentialConfirmation(history, command);
     }
   });
@@ -397,12 +397,78 @@ describe('GitCredentialHistory', () => {
     const history = new GitCredentialHistory();
     git('config', 'http.extraHeader', 'PRIVATE_FIXTURE=regexp-query');
     expect(await provesSafe(history, 'git config --get user.name')).toBe(true);
-    for (const option of ['--get-r', '--get-reg']) {
+    for (const option of ['--get-r', '--get-re', '--get-reg']) {
       expect(git('config', option, '.*')).toContain('PRIVATE_FIXTURE=regexp-query');
       const command = 'git config ' + option + " '.*'";
       expect(await provesSafe(history, command), command).toBe(false);
       await requiresCredentialConfirmation(history, command);
     }
+  });
+
+  it('keeps consent for Git reads that cannot enter the readonly probe path', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git diff --cached')).toBe(true);
+    write('.env', 'PRIVATE_FIXTURE=non-probed-read\n');
+    git('add', '.env');
+    for (const args of [
+      ['--literal-pathspecs', 'diff', '--cached'],
+      ['--git-dir=' + path.join(repo, '.git'), '--work-tree=' + repo, 'diff', '--cached'],
+      ['diff', '--ext-diff', '--cached'],
+      ['diff', '--textconv', '--cached'],
+      ['status', '-v'],
+    ]) {
+      expect(git(...args)).toContain('PRIVATE_FIXTURE=non-probed-read');
+      await requiresCredentialConfirmation(history, 'git ' + args.map((arg) => JSON.stringify(arg)).join(' '));
+    }
+  });
+
+  it('keeps consent for configured textconv and external diff helpers', async () => {
+    const history = new GitCredentialHistory();
+    const credentialFile = path.join(root, '.env');
+    const helperFile = path.join(root, 'diff-helper.cjs');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=diff-helper\n');
+    fs.writeFileSync(helperFile, 'const fs = require("node:fs");\n'
+      + 'process.stdout.write(fs.readFileSync(' + JSON.stringify(credentialFile) + '));\n'
+      + 'process.stdout.write(fs.readFileSync(process.argv[2], "utf8").replaceAll("\\0", ""));\n');
+    const helper = [process.execPath, helperFile].map((file) => JSON.stringify(file.split(path.sep).join('/'))).join(' ');
+    write('.gitattributes', 'data.bin diff=shared\n');
+    write('data.bin', 'old\0bytes\n');
+    git('add', '.gitattributes', 'data.bin');
+    git('commit', '-q', '--no-gpg-sign', '-m', 'binary data');
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    git('config', 'diff.shared.textconv', helper);
+    for (const args of [['show', 'HEAD'], ['log', '-p']]) {
+      expect(git(...args)).toContain('PRIVATE_FIXTURE=diff-helper');
+      const command = 'git ' + args.join(' ');
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+    write('data.bin', 'new\0bytes\n');
+    expect(git('diff')).toContain('PRIVATE_FIXTURE=diff-helper');
+    await requiresCredentialConfirmation(history, 'git diff');
+    git('add', 'data.bin');
+    expect(git('diff', '--cached')).toContain('PRIVATE_FIXTURE=diff-helper');
+    await requiresCredentialConfirmation(history, 'git diff --cached');
+    expect(git('show', '--textconv', 'HEAD:data.bin')).toContain('PRIVATE_FIXTURE=diff-helper');
+    await requiresCredentialConfirmation(history, 'git show --textconv HEAD:data.bin');
+    expect(await provesSafe(history, 'git log -p -S --no-textconv')).toBe(false);
+    expect(git('show', '--no-textconv', 'HEAD')).not.toContain('PRIVATE_FIXTURE=diff-helper');
+    expect(await provesSafe(history, 'git show --no-textconv HEAD')).toBe(true);
+    git('config', '--unset', 'diff.shared.textconv');
+    git('config', 'diff.shared.command', helper);
+    expect(git('diff', '--cached')).toContain('PRIVATE_FIXTURE=diff-helper');
+    await requiresCredentialConfirmation(history, 'git diff --cached');
+    expect(await provesSafe(history, 'git diff --no-ext-diff --cached')).toBe(true);
+    git('config', '--unset', 'diff.shared.command');
+    git('config', 'diff.external', helper);
+    expect(git('diff', '--cached')).toContain('PRIVATE_FIXTURE=diff-helper');
+    await requiresCredentialConfirmation(history, 'git diff --cached');
+    expect(await provesSafe(history, 'git diff --no-ext-diff --cached')).toBe(true);
+    git('config', '--unset', 'diff.external');
+    vi.stubEnv('GIT_EXTERNAL_DIFF', helper);
+    expect(git('diff', '--cached')).toContain('PRIVATE_FIXTURE=diff-helper');
+    await requiresCredentialConfirmation(history, 'git diff --cached');
+    expect(await provesSafe(history, 'git diff --no-ext-diff --cached')).toBe(true);
   });
 
   it('does not exempt a git read after an earlier shell segment may change state', async () => {
@@ -533,6 +599,34 @@ describe('GitCredentialHistory', () => {
     vi.stubEnv('PATH', '.' + path.delimiter + process.env.PATH);
     expect(await provesSafe(history, command)).toBe(false);
     await requiresCredentialConfirmation(history, command);
+  });
+
+  it('keeps confirmation for inherited shell startup hooks and exported functions', async () => {
+    const history = new GitCredentialHistory();
+    const startupFile = path.join(root, 'bash-env');
+    const credentialFile = path.join(root, '.env');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=shell-startup\n');
+    const payload = 'cat ' + JSON.stringify(credentialFile.split(path.sep).join('/'));
+    fs.writeFileSync(startupFile, 'git() { ' + payload + '; }\n');
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    vi.stubEnv('BASH_ENV', startupFile);
+    if (process.platform !== 'win32') {
+      expect(execFileSync('/bin/bash', ['-c', 'git diff'], { cwd: repo, encoding: 'utf8' }))
+        .toContain('PRIVATE_FIXTURE=shell-startup');
+    }
+    for (const command of ['git diff', 'git config --list']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+    vi.stubEnv('BASH_ENV', undefined);
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    for (const key of ['ENV', 'ZDOTDIR', 'BASH_FUNC_git%%']) {
+      vi.stubEnv(key, key.startsWith('BASH_FUNC_') ? '() { ' + payload + '; }' : startupFile);
+      expect(await provesSafe(history, 'git diff'), key).toBe(false);
+      await requiresCredentialConfirmation(history, 'git diff');
+      vi.stubEnv(key, undefined);
+    }
+    expect(await provesSafe(history, 'git diff')).toBe(true);
   });
 
   it('keeps asking where the scan does not reach', async () => {
