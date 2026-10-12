@@ -2196,6 +2196,9 @@ struct UsagePage: View {
   let view: MBView
   let controller: StatusController
   @State private var selection: Int?
+  @State private var offset: CGFloat = 0
+  @State private var contentHeight: CGFloat = 0
+  @State private var headerHeight: CGFloat = 0
 
   private var scope: String { view.settings.scope }
   private var scopeData: MBScopeData? { view.usage.scopes[scope] ?? view.usage.scopes["all"] }
@@ -2207,56 +2210,64 @@ struct UsagePage: View {
     let daily = Array((data?.daily ?? []).suffix(range))
     let byHarness = harnessTotals(daily)
     let total = byHarness.reduce(0, +)
-    ScrollView(.vertical, showsIndicators: false) {
-      VStack(alignment: .leading, spacing: 0) {
-        header
-        summary(days: days, daily: daily, total: total)
-          .padding(EdgeInsets(top: 8, leading: 18, bottom: 0, trailing: 18))
-        UsageChart(days: days, daily: daily, money: true, compact: false, selection: $selection)
-          .frame(height: store.short ? 84 : 100)
-          .padding(EdgeInsets(top: 12, leading: 18, bottom: 0, trailing: 18))
-        dateRange(days: days)
-          .padding(EdgeInsets(top: 4, leading: 18, bottom: 0, trailing: 18))
-        harnessSplit(byHarness: byHarness, total: total)
-          .padding(EdgeInsets(top: 14, leading: 18, bottom: 0, trailing: 18))
-        Picker("", selection: $store.usageList) {
-          Text(store.s("listModels", ["n": String(range)])).tag(UsageList.models)
-          Text(store.s("listTasks")).tag(UsageList.tasks)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
-        .fixedSize()
-        .padding(EdgeInsets(top: 16, leading: 14, bottom: 4, trailing: 14))
-        Group {
-          if store.usageList == .models {
-            modelList(data?.models[String(range)] ?? [])
-          } else {
-            taskList
+    VStack(spacing: 0) {
+      header
+        .background(GeometryReader { g in
+          Color.clear
+            .onAppear { headerHeight = g.size.height }
+            .onChange(of: g.size.height) { _, h in headerHeight = h }
+        })
+      EdgeLine(visible: offset > 2)
+      // Only the body scrolls, so back and the range switch stay in reach on long task lists.
+      TrackedScroll(offset: $offset, contentHeight: $contentHeight) {
+        VStack(alignment: .leading, spacing: 0) {
+          summary(days: days, daily: daily, total: total)
+            .padding(.horizontal, 18)
+          UsageChart(days: days, daily: daily, money: true, compact: false, selection: $selection)
+            .frame(height: store.short ? 84 : 100)
+            .padding(EdgeInsets(top: 12, leading: 18, bottom: 0, trailing: 18))
+          dateRange(days: days)
+            .padding(EdgeInsets(top: 4, leading: 18, bottom: 0, trailing: 18))
+          harnessSplit(byHarness: byHarness, total: total)
+            .padding(EdgeInsets(top: 14, leading: 18, bottom: 0, trailing: 18))
+          Picker("", selection: $store.usageList) {
+            Text(store.s("listModels", ["n": String(range)])).tag(UsageList.models)
+            Text(store.s("listTasks")).tag(UsageList.tasks)
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .controlSize(.small)
+          .fixedSize()
+          .padding(EdgeInsets(top: 16, leading: 14, bottom: 4, trailing: 14))
+          Group {
+            if store.usageList == .models {
+              modelList(data?.models[String(range)] ?? [])
+            } else {
+              taskList
+            }
+          }
+          .padding(.horizontal, 10)
+          if let note = data?.note, !note.isEmpty {
+            Text(note)
+              .font(.system(size: 10.5))
+              .foregroundStyle(Palette.ink3)
+              .lineSpacing(2)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(EdgeInsets(top: 12, leading: 18, bottom: 16, trailing: 18))
           }
         }
-        .padding(.horizontal, 10)
-        if let note = data?.note, !note.isEmpty {
-          Text(note)
-            .font(.system(size: 10.5))
-            .foregroundStyle(Palette.ink3)
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(EdgeInsets(top: 12, leading: 18, bottom: 16, trailing: 18))
-        }
+        .frame(width: store.narrowWidth, alignment: .leading)
       }
-      .frame(width: store.narrowWidth, alignment: .leading)
-      .background(GeometryReader { inner in
-        Color.clear
-          .onAppear { report(inner.size.height) }
-          .onChange(of: inner.size.height) { _, height in report(height) }
-      })
     }
+    .onChange(of: contentHeight) { report() }
+    .onChange(of: headerHeight) { report() }
     .onChange(of: store.usageRange) { selection = nil }
   }
 
-  private func report(_ height: CGFloat) {
-    let natural = (height + 1).rounded(.up)
+  /// Sizes the panel to the whole page; it only scrolls when the screen is shorter.
+  private func report() {
+    guard contentHeight > 0 else { return }
+    let natural = (headerHeight + contentHeight + 1).rounded(.up)
     if abs(store.usageContentHeight - natural) > 0.5 { store.usageContentHeight = natural }
   }
 
@@ -2275,7 +2286,7 @@ struct UsagePage: View {
       .controlSize(.small)
       .fixedSize()
     }
-    .padding(EdgeInsets(top: 12, leading: 10, bottom: 0, trailing: 14))
+    .padding(EdgeInsets(top: 12, leading: 10, bottom: 8, trailing: 14))
   }
 
   /// The total, or the hovered day's amount and its harness split.
