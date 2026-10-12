@@ -9309,6 +9309,25 @@
       "skillUpdated": "스킬 업데이트: {{title}}"
     },
     "voiceMode": {
+      "voiceId": "음성 ID",
+      "manualVoice": "음성 ID 직접 입력",
+      "voiceCatalogHint": "음성을 선택한 후 미리 들어 현재 모델에서 사용할 수 있는지 확인하세요.",
+      "refreshVoices": "음성 목록 새로고침",
+      "voicesLoading": "음성 불러오는 중…",
+      "voicesError": "음성을 불러오지 못했습니다. 다시 시도하거나 음성 ID를 입력하세요.",
+      "voicesReference": "이 모델의 OpenAI 참고 음성입니다. 호환 서비스에서 지원하는 음성은 다를 수 있습니다.",
+      "voicesTruncated": "음성 목록의 일부만 표시합니다. 목록에 없는 음성은 ID를 입력하세요.",
+      "voicesManual": "이 인터페이스에는 음성 목록이 없습니다. 음성 ID를 입력하세요.",
+      "preview": "미리 듣기",
+      "stopPreview": "미리 듣기 중지",
+      "previewText": "안녕하세요, 제 목소리입니다. 함께 이야기하게 되어 반갑습니다.",
+      "previewStatus": {
+        "idle": "미리 듣기는 선택한 모델을 사용하며 사용 요금이 발생할 수 있습니다.",
+        "preparing": "미리 듣기 음성 생성 중…",
+        "playing": "미리 듣는 중…",
+        "complete": "미리 듣기를 완료했습니다.",
+        "error": "미리 듣기에 실패했습니다. 인터페이스, 모델 접근 권한, 음성 ID를 확인한 후 다시 시도하세요."
+      },
       "finishBeforeDictation": "음성 모드를 종료한 후 받아쓰기를 시작하세요.",
       "title": "음성 모드",
       "close": "음성 모드 닫기",

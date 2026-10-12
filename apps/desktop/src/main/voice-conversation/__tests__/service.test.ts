@@ -5,6 +5,94 @@ import { hasVoiceConversationLease } from '../lease.js';
 const active: VoiceConversationService[] = [];
 afterEach(async () => {
   await Promise.all(active.splice(0).map((service) => service.end(1)));
+  vi.useRealTimers();
+});
+
+const previewSelection = {
+  previewId: 'preview-1',
+  botId: 'bot',
+  sessionId: 'canonical',
+  modelId: 'tts',
+  voice: 'alloy',
+  text: 'voice sample',
+};
+describe('voice preview ownership', () => {
+  it('synthesizes the exact selection without allocating ASR, and excludes concurrent calls', async () => {
+    const { service, deps } = fixture();
+    expect(await service.startPreview(1, previewSelection)).toEqual({ sampleRate: 24000 });
+    expect(deps.assertCompanion).toHaveBeenCalledWith('bot', 'canonical');
+    expect(deps.createProvider).not.toHaveBeenCalled();
+    expect(deps.fetch).toHaveBeenCalledWith(
+      new URL('https://gateway.test/v1/audio/speech'),
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: 'tts',
+          voice: 'alloy',
+          input: 'voice sample',
+          response_format: 'pcm',
+        }),
+      }),
+    );
+    await expect(service.start(1, selection)).rejects.toThrow('busy');
+    await expect(service.readPreview(2, 'preview-1')).rejects.toThrow('preview_ended');
+    service.stopPreview(2, 'preview-1');
+    expect(hasVoiceConversationLease()).toBe(true);
+    expect((await service.readPreview(1, 'preview-1')).pcm.byteLength).toBe(2);
+    service.stopPreview(1, 'preview-1');
+    expect(hasVoiceConversationLease()).toBe(false);
+  });
+
+  it('cancels while companion authorization is pending without issuing a late paid request', async () => {
+    const { service, deps } = fixture();
+    let release!: () => void;
+    deps.assertCompanion.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const pending = service.startPreview(1, previewSelection);
+    service.stopPreview(1, 'preview-1');
+    release();
+    await expect(pending).rejects.toThrow('preview_ended');
+    expect(deps.fetch).not.toHaveBeenCalled();
+    expect(hasVoiceConversationLease()).toBe(false);
+  });
+
+  it('checks eligibility and canonical ownership before preview execution', async () => {
+    const { service, deps } = fixture();
+    await expect(
+      service.startPreview(1, { ...previewSelection, modelId: 'invented' }),
+    ).rejects.toThrow('model_unavailable');
+    deps.assertCompanion.mockRejectedValueOnce(new Error('not canonical'));
+    await expect(service.startPreview(1, previewSelection)).rejects.toThrow('not canonical');
+    deps.hasDictation.mockReturnValueOnce(true);
+    await expect(service.startPreview(1, previewSelection)).rejects.toThrow('busy');
+    expect(deps.fetch).not.toHaveBeenCalled();
+    expect(hasVoiceConversationLease()).toBe(false);
+  });
+
+  it.each(['owner', 'connection'] as const)('releases playback on a changed %s', async (change) => {
+    const { service, deps } = fixture();
+    await service.startPreview(1, previewSelection);
+    if (change === 'owner') deps.owner.mockReturnValue('owner-b');
+    else
+      deps.connection.mockImplementation(() => {
+        throw new Error('model_unavailable');
+      });
+    await expect(service.readPreview(1, 'preview-1')).rejects.toThrow();
+    expect(hasVoiceConversationLease()).toBe(false);
+  });
+
+  it('releases the lease on sender teardown and on the bounded preview deadline', async () => {
+    vi.useFakeTimers();
+    const { service } = fixture();
+    await service.startPreview(1, previewSelection);
+    await service.end(1);
+    expect(hasVoiceConversationLease()).toBe(false);
+    await service.startPreview(1, previewSelection);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hasVoiceConversationLease()).toBe(false);
+  });
 });
 const selection = {
   callId: 'call-1',

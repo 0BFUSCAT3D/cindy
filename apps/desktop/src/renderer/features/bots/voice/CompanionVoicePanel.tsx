@@ -10,7 +10,6 @@ import {
 import { AudioLines, Mic, MicOff, PhoneOff, RefreshCw, Send, VolumeX, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { FormField } from '@/components/ui/form-field';
 import { Select } from '@/components/ui/select';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
@@ -24,10 +23,13 @@ import type {
   VoiceConversationSelection,
 } from '@/../shared/voiceConversation';
 import { normalizeVoiceConversationSelection, voiceModelKey } from '@/../shared/voiceConversation';
+import { referenceSpeechVoices } from '@/../shared/speechVoices';
 import { BotAvatar } from '../BotAvatar';
 import type { BotChatIdentity } from '../BotSessionContentHeader';
 import { VoiceConversationController } from './VoiceConversationController';
 import { PcmSpeechPlayer } from './PcmSpeechPlayer';
+import { VoicePreviewController } from './VoicePreviewController';
+import { SpeechVoicePicker } from './SpeechVoicePicker';
 import './voiceConversation.css';
 
 type Props = {
@@ -42,7 +44,6 @@ type Props = {
 export function CompanionVoicePanel(props: Props) {
   const { t } = useTranslation();
   const labelId = useId();
-  const voiceId = useId();
   const latest = useRef(props);
   latest.current = props;
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -55,6 +56,8 @@ export function CompanionVoicePanel(props: Props) {
   const [preferenceOwner, setPreferenceOwner] = useState<string>();
   const [preferenceError, setPreferenceError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const startingRef = useRef(false);
   const dirty = useRef(false);
   const pendingSave = useRef<Promise<boolean> | null>(null);
   const ready = preferenceOwner === props.bot.id;
@@ -62,7 +65,7 @@ export function CompanionVoicePanel(props: Props) {
     ? models.find((model) => voiceModelKey(model) === voiceModelKey(preference))
     : models[0];
   const validModel = !!selectedModel;
-  const selectedVoice = voice ?? preference?.voice ?? selectedModel?.defaultVoice ?? 'alloy';
+  const selectedVoice = voice ?? preference?.voice ?? selectedModel?.defaultVoice ?? '';
   const selection = normalizeVoiceConversationSelection({
     providerId: selectedModel?.providerId,
     agent: selectedModel?.agent,
@@ -96,6 +99,16 @@ export function CompanionVoicePanel(props: Props) {
             onInterrupted,
           }),
         player: (onLevel) => new PcmSpeechPlayer(onLevel),
+      }),
+    [props.bot.id, props.sessionId],
+  );
+  const preview = useMemo(
+    () =>
+      new VoicePreviewController({
+        api: window.electronAPI.voiceConversation,
+        botId: props.bot.id,
+        sessionId: props.sessionId,
+        player: () => new PcmSpeechPlayer(() => undefined),
       }),
     [props.bot.id, props.sessionId],
   );
@@ -153,9 +166,13 @@ export function CompanionVoicePanel(props: Props) {
       ++refreshVersion.current;
       ++preferenceVersion.current;
       controller.end();
+      void preview.stop();
     };
-  }, [controller, loadPreference, refresh]);
-  useEffect(() => controller.setBlocked(props.blocked), [controller, props.blocked]);
+  }, [controller, preview, loadPreference, refresh]);
+  useEffect(() => {
+    controller.setBlocked(props.blocked);
+    if (props.blocked) void preview.stop();
+  }, [controller, preview, props.blocked]);
   useEffect(() => controller.updateMessages(props.messages), [controller, props.messages]);
   useEffect(() => {
     const initialOwner = getDataOwnerGeneration();
@@ -164,18 +181,25 @@ export function CompanionVoicePanel(props: Props) {
       const key = `${next.dataOwnerId}:${next.ownerGeneration}`;
       if (next.ownerBoundaryPending || key !== owner) {
         controller.end();
+        void preview.stop();
         latest.current.onClose();
       }
       owner = key;
     });
-    const removePower = window.electronAPI.voiceInput.onPowerStateChange(() =>
-      controller.setBlocked(true),
-    );
+    const removePower = window.electronAPI.voiceInput.onPowerStateChange(() => {
+      controller.setBlocked(true);
+      void preview.stop();
+    });
+    const hidden = () => {
+      if (document.hidden) void preview.stop();
+    };
+    document.addEventListener('visibilitychange', hidden);
     return () => {
       removeAuth();
       removePower();
+      document.removeEventListener('visibilitychange', hidden);
     };
-  }, [controller]);
+  }, [controller, preview]);
 
   const persist = (next: VoiceConversationSelection | null): Promise<boolean> => {
     if (pendingSave.current) return pendingSave.current;
@@ -206,13 +230,23 @@ export function CompanionVoicePanel(props: Props) {
     return pending;
   };
   const start = async () => {
-    if (!selection || !validModel || !protocol || props.blocked || !ready) return;
+    if (startingRef.current || !selection || !validModel || !protocol || props.blocked || !ready)
+      return;
+    startingRef.current = true;
+    setStarting(true);
     const version = preferenceVersion.current;
-    if (dirty.current && !(await persist(selection))) return;
-    if (version !== preferenceVersion.current || latest.current.blocked) return;
-    controller.setBlocked(false);
-    await controller.start(selection);
-    controller.retryUnsent();
+    try {
+      await preview.stop();
+      if (version !== preferenceVersion.current || latest.current.blocked) return;
+      if (dirty.current && !(await persist(selection))) return;
+      if (version !== preferenceVersion.current || latest.current.blocked) return;
+      controller.setBlocked(false);
+      await controller.start(selection);
+      controller.retryUnsent();
+    } finally {
+      startingRef.current = false;
+      if (version === preferenceVersion.current) setStarting(false);
+    }
   };
   const chooseModel = (key: string) => {
     const model = models.find((item) => voiceModelKey(item) === key);
@@ -221,11 +255,10 @@ export function CompanionVoicePanel(props: Props) {
       providerId: model.providerId,
       agent: model.agent,
       modelId: model.id,
-      voice:
-        model.providerId === selectedModel?.providerId && model.protocol === selectedModel?.protocol
-          ? selectedVoice
-          : (model.defaultVoice ?? 'alloy'),
+      // Voice compatibility is model-specific, even within the same connection/protocol.
+      voice: model.defaultVoice ?? '',
     };
+    void preview.stop();
     dirty.current = true;
     setCustomized(true);
     setPreference(next);
@@ -319,43 +352,44 @@ export function CompanionVoicePanel(props: Props) {
                 {t(catalogError ? 'bots.voiceMode.catalogError' : 'bots.voiceMode.noModels')}
               </p>
             ) : null}
-            <FormField label={t('bots.voiceMode.model')}>
-              {(control) => (
-                <div className="flex items-center gap-2">
-                  <Select
-                    {...control}
-                    label={t('bots.voiceMode.model')}
-                    value={selectedModel ? voiceModelKey(selectedModel) : ''}
-                    options={models.map((model) => ({
-                      value: voiceModelKey(model),
-                      label: [model.name, model.providerName].filter(Boolean).join(' · '),
-                    }))}
-                    onValueChange={chooseModel}
-                    disabled={loading || !ready || saving || models.length === 0}
-                    className="flex-1"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="lg"
-                    disabled={loading}
-                    aria-label={t('bots.voiceMode.refresh')}
-                    title={t('bots.voiceMode.refresh')}
-                    onClick={() => {
-                      void refresh(true);
-                      if (!ready) loadPreference();
-                    }}
-                  >
-                    <RefreshCw size={15} />
-                  </Button>
-                </div>
-              )}
-            </FormField>
-            {!validModel && preference && models.length > 0 ? (
-              <p className="text-12 text-[var(--text-secondary)]">
-                {t('bots.voiceMode.modelUnavailable')}
-              </p>
-            ) : null}
             <div className="flex flex-wrap items-start gap-3">
+              <FormField label={t('bots.voiceMode.model')} className="min-w-52 flex-[2]">
+                {(control) => (
+                  <div className="flex items-center gap-2">
+                    <Select
+                      {...control}
+                      label={t('bots.voiceMode.model')}
+                      value={selectedModel ? voiceModelKey(selectedModel) : ''}
+                      options={models.map((model) => ({
+                        value: voiceModelKey(model),
+                        label: [model.name, model.providerName].filter(Boolean).join(' · '),
+                      }))}
+                      onValueChange={chooseModel}
+                      disabled={loading || !ready || saving || starting || models.length === 0}
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="lg"
+                      className="w-9 shrink-0 px-0"
+                      disabled={loading || starting}
+                      aria-label={t('bots.voiceMode.refresh')}
+                      title={t('bots.voiceMode.refresh')}
+                      onClick={() => {
+                        void refresh(true);
+                        if (!ready) loadPreference();
+                      }}
+                    >
+                      <RefreshCw size={15} />
+                    </Button>
+                  </div>
+                )}
+              </FormField>
+              {!validModel && preference && models.length > 0 ? (
+                <p className="w-full text-12 text-[var(--text-secondary)]">
+                  {t('bots.voiceMode.modelUnavailable')}
+                </p>
+              ) : null}
               {selectedModel && selectedModel.providerId !== 'xd' && selectedModel.agent ? (
                 <FormField
                   label={t('bots.voiceMode.protocol')}
@@ -372,15 +406,18 @@ export function CompanionVoicePanel(props: Props) {
                         { value: 'elevenlabs', label: 'ElevenLabs' },
                         { value: 'minimax', label: 'MiniMax' },
                       ]}
-                      disabled={!ready || saving}
+                      disabled={!ready || saving || starting}
                       onValueChange={(value) => {
                         const next = {
                           providerId: selectedModel.providerId,
                           agent: selectedModel.agent,
                           modelId: selectedModel.id,
-                          voice: selectedVoice || (value === 'openai' ? 'alloy' : ''),
+                          voice:
+                            referenceSpeechVoices(selectedModel.id, value as SpeechProtocol)[0] ??
+                            '',
                           protocol: value as SpeechProtocol,
                         };
+                        void preview.stop();
                         dirty.current = true;
                         setCustomized(true);
                         setPreference(next);
@@ -392,36 +429,34 @@ export function CompanionVoicePanel(props: Props) {
                   )}
                 </FormField>
               ) : null}
-              {models.length > 0 ? (
-                <FormField
-                  id={voiceId}
-                  label={t('bots.voiceMode.voice')}
-                  hint={t(
-                    protocol === 'elevenlabs' || protocol === 'minimax'
-                      ? 'bots.voiceMode.voiceIdHint'
-                      : 'bots.voiceMode.voiceHint',
-                  )}
-                  className="min-w-52 flex-1"
-                >
-                  {(control) => (
-                    <Input
-                      {...control}
-                      value={selectedVoice}
-                      disabled={!ready || saving}
-                      maxLength={128}
-                      onChange={(value) => {
-                        dirty.current = true;
-                        setVoice(value);
-                      }}
-                      onBlur={() => {
-                        if (dirty.current && selection && validModel) void persist(selection);
-                      }}
-                      className="w-full"
-                    />
-                  )}
-                </FormField>
-              ) : null}
             </div>
+            {selectedModel ? (
+              <SpeechVoicePicker
+                route={{
+                  providerId: selectedModel.providerId,
+                  agent: selectedModel.agent,
+                  modelId: selectedModel.id,
+                  protocol: preference?.protocol,
+                }}
+                protocol={protocol}
+                voice={selectedVoice}
+                disabled={!ready || saving || starting || props.blocked}
+                previewDisabled={!ready || starting || props.blocked}
+                preview={preview}
+                onChange={(value, save) => {
+                  dirty.current = true;
+                  setVoice(value);
+                  const next = normalizeVoiceConversationSelection({
+                    providerId: selectedModel.providerId,
+                    agent: selectedModel.agent,
+                    modelId: selectedModel.id,
+                    protocol: preference?.protocol,
+                    voice: value,
+                  });
+                  if (save && next && validModel) void persist(next);
+                }}
+              />
+            ) : null}
             {preferenceError ? (
               <p role="alert" className="text-13 text-[var(--error-fg)]">
                 {t('bots.voiceMode.preferenceError')}
@@ -434,7 +469,7 @@ export function CompanionVoicePanel(props: Props) {
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={!ready || saving || (!customized && !dirty.current)}
+                disabled={!ready || saving || starting || (!customized && !dirty.current)}
                 onClick={() => void persist(null)}
               >
                 {t('bots.voiceMode.resetPreference')}
@@ -449,7 +484,15 @@ export function CompanionVoicePanel(props: Props) {
             variant="primary"
             size="lg"
             onClick={() => void start()}
-            disabled={!validModel || !selection || !protocol || props.blocked || loading || !ready}
+            disabled={
+              starting ||
+              !validModel ||
+              !selection ||
+              !protocol ||
+              props.blocked ||
+              loading ||
+              !ready
+            }
           >
             <Mic size={16} />
             {t(

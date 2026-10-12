@@ -9347,6 +9347,25 @@
       "skillUpdated": "Updated skill: {{title}}"
     },
     "voiceMode": {
+      "voiceId": "Voice ID",
+      "manualVoice": "Enter a voice ID",
+      "voiceCatalogHint": "Choose a voice, then preview it to check that it works with the selected model.",
+      "refreshVoices": "Refresh voices",
+      "voicesLoading": "Loading voices…",
+      "voicesError": "Couldn't load voices. Retry or enter a voice ID.",
+      "voicesReference": "These are OpenAI reference voices for this model. Compatible services may support different voices.",
+      "voicesTruncated": "Showing part of the voice list. Enter an ID to use an unlisted voice.",
+      "voicesManual": "No voice list is available for this interface. Enter a voice ID.",
+      "preview": "Preview",
+      "stopPreview": "Stop preview",
+      "previewText": "Hello, this is my voice. It's nice to talk with you.",
+      "previewStatus": {
+        "idle": "Preview uses the selected model and may incur usage charges.",
+        "preparing": "Generating preview…",
+        "playing": "Playing preview…",
+        "complete": "Preview complete.",
+        "error": "Preview failed. Check the interface, model access and voice ID, then retry."
+      },
       "finishBeforeDictation": "End voice mode before starting dictation.",
       "title": "Voice Mode",
       "close": "Close voice mode",

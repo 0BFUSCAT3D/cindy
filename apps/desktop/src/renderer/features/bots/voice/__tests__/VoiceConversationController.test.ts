@@ -14,6 +14,10 @@ function fixture() {
   let calls = 0;
   const api = {
     models: vi.fn(async () => []),
+    voices: vi.fn(async () => ({ source: 'manual' as const, voices: [] })),
+    preview: vi.fn(async () => ({ sampleRate: 24000 })),
+    readPreview: vi.fn(async () => ({ pcm: new ArrayBuffer(0), done: true })),
+    stopPreview: vi.fn(async () => {}),
     preference: vi.fn(async () => ({ selection: null, customized: false })),
     setPreference: vi.fn(async () => ({ selection: null, customized: false })),
     start: vi.fn(async () => ({ callId: `call-${++calls}` })),

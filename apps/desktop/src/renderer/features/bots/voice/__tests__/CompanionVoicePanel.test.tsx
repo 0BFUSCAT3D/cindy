@@ -71,6 +71,10 @@ beforeEach(() => {
     value: {
       voiceConversation: {
         models: async () => models,
+        voices: vi.fn(async () => ({ source: 'manual', voices: [] })),
+        preview: vi.fn(async () => ({ sampleRate: 24000 })),
+        readPreview: vi.fn(async () => ({ pcm: new ArrayBuffer(2), done: true })),
+        stopPreview: vi.fn(async () => {}),
         preference: vi.fn(async () => ({ selection: null, customized: false })),
         setPreference: vi.fn(async (_botId, selection) => ({ selection, customized: !!selection })),
         start,
@@ -109,14 +113,14 @@ it('shows a useful empty state without requesting a microphone or inventing mode
 });
 
 it('opens the chosen voice route and releases capture when the panel unmounts', async () => {
-  models = [{ id: 'gateway-speech', name: 'Speech' }];
+  models = [{ id: 'gateway-speech', name: 'Speech', defaultVoice: 'alloy' }];
   const view = renderPanel();
   await waitFor(() =>
     expect(
       screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
     ).toBe(false),
   );
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), { target: { value: 'nova' } });
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.voiceId'), { target: { value: 'nova' } });
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.start' }));
   await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
   expect(start).toHaveBeenCalledWith({
@@ -135,9 +139,7 @@ it('opens the chosen voice route and releases capture when the panel unmounts', 
 it('keeps permission cards authoritative and never starts through a pending confirmation', async () => {
   models = [{ id: 'tts', name: 'Speech' }];
   renderPanel(true);
-  await waitFor(() =>
-    expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.confirmation'),
-  );
+  await waitFor(() => expect(screen.getByText('bots.voiceMode.status.confirmation')).toBeTruthy());
   expect(
     screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
   ).toBe(true);
@@ -185,7 +187,7 @@ it('requires an explicit API choice for an unknown endpoint before requesting a 
   ];
   renderPanel();
   await screen.findByText('bots.voiceMode.protocolHint');
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.voiceId'), {
     target: { value: 'voice-id' },
   });
   expect(
@@ -194,6 +196,11 @@ it('requires an explicit API choice for an unknown endpoint before requesting a 
   fireEvent.change(screen.getByLabelText('bots.voiceMode.protocol'), {
     target: { value: 'elevenlabs' },
   });
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe('');
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.voiceId'), {
+    target: { value: 'voice-id' },
+  });
+  fireEvent.blur(screen.getByLabelText('bots.voiceMode.voiceId'));
   await waitFor(() =>
     expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
       'bot',
@@ -248,18 +255,22 @@ it('reloads the right companion preference after reopening and does not save a d
   }));
   const first = renderPanel(false, 'a');
   await waitFor(() =>
-    expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLInputElement).value).toBe('nova'),
+    expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+      'nova',
+    ),
   );
   first.unmount();
   renderPanel(false, 'b');
   await waitFor(() =>
-    expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLInputElement).value).toBe('alloy'),
+    expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+      'alloy',
+    ),
   );
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
 });
 
 it('retries a failed preference load and still lists BYOK when Gateway refresh fails', async () => {
-  models = [{ id: 'tts', name: 'Speech' }];
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   vi.mocked(window.electronAPI.voiceConversation.preference).mockRejectedValueOnce(
     new Error('load failed'),
   );
@@ -276,4 +287,86 @@ it('retries a failed preference load and still lists BYOK when Gateway refresh f
     ).toBe(false),
   );
   expect(window.electronAPI.voiceConversation.preference).toHaveBeenCalledTimes(2);
+});
+
+it('selects an account voice, keeps manual IDs on catalog failure, and previews without capturing audio', async () => {
+  models = [
+    { id: 'speech', name: 'MiniMax', providerId: 'mine', agent: 'codex', protocol: 'minimax' },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.voices)
+    .mockResolvedValueOnce({
+      source: 'provider',
+      voices: [{ id: 'Chinese (Mandarin)_News_Anchor', name: 'News Anchor' }],
+    })
+    .mockRejectedValueOnce(new Error('offline'));
+  renderPanel();
+  await screen.findByRole('option', { name: 'News Anchor · Chinese (Mandarin)_News_Anchor' });
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
+    target: { value: 'voice:Chinese (Mandarin)_News_Anchor' },
+  });
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+      'bot',
+      expect.objectContaining({
+        voice: 'Chinese (Mandarin)_News_Anchor',
+        providerId: 'mine',
+      }),
+    ),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'speech',
+        voice: 'Chinese (Mandarin)_News_Anchor',
+        text: 'bots.voiceMode.previewText',
+      }),
+    ),
+  );
+  expect(
+    vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0].protocol,
+  ).toBeUndefined();
+  expect(
+    vi.mocked(window.electronAPI.voiceConversation.voices).mock.calls[0][0].protocol,
+  ).toBeUndefined();
+  expect(start).not.toHaveBeenCalled();
+  expect(audio.start).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
+  await screen.findByText('bots.voiceMode.voicesError');
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+    'Chinese (Mandarin)_News_Anchor',
+  );
+});
+
+it('resets a voice when switching models on the same connection and ignores a late catalog', async () => {
+  models = ['first', 'second'].map((id) => ({
+    id,
+    name: id,
+    providerId: 'mine',
+    agent: 'codex',
+    protocol: 'elevenlabs',
+  }));
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: { providerId: 'mine', agent: 'codex', modelId: 'first', voice: 'private-voice' },
+    customized: true,
+  });
+  let release!: (value: { source: 'provider'; voices: { id: string; name: string }[] }) => void;
+  vi.mocked(window.electronAPI.voiceConversation.voices)
+    .mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    )
+    .mockResolvedValue({ source: 'provider', voices: [{ id: 'new', name: 'New voice' }] });
+  renderPanel();
+  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalled());
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
+    target: { value: voiceModelKey(models[1]) },
+  });
+  await screen.findByRole('option', { name: 'New voice · new' });
+  expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement).value).toBe('');
+  expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
+  release({ source: 'provider', voices: [{ id: 'old', name: 'Old voice' }] });
+  await waitFor(() => expect(screen.queryByRole('option', { name: 'Old voice · old' })).toBeNull());
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
 });

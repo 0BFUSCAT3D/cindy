@@ -9309,6 +9309,25 @@
       "skillUpdated": "スキルを更新：{{title}}"
     },
     "voiceMode": {
+      "voiceId": "音声 ID",
+      "manualVoice": "音声 ID を手動入力",
+      "voiceCatalogHint": "音声を選び、現在のモデルで使えるか試聴で確認してください。",
+      "refreshVoices": "音声リストを更新",
+      "voicesLoading": "音声を取得中…",
+      "voicesError": "音声を取得できませんでした。再試行するか、音声 ID を入力してください。",
+      "voicesReference": "このモデルの OpenAI 参考音声です。互換サービスで使える音声は異なる場合があります。",
+      "voicesTruncated": "音声リストの一部を表示しています。未掲載の音声は ID を入力してください。",
+      "voicesManual": "このインターフェースには音声リストがありません。音声 ID を入力してください。",
+      "preview": "試聴",
+      "stopPreview": "試聴を停止",
+      "previewText": "こんにちは、これが私の声です。お話しできてうれしいです。",
+      "previewStatus": {
+        "idle": "試聴には選択したモデルを使用し、利用料金が発生する場合があります。",
+        "preparing": "試聴用の音声を生成中…",
+        "playing": "試聴中…",
+        "complete": "試聴が完了しました。",
+        "error": "試聴に失敗しました。インターフェース、モデルの利用権限、音声 ID を確認して再試行してください。"
+      },
       "finishBeforeDictation": "音声モードを終了してから音声入力を開始してください。",
       "title": "音声モード",
       "close": "音声モードを閉じる",

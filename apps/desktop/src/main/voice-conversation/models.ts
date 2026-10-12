@@ -10,8 +10,10 @@ import {
   voiceModelKey,
   type SpeechProtocol,
   type VoiceConversationModel,
+  type SpeechModelSelection,
   type VoiceConversationSelection,
 } from '../../shared/voiceConversation.js';
+import { referenceSpeechVoices } from '../../shared/speechVoices.js';
 import type { SpeechConnection } from './speech.js';
 
 export type SpeechCatalogDeps = {
@@ -85,7 +87,7 @@ function endpointProtocol(base: URL): SpeechProtocol | null {
   return null;
 }
 
-function bindings(deps: SpeechCatalogDeps, selection?: VoiceConversationSelection): Binding[] {
+function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Binding[] {
   const result: Binding[] = [];
   for (const provider of deps.catalog.providers) {
     if (selection && provider.id !== (selection.providerId ?? 'xd')) continue;
@@ -115,7 +117,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: VoiceConversationSelectio
             providerId: 'xd',
             providerName: provider.name,
             protocol: 'openai',
-            defaultVoice: 'alloy',
+            defaultVoice: referenceSpeechVoices(media.id, 'openai')[0] ?? '',
           },
           connection: {
             baseUrl: connection.baseUrl,
@@ -187,7 +189,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: VoiceConversationSelectio
           providerName: provider.name,
           agent,
           protocol: detectedProtocol ?? undefined,
-          defaultVoice: protocol === 'openai' ? 'alloy' : '',
+          defaultVoice: referenceSpeechVoices(media.id, protocol ?? undefined)[0] ?? '',
         },
         connection: protocol
           ? { baseUrl: base.toString().replace(/\/+$/, ''), headers, protocol }
@@ -204,7 +206,7 @@ export function speechModels(deps: SpeechCatalogDeps): VoiceConversationModel[] 
 }
 export function resolveSpeechConnection(
   deps: SpeechCatalogDeps,
-  selection: VoiceConversationSelection,
+  selection: SpeechModelSelection | VoiceConversationSelection,
 ): SpeechConnection {
   const binding = bindings(deps, selection).find(
     (entry) => voiceModelKey(entry.model) === voiceModelKey(selection),

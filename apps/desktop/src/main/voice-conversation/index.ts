@@ -2,6 +2,7 @@ import { ipcMain, webContents, type IpcMainInvokeEvent } from 'electron';
 import type { AsrProvider } from '@cindy/voice-input-core';
 import {
   normalizeVoiceConversationSelection,
+  normalizeSpeechModelSelection,
   type VoiceConversationPreference,
 } from '../../shared/voiceConversation.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
@@ -62,6 +63,15 @@ export function registerVoiceConversationIpc(deps: {
     },
   });
   const observed = new Set<number>();
+  const observe = (event: IpcMainInvokeEvent): void => {
+    if (observed.has(event.sender.id)) return;
+    const sender = event.sender.id;
+    observed.add(sender);
+    event.sender.once('destroyed', () => {
+      observed.delete(sender);
+      void service.end(sender);
+    });
+  };
   const handle = (
     name: string,
     action: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown,
@@ -76,6 +86,31 @@ export function registerVoiceConversationIpc(deps: {
     });
   };
   handle('models', () => service.models());
+  handle('voices', (_event, raw) => {
+    const selection = normalizeSpeechModelSelection(raw);
+    if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech model');
+    return service.voices(selection);
+  });
+  handle('preview', (event, raw) => {
+    if (isAppSessionBoundaryPending()) throw new Error('changing_account');
+    const value = requireObject(raw);
+    const selection = normalizeVoiceConversationSelection(value);
+    if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
+    observe(event);
+    return service.startPreview(event.sender.id, {
+      ...selection,
+      previewId: boundedString(value.previewId, 'previewId', 64),
+      botId: boundedString(value.botId, 'botId', 256),
+      sessionId: boundedString(value.sessionId, 'sessionId', 256),
+      text: boundedString(value.text, 'text', 256),
+    });
+  });
+  handle('read-preview', (event, id) =>
+    service.readPreview(event.sender.id, boundedString(id, 'previewId', 64)),
+  );
+  handle('stop-preview', (event, id) =>
+    service.stopPreview(event.sender.id, boundedString(id, 'previewId', 64)),
+  );
   const preferenceBot = async (
     raw: unknown,
     action: (botId: string) => VoiceConversationPreference,
@@ -104,14 +139,7 @@ export function registerVoiceConversationIpc(deps: {
     const value = requireObject(raw);
     const selection = normalizeVoiceConversationSelection(value);
     if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
-    if (!observed.has(event.sender.id)) {
-      observed.add(event.sender.id);
-      const sender = event.sender.id;
-      event.sender.once('destroyed', () => {
-        observed.delete(sender);
-        void service.end(sender);
-      });
-    }
+    observe(event);
     return service.start(event.sender.id, {
       ...selection,
       callId: boundedString(value.callId, 'callId', 64),

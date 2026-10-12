@@ -55,6 +55,7 @@ vi.mock('../../utility-model/oneShotCandidates.js', () => ({
 
 import { normalizeVoiceInputSettings } from '../../../shared/voiceInputData.js';
 import { registerVoiceConversationIpc } from '../index.js';
+import { outboundFetch } from '../../maker-host/outbound-fetch.js';
 const sender = (id = 1) => ({ sender: { id, once: vi.fn() } });
 const call = (name: string, ...args: unknown[]) =>
   h.handlers.get(`voice-conversation:${name}`)!(sender(), ...args);
@@ -64,6 +65,7 @@ beforeEach(() => {
   h.trusted.mockReset();
   h.append.mockReset();
   h.boundary = false;
+  vi.mocked(outboundFetch).mockReset();
   let settings = normalizeVoiceInputSettings({});
   registerVoiceConversationIpc({
     getSettings: () => settings,
@@ -85,6 +87,7 @@ beforeEach(() => {
 afterEach(async () => {
   h.trusted.mockReset();
   await call('end', 'call');
+  await call('stop-preview', 'preview');
 });
 const start = () =>
   call('start', {
@@ -101,6 +104,42 @@ it('rejects an untrusted sender before returning models or opening a connection'
   });
   await expect(call('models')).rejects.toThrow('untrusted frame');
   await expect(start()).rejects.toThrow('untrusted frame');
+  for (const name of ['voices', 'preview', 'read-preview', 'stop-preview']) {
+    await expect(call(name, {})).rejects.toThrow('untrusted frame');
+  }
+});
+
+it('validates preview boundaries before synthesis and cleans up when its sender is destroyed', async () => {
+  const input = {
+    previewId: 'preview',
+    botId: 'bot',
+    sessionId: 'canonical',
+    modelId: 'voice-test',
+    voice: 'alloy',
+    text: 'sample',
+  };
+  await expect(call('preview', { ...input, voice: 'bad\nvoice' })).rejects.toThrow();
+  await expect(call('preview', { ...input, text: 'x'.repeat(257) })).rejects.toThrow();
+  await expect(call('preview', { ...input, sessionId: 'another-task' })).rejects.toThrow();
+  h.boundary = true;
+  await expect(call('voices', { modelId: 'voice-test' })).rejects.toThrow();
+  await expect(call('preview', input)).rejects.toThrow();
+  h.boundary = false;
+  expect(outboundFetch).not.toHaveBeenCalled();
+  vi.mocked(outboundFetch).mockResolvedValue(
+    new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/pcm' } }),
+  );
+  const event = sender(3);
+  await h.handlers.get('voice-conversation:preview')!(event, input);
+  expect(h.append).not.toHaveBeenCalled();
+  const destroyed = event.sender.once.mock.calls.find(([name]) => name === 'destroyed')?.[1] as
+    (() => void) | undefined;
+  expect(destroyed).toBeTypeOf('function');
+  destroyed!();
+  await expect(
+    h.handlers.get('voice-conversation:read-preview')!(event, 'preview'),
+  ).rejects.toThrow();
+  await expect(start()).resolves.toEqual({ callId: 'call' });
 });
 
 it('enforces sender ownership and PCM size/alignment on the non-awaitable capture channel', async () => {

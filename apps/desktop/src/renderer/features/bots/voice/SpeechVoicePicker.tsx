@@ -1,0 +1,182 @@
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useTranslation } from 'react-i18next';
+import { RefreshCw, Square, Volume2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { FormField } from '@/components/ui/form-field';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import {
+  normalizeVoiceConversationSelection,
+  type SpeechModelSelection,
+  type SpeechProtocol,
+  type SpeechVoiceCatalog,
+} from '@/../shared/voiceConversation';
+import type { VoicePreviewController } from './VoicePreviewController';
+
+const MANUAL = 'manual';
+type Props = {
+  route: SpeechModelSelection;
+  protocol?: SpeechProtocol;
+  voice: string;
+  disabled: boolean;
+  previewDisabled: boolean;
+  preview: VoicePreviewController;
+  onChange(voice: string, save: boolean): void;
+};
+
+export function SpeechVoicePicker({
+  route,
+  protocol,
+  voice,
+  disabled,
+  previewDisabled,
+  preview,
+  onChange,
+}: Props) {
+  const { t } = useTranslation();
+  const [catalog, setCatalog] = useState<SpeechVoiceCatalog>();
+  const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const [manual, setManual] = useState(false);
+  const version = useRef(0);
+  const routeKey = JSON.stringify([route, protocol]);
+  const phase = useSyncExternalStore(preview.subscribe, preview.getSnapshot);
+  const previewing = phase === 'preparing' || phase === 'playing';
+  const selection = normalizeVoiceConversationSelection({ ...route, voice });
+  const listed = catalog?.voices.some((item) => item.id === voice);
+  const showManual = manual || (!!voice && !listed) || !catalog?.voices.length;
+
+  useEffect(() => {
+    const request = ++version.current;
+    setCatalog(undefined);
+    setFailed(false);
+    setLoading(!!protocol);
+    if (protocol) {
+      void window.electronAPI.voiceConversation
+        .voices(route)
+        .then((result) => {
+          if (version.current === request) setCatalog(result);
+        })
+        .catch(() => {
+          if (version.current === request) setFailed(true);
+        })
+        .finally(() => {
+          if (version.current === request) setLoading(false);
+        });
+    }
+    return () => {
+      ++version.current;
+    };
+    // Include the detected protocol in the refresh key, but send only an explicit
+    // user override. Main must resolve inferred protocols against its current catalog.
+  }, [routeKey, revision]);
+
+  useEffect(() => {
+    setManual(false);
+    void preview.stop();
+    return () => {
+      void preview.stop();
+    };
+  }, [routeKey, preview]);
+  useEffect(() => {
+    void preview.stop();
+  }, [voice, preview]);
+
+  return (
+    <div className="min-w-0 space-y-3">
+      <FormField label={t('bots.voiceMode.voice')} hint={t('bots.voiceMode.voiceCatalogHint')}>
+        {(control) => (
+          <div className="flex min-w-0 items-center gap-2">
+            <Select
+              {...control}
+              label={t('bots.voiceMode.voice')}
+              value={showManual ? MANUAL : listed ? `voice:${voice}` : ''}
+              options={[
+                ...(catalog?.voices ?? []).map((item) => ({
+                  value: `voice:${item.id}`,
+                  label: item.name === item.id ? item.name : `${item.name} · ${item.id}`,
+                })),
+                { value: MANUAL, label: t('bots.voiceMode.manualVoice') },
+              ]}
+              disabled={disabled}
+              onValueChange={(value) => {
+                void preview.stop();
+                setManual(value === MANUAL);
+                if (value !== MANUAL) onChange(value.slice(6), true);
+              }}
+              className="min-w-0 flex-1"
+              truncateOptions
+            />
+            <Button
+              variant="secondary"
+              size="lg"
+              className="w-9 shrink-0 px-0"
+              aria-label={t('bots.voiceMode.refreshVoices')}
+              title={t('bots.voiceMode.refreshVoices')}
+              disabled={disabled || loading || !protocol}
+              onClick={() => setRevision((value) => value + 1)}
+            >
+              <RefreshCw size={15} aria-hidden="true" />
+            </Button>
+          </div>
+        )}
+      </FormField>
+      <p role="status" className="text-12 text-[var(--text-secondary)]">
+        {loading
+          ? t('bots.voiceMode.voicesLoading')
+          : failed
+            ? t('bots.voiceMode.voicesError')
+            : catalog?.source === 'reference'
+              ? t('bots.voiceMode.voicesReference')
+              : catalog?.truncated
+                ? t('bots.voiceMode.voicesTruncated')
+                : !catalog?.voices.length
+                  ? t('bots.voiceMode.voicesManual')
+                  : ''}
+      </p>
+      {showManual ? (
+        <FormField label={t('bots.voiceMode.voiceId')} hint={t('bots.voiceMode.voiceIdHint')}>
+          {(control) => (
+            <Input
+              {...control}
+              value={voice}
+              maxLength={128}
+              disabled={disabled}
+              onChange={(value) => {
+                void preview.stop();
+                setManual(true);
+                onChange(value, false);
+              }}
+              onBlur={() => {
+                if (selection) onChange(selection.voice, true);
+              }}
+              className="w-full"
+            />
+          )}
+        </FormField>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          size="lg"
+          disabled={!previewing && (previewDisabled || !selection || !protocol)}
+          onClick={() => {
+            if (previewing) void preview.stop();
+            else if (selection) void preview.start(selection, t('bots.voiceMode.previewText'));
+          }}
+        >
+          {previewing ? (
+            <Square size={14} aria-hidden="true" />
+          ) : (
+            <Volume2 size={16} aria-hidden="true" />
+          )}
+          {t(previewing ? 'bots.voiceMode.stopPreview' : 'bots.voiceMode.preview')}
+        </Button>
+        <p role="status" className="min-w-0 flex-1 text-12 text-[var(--text-secondary)]">
+          {t(`bots.voiceMode.previewStatus.${phase}`)}
+        </p>
+      </div>
+    </div>
+  );
+}

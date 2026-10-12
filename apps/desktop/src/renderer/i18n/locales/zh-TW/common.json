@@ -9309,6 +9309,25 @@
       "skillUpdated": "已更新技能：{{title}}"
     },
     "voiceMode": {
+      "voiceId": "音色 ID",
+      "manualVoice": "手動輸入音色 ID",
+      "voiceCatalogHint": "選擇音色後試聽，確認目前的模型可以使用它。",
+      "refreshVoices": "重新整理音色清單",
+      "voicesLoading": "正在取得音色…",
+      "voicesError": "無法取得音色清單。請重試，或手動輸入音色 ID。",
+      "voicesReference": "這是此型號的 OpenAI 參考音色；相容服務的實際支援可能不同。",
+      "voicesTruncated": "僅顯示部分音色；未列出的音色可手動輸入 ID。",
+      "voicesManual": "此介面沒有可用的音色清單，請手動輸入音色 ID。",
+      "preview": "試聽",
+      "stopPreview": "停止試聽",
+      "previewText": "你好，這是我的聲音。很高興與你交流。",
+      "previewStatus": {
+        "idle": "試聽會呼叫所選模型，可能產生用量。",
+        "preparing": "正在產生試聽語音…",
+        "playing": "正在試聽…",
+        "complete": "試聽完成。",
+        "error": "試聽失敗。請檢查介面、模型權限與音色 ID 後重試。"
+      },
       "finishBeforeDictation": "請先結束語音模式，再開始聽寫。",
       "title": "語音模式",
       "close": "關閉語音模式",

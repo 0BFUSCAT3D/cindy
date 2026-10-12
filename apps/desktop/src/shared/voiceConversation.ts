@@ -4,13 +4,26 @@ import type { AgentKind } from '@cindy/model-providers';
 /** Local Desktop voice UI contract. No credentials, raw paths or remote invoke access. */
 export type SpeechProtocol = 'openai' | 'elevenlabs' | 'minimax';
 // Missing provider/runtime is the original Cindy AI selection, never another connection.
-export type VoiceConversationSelection = {
+export type SpeechModelSelection = {
   providerId?: string;
   agent?: AgentKind;
   modelId: string;
-  voice: string;
   /** Explicit user choice for a custom speech endpoint; absent follows a known adapter. */
   protocol?: SpeechProtocol;
+};
+export type VoiceConversationSelection = SpeechModelSelection & { voice: string };
+export type SpeechVoice = { id: string; name: string };
+export type SpeechVoiceCatalog = {
+  voices: SpeechVoice[];
+  /** References are model-specific suggestions, not proof a compatible proxy supports them. */
+  source: 'provider' | 'reference' | 'manual';
+  truncated?: boolean;
+};
+export type SpeechPreviewStart = VoiceConversationSelection & {
+  previewId: string;
+  botId: string;
+  sessionId: string;
+  text: string;
 };
 export type VoiceConversationModel = {
   id: string;
@@ -44,6 +57,10 @@ export type VoiceConversationStart = VoiceConversationSelection & {
 };
 export interface VoiceConversationApi {
   models(): Promise<VoiceConversationModel[]>;
+  voices(selection: SpeechModelSelection): Promise<SpeechVoiceCatalog>;
+  preview(input: SpeechPreviewStart): Promise<{ sampleRate: number }>;
+  readPreview(previewId: string): Promise<{ pcm: ArrayBuffer; done: boolean }>;
+  stopPreview(previewId: string): Promise<void>;
   preference(botId: string): Promise<VoiceConversationPreference>;
   setPreference(
     botId: string,
@@ -67,14 +84,30 @@ export function normalizeVoiceConversationSelection(
   value: unknown,
 ): VoiceConversationSelection | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const { modelId, voice, providerId, agent, protocol } =
-    value as Partial<VoiceConversationSelection>;
+  const route = normalizeSpeechModelSelection(value);
+  const voice = normalizeSpeechVoiceId((value as Partial<VoiceConversationSelection>).voice);
+  return route && voice ? { ...route, voice } : undefined;
+}
+
+/** Voice IDs are opaque provider identifiers; MiniMax IDs include spaces and parentheses. */
+export function normalizeSpeechVoiceId(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 128) return undefined;
+  const voice = value.trim();
+  // Retain the path/control-character boundary for manual IDs. URL use also encodes the ID.
+  const invalid = [...value].some(
+    (char) =>
+      char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 || char === '/' || char === '\\',
+  );
+  return voice && !invalid ? voice : undefined;
+}
+
+export function normalizeSpeechModelSelection(value: unknown): SpeechModelSelection | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { modelId, providerId, agent, protocol } = value as Partial<SpeechModelSelection>;
   if (
     typeof modelId !== 'string' ||
     !modelId.trim() ||
     modelId.length > 256 ||
-    typeof voice !== 'string' ||
-    !/^[a-zA-Z0-9_-]{1,128}$/.test(voice) ||
     (providerId !== undefined &&
       (typeof providerId !== 'string' || !providerId.trim() || providerId.length > 256)) ||
     (protocol !== undefined && !['openai', 'elevenlabs', 'minimax'].includes(protocol)) ||
@@ -88,7 +121,6 @@ export function normalizeVoiceConversationSelection(
     return undefined;
   return {
     modelId: modelId.trim(),
-    voice,
     ...(providerId ? { providerId } : {}),
     ...(agent ? { agent } : {}),
     ...(protocol ? { protocol } : {}),
