@@ -2067,18 +2067,30 @@ struct DetailPage: View {
   @ObservedObject var store: MenubarStore
   let detail: MBDetail
   let controller: StatusController
+  @State private var offset: CGFloat = 0
+  @State private var contentHeight: CGFloat = 0
+  @State private var headerHeight: CGFloat = 0
+  @State private var footerHeight: CGFloat = 0
 
+  /// Back and the action stay put; only the body between them scrolls when the screen is short.
   var body: some View {
-    ScrollView(.vertical, showsIndicators: false) {
-      VStack(alignment: .leading, spacing: 0) {
-        HStack(spacing: 6) {
-          IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
-          LogoView(svg: detail.logoSvg, size: 13)
-          Text(detail.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-          Text(detail.plan).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Palette.ink3).lineLimit(1)
-          Spacer(minLength: 0)
-        }
-        .padding(EdgeInsets(top: 12, leading: 10, bottom: 0, trailing: 14))
+    VStack(spacing: 0) {
+    HStack(spacing: 6) {
+      IconButton(systemName: "chevron.left", label: store.s("back")) { store.go(.main) }
+      LogoView(svg: detail.logoSvg, size: 13)
+      Text(detail.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+      Text(detail.plan).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Palette.ink3).lineLimit(1)
+      Spacer(minLength: 0)
+    }
+    .padding(EdgeInsets(top: 12, leading: 10, bottom: 10, trailing: 14))
+        .background(GeometryReader { g in
+          Color.clear
+            .onAppear { headerHeight = g.size.height }
+            .onChange(of: g.size.height) { _, h in headerHeight = h }
+        })
+      EdgeLine(visible: offset > 2)
+      TrackedScroll(offset: $offset, contentHeight: $contentHeight) {
+        VStack(alignment: .leading, spacing: 0) {
 
         let ring: CGFloat = store.short ? 160 : 188
         ZStack {
@@ -2101,7 +2113,6 @@ struct DetailPage: View {
           .frame(maxWidth: ring - 44)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 10)
         .accessibilityElement(children: .combine)
 
         if !detail.legend.isEmpty {
@@ -2135,22 +2146,31 @@ struct DetailPage: View {
         }
         .padding(EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
 
-        InkPillButton(title: detail.actionLabel, height: 32, fullWidth: true, disabled: detail.action.kind == "none") {
-          controller.emitAndClose(["type": "detail-action", "sourceId": detail.id])
         }
-        .padding(EdgeInsets(top: 0, leading: 14, bottom: 14, trailing: 14))
+        .frame(width: store.narrowWidth, alignment: .leading)
       }
-      .frame(width: store.narrowWidth, alignment: .leading)
-      .background(GeometryReader { inner in
-        Color.clear
-          .onAppear { report(inner.size.height) }
-          .onChange(of: inner.size.height) { _, height in report(height) }
-      })
+      // The panel may be taller than this page (it keeps the main page's height); the
+      // action then follows the content instead of sinking to the bottom.
+      .frame(maxHeight: contentHeight > 0 ? contentHeight : nil)
+    InkPillButton(title: detail.actionLabel, height: 32, fullWidth: true, disabled: detail.action.kind == "none") {
+      controller.emitAndClose(["type": "detail-action", "sourceId": detail.id])
     }
+    .padding(EdgeInsets(top: 0, leading: 14, bottom: 14, trailing: 14))
+        .background(GeometryReader { g in
+          Color.clear
+            .onAppear { footerHeight = g.size.height }
+            .onChange(of: g.size.height) { _, h in footerHeight = h }
+        })
+    }
+    .frame(maxHeight: .infinity, alignment: .top)
+    .onChange(of: contentHeight) { report() }
+    .onChange(of: headerHeight) { report() }
+    .onChange(of: footerHeight) { report() }
   }
 
-  private func report(_ height: CGFloat) {
-    let natural = (height + 1).rounded(.up)
+  private func report() {
+    guard contentHeight > 0 else { return }
+    let natural = (headerHeight + contentHeight + footerHeight + 1).rounded(.up)
     if abs(store.detailContentHeight - natural) > 0.5 { store.detailContentHeight = natural }
   }
 
@@ -2582,6 +2602,7 @@ struct ManagePage: View {
         .padding(.horizontal, 12)
       // Four labels never fit one segmented row in every language; two columns always do.
       ChoiceGrid(
+        label: store.s("statusIcon"),
         options: ["icon", "lowest", "today", "task"].map { ($0, store.s("statusIconMode." + $0)) },
         selected: view.settings.statusText
       ) { Bridge.emitSettings(["statusText": $0]) }
@@ -2692,7 +2713,10 @@ struct ManagePage: View {
 
 /// Exclusive choice laid out in two columns of equal chips; used where a segmented control
 /// would be wider than the panel in some languages.
+/// Two columns of mutually exclusive choices. Assistive technologies see one radio group,
+/// like the segmented control it replaces, rather than four separate buttons.
 struct ChoiceGrid: View {
+  let label: String
   let options: [(id: String, label: String)]
   let selected: String
   let choose: (String) -> Void
@@ -2703,7 +2727,12 @@ struct ChoiceGrid: View {
         ChoiceChip(label: option.label, selected: option.id == selected) { choose(option.id) }
       }
     }
-    .accessibilityElement(children: .contain)
+    .accessibilityRepresentation {
+      Picker(label, selection: Binding(get: { selected }, set: { choose($0) })) {
+        ForEach(options, id: \.id) { option in Text(option.label).tag(option.id) }
+      }
+      .pickerStyle(.radioGroup)
+    }
   }
 }
 
@@ -2724,14 +2753,14 @@ struct ChoiceChip: View {
         .padding(.horizontal, 8)
         .foregroundStyle(selected ? Palette.onInk : Palette.ink2)
         .background(
-          RoundedRectangle(cornerRadius: 9, style: .circular)
+          Capsule()
             .fill(selected ? Palette.ink : (hovering ? Palette.ink5 : Palette.tile))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 9, style: .circular)
+          Capsule()
             .strokeBorder(selected ? Color.clear : Palette.line, lineWidth: 0.5)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 9, style: .circular))
+        .contentShape(Capsule())
     }
     .buttonStyle(PressScaleStyle())
     .onHover { hovering in withAnimation(Motion.quick) { self.hovering = hovering } }
