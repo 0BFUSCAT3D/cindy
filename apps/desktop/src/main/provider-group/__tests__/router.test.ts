@@ -4,13 +4,14 @@
  */
 import type { ProviderView } from '@cindy/model-providers';
 import type { RemoteAgentCaps } from '@cindy/device-link';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
 import type { ProviderGroupBinding } from '../bindings';
 import type { DeviceLinkDeviceView } from '../../../shared/deviceLinkIpc';
 import { createProviderGroupDirectory, type ProviderGroupDirectory, type ResolvedProviderGroupMember } from '../directory';
 import { createProviderGroupRouter, PROVIDER_GROUP_PICK_QUICK_MS, type ProviderGroupRouterDeps } from '../router';
+import { SHARED_GROUP_STATUS_CAPS_CACHE_MS, SHARED_GROUP_STATUS_TIMEOUT_MS } from '../sharedStatus';
 
 const MODEL = 'claude-opus-5-5';
 
@@ -67,6 +68,126 @@ function harness(reported: Record<string, number>, bindings: Record<string, Prov
     ...overrides,
   });
 }
+
+describe('provider group details capability reader lifetime', () => {
+  const devices = Array.from({ length: 5 }, (_, index) => member(`device:${index}:anthropic`, 'device', `device-${index}`, 1));
+  const supportedCaps = { virtualWorkspace: true, guestRelay: true } as RemoteAgentCaps;
+  const olderCaps = { virtualWorkspace: true } as RemoteAgentCaps;
+  const detailsOptions = { includeGuestSupport: true };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function detailsRouter(readCaps: NonNullable<ProviderGroupRouterDeps['readCaps']>) {
+    return harness({}, {}, [], {
+      readGroup: () => ({ strategy: 'least', autoSwitch: true, members: devices }), readCaps,
+    });
+  }
+
+  it('keeps four physical probes across overlapping details and the next refresh', async () => {
+    const readCaps = vi.fn<NonNullable<ProviderGroupRouterDeps['readCaps']>>(() => new Promise(() => undefined));
+    const router = detailsRouter(readCaps);
+    const first = router.view('anthropic', detailsOptions);
+    const overlapping = router.view('anthropic', detailsOptions);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readCaps).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_TIMEOUT_MS);
+    for (const details of await Promise.all([first, overlapping])) {
+      expect(details.members.map((entry) => entry.guestSupport)).toEqual(Array(5).fill('unknown'));
+    }
+
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_CAPS_CACHE_MS - SHARED_GROUP_STATUS_TIMEOUT_MS);
+    const refreshed = router.view('anthropic', detailsOptions);
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_TIMEOUT_MS);
+    expect((await refreshed).members.map((entry) => entry.guestSupport)).toEqual(Array(5).fill('unknown'));
+    expect(readCaps).toHaveBeenCalledTimes(4);
+  });
+
+  it('uses late results on the next refresh so a fifth computer can be probed', async () => {
+    const readCaps = vi.fn<NonNullable<ProviderGroupRouterDeps['readCaps']>>((current) => current.agentDeviceId === devices[4].agentDeviceId
+      ? Promise.resolve(supportedCaps)
+      : new Promise((resolve) => setTimeout(() => resolve(supportedCaps), SHARED_GROUP_STATUS_TIMEOUT_MS + 1_000)));
+    const router = detailsRouter(readCaps);
+    const first = router.view('anthropic', detailsOptions);
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_TIMEOUT_MS);
+    expect((await first).members.map((entry) => entry.guestSupport)).toEqual(Array(5).fill('unknown'));
+    expect(readCaps).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_CAPS_CACHE_MS - SHARED_GROUP_STATUS_TIMEOUT_MS);
+    const refreshed = router.view('anthropic', detailsOptions);
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_TIMEOUT_MS);
+    expect((await refreshed).members.map((entry) => entry.guestSupport)).toEqual(Array(5).fill('supported'));
+    expect(readCaps).toHaveBeenCalledTimes(5);
+    expect(readCaps).toHaveBeenLastCalledWith(devices[4]);
+  });
+
+  it('caches capabilities for 15 seconds but still reads the current running state', async () => {
+    const device = devices[0];
+    const reported = { [device.key]: 0 };
+    const readCaps = vi.fn<NonNullable<ProviderGroupRouterDeps['readCaps']>>().mockResolvedValue(supportedCaps);
+    const router = harness(reported, {}, [], {
+      readGroup: () => ({ strategy: 'least', autoSwitch: true, members: [device] }), readCaps,
+    });
+    expect((await router.view('anthropic', detailsOptions)).members[0]).toMatchObject({
+      guestSupport: 'supported', state: 'available', running: 0,
+    });
+    reported[device.key] = 1;
+    readCaps.mockResolvedValue(olderCaps);
+    await vi.advanceTimersByTimeAsync(SHARED_GROUP_STATUS_CAPS_CACHE_MS - 1);
+    expect((await router.view('anthropic', detailsOptions)).members[0]).toMatchObject({
+      guestSupport: 'supported', state: 'full', running: 1,
+    });
+    expect(readCaps).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await router.view('anthropic', detailsOptions)).members[0]).toMatchObject({
+      guestSupport: 'needs-update', state: 'full', running: 1,
+    });
+    expect(readCaps).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares an in-flight device probe across different groups in the same router', async () => {
+    const device = devices[0];
+    const otherProvider = { ...device, key: 'device:0:openai', providerId: 'openai' };
+    const readCaps = vi.fn<NonNullable<ProviderGroupRouterDeps['readCaps']>>(() =>
+      new Promise((resolve) => setTimeout(() => resolve(supportedCaps), 1)));
+    const router = harness({}, {}, [], {
+      readGroup: (providerId) => ({
+        strategy: 'least', autoSwitch: true, members: [providerId === 'anthropic' ? device : otherProvider],
+      }),
+      readCaps,
+    });
+    const first = router.view('anthropic', detailsOptions);
+    const other = router.view('openai', detailsOptions);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readCaps).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    for (const details of await Promise.all([first, other])) {
+      expect(details.members[0].guestSupport).toBe('supported');
+    }
+    await router.view('openai', detailsOptions);
+    expect(readCaps).toHaveBeenCalledTimes(1);
+  });
+
+  it('isolates in-flight probes and caches between router account runtimes', async () => {
+    let finishOldProbe!: (caps: RemoteAgentCaps) => void;
+    const readCaps = vi.fn<NonNullable<ProviderGroupRouterDeps['readCaps']>>()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOldProbe = resolve; }))
+      .mockResolvedValue(olderCaps);
+    const overrides = {
+      readGroup: (): ProviderGroupConfig => ({ strategy: 'least', autoSwitch: true, members: [devices[0]] }), readCaps,
+    };
+    const oldRouter = harness({}, {}, [], overrides);
+    const first = oldRouter.view('anthropic', detailsOptions);
+    await vi.advanceTimersByTimeAsync(0);
+    const nextRouter = harness({}, {}, [], overrides);
+    expect((await nextRouter.view('anthropic', detailsOptions)).members[0].guestSupport).toBe('needs-update');
+    finishOldProbe(supportedCaps);
+    expect((await first).members[0].guestSupport).toBe('supported');
+    expect((await oldRouter.view('anthropic', detailsOptions)).members[0].guestSupport).toBe('supported');
+    expect(readCaps).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('provider group running count', () => {
   it('only probes sharing support for details and keeps an older computer usable by its owner', async () => {

@@ -107,6 +107,7 @@ function coolKey(providerId: string, memberKey: string): string {
 }
 
 export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): ProviderGroupRouter {
+  const guestSupportReader = deps.readCaps ? createGuestSupportReader(deps.readCaps) : null;
   const cooling = new Map<string, number>();
   try {
     for (const [providerId, members] of Object.entries(deps.coolingStore?.read() ?? {})) {
@@ -241,7 +242,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       const config = deps.readGroup(providerId);
       if (!config) return { providerId, config: null, members: [] };
       const resolved = await deps.directory.resolveMembers(providerId, config);
-      const readSupport = options?.includeGuestSupport && deps.readCaps ? createGuestSupportReader(deps.readCaps) : null;
+      const readSupport = options?.includeGuestSupport ? guestSupportReader : null;
       return {
         providerId,
         config,
