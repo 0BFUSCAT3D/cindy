@@ -125,9 +125,9 @@ const NOTICE_DISMISS_MS = 2500;
 const SEARCH_FILES_CAP = 20000;
 
 export default function RemoteFileBrowserScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
   return (
-    <CindyMakeSessionGate sessionId={String(sessionId ?? '')}>
+    <CindyMakeSessionGate sessionId={String(sessionId ?? '')} deviceId={readRouteString(deviceId) ?? undefined}>
       <RemoteFileBrowserContent />
     </CindyMakeSessionGate>
   );

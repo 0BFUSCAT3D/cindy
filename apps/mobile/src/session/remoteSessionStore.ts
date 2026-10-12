@@ -1364,7 +1364,7 @@ const homeSessionProjectionCache = new Map<string, {
 
 function reconcileHomeSessions(): void {
   const activeSessionIds = new Set<string>();
-  const next = mergedSessions.map((session) => {
+  const next = visibleSessions.map((session) => {
     activeSessionIds.add(session.id);
     const cached = homeSessionProjectionCache.get(session.id);
     if (cached?.source === session) return cached.projected;

@@ -146,14 +146,36 @@ describe('remoteSessionStore', () => {
     expect(remoteSessionStore.getSessionDeviceId('make')).toBe('dev-1');
     const visible = remoteSessionStore.getVisibleSessions();
     expect(visible.map(item => item.id)).toEqual(['ordinary']);
+    const home = remoteSessionStore.getHomeSessions();
+    expect(home.map(item => item.id)).toEqual(['ordinary']);
     remoteSessionStore.applySessionPatch('dev-1', 'make', { totalCostUsd: 1 });
     expect(remoteSessionStore.getVisibleSessions()).toBe(visible);
+    expect(remoteSessionStore.getHomeSessions()).toBe(home);
     remoteSessionStore.applySessionPatch('dev-1', 'ordinary', { totalCostUsd: 2 });
     expect(remoteSessionStore.getVisibleSessions()[0].totalCostUsd).toBe(2);
+    expect(remoteSessionStore.getHomeSessions()).toBe(home);
     remoteSessionStore.applySessionPatch('dev-1', 'ordinary', { source: 'cindy-make-merge' });
     expect(remoteSessionStore.getVisibleSessions()).toEqual([]);
+    expect(remoteSessionStore.getHomeSessions()).toEqual([]);
     remoteSessionStore.clear();
     expect(remoteSessionStore.getVisibleSessions()).toEqual([]);
+    expect(remoteSessionStore.getHomeSessions()).toEqual([]);
+  });
+
+  it.each(['cindy-make', 'cindy-make-merge'])('removes %s from Home when source metadata arrives late', (source) => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [
+      session('unknown'),
+      session('ordinary', { source: 'desktop' }),
+    ]);
+    const ordinary = remoteSessionStore.getHomeSessions()[1];
+    remoteSessionStore.applySessionActivity('dev-1', { sessionId: 'unknown', phase: 'error', attention: true });
+    remoteSessionStore.applySessionPatch('dev-1', 'unknown', { source });
+    expect(remoteSessionStore.getHomeSessions()).toEqual([ordinary]);
+    expect(remoteSessionStore.getHomeSessions()[0]).toBe(ordinary);
+    expect(remoteSessionStore.getSessions()).toHaveLength(2);
+    expect(remoteSessionStore.getSessionLiveActivity('unknown')).toMatchObject({ phase: 'error', attention: true });
+    remoteSessionStore.applySessionActivity('dev-1', { sessionId: 'unknown', phase: 'completed', attention: true });
+    expect(remoteSessionStore.getHomeSessions()).toEqual([ordinary]);
   });
 
   it('releases a large persisted tool input when the matching result is appended', () => {
