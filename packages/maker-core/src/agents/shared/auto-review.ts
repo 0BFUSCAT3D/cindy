@@ -3239,6 +3239,7 @@ export type GitRead = {
   args: readonly string[];
   /** git 实际运行的目录(已跟随前面各段的 cd 与 -C)；认不出时为 undefined。 */
   cwd?: string;
+  usesInheritedGitRuntime?: boolean;
   /**
    * 当前 git 读取前是否有无法证明只读的 shell 段。前置段可能先修改工作区或索引，
    * 因而使执行器在命令运行前取得的凭证扫描结果过时；调用方应拒绝凭证豁免。
@@ -6336,7 +6337,11 @@ function shellCommandReadsDotenv(
 
     if (opts.gitConfigRead && (bin === 'git' || bin.startsWith('git-credential'))) {
       const read = gitConfigReadOf(tokens, workspaceRoots, opts, segmentCwds[segmentIndex]);
-      if (read && !opts.gitConfigRead({ ...read, priorSegmentsMayMutate: priorMutation })) return true;
+      if (read && !opts.gitConfigRead({
+        ...read,
+        priorSegmentsMayMutate: priorMutation,
+        usesInheritedGitRuntime: rawTokens[0] === 'git',
+      })) return true;
     }
 
     if (bin === 'git') {
@@ -6359,6 +6364,7 @@ function shellCommandReadsDotenv(
           args: invocation.args,
           cwd: configOverride ? undefined : gitInvocationCwd(tokens, segmentCwds[segmentIndex]),
           priorSegmentsMayMutate: priorMutation,
+          usesInheritedGitRuntime: rawTokens[0] === 'git',
         })) return true;
       continue;
     }

@@ -4757,6 +4757,36 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     }
   });
 
+  it('Git 探针只把不改运行环境的裸 git 调用标成可沿用宿主运行环境', () => {
+    for (const executable of [
+      'git',
+      './git',
+      '/usr/bin/git',
+      'git.exe',
+      'GIT',
+      'env -u GIT_CONFIG_GLOBAL git',
+      'env --unset=GIT_CONFIG_GLOBAL git',
+      'env -i git',
+      'env --ignore-environment git',
+      'exec -c git',
+      'PATH=/other/bin git',
+      'LD_PRELOAD=/other/lib.so git',
+      'command -p git',
+    ]) {
+      for (const subcommand of ['diff', 'config --list']) {
+        const command = executable + ' ' + subcommand;
+        expect(shellCommandReadsCredentials(command, roots), command).toBe(subcommand === 'diff');
+        const reads: GitRead[] = [];
+        const collect = (read: GitRead) => {
+          reads.push(read);
+          return true;
+        };
+        expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect, gitConfigRead: collect }), command).toBe(false);
+        expect(reads, command).toEqual([expect.objectContaining({ usesInheritedGitRuntime: executable === 'git' })]);
+      }
+    }
+  });
+
   it('gitContentRead：git 查看内容先问调用方，并带上 git 实际运行的目录', () => {
     const reads: GitRead[] = [];
     const record = (read: GitRead) => {

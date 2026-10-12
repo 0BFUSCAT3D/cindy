@@ -447,6 +447,9 @@ export class GitCredentialHistory {
   /** 这些 git 调用(credentials.ts shareCredentialGitReads 的结果)在本机核实后都读不到、打不出凭证。 */
   async provesSafe(command: string, reads: readonly GitRead[], signal?: AbortSignal): Promise<boolean> {
     if (reads.length === 0 || GIT_ENV_ASSIGNMENT.test(command) || GIT_CONFIG_ENV_ASSIGNMENT.test(command)) return false;
+    const searchPath = process.env.PATH;
+    if (!searchPath || searchPath.split(path.delimiter).some((entry) => !path.isAbsolute(entry))) return false;
+    if (reads.some((read) => read.usesInheritedGitRuntime !== true)) return false;
     // The history/index probe runs before the complete shell command. If an earlier
     // segment may change Git state, its result can become stale before the later read;
     // keep the credential confirmation in that case instead of granting an exemption.

@@ -10,7 +10,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { shareCredentialGitReads } from '../../credentials';
+import { RemoteExecutor } from '../executor';
+import { ExecutorGate, type ExecutorAction } from '../gate';
 import { GitCredentialHistory } from '../gitCredentials';
+import { ExecutorWorkspace } from '../workspace';
 
 // Windows 上每次 spawn git 要数百毫秒。
 vi.setConfig({ testTimeout: process.platform === 'win32' ? 120_000 : 60_000 });
@@ -40,11 +43,35 @@ async function provesSafe(history: GitCredentialHistory, command: string, cwd = 
   return history.provesSafe(command, reads ?? []);
 }
 
+async function requiresCredentialConfirmation(history: GitCredentialHistory, command: string): Promise<void> {
+  const workspace = new ExecutorWorkspace({ workingDir: repo });
+  const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: true });
+  const confirm = vi.fn(async () => false);
+  const executor = new RemoteExecutor({
+    workspace,
+    gate,
+    rgPath: 'rg',
+    tempDir: path.join(root, 'executor'),
+    confirm,
+    gitCredentials: history,
+  });
+  const action: ExecutorAction = { kind: 'exec', command, cwd: repo };
+  try {
+    expect(gate.authorize(action).ok, command).toBe(false);
+    expect(await executor.confirm(action), command).toBe(false);
+    expect(confirm, command).toHaveBeenCalledExactlyOnceWith(action);
+    expect(gate.authorize(action).ok, command).toBe(false);
+  } finally {
+    await executor.close();
+  }
+}
+
 const GIT_ENV_KEYS = ['GIT_CEILING_DIRECTORIES', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
 const savedEnv = Object.fromEntries(GIT_ENV_KEYS.map((key) => [key, process.env[key]]));
 
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'share-git-credentials-')));
+  vi.stubEnv('PATH', (process.env.PATH ?? '').split(path.delimiter).map((entry) => path.resolve(entry)).join(path.delimiter));
   // 临时目录的上层也可能是 git 仓库(比如整个用户目录)：不往上找。开发机自己的全局与系统 git 配置
   // 也不读，免得里面的令牌影响结果。
   process.env.GIT_CEILING_DIRECTORIES = root;
@@ -61,6 +88,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const key of GIT_ENV_KEYS) {
     if (savedEnv[key] === undefined) delete process.env[key];
     else process.env[key] = savedEnv[key];
@@ -271,6 +299,79 @@ describe('GitCredentialHistory', () => {
     const started = Date.now();
     expect(await provesSafe(history, 'git log -p -- ' + selector)).toBe(false);
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('keeps confirmation when env removes variables or clears the environment', async () => {
+    const history = new GitCredentialHistory();
+    const home = path.join(root, 'home');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(home, '.gitconfig'), '[http]\n\textraHeader = global-runtime-fixture\n');
+    const systemConfig = path.join(root, 'system-gitconfig');
+    fs.writeFileSync(systemConfig, '[http]\n\textraHeader = system-runtime-fixture\n');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('XDG_CONFIG_HOME', path.join(root, 'xdg'));
+    vi.stubEnv('GIT_CONFIG_SYSTEM', systemConfig);
+    expect(await provesSafe(history, 'git config --list')).toBe(true);
+    const removedEnv = { ...process.env };
+    delete removedEnv.GIT_CONFIG_GLOBAL;
+    delete removedEnv.GIT_CONFIG_NOSYSTEM;
+    const output = execFileSync('git', ['config', '--list'], { cwd: repo, env: removedEnv, encoding: 'utf8' });
+    expect(output).toContain('http.extraheader=global-runtime-fixture');
+    expect(output).toContain('http.extraheader=system-runtime-fixture');
+    for (const command of [
+      'env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM git config --list',
+      'env -uGIT_CONFIG_GLOBAL git config --list',
+      'env --unset GIT_CONFIG_GLOBAL git config --list',
+      'env --unset=GIT_CONFIG_GLOBAL git config --list',
+      'env -u HOME git diff',
+      'env -i git config --list',
+      'env --ignore-environment git diff --cached',
+      'env - git config --list',
+      'exec -c git config --list',
+    ]) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('keeps confirmation for explicit executables, wrappers and runtime overrides', async () => {
+    const history = new GitCredentialHistory();
+    const executable = path.join(repo, 'git');
+    write('git', '#!/bin/sh\nprintf "runtime-mismatch\\n"\n');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(executable, 0o755);
+      expect(execFileSync(executable, ['diff'], { cwd: repo, encoding: 'utf8' })).toBe('runtime-mismatch\n');
+    }
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    expect(await provesSafe(history, 'git diff --cached')).toBe(true);
+    expect(await provesSafe(history, 'git config --list')).toBe(true);
+    for (const command of [
+      './git diff',
+      './git config --list',
+      '"' + executable + '" diff',
+      '/usr/bin/git config --list',
+      'git.exe diff',
+      'GIT diff',
+      'PATH=/other/bin git diff',
+      'env PATH=/other/bin git config --list',
+      'LD_PRELOAD=/other/lib.so git diff',
+      'DYLD_INSERT_LIBRARIES=/other/lib.dylib git config --list',
+      'command -p git diff',
+      'env git config --list',
+    ]) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
+  it('keeps confirmation when the inherited PATH has a relative search directory', async () => {
+    const history = new GitCredentialHistory();
+    const command = 'git diff';
+    expect(await provesSafe(history, command)).toBe(true);
+    vi.stubEnv('PATH', '.' + path.delimiter + process.env.PATH);
+    expect(await provesSafe(history, command)).toBe(false);
+    await requiresCredentialConfirmation(history, command);
   });
 
   it('keeps asking where the scan does not reach', async () => {
