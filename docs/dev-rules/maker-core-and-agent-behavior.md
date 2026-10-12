@@ -409,6 +409,13 @@ sessionRunningRetry 就停。每次因 replacement 关闭而重新入队都计�
   capability selection 与 auto-review intent。不得把无人值守只读边界重置成普通
   Auto，也不得用固定 wait 提示覆盖原请求的能力选择或审查意图。
   Claude wake continuation 与 Codex yield continuation 先分账，不抽公共模块。
+- **Provider 自己开的轮次要显式交给宿主。** 本代产品轮次已收口、没有预留中的 `Session.send`
+  时出现的主代理新输出（Claude Code 后台任务完成后 CLI 自行注入 `<task-notification>` 开的
+  新一轮）沿用上一代 generation、没有 `turnOrigin`，也不经过 `beforeProviderStart`。`Session`
+  在该轮首个事件分发给监听者之前同步调用 `SessionTurnLifecycleObserver.onProviderInitiatedTurn`，
+  每轮一次，终态后清除；子代理事件、后台事件、claim 挡住的续跑段不触发。同一产品轮次接受过
+  插话时，收口后第一个无发送的轮次归插话（分不出插话是否已被原轮次吸收，宁可漏报）。桌面用它把这类轮次回传到 IM（`maker-ipc/channelTurnSignal.ts`）；
+  回调必须同步决定，异步查询会从轮次中途开始观察。回归见 `session.origin.test.ts`。
 
 ### Auto 模式的同范围自动跟进
 
