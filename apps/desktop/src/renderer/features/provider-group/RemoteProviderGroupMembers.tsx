@@ -159,7 +159,7 @@ function MemberRow({
   const [quotaOpen, setQuotaOpen] = useState(false);
   const quotaId = useId();
   const selfDeviceId = useOptionalAuthDeviceId();
-  const versionStatus = appVersion ? { ...status, appVersion } : status;
+  const versionStatus = status?.appVersion ? status : appVersion ? { ...status, appVersion } : status;
   return (
     <div
       data-testid="remote-provider-group-member"

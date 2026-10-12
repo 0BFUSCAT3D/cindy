@@ -130,6 +130,14 @@ describe('RemoteProviderGroupMembers', () => {
     expect(screen.queryByText('settings.providers.remote.groupMembersFailed')).toBeNull();
   });
 
+  it('prefers the group status version over a stale device directory version', async () => {
+    mountWith({ appVersion: '0.1.105' }, {
+      devices: [{ deviceId: 'vm', appVersion: '0.1.103' }],
+    });
+    await screen.findByText('v0.1.105');
+    expect(screen.queryByText('v0.1.103')).toBeNull();
+  });
+
   it('refreshes an offline computer’s reported version and drops invalid or no-longer-reported versions', async () => {
     vi.useFakeTimers();
     const { listDevices } = mountWith({ state: 'offline', running: 0 }, {
