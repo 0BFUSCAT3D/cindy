@@ -68,6 +68,7 @@ import { imAttachmentsRoot, removeImSessionAttachmentDirs } from '../../im/share
 import { upsertRecentWorkdir } from './recentWorkdirs';
 import { createLogger } from '../../logger';
 import {
+  DESKTOP_TASK_LIST_SESSION_SOURCES,
   DESKTOP_VISIBLE_SESSION_SOURCES,
   isRetainableProjectSession,
 } from '../../../shared/sessionSource.js';
@@ -1272,6 +1273,21 @@ export function registerSessionIpc(
         before = { updatedAt: value.updatedAt, id: value.id };
       }
 
+      const rawIds = options && typeof options === 'object' ? (options as { ids?: unknown }).ids : undefined;
+      let ids: string[] | undefined;
+      if (rawIds !== undefined) {
+        // Exact-subset pagination remains local-only, like the continuation cursor.
+        assertTrustedAppRendererEvent(event);
+        if (!Array.isArray(rawIds) || rawIds.length > 10_000 || usageHistory || includePinned) {
+          throwIpcError('INVALID_PARAMS', 'Invalid session list IDs');
+        }
+        ids = [...new Set(rawIds.map((id, index) => {
+          const value = requireString(id, `ids[${index}]`);
+          if (value.length > 256) throwIpcError('INVALID_PARAMS', 'Session list ID too long');
+          return value;
+        }))];
+      }
+
       // 支持 Sidebar Filter 的 Active/Archived/All status 过滤。
       //   - 'active' / 'archived' → WHERE status = ?
       //   - 'all' / undefined / 其它非法值 → WHERE status != 'deleted'
@@ -1280,13 +1296,15 @@ export function registerSessionIpc(
       const statusFilter: 'active' | 'archived' | null =
         status === 'active' || status === 'archived' ? status : null;
       const loadRows = async () => {
+        if (ids?.length === 0) return [];
         // 按 DESKTOP_VISIBLE_SESSION_SOURCES 白名单过滤 — 包含 IM 渠道
         // (feishu/slack/discord)与本机自动化(scheduler/learn/shared);
-        // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。
-        const sourceFilter = inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES);
+        // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。/review 审查任务
+        // 只从来源任务的审查卡片打开,不进普通任务列表(用量历史仍包含)。
+        const sourceFilter = inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES);
         const statusWhere = () =>
           statusFilter ? eq(sessions.status, statusFilter) : ne(sessions.status, 'deleted');
-        const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere()), cap, before);
+        const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere(), ids ? inArray(sessions.id, ids) : undefined), cap, before);
 
         let mergedRows = rows;
         if (includePinned) {
@@ -1319,7 +1337,7 @@ export function registerSessionIpc(
       // forceRefresh / status 重拉带 fresh，不并入写前那次查询。
       const result = usageHistory
         ? await loadUsageHistoryRows()
-        : userId && !fresh && !before
+        : userId && !fresh && !before && !ids
           ? await runSessionListSingleFlight(
               buildSessionListFlightKey({
                 userId,

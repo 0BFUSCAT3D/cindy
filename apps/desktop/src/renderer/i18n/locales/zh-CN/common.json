@@ -468,6 +468,7 @@
       "weightAria": "{{name}} 的权重",
       "weightOption": "权重 {{weight}}",
       "assignAria": "给 {{name}} 分配任务",
+      "assignLocalAria": "允许 {{name}} 接收外部新任务",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出组",
       "status": {
@@ -475,6 +476,7 @@
         "idle": "空闲",
         "full": "已满",
         "paused": "已暂停分配",
+        "pausedLocal": "已暂停接收外部新任务",
         "cooling": "冷却中",
         "coolingUntil": "冷却中 · 约 {{time}} 恢复",
         "offline": "不在线",
@@ -6040,7 +6042,7 @@
         "installed": "已安装",
         "replace": "替换",
         "replaceAria": "使用此市场版本替换 {{name}}",
-        "replaceDescription": "已安装相同标识的插件；继续安装会用此市场版本替换，并保留插件数据。",
+        "replaceDescription": "已安装相同标识的插件；继续安装会切换来源。原来源的数据将隔离保留，新来源不会继承原账号和密钥，需要重新连接。",
         "unavailable": "插件市场暂时不可用；已安装插件仍可正常管理和使用。",
         "customSourcesUnavailable": "以下自定义市场暂时不可用：{{names}}。其他市场不受影响。",
         "authenticationRequired": "登录 Cindy 后才能查看插件市场。",
@@ -8571,7 +8573,7 @@
         "message": "跟进「{{title}}」",
         "aria": "跟进「{{title}}」"
       },
-      "followingMark": "{{names}}在跟进这个项目",
+      "followingMark": "{{names}}在跟进这个任务",
       "olderCount_other": "更早的 {{count}} 个",
       "kind": {
         "existing": "原有任务",
@@ -10955,6 +10957,7 @@
         },
         "directory": "目录：",
         "baseline": "基线分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下结论已生成，但未能验证是否仍然有效。"
       }
     },
@@ -11413,6 +11416,7 @@
       },
       "dialogueLabel": "对话",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回来源任务",
       "waitForReply": "等待你在文档区回复…",
       "modelSwitchedFastModeOff": "已切换模型，Fast Mode 已关闭"
     },
@@ -14105,6 +14109,18 @@
       "current": "审查当前目录",
       "choose": "选择其他目录",
       "open": "审查"
+    },
+    "inputSummary": {
+      "title": "独立审查（只读，无开发记忆）",
+      "directory": "目录：{{dir}}",
+      "baseline": "对比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未覆盖：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 个任务目录未检查",
+      "artifacts": "成果：{{count}} 项",
+      "focus": "关注：{{focus}}",
+      "task": "按任务目标审查当前成果"
     }
   },
   "learn": {
