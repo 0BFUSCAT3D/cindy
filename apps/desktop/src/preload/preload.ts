@@ -14,6 +14,10 @@ import {
   COPY_PNG_TO_CLIPBOARD_CHANNEL,
   type CopyPngToClipboardParams,
 } from '../shared/pngClipboard';
+import {
+  COPY_TEXT_TO_CLIPBOARD_CHANNEL,
+  type CopyTextToClipboardParams,
+} from '../shared/textClipboard';
 import type { ByokStatus } from '../shared/modelAccess.js';
 import type { LocalPluginOauthRequest, LocalPluginSecretRequest } from '../shared/pluginOauth';
 import { REMOTE_VIEWER } from '../shared/remoteDesktopViewer';
@@ -411,6 +415,8 @@ type DiscordBotSessionAuthCheckWire = {
 type LocalDbSessionListOptions = {
   /** Local list continuation; does not change the default capped query. */
   before?: { updatedAt: number; id: string };
+  /** Local renderer-only exact subset, filtered before sorting and pagination. */
+  ids?: string[];
   includePinned?: boolean;
   fresh?: boolean;
   usageHistory?: boolean;
@@ -1301,6 +1307,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       opts: {
         expectedPackageSha256: string;
         expectedInstalledApproval: string;
+        expectedInstalledInstanceId: string;
       },
     ): Promise<{ ghost: unknown }> => ipcRenderer.invoke('ghosts:update', lizFilePath, opts),
     cindyPrefsSync: (
@@ -1361,13 +1368,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('ghosts:pick-file'),
     inspect: (
       lizFilePath: string,
+      opts?: { expectedInstalledInstanceId: string; expectedInstalledApproval: string },
     ): Promise<{
       manifest: unknown;
       trust: unknown;
       packageSha256: string;
       unsupportedSlots: string[];
       iconDataUrl?: string;
-    }> => ipcRenderer.invoke('ghosts:inspect', lizFilePath),
+    }> => opts === undefined
+      ? ipcRenderer.invoke('ghosts:inspect', lizFilePath)
+      : ipcRenderer.invoke('ghosts:inspect', lizFilePath, opts),
     uninstall: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('ghosts:uninstall', id),
     /** 详情页「导出 .cindy」:main 打包安装目录 → 系统保存对话框落盘。 */
     export: (
@@ -1380,8 +1390,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       fanOutRetirementOpen((id: unknown) => { if (typeof id === 'string') callback(id); }),
     acknowledgeRetirement: (id: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('ghosts:acknowledge-retirement', id),
-    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('ghosts:set-enabled', id, enabled),
+    setEnabled: (id: string, enabled: boolean, expectedInstalledApproval?: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('ghosts:set-enabled', id, enabled, expectedInstalledApproval),
     requestTaskApproval: (id: string): Promise<{ granted: boolean }> =>
       ipcRenderer.invoke('ghosts:request-task-approval', id),
     /** 目录级禁用清单(插件页项目范围视图;sendSync 保证切换同帧渲染)。 */
@@ -1482,6 +1492,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolvePanelMedia: (
       uri: string,
       purpose?: 'attach' | 'menu',
+      instanceId?: string,
+      sourceToken?: string,
     ): Promise<
       | { url: string; kind?: 'image' }
       | {
@@ -1493,7 +1505,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
           ext: string;
           mimeType: string;
         }
-    > => ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose),
+    > => sourceToken !== undefined
+      ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId, sourceToken)
+      : instanceId === undefined
+      ? ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose)
+      : ipcRenderer.invoke('ghosts:resolve-panel-media', uri, purpose, instanceId),
     runtimeStates: (): Promise<{ states: Record<string, string> }> =>
       ipcRenderer.invoke('ghosts:runtime-states'),
     reload: (id: string): Promise<{ state: string }> => ipcRenderer.invoke('ghosts:reload', id),
@@ -4138,6 +4154,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Copy an in-memory export without requiring renderer focus.
   copyPngToClipboard: (params: CopyPngToClipboardParams): Promise<void> =>
     ipcRenderer.invoke(COPY_PNG_TO_CLIPBOARD_CHANNEL, params),
+
+  // Copy text through Main and confirm it by reading the clipboard back.
+  copyTextToClipboard: (params: CopyTextToClipboardParams): Promise<void> =>
+    ipcRenderer.invoke(COPY_TEXT_TO_CLIPBOARD_CHANNEL, params),
 
   // Copy an image / video (resolved from xdt-image:// or xdt-video:// URL,
   // or absolute path) into the system clipboard as a FILE REFERENCE. Used

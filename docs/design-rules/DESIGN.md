@@ -194,6 +194,14 @@ motion; inspect the complete action and loop boundary before accepting an asset.
 
 用户确认的任务标签色板为红、橙、黄、绿、蓝、紫、灰、粉、珊瑚、青、靛蓝、白共十二色。只用于标签色球与编辑色板，表示用户分类，不表示任务运行状态。色球为圆形、细描边，选中时勾位于球内；白色在 Light/Dark 中均保持白色，用独立深色勾保证对比度。Desktop 使用 `task-tag-*` 语义 token；Mobile 使用对应 `taskTag*` 色板字段。默认面板只显示选择列表，添加或编辑后才显示名称和两行六列色板，不显示双击编辑提示。
 
+### Personal message bubble colors (Mobile, 2026-10-12)
+
+手机版设置提供「我的消息气泡颜色」:默认继续跟随现有主题,另有初稿、晨光、灵感、梦境、夜猫、项圈六个预设和自定义颜色。名称取自 Cindy 自身的设定(创作的一天、黑猫与红项圈),不使用公司名或游戏 IP;各语言意译,不逐字翻译。此项是用户主动选择的个性化例外,只作用于确认是自己发出的消息气泡(会话、待发送与伙伴群聊)和设置预览,不染色 Agent 回复、系统卡片或页面背景。共享任务里所有 user 消息都右对齐,因此按归属而不是对齐判断:访客消息只有作者账号是当前账号才染,房主消息只在不是以访客身份查看时染;归属只用于展示,不作权限依据。偏好仅保存在本机;选「默认」即删除 override。桌面端暂未提供。
+
+颜色由 packages/maker-shared/src/userBubbleAppearance.ts 在运行期按 light/dark 生成背景、前景与描边,属于治理合同 §3.4 的运行时派生值,消费者只用该结果,不把用户输入直接拼进样式。预设柔化较强;自定义色着色更明显。着色强度会自动收敛到气泡内实际出现的文字(正文、次要文字、弱提示、行内代码)都不低于 4.5:1、派生前景不低于 7:1;已满足的颜色不降低。项圈取品牌红色相,只用柔化后的浅红调,不直接使用品牌红。
+
+iOS 使用原生 Form 二级页:顶部是与真实气泡同款的预览,预设与「自定义颜色」同在一个 inline Picker 勾选列表;选中自定义才在其下展开一条彩虹色带(仅选色相,外形对齐系统滑块)。iOS 没有比系统 ColorPicker 更轻的自由选色组件,系统取色面板因功能过多不采用。拖动时只更新本页预览,松手才保存;保存失败的提示提供「重试」。Android 沿用设置页内的面板实现。
+
 ### Chip & Button Neutrals
 
 Small interactive chips (button backgrounds, tag pills, avatar fills, selected-nav pills) sit outside the layer system — they're foreground elements, not background layers.
@@ -534,10 +542,13 @@ The usage heatmap, daily-token bars and their separate interaction indicators fo
 ### macOS menu bar quota panel (owner-approved v6 prototype, 2026-10-11)
 
 - A native status item (`NSStatusItem`) and panel rendered by the Swift helper in `apps/desktop/native/menubar/`, not an HTML window. Main builds every sentence and value; the helper renders, animates and formats only times that tick while the panel is open. Available on macOS 14+ and toggled in Settings → Window behavior (default on).
-- The panel uses the system popover material (`NSVisualEffectView`, `.popover`) with a 0.5pt hairline edge, so it follows the desktop wallpaper and Light/Dark automatically. Native SwiftUI controls (segmented `Picker`, `Toggle`, Swift Charts) are used as-is; their system geometry is not restyled to Web tokens.
+- The panel uses the system popover material (`NSVisualEffectView`, `.popover`) with a 0.5pt hairline edge, so it follows the desktop wallpaper and Light/Dark automatically. Native SwiftUI controls (segmented `Picker`, `Toggle`, Swift Charts) are used as-is; their system geometry is not restyled to Web tokens. A segmented control is used only where its labels fit in every language (see below).
 - The menu bar icon and every provider/harness logo are template images (monochrome, tinted by the system). Brand red appears only in the Cindy wordmark, a fixed Light/Dark image pair; it is never used for state.
 - Status colors are fixed native values shared by both appearances: warning `#EA6B17` (15% or less left, or a pace that runs out before reset) and error `#D91F37` (used up). Agent/harness fills reuse the identity colors of the §2 Usage History registration: `--engine-badge-cc` `#D97757` (with two lighter steps for Claude's session/per-model rings), `--engine-badge-codex` `#7A9DFF` and `--usage-model-1` teal for Pi; neutral ink fills carry no state.
 - Copy is truthful: Cindy does not switch accounts automatically and has no default account per service, so the headline recommends the source with the most room ("{{name}} has the most left.") instead of claiming which one is in use.
+- Size and density (owner request, 2026-10-12: lighter on small laptops, verified in every language): every page is 320–368pt wide by tube count, with a 20pt panel radius and 14pt tile radius. The panel never takes more than 86% of the screen's visible height; longer content scrolls between the fixed header and footer. When the visible height is under 1000pt (13–14" laptops at default scaling), the panel opens in a short layout: 76pt tubes instead of 96pt, 160pt rings instead of 188pt, and two task rows instead of three.
+- The usage page (owner-approved redesign, 2026-10-12) shares the panel width and slides in like a detail page instead of widening into a dashboard. Top to bottom it shows: back, title and a 7/30/90-day switch; one total with two caption lines (period, scope and value basis; daily average, paid and tokens); a 100pt stacked chart labeled only with its first day and Today, where hovering a day swaps the total for that day's amount and harness split; a thin harness bar with share and amount per harness; the top five models or today's tasks; and the value note. There is no amount/tokens switch and no scope switch: the scope follows Settings, and the caption names it.
+- Every row must fit in the longest supported language. A segmented control is used only where all its labels fit on one row in every language. The four menu bar text options are a two-column chip grid. Other controls fall back instead of overflowing: the usage-scope picker moves under its title. Screenshots for review cover English, Simplified and Traditional Chinese, Japanese and Korean, in Light and Dark.
 
 ### Desktop chat and operation authorization (DS-9, 2026-09-11)
 
@@ -1022,6 +1033,7 @@ Known but deliberately-deferred cleanups are tracked in the decision log's backl
 - When a dismissible form opens, focus its primary input. Ordinary ConfirmDialog retains Cancel by default; explicit `autoFocusConfirm` opts into the primary action, and typed confirmation takes precedence (§4, DS-6). Selection-only dialogs such as InstallTargetPicker start on Cancel to avoid focusing an immediate installation action. Contain Tab, support Esc when idle, and restore the opener on close; actual saving/installation blocks dismissal until settlement.
 - On close, focus returns to the triggering element (Radix default — don't break it).
 - Composer-replacing cards (permission, plan review, ask) take window-level Enter / Esc / number shortcuts only when the key is otherwise unclaimed. An already-handled key, IME composition, an editable field, a control or popup layer outside the card, and Enter on the card's own control (native activation — Enter on Deny denies) all take precedence. Implementation: `shouldCardShortcutYield` in [editableKeyboardTarget.ts](../../apps/desktop/src/renderer/lib/editableKeyboardTarget.ts); regressions in [cardShortcutYield.test.tsx](../../apps/desktop/src/renderer/__tests__/cardShortcutYield.test.tsx).
+- Settings (an in-window route, all desktop platforms) steps back one level on an unclaimed Esc, the same exit as its top-left Back: the Pi extensions sub-page returns to General, otherwise Settings closes. Inner owners settle first — clearing a non-empty search, shortcut recording, dialogs / menus / popovers, a plugin detail page (back to its list) and the Help panel; IME composition, modified Esc and auto-repeat from a held key never navigate (one physical press steps back one level). With a Settings field focused, the first Esc only leaves the field (blur-to-save fields commit as on click-away) and the next one exits. Implementation: [useSettingsEscape.ts](../../apps/desktop/src/renderer/components/settings/useSettingsEscape.ts); regressions in [useSettingsEscape.test.tsx](../../apps/desktop/src/renderer/components/settings/__tests__/useSettingsEscape.test.tsx).
 
 ### 14.3 Keyboard & IME (send-type text fields)
 
