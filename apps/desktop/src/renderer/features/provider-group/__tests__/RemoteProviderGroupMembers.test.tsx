@@ -58,17 +58,18 @@ afterEach(() => {
 describe('RemoteProviderGroupMembers', () => {
   it('shows the version and sharing update hint without hiding availability for the owner', async () => {
     mountWith({ appVersion: '0.1.103', guestSupport: 'needs-update' });
-    await screen.findByText('providerGroup.member.version.current:{"version":"0.1.103"}');
-    expect(screen.getByText('providerGroup.member.version.needsUpdate')).toBeTruthy();
+    await screen.findByText('v0.1.103');
+    expect(screen.getByText('providerGroup.member.version.updateRequired')).toBeTruthy();
     expect(screen.getByTestId('remote-provider-group-member').getAttribute('data-member-state')).toBe('available');
     expect(screen.getByText('providerGroup.member.runningCount:{"count":2}')).toBeTruthy();
   });
 
-  it('leaves the version and sharing compatibility unknown for an older group host', async () => {
+  it('does not repeat unknown diagnostics in every row for an older group host', async () => {
     mountWith({});
-    await screen.findByText('providerGroup.member.version.supportUnknown');
-    expect(screen.getByText('providerGroup.member.version.unknown')).toBeTruthy();
-    expect(screen.queryByText('providerGroup.member.version.needsUpdate')).toBeNull();
+    await screen.findByText('providerGroup.member.runningCount:{"count":2}');
+    expect(screen.queryByText('providerGroup.member.version.unknown')).toBeNull();
+    expect(screen.queryByText('providerGroup.member.version.supportUnknown')).toBeNull();
+    expect(screen.queryByText('providerGroup.member.version.updateRequired')).toBeNull();
   });
 
   it('says this computer cannot reach a computer the group computer still sees as usable', async () => {

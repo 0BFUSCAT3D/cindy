@@ -479,6 +479,7 @@
       "local": "本機",
       "version": {
         "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
         "unknown": "版本未知",
         "needsUpdate": "需要更新才能接收分享任務",
         "supportUnknown": "分享任務相容性未知"

@@ -126,8 +126,8 @@ describe('ProviderGroupSection', () => {
     base.members[0] = { ...base.members[0], appVersion: '0.1.103', guestSupport: 'needs-update' };
     command.mockImplementation(async (cmd: { action: string }) => cmd.action === 'list' ? { anthropic: stored } : base);
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
-    await screen.findByText('providerGroup.member.version.current:{"version":"0.1.103"}');
-    expect(screen.getByText('providerGroup.member.version.needsUpdate')).toBeTruthy();
+    await screen.findByText('v0.1.103');
+    expect(screen.getByText('providerGroup.member.version.updateRequired')).toBeTruthy();
     expect(screen.getByTestId('provider-group-member').getAttribute('data-member-state')).toBe('available');
     expect(screen.getByText('providerGroup.member.runningCount:{"count":1}')).toBeTruthy();
   });

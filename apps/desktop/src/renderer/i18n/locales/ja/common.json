@@ -479,6 +479,7 @@
       "local": "このパソコン",
       "version": {
         "current": "Cindy {{version}}",
+        "updateRequired": "更新が必要",
         "unknown": "バージョン不明",
         "needsUpdate": "共有されたタスクを受け取るには更新が必要",
         "supportUnknown": "共有タスクへの対応状況は不明"

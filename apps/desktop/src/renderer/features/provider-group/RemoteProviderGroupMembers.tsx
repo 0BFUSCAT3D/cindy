@@ -18,7 +18,7 @@ import type {
 } from '../../../shared/providerGroup';
 import { providerShareComputerName, useProviderShareOwnerNameOf } from '../provider-share/providerShareNames';
 import { GroupMemberQuota, groupMemberQuotaTarget } from './GroupMemberQuota';
-import { GroupMemberVersion } from './GroupMemberVersion';
+import { GroupMemberDetailsButton, GroupMemberVersion } from './GroupMemberVersion';
 import { memberStatusText } from './ProviderGroupSection';
 
 const REFRESH_INTERVAL_MS = 15_000;
@@ -138,7 +138,8 @@ function MemberRow({
       data-unreachable-here={unreachableHere || undefined}
       className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}
     >
-      <button
+      <GroupMemberDetailsButton
+        status={status}
         type="button"
         aria-expanded={quotaOpen}
         aria-controls={quotaOpen ? quotaId : undefined}
@@ -154,6 +155,7 @@ function MemberRow({
         <span className={cn('flex min-w-0 flex-1 flex-col gap-0.5', member.paused && 'opacity-60')}>
           <span className="flex min-w-0 flex-wrap items-baseline gap-2 text-13">
             <span className="truncate font-medium text-[var(--text-primary)]">{label}</span>
+            <GroupMemberVersion status={status} />
             <span className="text-12 text-[var(--text-secondary)]">{source}</span>
             <ChevronRight
               aria-hidden="true"
@@ -184,9 +186,8 @@ function MemberRow({
               </>
             )}
           </span>
-          <GroupMemberVersion status={status} />
         </span>
-      </button>
+      </GroupMemberDetailsButton>
       {quotaOpen && (
         <GroupMemberQuota
           id={quotaId}

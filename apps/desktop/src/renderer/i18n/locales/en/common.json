@@ -482,6 +482,7 @@
       "local": "This Computer",
       "version": {
         "current": "Cindy {{version}}",
+        "updateRequired": "Update needed",
         "unknown": "Version unknown",
         "needsUpdate": "Update needed to receive shared tasks",
         "supportUnknown": "Shared-task compatibility unknown"

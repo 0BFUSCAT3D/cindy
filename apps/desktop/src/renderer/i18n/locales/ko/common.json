@@ -479,6 +479,7 @@
       "local": "이 컴퓨터",
       "version": {
         "current": "Cindy {{version}}",
+        "updateRequired": "업데이트 필요",
         "unknown": "버전 확인 안 됨",
         "needsUpdate": "공유받은 작업을 실행하려면 업데이트 필요",
         "supportUnknown": "공유 작업 호환성 확인 안 됨"
