@@ -161,9 +161,9 @@ function avKindFor(pathOrName: string): 'video' | 'audio' | null {
 }
 
 export default function RemoteFilePreviewScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
   return (
-    <CindyMakeSessionGate sessionId={String(sessionId ?? '')}>
+    <CindyMakeSessionGate sessionId={String(sessionId ?? '')} deviceId={readRouteString(deviceId) ?? undefined}>
       <RemoteFilePreviewContent />
     </CindyMakeSessionGate>
   );

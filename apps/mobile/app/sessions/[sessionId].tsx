@@ -978,9 +978,9 @@ function composerDraftScopeKey(sessionId: string, routeDraft: string | null): st
 }
 
 export default function SessionScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
   return (
-    <CindyMakeSessionGate sessionId={readRouteParam(sessionId) ?? ''}>
+    <CindyMakeSessionGate sessionId={readRouteParam(sessionId) ?? ''} deviceId={readRouteParam(deviceId) ?? undefined}>
       <SessionScreenContent />
     </CindyMakeSessionGate>
   );
