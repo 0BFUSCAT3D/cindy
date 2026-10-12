@@ -431,16 +431,15 @@ describe('task image delivery', () => {
         await fs.mkdir(path.dirname(source), { recursive: true });
       }
       if (kind === 'symlink') {
-        const outsideDir = path.join(state.root, 'outside');
-        await fs.mkdir(outsideDir);
-        const outside = path.join(outsideDir, 'private.png');
+        const outside = path.join(state.root, 'private.png');
         await fs.writeFile(outside, PNG);
         if (process.platform === 'win32') {
-          // 与 scratchpad 用例一样用 junction，验证真实路径越界，不依赖文件链接特权。
+          // Junctions preserve the real path escape without requiring file-symlink privileges.
           const link = path.join(work, 'linked');
-          await fs.symlink(outsideDir, link, 'junction');
+          await fs.symlink(state.root, link, 'junction');
           source = path.join(link, 'private.png');
         } else await fs.symlink(outside, source);
+        expect(await fs.realpath(source)).toBe(await fs.realpath(outside));
       } else await fs.writeFile(source, kind === 'not-image' ? Buffer.from('not png') : PNG);
       const row = insert(`![image](${source})`);
       expect(await restoreTaskImageRows(client, [row])).toEqual([row]);
