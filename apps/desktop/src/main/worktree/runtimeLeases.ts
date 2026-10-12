@@ -8,6 +8,7 @@ import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { isManagedWorktreeDirectoryName } from '../../shared/managedWorktreePaths';
 import { notifyWorktreeRecycleOpportunity } from './recycleEvents';
 import { isReusedDesktopInstancePid, readDesktopProcessIdentity } from '../desktopProcessIdentity';
+import { isGitProcessTreeAlive } from './gitExec';
 
 function runtimeRoot(): string {
   return path.join(app.getPath('userData'), 'worktree-runtime-leases');
@@ -319,6 +320,7 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
   return paths;
 }
 
+/** A detached checkout can outlive git while its POSIX process group remains active. */
 /**
  * Remove runtime leases left by a dead owner for an explicitly cancelled,
  * unclaimed pre-created worktree.
@@ -359,7 +361,7 @@ export async function reclaimOrphanedWorktreeRuntimeLeases(
           || await physicalWorktreeKey(value.path) !== target
           || pidMayBeAlive(value.pid)
           || typeof value.childPid !== 'number' || !Number.isInteger(value.childPid)
-          || value.childPid <= 0 || pidMayBeAlive(value.childPid)) {
+          || value.childPid <= 0 || await isGitProcessTreeAlive(value.childPid)) {
           continue;
         }
         await fs.unlink(file);

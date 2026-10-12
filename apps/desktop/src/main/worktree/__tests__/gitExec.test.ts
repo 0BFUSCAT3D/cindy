@@ -29,6 +29,7 @@ vi.mock('../../logger', () => ({
 import {
   gitExec,
   GitExecError,
+  isGitProcessTreeAlive,
   normalizeSafeDirectorySpelling,
   safeDirectorySpellings,
 } from '../gitExec';
@@ -178,6 +179,16 @@ afterEach(() => {
 });
 
 describe('gitExec timeoutMs', () => {
+  it('keeps a dead checkout root leased while a Windows descendant remains', async () => {
+    setPlatform('win32');
+    const state = installExecFileMock();
+    state.psTable = [{ ProcessId: 4343, ParentProcessId: 4242, CreationDate: 'x' }];
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+    });
+    await expect(isGitProcessTreeAlive(4242)).resolves.toBe(true);
+  });
+
   it('records the spawned checkout PID before completion', async () => {
     const state = installExecFileMock();
     const onSpawn = vi.fn();

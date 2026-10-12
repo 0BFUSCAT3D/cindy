@@ -160,6 +160,47 @@ async function queryWin32ProcessTable(
 }
 
 /**
+ * Check whether a detached git process or one of its descendants remains.
+ * Unknown process-table state is protective because reclaim must never race a
+ * filter/helper that still has the worktree open.
+ */
+export async function isGitProcessTreeAlive(pid: number): Promise<boolean> {
+  if (pid <= 0) return true;
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
+  }
+  if (pidMayBeAliveForGit(pid)) return true;
+  const rows = await queryWin32ProcessTable();
+  if (!rows) return true;
+  const descendants = new Set([pid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (descendants.has(row.ppid) && !descendants.has(row.pid)) {
+        descendants.add(row.pid);
+        changed = true;
+      }
+    }
+  }
+  return descendants.size > 1;
+}
+
+function pidMayBeAliveForGit(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
  * 执行一次 git, 不做 dubious-ownership 自动重试(底层用)。
  */
 function execFileOnce(

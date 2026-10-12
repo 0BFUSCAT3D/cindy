@@ -12,6 +12,9 @@ vi.mock('../desktopProcessIdentity', async (importOriginal) => ({
   ...await importOriginal<typeof import('../desktopProcessIdentity')>(),
   readDesktopProcessIdentity: readIdentity,
 }));
+vi.mock('../worktree/gitExec', () => ({
+  isGitProcessTreeAlive: vi.fn(async (pid: number) => pid === process.pid),
+}));
 
 import {
   acquireWorktreeRuntimeLease,
