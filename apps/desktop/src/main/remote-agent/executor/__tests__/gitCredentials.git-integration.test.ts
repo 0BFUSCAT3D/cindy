@@ -4,6 +4,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,6 +14,7 @@ import { shareCredentialGitReads } from '../../credentials';
 import { RemoteExecutor } from '../executor';
 import { ExecutorGate, type ExecutorAction } from '../gate';
 import { GitCredentialHistory } from '../gitCredentials';
+import * as executorShell from '../shell';
 import { ExecutorWorkspace } from '../workspace';
 
 // Windows 上每次 spawn git 要数百毫秒。
@@ -71,6 +73,7 @@ const savedEnv = Object.fromEntries(GIT_ENV_KEYS.map((key) => [key, process.env[
 
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'share-git-credentials-')));
+  vi.stubEnv('SHELL', '/bin/bash');
   vi.stubEnv('PATH', (process.env.PATH ?? '').split(path.delimiter).map((entry) => path.resolve(entry)).join(path.delimiter));
   // 临时目录的上层也可能是 git 仓库(比如整个用户目录)：不往上找。开发机自己的全局与系统 git 配置
   // 也不读，免得里面的令牌影响结果。
@@ -88,6 +91,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const key of GIT_ENV_KEYS) {
     if (savedEnv[key] === undefined) delete process.env[key];
@@ -667,6 +671,50 @@ describe('GitCredentialHistory', () => {
       await requiresCredentialConfirmation(history, 'git diff');
       vi.stubEnv(key, undefined);
     }
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+  });
+
+  it('keeps confirmation for zsh default and compiled startup files without ZDOTDIR', async () => {
+    const history = new GitCredentialHistory();
+    const home = path.join(root, 'home');
+    const credentialFile = path.join(root, '.env');
+    const startupFile = path.join(home, '.zshenv');
+    fs.mkdirSync(home);
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=zsh-startup\n');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('ZDOTDIR', undefined);
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    fs.writeFileSync(startupFile, 'git() { cat ' + JSON.stringify(credentialFile.split(path.sep).join('/')) + '; }\n');
+    const shell = vi.spyOn(executorShell, 'resolveExecutorShell').mockReturnValue({
+      file: '/bin/zsh', dialect: 'bash', scriptName: 'script.sh', args: ['script.sh'],
+    });
+    if (process.platform !== 'win32' && fs.existsSync('/bin/zsh')) {
+      expect(execFileSync('/bin/zsh', ['-c', 'git diff'], { cwd: repo, encoding: 'utf8' }))
+        .toContain('PRIVATE_FIXTURE=zsh-startup');
+    }
+    for (const command of ['git diff', 'git config --list']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+    fs.renameSync(startupFile, startupFile + '.zwc');
+    expect(await provesSafe(history, 'git diff')).toBe(false);
+    fs.unlinkSync(startupFile + '.zwc');
+    const globalStartups = ['/etc/zshenv', '/etc/zsh/zshenv'].flatMap((file) => [file, file + '.zwc']);
+    if (!globalStartups.some((file) => fs.existsSync(file))) {
+      expect(await provesSafe(history, 'git diff')).toBe(true);
+    }
+    const stats = vi.spyOn(fsPromises, 'lstat').mockRejectedValue(Object.assign(new Error('unavailable'), { code: 'EACCES' }));
+    expect(await provesSafe(history, 'git diff')).toBe(false);
+    stats.mockImplementation(() => new Promise<never>(() => {}));
+    const bounded = new GitCredentialHistory({ waitMs: 10 });
+    const started = Date.now();
+    expect(await provesSafe(bounded, 'git diff')).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await requiresCredentialConfirmation(bounded, 'git config --list');
+    stats.mockRestore();
+    shell.mockReturnValue({ file: '/custom/bin/zsh', dialect: 'bash', scriptName: 'script.sh', args: ['script.sh'] });
+    expect(await provesSafe(history, 'git diff')).toBe(false);
+    shell.mockRestore();
     expect(await provesSafe(history, 'git diff')).toBe(true);
   });
 

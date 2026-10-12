@@ -19,6 +19,7 @@ import path from 'node:path';
 import type { GitRead } from '@cindy/maker-core';
 
 import { isShareCredentialPath, textSpellsOutSecret } from '../credentials';
+import { resolveExecutorShell } from './shell';
 
 /** 核实一条命令最多等这么久，超过就先弹卡；仓库扫描在后台继续，结果留给后面的命令。 */
 const GIT_CREDENTIAL_WAIT_MS = 8_000;
@@ -501,6 +502,29 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
   });
 }
 
+async function shellStartupAllowsGitProbe(waitMs: number): Promise<boolean> {
+  const shell = resolveExecutorShell();
+  if (path.basename(shell.file) !== 'zsh') return true;
+  if (!['/bin/zsh', '/usr/bin/zsh'].includes(shell.file)) return false;
+  const home = process.env.HOME;
+  if (!home || !path.isAbsolute(home)) return false;
+  const startupFiles = ['/etc/zshenv', '/etc/zsh/zshenv', path.join(home, '.zshenv')]
+    .flatMap((file) => [file, file + '.zwc']);
+  const checks = Promise.all(startupFiles.map((file) => fsp.lstat(file).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => error.code !== 'ENOENT',
+  ))).then((present) => !present.some(Boolean));
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      checks,
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, waitMs)); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export class GitCredentialHistory {
   private readonly repos = new Map<string, RepoEntry>();
 
@@ -518,6 +542,9 @@ export class GitCredentialHistory {
     // segment may change Git state, its result can become stale before the later read;
     // keep the credential confirmation in that case instead of granting an exemption.
     if (reads.some((read) => read.priorSegmentsMayMutate)) return false;
+    if (signal?.aborted || !(await shellStartupAllowsGitProbe(this.opts.waitMs ?? GIT_CREDENTIAL_WAIT_MS).catch(() => false))) {
+      return false;
+    }
     for (const read of reads) {
       const check = CONFIG_SUBCOMMANDS.has(read.sub) ? configReadProvesSafe(read) : this.readProvesSafe(read, signal);
       if (signal?.aborted || !(await check.catch(() => false))) return false;
