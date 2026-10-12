@@ -206,10 +206,13 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
       const ownLocal = (r: ResolvedProviderGroupMember) => input.localTask === true && r.member.kind === 'local';
       const paused = (r: ResolvedProviderGroupMember) => r.member.paused && !ownLocal(r);
       const local = input.localTask === true ? config.members.find((m) => m.kind === 'local') : undefined;
-      // 本机优先时先只读本机状态，避免等待远端目录，或因远端先返回而提前分配到别处。
+      // 本机优先只读可用性，不等无关的负载查询或远端目录，也不因远端先返回而分配到别处。
       let resolved = local && !input.exclude?.has(local.key) && coolingUntil(input.providerId, local.key) === null
         ? await deps.directory.resolveMembers(
-            input.providerId, { ...config, members: [local] }, input.fresh ? { fresh: true } : undefined,
+            input.providerId, { ...config, members: [local] }, {
+              includeLocalRunning: false,
+              ...(input.fresh ? { fresh: true } : {}),
+            },
           )
         : [];
       if (!resolved.some(usable)) {
@@ -220,6 +223,7 @@ export function createProviderGroupRouter(deps: ProviderGroupRouterDeps): Provid
             && !paused(r)
             && !input.exclude?.has(r.member.key),
           ...(input.fresh ? { fresh: true } : {}),
+          ...(input.localTask ? { includeLocalRunning: false } : {}),
         });
       }
       const schedulable: SchedulableMember[] = resolved.map((r) => ({
