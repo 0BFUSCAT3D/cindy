@@ -75,7 +75,7 @@ function ImageLoad({ style, onDisplay, onError, ...props }: ImageProps) {
         <ExpoImage
           {...props}
           style={StyleSheet.absoluteFill}
-          transition={animate ? motionDuration.base : 0}
+          transition={animate ? motionDuration.fast : 0}
           onDisplay={() => {
             setStatus("displayed");
             onDisplay?.();

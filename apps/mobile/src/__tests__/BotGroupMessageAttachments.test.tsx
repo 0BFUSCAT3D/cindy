@@ -76,6 +76,7 @@ vi.mock('@/session/messageActions', async (original) => ({ ...await original<obj
 
 import { BotGroupMessageAttachments } from '@/session/BotGroupMessageAttachments';
 import { AttachmentStrip } from '@/session/MessageRenderer';
+import { MessageLoadingImage } from '@/session/MessageLoadingImage';
 import { buildMessageContentLayout } from '@/session/messageContentLayout';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -106,6 +107,38 @@ async function renderAttachment(messageId: string) {
 }
 
 describe('group image attachments outside LegendList (#5278)', () => {
+  it.each(['displayed', 'error'] as const)('resets the real loading image after %s and ignores late events from the previous image', async (previousState) => {
+    host = document.createElement('div');
+    root = createRoot(host);
+    const firstUri = 'https://example.invalid/first.png';
+    const nextUri = 'https://example.invalid/next.png';
+    const onLoad = vi.fn();
+    const renderImage = (uri: string) => act(() => root!.render(createElement(MessageLoadingImage, {
+      source: { uri }, recyclingKey: uri, onLoad, style: { width: 280, height: 180 },
+    })));
+    const loading = () => host!.querySelector('[data-testid="message.mediaThumbLoading"]');
+
+    renderImage(firstUri);
+    const firstEvents = imageEvents.get(firstUri)!;
+    act(() => previousState === 'displayed' ? firstEvents.onDisplay() : firstEvents.onError());
+    expect(loading()).toBeNull();
+
+    renderImage(nextUri);
+    expect(loading()).not.toBeNull();
+    expect(host.querySelector('img')?.getAttribute('src')).toBe(nextUri);
+    act(() => { firstEvents.onDisplay(); firstEvents.onError(); });
+    expect(loading()).not.toBeNull();
+    expect(host.querySelector('img')?.getAttribute('src')).toBe(nextUri);
+
+    const nextEvents = imageEvents.get(nextUri)!;
+    const event = { source: { width: 100, height: 50 } };
+    act(() => nextEvents.onLoad(event));
+    expect(onLoad).toHaveBeenCalledWith(event);
+    expect(loading()).not.toBeNull();
+    act(() => nextEvents.onDisplay());
+    expect(loading()).toBeNull();
+  });
+
   it('renders the real image preview without a list provider and opens its gallery', async () => {
     const container = await renderAttachment('new-message');
     expect(container.querySelector('img')?.getAttribute('src')).toBe(thumbnailUrl);
