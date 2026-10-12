@@ -64,7 +64,10 @@ type EnrollErrorKey =
  */
 export default function VoiceSpeakerFilterScreen() {
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage || i18n.language;
+  // The model covers Chinese and English; other UI locales use English passages.
+  const passageLanguage = language === 'zh-CN' || language === 'zh-TW' ? language : 'en';
   const rowStyles = useSettingsRowStyles();
   const styles = useThemedStyles(makeStyles);
   const { colors } = useTheme();
@@ -225,7 +228,7 @@ export default function VoiceSpeakerFilterScreen() {
           </View>
           {index === current ? (
             <Text style={rowStyles.rowLabel}>
-              {t(`settings.voiceSpeakerFilter.enroll.passages.p${index + 1}`)}
+              {t(`settings.voiceSpeakerFilter.enroll.passages.p${index + 1}`, { lng: passageLanguage })}
             </Text>
           ) : null}
         </Pressable>

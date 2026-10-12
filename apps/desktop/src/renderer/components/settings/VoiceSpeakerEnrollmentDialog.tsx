@@ -46,7 +46,10 @@ export function VoiceSpeakerEnrollmentDialog({
   microphoneDeviceId,
   onEnrolled,
 }: VoiceSpeakerEnrollmentDialogProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage || i18n.language;
+  // The model covers Chinese and English; other UI locales use English passages.
+  const passageLanguage = language === 'zh-CN' || language === 'zh-TW' ? language : 'en';
   const [clips, setClips] = useState<Array<ArrayBuffer | null>>(() => CLIP_INDEXES.map(() => null));
   const [current, setCurrent] = useState(0);
   const [recording, setRecording] = useState(false);
@@ -255,7 +258,7 @@ export function VoiceSpeakerEnrollmentDialog({
               'text-15 leading-[1.6] text-[var(--settings-section-title)]',
             )}
           >
-            {t(`settings.voiceInput.speakerFilter.enroll.passages.p${current + 1}`)}
+            {t(`settings.voiceInput.speakerFilter.enroll.passages.p${current + 1}`, { lng: passageLanguage })}
           </p>
 
           <div className="flex min-h-8 items-center gap-3">

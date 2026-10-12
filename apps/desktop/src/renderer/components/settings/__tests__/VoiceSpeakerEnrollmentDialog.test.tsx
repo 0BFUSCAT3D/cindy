@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ permission: vi.fn(), record: vi.fn(), enroll: vi.fn() }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn() } }));
 vi.mock('@/voice-input/startGuards', () => ({ requestRendererMicrophonePermission: mocks.permission }));
 vi.mock('@/voice-input/speakerEnrollmentRecorder', () => ({
