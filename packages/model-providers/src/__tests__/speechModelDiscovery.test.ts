@@ -4,6 +4,7 @@ import { isAgentSelectableModel } from '../classification.js';
 import { parseModelsListResponse } from '../modelDiscovery.js';
 import { mergeDiscoveredRuntimeModels, pickModelMetadata, validModelMetadata } from '../modelMetadataLayers.js';
 import { resolveCatalogModelNativeApi, resolveModelNativeApi } from '../modelRegistry.js';
+import { projectProviderMediaModels } from '../providerMediaModels.js';
 import { buildUserProvider } from '../user-provider.js';
 import type { ModelRegistry } from '../modelAccessBean.js';
 import type { ProviderRuntimeModelConfig } from '../types.js';
@@ -16,6 +17,34 @@ function provider(models: ProviderRuntimeModelConfig[], id = 'speech-account') {
 }
 
 describe('BYOK speech discovery and projection', () => {
+  it.each([
+    [null, undefined, null],
+    ['openai-completions', undefined, 'openai-completions'],
+    [undefined, undefined, 'openai-audio-speech'],
+    [null, 'openai-audio-speech', 'openai-audio-speech'],
+    ['openai-audio-speech', null, null],
+  ] as const)('preserves media protocol precedence through projection: declaration %s, user %s',
+    (declaration, override, expected) => {
+      for (const providerId of ['speech-account', 'xd']) {
+        const activeRegistry: ModelRegistry = {
+          schemaVersion: 5, updatedAt: '2026-10-12T06:00:00.000Z',
+          baseModels: [{ id: 'new-voice', aliases: [], defaults: { mode: 'audio_speech' } }],
+          models: [{ id: 'new-voice', name: 'Voice', modelRef: 'new-voice', nativeApi: declaration,
+            routes: [{ providerId, modelId: 'new-voice', agents: [] }] }],
+        };
+        const model: ProviderRuntimeModelConfig = { id: 'new-voice', name: 'Voice',
+          discoveredMetadata: { mode: 'audio_speech', nativeApi: 'openai-audio-speech' },
+          ...(override !== undefined ? { nativeApi: override } : {}),
+        };
+        const p = buildUserProvider({ id: 'speech-account', name: 'Speech', runtimes: {
+          codex: { baseUrl: 'https://speech.example.test/v1', wireProtocol: 'openai-chat', models: [model] },
+        } }, { modelRegistry: activeRegistry });
+        expect(p.models.codex![0].nativeApi).toBe(expected);
+        expect(projectProviderMediaModels(p, activeRegistry).audioModels?.[0].nativeApi).toBe(expected);
+        expect(p.models.codex![0].userModelConfig).toEqual(model);
+      }
+    });
+
   it.each(['nativeApi', 'native_api'])('retains explicit speech metadata from %s through refresh and catalog parsing', key => {
     const discovered = parseModelsListResponse({ data: [{ id: 'custom-voice',
       name: 'Custom Voice', mode: 'audio_speech', [key]: 'openai-audio-speech',

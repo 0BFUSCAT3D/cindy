@@ -71,6 +71,7 @@ import {
   restoreHydratedApiKey,
   stripCredentialHeaders,
   type CustomProviderAuthMode,
+  type ProviderConnectionTestSignatureFields,
   type SavedProviderProbeBaseline,
 } from '@/lib/providerModelFetch';
 import {
@@ -102,6 +103,7 @@ import type {
   CustomProviderConfig,
   ProviderPreset,
   ProviderRuntimeModelConfig,
+  ProviderView,
   ProviderWireProtocol,
 } from '@cindy/model-providers';
 import { SettingsTextInput } from './SettingsTextInput';
@@ -154,6 +156,8 @@ function defaultWireFor(agent: DialogAgentKind): ProviderWireProtocol {
 
 interface ProviderConnectionDialogProps {
   initial?: CustomProviderConfig;
+  /** Effective modes from the same connection's active catalog, separate from editable overrides. */
+  catalogModels?: ProviderView['models'];
   /** 已占用的全部 provider id（内置 anthropic/openai/xd + 全部自定义）；新建时自动生成 id 时避让，防撞内置保留 id。 */
   existingIds?: string[];
   /** Stable fallback for transitions whose immediate opener unmounts before this dialog mounts. */
@@ -201,9 +205,14 @@ interface RuntimeFields extends RuntimeFillDraft {
   videoApi?: 'xai-videos';
 }
 
-function runtimeProbeFields(agent: DialogAgentKind, runtime: RuntimeFields): RuntimeFields {
+function runtimeProbeFields(
+  agent: DialogAgentKind,
+  runtime: RuntimeFields,
+  catalogModels?: ProviderConnectionTestSignatureFields['catalogModels'],
+): RuntimeFields & Pick<ProviderConnectionTestSignatureFields, 'catalogModels'> {
   return {
     ...runtime,
+    catalogModels,
     requestPath: agent === 'pi' ? '' : runtime.requestPath,
     models: modelsAfterProviderEndpointEdit(runtime.models, runtime.modelRouteBaseUrl, runtime.baseUrl),
   };
@@ -403,6 +412,7 @@ function PresetDropdown({
 
 export function ProviderConnectionDialog({
   initial,
+  catalogModels,
   existingIds,
   returnFocusRef,
   focusAgent,
@@ -414,6 +424,7 @@ export function ProviderConnectionDialog({
   const onClose = useCallback(() => dialog.close(notifyClosed), [dialog.close, notifyClosed]);
   const onSaved = useCallback(() => dialog.close(notifySaved), [dialog.close, notifySaved]);
   const editing = !!initial;
+  const catalogModelsRef = useRef(catalogModels);
   const initialOAuth = initial?.auth?.method === 'oauth' ? initial.auth.oauth : undefined;
 
   const formId = useId();
@@ -676,6 +687,18 @@ export function ProviderConnectionDialog({
   // （见 setRtSynced），不用被动 useEffect——effect 在 commit 后才跑，IPC 响应若落在
   // 状态更新与 effect 之间会读到旧值。
   const rtRef = useRef(rt);
+  useLayoutEffect(() => {
+    const previousCatalogModels = catalogModelsRef.current;
+    catalogModelsRef.current = catalogModels;
+    const changedAgents = AGENTS.filter(agent =>
+      firstProviderChatModel(rtRef.current[agent].models, previousCatalogModels?.[agent])?.id !==
+      firstProviderChatModel(rtRef.current[agent].models, catalogModels?.[agent])?.id);
+    if (changedAgents.length) setTest(previous => {
+      const next = { ...previous };
+      for (const agent of changedAgents) next[agent] = IDLE_TEST;
+      return next;
+    });
+  }, [catalogModels]);
   /** 唯一的 rt 写入口：状态更新的同时同步镜像进 rtRef（updater 幂等，StrictMode 双调无害）。 */
   const setRtSynced = useCallback(
     (
@@ -747,10 +770,10 @@ export function ProviderConnectionDialog({
         authMode: savedAuthMode,
         apiKey: loadedKeyRef.current[agent] ?? '',
         ...(agent === 'pi'
-          ? { modelPiApi: firstProviderChatModel(rc.models)?.piApi }
+          ? { modelPiApi: firstProviderChatModel(rc.models, catalogModels?.[agent])?.piApi }
           : {}),
-        modelRoute: firstProviderChatModel(rc.models)?.route,
-        modelApi: firstProviderChatModel(rc.models)?.api,
+        modelRoute: firstProviderChatModel(rc.models, catalogModels?.[agent])?.route,
+        modelApi: firstProviderChatModel(rc.models, catalogModels?.[agent])?.api,
         catalogPresetId: rc.catalogPresetId,
         headers:
           rc.headers && Object.keys(rc.headers).length > 0
@@ -758,7 +781,7 @@ export function ProviderConnectionDialog({
             : [],
       };
     },
-    [editing, initial],
+    [editing, initial, catalogModels],
   );
 
   // URL edits temporarily clear an untouched hydrated key so it cannot be
@@ -1175,7 +1198,7 @@ export function ProviderConnectionDialog({
   );
 
   const f = rt[activeTab];
-  const mediaOnly = f.models.some(model => model.id.trim()) && !firstProviderChatModel(f.models);
+  const mediaOnly = f.models.some(model => model.id.trim()) && !firstProviderChatModel(f.models, catalogModels?.[activeTab]);
   const boundPreset = presets.find(preset => preset.id === f.catalogPresetId);
   const templateBound = Boolean(f.catalogPresetId);
   const endpointTemplate = boundPreset?.runtimes[activeTab]?.baseUrl;
@@ -1200,9 +1223,9 @@ export function ProviderConnectionDialog({
   const handleTest = useCallback(async () => {
     const agent = activeTab;
     const rf = rt[agent];
-    const probeFields = runtimeProbeFields(agent, rf);
+    const probeFields = runtimeProbeFields(agent, rf, catalogModels?.[agent]);
     const defaultBaseUrl = rf.baseUrl.trim();
-    const firstModelConfig = firstProviderChatModel(rf.models);
+    const firstModelConfig = firstProviderChatModel(rf.models, catalogModels?.[agent]);
     const firstModel = firstModelConfig?.id.trim();
     if (!matchesEndpointTemplate(agent, rf)) {
       toast.error(t('settings.providers.custom.errors.baseUrlInvalid'));
@@ -1270,7 +1293,7 @@ export function ProviderConnectionDialog({
       );
       if (
         providerConnectionTestRequestSignature(
-          runtimeProbeFields(agent, rtRef.current[agent]),
+          runtimeProbeFields(agent, rtRef.current[agent], catalogModelsRef.current?.[agent]),
           authModeRef.current,
         ) !== requestSig
       )
@@ -1284,7 +1307,7 @@ export function ProviderConnectionDialog({
     } catch (e) {
       if (
         providerConnectionTestRequestSignature(
-          runtimeProbeFields(agent, rtRef.current[agent]),
+          runtimeProbeFields(agent, rtRef.current[agent], catalogModelsRef.current?.[agent]),
           authModeRef.current,
         ) !== requestSig
       )
@@ -1293,7 +1316,7 @@ export function ProviderConnectionDialog({
       setTest((prev) => ({ ...prev, [agent]: { status: 'fail', code: 'UNKNOWN' } }));
       if (ipc?.message) toast.error(ipc.message);
     }
-  }, [activeTab, authMode, rt, t, savedBaselineFor, initial, presets, matchesEndpointTemplate]);
+  }, [activeTab, authMode, rt, t, savedBaselineFor, initial, presets, matchesEndpointTemplate, catalogModels]);
 
   // 拉取单飞：任一 runtime（含 Pi）在途时所有 Tab 的拉取按钮都禁用——两个并发请求会竞争
   // 同一个勾选弹层（后到的覆盖先开的、确认还会写进另一个 runtime），单飞直接消掉这类竞态。

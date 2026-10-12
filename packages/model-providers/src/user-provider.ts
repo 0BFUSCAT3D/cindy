@@ -633,10 +633,10 @@ export function buildUserProvider(
       const declaration = currentDeclaration !== undefined ? currentDeclaration
         : projected.nativeApi !== undefined ? projected.nativeApi
         : resolveDeclaration(BUNDLED_CATALOG.modelRegistry);
-      // Media declarations are metadata too; dropping them here loses the connection's
-      // speech protocol before audioModels is projected. This does not enable execution.
-      const nativeApi = providerMediaField(projected.mode) && projected.nativeApi !== undefined
-        ? projected.nativeApi : declaration;
+      // Only an explicit user value may override the current media declaration.
+      // projected also contains discovery metadata, including stale protocol claims.
+      const nativeApi = providerMediaField(projected.mode) && storedModel.nativeApi !== undefined
+        ? storedModel.nativeApi : declaration;
       return {
         ...(imported?.cost ? { cost: imported.cost } : {}),
         ...projected,
