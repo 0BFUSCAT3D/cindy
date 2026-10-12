@@ -357,6 +357,38 @@ describe('resolving members quickly when choosing a computer (2026-10-11)', () =
     }
   });
 
+  it('keeps waiting when the completed quota makes the known computer unavailable', async () => {
+    vi.useFakeTimers();
+    try {
+      const directory = createProviderGroupDirectory(deps({
+        listDevices: async () => [device('mini'), device('slow')],
+        readDeviceProviders: vi.fn((id: string) => id === 'slow'
+          ? new Promise<ProviderView[]>((resolve) => {
+              setTimeout(() => resolve([view('anthropic', 'Claude')]), 4_000);
+            })
+          : Promise.resolve([view('anthropic-1a2b3c4d', 'Claude')])),
+        readClaudeUsage: async (member) => member.key === MINI.key
+          ? { updatedAt: 0, fiveHour: { utilization: 100, resetsAt: 80_000 }, sevenDay: { utilization: 20, resetsAt: 80_000 } }
+          : null,
+      }));
+      const done = vi.fn();
+      void directory.resolveMembers('anthropic', config, {
+        quickMs: 3_000,
+        enough: (resolved) => resolved.state === 'ok' && resolved.claudeUsage?.fiveHour?.utilization !== 100,
+      }).then(done);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done).toHaveBeenCalledTimes(1);
+      expect(done.mock.calls[0][0]).toMatchObject([
+        { member: { key: SLOW.key }, state: 'ok' },
+        { member: { key: MINI.key }, state: 'ok', claudeUsage: { fiveHour: { utilization: 100 } } },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps waiting when none of the computers read so far can take the task', async () => {
     vi.useFakeTimers();
     try {

@@ -241,13 +241,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "還沒有分享給任何人。產生分享連結傳給對方，對方申請、你同意後會出現在這裡。",
         "table": {
-          "model": "模型",
           "turns": "訊息",
           "input": "輸入",
           "output": "輸出",
           "amount": "估算金額"
         },
-        "noUsage": "這段時間沒有用量",
         "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。"
       },
       "removeConfirm": {
@@ -422,7 +420,7 @@
       "expandAria": "展開 {{name}} 的用量明細",
       "collapseAria": "收起 {{name}} 的用量明細",
       "table": {
-        "member": "組內電腦 / 模型"
+        "member": "電腦 / 模型"
       }
     },
     "section": {
@@ -472,6 +470,7 @@
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
       "assignAria": "給 {{name}} 分配任務",
+      "assignLocalAria": "允許 {{name}} 接收外部新任務",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
@@ -479,6 +478,7 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
+        "pausedLocal": "已暫停接收外部新任務",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
@@ -2786,6 +2786,10 @@
           "modelSupportsImageInput": "支援圖片輸入",
           "modelSupportsImageInputHelp": "僅在該模型確實支援視覺輸入時開啟。儲存後新建 Pi 任務生效。",
           "runtimeAdvanced": "進階",
+          "openaiImages": "使用 OpenAI Images 介面",
+          "openaiImagesHint": "使用此連線的位址和 API Key 呼叫 /images/generations 與 /images/edits。開啟後，此連線將作為供應商唯一的圖片連線。缺少的模型可手動新增 ID，再到模型詳情宣告圖片能力。",
+          "xaiVideos": "使用 xAI 相容影片介面",
+          "xaiVideosHint": "使用此連線的位址與 API Key 提交、查詢影片任務。開啟後，此連線將作為供應商唯一的影片連線。缺少的模型可手動新增 ID，再到模型詳情宣告影片能力。",
           "runtimeSupportsImageGeneration": "支援圖片生成與編輯",
           "runtimeSupportsImageGenerationHelpLabel": "瞭解圖片生成與編輯支援",
           "runtimeSupportsImageGenerationConditionTitle": "適用條件",
@@ -3034,6 +3038,20 @@
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "目錄未提供",
           "capability": "能力",
+          "videoCapability": {
+            "label": "影片能力",
+            "default": "跟隨模型目錄",
+            "generate": "文字生成影片",
+            "edit": "文字生成影片與圖片轉影片",
+            "hint": "套用於 {{agent}} 影片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
+          "imageCapability": {
+            "label": "圖片能力",
+            "default": "跟隨模型目錄",
+            "generate": "圖片生成",
+            "edit": "圖片生成與編輯",
+            "hint": "套用於 {{agent}} 的圖片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
           "capabilityHint": "優先使用目前供應商宣告的能力；未宣告時，圖片能力參考模型名稱。",
           "imageInput": "圖片輸入",
           "supported": "支援",
@@ -3440,7 +3458,10 @@
       "connection": {
         "modelCount": "已設定 {{count}} 個模型",
         "modelsAutomatic": "模型資料自動取得。個別模型的設定請在模型清單調整。",
-        "manualModel": "模型 ID（無法自動取得時填寫）"
+        "manualModel": "模型 ID（無法自動取得時填寫）",
+        "modelTypeAutomatic": "自動辨識",
+        "manualModelTypeHint": "相同 ID 可更新類型；自動辨識會恢復目錄中的類型。",
+        "mediaOnlyTestHint": "此連線僅含非對話模型。可取得模型列表檢查目錄存取，此處不驗證模型呼叫。"
       },
       "byok": {
         "managed": "由企業管理連線與模型",
@@ -6115,7 +6136,7 @@
         "customSourcesUnavailable": "以下自訂市場暫時無法存取：{{names}}，其他市場不受影響。",
         "replace": "取代",
         "replaceAria": "以此市場版本取代 {{name}}",
-        "replaceDescription": "已安裝相同 ID 的插件，繼續將以市場版本取代，原有資料會保留。"
+        "replaceDescription": "已安裝相同 ID 的插件；繼續安裝會切換來源。原來源的資料將隔離保留，新來源不會繼承原帳號和金鑰，需要重新連接。"
       },
       "install": "安裝插件…",
       "empty": "還沒有安裝任何插件",
@@ -8554,7 +8575,7 @@
         "message": "跟進「{{title}}」",
         "aria": "跟進「{{title}}」"
       },
-      "followingMark": "{{names}}在跟進這個專案",
+      "followingMark": "{{names}}在跟進這個任務",
       "olderCount_other": "更早的 {{count}} 個",
       "kind": {
         "existing": "原有任務",
@@ -9151,6 +9172,7 @@
       "avatar": "{{name}} 正在挑選新頭像",
       "welcome": "正在準備第一聲問候",
       "failed": "準備暫時停住了。已完成的內容會保留，可以再試一次。",
+      "changeModel": "更換模型",
       "retryFailed": "暫時無法重試，請稍後再試。",
       "leave": "先去忙",
       "avatarSkipped": "暫時用了預設頭像，你隨時可以換一張。"
@@ -9191,7 +9213,9 @@
       "generate": "產生夥伴",
       "generating": "正在構思夥伴…",
       "generationFailed": "暫時無法產生，請保留你的想法再試一次。",
-      "modelRequired": "請先在 Cindy 中選擇可用的預設模型。",
+      "modelRequired": "請在上方選擇可用模型後繼續。",
+      "modelFollowsDefault": "跟隨夥伴預設模型。",
+      "modelForThisBot": "此選擇僅用於這位夥伴。",
       "cindyDescription": "我會幫你使用 Cindy、連接工具，也會和你一起把事情做完。",
       "cindySummary": "管理 Cindy，連接工具，把事情做完。",
       "openCindy": "開啟 Cindy",
@@ -9745,6 +9769,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在讀取那臺電腦的模型…",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能儲存收藏變更",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
         "addFavorite": "存為收藏",
         "customize": "自訂",
@@ -10096,7 +10122,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者的電腦。這一步涉及憑證類檔案（如金鑰、.env），需要你確認後才繼續。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；重新開啟任務或切換權限模式後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
@@ -10932,6 +10958,7 @@
         },
         "directory": "目錄：",
         "baseline": "基準分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
@@ -11391,6 +11418,7 @@
       },
       "dialogueLabel": "對話",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回來源任務",
       "waitForReply": "等待你在文件區回覆…",
       "modelSwitchedFastModeOff": "已切換模型，Fast Mode 已關閉"
     },
@@ -14083,6 +14111,18 @@
       "current": "審查目前目錄",
       "choose": "選擇其他目錄",
       "open": "審查"
+    },
+    "inputSummary": {
+      "title": "獨立審查（只讀，無開發記憶）",
+      "directory": "目錄：{{dir}}",
+      "baseline": "對比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未涵蓋：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 個任務目錄未檢查",
+      "artifacts": "成果：{{count}} 項",
+      "focus": "關注：{{focus}}",
+      "task": "依任務目標審查目前成果"
     }
   },
   "learn": {

@@ -183,12 +183,23 @@ describe('ProviderGroupSection', () => {
     expect(rows[1].getAttribute('data-member-state')).toBe('cooling');
     expect(within(rows[1]).getByText(/providerGroup\.member\.status\.coolingUntil/)).toBeTruthy();
     // 本机与远程共用同一个开关；本机不能移出组。
-    expect(within(rows[0]).getByRole('switch')).toBeTruthy();
+    const localSwitch = within(rows[0]).getByRole('switch', {
+      name: 'providerGroup.member.assignLocalAria:{"name":"providerGroup.member.local"}',
+    });
+    expect(localSwitch).toBeTruthy();
     expect(within(rows[0]).queryByRole('button', { name: 'providerGroup.member.remove' })).toBeNull();
     fireEvent.click(
       within(rows[1]).getByRole('switch', { name: 'providerGroup.member.assignAria:{"name":"Mac mini"}' }),
     );
     await waitFor(() => expect(stored?.members[1].paused).toBe(true));
+    expect(await within(rows[1]).findByText('providerGroup.member.status.paused')).toBeTruthy();
+    fireEvent.click(localSwitch);
+    await waitFor(() => expect(stored?.members[0].paused).toBe(true));
+    expect(await within(rows[0]).findByText('providerGroup.member.status.pausedLocal')).toBeTruthy();
+    expect(within(rows[0]).getByText('providerGroup.member.runningCount:{"count":1}')).toBeTruthy();
+    fireEvent.click(localSwitch);
+    await waitFor(() => expect(stored?.members[0].paused).toBe(false));
+    await waitFor(() => expect(within(rows[0]).queryByText('providerGroup.member.status.pausedLocal')).toBeNull());
   });
 
   it('says idle instead of staying silent when a computer is available with nothing running', async () => {

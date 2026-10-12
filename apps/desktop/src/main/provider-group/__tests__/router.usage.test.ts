@@ -42,6 +42,41 @@ function harness() {
 }
 
 describe('provider-group quota routing', () => {
+  it.each(PROVIDER_GROUP_STRATEGIES)('keeps local task priority with the %s strategy despite higher usage, load and external pause', async (strategy) => {
+    const context = harness();
+    context.config.strategy = strategy;
+    const local = context.config.members[0];
+    const remote = context.config.members[1].key;
+    local.limit = 1;
+    local.paused = true;
+    context.usage.set(local.key, snapshot(85, 90));
+    context.usage.set(remote, snapshot(10, 20));
+    const input = { providerId: 'anthropic', agentKind: 'claude-code' as const, model: OPUS, localTask: true as const };
+    expect(await context.router.pick({ ...input, reserveFor: 'local-running' })).toMatchObject({ kind: 'member', member: { key: local.key } });
+    expect(context.router.running('anthropic', local.key)).toBe(1);
+    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: local.key } });
+    expect(context.readUsage.mock.calls.every(([member]) => member.kind === 'local')).toBe(true);
+    expect(await context.pick()).toMatchObject({ kind: 'member', member: { key: remote } });
+  });
+
+  it.each(PROVIDER_GROUP_STRATEGIES)('applies quota prefiltering to local task priority with the %s strategy', async (strategy) => {
+    const context = harness();
+    context.config.strategy = strategy;
+    context.config.members[0].paused = true;
+    const remote = context.config.members[1].key;
+    context.usage.set(remote, snapshot(40, 60));
+    const input = { providerId: 'anthropic', agentKind: 'claude-code' as const, model: OPUS, localTask: true as const };
+    context.usage.set('local', snapshot(100, 5));
+    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: remote } });
+    context.usage.set('local', snapshot(5, 100));
+    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: remote } });
+    context.usage.set('local', { ...snapshot(10, 20), scoped: [{ modelDisplayName: 'Opus', utilization: 100, resetsAt: 80_000 }] });
+    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: remote } });
+    expect(await context.router.pick({ ...input, model: SONNET })).toMatchObject({ kind: 'member', member: { key: 'local' } });
+    context.usage.set('local', null);
+    expect(await context.router.pick(input)).toMatchObject({ kind: 'member', member: { key: 'local' } });
+  });
+
   it.each(PROVIDER_GROUP_STRATEGIES)('excludes an exhausted account for the %s strategy', async (strategy) => {
     const h = harness();
     h.config.strategy = strategy;

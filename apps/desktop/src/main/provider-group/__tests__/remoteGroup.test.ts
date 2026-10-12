@@ -376,6 +376,20 @@ describe('switching computers within a group on another computer', () => {
     expect(gone.deps.switchAgentLocation).not.toHaveBeenCalled();
   });
 
+  it('keeps the retry entry when the session closes while the task record is read (#5880)', async () => {
+    const h = bound({ config: undefined });
+    h.probe.mockResolvedValueOnce('offline').mockResolvedValueOnce('ok');
+    // 读任务记录期间终态错误的 drain 宽限到点、会话关闭：关闭撤销了限额等待候选，之后再取句柄会落空。
+    h.deps.readSessionRow.mockImplementation(async () => {
+      h.deps.leaseRecovery.mockReturnValue(null);
+      return h.row;
+    });
+    await h.service.onTurnError('s1', { message: '[REMOTE_AGENT_DEVICE_UNREACHABLE] gone' }, 3);
+    expect(h.deps.continueSession).toHaveBeenCalledWith('s1', 7, expect.objectContaining({
+      agentReconnect: { computer: '' },
+    }));
+  });
+
   it('waits before sending for its own computer when the group computer cannot be read and the session must be reopened', async () => {
     const reopen = bound({ config: undefined });
     Object.assign(reopen.deps, { hasLiveSession: () => false });
