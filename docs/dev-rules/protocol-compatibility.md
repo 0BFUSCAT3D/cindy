@@ -11,6 +11,21 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## 手机直连群的设置管理
+
+现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
+声明该能力，手机读取最新群详情和已有成员角色后才开放管理。设置动作可带
+`expectedRevision`，Host 在调用服务前核验，群信息 PATCH 和归档继续携带该编辑版本给
+Chat Server。新增资源动作 `add-member` (`botId`) 只邀请一个本机可见伙伴，不替换成员名单；
+移出仍使用已有 `remove-member` 和 actor ID。旧手机忽略能力并保留原动作；新版手机遇到旧
+Host 显示更新提示。账号切换、关闭设置、断连或撤销设备使旧读取和未发出的操作失效。
+管理电脑按当前群 ID 精确读取，不以截断的群列表作为存在性门槛。普通内容刷新保留同一次
+设置页已核实的管理资格，实际发送前仍复核电脑身份和最新权限；新详情确认撤权或群不可见后禁用。
+Chat Server 返回的 `REVISION_CONFLICT` 保留为公开错误码，新手机显示冲突提示并保留草稿，
+旧客户端沿用未知错误码的通用失败提示，不自动重试写操作。
+复用原有 collection、channel、订阅、账号和群权限，不扩 IPC allowlist、relay、服务端
+schema、数据库或 Mobile 原生指纹。完整管理需要两端客户端更新。
+
 ## 实时生成速度
 
 既有 maker status 可选携带 `tokenSpeed`（`rate`、`average`、`tokens`、`elapsedMs`、
@@ -98,8 +113,9 @@ Chat Server 新增只读 `/conversations/:roomId/execution-failures`：按成员
 ## Desktop 远程新建菜单
 
 同账号控制端通过新增只读 `ghosts:composer-list(workingDir?)` 异步取得执行主机的插件菜单。
-响应仅含名称、ID、指令、工具声明、图标、Skill 存在标记与目录过滤后的启用状态，不传安装路径、
-批准记录、配置或凭证。无项目时不传参数；共享任务访客不开放此通道。
+响应仅含名称、ID、实例键、namespace、指令、工具声明、图标、Skill 存在标记与目录过滤后的启用状态，
+不传安装路径、批准记录、配置或凭证。目录禁用按实例键匹配，不用裸 ID；旧主机可以不带实例键和 namespace。
+无项目时不传参数；共享任务访客不开放此通道。
 远程清单按序列化后的 UTF-8 字节限制为 1 MiB，为传输封装预留空间；保留所有插件的基础信息，
 先容纳工具声明、再容纳图标。超出剩余预算的可选字段整项省略，工具声明缺失时复用现有
 `ghost_list` 按需查询，图标缺失时显示通用图标。基础信息本身超限则明确失败，不截断插件列表；
@@ -157,6 +173,14 @@ Claude Code 终态 error 事件可带 `usageResetAt`（unix ms）。服务端无
 「重新连接中」显示。`provider-group:remote` 的 `cool` 仍只报那台账号的问题(`usage-limit` / `auth` / `overload`)，不变。
 本机远程 Agent 任务连续拉不到那台而结束时，终态 error 的 `reason` 由 `remote_agent_closed` 改为 `remote_agent_lost`(只在本机
 与它的控制端之间流转，用于判定「只是连接断了」；渲染端两者都按错误码给文案，旧端不受影响)。
+
+## 插件远程授权的实例身份
+
+远程授权中的 `ghostId` 绑定实际安装的物理 storage part，不使用裸逻辑 ID 替代企业实例。
+企业键 `_ns__<namespace>__<id>` 最长 167 字符；只对该合法键扩展校验，其他 OAuth
+事务、设备与启动 ID 仍限 128 字符。签名 transcript、v3 字段及频道不变，不能截断或
+增加 alias fallback。Desktop 与 Mobile 复用同一握手 parser；长企业键要求控制端也具备
+该校验能力，旧端的短键行为保持不变。
 
 ## Agent 跨设备历史发现与搜索
 
@@ -1498,6 +1522,16 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 新控制端连接旧执行端沿用原通知；旧控制端忽略该字段，仍可能发独立完成外部通知，完整远端
 去重需要两端更新。手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
 移动列表继续原 phase/attention 语义。无需服务端、数据库 migration 或 Mobile fingerprint 改动。
+
+## 伙伴创建时选择模型
+
+伙伴 `create` 表单块在 data 追加可选 `creationModelChain` 元数据，表示支持创建选模并给出默认首选。
+旧端忽略该元数据，不会在通用表单中显示 JSON。新 Mobile 看到它才显示现有选择器；
+显式选择时动作输入追加 `modelChain`（单条既有 BotModelRoute 的 JSON），省略即跟随伙伴默认。
+选择不改全局默认。
+主机复用设置页的模型可用性验证；旧手机省略字段照常创建，新手机连接旧主机保留原创建流程。
+丢失回执后的重试仍沿用原 requestId 和原模型选择，不覆盖已创建伙伴。
+无新增 channel、权限、数据库 migration、服务端改动或原生 fingerprint 变化。
 
 ## 移动插件只读权限摘要
 

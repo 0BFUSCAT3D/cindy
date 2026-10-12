@@ -68,6 +68,8 @@ export interface ResolveMembersOptions {
   enough?(resolved: ResolvedProviderGroupMember): boolean;
   /** 不用短时缓存，现读设备列表与每台的目录(试过不行之后拉最新状态)。 */
   fresh?: boolean;
+  /** 本机自用不按负载分配，可不读本机运行数，避免等待任务数据库；默认仍读取。 */
+  includeLocalRunning?: boolean;
 }
 
 const CATALOG_TTL_MS = 15_000;
@@ -151,11 +153,11 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     return views.find((view) => view.id === providerId) ?? null;
   }
 
-  async function resolveLocal(member: ProviderGroupMember): Promise<ResolvedProviderGroupMember> {
+  async function resolveLocal(member: ProviderGroupMember, includeRunning = true): Promise<ResolvedProviderGroupMember> {
     const label = deps.localDeviceName();
     const view = await localGroupProvider(member.providerId);
     if (!view || !view.connected || view.suspended) return { member, label, state: 'unavailable', reason: 'disconnected' };
-    const reportedRunning = await deps.localRunning?.(member.providerId).catch(() => null);
+    const reportedRunning = includeRunning ? await deps.localRunning?.(member.providerId).catch(() => null) : undefined;
     return { member, label, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
   }
 
@@ -274,7 +276,7 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       // PR #5792 review)。
       const deviceListPromise = needsDevices ? readDevices().catch(() => null) : Promise.resolve(null);
       const reads = config.members.map((member) => {
-        if (member.kind === 'local') return resolveLocal(member);
+        if (member.kind === 'local') return resolveLocal(member, options?.includeLocalRunning);
         if (member.kind === 'share') return resolveShare(member);
         return deviceListPromise.then((deviceList) => resolveDevice(member, deviceList));
       });

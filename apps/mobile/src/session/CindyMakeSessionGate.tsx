@@ -19,7 +19,7 @@ export function CindyMakeSessionGate({ sessionId, deviceId: routeDeviceId, child
   const maker = useMobileMakerTransport(deviceId);
   const knownSession = sessions.find(session => session.id === sessionId
     && (!deviceId || session.deviceLinkDeviceId === deviceId));
-  const knownSource = knownSession ? knownSession.source ?? null : undefined;
+  const knownSource = knownSession?.source;
   const [loaded, setLoaded] = useState<{
     sessionId: string;
     deviceId: string;

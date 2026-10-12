@@ -48,11 +48,17 @@ afterEach(() => {
 });
 
 describe('mobile Cindy Make links', () => {
-  it('opens an ordinary mirrored task without a source or a metadata request', () => {
+  it('resolves mirrored tasks whose source is missing before mounting the screen', async () => {
     state.sessions = [{ id: 'old-task', deviceLinkDeviceId: 'device-a' }];
-    act(() => root.render(<CindyMakeSessionGate sessionId="old-task" deviceId="device-a"><span>Composer</span></CindyMakeSessionGate>));
+    let resolveSession!: (session: { id: string; source: string }) => void;
+    state.maker.getSession.mockReturnValue(new Promise(resolve => { resolveSession = resolve; }));
+    const Content = vi.fn(() => createElement('span', {}, 'Composer'));
+    await act(async () => root.render(<CindyMakeSessionGate sessionId="old-task" deviceId="device-a"><Content /></CindyMakeSessionGate>));
+    expect(container.textContent).toBe('');
+    expect(Content).not.toHaveBeenCalled();
+    expect(state.maker.getSession).toHaveBeenCalledWith('old-task');
+    await act(async () => resolveSession({ id: 'old-task', source: 'desktop' }));
     expect(container.textContent).toBe('Composer');
-    expect(state.maker.getSession).not.toHaveBeenCalled();
   });
 
   it.each(['cindy-make', 'cindy-make-merge'])('redirects %s to Home before mounting the task screen', (source) => {

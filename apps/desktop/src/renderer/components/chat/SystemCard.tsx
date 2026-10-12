@@ -1310,6 +1310,9 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
     ? data.workspace as Record<string, unknown> : null;
   const reviewedDir = typeof workspace?.workingDir === 'string' ? workspace.workingDir : workingDir;
   const reviewedBase = typeof workspace?.baseRef === 'string' ? workspace.baseRef : '';
+  const additionalDirs = Array.isArray(workspace?.additionalWorkingDirs)
+    ? workspace.additionalWorkingDirs.filter((dir): dir is string => typeof dir === 'string' && !!dir)
+    : [];
   const error = typeof data?.error === 'string' ? data.error : '';
   const failureCode =
     readReviewFailureCode(data?.failureCode) ?? reviewFailureCodeFromLegacyError(error);
@@ -1343,7 +1346,15 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
             compact
             tone="quiet"
             type="button"
-            onClick={() => navigate(`/cc-agent/${reviewerSessionId}`)}
+            onClick={() =>
+              navigate(`/cc-agent/${reviewerSessionId}`, {
+                state: {
+                  from: 'review-source',
+                  sourceSessionId:
+                    typeof data?.sourceSessionId === 'string' ? data.sourceSessionId : undefined,
+                },
+              })
+            }
           >
             {t('chat.systemCard.review.openTask')}
             <ArrowRight size={12} />
@@ -1354,6 +1365,11 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
         <p className="mt-1 break-all pl-[23px] text-xs text-muted-foreground">
           {t('chat.systemCard.review.directory')}{reviewedDir}
           {reviewedBase && <> · {t('chat.systemCard.review.baseline')}{reviewedBase}</>}
+        </p>
+      )}
+      {workspace && additionalDirs.length > 0 && (
+        <p className="mt-0.5 break-all pl-[23px] text-xs text-muted-foreground">
+          {t('chat.systemCard.review.additionalDirectories')}{additionalDirs.join(', ')}
         </p>
       )}
       {status === 'running' && (
