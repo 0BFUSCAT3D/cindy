@@ -438,12 +438,12 @@ async function shownFilesAvoidCredentials(read: GitRead, cwd: string, top: strin
 
 /** 读这一项要打出的 git config 键名(小写)；列出全部或认不准键名时为 undefined。 */
 function requestedConfigKey(read: GitRead): string | undefined {
-  if (read.sub !== 'config' || read.args.some((arg) => /^(?:--list|-l|list|--get-regexp|--get-urlmatch)$/.test(arg))) {
-    return undefined;
-  }
-  // `--type bool core.x` 这类带取值的选项会让位置参数对不上：多于一个就按全部处理。
-  const keys = read.args.filter((arg) => !arg.startsWith('-') && arg !== 'get');
-  return keys.length === 1 ? keys[0].toLowerCase() : undefined;
+  if (read.sub !== 'config') return undefined;
+  const args = read.args;
+  const key = args.length === 1 ? args[0]
+    : args.length === 2 && ['--get', '--get-all', 'get'].includes(args[0] ?? '') ? args[1]
+      : undefined;
+  return key && !key.startsWith('-') && key.includes('.') ? key.toLowerCase() : undefined;
 }
 
 /** 配置项里有密钥：键名或取值里直接写着(带令牌的地址、Authorization 头)，或是密码、令牌、http 头这类项。 */

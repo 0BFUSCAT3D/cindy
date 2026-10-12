@@ -393,6 +393,18 @@ describe('GitCredentialHistory', () => {
     }
   });
 
+  it('does not mistake abbreviated regexp queries for literal config keys', async () => {
+    const history = new GitCredentialHistory();
+    git('config', 'http.extraHeader', 'PRIVATE_FIXTURE=regexp-query');
+    expect(await provesSafe(history, 'git config --get user.name')).toBe(true);
+    for (const option of ['--get-r', '--get-reg']) {
+      expect(git('config', option, '.*')).toContain('PRIVATE_FIXTURE=regexp-query');
+      const command = 'git config ' + option + " '.*'";
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+  });
+
   it('does not exempt a git read after an earlier shell segment may change state', async () => {
     const history = new GitCredentialHistory();
     expect(await provesSafe(history, 'git add -A && git diff --cached')).toBe(false);
