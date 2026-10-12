@@ -404,6 +404,38 @@ export function expandCollapsedMessages(root: HTMLElement): void {
 }
 
 /**
+ * 按选中顺序把清洗后的消息放进 stage,返回实际放入的条数。
+ *
+ * 跳选断点按「选中序列」判定(orderInAll 为当前已渲染可选序列的位置);清洗后为空的
+ * 消息(本身是选中项)不放进图里,但它之前出现的断点要延续到下一条实际放进图里的
+ * 消息,不能被吞掉。图首不放断点标记:前面没有内容可与之区隔。
+ */
+export function appendShareMessages(
+  stage: HTMLElement,
+  sourceNodes: readonly HTMLElement[],
+  orderedSelectedIds: readonly string[],
+  orderInAll: ReadonlyMap<string, number>,
+): number {
+  let prevIndex: number | null = null;
+  let appendedCount = 0;
+  let gapPending = false;
+  for (const [i, node] of sourceNodes.entries()) {
+    const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
+    if (prevIndex !== null && currentIndex !== null && currentIndex - prevIndex > 1) {
+      gapPending = true;
+    }
+    prevIndex = currentIndex;
+    const clone = prepareShareMessageClone(node);
+    if (!clone) continue;
+    if (gapPending && appendedCount > 0) stage.appendChild(buildShareImageGapMarker());
+    gapPending = false;
+    stage.appendChild(clone);
+    appendedCount += 1;
+  }
+  return appendedCount;
+}
+
+/**
  * 跳选断点处的省略标记。
  *
  * 选了第 1、第 5 条时,两条在图里直接相邻 —— 接收方看不出中间还有对话被跳过,
@@ -557,26 +589,7 @@ export async function buildShareImageBlob({
   const orderInAll = new Map(allIds.map((id, index) => [id, index]));
 
   try {
-    let prevIndex: number | null = null;
-    let appendedCount = 0;
-    for (const [i, node] of sourceNodes.entries()) {
-      const currentIndex = orderInAll.get(orderedSelectedIds[i]) ?? null;
-      const clone = prepareShareMessageClone(node);
-      // 清洗后为空的消息本身是选中项,跳过它不算「跳选」:不加断点标记,但推进序号。
-      if (clone) {
-        if (
-          appendedCount > 0 &&
-          prevIndex !== null &&
-          currentIndex !== null &&
-          currentIndex - prevIndex > 1
-        ) {
-          stage.appendChild(buildShareImageGapMarker());
-        }
-        stage.appendChild(clone);
-        appendedCount += 1;
-      }
-      prevIndex = currentIndex;
-    }
+    const appendedCount = appendShareMessages(stage, sourceNodes, orderedSelectedIds, orderInAll);
     if (appendedCount === 0) throw new ShareImageNoContentError();
     redactTextNodes(stage);
 

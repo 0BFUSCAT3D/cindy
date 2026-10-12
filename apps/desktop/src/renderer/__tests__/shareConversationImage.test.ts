@@ -16,6 +16,7 @@ const {
   SHARE_SESSION_ATTR,
   SHARE_SOURCE_ATTR,
   ShareImageTooLargeError,
+  appendShareMessages,
   assertShareImageReadableSize,
   buildShareImageFooter,
   expandScrollableBlocks,
@@ -115,6 +116,66 @@ describe('prepareShareMessageClone', () => {
     const node = root(`<div><img src="data:image/png;base64,AAAA" alt="" /></div>`)
       .firstElementChild as HTMLElement;
     expect(prepareShareMessageClone(node)).not.toBeNull();
+  });
+});
+
+describe('appendShareMessages', () => {
+  const message = (text: string | null) =>
+    root(
+      text === null
+        ? `<div><div ${SHARE_SOURCE_ATTR}><button aria-expanded="false">GitHub</button></div></div>`
+        : `<div><p>${text}</p></div>`,
+    ).firstElementChild as HTMLElement;
+  // 序列里每项 = [消息在可选序列中的位置, 正文(null = 只剩插件标注)]
+  const assemble = (items: Array<[number, string | null]>) => {
+    const stage = document.createElement('div');
+    const ids = items.map(([index]) => `m${index}`);
+    const order = new Map(ids.map((id, i) => [id, items[i][0]]));
+    const count = appendShareMessages(
+      stage,
+      items.map(([, text]) => message(text)),
+      ids,
+      order,
+    );
+    const layout = Array.from(stage.children).map((child) =>
+      child.hasAttribute('data-share-gap') ? '⋯' : (child.textContent ?? '').trim(),
+    );
+    return { count, layout };
+  };
+
+  it('跳过空消息时,它之前的跳选断点延续到下一条有内容的消息', () => {
+    expect(
+      assemble([
+        [1, 'A'],
+        [5, null],
+        [6, 'B'],
+      ]),
+    ).toEqual({ count: 2, layout: ['A', '⋯', 'B'] });
+  });
+
+  it('相邻选中、中间只是一条空消息时不加断点', () => {
+    expect(
+      assemble([
+        [1, 'A'],
+        [2, null],
+        [3, 'B'],
+      ]),
+    ).toEqual({ count: 2, layout: ['A', 'B'] });
+  });
+
+  it('图首不放断点;全空时返回 0', () => {
+    expect(
+      assemble([
+        [1, null],
+        [5, 'B'],
+      ]).layout,
+    ).toEqual(['B']);
+    expect(
+      assemble([
+        [1, null],
+        [2, null],
+      ]),
+    ).toEqual({ count: 0, layout: [] });
   });
 });
 
