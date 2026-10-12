@@ -235,7 +235,7 @@ export default {
     // Give it the full worker budget, but never overlap it with other workspaces.
     requiredUnitWorkspace('mobile', 'apps/mobile', { workers: 4, execution: 'exclusive' }),
     // Start the slowest packages first within the existing four-workspace budget.
-    // Windows CI run 38210710002: maker-core 152-214s, design-tokens 24-94s,
+    // Windows CI run 38210710002: maker-core 152-214s,
     // browser-control-runtime 11-62s, mcps 44-65s. Desktop/Mobile stay exclusive.
     // Stays on forks: palette-scanner's tests stub HOME and the scanner resolves
     // it through os.homedir(), which a worker thread cannot see (see
@@ -267,7 +267,6 @@ export default {
         },
       },
     },
-    requiredUnitWorkspace('@cindy/design-tokens', 'packages/design-tokens'),
     requiredUnitWorkspace('@cindy/browser-control-runtime', 'packages/browser-control-runtime'),
     requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
     requiredUnitWorkspace('@cindy/anthropic-compat-proxy', 'packages/anthropic-compat-proxy'),
@@ -330,5 +329,8 @@ export default {
     noCollectableWorkspace('@cindy/device-link-protocol', 'packages/device-link-protocol'),
     requiredUnitWorkspace('@cindy/plugin-protocol', 'packages/plugin-protocol'),
     requiredUnitWorkspace('@cindy/slack-hook-protocol', 'packages/slack-hook-protocol'),
+    // Keep generation's filesystem-heavy regression later: starting it alongside
+    // all the long packages exceeded its timeout on Windows (run 38214480678).
+    requiredUnitWorkspace('@cindy/design-tokens', 'packages/design-tokens'),
   ],
 };
