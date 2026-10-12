@@ -174,8 +174,8 @@ describe('QueuedAttachmentOwnershipRegistry', () => {
   it('keeps the current owner when a queue edit still references its media without a new copy', async () => {
     const cleanup = vi.fn(async () => {});
     const registry = new QueuedAttachmentOwnershipRegistry();
-    const ownerId = registry.register('session-1', 'client-1', cleanup, {
-      mediaRefs: ['cindy-media://blobs/a.png', '/blobs/a.png'],
+    const ownerId = registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/a.png', '/blobs/a.png'], cleanup }],
     });
     registry.activateCurrentOwner('session-1', 'client-1', ownerId!);
 
@@ -193,22 +193,27 @@ describe('QueuedAttachmentOwnershipRegistry', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
-  it('folds a still-referenced owner into the edit owner and drops unreferenced media', async () => {
+  it('splits one materialisation so an edit releases only its dropped attachments', async () => {
     const keptLocal = vi.fn(async () => {});
-    const keptRemote = vi.fn(async () => {});
     const droppedLocal = vi.fn(async () => {});
+    const remote = vi.fn(async () => {});
+    const otherLocal = vi.fn(async () => {});
     const newLocal = vi.fn(async () => {});
     const registry = new QueuedAttachmentOwnershipRegistry();
-    const keptOwnerId = registry.register('session-1', 'client-1', keptLocal, {
-      cleanupAfterDurable: keptRemote,
-      mediaRefs: ['cindy-media://blobs/kept.png'],
+    // One enqueue materialised two attachments; the edit keeps one of them.
+    const enqueuedOwnerId = registry.register('session-1', 'client-1', undefined, {
+      cleanupAfterDurable: remote,
+      parts: [
+        { refs: ['cindy-media://blobs/kept.png'], cleanup: keptLocal },
+        { refs: ['cindy-media://blobs/dropped.png'], cleanup: droppedLocal },
+      ],
     });
-    registry.activateCurrentOwner('session-1', 'client-1', keptOwnerId!);
-    registry.register('session-1', 'client-1', droppedLocal, {
-      mediaRefs: ['cindy-media://blobs/dropped.png'],
+    registry.activateCurrentOwner('session-1', 'client-1', enqueuedOwnerId!);
+    registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/other.png'], cleanup: otherLocal }],
     });
-    const newOwnerId = registry.register('session-1', 'client-1', newLocal, {
-      mediaRefs: ['cindy-media://blobs/new.png'],
+    const newOwnerId = registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/new.png'], cleanup: newLocal }],
     });
 
     const replacement = new Set(['cindy-media://blobs/kept.png', 'cindy-media://blobs/new.png']);
@@ -220,14 +225,18 @@ describe('QueuedAttachmentOwnershipRegistry', () => {
 
     expect(survivor).toBe(newOwnerId);
     expect(droppedLocal).toHaveBeenCalledTimes(1);
+    expect(otherLocal).toHaveBeenCalledTimes(1);
     expect(keptLocal).not.toHaveBeenCalled();
     expect(newLocal).not.toHaveBeenCalled();
+    // The remote source moved with the kept attachment and waits for the durable boundary.
+    expect(remote).not.toHaveBeenCalled();
 
     await registry.markDurable('session-1', 'client-1', survivor!);
-    expect(keptRemote).toHaveBeenCalledTimes(1);
+    expect(remote).toHaveBeenCalledTimes(1);
     await registry.settleDurable('session-1', 'client-1');
     expect(keptLocal).not.toHaveBeenCalled();
     expect(newLocal).not.toHaveBeenCalled();
+    expect(remote).toHaveBeenCalledTimes(1);
   });
 
   it('does not clean a duplicate materialisation that was never accepted', async () => {

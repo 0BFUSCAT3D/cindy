@@ -9,17 +9,19 @@ export type QueuedAttachmentOwnershipOptions = {
    */
   cleanupAfterDurable?: QueuedAttachmentCleanup;
   /**
-   * Host-managed references (managed URL and absolute path) this owner's local
-   * materialisation produced. A queue edit keeps an owner whose references the
-   * replacement still carries instead of discarding it as superseded.
+   * The local materialisation split per attachment: its host-managed refs
+   * (managed URL and absolute path) and the cleanup releasing only it. When
+   * given, these replace `cleanup`, so a queue edit can keep the attachments
+   * the replacement still carries and release only the ones it dropped.
    */
-  mediaRefs?: readonly string[];
+  parts?: ReadonlyArray<{ refs: readonly string[]; cleanup: QueuedAttachmentCleanup }>;
 };
 
+type OwnedAttachment = { refs: ReadonlySet<string>; cleanup: QueuedAttachmentCleanup };
+
 type QueuedAttachmentOwnership = {
-  cleanup: QueuedAttachmentCleanup;
+  parts: OwnedAttachment[];
   cleanupAfterDurable?: QueuedAttachmentCleanup;
-  mediaRefs: Set<string>;
   durableBoundaryReached: boolean;
   persistenceInFlight: boolean;
   discardRequested: boolean;
@@ -60,7 +62,12 @@ export class QueuedAttachmentOwnershipRegistry {
     cleanup: QueuedAttachmentCleanup | undefined,
     options?: QueuedAttachmentOwnershipOptions,
   ): string | null {
-    if (!cleanup && !options?.cleanupAfterDurable) return null;
+    const parts: OwnedAttachment[] = options?.parts?.length
+      ? options.parts.map((part) => ({ refs: new Set(part.refs), cleanup: part.cleanup }))
+      : cleanup
+        ? [{ refs: new Set(), cleanup }]
+        : [];
+    if (parts.length === 0 && !options?.cleanupAfterDurable) return null;
     let byClient = this.ownership.get(sessionId);
     if (!byClient) {
       byClient = new Map();
@@ -73,9 +80,8 @@ export class QueuedAttachmentOwnershipRegistry {
     }
     const ownerId = `${clientId}:${++this.nextOwnerId}`;
     clientOwnership.owners.set(ownerId, {
-      cleanup: cleanup ?? (() => {}),
+      parts,
       ...(options?.cleanupAfterDurable ? { cleanupAfterDurable: options.cleanupAfterDurable } : {}),
-      mediaRefs: new Set(options?.mediaRefs ?? []),
       durableBoundaryReached: false,
       persistenceInFlight: false,
       discardRequested: false,
@@ -105,12 +111,13 @@ export class QueuedAttachmentOwnershipRegistry {
   }
 
   /**
-   * Queue edit: fold every superseded owner whose local media the replacement
-   * still references into one surviving owner, so the later superseded-owner
-   * discard releases only media the edit actually dropped. The survivor is
+   * Queue edit: move every attachment the replacement still references into
+   * one surviving owner, so the caller's later superseded-owner discard
+   * releases only the attachments the edit dropped. The survivor is
    * `keepOwnerId` (the edit's own materialisation) or, when the edit created
-   * none, the first referenced existing owner. Returns the survivor id, which
-   * the caller activates and excludes from its discard.
+   * none, the first owner with a referenced attachment. Dropped attachments of
+   * a partly kept owner stay behind in a superseded owner. Returns the survivor
+   * id, which the caller activates and excludes from its discard.
    */
   retainReferencedOwners(
     sessionId: string,
@@ -122,35 +129,43 @@ export class QueuedAttachmentOwnershipRegistry {
     if (!clientOwnership) return null;
     let survivorId = keepOwnerId && clientOwnership.owners.has(keepOwnerId) ? keepOwnerId : null;
     for (const [ownerId, owner] of [...clientOwnership.owners]) {
-      if (ownerId === survivorId || ![...owner.mediaRefs].some(isReferenced)) continue;
+      if (ownerId === survivorId) continue;
+      const kept = owner.parts.filter((part) => [...part.refs].some(isReferenced));
+      if (kept.length === 0) continue;
+      const dropped = owner.parts.filter((part) => !kept.includes(part));
       if (!survivorId) {
         survivorId = ownerId;
-        continue;
+        owner.parts = kept;
+      } else {
+        const survivor = clientOwnership.owners.get(survivorId)!;
+        survivor.parts.push(...kept);
+        const pendingRemote = owner.durableBoundaryReached ? undefined : owner.cleanupAfterDurable;
+        if (pendingRemote) {
+          const survivorRemote = survivor.cleanupAfterDurable;
+          survivor.cleanupAfterDurable = survivorRemote
+            ? async () => {
+                await survivorRemote();
+                await pendingRemote();
+              }
+            : pendingRemote;
+          // The moved remote source has not been released yet; the caller's
+          // next durable mark must run it.
+          survivor.durableBoundaryReached = false;
+        }
+        survivor.persistenceInFlight ||= owner.persistenceInFlight;
+        survivor.discardRequested ||= owner.discardRequested;
+        clientOwnership.owners.delete(ownerId);
+        if (clientOwnership.currentOwnerId === ownerId) clientOwnership.currentOwnerId = survivorId;
       }
-      const survivor = clientOwnership.owners.get(survivorId)!;
-      const survivorCleanup = survivor.cleanup;
-      survivor.cleanup = async () => {
-        await survivorCleanup();
-        await owner.cleanup();
-      };
-      const pendingRemote = owner.durableBoundaryReached ? undefined : owner.cleanupAfterDurable;
-      if (pendingRemote) {
-        const survivorRemote = survivor.cleanupAfterDurable;
-        survivor.cleanupAfterDurable = survivorRemote
-          ? async () => {
-              await survivorRemote();
-              await pendingRemote();
-            }
-          : pendingRemote;
-        // The folded remote source has not been released yet; the caller's
-        // next durable mark must run it.
-        survivor.durableBoundaryReached = false;
+      if (dropped.length > 0) {
+        // The remote source travels with the kept attachments; only local copies remain here.
+        clientOwnership.owners.set(`${clientId}:${++this.nextOwnerId}`, {
+          parts: dropped,
+          durableBoundaryReached: true,
+          persistenceInFlight: owner.persistenceInFlight,
+          discardRequested: owner.discardRequested,
+        });
       }
-      for (const ref of owner.mediaRefs) survivor.mediaRefs.add(ref);
-      survivor.persistenceInFlight ||= owner.persistenceInFlight;
-      survivor.discardRequested ||= owner.discardRequested;
-      clientOwnership.owners.delete(ownerId);
-      if (clientOwnership.currentOwnerId === ownerId) clientOwnership.currentOwnerId = survivorId;
     }
     return survivorId;
   }
@@ -204,7 +219,7 @@ export class QueuedAttachmentOwnershipRegistry {
         continue;
       }
       clientOwnership.owners.delete(ownerId);
-      cleanups.push(owner.cleanup);
+      cleanups.push(...localCleanups(owner));
       if (owner.cleanupAfterDurable && !owner.durableBoundaryReached) {
         cleanups.push(owner.cleanupAfterDurable);
       }
@@ -277,7 +292,7 @@ export class QueuedAttachmentOwnershipRegistry {
           cleanups.push(owner.cleanupAfterDurable);
         }
       } else {
-        cleanups.push(owner.cleanup);
+        cleanups.push(...localCleanups(owner));
         if (owner.cleanupAfterDurable && !owner.durableBoundaryReached) {
           cleanups.push(owner.cleanupAfterDurable);
         }
@@ -342,7 +357,7 @@ export class QueuedAttachmentOwnershipRegistry {
       }
       clientOwnership.owners.delete(ownerId);
       if (clientOwnership.currentOwnerId === ownerId) clientOwnership.currentOwnerId = null;
-      cleanups.push(owner.cleanup);
+      cleanups.push(...localCleanups(owner));
       if (owner.cleanupAfterDurable && !owner.durableBoundaryReached) {
         cleanups.push(owner.cleanupAfterDurable);
       }
@@ -373,4 +388,8 @@ export class QueuedAttachmentOwnershipRegistry {
       }),
     );
   }
+}
+
+function localCleanups(owner: QueuedAttachmentOwnership): QueuedAttachmentCleanup[] {
+  return owner.parts.map((part) => part.cleanup);
 }

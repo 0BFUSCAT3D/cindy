@@ -18450,7 +18450,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         materialized.cleanupLocalMaterialization,
         {
           cleanupAfterDurable: materialized.cleanupAfterAcceptance,
-          mediaRefs: materialized.materializedRefs,
+          parts: materialized.materializedParts,
         },
       );
       let acceptedByCoordinator = false;
@@ -18669,7 +18669,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             cleanupAfterAcceptance: undefined,
             cleanupBeforeAcceptance: undefined,
             cleanupLocalMaterialization: undefined,
-            materializedRefs: undefined,
+            materializedParts: undefined,
           }
         : await materializeQueuedOssAttachmentsDeferred(sid, parsed);
       const attachmentOwnerId = steeringStoredQueueItem
@@ -18680,7 +18680,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             materialized.cleanupLocalMaterialization,
             {
               cleanupAfterDurable: materialized.cleanupAfterAcceptance,
-              mediaRefs: materialized.materializedRefs,
+              parts: materialized.materializedParts,
             },
           );
       let acceptedByCoordinator = false;
@@ -19049,7 +19049,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         materialized.cleanupLocalMaterialization,
         {
           cleanupAfterDurable: materialized.cleanupAfterAcceptance,
-          mediaRefs: materialized.materializedRefs,
+          parts: materialized.materializedParts,
         },
       );
       let acceptedByCoordinator = false;
