@@ -158,12 +158,20 @@ export function setActivityTokenRate(activity: TurnActivityState, rate: number |
  * - 占位帧 / 首个输出之前的 0 读数 / 坏数据: 保留上一个值, 避免工具执行间隙头部来回闪。
  */
 export function applyStatusTokenRate(activity: TurnActivityState, data: unknown): boolean {
-  if (!data || typeof data !== 'object') return false;
+  return setActivityTokenRate(activity, tokenRateFromStatus(data, activity.tokenRate));
+}
+
+/**
+ * applyStatusTokenRate 的纯判据: 给定上一个值与一条 status data, 返回下一个值。
+ * 还没有 activity 可写时(自动任务转播卡尚未开出)用它暂存读数。
+ */
+export function tokenRateFromStatus(data: unknown, previous: number | null): number | null {
+  if (!data || typeof data !== 'object') return previous;
   const record = data as { generationReliable?: unknown; tokenSpeed?: unknown };
-  if (record.generationReliable === false) return setActivityTokenRate(activity, null);
+  if (record.generationReliable === false) return null;
   const speed = readTokenSpeedSnapshot(record.tokenSpeed);
-  if (!speed || speed.rate <= 0) return false;
-  return setActivityTokenRate(activity, speed.rate);
+  if (!speed || speed.rate <= 0) return previous;
+  return Math.round(speed.rate);
 }
 
 /**

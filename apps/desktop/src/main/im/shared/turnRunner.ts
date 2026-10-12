@@ -161,6 +161,8 @@ import {
   pushToolStep,
   renderActivity,
   setActivityNotice,
+  setActivityTokenRate,
+  tokenRateFromStatus,
   type TurnActivityState,
 } from './turnActivity';
 import { terminalErrorText, turnRetryNotice } from './turnRetryNotice';
@@ -374,6 +376,11 @@ interface SessionState {
    * 接管任务的 scheduler 输出。与正常入站 TurnState 分开，避免重复发送。
    */
   scheduledTranspond: ScheduledTranspond | null;
+  /**
+   * 转播卡开出之前收到的最新 tok/s 读数(先调工具的自动任务, 生成工具参数时就有读数)。
+   * 开卡时写进卡片头部并清空；不因它开卡，一轮结束(isRunning=false)即作废。
+   */
+  pendingTranspondTokenRate: number | null;
   /** Agent execution ended, but its background output is still being delivered. */
   pendingTranspondFinals: number;
   /**
@@ -1978,6 +1985,7 @@ export function createTurnRunner(
       resolveDetachDrain: null,
       attached,
       scheduledTranspond: null,
+      pendingTranspondTokenRate: null,
       pendingTranspondFinals: 0,
       otherTaskTurn: false,
     };
@@ -2751,10 +2759,18 @@ export function createTurnRunner(
   function transpondScheduledEvent(state: SessionState, event: AgentEvent): void {
     // Lifecycle status is not user-facing scheduler content. In particular,
     // the claim-bearing status(false) paired with an SDK boundary must not
-    // create or close a projection card. It only feeds the header tok/s of a
-    // projection that already exists; the activity ticker carries it out.
+    // create or close a projection card. It only feeds the header tok/s; the
+    // activity ticker carries it out. Before the card exists the latest reading
+    // is kept on the session so a tool-first turn shows it from the first frame.
     if (event.type === 'status') {
-      if (state.scheduledTranspond) applyStatusTokenRate(state.scheduledTranspond.activity, event.data);
+      if (state.scheduledTranspond) {
+        applyStatusTokenRate(state.scheduledTranspond.activity, event.data);
+      } else {
+        const running = (event.data as { isRunning?: unknown } | null)?.isRunning !== false;
+        state.pendingTranspondTokenRate = running
+          ? tokenRateFromStatus(event.data, state.pendingTranspondTokenRate)
+          : null;
+      }
       return;
     }
     if (event.type === 'done' && isTurnContinuationBoundaryEvent(event)) return;
@@ -2776,6 +2792,8 @@ export function createTurnRunner(
         streamingHandle: null,
         streamingHandlePromise: null,
       };
+      setActivityTokenRate(state.scheduledTranspond.activity, state.pendingTranspondTokenRate);
+      state.pendingTranspondTokenRate = null;
     }
     const t = state.scheduledTranspond;
     switch (event.type) {
@@ -4177,6 +4195,7 @@ export function createTurnRunner(
         resolveDetachDrain: null,
         attached: route?.attached === true,
         scheduledTranspond: null,
+        pendingTranspondTokenRate: null,
         pendingTranspondFinals: 0,
         otherTaskTurn: source === 'other-task',
       };
