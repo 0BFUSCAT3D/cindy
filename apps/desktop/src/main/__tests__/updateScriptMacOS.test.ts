@@ -152,7 +152,7 @@ function shellScript(body: string): string {
  *   'launch'  — stub open execs the new app main binary detached (success path)
  *   'noop'    — stub open does nothing (verification-failure path)
  */
-function makeSandbox(openBehavior: 'launch' | 'noop'): Sandbox {
+function makeSandbox(openBehavior: 'launch' | 'noop', includeNewApp = true): Sandbox {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-upd-test-'));
   const appPath = path.join(root, 'Installed', 'fake (2).app');
   const helperDir = path.join(appPath, 'Contents', 'Frameworks', 'fake Helper (Renderer).app', 'Contents', 'MacOS');
@@ -165,14 +165,19 @@ function makeSandbox(openBehavior: 'launch' | 'noop'): Sandbox {
 
   // New bundle → zip (ditto -c -k, same tool the real flow unpacks with).
   const stage = path.join(root, 'stage');
-  const newApp = path.join(stage, 'fake (2).app');
-  fs.mkdirSync(path.join(newApp, 'Contents', 'MacOS'), { recursive: true });
-  fs.writeFileSync(
-    path.join(newApp, 'Contents', 'MacOS', 'fakemain'),
-    shellScript('sleep 300'),
-    { mode: 0o755 },
-  );
-  fs.writeFileSync(path.join(newApp, 'Contents', 'version.txt'), 'new');
+  if (includeNewApp) {
+    const newApp = path.join(stage, 'fake (2).app');
+    fs.mkdirSync(path.join(newApp, 'Contents', 'MacOS'), { recursive: true });
+    fs.writeFileSync(
+      path.join(newApp, 'Contents', 'MacOS', 'fakemain'),
+      shellScript('sleep 300'),
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(newApp, 'Contents', 'version.txt'), 'new');
+  } else {
+    fs.mkdirSync(path.join(stage, 'not-an-app'), { recursive: true });
+    fs.writeFileSync(path.join(stage, 'not-an-app', 'README.txt'), 'no bundle');
+  }
   const zipPath = path.join(root, 'update.zip');
   execFileSync('/usr/bin/ditto', ['-c', '-k', stage, zipPath]);
 
@@ -274,6 +279,24 @@ describe.runIf(isDarwin)('generated script behavior (darwin)', () => {
       expect(log).not.toContain('PROCESS VERIFIED');
       // Swap itself still succeeded — failure is about launch, not install.
       expect(fs.readFileSync(path.join(sb.appPath, 'Contents', 'version.txt'), 'utf8')).toBe('new');
+    } finally {
+      fs.rmSync(sb.root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('keeps the old bundle and releases the lock when the archive has no app bundle', async () => {
+    const sb = makeSandbox('noop', false);
+    try {
+      const oldPid = spawnDetached('/bin/sleep', ['1']);
+      sb.params.pid = oldPid;
+
+      await runScript(sb);
+      const log = fs.readFileSync(sb.logPath, 'utf8');
+
+      expect(log).toContain(`FATAL: no .app found in ${sb.params.extractDir}`);
+      expect(log).not.toContain('Removing old app');
+      expect(fs.readFileSync(path.join(sb.appPath, 'Contents', 'version.txt'), 'utf8')).toBe('old');
+      expect(fs.existsSync(sb.params.lockFilePath)).toBe(false);
     } finally {
       fs.rmSync(sb.root, { recursive: true, force: true });
     }
