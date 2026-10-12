@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   generateDraft: vi.fn(),
   galleryPortrait: vi.fn(async (_index: number) => 'data:image/png;base64,cG9ydHJhaXQ='),
   defaultModel: 'cindy-selected-model',
+  withDefaultBackup: false,
   navigate: vi.fn(),
   onboarding: false,
   availableVendors: new Set(['cc', 'codex', 'pi']),
@@ -39,7 +40,7 @@ vi.mock('../botStore', () => ({
   addBotProfileAndWait: mocks.addBotProfileAndWait,
   useBotProfiles: () => mocks.profiles,
   subscribeBotGlobalModel: () => () => {},
-  getEffectiveBotModelChain: () => mocks.defaultModel ? [{ harness: 'codex', model: mocks.defaultModel, providerId: 'openai', effort: 'high', fastMode: false }] : [],
+  getEffectiveBotModelChain: () => mocks.defaultModel ? [{ harness: 'codex', model: mocks.defaultModel, providerId: 'openai', effort: 'high', fastMode: false }, ...(mocks.withDefaultBackup ? [{ harness: 'pi', model: 'hidden-backup', providerId: 'backup-provider', effort: 'high', fastMode: false }] : [])] : [],
   refreshBotProfiles: vi.fn(),
   retryBotInvitation: vi.fn(),
   getEffectiveBotModelSettings: () => ({
@@ -108,6 +109,7 @@ beforeEach(() => {
   setDataOwnerGeneration('fixture-owner');
   mocks.galleryPortrait.mockClear();
   mocks.defaultModel = 'cindy-selected-model';
+  mocks.withDefaultBackup = false;
   mocks.generateDraft.mockReset();
   mocks.generateDraft.mockResolvedValue({
     token: 'draft-1',
@@ -191,6 +193,23 @@ describe('name-only creation', () => {
     await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/bots/bot-new'));
     expect(mocks.addBotProfileAndWait).toHaveBeenCalledWith({ name: 'Mika', description: '', avatarImageBase64: 'cG9ydHJhaXQ=', prepareInvitation: true });
     expect(mocks.generateDraft).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('keeps default-chain inheritance but saves only the visible explicit model: selected=%s', async selected => {
+    mocks.withDefaultBackup = true;
+    render(<BotRosterView />);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Mika' } });
+    if (selected) fireEvent.click(screen.getByRole('button', { name: 'choose-custom-model' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'bots.guided.generate' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'bots.guided.generate' }));
+    await waitFor(() => expect(mocks.addBotProfileAndWait).toHaveBeenCalledTimes(1));
+    const input = mocks.addBotProfileAndWait.mock.calls[0][0];
+    if (selected) {
+      expect(input.capabilities.modelChainOverride).toEqual([
+        { harness: 'pi', model: 'custom-model', providerId: 'custom', effort: 'high', fastMode: false },
+      ]);
+      expect(input.capabilities.modelChain).toEqual(input.capabilities.modelChainOverride);
+    } else expect(input.capabilities).toBeUndefined();
   });
 
   it('preserves the name when the configured model is unavailable', async () => {

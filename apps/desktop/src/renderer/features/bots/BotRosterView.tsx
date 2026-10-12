@@ -116,10 +116,10 @@ export function BotRosterView({ onCreated, onClose, restoreFocus, inline = false
         <div className="mt-5">
           <BotModelChainEditor
             label={t('bots.settingsTabs.model')}
-            value={modelOverride ?? getEffectiveBotModelChain()}
+            value={(modelOverride ?? getEffectiveBotModelChain()).slice(0, 1)}
             disabled={creating}
             allowFallbacks={false}
-            onChange={(routes) => { setModelOverride(routes); setError(null); }}
+            onChange={(routes) => { setModelOverride(routes.slice(0, 1)); setError(null); }}
             onNavigateToProviders={() => {
               providerSetupDraft = { owner: getDataOwnerGeneration(), dataOwnerId, name, portrait, initialPortrait, modelOverride };
               navigate('/settings?tab=providers');
