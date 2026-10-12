@@ -114,6 +114,7 @@ const LAST_ACTIVITY_DAY_COUNTS: Record<
   '30d': 30,
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
+const REMOTE_CONVERSATION_SEARCH_LIMIT = 50;
 
 export function emptyConversationSearchResponse(query = ''): ConversationSearchResponse {
   return {
@@ -123,6 +124,12 @@ export function emptyConversationSearchResponse(query = ''): ConversationSearchR
     vectorSkipReason: null,
     poolCapped: false,
   };
+}
+
+export function remoteConversationSearchRequest(
+  request: ConversationSearchRequest,
+): ConversationSearchRequest {
+  return CINDY_MAKE_ENABLED ? request : { ...request, limit: REMOTE_CONVERSATION_SEARCH_LIMIT };
 }
 
 export function stampRemoteSearchResponse(

@@ -438,6 +438,38 @@ describe('searchConversationsAcrossOrigins', () => {
     semanticMode: 'hybrid',
   };
 
+  it.each([1, 3, 24, 40])('finds ordinary hits behind %i Make hits on a bounded legacy host', async (hiddenCount) => {
+    const candidates = [
+      ...Array.from({ length: hiddenCount }, (_entry, index) => result('make-' + index, 100 - index, {
+        source: index % 2 === 0 ? 'cindy-make' : 'cindy-make-merge',
+      })),
+      ...Array.from({ length: 4 }, (_entry, index) => result('ordinary-' + index, 4 - index, { source: 'desktop' })),
+    ];
+    const invokeRemote = vi.fn(async (_deviceId: string, _channel: string, args: unknown[]) => {
+      const remoteRequest = args[0] as ConversationSearchRequest;
+      return response(candidates.slice(0, Math.min(remoteRequest.limit ?? 20, 50)));
+    });
+    const searchLocal = vi.fn(async () => response([]));
+    const page = await searchConversationsAcrossOrigins({ ...request, limit: 3 }, {
+      origins: [
+        { kind: 'local', sessionIds: null },
+        { kind: 'remote', deviceId: 'dev-a', deviceName: 'Studio', connected: true, sessionIds: null },
+      ],
+      searchLocal,
+      invokeRemote,
+      listCachedRemoteSessions: () => [],
+    });
+
+    expect(page.results.map((item) => item.session.id)).toEqual(['ordinary-0', 'ordinary-1', 'ordinary-2']);
+    expect(page.remoteResults?.map((item) => item.session.id)).toEqual([
+      'ordinary-0', 'ordinary-1', 'ordinary-2', 'ordinary-3',
+    ]);
+    expect(invokeRemote).toHaveBeenCalledExactlyOnceWith('dev-a', 'local-db:conversations:search', [
+      expect.objectContaining({ limit: 50, semanticMode: 'keyword' }),
+    ]);
+    expect(searchLocal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ limit: 3, semanticMode: 'hybrid' }));
+  });
+
   it('fans out, forces keyword on remotes, and survives a failed device', async () => {
     const invokeRemote = vi.fn(async (deviceId: string) => {
       if (deviceId === 'dev-b') throw new Error('[DEVICE_LINK_NOT_CONNECTED] closed');

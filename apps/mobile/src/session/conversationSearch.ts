@@ -9,6 +9,7 @@ import {
   filterResultsByRequestFilters,
   mergeConversationSearchFanout,
   remoteIndexedSearchIgnoredWorkingDirs,
+  remoteConversationSearchRequest,
   stampRemoteSearchResponse,
   type ConversationSearchAgentFilter,
   type ConversationSearchLastActivityFilter,
@@ -148,7 +149,7 @@ async function searchOneDevice(
       invoke: deps.invoke,
     });
     const deviceRequest = requestForOrigin(origin, request);
-    const raw = await maker.searchConversations(deviceRequest);
+    const raw = await maker.searchConversations(remoteConversationSearchRequest(deviceRequest));
     if (remoteIndexedSearchIgnoredWorkingDirs(raw, deviceRequest.filters?.workingDirs)) {
       return searchCachedDeviceSessions(origin, deviceRequest, deps.getCachedSessions());
     }
