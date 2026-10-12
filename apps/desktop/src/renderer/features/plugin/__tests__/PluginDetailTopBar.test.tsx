@@ -15,7 +15,9 @@ import { PluginDetailTopBar, usePluginDetailScrolled } from '../PluginDetailTopB
 
 /** jsdom 下 `-webkit-app-region` 只能从 React 写进 style 对象的驼峰键读回。 */
 function appRegionOf(element: HTMLElement): string {
-  return (element.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion ?? '';
+  return (
+    (element.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion ?? ''
+  );
 }
 
 afterEach(() => {
@@ -74,7 +76,7 @@ describe('PluginDetailTopBar', () => {
     expect(onBack).not.toHaveBeenCalled();
   });
 
-  it.each(['altKey', 'ctrlKey', 'metaKey', 'shiftKey', 'isComposing'])(
+  it.each(['altKey', 'ctrlKey', 'metaKey', 'shiftKey', 'isComposing', 'repeat'])(
     'does not navigate back when Escape carries %s',
     (flag) => {
       const onBack = vi.fn();

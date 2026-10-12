@@ -141,6 +141,9 @@ describe('useSettingsEscape', () => {
     pressEscape(search);
     expect(search.value).toBe('');
     expect(document.activeElement).toBe(search);
+    // 按住不放：连发既不失焦也不退出。
+    pressEscape(search, { repeat: true });
+    expect(document.activeElement).toBe(search);
 
     pressEscape(search);
     expect(document.activeElement).not.toBe(search);
