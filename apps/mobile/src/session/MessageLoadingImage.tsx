@@ -33,7 +33,7 @@ export function MessageImagePlaceholder({
     <View
       style={[styles.placeholder, style]}
       accessible
-      accessibilityLabel={t("message.lightbox.loading")}
+      accessibilityLabel={t("message.renderer.loading")}
       accessibilityRole="progressbar"
       testID="message.mediaThumbLoading"
     >
