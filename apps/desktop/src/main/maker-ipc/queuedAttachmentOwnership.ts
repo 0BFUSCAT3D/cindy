@@ -22,6 +22,12 @@ type OwnedAttachment = { refs: ReadonlySet<string>; cleanup: QueuedAttachmentCle
 type QueuedAttachmentOwnership = {
   parts: OwnedAttachment[];
   cleanupAfterDurable?: QueuedAttachmentCleanup;
+  /**
+   * Set once the coordinator accepted this materialisation. A preparation that
+   * is still awaiting acceptance belongs to its own handler, which activates or
+   * discards it; a superseded-owner discard must leave it alone.
+   */
+  accepted: boolean;
   durableBoundaryReached: boolean;
   persistenceInFlight: boolean;
   discardRequested: boolean;
@@ -82,6 +88,7 @@ export class QueuedAttachmentOwnershipRegistry {
     clientOwnership.owners.set(ownerId, {
       parts,
       ...(options?.cleanupAfterDurable ? { cleanupAfterDurable: options.cleanupAfterDurable } : {}),
+      accepted: false,
       durableBoundaryReached: false,
       persistenceInFlight: false,
       discardRequested: false,
@@ -97,7 +104,9 @@ export class QueuedAttachmentOwnershipRegistry {
    */
   activateCurrentOwner(sessionId: string, clientId: string, ownerId: string): string | null {
     const clientOwnership = this.ownership.get(sessionId)?.get(clientId);
-    if (!clientOwnership?.owners.has(ownerId)) return null;
+    const owner = clientOwnership?.owners.get(ownerId);
+    if (!clientOwnership || !owner) return null;
+    owner.accepted = true;
     const previousOwnerId = clientOwnership.currentOwnerId;
     clientOwnership.currentOwnerId = ownerId;
     return previousOwnerId;
@@ -129,7 +138,8 @@ export class QueuedAttachmentOwnershipRegistry {
     if (!clientOwnership) return null;
     let survivorId = keepOwnerId && clientOwnership.owners.has(keepOwnerId) ? keepOwnerId : null;
     for (const [ownerId, owner] of [...clientOwnership.owners]) {
-      if (ownerId === survivorId) continue;
+      // Another edit's preparation that is not accepted yet is not ours to move.
+      if (ownerId === survivorId || !owner.accepted) continue;
       const kept = owner.parts.filter((part) => [...part.refs].some(isReferenced));
       if (kept.length === 0) continue;
       const dropped = owner.parts.filter((part) => !kept.includes(part));
@@ -161,6 +171,7 @@ export class QueuedAttachmentOwnershipRegistry {
         // The remote source travels with the kept attachments; only local copies remain here.
         clientOwnership.owners.set(`${clientId}:${++this.nextOwnerId}`, {
           parts: dropped,
+          accepted: true,
           durableBoundaryReached: true,
           persistenceInFlight: owner.persistenceInFlight,
           discardRequested: owner.discardRequested,
@@ -309,12 +320,19 @@ export class QueuedAttachmentOwnershipRegistry {
   }
 
   /**
-   * Discard every owner except the coordinator's current one, resolved when
-   * this runs rather than when the discard was scheduled.
+   * Discard every accepted owner except the coordinator's current one,
+   * resolved when this runs rather than when the discard was scheduled.
+   * Preparations not yet accepted stay with the handler that registered them.
    */
   discardSuperseded(sessionId: string, clientId: string): Promise<void> {
-    const currentOwnerId = this.getCurrentOwnerId(sessionId, clientId);
-    return this.discardWhere(sessionId, clientId, (ownerId) => ownerId !== currentOwnerId);
+    const clientOwnership = this.ownership.get(sessionId)?.get(clientId);
+    const currentOwnerId = clientOwnership?.currentOwnerId ?? null;
+    return this.discardWhere(
+      sessionId,
+      clientId,
+      (ownerId) =>
+        ownerId !== currentOwnerId && clientOwnership?.owners.get(ownerId)?.accepted === true,
+    );
   }
 
   discardSpecific(sessionId: string, clientId: string, ownerId: string): Promise<void> {

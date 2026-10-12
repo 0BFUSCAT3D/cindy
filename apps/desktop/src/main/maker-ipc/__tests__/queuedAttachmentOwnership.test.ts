@@ -274,6 +274,31 @@ describe('QueuedAttachmentOwnershipRegistry', () => {
     expect(secondLocal).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves a later edit preparation that is not accepted yet to its own handler', async () => {
+    const acceptedLocal = vi.fn(async () => {});
+    const pendingLocal = vi.fn(async () => {});
+    const registry = new QueuedAttachmentOwnershipRegistry();
+    const acceptedOwnerId = registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/old.png'], cleanup: acceptedLocal }],
+    });
+    registry.activateCurrentOwner('session-1', 'client-1', acceptedOwnerId!);
+    // Edit 1 drops the old image and is accepted without a copy of its own.
+    expect(registry.retainReferencedOwners('session-1', 'client-1', null, () => false)).toBeNull();
+    registry.restoreCurrentOwner('session-1', 'client-1', null);
+    // Edit 2 has materialised a new image but is still preparing when edit 1's discard runs.
+    const pendingOwnerId = registry.register('session-1', 'client-1', undefined, {
+      parts: [{ refs: ['cindy-media://blobs/new.png'], cleanup: pendingLocal }],
+    });
+
+    await registry.discardSuperseded('session-1', 'client-1');
+
+    expect(acceptedLocal).toHaveBeenCalledTimes(1);
+    expect(pendingLocal).not.toHaveBeenCalled();
+    registry.activateCurrentOwner('session-1', 'client-1', pendingOwnerId!);
+    await registry.discardSuperseded('session-1', 'client-1');
+    expect(pendingLocal).not.toHaveBeenCalled();
+  });
+
   it('does not clean a duplicate materialisation that was never accepted', async () => {
     const acceptedCleanup = vi.fn(async () => {});
     const duplicateCleanup = vi.fn(async () => {});
