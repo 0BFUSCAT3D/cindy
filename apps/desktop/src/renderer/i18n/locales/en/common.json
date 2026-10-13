@@ -9175,6 +9175,7 @@
         "reactorsUnavailable_other": "Names unavailable for {{count}} more members",
         "reactorsLoading": "Loading who reacted…",
         "reactorsFailed": "Couldn’t load who reacted",
+        "reactorsScrollHint": "Scroll or press ↑↓ to see everyone",
         "invite": "Invite to group",
         "join": "Join group",
         "inviteDescription": "People who accept the invitation join the group and can read its chat history.",

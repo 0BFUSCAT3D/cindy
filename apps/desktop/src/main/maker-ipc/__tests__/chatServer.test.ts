@@ -132,11 +132,12 @@ describe('Chat Server result delivery and refresh', () => {
     await expect(service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 1 }))
       .resolves.toEqual({ ok: false, errorCode: 'REVISION_CONFLICT', message: 'REVISION_CONFLICT' });
   });
-  it('lists every reactor by actor ID and names them only from the group member projection', async () => {
+  it('lists every reactor by actor ID, past the room cap, without the register-time writes', async () => {
     const messageId = '50000000-0000-4000-8000-000000000009';
     const actor = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
     const former = actor(1), unknown = actor(2);
-    const firstPage = [selfId, botId, former, ...Array.from({ length: 97 }, (_, n) => actor(100 + n))];
+    // Former members keep their reactions, so one emoji can exceed the 1000-member room cap.
+    const all = [selfId, botId, former, unknown, ...Array.from({ length: 1101 }, (_, n) => actor(100 + n))].sort();
     fixture.handle.mockImplementation(route => {
       if (route === `/conversations/${roomId}/members`) return { body: [
         { id: selfId, kind: 'human', name: 'Dash', ownerName: 'Dash', state: 'joined' },
@@ -146,22 +147,32 @@ describe('Chat Server result delivery and refresh', () => {
       if (route.startsWith(`/conversations/${roomId}/messages/${messageId}/reactions?`)) {
         const query = new URLSearchParams(route.split('?')[1]);
         expect(query.get('emoji')).toBe('🎉');
-        return { body: query.get('after') ? [{ actor_id: former }, { actor_id: unknown }] : firstPage.map(actor_id => ({ actor_id })) };
+        const after = query.get('after');
+        return { body: all.filter(a => !after || a > after).slice(0, 100).map(actor_id => ({ actor_id })) };
       }
       return response(route);
     });
     const result = await service.chatServer!.reactors({ groupId: roomId, messageId, emoji: '🎉' });
     if (!result.ok) throw new Error(result.errorCode);
-    expect(result.reactors).toHaveLength(101);
-    expect(result.reactors.slice(0, 3)).toEqual([
-      { actorId: selfId, name: 'Dash', isSelf: true, formerMember: false },
-      { actorId: botId, name: 'Cindy (Chris)', isSelf: false, formerMember: false },
-      { actorId: former, name: 'Ada', isSelf: false, formerMember: true },
-    ]);
-    expect(result.reactors.at(-1)).toEqual({ actorId: unknown, name: null, isSelf: false, formerMember: false });
-    const reads = fixture.handle.mock.calls.filter(([route]) => String(route).includes('/reactions'));
-    expect(reads.map(([, method]) => method)).toEqual(['GET', 'GET']);
-    expect(new URLSearchParams(String(reads[1][0]).split('?')[1]).get('after')).toBe(firstPage.at(-1));
+    expect(result.reactors.map(r => r.actorId)).toEqual(all);
+    const byId = new Map(result.reactors.map(r => [r.actorId, r]));
+    expect(byId.get(selfId)).toEqual({ actorId: selfId, name: 'Dash', isSelf: true, formerMember: false });
+    expect(byId.get(botId)).toEqual({ actorId: botId, name: 'Cindy (Chris)', isSelf: false, formerMember: false });
+    expect(byId.get(former)).toEqual({ actorId: former, name: 'Ada', isSelf: false, formerMember: true });
+    expect(byId.get(unknown)).toEqual({ actorId: unknown, name: null, isSelf: false, formerMember: false });
+    expect(fixture.handle.mock.calls.filter(([route]) => String(route).includes('/reactions'))).toHaveLength(12);
+    // Hover is read-only: no actor/profile sync, no write of any kind.
+    expect(fixture.handle.mock.calls.every(([, method]) => method === 'GET')).toBe(true);
+    expect(fixture.handle.mock.calls.some(([route]) => route === '/actors')).toBe(false);
+  });
+  it('fails instead of looping or truncating when a full reactor page does not advance', async () => {
+    const messageId = '50000000-0000-4000-8000-000000000009';
+    const page = Array.from({ length: 100 }, (_, n) => ({ actor_id: `70000000-0000-4000-8000-${String(n).padStart(12, '0')}` }));
+    fixture.handle.mockImplementation(route => route.includes('/reactions?') ? { body: page }
+      : route.endsWith('/members') ? { body: [] } : response(route));
+    await expect(service.chatServer!.reactors({ groupId: roomId, messageId, emoji: '🎉' }))
+      .resolves.toEqual({ ok: false, errorCode: 'CHAT_RESPONSE_INVALID' });
+    expect(fixture.handle.mock.calls.filter(([route]) => String(route).includes('/reactions'))).toHaveLength(2);
   });
   it('rejects a malformed reactor query before reaching the server', async () => {
     await expect(service.chatServer!.reactors({ groupId: roomId, messageId: 'not-a-message', emoji: '🎉' }))

@@ -9138,6 +9138,7 @@
         "reactorsUnavailable_other": "ほか {{count}} 人のメンバー情報は表示できません",
         "reactorsLoading": "リアクションしたメンバーを読み込み中…",
         "reactorsFailed": "リアクションしたメンバーを読み込めませんでした",
+        "reactorsScrollHint": "スクロールまたは ↑↓ キーで全員を表示",
         "invite": "グループに招待",
         "join": "グループに参加",
         "inviteDescription": "招待を承諾するとメンバーになり、チャット履歴を閲覧できます。",

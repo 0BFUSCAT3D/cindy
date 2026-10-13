@@ -74,7 +74,7 @@ describe('reaction participants', () => {
     mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('x', null)] });
     render(actions([{ emoji: '👍', count: 1, me: false }]));
     act(() => badge().focus());
-    await waitFor(async () => expect((await tooltip()).textContent).toBe(['👍 · 1', '1 unavailable'].join('')));
+    await waitFor(async () => expect((await tooltip()).textContent).toBe(['👍 · 1', '1 unavailable'].join('\n')));
   });
 
   it('refreshes the list after a live change and ignores the superseded read', async () => {
@@ -123,5 +123,52 @@ describe('reaction participants', () => {
     mocks.ownerCurrent = false;
     await act(async () => { resolve({ ok: true, reactors: [reactor('b', 'Zoe')] }); });
     expect((await tooltip()).textContent).not.toContain('Zoe');
+  });
+
+  it('keeps a long list inside the viewport and lets the keyboard scroll it without toggling', async () => {
+    const many = Array.from({ length: 300 }, (_, n) => reactor(`p${n}`, `Member ${String(n).padStart(3, '0')}`));
+    mocks.reactors.mockResolvedValue({ ok: true, reactors: many });
+    // jsdom has no layout: give the scroll region a real overflow.
+    const geometry = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'reactor-names' ? 2000 : 0;
+    });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'reactor-names' ? 240 : 0;
+    });
+    const scrollBy = vi.fn();
+    HTMLElement.prototype.scrollBy = scrollBy;
+    try {
+      render(actions([{ emoji: '👍', count: 300, me: false }]));
+      act(() => badge().focus());
+      await waitFor(() => expect(document.querySelector('[data-testid="reactor-names"]')?.textContent).toContain('Member 299'));
+      const names = document.querySelector<HTMLElement>('[data-testid="reactor-names"]')!;
+      // Rendered once (not again as hidden tooltip text), so scrolling targets the visible list.
+      expect(document.querySelectorAll('[data-testid="reactor-names"]')).toHaveLength(1);
+      // Every name is rendered; the region scrolls inside a viewport-bounded tooltip.
+      expect(names.textContent).toContain('Member 000');
+      expect(names.className).toContain('overflow-y-auto');
+      expect(names.parentElement!.className).toContain('--radix-tooltip-content-available-height');
+      await waitFor(() => expect(names.parentElement!.textContent).toContain('reactorsScrollHint'));
+      // Screen readers get every name from the label; the scroll hint is for sighted users only.
+      expect((await tooltip()).textContent).toContain('Member 299');
+      fireEvent.keyDown(badge(), { key: 'PageDown' });
+      fireEvent.keyDown(badge(), { key: 'ArrowUp' });
+      expect(scrollBy).toHaveBeenNthCalledWith(1, { top: 216 });
+      expect(scrollBy).toHaveBeenNthCalledWith(2, { top: -40 });
+      expect(mocks.react).not.toHaveBeenCalled();
+    } finally { geometry.mockRestore(); client.mockRestore(); }
+  });
+
+  it('keeps reading while the pointer moves from the badge into the open list', async () => {
+    mocks.reactors.mockResolvedValueOnce({ ok: true, reactors: [reactor('b', 'Zoe')] })
+      .mockResolvedValueOnce({ ok: true, reactors: [reactor('b', 'Zoe'), reactor('c', 'Bo')] });
+    const view = render(actions([{ emoji: '👍', count: 1, me: false }]));
+    fireEvent.pointerEnter(badge());
+    fireEvent.pointerMove(badge(), { pointerType: 'mouse' });
+    await waitFor(async () => expect((await tooltip()).textContent).toContain('Zoe'), { timeout: 2000 });
+    // Leaving the badge toward the hoverable list keeps it open; a remote add still refreshes it.
+    fireEvent.pointerLeave(badge());
+    view.rerender(actions([{ emoji: '👍', count: 2, me: false }]));
+    await waitFor(async () => expect((await tooltip()).textContent).toContain('Bo and Zoe'));
   });
 });
