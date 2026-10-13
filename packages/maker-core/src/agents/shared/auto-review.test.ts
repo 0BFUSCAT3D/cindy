@@ -4888,6 +4888,33 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     })).toBe(true);
   });
 
+  it('keeps sharing source searches behind consent when ripgrep may run a preprocessor', () => {
+    for (const command of [
+      "rg token -g '*.ts' --pre=/tmp/filter .",
+      "rg --pre /tmp/filter token -g '*.ts' .",
+      "rg --no-config token -g '*.ts' --pre=/tmp/filter .",
+      "rg token -g '*.ts' --pre=/tmp/filter --pre-glob '*.ts' .",
+      "rg token -g '*.ts' --pre=/tmp/filter --no-pre .",
+      "rg token -g '*.ts' --pre='' .",
+      "rg token -g '*.ts' --pr=/tmp/filter .",
+      "rg token -g '*.ts' --p /tmp/filter .",
+      "rg -e -- -e token -g '*.ts' --pre=/tmp/filter .",
+      "rg token -g '*.ts' --'pre'=/tmp/filter .",
+    ]) {
+      const localDecision = shellCommandReadsCredentials(command, roots);
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: false }), command).toBe(localDecision);
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true }), command).toBe(true);
+    }
+    for (const command of [
+      "rg token -g '*.ts' .",
+      "rg --no-config token -g '*.ts' .",
+      "rg token -g '*.ts' --pre-glob '*.ts' .",
+      "rg token -g '*.ts' --no-pre .",
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true }), command).toBe(false);
+    }
+  });
+
   it('checks runtime helpers for sharing Git metadata without changing local decisions', () => {
     for (const command of ['git status', 'git ls-files', 'git diff --name-only', 'git log --oneline']) {
       expect(shellCommandReadsCredentials(command, roots), command).toBe(false);

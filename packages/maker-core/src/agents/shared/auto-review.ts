@@ -5727,6 +5727,13 @@ function searchFollowsSymlinks(bin: string, args: readonly string[]): boolean {
   return false;
 }
 
+function ripgrepMayRunPreprocessor(args: readonly string[]): boolean {
+  return args.some((token) => {
+    const name = token.split('=', 1)[0];
+    return name.length > 2 && '--pre'.startsWith(name);
+  });
+}
+
 function rgSearchesPotentialDotenv(
   args: readonly string[],
   selectorCouldMatch: (value: string) => boolean = selectorCouldMatchCredential,
@@ -6445,6 +6452,7 @@ function shellCommandReadsDotenv(
     }
     if (readsCredentialInput) return true;
     const args = tokens.slice(1);
+    if (opts.sourceFileSelectors && bin === 'rg' && ripgrepMayRunPreprocessor(args)) return true;
     if (opts.sourceFileSelectors && searchFollowsSymlinks(bin, args)) return true;
     if (opts.sourceFileSelectors && bin === 'rg'
       && (opts.ripgrepConfigActive || /\bRIPGREP_CONFIG_PATH\s*=/i.test(command))

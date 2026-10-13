@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { shareCredentialGitReads } from '../../credentials';
+import { isShareCredentialCommand, shareCredentialGitReads } from '../../credentials';
 import { RemoteExecutor } from '../executor';
 import { ExecutorGate, type ExecutorAction } from '../gate';
 import { GitCredentialHistory } from '../gitCredentials';
@@ -352,6 +352,34 @@ describe('GitCredentialHistory', () => {
     expect(gate.authorize({ kind: 'exec', command: "rg --no-config -g '*.ts' PRIVATE .", cwd: repo }).ok).toBe(true);
     fs.writeFileSync(config, '--hidden\n--glob=*.env\n');
     await requiresCredentialConfirmation(history, command);
+  });
+
+  it.runIf(process.platform !== 'win32')('keeps consent when ripgrep preprocessors expose a credential outside source files', async () => {
+    const history = new GitCredentialHistory();
+    const ripgrep = path.resolve(__dirname, '../../../../../../ripgrep-bin', process.platform + '-' + process.arch, 'rg');
+    const credential = path.join(root, 'private.env');
+    const filter = path.join(root, 'preprocessor');
+    fs.writeFileSync(credential, 'PRIVATE_FIXTURE=rg-preprocessor\n');
+    fs.writeFileSync(filter, '#!/bin/sh\ncat ' + JSON.stringify(credential) + '\n', { mode: 0o700 });
+    for (const args of [
+      ['PRIVATE_FIXTURE', '-g', '*.ts', '--pre=' + filter, '.'],
+      ['PRIVATE_FIXTURE', '-g', '*.ts', '--pre', filter, '.'],
+      ['--no-config', 'PRIVATE_FIXTURE', '-g', '*.ts', '--pre=' + filter, '.'],
+      ['-e', '--', '-e', 'PRIVATE_FIXTURE', '-g', '*.ts', '--pre=' + filter, '.'],
+      ['PRIVATE_FIXTURE', '-g', '*.ts', '--pre-glob', '*.ts', '--pre=' + filter, '.'],
+    ]) {
+      expect(execFileSync(ripgrep, args, { cwd: repo, encoding: 'utf8' })).toContain('PRIVATE_FIXTURE=rg-preprocessor');
+      const command = 'rg ' + args.map((arg) => JSON.stringify(arg)).join(' ');
+      expect(isShareCredentialCommand(command, [repo], { cwd: repo, platform: process.platform }), command).toBe(true);
+      await requiresCredentialConfirmation(history, command);
+    }
+    const plain = spawnSync(ripgrep, ['PRIVATE_FIXTURE', '-g', '*.ts', '.'], { cwd: repo, encoding: 'utf8' });
+    expect(plain.status).toBe(1);
+    expect(plain.stdout).toBe('');
+    expect(plain.stderr).toBe('');
+    const workspace = new ExecutorWorkspace({ workingDir: repo });
+    const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: true });
+    expect(gate.authorize({ kind: 'exec', command: "rg PRIVATE_FIXTURE -g '*.ts' .", cwd: repo }).ok).toBe(true);
   });
 
   it('keeps consent when --bare selects a different repository in the same directory', async () => {
