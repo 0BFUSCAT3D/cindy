@@ -6440,7 +6440,13 @@ function shellCommandReadsDotenv(
           const mode = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[index + 1];
           return '--diff-merges'.startsWith(name) && mode !== 'off' && mode !== 'none';
         });
-      const readsContent = gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject || probesMergePatch;
+      // Whitespace diagnostics print offending source lines even without -p,
+      // including when --check is combined with a metadata output flag.
+      const probesWhitespaceContent = sharesGitCredentialChecks
+        && /^(?:diff|log|show|whatchanged)$/.test(invocation.sub)
+        && invocation.args.includes('--check');
+      const readsContent = gitContentReadWithoutPath(invocation.sub, invocation.args)
+        || probesShowObject || probesMergePatch || probesWhitespaceContent;
       const probesRuntime = opts.gitContentRead !== undefined
         && /^(?:diff|show|log|whatchanged|grep|cat-file|status|blame|ls-files|check-ignore)$/.test(invocation.sub);
       const checksContent = readsContent || probesRuntime || (sharesGitCredentialChecks

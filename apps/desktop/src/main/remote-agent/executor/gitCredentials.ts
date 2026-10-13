@@ -68,7 +68,7 @@ const MIXED_OUTPUT_OPTION = /^--(?:graph|stat|numstat|shortstat|dirstat|summary|
  * `--名称=值`、带数字的短选项或提交；否则插进去的选项可能被它当成取值(`git log -S <文件名>`)。
  */
 const VALUELESS_OPTIONS: ReadonlySet<string> = new Set([
-  '-p', '-u', '--patch', '-W', '--function-context', '--cached', '--staged', '--merge-base', '-R',
+  '-p', '-u', '--patch', '-W', '--function-context', '--cached', '--staged', '--merge-base', '-R', '--check',
   '-a', '--text', '-w', '-b', '--ignore-all-space', '--ignore-space-change', '--ignore-blank-lines',
   '--minimal', '--patience', '--histogram', '--word-diff', '--color-words', '--color', '--no-color',
   '--no-ext-diff', '--no-textconv', '--no-prefix', '--full-index', '--binary', '-M', '-C', '-B', '--find-renames', '--no-renames',
@@ -380,14 +380,19 @@ async function revisionsAreCovered(
  */
 async function shownFilesArgs(read: GitRead, cwd: string): Promise<string[] | null> {
   const listing = SHOWN_FILES[read.sub];
-  if (!listing || read.args.some((arg) => MIXED_OUTPUT_OPTION.test(arg))) return null;
+  const separator = read.args.indexOf('--');
+  // --check prints source lines and conflicts with --name-only. Remove only
+  // actual flags; preserve path operands and possible values of other options.
+  const args = read.args.filter((arg, index) => !(arg === '--check'
+    && (separator < 0 || index < separator) && cannotTakeNextAsValue(read.args[index - 1])));
+  if (!listing || args.some((arg) => MIXED_OUTPUT_OPTION.test(arg))) return null;
   const objectsMustBeCommits = read.sub === 'diff' || read.sub === 'show';
   const resolves = (spec: string) => git(['rev-parse', '--verify', '--quiet', spec], cwd).then(() => true, () => false);
-  const separator = read.args.indexOf('--');
-  let insertAt = separator < 0 ? read.args.length : separator;
+  const argsSeparator = args.indexOf('--');
+  let insertAt = argsSeparator < 0 ? args.length : argsSeparator;
   let sawCommit = false;
   for (let index = 0; index < insertAt; index += 1) {
-    const arg = read.args[index];
+    const arg = args[index];
     if (arg.startsWith('-')) continue;
     const range = arg.split(/\.\.\.?/);
     if (range.length > 1) {
@@ -409,8 +414,8 @@ async function shownFilesArgs(read: GitRead, cwd: string): Promise<string[] | nu
     if (await exists(path.resolve(cwd, arg))) insertAt = index;
   }
   if (read.sub === 'show' && !sawCommit && !(await resolves('HEAD^{commit}'))) return null;
-  if (!cannotTakeNextAsValue(read.args[insertAt - 1])) return null;
-  return [listing.sub, ...read.args.slice(0, insertAt), ...listing.args, ...read.args.slice(insertAt)];
+  if (!cannotTakeNextAsValue(args[insertAt - 1])) return null;
+  return [listing.sub, ...args.slice(0, insertAt), ...listing.args, ...args.slice(insertAt)];
 }
 
 /**

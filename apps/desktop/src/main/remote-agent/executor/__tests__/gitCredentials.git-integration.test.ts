@@ -223,6 +223,30 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'git show blob-tag -- src')).toBe(false);
   });
 
+  it('checks credential lines printed by whitespace diagnostics without blocking source checks', async () => {
+    commit('credential baseline', '.env');
+    write('.env', 'PRIVATE_FIXTURE=whitespace-check \n');
+    write('src/app.ts', 'const changed = true; \n');
+    const history = new GitCredentialHistory();
+    const check = async (args: string[]) => {
+      const output = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+      expect(output.stdout, args.join(' ')).toContain('PRIVATE_FIXTURE=whitespace-check');
+      const command = 'git ' + args.join(' ');
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      if (!args.includes('--stat')) {
+        expect(await provesSafe(history, command + ' -- src/app.ts'), command).toBe(true);
+      }
+    };
+    await check(['diff', '--check']);
+    await check(['diff', '--stat', '--check']);
+    git('add', '.env', 'src/app.ts');
+    await check(['diff', '--cached', '--check']);
+    git('commit', '-qm', 'whitespace change', '--no-gpg-sign');
+    for (const sub of ['log', 'show']) await check([sub, '--check', '-1']);
+    expect(await provesSafe(history, 'git diff --check')).toBe(true);
+  });
+
   it('keeps consent for implicit merge patches containing credentials', async () => {
     write('.env', 'PRIVATE_FIXTURE=base\n');
     git('add', '.env');

@@ -4997,6 +4997,18 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     },
   );
 
+  it.each([
+    'git diff --check', 'git diff --cached --check', 'git diff --stat --check',
+    'git log --check -1', 'git show --check HEAD', 'git whatchanged --check -1',
+  ])('checks whitespace diagnostics as sharing content without changing local decisions: %s', (command) => {
+    expect(shellCommandReadsCredentials(command, roots)).toBe(false);
+    expect(classifyShellCommand(command, roots)).toBe('auto-approve');
+    const collect = vi.fn(() => true);
+    expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect })).toBe(false);
+    expect(collect).toHaveBeenCalledExactlyOnceWith(expect.not.objectContaining({ metadataOnly: true }));
+    expect(shellCommandReadsCredentials(command, roots, { gitContentRead: () => false })).toBe(true);
+  });
+
   it('checks sharing git show object types even when patch output is suppressed', () => {
     for (const command of ['git show -s deadbeef', 'git show --name-only deadbeef', 'git show --no-patch']) {
       expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
