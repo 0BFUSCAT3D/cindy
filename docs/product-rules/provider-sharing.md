@@ -326,6 +326,9 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
        环境变量的赋值、移除或清空（含 PATH、加载器与 Git 配置来源）都无法与探针证明一致，照旧弹卡；
        宿主继承了 `BASH_ENV` / `ENV` / `ZDOTDIR` 或导出的 Bash 函数时，同样无法证明 shell 启动后仍调用
        探针使用的 Git，不授予内容与配置读取豁免；
+       shell 可执行文件本身也要核实：Bash 仅接受固定系统路径的二进制，以及 Windows 标准 Program Files
+       安装目录里的 Git Bash（核实实际路径没有重定向）。自定义 Bash、Windows 显式 `CLAUDE_CODE_GIT_BASH_PATH`、
+       未知安装目录或其他 shell 无法与探针证明一致，保留内容、配置和静态只读调用的凭证确认；
        实际执行器选择 zsh 时，即使没有 `ZDOTDIR`，也要核实系统级 `zshenv` 与 `HOME/.zshenv`（含各自
        `.zwc` 缓存）均不存在；发现文件、核实文件状态失败或超时、HOME 不明确、或自定义 zsh 的启动目录
        无法核实，都保留确认。此核实每次执行前重做，不读取或运行启动脚本，不沿用仓库历史的缓存；
@@ -335,6 +338,9 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
        配置中出现 `core.fsmonitor` 时同样保留确认（不假设不同 Git 版本对布尔取值的解释一致），
        在读取 index 前拦下它，避免 hook 经 stderr 带出凭证。`git status`、`git ls-files`、只列文件名的
        diff 等静态只读调用也要核实运行期 helper；无 helper 时仍可豁免，不改变本机任务默认判定；
+       静态只读调用同样不能略过子模块检查：公共 Git 目录存在 `modules`、index 包含 gitlink，
+       或核实目录状态失败时保留确认；即使旧式子模块把自己的 `.git` 留在工作目录里也不豁免，
+       避免 `git status` 进入子模块后执行其独立配置的 helper 或 hook；
        配置中出现 `core.hooksPath` 时同样保留确认；未配置时，每次核实仓库公共 Git 目录里的默认
        `post-index-change` hook（含 Windows 可执行文件后缀）不存在。发现 hook 或无法核实文件状态
        都不授予内容与静态只读豁免，避免 `git status` 刷新 index 时执行 hook、经 stderr 带出凭证；

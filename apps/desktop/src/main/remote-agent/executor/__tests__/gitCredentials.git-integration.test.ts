@@ -74,6 +74,7 @@ const savedEnv = Object.fromEntries(GIT_ENV_KEYS.map((key) => [key, process.env[
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'share-git-credentials-')));
   vi.stubEnv('SHELL', '/bin/bash');
+  vi.stubEnv('CLAUDE_CODE_GIT_BASH_PATH', undefined);
   vi.stubEnv('RIPGREP_CONFIG_PATH', undefined);
   vi.stubEnv('PATH', (process.env.PATH ?? '').split(path.delimiter).map((entry) => path.resolve(entry)).join(path.delimiter));
   // 临时目录的上层也可能是 git 仓库(比如整个用户目录)：不往上找。开发机自己的全局与系统 git 配置
@@ -529,6 +530,54 @@ describe('GitCredentialHistory', () => {
     expect(fs.existsSync(invokedFile)).toBe(false);
   });
 
+  it.each(['absorbed', 'embedded'])('keeps consent when status enters an %s submodule with a helper', async (layout) => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git status')).toBe(true);
+    const child = path.join(repo, 'child');
+    if (layout === 'absorbed') {
+      git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', repo, 'child');
+    } else {
+      git('clone', '--no-hardlinks', '-q', repo, child);
+      git('config', '-f', '.gitmodules', 'submodule.child.path', 'child');
+      git('config', '-f', '.gitmodules', 'submodule.child.url', repo.split(path.sep).join('/'));
+      git('add', '.gitmodules', 'child');
+    }
+    git('commit', '-q', '--no-gpg-sign', '-m', 'submodule fixture');
+    expect(fs.existsSync(path.join(repo, '.git', 'modules'))).toBe(layout === 'absorbed');
+    expect(git('ls-files', '--stage', 'child')).toMatch(/^160000 /);
+    const credentialFile = path.join(root, '.env');
+    const hookFile = path.join(root, 'submodule-fsmonitor.cjs');
+    const invokedFile = path.join(root, 'submodule-helper-invoked');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=submodule-helper\n');
+    fs.writeFileSync(hookFile, 'const fs = require("node:fs");\n'
+      + 'fs.writeFileSync(' + JSON.stringify(invokedFile) + ', "called");\n'
+      + 'process.stderr.write(fs.readFileSync(' + JSON.stringify(credentialFile) + '));\n'
+      + 'process.stdout.write("fixture-token\\0");\n');
+    const hook = [process.execPath, hookFile].map((file) => JSON.stringify(file.split(path.sep).join('/'))).join(' ');
+    git('-C', child, 'config', 'core.fsmonitor', hook);
+    const output = spawnSync('git', ['status'], { cwd: repo, encoding: 'utf8' });
+    expect(output.stdout + output.stderr).toContain('PRIVATE_FIXTURE=submodule-helper');
+    expect(output.status).toBe(0);
+    fs.unlinkSync(invokedFile);
+    for (const command of ['git status', 'git status --porcelain', 'git diff --name-only', 'git ls-files', 'git diff --cached']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invokedFile), command).toBe(false);
+    }
+  });
+
+  it('fails closed when the submodule directory cannot be inspected', async () => {
+    const history = new GitCredentialHistory();
+    expect(await provesSafe(history, 'git status')).toBe(true);
+    const modules = path.join(repo, '.git', 'modules');
+    const lstat = fsPromises.lstat;
+    const stats = vi.spyOn(fsPromises, 'lstat').mockImplementation((file) => file === modules
+      ? Promise.reject(Object.assign(new Error('unavailable'), { code: 'EACCES' })) : lstat(file));
+    expect(await provesSafe(history, 'git status')).toBe(false);
+    expect(stats).toHaveBeenCalledWith(modules);
+    await requiresCredentialConfirmation(history, 'git status');
+  });
+
   it('keeps consent for post-index-change hooks and configured hook directories', async () => {
     vi.stubEnv('GIT_OPTIONAL_LOCKS', undefined);
     const history = new GitCredentialHistory();
@@ -929,6 +978,43 @@ describe('GitCredentialHistory', () => {
       await requiresCredentialConfirmation(history, 'git diff');
       vi.stubEnv(key, undefined);
     }
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+  });
+
+  it('keeps consent for custom Bash and other unverified shell executables', async () => {
+    const history = new GitCredentialHistory();
+    const shellFile = path.join(root, process.platform === 'win32' ? 'bash.exe' : 'bash');
+    const credentialFile = path.join(root, '.env');
+    const invokedFile = path.join(root, 'custom-shell-invoked');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=custom-shell\n');
+    fs.writeFileSync(shellFile, '#!/bin/sh\nprintf called > ' + JSON.stringify(invokedFile.split(path.sep).join('/'))
+      + '\ncat ' + JSON.stringify(credentialFile.split(path.sep).join('/')) + '\n');
+    fs.chmodSync(shellFile, 0o700);
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    vi.stubEnv(process.platform === 'win32' ? 'CLAUDE_CODE_GIT_BASH_PATH' : 'SHELL', shellFile);
+    const selected = executorShell.resolveExecutorShell();
+    expect(selected.file).toBe(shellFile);
+    if (process.platform !== 'win32') {
+      const output = spawnSync(selected.file, ['-c', 'git diff'], { cwd: repo, encoding: 'utf8' });
+      expect(output.stdout + output.stderr).toContain('PRIVATE_FIXTURE=custom-shell');
+      expect(output.status).toBe(0);
+      fs.unlinkSync(invokedFile);
+    }
+    for (const command of ['git diff', 'git status', 'git config --list']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invokedFile), command).toBe(false);
+    }
+    vi.stubEnv('SHELL', '/bin/bash');
+    vi.stubEnv('CLAUDE_CODE_GIT_BASH_PATH', undefined);
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    const shell = vi.spyOn(executorShell, 'resolveExecutorShell');
+    for (const name of ['bash', 'bash.exe', 'cmd.exe']) {
+      shell.mockReturnValue({ file: path.join(root, 'custom', name), dialect: name === 'cmd.exe' ? 'cmd' : 'bash',
+        scriptName: 'script.sh', args: ['script.sh'] });
+      expect(await provesSafe(history, 'git diff'), name).toBe(false);
+    }
+    shell.mockRestore();
     expect(await provesSafe(history, 'git diff')).toBe(true);
   });
 

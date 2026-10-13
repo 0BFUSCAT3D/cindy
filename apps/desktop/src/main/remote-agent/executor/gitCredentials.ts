@@ -516,7 +516,24 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
 
 async function shellStartupAllowsGitProbe(waitMs: number): Promise<boolean> {
   const shell = resolveExecutorShell();
-  if (path.basename(shell.file) !== 'zsh') return true;
+  if (shell.dialect !== 'bash') return false;
+  if (['/bin/bash', '/usr/bin/bash'].includes(shell.file)) return true;
+  if (path.basename(shell.file) !== 'zsh') {
+    if (process.platform !== 'win32' || process.env.CLAUDE_CODE_GIT_BASH_PATH !== undefined) return false;
+    const normalized = (file: string) => path.win32.normalize(file).replace(/[\\/]$/, '').toLowerCase();
+    const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter((root): root is string => {
+      if (!root || !/^[a-z]:\\/i.test(path.win32.normalize(root))) return false;
+      const drive = path.win32.parse(root).root;
+      return ['Program Files', 'Program Files (x86)'].some((directory) => normalized(root) === normalized(path.win32.join(drive, directory)));
+    });
+    const trusted = roots.flatMap((root) => [
+      path.win32.join(root, 'Git', 'bin', 'bash.exe'),
+      path.win32.join(root, 'Git', 'usr', 'bin', 'bash.exe'),
+    ]).map(normalized);
+    if (!trusted.includes(normalized(shell.file))) return false;
+    const actual = await fsp.realpath(shell.file).catch(() => undefined);
+    return actual !== undefined && normalized(actual) === normalized(shell.file);
+  }
   if (!['/bin/zsh', '/usr/bin/zsh'].includes(shell.file)) return false;
   const home = process.env.HOME;
   if (!home || !path.isAbsolute(home)) return false;
@@ -614,16 +631,20 @@ export class GitCredentialHistory {
       (error: NodeJS.ErrnoException) => error.code !== 'ENOENT',
     )));
     if (hookPresent.some(Boolean)) return false;
-    if (read.metadataOnly) return true;
+    const modulesPresent = await fsp.lstat(path.join(commonDir, 'modules')).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => error.code !== 'ENOENT',
+    );
+    if (modulesPresent) return false;
     // 指向仓库外的文件时 git diff 不经仓库、直接比较文件。
     if (read.sub === 'diff' && read.args.some((arg) => !arg.startsWith('-') && isOutside(top, path.resolve(cwd, arg)))) {
       return false;
     }
-    if (await exists(path.join(commonDir, 'modules'))) return false;
     const indexTimeout = deadline - Date.now();
     if (indexTimeout <= 0 || signal?.aborted) return false;
     const index = await indexCredentials(top, indexTimeout);
     if (!index) return false;
+    if (read.metadataOnly) return true;
     const history = await this.waitForHistory(top, commonDir, deadline, signal);
     if (history) {
       const credentials = new Set([...history.credentials, ...index]);
