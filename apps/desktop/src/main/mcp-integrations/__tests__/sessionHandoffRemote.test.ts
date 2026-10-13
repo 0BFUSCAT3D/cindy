@@ -73,8 +73,9 @@ describe('cross-device send_to_session sender', () => {
       ],
       [{ ok: true, result: { ok: false, errorCode: 'ARCHIVED', message: 'archived' } }, 'ARCHIVED'],
       [
+        // Agent 没能启动时消息可能已记入目标任务，不能原样透传成可直接重试的错误。
         { ok: true, result: { ok: false, errorCode: 'AGENT_NOT_READY', message: 'x' } },
-        'AGENT_NOT_READY',
+        'DELIVERY_UNKNOWN',
       ],
       // 已发出但没有可信回执:可能已送达,不能说「没有发出」。
       [new DeviceLinkError('INVOKE_TIMEOUT', ''), 'DELIVERY_UNKNOWN'],

@@ -143,7 +143,7 @@ const DESCRIPTION = [
   "- HOST_NOT_READY: 主进程服务尚未就绪。skill 应告知用户稍等几秒后重试。",
   "- REMOTE_DEVICE_OFFLINE / REMOTE_DISABLED / REMOTE_UNAVAILABLE: 目标电脑离线、未开启远程控制或暂时连不上,消息没有发出。",
   "- REMOTE_UNSUPPORTED: 目标电脑的版本不支持接收其它电脑的任务消息,消息没有发出;需要对方升级。",
-  "- DELIVERY_UNKNOWN: 请求已发往目标电脑但没有收到回执,可能已送达。重发前先用 get_chat_history(deviceId::sessionId) 确认,避免重复。",
+  "- DELIVERY_UNKNOWN: 请求已发往目标电脑但没有收到可信回执(含对方 Agent 没能启动),可能已送达。重发前先用 get_chat_history(deviceId::sessionId) 确认,避免重复。",
   "",
   "【重要】这不是 chat 对话工具,而是 session 间 handoff 的控制层入口。不要拿它替代普通的 user→agent 对话。",
 ].join("\n");

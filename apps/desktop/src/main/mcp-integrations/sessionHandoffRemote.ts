@@ -34,7 +34,6 @@ export type RemoteSessionHandoffErrorCode =
   | 'NOT_FOUND'
   | 'ARCHIVED'
   | 'DELETED'
-  | 'AGENT_NOT_READY'
   | 'UNSUPPORTED_CAPABILITY'
   | 'INVALID_ARGS'
   | 'HOST_NOT_READY'
@@ -44,7 +43,10 @@ export type RemoteSessionHandoffErrorCode =
   | 'REMOTE_UNAVAILABLE'
   | 'DELIVERY_UNKNOWN';
 
-/** 目标电脑明确拒绝、消息没有进入目标任务的错误码（与本机 send_to_session 同名同义）。 */
+/**
+ * 目标电脑明确拒绝、消息没有进入目标任务的错误码（与本机 send_to_session 同名同义）。
+ * AGENT_NOT_READY 不在其中：它可能发生在消息已记入目标任务之后，按结果未知处理。
+ */
 const TARGET_REJECTIONS = new Set<string>([
   'NOT_FOUND',
   'ARCHIVED',
@@ -52,8 +54,6 @@ const TARGET_REJECTIONS = new Set<string>([
   'UNSUPPORTED_CAPABILITY',
   'INVALID_ARGS',
   'HOST_NOT_READY',
-  // 与本机一致原样透传：Agent 没能启动；消息可能已记入目标任务，重发前同样要先确认。
-  'AGENT_NOT_READY',
 ]);
 const AGENT_KINDS = new Set(['claude-code', 'codex', 'pi']);
 const WAKE_KINDS = new Set(['resumed', 'already-active', 'queued']);
