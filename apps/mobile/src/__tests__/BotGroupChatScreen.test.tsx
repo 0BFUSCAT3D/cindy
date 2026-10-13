@@ -282,6 +282,22 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); });
 
 describe('group timeline', () => {
+  it('shows a 引用回复 block from the loaded original, and only the author once it is deleted', async () => {
+    const quote = { messageId: 'm2', authorName: '咪咪', authorKind: 'bot' as const, excerpt: 'old snapshot', attachmentCount: 0, attachmentName: null, sequence: 2 };
+    const data = group();
+    data.messages.push(message('q1', 10, { authorKind: 'user', content: '就按这个来', quote }));
+    await render(data);
+    const block = byId('botGroup.quote')!;
+    expect(block.textContent).toContain('咪咪');
+    expect(block.textContent).toContain('**好的**，我看看');
+    expect(block.textContent).not.toContain('old snapshot');
+    const deleted = group();
+    deleted.messages = [message('q1', 10, { authorKind: 'user', content: '就按这个来', quote: { ...quote, excerpt: '私密的原文', originalDeleted: true } })];
+    await render(deleted);
+    expect(byId('botGroup.quote')!.textContent).toContain('groupChat.quote.deleted');
+    expect(node.textContent).not.toContain('私密的原文');
+  });
+
   it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {
     h.platform.OS = 'android';
     await render();

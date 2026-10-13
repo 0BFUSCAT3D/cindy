@@ -11,11 +11,12 @@ import { shareSelectionStore, useShareSelectionActive } from '@/components/chat/
 import { SHARE_SESSION_ATTR, SHARE_MESSAGE_ATTR } from '@/lib/shareConversationImage';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMention, BotGroupMessageView } from '../../../shared/botGroupChat';
-import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
+import { isBotGroupRuntimeFailureCode, resolveBotGroupQuote } from '../../../shared/botGroupChat';
 import { resolveBotGroupMentions } from './botGroupMentions';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
+import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
 const key = (name: string) => `bots.groupChat.server.${name}`;
@@ -40,6 +41,8 @@ function ThreadMessage({ group, message, shareScope, sharing, onChanged }: { gro
     <BotAvatar bot={{ name: message.authorName, avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null }} size="sm" />
     <div className="min-w-0 flex-1 space-y-1">
       <p className="text-13 font-medium leading-7 text-[var(--text-primary)]">{message.authorName}</p>
+      {/* A 话题 root may itself be a 引用回复; its original lives in the main timeline. */}
+      {message.quote ? <BotGroupQuoteBlock display={resolveBotGroupQuote(message.quote, group.messages)} /> : null}
       <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
         <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
       </div>
@@ -114,7 +117,7 @@ export function ChatThreadPanel({ group, rootId, onClose }: { group: BotGroupDet
   return <aside ref={panelRef} aria-labelledby={titleId}
         className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
-          <h2 id={titleId} className="text-15 font-medium text-[var(--text-primary)]">{t(key('replies'))}</h2>
+          <h2 id={titleId} className="text-15 font-medium text-[var(--text-primary)]">{t(key('topic'))}</h2>
           <Tip text={t('bots.close')}>
             <Button variant="secondary" tone="quiet" size="md"
               className="w-8 rounded-none px-0 [&::before]:rounded-full"
