@@ -8,6 +8,7 @@ import { MainViewHistoryContext } from '@/contexts/MainViewHistoryContext';
 import { BotPortraitPicker } from './BotPortraitPicker';
 import {
   ArrowLeft,
+  AudioLines,
   Bot,
   Brain,
   Camera,
@@ -61,6 +62,7 @@ import { BotTaskModelEditor } from './BotTaskModelEditor';
 import { BotCapabilitySettings } from './BotCapabilitySettings';
 import { BotRoutines } from './BotRoutines';
 import { BotMemorySettings } from './BotMemorySettings';
+import { CompanionVoiceSettings } from './voice/CompanionVoiceSettings';
 import {
   botSettingsChanges,
   normalizeBotSettingsPayload,
@@ -100,7 +102,7 @@ export function BotSettings({
   beforeCloseRef,
   initialPage = 'home',
 }: {
-  initialPage?: 'home' | 'memory' | 'capabilities' | 'model';
+  initialPage?: 'home' | 'memory' | 'capabilities' | 'model' | 'voice';
   bot: BotProfile;
   beforeCloseRef?: { current: (() => Promise<boolean>) | null };
   onBack: () => void;
@@ -139,32 +141,36 @@ export function BotSettings({
     | 'profile'
     | 'personality'
     | 'model'
+    | 'voice'
     | 'capabilities'
     | 'history'
     | 'advanced'
     | 'routines'
     | 'memory'
   >(initialPage);
+  const voiceLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const routineLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const routineBackRef = useRef<(() => Promise<boolean>) | null>(null);
   const memoryLeaveRef = useRef<(() => Promise<boolean>) | null>(null);
   const memoryBackRef = useRef<(() => Promise<boolean>) | null>(null);
   const pageTitle =
-    page === 'memory'
-      ? t('bots.memory.title')
-      : page === 'model'
-        ? t('bots.settingsTabs.model')
-        : page === 'routines'
-          ? t('routines.title')
-          : page === 'history'
-            ? t('bots.historySearch.title')
-            : page === 'advanced'
-              ? t('bots.homeFolder.title')
-              : page === 'capabilities'
-                ? t('bots.capabilities.title')
-                : page === 'personality'
-                  ? t('bots.profile.personality')
-                  : t('bots.profile.title');
+    page === 'voice'
+      ? t('bots.voiceMode.settingsTitle')
+      : page === 'memory'
+        ? t('bots.memory.title')
+        : page === 'model'
+          ? t('bots.settingsTabs.model')
+          : page === 'routines'
+            ? t('routines.title')
+            : page === 'history'
+              ? t('bots.historySearch.title')
+              : page === 'advanced'
+                ? t('bots.homeFolder.title')
+                : page === 'capabilities'
+                  ? t('bots.capabilities.title')
+                  : page === 'personality'
+                    ? t('bots.profile.personality')
+                    : t('bots.profile.title');
   const [folderError, setFolderError] = useState<string | null>(null);
   const avatarInFlight = useRef(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -228,6 +234,7 @@ export function BotSettings({
     if (avatarInFlight.current) return false;
     await autosave.flush();
     if (autosave.isDirty()) return false;
+    if (!((await voiceLeaveRef.current?.()) ?? true)) return false;
     if (!((await memoryLeaveRef.current?.()) ?? true)) return false;
     return (await routineLeaveRef.current?.()) ?? true;
   }, [autosave.flush, autosave.isDirty]);
@@ -257,7 +264,7 @@ export function BotSettings({
       settingsRowRefs.current.get(returnFocusRowRef.current)?.focus();
   }, [page]);
   const go = (next: typeof page) => {
-    if (!autosave.isDirty() && !routineLeaveRef.current && !memoryLeaveRef.current) {
+    if (!autosave.isDirty() && !routineLeaveRef.current && !memoryLeaveRef.current && !voiceLeaveRef.current) {
       showPage(next);
       return;
     }
@@ -408,6 +415,7 @@ export function BotSettings({
     ['personality', UserRound, t('bots.profile.personality')],
     ['memory', Brain, t('bots.memory.title')],
     ['model', Sparkles, t('bots.settingsTabs.model')],
+    ['voice', AudioLines, t('bots.voiceMode.settingsTitle')],
     ['capabilities', Settings2, t('bots.capabilities.title')],
     ['routines', Clock3, t('routines.title')],
     ['history', History, t('bots.historySearch.title')],
@@ -705,6 +713,10 @@ export function BotSettings({
               </div>
             </div>
           </div>
+        ) : null}
+        {page === 'voice' ? (
+          <CompanionVoiceSettings botId={bot.id} sessionId={canonicalBotSessionId(bot) ?? undefined}
+            beforeLeaveRef={voiceLeaveRef} />
         ) : null}
         {page === 'memory' ? (
           <BotMemorySettings

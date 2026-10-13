@@ -992,9 +992,17 @@ export function CCAgentSessionView({
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
-  const toggleVoiceMode = useCallback(() => setVoiceModeOpen((open) => !open), []);
+  const startVoiceMode = useCallback(() => setVoiceModeOpen(true), []);
   const closeVoiceMode = useCallback(() => setVoiceModeOpen(false), []);
   const botChatIdentity = resolveBotChatIdentity(botIdentity, sessionId);
+  const companionSettingsOpen = new URLSearchParams(location.search).get('settings') === '1';
+  const openVoiceSettings = useCallback(() => {
+    setVoiceModeOpen(false);
+    const search = new URLSearchParams(location.search);
+    search.set('settings', '1');
+    search.set('settingsPage', 'voice');
+    navigate(`${location.pathname}?${search.toString()}`);
+  }, [location.pathname, location.search, navigate]);
   // 伙伴没有 RunningStatusBar，折叠呼吸灯继续留在输入框上方，不能随状态行一起消失。
   const showCenteredControlledBanner =
     hasControlledBanner && (!controlledBannerCollapsed || Boolean(botChatIdentity));
@@ -4057,7 +4065,7 @@ export function CCAgentSessionView({
   );
 
   const voiceModeAvailable = Boolean(botChatIdentity && !botChatIdentity.deviceId && sessionId
-    && !remoteDeviceId && !session?.remoteHostId && !readOnly && ownsRoute && viewVisible);
+    && !remoteDeviceId && !session?.remoteHostId && !readOnly && ownsRoute && viewVisible && !companionSettingsOpen);
   useEffect(() => { if (!voiceModeAvailable) setVoiceModeOpen(false); }, [voiceModeAvailable]);
   const voiceModeBlocked = Boolean(pendingPermission || pendingAskUser || pendingPlanReview
     || pendingPluginSetup || pendingIssueConfirm || pendingRenameSessionsConfirm
@@ -4917,7 +4925,7 @@ export function CCAgentSessionView({
         // 伙伴对话不是用户经营的任务:它拿的是「跟谁说话 + 进 TA 的设置」,
         // 不是重命名/置顶/归档/导出那一套任务菜单。
         botChatIdentity ? (
-          <BotSessionContentHeaderRegistration bot={botChatIdentity} onVoice={voiceModeAvailable ? toggleVoiceMode : undefined} voiceActive={voiceModeOpen} />
+          <BotSessionContentHeaderRegistration bot={botChatIdentity} />
         ) : (
           <SessionContentHeaderRegistration
             session={session}
@@ -5623,6 +5631,9 @@ export function CCAgentSessionView({
                   ) : remoteMakeCards.handlesSession ? <SessionResourceCards state={remoteMakeCards} /> : undefined}
                   onSend={handleSend}
                   onBeforeVoiceInputStart={handleBeforeVoiceInputStart}
+                  onStartVoiceConversation={voiceModeAvailable ? startVoiceMode : undefined}
+                  voiceConversationDisabled={voiceModeBlocked}
+                  voiceConversationActive={voiceModeOpen}
                   sessionId={sessionId}
                   ownsHardwareComposerActions={ownsHardwareTaskActions && !voiceModeOpen}
                   // session=null 是冷启动 / 直链 GET 尚未回流的合法首帧；显式传 null，
@@ -5777,7 +5788,7 @@ export function CCAgentSessionView({
               )}
               {voiceModeOpen && voiceModeAvailable && botChatIdentity && sessionId ? (
                 <CompanionVoicePanel key={sessionId} bot={botChatIdentity} sessionId={sessionId} messages={messages}
-                  blocked={voiceModeBlocked} onSend={sendVoiceMessage} onClose={closeVoiceMode} />
+                  blocked={voiceModeBlocked} onSend={sendVoiceMessage} onClose={closeVoiceMode} onConfigure={openVoiceSettings} />
               ) : null}
 
               {/* F-FP-5: workingDir — always rendered to prevent layout shift

@@ -9339,6 +9339,12 @@
       "skillUpdated": "스킬 업데이트: {{title}}"
     },
     "voiceMode": {
+      "settingsTitle": "음성",
+      "openSettings": "음성 설정",
+      "startConversation": "음성 대화 시작",
+      "settingsHint": "이 파트너의 낭독 모델과 음성을 선택한 후 입력창에서 음성 대화를 시작하세요.",
+      "incompleteSettings": "음성 API와 음성을 선택하면 자동으로 저장됩니다.",
+      "previewNeedsChat": "파트너와 대화를 시작하면 음성을 미리 들을 수 있습니다.",
       "voiceId": "음성 ID",
       "manualVoice": "음성 ID 직접 입력",
       "voiceCatalogHint": "음성을 선택한 후 미리 들어 현재 모델에서 사용할 수 있는지 확인하세요.",

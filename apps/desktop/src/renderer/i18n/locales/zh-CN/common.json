@@ -9339,6 +9339,12 @@
       "skillUpdated": "已更新技能：{{title}}"
     },
     "voiceMode": {
+      "settingsTitle": "语音",
+      "openSettings": "语音设置",
+      "startConversation": "开始语音对话",
+      "settingsHint": "选择这位伙伴使用的朗读模型和音色。设置完成后，从输入框开始语音对话。",
+      "incompleteSettings": "选择语音接口和音色后自动保存。",
+      "previewNeedsChat": "与伙伴开始对话后可试听。",
       "voiceId": "音色 ID",
       "manualVoice": "手动输入音色 ID",
       "voiceCatalogHint": "选择音色后试听，确认当前模型可以使用它。",

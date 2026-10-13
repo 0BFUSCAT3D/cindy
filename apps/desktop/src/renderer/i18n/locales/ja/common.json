@@ -9339,6 +9339,12 @@
       "skillUpdated": "スキルを更新：{{title}}"
     },
     "voiceMode": {
+      "settingsTitle": "音声",
+      "openSettings": "音声設定",
+      "startConversation": "音声会話を開始",
+      "settingsHint": "このパートナーの読み上げモデルと声を選択し、入力欄から音声会話を開始できます。",
+      "incompleteSettings": "音声 API と声を選択すると自動で保存されます。",
+      "previewNeedsChat": "パートナーとの会話を開始すると試聴できます。",
       "voiceId": "音声 ID",
       "manualVoice": "音声 ID を手動入力",
       "voiceCatalogHint": "音声を選び、現在のモデルで使えるか試聴で確認してください。",

@@ -1,37 +1,9 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { voiceModelKey, type VoiceConversationModel } from '@/../shared/voiceConversation';
+import { type VoiceConversationModel } from '@/../shared/voiceConversation';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-vi.mock('@/components/ui/select', () => ({
-  Select: ({
-    label,
-    value,
-    options,
-    onValueChange,
-    disabled,
-  }: {
-    label: string;
-    value: string;
-    options: { value: string; label: string }[];
-    onValueChange(value: string): void;
-    disabled: boolean;
-  }) => (
-    <select
-      aria-label={label}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onValueChange(e.target.value)}
-    >
-      <option value="" />
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  ),
-}));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
@@ -88,459 +60,140 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
-const renderPanel = (blocked = false, botId = 'bot') =>
-  render(
-    <CompanionVoicePanel
-      bot={{ id: botId, name: 'Partner' }}
-      sessionId="canonical"
-      messages={[]}
-      blocked={blocked}
-      onSend={vi.fn(async () => true)}
-      onClose={vi.fn()}
-    />,
-  );
+const configure = vi.fn();
+const close = vi.fn();
+const panel = (blocked = false) => (
+  <CompanionVoicePanel
+    bot={{ id: 'bot', name: 'Partner' }}
+    sessionId="canonical"
+    messages={[]}
+    blocked={blocked}
+    onSend={vi.fn(async () => true)}
+    onClose={close}
+    onConfigure={configure}
+  />
+);
 
-it('shows a useful empty state without requesting a microphone or inventing models', async () => {
-  renderPanel();
-  await screen.findByText('bots.voiceMode.noModels');
-  const button = screen.getByRole('button', { name: 'bots.voiceMode.start' });
-  expect(button.hasAttribute('disabled')).toBe(true);
-  fireEvent.click(button);
-  expect(start).not.toHaveBeenCalled();
-  expect(audio.start).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refresh' }));
-  await waitFor(() => expect(refresh).toHaveBeenCalledWith('xd'));
-});
-
-it('opens the chosen voice route and releases capture when the panel unmounts', async () => {
-  models = [{ id: 'gateway-speech', name: 'Speech', defaultVoice: 'alloy' }];
-  const view = renderPanel();
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-    ).toBe(false),
-  );
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voiceId'), { target: { value: 'nova' } });
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.start' }));
+it('starts the saved route directly and releases capture when the panel unmounts', async () => {
+  models = [
+    {
+      id: 'speech',
+      name: 'Speech',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'elevenlabs',
+      protocolLocked: true,
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: { providerId: 'mine', agent: 'codex', modelId: 'speech', voice: 'saved-voice' },
+    customized: true,
+  });
+  const view = render(panel());
   await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
   expect(start).toHaveBeenCalledWith({
     callId: expect.any(String),
     botId: 'bot',
     sessionId: 'canonical',
-    modelId: 'gateway-speech',
-    voice: 'nova',
+    providerId: 'mine',
+    agent: 'codex',
+    modelId: 'speech',
+    voice: 'saved-voice',
   });
   expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.listening');
+  expect(screen.queryByLabelText('bots.voiceMode.model')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'bots.voiceMode.preview' })).toBeNull();
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
   view.unmount();
   expect(audio.stop).toHaveBeenCalledOnce();
   expect(audio.close).toHaveBeenCalledOnce();
 });
 
-it('keeps permission cards authoritative and never starts through a pending confirmation', async () => {
-  models = [{ id: 'tts', name: 'Speech' }];
-  renderPanel(true);
-  await waitFor(() => expect(screen.getByText('bots.voiceMode.status.confirmation')).toBeTruthy());
-  expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-  ).toBe(true);
-});
-
-it('selects the exact BYOK connection for duplicate IDs and persists it for this companion', async () => {
-  models = ['a', 'b'].map((providerId) => ({
-    id: 'same',
-    name: 'Speech',
-    providerId,
-    providerName: providerId,
-    agent: 'codex',
-    protocol: 'openai',
-    defaultVoice: 'alloy',
-  }));
-  renderPanel();
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-    ).toBe(false),
-  );
-  expect(screen.getByRole('option', { name: 'Speech · b' })).toBeTruthy();
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
-    target: { value: voiceModelKey(models[1]) },
-  });
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
-      providerId: 'b',
-      agent: 'codex',
-      modelId: 'same',
-      voice: 'alloy',
-    }),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.start' }));
-  await waitFor(() =>
-    expect(start).toHaveBeenCalledWith(
-      expect.objectContaining({ providerId: 'b', agent: 'codex', modelId: 'same' }),
-    ),
-  );
-});
-
-it('requires an explicit API choice for an unknown endpoint before requesting a microphone', async () => {
-  models = [
-    { id: 'private', name: 'Voice', providerId: 'custom', agent: 'codex', defaultVoice: '' },
-  ];
-  renderPanel();
-  await screen.findByText('bots.voiceMode.protocolHint');
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voiceId'), {
-    target: { value: 'voice-id' },
-  });
-  expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-  ).toBe(true);
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.protocol'), {
-    target: { value: 'elevenlabs' },
-  });
-  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe('');
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voiceId'), {
-    target: { value: 'voice-id' },
-  });
-  fireEvent.blur(screen.getByLabelText('bots.voiceMode.voiceId'));
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
-      'bot',
-      expect.objectContaining({ protocol: 'elevenlabs', voice: 'voice-id' }),
-    ),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.start' }));
-  await waitFor(() =>
-    expect(start).toHaveBeenCalledWith(
-      expect.objectContaining({ providerId: 'custom', protocol: 'elevenlabs', voice: 'voice-id' }),
-    ),
-  );
-});
-
-it.each(['elevenlabs', 'minimax', 'openai'] as const)(
-  'shows only the fixed %s API for an official endpoint and keeps its saved voice',
-  async (protocol) => {
-    models = [
-      {
-        id: 'speech',
-        name: 'Speech',
-        providerId: 'official',
-        agent: 'codex',
-        protocol,
-        protocolLocked: true,
-      },
-    ];
+it.each(['empty', 'missing-model', 'missing-voice', 'unknown-api', 'mismatched-api'])(
+  'opens settings for %s without starting ASR or changing preferences',
+  async (reason) => {
+    models =
+      reason === 'empty'
+        ? []
+        : [
+            {
+              id: 'speech',
+              name: 'Speech',
+              providerId: 'mine',
+              agent: 'codex',
+              ...(reason === 'unknown-api' ? {} : { protocol: 'elevenlabs', protocolLocked: true }),
+            },
+          ];
     vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
       selection: {
-        providerId: 'official',
+        providerId: 'mine',
         agent: 'codex',
-        modelId: 'speech',
-        protocol,
-        voice: 'saved-voice',
+        modelId: reason === 'missing-model' ? 'removed' : 'speech',
+        voice: reason === 'missing-voice' ? '' : 'saved-voice',
+        ...(reason === 'mismatched-api' ? { protocol: 'openai' } : {}),
       },
       customized: true,
     });
-    renderPanel();
-    await screen.findByText('bots.voiceMode.protocolAutomaticHint');
-    const field = screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement;
-    expect(field.disabled).toBe(true);
-    expect(field.value).toBe(protocol);
-    expect(
-      Array.from(field.options)
-        .map((option) => option.value)
-        .filter(Boolean),
-    ).toEqual([protocol]);
-    await waitFor(() =>
-      expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
-        'saved-voice',
-      ),
-    );
+    render(panel());
+    await waitFor(() => expect(configure).toHaveBeenCalledOnce());
+    expect(start).not.toHaveBeenCalled();
+    expect(audio.start).not.toHaveBeenCalled();
     expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.start' }));
-    await waitFor(() =>
-      expect(start).toHaveBeenCalledWith(
-        expect.objectContaining({ modelId: 'speech', voice: 'saved-voice' }),
-      ),
-    );
-    expect(
-      vi.mocked(window.electronAPI.voiceConversation.start).mock.calls[0][0],
-    ).not.toHaveProperty('protocol');
   },
 );
 
-it('repairs a saved API mismatch without reusing its voice or rewriting preferences on load', async () => {
-  models = [
-    {
-      id: 'eleven_flash_v2_5',
-      name: 'ElevenLabs',
-      providerId: 'official',
-      agent: 'codex',
-      protocol: 'elevenlabs',
-      protocolLocked: true,
-    },
-  ];
-  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
-    selection: {
-      providerId: 'official',
-      agent: 'codex',
-      modelId: 'eleven_flash_v2_5',
-      protocol: 'openai',
-      voice: 'alloy',
-    },
-    customized: true,
-  });
-  renderPanel();
-  await screen.findByText('bots.voiceMode.protocolCorrectedHint');
-  expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).value).toBe(
-    'elevenlabs',
-  );
-  const voice = screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement;
-  expect(voice.value).toBe('');
+it('starts once under StrictMode and keeps end and settings actions separate from configuration', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  render(<StrictMode>{panel()}</StrictMode>);
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+  expect(start).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.openSettings' }));
+  expect(configure).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.end' }));
+  expect(close).toHaveBeenCalledOnce();
+});
+
+it('keeps permission cards authoritative and resumes only after another explicit action', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  const view = render(panel(true));
+  await act(async () => {});
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.confirmation');
   expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.preview' }).hasAttribute('disabled'),
+    screen.getByRole('button', { name: 'bots.voiceMode.resume' }).hasAttribute('disabled'),
   ).toBe(true);
-  expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-  ).toBe(true);
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledWith({
-      providerId: 'official',
-      agent: 'codex',
-      modelId: 'eleven_flash_v2_5',
-      protocol: undefined,
+  view.rerender(panel());
+  await act(async () => {});
+  expect(start).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resume' }));
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+});
+
+it('does not start a late configuration result after closing', async () => {
+  let release!: (value: { selection: null; customized: boolean }) => void;
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockReturnValue(
+    new Promise((resolve) => {
+      release = resolve;
     }),
   );
-  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
-  fireEvent.change(voice, { target: { value: 'eleven-voice-id' } });
-  fireEvent.blur(voice);
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
-      providerId: 'official',
-      agent: 'codex',
-      modelId: 'eleven_flash_v2_5',
-      voice: 'eleven-voice-id',
-    }),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
-      expect.objectContaining({ voice: 'eleven-voice-id' }),
-    ),
-  );
-  expect(
-    vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0],
-  ).not.toHaveProperty('protocol');
+  const view = render(panel());
+  view.unmount();
+  await act(async () => {
+    release({ selection: null, customized: false });
+  });
   expect(start).not.toHaveBeenCalled();
-  expect(audio.start).not.toHaveBeenCalled();
+  expect(configure).not.toHaveBeenCalled();
 });
 
-it('keeps a proxy API override and unlocks the selector after switching away from an official model', async () => {
-  models = [
-    {
-      id: 'eleven_flash_v2_5',
-      name: 'Official',
-      providerId: 'official',
-      agent: 'codex',
-      protocol: 'elevenlabs',
-      protocolLocked: true,
-    },
-    { id: 'eleven_flash_v2_5', name: 'Proxy', providerId: 'proxy', agent: 'codex' },
-  ];
-  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
-    selection: {
-      providerId: 'proxy',
-      agent: 'codex',
-      modelId: 'eleven_flash_v2_5',
-      protocol: 'openai',
-      voice: 'proxy-voice',
-    },
-    customized: true,
-  });
-  renderPanel();
-  await waitFor(() =>
-    expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).value).toBe(
-      'openai',
-    ),
-  );
-  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
-    'proxy-voice',
-  );
-  await act(async () => {
-    fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
-      target: { value: voiceModelKey(models[0]) },
-    });
-  });
-  expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).disabled).toBe(
-    true,
-  );
-  await act(async () => {
-    fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
-      target: { value: voiceModelKey(models[1]) },
-    });
-  });
-  const field = screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement;
-  expect(field.disabled).toBe(false);
-  expect(
-    Array.from(field.options)
-      .map((option) => option.value)
-      .filter(Boolean),
-  ).toEqual(['openai', 'elevenlabs', 'minimax']);
-  await act(async () => {
-    fireEvent.change(field, { target: { value: 'minimax' } });
-  });
-  expect(field.value).toBe('minimax');
-});
-
-it('preserves an unavailable saved connection until the user restores defaults', async () => {
-  models = [
-    {
-      id: 'same',
-      name: 'Available',
-      providerId: 'other',
-      agent: 'codex',
-      protocol: 'openai',
-      defaultVoice: 'alloy',
-    },
-  ];
-  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
-    selection: { providerId: 'missing', agent: 'codex', modelId: 'same', voice: 'nova' },
-    customized: true,
-  });
-  renderPanel();
-  await screen.findByText('bots.voiceMode.modelUnavailable');
-  expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-  ).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resetPreference' }));
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', null),
-  );
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-    ).toBe(false),
-  );
-  expect(start).not.toHaveBeenCalled();
-});
-
-it('reloads the right companion preference after reopening and does not save a derived default', async () => {
-  models = [{ id: 'tts', name: 'Speech' }];
-  vi.mocked(window.electronAPI.voiceConversation.preference).mockImplementation(async (id) => ({
-    selection: { modelId: 'tts', voice: id === 'a' ? 'nova' : 'alloy' },
-    customized: true,
-  }));
-  const first = renderPanel(false, 'a');
-  await waitFor(() =>
-    expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
-      'nova',
-    ),
-  );
-  first.unmount();
-  renderPanel(false, 'b');
-  await waitFor(() =>
-    expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
-      'alloy',
-    ),
-  );
-  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
-});
-
-it('retries a failed preference load and still lists BYOK when Gateway refresh fails', async () => {
+it('keeps a load failure visible and retries without silently switching providers', async () => {
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   vi.mocked(window.electronAPI.voiceConversation.preference).mockRejectedValueOnce(
-    new Error('load failed'),
+    new Error('offline'),
   );
-  refresh.mockRejectedValueOnce(new Error('Gateway unavailable'));
-  renderPanel();
+  render(panel());
   await screen.findByText('bots.voiceMode.preferenceError');
-  expect(
-    screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-  ).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refresh' }));
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
-    ).toBe(false),
-  );
-  expect(window.electronAPI.voiceConversation.preference).toHaveBeenCalledTimes(2);
-});
-
-it('selects an account voice, keeps manual IDs on catalog failure, and previews without capturing audio', async () => {
-  models = [
-    { id: 'speech', name: 'MiniMax', providerId: 'mine', agent: 'codex', protocol: 'minimax' },
-  ];
-  vi.mocked(window.electronAPI.voiceConversation.voices)
-    .mockResolvedValueOnce({
-      source: 'provider',
-      voices: [{ id: 'Chinese (Mandarin)_News_Anchor', name: 'News Anchor' }],
-    })
-    .mockRejectedValueOnce(new Error('offline'));
-  renderPanel();
-  await screen.findByRole('option', { name: 'News Anchor · Chinese (Mandarin)_News_Anchor' });
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
-    target: { value: 'voice:Chinese (Mandarin)_News_Anchor' },
-  });
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
-      'bot',
-      expect.objectContaining({
-        voice: 'Chinese (Mandarin)_News_Anchor',
-        providerId: 'mine',
-      }),
-    ),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
-  await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelId: 'speech',
-        voice: 'Chinese (Mandarin)_News_Anchor',
-        text: 'bots.voiceMode.previewText',
-      }),
-    ),
-  );
-  expect(
-    vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0].protocol,
-  ).toBeUndefined();
-  expect(
-    vi.mocked(window.electronAPI.voiceConversation.voices).mock.calls[0][0].protocol,
-  ).toBeUndefined();
   expect(start).not.toHaveBeenCalled();
-  expect(audio.start).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refreshVoices' }));
-  await screen.findByText('bots.voiceMode.voicesError');
-  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
-    'Chinese (Mandarin)_News_Anchor',
-  );
-});
-
-it('resets a voice when switching models on the same connection and ignores a late catalog', async () => {
-  models = ['first', 'second'].map((id) => ({
-    id,
-    name: id,
-    providerId: 'mine',
-    agent: 'codex',
-    protocol: 'elevenlabs',
-  }));
-  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
-    selection: { providerId: 'mine', agent: 'codex', modelId: 'first', voice: 'private-voice' },
-    customized: true,
-  });
-  let release!: (value: { source: 'provider'; voices: { id: string; name: string }[] }) => void;
-  vi.mocked(window.electronAPI.voiceConversation.voices)
-    .mockReturnValueOnce(
-      new Promise((resolve) => {
-        release = resolve;
-      }),
-    )
-    .mockResolvedValue({ source: 'provider', voices: [{ id: 'new', name: 'New voice' }] });
-  renderPanel();
-  await waitFor(() => expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalled());
-  fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
-    target: { value: voiceModelKey(models[1]) },
-  });
-  await screen.findByRole('option', { name: 'New voice · new' });
-  expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement).value).toBe('');
-  expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
-  release({ source: 'provider', voices: [{ id: 'old', name: 'Old voice' }] });
-  await waitFor(() => expect(screen.queryByRole('option', { name: 'Old voice · old' })).toBeNull());
-  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(configure).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resume' }));
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
 });
