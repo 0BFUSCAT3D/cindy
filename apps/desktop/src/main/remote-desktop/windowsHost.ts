@@ -112,10 +112,10 @@ export async function uninstallWindowsDesktopSupportFrom(
   } catch {
     // A helper that cannot report status may still have leftover SCM/ACL state.
   }
-  if (status === 'missing') return;
   try {
     await exec(native.binary, ['--uninstall'], { ...hidden, timeout: 130_000 });
-  } catch {
+  } catch (error) {
+    if (status === 'missing') throw error;
     await exec(native.binary, ['--elevate-uninstall'], { ...hidden, timeout: 130_000 });
   }
 }

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runtime = vi.hoisted(() => ({
@@ -36,9 +37,13 @@ import {
 
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 const resourcesPath = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
-const customResources = path.join(os.tmpdir(), 'custom-cindy-install', 'resources');
+let customResources: string;
 
 beforeEach(() => {
+  customResources = path.join(
+    mkdtempSync(path.join(os.tmpdir(), 'cindy-windows-host-test-')),
+    'resources',
+  );
   vi.clearAllMocks();
   runtime.app.isPackaged = true;
   runtime.exec.mockReset().mockResolvedValue({ stdout: 'ready\n' });
@@ -52,6 +57,7 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', platform);
   if (resourcesPath) Object.defineProperty(process, 'resourcesPath', resourcesPath);
   else Reflect.deleteProperty(process, 'resourcesPath');
+  rmSync(path.dirname(customResources), { recursive: true, force: true });
 });
 
 describe('Windows lock screen service setup', () => {
@@ -103,18 +109,21 @@ describe('Windows lock screen service setup', () => {
     );
     try {
       await uninstallWindowsDesktopSupportFrom(customResources);
-      expect(runtime.exec.mock.calls.map((call) => call[1])).toEqual([['--status'], ['--uninstall']]);
+      expect(runtime.exec.mock.calls.map((call) => call[1])).toEqual([
+        ['--status'],
+        ['--uninstall'],
+      ]);
     } finally {
       rmSync(customResources, { recursive: true, force: true });
     }
   });
 
   it('skips personal-version uninstall when that snapshot has no helper', async () => {
-    await uninstallWindowsDesktopSupportFrom(path.join(os.tmpdir(), 'cindy-missing-resources'));
+    await uninstallWindowsDesktopSupportFrom(customResources);
     expect(runtime.exec).not.toHaveBeenCalled();
   });
 
-  it('does not request elevation when a personal version never had a lock-screen service', async () => {
+  it('cleans legacy credentials without elevation when a personal version has no service', async () => {
     const { mkdirSync, writeFileSync, rmSync } = await import('node:fs');
     mkdirSync(path.join(customResources, 'tools', 'remote-desktop'), { recursive: true });
     writeFileSync(
@@ -124,10 +133,26 @@ describe('Windows lock screen service setup', () => {
     runtime.exec.mockResolvedValue({ stdout: 'missing\n' });
     try {
       await uninstallWindowsDesktopSupportFrom(customResources);
-      expect(runtime.exec.mock.calls.map((call) => call[1])).toEqual([['--status']]);
+      expect(runtime.exec.mock.calls.map((call) => call[1])).toEqual([
+        ['--status'],
+        ['--uninstall'],
+      ]);
     } finally {
       rmSync(customResources, { recursive: true, force: true });
     }
+  });
+
+  it('preserves the runtime without elevation if missing-service credential cleanup fails', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(path.join(customResources, 'tools', 'remote-desktop'), { recursive: true });
+    writeFileSync(
+      path.join(customResources, 'tools', 'remote-desktop', 'cindy-windows-desktop-host.exe'),
+      'helper',
+    );
+    const failure = new Error('credential cleanup failed');
+    runtime.exec.mockResolvedValueOnce({ stdout: 'missing\n' }).mockRejectedValueOnce(failure);
+    await expect(uninstallWindowsDesktopSupportFrom(customResources)).rejects.toThrow(failure);
+    expect(runtime.exec.mock.calls.map((call) => call[1])).toEqual([['--status'], ['--uninstall']]);
   });
 
   it('elevates personal-version uninstall only after an unelevated removal fails', async () => {
