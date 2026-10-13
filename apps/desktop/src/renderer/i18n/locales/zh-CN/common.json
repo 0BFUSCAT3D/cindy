@@ -9795,6 +9795,7 @@
         "railAll": "全部",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在读取那台电脑的模型…",
+        "remoteFavoriteUnavailable": "{{source}} · 暂时读不到那台电脑的模型",
         "favoritesGroup": "收藏",
         "favoritesSaveFailed": "未能保存收藏更改",
         "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
