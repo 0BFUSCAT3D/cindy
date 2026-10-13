@@ -80,11 +80,12 @@ describe('workspaceProviderSourceStore', () => {
   });
 
   describe('远端快照改模型时清理同键来源(issue #5912)', () => {
-    const row = (workspace: string, model: string | null, teamId: string | null = null) => ({
-      workspace,
-      model,
-      teamId,
-    });
+    const row = (
+      workspace: string,
+      model: string | null,
+      teamId: string | null = null,
+      agentKind: string | null = model === null ? null : 'codex',
+    ) => ({ workspace, model, teamId, agentKind });
 
     it('模型被清空 / 整行消失 / 改成别的: 同键来源清除, 其它键与其它渠道不动', () => {
       setWorkspaceProviderSource('x', null, 'chat', 'openai');
@@ -120,6 +121,27 @@ describe('workspaceProviderSourceStore', () => {
         ),
       ).toBeNull();
       expect(listWorkspaceProviderSources()).toHaveLength(2);
+    });
+
+    it('只换 Agent、模型 id 不变也算路由变化, 来源清除', () => {
+      setWorkspaceProviderSource('x', null, 'chat', 'openai');
+      const next = clearWorkspaceProviderSourcesForRemoteModelChanges(
+        'x',
+        [row('chat', 'shared-model', null, 'codex')],
+        [row('chat', 'shared-model', null, 'claude-code')],
+      );
+      expect(next).toEqual([]);
+    });
+
+    it('某 team 改路由不清共用的 null-team 兜底来源(避免其它 team 静默换账号)', () => {
+      setWorkspaceProviderSource('slack', null, 'repo', 'openai');
+      const next = clearWorkspaceProviderSourcesForRemoteModelChanges(
+        'slack',
+        [row('repo', 'gpt-test', 'T1'), row('repo', 'gpt-test', 'T2')],
+        [row('repo', 'claude-test', 'T1'), row('repo', 'gpt-test', 'T2')],
+      );
+      expect(next).toBeNull();
+      expect(getWorkspaceProviderSource('slack', 'T2', 'repo')).toBe('openai');
     });
 
     it('按 teamId 精确键判定, 不误清其它 team 的来源', () => {

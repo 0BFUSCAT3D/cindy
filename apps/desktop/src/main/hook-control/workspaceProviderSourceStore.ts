@@ -120,33 +120,40 @@ export function setWorkspaceProviderSource(
   return next;
 }
 
-/** 只需要偏好行的定位键与模型(HookWorkspacePrefs 的子集)。 */
-interface WorkspaceModelRow {
+/** 只需要偏好行的定位键与路由字段(HookWorkspacePrefs 的子集)。 */
+interface WorkspaceRouteRow {
   workspace: string;
   teamId?: string | null;
+  agentKind: string | null;
   model: string | null;
 }
 
 /**
- * server 快照改动了某目录的模型(改成另一个 / 清空 / 整行消失)后, 清掉同键的来源偏好;
- * 有清除时返回更新后的全量条目, 否则返回 null。
+ * server 快照改动了某目录的路由(agentKind 或 model 改成别的 / 清空 / 整行消失)后,
+ * 清掉同键的来源偏好;有清除时返回更新后的全量条目, 否则返回 null。
  *
- * 来源只在本机模型面板里和模型一起选, 远端(/model 卡、服务端快照)改模型时没有来源
- * 通道 —— 留着旧来源就会拼出「新模型 + 旧来源」的不可执行路由(issue #5912)。本机
- * 尚未镜像的写入在快照合并时优先, 模型不会被改动, 也就不会误清刚选的来源。
+ * 来源只在本机模型面板里和 (Agent, 模型) 一起选, 远端(/model 卡、服务端快照)改路由时
+ * 没有来源通道 —— 留着旧来源就会拼出「新路由 + 旧来源」的不可执行组合(issue #5912)。
+ * 本机尚未镜像的写入在快照合并时优先, 路由不会被改动, 也就不会误清刚选的来源。
+ *
+ * 只按来源条目自身的键比较。null-team 来源被多个 team 当兜底共用, 某个 team 远端改了
+ * 自己的路由时不清它: 清掉会让仍在用它的其它 team 静默改走默认来源(换账号)。这种
+ * 组合派发时按「显式来源失效」拒绝并提示重新选择。
  */
 export function clearWorkspaceProviderSourcesForRemoteModelChanges(
   channel: HookProviderChannel,
-  before: readonly WorkspaceModelRow[],
-  after: readonly WorkspaceModelRow[],
+  before: readonly WorkspaceRouteRow[],
+  after: readonly WorkspaceRouteRow[],
 ): WorkspaceProviderSourceEntry[] | null {
-  const keyOf = (row: WorkspaceModelRow): string => `${row.teamId ?? ''}::${row.workspace}`;
-  const modelBefore = new Map(before.map((row) => [keyOf(row), row.model] as const));
-  const modelAfter = new Map(after.map((row) => [keyOf(row), row.model] as const));
-  const changed = (e: WorkspaceProviderSourceEntry): boolean => {
-    const key = `${e.teamId ?? ''}::${e.workspace}`;
-    return (modelBefore.get(key) ?? null) !== (modelAfter.get(key) ?? null);
-  };
+  const keyOf = (row: { teamId?: string | null; workspace: string }): string =>
+    `${row.teamId ?? ''}::${row.workspace}`;
+  const routeOf = (row: WorkspaceRouteRow): string =>
+    JSON.stringify([row.agentKind ?? null, row.model ?? null]);
+  const routeBefore = new Map(before.map((row) => [keyOf(row), routeOf(row)] as const));
+  const routeAfter = new Map(after.map((row) => [keyOf(row), routeOf(row)] as const));
+  const empty = JSON.stringify([null, null]);
+  const changed = (e: WorkspaceProviderSourceEntry): boolean =>
+    (routeBefore.get(keyOf(e)) ?? empty) !== (routeAfter.get(keyOf(e)) ?? empty);
   const fp = filePath();
   const entries = readFileEntries(fp);
   const next = entries.filter((e) => e.channel !== channel || !changed(e));
