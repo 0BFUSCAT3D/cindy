@@ -32,6 +32,7 @@ import {
   type RipgrepRunner,
   type ToolResult,
 } from './files';
+import type { CredentialGrantRecord } from './credentialGrants';
 import type { ExecutorAction, ExecutorGate, ExecutorGateDecision, ExecutorGateMode } from './gate';
 import { piGrep, type PiGrepInput } from './search';
 import { resolveExecutorShell, runOnce, ShellSession } from './shell';
@@ -46,7 +47,7 @@ export interface ExecutorCaptureHooks {
   noteOpaqueWrite(): void;
 }
 
-/** `session` 仅免除当前执行器的分享凭证确认，普通权限上限仍由 gate 判断。 */
+/** `session` 免除当前任务后续的分享凭证确认，普通权限上限仍由 gate 判断。 */
 export type ExecutorConfirmation = boolean | 'session';
 
 export interface RemoteExecutorOptions {
@@ -65,6 +66,8 @@ export interface RemoteExecutorOptions {
    * 默认只放行这一个操作；用户明确选择会话级允许后免除后续的分享凭证确认。缺省时直接拒绝。
    */
   confirm?(action: ExecutorAction): Promise<ExecutorConfirmation>;
+  /** 「本任务总是允许」的任务级记录：Agent 实例被系统回收重建后据此恢复；缺省时只在本执行器内有效。 */
+  credentialGrant?: Pick<CredentialGrantRecord, 'remember' | 'forget'>;
 }
 
 export class ExecutorRequestError extends Error {
@@ -117,6 +120,7 @@ export class RemoteExecutor {
   private readonly writeHooks: FileWriteHooks;
   private closed = false;
   private permissionGeneration = 0;
+  private credentialConfirmationTail?: Promise<void>;
 
   constructor(private readonly opts: RemoteExecutorOptions) {
     this.workspace = opts.workspace;
@@ -138,6 +142,7 @@ export class RemoteExecutor {
   setGateMode(mode: ExecutorGateMode): void {
     this.permissionGeneration += 1;
     this.gate.setMode(mode);
+    this.opts.credentialGrant?.forget();
   }
 
   /** 本机用户在确认卡上允许了一个操作。 */
@@ -156,18 +161,46 @@ export class RemoteExecutor {
    * 放行。不是凭证类、没有确认通道或任务已结束时返回 false。
    */
   async confirm(action: ExecutorAction, signal?: AbortSignal): Promise<boolean> {
-    if (this.closed || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
+    if (this.closed || signal?.aborted || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
     const permissionGeneration = this.permissionGeneration;
-    const allowed = await this.opts.confirm(action).catch(() => false);
-    // 等确认期间任务结束、请求被取消或权限已切换：不接受旧确认。
-    if ((allowed !== true && allowed !== 'session') || this.closed || signal?.aborted
-      || permissionGeneration !== this.permissionGeneration) return false;
-    if (allowed === 'session') {
-      this.gate.allowCredentialsForSession();
-      if (this.gate.getMode() === 'full') return true;
+    // 同一任务可能并行调用工具。只排队确认，不排队执行；前一张卡建立任务授权后，
+    // 后续请求重新检查，避免已经弹出的多张卡仍逐一等待用户回答。
+    // 排队位置要等前一个位置放行、且自己的卡处理完才放行。
+    const previous = this.credentialConfirmationTail;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const slot = previous ? previous.then(() => settled) : settled;
+    this.credentialConfirmationTail = slot;
+    // 自己的请求取消后立即让出：还在排队就不再等(后面的请求仍等前一张卡)；
+    // 卡已弹出就不再挡住后面的请求，这张卡之后的回答会被丢弃。
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      onAbort = () => { settle(); resolve(); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      if (previous) await Promise.race([previous, aborted]);
+      if (this.closed || signal?.aborted || permissionGeneration !== this.permissionGeneration) return false;
+      // 调用方仍会重新检查普通权限上限；这里只免除已授权的分享凭证确认。
+      if (!this.gate.needsCredentialConsent(action)) return true;
+      const allowed = await this.opts.confirm(action).catch(() => false);
+      // 等确认期间任务结束、请求被取消或权限已切换：不接受旧确认。
+      if ((allowed !== true && allowed !== 'session') || this.closed || signal?.aborted
+        || permissionGeneration !== this.permissionGeneration) return false;
+      if (allowed === 'session') {
+        this.gate.allowCredentialsForSession();
+        this.opts.credentialGrant?.remember(this.gate.getMode());
+        if (this.gate.getMode() === 'full') return true;
+      }
+      this.gate.recordApproval(action);
+      return true;
+    } finally {
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      settle();
+      void slot.then(() => {
+        if (this.credentialConfirmationTail === slot) this.credentialConfirmationTail = undefined;
+      });
     }
-    this.gate.recordApproval(action);
-    return true;
   }
 
   /** 检查上限；凭证类操作没有批准时先在本机问一次。 */

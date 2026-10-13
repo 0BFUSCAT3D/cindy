@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleExecMcpRequest } from '../ccMcp';
-import { RemoteExecutor, type ExecutorConfirmation } from '../executor';
+import { RemoteExecutor, type ExecutorConfirmation, type RemoteExecutorOptions } from '../executor';
 import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor, type ExecutorAction } from '../gate';
 import type { PdfTextExtractor } from '../files';
 import { findWindowsGitBash, truncateOutput } from '../shell';
@@ -581,6 +581,7 @@ describe('shared provider credentials', () => {
   function sharedExecutor(
     mode: ReturnType<typeof executorGateModeFor>,
     confirm?: (action: ExecutorAction) => Promise<ExecutorConfirmation>,
+    credentialGrant?: RemoteExecutorOptions['credentialGrant'],
   ) {
     const workspace = new ExecutorWorkspace({ workingDir: project });
     const gate = new ExecutorGate(workspace, mode, Date.now, { confirmCredentials: true });
@@ -590,9 +591,41 @@ describe('shared provider credentials', () => {
       rgPath: RG,
       tempDir: path.join(root, 'tmp'),
       ...(confirm ? { confirm } : {}),
+      ...(credentialGrant ? { credentialGrant } : {}),
     });
     return { executor, gate, workspace };
   }
+
+  it('records only an explicit task-level grant and clears it when the permission mode changes', async () => {
+    const env: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    for (const answer of [true, false, 'session'] as const) {
+      const credentialGrant = { remember: vi.fn(), forget: vi.fn() };
+      const { executor } = sharedExecutor('normal', async () => answer, credentialGrant);
+      try {
+        expect(await executor.confirm(env)).toBe(answer !== false);
+        if (answer === 'session') expect(credentialGrant.remember).toHaveBeenCalledWith('normal');
+        else expect(credentialGrant.remember).not.toHaveBeenCalled();
+        executor.setGateMode('full');
+        expect(credentialGrant.forget).toHaveBeenCalledTimes(1);
+      } finally {
+        await executor.close();
+      }
+    }
+    // 卡片回答前请求被取消：不记录。
+    let answer!: (result: ExecutorConfirmation) => void;
+    const credentialGrant = { remember: vi.fn(), forget: vi.fn() };
+    const { executor } = sharedExecutor('full', () => new Promise((resolve) => { answer = resolve; }), credentialGrant);
+    const abort = new AbortController();
+    try {
+      const pending = executor.confirm(env, abort.signal);
+      abort.abort();
+      answer('session');
+      expect(await pending).toBe(false);
+      expect(credentialGrant.remember).not.toHaveBeenCalled();
+    } finally {
+      await executor.close();
+    }
+  });
 
   it('holds credential reads, writes and commands even with full access, and nothing else', () => {
     const { gate, workspace } = sharedExecutor('full');
@@ -682,6 +715,162 @@ describe('shared provider credentials', () => {
       expect(executor.check({ kind: 'read', path: production }).ok).toBe(false);
     } finally {
       await executor.close();
+    }
+  });
+
+  it('asks once for concurrent credential operations when the user allows the session', async () => {
+    const answers: Array<(result: ExecutorConfirmation) => void> = [];
+    const confirm = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answers.push(resolve); }));
+    const { executor } = sharedExecutor('full', confirm);
+    const first: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const second: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const pending = [executor.confirm(first), executor.confirm(second)];
+    try {
+      expect(confirm).toHaveBeenCalledTimes(1);
+      answers[0]('session');
+      expect(await Promise.all(pending)).toEqual([true, true]);
+      expect(executor.check(first).ok).toBe(true);
+      expect(executor.check(second).ok).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      await executor.close();
+      for (const answer of answers) answer(false);
+      await Promise.all(pending);
+    }
+  });
+
+  it.each([true, false, 'failed'] as const)('keeps concurrent requests independent after the first answer is %s', async (answer) => {
+    let resolve!: (result: ExecutorConfirmation) => void;
+    let reject!: (error: Error) => void;
+    const confirm = vi.fn<(action: ExecutorAction) => Promise<ExecutorConfirmation>>()
+      .mockImplementationOnce(() => new Promise<ExecutorConfirmation>((done, fail) => { resolve = done; reject = fail; }))
+      .mockResolvedValue(false);
+    const { executor } = sharedExecutor('full', confirm);
+    const first: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const second: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const pending = [executor.confirm(first), executor.confirm(second)];
+    try {
+      expect(confirm).toHaveBeenCalledTimes(1);
+      if (answer === 'failed') reject(new Error('confirmation failed'));
+      else resolve(answer);
+      expect(await Promise.all(pending)).toEqual([answer === true, false]);
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(confirm).toHaveBeenNthCalledWith(2, second);
+      expect(executor.check(first).ok).toBe(answer === true);
+      expect(executor.check(first).ok).toBe(false);
+      expect(executor.check(second).ok).toBe(false);
+    } finally {
+      await executor.close();
+      resolve(false);
+      await Promise.all(pending);
+    }
+  });
+
+  it.each(['cancel', 'close', 'permission-change'] as const)('does not show or grant a queued confirmation after %s', async (end) => {
+    let answer!: (result: ExecutorConfirmation) => void;
+    const confirm = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answer = resolve; }));
+    const { executor, gate } = sharedExecutor('full', confirm);
+    const first: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const second: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const abort = new AbortController();
+    const pending = [executor.confirm(first), executor.confirm(second, abort.signal)];
+    try {
+      expect(confirm).toHaveBeenCalledTimes(1);
+      if (end === 'cancel') abort.abort();
+      else if (end === 'close') await executor.close();
+      else {
+        executor.setGateMode('normal');
+        executor.setGateMode('full');
+      }
+      answer('session');
+      expect(await Promise.all(pending)).toEqual([end === 'cancel', false]);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(gate.needsCredentialConsent(first)).toBe(end !== 'cancel');
+    } finally {
+      await executor.close();
+      answer(false);
+      await Promise.all(pending);
+    }
+  });
+
+  it('lets a cancelled queued request leave at once while later requests still wait for the open card', async () => {
+    const answers: Array<(result: ExecutorConfirmation) => void> = [];
+    const confirm = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answers.push(resolve); }));
+    const { executor } = sharedExecutor('full', confirm);
+    const first: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const second: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const third: ExecutorAction = { kind: 'exec', command: 'cat .env.local', cwd: project };
+    const abort = new AbortController();
+    const pending = [executor.confirm(first), executor.confirm(second, abort.signal), executor.confirm(third)];
+    try {
+      abort.abort();
+      // 第一张卡还没回答，排队中被取消的请求不必等它。
+      expect(await pending[1]).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(confirm).toHaveBeenCalledTimes(1);
+      answers[0](true);
+      expect(await pending[0]).toBe(true);
+      await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+      expect(confirm).toHaveBeenNthCalledWith(2, third);
+      answers[1](true);
+      expect(await pending[2]).toBe(true);
+    } finally {
+      await executor.close();
+      for (const answer of answers) answer(false);
+      await Promise.all(pending);
+    }
+  });
+
+  it('stops an open card from blocking later requests once its request is cancelled', async () => {
+    const answers: Array<(result: ExecutorConfirmation) => void> = [];
+    const confirm = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answers.push(resolve); }));
+    const { executor, gate } = sharedExecutor('full', confirm);
+    const first: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const second: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const abort = new AbortController();
+    const pending = [executor.confirm(first, abort.signal), executor.confirm(second)];
+    try {
+      expect(confirm).toHaveBeenCalledTimes(1);
+      abort.abort();
+      await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+      expect(confirm).toHaveBeenNthCalledWith(2, second);
+      // 已取消请求的卡片之后再回答，不建立任务授权。
+      answers[0]('session');
+      expect(await pending[0]).toBe(false);
+      expect(gate.needsCredentialConsent(second)).toBe(true);
+      answers[1](true);
+      expect(await pending[1]).toBe(true);
+    } finally {
+      await executor.close();
+      for (const answer of answers) answer(false);
+      await Promise.all(pending);
+    }
+  });
+
+  it('keeps ordinary permission limits and other tasks independent of a queued session grant', async () => {
+    let answer!: (result: ExecutorConfirmation) => void;
+    const confirm = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answer = resolve; }));
+    const { executor } = sharedExecutor('plan', confirm);
+    const otherConfirm = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const other = sharedExecutor('full', otherConfirm).executor;
+    const first: ExecutorAction = { kind: 'read', path: path.join(project, '.env') };
+    const second: ExecutorAction = { kind: 'write', path: path.join(project, '.env.production') };
+    const pending = [executor.confirm(first), executor.confirm(second)];
+    try {
+      // 一个 Worker 等待确认，不阻塞另一任务，也不把任务授权扩展过去。
+      expect(await other.confirm(first)).toBe(false);
+      expect(otherConfirm).toHaveBeenCalledTimes(1);
+      answer('session');
+      expect(await Promise.all(pending)).toEqual([true, true]);
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(executor.check(first).ok).toBe(true);
+      expect(executor.check(second).ok).toBe(false);
+      expect(other.check(first).ok).toBe(false);
+    } finally {
+      await executor.close();
+      await other.close();
+      answer(false);
+      await Promise.all(pending);
     }
   });
 
