@@ -3240,6 +3240,7 @@ export type GitRead = {
   /** git 实际运行的目录(已跟随前面各段的 cd 与 -C)；认不出时为 undefined。 */
   cwd?: string;
   usesInheritedGitRuntime?: boolean;
+  metadataOnly?: boolean;
   /**
    * 当前 git 读取前是否有无法证明只读的 shell 段。前置段可能先修改工作区或索引，
    * 因而使执行器在命令运行前取得的凭证扫描结果过时；调用方应拒绝凭证豁免。
@@ -6421,16 +6422,19 @@ function shellCommandReadsDotenv(
       const probesShowObject = opts.gitContentRead !== undefined && invocation.sub === 'show'
         && !gitShowHasOnlySafeObjectPaths(invocation.args);
       const readsContent = gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject;
-      const checksContent = readsContent || (sharesGitCredentialChecks
+      const probesRuntime = opts.gitContentRead !== undefined
+        && /^(?:diff|show|log|whatchanged|grep|cat-file|status|blame|ls-files|check-ignore)$/.test(invocation.sub);
+      const checksContent = readsContent || probesRuntime || (sharesGitCredentialChecks
         && /^(?:diff|show|log|whatchanged|grep|cat-file|status|blame)$/.test(invocation.sub));
       const canProbe = checksContent && classifyGit(tokens, segment, workspaceRoots, opts) === 'auto-approve';
       if (checksContent && sharesGitCredentialChecks && !canProbe) return true;
-      if (readsContent && canProbe && !opts.gitContentRead?.({
+      if ((readsContent || probesRuntime) && canProbe && !opts.gitContentRead?.({
           sub: invocation.sub,
           args: invocation.args,
           cwd: configOverride ? undefined : gitInvocationCwd(tokens, segmentCwds[segmentIndex]),
           priorSegmentsMayMutate: priorMutation,
           usesInheritedGitRuntime: rawTokens[0] === 'git',
+          ...(!readsContent ? { metadataOnly: true } : {}),
         })) return true;
       continue;
     }

@@ -4888,6 +4888,16 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     })).toBe(true);
   });
 
+  it('checks runtime helpers for sharing Git metadata without changing local decisions', () => {
+    for (const command of ['git status', 'git ls-files', 'git diff --name-only', 'git log --oneline']) {
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+      const collect = vi.fn(() => true);
+      expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect }), command).toBe(false);
+      expect(collect, command).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ metadataOnly: true }));
+      expect(shellCommandReadsCredentials(command, roots, { gitContentRead: () => false }), command).toBe(true);
+    }
+  });
+
   it('marks sharing Git probes unsafe when --bare changes the repository context', () => {
     for (const subcommand of ['show HEAD', 'config --list']) {
       const command = 'git --bare ' + subcommand;
@@ -4940,8 +4950,10 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
       expect(collect, command).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sub: 'show' }));
     }
     const collect = vi.fn(() => false);
-    expect(shellCommandReadsCredentials('git show -s HEAD:src/app.ts', roots, { gitContentRead: collect })).toBe(false);
-    expect(collect).not.toHaveBeenCalled();
+    expect(shellCommandReadsCredentials('git show -s HEAD:src/app.ts', roots, { gitContentRead: collect })).toBe(true);
+    expect(collect).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ metadataOnly: true }));
+    expect(shellCommandReadsCredentials('git show -s HEAD:src/app.ts', roots, { gitContentRead: () => true })).toBe(false);
+    expect(shellCommandReadsCredentials('git show -s HEAD:src/app.ts', roots)).toBe(false);
   });
 
   it('gitContentRead：git 查看内容先问调用方，并带上 git 实际运行的目录', () => {

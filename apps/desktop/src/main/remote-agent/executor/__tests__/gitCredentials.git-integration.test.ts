@@ -491,6 +491,75 @@ describe('GitCredentialHistory', () => {
     expect(fs.existsSync(invokedFile)).toBe(false);
   });
 
+  it('keeps consent for fsmonitor hooks before any index probe can run them', async () => {
+    const history = new GitCredentialHistory();
+    const credentialFile = path.join(root, '.env');
+    const hookFile = path.join(root, 'fsmonitor-hook.cjs');
+    const invokedFile = path.join(root, 'fsmonitor-invoked');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=fsmonitor-hook\n');
+    fs.writeFileSync(hookFile, 'const fs = require("node:fs");\n'
+      + 'fs.writeFileSync(' + JSON.stringify(invokedFile) + ', "called");\n'
+      + 'process.stderr.write(fs.readFileSync(' + JSON.stringify(credentialFile) + '));\n'
+      + 'process.stdout.write("fixture-token\\0");\n');
+    const hook = [process.execPath, hookFile].map((file) => JSON.stringify(file.split(path.sep).join('/'))).join(' ');
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    git('config', 'core.fsmonitor', hook);
+    for (const subcommand of ['diff', 'status']) {
+      const output = spawnSync('git', [subcommand], { cwd: repo, encoding: 'utf8' });
+      expect(output.stderr, subcommand).toContain('PRIVATE_FIXTURE=fsmonitor-hook');
+      expect(output.status, subcommand).toBe(0);
+    }
+    fs.unlinkSync(invokedFile);
+    for (const command of ['git diff', 'git diff --no-ext-diff --no-textconv', 'git diff --cached', 'git show HEAD',
+      'git diff --name-only', 'git status', 'git ls-files', 'git show -s HEAD:src/app.ts']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invokedFile), command).toBe(false);
+    }
+    expect(await provesSafe(history, 'git config --get core.autocrlf')).toBe(true);
+    for (const value of ['true', 'false']) {
+      git('config', 'core.fsmonitor', value);
+      expect(await provesSafe(history, 'git diff'), value).toBe(false);
+    }
+    git('config', '--unset', 'core.fsmonitor');
+    expect(await provesSafe(history, 'git diff')).toBe(true);
+    expect(await provesSafe(history, 'git diff --cached')).toBe(true);
+    expect(await provesSafe(history, 'git status')).toBe(true);
+    expect(await provesSafe(history, 'git ls-files')).toBe(true);
+    expect(fs.existsSync(invokedFile)).toBe(false);
+  });
+
+  it('uses one budget for all Git segments including configuration reads', async () => {
+    vi.spyOn(fsPromises, 'realpath').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      return repo;
+    });
+    const history = new GitCredentialHistory({ waitMs: 100 });
+    const started = Date.now();
+    expect(await provesSafe(history, 'git config --get core.autocrlf && git config --get core.autocrlf')).toBe(false);
+    expect(Date.now() - started).toBeLessThan(process.platform === 'win32' ? 5_000 : 1_000);
+    const contentStarted = Date.now();
+    expect(await provesSafe(history, 'git diff && git show HEAD')).toBe(false);
+    expect(Date.now() - contentStarted).toBeLessThan(process.platform === 'win32' ? 5_000 : 1_000);
+  });
+
+  it('stops a stalled configuration filesystem check and cancelled command within the same budget', async () => {
+    vi.spyOn(fsPromises, 'realpath').mockImplementation(() => new Promise<string>(() => {}));
+    const history = new GitCredentialHistory({ waitMs: 30 });
+    const started = Date.now();
+    expect(await provesSafe(history, 'git config --list')).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    const abort = new AbortController();
+    const reads = shareCredentialGitReads('git config --list', [repo], { cwd: repo, platform: process.platform });
+    const cancelled = new GitCredentialHistory({ waitMs: 5_000 });
+    const cancelledStarted = Date.now();
+    const pending = cancelled.provesSafe('git config --list', reads ?? [], abort.signal);
+    abort.abort();
+    expect(await pending).toBe(false);
+    expect(Date.now() - cancelledStarted).toBeLessThan(1_000);
+    expect(await history.provesSafe('git config --list', reads ?? [], abort.signal)).toBe(false);
+  });
+
   it('keeps consent for configured textconv and external diff helpers', async () => {
     const history = new GitCredentialHistory();
     const credentialFile = path.join(root, '.env');

@@ -174,10 +174,11 @@ async function scanHistory(top: string, extraArgs: readonly string[], stdin?: st
 }
 
 /** 暂存区里的凭证类路径；带子模块或超过上限时返回 null。 */
-async function indexCredentials(top: string): Promise<Set<string> | null> {
+async function indexCredentials(top: string, timeoutMs: number): Promise<Set<string> | null> {
   const collector = credentialCollector(top);
   let submodule = false;
   await git(['ls-files', '--stage', '-z'], top, {
+    timeoutMs,
     onRecord: (record) => {
       const tab = record.indexOf('\t');
       if (tab < 0) return;
@@ -456,7 +457,7 @@ function configEntryHoldsSecret(key: string, value: string): boolean {
  * 打出 git 配置的命令(git remote -v / get-url / show、读 git config、git var -l)：按这个目录生效的 git 配置
  * (系统、全局、仓库，含 include)核对它会打出的那些项里没有密钥。读别的配置文件(-f / --blob)的不核对。
  */
-async function configReadProvesSafe(read: GitRead): Promise<boolean> {
+async function configReadProvesSafe(read: GitRead, deadline: number): Promise<boolean> {
   if (read.sub === 'remote') {
     const actionIndex = read.args.findIndex((arg) => !arg.startsWith('-'));
     if (read.args[actionIndex] === 'show' && read.args[actionIndex + 1] !== '-n') return false;
@@ -468,8 +469,10 @@ async function configReadProvesSafe(read: GitRead): Promise<boolean> {
     return name.startsWith('--') && name.length > 2 && configSources.some((option) => option.startsWith(name));
   })) return false;
   const cwd = await fsp.realpath(read.cwd);
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return false;
   const key = requestedConfigKey(read);
-  const entries = (await git(['config', '--list', '-z'], cwd)).split('\0').filter(Boolean);
+  const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs: remaining })).split('\0').filter(Boolean);
   return !entries.some((entry) => {
     const newline = entry.indexOf('\n');
     const name = newline < 0 ? entry : entry.slice(0, newline);
@@ -482,7 +485,7 @@ async function configReadProvesSafe(read: GitRead): Promise<boolean> {
 }
 
 async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
-  if (!CONTENT_SUBCOMMANDS.has(read.sub)) return true;
+  if (!CONTENT_SUBCOMMANDS.has(read.sub) && !read.metadataOnly) return true;
   const disabled = new Set<string>();
   for (const arg of read.args) {
     if (arg !== '--no-textconv' && arg !== '--no-ext-diff') break;
@@ -494,8 +497,9 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
   const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs })).split('\0');
   return !entries.some((entry) => {
     const newline = entry.indexOf('\n');
+    const key = newline < 0 ? entry : entry.slice(0, newline);
+    if (key.toLowerCase() === 'core.fsmonitor') return true;
     if (newline < 0 || !entry.slice(newline + 1).trim()) return false;
-    const key = entry.slice(0, newline);
     return /^filter\..+\.(?:clean|process)$/i.test(key)
       || (textconvEnabled && /^diff\..+\.textconv$/i.test(key))
       || (externalDiffEnabled && (/^diff\..+\.command$/i.test(key) || key.toLowerCase() === 'diff.external'));
@@ -532,6 +536,7 @@ export class GitCredentialHistory {
 
   /** 这些 git 调用(credentials.ts shareCredentialGitReads 的结果)在本机核实后都读不到、打不出凭证。 */
   async provesSafe(command: string, reads: readonly GitRead[], signal?: AbortSignal): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, this.opts.waitMs ?? GIT_CREDENTIAL_WAIT_MS);
     if (reads.length === 0 || GIT_ENV_ASSIGNMENT.test(command) || GIT_CONFIG_ENV_ASSIGNMENT.test(command)) return false;
     if (['BASH_ENV', 'ENV', 'ZDOTDIR'].some((key) => process.env[key] !== undefined)
       || Object.keys(process.env).some((key) => key.startsWith('BASH_FUNC_'))) return false;
@@ -542,23 +547,47 @@ export class GitCredentialHistory {
     // segment may change Git state, its result can become stale before the later read;
     // keep the credential confirmation in that case instead of granting an exemption.
     if (reads.some((read) => read.priorSegmentsMayMutate)) return false;
-    if (signal?.aborted || !(await shellStartupAllowsGitProbe(this.opts.waitMs ?? GIT_CREDENTIAL_WAIT_MS).catch(() => false))) {
+    if (signal?.aborted || deadline <= Date.now()) return false;
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    const stopped = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
+      onAbort = () => resolve(false);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([this.readsProveSafe(reads, deadline, signal).catch(() => false), stopped]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private async readsProveSafe(reads: readonly GitRead[], deadline: number, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted || deadline <= Date.now()
+      || !(await shellStartupAllowsGitProbe(deadline - Date.now()).catch(() => false))) {
       return false;
     }
     for (const read of reads) {
-      const check = CONFIG_SUBCOMMANDS.has(read.sub) ? configReadProvesSafe(read) : this.readProvesSafe(read, signal);
-      if (signal?.aborted || !(await check.catch(() => false))) return false;
+      if (signal?.aborted || deadline <= Date.now()) return false;
+      const check = CONFIG_SUBCOMMANDS.has(read.sub)
+        ? configReadProvesSafe(read, deadline) : this.readProvesSafe(read, deadline, signal);
+      const safe = await check.catch(() => false);
+      if (signal?.aborted || deadline <= Date.now() || !safe) return false;
     }
     return true;
   }
 
-  private async readProvesSafe(read: GitRead, signal?: AbortSignal): Promise<boolean> {
-    const deadline = Date.now() + (this.opts.waitMs ?? GIT_CREDENTIAL_WAIT_MS);
-    if (!read.cwd || !CONTENT_SUBCOMMANDS.has(read.sub)) return false;
+  private async readProvesSafe(read: GitRead, deadline: number, signal?: AbortSignal): Promise<boolean> {
+    if (!read.cwd || (!CONTENT_SUBCOMMANDS.has(read.sub) && !read.metadataOnly)) return false;
     if (read.args.some((arg) => /[$`]/.test(arg) || UNCOVERED_OPTION.test(arg) || PSEUDO_REF.test(arg))) return false;
     const cwd = await fsp.realpath(read.cwd);
     if (pathspecIsTooComplexForRead(read)) return false;
-    const [topLine, commonLine] = (await git(['rev-parse', '--show-toplevel', '--git-common-dir'], cwd)).split(/\r?\n/);
+    const rootTimeout = deadline - Date.now();
+    if (rootTimeout <= 0 || signal?.aborted) return false;
+    const [topLine, commonLine] = (await git(['rev-parse', '--show-toplevel', '--git-common-dir'], cwd, {
+      timeoutMs: rootTimeout,
+    })).split(/\r?\n/);
     if (!topLine || !commonLine) return false;
     const top = path.resolve(topLine);
     const commonDir = path.resolve(cwd, commonLine);
@@ -571,12 +600,15 @@ export class GitCredentialHistory {
     if (replacements.trim()) return false;
     const helperTimeout = deadline - Date.now();
     if (helperTimeout <= 0 || !(await diffHelpersCannotRun(read, cwd, helperTimeout))) return false;
+    if (read.metadataOnly) return true;
     // 指向仓库外的文件时 git diff 不经仓库、直接比较文件。
     if (read.sub === 'diff' && read.args.some((arg) => !arg.startsWith('-') && isOutside(top, path.resolve(cwd, arg)))) {
       return false;
     }
     if (await exists(path.join(commonDir, 'modules'))) return false;
-    const index = await indexCredentials(top);
+    const indexTimeout = deadline - Date.now();
+    if (indexTimeout <= 0 || signal?.aborted) return false;
+    const index = await indexCredentials(top, indexTimeout);
     if (!index) return false;
     const history = await this.waitForHistory(top, commonDir, deadline, signal);
     if (history) {

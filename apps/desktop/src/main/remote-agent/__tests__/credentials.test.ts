@@ -6,7 +6,7 @@
 import { isSensitiveCredentialPath, shellCommandReadsCredentials } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isShareCredentialCommand, isShareCredentialPath, shareCredentialGitReads } from '../credentials';
+import { isShareCredentialCommand, isShareCredentialPath, shareCredentialGitReads, textSpellsOutSecret } from '../credentials';
 
 beforeEach(() => vi.stubEnv('RIPGREP_CONFIG_PATH', undefined));
 afterEach(() => vi.unstubAllEnvs());
@@ -159,10 +159,13 @@ describe('shareCredentialGitReads', () => {
       { sub: 'log', args: ['-p', '--', 'src/app.ts'] },
     ]);
     expect(shareCredentialGitReads('git diff && git show HEAD', roots, { cwd: '/repo' })).toHaveLength(2);
+    expect(shareCredentialGitReads('git status', roots, { cwd: '/repo' })).toMatchObject([
+      { sub: 'status', metadataOnly: true },
+    ]);
+    expect(shellCommandReadsCredentials('git status', roots)).toBe(false);
     // 还有别的理由，或本来就不用确认：不交给核实。
     expect(shareCredentialGitReads('git diff && cat .env', roots, { cwd: '/repo' })).toBeNull();
     expect(shareCredentialGitReads('git show HEAD:.env', roots, { cwd: '/repo' })).toBeNull();
-    expect(shareCredentialGitReads('git status', roots, { cwd: '/repo' })).toBeNull();
     expect(shareCredentialGitReads('pnpm test', roots, { cwd: '/repo' })).toBeNull();
   });
 
@@ -250,12 +253,16 @@ describe('secrets written in the command', () => {
       'git clone https://github.com/a/b.git',
       'git push origin main',
       'git commit -m "fix sk-learn import"',
-      "git log --format='%h: %s' -5",
       'curl http://localhost:3000/api',
-      'git show HEAD:src/app.ts',
-      'git show HEAD:.env.example',
     ]) {
       expect(isShareCredentialCommand(command, roots), command).toBe(false);
+    }
+    for (const command of ["git log --format='%h: %s' -5", 'git show HEAD:src/app.ts', 'git show HEAD:.env.example']) {
+      expect(textSpellsOutSecret(command), command).toBe(false);
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(command === 'git show HEAD:.env.example');
+      expect(shareCredentialGitReads(command, roots, { cwd: '/repo' }), command).toMatchObject([
+        { metadataOnly: true },
+      ]);
     }
   });
 });
