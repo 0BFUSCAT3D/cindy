@@ -1,9 +1,11 @@
 /**
- * worktree-parallel-sessions: `.xdtworktreeinclude` 解析与拷贝引擎。
+ * worktree-parallel-sessions: worktree include 文件解析与拷贝引擎。
  *
- * 文件位于 baseRepo 根目录, 内容是按行的 glob pattern。worktree 创建后, 把匹配
- * 的(且 git 不跟踪的)文件按相对路径复制到 worktree 路径下, 用于带过去
- * .env / 本地 build 产物 / IDE 配置等不入库的本地文件。
+ * 两个文件都位于 baseRepo 根目录, 规则合并生效（任一文件选中即复制）:
+ *   - `.xdtworktreeinclude`: Cindy 原有格式, 每行一个 glob, 相对 baseRepo 根目录
+ *   - `.worktreeinclude`:    Claude Code 的同名约定, 按 `.gitignore` 语法解析
+ * worktree 创建后, 把匹配的(且 git 不跟踪的)文件按相对路径复制到 worktree 路径下,
+ * 用于带过去 .env / 本地 build 产物 / IDE 配置等不入库的本地文件。
  *
  * 规则:
  *   - 每行 trim
@@ -116,6 +118,67 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${p}$`);
 }
 
+/** 判断 baseRepo 相对路径(/ 分隔)是否被 include 规则选中。 */
+type IncludeMatcher = (relpath: string) => boolean;
+
+function globMatcher(patterns: readonly string[]): IncludeMatcher {
+  const regexes = patterns.map(globToRegex);
+  return (rel) => regexes.some((re) => re.test(rel));
+}
+
+/**
+ * 按 `.gitignore` 语法匹配(Claude Code 的 `.worktreeinclude` 约定):
+ *   - 不含 `/` 的规则匹配任意层级; 含 `/`(或以 `/` 开头)时相对仓库根目录
+ *   - 末尾 `/` 只匹配目录; 选中目录即包含其下全部文件
+ *   - `!` 取反, 后面的规则覆盖前面的
+ * `[...]` 字符类与 `\` 转义不支持, 按字面处理。
+ */
+function gitignoreMatcher(patterns: readonly string[]): IncludeMatcher {
+  const rules: { re: RegExp; negate: boolean; dirOnly: boolean }[] = [];
+  for (const raw of patterns) {
+    const negate = raw.startsWith('!');
+    let p = negate ? raw.slice(1) : raw;
+    const dirOnly = p.endsWith('/');
+    if (dirOnly) p = p.slice(0, -1);
+    const anchored = p.includes('/');
+    if (p.startsWith('/')) p = p.slice(1);
+    if (!p) continue;
+    rules.push({ re: globToRegex(anchored ? p : `**/${p}`), negate, dirOnly });
+  }
+  return (rel) => {
+    const segments = rel.split('/');
+    const dirs = segments.slice(1).map((_, i) => segments.slice(0, i + 1).join('/'));
+    let included = false;
+    for (const rule of rules) {
+      const hit = (!rule.dirOnly && rule.re.test(rel)) || dirs.some((dir) => rule.re.test(dir));
+      if (hit) included = !rule.negate;
+    }
+    return included;
+  };
+}
+
+const INCLUDE_FILES = [
+  { name: '.xdtworktreeinclude', toMatcher: globMatcher },
+  { name: '.worktreeinclude', toMatcher: gitignoreMatcher },
+] as const;
+
+/** 读取 baseRepo 根目录的 include 文件并合并规则; 都没有有效规则时返回 null。 */
+function readIncludeMatcher(baseRepo: string): IncludeMatcher | null {
+  const matchers: IncludeMatcher[] = [];
+  for (const { name, toMatcher } of INCLUDE_FILES) {
+    let content: string;
+    try {
+      content = fs.readFileSync(path.join(baseRepo, name), 'utf8');
+    } catch {
+      continue;
+    }
+    const patterns = parseWorktreeIncludePatterns(content);
+    if (patterns.length > 0) matchers.push(toMatcher(patterns));
+  }
+  if (matchers.length === 0) return null;
+  return (rel) => matchers.some((matches) => matches(rel));
+}
+
 /**
  * 递归列出 baseRepo 下的所有文件相对路径(用 / 分隔)。
  * 跳过 .git/ + node_modules/ + Cindy 当前/历史托管 worktree 子树, 防止扫超量。
@@ -174,7 +237,7 @@ async function getTrackedFiles(baseRepo: string): Promise<Set<string>> {
  *
  * @param baseRepo  源 repo 根目录(绝对路径)
  * @param destRoot  目标 worktree 路径(绝对路径)
- * @param patterns  parseWorktreeIncludePatterns 的输出
+ * @param patterns  parseWorktreeIncludePatterns 的输出(`.xdtworktreeinclude` glob 语法)
  * @returns per-file 结果, 用于日志 / UI 展示
  */
 export async function copyWorktreeIncludeFiles(
@@ -184,14 +247,16 @@ export async function copyWorktreeIncludeFiles(
   options: CopyWorktreeIncludeOptions = {},
 ): Promise<IncludeFileResult[]> {
   if (patterns.length === 0) return [];
-  const regexes = patterns.map(globToRegex);
-  const allFiles = listAllFiles(baseRepo);
-  const matched: string[] = [];
-  for (const rel of allFiles) {
-    if (regexes.some((re) => re.test(rel))) {
-      matched.push(rel);
-    }
-  }
+  return copyMatchedFiles(baseRepo, destRoot, globMatcher(patterns), options);
+}
+
+async function copyMatchedFiles(
+  baseRepo: string,
+  destRoot: string,
+  matches: IncludeMatcher,
+  options: CopyWorktreeIncludeOptions,
+): Promise<IncludeFileResult[]> {
+  const matched = listAllFiles(baseRepo).filter(matches);
   if (matched.length === 0) return [];
 
   const tracked = await getTrackedFiles(baseRepo);
@@ -262,17 +327,9 @@ export async function listChangedWorktreeIncludeFiles(
   baseRepo: string,
   destRoot: string,
 ): Promise<ChangedIncludeFile[]> {
-  const includeFile = path.join(baseRepo, '.xdtworktreeinclude');
-  let content: string;
-  try {
-    content = fs.readFileSync(includeFile, 'utf8');
-  } catch {
-    return [];
-  }
-  const patterns = parseWorktreeIncludePatterns(content);
-  if (patterns.length === 0) return [];
+  const matches = readIncludeMatcher(baseRepo);
+  if (!matches) return [];
 
-  const regexes = patterns.map(globToRegex);
   const [trackedInBase, trackedInDest] = await Promise.all([
     getTrackedFiles(baseRepo),
     getTrackedFiles(destRoot),
@@ -282,7 +339,7 @@ export async function listChangedWorktreeIncludeFiles(
   const srcFiles = listAllFiles(baseRepo);
 
   for (const rel of srcFiles) {
-    if (!regexes.some((re) => re.test(rel))) continue;
+    if (!matches(rel)) continue;
     if (trackedInBase.has(rel)) continue;
 
     const srcAbs = path.join(baseRepo, rel);
@@ -341,7 +398,7 @@ export async function listChangedWorktreeIncludeFiles(
   const srcSet = new Set(srcFiles);
   for (const rel of listAllFiles(destRoot)) {
     if (srcSet.has(rel)) continue;
-    if (!regexes.some((re) => re.test(rel))) continue;
+    if (!matches(rel)) continue;
     // base 与 worktree 可能位于不同分支；dest-only 文件是否已提交必须按
     // worktree 自己的 index 判断，不能复用 base checkout 的 tracked 集合。
     if (trackedInDest.has(rel)) continue;
@@ -360,24 +417,17 @@ export async function listChangedWorktreeIncludeFiles(
 }
 
 /**
- * 一站式: 读 .xdtworktreeinclude → 解析 → 拷贝。文件不存在则返回空。
+ * 一站式: 读 .xdtworktreeinclude / .worktreeinclude → 解析 → 拷贝。都不存在则返回空。
  */
 export async function applyWorktreeIncludeFile(
   baseRepo: string,
   destRoot: string,
   options: CopyWorktreeIncludeOptions = {},
 ): Promise<IncludeFileResult[]> {
-  const includeFile = path.join(baseRepo, '.xdtworktreeinclude');
-  let content: string;
-  try {
-    content = fs.readFileSync(includeFile, 'utf8');
-  } catch {
-    return [];
-  }
-  const patterns = parseWorktreeIncludePatterns(content);
-  if (patterns.length === 0) return [];
-  return copyWorktreeIncludeFiles(baseRepo, destRoot, patterns, options);
+  const matches = readIncludeMatcher(baseRepo);
+  if (!matches) return [];
+  return copyMatchedFiles(baseRepo, destRoot, matches, options);
 }
 
 // 仅供测试用
-export const _internal = { globToRegex, listAllFiles };
+export const _internal = { globToRegex, listAllFiles, gitignoreMatcher };

@@ -3,20 +3,21 @@
  * tracked 分支差异场景使用临时 Git worktree 做真实集成验证。
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 
 import {
+  applyWorktreeIncludeFile,
   copyWorktreeIncludeFiles,
   listChangedWorktreeIncludeFiles,
   parseWorktreeIncludePatterns,
   _internal,
 } from '../worktree/includePatternsEngine';
 
-const { globToRegex, listAllFiles } = _internal;
+const { globToRegex, listAllFiles, gitignoreMatcher } = _internal;
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'pipe' });
@@ -92,6 +93,90 @@ describe('globToRegex', () => {
     expect(re.test('build/foo')).toBe(true);
     expect(re.test('build/foo/bar.js')).toBe(true);
     expect(re.test('source/build/foo')).toBe(false);
+  });
+});
+
+describe('gitignoreMatcher (.worktreeinclude)', () => {
+  it('matches a slash-less pattern at any depth', () => {
+    const matches = gitignoreMatcher(['.env']);
+    expect(matches('.env')).toBe(true);
+    expect(matches('apps/web/.env')).toBe(true);
+    expect(matches('.env.local')).toBe(false);
+  });
+
+  it('anchors patterns that contain a slash to the repo root', () => {
+    expect(gitignoreMatcher(['/.env'])('apps/.env')).toBe(false);
+    expect(gitignoreMatcher(['/.env'])('.env')).toBe(true);
+    const matches = gitignoreMatcher(['config/*.json']);
+    expect(matches('config/local.json')).toBe(true);
+    expect(matches('apps/config/local.json')).toBe(false);
+  });
+
+  it('selects every file under a matched directory', () => {
+    const dirOnly = gitignoreMatcher(['.vscode/']);
+    expect(dirOnly('.vscode/settings.json')).toBe(true);
+    expect(dirOnly('apps/.vscode/a/b.json')).toBe(true);
+    expect(dirOnly('.vscode')).toBe(false);
+    expect(gitignoreMatcher(['secrets'])('secrets/key.pem')).toBe(true);
+  });
+
+  it('lets a later negation override an earlier match', () => {
+    const matches = gitignoreMatcher(['.env*', '!.env.example']);
+    expect(matches('.env.local')).toBe(true);
+    expect(matches('.env.example')).toBe(false);
+    expect(gitignoreMatcher(['!.env.example', '.env*'])('.env.example')).toBe(true);
+  });
+});
+
+describe('applyWorktreeIncludeFile', () => {
+  let tmpRoot: string;
+  let baseRepo: string;
+  let worktreePath: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-wt-include-apply-'));
+    baseRepo = path.join(tmpRoot, 'repo');
+    worktreePath = path.join(tmpRoot, 'worktree');
+    fs.mkdirSync(path.join(baseRepo, 'apps', 'web'), { recursive: true });
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(path.join(baseRepo, '.env'), 'ROOT=1\n');
+    fs.writeFileSync(path.join(baseRepo, 'apps', 'web', '.env'), 'WEB=1\n');
+    fs.writeFileSync(path.join(baseRepo, 'local.json'), '{}');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  const copied = async () =>
+    (await applyWorktreeIncludeFile(baseRepo, worktreePath))
+      .filter((r) => r.status === 'copied')
+      .map((r) => r.relpath)
+      .sort();
+
+  it('reads Claude Code .worktreeinclude with .gitignore semantics', async () => {
+    fs.writeFileSync(path.join(baseRepo, '.worktreeinclude'), '.env\n');
+
+    await expect(copied()).resolves.toEqual(['.env', 'apps/web/.env']);
+    expect(fs.readFileSync(path.join(worktreePath, 'apps', 'web', '.env'), 'utf8')).toBe('WEB=1\n');
+  });
+
+  it('keeps .xdtworktreeinclude root-relative and merges both files', async () => {
+    fs.writeFileSync(path.join(baseRepo, '.xdtworktreeinclude'), '.env\n');
+    await expect(copied()).resolves.toEqual(['.env']);
+
+    fs.writeFileSync(path.join(baseRepo, '.worktreeinclude'), 'local.json\n');
+    await expect(copied()).resolves.toEqual(['.env', 'local.json']);
+  });
+
+  it('reports files changed under .worktreeinclude rules as dirty', async () => {
+    fs.writeFileSync(path.join(baseRepo, '.worktreeinclude'), '.env\n');
+    await applyWorktreeIncludeFile(baseRepo, worktreePath);
+    fs.writeFileSync(path.join(worktreePath, 'apps', 'web', '.env'), 'WEB=2\n');
+
+    await expect(listChangedWorktreeIncludeFiles(baseRepo, worktreePath)).resolves.toEqual([
+      { relpath: 'apps/web/.env', reason: 'content-differs' },
+    ]);
   });
 });
 
