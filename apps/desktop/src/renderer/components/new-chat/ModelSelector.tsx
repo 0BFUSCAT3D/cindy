@@ -1,3 +1,4 @@
+import { DisplayPricingDetails } from '@/components/DisplayPricingDetails';
 import { Button } from '@/components/ui/button';
 import { localizedModelDescription } from '@/lib/modelDescriptions';
 import { localizedModelName, matchesModelName } from '@/lib/modelDisplayNames';
@@ -2614,6 +2615,8 @@ function ModelSelectorContentView({
     currentProviderId,
     resolveCurrentSourceId,
   ]);
+  const editingDisplayPricingModel = editingProvider && editingModel && currentAgentKind
+    ? findCatalogModel(editingProvider, editingModel.id, currentAgentKind, { exact: true }) : undefined;
   const editingPricePresentation = editingModel
     ? pricePresentationOf(editingProvider?.id ?? editingProviderId, editingModel.id)
     : null;
@@ -2758,7 +2761,12 @@ function ModelSelectorContentView({
       {(editShowFast || editHasEfforts) && (
         <div className="mx-1 my-1 h-px bg-[var(--model-dropdown-border)]" />
       )}
-      {editingPricePresentation && (
+      {editingDisplayPricingModel?.displayPricing && editingDisplayPricingModel.currency && (
+        <div className="max-h-72 overflow-y-auto border-t border-[var(--model-dropdown-border)] pt-2.5">
+          <DisplayPricingDetails model={editingDisplayPricingModel} />
+        </div>
+      )}
+      {!editingDisplayPricingModel?.displayPricing && editingPricePresentation && (
         <>
           <div {...menuSkipAttrs} className="px-2 pb-1 pt-1">
             <div

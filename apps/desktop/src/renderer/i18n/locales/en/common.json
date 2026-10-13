@@ -9696,6 +9696,20 @@
       "addRemoteProject": "Add remote project"
     },
     "modelSelector": {
+      "displayPricing": {
+        "estimated": "About {{price}}",
+        "startingAt": "From {{price}}",
+        "units": {
+          "token": "tokens",
+          "character": "characters",
+          "image": "image",
+          "second": "second",
+          "minute": "minute",
+          "request": "request",
+          "megapixel": "MP",
+          "megapixelSecond": "MP·s"
+        }
+      },
       "budgetNeedsApiKey": "This model needs an API key — configure it in Settings",
       "paymentRequired": {
         "badge": "Paid",

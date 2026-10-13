@@ -9658,6 +9658,20 @@
       "addRemoteProject": "新增遠端專案"
     },
     "modelSelector": {
+      "displayPricing": {
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} 起",
+        "units": {
+          "token": "token",
+          "character": "字元",
+          "image": "張",
+          "second": "秒",
+          "minute": "分鐘",
+          "request": "次",
+          "megapixel": "百萬像素",
+          "megapixelSecond": "百萬像素·秒"
+        }
+      },
       "budgetNeedsApiKey": "此模型需先在設定裡配置 API key 才能使用",
       "paymentRequired": {
         "badge": "付費",

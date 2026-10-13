@@ -9658,6 +9658,20 @@
       "addRemoteProject": "リモートプロジェクトを追加"
     },
     "modelSelector": {
+      "displayPricing": {
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} から",
+        "units": {
+          "token": "トークン",
+          "character": "文字",
+          "image": "枚",
+          "second": "秒",
+          "minute": "分",
+          "request": "リクエスト",
+          "megapixel": "メガピクセル",
+          "megapixelSecond": "メガピクセル·秒"
+        }
+      },
       "budgetNeedsApiKey": "このモデルは設定で API key を構成してから使用できます",
       "paymentRequired": {
         "badge": "有料",
