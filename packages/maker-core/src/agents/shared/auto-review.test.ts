@@ -4844,6 +4844,50 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     }
   });
 
+  it('keeps sharing searches behind consent when ripgrep config can inject options', () => {
+    for (const command of [
+      "rg -g '*.ts' token .",
+      "rg -e --no-config -g '*.ts' .",
+      "rg --regexp=--no-config -g '*.ts' .",
+      "rg --glob --no-config -g '*.ts' token .",
+      "rg -g--no-config -g '*.ts' token .",
+      "rg -n --no-config -g '*.ts' token .",
+      'rg -- --no-config',
+    ]) {
+      const localDecision = shellCommandReadsCredentials(command, roots);
+      expect(shellCommandReadsCredentials(command, roots, { ripgrepConfigActive: true }), command).toBe(localDecision);
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: false, ripgrepConfigActive: true }), command)
+        .toBe(localDecision);
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true, ripgrepConfigActive: true }), command)
+        .toBe(true);
+    }
+    for (const command of [
+      "RIPGREP_CONFIG_PATH=/other/config rg -g '*.ts' token .",
+      "env RIPGREP_CONFIG_PATH=/other/config rg -g '*.ts' token .",
+      "export RIPGREP_CONFIG_PATH=/other/config && rg -g '*.ts' token .",
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, { sourceFileSelectors: true }), command).toBe(true);
+    }
+    const opts = { sourceFileSelectors: true, ripgrepConfigActive: true };
+    for (const command of [
+      "rg --no-config -g '*.ts' token .",
+      "RIPGREP_CONFIG_PATH=/other/config rg --no-config -g '*.ts' token .",
+      "grep -rn --include='*.md' token .",
+    ]) {
+      expect(shellCommandReadsCredentials(command, roots, opts), command).toBe(false);
+    }
+    expect(shellCommandReadsCredentials("rg --no-config --follow -g '*.ts' token .", roots, opts)).toBe(true);
+    expect(shellCommandReadsCredentials("rg -g '*.ts' token .", roots, { sourceFileSelectors: true })).toBe(false);
+    const checkFile = vi.fn((read: { operand: string }) => read.operand === '.env');
+    expect(shellCommandReadsCredentials("rg --no-config -g '*.ts' token .", roots, {
+      ...opts, cwd: '/repo', fileReadRequiresConsent: checkFile,
+    })).toBe(false);
+    expect(checkFile).not.toHaveBeenCalledWith(expect.objectContaining({ operand: 'token' }));
+    expect(shellCommandReadsCredentials("rg --no-config -g '*.ts' token .env", roots, {
+      ...opts, cwd: '/repo', fileReadRequiresConsent: checkFile,
+    })).toBe(true);
+  });
+
   it('marks sharing Git probes unsafe when --bare changes the repository context', () => {
     for (const subcommand of ['show HEAD', 'config --list']) {
       const command = 'git --bare ' + subcommand;

@@ -47,7 +47,8 @@ type ShareCommandOptions = Pick<CredentialCommandOptions, 'cwd' | 'platform'> & 
 };
 
 function credentialCommandOptions(opts: ShareCommandOptions): CredentialCommandOptions {
-  const { resolveFilePath, ...commandOptions } = opts;
+  const { resolveFilePath, ...shellOptions } = opts;
+  const commandOptions = { ...shellOptions, ripgrepConfigActive: process.env.RIPGREP_CONFIG_PATH !== undefined };
   if (!resolveFilePath) return { ...commandOptions, sourceFileSelectors: true };
   let checkedPaths = 0;
   return {

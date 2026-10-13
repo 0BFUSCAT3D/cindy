@@ -74,6 +74,7 @@ const savedEnv = Object.fromEntries(GIT_ENV_KEYS.map((key) => [key, process.env[
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'share-git-credentials-')));
   vi.stubEnv('SHELL', '/bin/bash');
+  vi.stubEnv('RIPGREP_CONFIG_PATH', undefined);
   vi.stubEnv('PATH', (process.env.PATH ?? '').split(path.delimiter).map((entry) => path.resolve(entry)).join(path.delimiter));
   // 临时目录的上层也可能是 git 仓库(比如整个用户目录)：不往上找。开发机自己的全局与系统 git 配置
   // 也不读，免得里面的令牌影响结果。
@@ -326,6 +327,30 @@ describe('GitCredentialHistory', () => {
     ]) {
       await requiresCredentialConfirmation(history, command);
     }
+  });
+
+  it.runIf(process.platform !== 'win32')('keeps consent when inherited ripgrep config follows source symlinks', async () => {
+    const history = new GitCredentialHistory();
+    const ripgrep = path.resolve(__dirname, '../../../../../../ripgrep-bin', process.platform + '-' + process.arch, 'rg');
+    const config = path.join(root, 'ripgrep-config');
+    const command = "rg -g '*.ts' PRIVATE .";
+    write('.gitignore', '.env\n');
+    write('.env', 'PRIVATE_FIXTURE=rg-config\n');
+    fs.symlinkSync('.env', path.join(repo, 'safe.ts'));
+    fs.writeFileSync(config, '--follow\n');
+    vi.stubEnv('RIPGREP_CONFIG_PATH', config);
+    expect(execFileSync(ripgrep, ['-g', '*.ts', 'PRIVATE', '.'], { cwd: repo, encoding: 'utf8' }))
+      .toContain('PRIVATE_FIXTURE=rg-config');
+    const disabled = spawnSync(ripgrep, ['--no-config', '-g', '*.ts', 'PRIVATE', '.'], { cwd: repo, encoding: 'utf8' });
+    expect(disabled.status).toBe(1);
+    expect(disabled.stdout).toBe('');
+    expect(disabled.stderr).toBe('');
+    await requiresCredentialConfirmation(history, command);
+    const workspace = new ExecutorWorkspace({ workingDir: repo });
+    const gate = new ExecutorGate(workspace, 'full', Date.now, { confirmCredentials: true });
+    expect(gate.authorize({ kind: 'exec', command: "rg --no-config -g '*.ts' PRIVATE .", cwd: repo }).ok).toBe(true);
+    fs.writeFileSync(config, '--hidden\n--glob=*.env\n');
+    await requiresCredentialConfirmation(history, command);
   });
 
   it('keeps consent when --bare selects a different repository in the same directory', async () => {

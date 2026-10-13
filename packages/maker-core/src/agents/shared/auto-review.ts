@@ -3260,6 +3260,7 @@ export type CredentialCommandOptions = ShellReviewOptions & {
   }) => boolean;
   /** rg -g、grep --include 这类搜索范围只选中源码与文档扩展名时不算读取凭证。 */
   sourceFileSelectors?: boolean;
+  ripgrepConfigActive?: boolean;
   /**
    * git 查看内容又没有限定到具体文件时默认按可能读到提交进仓库的凭证处理；提供时先问调用方，
    * 返回 true 表示调用方已核实这次调用读不到凭证类文件。
@@ -6441,11 +6442,16 @@ function shellCommandReadsDotenv(
     if (readsCredentialInput) return true;
     const args = tokens.slice(1);
     if (opts.sourceFileSelectors && searchFollowsSymlinks(bin, args)) return true;
+    if (opts.sourceFileSelectors && bin === 'rg'
+      && (opts.ripgrepConfigActive || /\bRIPGREP_CONFIG_PATH\s*=/i.test(command))
+      && args[0] !== '--no-config') return true;
+    const readerArgs = opts.sourceFileSelectors && bin === 'rg' && args[0] === '--no-config'
+      ? args.slice(1) : args;
     if (grepRecursesIntoPotentialDotenv(bin, args, selectorCouldMatch)) return true;
     if (bin === 'ag' && agSearchesPotentialCredential(args)) return true;
     if (bin === 'rg' && rgSearchesPotentialDotenv(args, selectorCouldMatch)) return true;
     if (readerArgumentsReadDotenv(
-      bin, args, isDotenvCredentialPath, opts.platform ?? process.platform,
+      bin, readerArgs, isDotenvCredentialPath, opts.platform ?? process.platform,
       selectorCouldMatch, fileReadRequiresConsent)) return true;
   }
   return false;

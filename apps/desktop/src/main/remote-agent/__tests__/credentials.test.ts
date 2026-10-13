@@ -4,9 +4,12 @@
  * git 查看内容交给执行器在本机核实。
  */
 import { isSensitiveCredentialPath, shellCommandReadsCredentials } from '@cindy/maker-core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isShareCredentialCommand, isShareCredentialPath, shareCredentialGitReads } from '../credentials';
+
+beforeEach(() => vi.stubEnv('RIPGREP_CONFIG_PATH', undefined));
+afterEach(() => vi.unstubAllEnvs());
 
 describe('isShareCredentialPath', () => {
   it('keeps the credential rules of local tasks', () => {
@@ -77,6 +80,22 @@ describe('isShareCredentialCommand', () => {
     }
     // 含 `..` 时不放宽。
     expect(isShareCredentialCommand('cat ~/.claude/skills/../settings.json', roots)).toBe(true);
+  });
+
+  it('checks inherited ripgrep config without changing local credential decisions', () => {
+    const command = "rg -g '*.ts' PRIVATE .";
+    expect(isShareCredentialCommand(command, roots)).toBe(false);
+    const localDecision = shellCommandReadsCredentials(command, roots);
+    vi.stubEnv('RIPGREP_CONFIG_PATH', '/unreadable/ripgrep-config');
+    expect(isShareCredentialCommand(command, roots)).toBe(true);
+    expect(shellCommandReadsCredentials(command, roots)).toBe(localDecision);
+    expect(isShareCredentialCommand("rg --no-config -g '*.ts' PRIVATE .", roots)).toBe(false);
+    expect(isShareCredentialCommand("rg -e --no-config -g '*.ts' .", roots)).toBe(true);
+    expect(isShareCredentialCommand("rg --no-config --follow -g '*.ts' PRIVATE .", roots)).toBe(true);
+    expect(isShareCredentialCommand("grep -rn --include='*.md' PRIVATE .", roots)).toBe(false);
+    vi.stubEnv('RIPGREP_CONFIG_PATH', undefined);
+    expect(isShareCredentialCommand(command, roots)).toBe(false);
+    expect(isShareCredentialCommand("RIPGREP_CONFIG_PATH=/other/config rg -g '*.ts' PRIVATE .", roots)).toBe(true);
   });
 
   it('lets searches narrowed to source and doc extensions run', () => {
