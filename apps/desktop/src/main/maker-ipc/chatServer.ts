@@ -471,6 +471,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             }).catch(() => ws.close());
           } else {
             rooms.delete(roomId);
+            // Access may come back with a narrower history; re-read every reference.
+            threads.reset();
             changed(roomId);
           }
         }

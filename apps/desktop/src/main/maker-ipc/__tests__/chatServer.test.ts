@@ -1293,6 +1293,31 @@ describe('Chat Server result delivery and refresh', () => {
       expect(reads()).toBe(3);
     });
 
+    it('does not reuse a cached share source after losing the room subscription', async () => {
+      const outside = '70000000-0000-4000-8000-00000000000a';
+      const share = msg('90000000-0000-4000-8000-00000000000a', 9, aliceId, { content: shareCard(outside) });
+      let visible = true;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [share], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [share] };
+        if (route.endsWith(`/messages/${outside}`)) return visible
+          ? { body: msg(outside, 1, aliceId, { threadRootId: rootId, content: [{ type: 'text', text: 'before you left' }] }) }
+          : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
+        return threadResponse(route, method, body);
+      });
+      const shareView = async () => {
+        const result = await service.getGroup(roomId);
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.messages.find(m => m.id === share.id)!.threadShare!;
+      };
+      expect(await shareView()).toMatchObject({ status: 'available', content: 'before you left' });
+      await vi.advanceTimersByTimeAsync(2000);
+      // Removed from the room; on rejoin the history window no longer covers that reply.
+      fixture.sockets.at(-1)!.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
+      visible = false;
+      expect(await shareView()).toMatchObject({ status: 'unavailable', content: '' });
+    });
+
     it('does not let 「继续讨论」 restart a re-posted reply', async () => {
       const ask = msg('90000000-0000-4000-8000-0000000000aa', 1, selfId);
       fixture.handle.mockImplementation((route, method, body) => {
