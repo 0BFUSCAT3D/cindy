@@ -72,7 +72,14 @@ export function buildUsageTaskRows(
   }
   const rows: UsageTaskRow[] = [];
   for (const task of history.tasks) {
-    if (!CINDY_MAKE_ENABLED && isCindyMakeSource(task.source)) continue;
+    if (
+      !CINDY_MAKE_ENABLED &&
+      (isCindyMakeSource(task.source) ||
+        (task.deviceId !== LOCAL_TASK_DEVICE &&
+          (task.source === null || task.source === undefined)))
+    ) {
+      continue;
+    }
     const tokens = tokensByTask.get(task.taskKey) ?? 0;
     if (tokens > 0) rows.push({ ...task, tokens });
   }

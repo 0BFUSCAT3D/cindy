@@ -12,6 +12,12 @@
 [versionStartup](../apps/desktop/src/main/cindy-make/versionStartup.ts) 与
 [versionStartup.test](../apps/desktop/src/main/cindy-make/__tests__/versionStartup.test.ts)。
 
+用量记录与总量统计继续保留；来自旧版电脑或旧同步缓存、尚未确认来源的任务不进入
+「最耗 token 的任务」排名，离线时也不通过缺失来源推定为普通任务。同步获得来源后，
+普通任务恢复参与排名，制作任务仍隐藏。本机任务元数据的兼容兜底不变。实现与回归见
+[UsageTaskTable](../apps/desktop/src/renderer/components/settings/usage/UsageTaskTable.tsx) 与
+[用量任务排名测试](../apps/desktop/src/renderer/components/settings/usage/__tests__/usageTaskTable.test.tsx)。
+
 共享开关见 [cindyMakeFeature](../packages/maker-shared/src/cindyMakeFeature.ts)，
 执行边界见 [featureGate](../apps/desktop/src/main/cindy-make/featureGate.ts) 与
 [回归测试](../apps/desktop/src/main/maker-ipc/__tests__/cindyMakeFeatureGate.test.ts)。
