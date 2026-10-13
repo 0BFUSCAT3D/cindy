@@ -812,6 +812,101 @@ fn open_for_hardening(path: &Path) -> Result<Handle> {
     open_acl_handle(path, FILE_SHARE_READ)
 }
 
+fn directory_inheritance_acl(handle: HANDLE, desired: *mut ACL) -> Result<Option<Vec<u32>>> {
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(error());
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Ok(None);
+    }
+    for index in 0..unsafe { (*desired).AceCount } as u32 {
+        let mut ace = ptr::null_mut();
+        if unsafe { GetAce(desired, index, &mut ace) } == 0 {
+            return Err(error());
+        }
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        if header.AceFlags as u32 & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) != 0 {
+            return Ok(None);
+        }
+    }
+    let mut current = ptr::null_mut();
+    let mut current_sd = ptr::null_mut();
+    let code = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut current,
+            ptr::null_mut(),
+            &mut current_sd,
+        )
+    };
+    if code != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    let result = (|| {
+        if current.is_null() || unsafe { IsValidAcl(current) } == 0 {
+            return denied();
+        }
+        let mut inherited = Vec::new();
+        let mut size = unsafe { (*desired).AclSize } as usize;
+        for index in 0..unsafe { (*current).AceCount } as u32 {
+            let mut ace = ptr::null_mut();
+            if unsafe { GetAce(current, index, &mut ace) } == 0 {
+                return Err(error());
+            }
+            let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+            if header.AceFlags as u32 & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) == 0 {
+                continue;
+            }
+            let mut entry = unsafe {
+                std::slice::from_raw_parts(ace.cast::<u8>(), header.AceSize as usize)
+            }
+            .to_vec();
+            entry[1] |= INHERIT_ONLY_ACE as u8;
+            size = size.checked_add(entry.len()).ok_or_else(error)?;
+            inherited.push(entry);
+        }
+        if inherited.is_empty() {
+            return Ok(None);
+        }
+        if size > u16::MAX as usize {
+            return denied();
+        }
+        let revision = unsafe { (*desired).AclRevision.max((*current).AclRevision) } as u32;
+        let mut buffer = vec![0u32; size.div_ceil(mem::size_of::<u32>())];
+        let updated = buffer.as_mut_ptr().cast::<ACL>();
+        if unsafe { InitializeAcl(updated, size as u32, revision) } == 0 {
+            return Err(error());
+        }
+        for index in 0..unsafe { (*desired).AceCount } as u32 {
+            let mut ace = ptr::null_mut();
+            if unsafe { GetAce(desired, index, &mut ace) } == 0 {
+                return Err(error());
+            }
+            let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+            if unsafe { AddAce(updated, revision, u32::MAX, ace, header.AceSize as u32) } == 0 {
+                return Err(error());
+            }
+        }
+        for entry in &inherited {
+            if unsafe {
+                AddAce(updated, revision, u32::MAX, entry.as_ptr().cast(), entry.len() as u32)
+            } == 0 {
+                return Err(error());
+            }
+        }
+        Ok(Some(buffer))
+    })();
+    unsafe {
+        LocalFree(current_sd);
+    }
+    result
+}
+
 fn apply_descriptor(handle: HANDLE, descriptor: &str) -> Result<()> {
     let mut sd = ptr::null_mut();
     if unsafe {
@@ -828,21 +923,55 @@ fn apply_descriptor(handle: HANDLE, descriptor: &str) -> Result<()> {
     // Unlike SetSecurityInfo's tree propagation, update this exact open object.
     // App-owned code paths are enumerated explicitly; unrelated descendants
     // must keep their original permissions, even if located below the app root.
-    let result = unsafe {
-        SetKernelObjectSecurity(
-            handle,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            sd,
-        )
-    };
-    let code = unsafe { GetLastError() };
+    let result = (|| {
+        let mut owner = ptr::null_mut();
+        let mut owner_defaulted = 0;
+        let mut dacl = ptr::null_mut();
+        let mut present = 0;
+        let mut dacl_defaulted = 0;
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorOwner(sd, &mut owner, &mut owner_defaulted) } == 0
+            || unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut dacl_defaulted) } == 0
+            || unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) } == 0
+        {
+            return Err(error());
+        }
+        if !dacl.is_null() && unsafe { IsValidAcl(dacl) } == 0 {
+            return denied();
+        }
+        let mut inheritance = if present != 0 && !dacl.is_null() {
+            directory_inheritance_acl(handle, dacl)?
+        } else {
+            None
+        };
+        if let Some(buffer) = &mut inheritance {
+            dacl = buffer.as_mut_ptr().cast();
+        }
+        let mut updated: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
+        let updated = (&mut updated as *mut SECURITY_DESCRIPTOR).cast();
+        if unsafe { InitializeSecurityDescriptor(updated, 1) } == 0
+            || unsafe { SetSecurityDescriptorOwner(updated, owner, owner_defaulted) } == 0
+            || unsafe { SetSecurityDescriptorDacl(updated, present, dacl, dacl_defaulted) } == 0
+            || unsafe { SetSecurityDescriptorControl(
+                updated,
+                SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ,
+                control & (SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ),
+            ) } == 0
+            || unsafe { SetKernelObjectSecurity(
+                handle,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                updated,
+            ) } == 0
+        {
+            return Err(error());
+        }
+        Ok(())
+    })();
     unsafe {
         LocalFree(sd);
     }
-    if result == 0 {
-        return Err(std::io::Error::from_raw_os_error(code as i32));
-    }
-    Ok(())
+    result
 }
 
 fn inherit_parent_acl(handle: HANDLE) -> Result<()> {
@@ -1761,7 +1890,7 @@ mod tests {
         .unwrap();
         // Exercise the exact production Win32 setter on an owned test directory;
         // the fixture keeps its own owner so the test requires no UAC.
-        secure_code_with_descriptor(&app, &format!("O:{sid}D:P(A;;FA;;;{sid})")).unwrap();
+        secure_code_with_descriptor(&app, &format!("O:{sid}D:P(A;;FRWO;;;{sid})")).unwrap();
         assert_eq!(
             before,
             (
@@ -1770,6 +1899,7 @@ mod tests {
                 descriptor(&content)
             )
         );
+        assert!(std::fs::write(app.join("new-code"), b"blocked").is_err());
         std::fs::write(&content, b"still writable").unwrap();
     }
     #[test]

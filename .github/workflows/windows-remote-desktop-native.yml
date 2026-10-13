@@ -51,6 +51,7 @@ jobs:
         run: cargo test --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml -- --test-threads=1
 
       - name: Bind development test paths
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $application = (Resolve-Path 'apps/desktop').Path
@@ -59,13 +60,17 @@ jobs:
           "CINDY_DESKTOP_DEV_EXECUTABLE=$executable" >> $env:GITHUB_ENV
 
       - name: Build development host
+        if: ${{ !cancelled() }}
         run: cargo build --locked --bins --features development --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml
 
       - name: Test development host
+        if: ${{ !cancelled() }}
         run: cargo test --locked --bins --features development --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml -- --test-threads=1
 
       - name: Build input helper
+        if: ${{ !cancelled() }}
         run: cargo build --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-input/Cargo.toml
 
       - name: Test input helper
+        if: ${{ !cancelled() }}
         run: cargo test --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-input/Cargo.toml
