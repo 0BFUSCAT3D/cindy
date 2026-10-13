@@ -144,6 +144,54 @@ describe('CodexMicroGuardService suspension', () => {
     expect(f.runner.nodeOptions).toBeNull();
   });
 
+  it.each(['current', 'previous'] as const)(
+    'rechecks late injection from the %s profile on normal exit after successful startup cleanup',
+    async (profile) => {
+      const testFixture = fixture(true);
+      const service = testFixture.make();
+      expect(await service.getState()).toEqual(PAUSED);
+      expect(testFixture.runner.nodeOptions).toBeNull();
+      const legacyStore =
+        profile === 'current'
+          ? testFixture.store
+          : new CodexMicroGuardStore(
+              path.join(path.dirname(testFixture.supportPath), 'bbbbbbbbbbbb'),
+            );
+      const externalOptions = '--trace-warnings --require=unrelated-preload.cjs';
+      const token = seedLegacyGuard(legacyStore, externalOptions);
+      testFixture.runner.nodeOptions = `${externalOptions} ${token}`;
+      expect(await service.getState()).toEqual(PAUSED);
+
+      await service.dispose();
+
+      expect(testFixture.runner.nodeOptions).toBe(externalOptions);
+      expect(legacyStore.isFresh()).toBe(false);
+      expect(legacyStore.readState()).toBeNull();
+      expect(fs.existsSync(legacyStore.hookPath)).toBe(true);
+      const commandCount = testFixture.runner.commands.length;
+      await service.dispose();
+      expect(testFixture.runner.commands).toHaveLength(commandCount);
+    },
+  );
+
+  it('preserves failed late-injection recovery for the next startup without blocking exit', async () => {
+    const testFixture = fixture(true);
+    const service = testFixture.make();
+    expect(await service.getState()).toEqual(PAUSED);
+    const token = seedLegacyGuard(testFixture.store);
+    testFixture.runner.nodeOptions = token;
+    testFixture.runner.failNextMutation = true;
+
+    await expect(service.dispose()).resolves.toBeUndefined();
+
+    expect(testFixture.runner.nodeOptions).toBe(token);
+    expect(testFixture.store.readState()).not.toBeNull();
+    expect(await service.getState()).toMatchObject({ status: 'recovery-required' });
+    expect(await testFixture.make().getState()).toEqual(PAUSED);
+    expect(testFixture.runner.nodeOptions).toBeNull();
+    expect(testFixture.store.readState()).toBeNull();
+  });
+
   it('cleans old profiles on an upgrade with no current-profile recovery state', async () => {
     const f = fixture();
     const previous = new CodexMicroGuardStore(

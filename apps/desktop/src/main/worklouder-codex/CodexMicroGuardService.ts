@@ -89,7 +89,7 @@ export class CodexMicroGuardService {
     if (this.disposed) return;
     this.disposed = true;
     // Retry incomplete restoration on a normal exit as well as on next startup.
-    if (this.platform === 'darwin' && this.recoveryRequired) {
+    if (this.platform === 'darwin') {
       await this.cleanup().catch(() => undefined);
     }
     this.listeners.clear();
