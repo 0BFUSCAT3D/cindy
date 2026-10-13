@@ -1845,11 +1845,23 @@
         "nameHint": "留空則保持當前名字",
         "changeAvatar": "更換頭像",
         "resetAvatar": "恢復預設頭像",
+        "adjustAvatar": "調整頭像",
         "save": "儲存資料",
         "cancel": "取消",
         "syncHint": "名字和頭像會儲存到帳號，並同步到你的所有裝置",
-        "avatarInvalid": "請選擇 5MB 以內的 PNG / JPG / WebP 圖片",
-        "saveFailed": "儲存失敗，請重試"
+        "avatarInvalid": "請選擇 20MB 以內的 PNG / JPG / WebP 圖片",
+        "saveFailed": "儲存失敗，請重試",
+        "crop": {
+          "title": "調整頭像",
+          "description": "拖曳調整位置，捲動或雙指縮放",
+          "done": "完成",
+          "stageLabel": "頭像取景區域：用方向鍵移動，用加號或減號縮放",
+          "zoomLabel": "縮放",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "放大",
+          "zoomOut": "縮小",
+          "exportFailed": "無法處理這張圖片，請換一張試試"
+        }
       }
     },
     "help": {

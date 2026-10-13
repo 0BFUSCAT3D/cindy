@@ -1845,11 +1845,23 @@
         "nameHint": "留空则保持当前名字",
         "changeAvatar": "更换头像",
         "resetAvatar": "恢复默认头像",
+        "adjustAvatar": "调整头像",
         "save": "保存资料",
         "cancel": "取消",
         "syncHint": "名字和头像会保存到账号，并同步到你的所有设备",
-        "avatarInvalid": "请选择 5MB 以内的 PNG / JPG / WebP 图片",
-        "saveFailed": "保存失败，请重试"
+        "avatarInvalid": "请选择 20MB 以内的 PNG / JPG / WebP 图片",
+        "saveFailed": "保存失败，请重试",
+        "crop": {
+          "title": "调整头像",
+          "description": "拖动调整位置，滚动或双指缩放",
+          "done": "完成",
+          "stageLabel": "头像取景区域：用方向键移动，用加号或减号缩放",
+          "zoomLabel": "缩放",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "放大",
+          "zoomOut": "缩小",
+          "exportFailed": "无法处理这张图片，请换一张试试"
+        }
       }
     },
     "help": {
