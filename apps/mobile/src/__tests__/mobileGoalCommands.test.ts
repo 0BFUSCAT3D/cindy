@@ -34,6 +34,8 @@ function findSend(node: ts.Node) {
 findSend(sessionSource);
 if (!sendSource) throw new Error('Missing complete SessionScreen.send entry');
 if (!readRouteParamSource) throw new Error('Missing SessionScreen.readRouteParam helper');
+// Keep page-local route parsing with send; missing closure dependencies would
+// otherwise be caught by send and surface only as a misleading outbox failure.
 const compiledExisting = ts.transpileModule(`${readRouteParamSource}\n${sendSource}\nreturn send;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
 function newHarness(text = '/goal target') {
@@ -74,9 +76,9 @@ function existingHarness(args = 'target') {
   const session = { id: 'existing-task', agentKind: 'pi', model: 'test-model', permissionMode: 'ask', workingDir: '/test-workdir' };
   const bindings = {
     setError: vi.fn(), setGoalError: vi.fn(), t: (key: string) => key,
-    params: {},
     isRemoteSessionMissing: () => false, readSessionRowNow: () => session, goalBusy: false, setGoalBusy: vi.fn(),
     executeMobileGoalCommand, sessionId: 'existing-task', deviceId: 'host', deviceIdRef: { current: 'host' },
+    params: {} as Record<string, string | string[] | undefined>,
     outboxSessionAliveRef: { current: 'existing-task' }, getMobileAuthOwner: () => ({}), isMobileAuthOwnerCurrent: () => true,
     maker: { goal: { set: vi.fn(async () => {}), clear: vi.fn(async () => {}), getStatus: vi.fn(async () => ({ status: 'active', objective: 'target' })) } },
     remoteSessionStore: { setGoalStatus: vi.fn(), acquireSessionMessageWork: vi.fn(() => ({ release })), getSessionDeviceId: () => 'host' }, setContextSheetView: vi.fn(), setContextSheetOpen: vi.fn(),
@@ -87,6 +89,7 @@ function existingHarness(args = 'target') {
     composerDocumentProjectedText, serializeComposerDocument, reconcileComposerProjectedText, emptyComposerDocument,
     canUseComposer: true, attachments: [] as unknown[], attachmentsRef: { current: [] as unknown[] }, pendingUploads: [],
     sendInFlightRef: { current: false }, sending: false, setSending: vi.fn((_sending: boolean) => {}), currentSession: session,
+    invalidateHistoryRecoveryNavigation: vi.fn(),
     outboxConnectionBlockedNow: () => false, getPendingUploadCount: () => 0,
     parseMobileLocalSystemCommand: () => null, parseMobileDesktopCommand, pendingSkillSelectionRef: { current: null },
     resolveSessionAgentKind: () => 'pi', modelNeedsReselection: () => false, getCachedDeviceProviders: () => undefined,
@@ -153,6 +156,7 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.maker.goal.set).toHaveBeenCalledExactlyOnceWith({ sessionId: 'existing-task', objective: 'target' });
     expect(h.bindings.remoteSessionStore.setGoalStatus).toHaveBeenCalledWith('existing-task', { status: 'active', objective: 'target' });
     expect(h.bindings.applyComposerDocument).toHaveBeenCalledWith(emptyComposerDocument());
+    expect(h.bindings.invalidateHistoryRecoveryNavigation).toHaveBeenCalledOnce();
   });
   it('bare /goal opens the existing panel', async () => {
     const h = existingHarness(''); await h.run();
@@ -197,6 +201,7 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.sendInFlightRef.current).toBe(true);
     await h.run();
     expect(h.bindings.maker.goal.set).toHaveBeenCalledOnce();
+    expect(h.bindings.invalidateHistoryRecoveryNavigation).toHaveBeenCalledOnce();
     expect(h.release).not.toHaveBeenCalled();
     finish();
     await first;
@@ -224,5 +229,24 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.sendInFlightRef.current).toBe(false);
     expect(h.bindings.sending).toBe(false);
     expect(h.release).toHaveBeenCalledTimes(2);
+    expect(h.bindings.invalidateHistoryRecoveryNavigation).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([false, true])('preserves the bot resource on a follow-up after Goal, array route params=%s', async arrayParams => {
+    const h = existingHarness();
+    const routeValue = (value: string) => arrayParams ? [value] : value;
+    h.bindings.params = {
+      resourceKind: routeValue('bot'),
+      resourceCollectionId: routeValue('companions'),
+      resourceId: routeValue('bot-1'),
+    };
+    await h.run();
+    h.bindings.composerDocumentRef.current = textComposerDocument('ordinary follow-up');
+    await h.run();
+    expect(h.bindings.setError).toHaveBeenLastCalledWith(null);
+    expect(h.bindings.mobileDurableOutbox.add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      item: expect.objectContaining({ sessionId: 'existing-task', text: 'ordinary follow-up' }),
+      resourceRef: { collectionId: 'companions', kind: 'bot', id: 'bot-1' },
+    }));
   });
 });
