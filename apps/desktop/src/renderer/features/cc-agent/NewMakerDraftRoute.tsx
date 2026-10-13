@@ -1597,7 +1597,15 @@ export function NewMakerDraftRoute() {
     }
     // provider revision 驱逐时 hook 会保留旧快照但标 loading；必须等新代际 ready，不能用 stale
     // capabilities 把 inline handoff 或用户当前选择校准回旧目录。
-    if (!capabilities || capabilitiesLoading || !deviceDraftDefaultsReady) return;
+    // 现代被控端还要等 provider:list；否则 flat capabilities 先播种后不会因目录到达而重校准。
+    // 明确不支持该 channel 的旧端继续使用 capabilities fallback。
+    const deviceProviderCatalogReady = deviceProvidersUnsupported || !deviceProvidersLoading;
+    if (
+      !capabilities ||
+      capabilitiesLoading ||
+      !deviceDraftDefaultsReady ||
+      !deviceProviderCatalogReady
+    ) return;
     const key = `${catalogDeviceId}:${capabilityAgentKind}`;
     const newTarget = dlSeedKeyRef.current !== key;
     const capabilitiesChanged = dlSeedCapabilitiesRef.current !== capabilities;
@@ -1627,6 +1635,8 @@ export function NewMakerDraftRoute() {
                   providerId: current.providerId,
                 },
                 current.model,
+                capabilityAgentKind,
+                agentCatalogProviders,
               )
             : current,
         );
@@ -1642,14 +1652,18 @@ export function NewMakerDraftRoute() {
         deviceDraftDefaults,
         undefined,
         capabilityAgentKind,
+        agentCatalogProviders,
       ),
     );
   }, [
     usesDeviceCatalog,
     catalogDeviceId,
     capabilityAgentKind,
+    agentCatalogProviders,
     capabilities,
     capabilitiesLoading,
+    deviceProvidersLoading,
+    deviceProvidersUnsupported,
     deviceDraftDefaultsReady,
     deviceDraftDefaults,
   ]);
@@ -1667,10 +1681,22 @@ export function NewMakerDraftRoute() {
     if (!usesDeviceCatalog) return null;
     if (dlSel) return dlSel;
     if (capabilities) {
-      return resolveDeviceLinkDraftDefaults(capabilities, null, undefined, capabilityAgentKind);
+      return resolveDeviceLinkDraftDefaults(
+        capabilities,
+        null,
+        undefined,
+        capabilityAgentKind,
+        agentCatalogProviders,
+      );
     }
     return null;
-  }, [usesDeviceCatalog, dlSel, capabilities, capabilityAgentKind]);
+  }, [
+    usesDeviceCatalog,
+    dlSel,
+    capabilities,
+    capabilityAgentKind,
+    agentCatalogProviders,
+  ]);
 
   // ── device-link 草稿列表「纯显示镜像」(非选中行的 effort/fast) ──────────────────
   // scopeKey 按设备隔离。镜像 = 被控端 providerModelMemory 全量快照(草稿列表行的真实读源),
@@ -2511,7 +2537,7 @@ export function NewMakerDraftRoute() {
           workspaceKind: 'project',
           permissionMode: chatInitialPermissionMode,
           model: sshModel,
-          ...(sshEffort !== null ? { effort: sshEffort } : {}),
+          effort: sshEffort ?? '',
           fastMode: sshFastMode,
           planModeEnabled: effectivePlanMode,
           remoteHostId: target.hostId,

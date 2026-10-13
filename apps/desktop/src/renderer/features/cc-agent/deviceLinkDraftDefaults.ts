@@ -15,6 +15,11 @@
  * 与「会话内切来源」同一口径,不在本函数重复一套。
  */
 
+import {
+  effectiveSourceIdForModel,
+  getModel,
+  type ProviderView,
+} from '@cindy/model-providers';
 import type { AgentCapabilities, AgentKind } from '@/hooks/useAgentCapabilities';
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 
@@ -97,6 +102,7 @@ export function resolveDeviceLinkDraftDefaults(
   remoteDraft: RemoteDraftDefaults | null,
   targetModel?: string,
   agentKind?: AgentKind,
+  providers?: ProviderView[],
 ): DeviceLinkDraftSelection {
   const models = capabilities.availableModels;
   const providerId = remoteDraft?.providerId ?? null;
@@ -136,6 +142,21 @@ export function resolveDeviceLinkDraftDefaults(
   }
 
   const chosen = models.find((m) => m.id === wantedModelId) ?? models[0];
+  const selectedProviderId =
+    agentKind && providers?.length
+      ? remoteDraft?.providerId ??
+        effectiveSourceIdForModel(providers, null, chosen.id, agentKind)
+      : null;
+  const selectedProvider = selectedProviderId
+    ? providers?.find((provider) => provider.id === selectedProviderId)
+    : undefined;
+  const providerModel = selectedProvider && agentKind
+    ? getModel(selectedProvider, chosen.id, agentKind)
+    : undefined;
+  // capabilities.availableModels is a cross-provider union. If the selected source has
+  // its own entry, its effort table is authoritative; otherwise keep the flat snapshot
+  // for old hosts that do not expose provider catalogs.
+  const effortModel = providerModel ?? chosen;
   const globalPreset = agentKind ? remoteDraft?.providerModelMemory?.[`${agentKind}:*`] : undefined;
   const providerPreset =
     agentKind && providerId
@@ -158,13 +179,14 @@ export function resolveDeviceLinkDraftDefaults(
     (isActiveModel
       ? remoteDraft?.fastMode === true
       : remoteDraft?.fastModeByModel?.[chosen.id] === true);
+  const supportedEfforts = effortModel.efforts as readonly string[];
 
   const effort: Effort | null =
-    chosen.efforts.length === 0 && chosen.effortsUnknown !== true
+    supportedEfforts.length === 0 && effortModel.effortsUnknown !== true
       ? null
-      : wantedEffort && chosen.efforts.includes(wantedEffort)
+      : wantedEffort && supportedEfforts.includes(wantedEffort)
         ? wantedEffort
-        : (chosen.defaultEffort ?? chosen.efforts[0] ?? wantedEffort ?? 'high');
+        : (effortModel.defaultEffort ?? supportedEfforts[0] ?? wantedEffort ?? 'high');
   const fastMode = Boolean(capabilities.hasFastMode && chosen.supportsFastMode && wantedFast);
 
   return { model: chosen.id, effort, fastMode, permissionMode, providerId };

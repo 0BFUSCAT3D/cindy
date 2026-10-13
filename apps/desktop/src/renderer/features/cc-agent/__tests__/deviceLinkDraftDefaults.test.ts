@@ -5,6 +5,35 @@ import {
   shouldReseedDeviceLinkDraftDefaults,
 } from '../deviceLinkDraftDefaults';
 import type { AgentCapabilities } from '@/hooks/useAgentCapabilities';
+import type { CatalogModel, ProviderView } from '@cindy/model-providers';
+
+function providerModel(
+  id: string,
+  efforts: CatalogModel['efforts'],
+  defaultEffort: CatalogModel['defaultEffort'],
+): CatalogModel {
+  return {
+    id,
+    name: id,
+    contextWindow: 200_000,
+    efforts,
+    defaultEffort,
+    supportsFastMode: false,
+  } as CatalogModel;
+}
+
+function provider(id: string, model: CatalogModel): ProviderView {
+  return {
+    id,
+    name: id,
+    source: 'user',
+    agents: ['pi'],
+    models: { pi: [model] },
+    routing: { pi: { upstream: 'https://provider.test', authStrategy: 'none' } },
+    auth: { method: 'api-key' },
+    connected: true,
+  } as unknown as ProviderView;
+}
 
 // 最小被控端 capabilities:两模型(Opus 支持 fast + 多 effort 档;Haiku 无 effort/fast)。
 function caps(overrides: Partial<AgentCapabilities> = {}): AgentCapabilities {
@@ -171,6 +200,57 @@ describe('resolveDeviceLinkDraftDefaults', () => {
       effort: 'high',
       fastMode: true,
     });
+    expect(sel.effort).toBeNull();
+  });
+
+  it('按选中的供应商校准 effort,不被同名其他来源的空档位清掉', () => {
+    const model = 'qwen3:14b';
+    const capabilities = caps({
+      availableModels: [
+        {
+          id: model,
+          displayName: model,
+          contextWindow: 200_000,
+          efforts: [],
+          defaultEffort: null,
+        },
+      ],
+    });
+    const sel = resolveDeviceLinkDraftDefaults(
+      capabilities,
+      { model, providerId: 'ollama', effort: 'medium' },
+      undefined,
+      'pi',
+      [
+        provider('ollama', providerModel(model, ['medium', 'high'], 'high')),
+        provider('other', providerModel(model, [], null)),
+      ],
+    );
+    expect(sel.effort).toBe('medium');
+  });
+
+  it('选中的供应商明确无 effort 时才清掉旧档位', () => {
+    const model = 'qwen3:14b';
+    const sel = resolveDeviceLinkDraftDefaults(
+      caps({
+        availableModels: [
+          {
+            id: model,
+            displayName: model,
+            contextWindow: 200_000,
+            efforts: ['medium', 'high'],
+            defaultEffort: 'high',
+          },
+        ],
+      }),
+      { model, providerId: 'ollama', effort: 'medium' },
+      undefined,
+      'pi',
+      [
+        provider('ollama', providerModel(model, [], null)),
+        provider('other', providerModel(model, ['medium', 'high'], 'high')),
+      ],
+    );
     expect(sel.effort).toBeNull();
   });
 
