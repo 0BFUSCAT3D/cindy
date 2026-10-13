@@ -1138,6 +1138,7 @@ function removeSessionRuntimeState(sessionId: string): void {
   sessionMakerActivityEpochs.delete(sessionId);
   sessionMakerTurnRunning.delete(sessionId);
   sessionMessageLifecycle.forget(sessionId);
+  sessionsOpenedInDetail.delete(sessionId);
   sessionDeviceIndex.delete(sessionId);
   dropPendingTitlePreview(sessionId);
   // revision 下限按会话回收:它不参与单轮快照回收(那会把覆盖权还给晚到的
@@ -3510,6 +3511,7 @@ export const remoteSessionStore = {
       let messageStateChanged = invalidateSessionMessageWindowState(sessionId, false);
       messageStateChanged = releaseSessionDetailProjections(sessionId) || messageStateChanged;
       sessionMessageLifecycle.forget(sessionId);
+      sessionsOpenedInDetail.delete(sessionId);
       if (patch.status === 'deleted') clearSessionMessageCache(sessionId, deviceId);
       if (messageStateChanged) bumpMessageVersion(sessionId);
     } else {

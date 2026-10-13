@@ -5644,6 +5644,25 @@ describe('任务消息内存治理', () => {
     expect(rows.at(-1)?.id).toBe('s1-m-99');
   });
 
+  it.each(['deleted', 'archived'] as const)('%s 后同 id 重新出现的 schedule 不沿用旧的已打开标记', (status) => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', { source: 'scheduler' })]);
+    remoteSessionStore.enterSessionMessageDetail('s1');
+    expect(remoteSessionStore.getSessionRetention('s1')).toBe('regular');
+
+    remoteSessionStore.applySessionPatch('dev-1', 's1', { status });
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', { source: 'scheduler' })]);
+    expect(remoteSessionStore.getSessionRetention('s1')).toBe('schedule');
+  });
+
+  it('移除设备后同 id 重新出现的 schedule 不沿用旧的已打开标记', () => {
+    remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', { source: 'scheduler' })]);
+    remoteSessionStore.enterSessionMessageDetail('s1');
+
+    remoteSessionStore.removeDevice('dev-1');
+    remoteSessionStore.setDeviceSessions('dev-2', 'PC', [session('s1', { source: 'scheduler' })]);
+    expect(remoteSessionStore.getSessionRetention('s1')).toBe('schedule');
+  });
+
   it('从未打开的 schedule 不驻留推送来的完整正文', () => {
     remoteSessionStore.setDeviceSessions('dev-1', 'Mac', [session('s1', { source: 'scheduler' })]);
     remoteSessionStore.applyRemotePush('dev-1', 'local-db:messages:created', {

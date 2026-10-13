@@ -92,7 +92,8 @@ microtask 让同一轮 React cleanup 中的 outbox 恢复草稿、上传取消�
 ```text
 unknown source => regular (conservative)
 fresh session metadata arrives with source=scheduler
-  -> cache clear queued after older writes
+  -> opened in detail this run: stays regular, nothing below applies
+  -> never opened: cache clear queued after older writes
   -> visible: clamp to one window
   -> hidden: request reclaim
   -> pending hydrate/timer commit rechecks retention and rejects
@@ -142,7 +143,7 @@ fresh session metadata arrives with source=scheduler
 
 ## 5. 交付检查清单
 
-- [x] 分类只看 source。
+- [x] 分类只看 source 与本次运行内是否打开过详情；删除、归档或移除设备时清掉打开标记。
 - [x] per-session generation authority。
 - [x] focus、AppState 与 session switch 接线。
 - [x] 常驻工作租约与卸载后补回收。
