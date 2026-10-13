@@ -299,6 +299,11 @@ allowlist 指纹随新增 channel 变化，两端版本不一致时沿用既有�
 与用户远程控制同一台电脑的请求共用设备级熔断计数，连续超时会让那台电脑被判为暂无响应
 （既有行为，未改动）。「两台控制端共享同一被控端」的回归未新增，沿用 `remoteInvoke` 既有覆盖。
 
+**审批。** `cindy_scheduler` 与 `cindy_helper` 是整体静默的可信 server；跨电脑写操作
+（`schedule_update` / `pause` / `resume` / `delete` / `run_now` 带非本机 `device`，以及
+`send_to_session` 的 `deviceId::sessionId` 目标）在 `mcp-tool-approval-policy.ts` 里按内层动作
+判为逐次审批，交给任务权限档；本机调用与跨电脑读取仍静默。
+
 手机与 IM 通过所在电脑的 Agent 使用这些能力，无新增界面。实现与回归见
 `packages/lizi-mcps/src/scheduler/_devices.ts`、`mcp-integrations/schedulerDevices.ts`、
 `mcp-integrations/sessionHandoffRemote.ts`、`maker-ipc/sessionHandoffIpc.ts` 及各自的测试。
