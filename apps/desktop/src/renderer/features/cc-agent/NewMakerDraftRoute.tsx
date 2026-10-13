@@ -1745,6 +1745,7 @@ export function NewMakerDraftRoute() {
             next,
             prev.model,
             capabilityAgentKind,
+            agentCatalogProviders,
           );
           return { ...prev, effort: re.effort, fastMode: re.fastMode };
         });
@@ -1756,6 +1757,7 @@ export function NewMakerDraftRoute() {
     effectiveAgentDeviceId,
     capabilityAgentKind,
     capabilities,
+    agentCatalogProviders,
   ]);
 
   // ── worktree 勾选 = 工作端记忆的镜像(2026-07-29 用户裁决:状态只属于用户) ────
@@ -2314,6 +2316,7 @@ export function NewMakerDraftRoute() {
               freshDefaults,
               undefined,
               capabilityAgentKind,
+              agentCatalogProviders,
             ),
           );
           dlRuntimeTouchedRef.current = false;
@@ -2338,12 +2341,14 @@ export function NewMakerDraftRoute() {
                   },
                   undefined,
                   capabilityAgentKind,
+                  agentCatalogProviders,
                 )
               : resolveDeviceLinkDraftDefaults(
                   freshCaps,
                   freshDefaults,
                   undefined,
                   capabilityAgentKind,
+                  agentCatalogProviders,
                 ),
           );
         }
@@ -2403,6 +2408,7 @@ export function NewMakerDraftRoute() {
       effectiveAgentDeviceId,
       draft.workingDir,
       capabilityAgentKind,
+      agentCatalogProviders,
       stripProjectRelativeMentions,
     ],
   );
@@ -2693,6 +2699,7 @@ export function NewMakerDraftRoute() {
           deviceDraftDefaults,
           newModelId,
           capabilityAgentKind,
+          agentCatalogProviders,
         );
         setDlSel((prev) => ({
           ...resolved,
@@ -2712,6 +2719,7 @@ export function NewMakerDraftRoute() {
       deviceDraftDefaults,
       patchActiveTuplePrefs,
       capabilityAgentKind,
+      agentCatalogProviders,
     ],
   );
   const handleFastModeChange = useCallback(
@@ -2953,9 +2961,13 @@ export function NewMakerDraftRoute() {
           const baseline = capabilities
             ? resolveDeviceLinkDraftDefaults(
                 capabilities,
-                deviceDraftDefaults ?? previous,
+                {
+                  ...(deviceDraftDefaults ?? previous ?? {}),
+                  providerId: selection.providerId,
+                },
                 selection.modelId,
                 capabilityAgentKind,
+                agentCatalogProviders,
               )
             : previous;
           // 能力与镜像都还没到:推不出任何一档,保持原状而不是编一个默认值。
@@ -3031,6 +3043,7 @@ export function NewMakerDraftRoute() {
       capabilities,
       deviceDraftDefaults,
       capabilityAgentKind,
+      agentCatalogProviders,
       pushActiveDraftPref,
     ],
   );
