@@ -18,6 +18,12 @@
 [UsageTaskTable](../apps/desktop/src/renderer/components/settings/usage/UsageTaskTable.tsx) 与
 [用量任务排名测试](../apps/desktop/src/renderer/components/settings/usage/__tests__/usageTaskTable.test.tsx)。
 
+历史制作与上游合并任务也不能通过普通分叉或剥离加密内容分叉转为可见普通任务。公共
+分叉函数在读取源任务的持久来源后、复制历史或原生线程及创建子任务前拒绝，旧控制端的
+既有 fork 通道同样受此门禁约束；普通任务流程不变。实现与回归见
+[fork](../apps/desktop/src/main/maker-orchestration/fork.ts) 与
+[fork.test](../apps/desktop/src/main/__tests__/fork.test.ts)。
+
 共享开关见 [cindyMakeFeature](../packages/maker-shared/src/cindyMakeFeature.ts)，
 执行边界见 [featureGate](../apps/desktop/src/main/cindy-make/featureGate.ts) 与
 [回归测试](../apps/desktop/src/main/maker-ipc/__tests__/cindyMakeFeatureGate.test.ts)。
