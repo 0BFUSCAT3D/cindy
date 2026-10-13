@@ -3068,15 +3068,14 @@ export class ClaudeCodeAgent extends BaseAgent {
         // keep exact repetition/rotation guards, not category-only retries.
         contractConsecutiveLimit: Number.POSITIVE_INFINITY,
       }), {
+        // 供应商分享受邀者同样复核：与本机自己的任务一样走本机(分享者)的辅助模型链
+        // (2026-10-13 用户裁决)。
         reviewer: this.deps.toolLoopReviewer,
         reviewBudget: toolLoopReviewBudget,
         context: () => ({
           sessionId: sid,
           agentKind: 'claude-code',
           model: toolLoopGuardModelForScope(parentToolUseId),
-          // 供应商分享受邀者：复核钉到分享的供应商与会话模型。任务内容本来就发给它，
-          // 不能落到本机用户自己的辅助模型链(分享之外的供应商)上。
-          ...(guestProvider ? { route: { providerId: guestProvider.providerId, model: mutableModel } } : {}),
         }),
         // 复核结果晚到时,guard 可能已随新 turn 重置;只处理仍在位的同一 monitor。
         onReviewedStop: (verdict) => {

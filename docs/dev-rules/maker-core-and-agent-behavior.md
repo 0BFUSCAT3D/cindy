@@ -73,10 +73,9 @@ Claude Code 在原有 per-sidechain 回调里检测所有模型；Pi / Codex 在
 的厂商令牌与私钥、截断私钥块、URL 内嵌凭证、命令行凭证参数、凭证类 HTTP 头，最后以
 含字母和数字的 32 位以上连续串兜底，宁可多删），再截断到每段 400 字符，最后改写分隔标签；
 顺序不能颠倒，否则跨截断点的凭证会留下认不出的前缀。走共享辅助模型链，回答只接受
-CONTINUE / STOP。供应商分享的受邀者会话（Claude Code 在分享者电脑上运行）不走分享者的
-辅助模型链：复核请求带 `route`，钉到分享的供应商与会话模型，失败按 stop，不回落；
-受邀者的复核材料只发给它本来就在用的模型。Pi / Codex 的检测在任务所在电脑的 Session 上，
-用的是受邀者自己的复核入口。
+CONTINUE / STOP。供应商分享的受邀者会话（Claude Code 在分享者电脑上运行）与分享者自己的
+任务一样，交分享者电脑的辅助模型链复核（2026-10-13 用户裁决，见 `provider-sharing.md` §9）；
+Pi / Codex 的检测在任务所在电脑的 Session 上，用的是受邀者自己的复核入口。
 回归见 `loop-guard.test.ts`、`tool-loop-review.test.ts`、`session.tool-loop.test.ts`、
 Claude Code 的 `upstream-idle-watchdog.test.ts` 与 desktop 的 `tool-loop-reviewer.test.ts`。
 

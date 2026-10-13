@@ -4,25 +4,10 @@ import type { ToolLoopEvidence, ToolLoopGuard, ToolLoopGuardVerdict } from './lo
 
 export type HardToolLoopVerdict = Extract<ToolLoopGuardVerdict, { kind: 'hard' }>;
 
-/**
- * 复核必须走的供应商与模型。受邀者会话只能用分享给它的供应商：复核材料就是它的任务内容，
- * 只能发给它本来就在用的那个模型，不能落到本机用户自己的辅助模型链上。
- */
-export interface ToolLoopReviewRoute {
-  providerId: string;
-  model: string;
-}
-
-/** 复核请求里由调用方提供的会话信息。 */
-export interface ToolLoopReviewContext {
+export interface ToolLoopReviewRequest {
   sessionId: string;
   agentKind: AgentKind;
   model: string;
-  /** 缺省 = 走 host 的共享辅助模型链。 */
-  route?: ToolLoopReviewRoute;
-}
-
-export interface ToolLoopReviewRequest extends ToolLoopReviewContext {
   verdict: Pick<HardToolLoopVerdict, 'reason' | 'count' | 'toolName'>;
   /**
    * 最近的普通调用(旧→新)。均为未脱敏原文,input 保留原结构;发送前必须在未转义的
@@ -55,7 +40,7 @@ export interface ToolLoopMonitorOptions {
   reviewer?: ToolLoopReviewer;
   /** 缺省为本 monitor 独占;传入同一对象即共享每 turn 的复核上限。 */
   reviewBudget?: ToolLoopReviewBudget;
-  context: () => ToolLoopReviewContext;
+  context: () => { sessionId: string; agentKind: AgentKind; model: string };
   /** 复核判定 stop(含失败/超时)时调用;调用方自行确认 turn 仍然有效再中断。 */
   onReviewedStop: (verdict: HardToolLoopVerdict) => void;
   logger: Logger;

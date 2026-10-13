@@ -520,7 +520,7 @@ describe('Claude Code tool-loop guard runtime integration', () => {
     }
   });
 
-  it('受邀者会话的复核钉到分享的供应商与会话模型', async () => {
+  it('受邀者会话同样交本机辅助模型复核', async () => {
     const reviewer = vi.fn<ToolLoopReviewer>(async () => 'continue');
     const { handle, stream, events, collected } = await startSessionWithStream('shared/model-a', reviewer, {
       providerId: 'shared-provider',
@@ -559,7 +559,8 @@ describe('Claude Code tool-loop guard runtime integration', () => {
       expect(reviewer).toHaveBeenCalledOnce();
       expect(reviewer.mock.calls[0]?.[0]).toMatchObject({
         agentKind: 'claude-code',
-        route: { providerId: 'shared-provider', model: 'shared/model-a' },
+        model: 'shared/model-a',
+        verdict: { reason: 'consecutive', count: 4 },
       });
       expect(toolLoopError(events)).toBeUndefined();
     } finally {
