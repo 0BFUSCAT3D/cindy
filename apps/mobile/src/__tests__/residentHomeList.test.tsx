@@ -2,15 +2,16 @@
 import { act, memo, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 import { homeRowPropsEqual } from '../session/homeRowPropsEqual';
 import { ResidentHomeList, ResidentHomeListProvider } from '../session/ResidentHomeList';
 
 const state = vi.hoisted(() => ({
-  mode: 'tasks', segments: ['devices'], width: 1000, anchorWidth: 1000, mounts: 0, unmounts: 0,
+  hydrated: true, reduceMotion: true, progress: null as any, slide: null as any, mode: 'tasks', segments: ['devices'], width: 1000, anchorWidth: 1000, mounts: 0, unmounts: 0,
 }));
-vi.mock('../session/useHomeMode', () => ({ useHomeMode: () => ({ mode: state.mode }) }));
+vi.mock('../session/useHomeMode', () => ({ useHomeMode: () => ({ mode: state.mode, hydrated: state.hydrated }) }));
 vi.mock('expo-router', () => ({ useSegments: () => state.segments }));
-vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
+vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => state.reduceMotion }));
 vi.mock('@/platform/AdaptiveWindowContext', () => ({ useAdaptiveWindow: () => ({
   width: state.width, height: 800, regularWidth: true, regularHeight: true,
   barEdge: 'right', insets: { top: 0, bottom: 0, left: 0, right: 80 },
@@ -32,13 +33,18 @@ vi.mock('react-native', async () => {
     }),
   };
 });
-vi.mock('react-native-reanimated', () => ({
-  default: { View: ({ children, pointerEvents }: any) => <div data-host data-pointer={pointerEvents}>{children}</div> },
-}));
+vi.mock('react-native-reanimated', async () => {
+  const { useRef } = await import('react');
+  return { default: { View: ({ children, pointerEvents }: any) => <div data-host data-pointer={pointerEvents}>{children}</div> },
+    useSharedValue: (value: number) => { const ref = useRef({ value }); state.progress = ref.current; return ref.current; },
+    useAnimatedStyle: (factory: () => any) => { state.slide = factory; return factory(); },
+    cancelAnimation: () => {}, withSpring: (target: number) => target,
+  };
+});
 const roots: ReturnType<typeof createRoot>[] = [];
 afterEach(() => {
   act(() => roots.splice(0).forEach(root => root.unmount()));
-  state.mode = 'tasks'; state.segments = ['devices']; state.width = 1000; state.anchorWidth = 1000;
+  state.hydrated = true; state.reduceMotion = true; state.mode = 'tasks'; state.segments = ['devices']; state.width = 1000; state.anchorWidth = 1000;
   state.mounts = 0; state.unmounts = 0;
 });
 const ListProbe = memo(function ListProbe({ onSelect }: { onSelect(): void }) {
@@ -106,5 +112,16 @@ it.each([{ homeSegments: [] }, { homeSegments: ['index'] }, { homeSegments: ['de
   state.segments = homeSegments; state.mode = 'tasks'; render();
   expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('box-none');
   expect(host.querySelector('[data-select]')?.textContent).toBe('240');
+  expect(state.mounts).toBe(1); expect(state.unmounts).toBe(0);
+});
+
+it('slides the wide resident list out with its home pane without remounting or intercepting teammate touches', () => {
+  state.reduceMotion = false;
+  const host = document.createElement('div'); const root = createRoot(host); roots.push(root);
+  const render = () => act(() => root.render(<Scene detail={false} homeSelect={() => {}} />));
+  render(); state.mode = 'teammates'; render(); state.progress.value = 0.5;
+  expect(state.slide()).toEqual({ opacity: 1, transform: [{ translateX: -500 }] });
+  expect(host.querySelector('[data-host]')?.getAttribute('data-pointer')).toBe('none');
+  state.progress.value = 1; expect(state.slide().opacity).toBe(0);
   expect(state.mounts).toBe(1); expect(state.unmounts).toBe(0);
 });

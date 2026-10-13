@@ -60,6 +60,9 @@ export interface TeammateListProps {
   groups?: TeammateListGroups;
   /** Home only: the create entry shown under an empty list. */
   emptyAction?: ReactElement | null;
+  /** Explicit inset for the overlaid home bar; other routes keep automatic scroll insets. */
+  topInset?: number;
+  notice?: ReactElement | null;
   /** 独立整页、铺到透明系统顶栏下时,由列表自己让出上下安全区。 */
   scrollInsetProps?: Pick<ScrollViewProps, 'automaticallyAdjustsScrollIndicatorInsets' | 'contentInsetAdjustmentBehavior'>;
 }
@@ -83,7 +86,7 @@ function useAwaitingSessions(items: readonly HostedRemoteCollectionItem[]): Read
 
 /** Identity list shared by home (with group chats) and the collection route. No host headings. */
 export function TeammateList({ items, loading, refreshing, error, isOnline, connectionState, onRefresh, onSelect,
-  embedded = false, autoFocusSearch = false, onInteract, groups, emptyAction, scrollInsetProps }: TeammateListProps) {
+  embedded = false, autoFocusSearch = false, onInteract, groups, emptyAction, scrollInsetProps, topInset, notice }: TeammateListProps) {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const { colors } = useTheme();
@@ -203,11 +206,14 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
     return <BotGroupListRow key={`group:${entry.row.key}`} row={entry.row} online={groups.isOnline(entry.row.host)} last={last}
       onPress={() => groups.onSelect(entry.row)} />;
   };
-  if (embedded) return <View testID="teammates.list">{header}{entries.length ? entries.map(renderEntry) : empty}</View>;
-  return <FlatList {...scrollInsetProps} style={styles.list} contentContainerStyle={styles.content} data={entries} keyExtractor={(entry) => `${entry.kind}:${entry.row.key}`}
+  if (embedded) return <View testID="teammates.list">{notice}{header}{entries.length ? entries.map(renderEntry) : empty}</View>;
+  return <FlatList {...scrollInsetProps} style={styles.list} contentContainerStyle={[styles.content, topInset !== undefined && { paddingTop: topInset }]}
+    contentInsetAdjustmentBehavior={topInset !== undefined ? 'never' : scrollInsetProps?.contentInsetAdjustmentBehavior}
+    automaticallyAdjustsScrollIndicatorInsets={topInset !== undefined ? false : scrollInsetProps?.automaticallyAdjustsScrollIndicatorInsets}
+    scrollIndicatorInsets={topInset !== undefined ? { top: topInset } : undefined} data={entries} keyExtractor={(entry) => `${entry.kind}:${entry.row.key}`}
     keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" onScrollBeginDrag={onInteract} testID="teammates.list"
-    ListHeaderComponent={header} ListEmptyComponent={empty} renderItem={({ item, index }) => renderEntry(item, index)}
-    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textSecondary} />} />;
+    ListHeaderComponent={<>{notice}{header}</>} ListEmptyComponent={empty} renderItem={({ item, index }) => renderEntry(item, index)}
+    refreshControl={<RefreshControl progressViewOffset={topInset} refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textSecondary} />} />;
 }
 
 /**
