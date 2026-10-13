@@ -319,8 +319,9 @@ export function CompanionVoiceSettings(props: Props) {
           </FormField>
         ) : null}
       </div>
-      {selectedModel ? (
+      {ready && selectedModel ? (
         <SpeechVoicePicker
+          botId={props.botId}
           route={{
             providerId: selectedModel.providerId,
             agent: selectedModel.agent,

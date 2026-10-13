@@ -6,15 +6,27 @@ import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import {
+  getDataOwnerGeneration,
+  isDataOwnerGenerationCurrent,
+} from '@/contexts/dataOwnerGeneration';
+import {
   normalizeVoiceConversationSelection,
   type SpeechModelSelection,
   type SpeechProtocol,
   type SpeechVoiceCatalog,
 } from '@/../shared/voiceConversation';
 import type { VoicePreviewController } from './VoicePreviewController';
+import { readSpeechVoiceLabel, rememberSpeechVoiceLabel } from './speechVoiceLabelCache';
 
 const MANUAL = 'manual';
+const LOADING = 'loading';
+type CatalogState = {
+  routeKey: string;
+  phase: 'loading' | 'ready' | 'failed';
+  catalog?: SpeechVoiceCatalog;
+};
 type Props = {
+  botId: string;
   route: SpeechModelSelection;
   protocol?: SpeechProtocol;
   voice: string;
@@ -25,6 +37,7 @@ type Props = {
 };
 
 export function SpeechVoicePicker({
+  botId,
   route,
   protocol,
   voice,
@@ -34,18 +47,44 @@ export function SpeechVoicePicker({
   onChange,
 }: Props) {
   const { t } = useTranslation();
-  const [catalog, setCatalog] = useState<SpeechVoiceCatalog>();
-  const [failed, setFailed] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [catalogState, setCatalogState] = useState<CatalogState>();
   const [revision, setRevision] = useState(0);
-  const [manual, setManual] = useState(false);
+  const [manualRouteKey, setManualRouteKey] = useState<string>();
   const version = useRef(0);
-  const routeKey = JSON.stringify([route, protocol]);
+  const owner = getDataOwnerGeneration();
+  const selectionRouteKey = JSON.stringify([route, protocol]);
+  const routeKey = JSON.stringify([owner.dataOwnerId, owner.generation, botId, selectionRouteKey]);
+  // A missing catalog is pending from the first render, not evidence that the
+  // saved voice is unavailable. Never reuse another route's list while loading.
+  const currentCatalog = catalogState?.routeKey === routeKey ? catalogState : undefined;
+  const catalog = currentCatalog?.catalog;
+  const loading = !!protocol && (!currentCatalog || currentCatalog.phase === 'loading');
+  const failed = currentCatalog?.phase === 'failed';
+  const initialLoading = loading && !catalog;
+  const manual = manualRouteKey === routeKey;
   const phase = useSyncExternalStore(preview.subscribe, preview.getSnapshot);
   const previewing = phase === 'preparing' || phase === 'playing';
   const selection = normalizeVoiceConversationSelection({ ...route, voice });
   const listed = catalog?.voices.some((item) => item.id === voice);
-  const showManual = manual || (!!voice && !listed) || !catalog?.voices.length;
+  const cachedLabel = useMemo(
+    () => readSpeechVoiceLabel(owner, botId, selectionRouteKey, voice),
+    [owner, botId, selectionRouteKey, voice, catalog],
+  );
+  // A saved label bridges initial loading and offline re-entry. A successful
+  // response is authoritative for display, but never changes the saved ID.
+  const showCachedLabel = !!cachedLabel && !catalog && (initialLoading || failed);
+  const showManual =
+    manual ||
+    (!initialLoading && !showCachedLabel && ((!!voice && !listed) || !catalog?.voices.length));
+  const catalogHint = failed
+    ? t('bots.voiceMode.voicesError')
+    : catalog?.source === 'reference'
+      ? t('bots.voiceMode.voicesReference')
+      : catalog?.truncated
+        ? t('bots.voiceMode.voicesTruncated')
+        : !initialLoading && !catalog?.voices.length
+          ? t('bots.voiceMode.voicesManual')
+          : '';
   const voiceOptions = useMemo(() => {
     const voices = (catalog?.voices ?? []).map((item) => ({
       ...item,
@@ -78,20 +117,26 @@ export function SpeechVoicePicker({
 
   useEffect(() => {
     const request = ++version.current;
-    setCatalog(undefined);
-    setFailed(false);
-    setLoading(!!protocol);
+    setCatalogState((current) => ({
+      routeKey,
+      phase: protocol ? 'loading' : 'ready',
+      // Refresh in place. Only an explicit route change discards a known list.
+      catalog: protocol && current?.routeKey === routeKey ? current.catalog : undefined,
+    }));
     if (protocol) {
       void window.electronAPI.voiceConversation
         .voices(route)
         .then((result) => {
-          if (version.current === request) setCatalog(result);
+          if (version.current === request && isDataOwnerGenerationCurrent(owner))
+            setCatalogState({ routeKey, phase: 'ready', catalog: result });
         })
         .catch(() => {
-          if (version.current === request) setFailed(true);
-        })
-        .finally(() => {
-          if (version.current === request) setLoading(false);
+          if (version.current === request && isDataOwnerGenerationCurrent(owner))
+            setCatalogState((current) => ({
+              routeKey,
+              phase: 'failed',
+              catalog: current?.routeKey === routeKey ? current.catalog : undefined,
+            }));
         });
     }
     return () => {
@@ -102,7 +147,18 @@ export function SpeechVoicePicker({
   }, [routeKey, revision]);
 
   useEffect(() => {
-    setManual(false);
+    if (currentCatalog?.phase !== 'ready' || !catalog || !voice) return;
+    rememberSpeechVoiceLabel(
+      owner,
+      botId,
+      selectionRouteKey,
+      voice,
+      voiceOptions.find((option) => option.value === `voice:${voice}`)?.label,
+    );
+  }, [owner, botId, selectionRouteKey, voice, currentCatalog, catalog, voiceOptions]);
+
+  useEffect(() => {
+    setManualRouteKey(undefined);
     void preview.stop();
     return () => {
       void preview.stop();
@@ -120,12 +176,27 @@ export function SpeechVoicePicker({
             <Select
               {...control}
               label={t('bots.voiceMode.voice')}
-              value={showManual ? MANUAL : listed ? `voice:${voice}` : ''}
-              options={[...voiceOptions, { value: MANUAL, label: t('bots.voiceMode.manualVoice') }]}
-              disabled={disabled}
+              value={
+                showManual
+                  ? MANUAL
+                  : showCachedLabel || listed
+                    ? `voice:${voice}`
+                    : initialLoading
+                      ? LOADING
+                      : ''
+              }
+              options={[
+                ...(showCachedLabel
+                  ? [{ value: `voice:${voice}`, label: cachedLabel! }]
+                  : initialLoading
+                    ? [{ value: LOADING, label: t('bots.voiceMode.voicesLoading'), disabled: true }]
+                    : voiceOptions),
+                { value: MANUAL, label: t('bots.voiceMode.manualVoice') },
+              ]}
+              disabled={disabled || (initialLoading && !showCachedLabel && !manual)}
               onValueChange={(value) => {
                 void preview.stop();
-                setManual(value === MANUAL);
+                setManualRouteKey(value === MANUAL ? routeKey : undefined);
                 if (value !== MANUAL) onChange(value.slice(6), true);
               }}
               className="min-w-0 flex-1"
@@ -138,6 +209,7 @@ export function SpeechVoicePicker({
               aria-label={t('bots.voiceMode.refreshVoices')}
               title={t('bots.voiceMode.refreshVoices')}
               disabled={disabled || loading || !protocol}
+              loading={loading}
               onClick={() => setRevision((value) => value + 1)}
             >
               <RefreshCw size={15} aria-hidden="true" />
@@ -145,18 +217,8 @@ export function SpeechVoicePicker({
           </div>
         )}
       </FormField>
-      <p role="status" className="text-12 text-[var(--text-secondary)]">
-        {loading
-          ? t('bots.voiceMode.voicesLoading')
-          : failed
-            ? t('bots.voiceMode.voicesError')
-            : catalog?.source === 'reference'
-              ? t('bots.voiceMode.voicesReference')
-              : catalog?.truncated
-                ? t('bots.voiceMode.voicesTruncated')
-                : !catalog?.voices.length
-                  ? t('bots.voiceMode.voicesManual')
-                  : ''}
+      <p role="status" className={catalogHint ? 'text-12 text-[var(--text-secondary)]' : 'sr-only'}>
+        {catalogHint || (loading ? t('bots.voiceMode.voicesLoading') : '')}
       </p>
       {showManual ? (
         <FormField label={t('bots.voiceMode.voiceId')} hint={t('bots.voiceMode.voiceIdHint')}>
@@ -168,7 +230,7 @@ export function SpeechVoicePicker({
               disabled={disabled}
               onChange={(value) => {
                 void preview.stop();
-                setManual(true);
+                setManualRouteKey(routeKey);
                 onChange(value, false);
               }}
               onBlur={() => {
