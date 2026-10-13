@@ -80,6 +80,10 @@ export const MOBILE_COMPOSER_INPUT_MAX_HEIGHT = (MOBILE_COMPOSER_INPUT_LINE_HEIG
  * 语音听写期间「点输入区停止听写」的命中层用它撑起 inputFrame(见 inputFrameMinHeight)。
  */
 export const MOBILE_COMPOSER_MIN_TOUCH_TARGET = 44;
+/** 聚焦卡片的顶部留白:iOS 原生卡片 / 其它平台。拖拽热区高度与它对齐。 */
+const COMPOSER_CARD_PADDING_TOP_IOS = spacing.md;
+const COMPOSER_CARD_PADDING_TOP = 26;
+const RESIZE_GRABBER_HIT_HEIGHT = Platform.OS === 'ios' ? COMPOSER_CARD_PADDING_TOP_IOS + 4 : COMPOSER_CARD_PADDING_TOP;
 const isExpoGo =
   Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
@@ -493,13 +497,6 @@ export interface ComposerResizeGrabberProps {
   testID?: string;
 }
 
-/**
- * Composer 顶部居中的拖拽调高 grabber。
- *
- * absolute 贴在 capsule 顶部内侧，不参与布局，因此显示 / 隐藏只有透明度变化、
- * 不会引起输入行高度跳变。触摸命中区是顶部居中的一段窄条，比可见的横条大得多，
- * 行两端保持穿透，不与左右按钮抢触摸。
- */
 function ComposerFoldingSection({ progress, children }: { progress?: SharedValue<number>; children: ReactNode }) {
   const measuredHeight = useSharedValue(0);
   const style = useAnimatedStyle(() => {
@@ -524,6 +521,13 @@ function ComposerFoldingSection({ progress, children }: { progress?: SharedValue
   </Reanimated.View>;
 }
 
+/**
+ * Composer 顶部居中的拖拽调高 grabber。
+ *
+ * absolute 贴在卡片顶部内侧，不参与布局，因此显示 / 隐藏只有透明度变化、
+ * 不会引起输入行高度跳变。触摸命中区横跨整条卡片顶边（不只是可见横条附近）；
+ * 只在聚焦卡片态渲染，此时顶边没有其它按钮，向下不进入文字行。
+ */
 export function ComposerResizeGrabber({ onAdjust, panHandlers, gesture, visible, testID }: ComposerResizeGrabberProps) {
   const { colors, mode } = useTheme();
   const { t } = useTranslation();
@@ -702,10 +706,10 @@ const makeMobileComposerInputRowStyles = (colors: ThemeColors) => ({
   rowCard: {
     borderRadius: radius.control,
     paddingBottom: MOBILE_COMPOSER_VOICE_ANCHOR_CARD_BOTTOM,
-    paddingTop: 26,
+    paddingTop: COMPOSER_CARD_PADDING_TOP,
   },
   // iOS composer uses the existing 30pt multiline geometry with a native glass surface.
-  rowNativeCard: { borderRadius: 30, paddingTop: spacing.md },
+  rowNativeCard: { borderRadius: 30, paddingTop: COMPOSER_CARD_PADDING_TOP_IOS },
   // 水平输入行：简洁态装 [输入][发送]，card 态只剩全宽输入区；
   // 语音按钮不在流内（absolute 锚点），简洁态无发送时给它留出右侧空间。
   mainRow: {
@@ -794,11 +798,12 @@ const makeMobileComposerInputRowStyles = (colors: ThemeColors) => ({
     paddingTop: COMPOSER_TEXT_GEOMETRIC_PADDING_TOP,
     textAlignVertical: 'center',
   },
-  // 外层 box-none 穿透；只有把手附近接管拖动。iOS 输入区从 16pt 开始，
-  // 热区不得向下覆盖首行，否则会抢走编辑器的点击和系统粘贴长按。
+  // 整条卡片顶边都接管拖动，高度只到首行文字之上：热区不得向下覆盖首行，
+  // 否则会抢走编辑器的点击、选中和系统粘贴长按。iOS 卡片顶部留白 12pt、
+  // 输入框上内边距 6pt，16pt 仍在文字之上；其它平台留白 26pt，热区与留白等高。
   resizeGrabberTouch: {
-    alignItems: 'center',
-    height: 16,
+    alignItems: 'stretch',
+    height: RESIZE_GRABBER_HIT_HEIGHT,
     left: 0,
     position: 'absolute',
     right: 0,
@@ -807,9 +812,7 @@ const makeMobileComposerInputRowStyles = (colors: ThemeColors) => ({
   },
   resizeGrabberHit: {
     alignItems: 'center',
-    // 触摸热区比可见把手宽 50%，高度保持与把手附近的顶部区域一致。
-    width: 60,
-    height: 16,
+    height: RESIZE_GRABBER_HIT_HEIGHT,
   },
   resizeGrabberBar: {
     backgroundColor: colors.borderTranslucent,
