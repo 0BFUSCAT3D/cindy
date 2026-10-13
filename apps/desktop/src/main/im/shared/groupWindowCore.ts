@@ -95,10 +95,7 @@ export interface GroupContextAssembly {
   /** 任务/消息被实际受理后调用；拒绝时不调用，未读批次留给下次触发。 */
   commit: (
     guard?: GroupContextCommitGuard,
-  ) =>
-    | void
-    | GroupContextCommitReceipt
-    | Promise<void | GroupContextCommitReceipt>;
+  ) => void | GroupContextCommitReceipt | Promise<void | GroupContextCommitReceipt>;
 }
 
 /**
@@ -123,20 +120,29 @@ interface GroupWindowRow {
 
 const pad2 = (n: number): string => String(n).padStart(2, '0');
 
+function formatMonthDayTime(d: Date): string {
+  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
 /**
  * IM 群历史的统一时间格式(所有渠道同一口径): 本机时区 `MM-DD HH:mm`,
- * 写在每行发言人之后。年份与时区不逐行重复, 由 {@link formatImHistoryTimeNote}
- * 在块尾一次性给出参照。
+ * 写在每行发言人之后。与当前同年、同 UTC 偏移的消息不逐行重复年份与时区,
+ * 由 {@link formatImHistoryTimeNote} 在块尾一次性给出参照; 跨年的消息前补年份,
+ * 跨夏令时切换(偏移与当前不同)的消息后补该消息自己的偏移, 保证每行可还原绝对时间。
  */
-export function formatImHistoryTime(ms: number): string {
+export function formatImHistoryTime(ms: number, nowMs: number = Date.now()): string {
   const d = new Date(ms);
-  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const now = new Date(nowMs);
+  const year = d.getFullYear() === now.getFullYear() ? '' : `${d.getFullYear()}-`;
+  const offset =
+    d.getTimezoneOffset() === now.getTimezoneOffset() ? '' : ` (${formatUtcOffset(d)})`;
+  return `${year}${formatMonthDayTime(d)}${offset}`;
 }
 
 /** 带年份与时区的完整时间(检索工具结果用, 单条脱离上下文也能读懂)。 */
 export function formatImHistoryDateTime(ms: number): string {
   const d = new Date(ms);
-  return `${d.getFullYear()}-${formatImHistoryTime(ms)} (${formatUtcOffset(d)})`;
+  return `${d.getFullYear()}-${formatMonthDayTime(d)} (${formatUtcOffset(d)})`;
 }
 
 /** 本机时区偏移, 如 `UTC+13:00` / `UTC-03:30`。 */
@@ -153,7 +159,7 @@ function formatUtcOffset(d: Date): string {
  */
 export function formatImHistoryTimeNote(nowMs: number = Date.now()): string {
   const now = new Date(nowMs);
-  return `每行发言人后的时间为该消息的发送时间（本机时区 ${formatUtcOffset(now)}），当前时间为 ${now.getFullYear()}-${formatImHistoryTime(nowMs)}。`;
+  return `每行发言人后的时间为该消息的发送时间（本机时区 ${formatUtcOffset(now)}；未写年份的为今年，括号内另注 UTC 偏移的按所注偏移计），当前时间为 ${now.getFullYear()}-${formatMonthDayTime(now)}。`;
 }
 
 export function createFenceNeutralizer(tags: readonly string[]): (value: string) => string {
@@ -398,17 +404,13 @@ export async function resetGroupWindowCursors(args: {
   )
     return;
   const filters = [
-    ...args.providerPrefixes.map((prefix) =>
-      like(hookGroupContextCursors.provider, `${prefix}%`),
-    ),
-    ...(args.providerNames ?? []).map((provider) =>
-      eq(hookGroupContextCursors.provider, provider),
-    ),
+    ...args.providerPrefixes.map((prefix) => like(hookGroupContextCursors.provider, `${prefix}%`)),
+    ...(args.providerNames ?? []).map((provider) => eq(hookGroupContextCursors.provider, provider)),
   ];
   const dbClient = tryGetDbClient();
   if (!dbClient) return;
-  await dbClient
-    .drizzle.delete(hookGroupContextCursors)
+  await dbClient.drizzle
+    .delete(hookGroupContextCursors)
     .where(filters.length === 1 ? filters[0] : or(...filters));
 }
 
@@ -471,7 +473,8 @@ export async function assembleGroupWindowContext(args: {
       if (row.fileNames !== null) {
         try {
           const names = JSON.parse(row.fileNames) as string[];
-          if (names.length > 0) fileNote = ` (附件: ${names.join(', ')}；仅历史记录，是否提供文件以本轮实际附件为准)`;
+          if (names.length > 0)
+            fileNote = ` (附件: ${names.join(', ')}；仅历史记录，是否提供文件以本轮实际附件为准)`;
         } catch {
           /* 老行损坏时静默丢附件标注 */
         }
@@ -494,9 +497,7 @@ export async function assembleGroupWindowContext(args: {
 
   const commit =
     maxId > cursor
-      ? async (
-          guard?: GroupContextCommitGuard,
-        ): Promise<void | GroupContextCommitReceipt> => {
+      ? async (guard?: GroupContextCommitGuard): Promise<void | GroupContextCommitReceipt> => {
           const current = args.cursors.get(args.cursorKey) ?? 0;
           if (maxId <= current) return;
           if (guard !== undefined && !(await guard())) return;
