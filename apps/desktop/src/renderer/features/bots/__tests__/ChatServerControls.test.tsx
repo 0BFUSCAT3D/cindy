@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from 'react';
-import { cleanup, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
@@ -213,5 +213,104 @@ describe('chat interaction controls', () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(''));
     expect(mocks.reply.mock.calls[0][0].clientId).toBe(mocks.reply.mock.calls[1][0].clientId);
     expect(mocks.reply.mock.calls[0][0].rootId).toBe('root');
+  });
+
+  describe('thread @ picker', () => {
+    const namesakes = [
+      { botId: 'ann-chris', name: 'Ann', status: 'active' },
+      { botId: 'ann-dana', name: 'Ann', status: 'active' },
+      { botId: 'bo', name: 'Bo', status: 'active' },
+      { botId: 'gone', name: 'Annie', status: 'left' },
+    ];
+    const renderThread = () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      render(<ChatThreadPanel group={{ ...group, members: namesakes } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      expect(document.activeElement).toBe(input);
+      return input;
+    };
+    const type = (input: HTMLTextAreaElement, value: string, caret = value.length) =>
+      fireEvent.change(input, { target: { value, selectionStart: caret, selectionEnd: caret } });
+    const labels = () => screen.queryAllByRole('option').map(option => option.textContent);
+
+    it('opens on @ with the main composer candidates, filters, and picks a namesake by keyboard', async () => {
+      const input = renderThread();
+      type(input, '@');
+      const listbox = screen.getByRole('listbox', { name: 'bots.groupChat.mention.label' });
+      // Everyone first, then active teammates only (the departed one is not offered).
+      expect(labels()).toEqual(['bots.groupChat.mention.allbots.groupChat.mention.allHint', 'Ann', 'Ann', 'Bo']);
+      expect(input.getAttribute('aria-controls')).toBe(listbox.id);
+      expect(input.getAttribute('aria-activedescendant')).toBe(screen.getAllByRole('option')[0]!.id);
+      type(input, '@an');
+      expect(labels()).toEqual(['Ann', 'Ann']);
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      expect(screen.getAllByRole('option')[1]!.getAttribute('aria-selected')).toBe('true');
+      // Enter picks while the list is open; it never sends.
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(input.value).toBe('@Ann ');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(mocks.reply).not.toHaveBeenCalled();
+      type(input, '@Ann 看一下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0]).toMatchObject({ groupId: 'room', rootId: 'root', text: '@Ann 看一下', mentions: { all: false, botIds: ['ann-dana'] } });
+      await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('picks by mouse in the middle of a draft, supports several @ and Everyone', async () => {
+      const input = renderThread();
+      type(input, '请  帮忙', 1);
+      type(input, '请 @ 帮忙', 3);
+      const bo = screen.getAllByRole('option')[3]!;
+      // Pressing the option keeps focus in the input.
+      expect(fireEvent.mouseDown(bo)).toBe(false);
+      fireEvent.click(bo);
+      expect(input.value).toBe('请 @Bo 帮忙');
+      expect(input.selectionStart).toBe(6);
+      type(input, '请 @Bo @ 帮忙', 7);
+      fireEvent.click(screen.getAllByRole('option')[0]!);
+      expect(input.value).toBe('请 @Bo @bots.groupChat.mention.all 帮忙');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: true, botIds: ['bo'] });
+    });
+
+    it('Escape closes only the list for that @; IME keys neither pick nor send', () => {
+      const input = renderThread();
+      type(input, '@');
+      const composing = createEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 });
+      fireEvent(input, composing);
+      expect(input.value).toBe('@');
+      expect(screen.getByRole('listbox')).toBeTruthy();
+      const escape = createEvent.keyDown(input, { key: 'Escape' });
+      fireEvent(input, escape);
+      // The thread panel's own Esc-to-close sees a handled key and stays open.
+      expect(escape.defaultPrevented).toBe(true);
+      expect(screen.queryByRole('listbox')).toBeNull();
+      type(input, '@A');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      // Enter with the list closed sends as usual; a fresh @ opens it again.
+      type(input, '@A @');
+      expect(labels()).toHaveLength(4);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
+    it('treats an e-mail address as text and forgets a pick once its name is edited', async () => {
+      const input = renderThread();
+      type(input, 'mail a@');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      type(input, '@An ', 3);
+      type(input, '@Ann ', 4);
+      fireEvent.keyDown(input, { key: 'Escape' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      // A retyped name is a manual @: both namesakes, as in the main composer.
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['ann-chris', 'ann-dana'] });
+    });
   });
 });

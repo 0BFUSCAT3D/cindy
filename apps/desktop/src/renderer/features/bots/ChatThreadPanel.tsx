@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -12,13 +12,13 @@ import { SHARE_SESSION_ATTR, SHARE_MESSAGE_ATTR } from '@/lib/shareConversationI
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMention, BotGroupMessageView } from '../../../shared/botGroupChat';
 import { isBotGroupRuntimeFailureCode, resolveBotGroupQuote } from '../../../shared/botGroupChat';
-import { resolveBotGroupMentions } from './botGroupMentions';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
+import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
 
@@ -80,6 +80,14 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const request = useRef(0);
   const attempt = useRef<{ text: string; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const allLabel = t('bots.groupChat.mention.all');
+  const allLabels = useMemo(() => [allLabel, '所有人', 'all', 'everyone'], [allLabel]);
+  // Same @ picker as the main composer; a new text is a new attempt (the retry key).
+  const mention = useBotGroupMentionPicker({ text, members: group.members, textareaRef: inputRef, allLabels, onTextChange: value => {
+    setText(value);
+    if (attempt.current?.text !== value) attempt.current = null;
+  } });
   const load = useCallback(async (before?: number) => {
     const version = ++request.current, owner = getDataOwnerGeneration();
     const current = () => version === request.current && isDataOwnerGenerationCurrent(owner);
@@ -105,16 +113,13 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (group.archived || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
-    if (!attempt.current || attempt.current.text !== text) attempt.current = {
-      text, id: crypto.randomUUID(),
-      mentions: resolveBotGroupMentions(text, { members: group.members, allLabels: [t('bots.groupChat.mention.all'), '所有人', 'all', 'everyone'] }),
-    };
+    if (!attempt.current || attempt.current.text !== text) attempt.current = { text, id: crypto.randomUUID(), mentions: mention.resolve(text) };
     try {
       const result = await api().reply({ groupId: group.id, rootId, text: attempt.current.text, clientId: attempt.current.id,
         mentions: attempt.current.mentions });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
-      setText(''); attempt.current = null; void loadRef.current(); refreshBotGroups();
+      setText(''); mention.reset(); attempt.current = null; void loadRef.current(); refreshBotGroups();
     } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(key('requestFailed'))); }
     finally { sending.current = false; setBusy(false); }
   }
@@ -137,13 +142,15 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
           getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className="space-y-3 border-t border-[var(--border-default)] p-4">
           {error && <p role="alert" className="text-13 text-[var(--error-fg)]">{error}</p>}
-          <Textarea aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text} onChange={value => {
-            setText(value);
-            if (attempt.current?.text !== value) attempt.current = null;
-          }}
-            rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); void send(); }
-            }} />
+          <div className="relative">
+            {mention.list}
+            <Textarea textareaRef={inputRef} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
+              {...mention.textareaProps} onChange={mention.onChange}
+              rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || mention.onKeyDown(e)) return;
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+              }} />
+          </div>
           <div className="flex justify-end"><Button variant="cta" size="sm" loading={busy} disabled={group.archived || !text.trim()} onClick={() => void send()}>{t(key('sendReply'))}</Button></div>
         </div>}
   </aside>;
