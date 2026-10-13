@@ -227,3 +227,59 @@ describe('reply summaries', () => {
     expect(isShareableThreadReply(reply('n', rootA, { content: [{ type: 'card', namespace: 'cindy.group-notice', fallback: 'x' }] }))).toBe(false);
   });
 });
+
+describe('recovering from a failed read in a quiet room', () => {
+  const sourceId = '40000000-0000-4000-8000-000000000001';
+  const share = message({ id: 's1', content: [buildBotGroupThreadShareCard({ messageId: sourceId, threadRootId: rootA, authorName: 'Miao', text: 'hi' })] });
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] }));
+  afterEach(() => vi.useRealTimers());
+
+  it('asks for one more read after the backoff even when nothing else happens', async () => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    io.message.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(reply(sourceId, rootA));
+    // The adapter answers `filled` by reading again, like a push would.
+    io.filled.mockImplementation(() => { projection.shareSources(room, [share], []); });
+    projection.shareSources(room, [share], []);
+    await projection.settled();
+    expect(io.filled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(io.message).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await projection.settled();
+    expect(io.message).toHaveBeenCalledTimes(2);
+    expect(projection.shareSources(room, [share], []).get(sourceId)?.id).toBe(sourceId);
+  });
+
+  it('backs off and stops retrying by itself after a bounded number of attempts', async () => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    io.threadPage.mockRejectedValue(new Error('offline'));
+    const root = message({ id: rootB, replyCount: 1 });
+    io.filled.mockImplementation(() => { projection.previews(room, [root], fullWindow([])); });
+    projection.previews(room, [root], fullWindow([]));
+    await projection.settled();
+    const gaps: number[] = [];
+    let last = Date.now();
+    for (let step = 0; step < 40; step += 1) {
+      const before = io.threadPage.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await projection.settled();
+      if (io.threadPage.mock.calls.length > before) { gaps.push(Date.now() - last); last = Date.now(); }
+    }
+    // 5 automatic retries with doubling gaps, then it waits for a push or a reopen.
+    expect(io.threadPage).toHaveBeenCalledTimes(6);
+    expect(gaps).toEqual([30_000, 60_000, 120_000, 240_000, 480_000]);
+  });
+
+  it.each(['dispose', 'reset'] as const)('cancels a pending retry on %s', async (stop) => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    io.message.mockRejectedValue(new Error('offline'));
+    projection.shareSources(room, [share], []);
+    await projection.settled();
+    projection[stop]();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(io.filled).not.toHaveBeenCalled();
+  });
+});

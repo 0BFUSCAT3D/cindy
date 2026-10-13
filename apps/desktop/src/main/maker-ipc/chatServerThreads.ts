@@ -19,8 +19,9 @@ export interface ThreadMessage {
 
 /** Concurrent reads per refresh; the rest wait for a slot rather than fan out. */
 const READ_CONCURRENCY = 6;
-/** A failed read is retried on a later refresh, not on every push. */
+/** A failed read backs off from this delay, doubling, and retries on its own a few times. */
 const RETRY_MS = 30_000;
+const RETRY_ATTEMPTS = 5;
 /** Deleted replies still occupy a page, so read a little more than the preview needs. */
 const FALLBACK_PAGE = BOT_GROUP_THREAD_PREVIEW_REPLIES + 4;
 /** A thread whose newest replies are mostly deleted reads back at most this far. */
@@ -51,6 +52,27 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
   const retryAt = new Map<string, number>();
   const inFlight = new Set<string>();
   const settling = new Set<Promise<void>>();
+  const failures = new Map<string, number>();
+  // One pending wake-up per room: a quiet room still recovers from a transient failure.
+  const retryTimers = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> }>();
+  function scheduleRetry(roomId: string, cacheKey: string) {
+    const attempt = (failures.get(cacheKey) ?? 0) + 1;
+    failures.set(cacheKey, attempt);
+    const at = Date.now() + RETRY_MS * 2 ** Math.min(attempt - 1, RETRY_ATTEMPTS - 1);
+    retryAt.set(cacheKey, at);
+    // After the last automatic attempt only a later read (a push or reopening) retries.
+    if (attempt > RETRY_ATTEMPTS) return;
+    const pending = retryTimers.get(roomId);
+    if (pending && pending.at <= at) return;
+    if (pending) clearTimeout(pending.timer);
+    const timer = setTimeout(() => { retryTimers.delete(roomId); io.filled(roomId); }, at - Date.now());
+    timer.unref?.();
+    retryTimers.set(roomId, { at, timer });
+  }
+  function cancelRetries() {
+    for (const { timer } of retryTimers.values()) clearTimeout(timer);
+    retryTimers.clear(); failures.clear();
+  }
   // A read that was in flight across reset()/invalidate() may carry the old copy.
   let generation = 0;
   const key = (roomId: string, id: string) => `${roomId}:${id}`;
@@ -65,10 +87,10 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
       await eachLimited(items, async ({ cacheKey, item }) => {
         try {
           const store = await read(item);
-          retryAt.delete(cacheKey);
+          retryAt.delete(cacheKey); failures.delete(cacheKey);
           // A copy that outlived a reset is dropped, but the reader still needs a fresh read.
           if (store) { if (generation === started) store(); wrote = true; }
-        } catch { retryAt.set(cacheKey, Date.now() + RETRY_MS); }
+        } catch { if (generation === started) scheduleRetry(roomId, cacheKey); }
         finally { inFlight.delete(cacheKey); }
       });
       if (wrote) io.filled(roomId);
@@ -124,16 +146,19 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
      * not see it, or absent while it is still being read.
      */
     shareSources(roomId: string, page: readonly M[], known: readonly M[]): Map<string, M | null> {
+      return this.sources(roomId, page.flatMap(message => readBotGroupThreadShareCard(message)?.messageId ?? []), known);
+    },
+    /** The same lookup by reply ID, for shares the reader already has on screen. */
+    sources(roomId: string, messageIds: readonly string[], known: readonly M[]): Map<string, M | null> {
       const fresh = new Map(known.map(message => [message.id, message]));
       const result = new Map<string, M | null>();
       const missing = new Map<string, { cacheKey: string; item: string }>();
-      for (const message of page) {
-        const card = readBotGroupThreadShareCard(message);
-        if (!card || result.has(card.messageId)) continue;
-        const cacheKey = key(roomId, card.messageId);
-        if (fresh.has(card.messageId)) result.set(card.messageId, fresh.get(card.messageId)!);
-        else if (sources.has(cacheKey)) result.set(card.messageId, sources.get(cacheKey)!);
-        else if (!waiting(cacheKey)) missing.set(card.messageId, { cacheKey, item: card.messageId });
+      for (const messageId of messageIds) {
+        if (result.has(messageId)) continue;
+        const cacheKey = key(roomId, messageId);
+        if (fresh.has(messageId)) result.set(messageId, fresh.get(messageId)!);
+        else if (sources.has(cacheKey)) result.set(messageId, sources.get(cacheKey)!);
+        else if (!waiting(cacheKey)) missing.set(messageId, { cacheKey, item: messageId });
       }
       fill(roomId, [...missing.values()], async messageId => {
         const value = await io.message(roomId, messageId);
@@ -149,7 +174,9 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         if (cacheKey.startsWith(`${roomId}:`) && entry.replies.some(reply => reply.id === messageId)) previews.delete(cacheKey);
     },
     /** Pushes may have been missed while disconnected. */
-    reset() { generation += 1; previews.clear(); sources.clear(); retryAt.clear(); },
+    reset() { generation += 1; previews.clear(); sources.clear(); retryAt.clear(); cancelRetries(); },
+    /** The adapter is gone (account switch or quit): no wake-up may outlive it. */
+    dispose() { generation += 1; cancelRetries(); },
     /** Tests: wait for background fills started so far. */
     async settled() { while (settling.size) await Promise.all([...settling]); },
   };

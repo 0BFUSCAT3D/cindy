@@ -347,6 +347,8 @@ export interface BotGroupLastMessage {
   noticeCode?: BotGroupNoticeCode | null;
   preview: string;
   createdAt: number;
+  /** The latest message re-posts a thread reply; `preview` is then empty, never the card's text. */
+  threadShare?: boolean;
 }
 
 /** `reply`: answering in the chat; `planning`: the organizer is working out a plan; `step`: doing a plan step. */
@@ -402,6 +404,8 @@ export interface BotGroupDetail extends BotGroupSummary {
   messages: BotGroupMessageView[];
   /** Authorized current failures, independent of message pagination. Local/older hosts omit this. */
   executionFailures?: BotGroupExecutionFailureView[];
+  /** Current state of shares the reader listed in `shownShares`, keyed by the share's message ID. */
+  threadShareUpdates?: Record<string, BotGroupThreadShareView>;
   hasMoreBefore: boolean;
   round: BotGroupRoundView;
   /** Plans referenced by the loaded messages, plus the open plan. */
@@ -503,7 +507,12 @@ export interface BotGroupGetOptions {
   limit?: number;
   /** Reconcile execution state for real messages already displayed on older pages. */
   sourceMessageIds?: string[];
+  /** Shares already shown from older pages, so edits and deletions reach them without a reload. */
+  shownShares?: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }>;
 }
+
+/** Older-page shares re-resolved per refresh; later ones wait for a reload. */
+export const BOT_GROUP_SHOWN_SHARES_MAX = 200;
 
 export type BotGroupChange = 'created' | 'updated' | 'deleted' | 'messages' | 'round' | 'plan';
 

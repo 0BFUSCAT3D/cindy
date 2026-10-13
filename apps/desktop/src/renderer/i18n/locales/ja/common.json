@@ -8907,6 +8907,8 @@
         "empty": "メッセージはまだありません",
         "preview": "{{name}}: {{text}}",
         "previewYou": "あなた: {{text}}",
+        "sharedReplyYou": "スレッドの返信を共有しました",
+        "sharedReply": "{{name}} がスレッドの返信を共有しました",
         "waiting": "確認待ち",
         "planProposed": "{{name}}: 計画ができました。開始を待っています",
         "planProposedAnonymous": "計画ができました。開始を待っています",

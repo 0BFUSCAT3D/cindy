@@ -1347,6 +1347,63 @@ describe('Chat Server result delivery and refresh', () => {
       expect(JSON.stringify(view)).not.toContain('forged words');
     });
 
+    it('names the sharer in the sidebar and never quotes or resolves the card', async () => {
+      const forged = msg('90000000-0000-4000-8000-00000000000c', 20, aliceId, { content: shareCard(botReply) });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route === '/conversations?limit=100') return { body: [room(roomId)] };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [forged, ...replies, root], cursor: '20' } };
+        return threadResponse(route, method, body);
+      });
+      const result = await service.listGroups();
+      if (!result.ok) throw new Error('Expected groups');
+      expect(result.groups[0]!.lastMessage).toMatchObject({ preview: '', threadShare: true, authorName: 'Alice' });
+      expect(JSON.stringify(result.groups)).not.toContain('forged words');
+      // The sidebar costs no per-group share or thread reads.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.handle.mock.calls.filter(([route]) => route.includes('threadRootId=') || /\/messages\/[0-9a-f-]{36}$/.test(route))).toHaveLength(0);
+    });
+
+    it('updates shares shown on older pages after an edit, a deletion or lost access, without a reload', async () => {
+      const outside = '70000000-0000-4000-8000-00000000000d';
+      const ref = { id: '90000000-0000-4000-8000-00000000000d', messageId: outside, threadRootId: rootId, sharerId: aliceId };
+      let source: Record<string, unknown> | null = msg(outside, 1, aliceId, { threadRootId: rootId, content: [{ type: 'text', text: 'v1' }] });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [root], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [root] };
+        if (route.endsWith(`/messages/${outside}`)) return source ? { body: source } : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
+        return threadResponse(route, method, body);
+      });
+      const read = async () => {
+        const result = await service.getGroup(roomId, { shownShares: [ref] });
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.threadShareUpdates![ref.id]!;
+      };
+      const settle = async () => { await read(); await vi.advanceTimersByTimeAsync(0); return read(); };
+      expect(await read()).toMatchObject({ status: 'loading', content: '' });
+      vi.mocked(deps.onChanged!).mockClear();
+      await vi.advanceTimersByTimeAsync(0);
+      // The background read asks the open page to refresh: no click or reopen needed.
+      expect(deps.onChanged).toHaveBeenCalledWith({ groupId: roomId, change: 'messages' }, undefined);
+      expect(await read()).toMatchObject({ status: 'available', content: 'v1', sharedByAuthor: true, edited: false });
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets.at(-1)!;
+      source = { ...source, revision: 2, content: [{ type: 'text', text: 'v2' }] };
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '10', changes: [{ type: 'message.updated', entityId: outside }] }));
+      expect(await settle()).toMatchObject({ status: 'available', content: 'v2', edited: true });
+      source = { ...source, deleted: true, content: [] };
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '11', changes: [{ type: 'message.deleted', entityId: outside }] }));
+      expect(await settle()).toMatchObject({ status: 'unavailable', content: '' });
+      // Back to visible, then the reader loses access: the old text must not come back.
+      source = msg(outside, 1, aliceId, { threadRootId: rootId, content: [{ type: 'text', text: 'v3' }] });
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '12', changes: [{ type: 'message.updated', entityId: outside }] }));
+      expect(await settle()).toMatchObject({ status: 'available', content: 'v3' });
+      socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
+      source = null;
+      expect(await read()).not.toMatchObject({ content: 'v3' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await read()).toMatchObject({ status: 'unavailable', content: '' });
+    });
+
     it('does not let 「继续讨论」 restart a re-posted reply', async () => {
       const ask = msg('90000000-0000-4000-8000-0000000000aa', 1, selfId);
       fixture.handle.mockImplementation((route, method, body) => {

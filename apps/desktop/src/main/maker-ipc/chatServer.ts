@@ -30,7 +30,8 @@ import {
   isBotGroupRuntimeFailureCode, type BotGroupRuntimeFailureCode,
   readImportedBotGroupRuntimeFailureCode,
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
-  buildBotGroupThreadShareCard, botGroupThreadShareOperationId, readBotGroupThreadShareCard,
+  buildBotGroupThreadShareCard, botGroupThreadShareOperationId, readBotGroupThreadShareCard, BOT_GROUP_SHOWN_SHARES_MAX,
+  type BotGroupThreadShareView,
   type BotGroupDetail, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
 } from '../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal } from './botGroupChatService.js';
@@ -565,11 +566,23 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
    * of `page`. `snapshot` is the newest window across all threads. A share whose reply is
    * still being read is marked `loading`: the card's own fallback text is never shown here.
    */
-  async function decorateThreads(roomId: string, views: BotGroupMessageView[], page: Message[], snapshot: Message[], members: Member[], withPreviews: boolean) {
+  async function decorateThreads(roomId: string, views: BotGroupMessageView[], page: Message[], snapshot: Message[], members: Member[], withPreviews: boolean,
+    shownShares: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }> = []) {
     const previews = withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, Message[]>();
-    const sources = threads.shareSources(roomId, page, [...snapshot, ...page]);
+    const sources = threads.sources(roomId, [...page.flatMap(m => readBotGroupThreadShareCard(m)?.messageId ?? []),
+      ...shownShares.map(share => share.messageId)], [...snapshot, ...page]);
     const shareable = [...sources.values()].filter((m): m is Message => !!m && isShareableThreadReply(m));
     const sourceViews = new Map((await messageViews(roomId, shareable, members)).map(view => [view.id, view]));
+    const shareView = (card: { messageId: string; threadRootId: string }, sharerId?: string): BotGroupThreadShareView => {
+      const source = sources.get(card.messageId);
+      const resolved = source && source.threadRootId === card.threadRootId ? sourceViews.get(source.id) : undefined;
+      return source && resolved ? {
+        ...card, status: 'available', authorKind: resolved.authorKind, authorBotId: resolved.authorBotId, authorName: resolved.authorName,
+        sharedByAuthor: source.authorId === sharerId, content: resolved.content, attachments: resolved.attachments,
+        createdAt: resolved.createdAt, edited: (source.revision ?? 1) > 1,
+      } : { ...card, status: sources.has(card.messageId) ? 'unavailable' : 'loading', authorKind: 'user', authorBotId: null, authorName: '', sharedByAuthor: false,
+        content: '', attachments: [], createdAt: null, edited: false };
+    };
     const byId = new Map(page.map(m => [m.id, m]));
     for (const view of views) {
       const message = byId.get(view.id);
@@ -582,21 +595,17 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       });
       if (replies?.length) view.threadPreview = { replies };
       const card = readBotGroupThreadShareCard(message);
-      if (!card) continue;
-      const source = sources.get(card.messageId);
-      const resolved = source && source.threadRootId === card.threadRootId ? sourceViews.get(source.id) : undefined;
-      view.threadShare = source && resolved ? {
-        ...card, status: 'available', authorKind: resolved.authorKind, authorBotId: resolved.authorBotId, authorName: resolved.authorName,
-        sharedByAuthor: source.authorId === message.authorId, content: resolved.content, attachments: resolved.attachments,
-        createdAt: resolved.createdAt, edited: (source.revision ?? 1) > 1,
-      } : { ...card, status: sources.has(card.messageId) ? 'unavailable' : 'loading', authorKind: 'user', authorBotId: null, authorName: '', sharedByAuthor: false,
-        content: '', attachments: [], createdAt: null, edited: false };
+      if (card) view.threadShare = shareView(card, message.authorId);
     }
+    // Shares on pages loaded earlier. The sharer ID only picks the label; content is the server's.
+    return Object.fromEntries(shownShares.filter(share => !byId.has(share.id)).map(({ id: shareId, sharerId, ...card }) =>
+      [shareId, shareView(card, sharerId && (actors.find(actor => actor.externalId === sharerId)?.id ?? sharerId))]));
   }
   async function detail(roomId: string, options?: unknown, summaryOnly = false): Promise<BotGroupDetail> {
     const s = await snapshot(roomId);
     const o = z.object({ beforeSequence: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional(),
-      sourceMessageIds: z.array(id).optional() }).parse(options ?? {});
+      sourceMessageIds: z.array(id).optional(),
+      shownShares: z.array(z.object({ id, messageId: id, threadRootId: id, sharerId: z.string().min(1).max(200).optional() })).max(BOT_GROUP_SHOWN_SHARES_MAX).optional() }).parse(options ?? {});
     const query = new URLSearchParams({ limit: String(o.limit ?? 100) });
     if (o.beforeSequence) query.set('before', String(o.beforeSequence));
     const page = summaryOnly ? s.messages : await api<Message[]>(`/conversations/${roomId}/messages?${query}`);
@@ -612,12 +621,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }));
     // Sidebar refresh must not download every attachment in every group's history.
     const messages = summaryOnly ? [] : await messageViews(roomId, page, s.members);
-    if (!summaryOnly) {
-      await decorateThreads(roomId, messages, page, s.messages, s.members, true);
-      messages.sort((a, b) => a.sequence - b.sequence);
-    }
+    const threadShareUpdates = summaryOnly ? undefined : await decorateThreads(roomId, messages, page, s.messages, s.members, true, o.shownShares);
+    messages.sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
+    // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
+    const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
     return { serverBacked: true, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
@@ -628,12 +637,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
-        preview: lastView.content.slice(0, 80), createdAt: lastView.createdAt,
+        preview: lastIsShare ? '' : lastView.content.slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
       createdAt: Date.parse(s.room.created_at), updatedAt: Date.parse(s.room.updated_at ?? s.room.created_at),
-      messages, executionFailures, hasMoreBefore: page.length === (o.limit ?? 100), plans,
+      messages, executionFailures, ...(threadShareUpdates && Object.keys(threadShareUpdates).length ? { threadShareUpdates } : {}), hasMoreBefore: page.length === (o.limit ?? 100), plans,
       round: { status: executions.some(e => ['queued', 'running'].includes(e.status)) ? 'running' : 'idle', speakers, canContinue: !open && !planning.has(roomId) && (executions.some(e => !e.plan_id && ordinaryExecution(e)) || s.messages.some(discussionSource)) && !executions.some(e => ['queued','running','stopping'].includes(e.status)) } };
   }
   function planView(plan: ServerPlan, members: Member[], workspace: ReturnType<ReturnType<typeof chatServerWorkspaces>['read']>): BotGroupPlanView {
@@ -1407,7 +1416,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     continuePlan: input => safe(() => actPlan(input, 'continue')), retryPlan: input => safe(() => actPlan(input, 'retry')),
     editPlanStep: input => safe(() => actPlan(input, 'reassign')),
     dispose: () => {
-      disposed = true; clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); socket?.close();
+      disposed = true; threads.dispose(); clearInterval(timer); clearInterval(heartbeat); clearTimeout(reconnect); socket?.close();
       for (const run of running.values()) {
         run.releaseToolAuthority?.();
         if (run.sessionId) void deps.abortLane(run.sessionId).catch(() => undefined);

@@ -1923,3 +1923,29 @@ describe('thread share follow-ups', () => {
     expect(mocks.reply).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('shares on older pages', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('follows the reply after an edit or deletion without a click or reopen', async () => {
+    const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 冒充: 卡片文字',
+      threadShare: { messageId: 'old-reply', threadRootId: 'old-root', status: 'available', authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满',
+        sharedByAuthor: false, content: '加载时的原文', attachments: [], createdAt: 1, edited: false } });
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] });
+    mocks.getBotGroup
+      .mockResolvedValueOnce({ ok: true, group: latest })
+      .mockResolvedValueOnce({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [oldShare] } })
+      .mockResolvedValue({ ok: true, group: { ...latest, threadShareUpdates: { 'old-share': { ...oldShare.threadShare!, status: 'unavailable', authorName: '', content: '' } } } });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('加载时的原文')).toBeTruthy();
+    act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
+    expect(await screen.findByText(t('sourceUnavailable'))).toBeTruthy();
+    expect(screen.queryByText('加载时的原文')).toBeNull();
+    expect(screen.queryByText('↪ 冒充: 卡片文字')).toBeNull();
+    expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', expect.objectContaining({
+      shownShares: [{ id: 'old-share', messageId: 'old-reply', threadRootId: 'old-root', sharerId: 'alice-actor' }] }));
+  });
+});

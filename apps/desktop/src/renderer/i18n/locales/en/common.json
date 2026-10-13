@@ -8944,6 +8944,8 @@
         "empty": "No messages yet",
         "preview": "{{name}}: {{text}}",
         "previewYou": "You: {{text}}",
+        "sharedReplyYou": "You shared a thread reply",
+        "sharedReply": "{{name}} shared a thread reply",
         "waiting": "Waiting for your go-ahead",
         "planProposed": "{{name}}: plan ready, waiting for you to start",
         "planProposedAnonymous": "Plan ready, waiting for you to start",

@@ -8907,6 +8907,8 @@
         "empty": "還沒有訊息",
         "preview": "{{name}}：{{text}}",
         "previewYou": "你：{{text}}",
+        "sharedReplyYou": "你貼回了一則話題回覆",
+        "sharedReply": "{{name}} 貼回了一則話題回覆",
         "waiting": "在等你確認",
         "planProposed": "{{name}}：安排好了，等你開始",
         "planProposedAnonymous": "安排好了，等你開始",

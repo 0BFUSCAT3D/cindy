@@ -69,7 +69,7 @@ import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
-import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
+import { BOT_GROUP_SHOWN_SHARES_MAX, isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import {
   BotGroupHandoffFiles,
   BotGroupOrganizerTag,
@@ -188,15 +188,20 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       }
       try {
         const displayed = stateRef.current;
-        const sourceMessageIds = [...new Set([...(displayed.kind === 'ready' && displayed.group.id === groupId
+        const shown = displayed.kind === 'ready' && displayed.group.id === groupId;
+        const sourceMessageIds = [...new Set([...(shown
           ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
-        const result = sourceMessageIds.length ? await api.getBotGroup(groupId, { sourceMessageIds }) : await api.getBotGroup(groupId);
+        // Older pages are not re-read, so their shares ask for the reply's current state.
+        const shownShares = shown ? botGroupShownShares(displayed.older) : [];
+        const result = sourceMessageIds.length || shownShares.length
+          ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
+          : await api.getBotGroup(groupId);
         if (!isCurrent()) return;
         if (result.ok) {
           readOwner.current = owner;
           setState((previous) =>
             previous.kind === 'ready'
-              ? { ...previous, group: result.group }
+              ? { ...previous, group: result.group, older: applyBotGroupThreadShareUpdates(previous.older, result.group.threadShareUpdates) }
               : {
                   kind: 'ready',
                   group: result.group,
@@ -788,6 +793,26 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       renderAttachments={attachments => <BotGroupUserAttachments attachments={attachments} align="start" />} />}
     </div>
   );
+}
+
+/** Shares on older pages, newest kept when there are more than one refresh re-reads. */
+function botGroupShownShares(older: readonly BotGroupMessageView[]) {
+  return older.flatMap(message => message.threadShare
+    ? [{ id: message.id, messageId: message.threadShare.messageId, threadRootId: message.threadShare.threadRootId,
+      ...(message.authorBotId ? { sharerId: message.authorBotId } : {}) }] : [])
+    .slice(-BOT_GROUP_SHOWN_SHARES_MAX);
+}
+
+function applyBotGroupThreadShareUpdates(older: BotGroupMessageView[], updates: BotGroupDetail['threadShareUpdates']) {
+  if (!updates) return older;
+  let changed = false;
+  const next = older.map(message => {
+    const update = updates[message.id];
+    if (!update || !message.threadShare) return message;
+    changed = true;
+    return { ...message, threadShare: update };
+  });
+  return changed ? next : older;
 }
 
 function planCardPending(action: PlanPending['action'] | null): BotGroupPlanCardAction | null {

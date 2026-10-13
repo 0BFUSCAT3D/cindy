@@ -8907,6 +8907,8 @@
         "empty": "아직 메시지가 없습니다",
         "preview": "{{name}}: {{text}}",
         "previewYou": "나: {{text}}",
+        "sharedReplyYou": "스레드 답글을 공유했습니다",
+        "sharedReply": "{{name}} 님이 스레드 답글을 공유했습니다",
         "waiting": "확인 대기 중",
         "planProposed": "{{name}}: 계획이 준비됐어요. 시작을 기다리는 중",
         "planProposedAnonymous": "계획이 준비됐어요. 시작을 기다리는 중",
