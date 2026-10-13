@@ -2329,6 +2329,8 @@ interface OrcaCollabService {
       }
   >;
   sendToSession: (params: {
+    /** Host-only script follow-up; preserves target authorization without treating script text as consent. */
+    readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
     messagePurpose?: SessionMessagePurpose;
     /** 省略 → create 新 session;提供 → jump 到该既有 session。 */
     targetSessionId?: string;
@@ -15189,7 +15191,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       return sendToSessionInternal({
         ...params,
-        ...(classification.delegatedContinuation ? { autoReviewUserText: { kind: 'delegated-continuation' as const } } : {}),
+        ...(classification.delegatedContinuation || (params.targetSessionId && params[AUTO_REVIEW_DELEGATED_CONTINUATION])
+          ? { autoReviewUserText: { kind: 'delegated-continuation' as const } } : {}),
+        ...(params.targetSessionId && params[AUTO_REVIEW_DELEGATED_CONTINUATION] ? {
+          // Use the durable path for idle and busy targets alike. It restores the
+          // target's user intent and current permission mode at dispatch time.
+          forceQueue: true,
+          resumeWithStoredPermissionMode: true,
+        } : {}),
         ...(classification.coordination ? {
           ...coordinationInput(params.message, classification.coordination),
           forceQueue: true,
