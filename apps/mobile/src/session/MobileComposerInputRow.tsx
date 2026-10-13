@@ -15,7 +15,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { TextInput } from '@/components/AppText';
-import Reanimated, { useAnimatedStyle, useSharedValue, type SharedValue } from 'react-native-reanimated';
+import Reanimated, { useAnimatedStyle, useSharedValue, type AnimatedRef, type SharedValue } from 'react-native-reanimated';
 import { GestureDetector } from '@/platform/gestureHandler';
 import type { NativeGesture, PanGesture } from 'react-native-gesture-handler';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
@@ -494,6 +494,8 @@ export interface ComposerResizeGrabberProps {
   gesture: PanGesture;
   /** 不可见时淡出且不响应触摸，布局位置保持不变（避免出现/消失跳变）。 */
   visible: boolean;
+  /** 「聊天记录拖进输入框」在 UI 线程测量顶边位置用（composerPullThrough）。 */
+  measureRef?: AnimatedRef<View>;
   testID?: string;
 }
 
@@ -529,7 +531,7 @@ function ComposerFoldingSection({ progress, children }: { progress?: SharedValue
  * 只在聚焦卡片态渲染，此时顶边没有其它按钮；高度不超过卡片顶部留白，
  * 不覆盖下面的附件或文字。
  */
-export function ComposerResizeGrabber({ onAdjust, panHandlers, gesture, visible, testID }: ComposerResizeGrabberProps) {
+export function ComposerResizeGrabber({ onAdjust, panHandlers, gesture, visible, measureRef, testID }: ComposerResizeGrabberProps) {
   const { colors, mode } = useTheme();
   const { t } = useTranslation();
   const styles = useThemedStyles(makeMobileComposerInputRowStyles);
@@ -558,7 +560,8 @@ export function ComposerResizeGrabber({ onAdjust, panHandlers, gesture, visible,
       style={[styles.resizeGrabberTouch, { opacity }]}
     >
       <GestureDetector gesture={gesture}>
-      <View
+      <Reanimated.View
+        ref={measureRef}
         collapsable={false}
         accessibilityActions={[
           { label: t('composer.input.resize.increaseHeight'), name: 'increment' },
@@ -575,7 +578,7 @@ export function ComposerResizeGrabber({ onAdjust, panHandlers, gesture, visible,
         {...panHandlers}
       >
         <View style={[styles.resizeGrabberBar, mode === 'dark' && { backgroundColor: colors.sheetGrabber, opacity: 0.62 }]} />
-      </View>
+      </Reanimated.View>
       </GestureDetector>
     </Animated.View>
   );
