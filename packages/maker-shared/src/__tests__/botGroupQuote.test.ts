@@ -5,6 +5,7 @@ import {
   botGroupQuoteFromMessage,
   buildBotGroupQuoteCard,
   isBotGroupMessageQuotable,
+  parseBotGroupQuoteView,
   readBotGroupQuote,
   readBotGroupQuoteCard,
   resolveBotGroupQuote,
@@ -98,6 +99,21 @@ describe('quote card', () => {
   });
 });
 
+describe('parseBotGroupQuoteView', () => {
+  it('accepts the projected view and applies the card field rules', () => {
+    expect(parseBotGroupQuoteView(quote())).toEqual(quote());
+    expect(parseBotGroupQuoteView({ ...quote(), sequence: null })).toEqual(quote({ sequence: null }));
+    expect(parseBotGroupQuoteView({ ...quote(), originalDeleted: true })).toEqual(quote({ originalDeleted: true }));
+    expect(parseBotGroupQuoteView({ ...quote(), originalDeleted: 'yes' })).toEqual(quote());
+    expect(parseBotGroupQuoteView({ ...quote(), sequence: 0 })).toBeNull();
+    expect(parseBotGroupQuoteView({ ...quote(), sequence: '2' })).toBeNull();
+    expect(parseBotGroupQuoteView({ ...quote(), messageId: 'x' })).toBeNull();
+    expect(parseBotGroupQuoteView({ ...quote(), attachmentCount: 1 })).toBeNull();
+    expect(parseBotGroupQuoteView(null)).toBeNull();
+    expect(parseBotGroupQuoteView([quote()])).toBeNull();
+  });
+});
+
 describe('resolveBotGroupQuote', () => {
   it('prefers the loaded original over the snapshot', () => {
     expect(resolveBotGroupQuote(quote({ excerpt: 'old' }), [message({ content: 'edited', authorName: 'Cindy' })]))
@@ -112,6 +128,11 @@ describe('resolveBotGroupQuote', () => {
 
   it('falls back to the snapshot when the original is not loaded', () => {
     expect(resolveBotGroupQuote(quote(), [message({ id: OTHER })])).toMatchObject({ state: 'snapshot', excerpt: '第一行 第二行' });
+  });
+
+  it('keeps the snapshot attachment summary while a loaded original has no attachments yet', () => {
+    expect(resolveBotGroupQuote(quote({ excerpt: '', attachmentCount: 2, attachmentName: 'plan.pdf' }), [message({ content: '' })]))
+      .toEqual({ state: 'live', authorName: 'Cindy (Chris)', excerpt: '', attachmentCount: 2, attachmentName: 'plan.pdf' });
   });
 
   it('never resolves into a Thread reply with the same id', () => {

@@ -301,13 +301,13 @@ export function BotGroupComposer({
     if (sentQuote) onQuoteChange?.(null);
     const owner = getDataOwnerGeneration();
     const restore = (keepQuote = true) => {
-      // The tag comes back only with its own draft, never onto newly typed text.
+      // The tag and the quote come back only with their own draft, never onto newly typed
+      // text; a quote picked meanwhile wins, and an unavailable original is not put back.
       if (!textRef.current) {
         if (attempt.division) setDivision(true);
         setTracked(tracked);
+        if (keepQuote && sentQuote && !quoteRef.current) onQuoteChange?.(sentQuote);
       }
-      // A quote picked meanwhile wins; an unavailable original is not put back.
-      if (keepQuote && sentQuote && !quoteRef.current) onQuoteChange?.(sentQuote);
       setText((current) => (current ? current : draft));
     };
     try {

@@ -1247,6 +1247,23 @@ describe('BotGroupChatView', () => {
       expect(lastSend().clientId).not.toBe(failedId);
     });
 
+    it('never attaches a failed send\'s quote to text typed while it was on its way', async () => {
+      const user = userEvent.setup();
+      let fail!: () => void;
+      mocks.sendBotGroupMessage.mockImplementation(() => new Promise((resolve) => {
+        fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' });
+      }));
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledOnce());
+      const composer = screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement;
+      await user.type(composer, '另一件事');
+      await act(async () => fail());
+      expect(composer.value).toBe('另一件事');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
     it('puts the text back without an unavailable quote', async () => {
       const user = userEvent.setup();
       mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });

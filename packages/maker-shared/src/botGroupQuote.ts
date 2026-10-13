@@ -141,7 +141,23 @@ export function readBotGroupQuoteCard(block: unknown): BotGroupQuoteView | null 
     || value.schemaRevision !== BOT_GROUP_QUOTE_SCHEMA_REVISION) return null;
   const data = value.data && typeof value.data === 'object' && !Array.isArray(value.data)
     ? value.data as Record<string, unknown> : null;
-  if (!data) return null;
+  return data ? quoteFromFields(data) : null;
+}
+
+/**
+ * A quote as a controller receives it in a message view (the computer's projection over
+ * device-link). Same field rules as the card; only the order field is a number here.
+ */
+export function parseBotGroupQuoteView(value: unknown): BotGroupQuoteView | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const { sequence } = record;
+  if (sequence !== null && (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence < 1)) return null;
+  const quote = quoteFromFields({ ...record, seq: sequence === null ? null : String(sequence) });
+  return quote && record.originalDeleted === true ? { ...quote, originalDeleted: true } : quote;
+}
+
+function quoteFromFields(data: Record<string, unknown>): BotGroupQuoteView | null {
   const { messageId, authorName, authorKind, excerpt, attachmentCount, attachmentName, seq } = data;
   if (typeof messageId !== 'string' || !MESSAGE_ID.test(messageId)) return null;
   if (typeof authorName !== 'string' || !authorName.trim() || Array.from(authorName).length > AUTHOR_NAME_MAX) return null;
@@ -190,12 +206,15 @@ export function resolveBotGroupQuote(
   if (!original) return { state: 'snapshot', authorName: quote.authorName, excerpt: quote.excerpt,
     attachmentCount: quote.attachmentCount, attachmentName: quote.attachmentName };
   if (original.deleted) return { state: 'deleted', authorName: original.authorName || quote.authorName };
+  // A loaded original may not have its attachments yet (still downloading, or failed);
+  // the snapshot's summary stands in until they are there.
   const attachments: readonly Pick<BotGroupAttachment, 'name'>[] = original.attachments;
   return {
     state: 'live',
     authorName: original.authorName || quote.authorName,
     excerpt: botGroupQuoteExcerpt(original.content),
-    attachmentCount: attachments.length,
-    attachmentName: firstAttachmentName(attachments),
+    ...(attachments.length
+      ? { attachmentCount: attachments.length, attachmentName: firstAttachmentName(attachments) }
+      : { attachmentCount: quote.attachmentCount, attachmentName: quote.attachmentName }),
   };
 }

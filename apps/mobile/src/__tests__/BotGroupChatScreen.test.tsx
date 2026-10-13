@@ -202,6 +202,7 @@ vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
 vi.mock('@/session/ThinkingDots', () => ({ ThinkingDots: () => null }));
 import { BotGroupChatScreen } from '@/session/BotGroupChatScreen';
+import { parseBotGroupChatData } from '@/session/botGroupRemote';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -283,17 +284,22 @@ afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(
 
 describe('group timeline', () => {
   it('shows a 引用回复 block from the loaded original, and only the author once it is deleted', async () => {
-    const quote = { messageId: 'm2', authorName: '咪咪', authorKind: 'bot' as const, excerpt: 'old snapshot', attachmentCount: 0, attachmentName: null, sequence: 2 };
+    // Server message ids are UUIDs; the parser rejects a quote that points at anything else.
+    const originalId = '11111111-1111-4111-8111-111111111111';
+    const quote = { messageId: originalId, authorName: '咪咪', authorKind: 'bot' as const, excerpt: 'old snapshot', attachmentCount: 0, attachmentName: null, sequence: 2 };
+    // Through the same parser the phone uses for the computer's projection.
     const data = group();
-    data.messages.push(message('q1', 10, { authorKind: 'user', content: '就按这个来', quote }));
-    await render(data);
+    data.messages.push(message(originalId, 9, { authorBotId: 'mimi', authorName: '咪咪', content: '**好的**，我看看' }),
+      message('q1', 10, { authorKind: 'user', content: '就按这个来', quote }));
+    await render(parseBotGroupChatData(data)!);
     const block = byId('botGroup.quote')!;
     expect(block.textContent).toContain('咪咪');
     expect(block.textContent).toContain('**好的**，我看看');
     expect(block.textContent).not.toContain('old snapshot');
     const deleted = group();
-    deleted.messages = [message('q1', 10, { authorKind: 'user', content: '就按这个来', quote: { ...quote, excerpt: '私密的原文', originalDeleted: true } })];
-    await render(deleted);
+    deleted.messages = [message(originalId, 9, { authorBotId: 'mimi', authorName: '咪咪', deleted: true, content: '（消息已删除）' }),
+      message('q1', 10, { authorKind: 'user', content: '就按这个来', quote: { ...quote, excerpt: '私密的原文' } })];
+    await render(parseBotGroupChatData(deleted)!);
     expect(byId('botGroup.quote')!.textContent).toContain('groupChat.quote.deleted');
     expect(node.textContent).not.toContain('私密的原文');
   });
