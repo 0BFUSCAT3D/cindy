@@ -8723,7 +8723,9 @@
       "pinned": "已置頂",
       "needsAttention": "需要處理",
       "duplicate": "複製夥伴",
-      "moreActions": "{{name}} 的更多操作"
+      "moreActions": "{{name}} 的更多操作",
+      "sectionExpand": "展開夥伴",
+      "sectionCollapse": "收起夥伴"
     },
     "cancel": "取消",
     "save": "儲存",

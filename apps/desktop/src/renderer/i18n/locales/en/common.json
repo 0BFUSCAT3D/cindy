@@ -8760,7 +8760,9 @@
       "pinned": "Pinned",
       "needsAttention": "Needs attention",
       "duplicate": "Duplicate teammate",
-      "moreActions": "More actions for {{name}}"
+      "moreActions": "More actions for {{name}}",
+      "sectionExpand": "Expand teammates",
+      "sectionCollapse": "Collapse teammates"
     },
     "cancel": "Cancel",
     "save": "Save",

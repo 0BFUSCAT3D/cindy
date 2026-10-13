@@ -8723,7 +8723,9 @@
       "pinned": "固定済み",
       "needsAttention": "対応が必要",
       "duplicate": "仲間を複製",
-      "moreActions": "{{name}} のその他の操作"
+      "moreActions": "{{name}} のその他の操作",
+      "sectionExpand": "仲間を展開",
+      "sectionCollapse": "仲間を折りたたむ"
     },
     "cancel": "キャンセル",
     "save": "保存",

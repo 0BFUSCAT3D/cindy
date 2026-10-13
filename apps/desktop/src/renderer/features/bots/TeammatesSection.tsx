@@ -1,12 +1,10 @@
-import { useNavigationAttention } from '@/lib/navigationAttentionStore';
-import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { botRosterLabel } from '../../../shared/botCreation';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   AlertTriangle,
-  ArrowLeft,
-  Bot,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Eye,
   EyeOff,
@@ -14,13 +12,13 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { projectDraftSessionTitle } from '@cindy/maker-shared/session-title';
 
 import { cn } from '@/lib/utils';
-import * as sessionService from '@/lib/sessionService';
-import { isOrcaWorkerSession } from '@/lib/orcaSessionIdentity';
+import { useAuth } from '@/contexts/AuthContext';
+import { Tip } from '@/components/ui/tooltip';
+import { SectionCollapse } from '@/features/cc-agent/sidebar/SectionCollapse';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,15 +27,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
-import { useSessionRunningStatus } from '@/hooks/useSessionRunningStatus';
-import { useActiveMainView } from '@/hooks/useActiveMainView';
-import {
-  BOT_GROUP_LANE_SESSION,
-  botOwnedSessionNotificationTitle,
-  sendSessionEventNotification,
-} from '@/lib/sessionEventNotification';
-import { useSidebarCollapsedState, useRegisterSidebarUpper } from '../feature-context';
-import { SidebarIconButton } from '@/components/sidebar/SidebarIconButton';
 import { useRemoteBots } from './useRemoteBots';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
@@ -49,9 +38,9 @@ import { BotCreateMenu } from './BotCreateMenu';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
 import { useBotGroupList } from './botGroupStore';
-import { subscribeBotReadState, getBotLastReadAtMap } from './botReadState';
+import { subscribeBotReadState, getBotLastReadAtMap, isBotGroupUnread } from './botReadState';
 import { ChatJoinButton } from './ChatServerControls';
-import { isBotGroupLaneSession, withoutBotGroupLanes } from './botGroupLane';
+import { withoutBotGroupLanes } from './botGroupLane';
 import {
   botListSubtitle,
   botListTimestampAt,
@@ -59,6 +48,7 @@ import {
   formatBotUnreadBadge,
 } from './botListDisplay';
 import { botDeviceLabel, partitionBotRoster } from './botRosterDisplay';
+import { readTeammatesSectionCollapsed, writeTeammatesSectionCollapsed } from './teammatesSectionPrefs';
 import {
   canonicalBotSessionId,
   duplicateBotProfile,
@@ -80,13 +70,35 @@ const readRevision = () => JSON.stringify(getBotLastReadAtMap());
 const UNREAD_BADGE_CLASS =
   'flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-[var(--bot-unread-bg)] px-1 text-10 font-medium tabular-nums leading-none text-[var(--bot-unread-fg)]';
 
-function BotsSidebarContent() {
-  const { navigateToView } = useActiveMainView();
+/** 段头悬停动作:与置顶 / 项目段头同款,鼠标离开后只保留键盘焦点或打开中的菜单。 */
+const HEADER_HOVER_ACTION_CLASS = cn(
+  'pointer-events-none opacity-0 transition-opacity duration-150',
+  'group-hover/sidebar-header:pointer-events-auto group-hover/sidebar-header:opacity-100',
+  'has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100',
+  'has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100',
+);
+const HEADER_ICON_BUTTON_CLASS =
+  'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
+
+/**
+ * 侧栏第一层的「伙伴」段(2026-10-13 定稿):固定在置顶段上方,与置顶、全部任务并存。
+ * 点伙伴只切换主区域,左栏不再整栏切换。段名在「展开(行列表)」与「收起成一排头像」
+ * 之间切换,默认展开,按账号记住。通知不在这里发 —— 唯一 owner 是任务侧栏。
+ */
+export function TeammatesSection() {
   const { t } = useTranslation();
-  const navigationCounts = useNavigationAttention();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
-  const { botId, sessionId, deviceId, groupId } = useParams();
+  const { dataOwnerId } = useAuth();
+  const { botId, deviceId, groupId } = useParams();
+  const [collapsed, setCollapsed] = useState(() => readTeammatesSectionCollapsed(dataOwnerId));
+  useEffect(() => {
+    setCollapsed(readTeammatesSectionCollapsed(dataOwnerId));
+  }, [dataOwnerId]);
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    writeTeammatesSectionCollapsed(dataOwnerId, next);
+  };
   const remoteBots = useRemoteBots();
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf);
@@ -100,7 +112,6 @@ function BotsSidebarContent() {
   const unreadByBotId = useBotUnreadCounts();
   const rosterBots = bots.filter((bot) => bot.status !== 'archived');
   const archivedBots = bots.filter((bot) => bot.status === 'archived');
-  const collapsed = useSidebarCollapsedState();
   const [query, setQuery] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -121,23 +132,7 @@ function BotsSidebarContent() {
     setContextMenu({ botId, x, y });
   };
 
-  /*
-    「正在输入…」的信号来源：灵动岛活动镜像(state/agentIslandActivity)。
-    **没有新增 IPC** —— 主进程本来就在广播这份 per-session 快照，任务列表的
-    SessionCard 用的也是它，这里只是多一个读者。
-
-    为什么选它而不是 makerChatStore 的全局 running 快照：
-     - 它是全量推送，主进程持有状态机，窗口在一次 turn 中途冷启动也补得回来；
-       makerChatStore 的分片要等该会话**下一个**事件到达才materialize，长工具
-       调用期间会是空的。
-     - 它与灵动岛开关无关，非 macOS 上服务也以 headless 方式跑着照常广播
-       (main/agent-island/service.ts 的 publish 两条分支都会 emit)。
-     - 依赖轻：只吃 shared 里的类型，不用把整个聊天 store 拖进侧栏。
-
-    当前侧栏只有一个 owner：进入伙伴页时普通任务侧栏会被这个节点替换，因此这里
-    必须接手 useSessionRunningStatus。否则用户停留在伙伴页时，伙伴和普通任务的
-    完成、失败、待回复都没有系统通知。
-  */
+  // 「正在输入…」读灵动岛活动镜像(全量推送,与任务列表同源),不新增 IPC。
   const islandActivity = useAgentIslandActivityMap();
   const botRunningActivity = (bot: BotProfile) => {
     // 委派干活发生在子任务,不在主任务。只看 canonical 的话,目标伙伴侧栏会一直是
@@ -179,84 +174,6 @@ function BotsSidebarContent() {
     ...(showCindy && currentCindy ? [{ kind: 'cindy' as const, pinned: cindyOptions.some(option => 'pinnedAt' in option.bot && Boolean(option.bot.pinnedAt)),
       activityAt: Math.max(...cindyOptions.map(option => 'activityAt' in option.bot ? option.bot.activityAt : option.bot.lastMessageAt ?? option.bot.createdAt)) }] : []),
   ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.activityAt - a.activityAt);
-
-  const { sessionOwners, groupLaneSessionIds } = useMemo(() => {
-    const owners = new Map<string, { bot: BotProfile; title: string }>();
-    const lanes = new Set<string>();
-    for (const bot of bots) {
-      for (const session of bot.sessions) {
-        if (isBotGroupLaneSession(session)) lanes.add(session.id);
-        else owners.set(session.id, { bot, title: session.title });
-      }
-    }
-    return { sessionOwners: owners, groupLaneSessionIds: lanes };
-  }, [bots]);
-  const activeBotSessionId = useMemo(() => {
-    if (sessionId) return sessionId;
-    if (deviceId) return remoteBots.find(bot => bot.deviceId === deviceId && bot.id === botId)?.sessionId ?? undefined;
-    const selectedBot = bots.find((bot) => bot.id === botId);
-    return selectedBot ? canonicalBotSessionId(selectedBot) : undefined;
-  }, [botId, bots, deviceId, remoteBots, sessionId]);
-  const fireSessionNotification = useCallback(
-    (targetSessionId: string, kind: 'done' | 'error' | 'needs-reply') => {
-      // 群专线不进系统通知(docs/product-rules/bot-group-chat.md §3);需要确认的操作在群里提示。
-      if (groupLaneSessionIds.has(targetSessionId)) return;
-      const owner = sessionOwners.get(targetSessionId);
-      if (owner) {
-        const title =
-          owner.title.trim() && owner.title !== owner.bot.name
-            ? `${owner.bot.name} · ${owner.title}`
-            : owner.bot.name;
-        sendSessionEventNotification(targetSessionId, title, kind);
-        return;
-      }
-      // useSessionRunningStatus observes the shared runtime map, so it also
-      // keeps ordinary tasks notifying while the user is on the Bots page.
-      // Resolve their real title lazily instead of exposing an internal id.
-      void sessionService
-        .get(targetSessionId)
-        .then(async (session) => {
-          if (isOrcaWorkerSession(session)) return;
-          // 伙伴画像可能还没投影到刚建好的群专线,用库里的最新归属再判一次。
-          if (
-            session.source === 'bot' &&
-            (await botOwnedSessionNotificationTitle(targetSessionId)) === BOT_GROUP_LANE_SESSION
-          ) {
-            return;
-          }
-          sendSessionEventNotification(
-            targetSessionId,
-            projectDraftSessionTitle(session.title, t('ccAgent.common.unnamedSession')),
-            kind,
-          );
-        })
-        .catch(() => {
-          sendSessionEventNotification(
-            targetSessionId,
-            t('ccAgent.common.unnamedSession'),
-            kind,
-          );
-        });
-    },
-    [groupLaneSessionIds, sessionOwners, t],
-  );
-  const handleSessionDone = useCallback(
-    (targetSessionId: string) => fireSessionNotification(targetSessionId, 'done'),
-    [fireSessionNotification],
-  );
-  const handleSessionError = useCallback(
-    (targetSessionId: string) => fireSessionNotification(targetSessionId, 'error'),
-    [fireSessionNotification],
-  );
-  const handleSessionNeedsReply = useCallback(
-    (targetSessionId: string) => fireSessionNotification(targetSessionId, 'needs-reply'),
-    [fireSessionNotification],
-  );
-  useSessionRunningStatus(activeBotSessionId, {
-    onSessionDone: handleSessionDone,
-    onSessionError: handleSessionError,
-    onSessionNeedsReply: handleSessionNeedsReply,
-  });
 
   useEffect(() => {
     if (roster.visible.length + remoteBots.length + groups.length === 0) return;
@@ -348,47 +265,95 @@ function BotsSidebarContent() {
     </DropdownMenu>
   );
 
-  if (collapsed) {
-    return (
-      <div className="flex flex-col items-center gap-2 px-2 pt-3">
-        {(pathname === '/bots' || pathname.startsWith('/bots/')) && (
-          <SidebarIconButton
-            icon={ArrowLeft}
-            label={t('sidebar.backToSessions')}
-            aria-description={navigationCounts.tasks > 0 ? t('sidebar.taskAttentionCount', { count: navigationCounts.tasks }) : undefined}
-            badge={<NavigationCountBadge count={navigationCounts.tasks} label={t('sidebar.taskAttentionCount', { count: navigationCounts.tasks })} />}
-            onClick={() => navigateToView('cc-agent')}
-          />
-        )}
-        <BotCreateMenu compact />
-      </div>
-    );
-  }
+  const ToggleIcon = collapsed ? ChevronRight : ChevronDown;
+  const toggleLabel = collapsed ? t('bots.list.sectionExpand') : t('bots.list.sectionCollapse');
+  const openChat = (entry: (typeof visibleChats)[number]) => {
+    if (entry.kind === 'group') navigate(`/bots/groups/${encodeURIComponent(entry.group.id)}`);
+    else if (entry.kind === 'cindy') { if (currentCindy) navigate(currentCindy.route); }
+    else if ('deviceId' in entry.bot) navigate(`/bots/remote/${encodeURIComponent(entry.bot.deviceId)}/${encodeURIComponent(entry.bot.id)}`);
+    else navigate(`/bots/${entry.bot.id}`);
+  };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-3 pt-2">
-      {/* 小节头与伙伴行的正文左边缘对齐:容器 12px + 行内 10px = 22px。 */}
-      <div className="flex items-center justify-between px-2.5 pb-2">
-        <div className="flex items-center gap-2 text-12 font-medium text-[var(--sidebar-list-muted)]">
-          <Bot size={14} />
-          <span>{t('bots.title')}</span>
+    <div className="flex w-full flex-col gap-0.5" data-sidebar-section="teammates">
+      {/* 段头与置顶 / 全部任务段头同款:高 24,左 24 / 右 12;动作悬停浮现。 */}
+      <div className="group/sidebar-header flex h-6 items-center justify-between pr-3 pl-6">
+        <div className="flex min-w-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            aria-expanded={!collapsed}
+            className="text-sm font-medium text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]"
+          >
+            {t('bots.title')}
+          </button>
+          <div className={HEADER_HOVER_ACTION_CLASS}>
+            <Tip text={toggleLabel} side="bottom">
+              <button type="button" onClick={toggleCollapsed} aria-label={toggleLabel} aria-expanded={!collapsed} className={HEADER_ICON_BUTTON_CLASS}>
+                <ToggleIcon size={13} strokeWidth={2} />
+              </button>
+            </Tip>
+          </div>
         </div>
-        <span className="flex items-center gap-0.5">
-          {roster.showHiddenSection ? (
+        <div className={cn(HEADER_HOVER_ACTION_CLASS, 'flex items-center gap-0.5')}>
+          {roster.showHiddenSection && !collapsed ? (
             <button
               type="button"
               onClick={() => setShowHidden((value) => !value)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--sidebar-list-muted)] transition-colors hover:bg-sidebar-item-hover hover:text-[var(--sidebar-nav-text)]"
+              className={HEADER_ICON_BUTTON_CLASS}
               aria-label={t(showHidden ? 'bots.list.hideHidden' : 'bots.list.showHidden')}
             >
-              {showHidden ? <EyeOff size={15} /> : <Eye size={15} />}
+              {showHidden ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
             </button>
           ) : null}
-          <ChatJoinButton onJoined={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />
-          <BotCreateMenu />
-        </span>
+          <ChatJoinButton compact onJoined={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />
+          <BotCreateMenu variant="header" />
+        </div>
       </div>
 
+      {collapsed ? (
+        // 收起:一排头像,未读带点;顺序与展开时一致。
+        <div className="flex flex-wrap items-center gap-2 pt-1 pr-0 pl-[22px]">
+          {visibleChats.map((entry) => {
+            const key = entry.kind === 'group' ? `group:${entry.group.id}`
+              : entry.kind === 'cindy' ? 'cindy-devices'
+                : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
+            const avatarBot = entry.kind === 'group' ? entry.group.members[0]
+              : entry.kind === 'cindy' ? currentCindy?.bot : entry.bot;
+            const name = entry.kind === 'group' ? entry.group.name
+              : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
+            const selected = entry.kind === 'group' ? entry.group.id === groupId
+              : entry.kind === 'cindy' ? Boolean(routeCindy)
+                : 'deviceId' in entry.bot ? entry.bot.id === botId && entry.bot.deviceId === deviceId
+                  : !deviceId && entry.bot.id === botId;
+            const unread = entry.kind === 'group' ? isBotGroupUnread(entry.group)
+              : entry.kind === 'cindy' ? cindyOptions.some(option => option.unread)
+                : 'deviceId' in entry.bot ? isRemoteBotUnread(entry.bot) : (unreadByBotId[entry.bot.id] ?? 0) > 0;
+            return (
+              <Tip key={key} text={name} side="bottom">
+                <button
+                  type="button"
+                  onClick={() => openChat(entry)}
+                  aria-label={unread && !selected ? `${name} · ${t('bots.list.unread', { count: 1 })}` : name}
+                  aria-current={selected ? 'page' : undefined}
+                  className={cn(
+                    'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    selected && 'ring-2 ring-[var(--sidebar-nav-text)] ring-offset-2 ring-offset-sidebar',
+                  )}
+                >
+                  {avatarBot ? <BotAvatar bot={avatarBot} size="sm" /> : null}
+                  {unread && !selected ? (
+                    <span aria-hidden className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-sidebar bg-[var(--bot-unread-bg)]" />
+                  ) : null}
+                </button>
+              </Tip>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <SectionCollapse collapsed={collapsed}>
+      <div className="flex flex-col pt-1 pr-0 pl-3">
       {showSearch ? (
         <label className="relative mb-2 block px-2.5">
           <Search
@@ -406,7 +371,7 @@ function BotsSidebarContent() {
         </label>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto pb-3">
+      <div>
         {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && groups.length === 0 ? (
           <div className="px-3 py-3">
             <BotCreateMenu label={t('bots.add')} />
@@ -693,6 +658,8 @@ function BotsSidebarContent() {
         )}
 
       </div>
+      </div>
+      </SectionCollapse>
       <BotDeleteDialog
         bot={deleteTarget}
         onOpenChange={(open) => {
@@ -708,10 +675,4 @@ function BotsSidebarContent() {
       />
     </div>
   );
-}
-
-export function BotsSidebar() {
-  const content = useMemo(() => <BotsSidebarContent />, []);
-  useRegisterSidebarUpper(content);
-  return null;
 }

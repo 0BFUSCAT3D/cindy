@@ -31,6 +31,7 @@ import type { SchedulerEvent } from '@cindy/maker-scheduler';
 import { createPortal } from 'react-dom';
 import {
   Archive,
+  Bot,
   ChevronRight,
   CircleAlert,
   CirclePlus,
@@ -68,6 +69,10 @@ import { SidebarRailNavigation, SidebarTopNav } from '@/components/sidebar/Sideb
 import { SidebarFilterPopover } from './sidebar/SidebarFilterPopover';
 import { MainListScopeHeader } from './sidebar/MainListScopeHeader';
 import { SharedTasksSection } from '@/features/device-link/SharedTasksSection';
+import { TeammatesSection } from '@/features/bots/TeammatesSection';
+import { useNavigationAttention } from '@/lib/navigationAttentionStore';
+import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
+import { useViewedBotSessionId } from '@/features/bots/useViewedBotSessionId';
 import { sharedTaskErrorKey } from '@/features/device-link/sharedTaskCompatibility';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import { stripTrailingPathSeparators } from '../../../shared/pathText';
@@ -519,6 +524,8 @@ export function CCAgentSidebarUpper() {
   const filesMatch = useMatch('/cc-agent/files/:sessionId');
   const activeSessionId = orcaMatch?.params.sessionId ?? match?.params.sessionId;
   const filesSessionId = filesMatch?.params.sessionId;
+  // /bots/* 与任务列表共用本侧栏:正在看的伙伴会话同样算「注视中」,不记未读、不发通知。
+  const viewedBotSessionId = useViewedBotSessionId();
   const scheduleSessionIndex = usePublishedAutomationScheduleSessionIndex();
   const remoteScheduleIndex = useRemoteScheduleIndex();
   // 侧栏右侧 urgent 红点的"额外"来源:定时任务未读且失败(status != 'success')。
@@ -773,6 +780,7 @@ export function CCAgentSidebarUpper() {
                 // 按远程镜像解析)会解析不到,面板豁免/高亮与重定向判定就会丢
                 // (codex review)。id 相等性语义不需要完整 Session 对象。
                 viewedSessionId={activeSessionId ?? filesSessionId}
+                attentionSessionId={activeSessionId ?? filesSessionId ?? viewedBotSessionId}
                 filter={filter}
                 hiddenProjects={hiddenProjects}
                 projectAliases={projectAliases}
@@ -826,6 +834,9 @@ interface ExpandedProps {
    *  与 activeSessionId 分开传:后者还承担选中高亮与「点击同会话早退」语义,
    *  files 模式下从面板点击该会话仍要能导航回聊天视图。 */
   viewedSessionId: string | undefined;
+  /** 通知与未读的「注视中」会话:viewedSessionId 之外再包含主区域正在看的伙伴会话。
+   *  只用于 useSessionRunningStatus,不参与归档重定向与选中高亮。 */
+  attentionSessionId: string | undefined;
   filter: UseSidebarFilterReturn;
   hiddenProjects: UseHiddenProjectsReturn;
   projectAliases: ReturnType<typeof useProjectAliases>;
@@ -863,6 +874,7 @@ function ExpandedView({
   navigate,
   activeSessionId,
   viewedSessionId,
+  attentionSessionId,
   filter,
   hiddenProjects,
   projectAliases,
@@ -1211,10 +1223,11 @@ function ExpandedView({
   const attachedSessionIds = useAttachedSessionIds();
 
   // F-SB-7: Session status indicators — running state + attention notifications
-  // 「active」按 viewedSessionId:files 路由下用户注视的是该会话的文件视图,
-  // 完成/待回复不能按后台会话记未读、发通知(codex review)。
+  // 「active」按注视中的会话:files 路由下用户注视的是该会话的文件视图,
+  // 完成/待回复不能按后台会话记未读、发通知(codex review);伙伴聊天页同理。
+  // 本侧栏是系统通知的唯一 owner —— /bots 也用它,伙伴段本身不再观察转换。
   const { runningSessionIds, notifications, clearNotification } = useSessionRunningStatus(
-    viewedSessionId,
+    attentionSessionId,
     {
       onSessionDone: handleSessionDone,
       onSessionError: handleSessionError,
@@ -3774,6 +3787,8 @@ function ExpandedView({
           ) : null}
           {/* 搜索时原列表只隐藏、不卸载:置顶段折叠等本地 state 才能保住。 */}
           <div hidden={searchActive} className="flex flex-col gap-2">
+            {/* 伙伴段:侧栏第一层,固定在置顶上方(2026-10-13 定稿),/bots 与 /cc-agent 共用。 */}
+            <TeammatesSection />
             <SharedTasksSection activeSessionId={activeSessionId} localSessions={sessions}
               runningSessionIds={displayRunningSessionIds} attachedSessionIds={attachedSessionIds} notifications={sidebarNotifications}
               onAction={handleActionClick} onRename={handleRename} onTogglePin={handleTogglePin}
@@ -4092,6 +4107,10 @@ function CollapsedView({
   const location = useLocation();
   const isCollapsed = useSidebarCollapsedState();
   const projectFilterRequest = useConversationSearchRequest();
+  // 收窄态的伙伴入口:展开态里伙伴是置顶上方的一段,rail 放不下整段,
+  // 用一个带未读数的图标直达伙伴(上次看的伙伴,没有则 Cindy)。
+  const teammateUnread = useNavigationAttention().teammates;
+  const onBotsRoute = location.pathname === '/bots' || location.pathname.startsWith('/bots/');
   const selectedMachineId = useEffectiveSelectedMachineId();
   const switcherDevices = useSwitcherDevices();
   const searchDevices = useMemo(
@@ -4142,7 +4161,7 @@ function CollapsedView({
         label={t('ccAgent.layout.new')}
         onClick={handleNewCCS}
       />
-      {/* 自动化 / 插件 / 伙伴 / 搜索按「自定义」的顺序与勾选排列,未勾选项收进「更多」
+      {/* 自动化 / 插件 / 搜索按「自定义」的顺序与勾选排列,未勾选项收进「更多」
           (与展开态 SidebarTopNav 同一份偏好)。搜索在 project-menu 锁定请求时临时出现。 */}
       <SidebarRailNavigation
         forceSearch={isCollapsed && projectFilterRequest != null}
@@ -4160,6 +4179,17 @@ function CollapsedView({
             onOpenChange={onOpenChange}
           />
         )}
+      />
+
+      <SidebarIconButton
+        icon={Bot}
+        label={t('sidebar.tabs.bots')}
+        active={onBotsRoute}
+        aria-description={teammateUnread > 0 ? t('sidebar.teammateUnreadCount', { count: teammateUnread }) : undefined}
+        badge={teammateUnread > 0 ? (
+          <NavigationCountBadge count={teammateUnread} label={t('sidebar.teammateUnreadCount', { count: teammateUnread })} />
+        ) : undefined}
+        onClick={() => navigate('/bots')}
       />
 
       <div className="my-[7px] h-px w-[22px] shrink-0 bg-sidebar-border" aria-hidden />

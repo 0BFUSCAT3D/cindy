@@ -2,7 +2,6 @@
 import { useBotUnreadSync } from '../useBotUnreadSync';
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { cloneElement, type ReactElement, type ReactNode } from 'react';
 import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/makerChatStore', () => { const running = new Map(); return { makerChatStore: { subscribeAll: () => () => {}, getRunningSnapshot: () => running } }; });
@@ -34,14 +33,11 @@ const mocks = vi.hoisted(() => ({
   health: new Map<string, string>(),
   unread: {} as Record<string, number>,
   groupMessages: new Map<string, unknown[]>(),
-  pathname: '/bots',
   params: {} as { botId?: string; deviceId?: string },
-  collapsed: false,
   refreshBotProfiles: vi.fn(),
   setBotHidden: vi.fn(async () => undefined),
   setBotPinned: vi.fn(async () => undefined),
   duplicateBotProfile: vi.fn(async () => ({ id: 'copy' })),
-  registered: { node: null as ReactNode },
   /** 灵动岛活动镜像:sessionId -> phase。侧栏据此显示「正在输入…」。 */
   islandActivity: new Map<string, { sessionId: string; phase: string; compactDetail?: string }>(),
 }));
@@ -54,6 +50,8 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
 vi.mock('@/state/agentIslandActivity', () => ({
   useAgentIslandActivityMap: () => mocks.islandActivity,
 }));
+// The section must never observe session transitions: the task sidebar is the only
+// notification owner (CCAgentSidebarUpper), also on /bots routes.
 vi.mock('@/hooks/useSessionRunningStatus', () => ({
   useSessionRunningStatus: (sessionId: string | undefined) => {
     mocks.observeSession(sessionId);
@@ -67,14 +65,7 @@ vi.mock('@/hooks/useSessionRunningStatus', () => ({
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
-  useLocation: () => ({ pathname: mocks.pathname, search: '', hash: '' }),
   useParams: () => mocks.params,
-}));
-vi.mock('../../feature-context', () => ({
-  useSidebarCollapsedState: () => mocks.collapsed,
-  useRegisterSidebarUpper: (node: ReactNode) => {
-    mocks.registered.node = node;
-  },
 }));
 vi.mock('../botStore', () => ({
   useBotProfiles: () => mocks.profiles,
@@ -93,10 +84,10 @@ vi.mock('../BotDeleteDialog', () => ({
     bot ? <div data-testid="bot-delete-dialog">{bot.name}</div> : null,
 }));
 
-import { BotsSidebar } from '../BotsSidebar';
+import { TeammatesSection } from '../TeammatesSection';
 import { BotConnectionStatus } from '../BotConnectionStatus';
-import { MainViewHistoryContext, type MainViewHistory } from '@/contexts/MainViewHistoryContext';
 import { markBotRead, resetBotReadStateForTests } from '../botReadState';
+import { readTeammatesSectionCollapsed } from '../teammatesSectionPrefs';
 
 interface BotFixture {
   id: string;
@@ -127,8 +118,7 @@ function bot(fixture: BotFixture) {
 let messageListeners: Array<(payload: unknown) => void> = [];
 
 async function renderSidebar() {
-  render(<BotsSidebar />);
-  const view = render(<>{mocks.registered.node}</>);
+  const view = render(<TeammatesSection />);
   await waitFor(() => expect(view.container.querySelector('button')).not.toBeNull());
   return view;
 }
@@ -149,13 +139,10 @@ beforeEach(() => {
   mocks.health = new Map();
   mocks.unread = {};
   mocks.groupMessages = new Map();
-  mocks.pathname = '/bots';
   mocks.params = {};
-  mocks.collapsed = false;
   mocks.profiles = [];
   mocks.remoteBots = [];
   mocks.devices = [];
-  mocks.registered.node = null;
   mocks.islandActivity = new Map();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
@@ -198,13 +185,13 @@ describe('one Cindy entry across devices', () => {
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/cindy-default');
 
     mocks.remoteBots = [remote('cloud', 'Cloud', { online: false })];
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getAllByRole('combobox', { name: /bots.devicePicker.switchDevice/ })).toHaveLength(1);
     expect(screen.getAllByTestId('cindy-device-row')).toHaveLength(1);
     expect(screen.getByText('Local preview')).toBeTruthy();
 
     mocks.remoteBots = [];
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.queryByRole('combobox', { name: /bots.devicePicker.switchDevice/ })).toBeNull();
     expect(screen.queryByTestId('cindy-device-row')).toBeNull();
     expect(screen.queryByText('bots.devicePicker.local')).toBeNull();
@@ -245,13 +232,12 @@ describe('one Cindy entry across devices', () => {
     fireEvent.click(cloud);
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/cloud/cindy-default');
     mocks.params = { deviceId: 'cloud', botId: 'cindy-default' };
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('Cloud preview')).toBeTruthy();
     expect(screen.queryByText('Local preview')).toBeNull();
     expect(screen.getByRole('button', { name: 'Cindy · Cloud' }).getAttribute('aria-current')).toBe('page');
-    expect(mocks.observeSession).toHaveBeenLastCalledWith('cloud-chat');
     mocks.params = { botId: 'writer' };
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('Local preview')).toBeTruthy();
     expect(screen.queryByText('Cloud preview')).toBeNull();
     const localEntry = screen.getByRole('button', { name: 'Renamed Cindy · bots.devicePicker.local' });
@@ -300,7 +286,7 @@ describe('one Cindy entry across devices', () => {
     expect(screen.getByText('Cloud preview')).toBeTruthy();
 
     mocks.profiles = [bot({ id: 'cindy-default', name: 'Cindy', lastMessagePreview: 'Local preview' })];
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('Local preview')).toBeTruthy();
     expect(screen.queryByText('Cloud preview')).toBeNull();
     expect(screen.getByRole('button', { name: 'Cindy · bots.devicePicker.local' })).toBeTruthy();
@@ -314,7 +300,7 @@ describe('one Cindy entry across devices', () => {
     const view = await renderSidebar();
     expect(screen.getByText('Cloud preview')).toBeTruthy();
     mocks.remoteBots = [];
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('Local preview')).toBeTruthy();
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
@@ -346,7 +332,7 @@ describe('teammate host labels', () => {
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/remote-device/remote-bot');
 
     mocks.remoteBots = mocks.remoteBots.map((bot) => ({ ...bot, online: false, deviceName: ' ' }));
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('bots.remote.offline · remote-device')).toBeTruthy();
     expect(screen.queryByText('bots.remote.offline · bots.remote.thisDevice')).toBeNull();
   });
@@ -358,7 +344,7 @@ describe('teammate host labels', () => {
     expect(view.container.innerHTML).not.toContain('bots.remote.thisDevice');
     expect(view.container.textContent).not.toContain(' · ');
     mocks.devices = [{ deviceId: 'local-device', name: 'Renamed Mac', isSelf: true }];
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('bots.remote.online')).toBeTruthy();
     expect(view.container.innerHTML).not.toContain('Renamed Mac');
     expect(view.container.textContent).not.toContain(' · ');
@@ -377,7 +363,7 @@ describe('teammate host labels', () => {
     expect(screen.getByText('bots.remote.online · Shared Mac (host-b)')).toBeTruthy();
     expect(view.container.innerHTML).not.toContain('local-device');
     mocks.remoteBots = mocks.remoteBots.map((entry) => ({ ...entry, deviceName: entry.deviceId === 'host-a' ? 'Studio' : 'Mini' }));
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.getByText('bots.remote.online · Studio')).toBeTruthy();
     expect(screen.getByText('bots.remote.online · Mini')).toBeTruthy();
   });
@@ -395,7 +381,7 @@ describe('teammate host labels', () => {
     expect(view.container.textContent).not.toContain(' · ');
     expect(screen.queryByText('Previous reply')).toBeNull();
     mocks.islandActivity.clear();
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(screen.queryByText(compactDetail)).toBeNull();
     expect(screen.getByText('bots.remote.online')).toBeTruthy();
     expect(screen.getByText('Previous reply')).toBeTruthy();
@@ -418,43 +404,66 @@ describe('teammate host labels', () => {
 
 });
 
-describe('BotsSidebar rail return', () => {
-  it.each(['/plugins', '/settings', '/bots-other'])('hides the retained return entry on %s', async (path) => {
-    mocks.collapsed = true;
-    const view = await renderSidebar();
-    expect(screen.getByRole('button', { name: 'sidebar.backToSessions' })).toBeTruthy();
+describe('TeammatesSection header', () => {
+  const header = () => screen.getByRole('button', { name: 'bots.title' });
 
-    // The slot retains the same element after the bots feature unregisters.
-    mocks.pathname = path;
-    view.rerender(<div>{mocks.registered.node}</div>);
-    expect(screen.queryByRole('button', { name: 'sidebar.backToSessions' })).toBeNull();
+  it('starts expanded and collapses into a row of avatars that is remembered per account', async () => {
+    mocks.profiles = [
+      bot({ id: 'bot-1', name: 'PR steward', lastMessagePreview: 'Two checks are still red' }),
+      bot({ id: 'bot-2', name: 'Writer' }),
+    ];
+    mocks.unread = { 'bot-2': 1 };
+    await renderSidebar();
+    expect(header().getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Two checks are still red')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'PR steward' })).toBeNull();
+    expect(readTeammatesSectionCollapsed('fixture-owner')).toBe(false);
+
+    fireEvent.click(header());
+    expect(header().getAttribute('aria-expanded')).toBe('false');
+    expect(readTeammatesSectionCollapsed('fixture-owner')).toBe(true);
+    // Collapsed: one avatar per chat; an unread teammate says so in its label.
+    fireEvent.click(screen.getByRole('button', { name: 'PR steward' }));
+    expect(mocks.navigate).toHaveBeenLastCalledWith('/bots/bot-1');
+    expect(screen.getByRole('button', { name: 'Writer · bots.list.unread:{"count":1}' })).toBeTruthy();
+    // The full rows leave once the collapse animation has finished.
+    await waitFor(() => expect(screen.queryByText('Two checks are still red')).toBeNull());
+
+    // A fresh mount (another route, a relaunch) restores the saved choice.
+    cleanup();
+    await renderSidebar();
+    expect(header().getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Two checks are still red')).toBeNull();
+    expect(screen.getByRole('button', { name: 'PR steward' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'bots.list.sectionExpand' }));
+    expect(header().getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Two checks are still red')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'PR steward' })).toBeNull();
+    expect(readTeammatesSectionCollapsed('fixture-owner')).toBe(false);
+    expect(window.localStorage.getItem('sidebar.teammatesSection.v1.owner.fixture-owner')).toBe('expanded');
   });
 
-  it.each([
-    '/cc-agent/session-1?remoteHostId=host-1#message-2',
-    undefined,
-  ])('restores the remembered task route %s, falling back to the index', (taskPath) => {
-    mocks.collapsed = true;
-    mocks.pathname = '/bots/teammate-2';
-    const history: { current: MainViewHistory } = {
-      current: {
-        lastMatchedKey: 'bots',
-        paths: taskPath ? { 'cc-agent': taskPath } : {},
-      },
-    };
-    render(<BotsSidebar />);
-    render(
-      <MainViewHistoryContext.Provider value={history}>
-        {mocks.registered.node}
-      </MainViewHistoryContext.Provider>,
-    );
+  it('marks the open chat in the collapsed avatar row', async () => {
+    mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' }), bot({ id: 'bot-2', name: 'Writer' })];
+    mocks.unread = { 'bot-1': 2 };
+    mocks.params = { botId: 'bot-1' };
+    await renderSidebar();
+    fireEvent.click(header());
+    // The chat being read is current and does not also advertise its unread replies.
+    expect(screen.getByRole('button', { name: 'PR steward' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: 'Writer' }).hasAttribute('aria-current')).toBe(false);
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: 'sidebar.backToSessions' }));
-    expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(taskPath ?? '/cc-agent');
+  it('leaves session notifications to the task sidebar', async () => {
+    mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' })];
+    mocks.params = { botId: 'bot-1' };
+    await renderSidebar();
+    expect(mocks.observeSession).not.toHaveBeenCalled();
   });
 });
 
-describe('BotsSidebar 「正在输入…」', () => {
+describe('TeammatesSection 「正在输入…」', () => {
   it('回合进行中时第二行让位给「正在输入…」', async () => {
     mocks.profiles = [
       bot({
@@ -518,7 +527,7 @@ describe('BotsSidebar 「正在输入…」', () => {
 
 function UnreadSync() { useBotUnreadSync(); return null; }
 
-describe('BotsSidebar rows', () => {
+describe('TeammatesSection rows', () => {
   it('shows durable Hermes attention without reviving the permissions badge', async () => {
     mocks.profiles = [bot({ id: 'bot-1', name: 'Needs help', needsAttention: true })];
 
@@ -746,8 +755,7 @@ describe('BotsSidebar rows', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' })];
 
-    render(<><UnreadSync /><BotsSidebar /></>);
-    render(<>{mocks.registered.node}</>);
+    render(<><UnreadSync /><TeammatesSection /></>);
     await vi.waitFor(() => expect(messageListeners.length).toBe(1));
     mocks.refreshBotProfiles.mockClear();
 
@@ -764,8 +772,7 @@ describe('BotsSidebar rows', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' })];
 
-    render(<><UnreadSync /><BotsSidebar /></>);
-    render(<>{mocks.registered.node}</>);
+    render(<><UnreadSync /><TeammatesSection /></>);
     await vi.waitFor(() => expect(messageListeners.length).toBe(1));
 
     mocks.refreshBotProfiles.mockClear();

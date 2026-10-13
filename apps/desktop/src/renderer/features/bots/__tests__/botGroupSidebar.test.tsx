@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { cloneElement, type ReactElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BotGroupOpenPlanSummary, BotGroupSummary } from '../../../../shared/botGroupChat';
@@ -29,16 +28,7 @@ const mocks = vi.hoisted(() => ({
   profiles: [] as unknown[],
   groups: [] as BotGroupSummary[],
   params: {} as { botId?: string; groupId?: string },
-  registered: { node: null as ReactNode },
   islandActivity: new Map<string, { sessionId: string; phase: string; workingPhase?: string }>(),
-  runningStatusOptions: null as null | {
-    onSessionDone: (sessionId: string) => void;
-    onSessionNeedsReply: (sessionId: string) => void;
-  },
-  sendNotification: vi.fn(),
-  laneSentinel: Symbol('lane'),
-  ownedTitle: vi.fn(),
-  getSession: vi.fn(),
 }));
 
 vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [] }));
@@ -48,28 +38,9 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
 vi.mock('@/state/agentIslandActivity', () => ({
   useAgentIslandActivityMap: () => mocks.islandActivity,
 }));
-vi.mock('@/hooks/useSessionRunningStatus', () => ({
-  useSessionRunningStatus: (_sessionId: string | undefined, options: typeof mocks.runningStatusOptions) => {
-    mocks.runningStatusOptions = options;
-    return { runningSessionIds: new Set<string>(), notifications: new Set<string>(), clearNotification: vi.fn() };
-  },
-}));
-vi.mock('@/lib/sessionEventNotification', () => ({
-  BOT_GROUP_LANE_SESSION: mocks.laneSentinel,
-  botOwnedSessionNotificationTitle: (...args: unknown[]) => mocks.ownedTitle(...args),
-  sendSessionEventNotification: (...args: unknown[]) => mocks.sendNotification(...args),
-}));
-vi.mock('@/lib/sessionService', () => ({ get: (...args: unknown[]) => mocks.getSession(...args) }));
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mocks.navigate,
-  useLocation: () => ({ pathname: '/bots', search: '', hash: '' }),
   useParams: () => mocks.params,
-}));
-vi.mock('../../feature-context', () => ({
-  useSidebarCollapsedState: () => false,
-  useRegisterSidebarUpper: (node: ReactNode) => {
-    mocks.registered.node = node;
-  },
 }));
 vi.mock('../botStore', () => ({
   useBotProfiles: () => mocks.profiles,
@@ -95,7 +66,7 @@ vi.mock('../BotGenerationLabel', () => ({
   BotGenerationLabel: ({ sessionId }: { sessionId?: string }) => <span>{`generation:${sessionId}`}</span>,
 }));
 
-import { BotsSidebar } from '../BotsSidebar';
+import { TeammatesSection } from '../TeammatesSection';
 
 function bot(id: string, name: string, extraSessions: unknown[] = []) {
   return {
@@ -149,21 +120,16 @@ function openPlan(overrides: Partial<BotGroupOpenPlanSummary> = {}): BotGroupOpe
 }
 
 async function renderSidebar() {
-  render(<BotsSidebar />);
-  const view = render(<>{mocks.registered.node}</>);
+  const view = render(<TeammatesSection />);
   await waitFor(() => expect(view.container.querySelector('button')).not.toBeNull());
   return view;
 }
 
 beforeEach(() => {
   mocks.navigate.mockReset();
-  mocks.sendNotification.mockReset();
-  mocks.ownedTitle.mockReset().mockResolvedValue(null);
-  mocks.getSession.mockReset();
   mocks.params = {};
   mocks.groups = [];
   mocks.islandActivity = new Map();
-  mocks.runningStatusOptions = null;
   mocks.profiles = [
     bot('mimi', '咪咪', [{ id: 'lane-mimi', kind: 'group', role: 'group', title: 'group lane' }]),
     bot('xiaoman', '小满'),
@@ -177,7 +143,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe('BotsSidebar group chats', () => {
+describe('TeammatesSection group chats', () => {
   it('lists groups alongside teammates with an author preview and opens them', async () => {
     mocks.groups = [group(), group({ id: 'g2', name: '读书会', lastMessage: null, updatedAt: 1 })];
     mocks.params = { groupId: 'g1' };
@@ -216,7 +182,7 @@ describe('BotsSidebar group chats', () => {
       .filter(Boolean);
     expect(order()).toEqual(['小满', '咪咪', '周末出游']);
     mocks.groups = [group({ lastMessage: { ...group().lastMessage!, createdAt: 30 } })];
-    view.rerender(cloneElement(mocks.registered.node as ReactElement));
+    view.rerender(<TeammatesSection />);
     expect(order()).toEqual(['小满', '周末出游', '咪咪']);
   });
 
@@ -319,26 +285,6 @@ describe('BotsSidebar group chats', () => {
     const running = screen.getByTestId('bot-group-running');
     expect(running.textContent).toContain('咪咪');
     expect(running.textContent).toContain('bots.groupChat.sidebar.waiting');
-  });
-
-  it('never sends system notifications for group lanes', async () => {
-    await renderSidebar();
-    const options = mocks.runningStatusOptions!;
-    options.onSessionDone('lane-mimi');
-    options.onSessionNeedsReply('lane-mimi');
-    expect(mocks.sendNotification).not.toHaveBeenCalled();
-
-    options.onSessionDone('mimi-chat');
-    expect(mocks.sendNotification).toHaveBeenCalledWith('mimi-chat', '咪咪', 'done');
-
-    // A lane the cached profiles have not caught up with yet is re-checked.
-    mocks.sendNotification.mockReset();
-    mocks.getSession.mockResolvedValue({ id: 'lane-new', title: 'lane', source: 'bot' });
-    mocks.ownedTitle.mockResolvedValue(mocks.laneSentinel);
-    options.onSessionDone('lane-new');
-    await waitFor(() => expect(mocks.ownedTitle).toHaveBeenCalledWith('lane-new'));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mocks.sendNotification).not.toHaveBeenCalled();
   });
 });
 

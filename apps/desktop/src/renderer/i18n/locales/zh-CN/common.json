@@ -8723,7 +8723,9 @@
       "pinned": "已置顶",
       "needsAttention": "需要处理",
       "duplicate": "复制伙伴",
-      "moreActions": "{{name}} 的更多操作"
+      "moreActions": "{{name}} 的更多操作",
+      "sectionExpand": "展开伙伴",
+      "sectionCollapse": "收起伙伴"
     },
     "cancel": "取消",
     "save": "保存",

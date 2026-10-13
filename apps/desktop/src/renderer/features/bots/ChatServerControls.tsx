@@ -69,17 +69,18 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
   );
 }
 
-function InviteControl({ groupId, onJoined }: { groupId?: string; onJoined?: (id: string) => void }) {
+const compactIconClass = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
+function InviteControl({ groupId, onJoined, compact = false }: { groupId?: string; onJoined?: (id: string) => void; compact?: boolean }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const title = t(key(groupId ? 'invite' : 'join'));
   return <>
-    <Tip text={title}><button type="button" className={iconClass} style={WINDOW_NO_DRAG_STYLE} aria-label={title} onClick={() => setOpen(true)}><UserPlus size={16} /></button></Tip>
+    <Tip text={title}><button type="button" className={compact ? compactIconClass : iconClass} style={WINDOW_NO_DRAG_STYLE} aria-label={title} onClick={() => setOpen(true)}><UserPlus size={compact ? 13 : 16} strokeWidth={compact ? 2 : undefined} /></button></Tip>
     {open && <ChatInviteDialog groupId={groupId} onClose={() => setOpen(false)} onJoined={onJoined} />}
   </>;
 }
 export const ChatInviteButton = InviteControl;
-export function ChatJoinButton({ onJoined }: { onJoined: (id: string) => void }) {
+export function ChatJoinButton({ onJoined, compact = false }: { onJoined: (id: string) => void; compact?: boolean }) {
   const [enabled, setEnabled] = useState(false);
   useEffect(() => {
     let disposed = false;
@@ -87,5 +88,5 @@ export function ChatJoinButton({ onJoined }: { onJoined: (id: string) => void })
     read(); const timer = setInterval(read, 3000);
     return () => { disposed = true; clearInterval(timer); };
   }, []);
-  return enabled ? <InviteControl onJoined={onJoined} /> : null;
+  return enabled ? <InviteControl onJoined={onJoined} compact={compact} /> : null;
 }
