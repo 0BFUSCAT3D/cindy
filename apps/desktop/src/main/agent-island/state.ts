@@ -954,6 +954,20 @@ function dismissPendingInteraction(
  */
 export type AgentIslandSessionReadAckResult = 'cleared' | 'noop' | 'not-found' | 'error-immune';
 
+/**
+ * 灵动岛上一张未读完成 / 报错卡的身份。点击时记下,导航落地后再比对:任何后续活动
+ * (新一轮开始、新的报错或完成)都会改变它,旧点击因此不会处置后来的提醒。
+ * 只认本机会话当前展示的未读终态;运行中、等待交互或只剩远程账本时返回 null。
+ */
+export function readAgentIslandUnreadTerminalStamp(
+  state: AgentIslandState,
+  sessionId: string,
+): string | null {
+  const session = state.sessions.get(sessionId);
+  if (!session || session.sourceDeviceId !== null || !isUnreadTerminalLedger(session)) return null;
+  return `${session.phase}:${session.lastActivityAt}`;
+}
+
 export function acknowledgeAgentIslandSessionRead(
   state: AgentIslandState,
   sessionId: string,

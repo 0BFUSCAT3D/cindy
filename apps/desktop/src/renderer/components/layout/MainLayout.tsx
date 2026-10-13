@@ -107,6 +107,7 @@ import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNe
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
 import { createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
+import { useSessionEntryLocationCommits } from '@/features/bots/useSessionEntryLocationCommits';
 import { requestProviderShareJoin } from '@/features/provider-share/joinIntent';
 import { ProviderShareGlobalHost } from '@/features/provider-share/ProviderShareGlobalHost';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -557,10 +558,17 @@ export function MainLayout() {
     openBotRoute: (route) => {
       if (currentPathRef.current !== route) sessionEntryDepsRef.current.navigate(route);
     },
+    // 群专线 / 只读历史 / 不可用的委派任务没有可处置报错的横幅:目标地址提交后请 main
+    // 处置这次点击的那张卡(main 只认最近一次点击与当时的卡片身份,见 BotSessionEntryTarget)。
+    consumeAlert: (sessionId, islandEntryId) => {
+      void window.electronAPI.agentIsland?.consumeEntryAlert?.(sessionId, islandEntryId).catch(() => undefined);
+    },
     openOrdinary: (sessionId, messageClientId, isLatest) =>
       sessionEntryDepsRef.current.navigateToOrdinarySession(sessionId, messageClientId, isLatest),
   }));
   navigateToSessionRef.current = navigateToSession;
+  // 已提交的地址交给入口导航器:灵动岛卡片的处置等到目标地址真正提交后才发。
+  useSessionEntryLocationCommits(navigateToSession);
   useEffect(() => {
     const unsubscribe = window.electronAPI.onNotificationFocusSession((sessionId) => {
       if (typeof sessionId !== 'string' || !sessionId) return;
@@ -633,7 +641,7 @@ export function MainLayout() {
   const handleDeepLinkPayload = useCallback(
     (
       payload:
-        | { type: 'session'; id: string; messageClientId?: string }
+        | { type: 'session'; id: string; messageClientId?: string; islandEntryId?: string }
         | { type: 'project'; workingDir: string }
         | { type: 'new-session'; workingDir: string }
         | { type: 'share-import'; filePath: string }
@@ -661,7 +669,7 @@ export function MainLayout() {
         return;
       }
       if (payload.type === 'session') {
-        navigateToSession(payload.id, payload.messageClientId);
+        navigateToSession(payload.id, payload.messageClientId, payload.islandEntryId);
         return;
       }
       if (payload.type === 'project') {

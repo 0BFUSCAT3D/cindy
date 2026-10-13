@@ -24,6 +24,7 @@ import { BotSessionView } from '../BotSessionView';
 import { BotHistorySessionView } from '../BotHistorySessionView';
 
 const report = vi.fn();
+const consumeEntryAlert = vi.fn(async () => ({ ok: true as const, consumed: true }));
 const get = vi.fn();
 const history = vi.fn();
 const profile = {
@@ -39,7 +40,7 @@ beforeEach(() => {
   get.mockResolvedValue(profile);
   history.mockResolvedValue([{ id: 'chat-a' }]);
   Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
-    agentIsland: { setVisibleSession: report },
+    agentIsland: { setVisibleSession: report, consumeEntryAlert },
     localDb: { bots: { get, history, list: vi.fn(async () => []) } },
   } });
 });
@@ -117,5 +118,33 @@ describe.each([
     const view = render(<View />);
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
     expect(report).not.toHaveBeenCalled();
+  });
+});
+
+// 不可用页自己从不处置提醒:只有灵动岛入口导航器在目标地址提交后、带着那次点击的编号
+// 才会请 main 处置(见 botSessionOwners)。直接打开地址、被新点击取代后再访问都不消费。
+describe('unavailable Bot task page never disposes island alerts by itself', () => {
+  it('shows the unavailable state without asking main to dispose anything', async () => {
+    mocks.params = { botId: 'bot-a', sessionId: 'delegated-a' };
+    get.mockResolvedValue({
+      ...profile,
+      sessions: [...profile.sessions, { id: 'delegated-a', kind: 'worker', role: 'delegation', status: 'active' }],
+    });
+    const view = render(<BotSessionView />);
+    await waitFor(() => expect(view.getByText('bots.sessionUnavailableTitle')).toBeTruthy());
+    view.rerender(<BotSessionView />);
+    await act(async () => {});
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
+    expect(report.mock.calls.every(([id]) => id === null)).toBe(true);
+  });
+
+  it('keeps the alert for a live chat and for a retryable load failure', async () => {
+    const live = render(<BotSessionView />);
+    await waitFor(() => expect(live.getByTestId('chat')).toBeTruthy());
+    live.unmount();
+    get.mockRejectedValue(new Error('db busy'));
+    const failed = render(<BotSessionView />);
+    await waitFor(() => expect(failed.getByText('bots.sessionLoadFailedTitle')).toBeTruthy());
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
   });
 });
