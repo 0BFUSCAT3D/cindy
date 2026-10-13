@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "로그 및 피드백",
+    "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
+    "uploaded": "로그를 업로드했습니다. 업로드 번호: {{code}}. 문제를 신고할 때 이 번호를 함께 보내세요.",
+    "close": "닫기",
+    "uploadDescription": "문제를 신고할 때 업로드 번호를 함께 보내세요.",
+    "uploadDetails": "업로드 항목 보기"
+  },
   "taskMove": {
     "upgradeComputer": "이 컴퓨터의 Cindy 버전은 작업 이동을 지원하지 않습니다. “{{name}}”의 Cindy를 업데이트해 주세요.",
     "sourceProjects": "작업이 있는 컴퓨터의 프로젝트",

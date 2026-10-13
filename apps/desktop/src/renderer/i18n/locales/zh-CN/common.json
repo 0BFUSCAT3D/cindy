@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "日志与反馈",
+    "localFiles": "选择问题当天的日志。文件未脱敏，请先检查。",
+    "uploaded": "日志已上传，上传编号：{{code}}。反馈时请附上编号。",
+    "close": "关闭",
+    "uploadDescription": "上传后，请在反馈中附上上传编号。",
+    "uploadDetails": "查看上传内容"
+  },
   "taskMove": {
     "upgradeComputer": "这台电脑的 Cindy 版本暂不支持移动任务。请更新「{{name}}」上的 Cindy 后再试。",
     "sourceProjects": "任务所在电脑的项目",
