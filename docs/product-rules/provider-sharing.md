@@ -357,6 +357,9 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
        签名验证也可能启动外部程序：配置了 `gpg.program` / `gpg.<format>.program`、启用了
        `log.showSignature`、命令请求 `--show-signature` 或 `%G` 验证格式、配置中的 pretty 格式或别名
        含 `%G` 时均保留确认，不假设验证器不会读取或输出凭证；历史与文件列表探针始终禁用签名展示；
+       重合并历史（`--remerge-diff`、`--diff-merges=remerge` 或配置选择的 remerge 模式）可能运行
+       自定义 `merge.<driver>.driver`，非空时先保留确认。内部历史／文件列表探针固定逐父提交比较，
+       不继承重合并配置、不运行 merge driver；普通 Git 查看不因仅存在 merge driver 就额外确认；
        `--bare` 这类改变仓库上下文的选项、前面的命令段可能修改 Git 状态、运行环境，或写法认不出时也不能豁免。
        已知会读取 Git 内容的调用遇到未识别的全局选项、或不能归为静态只读命令时（如 `--ext-diff` /
        `--textconv`）也保留凭证确认，不能因为未进入核实路径就当成不读取凭证；本机默认判定仍不变。

@@ -50,16 +50,16 @@ const PSEUDO_REF = /(?:ORIG|FETCH|MERGE|CHERRY_PICK|REVERT|REBASE|BISECT)_HEAD|A
 const GIT_ENV_ASSIGNMENT = /\bGIT_[A-Z0-9_]*\s*=/i;
 const GIT_CONFIG_ENV_ASSIGNMENT = /\b(?:HOME|XDG_CONFIG_HOME)\s*=/i;
 /** 列出历史里每个路径(每个路径至少在某次提交里以新增出现)。 */
-const HISTORY_PATHS = ['log', '-m', '--root', '--no-renames', '--diff-filter=A', '--name-only', '--format=', '-z', '--no-show-signature', '--no-textconv', '--no-ext-diff'];
+const HISTORY_PATHS = ['log', '--diff-merges=separate', '--root', '--no-renames', '--diff-filter=A', '--name-only', '--format=', '-z', '--no-show-signature', '--no-textconv', '--no-ext-diff'];
 /**
  * 按原命令只列出会显示的文件(插在原有选项之后，后出现的输出格式生效，见 shownFilesArgs)。合并提交按
  * 每个父提交分别列、不认改名，只会多列。git grep 的选项不能放在搜索词之后，不在内。
  */
 const SHOWN_FILES: Readonly<Record<string, { sub: string; args: readonly string[] }>> = {
   diff: { sub: 'diff', args: ['--name-only', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
-  show: { sub: 'show', args: ['--name-only', '--format=', '-m', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
-  log: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
-  whatchanged: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
+  show: { sub: 'show', args: ['--diff-merges=separate', '--name-only', '--format=', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
+  log: { sub: 'log', args: ['--diff-merges=separate', '--name-only', '--format=', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
+  whatchanged: { sub: 'log', args: ['--diff-merges=separate', '--name-only', '--format=', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
 };
 /** 会在文件名列表里夹进别的内容的输出选项：碰到就不这样核对。 */
 const MIXED_OUTPUT_OPTION = /^--(?:graph|stat|numstat|shortstat|dirstat|summary|raw|name-|check|compact-summary|patch-with|line-prefix)/;
@@ -499,6 +499,16 @@ async function diffHelpersAllowCredentialProbe(read: GitRead, cwd: string, timeo
   const externalDiffEnabled = !disabled.has('--no-ext-diff');
   if (externalDiffEnabled && process.env.GIT_EXTERNAL_DIFF !== undefined) return false;
   const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs })).split('\0');
+  const defaultRemerge = entries.some((entry) => /^log\.diffmerges\n(?:r|remerge)\s*$/i.test(entry));
+  const mayRemerge = /^(?:log|show|whatchanged)$/.test(read.sub) && read.args.some((arg, index, args) => {
+    if (arg === '-m') return defaultRemerge;
+    const name = arg.split('=')[0];
+    if (!name.startsWith('--') || name.length <= 2) return false;
+    if ('--remerge-diff'.startsWith(name)) return true;
+    if (!'--diff-merges'.startsWith(name)) return false;
+    const mode = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[index + 1];
+    return mode === 'r' || mode === 'remerge' || (defaultRemerge && (mode === 'on' || mode === 'm'));
+  });
   return !entries.some((entry) => {
     const newline = entry.indexOf('\n');
     const key = newline < 0 ? entry : entry.slice(0, newline);
@@ -507,6 +517,9 @@ async function diffHelpersAllowCredentialProbe(read: GitRead, cwd: string, timeo
     const value = newline < 0 ? '' : entry.slice(newline + 1).trim();
     if (lowered === 'log.showsignature') return !/^(?:false|no|off|0)$/i.test(value);
     if (newline < 0 || !value) return false;
+    // Reconstructing a merge can run a configured merge driver even for ordinary
+    // source paths. Check before any probe; unrelated Git reads stay exempt.
+    if (mayRemerge && /^merge\..+\.driver$/i.test(key)) return true;
     if ((lowered === 'format.pretty' || lowered.startsWith('pretty.')) && value.includes('%G')) return true;
     // Trust the standard installed Git LFS commands, just as we trust Git itself.
     // This gate prevents accidental credential disclosure, not replaced binaries.

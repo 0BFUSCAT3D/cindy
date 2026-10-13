@@ -254,6 +254,51 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'git log --diff-merges=none -1')).toBe(true);
   });
 
+  it('checks custom merge drivers only when history reads may remerge commits', async () => {
+    write('.gitattributes', 'src/app.ts merge=shared\n');
+    git('add', '.gitattributes');
+    git('commit', '-qm', 'merge attributes', '--no-gpg-sign');
+    const baseBranch = git('branch', '--show-current').trim();
+    git('checkout', '-q', '-b', 'side');
+    write('src/app.ts', 'side\n');
+    git('commit', '-qam', 'side', '--no-gpg-sign');
+    git('checkout', '-q', baseBranch);
+    write('src/app.ts', 'main\n');
+    git('commit', '-qam', 'main', '--no-gpg-sign');
+    expect(spawnSync('git', ['merge', '--no-gpg-sign', 'side'], { cwd: repo }).status).toBe(1);
+    write('src/app.ts', 'resolved\n');
+    git('add', 'src/app.ts');
+    git('commit', '-qm', 'resolve merge', '--no-gpg-sign');
+    const credential = path.join(root, '.env');
+    const invoked = path.join(root, 'merge-invoked');
+    const helperFile = path.join(root, 'merge-helper.cjs');
+    fs.writeFileSync(credential, 'PRIVATE_FIXTURE=merge-driver\n');
+    fs.writeFileSync(helperFile, 'const fs = require("node:fs");\n'
+      + 'fs.writeFileSync(' + JSON.stringify(invoked) + ', "called");\n'
+      + 'process.stderr.write(fs.readFileSync(' + JSON.stringify(credential) + '));\nprocess.exit(1);\n');
+    const helper = [process.execPath, helperFile].map((file) => JSON.stringify(file.split(path.sep).join('/'))).join(' ');
+    git('config', 'merge.shared.driver', helper);
+    git('config', 'log.diffMerges', 'remerge');
+    const history = new GitCredentialHistory();
+    for (const options of [
+      ['--remerge-diff'], ['--diff-merges=remerge'], ['--diff-merges', 'r'],
+      ['-m', '-p'], ['--diff-merges=on'], ['--diff-merges', 'm'],
+    ]) {
+      const actual = spawnSync('git', ['log', ...options, '-1'], { cwd: repo, encoding: 'utf8' });
+      expect(actual.status).toBe(0);
+      expect(actual.stderr).toContain('PRIVATE_FIXTURE=merge-driver');
+      fs.unlinkSync(invoked);
+      const command = 'git log ' + options.join(' ') + ' -1';
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invoked), command).toBe(false);
+    }
+    for (const command of ['git log --oneline -1', 'git log -p -1', 'git diff', 'git status --short', 'git log --dd -1']) {
+      expect(await provesSafe(history, command), command).toBe(true);
+      expect(fs.existsSync(invoked), command).toBe(false);
+    }
+  });
+
   it('does not trust path-limited full diffs or commits outside the scanned history', async () => {
     const history = new GitCredentialHistory();
     const visible = git('rev-parse', 'HEAD').trim();
