@@ -212,6 +212,14 @@ describe('HDR 头像转 SDR 后再预览 / 上传', () => {
     ).rejects.toSatisfy((e) => ipcCode(e) === 'INVALID_PARAMS');
     expect(deps.uploadAvatar).not.toHaveBeenCalled();
   });
+
+  it('chooseAvatarFile:转换结果超出体积上限 → 选图阶段就 INVALID_PARAMS', async () => {
+    const { deps } = makeDeps({
+      showAvatarOpenDialog: vi.fn(async () => '/pics/hdr.png'),
+      toSdrAvatar: vi.fn(async () => ({ buffer: Buffer.alloc(AVATAR_MAX_BYTES + 1), mimeType: 'image/png' })),
+    });
+    await expect(chooseAvatarFile(deps)).rejects.toSatisfy((e) => ipcCode(e) === 'INVALID_PARAMS');
+  });
 });
 
 describe('chooseAvatarFile(选图预校验,不上传)', () => {

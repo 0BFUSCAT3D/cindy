@@ -77,6 +77,29 @@ async function syntheticPqPng(
   return insertAfterIhdr(png, ...extra);
 }
 
+/** Apple HDR gain map 结构:SDR 主图后经 MPF 追加一张带 hdrgainmap XMP 的辅助图。 */
+async function appleGainMapJpeg(width: number, height: number): Promise<Buffer> {
+  const primary = await sharp({
+    create: { width, height, channels: 3, background: { r: 90, g: 90, b: 90 } },
+  })
+    .jpeg()
+    .toBuffer();
+  const xmp = Buffer.from(
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:Description apdi:AuxiliaryImageType="urn:com:apple:photo:2020:aux:hdrgainmap"/></x:xmpmeta>',
+    'latin1',
+  );
+  const app1 = Buffer.alloc(4);
+  app1.writeUInt16BE(0xffe1, 0);
+  app1.writeUInt16BE(xmp.length + 2, 2);
+  const auxiliary = await sharp(Buffer.alloc(8 * 8 * 3, 90), {
+    raw: { width: 8, height: 8, channels: 3 },
+  })
+    .jpeg()
+    .toBuffer();
+  const secondary = Buffer.concat([auxiliary.subarray(0, 2), app1, xmp, auxiliary.subarray(2)]);
+  return Buffer.concat([primary, secondary]);
+}
+
 async function rgbaAt(buffer: Buffer, xs: number[], y = 0) {
   const { data, info } = await sharp(buffer)
     .toColourspace('srgb')
@@ -205,6 +228,19 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     }
   });
 
+  it('rejects HDR sources whose declared dimensions exceed the limit before decoding', async () => {
+    const png = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
+    // 改写 IHDR 宽高为 10000 × 10000(1 亿像素),文件仍只有几百字节。
+    const ihdr = Buffer.from(png.subarray(16, 29));
+    ihdr.writeUInt32BE(10_000, 0);
+    ihdr.writeUInt32BE(10_000, 4);
+    const inflated = Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', ihdr), png.subarray(33)]);
+    expect((await sharp(inflated).metadata()).width).toBe(10_000);
+    await expect(toSdrAvatarImage({ buffer: inflated, mimeType: 'image/png' })).rejects.toThrow(
+      /INVALID_PARAMS.*dimensions exceed/,
+    );
+  });
+
   it('rejects HDR bytes it cannot decode instead of storing them unchanged', async () => {
     const valid = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
     const truncated = valid.subarray(0, valid.length - 20);
@@ -237,27 +273,24 @@ describe('toSdrAvatarImage — gain maps', () => {
   });
 
   it('strips Apple HDR gain map auxiliary images appended through MPF', async () => {
-    const primary = await sharp(Buffer.alloc(8 * 8 * 3, 90), {
-      raw: { width: 8, height: 8, channels: 3 },
-    })
-      .jpeg()
-      .toBuffer();
-    const xmp = Buffer.from(
-      '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:Description apdi:AuxiliaryImageType="urn:com:apple:photo:2020:aux:hdrgainmap"/></x:xmpmeta>',
-      'latin1',
-    );
-    const app1 = Buffer.alloc(4);
-    app1.writeUInt16BE(0xffe1, 0);
-    app1.writeUInt16BE(xmp.length + 2, 2);
-    const secondary = Buffer.concat([primary.subarray(0, 2), app1, xmp, primary.subarray(2)]);
-    const input = Buffer.concat([primary, secondary]);
-
+    const input = await appleGainMapJpeg(8, 8);
     const output = await toSdrAvatarImage({ buffer: input, mimeType: 'image/jpeg' });
     await expectNoHdrSignal(output.buffer);
     expect(output.buffer.length).toBeLessThan(input.length);
     expect(
       (await rgbaAt(output.buffer, [4], 4))[0]!.slice(0, 3).every((v) => Math.abs(v - 90) <= 3),
     ).toBe(true);
+  });
+
+  it('downscales large gain-map photos like the PQ / HLG path', async () => {
+    // 4200 × 4100 ≈ 1722 万像素,超过 4096²。
+    const output = await toSdrAvatarImage({
+      buffer: await appleGainMapJpeg(4200, 4100),
+      mimeType: 'image/jpeg',
+    });
+    const metadata = await expectNoHdrSignal(output.buffer);
+    expect(metadata.width! * metadata.height!).toBeLessThanOrEqual(4096 * 4096);
+    expect(Math.abs(metadata.width! / metadata.height! - 4200 / 4100)).toBeLessThan(0.01);
   });
 });
 

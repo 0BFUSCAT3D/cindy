@@ -145,6 +145,10 @@ export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAva
     throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${buffer.byteLength}`);
   }
   const preview = await deps.toSdrAvatar({ buffer, mimeType: mime });
+  // 选图阶段就拒绝转换后超限的头像，不让用户在保存时才看到失败。
+  if (preview.buffer.byteLength > AVATAR_MAX_BYTES) {
+    throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${preview.buffer.byteLength}`);
+  }
   return {
     canceled: false,
     filePath,

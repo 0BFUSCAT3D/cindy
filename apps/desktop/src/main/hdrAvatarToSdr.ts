@@ -42,8 +42,13 @@ const HDR_REFERENCE_WHITE_NITS = 203;
 const DEFAULT_HDR_PEAK_NITS = 1000;
 /** 线性 SDR 中低于该值的部分保持不变，只把以上到峰值的高光平滑压进 (knee, 1]。 */
 const TONE_MAP_KNEE = 0.8;
-/** 色调映射在 JS 里逐像素做；超出该像素数先等比缩小，限制 main 进程内存与耗时。 */
+/** 两条转换路径的输出像素上限；超出先等比缩小，限制 main 进程内存与耗时。 */
 const HDR_MAX_PIXELS = 4096 * 4096;
+/**
+ * 源图像素上限：≤5 MB 的 PNG / WebP 也能声明上亿像素，超出时在解码前按头部尺寸拒绝，
+ * 并作为每次解码的 limitInputPixels 兜底（sharp 默认上限约 2.7 亿）。覆盖 4800 万像素手机原片。
+ */
+const HDR_MAX_INPUT_PIXELS = 64_000_000;
 /** 每处理这么多像素让出一次事件循环，避免长时间阻塞 main。 */
 const PIXELS_PER_YIELD = 1 << 18;
 
@@ -244,37 +249,45 @@ async function encode(pipeline: Sharp, format: AvatarFormat): Promise<AvatarImag
 }
 
 /**
- * 增益图 JPEG：主图即 SDR 版本。sharp 默认不保留增益图、XMP 与 MPF 次图，
- * 保留主图 ICC（常见为 Display P3）以免改变 SDR 颜色；EXIF 方向先烘焙进像素。
+ * 两条转换路径共用的解码入口：EXIF 方向烘焙进像素，源图受 HDR_MAX_INPUT_PIXELS 约束，
+ * 按旋转后的尺寸超出 HDR_MAX_PIXELS 时等比缩小。
  */
-async function dropGainMap(buffer: Buffer): Promise<AvatarImageBytes> {
-  return encode(sharp(buffer, { autoOrient: true }).keepIccProfile(), 'jpeg');
+function openHdrSource(buffer: Buffer, metadata: Metadata, ignoreIcc: boolean): Sharp {
+  const pipeline = sharp(buffer, {
+    ignoreIcc,
+    autoOrient: true,
+    limitInputPixels: HDR_MAX_INPUT_PIXELS,
+  });
+  const width = metadata.autoOrient?.width ?? metadata.width ?? 0;
+  const height = metadata.autoOrient?.height ?? metadata.height ?? 0;
+  if (width * height <= HDR_MAX_PIXELS) return pipeline;
+  const scale = Math.sqrt(HDR_MAX_PIXELS / (width * height));
+  return pipeline.resize(
+    Math.max(1, Math.floor(width * scale)),
+    Math.max(1, Math.floor(height * scale)),
+    { fit: 'fill' },
+  );
+}
+
+/**
+ * 增益图 JPEG：主图即 SDR 版本。sharp 默认不保留增益图、XMP 与 MPF 次图，
+ * 保留主图 ICC（常见为 Display P3）以免改变 SDR 颜色。
+ */
+async function dropGainMap(buffer: Buffer, metadata: Metadata): Promise<AvatarImageBytes> {
+  return encode(openHdrSource(buffer, metadata, false).keepIccProfile(), 'jpeg');
 }
 
 async function toneMapToSdr(
   buffer: Buffer,
+  metadata: Metadata,
   format: AvatarFormat,
   cicp: Cicp,
   transfer: HdrTransfer,
   maxCllNits: number | null,
 ): Promise<AvatarImageBytes> {
-  const metadata = await sharp(buffer).metadata();
   const wide = metadata.depth === 'ushort';
   // ignoreIcc：像素必须保持 PQ / HLG 编码原值，不能先被 lcms 按 ICC 转成 sRGB（会过曝裁切）。
-  let pipeline = sharp(buffer, { ignoreIcc: true, autoOrient: true });
-  const width = metadata.autoOrient?.width ?? metadata.width ?? 0;
-  const height = metadata.autoOrient?.height ?? metadata.height ?? 0;
-  if (width * height > HDR_MAX_PIXELS) {
-    const scale = Math.sqrt(HDR_MAX_PIXELS / (width * height));
-    pipeline = pipeline.resize(
-      Math.max(1, Math.floor(width * scale)),
-      Math.max(1, Math.floor(height * scale)),
-      {
-        fit: 'fill',
-      },
-    );
-  }
-  const { data, info } = await pipeline
+  const { data, info } = await openHdrSource(buffer, metadata, true)
     .toColourspace(wide ? 'rgb16' : 'srgb')
     .raw({ depth: wide ? 'ushort' : 'uchar' })
     .toBuffer({ resolveWithObject: true });
@@ -369,10 +382,13 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
   const gainMap =
     format === 'jpeg' && (Boolean(metadata.gainMap) || hasGainMapSignature(image.buffer));
   if (!transfer && !gainMap) return image;
+  if ((metadata.width ?? 0) * (metadata.height ?? 0) > HDR_MAX_INPUT_PIXELS) {
+    throwIpcError('INVALID_PARAMS', 'HDR avatar dimensions exceed the conversion limit');
+  }
   try {
     return transfer && cicp
-      ? await toneMapToSdr(image.buffer, format, cicp, transfer, png.maxCllNits)
-      : await dropGainMap(image.buffer);
+      ? await toneMapToSdr(image.buffer, metadata, format, cicp, transfer, png.maxCllNits)
+      : await dropGainMap(image.buffer, metadata);
   } catch {
     throwIpcError('INVALID_PARAMS', 'HDR avatar could not be converted to SDR');
   }
