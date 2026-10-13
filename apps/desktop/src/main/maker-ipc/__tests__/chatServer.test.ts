@@ -132,6 +132,42 @@ describe('Chat Server result delivery and refresh', () => {
     await expect(service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 1 }))
       .resolves.toEqual({ ok: false, errorCode: 'REVISION_CONFLICT', message: 'REVISION_CONFLICT' });
   });
+  it('lists every reactor by actor ID and names them only from the group member projection', async () => {
+    const messageId = '50000000-0000-4000-8000-000000000009';
+    const actor = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const former = actor(1), unknown = actor(2);
+    const firstPage = [selfId, botId, former, ...Array.from({ length: 97 }, (_, n) => actor(100 + n))];
+    fixture.handle.mockImplementation(route => {
+      if (route === `/conversations/${roomId}/members`) return { body: [
+        { id: selfId, kind: 'human', name: 'Dash', ownerName: 'Dash', state: 'joined' },
+        { id: botId, kind: 'bot', name: 'Cindy', ownerName: 'Chris', state: 'joined' },
+        { id: former, kind: 'human', name: 'Ada', ownerName: 'Ada', state: 'left' },
+      ] };
+      if (route.startsWith(`/conversations/${roomId}/messages/${messageId}/reactions?`)) {
+        const query = new URLSearchParams(route.split('?')[1]);
+        expect(query.get('emoji')).toBe('🎉');
+        return { body: query.get('after') ? [{ actor_id: former }, { actor_id: unknown }] : firstPage.map(actor_id => ({ actor_id })) };
+      }
+      return response(route);
+    });
+    const result = await service.chatServer!.reactors({ groupId: roomId, messageId, emoji: '🎉' });
+    if (!result.ok) throw new Error(result.errorCode);
+    expect(result.reactors).toHaveLength(101);
+    expect(result.reactors.slice(0, 3)).toEqual([
+      { actorId: selfId, name: 'Dash', isSelf: true, formerMember: false },
+      { actorId: botId, name: 'Cindy (Chris)', isSelf: false, formerMember: false },
+      { actorId: former, name: 'Ada', isSelf: false, formerMember: true },
+    ]);
+    expect(result.reactors.at(-1)).toEqual({ actorId: unknown, name: null, isSelf: false, formerMember: false });
+    const reads = fixture.handle.mock.calls.filter(([route]) => String(route).includes('/reactions'));
+    expect(reads.map(([, method]) => method)).toEqual(['GET', 'GET']);
+    expect(new URLSearchParams(String(reads[1][0]).split('?')[1]).get('after')).toBe(firstPage.at(-1));
+  });
+  it('rejects a malformed reactor query before reaching the server', async () => {
+    await expect(service.chatServer!.reactors({ groupId: roomId, messageId: 'not-a-message', emoji: '🎉' }))
+      .resolves.toEqual({ ok: false, errorCode: 'INVALID_INPUT' });
+    expect(fixture.handle.mock.calls.some(([route]) => String(route).includes('/reactions'))).toBe(false);
+  });
   it('an additive invite preserves people and all previously joined companions', async () => {
     const other = '60000000-0000-4000-8000-000000000002';
     fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { room: room(roomId), messages: [], cursor: '1', members: [

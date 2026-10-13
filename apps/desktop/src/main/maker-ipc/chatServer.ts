@@ -1345,6 +1345,27 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions`, 'POST', { operationId: randomUUID(), emoji: i.emoji, present: i.present });
       changed(i.groupId); return {};
     }),
+    reactors: input => result(async () => {
+      const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128) }).strict().parse(input);
+      await register();
+      // Every member state is listed, so actors who have since left keep their group name.
+      const members = await api<Member[]>(`/conversations/${i.groupId}/members`);
+      const page = z.array(z.object({ actor_id: id }).passthrough());
+      // One entry per actor ID, never merged by display name.
+      const actorIds = new Set<string>();
+      // Reactors are listed by actor ID; ten full pages cover the server's 1000-member room cap.
+      for (let pages = 0, after = ''; pages < 10; pages++) {
+        const query = new URLSearchParams({ emoji: i.emoji, limit: '100', ...(after ? { after } : {}) });
+        const rows = page.parse(await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions?${query}`));
+        for (const row of rows) actorIds.add(row.actor_id);
+        if (rows.length < 100) break;
+        after = rows[rows.length - 1].actor_id;
+      }
+      return { reactors: [...actorIds].map(actorId => {
+        const member = members.find(m => m.id === actorId);
+        return { actorId, name: member ? memberName(member) : null, isSelf: actorId === selfId, formerMember: !!member && member.state !== 'joined' };
+      }) };
+    }),
     createInvite: input => result(async () => {
       const i = z.object({ groupId: id, clientId: operationId }).parse(input);
       const invite = inviteResponse(z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/), ...inviteFields }).refine(validInvite),

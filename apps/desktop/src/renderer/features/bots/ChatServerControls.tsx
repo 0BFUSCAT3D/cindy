@@ -1,9 +1,9 @@
 import { chatErrorKey } from './chatError';
 import { useEffect, useRef, useState } from 'react';
 import { ChatInviteDialog } from './ChatInviteDialog';
+import { ChatReactionButton } from './ChatReactionButton';
 import { UserPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
 import { MessageActionBar } from '@/components/chat/MessageActionBar';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { SHARE_EXCLUDE_ATTR } from '@/lib/shareConversationImage';
@@ -46,12 +46,8 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} className="mt-1 flex flex-col gap-1">
       {!!message.reactions?.length && <div className={`flex flex-wrap items-center gap-1 ${align === 'right' ? 'justify-end' : ''}`}>
         {message.reactions.map(reaction => (
-          <Button key={reaction.emoji} variant={reaction.me ? 'primary' : 'secondary'} size="sm" compact
-            disabled={busy || !groupId} aria-pressed={reaction.me}
-            aria-label={t(key('reactionCount'), { emoji: reaction.emoji, count: reaction.count })}
-            onClick={() => void react(reaction.emoji, !reaction.me)}>
-            <span>{reaction.emoji}</span><span>{reaction.count}</span>
-          </Button>
+          <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction}
+            disabled={busy || !groupId} onToggle={() => void react(reaction.emoji, !reaction.me)} />
         ))}
       </div>}
       <MessageActionBar copyText={message.content} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}
