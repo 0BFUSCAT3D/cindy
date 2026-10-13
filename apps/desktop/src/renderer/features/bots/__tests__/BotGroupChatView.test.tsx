@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   getControlledState: vi.fn(),
   revoke: vi.fn(),
   thread: vi.fn(),
+  ownerGeneration: 1,
   reply: vi.fn(),
   shareToMain: vi.fn(),
   toastInfo: vi.fn(),
@@ -65,7 +66,7 @@ vi.mock('react-router-dom', () => ({
   useParams: () => ({ groupId: mocks.groupId }),
 }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
-  getDataOwnerGeneration: () => 1,
+  getDataOwnerGeneration: () => mocks.ownerGeneration,
   isDataOwnerGenerationCurrent: () => true,
   isDataOwnerPushCurrent: () => true,
 }));
@@ -1992,5 +1993,31 @@ describe('more older shares than one refresh re-reads', () => {
     expect(refreshes.length).toBeLessThanOrEqual(3);
     expect(refreshes.every(ids => ids.length <= 200)).toBe(true);
     expect(screen.queryByText('↪ 卡片 0')).toBeNull();
+  });
+});
+
+describe('pending main-chat copies across accounts', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+  afterEach(() => { mocks.ownerGeneration = 1; });
+
+  it('does not offer one account\'s failed copy to the next account in the same group', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' })] }) });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    const view = renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    let panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'from account A{Enter}');
+    await within(panel).findByRole('button', { name: t('retryPost') });
+    view.unmount();
+    // Another account opens the same server group and thread.
+    mocks.ownerGeneration = 2;
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    panel = await screen.findByRole('complementary');
+    await within(panel).findByText('Reply to u1');
+    expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull();
   });
 });

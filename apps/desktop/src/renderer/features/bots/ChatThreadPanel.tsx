@@ -32,8 +32,14 @@ export type BotGroupSharedReplies = ReadonlyMap<string, { messageId: string; byS
 /**
  * Replies that reached a thread while their main-chat copy did not, per group and thread.
  * Kept outside the panel so switching threads and coming back still offers the retry.
+ * Server groups keep their IDs across accounts, so the queue belongs to one data owner.
  */
-const unpostedReplies = new Map<string, ReadonlySet<string>>();
+const unpostedStore = { owner: getDataOwnerGeneration(), replies: new Map<string, ReadonlySet<string>>() };
+function unpostedReplies() {
+  const owner = getDataOwnerGeneration();
+  if (unpostedStore.owner !== owner) { unpostedStore.owner = owner; unpostedStore.replies.clear(); }
+  return unpostedStore.replies;
+}
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
   const style = getComputedStyle(panel);
@@ -118,10 +124,10 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
   // Off by default: a reply stays in the thread unless the user asks for both.
   const [alsoSend, setAlsoSend] = useState(false);
   const unpostedKey = `${group.id}:${rootId}`;
-  const [unposted, setUnpostedState] = useState<ReadonlySet<string>>(() => unpostedReplies.get(unpostedKey) ?? new Set());
+  const [unposted, setUnpostedState] = useState<ReadonlySet<string>>(() => unpostedReplies().get(unpostedKey) ?? new Set());
   const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => setUnpostedState(previous => {
     const next = update(previous);
-    if (next.size) unpostedReplies.set(unpostedKey, next); else unpostedReplies.delete(unpostedKey);
+    if (next.size) unpostedReplies().set(unpostedKey, next); else unpostedReplies().delete(unpostedKey);
     return next;
   });
   const [posting, setPosting] = useState<ReadonlySet<string>>(new Set());
