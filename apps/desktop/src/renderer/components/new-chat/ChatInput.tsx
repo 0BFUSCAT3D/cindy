@@ -1760,7 +1760,7 @@ export function ChatInput({
       agentKind: runtimeAgentKind ?? vendorKeyToAgentKind(vendorKey) ?? 'claude-code',
       model: initialModel ?? (sessionId ? '' : localVendorDefaults.model),
       providerId: initialProviderId ?? null,
-      effort: initialEffort === null ? null : initialEffort ?? localVendorDefaults.effort,
+      effort: initialEffort === null || initialEffort === '' ? null : initialEffort ?? localVendorDefaults.effort,
       fastMode: fastMode === true,
     },
     effective: sessionId ? runtimeEffective : undefined,
@@ -1769,7 +1769,8 @@ export function ChatInput({
     optimistic: pendingRemoteSwitch,
   });
   const activeModel = composerSelection.display.model;
-  const activeEffort = composerSelection.display.effort ?? 'low';
+  const selectedEffort = composerSelection.display.effort ?? '';
+  const activeEffort = selectedEffort || 'low';
   const activePermissionMode: PermissionMode =
     initialPermissionMode ?? localVendorDefaults.permissionMode;
 
@@ -5359,7 +5360,7 @@ export function ChatInput({
               workspaceKind: 'dialogue',
               agentKind: currentModelAgentKind === 'claude-code' ? 'cc' : currentModelAgentKind ?? undefined,
               model: activeModel,
-              effort: initialEffort === null ? '' : activeEffort,
+              effort: selectedEffort,
               permissionMode: activePermissionMode,
               providerId: sendProviderId,
               fastMode,
@@ -5907,7 +5908,7 @@ export function ChatInput({
           }
         }
         let result: boolean | void;
-        let effortForSend = activeEffort;
+        let effortForSend = selectedEffort;
         try {
           if (sessionId) {
             const coordinator = effortChangeCoordinatorRef.current;
@@ -5945,7 +5946,7 @@ export function ChatInput({
             }
             // 等待 commit 后，闭包里的 activeEffort 可能仍是旧 props；以该 session 已提交的
             // 选择发送，保证本 turn 与 UI/SQLite 的 effort 相同。
-            effortForSend = coordinator.getCommittedEffort(sessionId) ?? activeEffort;
+            effortForSend = coordinator.getCommittedEffort(sessionId) ?? selectedEffort;
           }
           result = await onSend(
             routedText,
@@ -5996,7 +5997,7 @@ export function ChatInput({
       sessionId,
       onSend,
       activeModel,
-      activeEffort,
+      selectedEffort,
       activePermissionMode,
       sendProviderId,
       selectedSourceDisconnected,
@@ -6173,13 +6174,13 @@ export function ChatInput({
   const localRuntimeSwitchSeqBySessionRef = useRef(new Map<string, number>());
 
   useLayoutEffect(() => {
-    if (!sessionId || initialEffort === undefined || initialEffort === null) return;
+    if (!sessionId || initialEffort === undefined) return;
     if (deviceLinkDeviceId ?? getSessionDeviceId(sessionId)) return;
     // 其它窗口 / 控制路径的 sessions:patched 会更新 SSoT props；同步刷新本地 commit
     // cache，并使先前本机发布的旧 runtime attempt 失效，避免迟到完成覆盖外部终态。
     effortChangeCoordinatorRef.current.adoptExternalEffort(
       sessionId,
-      initialEffort,
+      initialEffort ?? '',
       (targetSessionId, effort) => window.electronAPI.maker.setEffort(targetSessionId, effort),
     );
   }, [deviceLinkDeviceId, initialEffort, sessionId]);

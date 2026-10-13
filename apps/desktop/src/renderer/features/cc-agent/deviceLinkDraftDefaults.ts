@@ -182,8 +182,10 @@ export function resolveDeviceLinkDraftDefaults(
   const supportedEfforts = effortModel.efforts as readonly string[];
 
   const effort: Effort | null =
-    supportedEfforts.length === 0 && effortModel.effortsUnknown !== true
-      ? null
+    supportedEfforts.length === 0
+      ? effortModel.effortsUnknown === false
+        ? null
+        : wantedEffort ?? effortModel.defaultEffort ?? 'high'
       : wantedEffort && supportedEfforts.includes(wantedEffort)
         ? wantedEffort
         : (effortModel.defaultEffort ?? supportedEfforts[0] ?? wantedEffort ?? 'high');

@@ -18,6 +18,7 @@ function providerModel(
     contextWindow: 200_000,
     efforts,
     defaultEffort,
+    effortsUnknown: false,
     supportsFastMode: false,
   } as CatalogModel;
 }
@@ -53,6 +54,7 @@ function caps(overrides: Partial<AgentCapabilities> = {}): AgentCapabilities {
         contextWindow: 200_000,
         efforts: [],
         defaultEffort: null,
+        effortsUnknown: false,
         supportsFastMode: false,
         sortOrder: 10,
         newSessionDefault: ['claude-code'],
@@ -262,6 +264,25 @@ describe('resolveDeviceLinkDraftDefaults', () => {
       effort: 'high',
     });
     expect(sel.effort).toBe('high');
+  });
+
+  it.each(['medium', 'high'])('旧主机缺少能力标记时保留远端草稿档位 (%s)', (effort) => {
+    const capabilities = caps();
+    delete capabilities.availableModels[1]!.effortsUnknown;
+    const sel = resolveDeviceLinkDraftDefaults(capabilities, {
+      model: 'claude-haiku-4-5', effort,
+    });
+    expect(sel.effort).toBe(effort);
+  });
+
+  it.each(['medium', 'high'])('旧主机来源条目缺少能力标记时不借用扁平目录清空档位 (%s)', (effort) => {
+    const model = providerModel('claude-haiku-4-5', [], null);
+    delete model.effortsUnknown;
+    const sel = resolveDeviceLinkDraftDefaults(
+      caps(), { model: model.id, providerId: 'legacy', effort }, undefined, 'pi',
+      [provider('legacy', model)],
+    );
+    expect(sel.effort).toBe(effort);
   });
 
   it('模型不支持 fast(或被控端 agent 无 fast 能力)→ fastMode 强制 false', () => {

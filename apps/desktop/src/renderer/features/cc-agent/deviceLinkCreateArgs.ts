@@ -178,7 +178,8 @@ export function resolveDeviceLinkSubmission(p: DeviceLinkSubmissionParams): Devi
     ? getModel(routeProvider, p.candidate.model, p.capabilityAgentKind)
     : undefined;
   const effort =
-    !routeModel || routeModel.effortsUnknown === true
+    !routeModel || routeModel.effortsUnknown === true ||
+      (routeModel.efforts.length === 0 && routeModel.effortsUnknown !== false)
       ? p.candidate.effort
       : reconcileInvocationEffort({
           requested: p.candidate.effort,

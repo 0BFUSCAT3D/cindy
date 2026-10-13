@@ -485,7 +485,7 @@ describe('resolveDeviceLinkSubmission', () => {
     const args = resolveDeviceLinkSubmission({
       agentKind: 'pi',
       candidate: { ...candidate, model: 'qwen3:14b', effort: 'medium', providerId: 'ollama' },
-      deviceProviders: [deviceProvider('ollama', true, ['qwen3:14b'], 'pi')],
+      deviceProviders: [deviceProvider('ollama', true, ['qwen3:14b'], 'pi', { effortsUnknown: false })],
       capabilityAgentKind: 'pi',
     });
     expect(args.effort).toBe('');
@@ -583,6 +583,16 @@ describe('resolveDeviceLinkSubmission', () => {
       capabilityAgentKind: 'pi',
     });
     expect(args.effort).toBe('medium');
+  });
+
+  it.each(['medium', 'high'])('旧主机空档位表缺少能力标记时保留候选档位 (%s)', (effort) => {
+    const args = resolveDeviceLinkSubmission({
+      agentKind: 'pi',
+      candidate: { ...candidate, model: 'qwen3:14b', effort, providerId: 'ollama' },
+      deviceProviders: [deviceProvider('ollama', true, ['qwen3:14b'], 'pi')],
+      capabilityAgentKind: 'pi',
+    });
+    expect(args.effort).toBe(effort);
   });
 
   it.each(['missing-provider', 'missing-model'])('缺少选中来源或模型时不使用其他来源校准 (%s)', (providerId) => {
