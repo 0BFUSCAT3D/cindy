@@ -344,11 +344,15 @@ export function AboutSection() {
         <AgentVersionsRows />
         <DebugLogToggleRow />
         <Divider />
-        <OpenLogsRow />
+        <div id="settings-search-settings-about-logsDirLabel">
+          <OpenLogsRow />
+        </div>
         <Divider />
         <CrashAutoUploadToggleRow />
         <Divider />
-        <UploadLogsRow />
+        <div id="settings-search-settings-about-logUpload-uploadLabel">
+          <UploadLogsRow />
+        </div>
         <Divider />
         <LegalLinksRows />
       </div>

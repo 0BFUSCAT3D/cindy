@@ -7,12 +7,14 @@ import { useAppShellCover } from '@/contexts/AppShellCoverContext';
 import { useEnvCheck } from '@/contexts/EnvCheckContext';
 import { useLoginHandoff } from '@/contexts/LoginHandoffContext';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
-import { OpenLogsRow, UploadLogsRow } from './LogSupportActions';
+import { OpenLogsRow, UploadLogsActionRow } from './LogSupportActions';
+import { useManualLogUpload } from './useManualLogUpload';
 
 /** Outside startup/auth/database gates so the failure being diagnosed cannot hide the entry. */
 export function StartupLogSupport() {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const upload = useManualLogUpload();
   const { canEnterApp, isInitializing } = useAuth();
   const { localDbGateStatus } = useAppShellCover();
   const { status } = useEnvCheck();
@@ -43,6 +45,7 @@ export function StartupLogSupport() {
           </button>
         </div>
       )}
+      {/* Only the entry follows startup readiness; an opened dialog stays until explicitly dismissed. */}
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
@@ -51,7 +54,7 @@ export function StartupLogSupport() {
         content={
           open ? (
             <div className="flex flex-col gap-5">
-              <UploadLogsRow presentation="dialog" />
+              <UploadLogsActionRow presentation="dialog" upload={upload} />
               <OpenLogsRow presentation="dialog" />
             </div>
           ) : undefined

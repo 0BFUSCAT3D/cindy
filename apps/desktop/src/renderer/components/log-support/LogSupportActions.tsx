@@ -1,4 +1,3 @@
-import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FolderOpen, Upload } from 'lucide-react';
 
@@ -6,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { useLogUploadSettings } from '@/hooks/useLogUploadSettings';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { extractIpcError } from '@/utils/ipcError';
+import { useManualLogUpload } from './useManualLogUpload';
 
 interface LogSupportRowProps {
   presentation?: 'settings' | 'dialog';
@@ -35,7 +34,6 @@ export function OpenLogsRow({ presentation = 'settings' }: LogSupportRowProps) {
     >
       <div className="flex min-w-0 flex-col gap-1">
         <span
-          id={inDialog ? undefined : 'settings-search-settings-about-logsDirLabel'}
           className={cn(
             'text-13',
             inDialog ? 'text-[var(--confirm-title)]' : 'text-[var(--settings-section-sublabel)]',
@@ -71,51 +69,19 @@ export function OpenLogsRow({ presentation = 'settings' }: LogSupportRowProps) {
  * 成功后必须给出上传编号(用户报障时口述给我们),所以保留可选择的编号并尝试复制到剪贴板。
  * 四种失败按 IPC 错误码给可区分的文案:未配置目标 / 未同意隐私政策 / 采到 0 条 / 上传失败。
  */
-export function UploadLogsRow({ presentation = 'settings' }: LogSupportRowProps) {
+export function UploadLogsRow() {
+  const upload = useManualLogUpload();
+  return <UploadLogsActionRow upload={upload} />;
+}
+
+export function UploadLogsActionRow({
+  presentation = 'settings',
+  upload,
+}: LogSupportRowProps & { upload: ReturnType<typeof useManualLogUpload> }) {
   const { t } = useTranslation();
   const inDialog = presentation === 'dialog';
   const { state } = useLogUploadSettings();
-  const [uploading, setUploading] = useState(false);
-  const inFlight = useRef(false);
-  const [uploadCode, setUploadCode] = useState<string | null>(null);
-
-  const handleUpload = async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setUploading(true);
-    try {
-      const result = await window.electronAPI.uploadLogsNow();
-      setUploadCode(result.uploadCode);
-      toast.success(t('logSupport.uploaded', { code: result.uploadCode }));
-      // 编号是这次上报唯一的可报凭据,顺手放进剪贴板,省得用户从 toast 里抄。
-      try {
-        await navigator.clipboard.writeText(result.uploadCode);
-      } catch {
-        // 剪贴板不可用不影响主流程 —— 编号保留在界面上，可手动选择复制。
-      }
-    } catch (err) {
-      const code = extractIpcError(err)?.code;
-      switch (code) {
-        case 'LOG_UPLOAD_UNAVAILABLE':
-          toast.error(t('settings.about.logUpload.errorUnavailable'));
-          break;
-        case 'PRIVACY_CONSENT_REQUIRED':
-          toast.error(t('settings.about.logUpload.errorConsentRequired'));
-          break;
-        case 'LOG_UPLOAD_EMPTY':
-          toast.error(t('settings.about.logUpload.errorEmpty'));
-          break;
-        case 'LOG_UPLOAD_BUSY':
-          toast.error(t('settings.about.logUpload.errorBusy'));
-          break;
-        default:
-          toast.error(t('settings.about.logUpload.errorFailed'));
-      }
-    } finally {
-      inFlight.current = false;
-      setUploading(false);
-    }
-  };
+  const { uploading, uploadCode, handleUpload } = upload;
 
   const unavailableReason = !state.targetConfigured
     ? t('settings.about.logUpload.unavailableNotConfigured')
@@ -134,7 +100,6 @@ export function UploadLogsRow({ presentation = 'settings' }: LogSupportRowProps)
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <span
-            id={inDialog ? undefined : 'settings-search-settings-about-logUpload-uploadLabel'}
             className={cn(
               'text-13',
               inDialog ? 'text-[var(--confirm-title)]' : 'text-[var(--settings-section-sublabel)]',

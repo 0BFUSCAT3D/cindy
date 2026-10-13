@@ -4880,7 +4880,7 @@ const registerIpcHandlers = () => {
       }
       windowsClosePromptFallback.acknowledge();
       writeWindowsCloseBehavior(behavior);
-      if (behavior === 'quit') destroyWindowsTray();
+      // The tray also provides diagnostics while running; only app shutdown owns its destruction.
       return behavior;
     },
   );
@@ -7515,7 +7515,8 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // Shared local diagnostics entry; sender cannot choose a path and login is not required.
+  // Settings → About: shared local diagnostics entry, also available before login.
+  // The sender cannot choose a path.
   ipcMain.handle('app:open-logs-dir', (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
     return openLogsDirectory();
