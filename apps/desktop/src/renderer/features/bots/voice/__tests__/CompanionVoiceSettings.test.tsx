@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { voiceModelKey, type VoiceConversationModel } from '@/../shared/voiceConversation';
+import { toast } from '@/lib/toast';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 vi.mock('@/components/ui/select', () => ({
@@ -33,6 +34,7 @@ vi.mock('@/components/ui/select', () => ({
   ),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
 }));
@@ -423,6 +425,101 @@ it('retries a failed preference load and still lists BYOK when Gateway refresh f
   expect(window.electronAPI.voiceConversation.preference).toHaveBeenCalledTimes(2);
 });
 
+it('shows names by default and reveals and copies the complete saved voice ID without changing it', async () => {
+  const voice = 'SAz9YHcvj6GT2YYXdXww';
+  const name = 'River - Relaxed, Neutral, Informative';
+  models = [
+    {
+      id: 'speech',
+      name: 'ElevenLabs',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'elevenlabs',
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'provider',
+    voices: [{ id: voice, name }],
+  });
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: { providerId: 'mine', agent: 'codex', modelId: 'speech', voice },
+    customized: true,
+  });
+  const writeText = vi.fn(async () => {});
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  try {
+    renderSettings();
+    const option = (await screen.findByRole('option', { name })) as HTMLOptionElement;
+    expect(option.selected).toBe(true);
+    expect(option.value).toBe(`voice:${voice}`);
+    expect(screen.queryByRole('button', { name: 'bots.voiceMode.copyVoiceId' })).toBeNull();
+    const details = screen.getByRole('button', { name: 'bots.voiceMode.voiceId' });
+    expect(details.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(details);
+    expect(details.getAttribute('aria-expanded')).toBe('true');
+    const fullId = screen.getByText(voice);
+    expect(fullId.closest('[hidden]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.copyVoiceId' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('bots.voiceMode.voiceIdCopied'));
+    expect(writeText).toHaveBeenCalledWith(voice);
+
+    writeText.mockRejectedValueOnce(new Error('clipboard unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.copyVoiceId' }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('bots.voiceMode.voiceIdCopyFailed'),
+    );
+    expect(fullId.closest('[hidden]')).toBeNull();
+    expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+    expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(audio.start).not.toHaveBeenCalled();
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
+    else Reflect.deleteProperty(navigator, 'clipboard');
+  }
+});
+
+it('disambiguates duplicate names even when short ID suffixes collide and preserves full IDs', async () => {
+  models = [
+    {
+      id: 'speech',
+      name: 'ElevenLabs',
+      providerId: 'mine',
+      agent: 'codex',
+      protocol: 'elevenlabs',
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.voices).mockResolvedValue({
+    source: 'provider',
+    voices: [
+      { id: 'voice-a-123456', name: 'River' },
+      { id: 'voice-b-123456', name: 'River' },
+      { id: 'unnamed-voice-id', name: ' ' },
+      { id: 'already-the-name', name: 'already-the-name' },
+    ],
+  });
+  renderSettings();
+  await screen.findByRole('option', { name: 'River · …a-123456' });
+  const other = (await screen.findByRole('option', {
+    name: 'River · …b-123456',
+  })) as HTMLOptionElement;
+  expect(other.value).toBe('voice:voice-b-123456');
+  expect(screen.getByRole('option', { name: 'unnamed-voice-id' })).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'already-the-name' })).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
+    target: { value: other.value },
+  });
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
+      providerId: 'mine',
+      agent: 'codex',
+      modelId: 'speech',
+      voice: 'voice-b-123456',
+    }),
+  );
+});
+
 it('selects an account voice, keeps manual IDs on catalog failure, and previews without capturing audio', async () => {
   models = [
     { id: 'speech', name: 'MiniMax', providerId: 'mine', agent: 'codex', protocol: 'minimax' },
@@ -434,7 +531,7 @@ it('selects an account voice, keeps manual IDs on catalog failure, and previews 
     })
     .mockRejectedValueOnce(new Error('offline'));
   renderSettings();
-  await screen.findByRole('option', { name: 'News Anchor · Chinese (Mandarin)_News_Anchor' });
+  await screen.findByRole('option', { name: 'News Anchor' });
   fireEvent.change(screen.getByLabelText('bots.voiceMode.voice'), {
     target: { value: 'voice:Chinese (Mandarin)_News_Anchor' },
   });
@@ -497,11 +594,11 @@ it('resets a voice when switching models on the same connection and ignores a la
   fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
     target: { value: voiceModelKey(models[1]) },
   });
-  await screen.findByRole('option', { name: 'New voice · new' });
+  await screen.findByRole('option', { name: 'New voice' });
   expect((screen.getByLabelText('bots.voiceMode.voice') as HTMLSelectElement).value).toBe('');
   expect(screen.queryByLabelText('bots.voiceMode.voiceId')).toBeNull();
   release({ source: 'provider', voices: [{ id: 'old', name: 'Old voice' }] });
-  await waitFor(() => expect(screen.queryByRole('option', { name: 'Old voice · old' })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('option', { name: 'Old voice' })).toBeNull());
   expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
 });
 

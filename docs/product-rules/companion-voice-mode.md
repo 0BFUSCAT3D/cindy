@@ -49,6 +49,7 @@
 - **OpenAI 兼容**：仅对已知精确型号及已知格式的日期版本提供代码内的官方参考列表；`gpt-4o-mini-tts` 与 `tts-1` / `tts-1-hd` 的集合分开。未知型号不强行填 `alloy`，也不探测不存在的通用 `/voices`。兼容服务可能只实现部分音色，列表明确标注为参考，是否可用仍需试听。[资料来源](https://developers.openai.com/api/docs/guides/text-to-speech#voice-options)。
 - **ElevenLabs**：从对应连接的 `/v2/voices` 分页查询账号音色；由既有 `/v1` base 替换末段，保留代理 origin 和路径前缀。无版本后缀的自定义代理尝试其 `<base>/voices` 旧接口。`high_quality_base_model_ids` 不作为模型可用性的硬过滤条件。失败时允许重试或手动输入。[资料来源](https://elevenlabs.io/docs/api-reference/voices/search)。
 - **MiniMax**：调用 `<base>/get_voice`，`voice_type: all`，合并 `system_voice`、`voice_cloning`、`voice_generation`；名称与 ID 分开，缺名称时显示 ID。音色 ID 接受真实型号所需的空格、括号等字符，保留长度、控制字符和路径分隔符校验。[资料来源](https://platform.minimax.io/docs/api-reference/voice-management-get)。
+- 音色选项与当前选中项默认只显示名称及供应商提供的风格说明；同名音色附加短 ID 尾缀，尾缀冲突时延长至可区分，缺名称时回退为完整 ID。已选音色的完整 ID 可展开查看、复制，手动输入入口保留。显示缩写不改变选择值、伙伴偏好或合成请求中的完整 ID，也不触发已有偏好重写。
 - 目录请求只在 Main 使用当前连接的凭证，拒绝重定向，限制 15 秒、每页 2MB 和最多 1000 个音色 / 10 页；超过显示范围时提示手动输入兜底。账号、密钥或路由在请求期间变化则丢弃结果。账号专属音色列表只留在面板内存，不写入公共 Registry 或新的配置文件；已有伙伴偏好仅保存所选 ID，不自动迁移或重写。
 - 用户点击试听后，以当前连接、型号、接口和音色合成短示例文本，并明确提示可能产生用量。复用既有 PCM 合成、解码和播放；不采集麦克风、不发送伙伴消息、不调用聊天模型，不使用供应商返回的任意 `preview_url`。试听结果表示这次调用结果，不持久标记整个账号或型号已验证。
 - 试听与语音模式/听写互斥，绑定可信窗口、账号和伙伴 canonical 任务。生成过程中也可停止；改选、隐藏页面、关面板、账号变化、系统挂起或权限阻塞时取消；开始语音前等待试听停止。窗口销毁与 60 秒总时限均释放 Main 的语音占用。晚到的结果不恢复播放、不覆盖新选择。

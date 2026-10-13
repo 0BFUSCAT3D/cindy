@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw, Square, Volume2 } from 'lucide-react';
+import { ChevronRight, Copy, RefreshCw, Square, Volume2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
+import { toast } from '@/lib/toast';
 import {
   normalizeVoiceConversationSelection,
   type SpeechModelSelection,
@@ -39,6 +40,8 @@ export function SpeechVoicePicker({
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
   const [manual, setManual] = useState(false);
+  const [showVoiceId, setShowVoiceId] = useState(false);
+  const voiceIdDetailsId = useId();
   const version = useRef(0);
   const routeKey = JSON.stringify([route, protocol]);
   const phase = useSyncExternalStore(preview.subscribe, preview.getSnapshot);
@@ -46,6 +49,35 @@ export function SpeechVoicePicker({
   const selection = normalizeVoiceConversationSelection({ ...route, voice });
   const listed = catalog?.voices.some((item) => item.id === voice);
   const showManual = manual || (!!voice && !listed) || !catalog?.voices.length;
+  const voiceOptions = useMemo(() => {
+    const voices = (catalog?.voices ?? []).map((item) => ({
+      ...item,
+      name: item.name.trim() || item.id,
+    }));
+    const idsByName = new Map<string, string[]>();
+    for (const item of voices) {
+      const ids = idsByName.get(item.name) ?? [];
+      ids.push(item.id);
+      idsByName.set(item.name, ids);
+    }
+    return voices.map((item) => {
+      const peers = idsByName.get(item.name)!;
+      let label = item.name;
+      if (peers.length > 1) {
+        // Short IDs only distinguish duplicate labels; selection and storage keep
+        // the full provider ID. Extend colliding suffixes until they are distinct.
+        let length = 6;
+        while (
+          length < item.id.length &&
+          peers.some((id) => id !== item.id && id.slice(-length) === item.id.slice(-length))
+        ) {
+          length++;
+        }
+        label += ` · ${length < item.id.length ? '…' : ''}${item.id.slice(-length)}`;
+      }
+      return { value: `voice:${item.id}`, label };
+    });
+  }, [catalog]);
 
   useEffect(() => {
     const request = ++version.current;
@@ -74,6 +106,7 @@ export function SpeechVoicePicker({
 
   useEffect(() => {
     setManual(false);
+    setShowVoiceId(false);
     void preview.stop();
     return () => {
       void preview.stop();
@@ -92,13 +125,7 @@ export function SpeechVoicePicker({
               {...control}
               label={t('bots.voiceMode.voice')}
               value={showManual ? MANUAL : listed ? `voice:${voice}` : ''}
-              options={[
-                ...(catalog?.voices ?? []).map((item) => ({
-                  value: `voice:${item.id}`,
-                  label: item.name === item.id ? item.name : `${item.name} · ${item.id}`,
-                })),
-                { value: MANUAL, label: t('bots.voiceMode.manualVoice') },
-              ]}
+              options={[...voiceOptions, { value: MANUAL, label: t('bots.voiceMode.manualVoice') }]}
               disabled={disabled}
               onValueChange={(value) => {
                 void preview.stop();
@@ -155,6 +182,49 @@ export function SpeechVoicePicker({
             />
           )}
         </FormField>
+      ) : voice ? (
+        <div className="min-w-0 space-y-2">
+          <Button
+            variant="secondary"
+            tone="quiet"
+            size="sm"
+            compact
+            aria-expanded={showVoiceId}
+            aria-controls={voiceIdDetailsId}
+            onClick={() => setShowVoiceId((value) => !value)}
+          >
+            <ChevronRight
+              size={14}
+              aria-hidden="true"
+              className={showVoiceId ? 'rotate-90' : undefined}
+            />
+            {t('bots.voiceMode.voiceId')}
+          </Button>
+          <div id={voiceIdDetailsId} hidden={!showVoiceId}>
+            <div className="flex min-w-0 items-start gap-2">
+              <code className="min-w-0 flex-1 select-text break-all py-1 text-12 text-[var(--text-secondary)]">
+                {voice}
+              </code>
+              <Button
+                variant="secondary"
+                size="sm"
+                compact
+                aria-label={t('bots.voiceMode.copyVoiceId')}
+                title={t('bots.voiceMode.copyVoiceId')}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(voice);
+                    toast.success(t('bots.voiceMode.voiceIdCopied'));
+                  } catch {
+                    toast.error(t('bots.voiceMode.voiceIdCopyFailed'));
+                  }
+                }}
+              >
+                <Copy size={14} aria-hidden="true" />
+              </Button>
+            </div>
+          </div>
+        </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button
