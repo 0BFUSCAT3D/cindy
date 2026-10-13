@@ -9407,7 +9407,6 @@
       "protocol": "音声 API",
       "protocolOpenai": "OpenAI 互換",
       "protocolHint": "このアドレスが対応する音声 API を選択してください。プロバイダーは切り替わりません。",
-      "protocolAutomaticHint": "プロバイダーの公式アドレスに合わせて自動選択されています。",
       "protocolCorrectedHint": "公式アドレスに合わせて API を修正しました。音声を選び直してください。"
     }
   },

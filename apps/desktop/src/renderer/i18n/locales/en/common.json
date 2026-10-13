@@ -9444,7 +9444,6 @@
       "protocol": "Speech API",
       "protocolOpenai": "OpenAI compatible",
       "protocolHint": "Choose the speech API this address supports. This does not switch providers.",
-      "protocolAutomaticHint": "Matched automatically to the provider’s official address.",
       "protocolCorrectedHint": "The API now matches the official address. Choose a voice again."
     }
   },

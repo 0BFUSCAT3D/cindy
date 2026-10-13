@@ -273,16 +273,13 @@ export function CompanionVoiceSettings(props: Props) {
             {t('bots.voiceMode.modelUnavailable')}
           </p>
         ) : null}
-        {selectedModel && selectedModel.providerId !== 'xd' && selectedModel.agent ? (
+        {selectedModel &&
+        selectedModel.providerId !== 'xd' &&
+        selectedModel.agent &&
+        !selectedModel.protocolLocked ? (
           <FormField
             label={t('bots.voiceMode.protocol')}
-            hint={t(
-              incompatibleSavedProtocol && voice === undefined
-                ? 'bots.voiceMode.protocolCorrectedHint'
-                : selectedModel.protocolLocked
-                  ? 'bots.voiceMode.protocolAutomaticHint'
-                  : 'bots.voiceMode.protocolHint',
-            )}
+            hint={t('bots.voiceMode.protocolHint')}
             className="min-w-52 flex-1"
           >
             {(control) => (
@@ -294,10 +291,9 @@ export function CompanionVoiceSettings(props: Props) {
                   { value: 'openai', label: t('bots.voiceMode.protocolOpenai') },
                   { value: 'elevenlabs', label: 'ElevenLabs' },
                   { value: 'minimax', label: 'MiniMax' },
-                ].filter((option) => !selectedModel.protocolLocked || option.value === protocol)}
-                disabled={selectedModel.protocolLocked || !ready || saving}
+                ]}
+                disabled={!ready || saving}
                 onValueChange={(value) => {
-                  if (selectedModel.protocolLocked) return;
                   const next = {
                     providerId: selectedModel.providerId,
                     agent: selectedModel.agent,
@@ -319,6 +315,11 @@ export function CompanionVoiceSettings(props: Props) {
           </FormField>
         ) : null}
       </div>
+      {ready && incompatibleSavedProtocol && voice === undefined ? (
+        <p role="status" className="text-12 text-[var(--text-secondary)]">
+          {t('bots.voiceMode.protocolCorrectedHint')}
+        </p>
+      ) : null}
       {ready && selectedModel ? (
         <SpeechVoicePicker
           botId={props.botId}

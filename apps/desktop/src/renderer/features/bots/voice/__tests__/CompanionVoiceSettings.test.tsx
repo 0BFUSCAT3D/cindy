@@ -187,7 +187,7 @@ it('requires an explicit API choice for an unknown endpoint before previewing', 
 });
 
 it.each(['elevenlabs', 'minimax', 'openai'] as const)(
-  'shows only the fixed %s API for an official endpoint and keeps its saved voice',
+  'hides the fixed %s API for an official endpoint and keeps its saved voice',
   async (protocol) => {
     models = [
       {
@@ -210,20 +210,13 @@ it.each(['elevenlabs', 'minimax', 'openai'] as const)(
       customized: true,
     });
     renderSettings();
-    await screen.findByText('bots.voiceMode.protocolAutomaticHint');
-    const field = screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement;
-    expect(field.disabled).toBe(true);
-    expect(field.value).toBe(protocol);
-    expect(
-      Array.from(field.options)
-        .map((option) => option.value)
-        .filter(Boolean),
-    ).toEqual([protocol]);
     await waitFor(() =>
       expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
         'saved-voice',
       ),
     );
+    expect(screen.queryByLabelText('bots.voiceMode.protocol')).toBeNull();
+    expect(screen.queryByText('bots.voiceMode.protocolCorrectedHint')).toBeNull();
     expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
     await waitFor(() =>
@@ -260,9 +253,7 @@ it('repairs a saved API mismatch without reusing its voice or rewriting preferen
   });
   renderSettings();
   await screen.findByText('bots.voiceMode.protocolCorrectedHint');
-  expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).value).toBe(
-    'elevenlabs',
-  );
+  expect(screen.queryByLabelText('bots.voiceMode.protocol')).toBeNull();
   const voice = screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement;
   expect(voice.value).toBe('');
   expect(
@@ -303,7 +294,7 @@ it('repairs a saved API mismatch without reusing its voice or rewriting preferen
   expect(audio.start).not.toHaveBeenCalled();
 });
 
-it('keeps a proxy API override and unlocks the selector after switching away from an official model', async () => {
+it('keeps a proxy API override and shows its selector only while a custom endpoint is selected', async () => {
   models = [
     {
       id: 'eleven_flash_v2_5',
@@ -339,9 +330,7 @@ it('keeps a proxy API override and unlocks the selector after switching away fro
       target: { value: voiceModelKey(models[0]) },
     });
   });
-  expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).disabled).toBe(
-    true,
-  );
+  expect(screen.queryByLabelText('bots.voiceMode.protocol')).toBeNull();
   await act(async () => {
     fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
       target: { value: voiceModelKey(models[1]) },
