@@ -5359,7 +5359,7 @@ export function ChatInput({
               workspaceKind: 'dialogue',
               agentKind: currentModelAgentKind === 'claude-code' ? 'cc' : currentModelAgentKind ?? undefined,
               model: activeModel,
-              ...(initialEffort === null ? {} : { effort: activeEffort }),
+              effort: initialEffort === null ? '' : activeEffort,
               permissionMode: activePermissionMode,
               providerId: sendProviderId,
               fastMode,

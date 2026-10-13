@@ -5162,7 +5162,7 @@ export function NewMakerDraftRoute() {
           id: goalSessionId,
           agentKind: persistedAgentKind,
           model: draftInitialModel,
-          ...(draftInitialEffort !== null ? { effort: draftInitialEffort } : {}),
+          effort: draftInitialEffort ?? '',
           permissionMode: chatInitialPermissionMode,
           fastMode: effectiveFastMode,
           workingDir: goalWorkingDir,

@@ -154,7 +154,16 @@ describe('NewMakerDraftRoute 的档位校准接线', () => {
   it('校准后的档同时喂 composer 显示与 createSession 提交', () => {
     // 显示:draftInitialEffort → ChatInput.initialEffort → pill。
     expect(routeSource).toContain('return { model: calibratedDraftModel, effort: localDraftEffort };');
-    // 提交:两条 createSession 组装都用同一个值；已知无档位时显式省略它。
-    expect(routeSource.match(/draftInitialEffort !== null/g)?.length).toBeGreaterThanOrEqual(2);
+    // Goal 提交也必须把「明确无档位」写成空串,否则 sessionCreateToRow 会回填 high。
+    const goalCreateStart = routeSource.lastIndexOf('const newSession = await createSession({');
+    const goalCreateEnd = routeSource.indexOf('if (!newSession)', goalCreateStart);
+    expect(goalCreateStart).toBeGreaterThan(-1);
+    expect(goalCreateEnd).toBeGreaterThan(goalCreateStart);
+    expect(routeSource.slice(goalCreateStart, goalCreateEnd)).toContain(
+      "effort: draftInitialEffort ?? '',",
+    );
+    expect(routeSource.slice(goalCreateStart, goalCreateEnd)).not.toContain(
+      'draftInitialEffort !== null',
+    );
   });
 });

@@ -43,4 +43,9 @@ describe('ChatInput Ghost snapshot contract', () => {
       /isPlanModeComposerCommandText\(\s*editorText,?/,
     );
   });
+
+  it('persists the explicit no-effort sentinel for Cindy Make creation', () => {
+    expect(source).toContain("effort: initialEffort === null ? '' : activeEffort,");
+    expect(source).not.toContain('...(initialEffort === null ? {} : { effort: activeEffort })');
+  });
 });
