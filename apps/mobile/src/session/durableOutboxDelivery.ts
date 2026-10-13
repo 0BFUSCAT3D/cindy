@@ -16,10 +16,12 @@ import type {
 
 export type DeliveryProjection = InputProjection &
   InputDeliveryProjection & { clearBoundaryMs?: number | null };
+export type OutboxSessionPolicy = 'deliver' | 'discard' | 'wait';
 export interface DurableOutboxDeliveryDeps {
   store: ReturnType<typeof createDurableOutbox>;
   isCurrent(): boolean;
   canRun(record: DurableOutboxRecord): boolean;
+  sessionPolicy?(record: DurableOutboxRecord): Promise<OutboxSessionPolicy>;
   projection(record: DurableOutboxRecord): Promise<DeliveryProjection>;
   session(record: DurableOutboxRecord): Promise<{ id: string; status: string } | null>;
   prepare(record: DurableOutboxRecord): Promise<QueuedRemoteMessage>;
@@ -100,6 +102,11 @@ export function createDurableOutboxDelivery(deps: DurableOutboxDeliveryDeps) {
       if (current(record)) await finish();
     };
     try {
+      if (deps.sessionPolicy && !isDurableOutboxSettled(record)) {
+        const policy = await deps.sessionPolicy(record);
+        if (!current(record) || policy === 'wait') return;
+        if (policy === 'discard') return await finish(isDurableOutboxUnsent(record));
+      }
       if (record.draftHandoff) {
         await deps.store.reconcileDrafts(record.item.sessionId);
         const reconciled = deps.store.getSnapshot().find((r) => id(r) === id(record));

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { accountVaultKey } from '@cindy/auth-client';
 import { cancelledCreationDraft, outboxCreationRetryIdentity } from '../session/cancelledCreationDraft';
+import { cindyMakeOutboxPolicy } from '../session/cindyMakeOutboxPolicy';
 import {
   createDurableOutbox,
   isDurableOutboxUnsent,
@@ -189,6 +190,117 @@ async function setup(storage = disk()) {
     },
   };
 }
+
+describe('disabled Cindy Make outbox recovery', () => {
+  it.each(['cindy-make', 'cindy-make-merge'])('cleans upgraded %s records before contacting a legacy host', async (source) => {
+    const { store, storage, deps } = await setup();
+    await store.add(message());
+    const restarted = createDurableOutbox(storage);
+    await restarted.activate('alice');
+    const readSession = vi.fn(async () => ({ id: 'session-a', source }));
+    const delivery = createDurableOutboxDelivery({ ...deps, store: restarted,
+      sessionPolicy: (record) => cindyMakeOutboxPolicy(record, {
+        knownSession: () => ({ id: 'session-a', source }), readSession, isCurrent: () => true,
+      }),
+    });
+    await delivery.run();
+    delivery.wake();
+    await delivery.run();
+    expect(readSession).not.toHaveBeenCalled();
+    expect(deps.projection).not.toHaveBeenCalled();
+    expect(deps.prepare).not.toHaveBeenCalled();
+    expect(deps.upload).not.toHaveBeenCalled();
+    expect(deps.enqueue).not.toHaveBeenCalled();
+    expect(deps.cancel).not.toHaveBeenCalled();
+    expect(deps.cleanup).toHaveBeenCalledWith(expect.objectContaining({ cleanupOutcome: 'cancelled' }), true);
+    const coldStart = createDurableOutbox(storage);
+    await coldStart.activate('alice');
+    expect(coldStart.getSnapshot()).toEqual([]);
+  });
+
+  it.each(['cindy-make', 'cindy-make-merge'])('reads missing metadata before discarding a legacy %s task', async (source) => {
+    const { store, deps } = await setup();
+    await store.add(message());
+    const readSession = vi.fn(async () => ({ id: 'session-a', source }));
+    await createDurableOutboxDelivery({ ...deps,
+      sessionPolicy: (record) => cindyMakeOutboxPolicy(record, {
+        knownSession: () => undefined, readSession, isCurrent: () => true,
+      }),
+    }).run();
+    expect(readSession).toHaveBeenCalledOnce();
+    expect(deps.projection).not.toHaveBeenCalled();
+    expect(deps.enqueue).not.toHaveBeenCalled();
+    expect(store.getSnapshot()).toEqual([]);
+  });
+
+  it.each(['offline', 'missing', 'mismatch'])('retains an unknown record on %s and resumes ordinary delivery after recovery', async (failure) => {
+    const { store, storage, deps } = await setup();
+    await store.add(message());
+    const readSession = vi.fn<() => Promise<{ id: string; source?: string } | null>>()
+      .mockResolvedValue({ id: 'session-a', source: 'cc' });
+    if (failure === 'offline') readSession.mockRejectedValueOnce(new Error('offline'));
+    else readSession.mockResolvedValueOnce(failure === 'missing' ? null : { id: 'another', source: 'cc' });
+    const delivery = createDurableOutboxDelivery({ ...deps,
+      sessionPolicy: (record) => cindyMakeOutboxPolicy(record, {
+        knownSession: () => undefined, readSession, isCurrent: () => true,
+      }),
+    });
+    await delivery.run();
+    expect(store.getSnapshot()).toEqual([message()]);
+    expect(deps.projection).not.toHaveBeenCalled();
+    expect(deps.cleanup).not.toHaveBeenCalled();
+    const coldStart = createDurableOutbox(storage);
+    await coldStart.activate('alice');
+    expect(coldStart.getSnapshot()).toEqual([message()]);
+    delivery.wake();
+    await delivery.run();
+    expect(deps.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('does not delete uploads possibly owned by a legacy host or block another task', async () => {
+    const { store, deps } = await setup();
+    await store.add({ ...message(), state: 'confirming', enqueueStarted: true, sendAtMs: 1 });
+    await store.add(message('id-2', 'ordinary'));
+    await createDurableOutboxDelivery({ ...deps,
+      sessionPolicy: (record) => cindyMakeOutboxPolicy(record, {
+        knownSession: () => ({ id: record.item.sessionId, source: record.item.sessionId === 'ordinary' ? 'cc' : 'cindy-make' }),
+        readSession: async () => null, isCurrent: () => true,
+      }),
+    }).run();
+    expect(deps.cleanup).toHaveBeenCalledWith(expect.objectContaining({ cleanupOutcome: 'accepted' }), false);
+    expect(deps.enqueue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ item: expect.objectContaining({ sessionId: 'ordinary' }) }));
+    expect(store.getSnapshot().every(record => record.item.sessionId === 'ordinary')).toBe(true);
+  });
+
+  it('keeps a disabled terminal record retryable after local cleanup fails', async () => {
+    const { store, storage, deps } = await setup();
+    await store.add(message());
+    deps.cleanup.mockRejectedValueOnce(new Error('files unavailable'));
+    const delivery = createDurableOutboxDelivery({ ...deps, sessionPolicy: async () => 'discard' });
+    await delivery.run();
+    const coldStart = createDurableOutbox(storage);
+    await coldStart.activate('alice');
+    expect(coldStart.getSnapshot()[0]).toMatchObject({ cleanupOutcome: 'cancelled' });
+    await createDurableOutboxDelivery({ ...deps, store: coldStart, sessionPolicy: async () => 'discard' }).run();
+    expect(coldStart.getSnapshot()).toEqual([]);
+    expect(deps.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('does not consume a record after the owner changes during metadata lookup', async () => {
+    const { store, deps, deactivate } = await setup();
+    await store.add(message());
+    await createDurableOutboxDelivery({ ...deps,
+      sessionPolicy: (record) => cindyMakeOutboxPolicy(record, {
+        knownSession: () => undefined,
+        readSession: async () => { deactivate(); return { id: 'session-a', source: 'cindy-make' }; },
+        isCurrent: deps.isCurrent,
+      }),
+    }).run();
+    expect(store.getSnapshot()).toEqual([message()]);
+    expect(deps.cleanup).not.toHaveBeenCalled();
+    expect(deps.enqueue).not.toHaveBeenCalled();
+  });
+});
 
 describe("durable mobile outbox ownership", () => {
   it.each([
