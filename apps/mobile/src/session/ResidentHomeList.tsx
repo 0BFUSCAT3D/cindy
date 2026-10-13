@@ -1,6 +1,6 @@
 import { useHomeMode } from './useHomeMode';
 import { createContext, useCallback, useContext, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { HomeModeProgressContext, useHomeModeProgress } from './HomeModeTransition';
 import { useSegments } from 'expo-router';
@@ -45,7 +45,8 @@ export function ResidentHomeListProvider({ children }: { children: ReactNode }) 
   const { mode, hydrated } = useHomeMode();
   const homeRoute = segments.length === 0 || segments[0] === 'index'
     || (segments[0] === 'devices' && (segments.length === 1 || segments[1] === 'index'));
-  const progress = useHomeModeProgress(mode, homeRoute, hydrated);
+  // Android pages draw their own bar inside each pane, so sliding them would move it; they switch in place.
+  const progress = useHomeModeProgress(mode, homeRoute && Platform.OS === 'ios', hydrated);
   // Keep the outgoing resident list drawn during the slide, but never interactive over the new tab.
   const visible = enabled && ((mode === 'tasks' && homeRoute)
     || (segments[0] === 'sessions' && segments[1] === '[sessionId]'));

@@ -2,7 +2,7 @@
 import { act, createElement as el } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ awaiting: new Set<string>(), list: {} as any }));
+const h = vi.hoisted(() => ({ awaiting: new Set<string>(), list: {} as any, scrollToOffset: vi.fn() }));
 vi.mock('react-native', () => ({
   View: ({ children, testID, style }: any) => el('div', { 'data-testid': testID, style: Object.assign({}, ...[style].flat().filter(Boolean)) }, children),
   Pressable: ({ children, testID, accessibilityLabel, disabled, onPress, style }: any) => el('button', { 'data-testid': testID, 'aria-label': accessibilityLabel, disabled, onClick: onPress,
@@ -11,7 +11,7 @@ vi.mock('react-native', () => ({
   Animated: { View: ({ children, testID }: any) => el('div', { 'data-testid': testID }, children), Value: class { setValue() {} }, timing: () => ({ start() {}, stop() {} }), loop: () => ({ start() {}, stop() {} }), sequence: () => ({}) },
   Easing: { inOut: () => undefined, ease: undefined },
   StyleSheet: { create: (v: unknown) => v, hairlineWidth: 1 },
-  FlatList: (props: any) => { h.list = props; const { ListHeaderComponent, ListEmptyComponent, data, renderItem } = props; return el('div', null, ListHeaderComponent, data.length ? data.map((item: any, index: number) => renderItem({ item, index })) : ListEmptyComponent); },
+  FlatList: ({ ref, ...props }: any) => { if (ref) ref.current = { scrollToOffset: h.scrollToOffset }; h.list = props; const { ListHeaderComponent, ListEmptyComponent, data, renderItem } = props; return el('div', null, ListHeaderComponent, data.length ? data.map((item: any, index: number) => renderItem({ item, index })) : ListEmptyComponent); },
 }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invoke: async () => ({ blocks: [] }) }) }));
 vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: {
@@ -177,6 +177,8 @@ it('reserves the native home bar once for content, scroll indicator and refresh;
   expect(h.list.scrollIndicatorInsets).toEqual({ top: 106 });
   expect(h.list.refreshControl.props.progressViewOffset).toBe(106);
   expect(node.textContent).toContain('Preference could not be saved');
+  // A kept-alive list may be scrolled past the header; the failure must come into view.
+  expect(h.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
   await act(async () => root.render(el(TeammateList, { ...props,
     scrollInsetProps: { contentInsetAdjustmentBehavior: 'automatic', automaticallyAdjustsScrollIndicatorInsets: true },
   })));

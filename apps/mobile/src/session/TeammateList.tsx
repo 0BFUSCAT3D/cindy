@@ -92,6 +92,10 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const now = useMinuteNow();
+  const listRef = useRef<FlatList<ListEntry>>(null);
+  // The notice sits in the list header; a kept-alive list may be scrolled past it when it appears.
+  const showsNotice = !!notice;
+  useEffect(() => { if (showsNotice) listRef.current?.scrollToOffset({ offset: 0, animated: true }); }, [showsNotice]);
   const [query, setQuery] = useState('');
   const awaiting = useAwaitingSessions(items);
   const entries = useMemo<ListEntry[]>(() => {
@@ -206,7 +210,7 @@ export function TeammateList({ items, loading, refreshing, error, isOnline, conn
       onPress={() => groups.onSelect(entry.row)} />;
   };
   if (embedded) return <View testID="teammates.list">{notice}{header}{entries.length ? entries.map(renderEntry) : empty}</View>;
-  return <FlatList {...scrollInsetProps} style={styles.list} contentContainerStyle={[styles.content, topInset !== undefined && { paddingTop: topInset }]}
+  return <FlatList ref={listRef} {...scrollInsetProps} style={styles.list} contentContainerStyle={[styles.content, topInset !== undefined && { paddingTop: topInset }]}
     contentInsetAdjustmentBehavior={topInset !== undefined ? 'never' : scrollInsetProps?.contentInsetAdjustmentBehavior}
     automaticallyAdjustsScrollIndicatorInsets={topInset !== undefined ? false : scrollInsetProps?.automaticallyAdjustsScrollIndicatorInsets}
     scrollIndicatorInsets={topInset !== undefined ? { top: topInset } : undefined} data={entries} keyExtractor={(entry) => `${entry.kind}:${entry.row.key}`}
