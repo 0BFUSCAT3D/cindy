@@ -503,7 +503,7 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
     const newline = entry.indexOf('\n');
     const key = newline < 0 ? entry : entry.slice(0, newline);
     const lowered = key.toLowerCase();
-    if (lowered === 'core.fsmonitor' || /^gpg(?:\..+)?\.program$/i.test(key)) return true;
+    if (lowered === 'core.fsmonitor' || lowered === 'core.hookspath' || /^gpg(?:\..+)?\.program$/i.test(key)) return true;
     const value = newline < 0 ? '' : entry.slice(newline + 1).trim();
     if (lowered === 'log.showsignature') return !/^(?:false|no|off|0)$/i.test(value);
     if (newline < 0 || !value) return false;
@@ -608,6 +608,12 @@ export class GitCredentialHistory {
     if (replacements.trim()) return false;
     const helperTimeout = deadline - Date.now();
     if (helperTimeout <= 0 || !(await diffHelpersCannotRun(read, cwd, helperTimeout))) return false;
+    const hook = path.join(commonDir, 'hooks', 'post-index-change');
+    const hookPresent = await Promise.all([hook, hook + '.exe'].map((file) => fsp.lstat(file).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => error.code !== 'ENOENT',
+    )));
+    if (hookPresent.some(Boolean)) return false;
     if (read.metadataOnly) return true;
     // 指向仓库外的文件时 git diff 不经仓库、直接比较文件。
     if (read.sub === 'diff' && read.args.some((arg) => !arg.startsWith('-') && isOutside(top, path.resolve(cwd, arg)))) {

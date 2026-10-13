@@ -529,6 +529,75 @@ describe('GitCredentialHistory', () => {
     expect(fs.existsSync(invokedFile)).toBe(false);
   });
 
+  it('keeps consent for post-index-change hooks and configured hook directories', async () => {
+    vi.stubEnv('GIT_OPTIONAL_LOCKS', undefined);
+    const history = new GitCredentialHistory();
+    const credentialFile = path.join(root, '.env');
+    const hooksDir = path.join(root, 'custom-hooks');
+    const hookFile = path.join(hooksDir, 'post-index-change');
+    const invokedFile = path.join(root, 'post-index-change-invoked');
+    fs.mkdirSync(hooksDir);
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=post-index-change\n');
+    fs.writeFileSync(hookFile, '#!/usr/bin/env node\nconst fs = require("node:fs");\n'
+      + 'fs.writeFileSync(' + JSON.stringify(invokedFile) + ', "called");\n'
+      + 'process.stderr.write(fs.readFileSync(' + JSON.stringify(credentialFile) + '));\n');
+    fs.chmodSync(hookFile, 0o700);
+    expect(await provesSafe(history, 'git status')).toBe(true);
+    git('config', 'core.hooksPath', hooksDir.split(path.sep).join('/'));
+    if (process.platform !== 'win32') {
+      const changedTime = new Date(Date.now() + 2_000);
+      fs.utimesSync(path.join(repo, 'src/app.ts'), changedTime, changedTime);
+      const output = spawnSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' });
+      expect(output.stdout + output.stderr).toContain('PRIVATE_FIXTURE=post-index-change');
+      expect(output.status).toBe(0);
+      fs.unlinkSync(invokedFile);
+    }
+    for (const command of ['git status', 'git status --porcelain', 'git diff --name-only', 'git ls-files',
+      'git diff', 'git diff --cached', 'git show HEAD']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invokedFile), command).toBe(false);
+    }
+    for (const value of ['', '/dev/null', path.join(root, 'missing-hooks').split(path.sep).join('/')]) {
+      git('config', 'core.hooksPath', value);
+      expect(await provesSafe(history, 'git status'), value).toBe(false);
+    }
+    git('config', '--unset', 'core.hooksPath');
+    expect(await provesSafe(history, 'git status')).toBe(true);
+    const defaultHook = path.resolve(repo, git('rev-parse', '--git-common-dir').trim(), 'hooks', 'post-index-change');
+    fs.renameSync(hookFile, defaultHook);
+    for (const command of ['git status', 'git diff --cached', 'git diff --name-only']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invokedFile), command).toBe(false);
+    }
+    expect(await provesSafe(history, 'git config --get core.autocrlf')).toBe(true);
+    fs.unlinkSync(defaultHook);
+    expect(await provesSafe(history, 'git status')).toBe(true);
+    expect(fs.existsSync(invokedFile)).toBe(false);
+  });
+
+  it('checks shared worktree hooks each time and fails closed on hook inspection errors', async () => {
+    const history = new GitCredentialHistory();
+    const linked = path.join(root, 'linked-worktree');
+    git('worktree', 'add', '--detach', '-q', linked, 'HEAD');
+    const reads = shareCredentialGitReads('git status', [linked], { cwd: linked, platform: process.platform });
+    expect(reads).not.toBeNull();
+    expect(await history.provesSafe('git status', reads ?? [])).toBe(true);
+    const defaultHook = path.resolve(repo, git('rev-parse', '--git-common-dir').trim(), 'hooks', 'post-index-change');
+    fs.writeFileSync(defaultHook, 'hook-fixture\n');
+    expect(await history.provesSafe('git status', reads ?? [])).toBe(false);
+    fs.unlinkSync(defaultHook);
+    expect(await history.provesSafe('git status', reads ?? [])).toBe(true);
+    fs.writeFileSync(defaultHook + '.exe', 'hook-fixture\n');
+    expect(await history.provesSafe('git status', reads ?? [])).toBe(false);
+    fs.unlinkSync(defaultHook + '.exe');
+    expect(await history.provesSafe('git status', reads ?? [])).toBe(true);
+    const stats = vi.spyOn(fsPromises, 'lstat').mockRejectedValue(Object.assign(new Error('unavailable'), { code: 'EACCES' }));
+    expect(await history.provesSafe('git status', reads ?? [])).toBe(false);
+    expect(stats).toHaveBeenCalledWith(defaultHook);
+  });
+
   it('uses one budget for all Git segments including configuration reads', async () => {
     vi.spyOn(fsPromises, 'realpath').mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 75));

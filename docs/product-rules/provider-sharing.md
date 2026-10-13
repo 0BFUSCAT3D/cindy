@@ -335,6 +335,9 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
        配置中出现 `core.fsmonitor` 时同样保留确认（不假设不同 Git 版本对布尔取值的解释一致），
        在读取 index 前拦下它，避免 hook 经 stderr 带出凭证。`git status`、`git ls-files`、只列文件名的
        diff 等静态只读调用也要核实运行期 helper；无 helper 时仍可豁免，不改变本机任务默认判定；
+       配置中出现 `core.hooksPath` 时同样保留确认；未配置时，每次核实仓库公共 Git 目录里的默认
+       `post-index-change` hook（含 Windows 可执行文件后缀）不存在。发现 hook 或无法核实文件状态
+       都不授予内容与静态只读豁免，避免 `git status` 刷新 index 时执行 hook、经 stderr 带出凭证；
        签名验证也可能启动外部程序：配置了 `gpg.program` / `gpg.<format>.program`、启用了
        `log.showSignature`、命令请求 `--show-signature` 或 `%G` 验证格式、配置中的 pretty 格式或别名
        含 `%G` 时均保留确认，不假设验证器不会读取或输出凭证；历史与文件列表探针始终禁用签名展示；
