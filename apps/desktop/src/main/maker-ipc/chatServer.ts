@@ -675,7 +675,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       action: serverAction, position: i.position, botId });
     changed(room); return { ok: true as const };
   }
-  async function decideArrangement(s: Snapshot, sourceId: string, text: string, forced: boolean, attachments: BotGroupAttachment[], intent: PlanIntent) {
+  async function decideArrangement(s: Snapshot, sourceId: string, text: string, forced: boolean, attachments: BotGroupAttachment[], intent: PlanIntent, quote: BotGroupQuoteView | null = null) {
     if (!current() || planIntents.get(s.room.id) !== intent) return;
     const members = s.members.filter(m => m.kind === 'bot' && m.state === 'joined' && (!localBot(m.id) || localBot(m.id)?.status === 'active') && (m.ownerActorId === selfId || m.guestAccess !== 'none'));
     const organizer = members.find(m => m.id === s.room.organizer_id) ?? members[0];
@@ -693,10 +693,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const decision = await deps.decidePlan({ mode: proposed ? 'revise' : forced ? 'forced' : 'auto', groupName: s.room.name,
         organizerName: organizer.name, members: members.map(m => ({ botId: m.id, name: m.name, description: localBot(m.id)?.description ?? '' })),
         recent: s.messages.slice(0, 12).reverse().map(m => ({ from: m.author.name, text: bodyText(m) })), request: text,
-        requestAttachments: attachments.map(a => a.name), currentSteps: proposed?.steps }, controller.signal);
+        requestAttachments: attachments.map(a => a.name), currentSteps: proposed?.steps,
+        ...(quote ? { requestQuote: { from: quote.authorName, text: quote.excerpt, ...(quote.attachmentCount ? { attachments: quote.attachmentCount } : {}) } } : {}) }, controller.signal);
+      // Steps read the plan's request; keep what it quotes beside it when the server's limit allows.
+      const quoteLine = quote ? buildBotGroupQuoteCard(quote).fallback : '';
+      const request = quoteLine && text.length + quoteLine.length + 2 <= 8000 ? `${text}\n\n${quoteLine}` : text;
       if (!current() || controller.signal.aborted || planIntents.get(s.room.id) !== intent) return;
       if (decision?.needsPlan) await api(`/conversations/${s.room.id}/plans`, 'POST', {
-        operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId: organizer.id, request: text, steps: decision.steps });
+        operationId: `plan:${sourceId}`, sourceMessageId: sourceId, organizerId: organizer.id, request, steps: decision.steps });
       else if (explicit) await cancelPlanning(s.room.id, sourceId, true);
       else await api(`/conversations/${s.room.id}/messages/${sourceId}/continue`, 'POST', { operationId: `discuss:${sourceId}`, ...(groupDiscussionParity ? { automatic: true } : {}) });
     } catch (error) {
@@ -1280,7 +1284,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (!intent || planIntents.get(i.groupId) !== intent) await cancelPlanning(i.groupId, result.id);
       else {
         intent.sourceId = result.id;
-        void decideArrangement(s, result.id, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent).catch(() => undefined);
+        void decideArrangement(s, result.id, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent, quote).catch(() => undefined);
       }
     }
     deps.log?.info?.('Chat group send confirmed', { groupId: i.groupId, messageId: result.id,

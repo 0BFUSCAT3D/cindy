@@ -1330,6 +1330,26 @@ describe('BotGroupChatView', () => {
       expect(mocks.getBotGroup).toHaveBeenCalledWith('g1', expect.objectContaining({ beforeSequence: 50 }));
     });
 
+    it('re-reads an original on an older page before jumping, and stops when it was deleted meanwhile', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
+      let deleted = false;
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [deleted ? { ...original, deleted: true, content: '（消息已删除）' } : original] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '很早的原文', sequence: 1 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect((document.querySelector('[data-bot-group-message-id="old1"]') as HTMLElement | null)?.className).toContain('search-match-bg'));
+      // Deleted on another client after it was paged in: the push re-read leaves older pages as they were.
+      deleted = true;
+      await user.click(screen.getByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect(mocks.toastInfo).toHaveBeenCalledWith('bots.groupChat.quote.deleted'));
+      expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', expect.objectContaining({ beforeSequence: 2 }));
+      expect(screen.getByTestId('bot-group-quote').getAttribute('data-quote-state')).toBe('deleted');
+      expect(document.body.textContent).not.toContain('很早的原文');
+    });
+
     it('says the original is out of reach instead of jumping elsewhere', async () => {
       const user = userEvent.setup();
       const base = detail({ serverBacked: true, hasMoreBefore: true });

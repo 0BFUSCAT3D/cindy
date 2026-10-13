@@ -469,9 +469,21 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     };
     const base = stateRef.current;
     if (base.kind !== 'ready') return;
-    const loaded = find(mergeBotGroupMessages(base.older, base.group.messages));
-    if (loaded) { settle(loaded); return; }
+    const latest = find(base.group.messages);
+    if (latest) { settle(latest); return; }
     locatingRef.current = true;
+    // Push refreshes re-read only the newest page, so an original on an older page may have
+    // changed since it was paged in: re-read its page first and go by what that says.
+    const paged = find(base.older);
+    if (paged) {
+      try {
+        const read = await loadOlder(paged.sequence + 1);
+        settle(read ? find(read.messages) : paged);
+      } finally {
+        locatingRef.current = false;
+      }
+      return;
+    }
     try {
       let hasMore = base.older.length > 0 ? base.olderHasMore : base.group.hasMoreBefore;
       let before: number | undefined;

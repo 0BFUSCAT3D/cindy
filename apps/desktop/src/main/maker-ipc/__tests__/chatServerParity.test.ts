@@ -131,6 +131,20 @@ describe('server group feature parity', () => {
     expect(posted.deferExecution).toBe(true);
     expect(posted.mentions).toEqual(_name === '@all' ? [botId, secondBotId] : []);
   });
+  it('gives an explicit 安排分工 the 引用回复 it quotes, in the decision and the stored request', async () => {
+    const quotedId = '80000000-0000-4000-8000-000000000001';
+    arrange();
+    const base = fixture.handle.getMockImplementation()!;
+    fixture.handle.mockImplementation((route, method, data) => route === `/conversations/${roomId}/messages/${quotedId}`
+      ? { body: { id: quotedId, seq: '7', authorId: secondBotId, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', deleted: false,
+        threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [{ type: 'text', text: 'Landing page: hero, pricing, FAQ' }] } }
+      : base(route, method, data));
+    expect((await send({ text: 'Do this one', division: true, quote: { messageId: quotedId } })).ok).toBe(true); await flush();
+    expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({ mode: 'forced', request: 'Do this one',
+      requestQuote: { from: 'Peer (Me)', text: 'Landing page: hero, pricing, FAQ' } }), expect.any(AbortSignal));
+    expect(planPosts()[0]?.[2]).toMatchObject({ request: 'Do this one\n\n> Peer (Me): Landing page: hero, pricing, FAQ' });
+  });
+
   it('returns one available member to ordinary discussion using the real decision parser', async () => {
     arrange(undefined, members.slice(0, 1));
     const { parsePlanDecision } = await import('../botGroupDivision.js');
