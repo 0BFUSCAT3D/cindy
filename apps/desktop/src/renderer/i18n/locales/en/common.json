@@ -9726,6 +9726,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "free": "Free",
         "estimated": "About {{price}}",
         "startingAt": "From {{price}}",
         "units": {

@@ -9689,6 +9689,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "free": "無料",
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} から",
         "units": {

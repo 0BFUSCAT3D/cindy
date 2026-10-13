@@ -41,7 +41,7 @@ export function DisplayPricingDetails({ model }: { model: PricingModel }) {
                 : new Intl.NumberFormat(locale, {
                     maximumSignificantDigits: 12,
                   }).format(item.quantity) + ' ';
-            const price = amount.free ? t('newChat.modelSelector.pricing.free') : amount.current;
+            const price = amount.free ? t('newChat.modelSelector.displayPricing.free') : amount.current;
             const qualifiedPrice =
               item.priceType === 'estimated'
                 ? t('newChat.modelSelector.displayPricing.estimated', { price })

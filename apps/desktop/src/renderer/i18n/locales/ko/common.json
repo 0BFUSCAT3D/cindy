@@ -9689,6 +9689,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "free": "무료",
         "estimated": "약 {{price}}",
         "startingAt": "{{price}}부터",
         "units": {

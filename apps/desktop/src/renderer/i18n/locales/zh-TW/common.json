@@ -9689,6 +9689,7 @@
     },
     "modelSelector": {
       "displayPricing": {
+        "free": "免費",
         "estimated": "約 {{price}}",
         "startingAt": "{{price}} 起",
         "units": {
