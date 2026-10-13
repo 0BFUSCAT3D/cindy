@@ -1,5 +1,6 @@
 import { sharedTaskHostPeer, type SharedTaskListItem } from '@cindy/device-link';
 import { filterCindyMakeSharedTasks } from '@cindy/maker-shared/cindy-make-feature';
+import { mobileDebugLog } from '@/debug/mobileDebugLog';
 import { remoteSessionStore } from '@/session/remoteSessionStore';
 import type { RemoteSession } from '@/session/types';
 import { markDeviceAccessRevoked } from './accessRevoked';
@@ -33,6 +34,7 @@ export function filterVisibleSharedTasks(
     isCurrent,
     onHiddenTask: task => task.ownerAccountId === ownerAccountId
       ? Promise.resolve() : leaveHiddenSharedTask(task, link.closeLink, leave, isCurrent),
+    onHiddenTaskError: () => mobileDebugLog('warn', 'device-link', 'Hidden shared task membership cleanup failed; will retry on refresh'),
     knownSession: task => remoteSessionStore.getSessions().find(session =>
       session.id === task.sessionId && session.deviceLinkDeviceId === deviceId(task)),
     readSession: async task => {

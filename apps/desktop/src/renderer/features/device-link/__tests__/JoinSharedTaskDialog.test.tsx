@@ -8,7 +8,7 @@ import { SharedTaskDialog } from '../SharedTaskDialog';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { toast } from '@/lib/toast';
 
-const state = vi.hoisted(() => ({ account: vi.fn(), host: vi.fn(), openLink: vi.fn(), closeLink: vi.fn(), invoke: vi.fn(), setSessions: vi.fn(), mergeSessions: vi.fn(), pin: vi.fn(), captureRead: vi.fn(), removeDevice: vi.fn(), getSessions: vi.fn(), rawSessions: vi.fn(), findById: vi.fn(), bind: vi.fn(), reset: vi.fn() }));
+const state = vi.hoisted(() => ({ account: vi.fn(), host: vi.fn(), openLink: vi.fn(), closeLink: vi.fn(), invoke: vi.fn(), setSessions: vi.fn(), mergeSessions: vi.fn(), pin: vi.fn(), captureRead: vi.fn(), removeDevice: vi.fn(), getSessions: vi.fn(), rawSessions: vi.fn(), findById: vi.fn(), bind: vi.fn(), reset: vi.fn(), logToMain: vi.fn() }));
 vi.mock('@/lib/sessionsStore', () => ({ sessionsStore: { findById: state.findById } }));
 vi.mock('@/lib/sessionService', () => ({ get: vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, args?: { title?: string }) => key + (args?.title ? ':' + args.title : '') }) }));
@@ -47,7 +47,7 @@ beforeEach(() => {
     return { id: joinedTask.sessionId };
   });
   state.closeLink.mockResolvedValue(undefined); state.openLink.mockResolvedValue(undefined);
-  Object.assign(window, { electronAPI: { sharedTask: { account: state.account, host: state.host }, deviceLink: { openLink: state.openLink, closeLink: state.closeLink, invoke: state.invoke } } });
+  Object.assign(window, { electronAPI: { logToMain: state.logToMain, sharedTask: { account: state.account, host: state.host }, deviceLink: { openLink: state.openLink, closeLink: state.closeLink, invoke: state.invoke } } });
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 it.each(['cindy-make', 'cindy-make-merge'])('filters %s from owned and joined account management without the host upgrading', async source => {
@@ -65,6 +65,35 @@ it.each(['cindy-make', 'cindy-make-merge'])('filters %s from owned and joined ac
   expect(state.invoke).toHaveBeenCalledWith(sharedTaskHostPeer(joinedTask.sharedTaskId, joinedTask.hostDeviceId), 'local-db:sessions:get', [joinedTask.sessionId]);
   expect(state.account).toHaveBeenCalledWith({ action: 'leave', sharedTaskId: joinedTask.sharedTaskId });
   expect(state.account).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'close' }));
+});
+
+it.each(['cindy-make', 'cindy-make-merge'])('commits ordinary joined shares while %s cleanup fails and retries on focus', async source => {
+  const hidden = { ...joinedTask, sharedTaskId: 'hidden-share', sessionId: 'hidden-task', title: 'Hidden Make share' };
+  ownedItems = []; joinedItems = [hidden, joinedTask];
+  state.rawSessions.mockImplementation((deviceId: string) => joinedItems
+    .filter(item => sharedTaskHostPeer(item.sharedTaskId, item.hostDeviceId) === deviceId)
+    .map(item => ({ id: item.sessionId, source: item.sessionId === hidden.sessionId ? source : 'desktop' })));
+  const original = state.account.getMockImplementation()!;
+  let failing = true;
+  state.account.mockImplementation(command => command.action === 'leave' && failing
+    ? Promise.reject(new Error('offline')) : original(command));
+  render(<MemoryRouter><SharedTaskDialog open presentation="settings" onOpenChange={vi.fn()} /></MemoryRouter>);
+  await screen.findByText('sharedTask.ownedEmptyTitle');
+  tab('joined');
+  expect(await screen.findByRole('button', { name: joinedTask.title })).toBeTruthy();
+  expect(screen.queryByText(hidden.title)).toBeNull();
+  expect(screen.queryByText('sharedTask.joinedLoadFailed')).toBeNull();
+  expect(state.removeDevice).not.toHaveBeenCalled();
+  expect(state.logToMain).toHaveBeenCalledWith('warn', 'SharedTaskVisibility', 'Hidden shared task membership cleanup failed; will retry on refresh');
+  const attempts = state.account.mock.calls.filter(([command]) => command.action === 'leave').length;
+  failing = false;
+  fireEvent(window, new Event('focus'));
+  const peer = sharedTaskHostPeer(hidden.sharedTaskId, hidden.hostDeviceId);
+  await waitFor(() => expect(state.removeDevice).toHaveBeenCalledExactlyOnceWith(peer));
+  expect(state.closeLink).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.account.mock.calls.filter(([command]) => command.action === 'leave')).toHaveLength(attempts + 1);
+  expect(state.account).not.toHaveBeenCalledWith({ action: 'leave', sharedTaskId: joinedTask.sharedTaskId });
+  expect(screen.getByRole('button', { name: joinedTask.title })).toBeTruthy();
 });
 
 it.each([

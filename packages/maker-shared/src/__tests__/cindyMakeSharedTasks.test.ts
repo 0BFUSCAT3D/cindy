@@ -3,10 +3,11 @@ import { filterCindyMakeSharedTasks } from '../cindyMakeFeature';
 
 const task = { sessionId: 'task', hostDeviceId: 'offline-host', title: 'Share' };
 const options = () => ({
-  knownSession: vi.fn<() => { id: string; source?: string | null } | undefined>(() => undefined),
+  knownSession: vi.fn<(candidate: typeof task) => { id: string; source?: string | null } | undefined>(() => undefined),
   readSession: vi.fn<() => Promise<{ id: string; source?: string } | null>>(async () => null),
   isCurrent: vi.fn(() => true),
   onHiddenTask: vi.fn(async () => {}),
+  onHiddenTaskError: vi.fn<(candidate: typeof task, error: unknown) => void>(),
 });
 
 it.each(['cindy-make', 'cindy-make-merge'])('hides a legacy share confirmed as %s by the old host', async source => {
@@ -66,14 +67,44 @@ it('does not let a delayed read override newly arrived hidden source metadata', 
   expect(reader.onHiddenTask).toHaveBeenCalledExactlyOnceWith(task);
 });
 
-it.each(['cached', 'remote'])('reports failed hidden membership cleanup and retries it (%s)', async origin => {
+it.each(['cached', 'remote'].flatMap(origin =>
+  ['cindy-make', 'cindy-make-merge'].map(source => ({ origin, source })),
+))('isolates $source cleanup failure from ordinary shares and retries it ($origin)', async ({ origin, source }) => {
   const reader = options();
-  if (origin === 'cached') reader.knownSession.mockReturnValue({ id: task.sessionId, source: 'cindy-make' });
-  else reader.readSession.mockResolvedValue({ id: task.sessionId, source: 'cindy-make' });
-  reader.onHiddenTask.mockRejectedValueOnce(new Error('leave failed'));
-  await expect(filterCindyMakeSharedTasks([task], reader)).rejects.toThrow('leave failed');
-  expect(await filterCindyMakeSharedTasks([task], reader)).toEqual([]);
+  const ordinary = { ...task, sessionId: 'ordinary', title: 'Ordinary share' };
+  reader.knownSession.mockImplementation(candidate => candidate.sessionId === ordinary.sessionId
+    ? { id: ordinary.sessionId, source: 'desktop' }
+    : origin === 'cached' ? { id: task.sessionId, source } : undefined);
+  reader.readSession.mockResolvedValue({ id: task.sessionId, source });
+  const failure = new Error('leave failed');
+  reader.onHiddenTask.mockRejectedValueOnce(failure);
+  const visible = [{ ...ordinary, source: 'desktop' }];
+  expect(await filterCindyMakeSharedTasks([task, ordinary], reader)).toEqual(visible);
+  expect(reader.onHiddenTaskError).toHaveBeenCalledExactlyOnceWith(task, failure);
+  expect(await filterCindyMakeSharedTasks([task, ordinary], reader)).toEqual(visible);
   expect(reader.onHiddenTask).toHaveBeenCalledTimes(2);
+  expect(reader.onHiddenTask).not.toHaveBeenCalledWith(ordinary);
+  expect(reader.onHiddenTaskError).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a failed hidden cleanup isolated even when diagnostics fail', async () => {
+  const reader = options();
+  reader.knownSession.mockReturnValue({ id: task.sessionId, source: 'cindy-make' });
+  reader.onHiddenTask.mockRejectedValue(new Error('leave failed'));
+  reader.onHiddenTaskError.mockImplementation(() => { throw new Error('diagnostics failed'); });
+  expect(await filterCindyMakeSharedTasks([task], reader)).toEqual([]);
+  expect(reader.onHiddenTaskError).toHaveBeenCalledTimes(1);
+});
+
+it('does not report cleanup failures for an invalidated account', async () => {
+  const reader = options();
+  reader.knownSession.mockReturnValue({ id: task.sessionId, source: 'cindy-make' });
+  reader.onHiddenTask.mockImplementation(async () => {
+    reader.isCurrent.mockReturnValue(false);
+    throw new Error('leave failed');
+  });
+  expect(await filterCindyMakeSharedTasks([task], reader)).toEqual([]);
+  expect(reader.onHiddenTaskError).not.toHaveBeenCalled();
 });
 
 it('does not revoke a membership identified after an account change', async () => {

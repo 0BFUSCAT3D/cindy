@@ -2,10 +2,13 @@ import { sharedTaskHostPeer, type SharedTaskListItem } from '@cindy/device-link'
 import { filterCindyMakeSharedTasks } from '@cindy/maker-shared/cindy-make-feature';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import type { Session } from '@/lib/ccAgent.types';
+import { createLogger } from '@/lib/logger';
 import * as sessionService from '@/lib/sessionService';
 import { sessionsStore } from '@/lib/sessionsStore';
 import { resetRemoteDataOwnerPushFence } from '@/lib/remoteDataOwnerPushFence';
 import { remoteProjectsStore } from './remoteProjectsStore';
+
+const log = createLogger('SharedTaskVisibility');
 
 export async function leaveHiddenSharedTask(task: SharedTaskListItem, isCurrent: () => boolean) {
   if (!isCurrent()) return;
@@ -28,6 +31,7 @@ export function filterVisibleSharedTasks<Task extends SharedTaskListItem & { loc
     isCurrent,
     onHiddenTask: task => task.ownerAccountId === owner.dataOwnerId
       ? Promise.resolve() : leaveHiddenSharedTask(task, isCurrent),
+    onHiddenTaskError: () => log.warn('Hidden shared task membership cleanup failed; will retry on refresh'),
     knownSession: task => task.local
       ? sessionsStore.findById(task.sessionId)
       : remoteProjectsStore.getDeviceSessions(deviceId(task)).find(session => session.id === task.sessionId),

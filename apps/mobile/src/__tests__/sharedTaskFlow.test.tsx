@@ -6,6 +6,7 @@ import { parseSharedTaskInvitation, sharedTaskHostPeer } from '@cindy/device-lin
 import { writeClipboardText } from '@/session/messageActions';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { ApiError } from '@/api/client';
+import { setMobileDebugSink } from '@/debug/mobileDebugLog';
 import { Platform } from 'react-native';
 import { clearSharedTaskInvitationIntent, receiveSharedTaskInvitationIntent, getPendingSharedTaskInvitationIntent } from '@/device-link/sharedTaskInvitationIntent';
 import SharedSessionScreen from '../../app/shared-session';
@@ -96,7 +97,7 @@ beforeEach(() => {
   h.link.readDeviceList.mockResolvedValue({ devices: [{ deviceId: 'host', name: 'Test computer' }] });
   element = document.createElement('div'); root = createRoot(element);
 });
-afterEach(async () => { await act(async () => root.unmount()); clearSharedTaskInvitationIntent(); vi.useRealTimers(); });
+afterEach(async () => { await act(async () => root.unmount()); clearSharedTaskInvitationIntent(); setMobileDebugSink(undefined); vi.useRealTimers(); });
 it.each(['cindy-make', 'cindy-make-merge'])('hides cold %s shares from both account management lists', async source => {
   h.params = { mode: 'manage' };
   let shares = [owned('Legacy owned'), { ...owned('Legacy joined'), ownerAccountId: 'other' }];
@@ -115,6 +116,43 @@ it.each(['cindy-make', 'cindy-make-merge'])('hides cold %s shares from both acco
   expect(h.api.leave).toHaveBeenCalledExactlyOnceWith('Legacy-joined');
   expect(h.api.close).not.toHaveBeenCalled();
 });
+it.each(['cindy-make', 'cindy-make-merge'])('publishes ordinary management rows when %s cleanup fails and retries on the next poll', async source => {
+  h.params = { mode: 'manage' };
+  const ordinaryOwned = owned('Ordinary owned');
+  const ordinaryJoined = { ...owned('Ordinary joined'), ownerAccountId: 'other' };
+  const hidden = { ...owned('Hidden Make share'), ownerAccountId: 'other' };
+  let shares = [ordinaryOwned, ordinaryJoined, hidden];
+  h.api.list.mockImplementation(async () => shares);
+  const peer = sharedTaskHostPeer(hidden.sharedTaskId, hidden.hostDeviceId);
+  h.store.getSessions.mockReturnValue([]);
+  h.link.invoke.mockImplementation(async (deviceId, _channel, [sessionId]) => ({ id: sessionId, source: deviceId === peer ? source : 'desktop' }));
+  let failing = true;
+  h.api.leave.mockImplementation(async sharedTaskId => {
+    if (failing) throw new Error('offline');
+    shares = shares.filter(item => item.sharedTaskId !== sharedTaskId);
+  });
+  const diagnostics = vi.fn();
+  setMobileDebugSink(diagnostics);
+  await render();
+  expect(element.textContent).toContain(ordinaryOwned.title);
+  await click('sharedTask.joinedTab');
+  expect(element.textContent).toContain(ordinaryJoined.title);
+  expect(element.textContent).not.toContain(hidden.title);
+  expect(element.textContent).not.toContain('sharedTask.retry');
+  expect(h.store.removeDevice).not.toHaveBeenCalled();
+  expect(diagnostics).toHaveBeenCalledWith('warn', 'device-link', ['Hidden shared task membership cleanup failed; will retry on refresh']);
+  const attempts = h.api.leave.mock.calls.length;
+  failing = false;
+  await act(async () => vi.advanceTimersByTimeAsync(5_000));
+  expect(h.api.leave).toHaveBeenCalledTimes(attempts + 1);
+  expect(h.api.leave.mock.calls.every(([sharedTaskId]) => sharedTaskId === hidden.sharedTaskId)).toBe(true);
+  expect(h.link.closeLink).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(h.store.removeDevice).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(h.api.close).not.toHaveBeenCalled();
+  expect(element.textContent).toContain(ordinaryJoined.title);
+  expect(element.textContent).not.toContain(hidden.title);
+});
+
 it('does not show unknown offline shares and restores a confirmed ordinary share on the next poll', async () => {
   h.params = { mode: 'manage' }; h.api.list.mockResolvedValue([owned('Recovered normal task')]);
   h.store.getSessions.mockReturnValue([]); h.link.invoke.mockRejectedValue(new Error('offline'));
@@ -164,9 +202,10 @@ it('retries failed Make membership rollback without exposing the task', async ()
   h.store.getSessions.mockReturnValue([]); h.link.invoke.mockResolvedValue({ id: 'task', source: 'cindy-make' });
   h.api.leave.mockRejectedValueOnce(new Error('offline'));
   await render(); await fill('sharedTask.invitation', invitationLink); await click('sharedTask.join');
-  expect(element.textContent).toContain('sharedTask.retry');
+  expect(element.textContent).toContain('sharedTask.invitationUnavailable');
   expect(element.textContent).not.toContain('Design review');
   expect(h.router.replace).not.toHaveBeenCalled();
+  expect(h.store.removeDevice).not.toHaveBeenCalled();
   await click('sharedTask.join');
   expect(h.api.leave).toHaveBeenCalledTimes(2);
   expect(element.textContent).toContain('sharedTask.invitationUnavailable');

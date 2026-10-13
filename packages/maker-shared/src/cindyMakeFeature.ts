@@ -23,10 +23,21 @@ export async function filterCindyMakeSharedTasks<Task extends { sessionId: strin
     readSession(task: Task): Promise<SharedTaskSessionSource | null | undefined>;
     isCurrent(): boolean;
     onHiddenTask?(task: Task): Promise<void>;
+    onHiddenTaskError?(task: Task, error: unknown): void;
   },
 ): Promise<SourceConfirmedSharedTask<Task>[]> {
   const hide = async (task: Task) => {
-    if (options.isCurrent()) await options.onHiddenTask?.(task);
+    try {
+      if (options.isCurrent()) await options.onHiddenTask?.(task);
+    } catch (error) {
+      if (options.isCurrent()) {
+        try {
+          options.onHiddenTaskError?.(task, error);
+        } catch {
+          return null;
+        }
+      }
+    }
     return null;
   };
   const confirmed = await Promise.all(tasks.map(async (task): Promise<{ task: Task; source: string | null } | null> => {
