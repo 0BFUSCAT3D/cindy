@@ -588,13 +588,14 @@ describe('botGroupOutbox', () => {
 
       mocks.owner = 2;
       expect(getBotGroupOutbox('g1')).toEqual([]);
-      expect(released()).toEqual(['failed']);
+      // Not yet submitted: the outbox owns them and releases them now. The one in flight is main's.
+      expect(released().sort()).toEqual(['failed', 'queued']);
       // The in-flight send went out after all: its file stays with the message.
       inFlight.resolve({ ok: true, messageId: 'm-late' });
       await flush();
-      // The queued one never reached main; nothing is sent under the new account.
+      // Nothing is sent under the new account, and nothing more is released.
       expect(mocks.send).toHaveBeenCalledTimes(3);
-      expect(released()).toEqual(['failed', 'queued']);
+      expect(released().sort()).toEqual(['failed', 'queued']);
     });
 
     it('on an account switch: releases an in-flight send that did not go out, and one still burning in', async () => {
@@ -616,27 +617,75 @@ describe('botGroupOutbox', () => {
       expect(mocks.send).toHaveBeenCalledTimes(1);
     });
 
-    it('discards a group that left the list once a read confirms it is gone, including late answers', async () => {
-      const late = deferred();
-      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' }).mockReturnValueOnce(late.promise);
-      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'failed' }, { files: [staged('failed')] }));
-      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'flying' }, { files: [staged('flying')] }));
-      enqueueBotGroupSend(draft({ groupId: 'kept', clientId: 'other' }, { files: [staged('other')] }));
-      await flush();
+    const goneGroup = () => {
       mocks.getBotGroup.mockImplementation(async (groupId: string) =>
         groupId === 'gone' ? { ok: false, errorCode: 'NOT_FOUND', message: '' } : { ok: true, group: {} });
-      // `kept` is missing from the list too (e.g. a legacy id), but still reads fine: untouched.
       listGroups(['unrelated']);
+    };
+
+    it('discards a group that left the list once a read confirms it is gone; unsubmitted files go at once', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'failed' }, { files: [staged('failed')] }));
+      enqueueBotGroupSend(draft({ groupId: 'kept', clientId: 'other' }, { files: [staged('other')] }));
+      await flush();
+      mocks.send.mockReturnValue(new Promise(() => undefined));
+      // `kept` is missing from the list too (e.g. a legacy id), but still reads fine: untouched.
+      goneGroup();
       await flush();
       expect(mocks.getBotGroup.mock.calls.map(([groupId]) => groupId).sort()).toEqual(['gone', 'kept']);
       expect(getBotGroupOutbox('gone')).toEqual([]);
       expect(getBotGroupOutbox('kept')).toHaveLength(1);
-      expect(new Set(released().flatMap((ids) => ids.split(',')))).toEqual(new Set(['failed', 'flying']));
-      // Its late receipt changes nothing and releases nothing more.
-      late.resolve({ ok: true, messageId: 'm1' });
+      expect(released()).toEqual(['failed']);
+    });
+
+    it.each([
+      ['went out', { ok: true, messageId: 'm1' }, []],
+      ['was refused', { ok: false, errorCode: 'INTERNAL', message: '' }, ['flying']],
+    ] as const)('A) a send already with main when its group is discarded: files stay until main answers, then kept if it %s', async (_label, answer, expected) => {
+      const late = deferred();
+      mocks.send.mockReturnValueOnce(late.promise);
+      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'flying' }, { files: [staged('flying')] }));
+      await flush();
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+      goneGroup();
       await flush();
       expect(getBotGroupOutbox('gone')).toEqual([]);
-      expect(new Set(released().flatMap((ids) => ids.split(',')))).toEqual(new Set(['failed', 'flying']));
+      // Main may still be reading the file and deciding: nothing is cleaned up before it answers.
+      expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+      late.resolve(answer);
+      await flush();
+      expect(released()).toEqual(expected);
+      expect(getBotGroupOutbox('gone')).toEqual([]);
+    });
+
+    it('A) a lost answer (the call itself rejects) after its group is discarded releases the files once', async () => {
+      const late = deferred();
+      mocks.send.mockReturnValueOnce(late.promise);
+      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'flying' }, { files: [staged('flying')] }));
+      await flush();
+      goneGroup();
+      await flush();
+      expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+      late.reject(new Error('ipc closed'));
+      await flush();
+      expect(released()).toEqual(['flying']);
+    });
+
+    it('B) a message still burning in when its group is discarded is never sent, and its files go once', async () => {
+      let finishBurn!: (files: AttachedFile[]) => void;
+      const drawn = { ...staged('drawn'), category: 'image', annotationStrokes: [{ points: [{ x: 1, y: 1 }] }] } as unknown as AttachedFile;
+      mocks.materialize.mockImplementationOnce(() => new Promise((resolve) => { finishBurn = resolve; }));
+      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'burning' }, { files: [drawn] }));
+      await flush();
+      goneGroup();
+      await flush();
+      expect(getBotGroupOutbox('gone')).toEqual([]);
+      // Submission has started (it owns the files): not released yet, not sent yet.
+      expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+      finishBurn([{ ...drawn, annotated: true } as AttachedFile]);
+      await flush();
+      expect(mocks.send).not.toHaveBeenCalled();
+      expect(released()).toEqual(['drawn']);
     });
 
     it('keeps a group that is only missing from the list when the read fails or is not definite', async () => {

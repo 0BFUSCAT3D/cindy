@@ -18,9 +18,11 @@
  *   而服务器副本还没下载好（没有 url / path，或旧版干脆还没出现在列表里）时，按同一 messageId
  *   把本地预览接到真实消息上，直到副本可用（见 `mergeBotGroupLocalAttachments`）。
  * - 离开输入框的附件不再受草稿保护：发件箱持有的图片地址（含标注原图与本地预览）登记进存储
- *   清理的保护清单，条目移除时同步撤下。尚未进入消息的暂存文件由发件箱回收：群被删除（含
- *   不在当前页的群：列表里消失且读取确认已不存在）时回收该群所有未发出的条目；切换账号时回收
- *   排队中与已失败的条目，在途的那条等它的请求有了结果再定——发出了就不碰，没发出才回收。
+ *   清理的保护清单，条目移除时同步撤下。尚未进入消息的暂存文件按归属回收：还没开始提交的条目
+ *   （排队中、已失败）归发件箱，群被删除（含不在当前页的群：列表里消失且读取确认已不存在）或
+ *   切换账号时立即回收；已开始提交的条目归它的那次请求，条目在烧录期间被丢弃就不再发出并回收，
+ *   已交给 main 的等结果——成功（已进入消息）不碰，失败才回收。main 的发送在 IPC 返回前读完
+ *   全部本地文件，失败时不留任何引用暂存路径的本地记录（服务端只引用已上传的副本）。
  * - 失败时交还输入框（输入框空着才交还，见 `registerBotGroupComposer`），否则留在时间线上
  *   显示没发出去，可重试或编辑；失败时输入框不在（切群、分享模式），回来注册输入框时同样交还。
  * - 切换账号整体清空，旧账号的迟到回执一律丢弃；群被删除时丢弃该群的条目。
@@ -145,15 +147,23 @@ function releaseStaged(files: readonly AttachedFile[]): void {
   if (files.length > 0) cleanupStagedChatAttachmentFiles(files);
 }
 
+/** Entries whose `submit` has started: that request owns their files until it settles. */
+const submitting = new Set<string>();
+const entryKey = (groupId: string, clientId: string) => `${groupId}\n${clientId}`;
+
+/** Drop entries the outbox still owns; a request in progress settles its own (see `submit`). */
+function releaseUnsubmitted(groupId: string, entries: readonly BotGroupOutboxEntry[]): void {
+  for (const entry of entries) {
+    if (entry.status !== 'sent' && !submitting.has(entryKey(groupId, entry.input.clientId))) releaseStaged(entry.files);
+  }
+}
+
 function ensureOwner(): void {
   if (isDataOwnerGenerationCurrent(owner)) return;
   owner = getDataOwnerGeneration();
   generation += 1;
-  // The previous account's failures go with it. Its queued and in-flight sends still hold their
-  // files and settle them in `submit`, which knows whether they went out.
-  for (const group of groups.values()) {
-    for (const entry of group.entries) if (entry.status === 'failed') releaseStaged(entry.files);
-  }
+  // The previous account's queued and failed sends go with it; one being submitted settles itself.
+  for (const [groupId, group] of groups) releaseUnsubmitted(groupId, group.entries);
   groups.clear();
   preparing.clear();
   protectHeldMedia();
@@ -279,14 +289,30 @@ async function submit(
   files: readonly AttachedFile[],
 ): Promise<void> {
   const isCurrent = () => requestGeneration === generation && isDataOwnerGenerationCurrent(owner);
-  // Queued under an account that is gone: it never reached main.
-  if (!isCurrent()) {
-    releaseStaged(files);
-    return;
-  }
+  // Dropped before its turn (account switch, deleted group): whoever dropped it released its files.
+  if (!isCurrent()) return;
   const group = groups.get(groupId);
   const entry = group?.entries.find((candidate) => candidate.input.clientId === clientId);
   if (!group || !entry || entry.status !== 'sending') return;
+  // From here this request owns the files. Still the outbox's message: same account, still listed.
+  const owned = () =>
+    isCurrent() && (groups.get(groupId)?.entries.some((candidate) => candidate.input.clientId === clientId) ?? false);
+  const key = entryKey(groupId, clientId);
+  submitting.add(key);
+  try {
+    await submitOwned(group, entry, owned, files);
+  } finally {
+    submitting.delete(key);
+  }
+}
+
+async function submitOwned(
+  group: GroupOutbox,
+  entry: BotGroupOutboxEntry,
+  owned: () => boolean,
+  files: readonly AttachedFile[],
+): Promise<void> {
+  const { groupId, clientId } = entry.input;
   update(groupId, clientId, { baseline: group.latestSequence });
   const api = botGroupApi();
   let errorKey = 'bots.groupChat.composer.sendFailed';
@@ -294,8 +320,8 @@ async function submit(
     if (!api) throw new Error('HOST_NOT_READY');
     // Drawn annotations are burned in first, as in a task; a failure keeps everything for a retry.
     const prepared = await prepare(groupId, clientId);
-    // The account changed while annotations were burning in: never send it under the new one.
-    if (!isCurrent()) {
+    // Dropped while annotations were burning in: it never reaches main.
+    if (!owned()) {
       releaseStaged(files);
       return;
     }
@@ -303,8 +329,9 @@ async function submit(
       ...entry.input,
       ...(prepared.length > 0 ? { attachments: toBotGroupAttachmentInputs(prepared) } : {}),
     });
-    if (!isCurrent()) {
-      // A late answer for the previous account: keep what went out, release what did not.
+    if (!owned()) {
+      // A late answer for a dropped message: keep what went out, release what did not. Main has
+      // read the files by the time it answers.
       if (!result.ok) releaseStaged(files);
       return;
     }
@@ -318,7 +345,8 @@ async function submit(
         ? 'bots.groupChat.composer.attachmentsFailed'
         : botGroupErrorKey(result.errorCode, 'bots.groupChat.composer.sendFailed');
   } catch (error) {
-    if (!isCurrent()) {
+    // Burn-in failed (never sent) or the call failed without an answer from main's handler.
+    if (!owned()) {
       releaseStaged(files);
       return;
     }
@@ -434,9 +462,7 @@ export function discardBotGroupOutbox(groupId: string): void {
   const group = groups.get(groupId);
   if (!group) return;
   groups.delete(groupId);
-  for (const entry of group.entries) {
-    if (entry.status !== 'sent') releaseStaged(entry.files);
-  }
+  releaseUnsubmitted(groupId, group.entries);
   emit();
 }
 
@@ -567,6 +593,7 @@ export function resetBotGroupOutboxForTests(): void {
   groups.clear();
   preparing.clear();
   verifying.clear();
+  submitting.clear();
   unwatchGroupList?.();
   unwatchGroupList = null;
   composers.clear();
