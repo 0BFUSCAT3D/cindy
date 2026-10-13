@@ -374,6 +374,30 @@
       "modelsRefused": "對方電腦暫時不讓讀取這個分享：可能沒有允許遠端控制、關了這個供應商的「允許遠端呼叫」，也可能對方的 Cindy 剛啟動、還沒準備好。請稍後重試，或請對方檢查這兩項設定。",
       "modelsFailedWithCode": "暫時讀不到對方開放的模型，請稍後重試。（錯誤代碼：{{code}}）",
       "retryModels": "重新讀取模型",
+      "groupStatus": {
+        "title": "組內電腦狀態",
+        "shareActive": "分享已開啟",
+        "refresh": "重新整理狀態",
+        "computer": "電腦 {{number}}",
+        "summary": "{{total}} 台中有 {{ready}} 台可接任務",
+        "loading": "正在讀取電腦狀態…",
+        "unsupported": "分享者的 Cindy 尚未提供狀態，請聯絡分享者檢查或更新",
+        "failed": "電腦狀態讀取失敗，請重新整理再試",
+        "unconfirmed": "部分電腦狀態尚未確認，請稍後重新整理",
+        "noneReady": "目前沒有可接任務的電腦，請聯絡分享者檢查",
+        "note": "僅顯示匿名狀態，不顯示電腦名稱和用量。能否執行仍取決於所選模型。",
+        "updateNote": "需要分享者更新對應電腦上的 Cindy，才能接收分享來的任務",
+        "state": {
+          "available": "可用",
+          "busy": "忙碌，仍可接任務",
+          "cooling": "冷卻中，暫不接新任務",
+          "offline": "離線或無法連線",
+          "paused": "已暫停分配",
+          "unavailable": "暫不可用",
+          "needs-update": "需要更新",
+          "unknown": "狀態未知"
+        }
+      },
       "modelsEmpty": "對方還沒有開放可用的模型。",
       "pausedNote": "對方暫停了這個分享，恢復後才能使用。",
       "offlineNote": "對方電腦不在線，上線後就能繼續使用。",
@@ -438,11 +462,13 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
+      "usage": "用量均衡",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例"
+        "weight": "依權重比例",
+        "usage": "按5小時和每週用量分配"
       }
     },
     "autoSwitch": {
@@ -451,6 +477,13 @@
     },
     "member": {
       "local": "本機",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
+        "unknown": "版本未知",
+        "needsUpdate": "需要更新才能接收分享任務",
+        "supportUnknown": "分享任務相容性未知"
+      },
       "sourceDevice": "我的其他電腦",
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
@@ -468,6 +501,7 @@
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
       "assignAria": "給 {{name}} 分配任務",
+      "assignLocalAria": "允許 {{name}} 接收外部新任務",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
@@ -475,6 +509,7 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
+        "pausedLocal": "已暫停接收外部新任務",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
@@ -1059,7 +1094,6 @@
       "back": "返回",
       "usageTitle": "用量",
       "wideCaptionMoney_other": "近 {{n}} 天 · 訂閱等值估算",
-      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
       "scopeLocal": "這台電腦",
       "scopeAll": "所有裝置",
       "noUsage": "沒有用量",
@@ -1070,13 +1104,9 @@
       },
       "dailyAverage": "日均",
       "paid": "實付",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最高單日",
       "range7": "7 天",
       "range30": "30 天",
       "range90": "90 天",
-      "metricMoney": "金額",
-      "metricTokens": "Token",
       "listModels_other": "近 {{n}} 天模型",
       "listTasks": "今天的任務",
       "today": "今天",
@@ -6132,7 +6162,7 @@
         "customSourcesUnavailable": "以下自訂市場暫時無法存取：{{names}}，其他市場不受影響。",
         "replace": "取代",
         "replaceAria": "以此市場版本取代 {{name}}",
-        "replaceDescription": "已安裝相同 ID 的插件，繼續將以市場版本取代，原有資料會保留。"
+        "replaceDescription": "已安裝相同 ID 的插件；繼續安裝會切換來源。原來源的資料將隔離保留，新來源不會繼承原帳號和金鑰，需要重新連接。"
       },
       "install": "安裝插件…",
       "empty": "還沒有安裝任何插件",
@@ -8571,7 +8601,7 @@
         "message": "跟進「{{title}}」",
         "aria": "跟進「{{title}}」"
       },
-      "followingMark": "{{names}}在跟進這個專案",
+      "followingMark": "{{names}}在跟進這個任務",
       "olderCount_other": "更早的 {{count}} 個",
       "kind": {
         "existing": "原有任務",
@@ -9828,7 +9858,10 @@
         "railAll": "全部",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在讀取那臺電腦的模型…",
+        "remoteFavoriteUnavailable": "{{source}} · 暫時讀不到那臺電腦的模型",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能儲存收藏變更",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
         "addFavorite": "存為收藏",
         "customize": "自訂",
@@ -10180,7 +10213,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者的電腦。這一步涉及憑證類檔案（如金鑰、.env），需要你確認後才繼續。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；重新開啟任務或切換權限模式後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
@@ -11016,6 +11049,7 @@
         },
         "directory": "目錄：",
         "baseline": "基準分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
@@ -11475,6 +11509,7 @@
       },
       "dialogueLabel": "對話",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回來源任務",
       "waitForReply": "等待你在文件區回覆…",
       "modelSwitchedFastModeOff": "已切換模型，Fast Mode 已關閉"
     },
@@ -14167,6 +14202,18 @@
       "current": "審查目前目錄",
       "choose": "選擇其他目錄",
       "open": "審查"
+    },
+    "inputSummary": {
+      "title": "獨立審查（只讀，無開發記憶）",
+      "directory": "目錄：{{dir}}",
+      "baseline": "對比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未涵蓋：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 個任務目錄未檢查",
+      "artifacts": "成果：{{count}} 項",
+      "focus": "關注：{{focus}}",
+      "task": "依任務目標審查目前成果"
     }
   },
   "learn": {
