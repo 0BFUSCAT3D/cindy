@@ -560,6 +560,61 @@ describe('GitCredentialHistory', () => {
     expect(await history.provesSafe('git config --list', reads ?? [], abort.signal)).toBe(false);
   });
 
+  it('keeps consent for signature verifiers including configured and formatted verification', async () => {
+    const history = new GitCredentialHistory();
+    const credentialFile = path.join(root, '.env');
+    const verifierFile = path.join(root, 'signature-verifier.cjs');
+    const invokedFile = path.join(root, 'verifier-invoked');
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=signature-verifier\n');
+    fs.writeFileSync(verifierFile, '#!/usr/bin/env node\nconst fs = require("node:fs");\n'
+      + 'fs.writeFileSync(' + JSON.stringify(invokedFile) + ', "called");\n'
+      + 'process.stderr.write(fs.readFileSync(' + JSON.stringify(credentialFile) + '));\n'
+      + 'process.exitCode = 1;\n');
+    fs.chmodSync(verifierFile, 0o700);
+    const verifier = verifierFile.split(path.sep).join('/');
+    const parent = git('rev-parse', 'HEAD').trim();
+    const rawCommit = ['tree ' + git('rev-parse', 'HEAD^{tree}').trim(), 'parent ' + parent,
+      'author ' + git('var', 'GIT_AUTHOR_IDENT').trim(), 'committer ' + git('var', 'GIT_COMMITTER_IDENT').trim(),
+      'gpgsig -----BEGIN PGP SIGNATURE-----', ' synthetic-fixture', ' -----END PGP SIGNATURE-----', '', 'verifier fixture', ''].join('\n');
+    const signed = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], {
+      cwd: repo, input: rawCommit, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
+    git('update-ref', 'HEAD', signed);
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    git('config', 'gpg.program', verifier);
+    git('config', 'log.showSignature', 'true');
+    if (process.platform !== 'win32') {
+      for (const args of [['show', 'HEAD'], ['log', '-1']]) {
+        const output = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+        expect(output.stdout + output.stderr, args.join(' ')).toContain('PRIVATE_FIXTURE=signature-verifier');
+      }
+      fs.unlinkSync(invokedFile);
+    }
+    for (const command of ['git show HEAD', 'git log -1', 'git log --format=%G?', 'git log --format=%GG']) {
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+      expect(fs.existsSync(invokedFile), command).toBe(false);
+    }
+    await requiresCredentialConfirmation(history, 'git log --show-signature -1');
+    git('config', '--unset', 'gpg.program');
+    expect(await provesSafe(history, 'git show HEAD')).toBe(false);
+    git('config', 'log.showSignature', 'false');
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    for (const key of ['gpg.openpgp.program', 'gpg.ssh.program', 'gpg.x509.program']) {
+      git('config', key, verifier);
+      expect(await provesSafe(history, 'git show HEAD'), key).toBe(false);
+      git('config', '--unset', key);
+    }
+    for (const key of ['format.pretty', 'pretty.fixture']) {
+      git('config', key, '%G?');
+      expect(await provesSafe(history, 'git log --oneline'), key).toBe(false);
+      git('config', '--unset', key);
+    }
+    expect(await provesSafe(history, 'git log --format=%GG')).toBe(false);
+    expect(await provesSafe(history, 'git show HEAD')).toBe(true);
+    expect(fs.existsSync(invokedFile)).toBe(false);
+  });
+
   it('keeps consent for configured textconv and external diff helpers', async () => {
     const history = new GitCredentialHistory();
     const credentialFile = path.join(root, '.env');

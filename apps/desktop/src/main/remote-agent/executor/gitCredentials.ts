@@ -57,9 +57,9 @@ const HISTORY_PATHS = ['log', '-m', '--root', '--no-renames', '--diff-filter=A',
  */
 const SHOWN_FILES: Readonly<Record<string, { sub: string; args: readonly string[] }>> = {
   diff: { sub: 'diff', args: ['--name-only', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
-  show: { sub: 'show', args: ['--name-only', '--format=', '-m', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
-  log: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
-  whatchanged: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff'] },
+  show: { sub: 'show', args: ['--name-only', '--format=', '-m', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
+  log: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
+  whatchanged: { sub: 'log', args: ['--name-only', '--format=', '-m', '--root', '--no-renames', '--no-relative', '--no-color', '-z', '--no-textconv', '--no-ext-diff', '--no-show-signature'] },
 };
 /** 会在文件名列表里夹进别的内容的输出选项：碰到就不这样核对。 */
 const MIXED_OUTPUT_OPTION = /^--(?:graph|stat|numstat|shortstat|dirstat|summary|raw|name-|check|compact-summary|patch-with|line-prefix)/;
@@ -486,6 +486,10 @@ async function configReadProvesSafe(read: GitRead, deadline: number): Promise<bo
 
 async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
   if (!CONTENT_SUBCOMMANDS.has(read.sub) && !read.metadataOnly) return true;
+  if (read.args.some((arg) => {
+    const name = arg.split('=')[0];
+    return arg.includes('%G') || (name.startsWith('--') && name.length > 2 && '--show-signature'.startsWith(name));
+  })) return false;
   const disabled = new Set<string>();
   for (const arg of read.args) {
     if (arg !== '--no-textconv' && arg !== '--no-ext-diff') break;
@@ -498,8 +502,12 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
   return !entries.some((entry) => {
     const newline = entry.indexOf('\n');
     const key = newline < 0 ? entry : entry.slice(0, newline);
-    if (key.toLowerCase() === 'core.fsmonitor') return true;
-    if (newline < 0 || !entry.slice(newline + 1).trim()) return false;
+    const lowered = key.toLowerCase();
+    if (lowered === 'core.fsmonitor' || /^gpg(?:\..+)?\.program$/i.test(key)) return true;
+    const value = newline < 0 ? '' : entry.slice(newline + 1).trim();
+    if (lowered === 'log.showsignature') return !/^(?:false|no|off|0)$/i.test(value);
+    if (newline < 0 || !value) return false;
+    if ((lowered === 'format.pretty' || lowered.startsWith('pretty.')) && value.includes('%G')) return true;
     return /^filter\..+\.(?:clean|process)$/i.test(key)
       || (textconvEnabled && /^diff\..+\.textconv$/i.test(key))
       || (externalDiffEnabled && (/^diff\..+\.command$/i.test(key) || key.toLowerCase() === 'diff.external'));
