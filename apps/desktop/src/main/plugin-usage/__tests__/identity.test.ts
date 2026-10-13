@@ -81,3 +81,18 @@ it('keeps a verified installed origin when the current endpoint changes or becom
     pluginUsageIdentity(ghost, record, snapshot, 'https://original')?.verifiedServerRoot,
   ).toBeUndefined();
 });
+
+it('keeps same-name namespace instances separate and never borrows a sibling catalog provenance', () => {
+  const orgGhost = { ...ghost, namespace: 'acme', instanceKey: '_ns__acme__some-plugin' };
+  const rootGhost = { ...ghost, namespace: null, instanceKey: 'some-plugin' };
+  const orgRecord = { ...record, namespace: 'acme', scope: 'organization', organizationId: 'org-1' } as PluginMarketInstallationRecord;
+  expect(pluginUsageIdentity(orgGhost, orgRecord, snapshot, 'https://server')).toMatchObject({
+    ghostId: '_ns__acme__some-plugin', sourceKind: 'server', pluginId: 'plugin1',
+  });
+  expect(pluginUsageIdentity(rootGhost, orgRecord, snapshot, 'https://server')).toMatchObject({
+    ghostId: 'some-plugin', sourceKind: 'manual', pluginId: null, stableKey: null,
+  });
+  expect(pluginUsageIdentity(orgGhost, null, snapshot, 'https://server')?.ghostId).not.toBe(
+    pluginUsageIdentity(rootGhost, null, snapshot, 'https://server')?.ghostId,
+  );
+});

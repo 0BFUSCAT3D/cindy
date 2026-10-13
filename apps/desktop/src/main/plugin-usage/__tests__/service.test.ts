@@ -594,3 +594,20 @@ it('runs usage transactions in the bundled file worker, not only its inline fall
     rmSync(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+it('counts and clears tool calls separately for same-name namespace instances', async () => {
+  const root = { ...identity, ghostId: 'same-name' };
+  const org = { ...identity, ghostId: '_ns__acme__same-name' };
+  await service.bind(root);
+  await service.bind(org);
+  const rootHandle = service.capture(root)!;
+  const orgHandle = service.capture(org)!;
+  expect(rootHandle.subjectId).not.toBe(orgHandle.subjectId);
+  service.accept(rootHandle, 'root-call', 'tool', null, now - 1);
+  service.accept(orgHandle, 'org-call', 'tool', null, now - 1);
+  expect(await service.summary(rootHandle.subjectId)).toMatchObject({ totalCalls: 1 });
+  expect(await service.summary(orgHandle.subjectId)).toMatchObject({ totalCalls: 1 });
+  await service.clear(rootHandle.subjectId);
+  expect(await service.summary(rootHandle.subjectId)).toMatchObject({ totalCalls: 0 });
+  expect(await service.summary(orgHandle.subjectId)).toMatchObject({ totalCalls: 1 });
+});

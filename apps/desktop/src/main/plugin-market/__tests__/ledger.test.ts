@@ -842,3 +842,23 @@ describe('backfill missing namespace from the server catalog', () => {
     expect(ledger.installationForPlugin({ ghostId: 'xd-feishu', namespace: 'xd' })?.namespace).toBe('xd');
   });
 });
+
+it('backfills a verified reporting root only in the exact same-name namespace row', () => {
+  const { ledger } = sameNameNamespaceHarness();
+  const root = ledger.installationForPlugin({ ghostId: 'helper', namespace: null })!;
+  const org = ledger.installationForPlugin({ ghostId: 'helper', namespace: 'acme' })!;
+  expect(ledger.backfillServerRoot(org, 'https://org-origin')).toBe(true);
+  expect(ledger.installationForPlugin({ ghostId: 'helper', namespace: 'acme' })).toMatchObject({ serverRoot: 'https://org-origin' });
+  expect(ledger.installationForPlugin({ ghostId: 'helper', namespace: null })).toEqual(root);
+  expect(ledger.backfillServerRoot(org, 'https://other')).toBe(false);
+});
+
+it('keeps a pending local uninstall valid after reporting-root backfill without accepting an origin replacement', () => {
+  const { ledger } = harness();
+  const captured = record({ namespace: null });
+  ledger.upsertInstallation(captured);
+  expect(ledger.backfillServerRoot(captured, 'https://original')).toBe(true);
+  expect(ledger.markRemovedRecordIfUnchanged({ ...captured, serverRoot: 'https://other' }, 'user-1')).toBe(false);
+  expect(ledger.markRemovedRecordIfUnchanged(captured, 'user-1')).toBe(true);
+  expect(ledger.installationForPlugin(captured)).toMatchObject({ installed: false, serverRoot: 'https://original' });
+});

@@ -2005,7 +2005,7 @@ export function getGhostPipeDispatcher(): GhostPipeDispatcher {
         const service = currentPluginUsageService();
         if (!service) return null;
         if (ghost.approval.state !== 'approved') return null;
-        const handle = service.captureBound(ghost.manifest.id, ghost.approval.revision);
+        const handle = service.captureBound(installedGhostStoragePart(ghost), ghost.approval.revision);
         if (!handle) {
           void bindPluginUsage(ghost);
           return null;
@@ -3013,7 +3013,7 @@ function pluginMarketAuthorizationTargetFor(ghostId: string): { ghostId: string;
 function readPluginUsageIdentity(ghost: InstalledGhost) {
   try {
     const result = readInstalledGhostManifestSnapshot(ghost.dir, GHOST_INSTALL_MANIFEST_MAX_BYTES);
-    return pluginUsageIdentity(ghost, getPluginMarketLedger().installationForGhost(ghost.manifest.id),
+    return pluginUsageIdentity(ghost, getPluginMarketLedger().installationForPlugin({ ghostId: ghost.manifest.id, ...deliveryNamespaceFields(ghost) }),
       result.ok ? installedMarketManifestIdentity(result.snapshot) : null,
       pluginUsageServerRoot());
   } catch { return null; }
@@ -3032,7 +3032,7 @@ async function bindPluginUsage(ghost: InstalledGhost, previousRevision?: string)
     await withGhostInstallLock(ghost.manifest.id, async () => {
       if (activeOwnerScopeKey() !== scope || isAppSessionBoundaryPending()) return;
       // A fallback bind can wait behind update/uninstall. Read the final committed identity.
-      const installed = getGhostManager().list().find(g => g.manifest.id === ghost.manifest.id);
+      const installed = findInstalledGhostByInstanceId(getGhostManager().list(), installedGhostStoragePart(ghost));
       const identity = installed && readPluginUsageIdentity(installed);
       if (identity) await service.bind(identity, previousRevision);
     });
@@ -9187,9 +9187,10 @@ export function registerGhostIpc(): void {
   });
   registerPluginUsageIpc({
     ipcMain, assertTrusted: assertTrustedAppRendererEvent, service: currentPluginUsageService,
+    lockId: id => findGhostForInstanceId(id)?.manifest.id ?? id,
     identity: id => {
       requireGhostAvailableForActiveSession(id);
-      const ghost = getGhostManager().list().find(g => g.manifest.id === id);
+      const ghost = findGhostForInstanceId(id);
       return ghost ? readPluginUsageIdentity(ghost) : null;
     },
     warn: () => log.warn('plugin usage IPC unavailable'),

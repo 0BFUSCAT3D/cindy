@@ -1,3 +1,7 @@
+import {
+  installedGhostStoragePart,
+  knownDeliveryNamespacesDiffer,
+} from '../../shared/pluginIdentity.js';
 import type { InstalledGhost } from '../../shared/ghost.js';
 import type { PluginUsageIdentity } from '../../shared/pluginUsage.js';
 import type { PluginMarketInstallationRecord } from '../plugin-market/ledger.js';
@@ -15,7 +19,7 @@ export function pluginUsageIdentity(
 ): PluginUsageIdentity | null {
   if (ghost.approval.state !== 'approved') return null;
   const base: PluginUsageIdentity = {
-    ghostId: ghost.manifest.id,
+    ghostId: installedGhostStoragePart(ghost),
     displayName: ghost.manifest.name,
     revision: ghost.approval.revision,
     sourceKind: 'manual',
@@ -29,7 +33,8 @@ export function pluginUsageIdentity(
   };
   if (
     !record?.installed ||
-    record.ghostId !== base.ghostId ||
+    record.ghostId !== ghost.manifest.id ||
+    knownDeliveryNamespacesDiffer(ghost, record) ||
     !installedIdentity ||
     !verifyInstalledMarketManifest(record, installedIdentity)
   )

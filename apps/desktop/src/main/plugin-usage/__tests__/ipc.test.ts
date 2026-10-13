@@ -4,7 +4,7 @@ import type { PluginUsageService } from '../service';
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
 import { withGhostInstallLock } from '../../cindy-brain/ghostInstallLock';
 import type { PluginUsageIdentity } from '../../../shared/pluginUsage';
-function harness(trusted = true) {
+function harness(trusted = true, lockId?: (id: string) => string) {
   const handlers = new Map<string, Parameters<IpcMain['handle']>[1]>();
   const service = {
     summary: vi.fn(async () => null),
@@ -23,6 +23,7 @@ function harness(trusted = true) {
     },
     service: () => current.service,
     identity,
+    lockId,
     warn,
   });
   return { handlers, service, warn, identity, current };
@@ -114,4 +115,23 @@ it('hides database failures and preserves deliberate visibility and argument err
   ).rejects.toMatchObject({
     code: 'NOT_FOUND',
   });
+});
+
+it('accepts an instance key while waiting on the existing logical package lock', async () => {
+  const { handlers, identity } = harness(true, () => 'same-name');
+  let release!: () => void;
+  let entered!: () => void;
+  const ready = new Promise<void>((resolve) => { entered = resolve; });
+  const updating = withGhostInstallLock('same-name', async () => {
+    entered();
+    await new Promise<void>((resolve) => { release = resolve; });
+  });
+  await ready;
+  const summary = handlers.get('ghosts:usage-summary')!({} as IpcMainInvokeEvent, '_ns__acme__same-name');
+  await Promise.resolve();
+  expect(identity).not.toHaveBeenCalled();
+  release();
+  await updating;
+  await expect(summary).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  expect(identity).toHaveBeenCalledWith('_ns__acme__same-name');
 });

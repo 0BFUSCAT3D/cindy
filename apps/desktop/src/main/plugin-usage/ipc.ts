@@ -1,5 +1,5 @@
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
-import { isValidGhostId } from '../../shared/ghost.js';
+import { isGhostInstanceId } from '../../shared/pluginIdentity.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
 import type { PluginUsageIdentity } from '../../shared/pluginUsage.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
@@ -12,6 +12,8 @@ export function registerPluginUsageIpc(deps: {
   service(): PluginUsageService | null;
   /** Checks current-owner plugin visibility and derives verified install identity. */
   identity(ghostId: string): PluginUsageIdentity | null;
+  /** The existing package lock is keyed by logical id, including instance-key queries. */
+  lockId?(instanceId: string): string;
   warn(): void;
 }): void {
   const historyId = (value: unknown): string => {
@@ -39,10 +41,10 @@ export function registerPluginUsageIpc(deps: {
   };
   deps.ipcMain.handle('ghosts:usage-summary', (event, id: unknown) =>
     invoke(event, async () => {
-      if (typeof id !== 'string' || !isValidGhostId(id))
+      if (typeof id !== 'string' || !isGhostInstanceId(id))
         throwIpcError('INVALID_PARAMS', 'Invalid plugin id');
       const current = service();
-      return withGhostInstallLock(id, async () => {
+      return withGhostInstallLock(deps.lockId?.(id) ?? id, async () => {
         if (service() !== current)
           throwIpcError('PRECONDITION_FAILED', 'Plugin usage owner changed');
         const identity = deps.identity(id);

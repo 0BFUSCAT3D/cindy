@@ -425,7 +425,13 @@ export function GhostPluginDetailView({
           ) : null}
         </header>
 
-        {ghost ? <PluginUsageCard key={`${usageOwnerKey ?? "local"}:${ghost.manifest.id}`} ghostId={ghost.manifest.id} confirmClear={confirmClearUsage} /> : null}
+        {ghost ? (
+          <PluginUsageCard
+            key={`${usageOwnerKey ?? 'local'}:${detail.id}`}
+            ghostId={detail.id}
+            confirmClear={confirmClearUsage}
+          />
+        ) : null}
 
         {hasConfiguration ? (
           <section

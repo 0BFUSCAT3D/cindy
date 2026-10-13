@@ -1107,7 +1107,7 @@ export class PluginMarketService {
             requireSameMarketOwner(owner);
             const installations = ledger.read().installations;
             for (const plugin of plugins) {
-              const record = installations[plugin.ghostId];
+              const record = installations[pluginLedgerRecordKey(plugin)];
               if (record?.installed && !record.serverRoot && record.source !== 'git-market'
                 && record.source !== 'local-market' && record.pluginId === plugin.id
                 && record.scope === plugin.scope && record.organizationId === plugin.organizationId
