@@ -567,8 +567,8 @@ interface ChatInputProps {
   modelMemoryOverride?: ModelMemoryAccessors;
   /** Initial model from session data. When provided, overrides activeModel. */
   initialModel?: string;
-  /** Initial effort from session data. When provided, overrides activeEffort. */
-  initialEffort?: Effort;
+  /** Initial effort from session data. null explicitly means the model has no effort selector. */
+  initialEffort?: Effort | null;
   /**
    * per-session 来源(供应商)初值。来自 session.providerId(null = 跟随默认路由)。
    * 决定 ModelSelector 来源栏高亮哪家;不传 = 跟随默认(显示列表首项为默认命中)。
@@ -1760,7 +1760,7 @@ export function ChatInput({
       agentKind: runtimeAgentKind ?? vendorKeyToAgentKind(vendorKey) ?? 'claude-code',
       model: initialModel ?? (sessionId ? '' : localVendorDefaults.model),
       providerId: initialProviderId ?? null,
-      effort: initialEffort ?? localVendorDefaults.effort,
+      effort: initialEffort === null ? null : initialEffort ?? localVendorDefaults.effort,
       fastMode: fastMode === true,
     },
     effective: sessionId ? runtimeEffective : undefined,
@@ -5359,7 +5359,7 @@ export function ChatInput({
               workspaceKind: 'dialogue',
               agentKind: currentModelAgentKind === 'claude-code' ? 'cc' : currentModelAgentKind ?? undefined,
               model: activeModel,
-              effort: activeEffort,
+              ...(initialEffort === null ? {} : { effort: activeEffort }),
               permissionMode: activePermissionMode,
               providerId: sendProviderId,
               fastMode,
@@ -6173,7 +6173,7 @@ export function ChatInput({
   const localRuntimeSwitchSeqBySessionRef = useRef(new Map<string, number>());
 
   useLayoutEffect(() => {
-    if (!sessionId || initialEffort === undefined) return;
+    if (!sessionId || initialEffort === undefined || initialEffort === null) return;
     if (deviceLinkDeviceId ?? getSessionDeviceId(sessionId)) return;
     // 其它窗口 / 控制路径的 sessions:patched 会更新 SSoT props；同步刷新本地 commit
     // cache，并使先前本机发布的旧 runtime attempt 失效，避免迟到完成覆盖外部终态。

@@ -23,7 +23,7 @@ export interface RemoteDraftDefaults {
   model?: string;
   /** false = 被控端明确未在 New Maker picker 选过模型；undefined = 旧端未知。 */
   modelChosenByUser?: boolean;
-  effort?: string;
+  effort?: string | null;
   fastMode?: boolean;
   permissionMode?: string;
   providerId?: string | null;
@@ -53,7 +53,7 @@ export interface RemoteDraftDefaults {
 /** 校准后可直接 seed 控制端草稿 holder 的一组值。 */
 export interface DeviceLinkDraftSelection {
   model: string;
-  effort: Effort;
+  effort: Effort | null;
   fastMode: boolean;
   /** 仍是被控端支持的权限档则带上;否则 undefined(由 ChatInput 回落自身默认)。 */
   permissionMode?: PermissionMode;
@@ -128,7 +128,7 @@ export function resolveDeviceLinkDraftDefaults(
   if (models.length === 0) {
     return {
       model: wantedModelId ?? '',
-      effort: (remoteDraft?.effort as Effort) ?? 'high',
+      effort: (remoteDraft?.effort as Effort | null | undefined) ?? 'high',
       fastMode: false,
       permissionMode,
       providerId,
@@ -159,10 +159,12 @@ export function resolveDeviceLinkDraftDefaults(
       ? remoteDraft?.fastMode === true
       : remoteDraft?.fastModeByModel?.[chosen.id] === true);
 
-  const effort: Effort =
-    wantedEffort && chosen.efforts.includes(wantedEffort)
-      ? wantedEffort
-      : (chosen.defaultEffort ?? chosen.efforts[0] ?? wantedEffort ?? 'high');
+  const effort: Effort | null =
+    chosen.efforts.length === 0 && chosen.effortsUnknown !== true
+      ? null
+      : wantedEffort && chosen.efforts.includes(wantedEffort)
+        ? wantedEffort
+        : (chosen.defaultEffort ?? chosen.efforts[0] ?? wantedEffort ?? 'high');
   const fastMode = Boolean(capabilities.hasFastMode && chosen.supportsFastMode && wantedFast);
 
   return { model: chosen.id, effort, fastMode, permissionMode, providerId };

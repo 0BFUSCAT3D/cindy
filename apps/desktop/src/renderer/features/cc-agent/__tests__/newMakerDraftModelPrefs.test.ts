@@ -42,8 +42,20 @@ describe('resolveNewMakerDraftEffort', () => {
         presetEffort: 'high',
         efforts: [],
         defaultEffort: null,
+        effortsUnknown: true,
       }),
     ).toBe('medium');
+  });
+
+  it('已知无推理档位的模型清掉旧草稿档位', () => {
+    expect(
+      resolveNewMakerDraftEffort({
+        currentEffort: 'medium',
+        efforts: [],
+        defaultEffort: null,
+        effortsUnknown: false,
+      }),
+    ).toBeNull();
   });
 
   /**
@@ -134,6 +146,7 @@ describe('NewMakerDraftRoute 的档位校准接线', () => {
     );
     expect(routeSource).toContain('efforts: model?.efforts ?? [],');
     expect(routeSource).toContain('defaultEffort: model?.defaultEffort ?? null,');
+    expect(routeSource).toContain('effortsUnknown: model ? model.effortsUnknown === true : true,');
     // 种子档与全局预设都作为输入交给规则,由它裁决 —— 调用方不自己短路。
     expect(routeSource).toContain('currentEffort: chatPrefs.effort,');
   });
@@ -141,7 +154,7 @@ describe('NewMakerDraftRoute 的档位校准接线', () => {
   it('校准后的档同时喂 composer 显示与 createSession 提交', () => {
     // 显示:draftInitialEffort → ChatInput.initialEffort → pill。
     expect(routeSource).toContain('return { model: calibratedDraftModel, effort: localDraftEffort };');
-    // 提交:两条 createSession 组装都用同一个值,不得回退 chatPrefs.effort。
-    expect(routeSource.match(/effort: draftInitialEffort,/g)?.length).toBeGreaterThanOrEqual(2);
+    // 提交:两条 createSession 组装都用同一个值；已知无档位时显式省略它。
+    expect(routeSource.match(/draftInitialEffort !== null/g)?.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -1439,7 +1439,7 @@ export function NewMakerDraftRoute() {
   // 首页是“下一次创建会话”的配置草稿,没有正在运行的当前模型需要保护。其它对话更新同一模型
   // 的全局预设后,即使该模型正显示在首页 trigger 上,也应立即采用新 effort / fast。真实会话仍
   // 由 CCAgentSessionView 的 live DB/runtime props 保护,不会走这里。
-  const localDraftEffort = useMemo<Effort>(() => {
+  const localDraftEffort = useMemo<Effort | null>(() => {
     if (usesDeviceCatalog || !effectiveSourceId) return chatPrefs.effort;
     const provider = providers.find((item) => item.id === effectiveSourceId);
     // 按**校准后**的模型推导:effort 必须和最终提交的模型属于同一个能力集合。
@@ -1455,6 +1455,9 @@ export function NewMakerDraftRoute() {
       ),
       efforts: model?.efforts ?? [],
       defaultEffort: model?.defaultEffort ?? null,
+      // An absent model entry means the catalog is still loading; an existing Pi/Ollama
+      // entry with [] is a known no-effort model and must omit the stale draft value.
+      effortsUnknown: model ? model.effortsUnknown === true : true,
     });
   }, [
     usesDeviceCatalog,
@@ -2489,7 +2492,7 @@ export function NewMakerDraftRoute() {
         preferred: {
           model: draftInitialModel,
           providerId: chatInitialProviderId,
-          effort: draftInitialEffort,
+          ...(draftInitialEffort !== null ? { effort: draftInitialEffort } : {}),
           fastMode: effectiveFastMode,
         },
         getPresetEffort: getProviderModelEffort,
@@ -2508,7 +2511,7 @@ export function NewMakerDraftRoute() {
           workspaceKind: 'project',
           permissionMode: chatInitialPermissionMode,
           model: sshModel,
-          effort: sshEffort,
+          ...(sshEffort !== null ? { effort: sshEffort } : {}),
           fastMode: sshFastMode,
           planModeEnabled: effectivePlanMode,
           remoteHostId: target.hostId,
@@ -3556,6 +3559,9 @@ export function NewMakerDraftRoute() {
       // (未选 / 已断开 → null = 跟随默认路由)。透传给 createSession 落盘 sessions.provider_id,
       // 让新会话首个请求就走对来源,与"会话内切来源"行为一致。device-link 远程会话不支持(下方分支跳过)。
       const providerId = opts?.providerId ?? null;
+      // 已知无 effort 的模型（例如 Pi/Ollama qwen3:14b）不能接收 ChatInput 的
+      // UI fallback 档位；空串会在 main 的准入层归一化为“未指定”。
+      const submittedEffort = draftInitialEffort === null ? '' : effort;
 
       // 本地导航命令(/jump-session)在进入 createSession 前同步短路:命中即直接
       // 跳转,新建界面不会先创建 session。这正是它和 /issue 的关键区别。
@@ -3821,7 +3827,7 @@ export function NewMakerDraftRoute() {
               // 路径各自推导曾长出过只在其中一条上复现的缺陷(见该函数注释)。
               candidate: {
                 model,
-                effort,
+                effort: draftInitialEffort === null ? null : effort,
                 permissionMode,
                 fastMode: effectiveFastMode,
                 planModeEnabled: effectivePlanMode,
@@ -4122,7 +4128,7 @@ export function NewMakerDraftRoute() {
               id: sessionId,
               agentKind: persistedAgentKind,
               model,
-              effort,
+              effort: submittedEffort,
               permissionMode,
               fastMode: effectiveFastMode,
               planModeEnabled: effectivePlanMode,
@@ -4327,7 +4333,7 @@ export function NewMakerDraftRoute() {
                   newSession.id,
                   dispatchedMessage,
                   model,
-                  effort,
+                  submittedEffort,
                   permissionMode,
                   newDir,
                   rehomedFiles,
@@ -4379,7 +4385,7 @@ export function NewMakerDraftRoute() {
             id: sessionId,
             agentKind: persistedAgentKind,
             model,
-            effort,
+            effort: submittedEffort,
             permissionMode,
             fastMode: effectiveFastMode,
             planModeEnabled: effectivePlanMode,
@@ -4555,7 +4561,7 @@ export function NewMakerDraftRoute() {
               newSession.id,
               dispatchedMessage,
               model,
-              effort,
+              submittedEffort,
               permissionMode,
               sendWorkingDir,
               rehydratedFiles,
@@ -5130,7 +5136,7 @@ export function NewMakerDraftRoute() {
           id: goalSessionId,
           agentKind: persistedAgentKind,
           model: draftInitialModel,
-          effort: draftInitialEffort,
+          ...(draftInitialEffort !== null ? { effort: draftInitialEffort } : {}),
           permissionMode: chatInitialPermissionMode,
           fastMode: effectiveFastMode,
           workingDir: goalWorkingDir,

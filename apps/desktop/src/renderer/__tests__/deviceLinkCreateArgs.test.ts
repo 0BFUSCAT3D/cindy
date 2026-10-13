@@ -34,15 +34,20 @@ function catalogModel(id: string): CatalogModel {
 }
 
 /** 被控端供应商目录的最小形态(与 draftModelCalibration.test.ts 同款构造)。 */
-function deviceProvider(id: string, connected: boolean, modelIds: string[]): ProviderView {
+function deviceProvider(
+  id: string,
+  connected: boolean,
+  modelIds: string[],
+  agent: 'claude-code' | 'pi' = 'claude-code',
+): ProviderView {
   return {
     id,
     name: id,
     source: 'builtin',
-    agents: ['claude-code'],
-    models: { 'claude-code': modelIds.map(catalogModel) },
+    agents: [agent],
+    models: { [agent]: modelIds.map(catalogModel) },
     routing: {
-      'claude-code': { upstream: 'https://provider.test', authStrategy: 'none' },
+      [agent]: { upstream: 'https://provider.test', authStrategy: 'none' },
     },
     auth: { method: 'oauth' },
     connected,
@@ -98,6 +103,18 @@ describe('buildDeviceLinkCreateArgs', () => {
       permissionMode: 'auto',
       fastMode: true,
     });
+  });
+
+  it('无 effort 模型用空串交给被控端准入层', () => {
+    const args = buildDeviceLinkCreateArgs({
+      agentKind: 'pi',
+      workingDir: '/host/repo',
+      model: 'qwen3:14b',
+      effort: null,
+      permissionMode: 'auto',
+      fastMode: false,
+    });
+    expect(args.effort).toBe('');
   });
 
   // [12] 远程 create 透传 extraDirs:被控端 bootstrapSession 再按 set-extra-dirs 同款校验,
@@ -457,6 +474,16 @@ describe('resolveDeviceLinkSubmission', () => {
       capabilityAgentKind: AGENT,
     });
     expect(args.providerId).toBe('anything');
+  });
+
+  it('提交前按选中来源清掉已知无 effort 模型的旧档位', () => {
+    const args = resolveDeviceLinkSubmission({
+      agentKind: 'pi',
+      candidate: { ...candidate, model: 'qwen3:14b', effort: 'medium', providerId: 'ollama' },
+      deviceProviders: [deviceProvider('ollama', true, ['qwen3:14b'], 'pi')],
+      capabilityAgentKind: 'pi',
+    });
+    expect(args.effort).toBe('');
   });
 
   it('无项目目录 → dialogue,且不把 workingDir 塞进 payload(转调派生未被绕过)', () => {

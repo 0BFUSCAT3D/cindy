@@ -165,6 +165,25 @@ describe('resolveDeviceLinkDraftDefaults', () => {
     expect(sel.effort).toBe('high');
   });
 
+  it('已知无 effort 模型清掉远端草稿里的旧档位', () => {
+    const sel = resolveDeviceLinkDraftDefaults(caps(), {
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+      fastMode: true,
+    });
+    expect(sel.effort).toBeNull();
+  });
+
+  it('档位能力尚未声明时保留远端草稿档位', () => {
+    const capabilities = caps();
+    capabilities.availableModels[1]!.effortsUnknown = true;
+    const sel = resolveDeviceLinkDraftDefaults(capabilities, {
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    });
+    expect(sel.effort).toBe('high');
+  });
+
   it('模型不支持 fast(或被控端 agent 无 fast 能力)→ fastMode 强制 false', () => {
     // 选中无 fast 的 Haiku
     const a = resolveDeviceLinkDraftDefaults(caps(), {
