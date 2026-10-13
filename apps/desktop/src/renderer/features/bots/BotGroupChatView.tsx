@@ -134,6 +134,26 @@ const TIMELINE_LOADING_REVEAL_MS = 200;
 /** Older pages read while looking for a quoted message before saying it is out of reach. */
 const QUOTE_LOCATE_MAX_PAGES = 5;
 const QUOTE_HIGHLIGHT_MS = 2000;
+/** Older pages re-read after one push refresh to re-check quoted originals. */
+const QUOTE_REFRESH_MAX_PAGES = 3;
+const NO_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * Originals that loaded quotes point at and that sit only on older pages, newest first. A push
+ * refresh re-reads just the latest page, so these may have been edited or deleted since.
+ */
+function quotedOlderOriginals(
+  older: readonly BotGroupMessageView[],
+  latest: readonly BotGroupMessageView[],
+): BotGroupMessageView[] {
+  const latestIds = new Set(latest.map((message) => message.id));
+  const olderById = new Map(older.map((message) => [message.id, message]));
+  const ids = new Set([...older, ...latest].flatMap((message) => {
+    const target = message.quote?.messageId;
+    return target && !latestIds.has(target) && olderById.has(target) ? [target] : [];
+  }));
+  return [...ids].map((id) => olderById.get(id)!).sort((a, b) => b.sequence - a.sequence);
+}
 
 /** Stable identity for header memoization; member arrays are new on every read. */
 function memberKey(members: readonly BotGroupMemberView[]): string {
@@ -190,6 +210,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [quoteDraft, setQuoteDraft] = useState<BotGroupQuoteView | null>(null);
   const [jumpTarget, setJumpTarget] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  /** Quoted originals on older pages not re-read since the last push: quotes use their snapshot. */
+  const [unverifiedOriginals, setUnverifiedOriginals] = useState<ReadonlySet<string>>(NO_IDS);
   const loadingOlderRef = useRef(false);
   const locatingRef = useRef(false);
 
@@ -225,6 +247,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   olderHasMore: result.group.hasMoreBefore,
                 },
           );
+          const shown = stateRef.current;
+          if (shown.kind === 'ready') {
+            const targets = quotedOlderOriginals(shown.older, result.group.messages);
+            if (targets.length > 0) void recheckQuotedOriginals(api, targets, isCurrent);
+          }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });
         } else {
@@ -233,6 +260,43 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         }
       } catch {
         if (isCurrent()) setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
+      }
+    };
+    /**
+     * Re-reads the older pages holding quoted originals after a push, a bounded number of times,
+     * and updates only the messages already loaded. A newer read supersedes this one; a failed
+     * read leaves the original unverified, so its quote shows the snapshot, not the stale copy.
+     */
+    const recheckQuotedOriginals = async (
+      api: NonNullable<ReturnType<typeof botGroupApi>>,
+      targets: BotGroupMessageView[],
+      isCurrent: () => boolean,
+    ) => {
+      setUnverifiedOriginals((previous) => new Set([...previous, ...targets.map((target) => target.id)]));
+      let remaining = targets;
+      for (let page = 0; remaining.length > 0 && page < QUOTE_REFRESH_MAX_PAGES; page += 1) {
+        let messages: BotGroupMessageView[] | null = null;
+        try {
+          const read = await api.getBotGroup(groupId, { beforeSequence: remaining[0]!.sequence + 1 });
+          messages = read.ok ? read.group.messages : null;
+        } catch {
+          messages = null;
+        }
+        if (!isCurrent() || !messages) return;
+        const fresh = new Map(messages.map((message) => [message.id, message]));
+        const oldest = messages.reduce((min, message) => Math.min(min, message.sequence), Number.POSITIVE_INFINITY);
+        const covered = remaining.filter((target) => fresh.has(target.id) || target.sequence >= oldest);
+        setState((previous) => previous.kind === 'ready'
+          ? { ...previous, older: previous.older.map((message) => fresh.get(message.id) ?? message) }
+          : previous);
+        // An original missing from a page that covers it is no longer readable here: it stays unverified.
+        setUnverifiedOriginals((previous) => {
+          const next = new Set(previous);
+          for (const target of covered) if (fresh.has(target.id)) next.delete(target.id);
+          return next;
+        });
+        remaining = remaining.filter((target) => !covered.includes(target));
+        if (covered.length === 0) return;
       }
     };
     loadRef.current = additionalSources => void load(additionalSources);
@@ -264,6 +328,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const messages = useMemo(
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
+  );
+  // Quotes resolve against verified copies only; an unverified original falls back to the snapshot.
+  const quoteSources = useMemo(
+    () => (unverifiedOriginals.size > 0 ? messages.filter((message) => !unverifiedOriginals.has(message.id)) : messages),
+    [messages, unverifiedOriginals],
   );
   const acknowledge = useCallback(() => {
     if (!isDataOwnerGenerationCurrent(readOwner.current) || !stickToBottomRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
@@ -477,8 +546,17 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const paged = find(base.older);
     if (paged) {
       try {
+        // A failed re-read is not a verified original: stay put rather than jump to a stale copy.
         const read = await loadOlder(paged.sequence + 1);
-        settle(read ? find(read.messages) : paged);
+        if (!read) return;
+        const original = find(read.messages);
+        if (original) setUnverifiedOriginals((previous) => {
+          if (!previous.has(original.id)) return previous;
+          const next = new Set(previous);
+          next.delete(original.id);
+          return next;
+        });
+        settle(original);
       } finally {
         locatingRef.current = false;
       }
@@ -759,7 +837,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   message={message}
                   shareScope={shareScope}
                   sharing={sharing}
-                  quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, messages) : undefined}
+                  quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
                   onLocateQuote={message.quote ? () => void locateQuoted(message.quote!) : undefined}
                   actions={message.kind === 'message' ? <ChatMessageActions
                     groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message}
@@ -848,7 +926,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         attachments={attachmentState}
         attachmentScope={attachmentScope}
         dragOver={dragOver}
-        quote={quoteDraft ? { view: quoteDraft, display: resolveBotGroupQuote(quoteDraft, messages) } : null}
+        quote={quoteDraft ? { view: quoteDraft, display: resolveBotGroupQuote(quoteDraft, quoteSources) } : null}
         onQuoteChange={setQuoteDraft}
         onSent={() => {
           stickToBottomRef.current = true;

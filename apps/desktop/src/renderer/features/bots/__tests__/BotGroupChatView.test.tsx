@@ -1350,6 +1350,85 @@ describe('BotGroupChatView', () => {
       expect(document.body.textContent).not.toContain('很早的原文');
     });
 
+    describe('quoted originals on older pages after a push', () => {
+      const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
+      const latest = msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '快照摘要', sequence: 1 }) });
+      /** The server's current page for `beforeSequence`, and a way to run the page loader. */
+      function serve(older: () => Promise<BotGroupMessageView[]>) {
+        const base = detail({ serverBacked: true, hasMoreBefore: true });
+        mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+          ? { ok: true, group: { ...base, hasMoreBefore: false, messages: await older() } }
+          : { ok: true, group: { ...base, messages: [latest] } });
+      }
+      const quoteState = () => screen.getByTestId('bot-group-quote').getAttribute('data-quote-state');
+      const push = () => act(async () => { mocks.pushes.forEach((listener) => listener({ groupId: 'g1', change: 'messages' })); });
+
+      it('drops a deleted original from the quote on a push, without a click', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('很早的原文'));
+        expect(quoteState()).toBe('live');
+        server = [{ ...original, deleted: true, content: '（消息已删除）' }];
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        expect(document.body.textContent).not.toContain('很早的原文');
+        expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', { beforeSequence: 2 });
+      });
+
+      it('follows an edited original on a push', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('很早的原文'));
+        server = [{ ...original, content: '改过的原文' }];
+        await push();
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('改过的原文'));
+        expect(quoteState()).toBe('live');
+      });
+
+      it('falls back to the snapshot and never jumps when the original cannot be re-read', async () => {
+        const user = userEvent.setup();
+        let fail = false;
+        serve(async () => { if (fail) throw new Error('offline'); return [original]; });
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        fail = true;
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('snapshot'));
+        expect(screen.getByTestId('bot-group-quote').textContent).toContain('快照摘要');
+        await user.click(screen.getByTestId('bot-group-quote'));
+        await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.timeline.loadEarlierFailed'));
+        expect(document.querySelector('[class*="search-match-bg"]')).toBeNull();
+      });
+
+      it('lets a newer push win over an older re-read that answers late', async () => {
+        const user = userEvent.setup();
+        const pending: Array<(page: BotGroupMessageView[]) => void> = [];
+        let paging = true;
+        serve(() => paging ? Promise.resolve([original]) : new Promise((resolve) => pending.push(resolve)));
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        paging = false;
+        await push();
+        await waitFor(() => expect(pending).toHaveLength(1));
+        await push();
+        await waitFor(() => expect(pending).toHaveLength(2));
+        await act(async () => pending[1]!([{ ...original, deleted: true, content: '（消息已删除）' }]));
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        // The superseded read arrives last with the pre-deletion copy; it must not bring the text back.
+        await act(async () => pending[0]!([original]));
+        expect(quoteState()).toBe('deleted');
+        expect(document.body.textContent).not.toContain('很早的原文');
+      });
+    });
+
     it('says the original is out of reach instead of jumping elsewhere', async () => {
       const user = userEvent.setup();
       const base = detail({ serverBacked: true, hasMoreBefore: true });

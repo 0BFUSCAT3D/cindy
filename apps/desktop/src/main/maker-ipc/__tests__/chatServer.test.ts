@@ -45,7 +45,7 @@ import { withChatServer } from '../chatServer.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
-import { buildBotGroupQuoteCard } from '../../../shared/botGroupChat.js';
+import { botGroupQuoteFromMessage, buildBotGroupQuoteCard } from '../../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupChatService.js';
 
 describe('Chat Server production connection', () => {
@@ -265,6 +265,18 @@ describe('Chat Server result delivery and refresh', () => {
         quote: { messageId: '../../other-room/messages/x' } })).toMatchObject({ ok: false });
       expect(fixture.handle.mock.calls.some(([route]) => route.includes('other-room'))).toBe(false);
       expect(posts()).toHaveLength(0);
+    });
+
+    it('drafts a quote of an attachment-only message whose files are still downloading with their names', async () => {
+      fixture.download.mockImplementation(() => new Promise(() => {}));
+      const pending = { id: quotedId, seq: '7', authorId: botId, author: { kind: 'bot', name: 'Bot' }, origin: 'bot', deleted: false,
+        threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [{ type: 'media', mediaId, caption: 'plan.pdf' }] };
+      fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [pending] } : response(route));
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      const view = result.group.messages[0]!;
+      expect(view.attachments).toEqual([]);
+      expect(botGroupQuoteFromMessage(view)).toMatchObject({ excerpt: '[附件: plan.pdf]' });
     });
 
     it('shows a valid card as the quote and an unknown revision as plain fallback text', async () => {
