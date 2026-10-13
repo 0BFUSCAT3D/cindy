@@ -634,6 +634,7 @@ import {
   useSessionRunning,
   useSessionTaskUpdates,
 } from '@/session/remoteSessionStore';
+import { CindyMakeSessionGate } from '@/session/CindyMakeSessionGate';
 import type {
   MobileGoalLimitsInput,
   MobileGoalStatusPayload,
@@ -981,6 +982,15 @@ function composerDraftScopeKey(sessionId: string, routeDraft: string | null): st
 }
 
 export default function SessionScreen() {
+  const { sessionId, deviceId } = useLocalSearchParams<{ sessionId: string; deviceId?: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={readRouteParam(sessionId) ?? ''} deviceId={readRouteParam(deviceId) ?? undefined}>
+      <SessionScreenContent />
+    </CindyMakeSessionGate>
+  );
+}
+
+function SessionScreenContent() {
   const styles = useThemedStyles(makeStyles);
   const { colors, mode } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();

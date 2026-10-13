@@ -17,6 +17,7 @@
     "./chat-quotes": "./src/chatQuotes.ts",
     "./command-display": "./src/commandDisplay.ts",
     "./client-endpoints": "./src/clientEndpoints.ts",
+    "./cindy-make-feature": "./src/cindyMakeFeature.ts",
     "./companion-import": "./src/companionImport.ts",
     "./composer-palette": "./src/composerPalette.ts",
     "./conversation-search": "./src/conversationSearch.ts",
