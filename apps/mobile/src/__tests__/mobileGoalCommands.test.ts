@@ -74,6 +74,8 @@ function existingHarness(args = 'target') {
     isRemoteSessionMissing: () => false, readSessionRowNow: () => session, goalBusy: false, setGoalBusy: vi.fn(),
     executeMobileGoalCommand, sessionId: 'existing-task', deviceId: 'host', deviceIdRef: { current: 'host' },
     outboxSessionAliveRef: { current: 'existing-task' }, getMobileAuthOwner: () => ({}), isMobileAuthOwnerCurrent: () => true,
+    // Durable outbox construction reads route params for bot resourceRef (#5928).
+    params: {}, readRouteParam: (value: string | undefined) => value ?? null,
     maker: { goal: { set: vi.fn(async () => {}), clear: vi.fn(async () => {}), getStatus: vi.fn(async () => ({ status: 'active', objective: 'target' })) } },
     remoteSessionStore: { setGoalStatus: vi.fn(), acquireSessionMessageWork: vi.fn(() => ({ release })), getSessionDeviceId: () => 'host' }, setContextSheetView: vi.fn(), setContextSheetOpen: vi.fn(),
     setGoalRestore: vi.fn(), router: { setParams: vi.fn() }, composerDocumentRef: { current: initial },
@@ -212,7 +214,9 @@ describe('existing task /goal send boundary', () => {
     h.bindings.goalBusy = false;
     h.bindings.attachmentsRef.current = [];
     h.bindings.composerDocumentRef.current = textComposerDocument('ordinary follow-up');
+    h.bindings.setError.mockClear();
     await h.run();
+    expect(h.bindings.setError).toHaveBeenCalledExactlyOnceWith(null);
     expect(h.bindings.mobileDurableOutbox.add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       item: expect.objectContaining({ sessionId: 'existing-task', text: 'ordinary follow-up' }),
     }));
