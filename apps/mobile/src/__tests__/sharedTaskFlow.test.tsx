@@ -99,7 +99,9 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); clearSharedTaskInvitationIntent(); vi.useRealTimers(); });
 it.each(['cindy-make', 'cindy-make-merge'])('hides cold %s shares from both account management lists', async source => {
   h.params = { mode: 'manage' };
-  h.api.list.mockResolvedValue([owned('Legacy owned'), { ...owned('Legacy joined'), ownerAccountId: 'other' }]);
+  let shares = [owned('Legacy owned'), { ...owned('Legacy joined'), ownerAccountId: 'other' }];
+  h.api.list.mockImplementation(async () => shares);
+  h.api.leave.mockImplementation(async sharedTaskId => { shares = shares.filter(task => task.sharedTaskId !== sharedTaskId); });
   h.store.getSessions.mockReturnValue([]);
   h.link.invoke.mockImplementation(async (_peer, _channel, [sessionId]) => ({ id: sessionId, source }));
   await render();
@@ -110,6 +112,8 @@ it.each(['cindy-make', 'cindy-make-merge'])('hides cold %s shares from both acco
   expect(element.textContent).toContain('sharedTask.joinedEmptyTitle');
   expect(h.link.invoke).toHaveBeenCalledWith('host', 'local-db:sessions:get', ['task']);
   expect(h.link.invoke).toHaveBeenCalledWith(sharedTaskHostPeer('Legacy-joined', 'host'), 'local-db:sessions:get', ['task']);
+  expect(h.api.leave).toHaveBeenCalledExactlyOnceWith('Legacy-joined');
+  expect(h.api.close).not.toHaveBeenCalled();
 });
 it('does not show unknown offline shares and restores a confirmed ordinary share on the next poll', async () => {
   h.params = { mode: 'manage' }; h.api.list.mockResolvedValue([owned('Recovered normal task')]);
@@ -123,6 +127,50 @@ it('does not show unknown offline shares and restores a confirmed ordinary share
 });
 const invitationLink = 'https://relay.example.test/shared-task/join#' + 'A'.repeat(43);
 const invitationIntent = 'cindy://shared-session?invitation=' + 'A'.repeat(43) + '&server=https%3A%2F%2Frelay.example.test';
+it.each([
+  ['cindy-make', false], ['cindy-make-merge', false],
+  ['cindy-make', true], ['cindy-make-merge', true],
+] as const)('undoes a legacy %s invitation before publishing success or navigating (link=%s)', async (source, automatic) => {
+  h.store.getSessions.mockReturnValue([]);
+  h.link.invoke.mockResolvedValue({ id: 'task', source });
+  if (automatic) receiveSharedTaskInvitationIntent(invitationIntent);
+  await render();
+  if (!automatic) { await fill('sharedTask.invitation', invitationLink); await click('sharedTask.join'); }
+  const peer = sharedTaskHostPeer('shared', 'desktop');
+  expect(h.api.leave).toHaveBeenCalledExactlyOnceWith('shared');
+  expect(h.revoked).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(h.link.closeLink).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(h.store.removeDevice).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(h.api.close).not.toHaveBeenCalled();
+  expect(h.store.setDeviceSessions).not.toHaveBeenCalled();
+  expect(h.router.replace).not.toHaveBeenCalled();
+  expect(element.textContent).toContain('sharedTask.invitationUnavailable');
+  expect(element.textContent).not.toContain('Design review');
+  expect(element.querySelector('[aria-label="sharedTask.invitation"]')).not.toBeNull();
+});
+it('does not revoke membership after an account change while confirming an invitation', async () => {
+  h.store.getSessions.mockReturnValue([]);
+  let finish!: (session: unknown) => void;
+  h.link.invoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await render(); await fill('sharedTask.invitation', invitationLink); await click('sharedTask.join');
+  expect(finish).toBeTypeOf('function');
+  setMobileAuthOwner('other'); h.generation++;
+  await render(); await act(async () => finish({ id: 'task', source: 'cindy-make' }));
+  expect(h.api.leave).not.toHaveBeenCalled();
+  expect(h.link.closeLink).not.toHaveBeenCalled();
+  expect(h.router.replace).not.toHaveBeenCalled();
+});
+it('retries failed Make membership rollback without exposing the task', async () => {
+  h.store.getSessions.mockReturnValue([]); h.link.invoke.mockResolvedValue({ id: 'task', source: 'cindy-make' });
+  h.api.leave.mockRejectedValueOnce(new Error('offline'));
+  await render(); await fill('sharedTask.invitation', invitationLink); await click('sharedTask.join');
+  expect(element.textContent).toContain('sharedTask.retry');
+  expect(element.textContent).not.toContain('Design review');
+  expect(h.router.replace).not.toHaveBeenCalled();
+  await click('sharedTask.join');
+  expect(h.api.leave).toHaveBeenCalledTimes(2);
+  expect(element.textContent).toContain('sharedTask.invitationUnavailable');
+});
 it('copies a shareable invitation message with a link accepted by automatic and manual admission', async () => {
   h.params = { sessionId: 'task', deviceId: 'desktop' };
   h.link.invoke.mockImplementation(async (_device, _channel, [command]) => command.action === 'invite' ? { invitation: 'A'.repeat(43) } : { available: true, detail });

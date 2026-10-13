@@ -63,6 +63,59 @@ it.each(['cindy-make', 'cindy-make-merge'])('filters %s from owned and joined ac
   expect(screen.queryByText(joinedTask.title)).toBeNull();
   expect(state.invoke).toHaveBeenCalledWith('other-pc', 'local-db:sessions:get', [owned[1].sessionId]);
   expect(state.invoke).toHaveBeenCalledWith(sharedTaskHostPeer(joinedTask.sharedTaskId, joinedTask.hostDeviceId), 'local-db:sessions:get', [joinedTask.sessionId]);
+  expect(state.account).toHaveBeenCalledWith({ action: 'leave', sharedTaskId: joinedTask.sharedTaskId });
+  expect(state.account).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'close' }));
+});
+
+it.each([
+  ['cindy-make', false], ['cindy-make-merge', false],
+  ['cindy-make', true], ['cindy-make-merge', true],
+] as const)('undoes a legacy %s invitation before showing success or entering (link=%s)', async (source, automatic) => {
+  ownedItems = []; joinedItems = [];
+  state.rawSessions.mockReturnValue([]);
+  state.invoke.mockResolvedValue({ id: joinedTask.sessionId, source });
+  const close = vi.fn();
+  const invitation = 'https://relay.example.test/shared-task/join#' + 'A'.repeat(43);
+  render(<MemoryRouter><JoinSharedTaskDialog open initialInvitation={automatic ? invitation : undefined} onOpenChange={close} /></MemoryRouter>);
+  if (!automatic) {
+    fireEvent.change(screen.getByLabelText('sharedTask.invitation'), { target: { value: invitation } });
+    click('join');
+  }
+  await waitFor(() => expect(state.account).toHaveBeenCalledWith({ action: 'leave', sharedTaskId: joinedTask.sharedTaskId }));
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('sharedTask.invitationUnavailable'));
+  const peer = sharedTaskHostPeer(joinedTask.sharedTaskId, joinedTask.hostDeviceId);
+  expect(state.invoke).toHaveBeenCalledExactlyOnceWith(peer, 'local-db:sessions:get', [joinedTask.sessionId]);
+  expect(state.closeLink).toHaveBeenCalledWith(peer);
+  expect(state.reset).toHaveBeenCalledWith(peer);
+  expect(state.removeDevice).toHaveBeenCalledWith(peer);
+  expect(state.setSessions).not.toHaveBeenCalled();
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByText('sharedTask.joinedTitle:' + joinedTask.title)).toBeNull();
+  expect((screen.getByLabelText('sharedTask.invitation') as HTMLTextAreaElement).value).toBe(invitation);
+});
+
+it('does not show join success until ordinary source metadata arrives', async () => {
+  ownedItems = []; joinedItems = []; state.rawSessions.mockReturnValue([]);
+  let finish!: (session: unknown) => void;
+  state.invoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  open(); fill();
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  expect(screen.queryByText('sharedTask.joinedTitle:' + joinedTask.title)).toBeNull();
+  await act(async () => finish({ id: joinedTask.sessionId, source: 'desktop' }));
+  await screen.findByText('sharedTask.joinedTitle:' + joinedTask.title);
+  expect(state.account).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'leave' }));
+});
+
+it('does not revoke a new account when hidden join metadata arrives late', async () => {
+  ownedItems = []; joinedItems = []; state.rawSessions.mockReturnValue([]);
+  let finish!: (session: unknown) => void;
+  state.invoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  open(); fill();
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  await act(async () => { setDataOwnerGeneration('other'); finish({ id: joinedTask.sessionId, source: 'cindy-make' }); });
+  expect(state.account).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'leave' }));
+  expect(state.closeLink).not.toHaveBeenCalled();
+  expect(state.setSessions).not.toHaveBeenCalled();
 });
 it('does not expose unconfirmed offline shares in account management and retries on focus', async () => {
   ownedItems = [owned[1]]; joinedItems = [];

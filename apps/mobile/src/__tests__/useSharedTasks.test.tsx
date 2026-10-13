@@ -11,13 +11,15 @@ const state = vi.hoisted(() => ({
   auth: { isAuthenticated: true, accountGeneration: 1 },
   link: { status: 'online', sharedTaskAvailable: false as boolean | undefined,
     openLink: vi.fn(), closeLink: vi.fn(), invoke: vi.fn() },
-  api: { list: vi.fn<() => Promise<SharedTaskListItem[]>>(async () => []) },
+  api: { list: vi.fn<() => Promise<SharedTaskListItem[]>>(async () => []), leave: vi.fn() },
+  revoked: vi.fn(),
   store: { getSessions: vi.fn<() => RemoteSession[]>(() => []), removeDevice: vi.fn(), setDeviceSessions: vi.fn() },
 }));
 vi.mock('@/auth/AuthContext', () => ({ useAuth: () => state.auth }));
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => state.link }));
 vi.mock('@/device-link/useSharedTaskApi', () => ({ useSharedTaskApi: () => state.api }));
 vi.mock('@/session/remoteSessionStore', () => ({ remoteSessionStore: state.store }));
+vi.mock('@/device-link/accessRevoked', () => ({ markDeviceAccessRevoked: state.revoked }));
 let root: Root;
 let ownedTasks: readonly SharedTaskListItem[];
 function Probe() { ownedTasks = useSharedTasks(); return null; }
@@ -60,6 +62,58 @@ it('keeps guest admission separate while listing shares owned by the same accoun
   expect(ownedTasks).toEqual([confirmedOwned]);
   expect(state.link.openLink).toHaveBeenCalledExactlyOnceWith(sharedTaskHostPeer('joined', 'desktop'));
   expect(state.store.setDeviceSessions).toHaveBeenCalledExactlyOnceWith(sharedTaskHostPeer('joined', 'desktop'), guest.title, [{ id: 'guest-task' }]);
+  expect(state.api.leave).not.toHaveBeenCalled();
+});
+it.each(['cindy-make', 'cindy-make-merge'])('revokes a restored %s membership without publishing its session', async source => {
+  state.link.sharedTaskAvailable = true;
+  const guest = { ...owned, sharedTaskId: 'joined', sessionId: 'guest-task', ownerAccountId: 'other' };
+  state.api.list.mockResolvedValue([guest]);
+  state.link.invoke.mockResolvedValue({ id: 'guest-task', source });
+  await render();
+  const peer = sharedTaskHostPeer('joined', 'desktop');
+  expect(state.api.leave).toHaveBeenCalledExactlyOnceWith('joined');
+  expect(state.revoked).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.link.closeLink).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.store.removeDevice).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.store.setDeviceSessions).not.toHaveBeenCalled();
+});
+it('retries membership cleanup on the next restore poll after a leave failure', async () => {
+  state.link.sharedTaskAvailable = true;
+  const guest = { ...owned, sharedTaskId: 'joined', sessionId: 'guest-task', ownerAccountId: 'other' };
+  state.api.list.mockResolvedValue([guest]); state.link.invoke.mockResolvedValue({ id: 'guest-task', source: 'cindy-make' });
+  state.api.leave.mockRejectedValueOnce(new Error('offline'));
+  await render();
+  expect(state.api.leave).toHaveBeenCalledTimes(1);
+  expect(state.store.setDeviceSessions).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(5_000));
+  expect(state.api.leave).toHaveBeenCalledTimes(2);
+  expect(state.link.closeLink).toHaveBeenCalledWith(sharedTaskHostPeer('joined', 'desktop'));
+});
+it('leaves a cached hidden guest membership without contacting the offline host', async () => {
+  state.link.sharedTaskAvailable = true;
+  const guest = { ...owned, sharedTaskId: 'joined', sessionId: 'guest-task', ownerAccountId: 'other' };
+  const peer = sharedTaskHostPeer('joined', 'desktop');
+  state.api.list.mockResolvedValue([guest]);
+  state.store.getSessions.mockReturnValue([{ id: 'guest-task', deviceLinkDeviceId: peer, source: 'cindy-make' } as RemoteSession]);
+  state.link.invoke.mockRejectedValue(new Error('offline'));
+  await render();
+  expect(state.api.leave).toHaveBeenCalledExactlyOnceWith('joined');
+  expect(state.link.closeLink).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.link.openLink).not.toHaveBeenCalled();
+  expect(state.link.invoke).not.toHaveBeenCalled();
+});
+it('keeps an ordinary shared peer on the same host unaffected by Make withdrawal', async () => {
+  state.link.sharedTaskAvailable = true;
+  const hidden = { ...owned, sharedTaskId: 'hidden-share', sessionId: 'hidden-task', ownerAccountId: 'other' };
+  const ordinary = { ...hidden, sharedTaskId: 'ordinary-share', sessionId: 'ordinary-task' };
+  state.api.list.mockResolvedValue([hidden, ordinary]);
+  state.link.invoke.mockImplementation(async (_peer, _channel, [sessionId]) => ({ id: sessionId, source: sessionId === hidden.sessionId ? 'cindy-make' : 'desktop' }));
+  await render();
+  const peer = sharedTaskHostPeer(hidden.sharedTaskId, hidden.hostDeviceId);
+  expect(state.api.leave).toHaveBeenCalledExactlyOnceWith(hidden.sharedTaskId);
+  expect(state.link.closeLink).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.store.removeDevice).toHaveBeenCalledExactlyOnceWith(peer);
+  expect(state.store.setDeviceSessions).toHaveBeenCalledExactlyOnceWith(sharedTaskHostPeer(ordinary.sharedTaskId, ordinary.hostDeviceId), ordinary.title, [{ id: ordinary.sessionId, source: 'desktop' }]);
 });
 it('hides the previous account shares and ignores its late list response', async () => {
   state.link.sharedTaskAvailable = true; state.api.list.mockResolvedValue([owned]);

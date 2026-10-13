@@ -250,10 +250,13 @@ export function SharedTaskDialog({ open, onOpenChange, session, returnFocus, ini
       try {
         const result = await window.electronAPI.sharedTask.account({ action: 'join', invitation: invitation.trim(), displayName: sharedTaskAccountName(user?.name) }) as { sharedTaskId: string };
         if (!current()) return;
-        setInvitation(''); setSuccess({ sharedTaskId: result.sharedTaskId, title: '' });
-        invalidateLists(); void loadList('joined');
         const joinedDetail = await window.electronAPI.sharedTask.account({ action: 'get', sharedTaskId: result.sharedTaskId }) as SharedTaskDetail;
-        if (current()) setSuccess({ sharedTaskId: result.sharedTaskId, title: joinedDetail.title });
+        if (!current()) return;
+        const visible = await filterVisibleSharedTasks([joinedDetail], current);
+        if (!current()) return;
+        if (!visible.length) { toast.error(t('sharedTask.invitationUnavailable')); return; }
+        setInvitation(''); setSuccess({ sharedTaskId: result.sharedTaskId, title: joinedDetail.title });
+        invalidateLists(); void loadList('joined');
         if (enter && current()) await enterTask(result.sharedTaskId, current);
       } catch (error) { if (current()) toast.error(t(sharedTaskErrorKey(error, 'join'))); }
     });
