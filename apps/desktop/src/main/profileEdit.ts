@@ -46,6 +46,8 @@ export interface ProfileEditDeps {
   showAvatarOpenDialog(): Promise<string | null>;
   /** 读文件字节(fs.promises.readFile)。 */
   readFile(filePath: string): Promise<Buffer>;
+  /** HDR 头像转 SDR(hdrAvatarToSdr.toSdrAvatarImage);SDR 原样返回。 */
+  toSdrAvatar(image: { buffer: Buffer; mimeType: string }): Promise<{ buffer: Buffer; mimeType: string }>;
   /** 头像直传 OSS(ossPublicUpload.uploadPublicAsset 的 avatar 场景特化)。 */
   uploadAvatar(params: { buffer: Uint8Array; mimeType: string }): Promise<
     | { ok: true; publicUrl: string }
@@ -121,7 +123,8 @@ export function getProfileEditState(deps: ProfileEditDeps): ProfileEditState {
 }
 
 /**
- * 选头像文件:系统选择器 → 扩展名 / 体积校验 → 返回路径 + 预览 data URL。
+ * 选头像文件:系统选择器 → 扩展名 / 体积校验 → HDR 转 SDR → 返回路径 + 预览 data URL。
+ * 预览即转换后的 SDR 像素,与「保存」时上传的字节一致。
  * 这里**不**上传——用户点「保存」才走 OSS 直传,取消弹窗零副作用。
  */
 export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAvatarResult> {
@@ -141,17 +144,18 @@ export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAva
   if (buffer.byteLength === 0 || buffer.byteLength > AVATAR_MAX_BYTES) {
     throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${buffer.byteLength}`);
   }
+  const preview = await deps.toSdrAvatar({ buffer, mimeType: mime });
   return {
     canceled: false,
     filePath,
-    previewDataUrl: `data:${mime};base64,${buffer.toString('base64')}`,
+    previewDataUrl: `data:${preview.mimeType};base64,${preview.buffer.toString('base64')}`,
   };
 }
 
 /**
  * 保存资料:name 与 avatar 各自收敛成 PATCH 字段,一次提交服务端。
  *   - name:trim 后为空或与当前一致 → 不改;否则 displayName;
- *   - avatar keep:不动;set:校验 → OSS 直传拿 publicUrl;reset:avatarUrl null;
+ *   - avatar keep:不动;set:校验 → HDR 转 SDR → OSS 直传拿 publicUrl;reset:avatarUrl null;
  *   - 两个字段都没变化 → 直接成功返回,零网络请求。
  * 上传成功但 PATCH 失败时,已传对象成为孤儿(bucket 生命周期规则兜底清理,
  * 契约见 oss-server 文档),客户端无需补偿删除。
@@ -200,7 +204,11 @@ export async function updateProfile(
     if (buffer.byteLength === 0 || buffer.byteLength > AVATAR_MAX_BYTES) {
       throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${buffer.byteLength}`);
     }
-    const uploaded = await deps.uploadAvatar({ buffer, mimeType: mime });
+    const image = await deps.toSdrAvatar({ buffer, mimeType: mime });
+    if (image.buffer.byteLength > AVATAR_MAX_BYTES) {
+      throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${image.buffer.byteLength}`);
+    }
+    const uploaded = await deps.uploadAvatar(image);
     if (!uploaded.ok) {
       throwIpcError(
         'PROFILE_AVATAR_UPLOAD_FAILED',

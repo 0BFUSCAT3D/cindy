@@ -2,10 +2,13 @@
  * profileEdit.test.ts — 个人资料编辑业务体单测(规则 14:全依赖注入,内存直测)。
  * 覆盖:未登录 / 非法参数拒绝、名字收敛(留空/一致 = 不改)、头像三态
  * (keep / set / reset)的 OSS 直传与 PATCH 组装、体积与扩展名校验、
- * 上传 / PATCH 失败的错误码映射、无变化零请求。
+ * 上传 / PATCH 失败的错误码映射、无变化零请求、HDR 头像先转 SDR 再预览 / 上传。
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { toSdrAvatarImage, readPngHdrChunks } from '../hdrAvatarToSdr';
 
 import {
   AVATAR_MAX_BYTES,
@@ -31,6 +34,7 @@ function makeDeps(overrides: Partial<ProfileEditDeps> = {}): {
     getServerProfile: () => ({ name: 'Server Name', avatar: null }),
     showAvatarOpenDialog: vi.fn(async () => null),
     readFile: vi.fn(async () => Buffer.from([1, 2, 3])),
+    toSdrAvatar: vi.fn(async (image) => image),
     uploadAvatar: vi.fn(async () => ({ ok: true as const, publicUrl: PUBLIC_URL })),
     patchProfile: vi.fn(async (patch: ProfilePatch) => {
       patches.push(patch);
@@ -170,6 +174,43 @@ describe('头像三态', () => {
     await expect(
       updateProfile(deps, { name: 'Lizi', avatar: { type: 'keep' } }),
     ).rejects.toSatisfy((e) => ipcCode(e) === 'PROFILE_UPDATE_FAILED');
+  });
+});
+
+describe('HDR 头像转 SDR 后再预览 / 上传', () => {
+  const hdrPng = readFileSync(path.join(__dirname, 'fixtures', 'hdr-avatar', 'pq-bt2100.png'));
+
+  it('set:上传的是真实转换后的 SDR 字节,而不是原 HDR 文件', async () => {
+    const { deps } = makeDeps({ readFile: vi.fn(async () => hdrPng), toSdrAvatar: toSdrAvatarImage });
+    await updateProfile(deps, { name: null, avatar: { type: 'set', filePath: '/pics/hdr.png' } });
+    const [[uploaded]] = (deps.uploadAvatar as ReturnType<typeof vi.fn>).mock.calls as [[{ buffer: Buffer; mimeType: string }]];
+    expect(uploaded.mimeType).toBe('image/png');
+    expect(uploaded.buffer.equals(hdrPng)).toBe(false);
+    expect(readPngHdrChunks(hdrPng).cicp?.transfer).toBe(16);
+    expect(readPngHdrChunks(uploaded.buffer).cicp).toBeNull();
+  });
+
+  it('chooseAvatarFile:预览与将要上传的字节一致(同为 SDR)', async () => {
+    const { deps } = makeDeps({
+      showAvatarOpenDialog: vi.fn(async () => '/pics/hdr.png'),
+      readFile: vi.fn(async () => hdrPng),
+      toSdrAvatar: toSdrAvatarImage,
+    });
+    const result = await chooseAvatarFile(deps);
+    const preview = Buffer.from(result.previewDataUrl!.split(',')[1]!, 'base64');
+    expect(result.previewDataUrl!.startsWith('data:image/png;base64,')).toBe(true);
+    expect(readPngHdrChunks(preview).cicp).toBeNull();
+    expect(preview.equals((await toSdrAvatarImage({ buffer: hdrPng, mimeType: 'image/png' })).buffer)).toBe(true);
+  });
+
+  it('转换结果超出体积上限 → INVALID_PARAMS,不触发上传', async () => {
+    const { deps } = makeDeps({
+      toSdrAvatar: vi.fn(async () => ({ buffer: Buffer.alloc(AVATAR_MAX_BYTES + 1), mimeType: 'image/png' })),
+    });
+    await expect(
+      updateProfile(deps, { name: null, avatar: { type: 'set', filePath: '/a/b.png' } }),
+    ).rejects.toSatisfy((e) => ipcCode(e) === 'INVALID_PARAMS');
+    expect(deps.uploadAvatar).not.toHaveBeenCalled();
   });
 });
 

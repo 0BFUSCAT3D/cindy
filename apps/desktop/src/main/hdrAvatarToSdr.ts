@@ -1,0 +1,379 @@
+/**
+ * hdrAvatarToSdr.ts — 头像入口的 HDR → SDR 归一化。
+ * ---------------------------------------------------------------------------
+ * 头像会在列表、通知、手机端等大量 SDR 语境里与其它界面元素并排显示；HDR 头像
+ * 在 HDR 屏上会比周围 UI 亮出一截（高光刺眼），在不同端又各自走不同的色调映射。
+ * 因此用户上传的头像在入库 / 上传前就转成真正的 SDR 字节，而不是靠 CSS 调暗。
+ *
+ * 只处理头像白名单（PNG / JPEG / WebP）里浏览器会按 HDR 渲染的两类信号：
+ *   1. 增益图（gain map）JPEG：Ultra HDR（hdrgm XMP）、ISO 21496-1、Apple HDR gain map。
+ *      主图本身就是 SDR 版本，丢弃增益图与相关元数据后按主图重编码即可；
+ *   2. PQ / HLG 传递函数：PNG `cICP` 块或 ICC v4.4 `cicp` 标签声明 transfer=16/18。
+ *      这类像素本身是 HDR 编码，需解码到线性光 → 转 BT.709 色域 → 高光压缩 →
+ *      sRGB 编码为 8-bit。
+ * 其它输入（含一切 SDR 图片、无法解析头部的字节）原样返回，保证既有 SDR 头像的
+ * 字节、颜色、方向、透明度与尺寸行为完全不变。
+ */
+
+import sharp, { type Metadata, type Sharp } from 'sharp';
+import { throwIpcError } from './utils/ipcValidate';
+
+export interface AvatarImageBytes {
+  buffer: Buffer;
+  mimeType: string;
+}
+
+type AvatarFormat = 'png' | 'jpeg' | 'webp';
+type HdrTransfer = 'pq' | 'hlg';
+
+interface Cicp {
+  primaries: number;
+  transfer: number;
+  fullRange: boolean;
+}
+
+/** H.273 TransferCharacteristics：16 = SMPTE ST 2084 (PQ)，18 = ARIB STD-B67 (HLG)。 */
+const H273_TRANSFER_PQ = 16;
+const H273_TRANSFER_HLG = 18;
+
+/** BT.2408 的 HDR 参考白（203 cd/m²）对应 SDR 的 1.0。 */
+const HDR_REFERENCE_WHITE_NITS = 203;
+/** 无 cLLI 时 PQ 内容的假定峰值，及 HLG 的标称显示峰值（BT.2100 Lw = 1000）。 */
+const DEFAULT_HDR_PEAK_NITS = 1000;
+/** 线性 SDR 中低于该值的部分保持不变，只把以上到峰值的高光平滑压进 (knee, 1]。 */
+const TONE_MAP_KNEE = 0.8;
+/** 色调映射在 JS 里逐像素做；超出该像素数先等比缩小，限制 main 进程内存与耗时。 */
+const HDR_MAX_PIXELS = 4096 * 4096;
+/** 每处理这么多像素让出一次事件循环，避免长时间阻塞 main。 */
+const PIXELS_PER_YIELD = 1 << 18;
+
+const GAIN_MAP_SIGNATURES = [
+  // Ultra HDR / Adobe gain map XMP namespace
+  'http://ns.adobe.com/hdr-gain-map/1.0/',
+  // ISO 21496-1 APP2 版本块
+  'urn:iso:std:iso:ts:21496:-1',
+  // Apple HDR gain map 辅助图（MPF 次图 XMP）
+  'urn:com:apple:photo:2020:aux:hdrgainmap',
+].map((signature) => Buffer.from(signature, 'latin1'));
+
+function sniffFormat(buffer: Buffer): AvatarFormat | null {
+  if (
+    buffer.length >= 8 &&
+    buffer.readUInt32BE(0) === 0x89504e47 &&
+    buffer.readUInt32BE(4) === 0x0d0a1a0a
+  ) {
+    return 'png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff)
+    return 'jpeg';
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('latin1', 0, 4) === 'RIFF' &&
+    buffer.toString('latin1', 8, 12) === 'WEBP'
+  ) {
+    return 'webp';
+  }
+  return null;
+}
+
+/** 读取 IDAT 之前的 cICP / cLLI 块（PNG 规范要求二者都出现在 IDAT 之前）。 */
+export function readPngHdrChunks(buffer: Buffer): { cicp: Cicp | null; maxCllNits: number | null } {
+  let cicp: Cicp | null = null;
+  let maxCllNits: number | null = null;
+  let offset = 8;
+  while (offset + 8 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString('latin1', offset + 4, offset + 8);
+    const data = offset + 8;
+    if (type === 'IDAT' || type === 'IEND' || data + length > buffer.length) break;
+    if (type === 'cICP' && length === 4) {
+      cicp = {
+        primaries: buffer[data]!,
+        transfer: buffer[data + 1]!,
+        fullRange: buffer[data + 3] !== 0,
+      };
+    } else if (type === 'cLLI' && length === 8) {
+      // MaxCLL 单位 0.0001 cd/m²；0 表示未知。
+      const value = buffer.readUInt32BE(data) / 10_000;
+      maxCllNits = value > 0 ? value : null;
+    }
+    offset = data + length + 4;
+  }
+  return { cicp, maxCllNits };
+}
+
+/** 读取 ICC v4.4 的 `cicp` 标签；没有或结构不完整时返回 null。 */
+export function readIccCicp(icc: Buffer | undefined): Cicp | null {
+  if (!icc || icc.length < 132) return null;
+  const count = icc.readUInt32BE(128);
+  for (let index = 0; index < count; index++) {
+    const entry = 132 + index * 12;
+    if (entry + 12 > icc.length) return null;
+    if (icc.toString('latin1', entry, entry + 4) !== 'cicp') continue;
+    const offset = icc.readUInt32BE(entry + 4);
+    const size = icc.readUInt32BE(entry + 8);
+    if (
+      size < 12 ||
+      offset + 12 > icc.length ||
+      icc.toString('latin1', offset, offset + 4) !== 'cicp'
+    ) {
+      return null;
+    }
+    return {
+      primaries: icc[offset + 8]!,
+      transfer: icc[offset + 9]!,
+      fullRange: icc[offset + 11] !== 0,
+    };
+  }
+  return null;
+}
+
+function hdrTransferOf(cicp: Cicp | null): HdrTransfer | null {
+  if (cicp?.transfer === H273_TRANSFER_PQ) return 'pq';
+  if (cicp?.transfer === H273_TRANSFER_HLG) return 'hlg';
+  return null;
+}
+
+function hasGainMapSignature(buffer: Buffer): boolean {
+  return GAIN_MAP_SIGNATURES.some((signature) => buffer.includes(signature));
+}
+
+// ── 色彩数学 ────────────────────────────────────────────────────────────────
+
+type Mat3 = [number, number, number, number, number, number, number, number, number];
+type Chromaticities = { r: [number, number]; g: [number, number]; b: [number, number] };
+
+const D65: [number, number] = [0.3127, 0.329];
+const BT709: Chromaticities = { r: [0.64, 0.33], g: [0.3, 0.6], b: [0.15, 0.06] };
+const BT2020: Chromaticities = { r: [0.708, 0.292], g: [0.17, 0.797], b: [0.131, 0.046] };
+const P3_D65: Chromaticities = { r: [0.68, 0.32], g: [0.265, 0.69], b: [0.15, 0.06] };
+
+/** H.273 ColourPrimaries → 色度；HDR 内容未声明或未知时按惯例视为 BT.2020。 */
+function primariesFor(code: number): Chromaticities {
+  if (code === 1) return BT709;
+  if (code === 11 || code === 12) return P3_D65;
+  return BT2020;
+}
+
+function multiply(a: Mat3, b: Mat3): Mat3 {
+  const out = new Array(9).fill(0) as Mat3;
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      out[row * 3 + col] =
+        a[row * 3]! * b[col]! + a[row * 3 + 1]! * b[3 + col]! + a[row * 3 + 2]! * b[6 + col]!;
+    }
+  }
+  return out;
+}
+
+function invert(m: Mat3): Mat3 {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const A = e * i - f * h;
+  const B = -(d * i - f * g);
+  const C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  return [
+    A / det,
+    -(b * i - c * h) / det,
+    (b * f - c * e) / det,
+    B / det,
+    (a * i - c * g) / det,
+    -(a * f - c * d) / det,
+    C / det,
+    -(a * h - b * g) / det,
+    (a * e - b * d) / det,
+  ];
+}
+
+/** 由 RGB 原色与 D65 白点推导线性 RGB → XYZ 矩阵。 */
+function rgbToXyz({ r, g, b }: Chromaticities): Mat3 {
+  const column = ([x, y]: [number, number]) => [x / y, 1, (1 - x - y) / y] as const;
+  const [rx, ry, rz] = column(r);
+  const [gx, gy, gz] = column(g);
+  const [bx, by, bz] = column(b);
+  const [wx, wy, wz] = column(D65);
+  const primaries: Mat3 = [rx, gx, bx, ry, gy, by, rz, gz, bz];
+  const s = invert(primaries);
+  const sr = s[0] * wx + s[1] * wy + s[2] * wz;
+  const sg = s[3] * wx + s[4] * wy + s[5] * wz;
+  const sb = s[6] * wx + s[7] * wy + s[8] * wz;
+  return [rx * sr, gx * sg, bx * sb, ry * sr, gy * sg, by * sb, rz * sr, gz * sg, bz * sb];
+}
+
+function pqToNits(encoded: number): number {
+  const m1 = 2610 / 16384;
+  const m2 = (2523 / 4096) * 128;
+  const c1 = 3424 / 4096;
+  const c2 = (2413 / 4096) * 32;
+  const c3 = (2392 / 4096) * 32;
+  const p = Math.pow(Math.max(encoded, 0), 1 / m2);
+  return 10_000 * Math.pow(Math.max(p - c1, 0) / (c2 - c3 * p), 1 / m1);
+}
+
+/** BT.2100 HLG 逆 OETF：非线性信号 → 归一化场景线性光 [0, 1]。 */
+function hlgToSceneLinear(encoded: number): number {
+  const a = 0.17883277;
+  const b = 1 - 4 * a;
+  const c = 0.5 - a * Math.log(4 * a);
+  const e = Math.max(encoded, 0);
+  return e <= 0.5 ? (e * e) / 3 : (Math.exp((e - c) / a) + b) / 12;
+}
+
+function srgbEncode(linear: number): number {
+  return linear <= 0.0031308 ? 12.92 * linear : 1.055 * Math.pow(linear, 1 / 2.4) - 0.055;
+}
+
+/** maxRGB 高光压缩：knee 以下恒等，(knee, peak] 用扩展 Reinhard 平滑压进 (knee, 1]。 */
+function toneMapMax(max: number, peak: number): number {
+  if (max <= TONE_MAP_KNEE || peak <= 1) return Math.min(max, 1);
+  if (max >= peak) return 1;
+  const t = (max - TONE_MAP_KNEE) / (1 - TONE_MAP_KNEE);
+  const white = (peak - TONE_MAP_KNEE) / (1 - TONE_MAP_KNEE);
+  return TONE_MAP_KNEE + (1 - TONE_MAP_KNEE) * ((t * (1 + t / (white * white))) / (1 + t));
+}
+
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+// ── 转换 ────────────────────────────────────────────────────────────────────
+
+async function encode(pipeline: Sharp, format: AvatarFormat): Promise<AvatarImageBytes> {
+  if (format === 'png') return { buffer: await pipeline.png().toBuffer(), mimeType: 'image/png' };
+  if (format === 'webp')
+    return { buffer: await pipeline.webp({ quality: 90 }).toBuffer(), mimeType: 'image/webp' };
+  return { buffer: await pipeline.jpeg({ quality: 90 }).toBuffer(), mimeType: 'image/jpeg' };
+}
+
+/**
+ * 增益图 JPEG：主图即 SDR 版本。sharp 默认不保留增益图、XMP 与 MPF 次图，
+ * 保留主图 ICC（常见为 Display P3）以免改变 SDR 颜色；EXIF 方向先烘焙进像素。
+ */
+async function dropGainMap(buffer: Buffer): Promise<AvatarImageBytes> {
+  return encode(sharp(buffer, { autoOrient: true }).keepIccProfile(), 'jpeg');
+}
+
+async function toneMapToSdr(
+  buffer: Buffer,
+  format: AvatarFormat,
+  cicp: Cicp,
+  transfer: HdrTransfer,
+  maxCllNits: number | null,
+): Promise<AvatarImageBytes> {
+  const metadata = await sharp(buffer).metadata();
+  const wide = metadata.depth === 'ushort';
+  // ignoreIcc：像素必须保持 PQ / HLG 编码原值，不能先被 lcms 按 ICC 转成 sRGB（会过曝裁切）。
+  let pipeline = sharp(buffer, { ignoreIcc: true, autoOrient: true });
+  const width = metadata.autoOrient?.width ?? metadata.width ?? 0;
+  const height = metadata.autoOrient?.height ?? metadata.height ?? 0;
+  if (width * height > HDR_MAX_PIXELS) {
+    const scale = Math.sqrt(HDR_MAX_PIXELS / (width * height));
+    pipeline = pipeline.resize(
+      Math.max(1, Math.floor(width * scale)),
+      Math.max(1, Math.floor(height * scale)),
+      {
+        fit: 'fill',
+      },
+    );
+  }
+  const { data, info } = await pipeline
+    .toColourspace(wide ? 'rgb16' : 'srgb')
+    .raw({ depth: wide ? 'ushort' : 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  if (channels < 3) throw new Error('unexpected channel count');
+  const source = wide
+    ? new Uint16Array(data.buffer, data.byteOffset, data.byteLength / 2)
+    : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  const maxCode = wide ? 65535 : 255;
+
+  // 码值 → 线性：PQ 直接到「相对参考白」的显示线性；HLG 先到场景线性，OOTF 需逐像素亮度。
+  const narrowScale = wide ? 256 : 1;
+  const decode = new Float32Array(maxCode + 1);
+  for (let code = 0; code <= maxCode; code++) {
+    const signal = cicp.fullRange
+      ? code / maxCode
+      : (code - 16 * narrowScale) / (219 * narrowScale);
+    decode[code] =
+      transfer === 'pq' ? pqToNits(signal) / HDR_REFERENCE_WHITE_NITS : hlgToSceneLinear(signal);
+  }
+  const encodeLut = new Uint8Array(65536);
+  for (let index = 0; index < encodeLut.length; index++) {
+    encodeLut[index] = Math.round(srgbEncode(index / 65535) * 255);
+  }
+
+  const sourceToXyz = rgbToXyz(primariesFor(cicp.primaries));
+  const toBt709 = multiply(invert(rgbToXyz(BT709)), sourceToXyz);
+  const [yr, yg, yb] = [sourceToXyz[3], sourceToXyz[4], sourceToXyz[5]];
+  const peakNits =
+    transfer === 'pq'
+      ? Math.min(Math.max(maxCllNits ?? DEFAULT_HDR_PEAK_NITS, HDR_REFERENCE_WHITE_NITS), 10_000)
+      : DEFAULT_HDR_PEAK_NITS;
+  const peak = peakNits / HDR_REFERENCE_WHITE_NITS;
+
+  const pixels = info.width * info.height;
+  const out = Buffer.alloc(pixels * channels);
+  for (let start = 0; start < pixels; start += PIXELS_PER_YIELD) {
+    const end = Math.min(pixels, start + PIXELS_PER_YIELD);
+    for (let pixel = start; pixel < end; pixel++) {
+      const i = pixel * channels;
+      let r = decode[source[i]!]!;
+      let g = decode[source[i + 1]!]!;
+      let b = decode[source[i + 2]!]!;
+      if (transfer === 'hlg') {
+        // BT.2100 OOTF（γ = 1.2，Lw = 1000）后再相对参考白归一。
+        const ys = yr * r + yg * g + yb * b;
+        const gain =
+          (DEFAULT_HDR_PEAK_NITS * Math.pow(Math.max(ys, 0), 0.2)) / HDR_REFERENCE_WHITE_NITS;
+        r *= gain;
+        g *= gain;
+        b *= gain;
+      }
+      const lr = Math.max(0, toBt709[0] * r + toBt709[1] * g + toBt709[2] * b);
+      const lg = Math.max(0, toBt709[3] * r + toBt709[4] * g + toBt709[5] * b);
+      const lb = Math.max(0, toBt709[6] * r + toBt709[7] * g + toBt709[8] * b);
+      const max = Math.max(lr, lg, lb);
+      const scale = max > 0 ? toneMapMax(max, peak) / max : 0;
+      out[i] = encodeLut[Math.round(Math.min(lr * scale, 1) * 65535)]!;
+      out[i + 1] = encodeLut[Math.round(Math.min(lg * scale, 1) * 65535)]!;
+      out[i + 2] = encodeLut[Math.round(Math.min(lb * scale, 1) * 65535)]!;
+      // Alpha 为直通（非预乘）通道，只做位深缩放。
+      if (channels === 4)
+        out[i + 3] = wide ? Math.round((source[i + 3]! * 255) / 65535) : source[i + 3]!;
+    }
+    if (end < pixels) await yieldToEventLoop();
+  }
+  // 输出不带 ICC / cICP / EXIF，即隐式 sRGB 8-bit；方向已在解码时烘焙。
+  return encode(
+    sharp(out, { raw: { width: info.width, height: info.height, channels: channels as 3 | 4 } }),
+    format,
+  );
+}
+
+/**
+ * 头像入口统一调用：HDR 输入返回转换后的 SDR 字节与真实 MIME，其它输入原样返回
+ * 同一对象。头部无法解析时按既有行为放行；已识别为 HDR 但转换失败时拒绝，
+ * 不把 HDR 字节静默落库或上传。
+ */
+export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarImageBytes> {
+  const format = sniffFormat(image.buffer);
+  if (!format) return image;
+  let metadata: Metadata;
+  try {
+    metadata = await sharp(image.buffer).metadata();
+  } catch {
+    return image;
+  }
+  const png = format === 'png' ? readPngHdrChunks(image.buffer) : { cicp: null, maxCllNits: null };
+  // PNG 规范：cICP 优先于 iCCP；其它格式只有 ICC 能声明传递函数。
+  const cicp = png.cicp ?? readIccCicp(metadata.icc);
+  const transfer = hdrTransferOf(cicp);
+  const gainMap =
+    format === 'jpeg' && (Boolean(metadata.gainMap) || hasGainMapSignature(image.buffer));
+  if (!transfer && !gainMap) return image;
+  try {
+    return transfer && cicp
+      ? await toneMapToSdr(image.buffer, format, cicp, transfer, png.maxCllNits)
+      : await dropGainMap(image.buffer);
+  } catch {
+    throwIpcError('INVALID_PARAMS', 'HDR avatar could not be converted to SDR');
+  }
+}
