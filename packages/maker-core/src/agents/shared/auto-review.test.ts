@@ -4982,6 +4982,21 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     }
   });
 
+  it.each([
+    '--remerge-diff', '--remerge-di', '--remerge', '--dd',
+    '--diff-merges=remerge', '--diff-merges remerge', '--diff-merges=first-parent', '--diff-merges=on',
+  ])(
+    'checks implicit merge patches as sharing content without changing local decisions: %s', (option) => {
+      const command = 'git log ' + option + ' -1';
+      expect(shellCommandReadsCredentials(command, roots)).toBe(false);
+      // The existing general classifier treats the dd token as high impact.
+      expect(classifyShellCommand(command, roots)).toBe(option === '--dd' ? 'prompt-each-time' : 'auto-approve');
+      const collect = vi.fn(() => true);
+      expect(shellCommandReadsCredentials(command, roots, { gitContentRead: collect })).toBe(false);
+      expect(collect).toHaveBeenCalledExactlyOnceWith(expect.not.objectContaining({ metadataOnly: true }));
+    },
+  );
+
   it('checks sharing git show object types even when patch output is suppressed', () => {
     for (const command of ['git show -s deadbeef', 'git show --name-only deadbeef', 'git show --no-patch']) {
       expect(shellCommandReadsCredentials(command, roots), command).toBe(false);

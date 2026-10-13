@@ -223,6 +223,37 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'git show blob-tag -- src')).toBe(false);
   });
 
+  it('keeps consent for implicit merge patches containing credentials', async () => {
+    write('.env', 'PRIVATE_FIXTURE=base\n');
+    git('add', '.env');
+    git('commit', '-q', '--no-gpg-sign', '-m', 'base');
+    const baseBranch = git('branch', '--show-current').trim();
+    git('checkout', '-q', '-b', 'side');
+    write('.env', 'PRIVATE_FIXTURE=side\n');
+    git('commit', '-qam', 'side', '--no-gpg-sign');
+    git('checkout', '-q', baseBranch);
+    write('.env', 'PRIVATE_FIXTURE=main\n');
+    git('commit', '-qam', 'main', '--no-gpg-sign');
+    expect(spawnSync('git', ['merge', '--no-gpg-sign', 'side'], { cwd: repo }).status).toBe(1);
+    write('.env', 'PRIVATE_FIXTURE=resolved\n');
+    git('add', '.env');
+    git('commit', '-qm', 'resolve merge', '--no-gpg-sign');
+    const history = new GitCredentialHistory();
+    for (const options of [
+      ['--remerge-diff'], ['--dd'], ['--diff-merges', 'remerge'],
+      ...['on', 'm', 'first-parent', '1', 'separate', 'combined', 'c', 'dense-combined', 'cc', 'remerge', 'r']
+        .map((mode) => ['--diff-merges=' + mode]),
+    ]) {
+      expect(git('log', ...options, '-1'), options.join(' ')).toContain('PRIVATE_FIXTURE=resolved');
+      const command = 'git log ' + options.join(' ') + ' -1';
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+    expect(await provesSafe(history, 'git log --oneline -1')).toBe(true);
+    expect(await provesSafe(history, 'git log --diff-merges=off -1')).toBe(true);
+    expect(await provesSafe(history, 'git log --diff-merges=none -1')).toBe(true);
+  });
+
   it('does not trust path-limited full diffs or commits outside the scanned history', async () => {
     const history = new GitCredentialHistory();
     const visible = git('rev-parse', 'HEAD').trim();

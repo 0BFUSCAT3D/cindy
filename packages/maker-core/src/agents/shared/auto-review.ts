@@ -6428,7 +6428,19 @@ function shellCommandReadsDotenv(
       }
       const probesShowObject = opts.gitContentRead !== undefined && invocation.sub === 'show'
         && !gitShowHasOnlySafeObjectPaths(invocation.args);
-      const readsContent = gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject;
+      // Merge-diff modes can imply -p; treat long-option prefixes conservatively
+      // too. Sharing probes must not grant the metadata-only exemption.
+      // Keep the existing local / same-account classifier unchanged.
+      const probesMergePatch = sharesGitCredentialChecks
+        && /^(?:log|show|whatchanged)$/.test(invocation.sub)
+        && invocation.args.some((arg, index, args) => {
+          const name = arg.split('=')[0];
+          if (!name.startsWith('--') || name.length <= 2) return false;
+          if (['--remerge-diff', '--dd'].some((option) => option.startsWith(name))) return true;
+          const mode = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[index + 1];
+          return '--diff-merges'.startsWith(name) && mode !== 'off' && mode !== 'none';
+        });
+      const readsContent = gitContentReadWithoutPath(invocation.sub, invocation.args) || probesShowObject || probesMergePatch;
       const probesRuntime = opts.gitContentRead !== undefined
         && /^(?:diff|show|log|whatchanged|grep|cat-file|status|blame|ls-files|check-ignore)$/.test(invocation.sub);
       const checksContent = readsContent || probesRuntime || (sharesGitCredentialChecks
