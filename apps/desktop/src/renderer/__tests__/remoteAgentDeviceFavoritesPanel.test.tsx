@@ -171,6 +171,12 @@ beforeEach(() => {
     if (channel === MODEL_FAVORITES_APPLY) {
       const mutation = args[0] as ModelFavoriteMutation;
       if (mutation.kind === 'add') list.push({ uid: `fav-${seq++}`, ...mutation.item });
+      if (mutation.kind === 'update') {
+        const index = list.findIndex((item) => item.uid === mutation.expected.uid);
+        if (index < 0 || JSON.stringify(list[index]) !== JSON.stringify(mutation.expected))
+          throw new Error('stale favorite');
+        list[index] = { uid: mutation.expected.uid, ...mutation.item };
+      }
       if (mutation.kind === 'remove')
         remoteLists[deviceId] = list.filter((item) => item.uid !== mutation.expected.uid);
       return remoteLists[deviceId];
@@ -499,6 +505,35 @@ describe('收藏 / 全部聚合来源，供应商只筛自己的收藏', () => {
     expect(within(favoritesGroup()).getByText('B Model')).toBeTruthy();
     await act(async () => fireEvent.click(within(rowOf(favoritesGroup(), 'Shared one')).getByRole('button', { name: '取消收藏' })));
     expect(remoteLists['device-b']).toHaveLength(1);
+    expect(listModelFavorites()).toEqual(controllerItems);
+    expect(invoke.mock.calls.every(([deviceId]) => deviceId === 'device-b')).toBe(true);
+  });
+
+  it('被控任务在分享里改收藏配置：按原副本条件更新被控电脑，重读后生效', async () => {
+    const controllerItems = listModelFavorites();
+    const source = providerShareFavoriteSource(shares[0]!);
+    const before = { uid: 'home-share', providerId: source, modelId: 'a-model', agent: 'cc' as const, effort: 'low' };
+    remoteLists['device-b'] = [before];
+    renderPanel({ devices: allDevices, homeDeviceId: 'device-b' }, {
+      deviceId: 'device-b', modelId: 'b-model', currentProviderId: 'b-main',
+    });
+    await clickRail('remote:share:one:a-local');
+    const row = () => rowOf(favoritesGroup(), 'Shared one');
+    expect(row().querySelector('[data-unified-triple]')?.textContent).toContain('低');
+    await act(async () => fireEvent.click(within(row()).getByRole('button', { name: '自定义' })));
+    const flyout = await screen.findByTestId('unified-model-config-flyout');
+    await act(async () => {
+      fireEvent.keyDown(flyout.querySelector('[role="slider"]') as HTMLElement, { key: 'ArrowRight' });
+    });
+    expect(invoke).toHaveBeenCalledWith('device-b', MODEL_FAVORITES_APPLY, [{
+      kind: 'update',
+      expected: before,
+      item: expect.objectContaining({ providerId: source, modelId: 'a-model', agent: 'cc', effort: 'high' }),
+    }]);
+    expect(remoteLists['device-b']).toEqual([expect.objectContaining({ uid: 'home-share', providerId: source, effort: 'high' })]);
+    // 重读被控电脑的列表后，同一行按新配置显示；控制端收藏不动。
+    expect(invoke.mock.calls.filter(([, channel]) => channel === MODEL_FAVORITES_GET).length).toBeGreaterThan(1);
+    expect(row().querySelector('[data-unified-triple]')?.textContent).toContain('高');
     expect(listModelFavorites()).toEqual(controllerItems);
     expect(invoke.mock.calls.every(([deviceId]) => deviceId === 'device-b')).toBe(true);
   });
