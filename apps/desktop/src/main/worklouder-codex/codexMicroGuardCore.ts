@@ -450,13 +450,7 @@ export class CodexMicroGuardManager {
     let restored = this.stripNodeOptions(current);
     // Preserve an explicitly empty original value. Never restore snapshot text:
     // another profile's original value can contain a preload already retired.
-    if (
-      restored === null &&
-      current !== null &&
-      states.some(
-        (state) => state.installedNodeOptions === current && state.originalNodeOptions === '',
-      )
-    )
+    if (restored === null && current !== null && hasEmptyOriginalNodeOptions(current, states))
       restored = '';
     if (restored !== current) {
       await this.restoreEnvironment(restored);
@@ -492,6 +486,21 @@ export class CodexMicroGuardManager {
     if (result.status !== 0) throw new Error('launchctl command failed');
     return result;
   }
+}
+
+function hasEmptyOriginalNodeOptions(
+  current: string,
+  states: readonly CodexMicroGuardStateRecord[],
+): boolean {
+  const values = new Set([current]);
+  for (const value of values) {
+    for (const state of states) {
+      if (state.installedNodeOptions !== value) continue;
+      if (state.originalNodeOptions === '') return true;
+      if (state.originalNodeOptions !== null) values.add(state.originalNodeOptions);
+    }
+  }
+  return false;
 }
 
 export function parseLaunchEnvironmentNodeOptions(input: string): LaunchEnvironmentNodeOptions {

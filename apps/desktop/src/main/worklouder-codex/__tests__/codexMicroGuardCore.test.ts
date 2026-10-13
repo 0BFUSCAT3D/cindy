@@ -135,6 +135,77 @@ describe('paused Codex Micro guard recovery', () => {
     expect(runner.nodeOptions).toBe(original);
   });
 
+  it.each([
+    { original: null, profileCount: 2 },
+    { original: '', profileCount: 2 },
+    { original: null, profileCount: 3 },
+    { original: '', profileCount: 3 },
+  ])(
+    'restores original $original distinctly through $profileCount sequential profile snapshots',
+    async ({ original, profileCount }) => {
+      const { store, runner, manager } = fixture(original);
+      const stores = [store];
+      for (let profileIndex = 1; profileIndex < profileCount; profileIndex += 1) {
+        const nextStore = new CodexMicroGuardStore(
+          path.join(path.dirname(store.supportPath), profileIndex.toString(16).padStart(12, '0')),
+        );
+        const nextToken = seedLegacyGuard(nextStore, runner.nodeOptions);
+        runner.nodeOptions = mergeNodeOptions(runner.nodeOptions, nextToken);
+        stores.push(nextStore);
+      }
+
+      await manager.recover();
+
+      expect(runner.nodeOptions).toBe(original);
+      const expectedMutations =
+        original === null ? [['unsetenv', 'NODE_OPTIONS']] : [['setenv', 'NODE_OPTIONS', '']];
+      expect(runner.commands.filter(([command]) => command !== 'print')).toEqual(expectedMutations);
+      for (const profileStore of stores) {
+        expect(profileStore.isFresh()).toBe(false);
+        expect(profileStore.readState()).toBeNull();
+        expect(fs.existsSync(profileStore.hookPath)).toBe(true);
+      }
+      await manager.recover();
+      expect(runner.nodeOptions).toBe(original);
+      expect(runner.commands.filter(([command]) => command !== 'print')).toEqual(expectedMutations);
+    },
+  );
+
+  it('does not infer an empty original from an unrelated profile snapshot', async () => {
+    const { store, runner, manager } = fixture(null);
+    const unrelated = new CodexMicroGuardStore(
+      path.join(path.dirname(store.supportPath), 'aaaaaaaaaaaa'),
+    );
+    seedLegacyGuard(unrelated, '');
+
+    await manager.recover();
+
+    expect(runner.nodeOptions).toBeNull();
+    expect(runner.commands.filter(([command]) => command !== 'print')).toEqual([
+      ['unsetenv', 'NODE_OPTIONS'],
+    ]);
+  });
+
+  it('terminates a cyclic snapshot chain without inventing an empty original', async () => {
+    const { store, token, runner, manager } = fixture(null);
+    const second = new CodexMicroGuardStore(
+      path.join(path.dirname(store.supportPath), 'aaaaaaaaaaaa'),
+    );
+    const secondToken = seedLegacyGuard(second, token);
+    runner.nodeOptions = mergeNodeOptions(token, secondToken);
+    store.writeState({
+      version: 1,
+      originalNodeOptions: runner.nodeOptions,
+      installedNodeOptions: token,
+    });
+
+    await manager.recover();
+
+    expect(runner.nodeOptions).toBeNull();
+    expect(store.readState()).toBeNull();
+    expect(second.readState()).toBeNull();
+  });
+
   it('removes all profiles and duplicate arguments without restoring another profile from a snapshot', async () => {
     const { store, token, runner, manager } = fixture(null);
     const second = new CodexMicroGuardStore(
