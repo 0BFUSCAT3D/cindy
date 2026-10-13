@@ -25,13 +25,16 @@ const newCreate = callback('app/sessions/new.tsx', 'create');
 const goalCreate = callback('app/sessions/new.tsx', 'createGoalSession');
 const sessionSource = ts.createSourceFile('session.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let sendSource = '';
+let readRouteParamSource = '';
 function findSend(node: ts.Node) {
   if (ts.isFunctionDeclaration(node) && node.name?.text === 'send') sendSource = node.getText(sessionSource);
+  if (ts.isFunctionDeclaration(node) && node.name?.text === 'readRouteParam') readRouteParamSource = node.getText(sessionSource);
   ts.forEachChild(node, findSend);
 }
 findSend(sessionSource);
 if (!sendSource) throw new Error('Missing complete SessionScreen.send entry');
-const compiledExisting = ts.transpileModule(`${sendSource}\nreturn send;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+if (!readRouteParamSource) throw new Error('Missing SessionScreen.readRouteParam helper');
+const compiledExisting = ts.transpileModule(`${readRouteParamSource}\n${sendSource}\nreturn send;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
 function newHarness(text = '/goal target') {
   const noop = vi.fn();
@@ -71,6 +74,7 @@ function existingHarness(args = 'target') {
   const session = { id: 'existing-task', agentKind: 'pi', model: 'test-model', permissionMode: 'ask', workingDir: '/test-workdir' };
   const bindings = {
     setError: vi.fn(), setGoalError: vi.fn(), t: (key: string) => key,
+    params: {},
     isRemoteSessionMissing: () => false, readSessionRowNow: () => session, goalBusy: false, setGoalBusy: vi.fn(),
     executeMobileGoalCommand, sessionId: 'existing-task', deviceId: 'host', deviceIdRef: { current: 'host' },
     outboxSessionAliveRef: { current: 'existing-task' }, getMobileAuthOwner: () => ({}), isMobileAuthOwnerCurrent: () => true,
@@ -213,6 +217,7 @@ describe('existing task /goal send boundary', () => {
     h.bindings.attachmentsRef.current = [];
     h.bindings.composerDocumentRef.current = textComposerDocument('ordinary follow-up');
     await h.run();
+    expect(h.bindings.setError).toHaveBeenLastCalledWith(null);
     expect(h.bindings.mobileDurableOutbox.add).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       item: expect.objectContaining({ sessionId: 'existing-task', text: 'ordinary follow-up' }),
     }));
