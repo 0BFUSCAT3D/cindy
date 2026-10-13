@@ -34,7 +34,7 @@ export function BotCreateMenu({ variant, label }: { variant?: 'header'; label?: 
               ref={trigger}
               type="button"
               className={variant === 'header'
-              ? 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]'
+              ? 'flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]'
               : 'flex h-7 w-7 items-center justify-center rounded-full text-[var(--sidebar-list-muted)] transition-colors hover:bg-sidebar-item-hover hover:text-[var(--sidebar-nav-text)]'
               }
               aria-label={t('bots.list.createMenu')}

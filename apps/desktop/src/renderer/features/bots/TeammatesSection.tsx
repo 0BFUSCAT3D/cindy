@@ -78,7 +78,7 @@ const HEADER_HOVER_ACTION_CLASS = cn(
   'has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100',
 );
 const HEADER_ICON_BUTTON_CLASS =
-  'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
+  'flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
 
 /**
  * 侧栏第一层的「伙伴」段(2026-10-13 定稿):固定在置顶段上方,与置顶、全部任务并存。

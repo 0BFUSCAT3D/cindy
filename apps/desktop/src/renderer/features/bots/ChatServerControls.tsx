@@ -69,7 +69,7 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
   );
 }
 
-const compactIconClass = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
+const compactIconClass = 'flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
 function InviteControl({ groupId, onJoined, compact = false }: { groupId?: string; onJoined?: (id: string) => void; compact?: boolean }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
