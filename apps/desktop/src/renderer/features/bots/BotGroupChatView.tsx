@@ -229,6 +229,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                 },
           );
         } else if (result.errorCode === 'NOT_FOUND') {
+          // Gone for this account (deleted, archived or left): nothing of it is left to send.
+          discardBotGroupOutbox(groupId);
           setState({ kind: 'missing' });
         } else {
           // Keep a timeline that is already on screen; only a first read fails loudly.

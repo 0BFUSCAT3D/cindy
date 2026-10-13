@@ -13,7 +13,7 @@ import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../featu
 import { markBotRead, getBotLastReadAt, botGroupReadKey, resetBotReadStateForTests } from '../botReadState';
 import { botGroupAttachmentScope } from '../botGroupAttachments';
 import { getBotGroupListSnapshot, refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
-import { resetBotGroupOutboxForTests } from '../botGroupOutbox';
+import { getBotGroupOutbox, resetBotGroupOutboxForTests } from '../botGroupOutbox';
 import { BotGroupChatView } from '../BotGroupChatView';
 import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
 import type {
@@ -1380,6 +1380,20 @@ describe('BotGroupChatView', () => {
       fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
       await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
       expect(mocks.sendBotGroupMessage.mock.calls[1]![0].clientId).toBe(mocks.sendBotGroupMessage.mock.calls[0]![0].clientId);
+    });
+
+    it('drops the outbox of a group that reads as gone', async () => {
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      fireEvent.change(input, { target: { value: '没发出去' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.change(input, { target: { value: '正在写' } });
+      await waitFor(() => expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['failed']));
+      mocks.getBotGroup.mockResolvedValue({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+      pushMessages();
+      expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
+      expect(getBotGroupOutbox('g1')).toEqual([]);
     });
 
     it('keeps a late receipt out of the next group and shows the message when coming back', async () => {

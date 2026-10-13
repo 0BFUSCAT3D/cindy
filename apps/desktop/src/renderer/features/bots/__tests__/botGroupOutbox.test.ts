@@ -32,6 +32,9 @@ const mocks = vi.hoisted(() => ({
   materialize: vi.fn(async (files: readonly AttachedFile[]) => [...files]),
   protectedUrls: [] as string[],
   cleanupStaged: vi.fn(),
+  getBotGroup: vi.fn(),
+  list: { groups: [] as Array<{ id: string }>, loaded: false },
+  listListeners: new Set<() => void>(),
 }));
 
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
@@ -39,8 +42,19 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   isDataOwnerGenerationCurrent: (owner: number) => owner === mocks.owner,
 }));
 vi.mock('../botGroupStore', () => ({
-  botGroupApi: () => ({ sendBotGroupMessage: mocks.send }),
+  botGroupApi: () => ({ sendBotGroupMessage: mocks.send, getBotGroup: mocks.getBotGroup }),
+  getBotGroupListSnapshot: () => mocks.list,
+  subscribeBotGroups: (listener: () => void) => {
+    mocks.listListeners.add(listener);
+    return () => mocks.listListeners.delete(listener);
+  },
 }));
+
+/** The sidebar list re-read: these groups exist for the account. */
+function listGroups(ids: string[]) {
+  mocks.list = { groups: ids.map((id) => ({ id })), loaded: true };
+  for (const listener of [...mocks.listListeners]) listener();
+}
 vi.mock('@/lib/annotationBurnIn', () => ({
   isAnnotationBurnInError: () => false,
   materializeAnnotatedAttachmentsForSend: (files: readonly AttachedFile[]) => mocks.materialize(files),
@@ -129,6 +143,8 @@ beforeEach(() => {
   mocks.materialize.mockReset().mockImplementation(async (files: readonly AttachedFile[]) => [...files]);
   mocks.protectedUrls = [];
   mocks.cleanupStaged.mockReset();
+  mocks.getBotGroup.mockReset().mockResolvedValue({ ok: true, group: {} });
+  mocks.list = { groups: [], loaded: false };
   resetBotGroupOutboxForTests();
 });
 
@@ -550,6 +566,96 @@ describe('botGroupOutbox', () => {
       expect(empty.restore).toHaveBeenCalledWith(expect.objectContaining({ input: expect.objectContaining({ clientId: 'c1' }) }));
       expect(empty.notifyFailed).toHaveBeenCalledWith('bots.groupChat.errors.mentionUnavailable');
       expect(getBotGroupOutbox('g1')).toEqual([]);
+    });
+  });
+
+  describe('staged files of messages that never went out', () => {
+    const staged = (id: string) =>
+      ({ id, name: `${id}.txt`, path: `/staged/${id}.bin`, size: 1, category: 'text', mimeType: 'text/plain', type: 'file' }) as unknown as AttachedFile;
+    const released = () => mocks.cleanupStaged.mock.calls.map(([files]) => (files as AttachedFile[]).map((file) => file.id).join(','));
+
+    it('on an account switch: releases queued and failed sends, settles the one in flight by its answer', async () => {
+      const inFlight = deferred();
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm-sent' })
+        .mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' })
+        .mockReturnValueOnce(inFlight.promise);
+      enqueueBotGroupSend(draft({ clientId: 'sent' }, { files: [staged('sent')] }));
+      enqueueBotGroupSend(draft({ clientId: 'failed' }, { files: [staged('failed')] }));
+      enqueueBotGroupSend(draft({ clientId: 'flying' }, { files: [staged('flying')] }));
+      enqueueBotGroupSend(draft({ clientId: 'queued' }, { files: [staged('queued')] }));
+      await flush();
+      expect(mocks.send).toHaveBeenCalledTimes(3);
+
+      mocks.owner = 2;
+      expect(getBotGroupOutbox('g1')).toEqual([]);
+      expect(released()).toEqual(['failed']);
+      // The in-flight send went out after all: its file stays with the message.
+      inFlight.resolve({ ok: true, messageId: 'm-late' });
+      await flush();
+      // The queued one never reached main; nothing is sent under the new account.
+      expect(mocks.send).toHaveBeenCalledTimes(3);
+      expect(released()).toEqual(['failed', 'queued']);
+    });
+
+    it('on an account switch: releases an in-flight send that did not go out, and one still burning in', async () => {
+      const inFlight = deferred();
+      let finishBurn!: (files: AttachedFile[]) => void;
+      mocks.send.mockReturnValueOnce(inFlight.promise);
+      enqueueBotGroupSend(draft({ groupId: 'g1', clientId: 'flying' }, { files: [staged('flying')] }));
+      const drawn = { ...staged('drawn'), category: 'image', annotationStrokes: [{ points: [{ x: 1, y: 1 }] }] } as unknown as AttachedFile;
+      mocks.materialize.mockImplementationOnce(() => new Promise((resolve) => { finishBurn = resolve; }));
+      enqueueBotGroupSend(draft({ groupId: 'g2', clientId: 'burning' }, { files: [drawn] }));
+      await flush();
+      mocks.owner = 2;
+      getBotGroupOutbox('g1');
+      inFlight.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+      finishBurn([drawn]);
+      await flush();
+      expect(released().sort()).toEqual(['drawn', 'flying']);
+      // The burn finished under the new account: the old message is never sent.
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('discards a group that left the list once a read confirms it is gone, including late answers', async () => {
+      const late = deferred();
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' }).mockReturnValueOnce(late.promise);
+      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'failed' }, { files: [staged('failed')] }));
+      enqueueBotGroupSend(draft({ groupId: 'gone', clientId: 'flying' }, { files: [staged('flying')] }));
+      enqueueBotGroupSend(draft({ groupId: 'kept', clientId: 'other' }, { files: [staged('other')] }));
+      await flush();
+      mocks.getBotGroup.mockImplementation(async (groupId: string) =>
+        groupId === 'gone' ? { ok: false, errorCode: 'NOT_FOUND', message: '' } : { ok: true, group: {} });
+      // `kept` is missing from the list too (e.g. a legacy id), but still reads fine: untouched.
+      listGroups(['unrelated']);
+      await flush();
+      expect(mocks.getBotGroup.mock.calls.map(([groupId]) => groupId).sort()).toEqual(['gone', 'kept']);
+      expect(getBotGroupOutbox('gone')).toEqual([]);
+      expect(getBotGroupOutbox('kept')).toHaveLength(1);
+      expect(new Set(released().flatMap((ids) => ids.split(',')))).toEqual(new Set(['failed', 'flying']));
+      // Its late receipt changes nothing and releases nothing more.
+      late.resolve({ ok: true, messageId: 'm1' });
+      await flush();
+      expect(getBotGroupOutbox('gone')).toEqual([]);
+      expect(new Set(released().flatMap((ids) => ids.split(',')))).toEqual(new Set(['failed', 'flying']));
+    });
+
+    it('keeps a group that is only missing from the list when the read fails or is not definite', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      enqueueBotGroupSend(draft({ groupId: 'g1', clientId: 'failed' }, { files: [staged('failed')] }));
+      await flush();
+      mocks.getBotGroup.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      listGroups([]);
+      await flush();
+      mocks.getBotGroup.mockRejectedValueOnce(new Error('offline'));
+      listGroups([]);
+      await flush();
+      expect(getBotGroupOutbox('g1')).toHaveLength(1);
+      expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+      // Listed groups are never re-read.
+      mocks.getBotGroup.mockClear();
+      listGroups(['g1']);
+      await flush();
+      expect(mocks.getBotGroup).not.toHaveBeenCalled();
     });
   });
 });

@@ -18,7 +18,9 @@
  *   而服务器副本还没下载好（没有 url / path，或旧版干脆还没出现在列表里）时，按同一 messageId
  *   把本地预览接到真实消息上，直到副本可用（见 `mergeBotGroupLocalAttachments`）。
  * - 离开输入框的附件不再受草稿保护：发件箱持有的图片地址（含标注原图与本地预览）登记进存储
- *   清理的保护清单，条目移除时同步撤下；删群时回收尚未进入消息的暂存文件。
+ *   清理的保护清单，条目移除时同步撤下。尚未进入消息的暂存文件由发件箱回收：群被删除（含
+ *   不在当前页的群：列表里消失且读取确认已不存在）时回收该群所有未发出的条目；切换账号时回收
+ *   排队中与已失败的条目，在途的那条等它的请求有了结果再定——发出了就不碰，没发出才回收。
  * - 失败时交还输入框（输入框空着才交还，见 `registerBotGroupComposer`），否则留在时间线上
  *   显示没发出去，可重试或编辑；失败时输入框不在（切群、分享模式），回来注册输入框时同样交还。
  * - 切换账号整体清空，旧账号的迟到回执一律丢弃；群被删除时丢弃该群的条目。
@@ -39,7 +41,7 @@ import type {
 import { toBotGroupAttachmentInputs } from './botGroupAttachments';
 import type { BotGroupTrackedMention } from './botGroupMentions';
 import { botGroupErrorKey } from './botGroupPresentation';
-import { botGroupApi } from './botGroupStore';
+import { botGroupApi, getBotGroupListSnapshot, subscribeBotGroups } from './botGroupStore';
 
 export type BotGroupOutboxStatus = 'sending' | 'sent' | 'failed';
 
@@ -138,10 +140,20 @@ function emit(): void {
   for (const listener of listeners) listener();
 }
 
+/** Staged copies only a message that never reached a message still points at. */
+function releaseStaged(files: readonly AttachedFile[]): void {
+  if (files.length > 0) cleanupStagedChatAttachmentFiles(files);
+}
+
 function ensureOwner(): void {
   if (isDataOwnerGenerationCurrent(owner)) return;
   owner = getDataOwnerGeneration();
   generation += 1;
+  // The previous account's failures go with it. Its queued and in-flight sends still hold their
+  // files and settle them in `submit`, which knows whether they went out.
+  for (const group of groups.values()) {
+    for (const entry of group.entries) if (entry.status === 'failed') releaseStaged(entry.files);
+  }
   groups.clear();
   preparing.clear();
   protectHeldMedia();
@@ -149,6 +161,7 @@ function ensureOwner(): void {
 
 function groupOf(groupId: string): GroupOutbox {
   ensureOwner();
+  watchGroupList();
   let group = groups.get(groupId);
   if (!group) {
     group = { entries: EMPTY, chain: Promise.resolve(), claimed: [], latestSequence: 0, previews: NO_PREVIEWS };
@@ -254,12 +267,23 @@ export function editBotGroupSend(groupId: string, clientId: string): boolean {
 function schedule(groupId: string, clientId: string): void {
   const group = groupOf(groupId);
   const requestGeneration = generation;
-  group.chain = group.chain.then(() => submit(groupId, clientId, requestGeneration)).catch(() => undefined);
+  // Kept by the request itself: after an account switch the entry is gone but its files are not.
+  const files = group.entries.find((entry) => entry.input.clientId === clientId)?.files ?? [];
+  group.chain = group.chain.then(() => submit(groupId, clientId, requestGeneration, files)).catch(() => undefined);
 }
 
-async function submit(groupId: string, clientId: string, requestGeneration: number): Promise<void> {
+async function submit(
+  groupId: string,
+  clientId: string,
+  requestGeneration: number,
+  files: readonly AttachedFile[],
+): Promise<void> {
   const isCurrent = () => requestGeneration === generation && isDataOwnerGenerationCurrent(owner);
-  if (!isCurrent()) return;
+  // Queued under an account that is gone: it never reached main.
+  if (!isCurrent()) {
+    releaseStaged(files);
+    return;
+  }
   const group = groups.get(groupId);
   const entry = group?.entries.find((candidate) => candidate.input.clientId === clientId);
   if (!group || !entry || entry.status !== 'sending') return;
@@ -270,11 +294,20 @@ async function submit(groupId: string, clientId: string, requestGeneration: numb
     if (!api) throw new Error('HOST_NOT_READY');
     // Drawn annotations are burned in first, as in a task; a failure keeps everything for a retry.
     const prepared = await prepare(groupId, clientId);
+    // The account changed while annotations were burning in: never send it under the new one.
+    if (!isCurrent()) {
+      releaseStaged(files);
+      return;
+    }
     const result: BotGroupSendResult = await api.sendBotGroupMessage({
       ...entry.input,
       ...(prepared.length > 0 ? { attachments: toBotGroupAttachmentInputs(prepared) } : {}),
     });
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      // A late answer for the previous account: keep what went out, release what did not.
+      if (!result.ok) releaseStaged(files);
+      return;
+    }
     if (result.ok) {
       group.claimed = [...group.claimed, result.messageId].slice(-CLAIMED_LIMIT);
       update(groupId, clientId, { status: 'sent', messageId: result.messageId, receiptTick: ++tick, baseline: undefined });
@@ -285,7 +318,10 @@ async function submit(groupId: string, clientId: string, requestGeneration: numb
         ? 'bots.groupChat.composer.attachmentsFailed'
         : botGroupErrorKey(result.errorCode, 'bots.groupChat.composer.sendFailed');
   } catch (error) {
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      releaseStaged(files);
+      return;
+    }
     if (isAnnotationBurnInError(error)) errorKey = 'chat.media.annotateBurnFailedNotSent';
   }
   const failed = update(groupId, clientId, { status: 'failed', errorKey, baseline: undefined });
@@ -399,9 +435,41 @@ export function discardBotGroupOutbox(groupId: string): void {
   if (!group) return;
   groups.delete(groupId);
   for (const entry of group.entries) {
-    if (entry.status !== 'sent') cleanupStagedChatAttachmentFiles(entry.files);
+    if (entry.status !== 'sent') releaseStaged(entry.files);
   }
   emit();
+}
+
+let unwatchGroupList: (() => void) | null = null;
+const verifying = new Set<string>();
+
+/**
+ * Groups deleted while their page is closed (or from another device) send no event this
+ * outbox sees. The group list does: a group that drops out of it is read once more, and only
+ * a definite NOT_FOUND discards its outbox (a legacy id still resolves, a failed read keeps it).
+ */
+function watchGroupList(): void {
+  if (unwatchGroupList) return;
+  unwatchGroupList = subscribeBotGroups(() => {
+    const list = getBotGroupListSnapshot();
+    if (!list.loaded) return;
+    const listed = new Set(list.groups.map((group) => group.id));
+    for (const [groupId, group] of groups) {
+      if (listed.has(groupId) || verifying.has(groupId)) continue;
+      if (group.entries.length === 0 && group.previews.size === 0) continue;
+      const api = botGroupApi();
+      if (!api) continue;
+      const requestGeneration = generation;
+      verifying.add(groupId);
+      void api
+        .getBotGroup(groupId)
+        .then((result) => {
+          if (requestGeneration === generation && !result.ok && result.errorCode === 'NOT_FOUND') discardBotGroupOutbox(groupId);
+        })
+        .catch(() => undefined)
+        .finally(() => verifying.delete(groupId));
+    }
+  });
 }
 
 /**
@@ -498,5 +566,8 @@ export function resetBotGroupOutboxForTests(): void {
   owner = getDataOwnerGeneration();
   groups.clear();
   preparing.clear();
+  verifying.clear();
+  unwatchGroupList?.();
+  unwatchGroupList = null;
   composers.clear();
 }
