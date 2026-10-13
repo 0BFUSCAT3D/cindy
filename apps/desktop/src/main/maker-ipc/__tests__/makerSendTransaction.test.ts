@@ -3330,6 +3330,25 @@ describe('session-agent-switch handoff injection', () => {
     expect(bootstrapOpts.resumeSessionId).toBeUndefined();
   });
 
+  it('lazy-create uses the current DB permission after reconcile, not the queued snapshot', async () => {
+    const reconcile = vi.fn(async (_sessionId: string, co: MakerSessionCreateOpts) => {
+      co.permissionMode = 'ask';
+    });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => undefined),
+      reconcileCreateOptsWithDb: reconcile,
+    });
+
+    await createMakerSendTransaction(deps).sendToAgentAccepted(
+      'session-1',
+      'CI failed; repair and push the PR',
+      { agentKind: 'claude-code', workingDir: '/tmp/w', permissionMode: 'bypassPermissions' },
+      {},
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deps.bootstrapSession).mock.calls[0][0].permissionMode).toBe('ask');
+  });
+
   it('发送前的准备期间被停止(如供应商组在等原电脑恢复)→ 不再打开会话,按「派发前取消」返回', async () => {
     const controller = new AbortController();
     const getSession = vi.fn((): MakerSendTransactionSession | null => null);

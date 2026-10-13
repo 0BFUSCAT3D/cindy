@@ -9695,6 +9695,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // 残留在 renderer store / 排队项里的旧 agentKind/resumeSessionId 若原样 spawn,
   // 会把会话劫持回旧引擎且丢交接注入(规则 9:代码兜底)。send 事务与
   // GET_CONTEXT_USAGE 的 lazy 分支共用(后者无校正曾是审计实锤缺口)。
+  // 权限档同样是会话级设置:forceQueue 入队快照不能锁死排队期间的切档,冷启动必须
+  // 再读一次当前落库值,否则降档后仍免确认、升档后仍重复询问。
   async function reconcileCreateOptsAgainstDb(sessionId: string, co: CreateOpts): Promise<void> {
     try {
       const db = getDbClient().drizzle;
@@ -9706,6 +9708,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           providerId: sessions.providerId,
           effort: sessions.effort,
           fastMode: sessions.fastMode,
+          permissionMode: sessions.permissionMode,
           agentDeviceId: sessions.agentDeviceId,
           remoteHostId: sessions.remoteHostId,
         })
@@ -9748,6 +9751,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       co.providerId = row.providerId;
       co.effort = (row.effort ?? undefined) as CreateOpts['effort'];
       co.fastMode = !!row.fastMode;
+      co.permissionMode = permissionModeOrAsk(row.permissionMode);
     } catch (error) {
       // context.rebuild clears sdk_session_id before the next bootstrap. If the
       // DB truth cannot be read, continuing with caller-supplied opts could
@@ -10505,6 +10509,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
      * Host 持有的恢复策略:目标会话不在运行、需要 lazy-resume 时,按会话落库的权限档
      * 启动,而不是 main 侧通路的缺省 bypass。插件任务的档位来自用户的任务设置,只能由
      * 宿主的插件派发入口显式要求,不从来源字段推断(#5788)。
+     * forceQueue 会在这条 lazy-resume 之前入队返回;排队项真正启动前由
+     * reconcileCreateOptsAgainstDb 再读当前落库档位,不使用入队时的旧快照。
      */
     resumeWithStoredPermissionMode?: boolean;
   }): Promise<SendToSessionInternalResult> {

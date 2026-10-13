@@ -904,8 +904,10 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const body = hostSource.slice(start, end);
     expect(body).toContain('effort: sessions.effort,');
     expect(body).toContain('fastMode: sessions.fastMode,');
+    expect(body).toContain('permissionMode: sessions.permissionMode,');
     expect(body).toContain("co.effort = (row.effort ?? undefined) as CreateOpts['effort'];");
     expect(body).toContain('co.fastMode = !!row.fastMode;');
+    expect(body).toContain('co.permissionMode = permissionModeOrAsk(row.permissionMode);');
   });
 
   it('Orca 与角色未加载会话都 fail-closed:只有完整元数据确认非协同后开放入口', () => {
