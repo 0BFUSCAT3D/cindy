@@ -160,7 +160,7 @@ describe('buildTelegramGroupContextPrefix', () => {
     await recordTelegramGroupMessage(entry({ messageId: 'trigger', text: '@bot 干活' }));
     const asm = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'trigger' });
     expect(asm.prefix).toContain('<group_chat_context>');
-    expect(asm.prefix).toContain('[user202] 第一条');
+    expect(asm.prefix).toMatch(/\[user202\] \d{2}-\d{2} \d{2}:\d{2} 第一条/);
     expect(asm.prefix).toContain('第二条');
     expect(asm.prefix).not.toContain('干活');
     expect(asm.prefix.indexOf('第一条')).toBeLessThan(asm.prefix.indexOf('第二条'));
@@ -219,8 +219,18 @@ describe('buildTelegramGroupContextPrefix', () => {
     }
     const asm = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'none' });
     expect(asm.prefix).toContain('[... 更早的消息已省略 ...]');
-    expect(asm.prefix).toContain('[user202] 11-');
-    expect(asm.prefix).not.toContain('[user202] 0-');
+    expect(asm.prefix).toMatch(/\[user202\] \d{2}-\d{2} \d{2}:\d{2} 11-/);
+    expect(asm.prefix).not.toMatch(/\[user202\] \d{2}-\d{2} \d{2}:\d{2} 0-/);
+  });
+
+  it('每行带发送时间, 块尾给出时区与当前时间参照', async () => {
+    const sentAt = new Date(2026, 9, 11, 13, 52).getTime();
+    await recordTelegramGroupMessage(entry({ messageId: 'timed', text: '能鉴定新闻吗', sentAt }));
+    const asm = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'none' });
+    expect(asm.prefix).toContain('[user202] 10-11 13:52 能鉴定新闻吗');
+    expect(asm.prefix).toMatch(/（本机时区 UTC[+-]\d{2}:\d{2}），当前时间为 \d{4}-\d{2}-\d{2} \d{2}:\d{2}。/);
+    // 时间说明在块外: 不进上下文快照、不冒充一条消息。
+    expect(asm.prefix.indexOf('当前时间为')).toBeGreaterThan(asm.prefix.indexOf('</group_chat_context>'));
   });
 
   it('不同 threadId lane 互不串扰', async () => {

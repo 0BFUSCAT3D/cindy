@@ -185,6 +185,11 @@ Hook 与本地 IM 共享消息级来源及上下文快照结构。本地所有�
 上下文片段，不分别实现保存或展示。没有附带上下文时不显示空折叠区。
 过去未保存的内容不可从当前群历史补造，也不可用会话级来源猜测单条消息来源。
 受保护内容仍不落库；群历史二进制附件仍只进模型，不因快照额外保留。
+群历史上下文统一带发送时间：本地群窗口（个人与官方 Telegram）与飞书历史组装器每行写
+`[发言人] MM-DD HH:mm 正文`（本机时区，共用 `im/shared/groupWindowCore.ts` 的
+`formatImHistoryTime`）；时区与当前完整时间由块外说明 `formatImHistoryTimeNote` 一次给出，
+不改块头、不进上下文快照。群历史检索结果在 `sentAt` 之外附可读的 `sentAtLocal`。
+官方 Slack / X 的 `threadContext` 由服务端下发，协议条目暂无时间字段，补齐需跨仓推进协议。
 本地 IM 使用 `agentMeta.imSource`，Hook 保留原 `hookSource`，Desktop 投影到同一展示结构。
 不复用旧客户端会解释为系统卡的 Hook 标记；旧 Mobile 忽略本地新增字段，保留普通用户
 消息的完整正文、附件与操作。上下文展示本身不改模型输入，不新增实时群历史查询。
