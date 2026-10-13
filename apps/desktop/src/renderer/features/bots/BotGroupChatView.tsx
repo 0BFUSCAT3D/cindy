@@ -15,7 +15,7 @@ import type { ReactNode } from 'react';
  * 附件 chip。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react';
-import { ArrowLeft, CircleAlert, RefreshCcw, Settings2, Sparkles } from 'lucide-react';
+import { ArrowLeft, CircleAlert, CornerDownRight, RefreshCcw, Settings2, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
@@ -66,6 +66,7 @@ import { botGroupAttachmentScope, splitBotGroupMessageAttachments } from './botG
 import { BotGroupComposer } from './BotGroupComposer';
 import { ChatInviteButton, ChatMessageActions } from './ChatServerControls';
 import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
+import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
@@ -241,6 +242,18 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
+  /** Thread replies already in the loaded main chat, with the share to reveal. */
+  const sharedReplies = useMemo(() => {
+    const shares = new Map<string, { messageId: string; bySelf: boolean }>();
+    for (const message of messages) {
+      const share = message.threadShare;
+      if (!share) continue;
+      const bySelf = message.authorKind === 'user' && message.isSelf !== false;
+      // Prefer the reader's own share: it is the one a repeat would return.
+      if (!shares.has(share.messageId) || bySelf) shares.set(share.messageId, { messageId: message.id, bySelf });
+    }
+    return shares;
+  }, [messages]);
   const acknowledge = useCallback(() => {
     if (!isDataOwnerGenerationCurrent(readOwner.current) || !stickToBottomRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
     const at = messages.reduce((latest, message) => message.kind === 'message' && (message.authorKind === 'bot' || message.isSelf === false)
@@ -268,6 +281,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
 
   const separator = t('bots.groupChat.memberSeparator');
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
+  /** A reply to bring into view when a main-chat share opens its thread. */
+  const [threadFocus, setThreadFocus] = useState<{ messageId: string; nonce: number } | null>(null);
   const threadOpenerRef = useRef<HTMLElement | null>(null);
   const threadLayoutRef = useRef<HTMLDivElement>(null);
   const threadHeaderRef = useRef<HTMLDivElement>(null);
@@ -301,6 +316,28 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     threadCloseAnimationRef.current?.cancel();
     threadCloseAnimationRef.current = null;
   }, [threadRootId]);
+  const openThread = useCallback((rootId: string, focusMessageId?: string) => {
+    threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (threadCloseAnimationRef.current) {
+      threadCloseAnimationRef.current.cancel();
+      threadCloseAnimationRef.current = null;
+      const panel = threadLayoutRef.current?.querySelector('aside');
+      if (panel) panel.inert = false;
+      if (rootId === threadRootId) {
+        (panel?.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)') ?? panel?.querySelector<HTMLButtonElement>('header button'))?.focus();
+      }
+    }
+    setThreadFocus(focusMessageId ? { messageId: focusMessageId, nonce: Date.now() } : null);
+    setThreadRootId(rootId);
+  }, [threadRootId]);
+  /** From a thread reply back to where it was shared in the main chat. */
+  const revealMainMessage = useCallback((messageId: string) => {
+    const target = findThreadMessageElement(contentRef.current, messageId);
+    if (!target) return false;
+    stickToBottomRef.current = false;
+    flashThreadTarget(target);
+    return true;
+  }, []);
   useEffect(() => {
     if (!group?.serverBacked || !threadRootId) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -655,20 +692,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   actions={message.kind === 'message' ? <ChatMessageActions
                     groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
-                    onReply={group.serverBacked ? () => {
-                      threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-                      if (threadCloseAnimationRef.current) {
-                        threadCloseAnimationRef.current.cancel();
-                        threadCloseAnimationRef.current = null;
-                        const panel = threadLayoutRef.current?.querySelector('aside');
-                        if (panel) panel.inert = false;
-                        if (message.id === threadRootId) {
-                          (panel?.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)') ?? panel?.querySelector<HTMLButtonElement>('header button'))?.focus();
-                        }
-                      }
-                      setThreadRootId(message.id);
-                    } : undefined}
+                    onReply={group.serverBacked ? () => openThread(message.id) : undefined}
+                    replyCountShown={group.serverBacked && (message.replyCount ?? 0) > 0}
+                    copyText={message.threadShare?.status === 'available' ? message.threadShare.content : undefined}
                     onChanged={() => loadRef.current()} /> : undefined}
+                  onOpenThread={group.serverBacked ? (rootId, focusMessageId) => openThread(rootId, focusMessageId) : undefined}
                   member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
                   members={group.members}
                   mentionLabels={mentionLabels}
@@ -754,7 +782,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         />
       ) : null}
     </main>
-    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} onClose={closeThread} />}
+    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId}
+      focus={threadFocus} sharedReplies={sharedReplies} onRevealShare={revealMainMessage} onClose={closeThread} />}
     </div>
   );
 }
@@ -784,11 +813,14 @@ function BotGroupTimelineItem({
   planPending,
   onPlanAction,
   onEditStep,
+  onOpenThread,
 }: {
   message: BotGroupMessageView;
   shareScope: string;
   sharing: boolean;
   actions?: ReactNode;
+  /** Server groups: open a thread, optionally bringing one of its replies into view. */
+  onOpenThread?: (rootId: string, focusMessageId?: string) => void;
   member: BotGroupMemberView | undefined;
   members: readonly BotGroupMemberView[];
   mentionLabels: readonly string[];
@@ -831,7 +863,37 @@ function BotGroupTimelineItem({
     const text = key ? t(key, { name }) : message.content;
     return <p className="text-center text-12 text-[var(--text-tertiary)]">{text}</p>;
   }
-  if (message.kind === 'message' && message.authorKind === 'user' && message.isSelf !== false) {
+  const selfMessage = message.kind === 'message' && message.authorKind === 'user' && message.isSelf !== false;
+  const threadPreview = onOpenThread && message.kind === 'message' && (message.replyCount ?? 0) > 0 ? (
+    <BotGroupThreadPreview message={message} members={members} align={selfMessage ? 'right' : 'left'}
+      onOpen={() => onOpenThread(message.id)} />
+  ) : null;
+  const share = message.kind === 'message' ? message.threadShare : undefined;
+  const shareBody = share && onOpenThread ? (
+    <>
+      <p className="flex min-w-0 select-none items-center gap-1 text-12 text-[var(--text-tertiary)]">
+        <CornerDownRight size={12} aria-hidden className="shrink-0" />
+        <span className="min-w-0 truncate">{botGroupThreadShareLabel(share, t)}</span>
+      </p>
+      <BotGroupThreadShareQuote share={share} members={members}
+        attachments={<BotGroupUserAttachments attachments={share.attachments} align="start" />}
+        onOpenThread={() => onOpenThread(share.threadRootId, share.messageId)} />
+    </>
+  ) : null;
+  if (selfMessage && shareBody) {
+    return (
+      <article {...{ [SHARE_SESSION_ATTR]: shareScope, [SHARE_MESSAGE_ATTR]: message.id }}
+        className={`relative flex justify-end ${sharing ? 'ml-10' : ''}`}>
+        {sharing && <ShareMessageCheckbox clientId={message.id} />}
+        <div className="flex min-w-0 w-[72%] max-w-[560px] flex-col items-end gap-1.5">
+          {shareBody}
+          {threadPreview}
+          {actions}
+        </div>
+      </article>
+    );
+  }
+  if (selfMessage) {
     // An attachment-only message shows just its attachments, without an empty bubble.
     const hasText = message.content.trim().length > 0;
     return (
@@ -858,6 +920,7 @@ function BotGroupTimelineItem({
               )}
             </div>
           ) : null}
+          {threadPreview}
           {actions}
         </div>
       </article>
@@ -898,13 +961,14 @@ function BotGroupTimelineItem({
           />
         ) : (
           <>
-            {hasText ? (
+            {shareBody ? <div className="flex min-w-0 flex-col gap-1.5">{shareBody}</div> : hasText ? (
               <div className={`min-w-0 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
                 <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
               </div>
             ) : null}
-            <BotGroupUserAttachments attachments={message.attachments} />
+            {shareBody ? null : <BotGroupUserAttachments attachments={message.attachments} />}
             <BotGroupHandoffFiles files={message.files} workDir={plan?.workDir ?? null} />
+            {threadPreview ? <div className="mt-1 flex min-w-0">{threadPreview}</div> : null}
             {actions}
           </>
         )}
@@ -918,7 +982,7 @@ function BotGroupTimelineItem({
  * same attached-image view (click for the lightbox, right-click to copy or reveal), files
  * as the same chips (text preview or the system app, right-click menu).
  */
-function BotGroupUserAttachments({ attachments }: { attachments: readonly BotGroupAttachment[] }) {
+function BotGroupUserAttachments({ attachments, align = 'end' }: { attachments: readonly BotGroupAttachment[]; align?: 'start' | 'end' }) {
   const [textPreview, setTextPreview] = useState<{ path: string; name: string } | null>(null);
   const chipRef = useRef<HTMLElement | null>(null);
   const { images, files } = splitBotGroupMessageAttachments(attachments);
@@ -929,7 +993,7 @@ function BotGroupUserAttachments({ attachments }: { attachments: readonly BotGro
         <ChatImageView key={image.id} src={image.url} filename={image.name} variant="user-attached" />
       ))}
       {files.length > 0 ? (
-        <div className="flex flex-wrap items-end justify-end gap-1.5">
+        <div className={`flex flex-wrap items-end gap-1.5 ${align === 'start' ? 'justify-start' : 'justify-end'}`}>
           {files.map((file) => (
             <UserAttachmentChip
               key={file.id}

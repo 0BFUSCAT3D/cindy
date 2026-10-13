@@ -45,6 +45,9 @@ const mocks = vi.hoisted(() => ({
   getControlledState: vi.fn(),
   revoke: vi.fn(),
   thread: vi.fn(),
+  reply: vi.fn(),
+  shareToMain: vi.fn(),
+  toastInfo: vi.fn(),
 }));
 
 // Partial: the shared attachment pieces pull in the app i18n instance, which needs initReactI18next.
@@ -66,7 +69,7 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   isDataOwnerGenerationCurrent: () => true,
   isDataOwnerPushCurrent: () => true,
 }));
-vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError, warning: mocks.toastWarning } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError, warning: mocks.toastWarning, info: mocks.toastInfo } }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
   useConfirmDialog: () => ({ confirm: vi.fn(async () => false) }),
   useOptionalConfirmDialog: () => null,
@@ -281,6 +284,9 @@ beforeEach(() => {
     replies: [msg({ id: `reply-${rootId}`, content: `Reply to ${rootId}` })],
     hasMore: false,
   }));
+  mocks.reply.mockReset().mockResolvedValue({ ok: true, messageId: 'new-reply' });
+  mocks.shareToMain.mockReset().mockResolvedValue({ ok: true, messageId: 'share-1', alreadyShared: false });
+  mocks.toastInfo.mockReset();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -299,7 +305,7 @@ beforeEach(() => {
       cleanupCachedImages: vi.fn(async () => undefined),
       getFileThumbnail: vi.fn(async () => null),
       maker: {
-        chatServer: { thread: mocks.thread },
+        chatServer: { thread: mocks.thread, reply: mocks.reply, shareToMain: mocks.shareToMain },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
         getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),
@@ -1684,4 +1690,153 @@ it('keeps copy/share in each author row and shares only message content through 
     scroll.scrollTop = 900; fireEvent.scroll(scroll);
     expect(getBotLastReadAt(botGroupReadKey('g1'))).toBe(1200);
   } finally { focus.mockRestore(); resetBotReadStateForTests(); }
+});
+
+describe('thread previews and posting to the main chat', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  const preview = (id: string, authorName: string, text: string, extra: Record<string, unknown> = {}) => ({
+    id, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName, text, attachments: [], createdAt: 1_700_000_000_000, ...extra });
+  const share = (overrides: Partial<NonNullable<BotGroupMessageView['threadShare']>> = {}): NonNullable<BotGroupMessageView['threadShare']> => ({
+    messageId: 'reply-u1', threadRootId: 'u1', status: 'available', authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满',
+    sharedByAuthor: false, content: '原话：@咪咪 周六见', attachments: [], createdAt: 1_700_000_000_000, edited: false, ...overrides });
+  function group(messages: BotGroupMessageView[]) {
+    return detail({ serverBacked: true, messages });
+  }
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('shows the newest replies under the root and opens the thread from the preview', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([
+      msg({ id: 'u1', content: '去哪玩', replyCount: 3, threadPreview: { replies: [
+        preview('r2', '小满', '爬山吧，带上相机'),
+        preview('r3', '咪咪', '', { attachments: [{ name: 'map.png', category: 'image' }, { name: 'list.pdf', category: 'file' }] }),
+      ] } }),
+    ]) });
+    const user = userEvent.setup();
+    renderView();
+    const card = await screen.findByRole('button', { name: t('open') });
+    expect(card.textContent).toContain('小满');
+    expect(card.textContent).toContain('爬山吧，带上相机');
+    // An attachment-only reply still says what it carried.
+    expect(card.textContent).toContain(t('attachmentsSummary'));
+    expect(card.textContent).toContain('bots.groupChat.server.replyCount');
+    // The count lives in the preview; the toolbar keeps a plain reply icon.
+    const toolbarReply = screen.getByRole('button', { name: 'bots.groupChat.server.replyCount' });
+    expect(toolbarReply.textContent).toBe('');
+    await user.click(card);
+    expect(await screen.findByRole('complementary')).toBeTruthy();
+    expect(mocks.thread).toHaveBeenCalledWith(expect.objectContaining({ rootId: 'u1' }));
+    await user.keyboard('{Escape}');
+    expect(document.activeElement).toBe(card);
+  });
+
+  it('keeps the original author and the sharer apart, and jumps from a share to its reply', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([
+      msg({ id: 'u1', content: '去哪玩' }),
+      msg({ id: 's-other', sequence: 2, authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ 小满: fallback', threadShare: share() }),
+      msg({ id: 's-own', sequence: 3, content: '↪ 我: fallback', threadShare: share({ messageId: 'reply-u1', authorKind: 'user', authorBotId: null, authorName: '我', sharedByAuthor: true, content: '我自己的回复' }) }),
+      msg({ id: 's-gone', sequence: 4, authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ x: fallback', threadShare: share({ status: 'unavailable', authorName: '', content: '' }) }),
+    ]) });
+    const user = userEvent.setup();
+    renderView();
+    const other = (await screen.findByText(`${t('sharedReplyFrom')}:小满`)).closest('article')!;
+    expect(within(other).getByText('Alice')).toBeTruthy();
+    expect(within(other).getByText('原话：@咪咪 周六见')).toBeTruthy();
+    expect(within(other).queryByText('↪ 小满: fallback')).toBeNull();
+    const own = screen.getByText(t('alsoSent')).closest('article')!;
+    expect(within(own).getByText('我自己的回复')).toBeTruthy();
+    expect(screen.getByText(t('sourceUnavailable'))).toBeTruthy();
+    await user.click(within(other).getByRole('button', { name: t('viewThread') }));
+    const panel = await screen.findByRole('complementary');
+    await waitFor(() => expect(within(panel).getByText('Reply to u1').closest('article')!.className).toContain('ring-2'));
+    // The reply is already in the main chat: say so and lead back to it.
+    expect(within(panel).getByRole('button', { name: t('postedBySelf') })).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: t('postedBySelf') }));
+    expect(own.className).toContain('ring-2');
+  });
+
+  it('sends to the thread only by default, and to both places when asked', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    const panel = await screen.findByRole('complementary');
+    const toggle = within(panel).getByRole('checkbox', { name: t('alsoSend') });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await user.type(within(panel).getByRole('textbox'), 'thread only{Enter}');
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(1));
+    expect(mocks.shareToMain).not.toHaveBeenCalled();
+    await user.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'reply-2' });
+    await user.type(within(panel).getByRole('textbox'), '@咪咪 both{Enter}');
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledWith({ groupId: 'g1', messageId: 'reply-2' }));
+    expect(mocks.reply).toHaveBeenCalledTimes(2);
+    expect(mocks.reply.mock.calls[1][0]).toMatchObject({ rootId: 'u1', text: '@咪咪 both' });
+    // Each send starts from the default again.
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+  });
+
+  it('retries only the main-chat copy after the reply already reached the thread', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
+    const retry = await within(panel).findByRole('button', { name: t('retryPost') });
+    // A thread refresh must not hide the retry.
+    act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
+    await waitFor(() => expect(mocks.thread.mock.calls.length).toBeGreaterThan(1));
+    expect(within(panel).getByText(t('alsoSendFailed'))).toBeTruthy();
+    await user.click(retry);
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
+    expect(mocks.shareToMain.mock.calls).toEqual([[{ groupId: 'g1', messageId: 'new-reply' }], [{ groupId: 'g1', messageId: 'new-reply' }]]);
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps one send identity across a failed reply and never posts to the main chat before it lands', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(1));
+    expect(mocks.shareToMain).not.toHaveBeenCalled();
+    expect(within(panel).getByRole('checkbox', { name: t('alsoSend') }).getAttribute('aria-checked')).toBe('true');
+    await user.click(within(panel).getByRole('button', { name: 'bots.groupChat.server.sendReply' }));
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
+    expect(mocks.reply.mock.calls[1][0].clientId).toBe(mocks.reply.mock.calls[0][0].clientId);
+  });
+
+  it('does not carry the choice into another thread', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })]) });
+    const user = userEvent.setup();
+    renderView();
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    await user.click(first!);
+    await user.click(within(await screen.findByRole('complementary')).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.click(second!);
+    await screen.findByText('Reply to u2');
+    expect(within(screen.getByRole('complementary')).getByRole('checkbox', { name: t('alsoSend') }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('posts an existing reply, including someone else’s, from its menu', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    expect(mocks.shareToMain).toHaveBeenCalledWith({ groupId: 'g1', messageId: 'alice-reply' });
+    expect(await within(reply).findByRole('button', { name: t('postedBySelf') })).toBeTruthy();
+    expect(mocks.reply).not.toHaveBeenCalled();
+  });
 });

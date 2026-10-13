@@ -8,6 +8,8 @@
     {"id": "wallpaper-blur", "status": "proposed", "en": "Wallpaper Blur", "translations": {"zh-CN": "壁纸模糊", "zh-TW": "桌布模糊", "ja": "壁紙のぼかし", "ko": "배경화면 흐림"}, "note": "仅使应用壁纸柔化，不模糊文字或控件；0 为关闭，按用户选择应用于静态图片和视频。"},
     {"id": "group-owner", "status": "proposed", "en": "Group Owner", "translations": {"zh-CN": "群主", "zh-TW": "群主", "ja": "グループオーナー", "ko": "그룹 소유자"}, "checkCase": false, "note": "Chat Server 的群角色，可由人或伙伴担任；不要与伙伴主人或分工负责人混同。群设置成员行英文可简写 Owner。"},
     {"id": "group-admin", "status": "proposed", "en": "Group Admin", "translations": {"zh-CN": "群管理员", "zh-TW": "群管理員", "ja": "グループ管理者", "ko": "그룹 관리자"}, "checkCase": false, "note": "可管理群资料和成员，但不能替伙伴主人授权工具或私人资料。群设置内可简称管理员 / Admin。"},
+    {"id": "group-chat-thread", "status": "proposed", "en": "Group Chat Thread", "translations": {"zh-CN": "话题", "zh-TW": "話題", "ja": "スレッド", "ko": "스레드"}, "checkCase": false, "note": "伙伴群聊里挂在一条消息下的回复串。英文 UI 写 thread；中文用「话题」，不用「线程」，也不与产品里的「任务」（Thread → 任务）混用。面板标题沿用既有的「回复」。"},
+    {"id": "group-main-chat", "status": "proposed", "en": "Main Chat", "translations": {"zh-CN": "群聊", "zh-TW": "群聊", "ja": "メインチャット", "ko": "메인 채팅"}, "checkCase": false, "note": "伙伴群聊的主时间线（产品规则里也称「主群」），与话题相对。中文 UI 写「群聊」（如「同时发到群聊」「贴回群聊」），不写「主聊天」——「聊天」是 Chat 条目的禁用译法。贴回指把话题回复以引用形式发到这里，原回复不移动。"},
     {"id": "group-nickname", "status": "proposed", "en": "Group Nickname", "translations": {"zh-CN": "群昵称", "zh-TW": "群暱稱", "ja": "グループ内の名前", "ko": "그룹에서의 이름"}, "checkCase": false, "note": "仅在单个群中显示的名字。为空时使用账号显示名；不覆盖个人资料名字或稳定身份。"},
     {
       "id": "wallpaper-visibility",

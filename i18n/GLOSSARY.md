@@ -299,6 +299,14 @@ OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入�
 
 伙伴群聊：用户把 2–6 位伙伴放进一个群，用户说一句，伙伴们按规则接话（docs/product-rules/bot-group-chat.md）。群是独立对象，不是任务，也不是某位伙伴的主任务；群里的单条往来仍叫「消息」（见 task-and-conversation-naming）。英文分两层：侧栏标题与按钮用 Title Case（Group Chats、New Group Chat），句中用小写 group chat——故 checkCase 为 false。zh-CN 短句里可简称「群」（群名称、群设置）。与企业微信「群机器人」（wecom-group-bot）等 IM 平台的群概念无关。先登记为 proposed：第一阶段刚落地，等 UI 走查后再定。
 
+### Group Chat Thread
+
+伙伴群聊里挂在一条消息下的回复串。英文 UI 写 thread；中文用「话题」，不用「线程」，也不与产品里的「任务」（Thread → 任务）混用。面板标题沿用既有的「回复」。
+
+### Main Chat
+
+伙伴群聊的主时间线（产品规则里也称「主群」），与话题相对。中文 UI 写「群聊」（如「同时发到群聊」「贴回群聊」），不写「主聊天」——「聊天」是 Chat 条目的禁用译法。贴回指把话题回复以引用形式发到这里，原回复不移动。
+
 ### Group Nickname
 
 仅在单个群中显示的名字。为空时使用账号显示名；不覆盖个人资料名字或稳定身份。

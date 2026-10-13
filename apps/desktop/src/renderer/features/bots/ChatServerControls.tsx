@@ -19,8 +19,13 @@ const emojiChoices = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '
 const iconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] disabled:opacity-50';
 export { chatErrorKey } from './chatError';
 
-export function ChatMessageActions({ groupId, shareScope, message, align = message.isSelf ? 'right' : 'left', onReply, onChanged }: {
-  groupId?: string; shareScope: string; message: BotGroupMessageView; align?: 'left' | 'right'; onReply?: () => void; onChanged: () => void;
+export function ChatMessageActions({ groupId, shareScope, message, align = message.isSelf ? 'right' : 'left', onReply, replyCountShown = false, copyText, menuActions, onChanged }: {
+  groupId?: string; shareScope: string; message: BotGroupMessageView; align?: 'left' | 'right'; onReply?: () => void;
+  /** The thread preview already shows the count; keep the toolbar icon quiet. */
+  replyCountShown?: boolean;
+  copyText?: string;
+  menuActions?: Parameters<typeof MessageActionBar>[0]['menuActions'];
+  onChanged: () => void;
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
@@ -50,10 +55,10 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
           </Button>
         ))}
       </div>}
-      <MessageActionBar copyText={message.content} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}
+      <MessageActionBar copyText={copyText ?? message.content} menuActions={menuActions} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}
         align={align} hovered simplifiedBotConversation
         onShareAsImage={() => shareSelectionStore.enter(shareScope, message.id)}
-        replyAction={onReply ? { onClick: onReply, count: message.replyCount,
+        replyAction={onReply ? { onClick: onReply, count: replyCountShown ? undefined : message.replyCount,
           label: message.replyCount ? t(key('replyCount'), { count: message.replyCount }) : t(key('reply')) } : undefined}
         reactionAction={groupId ? { label: t(key('addReaction')), open: picker, onOpenChange: setPicker, disabled: busy,
           content: <div className="grid grid-cols-6 gap-1">{emojiChoices.map(emoji =>

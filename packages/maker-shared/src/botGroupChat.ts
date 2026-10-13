@@ -159,6 +159,93 @@ export interface BotGroupMessageView {
   /** What the user attached to this message (images, files, videos). */
   attachments: BotGroupAttachment[];
   createdAt: number;
+  /** Thread roots only: the newest replies, shown in the main chat without opening the thread. */
+  threadPreview?: BotGroupThreadPreview;
+  /** A main-chat message that re-posts an existing thread reply by reference. */
+  threadShare?: BotGroupThreadShareView;
+}
+
+/** A root message previews at most this many of its newest replies. */
+export const BOT_GROUP_THREAD_PREVIEW_REPLIES = 2;
+
+/**
+ * Main-chat share of a thread reply. The card stores only the two IDs; clients resolve the
+ * author, text and files from the server's copy of the reply, so a card cannot put words
+ * in someone else's name. `fallback` keeps older clients readable.
+ */
+export const BOT_GROUP_THREAD_SHARE_NAMESPACE = 'cindy.thread-share';
+const THREAD_SHARE_REVISION = 1;
+const THREAD_SHARE_FALLBACK_TEXT_MAX = 280;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** One share per person and reply: retries and repeats replay the same server operation. */
+export function botGroupThreadShareOperationId(messageId: string): string {
+  return `thread-share:${messageId}`;
+}
+
+export function buildBotGroupThreadShareCard(input: { messageId: string; threadRootId: string; authorName: string; text: string }) {
+  const text = input.text.replace(/\s+/g, ' ').trim();
+  const clipped = text.length > THREAD_SHARE_FALLBACK_TEXT_MAX ? `${text.slice(0, THREAD_SHARE_FALLBACK_TEXT_MAX)}…` : text;
+  const author = input.authorName.trim() || '…';
+  return {
+    type: 'card' as const, namespace: BOT_GROUP_THREAD_SHARE_NAMESPACE, schemaRevision: THREAD_SHARE_REVISION,
+    fallback: clipped ? `↪ ${author}: ${clipped}` : `↪ ${author}`,
+    data: { messageId: input.messageId, threadRootId: input.threadRootId },
+  };
+}
+
+export function readBotGroupThreadShareCard(message: {
+  deleted?: unknown; threadRootId?: unknown;
+  content: readonly { type?: unknown; namespace?: unknown; schemaRevision?: unknown; data?: unknown }[];
+}): { messageId: string; threadRootId: string } | null {
+  // A share lives in the main chat; a card copied into a thread is just content.
+  if (message.deleted === true || (message.threadRootId !== null && message.threadRootId !== undefined)) return null;
+  const card = message.content.find(block => block.type === 'card' && block.namespace === BOT_GROUP_THREAD_SHARE_NAMESPACE
+    && block.schemaRevision === THREAD_SHARE_REVISION);
+  if (!card?.data || typeof card.data !== 'object' || Array.isArray(card.data)) return null;
+  const { messageId, threadRootId } = card.data as Record<string, unknown>;
+  if (typeof messageId !== 'string' || typeof threadRootId !== 'string' || !UUID.test(messageId) || !UUID.test(threadRootId)
+    || messageId === threadRootId) return null;
+  return { messageId, threadRootId };
+}
+
+export interface BotGroupThreadPreviewReply {
+  id: string;
+  authorKind: BotGroupAuthorKind;
+  authorBotId: string | null;
+  authorName: string;
+  isSelf?: boolean;
+  /** Plain text; empty when the reply only carries attachments. */
+  text: string;
+  /** Names only: a preview never downloads the reply's files. */
+  attachments: Array<{ name: string; category: BotGroupAttachmentCategory }>;
+  createdAt: number;
+}
+
+export interface BotGroupThreadPreview {
+  /** Chronological, newest last. */
+  replies: BotGroupThreadPreviewReply[];
+}
+
+/**
+ * The reply a main-chat share points at. Everything except the IDs is read from the
+ * server's current copy of that reply, never from what the sharer's card claims.
+ */
+export interface BotGroupThreadShareView {
+  messageId: string;
+  /** The thread the reply stays in; sharing never moves it. */
+  threadRootId: string;
+  /** `unavailable`: deleted, outside this reader's history, or not a reply in `threadRootId`. */
+  status: 'available' | 'unavailable';
+  authorKind: BotGroupAuthorKind;
+  authorBotId: string | null;
+  authorName: string;
+  /** The sharer wrote the reply themselves (sent to the thread and the main chat). */
+  sharedByAuthor: boolean;
+  content: string;
+  attachments: BotGroupAttachment[];
+  createdAt: number | null;
+  edited: boolean;
 }
 
 export type BotGroupAttachmentCategory = 'image' | 'pdf' | 'text' | 'office' | 'file';
@@ -554,6 +641,11 @@ export interface ChatServerApi {
     executionFailures?: BotGroupExecutionFailureView[];
   }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
+  /**
+   * Re-post a thread reply to the main chat as the current user. Repeating it for the same
+   * reply returns the existing share (`alreadyShared`); it never starts a companion round.
+   */
+  shareToMain(input: { groupId: string; messageId: string }): Promise<ChatServerResult<{ messageId: string | null; alreadyShared: boolean }>>;
   react(input: { groupId: string; messageId: string; emoji: string; present: boolean }): Promise<ChatServerResult<Record<never, never>>>;
   createInvite(input: { groupId: string; clientId: string }): Promise<ChatServerResult<{ link: string; expiresAt: string | null; reusable?: boolean }>>;
   revokeInvite(input: { groupId: string; link: string; clientId: string }): Promise<ChatServerResult<{ revoked: true }>>;
