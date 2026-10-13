@@ -1003,6 +1003,47 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'XDG_CONFIG_HOME=' + path.join(root, 'other-config') + ' git remote -v')).toBe(false);
   });
 
+  it('checks Git logical variable output including environment and derived values', async () => {
+    const history = new GitCredentialHistory();
+    const fakeToken = 'ghp_' + '0'.repeat(36);
+    const editorEnv = ['GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'GIT_PAGER', 'EDITOR', 'VISUAL', 'PAGER'];
+    for (const key of editorEnv) vi.stubEnv(key, undefined);
+    vi.stubEnv('GIT_EDITOR', 'vi');
+    vi.stubEnv('GIT_PAGER', 'less');
+    for (const variable of ['-l', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'GIT_PAGER']) {
+      expect(await provesSafe(history, 'git var ' + variable), variable).toBe(true);
+    }
+    for (const [key, variables] of [
+      ['GIT_EDITOR', ['GIT_EDITOR', 'GIT_SEQUENCE_EDITOR']],
+      ['GIT_SEQUENCE_EDITOR', ['GIT_SEQUENCE_EDITOR']],
+      ['GIT_PAGER', ['GIT_PAGER']],
+      ['EDITOR', ['GIT_EDITOR', 'GIT_SEQUENCE_EDITOR']],
+      ['VISUAL', ['GIT_EDITOR', 'GIT_SEQUENCE_EDITOR']],
+      ['PAGER', ['GIT_PAGER']],
+    ] as const) {
+      for (const envKey of editorEnv) vi.stubEnv(envKey, undefined);
+      vi.stubEnv('TERM', 'xterm');
+      vi.stubEnv('EDITOR', 'vi');
+      vi.stubEnv('PAGER', 'less');
+      vi.stubEnv(key, fakeToken);
+      for (const variable of ['-l', ...variables]) {
+        expect(git('var', variable), key + ': ' + variable).toContain(fakeToken);
+        const command = 'git var ' + variable;
+        expect(await provesSafe(history, command), key + ': ' + command).toBe(false);
+        await requiresCredentialConfirmation(history, command);
+      }
+      expect(await provesSafe(history, 'git config user.name')).toBe(true);
+    }
+    vi.stubEnv('PAGER', 'less');
+    git('config', 'http.extraHeader', 'synthetic-config-secret');
+    expect(await provesSafe(history, 'git var -l')).toBe(false);
+    expect(await provesSafe(history, 'git var GIT_EDITOR')).toBe(true);
+    git('config', '--unset', 'http.extraHeader');
+    git('config', 'custom.token', '\nsynthetic-config-secret');
+    expect(await provesSafe(history, 'git var -l')).toBe(false);
+    expect(await provesSafe(history, 'git var GIT_EDITOR')).toBe(true);
+  });
+
   it('fails closed for path selectors that exceed the bounded matcher', async () => {
     const history = new GitCredentialHistory();
     const selector = 'a*'.repeat(20) + 'b';

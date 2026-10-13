@@ -5104,6 +5104,17 @@ describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
     expect(shellCommandReadsCredentials('git diff -- .env', roots, { gitContentRead: () => true })).toBe(true);
   });
 
+  it('checks sharing Git logical variables without changing local decisions', () => {
+    for (const variable of ['-l', 'GIT_EDITOR', 'GIT_PAGER', 'GIT_SEQUENCE_EDITOR']) {
+      const command = 'git var ' + variable;
+      expect(shellCommandReadsCredentials(command, roots), command).toBe(false);
+      expect(shellCommandReadsCredentials(command, roots, { gitConfigRead: () => false }), command).toBe(true);
+      const collect = vi.fn(() => true);
+      expect(shellCommandReadsCredentials(command, roots, { gitConfigRead: collect }), command).toBe(false);
+      expect(collect).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sub: 'var', args: [variable] }));
+    }
+  });
+
   it('gitConfigRead：会打出 git 配置或保存的凭证的调用交给调用方', () => {
     const printing = [
       'git remote -v',

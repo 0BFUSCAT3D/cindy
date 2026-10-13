@@ -6177,7 +6177,7 @@ const GIT_CONFIG_WRITES: ReadonlySet<string> = new Set([
  */
 function gitPrintsConfig(sub: string, args: readonly string[]): boolean {
   if (sub === 'credential' || sub.startsWith('credential-')) return true;
-  if (sub === 'var') return args.includes('-l');
+  if (sub === 'var') return true;
   if (sub === 'remote') {
     const action = args.find((arg) => !arg.startsWith('-'));
     return action === 'get-url' || action === 'show'

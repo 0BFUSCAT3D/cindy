@@ -471,8 +471,20 @@ async function configReadProvesSafe(read: GitRead, deadline: number): Promise<bo
   const cwd = await fsp.realpath(read.cwd);
   const remaining = deadline - Date.now();
   if (remaining <= 0) return false;
+  if (read.sub === 'var') {
+    // git var includes logical values derived from the environment, not just
+    // config. Inspect exactly the requested output locally without logging it.
+    if (read.args.length !== 1 || (read.args[0] !== '-l' && !/^GIT_[A-Z0-9_]+$/.test(read.args[0]))) return false;
+    const output = await git(['var', ...read.args], cwd, { timeoutMs: remaining });
+    if (textSpellsOutSecret(output)) return false;
+    if (read.args[0] !== '-l') return true;
+    // -l also prints config values. Preserve NUL-delimited key/value checks
+    // below so a multiline password/token value cannot lose its key.
+  }
   const key = requestedConfigKey(read);
-  const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs: remaining })).split('\0').filter(Boolean);
+  const configRemaining = deadline - Date.now();
+  if (configRemaining <= 0) return false;
+  const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs: configRemaining })).split('\0').filter(Boolean);
   return !entries.some((entry) => {
     const newline = entry.indexOf('\n');
     const name = newline < 0 ? entry : entry.slice(0, newline);
