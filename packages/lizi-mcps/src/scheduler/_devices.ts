@@ -131,8 +131,14 @@ export async function readOnDevices(
   };
   if (isLocalDevice(device)) {
     const result = await readLocal();
+    // 本机读取一律自带范围:否则「本机没有」(如 get 的 data:null)会被读成哪台电脑都没有。
     return result.ok
-      ? buildJsonResult({ ok: true, data: result.data, ...localExtras })
+      ? buildJsonResult({
+          ok: true,
+          data: result.data,
+          scope: "local",
+          ...localExtras,
+        })
       : failure(result.code, result.message);
   }
   if (!deps.remote)

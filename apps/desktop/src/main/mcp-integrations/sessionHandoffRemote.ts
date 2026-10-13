@@ -125,17 +125,34 @@ export function createRemoteSessionHandoff(deps: {
 }) {
   return async (
     target: QualifiedSessionTarget,
-    request: Omit<RemoteSessionHandoffRequest, 'sessionId'>,
+    request: {
+      message: string;
+      /** 在账号记录之后读取，使来源查询也落在同一道 owner 检查之内。 */
+      sender(): Promise<RemoteSessionHandoffRequest['sender']>;
+    },
   ): Promise<RemoteSessionHandoffResult> => {
+    const notSent = (): RemoteSessionHandoffResult => ({
+      ok: false,
+      errorCode: 'HOST_NOT_READY',
+      message: '账号正在切换，消息没有发出。',
+    });
+    // 同一份账号记录覆盖整次调用：读来源之前记录，发送前与收到回执后各核对一次。
     let assertCurrent: () => void;
+    let sender: RemoteSessionHandoffRequest['sender'];
     try {
       assertCurrent = deps.captureAccess();
+      sender = await request.sender();
+      assertCurrent();
     } catch {
-      return { ok: false, errorCode: 'HOST_NOT_READY', message: '账号正在切换，消息没有发出。' };
+      return notSent();
     }
     let response: InvokeResultPayload;
     try {
-      const wire: RemoteSessionHandoffRequest = { sessionId: target.sessionId, ...request };
+      const wire: RemoteSessionHandoffRequest = {
+        sessionId: target.sessionId,
+        message: request.message,
+        sender,
+      };
       response = await deps.invoke(target.deviceId, DL_SESSION_HANDOFF_CHANNEL, [wire], {
         preSend: assertCurrent,
       });
@@ -146,6 +163,12 @@ export function createRemoteSessionHandoff(deps: {
       }
       // 发送前的本机拒绝（另一实例持有连接、本机关闭了对该设备的控制等）以 [CODE] 前缀抛出。
       return transportFailure('IPC_ERROR', error instanceof Error ? error.message : '');
+    }
+    try {
+      assertCurrent();
+    } catch {
+      // 请求已发出、账号随后切换：回执属于上一个账号，不读取也不返回其中的任务信息。
+      return transportFailure('UNKNOWN', '');
     }
     if (!response.ok) return transportFailure(response.error.code, response.error.message);
     const result = response.result as Record<string, unknown> | null;

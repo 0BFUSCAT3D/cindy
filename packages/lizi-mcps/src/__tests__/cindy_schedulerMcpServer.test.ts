@@ -600,7 +600,8 @@ describe('cindy_scheduler MCP server (in-process smoke)', () => {
       arguments: { name: 'schedule_get', args: { id: 'does-not-exist' } },
     });
     const env = parseToolResult(result as { content: unknown[]; isError?: boolean }).envelope;
-    expect(env).toEqual({ ok: true, data: null });
+    // 本机读取自带范围：data:null 只说明本机没有。
+    expect(env).toEqual({ ok: true, data: null, scope: 'local' });
     await h.cleanup();
   });
 

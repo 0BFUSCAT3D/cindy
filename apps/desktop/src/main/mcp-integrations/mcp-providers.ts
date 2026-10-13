@@ -726,17 +726,18 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // 目标在另一台电脑(deviceId::sessionId):交给那台电脑按它本机的同一条通路投递。
       ...(remoteSessionHandoff
         ? {
-            sendToRemoteSession: async ({ deviceId, sessionId, message, dispatcherSessionId }) => {
-              const dbClient = tryGetDbClient();
-              const [sender] = dbClient
-                ? await dbClient.drizzle.select({ title: sessions.title }).from(sessions)
-                  .where(eq(sessions.id, dispatcherSessionId)).limit(1).catch(() => [])
-                : [];
-              return remoteSessionHandoff({ deviceId, sessionId }, {
+            sendToRemoteSession: async ({ deviceId, sessionId, message, dispatcherSessionId }) =>
+              remoteSessionHandoff({ deviceId, sessionId }, {
                 message,
-                sender: { sessionId: dispatcherSessionId, ...(sender?.title ? { title: sender.title } : {}) },
-              });
-            },
+                sender: async () => {
+                  const dbClient = tryGetDbClient();
+                  const [row] = dbClient
+                    ? await dbClient.drizzle.select({ title: sessions.title }).from(sessions)
+                      .where(eq(sessions.id, dispatcherSessionId)).limit(1).catch(() => [])
+                    : [];
+                  return { sessionId: dispatcherSessionId, ...(row?.title ? { title: row.title } : {}) };
+                },
+              }),
           }
         : {}),
       sendToSession: async ({

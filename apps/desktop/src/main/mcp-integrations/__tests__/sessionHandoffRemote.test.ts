@@ -26,7 +26,7 @@ function setup(outcome: unknown = { ok: true, result: accepted }) {
     send: () =>
       send(
         { deviceId: 'mbp', sessionId: 's9' },
-        { message: 'hi', sender: { sessionId: 'me', title: 'T' } },
+        { message: 'hi', sender: async () => ({ sessionId: 'me', title: 'T' }) },
       ),
   };
 }
@@ -123,9 +123,45 @@ describe('cross-device send_to_session sender', () => {
     expect(
       await send(
         { deviceId: 'mbp', sessionId: 's9' },
-        { message: 'hi', sender: { sessionId: 'me' } },
+        { message: 'hi', sender: async () => ({ sessionId: 'me' }) },
       ),
     ).toMatchObject({ ok: false, errorCode: 'HOST_NOT_READY' });
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('holds one account record across the sender lookup, the send and the reply', async () => {
+    let owner = 1;
+    const captureAccess = () => {
+      const captured = owner;
+      return () => {
+        if (captured !== owner) throw new Error('Owner changed');
+      };
+    };
+    const target = { deviceId: 'mbp', sessionId: 's9' };
+    // 读来源期间切换账号：还没发出。
+    const beforeSend = vi.fn(async (): Promise<InvokeResultPayload> => ({
+      ok: true,
+      result: accepted,
+    }));
+    const early = await createRemoteSessionHandoff({ invoke: beforeSend, captureAccess })(target, {
+      message: 'hi',
+      sender: async () => {
+        owner += 1;
+        return { sessionId: 'me', title: 'old account title' };
+      },
+    });
+    expect(early).toMatchObject({ ok: false, errorCode: 'HOST_NOT_READY' });
+    expect(beforeSend).not.toHaveBeenCalled();
+    // 发出后、回执前切换账号：结果未知，且不返回上一个账号的任务信息。
+    const inFlight = vi.fn(async (): Promise<InvokeResultPayload> => {
+      owner += 1;
+      return { ok: true, result: { ...accepted, targetTitle: 'old account task' } };
+    });
+    const late = await createRemoteSessionHandoff({ invoke: inFlight, captureAccess })(target, {
+      message: 'hi',
+      sender: async () => ({ sessionId: 'me' }),
+    });
+    expect(late).toMatchObject({ ok: false, errorCode: 'DELIVERY_UNKNOWN' });
+    expect(JSON.stringify(late)).not.toContain('old account task');
   });
 });

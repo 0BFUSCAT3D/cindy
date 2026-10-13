@@ -254,6 +254,87 @@ describe("cindy_scheduler cross-device routing", () => {
     });
   });
 
+  it("marks every default local read as local, so a local miss is not read as absent everywhere", async () => {
+    const s = setup();
+    expect(
+      parse(await s.registry.call("schedule_get", { id: "nope" })),
+    ).toEqual({
+      ok: true,
+      data: null,
+      scope: "local",
+    });
+    expect(
+      parse(await s.registry.call("schedule_list_runs", { scheduleId: "l1" })),
+    ).toEqual({ ok: true, data: [{ id: "run-local" }], scope: "local" });
+  });
+
+  it("keeps the remote check timeout when only the command changes", async () => {
+    const s = setup();
+    s.invoke.mockImplementation(async (_device, op, args) =>
+      op === "get"
+        ? {
+            ok: true,
+            data: {
+              id: args[0],
+              preRunHook: { command: "old", timeoutMs: 180000 },
+            },
+          }
+        : { ok: true, data: { id: args[0] } },
+    );
+    await s.registry.call("schedule_update", {
+      id: "r1",
+      device: "mbp",
+      preRunHook: { command: "node new.mjs" },
+    });
+    expect(s.invoke.mock.calls).toEqual([
+      ["mbp", "get", ["r1"]],
+      [
+        "mbp",
+        "update",
+        ["r1", { preRunHook: { command: "node new.mjs", timeoutMs: 180000 } }],
+      ],
+    ]);
+    // 显式给了超时、或没动 preRunHook 时不多读一次。
+    s.invoke.mockClear();
+    await s.registry.call("schedule_update", {
+      id: "r1",
+      device: "mbp",
+      preRunHook: { command: "node new.mjs", timeoutMs: 5000 },
+    });
+    await s.registry.call("schedule_update", {
+      id: "r1",
+      device: "mbp",
+      name: "n",
+    });
+    expect(s.invoke.mock.calls.map(([, op]) => op)).toEqual([
+      "update",
+      "update",
+    ]);
+  });
+
+  it("does not write the check script when the current timeout cannot be read", async () => {
+    const s = setup();
+    s.invoke.mockImplementation(async (_device, op) =>
+      op === "get"
+        ? { ok: false, code: "REMOTE_TIMEOUT", message: "slow" }
+        : { ok: true, data: {} },
+    );
+    const failed = await s.registry.call("schedule_update", {
+      id: "r1",
+      device: "mbp",
+      preRunHook: { command: "node new.mjs" },
+    });
+    expect(parse(failed)).toMatchObject({ ok: false, code: "REMOTE_TIMEOUT" });
+    s.invoke.mockImplementation(async () => ({ ok: true, data: null }));
+    const missing = await s.registry.call("schedule_update", {
+      id: "gone",
+      device: "mbp",
+      preRunHook: { command: "node new.mjs" },
+    });
+    expect(parse(missing)).toMatchObject({ ok: false, code: "NOT_FOUND" });
+    expect(s.invoke.mock.calls.every(([, op]) => op === "get")).toBe(true);
+  });
+
   it("runs write tools on the named computer only", async () => {
     const s = setup();
     expect(

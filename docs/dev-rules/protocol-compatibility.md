@@ -258,11 +258,12 @@ SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integratio
 （`local` 默认、`all`、设备 ID），`schedule_update` / `pause` / `resume` / `delete` / `run_now` 新增
 `device`（`local` 默认或设备 ID）。非本机请求走用户远程控制定时任务时已有的
 `maker:schedule:*` channel，参数形状不变，被控端仍由原 IPC 入口校验并执行。`schedule_list` 的
-`query` 文本筛选在发起端对返回结果做，不改请求。`device` 缺省时返回形状与原来一致，只多出
-`scope: "local"`。跨电脑读取按电脑分组，离线、未开启远程控制、撤权、超时、不支持的电脑逐台
+`query` 文本筛选在发起端对返回结果做，不改请求。`device` 缺省时返回形状与原来一致，三个读取工具
+都只多出 `scope: "local"`。跨电脑读取按电脑分组，离线、未开启远程控制、撤权、超时、不支持的电脑逐台
 列出，`partial` 表示覆盖不全。`schedule_update` 跨电脑时拒绝 `bindToCurrentSession` 和
 `intervalMs` 以外的 `null` 清空（JSON 边界表达不了「带 key 的 undefined」），明确报
-`INVALID_PARAMS`，不写出与意图不符的任务。被控端不认识这些 channel（早于完整控制面的旧版本）时
+`INVALID_PARAMS`，不写出与意图不符的任务。被控端对 `preRunHook` 是整对象替换：只改 `command`
+时发起端先读对方现有 `timeoutMs` 并带上，读不到就不写。被控端不认识这些 channel（早于完整控制面的旧版本）时
 返回 `CHANNEL_NOT_ALLOWED`，发起端报 `REMOTE_UNSUPPORTED`。
 
 **发消息新增 `maker:session:handoff`。** `send_to_session` 的 `target_session_id` 传
@@ -288,7 +289,9 @@ allowlist 指纹随新增 channel 变化，两端版本不一致时沿用既有�
 的慢恢复报成结果未知。请求已发出但没有可信回执（超时、在途断连、目标电脑报内部错误）时，发消息
 报 `DELIVERY_UNKNOWN`，定时任务写操作报 `REMOTE_TIMEOUT` 并说明可能已生效，由 Agent 先查询再
 决定；能证明没有进入目标任务的错误（离线、未开启、链路未建立、对方不支持、目标不存在或已归档）
-才报「没有发出」。发消息没有幂等键，结果未知后的重发可能重复，工具说明要求先读聊天记录确认。
+才报「没有发出」。发消息的账号 owner 检查用同一份记录覆盖整次调用：读来源任务标题前记录，
+发送前与收到回执后各核对一次；回执到达时账号已切换的按结果未知处理，不返回其中的任务信息。
+发消息没有幂等键，结果未知后的重发可能重复，工具说明要求先读聊天记录确认。
 定时任务仍用默认 30s，与被控端等待 scheduler 就绪的 30s 相同，对方刚启动时可能超时。
 
 按故障半径三问：触发条件是单个请求失败；本改动不新增恢复动作，不重建 link、不断开 relay；

@@ -65,7 +65,7 @@ export function registerScheduleListTool(
           map: (rows) => filterSchedulesByText(rows, query),
         },
         // 本机结果自带范围,避免把「本机没有」读成「哪台电脑都没有」。
-        { scope: 'local', ...(deps.remote ? { note: '仅本机；其它电脑用 device="all"。' } : {}) },
+        deps.remote ? { note: '仅本机；其它电脑用 device="all"。' } : {},
       ),
   });
 }
