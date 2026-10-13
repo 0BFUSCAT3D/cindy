@@ -46,6 +46,7 @@ import type {
 } from '@cindy/maker-core';
 import {
   effectiveSourceIdForModel,
+  providerOffersModel,
   type ProviderView,
   visibleModelUnion,
 } from '@cindy/model-providers';
@@ -160,7 +161,7 @@ function mainOwnedChannelOrigin(value: string | undefined): TurnPermissionOrigin
 }
 
 /** 路由不可用时附在错误后的恢复指引(渠道回帖与 request ledger 都看得到)。 */
-const ROUTE_RESELECT_HINT = '。请在 设置 → 远程连接 中为这个渠道重新选择模型。';
+const ROUTE_RESELECT_HINT = '。请在 设置 → IM 机器人 中为这个渠道的工作目录重新选择模型。';
 
 /**
  * 新会话 agent/model/effort/permissionMode/providerId 合成: IM provider 按目录偏好
@@ -240,15 +241,19 @@ async function resolveNewSessionConfig(
       ? getWorkspaceProviderSource(channel, workspaceCtx.teamId, workspaceCtx.alias)
       : null;
   // 目录来源是和目录模型一起选的(issue #5912)。目录模型为空、改为继承 IM 默认时,
-  // 残留来源若账号仍可用、只是不提供这个继承来的模型,它已不再描述用户可见的选择 ——
-  // 设置页显示的就是继承模型 —— 按 IM 默认自己的来源路由。来源账号本身断开 / 停用
-  // 时不在此放行,仍走下方「显式来源失效不换账号」。
+  // 残留来源若账号仍可用、只是目录里根本没有这个继承来的模型,它已不再描述用户可见的
+  // 选择 —— 设置页显示的就是继承模型 —— 按 IM 默认自己的来源路由。来源账号断开 /
+  // 停用,或它提供该模型但模型 / 运行路径被停用、退役时不在此放行,仍走下方「显式来源
+  // 失效不换账号」。
+  const workdirSource =
+    providers !== null && workdirProviderId !== null && mergedOverrides.model === null
+      ? providers.find((p) => p.id === workdirProviderId)
+      : undefined;
   const staleWorkdirSource =
-    providers !== null &&
-    workdirProviderId !== null &&
-    mergedOverrides.model === null &&
-    providers.some((p) => p.id === workdirProviderId && p.connected && !p.suspended) &&
-    effectiveSourceIdForModel(providers, workdirProviderId, resolved.model, resolved.agentKind) === null;
+    workdirSource !== undefined &&
+    workdirSource.connected === true &&
+    !workdirSource.suspended &&
+    !providerOffersModel(workdirSource, resolved.model, resolved.agentKind);
   if (staleWorkdirSource) {
     log.warn(
       `hook workspace provider source ignored: provider=${workdirProviderId} cannot serve inherited model=${resolved.model} channel=${channel}`,

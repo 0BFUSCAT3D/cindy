@@ -265,7 +265,7 @@ function makeDispatcher(overrides?: {
 describe('任务失败原因进主日志(issue #5912)', () => {
   it('runner 抛出路由不可用: 主日志记 requestId / 渠道 / 原因, turn.end 带同一 errorMessage', async () => {
     const message =
-      'hook session route unavailable: selected provider "openai" cannot serve model "claude-test"。请在 设置 → 远程连接 中为这个渠道重新选择模型。';
+      'hook session route unavailable: selected provider "openai" cannot serve model "claude-test"。请在 设置 → IM 机器人 中为这个渠道的工作目录重新选择模型。';
     const runner: HookSessionRunner = {
       isBusy: () => false,
       inspect: async () => null,

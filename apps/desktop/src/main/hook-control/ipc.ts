@@ -44,7 +44,6 @@ import {
   requireString,
 } from '../utils/ipcValidate.js';
 import {
-  clearWorkspaceProviderSourcesForRemoteModelChanges,
   listWorkspaceProviderSources,
   setWorkspaceProviderSource,
 } from './workspaceProviderSourceStore.js';
@@ -319,29 +318,36 @@ function broadcastWorkspaceProviderSources(entries: ReturnType<typeof listWorksp
   }
 }
 
-/** 远端快照改了目录模型时, 同键来源随之作废(issue #5912); 失败只记日志, 不挡快照落地。 */
-function clearProviderSourcesAfterRemoteModelChange(
-  channel: HookPrefsChannel,
-  before: HookWorkspacePrefs[],
-  after: HookWorkspacePrefs[],
-): void {
+/**
+ * server 快照落地可能清掉配对来源(applyIncomingServerWorkspacePrefs, issue #5912),
+ * 落地后把现有条目推给设置页; 给了落地前快照时只在有变化时推。
+ */
+function rebroadcastWorkspaceProviderSources(before?: string): void {
   try {
-    const entries = clearWorkspaceProviderSourcesForRemoteModelChanges(channel, before, after);
-    if (entries === null) return;
-    log.info(`workspace provider source cleared after remote model change (${channel})`);
-    broadcastWorkspaceProviderSources(entries);
+    const entries = listWorkspaceProviderSources();
+    if (before === undefined || JSON.stringify(entries) !== before) {
+      broadcastWorkspaceProviderSources(entries);
+    }
   } catch (err) {
     log.warn(
-      `workspace provider source cleanup (${channel}) failed: ${err instanceof Error ? err.message : String(err)}`,
+      `workspace provider source broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+}
+
+function snapshotWorkspaceProviderSources(): string {
+  try {
+    return JSON.stringify(listWorkspaceProviderSources());
+  } catch {
+    return '';
   }
 }
 
 function persistUnsolicitedServerPrefs(channel: HookPrefsChannel, prefs: HookWorkspacePrefs[]): void {
   try {
-    const before = listWorkspacePrefs(channel);
-    const after = applyIncomingServerWorkspacePrefs(channel, prefs);
-    clearProviderSourcesAfterRemoteModelChange(channel, before, after);
+    const sourcesBefore = snapshotWorkspaceProviderSources();
+    applyIncomingServerWorkspacePrefs(channel, prefs);
+    rebroadcastWorkspaceProviderSources(sourcesBefore);
     remotePrefsSnapshotGenerations.set(
       channel,
       (remotePrefsSnapshotGenerations.get(channel) ?? 0) + 1,
@@ -401,6 +407,8 @@ const mirrorWorkspacePrefs = createWorkspacePrefsMirror({
   onLocalPrefsChanged: (channel) => {
     if (channel === 'slack') broadcastPrefs(slackLocalPrefsView());
     else broadcastProviderPrefs(providerLocalPrefsView(channel));
+    // 重连镜像同样经 applyIncomingServerWorkspacePrefs 落快照, 可能清掉配对来源(issue #5912)。
+    rebroadcastWorkspaceProviderSources();
   },
   onError: (channel, err) => {
     log.warn(

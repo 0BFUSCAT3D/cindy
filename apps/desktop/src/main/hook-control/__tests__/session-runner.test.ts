@@ -3255,6 +3255,19 @@ describe('providerId(来源/供应商)贯通 —— issue #854 回归', () => {
       expect(fakeMaker.createSession).not.toHaveBeenCalled();
     });
 
+    it('残留来源提供该模型但已停用时不换账号, 仍拒绝', async () => {
+      h.getWorkspaceProviderSource.mockReturnValue('sub');
+      h.getWorkspacePref.mockReturnValue(inheritedPref);
+      h.listProviders.mockResolvedValueOnce([
+        connectedProvider('xd', [catalogModel('test-model')]),
+        connectedProvider('sub', [{ ...catalogModel('test-model'), disabled: true }]),
+      ]);
+      const runner = createMakerHookSessionRunner({ log });
+
+      await expect(runner.run(xChatReq())).rejects.toThrow('selected provider "sub"');
+      expect(fakeMaker.createSession).not.toHaveBeenCalled();
+    });
+
     it('残留来源账号已断开时不换账号, 仍拒绝', async () => {
       h.getWorkspaceProviderSource.mockReturnValue('openai');
       h.getWorkspacePref.mockReturnValue(inheritedPref);
