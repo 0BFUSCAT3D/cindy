@@ -249,6 +249,8 @@ export interface BotGroupThreadShareView {
   attachments: BotGroupAttachment[];
   createdAt: number | null;
   edited: boolean;
+  /** Cache version this view was checked at; compare with `BotGroupDetail.threadShareVersion`. */
+  version?: number;
 }
 
 export type BotGroupAttachmentCategory = 'image' | 'pdf' | 'text' | 'office' | 'file';
@@ -406,6 +408,8 @@ export interface BotGroupDetail extends BotGroupSummary {
   executionFailures?: BotGroupExecutionFailureView[];
   /** Current state of shares the reader listed in `shownShares`, keyed by the share's message ID. */
   threadShareUpdates?: Record<string, BotGroupThreadShareView>;
+  /** Raised by every edit, deletion or reset; an older share view may no longer be true. */
+  threadShareVersion?: number;
   hasMoreBefore: boolean;
   round: BotGroupRoundView;
   /** Plans referenced by the loaded messages, plus the open plan. */

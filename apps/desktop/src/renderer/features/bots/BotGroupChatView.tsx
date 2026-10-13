@@ -176,6 +176,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
+    // Follow-up reads for older shares one refresh could not check; bounded per chain.
+    let shareFollowUps = 0;
     const load = async (additionalSources: string[] = []) => {
       const version = ++requestVersion;
       const owner = getDataOwnerGeneration();
@@ -192,7 +194,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         const sourceMessageIds = [...new Set([...(shown
           ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
         // Older pages are not re-read, so their shares ask for the reply's current state.
-        const shownShares = shown ? botGroupShownShares(displayed.older) : [];
+        const shownShares = shown ? botGroupShownShares(displayed.older, displayed.group.threadShareVersion) : [];
         const result = sourceMessageIds.length || shownShares.length
           ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
           : await api.getBotGroup(groupId);
@@ -201,7 +203,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           readOwner.current = owner;
           setState((previous) =>
             previous.kind === 'ready'
-              ? { ...previous, group: result.group, older: applyBotGroupThreadShareUpdates(previous.older, result.group.threadShareUpdates) }
+              ? { ...previous, group: result.group, older: applyBotGroupThreadShareUpdates(previous.older, result.group) }
               : {
                   kind: 'ready',
                   group: result.group,
@@ -210,6 +212,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   olderHasMore: result.group.hasMoreBefore,
                 },
           );
+          const older = shown ? applyBotGroupThreadShareUpdates(displayed.older, result.group) : [];
+          const unchecked = staleBotGroupShares(older, result.group.threadShareVersion).length;
+          const total = older.filter(message => message.threadShare).length;
+          if (!unchecked) shareFollowUps = 0;
+          else if (shareFollowUps < Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) {
+            shareFollowUps += 1;
+            setTimeout(() => { if (!cancelled) void load(); }, 0);
+          }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });
         } else {
@@ -795,22 +805,40 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   );
 }
 
-/** Shares on older pages, newest kept when there are more than one refresh re-reads. */
-function botGroupShownShares(older: readonly BotGroupMessageView[]) {
-  return older.flatMap(message => message.threadShare
-    ? [{ id: message.id, messageId: message.threadShare.messageId, threadRootId: message.threadShare.threadRootId,
-      ...(message.authorBotId ? { sharerId: message.authorBotId } : {}) }] : [])
-    .slice(-BOT_GROUP_SHOWN_SHARES_MAX);
+/** Older shares checked before the latest edit, deletion or reset: they may be out of date. */
+function staleBotGroupShares(older: readonly BotGroupMessageView[], version: number | undefined) {
+  return older.filter(message => message.threadShare && version !== undefined && (message.threadShare.version ?? 0) < version);
 }
 
-function applyBotGroupThreadShareUpdates(older: BotGroupMessageView[], updates: BotGroupDetail['threadShareUpdates']) {
-  if (!updates) return older;
+/**
+ * Which older shares one refresh re-checks: stale or still-loading ones first, then the
+ * newest, up to the per-read cap. The rest are checked by later refreshes.
+ */
+function botGroupShownShares(older: readonly BotGroupMessageView[], version: number | undefined) {
+  const withShares = older.filter(message => message.threadShare).reverse();
+  const first = new Set(withShares.filter(message => message.threadShare!.status === 'loading'
+    || (version !== undefined && (message.threadShare!.version ?? 0) < version)));
+  return [...first, ...withShares.filter(message => !first.has(message))].slice(0, BOT_GROUP_SHOWN_SHARES_MAX).map(message => ({
+    id: message.id, messageId: message.threadShare!.messageId, threadRootId: message.threadShare!.threadRootId,
+    ...(message.authorBotId ? { sharerId: message.authorBotId } : {}) }));
+}
+
+/**
+ * Apply the refreshed older shares. One this refresh could not check that is older than the
+ * latest version stops quoting its old text until a later refresh confirms it.
+ */
+function applyBotGroupThreadShareUpdates(older: BotGroupMessageView[], group: Pick<BotGroupDetail, 'threadShareUpdates' | 'threadShareVersion'>) {
+  const { threadShareUpdates: updates, threadShareVersion: version } = group;
+  if (!updates && version === undefined) return older;
   let changed = false;
   const next = older.map(message => {
-    const update = updates[message.id];
-    if (!update || !message.threadShare) return message;
+    const share = message.threadShare;
+    if (!share) return message;
+    const update = updates?.[message.id];
+    if (update) { changed = true; return { ...message, threadShare: update }; }
+    if (version === undefined || (share.version ?? 0) >= version || share.status !== 'available') return message;
     changed = true;
-    return { ...message, threadShare: update };
+    return { ...message, threadShare: { ...share, status: 'loading' as const, authorName: '', authorBotId: null, content: '', attachments: [], edited: false } };
   });
   return changed ? next : older;
 }

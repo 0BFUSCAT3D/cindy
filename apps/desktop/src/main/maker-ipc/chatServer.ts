@@ -568,6 +568,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
    */
   async function decorateThreads(roomId: string, views: BotGroupMessageView[], page: Message[], snapshot: Message[], members: Member[], withPreviews: boolean,
     shownShares: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }> = []) {
+    // Taken before reading, so a change while this read is in progress marks it stale.
+    const version = threads.version();
     const previews = withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, Message[]>();
     const sources = threads.sources(roomId, [...page.flatMap(m => readBotGroupThreadShareCard(m)?.messageId ?? []),
       ...shownShares.map(share => share.messageId)], [...snapshot, ...page]);
@@ -579,9 +581,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       return source && resolved ? {
         ...card, status: 'available', authorKind: resolved.authorKind, authorBotId: resolved.authorBotId, authorName: resolved.authorName,
         sharedByAuthor: source.authorId === sharerId, content: resolved.content, attachments: resolved.attachments,
-        createdAt: resolved.createdAt, edited: (source.revision ?? 1) > 1,
+        createdAt: resolved.createdAt, edited: (source.revision ?? 1) > 1, version,
       } : { ...card, status: sources.has(card.messageId) ? 'unavailable' : 'loading', authorKind: 'user', authorBotId: null, authorName: '', sharedByAuthor: false,
-        content: '', attachments: [], createdAt: null, edited: false };
+        content: '', attachments: [], createdAt: null, edited: false, version };
     };
     const byId = new Map(page.map(m => [m.id, m]));
     for (const view of views) {
@@ -598,8 +600,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (card) view.threadShare = shareView(card, message.authorId);
     }
     // Shares on pages loaded earlier. The sharer ID only picks the label; content is the server's.
-    return Object.fromEntries(shownShares.filter(share => !byId.has(share.id)).map(({ id: shareId, sharerId, ...card }) =>
-      [shareId, shareView(card, sharerId && (actors.find(actor => actor.externalId === sharerId)?.id ?? sharerId))]));
+    return { version, updates: Object.fromEntries(shownShares.filter(share => !byId.has(share.id)).map(({ id: shareId, sharerId, ...card }) =>
+      [shareId, shareView(card, sharerId && (actors.find(actor => actor.externalId === sharerId)?.id ?? sharerId))])) };
   }
   async function detail(roomId: string, options?: unknown, summaryOnly = false): Promise<BotGroupDetail> {
     const s = await snapshot(roomId);
@@ -621,7 +623,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }));
     // Sidebar refresh must not download every attachment in every group's history.
     const messages = summaryOnly ? [] : await messageViews(roomId, page, s.members);
-    const threadShareUpdates = summaryOnly ? undefined : await decorateThreads(roomId, messages, page, s.messages, s.members, true, o.shownShares);
+    const shares = summaryOnly ? undefined : await decorateThreads(roomId, messages, page, s.messages, s.members, true, o.shownShares);
+    const threadShareUpdates = shares?.updates;
     messages.sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
@@ -642,7 +645,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
       createdAt: Date.parse(s.room.created_at), updatedAt: Date.parse(s.room.updated_at ?? s.room.created_at),
-      messages, executionFailures, ...(threadShareUpdates && Object.keys(threadShareUpdates).length ? { threadShareUpdates } : {}), hasMoreBefore: page.length === (o.limit ?? 100), plans,
+      messages, executionFailures, ...(threadShareUpdates && Object.keys(threadShareUpdates).length ? { threadShareUpdates } : {}),
+      ...(shares ? { threadShareVersion: shares.version } : {}), hasMoreBefore: page.length === (o.limit ?? 100), plans,
       round: { status: executions.some(e => ['queued', 'running'].includes(e.status)) ? 'running' : 'idle', speakers, canContinue: !open && !planning.has(roomId) && (executions.some(e => !e.plan_id && ordinaryExecution(e)) || s.messages.some(discussionSource)) && !executions.some(e => ['queued','running','stopping'].includes(e.status)) } };
   }
   function planView(plan: ServerPlan, members: Member[], workspace: ReturnType<ReturnType<typeof chatServerWorkspaces>['read']>): BotGroupPlanView {

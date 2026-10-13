@@ -283,3 +283,79 @@ describe('recovering from a failed read in a quiet room', () => {
     expect(io.filled).not.toHaveBeenCalled();
   });
 });
+
+describe('one wake-up per room with several failed reads', () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] }));
+  afterEach(() => vi.useRealTimers());
+  const idA = '40000000-0000-4000-8000-00000000000a';
+  const idB = '40000000-0000-4000-8000-00000000000b';
+  const card = (id: string, messageId: string) => message({ id, content: [buildBotGroupThreadShareCard({ messageId, threadRootId: rootA, authorName: 'Miao', text: 'hi' })] });
+  const shares = [card('sa', idA), card('sb', idB)];
+
+  it('keeps waking up for a later deadline after an earlier one has recovered', async () => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    const failOnce = new Set([idA, idB]);
+    io.message.mockImplementation(async (_room: string, id: string) => {
+      if (failOnce.delete(id)) throw new Error('offline');
+      return reply(id, rootA);
+    });
+    io.filled.mockImplementation(() => { projection.shareSources(room, shares, []); });
+    projection.shareSources(room, [shares[0]!], []);       // A fails at t0 → due t30
+    await projection.settled();
+    await vi.advanceTimersByTimeAsync(5_000);
+    projection.shareSources(room, [shares[1]!], []);       // B fails at t5 → due t35
+    await projection.settled();
+    await vi.advanceTimersByTimeAsync(25_000);             // t30: A retried and recovered; B not yet due
+    await projection.settled();
+    expect(projection.shareSources(room, shares, []).get(idA)?.id).toBe(idA);
+    expect(projection.shareSources(room, shares, []).has(idB)).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);              // t35: nothing else happens in the room
+    await projection.settled();
+    expect(projection.shareSources(room, shares, []).get(idB)?.id).toBe(idB);
+    // Both recovered: no further wake-ups.
+    io.filled.mockClear();
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(io.filled).not.toHaveBeenCalled();
+  });
+
+  it('keeps each read to its own five automatic retries when failures are staggered', async () => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    let bFailed = false;
+    io.message.mockImplementation(async (_room: string, id: string) => {
+      if (id === idA) throw new Error('offline');
+      if (!bFailed) { bFailed = true; throw new Error('offline'); }
+      return reply(id, rootA);
+    });
+    io.filled.mockImplementation(() => { projection.shareSources(room, shares, []); });
+    projection.shareSources(room, [shares[0]!], []);
+    await projection.settled();
+    await vi.advanceTimersByTimeAsync(5_000);
+    projection.shareSources(room, [shares[1]!], []);
+    await projection.settled();
+    for (let step = 0; step < 200; step += 1) { await vi.advanceTimersByTimeAsync(30_000); await projection.settled(); }
+    const reads = (id: string) => io.message.mock.calls.filter(([, value]) => value === id).length;
+    expect(reads(idA)).toBe(6);
+    expect(reads(idB)).toBe(2);
+    expect(projection.shareSources(room, shares, []).get(idB)?.id).toBe(idB);
+    // A gave up and B recovered: the room has nothing left to wake up for.
+    io.filled.mockClear();
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+    expect(io.filled).not.toHaveBeenCalled();
+  });
+
+  it.each(['dispose', 'reset'] as const)('cancels every pending wake-up of the room on %s', async (stop) => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    io.message.mockRejectedValue(new Error('offline'));
+    projection.shareSources(room, [shares[0]!], []);
+    await projection.settled();
+    await vi.advanceTimersByTimeAsync(5_000);
+    projection.shareSources(room, [shares[1]!], []);
+    await projection.settled();
+    projection[stop]();
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(io.filled).not.toHaveBeenCalled();
+  });
+});

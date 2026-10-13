@@ -1404,6 +1404,26 @@ describe('Chat Server result delivery and refresh', () => {
       expect(await read()).toMatchObject({ status: 'unavailable', content: '' });
     });
 
+    it('raises the share version on edits and lost access so unchecked older shares are not trusted', async () => {
+      const version = async () => {
+        const result = await service.getGroup(roomId);
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.threadShareVersion!;
+      };
+      const start = await version();
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets.at(-1)!;
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '10', changes: [{ type: 'message.deleted', entityId: botReply }] }));
+      const afterDelete = await version();
+      expect(afterDelete).toBeGreaterThan(start);
+      socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
+      expect(await version()).toBeGreaterThan(afterDelete);
+      // Share views carry the version they were checked at.
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages.find(m => m.id === shares[0]!.id)!.threadShare!.version).toBe(result.group.threadShareVersion);
+    });
+
     it('does not let 「继续讨论」 restart a re-posted reply', async () => {
       const ask = msg('90000000-0000-4000-8000-0000000000aa', 1, selfId);
       fixture.handle.mockImplementation((route, method, body) => {

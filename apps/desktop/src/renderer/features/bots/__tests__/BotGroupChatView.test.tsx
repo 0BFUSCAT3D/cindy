@@ -1949,3 +1949,48 @@ describe('shares on older pages', () => {
       shownShares: [{ id: 'old-share', messageId: 'old-reply', threadRootId: 'old-root', sharerId: 'alice-actor' }] }));
   });
 });
+
+describe('more older shares than one refresh re-reads', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('never keeps showing a share the refresh could not check, and gets to it within a few refreshes', async () => {
+    type Share = NonNullable<BotGroupMessageView['threadShare']>;
+    const shareOf = (i: number, extra: Partial<Share> = {}): Share => ({ messageId: `reply-${i}`, threadRootId: 'root', status: 'available', authorKind: 'bot',
+      authorBotId: 'xiaoman', authorName: '小满', sharedByAuthor: false, content: `原文 ${i}`, attachments: [], createdAt: 1, edited: false, version: 1, ...extra });
+    const older = Array.from({ length: 201 }, (_, i) => msg({ id: `share-${i}`, sequence: i + 1, authorKind: 'user', isSelf: false, authorBotId: 'alice',
+      authorName: 'Alice', content: `↪ 卡片 ${i}`, threadShare: shareOf(i) }));
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 1, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
+    let version = 1;
+    const refreshes: Array<string[]> = [];
+    let release!: () => void;
+    const followUp = new Promise<void>(resolve => { release = resolve; });
+    mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string; messageId: string }> }) => {
+      if (options?.beforeSequence) return { ok: true, group: { ...latest, hasMoreBefore: false, messages: older } };
+      refreshes.push((options?.shownShares ?? []).map(share => share.id));
+      // Hold the read that finally checks the oldest share, to see what shows meanwhile.
+      if (version > 1 && options?.shownShares?.some(share => share.id === 'share-0')) await followUp;
+      // The oldest share's reply has been deleted on the server since it was shown.
+      const threadShareUpdates = Object.fromEntries((options?.shownShares ?? []).map(share => [share.id, share.messageId === 'reply-0'
+        ? shareOf(0, { status: 'unavailable', authorName: '', content: '', version }) : shareOf(Number(share.messageId.slice(6)), { version })]));
+      return { ok: true, group: { ...latest, threadShareVersion: version, threadShareUpdates } };
+    });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('原文 0')).toBeTruthy();
+    version = 2;
+    act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
+    // Not checked by the first refresh: its old text goes away before anything confirms it.
+    await waitFor(() => expect(refreshes.some(ids => ids.includes('share-0'))).toBe(true));
+    expect(screen.queryByText('原文 0')).toBeNull();
+    expect(screen.getAllByText(t('loadingSource')).length).toBe(1);
+    act(() => release());
+    await waitFor(() => expect(screen.queryByText(t('loadingSource'))).toBeNull());
+    expect(screen.getAllByText(t('sourceUnavailable')).length).toBe(1);
+    // Bounded: the push plus at most a couple of follow-ups, each within the per-read cap.
+    expect(refreshes.length).toBeLessThanOrEqual(3);
+    expect(refreshes.every(ids => ids.length <= 200)).toBe(true);
+    expect(screen.queryByText('↪ 卡片 0')).toBeNull();
+  });
+});

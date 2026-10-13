@@ -53,8 +53,28 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
   const inFlight = new Set<string>();
   const settling = new Set<Promise<void>>();
   const failures = new Map<string, number>();
-  // One pending wake-up per room: a quiet room still recovers from a transient failure.
+  // One wake-up per room, aimed at the earliest pending retry; after firing it re-arms for
+  // the next one, so a quiet room still recovers every read that failed.
+  const pendingRetries = new Map<string, Map<string, number>>();
   const retryTimers = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> }>();
+  function armRetry(roomId: string) {
+    const pending = pendingRetries.get(roomId);
+    const armed = retryTimers.get(roomId);
+    const at = pending?.size ? Math.min(...pending.values()) : undefined;
+    if (armed && armed.at === at) return;
+    if (armed) { clearTimeout(armed.timer); retryTimers.delete(roomId); }
+    if (at === undefined) return;
+    const timer = setTimeout(() => {
+      retryTimers.delete(roomId);
+      let due = false;
+      for (const [cacheKey, deadline] of pending!) if (deadline <= Date.now()) { pending!.delete(cacheKey); due = true; }
+      if (!pending!.size) pendingRetries.delete(roomId);
+      if (due) io.filled(roomId);
+      armRetry(roomId);
+    }, Math.max(0, at - Date.now()));
+    timer.unref?.();
+    retryTimers.set(roomId, { at, timer });
+  }
   function scheduleRetry(roomId: string, cacheKey: string) {
     const attempt = (failures.get(cacheKey) ?? 0) + 1;
     failures.set(cacheKey, attempt);
@@ -62,17 +82,19 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     retryAt.set(cacheKey, at);
     // After the last automatic attempt only a later read (a push or reopening) retries.
     if (attempt > RETRY_ATTEMPTS) return;
-    const pending = retryTimers.get(roomId);
-    if (pending && pending.at <= at) return;
-    if (pending) clearTimeout(pending.timer);
-    const timer = setTimeout(() => { retryTimers.delete(roomId); io.filled(roomId); }, at - Date.now());
-    timer.unref?.();
-    retryTimers.set(roomId, { at, timer });
+    const pending = pendingRetries.get(roomId) ?? new Map<string, number>();
+    pending.set(cacheKey, at); pendingRetries.set(roomId, pending);
+    armRetry(roomId);
+  }
+  function settledRetry(roomId: string, cacheKey: string) {
+    failures.delete(cacheKey);
+    if (pendingRetries.get(roomId)?.delete(cacheKey)) armRetry(roomId);
   }
   function cancelRetries() {
     for (const { timer } of retryTimers.values()) clearTimeout(timer);
-    retryTimers.clear(); failures.clear();
+    retryTimers.clear(); pendingRetries.clear(); failures.clear();
   }
+
   // A read that was in flight across reset()/invalidate() may carry the old copy.
   let generation = 0;
   const key = (roomId: string, id: string) => `${roomId}:${id}`;
@@ -87,7 +109,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
       await eachLimited(items, async ({ cacheKey, item }) => {
         try {
           const store = await read(item);
-          retryAt.delete(cacheKey); failures.delete(cacheKey);
+          retryAt.delete(cacheKey); settledRetry(roomId, cacheKey);
           // A copy that outlived a reset is dropped, but the reader still needs a fresh read.
           if (store) { if (generation === started) store(); wrote = true; }
         } catch { if (generation === started) scheduleRetry(roomId, cacheKey); }
@@ -177,6 +199,8 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     reset() { generation += 1; previews.clear(); sources.clear(); retryAt.clear(); cancelRetries(); },
     /** The adapter is gone (account switch or quit): no wake-up may outlive it. */
     dispose() { generation += 1; cancelRetries(); },
+    /** Raised by every invalidation and reset; views checked at an older one may be stale. */
+    version() { return generation; },
     /** Tests: wait for background fills started so far. */
     async settled() { while (settling.size) await Promise.all([...settling]); },
   };
