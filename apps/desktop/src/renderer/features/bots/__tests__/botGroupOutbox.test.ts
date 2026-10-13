@@ -1,0 +1,418 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { AttachedFile } from '@/lib/fileTypes';
+import type {
+  BotGroupAttachment,
+  BotGroupMessageView,
+  BotGroupSendInput,
+  BotGroupSendResult,
+} from '../../../../shared/botGroupChat';
+import {
+  beginBotGroupTimelineRead,
+  botGroupSendSignature,
+  discardBotGroupOutbox,
+  editBotGroupSend,
+  enqueueBotGroupSend,
+  getBotGroupOutbox,
+  getBotGroupOutboxClaims,
+  noteBotGroupTimeline,
+  registerBotGroupComposer,
+  resetBotGroupOutboxForTests,
+  getBotGroupOutboxPreviews,
+  mergeBotGroupLocalAttachments,
+  projectBotGroupOutbox,
+  retryBotGroupSend,
+  type BotGroupOutboxDraft,
+  type BotGroupOutboxSendInput,
+} from '../botGroupOutbox';
+
+const mocks = vi.hoisted(() => ({
+  owner: 1,
+  send: vi.fn<(input: BotGroupSendInput) => Promise<BotGroupSendResult>>(),
+}));
+
+vi.mock('@/contexts/dataOwnerGeneration', () => ({
+  getDataOwnerGeneration: () => mocks.owner,
+  isDataOwnerGenerationCurrent: (owner: number) => owner === mocks.owner,
+}));
+vi.mock('../botGroupStore', () => ({
+  botGroupApi: () => ({ sendBotGroupMessage: mocks.send }),
+}));
+vi.mock('@/lib/annotationBurnIn', () => ({
+  isAnnotationBurnInError: () => false,
+  materializeAnnotatedAttachmentsForSend: async (files: readonly AttachedFile[]) => [...files],
+}));
+
+/** A send main has not answered yet; the test decides when and how. */
+function deferred() {
+  let resolve!: (result: BotGroupSendResult) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<BotGroupSendResult>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** A draft as the composer builds it; `input` fields and draft fields override separately. */
+function draft(
+  input: Partial<BotGroupOutboxSendInput> = {},
+  overrides: Partial<Omit<BotGroupOutboxDraft, 'input'>> = {},
+): BotGroupOutboxDraft {
+  const full: BotGroupOutboxSendInput = {
+    groupId: 'g1',
+    clientId: 'c1',
+    text: '你好',
+    mentions: { all: false, botIds: [] },
+    ...input,
+  };
+  return {
+    input: full,
+    signature: botGroupSendSignature(full, '[]'),
+    draft: full.text,
+    tracked: [],
+    files: [],
+    attachmentScope: `bot-group:${full.groupId}`,
+    ...overrides,
+  };
+}
+
+function msg(overrides: Partial<BotGroupMessageView>): BotGroupMessageView {
+  return {
+    id: 'm',
+    sequence: 1,
+    kind: 'message',
+    authorKind: 'user',
+    authorBotId: null,
+    authorName: '',
+    content: '',
+    mentions: { all: false, botIds: [] },
+    noticeCode: null,
+    planId: null,
+    files: [],
+    attachments: [],
+    createdAt: 1,
+    isSelf: true,
+    ...overrides,
+  };
+}
+
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+function visible(groupId: string, messages: BotGroupMessageView[]) {
+  return project(groupId, messages).pending.map((entry) => `${entry.input.clientId}:${entry.status}`);
+}
+
+function project(groupId: string, messages: BotGroupMessageView[]) {
+  return projectBotGroupOutbox(
+    getBotGroupOutbox(groupId),
+    messages,
+    getBotGroupOutboxClaims(groupId),
+    getBotGroupOutboxPreviews(groupId),
+  );
+}
+
+beforeEach(() => {
+  mocks.owner = 1;
+  mocks.send.mockReset();
+  resetBotGroupOutboxForTests();
+});
+
+afterEach(() => {
+  resetBotGroupOutboxForTests();
+});
+
+describe('botGroupOutbox', () => {
+  it('shows a message at once and submits a group’s sends one after another', async () => {
+    const first = deferred();
+    const second = deferred();
+    mocks.send.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    noteBotGroupTimeline('g1', [msg({ id: 'old', sequence: 3 })], beginBotGroupTimelineRead());
+
+    enqueueBotGroupSend(draft({ clientId: 'c1', text: '一' }));
+    enqueueBotGroupSend(draft({ clientId: 'c2', text: '二' }));
+    expect(visible('g1', [])).toEqual(['c1:sending', 'c2:sending']);
+    await flush();
+    // The second waits for the first, so the server sees them in the order they were sent.
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.send.mock.calls[0]![0]).toMatchObject({ groupId: 'g1', clientId: 'c1', text: '一' });
+
+    first.resolve({ ok: true, messageId: 'm1' });
+    await flush();
+    expect(mocks.send).toHaveBeenCalledTimes(2);
+    expect(mocks.send.mock.calls[1]![0]).toMatchObject({ clientId: 'c2', text: '二' });
+    expect(visible('g1', [])).toEqual(['c1:sent', 'c2:sending']);
+  });
+
+  it('swaps a receipt for the real message whether the receipt or the re-read comes first, and ignores repeats', async () => {
+    const pending = deferred();
+    mocks.send.mockReturnValueOnce(pending.promise);
+    noteBotGroupTimeline('g1', [msg({ id: 'old', sequence: 3, content: '你好' })], beginBotGroupTimelineRead());
+    enqueueBotGroupSend(draft());
+    await flush();
+
+    // A push re-read lands before main answers: the copy after the baseline stands in for it,
+    // while the earlier message with the same text does not.
+    const real = msg({ id: 'm9', sequence: 4, content: '你好' });
+    const reread = [msg({ id: 'old', sequence: 3, content: '你好' }), real];
+    noteBotGroupTimeline('g1', reread, beginBotGroupTimelineRead());
+    expect(visible('g1', [msg({ id: 'old', sequence: 3, content: '你好' })])).toEqual(['c1:sending']);
+    expect(visible('g1', reread)).toEqual([]);
+
+    pending.resolve({ ok: true, messageId: 'm9' });
+    await flush();
+    expect(visible('g1', reread)).toEqual([]);
+    // The same receipt id read again (a duplicate push) settles the entry for good.
+    const read = beginBotGroupTimelineRead();
+    noteBotGroupTimeline('g1', reread, read);
+    noteBotGroupTimeline('g1', reread, read);
+    expect(getBotGroupOutbox('g1')).toEqual([]);
+  });
+
+  it('never lets a re-read hide a message that is not the one in flight', async () => {
+    const first = deferred();
+    const second = deferred();
+    mocks.send.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    noteBotGroupTimeline('g1', [], beginBotGroupTimelineRead());
+    enqueueBotGroupSend(draft({ clientId: 'c1', text: '好' }));
+    enqueueBotGroupSend(draft({ clientId: 'c2', text: '好' }));
+    await flush();
+    first.resolve({ ok: true, messageId: 'm1' });
+    await flush();
+
+    // m1 belongs to c1's receipt; c2 (same text, now in flight) must stay visible.
+    const timeline = [msg({ id: 'm1', sequence: 1, content: '好' })];
+    noteBotGroupTimeline('g1', timeline, beginBotGroupTimelineRead());
+    expect(visible('g1', timeline)).toEqual(['c2:sending']);
+    // A queued message is never matched, nor a message from someone else.
+    expect(visible('g1', [...timeline, msg({ id: 'x', sequence: 2, content: '好', isSelf: false })])).toEqual(['c2:sending']);
+
+    second.resolve({ ok: true, messageId: 'm2' });
+    await flush();
+    expect(visible('g1', timeline)).toEqual(['c2:sent']);
+    noteBotGroupTimeline('g1', [...timeline, msg({ id: 'm2', sequence: 2, content: '好' })], beginBotGroupTimelineRead());
+    expect(getBotGroupOutbox('g1')).toEqual([]);
+  });
+
+  it('settles a receipt that a later read no longer shows on its page', async () => {
+    const pending = deferred();
+    mocks.send.mockReturnValueOnce(pending.promise);
+    enqueueBotGroupSend(draft());
+    await flush();
+    const early = beginBotGroupTimelineRead();
+    pending.resolve({ ok: true, messageId: 'm1' });
+    await flush();
+    // A read that started before the receipt cannot speak for it.
+    noteBotGroupTimeline('g1', [], early);
+    expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['sent']);
+    // One that started after it can: the message is in history even when pushed off the page.
+    noteBotGroupTimeline('g1', [msg({ id: 'later', sequence: 50, isSelf: false })], beginBotGroupTimelineRead());
+    expect(getBotGroupOutbox('g1')).toEqual([]);
+  });
+
+  it('hands a failure back to an empty composer, otherwise keeps it for 重试 with the same clientId', async () => {
+    const restore = vi.fn(() => false);
+    const notifyFailed = vi.fn();
+    registerBotGroupComposer('g1', { restore, notifyFailed });
+    mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+    enqueueBotGroupSend(draft({ clientId: 'keep' }));
+    await flush();
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(notifyFailed).toHaveBeenCalledWith('bots.groupChat.composer.sendFailed');
+    expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['failed']);
+    // Nothing is sent again on its own.
+    await flush();
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+
+    mocks.send.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+    retryBotGroupSend('g1', 'keep');
+    await flush();
+    expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['failed']);
+    retryBotGroupSend('g1', 'keep');
+    await flush();
+    expect(mocks.send.mock.calls.map(([input]) => input.clientId)).toEqual(['keep', 'keep', 'keep']);
+    expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['sent']);
+
+    // An empty composer takes the next failure back; the bubble goes away.
+    restore.mockReturnValue(true);
+    mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'MENTION_UNAVAILABLE', message: '' });
+    enqueueBotGroupSend(draft({ clientId: 'back' }));
+    await flush();
+    expect(restore).toHaveBeenLastCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ clientId: 'back' }), status: 'failed' }),
+    );
+    expect(notifyFailed).toHaveBeenLastCalledWith('bots.groupChat.errors.mentionUnavailable');
+    expect(getBotGroupOutbox('g1').map((entry) => entry.input.clientId)).toEqual(['keep']);
+  });
+
+  it('edits a failed message only into a composer that accepts it', async () => {
+    const restore = vi.fn(() => false);
+    registerBotGroupComposer('g1', { restore, notifyFailed: vi.fn() });
+    mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+    enqueueBotGroupSend(draft());
+    await flush();
+    expect(editBotGroupSend('g1', 'c1')).toBe(false);
+    expect(getBotGroupOutbox('g1')).toHaveLength(1);
+    restore.mockReturnValue(true);
+    expect(editBotGroupSend('g1', 'c1')).toBe(true);
+    expect(getBotGroupOutbox('g1')).toEqual([]);
+  });
+
+  it('keeps groups apart: another group’s composer never takes a failure', async () => {
+    const otherRestore = vi.fn(() => true);
+    registerBotGroupComposer('g2', { restore: otherRestore, notifyFailed: vi.fn() });
+    const g1 = deferred();
+    mocks.send.mockReturnValueOnce(g1.promise).mockResolvedValueOnce({ ok: true, messageId: 'g2-m' });
+    enqueueBotGroupSend(draft({ groupId: 'g1', clientId: 'a' }));
+    enqueueBotGroupSend(draft({ groupId: 'g2', clientId: 'b' }));
+    await flush();
+    // Groups do not queue behind each other.
+    expect(mocks.send).toHaveBeenCalledTimes(2);
+    g1.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+    await flush();
+    expect(otherRestore).not.toHaveBeenCalled();
+    expect(visible('g1', [])).toEqual(['a:failed']);
+    expect(visible('g2', [])).toEqual(['b:sent']);
+  });
+
+  it('drops late answers after the account changes or the group is deleted', async () => {
+    const late = deferred();
+    mocks.send.mockReturnValueOnce(late.promise);
+    enqueueBotGroupSend(draft());
+    await flush();
+    mocks.owner = 2;
+    late.resolve({ ok: true, messageId: 'm1' });
+    await flush();
+    expect(getBotGroupOutbox('g1')).toEqual([]);
+
+    const gone = deferred();
+    mocks.send.mockReturnValueOnce(gone.promise);
+    enqueueBotGroupSend(draft({ clientId: 'c2' }));
+    await flush();
+    discardBotGroupOutbox('g1');
+    gone.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+    await flush();
+    expect(getBotGroupOutbox('g1')).toEqual([]);
+  });
+
+  it('keeps the attachments with the message and sends them in the existing shape', async () => {
+    mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+    const file = {
+      id: 'f1',
+      name: 'report.pdf',
+      path: '/tmp/report.pdf',
+      ext: '.pdf',
+      size: 7,
+      category: 'pdf',
+      mimeType: 'application/pdf',
+      type: 'file',
+    } as unknown as AttachedFile;
+    enqueueBotGroupSend(draft({ text: '' }, { files: [file] }));
+    expect(getBotGroupOutbox('g1')[0]!.attachments).toEqual([
+      expect.objectContaining({ id: 'f1', name: 'report.pdf', category: 'pdf', path: '/tmp/report.pdf' }),
+    ]);
+    await flush();
+    expect(mocks.send.mock.calls[0]![0].attachments).toEqual([
+      expect.objectContaining({ name: 'report.pdf', path: '/tmp/report.pdf', category: 'pdf' }),
+    ]);
+  });
+
+  it('sends the whole input it was given, first time and on 重试, without dropping fields it does not know', async () => {
+    // A field a later composer feature adds (here a stand-in) must survive the outbox untouched.
+    const extra = { replyTo: { messageId: 'root-1' } } as unknown as Partial<BotGroupOutboxSendInput>;
+    mocks.send
+      .mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' })
+      .mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+    enqueueBotGroupSend(draft({ division: true, mentions: { all: true, botIds: ['a'] }, ...extra }));
+    await flush();
+    retryBotGroupSend('g1', 'c1');
+    await flush();
+    const expected = {
+      groupId: 'g1',
+      clientId: 'c1',
+      text: '你好',
+      mentions: { all: true, botIds: ['a'] },
+      division: true,
+      replyTo: { messageId: 'root-1' },
+    };
+    expect(mocks.send.mock.calls.map(([input]) => input)).toEqual([expected, expected]);
+  });
+
+  it('ties a clientId to every send field except itself, plus the attachments', () => {
+    const base = draft().input;
+    const same = botGroupSendSignature({ ...base, clientId: 'other' }, '[]');
+    expect(same).toBe(botGroupSendSignature(base, '[]'));
+    for (const changed of [
+      { ...base, text: '别的' },
+      { ...base, mentions: { all: false, botIds: ['a'] } },
+      { ...base, division: true },
+      { ...base, replyTo: 'x' } as unknown as BotGroupOutboxSendInput,
+    ]) {
+      expect(botGroupSendSignature(changed, '[]')).not.toBe(same);
+    }
+    expect(botGroupSendSignature(base, '[["f1"]]')).not.toBe(same);
+  });
+
+  describe('attachments of a confirmed message', () => {
+    const local = (id: string, name: string): BotGroupAttachment => ({
+      id, name, category: 'image', mimeType: 'image/png', size: 1, url: `cindy-media://blobs/${id}.png`, path: '/tmp/' + name,
+    });
+    /** A server copy not downloaded yet keeps id and name only. */
+    const placeholder = (id: string, name: string): BotGroupAttachment => ({
+      id, name, category: 'image', mimeType: 'image/png', size: 1, url: null, path: null,
+    });
+    const usable = (id: string, name: string): BotGroupAttachment => ({ ...placeholder(id, name), url: `cindy-media://blobs/${id}.png` });
+
+    it('keeps each local preview until its server copy is usable, under the server id, in send order', () => {
+      const mine = [local('l1', 'a.png'), local('l2', 'b.png')];
+      expect(mergeBotGroupLocalAttachments([placeholder('s2', 'b.png'), placeholder('s1', 'a.png')], mine)).toEqual([
+        { ...mine[0], id: 's1' },
+        { ...mine[1], id: 's2' },
+      ]);
+      expect(mergeBotGroupLocalAttachments([usable('s1', 'a.png'), placeholder('s2', 'b.png')], mine)).toEqual([
+        usable('s1', 'a.png'),
+        { ...mine[1], id: 's2' },
+      ]);
+      // Older servers leave a copy out until it downloads: never show it missing or twice.
+      expect(mergeBotGroupLocalAttachments([usable('s2', 'b.png')], mine)).toEqual([mine[0], usable('s2', 'b.png')]);
+      // A burned-in image may come back renamed; equal counts pair the rest in order.
+      expect(mergeBotGroupLocalAttachments([usable('s1', 'a-annotated.png'), usable('s2', 'b.png')], mine)).toEqual([
+        usable('s1', 'a-annotated.png'),
+        usable('s2', 'b.png'),
+      ]);
+    });
+
+    it('carries the previews from the pending bubble onto the real message, then lets them go', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+      const file = { id: 'l1', name: 'a.png', path: '/tmp/a.png', size: 1, category: 'image', mimeType: 'image/png',
+        url: 'cindy-media://blobs/l1.png', type: 'image' } as unknown as AttachedFile;
+      enqueueBotGroupSend(draft({ text: '' }, { files: [file] }));
+      await flush();
+      const shownLocal = getBotGroupOutbox('g1')[0]!.attachments;
+
+      const loading = [msg({ id: 'm1', sequence: 1, attachments: [placeholder('s1', 'a.png')] })];
+      expect(project('g1', loading)).toEqual({ pending: [], localAttachments: new Map([['m1', shownLocal]]) });
+      noteBotGroupTimeline('g1', loading, beginBotGroupTimelineRead());
+      // The entry is settled, the preview stays with the message.
+      expect(getBotGroupOutbox('g1')).toEqual([]);
+      expect(project('g1', loading).localAttachments.get('m1')).toEqual(shownLocal);
+
+      noteBotGroupTimeline('g1', [msg({ id: 'm1', sequence: 1, attachments: [usable('s1', 'a.png')] })], beginBotGroupTimelineRead());
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(0);
+    });
+
+    it('lays the previews over the copy a re-read shows before the receipt', async () => {
+      const pending = deferred();
+      mocks.send.mockReturnValueOnce(pending.promise);
+      noteBotGroupTimeline('g1', [], beginBotGroupTimelineRead());
+      const file = { id: 'l1', name: 'a.png', path: '/tmp/a.png', size: 1, category: 'image', mimeType: 'image/png',
+        url: 'cindy-media://blobs/l1.png', type: 'image' } as unknown as AttachedFile;
+      enqueueBotGroupSend(draft({ text: '看图' }, { files: [file] }));
+      await flush();
+      const copy = msg({ id: 'm1', sequence: 1, content: '看图', attachments: [placeholder('s1', 'a.png')] });
+      const projected = project('g1', [copy]);
+      expect(projected.pending).toEqual([]);
+      expect(projected.localAttachments.get('m1')).toEqual(getBotGroupOutbox('g1')[0]!.attachments);
+    });
+  });
+});
