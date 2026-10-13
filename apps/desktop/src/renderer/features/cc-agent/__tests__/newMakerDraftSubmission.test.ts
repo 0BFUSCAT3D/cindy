@@ -18,20 +18,23 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({ getSessionDeviceI
 // being dropped for create but leaking back into the first-message handoff.
 const source = ts.createSourceFile('NewMakerDraftRoute.tsx', readFileSync(
   resolve(__dirname, '../NewMakerDraftRoute.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let callback: ts.Expression | undefined;
+const callbacks: Record<string, ts.Expression> = {};
 function visit(node: ts.Node) {
-  if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'handleSend'
-      && node.initializer && ts.isCallExpression(node.initializer)) callback = node.initializer.arguments[0];
+  if (ts.isVariableDeclaration(node) && ['handleSend', 'handleCreateGoal'].includes(node.name.getText(source))
+      && node.initializer && ts.isCallExpression(node.initializer)) callbacks[node.name.getText(source)] = node.initializer.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(source);
-if (!callback) throw new Error('NewMakerDraftRoute.handleSend callback missing');
-const executable = ts.transpileModule(`(${callback.getText(source)})`, {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
-}).outputText;
+function executable(name: string) {
+  if (!callbacks[name]) throw new Error(`NewMakerDraftRoute.${name} callback missing`);
+  return ts.transpileModule(`(${callbacks[name].getText(source)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+}
 
 const modelId = 'qwen3:8b';
 const providerId = 'custom:cindy-local-ollama';
+const goalLimits = { maxTurns: 3, budgetTokens: null, noProgressLimit: null };
 function provider(id = providerId, efforts: PiReasoningEffort[] = []): ProviderView {
   const configured = buildUserProvider({
     id: id.replace(/^custom:/, ''), name: id, auth: { method: 'none' },
@@ -45,6 +48,7 @@ function provider(id = providerId, efforts: PiReasoningEffort[] = []): ProviderV
 }
 
 async function submit(options: {
+  entry?: 'send' | 'goal';
   effort?: Effort;
   providers?: ProviderView[];
   backendProviders?: ProviderView[];
@@ -77,9 +81,14 @@ async function submit(options: {
   const ipcCreate = vi.fn(async (body) => ({
     ...body, ...admit(body), id: 'created', workingDir: '/isolated/dialogue',
   }));
+  const setGoal = vi.fn(async () => {
+    // Goal starts from the newly persisted selection rather than receiving an
+    // independent effort argument. Exercise admission on that creation result.
+    admit(await ipcCreate.mock.results[0].value);
+  });
   // Real renderer adapter forwards to the simulated IPC transport, whose receiving
   // side runs Main's production admission. No real database or user profile is opened.
-  vi.stubGlobal('window', { electronAPI: { localDb: { sessions: { create: ipcCreate } } } });
+  vi.stubGlobal('window', { electronAPI: { localDb: { sessions: { create: ipcCreate } }, maker: { setGoal } } });
   const createSession = vi.fn(async (body) => {
     try { return await createSessionViaIpc(body); }
     catch (error) { errors.push(error); return null; }
@@ -92,13 +101,16 @@ async function submit(options: {
   const finished = new Promise<void>(resolve => { done = resolve; });
   const noop = () => {};
   const environment = {
-    ...draftEffort, getModel,
+    ...draftEffort, getModel, window,
     localProviders: providers, localProvidersLoading: false, providers,
     capabilityAgentKind: agentKind, persistedAgentKind: agentKind,
+    draftInitialModel: modelId, draftInitialEffort: options.effort ?? 'medium',
+    chatInitialProviderId: selectedProviderId, chatInitialPermissionMode: 'default',
     effectiveSourceId: selectedProviderId,
     sendInFlightRef: { current: false }, effectiveCollab: { enabled: false },
     collabPolicy: { enabled: false }, collabPolicyEligible: false,
     usesDeviceCatalog: false, isDeviceLinkDraft: false, isRemoteProjectDraft: !!options.remoteHostId,
+    isAgentDeviceDraft: !!options.agentDeviceId, remoteModelListStatus: 'ready', remoteDraftState: { status: 'ready' },
     effectiveRemoteHostId: options.remoteHostId, effectiveAgentDeviceId: options.agentDeviceId,
     effectiveWorkingDir: options.remoteHostId ? '/remote/project' : null,
     effectiveExtraDirs: [], effectiveWritableDirs: [], effectiveFastMode: false, effectivePlanMode: false,
@@ -114,7 +126,7 @@ async function submit(options: {
     vendorAuthGate: { checkAndConfirm: async () => ({ proceed: true }) },
     localDraftSessionIdRef: { current: 'draft-id' }, optimisticFirstMessageTitle: () => null,
     createSession, toastCreateSessionFailed: noop, carryDraftFavoriteAnchorToSession: noop,
-    makerChatStore: { setSessionRuntime: noop, sendMessage }, sessionsStore: { patchLocal: noop },
+    makerChatStore: { setSessionRuntime: noop, sendMessage, autoNameSession: noop }, sessionsStore: { patchLocal: noop },
     markSessionStarting: noop, clearSessionStarting: noop,
     rehomeDraftAttachments: async () => [], getComposerDraft: () => null,
     NEW_MAKER_DRAFT_KEY: 'fixture', rewriteBrowserCommentsFromRehomedFiles: () => [],
@@ -127,15 +139,22 @@ async function submit(options: {
     isRemotePrecreatedWorktreeCleanupPendingError: () => false,
     getRemoteWorkingDirErrorMessage: () => null,
     emitAutoTitlePreviewCleared: noop, restoreRemoteOptimisticDraft: noop,
+    normalizeAutoTitle: () => null,
+    isLocalGoalWorktreeCleanupPendingError: () => false,
     plainTextToTiptapDoc: noop, excludeCommentScreenshots: () => [],
     log: { warn: (...args: unknown[]) => errors.push(args), error: (...args: unknown[]) => errors.push(args) },
     toast: { error: noop, warning: noop },
   };
-  const handleSend = runInNewContext(executable, environment);
+  const callback = runInNewContext(executable(options.entry === 'goal' ? 'handleCreateGoal' : 'handleSend'), environment);
   try {
-    await handleSend('hello', modelId, options.effort ?? 'medium', 'default', [], [], { providerId: selectedProviderId });
+    if (options.entry === 'goal') {
+      try { await callback('hello goal', goalLimits); }
+      catch (error) { errors.push(error); }
+    } else {
+      await callback('hello', modelId, options.effort ?? 'medium', 'default', [], [], { providerId: selectedProviderId });
+    }
     await finished;
-    return { createSession, ipcCreate, sendMessage, errors, environment };
+    return { createSession, ipcCreate, sendMessage, setGoal, errors, environment };
   } finally { vi.unstubAllGlobals(); }
 }
 
@@ -215,5 +234,67 @@ describe('homepage submission to Main admission and first-message handoff', () =
     const result = await submit({ providers: [p] });
     expect(result.errors).toHaveLength(1);
     expect(result.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('homepage New Goal submission to Main admission and goal start', () => {
+  it.each(['low', 'medium', 'high', 'xhigh'] as const)('omits remembered %s for a known no-effort Pi model before starting the goal', async effort => {
+    const result = await submit({ entry: 'goal', effort });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0]).toMatchObject({ model: modelId, providerId, agentKind: 'pi' });
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBeUndefined();
+    expect(result.setGoal).toHaveBeenCalledWith({ sessionId: 'created', objective: 'hello goal', limits: goalLimits });
+    expect(result.sendMessage).not.toHaveBeenCalled();
+    expect(result.environment.draftInitialEffort).toBe(effort);
+  });
+  it('honors the exact provider rather than another provider with an empty table', async () => {
+    const result = await submit({ entry: 'goal', providers: [provider(), provider('other', ['high'])], providerId: 'other', effort: 'high' });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('high');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it('keeps Main rejection for an invalid supported-model effort and does not start a goal', async () => {
+    const result = await submit({ entry: 'goal', providers: [provider(providerId, ['high'])] });
+    expect(String(result.errors[0])).toContain('not supported');
+    expect(result.setGoal).not.toHaveBeenCalled();
+  });
+  it('preserves unknown capability', async () => {
+    const p = provider(); p.models.pi![0].effortsUnknown = true;
+    const result = await submit({ entry: 'goal', providers: [p] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it('preserves the effort when the local catalog is not loaded', async () => {
+    const result = await submit({ entry: 'goal', providers: [], backendProviders: [provider(providerId, ['medium'])] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it.each(['remoteHostId', 'agentDeviceId'] as const)('does not apply local no-effort metadata to %s execution', async field => {
+    const result = await submit({ entry: 'goal', [field]: 'remote-target', backendProviders: [provider(providerId, ['medium'])] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it('uses the selected engine metadata', async () => {
+    const p = provider();
+    p.models.codex = [{ ...p.models.pi![0], efforts: ['medium'], defaultEffort: 'medium' }];
+    const result = await submit({ entry: 'goal', agentKind: 'codex', providers: [p] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it('does not use a different provider when the goal target is absent', async () => {
+    const result = await submit({ entry: 'goal', providerId: 'absent' });
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.setGoal).not.toHaveBeenCalled();
+  });
+  it('does not bypass disconnected-provider admission for a goal', async () => {
+    const p = provider(); p.connected = false;
+    const result = await submit({ entry: 'goal', providers: [p] });
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.setGoal).not.toHaveBeenCalled();
   });
 });
