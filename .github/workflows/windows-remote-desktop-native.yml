@@ -48,7 +48,7 @@ jobs:
         run: cargo build --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml
 
       - name: Test packaged host
-        run: cargo test --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml
+        run: cargo test --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml -- --test-threads=1
 
       - name: Bind development test paths
         shell: pwsh
@@ -62,7 +62,7 @@ jobs:
         run: cargo build --locked --bins --features development --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml
 
       - name: Test development host
-        run: cargo test --locked --bins --features development --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml
+        run: cargo test --locked --bins --features development --manifest-path apps/desktop/native/remote-desktop/windows-host/Cargo.toml -- --test-threads=1
 
       - name: Build input helper
         run: cargo build --locked --bins --manifest-path apps/desktop/native/remote-desktop/windows-input/Cargo.toml

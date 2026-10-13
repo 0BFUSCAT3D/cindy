@@ -99,18 +99,25 @@ fn main() {
 mod tests {
     #[test]
     fn elevation_isolates_the_helper_search_path_before_uac() {
-        let source = include_str!("main.rs");
+        let source = include_str!("main.rs").split("#[cfg(test)]").next().unwrap();
+        let run = source
+            .split("fn run()")
+            .nth(1)
+            .unwrap()
+            .split("fn main()")
+            .next()
+            .unwrap();
         assert!(
-            source.find("isolate_search_path()").unwrap()
-                < source.find("std::env::args()").unwrap()
+            run.find("isolate_search_path()").unwrap()
+                < run.find("std::env::args()").unwrap()
         );
         assert!(source.contains("SetDllDirectoryW"));
         assert!(source.contains("LOAD_LIBRARY_SEARCH_SYSTEM32"));
         assert!(!source.contains("LOAD_LIBRARY_SEARCH_USER_DIRS"));
         assert!(include_str!("../build.rs").contains("/DEPENDENTLOADFLAG:0x800"));
         assert!(
-            source.find("isolate_search_path()").unwrap()
-                < source.find("service::elevate").unwrap()
+            run.find("isolate_search_path()").unwrap()
+                < run.find("service::elevate").unwrap()
         );
     }
     #[test]

@@ -209,6 +209,8 @@ pnpm test:unit
 `.github/workflows/windows-remote-desktop-native.yml` 在 Windows runner 上编译并运行
 host 默认、`development` 变体及 input helper 的 Rust 二进制测试，使用各自已提交的
 `Cargo.lock`。这套检查独立于 `client-ci` 的 Node/TypeScript 单测，不削减原有门禁。
+host 测试在各自的进程内串行执行，避免并行截图/游标测试干扰进程级 GDI 资源计数；
+资源回收和 ACL 断言仍完整运行。
 
 Dev 测试将身份绑定到当前 checkout 的 `apps/desktop` 和 runner 的 Node 可执行文件，
 仅用于现有路径与命令行单测，不代表 Electron 实例、Node-API addon 或正式签名包已验证。

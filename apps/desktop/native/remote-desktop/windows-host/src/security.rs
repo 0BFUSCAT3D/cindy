@@ -828,24 +828,10 @@ fn apply_descriptor(handle: HANDLE, descriptor: &str) -> Result<()> {
     // Unlike SetSecurityInfo's tree propagation, update this exact open object.
     // App-owned code paths are enumerated explicitly; unrelated descendants
     // must keep their original permissions, even if located below the app root.
-    let mut control = 0;
-    let mut revision = 0;
-    if unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) } == 0 {
-        let code = unsafe { GetLastError() };
-        unsafe {
-            LocalFree(sd);
-        }
-        return Err(io::Error::from_raw_os_error(code as i32));
-    }
-    let inheritance = if control & SE_DACL_PROTECTED != 0 {
-        PROTECTED_DACL_SECURITY_INFORMATION
-    } else {
-        UNPROTECTED_DACL_SECURITY_INFORMATION
-    };
     let result = unsafe {
         SetKernelObjectSecurity(
             handle,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | inheritance,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             sd,
         )
     };
@@ -1464,6 +1450,9 @@ pub fn authenticate_application_code(
     install: &Path,
     executable: &str,
 ) -> Result<(Handle, [u8; 32])> {
+    if install.parent().is_none() || !install.join("resources/app.asar").is_file() {
+        return denied();
+    }
     let main = install.join(executable);
     let handle = open_payload(&main)?;
     verify_authenticode(&main, handle.0)?;
