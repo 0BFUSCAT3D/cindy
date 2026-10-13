@@ -8756,6 +8756,7 @@
     "list": {
       "createMenu": "Create",
       "createTeammate": "New teammate",
+      "joinWithLink": "Enter Invite Link…",
       "startChat": "Start the conversation",
       "typing": "Typing…",
       "unread": "{{count}} unread messages",
@@ -9170,6 +9171,15 @@
       "files": {
         "openFailed": "Couldn’t open the file. It may have been moved or deleted."
       },
+      "addFromChat": {
+        "triggerFor": "Add {{name}} to a Group Chat",
+        "addTo": "Add {{name}} to",
+        "newGroup": "New Group Chat…",
+        "existingGroup": "Add to Existing Group",
+        "added": "Added {{name}} to “{{group}}”",
+        "openGroup": "Open Group",
+        "unavailable": "{{name}} can’t join a group chat right now"
+      },
       "server": {
         "quoteReply": "Quote reply",
         "startTopic": "Start a thread",
@@ -9198,8 +9208,11 @@
         "copied": "Invitation link copied",
         "createLink": "Create invitation link",
         "accept": "Accept and join",
-        "openGroup": "Open group",
         "previewInvite": "Preview invitation",
+        "linkDescription": "Once you join, you become a member and can read the group’s chat history.",
+        "loadingInvite": "Loading invitation…",
+        "retryInvite": "Reload Invitation",
+        "malformedInvite": "This invitation link is incomplete or malformed. Ask the person who invited you for a new link.",
         "invalidInvite": "This invitation is invalid, used, expired or revoked. Request a new link.",
         "notAllowed": "This account does not have permission. Check your account or contact the group owner.",
         "loginRequired": "Sign in to your account and try again.",

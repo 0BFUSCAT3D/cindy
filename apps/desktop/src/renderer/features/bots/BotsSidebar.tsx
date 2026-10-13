@@ -52,7 +52,6 @@ import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
 import { useBotGroupList } from './botGroupStore';
 import { subscribeBotReadState, getBotLastReadAtMap } from './botReadState';
-import { ChatJoinButton } from './ChatServerControls';
 import { isBotGroupLaneSession, withoutBotGroupLanes } from './botGroupLane';
 import {
   botListSubtitle,
@@ -391,7 +390,6 @@ function BotsSidebarContent() {
               {showHidden ? <EyeOff size={15} /> : <Eye size={15} />}
             </button>
           ) : null}
-          <ChatJoinButton onJoined={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />
           <BotCreateMenu />
         </span>
       </div>

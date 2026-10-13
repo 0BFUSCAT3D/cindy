@@ -59,7 +59,9 @@ describe('BotSessionContentHeader', () => {
     const originalHeader = view.container.innerHTML;
     expect(screen.queryByRole('combobox', { name: 'bots.devicePicker.switchDevice' })).toBeNull();
     expect(screen.queryByText('bots.devicePicker.local')).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(2);
+    // Name lockup, add-to-group and settings: an active local teammate can be brought into a group.
+    expect(screen.getAllByRole('button')).toHaveLength(3);
+    expect(screen.getByRole('button', { name: 'bots.groupChat.addFromChat.triggerFor' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'bots.settings' })).toBeTruthy();
 
     deviceData.remote = [remoteCindy];

@@ -91,6 +91,11 @@ vi.mock('../BotGroupCreateDialog', () => ({
 vi.mock('../BotRosterView', () => ({
   BotRosterView: () => <div role="dialog">create-teammate-dialog</div>,
 }));
+vi.mock('../ChatInviteDialog', () => ({
+  ChatInviteDialog: ({ groupId, initialLink, onJoined }: { groupId?: string; initialLink?: string; onJoined?: (id: string) => void }) =>
+    <div role="dialog"><span>{`join-dialog:${groupId ?? ''}:${initialLink ?? ''}`}</span>
+      <button type="button" onClick={() => onJoined?.('joined-room')}>joined</button></div>,
+}));
 vi.mock('../BotGenerationLabel', () => ({
   BotGenerationLabel: ({ sessionId }: { sessionId?: string }) => <span>{`generation:${sessionId}`}</span>,
 }));
@@ -197,6 +202,22 @@ describe('BotsSidebar group chats', () => {
     expect(screen.getByRole('menuitem', { name: 'bots.list.createTeammate' })).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitem', { name: 'bots.groupChat.create.title' }));
     expect(screen.getByRole('dialog').textContent).toBe('create-group-dialog');
+  });
+
+  it('keeps only the plus menu in the header and offers pasting an invitation as a separate fallback', async () => {
+    await renderSidebar();
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.server.join' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'bots.list.createMenu' }), { key: 'Enter' });
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+      'bots.list.createTeammate', 'bots.groupChat.create.title', 'bots.list.joinWithLink',
+    ]);
+    expect(screen.getAllByRole('separator')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'bots.list.joinWithLink' }));
+    expect(screen.getByRole('dialog').textContent).toContain('join-dialog::');
+    expect(screen.queryByText('create-group-dialog')).toBeNull();
+    expect(screen.queryByText('create-teammate-dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'joined' }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/joined-room');
   });
 
   it('opens teammate creation from the same plus menu', async () => {

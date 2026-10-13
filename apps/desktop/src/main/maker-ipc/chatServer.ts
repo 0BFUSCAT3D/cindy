@@ -1294,7 +1294,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   const operationId = z.string().min(8).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
   const chatServer: ChatServerApi = {
-    ownedBots: () => result(async () => { await register(); return { bots: actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active').map(a => ({ actorId: a.id, name: a.name })) }; }),
+    ownedBots: () => result(async () => { await register(); return { bots: actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; }) }; }),
     refreshProfile: () => result(async () => {
       await api('/profile/refresh', 'POST'); profileRefreshedAt = Date.now();
       for (const roomId of rooms.keys()) changed(roomId);
