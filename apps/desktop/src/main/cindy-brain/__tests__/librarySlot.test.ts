@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { crc32 } from 'node:zlib';
 import { LibraryBindingStore, relocateLibraryMetaOwner } from '../libraryBinding.js';
 import { LibraryVault } from '../libraryVault.js';
-import { initCustomLibraryTree, openExistingCustomLibrary } from '../libraryDirFd.js';
+import { initCustomLibraryTree, openExistingCustomLibrary, parseExistingStdout } from '../libraryDirFd.js';
 import { createLibraryDbCore, type SqliteDatabaseConstructor } from '../libraryDbCore.js';
 import { LibrarySqlService } from '../librarySqlService.js';
 import { GhostManager } from '../GhostManager.js';
@@ -360,8 +360,35 @@ describe('GhostLibrarySlot', () => {
     }
   }
 
+  // Archive tests exercise real binding, metadata, relocation and SQLite. Keep
+  // their tree fixture in-process; the custom-parent race tests below still
+  // exercise the native fd-relative helpers.
+  function useInProcessCustomTree(): void {
+    createVault.mockImplementation((d) => new LibraryVault({
+      ...d,
+      openExistingCustom: async () => {
+        const metaDir = path.join(d.rootDir(), '.cindy-library');
+        try {
+          const meta = await fs.promises.readFile(path.join(metaDir, 'meta.json'), 'utf8');
+          return parseExistingStdout(`OK\n${meta}\n`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: false, code: 'MISSING' };
+          throw error;
+        }
+      },
+      initCustomTree: async ({ metaJson }) => {
+        const metaDir = path.join(d.rootDir(), '.cindy-library');
+        await fs.promises.mkdir(path.join(metaDir, 'tmp'), { recursive: true });
+        await fs.promises.mkdir(path.join(metaDir, 'backups'), { recursive: true });
+        await fs.promises.writeFile(path.join(metaDir, 'meta.json'), metaJson, { flag: 'wx' });
+        return { ok: true, createdMeta: true };
+      },
+    }));
+  }
+
   async function seedSourceDatabase(value: string, instanceId = GHOST_ID): Promise<void> {
-    expect(await slot.handleLibraryRequest(instanceId, { op: 'db.open', dbPath: 'library.sqlite' }))
+    const opened = await slot.handleLibraryRequest(instanceId, { op: 'db.open', dbPath: 'library.sqlite' });
+    expect(opened, JSON.stringify(opened))
       .toMatchObject({ ok: true, op: 'db.open' });
     expect(await slot.handleLibraryRequest(instanceId, {
       op: 'db.exec', dbPath: 'library.sqlite', sql: 'CREATE TABLE source_state (value TEXT)',
@@ -375,6 +402,7 @@ describe('GhostLibrarySlot', () => {
   }
 
   it.each(['default', 'custom'] as const)('source archive wrapper isolates the real SQLite %s Library from a replacement source', async (location) => {
+    useInProcessCustomTree();
     if (location === 'custom') {
       expect((await bindingStore.setBinding(GHOST_ID, candidate)).ok).toBe(true);
     }
@@ -406,6 +434,7 @@ describe('GhostLibrarySlot', () => {
   });
 
   it.each(['default', 'custom'] as const)('source archive wrapper restores the real SQLite %s Library on inverse after failure', async (location) => {
+    useInProcessCustomTree();
     if (location === 'custom') {
       expect((await bindingStore.setBinding(GHOST_ID, candidate)).ok).toBe(true);
     }
@@ -441,6 +470,7 @@ describe('GhostLibrarySlot', () => {
   });
 
   it.each(['default', 'custom'] as const)('delayed session creation does not block real Manager %s source archive rollback', async (location) => {
+    useInProcessCustomTree();
     const manager = new GhostManager({
       getRootDir: () => path.join(tmp, 'ghosts'),
       onArchiveSourceState: relocateLibraryState,
