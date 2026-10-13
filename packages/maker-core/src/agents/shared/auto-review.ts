@@ -6385,15 +6385,15 @@ function shellCommandReadsDotenv(
       && executableName(rawTokens[0] ?? '') !== 'git'
       && (hasNestedGitInvocation || nestedCredentialPayloads.size > 0)) return true;
 
-    // Recursively inspect code supplied to a shell/interpreter, command substitution, eval/awk,
-    // or find -exec. Without this, `sh -c 'cat .env'`,
-    // `python -c 'open(".env")'`, and `echo "$(cat .env)"` could bypass the credential path scan.
-    for (const payload of nestedCredentialPayloads) {
-      // Inline programs are not shell argv, so a Python/Node reader such as
-      // `open(".env")` never reaches the reader-specific path parser. Keep
-      // credential path patterns visible in these payloads before recursing.
-      if (inlinePayloadMentionsCredentialPath(opts.fileReadRequiresConsent ? payload : credentialText(payload))) return true;
-      if (shellCommandReadsCredentials(payload, workspaceRoots, opts, depth + 1)) return true;
+    // Only sharing callers request these extra nested checks. Local Auto and
+    // same-account remote commands retain their existing classification.
+    if (sharesGitCredentialChecks || opts.fileReadRequiresConsent) {
+      for (const payload of nestedCredentialPayloads) {
+        // Inline programs are not shell argv: keep paths in e.g. Python
+        // open(".env") visible before recursively checking shell payloads.
+        if (inlinePayloadMentionsCredentialPath(opts.fileReadRequiresConsent ? payload : credentialText(payload))) return true;
+        if (shellCommandReadsCredentials(payload, workspaceRoots, opts, depth + 1)) return true;
+      }
     }
 
     if (opts.gitConfigRead && (bin === 'git' || bin.startsWith('git-credential'))) {

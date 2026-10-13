@@ -580,6 +580,21 @@ describe('findWindowsGitBash', () => {
 });
 
 describe('shared provider credentials', () => {
+  it('preserves same-account command approval while sharing checks nested credential reads', () => {
+    const workspace = new ExecutorWorkspace({ workingDir: project });
+    const sameAccount = new ExecutorGate(workspace, 'normal');
+    const shared = new ExecutorGate(workspace, 'normal', Date.now, { confirmCredentials: true });
+    for (const command of [
+      "bash -c 'cat .env'",
+      "python -c 'open(\".env\").read()'",
+      'echo $(git diff)',
+    ]) {
+      const action: ExecutorAction = { kind: 'exec', command, cwd: project };
+      expect(sameAccount.authorize(action).ok, command).toBe(true);
+      expect(shared.authorize(action).ok, command).toBe(false);
+    }
+  });
+
   function sharedExecutor(
     mode: ReturnType<typeof executorGateModeFor>,
     confirm?: (action: ExecutorAction) => Promise<ExecutorConfirmation>,

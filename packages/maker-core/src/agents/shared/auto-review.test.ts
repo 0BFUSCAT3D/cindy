@@ -4722,6 +4722,19 @@ describe('shellCommandReadsCredentials — 只认凭证那一部分红线', () =
 
 // 两个附加选项只供供应商分享的受邀者任务用(apps/desktop/src/main/remote-agent/credentials.ts)。
 describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
+  it.each([
+    "bash -c 'cat .env'",
+    "python -c 'open(\".env\").read()'",
+    'echo $(git diff)',
+  ])('limits nested credential checks to sharing options: %s', (command) => {
+    expect(shellCommandReadsCredentials(command, roots)).toBe(false);
+    expect(classifyShellCommand(command, roots)).toBe('prompt');
+    expect(shellCommandReadsCredentials(command, roots, {
+      gitContentRead: () => true,
+      gitConfigRead: () => true,
+    })).toBe(true);
+  });
+
   it('passes original reader operands, redirects and auxiliary files to the sharing path check', () => {
     for (const command of ['cat .env.example', 'cat < .env.example', 'grep -f .env.example README.md']) {
       const checked: string[] = [];
