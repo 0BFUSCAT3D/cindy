@@ -278,7 +278,7 @@ describe('Chat Server Thread context reaches the Agent input', () => {
       }
     });
 
-  it('keeps the Thread root file inside the attachment cap and reports earlier delivery truthfully', async () => {
+  it('keeps the Thread root file inside the attachment cap and offers it again behind the watermark', async () => {
     const root = post('请看这张权限截图。', { media: ['permissions.png'] });
     for (let n = 0; n < 45; n++) post(`主群图片 ${n}`, { media: [`noise-${n}.png`] });
     const question = post('@所有人 截图里的说法对吗？', { threadRootId: root.id, mentions: bots.map(bot => bot.id) });
@@ -290,14 +290,56 @@ describe('Chat Server Thread context reaches the Agent input', () => {
     expect(payload(input.message).thread.root.attachments).toEqual([{ name: 'permissions.png', delivery: 'included' }]);
     expect(payload(input.message).unavailableAttachments).toHaveLength(6);
 
-    // Files at or before the watermark were delivered to this companion before.
+    // The watermark only records a successful turn, not delivery: the Thread's own files are offered again.
     const followUp = post('@Pico 那现在呢？', { threadRootId: root.id, mentions: [bots[1].id] });
     await settle('pico', '对。');
     trigger(followUp, { attachment_after_seq: String(Number(followUp.seq) - 1) });
     await vi.advanceTimersByTimeAsync(2000);
-    const second = payload(inputs('pico')[1].message);
-    expect(second.thread.root.attachments).toEqual([{ name: 'permissions.png', delivery: 'sent-earlier' }]);
-    expect(inputs('pico')[1].message).toContain('"sent-earlier" files were delivered in an earlier turn');
+    const second = inputs('pico')[1];
+    expect(second.attachments?.map(a => a.id)).toEqual([root.content[1].mediaId]);
+    expect(payload(second.message).thread.root.attachments).toEqual([{ name: 'permissions.png', delivery: 'included' }]);
+    expect(second.message).not.toContain('sent-earlier');
+  });
+
+  it('does not hand a Thread request the files of another Thread', async () => {
+    const root = post('只要伙伴能管理任务，是不是就拿到了所有权限？');
+    const mainFile = post('主群截图', { media: ['main-board.png'] });
+    const otherRoot = post('发布流程要不要改？');
+    const otherFile = post('其他话题的截图', { threadRootId: otherRoot.id, media: ['release-plan.png'] });
+    const question = post('@所有人 我说的对吗？', { threadRootId: root.id, mentions: bots.map(bot => bot.id) });
+    trigger(question, { attachment_after_seq: '0' });
+    await vi.advanceTimersByTimeAsync(2000);
+    const ids = inputs('nova')[0].attachments?.map(a => a.id);
+    expect(ids).toEqual([mainFile.content[1].mediaId]);
+    expect(ids).not.toContain(otherFile.content[1].mediaId);
+    expect(inputs('nova')[0].message).not.toContain('release-plan.png');
+  });
+
+  it('reads the main-group background on its own when busy Threads fill the mixed page', async () => {
+    const main = Array.from({ length: 35 }, (_, n) => post(`主群消息 ${n}`));
+    const root = post('只要伙伴能管理任务，是不是就拿到了所有权限？');
+    const busyRoot = post('另一个很热闹的话题');
+    for (let n = 0; n < 120; n++) post(`热闹话题回复 ${n}`, { threadRootId: busyRoot.id });
+    const question = post('@所有人 我说的对吗？', { threadRootId: root.id, mentions: bots.map(bot => bot.id) });
+    trigger(question);
+    post('之后才发的主群消息');
+    await vi.advanceTimersByTimeAsync(2000);
+    const background = payload(inputs('nova')[0].message).mainGroupBackground as Array<{ id: string; threadRootId?: string }>;
+    // 30 newest main-timeline messages before the request: the busy root and the tail of `main`, never the Thread root.
+    expect(background).toHaveLength(30);
+    expect(background.at(-1)!.id).toBe(busyRoot.id);
+    expect(background[0].id).toBe(main[6].id);
+    expect(background.some(m => m.id === root.id || m.threadRootId)).toBe(false);
+  });
+
+  it('does not claim earlier delivery for a main request file behind the watermark', async () => {
+    const request = post('大家看下这张图', { media: ['board.png'] });
+    trigger(request, { attachment_after_seq: request.seq });
+    await vi.advanceTimersByTimeAsync(2000);
+    const input = inputs('nova')[0];
+    expect(input.attachments).toEqual([]);
+    expect(payload(input.message).currentRequest.attachments).toEqual([{ name: 'board.png', delivery: 'not-resent' }]);
+    expect(input.message).toContain('"not-resent" files were not attached this turn and earlier delivery cannot be confirmed');
   });
 
   it('keeps a main-group request on the main timeline with Thread replies labeled as background', async () => {
