@@ -426,6 +426,46 @@ describe('GitCredentialHistory', () => {
     }
   });
 
+  it('keeps consent for clean and process filters even when diff helpers are disabled', async () => {
+    const history = new GitCredentialHistory();
+    const credentialFile = path.join(root, '.env');
+    const helperFile = path.join(root, 'clean-helper.cjs');
+    const invokedFile = path.join(root, 'filter-invoked');
+    const disabledCommand = 'git diff --no-ext-diff --no-textconv';
+    fs.writeFileSync(credentialFile, 'PRIVATE_FIXTURE=clean-filter\n');
+    fs.writeFileSync(helperFile, 'const fs = require("node:fs");\n'
+      + 'fs.writeFileSync(' + JSON.stringify(invokedFile) + ', "called");\n'
+      + 'process.stdout.write(fs.readFileSync(' + JSON.stringify(credentialFile) + '));\n');
+    const helper = [process.execPath, helperFile].map((file) => JSON.stringify(file.split(path.sep).join('/'))).join(' ');
+    write('.gitattributes', 'safe.txt filter=shared\n');
+    write('safe.txt', 'safe before\n');
+    git('add', '.gitattributes', 'safe.txt');
+    git('commit', '-q', '--no-gpg-sign', '-m', 'filtered file');
+    write('safe.txt', 'safe after\n');
+    expect(await provesSafe(history, disabledCommand)).toBe(true);
+    expect(await provesSafe(history, 'git diff --cached')).toBe(true);
+    git('config', 'filter.shared.clean', helper);
+    expect(git('diff', '--no-ext-diff', '--no-textconv')).toContain('PRIVATE_FIXTURE=clean-filter');
+    expect(fs.existsSync(invokedFile)).toBe(true);
+    fs.unlinkSync(invokedFile);
+    for (const key of ['filter.shared.clean', 'filter.shared.process']) {
+      git('config', key, helper);
+      for (const command of ['git diff', disabledCommand, 'git diff --cached', 'git show HEAD', 'git log -p -- safe.txt', 'git grep safe']) {
+        expect(await provesSafe(history, command), key + ': ' + command).toBe(false);
+        await requiresCredentialConfirmation(history, command);
+        expect(fs.existsSync(invokedFile), key + ': ' + command).toBe(false);
+      }
+      expect(await provesSafe(history, 'git config --get core.autocrlf')).toBe(true);
+      git('config', '--unset', key);
+      expect(await provesSafe(history, disabledCommand)).toBe(true);
+      expect(await provesSafe(history, 'git diff --cached')).toBe(true);
+    }
+    git('config', 'filter.shared.clean', '');
+    git('config', 'filter.shared.process', '');
+    expect(await provesSafe(history, disabledCommand)).toBe(true);
+    expect(fs.existsSync(invokedFile)).toBe(false);
+  });
+
   it('keeps consent for configured textconv and external diff helpers', async () => {
     const history = new GitCredentialHistory();
     const credentialFile = path.join(root, '.env');

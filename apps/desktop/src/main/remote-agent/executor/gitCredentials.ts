@@ -482,7 +482,7 @@ async function configReadProvesSafe(read: GitRead): Promise<boolean> {
 }
 
 async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
-  if (!['diff', 'show', 'log', 'whatchanged', 'status'].includes(read.sub)) return true;
+  if (!CONTENT_SUBCOMMANDS.has(read.sub)) return true;
   const disabled = new Set<string>();
   for (const arg of read.args) {
     if (arg !== '--no-textconv' && arg !== '--no-ext-diff') break;
@@ -491,13 +491,13 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
   const textconvEnabled = !disabled.has('--no-textconv');
   const externalDiffEnabled = !disabled.has('--no-ext-diff');
   if (externalDiffEnabled && process.env.GIT_EXTERNAL_DIFF !== undefined) return false;
-  if (!textconvEnabled && !externalDiffEnabled) return true;
   const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs })).split('\0');
   return !entries.some((entry) => {
     const newline = entry.indexOf('\n');
     if (newline < 0 || !entry.slice(newline + 1).trim()) return false;
     const key = entry.slice(0, newline);
-    return (textconvEnabled && /^diff\..+\.textconv$/i.test(key))
+    return /^filter\..+\.(?:clean|process)$/i.test(key)
+      || (textconvEnabled && /^diff\..+\.textconv$/i.test(key))
       || (externalDiffEnabled && (/^diff\..+\.command$/i.test(key) || key.toLowerCase() === 'diff.external'));
   });
 }
