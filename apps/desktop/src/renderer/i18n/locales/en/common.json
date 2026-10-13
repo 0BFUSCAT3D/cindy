@@ -9151,7 +9151,10 @@
           "postedBySelf": "You posted this to the main chat",
           "postedToMain": "Posted to the main chat",
           "alsoSend": "Also send to main chat",
-          "alsoSendFailed": "Your reply is in the thread, but it couldn't be sent to the main chat.",
+          "alsoSendFailed_one": "Your reply is in the thread, but it couldn't be sent to the main chat.",
+          "alsoSendFailed_other": "{{count}} replies are in the thread, but they couldn't be sent to the main chat.",
+          "loadingSource": "Loading the original reply…",
+          "shareNotLoaded": "This share is further back in the main chat. Load earlier messages to see it.",
           "retryPost": "Send to main chat again",
           "alreadyPosted": "You've already posted this reply to the main chat.",
           "shareUnavailable": "This reply was deleted or isn't available, so it can't be posted to the main chat."

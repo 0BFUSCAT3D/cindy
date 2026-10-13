@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,7 @@ import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
-import { botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
+import { BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
@@ -28,6 +28,12 @@ const FOCUS_PAGE_LIMIT = 5;
 
 /** Shares of this thread's replies that the main chat has loaded. */
 export type BotGroupSharedReplies = ReadonlyMap<string, { messageId: string; bySelf: boolean }>;
+
+/**
+ * Replies that reached a thread while their main-chat copy did not, per group and thread.
+ * Kept outside the panel so switching threads and coming back still offers the retry.
+ */
+const unpostedReplies = new Map<string, ReadonlySet<string>>();
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
   const style = getComputedStyle(panel);
@@ -39,15 +45,17 @@ export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: st
   });
 }
 
-function ThreadMessage({ group, message, shareScope, sharing, shared, posting, onPost, onReveal, onChanged }: {
+function ThreadMessage({ group, message, shareScope, sharing, shared, posting, onPost, onReveal, onChanged, renderAttachments }: {
   group: BotGroupDetail; message: BotGroupMessageView; shareScope: string; sharing: boolean;
+  renderAttachments?: (attachments: BotGroupMessageView['attachments']) => ReactNode;
   /** Replies only: already in the main chat (by anyone), and whether the reader shared it. */
   shared?: { bySelf: boolean } | null; posting?: boolean; onPost?: () => void; onReveal?: () => void; onChanged: () => void;
 }) {
   const { t } = useTranslation();
   const member = group.members.find(m => m.botId === message.authorBotId);
   if (message.kind === 'notice' && isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) return <BotGroupRuntimeFailureNotice name={message.authorName || member?.name || ''} code={message.runtimeFailureCode} />;
-  const share = message.threadShare?.status === 'available' ? message.threadShare : undefined;
+  // A share as a thread root shows the same quote as the main chat, in every state.
+  const share = message.threadShare;
   const postAction = onPost && !message.deleted && message.kind === 'message' ? shared?.bySelf && onReveal
     ? { key: 'reveal-in-main', label: t(key('thread.viewInMain')), icon: <CornerDownRight size={14} strokeWidth={2} className="shrink-0" />, onSelect: onReveal }
     : { key: 'post-to-main', label: t(key('thread.postToMain')), disabled: posting, icon: <MessageSquareShare size={14} strokeWidth={2} className="shrink-0" />, onSelect: onPost }
@@ -58,22 +66,24 @@ function ThreadMessage({ group, message, shareScope, sharing, shared, posting, o
     <BotAvatar bot={{ name: message.authorName, avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null }} size="sm" />
     <div className="min-w-0 flex-1 space-y-1">
       <p className="text-13 font-medium leading-7 text-[var(--text-primary)]">{message.authorName}</p>
-      {share && <p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]">
-        <CornerDownRight size={12} aria-hidden />{botGroupThreadShareLabel(share, t)} · {share.authorName}</p>}
-      <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
-        <MarkdownRenderer workingDir="" content={share?.content ?? message.content} allowPrivilegedLinks={false} />
-      </div>
+      {share ? <>
+        <p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]">
+          <CornerDownRight size={12} aria-hidden />{botGroupThreadShareLabel(share, t)}</p>
+        <BotGroupThreadShareQuote share={share} members={group.members} attachments={renderAttachments?.(share.attachments)} />
+      </> : <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
+        <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
+      </div>}
       {shared && <button type="button" onClick={onReveal} disabled={!onReveal}
         className="-ml-1.5 inline-flex min-h-6 select-none items-center gap-1 rounded-full px-1.5 text-12 text-[var(--text-tertiary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
         <CornerDownRight size={12} aria-hidden />{t(key(shared.bySelf ? 'thread.postedBySelf' : 'thread.postedToMain'))}
       </button>}
       <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} align="left" onChanged={onChanged}
-        copyText={share?.content} menuActions={postAction ? [postAction] : undefined} />
+        copyText={share ? share.status === 'available' ? share.content : '' : undefined} menuActions={postAction ? [postAction] : undefined} />
     </div>
   </article>;
 }
 
-export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealShare, onClose }: {
+export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealShare, onClose, renderAttachments }: {
   group: BotGroupDetail; rootId: string;
   /** A reply to bring into view; a new nonce repeats the jump. */
   focus?: { messageId: string; nonce: number } | null;
@@ -81,6 +91,8 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
   /** Scroll the main chat to a share; false when it is not loaded there. */
   onRevealShare?: (messageId: string) => boolean;
   onClose: () => void;
+  /** The main chat's attachment view, reused for a shared reply at the thread root. */
+  renderAttachments?: (attachments: BotGroupMessageView['attachments']) => ReactNode;
 }) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -105,12 +117,17 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
   const [error, setError] = useState('');
   // Off by default: a reply stays in the thread unless the user asks for both.
   const [alsoSend, setAlsoSend] = useState(false);
-  /** A reply that reached the thread while its main-chat copy did not. */
-  const [unposted, setUnposted] = useState<string | null>(null);
+  const unpostedKey = `${group.id}:${rootId}`;
+  const [unposted, setUnpostedState] = useState<ReadonlySet<string>>(() => unpostedReplies.get(unpostedKey) ?? new Set());
+  const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => setUnpostedState(previous => {
+    const next = update(previous);
+    if (next.size) unpostedReplies.set(unpostedKey, next); else unpostedReplies.delete(unpostedKey);
+    return next;
+  });
   const [posting, setPosting] = useState<ReadonlySet<string>>(new Set());
   const postingRef = useRef(new Set<string>());
-  /** Shares confirmed in this panel, until the main chat's reload lists them. */
-  const [posted, setPosted] = useState<ReadonlySet<string>>(new Set());
+  /** Shares confirmed in this panel (reply → main-chat message, null when unknown). */
+  const [posted, setPosted] = useState<ReadonlyMap<string, string | null>>(new Map());
   const request = useRef(0);
   const attempt = useRef<{ text: string; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
@@ -156,15 +173,15 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
     const owner = getDataOwnerGeneration();
     const failed = (code?: string) => {
       if (!isDataOwnerGenerationCurrent(owner)) return;
-      if (fromComposer) setUnposted(messageId);
+      if (fromComposer) setUnposted(previous => new Set(previous).add(messageId));
       else toast.error(t(code ? chatErrorKey(code) : key('requestFailed')));
     };
     try {
       const result = await api().shareToMain({ groupId: group.id, messageId });
       if (!isDataOwnerGenerationCurrent(owner)) return false;
       if (!result.ok) { failed(result.errorCode); return false; }
-      setPosted(previous => new Set(previous).add(messageId));
-      setUnposted(current => current === messageId ? null : current);
+      setPosted(previous => new Map(previous).set(messageId, result.messageId));
+      setUnposted(previous => { const next = new Set(previous); next.delete(messageId); return next; });
       if (result.alreadyShared && !fromComposer) toast.info(t(key('thread.alreadyPosted')));
       refreshBotGroups();
       return true;
@@ -172,7 +189,7 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
     finally { postingRef.current.delete(messageId); setPosting(new Set(postingRef.current)); }
   }
   async function retryUnposted() {
-    if (unposted) await postToMain(unposted, true);
+    for (const messageId of unposted) await postToMain(messageId, true);
   }
   async function send() {
     if (group.archived || sending.current || !text.trim()) return;
@@ -198,7 +215,11 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
   const sharedState = (messageId: string) => {
     const known = sharedReplies?.get(messageId);
     if (known) return { bySelf: known.bySelf, shareId: known.messageId };
-    return posted.has(messageId) ? { bySelf: true, shareId: null } : null;
+    return posted.has(messageId) ? { bySelf: true, shareId: posted.get(messageId) ?? null } : null;
+  };
+  /** The share may sit on an older page the main chat has not loaded. */
+  const revealShare = (shareId: string) => {
+    if (!onRevealShare?.(shareId)) toast.info(t(key('thread.shareNotLoaded')));
   };
   return <aside ref={panelRef} aria-labelledby={titleId}
         className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)]">
@@ -211,7 +232,8 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
           </Tip>
         </header>
         <div ref={contentRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-          {projectBotGroupExecutionFailures(root ? [root] : [], executionFailures).map(message => <ThreadMessage key={message.id} shareScope={shareScope} sharing={sharing} group={group} message={message} onChanged={() => void loadRef.current()} />)}
+          {projectBotGroupExecutionFailures(root ? [root] : [], executionFailures).map(message => <ThreadMessage key={message.id} shareScope={shareScope} sharing={sharing} group={group} message={message}
+            renderAttachments={renderAttachments} onChanged={() => void loadRef.current()} />)}
           <div className="border-t border-[var(--border-default)] pt-3 text-12 text-[var(--text-tertiary)]">{t(key('replies'))}</div>
           {hasMore && <Button variant="secondary" size="sm" onClick={() => void loadRef.current(replies[0]?.sequence)}>{t('bots.groupChat.timeline.loadEarlier')}</Button>}
           {projectBotGroupExecutionFailures(replies, executionFailures).map(message => {
@@ -219,7 +241,7 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
             return <ThreadMessage key={message.id} shareScope={shareScope} sharing={sharing} group={group} message={message}
               shared={shared} posting={posting.has(message.id)}
               onPost={group.archived ? undefined : () => void postToMain(message.id, false)}
-              onReveal={shared?.shareId && onRevealShare ? () => { onRevealShare(shared.shareId!); } : undefined}
+              onReveal={shared?.shareId ? () => revealShare(shared.shareId!) : undefined}
               onChanged={() => void loadRef.current()} />;
           })}
         </div>
@@ -227,9 +249,9 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
           getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className="space-y-3 border-t border-[var(--border-default)] p-4">
           {error && <p role="alert" className="text-13 text-[var(--error-fg)]">{error}</p>}
           {/* Kept apart from read errors: a thread refresh must not hide the retry. */}
-          {unposted && <div role="alert" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-13 text-[var(--error-fg)]">
-            <span className="min-w-0">{t(key('thread.alsoSendFailed'))}</span>
-            <Button variant="secondary" size="sm" compact loading={posting.has(unposted)} onClick={() => void retryUnposted()}>
+          {unposted.size > 0 && <div role="alert" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-13 text-[var(--error-fg)]">
+            <span className="min-w-0">{t(key('thread.alsoSendFailed'), { count: unposted.size })}</span>
+            <Button variant="secondary" size="sm" compact loading={[...unposted].some(id => posting.has(id))} onClick={() => void retryUnposted()}>
               {t(key('thread.retryPost'))}</Button>
           </div>}
           <Textarea aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text} onChange={value => {

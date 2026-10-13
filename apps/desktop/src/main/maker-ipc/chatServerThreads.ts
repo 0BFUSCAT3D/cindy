@@ -23,6 +23,8 @@ const READ_CONCURRENCY = 6;
 const RETRY_MS = 30_000;
 /** Deleted replies still occupy a page, so read a little more than the preview needs. */
 const FALLBACK_PAGE = BOT_GROUP_THREAD_PREVIEW_REPLIES + 4;
+/** A thread whose newest replies are mostly deleted reads back at most this far. */
+const FALLBACK_PAGES = 4;
 const SNAPSHOT_WINDOW = 100;
 
 async function eachLimited<T>(items: readonly T[], run: (item: T) => Promise<void>) {
@@ -32,26 +34,55 @@ async function eachLimited<T>(items: readonly T[], run: (item: T) => Promise<voi
   }));
 }
 
+/**
+ * Cache lookups never wait for the network: a missing entry is filled in the background
+ * and `filled(roomId)` asks for one more read once anything new is cached, so a room with
+ * many quiet threads still opens at once and shows the counts first.
+ */
 export function createThreadProjection<M extends ThreadMessage>(io: {
-  /** Newest-first page of one thread. */
-  threadPage(roomId: string, rootId: string, limit: number): Promise<M[]>;
-  /** One message as this reader may see it; `null` when the server says it does not exist. */
+  /** Newest-first page of one thread, optionally before a sequence. */
+  threadPage(roomId: string, rootId: string, limit: number, before?: string): Promise<M[]>;
+  /** One message as this reader may see it; `null` when the server says it is not visible. */
   message(roomId: string, messageId: string): Promise<M | null>;
+  filled(roomId: string): void;
 }) {
   const previews = new Map<string, { replyCount: number; replies: M[] }>();
   const sources = new Map<string, M | null>();
   const retryAt = new Map<string, number>();
+  const inFlight = new Set<string>();
+  const settling = new Set<Promise<void>>();
   // A read that was in flight across reset()/invalidate() may carry the old copy.
   let generation = 0;
   const key = (roomId: string, id: string) => `${roomId}:${id}`;
-  const waiting = (cacheKey: string) => (retryAt.get(cacheKey) ?? 0) > Date.now();
+  const waiting = (cacheKey: string) => inFlight.has(cacheKey) || (retryAt.get(cacheKey) ?? 0) > Date.now();
+
+  function fill<T>(roomId: string, items: Array<{ cacheKey: string; item: T }>, read: (item: T) => Promise<(() => void) | null>) {
+    if (!items.length) return;
+    for (const { cacheKey } of items) inFlight.add(cacheKey);
+    const started = generation;
+    const task = (async () => {
+      let wrote = false;
+      await eachLimited(items, async ({ cacheKey, item }) => {
+        try {
+          const store = await read(item);
+          retryAt.delete(cacheKey);
+          // A copy that outlived a reset is dropped, but the reader still needs a fresh read.
+          if (store) { if (generation === started) store(); wrote = true; }
+        } catch { retryAt.set(cacheKey, Date.now() + RETRY_MS); }
+        finally { inFlight.delete(cacheKey); }
+      });
+      if (wrote) io.filled(roomId);
+    })();
+    settling.add(task);
+    void task.finally(() => settling.delete(task));
+  }
 
   return {
     /**
-     * Newest replies of every root in `page`, chronological. `snapshot` is the server's
-     * newest-first window across the main chat and all threads.
+     * Newest replies of every root in `page` that are known now, chronological. `snapshot`
+     * is the server's newest-first window across the main chat and all threads.
      */
-    async previews(roomId: string, page: readonly M[], snapshot: readonly M[]): Promise<Map<string, M[]>> {
+    previews(roomId: string, page: readonly M[], snapshot: readonly M[]): Map<string, M[]> {
       const complete = snapshot.length < SNAPSHOT_WINDOW;
       const inWindow = new Map<string, M[]>();
       for (const message of snapshot) {
@@ -60,56 +91,53 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         list.push(message); inWindow.set(message.threadRootId, list);
       }
       const result = new Map<string, M[]>();
-      const missing: M[] = [];
+      const missing: Array<{ cacheKey: string; item: M }> = [];
       for (const root of page) {
         const count = root.replyCount ?? 0;
         if (root.threadRootId || count <= 0) continue;
         const found = inWindow.get(root.id) ?? [];
-        const cached = previews.get(key(roomId, root.id));
+        const cacheKey = key(roomId, root.id);
+        const cached = previews.get(cacheKey);
         // The window is a suffix of the room's sequence, so what it holds is the newest.
         if (complete || found.length >= Math.min(count, BOT_GROUP_THREAD_PREVIEW_REPLIES)) result.set(root.id, found);
         else if (cached?.replyCount === count) result.set(root.id, cached.replies);
-        else if (!waiting(key(roomId, root.id))) missing.push(root);
+        else if (!waiting(cacheKey)) missing.push({ cacheKey, item: root });
       }
-      await eachLimited(missing, async root => {
-        const cacheKey = key(roomId, root.id);
-        const started = generation;
-        try {
-          const replies = (await io.threadPage(roomId, root.id, FALLBACK_PAGE)).filter(message => !message.deleted);
-          if (generation === started) previews.set(cacheKey, { replyCount: root.replyCount ?? 0, replies });
-          retryAt.delete(cacheKey);
-          result.set(root.id, replies);
-        } catch { retryAt.set(cacheKey, Date.now() + RETRY_MS); }
+      fill(roomId, missing, async root => {
+        const wanted = Math.min(root.replyCount ?? 0, BOT_GROUP_THREAD_PREVIEW_REPLIES);
+        const replies: M[] = [];
+        let before: string | undefined;
+        for (let pages = 0; pages < FALLBACK_PAGES && replies.length < wanted; pages += 1) {
+          const batch = await io.threadPage(roomId, root.id, FALLBACK_PAGE, before);
+          replies.push(...batch.filter(message => !message.deleted));
+          if (batch.length < FALLBACK_PAGE) break;
+          before = batch.reduce((min, message) => BigInt(message.seq) < BigInt(min) ? message.seq : min, batch[0]!.seq);
+        }
+        return () => previews.set(key(roomId, root.id), { replyCount: root.replyCount ?? 0, replies });
       });
       for (const [rootId, replies] of result)
         result.set(rootId, replies.slice(0, BOT_GROUP_THREAD_PREVIEW_REPLIES).reverse());
       return result;
     },
     /**
-     * The replies named by share cards in `page`: a message, `null` when it no longer
-     * exists for this reader, or absent while the server cannot be reached.
+     * The replies named by share cards in `page`: a message, `null` when this reader may
+     * not see it, or absent while it is still being read.
      */
-    async shareSources(roomId: string, page: readonly M[], known: readonly M[]): Promise<Map<string, M | null>> {
+    shareSources(roomId: string, page: readonly M[], known: readonly M[]): Map<string, M | null> {
       const fresh = new Map(known.map(message => [message.id, message]));
       const result = new Map<string, M | null>();
-      const missing = new Set<string>();
+      const missing = new Map<string, { cacheKey: string; item: string }>();
       for (const message of page) {
         const card = readBotGroupThreadShareCard(message);
         if (!card || result.has(card.messageId)) continue;
         const cacheKey = key(roomId, card.messageId);
         if (fresh.has(card.messageId)) result.set(card.messageId, fresh.get(card.messageId)!);
         else if (sources.has(cacheKey)) result.set(card.messageId, sources.get(cacheKey)!);
-        else if (!waiting(cacheKey)) missing.add(card.messageId);
+        else if (!waiting(cacheKey)) missing.set(card.messageId, { cacheKey, item: card.messageId });
       }
-      await eachLimited([...missing], async messageId => {
-        const cacheKey = key(roomId, messageId);
-        const started = generation;
-        try {
-          const value = await io.message(roomId, messageId);
-          if (generation === started) sources.set(cacheKey, value);
-          retryAt.delete(cacheKey);
-          result.set(messageId, value);
-        } catch { retryAt.set(cacheKey, Date.now() + RETRY_MS); }
+      fill(roomId, [...missing.values()], async messageId => {
+        const value = await io.message(roomId, messageId);
+        return () => sources.set(key(roomId, messageId), value);
       });
       return result;
     },
@@ -122,6 +150,8 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     },
     /** Pushes may have been missed while disconnected. */
     reset() { generation += 1; previews.clear(); sources.clear(); retryAt.clear(); },
+    /** Tests: wait for background fills started so far. */
+    async settled() { while (settling.size) await Promise.all([...settling]); },
   };
 }
 

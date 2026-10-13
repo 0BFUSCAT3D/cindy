@@ -1310,12 +1310,41 @@ describe('Chat Server result delivery and refresh', () => {
         if (!result.ok) throw new Error('Expected group');
         return result.group.messages.find(m => m.id === share.id)!.threadShare!;
       };
+      expect(await shareView()).toMatchObject({ status: 'loading', content: '' });
+      await vi.advanceTimersByTimeAsync(0);
       expect(await shareView()).toMatchObject({ status: 'available', content: 'before you left' });
       await vi.advanceTimersByTimeAsync(2000);
       // Removed from the room; on rejoin the history window no longer covers that reply.
       fixture.sockets.at(-1)!.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
       visible = false;
+      expect(await shareView()).not.toMatchObject({ content: 'before you left' });
+      await vi.advanceTimersByTimeAsync(0);
       expect(await shareView()).toMatchObject({ status: 'unavailable', content: '' });
+    });
+
+    it.each([
+      ['a server error', { status: 503, body: { error: { code: 'UNAVAILABLE' } } }, 'loading'],
+      ['a timeout-like failure', null, 'loading'],
+      ['forbidden', { status: 403, body: { error: { code: 'FORBIDDEN' } } }, 'unavailable'],
+    ] as const)('never shows the card text when reading the reply hits %s', async (_label, reply, status) => {
+      const outside = '70000000-0000-4000-8000-00000000000b';
+      const share = msg('90000000-0000-4000-8000-00000000000b', 9, aliceId, { content: shareCard(outside) });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [share], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [share] };
+        if (route.endsWith(`/messages/${outside}`)) { if (!reply) throw new Error('socket hang up'); return reply; }
+        return threadResponse(route, method, body);
+      });
+      const read = async () => {
+        const result = await service.getGroup(roomId);
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.messages.find(m => m.id === share.id)!.threadShare!;
+      };
+      await read();
+      await vi.advanceTimersByTimeAsync(0);
+      const view = await read();
+      expect(view).toMatchObject({ status, content: '', authorName: '' });
+      expect(JSON.stringify(view)).not.toContain('forged words');
     });
 
     it('does not let 「继续讨论」 restart a re-posted reply', async () => {

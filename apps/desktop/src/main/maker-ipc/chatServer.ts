@@ -281,11 +281,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   const media = createChatMedia(api, current, deps.log, { allowLoopback: !app.isPackaged && process.env.XDT_ISOLATED === '1' && config.baseUrl === 'http://127.0.0.1:3018' });
   const threads = createThreadProjection<Message>({
-    threadPage: (roomId, rootId, limit) => api<Message[]>(`/conversations/${roomId}/messages?threadRootId=${rootId}&limit=${limit}`),
+    threadPage: (roomId, rootId, limit, before) => api<Message[]>(`/conversations/${roomId}/messages?threadRootId=${rootId}&limit=${limit}${before ? `&before=${before}` : ''}`),
+    // Not found and forbidden both mean this reader may not see the reply now.
     message: (roomId, messageId) => api<Message>(`/conversations/${roomId}/messages/${messageId}`).catch(error => {
-      if (error instanceof ChatResponseError && error.status === 404) return null;
+      if (error instanceof ChatResponseError && (error.status === 404 || error.status === 403)) return null;
       throw error;
     }),
+    filled: roomId => changed(roomId),
   });
   let upgrade: Promise<Map<string, string>> | undefined;
   let upgradeRetryAt = 0;
@@ -560,14 +562,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   /**
    * Attach thread previews (roots) and resolved shares (main-chat references) to the views
-   * of `page`. `snapshot` is the newest window across all threads. A share whose reply
-   * cannot be read right now keeps its plain fallback text and is resolved on a later read.
+   * of `page`. `snapshot` is the newest window across all threads. A share whose reply is
+   * still being read is marked `loading`: the card's own fallback text is never shown here.
    */
   async function decorateThreads(roomId: string, views: BotGroupMessageView[], page: Message[], snapshot: Message[], members: Member[], withPreviews: boolean) {
-    const [previews, sources] = await Promise.all([
-      withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, Message[]>(),
-      threads.shareSources(roomId, page, [...snapshot, ...page]),
-    ]);
+    const previews = withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, Message[]>();
+    const sources = threads.shareSources(roomId, page, [...snapshot, ...page]);
     const shareable = [...sources.values()].filter((m): m is Message => !!m && isShareableThreadReply(m));
     const sourceViews = new Map((await messageViews(roomId, shareable, members)).map(view => [view.id, view]));
     const byId = new Map(page.map(m => [m.id, m]));
@@ -582,14 +582,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       });
       if (replies?.length) view.threadPreview = { replies };
       const card = readBotGroupThreadShareCard(message);
-      if (!card || !sources.has(card.messageId)) continue;
+      if (!card) continue;
       const source = sources.get(card.messageId);
       const resolved = source && source.threadRootId === card.threadRootId ? sourceViews.get(source.id) : undefined;
       view.threadShare = source && resolved ? {
         ...card, status: 'available', authorKind: resolved.authorKind, authorBotId: resolved.authorBotId, authorName: resolved.authorName,
         sharedByAuthor: source.authorId === message.authorId, content: resolved.content, attachments: resolved.attachments,
         createdAt: resolved.createdAt, edited: (source.revision ?? 1) > 1,
-      } : { ...card, status: 'unavailable', authorKind: 'user', authorBotId: null, authorName: '', sharedByAuthor: false,
+      } : { ...card, status: sources.has(card.messageId) ? 'unavailable' : 'loading', authorKind: 'user', authorBotId: null, authorName: '', sharedByAuthor: false,
         content: '', attachments: [], createdAt: null, edited: false };
     }
   }

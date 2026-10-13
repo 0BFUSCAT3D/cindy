@@ -694,7 +694,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
                     onReply={group.serverBacked ? () => openThread(message.id) : undefined}
                     replyCountShown={group.serverBacked && (message.replyCount ?? 0) > 0}
-                    copyText={message.threadShare?.status === 'available' ? message.threadShare.content : undefined}
+                    // A share copies the server's reply, never the card's fallback text.
+                    copyText={message.threadShare ? message.threadShare.status === 'available' ? message.threadShare.content : '' : undefined}
                     onChanged={() => loadRef.current()} /> : undefined}
                   onOpenThread={group.serverBacked ? (rootId, focusMessageId) => openThread(rootId, focusMessageId) : undefined}
                   member={message.authorBotId ? memberById.get(message.authorBotId) : undefined}
@@ -783,7 +784,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       ) : null}
     </main>
     {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId}
-      focus={threadFocus} sharedReplies={sharedReplies} onRevealShare={revealMainMessage} onClose={closeThread} />}
+      focus={threadFocus} sharedReplies={sharedReplies} onRevealShare={revealMainMessage} onClose={closeThread}
+      renderAttachments={attachments => <BotGroupUserAttachments attachments={attachments} align="start" />} />}
     </div>
   );
 }

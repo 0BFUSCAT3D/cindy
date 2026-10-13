@@ -1840,3 +1840,86 @@ describe('thread previews and posting to the main chat', () => {
     expect(mocks.reply).not.toHaveBeenCalled();
   });
 });
+
+describe('thread share follow-ups', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  const share = (overrides: Partial<NonNullable<BotGroupMessageView['threadShare']>> = {}): NonNullable<BotGroupMessageView['threadShare']> => ({
+    messageId: 'reply-x', threadRootId: 'u1', status: 'available', authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满',
+    sharedByAuthor: false, content: '服务器上的原文', attachments: [], createdAt: 1_700_000_000_000, edited: false, ...overrides });
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('shows a loading placeholder, never the card text, while the reply is read', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [
+      msg({ id: 's1', authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ 冒充: 卡片文字', threadShare: share({ status: 'loading', authorName: '', content: '' }) }),
+    ] }) });
+    renderView();
+    expect(await screen.findByText(t('loadingSource'))).toBeTruthy();
+    expect(screen.queryByText('↪ 冒充: 卡片文字')).toBeNull();
+  });
+
+  it.each(['unavailable', 'available'] as const)('keeps a %s share as a quote when it is the thread root', async status => {
+    const root = msg({ id: 's1', authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ 冒充: 卡片文字', replyCount: 1,
+      threadShare: share(status === 'available'
+        ? { attachments: [{ id: 'f1', name: '路线.pdf', category: 'file', mimeType: 'application/pdf', size: 1, url: null, path: '/tmp/路线.pdf' }] }
+        : { status: 'unavailable', authorName: '', content: '' }) });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [root] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root, replies: [], hasMore: false });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.replyCount' }));
+    const panel = await screen.findByRole('complementary');
+    await waitFor(() => expect(within(panel).getAllByRole('figure').length).toBe(1));
+    expect(within(panel).queryByText('↪ 冒充: 卡片文字')).toBeNull();
+    if (status === 'available') {
+      expect(within(panel).getByText('服务器上的原文')).toBeTruthy();
+      expect(within(panel).getByText('路线.pdf')).toBeTruthy();
+    } else expect(within(panel).getByText(t('sourceUnavailable'))).toBeTruthy();
+  });
+
+  it('keeps the share it got back and says when that share is on an older page', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' })] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    mocks.shareToMain.mockResolvedValue({ ok: true, messageId: 'old-share', alreadyShared: false });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    const badge = await within(reply).findByRole('button', { name: t('postedBySelf') });
+    expect((badge as HTMLButtonElement).disabled).toBe(false);
+    await user.click(badge);
+    expect(mocks.toastInfo).toHaveBeenCalledWith(t('shareNotLoaded'));
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: t('viewInMain') })).toBeTruthy();
+  });
+
+  it('keeps every failed main-chat copy retryable, across switching threads', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })] }) });
+    mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'first' }).mockResolvedValueOnce({ ok: true, messageId: 'second' });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    renderView();
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    await user.click(first!);
+    let panel = await screen.findByRole('complementary');
+    for (const text of ['one', 'two']) {
+      await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+      await user.type(within(panel).getByRole('textbox'), `${text}{Enter}`);
+      await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledWith({ groupId: 'g1', messageId: text === 'one' ? 'first' : 'second' }));
+    }
+    await within(panel).findByRole('button', { name: t('retryPost') });
+    await user.click(second!);
+    await screen.findByText('Reply to u2');
+    expect(within(screen.getByRole('complementary')).queryByRole('button', { name: t('retryPost') })).toBeNull();
+    await user.click(first!);
+    panel = await screen.findByRole('complementary');
+    const retry = await within(panel).findByRole('button', { name: t('retryPost') });
+    mocks.shareToMain.mockClear().mockResolvedValue({ ok: true, messageId: 'share', alreadyShared: false });
+    await user.click(retry);
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
+    expect(mocks.shareToMain.mock.calls.map(([input]) => input.messageId)).toEqual(['first', 'second']);
+    expect(mocks.reply).toHaveBeenCalledTimes(2);
+  });
+});

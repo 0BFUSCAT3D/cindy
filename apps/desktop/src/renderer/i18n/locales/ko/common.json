@@ -9114,7 +9114,10 @@
           "postedBySelf": "내가 메인 채팅에 올림",
           "postedToMain": "메인 채팅에 올라감",
           "alsoSend": "메인 채팅에도 보내기",
-          "alsoSendFailed": "답글은 스레드에 보냈지만 메인 채팅에는 보내지 못했습니다.",
+          "alsoSendFailed_one": "답글은 스레드에 보냈지만 메인 채팅에는 보내지 못했습니다.",
+          "alsoSendFailed_other": "답글 {{count}}개를 스레드에 보냈지만 메인 채팅에는 보내지 못했습니다.",
+          "loadingSource": "원래 답글을 불러오는 중…",
+          "shareNotLoaded": "이 공유는 메인 채팅의 이전 메시지에 있습니다. 이전 메시지를 불러오면 볼 수 있습니다.",
           "retryPost": "메인 채팅에 다시 보내기",
           "alreadyPosted": "이 답글은 이미 메인 채팅에 올렸습니다.",
           "shareUnavailable": "이 답글은 삭제되었거나 볼 수 없어 메인 채팅에 올릴 수 없습니다."

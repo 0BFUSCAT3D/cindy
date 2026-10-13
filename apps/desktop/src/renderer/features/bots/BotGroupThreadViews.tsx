@@ -103,7 +103,9 @@ export function botGroupThreadShareLabel(share: BotGroupThreadShareView, t: (key
 
 /** The referenced reply as the server has it now: edits show, deletions say so. */
 export function BotGroupThreadShareQuote({ share, members, attachments, onOpenThread }: {
-  share: BotGroupThreadShareView; members: readonly BotGroupMemberView[]; attachments: ReactNode; onOpenThread: () => void;
+  share: BotGroupThreadShareView; members: readonly BotGroupMemberView[]; attachments: ReactNode;
+  /** Omitted inside the thread panel, where the quote is already the thread's root. */
+  onOpenThread?: () => void;
 }) {
   const { t } = useTranslation();
   const createdAt = share.createdAt ? new Date(share.createdAt).toISOString() : undefined;
@@ -131,13 +133,15 @@ export function BotGroupThreadShareQuote({ share, members, attachments, onOpenTh
           {attachments}
         </>
       ) : (
-        <p className="text-13 text-[var(--text-tertiary)]">{t(key('sourceUnavailable'))}</p>
+        <p role={share.status === 'loading' ? 'status' : undefined} className="text-13 text-[var(--text-tertiary)]">
+          {t(key(share.status === 'loading' ? 'loadingSource' : 'sourceUnavailable'))}
+        </p>
       )}
-      <button type="button" onClick={onOpenThread}
+      {onOpenThread ? <button type="button" onClick={onOpenThread}
         className={cn('-ml-1.5 inline-flex min-h-6 w-fit select-none items-center gap-1 rounded-full px-1.5 text-12 text-[var(--text-secondary)] transition-colors duration-[var(--motion-fast)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]', FOCUS)}>
         <CornerDownRight size={12} aria-hidden />
         {t(key('viewThread'))}
-      </button>
+      </button> : null}
     </figure>
   );
 }

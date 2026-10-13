@@ -9114,7 +9114,10 @@
           "postedBySelf": "你已貼到群聊",
           "postedToMain": "已貼到群聊",
           "alsoSend": "同時發到群聊",
-          "alsoSendFailed": "回覆已發到話題，但沒能同時發到群聊。",
+          "alsoSendFailed_one": "回覆已發到話題，但沒能同時發到群聊。",
+          "alsoSendFailed_other": "有 {{count}} 則回覆已發到話題，但沒能同時發到群聊。",
+          "loadingSource": "正在讀取原回覆…",
+          "shareNotLoaded": "這則貼回在更早的群聊記錄裡，往上載入後可以看到。",
           "retryPost": "重新發到群聊",
           "alreadyPosted": "你已經把這則回覆貼到群聊了",
           "shareUnavailable": "這則回覆已刪除或無法查看，不能貼到群聊。"

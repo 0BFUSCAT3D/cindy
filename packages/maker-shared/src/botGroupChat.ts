@@ -235,8 +235,11 @@ export interface BotGroupThreadShareView {
   messageId: string;
   /** The thread the reply stays in; sharing never moves it. */
   threadRootId: string;
-  /** `unavailable`: deleted, outside this reader's history, or not a reply in `threadRootId`. */
-  status: 'available' | 'unavailable';
+  /**
+   * `loading`: the reply is still being read. `unavailable`: deleted, outside this reader's
+   * history, or not a reply in `threadRootId`. Neither shows the card's fallback text.
+   */
+  status: 'available' | 'loading' | 'unavailable';
   authorKind: BotGroupAuthorKind;
   authorBotId: string | null;
   authorName: string;
