@@ -129,6 +129,18 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('ProviderGroupSection', () => {
+  it('shows the version and sharing update hint alongside the owner’s normal availability', async () => {
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    const base = viewOf(stored);
+    base.members[0] = { ...base.members[0], appVersion: '0.1.103', guestSupport: 'needs-update' };
+    command.mockImplementation(async (cmd: { action: string }) => cmd.action === 'list' ? { anthropic: stored } : base);
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findByText('v0.1.103');
+    expect(screen.getByText('providerGroup.member.version.updateRequired')).toBeTruthy();
+    expect(screen.getByTestId('provider-group-member').getAttribute('data-member-state')).toBe('available');
+    expect(screen.getByText('providerGroup.member.runningCount:{"count":1}')).toBeTruthy();
+  });
+
   it('creates a group with this computer plus the selected computers', async () => {
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
     expect(await screen.findByText(/providerGroup\.section\.empty/)).toBeTruthy();
