@@ -603,7 +603,7 @@ describe('shared provider credentials', () => {
       const { executor } = sharedExecutor('normal', async () => answer, credentialGrant);
       try {
         expect(await executor.confirm(env)).toBe(answer !== false);
-        if (answer === 'session') expect(credentialGrant.remember).toHaveBeenCalledWith('normal');
+        if (answer === 'session') expect(credentialGrant.remember).toHaveBeenCalledTimes(1);
         else expect(credentialGrant.remember).not.toHaveBeenCalled();
         executor.setGateMode('full');
         expect(credentialGrant.forget).toHaveBeenCalledTimes(1);

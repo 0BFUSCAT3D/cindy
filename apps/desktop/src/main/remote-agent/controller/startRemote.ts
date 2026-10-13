@@ -19,7 +19,7 @@ import {
 import type { AgentEvent, AgentSessionHandle, StartSessionOptions } from '@cindy/maker-core';
 
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
-import type { CredentialGrantRecord } from '../executor/credentialGrants';
+import { credentialGrantPermission, type CredentialGrantRecord } from '../executor/credentialGrants';
 import { RemoteExecutor, type ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import { ExecutorGate, executorGateModeFor, type ExecutorAction } from '../executor/gate';
@@ -221,12 +221,16 @@ export async function startRemoteAgentSession(
   let writableDirs = [...new Set(opts.writableDirs ?? [])];
   const workspace = new ExecutorWorkspace({ workingDir: opts.workingDir, extraDirs: [...extraDirs, ...writableDirs] });
   const applyDirs = () => workspace.setExtraDirs([...new Set([...extraDirs, ...writableDirs])]);
+  let permissionMode = opts.permissionMode;
+  let planMode = opts.planMode === true;
   const credentialConsent = deps.credentialConsent;
-  const gate = new ExecutorGate(workspace, executorGateModeFor(opts.permissionMode, opts.planMode === true), Date.now, {
+  const gate = new ExecutorGate(workspace, executorGateModeFor(permissionMode, planMode), Date.now, {
     confirmCredentials: credentialConsent !== undefined,
   });
-  // 同一任务、同一分享、权限档未变时恢复之前的「本任务总是允许」(Orca Worker 等会在两轮之间被回收重建)。
-  if (credentialConsent?.grant?.restore(gate.getMode())) gate.allowCredentialsForSession();
+  // 同一任务、同一分享、原始权限档未变时恢复之前的「本任务总是允许」(Orca Worker 等会在两轮之间被回收重建)。
+  const grant = credentialConsent?.grant;
+  const grantPermission = () => credentialGrantPermission(permissionMode, planMode);
+  if (grant?.restore(grantPermission())) gate.allowCredentialsForSession();
   let controller: RemoteAgentHandleController | null = null;
   const executor = new RemoteExecutor({
     workspace,
@@ -240,12 +244,12 @@ export async function startRemoteAgentSession(
       ? {
           confirm: async (action: ExecutorAction) =>
             controller?.confirm(credentialConfirmation(action, credentialConsent.description)) ?? false,
-          ...(credentialConsent.grant ? { credentialGrant: credentialConsent.grant } : {}),
+          ...(grant
+            ? { credentialGrant: { remember: () => grant.remember(grantPermission()), forget: () => grant.forget() } }
+            : {}),
         }
       : {}),
   });
-  let permissionMode = opts.permissionMode;
-  let planMode = opts.planMode === true;
   const vendorOptions: Record<string, unknown> = { ...(opts.vendorOptions ?? {}) };
   const mcp = await deps.prepareMcp({ kind, opts, vendorOptions }).catch((error) => {
     void executor.close();

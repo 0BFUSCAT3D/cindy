@@ -21,7 +21,7 @@ import { MAIN_OWNED_SEND_CONTEXT } from '@cindy/maker-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RemoteAgentPoller } from '../controller/poller';
-import { credentialGrantFor } from '../executor/credentialGrants';
+import { credentialGrantFor, forgetCredentialGrants } from '../executor/credentialGrants';
 import { startRemoteAgentSession, type StartRemoteAgentDeps } from '../controller/startRemote';
 import { createRemoteAgentHost, type HostedStartInput } from '../host/runHost';
 import { PROVIDER_SHARE_CREDENTIAL_SESSION_APPROVAL } from '../../../shared/providerShareCredentialConsent';
@@ -279,7 +279,7 @@ describe('remote agent round trip', () => {
     let localConfirmations = 0;
     // 打开一次 Agent、跑一轮、关闭(相当于 Orca Worker 一轮结束后被回收)。
     const openRunClose = async (
-      opts: typeof full | (Omit<typeof full, 'permissionMode'> & { permissionMode: 'default' }),
+      opts: Omit<typeof full, 'permissionMode'> & { permissionMode: 'bypassPermissions' | 'default' | 'ask' },
       deviceId = 'share:a',
       between?: (handle: AgentSessionHandle) => Promise<void>,
     ) => {
@@ -321,6 +321,19 @@ describe('remote agent round trip', () => {
       expect(localConfirmations).toBe(4);
       await openRunClose(full);
       expect(localConfirmations).toBe(5);
+      // 比较原始权限档：default 与 ask 归并后同为 normal，回收期间这样改也要重新确认。
+      await openRunClose({ ...full, permissionMode: 'default' });
+      expect(localConfirmations).toBe(6);
+      await openRunClose({ ...full, permissionMode: 'ask' });
+      expect(localConfirmations).toBe(7);
+      await openRunClose({ ...full, permissionMode: 'ask' });
+      expect(localConfirmations).toBe(7);
+      // 回收期间切走又切回(设置入口调用 forgetCredentialGrants)：所有分享上的授权都作废。
+      forgetCredentialGrants(sessionId);
+      await openRunClose({ ...full, permissionMode: 'ask' });
+      expect(localConfirmations).toBe(8);
+      await openRunClose(full, 'share:b');
+      expect(localConfirmations).toBe(9);
     } finally {
       host.dispose();
     }

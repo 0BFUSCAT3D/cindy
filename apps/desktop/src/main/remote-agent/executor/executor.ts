@@ -32,7 +32,6 @@ import {
   type RipgrepRunner,
   type ToolResult,
 } from './files';
-import type { CredentialGrantRecord } from './credentialGrants';
 import type { ExecutorAction, ExecutorGate, ExecutorGateDecision, ExecutorGateMode } from './gate';
 import { piGrep, type PiGrepInput } from './search';
 import { resolveExecutorShell, runOnce, ShellSession } from './shell';
@@ -66,8 +65,11 @@ export interface RemoteExecutorOptions {
    * 默认只放行这一个操作；用户明确选择会话级允许后免除后续的分享凭证确认。缺省时直接拒绝。
    */
   confirm?(action: ExecutorAction): Promise<ExecutorConfirmation>;
-  /** 「本任务总是允许」的任务级记录：Agent 实例被系统回收重建后据此恢复；缺省时只在本执行器内有效。 */
-  credentialGrant?: Pick<CredentialGrantRecord, 'remember' | 'forget'>;
+  /**
+   * 「本任务总是允许」的任务级记录(credentialGrants.ts，由启动方按当前原始权限档写入)：Agent 实例被系统
+   * 回收重建后据此恢复；缺省时只在本执行器内有效。
+   */
+  credentialGrant?: { remember(): void; forget(): void };
 }
 
 export class ExecutorRequestError extends Error {
@@ -189,7 +191,7 @@ export class RemoteExecutor {
         || permissionGeneration !== this.permissionGeneration) return false;
       if (allowed === 'session') {
         this.gate.allowCredentialsForSession();
-        this.opts.credentialGrant?.remember(this.gate.getMode());
+        this.opts.credentialGrant?.remember();
         if (this.gate.getMode() === 'full') return true;
       }
       this.gate.recordApproval(action);
