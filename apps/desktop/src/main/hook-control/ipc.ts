@@ -44,6 +44,7 @@ import {
   requireString,
 } from '../utils/ipcValidate.js';
 import {
+  clearWorkspaceProviderSourcesForRemoteModelChanges,
   listWorkspaceProviderSources,
   setWorkspaceProviderSource,
 } from './workspaceProviderSourceStore.js';
@@ -309,9 +310,38 @@ function parseWorkspacePrefsWrite(payload: unknown): {
 
 const remotePrefsSnapshotGenerations = new Map<HookPrefsChannel, number>();
 
+function broadcastWorkspaceProviderSources(entries: ReturnType<typeof listWorkspaceProviderSources>): void {
+  // 多窗口同步(codex review): 会话副窗也能开设置页, 写后全窗口广播全量条目。
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed() && isAppContentWindow(w)) {
+      w.webContents.send(HOOK_CONTROL_EVENT.WORKSPACE_PROVIDER_SOURCE_CHANGED, entries);
+    }
+  }
+}
+
+/** 远端快照改了目录模型时, 同键来源随之作废(issue #5912); 失败只记日志, 不挡快照落地。 */
+function clearProviderSourcesAfterRemoteModelChange(
+  channel: HookPrefsChannel,
+  before: HookWorkspacePrefs[],
+  after: HookWorkspacePrefs[],
+): void {
+  try {
+    const entries = clearWorkspaceProviderSourcesForRemoteModelChanges(channel, before, after);
+    if (entries === null) return;
+    log.info(`workspace provider source cleared after remote model change (${channel})`);
+    broadcastWorkspaceProviderSources(entries);
+  } catch (err) {
+    log.warn(
+      `workspace provider source cleanup (${channel}) failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 function persistUnsolicitedServerPrefs(channel: HookPrefsChannel, prefs: HookWorkspacePrefs[]): void {
   try {
-    applyIncomingServerWorkspacePrefs(channel, prefs);
+    const before = listWorkspacePrefs(channel);
+    const after = applyIncomingServerWorkspacePrefs(channel, prefs);
+    clearProviderSourcesAfterRemoteModelChange(channel, before, after);
     remotePrefsSnapshotGenerations.set(
       channel,
       (remotePrefsSnapshotGenerations.get(channel) ?? 0) + 1,
@@ -1163,12 +1193,7 @@ export function registerHookControlIpc(): void {
         );
         throwIpcError('INTERNAL', 'failed to persist workspace provider source');
       }
-      // 多窗口同步(codex review): 会话副窗也能开设置页, 写后全窗口广播全量条目。
-      for (const w of BrowserWindow.getAllWindows()) {
-        if (!w.isDestroyed() && isAppContentWindow(w)) {
-          w.webContents.send(HOOK_CONTROL_EVENT.WORKSPACE_PROVIDER_SOURCE_CHANGED, entries);
-        }
-      }
+      broadcastWorkspaceProviderSources(entries);
       return { entries };
     },
   );

@@ -17,6 +17,7 @@ vi.mock('../../im/ownerScopedStorage.js', () => ({
 }));
 
 import {
+  clearWorkspaceProviderSourcesForRemoteModelChanges,
   getWorkspaceProviderSource,
   listWorkspaceProviderSources,
   setWorkspaceProviderSource,
@@ -76,5 +77,60 @@ describe('workspaceProviderSourceStore', () => {
     expect(listWorkspaceProviderSources()).toEqual([
       { channel: 'telegram', teamId: null, workspace: 'chat', providerId: 'anthropic' },
     ]);
+  });
+
+  describe('远端快照改模型时清理同键来源(issue #5912)', () => {
+    const row = (workspace: string, model: string | null, teamId: string | null = null) => ({
+      workspace,
+      model,
+      teamId,
+    });
+
+    it('模型被清空 / 整行消失 / 改成别的: 同键来源清除, 其它键与其它渠道不动', () => {
+      setWorkspaceProviderSource('x', null, 'chat', 'openai');
+      setWorkspaceProviderSource('x', null, 'gone', 'openai');
+      setWorkspaceProviderSource('x', null, 'swapped', 'openai');
+      setWorkspaceProviderSource('x', null, 'same', 'openai');
+      setWorkspaceProviderSource('slack', null, 'chat', 'openai');
+
+      const next = clearWorkspaceProviderSourcesForRemoteModelChanges(
+        'x',
+        [row('chat', 'gpt-test'), row('gone', 'gpt-test'), row('swapped', 'gpt-test'), row('same', 'gpt-test')],
+        [row('chat', null), row('swapped', 'claude-test'), row('same', 'gpt-test')],
+      );
+
+      expect(next).toEqual([
+        { channel: 'x', teamId: null, workspace: 'same', providerId: 'openai' },
+        { channel: 'slack', teamId: null, workspace: 'chat', providerId: 'openai' },
+      ]);
+      expect(listWorkspaceProviderSources()).toEqual(next);
+    });
+
+    it('模型未变(含一直继承默认、只钉来源)时不写文件, 返回 null', () => {
+      setWorkspaceProviderSource('x', null, 'chat', 'sub');
+      setWorkspaceProviderSource('slack', 'T1', 'repo', 'openai');
+      expect(
+        clearWorkspaceProviderSourcesForRemoteModelChanges('x', [], [row('chat', null)]),
+      ).toBeNull();
+      expect(
+        clearWorkspaceProviderSourcesForRemoteModelChanges(
+          'slack',
+          [row('repo', 'gpt-test', 'T1')],
+          [row('repo', 'gpt-test', 'T1')],
+        ),
+      ).toBeNull();
+      expect(listWorkspaceProviderSources()).toHaveLength(2);
+    });
+
+    it('按 teamId 精确键判定, 不误清其它 team 的来源', () => {
+      setWorkspaceProviderSource('slack', 'T1', 'repo', 'openai');
+      setWorkspaceProviderSource('slack', 'T2', 'repo', 'openai');
+      const next = clearWorkspaceProviderSourcesForRemoteModelChanges(
+        'slack',
+        [row('repo', 'gpt-test', 'T1'), row('repo', 'gpt-test', 'T2')],
+        [row('repo', 'gpt-test', 'T2')],
+      );
+      expect(next).toEqual([{ channel: 'slack', teamId: 'T2', workspace: 'repo', providerId: 'openai' }]);
+    });
   });
 });

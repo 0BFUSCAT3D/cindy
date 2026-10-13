@@ -7,8 +7,9 @@
  * 连接态、目录、派发全在客户端,server 对它零感知,Slack /model 卡也不需要
  * 编辑它)。model/effort/agentKind/permissionMode 的正本同样在本机
  * (workspacePrefsStore);本表按 (channel, teamId, workspace) 记来源,派发合成
- * 时与本机目录 model 组合,再经 effectiveSourceIdForModel 收窄到真实已连接来源
- * (来源断开/不提供该模型时自动回落,不会拼出不可能路由)。
+ * 时与本机目录 model 组合,再经 effectiveSourceIdForModel 校验:显式来源失效时
+ * 拒绝新任务而不换账号;目录模型为空(继承 IM 默认)时,账号可用但不提供继承模型
+ * 的残留来源被忽略(issue #5912)。远端快照改模型时同键来源一并清除。
  *
  * 持久化 <userData>/hook-workspace-provider-source.json —— 属配置而非业务数据,
  * 与 slack-hook.json 同级同模式(原子写防半截文件);不含任何凭证。
@@ -115,6 +116,41 @@ export function setWorkspaceProviderSource(
   const rest = readFileEntries(fp).filter((e) => !sameKey(e, channel, teamId, workspace));
   const next =
     providerId === null ? rest : [...rest, { channel, teamId, workspace, providerId }];
+  writeFileEntries(fp, next);
+  return next;
+}
+
+/** 只需要偏好行的定位键与模型(HookWorkspacePrefs 的子集)。 */
+interface WorkspaceModelRow {
+  workspace: string;
+  teamId?: string | null;
+  model: string | null;
+}
+
+/**
+ * server 快照改动了某目录的模型(改成另一个 / 清空 / 整行消失)后, 清掉同键的来源偏好;
+ * 有清除时返回更新后的全量条目, 否则返回 null。
+ *
+ * 来源只在本机模型面板里和模型一起选, 远端(/model 卡、服务端快照)改模型时没有来源
+ * 通道 —— 留着旧来源就会拼出「新模型 + 旧来源」的不可执行路由(issue #5912)。本机
+ * 尚未镜像的写入在快照合并时优先, 模型不会被改动, 也就不会误清刚选的来源。
+ */
+export function clearWorkspaceProviderSourcesForRemoteModelChanges(
+  channel: HookProviderChannel,
+  before: readonly WorkspaceModelRow[],
+  after: readonly WorkspaceModelRow[],
+): WorkspaceProviderSourceEntry[] | null {
+  const keyOf = (row: WorkspaceModelRow): string => `${row.teamId ?? ''}::${row.workspace}`;
+  const modelBefore = new Map(before.map((row) => [keyOf(row), row.model] as const));
+  const modelAfter = new Map(after.map((row) => [keyOf(row), row.model] as const));
+  const changed = (e: WorkspaceProviderSourceEntry): boolean => {
+    const key = `${e.teamId ?? ''}::${e.workspace}`;
+    return (modelBefore.get(key) ?? null) !== (modelAfter.get(key) ?? null);
+  };
+  const fp = filePath();
+  const entries = readFileEntries(fp);
+  const next = entries.filter((e) => e.channel !== channel || !changed(e));
+  if (next.length === entries.length) return null;
   writeFileEntries(fp, next);
   return next;
 }
