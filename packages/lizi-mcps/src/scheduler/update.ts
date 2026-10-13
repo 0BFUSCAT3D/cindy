@@ -8,7 +8,8 @@
 import { z } from 'zod';
 
 import { AGENT_KIND, EFFORT, EXECUTION_MODE, SCRIPT_CAPABILITY } from './_enums.js';
-import { assertCronAndTimezoneValid, withScheduler } from './_shared.js';
+import { assertCronAndTimezoneValid, buildJsonResult, withScheduler } from './_shared.js';
+import { isLocalDevice, runOnDevice, writeDeviceShape } from './_devices.js';
 import type { LiziMcpSessionContext, SchedulerMcpDeps } from '../types.js';
 import type { SchedulerToolRegistry } from '../cindy_schedulerToolRegistry.js';
 import { stabilizePreRunHookForUpdate, type UpdateScheduleInput } from '@cindy/maker-scheduler';
@@ -22,7 +23,7 @@ export function registerScheduleUpdateTool(
     name: 'schedule_update',
     category: 'scheduler',
     description:
-      '修改一条 schedule 的部分字段（patch 形态）。改 cronExpr / timezone 时 nextFireAt 会自动重算。要暂停 / 恢复请用 schedule_pause / schedule_resume，不要直接 patch status。把任务改成跟进**当前对话**的 heartbeat 请传 bindToCurrentSession=true（代码自动绑定本会话,无需也不要自己查 / 传 session id）。' +
+      '修改一条定时任务的部分字段（patch 形态）。默认改本机的；其它电脑上的任务传 device（此时不支持 bindToCurrentSession，也不支持用 null 清空 intervalMs 以外的字段）。改 cronExpr / timezone 时 nextFireAt 会自动重算。要暂停 / 恢复请用 schedule_pause / schedule_resume，不要直接 patch status。把任务改成跟进**当前对话**的 heartbeat 请传 bindToCurrentSession=true（代码自动绑定本会话,无需也不要自己查 / 传 session id）。' +
       '**目标值缺失时先问用户，禁止盲猜**：用户指令模糊（如"改一下时间"没说改到几点、"换个模型"没说换哪个）时，先用 AskUserQuestion（或一句话追问）确认目标值再 patch；只改用户点名的字段，不要顺手"优化"其它字段。',
     inputShape: {
       id: z.string().min(1).describe('Schedule id'),
@@ -110,9 +111,35 @@ export function registerScheduleUpdateTool(
         })
         .optional(),
       expireAt: z.number().int().optional(),
+      ...writeDeviceShape,
     },
-    handler: async ({ id, bindToCurrentSession, ...patch }) =>
-      withScheduler(deps, async (scheduler) => {
+    handler: async ({ id, bindToCurrentSession, device, ...patch }) => {
+      if (!isLocalDevice(device)) {
+        // 对方电脑的 IPC 入口自己做校验与 hook 路径稳定化;这里只拦跨 JSON 边界
+        // 表达不了、或只对本机有意义的写法,明确报错而不是写出与意图不符的任务。
+        const unsupported = bindToCurrentSession
+          ? 'bindToCurrentSession 只能绑定本机的当前任务'
+          : Object.entries(patch).some(([key, value]) => value === null && key !== 'intervalMs')
+              || (patch.preRunHook as { timeoutMs?: number | null } | null | undefined)?.timeoutMs === null
+            ? '其它电脑上的定时任务暂不支持用 null 清空 intervalMs 以外的字段'
+            : null;
+        if (unsupported) {
+          return buildJsonResult(
+            { ok: false, code: 'INVALID_PARAMS', message: `invalid request: ${unsupported}` },
+            true,
+          );
+        }
+        try {
+          assertCronAndTimezoneValid(patch.cronExpr, patch.timezone);
+        } catch (err) {
+          return buildJsonResult(
+            { ok: false, code: 'INVALID_PARAMS', message: (err as Error).message },
+            true,
+          );
+        }
+        return runOnDevice(deps, device, async () => undefined, { op: 'update', args: [id, patch] });
+      }
+      return withScheduler(deps, async (scheduler) => {
         let input = patch as UpdateScheduleInput;
         if ((patch as { targetSessionId?: string | null }).targetSessionId === null) {
           // JSON 边界的"解绑"表达:null → 归一成 undefined 但保留 key(storage patch
@@ -207,6 +234,7 @@ export function registerScheduleUpdateTool(
             stabilizeCommand: deps.hookScript.stabilizeCommand,
           });
         });
-      }),
+      });
+    },
   });
 }
