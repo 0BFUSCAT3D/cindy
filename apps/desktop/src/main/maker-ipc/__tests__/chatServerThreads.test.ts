@@ -141,3 +141,38 @@ describe('reply summaries', () => {
     expect(isShareableThreadReply(reply('n', rootA, { content: [{ type: 'card', namespace: 'cindy.group-notice', fallback: 'x' }] }))).toBe(false);
   });
 });
+
+describe('late reads after a reset or invalidation', () => {
+  const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
+  const sourceId = '40000000-0000-4000-8000-000000000001';
+  const share = message({ id: 's1', content: [buildBotGroupThreadShareCard({ messageId: sourceId, threadRootId: rootA, authorName: 'Miao', text: 'hi' })] });
+
+  it.each(['reset', 'invalidate'] as const)('does not let a thread page started before %s refill the cache', async (clear) => {
+    const io = { threadPage: vi.fn(), message: vi.fn() };
+    const projection = createThreadProjection(io);
+    const root = message({ id: rootB, replyCount: 1 });
+    const stale = deferred<ThreadMessage[]>();
+    io.threadPage.mockReturnValueOnce(stale.promise).mockResolvedValue([reply('b1', rootB, { revision: 2 })]);
+    const inFlight = projection.previews(room, [root], fullWindow([]));
+    if (clear === 'reset') projection.reset(); else projection.invalidate(room, 'b1');
+    stale.resolve([reply('b1', rootB)]);
+    await inFlight;
+    const next = await projection.previews(room, [root], fullWindow([]));
+    expect(io.threadPage).toHaveBeenCalledTimes(2);
+    expect(next.get(rootB)![0]!.revision).toBe(2);
+  });
+
+  it.each(['reset', 'invalidate'] as const)('does not let a share source read started before %s refill the cache', async (clear) => {
+    const io = { threadPage: vi.fn(), message: vi.fn() };
+    const projection = createThreadProjection(io);
+    const stale = deferred<ThreadMessage | null>();
+    io.message.mockReturnValueOnce(stale.promise).mockResolvedValue(reply(sourceId, rootA, { revision: 2 }));
+    const inFlight = projection.shareSources(room, [share], []);
+    if (clear === 'reset') projection.reset(); else projection.invalidate(room, sourceId);
+    stale.resolve(reply(sourceId, rootA));
+    await inFlight;
+    const next = await projection.shareSources(room, [share], []);
+    expect(io.message).toHaveBeenCalledTimes(2);
+    expect(next.get(sourceId)?.revision).toBe(2);
+  });
+});

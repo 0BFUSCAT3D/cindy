@@ -41,6 +41,8 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
   const previews = new Map<string, { replyCount: number; replies: M[] }>();
   const sources = new Map<string, M | null>();
   const retryAt = new Map<string, number>();
+  // A read that was in flight across reset()/invalidate() may carry the old copy.
+  let generation = 0;
   const key = (roomId: string, id: string) => `${roomId}:${id}`;
   const waiting = (cacheKey: string) => (retryAt.get(cacheKey) ?? 0) > Date.now();
 
@@ -71,9 +73,10 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
       }
       await eachLimited(missing, async root => {
         const cacheKey = key(roomId, root.id);
+        const started = generation;
         try {
           const replies = (await io.threadPage(roomId, root.id, FALLBACK_PAGE)).filter(message => !message.deleted);
-          previews.set(cacheKey, { replyCount: root.replyCount ?? 0, replies });
+          if (generation === started) previews.set(cacheKey, { replyCount: root.replyCount ?? 0, replies });
           retryAt.delete(cacheKey);
           result.set(root.id, replies);
         } catch { retryAt.set(cacheKey, Date.now() + RETRY_MS); }
@@ -100,9 +103,11 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
       }
       await eachLimited([...missing], async messageId => {
         const cacheKey = key(roomId, messageId);
+        const started = generation;
         try {
           const value = await io.message(roomId, messageId);
-          sources.set(cacheKey, value); retryAt.delete(cacheKey);
+          if (generation === started) sources.set(cacheKey, value);
+          retryAt.delete(cacheKey);
           result.set(messageId, value);
         } catch { retryAt.set(cacheKey, Date.now() + RETRY_MS); }
       });
@@ -110,12 +115,13 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     },
     /** An edited or deleted message may be a cached reply or share source. */
     invalidate(roomId: string, messageId: string) {
+      generation += 1;
       sources.delete(key(roomId, messageId));
       for (const [cacheKey, entry] of previews)
         if (cacheKey.startsWith(`${roomId}:`) && entry.replies.some(reply => reply.id === messageId)) previews.delete(cacheKey);
     },
     /** Pushes may have been missed while disconnected. */
-    reset() { previews.clear(); sources.clear(); retryAt.clear(); },
+    reset() { generation += 1; previews.clear(); sources.clear(); retryAt.clear(); },
   };
 }
 
