@@ -2772,7 +2772,7 @@ function ModelSelectorContentView({
         <div className="mx-1 my-1 h-px bg-[var(--model-dropdown-border)]" />
       )}
       {editingDisplayPricingModel?.displayPricing && editingDisplayPricingModel.currency && (
-        <div className="max-h-72 overflow-y-auto border-t border-[var(--model-dropdown-border)] pt-2.5">
+        <div {...menuSkipAttrs} className="max-h-72 overflow-y-auto border-t border-[var(--model-dropdown-border)] pt-2.5">
           <DisplayPricingDetails model={editingDisplayPricingModel} />
         </div>
       )}
