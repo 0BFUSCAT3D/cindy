@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "ログとフィードバック",
+    "localFiles": "問題が発生した日のログを選択してください。未マスキングのため、共有前に内容を確認してください。",
+    "uploaded": "ログをアップロードしました。アップロード番号：{{code}}。問題の報告時にこの番号を添えてください。",
+    "close": "閉じる",
+    "uploadDescription": "問題の報告時にアップロード番号を添えてください。",
+    "uploadDetails": "アップロード内容を確認"
+  },
   "taskMove": {
     "upgradeComputer": "このコンピューターの Cindy はタスクの移動に対応していません。「{{name}}」の Cindy を更新してください。",
     "sourceProjects": "タスクのコンピューターのプロジェクト",

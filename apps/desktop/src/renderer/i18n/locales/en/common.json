@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "Logs and Feedback",
+    "localFiles": "Choose logs from the day of the problem. Review unredacted files before sharing.",
+    "uploaded": "Logs uploaded. Upload code: {{code}}. Include this code when reporting the problem.",
+    "close": "Close",
+    "uploadDescription": "Include the upload code when reporting the problem.",
+    "uploadDetails": "What gets uploaded"
+  },
   "taskMove": {
     "upgradeComputer": "This computer’s Cindy version does not support moving tasks. Update Cindy on “{{name}}” to use this feature.",
     "sourceProjects": "Projects on the task’s computer",
