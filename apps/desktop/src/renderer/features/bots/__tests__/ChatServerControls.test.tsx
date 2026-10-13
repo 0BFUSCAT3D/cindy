@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from 'react';
-import { cleanup, createEvent, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
@@ -311,6 +311,30 @@ describe('chat interaction controls', () => {
       await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
       // A retyped name is a manual @: both namesakes, as in the main composer.
       expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['ann-chris', 'ann-dana'] });
+    });
+
+    it('starts a new attempt when a failed reply re-picks a namesake without changing the text', async () => {
+      const input = renderThread();
+      mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' });
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await screen.findByRole('alert');
+      expect(input.value).toBe('@Ann ');
+      const first = mocks.reply.mock.calls[0]![0];
+      expect(first.mentions).toEqual({ all: false, botIds: ['ann-chris'] });
+      // Caret back to the end of the name and pick the other Ann: the text stays `@Ann `.
+      // As a user would: click back into the box with the caret after the name.
+      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
+      fireEvent.select(input);
+      expect(labels()).toEqual(['Ann', 'Ann']);
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+      const second = mocks.reply.mock.calls[1]![0];
+      expect(second.mentions).toEqual({ all: false, botIds: ['ann-dana'] });
+      expect(second.clientId).not.toBe(first.clientId);
     });
   });
 });

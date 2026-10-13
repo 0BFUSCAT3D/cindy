@@ -78,12 +78,13 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const request = useRef(0);
-  const attempt = useRef<{ text: string; id: string; mentions: BotGroupMention } | null>(null);
+  const attempt = useRef<{ text: string; picks: string; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const allLabel = t('bots.groupChat.mention.all');
   const allLabels = useMemo(() => [allLabel, '所有人', 'all', 'everyone'], [allLabel]);
-  // Same @ picker as the main composer; a new text is a new attempt (the retry key).
+  // Same @ picker as the main composer. The retry key is the text plus the picked identities:
+  // re-picking a namesake can leave the text unchanged, while a roster refresh keeps the picks.
   const mention = useBotGroupMentionPicker({ text, members: group.members, textareaRef: inputRef, allLabels, onTextChange: value => {
     setText(value);
     if (attempt.current?.text !== value) attempt.current = null;
@@ -113,7 +114,9 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (group.archived || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
-    if (!attempt.current || attempt.current.text !== text) attempt.current = { text, id: crypto.randomUUID(), mentions: mention.resolve(text) };
+    const picks = JSON.stringify(mention.tracked.map(pick => [pick.start, pick.botId]));
+    if (!attempt.current || attempt.current.text !== text || attempt.current.picks !== picks)
+      attempt.current = { text, picks, id: crypto.randomUUID(), mentions: mention.resolve(text) };
     try {
       const result = await api().reply({ groupId: group.id, rootId, text: attempt.current.text, clientId: attempt.current.id,
         mentions: attempt.current.mentions });
