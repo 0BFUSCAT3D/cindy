@@ -29,6 +29,9 @@ import {
 const mocks = vi.hoisted(() => ({
   owner: 1,
   send: vi.fn<(input: BotGroupSendInput) => Promise<BotGroupSendResult>>(),
+  materialize: vi.fn(async (files: readonly AttachedFile[]) => [...files]),
+  protectedUrls: [] as string[],
+  cleanupStaged: vi.fn(),
 }));
 
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
@@ -40,7 +43,15 @@ vi.mock('../botGroupStore', () => ({
 }));
 vi.mock('@/lib/annotationBurnIn', () => ({
   isAnnotationBurnInError: () => false,
-  materializeAnnotatedAttachmentsForSend: async (files: readonly AttachedFile[]) => [...files],
+  materializeAnnotatedAttachmentsForSend: (files: readonly AttachedFile[]) => mocks.materialize(files),
+}));
+vi.mock('@/lib/composerDraftStore', () => ({
+  setBotGroupOutboxAttachmentUrls: (urls: readonly string[]) => {
+    mocks.protectedUrls = [...new Set(urls)].sort();
+  },
+}));
+vi.mock('@/lib/chatAttachmentStageCleanup', () => ({
+  cleanupStagedChatAttachmentFiles: (files: unknown) => mocks.cleanupStaged(files),
 }));
 
 /** A send main has not answered yet; the test decides when and how. */
@@ -115,6 +126,9 @@ function project(groupId: string, messages: BotGroupMessageView[]) {
 beforeEach(() => {
   mocks.owner = 1;
   mocks.send.mockReset();
+  mocks.materialize.mockReset().mockImplementation(async (files: readonly AttachedFile[]) => [...files]);
+  mocks.protectedUrls = [];
+  mocks.cleanupStaged.mockReset();
   resetBotGroupOutboxForTests();
 });
 
@@ -365,7 +379,8 @@ describe('botGroupOutbox', () => {
 
     it('keeps each local preview until its server copy is usable, under the server id, in send order', () => {
       const mine = [local('l1', 'a.png'), local('l2', 'b.png')];
-      expect(mergeBotGroupLocalAttachments([placeholder('s2', 'b.png'), placeholder('s1', 'a.png')], mine)).toEqual([
+      // The server keeps the order the files were sent in.
+      expect(mergeBotGroupLocalAttachments([placeholder('s1', 'a.png'), placeholder('s2', 'b.png')], mine)).toEqual([
         { ...mine[0], id: 's1' },
         { ...mine[1], id: 's2' },
       ]);
@@ -413,6 +428,128 @@ describe('botGroupOutbox', () => {
       const projected = project('g1', [copy]);
       expect(projected.pending).toEqual([]);
       expect(projected.localAttachments.get('m1')).toEqual(getBotGroupOutbox('g1')[0]!.attachments);
+    });
+
+    it('never swaps two files with the same name, whether the server lists all of them or not yet', () => {
+      // Two different photo.png; the first was drawn on, so its burned-in copy is renamed.
+      const mine = [local('l1', 'photo-annotated.png'), local('l2', 'photo.png')];
+      expect(mergeBotGroupLocalAttachments(
+        [placeholder('s1', 'photo-annotated.png'), usable('s2', 'photo.png')], mine,
+      )).toEqual([{ ...mine[0], id: 's1' }, usable('s2', 'photo.png')]);
+      // Copies listed one by one as they download (older servers).
+      expect(mergeBotGroupLocalAttachments([usable('s2', 'photo.png')], mine)).toEqual([mine[0], usable('s2', 'photo.png')]);
+      expect(mergeBotGroupLocalAttachments([usable('s1', 'photo-annotated.png')], mine)).toEqual([
+        usable('s1', 'photo-annotated.png'), mine[1],
+      ]);
+    });
+  });
+
+  describe('drawn annotations', () => {
+    const original = {
+      id: 'l1', name: 'photo.png', path: '/tmp/photo.png', size: 1, category: 'image', mimeType: 'image/png', type: 'image',
+      url: 'cindy-media://blobs/original.png', annotationStrokes: [{ points: [{ x: 1, y: 1 }] }],
+    } as unknown as AttachedFile;
+    const burned = {
+      ...original, name: 'photo-annotated.png', url: 'cindy-media://blobs/burned.png', annotated: true,
+      annotationSourceUrl: 'cindy-media://blobs/original.png',
+    } as unknown as AttachedFile;
+
+    it('shows the burned-in copy as soon as it is ready and burns once for every (re)try', async () => {
+      let finishBurn!: (files: AttachedFile[]) => void;
+      mocks.materialize.mockImplementationOnce(() => new Promise((resolve) => { finishBurn = resolve; }));
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' })
+        .mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+      enqueueBotGroupSend(draft({ text: '圈出来的地方' }, { files: [original] }));
+      await flush();
+      expect(mocks.send).not.toHaveBeenCalled();
+      finishBurn([burned]);
+      await flush();
+      expect(getBotGroupOutbox('g1')[0]!.attachments).toEqual([
+        expect.objectContaining({ name: 'photo-annotated.png', url: 'cindy-media://blobs/burned.png' }),
+      ]);
+      retryBotGroupSend('g1', 'c1');
+      await flush();
+      expect(mocks.materialize).toHaveBeenCalledTimes(1);
+      expect(mocks.send.mock.calls.map(([input]) => input.attachments?.[0]?.url)).toEqual([
+        'cindy-media://blobs/burned.png', 'cindy-media://blobs/burned.png',
+      ]);
+    });
+
+    it('hands the original with its strokes back to the composer, not the burned copy', async () => {
+      const restore = vi.fn(() => true);
+      registerBotGroupComposer('g1', { restore, notifyFailed: vi.fn() });
+      mocks.materialize.mockResolvedValueOnce([burned]);
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      enqueueBotGroupSend(draft({}, { files: [original] }));
+      await flush();
+      expect(restore).toHaveBeenCalledWith(expect.objectContaining({ files: [original] }));
+    });
+
+    it('tries the burn again on 重试 after it failed', async () => {
+      mocks.materialize.mockRejectedValueOnce(new Error('burn')).mockResolvedValueOnce([burned]);
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+      enqueueBotGroupSend(draft({}, { files: [original] }));
+      await flush();
+      expect(getBotGroupOutbox('g1')[0]!.status).toBe('failed');
+      expect(mocks.send).not.toHaveBeenCalled();
+      retryBotGroupSend('g1', 'c1');
+      await flush();
+      expect(mocks.materialize).toHaveBeenCalledTimes(2);
+      expect(mocks.send.mock.calls[0]![0].attachments?.[0]?.url).toBe('cindy-media://blobs/burned.png');
+    });
+  });
+
+  describe('holding files outside the draft', () => {
+    const file = {
+      id: 'f1', name: 'shot.png', path: '/staged/shot.bin', size: 1, category: 'image', mimeType: 'image/png', type: 'image',
+      url: 'cindy-media://blobs/shot.png',
+    } as unknown as AttachedFile;
+
+    it('protects the media of messages still held from storage cleanup until they are settled', async () => {
+      const pending = deferred();
+      mocks.send.mockReturnValueOnce(pending.promise);
+      enqueueBotGroupSend(draft({ text: '' }, { files: [file] }));
+      await flush();
+      expect(mocks.protectedUrls).toEqual(['cindy-media://blobs/shot.png']);
+      pending.resolve({ ok: true, messageId: 'm1' });
+      await flush();
+      expect(mocks.protectedUrls).toEqual(['cindy-media://blobs/shot.png']);
+      noteBotGroupTimeline('g1', [msg({ id: 'm1', sequence: 1, attachments: [
+        { id: 's1', name: 'shot.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/server.png', path: null },
+      ] })], beginBotGroupTimelineRead());
+      expect(mocks.protectedUrls).toEqual([]);
+    });
+
+    it('cleans up staged copies of unsent messages when the group is deleted, never of sent ones', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' })
+        .mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      const sentFile = { ...file, id: 'f0', path: '/staged/sent.bin' } as AttachedFile;
+      enqueueBotGroupSend(draft({ clientId: 'sent' }, { files: [sentFile] }));
+      enqueueBotGroupSend(draft({ clientId: 'unsent' }, { files: [file] }));
+      await flush();
+      discardBotGroupOutbox('g1');
+      expect(mocks.cleanupStaged).toHaveBeenCalledTimes(1);
+      expect(mocks.cleanupStaged).toHaveBeenCalledWith([file]);
+      expect(mocks.protectedUrls).toEqual([]);
+    });
+  });
+
+  describe('a failure while the composer was away', () => {
+    it('comes back into an empty composer when it registers, with the reason', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'MENTION_UNAVAILABLE', message: '' });
+      enqueueBotGroupSend(draft());
+      await flush();
+      expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['failed']);
+      const busy = { restore: vi.fn(() => false), notifyFailed: vi.fn() };
+      const release = registerBotGroupComposer('g1', busy);
+      expect(busy.notifyFailed).not.toHaveBeenCalled();
+      expect(getBotGroupOutbox('g1')).toHaveLength(1);
+      release();
+      const empty = { restore: vi.fn(() => true), notifyFailed: vi.fn() };
+      registerBotGroupComposer('g1', empty);
+      expect(empty.restore).toHaveBeenCalledWith(expect.objectContaining({ input: expect.objectContaining({ clientId: 'c1' }) }));
+      expect(empty.notifyFailed).toHaveBeenCalledWith('bots.groupChat.errors.mentionUnavailable');
+      expect(getBotGroupOutbox('g1')).toEqual([]);
     });
   });
 });

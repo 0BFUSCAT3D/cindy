@@ -3,7 +3,7 @@
  *
  * 只是 renderer 内存里的展示状态，不持久化，也不替代 main 的幂等与服务器的权威时间线：
  * - 每条消息保存 composer 交来的完整发送输入（`BotGroupSendInput`，附件除外——附件在
- *   提交时才烧录标注并序列化），提交与重试都原样发出，这里不挑字段；新增发送字段只需
+ *   入队时就开始烧录标注，提交时序列化），提交与重试都原样发出，这里不挑字段；新增发送字段只需
  *   composer 放进 `input`，显示、回执与重试自动带上。
  * - `input.clientId` 是身份，失败重试沿用同一个 clientId，main 与服务器据此去重，
  *   所以这里绝不自动重发。
@@ -13,17 +13,22 @@
  * - 推送重读可能先于回执到达。此时只对正在提交的那一条（同群同时最多一条）做显示上的
  *   去重：基线之后出现、未被任何回执认领、正文与附件数一致的自己的消息视为它，回执到达后
  *   仍以 messageId 为准。
- * - 附件：临时消息从输入的附件生成列表。真实消息到了而服务器副本还没下载好（没有 url / path，
- *   或旧版干脆还没出现在列表里）时，按同一 messageId 把本地预览接到真实消息上，直到副本可用，
- *   不让已看见的图片先退成缺失再出现（见 `mergeBotGroupLocalAttachments`）。
+ * - 附件：临时消息从输入的附件生成列表；带手绘标注的图片烧录完成后改用烧录后的本地预览
+ *   （同一份烧录结果也用于提交与重试，不重复烧录；放回输入框的仍是带笔迹的原件）。真实消息到了
+ *   而服务器副本还没下载好（没有 url / path，或旧版干脆还没出现在列表里）时，按同一 messageId
+ *   把本地预览接到真实消息上，直到副本可用（见 `mergeBotGroupLocalAttachments`）。
+ * - 离开输入框的附件不再受草稿保护：发件箱持有的图片地址（含标注原图与本地预览）登记进存储
+ *   清理的保护清单，条目移除时同步撤下；删群时回收尚未进入消息的暂存文件。
  * - 失败时交还输入框（输入框空着才交还，见 `registerBotGroupComposer`），否则留在时间线上
- *   显示没发出去，可重试或编辑。
+ *   显示没发出去，可重试或编辑；失败时输入框不在（切群、分享模式），回来注册输入框时同样交还。
  * - 切换账号整体清空，旧账号的迟到回执一律丢弃；群被删除时丢弃该群的条目。
  */
 import { useCallback, useSyncExternalStore } from 'react';
 
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { isAnnotationBurnInError, materializeAnnotatedAttachmentsForSend } from '@/lib/annotationBurnIn';
+import { cleanupStagedChatAttachmentFiles } from '@/lib/chatAttachmentStageCleanup';
+import { setBotGroupOutboxAttachmentUrls } from '@/lib/composerDraftStore';
 import type { AttachedFile } from '@/lib/fileTypes';
 import type {
   BotGroupAttachment,
@@ -38,7 +43,7 @@ import { botGroupApi } from './botGroupStore';
 
 export type BotGroupOutboxStatus = 'sending' | 'sent' | 'failed';
 
-/** The send as main receives it; attachments are prepared from `files` at submission. */
+/** The send as main receives it; attachments are prepared from `files` (see `prepared`). */
 export type BotGroupOutboxSendInput = Omit<BotGroupSendInput, 'attachments'>;
 
 /** What the composer hands over when the user presses send. */
@@ -67,8 +72,10 @@ export function botGroupSendSignature(input: BotGroupOutboxSendInput, attachment
 export interface BotGroupOutboxEntry extends BotGroupOutboxDraft {
   status: BotGroupOutboxStatus;
   createdAt: number;
-  /** The attachments as the timeline shows them. */
+  /** The attachments as the timeline shows them (the burned-in copies once `prepared`). */
   attachments: readonly BotGroupAttachment[];
+  /** `files` with drawn annotations burned in; reused by every (re)try. */
+  prepared?: readonly AttachedFile[];
   /** From the receipt. */
   messageId?: string;
   /** Order of the receipt against timeline reads (see `beginBotGroupTimelineRead`). */
@@ -106,8 +113,28 @@ let tick = 0;
 const groups = new Map<string, GroupOutbox>();
 const composers = new Map<string, BotGroupComposerHandle>();
 const listeners = new Set<() => void>();
+/** One burn-in per message, shared by the bubble and its submission. */
+const preparing = new Map<string, Promise<readonly AttachedFile[]>>();
+
+/** Media only this outbox still refers to; storage cleanup must not sweep it. */
+function protectHeldMedia(): void {
+  const urls: string[] = [];
+  const add = (file: { url?: string | null; annotationSourceUrl?: string }) => {
+    if (file.url) urls.push(file.url);
+    if (file.annotationSourceUrl) urls.push(file.annotationSourceUrl);
+  };
+  for (const group of groups.values()) {
+    for (const entry of group.entries) {
+      entry.files.forEach(add);
+      entry.prepared?.forEach(add);
+    }
+    for (const preview of group.previews.values()) preview.forEach(add);
+  }
+  setBotGroupOutboxAttachmentUrls(urls);
+}
 
 function emit(): void {
+  protectHeldMedia();
   for (const listener of listeners) listener();
 }
 
@@ -116,6 +143,8 @@ function ensureOwner(): void {
   owner = getDataOwnerGeneration();
   generation += 1;
   groups.clear();
+  preparing.clear();
+  protectHeldMedia();
 }
 
 function groupOf(groupId: string): GroupOutbox {
@@ -174,6 +203,33 @@ export function enqueueBotGroupSend(draft: BotGroupOutboxDraft): void {
   group.entries = [...group.entries.filter((existing) => existing.input.clientId !== clientId), entry];
   emit();
   schedule(groupId, clientId);
+  // Burn annotations in now, not when the message's turn comes: the bubble shows the result.
+  if (entry.files.length > 0) void prepare(groupId, clientId).catch(() => undefined);
+}
+
+/** The message's files with annotations burned in, once; a failure is retried by the next call. */
+function prepare(groupId: string, clientId: string): Promise<readonly AttachedFile[]> {
+  const entry = groups.get(groupId)?.entries.find((candidate) => candidate.input.clientId === clientId);
+  if (!entry) return Promise.reject(new Error('OUTBOX_ENTRY_GONE'));
+  if (entry.prepared) return Promise.resolve(entry.prepared);
+  if (entry.files.length === 0) return Promise.resolve([]);
+  const key = `${groupId}\n${clientId}`;
+  const existing = preparing.get(key);
+  if (existing) return existing;
+  const requestGeneration = generation;
+  const pending = materializeAnnotatedAttachmentsForSend(entry.files, entry.attachmentScope, { burnFailure: 'abort' })
+    .then((files) => {
+      const prepared = files ?? [];
+      if (requestGeneration === generation) {
+        update(groupId, clientId, { prepared, attachments: displayAttachments(prepared) });
+      }
+      return prepared;
+    })
+    .finally(() => {
+      if (preparing.get(key) === pending) preparing.delete(key);
+    });
+  preparing.set(key, pending);
+  return pending;
 }
 
 /** 重试 on a message that did not go out: the same clientId, so main returns any copy it already has. */
@@ -213,10 +269,7 @@ async function submit(groupId: string, clientId: string, requestGeneration: numb
   try {
     if (!api) throw new Error('HOST_NOT_READY');
     // Drawn annotations are burned in first, as in a task; a failure keeps everything for a retry.
-    const prepared =
-      entry.files.length > 0
-        ? ((await materializeAnnotatedAttachmentsForSend(entry.files, entry.attachmentScope, { burnFailure: 'abort' })) ?? [])
-        : [];
+    const prepared = await prepare(groupId, clientId);
     const result: BotGroupSendResult = await api.sendBotGroupMessage({
       ...entry.input,
       ...(prepared.length > 0 ? { attachments: toBotGroupAttachmentInputs(prepared) } : {}),
@@ -286,27 +339,26 @@ function isUsable(attachment: BotGroupAttachment): boolean {
 }
 
 /**
- * Pair the server's attachments of a message with the local ones it was sent with: by name
- * first, then in order when the remaining counts agree (a burned-in image can be renamed).
+ * Pair the server's attachments of a message with the local ones it was sent with. The server
+ * keeps the order they were sent in, so equal counts pair by position. An older server lists a
+ * copy only once it is downloaded; then pair by name in that same order, so two files with the
+ * same name never swap. Local names are the burned-in ones (see `prepared`), as on the server.
  * Returns, for each local attachment, the server copy it matches (or undefined), plus the
  * server attachments nothing local matched.
  */
 function pairLocalAttachments(server: readonly BotGroupAttachment[], local: readonly BotGroupAttachment[]) {
+  if (server.length === local.length) return { pairs: [...server], extra: [] as BotGroupAttachment[] };
   const used = new Set<number>();
+  let next = 0;
   const pairs: Array<BotGroupAttachment | undefined> = local.map((file) => {
-    const index = server.findIndex((candidate, at) => !used.has(at) && candidate.name === file.name);
-    if (index < 0) return undefined;
-    used.add(index);
-    return server[index];
+    for (let at = next; at < server.length; at += 1) {
+      if (server[at]!.name !== file.name) continue;
+      used.add(at);
+      next = at + 1;
+      return server[at];
+    }
+    return undefined;
   });
-  const rest = server.flatMap((candidate, at) => (used.has(at) ? [] : [at]));
-  const unpaired = pairs.flatMap((pair, at) => (pair ? [] : [at]));
-  if (rest.length === unpaired.length) {
-    unpaired.forEach((at, order) => {
-      used.add(rest[order]!);
-      pairs[at] = server[rest[order]!];
-    });
-  }
   return { pairs, extra: server.filter((_, at) => !used.has(at)) };
 }
 
@@ -337,15 +389,32 @@ function botGroupLocalAttachmentsSettled(
   return pairLocalAttachments(server, local).pairs.every((echo) => echo !== undefined && isUsable(echo));
 }
 
-/** The group was deleted: nothing of it is left to send or show. */
+/**
+ * The group was deleted: nothing of it is left to send or show. Staged copies of files that
+ * never reached a message go too; the draft no longer lists them, so nothing else would.
+ */
 export function discardBotGroupOutbox(groupId: string): void {
   ensureOwner();
-  if (!groups.delete(groupId)) return;
+  const group = groups.get(groupId);
+  if (!group) return;
+  groups.delete(groupId);
+  for (const entry of group.entries) {
+    if (entry.status !== 'sent') cleanupStagedChatAttachmentFiles(entry.files);
+  }
   emit();
 }
 
+/**
+ * The group's composer is on screen. A message that failed while it was away (another group,
+ * share mode) comes back into it now, the same way as a failure seen in place.
+ */
 export function registerBotGroupComposer(groupId: string, handle: BotGroupComposerHandle): () => void {
   composers.set(groupId, handle);
+  const failed = groups.get(groupId)?.entries.find((entry) => entry.status === 'failed');
+  if (failed && handle.restore(failed)) {
+    remove(groupId, failed.input.clientId);
+    handle.notifyFailed(failed.errorKey ?? 'bots.groupChat.composer.sendFailed');
+  }
   return () => {
     if (composers.get(groupId) === handle) composers.delete(groupId);
   };
@@ -428,5 +497,6 @@ export function resetBotGroupOutboxForTests(): void {
   generation += 1;
   owner = getDataOwnerGeneration();
   groups.clear();
+  preparing.clear();
   composers.clear();
 }

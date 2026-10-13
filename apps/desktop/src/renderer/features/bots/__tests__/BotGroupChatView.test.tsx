@@ -1344,6 +1344,44 @@ describe('BotGroupChatView', () => {
       expect(screen.getAllByAltText('photo.png')).toHaveLength(1);
     });
 
+    it('puts a message that failed while the group was closed back into its empty composer on return', async () => {
+      const send = pendingSend();
+      const view = renderView();
+      const tree = () => (
+        <Tooltip.Provider>
+          <FeatureSidebarSlotProvider isCollapsed={false}>
+            <HeaderSlot />
+            <BotGroupChatView />
+          </FeatureSidebarSlotProvider>
+        </Tooltip.Provider>
+      );
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '离开时失败的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      mocks.groupId = 'g2';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'g2', name: '另一个群' }) });
+      view.rerender(tree());
+      await screen.findByText('另一个群');
+      await send.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+      // Nothing of g1 shows here, and g2's composer is not touched.
+      expect(outboxItems()).toHaveLength(0);
+      expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
+
+      mocks.groupId = 'g1';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail() });
+      view.rerender(tree());
+      await screen.findByText('周六 8:10 有票');
+      await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('离开时失败的'));
+      expect(outboxItems()).toHaveLength(0);
+      expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.composer.sendFailed');
+      // Sending it again is the same attempt.
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: true, messageId: 'u2' });
+      fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
+      expect(mocks.sendBotGroupMessage.mock.calls[1]![0].clientId).toBe(mocks.sendBotGroupMessage.mock.calls[0]![0].clientId);
+    });
+
     it('keeps a late receipt out of the next group and shows the message when coming back', async () => {
       const send = pendingSend();
       const view = renderView();

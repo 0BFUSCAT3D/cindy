@@ -236,7 +236,12 @@ export function BotGroupComposer({
 
   // A message that did not go out comes back only into an empty input: never over new
   // text, a new tag or files added meanwhile. Pressing send again reuses its clientId.
-  const restoreAttachments = attachmentState.restoreFiles;
+  // Registered once per group (mount / group change): re-registering on every render would
+  // pull a failed message back in the moment the user clears the input.
+  const restoreAttachmentsRef = useRef(attachmentState.restoreFiles);
+  restoreAttachmentsRef.current = attachmentState.restoreFiles;
+  const tRef = useRef(t);
+  tRef.current = t;
   useEffect(
     () =>
       registerBotGroupComposer(groupId, {
@@ -249,12 +254,12 @@ export function BotGroupComposer({
           const restoredDivision = entry.input.division === true;
           divisionRef.current = restoredDivision;
           if (restoredDivision) setDivision(true);
-          if (entry.files.length > 0) attachmentsRef.current = restoreAttachments(entry.files);
+          if (entry.files.length > 0) attachmentsRef.current = restoreAttachmentsRef.current(entry.files);
           return true;
         },
-        notifyFailed: (errorKey) => toast.error(t(errorKey)),
+        notifyFailed: (errorKey) => toast.error(tRef.current(errorKey)),
       }),
-    [groupId, restoreAttachments, t],
+    [groupId],
   );
 
   const send = () => {
