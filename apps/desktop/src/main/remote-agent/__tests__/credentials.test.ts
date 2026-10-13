@@ -266,3 +266,16 @@ describe('secrets written in the command', () => {
     }
   });
 });
+
+
+describe('long development commands', () => {
+  it('scans beyond the model review budget without treating script length as a credential read', () => {
+    const script = "python3 - <<'PY'\n" + '# ordinary edit\n'.repeat(500)
+      + "p='main.ts'\ns=open(p).read()\nopen(p,'w').write(s.replace('true','false'))\nPY";
+    expect(script.length).toBeGreaterThan(4096);
+    const roots = ['/repo'];
+    expect(isShareCredentialCommand(script + '\nnode --test main.test.mjs', roots)).toBe(false);
+    expect(isShareCredentialCommand(script + '\ncat ~/.ssh/id_rsa', roots)).toBe(true);
+    expect(isShareCredentialCommand(script + '\ncat .env', roots)).toBe(true);
+  });
+});

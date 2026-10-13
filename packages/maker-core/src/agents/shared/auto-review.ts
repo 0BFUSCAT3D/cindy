@@ -6544,8 +6544,9 @@ export function shellCommandReadsCredentials(
   depth = 0,
 ): boolean {
   if (typeof command !== 'string' || command.trim().length === 0) return false;
-  // 超长命令解析器不展开扫描，按需要确认处理(与 classifyShellCommand 同样不放过)。
-  if (command.length > MAX_AUTO_REVIEW_ACTION_TEXT_CHARS) return true;
+  // 确定性扫描与模型审阅的 4096 字符预算无关。普通长编辑脚本不能仅因长度
+  // 被当作凭证读取；仍扫描完整文本，独立上限用于限制解析资源消耗。
+  if (command.length > 256 * 1024) return true;
   if (shellCommandReadsDotenv(command, workspaceRoots, opts, depth)) return true;
   const variants = deterministicScanVariants(opts.credentialTextTransform?.(command) ?? command);
   return matchesAnyVariant(CREDENTIAL_ALWAYS_ASK_PATTERNS, variants) || fetchesCloudMetadata(variants.quotesOnly);
