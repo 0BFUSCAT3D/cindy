@@ -203,6 +203,18 @@ pnpm test:unit
   对应规则，不以本页命令替代专项验证。
 - 记录实际执行和结果；未执行的高相关检查必须说明原因。
 
+### Windows 远控 Rust 回归
+
+修改 `windows-host` / `windows-input` 时，
+`.github/workflows/windows-remote-desktop-native.yml` 在 Windows runner 上编译并运行
+host 默认、`development` 变体及 input helper 的 Rust 二进制测试，使用各自已提交的
+`Cargo.lock`。这套检查独立于 `client-ci` 的 Node/TypeScript 单测，不削减原有门禁。
+
+Dev 测试将身份绑定到当前 checkout 的 `apps/desktop` 和 runner 的 Node 可执行文件，
+仅用于现有路径与命令行单测，不代表 Electron 实例、Node-API addon 或正式签名包已验证。
+自动测试不安装 SYSTEM 服务、不请求真实 UAC；锁屏输入、授权迁移和 ACL 回滚仍需
+Windows 实机验收，不能以此 workflow 通过替代。
+
 ## Windows 窗口恢复实验
 
 Windows 偶发黑屏/灰屏的后台节流对照实验见
