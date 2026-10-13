@@ -374,6 +374,30 @@
       "modelsRefused": "对方电脑暂时不让读取这个分享：可能没有允许远程控制、关了这个供应商的「允许被远程调用」，也可能对方的 Cindy 刚启动、还没准备好。请稍后重试，或让对方检查这两项设置。",
       "modelsFailedWithCode": "暂时读不到对方开放的模型，请稍后重试。（错误代码：{{code}}）",
       "retryModels": "重新读取模型",
+      "groupStatus": {
+        "title": "组内电脑状态",
+        "shareActive": "分享已开启",
+        "refresh": "刷新状态",
+        "computer": "电脑 {{number}}",
+        "summary": "{{total}} 台中有 {{ready}} 台可接任务",
+        "loading": "正在读取电脑状态…",
+        "unsupported": "分享者的 Cindy 暂未提供状态，请联系分享者检查或更新",
+        "failed": "电脑状态读取失败，请刷新重试",
+        "unconfirmed": "部分电脑状态尚未确认，请稍后刷新",
+        "noneReady": "目前没有可接任务的电脑，请联系分享者检查",
+        "note": "仅显示匿名状态，不显示电脑名称和用量。能否运行还取决于所选模型。",
+        "updateNote": "需要分享者更新对应电脑上的 Cindy，才能接收分享来的任务",
+        "state": {
+          "available": "可用",
+          "busy": "忙碌，仍可接任务",
+          "cooling": "冷却中，暂不接新任务",
+          "offline": "离线或无法连接",
+          "paused": "已暂停分配",
+          "unavailable": "暂不可用",
+          "needs-update": "需要更新",
+          "unknown": "状态未知"
+        }
+      },
       "modelsEmpty": "对方还没有开放可用的模型。",
       "pausedNote": "对方暂停了这个分享，恢复后才能使用。",
       "offlineNote": "对方电脑不在线，上线后就能继续使用。",
@@ -438,11 +462,13 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
+      "usage": "用量均衡",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
         "order": "排前面的优先",
-        "weight": "按权重比例"
+        "weight": "按权重比例",
+        "usage": "按5小时和每周用量分配"
       }
     },
     "autoSwitch": {
@@ -451,6 +477,13 @@
     },
     "member": {
       "local": "本机",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
+        "unknown": "版本未知",
+        "needsUpdate": "需要更新才能接收分享任务",
+        "supportUnknown": "分享任务兼容性未知"
+      },
       "sourceDevice": "我的其他电脑",
       "sourceShare": "来自 {{name}} 的分享",
       "shareComputer": "{{name}} 的电脑",
@@ -468,6 +501,7 @@
       "weightAria": "{{name}} 的权重",
       "weightOption": "权重 {{weight}}",
       "assignAria": "给 {{name}} 分配任务",
+      "assignLocalAria": "允许 {{name}} 接收外部新任务",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出组",
       "status": {
@@ -475,6 +509,7 @@
         "idle": "空闲",
         "full": "已满",
         "paused": "已暂停分配",
+        "pausedLocal": "已暂停接收外部新任务",
         "cooling": "冷却中",
         "coolingUntil": "冷却中 · 约 {{time}} 恢复",
         "offline": "不在线",
@@ -1059,7 +1094,6 @@
       "back": "返回",
       "usageTitle": "用量",
       "wideCaptionMoney_other": "近 {{n}} 天 · 订阅等值估算",
-      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
       "scopeLocal": "这台电脑",
       "scopeAll": "全部设备",
       "noUsage": "没有用量",
@@ -1070,24 +1104,17 @@
       },
       "dailyAverage": "日均",
       "paid": "实付",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最高单日",
       "range7": "7 天",
       "range30": "30 天",
       "range90": "90 天",
-      "metricMoney": "金额",
-      "metricTokens": "Token",
       "listModels_other": "近 {{n}} 天模型",
       "listTasks": "今天的任务",
       "today": "今天",
       "manageTitle": "管理",
       "done": "完成",
-      "manageHero": "菜单里显示什么，\n按什么顺序。",
-      "manageHeroSub": "拖动调整顺序；关掉的来源不在菜单里出现，也不参与上面的余量判断。",
       "sources": "余量来源",
       "sourcesShown": "{{a}} / {{b}} 显示",
       "statusIcon": "菜单栏图标",
-      "statusIconSub": "单色，随菜单栏深浅变化",
       "statusIconMode": {
         "icon": "只图标",
         "lowest": "最低余量",
@@ -1096,11 +1123,9 @@
       },
       "other": "其他",
       "lowAlert": "快用完时通知",
-      "lowAlertSub": "所有还有余量的来源都快见底时，发一条系统通知",
       "privacy": "隐藏个人信息",
-      "privacySub": "账号只显示首尾字母，任务标题也会隐藏，适合录屏和截图",
       "usageScope": "用量统计范围",
-      "manageFoot": "账号登录和连接在 Cindy 设置 › 模型供应商 里管理。",
+      "manageFoot": "管理模型供应商",
       "showSource": "在菜单里显示 {{name}}",
       "reorderHint": "拖动，或用操作菜单调整顺序",
       "moveUp": "上移",
@@ -6040,7 +6065,7 @@
         "installed": "已安装",
         "replace": "替换",
         "replaceAria": "使用此市场版本替换 {{name}}",
-        "replaceDescription": "已安装相同标识的插件；继续安装会用此市场版本替换，并保留插件数据。",
+        "replaceDescription": "已安装相同标识的插件；继续安装会切换来源。原来源的数据将隔离保留，新来源不会继承原账号和密钥，需要重新连接。",
         "unavailable": "插件市场暂时不可用；已安装插件仍可正常管理和使用。",
         "customSourcesUnavailable": "以下自定义市场暂时不可用：{{names}}。其他市场不受影响。",
         "authenticationRequired": "登录 Cindy 后才能查看插件市场。",
@@ -6061,7 +6086,12 @@
           "invalidPackage": "插件安装包异常，无法安装，请联系发布者。",
           "downloadTimeout": "插件下载超时，请稍后重试。",
           "downloadFailed": "插件下载失败，请检查网络后重试。",
-          "brokerRedirectPortRequired": "该插件声明了授权 broker，但同一项 OAuth 配置缺少 redirectPort，无法从插件市场安装。请联系发布者补充该字段并重新发布。"
+          "brokerRedirectPortRequired": "该插件声明了授权 broker，但同一项 OAuth 配置缺少 redirectPort，无法从插件市场安装。请联系发布者补充该字段并重新发布。",
+          "namespaceClientRequired": "当前版本无法查看企业插件，请更新 Cindy。已安装的企业插件仍可使用。",
+          "organizationContextUnavailable": "暂时无法确认企业身份，请稍后重试。已安装的企业插件仍可使用。",
+          "namespaceConfigRequired": "企业插件服务暂不可用。已安装的企业插件仍可使用。",
+          "listChanged": "企业插件目录已变化，请重试。",
+          "organizationUnavailable": "企业插件暂不可用。已安装的企业插件仍可使用。"
         },
         "securityTitle": "安装与权限",
         "securityDescription": "安装包会在主进程中校验大小与 SHA-256，再经 Cindy 插件清单校验后原子安装。安装前会请你确认插件的权限，装好后即自动开启，可随时在插件页停用；更新会保留当前生效状态，新版本权限变多时会先请你确认。",
@@ -8571,7 +8601,7 @@
         "message": "跟进「{{title}}」",
         "aria": "跟进「{{title}}」"
       },
-      "followingMark": "{{names}}在跟进这个项目",
+      "followingMark": "{{names}}在跟进这个任务",
       "olderCount_other": "更早的 {{count}} 个",
       "kind": {
         "existing": "原有任务",
@@ -9779,7 +9809,10 @@
         "railAll": "全部",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在读取那台电脑的模型…",
+        "remoteFavoriteUnavailable": "{{source}} · 暂时读不到那台电脑的模型",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能保存收藏更改",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "还没有收藏——把鼠标停到模型行上，点 ☆ 存到这里",
         "addFavorite": "存为收藏",
         "customize": "自定义",
@@ -10967,6 +11000,7 @@
         },
         "directory": "目录：",
         "baseline": "基线分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下结论已生成，但未能验证是否仍然有效。"
       }
     },
@@ -11425,6 +11459,7 @@
       },
       "dialogueLabel": "对话",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回来源任务",
       "waitForReply": "等待你在文档区回复…",
       "modelSwitchedFastModeOff": "已切换模型，Fast Mode 已关闭"
     },
@@ -14117,6 +14152,18 @@
       "current": "审查当前目录",
       "choose": "选择其他目录",
       "open": "审查"
+    },
+    "inputSummary": {
+      "title": "独立审查（只读，无开发记忆）",
+      "directory": "目录：{{dir}}",
+      "baseline": "对比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未覆盖：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 个任务目录未检查",
+      "artifacts": "成果：{{count}} 项",
+      "focus": "关注：{{focus}}",
+      "task": "按任务目标审查当前成果"
     }
   },
   "learn": {
