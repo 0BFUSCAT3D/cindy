@@ -243,13 +243,11 @@
         "collapseAria": "Collapse {{name}}’s Model Usage",
         "empty": "You haven’t shared with anyone yet. Create a share link and send it; once they request access and you approve, they’ll appear here.",
         "table": {
-          "model": "Model",
           "turns": "Messages",
           "input": "Input",
           "output": "Output",
           "amount": "Est. Cost"
         },
-        "noUsage": "No usage in this period",
         "estimateNote": "Amounts are estimated from local unit prices and don’t reflect the provider’s actual bill."
       },
       "removeConfirm": {
@@ -378,6 +376,30 @@
       "modelsRefused": "The owner’s computer isn’t allowing this share right now. It may not allow remote control, “Allow remote use” may be off for this provider, or their Cindy may still be starting. Try again shortly, or ask them to check both settings.",
       "modelsFailedWithCode": "Couldn’t read the models they made available. Try again shortly. (Error code: {{code}})",
       "retryModels": "Reload Models",
+      "groupStatus": {
+        "title": "Group Computer Status",
+        "shareActive": "Sharing Active",
+        "refresh": "Refresh Status",
+        "computer": "Computer {{number}}",
+        "summary": "{{ready}} of {{total}} computers can accept tasks",
+        "loading": "Reading computer status…",
+        "unsupported": "The sharer’s Cindy has not provided status. Ask the sharer to check or update Cindy.",
+        "failed": "Could not read computer status. Refresh to try again.",
+        "unconfirmed": "Some computer statuses are unconfirmed. Refresh shortly.",
+        "noneReady": "No computers can accept tasks right now. Ask the sharer to check.",
+        "note": "Only anonymous status is shown, without computer names or usage. Availability also depends on the selected model.",
+        "updateNote": "The sharer needs to update Cindy on the indicated computers to accept shared tasks.",
+        "state": {
+          "available": "Available",
+          "busy": "Busy, Can Accept Tasks",
+          "cooling": "Cooling Down, No New Tasks",
+          "offline": "Offline or Unreachable",
+          "paused": "Assignment Paused",
+          "unavailable": "Temporarily Unavailable",
+          "needs-update": "Update Required",
+          "unknown": "Status Unknown"
+        }
+      },
       "modelsEmpty": "They haven't made any models available yet.",
       "pausedNote": "They've paused this share. You can use it again once they resume it.",
       "offlineNote": "Their computer is offline. You can use it again once it is back online.",
@@ -443,11 +465,13 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
+      "usage": "Usage Balancing",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
         "order": "Earlier in the list first",
-        "weight": "Split by weight"
+        "weight": "Split by weight",
+        "usage": "Balance 5-hour and weekly usage"
       }
     },
     "autoSwitch": {
@@ -456,6 +480,13 @@
     },
     "member": {
       "local": "This Computer",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "Update needed",
+        "unknown": "Version unknown",
+        "needsUpdate": "Update needed to receive shared tasks",
+        "supportUnknown": "Shared-task compatibility unknown"
+      },
       "sourceDevice": "My other computer",
       "sourceShare": "Shared by {{name}}",
       "shareComputer": "{{name}}'s computer",
@@ -475,6 +506,7 @@
       "weightAria": "Weight for {{name}}",
       "weightOption": "Weight {{weight}}",
       "assignAria": "Assign tasks to {{name}}",
+      "assignLocalAria": "Allow {{name}} to accept new tasks from other computers",
       "moreAria": "More actions for {{name}}",
       "remove": "Remove from Group",
       "status": {
@@ -482,6 +514,7 @@
         "idle": "Idle",
         "full": "Full",
         "paused": "Assignments paused",
+        "pausedLocal": "Not accepting new tasks from other computers",
         "cooling": "Cooling down",
         "coolingUntil": "Cooling down · back around {{time}}",
         "offline": "Offline",
@@ -1083,8 +1116,6 @@
       "usageTitle": "Usage",
       "wideCaptionMoney_one": "Last {{n}} day · Subscription value",
       "wideCaptionMoney_other": "Last {{n}} days · Subscription value",
-      "wideCaptionTokens_one": "Last {{n}} day · Tokens",
-      "wideCaptionTokens_other": "Last {{n}} days · Tokens",
       "scopeLocal": "This computer",
       "scopeAll": "All devices",
       "noUsage": "No usage",
@@ -1095,25 +1126,18 @@
       },
       "dailyAverage": "Daily avg",
       "paid": "Paid",
-      "tokenUnitTitle": "Tokens",
-      "peakDay": "Peak day",
       "range7": "7 days",
       "range30": "30 days",
       "range90": "90 days",
-      "metricMoney": "Amount",
-      "metricTokens": "Tokens",
       "listModels_one": "Models · {{n}} day",
       "listModels_other": "Models · {{n}} days",
       "listTasks": "Today's tasks",
       "today": "Today",
       "manageTitle": "Manage",
       "done": "Done",
-      "manageHero": "What the menu shows,\nand in what order.",
-      "manageHeroSub": "Drag to reorder. Sources you turn off don't appear in the menu and aren't part of the summary above.",
       "sources": "Sources",
       "sourcesShown": "{{a}} of {{b}} shown",
       "statusIcon": "Menu bar icon",
-      "statusIconSub": "Monochrome, follows the menu bar",
       "statusIconMode": {
         "icon": "Icon only",
         "lowest": "Lowest left",
@@ -1122,11 +1146,9 @@
       },
       "other": "Other",
       "lowAlert": "Notify when running low",
-      "lowAlertSub": "Sends a system notification when every source with room left is nearly empty",
       "privacy": "Hide personal info",
-      "privacySub": "Shows only the first and last letter of accounts and hides task titles. Good for recordings and screenshots.",
       "usageScope": "Usage covers",
-      "manageFoot": "Sign in to accounts and connect them in Cindy Settings › Model Providers.",
+      "manageFoot": "Manage providers",
       "showSource": "Show {{name}} in the menu",
       "reorderHint": "Drag, or use the actions menu to reorder",
       "moveUp": "Move up",
@@ -2808,6 +2830,10 @@
           "modelSupportsImageInput": "Supports image input",
           "modelSupportsImageInputHelp": "Enable only when the model actually accepts visual input. Start a new Pi task after saving.",
           "runtimeAdvanced": "Advanced",
+          "openaiImages": "Use OpenAI Images API",
+          "openaiImagesHint": "Uses this connection’s address and API key for /images/generations and /images/edits. Enabling it selects this as the provider’s only Images connection. Add missing model IDs manually, then declare their image capability in model details.",
+          "xaiVideos": "Use xAI-compatible Videos API",
+          "xaiVideosHint": "Uses this connection’s address and API key to submit and poll video tasks. Enabling it selects this as the provider’s only video connection. Add missing model IDs, then declare video capability in model details.",
           "runtimeSupportsImageGeneration": "Supports image generation and editing",
           "runtimeSupportsImageGenerationHelpLabel": "About image generation and editing support",
           "runtimeSupportsImageGenerationConditionTitle": "When to enable",
@@ -3057,6 +3083,20 @@
           "tokensApprox": "tokens (~{{approx}})",
           "catalogMissing": "Not in the catalog",
           "capability": "Capabilities",
+          "videoCapability": {
+            "label": "Video capability",
+            "default": "Follow model catalog",
+            "generate": "Text-to-video",
+            "edit": "Text-to-video and image-to-video",
+            "hint": "Applies to the {{agent}} video connection. Only declare capabilities the API supports. Reopen Art details after saving."
+          },
+          "imageCapability": {
+            "label": "Image capability",
+            "default": "Follow model catalog",
+            "generate": "Image generation",
+            "edit": "Image generation and editing",
+            "hint": "Applies to the {{agent}} Images connection. Only declare capabilities the API actually supports. Reopen Art details after saving."
+          },
           "capabilityHint": "Uses capabilities declared by this provider. Image support falls back to model naming when undeclared.",
           "imageInput": "Image input",
           "supported": "Supported",
@@ -3464,7 +3504,10 @@
       "connection": {
         "modelCount": "{{count}} models configured",
         "modelsAutomatic": "Model details are imported automatically. Adjust individual models in the model list.",
-        "manualModel": "Model IDs (if discovery is unavailable)"
+        "manualModel": "Model IDs (if discovery is unavailable)",
+        "modelTypeAutomatic": "Detect Automatically",
+        "manualModelTypeHint": "Use the same ID to update its type. Automatic detection restores the catalog type.",
+        "mediaOnlyTestHint": "This connection has only non-chat models. Fetch the model list to check catalog access; model execution is not tested here."
       },
       "byok": {
         "managed": "Managed by your organization",
@@ -6047,7 +6090,7 @@
         "installed": "Installed",
         "replace": "Replace",
         "replaceAria": "Replace {{name}} with this marketplace version",
-        "replaceDescription": "A plugin with the same ID is already installed. Continuing will replace it with this marketplace version and keep its data.",
+        "replaceDescription": "A plugin with the same ID is already installed. Continuing switches its source. Existing data is kept separately; the new source does not inherit accounts or secrets and must be connected again.",
         "unavailable": "The plugin market is temporarily unavailable. Installed plugins remain available.",
         "customSourcesUnavailable": "These custom marketplaces are temporarily unavailable: {{names}}. Other marketplaces are unaffected.",
         "authenticationRequired": "Sign in to Cindy to view the plugin market.",
@@ -6068,7 +6111,12 @@
           "invalidPackage": "This plugin package is invalid and cannot be installed. Contact the publisher.",
           "downloadTimeout": "The plugin download timed out. Please try again later.",
           "downloadFailed": "The plugin download failed. Check your connection and try again.",
-          "brokerRedirectPortRequired": "This plugin declares an authorization broker but is missing redirectPort in the same OAuth configuration, so it cannot be installed from the plugin marketplace. Contact the publisher to add the field and publish a new release."
+          "brokerRedirectPortRequired": "This plugin declares an authorization broker but is missing redirectPort in the same OAuth configuration, so it cannot be installed from the plugin marketplace. Contact the publisher to add the field and publish a new release.",
+          "namespaceClientRequired": "This version cannot show organization plugins. Update Cindy to continue. Installed organization plugins remain available.",
+          "organizationContextUnavailable": "Organization identity is temporarily unavailable. Try again later. Installed organization plugins remain available.",
+          "namespaceConfigRequired": "Organization plugins are temporarily unavailable. Installed organization plugins remain available.",
+          "listChanged": "The organization plugin catalog changed. Try again.",
+          "organizationUnavailable": "Organization plugins are temporarily unavailable. Installed organization plugins remain available."
         },
         "securityTitle": "Install and permissions",
         "securityDescription": "Cindy verifies package size and SHA-256 in the main process, validates the plugin manifest, then installs atomically. You confirm the plugin’s permissions before it is installed; first-time installs are then enabled automatically and can be disabled anytime on the Plugins page. Updates keep the current enabled state, and you are asked first when a new version needs more permissions.",
@@ -8589,7 +8637,7 @@
         "message": "Follow up on “{{title}}”",
         "aria": "Follow up on “{{title}}”"
       },
-      "followingMark": "Looked after by {{names}}",
+      "followingMark": "This task is looked after by {{names}}",
       "olderCount_one": "{{count}} older",
       "olderCount_other": "{{count}} older",
       "kind": {
@@ -9187,6 +9235,7 @@
       "avatar": "{{name}} is choosing a new portrait",
       "welcome": "Getting a first hello ready",
       "failed": "Preparation paused. Everything completed so far is saved. You can try again.",
+      "changeModel": "Change Model",
       "retryFailed": "Couldn’t retry just now. Please try again shortly.",
       "leave": "Step away",
       "avatarSkipped": "Using the default portrait for now. You can change it anytime."
@@ -9227,7 +9276,9 @@
       "generate": "Create teammate",
       "generating": "Shaping your teammate…",
       "generationFailed": "Could not generate your teammate. Your idea is still here; please try again.",
-      "modelRequired": "Select an available default model in Cindy first.",
+      "modelRequired": "Choose an available model above to continue.",
+      "modelFollowsDefault": "Follows the default teammate model.",
+      "modelForThisBot": "This selection applies only to this teammate.",
       "cindyDescription": "I can help you use Cindy, connect your tools, and get things done together.",
       "cindySummary": "Manage Cindy, connect tools, and get things done.",
       "openCindy": "Open Cindy",
@@ -9781,7 +9832,10 @@
         "railAll": "All",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "Loading models from that computer…",
+        "remoteFavoriteUnavailable": "{{source}} · Can't read that computer's models right now",
         "favoritesGroup": "Favorites",
+        "favoritesSaveFailed": "Could not save favorite changes",
+        "favoritesCleanupFailed": "Could not remove favorites for revoked provider shares",
         "favoritesEmpty": "No favorites yet — hover a model and hit ☆ to pin it here",
         "addFavorite": "Save to favorites",
         "customize": "Customize",
@@ -10132,7 +10186,7 @@
       "saveEdit": "Save Text"
     },
     "sharedProviderCredential": {
-      "description": "This task uses a provider shared with you, so what the Agent reads passes through the sharer's computer. This step involves a credential file (such as a key or .env), so it continues only after you confirm."
+      "description": "This task uses a shared provider, so what the Agent reads passes through the sharer’s computer or another computer they arrange. This step may involve credentials (such as keys or .env) and needs your confirmation. “Always allow for this session” skips further shared-provider credential confirmations in this task. Reopening the task or changing its permission mode requires confirmation again."
     },
     "mediaDownload": {
       "title": "Download the generated media?",
@@ -10975,6 +11029,7 @@
         },
         "directory": "Directory: ",
         "baseline": "Base branch: ",
+        "additionalDirectories": "Also: ",
         "unverifiedResult": "The reviewer produced these findings, but their validity could not be verified."
       }
     },
@@ -11442,6 +11497,7 @@
       },
       "dialogueLabel": "Chat",
       "backToAutomations": "Back to Automations",
+      "backToReviewSource": "Back to source task",
       "waitForReply": "Waiting for your reply in the document area…",
       "modelSwitchedFastModeOff": "Model switched, Fast Mode disabled"
     },
@@ -14136,6 +14192,18 @@
       "current": "Review this directory",
       "choose": "Choose another directory",
       "open": "Review"
+    },
+    "inputSummary": {
+      "title": "Independent review (read-only, no development memory)",
+      "directory": "Directory: {{dir}}",
+      "baseline": "compared with {{base}}",
+      "uncommitted": "includes uncommitted changes",
+      "additionalDirectories": "Also: {{dirs}}",
+      "uncovered": "Not covered: {{dirs}}",
+      "uncheckedDirs": "{{count}} more task directories were not checked",
+      "artifacts": "Artifacts: {{count}}",
+      "focus": "Focus: {{focus}}",
+      "task": "Reviewing the current result against the task goal"
     }
   },
   "learn": {
@@ -14367,7 +14435,9 @@
         "description": "Please email the following information to {{email}} to request an invoice.",
         "requiredInfo": "Please include these details in your email:",
         "emailSubject": "Invoice request for order {{orderId}}",
-        "emailBody": "Hello,\n\nI would like to request an invoice for the following order:\n\n────────────────────\nOrder ID: {{orderId}}\nApplication: {{application}}\nPayment method: {{paymentMethod}}\nInvoice amount: {{amount}}\nInvoice title: \nContact person: \nPhone number: \nEmail: \n────────────────────\n\nThank you.",
+        "personalInvoicePolicy": "Invoices for Cindy Personal top-ups are issued in <strong>an individual’s name</strong> by default. You can use your name or “Individual” as the invoice title. If you need an invoice in your company’s name for expense reimbursement, provide <strong>a reimbursement statement bearing the company’s official stamp</strong> and specifying the invoice title.",
+        "invoiceTitleHint": "Instructions: For an individual invoice, enter your name or “Individual”. For an invoice in your company’s name for expense reimbursement, attach a reimbursement statement bearing the company’s official stamp and specifying the invoice title.",
+        "emailBody": "Hello,\n\nI would like to request an invoice for the following order:\n\n────────────────────\nOrder ID: {{orderId}}\nApplication: {{application}}\nPayment method: {{paymentMethod}}\nInvoice amount: {{amount}}\nInvoice title: \n{{invoiceTitleHint}}\n\nContact person: \nPhone number: \nEmail: \n────────────────────\n\nThank you.",
         "sendAction": "Send Invoice Request",
         "emailCopied": "Support email copied",
         "emailCopyFailed": "Support email wasn’t copied — try again",

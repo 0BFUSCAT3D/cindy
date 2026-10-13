@@ -52,6 +52,7 @@ import { MainWindowActionButton, MainWindowEmptyState } from '@/components/Mobil
 import { readRemoteCollectionCache } from '@/device-link/remoteResourceAvailability';
 import type { RemoteResourceHostTarget } from '@/device-link/remoteResources';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 import { goBackGuarded } from '@/utils/backGuard';
 import {
@@ -330,6 +331,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     {body}
     {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
       act={chat.act} onClose={() => setSettings(false)}
+      onRefresh={chat.reload}
       onClosed={() => { if (leaveAfterSettings.current) { leaveAfterSettings.current = false; leave(); } }}
       onDeleted={onGroupDeleted} /> : null}
   </SafeAreaView>;
@@ -449,6 +451,7 @@ function BotGroupTimelineItem({
 }) {
   const { t } = useTranslation();
   const styles = useThemedStyles(makeStyles);
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
   if (message.kind === 'round-end') {
     return <BotGroupDivider testID="botGroup.roundEnd">
       <Text style={styles.dividerText}>{t('groupChat.timeline.roundEnded')}</Text>
@@ -478,7 +481,11 @@ function BotGroupTimelineItem({
         {attachments.length > 0
           ? <BotGroupMessageAttachments messageId={message.id} attachments={attachments} align="right" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} />
           : null}
-        {bubble ? <View style={[styles.userBubble, compact && styles.userBubbleCompact]} testID="botGroup.message.userBubble">
+        {bubble ? <View style={[
+          styles.userBubble,
+          compact && styles.userBubbleCompact,
+          userBubbleColors && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
+        ]} testID="botGroup.message.userBubble">
           <BotGroupUserText content={message.content} mentionLabels={mentionLabels} />
         </View> : null}
       </View>

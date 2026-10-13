@@ -241,13 +241,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "還沒有分享給任何人。產生分享連結傳給對方，對方申請、你同意後會出現在這裡。",
         "table": {
-          "model": "模型",
           "turns": "訊息",
           "input": "輸入",
           "output": "輸出",
           "amount": "估算金額"
         },
-        "noUsage": "這段時間沒有用量",
         "estimateNote": "金額按本機單價估算，不代表供應商實際帳單。"
       },
       "removeConfirm": {
@@ -376,6 +374,30 @@
       "modelsRefused": "對方電腦暫時不讓讀取這個分享：可能沒有允許遠端控制、關了這個供應商的「允許遠端呼叫」，也可能對方的 Cindy 剛啟動、還沒準備好。請稍後重試，或請對方檢查這兩項設定。",
       "modelsFailedWithCode": "暫時讀不到對方開放的模型，請稍後重試。（錯誤代碼：{{code}}）",
       "retryModels": "重新讀取模型",
+      "groupStatus": {
+        "title": "組內電腦狀態",
+        "shareActive": "分享已開啟",
+        "refresh": "重新整理狀態",
+        "computer": "電腦 {{number}}",
+        "summary": "{{total}} 台中有 {{ready}} 台可接任務",
+        "loading": "正在讀取電腦狀態…",
+        "unsupported": "分享者的 Cindy 尚未提供狀態，請聯絡分享者檢查或更新",
+        "failed": "電腦狀態讀取失敗，請重新整理再試",
+        "unconfirmed": "部分電腦狀態尚未確認，請稍後重新整理",
+        "noneReady": "目前沒有可接任務的電腦，請聯絡分享者檢查",
+        "note": "僅顯示匿名狀態，不顯示電腦名稱和用量。能否執行仍取決於所選模型。",
+        "updateNote": "需要分享者更新對應電腦上的 Cindy，才能接收分享來的任務",
+        "state": {
+          "available": "可用",
+          "busy": "忙碌，仍可接任務",
+          "cooling": "冷卻中，暫不接新任務",
+          "offline": "離線或無法連線",
+          "paused": "已暫停分配",
+          "unavailable": "暫不可用",
+          "needs-update": "需要更新",
+          "unknown": "狀態未知"
+        }
+      },
       "modelsEmpty": "對方還沒有開放可用的模型。",
       "pausedNote": "對方暫停了這個分享，恢復後才能使用。",
       "offlineNote": "對方電腦不在線，上線後就能繼續使用。",
@@ -422,7 +444,7 @@
       "expandAria": "展開 {{name}} 的用量明細",
       "collapseAria": "收起 {{name}} 的用量明細",
       "table": {
-        "member": "組內電腦 / 模型"
+        "member": "電腦 / 模型"
       }
     },
     "section": {
@@ -440,11 +462,13 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
+      "usage": "用量均衡",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例"
+        "weight": "依權重比例",
+        "usage": "按5小時和每週用量分配"
       }
     },
     "autoSwitch": {
@@ -453,6 +477,13 @@
     },
     "member": {
       "local": "本機",
+      "version": {
+        "current": "Cindy {{version}}",
+        "updateRequired": "需要更新",
+        "unknown": "版本未知",
+        "needsUpdate": "需要更新才能接收分享任務",
+        "supportUnknown": "分享任務相容性未知"
+      },
       "sourceDevice": "我的其他電腦",
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
@@ -470,6 +501,7 @@
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
       "assignAria": "給 {{name}} 分配任務",
+      "assignLocalAria": "允許 {{name}} 接收外部新任務",
       "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
@@ -477,6 +509,7 @@
         "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
+        "pausedLocal": "已暫停接收外部新任務",
         "cooling": "冷卻中",
         "coolingUntil": "冷卻中 · 約 {{time}} 恢復",
         "offline": "離線",
@@ -1061,7 +1094,6 @@
       "back": "返回",
       "usageTitle": "用量",
       "wideCaptionMoney_other": "近 {{n}} 天 · 訂閱等值估算",
-      "wideCaptionTokens_other": "近 {{n}} 天 · Token",
       "scopeLocal": "這台電腦",
       "scopeAll": "所有裝置",
       "noUsage": "沒有用量",
@@ -1072,24 +1104,17 @@
       },
       "dailyAverage": "日均",
       "paid": "實付",
-      "tokenUnitTitle": "Token",
-      "peakDay": "最高單日",
       "range7": "7 天",
       "range30": "30 天",
       "range90": "90 天",
-      "metricMoney": "金額",
-      "metricTokens": "Token",
       "listModels_other": "近 {{n}} 天模型",
       "listTasks": "今天的任務",
       "today": "今天",
       "manageTitle": "管理",
       "done": "完成",
-      "manageHero": "選單裡顯示什麼，\n按什麼順序。",
-      "manageHeroSub": "拖動調整順序；關掉的來源不在選單裡出現，也不參與上面的餘量判斷。",
       "sources": "餘量來源",
       "sourcesShown": "{{a}} / {{b}} 顯示",
       "statusIcon": "選單列圖示",
-      "statusIconSub": "單色，隨選單列深淺變化",
       "statusIconMode": {
         "icon": "只圖標",
         "lowest": "最低餘量",
@@ -1098,11 +1123,9 @@
       },
       "other": "其他",
       "lowAlert": "快用完時通知",
-      "lowAlertSub": "所有還有餘量的來源都快見底時，發一則系統通知",
       "privacy": "隱藏個人資訊",
-      "privacySub": "帳號只顯示首尾字母，任務標題也會隱藏，適合錄影和截圖",
       "usageScope": "用量統計範圍",
-      "manageFoot": "帳號登入和連線在 Cindy 設定 › 模型供應商 裡管理。",
+      "manageFoot": "管理模型供應商",
       "showSource": "在選單裡顯示 {{name}}",
       "reorderHint": "拖動，或用操作選單調整順序",
       "moveUp": "上移",
@@ -2784,6 +2807,10 @@
           "modelSupportsImageInput": "支援圖片輸入",
           "modelSupportsImageInputHelp": "僅在該模型確實支援視覺輸入時開啟。儲存後新建 Pi 任務生效。",
           "runtimeAdvanced": "進階",
+          "openaiImages": "使用 OpenAI Images 介面",
+          "openaiImagesHint": "使用此連線的位址和 API Key 呼叫 /images/generations 與 /images/edits。開啟後，此連線將作為供應商唯一的圖片連線。缺少的模型可手動新增 ID，再到模型詳情宣告圖片能力。",
+          "xaiVideos": "使用 xAI 相容影片介面",
+          "xaiVideosHint": "使用此連線的位址與 API Key 提交、查詢影片任務。開啟後，此連線將作為供應商唯一的影片連線。缺少的模型可手動新增 ID，再到模型詳情宣告影片能力。",
           "runtimeSupportsImageGeneration": "支援圖片生成與編輯",
           "runtimeSupportsImageGenerationHelpLabel": "瞭解圖片生成與編輯支援",
           "runtimeSupportsImageGenerationConditionTitle": "適用條件",
@@ -3032,6 +3059,20 @@
           "tokensApprox": "tokens（約 {{approx}}）",
           "catalogMissing": "目錄未提供",
           "capability": "能力",
+          "videoCapability": {
+            "label": "影片能力",
+            "default": "跟隨模型目錄",
+            "generate": "文字生成影片",
+            "edit": "文字生成影片與圖片轉影片",
+            "hint": "套用於 {{agent}} 影片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
+          "imageCapability": {
+            "label": "圖片能力",
+            "default": "跟隨模型目錄",
+            "generate": "圖片生成",
+            "edit": "圖片生成與編輯",
+            "hint": "套用於 {{agent}} 的圖片連線。僅宣告介面實際支援的能力，儲存後重新開啟 Art 詳情。"
+          },
           "capabilityHint": "優先使用目前供應商宣告的能力；未宣告時，圖片能力參考模型名稱。",
           "imageInput": "圖片輸入",
           "supported": "支援",
@@ -3438,7 +3479,10 @@
       "connection": {
         "modelCount": "已設定 {{count}} 個模型",
         "modelsAutomatic": "模型資料自動取得。個別模型的設定請在模型清單調整。",
-        "manualModel": "模型 ID（無法自動取得時填寫）"
+        "manualModel": "模型 ID（無法自動取得時填寫）",
+        "modelTypeAutomatic": "自動辨識",
+        "manualModelTypeHint": "相同 ID 可更新類型；自動辨識會恢復目錄中的類型。",
+        "mediaOnlyTestHint": "此連線僅含非對話模型。可取得模型列表檢查目錄存取，此處不驗證模型呼叫。"
       },
       "byok": {
         "managed": "由企業管理連線與模型",
@@ -6041,7 +6085,12 @@
           "invalidPackage": "插件安裝包異常，無法安裝，請聯絡釋出者。",
           "downloadTimeout": "插件下載逾時，請稍後重試。",
           "downloadFailed": "插件下載失敗，請檢查網路後重試。",
-          "brokerRedirectPortRequired": "此插件宣告了授權 broker，但同一項 OAuth 設定缺少 redirectPort，無法從插件市場安裝。請聯絡釋出者補上該欄位並重新釋出。"
+          "brokerRedirectPortRequired": "此插件宣告了授權 broker，但同一項 OAuth 設定缺少 redirectPort，無法從插件市場安裝。請聯絡釋出者補上該欄位並重新釋出。",
+          "namespaceClientRequired": "目前版本無法查看企業插件，請更新 Cindy。已安裝的企業插件仍可使用。",
+          "organizationContextUnavailable": "暫時無法確認企業身份，請稍後重試。已安裝的企業插件仍可使用。",
+          "namespaceConfigRequired": "企業插件服務暫時無法使用。已安裝的企業插件仍可使用。",
+          "listChanged": "企業插件目錄已變化，請重試。",
+          "organizationUnavailable": "企業插件暫時無法使用。已安裝的企業插件仍可使用。"
         },
         "securityTitle": "安裝與權限",
         "securityDescription": "安裝包會在主處理程序中校驗大小與 SHA-256，再經 Cindy 插件清單校驗後原子安裝。安裝前會請你確認插件的權限，安裝好後即自動開啟，可隨時在插件頁停用；更新會保留當前生效狀態，新版本權限變多時會先請你確認。",
@@ -6113,7 +6162,7 @@
         "customSourcesUnavailable": "以下自訂市場暫時無法存取：{{names}}，其他市場不受影響。",
         "replace": "取代",
         "replaceAria": "以此市場版本取代 {{name}}",
-        "replaceDescription": "已安裝相同 ID 的插件，繼續將以市場版本取代，原有資料會保留。"
+        "replaceDescription": "已安裝相同 ID 的插件；繼續安裝會切換來源。原來源的資料將隔離保留，新來源不會繼承原帳號和金鑰，需要重新連接。"
       },
       "install": "安裝插件…",
       "empty": "還沒有安裝任何插件",
@@ -8552,7 +8601,7 @@
         "message": "跟進「{{title}}」",
         "aria": "跟進「{{title}}」"
       },
-      "followingMark": "{{names}}在跟進這個專案",
+      "followingMark": "{{names}}在跟進這個任務",
       "olderCount_other": "更早的 {{count}} 個",
       "kind": {
         "existing": "原有任務",
@@ -9149,6 +9198,7 @@
       "avatar": "{{name}} 正在挑選新頭像",
       "welcome": "正在準備第一聲問候",
       "failed": "準備暫時停住了。已完成的內容會保留，可以再試一次。",
+      "changeModel": "更換模型",
       "retryFailed": "暫時無法重試，請稍後再試。",
       "leave": "先去忙",
       "avatarSkipped": "暫時用了預設頭像，你隨時可以換一張。"
@@ -9189,7 +9239,9 @@
       "generate": "產生夥伴",
       "generating": "正在構思夥伴…",
       "generationFailed": "暫時無法產生，請保留你的想法再試一次。",
-      "modelRequired": "請先在 Cindy 中選擇可用的預設模型。",
+      "modelRequired": "請在上方選擇可用模型後繼續。",
+      "modelFollowsDefault": "跟隨夥伴預設模型。",
+      "modelForThisBot": "此選擇僅用於這位夥伴。",
       "cindyDescription": "我會幫你使用 Cindy、連接工具，也會和你一起把事情做完。",
       "cindySummary": "管理 Cindy，連接工具，把事情做完。",
       "openCindy": "開啟 Cindy",
@@ -9742,7 +9794,10 @@
         "railAll": "全部",
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在讀取那臺電腦的模型…",
+        "remoteFavoriteUnavailable": "{{source}} · 暫時讀不到那臺電腦的模型",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能儲存收藏變更",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
         "addFavorite": "存為收藏",
         "customize": "自訂",
@@ -10094,7 +10149,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者的電腦。這一步涉及憑證類檔案（如金鑰、.env），需要你確認後才繼續。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；重新開啟任務或切換權限模式後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
@@ -10932,6 +10987,7 @@
         },
         "directory": "目錄：",
         "baseline": "基準分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下結論已產生，但未能驗證是否仍然有效。"
       }
     },
@@ -11391,6 +11447,7 @@
       },
       "dialogueLabel": "對話",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回來源任務",
       "waitForReply": "等待你在文件區回覆…",
       "modelSwitchedFastModeOff": "已切換模型，Fast Mode 已關閉"
     },
@@ -14083,6 +14140,18 @@
       "current": "審查目前目錄",
       "choose": "選擇其他目錄",
       "open": "審查"
+    },
+    "inputSummary": {
+      "title": "獨立審查（只讀，無開發記憶）",
+      "directory": "目錄：{{dir}}",
+      "baseline": "對比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未涵蓋：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 個任務目錄未檢查",
+      "artifacts": "成果：{{count}} 項",
+      "focus": "關注：{{focus}}",
+      "task": "依任務目標審查目前成果"
     }
   },
   "learn": {
@@ -14314,7 +14383,9 @@
         "description": "請將以下資訊寄送至客服信箱 {{email}}，以申請開立發票。",
         "requiredInfo": "郵件中請提供以下資訊：",
         "emailSubject": "申請開立訂單 {{orderId}} 的發票",
-        "emailBody": "您好，\n\n我想申請開立以下訂單的發票：\n\n────────────────────\n訂單號：{{orderId}}\n應用程式：{{application}}\n付款方式：{{paymentMethod}}\n開票金額：{{amount}}\n發票抬頭：\n聯絡人：\n聯絡電話：\n信箱：\n────────────────────\n\n謝謝。",
+        "personalInvoicePolicy": "Cindy 個人版儲值預設開立<strong>個人抬頭發票</strong>，抬頭可填寫姓名或「個人」。如需開立企業抬頭發票用於公司報銷，請提供<strong>加蓋公司公章的報銷說明</strong>，並在說明中註明開票抬頭。",
+        "invoiceTitleHint": "填寫說明：個人抬頭請填寫姓名或「個人」；如需企業抬頭用於公司報銷，請隨郵件附上加蓋公司公章、註明開票抬頭的報銷說明。",
+        "emailBody": "您好，\n\n我想申請開立以下訂單的發票：\n\n────────────────────\n訂單號：{{orderId}}\n應用程式：{{application}}\n付款方式：{{paymentMethod}}\n開票金額：{{amount}}\n發票抬頭：\n{{invoiceTitleHint}}\n\n聯絡人：\n聯絡電話：\n信箱：\n────────────────────\n\n謝謝。",
         "sendAction": "寄送開票申請",
         "emailCopied": "客服信箱已複製",
         "emailCopyFailed": "複製客服信箱失敗，請再試一次",
