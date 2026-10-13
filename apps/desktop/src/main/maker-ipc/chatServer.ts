@@ -1241,6 +1241,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       rooms.delete(room.groupId); subscribe(room.groupId); changed(room.groupId); return room;
     }),
   };
+  /**
+   * Quote snapshots of sends whose outcome is unknown (the POST went out, no answer came back).
+   * A retry of the same operation must post the same content, even if the original has been
+   * deleted since: the server then returns the message it already stored instead of a second one.
+   */
+  const postedQuotes = new Map<string, BotGroupQuoteView>();
   const sendMessage: BotGroupChatService['sendMessage'] = (input, origin) => safe(async () => {
     const started = Date.now();
     const i = z.object({ groupId: id, text: z.string().max(8000), clientId: z.string().min(8).max(160),
@@ -1252,7 +1258,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const intentVersion = ++nextIntentVersion;
     const s = await snapshot(i.groupId);
     // Read before preparing attachments: an unavailable quote must not stage files.
-    const quote = i.quote ? await quoteSnapshot(i.groupId, i.quote.messageId, s.members) : null;
+    const quoteKey = i.quote ? `${i.groupId}:${i.clientId}:${i.quote.messageId}` : '';
+    const quote = i.quote ? postedQuotes.get(quoteKey) ?? await quoteSnapshot(i.groupId, i.quote.messageId, s.members) : null;
     const plans = await api<ServerPlan[]>(`/conversations/${i.groupId}/plans`);
     const openPlan = plans.find(p => ['proposed','running','waiting'].includes(p.status));
     const proposed = openPlan?.status === 'proposed' && openPlan.creator_id === selfId;
@@ -1269,14 +1276,21 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     let result: { id: string };
     try {
       const mentions = await mentionIds(i.groupId, i.mentions);
+      if (quote) {
+        postedQuotes.set(quoteKey, quote);
+        if (postedQuotes.size > 128) postedQuotes.delete(postedQuotes.keys().next().value!);
+      }
       result = await api<{ id: string }>(`/conversations/${i.groupId}/${commentPlan ? `plans/${commentPlan.id}/messages` : 'messages'}`, 'POST', {
         operationId: i.clientId, content: [ ...(quote ? [buildBotGroupQuoteCard(quote)] : []), ...(i.text ? [{ type: 'text', text: i.text }] : []),
           ...await media.upload(i.groupId, i.clientId, prepared?.ok ? prepared.attachments : [], selfId) ], mentions, deferExecution: shouldPlan, ...(groupDiscussionParity ? { mentionsAll: i.mentions.all, planningMode: i.division || proposed ? 'explicit' : 'auto' } : {}),
       });
     } catch (error) {
       if (prepared?.ok) await prepared.discard();
+      // A definite refusal stored nothing; a lost answer keeps the snapshot for the retry.
+      if (error instanceof ChatResponseError && error.status >= 400 && error.status < 500 && error.status !== 408) postedQuotes.delete(quoteKey);
       throw error;
     }
+    postedQuotes.delete(quoteKey);
     if (prepared?.ok) prepared.commit();
     const intent = intentVersion > (acceptedIntentVersions.get(i.groupId) ?? 0)
       ? await replacePlanIntent(i.groupId, intentVersion) : null;

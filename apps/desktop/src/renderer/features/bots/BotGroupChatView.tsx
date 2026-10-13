@@ -134,8 +134,6 @@ const TIMELINE_LOADING_REVEAL_MS = 200;
 /** Older pages read while looking for a quoted message before saying it is out of reach. */
 const QUOTE_LOCATE_MAX_PAGES = 5;
 const QUOTE_HIGHLIGHT_MS = 2000;
-/** Older pages re-read after one push refresh to re-check quoted originals. */
-const QUOTE_REFRESH_MAX_PAGES = 3;
 const NO_IDS: ReadonlySet<string> = new Set();
 
 /**
@@ -263,9 +261,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       }
     };
     /**
-     * Re-reads the older pages holding quoted originals after a push, a bounded number of times,
-     * and updates only the messages already loaded. A newer read supersedes this one; a failed
-     * read leaves the original unverified, so its quote shows the snapshot, not the stale copy.
+     * Re-reads the older pages holding quoted originals after a push and updates only messages
+     * already loaded; history that was never opened is not fetched. Each read covers at least the
+     * newest remaining original, so it ends after at most one read per original. A newer read
+     * supersedes this one; a failed read leaves the rest unverified, so their quotes show the
+     * snapshot, not the stale copy.
      */
     const recheckQuotedOriginals = async (
       api: NonNullable<ReturnType<typeof botGroupApi>>,
@@ -274,7 +274,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     ) => {
       setUnverifiedOriginals((previous) => new Set([...previous, ...targets.map((target) => target.id)]));
       let remaining = targets;
-      for (let page = 0; remaining.length > 0 && page < QUOTE_REFRESH_MAX_PAGES; page += 1) {
+      for (let page = 0; remaining.length > 0 && page < targets.length; page += 1) {
         let messages: BotGroupMessageView[] | null = null;
         try {
           const read = await api.getBotGroup(groupId, { beforeSequence: remaining[0]!.sequence + 1 });
@@ -946,7 +946,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         />
       ) : null}
     </main>
-    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} onClose={closeThread} />}
+    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} quoteSources={quoteSources} onClose={closeThread} />}
     </div>
   );
 }

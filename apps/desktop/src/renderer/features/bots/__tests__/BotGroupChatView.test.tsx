@@ -1407,6 +1407,57 @@ describe('BotGroupChatView', () => {
         expect(document.querySelector('[class*="search-match-bg"]')).toBeNull();
       });
 
+      it('re-checks every quoted original across all opened pages on a single push', async () => {
+        const user = userEvent.setup();
+        const originals = [400, 300, 200, 100].map((sequence, index) => msg({ id: `o${index}`, sequence, authorKind: 'bot',
+          authorBotId: 'xiaoman', authorName: '小满', content: `原文${index}` }));
+        const quotes = originals.map((original, index) => msg({ id: `q${index}`, sequence: 501 + index, content: `回复${index}`,
+          quote: quoteOf(original.id, { excerpt: `快照${index}`, sequence: original.sequence }) }));
+        let server = originals;
+        const base = detail({ serverBacked: true, hasMoreBefore: true });
+        // One message per page, so each original sits on its own opened page.
+        mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => {
+          if (!options?.beforeSequence) return { ok: true, group: { ...base, messages: quotes } };
+          const page = server.filter((message) => message.sequence < options.beforeSequence!).slice(0, 1);
+          return { ok: true, group: { ...base, hasMoreBefore: page[0]!.sequence > 100, messages: page } };
+        });
+        renderView();
+        for (let page = 0; page < 4; page += 1) {
+          await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+          await screen.findByText(`原文${page}`, { selector: '[data-markdown]' });
+        }
+        server = originals.map((original, index) => index % 2 === 0
+          ? { ...original, deleted: true, content: '（消息已删除）' } : { ...original, content: `改过${index}` });
+        mocks.getBotGroup.mockClear();
+        await push();
+        await waitFor(() => expect(screen.getAllByTestId('bot-group-quote').map((block) => block.getAttribute('data-quote-state')))
+          .toEqual(['deleted', 'live', 'deleted', 'live']));
+        const blocks = screen.getAllByTestId('bot-group-quote');
+        expect(blocks[1]!.textContent).toContain('改过1');
+        expect(blocks[3]!.textContent).toContain('改过3');
+        expect(document.body.textContent).not.toMatch(/原文0|原文2/);
+        // One read for the latest page, then one per original's page; nothing beyond what was opened.
+        expect(mocks.getBotGroup.mock.calls.map(([, options]) => options?.beforeSequence).filter(Boolean)).toEqual([401, 301, 201, 101]);
+      });
+
+      it('shows a 话题 root\'s quote from the same verified messages', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        mocks.thread.mockImplementation(async () => ({ ok: true, root: latest, replies: [], hasMore: false }));
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        server = [{ ...original, deleted: true, content: '（消息已删除）' }];
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        const row = document.querySelector('[data-bot-group-message-id="q1"]') as HTMLElement;
+        await user.click(within(row).getByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+        const panel = await screen.findByRole('complementary');
+        await waitFor(() => expect(within(panel).getByTestId('bot-group-quote').getAttribute('data-quote-state')).toBe('deleted'));
+        expect(panel.textContent).not.toContain('快照摘要');
+      });
+
       it('lets a newer push win over an older re-read that answers late', async () => {
         const user = userEvent.setup();
         const pending: Array<(page: BotGroupMessageView[]) => void> = [];

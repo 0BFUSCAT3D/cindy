@@ -259,6 +259,38 @@ describe('Chat Server result delivery and refresh', () => {
       expect(posts()).toHaveLength(0);
     });
 
+    it('retries a send whose answer was lost with the same quote, even after the original is gone', async () => {
+      let original: unknown = quoted();
+      let lost = true;
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/messages') && method === 'POST' && lost) { lost = false; throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }); }
+        return quoteResponse(original)(route, method);
+      });
+      const input = { groupId: roomId, text: 'Agreed', clientId: 'quote-send-lost', mentions: { all: false, botIds: [] }, quote: { messageId: quotedId } };
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false });
+      // The original is deleted before the user retries the same send.
+      original = null;
+      expect(await service.sendMessage(input)).toEqual({ ok: true, messageId: 'saved-quote' });
+      const [first, retry] = posts().map(([, , body]) => body);
+      expect(retry.operationId).toBe(first.operationId);
+      expect(retry.content).toEqual(first.content);
+      expect(fixture.handle.mock.calls.filter(([route]) => route === `/conversations/${roomId}/messages/${quotedId}`)).toHaveLength(1);
+    });
+
+    it('validates the quote again after the server refused the post', async () => {
+      let original: unknown = quoted();
+      let refuse = true;
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/messages') && method === 'POST' && refuse) { refuse = false; return { status: 409, body: { error: { code: 'MENTION_NOT_MEMBER' } } }; }
+        return quoteResponse(original)(route, method);
+      });
+      const input = { groupId: roomId, text: 'Agreed', clientId: 'quote-send-refused', mentions: { all: false, botIds: [] }, quote: { messageId: quotedId } };
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false });
+      original = null;
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
+      expect(posts()).toHaveLength(1);
+    });
+
     it('rejects a quote id that is not a message id', async () => {
       fixture.handle.mockImplementation(quoteResponse(quoted()));
       expect(await service.sendMessage({ groupId: roomId, text: 'Agreed', clientId: 'quote-send-3', mentions: { all: false, botIds: [] },
