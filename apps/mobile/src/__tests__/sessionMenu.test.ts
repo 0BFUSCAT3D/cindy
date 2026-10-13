@@ -163,6 +163,10 @@ describe('sessionMenu info model', () => {
 describe('sessionMenu navigation', () => {
   it('copies the mobile deep link for the session', () => {
     expect(sessionMenuCopyLink(session({ id: 'abc' }))).toBe('cindy://session/abc');
+    expect(sessionMenuCopyLink(session({ id: 'abc', deviceLinkDeviceId: 'physical' })))
+      .toBe('cindy://session/abc?device=physical');
+    expect(sessionMenuCopyLink(session({ id: 'abc', canonicalDeviceId: 'canonical', deviceLinkDeviceId: 'physical' })))
+      .toBe('cindy://session/abc?device=canonical');
   });
 
   it('settles back navigation in two stages', () => {

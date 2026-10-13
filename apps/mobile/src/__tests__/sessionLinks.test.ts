@@ -82,6 +82,22 @@ describe('session links', () => {
     expect(extractSessionLinkIds('没有链接')).toEqual([]);
   });
 
+  it('freezes the owner device into generated links in the desktop query order', () => {
+    expect(buildMobileSessionDeepLink('abc', { deviceId: 'device/1' })).toBe(
+      'cindy://session/abc?device=device%2F1',
+    );
+    expect(buildMobileSessionMessageDeepLink('abc', 'client/9', { deviceId: 'device/1' })).toBe(
+      'cindy://session/abc?message=client%2F9&device=device%2F1',
+    );
+    expect(parseSessionDeepLinkUrl(buildMobileSessionMessageDeepLink('abc', 'client/9', { deviceId: 'device/1' }))).toEqual({
+      sessionId: 'abc',
+      messageClientId: 'client/9',
+      deviceId: 'device/1',
+    });
+    // 缺设备时保持旧格式。
+    expect(buildMobileSessionMessageDeepLink('abc', 'c1', { deviceId: null })).toBe('cindy://session/abc?message=c1');
+  });
+
   it('resolves the device for a session link, falling back when the target is not listed', () => {
     // 已同步列表里的可达设备优先于深链冻结值(re-link 后冻结值可能已过期)。
     expect(resolveSessionLinkDeviceId({
