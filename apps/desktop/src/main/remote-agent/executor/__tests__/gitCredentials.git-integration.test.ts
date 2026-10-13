@@ -480,6 +480,33 @@ describe('GitCredentialHistory', () => {
     }
   });
 
+  it('allows ordinary Git reads with standard Git LFS installed without exempting credential files', async () => {
+    const history = new GitCredentialHistory();
+    write('.gitattributes', '*.bin filter=lfs diff=lfs merge=lfs -text\n');
+    commit('source and LFS attributes', 'src/util.ts');
+    write('src/app.ts', 'changed\n');
+    git('config', '--global', 'filter.lfs.clean', 'git-lfs clean -- %f');
+    git('config', '--global', 'filter.lfs.process', 'git-lfs filter-process');
+    for (const command of [
+      'git diff', 'git diff -- src/app.ts', 'git diff --cached', 'git status --short',
+      'git show HEAD', 'git log -p -1', 'git grep x -- src',
+    ]) {
+      expect(await provesSafe(history, command), command).toBe(true);
+    }
+    write('.env', 'PRIVATE_FIXTURE=lfs-consent\n');
+    git('add', '.env');
+    expect(await provesSafe(history, 'git diff --cached')).toBe(false);
+    await requiresCredentialConfirmation(history, 'git diff --cached');
+    for (const [key, value] of [
+      ['filter.lfs.clean', 'git-lfs clean -- %f && cat .env'],
+      ['filter.lfs.process', 'git-lfs filter-process; cat .env'],
+    ]) {
+      git('config', key, value);
+      expect(await provesSafe(history, 'git diff -- src/app.ts'), key).toBe(false);
+      git('config', '--unset', key);
+    }
+  });
+
   it('keeps consent for clean and process filters even when diff helpers are disabled', async () => {
     const history = new GitCredentialHistory();
     const credentialFile = path.join(root, '.env');

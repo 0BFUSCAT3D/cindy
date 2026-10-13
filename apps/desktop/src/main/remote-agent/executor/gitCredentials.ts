@@ -484,7 +484,7 @@ async function configReadProvesSafe(read: GitRead, deadline: number): Promise<bo
   });
 }
 
-async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
+async function diffHelpersAllowCredentialProbe(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
   if (!CONTENT_SUBCOMMANDS.has(read.sub) && !read.metadataOnly) return true;
   if (read.args.some((arg) => {
     const name = arg.split('=')[0];
@@ -508,7 +508,12 @@ async function diffHelpersCannotRun(read: GitRead, cwd: string, timeoutMs: numbe
     if (lowered === 'log.showsignature') return !/^(?:false|no|off|0)$/i.test(value);
     if (newline < 0 || !value) return false;
     if ((lowered === 'format.pretty' || lowered.startsWith('pretty.')) && value.includes('%G')) return true;
-    return /^filter\..+\.(?:clean|process)$/i.test(key)
+    // Trust the standard installed Git LFS commands, just as we trust Git itself.
+    // This gate prevents accidental credential disclosure, not replaced binaries.
+    // Match the complete key/value so custom drivers and shell suffixes still ask.
+    const standardLfs = (key === 'filter.lfs.clean' && value === 'git-lfs clean -- %f')
+      || (key === 'filter.lfs.process' && value === 'git-lfs filter-process');
+    return (/^filter\..+\.(?:clean|process)$/i.test(key) && !standardLfs)
       || (textconvEnabled && /^diff\..+\.textconv$/i.test(key))
       || (externalDiffEnabled && (/^diff\..+\.command$/i.test(key) || key.toLowerCase() === 'diff.external'));
   });
@@ -624,7 +629,7 @@ export class GitCredentialHistory {
     });
     if (replacements.trim()) return false;
     const helperTimeout = deadline - Date.now();
-    if (helperTimeout <= 0 || !(await diffHelpersCannotRun(read, cwd, helperTimeout))) return false;
+    if (helperTimeout <= 0 || !(await diffHelpersAllowCredentialProbe(read, cwd, helperTimeout))) return false;
     const hook = path.join(commonDir, 'hooks', 'post-index-change');
     const hookPresent = await Promise.all([hook, hook + '.exe'].map((file) => fsp.lstat(file).then(
       () => true,

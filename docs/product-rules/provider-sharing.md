@@ -339,9 +339,12 @@ Desktop「设置 → 模型供应商」的左栏(2026-10-08 用户裁决)：
        实际执行器选择 zsh 时，即使没有 `ZDOTDIR`，也要核实系统级 `zshenv` 与 `HOME/.zshenv`（含各自
        `.zwc` 缓存）均不存在；发现文件、核实文件状态失败或超时、HOME 不明确、或自定义 zsh 的启动目录
        无法核实，都保留确认。此核实每次执行前重做，不读取或运行启动脚本，不沿用仓库历史的缓存；
-       Git 内容读取前还要按当次生效的配置核实 `filter.<driver>.clean` / `.process` 均无非空命令；
-       即使指定 `--no-textconv` / `--no-ext-diff` 也不能略过过滤器核实。发现配置就保留凭证确认，探针
-       不运行这些过滤器；移除过滤器后仍可按原有路径核实豁免，不沿用旧配置结论；
+       Git 内容读取前还要按当次生效的配置核实 `filter.<driver>.clean` / `.process`。标准 Git LFS
+       配置 `filter.lfs.clean=git-lfs clean -- %f` 与 `filter.lfs.process=git-lfs filter-process`
+       按正常工具使用，不因安装 LFS 就要求普通 Git 查看命令确认；其它非空过滤命令仍保留确认，
+       探针不运行这些自定义过滤器。即使指定 `--no-textconv` / `--no-ext-diff` 也要核实过滤配置，
+       不沿用旧配置结论。此处沿用防误发的边界：信任正常安装的 Git / Git LFS，不校验二进制是否被
+       故意替换；凭证文件、直接写在命令里的密钥与保存的登录凭证仍按原规则确认；
        配置中出现 `core.fsmonitor` 时同样保留确认（不假设不同 Git 版本对布尔取值的解释一致），
        在读取 index 前拦下它，避免 hook 经 stderr 带出凭证。`git status`、`git ls-files`、只列文件名的
        diff 等静态只读调用也要核实运行期 helper；无 helper 时仍可豁免，不改变本机任务默认判定；
