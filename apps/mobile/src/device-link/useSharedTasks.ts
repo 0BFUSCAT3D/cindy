@@ -6,6 +6,7 @@ import { remoteSessionStore } from '@/session/remoteSessionStore';
 import type { RemoteSession } from '@/session/types';
 import { useDeviceLink } from './DeviceLinkContext';
 import { useSharedTaskApi } from './useSharedTaskApi';
+import { filterVisibleSharedTasks } from './sharedTaskVisibility';
 
 /** Shared tasks have their own account authority list, separate from paired devices. */
 export function useSharedTasks(): readonly SharedTaskListItem[] {
@@ -25,9 +26,11 @@ export function useSharedTasks(): readonly SharedTaskListItem[] {
       try {
         const all = await api.list();
         if (!current()) return;
-        // Owner discovery must not depend on full-device remote-control permission.
-        // Only guests are auto-connected through task-scoped peers.
-        setOwned({ owner, tasks: all.filter(task => task.ownerAccountId === owner.accountId) });
+        const visibleOwned = await filterVisibleSharedTasks(
+          all.filter(task => task.ownerAccountId === owner.accountId), owner.accountId, { openLink, invoke }, current,
+        );
+        if (!current()) return;
+        setOwned({ owner, tasks: visibleOwned });
         const tasks = all.filter(task => task.ownerAccountId !== owner.accountId);
         const peers = new Set(tasks.map((task) => sharedTaskHostPeer(task.sharedTaskId, task.hostDeviceId)));
         for (const task of remoteSessionStore.getSessions()) {

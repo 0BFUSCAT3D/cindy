@@ -20,6 +20,7 @@ import { bindSharedTaskPushOwner, resetRemoteDataOwnerPushFence } from '@/lib/re
 import { remoteProjectsStore, isRemoteDeviceMarkedDisconnected } from './remoteProjectsStore';
 import { sharedTaskErrorKey } from './sharedTaskCompatibility';
 import { closeOwnedSharedTask } from './closeOwnedSharedTask';
+import { filterVisibleSharedTasks } from './sharedTaskVisibility';
 
 type Tab = 'join' | 'joined' | 'owned';
 type Target = { sessionId: string; title: string; deviceId?: string; sharedTaskId?: string; guestId?: string; connect?: boolean };
@@ -90,8 +91,10 @@ export function SharedTaskDialog({ open, onOpenChange, session, returnFocus, ini
       const items = await window.electronAPI.sharedTask.account({ action: kind === 'owned' ? 'owned' : 'list' });
       if (!Array.isArray(items)) throw new Error('Invalid shared task list');
       if (!current()) return;
-      if (kind === 'owned') setOwned(items as SharedTaskOwnedItem[]);
-      else setJoined(items as SharedTaskListItem[]);
+      const visible = await filterVisibleSharedTasks(items as SharedTaskOwnedItem[], current);
+      if (!current()) return;
+      if (kind === 'owned') setOwned(visible);
+      else setJoined(visible);
       setListErrors(previous => ({ ...previous, [kind]: false }));
     } catch {
       if (current()) setListErrors(previous => ({ ...previous, [kind]: true }));
