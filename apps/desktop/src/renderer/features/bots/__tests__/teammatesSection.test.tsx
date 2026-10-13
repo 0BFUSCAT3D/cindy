@@ -423,6 +423,33 @@ describe('TeammatesSection header', () => {
     expect(window.localStorage.getItem('sidebar.teammatesSection.v1.owner.fixture-owner')).toBe('expanded');
   });
 
+  it('keeps the collapsed row on one line and folds the rest into +N', async () => {
+    const original = globalThis.ResizeObserver;
+    // 4 slots: 3 avatars + the +N chip (36px per slot, 8px gap).
+    globalThis.ResizeObserver = class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 136 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      mocks.profiles = Array.from({ length: 6 }, (_, index) => bot({ id: `bot-${index}`, name: `Mate ${index}` }));
+      mocks.unread = { 'bot-5': 1 };
+      mocks.params = { botId: 'bot-4' };
+      await renderSidebar();
+      fireEvent.click(header());
+      const avatars = screen.getAllByRole('button', { name: /^Mate \d$/ });
+      expect(avatars).toHaveLength(3);
+      // The open chat keeps a slot even when it sorts past the cut.
+      expect(screen.getByRole('button', { name: 'Mate 4' }).getAttribute('aria-current')).toBe('page');
+      const more = screen.getByRole('button', { name: 'bots.list.sectionExpand · +3' });
+      fireEvent.click(more);
+      expect(header().getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
+
   it('marks the open chat in the collapsed avatar row', async () => {
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' }), bot({ id: 'bot-2', name: 'Writer' })];
     mocks.unread = { 'bot-1': 2 };

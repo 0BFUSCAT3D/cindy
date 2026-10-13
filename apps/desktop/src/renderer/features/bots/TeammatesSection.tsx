@@ -1,8 +1,9 @@
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { botRosterLabel } from '../../../shared/botCreation';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import {
   AlertTriangle,
+  Users,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -79,6 +80,48 @@ const HEADER_HOVER_ACTION_CLASS = cn(
 const HEADER_ICON_BUTTON_CLASS =
   'flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)]';
 
+/** 收起态头像行:28px 头像 + 8px 间距。 */
+const AVATAR_SLOT_PX = 36;
+
+/**
+ * 收起态只占一行:按内容宽度算出能放几个头像(含末尾「+N」),伙伴再多也不换行。
+ * 尚未测量(宽度 0,如首帧或测试环境)时不截断。
+ */
+function useAvatarRowCapacity(ref: RefObject<HTMLDivElement | null>, active: boolean): number {
+  const [width, setWidth] = useState(0);
+  // 头像行只在收起时挂载:每次收起后重新挂上观察。
+  useEffect(() => {
+    const element = active ? ref.current : null;
+    if (!element || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      setWidth(Math.floor(entries[0]?.contentRect.width ?? 0));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref, active]);
+  return width > 0 ? Math.max(1, Math.floor((width + 8) / AVATAR_SLOT_PX)) : Number.POSITIVE_INFINITY;
+}
+
+/** 群聊在头像行里用两位成员叠放,和单聊头像一眼可分。 */
+function GroupMiniAvatar({ members }: { members: readonly Parameters<typeof BotAvatar>[0]['bot'][] }) {
+  const [first, second] = members;
+  if (!first || !second) {
+    return (
+      <span aria-hidden className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--surface-chip)] text-[var(--sidebar-list-muted)]">
+        <Users size={14} strokeWidth={2} />
+      </span>
+    );
+  }
+  return (
+    <span aria-hidden className="relative block h-7 w-7">
+      <BotAvatar bot={first} size="xs" className="absolute left-0 top-0 h-[18px] w-[18px] text-10" />
+      <span className="absolute bottom-0 right-0 flex rounded-full border-[1.5px] border-sidebar">
+        <BotAvatar bot={second} size="xs" className="h-[18px] w-[18px] text-10" />
+      </span>
+    </span>
+  );
+}
+
 /**
  * 侧栏第一层的「伙伴」段(2026-10-13 定稿):固定在置顶段上方,与置顶、全部任务并存。
  * 点伙伴只切换主区域,左栏不再整栏切换。段名在「展开(行列表)」与「收起成一排头像」
@@ -90,6 +133,8 @@ export function TeammatesSection() {
   const { dataOwnerId } = useAuth();
   const { botId, deviceId, groupId } = useParams();
   const [collapsed, setCollapsed] = useState(() => readTeammatesSectionCollapsed(dataOwnerId));
+  const avatarRowRef = useRef<HTMLDivElement>(null);
+  const avatarCapacity = useAvatarRowCapacity(avatarRowRef, collapsed);
   useEffect(() => {
     setCollapsed(readTeammatesSectionCollapsed(dataOwnerId));
   }, [dataOwnerId]);
@@ -302,43 +347,75 @@ export function TeammatesSection() {
       </div>
 
       {collapsed ? (
-        // 收起:一排头像,未读带点;顺序与展开时一致。
-        <div className="flex flex-wrap items-center gap-2 pt-1 pr-0 pl-[22px]">
-          {visibleChats.map((entry) => {
-            const key = entry.kind === 'group' ? `group:${entry.group.id}`
-              : entry.kind === 'cindy' ? 'cindy-devices'
-                : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
-            const avatarBot = entry.kind === 'group' ? entry.group.members[0]
-              : entry.kind === 'cindy' ? currentCindy?.bot : entry.bot;
-            const name = entry.kind === 'group' ? entry.group.name
-              : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
-            const selected = entry.kind === 'group' ? entry.group.id === groupId
-              : entry.kind === 'cindy' ? Boolean(routeCindy)
-                : 'deviceId' in entry.bot ? entry.bot.id === botId && entry.bot.deviceId === deviceId
-                  : !deviceId && entry.bot.id === botId;
-            const unread = entry.kind === 'group' ? isBotGroupUnread(entry.group)
-              : entry.kind === 'cindy' ? cindyOptions.some(option => option.unread)
-                : 'deviceId' in entry.bot ? isRemoteBotUnread(entry.bot) : (unreadByBotId[entry.bot.id] ?? 0) > 0;
+        // 收起:单行头像,未读带点;顺序与展开时一致,放不下的收进末尾「+N」(点开即展开整段)。
+        <div ref={avatarRowRef} className="flex flex-nowrap items-center gap-2 overflow-hidden py-1 pr-0 pl-[22px]">
+          {(() => {
+            const entries = visibleChats.map((entry) => {
+              const key = entry.kind === 'group' ? `group:${entry.group.id}`
+                : entry.kind === 'cindy' ? 'cindy-devices'
+                  : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
+              const name = entry.kind === 'group' ? entry.group.name
+                : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
+              const selected = entry.kind === 'group' ? entry.group.id === groupId
+                : entry.kind === 'cindy' ? Boolean(routeCindy)
+                  : 'deviceId' in entry.bot ? entry.bot.id === botId && entry.bot.deviceId === deviceId
+                    : !deviceId && entry.bot.id === botId;
+              const unread = entry.kind === 'group' ? isBotGroupUnread(entry.group)
+                : entry.kind === 'cindy' ? cindyOptions.some(option => option.unread)
+                  : 'deviceId' in entry.bot ? isRemoteBotUnread(entry.bot) : (unreadByBotId[entry.bot.id] ?? 0) > 0;
+              return { entry, key, name, selected, unread };
+            });
+            const overflow = entries.length > avatarCapacity;
+            let shown = overflow ? entries.slice(0, Math.max(0, avatarCapacity - 1)) : entries;
+            // 正在看的聊天始终留在行内,占最后一个可见位。
+            const selectedEntry = entries.find((item) => item.selected);
+            if (overflow && selectedEntry && !shown.includes(selectedEntry) && shown.length > 0) {
+              shown = [...shown.slice(0, -1), selectedEntry];
+            }
+            const hidden = entries.filter((item) => !shown.includes(item));
             return (
-              <Tip key={key} text={name} side="bottom">
-                <button
-                  type="button"
-                  onClick={() => openChat(entry)}
-                  aria-label={unread && !selected ? `${name} · ${t('bots.list.unread', { count: 1 })}` : name}
-                  aria-current={selected ? 'page' : undefined}
-                  className={cn(
-                    'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    selected && 'ring-2 ring-[var(--sidebar-nav-text)] ring-offset-2 ring-offset-sidebar',
-                  )}
-                >
-                  {avatarBot ? <BotAvatar bot={avatarBot} size="sm" /> : null}
-                  {unread && !selected ? (
-                    <span aria-hidden className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-sidebar bg-[var(--bot-unread-bg)]" />
-                  ) : null}
-                </button>
-              </Tip>
+              <>
+                {shown.map(({ entry, key, name, selected, unread }) => (
+                  <Tip key={key} text={name} side="bottom">
+                    <button
+                      type="button"
+                      onClick={() => openChat(entry)}
+                      aria-label={unread && !selected ? `${name} · ${t('bots.list.unread', { count: 1 })}` : name}
+                      aria-current={selected ? 'page' : undefined}
+                      className={cn(
+                        'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        selected && 'ring-2 ring-[var(--sidebar-nav-text)] ring-offset-2 ring-offset-sidebar',
+                      )}
+                    >
+                      {entry.kind === 'group' ? (
+                        <GroupMiniAvatar members={entry.group.members} />
+                      ) : (entry.kind === 'cindy' ? currentCindy?.bot : entry.bot) ? (
+                        <BotAvatar bot={(entry.kind === 'cindy' ? currentCindy?.bot : entry.bot)!} size="sm" />
+                      ) : null}
+                      {unread && !selected ? (
+                        <span aria-hidden className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-sidebar bg-[var(--bot-unread-bg)]" />
+                      ) : null}
+                    </button>
+                  </Tip>
+                ))}
+                {hidden.length > 0 ? (
+                  <Tip text={t('bots.list.sectionExpand')} side="bottom">
+                    <button
+                      type="button"
+                      onClick={toggleCollapsed}
+                      aria-label={`${t('bots.list.sectionExpand')} · +${hidden.length}`}
+                      className="relative flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-chip)] px-1.5 text-11 font-medium tabular-nums text-[var(--sidebar-nav-text)] outline-none hover:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      +{hidden.length}
+                      {hidden.some((item) => item.unread) ? (
+                        <span aria-hidden className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-sidebar bg-[var(--bot-unread-bg)]" />
+                      ) : null}
+                    </button>
+                  </Tip>
+                ) : null}
+              </>
             );
-          })}
+          })()}
         </div>
       ) : null}
 

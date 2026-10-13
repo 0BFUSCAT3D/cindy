@@ -126,7 +126,7 @@ describe('伙伴行的间距基线', () => {
       '<div className="group/sidebar-header flex h-6 items-center justify-between pr-3 pl-6">',
     );
     // 头像行起点 = 列表容器 12px + 行内边距 10px。
-    expect(source).toContain('<div className="flex flex-wrap items-center gap-2 pt-1 pr-0 pl-[22px]">');
+    expect(source).toContain('<div ref={avatarRowRef} className="flex flex-nowrap items-center gap-2 overflow-hidden py-1 pr-0 pl-[22px]">');
     // 段头动作是 20px 图标钮,与其它段头动作同尺寸。
     expect(source).toContain('<BotCreateMenu variant="header" />');
     expect(source).toContain('<ChatJoinButton compact');
