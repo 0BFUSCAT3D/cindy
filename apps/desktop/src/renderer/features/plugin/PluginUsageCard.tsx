@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import type { PluginUsageSummary } from '../../../shared/pluginUsage';
 
 export function PluginUsageCard({
@@ -57,9 +50,10 @@ export function PluginUsageCard({
     }
   };
   const clear = async () => {
-    if (!summary || clearing || !(await confirmClear?.())) return;
+    if (!summary || clearing || !confirmClear) return;
     setClearing(true);
     try {
+      if (!(await confirmClear())) return;
       await window.electronAPI.ghosts.clearUsage(summary.subjectId);
       await refresh();
     } catch {
@@ -94,35 +88,22 @@ export function PluginUsageCard({
             </button>
           </Tip>
         </h2>
-        <DropdownMenu>
-          <Tip text={t('settings.ghosts.usage.more')}>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={t('settings.ghosts.usage.more')}
-                className="-mr-1 flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-              >
-                <MoreHorizontal size={16} aria-hidden="true" />
-              </button>
-            </DropdownMenuTrigger>
-          </Tip>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              disabled={state === 'loading' || clearing}
-              onSelect={() => void refresh()}
-            >
-              {t('settings.ghosts.usage.refresh')}
-            </DropdownMenuItem>
-            {summary && confirmClear ? (
-              <DropdownMenuItem
-                disabled={state === 'loading' || clearing}
-                onSelect={() => void clear()}
-              >
-                {t('settings.ghosts.usage.clear')}
-              </DropdownMenuItem>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {confirmClear ? (
+          <Button
+            variant="secondary"
+            tone="quiet"
+            size="sm"
+            compact
+            type="button"
+            disabled={!summary || state !== 'ready' || clearing}
+            loading={clearing}
+            onClick={() => void clear()}
+            aria-label={t('settings.ghosts.usage.clear')}
+            className="-mr-3 shrink-0"
+          >
+            {t('settings.ghosts.usage.clearAction')}
+          </Button>
+        ) : null}
       </div>
       {state === 'loading' ? (
         <p aria-live="polite" className="mt-3 text-13 leading-5 text-[var(--text-secondary)]">
@@ -149,7 +130,7 @@ export function PluginUsageCard({
                 : time(summary.lastUsedAt)}
             </dd>
           </div>
-          <div className="min-w-0 border-l border-[var(--border-default)] pl-5">
+          <div className="min-w-0">
             <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
               {t('settings.ghosts.usage.last7Days')}
             </dt>

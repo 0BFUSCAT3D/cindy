@@ -6698,7 +6698,11 @@
         "downloads": "下载",
         "downloadExplanation": "累计下载请求次数：成功获取安装包下载地址后计一次，包括更新、重装及重新获取地址的重试；不代表成功安装次数。",
         "refresh": "刷新记录",
-        "more": "记录选项"
+        "more": "记录选项",
+        "clearAction": "清除",
+        "downloadsValue": "{{value}} 下载",
+        "usesValue": "{{value}} 使用",
+        "usesExplanation": "当前共享范围内各版本累计的工具调用次数。下方个人调用仅统计本机当前账户，口径不同。"
       }
     },
     "mcp": {

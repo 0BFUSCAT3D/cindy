@@ -30,6 +30,8 @@ import { useTranslation } from 'react-i18next';
 
 import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
 import { PluginUsageCard } from './PluginUsageCard';
+import { PluginSharedUsage } from './PluginSharedUsage';
+import type { PluginMarketItem } from '../../../shared/pluginMarket';
 import { GhostLibrarySection } from './GhostLibrarySection';
 import { PluginTaskPrefs } from '@/cindy-brain/PluginTaskPrefs';
 import { GhostSettingsWebview } from '@/cindy-brain/GhostSettingsWebview';
@@ -63,6 +65,7 @@ import './plugin-motion.css';
 interface GhostPluginDetailViewProps {
   ghost: InstalledGhost | null;
   detail: GhostPluginDetail;
+  marketItem?: PluginMarketItem | null;
   panelStatus: string | null;
   enabledOverride?: boolean;
   onBack: () => void;
@@ -111,6 +114,7 @@ export function GhostPluginDetailView({
   onBack,
   onToggle,
   onUse,
+  marketItem,
   usageOwnerKey,
   confirmClearUsage,
   mainViewSidebarVisible = true,
@@ -238,11 +242,11 @@ export function GhostPluginDetailView({
               size="detail"
               onIconLoadError={onIconLoadError}
             />
-            <div className="min-w-0">
+            <div className="plugin-detail-heading min-w-0">
               <h1 className="truncate text-28 font-medium leading-[1.214] text-[var(--text-primary)]">
                 {detail.name}
               </h1>
-              <GhostPluginMetadata author={detail.author} version={detail.version} />
+              <GhostPluginMetadata author={detail.author} version={detail.version} marketItem={marketItem} />
             </div>
 
             <div
@@ -584,13 +588,15 @@ export function OauthScopeStaleBadge() {
 export function GhostPluginMetadata({
   author,
   version,
+  marketItem,
 }: {
   author?: string | null;
   version: string;
+  marketItem?: PluginMarketItem | null;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="plugin-detail-metadata mt-2 flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden whitespace-nowrap text-13 leading-5 text-[var(--text-tertiary)]">
+    <div className="plugin-detail-metadata mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-13 leading-5 text-[var(--text-tertiary)]">
       {author ? (
         <>
           <span className="min-w-0 truncate">
@@ -600,6 +606,7 @@ export function GhostPluginMetadata({
         </>
       ) : null}
       <span className="shrink-0">v{version}</span>
+      {marketItem ? <PluginSharedUsage detail={marketItem} /> : null}
     </div>
   );
 }

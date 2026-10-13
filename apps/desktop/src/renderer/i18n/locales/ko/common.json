@@ -6698,7 +6698,11 @@
         "downloads": "다운로드",
         "downloadExplanation": "누적 다운로드 URL 요청 수입니다. 패키지 URL 발급 성공마다 1회로 집계하며 업데이트, 재설치, 새 URL을 요청하는 재시도도 포함합니다. 설치 완료 횟수가 아닙니다.",
         "refresh": "기록 새로고침",
-        "more": "기록 옵션"
+        "more": "기록 옵션",
+        "clearAction": "지우기",
+        "downloadsValue": "{{value}} 다운로드",
+        "usesValue": "{{value}} 사용",
+        "usesExplanation": "허용된 공유 범위의 모든 버전에서 누적된 도구 호출 수입니다. 아래 내 호출은 이 컴퓨터의 현재 계정만 집계합니다."
       }
     },
     "mcp": {
