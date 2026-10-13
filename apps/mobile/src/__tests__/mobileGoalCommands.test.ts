@@ -83,12 +83,14 @@ function existingHarness(args = 'target') {
     maker: { goal: { set: vi.fn(async () => {}), clear: vi.fn(async () => {}), getStatus: vi.fn(async () => ({ status: 'active', objective: 'target' })) } },
     remoteSessionStore: { setGoalStatus: vi.fn(), acquireSessionMessageWork: vi.fn(() => ({ release })), getSessionDeviceId: () => 'host' }, setContextSheetView: vi.fn(), setContextSheetOpen: vi.fn(),
     setGoalRestore: vi.fn(), router: { setParams: vi.fn() }, composerDocumentRef: { current: initial },
+    params: {}, readRouteParam: () => null,
     composerDocumentsEqual: (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b),
     applyComposerDocument: vi.fn(), normalizeComposerDocument, humanizeRemoteError,
     composerDraftHydrated: true, voiceState: 'idle', slashCommandsRef: { current: [] }, queueEditingRef: { current: null },
     composerDocumentProjectedText, serializeComposerDocument, reconcileComposerProjectedText, emptyComposerDocument,
     canUseComposer: true, attachments: [] as unknown[], attachmentsRef: { current: [] as unknown[] }, pendingUploads: [],
     sendInFlightRef: { current: false }, sending: false, setSending: vi.fn((_sending: boolean) => {}), currentSession: session,
+    invalidateHistoryRecoveryNavigation: vi.fn(),
     outboxConnectionBlockedNow: () => false, getPendingUploadCount: () => 0,
     parseMobileLocalSystemCommand: () => null, parseMobileDesktopCommand, pendingSkillSelectionRef: { current: null },
     resolveSessionAgentKind: () => 'pi', modelNeedsReselection: () => false, getCachedDeviceProviders: () => undefined,
@@ -155,6 +157,7 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.maker.goal.set).toHaveBeenCalledExactlyOnceWith({ sessionId: 'existing-task', objective: 'target' });
     expect(h.bindings.remoteSessionStore.setGoalStatus).toHaveBeenCalledWith('existing-task', { status: 'active', objective: 'target' });
     expect(h.bindings.applyComposerDocument).toHaveBeenCalledWith(emptyComposerDocument());
+    expect(h.bindings.invalidateHistoryRecoveryNavigation).toHaveBeenCalledOnce();
   });
   it('bare /goal opens the existing panel', async () => {
     const h = existingHarness(''); await h.run();
@@ -199,6 +202,7 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.sendInFlightRef.current).toBe(true);
     await h.run();
     expect(h.bindings.maker.goal.set).toHaveBeenCalledOnce();
+    expect(h.bindings.invalidateHistoryRecoveryNavigation).toHaveBeenCalledOnce();
     expect(h.release).not.toHaveBeenCalled();
     finish();
     await first;
@@ -226,6 +230,7 @@ describe('existing task /goal send boundary', () => {
     expect(h.bindings.sendInFlightRef.current).toBe(false);
     expect(h.bindings.sending).toBe(false);
     expect(h.release).toHaveBeenCalledTimes(2);
+    expect(h.bindings.invalidateHistoryRecoveryNavigation).toHaveBeenCalledTimes(2);
   });
 
   it.each([false, true])('preserves the bot resource on a follow-up after Goal, array route params=%s', async arrayParams => {
