@@ -79,6 +79,9 @@ export function ProfileEditDialog({ open, onOpenChange }: ProfileEditDialogProps
   // 同理:「完成」导出是异步的,紧随其后的同步 onOpenChange(false) 不能被当成「取消调整」。
   const exportingRef = useRef(false);
   const choosingRef = useRef(false);
+  // 选图请求的代次:关闭弹窗或卸载时 +1,让还在系统选择器 / 解码中的旧请求作废——
+  // 否则关掉再重开时,旧请求返回会把已放弃的图片带回调整步骤。
+  const chooseGenerationRef = useRef(0);
   const openRef = useRef(open);
   openRef.current = open;
   // 位图 / object URL 的所有权跟踪:ref 始终是最新值,释放逻辑不依赖渲染时机。
@@ -146,6 +149,8 @@ export function ProfileEditDialog({ open, onOpenChange }: ProfileEditDialogProps
   // 数据都在本地 main,毫秒级返回,无需 loading 态 —— 规则 7)。
   useEffect(() => {
     if (!open) {
+      chooseGenerationRef.current += 1;
+      choosingRef.current = false;
       releaseAll();
       return;
     }
@@ -167,7 +172,13 @@ export function ProfileEditDialog({ open, onOpenChange }: ProfileEditDialogProps
     };
   }, [open, onOpenChange, releaseAll]);
 
-  useEffect(() => releaseAll, [releaseAll]);
+  useEffect(
+    () => () => {
+      chooseGenerationRef.current += 1;
+      releaseAll();
+    },
+    [releaseAll],
+  );
 
   // 步骤切换后的焦点:进入调整 → 聚焦取景区(方向键即可微调);回到表单 → 回到触发按钮。
   const inCrop = cropSession !== null;
@@ -183,20 +194,23 @@ export function ProfileEditDialog({ open, onOpenChange }: ProfileEditDialogProps
   const handleChooseAvatar = useCallback(async () => {
     if (choosingRef.current) return;
     choosingRef.current = true;
+    const generation = chooseGenerationRef.current;
+    const isCurrent = () => generation === chooseGenerationRef.current && openRef.current;
     try {
       const result = await window.electronAPI.profileChooseAvatar();
-      if (result.canceled || !result.previewDataUrl) return;
+      if (!isCurrent() || result.canceled || !result.previewDataUrl) return;
       // 先解码再切到调整步骤:编辑台第一帧就有图,解码失败则留在表单提示。
       const source = await loadAvatarSource(result.previewDataUrl);
-      if (!openRef.current) {
+      if (!isCurrent()) {
         source.bitmap.close();
         return;
       }
       startCropSession({ source, crop: initialAvatarCrop(source.size) });
     } catch {
-      toast.error(t('settings.userProfile.edit.avatarInvalid'));
+      if (isCurrent()) toast.error(t('settings.userProfile.edit.avatarInvalid'));
     } finally {
-      choosingRef.current = false;
+      // 作废的请求不动守卫:关闭时已复位,新一轮打开可能已在选图。
+      if (generation === chooseGenerationRef.current) choosingRef.current = false;
     }
   }, [startCropSession, t]);
 
@@ -330,7 +344,7 @@ export function ProfileEditDialog({ open, onOpenChange }: ProfileEditDialogProps
       onConfirm={() => void handleSave()}
       content={
         <div className={cn('flex flex-col gap-4', stepSwitched && 'animate-fade-in')}>
-          {/* 头像行:预览 + 更换 / 调整 / 清除自定义 */}
+          {/* 头像行:预览 + 更换 / 调整(共享 Button)+ 清除自定义(沿用既有文字动作) */}
           <div className="flex items-center gap-4">
             {previewUrl ? (
               <img
@@ -354,40 +368,40 @@ export function ProfileEditDialog({ open, onOpenChange }: ProfileEditDialogProps
               </div>
             )}
             <div className="flex flex-col items-start gap-1.5">
-              <Button
-                ref={changeAvatarRef}
-                variant="secondary"
-                size="sm"
-                compact
-                type="button"
-                disabled={saving}
-                onClick={() => void handleChooseAvatar()}
-              >
-                {t('settings.userProfile.edit.changeAvatar')}
-              </Button>
-              {(avatarDraft.type === 'set' || canResetAvatar) && (
-                <div className="flex items-center gap-2">
-                  {avatarDraft.type === 'set' && (
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={handleAdjustAvatar}
-                      className={linkClass}
-                    >
-                      {t('settings.userProfile.edit.adjustAvatar')}
-                    </button>
-                  )}
-                  {canResetAvatar && (
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => setAvatarDraft({ type: 'reset' })}
-                      className={linkClass}
-                    >
-                      {t('settings.userProfile.edit.resetAvatar')}
-                    </button>
-                  )}
-                </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  ref={changeAvatarRef}
+                  variant="secondary"
+                  size="sm"
+                  compact
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleChooseAvatar()}
+                >
+                  {t('settings.userProfile.edit.changeAvatar')}
+                </Button>
+                {avatarDraft.type === 'set' && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    compact
+                    type="button"
+                    disabled={saving}
+                    onClick={handleAdjustAvatar}
+                  >
+                    {t('settings.userProfile.edit.adjustAvatar')}
+                  </Button>
+                )}
+              </div>
+              {canResetAvatar && (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setAvatarDraft({ type: 'reset' })}
+                  className={linkClass}
+                >
+                  {t('settings.userProfile.edit.resetAvatar')}
+                </button>
               )}
             </div>
           </div>

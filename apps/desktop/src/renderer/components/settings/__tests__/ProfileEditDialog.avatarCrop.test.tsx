@@ -26,7 +26,6 @@ function makeSource(width = 1200, height = 800): AvatarSource {
   return {
     bitmap: { width, height, close: vi.fn() } as unknown as ImageBitmap,
     size: { width, height },
-    mayHaveAlpha: false,
   };
 }
 
@@ -218,5 +217,46 @@ describe('ProfileEditDialog 头像调整', () => {
     expect(image.exportAvatarCrop.mock.calls[1]).toEqual([source, { cx: 300, cy: 450, side: 600 }]);
     expect(first.bitmap.close).toHaveBeenCalled();
     expect(source.bitmap.close).not.toHaveBeenCalled();
+  });
+
+  it('选图解码期间关闭再重开:旧请求作废,不把已放弃的图片带回调整步骤并释放其位图', async () => {
+    let resolveDecode: (value: AvatarSource) => void = () => {};
+    image.loadAvatarSource.mockImplementationOnce(
+      () => new Promise<AvatarSource>((resolve) => (resolveDecode = resolve)),
+    );
+    const { rerender } = renderDialog();
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'settings.userProfile.edit.changeAvatar' }),
+    );
+    await waitFor(() => expect(image.loadAvatarSource).toHaveBeenCalledTimes(1));
+
+    rerender(<ProfileEditDialog open={false} onOpenChange={vi.fn()} />);
+    rerender(<ProfileEditDialog open onOpenChange={vi.fn()} />);
+    await screen.findByRole('button', { name: 'settings.userProfile.edit.changeAvatar' });
+
+    const stale = makeSource();
+    await act(async () => resolveDecode(stale));
+
+    expect(screen.queryByRole('group')).toBeNull();
+    expect(stale.bitmap.close).toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalled();
+    // 新一轮打开可以正常选图,不被旧请求的守卫挡住。
+    await chooseImage();
+  });
+
+  it('选图解码期间卸载:返回的位图被释放,不进入调整步骤', async () => {
+    let resolveDecode: (value: AvatarSource) => void = () => {};
+    image.loadAvatarSource.mockImplementationOnce(
+      () => new Promise<AvatarSource>((resolve) => (resolveDecode = resolve)),
+    );
+    const { unmount } = renderDialog();
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'settings.userProfile.edit.changeAvatar' }),
+    );
+    await waitFor(() => expect(image.loadAvatarSource).toHaveBeenCalledTimes(1));
+    unmount();
+    const stale = makeSource();
+    await act(async () => resolveDecode(stale));
+    expect(stale.bitmap.close).toHaveBeenCalled();
   });
 });

@@ -19,12 +19,10 @@ import {
   type AvatarImageSize,
 } from './avatarCropGeometry';
 
-/** 解码后的编辑源:转正、限尺寸后的位图 + 尺寸 + 是否可能含透明。 */
+/** 解码后的编辑源:转正、限尺寸后的位图 + 尺寸。 */
 export interface AvatarSource {
   bitmap: ImageBitmap;
   size: AvatarImageSize;
-  /** JPEG 不可能有 alpha;PNG / WebP 需要导出时再按像素判断。 */
-  mayHaveAlpha: boolean;
 }
 
 /** 导出结果:即将上传的字节本身,预览也直接用它,保证所见即所传。 */
@@ -62,32 +60,45 @@ export function fitAvatarSourceSize(size: AvatarImageSize, maxEdge = AVATAR_SOUR
 }
 
 /**
+ * 读出图片按 EXIF 转正后的尺寸,不解码像素:`<img>` 加载完成只解析文件头,
+ * 像素解码要等绘制或 decode() 才发生;naturalWidth/Height 已计入 EXIF 方向。
+ */
+function probeAvatarImageSize(blob: Blob): Promise<AvatarImageSize> {
+  const url = URL.createObjectURL(blob);
+  return new Promise<AvatarImageSize>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error('avatar image is not decodable'));
+    img.src = url;
+  }).finally(() => URL.revokeObjectURL(url));
+}
+
+/**
  * 解码选中的图片。失败(损坏、格式不符)时抛错,由调用方提示并留在原界面。
  * 解码在切到编辑台**之前**完成,编辑台第一帧就有图,不出现空白帧。
+ *
+ * 先探尺寸、再**一次** createImageBitmap 直接解码到目标尺寸:超大原片不会先留一张
+ * 全尺寸位图再缩出第二张,失败路径也没有需要额外释放的中间位图。
  */
 export async function loadAvatarSource(dataUrl: string): Promise<AvatarSource> {
   const blob = dataUrlToBlob(dataUrl);
-  const decoded = await createImageBitmap(blob, { imageOrientation: 'from-image' });
-  const natural = { width: decoded.width, height: decoded.height };
+  const natural = await probeAvatarImageSize(blob);
   if (natural.width === 0 || natural.height === 0) {
-    decoded.close();
     throw new Error('avatar image has no pixels');
   }
   const fitted = fitAvatarSourceSize(natural);
-  let bitmap = decoded;
-  if (fitted !== natural) {
-    bitmap = await createImageBitmap(decoded, {
-      resizeWidth: fitted.width,
-      resizeHeight: fitted.height,
-      resizeQuality: 'high',
-    });
-    decoded.close();
-  }
-  return {
-    bitmap,
-    size: { width: bitmap.width, height: bitmap.height },
-    mayHaveAlpha: blob.type !== 'image/jpeg',
-  };
+  const bitmap = await createImageBitmap(
+    blob,
+    fitted === natural
+      ? { imageOrientation: 'from-image' }
+      : {
+          imageOrientation: 'from-image',
+          resizeWidth: fitted.width,
+          resizeHeight: fitted.height,
+          resizeQuality: 'high',
+        },
+  );
+  return { bitmap, size: { width: bitmap.width, height: bitmap.height } };
 }
 
 /** 把取景画进一块 outSize × outSize 的目标区域。编辑后预览与导出共用。 */
@@ -114,11 +125,10 @@ export function hasTransparentPixel(rgba: Uint8ClampedArray) {
 
 /**
  * 透明图沿用既有约定(保留透明,导出 PNG);其余导出 JPEG,体积更小。
+ * 按导出画布的实际像素判断,不看文件扩展名——改了扩展名的透明 PNG 也保留透明。
  */
-export function avatarExportMime(source: AvatarSource, rgba: Uint8ClampedArray | null) {
-  return source.mayHaveAlpha && rgba !== null && hasTransparentPixel(rgba)
-    ? 'image/png'
-    : 'image/jpeg';
+export function avatarExportMime(rgba: Uint8ClampedArray): AvatarExportMime {
+  return hasTransparentPixel(rgba) ? 'image/png' : 'image/jpeg';
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, mime: AvatarExportMime): Promise<Blob> {
@@ -143,8 +153,7 @@ export async function exportAvatarCrop(
   const ctx = canvas.getContext('2d', { colorSpace: 'srgb' });
   if (!ctx) throw new Error('avatar canvas unavailable');
   drawAvatarCrop(ctx, source, crop, outSize);
-  const rgba = source.mayHaveAlpha ? ctx.getImageData(0, 0, outSize, outSize).data : null;
-  const mimeType = avatarExportMime(source, rgba);
+  const mimeType = avatarExportMime(ctx.getImageData(0, 0, outSize, outSize).data);
   const blob = await canvasToBlob(canvas, mimeType);
   return { blob, bytes: new Uint8Array(await blob.arrayBuffer()), mimeType };
 }
