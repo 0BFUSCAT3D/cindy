@@ -9437,7 +9437,9 @@
       "preferenceError": "Could not load or save voice settings. Please try again.",
       "protocol": "Speech API",
       "protocolOpenai": "OpenAI compatible",
-      "protocolHint": "Choose the speech API used by this connection. The chat API is unchanged."
+      "protocolHint": "Choose the speech API this address supports. This does not switch providers.",
+      "protocolAutomaticHint": "Matched automatically to the provider’s official address.",
+      "protocolCorrectedHint": "The API now matches the official address. Choose a voice again."
     }
   },
   "common": {

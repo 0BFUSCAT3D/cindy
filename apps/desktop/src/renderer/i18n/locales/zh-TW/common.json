@@ -9400,7 +9400,9 @@
       "preferenceError": "無法讀取或儲存語音設定，請重試。",
       "protocol": "語音介面",
       "protocolOpenai": "OpenAI 相容",
-      "protocolHint": "選擇此連接使用的語音介面，不影響對話介面。"
+      "protocolHint": "選擇此位址實際支援的語音介面；切換介面不會更換供應商。",
+      "protocolAutomaticHint": "已根據供應商的官方位址自動配對。",
+      "protocolCorrectedHint": "已依官方位址修正介面，請重新選擇音色。"
     }
   },
   "common": {

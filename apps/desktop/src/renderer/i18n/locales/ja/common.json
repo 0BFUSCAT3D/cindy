@@ -9400,7 +9400,9 @@
       "preferenceError": "音声設定を読み込むか保存できませんでした。もう一度お試しください。",
       "protocol": "音声 API",
       "protocolOpenai": "OpenAI 互換",
-      "protocolHint": "この接続が使用する音声 API を選択します。チャット API は変更されません。"
+      "protocolHint": "このアドレスが対応する音声 API を選択してください。プロバイダーは切り替わりません。",
+      "protocolAutomaticHint": "プロバイダーの公式アドレスに合わせて自動選択されています。",
+      "protocolCorrectedHint": "公式アドレスに合わせて API を修正しました。音声を選び直してください。"
     }
   },
   "common": {

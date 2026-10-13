@@ -60,18 +60,9 @@ function nativeProtocol(catalog: Catalog, providerId: string, model: ProviderMed
     : resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, providerId, model.id);
 }
 
-/** Endpoint adapters are explicit contracts, not guesses based on a model name or chat wire. */
-function customProtocol(
-  base: URL,
-  declared: ReturnType<typeof nativeProtocol>,
-): SpeechProtocol | null {
-  if (declared === 'openai-audio-speech') return 'openai';
-  if (declared !== undefined) return null; // Includes an explicit unverified/null declaration.
-  return endpointProtocol(base);
-}
-
+/** Official endpoints fix the adapter, independently of model names or catalog metadata. */
 function endpointProtocol(base: URL): SpeechProtocol | null {
-  if (base.protocol !== 'https:') return null;
+  if (base.protocol !== 'https:' || base.port) return null;
   if (base.hostname === 'api.elevenlabs.io') return 'elevenlabs';
   if (
     [
@@ -141,11 +132,15 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
       const base = apiBase(model.route?.baseUrl ?? route.upstream);
       const ownerBase = apiBase(route.upstream);
       if (!base || !ownerBase || base.origin !== ownerBase.origin) continue;
-      const detectedProtocol = customProtocol(base, declared);
-      const protocol = selection?.protocol ?? detectedProtocol;
+      const fixedProtocol = endpointProtocol(base);
+      const detectedProtocol =
+        fixedProtocol ?? (declared === 'openai-audio-speech' ? 'openai' : null);
+      // A saved override cannot turn an official endpoint into another provider's API.
+      // Custom proxies retain explicit choices, including for null/unverified metadata.
+      const protocol = fixedProtocol ?? selection?.protocol ?? detectedProtocol;
       // Official native adapters use their documented origin endpoint. Compatible
       // OpenAI proxies keep the configured prefix (including a non-/v1 API base).
-      if (protocol !== 'openai' && endpointProtocol(base) === protocol) base.pathname = '/v1';
+      if (fixedProtocol && fixedProtocol !== 'openai') base.pathname = '/v1';
       else if (!base.pathname || base.pathname === '/') base.pathname = '/v1';
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(route.headerOverride ?? {})) {
@@ -189,6 +184,7 @@ function bindings(deps: SpeechCatalogDeps, selection?: SpeechModelSelection): Bi
           providerName: provider.name,
           agent,
           protocol: detectedProtocol ?? undefined,
+          protocolLocked: !!fixedProtocol,
           defaultVoice: referenceSpeechVoices(media.id, protocol ?? undefined)[0] ?? '',
         },
         connection: protocol

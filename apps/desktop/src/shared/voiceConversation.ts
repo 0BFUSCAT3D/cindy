@@ -8,7 +8,7 @@ export type SpeechModelSelection = {
   providerId?: string;
   agent?: AgentKind;
   modelId: string;
-  /** Explicit user choice for a custom speech endpoint; absent follows a known adapter. */
+  /** Custom endpoints allow overrides; official endpoints always use their own adapter. */
   protocol?: SpeechProtocol;
 };
 export type VoiceConversationSelection = SpeechModelSelection & { voice: string };
@@ -32,6 +32,8 @@ export type VoiceConversationModel = {
   providerName?: string;
   agent?: AgentKind;
   protocol?: SpeechProtocol;
+  /** The official endpoint fixes protocol; saved overrides cannot select another adapter. */
+  protocolLocked?: boolean;
   defaultVoice?: string;
 };
 export type VoiceConversationPreference = {

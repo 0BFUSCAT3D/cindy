@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { voiceModelKey, type VoiceConversationModel } from '@/../shared/voiceConversation';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -213,6 +213,180 @@ it('requires an explicit API choice for an unknown endpoint before requesting a 
       expect.objectContaining({ providerId: 'custom', protocol: 'elevenlabs', voice: 'voice-id' }),
     ),
   );
+});
+
+it.each(['elevenlabs', 'minimax', 'openai'] as const)(
+  'shows only the fixed %s API for an official endpoint and keeps its saved voice',
+  async (protocol) => {
+    models = [
+      {
+        id: 'speech',
+        name: 'Speech',
+        providerId: 'official',
+        agent: 'codex',
+        protocol,
+        protocolLocked: true,
+      },
+    ];
+    vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+      selection: {
+        providerId: 'official',
+        agent: 'codex',
+        modelId: 'speech',
+        protocol,
+        voice: 'saved-voice',
+      },
+      customized: true,
+    });
+    renderPanel();
+    await screen.findByText('bots.voiceMode.protocolAutomaticHint');
+    const field = screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement;
+    expect(field.disabled).toBe(true);
+    expect(field.value).toBe(protocol);
+    expect(
+      Array.from(field.options)
+        .map((option) => option.value)
+        .filter(Boolean),
+    ).toEqual([protocol]);
+    await waitFor(() =>
+      expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+        'saved-voice',
+      ),
+    );
+    expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.start' }));
+    await waitFor(() =>
+      expect(start).toHaveBeenCalledWith(
+        expect.objectContaining({ modelId: 'speech', voice: 'saved-voice' }),
+      ),
+    );
+    expect(
+      vi.mocked(window.electronAPI.voiceConversation.start).mock.calls[0][0],
+    ).not.toHaveProperty('protocol');
+  },
+);
+
+it('repairs a saved API mismatch without reusing its voice or rewriting preferences on load', async () => {
+  models = [
+    {
+      id: 'eleven_flash_v2_5',
+      name: 'ElevenLabs',
+      providerId: 'official',
+      agent: 'codex',
+      protocol: 'elevenlabs',
+      protocolLocked: true,
+    },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: {
+      providerId: 'official',
+      agent: 'codex',
+      modelId: 'eleven_flash_v2_5',
+      protocol: 'openai',
+      voice: 'alloy',
+    },
+    customized: true,
+  });
+  renderPanel();
+  await screen.findByText('bots.voiceMode.protocolCorrectedHint');
+  expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).value).toBe(
+    'elevenlabs',
+  );
+  const voice = screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement;
+  expect(voice.value).toBe('');
+  expect(
+    screen.getByRole('button', { name: 'bots.voiceMode.preview' }).hasAttribute('disabled'),
+  ).toBe(true);
+  expect(
+    screen.getByRole('button', { name: 'bots.voiceMode.start' }).hasAttribute('disabled'),
+  ).toBe(true);
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.voices).toHaveBeenCalledWith({
+      providerId: 'official',
+      agent: 'codex',
+      modelId: 'eleven_flash_v2_5',
+      protocol: undefined,
+    }),
+  );
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  fireEvent.change(voice, { target: { value: 'eleven-voice-id' } });
+  fireEvent.blur(voice);
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', {
+      providerId: 'official',
+      agent: 'codex',
+      modelId: 'eleven_flash_v2_5',
+      voice: 'eleven-voice-id',
+    }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.preview' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.preview).toHaveBeenCalledWith(
+      expect.objectContaining({ voice: 'eleven-voice-id' }),
+    ),
+  );
+  expect(
+    vi.mocked(window.electronAPI.voiceConversation.preview).mock.calls[0][0],
+  ).not.toHaveProperty('protocol');
+  expect(start).not.toHaveBeenCalled();
+  expect(audio.start).not.toHaveBeenCalled();
+});
+
+it('keeps a proxy API override and unlocks the selector after switching away from an official model', async () => {
+  models = [
+    {
+      id: 'eleven_flash_v2_5',
+      name: 'Official',
+      providerId: 'official',
+      agent: 'codex',
+      protocol: 'elevenlabs',
+      protocolLocked: true,
+    },
+    { id: 'eleven_flash_v2_5', name: 'Proxy', providerId: 'proxy', agent: 'codex' },
+  ];
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: {
+      providerId: 'proxy',
+      agent: 'codex',
+      modelId: 'eleven_flash_v2_5',
+      protocol: 'openai',
+      voice: 'proxy-voice',
+    },
+    customized: true,
+  });
+  renderPanel();
+  await waitFor(() =>
+    expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).value).toBe(
+      'openai',
+    ),
+  );
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+    'proxy-voice',
+  );
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
+      target: { value: voiceModelKey(models[0]) },
+    });
+  });
+  expect((screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement).disabled).toBe(
+    true,
+  );
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText('bots.voiceMode.model'), {
+      target: { value: voiceModelKey(models[1]) },
+    });
+  });
+  const field = screen.getByLabelText('bots.voiceMode.protocol') as HTMLSelectElement;
+  expect(field.disabled).toBe(false);
+  expect(
+    Array.from(field.options)
+      .map((option) => option.value)
+      .filter(Boolean),
+  ).toEqual(['openai', 'elevenlabs', 'minimax']);
+  await act(async () => {
+    fireEvent.change(field, { target: { value: 'minimax' } });
+  });
+  expect(field.value).toBe('minimax');
 });
 
 it('preserves an unavailable saved connection until the user restores defaults', async () => {

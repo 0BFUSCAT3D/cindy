@@ -65,16 +65,25 @@ export function CompanionVoicePanel(props: Props) {
     ? models.find((model) => voiceModelKey(model) === voiceModelKey(preference))
     : models[0];
   const validModel = !!selectedModel;
-  const selectedVoice = voice ?? preference?.voice ?? selectedModel?.defaultVoice ?? '';
+  const protocolOverride = selectedModel?.protocolLocked ? undefined : preference?.protocol;
+  const incompatibleSavedProtocol =
+    selectedModel?.protocolLocked &&
+    preference?.protocol !== undefined &&
+    preference.protocol !== selectedModel.protocol;
+  // A voice saved for another adapter is not portable. Keep the stored preference
+  // intact until the user chooses a voice; never persist a derived default on load.
+  const selectedVoice =
+    voice ??
+    (incompatibleSavedProtocol ? '' : (preference?.voice ?? selectedModel?.defaultVoice ?? ''));
   const selection = normalizeVoiceConversationSelection({
     providerId: selectedModel?.providerId,
     agent: selectedModel?.agent,
     modelId: selectedModel?.id,
-    protocol: preference?.protocol,
+    protocol: protocolOverride,
     voice: selectedVoice,
   });
   const protocol =
-    preference?.protocol ??
+    protocolOverride ??
     selectedModel?.protocol ??
     ((selectedModel?.providerId ?? 'xd') === 'xd' ? 'openai' : undefined);
   const controller = useMemo(
@@ -393,7 +402,13 @@ export function CompanionVoicePanel(props: Props) {
               {selectedModel && selectedModel.providerId !== 'xd' && selectedModel.agent ? (
                 <FormField
                   label={t('bots.voiceMode.protocol')}
-                  hint={t('bots.voiceMode.protocolHint')}
+                  hint={t(
+                    incompatibleSavedProtocol && voice === undefined
+                      ? 'bots.voiceMode.protocolCorrectedHint'
+                      : selectedModel.protocolLocked
+                        ? 'bots.voiceMode.protocolAutomaticHint'
+                        : 'bots.voiceMode.protocolHint',
+                  )}
                   className="min-w-52 flex-1"
                 >
                   {(control) => (
@@ -405,9 +420,12 @@ export function CompanionVoicePanel(props: Props) {
                         { value: 'openai', label: t('bots.voiceMode.protocolOpenai') },
                         { value: 'elevenlabs', label: 'ElevenLabs' },
                         { value: 'minimax', label: 'MiniMax' },
-                      ]}
-                      disabled={!ready || saving || starting}
+                      ].filter(
+                        (option) => !selectedModel.protocolLocked || option.value === protocol,
+                      )}
+                      disabled={selectedModel.protocolLocked || !ready || saving || starting}
                       onValueChange={(value) => {
+                        if (selectedModel.protocolLocked) return;
                         const next = {
                           providerId: selectedModel.providerId,
                           agent: selectedModel.agent,
@@ -436,7 +454,7 @@ export function CompanionVoicePanel(props: Props) {
                   providerId: selectedModel.providerId,
                   agent: selectedModel.agent,
                   modelId: selectedModel.id,
-                  protocol: preference?.protocol,
+                  protocol: protocolOverride,
                 }}
                 protocol={protocol}
                 voice={selectedVoice}
@@ -450,7 +468,7 @@ export function CompanionVoicePanel(props: Props) {
                     providerId: selectedModel.providerId,
                     agent: selectedModel.agent,
                     modelId: selectedModel.id,
-                    protocol: preference?.protocol,
+                    protocol: protocolOverride,
                     voice: value,
                   });
                   if (save && next && validModel) void persist(next);

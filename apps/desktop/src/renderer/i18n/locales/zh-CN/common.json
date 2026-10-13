@@ -9400,7 +9400,9 @@
       "preferenceError": "未能读取或保存语音设置，请重试。",
       "protocol": "语音接口",
       "protocolOpenai": "OpenAI 兼容",
-      "protocolHint": "选择该连接使用的语音接口，不影响对话接口。"
+      "protocolHint": "选择此地址实际支持的语音接口；切换接口不会更换供应商。",
+      "protocolAutomaticHint": "已根据供应商的官方地址自动匹配。",
+      "protocolCorrectedHint": "已按官方地址修正接口，请重新选择音色。"
     }
   },
   "common": {

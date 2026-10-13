@@ -123,11 +123,12 @@ it('supports documented native endpoints without guessing protocols from model I
 });
 
 it('requires an explicit choice for null protocols and excludes unusable credentials/routes', () => {
-  const provider = custom('p', 'https://api.elevenlabs.io/v1', [
+  const provider = custom('p', 'https://proxy.test/v1', [
     { id: 'voice', name: 'Voice', mode: 'audio_speech', nativeApi: null },
   ]);
   const d = deps([provider]);
   expect(speechModels(d)[0].protocol).toBeUndefined();
+  expect(speechModels(d)[0].protocolLocked).toBe(false);
   const selected = { providerId: 'p', agent: 'codex' as const, modelId: 'voice', voice: 'v' };
   expect(() => resolveSpeechConnection(d, selected)).toThrow('model_unavailable');
   expect(resolveSpeechConnection(d, { ...selected, protocol: 'elevenlabs' }).protocol).toBe(
@@ -143,6 +144,73 @@ it('requires an explicit choice for null protocols and excludes unusable credent
   p.auth.native = 'codex';
   expect(speechModels(d)).toEqual([]);
 });
+
+it.each([
+  ['https://api.elevenlabs.io/v1', 'elevenlabs', 'openai'],
+  ['https://api.minimax.io/anthropic', 'minimax', 'elevenlabs'],
+  ['https://api.minimax.cn/v1', 'minimax', 'openai'],
+  ['https://api.minimaxi.com/v1', 'minimax', 'openai'],
+  ['https://api.minimax.chat/v1', 'minimax', 'openai'],
+  ['https://api-uw.minimax.io/v1', 'minimax', 'openai'],
+  ['https://api.openai.com/v1', 'openai', 'minimax'],
+] as const)(
+  'keeps %s on its official %s contract even with a saved %s override',
+  (baseUrl, protocol, savedProtocol) => {
+    // The host contract also wins over absent, unverified or incompatible catalog metadata.
+    for (const nativeApi of [undefined, null, 'openai-audio-speech'] as const) {
+      const d = deps([
+        custom('official', baseUrl, [
+          { id: 'speech', name: 'Speech', mode: 'audio_speech', nativeApi },
+        ]),
+      ]);
+      expect(speechModels(d)[0]).toMatchObject({ protocol, protocolLocked: true });
+      expect(
+        resolveSpeechConnection(d, {
+          providerId: 'official',
+          agent: 'codex',
+          modelId: 'speech',
+          protocol: savedProtocol,
+        }),
+      ).toEqual({
+        baseUrl: `${new URL(baseUrl).origin}/v1`,
+        protocol,
+        headers:
+          protocol === 'elevenlabs'
+            ? { 'xi-api-key': 'official-codex-key' }
+            : { authorization: 'Bearer official-codex-key' },
+      });
+    }
+  },
+);
+
+it.each([
+  'https://speech-proxy.test/api.elevenlabs.io/v1',
+  'https://api.elevenlabs.io.proxy.test/prefix/v1',
+  'https://api.elevenlabs.io:8443/prefix/v1',
+  'http://127.0.0.1:8000/prefix/v1',
+])(
+  'preserves manual overrides for a compatible proxy at %s regardless of model brand',
+  (baseUrl) => {
+    const d = deps([
+      custom('proxy', baseUrl, [
+        { id: 'eleven_flash_v2_5', name: 'ElevenLabs', mode: 'audio_speech' },
+      ]),
+    ]);
+    expect(speechModels(d)[0].protocolLocked).toBe(false);
+    expect(
+      resolveSpeechConnection(d, {
+        providerId: 'proxy',
+        agent: 'codex',
+        modelId: 'eleven_flash_v2_5',
+        protocol: 'openai',
+      }),
+    ).toEqual({
+      baseUrl,
+      protocol: 'openai',
+      headers: { authorization: 'Bearer proxy-codex-key' },
+    });
+  },
+);
 
 it('rejects cross-origin model overrides and stale credentials in headers; permits explicit local no-auth', () => {
   const p = custom('p', 'https://api.elevenlabs.io/v1', [
