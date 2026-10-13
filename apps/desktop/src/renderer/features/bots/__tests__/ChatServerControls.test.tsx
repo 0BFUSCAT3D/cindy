@@ -48,6 +48,27 @@ describe('chat interaction controls', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.close' }));
   });
 
+  it('keeps a sending thread reply focused and locked, then sends it only once', async () => {
+    let settle: (value: { ok: true; messageId: string }) => void = () => {};
+    mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'In flight' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.readOnly).toBe(true));
+    expect(document.activeElement).toBe(input);
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(sendButton);
+    expect(mocks.reply).toHaveBeenCalledOnce();
+    settle({ ok: true, messageId: 'reply' });
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(input.readOnly).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
   it('closes from the square button surface outside the icon and retains the standard focus treatment', () => {
     const onClose = vi.fn();
     render(<ChatThreadPanel group={group} rootId="root" onClose={onClose} />);
