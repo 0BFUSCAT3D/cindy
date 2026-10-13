@@ -464,6 +464,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (event.error?.code === 'RESET_REQUIRED') {
             void api<Snapshot>(`/conversations/${roomId}/snapshot`).then(value => {
               if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+              // Edits and deletions before the new cursor will never be pushed.
+              threads.reset();
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());

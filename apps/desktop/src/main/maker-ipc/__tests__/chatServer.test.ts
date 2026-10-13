@@ -1285,6 +1285,12 @@ describe('Chat Server result delivery and refresh', () => {
         changes: [{ type: 'message.updated', entityId: outside }] }));
       await service.getGroup(roomId);
       expect(reads()).toBe(2);
+      // A cursor reset skips the pushes in between, so nothing cached may survive it.
+      Object.assign(socket, { readyState: 1 });
+      socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
+      await vi.advanceTimersByTimeAsync(0);
+      await service.getGroup(roomId);
+      expect(reads()).toBe(3);
     });
 
     it('does not let 「继续讨论」 restart a re-posted reply', async () => {
