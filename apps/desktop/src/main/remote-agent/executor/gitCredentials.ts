@@ -501,7 +501,39 @@ async function configReadProvesSafe(read: GitRead, deadline: number): Promise<bo
   });
 }
 
-async function diffHelpersAllowCredentialProbe(read: GitRead, cwd: string, timeoutMs: number): Promise<boolean> {
+async function mailmapSourcesAllowProbe(
+  read: GitRead, cwd: string, top: string, entries: readonly string[], deadline: number,
+): Promise<boolean> {
+  if (!/^(?:log|show|whatchanged|blame)$/.test(read.sub)) return true;
+  const fileIsSafe = async (file: string): Promise<boolean> => {
+    if (isShareCredentialPath(file)) return false;
+    try {
+      return !isShareCredentialPath(await fsp.realpath(file));
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    }
+  };
+  // Git reads the worktree mailmap and configured sources even for metadata
+  // formats. Inspect paths, not arbitrary source contents; normal maps stay free.
+  if (!(await fileIsSafe(path.join(top, '.mailmap')))) return false;
+  if (entries.some((entry) => /^mailmap\.file\n/i.test(entry))) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const file = (await git(['config', '--path', '-z', '--get', 'mailmap.file'], cwd, { timeoutMs: remaining })).replace(/\0$/, '');
+    if (file && !(await fileIsSafe(path.resolve(top, file)))) return false;
+  }
+  for (const entry of entries) {
+    if (!/^mailmap\.blob\n/i.test(entry)) continue;
+    const value = entry.slice(entry.indexOf('\n') + 1);
+    if (!value) continue;
+    const objectPath = /^[A-Za-z0-9_./@{}~^+\-]+:(.+)$/.exec(value)?.[1];
+    if (!objectPath || isShareCredentialPath(path.posix.resolve('/', objectPath))) return false;
+  }
+  return true;
+}
+
+async function diffHelpersAllowCredentialProbe(read: GitRead, cwd: string, top: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   if (!CONTENT_SUBCOMMANDS.has(read.sub) && !read.metadataOnly) return true;
   if (read.args.some((arg) => {
     const name = arg.split('=')[0];
@@ -516,6 +548,7 @@ async function diffHelpersAllowCredentialProbe(read: GitRead, cwd: string, timeo
   const externalDiffEnabled = !disabled.has('--no-ext-diff');
   if (externalDiffEnabled && process.env.GIT_EXTERNAL_DIFF !== undefined) return false;
   const entries = (await git(['config', '--list', '-z'], cwd, { timeoutMs })).split('\0');
+  if (!(await mailmapSourcesAllowProbe(read, cwd, top, entries, deadline))) return false;
   const defaultRemerge = entries.some((entry) => /^log\.diffmerges\n(?:r|remerge)\s*$/i.test(entry));
   const mayRemerge = /^(?:log|show|whatchanged)$/.test(read.sub) && read.args.some((arg, index, args) => {
     if (arg === '-m') return defaultRemerge;
@@ -659,7 +692,7 @@ export class GitCredentialHistory {
     });
     if (replacements.trim()) return false;
     const helperTimeout = deadline - Date.now();
-    if (helperTimeout <= 0 || !(await diffHelpersAllowCredentialProbe(read, cwd, helperTimeout))) return false;
+    if (helperTimeout <= 0 || !(await diffHelpersAllowCredentialProbe(read, cwd, top, helperTimeout))) return false;
     const hook = path.join(commonDir, 'hooks', 'post-index-change');
     const hookPresent = await Promise.all([hook, hook + '.exe'].map((file) => fsp.lstat(file).then(
       () => true,

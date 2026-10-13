@@ -278,6 +278,42 @@ describe('GitCredentialHistory', () => {
     expect(await provesSafe(history, 'git log --diff-merges=none -1')).toBe(true);
   });
 
+  it('keeps mailmap credential sources behind consent while allowing ordinary mappings', async () => {
+    const mapping = 'PRIVATE_FIXTURE=mailmap <mapped@example.invalid> <test@xdt.local>\n';
+    const externalCredential = path.join(root, '.env');
+    fs.writeFileSync(externalCredential, mapping);
+    git('config', 'mailmap.file', externalCredential);
+    const history = new GitCredentialHistory();
+    for (const args of [
+      ['log', '--use-mailmap', '--format=%aN', '-1'],
+      ['log', '--format=%aN', '-1'],
+      ['show', '--format=%aN', '--no-patch', 'HEAD'],
+    ]) {
+      expect(git(...args)).toContain('PRIVATE_FIXTURE=mailmap');
+      const command = 'git ' + args.join(' ');
+      expect(await provesSafe(history, command), command).toBe(false);
+      await requiresCredentialConfirmation(history, command);
+    }
+    for (const command of ['git diff', 'git status --short']) {
+      expect(await provesSafe(history, command), command).toBe(true);
+    }
+    const ordinaryMapping = path.join(root, 'authors.mailmap');
+    fs.writeFileSync(ordinaryMapping, 'Mapped Author <mapped@example.invalid> <test@xdt.local>\n');
+    git('config', 'mailmap.file', ordinaryMapping);
+    expect(git('log', '--format=%aN', '-1')).toContain('Mapped Author');
+    expect(await provesSafe(history, 'git log --format=%aN -1')).toBe(true);
+    git('config', '--unset', 'mailmap.file');
+    write('.env', mapping);
+    write('.mailmap', 'Mapped Author <mapped@example.invalid> <test@xdt.local>\n');
+    git('add', '.env', '.mailmap');
+    git('commit', '-qm', 'mapping sources', '--no-gpg-sign');
+    git('config', 'mailmap.blob', 'HEAD:.env');
+    expect(git('log', '--format=%aN', '-1')).toContain('PRIVATE_FIXTURE=mailmap');
+    expect(await provesSafe(history, 'git log --format=%aN -1')).toBe(false);
+    git('config', 'mailmap.blob', 'HEAD:.mailmap');
+    expect(await provesSafe(history, 'git log --format=%aN -1')).toBe(true);
+  });
+
   it('checks custom merge drivers only when history reads may remerge commits', async () => {
     write('.gitattributes', 'src/app.ts merge=shared\n');
     git('add', '.gitattributes');
