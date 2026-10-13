@@ -5,6 +5,7 @@
  *
  * 输入框贴在面板底部，不另画分隔线；卡片自己的描边就是边界。
  */
+import { useEffect, type RefObject } from 'react';
 
 /** Docked under the message list; no top rule — the card's border is the boundary. */
 export const BOT_GROUP_COMPOSER_DOCK = 'shrink-0 px-5 pb-4 pt-2';
@@ -32,4 +33,27 @@ export const BOT_GROUP_COMPOSER_FOOTER_START = 'flex min-w-0 items-center gap-2'
 export function fitBotGroupComposerInput(element: HTMLTextAreaElement): void {
   element.style.height = 'auto';
   element.style.height = `${element.scrollHeight}px`;
+}
+
+/**
+ * A wider or narrower input rewraps its text, so fit it again when its width changes (window
+ * resize, Thread panel opening). Only width counts: the fit itself changes the height.
+ * `mounted` re-attaches after the textarea is replaced (e.g. by the share bar and back).
+ */
+export function useRefitBotGroupComposerInputOnResize(
+  ref: RefObject<HTMLTextAreaElement | null>,
+  mounted = true,
+): void {
+  useEffect(() => {
+    const element = ref.current;
+    if (!mounted || !element || typeof ResizeObserver === 'undefined') return;
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth === width) return;
+      width = element.clientWidth;
+      fitBotGroupComposerInput(element);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref, mounted]);
 }

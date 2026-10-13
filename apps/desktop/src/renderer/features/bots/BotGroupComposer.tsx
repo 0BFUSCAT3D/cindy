@@ -64,6 +64,7 @@ import {
   BOT_GROUP_COMPOSER_FOOTER_START,
   BOT_GROUP_COMPOSER_INPUT,
   fitBotGroupComposerInput,
+  useRefitBotGroupComposerInputOnResize,
 } from './botGroupComposerChrome';
 import { botGroupAttachmentSignature, toBotGroupAttachmentInputs } from './botGroupAttachments';
 import {
@@ -184,6 +185,7 @@ export function BotGroupComposer({
     if (!element) return;
     fitBotGroupComposerInput(element);
   }, [text]);
+  useRefitBotGroupComposerInputOnResize(textareaRef);
 
   const send = async () => {
     if (!canSend || sendingRef.current) return;

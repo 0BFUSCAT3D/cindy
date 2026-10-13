@@ -48,6 +48,29 @@ describe('chat interaction controls', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.close' }));
   });
 
+  it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
+    const observed: Array<{ target: Element; callback: () => void }> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: () => void) {}
+      observe(target: Element) { observed.push({ target, callback: this.callback }); }
+      disconnect() {}
+    });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    let width = 400, contentHeight = 48;
+    Object.defineProperty(input, 'clientWidth', { configurable: true, get: () => width });
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, get: () => contentHeight });
+    fireEvent.change(input, { target: { value: 'A long reply that wraps onto several lines' } });
+    expect(input.style.height).toBe('48px');
+    const refit = observed.find(entry => entry.target === input)!.callback;
+    width = 200; contentHeight = 96;
+    refit();
+    expect(input.style.height).toBe('96px');
+    contentHeight = 120;
+    refit();
+    expect(input.style.height).toBe('96px');
+  });
+
   it('keeps a sending thread reply focused and locked, then sends it only once', async () => {
     let settle: (value: { ok: true; messageId: string }) => void = () => {};
     mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
