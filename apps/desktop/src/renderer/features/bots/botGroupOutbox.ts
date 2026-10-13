@@ -468,34 +468,51 @@ export function discardBotGroupOutbox(groupId: string): void {
 
 let unwatchGroupList: (() => void) | null = null;
 const verifying = new Set<string>();
+const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+/** A read that was not definite (thrown, or a failure other than NOT_FOUND) is tried again. */
+export const BOT_GROUP_GONE_RETRY_MS = [5_000, 30_000, 120_000] as const;
 
 /**
  * Groups deleted while their page is closed (or from another device) send no event this
  * outbox sees. The group list does: a group that drops out of it is read once more, and only
- * a definite NOT_FOUND discards its outbox (a legacy id still resolves, a failed read keeps it).
+ * a definite NOT_FOUND discards its outbox (a legacy id still resolves). A read that fails is
+ * retried a few times on its own: the event that dropped the group may never come again.
  */
 function watchGroupList(): void {
   if (unwatchGroupList) return;
   unwatchGroupList = subscribeBotGroups(() => {
-    const list = getBotGroupListSnapshot();
-    if (!list.loaded) return;
-    const listed = new Set(list.groups.map((group) => group.id));
-    for (const [groupId, group] of groups) {
-      if (listed.has(groupId) || verifying.has(groupId)) continue;
-      if (group.entries.length === 0 && group.previews.size === 0) continue;
-      const api = botGroupApi();
-      if (!api) continue;
-      const requestGeneration = generation;
-      verifying.add(groupId);
-      void api
-        .getBotGroup(groupId)
-        .then((result) => {
-          if (requestGeneration === generation && !result.ok && result.errorCode === 'NOT_FOUND') discardBotGroupOutbox(groupId);
-        })
-        .catch(() => undefined)
-        .finally(() => verifying.delete(groupId));
-    }
+    for (const groupId of groups.keys()) verifyGroupGone(groupId, 0);
   });
+}
+
+function verifyGroupGone(groupId: string, attempt: number): void {
+  if (verifying.has(groupId)) return;
+  const group = groups.get(groupId);
+  if (!group || (group.entries.length === 0 && group.previews.size === 0)) return;
+  const list = getBotGroupListSnapshot();
+  if (!list.loaded || list.groups.some((listed) => listed.id === groupId)) return;
+  const api = botGroupApi();
+  if (!api) return;
+  const requestGeneration = generation;
+  let definite = false;
+  verifying.add(groupId);
+  void api
+    .getBotGroup(groupId)
+    .then((result) => {
+      definite = result.ok || result.errorCode === 'NOT_FOUND';
+      if (requestGeneration === generation && !result.ok && result.errorCode === 'NOT_FOUND') discardBotGroupOutbox(groupId);
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      verifying.delete(groupId);
+      const delay = BOT_GROUP_GONE_RETRY_MS[attempt];
+      if (definite || delay === undefined || requestGeneration !== generation) return;
+      const timer = setTimeout(() => {
+        retryTimers.delete(timer);
+        if (requestGeneration === generation) verifyGroupGone(groupId, attempt + 1);
+      }, delay);
+      retryTimers.add(timer);
+    });
 }
 
 /**
@@ -594,6 +611,8 @@ export function resetBotGroupOutboxForTests(): void {
   preparing.clear();
   verifying.clear();
   submitting.clear();
+  for (const timer of retryTimers) clearTimeout(timer);
+  retryTimers.clear();
   unwatchGroupList?.();
   unwatchGroupList = null;
   composers.clear();

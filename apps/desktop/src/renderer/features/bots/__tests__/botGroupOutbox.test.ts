@@ -8,6 +8,7 @@ import type {
   BotGroupSendResult,
 } from '../../../../shared/botGroupChat';
 import {
+  BOT_GROUP_GONE_RETRY_MS,
   beginBotGroupTimelineRead,
   botGroupSendSignature,
   discardBotGroupOutbox,
@@ -686,6 +687,54 @@ describe('botGroupOutbox', () => {
       await flush();
       expect(mocks.send).not.toHaveBeenCalled();
       expect(released()).toEqual(['drawn']);
+    });
+
+    describe('a read that is not definite', () => {
+      const failOne = async () => {
+        mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+        enqueueBotGroupSend(draft({ groupId: 'g1', clientId: 'failed' }, { files: [staged('failed')] }));
+        await flush();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      };
+      afterEach(() => vi.useRealTimers());
+
+      it('is retried on its own and discards once a later read says NOT_FOUND', async () => {
+        await failOne();
+        mocks.getBotGroup.mockRejectedValueOnce(new Error('ipc'))
+          .mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' })
+          .mockResolvedValueOnce({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+        listGroups([]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.getBotGroup).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(BOT_GROUP_GONE_RETRY_MS[0]);
+        expect(mocks.getBotGroup).toHaveBeenCalledTimes(2);
+        expect(getBotGroupOutbox('g1')).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(BOT_GROUP_GONE_RETRY_MS[1]);
+        expect(mocks.getBotGroup).toHaveBeenCalledTimes(3);
+        expect(getBotGroupOutbox('g1')).toEqual([]);
+        expect(released()).toEqual(['failed']);
+      });
+
+      it('gives up after the last retry, keeping the outbox', async () => {
+        await failOne();
+        mocks.getBotGroup.mockResolvedValue({ ok: false, errorCode: 'INTERNAL', message: '' });
+        listGroups([]);
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(mocks.getBotGroup).toHaveBeenCalledTimes(1 + BOT_GROUP_GONE_RETRY_MS.length);
+        expect(getBotGroupOutbox('g1')).toHaveLength(1);
+        expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+      });
+
+      it('stops once the group is listed again or reads fine', async () => {
+        await failOne();
+        mocks.getBotGroup.mockRejectedValueOnce(new Error('ipc'));
+        listGroups([]);
+        await vi.advanceTimersByTimeAsync(0);
+        mocks.list = { groups: [{ id: 'g1' }], loaded: true };
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(mocks.getBotGroup).toHaveBeenCalledTimes(1);
+        expect(getBotGroupOutbox('g1')).toHaveLength(1);
+      });
     });
 
     it('keeps a group that is only missing from the list when the read fails or is not definite', async () => {
