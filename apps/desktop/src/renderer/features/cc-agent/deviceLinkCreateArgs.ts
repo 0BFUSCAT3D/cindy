@@ -16,7 +16,7 @@
  * agentKind 归一到 maker-core 形态('cc' → 'claude-code');其余字段原样透传。
  */
 
-import { effectiveSourceIdForModel, getModel, type ProviderView } from '@cindy/model-providers';
+import { effectiveSourceIdForModel, getModel, reconcileInvocationEffort, type ProviderView } from '@cindy/model-providers';
 
 import type { Session, WorkspaceKind } from '@/lib/ccAgent.types';
 import type { AgentKind } from '@/hooks/useAgentCapabilities';
@@ -177,12 +177,14 @@ export function resolveDeviceLinkSubmission(p: DeviceLinkSubmissionParams): Devi
   const routeModel = routeProvider
     ? getModel(routeProvider, p.candidate.model, p.capabilityAgentKind)
     : undefined;
-  // A known empty effort list is an explicit no-effort contract. Keep the final
-  // submission safe even if the draft was seeded before the provider catalog arrived.
   const effort =
-    routeModel?.efforts.length === 0 && routeModel.effortsUnknown !== true
-      ? null
-      : p.candidate.effort;
+    !routeModel || routeModel.effortsUnknown === true
+      ? p.candidate.effort
+      : reconcileInvocationEffort({
+          requested: p.candidate.effort,
+          model: routeModel,
+          noEffortFallback: null,
+        });
   return buildDeviceLinkCreateArgs({
     agentKind: p.agentKind,
     id: p.id,
