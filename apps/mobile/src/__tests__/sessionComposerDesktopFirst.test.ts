@@ -2,8 +2,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildSessionComposerLayout } from '@/session/sessionComposerLayout';
-import { composerTextPaddingForPlatform } from '@/session/composerTextMetrics';
-import { spacing } from '@/theme/tokens';
 
 // Windows checkout(core.autocrlf)下源码是 CRLF;统一归一成 LF,含 \n 的多行片段断言才跨平台成立。
 const readTextLf = (...args: Parameters<typeof readFileSync>): string =>
@@ -832,7 +830,7 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).not.toMatch(/(?:const|let)\s+durationMs\b/);
   });
 
-  it('lets the whole top edge of the card resize without reaching the first text line', () => {
+  it('lets the whole top edge of the card resize without covering attachments or text', () => {
     const sharedSource = readTextLf(resolve(process.cwd(), 'src/session/MobileComposerInputRow.tsx'), 'utf8');
     const touchStart = sharedSource.indexOf('resizeGrabberTouch: {');
     const hitStart = sharedSource.indexOf('resizeGrabberHit: {', touchStart);
@@ -846,13 +844,12 @@ describe('mobile session composer desktop-first surface', () => {
     expect(hitStyle).not.toMatch(/\bwidth:/);
     expect(touchStyle).toContain('height: RESIZE_GRABBER_HIT_HEIGHT,');
     expect(hitStyle).toContain('height: RESIZE_GRABBER_HIT_HEIGHT,');
-    // 向下止于首行文字之上：iOS 卡片留白 + 输入框上内边距；其它平台与卡片留白等高。
+    // 高度恰好等于卡片顶部留白：留白之下的附件托盘与输入框都不被覆盖。
     expect(sharedSource).toContain('const COMPOSER_CARD_PADDING_TOP_IOS = spacing.md;');
     expect(sharedSource).toContain('const COMPOSER_CARD_PADDING_TOP = 26;');
     expect(sharedSource).toContain(
-      "const RESIZE_GRABBER_HIT_HEIGHT = Platform.OS === 'ios' ? COMPOSER_CARD_PADDING_TOP_IOS + 4 : COMPOSER_CARD_PADDING_TOP;",
+      "const RESIZE_GRABBER_HIT_HEIGHT = Platform.OS === 'ios' ? COMPOSER_CARD_PADDING_TOP_IOS : COMPOSER_CARD_PADDING_TOP;",
     );
-    expect(spacing.md + 4).toBeLessThanOrEqual(spacing.md + composerTextPaddingForPlatform('ios').top);
     expect(sharedSource).toContain('paddingTop: COMPOSER_CARD_PADDING_TOP,');
     expect(sharedSource).toContain('paddingTop: COMPOSER_CARD_PADDING_TOP_IOS }');
   });

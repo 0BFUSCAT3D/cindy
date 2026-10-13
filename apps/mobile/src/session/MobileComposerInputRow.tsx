@@ -80,10 +80,10 @@ export const MOBILE_COMPOSER_INPUT_MAX_HEIGHT = (MOBILE_COMPOSER_INPUT_LINE_HEIG
  * 语音听写期间「点输入区停止听写」的命中层用它撑起 inputFrame(见 inputFrameMinHeight)。
  */
 export const MOBILE_COMPOSER_MIN_TOUCH_TARGET = 44;
-/** 聚焦卡片的顶部留白:iOS 原生卡片 / 其它平台。拖拽热区高度与它对齐。 */
+/** 聚焦卡片的顶部留白:iOS 原生卡片 / 其它平台。拖拽热区高度与它相等。 */
 const COMPOSER_CARD_PADDING_TOP_IOS = spacing.md;
 const COMPOSER_CARD_PADDING_TOP = 26;
-const RESIZE_GRABBER_HIT_HEIGHT = Platform.OS === 'ios' ? COMPOSER_CARD_PADDING_TOP_IOS + 4 : COMPOSER_CARD_PADDING_TOP;
+const RESIZE_GRABBER_HIT_HEIGHT = Platform.OS === 'ios' ? COMPOSER_CARD_PADDING_TOP_IOS : COMPOSER_CARD_PADDING_TOP;
 const isExpoGo =
   Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
@@ -526,7 +526,8 @@ function ComposerFoldingSection({ progress, children }: { progress?: SharedValue
  *
  * absolute 贴在卡片顶部内侧，不参与布局，因此显示 / 隐藏只有透明度变化、
  * 不会引起输入行高度跳变。触摸命中区横跨整条卡片顶边（不只是可见横条附近）；
- * 只在聚焦卡片态渲染，此时顶边没有其它按钮，向下不进入文字行。
+ * 只在聚焦卡片态渲染，此时顶边没有其它按钮；高度不超过卡片顶部留白，
+ * 不覆盖下面的附件或文字。
  */
 export function ComposerResizeGrabber({ onAdjust, panHandlers, gesture, visible, testID }: ComposerResizeGrabberProps) {
   const { colors, mode } = useTheme();
@@ -798,9 +799,9 @@ const makeMobileComposerInputRowStyles = (colors: ThemeColors) => ({
     paddingTop: COMPOSER_TEXT_GEOMETRIC_PADDING_TOP,
     textAlignVertical: 'center',
   },
-  // 整条卡片顶边都接管拖动，高度只到首行文字之上：热区不得向下覆盖首行，
-  // 否则会抢走编辑器的点击、选中和系统粘贴长按。iOS 卡片顶部留白 12pt、
-  // 输入框上内边距 6pt，16pt 仍在文字之上；其它平台留白 26pt，热区与留白等高。
+  // 整条卡片顶边都接管拖动，高度恰好等于卡片顶部留白：留白之下是附件托盘或
+  // 输入框，热区越界就会抢走缩略图预览 / 移除按钮，或编辑器的点击、选中与系统
+  // 粘贴长按。
   resizeGrabberTouch: {
     alignItems: 'stretch',
     height: RESIZE_GRABBER_HIT_HEIGHT,
