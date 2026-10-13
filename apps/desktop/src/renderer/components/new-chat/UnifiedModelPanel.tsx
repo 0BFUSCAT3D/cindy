@@ -1,5 +1,9 @@
 import { useRemoteModelFavorites } from '@/state/useRemoteModelFavorites';
-import { useProviderShareFavorites } from '@/state/providerShareFavorites';
+import {
+  parseProviderShareFavoriteSource,
+  useProviderShareFavorites,
+  useProviderShareFavoriteSources,
+} from '@/state/providerShareFavorites';
 import {
   agentDeviceOfFavorite,
   LOCAL_MODEL_FAVORITE_STORE,
@@ -396,11 +400,17 @@ export function UnifiedModelPanel({
   const isSharedProvider = isProviderShareAgentDeviceId(deviceId);
   // 远程 Agent:收藏一律读写任务所在电脑那一份(§1.5),浏览其他电脑的目录时也不读那台自己的收藏;
   // 其余入口照旧 —— 远程控制读被控电脑的列表,本机读本机。
-  const favoritesListDeviceId = isSharedProvider
-    ? undefined
-    : remoteSources ? remoteSources.favoritesDeviceId : deviceId;
+  const favoritesListDeviceId = remoteSources
+    ? remoteSources.favoritesDeviceId
+    : isSharedProvider ? undefined : deviceId;
   const remoteFavorites = useRemoteModelFavorites(favoritesListDeviceId);
-  const sharedFavorites = useProviderShareFavorites(deviceId, storedFavorites);
+  const sharedFavorites = useProviderShareFavorites(
+    deviceId,
+    storedFavorites,
+    remoteSources?.favoritesDeviceId ? remoteFavorites : undefined,
+  );
+  const sharedFavoriteSources = useProviderShareFavoriteSources();
+  const hasRemoteSources = !!remoteSources;
   const favoritesHomeDeviceId = remoteSources?.homeDeviceId ?? null;
   const agentDeviceFavorites = useAgentDeviceFavorites({
     deviceId: remoteSources?.active && !isSharedProvider ? deviceId : undefined,
@@ -410,8 +420,8 @@ export function UnifiedModelPanel({
       : { items: storedFavorites, store: LOCAL_MODEL_FAVORITE_STORE },
   });
   useEffect(() => {
-    if (isSharedProvider) ensureProviderShareReceivedStarted();
-  }, [isSharedProvider]);
+    if (isSharedProvider || hasRemoteSources) ensureProviderShareReceivedStarted();
+  }, [isSharedProvider, hasRemoteSources]);
   const favorites = selectionPolicy === 'official' ? NO_FAVORITES
     : isSharedProvider ? sharedFavorites.items
     : remoteSources ? agentDeviceFavorites.items
@@ -537,8 +547,7 @@ export function UnifiedModelPanel({
         : null,
     [remoteActiveDeviceId, remoteActiveProviderId],
   );
-  const effectiveRail = isSharedProvider && rail.kind === 'favorites' && !query.trim()
-    ? rail : remoteRail ?? (query.trim() ? RAIL_ALL : rail);
+  const effectiveRail = remoteRail ?? (query.trim() ? RAIL_ALL : rail);
   // 切到另一台电脑的途中(或读取失败)列表数据还不是那台的目录:列表区只显示状态,不出行。
   const remoteListPending = remoteRail !== null && !remoteSources?.ready;
   const handleRailSelect = useCallback(
@@ -548,11 +557,11 @@ export function UnifiedModelPanel({
         remoteSources?.onActivate({ deviceId: item.deviceId, providerId: item.providerId });
         return;
       }
-      // 分享收藏属于受邀者，但条目仍要在该分享的目录里解析与选用。
-      if (remoteSources?.active && !(isSharedProvider && item.kind === 'favorites')) remoteSources.onActivate(null);
+      // ★ / 全部回到任务电脑的收藏列表；每条远程收藏按自身来源解析，不能把视图锁在刚浏览的分享。
+      if (remoteSources?.active) remoteSources.onActivate(null);
       setRail(item);
     },
-    [remoteSources, isSharedProvider],
+    [remoteSources],
   );
 
   // ── 行配置合成 ────────────────────────────────────────────────────────────
@@ -758,7 +767,11 @@ export function UnifiedModelPanel({
   const resolveDeviceFavorite = useMemo(() => {
     if (!deviceFavoritesEnabled) return undefined;
     return (item: ModelFavoriteItem): ForeignFavoriteRow | null => {
-      const source = agentDeviceOfFavorite(item.providerId, favoritesHomeDeviceId);
+      const shareDeviceId = sharedFavoriteSources.get(item.providerId);
+      const share = shareDeviceId ? parseProviderShareFavoriteSource(item.providerId) : null;
+      const source = share && shareDeviceId
+        ? { deviceId: shareDeviceId, providerId: share.providerId }
+        : agentDeviceOfFavorite(item.providerId, favoritesHomeDeviceId);
       if (!source) return null;
       const favorite: ModelFavoriteItem = { ...item, providerId: source.providerId };
       const group = deviceFavoriteGroups?.find((candidate) => candidate.deviceId === source.deviceId);
@@ -778,7 +791,7 @@ export function UnifiedModelPanel({
           }
         : null;
     };
-  }, [deviceFavoritesEnabled, favoritesHomeDeviceId, deviceFavoriteGroups, unavailableDeviceIds]);
+  }, [deviceFavoritesEnabled, favoritesHomeDeviceId, deviceFavoriteGroups, unavailableDeviceIds, sharedFavoriteSources]);
 
   const sections = useMemo(
     () =>
