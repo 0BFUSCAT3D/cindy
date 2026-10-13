@@ -1639,7 +1639,10 @@ describe('Shared create project picker', () => {
     );
     expect(seed).toContain('shouldReseedDeviceLinkDraftDefaults({');
     expect(seed).toContain('capabilitiesChanged,');
-    expect(seed).toContain('if (!capabilities || capabilitiesLoading');
+    expect(seed).toContain('!capabilities');
+    expect(seed).toContain('capabilitiesLoading');
+    expect(seed).toContain('!deviceDraftDefaultsReady');
+    expect(seed).toContain('!deviceProviderCatalogReady');
     expect(seed).toContain('controllerTouched: dlRuntimeTouchedRef.current,');
     expect(seed).toContain('remoteModelChosenByUser: deviceDraftDefaults?.modelChosenByUser,');
     expect(seed).toContain('modelChosenByUser: true,');
