@@ -70,6 +70,7 @@ import { SidebarFilterPopover } from './sidebar/SidebarFilterPopover';
 import { MainListScopeHeader } from './sidebar/MainListScopeHeader';
 import { SharedTasksSection } from '@/features/device-link/SharedTasksSection';
 import { TeammatesSection } from '@/features/bots/TeammatesSection';
+import { TeammateSearchResults, useTeammateSearchMatches } from '@/features/bots/TeammateSearchResults';
 import { useNavigationAttention } from '@/lib/navigationAttentionStore';
 import { useActiveMainView } from '@/hooks/useActiveMainView';
 import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
@@ -1612,6 +1613,8 @@ function ExpandedView({
   // 内联会话搜索:输入行在 SidebarTopNav 末行,状态经 ConversationSearchProvider 共享;
   // query 非空时同一份顶部导航 sticky 钉住,结果替换下方列表,不再用 overlay 盖输入框。
   const { search, openSignal } = useConversationSearchContext();
+  // 伙伴 / 群聊并入侧栏总搜索,命中排在会话结果之前。
+  const teammateMatches = useTeammateSearchMatches(search.trimmed);
   const gcProjectKeys = useMemo(
     () => projectUniverse.projects.map((p) => p.projectKey),
     [projectUniverse.projects],
@@ -3784,6 +3787,8 @@ function ExpandedView({
                 status={search.status}
                 results={search.results}
                 onSelect={search.handleSelect}
+                leading={<TeammateSearchResults matches={teammateMatches} />}
+                leadingCount={teammateMatches.length}
               />
             </div>
           ) : null}

@@ -194,20 +194,6 @@ describe('TeammatesSection group chats', () => {
     expect(screen.queryByRole('button', { name: 'bots.add' })).toBeNull();
   });
 
-  it('searches both group names and members in the unified list', async () => {
-    mocks.groups = [group(), ...Array.from({ length: 5 }, (_, i) =>
-      group({ id: `other-${i}`, name: `其他群 ${i}`, members: [] }))];
-    await renderSidebar();
-    const input = screen.getByRole('textbox', { name: 'bots.list.search' });
-    fireEvent.change(input, { target: { value: '出游' } });
-    expect(screen.getByRole('button', { name: /周末出游/ })).toBeTruthy();
-    expect(screen.queryByText('咪咪 private preview')).toBeNull();
-    expect(screen.queryByRole('button', { name: /其他群/ })).toBeNull();
-    fireEvent.change(input, { target: { value: '咪咪' } });
-    expect(screen.getByRole('button', { name: /周末出游/ })).toBeTruthy();
-    expect(screen.getByText('咪咪 private preview')).toBeTruthy();
-  });
-
   it('shows the running mark on the group, not on the speaking teammate’s own row', async () => {
     mocks.groups = [group({ speakingBotIds: ['mimi'] })];
     mocks.islandActivity = new Map([

@@ -9,7 +9,6 @@ import {
   Eye,
   EyeOff,
   Pin,
-  Search,
   Trash2,
 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -97,8 +96,6 @@ export function TeammatesSection() {
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
-    // 收起后搜索框不可见:清空筛选,头像行始终展示完整名册。
-    if (next) setQuery('');
     writeTeammatesSectionCollapsed(dataOwnerId, next);
   };
   const remoteBots = useRemoteBots();
@@ -114,7 +111,6 @@ export function TeammatesSection() {
   const unreadByBotId = useBotUnreadCounts();
   const rosterBots = bots.filter((bot) => bot.status !== 'archived');
   const archivedBots = bots.filter((bot) => bot.status === 'archived');
-  const [query, setQuery] = useState('');
   const [showHidden, setShowHidden] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [contextMenu, setContextMenu] = useState<{
@@ -146,27 +142,19 @@ export function TeammatesSection() {
     return withoutBotGroupLanes(bot.sessions).map((session) => islandActivity.get(session.id))
       .find((activity) => activity?.phase === 'running');
   };
-  const roster = partitionBotRoster(rosterBots, { query, showHidden });
+  // 伙伴搜索并入侧栏总搜索(TeammateSearchResults),段内不再单独筛选。
+  const roster = partitionBotRoster(rosterBots, { query: '', showHidden });
   const cindyOptions = cindyDeviceOptions(bots, remoteBots, devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
   const hasMultipleCindys = cindyOptions.length > 1;
   const routeCindy = cindyOptions.find(option => option.key === cindyDeviceKey({ id: botId ?? '', deviceId }));
   // Follow the open Cindy chat; otherwise the local-first roster is the default.
   const currentCindy = routeCindy ?? cindyOptions[0];
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const showCindy = hasMultipleCindys && currentCindy && (
-    !normalizedQuery ||
-    roster.visible.some(bot => cindyOptions.some(option => option.bot === bot)) ||
-    cindyOptions.some(option =>
-      `${option.bot.name} ${option.bot.description} ${option.label} ${option.deviceName}`.toLocaleLowerCase().includes(normalizedQuery))
-  );
+  const showCindy = hasMultipleCindys && Boolean(currentCindy);
   const visibleBots = [
     ...roster.visible.filter(bot => !hasMultipleCindys || !cindyOptions.some(option => option.bot === bot)),
-    ...remoteBots.filter(bot => (!hasMultipleCindys || !isCindyDeviceBot(bot)) && (!normalizedQuery || `${bot.name} ${bot.description} ${bot.deviceName}`.toLocaleLowerCase().includes(normalizedQuery))),
+    ...remoteBots.filter(bot => !hasMultipleCindys || !isCindyDeviceBot(bot)),
   ];
-  const rosterSize = groups.length + rosterBots.length + remoteBots.length - (hasMultipleCindys ? cindyOptions.length - 1 : 0);
-  const showSearch = rosterSize >= 8 || normalizedQuery.length > 0;
-  const visibleGroups = groups.filter(group => !normalizedQuery ||
-    `${group.name} ${group.members.map(member => member.name).join(' ')}`.toLocaleLowerCase().includes(normalizedQuery));
+  const visibleGroups = groups;
   const visibleChats = [
     ...visibleBots.map(bot => ({ kind: 'bot' as const, bot,
       pinned: 'pinnedAt' in bot && Boolean(bot.pinnedAt),
@@ -356,22 +344,6 @@ export function TeammatesSection() {
 
       <SectionCollapse collapsed={collapsed}>
       <div className="flex flex-col pt-1 pr-0 pl-3">
-      {showSearch ? (
-        <label className="relative mb-2 block px-2.5">
-          <Search
-            size={13}
-            aria-hidden="true"
-            className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-[var(--sidebar-list-muted)]"
-          />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('bots.list.searchPlaceholder')}
-            aria-label={t('bots.list.search')}
-            className="h-7 w-full rounded-lg border border-[var(--border-default)] bg-transparent pl-7 pr-2 text-11 text-[var(--sidebar-nav-text)] outline-none placeholder:text-[var(--sidebar-list-muted)] focus:border-[var(--focus-ring)]"
-          />
-        </label>
-      ) : null}
 
       <div>
         {roster.visible.length === 0 && roster.hidden.length === 0 && archivedBots.length === 0 && remoteBots.length === 0 && groups.length === 0 ? (

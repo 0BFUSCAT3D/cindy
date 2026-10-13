@@ -246,27 +246,6 @@ describe('one Cindy entry across devices', () => {
     expect(mocks.navigate).toHaveBeenLastCalledWith('/bots/cindy-default');
   });
 
-  it('keeps local Skill matches visible after grouping Cindy devices', async () => {
-    mocks.profiles = [
-      {
-        ...bot({ id: 'cindy-default', name: 'Cindy', lastMessagePreview: 'Local preview' }),
-        skills: ['web-research'],
-      },
-      ...Array.from({ length: 7 }, (_, index) => bot({ id: `other-${index}`, name: `Other ${index}` })),
-    ];
-    mocks.remoteBots = [remote('cloud', 'Cloud')];
-    await renderSidebar();
-
-    fireEvent.change(screen.getByLabelText('bots.list.search'), { target: { value: 'WEB-RESEARCH' } });
-    expect(screen.getAllByTestId('cindy-device-row')).toHaveLength(1);
-    expect(screen.getByText('Local preview')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Cindy · bots.devicePicker.local' }));
-    expect(mocks.navigate).toHaveBeenLastCalledWith('/bots/cindy-default');
-
-    fireEvent.change(screen.getByLabelText('bots.list.search'), { target: { value: 'unmatched-skill' } });
-    expect(screen.queryByTestId('cindy-device-row')).toBeNull();
-  });
-
   it('keeps remote unread discoverable without opening the chat or switching away from local', async () => {
     mocks.profiles = [bot({ id: 'cindy-default', name: 'Cindy' })];
     mocks.remoteBots = [remote('cloud', 'Cloud', { lastReplyAt: 20, readAt: 10, online: false })];
@@ -444,17 +423,6 @@ describe('TeammatesSection header', () => {
     expect(window.localStorage.getItem('sidebar.teammatesSection.v1.owner.fixture-owner')).toBe('expanded');
   });
 
-  it('clears a search when collapsing so the avatar row shows the whole roster', async () => {
-    mocks.profiles = Array.from({ length: 8 }, (_, index) => bot({ id: `bot-${index}`, name: `Mate ${index}` }));
-    await renderSidebar();
-    fireEvent.change(screen.getByLabelText('bots.list.search'), { target: { value: 'no-such-teammate' } });
-    fireEvent.click(header());
-    // The search box is hidden while collapsed; a leftover filter must not empty the avatar row.
-    expect(screen.getAllByRole('button', { name: /^Mate \d$/ })).toHaveLength(8);
-    fireEvent.click(screen.getByRole('button', { name: 'bots.list.sectionExpand' }));
-    expect((screen.getByLabelText('bots.list.search') as HTMLInputElement).value).toBe('');
-  });
-
   it('marks the open chat in the collapsed avatar row', async () => {
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' }), bot({ id: 'bot-2', name: 'Writer' })];
     mocks.unread = { 'bot-1': 2 };
@@ -555,7 +523,7 @@ describe('TeammatesSection rows', () => {
     expect(screen.getAllByText('Active steward')).toHaveLength(1);
   });
 
-  it('keeps hidden Bots recoverable and reveals a match automatically while searching', async () => {
+  it('keeps hidden Bots out of the list without a section search box', async () => {
     mocks.profiles = [
       bot({ id: 'visible', name: 'Visible' }),
       { ...bot({ id: 'hidden', name: 'Hidden release steward' }), hiddenAt: 2 },
@@ -568,10 +536,10 @@ describe('TeammatesSection rows', () => {
     ];
 
     await renderSidebar();
+    // Search moved to the sidebar-wide search (teammateSearchResults.test); the section
+    // keeps hidden teammates out of the list and offers no search box of its own.
     expect(screen.queryByText('Hidden release steward')).toBeNull();
-    fireEvent.change(screen.getByLabelText('bots.list.search'), { target: { value: 'release' } });
-    expect(screen.getByText('Hidden release steward')).toBeTruthy();
-    expect(screen.queryByText('Other hidden')).toBeNull();
+    expect(screen.queryByLabelText('bots.list.search')).toBeNull();
   });
 
   it('shows the latest message and its time instead of a channel label', async () => {
