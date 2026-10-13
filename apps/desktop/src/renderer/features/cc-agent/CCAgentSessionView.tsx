@@ -27,7 +27,9 @@ import {
   useState,
 } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
+import { CindyMakeSessionGate } from './CindyMakeSessionGate';
 import { dbToMakerAgentKind, normalizeDbAgentKind } from '../../../shared/agentKindConversion';
 import { useTranslation } from 'react-i18next';
 import {
@@ -188,6 +190,7 @@ import {
   useRemoteSessionConnection,
 } from '@/features/cc-agent/hooks/useRemoteSessionConnection';
 import { useSessionTurnActiveTruth } from '@/features/cc-agent/hooks/useSessionTurnActiveTruth';
+import { useHistoryRecoveryNavigation } from '@/features/cc-agent/hooks/useHistoryRecoveryNavigation';
 import { useRemoteSessionLoading } from '@/features/cc-agent/hooks/useRemoteSessionLoading';
 import { RemoteSessionBanner } from './RemoteSessionBanner';
 import { decideRemoteSessionExit } from './remoteSessionExit';
@@ -307,7 +310,7 @@ import { hasSplitGroupSessionType } from './splitGroupDnd';
 import { splitGroupStore } from './splitGroupStore';
 import {
   attachGhostMediaToSession,
-  getGhostMediaUriFromDataTransfer,
+  getGhostMediaHandoverFromDataTransfer,
 } from '@/cindy-brain/ghostMediaHandover';
 import { isGlobalDropIntercepted } from '@/lib/globalDropIntercept';
 import {
@@ -762,7 +765,16 @@ export function createWritableDirRemovalQueue() {
   };
 }
 
-export function CCAgentSessionView({
+export function CCAgentSessionView(props: CCAgentSessionViewProps) {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  return (
+    <CindyMakeSessionGate sessionId={props.sessionIdProp ?? sessionId}>
+      <CCAgentSessionContent {...props} />
+    </CindyMakeSessionGate>
+  );
+}
+
+function CCAgentSessionContent({
   sessionIdProp,
   routeOwner,
   compact,
@@ -841,11 +853,16 @@ export function CCAgentSessionView({
   const setRightSidebarSessionId = outletContext?.setRightSidebarSessionId;
   const setRightSidebarWorkdir = outletContext?.setRightSidebarWorkdir;
   const { enabled: silentEncryptedRetryEnabled } = useSilentEncryptedRetry();
-  const [forkStripEncryptedRunning, setForkStripEncryptedRunning] = useState(false);
   // 从 Automations 的 RunHistoryCard 跳过来的 navigate 会带 state.from='automations'，
   // 在聊天区左上角显示一个返回按钮；点别的 session 入口（不带 state）时按钮自然消失。
-  const navState = location.state as { from?: string } | null;
+  const navState = location.state as { from?: string; sourceSessionId?: unknown } | null;
   const cameFromAutomations = navState?.from === 'automations';
+  // /review 审查任务不在任务列表里,从来源任务的审查卡片进入时带上来源 id,
+  // 左上角给出回到来源任务的返回按钮(侧栏收起时这是唯一的回路)。
+  const reviewSourceSessionId =
+    navState?.from === 'review-source' && typeof navState.sourceSessionId === 'string'
+      ? navState.sourceSessionId
+      : null;
   const handoffFrom = useMemo(() => parseHandoffState(location.state), [location.state]);
   const locationSearchJump = useMemo(() => parseSearchJumpState(location.state), [location.state]);
   const searchJump = searchJumpProp !== undefined ? searchJumpProp : locationSearchJump;
@@ -2058,6 +2075,18 @@ export function CCAgentSessionView({
   // device-link 远程会话用被控端经隧道带来的 providers(per-provider,fast 判定与本地同口径)。
   const { providers: localProviders } = useProviders();
   const { mode: authMode, user: authUser, dataOwnerId, deviceId: selfDeviceId } = useAuth();
+  const {
+    begin: beginHistoryRecovery,
+    invalidate: invalidateHistoryRecoveryNavigation,
+    isPending: isHistoryRecoveryPending,
+    pending: forkStripEncryptedRunning,
+  } =
+    useHistoryRecoveryNavigation({
+      source: `${dataOwnerId}:${remoteDeviceId ?? ''}:${sessionId}:${navigationMode}`,
+      running: agentStatus.isRunning || isStreaming || remoteTurnActive,
+      startedAt: session?.activeTurnStartedAt ?? null,
+      endedAt: session?.lastTurnEndedAt ?? null,
+    });
   // Agent 在另一台电脑运行的任务:模型目录同样以那台为准(任务本身在本机)。
   const agentDeviceId = remoteDeviceId ? undefined : (session?.agentDeviceId ?? undefined);
   // 远程 Agent:本机任务的模型面板也列出其他电脑的供应商(选中 = 把 Agent 挪过去,下一条消息
@@ -2388,7 +2417,8 @@ export function CCAgentSessionView({
     }
   }, [syntheticContinuationPending, errorTailBannerHiddenFor]);
   const handleErrorTailContinue = useCallback(async () => {
-    if (!sessionId || !errorTailMsg) return;
+    if (!sessionId || !errorTailMsg || isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
     setErrorTailBannerHiddenFor(errorTailMsg.clientId);
     try {
       // 隐藏的英文续跑指令([UI_ACTION_TRIGGER] 前缀,消息流不渲染)——用户视角
@@ -2420,6 +2450,8 @@ export function CCAgentSessionView({
   }, [
     errorTailKind,
     errorTailMsg,
+    invalidateHistoryRecoveryNavigation,
+    isHistoryRecoveryPending,
     markCurrentUnreadFailedScheduleRun,
     rebuildClaudeSubscriptionSessionBeforeRetry,
     sessionId,
@@ -3330,6 +3362,9 @@ export function CCAgentSessionView({
         !slashMatch && agentKind === 'pi' ? leadingSlashInvocation(message) : undefined;
       if (!slashMatch && !leading) return { handled: false, accepted: false, message };
       const cmdName = (slashMatch?.[1] ?? leading!.name).toLowerCase();
+      if (!CINDY_MAKE_ENABLED && (cmdName === 'cindy-make' || cmdName === 'cindy-make-doctor')) {
+        return { handled: true, accepted: false, message };
+      }
       const args = slashMatch?.[2] ?? '';
       const allowDesktopDispatch = options?.allowDesktopDispatch ?? true;
       const workingDir = options?.workingDirOverride ?? session?.workingDir;
@@ -3750,6 +3785,7 @@ export function CCAgentSessionView({
     ) => {
       if (readOnly) return false;
       if (cindyMakeInputLocked) return false;
+      invalidateHistoryRecoveryNavigation();
       const deliveryMode = opts?.deliveryMode ?? 'queue';
       const originalMessage = message;
       const navigationRequestVersion =
@@ -4019,6 +4055,7 @@ export function CCAgentSessionView({
     [
       maybeDispatchDesktopSlashCommand,
       maybeShowContextUsage,
+      invalidateHistoryRecoveryNavigation,
       folderPickerOpen,
       isCodex,
       canNavigateSession,
@@ -4224,12 +4261,14 @@ export function CCAgentSessionView({
   // useSessionRunningStatus 在 running 上升沿把 orphan 的 error 角标 explicit 清掉。
   // 失败路径则天然保留红点,与仍在展示的横幅一致。
   const handleRetry = useCallback(() => {
+    if (isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
     void rebuildClaudeSubscriptionSessionBeforeRetry(errorReason)
       .then(() => retryLastError())
       .catch((error) => {
         log.warn('retryLastError failed', error);
       });
-  }, [errorReason, rebuildClaudeSubscriptionSessionBeforeRetry, retryLastError]);
+  }, [errorReason, invalidateHistoryRecoveryNavigation, isHistoryRecoveryPending, rebuildClaudeSubscriptionSessionBeforeRetry, retryLastError]);
 
   const handleSwitchToClaudeSubscription = useCallback(async (): Promise<void> => {
     if (!sessionId || !session || !canSwitchToClaudeSubscription) return;
@@ -4315,20 +4354,22 @@ export function CCAgentSessionView({
   }, [clearError, sessionId]);
 
   const handleForkStripEncrypted = useCallback(async () => {
-    if (!sessionId || session?.agentKind !== 'codex') return;
+    if (!sessionId || session?.agentKind !== 'codex' ||
+      isSharedTaskPeer(getSessionDeviceId(sessionId))) return;
     if (!canNavigateSession) {
       log.info('encrypted-session fork ignored by embedded sidebar view', { sessionId });
       return;
     }
+    const recovery = beginHistoryRecovery();
+    if (!recovery) return;
     const forkStripNavigationVersion = ++sessionNavigationVersionRef.current;
-    setForkStripEncryptedRunning(true);
     try {
       const newSession = await sessionService.forkStripEncrypted(sessionId);
       await refreshServerSession();
       // 远程会话:新会话在被控端,先重拉该设备会话列表注册新 sessionId 再 navigate(否则 404)。
       const deviceId = getSessionDeviceId(sessionId);
       if (deviceId) await refreshRemoteDeviceSessions(deviceId);
-      if (sessionNavigationVersionRef.current !== forkStripNavigationVersion) return;
+      if (sessionNavigationVersionRef.current !== forkStripNavigationVersion || !recovery.isCurrent()) return;
       onSessionNavigate?.(newSession.id, newSession.id);
       navigate(`/cc-agent/${newSession.id}`);
     } catch (err) {
@@ -4342,10 +4383,11 @@ export function CCAgentSessionView({
             : detail,
       );
     } finally {
-      setForkStripEncryptedRunning(false);
+      recovery.release();
     }
   }, [
     canNavigateSession,
+    beginHistoryRecovery,
     navigate,
     onSessionNavigate,
     refreshServerSession,
@@ -4758,6 +4800,10 @@ export function CCAgentSessionView({
   //   - /clear 之后留在空 ChatView 已经在用,体验没问题,本来就跟"空 session"等价
   // 现在所有空消息流/有消息流都走同一套布局(全高 scroll container + sticky bottom
   // overlay),自然消除 view 翻转带来的 layout shift。
+  if (!CINDY_MAKE_ENABLED && isCindyMakeSource(session?.source)) {
+    return <Navigate to="/cc-agent" replace />;
+  }
+
   const composerDir = composerWorkingDirPath({
     workingDir: session?.workingDir,
     liveWorktree,
@@ -4987,7 +5033,7 @@ export function CCAgentSessionView({
           // 意识面板拖来的产物(cindy-ghost:// 媒体地址,不带 files):落在聊天区
           // 任意位置都算数,与 ChatInput 自己的 onDrop 同一条引渡链路——
           // main 验归属后图片落图片附件、视频落路径引用的 file 附件(托盘可见)。
-          const ghostMediaUri = getGhostMediaUriFromDataTransfer(e.dataTransfer);
+          const ghostMediaUri = getGhostMediaHandoverFromDataTransfer(e.dataTransfer);
           if (ghostMediaUri) {
             if (sessionId) void attachGhostMediaToSession(ghostMediaUri, sessionId, t);
             return;
@@ -5299,7 +5345,7 @@ export function CCAgentSessionView({
                   }
                   silentEncryptedRetryEnabled={silentEncryptedRetryEnabled}
                   onForkStripEncrypted={
-                    !readOnly && canNavigateSession ? handleForkStripEncrypted : undefined
+                    !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId) ? handleForkStripEncrypted : undefined
                   }
                   forkStripEncryptedRunning={forkStripEncryptedRunning}
                   style={{ width: inputWidth }}
@@ -5376,7 +5422,7 @@ export function CCAgentSessionView({
                 errorSourceProviderId={liveErrorSourceProviderId}
                 silentEncryptedRetryEnabled={silentEncryptedRetryEnabled}
                 onForkStripEncrypted={
-                  !readOnly && canNavigateSession ? handleForkStripEncrypted : undefined
+                  !readOnly && canNavigateSession && !isSharedTaskPeer(remoteDeviceId) ? handleForkStripEncrypted : undefined
                 }
                 forkStripEncryptedRunning={forkStripEncryptedRunning}
                 style={{ width: inputWidth }}
@@ -5967,6 +6013,20 @@ export function CCAgentSessionView({
           type="button"
           onClick={() => navigate('/cc-agent/scheduled')}
           aria-label={t('ccAgent.layout.backToAutomations')}
+          className={cn(
+            'absolute left-[14px] top-[14px] z-40 inline-flex items-center justify-center',
+            'text-[var(--settings-section-desc)] transition-colors hover:text-foreground',
+          )}
+        >
+          <ArrowLeft size={18} strokeWidth={2} />
+        </button>
+      )}
+      {ownsWindowRoute && !cameFromAutomations && reviewSourceSessionId && (
+        <button
+          type="button"
+          onClick={() => navigate(`/cc-agent/${reviewSourceSessionId}`)}
+          aria-label={t('ccAgent.layout.backToReviewSource')}
+          title={t('ccAgent.layout.backToReviewSource')}
           className={cn(
             'absolute left-[14px] top-[14px] z-40 inline-flex items-center justify-center',
             'text-[var(--settings-section-desc)] transition-colors hover:text-foreground',
