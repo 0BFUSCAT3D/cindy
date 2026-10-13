@@ -1,11 +1,10 @@
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Copy, RefreshCw, Square, Volume2 } from 'lucide-react';
+import { RefreshCw, Square, Volume2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import { toast } from '@/lib/toast';
 import {
   normalizeVoiceConversationSelection,
   type SpeechModelSelection,
@@ -40,8 +39,6 @@ export function SpeechVoicePicker({
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
   const [manual, setManual] = useState(false);
-  const [showVoiceId, setShowVoiceId] = useState(false);
-  const voiceIdDetailsId = useId();
   const version = useRef(0);
   const routeKey = JSON.stringify([route, protocol]);
   const phase = useSyncExternalStore(preview.subscribe, preview.getSnapshot);
@@ -106,7 +103,6 @@ export function SpeechVoicePicker({
 
   useEffect(() => {
     setManual(false);
-    setShowVoiceId(false);
     void preview.stop();
     return () => {
       void preview.stop();
@@ -182,49 +178,6 @@ export function SpeechVoicePicker({
             />
           )}
         </FormField>
-      ) : voice ? (
-        <div className="min-w-0 space-y-2">
-          <Button
-            variant="secondary"
-            tone="quiet"
-            size="sm"
-            compact
-            aria-expanded={showVoiceId}
-            aria-controls={voiceIdDetailsId}
-            onClick={() => setShowVoiceId((value) => !value)}
-          >
-            <ChevronRight
-              size={14}
-              aria-hidden="true"
-              className={showVoiceId ? 'rotate-90' : undefined}
-            />
-            {t('bots.voiceMode.voiceId')}
-          </Button>
-          <div id={voiceIdDetailsId} hidden={!showVoiceId}>
-            <div className="flex min-w-0 items-start gap-2">
-              <code className="min-w-0 flex-1 select-text break-all py-1 text-12 text-[var(--text-secondary)]">
-                {voice}
-              </code>
-              <Button
-                variant="secondary"
-                size="sm"
-                compact
-                aria-label={t('bots.voiceMode.copyVoiceId')}
-                title={t('bots.voiceMode.copyVoiceId')}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(voice);
-                    toast.success(t('bots.voiceMode.voiceIdCopied'));
-                  } catch {
-                    toast.error(t('bots.voiceMode.voiceIdCopyFailed'));
-                  }
-                }}
-              >
-                <Copy size={14} aria-hidden="true" />
-              </Button>
-            </div>
-          </div>
-        </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button

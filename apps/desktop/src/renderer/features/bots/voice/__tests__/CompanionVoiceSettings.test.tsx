@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { voiceModelKey, type VoiceConversationModel } from '@/../shared/voiceConversation';
-import { toast } from '@/lib/toast';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 vi.mock('@/components/ui/select', () => ({
@@ -34,7 +33,6 @@ vi.mock('@/components/ui/select', () => ({
   ),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
 }));
@@ -425,7 +423,7 @@ it('retries a failed preference load and still lists BYOK when Gateway refresh f
   expect(window.electronAPI.voiceConversation.preference).toHaveBeenCalledTimes(2);
 });
 
-it('shows names by default and reveals and copies the complete saved voice ID without changing it', async () => {
+it('shows the saved voice name without an ID detail row and preserves its complete selection value', async () => {
   const voice = 'SAz9YHcvj6GT2YYXdXww';
   const name = 'River - Relaxed, Neutral, Informative';
   models = [
@@ -445,39 +443,16 @@ it('shows names by default and reveals and copies the complete saved voice ID wi
     selection: { providerId: 'mine', agent: 'codex', modelId: 'speech', voice },
     customized: true,
   });
-  const writeText = vi.fn(async () => {});
-  const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-  try {
-    renderSettings();
-    const option = (await screen.findByRole('option', { name })) as HTMLOptionElement;
-    expect(option.selected).toBe(true);
-    expect(option.value).toBe(`voice:${voice}`);
-    expect(screen.queryByRole('button', { name: 'bots.voiceMode.copyVoiceId' })).toBeNull();
-    const details = screen.getByRole('button', { name: 'bots.voiceMode.voiceId' });
-    expect(details.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(details);
-    expect(details.getAttribute('aria-expanded')).toBe('true');
-    const fullId = screen.getByText(voice);
-    expect(fullId.closest('[hidden]')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.copyVoiceId' }));
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('bots.voiceMode.voiceIdCopied'));
-    expect(writeText).toHaveBeenCalledWith(voice);
-
-    writeText.mockRejectedValueOnce(new Error('clipboard unavailable'));
-    fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.copyVoiceId' }));
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith('bots.voiceMode.voiceIdCopyFailed'),
-    );
-    expect(fullId.closest('[hidden]')).toBeNull();
-    expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
-    expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
-    expect(start).not.toHaveBeenCalled();
-    expect(audio.start).not.toHaveBeenCalled();
-  } finally {
-    if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard);
-    else Reflect.deleteProperty(navigator, 'clipboard');
-  }
+  renderSettings();
+  const option = (await screen.findByRole('option', { name })) as HTMLOptionElement;
+  expect(option.selected).toBe(true);
+  expect(option.value).toBe(`voice:${voice}`);
+  expect(screen.queryByText('bots.voiceMode.voiceId')).toBeNull();
+  expect(screen.queryByText(voice)).toBeNull();
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+  expect(window.electronAPI.voiceConversation.preview).not.toHaveBeenCalled();
+  expect(start).not.toHaveBeenCalled();
+  expect(audio.start).not.toHaveBeenCalled();
 });
 
 it('disambiguates duplicate names even when short ID suffixes collide and preserves full IDs', async () => {
