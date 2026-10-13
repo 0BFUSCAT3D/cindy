@@ -126,6 +126,14 @@ describe('gitignoreMatcher (.worktreeinclude)', () => {
     expect(matches('.env.example')).toBe(false);
     expect(gitignoreMatcher(['!.env.example', '.env*'])('.env.example')).toBe(true);
   });
+
+  it('selects only directory contents for a trailing /**', () => {
+    const matches = gitignoreMatcher(['config/**']);
+    expect(matches('config/local.json')).toBe(true);
+    expect(matches('config/a/b.json')).toBe(true);
+    expect(matches('config')).toBe(false);
+    expect(matches('apps/config/local.json')).toBe(false);
+  });
 });
 
 describe('applyWorktreeIncludeFile', () => {
@@ -159,6 +167,12 @@ describe('applyWorktreeIncludeFile', () => {
 
     await expect(copied()).resolves.toEqual(['.env', 'apps/web/.env']);
     expect(fs.readFileSync(path.join(worktreePath, 'apps', 'web', '.env'), 'utf8')).toBe('WEB=1\n');
+  });
+
+  it('keeps repeated .worktreeinclude rules so a later rule re-includes a file', async () => {
+    fs.writeFileSync(path.join(baseRepo, '.worktreeinclude'), '/.env\n!/.env\n/.env\n');
+
+    await expect(copied()).resolves.toEqual(['.env']);
   });
 
   it('keeps .xdtworktreeinclude root-relative and merges both files', async () => {

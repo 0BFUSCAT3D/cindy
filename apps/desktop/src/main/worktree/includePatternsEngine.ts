@@ -61,19 +61,16 @@ export interface ChangedIncludeFile {
  * 该函数不读文件——上层先 read 再传给本函数, 便于测试。
  */
 export function parseWorktreeIncludePatterns(content: string): string[] {
+  return [...new Set(includeRuleLines(content))];
+}
+
+/** 去掉空行与 `#` 注释后的规则行, 保留重复与原始顺序(`.gitignore` 语法依赖顺序)。 */
+function includeRuleLines(content: string): string[] {
   if (!content) return [];
-  const lines = content.split(/\r?\n/);
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of lines) {
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith('#')) continue;
-    if (seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
+  return content
+    .split(/\r?\n/)
+    .map((raw) => raw.trim())
+    .filter((line) => line && !line.startsWith('#'));
 }
 
 /**
@@ -129,8 +126,8 @@ function globMatcher(patterns: readonly string[]): IncludeMatcher {
 /**
  * 按 `.gitignore` 语法匹配(Claude Code 的 `.worktreeinclude` 约定):
  *   - 不含 `/` 的规则匹配任意层级; 含 `/`(或以 `/` 开头)时相对仓库根目录
- *   - 末尾 `/` 只匹配目录; 选中目录即包含其下全部文件
- *   - `!` 取反, 后面的规则覆盖前面的
+ *   - 末尾 `/` 只匹配目录; 选中目录即包含其下全部文件; 末尾 `/**` 只选目录里的内容
+ *   - `!` 取反, 后面的规则覆盖前面的(规则须保留重复与原始顺序)
  * `[...]` 字符类与 `\` 转义不支持, 按字面处理。
  */
 function gitignoreMatcher(patterns: readonly string[]): IncludeMatcher {
@@ -138,9 +135,12 @@ function gitignoreMatcher(patterns: readonly string[]): IncludeMatcher {
   for (const raw of patterns) {
     const negate = raw.startsWith('!');
     let p = negate ? raw.slice(1) : raw;
-    const dirOnly = p.endsWith('/');
-    if (dirOnly) p = p.slice(0, -1);
-    const anchored = p.includes('/');
+    // `config/**` 等价于根目录下的 `config/`: 只选目录内容, 不选同名普通文件。
+    const contentsOnly = p.endsWith('/**');
+    if (contentsOnly) p = p.slice(0, -3);
+    const dirOnly = contentsOnly || p.endsWith('/');
+    if (p.endsWith('/')) p = p.slice(0, -1);
+    const anchored = contentsOnly || p.includes('/');
     if (p.startsWith('/')) p = p.slice(1);
     if (!p) continue;
     rules.push({ re: globToRegex(anchored ? p : `**/${p}`), negate, dirOnly });
@@ -172,7 +172,7 @@ function readIncludeMatcher(baseRepo: string): IncludeMatcher | null {
     } catch {
       continue;
     }
-    const patterns = parseWorktreeIncludePatterns(content);
+    const patterns = includeRuleLines(content);
     if (patterns.length > 0) matchers.push(toMatcher(patterns));
   }
   if (matchers.length === 0) return null;
