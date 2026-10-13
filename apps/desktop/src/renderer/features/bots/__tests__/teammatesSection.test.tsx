@@ -444,6 +444,17 @@ describe('TeammatesSection header', () => {
     expect(window.localStorage.getItem('sidebar.teammatesSection.v1.owner.fixture-owner')).toBe('expanded');
   });
 
+  it('clears a search when collapsing so the avatar row shows the whole roster', async () => {
+    mocks.profiles = Array.from({ length: 8 }, (_, index) => bot({ id: `bot-${index}`, name: `Mate ${index}` }));
+    await renderSidebar();
+    fireEvent.change(screen.getByLabelText('bots.list.search'), { target: { value: 'no-such-teammate' } });
+    fireEvent.click(header());
+    // The search box is hidden while collapsed; a leftover filter must not empty the avatar row.
+    expect(screen.getAllByRole('button', { name: /^Mate \d$/ })).toHaveLength(8);
+    fireEvent.click(screen.getByRole('button', { name: 'bots.list.sectionExpand' }));
+    expect((screen.getByLabelText('bots.list.search') as HTMLInputElement).value).toBe('');
+  });
+
   it('marks the open chat in the collapsed avatar row', async () => {
     mocks.profiles = [bot({ id: 'bot-1', name: 'PR steward' }), bot({ id: 'bot-2', name: 'Writer' })];
     mocks.unread = { 'bot-1': 2 };

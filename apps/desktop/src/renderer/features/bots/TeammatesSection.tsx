@@ -97,6 +97,8 @@ export function TeammatesSection() {
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
+    // 收起后搜索框不可见:清空筛选,头像行始终展示完整名册。
+    if (next) setQuery('');
     writeTeammatesSectionCollapsed(dataOwnerId, next);
   };
   const remoteBots = useRemoteBots();

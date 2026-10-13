@@ -71,6 +71,7 @@ import { MainListScopeHeader } from './sidebar/MainListScopeHeader';
 import { SharedTasksSection } from '@/features/device-link/SharedTasksSection';
 import { TeammatesSection } from '@/features/bots/TeammatesSection';
 import { useNavigationAttention } from '@/lib/navigationAttentionStore';
+import { useActiveMainView } from '@/hooks/useActiveMainView';
 import { NavigationCountBadge } from '@/components/sidebar/NavigationCountBadge';
 import { useViewedBotSessionId } from '@/features/bots/useViewedBotSessionId';
 import { sharedTaskErrorKey } from '@/features/device-link/sharedTaskCompatibility';
@@ -805,6 +806,7 @@ export function CCAgentSidebarUpper() {
               hiddenProjectKeys={hiddenProjectKeys}
               sessions={visibleSessionsWithRemote}
               activeSessionId={activeSessionId}
+              attentionSessionId={activeSessionId ?? filesSessionId ?? viewedBotSessionId}
               notifications={railNotifications}
               manualPinnedOrder={filter.manualPinnedOrder}
               onReorderPinned={handleRailPinnedReorder}
@@ -4079,6 +4081,8 @@ interface CollapsedProps {
   /** rail 数据源——全量可见 sessions(本地 + 远程镜像合并),RailNav 内部切片。 */
   sessions: Session[];
   activeSessionId: string | undefined;
+  /** 与 ExpandedView 同口径的「注视中」会话(含正在看的伙伴会话),只用于运行状态 hook。 */
+  attentionSessionId: string | undefined;
   /** 未读集 = attention 快照 ∪ 定时任务未读运行——段瓷砖/面板行角标依据。 */
   notifications: ReadonlySet<string>;
   /** 与展开态共用的置顶顺序(置顶面板同序)。 */
@@ -4100,6 +4104,7 @@ function CollapsedView({
   hiddenProjectKeys,
   sessions,
   activeSessionId,
+  attentionSessionId,
   notifications,
   manualPinnedOrder,
   onReorderPinned,
@@ -4110,6 +4115,8 @@ function CollapsedView({
   // 收窄态的伙伴入口:展开态里伙伴是置顶上方的一段,rail 放不下整段,
   // 用一个带未读数的图标直达伙伴(上次看的伙伴,没有则 Cindy)。
   const teammateUnread = useNavigationAttention().teammates;
+  // 复用主视图历史:回到上次看的伙伴 / 群聊 / 远程伙伴的完整路径,没有记录才进 /bots。
+  const { navigateToView } = useActiveMainView();
   const onBotsRoute = location.pathname === '/bots' || location.pathname.startsWith('/bots/');
   const selectedMachineId = useEffectiveSelectedMachineId();
   const switcherDevices = useSwitcherDevices();
@@ -4120,7 +4127,9 @@ function CollapsedView({
   const { t } = useTranslation();
   // 只读 running 快照——**不传 options**：通知副作用（onSessionDone 等）由
   // ExpandedView 的实例独家持有，两个视图常驻挂载，双回调会重复发桌面通知。
-  const { runningSessionIds } = useSessionRunningStatus(activeSessionId);
+  // 「注视中」与 ExpandedView 同口径:该 hook 即使不传回调也会写未读,伙伴页上
+  // 正在看的伙伴会话不能被这个常驻实例当成后台会话记未读。
+  const { runningSessionIds } = useSessionRunningStatus(attentionSessionId);
   // 瓷砖未读点颜色按 attention kind(done 绿 / awaiting TapTap 蓝 / error 红);组件层
   // 取一次,renderItem 里查表(renderItem 非组件,不能 per-item 用 hook)。
 
@@ -4189,7 +4198,7 @@ function CollapsedView({
         badge={teammateUnread > 0 ? (
           <NavigationCountBadge count={teammateUnread} label={t('sidebar.teammateUnreadCount', { count: teammateUnread })} />
         ) : undefined}
-        onClick={() => navigate('/bots')}
+        onClick={() => navigateToView('bots')}
       />
 
       <div className="my-[7px] h-px w-[22px] shrink-0 bg-sidebar-border" aria-hidden />
