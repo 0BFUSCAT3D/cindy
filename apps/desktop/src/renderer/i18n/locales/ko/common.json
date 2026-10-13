@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "로그 및 피드백",
+    "localFiles": "문제가 발생한 날짜의 로그를 선택하세요. 민감 정보가 가려지지 않았으므로 공유 전에 확인하세요.",
+    "uploaded": "로그를 업로드했습니다. 업로드 번호: {{code}}. 문제를 신고할 때 이 번호를 함께 보내세요.",
+    "close": "닫기",
+    "uploadDescription": "문제를 신고할 때 업로드 번호를 함께 보내세요.",
+    "uploadDetails": "업로드 항목 보기"
+  },
   "taskMove": {
     "upgradeComputer": "이 컴퓨터의 Cindy 버전은 작업 이동을 지원하지 않습니다. “{{name}}”의 Cindy를 업데이트해 주세요.",
     "sourceProjects": "작업이 있는 컴퓨터의 프로젝트",
@@ -10531,6 +10539,8 @@
       "syncAuthFailed": "동기화 실패: {{msg}}",
       "syncAuthDaemonRestartFailed": "자격 증명이 원격에 푸시되었지만 이전 daemon이 재시작되지 않았습니다 — 원격에 다시 연결한 후 재시도하세요",
       "invalidEncryptedContent": "제공자 변경으로 이전 암호화를 사용할 수 없습니다. 이 세션은 원래 제공자에서만 계속할 수 있으며, 또는 Fork를 클릭하여 프로토콜 암호화 콘텐츠를 버리고 새 세션에서 계속할 수 있습니다.",
+      "readableHistoryRecovery": "읽을 수 있는 기록으로 새 작업 만들기",
+      "readableHistoryRecoveryDescription": "재시도해도 실패하면 읽을 수 있는 기록으로 새 작업을 만들 수 있습니다. 내부 암호화 정보는 제외됩니다. 기존 작업은 유지되며 실패한 메시지는 자동으로 다시 전송되지 않습니다.",
       "forkStripEncrypted": "Fork 및 분리",
       "forkStripEncryptedRunning": "Fork 중…",
       "forkStripEncryptedTitle": "암호화 추론을 제거한 새 세션으로 Fork",
