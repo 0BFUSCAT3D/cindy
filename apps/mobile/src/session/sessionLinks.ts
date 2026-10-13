@@ -90,6 +90,24 @@ export function parseSessionDeepLinkUrl(url: string): SessionDeepLinkTarget | nu
 }
 
 /**
+ * 点开 / 解析会话深链时目标任务所在的设备。已同步列表反查到的可达设备优先
+ * (re-link 后深链冻结的 `?device=` 可能已过期);列表里没有(已归档 / 尚未同步)
+ * 时用冻结值,再退回当前任务所在设备——正文里的深链多由当前任务所在电脑生成,
+ * 归档任务不在列表里,但仍在那台电脑上。
+ */
+export function resolveSessionLinkDeviceId({
+  listedDeviceId,
+  linkedDeviceId,
+  currentDeviceId,
+}: {
+  listedDeviceId?: string | null;
+  linkedDeviceId?: string | null;
+  currentDeviceId?: string | null;
+}): string | null {
+  return listedDeviceId || linkedDeviceId || currentDeviceId || null;
+}
+
+/**
  * 会话深链的文本匹配正则(ASCII 白名单,CJK / 空白 / 中文标点处天然收尾)。
  * tokenizer 与标题预取共用同一来源;`g` flag 使用方需注意 lastIndex,
  * 这里每次调用都新建实例避免共享状态。

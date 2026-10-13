@@ -4,6 +4,7 @@ import {
   buildMobileSessionMessageDeepLink,
   extractSessionLinkIds,
   parseSessionDeepLinkUrl,
+  resolveSessionLinkDeviceId,
   shortSessionId,
 } from '@/session/sessionLinks';
 
@@ -79,6 +80,27 @@ describe('session links', () => {
       'aaaa1111-2222-3333-4444-555566667777',
     ]);
     expect(extractSessionLinkIds('没有链接')).toEqual([]);
+  });
+
+  it('resolves the device for a session link, falling back when the target is not listed', () => {
+    // 已同步列表里的可达设备优先于深链冻结值(re-link 后冻结值可能已过期)。
+    expect(resolveSessionLinkDeviceId({
+      listedDeviceId: 'listed',
+      linkedDeviceId: 'linked',
+      currentDeviceId: 'current',
+    })).toBe('listed');
+    // 已归档 / 未同步的任务不在列表里:先用深链冻结设备,再退回当前任务所在设备。
+    expect(resolveSessionLinkDeviceId({
+      listedDeviceId: undefined,
+      linkedDeviceId: 'linked',
+      currentDeviceId: 'current',
+    })).toBe('linked');
+    expect(resolveSessionLinkDeviceId({
+      listedDeviceId: undefined,
+      linkedDeviceId: null,
+      currentDeviceId: 'current',
+    })).toBe('current');
+    expect(resolveSessionLinkDeviceId({ linkedDeviceId: null, currentDeviceId: undefined })).toBeNull();
   });
 
   it('shortens long session ids for display', () => {
