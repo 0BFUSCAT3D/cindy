@@ -219,16 +219,17 @@ export class SharedTaskHost {
     // Close access objects as well as the index so existing captures also expire.
     for (const item of journal) if (item.terminal) this.revokeLocally(item.sharedTaskId);
     const sessions = new Set([...this.entries.values()].map((entry) => entry.identity.sessionId));
+    for (const identity of this.created.values()) sessions.add(identity.sessionId);
+    for (const sessionId of this.creating.values()) sessions.add(sessionId);
+    const runtimeSessions = new Set(sessions);
     for (const item of journal) if (!item.terminal && item.snapshot
         && item.snapshot.ownerAccountId === this.options.ownerAccountId
         && item.snapshot.hostDeviceId === this.options.hostDeviceId) sessions.add(item.sessionId);
-    for (const identity of this.created.values()) sessions.add(identity.sessionId);
-    for (const sessionId of this.creating.values()) sessions.add(sessionId);
     for (const sessionId of sessions) {
       const session = await this.options.readSession(sessionId);
       this.assertCurrent();
-      if ((!session || session.status !== 'active'
-          || !CINDY_MAKE_ENABLED && isCindyMakeSource(session.source)) && !this.closedSessions.has(sessionId)) {
+      if ((runtimeSessions.has(sessionId) && (!session || session.status !== 'active')
+          || !CINDY_MAKE_ENABLED && isCindyMakeSource(session?.source)) && !this.closedSessions.has(sessionId)) {
         await this.closeLocallyForBoundary(sessionId);
         this.assertCurrent();
       }

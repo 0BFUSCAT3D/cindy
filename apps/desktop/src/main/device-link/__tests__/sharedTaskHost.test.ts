@@ -114,6 +114,16 @@ describe('task host sharedTask lifecycle', () => {
     expect(canRead()).toBe(false);
   });
 
+  it('does not close a cold ordinary share offline when local metadata is still absent', async () => {
+    records.set('sharedTask', { sharedTaskId: 'sharedTask', sessionId: 'session', terminal: false, snapshot: parseSharedTaskSnapshot(detail()) });
+    options.readSession = vi.fn(async () => null);
+    await host.restore(false);
+    expect(records.get('sharedTask')?.terminal).toBe(false);
+    expect(api.close).not.toHaveBeenCalled();
+    expect(api.list).not.toHaveBeenCalled();
+    expect(options.revoke).not.toHaveBeenCalled();
+  });
+
   it('consumes another instance closure offline and invalidates captured access without touching another share', async () => {
     await host.open('session');
     const old = host.capturePeer(sharedTaskGuestPeer('sharedTask', 'member-a', 'phone-a'))!;
