@@ -109,9 +109,10 @@ describeMigrationReplay('migration replay', () => {
       db.exec("CREATE TABLE migration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE migration_history (seq INTEGER PRIMARY KEY, file_name TEXT NOT NULL, content_hash TEXT NOT NULL, applied_at INTEGER NOT NULL)");
       if (shape !== 'missing') db.exec(`CREATE TABLE orca_workers (id TEXT PRIMARY KEY${shape === 'partial' ? ', pending_remote_report TEXT' : ''}); INSERT INTO orca_workers (id) VALUES ('worker-1');`);
       const result = runMigrationReplay(db, { drizzleDir: drizzleDir(), currentVersion: 124 });
-      expect(result.applied.map((migration) => migration.seq)).toEqual([125, 126]);
+      expect(result.applied.map((migration) => migration.seq)).toEqual([125, 126, 127]);
       expect(tableExists(db, 'plugin_usage_subjects')).toBe(true);
       expect(tableExists(db, 'plugin_usage_events')).toBe(true);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='plugin_usage_events_pending_idx'").get()).toEqual({ name: 'plugin_usage_events_pending_idx' });
       expect(tableExists(db, 'orca_remote_opens')).toBe(true);
       if (shape !== 'missing') {
         expect(columnNames(db, 'orca_workers')).toEqual(expect.arrayContaining(['pending_remote_report', 'remote_stop_confirmed_at']));

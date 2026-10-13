@@ -7,6 +7,7 @@ import {
 } from '../appSessionState.js';
 import { createLogger } from '../logger.js';
 import { PluginUsageService } from './service.js';
+import { createPluginUsageReporting } from './reporting.js';
 
 const log = createLogger('plugin-usage');
 let current: { epoch: number; ownerKey: string; service: PluginUsageService } | null = null;
@@ -29,9 +30,11 @@ export function currentPluginUsageService(): PluginUsageService | null {
   const service = new PluginUsageService({
     client: snapshot.client,
     deviceName: os.hostname(),
+    reporting: createPluginUsageReporting(snapshot.userId),
     isCurrent: () => {
       const latest = getCurrentDbClientSnapshot();
       return (
+        !isAppSessionBoundaryPending() &&
         latest?.client === snapshot.client &&
         latest.clientEpoch === snapshot.clientEpoch &&
         latest.userId === snapshot.userId &&

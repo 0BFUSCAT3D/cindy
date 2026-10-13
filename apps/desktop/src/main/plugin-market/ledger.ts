@@ -62,6 +62,8 @@ export interface PluginMarketInstallationRecord {
    * clients that still interpret it as a normalized digest.
    */
   rawManifestSha256?: string;
+  /** Verified delivery endpoint; absent legacy records require catalog verification before reporting. */
+  serverRoot?: string;
 }
 
 export type PluginMarketAuthorizationTarget = { ghostId: string; namespace?: string | null };
@@ -540,6 +542,15 @@ export class PluginMarketLedger {
     const data = this.read();
     this.putRecord(data, record);
     this.write(data);
+  }
+
+  backfillServerRoot(expected: PluginMarketInstallationRecord, serverRoot: string): boolean {
+    const data = this.read();
+    const current = data.installations[expected.ghostId];
+    if (!current || current.serverRoot || canonicalJson(current) !== canonicalJson(expected)) return false;
+    data.installations[current.ghostId] = { ...current, serverRoot };
+    this.write(data);
+    return true;
   }
 
   /**

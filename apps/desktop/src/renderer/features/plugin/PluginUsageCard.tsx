@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, Info, RefreshCw } from 'lucide-react';
+import { MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { PluginUsageSummary } from '../../../shared/pluginUsage';
 
 export function PluginUsageCard({
   ghostId,
-  onOpenTask,
   confirmClear,
 }: {
   ghostId: string;
-  onOpenTask?: (sessionId: string) => void;
   confirmClear?: () => Promise<boolean>;
 }) {
   const { t, i18n } = useTranslation();
@@ -75,51 +79,50 @@ export function PluginUsageCard({
     });
   return (
     <section
-      className="mt-6 max-w-[760px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-4"
+      className="mt-6 w-full max-w-[480px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-5"
       aria-labelledby={titleId}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <h2
-            id={titleId}
-            className="text-14 font-medium leading-[1.571] text-[var(--text-primary)]"
-          >
-            {t('settings.ghosts.usage.title')}
-          </h2>
+        <h2 id={titleId} className="text-13 font-medium leading-5 text-[var(--text-secondary)]">
           <Tip text={t('settings.ghosts.usage.explanation')}>
             <button
               type="button"
-              aria-label={t('settings.ghosts.usage.explanationLabel')}
-              className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-tertiary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+              aria-label={`${t('settings.ghosts.usage.title')} · ${t('settings.ghosts.usage.explanationLabel')}`}
+              className="-ml-2 min-h-7 rounded-full px-2 hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
             >
-              <Info size={14} />
+              {t('settings.ghosts.usage.title')}
             </button>
           </Tip>
-        </div>
-        <div className="flex items-center gap-1">
-          <Tip text={t('settings.ghosts.usage.refresh')}>
-            <button
-              type="button"
-              aria-label={t('settings.ghosts.usage.refresh')}
+        </h2>
+        <DropdownMenu>
+          <Tip text={t('settings.ghosts.usage.more')}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label={t('settings.ghosts.usage.more')}
+                className="-mr-1 flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+              >
+                <MoreHorizontal size={16} aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+          </Tip>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
               disabled={state === 'loading' || clearing}
-              onClick={() => void refresh()}
-              className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
+              onSelect={() => void refresh()}
             >
-              <RefreshCw size={14} />
-            </button>
-          </Tip>
-          {summary && confirmClear ? (
-            <Button
-              variant="secondary"
-              tone="quiet"
-              size="sm"
-              disabled={clearing}
-              onClick={() => void clear()}
-            >
-              {t('settings.ghosts.usage.clear')}
-            </Button>
-          ) : null}
-        </div>
+              {t('settings.ghosts.usage.refresh')}
+            </DropdownMenuItem>
+            {summary && confirmClear ? (
+              <DropdownMenuItem
+                disabled={state === 'loading' || clearing}
+                onSelect={() => void clear()}
+              >
+                {t('settings.ghosts.usage.clear')}
+              </DropdownMenuItem>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {state === 'loading' ? (
         <p aria-live="polite" className="mt-3 text-13 leading-5 text-[var(--text-secondary)]">
@@ -131,70 +134,30 @@ export function PluginUsageCard({
             {t('settings.ghosts.usage.unavailable')}
           </p>
           <Button variant="secondary" tone="quiet" size="sm" onClick={() => void refresh()}>
-            <RefreshCw size={14} />
             {t('settings.ghosts.usage.retry')}
           </Button>
         </div>
       ) : summary ? (
-        <>
-          <dl className="mt-3 grid grid-cols-2 gap-4">
-            <div>
-              <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
-                {t('settings.ghosts.usage.lastUsed')}
-              </dt>
-              <dd className="mt-1 text-14 leading-[1.571] text-[var(--text-primary)]">
-                {summary.lastUsedAt === null
-                  ? t('settings.ghosts.usage.never')
-                  : time(summary.lastUsedAt)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
-                {t('settings.ghosts.usage.last7Days')}
-              </dt>
-              <dd className="mt-1 text-14 leading-[1.571] text-[var(--text-primary)]">
-                {summary.callsLast7Days.toLocaleString(i18n.language)}
-              </dd>
-            </div>
-          </dl>
-          <div className="mt-4 border-t border-[var(--border-default)] pt-3">
-            <h3 className="text-12 leading-[1.5] text-[var(--text-secondary)]">
-              {t('settings.ghosts.usage.tasks')}
-            </h3>
-            {summary.recentTasks.length === 0 ? (
-              <p className="mt-2 text-13 leading-5 text-[var(--text-secondary)]">
-                {t('settings.ghosts.usage.noTasks')}
-              </p>
-            ) : (
-              <ul className="mt-1 space-y-1">
-                {summary.recentTasks.map((task) => (
-                  <li key={task.sessionId}>
-                    <button
-                      type="button"
-                      disabled={!onOpenTask}
-                      onClick={() => onOpenTask?.(task.sessionId)}
-                      className="flex min-h-9 w-full items-center gap-3 rounded-full px-2 text-left hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-13 leading-5 text-[var(--text-primary)]">
-                        {task.title || t('settings.ghosts.usage.untitled')}
-                      </span>
-                      <span className="shrink-0 text-12 leading-[1.5] text-[var(--text-tertiary)]">
-                        {time(task.lastUsedAt)}
-                      </span>
-                      <ChevronRight size={14} className="shrink-0 text-[var(--text-tertiary)]" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+        <dl className="mt-4 grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-5">
+          <div className="min-w-0">
+            <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+              {t('settings.ghosts.usage.lastUsed')}
+            </dt>
+            <dd className="mt-2 text-20 font-medium leading-8 tabular-nums text-[var(--text-primary)]">
+              {summary.lastUsedAt === null
+                ? t('settings.ghosts.usage.never')
+                : time(summary.lastUsedAt)}
+            </dd>
           </div>
-          <p className="mt-3 text-12 leading-[1.5] text-[var(--text-tertiary)]">
-            {t('settings.ghosts.usage.localSince', {
-              device: summary.deviceName,
-              time: time(summary.recordingStartedAt),
-            })}
-          </p>
-        </>
+          <div className="min-w-0 border-l border-[var(--border-default)] pl-5">
+            <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+              {t('settings.ghosts.usage.last7Days')}
+            </dt>
+            <dd className="mt-2 break-words text-24 font-medium leading-8 tabular-nums text-[var(--text-primary)]">
+              {summary.callsLast7Days.toLocaleString(i18n.language)}
+            </dd>
+          </div>
+        </dl>
       ) : null}
     </section>
   );

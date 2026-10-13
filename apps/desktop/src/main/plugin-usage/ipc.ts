@@ -4,6 +4,7 @@ import { isIpcError } from '../../shared/ipc-errors.js';
 import type { PluginUsageIdentity } from '../../shared/pluginUsage.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import type { PluginUsageService } from './service.js';
+import { withGhostInstallLock } from '../cindy-brain/ghostInstallLock.js';
 
 export function registerPluginUsageIpc(deps: {
   ipcMain: Pick<IpcMain, 'handle'>;
@@ -41,12 +42,16 @@ export function registerPluginUsageIpc(deps: {
       if (typeof id !== 'string' || !isValidGhostId(id))
         throwIpcError('INVALID_PARAMS', 'Invalid plugin id');
       const current = service();
-      const identity = deps.identity(id);
-      if (!identity) throwIpcError('NOT_FOUND', 'Plugin usage identity unavailable');
-      await current.bind(identity);
-      const handle = current.capture(identity);
-      if (!handle) throwIpcError('PRECONDITION_FAILED', 'Plugin usage unavailable');
-      return current.summary(handle.subjectId);
+      return withGhostInstallLock(id, async () => {
+        if (service() !== current)
+          throwIpcError('PRECONDITION_FAILED', 'Plugin usage owner changed');
+        const identity = deps.identity(id);
+        if (!identity) throwIpcError('NOT_FOUND', 'Plugin usage identity unavailable');
+        await current.bind(identity);
+        const handle = current.capture(identity);
+        if (!handle) throwIpcError('PRECONDITION_FAILED', 'Plugin usage unavailable');
+        return current.summary(handle.subjectId);
+      });
     }),
   );
   deps.ipcMain.handle('ghosts:usage-history', (event) => invoke(event, () => service().history()));

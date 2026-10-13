@@ -116,9 +116,9 @@ export function parsePluginDownloadStatistics(value: unknown): PluginDownloadSta
 
 /** Optional, already-authorized audience aggregate. Downloads are not install receipts. */
 export interface PluginUsageStatistics {
-  installationCount: string;
-  usageCount: string;
-  usageCountLast7Days: string;
+  installationCount?: string;
+  usageCount?: string;
+  usageCountLast7Days?: string;
   asOf: string;
 }
 
@@ -127,10 +127,13 @@ export function parsePluginUsageStatistics(value: unknown): PluginUsageStatistic
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const keys = ['installationCount', 'usageCount', 'usageCountLast7Days'] as const;
-  if (keys.some(key => typeof raw[key] !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(raw[key] as string))) return undefined;
   if (typeof raw.asOf !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*Z$/.test(raw.asOf) || !Number.isFinite(Date.parse(raw.asOf))) return undefined;
-  return { installationCount: raw.installationCount as string, usageCount: raw.usageCount as string,
-    usageCountLast7Days: raw.usageCountLast7Days as string, asOf: raw.asOf };
+  const result: PluginUsageStatistics = { asOf: raw.asOf };
+  for (const key of keys) {
+    if (typeof raw[key] === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(raw[key] as string))
+      result[key] = raw[key] as string;
+  }
+  return keys.some(key => result[key] !== undefined) ? result : undefined;
 }
 
 /** Plugin 列表项；只含市场展示和版本对账所需的摘要。 */

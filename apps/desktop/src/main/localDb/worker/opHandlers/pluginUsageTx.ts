@@ -54,8 +54,8 @@ export function runPluginUsageTransaction(
         const { handle, callId, toolName, sessionId, occurredAt } = body;
         db.prepare(
           `INSERT OR IGNORE INTO plugin_usage_events
-          (call_id,subject_id,history_generation,occurred_at,tool_name,session_id,version,release_id)
-          SELECT ?,id,history_generation,?,?,?,?,? FROM plugin_usage_subjects WHERE id=? AND history_generation=?`,
+          (call_id,subject_id,history_generation,occurred_at,tool_name,session_id,version,release_id,report_target,report_state)
+          SELECT ?,id,history_generation,?,?,?,?,?,?,? FROM plugin_usage_subjects WHERE id=? AND history_generation=?`,
         ).run(
           callId,
           occurredAt,
@@ -63,6 +63,8 @@ export function runPluginUsageTransaction(
           sessionId,
           handle.identity.version,
           handle.identity.releaseId,
+          handle.reportTarget ? JSON.stringify(handle.reportTarget) : null,
+          handle.reportTarget ? 'pending' : 'not-applicable',
           handle.subjectId,
           handle.historyGeneration,
         );
@@ -92,6 +94,22 @@ export function runPluginUsageTransaction(
           body.ghostId,
         );
         return null;
+      case 'report': {
+        const update =
+          db.prepare(`UPDATE plugin_usage_events SET report_state=?,next_attempt_at=?,attempt_count=attempt_count+1
+          WHERE call_id=? AND subject_id=? AND history_generation=? AND report_target=? AND report_state='pending'
+          AND EXISTS (SELECT 1 FROM plugin_usage_subjects s WHERE s.id=subject_id AND s.history_generation=plugin_usage_events.history_generation)`);
+        for (const { row, state, nextAttemptAt } of body.updates)
+          update.run(
+            state,
+            nextAttemptAt,
+            row.callId,
+            row.subjectId,
+            row.historyGeneration,
+            row.reportTarget,
+          );
+        return null;
+      }
     }
   })();
 }

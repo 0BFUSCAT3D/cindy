@@ -6683,34 +6683,22 @@
         }
       },
       "usage": {
-        "title": "个人使用记录",
+        "title": "个人调用",
         "explanationLabel": "统计口径",
         "explanation": "仅统计本机当前账户成功派发的工具调用，失败、超时或取消也计入。近 7 天为滚动 168 小时；面板、Skill 与调试操作不计入。记录默认保留，清除后重新开始。",
         "clear": "清除记录",
         "loading": "正在读取记录…",
         "unavailable": "个人记录暂不可用",
         "retry": "重试",
-        "lastUsed": "最近使用",
-        "last7Days": "近 7 天调用",
-        "never": "尚未使用",
-        "tasks": "参与任务",
-        "noTasks": "暂无可查看的参与任务",
-        "untitled": "未命名任务",
-        "localSince": "{{device}} · 从 {{time}} 开始记录",
+        "lastUsed": "最近调用",
+        "last7Days": "近 7 日调用",
+        "never": "尚未调用",
         "clearTitle": "清除该插件的使用记录？",
         "clearDescription": "清除本机当前账户的调用记录及任务关联，后续调用重新开始记录。已共享的累计统计不会撤回。",
         "downloads": "下载",
         "downloadExplanation": "累计下载请求次数：成功获取安装包下载地址后计一次，包括更新、重装及重新获取地址的重试；不代表成功安装次数。",
-        "installs": "安装",
-        "uses": "使用",
-        "sharedUnavailable": "暂不可用",
-        "sharedExplanation": "{{scope}}共享累计。安装按成功安装回执计数，普通升级不增加，卸载不倒扣；使用按成功派发的工具调用计数（含失败、超时和取消）。不代表当前安装人数，也不包含面板或 Skill 操作。服务端尚未提供统计时不显示为 0。",
-        "asOf": "统计时间：{{time}}",
-        "sharedScope": {
-          "public": "公开插件",
-          "organization": "当前有权查看该企业插件的用户"
-        },
-        "refresh": "刷新记录"
+        "refresh": "刷新记录",
+        "more": "记录选项"
       }
     },
     "mcp": {

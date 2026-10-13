@@ -57,6 +57,7 @@ export const pluginUsageEvents = sqliteTable('plugin_usage_events', {
 }, (t) => ({
   byTime: index('plugin_usage_events_time_idx').on(t.subjectId, t.occurredAt),
   byTask: index('plugin_usage_events_task_idx').on(t.subjectId, t.sessionId, t.occurredAt),
+  pendingReports: index('plugin_usage_events_pending_idx').on(t.nextAttemptAt, t.occurredAt).where(sql`${t.reportState} = 'pending'`),
 }));
 
 /** Per-profile authority journal. Snapshots are recovery/audit data, not offline grants. */

@@ -44,14 +44,17 @@ export function pluginUsageIdentity(
       releaseId: record.releaseId,
     };
   }
-  if (!serverRoot) return base;
+  const verifiedRoot = typeof record.serverRoot === 'string' ? record.serverRoot : undefined;
+  if (!verifiedRoot && !serverRoot) return base;
   return {
     ...base,
     sourceKind: 'server',
+    reportingScope: record.scope,
+    verifiedServerRoot: verifiedRoot,
     pluginId: record.pluginId,
     organizationId: record.organizationId,
-    serverRoot,
-    stableKey: JSON.stringify(['server', serverRoot, record.pluginId]),
+    serverRoot: verifiedRoot || serverRoot,
+    stableKey: JSON.stringify(['server', verifiedRoot || serverRoot, record.pluginId]),
     releaseId: record.releaseId,
   };
 }

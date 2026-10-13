@@ -55,6 +55,7 @@ import {
   installOrUpdateMarketGhostPackage,
   isGhostAvailableForActiveSession,
   isBuiltinGhostRemovedByUser,
+  refreshPluginUsageBindings,
   uninstallGhostAndCleanup,
 } from '../cindy-brain/index.js';
 import {
@@ -1061,6 +1062,7 @@ export class PluginMarketService {
     let currentOrganization: PluginCurrentOrganization | null | undefined;
     let organizationAccessError: string | null = null;
     let customDiscovery: CustomMarketDiscovery;
+    const catalogServerRoot = getClientEndpoint('pluginApiBaseUrl').replace(/\/+$/, '');
     try {
       // 官方目录与自定义发现并行；单个本地/网络盘来源卡顿不会串行拖住官方请求。
       const [catalog, discovered] = await Promise.all([this.api.listAll(), customDiscoveryPromise]);
@@ -1096,6 +1098,29 @@ export class PluginMarketService {
         log.warn('namespace migration market reconcile failed', {
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      // Only an exact delivered release proves a legacy installation's reporting endpoint.
+      if (catalogServerRoot === getClientEndpoint('pluginApiBaseUrl').replace(/\/+$/, '')) {
+        let rebound = false;
+        try {
+          await this.withCapturedLedgerMutation(ledger, () => {
+            requireSameMarketOwner(owner);
+            const installations = ledger.read().installations;
+            for (const plugin of plugins) {
+              const record = installations[plugin.ghostId];
+              if (record?.installed && !record.serverRoot && record.source !== 'git-market'
+                && record.source !== 'local-market' && record.pluginId === plugin.id
+                && record.scope === plugin.scope && record.organizationId === plugin.organizationId
+                && record.releaseId === plugin.currentRelease.id && record.sha256 === plugin.currentRelease.sha256) {
+                rebound = ledger.backfillServerRoot(record, catalogServerRoot) || rebound;
+              }
+            }
+          });
+        } catch {
+          requireSameMarketOwner(owner);
+          log.warn('plugin usage reporting provenance unavailable');
+        }
+        if (rebound) await refreshPluginUsageBindings();
       }
       await this.backfillOfficialCindyGithubTrust(ledger, owner);
       // A snapshot is passive discovery: an empty runtime list can be caused by
@@ -2275,8 +2300,12 @@ export class PluginMarketService {
       }
     }
 
+    const downloadServerRoot = getClientEndpoint('pluginApiBaseUrl').replace(/\/+$/, '');
     const download = await this.api.download(plugin.id, plugin.currentRelease.id);
     assertInstallIdentityCurrent();
+    const verifiedServerRoot = downloadServerRoot === getClientEndpoint('pluginApiBaseUrl').replace(/\/+$/, '')
+      ? downloadServerRoot : undefined;
+    requireSameMarketOwner(owner);
     if (
       download.sha256 !== plugin.currentRelease.sha256 ||
       download.sizeBytes !== plugin.currentRelease.sizeBytes ||
@@ -2324,6 +2353,7 @@ export class PluginMarketService {
           {
             consent,
             expectedInstalled: options.expectedInstalled,
+            verifiedServerRoot,
             ...(options.expectedInstalledApproval !== undefined
               ? { expectedInstalledApproval: options.expectedInstalledApproval }
               : {}),
@@ -2360,6 +2390,7 @@ export class PluginMarketService {
       sourceReplacementMode: ServerSourceReplacementMode;
       beforeCommitInLock?: () => void;
       expectedInstalled: boolean;
+      verifiedServerRoot?: string;
     },
     owner: ActiveAppSession,
     ledger: PluginMarketLedger,
@@ -2465,12 +2496,12 @@ export class PluginMarketService {
           // 包已落位且仍持原 owner mutation lease；即使切号终止等待超时推进了
           // 当前 generation，也必须把来源写进操作开始时捕获的旧 owner 账本。
           await this.withCapturedLedgerMutation(ledger, () => {
-            ledger.upsertInstallation(recordFrom(plugin, 'market', {
+            ledger.upsertInstallation({ ...recordFrom(plugin, 'market', {
               manifest: evidence.canonicalManifest,
               rawManifestSha256: evidence.rawManifestSha256,
               legacyManifestDigest: evidence.legacyManifestDigest,
               legacyManifestDigests: [],
-            }));
+            }), ...(options.verifiedServerRoot ? { serverRoot: options.verifiedServerRoot } : {}) });
           });
         },
       }).catch((error) => {

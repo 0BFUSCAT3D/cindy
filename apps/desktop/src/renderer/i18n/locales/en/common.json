@@ -6708,34 +6708,22 @@
         }
       },
       "usage": {
-        "title": "Personal usage",
+        "title": "Your calls",
         "explanationLabel": "How usage is counted",
         "explanation": "Tool calls dispatched on this computer by the current account, including failures, timeouts and cancellations. The last 7 days is a rolling 168 hours. Panels, Skills and debugging are excluded. Records remain until cleared.",
         "clear": "Clear records",
         "loading": "Loading records…",
         "unavailable": "Personal records unavailable",
         "retry": "Retry",
-        "lastUsed": "Last used",
+        "lastUsed": "Last call",
         "last7Days": "Calls in last 7 days",
-        "never": "Not used yet",
-        "tasks": "Participating Sessions",
-        "noTasks": "No participating Sessions to show",
-        "untitled": "Untitled Session",
-        "localSince": "{{device}} · Recording since {{time}}",
+        "never": "No calls yet",
         "clearTitle": "Clear this Plugin’s usage records?",
         "clearDescription": "Remove call records and Session links for this account on this computer. New calls start a fresh history. Shared totals already received by the server are not withdrawn.",
         "downloads": "Downloads",
         "downloadExplanation": "Cumulative download URL requests. Each successfully issued package URL counts once, including updates, reinstalls and retries that request a new URL. This is not a count of completed installations.",
-        "installs": "Installs",
-        "uses": "Uses",
-        "sharedUnavailable": "Unavailable",
-        "sharedExplanation": "Shared totals for {{scope}}. Installs count successful installation receipts; ordinary updates do not add a receipt and uninstalling does not subtract one. Uses count dispatched tool calls, including failures, timeouts and cancellations. These are not current installed users, panel visits or Skill actions. Missing server statistics are not zero.",
-        "asOf": "As of {{time}}",
-        "sharedScope": {
-          "public": "this public Plugin",
-          "organization": "users currently authorized to view this organization Plugin"
-        },
-        "refresh": "Refresh records"
+        "refresh": "Refresh records",
+        "more": "Record options"
       }
     },
     "mcp": {

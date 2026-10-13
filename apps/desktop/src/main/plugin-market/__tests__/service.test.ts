@@ -103,6 +103,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  refreshPluginUsageBindings: vi.fn(async () => undefined),
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
@@ -805,6 +806,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
     expect(snapshot.items[0]?.installState).toBe('installed');
     expect(h.ledger.installationForGhost(item.ghostId)).toEqual({
       ...legacyRecord,
+      serverRoot: runtime.pluginApiBaseUrl,
       rawManifestSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     });
   });
@@ -2424,6 +2426,7 @@ describe('PluginMarketService migration and defaultInstall', () => {
 
     expect(h.ledger.installationForGhost('cindy-github')).toEqual({
       ...original,
+      serverRoot: runtime.pluginApiBaseUrl,
       manifestDigest: ghostManifestDigest(rawManifest),
       rawManifestSha256: crypto.createHash('sha256').update(packageBytes).digest('hex'),
     });

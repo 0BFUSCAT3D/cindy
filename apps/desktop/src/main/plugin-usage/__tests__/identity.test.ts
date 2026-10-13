@@ -67,3 +67,17 @@ it('separates identical plugin ids from distinct server roots and preserves cust
       ?.stableKey,
   ).toBeNull();
 });
+it('keeps a verified installed origin when the current endpoint changes or becomes unavailable', () => {
+  const pinned = { ...record, serverRoot: 'https://original' };
+  for (const endpoint of ['https://other', '']) {
+    expect(pluginUsageIdentity(ghost, pinned, snapshot, endpoint)).toMatchObject({
+      serverRoot: 'https://original',
+      verifiedServerRoot: 'https://original',
+      reportingScope: 'public',
+      stableKey: JSON.stringify(['server', 'https://original', record.pluginId]),
+    });
+  }
+  expect(
+    pluginUsageIdentity(ghost, record, snapshot, 'https://original')?.verifiedServerRoot,
+  ).toBeUndefined();
+});

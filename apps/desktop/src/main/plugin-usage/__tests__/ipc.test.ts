@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest';
 import { registerPluginUsageIpc } from '../ipc';
 import type { PluginUsageService } from '../service';
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
+import { withGhostInstallLock } from '../../cindy-brain/ghostInstallLock';
+import type { PluginUsageIdentity } from '../../../shared/pluginUsage';
 function harness(trusted = true) {
   const handlers = new Map<string, Parameters<IpcMain['handle']>[1]>();
   const service = {
@@ -12,16 +14,18 @@ function harness(trusted = true) {
     capture: vi.fn(),
   } as unknown as PluginUsageService;
   const warn = vi.fn();
+  const identity = vi.fn<() => PluginUsageIdentity | null>(() => null);
+  const current = { service };
   registerPluginUsageIpc({
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) } as Pick<IpcMain, 'handle'>,
     assertTrusted: () => {
       if (!trusted) throw new Error('Untrusted frame');
     },
-    service: () => service,
-    identity: () => null,
+    service: () => current.service,
+    identity,
     warn,
   });
-  return { handlers, service, warn };
+  return { handlers, service, warn, identity, current };
 }
 it('checks trusted top-level app sender on every usage endpoint before reading or clearing', async () => {
   const { handlers, service } = harness(false);
@@ -30,6 +34,56 @@ it('checks trusted top-level app sender on every usage endpoint before reading o
   expect(service.summary).not.toHaveBeenCalled();
   expect(service.clear).not.toHaveBeenCalled();
   expect(service.history).not.toHaveBeenCalled();
+});
+it('waits for the install transaction before reading a revision or creating a history binding', async () => {
+  const { handlers, service, identity } = harness();
+  let release!: () => void;
+  let entered!: () => void;
+  const ready = new Promise<void>((r) => {
+    entered = r;
+  });
+  const updating = withGhostInstallLock('upgrading-plugin', async () => {
+    entered();
+    await new Promise<void>((r) => {
+      release = r;
+    });
+  });
+  await ready;
+  const summary = handlers.get('ghosts:usage-summary')!(
+    {} as IpcMainInvokeEvent,
+    'upgrading-plugin',
+  );
+  await Promise.resolve();
+  expect(identity).not.toHaveBeenCalled();
+  expect(service.bind).not.toHaveBeenCalled();
+  release();
+  await updating;
+  await expect(summary).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  expect(identity).toHaveBeenCalledOnce();
+});
+it('does not read the next owner when an account changes while waiting for installation', async () => {
+  const { handlers, identity, current } = harness();
+  let release!: () => void;
+  let entered!: () => void;
+  const ready = new Promise<void>((r) => {
+    entered = r;
+  });
+  const updating = withGhostInstallLock('switching-plugin', async () => {
+    entered();
+    await new Promise<void>((r) => {
+      release = r;
+    });
+  });
+  await ready;
+  const summary = handlers.get('ghosts:usage-summary')!(
+    {} as IpcMainInvokeEvent,
+    'switching-plugin',
+  );
+  current.service = {} as PluginUsageService;
+  release();
+  await updating;
+  await expect(summary).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  expect(identity).not.toHaveBeenCalled();
 });
 it('never treats a missing or malformed subject as clear-all; only explicit null clears all', async () => {
   const { handlers, service } = harness();

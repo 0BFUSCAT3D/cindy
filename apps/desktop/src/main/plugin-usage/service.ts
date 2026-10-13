@@ -7,7 +7,9 @@ import type {
   PluginUsageOutcome,
   PluginUsageSummary,
   PluginUsageTransaction,
+  PluginUsageReportRow,
 } from '../../shared/pluginUsage.js';
+import { PluginUsageReporter, type PluginUsageReporting } from './reporter.js';
 
 export interface PluginUsageServiceDeps {
   client: DbClient;
@@ -15,6 +17,7 @@ export interface PluginUsageServiceDeps {
   isCurrent(): boolean;
   deviceName: string;
   now?: () => number;
+  reporting?: PluginUsageReporting;
   warn(): void;
 }
 
@@ -25,9 +28,70 @@ export class PluginUsageService {
   private readonly handles = new Map<string, PluginUsageHandle>();
   private readonly paused = new Set<string>();
   private readonly now: () => number;
+  private readonly reporter?: PluginUsageReporter;
 
   constructor(private readonly deps: PluginUsageServiceDeps) {
     this.now = deps.now ?? Date.now;
+    if (deps.reporting) {
+      this.reporter = new PluginUsageReporter({
+        reporting: deps.reporting,
+        isCurrent: () => !this.stopped && deps.isCurrent(),
+        now: this.now,
+        select: () =>
+          this.enqueue(() =>
+            runAsBackgroundDbRpc(async () => {
+              const first = await deps.client.queryOne<{ target: string; nextAttemptAt: number }>(
+                `SELECT e.report_target AS target,COALESCE(e.next_attempt_at,0) AS nextAttemptAt
+             FROM plugin_usage_events e JOIN plugin_usage_subjects s ON s.id=e.subject_id AND s.history_generation=e.history_generation
+             WHERE e.report_state='pending' ORDER BY e.next_attempt_at,e.occurred_at LIMIT 1`,
+              );
+              this.assertCurrent();
+              if (!first) return null;
+              const rows = await deps.client.query<PluginUsageReportRow>(
+                `SELECT e.call_id AS callId,e.subject_id AS subjectId,e.history_generation AS historyGeneration,
+              e.release_id AS releaseId,e.occurred_at AS occurredAt,e.report_target AS reportTarget,e.attempt_count AS attemptCount
+             FROM plugin_usage_events e JOIN plugin_usage_subjects s ON s.id=e.subject_id AND s.history_generation=e.history_generation
+             WHERE e.report_state='pending' AND e.report_target=? AND COALESCE(e.next_attempt_at,0)<=?
+             ORDER BY e.occurred_at,e.call_id LIMIT 100`,
+                [first.target, this.now()],
+              );
+              return { rows, nextAttemptAt: first.nextAttemptAt };
+            }),
+          ),
+        revalidate: (rows) =>
+          this.enqueue(() =>
+            runAsBackgroundDbRpc(async () => {
+              if (!rows.length) return [];
+              const live = await deps.client.query<{
+                callId: string;
+                subjectId: string;
+                historyGeneration: number;
+                reportTarget: string;
+              }>(
+                `SELECT e.call_id AS callId,e.subject_id AS subjectId,e.history_generation AS historyGeneration,e.report_target AS reportTarget
+             FROM plugin_usage_events e JOIN plugin_usage_subjects s ON s.id=e.subject_id AND s.history_generation=e.history_generation
+             WHERE e.report_state='pending' AND e.call_id IN (${rows.map(() => '?').join(',')})`,
+                rows.map((row) => row.callId),
+              );
+              return rows.filter((row) =>
+                live.some(
+                  (found) =>
+                    found.callId === row.callId &&
+                    found.subjectId === row.subjectId &&
+                    found.historyGeneration === row.historyGeneration &&
+                    found.reportTarget === row.reportTarget,
+                ),
+              );
+            }),
+          ),
+        update: (updates, valid) =>
+          this.enqueue(async () => {
+            if (valid()) await this.tx({ action: 'report', updates });
+          }),
+        warn: deps.warn,
+      });
+      this.reporter.wake();
+    }
   }
 
   private assertCurrent(): void {
@@ -77,16 +141,23 @@ export class PluginUsageService {
       void this.bind(identity).catch(() => undefined);
       return null;
     }
-    return { ...handle, identity: { ...identity } };
+    return this.freeze(handle, identity);
   }
 
   /** Install/startup binding owns source verification; dispatch never rereads package files. */
   captureBound(ghostId: string, revision: string): PluginUsageHandle | null {
     if (this.stopped || !this.deps.isCurrent() || this.paused.has(ghostId)) return null;
     const handle = this.handles.get(ghostId);
-    return handle?.identity.revision === revision
-      ? { ...handle, identity: { ...handle.identity } }
-      : null;
+    return handle?.identity.revision === revision ? this.freeze(handle, handle.identity) : null;
+  }
+
+  private freeze(handle: PluginUsageHandle, identity: PluginUsageIdentity): PluginUsageHandle {
+    const reporting = this.deps.reporting;
+    return {
+      ...handle,
+      identity: { ...identity },
+      reportTarget: reporting?.allowed() ? reporting.target(identity) : null,
+    };
   }
 
   accept(
@@ -99,7 +170,10 @@ export class PluginUsageService {
     void this.enqueue(async () => {
       const refreshed = await this.tx({
         action: 'accept',
-        handle,
+        handle: {
+          ...handle,
+          reportTarget: this.deps.reporting?.allowed() ? handle.reportTarget : null,
+        },
         callId,
         toolName,
         sessionId,
@@ -107,6 +181,7 @@ export class PluginUsageService {
       });
       // Refresh only future captures after a cross-instance clear. Never replay this call.
       this.assertCurrent();
+      this.reporter?.wake();
       const current = this.handles.get(handle.identity.ghostId);
       if (
         refreshed &&
@@ -131,6 +206,7 @@ export class PluginUsageService {
   }
 
   async clear(subjectId: string | null): Promise<void> {
+    this.reporter?.invalidate();
     const affected = [...this.handles.values()].filter(
       (h) => subjectId === null || h.subjectId === subjectId,
     );
@@ -216,6 +292,7 @@ export class PluginUsageService {
   /** Stop admission first; worker close is not a drain. No cross-owner retry on timeout. */
   async close(budgetMs = 2_000): Promise<void> {
     this.stopped = true;
+    this.reporter?.stop();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([

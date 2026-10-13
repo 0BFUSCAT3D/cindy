@@ -217,6 +217,17 @@ describe('PluginMarketLedger', () => {
     ledger.markRemovedRecordIfUnchanged(replacement, 'user-1');
     expect(ledger.installationForGhost('cindy-test')).toMatchObject({ installed: false });
   });
+  it('pins a verified server root once and refuses stale ledger backfills', () => {
+    const { ledger, filePath } = harness();
+    const legacy = record();
+    ledger.upsertInstallation(legacy);
+    expect(ledger.backfillServerRoot(legacy, 'https://one')).toBe(true);
+    expect(new PluginMarketLedger(filePath).installationForGhost(legacy.ghostId)).toEqual({ ...legacy, serverRoot: 'https://one' });
+    expect(ledger.backfillServerRoot(legacy, 'https://two')).toBe(false);
+    const replaced = record({ releaseId: 'replacement' });
+    ledger.upsertInstallation(replaced);
+    expect(ledger.backfillServerRoot(legacy, 'https://one')).toBe(false);
+  });
   it('writes provenance atomically and reads it back', () => {
     const { filePath, ledger } = harness();
     ledger.upsertInstallation(record({

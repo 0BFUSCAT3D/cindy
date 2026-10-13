@@ -3025,10 +3025,18 @@ function pluginUsageServerRoot(): string {
 }
 
 async function bindPluginUsage(ghost: InstalledGhost, previousRevision?: string): Promise<void> {
+  const scope = activeOwnerScopeKey();
   const service = currentPluginUsageService();
-  const identity = service && readPluginUsageIdentity(ghost);
-  if (!service || !identity) return;
-  try { await service.bind(identity, previousRevision); }
+  if (!service) return;
+  try {
+    await withGhostInstallLock(ghost.manifest.id, async () => {
+      if (activeOwnerScopeKey() !== scope || isAppSessionBoundaryPending()) return;
+      // A fallback bind can wait behind update/uninstall. Read the final committed identity.
+      const installed = getGhostManager().list().find(g => g.manifest.id === ghost.manifest.id);
+      const identity = installed && readPluginUsageIdentity(installed);
+      if (identity) await service.bind(identity, previousRevision);
+    });
+  }
   catch { log.warn('plugin usage binding unavailable'); }
 }
 

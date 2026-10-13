@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PluginUsageTransaction, PluginUsageHandle } from '../../../../shared/pluginUsage';
 
 vi.mock('electron', () => ({
   app: {
@@ -141,7 +142,8 @@ describe('DbClient in-proc fallback', () => {
     for (const statement of usageMigration.split('--> statement-breakpoint').filter(s => s.trim())) await client.exec(statement);
     const identity = { ghostId: 'inproc-plugin', displayName: 'Test', revision: 'revision', sourceKind: 'manual' as const,
       stableKey: null, pluginId: null, organizationId: null, sourceKey: null, serverRoot: null, version: '1.0', releaseId: null };
-    const handle = await client.tx('pluginUsage.execute', { action: 'bind', identity, newId: 'inproc-subject', now: 1 });
+    const bindUsage = { action: 'bind', identity, newId: 'inproc-subject', now: 1 } satisfies PluginUsageTransaction;
+    const handle = await client.tx<PluginUsageHandle | null>('pluginUsage.execute', bindUsage);
     await client.tx('pluginUsage.execute', { action: 'accept', handle: handle!, callId: 'inproc-call', toolName: 'tool', sessionId: null, occurredAt: 2 });
     await client.tx('pluginUsage.execute', { action: 'clear', subjectId: handle!.subjectId, now: 3 });
     await client.tx('pluginUsage.execute', { action: 'settle', handle: handle!, callId: 'inproc-call', outcome: 'failed' });

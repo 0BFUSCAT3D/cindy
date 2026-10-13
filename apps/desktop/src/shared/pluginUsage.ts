@@ -25,12 +25,33 @@ export interface PluginUsageIdentity {
   serverRoot: string | null;
   version: string | null;
   releaseId: string | null;
+  reportingScope?: 'public' | 'organization' | 'personal';
+  verifiedServerRoot?: string;
 }
 
 export interface PluginUsageHandle {
   subjectId: string;
   historyGeneration: number;
   identity: PluginUsageIdentity;
+  reportTarget?: PluginUsageReportTarget | null;
+}
+
+export interface PluginUsageReportTarget {
+  serverRoot: string;
+  pluginId: string;
+  ownerId: string;
+  scope: 'public' | 'organization';
+  organizationId: string | null;
+}
+
+export interface PluginUsageReportRow {
+  callId: string;
+  subjectId: string;
+  historyGeneration: number;
+  releaseId: string;
+  occurredAt: number;
+  reportTarget: string;
+  attemptCount: number;
 }
 
 export type PluginUsageTransaction =
@@ -51,4 +72,12 @@ export type PluginUsageTransaction =
     }
   | { action: 'settle'; handle: PluginUsageHandle; callId: string; outcome: PluginUsageOutcome }
   | { action: 'clear'; subjectId: string | null; now: number }
-  | { action: 'detach'; ghostId: string };
+  | { action: 'detach'; ghostId: string }
+  | {
+      action: 'report';
+      updates: {
+        row: PluginUsageReportRow;
+        state: 'pending' | 'sent' | 'rejected';
+        nextAttemptAt: number | null;
+      }[];
+    };

@@ -67,7 +67,6 @@ interface GhostPluginDetailViewProps {
   enabledOverride?: boolean;
   onBack: () => void;
   usageOwnerKey?: string;
-  onOpenUsageTask?: (sessionId: string) => void;
   confirmClearUsage?: () => Promise<boolean>;
   onToggle: (enabled: boolean) => void;
   /** 主动作:面板型「使用」/ 指令或 Host 能力型「对话」;纯工具型不渲染主按钮。 */
@@ -113,7 +112,6 @@ export function GhostPluginDetailView({
   onToggle,
   onUse,
   usageOwnerKey,
-  onOpenUsageTask,
   confirmClearUsage,
   mainViewSidebarVisible = true,
   onMainViewSidebarVisibleChange,
@@ -427,7 +425,7 @@ export function GhostPluginDetailView({
           ) : null}
         </header>
 
-        {ghost ? <PluginUsageCard key={`${usageOwnerKey ?? "local"}:${ghost.manifest.id}`} ghostId={ghost.manifest.id} onOpenTask={onOpenUsageTask} confirmClear={confirmClearUsage} /> : null}
+        {ghost ? <PluginUsageCard key={`${usageOwnerKey ?? "local"}:${ghost.manifest.id}`} ghostId={ghost.manifest.id} confirmClear={confirmClearUsage} /> : null}
 
         {hasConfiguration ? (
           <section

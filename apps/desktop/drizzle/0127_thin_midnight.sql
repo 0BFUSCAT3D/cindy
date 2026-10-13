@@ -1,0 +1,1 @@
+CREATE INDEX `plugin_usage_events_pending_idx` ON `plugin_usage_events` (`next_attempt_at`,`occurred_at`) WHERE "plugin_usage_events"."report_state" = 'pending';
