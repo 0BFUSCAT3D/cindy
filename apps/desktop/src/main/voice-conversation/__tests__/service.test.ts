@@ -141,12 +141,12 @@ describe('local companion call ownership', () => {
     const { service, deps, provider } = fixture();
     await service.start(1, selection);
     provider.onSegment.mock.calls[0][0]({ id: 'segment', text: 'private utterance', final: true });
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_500);
     expect(deps.log.info).toHaveBeenCalledWith('input settled', {
       callId: selection.callId,
       trigger: 'silence',
-      inactiveMs: 2_000,
-      finalStableMs: 2_000,
+      inactiveMs: 1_500,
+      finalStableMs: 1_500,
       segments: 1,
       characters: 17,
     });
