@@ -271,6 +271,27 @@ it.each([false, true])('restores the last answer after a rejected receipt and cl
   expect(readAskUserDraft(requestId)).toBeNull();
 });
 
+it('keeps a typed custom answer when the pending request is refetched or the card remounts', async () => {
+  const pending = () => [{ request: {
+    kind: 'ask_user_question', requestId,
+    questions: [{ question: 'Spine license?', options: [{ label: 'Yes' }, { label: 'No' }] }],
+  } }];
+  remoteSessionStore.setPendingInteractions('s1', pending());
+  await act(async () => root.render(<Harness />));
+  const input = () => host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]');
+  await click('interaction.ask.showCustomButton');
+  await act(async () => {
+    input()!.value = 'No, figure it out';
+    input()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 回到前台后重新拉取待处理请求:内容相同但对象引用全新。
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', pending()));
+  expect(input()?.value).toBe('No, figure it out');
+  await act(async () => root.render(null));
+  await act(async () => root.render(<Harness />));
+  expect(input()?.value).toBe('No, figure it out');
+});
+
 
 it.each(['allowOnce', 'deny'])('companion permission preserves complete evidence and %s receipt', async (action) => {
   const content = 'unique-complete-payload-' + 'x'.repeat(800);
