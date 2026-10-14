@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { registerGetCurrentSessionIdTool, XdtHelperToolRegistry } from '@cindy/mcps';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createComputerMcpServer, registerGetCurrentSessionIdTool, XdtHelperToolRegistry } from '@cindy/mcps';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { mapExecServerParams, mapExecServerResult, execServerActions } from '../../controller/execServerRelay';
@@ -415,6 +417,8 @@ describe('virtual workspace', () => {
           attachments: [virtual + '/image.png', 'cindy-media://blobs/abc.png', 'xdt-image://task/image.png'],
           args: { working_dir: virtual, file_path: virtual + '/file.txt', outPath: virtual + '/out.pdf', htmlPath: virtual + '/in.html', imagePath: virtual + '/image.png' },
           workers: [{ working_dir: virtual }],
+          out_file: virtual + '/result.json', absPath: virtual + '/upload.txt',
+          workspace_root: virtual, anchorFile: virtual + '/index.ts', file_paths: [virtual + '/input.txt'],
           content, text: virtual,
         } },
       })).toString('base64') });
@@ -424,9 +428,59 @@ describe('virtual workspace', () => {
         attachments: [path.join(project, 'image.png'), 'cindy-media://blobs/abc.png', 'xdt-image://task/image.png'],
         args: { working_dir: project, file_path: path.join(project, 'file.txt'), outPath: path.join(project, 'out.pdf'), htmlPath: path.join(project, 'in.html'), imagePath: path.join(project, 'image.png') },
         workers: [{ working_dir: project }],
+        out_file: path.join(project, 'result.json'), absPath: path.join(project, 'upload.txt'),
+        workspace_root: project, anchorFile: path.join(project, 'index.ts'), file_paths: [path.join(project, 'input.txt')],
         content, text: virtual,
       });
     } finally {
+      await executor.close();
+    }
+  });
+
+  it.each(['/Users/agent/workspace', 'C:\\Agent\\workspace'].flatMap((virtual) => [
+    { virtual, name: 'start_recording', key: 'output_dir', args: { record_video: true } },
+    { virtual, name: 'get_window_state', key: 'screenshot_out_file', args: { pid: 123, window_id: 7 } },
+    { virtual, name: 'click', key: 'debug_image_out', args: { pid: 123, window_id: 7, x: 10, y: 20 } },
+  ]))('restores $name ($key) at $virtual before the real Computer MCP path guard', async ({ virtual, name, key, args }) => {
+    const { project, executor } = setup(virtual);
+    const agentPath = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const callTool = vi.fn(async () => ({ ok: true }));
+    const server = createComputerMcpServer({ getStatus: vi.fn(), callTool }, {
+      getSessionContext: () => ({ sessionId: 'local-task', agentKind: 'codex', workingDir: project }),
+    });
+    const client = new Client({ name: 'remote-path-test', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const router = createReverseHttpRouter({
+      executor,
+      mcpTarget: () => ({ url: 'http://unused', headers: {} }),
+      fetch: async (_url, options) => {
+        const request = JSON.parse(Buffer.from(options!.body as Uint8Array).toString());
+        const result = await client.callTool({ name: request.params.name, arguments: request.params.arguments });
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }), { headers: { 'content-type': 'application/json' } });
+      },
+    });
+    const invoke = async (output: string) => {
+      const reply = await router({ method: 'POST', path: '/mcp/cindy_computer', headers: [], body: Buffer.from(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: { name, args: { ...args, [key]: output } } },
+      })).toString('base64') });
+      if (reply.type !== 'http') throw new Error('expected MCP HTTP reply');
+      const result = JSON.parse(Buffer.from(reply.body!, 'base64').toString());
+      return JSON.parse(result.result.content[0].text);
+    };
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      expect(await invoke(agentPath.join(virtual, '输出 目录', 'capture'))).toMatchObject({ ok: true });
+      expect(callTool).toHaveBeenCalledWith(name, expect.objectContaining({
+        ...args, [key]: path.join(project, '输出 目录', 'capture'), session: 'local-task',
+      }), expect.objectContaining({ sessionId: 'local-task' }));
+      callTool.mockClear();
+      // 保留别名前缀中的 ..，确认先还原再由本机工具的真实权限边界拒绝。
+      expect(await invoke(virtual + agentPath.sep + '..' + agentPath.sep + 'outside'))
+        .toMatchObject({ ok: false, errorCode: 'PATH_NOT_ALLOWED' });
+      expect(callTool).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
       await executor.close();
     }
   });

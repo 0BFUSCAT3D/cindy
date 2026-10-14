@@ -37,6 +37,7 @@ const PATH_ARGUMENTS = new Set([
   'path', 'paths', 'filepath', 'filepaths', 'directory', 'directories', 'dir', 'dirs',
   'workingdir', 'workdir', 'cwd', 'root', 'libraryroot', 'sourcepath', 'destinationpath',
   'savedir', 'outpath', 'htmlpath', 'imagepath', 'iconsource', 'attachments', 'extradirs', 'writabledirs',
+  'debugimageout',
 ]);
 
 function json(status: number, value: unknown): Extract<RemoteAgentReply, { type: 'http' }> {
@@ -74,7 +75,7 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
   const mapArguments = (value: unknown, key = ''): unknown => {
     if (typeof value === 'string') {
       if (/^(?:cmd|command)$/.test(key)) return workspace.mapCommand(value, resolveExecutorShell().dialect);
-      if (PATH_ARGUMENTS.has(key.replace(/_/g, '').toLowerCase())) return workspace.mapAlias(value);
+      if (isPathTextField(key) || PATH_ARGUMENTS.has(key.replace(/_/g, '').toLowerCase())) return workspace.mapAlias(value);
       return value;
     }
     if (Array.isArray(value)) return value.map((item) => mapArguments(item, key));
