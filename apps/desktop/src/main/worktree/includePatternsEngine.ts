@@ -272,6 +272,18 @@ async function getHeadTreeFiles(root: string): Promise<Set<string>> {
 }
 
 /**
+ * rel 本身或其任一父级是否受版本管理。父级被跟踪意味着它是文件或符号链接(Git 不跟踪
+ * 目录), 在其下写入会顶掉受控内容或与后台 checkout 冲突——只看 Git 记录, 不依赖它是否
+ * 已经落盘。
+ */
+function isUnderTrackedPath(tracked: ReadonlySet<string>, rel: string): boolean {
+  for (let end = rel.length; end > 0; end = rel.lastIndexOf('/', end - 1)) {
+    if (tracked.has(rel.slice(0, end))) return true;
+  }
+  return false;
+}
+
+/**
  * 把 baseRepo 下匹配 patterns 且未被 git tracked 的文件拷贝到 destRoot 下相同相对路径。
  *
  * 已存在的 dest 文件会被覆盖(fs.copyFile 默认行为)。软链复制为软链本身。
@@ -352,7 +364,7 @@ async function copyMatchedFiles(
       continue;
     }
 
-    if (tracked.has(rel)) {
+    if (isUnderTrackedPath(tracked, rel)) {
       results.push({ relpath: rel, status: 'skipped-tracked' });
       continue;
     }
@@ -417,7 +429,7 @@ export async function listChangedWorktreeIncludeFiles(
   for (const rel of srcFiles) {
     if (!matches(rel)) continue;
     // worktree 分支已跟踪的同名文件不是从 base 复制来的, 其改动由 git 自身的 dirty 检查负责。
-    if (trackedInBase.has(rel) || trackedInDest.has(rel)) continue;
+    if (isUnderTrackedPath(trackedInBase, rel) || isUnderTrackedPath(trackedInDest, rel)) continue;
 
     const srcAbs = path.join(baseRepo, rel);
     const destAbs = path.join(destRoot, rel);

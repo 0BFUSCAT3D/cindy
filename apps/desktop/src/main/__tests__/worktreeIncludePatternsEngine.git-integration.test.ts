@@ -373,6 +373,46 @@ describe('include files tracked on the worktree branch', () => {
   });
 });
 
+describe('include files under a path the target branch tracks', () => {
+  it('skips files beneath a tracked symlink before checkout has written it', async () => {
+    const gitRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-wt-include-link-'));
+    const repo = path.join(gitRoot, 'repo');
+    const worktree = path.join(gitRoot, 'worktree');
+    fs.mkdirSync(repo, { recursive: true });
+    try {
+      git(repo, 'init');
+      git(repo, 'config', 'user.name', 'XDMaker Test');
+      git(repo, 'config', 'user.email', 'test@xdmaker.local');
+      fs.writeFileSync(path.join(repo, '.worktreeinclude'), 'config/**\n');
+      git(repo, 'add', '.worktreeinclude');
+      git(repo, 'commit', '-m', 'init');
+      // feature 分支以 120000 模式跟踪符号链接 config; 用底层命令建提交, 不切分支、
+      // 不依赖平台能否创建链接。
+      const run = (args: string[], input?: string, env?: NodeJS.ProcessEnv): string =>
+        execFileSync('git', args, { cwd: repo, input, env: { ...process.env, ...env } })
+          .toString()
+          .trim();
+      const indexEnv = { GIT_INDEX_FILE: path.join(gitRoot, 'feature.index') };
+      const blob = run(['hash-object', '-w', '--stdin'], '../outside');
+      run(['read-tree', 'HEAD'], undefined, indexEnv);
+      run(['update-index', '--add', '--cacheinfo', `120000,${blob},config`], undefined, indexEnv);
+      const tree = run(['write-tree'], undefined, indexEnv);
+      const commit = run(['commit-tree', tree, '-p', 'HEAD', '-m', 'track config as a symlink']);
+      git(repo, 'branch', 'feature', commit);
+      fs.mkdirSync(path.join(repo, 'config'));
+      fs.writeFileSync(path.join(repo, 'config', 'local.env'), 'A=1\n');
+      git(repo, 'worktree', 'add', '--no-checkout', worktree, 'feature');
+
+      await expect(applyWorktreeIncludeFile(repo, worktree)).resolves.toEqual([
+        { relpath: 'config/local.env', status: 'skipped-tracked' },
+      ]);
+      expect(fs.existsSync(path.join(worktree, 'config'))).toBe(false);
+    } finally {
+      fs.rmSync(gitRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('copyWorktreeIncludeFiles restore mode', () => {
   let tmpRoot: string;
   let baseRepo: string;
