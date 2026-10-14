@@ -17,10 +17,7 @@ import {
 import { toast } from '@/lib/toast';
 import { matchesModelName } from '@/lib/modelDisplayNames';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import {
-  favoritesSyncFailureI18nKey,
-  favoritesSyncFailureKind,
-} from './sessionAgentSwitchGate';
+import { favoritesSyncFailureI18nKey } from './sessionAgentSwitchGate';
 import { Check, Loader2, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -1381,10 +1378,7 @@ export function UnifiedModelPanel({
               </span>
             </div>
           )}
-          {favoritesListDeviceId && remoteFavorites.error ? <div role="status" className="px-3 py-2 text-13 text-[var(--text-secondary)]">{t(favoritesSyncFailureI18nKey(favoritesSyncFailureKind({
-            deviceId: favoritesListDeviceId,
-            unavailableDeviceIds: remoteSources?.unavailableDeviceIds,
-          })))}</div> : null}
+          {favoritesListDeviceId && remoteFavorites.error ? <div role="status" className="px-3 py-2 text-13 text-[var(--text-secondary)]">{t(favoritesSyncFailureI18nKey(remoteFavorites.errorCode))}</div> : null}
           {remoteListPending ? (
             remoteSources?.failure ?? (
               <div

@@ -7317,7 +7317,8 @@ export function ChatInput({
   // 没有跨引擎兜底,点任意一行都会把 Claude 模型经 onProviderChange 塞进 Codex 会话
   // (bug4)。所以身份未确认时不锁 —— 回落旧面板一帧,等 runtimeAgentKind 落地再进统一面板。
   const sessionEngineConfirmed = !sessionId || runtimeAgentKind != null;
-  const inSessionEngineLocked = Boolean(sessionId) && !sessionEngineFilter;
+  const inSessionEngineLocked =
+    Boolean(sessionId) && (!sessionEngineFilter || orcaLeadLocalFallback);
   const lockedSessionAgentKind =
     inSessionEngineLocked && sessionEngineConfirmed ? (runtimeAgentKind ?? agentKind) : null;
   // 新旧用户统一使用 A；仅在远端能力或任务引擎尚未确认时回落兼容列表。

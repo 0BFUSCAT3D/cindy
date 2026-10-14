@@ -318,7 +318,7 @@ describe('ChatInput model source switching wiring', () => {
     // 单引擎链路,把另一个引擎的模型塞进当前会话。护栏:这类会话把联合列表锁定在
     // 当前引擎;引擎解析不出时整个回落旧面板。
     expect(chatInputSource).toContain(
-      'const inSessionEngineLocked = Boolean(sessionId) && !sessionEngineFilter;',
+      'Boolean(sessionId) && (!sessionEngineFilter || orcaLeadLocalFallback)',
     );
     expect(chatInputSource).toContain(
       'unifiedModelPanelEnabled && (!inSessionEngineLocked || lockedSessionAgentKind !== null)',

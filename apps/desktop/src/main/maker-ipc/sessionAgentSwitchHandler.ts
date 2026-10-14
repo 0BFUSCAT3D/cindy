@@ -23,7 +23,8 @@
  *    上述回落再降级)。
  *
  * 边界:远程会话(remoteHostId)与 Orca 协同会话不支持切换(UNSUPPORTED_CAPABILITY);
- * 例外:Orca Lead 从另一台电脑显式切回本机(agentDeviceId=null)允许登记/落地;
+ * 例外:Orca Lead 从另一台电脑显式切回本机(agentDeviceId=null)且目标引擎与当前相同
+ * 时允许登记/落地;模型/来源可随本机目录改变。Worker、换电脑、换引擎仍拒;
  * turn 进行中登记 pending 推迟到下一条消息发送时刻执行。
  *
  * 远程 Agent 换电脑(agentDeviceId 变化,null = 任务所在电脑):原生会话记录在原来运行 Agent
@@ -631,11 +632,13 @@ export async function performSessionAgentSwitch(
     params.applyNow === true &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
     row.model === model;
-  // Orca Lead 的 Agent 在另一台电脑时允许显式切回本机(null)。跨电脑、Worker、换引擎入口仍拒。
+  // Orca Lead 的 Agent 在另一台电脑时允许显式切回本机(null),且必须同引擎。
+  // 跨电脑、Worker、换引擎入口仍拒。
   const orcaLeadReturnHome =
     row.orcaRole === 'lead' &&
     (row.agentDeviceId ?? null) !== null &&
-    requestedAgentDeviceId === null;
+    requestedAgentDeviceId === null &&
+    normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind);
   if (row.orcaRole && !providerGroupRelocationOnly && !orcaLeadReturnHome) {
     // Orca lead/worker:协同运行时对 agent 形态有独立契约(docs/dev-rules/orca-team-architecture.md),不掺和。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for Orca sessions');

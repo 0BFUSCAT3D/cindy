@@ -39,20 +39,17 @@ export function sessionRemoteAgentDevicesForOrcaFallback<T>(
   return devices ?? [];
 }
 
-export function favoritesSyncFailureKind(input: {
-  deviceId: string | undefined;
-  unavailableDeviceIds?: readonly string[];
-}): 'unreachable' | 'unsupported' {
-  if (!input.deviceId) return 'unreachable';
-  if (!input.unavailableDeviceIds) return 'unreachable';
-  if (input.unavailableDeviceIds.includes(input.deviceId)) return 'unreachable';
-  return 'unsupported';
-}
+const FAVORITES_UNREACHABLE_CODES = new Set([
+  'DEVICE_LINK_NOT_CONNECTED',
+  'DEVICE_LINK_DEVICE_OFFLINE',
+  'DEVICE_LINK_TIMEOUT',
+  'DEVICE_LINK_BUSY',
+]);
 
 export function favoritesSyncFailureI18nKey(
-  kind: 'unreachable' | 'unsupported',
-): 'newChat.modelSelector.unified.favoritesSyncFailedUnreachable' | 'newChat.modelSelector.unified.favoritesSyncFailedUnsupported' {
-  return kind === 'unsupported'
-    ? 'newChat.modelSelector.unified.favoritesSyncFailedUnsupported'
-    : 'newChat.modelSelector.unified.favoritesSyncFailedUnreachable';
+  errorCode: string | null | undefined,
+): 'newChat.modelSelector.unified.favoritesSyncFailedUnreachable' | 'newChat.modelSelector.unified.favoritesSyncFailed' {
+  return errorCode && FAVORITES_UNREACHABLE_CODES.has(errorCode)
+    ? 'newChat.modelSelector.unified.favoritesSyncFailedUnreachable'
+    : 'newChat.modelSelector.unified.favoritesSyncFailed';
 }
