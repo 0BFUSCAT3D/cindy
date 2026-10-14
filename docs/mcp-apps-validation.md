@@ -54,7 +54,7 @@ Pi 和 Codex 的 App 输入与来源说明，历史仍保留原文；读取任�
 保留主人授权意图，私有 guard 不进入队列持久快照、公开投影、历史或 provider options。
 官方 App SDK 另验证发送准备期间撤销卡片、账号和服务器后没有派发。
 
-本轮另新增 26 项回归：排队后撤销卡片会阻止 drain 和排队插话；活 guard 留在 Main，
+前序另新增 26 项回归：排队后撤销卡片会阻止 drain 和排队插话；活 guard 留在 Main，
 公开投影和 JSON/IPC 丢弃它，恢复快照及无活授权的旧版 App 队列行明确失败。
 Session 插话复用发送前的私有钩子，在异步准备后再核验；钩子不传给 provider，
 钩子等待期间结束、替换或关闭的 turn 都不能接收迟到消息。
@@ -64,7 +64,7 @@ form elicitation、roots 变更通知均到达原 harness；不同 facade 不串
 测试 peer 使用的 SDK 1.29 默认取消 handler 忽略数字 ID 0，因此该项直接检查 wire
 通知；ID 1 同时检查实际 signal，不能把 wire 证据说成测试 peer 的 ID 0 handler 已取消。
 
-本轮执行：
+该轮执行：
 
 ```powershell
 pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__ src/main/maker-ipc/__tests__/makerSendTransaction.test.ts src/main/maker-ipc/__tests__/agent-input-coordinator.test.ts src/main/maker-ipc/__tests__/messageSourceNote.test.ts src/main/__tests__/mobileClientPromptNote.test.ts --maxWorkers=2 --reporter=dot
@@ -76,7 +76,7 @@ pnpm.cmd --filter @cindy/maker-core build
 `makerSendTransaction.test.ts` 为 172 项，来源说明和客户端说明分别为 12 项与 68 项。
 coordinator 为 515 项。maker-core 的 6 个测试文件、200 项测试及无输出构建类型检查通过；
 该包没有独立 typecheck script，build 实际执行 tsc --noEmit。
-本轮未重跑前序 Electron 沙箱；真实模型账号、完整卡片双主题目检和 Mobile 真机仍未验证。
+该轮未重跑前序 Electron 沙箱；真实模型账号、完整卡片双主题目检和 Mobile 真机仍未验证。
 
 | 测试文件                      | 通过数量 | 主要覆盖                                                                                  |
 | ----------------------------- | -------: | ----------------------------------------------------------------------------------------- |
@@ -98,10 +98,47 @@ Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项
 文档测试 13 项、device-link 超时与重试策略测试 31 项通过；Desktop、Mobile 与两个
 共享包的类型检查、定向 ESLint、i18n 及设计台账检查通过。未用本地定向结果替代完整 CI。
 
-本轮开始时旧 head `8cd728d` 的 [Linux unit tests (1/2)](https://github.com/makecindy/cindy/actions/runs/38636206425/job/116099904816) 失败：
+前序跟进开始时旧 head `8cd728d` 的 [Linux unit tests (1/2)](https://github.com/makecindy/cindy/actions/runs/38636206425/job/116099904816) 失败：
 `linuxInstallation.test.ts` 在 beforeAll 制作 `.deb` 夹具时，`ar rc … package.deb debian-binary data.tar.gz` 返回失败。
 日志没有给出具体 stderr/退出原因，不能认定为瞬态；该安装器测试不在 PR 改动范围，
-本轮未修改或跳过它。完整 CI 仍由新 head 正常触发并决定通过与否。
+该轮未修改或跳过它。完整 CI 仍由新 head 正常触发并决定通过与否。
+
+## 关闭握手补充验证（2026-10-15）
+
+关闭控制器现在会等待其主动发送的 teardown 回执，收到 result/error 或达到发送后的
+1 秒上限才通知 Host 释放 View。重复关闭共用同一等待，不把本地回执交给未发起该请求的
+Host bridge；未主动通知时仍转发 Host 的标准 teardown 握手。
+
+新增 4 项控制器回归，其中成功回执、错误回执和超时的 3 项在修复前复现提前关闭；
+修复后控制器 14 项、共享文档 3 项、Desktop Host 协议与卡片 19 项、Mobile 卡片 3 项通过。
+覆盖异步回执前不释放、错误回执完成、相同 ID 请求或无关响应不能完成清理、重复关闭、
+从通知时刻计算的上限、晚到回执丢弃，以及关闭期间保留 Host 请求/响应路由。
+
+head `298ad2a` 的 [Linux unit tests (2/2)](https://github.com/makecindy/cindy/actions/runs/38643078077/job/116123167873)
+另有 3 项委派发送、1 项目标模式测试失败，原因均为源码片段的 Function 夹具没有注入
+新增 Symbol，错误为 `MCP_APP_MESSAGE_GUARD is not defined`；本机均复现。
+补入真实模块导出的 Symbol 后，`pluginTaskAuthorshipWiring.test.ts` 的 17 项与
+`goal-host/__tests__/controller.test.ts` 的 228 项通过，原授权与目标模式断言保留。
+本次定向测试合计 7 个文件、284 项通过，完整 CI 需在新 head 正常重跑后判定。
+
+```powershell
+pnpm.cmd --filter @cindy/maker-shared exec vitest run src/__tests__/mcpAppController.test.ts src/__tests__/mcpApps.test.ts --reporter=dot
+pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__/conformance.test.ts src/renderer/components/chat/__tests__/McpAppCard.test.tsx --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter mobile exec vitest run src/__tests__/mcpAppCard.test.tsx --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter desktop exec vitest run src/main/maker-ipc/__tests__/pluginTaskAuthorshipWiring.test.ts src/main/goal-host/__tests__/controller.test.ts --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter @cindy/maker-shared run --if-present typecheck
+pnpm.cmd --filter @cindy/maker-shared build
+pnpm.cmd --filter desktop run --if-present typecheck
+pnpm.cmd --filter mobile run --if-present typecheck
+pnpm.cmd --filter @cindy/maker-shared exec eslint src/mcpAppController.ts src/__tests__/mcpAppController.test.ts
+pnpm.cmd --filter desktop exec eslint src/main/maker-ipc/__tests__/pluginTaskAuthorshipWiring.test.ts src/main/goal-host/__tests__/controller.test.ts
+```
+
+maker-shared 没有独立 typecheck script，build 实际执行 `tsc --noEmit`，已通过；
+Mobile 与 Desktop 类型检查均通过。
+上述定向 ESLint 和文档合同检查（10 项）通过。
+本次未重跑 Electron 沙箱，也未完成 macOS、Mobile 真机或完整卡片双主题目检。
+Mobile 原生卸载不能保留 WebView 时属于尽力通知，未将单测结果当作原生异步清理完成的证据。
 
 ## 两个独立 App
 

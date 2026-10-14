@@ -17,6 +17,9 @@ export class McpAppController {
   private stopped = false;
   private closing = false;
   private teardownId?: string;
+  private teardownDone?: Promise<void>;
+  private finishTeardown?: () => void;
+  private closePromise?: Promise<void>;
   private ready = false;
   private outbound: AppRpc[] = [];
   private initializeId?: string | number;
@@ -69,7 +72,11 @@ export class McpAppController {
 
   receive(message: AppRpc): void {
     if (this.stopped || !this.document || !message || message.jsonrpc !== '2.0') return;
-    if (this.teardownId !== undefined && message.id === this.teardownId) return;
+    if (this.teardownId !== undefined && message.id === this.teardownId) {
+      if (message.method === undefined && ('result' in message || 'error' in message))
+        this.finishTeardown?.();
+      return;
+    }
     if (message.method === 'ui/notifications/sandbox-escape') {
       void this.displayMode('inline').catch((error) => this.fail(error));
       return;
@@ -172,15 +179,27 @@ export class McpAppController {
     }
   }
 
-  /** For platforms that cannot retain their native view during asynchronous disposal. */
+  /** Notify before native disposal; close() waits at most one second for the response. */
   prepareNativeClose(): void {
-    if (!this.ready || this.teardownId) return;
+    if (!this.ready || this.closing || this.teardownId) return;
     this.teardownId = `cindy-teardown:${Date.now()}:${this.clientId}`;
+    this.teardownDone = new Promise<void>((resolve) => {
+      const timer = setTimeout(() => this.finishTeardown?.(), 1_000);
+      this.finishTeardown = () => {
+        clearTimeout(timer);
+        this.finishTeardown = undefined;
+        resolve();
+      };
+    });
     this.post({ jsonrpc: '2.0', id: this.teardownId, method: 'ui/resource-teardown', params: {} });
   }
 
-  async close(): Promise<void> {
-    if (this.closing) return;
+  close(): Promise<void> {
+    this.closePromise ??= this.closeView();
+    return this.closePromise;
+  }
+
+  private async closeView(): Promise<void> {
     this.closing = true;
     clearTimeout(this.startupTimer);
     this.startupTimer = undefined;
@@ -192,6 +211,7 @@ export class McpAppController {
       return;
     }
     try {
+      if (this.teardownDone) await this.teardownDone;
       await this.invoke(this.sessionId, {
         op: 'teardown',
         viewId: this.document.viewId,

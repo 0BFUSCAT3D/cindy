@@ -83,6 +83,11 @@ JSON 转义、数组括号和分隔符均计入。超限文档在保留 View 前
 实时及重开 View 使用同一有界结果；原工具返回给模型的内容保持不变。
 输入或工具 metadata 本身超限时拒绝存卡，不写入超大历史，也不阻止原工具执行。
 Desktop 卡片仅在可见时打开，离屏或窗口隐藏时释放 View，重新可见后重新加载。
+主动关闭时，控制器先发送标准 `ui/resource-teardown`，从发送时起最多等待 1 秒，
+收到对应 JSON-RPC result/error 或超时后再让 Host 释放 View；并发关闭等待同一次清理。
+Desktop 在此期间保留隐藏 iframe 与回执监听。Mobile 原生 WebView 无法保留到
+异步卸载完成时，只能尽力提前通知，未收到回执仍在同一上限后回收 Host View。
+回归见 `packages/maker-shared/src/__tests__/mcpAppController.test.ts`。
 查看远端卡片的 Renderer 重载、崩溃或销毁时，Main 回收该 Renderer 的 HTML 供片和额度；
 同文档导航、子 frame 导航、其他窗口与本地 Host 的供片不受影响。
 单次模型上下文 128 KB，每个任务总计 512 KB。Host 资源加载最多 90 秒，远程打开

@@ -44,6 +44,89 @@ describe('MCP App transport lifecycle', () => {
     );
     await f.controller.close();
   });
+  it.each([{ result: {} }, { error: { code: -32603, message: 'cleanup failed' } }])(
+    'waits for the locally requested teardown response before releasing the View: %j',
+    async (response) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      await f.controller.open({});
+      f.controller.sandboxReady();
+      f.controller.prepareNativeClose();
+      f.controller.prepareNativeClose();
+      const requests = f.post.mock.calls
+        .map(([message]) => message as AppRpc)
+        .filter((message) => message.method === 'ui/resource-teardown');
+      expect(requests).toHaveLength(1);
+      const request = requests[0];
+      const closed = vi.fn();
+      const pending = f.controller.close().then(closed);
+      const repeated = f.controller.close().then(closed);
+      await flush();
+      expect(closed).not.toHaveBeenCalled();
+      expect(f.invoke.mock.calls.some(([, input]) => input.op === 'teardown')).toBe(false);
+
+      f.controller.receive({ jsonrpc: '2.0', id: 'unrelated', result: {} });
+      f.controller.receive(request);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(closed).not.toHaveBeenCalled();
+      expect(f.invoke.mock.calls.some(([, input]) => input.op === 'teardown')).toBe(false);
+
+      f.controller.receive({ jsonrpc: '2.0', id: request.id, ...response });
+      await Promise.all([pending, repeated]);
+      expect(f.invoke).toHaveBeenLastCalledWith('task', {
+        op: 'teardown', viewId: 'view', alreadyNotified: true,
+      });
+      expect(f.invoke.mock.calls.filter(([, input]) => input.op === 'teardown')).toHaveLength(1);
+      expect(f.state).not.toHaveBeenCalledWith(expect.objectContaining({ id: request.id }));
+      expect(f.invoke).not.toHaveBeenCalledWith('task', expect.objectContaining({
+        op: 'message', message: expect.objectContaining({ id: request.id }),
+      }));
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+  it('bounds an unresponsive local teardown from notification time and ignores late replies', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    await f.controller.open({});
+    f.controller.sandboxReady();
+    f.controller.prepareNativeClose();
+    const request = f.post.mock.calls.at(-1)![0] as AppRpc;
+    await vi.advanceTimersByTimeAsync(400);
+    const pending = f.controller.close();
+    await vi.advanceTimersByTimeAsync(599);
+    expect(f.invoke.mock.calls.some(([, input]) => input.op === 'teardown')).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(f.invoke).toHaveBeenLastCalledWith('task', {
+      op: 'teardown', viewId: 'view', alreadyNotified: true,
+    });
+    const invocations = f.invoke.mock.calls.length;
+    f.controller.receive({ jsonrpc: '2.0', id: request.id, result: {} });
+    expect(f.invoke).toHaveBeenCalledTimes(invocations);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('continues routing the Host teardown handshake while closing without a local notification', async () => {
+    let deliver!: (events: unknown) => void;
+    const f = fixture(() => new Promise((resolve) => { deliver = resolve; }));
+    await f.controller.open({});
+    f.controller.sandboxReady();
+    let release!: () => void;
+    f.invoke.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    const pending = f.controller.close();
+    await flush();
+    const request: AppRpc = { jsonrpc: '2.0', id: 'host-teardown', method: 'ui/resource-teardown' };
+    deliver([{ seq: 1, message: request }]);
+    await flush();
+    expect(f.post).toHaveBeenCalledWith(request);
+    const response: AppRpc = { jsonrpc: '2.0', id: request.id, result: {} };
+    f.controller.receive(response);
+    expect(f.invoke).toHaveBeenCalledWith('task', { op: 'message', viewId: 'view', message: response });
+    expect(f.invoke).toHaveBeenCalledWith('task', {
+      op: 'teardown', viewId: 'view', alreadyNotified: false,
+    });
+    release();
+    await pending;
+  });
   it('closes a View that finishes opening after its card unmounts', async () => {
     let resolve!: (value: unknown) => void;
     const invoke = vi.fn(

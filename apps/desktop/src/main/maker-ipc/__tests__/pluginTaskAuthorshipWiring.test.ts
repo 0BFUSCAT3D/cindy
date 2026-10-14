@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { appendAutoReviewUserIntent, AUTO_REVIEW_DELEGATED_CONTINUATION, AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, MAIN_OWNED_SEND_CONTEXT, type SendOptions } from '@cindy/maker-core';
 import { HOST_ONLY_AGENT_PREFIX, buildMakerUserMessage, sanitizeQueuedMessageForPersistence } from '../../../shared/agentInputQueue.js';
 import { redactInputProjectionForSharedGuest } from '../../device-link/sharedTaskMessageOrigin.js';
+import { MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 
 const source = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8');
 const compile = (code: string) => ts.transpileModule(code, {
@@ -16,7 +17,7 @@ it.each(['Do not publish.', '', undefined])('keeps live authority through the fi
   expect(start).toBeGreaterThan(0);
   const end = source.indexOf('\n      });', start) + '\n      });'.length;
   const deliver = new Function('sess', 'steerPayload', 'so', 'meta', 'restoredSteerIntent',
-    'MAIN_OWNED_SEND_CONTEXT', 'AUTO_REVIEW_SOURCE_CONTENT', 'AUTO_REVIEW_USER_INTENT', 'AUTO_REVIEW_DELEGATED_CONTINUATION',
+    'MAIN_OWNED_SEND_CONTEXT', 'AUTO_REVIEW_SOURCE_CONTENT', 'AUTO_REVIEW_USER_INTENT', 'AUTO_REVIEW_DELEGATED_CONTINUATION', 'MCP_APP_MESSAGE_GUARD',
     compile(`return (async () => { ${source.slice(start, end)} })();`));
   const invoke = async (delegated: boolean) => {
     let result;
@@ -25,7 +26,7 @@ it.each(['Do not publish.', '', undefined])('keeps live authority through the fi
     });
     await deliver({ steer }, 'Publish now', { [AUTO_REVIEW_SOURCE_CONTENT]: '',
       ...(delegated ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true } : {}) }, {}, 'Old persisted permission',
-      MAIN_OWNED_SEND_CONTEXT, AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION);
+      MAIN_OWNED_SEND_CONTEXT, AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, MCP_APP_MESSAGE_GUARD);
     expect(steer).toHaveBeenCalledOnce();
     return result;
   };

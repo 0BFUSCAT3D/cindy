@@ -193,8 +193,8 @@ export function McpAppCard({
     return () => {
       disposed = true;
       controllerRef.current = undefined;
-      // Notify the App before hiding it, and release its slot without waiting
-      // for an offscreen frame's teardown response.
+      // Notify before hiding the frame; close() retains the View until the
+      // teardown response arrives or the bounded wait expires.
       controller.prepareNativeClose();
       themeObserver.disconnect();
       sizeObserver.disconnect();
