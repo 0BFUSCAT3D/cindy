@@ -13,6 +13,7 @@ import {
   computeComposerResizeBounds,
   resolveComposerInputHeight,
   settleComposerResizeDrag,
+  shouldDismissComposerDuringDrag,
   shouldDismissComposerOnRelease,
 } from '@/session/composerResize';
 import { composerPullTranslation, type ComposerPullEvent, type ComposerPullThroughBridge } from '@/session/composerPullThrough';
@@ -53,6 +54,7 @@ export function useComposerResize(input: UseComposerResizeInput) {
   const dragHeight = useSharedValue(model.visibleContentHeight);
   const dragTranslation = useSharedValue(0);
   const startAbsoluteY = useSharedValue(0);
+  const dismissedGestureId = useSharedValue(0);
   useLayoutEffect(() => {
     const nextGeometry = { collapsed: input.collapsed === true, bounds, visibleHeight: model.visibleContentHeight, explicit: input.collapsed === true || model.mode === 'manual', minFrameHeight: input.minFrameHeight ?? 0, autoMaxHeight: input.autoMaxContentHeight };
     // Check the generation and publish together on UI: another gesture may
@@ -106,11 +108,19 @@ export function useComposerResize(input: UseComposerResizeInput) {
     };
     const moveBy = (translationY: number) => {
       'worklet';
+      if (dismissedGestureId.value === gestureId.value) return;
       dragTranslation.value = translationY;
       dragHeight.value = applyComposerResizeDrag({ bounds: geometry.value.bounds, startContentHeight: startHeight.value, translationY });
+      // 拖到一行、折叠完工具栏后再多拉一段即收起，不等松手。
+      if (shouldDismissComposerDuringDrag({ bounds: geometry.value.bounds, startContentHeight: startHeight.value, translationY })) {
+        dismissedGestureId.value = gestureId.value;
+        runOnJS(finish)(dragHeight.value, startHeight.value, translationY, true, gestureId.value);
+      }
     };
     const finalize = (translationY: number, successful: boolean) => {
       'worklet';
+      // 已在拖动途中收起：之后的抬手或取消不再结算。
+      if (dismissedGestureId.value === gestureId.value) return;
       if (!successful) {
         // Cancellation must restore the settled frame even while JS is busy,
         // so a new gesture cannot inherit the canceled temporary height.
@@ -120,7 +130,7 @@ export function useComposerResize(input: UseComposerResizeInput) {
       runOnJS(finish)(dragHeight.value, startHeight.value, translationY, successful, gestureId.value);
     };
     return { beginAt, moveBy, finalize };
-  }, [active, awaitingCollapse, begin, dragHeight, dragTranslation, finish, geometry, gestureId, startAbsoluteY, startHeight]);
+  }, [active, awaitingCollapse, begin, dismissedGestureId, dragHeight, dragTranslation, finish, geometry, gestureId, startAbsoluteY, startHeight]);
 
   const scrollGesture = useMemo(() => Gesture.Native(), []);
   const gesture = useMemo(() => Gesture.Pan()

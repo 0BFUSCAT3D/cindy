@@ -251,13 +251,61 @@ describe('composer resize interaction boundary', () => {
     expect(input.onSnapToAuto).toHaveBeenCalledOnce();
   });
 
+  it('dismisses mid-drag once the pull goes a further stretch past the folded one-line pill', () => {
+    const input = composerInput();
+    const harness = mountComposer(input);
+    const gesture = gestureOf(harness.result.gesture);
+    gesture.begin({ translationY: 0 });
+    flushJS();
+    // 60 → one line (20) takes 40pt, the toolbar folds over the next 24pt,
+    // and the keyboard only goes after a further 40pt past the folded pill.
+    gesture.update({ translationY: 64 });
+    flushJS();
+    expect(harness.result.collapseProgress.value).toBe(1);
+    expect(input.onSnapToAuto).not.toHaveBeenCalled();
+    gesture.update({ translationY: 103 });
+    flushJS();
+    expect(input.onSnapToAuto).not.toHaveBeenCalled();
+    gesture.update({ translationY: 104 });
+    flushJS();
+    expect(input.onSnapToAuto).toHaveBeenCalledOnce();
+    expect(input.onGrabberTouchActiveChange).toHaveBeenLastCalledWith(false);
+    // The finger keeps moving and lifts later: nothing settles a second time.
+    gesture.update({ translationY: 10 });
+    expect(harness.result.collapseProgress.value).toBe(1);
+    gesture.finalize({ translationY: 10 }, true);
+    expect(runtime.js).toHaveLength(0);
+    expect(input.onSnapToAuto).toHaveBeenCalledOnce();
+  });
+
+  it('a chat drag dismisses mid-gesture a further stretch past the folded one-line pill', () => {
+    const event = { value: { id: 0, active: false, startY: 0, y: 0, successful: false } };
+    const pullThrough = { armed: { value: true }, event, grabberRef: {} } as unknown as NonNullable<UseComposerResizeInput['pullThrough']>;
+    const input = { ...composerInput(), pullThrough };
+    const harness = mountComposer(input);
+    flushFrame();
+    event.value = { id: 1, active: true, startY: 500, y: 603, successful: false };
+    flushFrame();
+    flushJS();
+    expect(input.onSnapToAuto).not.toHaveBeenCalled();
+    event.value = { id: 1, active: true, startY: 500, y: 604, successful: false };
+    flushFrame();
+    flushJS();
+    expect(input.onSnapToAuto).toHaveBeenCalledOnce();
+    event.value = { id: 1, active: false, startY: 500, y: 620, successful: true };
+    flushFrame();
+    expect(runtime.js).toHaveLength(0);
+    expect(input.onSnapToAuto).toHaveBeenCalledOnce();
+    expect(harness.result.collapseProgress.value).toBe(1);
+  });
+
   it('cancellation restores the settled height without dismissing the keyboard', () => {
     const input = composerInput();
     const harness = mountComposer(input);
     const gesture = gestureOf(harness.result.gesture);
     gesture.begin({ translationY: 0 });
-    gesture.update({ translationY: 100 });
-    gesture.finalize({ translationY: 100 }, false);
+    gesture.update({ translationY: 30 });
+    gesture.finalize({ translationY: 30 }, false);
     expect(harness.result.active.value).toBe(false);
     expect(harness.result.contentHeight.value).toBe(60);
     expect(styleOf(harness.result.frameStyle).maxHeight).toBe(input.autoMaxContentHeight);
