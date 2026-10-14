@@ -85,6 +85,8 @@ export function botGroupSendSignature(input: BotGroupOutboxSendInput, attachment
 export interface BotGroupOutboxEntry extends BotGroupOutboxDraft {
   status: BotGroupOutboxStatus;
   createdAt: number;
+  /** Highest timeline sequence known when the user pressed send: the message shows after it. */
+  after: number;
   /** The attachments as the timeline shows them (the burned-in copies once `prepared`). */
   attachments: readonly BotGroupAttachment[];
   /** `files` with drawn annotations burned in; reused by every (re)try. */
@@ -259,15 +261,21 @@ export function enqueueBotGroupSend(draft: BotGroupOutboxDraft): void {
     attachments: displayAttachments(draft.files),
     status: 'sending',
     createdAt: Date.now(),
+    after: group.latestSequence,
   };
   group.entries = [...group.entries.filter((existing) => existing.input.clientId !== clientId), entry];
+  // Sent again after 编辑 (same clientId): a burn that failed before is tried afresh.
+  preparing.delete(entryKey(groupId, clientId));
   emit();
   schedule(groupId, clientId);
   // Burn annotations in now, not when the message's turn comes: the bubble shows the result.
   if (entry.files.length > 0) void prepare(groupId, clientId).catch(() => undefined);
 }
 
-/** The message's files with annotations burned in, once; a failure is retried by the next call. */
+/**
+ * The message's files with annotations burned in, once. A failure stays until 重试 clears it:
+ * the early burn's failure is the message's, it never goes out on a second try nobody asked for.
+ */
 function prepare(groupId: string, clientId: string): Promise<readonly AttachedFile[]> {
   const entry = groups.get(groupId)?.entries.find((candidate) => candidate.input.clientId === clientId);
   if (!entry) return Promise.reject(new Error('OUTBOX_ENTRY_GONE'));
@@ -283,10 +291,8 @@ function prepare(groupId: string, clientId: string): Promise<readonly AttachedFi
       if (requestGeneration === generation) {
         update(groupId, clientId, { prepared, attachments: displayAttachments(prepared) });
       }
-      return prepared;
-    })
-    .finally(() => {
       if (preparing.get(key) === pending) preparing.delete(key);
+      return prepared;
     });
   preparing.set(key, pending);
   return pending;
@@ -297,6 +303,8 @@ export function retryBotGroupSend(groupId: string, clientId: string): void {
   ensureOwner();
   const entry = groups.get(groupId)?.entries.find((candidate) => candidate.input.clientId === clientId);
   if (!entry || entry.status !== 'failed' || entry.retryable === false) return;
+  // A burn that failed is tried again now, on the user's 重试.
+  preparing.delete(entryKey(groupId, clientId));
   update(groupId, clientId, { status: 'sending', errorKey: undefined });
   schedule(groupId, clientId);
 }
@@ -616,6 +624,29 @@ export function projectBotGroupOutbox(
     return false;
   });
   return { pending, localAttachments };
+}
+
+export type BotGroupTimelineRow =
+  | { message: BotGroupMessageView; entry?: undefined }
+  | { entry: BotGroupOutboxEntry; message?: undefined };
+
+/**
+ * The timeline with the messages still in the outbox where they were sent: each after the
+ * messages the timeline had then, so a failed message never moves below later ones. Both lists
+ * are in order (messages by sequence, entries as sent), so the anchors only grow.
+ */
+export function interleaveBotGroupOutbox(
+  messages: readonly BotGroupMessageView[],
+  pending: readonly BotGroupOutboxEntry[],
+): BotGroupTimelineRow[] {
+  const rows: BotGroupTimelineRow[] = [];
+  let at = 0;
+  for (const entry of pending) {
+    while (at < messages.length && messages[at]!.sequence <= entry.after) rows.push({ message: messages[at++]! });
+    rows.push({ entry });
+  }
+  while (at < messages.length) rows.push({ message: messages[at++]! });
+  return rows;
 }
 
 function subscribe(listener: () => void): () => void {

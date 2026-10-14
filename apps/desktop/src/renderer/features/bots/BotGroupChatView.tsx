@@ -111,6 +111,7 @@ import {
   editBotGroupSend,
   getBotGroupOutboxClaims,
   getBotGroupOutboxPreviews,
+  interleaveBotGroupOutbox,
   mergeBotGroupLocalAttachments,
   noteBotGroupTimeline,
   projectBotGroupOutbox,
@@ -778,11 +779,29 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const openPlan = openBotGroupPlan({ openPlan: group.openPlan, plans });
   const followUp = botGroupPlanFollowUp(openPlan);
   const continueId = continuableRoundEndId(messages, group.round);
-  const timeGroups = collectBotMessageTimeGroups([
-    ...messages.map((message) => ({ clientId: message.id, createdAt: message.createdAt })),
-    ...pendingSends.map((entry) => ({ clientId: outboxKey(entry), createdAt: entry.createdAt })),
-  ]);
   const mentionLabels = [t('bots.groupChat.mention.all'), ...group.members.flatMap((member) => [member.name, member.nickname || member.displayName || member.name])];
+  // Messages still in the outbox stay where they were sent, between the timeline's own.
+  const rows = interleaveBotGroupOutbox(messages, pendingSends);
+  const timeGroups = collectBotMessageTimeGroups(rows.map((row) => row.entry
+    ? { clientId: outboxKey(row.entry), createdAt: row.entry.createdAt }
+    : { clientId: row.message.id, createdAt: row.message.createdAt }));
+  const renderOutboxEntry = (entry: BotGroupOutboxEntry) => {
+    const groupTime = timeGroups.get(outboxKey(entry));
+    return (
+      <div key={outboxKey(entry)} className="flex flex-col gap-4">
+        {groupTime !== undefined ? (
+          <p className="select-none text-center text-12 text-[var(--text-tertiary)]">
+            {formatBotMessageGroupTime(groupTime, i18n.language)}
+          </p>
+        ) : null}
+        <BotGroupOutboxItem entry={entry} mentionLabels={mentionLabels}
+          quote={entry.quote ? (
+            <BotGroupQuoteBlock display={resolveBotGroupQuote(entry.quote, quoteSources)}
+              onLocate={() => void locateQuoted(entry.quote!)} align="right" />
+          ) : null} />
+      </div>
+    );
+  };
   const running = group.round.status === 'running';
   const speakers = running
     ? group.round.speakers.flatMap((speaker) => {
@@ -855,7 +874,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               </p>
             </div>
           ) : null}
-          {messages.map((timelineMessage) => {
+          {rows.map((row) => {
+            if (row.entry) return renderOutboxEntry(row.entry);
+            const timelineMessage = row.message;
             const groupTime = timeGroups.get(timelineMessage.id);
             // My own message just confirmed: keep the local attachment previews until the server copies are usable.
             const local = localAttachments.get(timelineMessage.id);
@@ -931,23 +952,6 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   }}
                 />
                 </div>
-              </div>
-            );
-          })}
-          {pendingSends.map((entry) => {
-            const groupTime = timeGroups.get(outboxKey(entry));
-            return (
-              <div key={outboxKey(entry)} className="flex flex-col gap-4">
-                {groupTime !== undefined ? (
-                  <p className="select-none text-center text-12 text-[var(--text-tertiary)]">
-                    {formatBotMessageGroupTime(groupTime, i18n.language)}
-                  </p>
-                ) : null}
-                <BotGroupOutboxItem entry={entry} mentionLabels={mentionLabels}
-                  quote={entry.quote ? (
-                    <BotGroupQuoteBlock display={resolveBotGroupQuote(entry.quote, quoteSources)}
-                      onLocate={() => void locateQuoted(entry.quote!)} align="right" />
-                  ) : null} />
               </div>
             );
           })}

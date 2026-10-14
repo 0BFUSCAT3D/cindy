@@ -539,6 +539,26 @@ describe('botGroupOutbox', () => {
       expect(restore).toHaveBeenCalledWith(expect.objectContaining({ files: [original] }));
     });
 
+    it('never sends a queued message whose early burn failed until 重试', async () => {
+      const slow = deferred();
+      mocks.send.mockReturnValueOnce(slow.promise).mockResolvedValueOnce({ ok: true, messageId: 'm2' });
+      // The early burn fails; a second burn would succeed.
+      mocks.materialize.mockRejectedValueOnce(new Error('burn')).mockResolvedValue([burned]);
+      enqueueBotGroupSend(draft({ clientId: 'first' }));
+      enqueueBotGroupSend(draft({ clientId: 'drawn' }, { files: [original] }));
+      await flush();
+      slow.resolve({ ok: true, messageId: 'm1' });
+      await flush();
+      // Its turn came: the failure is the message's, not a cue to burn again on its own.
+      expect(getBotGroupOutbox('g1').find((entry) => entry.input.clientId === 'drawn')?.status).toBe('failed');
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+      expect(mocks.materialize).toHaveBeenCalledTimes(1);
+      retryBotGroupSend('g1', 'drawn');
+      await flush();
+      expect(mocks.materialize).toHaveBeenCalledTimes(2);
+      expect(mocks.send.mock.calls[1]![0].attachments?.[0]?.url).toBe('cindy-media://blobs/burned.png');
+    });
+
     it('tries the burn again on 重试 after it failed', async () => {
       mocks.materialize.mockRejectedValueOnce(new Error('burn')).mockResolvedValueOnce([burned]);
       mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' });

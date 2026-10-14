@@ -1249,6 +1249,29 @@ describe('BotGroupChatView', () => {
       expect(outboxItems()).toHaveLength(0);
     });
 
+    it('keeps a failed message where it was sent, above messages that came after it', async () => {
+      const first = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '先发的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      fireEvent.change(input, { target: { value: '后发的' } });
+      await first.resolve({ ok: false, errorCode: 'SERVICE_ERROR', message: '' });
+      expect(outboxItems()[0]!.getAttribute('data-status')).toBe('failed');
+
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: true, messageId: 'u2' });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withSelf('u2', 5, '后发的') });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(screen.getAllByText('后发的')).toHaveLength(1));
+      await waitFor(() => expect(outboxItems()).toHaveLength(1));
+      const order = [...document.querySelectorAll('article')]
+        .map((article) => article.textContent ?? '')
+        .filter((text) => text.includes('先发的') || text.includes('后发的'))
+        .map((text) => (text.includes('先发的') ? '先发的' : '后发的'));
+      expect(order).toEqual(['先发的', '后发的']);
+    });
+
     it('takes the next message while the first is still out, and sends them in order', async () => {
       const first = pendingSend();
       renderView();
