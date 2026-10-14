@@ -22,13 +22,12 @@ function readSource(rel: string): string {
 const source = readSource('app/files/preview/[sessionId].tsx');
 
 describe('remote file preview pager wiring', () => {
-  it.each([
-    ['app/files/[sessionId].tsx', 'stopExportRun'],
-    ['app/files/preview/[sessionId].tsx', 'cancelExport'],
-  ])('cancels the in-flight export on blur and on Cancel, including the phone download and share sheet, in %s', (path, stop) => {
+  it.each(['app/files/[sessionId].tsx', 'app/files/preview/[sessionId].tsx'])('cancels the in-flight export on blur and on Cancel, including the phone download and share sheet, in %s', (path) => {
     const routeSource = readSource(path);
-    // 失焦即取消:点进下一层 / 跳会话页时本屏留在栈中不卸载。
-    expect(routeSource).toContain(`useFocusEffect(useCallback(() => ${stop}, [${stop}]));`);
+    // 失焦即取消:点进下一层 / 跳会话页时本屏留在栈中不卸载。必须走与「取消」按钮同一个
+    // 会复位忙碌提示的出口,否则回到本屏时残留一个无事可取消的忙碌底栏。
+    expect(routeSource).toContain('useFocusEffect(useCallback(() => cancelExport, [cancelExport]));');
+    expect(routeSource).toMatch(/onCancel(Notice)?[=:] ?\{? ?cancelExport/);
     // 动态加载分享模块期间可能已取消:shareAsync 前必须再查一次。
     expect(routeSource).toMatch(/await import\('expo-sharing'\);\n\s*if \(run\.cancelled\) return;\n\s*await sharing\.shareAsync/);
     expect(routeSource).toMatch(/run\.abort\.abort\(\);/);
