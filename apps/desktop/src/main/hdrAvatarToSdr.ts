@@ -371,7 +371,8 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
   if (!format) return image;
   let metadata: Metadata;
   try {
-    metadata = await sharp(image.buffer).metadata();
+    // 只读头部、不解码像素：关闭默认像素上限，超大 HDR 才能被识别并在下方按尺寸拒绝。
+    metadata = await sharp(image.buffer, { limitInputPixels: false }).metadata();
   } catch {
     return image;
   }

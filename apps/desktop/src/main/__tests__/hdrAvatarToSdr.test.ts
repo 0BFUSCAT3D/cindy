@@ -230,15 +230,20 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
 
   it('rejects HDR sources whose declared dimensions exceed the limit before decoding', async () => {
     const png = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
-    // 改写 IHDR 宽高为 10000 × 10000(1 亿像素),文件仍只有几百字节。
-    const ihdr = Buffer.from(png.subarray(16, 29));
-    ihdr.writeUInt32BE(10_000, 0);
-    ihdr.writeUInt32BE(10_000, 4);
-    const inflated = Buffer.concat([png.subarray(0, 8), pngChunk('IHDR', ihdr), png.subarray(33)]);
-    expect((await sharp(inflated).metadata()).width).toBe(10_000);
-    await expect(toSdrAvatarImage({ buffer: inflated, mimeType: 'image/png' })).rejects.toThrow(
-      /INVALID_PARAMS.*dimensions exceed/,
-    );
+    // 改写 IHDR 宽高(1 亿 / 4 亿像素),文件仍只有几百字节;后者超过 sharp 默认像素上限。
+    for (const side of [10_000, 20_000]) {
+      const ihdr = Buffer.from(png.subarray(16, 29));
+      ihdr.writeUInt32BE(side, 0);
+      ihdr.writeUInt32BE(side, 4);
+      const inflated = Buffer.concat([
+        png.subarray(0, 8),
+        pngChunk('IHDR', ihdr),
+        png.subarray(33),
+      ]);
+      await expect(toSdrAvatarImage({ buffer: inflated, mimeType: 'image/png' })).rejects.toThrow(
+        /INVALID_PARAMS.*dimensions exceed/,
+      );
+    }
   });
 
   it('rejects HDR bytes it cannot decode instead of storing them unchanged', async () => {
