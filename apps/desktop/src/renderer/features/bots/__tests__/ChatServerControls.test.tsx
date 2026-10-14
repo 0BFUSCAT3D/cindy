@@ -339,6 +339,21 @@ describe('chat interaction controls', () => {
       expect(input.value).toHaveLength(8000);
     });
 
+    it('names only the picked companion whose name is a Thread 「所有人」 alias', async () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      const members = [{ botId: 'all-bot', name: 'all', status: 'active' }, { botId: 'bo', name: 'Bo', status: 'active' }];
+      render(<ChatThreadPanel group={{ ...group, members } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      type(input, '@al');
+      fireEvent.click(screen.getAllByRole('option').find(option => option.textContent === 'all')!);
+      expect(input.value).toBe('@all ');
+      // Typing after the pick keeps it.
+      type(input, '@all 看下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['all-bot'] });
+    });
+
     // One retry rule (bot-group-chat.md): a failed reply is retried with the same clientId only when the
     // text and its targets are unchanged. Each row edits the draft between attempts without changing the text.
     // Comparing only the text fails rows 1 and 4; comparing the pick records fails row 3; re-resolving
