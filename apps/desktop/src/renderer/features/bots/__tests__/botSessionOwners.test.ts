@@ -297,6 +297,36 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       expect(consumeAlert).not.toHaveBeenCalled();
     });
 
+    it('解析尚未完成时地址已提交（改去别处或自己打开了目标）：照常导航但不代为处置', async () => {
+      let resolveTarget!: (target: BotSessionEntryTarget | null) => void;
+      const openBotRoute = vi.fn();
+      const consumeAlert = vi.fn();
+      const open = createSessionEntryNavigator({
+        resolveBotRoute: () => new Promise((resolve) => { resolveTarget = resolve; }),
+        openBotRoute,
+        consumeAlert,
+        openOrdinary: vi.fn(),
+      });
+      open.locationCommitted('/cc-agent/new');
+      // The user moves elsewhere while the Bot projection is still loading.
+      open('s-lane', undefined, 'entry-5');
+      open.locationCommitted('/elsewhere');
+      resolveTarget(targets['s-lane']!);
+      await settle();
+      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1');
+      open.locationCommitted('/bots/groups/g-1');
+      expect(consumeAlert).not.toHaveBeenCalled();
+
+      // The user opens the target address themselves before the lookup returns.
+      open('s-lane', undefined, 'entry-6');
+      open.locationCommitted('/cc-agent/new');
+      open.locationCommitted('/bots/groups/g-1');
+      resolveTarget(targets['s-lane']!);
+      await settle();
+      open.locationCommitted('/bots/groups/g-1');
+      expect(consumeAlert).not.toHaveBeenCalled();
+    });
+
     it('导航抛错时丢弃待处置，之后到达同一地址也不处置', async () => {
       const failures: unknown[] = [];
       const onRejection = (reason: unknown) => failures.push(reason);

@@ -15,6 +15,8 @@ const targets: Record<string, BotSessionEntryTarget> = {
   lane: { route: '/bots/groups/g-1', consumesAlert: true },
   slow: { route: '/bots/groups/slow', consumesAlert: true },
 };
+/** Sessions whose route lookup waits for releaseLookup (e.g. Bot profiles still loading). */
+const slowLookups = new Set(['lane-slow-lookup']);
 
 function setup() {
   const consumeAlert = vi.fn<(sessionId: string, islandEntryId: string) => void>();
@@ -22,11 +24,19 @@ function setup() {
   let navigator!: SessionEntryNavigator;
   let releaseSlow!: () => void;
   const slowGate = new Promise<null>((resolve) => { releaseSlow = () => resolve(null); });
+  let releaseLookup!: () => void;
+  const lookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
 
   function Shell() {
     const navigate = useNavigate();
     const [entryNavigator] = useState(() => createSessionEntryNavigator({
-      resolveBotRoute: async (sessionId) => targets[sessionId] ?? null,
+      resolveBotRoute: async (sessionId) => {
+        if (slowLookups.has(sessionId)) {
+          await lookupGate;
+          return targets.lane!;
+        }
+        return targets[sessionId] ?? null;
+      },
       openBotRoute: (route) => { void navigate(route); },
       consumeAlert: (sessionId, islandEntryId) => {
         pathsAtConsume.push(router.state.location.pathname);
@@ -51,7 +61,7 @@ function setup() {
     },
   ], { initialEntries: ['/cc-agent/new'] });
   render(<RouterProvider router={router} />);
-  return { router, consumeAlert, pathsAtConsume, open: () => navigator, releaseSlow };
+  return { router, consumeAlert, pathsAtConsume, open: () => navigator, releaseSlow, releaseLookup };
 }
 
 const flush = () => act(async () => {
@@ -98,6 +108,19 @@ describe('island card disposal waits for the router to commit the target', () =>
     await flush();
     expect(router.state.location.pathname).toBe('/bots/groups/slow');
     expect(consumeAlert).toHaveBeenCalledExactlyOnceWith('slow', 'entry-3');
+  });
+
+  it('a commit while the lookup is still resolving forfeits disposal but keeps navigation', async () => {
+    const { router, consumeAlert, open, releaseLookup } = setup();
+    await screen.findByText('new task');
+    await act(async () => open()('lane-slow-lookup', undefined, 'entry-5'));
+    await act(async () => { void router.navigate('/elsewhere'); });
+    await screen.findByText('elsewhere');
+    releaseLookup();
+    await screen.findByText('group page');
+    await flush();
+    expect(router.state.location.pathname).toBe('/bots/groups/g-1');
+    expect(consumeAlert).not.toHaveBeenCalled();
   });
 
   it('a target that is already open is disposed without another navigation', async () => {

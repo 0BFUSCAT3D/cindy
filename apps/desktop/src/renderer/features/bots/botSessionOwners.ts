@@ -131,18 +131,22 @@ export interface SessionEntryNavigator {
  * control asks main to dispose that card only once the router has committed the
  * target location: immediately when it is already the committed location,
  * otherwise on the next committed location if it is the target. A newer entry,
- * or a commit to any other location (redirect, another navigation), drops it,
- * so the card stays and a later click can still dispose it.
+ * any location commit while the entry is still resolving (the user moved on, or
+ * opened the target address themselves), or a commit to any other location
+ * (redirect, another navigation) drops it, so the card stays and a later click
+ * can still dispose it.
  */
 export function createSessionEntryNavigator(
   deps: SessionEntryNavigatorDeps,
 ): SessionEntryNavigator {
   let sequence = 0;
   let committedPath: string | null = null;
+  let commitCount = 0;
   let pending: { entry: number; sessionId: string; islandEntryId: string; route: string } | null = null;
   const open = (sessionId: string, messageClientId?: string, islandEntryId?: string) => {
     const entry = ++sequence;
     pending = null;
+    const commitsAtOpen = commitCount;
     const isLatest = () => sequence === entry;
     void deps.resolveBotRoute(sessionId).then((target) => {
       if (!isLatest()) return;
@@ -150,7 +154,8 @@ export function createSessionEntryNavigator(
         deps.openOrdinary(sessionId, messageClientId, isLatest);
         return;
       }
-      if (target.consumesAlert && islandEntryId) {
+      // Navigation keeps its existing late-resolution behaviour; only disposal is forfeited.
+      if (target.consumesAlert && islandEntryId && commitCount === commitsAtOpen) {
         if (committedPath === target.route) {
           deps.consumeAlert(sessionId, islandEntryId);
         } else {
@@ -168,6 +173,7 @@ export function createSessionEntryNavigator(
   return Object.assign(open, {
     locationCommitted: (path: string) => {
       committedPath = path;
+      commitCount += 1;
       const waiting = pending;
       if (!waiting) return;
       pending = null;
