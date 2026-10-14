@@ -7366,10 +7366,6 @@ export class PiAgent extends BaseAgent {
                 await applyPlanMode(requestedPlanTurn);
                 if (!managedPackageRoute.accepted) rejectIfCancelled(sendOpts, 'send');
               }
-              if (requestedPlanTurn && armedPlanMode) {
-                armedPlanMode = false;
-                queue.push({ type: 'plan_mode_changed', data: { enabled: false }, source: 'pi' });
-              }
               const pendingTurnStartToken = markPiHostTurnStartPending(ctx);
               promptRequestStarted = true;
               const resp = await proc.request(command, {
@@ -7380,6 +7376,14 @@ export class PiAgent extends BaseAgent {
                 refreshTimeoutOnEvent: (event) =>
                   PI_PROMPT_ACCEPTANCE_PROGRESS_EVENTS.has(event.type),
               });
+              // Only consume the one-shot choice after acceptance. A confirmed
+              // rejection must preserve it for a retry without a message snapshot.
+              // Keep this in the RPC chain so a newer checkbox choice cannot be
+              // consumed by an older prompt's acceptance response.
+              if ((resp.success || managedPackageRoute.accepted) && requestedPlanTurn && armedPlanMode) {
+                armedPlanMode = false;
+                queue.push({ type: 'plan_mode_changed', data: { enabled: false }, source: 'pi' });
+              }
               return { resp, pendingTurnStartToken };
             });
             firstModelRequestStatus = resp.success ? 'ok' : 'degraded';

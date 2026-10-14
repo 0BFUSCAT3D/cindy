@@ -5676,6 +5676,31 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it.each(["startup", "checkbox"])("preserves %s plan intent after prompt rejection for a snapshot-free retry", async (source) => {
+    installPlanModeExtension();
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: `plan-rejected-retry-${source}`, workingDir: cwd, model: "local-model",
+      planMode: source === "startup",
+    });
+    if (source === "checkbox") await handle.setPlanMode!(true);
+    let rejectPrompt = true;
+    captured.requestHandler = async (command) => command.type === "prompt" && command.message !== "/plan" && rejectPrompt
+      ? { command: "prompt", success: false, error: "prompt rejected before acceptance" }
+      : { success: true, data: {} };
+    const message = { type: "user" as const, content: "must remain read-only" };
+    await expect(handle.send(message)).rejects.toMatchObject({ code: "TURN_DISPATCH_REJECTED" });
+    expect(handle.getPlanMode!()).toBe(true);
+    expect(handle.getExecutionPlanMode!()).toBe(true);
+    rejectPrompt = false;
+    await handle.send(message);
+    expect(handle.getPlanMode!()).toBe(false);
+    expect(handle.getExecutionPlanMode!()).toBe(true);
+    // Retrying must not toggle the native read-only turn back to ordinary mode.
+    expect(captured.requests.filter((request) => request.message === "/plan")).toHaveLength(1);
+    expect(captured.requests.filter((request) => request.message === message.content)).toHaveLength(2);
+    await handle.close();
+  });
+
   it("does not dispatch a planned message when the native toggle fails", async () => {
     installPlanModeExtension();
     const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
