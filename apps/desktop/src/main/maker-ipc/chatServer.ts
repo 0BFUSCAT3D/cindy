@@ -768,7 +768,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       explicit ||= !!proposed;
       const decision = await deps.decidePlan({ mode: proposed ? 'revise' : forced ? 'forced' : 'auto', groupName: s.room.name,
         organizerName: organizer.name, members: members.map(m => ({ botId: m.id, name: m.name, description: localBot(m.id)?.description ?? '' })),
-        recent: s.messages.slice(0, 12).reverse().map(m => ({ from: m.author.name, text: bodyText(m) })), request: text,
+        recent: s.messages.slice(0, 12).reverse().map(m => {
+          const shared = readBotGroupThreadShareCard(m);
+          return { from: m.author.name, text: bodyText(m), ...(shared ? { sharedReplyId: shared.messageId } : {}) };
+        }), request: text,
         requestAttachments: attachments.map(a => a.name), currentSteps: proposed?.steps,
         ...(quote ? { requestQuote: { from: quote.authorName, text: quote.excerpt, ...quoteAttachments(quote.attachmentCount, quote.attachmentName) } } : {}) }, controller.signal);
       // Steps read the plan's request; keep what it quotes beside it when the server's limit allows.
