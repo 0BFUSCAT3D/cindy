@@ -92,6 +92,18 @@ describe('chat interaction controls', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it('keeps the caret in the reply when the send button is pressed with the mouse', () => {
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') });
+    fireEvent.change(input, { target: { value: 'Clicked send' } });
+    input.focus();
+    // A cancelled mousedown is what stops Chromium moving focus onto the button.
+    expect(fireEvent.mouseDown(sendButton)).toBe(false);
+    input.blur();
+    expect(fireEvent.mouseDown(sendButton)).toBe(true);
+  });
+
   it('closes from the square button surface outside the icon and retains the standard focus treatment', () => {
     const onClose = vi.fn();
     render(<ChatThreadPanel group={group} rootId="root" onClose={onClose} />);

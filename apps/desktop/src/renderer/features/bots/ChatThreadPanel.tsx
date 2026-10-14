@@ -18,7 +18,7 @@ import { BotAvatar } from './BotAvatar';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
 import {
   BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
-  fitBotGroupComposerInput, useRefitBotGroupComposerInputOnResize,
+  fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
 } from './botGroupComposerChrome';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
@@ -168,9 +168,11 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
             <div className={BOT_GROUP_COMPOSER_FOOTER}>
               {/* Send options for this reply go here, before the button. */}
               <div className={BOT_GROUP_COMPOSER_FOOTER_START} />
-              <Tip text={t(key('sendReply'))}>
-                <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
-              </Tip>
+              <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
+                <Tip text={t(key('sendReply'))}>
+                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
+                </Tip>
+              </span>
             </div>
           </div>
         </div></div>}

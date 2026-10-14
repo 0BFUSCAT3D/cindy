@@ -64,6 +64,7 @@ import {
   BOT_GROUP_COMPOSER_FOOTER_START,
   BOT_GROUP_COMPOSER_INPUT,
   fitBotGroupComposerInput,
+  keepBotGroupComposerInputFocus,
   useRefitBotGroupComposerInputOnResize,
 } from './botGroupComposerChrome';
 import { botGroupAttachmentSignature, toBotGroupAttachmentInputs } from './botGroupAttachments';
@@ -523,14 +524,16 @@ export function BotGroupComposer({
                 {hint}
               </span>
             </div>
-            <Tip text={actionLabel}>
-              <SendButton
-                disabled={showStop ? stopping : !canSend}
-                isStreaming={showStop}
-                ariaLabel={actionLabel}
-                onClick={() => void (showStop ? stop() : send())}
-              />
-            </Tip>
+            <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(textareaRef)}>
+              <Tip text={actionLabel}>
+                <SendButton
+                  disabled={showStop ? stopping : !canSend}
+                  isStreaming={showStop}
+                  ariaLabel={actionLabel}
+                  onClick={() => void (showStop ? stop() : send())}
+                />
+              </Tip>
+            </span>
           </div>
         </div>
       </div>

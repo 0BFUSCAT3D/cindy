@@ -5,7 +5,7 @@
  *
  * 输入框贴在面板底部，不另画分隔线；卡片自己的描边就是边界。
  */
-import { useEffect, type RefObject } from 'react';
+import { useEffect, type MouseEvent, type RefObject } from 'react';
 
 /** Docked under the message list; no top rule — the card's border is the boundary. */
 export const BOT_GROUP_COMPOSER_DOCK = 'shrink-0 px-5 pb-4 pt-2';
@@ -28,6 +28,18 @@ export const BOT_GROUP_COMPOSER_FOOTER = 'flex min-h-7 items-center justify-betw
  * checkbox. Its content shrinks or truncates first, so the button never leaves the row.
  */
 export const BOT_GROUP_COMPOSER_FOOTER_START = 'flex min-w-0 items-center gap-2';
+
+/**
+ * `onMouseDown` for the wrapper around the send button. A click would move focus from the input
+ * to the button before `onClick`, and the button then disables itself while sending — leaving no
+ * caret. Only while the input has focus is that default suppressed; the click still fires and
+ * Tab focus is unchanged (as ChatInput's send button).
+ */
+export function keepBotGroupComposerInputFocus(ref: RefObject<HTMLTextAreaElement | null>) {
+  return (event: MouseEvent) => {
+    if (ref.current && document.activeElement === ref.current) event.preventDefault();
+  };
+}
 
 /** Auto-grow: call from a layout effect whenever the text changes. */
 export function fitBotGroupComposerInput(element: HTMLTextAreaElement): void {
