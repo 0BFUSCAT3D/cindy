@@ -563,7 +563,7 @@ function RemoteFileBrowserContent() {
           mime = shareMimeForFileName(item.name);
         }
         if (run.cancelled) return;
-        const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name);
+        const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name, run.abort.signal);
         if (run.cancelled) return;
         if (!localUri) throw new Error(t('files.browser.downloadFailed'));
         const sharing = await import('expo-sharing');

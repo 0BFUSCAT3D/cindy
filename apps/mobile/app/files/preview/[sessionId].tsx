@@ -535,19 +535,20 @@ function RemoteFilePreviewContent() {
   );
 
   // 进行中的「下载原文件 / 分享」:提示上点「取消」即标记本次已取消并立刻收起提示,
-  // 之后的结果(含失败)一律丢弃,不再弹分享单。
-  const exportRunRef = useRef<{ cancelled: boolean } | null>(null);
+  // 之后的结果(含失败)一律丢弃,不再弹分享单;手机侧下载阶段随之中止。
+  const exportRunRef = useRef<{ cancelled: boolean; abort: AbortController } | null>(null);
   const cancelExport = useCallback(() => {
     const run = exportRunRef.current;
     if (!run) return;
     run.cancelled = true;
+    run.abort.abort();
     exportRunRef.current = null;
     setBusyLabel(null);
   }, []);
 
   const downloadAndShare = useCallback(async (item: FileBrowserGridItem) => {
     if (busyLabel) return;
-    const run = { cancelled: false };
+    const run = { cancelled: false, abort: new AbortController() };
     exportRunRef.current = run;
     setBusyLabel(t('files.preview.exporting'));
     try {
@@ -559,7 +560,7 @@ function RemoteFilePreviewContent() {
       // 传原始文件名:分享单按真实扩展名识别类型(PDF/视频等非图片 mime 不在
       // extOfMime 映射里,不带名字会落成 .img 让接收方无法预览)。
       const mime = shareMimeForFileName(item.name);
-      const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name);
+      const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name, run.abort.signal);
       if (run.cancelled) return;
       if (!localUri) throw new Error(t('files.preview.downloadFailed'));
       const sharing = await import('expo-sharing');
