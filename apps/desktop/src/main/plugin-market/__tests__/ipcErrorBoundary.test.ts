@@ -175,7 +175,7 @@ describe('Plugin Market IPC error boundary', () => {
       "return needsRetry ? 'failed' : deferred ? 'deferred' : 'completed';",
     );
     expect(bootstrapSource).toContain(
-      "await authManager.ensureStableOwnerPostCommitTasks('auth-initialize');",
+      "authManager.requestStableOwnerPostCommit('auth-initialize');",
     );
     expect(authManagerSource).toContain("requestStableOwnerPostCommit('owner-commit');");
     expect(authManagerSource).not.toContain("await ensureStableOwnerPostCommit('owner-commit');");
