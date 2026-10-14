@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { RemoteViewerConnection } from '../connection';
+import { ViewerSafety } from '../safety';
 import {
   ClipboardSync,
   remoteDesktopVideoSettingsWire,
@@ -134,6 +135,45 @@ describe('standalone remote viewer authority', () => {
       await Promise.all([pending, sync]);
       expect(tick).toHaveBeenCalledTimes(2);
       await expect(connection.syncClipboard(generation + 1)).rejects.toThrow('DESKTOP_STOPPED');
+    } finally {
+      tick.mockRestore();
+    }
+  });
+  it('a blur-started clipboard pass finishes even when the grace deadline passes mid-transfer', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const snapshot = { privacyActive: false, notice: null, clipboardProgress: null };
+    const captured: Array<Parameters<ViewerSafety['tick']>[0]> = [];
+    let finish!: () => void;
+    const tick = vi
+      .spyOn(ViewerSafety.prototype, 'tick')
+      .mockImplementationOnce(async (value) => {
+        captured.push(value);
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return snapshot;
+      })
+      .mockImplementation(async (value) => {
+        captured.push(value);
+        return snapshot;
+      });
+    let focused = true;
+    const { connection, control } = syncFixture(() => focused);
+    try {
+      const generation = await control();
+      focused = false;
+      const blur = connection.focusChanged();
+      await vi.waitFor(() => expect(captured).toHaveLength(1));
+      expect(captured[0].clipboardCurrent()).toBe(true);
+      // The deadline passes while the pass is still transferring: it may finish.
+      vi.setSystemTime(Date.now() + 1000);
+      expect(captured[0].clipboardCurrent()).toBe(true);
+      finish();
+      await blur;
+      // But no new pass may read the clipboard after the deadline.
+      await connection.safety(generation);
+      expect(captured).toHaveLength(2);
+      expect(captured[1].clipboardCurrent()).toBe(false);
     } finally {
       tick.mockRestore();
     }

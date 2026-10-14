@@ -523,6 +523,9 @@ export class RemoteViewerConnection {
         return false;
       }
     };
+    // The blur grace decides whether a pass may start; one that started in
+    // time finishes even if the deadline passes mid-transfer.
+    const graced = Date.now() < this.clipboardGrace;
     const value =
       lease && this.caps
         ? await this.safetyState.tick({
@@ -531,9 +534,7 @@ export class RemoteViewerConnection {
             preferences: { ...this.preferencesValue },
             current,
             clipboardCurrent: () =>
-              current() &&
-              !this.clipboardPending &&
-              (this.focused() || Date.now() < this.clipboardGrace),
+              current() && !this.clipboardPending && (this.focused() || graced),
             clipboard: this.deps.clipboard,
             request: async (message, check) => {
               check();
