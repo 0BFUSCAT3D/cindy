@@ -23,8 +23,8 @@
 pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
-本轮分别执行该入口的单测阶段与两个沙箱阶段，最终退出码均为 0：
-11 个测试文件、118 项测试通过；两个真实 Electron 集成检查分别输出
+单测阶段最新结果为 11 个测试文件、127 项测试通过，退出码为 0。
+前序两个真实 Electron 集成检查均以退出码 0 结束，分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
 `pnpm.cmd --filter desktop typecheck` 与本轮修改代码、测试及模拟/验证脚本的定向 ESLint 也通过。
 前序自定义 MCP provider、Codex HTTP bridge 与 Pi 环境接入的 66 项回归通过；
@@ -37,6 +37,11 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 超限 View 不占额度、消费后字节回收及另一控制端继续工作；普通 MCP 的 HTTP/SSE
 补全、进行中的进度、订阅/退订、日志级别/通知、task 方法/状态通知和扩展请求均透传。
 无上游能力时不虚报，撤权拦住迟到结果和新请求，取消只传给原请求、不重放。
+普通工具调用另新增 9 项撤权竞态回归：在连接获取、工具执行、App 结果保存的等待期间，
+分别切换账号、删除服务器和修改配置；等待后重新核验 owner/config，拒绝执行或向模型
+返回迟到结果，已经执行的调用不重放。9 项均在修复前复现失败，修复后通过；
+见 `serverProxy.test.ts`。本次撤权修复重跑完整 MCP Apps 单测、Desktop 类型检查与
+定向 ESLint，未重跑前序沙箱与真机验证。
 
 | 测试文件                      | 通过数量 | 主要覆盖                                                                                  |
 | ----------------------------- | -------: | ----------------------------------------------------------------------------------------- |
@@ -50,7 +55,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 | `connection.test.ts`          |        3 | 首次失败及断线后独立重连、关闭竞态、不重放已发送工具                                      |
 | `openLifecycle.test.ts`       |        4 | 加载超时、打开前取消、晚到 View 回收、调用者与任务隔离                                    |
 | `wireBudget.test.ts` | 7 | 完整文档/事件 UTF-8 JSON 大小、转义、device-link 编码、额度回收与控制端隔离 |
-| `serverProxy.test.ts` | 7 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展、取消和撤权 |
+| `serverProxy.test.ts` | 16 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展、取消和三个等待阶段的撤权竞态 |
 
 作者侧修复另经 Desktop 卡片可见性、MCP 目录与 SSH bridge、安全守卫定向测试验证；
 Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项通过。共享 controller/

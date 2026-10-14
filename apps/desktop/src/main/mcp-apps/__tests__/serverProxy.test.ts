@@ -21,6 +21,8 @@ import {
   ListTasksResultSchema,
   CallToolResultSchema,
   ResultSchema,
+  type CallToolRequest,
+  type CallToolResult,
   type ClientRequest,
   type CompleteRequest,
   type CompleteResult,
@@ -28,6 +30,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { startMockAppServer } from '../../../../scripts/mcp-apps-mock.mjs';
 import { McpAppsHost } from '../host.js';
+import { AppConnection } from '../connection.js';
 import { createAppServerProxy } from '../serverProxy.js';
 import { setMcpAppsHost, registerAppServer, clearAppServerConfigs } from '../runtime.js';
 
@@ -54,6 +57,8 @@ const completionParams: CompleteRequest['params'] = {
 };
 const complete =
   vi.fn<(params: CompleteRequest['params'], signal: AbortSignal) => Promise<CompleteResult>>();
+const callTool =
+  vi.fn<(params: CallToolRequest['params'], signal: AbortSignal) => Promise<CallToolResult>>();
 const subscribed = vi.fn(),
   unsubscribed = vi.fn(),
   setLevel = vi.fn();
@@ -79,8 +84,8 @@ function createPlainServer() {
       },
     ],
   }));
-  server.server.setRequestHandler(CallToolRequestSchema, async (request) =>
-    request.params.task ? { task } : { content: [{ type: 'text' as const, text: 'plain result' }] },
+  server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) =>
+    request.params.task ? { task } : callTool(request.params, extra.signal),
   );
   server.server.setRequestHandler(CompleteRequestSchema, async (request, extra) => {
     if (extra._meta?.progressToken !== undefined)
@@ -122,6 +127,7 @@ beforeAll(async () => {
   });
 });
 beforeEach(() => {
+  callTool.mockReset().mockResolvedValue({ content: [{ type: 'text', text: 'plain result' }] });
   complete
     .mockReset()
     .mockImplementation(async (params) => ({
@@ -132,6 +138,7 @@ beforeEach(() => {
   setLevel.mockClear();
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) await close();
   clearAppServerConfigs();
 });
@@ -178,7 +185,20 @@ async function fixture(transport: 'http' | 'sse' = 'http', empty = false) {
     changeOwner: () => {
       owner = {};
     },
+    changeConfig: () => {
+      registerAppServer(config.id, () => ({
+        ...config,
+        headers: { 'x-test-revision': 'changed' },
+      }));
+    },
   };
+}
+
+const revocations = ['owner', 'server', 'config'] as const;
+function revoke(f: Awaited<ReturnType<typeof fixture>>, kind: (typeof revocations)[number]) {
+  if (kind === 'owner') f.changeOwner();
+  else if (kind === 'config') f.changeConfig();
+  else clearAppServerConfigs();
 }
 
 describe('ordinary MCP compatibility through the App facade', () => {
@@ -312,6 +332,95 @@ describe('ordinary MCP compatibility through the App facade', () => {
         kind === 'owner' ? 'MCP_APP_OWNER_CHANGED' : 'MCP_APP_SERVER_CHANGED',
       );
       expect(subscribed).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(revocations)(
+    'does not execute a tool after %s revocation while acquiring its client',
+    async (kind) => {
+      const f = await fixture();
+      const original = AppConnection.prototype.getClient;
+      let finish!: () => void;
+      vi.spyOn(AppConnection.prototype, 'getClient')
+        // Tool discovery still uses the live client. Hold the separate acquisition
+        // for execution to simulate a reconnect completing after revocation.
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(function (this: AppConnection) {
+          return new Promise<Client>((resolve, reject) => {
+            finish = () => {
+              void original.call(this).then(resolve, reject);
+            };
+          });
+        });
+      const rejected = expect(f.client.callTool({ name: 'plain' })).rejects.toThrow(
+        kind === 'owner' ? 'MCP_APP_OWNER_CHANGED' : 'MCP_APP_SERVER_CHANGED',
+      );
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      revoke(f, kind);
+      finish();
+      await rejected;
+      expect(callTool).not.toHaveBeenCalled();
+      expect(f.writeCard).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(revocations)(
+    'rejects a late ordinary tool result after %s revocation without replay',
+    async (kind) => {
+      const f = await fixture();
+      let finish!: () => void;
+      callTool.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ content: [{ type: 'text', text: 'late result' }] });
+          }),
+      );
+      const rejected = expect(f.client.callTool({ name: 'plain' })).rejects.toThrow(
+        kind === 'owner' ? 'MCP_APP_OWNER_CHANGED' : 'MCP_APP_SERVER_CHANGED',
+      );
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      revoke(f, kind);
+      finish();
+      await rejected;
+      await expect(f.client.callTool({ name: 'plain' })).rejects.toThrow(
+        kind === 'owner' ? 'MCP_APP_OWNER_CHANGED' : 'MCP_APP_SERVER_CHANGED',
+      );
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(f.writeCard).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(revocations)(
+    'rejects the model result after %s revocation during App result persistence',
+    async (kind) => {
+      const f = await fixture();
+      f.upstream.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+        tools: [
+          {
+            name: 'plain',
+            inputSchema: { type: 'object' as const },
+            _meta: { ui: { resourceUri: 'ui://plain' } },
+          },
+        ],
+      }));
+      let finish!: () => void;
+      f.writeCard
+        .mockResolvedValueOnce(undefined)
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        );
+      const rejected = expect(f.client.callTool({ name: 'plain' })).rejects.toThrow(
+        kind === 'owner' ? 'MCP_APP_OWNER_CHANGED' : 'MCP_APP_SERVER_CHANGED',
+      );
+      await vi.waitFor(() => expect(f.writeCard).toHaveBeenCalledTimes(2));
+      revoke(f, kind);
+      finish();
+      await rejected;
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(f.writeCard).toHaveBeenCalledTimes(2);
     },
   );
 

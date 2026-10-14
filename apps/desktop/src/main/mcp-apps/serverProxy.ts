@@ -243,14 +243,13 @@ export function createAppServerProxy(
     assertCurrent();
     let result: CallToolResult;
     try {
-      extra.signal.throwIfAborted();
-      result = (await (
-        await connection.getClient()
-      ).callTool(
+      const client = await currentClient(extra.signal);
+      result = (await client.callTool(
         request.params,
         CallToolResultSchema,
         requestOptions(request, extra),
       )) as CallToolResult;
+      assertCurrent();
     } catch (error) {
       if (record && sessionId) {
         try {
@@ -281,6 +280,8 @@ export function createAppServerProxy(
         log.warn('MCP App result card could not be stored');
       }
     }
+    // Card persistence may yield while the owner or server configuration changes.
+    assertCurrent();
     const modelResult = { ...result };
     delete modelResult._meta;
     return modelResult;
