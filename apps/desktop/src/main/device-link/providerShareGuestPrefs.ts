@@ -45,6 +45,14 @@ export function configureProviderShareGuestPrefs(options: { resolvePath: (() => 
   cache = null;
 }
 
+/**
+ * 共享 userData 的另一个 Desktop 实例可能已经改写了同一份偏好文件；
+ * device-link 持有权切换时必须丢掉本实例缓存，接管后重新从盘上读取。
+ */
+export function invalidateProviderShareGuestPrefsCache(): void {
+  cache = null;
+}
+
 function currentFile(): string | null {
   try {
     return resolvePath ? resolvePath() : null;

@@ -11,6 +11,7 @@ import {
   configureProviderShareGuestPrefs,
   flushProviderShareGuestPrefs,
   forgetProviderShareGuestPrefs,
+  invalidateProviderShareGuestPrefsCache,
   isProviderShareCredentialConsentSkipped,
   pruneProviderShareGuestPrefs,
   resetProviderShareGuestPrefsForTests,
@@ -176,5 +177,17 @@ describe('provider share guest prefs', () => {
     await setProviderShareCredentialConsent('memory-only', 'global', true);
     expect(isProviderShareCredentialConsentSkipped('memory-only')).toBe(true);
     await expect(setProviderShareCredentialConsent('not a share id', 'global', true)).rejects.toThrow();
+  });
+
+  it('reloads the shared file after another Desktop instance changes it', async () => {
+    await setProviderShareCredentialConsent('share-1', 'global', true);
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+    // 模拟另一持有者完成原子替换；同一账号的文件路径保持不变。
+    fs.writeFileSync(file(), JSON.stringify({ version: 1, shares: {} }));
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+    invalidateProviderShareGuestPrefsCache();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
   });
 });

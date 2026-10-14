@@ -64,6 +64,7 @@ import {
 } from './providerShareGuest.js';
 import {
   configureProviderShareGuestPrefs,
+  invalidateProviderShareGuestPrefsCache,
   isProviderShareCredentialConsentSkipped,
   setProviderShareCredentialConsent,
 } from './providerShareGuestPrefs.js';
@@ -151,6 +152,7 @@ function revoke(match: (controller: string) => boolean, purge: boolean): void {
 
 /** 设备互联连上(本实例持有连接)时启动；断开、登出或失去持有权时停止。 */
 export function startProviderShareRuntime(broadcast: Broadcast, options: { invoke?: ShareInvoke } = {}): void {
+  invalidateProviderShareGuestPrefsCache();
   broadcastFn = broadcast;
   shareInvoke = options.invoke ?? null;
   running = true;
@@ -201,6 +203,7 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
 }
 
 export function stopProviderShareRuntime(): void {
+  invalidateProviderShareGuestPrefsCache();
   running = false;
   shareInvoke = null;
   stopProviderShareHost();
