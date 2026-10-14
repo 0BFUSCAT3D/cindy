@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
+import { createSessionExecutionResolver } from '../sessionExecutionSelection.js';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -1031,6 +1032,77 @@ it('rechecks saved preferences at the runtime mutation boundary', async () => {
   await expect(f.service.setModel('p', { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' }))
     .rejects.toMatchObject({ code: 'STALE_REVISION' });
   expect(apply).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['provider', 'reset'], ['provider', 'partial'],
+  ['mutation', 'reset'], ['mutation', 'partial'],
+  ['provider', 'explicit'],
+] as const)('checks inherited defaults through production adapters during %s (%s)', async (phase, mode) => {
+  const f = fixture(), task = await f.create();
+  const config = mode === 'explicit' ? { ...f.route, model: 'next' }
+    : mode === 'partial' ? { effort: 'high' } : {};
+  const selected = { harness: 'codex' as const, model: 'next', providerId: f.route.providerId,
+    effort: 'high' as const, fastMode: false };
+  let entered!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  let waited = false;
+  const wait = async (point: string) => {
+    if (phase === point && !waited) { waited = true; entered(); await gate; }
+  };
+  const resolver = createSessionExecutionResolver({
+    captureOwner: () => () => {}, readCaller: async () => { throw Error('unexpected caller'); },
+    readDefault: () => ({ agentKind: selected.harness, model: selected.model,
+      providerId: selected.providerId, effort: selected.effort, fastMode: selected.fastMode }),
+    availableAgents: () => ['codex'],
+    availableModels: () => ['model', 'next', 'latest'].map(id => ({ id, efforts: ['high'] })),
+    hasCindyAiApiKey: () => true,
+    readProviderRouting: async () => {
+      await wait('provider');
+      return { availability: { 'claude-code': [], pi: [],
+        codex: [{ id: f.route.providerId, name: 'provider', models: ['model', 'next', 'latest'] }] },
+        resolveDefaultProviderIdForModel: () => f.route.providerId };
+    },
+  });
+  const source = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
+  const preferenceStart = source.indexOf('      readModelPreference:');
+  const preference = source.slice(preferenceStart, source.indexOf('      readPermissionMode:', preferenceStart));
+  const resolveStart = source.indexOf('    const resolveRoute = async');
+  const resolve = source.slice(resolveStart, source.indexOf('    const readExecution', resolveStart));
+  const deps = { readPluginTaskConfig: () => config, getSelectedNewMakerRoute: () => selected,
+    activeOwnerScopeKey: () => 'owner', assertPlugin: () => {}, getPluginTaskSourceSessionId: () => undefined,
+    resolveSessionExecution: resolver, PluginTaskError, routeUnavailable: () => { throw Error('unavailable'); } };
+  const js = ts.transpileModule(`${resolve}\nreturn {${preference} resolveRoute};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const adapter = new Function(...Object.keys(deps), js)(...Object.values(deps));
+  f.deps.readModelPreference = adapter.readModelPreference;
+  f.deps.resolveRoute = adapter.resolveRoute;
+  const write = vi.fn();
+  f.deps.setModel = async (id, route, assertCurrent) => {
+    await wait('mutation');
+    await assertCurrent();
+    write(route);
+    f.tasks.set(id, { ...f.tasks.get(id)!, revision: task.revision + 1, resolvedConfig: route });
+    return { status: 'applied' };
+  };
+  const request = { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' as const };
+  const result = f.service.setModel('p', request);
+  const assertion = mode === 'explicit'
+    ? expect(result).resolves.toMatchObject({ status: 'applied', task: { resolvedConfig: { model: 'next' } } })
+    : expect(result).rejects.toMatchObject({ code: 'STALE_REVISION' });
+  await started;
+  selected.model = 'latest';
+  finish();
+  await assertion;
+  if (mode !== 'explicit') {
+    expect(write).not.toHaveBeenCalled();
+    expect((await f.service.get('p', task.taskId)).revision).toBe(task.revision);
+    const retry = await f.service.setModel('p', request);
+    expect(retry.task.resolvedConfig.model).toBe('latest');
+    expect(write).toHaveBeenCalledOnce();
+  }
 });
 
 it('does not reject explicit routes when unrelated plugin preferences change', async () => {

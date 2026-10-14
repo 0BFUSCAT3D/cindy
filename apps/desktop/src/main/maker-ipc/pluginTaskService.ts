@@ -98,7 +98,8 @@ export interface PluginTaskServiceDeps {
   assertCurrent(): void;
   assertAuthorized(pluginId: string): void;
   readPermissionMode(pluginId: string): unknown;
-  readModelPreference(pluginId: string): Partial<PluginTaskRoute>;
+  /** Include the inherited new-task selection when the resolver can use it. */
+  readModelPreference(pluginId: string): Partial<PluginTaskRoute> & { inheritedDefault?: string };
   resolveRoute(pluginId: string, route?: PluginTaskRoute, callId?: string): Promise<PluginTaskRoute>;
   createSession(
     pluginId: string,
@@ -330,11 +331,12 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
         const task = await ownTask(pluginId, request.taskId);
         if (task.status !== 'active') return fail('TASK_BUSY', '任务已归档，请先恢复任务');
         if (task.revision !== request.expectedRevision) return fail('STALE_REVISION', '任务配置已变化，请刷新后重试');
-        // Saving plugin preferences does not change the task revision. Check
-        // them after admission and again at the runtime's mutation boundary.
+        // Plugin preferences and inherited defaults do not change the task
+        // revision. Recheck both after admission and at the mutation boundary.
         if (preference) {
           const current = deps.readModelPreference(pluginId);
-          if (modelFields.some(key => preference[key] !== current[key]))
+          if (modelFields.some(key => preference[key] !== current[key])
+            || preference.inheritedDefault !== current.inheritedDefault)
             return fail('STALE_REVISION', '插件模型设置已变化，请重试以使用当前设置');
         }
         return task;
