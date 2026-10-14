@@ -251,7 +251,7 @@ describe('ProviderGroupSection', () => {
     providerState.providers[0].connected = false;
     stored = { strategy: 'usage', autoSwitch: true, members: [LOCAL] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Claude" />);
-    expect(await screen.findByText('配额快重置、用量低的电脑优先，相近时再按组策略')).toBeTruthy();
+    expect(await screen.findByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
     expect(screen.getByRole('radio', { name: '最少占用' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByText('给最闲的那台')).toBeTruthy();
     expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
@@ -259,13 +259,20 @@ describe('ProviderGroupSection', () => {
     await waitFor(() => expect(stored?.strategy).toBe('order'));
   });
 
-  it('does not show the quota hint for an API key connection', async () => {
+  it.each([
+    { kind: 'API-only', members: [LOCAL] },
+    { kind: 'mixed local API and remote subscription', members: [LOCAL, MINI] },
+  ])('explains when quota overrides the strategy for a $kind group', async ({ members }) => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
     providerState.providers[0].auth.method = 'api-key';
-    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    // Group views do not expose remote authentication types; the local connection cannot gate this explanation.
+    stored = { strategy: 'order', autoSwitch: true, members };
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
     await screen.findAllByTestId('provider-group-member');
-    expect(screen.queryByText('providerGroup.strategy.quotaFirst')).toBeNull();
-    expect(screen.queryByRole('radio', { name: 'providerGroup.strategy.usage' })).toBeNull();
+    expect(screen.getByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '按顺序' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
   });
 
   it('shows the quota hint for a subscription group', async () => {

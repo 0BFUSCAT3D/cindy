@@ -184,8 +184,9 @@
        5 个百分点的几台。两个总窗口都有效且已知才参与比较；有对应模型的专属窗口时，它也必须有效。缺失值不当成 0%；
        读不到用量的电脑（别人分享的、非 Claude 订阅的）排在读得到的后面，全部读不到时不筛。
     3. **组策略在剩下的几台里挑**：最少占用选运行任务少的，按顺序选排在前面的，轮询接着上次往下轮，按权重按比例随机。
-    全部达到并发上限时同样先按第 1、2 条筛，再选运行任务最少的；未满载的电脑永远排在满载的前面。设置页对 Claude 订阅组在组策略下加一行说明
-    「配额快重置、用量低的电脑优先，相近时再按组策略」。实现见 `apps/desktop/src/main/provider-group/scheduler.ts`
+    全部达到并发上限时同样先按第 1、2 条筛，再选运行任务最少的；未满载的电脑永远排在满载的前面。设置页在组策略下始终显示适用条件与规则
+    「能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略」；不能仅按组所属的本机连接类型隐藏说明，
+    因为 API Key 连接建的组也能包含同品牌的远端订阅账号。实现见 `apps/desktop/src/main/provider-group/scheduler.ts`
     与 `apps/desktop/src/renderer/features/provider-group/ProviderGroupSection.tsx`，回归见同目录
     `__tests__/scheduler.test.ts`、`router.usage.test.ts` 与 `ProviderGroupSection.test.tsx`。
   - **取数与兜底**：复用原生 CLI 的订阅用量读取，不读凭证、不新增订阅 API 请求；每台按自己的供应商账号读取。

@@ -470,7 +470,7 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "quotaFirst": "配额快重置、用量低的电脑优先，相近时再按组策略",
+      "quotaFirst": "能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",

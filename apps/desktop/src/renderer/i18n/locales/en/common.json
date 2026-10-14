@@ -473,7 +473,7 @@
       "round": "Round Robin",
       "order": "In Order",
       "weight": "By Weight",
-      "quotaFirst": "Computers with quota about to reset or lower usage go first; the strategy picks among similar ones",
+      "quotaFirst": "When Claude subscription usage is available, prefer computers whose quota resets soon, then those with lower usage; apply the group strategy among similar ones",
       "description": {
         "least": "Goes to the least busy one",
         "round": "Rotates across computers",
