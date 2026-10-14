@@ -22,6 +22,16 @@ function readSource(rel: string): string {
 const source = readSource('app/files/preview/[sessionId].tsx');
 
 describe('remote file preview pager wiring', () => {
+  it.each([
+    ['app/files/[sessionId].tsx', 'stopExportRun'],
+    ['app/files/preview/[sessionId].tsx', 'cancelExport'],
+  ])('cancels the in-flight export on leave and on Cancel, including the phone download, in %s', (path, stop) => {
+    const routeSource = readSource(path);
+    expect(routeSource).toContain(`useEffect(() => ${stop}, [${stop}]);`);
+    expect(routeSource).toMatch(/run\.abort\.abort\(\);/);
+    expect(routeSource).toMatch(/downloadRemoteMediaShareTemp\(url, mime, item\.name, run\.abort\.signal\)/);
+  });
+
   it.each(['app/files/[sessionId].tsx', 'app/files/preview/[sessionId].tsx'])('passes the route device ID into the source gate for %s', (path) => {
     const routeSource = readSource(path).split('export default function ')[1]?.split('\n}\n')[0] ?? '';
     expect(routeSource).toContain('const { sessionId, deviceId } = useLocalSearchParams<');

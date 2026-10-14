@@ -545,6 +545,8 @@ function RemoteFilePreviewContent() {
     exportRunRef.current = null;
     setBusyLabel(null);
   }, []);
+  // 离开预览页同样取消(与文件页一致):不再下载,也不在下一屏弹分享单。
+  useEffect(() => cancelExport, [cancelExport]);
 
   const downloadAndShare = useCallback(async (item: FileBrowserGridItem) => {
     if (busyLabel) return;
