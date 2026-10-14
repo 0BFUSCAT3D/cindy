@@ -138,6 +138,19 @@ describe('reaction avatars', () => {
     expect(mocks.reactors).toHaveBeenCalledTimes(2);
   });
 
+  it('re-reads when who reacted changes but the count does not', async () => {
+    mocks.reactors.mockResolvedValueOnce({ ok: true, reactors: [reactor('z', 'Zoe')] })
+      .mockResolvedValueOnce({ ok: true, reactors: [reactor('c1', 'Cindy (Chris)')] });
+    const view = render(<ChatMessageActions shareScope="group:room" groupId="room" members={members} onChanged={vi.fn()}
+      message={{ ...message([{ emoji: '👍', count: 1, me: false }]), reactionRevision: 3 }} />);
+    await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoe'));
+    // Zoe removed 👍 and Chris's companion added it: same count and `me`, a new realtime revision.
+    view.rerender(<ChatMessageActions shareScope="group:room" groupId="room" members={members} onChanged={vi.fn()}
+      message={{ ...message([{ emoji: '👍', count: 1, me: false }]), reactionRevision: 4 }} />);
+    await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Cindy (Chris)'));
+    expect(images()).toEqual(['https://example.test/cindy-chris.png']);
+  });
+
   it('keeps click as the toggle', async () => {
     mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('a', 'Dash', { isSelf: true })] });
     render(actions([{ emoji: '👍', count: 1, me: true }]));

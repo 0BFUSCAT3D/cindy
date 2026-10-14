@@ -35,13 +35,14 @@ function reactorNames(reactors: ChatReactor[], t: TFunction, language: string) {
  * badge shows their avatars instead of a number; avatars come from the group member projection,
  * and actors without one fall back to an initial, never an invented identity.
  */
-export function ChatReactionButton({ groupId, messageId, reaction, members, disabled, onToggle }: {
-  groupId?: string; messageId: string; reaction: Reaction; members?: BotGroupMemberView[]; disabled: boolean; onToggle: () => void;
+export function ChatReactionButton({ groupId, messageId, reaction, revision = 0, members, disabled, onToggle }: {
+  groupId?: string; messageId: string; reaction: Reaction; revision?: number; members?: BotGroupMemberView[]; disabled: boolean; onToggle: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  // The authoritative summary changes on every add/remove, local or remote.
-  const summary = `${reaction.count}:${reaction.me}`;
+  // Changes on every add/remove, local or remote — including a same-count swap of who reacted,
+  // which only the realtime reaction revision reveals.
+  const summary = `${reaction.count}:${reaction.me}:${revision}`;
   const wantsAvatars = !!groupId && reaction.count > 0 && reaction.count <= REACTION_AVATAR_LIMIT;
   // Only badges near the viewport read, so opening a long history does not fire one read per badge.
   const badgeRef = useRef<HTMLButtonElement>(null);

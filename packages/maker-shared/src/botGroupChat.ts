@@ -145,6 +145,8 @@ export interface BotGroupMessageView {
   /** 引用回复: the earlier main-timeline message this one quotes; not a Thread parent. */
   quote?: BotGroupQuoteView;
   reactions?: Array<{ emoji: string; count: number; me: boolean }>;
+  /** Bumped by realtime reaction changes, so a same-count change of who reacted is still noticed. */
+  reactionRevision?: number;
   id: string;
   sequence: number;
   kind: BotGroupMessageKind;

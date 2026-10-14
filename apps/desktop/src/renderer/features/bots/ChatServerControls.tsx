@@ -46,7 +46,7 @@ export function ChatMessageActions({ groupId, shareScope, message, members, alig
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} className="mt-1 flex flex-col gap-1">
       {!!message.reactions?.length && <div className={`flex flex-wrap items-center gap-1 ${align === 'right' ? 'justify-end' : ''}`}>
         {message.reactions.map(reaction => (
-          <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} members={members}
+          <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} revision={message.reactionRevision} members={members}
             disabled={busy || !groupId} onToggle={() => void react(reaction.emoji, !reaction.me)} />
         ))}
       </div>}

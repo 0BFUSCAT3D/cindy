@@ -1091,6 +1091,23 @@ describe('Chat Server result delivery and refresh', () => {
     const recovered = await service.getGroup(roomId);
     expect(recovered.ok && recovered.group.messages[0].attachments[0].name).toBe('report.pdf');
   });
+  it('versions a message’s reactions on every realtime reaction change, even when the count is unchanged', async () => {
+    const message = { id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
+      content: [{ type: 'text', text: 'Hi' }], createdAt: new Date().toISOString(), deleted: false, threadRootId: null,
+      reactions: [{ emoji: '👍', count: 1, me: false }] };
+    fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [message] } : response(route));
+    const revision = async () => { const r = await service.getGroup(roomId); return r.ok ? r.group.messages[0].reactionRevision : undefined; };
+    expect(await revision()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    const socket = fixture.sockets[0];
+    // One member removes 👍 and another adds it in one batch: same count, different reactor.
+    socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '5', changes: [
+      { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: false } },
+      { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: true } },
+      { type: 'message.updated', entityId: message.id },
+    ] }));
+    expect(await revision()).toBe(2);
+  });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);
     await vi.advanceTimersByTimeAsync(2000);
