@@ -1246,7 +1246,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }),
   };
   /**
-   * Quote snapshots of sends that have not finished: from just before the POST until the send
+   * Quote snapshots of sends that have not finished: from just before the POST (attachments
+   * already uploaded) until the send
    * returns ok (post-send bookkeeping included) or the server definitely refuses the POST.
    * Invariant: every retry of one clientId posts the same content, even if the original has been
    * deleted since, so the server returns the message it already stored instead of a second one.
@@ -1279,20 +1280,25 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       throw error;
     }
     let result: { id: string };
+    let posting = false;
     try {
       const mentions = await mentionIds(i.groupId, i.mentions);
+      const uploaded = await media.upload(i.groupId, i.clientId, prepared?.ok ? prepared.attachments : [], selfId);
+      // Cached only once the message may reach the server; a failure before this stored nothing.
       if (quote) {
         postedQuotes.set(quoteKey, quote);
         if (postedQuotes.size > 128) postedQuotes.delete(postedQuotes.keys().next().value!);
       }
+      posting = true;
       result = await api<{ id: string }>(`/conversations/${i.groupId}/${commentPlan ? `plans/${commentPlan.id}/messages` : 'messages'}`, 'POST', {
         operationId: i.clientId, content: [ ...(quote ? [buildBotGroupQuoteCard(quote)] : []), ...(i.text ? [{ type: 'text', text: i.text }] : []),
-          ...await media.upload(i.groupId, i.clientId, prepared?.ok ? prepared.attachments : [], selfId) ], mentions, deferExecution: shouldPlan, ...(groupDiscussionParity ? { mentionsAll: i.mentions.all, planningMode: i.division || proposed ? 'explicit' : 'auto' } : {}),
+          ...uploaded ], mentions, deferExecution: shouldPlan, ...(groupDiscussionParity ? { mentionsAll: i.mentions.all, planningMode: i.division || proposed ? 'explicit' : 'auto' } : {}),
       });
     } catch (error) {
       if (prepared?.ok) await prepared.discard();
-      // A definite refusal stored nothing; a lost answer keeps the snapshot for the retry.
-      if (error instanceof ChatResponseError && error.status >= 400 && error.status < 500 && error.status !== 408) postedQuotes.delete(quoteKey);
+      // A definite refusal of this post stored nothing; a lost answer, or a failure before an
+      // earlier lost post's retry reached the server, keeps the snapshot for the next retry.
+      if (posting && error instanceof ChatResponseError && error.status >= 400 && error.status < 500 && error.status !== 408) postedQuotes.delete(quoteKey);
       throw error;
     }
     if (prepared?.ok) prepared.commit();

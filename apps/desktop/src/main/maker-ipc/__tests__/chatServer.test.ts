@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const fixture = vi.hoisted(() => ({ download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string }> }));
+const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> => []), download: vi.fn(), packaged: true, urls: [] as string[], wsUrls: [] as string[], exists: vi.fn(), config: '', handle: vi.fn(), profiles: [] as unknown[], sockets: [] as import('ws').WebSocket[], token: 'isolated-test-token', refresh: vi.fn(async () => true), requests: [] as Array<{ url: string; token: string }> }));
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
-vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: vi.fn(async () => []), download: fixture.download }) }));
+vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: () => null, save: vi.fn() }) }));
 vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' } }));
@@ -275,6 +275,36 @@ describe('Chat Server result delivery and refresh', () => {
       expect(retry.operationId).toBe(first.operationId);
       expect(retry.content).toEqual(first.content);
       expect(fixture.handle.mock.calls.filter(([route]) => route === `/conversations/${roomId}/messages/${quotedId}`)).toHaveLength(1);
+    });
+
+    it('validates the quote again when the send failed before its post, such as an unreadable attachment', async () => {
+      let original: unknown = quoted();
+      fixture.handle.mockImplementation((route, method) => quoteResponse(original)(route, method));
+      deps.prepareAttachments = vi.fn(async () => ({ ok: true as const, attachments: [], commit: vi.fn(), discard: vi.fn() }));
+      // The upload fails before the message is posted, so the server stored nothing.
+      fixture.upload.mockRejectedValueOnce(new Error('ATTACHMENT_UNAVAILABLE'));
+      const input = { groupId: roomId, text: 'Agreed', clientId: 'quote-send-upload', mentions: { all: false, botIds: [] }, attachments: [{}], quote: { messageId: quotedId } };
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false });
+      original = null;
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
+      expect(posts()).toHaveLength(0);
+    });
+
+    it('keeps a lost post\'s quote when a retry then fails before posting with a 4xx', async () => {
+      let original: unknown = quoted();
+      let stage: 'lost' | 'refuse-upload' | 'ok' = 'lost';
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/messages') && method === 'POST' && stage === 'lost') { stage = 'refuse-upload'; throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }); }
+        if (route.endsWith('/members') && stage === 'refuse-upload') { stage = 'ok'; return { status: 403, body: { error: { code: 'FORBIDDEN' } } }; }
+        return quoteResponse(original)(route, method);
+      });
+      const input = { groupId: roomId, text: 'Agreed', clientId: 'quote-send-lost-then-4xx', mentions: { all: false, botIds: [botId] }, quote: { messageId: quotedId } };
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false });
+      original = null;
+      expect(await service.sendMessage(input)).toMatchObject({ ok: false });
+      expect(await service.sendMessage(input)).toEqual({ ok: true, messageId: 'saved-quote' });
+      const [first, retry] = posts().map(([, , body]) => body);
+      expect(retry.content).toEqual(first.content);
     });
 
     it('validates the quote again after the server refused the post', async () => {
