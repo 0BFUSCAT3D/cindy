@@ -11,7 +11,7 @@ describe('chat group errors', () => {
     ['IMPORT_PENDING', 'IMPORT_PENDING'], ['REQUEST_TIMEOUT', 'REQUEST_TIMEOUT'],
     ['REVISION_CONFLICT', 'REVISION_CONFLICT'],
     ['ROLE_REQUIRED', 'PERMISSION_DENIED'], ['CONVERSATION_ARCHIVED', 'GROUP_ARCHIVED'],
-    ['CONVERSATION_NOT_FOUND', 'NOT_FOUND'], ['untrusted /private/path?token=secret', 'SERVICE_ERROR'],
+    ['CONVERSATION_NOT_FOUND', 'NOT_FOUND'], ['NOT_A_GROUP', 'NOT_FOUND'], ['untrusted /private/path?token=secret', 'SERVICE_ERROR'],
   ])('classifies %s without exposing exception text', (code, expected) => {
     expect(chatGroupFailure(new Error(code))).toEqual({ ok: false, errorCode: expected, message: expected });
   });

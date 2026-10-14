@@ -106,6 +106,8 @@ const id = z.string().uuid();
 const memberJoinedTrigger = z.object({ type: z.literal('member.joined'), messageId: id, actorId: id,
   displayName: z.string().min(1).refine(value => value.trim().length > 0) }).strict();
 type ExecutionContext = { kind: 'message' } | { kind: 'member.joined'; trigger: z.infer<typeof memberJoinedTrigger> };
+/** Only `group` rooms are bot groups; direct companion chats, channels and later kinds are not. */
+const isGroupRoom = (room: Pick<Room, 'kind'>) => room.kind === 'group';
 const ordinaryExecution = (execution: Execution) => execution.trigger === undefined && execution.trigger_type == null;
 const groupInput = z.object({ name: z.string().trim().min(1).max(40), botIds: z.array(z.string().min(1)).max(6) });
 // A recognized quote card is shown as the quote, not as body text; unknown revisions keep their fallback.
@@ -684,6 +686,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     subscribe(roomId, value.cursor);
     return value;
   }
+  /** A room read through a bot-group entry point; any other kind answers as a missing group. */
+  async function groupSnapshot(roomId: string) {
+    const value = await snapshot(roomId);
+    if (!isGroupRoom(value.room)) throw new Error('NOT_A_GROUP');
+    return value;
+  }
   function managementActor(s: Snapshot) {
     const eligible = s.members.filter(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role));
     return (eligible.find(m => m.role === 'owner') ?? eligible.find(m => m.id === selfId) ?? eligible[0])?.id;
@@ -841,7 +849,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     // reported (a left room stays 「not found」), whichever request fails first in time.
     // A followed room reports every later change, so its snapshot may run alongside. A new
     // room first takes the snapshot cursor it will follow from, before the rest is read.
-    const snapshotRead = snapshot(roomId);
+    const snapshotRead = groupSnapshot(roomId);
     if (!rooms.has(roomId)) await snapshotRead;
     const messagesRead = summaryOnly ? null : api<Message[]>(`/conversations/${roomId}/messages?${query}`);
     const executionsRead = api<Execution[]>(`/conversations/${roomId}/executions`);
@@ -1494,7 +1502,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const { type, ...payload } = action;
       const route = type === 'update' || type === 'archive' ? '' : type === 'member' ? '/members' : type === 'botAccess' ? '/bot-access' : `/${type}`;
       const asManager = type === 'update' || type === 'archive' || type === 'transfer' || (type === 'member' && !['leave', 'invite'].includes(action.action));
-      const actorId = asManager ? managementActor(await snapshot(target)) : undefined;
+      const s = await groupSnapshot(target);
+      const actorId = asManager ? managementActor(s) : undefined;
       await api(`/conversations/${target}${route}`, type === 'update' || type === 'archive' ? 'PATCH' : 'POST', {
         operationId: randomUUID(), ...payload, ...(type === 'archive' ? { archived: action.archived } : {}),
       }, actorId);
@@ -1580,14 +1589,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     createInvite: input => result(async () => {
       const i = z.object({ groupId: id, clientId: operationId }).parse(input);
       const invite = inviteResponse(z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/), ...inviteFields }).refine(validInvite),
-        await api(`/conversations/${i.groupId}/invite-links`, 'POST', { operationId: i.clientId }, managementActor(await snapshot(i.groupId)), false, 200),
+        await api(`/conversations/${i.groupId}/invite-links`, 'POST', { operationId: i.clientId }, managementActor(await groupSnapshot(i.groupId)), false, 200),
       );
       return { link: `cindy://chat-invite/${invite.token}`, expiresAt: invite.expiresAt, ...(invite.reusable !== undefined ? { reusable: invite.reusable } : {}) };
     }),
     revokeInvite: input => result(async () => {
       const i = z.object({ groupId: id, link: z.string(), clientId: z.string().uuid() }).strict().parse(input);
       const token = inviteToken(i.link);
-      const actor = managementActor(await snapshot(i.groupId));
+      const actor = managementActor(await groupSnapshot(i.groupId));
       if (!actor) throw new Error('ROLE_REQUIRED');
       try {
         return inviteResponse(z.object({ revoked: z.literal(true) }), await api(`/conversations/${i.groupId}/invite-links/revoke`, 'POST', { token, operationId: i.clientId }, actor, false, 200));
@@ -1619,7 +1628,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (!i.text.trim() && !i.attachments?.length) throw new Error('INVALID_INPUT');
     // An attempted send must not cancel a valid decision until its message exists.
     const intentVersion = ++nextIntentVersion;
-    const s = await snapshot(i.groupId);
+    const s = await groupSnapshot(i.groupId);
     // Read before preparing attachments: an unavailable quote must not stage files.
     const quoteKey = i.quote ? `${i.groupId}:${i.clientId}:${i.quote.messageId}` : '';
     const quote = i.quote ? postedQuotes.get(quoteKey) ?? await quoteSnapshot(i.groupId, i.quote.messageId, s.members) : null;
@@ -1685,7 +1694,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       let after: string | undefined;
       do {
         const page = await api<Array<Room & { state: string }>>(`/conversations?limit=100${after ? `&after=${after}` : ''}`);
-        const joined = page.filter(r => r.state === 'joined' && r.kind !== 'direct' && !personalList.hidden(r.id));
+        const joined = page.filter(r => r.state === 'joined' && isGroupRoom(r) && !personalList.hidden(r.id));
         for (let i = 0; i < joined.length; i += 8)
           groups.push(...await Promise.all(joined.slice(i, i + 8).map(r => detail(r.id, undefined, true))));
         after = page.length === 100 ? page.at(-1)!.id : undefined;
@@ -1735,7 +1744,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const i = z.object({ groupId: id, name: z.string().min(1).max(40).optional(), replyMode: z.enum(['all', 'mentioned']).optional(),
         speakingMode: z.enum(['auto', 'sequential']).optional(), organizerBotId: z.string().nullable().optional(), projectDir: z.string().max(4096).nullable().optional(), expectedRevision: z.number().int().positive().optional() }).parse(input);
       i.groupId = await resolveGroup(i.groupId);
-      const s = await snapshot(i.groupId);
+      const s = await groupSnapshot(i.groupId);
       let projectDir = i.projectDir;
       if (projectDir) { const checked = await deps.validateProjectDir?.(projectDir); if (!checked?.ok) throw new Error('INVALID_DIRECTORY'); projectDir = checked.dir; }
       const organizerId = i.organizerBotId ? actors.find(a => a.externalId === i.organizerBotId)?.id ?? id.parse(i.organizerBotId) : i.organizerBotId;
@@ -1766,7 +1775,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     },
     setMembers: input => safe(async () => {
       const i = z.object({ groupId: id, botIds: z.array(z.string()).max(6), addOnly: z.boolean().optional() }).parse(input);
-      const room = await resolveGroup(i.groupId); const s = await snapshot(room);
+      const room = await resolveGroup(i.groupId); const s = await groupSnapshot(room);
       const selected = i.botIds.map(bot => actors.find(a => a.externalId === bot)?.id ?? id.parse(bot));
       for (const m of s.members.filter(m => !i.addOnly && m.kind === 'bot' && m.state === 'joined' && !selected.includes(m.id)))
         await api(`/conversations/${room}/members`, 'POST', { operationId: randomUUID(), actorId: m.id, action: 'remove' }, managementActor(s));
@@ -1775,7 +1784,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       changed(room); return { ok: true as const };
     }),
     deleteGroup: groupId => safe(async () => {
-      const room = await resolveGroup(id.parse(groupId)); const s = await snapshot(room);
+      const room = await resolveGroup(id.parse(groupId)); const s = await groupSnapshot(room);
       if (s.members.some(m => m.ownerActorId === selfId && m.role === 'owner')) await api(`/conversations/${room}`, 'PATCH', { operationId: randomUUID(), expectedRevision: s.room.revision, archived: true }, managementActor(s));
       else await api(`/conversations/${room}/members`, 'POST', { operationId: randomUUID(), actorId: selfId, action: 'leave' });
       changed(room); return { ok: true as const };

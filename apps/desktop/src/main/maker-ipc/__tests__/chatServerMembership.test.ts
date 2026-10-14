@@ -62,10 +62,10 @@ describe('Chat Server membership notices', () => {
     messages = [joined()];
     fixture.handle.mockImplementation(route => {
       if (route === '/me') return { body: { actor: { id: selfId } } };
-      if (route === '/conversations?limit=100') return { body: [{ id: roomId, state: 'joined' }] };
+      if (route === '/conversations?limit=100') return { body: [{ id: roomId, kind: 'group', state: 'joined' }] };
       if (route === '/executions/claim') return { body: { execution: null } };
       if (route.endsWith('/snapshot')) return { body: {
-        room: { id: roomId, name: 'Group', response_mode: 'all', speaking_mode: 'auto',
+        room: { id: roomId, kind: 'group', name: 'Group', response_mode: 'all', speaking_mode: 'auto',
           created_at: '2026-10-08T00:00:00Z', updated_at: '2026-10-08T00:00:00Z' },
         members: [{ id: memberId, kind: 'human', name: 'Renamed after joining', state: 'left', ownerActorId: memberId, ownerName: '' }],
         messages, cursor: '12',
