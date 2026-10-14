@@ -288,7 +288,8 @@ allowlist 指纹随新增 channel 变化，两端版本不一致时沿用既有�
 的隧道超时为 65s：被控端要等目标任务的发送锁并在需要时恢复 Agent 后才回执，默认 30s 会把已送达
 的慢恢复报成结果未知。请求已发出但没有可信回执时，发消息报 `DELIVERY_UNKNOWN`，定时任务写操作报 `REMOTE_TIMEOUT`
 或 `REMOTE_RESULT_UNKNOWN` 并说明可能已生效，由 Agent 先查询再决定。「没有可信回执」包括：
-超时、在途断连、本机账号在回执前切换、目标电脑报内部错误或 Agent 未就绪，以及被控端 dispatch 在
+超时、在途断连、本机账号在回执前切换、目标电脑报内部错误或 Agent 未就绪、定时任务写操作
+收到写入前拒绝（参数错误、不存在、scheduler 未就绪）以外的任何 IPC 错误，以及被控端 dispatch 在
 handler 完成后复核可见性与账号失败（`[NOT_FOUND] Session does not exist`，定时任务 handler
 自己的不存在是 `Schedule not found`，据文案区分；发消息的目标不存在由 handler 以数据返回，
 隧道层 `NOT_FOUND` 一律按结果未知）。能证明没有进入目标任务的错误（离线、未开启、链路未建立、对方不支持、目标不存在或已归档）

@@ -124,6 +124,31 @@ describe('desktop scheduler cross-device transport', () => {
         code: 'REMOTE_UNAVAILABLE',
       });
     }
+    // handler 进入后的内部错误或未编码错误可能发生在写入之后。
+    for (const message of ['[INTERNAL] emit failed after save', 'Error: boom']) {
+      const internal = setup(
+        vi.fn<Invoke>(async () => ({ ok: false, error: { code: 'IPC_ERROR', message } })),
+      );
+      expect(await internal.remote.invoke('mac', 'run-now', ['s1'])).toMatchObject({
+        ok: false,
+        code: 'REMOTE_RESULT_UNKNOWN',
+      });
+      // 读操作没有副作用，照常归类。
+      expect(await internal.remote.invoke('mac', 'get', ['s1'])).toMatchObject({ ok: false });
+      expect(await internal.remote.invoke('mac', 'get', ['s1'])).not.toMatchObject({
+        code: 'REMOTE_RESULT_UNKNOWN',
+      });
+    }
+    // 写入前的拒绝仍是确定结果：参数错误、scheduler 尚未就绪。
+    for (const [message, code] of [
+      ['[INVALID_PARAMS] invalid cron', 'INVALID_PARAMS'],
+      ['[INTERNAL] scheduler not ready: timeout', 'INTERNAL'],
+    ]) {
+      const early = setup(
+        vi.fn<Invoke>(async () => ({ ok: false, error: { code: 'IPC_ERROR', message } })),
+      );
+      expect(await early.remote.invoke('mac', 'pause', ['s1'])).toMatchObject({ ok: false, code });
+    }
     // 定时任务自己的「不存在」仍是确定结果。
     const notFound = setup(
       vi.fn<Invoke>(async () => ({
@@ -155,6 +180,11 @@ describe('desktop scheduler cross-device transport', () => {
       'utf8',
     );
     expect(dispatch).toContain("throw new Error('[NOT_FOUND] Session does not exist')");
+    const schedule = readFileSync(
+      fileURLToPath(new URL('../../maker-ipc/schedule.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(schedule).toContain('`scheduler not ready: ${');
   });
 
   it('rejects a malformed list and never sends after the account changes', async () => {

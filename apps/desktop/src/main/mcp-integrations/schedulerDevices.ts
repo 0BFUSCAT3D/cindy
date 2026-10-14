@@ -47,6 +47,19 @@ const WRITE_OPS: ReadonlySet<SchedulerRemoteOp> = new Set([
  */
 const POST_HANDLER_REJECTION = '[NOT_FOUND] Session does not exist';
 
+/**
+ * 被控端 `maker:schedule:*` 入口在写入之前就会拒绝的错误（apps/desktop/src/main/maker-ipc/schedule.ts）：
+ * 参数校验、定时任务不存在、scheduler 尚未就绪。其余 IPC 错误（含 INTERNAL、未编码的错误）
+ * 可能发生在写入之后，写操作一律按结果未知处理。
+ */
+function isRejectedBeforeWrite(message: string): boolean {
+  return (
+    /\[INVALID_PARAMS]/.test(message) ||
+    /\[NOT_FOUND]/.test(message) ||
+    /\[INTERNAL] scheduler not ready:/.test(message)
+  );
+}
+
 /** 请求已发出但拿不到可信结果：写操作不能说没执行，读操作只是这次没读到。 */
 function unknownOutcome(op: SchedulerRemoteOp): { ok: false; code: string; message: string } {
   return WRITE_OPS.has(op)
@@ -112,7 +125,8 @@ export function createSchedulerRemoteDeps(deps: {
       if (!response.ok) {
         if (
           response.error.code === 'IPC_ERROR' &&
-          response.error.message.includes(POST_HANDLER_REJECTION)
+          (response.error.message.includes(POST_HANDLER_REJECTION) ||
+            (WRITE_OPS.has(op) && !isRejectedBeforeWrite(response.error.message)))
         ) {
           return unknownOutcome(op);
         }
