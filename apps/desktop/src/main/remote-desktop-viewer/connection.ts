@@ -251,7 +251,8 @@ export class RemoteViewerConnection {
             check();
             const caps = result as RemoteDesktopCapabilities;
             // A window view never runs whole-desktop safety features (masks, mute, clipboard sync).
-            this.caps = target.handoff && caps?.handoffWindow ? handoffWindowCapabilities(caps) : caps;
+            this.caps =
+              target.handoff && caps?.handoffWindow ? handoffWindowCapabilities(caps) : caps;
           }
           if (isStart) {
             const lease = result as RemoteDesktopLease;
@@ -480,8 +481,10 @@ export class RemoteViewerConnection {
   /**
    * Focus only decides when this window reads its own clipboard; the computer's
    * sync stays enabled for the whole control session. Regaining focus syncs at
-   * once; leaving runs one bounded pass (so a copy made on the computer arrives
-   * here before the user pastes) and then pauses local reads.
+   * once; leaving runs one pass at once (so a copy made on the computer arrives
+   * here before the user pastes) and then pauses local reads. Local reads stay
+   * allowed for CLIPBOARD_GRACE_MS after the blur, not just for that pass: a
+   * copy chord's delayed pull (about 200 ms after the key) may land after it.
    */
   async focusChanged(): Promise<void> {
     const generation = this.generation;
@@ -494,13 +497,9 @@ export class RemoteViewerConnection {
       return;
     }
     this.clipboardGrace = Date.now() + CLIPBOARD_GRACE_MS;
-    try {
-      await this.safetyState.idle();
-      if (!live() || this.focused()) return;
-      await this.safety(generation).catch(() => {});
-    } finally {
-      this.clipboardGrace = 0;
-    }
+    await this.safetyState.idle();
+    if (!live() || this.focused()) return;
+    await this.safety(generation).catch(() => {});
     if (!live() || this.focused()) return;
     await this.safetyState.pauseClipboard();
   }

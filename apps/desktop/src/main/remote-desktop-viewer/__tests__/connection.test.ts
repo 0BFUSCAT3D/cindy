@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { RemoteViewerConnection } from '../connection';
 import {
   ClipboardSync,
@@ -38,6 +38,9 @@ function fixture() {
   };
 }
 describe('standalone remote viewer authority', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   function syncFixture(focused: () => boolean, stop = vi.fn()) {
     const request = vi.fn(async (_target, message, check) => {
       check();
@@ -69,6 +72,7 @@ describe('standalone remote viewer authority', () => {
     return { connection, request, enables, control, stop };
   }
   it('keeps the computer sync on across focus changes: one last pass on blur, an immediate one on focus', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
     let focused = true;
     const tick = vi.spyOn(ClipboardSync.prototype, 'tick').mockResolvedValue(undefined);
     const { connection, enables, control, stop } = syncFixture(() => focused);
@@ -81,14 +85,19 @@ describe('standalone remote viewer authority', () => {
       await connection.focusChanged();
       expect(tick).toHaveBeenCalledTimes(2);
       expect(stop).toHaveBeenCalledOnce();
-      // Unfocused polls neither read the clipboard nor switch the computer's sync off.
+      // A copy chord's delayed pull lands after that pass but inside the 1 s grace.
+      await connection.syncClipboard(generation);
+      expect(tick).toHaveBeenCalledTimes(3);
+      // Past the grace, unfocused polls neither read the clipboard nor switch the computer's sync off.
+      vi.setSystemTime(Date.now() + 1000);
       await connection.safety(generation);
-      expect(tick).toHaveBeenCalledTimes(2);
+      await connection.syncClipboard(generation);
+      expect(tick).toHaveBeenCalledTimes(3);
       expect(enables()).toEqual([true]);
       // Back in front: sync at once instead of at the next poll, with no re-enable churn.
       focused = true;
       await connection.focusChanged();
-      expect(tick).toHaveBeenCalledTimes(3);
+      expect(tick).toHaveBeenCalledTimes(4);
       expect(enables()).toEqual([true]);
       connection.deactivate();
       expect(stop).toHaveBeenCalledTimes(2);
