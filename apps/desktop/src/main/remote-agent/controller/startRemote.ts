@@ -23,6 +23,7 @@ import { credentialGrantPermission, type CredentialGrantRecord } from '../execut
 import { RemoteExecutor, type ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import { ExecutorGate, executorGateModeFor, type ExecutorAction } from '../executor/gate';
+import { GitCredentialHistory } from '../executor/gitCredentials';
 import type { GuardedFetch } from '../executor/webFetch';
 import { ExecutorWorkspace } from '../executor/workspace';
 import type {
@@ -183,6 +184,9 @@ export function shadowAliases(
   return aliases;
 }
 
+/** 供应商分享的受邀者任务共用：同一个仓库的扫描结果留给后面的命令与任务。 */
+const sharedGitCredentials = new GitCredentialHistory();
+
 /** 凭证类操作的确认卡：用与 Agent 自带工具同名的工具显示本机路径或命令。 */
 export function credentialConfirmation(action: ExecutorAction, description: string): LocalConfirmation {
   const base = {
@@ -244,6 +248,7 @@ export async function startRemoteAgentSession(
       ? {
           confirm: async (action: ExecutorAction) =>
             controller?.confirm(credentialConfirmation(action, credentialConsent.description)) ?? false,
+          gitCredentials: sharedGitCredentials,
           ...(grant
             ? { credentialGrant: { remember: () => grant.remember(grantPermission()), forget: () => grant.forget() } }
             : {}),

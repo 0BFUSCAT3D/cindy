@@ -33,6 +33,7 @@ import {
   type ToolResult,
 } from './files';
 import type { ExecutorAction, ExecutorGate, ExecutorGateDecision, ExecutorGateMode } from './gate';
+import type { GitCredentialHistory } from './gitCredentials';
 import { piGrep, type PiGrepInput } from './search';
 import { resolveExecutorShell, runOnce, ShellSession } from './shell';
 import { fetchWebPage, WEB_FETCH_PAGE_CHARS, type GuardedFetch } from './webFetch';
@@ -65,6 +66,8 @@ export interface RemoteExecutorOptions {
    * 默认只放行这一个操作；用户明确选择会话级允许后免除后续的分享凭证确认。缺省时直接拒绝。
    */
   confirm?(action: ExecutorAction): Promise<ExecutorConfirmation>;
+  /** 与 confirm 一起提供：git 查看内容、打出 git 配置的命令先在本机核实，读不到凭证时不弹卡。 */
+  gitCredentials?: GitCredentialHistory;
   /**
    * 「本任务总是允许」的任务级记录(credentialGrants.ts，由启动方按当前原始权限档写入)：Agent 实例被系统
    * 回收重建后据此恢复；缺省时只在本执行器内有效。
@@ -160,11 +163,20 @@ export class RemoteExecutor {
 
   /**
    * 凭证类操作在本机补问一次(供应商分享的受邀者任务)；本机用户允许后登记批准，调用方再检查一次即可
-   * 放行。不是凭证类、没有确认通道或任务已结束时返回 false。
+   * 放行。git 查看内容、打出 git 配置的命令在本机核实过读不到凭证时不弹卡，直接登记批准。不是凭证类、
+   * 没有确认通道或任务已结束时返回 false。
    */
   async confirm(action: ExecutorAction, signal?: AbortSignal): Promise<boolean> {
     if (this.closed || signal?.aborted || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
     const permissionGeneration = this.permissionGeneration;
+    // 只有要核实的 git 命令才在弹卡前等核实结果；核实通过不弹卡，也不必排在其他确认卡后面。
+    const gitCheck = this.gitReadsCheck(action, signal);
+    if (gitCheck && await gitCheck) {
+      // 核实期间任务结束、请求被取消或权限已切换：同样不放行。
+      if (this.closed || signal?.aborted || permissionGeneration !== this.permissionGeneration) return false;
+      this.gate.recordCredentialExemption(action);
+      return true;
+    }
     // 同一任务可能并行调用工具。只排队确认，不排队执行；前一张卡建立任务授权后，
     // 后续请求重新检查，避免已经弹出的多张卡仍逐一等待用户回答。
     // 排队位置要等前一个位置放行、且自己的卡处理完才放行。
@@ -203,6 +215,16 @@ export class RemoteExecutor {
         if (this.credentialConfirmationTail === slot) this.credentialConfirmationTail = undefined;
       });
     }
+  }
+
+  /** 要在本机核实的 git 命令返回核实结果(true = 读不到凭证)；不需要核实的返回 null。 */
+  private gitReadsCheck(action: ExecutorAction, signal?: AbortSignal): Promise<boolean> | null {
+    const history = this.opts.gitCredentials;
+    if (!history || action.kind !== 'exec') return null;
+    const reads = this.gate.credentialGitReads(action);
+    return reads ? history.provesSafe(action.command, reads, signal)
+      .then((safe) => safe && this.gate.credentialGitReads(action) !== null)
+      .catch(() => false) : null;
   }
 
   /** 检查上限；凭证类操作没有批准时先在本机问一次。 */
