@@ -6,8 +6,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createIpcError } from '../../../shared/ipc-errors.js';
 import { setProviderShareCredentialConsentFromIpc } from '../providerShareGuestPrefsIpc.js';
+import * as crossProcessLock from '../crossProcessLock.js';
 
-vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn() }) }));
+vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) }));
 
 import {
   configureProviderShareGuestPrefs,
@@ -22,6 +23,7 @@ import {
 
 let root: string;
 let owner: string;
+const otherInstances: typeof import('../providerShareGuestPrefs')[] = [];
 const file = () => path.join(root, 'owners', owner, 'provider-share-guest-prefs.json');
 const stored = () => JSON.parse(fs.readFileSync(file(), 'utf8')) as { version: number; shares: Record<string, unknown> };
 /** 模拟重启：丢掉内存里的缓存，重新从文件读。 */
@@ -29,6 +31,15 @@ const restart = () => {
   resetProviderShareGuestPrefsForTests();
   configureProviderShareGuestPrefs({ resolvePath: file });
 };
+
+/** 独立模块状态模拟另一个进程；两者只通过真实偏好文件和跨进程锁协调。 */
+async function anotherInstance() {
+  vi.resetModules();
+  const instance = await import('../providerShareGuestPrefs');
+  instance.configureProviderShareGuestPrefs({ resolvePath: file });
+  otherInstances.push(instance);
+  return instance;
+}
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-share-prefs-'));
@@ -38,6 +49,10 @@ beforeEach(() => {
 
 afterEach(async () => {
   await flushProviderShareGuestPrefs();
+  for (const instance of otherInstances.splice(0)) {
+    await instance.flushProviderShareGuestPrefs();
+    instance.resetProviderShareGuestPrefsForTests();
+  }
   vi.restoreAllMocks();
   resetProviderShareGuestPrefsForTests();
   fs.rmSync(root, { recursive: true, force: true });
@@ -190,6 +205,97 @@ describe('provider share guest prefs', () => {
     expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
 
     invalidateProviderShareGuestPrefsCache();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+  });
+
+  it('rejects queued writes after ownership changes without publishing trust', async () => {
+    const first = setProviderShareCredentialConsent('share-1', 'global', true);
+    const second = setProviderShareCredentialConsent('share-2', 'cn', true);
+    invalidateProviderShareGuestPrefsCache();
+
+    const results = await Promise.allSettled([first, second]);
+    expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected']);
+    expect(fs.existsSync(file())).toBe(false);
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    expect(isProviderShareCredentialConsentSkipped('share-2')).toBe(false);
+
+    await setProviderShareCredentialConsent('current', 'global', true);
+    expect(Object.keys(stored().shares)).toEqual(['current']);
+  });
+
+  it.each(['writeFile', 'rename'] as const)('preserves revocation by the next owner after handoff during %s', async (operation) => {
+    await setProviderShareCredentialConsent('share-1', 'global', true);
+    const next = await anotherInstance();
+    await next.setProviderShareCredentialConsent('share-1', 'global', true);
+
+    let reachedWrite!: () => void;
+    const writing = new Promise<void>((resolve) => { reachedWrite = resolve; });
+    let finishWrite!: () => void;
+    const pendingWrite = new Promise<void>((resolve) => { finishWrite = resolve; });
+    if (operation === 'writeFile') {
+      const writeFile = fsp.writeFile;
+      vi.spyOn(fsp, 'writeFile').mockImplementationOnce(async (...args) => {
+        reachedWrite();
+        await pendingWrite;
+        await writeFile(...args);
+      });
+    } else {
+      const rename = fsp.rename;
+      vi.spyOn(fsp, 'rename').mockImplementationOnce(async (...args) => {
+        reachedWrite();
+        await pendingWrite;
+        await rename(...args);
+      });
+    }
+    const saving = setProviderShareCredentialConsent('share-2', 'global', true).catch((error: unknown) => error);
+    const queued = setProviderShareCredentialConsent('queued', 'global', true).catch((error: unknown) => error);
+    let revoking: Promise<void> | undefined;
+    try {
+      await writing;
+      invalidateProviderShareGuestPrefsCache();
+      next.invalidateProviderShareGuestPrefsCache();
+      const linkSpy = vi.spyOn(fsp, 'link');
+      let revoked = false;
+      revoking = next.setProviderShareCredentialConsent('share-1', 'global', false).then(() => { revoked = true; });
+      // 新持有者已经尝试拿写锁，但旧 rename 完成前不能确认已保存。
+      await vi.waitFor(() => expect(linkSpy).toHaveBeenCalledWith(expect.anything(), `${file()}.lock`));
+      expect(revoked).toBe(false);
+      expect(Object.keys(stored().shares)).toEqual(['share-1']);
+    } finally {
+      finishWrite();
+      await Promise.all([saving, queued, revoking]);
+    }
+    expect(await saving).toBeInstanceOf(Error);
+    expect(await queued).toBeInstanceOf(Error);
+    // 已提交给 OS 的 rename 可以完成，但必须在新实例重读和撤销之前完成。
+    expect(Object.keys(stored().shares)).toEqual(operation === 'rename' ? ['share-2'] : []);
+    expect(next.isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    expect(fs.readdirSync(path.dirname(file()))).toEqual(['provider-share-guest-prefs.json']);
+  });
+
+  it.each(['set', 'forget', 'prune'] as const)('reads the current file under the lock before %s instead of restoring stale trust', async (operation) => {
+    await setProviderShareCredentialConsent('share-1', 'global', true);
+    await setProviderShareCredentialConsent('share-2', 'global', true);
+    const next = await anotherInstance();
+    await next.setProviderShareCredentialConsent('share-1', 'global', false);
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+    if (operation === 'set') await setProviderShareCredentialConsent('share-3', 'global', true);
+    else if (operation === 'forget') await forgetProviderShareGuestPrefs('share-2');
+    else await pruneProviderShareGuestPrefs(new Set(['share-1']), ['global']);
+    expect(Object.keys(stored().shares)).toEqual(operation === 'set' ? ['share-2', 'share-3'] : []);
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+  });
+
+  it.each(['busy', 'unavailable'] as const)('fails closed when the cross-process lock is %s', async (reason) => {
+    await setProviderShareCredentialConsent('kept', 'global', true);
+    vi.spyOn(crossProcessLock, 'withSecurityBoundaryLock').mockImplementationOnce(async (_file, _options, run) => run({ held: false, reason }));
+    const writeSpy = vi.spyOn(fsp, 'writeFile');
+
+    await expect(setProviderShareCredentialConsentFromIpc('share-1', 'global', true)).rejects.toMatchObject({ code: 'INTERNAL' });
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(Object.keys(stored().shares)).toEqual(['kept']);
     expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
   });
 });

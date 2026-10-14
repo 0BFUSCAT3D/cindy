@@ -16,6 +16,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { createLogger } from '../logger.js';
+import { withSecurityBoundaryLock } from './crossProcessLock.js';
 
 const log = createLogger('provider-share:guest-prefs');
 
@@ -38,18 +39,21 @@ let resolvePath: (() => string) | null = null;
 let cache: { file: string | null; shares: Map<string, GuestPrefRecord> } | null = null;
 let writes: Promise<void> = Promise.resolve();
 let pendingWrites = 0;
+let generation = 0;
 
 /** 由本机接线在启动时提供文件位置(按当前账号解析)；传 null 回到只在内存里。 */
 export function configureProviderShareGuestPrefs(options: { resolvePath: (() => string) | null }): void {
   resolvePath = options.resolvePath;
-  cache = null;
+  invalidateProviderShareGuestPrefsCache();
 }
 
 /**
  * 共享 userData 的另一个 Desktop 实例可能已经改写了同一份偏好文件；
- * device-link 持有权切换时必须丢掉本实例缓存，接管后重新从盘上读取。
+ * device-link 持有权切换时必须丢掉本实例缓存，并使排队/在途写入失效。
+ * 已经交给文件系统的 rename 无法取消，由跨进程锁保证它先于新持有者的写入完成。
  */
 export function invalidateProviderShareGuestPrefsCache(): void {
+  generation += 1;
   cache = null;
 }
 
@@ -75,9 +79,7 @@ function parse(raw: string): Map<string, GuestPrefRecord> {
   return shares;
 }
 
-/** 当前账号的偏好；账号(文件位置)变了就重读。读不到按没有偏好处理。 */
-function load(file = currentFile()): Map<string, GuestPrefRecord> {
-  if (cache && cache.file === file) return cache.shares;
+function readFile(file: string | null): Map<string, GuestPrefRecord> {
   let shares = new Map<string, GuestPrefRecord>();
   if (file) {
     try {
@@ -88,17 +90,41 @@ function load(file = currentFile()): Map<string, GuestPrefRecord> {
       }
     }
   }
+  return shares;
+}
+
+/** 当前账号的偏好；账号(文件位置)变了就重读。读不到按没有偏好处理。 */
+function load(file = currentFile()): Map<string, GuestPrefRecord> {
+  if (cache && cache.file === file) return cache.shares;
+  const shares = readFile(file);
   if (currentFile() === file) cache = { file, shares };
   return shares;
 }
 
 function persist(file: string | null, update: (shares: Map<string, GuestPrefRecord>) => boolean): Promise<void> {
+  const expectedGeneration = generation;
+  const assertCurrent = () => {
+    if (generation !== expectedGeneration) throw new Error('Provider share preferences changed during save');
+  };
   pendingWrites += 1;
   const write = writes.then(async () => {
-    const shares = new Map(load(file));
-    if (!update(shares)) return;
-    if (file) await writeFile(file, { version: 1, shares: Object.fromEntries(shares) });
-    if (currentFile() === file) cache = { file, shares };
+    assertCurrent();
+    const commit = async () => {
+      assertCurrent();
+      // 必须在跨进程锁内重读，不能把旧实例缓存中的授权写回新持有者的文件。
+      const shares = new Map(file ? readFile(file) : load(file));
+      if (update(shares) && file) {
+        await writeFile(file, { version: 1, shares: Object.fromEntries(shares) }, assertCurrent);
+      }
+      assertCurrent();
+      if (currentFile() === file) cache = { file, shares };
+    };
+    if (!file) return commit();
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await withSecurityBoundaryLock(`${file}.lock`, { label: 'provider-share-guest-prefs' }, async (status) => {
+      if (!status.held) throw new Error('Provider share preferences lock is busy or unavailable');
+      await commit();
+    });
   });
   writes = write.catch((error) => {
     log.warn('guest prefs write failed', { error: error instanceof Error ? error.message : String(error) });
@@ -108,11 +134,11 @@ function persist(file: string | null, update: (shares: Map<string, GuestPrefReco
   return write;
 }
 
-async function writeFile(file: string, snapshot: StoredPrefs): Promise<void> {
+async function writeFile(file: string, snapshot: StoredPrefs, assertCurrent: () => void): Promise<void> {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.mkdir(path.dirname(file), { recursive: true });
   try {
     await fsp.writeFile(tmp, JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 });
+    assertCurrent();
     await fsp.rename(tmp, file);
   } finally {
     await fsp.rm(tmp, { force: true }).catch(() => undefined);
@@ -172,7 +198,7 @@ export function flushProviderShareGuestPrefs(): Promise<void> {
 /** 仅测试用：回到初始状态。 */
 export function resetProviderShareGuestPrefsForTests(): void {
   resolvePath = null;
-  cache = null;
+  invalidateProviderShareGuestPrefsCache();
   writes = Promise.resolve();
   pendingWrites = 0;
 }
