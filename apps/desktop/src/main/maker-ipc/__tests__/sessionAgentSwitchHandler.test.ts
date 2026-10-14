@@ -1419,7 +1419,12 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
       applyNow: true,
       providerGroupRelocation: true,
     })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
-    for (const h of [userMove, staged, otherModel, otherEngine]) expect(h.calls).toEqual([]);
+    const leadLocalMove = relocationHarness({ orcaRole: 'lead', agentDeviceId: null });
+    await expect(performSessionAgentSwitch(leadLocalMove.deps, {
+      ...backToTaskComputer,
+      agentDeviceId: 'office-pc',
+    })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    for (const h of [userMove, staged, otherModel, otherEngine, leadLocalMove]) expect(h.calls).toEqual([]);
   });
 
   it('协同 Lead:Agent 在另一台电脑时可登记切回本机;Worker 与换到其它电脑仍拒绝', async () => {
