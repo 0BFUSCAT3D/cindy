@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { mapExecServerParams, mapExecServerResult, execServerActions } from '../../controller/execServerRelay';
 import { RemoteExecutor } from '../executor';
 import { ExecutorGate } from '../gate';
+import { resolveExecutorShell, runOnce } from '../shell';
 import { ExecutorWorkspace, projectPathText } from '../workspace';
 import { createReverseHttpRouter } from '../../controller/router';
 
@@ -152,6 +153,25 @@ describe('virtual workspace', () => {
     const command = 'cat "' + path.win32.join(virtual, '目录 空格') + '/' + expression + '"';
     expect(workspace.mapCommand(command))
       .toBe('cat "' + project.replace(/\\/g, '/') + '/目录 空格/' + expression + '"');
+  });
+
+  it.each(['\\"; printf UNEXPECTED; #', '\\\\\\"; printf UNEXPECTED; #', '\\$file', '\\' + String.fromCharCode(96) + 'literal'])('preserves shell escapes after a spaced Windows path: %s', (suffix) => {
+    const virtual = 'C:\\Agent\\workspace';
+    const { project, workspace } = setup(virtual);
+    const command = 'printf \'%s\\n\' "' + virtual + '\\dir space\\safe' + suffix + '"';
+    expect(workspace.mapCommand(command))
+      .toBe('printf \'%s\\n\' "' + project.replace(/\\/g, '/') + '/dir space/safe' + suffix + '"');
+  });
+
+  it.skipIf(resolveExecutorShell().dialect !== 'bash')('keeps escaped command-looking text in one Bash argument after mapping', async () => {
+    const virtual = 'C:\\Agent\\workspace';
+    const { project, workspace } = setup(virtual);
+    const command = 'printf \'<%s>\\n\' "' + virtual + '\\dir space\\safe\\"; printf UNEXPECTED; #"';
+    const result = await runOnce(command + '\n' + workspace.mapCommand(command), { cwd: project });
+    expect(result.exitCode).toBe(0);
+    expect(result.output.toString('utf8'))
+      .toBe('<' + virtual + '\\dir space\\safe"; printf UNEXPECTED; #>\n'
+        + '<' + project.replace(/\\/g, '/') + '/dir space/safe"; printf UNEXPECTED; #>\n');
   });
 
   it.each([

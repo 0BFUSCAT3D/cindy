@@ -1,4 +1,5 @@
 /** 远程事件落库和广播前还原文件引用；不改 Agent 的原生会话或执行权限。 */
+import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import type { AgentEvent } from '@cindy/maker-core';
@@ -43,10 +44,12 @@ function localText(value: string, workspace: ExecutorWorkspace): string {
       return mapJsonPathText(value, (decoded, context) => localText(context === 'path' ? workspace.mapAlias(decoded) : decoded, workspace));
     } catch { /* 非 JSON 按文件引用投影。 */ }
   }
-  // Markdown 的代码引用和尖括号文件链接允许空格，需按完整路径还原。
+  // 尖括号链接是明确的完整路径。代码段也可能是命令，含空白时只有已存在的完整
+  // 文件/目录才按单一路径处理；其余回到下方逐 token 投影，保留参数和正文中的斜杠。
   value = value.replace(/\x60([^\x60\r\n]+)\x60|<([^<>\r\n]+)>/g, (literal, code: string | undefined, angle: string | undefined) => {
     const remote = code ?? angle!;
     const local = workspace.mapAlias(remote);
+    if (code !== undefined && local !== remote && /\s/.test(remote) && !fs.existsSync(local)) return literal;
     return local === remote ? literal : code !== undefined ? '\x60' + local + '\x60' : '<' + local + '>';
   });
   // URL 单独解析；HTTP 与媒体仓标识不得被普通路径替换改写。
@@ -164,7 +167,7 @@ export class RemoteEventProjection {
     }
     const terminal = !event.agentMeta?.parentUuid && event.turnScope !== 'background'
       && ['done', 'error', 'compact_boundary'].includes(event.type);
-    const output = event.type === 'text' || (event.turnScope !== 'background' && TEXT_BOUNDARIES.has(event.type))
+    const output = event.type === 'text' || TEXT_BOUNDARIES.has(event.type)
       ? this.flush(terminal ? undefined : stream) : [];
     // agentMeta、session/tool id 和权限回执不经过递归文本改写。
     output.push({ ...event, data: event.type === 'interaction_request' ? event.data : localValue(event.data, this.workspace) });

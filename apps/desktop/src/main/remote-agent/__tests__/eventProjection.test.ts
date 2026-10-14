@@ -81,12 +81,29 @@ describe('remote file references on the task computer', () => {
     const native = virtual.startsWith('C:') ? path.win32 : path.posix;
     const target = native.join(virtual, '中文 空格', 'report.md');
     const local = path.join(real, '中文 空格', 'report.md');
+    fs.mkdirSync(path.dirname(local), { recursive: true });
+    fs.writeFileSync(local, 'generated report');
     const reply = '文件在 ' + '\x60' + target + '\x60' + '，打开[报告](<' + remoteFileUrl(target) + '#L2>)。';
     const output = await eventsFrom(controller, [...reply].map((character) => ({
       type: 'text', source: 'codex', data: { text: character, isFinal: false, agentMessageId: 'message-1' },
     })));
     expect(output.map(text).join('')).toBe('文件在 ' + '\x60' + local + '\x60' + '，打开[报告](<' + pathToFileURL(local).href + '#L2>)。');
     expect(output.every((event) => (event.data as { isFinal: boolean }).isFinal === false)).toBe(true);
+  });
+
+  it.each(['/home/agent/workspace', 'C:\\Agent\\workspace'])('maps inline command paths without rewriting arguments at %s', async (virtual) => {
+    const { real, controller } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const remote = native.join(virtual, 'run.sh');
+    const second = native.join(virtual, 'src', 'input.txt');
+    const output = await eventsFrom(controller, [' --url /api/v1', ' relative/input.txt', ' && cat ' + second].map((suffix) => ({
+      type: 'text', source: 'codex', data: { text: '\x60' + remote + suffix + '\x60', isFinal: true },
+    })));
+    expect(output.map(text)).toEqual([
+      '\x60' + path.join(real, 'run.sh') + ' --url /api/v1\x60',
+      '\x60' + path.join(real, 'run.sh') + ' relative/input.txt\x60',
+      '\x60' + path.join(real, 'run.sh') + ' && cat ' + path.join(real, 'src', 'input.txt') + '\x60',
+    ]);
   });
 
   it('keeps plain text live, flushes unfinished paths before tools and close, and separates message identities', async () => {
@@ -234,6 +251,29 @@ describe('remote file references on the task computer', () => {
     });
   });
 
+  it.each(['tool_use', 'tool_result', 'done', 'error', 'compact_boundary'] as const)('flushes only the matching background stream before %s', async (boundary) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const foreground: AgentEvent = { type: 'text', source: 'pi', data: { text: virtual.slice(0, 12), isFinal: false } };
+    const background: AgentEvent = {
+      type: 'text', source: 'pi', turnScope: 'background', backgroundTurnStartedAt: 1000,
+      data: { text: virtual + '/background.txt', isFinal: false },
+    };
+    const output = await eventsFrom(controller, [
+      foreground, background,
+      { ...background, backgroundTurnStartedAt: 2000, data: { text: virtual.slice(0, 12), isFinal: false } },
+      { ...background, type: boundary, data: {} },
+      { ...foreground, data: { text: virtual.slice(12) + '/foreground.txt ', isFinal: false } },
+      { ...background, backgroundTurnStartedAt: 2000, data: { text: virtual.slice(12) + '/other.txt ', isFinal: false } },
+    ]);
+    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
+      path.join(real, 'background.txt'), boundary,
+      path.join(real, 'foreground.txt') + ' ', path.join(real, 'other.txt') + ' ',
+    ]);
+    expect(output[0]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 1000 });
+    expect(output[3]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 2000 });
+  });
+
   it.each(['claude-code', 'codex', 'pi'] as const)('preserves the calibrated final reply and stream flags for %s', async (source) => {
     const virtual = '/Users/agent/workspace';
     const { real, controller } = setup(virtual);
@@ -254,6 +294,9 @@ describe('remote file references on the task computer', () => {
     const virtual = '/Users/agent/workspace';
     const { real, controller } = setup(virtual);
     const remote = virtual + '/中文 空格/report.md';
+    const local = path.join(real, '中文 空格', 'report.md');
+    fs.mkdirSync(path.dirname(local), { recursive: true });
+    fs.writeFileSync(local, 'generated report');
     const raw = '报告在 \x60' + remote + '\x60 [打开](<' + remoteFileUrl(remote) + '>)';
     const output = await eventsFrom(controller, [
       { type: 'text', source, data: { text: '报告在 \x60/Users/ag', isFinal: false, agentMessageId: 'message' } },
@@ -262,7 +305,6 @@ describe('remote file references on the task computer', () => {
     ]);
     const streamed = output.filter((event) => event.type === 'text' && !(event.data as { isFinal?: boolean }).isFinal).map(text).join('');
     const final = output.find((event) => event.type === 'text' && (event.data as { isFinal?: boolean }).isFinal)!;
-    const local = path.join(real, '中文 空格', 'report.md');
     expect(text(final)).toBe('报告在 \x60' + local + '\x60 [打开](<' + pathToFileURL(local).href + '>)');
     // Claude 的非 isFullText 终态仅在正文仍是其前缀时才会补齐持久消息。
     expect(text(final).startsWith(streamed)).toBe(true);

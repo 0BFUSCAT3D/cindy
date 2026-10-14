@@ -70,13 +70,13 @@ function stripAliasPrefix(input: string, from: string): string | null {
   return null;
 }
 
-/** 引号中的完整路径允许空格；普通文本仍以 shell 分隔符为边界。 */
-function pathTextPattern(aliases: readonly ExecutorPathAlias[], quotedPaths = true): RegExp {
+/** 普通文本逐 token 匹配；命令只匹配前缀，后缀按 shell 引号与转义规则扫描。 */
+function pathTextPattern(aliases: readonly ExecutorPathAlias[], prefixOnly = false): RegExp {
   const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
     .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[/\\\\]'));
   const prefix = '(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])';
-  return new RegExp((quotedPaths ? '([\\x27\\x22])' + prefix + '([/\\\\][^\\r\\n]*?|)\\1|' : '')
-    + '(^|[^A-Za-z0-9_])' + prefix + '([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)', 'gi');
+  return new RegExp('(^|[^A-Za-z0-9_])' + prefix
+    + (prefixOnly ? '' : '([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)'), 'gi');
 }
 
 export function isPathTextField(key: string): boolean {
@@ -315,15 +315,17 @@ export class ExecutorWorkspace {
     if (!aliases.length) return command;
     // 路径尾部遇到引号即止：闭合引号属于外层 shell 语法，吞进路径会被按引号上下文转义
     // ('…mjs' → '…mjs'\'')，留下未闭合的引号。
-    const pattern = pathTextPattern(aliases);
+    const pattern = pathTextPattern(aliases, true);
     const quoteContext = (input: string, end: number): 'none' | 'single' | 'double' => {
       let quote: 'none' | 'single' | 'double' = 'none';
       let escaped = false;
       for (let i = 0; i < end; i += 1) {
         const char = input[i];
         if (escaped) { escaped = false; continue; }
-        if (char === '\\' && quote !== 'single') { escaped = true; continue; }
-        if (quote === 'none' && char === "'") quote = 'single';
+        if (dialect === 'bash' && char === '\\' && (quote === 'none'
+          || (quote === 'double' && /[$\x60"\\\n]/.test(input[i + 1] ?? '')))) { escaped = true; continue; }
+        if (dialect === 'cmd' && char === '^' && quote === 'none') { escaped = true; continue; }
+        if (dialect === 'bash' && quote === 'none' && char === "'") quote = 'single';
         else if (quote === 'none' && char === '"') quote = 'double';
         else if (quote === 'single' && char === "'") quote = 'none';
         else if (quote === 'double' && char === '"') quote = 'none';
@@ -342,19 +344,39 @@ export class ExecutorWorkspace {
         ? "'" + value.replace(/'/g, "'\\''") + "'"
         : value;
     };
-    return command.replace(pattern, (match: string, quoted: string, quotedPrefix: string, quotedSuffix: string, left: string, prefix: string, suffix: string, offset: number, input: string) => {
-      if (quoted) { left = quoted; prefix = quotedPrefix; suffix = quotedSuffix; }
+    let result = '';
+    let end = 0;
+    for (const match of command.matchAll(pattern)) {
+      const [, left, prefix] = match;
+      const start = match.index! + left.length;
+      if (start < end) continue;
       const alias = aliases.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
-      if (!alias) return match;
+      if (!alias) continue;
       const separator = alias.to.includes('\\') ? '\\' : '/';
-      const context = quoteContext(input, offset + left.length);
+      const context = quoteContext(command, start);
       const windowsPath = /^[A-Za-z]:|^[/\\]{2}/.test(prefix);
-      const shellStart = dialect === 'bash' && context !== 'single' ? suffix.search(/[$\x60]|\\(?=[$\x60"\\])/) : -1;
-      const mappedSuffix = dialect === 'bash' && !windowsPath ? suffix : shellStart < 0
-        ? suffix.replace(/[\\/]/g, separator)
-        : suffix.slice(0, shellStart).replace(/[\\/]/g, separator) + suffix.slice(shellStart);
-      return left + quote(alias.to.replace(/[\\/]+$/, ''), context) + mappedSuffix + (quoted || '');
-    });
+      let suffixEnd = start + prefix.length;
+      const suffixStart = suffixEnd;
+      if ((windowsPath || dialect === 'cmd') && /[/\\]/.test(command[suffixEnd] ?? '')) {
+        // 只转换静态路径段。转义、变量与命令替换从原文原样保留，尤其不能把转义
+        // 引号前的反斜杠当成路径分隔符，否则参数中的数据会变成新的 shell 命令。
+        for (; suffixEnd < command.length; suffixEnd += 1) {
+          const char = command[suffixEnd];
+          if (char === '\r' || char === '\n') break;
+          if (context === 'single' && char === "'") break;
+          if (context === 'double' && char === '"') break;
+          if (context === 'none' && /[\s'"\x60;:|&()<>}\]]/.test(char)) break;
+          if (dialect === 'bash' && context !== 'single'
+            && (/[$\x60]/.test(char) || (char === '\\'
+              && (context === 'double' ? /[$\x60"\\\n]/ : /[\s'"$\x60\\;|&()<>]/).test(command[suffixEnd + 1] ?? '')))) break;
+          if (dialect === 'cmd' && /[%^!]/.test(char)) break;
+        }
+      }
+      result += command.slice(end, start) + quote(alias.to.replace(/[\\/]+$/, ''), context)
+        + command.slice(suffixStart, suffixEnd).replace(/[\\/]/g, separator);
+      end = suffixEnd;
+    }
+    return result + command.slice(end);
   }
 
   /** 把 Agent 给的路径解析成本机绝对路径(相对路径以 baseDir / 工作目录为基准)。 */
