@@ -42,6 +42,7 @@ import type { AttachedFile } from '@/lib/fileTypes';
 import type {
   BotGroupAttachment,
   BotGroupMessageView,
+  BotGroupQuoteView,
   BotGroupSendInput,
   BotGroupSendResult,
 } from '../../../shared/botGroupChat';
@@ -65,6 +66,8 @@ export interface BotGroupOutboxDraft {
   draft: string;
   /** Composer-only state put back with the draft (which typed @ picked which teammate). */
   tracked: readonly BotGroupTrackedMention[];
+  /** The 引用回复 picked for this message, put back with the draft; `input.quote` is what goes out. */
+  quote?: BotGroupQuoteView | null;
   files: readonly AttachedFile[];
   /** Scope for burning drawn annotations into images (see botGroupAttachmentScope). */
   attachmentScope: string;
@@ -362,6 +365,8 @@ async function submitOwned(
       update(groupId, clientId, { status: 'sent', messageId: result.messageId, receiptTick: ++tick, baseline: undefined });
       return;
     }
+    // An original that is no longer available is not put back with the draft.
+    if (result.errorCode === 'QUOTE_UNAVAILABLE') update(groupId, clientId, { quote: null });
     errorKey =
       result.errorCode === 'INVALID_PARAMS' && prepared.length > 0
         ? 'bots.groupChat.composer.attachmentsFailed'

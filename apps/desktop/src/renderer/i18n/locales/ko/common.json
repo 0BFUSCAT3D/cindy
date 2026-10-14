@@ -6578,7 +6578,23 @@
         "installLocationPickedPrefix": "선택됨:",
         "installLocationChange": "변경…",
         "bindAfterInstallFailed": "사용자 지정 저장 위치 설정에 실패하여 기본 위치로 되돌렸습니다",
-        "cancel": "취소"
+        "cancel": "취소",
+        "reattachTitle": "이 플러그인의 이전 작업 데이터를 다시 연결할까요?",
+        "reattachDescription": "이 컴퓨터에 이 플러그인을 이전에 설치했을 때의 작업 데이터가 남아 있습니다. 이전에 로컬에서 가져온 후 제거한 버전의 데이터일 수 있습니다. 다시 연결하면 이전 캔버스와 이미지를 이번에 설치한 플러그인에서 계속 사용할 수 있습니다. 연결하지 않으면 빈 상태로 시작하며, 이전 데이터는 이 컴퓨터에 그대로 남습니다.",
+        "reattachConfirm": "다시 연결",
+        "reattachSkip": "연결 안 함",
+        "legacyFoundBanner": "이 컴퓨터에 이 플러그인이 이전에 남긴 작업 데이터({{size}} · 파일 {{count}}개)가 있지만, 현재 설치에서는 사용하지 않고 있습니다.",
+        "legacyReattach": "이전 작업 데이터 다시 연결",
+        "legacyReattachBusy": "다시 연결하는 중…",
+        "legacyReattachConfirmTitle": "이전 작업 데이터를 다시 연결할까요?",
+        "legacyReattachConfirmDescription": "플러그인이 이전 작업 데이터를 사용하게 됩니다. 현재 작업 데이터는 휴지통으로 옮겨져 30일간 보관된 후 완전히 삭제됩니다.",
+        "legacyReattachConfirmText": "다시 연결",
+        "legacyReattachDone": "이전 작업 데이터를 다시 연결했습니다",
+        "legacyReattachFailed": "다시 연결하지 못했습니다",
+        "legacyReattachNeedsRestart": "이 플러그인의 캐시를 지우지 못했습니다. Cindy를 다시 시작한 뒤 플러그인을 사용하세요.",
+        "legacyInUseBanner": "이 컴퓨터의 다른 설치(예: 로컬 버전)가 이 플러그인의 이전 작업 데이터를 아직 사용하고 있습니다. 그 설치를 제거하면 여기에서 다시 연결할 수 있습니다.",
+        "legacyFoundUnknownBanner": "이 컴퓨터에 이 플러그인이 이전에 남긴 것으로 보이는 작업 데이터({{size}} · 파일 {{count}}개)가 있습니다. 출처 기록이 없으며 현재 설치에서는 사용하지 않고 있습니다.",
+        "legacyReattachUnknownSource": "이 작업 데이터에는 출처 기록이 없습니다. 수동이나 스크립트로 복사되었을 수 있습니다. 이 플러그인의 데이터가 맞는지 확인하세요."
       },
       "updateConfirm": {
         "title": "플러그인 \"{{name}}\"을(를) 업데이트할까요?",
@@ -8967,6 +8983,14 @@
         "edit": "편집",
         "editBlocked": "입력란에 내용이 있습니다. 먼저 보내거나 지운 다음 이 메시지를 편집하세요"
       },
+      "quote": {
+        "replyingTo": "{{name}} 인용",
+        "remove": "인용 취소",
+        "jumpLabel": "{{name}}님의 원본 메시지로 이동: {{summary}}",
+        "deleted": "원본 메시지가 삭제되었습니다",
+        "unavailable": "볼 수 있는 기록에서 원본 메시지를 찾을 수 없습니다",
+        "attachments": "{{name}} 등 {{total}}개"
+      },
       "timeline": {
         "loadEarlier": "이전 메시지 보기",
         "loadEarlierFailed": "이전 메시지를 불러오지 못했습니다. 다시 시도하세요",
@@ -9065,7 +9089,8 @@
         "requestTimeout": "아직 작업 결과를 확인하지 못했어요. 새로고침하여 확인한 후 다시 시도해 주세요.",
         "permissionDenied": "이 그룹을 관리할 권한이 없어요.",
         "serviceError": "채팅 서비스에서 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
-        "groupArchived": "보관된 그룹에서는 이 작업을 수행할 수 없어요."
+        "groupArchived": "보관된 그룹에서는 이 작업을 수행할 수 없어요.",
+        "quoteUnavailable": "인용한 메시지가 삭제되었거나 더 이상 볼 수 없습니다. 인용을 해제했으니 다시 보내세요."
       },
       "organizer": "담당자",
       "plan": {
@@ -9097,9 +9122,11 @@
         "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
       },
       "server": {
-        "reply": "답글",
+        "quoteReply": "인용 답글",
+        "startTopic": "스레드 만들기",
+        "openTopic": "스레드 보기 · 답글 {{count}}개",
+        "topic": "스레드",
         "replies": "답글",
-        "replyCount": "답글 {{count}}개",
         "replyPlaceholder": "이 메시지에 답글을 쓰세요. @로 파트너를 멘션할 수 있어요…",
         "sendReply": "답글 보내기",
         "addReaction": "이모지 반응 추가",
@@ -9702,6 +9729,21 @@
       "addRemoteProject": "원격 프로젝트 추가"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "무료",
+        "estimated": "약 {{price}}",
+        "startingAt": "{{price}}부터",
+        "units": {
+          "token": "토큰",
+          "character": "문자",
+          "image": "장",
+          "second": "초",
+          "minute": "분",
+          "request": "요청",
+          "megapixel": "메가픽셀",
+          "megapixelSecond": "메가픽셀·초"
+        }
+      },
       "budgetNeedsApiKey": "이 모델은 설정에서 API key를 구성해야 사용할 수 있습니다",
       "paymentRequired": {
         "badge": "유료",

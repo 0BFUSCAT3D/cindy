@@ -17,6 +17,10 @@
  * 负责人出安排（`division: true`），发出后标签清掉。安排进行中或等继续时不能再安排新的，
  * 菜单项置灰并说明原因。占位文字跟随未结束的安排，告诉用户这时说的话会交给谁。
  *
+ * 「引用回复」（§10）：页面持有当前群的待发引用，输入框上方显示紧凑的引用块，× 或 Esc
+ * 只取消引用、不动正文。引用随发送一起交给 main（只带消息 id，摘要由 main 从服务器读），
+ * 也是幂等键的一部分；发送失败时与正文一同放回，原消息已不可用时只放回正文。
+ *
  * 附件（§3.1）与普通聊天同一套：托盘状态来自页面持有的 `useAttachments`（整页拖入也能
  * 加），缩略图与拒收提示复用 ComposerAttachments；「+」→「添加文件、图片或视频…」、粘贴
  * 文件或截图都进托盘。有附件时可以不写字。发送时这一批随消息离开托盘
@@ -62,8 +66,11 @@ import {
   BOT_GROUP_ATTACHMENTS_MAX,
   BOT_GROUP_MESSAGE_MAX_CHARS,
   type BotGroupMemberView,
+  type BotGroupQuoteDisplay,
+  type BotGroupQuoteView,
 } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
+import { BotGroupQuotePreview } from './BotGroupQuote';
 import { botGroupAttachmentSignature } from './botGroupAttachments';
 import {
   filterBotGroupMentionCandidates,
@@ -120,6 +127,8 @@ export function BotGroupComposer({
   attachments: attachmentState,
   attachmentScope,
   dragOver = false,
+  quote = null,
+  onQuoteChange,
   onSending,
 }: {
   groupId: string;
@@ -132,6 +141,9 @@ export function BotGroupComposer({
   attachmentScope: string;
   /** Files are being dragged over the page: the card shows the same drop hint as a task's. */
   dragOver?: boolean;
+  /** 引用回复 waiting to go with the next message, and how its original reads right now. */
+  quote?: { view: BotGroupQuoteView; display: BotGroupQuoteDisplay } | null;
+  onQuoteChange?: (quote: BotGroupQuoteView | null) => void;
   /** Called when a message enters the outbox, so the view can follow it to the bottom. */
   onSending: () => void;
 }) {
@@ -163,6 +175,9 @@ export function BotGroupComposer({
   const selectionRef = useRef({ start: 0, end: 0 });
   const attachmentsRef = useRef(attachmentState.attachments);
   attachmentsRef.current = attachmentState.attachments;
+  const quoteRef = useRef(quote?.view ?? null);
+  quoteRef.current = quote?.view ?? null;
+  const quotedMessageId = quote?.view.messageId ?? null;
   const focusInputOnMenuCloseRef = useRef(false);
   const pendingCaretRef = useRef<number | null>(null);
   const stoppingRef = useRef(false);
@@ -197,6 +212,11 @@ export function BotGroupComposer({
     (trimmed.length > 0 || attachmentCount > 0) && !tooLong && !tooManyAttachments && hasMembers;
   const showStop = running && trimmed.length === 0 && attachmentCount === 0;
   const divisionBlocked = isBotGroupDivisionBlocked(planState);
+
+  // Picking 引用回复 brings the caret here, ready to type the reply.
+  useEffect(() => {
+    if (quotedMessageId) textareaRef.current?.focus();
+  }, [quotedMessageId]);
 
   // Auto-grow; the CSS max height caps it and turns on scrolling.
   useLayoutEffect(() => {
@@ -242,6 +262,8 @@ export function BotGroupComposer({
   restoreAttachmentsRef.current = attachmentState.restoreFiles;
   const tRef = useRef(t);
   tRef.current = t;
+  const onQuoteChangeRef = useRef(onQuoteChange);
+  onQuoteChangeRef.current = onQuoteChange;
   useEffect(
     () =>
       registerBotGroupComposer(groupId, {
@@ -254,6 +276,11 @@ export function BotGroupComposer({
           const restoredDivision = entry.input.division === true;
           divisionRef.current = restoredDivision;
           if (restoredDivision) setDivision(true);
+          // A quote picked meanwhile wins.
+          if (entry.quote && !quoteRef.current) {
+            quoteRef.current = entry.quote;
+            onQuoteChangeRef.current?.(entry.quote);
+          }
           if (entry.files.length > 0) attachmentsRef.current = restoreAttachmentsRef.current(entry.files);
           return true;
         },
@@ -276,13 +303,28 @@ export function BotGroupComposer({
       tracked,
     });
     // Every field main gets is part of the attempt's identity (the tag changes what main does
-    // with the text), and so are the attachments that go with it.
-    const fields = { groupId, text: trimmed, mentions, ...(division ? { division: true } : {}) };
+    // with the text, the quote is part of the message), and so are the attachments that go with it.
+    const sentQuote = quoteRef.current;
+    const fields = {
+      groupId,
+      text: trimmed,
+      mentions,
+      ...(division ? { division: true } : {}),
+      ...(sentQuote ? { quote: { messageId: sentQuote.messageId } } : {}),
+    };
     const signature = botGroupSendSignature({ ...fields, clientId: '' }, botGroupAttachmentSignature(files));
     const clientId = attemptRef.current?.signature === signature ? attemptRef.current.clientId : crypto.randomUUID();
     // The outbox owns this attempt now; a failure hands it back through `restore`.
     attemptRef.current = null;
-    enqueueBotGroupSend({ input: { ...fields, clientId }, signature, draft: text, tracked, files, attachmentScope });
+    enqueueBotGroupSend({
+      input: { ...fields, clientId },
+      signature,
+      draft: text,
+      tracked,
+      quote: sentQuote,
+      files,
+      attachmentScope,
+    });
     // Clear at once like any chat, so the next message can be written while this one
     // goes out. The batch leaves the tray without deleting its files: the message has them.
     textRef.current = '';
@@ -292,6 +334,10 @@ export function BotGroupComposer({
     setDismissedStart(null);
     setDivision(false);
     divisionRef.current = false;
+    if (sentQuote) {
+      quoteRef.current = null;
+      onQuoteChange?.(null);
+    }
     if (files.length > 0) {
       attachmentState.clearFiles();
       attachmentsRef.current = [];
@@ -455,6 +501,15 @@ export function BotGroupComposer({
               </span>
             </div>
           ) : null}
+          {quote && onQuoteChange ? (
+            <BotGroupQuotePreview
+              display={quote.display}
+              onRemove={() => {
+                onQuoteChange(null);
+                textareaRef.current?.focus();
+              }}
+            />
+          ) : null}
           {attachmentCount > 0 ? (
             <ThumbnailStrip
               attachments={attachmentState.attachments}
@@ -513,6 +568,12 @@ export function BotGroupComposer({
                   setDismissedStart(query.start);
                   return;
                 }
+              }
+              // Esc takes the quote off before anything else it would close; the text stays.
+              if (event.key === 'Escape' && quote && onQuoteChange) {
+                event.preventDefault();
+                onQuoteChange(null);
+                return;
               }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
