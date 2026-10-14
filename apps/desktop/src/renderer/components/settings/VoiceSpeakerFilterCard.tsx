@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2 } from 'lucide-react';
 import {
   SPEAKER_GATE_STRICTNESS_VALUES,
   SPEAKER_MODEL_TOTAL_BYTES,
@@ -10,6 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { SegmentedControl } from '@/components/ui/segmented-control';
+import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { useVoiceSpeakerFilterStatus } from '@/hooks/useVoiceSpeakerFilterStatus';
 import { createLogger } from '@/lib/logger';
@@ -264,7 +264,7 @@ function ModelRow({ status, onDownload }: { status: VoiceSpeakerFilterStatus; on
     return (
       <div className="flex items-center justify-between gap-5">
         <p className="flex min-w-0 items-center gap-2 text-13 text-[var(--settings-section-title)]">
-          <Loader2 size={14} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+          <Spinner size={14} aria-hidden />
           {t('settings.voiceInput.speakerFilter.model.downloading', {
             done: formatMegabytes(status.downloadedBytes),
             total,
