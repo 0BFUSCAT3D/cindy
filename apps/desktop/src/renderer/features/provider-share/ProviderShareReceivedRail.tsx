@@ -6,7 +6,7 @@
  *
  * 模型清单读分享者电脑上分享给我的那份目录(`share:<id>`)，只读：开关与排序由分享者决定。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { readProviderShareGroupSize, type ProviderShareReceived } from '@cindy/device-link';
@@ -146,33 +146,41 @@ function useCredentialConsent(shareId: string) {
   const { t } = useTranslation();
   const [skip, setSkip] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
+  const revision = useRef(0);
   useEffect(() => {
-    let cancelled = false;
+    const currentRevision = ++revision.current;
     setSkip(null);
+    setSaving(false);
     void window.electronAPI.providerShare
       .command({ action: 'get-credential-consent', shareId })
       .then((view) => {
-        if (!cancelled) setSkip(view.skip === true);
+        if (revision.current === currentRevision) setSkip(view.skip === true);
       })
       .catch(() => {
-        if (!cancelled) setSkip(false);
+        if (revision.current === currentRevision) setSkip(false);
       });
     return () => {
-      cancelled = true;
+      revision.current += 1;
     };
   }, [shareId]);
   const update = (next: boolean) => {
+    const currentRevision = revision.current;
     const previous = skip;
     setSkip(next);
     setSaving(true);
     void window.electronAPI.providerShare
       .command({ action: 'set-credential-consent', shareId, skip: next })
-      .then((view) => setSkip(view.skip === true))
+      .then((view) => {
+        if (revision.current === currentRevision) setSkip(view.skip === true);
+      })
       .catch(() => {
+        if (revision.current !== currentRevision) return;
         setSkip(previous);
         toast.error(t('providerShare.received.credentialConsent.writeFailed'));
       })
-      .finally(() => setSaving(false));
+      .finally(() => {
+        if (revision.current === currentRevision) setSaving(false);
+      });
   };
   return { skip, saving, update };
 }

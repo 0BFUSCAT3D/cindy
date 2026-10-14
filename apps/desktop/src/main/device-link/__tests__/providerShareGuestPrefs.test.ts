@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -34,11 +35,77 @@ beforeEach(() => {
 
 afterEach(async () => {
   await flushProviderShareGuestPrefs();
+  vi.restoreAllMocks();
   resetProviderShareGuestPrefsForTests();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 describe('provider share guest prefs', () => {
+  it.each(['mkdir', 'writeFile', 'rename'] as const)('does not publish or retry a failed trust update when %s fails', async (operation) => {
+    await setProviderShareCredentialConsent('kept', 'global', true);
+    vi.spyOn(fsp, operation).mockRejectedValueOnce(new Error('disk unavailable'));
+
+    await expect(setProviderShareCredentialConsent('failed', 'global', true)).rejects.toThrow('disk unavailable');
+    expect(isProviderShareCredentialConsentSkipped('failed')).toBe(false);
+    expect(isProviderShareCredentialConsentSkipped('kept')).toBe(true);
+
+    await setProviderShareCredentialConsent('saved', 'cn', true);
+    expect(stored().shares).toEqual({
+      kept: { region: 'global', skipCredentialConsent: true },
+      saved: { region: 'cn', skipCredentialConsent: true },
+    });
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('failed')).toBe(false);
+  });
+
+  it('keeps the saved trust state when disabling it cannot be persisted', async () => {
+    await setProviderShareCredentialConsent('share-1', 'global', true);
+    vi.spyOn(fsp, 'rename').mockRejectedValueOnce(new Error('disk unavailable'));
+
+    await expect(setProviderShareCredentialConsent('share-1', 'global', false)).rejects.toThrow('disk unavailable');
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+  });
+
+  it('publishes trust only after the atomic write succeeds', async () => {
+    const rename = fsp.rename;
+    let finishWrite!: () => void;
+    const pendingWrite = new Promise<void>((resolve) => { finishWrite = resolve; });
+    const renameSpy = vi.spyOn(fsp, 'rename').mockImplementationOnce(async (source, target) => {
+      await pendingWrite;
+      await rename(source, target);
+    });
+    const saving = setProviderShareCredentialConsent('share-1', 'global', true);
+    try {
+      await vi.waitFor(() => expect(renameSpy).toHaveBeenCalled());
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    } finally {
+      finishWrite();
+      await saving;
+    }
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+  });
+
+  it('preserves independent concurrent updates and later removals', async () => {
+    await Promise.all([
+      setProviderShareCredentialConsent('share-1', 'global', true),
+      setProviderShareCredentialConsent('share-2', 'cn', true),
+    ]);
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+    expect(isProviderShareCredentialConsentSkipped('share-2')).toBe(true);
+
+    const saving = setProviderShareCredentialConsent('share-3', 'global', true);
+    const forgetting = forgetProviderShareGuestPrefs('share-3');
+    const pruning = pruneProviderShareGuestPrefs(new Set(['share-1']), ['global']);
+    await Promise.all([saving, forgetting, pruning]);
+    await flushProviderShareGuestPrefs();
+    expect(stored().shares).toEqual({
+      'share-1': { region: 'global', skipCredentialConsent: true },
+      'share-2': { region: 'cn', skipCredentialConsent: true },
+    });
+  });
+
   it('defaults to confirming, stores only the override per account, and survives a restart', async () => {
     expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
 
@@ -67,17 +134,17 @@ describe('provider share guest prefs', () => {
     await setProviderShareCredentialConsent('kept', 'global', true);
 
     // 本区域名单权威、对方区域还没加载：只清本区域里消失的那条。
-    pruneProviderShareGuestPrefs(new Set(['kept']), ['global']);
+    await pruneProviderShareGuestPrefs(new Set(['kept']), ['global']);
     expect(isProviderShareCredentialConsentSkipped('same-region')).toBe(false);
     expect(isProviderShareCredentialConsentSkipped('cross-region')).toBe(true);
     expect(isProviderShareCredentialConsentSkipped('kept')).toBe(true);
 
     // 没有任何已确认区域(刚启动 / 读失败)：什么都不清。
-    pruneProviderShareGuestPrefs(new Set(), []);
+    await pruneProviderShareGuestPrefs(new Set(), []);
     expect(isProviderShareCredentialConsentSkipped('cross-region')).toBe(true);
     expect(isProviderShareCredentialConsentSkipped('kept')).toBe(true);
 
-    forgetProviderShareGuestPrefs('cross-region');
+    await forgetProviderShareGuestPrefs('cross-region');
     expect(isProviderShareCredentialConsentSkipped('cross-region')).toBe(false);
 
     await flushProviderShareGuestPrefs();

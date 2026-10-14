@@ -37,6 +37,7 @@ const SHARE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/;
 let resolvePath: (() => string) | null = null;
 let cache: { file: string | null; shares: Map<string, GuestPrefRecord> } | null = null;
 let writes: Promise<void> = Promise.resolve();
+let pendingWrites = 0;
 
 /** 由本机接线在启动时提供文件位置(按当前账号解析)；传 null 回到只在内存里。 */
 export function configureProviderShareGuestPrefs(options: { resolvePath: (() => string) | null }): void {
@@ -67,8 +68,7 @@ function parse(raw: string): Map<string, GuestPrefRecord> {
 }
 
 /** 当前账号的偏好；账号(文件位置)变了就重读。读不到按没有偏好处理。 */
-function load(): Map<string, GuestPrefRecord> {
-  const file = currentFile();
+function load(file = currentFile()): Map<string, GuestPrefRecord> {
   if (cache && cache.file === file) return cache.shares;
   let shares = new Map<string, GuestPrefRecord>();
   if (file) {
@@ -80,16 +80,22 @@ function load(): Map<string, GuestPrefRecord> {
       }
     }
   }
-  cache = { file, shares };
+  if (currentFile() === file) cache = { file, shares };
   return shares;
 }
 
-function persist(file: string | null, shares: Map<string, GuestPrefRecord>): Promise<void> {
-  if (!file) return Promise.resolve();
-  const snapshot: StoredPrefs = { version: 1, shares: Object.fromEntries(shares) };
-  const write = writes.then(() => writeFile(file, snapshot));
+function persist(file: string | null, update: (shares: Map<string, GuestPrefRecord>) => boolean): Promise<void> {
+  pendingWrites += 1;
+  const write = writes.then(async () => {
+    const shares = new Map(load(file));
+    if (!update(shares)) return;
+    if (file) await writeFile(file, { version: 1, shares: Object.fromEntries(shares) });
+    if (currentFile() === file) cache = { file, shares };
+  });
   writes = write.catch((error) => {
     log.warn('guest prefs write failed', { error: error instanceof Error ? error.message : String(error) });
+  }).finally(() => {
+    pendingWrites -= 1;
   });
   return write;
 }
@@ -114,39 +120,40 @@ export function isProviderShareCredentialConsentSkipped(shareId: string): boolea
 export async function setProviderShareCredentialConsent(shareId: string, region: Region, skip: boolean): Promise<void> {
   if (!SHARE_ID.test(shareId)) throw new Error('Invalid provider share id');
   const file = currentFile();
-  const shares = new Map(load());
-  if (skip) shares.set(shareId, { region, skipCredentialConsent: true });
-  else shares.delete(shareId);
-  cache = { file, shares };
-  await persist(file, shares);
+  await persist(file, (shares) => {
+    if (!skip) return shares.delete(shareId);
+    if (shares.get(shareId)?.region === region) return false;
+    shares.set(shareId, { region, skipCredentialConsent: true });
+    return true;
+  });
+}
+
+/** 绑定退出请求发起时的账号文件，完成退出后只清理该账号的偏好。 */
+export function captureProviderShareGuestPrefsRemoval(shareId: string): () => Promise<void> {
+  const file = currentFile();
+  return () => persist(file, (shares) => shares.delete(shareId));
 }
 
 /** 受邀者退出了这个分享：忘掉它的偏好。 */
-export function forgetProviderShareGuestPrefs(shareId: string): void {
-  const file = currentFile();
-  const shares = load();
-  if (!shares.has(shareId)) return;
-  const next = new Map(shares);
-  next.delete(shareId);
-  cache = { file, shares: next };
-  void persist(file, next);
+export function forgetProviderShareGuestPrefs(shareId: string): Promise<void> {
+  return captureProviderShareGuestPrefsRemoval(shareId)();
 }
 
 /**
  * 按权威名单清理：只清 `confirmedRegions` 里的区域中已经不在 `present` 的分享，其它区域(还没加载)
  * 的记录原样保留。
  */
-export function pruneProviderShareGuestPrefs(present: ReadonlySet<string>, confirmedRegions: readonly Region[]): void {
+export function pruneProviderShareGuestPrefs(present: ReadonlySet<string>, confirmedRegions: readonly Region[]): Promise<void> | void {
   if (confirmedRegions.length === 0) return;
   const file = currentFile();
-  const shares = load();
-  const next = new Map(shares);
-  for (const [shareId, record] of shares) {
-    if (confirmedRegions.includes(record.region) && !present.has(shareId)) next.delete(shareId);
-  }
-  if (next.size === shares.size) return;
-  cache = { file, shares: next };
-  void persist(file, next);
+  if (pendingWrites === 0 && ![...load(file)].some(([shareId, record]) => confirmedRegions.includes(record.region) && !present.has(shareId))) return;
+  return persist(file, (shares) => {
+    const previousSize = shares.size;
+    for (const [shareId, record] of shares) {
+      if (confirmedRegions.includes(record.region) && !present.has(shareId)) shares.delete(shareId);
+    }
+    return shares.size !== previousSize;
+  }).catch(() => undefined);
 }
 
 /** 等最近一次写入落盘(测试与退出前用)。 */
@@ -159,4 +166,5 @@ export function resetProviderShareGuestPrefsForTests(): void {
   resolvePath = null;
   cache = null;
   writes = Promise.resolve();
+  pendingWrites = 0;
 }

@@ -43,14 +43,21 @@ vi.mock('../providerShareApi.js', () => ({
       if (state.receivedError) throw new Error('offline');
       return state.received;
     },
-    leave: async (memberId: string) => {
+    leave: vi.fn(async (memberId: string) => {
       state.received = state.received.filter((share) => share.memberId !== memberId);
-    },
+    }),
   },
   fetchIdentityCard: vi.fn(),
   sha256Hex: (value: string) => value,
   providerShareOwnerKey: () => state.scope,
 }));
+vi.mock('../providerShareCrossRegion.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../providerShareCrossRegion.js')>(),
+  crossRegionLeave: vi.fn(async () => false),
+}));
+
+import { providerShareApi } from '../providerShareApi';
+import { crossRegionLeave } from '../providerShareCrossRegion';
 
 import {
   applyLocalMemberChange,
@@ -101,6 +108,10 @@ beforeEach(() => {
   state.owned = [];
   state.received = [];
   state.receivedError = false;
+  vi.mocked(crossRegionLeave).mockReset().mockResolvedValue(false);
+  vi.mocked(providerShareApi.leave).mockReset().mockImplementation(async (memberId) => {
+    state.received = state.received.filter((entry) => entry.memberId !== memberId);
+  });
 });
 afterEach(() => {
   stopProviderShareHost();
@@ -247,9 +258,10 @@ describe('provider share guest routing', () => {
 
   describe('local credential-consent preference', () => {
     let dir: string;
+    const prefsFile = () => path.join(dir, state.scope === 'cloud:owner:1' ? 'account-a' : 'account-b', 'provider-share-guest-prefs.json');
     beforeEach(() => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-share-guest-prefs-'));
-      configureProviderShareGuestPrefs({ resolvePath: () => path.join(dir, 'provider-share-guest-prefs.json') });
+      configureProviderShareGuestPrefs({ resolvePath: prefsFile });
     });
     afterEach(async () => {
       await flushProviderShareGuestPrefs();
@@ -286,6 +298,63 @@ describe('provider share guest routing', () => {
 
       await leaveProviderShare('m1');
       expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    });
+
+    it('does not dispatch a same-region leave using the account that replaced the initiating account', async () => {
+      state.received = [received('active')];
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+      await refreshReceivedShares('test');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+      let finishCheck!: (crossRegion: boolean) => void;
+      vi.mocked(crossRegionLeave).mockReturnValueOnce(new Promise<boolean>((resolve) => { finishCheck = resolve; }));
+      const leaving = leaveProviderShare('m1');
+      state.scope = 'cloud:other:2';
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+      finishCheck(false);
+
+      await expect(leaving).rejects.toThrow('DEVICE_LINK_NOT_CONNECTED');
+      expect(providerShareApi.leave).not.toHaveBeenCalled();
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+      state.scope = 'cloud:owner:1';
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+    });
+
+    it.each([false, true])('cleans the initiating account after switching accounts during leave (cross-region: %s)', async (crossRegion) => {
+      state.received = [received('active')];
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+      await refreshReceivedShares('test');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+      const initiatingFile = prefsFile();
+      let finishLeave!: () => void;
+      const response = new Promise<void>((resolve) => { finishLeave = resolve; });
+      if (crossRegion) {
+        vi.mocked(crossRegionLeave).mockImplementationOnce(async () => {
+          await response;
+          return true;
+        });
+      } else {
+        vi.mocked(providerShareApi.leave).mockImplementationOnce(() => response);
+      }
+      const leaving = leaveProviderShare('m1');
+      await vi.waitFor(() => expect(crossRegion ? crossRegionLeave : providerShareApi.leave).toHaveBeenCalledWith('m1'));
+
+      stopProviderShareGuest();
+      state.scope = 'cloud:other:2';
+      const currentEvents = { changed: vi.fn(), settled: vi.fn() };
+      startProviderShareGuest(currentEvents);
+      await refreshReceivedShares('new-account');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+      currentEvents.changed.mockClear();
+      finishLeave();
+      await leaving;
+      await flushProviderShareGuestPrefs();
+
+      expect(JSON.parse(fs.readFileSync(initiatingFile, 'utf8')).shares).toEqual({});
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+      expect(JSON.parse(fs.readFileSync(prefsFile(), 'utf8')).shares).toEqual({
+        'share-1': { region: 'global', skipCredentialConsent: true },
+      });
+      expect(currentEvents.changed).not.toHaveBeenCalled();
     });
   });
 
