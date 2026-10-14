@@ -150,6 +150,8 @@ import {
 } from '@/state/modelFavorites';
 import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { providerShareFavoriteSource, reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
+import { resetProviderShareStoreForTests } from '@/features/provider-share/providerShareStore';
+import type { ProviderShareCommand } from '../../shared/providerShare';
 
 const devices = [{ deviceId: 'device-c', name: 'Studio' }];
 const C_SOURCE = agentDeviceFavoriteSource({ deviceId: 'device-c', providerId: 'c-open' });
@@ -536,5 +538,40 @@ describe('收藏 / 全部聚合来源，供应商只筛自己的收藏', () => {
     expect(row().querySelector('[data-unified-triple]')?.textContent).toContain('高');
     expect(listModelFavorites()).toEqual(controllerItems);
     expect(invoke.mock.calls.every(([deviceId]) => deviceId === 'device-b')).toBe(true);
+  });
+
+  it('被控电脑收藏了控制端没加载过的跨区分享：按它的区域恢复授权后照常列出', async () => {
+    resetProviderShareStoreForTests();
+    const cn = { ...share('three'), owner: { displayName: 'three', avatarUrl: null, region: 'cn' as const } };
+    catalogs.byDevice['share:three'] = [{
+      ...(catalogs.local[0] as object), remoteInvocationEnabled: true,
+      models: { 'claude-code': [{ id: 'a-model', name: 'Shared three', efforts: ['low', 'high'], defaultEffort: 'high' }] },
+    }];
+    remoteLists['device-b'] = [{ uid: 'home-cn', providerId: providerShareFavoriteSource(cn), modelId: 'a-model', agent: 'cc' }];
+    const command = vi.fn(async (request: ProviderShareCommand) => {
+      if (request.action !== 'received-snapshot') return shares;
+      // Main 只为线索里的区域加载跨区名单；控制端本机收藏只有 global。
+      const withCn = request.favoriteRecovery?.regions.includes('cn') ?? false;
+      return {
+        ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 },
+        confirmedRegions: withCn ? ['global', 'cn'] : ['global'],
+        received: withCn ? [...shares, cn] : shares,
+      };
+    });
+    vi.stubGlobal('electronAPI', {
+      ...(window as unknown as { electronAPI: object }).electronAPI,
+      providerShare: { command, onReceivedChanged: () => () => {} },
+    });
+    renderPanel({ devices: [...allDevices, { deviceId: 'share:three', name: 'three' }], homeDeviceId: 'device-b' }, {
+      deviceId: 'device-b', modelId: 'b-model', currentProviderId: 'b-main',
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(command).toHaveBeenCalledWith({ action: 'received-snapshot', favoriteRecovery: {
+      ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 }, regions: ['global', 'cn'],
+    } });
+    await clickRail('favorites');
+    expect(within(favoritesGroup()).getByText('Shared three')).toBeTruthy();
+    expect(remoteLists['device-b']).toHaveLength(1);
+    resetProviderShareStoreForTests();
   });
 });

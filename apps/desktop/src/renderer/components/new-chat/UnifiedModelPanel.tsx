@@ -1,6 +1,7 @@
 import { useRemoteModelFavorites } from '@/state/useRemoteModelFavorites';
 import {
   parseProviderShareFavoriteSource,
+  providerShareFavoriteRegionsOf,
   useProviderShareFavorites,
   useProviderShareFavoriteSources,
 } from '@/state/providerShareFavorites';
@@ -9,7 +10,10 @@ import {
   LOCAL_MODEL_FAVORITE_STORE,
   useAgentDeviceFavorites,
 } from '@/state/agentDeviceFavorites';
-import { ensureProviderShareReceivedStarted } from '@/features/provider-share/providerShareStore';
+import {
+  ensureProviderShareReceivedStarted,
+  requestProviderShareFavoriteRegions,
+} from '@/features/provider-share/providerShareStore';
 import { toast } from '@/lib/toast';
 import { matchesModelName } from '@/lib/modelDisplayNames';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -422,6 +426,11 @@ export function UnifiedModelPanel({
   useEffect(() => {
     if (isSharedProvider || hasRemoteSources) ensureProviderShareReceivedStarted();
   }, [isSharedProvider, hasRemoteSources]);
+  // 任务所在电脑收藏的跨区分享，本机可能从没加载过那个区域的名单：按它的区域补一次恢复。
+  const homeFavoriteItems = remoteSources?.favoritesDeviceId ? remoteFavorites.items : null;
+  useEffect(() => {
+    if (homeFavoriteItems) requestProviderShareFavoriteRegions(providerShareFavoriteRegionsOf(homeFavoriteItems));
+  }, [homeFavoriteItems]);
   const favorites = selectionPolicy === 'official' ? NO_FAVORITES
     : isSharedProvider ? sharedFavorites.items
     : remoteSources ? agentDeviceFavorites.items
