@@ -169,7 +169,7 @@ try {
       if(independent){
         stage='update-model-context';
         await inner().executeJavaScript("document.querySelector('#threshold').value='88';document.querySelector('#threshold').dispatchEvent(new Event('input'))");
-        await wait(async()=> (await host.modelContext('task')).includes('88'));assert.equal(turns,0);
+        await wait(async()=> (await host.modelContext('task')).text.includes('88'));assert.equal(turns,0);
         stage='App tool call';await inner().executeJavaScript("document.querySelector('#refresh').click()");
         await wait(()=>inner().executeJavaScript("window.rawApp.result.structuredContent.metrics.threshold===88&&window.rawApp.result.structuredContent.metrics.refreshes===1"));assert.equal(turns,0);
         stage='ui/message';await inner().executeJavaScript("document.querySelector('#ask').click()");await wait(()=>turns===1);
@@ -194,7 +194,7 @@ try {
         assert.equal(await inner().executeJavaScript('(()=>{const base=document.createElement("base");base.href='+JSON.stringify(allowed+'/base/')+';document.head.appendChild(base);return document.baseURI;})()'),allowed+'/base/');
       }else{
         await inner().executeJavaScript("document.querySelector('#title').value='用户核对后的申请';document.querySelector('#title').dispatchEvent(new Event('input'))");
-        await wait(async()=> (await host.modelContext('task')).includes('用户核对后的申请'));assert.equal(turns,0);
+        await wait(async()=> (await host.modelContext('task')).text.includes('用户核对后的申请'));assert.equal(turns,0);
         await inner().executeJavaScript("document.querySelector('#submit').click()");
         await wait(()=>inner().executeJavaScript("document.querySelector('#status').textContent.includes('已创建模拟申请')"));assert.equal(turns,0);
       }

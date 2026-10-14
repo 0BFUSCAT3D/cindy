@@ -70,8 +70,8 @@ export function mockAppHtml() {
   return htmlPromise;
 }
 
-export function createMockAppServer() {
-  const server = new McpServer({ name: 'cindy-mcp-apps-mock', version: '1.0.0' });
+export function createMockAppServer({ instructions } = {}) {
+  const server = new McpServer({ name: 'cindy-mcp-apps-mock', version: '1.0.0' }, { instructions });
   let count = 0;
   registerAppTool(
     server,

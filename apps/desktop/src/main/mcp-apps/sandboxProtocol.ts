@@ -56,17 +56,37 @@ export function registerMcpAppProtocol(): void {
   session.defaultSession.setPermissionRequestHandler((contents, _permission, callback, details) => {
     callback(!isMcpAppPermissionRequest(contents, details));
   });
-  session.defaultSession.setPermissionCheckHandler((contents, _permission, origin, details) =>
-    !isMcpAppPermissionRequest(contents, details, origin),
+  session.defaultSession.setPermissionCheckHandler(
+    (contents, _permission, origin, details) =>
+      !isMcpAppPermissionRequest(contents, details, origin),
   );
   // CSP does not restrict a frame's own location navigation. Keep the policy-bearing
   // document in place; external navigation goes through standard ui/open-link.
   app.on('web-contents-created', (_event, contents) => {
+    // A crashed/reloaded renderer cannot unmount its old documents; reload reuses its caller ID.
+    const caller = `renderer:${contents.id}`;
+    const releaseRemoteDocuments = () => {
+      for (const [id, entry] of documents) if (entry.caller === caller) documents.delete(id);
+    };
+    contents.on('destroyed', releaseRemoteDocuments);
+    contents.on('render-process-gone', releaseRemoteDocuments);
+    contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) releaseRemoteDocuments();
+    });
     // DOM keyboard events do not bubble out of a cross-origin App frame. Deliver
     // Escape to the trusted sandbox, which relays the exit to its own controller.
     contents.on('before-input-event', (event, input) => {
-      if (input.type !== 'keyDown' || input.key !== 'Escape' || input.isAutoRepeat ||
-          input.isComposing || input.control || input.alt || input.meta || input.shift) return;
+      if (
+        input.type !== 'keyDown' ||
+        input.key !== 'Escape' ||
+        input.isAutoRepeat ||
+        input.isComposing ||
+        input.control ||
+        input.alt ||
+        input.meta ||
+        input.shift
+      )
+        return;
       for (let frame = contents.focusedFrame; frame; frame = frame.parent) {
         if (!frame.url.startsWith('cindy-mcp-app:')) continue;
         const url = new URL(frame.url);
@@ -74,9 +94,9 @@ export function registerMcpAppProtocol(): void {
         const entry = documents.get(url.hostname);
         if (!entry || entry.owner !== getCurrentDbClientSnapshot()) return;
         event.preventDefault();
-        void frame.executeJavaScript(
-          "window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))",
-        ).catch(() => {});
+        void frame
+          .executeJavaScript("window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))")
+          .catch(() => {});
         return;
       }
     });
@@ -129,7 +149,12 @@ export function registerMcpAppProtocol(): void {
 }
 export function isMcpAppPermissionRequest(
   contents: Pick<WebContents, 'mainFrame'> | null,
-  details: { requestingUrl?: string; embeddingOrigin?: string; securityOrigin?: string; isMainFrame: boolean },
+  details: {
+    requestingUrl?: string;
+    embeddingOrigin?: string;
+    securityOrigin?: string;
+    isMainFrame: boolean;
+  },
   origin?: string,
 ): boolean {
   const sources = [origin, details.requestingUrl, details.embeddingOrigin, details.securityOrigin];
@@ -139,7 +164,8 @@ export function isMcpAppPermissionRequest(
   // Match real frame ancestry as well: a nested frame can itself have an HTTPS
   // origin. Missing subframe identity must not become a permission bypass.
   return frames.some((frame) => {
-    if (details.isMainFrame || (details.requestingUrl && frame.url !== details.requestingUrl)) return false;
+    if (details.isMainFrame || (details.requestingUrl && frame.url !== details.requestingUrl))
+      return false;
     for (let current: typeof frame | null = frame; current; current = current.parent) {
       if (current.url.startsWith('cindy-mcp-app:')) return true;
     }

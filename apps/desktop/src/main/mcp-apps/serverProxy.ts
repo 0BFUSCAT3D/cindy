@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type {
+  Transport,
+  TransportSendOptions,
+} from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -9,7 +13,12 @@ import {
   ListResourceTemplatesRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  ErrorCode,
+  isJSONRPCErrorResponse,
+  isJSONRPCRequest,
+  isJSONRPCResultResponse,
   type CallToolResult,
+  type RequestId,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpProviderContext } from '@cindy/maker-core';
 import type { McpAppRecord } from '../../shared/mcpApps.js';
@@ -20,6 +29,78 @@ import { toolVisibleTo, uiToolUri } from './protocol.js';
 import { createLogger } from '../logger.js';
 
 const log = createLogger('mcp-apps');
+
+/** Preserve the SDK handshake while attaching authenticated upstream instructions. */
+class AppProxyServer extends McpServer {
+  constructor(
+    name: string,
+    private readonly readInstructions: () => Promise<string | undefined>,
+  ) {
+    super(
+      { name, version: '1.0.0' },
+      {
+        capabilities: {
+          tools: { listChanged: true },
+          resources: { listChanged: true },
+          prompts: {},
+        },
+      },
+    );
+  }
+
+  override connect(transport: Transport): Promise<void> {
+    const initializing = new Set<RequestId>();
+    const wrapped: Transport = {
+      get sessionId() {
+        return transport.sessionId;
+      },
+      setProtocolVersion: (version) => transport.setProtocolVersion?.(version),
+      start: async () => {
+        const onmessage = transport.onmessage;
+        const onerror = transport.onerror;
+        const onclose = transport.onclose;
+        transport.onmessage = (message, extra) => {
+          if (isJSONRPCRequest(message) && message.method === 'initialize')
+            initializing.add(message.id);
+          onmessage?.(message, extra);
+          wrapped.onmessage?.(message, extra);
+        };
+        transport.onerror = (error) => {
+          onerror?.(error);
+          wrapped.onerror?.(error);
+        };
+        transport.onclose = () => {
+          initializing.clear();
+          onclose?.();
+          wrapped.onclose?.();
+        };
+        await transport.start();
+      },
+      send: async (message, options?: TransportSendOptions) => {
+        if (isJSONRPCResultResponse(message) && initializing.delete(message.id)) {
+          try {
+            const instructions = await this.readInstructions();
+            if (instructions !== undefined)
+              message = { ...message, result: { ...message.result, instructions } };
+          } catch {
+            // A failed response send is only reported out of band by the SDK.
+            // Return an initialize error instead of leaving the client waiting.
+            message = {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: { code: ErrorCode.InternalError, message: 'MCP_APP_INITIALIZE_FAILED' },
+            };
+          }
+        } else if (isJSONRPCErrorResponse(message) && message.id !== undefined) {
+          initializing.delete(message.id);
+        }
+        await transport.send(message, options);
+      },
+      close: () => transport.close(),
+    };
+    return super.connect(wrapped);
+  }
+}
 
 /** Generic MCP facade: the harness keeps its own tool approval, while Main negotiates Apps. */
 export function createAppServerProxy(
@@ -41,12 +122,12 @@ export function createAppServerProxy(
     assertCurrent();
     return host.registerConnection(connection, owner);
   };
-  const server = new McpServer(
-    { name: config.id, version: '1.0.0' },
-    {
-      capabilities: { tools: { listChanged: true }, resources: { listChanged: true }, prompts: {} },
-    },
-  );
+  const server = new AppProxyServer(config.id, async () => {
+    registerOnUse();
+    const client = await connection.getClient();
+    assertCurrent();
+    return client.getInstructions();
+  });
   server.server.setRequestHandler(ListToolsRequestSchema, async () => {
     registerOnUse();
     return { tools: (await connection.tools()).filter((tool) => toolVisibleTo(tool, 'model')) };

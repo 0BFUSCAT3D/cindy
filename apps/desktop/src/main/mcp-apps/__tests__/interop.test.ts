@@ -9,7 +9,11 @@ import {
   type CallToolResult,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
-import { startMockAppServer, MOCK_RESOURCE } from '../../../../scripts/mcp-apps-mock.mjs';
+import {
+  createMockAppServer,
+  startMockAppServer,
+  MOCK_RESOURCE,
+} from '../../../../scripts/mcp-apps-mock.mjs';
 import { AppConnection } from '../connection.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
 import { setMcpAppsHost, registerAppServer } from '../runtime.js';
@@ -17,9 +21,13 @@ import { createAppServerProxy } from '../serverProxy.js';
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 
 let endpoint: Awaited<ReturnType<typeof startMockAppServer>>;
+const serverInstructions =
+  'Review the draft before calling create_application.\nKeep application data unchanged.';
 const cleanups: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  endpoint = await startMockAppServer();
+  endpoint = await startMockAppServer({
+    createServer: () => createMockAppServer({ instructions: serverInstructions }),
+  });
 });
 afterAll(async () => {
   await endpoint.close();
@@ -429,9 +437,9 @@ describe('official MCP Apps interoperability', () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await facade.connect(serverTransport);
     await client.connect(clientTransport);
-    expect(register).not.toHaveBeenCalled();
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('draft_form');
     expect(register).toHaveBeenCalledOnce();
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('draft_form');
+    expect(register).toHaveBeenCalledTimes(2);
     const connection = register.mock.calls[0][0];
     expect(connection.isClosed).toBe(false);
     await client.listTools();
@@ -439,6 +447,51 @@ describe('official MCP Apps interoperability', () => {
     await facade.close();
     await vi.waitFor(() => expect(connection.isClosed).toBe(true));
     expect(release).toHaveBeenCalledWith(connection);
+  });
+  it.each(['http', 'sse'] as const)(
+    'preserves upstream instructions in the %s model initialize response',
+    async (transport) => {
+      const f = await fixture(transport);
+      setMcpAppsHost(f.host);
+      registerAppServer(f.config.id, () => f.config);
+      const facade = createAppServerProxy(() => f.config, {
+        agentKind: 'claude-code',
+        sessionId: 'task',
+        workingDir: '',
+      });
+      const client = new Client({ name: 'model-client', version: '1' });
+      cleanups.push(async () => {
+        await client.close();
+        await facade.close();
+      });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await facade.connect(serverTransport);
+      await client.connect(clientTransport);
+      expect(client.getInstructions()).toBe(serverInstructions);
+      expect(client.getServerVersion()).toEqual({ name: f.config.id, version: '1.0.0' });
+      expect(client.getServerCapabilities()).toMatchObject({ tools: { listChanged: true } });
+      await client.listTools();
+      expect(client.getInstructions()).toBe(serverInstructions);
+    },
+  );
+  it('rejects initialization after an owner change without leaving the client waiting', async () => {
+    const f = await fixture();
+    setMcpAppsHost(f.host);
+    registerAppServer(f.config.id, () => f.config);
+    const facade = createAppServerProxy(() => f.config, {
+      agentKind: 'codex',
+      sessionId: 'task',
+      workingDir: '',
+    });
+    const client = new Client({ name: 'model-client', version: '1' });
+    cleanups.push(async () => {
+      await client.close();
+      await facade.close();
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await facade.connect(serverTransport);
+    f.changeOwner();
+    await expect(client.connect(clientTransport)).rejects.toThrow('MCP_APP_INITIALIZE_FAILED');
   });
   it('the model facade strips UI metadata and never turns card-write failure into tool failure', async () => {
     const f = await fixture();
