@@ -126,7 +126,7 @@ function formatMonthDayTime(d: Date): string {
 
 /**
  * IM 群历史的统一时间格式(所有渠道同一口径): 本机时区 `MM-DD HH:mm`,
- * 写在每行发言人之后。与当前同年、同 UTC 偏移的消息不逐行重复年份与时区,
+ * 写在每行发言人之后。与整理时刻同年、同 UTC 偏移的消息不逐行重复年份与时区,
  * 由 {@link formatImHistoryTimeNote} 在块尾一次性给出参照; 跨年的消息前补年份,
  * 跨夏令时切换(偏移与当前不同)的消息后补该消息自己的偏移, 保证每行可还原绝对时间。
  */
@@ -154,12 +154,16 @@ function formatUtcOffset(d: Date): string {
 }
 
 /**
- * 群历史块尾的时间参照: 行内时间的时区 + 当前完整时间。模型据此判断每条消息
+ * 群历史块尾的时间参照: 行内时间的时区 + 上下文整理时间。模型据此判断每条消息
  * 是刚发的还是几天前的, 不把旧消息当成当下的话。
+ *
+ * 写「整理于」而不是「当前时间」: 前缀在入队前就已拼好, 繁忙会话可能排队很久才
+ * 真正派发, 这个时刻只代表组装时间。行内省略年份/偏移也以同一时刻为基准, 所以
+ * 无论何时派发, 整段说明都自洽。
  */
 export function formatImHistoryTimeNote(nowMs: number = Date.now()): string {
   const now = new Date(nowMs);
-  return `每行发言人后的时间为该消息的发送时间（本机时区 ${formatUtcOffset(now)}；未写年份的为今年，括号内另注 UTC 偏移的按所注偏移计），当前时间为 ${now.getFullYear()}-${formatMonthDayTime(now)}。`;
+  return `每行发言人后的时间为该消息的发送时间（本机时区 ${formatUtcOffset(now)}；未写年份的与整理时间同年，括号内另注 UTC 偏移的按所注偏移计）。本段上下文整理于 ${now.getFullYear()}-${formatMonthDayTime(now)}，可能早于实际回复时间。`;
 }
 
 export function createFenceNeutralizer(tags: readonly string[]): (value: string) => string {

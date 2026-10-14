@@ -232,10 +232,10 @@ describe('buildTelegramGroupContextPrefix', () => {
     const asm = await buildTelegramGroupContextPrefix({ ...LANE, triggerMessageId: 'none' });
     expect(asm.prefix).toContain('[user202] 10-11 13:52 能鉴定新闻吗');
     expect(asm.prefix).toMatch(
-      /（本机时区 UTC[+-]\d{2}:\d{2}；未写年份的为今年，括号内另注 UTC 偏移的按所注偏移计），当前时间为 2026-10-13 20:00。/,
+      /（本机时区 UTC[+-]\d{2}:\d{2}；未写年份的与整理时间同年，括号内另注 UTC 偏移的按所注偏移计）。本段上下文整理于 2026-10-13 20:00，可能早于实际回复时间。/,
     );
     // 时间说明在块外: 不进上下文快照、不冒充一条消息。
-    expect(asm.prefix.indexOf('当前时间为')).toBeGreaterThan(
+    expect(asm.prefix.indexOf('本段上下文整理于')).toBeGreaterThan(
       asm.prefix.indexOf('</group_chat_context>'),
     );
   });
