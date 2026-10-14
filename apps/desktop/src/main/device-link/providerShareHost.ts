@@ -103,13 +103,20 @@ interface Runtime {
   watchedSeen: Set<string>;
 }
 
+interface RetainedRemoteLinkState {
+  watches: RemoteLinkWatch[];
+  watched: Map<string, ProviderShareWatchedRequest>;
+  watchedSeen: Set<string>;
+}
+
 let runtime: Runtime | null = null;
 
 /**
  * 远程管理生成链接后，host runtime 可能因设备互联断开、重新接管或账号边界重建。
- * 这段归属只需存活到 7 分钟窗口结束，不写入磁盘；按账号作用域隔离，避免换账号时串用。
+ * 这段短期归属只需存活到 7 分钟窗口结束，不写入磁盘；按账号作用域隔离，避免换账号时串用。
  */
 const retainedQuietUntilByScope = new Map<string, Map<string, number>>();
+const retainedRemoteLinkStateByScope = new Map<string, RetainedRemoteLinkState>();
 
 function activeQuietUntil(source: ReadonlyMap<string, number>): Map<string, number> {
   const now = Date.now();
@@ -128,6 +135,35 @@ function restoreQuietUntil(scope: string | null): Map<string, number> {
   const retained = retainedQuietUntilByScope.get(scope);
   retainedQuietUntilByScope.delete(scope);
   return retained ? activeQuietUntil(retained) : new Map();
+}
+
+function activeRemoteLinkWatches(source: readonly RemoteLinkWatch[]): RemoteLinkWatch[] {
+  const now = Date.now();
+  return source.filter((watch) => watch.until > now);
+}
+
+function retainRemoteLinkState(rt: Runtime): void {
+  if (rt.scope === null) return;
+  const watches = activeRemoteLinkWatches(rt.watches);
+  const watched = new Map(rt.watched);
+  const watchedSeen = new Set(rt.watchedSeen);
+  if (watches.length > 0) {
+    retainedRemoteLinkStateByScope.set(rt.scope, { watches, watched, watchedSeen });
+  } else {
+    retainedRemoteLinkStateByScope.delete(rt.scope);
+  }
+}
+
+function restoreRemoteLinkState(scope: string | null): RetainedRemoteLinkState {
+  if (scope === null) return { watches: [], watched: new Map(), watchedSeen: new Set() };
+  const retained = retainedRemoteLinkStateByScope.get(scope);
+  retainedRemoteLinkStateByScope.delete(scope);
+  if (!retained) return { watches: [], watched: new Map(), watchedSeen: new Set() };
+  return {
+    watches: activeRemoteLinkWatches(retained.watches),
+    watched: new Map(retained.watched),
+    watchedSeen: new Set(retained.watchedSeen),
+  };
 }
 
 function current(rt: Runtime): boolean {
@@ -223,6 +259,7 @@ function applyWatched(rt: Runtime, others: readonly ProviderShareOwned[]): void 
 export function startProviderShareHost(events: ProviderShareHostEvents): void {
   stopProviderShareHost();
   const scope = providerShareOwnerKey();
+  const remoteLinkState = restoreRemoteLinkState(scope);
   const rt: Runtime = {
     events,
     scope,
@@ -237,9 +274,9 @@ export function startProviderShareHost(events: ProviderShareHostEvents): void {
     stopped: false,
     quietUntil: restoreQuietUntil(scope),
     quietRequests: new Set(),
-    watches: [],
-    watched: new Map(),
-    watchedSeen: new Set(),
+    watches: remoteLinkState.watches,
+    watched: remoteLinkState.watched,
+    watchedSeen: remoteLinkState.watchedSeen,
   };
   runtime = rt;
   void refreshProviderShareHost('start');
@@ -251,6 +288,7 @@ export function stopProviderShareHost(): void {
   rt.stopped = true;
   if (rt.timer) clearTimeout(rt.timer);
   retainQuietUntil(rt);
+  retainRemoteLinkState(rt);
   runtime = null;
 }
 

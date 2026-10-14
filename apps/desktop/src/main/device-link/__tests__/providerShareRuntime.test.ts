@@ -288,6 +288,34 @@ describe('provider share approval follows the computer that generated the link',
     stopProviderShareHost();
   });
 
+  it('keeps watched approval ownership and de-duplication across a host runtime restart', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    state.owned = [share([member('m1')]), otherShare([])];
+    const first = events();
+    startProviderShareHost(first);
+    await refreshProviderShareHost('test');
+    watchProviderShareRequests('group-host', 'anthropic');
+
+    state.owned = [share([member('m1')]), otherShare([pendingRequest('before-restart')])];
+    await refreshProviderShareHost('before-restart');
+    expect(first.watchedRequested).toHaveBeenCalledTimes(1);
+
+    stopProviderShareHost();
+    const restarted = events();
+    startProviderShareHost(restarted);
+    await refreshProviderShareHost('restart');
+    expect(restarted.watchedRequested).not.toHaveBeenCalled();
+
+    state.owned = [share([member('m1')]), otherShare([pendingRequest('before-restart'), pendingRequest('after-restart')])];
+    await refreshProviderShareHost('after-restart');
+    expect(restarted.watchedRequested.mock.calls.map(([item]) => item.request.requestId)).toEqual(['after-restart']);
+
+    // 不让本测试的短期归属影响后续测试。
+    vi.setSystemTime(new Date(Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1));
+    stopProviderShareHost();
+  });
+
   it('prompts here for a watched share on another computer without letting it into this computer\'s snapshot', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
