@@ -23,16 +23,18 @@
 pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
-单测阶段最新结果为 11 个测试文件、127 项测试通过，退出码为 0。
+单测阶段最新结果为 12 个测试文件、144 项测试通过，退出码为 0。
 前序两个真实 Electron 集成检查均以退出码 0 结束，分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
-`pnpm.cmd --filter desktop typecheck` 与本轮修改代码、测试及模拟/验证脚本的定向 ESLint 也通过。
+`pnpm.cmd --filter desktop typecheck` 本轮通过。定向 ESLint 与当前 HEAD 基准逐项比对，
+本轮代码和测试没有新增错误；`register.ts` 与 `makerSendTransaction.test.ts` 分别保留
+13 项和 10 项既有错误，其余本轮文件为 0。前序模拟/验证脚本的 ESLint 已通过。
 前序自定义 MCP provider、Codex HTTP bridge 与 Pi 环境接入的 66 项回归通过；
-本轮重跑自定义 provider/registry、Codex 与 Pi 环境的 62 项回归通过。
+前序作者侧修复重跑自定义 provider/registry、Codex 与 Pi 环境的 62 项回归通过。
 已有卡片大小回归：完整卡片按 UTF-8 JSON 字节限制为 1 MiB，超大结果在写入前
 变成标准有界错误；官方 View SDK 的实时/远程重开均能读取，模型仍收到原结果。
 恰好达到上限、超出一字节、多字节文本、View-only metadata 和输入/结果合计均纳入验证。
-本轮新增 14 项回归：远程完整文档和事件数组使用 4 MiB 减 64 KiB 的 UTF-8 JSON
+前序新增 14 项回归：远程完整文档和事件数组使用 4 MiB 减 64 KiB 的 UTF-8 JSON
 预算，覆盖多字节、引号/控制字符转义、真实 device-link invoke-result 分片编码、
 超限 View 不占额度、消费后字节回收及另一控制端继续工作；普通 MCP 的 HTTP/SSE
 补全、进行中的进度、订阅/退订、日志级别/通知、task 方法/状态通知和扩展请求均透传。
@@ -40,12 +42,29 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 普通工具调用另新增 9 项撤权竞态回归：在连接获取、工具执行、App 结果保存的等待期间，
 分别切换账号、删除服务器和修改配置；等待后重新核验 owner/config，拒绝执行或向模型
 返回迟到结果，已经执行的调用不重放。9 项均在修复前复现失败，修复后通过；
-见 `serverProxy.test.ts`。本次撤权修复重跑完整 MCP Apps 单测、Desktop 类型检查与
+见 `serverProxy.test.ts`。该轮撤权修复重跑完整 MCP Apps 单测、Desktop 类型检查与
 定向 ESLint，未重跑前序沙箱与真机验证。
+
+本轮 App 消息修复新增 23 项回归：所有文本块开头的斜线均转义，覆盖 Claude Code、
+Pi 和 Codex 的 App 输入与来源说明，历史仍保留原文；读取任务、恢复队列、加载 metadata、
+构建排队项及直发准备期间撤销卡片会阻止入队或派发，账号、清空与配置边界继续生效。
+直发复用 Session 既有钩子，在 accepted 持久化前和异步准备后的最终 vendor 派发前核验；
+保留主人授权意图，私有 guard 不进入队列、历史或 provider options。
+官方 App SDK 另验证发送准备期间撤销卡片、账号和服务器后没有派发。
+
+本轮执行：
+
+```powershell
+pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__ src/main/maker-ipc/__tests__/makerSendTransaction.test.ts src/main/maker-ipc/__tests__/messageSourceNote.test.ts src/main/__tests__/mobileClientPromptNote.test.ts --maxWorkers=2 --reporter=dot
+```
+
+结果：15 个测试文件、396 项测试通过，退出码为 0；其中 MCP Apps 为 144 项，
+`makerSendTransaction.test.ts` 为 172 项，来源说明和客户端说明分别为 12 项与 68 项。
+本轮未重跑前序 Electron 沙箱；真实模型账号、完整卡片双主题目检和 Mobile 真机仍未验证。
 
 | 测试文件                      | 通过数量 | 主要覆盖                                                                                  |
 | ----------------------------- | -------: | ----------------------------------------------------------------------------------------- |
-| `interop.test.ts`             |       25 | 官方 App SDK、HTTP/SSE、上游 instructions、初始化失败回复、加载期间完成/撤销、模型 facade |
+| `interop.test.ts`             |       28 | 官方 App SDK、HTTP/SSE、上游 instructions、初始化失败回复、加载期间完成/撤销、模型 facade、App 消息撤权 |
 | `conformance.test.ts`         |       18 | 独立 JSON-RPC App、编码/metadata 组合、分页、通知、取消、能力协商                         |
 | `operations.test.ts`          |       11 | 任务与调用者绑定、输入校验、远程操作边界                                                  |
 | `ipc.test.ts`                 |        6 | 卡片持久化、清空与账号竞态、权限路由、公开错误                                            |
@@ -56,6 +75,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 | `openLifecycle.test.ts`       |        4 | 加载超时、打开前取消、晚到 View 回收、调用者与任务隔离                                    |
 | `wireBudget.test.ts` | 7 | 完整文档/事件 UTF-8 JSON 大小、转义、device-link 编码、额度回收与控制端隔离 |
 | `serverProxy.test.ts` | 16 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展、取消和三个等待阶段的撤权竞态 |
+| `messageSender.test.ts` | 14 | App 命令转义、来源与历史保留、发送/入队准备等待期间撤权 |
 
 作者侧修复另经 Desktop 卡片可见性、MCP 目录与 SSH bridge、安全守卫定向测试验证；
 Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项通过。共享 controller/
@@ -92,7 +112,7 @@ Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项
 | 资源与列表变更       | resources/read/list/templates、prompts/list；resources/list 游标可继续分页；tools/resources/prompts 的 list_changed 到达 App，刷新后工具定义更新                                                                           |
 | 连接生命周期         | 超过 Host 额度的闲置 facade 不登记连接；首次请求（包括 initialize）登记，后续请求复用连接 ID，代理关闭后释放；回归见 `interop.test.ts`                                                                                     |
 | 远程文档生命周期     | Renderer 重载、崩溃或销毁后，旧供片返回 404 并可重新挂载；同文档/子 frame 导航、其他 Renderer 与本地 Host 供片保留；回归见 `sandboxProtocol.test.ts`                                                                       |
-| 消息与模型上下文     | `ui/message` 支持稳定单块与数组形状、text/resource_link；上下文支持 text/structuredContent，后一次替换旧值；发送接受后仅消费本次快照，失败或原生命令保留，更新与发送重叠时不丢新值；单独更新不启动轮次；未声明模态明确失败 |
+| 消息与模型上下文     | `ui/message` 支持稳定单块与数组形状、text/resource_link；App 原生命令转为普通文字并保留来源和历史原文，入队及最终派发前核验卡片/View；上下文支持 text/structuredContent，后一次替换旧值；发送接受后仅消费本次快照，失败或主人原生命令保留，更新与发送重叠时不丢新值；单独更新不启动轮次；未声明模态明确失败 |
 | 打开链接             | `ui/open-link` 转交查看端 controller；成功/失败均有 RPC 结果；拒绝 javascript 与含凭证的 URL；不让 App 自身导航离开资源                                                                                                    |
 | 显示与尺寸           | inline/fullscreen 协商；App 限制仅 inline 时返回 inline；pip 请求返回实际支持模式；host-context-changed 同步模式；真实浏览器按 size-changed 改变 iframe 高度                                                               |
 | 环境与主题           | locale、时区、容器尺寸、安全区域和工具信息可读；Host context 可增量更新；真实 Electron 内两种 App 的 Light/Dark 背景随 CSS variables 切换                                                                                  |

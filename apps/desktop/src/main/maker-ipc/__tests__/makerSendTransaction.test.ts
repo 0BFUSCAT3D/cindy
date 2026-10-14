@@ -15,7 +15,8 @@ import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-i
 import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-shared/chat-quotes';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
 import { describe, expect, it, vi } from 'vitest';
-import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '../autoReviewUserIntent.js';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent } from '../autoReviewUserIntent.js';
+import { appMessageInput, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import {
   createMakerSendTransaction,
   restoreTrustedDesktopQueuedOrigin,
@@ -163,6 +164,7 @@ function createSession(overrides: Partial<MakerSendTransactionSession> = {}): Ma
       _message: UserMessage | string,
       opts?: SessionSendOptions,
     ) => {
+      await opts?.beforeProviderStart?.();
       await opts?.onAccepted?.();
       await opts?.onTranscriptUserEntry?.('pi-user-entry');
       await opts?.resolveAutoReviewUserIntent?.();
@@ -220,6 +222,99 @@ function createDeps(overrides: Partial<MakerSendTransactionDeps> = {}) {
   };
   return { deps, session };
 }
+
+describe('MCP App message authorization', () => {
+  it.each(['claude-code', 'pi', 'codex'] as const)(
+    'keeps App slash text literal and includes its source note for %s',
+    async (agentKind) => {
+      const { deps, session } = createDeps();
+      session.agentKind = agentKind;
+      const { blocks, persistedContent } = appMessageInput([{ type: 'text', text: '/compact' }]);
+      const sourcePlugin = { pluginId: 'mcp-app:example', name: 'example' };
+      await createMakerSendTransaction(deps).sendToAgentAccepted(
+        'session-1', { type: 'user', content: blocks }, undefined, {
+          [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+          persistUserMessage: { clientId: 'app-input', content: persistedContent, sourcePlugin },
+        },
+      );
+      const sent = vi.mocked(session.send).mock.calls[0][0];
+      const wire = JSON.stringify(typeof sent === 'string' ? sent : sent.content);
+      expect(wire).toContain('[消息来源]');
+      expect(wire).toContain('mcp_server_id: example');
+      expect(wire).toContain('\\\\/compact');
+      expect(deps.createDbMessage).toHaveBeenCalledWith(
+        'session-1', expect.objectContaining({ content: '/compact', agentMeta: expect.objectContaining({ sourcePlugin }) }),
+        undefined,
+      );
+    },
+  );
+
+  it('rejects revocation during metadata loading before persisting an App turn', async () => {
+    let visible = true;
+    const dispatch = vi.fn();
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const { deps } = createDeps({
+      prepareProductTurn: () => dispatch,
+      getSessionMeta: async () => { visible = false; return { title: 'Task' }; },
+    });
+    await expect(createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'App text', undefined, {
+      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+      [MCP_APP_MESSAGE_GUARD]: guard,
+      persistUserMessage: { clientId: 'app-input', content: 'App text' },
+    })).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    expect(deps.createDbMessage).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rechecks card authorization after accepted persistence and blocks vendor dispatch', async () => {
+    let visible = true;
+    const dispatch = vi.fn();
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const { deps, session } = createDeps({
+      prepareProductTurn: () => dispatch,
+      createDbMessage: vi.fn(async () => { visible = false; }),
+    });
+    await expect(createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'App text', undefined, {
+      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+      [MCP_APP_MESSAGE_GUARD]: guard,
+      persistUserMessage: { clientId: 'app-input', content: 'App text' },
+    })).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(session.send).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('awaits the final card guard and preserves the owner intent without leaking the callback', async () => {
+    const dispatch = vi.fn();
+    let finish!: () => void;
+    const guard = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    let intent: unknown;
+    const session = createSession({ send: vi.fn(async (_message, opts) => {
+      await opts?.beforeProviderStart?.();
+      await opts?.onAccepted?.();
+      intent = await opts?.resolveAutoReviewUserIntent?.();
+      opts?.onDispatching?.();
+      return { accepted: true } satisfies SessionSendResult;
+    }) });
+    const { deps } = createDeps({ getSession: () => session, prepareProductTurn: () => dispatch });
+    const pending = createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'App text', undefined, {
+      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+      [MCP_APP_MESSAGE_GUARD]: guard,
+      persistUserMessage: { clientId: 'app-input', content: 'App text' },
+    });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(dispatch).not.toHaveBeenCalled();
+    finish();
+    await expect(pending).resolves.toMatchObject({ accepted: true });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(intent).toEqual(restoreAutoReviewUserIntent([]));
+    expect(Object.getOwnPropertySymbols(vi.mocked(session.send).mock.calls[0][1]!))
+      .not.toContain(MCP_APP_MESSAGE_GUARD);
+    expect(JSON.stringify(vi.mocked(session.send).mock.calls[0][0])).not.toContain('MCP_APP_MESSAGE_GUARD');
+  });
+});
 
 describe('maker SEND transaction', () => {
   it.each([false, true])(

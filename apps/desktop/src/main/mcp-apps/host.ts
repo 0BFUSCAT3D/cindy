@@ -11,6 +11,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpAppRecord, McpAppDocument } from '../../shared/mcpApps.js';
+import type { McpAppMessageGuard } from './message.js';
 import { AppConnection, type AppServerConfig } from './connection.js';
 import {
   appCsp,
@@ -34,7 +35,12 @@ export interface McpAppsHostDeps {
     args: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<void>;
-  sendMessage(sessionId: string, record: McpAppRecord, content: unknown[]): Promise<void>;
+  sendMessage(
+    sessionId: string,
+    record: McpAppRecord,
+    content: unknown[],
+    assertCurrent: McpAppMessageGuard,
+  ): Promise<void>;
   disposeDocument?(viewId: string): void;
   connection?(config: AppServerConfig): AppConnection;
   audit?(method: string): void;
@@ -410,7 +416,7 @@ export class McpAppsHost {
         const content = Array.isArray(params.content) ? params.content : [params.content];
         if (content.some((block) => block.type !== 'text' && block.type !== 'resource_link'))
           throw new Error('MCP_APP_MESSAGE_CONTENT_UNSUPPORTED');
-        await this.deps.sendMessage(sessionId, record, content);
+        await this.deps.sendMessage(sessionId, record, content, assertCurrent);
         return {};
       };
       bridge.onupdatemodelcontext = async (params) => {

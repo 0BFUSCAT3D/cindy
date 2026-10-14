@@ -487,10 +487,10 @@ describe('2026-01-26 MCP Apps conformance against an independent local server', 
     });
     expect(f.send).toHaveBeenNthCalledWith(1, 'task', expect.anything(), [
       { type: 'text', text: 'Stable message' },
-    ]);
+    ], expect.any(Function));
     expect(f.send).toHaveBeenNthCalledWith(2, 'task', expect.anything(), [
       { type: 'resource_link', uri: 'metrics://independent/latest', name: 'Metrics' },
-    ]);
+    ], expect.any(Function));
     await expect(
       f.peer.request('ui/message', {
         role: 'user',

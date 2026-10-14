@@ -56,6 +56,7 @@ import { channelTurnSourceFor, withChannelTurnSource } from './channelTurnSignal
 import type { CindyLearnInvocationGrant } from '../learn-host/invocationGrant.js';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, currentAutoReviewResourceIntent, readAutoReviewUserText, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from './autoReviewUserIntent.js';
 import { mcpAppModelContext } from '../mcp-apps/runtime.js';
+import { MCP_APP_MESSAGE_GUARD, type McpAppMessageGuard } from '../mcp-apps/message.js';
 
 type CreateOpts = MakerSessionCreateOpts;
 
@@ -246,6 +247,8 @@ export function revokeTrustedDesktopQueuedOrigin(item: AgentInputQueuedMessage):
 }
 
 type MakerSendOptions = {
+  /** Main-only live card guard, never serialized to queue history or provider options. */
+  readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
   retryUserClientId?: string;
   toolsDisabled?: boolean;
@@ -1557,7 +1560,20 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           persistUserMessage?.botTaskCoordination !== undefined,
         ), () => sess.send(outgoing as never, {
           ...(retryTranscriptUserEntryId ? { retryTranscriptUserEntryId } : {}),
-          ...(resolveScheduledIntent ? { resolveAutoReviewUserIntent: resolveScheduledIntent } : {}),
+          ...(so[MCP_APP_MESSAGE_GUARD]
+            ? {
+                beforeProviderStart: so[MCP_APP_MESSAGE_GUARD],
+                resolveAutoReviewUserIntent: async () => {
+                  const intent = resolveScheduledIntent
+                    ? await resolveScheduledIntent()
+                    : restoredAutoReviewIntent ?? restoreAutoReviewUserIntent([]);
+                  // Session awaits this existing authorization hook after all
+                  // preparation (including vision), immediately before dispatch.
+                  await so[MCP_APP_MESSAGE_GUARD]!();
+                  return intent;
+                },
+              }
+            : resolveScheduledIntent ? { resolveAutoReviewUserIntent: resolveScheduledIntent } : {}),
           [AUTO_REVIEW_SOURCE_CONTENT]: autoReviewSourceContent,
           ...(so[AUTO_REVIEW_DELEGATED_CONTINUATION] ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const } : {}),
           ...(so[INHERITED_CAPABILITY_SELECTION] !== undefined

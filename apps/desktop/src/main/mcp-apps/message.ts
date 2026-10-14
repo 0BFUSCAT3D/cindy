@@ -1,5 +1,9 @@
 import type { ContentBlock } from '@modelcontextprotocol/sdk/types.js';
 
+/** Main-only card authorization; neither the View nor persisted queue can mint it. */
+export const MCP_APP_MESSAGE_GUARD = Symbol('MCP_APP_MESSAGE_GUARD');
+export type McpAppMessageGuard = () => Promise<void>;
+
 /** Convert protocol content into the existing, attachment-aware Cindy user input. */
 export function appMessageBlocks(
   content: unknown[],
@@ -17,4 +21,15 @@ export function appMessageBlocks(
         throw new Error('MCP_APP_MESSAGE_CONTENT_UNSUPPORTED');
     }
   });
+}
+
+/** Keep the authored body for history, but escape native commands in model input. */
+export function appMessageInput(content: unknown[]) {
+  const authored = appMessageBlocks(content);
+  const persistedContent = authored.map((block) => String(block.text)).join('\n');
+  const blocks = authored.map((block) => ({
+    ...block,
+    text: String(block.text).replace(/^(\s*)\//, '$1\\/'),
+  }));
+  return { blocks, text: blocks.map((block) => block.text).join('\n'), persistedContent };
 }

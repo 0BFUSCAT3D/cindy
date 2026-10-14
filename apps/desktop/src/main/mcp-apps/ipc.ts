@@ -11,9 +11,9 @@ import { throwIpcError } from '../utils/ipcValidate.js';
 import { createLogger } from '../logger.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
-import { McpAppsHost } from './host.js';
+import { McpAppsHost, type McpAppsHostDeps } from './host.js';
 import { readAppServer, setMcpAppsHost } from './runtime.js';
-import { MCP_APPS_INVOKE, parseMcpAppRecord, type McpAppRecord } from '../../shared/mcpApps.js';
+import { MCP_APPS_INVOKE, parseMcpAppRecord } from '../../shared/mcpApps.js';
 import { handleMcpAppOperation } from './operations.js';
 import {
   supplyMcpAppDocument,
@@ -24,7 +24,7 @@ import {
 } from './sandboxProtocol.js';
 
 export function registerMcpAppsIpc(
-  send: (sessionId: string, record: McpAppRecord, content: unknown[]) => Promise<void>,
+  send: McpAppsHostDeps['sendMessage'],
   request: (
     sessionId: string,
     input: InteractionRequest,

@@ -15,7 +15,7 @@ import {
   MOCK_RESOURCE,
 } from '../../../../scripts/mcp-apps-mock.mjs';
 import { AppConnection } from '../connection.js';
-import { McpAppsHost, appServerRevision } from '../host.js';
+import { McpAppsHost, appServerRevision, type McpAppsHostDeps } from '../host.js';
 import { setMcpAppsHost, registerAppServer } from '../runtime.js';
 import { createAppServerProxy } from '../serverProxy.js';
 import { MCP_APPS_MAX_BYTES, MCP_APPS_MAX_CARD_BYTES } from '../protocol.js';
@@ -113,7 +113,7 @@ async function fixture(
     ...(options.cancelled ? { cancelled: 'User cancelled' } : options.pending ? {} : { result }),
   };
   const authorize = vi.fn(async () => {});
-  const sendMessage = vi.fn(async () => {});
+  const sendMessage = vi.fn<McpAppsHostDeps['sendMessage']>(async () => {});
   const openLink = vi.fn(async () => {});
   const dispose = vi.fn();
   const write = vi.fn(async (_session: string, _client: string, record: McpAppRecord) => {
@@ -385,13 +385,55 @@ describe('official MCP Apps interoperability', () => {
     });
     expect(f.sendMessage).toHaveBeenCalledWith('task', expect.anything(), [
       { type: 'text', text: 'Continue editing' },
-    ]);
+    ], expect.any(Function));
     f.clear();
     expect((await f.host.modelContext('task')).text).toBe('');
     await expect(
       f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
     ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
   });
+  it.each(['card', 'owner', 'server'] as const)(
+    'rechecks the live View after %s revocation during App-message preparation',
+    async (kind) => {
+      const f = await fixture();
+      let finish!: () => void;
+      let completed!: () => void;
+      const completion = new Promise<void>((resolve) => { completed = resolve; });
+      let failure: unknown;
+      const dispatched = vi.fn();
+      f.sendMessage.mockImplementationOnce(async (_id, _record, _content, assertCurrent) => {
+        await new Promise<void>((resolve) => { finish = resolve; });
+        try {
+          await assertCurrent();
+          dispatched();
+        } catch (error) {
+          failure = error;
+          throw error;
+        } finally {
+          completed();
+        }
+      });
+      const abort = new AbortController();
+      const rejected = expect(f.app.sendMessage({ role: 'user', content: [
+        { type: 'text', text: 'Continue editing' },
+      ] }, { signal: abort.signal })).rejects.toThrow();
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      if (kind === 'card') f.clear();
+      else if (kind === 'owner') f.changeOwner();
+      else f.revoke();
+      finish();
+      await completion;
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/MCP_APP_(CARD_UNAVAILABLE|VIEW_UNAVAILABLE|SERVER_CHANGED)/);
+      // A revoked owner/server also closes the controller's polling authority.
+      // Cancel its pending SDK request rather than waiting for an undeliverable reply.
+      if (kind !== 'card') abort.abort();
+      await rejected;
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(f.sendMessage).toHaveBeenCalledOnce();
+    },
+  );
+
   it('consumes a captured context once and leaves later updates for the next send', async () => {
     const f = await fixture();
     await f.app.updateModelContext({ structuredContent: { draft: 'first' } });
@@ -436,7 +478,7 @@ describe('official MCP Apps interoperability', () => {
     await vi.waitFor(() =>
       expect(f.sendMessage).toHaveBeenCalledWith('task', expect.anything(), [
         { type: 'text', text: 'Stable spec' },
-      ]),
+      ], expect.any(Function)),
     );
   });
   it('opens links on the controller, without forwarding the host action to the View', async () => {

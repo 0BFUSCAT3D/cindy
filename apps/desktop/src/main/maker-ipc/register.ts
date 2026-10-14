@@ -18,7 +18,7 @@ import { finishCompanionEnvironmentRemoval } from '../bot-import/runtime.js';
 import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js';
 import { requestHostInteraction } from './interactionRouter.js';
 import { registerMcpAppsIpc } from '../mcp-apps/ipc.js';
-import { appMessageBlocks } from '../mcp-apps/message.js';
+import { createAppMessageSender } from '../mcp-apps/messageSender.js';
 import { mcpAppModelContext } from '../mcp-apps/runtime.js';
 import { prepareCompanionImportDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
@@ -16592,38 +16592,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     sendToAgentAccepted(sessionId, message, createOpts, attachTrustedDesktopSendContext(message, sendOpts)),
     (sessionId) => inputCoordinator.getClearBoundaryMs(sessionId),
   );
-  registerMcpAppsIpc(async (sessionId, record, content) => {
-    const owner = getCurrentDbClientSnapshot();
-    const row = await getSessionRowSnapshotStrict(sessionId);
-    const expectedClearBoundaryMs = normalizeAgentInputClearBoundaryMs(row?.clearedAt);
-    await inputCoordinator.ensureQueueRestored(sessionId);
-    const assertInputCurrent = () => {
-      if (!owner || owner !== getCurrentDbClientSnapshot() || inputCoordinator.getClearBoundaryMs(sessionId) !== expectedClearBoundaryMs) throw new Error('MCP_APP_CARD_UNAVAILABLE');
-    };
-    assertInputCurrent();
-    const blocks = appMessageBlocks(content);
-    const text = blocks.filter(block => block.type === 'text').map(block => String(block.text)).join('\n');
-    const sourcePlugin = { pluginId: `mcp-app:${record.serverId}`, name: record.serverId };
-    const clientId = createId();
-    const persistedContent = text;
-    if (inputCoordinator.shouldQueueNewTurn(sessionId)) {
-      const meta = await maker.getSessionMeta(sessionId);
-      if (!meta) throw new Error('MCP_APP_SESSION_UNAVAILABLE');
-      const item = await buildSessionControlInputItem({
-        targetSessionId: sessionId, message: text, persistedContent, clientId, meta, sourcePlugin,
-        autoReviewUserText: { kind: 'delegated-continuation' },
-      });
-      assertInputCurrent();
-      inputCoordinator.enqueue(sessionId, item);
-      return;
-    }
-    const result = await sendToAgentAccepted(sessionId, { type: 'user', content: blocks }, undefined, {
-      sourcePlugin, [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
-      expectedClearBoundaryMs,
-      persistUserMessage: { clientId, content: persistedContent, sourcePlugin, expectedClearBoundaryMs },
-    });
-    if (result.accepted === false) throw new Error('MCP_APP_MESSAGE_NOT_ACCEPTED');
-  }, async (sessionId, request, signal) => {
+  registerMcpAppsIpc(createAppMessageSender({
+    owner: getCurrentDbClientSnapshot,
+    readClearBoundary: async (sessionId) => normalizeAgentInputClearBoundaryMs(
+      (await getSessionRowSnapshotStrict(sessionId))?.clearedAt,
+    ),
+    restoreQueue: (sessionId) => inputCoordinator.ensureQueueRestored(sessionId),
+    clearBoundary: (sessionId) => inputCoordinator.getClearBoundaryMs(sessionId),
+    shouldQueue: (sessionId) => inputCoordinator.shouldQueueNewTurn(sessionId),
+    getSessionMeta: (sessionId) => maker.getSessionMeta(sessionId),
+    createClientId: createId,
+    buildQueueItem: buildSessionControlInputItem,
+    enqueue: (sessionId, item) => { inputCoordinator.enqueue(sessionId, item); },
+    sendToAgentAccepted,
+  }), async (sessionId, request, signal) => {
     const session = maker.getSession(sessionId) ?? { id: sessionId, setInteractionListener: () => {} };
     // Historical Apps use the same permission cards without starting an Agent turn.
     installDesktopInteractionListener(session);

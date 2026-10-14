@@ -28,7 +28,7 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 | App 调工具                | 只连接产生该卡片的 MCP server；复用任务权限卡；审批后再次核对归属、清空与配置                                                                      | 可见性 / owner / 撤销 / IPC 回归 |
 | MCP 资源与通知            | 转发 resources/read/list/templates、工具列表、prompts/list 与 list_changed；不开放任意 server 或 endpoint                                          | 官方 SDK、连接和操作测试         |
 | `ui/open-link`            | 仅 http/https，无内嵌凭证；在当前查看设备的系统浏览器打开，失败返回 RPC 错误                                                                       | controller / Host / URL 单测     |
-| `ui/message`              | 支持 text、resourceLink；保留 user role 和真实 App 来源，复用发送与排队，不作为主人授权                                                            | 官方 SDK 互操作、来源与发送回归  |
+| `ui/message`              | 支持 text、resourceLink；原生命令转为普通文字，历史保留原文；保留 user role 和真实 App 来源，不作为主人授权；入队及最终派发前重新核验卡片和 View | 官方 SDK 互操作、来源与发送回归  |
 | `ui/update-model-context` | 支持 text、structuredContent；按 View 替换最新值，不启动模型；下次发送或插话附加外部应用上下文，接受后消费这份快照，失败保留；不进入 system prompt | 官方 SDK、发送链回归             |
 | 显示模式 / 尺寸           | Desktop inline+fullscreen，Mobile inline；返回实际模式；size-changed 调整高度；Host context 同步模式变化                                           | 互操作、controller 生命周期      |
 | 主题 / 环境               | Light/Dark、CSS variables、locale、时区、尺寸和设备能力通过 Host context 传递                                                                      | Electron 中主题切换、类型检查    |
@@ -128,7 +128,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 
 顺序运行协议、连接、授权与 IPC 回归，再分别启动真实 Electron 沙箱加载官方 SDK 申请表
 和独立 JSON-RPC 看板。HTTP/SSE、text/blob、metadata 来源、分页与变更通知、取消、
-销毁、显示、主题和 CSP 都纳入覆盖。当前结果为 118 项回归和两种 App 的沙箱检查通过，
+销毁、显示、主题和 CSP 都纳入覆盖。当前单测结果为 144 项回归通过；前序两种 App 的沙箱检查通过，
 逐项证据与边界见 [本地协议验证记录](./mcp-apps-validation.md)。
 
 ## 检查入口
