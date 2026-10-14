@@ -353,11 +353,7 @@ export class McpAppsHost {
         }, 30_000);
         this.sweepTimer.unref();
       }
-      const assertCurrent = async () => {
-        this.view(caller, sessionId, viewId);
-        await this.deps.readCard(sessionId, clientId);
-        this.view(caller, sessionId, viewId);
-      };
+      const assertCurrent = () => this.assertCurrentView(viewId, view);
       const currentClient = async (signal: AbortSignal) => {
         await assertCurrent();
         signal.throwIfAborted();
@@ -371,11 +367,11 @@ export class McpAppsHost {
         if (view.initialized || !bridge.getAppCapabilities()) return;
         view.initialized = true;
         bridge.setHostContext(view.context);
-        void bridge
-          .sendToolInput({ arguments: record.arguments })
+        void assertCurrent()
+          .then(() => bridge.sendToolInput({ arguments: record.arguments }))
           .then(() => {
             view.inputSent = true;
-            return this.sendResult(view);
+            return this.sendResult(viewId, view);
           })
           .catch(() => {
             void this.disposeView(viewId, view);
@@ -534,22 +530,46 @@ export class McpAppsHost {
   ): Promise<void> {
     this.assertOwner(owner);
     record = boundedAppRecord(record);
-    let storageError: unknown;
     try {
       await this.deps.writeCard(sessionId, clientId, record);
+      this.assertOwner(owner);
+      for (const [id, view] of this.views)
+        if (view.owner === owner && view.sessionId === sessionId && view.clientId === clientId) {
+          view.record = record;
+          if (view.inputSent) await this.sendResult(id, view);
+        }
     } catch (error) {
-      storageError = error;
+      // Persistence and delivery both require a current card. Never retain a late
+      // completion for an uninitialized View after either authorization fails.
+      await Promise.allSettled(
+        [...this.views]
+          .filter(
+            ([, view]) =>
+              view.owner === owner && view.sessionId === sessionId && view.clientId === clientId,
+          )
+          .map(([id, view]) => this.disposeView(id, view)),
+      );
+      throw error;
     }
-    this.assertOwner(owner);
-    for (const view of this.views.values())
-      if (view.sessionId === sessionId && view.clientId === clientId) {
-        view.record = record;
-        if (view.inputSent) await this.sendResult(view);
-      }
-    if (storageError) throw storageError;
   }
 
-  private async sendResult(view: View): Promise<void> {
+  private async assertCurrentView(id: string, view: View): Promise<void> {
+    this.view(view.caller, view.sessionId, id);
+    const latest = await this.deps.readCard(view.sessionId, view.clientId);
+    this.view(view.caller, view.sessionId, id);
+    if (
+      latest.serverId !== view.record.serverId ||
+      latest.serverRevision !== view.record.serverRevision ||
+      latest.resourceUri !== view.record.resourceUri ||
+      latest.tool.name !== view.record.tool.name
+    )
+      throw new Error('MCP_APP_CARD_UNAVAILABLE');
+  }
+
+  private async sendResult(id: string, view: View): Promise<void> {
+    if (view.resultSent || (!view.record.result && !view.record.cancelled)) return;
+    await this.assertCurrentView(id, view);
+    // Initialization and completion can both wait on the same authorization read.
     if (view.resultSent) return;
     if (view.record.result) {
       view.resultSent = true;

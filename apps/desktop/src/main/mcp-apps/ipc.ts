@@ -103,6 +103,9 @@ export function registerMcpAppsIpc(
         if (currentOwner() !== owner || !updated[0]) throw new Error('MCP_APP_CARD_UNAVAILABLE');
         broadcastMessageRow(sessionId, messageToCamel(updated[0]), scope);
       } else {
+        // Only the pending card may be inserted. Completion cannot resurrect a deleted grant.
+        if (record.result !== undefined || record.cancelled !== undefined)
+          throw new Error('MCP_APP_CARD_UNAVAILABLE');
         await createMessage(
           sessionId,
           { clientId, role: 'assistant', content: { mcpApp: record }, agentMeta: { mcpApp: true } },

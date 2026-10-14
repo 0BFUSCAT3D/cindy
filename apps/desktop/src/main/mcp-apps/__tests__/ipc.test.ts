@@ -188,6 +188,26 @@ describe('MCP App persistence and IPC wiring', () => {
     );
     expect(state.create.mock.calls[0][2]).not.toHaveProperty('expectedClearBoundaryMs');
   });
+  it.each([
+    { result: { content: [{ type: 'text' as const, text: 'Late result' }] } },
+    { cancelled: 'Tool execution cancelled' },
+  ])('does not recreate a deleted card when completion arrives: %j', async (completion) => {
+    state.row = null;
+    await expect(
+      state.deps!.writeCard('task', 'card', { ...record, ...completion }),
+    ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    expect(state.create).not.toHaveBeenCalled();
+    expect(state.broadcast).not.toHaveBeenCalled();
+  });
+  it('allows a new pending card to be created before tool execution', async () => {
+    state.row = null;
+    await state.deps!.writeCard('task', 'card', record);
+    expect(state.create).toHaveBeenCalledWith(
+      'task',
+      { clientId: 'card', role: 'assistant', content: { mcpApp: record }, agentMeta: { mcpApp: true } },
+      expect.objectContaining({ beforePublish: expect.any(Function) }),
+    );
+  });
   it('blocks archived tasks and checks tool permission through the existing approval route', async () => {
     state.session.status = 'archived';
     await expect(state.deps!.readCard('task', 'card')).rejects.toThrow(

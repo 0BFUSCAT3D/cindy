@@ -23,7 +23,7 @@
 pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
-单测阶段最新结果为 12 个测试文件、158 项测试通过，退出码为 0。
+前序单测阶段结果为 12 个测试文件、158 项测试通过，退出码为 0。
 前序两个真实 Electron 集成检查均以退出码 0 结束，分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
 `pnpm.cmd --filter desktop typecheck` 本轮通过。定向 ESLint 与当前 HEAD 基准逐项比对，
@@ -83,7 +83,7 @@ coordinator 为 515 项。maker-core 的 6 个测试文件、200 项测试及无
 | `interop.test.ts`             |       28 | 官方 App SDK、HTTP/SSE、上游 instructions、初始化失败回复、加载期间完成/撤销、模型 facade、App 消息撤权 |
 | `conformance.test.ts`         |       18 | 独立 JSON-RPC App、编码/metadata 组合、分页、通知、取消、能力协商                         |
 | `operations.test.ts`          |       11 | 任务与调用者绑定、输入校验、远程操作边界                                                  |
-| `ipc.test.ts`                 |        6 | 卡片持久化、清空与账号竞态、权限路由、公开错误                                            |
+| `ipc.test.ts`                 |        9 | 卡片持久化、清空与账号竞态、删除后禁止重建、权限路由、公开错误                            |
 | `protocol.test.ts`            |       22 | 标准 metadata、可见性、资源格式/大小、CSP 域声明与同源 base URI 默认值                    |
 | `sandboxProtocol.test.ts`     |       10 | 不同 origin、账号隔离、权限拒绝、Renderer 生命周期回收、嵌套导航与 Escape                 |
 | `remoteAuthorization.test.ts` |        5 | 真实 Session instance 路由、冻结装配名单、远程发现与执行授权                              |
@@ -92,6 +92,7 @@ coordinator 为 515 项。maker-core 的 6 个测试文件、200 项测试及无
 | `wireBudget.test.ts` | 7 | 完整文档/事件 UTF-8 JSON 大小、转义、device-link 编码、额度回收与控制端隔离 |
 | `serverProxy.test.ts` | 25 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展；客户端能力及 roots/sampling/elicitation 回调、隔离/撤权/取消 |
 | `messageSender.test.ts` | 19 | App 命令转义、来源与历史保留、发送/入队准备与入队后撤权、序列化丢授权与旧行拒绝 |
+| `resultDelivery.test.ts` | 9 | 晚到结果/取消撤权、保存失败、延迟初始化、正常交付与其他卡片隔离 |
 
 作者侧修复另经 Desktop 卡片可见性、MCP 目录与 SSH bridge、安全守卫定向测试验证；
 Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项通过。共享 controller/
@@ -159,6 +160,35 @@ Host 仍拒绝访客 MCP Apps 请求，房主本机和同账号远控仍使用�
 - 两端新增说明已逐语核对简中、繁中、英、日、韩的含义及编码，未做母语者复核。
   测试覆盖 Light/Dark 状态分支，不计作真实 UI 目检；本轮未启动 Electron 沙箱或 Metro，
   未完成卡片双主题实机、macOS、Mobile 真机或真实双账号联调。
+
+## 晚到工具结果撤权补充验证（2026-10-15）
+
+结果保存失败时，Host 不再替换或投递晚到数据，而是释放同一账号、任务和卡片的全部 View，
+并保留原错误。初始化输入和结果/取消通知发送前复用当前卡片校验；校验失败也回收 View。
+持久化只允许新建待执行卡片，已删除行的结果/取消更新会明确失败，不重新创建卡片。
+
+- 新增 Host 回归 9 项，其中 7 项在修复前复现越权投递或未回收；补充 IPC 回归 3 项，
+  其中 2 项在修复前复现删除后重建。覆盖本机与远程 View、已初始化与等待初始化、
+  保存失败及保存后撤权、完整结果和取消、正常交付一次、其他卡片不受影响及新卡片创建。
+- MCP Apps、WebView 安全与 CSP 定向回归共 15 文件 / 258 项通过，退出码 0；
+  Desktop typecheck、所改 Host/IPC 及测试 ESLint、文档合同 10 项均通过。测试使用
+  内存依赖与现有 loopback fixture，没有读取用户数据库或连接生产服务。
+- head `1053f64` 的 [client-ci](https://github.com/makecindy/cindy/actions/runs/38650071286)
+  中 verify-checks、Desktop Git integration、Windows unit tests (1/2) 的根级 runner
+  均因设计台账过期失败：上轮只读卡片新增的圆角未重新生成计数。本轮运行
+  `pnpm.cmd design:inventory`，仅更新三个 surface 各增加 1 的圆角计数，人工区不变。
+  `check:design-inventory` 与设计台账合同 52 项通过，未跳过或放宽门禁。
+
+```powershell
+pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__ src/main/__tests__/webview-security.test.ts src/main/security/__tests__/csp.test.ts --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter desktop run --if-present typecheck
+pnpm.cmd --filter desktop exec eslint src/main/mcp-apps/host.ts src/main/mcp-apps/ipc.ts src/main/mcp-apps/__tests__/resultDelivery.test.ts src/main/mcp-apps/__tests__/ipc.test.ts
+pnpm.cmd check:design-inventory
+node --test scripts/__tests__/design-inventory.test.mjs
+pnpm.cmd check:dev-docs
+```
+
+本轮未重跑真实 Electron 沙箱、Mobile 真机或 macOS；本地定向结果不替代新 head 的完整 CI。
 
 ## 两个独立 App
 
