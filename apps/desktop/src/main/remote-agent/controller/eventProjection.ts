@@ -147,6 +147,13 @@ export class RemoteEventProjection {
       if (boundary) output.push({ ...event, data: { ...data, text: localText(text.slice(0, boundary), this.workspace) } });
       return output;
     }
+    // 全文终态覆盖同一消息的未闭合尾段；先输出半截虚拟前缀会让 Claude 的前缀校准失效。
+    if (event.type === 'text' && this.pending && typeof data?.text === 'string' && (data.isFinal || data.isFullText)) {
+      const previous = this.pending.data as typeof data;
+      if (this.pending.source === event.source && this.pending.turnScope === event.turnScope
+        && previous?.agentMessageId === data.agentMessageId
+        && (data.isFullText || (typeof previous.text === 'string' && data.text.includes(previous.text)))) this.pending = null;
+    }
     const output = event.type === 'text' || (event.turnScope !== 'background' && TEXT_BOUNDARIES.has(event.type))
       ? this.flush() : [];
     // agentMeta、session/tool id 和权限回执不经过递归文本改写。

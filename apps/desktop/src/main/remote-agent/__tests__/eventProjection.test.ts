@@ -183,4 +183,23 @@ describe('remote file references on the task computer', () => {
     expect(output.filter((event) => event.type === 'text' && !(event.data as { isFinal?: boolean }).isFinal).map(text).join('')).toBe(expected);
     expect(output.find((event) => event.type === 'text' && (event.data as { isFinal?: boolean }).isFinal)?.data).toEqual({ ...final, text: expected });
   });
+
+  it.each(['claude-code', 'codex', 'pi'] as const)('finishes a link from the final snapshot when the last %s deltas are missing', async (source) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const remote = virtual + '/中文 空格/report.md';
+    const raw = '报告在 \x60' + remote + '\x60 [打开](<' + remoteFileUrl(remote) + '>)';
+    const output = await eventsFrom(controller, [
+      { type: 'text', source, data: { text: '报告在 \x60/Users/ag', isFinal: false, agentMessageId: 'message' } },
+      { type: 'text', source, data: { text: raw, isFinal: true, ...(source === 'claude-code' ? {} : { isFullText: true }), agentMessageId: 'message' } },
+      { type: 'done', source, data: {} },
+    ]);
+    const streamed = output.filter((event) => event.type === 'text' && !(event.data as { isFinal?: boolean }).isFinal).map(text).join('');
+    const final = output.find((event) => event.type === 'text' && (event.data as { isFinal?: boolean }).isFinal)!;
+    const local = path.join(real, '中文 空格', 'report.md');
+    expect(text(final)).toBe('报告在 \x60' + local + '\x60 [打开](<' + pathToFileURL(local).href + '>)');
+    // Claude 的非 isFullText 终态仅在正文仍是其前缀时才会补齐持久消息。
+    expect(text(final).startsWith(streamed)).toBe(true);
+    expect(streamed).not.toContain('/Users/ag');
+  });
 });
