@@ -12,7 +12,8 @@ import {
 } from './index.js';
 import { CodexForkError } from './fork-error.js';
 import { Session } from '../../session.js';
-import { Method } from './app-server/protocol.js';
+import { Method, type TurnStartParams } from './app-server/protocol.js';
+import type { Effort } from '../../types/common.js';
 import type { AppServerHost, ThreadEventHandlers } from './app-server/host.js';
 import {
   AUTO_REVIEW_SOURCE_CONTENT,
@@ -1831,6 +1832,29 @@ describe('CodexAgent permissions', () => {
       // A native create_goal would start a second loop outside the Host's
       // pause/budget controls and lose turnOrigin after its first completion.
       expect(params.config['features.goals']).toBe(false);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it.each([false, true])('gives this task\'s shell the 代输入 askpass variables per thread (resume=%s)', async (resume) => {
+    const agent = new CodexAgent(createDeps({
+      taskShellEnv: ({ sessionId }) => ({ CINDY_INPUT_HANDOFF_ROUTE: `route-${sessionId}`, SUDO_ASKPASS: '/tmp/x/askpass' }),
+    }));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'askpass-task',
+      model: 'gpt-6-astra',
+      workingDir: '/repo',
+      ...(resume ? { resumeSessionId: '11111111-1111-1111-1111-111111111111' } : {}),
+    });
+    try {
+      const params = host.request.mock.calls.find(
+        ([method]) => method === (resume ? Method.ThreadResume : Method.ThreadStart),
+      )?.[1] as { config: Record<string, unknown> };
+      // The app-server is shared by tasks, so the variables travel with the thread, not the process.
+      expect(params.config['shell_environment_policy.set.CINDY_INPUT_HANDOFF_ROUTE']).toBe('route-askpass-task');
+      expect(params.config['shell_environment_policy.set.SUDO_ASKPASS']).toBe('/tmp/x/askpass');
     } finally {
       await handle.close();
     }
@@ -7210,6 +7234,120 @@ describe('CodexAgent thread/settings/update channel', () => {
 });
 
 describe('CodexAgent send', () => {
+  it.each([
+    { remoteHostId: undefined, resume: false },
+    { remoteHostId: 'ssh-builder', resume: false },
+    { remoteHostId: undefined, resume: true },
+    { remoteHostId: 'ssh-builder', resume: true },
+  ])('omits no-effort sentinels on initial and subsequent turns ($remoteHostId, resume=$resume)', async ({ remoteHostId, resume }) => {
+    const agent = new CodexAgent(createDeps());
+    const turns: TurnStartParams[] = [];
+    const host = installFakeHost(agent, (method, params) => {
+      if (method === Method.TurnStart) {
+        turns.push(JSON.parse(JSON.stringify(params)) as TurnStartParams);
+        return { turn: { id: `turn-${turns.length}` } };
+      }
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-no-effort',
+      model: 'qwen3:14b',
+      // Desktop persists this sentinel and passes it through the bootstrap boundary.
+      effort: '' as Effort,
+      workingDir: '/repo',
+      remoteHostId,
+      ...(resume ? { resumeSessionId: '11111111-1111-4111-8111-111111111111' } : {}),
+    });
+    try {
+      await handle.send({ type: 'user', content: 'first message' });
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).not.toHaveProperty('effort');
+      host.getThreadHandlers()?.turnCompleted?.({
+        threadId: turns[0].threadId,
+        turn: { id: 'turn-1', status: 'completed' },
+      });
+      // A server default is not an explicit user choice for a no-effort model.
+      host.getThreadHandlers()?.threadSettingsUpdated?.({
+        threadId: turns[0].threadId,
+        threadSettings: { model: 'qwen3:14b', effort: 'high', serviceTier: null },
+      });
+      await handle.send({ type: 'user', content: 'second message' });
+      expect(turns).toHaveLength(2);
+      expect(turns[1]).not.toHaveProperty('effort');
+      expect(handle.getEffort?.()).toBe('');
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it.each([false, true])('uses null plan effort and omits turn effort for no-effort models (retry=%s)', async (retry) => {
+    const agent = new CodexAgent(createDeps());
+    const turns: TurnStartParams[] = [];
+    const host = installFakeHost(agent, (method, params) => {
+      if (method === Method.TurnStart) {
+        turns.push(JSON.parse(JSON.stringify(params)) as TurnStartParams);
+        if (retry && turns.length === 1) throw new Error('thread not found');
+        return { turn: { id: `turn-${turns.length}` } };
+      }
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-no-effort-plan',
+      model: 'qwen3:14b',
+      effort: '' as Effort,
+      workingDir: '/repo',
+      remoteHostId: 'ssh-builder',
+    });
+    try {
+      await handle.send({ type: 'user', content: 'make a plan' }, { planMode: true });
+      expect(turns).toHaveLength(retry ? 2 : 1);
+      for (const turn of turns) {
+        expect(turn).not.toHaveProperty('effort');
+        expect(turn.collaborationMode).toMatchObject({
+          mode: 'plan', settings: { reasoning_effort: null },
+        });
+      }
+      host.getThreadHandlers()?.turnCompleted?.({
+        threadId: turns.at(-1)!.threadId,
+        turn: { id: `turn-${turns.length}`, status: 'completed' },
+      });
+      await handle.send({ type: 'user', content: 'continue normally' }, { planMode: false });
+      expect(turns).toHaveLength(retry ? 3 : 2);
+      expect(turns.at(-1)).not.toHaveProperty('effort');
+      expect(turns.at(-1)?.collaborationMode).toMatchObject({
+        mode: 'default', settings: { reasoning_effort: null },
+      });
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('keeps a runtime no-effort selection out of settings updates and turn/start', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: 'turn-1' } };
+      if (method === Method.ThreadSettingsUpdate) return {};
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-set-no-effort', model: 'qwen3:14b',
+      effort: 'medium', workingDir: '/repo',
+    });
+    try {
+      await handle.setEffort?.('' as Effort);
+      await handle.send({ type: 'user', content: 'hello' });
+      const calls = host.request.mock.calls.filter(([method]) =>
+        method === Method.TurnStart || method === Method.ThreadSettingsUpdate);
+      expect(calls.some(([method]) => method === Method.TurnStart)).toBe(true);
+      for (const [, params] of calls) {
+        expect(JSON.parse(JSON.stringify(params))).not.toHaveProperty('effort');
+      }
+      expect(handle.getEffort?.()).toBe('');
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('clamps minimal effort to low before turn/start', async () => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent);

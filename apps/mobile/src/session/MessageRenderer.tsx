@@ -24,9 +24,10 @@ import { CompanionEntering } from '@/session/CompanionEntering';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
 import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactElement, type ReactNode, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageLoadingImage, MessageImagePlaceholder } from './MessageLoadingImage';
+import { InputHandoffRecordRow } from '@/inputHandoff/InputHandoffRecordRow';
 import {
   ArrowLeftRight,
   Bot,
@@ -78,6 +79,7 @@ import {
   type GestureResponderEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewProps,
   type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
@@ -770,6 +772,7 @@ export function MessageRenderer({
   emptyMessage,
   bottomOverlayHeight,
   contentBottomInset,
+  renderScrollComponent,
   isSessionStreaming,
   makerTurnRunning,
   continuationTurnClientId,
@@ -794,6 +797,8 @@ export function MessageRenderer({
   /** Offscreen preload and disappearing native screens must not replace the user's bookmark. */
   isReadingPositionActive?: () => boolean;
   bottomOverlayHeight?: number;
+  /** 列表滚动容器；任务页用它让聊天记录往下拖到输入框顶边时交给输入框（composerPullThrough）。 */
+  renderScrollComponent?: (props: ScrollViewProps) => ReactElement<ScrollViewProps>;
   /** Floating composers reserve a stable tail gap while their expanded surface overlays history. */
   contentBottomInset?: number;
   /** 顶部 chrome(绝对定位半透明工具栏)实测高度:内容顶部按此让位,详见 mobileMessageListTopPadding。 */
@@ -2859,6 +2864,7 @@ export function MessageRenderer({
         testID={testID ?? 'message.list'}
         viewabilityConfig={viewabilityConfigRef.current}
         onViewableItemsChanged={handleViewableItemsChanged}
+        renderScrollComponent={renderScrollComponent}
       />
       </Animated.View>
       {shareSelectionActive && stickyShareClientId ? (
@@ -5384,6 +5390,7 @@ function MobileSystemCard({
   }
   // agent-switch 走专用「分隔线 + 药丸」渲染(对齐桌面),不落通用盒子卡片。
   if (type === 'agent-switch') return <MobileAgentSwitchCard data={data} />;
+  if (type === 'input-handoff') return <InputHandoffRecordRow data={data} />;
   // auto-resume 复用桌面 AgentActionRow 的单行状态布局:默认只显示当前状态和压缩后的
   // 中断原因,完整诊断按需展开,避免底层错误全文把手机消息流撑成一张大卡片。
   if (type === 'auto-resume') {
