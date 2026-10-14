@@ -6,7 +6,8 @@
  * 因此用户上传的头像在入库 / 上传前就转成真正的 SDR 字节，而不是靠 CSS 调暗。
  *
  * 只处理头像白名单（PNG / JPEG / WebP）里浏览器会按 HDR 渲染的两类信号：
- *   1. 增益图（gain map）JPEG：Ultra HDR（hdrgm XMP）、ISO 21496-1、Apple HDR gain map。
+ *   1. 增益图（gain map）JPEG：以 libvips 从文件结构解析出的增益图为准（Ultra HDR /
+ *      ISO 21496-1，即 sharp `metadata.gainMap`），不按元数据里的字符串猜测。
  *      主图本身就是 SDR 版本，丢弃增益图与相关元数据后按主图重编码即可；
  *   2. PQ / HLG 传递函数：PNG `cICP` 块或 ICC v4.4 `cicp` 标签声明 transfer=16/18。
  *      这类像素本身是 HDR 编码，需解码到线性光 → 转 BT.709 色域 → 高光压缩 →
@@ -54,15 +55,6 @@ const HDR_MAX_PIXELS = 2048 * 2048;
 const HDR_MAX_INPUT_PIXELS = 64_000_000;
 /** 每处理这么多像素让出一次事件循环，避免长时间阻塞 main。 */
 const PIXELS_PER_YIELD = 1 << 18;
-
-const GAIN_MAP_SIGNATURES = [
-  // Ultra HDR / Adobe gain map XMP namespace
-  'http://ns.adobe.com/hdr-gain-map/1.0/',
-  // ISO 21496-1 APP2 版本块
-  'urn:iso:std:iso:ts:21496:-1',
-  // Apple HDR gain map 辅助图（MPF 次图 XMP）
-  'urn:com:apple:photo:2020:aux:hdrgainmap',
-].map((signature) => Buffer.from(signature, 'latin1'));
 
 function sniffFormat(buffer: Buffer): AvatarFormat | null {
   if (
@@ -150,10 +142,6 @@ function hdrTransferOf(cicp: Cicp | null): HdrTransfer | null {
   if (cicp?.transfer === H273_TRANSFER_PQ) return 'pq';
   if (cicp?.transfer === H273_TRANSFER_HLG) return 'hlg';
   return null;
-}
-
-function hasGainMapSignature(buffer: Buffer): boolean {
-  return GAIN_MAP_SIGNATURES.some((signature) => buffer.includes(signature));
 }
 
 // ── 色彩数学 ────────────────────────────────────────────────────────────────
@@ -443,13 +431,12 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
     format === 'png'
       ? readPngHdrChunks(image.buffer)
       : { cicp: null, maxCllNits: null, animated: false };
-  const gainMapSignature = format === 'jpeg' && hasGainMapSignature(image.buffer);
   let metadata: Metadata;
   try {
     // 只读头部、不解码像素：关闭默认像素上限，超大 HDR 才能被识别并在下方按尺寸拒绝。
     metadata = await sharp(image.buffer, { limitInputPixels: false }).metadata();
   } catch {
-    if (hdrTransferOf(png.cicp) || gainMapSignature) {
+    if (hdrTransferOf(png.cicp)) {
       throwIpcError('INVALID_PARAMS', 'HDR avatar could not be converted to SDR');
     }
     return image;
@@ -457,7 +444,7 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
   // PNG 规范：cICP 优先于 iCCP；其它格式只有 ICC 能声明传递函数。
   const cicp = png.cicp ?? readIccCicp(metadata.icc);
   const transfer = hdrTransferOf(cicp);
-  const gainMap = format === 'jpeg' && (Boolean(metadata.gainMap) || gainMapSignature);
+  const gainMap = format === 'jpeg' && Boolean(metadata.gainMap);
   if (!transfer && !gainMap) return image;
   // 转换只处理单帧：动画 WebP（pages > 1）与 APNG（acTL；libvips 只读首帧）都会丢帧。
   if ((metadata.pages ?? 1) > 1 || png.animated) {

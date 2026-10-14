@@ -81,7 +81,7 @@ async function syntheticPqPng(
   return insertAfterIhdr(png, ...extra);
 }
 
-/** Apple HDR gain map 结构:SDR 主图后经 MPF 追加一张带 hdrgainmap XMP 的辅助图。 */
+/** 仿 Apple HDR gain map 的字节:SDR 主图后追加一张带 hdrgainmap XMP 的辅助图(无 libvips 可解析的增益图结构)。 */
 async function appleGainMapJpeg(width: number, height: number): Promise<Buffer> {
   const primary = await sharp({
     create: { width, height, channels: 3, background: { r: 90, g: 90, b: 90 } },
@@ -398,25 +398,31 @@ describe('toSdrAvatarImage — gain maps', () => {
     });
   });
 
-  it('strips Apple HDR gain map auxiliary images appended through MPF', async () => {
-    const input = await appleGainMapJpeg(8, 8);
-    const output = await toSdrAvatarImage({ buffer: input, mimeType: 'image/jpeg' });
-    await expectNoHdrSignal(output.buffer);
-    expect(output.buffer.length).toBeLessThan(input.length);
-    expect(
-      (await rgbaAt(output.buffer, [4], 4))[0]!.slice(0, 3).every((v) => Math.abs(v - 90) <= 3),
-    ).toBe(true);
-  });
-
-  it('downscales large gain-map photos like the PQ / HLG path', async () => {
-    // 4200 × 4100 ≈ 1722 万像素,超过 2048²。
-    const output = await toSdrAvatarImage({
-      buffer: await appleGainMapJpeg(4200, 4100),
-      mimeType: 'image/jpeg',
-    });
-    const metadata = await expectNoHdrSignal(output.buffer);
-    expect(metadata.width! * metadata.height!).toBeLessThanOrEqual(2048 * 2048);
-    expect(Math.abs(metadata.width! / metadata.height! - 4200 / 4100)).toBeLessThan(0.01);
+  it('treats only a parsed gain-map structure as HDR, not gain-map strings in metadata', async () => {
+    const sdr = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#5a5a5a' } })
+      .jpeg()
+      .toBuffer();
+    const segment = (marker: number, text: string) => {
+      const body = Buffer.from(text, 'latin1');
+      const header = Buffer.alloc(4);
+      header.writeUInt16BE(marker, 0);
+      header.writeUInt16BE(body.length + 2, 2);
+      return Buffer.concat([header, body]);
+    };
+    const withSegment = (marker: number, text: string) =>
+      Buffer.concat([sdr.subarray(0, 2), segment(marker, text), sdr.subarray(2)]);
+    for (const buffer of [
+      // XMP 里声明了 Ultra HDR 命名空间,但没有增益图。
+      withSegment(0xffe1, '<x:xmpmeta xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"/>'),
+      // JPEG 注释里出现 ISO 21496-1 URN。
+      withSegment(0xfffe, 'urn:iso:std:iso:ts:21496:-1'),
+      // 末尾附带 Apple 辅助图 XMP,但没有 libvips 可解析的增益图结构。
+      await appleGainMapJpeg(8, 8),
+    ]) {
+      expect((await sharp(buffer).metadata()).gainMap).toBeUndefined();
+      const image = { buffer, mimeType: 'image/jpeg' };
+      expect(await toSdrAvatarImage(image)).toBe(image);
+    }
   });
 });
 
@@ -460,22 +466,24 @@ describe('toSdrAvatarImage — SDR passthrough', () => {
         pngChunk('cICP', Buffer.from([9, transfer, 0, 1])),
         png.subarray(33),
       ]);
+    for (const buffer of [brokenPng(16), brokenPng(18)]) {
+      await expect(sharp(buffer).metadata()).rejects.toThrow();
+      await expect(toSdrAvatarImage({ buffer, mimeType: 'image/png' })).rejects.toThrow(
+        /INVALID_PARAMS/,
+      );
+    }
+    // 增益图只认解析出的结构;读不出头部的 JPEG 即使带增益图字符串也按既有行为放行。
     const xmp = Buffer.from('<x:xmpmeta hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"/>', 'latin1');
     const app1 = Buffer.alloc(4);
     app1.writeUInt16BE(0xffe1, 0);
     app1.writeUInt16BE(xmp.length + 2, 2);
-    const brokenGainMapJpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, xmp]);
-
-    for (const [buffer, mimeType] of [
-      [brokenPng(16), 'image/png'],
-      [brokenPng(18), 'image/png'],
-      [brokenGainMapJpeg, 'image/jpeg'],
-    ] as const) {
-      await expect(sharp(buffer).metadata()).rejects.toThrow();
-      await expect(toSdrAvatarImage({ buffer, mimeType })).rejects.toThrow(/INVALID_PARAMS/);
+    for (const image of [
+      { buffer: brokenPng(13), mimeType: 'image/png' },
+      { buffer: Buffer.concat([Buffer.from([0xff, 0xd8]), app1, xmp]), mimeType: 'image/jpeg' },
+    ]) {
+      await expect(sharp(image.buffer).metadata()).rejects.toThrow();
+      expect(await toSdrAvatarImage(image)).toBe(image);
     }
-    const sdr = { buffer: brokenPng(13), mimeType: 'image/png' };
-    expect(await toSdrAvatarImage(sdr)).toBe(sdr);
   });
 
   it('passes through bytes it cannot parse, preserving the existing validation behaviour', async () => {
