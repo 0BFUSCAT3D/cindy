@@ -995,10 +995,11 @@ describe('ChatInput 的入口门控与调用路由', () => {
       'const exclusiveTurn = reserveAgentSwitchExclusive(sourceSessionId);',
     );
     const invoke = source.indexOf(
-      // 换电脑时多带一个位置参数,两种调用形态共用同一个 result。
-      'const result = relocateTo !== undefined',
+      // 带可选参数与不带参数的调用都必须在同一串行位置内完成。
+      'await switchApi.switchSessionAgent(',
       reservation,
     );
+    const invokeWithoutOptions = source.indexOf('await switchApi.switchSessionAgent(', invoke + 1);
     const scopeGuard = source.indexOf(
       'if (!isSessionScopeCurrent(sourceSessionId, currentSessionIdRef.current)) return false;',
       invoke,
@@ -1008,7 +1009,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const release = source.indexOf('exclusiveTurn.release();', reselect);
     expect(reservation).toBeGreaterThanOrEqual(0);
     expect(invoke).toBeGreaterThan(reservation);
-    expect(scopeGuard).toBeGreaterThan(invoke);
+    expect(invokeWithoutOptions).toBeGreaterThan(invoke);
+    expect(scopeGuard).toBeGreaterThan(invokeWithoutOptions);
     expect(reselect).toBeGreaterThan(scopeGuard);
     expect(staleGuard).toBeGreaterThan(reselect);
     expect(release).toBeGreaterThan(reselect);
