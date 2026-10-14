@@ -13,7 +13,6 @@ import { describe, expect, it } from 'vitest';
 import {
   readIccCicp,
   readPngHdrChunks,
-  serializeConversion,
   toSdrAvatarImage,
 } from '../hdrAvatarToSdr';
 
@@ -295,6 +294,20 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     }
   });
 
+  it('downscales large PQ sources to at most 2048² before tone mapping', async () => {
+    const [width, height] = [3000, 1500];
+    const raw = new Uint16Array(width * height * 3).fill(Math.round(PQ(203) * 65535));
+    const input = insertAfterIhdr(
+      await sharp(raw, { raw: { width, height, channels: 3 } }).toColourspace('rgb16').png().toBuffer(),
+      pngChunk('cICP', Buffer.from([1, 16, 0, 1])),
+    );
+    const metadata = await expectNoHdrSignal(
+      (await toSdrAvatarImage({ buffer: input, mimeType: 'image/png' })).buffer,
+    );
+    expect(metadata.width! * metadata.height!).toBeLessThanOrEqual(2048 * 2048);
+    expect(Math.abs(metadata.width! / metadata.height! - 2)).toBeLessThan(0.01);
+  });
+
   it('rejects HDR sources whose declared dimensions exceed the limit before decoding', async () => {
     const png = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
     // 改写 IHDR 宽高(1 亿 / 4 亿像素),文件仍只有几百字节;后者超过 sharp 默认像素上限。
@@ -361,32 +374,6 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     const sdrApng = { buffer: insertAfterIhdr(frames[0]!, acTL), mimeType: 'image/png' };
     expect(await toSdrAvatarImage(sdrApng)).toBe(sdrApng);
   });
-
-  it('runs concurrent conversions one at a time and keeps going after a failure', async () => {
-    const valid = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
-    const broken = valid.subarray(0, valid.length - 20);
-
-    // 先占住队列:未放行前,后续 HDR 转换都不能开始(并行实现会在几毫秒内各自完成)。
-    let release!: () => void;
-    const holder = serializeConversion(() => new Promise<void>((resolve) => (release = resolve)));
-    const settled: string[] = [];
-    const track = (label: string, image: Buffer) =>
-      toSdrAvatarImage({ buffer: image, mimeType: 'image/png' }).then(
-        (output) => (settled.push(label), output),
-        (error: unknown) => (settled.push(label), Promise.reject(error)),
-      );
-    const pending = Promise.allSettled([track('broken', broken), track('valid', valid)]);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(settled).toEqual([]);
-
-    release();
-    await holder;
-    const [brokenResult, validResult] = await pending;
-    // 失败的转换不卡住队列。
-    expect(brokenResult.status).toBe('rejected');
-    expect(validResult.status).toBe('fulfilled');
-    await expectNoHdrSignal((validResult as PromiseFulfilledResult<{ buffer: Buffer }>).value.buffer);
-  });
 });
 
 describe('toSdrAvatarImage — gain maps', () => {
@@ -422,13 +409,13 @@ describe('toSdrAvatarImage — gain maps', () => {
   });
 
   it('downscales large gain-map photos like the PQ / HLG path', async () => {
-    // 4200 × 4100 ≈ 1722 万像素,超过 4096²。
+    // 4200 × 4100 ≈ 1722 万像素,超过 2048²。
     const output = await toSdrAvatarImage({
       buffer: await appleGainMapJpeg(4200, 4100),
       mimeType: 'image/jpeg',
     });
     const metadata = await expectNoHdrSignal(output.buffer);
-    expect(metadata.width! * metadata.height!).toBeLessThanOrEqual(4096 * 4096);
+    expect(metadata.width! * metadata.height!).toBeLessThanOrEqual(2048 * 2048);
     expect(Math.abs(metadata.width! / metadata.height! - 4200 / 4100)).toBeLessThan(0.01);
   });
 });

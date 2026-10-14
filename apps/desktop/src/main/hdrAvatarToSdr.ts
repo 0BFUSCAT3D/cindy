@@ -42,8 +42,11 @@ const HDR_REFERENCE_WHITE_NITS = 203;
 const DEFAULT_HDR_PEAK_NITS = 1000;
 /** 线性 SDR 中低于该值的部分保持不变，只把以上到峰值的高光平滑压进 (knee, 1]。 */
 const TONE_MAP_KNEE = 0.8;
-/** 两条转换路径的输出像素上限；超出先等比缩小，限制 main 进程内存与耗时。 */
-const HDR_MAX_PIXELS = 4096 * 4096;
+/**
+ * 两条转换路径的输出像素上限；超出先等比缩小。头像展示远小于 2048²，按此上限单次
+ * PQ / HLG 转换在 main 进程持有的像素缓冲 ≤ 48 MiB（16-bit RGBA 32 MiB + 8-bit 输出 16 MiB）。
+ */
+const HDR_MAX_PIXELS = 2048 * 2048;
 /**
  * 源图像素上限：≤5 MB 的 PNG / WebP 也能声明上亿像素，超出时在解码前按头部尺寸拒绝，
  * 并作为每次解码的 limitInputPixels 兜底（sharp 默认上限约 2.7 亿）。覆盖 4800 万像素手机原片。
@@ -304,17 +307,6 @@ function toneMapMax(max: number, peak: number): number {
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/**
- * 所有头像入口共享的转换队列：同一时刻至多一个 HDR 转换持有像素缓冲（4096² 16-bit RGBA
- * 约 128 MiB 源像素 + 64 MiB 输出），main 进程峰值内存不随并发上传叠加。失败不阻塞后续。
- */
-let conversionQueue: Promise<unknown> = Promise.resolve();
-export function serializeConversion<T>(run: () => Promise<T>): Promise<T> {
-  const result = conversionQueue.then(run);
-  conversionQueue = result.catch(() => undefined);
-  return result;
-}
-
 // ── 转换 ────────────────────────────────────────────────────────────────────
 
 async function encode(pipeline: Sharp, format: AvatarFormat): Promise<AvatarImageBytes> {
@@ -479,11 +471,9 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
     throwIpcError('INVALID_PARAMS', 'HDR avatar declares unsupported colour primaries');
   }
   try {
-    return await serializeConversion(() =>
-      transfer && cicp && primaries
-        ? toneMapToSdr(image.buffer, metadata, format, cicp, primaries, transfer, png.maxCllNits)
-        : dropGainMap(image.buffer, metadata),
-    );
+    return transfer && cicp && primaries
+      ? await toneMapToSdr(image.buffer, metadata, format, cicp, primaries, transfer, png.maxCllNits)
+      : await dropGainMap(image.buffer, metadata);
   } catch {
     throwIpcError('INVALID_PARAMS', 'HDR avatar could not be converted to SDR');
   }
