@@ -1,0 +1,59 @@
+{
+  "acceptedSource": "46f937a39117ded3ef0fac4874d6e37a276c81ac",
+  "integrationSource": "c2041018d21ab18f55e9ee0881abfdb50eca436a",
+  "canonicalBase": "c950b504649f2c64668c618320c352d159370961",
+  "checks": {
+    "desktopTargeted": {
+      "files": 52,
+      "passed": 1072,
+      "exitCode": 0
+    },
+    "desktopTypecheck": {
+      "exitCode": 0
+    },
+    "protocolTest": {
+      "files": 11,
+      "passed": 165,
+      "exitCode": 0
+    },
+    "protocolBuild": {
+      "exitCode": 0
+    },
+    "migrationStatic": {
+      "range": "0000..0127",
+      "exitCode": 0
+    },
+    "migrationReplay": {
+      "passed": 14,
+      "exitCode": 0
+    },
+    "i18n": {
+      "exitCode": 0,
+      "existingWarnings": true
+    },
+    "glossary": {
+      "exitCode": 0
+    },
+    "publicTrackedDocs": {
+      "passed": 10,
+      "exitCode": 0
+    },
+    "desktopChangedFilesESLint": {
+      "files": 43,
+      "exitCode": 1,
+      "errors": 33,
+      "introducedErrors": 0,
+      "baseline": "c950b504649f2c64668c618320c352d159370961",
+      "comparison": "ruleId/message/source-line equality"
+    },
+    "diffCheck": {
+      "exitCode": 0
+    }
+  },
+  "limitations": [
+    "Local full suite not run; full CI pending",
+    "Root docs check fails on existing untracked local evidence-copy links; public tracked-file snapshot passes without modifying local originals",
+    "No independent review or numerical score yet",
+    "Screenshot renderer source 46f; initial main ready 97b; no claim of integration-source cold start"
+  ]
+}
