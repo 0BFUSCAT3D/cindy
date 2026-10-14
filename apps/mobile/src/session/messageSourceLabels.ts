@@ -111,6 +111,7 @@ export function isSourceDeviceRemoved(
 }
 
 export function sourcePluginLabel(plugin: MessageSourcePlugin): string {
+  if (plugin.pluginId.startsWith('mcp-app:')) return i18n.t('mcpApps.messageSource', { name: plugin.name ?? plugin.pluginId.slice(8) });
   return plugin.name
     ? i18n.t("message.renderer.sourcePluginNamed", { name: plugin.name })
     : i18n.t("message.renderer.sourcePlugin");

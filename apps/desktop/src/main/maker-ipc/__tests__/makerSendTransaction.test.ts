@@ -35,6 +35,7 @@ import { buildCindyMakeTaskNote } from '../../cindy-make/taskNote';
 import { getResolvedMainLocale } from '../../i18n';
 import { buildMobileClientPromptNote } from '../mobileClientPromptNote';
 import { buildUiLanguageErrorNote } from '../uiLanguageErrorNote';
+import * as mcpApps from '../../mcp-apps/runtime.js';
 
 function uiLanguageNote(): string {
   return buildUiLanguageErrorNote(getResolvedMainLocale());
@@ -47,6 +48,24 @@ function withUiLanguageNote(content: string): string {
 function withUiLanguageUserMessage(content: string): { type: 'user'; content: string } {
   return { type: 'user', content: withUiLanguageNote(content) };
 }
+describe('MCP App next-turn context', () => {
+  it('adds the latest App context to the agent wire while keeping the persisted user message intact', async () => {
+    const context = '\n[MCP App context: external application data]\n{"draft":"updated"}\n[/MCP App context]';
+    const read = vi.spyOn(mcpApps, 'mcpAppModelContext').mockResolvedValueOnce(context);
+    try {
+      const { deps, session } = createDeps();
+      await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'Continue', undefined, {
+        persistUserMessage: { clientId: 'input', content: 'Continue' },
+      });
+      expect(read).toHaveBeenCalledWith('session-1');
+      const call = vi.mocked(session.send).mock.calls[0][0];
+      const wire = typeof call === 'string' ? call : call.content;
+      expect(JSON.stringify(wire)).toContain('updated');
+      expect(JSON.stringify(wire)).toContain('Continue');
+      expect(deps.createDbMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({ content: 'Continue' }), undefined);
+    } finally { read.mockRestore(); }
+  });
+});
 
 function createSession(overrides: Partial<MakerSendTransactionSession> = {}): MakerSendTransactionSession {
   return {

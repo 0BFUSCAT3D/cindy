@@ -15741,5 +15741,12 @@
     "offerExpired": "The account or reset offer changed. Refresh usage before resetting.",
     "resetFailed": "Could not confirm the reset result. Refresh usage to check whether limits were restored.",
     "limitAction": "Use Reset · {{count}} Available"
+  },
+  "mcpApps": {
+    "retry": "Reload",
+    "loadFailed": "The app could not load. Check the connection and reload.",
+    "updateRequired": "This computer does not support MCP Apps yet. Update Cindy on that computer and try again.",
+    "messageSource": "MCP App",
+    "exitFullscreen": "Exit Fullscreen"
   }
 }

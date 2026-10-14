@@ -259,6 +259,7 @@ export function describeMessageSourceSender(sender: MessageSourceSender): string
       return ref ? `由任务${ref} 发送` : '由其他任务发送';
     }
     case 'plugin':
+      if (sender.pluginId.startsWith('mcp-app:')) return `由 MCP App${formatSourceRef(sender.name, 'mcp_server_id', sender.pluginId.slice(8))} 发送`;
       return `由插件${formatSourceRef(sender.name, 'plugin_id', sender.pluginId)} 发送`;
     case 'shared-member':
       return `由共享任务成员${formatSourceRef(sender.name, 'member_id', sender.memberId)} 发送`;

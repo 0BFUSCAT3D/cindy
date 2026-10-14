@@ -1,0 +1,35 @@
+import type { AppServerConfig } from './connection.js';
+import type { McpAppsHost } from './host.js';
+import { clearMcpAppDocuments } from './sandboxProtocol.js';
+
+let host: McpAppsHost | undefined;
+const configs = new Map<string, () => AppServerConfig>();
+export function setMcpAppsHost(value: McpAppsHost): void {
+  host = value;
+}
+export function getMcpAppsHost(): McpAppsHost {
+  if (!host) throw new Error('MCP_APPS_NOT_READY');
+  return host;
+}
+export function registerAppServer(id: string, read: () => AppServerConfig): void {
+  configs.set(id, read);
+}
+export function clearAppServerConfigs(): void {
+  configs.clear();
+}
+export function readAppServer(id: string): AppServerConfig | undefined {
+  return configs.get(id)?.();
+}
+export function appServerIds(): string[] {
+  return [...configs.keys()];
+}
+export function resetAppServers(): void {
+  configs.clear();
+  clearMcpAppDocuments();
+  void host?.reset();
+}
+
+/** Applied only to the next user send, never on each field change or in system prompts. */
+export async function mcpAppModelContext(sessionId: string): Promise<string> {
+  return (await host?.modelContext(sessionId)) ?? '';
+}

@@ -25,6 +25,7 @@ import {
   withMcpRouteIdentity,
 } from './codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from './remoteMcpBridgeToken.js';
+import { appServerIds } from '../mcp-apps/runtime.js';
 
 const TOKEN_ENV = 'LIZI_MCP_TOKEN';
 const MCP_TIMEOUT_SEC = 10 * 60;
@@ -365,6 +366,7 @@ async function doStart(
   const bridge = Object.keys(serverFactories).length > 0
     ? await startCodexHttpBridge({
         serverFactories,
+        appServerNames: Object.keys(serverFactories).filter(name => appServerIds().includes(name)),
         pluginIdByServerName,
         // 远端常驻 daemon 经 SSH remote-forward 直连本 bridge:接受 persistent
         // token (safeStorage, 跨 app 重启稳定)。函数形式读取,token 首用时惰性

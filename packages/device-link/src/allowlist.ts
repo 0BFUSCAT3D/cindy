@@ -169,6 +169,8 @@ const CORE_INVOKE_CHANNELS: readonly string[] = [
   'maker:close-session',
   'maker:abort-session',
   'maker:send',
+  // Task-bound official MCP App bridge. No credentials or arbitrary endpoint selection.
+  'maker:mcp-apps:v1',
   'maker:steer',
   'maker:list-active',
   'maker:any-session-in-turn',

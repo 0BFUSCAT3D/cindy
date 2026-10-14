@@ -1,5 +1,21 @@
 # 跨端协议兼容
 
+## MCP Apps
+
+标准 MCP Apps 使用 `io.modelcontextprotocol/ui` 扩展及官方 `2026-01-26` 协议。
+客户端新增独立 `maker:mcp-apps:v1` channel，复用 device-link 的同账号调用与错误协议，
+不改变已有 channel、relay 帧、服务端 schema 或 Mobile 原生指纹。
+App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必须有 Main 写入的
+`agentMeta.mcpApp` 标记；旧客户端不解析该字段，仍可阅读原工具返回的文本。
+新控制端连接旧 Host 时拒绝该 channel 并提示更新执行电脑，不回退到执行任意 HTML。
+完整交互需要执行电脑和查看端都支持 MCP Apps；共享任务访客不开放该入口。
+
+查看端只传标准 JSON-RPC 和界面环境；执行 Host 持有 MCP 连接、账号归属、工具可见性与
+审批决定。View 绑定 owner、task、card、caller 与配置版本，清空、回退、账号切换或配置
+撤销后旧操作失效。轮询可有界重试，工具调用、消息发送与创建申请不自动重放。
+远程外链动作单独传给控制端，在当前查看设备打开，不在执行电脑打开。
+兼容矩阵、可选能力声明与验证入口见 [MCP Apps 接入](../mcp-apps.md)。
+
 > **状态**：权威开发规则（authoritative）
 > **读取时机**：修改插件分发来源边界、device-link 协议／relay／隧道 payload／IPC
 > allowlist，或任何改动客户端与服务端之间 wire protocol 的地方之前

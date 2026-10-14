@@ -42,6 +42,7 @@ import {
   selectRemoteInjectableServerNames,
 } from '../mcp-integrations/codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from '../mcp-integrations/remoteMcpBridgeToken.js';
+import { appServerIds } from '../mcp-apps/runtime.js';
 
 const log = createLogger('codex-remote-mcp');
 
@@ -778,7 +779,7 @@ export function hasPendingRemoteMcpDrift(
   },
 ): boolean {
   const applied = readPortPrefs()[hostId]?.appliedFingerprint ?? null;
-  if ((!opts.collabEnabled && !opts.makerMemoryEnabled && !opts.botHelperAvailable) || !opts.token) {
+  if ((!opts.collabEnabled && !opts.makerMemoryEnabled && !opts.botHelperAvailable && appServerIds().length === 0) || !opts.token) {
     // 清理语义:applied 存在 = 待清理 (strip / 清理路径未跑过)。
     return applied !== null;
   }
@@ -793,7 +794,7 @@ export function hasPendingRemoteMcpDrift(
     token: opts.token,
     bridgeInstanceId: opts.bridgeInstanceId,
     remotePort,
-    serverNames: selectRemoteInjectableServerNames([...REMOTE_ALLOWED_SERVER_NAMES], {
+    serverNames: selectRemoteInjectableServerNames([...REMOTE_ALLOWED_SERVER_NAMES, ...appServerIds()], {
       collabEnabled: opts.collabEnabled,
       memoryEnabled: opts.makerMemoryEnabled,
       botHelperEnabled: opts.botHelperAvailable,

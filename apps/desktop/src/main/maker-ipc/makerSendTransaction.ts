@@ -55,6 +55,7 @@ import type { MakerSessionCreateOpts } from './sessionRequest.js';
 import { channelTurnSourceFor, withChannelTurnSource } from './channelTurnSignal.js';
 import type { CindyLearnInvocationGrant } from '../learn-host/invocationGrant.js';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION, currentAutoReviewResourceIntent, readAutoReviewUserText, restoreAutoReviewUserIntent, type AutoReviewHistoryMessage } from './autoReviewUserIntent.js';
+import { mcpAppModelContext } from '../mcp-apps/runtime.js';
 
 type CreateOpts = MakerSessionCreateOpts;
 
@@ -1352,9 +1353,13 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       const uiLanguageNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
         ? buildUiLanguageErrorNote(turnUiLanguageFromSendOpts(so, getResolvedMainLocale()))
         : null;
-      const outgoing = uiLanguageNote
+      let outgoing = uiLanguageNote
         ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, uiLanguageNote)
         : withCindyMakeNote;
+      const appContext = await mcpAppModelContext(sessionId);
+      if (appContext && shouldPrependMobileClientPromptNote(normalized, sess.agentKind)) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, appContext);
+      }
       const meta = await deps.getSessionMeta(sessionId).catch(() => null);
       let persistUserMessage = readPersistUserMessageOption(so);
       const trustedDesktopQueueReceipt = readTrustedDesktopQueueReceipt(persistUserMessage);

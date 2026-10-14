@@ -29,6 +29,8 @@ import {
   isSameCodexMcpSessionContext,
 } from './codexMcpThreadContextStore.js';
 import { isFrozenBuiltinPluginAllowed } from './codexBuiltinToolPolicy.js';
+import { readAllowedBuiltinPluginIds } from './codexBuiltinToolPolicy.js';
+import { appServerIds } from '../mcp-apps/runtime.js';
 
 const SERVER_HEADER = 'Lizi_MCPS/1.0';
 const MCP_PATH_PREFIX = '/mcp/';
@@ -74,9 +76,10 @@ export const REMOTE_ALLOWED_SERVER_NAMES: ReadonlySet<string> = new Set([
  */
 export function selectRemoteInjectableServerNames(
   available: readonly string[],
-  gates: { collabEnabled: boolean; memoryEnabled: boolean; botHelperEnabled?: boolean },
+  gates: { collabEnabled: boolean; memoryEnabled: boolean; botHelperEnabled?: boolean; appServerNames?: readonly string[] },
 ): string[] {
   return [
+    ...available.filter(name => appServerIds().includes(name) && (gates.appServerNames === undefined || gates.appServerNames.includes(name))),
     ...(gates.collabEnabled ? available.filter((n) => REMOTE_COLLAB_SERVER_NAMES.has(n)) : []),
     ...(gates.botHelperEnabled && available.includes(REMOTE_BOT_HELPER_SERVER_NAME)
       ? [REMOTE_BOT_HELPER_SERVER_NAME]
@@ -199,6 +202,8 @@ export interface StartCodexHttpBridgeOptions {
    * 函数形式读取:token 允许晚于 bridge 启动才生成/落盘。
    */
   additionalBearerTokens?: () => readonly string[];
+  /** Explicit configured user MCP facades in this bridge generation; never arbitrary built-ins. */
+  appServerNames?: readonly string[];
   logger: Logger;
 }
 
@@ -348,7 +353,8 @@ export async function startCodexHttpBridge(
       // scoped (persistent) token 仅限远端白名单 server:
       // 同一 remote-forward 能摸到完整 /mcp/<name> 路由, 不得经它初始化
       // cindy_ssh 等其余本机 server — codex-connector P1。
-      if (isScopedRemoteToken && !REMOTE_ALLOWED_SERVER_NAMES.has(serverName)) {
+      const remoteAppServer = isScopedRemoteToken && opts.appServerNames?.includes(serverName) === true && appServerIds().includes(serverName);
+      if (isScopedRemoteToken && !REMOTE_ALLOWED_SERVER_NAMES.has(serverName) && !remoteAppServer) {
         res.statusCode = 403;
         res.end();
         log.warn('rejected scoped remote token for non-collab server', { serverName });
@@ -372,6 +378,7 @@ export async function startCodexHttpBridge(
         log,
         threadContextStore,
         discoveryContexts,
+        remoteAppServer,
         pluginId: opts.pluginIdByServerName?.[serverName],
         sessionTokenCtx,
         threadInstanceQuery: sessionQuery === null ? instanceQuery : null,
@@ -574,6 +581,7 @@ interface DispatchOpts {
   threadContextStore: ReturnType<typeof createCodexMcpThreadContextStore>;
   discoveryContexts: ReadonlyMap<string, LiziMcpSessionContext>;
   remoteBotHelper?: boolean;
+  remoteAppServer?: boolean;
   pluginId?: string;
   /** per-session token 命中时解析出的 ctx;存在即优先于 _meta.threadId 路由。 */
   sessionTokenCtx?: LiziMcpSessionContext;
@@ -609,6 +617,7 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
     sessionTokenCtx,
     threadInstanceQuery,
     remoteBotHelper,
+    remoteAppServer,
   } = opts;
 
   const sessionIdHeader = req.headers['mcp-session-id'];
@@ -674,6 +683,16 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
       }
     }
     // The remote token must never open the ordinary local helper surface.
+    if (remoteAppServer && parsedBody && typeof parsedBody === 'object') {
+      const requests = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+      const needsSession = requests.some(item => item && typeof item === 'object' && 'id' in item && !['ping', 'tools/list'].includes(String(item.method)));
+      const mounted = activeContext?.vendorOptions?.cindyRuntimeMcpServerNames;
+      const frozenBot = readAllowedBuiltinPluginIds(activeContext?.vendorOptions) !== null;
+      if ((frozenBot && (!Array.isArray(mounted) || !mounted.includes(serverName))) ||
+        (needsSession && (!activeContext?.remoteHostId || !activeContext.sessionId || !activeContext.sessionInstanceId))) {
+        res.statusCode = 401;res.end('MCP App server requires a bound Session instance');return;
+      }
+    }
     // Startup discovery may list tools, but calls still need the registered thread.
     if (remoteBotHelper && (hasToolCall(parsedBody) ||
       (parsedBody as { method?: unknown } | undefined)?.method === 'tools/list') &&

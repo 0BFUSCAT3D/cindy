@@ -1,0 +1,132 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import {
+  ToolListChangedNotificationSchema,
+  ResourceListChangedNotificationSchema,
+  PromptListChangedNotificationSchema,
+  type ToolListChangedNotification,
+  type ResourceListChangedNotification,
+  type PromptListChangedNotification,
+  type Tool,
+} from '@modelcontextprotocol/sdk/types.js';
+
+type AppServerNotification =
+  ToolListChangedNotification | ResourceListChangedNotification | PromptListChangedNotification;
+import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
+import { MCP_APPS_EXTENSION } from './protocol.js';
+
+export interface AppServerConfig {
+  id: string;
+  url: string;
+  transport: 'http' | 'sse';
+  headers?: Record<string, string>;
+}
+
+/** Credentials and the MCP client always stay in Main, never in a View. */
+export class AppConnection {
+  readonly client = new Client(
+    { name: 'Cindy', version: '1.0.0' },
+    {
+      capabilities: { extensions: { [MCP_APPS_EXTENSION]: { mimeTypes: [RESOURCE_MIME_TYPE] } } },
+    },
+  );
+  private connecting?: Promise<Client>;
+  private closed = false;
+  private readonly listeners = new Set<(message: AppServerNotification) => void>();
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  constructor(readonly config: AppServerConfig) {}
+
+  async getClient(): Promise<Client> {
+    if (this.closed) throw new Error('MCP_APP_CONNECTION_CLOSED');
+    if (!this.connecting) {
+      const requestInit = { headers: this.config.headers };
+      const url = new URL(this.config.url);
+      const transport =
+        this.config.transport === 'sse'
+          ? new SSEClientTransport(url, {
+              requestInit,
+              eventSourceInit: {
+                fetch: (input, init) =>
+                  fetch(input, { ...init, headers: { ...this.config.headers, ...init?.headers } }),
+              },
+            })
+          : new StreamableHTTPClientTransport(url, { requestInit });
+      this.connecting = this.client.connect(transport, { timeout: 30_000 }).then(() => {
+        if (this.closed) throw new Error('MCP_APP_CONNECTION_CLOSED');
+        for (const schema of [
+          ToolListChangedNotificationSchema,
+          ResourceListChangedNotificationSchema,
+          PromptListChangedNotificationSchema,
+        ]) {
+          this.client.setNotificationHandler(schema, (message) => {
+            this.listeners.forEach((listener) => listener(message));
+          });
+        }
+        this.client.onclose = () => {
+          this.closed = true;
+        };
+        return this.client;
+      });
+      void this.connecting.catch(() => {
+        this.closed = true;
+        void this.client.close().catch(() => {});
+      });
+    }
+    return this.connecting;
+  }
+
+  async tools(): Promise<Tool[]> {
+    const client = await this.getClient();
+    const tools: Tool[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      const page = await client.listTools(cursor ? { cursor } : undefined);
+      tools.push(...page.tools);
+      cursor = page.nextCursor;
+      if (cursor && seen.has(cursor)) throw new Error('MCP_APP_INVALID_PAGINATION');
+      if (cursor) seen.add(cursor);
+      if (seen.size > 100 || tools.length > 10_000) throw new Error('MCP_APP_TOOL_LIST_TOO_LARGE');
+    } while (cursor);
+    return tools;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.listeners.clear();
+    await this.client.close();
+  }
+
+  listen(listener: (message: AppServerNotification) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async resource(uri: string) {
+    const client = await this.getClient();
+    const result = await client.readResource({ uri });
+    if (result.contents.some((item) => item.uri === uri && item._meta?.ui !== undefined))
+      return { result };
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    // Metadata may live on resources/list. servers without listing still support read.
+    try {
+      do {
+        const page = await client.listResources(cursor ? { cursor } : undefined);
+        const resource = page.resources.find((item) => item.uri === uri);
+        if (resource) return { result, meta: resource._meta?.ui };
+        cursor = page.nextCursor;
+        if (cursor && (seen.has(cursor) || seen.size >= 100))
+          throw new Error('MCP_APP_INVALID_PAGINATION');
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+    } catch {
+      /* Resource reads do not require list support. */
+    }
+    return { result };
+  }
+}

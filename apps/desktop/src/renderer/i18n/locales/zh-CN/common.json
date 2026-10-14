@@ -15687,5 +15687,12 @@
     "offerExpired": "账号或重置状态已变化，请刷新用量后再使用重置",
     "resetFailed": "无法确认重置结果，请刷新用量查看额度是否已恢复",
     "limitAction": "使用重置 · 剩余 {{count}} 次"
+  },
+  "mcpApps": {
+    "retry": "重新加载",
+    "loadFailed": "应用加载失败。请检查连接后重新加载。",
+    "updateRequired": "这台电脑暂不支持 MCP Apps，请更新电脑上的 Cindy 后再试。",
+    "messageSource": "MCP App",
+    "exitFullscreen": "退出全屏"
   }
 }

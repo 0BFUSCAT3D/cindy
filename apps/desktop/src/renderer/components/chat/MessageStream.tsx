@@ -318,6 +318,7 @@ import { ErrorMessageCard } from './ErrorMessageCard';
 import { APP_EXIT_INTERRUPTED_REASON } from '../../../shared/interruptedTurn';
 import { PlanReviewBubble } from './PlanReviewBubble';
 import { ToolCallCard, getToolSummary } from './ToolCallCard';
+import { McpAppCard } from './McpAppCard';
 import { InlinePlanCard } from './TodoListCard';
 import { SystemCard } from './SystemCard';
 import { NewMessageIndicator } from './NewMessageIndicator';
@@ -6813,6 +6814,9 @@ const MessageItem = memo(function MessageItem({
         />
       );
     case 'assistant':
+      if (message.systemCardType === 'mcp-app') {
+        return sessionId ? <McpAppCard sessionId={sessionId} clientId={message.clientId} title={String(message.systemCardData?.title ?? 'MCP App')} /> : null;
+      }
       if (message.systemCardType) {
         const card = (
           <SystemCard

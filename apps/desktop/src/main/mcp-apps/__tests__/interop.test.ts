@@ -1,0 +1,404 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Script } from 'node:vm';
+import { App } from '@modelcontextprotocol/ext-apps';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import {
+  CallToolResultSchema,
+  type CallToolResult,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
+import { startMockAppServer, MOCK_RESOURCE } from '../../../../scripts/mcp-apps-mock.mjs';
+import { AppConnection } from '../connection.js';
+import { McpAppsHost, appServerRevision } from '../host.js';
+import { setMcpAppsHost, registerAppServer } from '../runtime.js';
+import { createAppServerProxy } from '../serverProxy.js';
+import type { McpAppRecord } from '../../../shared/mcpApps.js';
+
+let endpoint: Awaited<ReturnType<typeof startMockAppServer>>;
+const cleanups: Array<() => Promise<unknown>> = [];
+beforeAll(async () => {
+  endpoint = await startMockAppServer();
+});
+afterAll(async () => {
+  await endpoint.close();
+});
+afterEach(async () => {
+  await Promise.allSettled(cleanups.splice(0).map((close) => close()));
+});
+
+/** Independent official View SDK, using the production Host transport operations. */
+class TestViewTransport implements Transport {
+  onmessage?: Transport['onmessage'];
+  onclose?: Transport['onclose'];
+  onerror?: Transport['onerror'];
+  private active = true;
+  constructor(
+    private host: McpAppsHost,
+    private viewId: string,
+    private caller = 'renderer:1',
+    private openLink: (url: string) => Promise<void> = async () => {},
+  ) {}
+  async start() {
+    void (async () => {
+      let after = 0;
+      while (this.active) {
+        try {
+          const events = await this.host.poll(this.caller, 'task', this.viewId, after);
+          for (const event of events) {
+            after = event.seq;
+            if (event.openLink) {
+              await this.openLink(event.openLink.url);
+              this.host.linkResult(this.caller, 'task', this.viewId, event.openLink.id, true);
+            } else this.onmessage?.(event.message);
+          }
+        } catch {
+          return;
+        }
+      }
+    })();
+  }
+  async send(message: JSONRPCMessage) {
+    await this.host.dispatch(this.caller, 'task', this.viewId, message);
+  }
+  async close() {
+    this.active = false;
+    this.onclose?.();
+  }
+}
+
+async function fixture(
+  transport: 'http' | 'sse' = 'http',
+  options: {
+    cancelled?: boolean;
+    platform?: 'mobile' | 'desktop';
+    appModes?: ('inline' | 'fullscreen')[];
+    duringResource?: 'result' | 'cancelled' | 'clear' | 'server';
+  } = {},
+) {
+  const config = {
+    id: 'example',
+    url: transport === 'http' ? endpoint.url : endpoint.sseUrl,
+    transport,
+  };
+  let owner: object = {};
+  let visible = true;
+  let enabled = true;
+  const connection = new AppConnection(config);
+  const client = await connection.getClient();
+  const tool = (await connection.tools()).find((tool) => tool.name === 'draft_form')!;
+  const input = { title: 'Draft', body: 'Review first' };
+  const result = (await client.callTool(
+    { name: 'draft_form', arguments: input },
+    CallToolResultSchema,
+  )) as CallToolResult;
+  let card: McpAppRecord = {
+    version: 1,
+    serverId: config.id,
+    serverRevision: appServerRevision(config),
+    resourceUri: MOCK_RESOURCE,
+    tool,
+    arguments: input,
+    ...(options.cancelled ? { cancelled: 'User cancelled' } : { result }),
+  };
+  const authorize = vi.fn(async () => {});
+  const sendMessage = vi.fn(async () => {});
+  const openLink = vi.fn(async () => {});
+  const dispose = vi.fn();
+  const write = vi.fn(async (_session: string, _client: string, record: McpAppRecord) => {
+    card = record;
+  });
+  const host = new McpAppsHost({
+    owner: () => owner,
+    config: () => (enabled ? config : undefined),
+    readCard: async () => {
+      if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE');
+      return card;
+    },
+    writeCard: write,
+    authorizeTool: authorize,
+    sendMessage,
+    disposeDocument: dispose,
+  });
+  card.connectionId = host.registerConnection(connection);
+  if (options.duringResource) {
+    if (options.duringResource === 'result' || options.duringResource === 'cancelled')
+      delete card.result;
+    const readResource = connection.resource.bind(connection);
+    vi.spyOn(connection, 'resource').mockImplementationOnce(async (uri) => {
+      const resource = await readResource(uri);
+      if (options.duringResource === 'result')
+        await host.updateResult('task', 'card', { ...card, result });
+      if (options.duringResource === 'cancelled')
+        await host.updateResult('task', 'card', { ...card, cancelled: 'User cancelled' });
+      if (options.duringResource === 'clear') visible = false;
+      if (options.duringResource === 'server') enabled = false;
+      return resource;
+    });
+  }
+  const document = await host
+    .open('renderer:1', 'task', 'card', {
+      theme: 'dark',
+      platform: options.platform ?? 'desktop',
+    })
+    .catch(async (error) => {
+      await host.reset();
+      await connection.close();
+      throw error;
+    });
+  const app = new App(
+    { name: 'Official SDK View', version: '1.0.0' },
+    { availableDisplayModes: options.appModes ?? ['inline', 'fullscreen'] },
+    { autoResize: false },
+  );
+  const messages: string[] = [];
+  const inputs: unknown[] = [],
+    results: unknown[] = [];
+  app.ontoolinput = (params) => {
+    messages.push('input');
+    inputs.push(params);
+  };
+  app.ontoolresult = (params) => {
+    messages.push('result');
+    results.push(params);
+  };
+  app.ontoolcancelled = () => {
+    messages.push('cancelled');
+  };
+  const teardown = vi.fn(async () => ({}));
+  app.onteardown = teardown;
+  await app.connect(new TestViewTransport(host, document.viewId, 'renderer:1', openLink));
+  cleanups.push(async () => {
+    await host.reset();
+    await app.close();
+    await connection.close();
+  });
+  return {
+    host,
+    app,
+    card,
+    document,
+    config,
+    messages,
+    inputs,
+    results,
+    authorize,
+    sendMessage,
+    openLink,
+    write,
+    teardown,
+    dispose,
+    clear() {
+      visible = false;
+    },
+    revoke() {
+      enabled = false;
+    },
+    changeOwner() {
+      owner = {};
+    },
+  };
+}
+
+describe('official MCP Apps interoperability', () => {
+  it.each(['result', 'cancelled'] as const)(
+    'delivers %s when execution finishes while the App resource is loading',
+    async (duringResource) => {
+      const f = await fixture('http', { duringResource });
+      await vi.waitFor(() => expect(f.messages).toEqual(['input', duringResource]));
+      if (duringResource === 'result') expect(f.results).toEqual([f.card.result]);
+    },
+  );
+  it.each([
+    ['clear', 'MCP_APP_CARD_UNAVAILABLE'],
+    ['server', 'MCP_APP_SERVER_CHANGED'],
+  ] as const)(
+    'refuses a View revoked by %s while its resource is loading',
+    async (duringResource, error) => {
+      await expect(fixture('http', { duringResource })).rejects.toThrow(error);
+    },
+  );
+  it.each(['http', 'sse'] as const)(
+    '%s negotiates the official View and sends input before full result',
+    async (transport) => {
+      const f = await fixture(transport);
+      await vi.waitFor(() => expect(f.messages).toEqual(['input', 'result']));
+      expect(f.inputs).toEqual([{ arguments: f.card.arguments }]);
+      expect(f.results).toEqual([f.card.result]);
+      expect(f.card.result?._meta?.hostUi).toMatchObject({
+        mimeTypes: ['text/html;profile=mcp-app'],
+      });
+      expect(f.app.getHostContext()).toMatchObject({
+        theme: 'dark',
+        displayMode: 'inline',
+        availableDisplayModes: ['inline', 'fullscreen'],
+      });
+      expect(f.app.getHostCapabilities()).toMatchObject({
+        sandbox: { permissions: {} },
+        serverTools: {},
+      });
+      expect(f.document.html).toContain('创建模拟申请');
+      expect(
+        () => new Script(f.document.html.match(/<script>([\s\S]*)<\/script>/)![1]),
+      ).not.toThrow();
+    },
+  );
+  it('App-only submit stays outside the model surface and model-only calls are rejected', async () => {
+    const f = await fixture();
+    const result = await f.app.callServerTool({
+      name: 'create_application',
+      arguments: { title: 'Edited', body: 'Application only' },
+    });
+    expect(result.structuredContent).toEqual({ applicationId: 1, sent: false });
+    expect(f.authorize).toHaveBeenCalledOnce();
+    await expect(f.app.callServerTool({ name: 'model_only', arguments: {} })).rejects.toThrow(
+      'MCP_APP_TOOL_NOT_VISIBLE',
+    );
+    const resource = await f.app.readServerResource({ uri: MOCK_RESOURCE });
+    expect(resource.contents[0].mimeType).toBe('text/html;profile=mcp-app');
+  });
+  it('context updates replace old values, do not start a model turn, and disappear after clear', async () => {
+    const f = await fixture();
+    await f.app.updateModelContext({ structuredContent: { draft: 'old' } });
+    await f.app.updateModelContext({ structuredContent: { draft: 'new' } });
+    const context = await f.host.modelContext('task');
+    expect(context).toContain('new');
+    expect(context).not.toContain('old');
+    expect(f.sendMessage).not.toHaveBeenCalled();
+    await f.app.sendMessage({
+      role: 'user',
+      content: [{ type: 'text', text: 'Continue editing' }],
+    });
+    expect(f.sendMessage).toHaveBeenCalledWith('task', expect.anything(), [
+      { type: 'text', text: 'Continue editing' },
+    ]);
+    f.clear();
+    expect(await f.host.modelContext('task')).toBe('');
+    await expect(
+      f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
+    ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+  });
+  it('supports the stable single-block ui/message shape', async () => {
+    const f = await fixture();
+    await f.host.dispatch('renderer:1', 'task', f.document.viewId, {
+      jsonrpc: '2.0',
+      id: 'legacy-message',
+      method: 'ui/message',
+      params: { role: 'user', content: { type: 'text', text: 'Stable spec' } },
+    });
+    await vi.waitFor(() =>
+      expect(f.sendMessage).toHaveBeenCalledWith('task', expect.anything(), [
+        { type: 'text', text: 'Stable spec' },
+      ]),
+    );
+  });
+  it('opens links on the controller, without forwarding the host action to the View', async () => {
+    const f = await fixture();
+    await f.app.openLink({ url: 'https://example.org/help' });
+    expect(f.openLink).toHaveBeenCalledWith('https://example.org/help');
+    await expect(f.app.openLink({ url: 'file:///C:/private' })).rejects.toThrow(
+      'MCP_APP_INVALID_LINK',
+    );
+    expect(f.openLink).toHaveBeenCalledOnce();
+  });
+  it('host-initiated display changes use context notifications and preserve identity', async () => {
+    const f = await fixture();
+    await f.app.requestDisplayMode({ mode: 'fullscreen' });
+    f.host.displayMode('renderer:1', 'task', f.document.viewId, 'inline');
+    await vi.waitFor(() => expect(f.app.getHostContext()?.displayMode).toBe('inline'));
+    f.host.context('renderer:1', 'task', f.document.viewId, { locale: 'zh-CN' });
+    await vi.waitFor(() =>
+      expect(f.app.getHostContext()).toMatchObject({
+        theme: 'dark',
+        locale: 'zh-CN',
+        toolInfo: { id: 'card' },
+      }),
+    );
+  });
+  it('returns the actual negotiated display mode and sends host context changes', async () => {
+    const f = await fixture('http', { platform: 'mobile' });
+    expect(await f.app.requestDisplayMode({ mode: 'fullscreen' })).toEqual({ mode: 'inline' });
+    f.host.context('renderer:1', 'task', f.document.viewId, { theme: 'light', locale: 'zh-CN' });
+    await vi.waitFor(() =>
+      expect(f.app.getHostContext()).toMatchObject({ theme: 'light', locale: 'zh-CN' }),
+    );
+    const desktop = await fixture();
+    expect(await desktop.app.requestDisplayMode({ mode: 'fullscreen' })).toEqual({
+      mode: 'fullscreen',
+    });
+    expect(await desktop.app.requestDisplayMode({ mode: 'pip' })).toEqual({ mode: 'fullscreen' });
+  });
+  it('delivers cancellation and completes official teardown before disposing the document', async () => {
+    const f = await fixture('http', { cancelled: true });
+    await vi.waitFor(() => expect(f.messages).toEqual(['input', 'cancelled']));
+    await f.host.teardown('renderer:1', 'task', f.document.viewId);
+    expect(f.teardown).toHaveBeenCalledOnce();
+    expect(f.dispose).toHaveBeenCalledWith(f.document.viewId);
+    await expect(f.host.poll('renderer:1', 'task', f.document.viewId, 0)).rejects.toThrow(
+      'MCP_APP_VIEW_UNAVAILABLE',
+    );
+  });
+  it('binds requests to the exact task, controller and signed-in owner', async () => {
+    const f = await fixture();
+    await expect(
+      f.host.dispatch('device:other', 'task', f.document.viewId, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'ping',
+      }),
+    ).rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE');
+    await expect(f.host.poll('renderer:1', 'another-task', f.document.viewId, 0)).rejects.toThrow(
+      'MCP_APP_VIEW_UNAVAILABLE',
+    );
+    f.changeOwner();
+    expect(await f.host.modelContext('task')).toBe('');
+    await expect(
+      f.host.dispatch('renderer:1', 'task', f.document.viewId, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'ping',
+      }),
+    ).rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE');
+  });
+  it('revokes a View when its configured server is removed', async () => {
+    const f = await fixture();
+    f.revoke();
+    await expect(
+      f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
+    ).rejects.toThrow('MCP_APP_SERVER_CHANGED');
+    expect(f.authorize).not.toHaveBeenCalled();
+  });
+  it('the model facade strips UI metadata and never turns card-write failure into tool failure', async () => {
+    const f = await fixture();
+    setMcpAppsHost(f.host);
+    registerAppServer(f.config.id, () => f.config);
+    const facade = createAppServerProxy(() => f.config, {
+      agentKind: 'codex',
+      sessionId: 'task',
+      workingDir: '',
+    });
+    const client = new Client({ name: 'model-client', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await facade.connect(serverTransport);
+    await client.connect(clientTransport);
+    cleanups.push(async () => {
+      await client.close();
+      await facade.close();
+    });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      'draft_form',
+      'model_only',
+    ]);
+    f.write.mockRejectedValueOnce(new Error('DB not available'));
+    const result = await client.callTool({
+      name: 'draft_form',
+      arguments: { title: 'x', body: 'y' },
+    });
+    expect(result.content).toEqual([{ type: 'text', text: 'Draft: x' }]);
+    expect(result).not.toHaveProperty('_meta');
+    await expect(
+      client.callTool({ name: 'create_application', arguments: { title: 'x', body: 'y' } }),
+    ).rejects.toThrow('MCP_APP_TOOL_NOT_VISIBLE');
+  });
+});

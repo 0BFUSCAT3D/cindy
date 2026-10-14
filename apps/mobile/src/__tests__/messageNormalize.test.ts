@@ -31,6 +31,16 @@ describe('normalizeRemoteMessages', () => {
     await i18n.changeLanguage('zh-CN');
   });
 
+  it('recognizes host-marked MCP App cards and leaves ordinary assistant content unchanged', () => {
+    const content = { mcpApp: { version: 1, serverId: 'example', serverRevision: 'revision', resourceUri: 'ui://example/app', tool: { name: 'draft', title: '申请表', inputSchema: { type: 'object' } }, arguments: {} } };
+    const output = normalizeRemoteMessages([
+      message({ id: 'app', role: 'assistant', content, agentMeta: { mcpApp: true } }),
+      message({ id: 'plain', role: 'assistant', content: '工具返回的文本' }),
+    ]);
+    expect(output[0]).toMatchObject({ systemCardType: 'mcp-app', systemCardData: { title: '申请表' } });
+    expect(output[1]).toMatchObject({ body: '工具返回的文本' });
+  });
+
   it('renders a projected large tool input from its bounded summary and keeps its result', () => {
     const projected = projectLargeSettledToolInputs([
       message({
