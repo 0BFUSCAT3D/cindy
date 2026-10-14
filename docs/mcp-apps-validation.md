@@ -23,12 +23,14 @@
 pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
-单测阶段最新结果为 12 个测试文件、144 项测试通过，退出码为 0。
+单测阶段最新结果为 12 个测试文件、158 项测试通过，退出码为 0。
 前序两个真实 Electron 集成检查均以退出码 0 结束，分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
 `pnpm.cmd --filter desktop typecheck` 本轮通过。定向 ESLint 与当前 HEAD 基准逐项比对，
 本轮代码和测试没有新增错误；`register.ts` 与 `makerSendTransaction.test.ts` 分别保留
-13 项和 10 项既有错误，其余本轮文件为 0。前序模拟/验证脚本的 ESLint 已通过。
+13 项和 10 项既有错误。当前触及文件另有 coordinator 测试 3 项、Session 与视觉桥
+测试各 1 项既有错误，与当前 HEAD 基准一致；没有新增错误，其余本轮文件为 0。
+前序模拟/验证脚本的 ESLint 已通过。
 前序自定义 MCP provider、Codex HTTP bridge 与 Pi 环境接入的 66 项回归通过；
 前序作者侧修复重跑自定义 provider/registry、Codex 与 Pi 环境的 62 项回归通过。
 已有卡片大小回归：完整卡片按 UTF-8 JSON 字节限制为 1 MiB，超大结果在写入前
@@ -45,21 +47,35 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 见 `serverProxy.test.ts`。该轮撤权修复重跑完整 MCP Apps 单测、Desktop 类型检查与
 定向 ESLint，未重跑前序沙箱与真机验证。
 
-本轮 App 消息修复新增 23 项回归：所有文本块开头的斜线均转义，覆盖 Claude Code、
+前序 App 消息修复新增 23 项回归：所有文本块开头的斜线均转义，覆盖 Claude Code、
 Pi 和 Codex 的 App 输入与来源说明，历史仍保留原文；读取任务、恢复队列、加载 metadata、
 构建排队项及直发准备期间撤销卡片会阻止入队或派发，账号、清空与配置边界继续生效。
 直发复用 Session 既有钩子，在 accepted 持久化前和异步准备后的最终 vendor 派发前核验；
-保留主人授权意图，私有 guard 不进入队列、历史或 provider options。
+保留主人授权意图，私有 guard 不进入队列持久快照、公开投影、历史或 provider options。
 官方 App SDK 另验证发送准备期间撤销卡片、账号和服务器后没有派发。
+
+本轮另新增 26 项回归：排队后撤销卡片会阻止 drain 和排队插话；活 guard 留在 Main，
+公开投影和 JSON/IPC 丢弃它，恢复快照及无活授权的旧版 App 队列行明确失败。
+Session 插话复用发送前的私有钩子，在异步准备后再核验；钩子不传给 provider，
+钩子等待期间结束、替换或关闭的 turn 都不能接收迟到消息。
+普通 MCP facade 继承下游实际 client capabilities，HTTP/SSE 的 roots、sampling、
+form elicitation、roots 变更通知均到达原 harness；不同 facade 不串线，撤权后不向
+上游返回迟到回调结果，无能力时不虚报。取消不重放，Main 对请求 ID 0 同样转发取消。
+测试 peer 使用的 SDK 1.29 默认取消 handler 忽略数字 ID 0，因此该项直接检查 wire
+通知；ID 1 同时检查实际 signal，不能把 wire 证据说成测试 peer 的 ID 0 handler 已取消。
 
 本轮执行：
 
 ```powershell
-pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__ src/main/maker-ipc/__tests__/makerSendTransaction.test.ts src/main/maker-ipc/__tests__/messageSourceNote.test.ts src/main/__tests__/mobileClientPromptNote.test.ts --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__ src/main/maker-ipc/__tests__/makerSendTransaction.test.ts src/main/maker-ipc/__tests__/agent-input-coordinator.test.ts src/main/maker-ipc/__tests__/messageSourceNote.test.ts src/main/__tests__/mobileClientPromptNote.test.ts --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter @cindy/maker-core exec vitest run src/session.vision-bridge.test.ts src/session.origin.test.ts src/session-control.test.ts src/session-send-outcome.test.ts src/session.close.test.ts src/session.async-user-questions.test.ts --maxWorkers=2 --reporter=dot
+pnpm.cmd --filter @cindy/maker-core build
 ```
 
-结果：15 个测试文件、396 项测试通过，退出码为 0；其中 MCP Apps 为 144 项，
+结果：Desktop 16 个测试文件、925 项测试通过，退出码为 0；其中 MCP Apps 为 158 项，
 `makerSendTransaction.test.ts` 为 172 项，来源说明和客户端说明分别为 12 项与 68 项。
+coordinator 为 515 项。maker-core 的 6 个测试文件、200 项测试及无输出构建类型检查通过；
+该包没有独立 typecheck script，build 实际执行 tsc --noEmit。
 本轮未重跑前序 Electron 沙箱；真实模型账号、完整卡片双主题目检和 Mobile 真机仍未验证。
 
 | 测试文件                      | 通过数量 | 主要覆盖                                                                                  |
@@ -74,13 +90,18 @@ pnpm.cmd --filter desktop exec vitest run src/main/mcp-apps/__tests__ src/main/m
 | `connection.test.ts`          |        3 | 首次失败及断线后独立重连、关闭竞态、不重放已发送工具                                      |
 | `openLifecycle.test.ts`       |        4 | 加载超时、打开前取消、晚到 View 回收、调用者与任务隔离                                    |
 | `wireBudget.test.ts` | 7 | 完整文档/事件 UTF-8 JSON 大小、转义、device-link 编码、额度回收与控制端隔离 |
-| `serverProxy.test.ts` | 16 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展、取消和三个等待阶段的撤权竞态 |
-| `messageSender.test.ts` | 14 | App 命令转义、来源与历史保留、发送/入队准备等待期间撤权 |
+| `serverProxy.test.ts` | 25 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展；客户端能力及 roots/sampling/elicitation 回调、隔离/撤权/取消 |
+| `messageSender.test.ts` | 19 | App 命令转义、来源与历史保留、发送/入队准备与入队后撤权、序列化丢授权与旧行拒绝 |
 
 作者侧修复另经 Desktop 卡片可见性、MCP 目录与 SSH bridge、安全守卫定向测试验证；
 Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项通过。共享 controller/
 文档测试 13 项、device-link 超时与重试策略测试 31 项通过；Desktop、Mobile 与两个
 共享包的类型检查、定向 ESLint、i18n 及设计台账检查通过。未用本地定向结果替代完整 CI。
+
+本轮开始时旧 head `8cd728d` 的 [Linux unit tests (1/2)](https://github.com/makecindy/cindy/actions/runs/38636206425/job/116099904816) 失败：
+`linuxInstallation.test.ts` 在 beforeAll 制作 `.deb` 夹具时，`ar rc … package.deb debian-binary data.tar.gz` 返回失败。
+日志没有给出具体 stderr/退出原因，不能认定为瞬态；该安装器测试不在 PR 改动范围，
+本轮未修改或跳过它。完整 CI 仍由新 head 正常触发并决定通过与否。
 
 ## 两个独立 App
 

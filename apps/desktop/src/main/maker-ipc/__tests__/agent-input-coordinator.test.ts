@@ -8,6 +8,7 @@ import { AUTO_REVIEW_DELEGATED_CONTINUATION, restoreAutoReviewUserIntent, type A
 import { createPluginTaskReviewResolver, type PluginReviewSnapshot } from '../pluginTaskReviewContext.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentInputCoordinator } from '../agent-input-coordinator.js';
+import { MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD } from '../../mcp-apps/message.js';
 import { hasAcceptedUserTaskInput } from '../pluginTaskInput.js';
 import { runSchedulerQueuedPreparation } from '../schedulerQueuedPreparation.js';
 import {
@@ -70,6 +71,124 @@ const mocks = vi.hoisted(() => {
     touchUserSendInDb: vi.fn(async () => {}),
     logger,
   };
+});
+
+describe('MCP App queued message grants', () => {
+  function appItem(guard: () => Promise<void>) {
+    return {
+      ...makeItem(`${MCP_APP_MESSAGE_CLIENT_PREFIX}fixture`, '\\/compact'),
+      sourcePlugin: { pluginId: 'mcp-app:example', name: 'example' },
+      autoReviewUserText: { kind: 'delegated-continuation' as const },
+      [MCP_APP_MESSAGE_GUARD]: guard,
+    };
+  }
+
+  function guardedHarness() {
+    const h = createHarness();
+    const dispatched = vi.fn();
+    h.sendToAgent.mockImplementation(async (_id, _message, _opts, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched();
+      return sendSuccess();
+    });
+    h.steerToAgent.mockImplementation(async (_id, _message, sendOpts) => {
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      dispatched();
+    });
+    return { ...h, dispatched };
+  }
+
+  it('rejects a card revoked after enqueue when the busy Agent drains it', async () => {
+    const h = guardedHarness(), sid = 'app-busy';
+    let visible = true;
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    h.coordinator.enqueue(sid, appItem(guard));
+    expect(Object.getOwnPropertySymbols(h.coordinator.getProjection(sid).pendingQueue[0]!)).not.toContain(MCP_APP_MESSAGE_GUARD);
+    await flush();
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+    visible = false;
+    h.setRunning(false);
+    h.coordinator.wakeSession(sid, 'app-fixture-idle');
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).not.toHaveBeenCalled();
+    expect(h.coordinator.getProjection(sid).error).toContain('MCP_APP_CARD_UNAVAILABLE');
+  });
+
+  it('keeps the grant through queue copies and asynchronous drain preparation', async () => {
+    const h = guardedHarness(), sid = 'app-preparing';
+    let visible = true;
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    h.getSdkSessionId.mockImplementationOnce(async () => { visible = false; return 'sdk-session'; });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.enqueue(sid, appItem(guard));
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).not.toHaveBeenCalled();
+  });
+
+  it('does not recreate a live App grant from a crash-restored snapshot', async () => {
+    const h = guardedHarness(), sid = 'app-restored';
+    const guard = vi.fn(async () => {});
+    const restored = JSON.parse(JSON.stringify(appItem(guard)));
+    h.setLoadQueueSnapshot(async () => [restored]);
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.resume(sid);
+    await flush();
+    expect(h.dispatched).not.toHaveBeenCalled();
+    expect(guard).not.toHaveBeenCalled();
+    expect(h.coordinator.getProjection(sid).error).toContain('MCP_APP_CARD_UNAVAILABLE');
+  });
+
+  it('dispatches a live App queue grant while keeping it out of queue snapshots', async () => {
+    const h = guardedHarness(), sid = 'app-live';
+    const guard = vi.fn(async () => {});
+    await h.coordinator.ensureQueueRestored(sid);
+    h.coordinator.enqueue(sid, appItem(guard));
+    await flush();
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).toHaveBeenCalledOnce();
+    const snapshots = JSON.stringify(h.persistQueueSnapshot.mock.calls);
+    expect(snapshots).not.toContain('MCP_APP_MESSAGE_GUARD');
+  });
+
+  it.each([true, false])('uses the Main-owned App row when a projection is steered (visible=%s)', async (visible) => {
+    const h = guardedHarness(), sid = 'app-steer';
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    h.coordinator.enqueue(sid, appItem(guard));
+    const projected = JSON.parse(JSON.stringify(h.coordinator.getProjection(sid).pendingQueue[0]));
+    expect(await h.coordinator.steer(sid, projected, { removeFromQueue: true })).toBe(visible);
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).toHaveBeenCalledTimes(visible ? 1 : 0);
+    expect(h.sendToAgent).not.toHaveBeenCalled();
+  });
+
+  it('checks the live App row after asynchronous steer preparation', async () => {
+    const h = guardedHarness(), sid = 'app-steer-preparing';
+    let visible = true;
+    const guard = vi.fn(async () => { if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE'); });
+    const prepared = deferred<void>();
+    h.steerToAgent.mockImplementationOnce(async (_id, _message, sendOpts) => {
+      await prepared.promise;
+      await sendOpts[MCP_APP_MESSAGE_GUARD]?.();
+      h.dispatched();
+    });
+    await h.coordinator.ensureQueueRestored(sid);
+    h.setRunning(true);
+    h.coordinator.enqueue(sid, appItem(guard));
+    const projected = JSON.parse(JSON.stringify(h.coordinator.getProjection(sid).pendingQueue[0]));
+    const steering = h.coordinator.steer(sid, projected, { removeFromQueue: true });
+    await vi.waitFor(() => expect(h.steerToAgent).toHaveBeenCalledOnce());
+    visible = false;
+    prepared.resolve();
+    expect(await steering).toBe(false);
+    expect(guard).toHaveBeenCalledOnce();
+    expect(h.dispatched).not.toHaveBeenCalled();
+  });
 });
 
 describe('INPUT_ENQUEUE crash-restored remote Worker pause', () => {

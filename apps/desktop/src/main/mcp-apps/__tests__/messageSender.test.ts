@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '../../maker-ipc/autoReviewUserIntent.js';
-import { appMessageInput, MCP_APP_MESSAGE_GUARD, type McpAppMessageGuard } from '../message.js';
+import { appMessageInput, MCP_APP_MESSAGE_CLIENT_PREFIX, MCP_APP_MESSAGE_GUARD, queuedAppMessageGuard, type McpAppMessageGuard } from '../message.js';
 import { createAppMessageSender } from '../messageSender.js';
 
 const record: McpAppRecord = {
@@ -144,5 +144,38 @@ describe('MCP App message input and dispatch', () => {
     held.release();
     await rejected;
     expect(f.deps.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('keeps the live grant on a queued message and rejects revocation after enqueue', async () => {
+    const f = fixture(true);
+    await f.send();
+    const item = f.deps.enqueue.mock.calls[0][1];
+    expect(item.clientId).toBe(`${MCP_APP_MESSAGE_CLIENT_PREFIX}input`);
+    const guard = queuedAppMessageGuard(item);
+    expect(guard).toBeTypeOf('function');
+    await expect(guard!()).resolves.toBeUndefined();
+    f.revokeCard();
+    await expect(guard!()).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+  });
+
+  it.each(['JSON', 'IPC'])('rejects a queued App grant lost across %s serialization', async (kind) => {
+    const f = fixture(true);
+    await f.send();
+    const item = f.deps.enqueue.mock.calls[0][1];
+    const restored = kind === 'JSON' ? JSON.parse(JSON.stringify(item)) : structuredClone(item);
+    expect(Object.getOwnPropertySymbols(restored)).toHaveLength(0);
+    expect(JSON.stringify(restored)).not.toContain('MCP_APP_MESSAGE_GUARD');
+    await expect(queuedAppMessageGuard(restored)!()).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+  });
+
+  it('does not create a card guard for ordinary owner queue input', () => {
+    expect(queuedAppMessageGuard({ clientId: 'owner-input' })).toBeUndefined();
+    expect(queuedAppMessageGuard({ clientId: 'plugin-input', sourcePlugin: { pluginId: 'other-plugin' } })).toBeUndefined();
+  });
+
+  it('rejects legacy App queue rows without treating display provenance as a live grant', async () => {
+    await expect(queuedAppMessageGuard({
+      clientId: 'legacy-input', sourcePlugin: { pluginId: 'mcp-app:example' },
+    })!()).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
   });
 });

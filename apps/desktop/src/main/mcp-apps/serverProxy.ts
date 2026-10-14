@@ -18,6 +18,7 @@ import {
   isJSONRPCResultResponse,
   type CallToolResult,
   type ClientRequest,
+  type ClientNotification,
   type Progress,
   type Request,
   type RequestId,
@@ -122,7 +123,25 @@ export function createAppServerProxy(
   const config = readConfig();
   const host = getMcpAppsHost();
   const owner = host.captureOwner();
-  const connection = new AppConnection(config);
+  const connection = new AppConnection(config, {
+    capabilities: () => server.server.getClientCapabilities() ?? {},
+    request: async (request, extra) => {
+      assertCurrent();
+      const token = request.params?._meta?.progressToken;
+      const result = await server.server.request(request as ServerRequest, ResultSchema, {
+        signal: extra.signal,
+        onprogress: token === undefined ? undefined : (progress) => {
+          try { assertCurrent(); } catch { return; }
+          void extra.sendNotification({
+            method: 'notifications/progress',
+            params: { ...progress, progressToken: token },
+          }).catch(() => {});
+        },
+      });
+      assertCurrent();
+      return result;
+    },
+  });
   const assertCurrent = () => {
     host.assertOwner(owner);
     const current = readAppServer(config.id);
@@ -170,7 +189,7 @@ export function createAppServerProxy(
             },
     };
   };
-  const server = new AppProxyServer(config.id, async () => {
+  const server: AppProxyServer = new AppProxyServer(config.id, async () => {
     const client = await currentClient();
     return {
       capabilities: client.getServerCapabilities() ?? {},
@@ -194,6 +213,11 @@ export function createAppServerProxy(
     return result;
   };
   server.server.fallbackRequestHandler = forwardRequest;
+  server.server.fallbackNotificationHandler = async (message) => {
+    const client = await currentClient();
+    await client.notification(message as ClientNotification);
+    assertCurrent();
+  };
   // Override the SDK's local log-level handler; the upstream owns its logging state.
   server.server.setRequestHandler(SetLevelRequestSchema, forwardRequest);
   server.server.setRequestHandler(ListToolsRequestSchema, async () => {

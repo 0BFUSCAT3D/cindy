@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -21,12 +22,19 @@ import {
   ListTasksResultSchema,
   CallToolResultSchema,
   ResultSchema,
+  ListRootsRequestSchema,
+  RootsListChangedNotificationSchema,
+  CreateMessageRequestSchema,
+  ElicitRequestSchema,
+  isJSONRPCNotification,
   type CallToolRequest,
   type CallToolResult,
   type ClientRequest,
   type CompleteRequest,
   type CompleteResult,
   type ServerCapabilities,
+  type ClientCapabilities,
+  type ServerRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 import { startMockAppServer } from '../../../../scripts/mcp-apps-mock.mjs';
 import { McpAppsHost } from '../host.js';
@@ -63,6 +71,7 @@ const subscribed = vi.fn(),
   unsubscribed = vi.fn(),
   setLevel = vi.fn();
 const upstreams: McpServer[] = [];
+const callbackOutcomes = vi.fn();
 const cleanup: Array<() => Promise<unknown>> = [];
 let endpoint: Awaited<ReturnType<typeof startMockAppServer>>;
 let emptyEndpoint: typeof endpoint;
@@ -116,7 +125,19 @@ function createPlainServer() {
     ...task,
     status: 'cancelled' as const,
   }));
-  server.server.fallbackRequestHandler = async (request) => ({ echo: request.params?.value });
+  server.server.fallbackRequestHandler = async (request, extra) => {
+    if (request.method !== 'example/client-callback') return { echo: request.params?.value };
+    try {
+      const result = await extra.sendRequest(request.params?.request as ServerRequest, ResultSchema, {
+        signal: extra.signal,
+      });
+      callbackOutcomes(server, { result });
+      return result;
+    } catch (error) {
+      callbackOutcomes(server, { error });
+      throw error;
+    }
+  };
   return server;
 }
 
@@ -136,6 +157,7 @@ beforeEach(() => {
   subscribed.mockClear();
   unsubscribed.mockClear();
   setLevel.mockClear();
+  callbackOutcomes.mockClear();
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -147,7 +169,11 @@ afterAll(async () => {
   await emptyEndpoint.close();
 });
 
-async function fixture(transport: 'http' | 'sse' = 'http', empty = false) {
+async function fixture(
+  transport: 'http' | 'sse' = 'http',
+  empty = false,
+  peer?: { capabilities: ClientCapabilities; configure(client: Client): void },
+) {
   const source = empty ? emptyEndpoint : endpoint;
   const config = { id: 'plain', url: transport === 'http' ? source.url : source.sseUrl, transport };
   let owner: object = {};
@@ -169,7 +195,8 @@ async function fixture(transport: 'http' | 'sse' = 'http', empty = false) {
     sessionId: 'task',
     workingDir: '',
   });
-  const client = new Client({ name: 'model', version: '1' });
+  const client = new Client({ name: 'model', version: '1' }, { capabilities: peer?.capabilities ?? {} });
+  peer?.configure(client);
   cleanup.push(async () => {
     await client.close();
     await facade.close();
@@ -180,6 +207,7 @@ async function fixture(transport: 'http' | 'sse' = 'http', empty = false) {
   await client.connect(clientTransport);
   return {
     client,
+    clientTransport,
     writeCard,
     upstream: upstreams.at(-1)!,
     changeOwner: () => {
@@ -200,6 +228,150 @@ function revoke(f: Awaited<ReturnType<typeof fixture>>, kind: (typeof revocation
   else if (kind === 'config') f.changeConfig();
   else clearAppServerConfigs();
 }
+
+// Sampling/elicitation belong to a client-originating request. Using the SDK's
+// related-request stream also avoids racing HTTP's optional standalone SSE GET.
+function requestClient(
+  f: Awaited<ReturnType<typeof fixture>>,
+  request: ServerRequest,
+  options?: RequestOptions,
+) {
+  return f.client.request(
+    { method: 'example/client-callback', params: { request } } as unknown as ClientRequest,
+    ResultSchema,
+    options,
+  );
+}
+
+describe('ordinary MCP downstream client callbacks', () => {
+  const peerCapabilities: ClientCapabilities = {
+    roots: { listChanged: true }, sampling: {}, elicitation: { form: {} },
+    extensions: { 'example/client': {} },
+  };
+
+  it.each(['http', 'sse'] as const)('preserves declared capabilities and callbacks over %s', async (transport) => {
+    const roots = vi.fn(async () => ({ roots: [{ uri: 'file:///fixture/project' }] }));
+    const sampling = vi.fn(async () => ({
+      role: 'assistant' as const, model: 'fixture',
+      content: { type: 'text' as const, text: 'sample result' }, stopReason: 'endTurn',
+    }));
+    const elicit = vi.fn(async () => ({ action: 'accept' as const, content: { confirmed: true } }));
+    const f = await fixture(transport, false, {
+      capabilities: peerCapabilities,
+      configure(client) {
+        client.setRequestHandler(ListRootsRequestSchema, roots);
+        client.setRequestHandler(CreateMessageRequestSchema, sampling);
+        client.setRequestHandler(ElicitRequestSchema, elicit);
+      },
+    });
+    expect(f.upstream.server.getClientCapabilities()).toMatchObject(peerCapabilities);
+    expect(f.upstream.server.getClientCapabilities()?.extensions).toHaveProperty('io.modelcontextprotocol/ui');
+    await expect(requestClient(f, { method: 'roots/list' })).resolves.toEqual(
+      { roots: [{ uri: 'file:///fixture/project' }] },
+    );
+    await expect(requestClient(f, { method: 'sampling/createMessage', params: {
+      messages: [{ role: 'user', content: { type: 'text', text: 'sample request' } }], maxTokens: 10,
+    } })).resolves.toMatchObject({ model: 'fixture', content: { text: 'sample result' } });
+    await expect(requestClient(f, { method: 'elicitation/create', params: {
+      mode: 'form',
+      message: 'Confirm fixture', requestedSchema: {
+        type: 'object', properties: { confirmed: { type: 'boolean' } }, required: ['confirmed'],
+      },
+    } })).resolves.toEqual({ action: 'accept', content: { confirmed: true } });
+    const changed = vi.fn(async () => {});
+    f.upstream.server.setNotificationHandler(RootsListChangedNotificationSchema, changed);
+    await f.client.sendRootsListChanged();
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
+    expect(roots).toHaveBeenCalledOnce();
+    expect(sampling).toHaveBeenCalledOnce();
+    expect(elicit).toHaveBeenCalledOnce();
+  });
+
+  it('does not advertise callbacks absent from the downstream client', async () => {
+    const f = await fixture();
+    const declared = f.upstream.server.getClientCapabilities()!;
+    expect(declared.roots).toBeUndefined();
+    expect(declared.sampling).toBeUndefined();
+    expect(declared.elicitation).toBeUndefined();
+    await expect(requestClient(f, { method: 'roots/list' })).rejects.toThrow('Method not found');
+  });
+
+  it('routes callbacks only to the facade that negotiated that connection', async () => {
+    const firstRoots = vi.fn(async () => ({ roots: [{ uri: 'file:///fixture/first' }] }));
+    const secondRoots = vi.fn(async () => ({ roots: [{ uri: 'file:///fixture/second' }] }));
+    const first = await fixture('http', false, {
+      capabilities: { roots: {} }, configure: client => client.setRequestHandler(ListRootsRequestSchema, firstRoots),
+    });
+    const second = await fixture('http', false, {
+      capabilities: { roots: {} }, configure: client => client.setRequestHandler(ListRootsRequestSchema, secondRoots),
+    });
+    await expect(requestClient(first, { method: 'roots/list' })).resolves.toEqual(
+      { roots: [{ uri: 'file:///fixture/first' }] },
+    );
+    await expect(requestClient(second, { method: 'roots/list' })).resolves.toEqual(
+      { roots: [{ uri: 'file:///fixture/second' }] },
+    );
+    expect(firstRoots).toHaveBeenCalledOnce();
+    expect(secondRoots).toHaveBeenCalledOnce();
+  });
+
+  it.each(revocations)('rejects a callback result after %s revocation', async (kind) => {
+    let finish!: () => void;
+    const roots = vi.fn(() => new Promise<{ roots: [] }>((resolve) => { finish = () => resolve({ roots: [] }); }));
+    const f = await fixture('http', false, {
+      capabilities: { roots: {} }, configure: client => client.setRequestHandler(ListRootsRequestSchema, roots),
+    });
+    const pending = requestClient(f, { method: 'roots/list' }).catch(error => error);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    revoke(f, kind);
+    finish();
+    expect(await pending).toHaveProperty('message', expect.stringContaining('MCP_APP_'));
+    // The callback result itself must be withheld from the upstream server,
+    // not only rejected later at the outer model response boundary.
+    expect(callbackOutcomes).toHaveBeenLastCalledWith(f.upstream, {
+      error: expect.objectContaining({ message: expect.stringContaining('MCP_APP_') }),
+    });
+    expect(roots).toHaveBeenCalledOnce();
+    await expect(requestClient(f, { method: 'roots/list' })).rejects.toThrow('MCP_APP_');
+    expect(roots).toHaveBeenCalledOnce();
+  });
+
+  it.each([0, 1])('forwards callback cancellation for request ID %s without replaying it', async (prior) => {
+    const cancelled = vi.fn();
+    let finish!: () => void;
+    const roots = vi.fn((_request: unknown, extra: { signal: AbortSignal }) => new Promise<{ roots: [] }>((resolve) => {
+      finish = () => resolve({ roots: [] });
+      extra.signal.addEventListener('abort', () => { cancelled(); resolve({ roots: [] }); }, { once: true });
+    }));
+    const f = await fixture('http', false, {
+      capabilities: { roots: {} }, configure: client => client.setRequestHandler(ListRootsRequestSchema, roots),
+    });
+    for (let index = 0; index < prior; index++) {
+      roots.mockResolvedValueOnce({ roots: [] });
+      await requestClient(f, { method: 'roots/list' });
+    }
+    const cancellation = vi.fn();
+    const onmessage = f.clientTransport.onmessage!;
+    f.clientTransport.onmessage = (message, extra) => {
+      if (isJSONRPCNotification(message) && message.method === 'notifications/cancelled')
+        cancellation(message.params);
+      onmessage(message, extra);
+    };
+    const abort = new AbortController();
+    const pending = requestClient(f, { method: 'roots/list' }, { signal: abort.signal }).catch(error => error);
+    await vi.waitFor(() => expect(roots).toHaveBeenCalledTimes(prior + 1));
+    abort.abort();
+    expect(await pending).toBeInstanceOf(Error);
+    await vi.waitFor(() => expect(cancellation).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: prior }),
+    ));
+    // The test peer is SDK 1.29, whose default cancellation handler ignores ID
+    // 0. Check the actual wire notification for both IDs and its signal for 1.
+    if (prior !== 0) await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+    finish();
+    expect(roots).toHaveBeenCalledTimes(prior + 1);
+  });
+});
 
 describe('ordinary MCP compatibility through the App facade', () => {
   it.each(['http', 'sse'] as const)(

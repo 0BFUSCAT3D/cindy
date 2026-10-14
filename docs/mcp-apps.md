@@ -34,7 +34,7 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 | 主题 / 环境               | Light/Dark、CSS variables、locale、时区、尺寸和设备能力通过 Host context 传递                                                                      | Electron 中主题切换、类型检查    |
 | CSP / 权限                | 按 connect/resource/frame/baseUri domains 构建 CSP；默认拒绝未声明网络；权限声明为空，拒绝摄像头、麦克风、定位和剪贴板                             | 注入单测、真实 Electron 阻域     |
 
-“符合标准”包含如实协商可选能力，并不表示 Host 宣称支持所有可选能力。当前不声明
+“符合标准”包含如实协商可选能力，并不表示 Host 宣称支持所有可选能力。View 对接的 AppBridge 当前不声明
 sampling、downloadFile、pip、图像/音频 `ui/message` 或图像/音频模型上下文。App 必须先检查
 Host capabilities；不支持的调用明确失败，不静默丢内容。工具结果本身仍完整交给 View。
 后续标准新增版本需要升级并重新验证 SDK；使用上述稳定协议的新 App 不需要业务特例。
@@ -56,6 +56,11 @@ iOS 另保留显式顶层请求拦截。回归见 `apps/mobile/src/__tests__/mcp
 凭证留在 Main 的现有密钥存储中，不进入 iframe。Claude Code、Codex、Pi 都通过同一
 Host facade 调用自定义 MCP；支持 Apps 的工具执行时生成独立卡片，历史卡片可重新连接。
 不支持 UI 扩展的普通 MCP 保持文本工具使用方式。
+模型侧 facade 继承下游 harness 实际声明的 client capabilities（含其他 extensions），
+再追加 Apps extension；roots、sampling、elicitation 与普通服务器回调只返回产生该
+连接的 harness，客户端通知（如 roots/list_changed）沿同一连接转发。回调返回前
+再次核验账号与服务器配置；取消按请求 ID 转发，不重放。View 的 AppBridge 不因此
+获得 sampling 等可选能力。
 模型侧 facade 如实透传上游 capabilities；补全、资源订阅/退订、日志级别、普通扩展请求
 与 MCP task 方法仍由同一认证连接处理，资源更新、日志和 task 状态通知返回原模型连接。
 进度 token 映射及取消跟随单次请求；异步结果返回前再核对账号和服务器配置。
@@ -86,6 +91,10 @@ Desktop 卡片仅在可见时打开，离屏或窗口隐藏时释放 View，重�
 旧 v1 Host 不支持取消操作时仍由既有空闲租约回收，收到晚到回执时控制端主动销毁。
 连接暂时中断只重试读取轮询，最多 30 秒；后续独立请求可重新建立 MCP 连接，
 已发出的工具调用和消息不自动重放。
+App 消息排队期间只在 Main 保留当前卡片/View 的私有 guard；正常 drain 和排队插话
+均在最终派发时重新核验，插话也在 Session 异步准备之后检查。guard 不进入公开队列
+投影、历史或持久快照；恢复后的 App 队列行无法重建活授权，会明确失败，需要从当前
+卡片重新触发。旧版 App 来源标记只用于拒绝无 guard 的旧行，不能授予发送权限。
 工具在页面加载期间完成或取消也会在初始化后正确交付；任务在加载期间被清空、
 服务器被撤销时，Host 会拒绝展示并清理 View。
 
@@ -128,7 +137,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 
 顺序运行协议、连接、授权与 IPC 回归，再分别启动真实 Electron 沙箱加载官方 SDK 申请表
 和独立 JSON-RPC 看板。HTTP/SSE、text/blob、metadata 来源、分页与变更通知、取消、
-销毁、显示、主题和 CSP 都纳入覆盖。当前单测结果为 144 项回归通过；前序两种 App 的沙箱检查通过，
+销毁、显示、主题和 CSP 都纳入覆盖。当前单测结果为 158 项回归通过；前序两种 App 的沙箱检查通过，
 逐项证据与边界见 [本地协议验证记录](./mcp-apps-validation.md)。
 
 ## 检查入口

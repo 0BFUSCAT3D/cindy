@@ -19,6 +19,7 @@ import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js'
 import { requestHostInteraction } from './interactionRouter.js';
 import { registerMcpAppsIpc } from '../mcp-apps/ipc.js';
 import { createAppMessageSender } from '../mcp-apps/messageSender.js';
+import { MCP_APP_MESSAGE_GUARD, type McpAppMessageGuard } from '../mcp-apps/message.js';
 import { mcpAppModelContext } from '../mcp-apps/runtime.js';
 import { prepareCompanionImportDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
@@ -16404,6 +16405,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readonly [AUTO_REVIEW_SOURCE_CONTENT]?: string;
       readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
       readonly [AUTO_REVIEW_USER_INTENT]?: string;
+      readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
     };
     const readCurrentSteerSession = () => {
       const current = maker.getSession(sessionId);
@@ -16519,6 +16521,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertCurrentInputClearBoundary(sessionId, precondition.expected);
       }
       assertCurrentInputGeneration(sessionId, readExpectedInputGeneration(sendOpts));
+      if (so[MCP_APP_MESSAGE_GUARD]) await so[MCP_APP_MESSAGE_GUARD]!();
       sess = readCurrentSteerSession();
       // 同轮插话也属于新输入。必须在 vendor await 前通知，旧轮可能先于 steer ack 结束。
       // 共用入口同时覆盖 INPUT_STEER、队列提升和旧 STEER IPC。
@@ -16526,6 +16529,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // A channel route vouches only for its triggering sender; steered input ends that.
       noteInteractionRouteSteer(sess);
       await sess.steer(steerPayload as never, {
+        ...(so[MCP_APP_MESSAGE_GUARD] ? { beforeProviderStart: so[MCP_APP_MESSAGE_GUARD] } : {}),
         logTitle: meta?.title,
         messageUuid: so.messageUuid,
         userName: so.userName,

@@ -3,6 +3,7 @@ import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { assertSharedTaskQueueMutation } from './sharedTaskInput.js';
 import { isBotGroupClientId } from '../../shared/botGroupChat.js';
 import { SchedulerQueuedPreparationError } from './schedulerQueuedPreparation.js';
+import { MCP_APP_MESSAGE_GUARD, queuedAppMessageGuard, type McpAppMessageGuard } from '../mcp-apps/message.js';
 /**
  * AgentInputCoordinator — main 侧排队输入事务协调器。
  *
@@ -205,6 +206,8 @@ function hasRetryableQueuedContent(item: AgentInputQueuedMessage): boolean {
 }
 
 export interface AgentInputSendOpts {
+  /** Main-only App grant, checked by the send/steer transaction at dispatch. */
+  readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
   readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
   /** Main-owned identity of the zero-output user turn being replaced. */
   retryUserClientId?: string;
@@ -2537,7 +2540,9 @@ export class AgentInputCoordinator {
         item.persistedContent,
         referenceContexts,
       );
+      const appMessageGuard = queuedAppMessageGuard(item);
       await this.deps.steerToAgent(sessionId, buildMakerUserMessage(item, referenceContexts), {
+        ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: appMessageGuard } : {}),
         ...(item.sharedTaskAuthor ? { sharedTaskAuthor: item.sharedTaskAuthor } : {}),
         [AUTO_REVIEW_SOURCE_CONTENT]: queuedAutoReviewText(item),
         ...(item.autoReviewUserText && typeof item.autoReviewUserText === 'object' && item.autoReviewUserText.kind === 'delegated-continuation'
@@ -4399,6 +4404,7 @@ export class AgentInputCoordinator {
   /** Renderer projection may carry routing hints, but never quoted history bodies. */
   private toProjectedItem(item: AgentInputQueuedMessage): AgentInputQueuedMessage {
     const projected = { ...item };
+    Reflect.deleteProperty(projected, MCP_APP_MESSAGE_GUARD);
     delete projected[HOST_ONLY_AGENT_PREFIX];
     delete projected.hostAcceptedAtMs;
     delete projected.autoReviewUserText;
@@ -4962,7 +4968,9 @@ export class AgentInputCoordinator {
       // may synchronously emit the new turn's started marker before it returns;
       // post-dispatch acknowledgements must remain older than that marker.
       const preVendorDispatchAt = Math.max(0, Date.now() - 1);
+      const appMessageGuard = queuedAppMessageGuard(head);
       const result = await this.deps.sendToAgent(sessionId, makerUserMessage, head.createOpts, {
+        ...(appMessageGuard ? { [MCP_APP_MESSAGE_GUARD]: appMessageGuard } : {}),
         ...(head.supersedesUserClientId ? { retryUserClientId: head.supersedesUserClientId } : {}),
         [AUTO_REVIEW_SOURCE_CONTENT]: queuedAutoReviewText(head),
         ...(head.autoReviewUserText && typeof head.autoReviewUserText === 'object' && head.autoReviewUserText.kind === 'delegated-continuation'
