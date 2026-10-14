@@ -9,14 +9,23 @@ export function chatErrorDiagnostic(error: unknown): { code: string; status?: nu
   return { code, ...(typeof value?.status === 'number' && Number.isInteger(value.status) ? { status: value.status } : {}) };
 }
 
+/**
+ * A room reached through a bot-group entry point that is not a group (a 1:1 companion chat,
+ * a channel) answers exactly like a missing room. The internal code stays in diagnostics only.
+ */
+export function missingGroupCode(code: string): string {
+  return code === 'NOT_A_GROUP' ? 'CONVERSATION_NOT_FOUND' : code;
+}
+
 /** Stable localized categories for desktop and remote controllers; raw errors stay private. */
 export function chatGroupFailure(error: unknown): BotGroupFailure {
-  const { code, status } = chatErrorDiagnostic(error);
+  const { code: raw, status } = chatErrorDiagnostic(error);
+  const code = missingGroupCode(raw);
   let errorCode: BotGroupErrorCode;
   if (['PLAN_OPEN', 'PLAN_CLOSED', 'MENTION_UNAVAILABLE', 'MEMBER_LIMIT', 'MEMBER_UNAVAILABLE', 'HOST_NOT_READY',
     'INVALID_ATTACHMENT', 'ATTACHMENT_UNAVAILABLE', 'ATTACHMENT_TOO_LARGE', 'MEDIA_UPLOAD_FAILED',
     'LIFECYCLE_UNAVAILABLE', 'LAST_OWNER', 'AUTH_REQUIRED', 'IMPORT_PENDING', 'REQUEST_TIMEOUT', 'REVISION_CONFLICT', 'QUOTE_UNAVAILABLE'].includes(code)) errorCode = code as BotGroupErrorCode;
-  else if (code === 'CONVERSATION_NOT_FOUND' || code === 'NOT_A_GROUP' || code === 'OWNER_CHANGED') errorCode = 'NOT_FOUND';
+  else if (code === 'CONVERSATION_NOT_FOUND' || code === 'OWNER_CHANGED') errorCode = 'NOT_FOUND';
   else if (['ROLE_REQUIRED', 'ACTOR_NOT_OWNED', 'OWNER_REQUIRED'].includes(code) || status === 403) errorCode = 'PERMISSION_DENIED';
   else if (status === 401) errorCode = 'AUTH_REQUIRED';
   else if (code === 'CHAT_ENDPOINT_UNAVAILABLE' || code === 'INVALID_CHAT_ENDPOINT' || ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) errorCode = 'CHAT_UNAVAILABLE';

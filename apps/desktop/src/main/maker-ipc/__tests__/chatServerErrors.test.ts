@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chatErrorDiagnostic, chatGroupFailure } from '../chatServerErrors.js';
+import { chatErrorDiagnostic, chatGroupFailure, missingGroupCode } from '../chatServerErrors.js';
 
 describe('chat group errors', () => {
   it.each([
@@ -14,6 +14,11 @@ describe('chat group errors', () => {
     ['CONVERSATION_NOT_FOUND', 'NOT_FOUND'], ['NOT_A_GROUP', 'NOT_FOUND'], ['untrusted /private/path?token=secret', 'SERVICE_ERROR'],
   ])('classifies %s without exposing exception text', (code, expected) => {
     expect(chatGroupFailure(new Error(code))).toEqual({ ok: false, errorCode: expected, message: expected });
+  });
+  it('answers a non-group room exactly like a missing room on every entry point', () => {
+    expect(missingGroupCode('NOT_A_GROUP')).toBe('CONVERSATION_NOT_FOUND');
+    expect(missingGroupCode('ROLE_REQUIRED')).toBe('ROLE_REQUIRED');
+    expect(chatGroupFailure(new Error('NOT_A_GROUP'))).toEqual(chatGroupFailure(new Error('CONVERSATION_NOT_FOUND')));
   });
   it('keeps only diagnostic code and HTTP status', () => {
     expect(chatErrorDiagnostic(Object.assign(new Error('private URL https://x/?token=secret'), { status: 500 })))

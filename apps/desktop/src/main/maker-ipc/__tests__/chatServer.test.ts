@@ -1966,10 +1966,33 @@ describe('Chat Server result delivery and refresh', () => {
       expect(await service.setMembers({ groupId: directId, botIds: [] })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
       expect(await service.sendMessage({ groupId: directId, text: 'hi', clientId: 'client-direct-1', mentions: { all: false, botIds: [] } }))
         .toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      // Raw-code entry points answer exactly like a missing room; the internal NOT_A_GROUP never leaves main.
       expect(await service.chatServer!.manage({ groupId: directId, action: { type: 'member', actorId: selfId, action: 'leave' } }))
-        .toMatchObject({ ok: false, errorCode: 'NOT_A_GROUP' });
-      expect(await service.chatServer!.createInvite({ groupId: directId, clientId: 'invite-direct-1' })).toMatchObject({ ok: false, errorCode: 'NOT_A_GROUP' });
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.createInvite({ groupId: directId, clientId: 'invite-direct-1' })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.revokeInvite({ groupId: directId, link: `cindy://chat-invite/${'a'.repeat(43)}`, clientId: '90000000-0000-4000-8000-000000000001' }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
       expect(writes()).toEqual([]);
+    });
+
+    it('never subscribes to a rejected room, so its traffic cannot invalidate the group list', async () => {
+      await service.getGroup(roomId);
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets[0];
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: '1' }));
+      vi.mocked(socket.send).mockClear();
+      expect(await service.getGroup(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.chatServer!.createInvite({ groupId: channelId, clientId: 'invite-channel-1' })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(vi.mocked(socket.send).mock.calls.filter(([raw]) => String(raw).includes('"subscribe"'))).toEqual([]);
+      // A later reconnect resubscribes only the group.
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      const scopes = vi.mocked(socket.send).mock.calls.map(([raw]) => JSON.parse(String(raw)))
+        .filter(m => m.type === 'subscribe' && String(m.scope).startsWith('conversation:')).map(m => m.scope);
+      expect(scopes).toEqual([`conversation:${roomId}`]);
     });
   });
 });
