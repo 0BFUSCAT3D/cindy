@@ -118,16 +118,19 @@ export function registerScheduleUpdateTool(
         // 对方电脑的 IPC 入口自己做校验与 hook 路径稳定化;这里只拦跨 JSON 边界
         // 表达不了、或只对本机有意义的写法,明确报错而不是写出与意图不符的任务。
         // 绑定任务 id 只在那台电脑上有效：带本设备前缀的去掉前缀，指向别的电脑的拒绝。
+        // 带 `::` 的只接受「本设备前缀 + 非空、不再含 `::` 的任务 id」。
         const target = (patch as { targetSessionId?: string | null }).targetSessionId;
-        const split = typeof target === 'string' ? target.indexOf('::') : -1;
-        const targetDevice = split > 0 ? target!.slice(0, split) : undefined;
-        if (targetDevice !== undefined && targetDevice === device) {
-          (patch as { targetSessionId?: string }).targetSessionId = target!.slice(split + 2);
+        let targetInvalid = false;
+        if (typeof target === 'string' && target.includes('::')) {
+          const split = target.indexOf('::');
+          const localId = target.slice(split + 2);
+          targetInvalid = target.slice(0, split) !== device || !localId || localId.includes('::');
+          if (!targetInvalid) (patch as { targetSessionId?: string }).targetSessionId = localId;
         }
         const unsupported = bindToCurrentSession
           ? 'bindToCurrentSession 只能绑定本机的当前任务'
-          : targetDevice !== undefined && targetDevice !== device
-            ? 'targetSessionId 必须是目标定时任务所在电脑上的任务'
+          : targetInvalid
+            ? 'targetSessionId 必须是目标定时任务所在电脑上的任务（deviceId::sessionId 或该电脑的任务 id）'
           : patch.preRunHook && typeof (patch.preRunHook as { timeoutMs?: unknown }).timeoutMs !== 'number'
             // 对方入口整对象替换 preRunHook:省略超时会把它清成不限时,而在这里先读后写
             // 又会覆盖别处同时改的超时。要求调用方显式带上,由一次写入完成。

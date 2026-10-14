@@ -334,12 +334,23 @@ describe("cindy_scheduler cross-device routing", () => {
     expect(written.data).toEqual({ id: "r2", targetSessionId: "mbp::sess-1" });
     // 指向别的电脑的任务不能绑定。
     const calls = s.invoke.mock.calls.length;
-    const other = await s.registry.call("schedule_update", {
-      id: "r2",
-      device: "mbp",
-      targetSessionId: "pc::sess-1",
-    });
-    expect(parse(other)).toMatchObject({ ok: false, code: "INVALID_PARAMS" });
+    // 指向别的电脑、去前缀后为空或格式残缺的都拒绝，不写成「未绑定」。
+    for (const targetSessionId of [
+      "pc::sess-1",
+      "mbp::",
+      "::sess-1",
+      "mbp::a::b",
+    ]) {
+      const rejected = await s.registry.call("schedule_update", {
+        id: "r2",
+        device: "mbp",
+        targetSessionId,
+      });
+      expect(parse(rejected)).toMatchObject({
+        ok: false,
+        code: "INVALID_PARAMS",
+      });
+    }
     expect(s.invoke.mock.calls.length).toBe(calls);
   });
 
