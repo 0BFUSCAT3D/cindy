@@ -6025,6 +6025,10 @@ const registerIpcHandlers = () => {
     },
     readFile: (filePath) => fs.promises.readFile(filePath),
     toSdrAvatar: toSdrAvatarImage,
+    decodeAvatarImage: ({ buffer }) => {
+      const image = nativeImage.createFromBuffer(Buffer.from(buffer));
+      return image.isEmpty() ? null : image.getSize();
+    },
     uploadAvatar: async ({ buffer, mimeType }) => {
       const result = await uploadPublicAsset(
         {

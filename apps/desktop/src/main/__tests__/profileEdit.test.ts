@@ -1,22 +1,26 @@
 /**
  * profileEdit.test.ts — 个人资料编辑业务体单测(规则 14:全依赖注入,内存直测)。
  * 覆盖:未登录 / 非法参数拒绝、名字收敛(留空/一致 = 不改)、头像三态
- * (keep / set / reset)的 OSS 直传与 PATCH 组装、导出字节的类型 / 文件头 / 体积校验、
+ * (keep / set / reset)的 OSS 直传与 PATCH 组装、导出字节的类型 / 文件头 / 体积 / 尺寸 / 解码校验、
  * 选图的扩展名与源图体积校验、HDR 头像在取景前转 SDR、保存途中切换账号、
  * 上传 / PATCH 失败的错误码映射、无变化零请求。
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
+
+import { describe, it, expect, vi } from 'vitest';
+
 import { toSdrAvatarImage, readPngHdrChunks } from '../hdrAvatarToSdr';
 
 import {
   AVATAR_MAX_BYTES,
   AVATAR_SOURCE_MAX_BYTES,
+  AVATAR_UPLOAD_MAX_EDGE_PX,
   chooseAvatarFile,
   cleanupLegacyProfileOverride,
   getProfileEditState,
+  readAvatarDimensions,
   updateProfile,
   type LegacyOverrideCleanupDeps,
   type ProfileEditDeps,
@@ -26,15 +30,25 @@ type ProfilePatch = { displayName?: string; avatarUrl?: string | null };
 
 const PUBLIC_URL = 'https://oss.example.invalid/cindy/public/avatar/u1/x.png';
 
-// 头像编辑器导出的字节:只认 PNG / JPEG,且文件头必须与声明的 mime 一致。
+// 头像编辑器导出的字节:只认 PNG / JPEG,文件头必须与声明的 mime 一致,且带可读尺寸。
 const PNG_HEADER = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const JPEG_HEADER = [0xff, 0xd8, 0xff, 0xe0];
-const pngBytes = (size = 64) => {
+const u16 = (n: number) => [(n >> 8) & 0xff, n & 0xff];
+const u32 = (n: number) => [(n >>> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+const pngBytes = (size = 64, width = 256, height = 256) => {
   const data = new Uint8Array(size);
-  data.set(PNG_HEADER);
+  data.set([...PNG_HEADER, ...u32(13), 0x49, 0x48, 0x44, 0x52, ...u32(width), ...u32(height)]);
   return data;
 };
-const jpegBytes = () => Uint8Array.from([...JPEG_HEADER, 0, 0, 0, 0]);
+// SOI + JFIF APP0 + SOF0(高在宽前)。
+const jpegBytes = (width = 256, height = 256) =>
+  Uint8Array.from([
+    0xff, 0xd8,
+    0xff, 0xe0, ...u16(16), 0x4a, 0x46, 0x49, 0x46, 0x00, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    0xff, 0xc0, ...u16(17), 8, ...u16(height), ...u16(width), 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1,
+    0xff, 0xda,
+  ]);
+const resourceBytes = (name: string) =>
+  new Uint8Array(fs.readFileSync(path.resolve(__dirname, '../../../resources', name)));
 
 function makeDeps(overrides: Partial<ProfileEditDeps> = {}): {
   deps: ProfileEditDeps;
@@ -48,6 +62,10 @@ function makeDeps(overrides: Partial<ProfileEditDeps> = {}): {
     showAvatarOpenDialog: vi.fn(async () => null),
     readFile: vi.fn(async () => Buffer.from([1, 2, 3])),
     toSdrAvatar: vi.fn(async (image) => image),
+    // 默认模拟解码成功:像素尺寸与文件头声明一致。
+    decodeAvatarImage: vi.fn(({ buffer, mimeType }: { buffer: Uint8Array; mimeType: string }) =>
+      readAvatarDimensions(buffer, mimeType),
+    ),
     uploadAvatar: vi.fn(async () => ({ ok: true as const, publicUrl: PUBLIC_URL })),
     patchProfile: vi.fn(async (patch: ProfilePatch) => {
       patches.push(patch);
@@ -168,6 +186,43 @@ describe('头像三态', () => {
     expect(deps.readFile).not.toHaveBeenCalled();
   });
 
+  it('set:文件头尺寸缺失 / 为 0 / 超过导出边长 → INVALID_PARAMS,不解码也不上传', async () => {
+    const { deps } = makeDeps();
+    const noIhdr = pngBytes();
+    noIhdr.set([0x67, 0x41, 0x4d, 0x41], 12); // 第一个 chunk 不是 IHDR
+    const max = AVATAR_UPLOAD_MAX_EDGE_PX;
+    const bad: Array<{ data: Uint8Array; mimeType: string }> = [
+      { data: noIhdr, mimeType: 'image/png' },
+      { data: Uint8Array.from([...PNG_HEADER, 0, 0, 0, 13]), mimeType: 'image/png' },
+      { data: pngBytes(64, 0, 256), mimeType: 'image/png' },
+      { data: pngBytes(64, max + 1, 16), mimeType: 'image/png' },
+      { data: pngBytes(64, 0x7fffffff, 0x7fffffff), mimeType: 'image/png' },
+      { data: jpegBytes(16, max + 1), mimeType: 'image/jpeg' },
+      { data: Uint8Array.from([0xff, 0xd8, 0xff, 0xda, 0, 2, 0, 0]), mimeType: 'image/jpeg' },
+      { data: Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]), mimeType: 'image/jpeg' },
+      { data: resourceBytes('bgicon.jpg'), mimeType: 'image/jpeg' },
+    ];
+    for (const { data, mimeType } of bad) {
+      await expect(
+        updateProfile(deps, { name: null, avatar: { type: 'set', data, mimeType } }),
+      ).rejects.toSatisfy((e) => ipcCode(e) === 'INVALID_PARAMS');
+    }
+    expect(deps.decodeAvatarImage).not.toHaveBeenCalled();
+    expect(deps.uploadAvatar).not.toHaveBeenCalled();
+  });
+
+  it('set:main 完整解码失败或像素尺寸与文件头不符 → INVALID_PARAMS,不上传', async () => {
+    for (const decoded of [null, { width: 128, height: 256 }]) {
+      const { deps } = makeDeps({ decodeAvatarImage: vi.fn(() => decoded) });
+      const data = pngBytes();
+      await expect(
+        updateProfile(deps, { name: null, avatar: { type: 'set', data, mimeType: 'image/png' } }),
+      ).rejects.toSatisfy((e) => ipcCode(e) === 'INVALID_PARAMS');
+      expect(deps.decodeAvatarImage).toHaveBeenCalledWith({ buffer: data, mimeType: 'image/png' });
+      expect(deps.uploadAvatar).not.toHaveBeenCalled();
+    }
+  });
+
   it('上传失败 → PROFILE_AVATAR_UPLOAD_FAILED,不触发 PATCH', async () => {
     const { deps } = makeDeps({
       uploadAvatar: vi.fn(async () => ({
@@ -196,7 +251,7 @@ describe('头像三态', () => {
 });
 
 describe('HDR 头像在取景前转 SDR', () => {
-  const hdrPng = readFileSync(path.join(__dirname, 'fixtures', 'hdr-avatar', 'pq-bt2100.png'));
+  const hdrPng = fs.readFileSync(path.join(__dirname, 'fixtures', 'hdr-avatar', 'pq-bt2100.png'));
 
   it('chooseAvatarFile:取景源就是真实转换后的 SDR 字节', async () => {
     const { deps } = makeDeps({
@@ -271,6 +326,31 @@ describe('保存途中切换账号', () => {
     const { deps, patches } = makeDeps({ getAccountScopeKey: switchAfter(Infinity) });
     await updateProfile(deps, { name: 'Lizi', avatar: setAvatar() });
     expect(patches).toEqual([{ displayName: 'Lizi', avatarUrl: PUBLIC_URL }]);
+  });
+});
+
+describe('readAvatarDimensions(文件头尺寸)', () => {
+  it('读出真实 PNG / JPEG 的像素尺寸', () => {
+    expect(readAvatarDimensions(resourceBytes('icon.png'), 'image/png')).toEqual({
+      width: 512,
+      height: 512,
+    });
+    expect(readAvatarDimensions(resourceBytes('bgicon.jpg'), 'image/jpeg')).toEqual({
+      width: 1024,
+      height: 1024,
+    });
+    expect(readAvatarDimensions(jpegBytes(300, 200), 'image/jpeg')).toEqual({
+      width: 300,
+      height: 200,
+    });
+  });
+
+  it('边长恰为上限的真实 PNG 可以上传,字节原样', async () => {
+    const { deps, patches } = makeDeps();
+    const data = resourceBytes('icon.png');
+    await updateProfile(deps, { name: null, avatar: { type: 'set', data, mimeType: 'image/png' } });
+    expect(deps.uploadAvatar).toHaveBeenCalledWith({ buffer: data, mimeType: 'image/png' });
+    expect(patches).toEqual([{ avatarUrl: PUBLIC_URL }]);
   });
 });
 
