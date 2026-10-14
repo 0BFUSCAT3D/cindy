@@ -10,7 +10,12 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import { readIccCicp, readPngHdrChunks, toSdrAvatarImage } from '../hdrAvatarToSdr';
+import {
+  readIccCicp,
+  readPngHdrChunks,
+  serializeConversion,
+  toSdrAvatarImage,
+} from '../hdrAvatarToSdr';
 
 const fixture = (name: string) =>
   readFileSync(path.join(__dirname, 'fixtures', 'hdr-avatar', name));
@@ -275,6 +280,32 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     await expect(toSdrAvatarImage({ buffer: truncated, mimeType: 'image/png' })).rejects.toThrow(
       /INVALID_PARAMS/,
     );
+  });
+
+  it('runs concurrent conversions one at a time and keeps going after a failure', async () => {
+    const valid = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
+    const broken = valid.subarray(0, valid.length - 20);
+
+    // 先占住队列:未放行前,后续 HDR 转换都不能开始(并行实现会在几毫秒内各自完成)。
+    let release!: () => void;
+    const holder = serializeConversion(() => new Promise<void>((resolve) => (release = resolve)));
+    const settled: string[] = [];
+    const track = (label: string, image: Buffer) =>
+      toSdrAvatarImage({ buffer: image, mimeType: 'image/png' }).then(
+        (output) => (settled.push(label), output),
+        (error: unknown) => (settled.push(label), Promise.reject(error)),
+      );
+    const pending = Promise.allSettled([track('broken', broken), track('valid', valid)]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(settled).toEqual([]);
+
+    release();
+    await holder;
+    const [brokenResult, validResult] = await pending;
+    // 失败的转换不卡住队列。
+    expect(brokenResult.status).toBe('rejected');
+    expect(validResult.status).toBe('fulfilled');
+    await expectNoHdrSignal((validResult as PromiseFulfilledResult<{ buffer: Buffer }>).value.buffer);
   });
 });
 

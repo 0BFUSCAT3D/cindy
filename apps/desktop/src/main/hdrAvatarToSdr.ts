@@ -271,6 +271,17 @@ function toneMapMax(max: number, peak: number): number {
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/**
+ * 所有头像入口共享的转换队列：同一时刻至多一个 HDR 转换持有像素缓冲（4096² 16-bit RGBA
+ * 约 128 MiB 源像素 + 64 MiB 输出），main 进程峰值内存不随并发上传叠加。失败不阻塞后续。
+ */
+let conversionQueue: Promise<unknown> = Promise.resolve();
+export function serializeConversion<T>(run: () => Promise<T>): Promise<T> {
+  const result = conversionQueue.then(run);
+  conversionQueue = result.catch(() => undefined);
+  return result;
+}
+
 // ── 转换 ────────────────────────────────────────────────────────────────────
 
 async function encode(pipeline: Sharp, format: AvatarFormat): Promise<AvatarImageBytes> {
@@ -422,9 +433,11 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
     throwIpcError('INVALID_PARAMS', 'HDR avatar dimensions exceed the conversion limit');
   }
   try {
-    return transfer && cicp
-      ? await toneMapToSdr(image.buffer, metadata, format, cicp, transfer, png.maxCllNits)
-      : await dropGainMap(image.buffer, metadata);
+    return await serializeConversion(() =>
+      transfer && cicp
+        ? toneMapToSdr(image.buffer, metadata, format, cicp, transfer, png.maxCllNits)
+        : dropGainMap(image.buffer, metadata),
+    );
   } catch {
     throwIpcError('INVALID_PARAMS', 'HDR avatar could not be converted to SDR');
   }
