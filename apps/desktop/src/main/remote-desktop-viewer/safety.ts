@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   ClipboardSync,
+  clipboardSyncErrorCode,
   clipboardSyncFailure,
   parseClipboardContent,
   type ClipboardSyncBaseline,
@@ -17,6 +18,44 @@ export interface ViewerClipboard {
   write(json: string, version: string | undefined, current: () => boolean): Promise<string>;
 }
 
+/** The viewer's own clipboard helper failing is not the computer being locked. */
+const VIEWER_CLIPBOARD_UNAVAILABLE = 'DESKTOP_VIEWER_CLIPBOARD_UNAVAILABLE';
+const RETRY_MS = 1500;
+const MAX_BACKOFF_MS = 5000;
+
+export interface ViewerClipboardFailure {
+  code: string;
+  /** Status key for the viewer window; null keeps whatever is shown. */
+  notice: string | null;
+  /** Milliseconds until the next attempt; null waits for an explicit retry. */
+  delay: number | null;
+  /** Settles by itself (locked computer, a copy mid-read); never grows the backoff. */
+  transient: boolean;
+}
+
+/** How one sync failure is retried. Only unexplained failures back off, and briefly. */
+export function viewerClipboardFailure(error: unknown, failures: number): ViewerClipboardFailure {
+  const shared = clipboardSyncFailure(error, failures);
+  const code = clipboardSyncErrorCode(error);
+  if (shared.delay === null) return { ...shared, transient: false };
+  if (code === 'CLIPBOARD_CONFLICT')
+    return { code, notice: 'clipboardSyncConflict', delay: RETRY_MS, transient: true };
+  // The computer's clipboard is refused while its screen is locked or it is busy.
+  if (code === 'DESKTOP_CLIPBOARD_UNAVAILABLE')
+    return { code, notice: 'clipboardSyncWaiting', delay: RETRY_MS, transient: true };
+  if (
+    code.endsWith('_CHANGED') ||
+    ['DESKTOP_BUSY', 'DESKTOP_CLIPBOARD_BUSY', 'DESKTOP_INPUT_BUSY'].includes(code)
+  )
+    return { code, notice: null, delay: RETRY_MS, transient: true };
+  return {
+    code,
+    notice: 'clipboardSyncFailed',
+    delay: Math.min(MAX_BACKOFF_MS, RETRY_MS * 2 ** Math.min(failures, 2)),
+    transient: false,
+  };
+}
+
 /** One lease's opt-ins. Clipboard payloads stay in Main; callers only receive status. */
 export class ViewerSafety {
   private clipboard: ViewerClipboard | undefined;
@@ -28,13 +67,21 @@ export class ViewerSafety {
     this.invalidate();
     await this.settled;
   }
+  /** Stops local clipboard reads (window left the foreground). The computer's sync stays on. */
   async pauseClipboard(): Promise<void> {
     this.clipboardRevision++;
     this.clipboard?.stop?.();
     await this.settled;
-    // Focus changes must not retry privacy/mute failures or clear their status.
-    this.applied.delete('clipboardSync');
+  }
+  /** Resolves once in-flight work has settled, so a caller can run a fresh tick. */
+  idle(): Promise<void> {
+    return this.settled;
+  }
+  /** Regained focus or a copy/paste: retry now, unless sync waits for a permission. */
+  wake(): void {
+    if (this.retryAt === Infinity) return;
     this.retryAt = 0;
+    this.failures = 0;
   }
   private baseline: ClipboardSyncBaseline = { local: '', remote: '' };
   private localReadCache: LocalClipboardReadCache = {};
@@ -66,6 +113,14 @@ export class ViewerSafety {
         null,
       clipboardProgress: null,
     };
+  }
+  private recordClipboardFailure(error: unknown): void {
+    const failure = viewerClipboardFailure(error, this.failures);
+    if (!failure.transient) this.failures++;
+    // Only the computer refusing sync needs it re-enabled; a local helper failure does not.
+    if (failure.code === 'DESKTOP_CLIPBOARD_UNAVAILABLE') this.applied.delete('clipboardSync');
+    if (failure.notice) this.notices.set('clipboardSync', failure.notice);
+    this.retryAt = failure.delay === null ? Infinity : Date.now() + failure.delay;
   }
   async tick(options: {
     lease: string;
@@ -109,20 +164,12 @@ export class ViewerSafety {
           this.notices.delete(op);
         } catch (error) {
           if (!valid()) return this.snapshot();
-          this.notices.set(
-            op,
-            op === 'privacyScreen'
-              ? 'privacyFailed'
-              : op === 'hostMute'
-                ? 'hostMuteFailed'
-                : 'clipboardSyncFailed',
-          );
-          // Retry is explicit for safety failures; synchronization follows its existing backoff below.
-          if (op === 'clipboardSync') {
-            const failure = clipboardSyncFailure(error, this.failures++);
-            this.retryAt = failure.delay === null ? Infinity : Date.now() + failure.delay;
-            this.notices.set(op, failure.notice);
-          } else this.applied.set(op, preferences[op]);
+          // Retry is explicit for safety failures; synchronization follows its own schedule.
+          if (op === 'clipboardSync') this.recordClipboardFailure(error);
+          else {
+            this.notices.set(op, op === 'privacyScreen' ? 'privacyFailed' : 'hostMuteFailed');
+            this.applied.set(op, preferences[op]);
+          }
         }
       }
       if (
@@ -139,15 +186,21 @@ export class ViewerSafety {
       const clipboardCheck = () => {
         if (!current()) throw new Error('DESKTOP_STOPPED');
       };
+      const local = <T>(work: Promise<T>) =>
+        work.catch((error: unknown) => {
+          throw error instanceof Error && error.message === 'DESKTOP_CLIPBOARD_UNAVAILABLE'
+            ? new Error(VIEWER_CLIPBOARD_UNAVAILABLE)
+            : error;
+        });
       const engine = new ClipboardSync(
         {
           lease,
           current,
           inline: caps.clipboardInline === true,
           request: (message) => options.request(message, clipboardCheck),
-          localVersion: () => options.clipboard!.version(current),
-          readLocal: () => options.clipboard!.read(current),
-          writeLocal: (json, version) => options.clipboard!.write(json, version, current),
+          localVersion: () => local(options.clipboard!.version(current)),
+          readLocal: () => local(options.clipboard!.read(current)),
+          writeLocal: (json, version) => local(options.clipboard!.write(json, version, current)),
           localReadCache: this.localReadCache,
           trace: (stage) => {
             if (!valid()) return;
@@ -171,7 +224,7 @@ export class ViewerSafety {
         await engine.tick();
         if (current()) {
           if (
-            ['clipboardSyncFailed', 'clipboardSyncPermission'].includes(
+            ['clipboardSyncFailed', 'clipboardSyncPermission', 'clipboardSyncWaiting'].includes(
               this.notices.get('clipboardSync') ?? '',
             )
           )
@@ -180,10 +233,7 @@ export class ViewerSafety {
         }
       } catch (error) {
         if (!current()) return this.snapshot();
-        const failure = clipboardSyncFailure(error, this.failures++);
-        if (failure.code === 'DESKTOP_CLIPBOARD_UNAVAILABLE') this.applied.delete('clipboardSync');
-        this.notices.set('clipboardSync', failure.notice);
-        this.retryAt = failure.delay === null ? Infinity : Date.now() + failure.delay;
+        this.recordClipboardFailure(error);
       }
       return this.snapshot();
     } finally {

@@ -28,6 +28,9 @@ import {
 import { ViewerSafety, type ViewerClipboard } from './safety.js';
 import type { ViewerCredentials } from './credentials.js';
 
+/** After the window leaves the foreground, one last pass may still read the local clipboard. */
+const CLIPBOARD_GRACE_MS = 1000;
+
 /** Main owns the target, account generation and lease for one lightweight viewer.
  * A destroyed/hidden window cannot leave late starts or inputs alive. No closeLink.
  */
@@ -51,6 +54,7 @@ export class RemoteViewerConnection {
   private preferencesValue = { ...DEFAULT_VIEWER_PREFERENCES };
   private safetyState = new ViewerSafety();
   private clipboardProgress: number | null = null;
+  private clipboardGrace = 0;
   private channelRequests = new Map<string, (outcome: RemoteViewerChannelOutcome) => void>();
   private channelRequestId = 0;
   constructor(
@@ -470,13 +474,41 @@ export class RemoteViewerConnection {
     this.check(generation);
     return parsed;
   }
+  private focused(): boolean {
+    return this.deps.focused?.() ?? true;
+  }
+  /**
+   * Focus only decides when this window reads its own clipboard; the computer's
+   * sync stays enabled for the whole control session. Regaining focus syncs at
+   * once; leaving runs one bounded pass (so a copy made on the computer arrives
+   * here before the user pastes) and then pauses local reads.
+   */
   async focusChanged(): Promise<void> {
     const generation = this.generation;
-    // Cancel local reads immediately, then reconcile after any old enable has
-    // settled. Use current focus when reconciling (blur/focus may race).
+    const live = () => this.active && generation === this.generation;
+    if (this.focused()) {
+      this.safetyState.wake();
+      await this.safetyState.idle();
+      if (live()) await this.safety(generation).catch(() => {});
+      return;
+    }
+    this.clipboardGrace = Date.now() + CLIPBOARD_GRACE_MS;
+    try {
+      await this.safetyState.idle();
+      if (!live() || this.focused()) return;
+      await this.safety(generation).catch(() => {});
+    } finally {
+      this.clipboardGrace = 0;
+    }
+    if (!live() || this.focused()) return;
     await this.safetyState.pauseClipboard();
-    if (!this.active || generation !== this.generation) return;
-    await this.safety(generation).catch(() => {});
+  }
+  /** A copy or paste in the picture: sync now instead of at the next poll. */
+  async syncClipboard(generation: number): Promise<RemoteViewerSafety> {
+    this.check(generation);
+    this.safetyState.wake();
+    await this.safetyState.idle();
+    return this.safety(generation);
   }
   async safety(generation: number, retry = false): Promise<RemoteViewerSafety> {
     this.check(generation);
@@ -496,13 +528,12 @@ export class RemoteViewerConnection {
         ? await this.safetyState.tick({
             lease,
             caps: this.caps,
-            preferences: {
-              ...this.preferencesValue,
-              clipboardSync: this.preferencesValue.clipboardSync && (this.deps.focused?.() ?? true),
-            },
+            preferences: { ...this.preferencesValue },
             current,
             clipboardCurrent: () =>
-              current() && !this.clipboardPending && (this.deps.focused?.() ?? true),
+              current() &&
+              !this.clipboardPending &&
+              (this.focused() || Date.now() < this.clipboardGrace),
             clipboard: this.deps.clipboard,
             request: async (message, check) => {
               check();

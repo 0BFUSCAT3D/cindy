@@ -143,6 +143,8 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   let pending = [],
     pendingSince = 0,
     sending = false,
+    // Deadline while a paste shortcut holds the queue (desktop only; 0 = open).
+    inputGateUntil = 0,
     cx = 0.5,
     cy = 0.5,
     drag = false,
@@ -866,6 +868,11 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       post({ type: "inputOverflow" });
       return;
     }
+    // A paste shortcut waits for the controller to push the local clipboard first.
+    if (inputGateUntil) {
+      if (performance.now() < inputGateUntil) return;
+      inputGateUntil = 0;
+    }
     if (sending) return;
     // Do not route around a congested live data channel: the relay could
     // overtake its already-buffered key/button events and reorder input.
@@ -1513,6 +1520,19 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     hardwareKeys.clear();
     commandKeys.clear();
   }
+  // Desktop only. Cmd/Ctrl+V holds the queue until the controller has pushed
+  // the local clipboard (or `inputGate` / the deadline releases it); Cmd/Ctrl+C
+  // and +X ask it to pull the computer's new copy soon after. Both are intents:
+  // the keys themselves still reach the computer unchanged.
+  function clipboardShortcut(e, code) {
+    if (!config.desktop || e.repeat || e.altKey || !(e.metaKey || e.ctrlKey))
+      return;
+    if (code === "KeyV") {
+      inputGateUntil = performance.now() + 1200;
+      post({ type: "clipboardIntent", action: "paste" });
+    } else if (code === "KeyC" || code === "KeyX")
+      post({ type: "clipboardIntent", action: "copy" });
+  }
   listen(document, "keydown", (e) => {
     if (config.desktop) {
       if (e.ctrlKey && e.altKey && e.code === "Escape") {
@@ -1546,7 +1566,9 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       return;
     if (control && validKeys.has(normalizedKey(e.code))) {
       e.preventDefault();
-      pressKey(normalizedKey(e.code));
+      const code = normalizedKey(e.code);
+      clipboardShortcut(e, code);
+      pressKey(code);
     }
   });
   listen(document, "keyup", (e) => {
@@ -2141,6 +2163,10 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       case "releaseInput":
         release();
         break;
+      case "inputGate":
+        inputGateUntil = 0;
+        flush();
+        break;
       case "theme":
         if (/^#[0-9a-f]{3,8}$/i.test(message.surface)) {
           document.body.style.background = config.nativeMedia
@@ -2423,6 +2449,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         // existing sequence fence so a late old ACK cannot unlock a new batch.
         seq++;
         sending = false;
+        inputGateUntil = 0;
         control = message.enabled;
         if (!control) showKeyboard(false);
         pending = [];

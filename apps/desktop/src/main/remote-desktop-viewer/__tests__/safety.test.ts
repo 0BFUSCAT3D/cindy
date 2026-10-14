@@ -116,6 +116,136 @@ it('a window-switch pause keeps the stopped read from updating the notice or fai
   }
 });
 
+function syncFixture() {
+  const { safety, options, request } = fixture();
+  const clipboardEnables = () =>
+    request.mock.calls.filter(([message]: [{ op: string }]) => message.op === 'clipboardSync');
+  return {
+    safety,
+    request,
+    clipboardEnables,
+    sync: {
+      ...options,
+      preferences: { ...options.preferences, clipboardSync: true },
+      clipboardCurrent: () => true,
+      clipboard: { version: async () => 'v', read: async () => '{}', write: async () => 'v' },
+    },
+  };
+}
+
+it('a window-switch pause keeps the computer sync enabled instead of toggling it', async () => {
+  const { safety, sync, clipboardEnables } = syncFixture();
+  const tick = vi.spyOn(ClipboardSync.prototype, 'tick').mockResolvedValue(undefined);
+  try {
+    await safety.tick(sync);
+    await safety.pauseClipboard();
+    await safety.tick(sync);
+    expect(clipboardEnables()).toHaveLength(1);
+    expect(tick).toHaveBeenCalledTimes(2);
+  } finally {
+    tick.mockRestore();
+  }
+});
+
+it('a locked computer waits at a fixed interval with its own status, never growing the backoff', async () => {
+  const { safety, sync, clipboardEnables } = syncFixture();
+  const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
+  const tick = vi
+    .spyOn(ClipboardSync.prototype, 'tick')
+    .mockRejectedValueOnce(new Error('DESKTOP_CLIPBOARD_UNAVAILABLE'))
+    .mockRejectedValueOnce(new Error('DESKTOP_CLIPBOARD_UNAVAILABLE'))
+    .mockRejectedValueOnce(new Error('DESKTOP_CLIPBOARD_UNAVAILABLE'))
+    .mockResolvedValue(undefined);
+  try {
+    expect((await safety.tick(sync)).notice).toBe('clipboardSyncWaiting');
+    for (const [at, calls] of [
+      [11000, 1],
+      [11500, 2],
+      [12500, 2],
+      [13000, 3],
+      [14500, 4],
+    ] as const) {
+      now.mockReturnValue(at);
+      await safety.tick(sync);
+      expect(tick).toHaveBeenCalledTimes(calls);
+    }
+    expect(safety.snapshot().notice).toBeNull();
+    // The computer refused sync while locked, so each attempt re-enabled it first.
+    expect(clipboardEnables()).toHaveLength(4);
+  } finally {
+    now.mockRestore();
+    tick.mockRestore();
+  }
+});
+
+it('a copy mid-read keeps the status; other failures back off to 5s at most and wake retries at once', async () => {
+  const { safety, sync } = syncFixture();
+  const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
+  const tick = vi
+    .spyOn(ClipboardSync.prototype, 'tick')
+    .mockRejectedValueOnce(new Error('CLIPBOARD_CHANGED'))
+    .mockRejectedValueOnce(new Error('DESKTOP_UNAVAILABLE'))
+    .mockRejectedValueOnce(new Error('DESKTOP_UNAVAILABLE'))
+    .mockRejectedValueOnce(new Error('DESKTOP_UNAVAILABLE'))
+    .mockRejectedValueOnce(new Error('DESKTOP_UNAVAILABLE'))
+    .mockResolvedValue(undefined);
+  try {
+    expect((await safety.tick(sync)).notice).toBeNull();
+    // 1.5s later the unexplained failures start: 1.5s, 3s, then capped at 5s.
+    for (const [at, calls, notice] of [
+      [11500, 2, 'clipboardSyncFailed'],
+      [12900, 2, 'clipboardSyncFailed'],
+      [13000, 3, 'clipboardSyncFailed'],
+      [15900, 3, 'clipboardSyncFailed'],
+      [16000, 4, 'clipboardSyncFailed'],
+      [20900, 4, 'clipboardSyncFailed'],
+    ] as const) {
+      now.mockReturnValue(at);
+      expect((await safety.tick(sync)).notice).toBe(notice);
+      expect(tick).toHaveBeenCalledTimes(calls);
+    }
+    // Regained focus or a shortcut: no waiting, and the failure count starts over.
+    safety.wake();
+    expect((await safety.tick(sync)).notice).toBe('clipboardSyncFailed');
+    expect(tick).toHaveBeenCalledTimes(5);
+    now.mockReturnValue(22400);
+    expect((await safety.tick(sync)).notice).toBeNull();
+    expect(tick).toHaveBeenCalledTimes(6);
+  } finally {
+    now.mockRestore();
+    tick.mockRestore();
+  }
+});
+
+it('a permission failure still waits for an explicit retry', async () => {
+  const { safety, sync } = syncFixture();
+  const tick = vi
+    .spyOn(ClipboardSync.prototype, 'tick')
+    .mockRejectedValueOnce(new Error('CLIPBOARD_PERMISSION_DENIED'))
+    .mockResolvedValue(undefined);
+  try {
+    expect((await safety.tick(sync)).notice).toBe('clipboardSyncPermission');
+    safety.wake();
+    expect((await safety.tick(sync)).notice).toBe('clipboardSyncPermission');
+    expect(tick).toHaveBeenCalledOnce();
+  } finally {
+    tick.mockRestore();
+  }
+});
+
+it("this computer's own clipboard helper failing is a plain failure, not the other computer being locked", async () => {
+  const { safety, sync, clipboardEnables } = syncFixture();
+  const version = vi.fn(async () => {
+    throw new Error('DESKTOP_CLIPBOARD_UNAVAILABLE');
+  });
+  expect((await safety.tick({ ...sync, clipboard: { ...sync.clipboard, version } })).notice).toBe(
+    'clipboardSyncFailed',
+  );
+  expect(version).toHaveBeenCalled();
+  await safety.tick({ ...sync, clipboard: { ...sync.clipboard, version } });
+  expect(clipboardEnables()).toHaveLength(1);
+});
+
 it('keeps conflict feedback until content is actually synchronized', async () => {
   const { safety, options } = fixture();
   const now = vi.spyOn(Date, 'now').mockReturnValue(10000);

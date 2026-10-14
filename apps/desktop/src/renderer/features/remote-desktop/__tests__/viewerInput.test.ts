@@ -271,6 +271,15 @@ it.each(['control', 'meta'])(
     }
     vi.advanceTimersByTime(34);
     expect(messages.some((message) => message.type === 'clipboard')).toBe(false);
+    // The shortcuts are only announced: copy so the controller pulls the computer's
+    // clipboard soon after, paste so it pushes the local one first. Until the
+    // controller releases the paste gate, the queued keys wait.
+    expect(messages.filter((m) => m.type === 'clipboardIntent').map((m) => m.action)).toEqual([
+      'copy',
+      'paste',
+    ]);
+    expect(events()).toEqual([]);
+    viewer.receive({ type: 'inputGate' });
     expect(events().filter((event) => event.kind === 'key' || event.kind === 'text')).toEqual(
       ['KeyC', 'KeyV'].flatMap((code) => [
         { kind: 'key', code: modifierCode, down: true },
@@ -281,6 +290,36 @@ it.each(['control', 'meta'])(
     );
   },
 );
+it('releases a paste that the controller never answers after 1.2s, and never holds a copy', () => {
+  pointer('pointerdown');
+  pointer('pointerup');
+  messages = [];
+  const input = document.getElementById('keyboard-input')!;
+  const chord = (code: string) => {
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'MetaLeft', metaKey: true, bubbles: true }),
+    );
+    input.dispatchEvent(new KeyboardEvent('keydown', { code, metaKey: true, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { code, metaKey: true, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { code: 'MetaLeft', bubbles: true }));
+  };
+  chord('KeyC');
+  vi.advanceTimersByTime(34);
+  expect(events().filter((event) => event.kind === 'key')).toHaveLength(4);
+  chord('KeyV');
+  vi.advanceTimersByTime(1100);
+  expect(events().filter((event) => event.kind === 'key')).toHaveLength(4);
+  vi.advanceTimersByTime(200);
+  expect(events().filter((event) => event.kind === 'key')).toHaveLength(8);
+  // Auto-repeat of a held paste neither re-announces nor re-arms the gate.
+  messages = [];
+  input.dispatchEvent(
+    new KeyboardEvent('keydown', { code: 'KeyV', metaKey: true, repeat: true, bubbles: true }),
+  );
+  vi.advanceTimersByTime(34);
+  expect(messages.some((m) => m.type === 'clipboardIntent')).toBe(false);
+  expect(events().filter((event) => event.kind === 'key')).toHaveLength(1);
+});
 // Invariant: a remote key is released only when its local keyup arrives, except
 // keys pressed while Command is held on a macOS controller (macOS swallows their
 // keyup); those alone are released together with Command.

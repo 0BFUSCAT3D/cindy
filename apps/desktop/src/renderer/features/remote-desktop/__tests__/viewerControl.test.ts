@@ -237,6 +237,71 @@ it('ignores clipboard messages from the picture; shortcuts reach the host as key
   expect(init).toMatchObject({ macKeyboard: false });
 });
 
+const syncOn = async (clipboardSync: RemoteDesktopViewerApi['clipboardSync']) => {
+  const current = await fixture(undefined, false, {
+    api: {
+      clipboardSync,
+      preferences: async () => ({
+        audio: true,
+        privacyScreen: false,
+        hostMute: false,
+        clipboardSync: true,
+        lockOnExit: false,
+      }),
+    },
+  });
+  present();
+  await vi.advanceTimersByTimeAsync(0);
+  return current;
+};
+const gateReleases = () =>
+  runtime.receive.mock.calls.filter(([message]) => message.type === 'inputGate').length;
+const idle = { privacyActive: false, notice: null, clipboardProgress: null };
+
+it('a paste shortcut holds the keys until the local clipboard has been pushed', async () => {
+  const sync = deferred<typeof idle>();
+  const clipboardSync = vi.fn(() => sync.promise);
+  await syncOn(clipboardSync);
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(clipboardSync).toHaveBeenCalledExactlyOnceWith(1);
+  expect(gateReleases()).toBe(0);
+  sync.resolve({ ...idle, notice: 'clipboardSyncSkipped' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(gateReleases()).toBe(2);
+  expect(snapshot.safety.notice).toBe('clipboardSyncSkipped');
+});
+
+it('a paste shortcut is released after one second when the sync pass stalls', async () => {
+  const clipboardSync = vi.fn(() => new Promise<typeof idle>(() => {}));
+  await syncOn(clipboardSync);
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(999);
+  expect(gateReleases()).toBe(0);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(gateReleases()).toBe(1);
+});
+
+it('a copy shortcut pulls the computer clipboard shortly after; paste never waits with sync off', async () => {
+  const clipboardSync = vi.fn(async () => idle);
+  await syncOn(clipboardSync);
+  runtime.post?.({ type: 'clipboardIntent', action: 'copy', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(199);
+  expect(clipboardSync).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(clipboardSync).toHaveBeenCalledExactlyOnceWith(1);
+  controller.dispose();
+  const off = vi.fn(async () => idle);
+  await fixture(undefined, false, { api: { clipboardSync: off } });
+  present();
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  runtime.post?.({ type: 'clipboardIntent', action: 'copy', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(300);
+  expect(off).not.toHaveBeenCalled();
+  expect(gateReleases()).toBe(1);
+});
+
 it('tells the picture when the controller keyboard follows macOS Command rules', async () => {
   vi.stubGlobal('window', { electronAPI: { platform: 'darwin' } });
   try {

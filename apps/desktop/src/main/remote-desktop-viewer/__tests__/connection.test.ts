@@ -38,54 +38,92 @@ function fixture() {
   };
 }
 describe('standalone remote viewer authority', () => {
-  it('stops counters on blur and orders remote disable after an in-flight enable', async () => {
-    let focused = true;
-    let finish!: () => void;
-    const stop = vi.fn();
-    const tick = vi.spyOn(ClipboardSync.prototype, 'tick').mockResolvedValue(undefined);
+  function syncFixture(focused: () => boolean, stop = vi.fn()) {
     const request = vi.fn(async (_target, message, check) => {
       check();
       if (message.op === 'capabilities') return { clipboardSync: true };
       if (message.op === 'start') return { lease: 'lease', controlling: false };
       if (message.op === 'control') return { controlling: true };
-      if (message.op === 'clipboardSync' && message.enabled && !finish)
-        await new Promise<void>((resolve) => {
-          finish = resolve;
-        });
       return { enabled: message.enabled };
     });
     const connection = new RemoteViewerConnection({
       owner: () => 'owner',
       request,
-      focused: () => focused,
+      focused,
       readClipboard: () => '',
       writeClipboard: () => {},
       preferences: () => ({ ...DEFAULT_VIEWER_PREFERENCES, clipboardSync: true }),
       clipboard: { stop, version: async () => '1', read: async () => '', write: async () => '1' },
     });
-    try {
+    const enables = () =>
+      request.mock.calls.filter(([, m]) => m.op === 'clipboardSync').map(([, m]) => m.enabled);
+    const control = async () => {
       connection.bind({ deviceId: 'target', name: 'Target' });
       connection.setActive(true);
       const generation = connection.generation;
       await connection.request(generation, { op: 'capabilities' });
       await connection.request(generation, { op: 'start', displayId: '1' });
       await connection.request(generation, { op: 'control', lease: 'lease', enabled: true });
-      const pending = connection.safety(generation);
-      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
-      focused = false;
-      const paused = connection.focusChanged();
-      expect(stop).toHaveBeenCalledOnce();
-      finish();
-      await Promise.all([pending, paused]);
-      expect(
-        request.mock.calls.filter(([, m]) => m.op === 'clipboardSync').map(([, m]) => m.enabled),
-      ).toEqual([true, false]);
-      expect(tick).not.toHaveBeenCalled();
-      focused = true;
+      return generation;
+    };
+    return { connection, request, enables, control, stop };
+  }
+  it('keeps the computer sync on across focus changes: one last pass on blur, an immediate one on focus', async () => {
+    let focused = true;
+    const tick = vi.spyOn(ClipboardSync.prototype, 'tick').mockResolvedValue(undefined);
+    const { connection, enables, control, stop } = syncFixture(() => focused);
+    try {
+      const generation = await control();
       await connection.safety(generation);
       expect(tick).toHaveBeenCalledOnce();
+      // Leaving: the computer's latest copy still comes over, then local reads stop.
+      focused = false;
+      await connection.focusChanged();
+      expect(tick).toHaveBeenCalledTimes(2);
+      expect(stop).toHaveBeenCalledOnce();
+      // Unfocused polls neither read the clipboard nor switch the computer's sync off.
+      await connection.safety(generation);
+      expect(tick).toHaveBeenCalledTimes(2);
+      expect(enables()).toEqual([true]);
+      // Back in front: sync at once instead of at the next poll, with no re-enable churn.
+      focused = true;
+      await connection.focusChanged();
+      expect(tick).toHaveBeenCalledTimes(3);
+      expect(enables()).toEqual([true]);
       connection.deactivate();
       expect(stop).toHaveBeenCalledTimes(2);
+    } finally {
+      tick.mockRestore();
+    }
+  });
+  it('a shortcut sync runs a fresh pass once the in-flight one settles', async () => {
+    let finish!: () => void;
+    const tick = vi
+      .spyOn(ClipboardSync.prototype, 'tick')
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const { connection, control } = syncFixture(() => true);
+    try {
+      const generation = await control();
+      const pending = connection.safety(generation);
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      let synced = false;
+      const sync = connection.syncClipboard(generation).then(() => {
+        synced = true;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(synced).toBe(false);
+      expect(tick).toHaveBeenCalledOnce();
+      finish();
+      await Promise.all([pending, sync]);
+      expect(tick).toHaveBeenCalledTimes(2);
+      await expect(connection.syncClipboard(generation + 1)).rejects.toThrow('DESKTOP_STOPPED');
     } finally {
       tick.mockRestore();
     }
