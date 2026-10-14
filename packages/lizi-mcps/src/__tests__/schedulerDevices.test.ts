@@ -172,7 +172,7 @@ describe("cindy_scheduler cross-device routing", () => {
     ]);
     expect(payload.groups[1]).toMatchObject({
       deviceName: "Dash Macbook Pro",
-      data: REMOTE,
+      data: [REMOTE[0], { ...REMOTE[1], targetSessionId: "mbp::sess-9" }],
     });
     // 离线电脑不发请求。
     expect(s.invoke.mock.calls.map(([deviceId]) => deviceId).sort()).toEqual([
@@ -293,6 +293,54 @@ describe("cindy_scheduler cross-device routing", () => {
         ["r1", { preRunHook: { command: "node new.mjs", timeoutMs: 5000 } }],
       ],
     ]);
+  });
+
+  it("addresses bound tasks on another computer with its device prefix both ways", async () => {
+    const s = setup();
+    // 读：绑定任务 id 带上设备前缀，可直接交给 send_to_session / get_chat_history。
+    const read = parse(
+      await s.registry.call("schedule_get", { id: "r2", device: "mbp" }),
+    );
+    expect(read.groups[0].data).toMatchObject({
+      id: "r2",
+      targetSessionId: "mbp::sess-9",
+    });
+    // 按带前缀的 id 也能筛到。
+    const found = parse(
+      await s.registry.call("schedule_list", {
+        device: "mbp",
+        query: "mbp::sess-9",
+      }),
+    );
+    expect(found.groups[0].data).toEqual([
+      { ...REMOTE[1], targetSessionId: "mbp::sess-9" },
+    ]);
+    // 写：同一台电脑的前缀去掉后再交给对方入口，写结果同样带前缀。
+    s.invoke.mockImplementationOnce(async () => ({
+      ok: true,
+      data: { id: "r2", targetSessionId: "sess-1" },
+    }));
+    const written = parse(
+      await s.registry.call("schedule_update", {
+        id: "r2",
+        device: "mbp",
+        targetSessionId: "mbp::sess-1",
+      }),
+    );
+    expect(s.invoke).toHaveBeenLastCalledWith("mbp", "update", [
+      "r2",
+      { targetSessionId: "sess-1" },
+    ]);
+    expect(written.data).toEqual({ id: "r2", targetSessionId: "mbp::sess-1" });
+    // 指向别的电脑的任务不能绑定。
+    const calls = s.invoke.mock.calls.length;
+    const other = await s.registry.call("schedule_update", {
+      id: "r2",
+      device: "mbp",
+      targetSessionId: "pc::sess-1",
+    });
+    expect(parse(other)).toMatchObject({ ok: false, code: "INVALID_PARAMS" });
+    expect(s.invoke.mock.calls.length).toBe(calls);
   });
 
   it("runs write tools on the named computer only", async () => {

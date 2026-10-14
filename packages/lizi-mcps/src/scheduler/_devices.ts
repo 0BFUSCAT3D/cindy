@@ -64,6 +64,29 @@ export const writeDeviceShape = {
   ),
 };
 
+/**
+ * 其它电脑返回的定时任务 / 运行记录里，绑定任务 id 只在那台电脑上有效。与历史查询同一约定，
+ * 加上 `deviceId::` 前缀，Agent 可直接交给 send_to_session / get_chat_history，
+ * 写回 schedule_update 时再去掉。只改这两个字段，其余原样透传。
+ */
+export function qualifyRemoteSessionIds(
+  data: unknown,
+  deviceId: string,
+): unknown {
+  const qualifyRow = (row: unknown): unknown => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+    const record = { ...(row as Record<string, unknown>) };
+    for (const key of ["targetSessionId", "sessionId"] as const) {
+      const value = record[key];
+      if (typeof value === "string" && value && !value.includes("::")) {
+        record[key] = `${deviceId}::${value}`;
+      }
+    }
+    return record;
+  };
+  return Array.isArray(data) ? data.map(qualifyRow) : qualifyRow(data);
+}
+
 export const isLocalDevice = (device: string | undefined): boolean =>
   !device || device === "local";
 
@@ -102,7 +125,9 @@ export async function runOnDevice(
   return buildJsonResult({
     ok: true,
     deviceId: device,
-    data: remote.map ? remote.map(result.data) : result.data,
+    data: (remote.map ?? ((data: unknown) => data))(
+      qualifyRemoteSessionIds(result.data, device!),
+    ),
   });
 }
 
@@ -183,7 +208,16 @@ export async function readOnDevices(
             : await deps
                 .remote!.invoke(target.deviceId, remote.op, remote.args)
                 .then(
-                  (r) => (r.ok ? { ok: true as const, data: map(r.data) } : r),
+                  (r) =>
+                    r.ok
+                      ? {
+                          ok: true as const,
+                          // 先加前缀再筛选：query 用 deviceId::sessionId 也能命中。
+                          data: map(
+                            qualifyRemoteSessionIds(r.data, target.deviceId),
+                          ),
+                        }
+                      : r,
                   () => ({
                     ok: false as const,
                     code: "REMOTE_UNAVAILABLE",
