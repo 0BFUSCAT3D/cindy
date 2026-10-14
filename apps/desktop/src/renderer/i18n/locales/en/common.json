@@ -5288,8 +5288,9 @@
           "descriptions": {
             "unsupported": "This protection is available on macOS only.",
             "disabled": "While Cindy is running, stop Codex from connecting to Work Louder keyboards. Cindy itself is not restricted.",
-            "recovery-required": "Protection stopped, but NODE_OPTIONS has not been safely restored. Retry the recovery before enabling it again.",
-            "error": "Cindy could not update Codex protection. Your previous NODE_OPTIONS value was preserved or queued for recovery."
+            "paused": "Protection is paused because it can affect other apps. If problems persist, quit older Cindy versions, then fully quit and reopen the affected apps.",
+            "recovery-required": "Protection is paused, but its old startup settings still need to be removed. Select “Restore environment”, then fully quit and reopen the affected apps.",
+            "error": "Cindy could not read or remove the old protection settings. Protection remains paused."
           },
           "restartRequired": "Quit and reopen Codex to apply"
         },
