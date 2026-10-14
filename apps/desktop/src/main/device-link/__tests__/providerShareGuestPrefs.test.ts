@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -34,6 +35,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await flushProviderShareGuestPrefs();
+  vi.restoreAllMocks();
   resetProviderShareGuestPrefsForTests();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -117,8 +119,101 @@ describe('provider share guest prefs', () => {
     await expect(setProviderShareCredentialConsent('write-fails', 'global', true)).rejects.toThrow();
     expect(isProviderShareCredentialConsentSkipped('write-fails')).toBe(false);
 
-    fs.rmSync(file(), { recursive: true, force: true });
+    fs.rmdirSync(file());
     await setProviderShareCredentialConsent('write-fails', 'global', true);
     expect(isProviderShareCredentialConsentSkipped('write-fails')).toBe(true);
+  });
+
+  it('serializes concurrent settings without losing another share or retaining a failed enable', async () => {
+    await Promise.all([
+      setProviderShareCredentialConsent('first', 'global', true),
+      setProviderShareCredentialConsent('second', 'cn', true),
+    ]);
+    expect(Object.keys(stored().shares).sort()).toEqual(['first', 'second']);
+
+    // 真正的 rename 失败，随后排队的写入仍应成功，不能把失败的启用一起保存。
+    const rename = fsp.rename;
+    const blocker = path.join(root, 'rename-blocker');
+    fs.mkdirSync(blocker);
+    fs.writeFileSync(path.join(blocker, 'keep'), 'not a preferences file');
+    vi.spyOn(fsp, 'rename').mockImplementationOnce((source) => rename(source, blocker));
+    const [failed, saved] = await Promise.allSettled([
+      setProviderShareCredentialConsent('failed', 'global', true),
+      setProviderShareCredentialConsent('third', 'global', true),
+    ]);
+    expect(failed.status).toBe('rejected');
+    expect(saved.status).toBe('fulfilled');
+    expect(isProviderShareCredentialConsentSkipped('failed')).toBe(false);
+    expect(Object.keys(stored().shares).sort()).toEqual(['first', 'second', 'third']);
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('failed')).toBe(false);
+    expect(isProviderShareCredentialConsentSkipped('third')).toBe(true);
+  });
+
+  it.each(['leave', 'prune', 'prune-other'] as const)('does not revive removed trust when %s runs during an in-flight save', async (cleanup) => {
+    await setProviderShareCredentialConsent('already-trusted', 'global', true);
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const rename = fsp.rename;
+    vi.spyOn(fsp, 'rename').mockImplementationOnce(async (...args) => {
+      entered();
+      await held;
+      return rename(...args);
+    });
+    const save = setProviderShareCredentialConsent('pending', 'global', true);
+    try {
+      await started;
+      expect(isProviderShareCredentialConsentSkipped('pending')).toBe(false);
+      if (cleanup === 'leave') {
+        forgetProviderShareGuestPrefs('pending');
+        forgetProviderShareGuestPrefs('already-trusted');
+      } else {
+        pruneProviderShareGuestPrefs(new Set(cleanup === 'prune-other' ? ['pending'] : []), ['global']);
+      }
+      expect(isProviderShareCredentialConsentSkipped('already-trusted')).toBe(false);
+      expect(isProviderShareCredentialConsentSkipped('pending')).toBe(false);
+    } finally {
+      release();
+      await save;
+      await flushProviderShareGuestPrefs();
+    }
+    expect(stored().shares).toEqual(cleanup === 'prune-other'
+      ? { pending: { region: 'global', skipCredentialConsent: true } }
+      : {});
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('pending')).toBe(cleanup === 'prune-other');
+    expect(isProviderShareCredentialConsentSkipped('already-trusted')).toBe(false);
+  });
+
+  it('keeps concurrent account writes isolated even when switching back before they finish', async () => {
+    const accountA = setProviderShareCredentialConsent('only-a', 'global', true);
+    owner = 'account-b';
+    const accountB = setProviderShareCredentialConsent('only-b', 'global', true);
+    owner = 'account-a';
+    const accountAAgain = setProviderShareCredentialConsent('also-a', 'cn', true);
+    await Promise.all([accountA, accountB, accountAAgain]);
+    expect(Object.keys(stored().shares).sort()).toEqual(['also-a', 'only-a']);
+    expect(isProviderShareCredentialConsentSkipped('only-a')).toBe(true);
+    expect(isProviderShareCredentialConsentSkipped('also-a')).toBe(true);
+    expect(isProviderShareCredentialConsentSkipped('only-b')).toBe(false);
+    owner = 'account-b';
+    expect(Object.keys(stored().shares)).toEqual(['only-b']);
+    expect(isProviderShareCredentialConsentSkipped('only-b')).toBe(true);
+    expect(isProviderShareCredentialConsentSkipped('only-a')).toBe(false);
+  });
+
+  it('retains the previous setting when disabling trust fails to save', async () => {
+    await setProviderShareCredentialConsent('trusted', 'global', true);
+    const rename = fsp.rename;
+    const blocker = path.join(root, 'disable-blocker');
+    fs.mkdirSync(blocker);
+    fs.writeFileSync(path.join(blocker, 'keep'), 'not a preferences file');
+    vi.spyOn(fsp, 'rename').mockImplementationOnce((source) => rename(source, blocker));
+    await expect(setProviderShareCredentialConsent('trusted', 'global', false)).rejects.toThrow();
+    expect(isProviderShareCredentialConsentSkipped('trusted')).toBe(true);
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('trusted')).toBe(true);
   });
 });

@@ -34,8 +34,24 @@ interface StoredPrefs {
 
 const SHARE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,121}$/;
 
+/** 未落盘的设置不参与授权；退出或权威名单清理可以取消它。 */
+interface PendingSetting {
+  shareId: string;
+  region: Region;
+  cancelled: boolean;
+}
+
+/** 同一账号的读、写共用一份已提交状态，在途写入期间切换账号也不另建旧快照。 */
+interface PrefsState {
+  file: string | null;
+  shares: Map<string, GuestPrefRecord>;
+  pending: Set<PendingSetting>;
+  writeCount: number;
+}
+
 let resolvePath: (() => string) | null = null;
-let cache: { file: string | null; shares: Map<string, GuestPrefRecord> } | null = null;
+let cache: PrefsState | null = null;
+const writing = new Map<string | null, PrefsState>();
 let writes: Promise<void> = Promise.resolve();
 
 /** 由本机接线在启动时提供文件位置(按当前账号解析)；传 null 回到只在内存里。 */
@@ -67,9 +83,11 @@ function parse(raw: string): Map<string, GuestPrefRecord> {
 }
 
 /** 当前账号的偏好；账号(文件位置)变了就重读。读不到按没有偏好处理。 */
-function load(): Map<string, GuestPrefRecord> {
+function load(): PrefsState {
   const file = currentFile();
-  if (cache && cache.file === file) return cache.shares;
+  if (cache && cache.file === file) return cache;
+  const pending = writing.get(file);
+  if (pending) return (cache = pending);
   let shares = new Map<string, GuestPrefRecord>();
   if (file) {
     try {
@@ -80,18 +98,27 @@ function load(): Map<string, GuestPrefRecord> {
       }
     }
   }
-  cache = { file, shares };
-  return shares;
+  cache = { file, shares, pending: new Set(), writeCount: 0 };
+  return cache;
 }
 
-function persist(file: string | null, shares: Map<string, GuestPrefRecord>): Promise<void> {
-  if (!file) return Promise.resolve();
-  const snapshot: StoredPrefs = { version: 1, shares: Object.fromEntries(shares) };
-  const write = writes.then(() => writeFile(file, snapshot));
+/** 整个读取、修改、落盘、发布串行执行，后一个设置只基于已成功保存的状态。 */
+function enqueueWrite(state: PrefsState, action: () => Promise<void>): Promise<void> {
+  state.writeCount += 1;
+  writing.set(state.file, state);
+  const write = writes.then(action).finally(() => {
+    state.writeCount -= 1;
+    if (state.writeCount === 0 && writing.get(state.file) === state) writing.delete(state.file);
+  });
   writes = write.catch((error) => {
     log.warn('guest prefs write failed', { error: error instanceof Error ? error.message : String(error) });
   });
   return write;
+}
+
+function persist(state: PrefsState, shares = state.shares): Promise<void> {
+  if (!state.file) return Promise.resolve();
+  return writeFile(state.file, { version: 1, shares: Object.fromEntries(shares) });
 }
 
 async function writeFile(file: string, snapshot: StoredPrefs): Promise<void> {
@@ -107,31 +134,36 @@ async function writeFile(file: string, snapshot: StoredPrefs): Promise<void> {
 
 /** 这个分享的任务里凭证类操作是否不再确认(默认 false)。 */
 export function isProviderShareCredentialConsentSkipped(shareId: string): boolean {
-  return load().get(shareId)?.skipCredentialConsent === true;
+  return load().shares.get(shareId)?.skipCredentialConsent === true;
 }
 
 /** 打开或关掉「信任 {分享者}」。关掉就是删掉记录(只存 override)。 */
 export async function setProviderShareCredentialConsent(shareId: string, region: Region, skip: boolean): Promise<void> {
   if (!SHARE_ID.test(shareId)) throw new Error('Invalid provider share id');
-  const file = currentFile();
-  const shares = new Map(load());
-  if (skip) shares.set(shareId, { region, skipCredentialConsent: true });
-  else shares.delete(shareId);
-  // Keep the previous cache until the durable write succeeds. A failed enable must not
-  // leave the running task path trusting a share that the UI has already reverted.
-  await persist(file, shares);
-  cache = { file, shares };
+  const state = load();
+  const setting: PendingSetting = { shareId, region, cancelled: false };
+  state.pending.add(setting);
+  const apply = (shares: Map<string, GuestPrefRecord>) => {
+    if (skip) shares.set(shareId, { region, skipCredentialConsent: true });
+    else shares.delete(shareId);
+  };
+  try {
+    await enqueueWrite(state, async () => {
+      if (setting.cancelled) return;
+      const next = new Map(state.shares);
+      apply(next);
+      await persist(state, next);
+      // 清理在等待磁盘时立即撤权；只发布本次设置，不能用旧快照复活其它已清理的分享。
+      if (!setting.cancelled) apply(state.shares);
+    });
+  } finally {
+    state.pending.delete(setting);
+  }
 }
 
 /** 受邀者退出了这个分享：忘掉它的偏好。 */
 export function forgetProviderShareGuestPrefs(shareId: string): void {
-  const file = currentFile();
-  const shares = load();
-  if (!shares.has(shareId)) return;
-  const next = new Map(shares);
-  next.delete(shareId);
-  cache = { file, shares: next };
-  void persist(file, next);
+  removePrefs((id) => id === shareId);
 }
 
 /**
@@ -140,15 +172,26 @@ export function forgetProviderShareGuestPrefs(shareId: string): void {
  */
 export function pruneProviderShareGuestPrefs(present: ReadonlySet<string>, confirmedRegions: readonly Region[]): void {
   if (confirmedRegions.length === 0) return;
-  const file = currentFile();
-  const shares = load();
-  const next = new Map(shares);
-  for (const [shareId, record] of shares) {
-    if (confirmedRegions.includes(record.region) && !present.has(shareId)) next.delete(shareId);
+  removePrefs((shareId, region) => confirmedRegions.includes(region) && !present.has(shareId));
+}
+
+/** 撤权立即生效，并排队保存最新已提交状态；失败也不恢复信任，错误由写队列记录。 */
+function removePrefs(matches: (shareId: string, region: Region) => boolean): void {
+  const state = load();
+  let changed = false;
+  for (const setting of state.pending) {
+    if (!setting.cancelled && matches(setting.shareId, setting.region)) {
+      setting.cancelled = true;
+      changed = true;
+    }
   }
-  if (next.size === shares.size) return;
-  cache = { file, shares: next };
-  void persist(file, next);
+  for (const [shareId, record] of state.shares) {
+    if (matches(shareId, record.region)) {
+      state.shares.delete(shareId);
+      changed = true;
+    }
+  }
+  if (changed) void enqueueWrite(state, () => persist(state)).catch(() => undefined);
 }
 
 /** 等最近一次写入落盘(测试与退出前用)。 */
@@ -160,5 +203,6 @@ export function flushProviderShareGuestPrefs(): Promise<void> {
 export function resetProviderShareGuestPrefsForTests(): void {
   resolvePath = null;
   cache = null;
+  writing.clear();
   writes = Promise.resolve();
 }
