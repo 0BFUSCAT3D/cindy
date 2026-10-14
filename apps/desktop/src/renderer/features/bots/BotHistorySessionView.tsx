@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Navigate, useParams } from 'react-router-dom';
+import { Navigate, useLocation, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import type { BotChatIdentity } from './BotSessionContentHeader';
-import { botHistoryIncludesSession } from './botSessionOwners';
+import { readIslandEntryRouteState, requestIslandEntryAlertDisposal } from './islandEntryAlert';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 
 function readBotChatIdentity(bot: unknown, botId: string): BotChatIdentity | null {
@@ -29,6 +29,11 @@ function BotHistorySessionGateView() {
   const { botId, sessionId } = useParams();
   const [allowed, setAllowed] = useState<boolean | null>(null);
   useBotIslandVisibleSession(allowed === true ? sessionId ?? null : null);
+  // 灵动岛点进来的那张卡,只在本门禁确认并显示了这段历史后才处置;被重定向走则保留。
+  const islandEntryId = readIslandEntryRouteState(useLocation().state);
+  useEffect(() => {
+    if (allowed === true && sessionId && islandEntryId) requestIslandEntryAlertDisposal(sessionId, islandEntryId);
+  }, [allowed, sessionId, islandEntryId]);
   /**
    * 归档的对话里,那个伙伴仍然是那个伙伴:气泡挂 TA 的头像,顶栏是 TA 的 lockup。
    * 这个视图本来就已经查过 `bots.history(botId)` 确认归属,顺手把身份取回来即可
@@ -47,7 +52,16 @@ function BotHistorySessionGateView() {
     void window.electronAPI.localDb.bots
       .history(botId)
       .then((rows) => {
-        if (!cancelled) setAllowed(botHistoryIncludesSession(rows, sessionId));
+        if (cancelled) return;
+        const found = rows.some(
+          (row) =>
+            !!row &&
+            typeof row === 'object' &&
+            'id' in row &&
+            typeof (row as { id?: unknown }).id === 'string' &&
+            (row as { id: string }).id === sessionId,
+        );
+        setAllowed(found);
       })
       .catch(() => {
         if (!cancelled) setAllowed(false);

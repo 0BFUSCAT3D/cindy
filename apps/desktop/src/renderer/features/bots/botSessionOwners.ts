@@ -33,10 +33,12 @@ export function findBotProfileForSession(
  * link) lands for a Bot-owned Session, and whether that target can dispose the
  * clicked Agent Island card itself.
  *
- * `consumesAlert` is true only for targets that render no disposal control for
- * this Session's error: a hidden group lane lives inside its group chat, a
- * history transcript is read-only, and a delegation run lands on the Bot task
- * page's unavailable gate. Unread errors are immune to passive visibility acks,
+ * Targets that render no disposal control for this Session's error dispose the
+ * clicked card instead: a hidden group lane lives inside its group chat and a
+ * delegation run lands on the Bot task page's unavailable gate (`consumesAlert`,
+ * once the route commits); a read-only history transcript re-checks ownership
+ * after it commits and may redirect away, so its gate disposes it once shown
+ * (`gateConsumesAlert`). Unread errors are immune to passive visibility acks,
  * so without this the island card could never be cleared. Main only honours it
  * for the card that was actually clicked, and only while that card is unchanged
  * (see AgentIslandService.consumeIslandEntryAlert). A live chat keeps its own
@@ -44,7 +46,10 @@ export function findBotProfileForSession(
  */
 export interface BotSessionEntryTarget {
   route: string;
+  /** The entry navigator disposes the clicked card once this route has committed. */
   consumesAlert: boolean;
+  /** The route's own ownership gate disposes it instead, given the click id as route state. */
+  gateConsumesAlert?: boolean;
 }
 
 /**
@@ -68,8 +73,10 @@ export function botRouteForOwnedSession(
       consumesAlert: true,
     };
   }
-  if (isBotHistoryProjection(projection)) {
-    return { route: `${botRoute}/history/${encodeURIComponent(sessionId)}`, consumesAlert: true };
+  if (projection?.kind === 'history' || projection?.role === 'history') {
+    // Its ownership gate re-checks after the route commits and may redirect away, so the
+    // gate itself disposes the card once it shows the transcript.
+    return { route: `${botRoute}/history/${encodeURIComponent(sessionId)}`, consumesAlert: false, gateConsumesAlert: true };
   }
   const canonicalSessionId = bot.sessions.find(
     (session) => session.role === 'canonical' || session.kind === 'chat',
@@ -83,28 +90,10 @@ export function botRouteForOwnedSession(
   };
 }
 
-function isBotHistoryProjection(projection: BotProfile['sessions'][number] | undefined): boolean {
-  return projection?.kind === 'history' || projection?.role === 'history';
-}
-
-/** The history route's ownership gate: `bots.history(botId)` rows must contain the Session. */
-export function botHistoryIncludesSession(rows: readonly unknown[], sessionId: string): boolean {
-  return rows.some(
-    (row) =>
-      !!row &&
-      typeof row === 'object' &&
-      'id' in row &&
-      typeof (row as { id?: unknown }).id === 'string' &&
-      (row as { id: string }).id === sessionId,
-  );
-}
-
 export interface BotSessionEntryRouteDeps {
   readProfiles: () => readonly BotProfile[];
   /** Loads the current owner's profiles; `refresh` re-reads an already loaded projection. */
   loadProfiles: (refresh: boolean) => Promise<readonly BotProfile[]>;
-  /** The same `bots.history(botId)` read the history route gates on. */
-  loadHistory: (botId: string) => Promise<readonly unknown[]>;
 }
 
 /**
@@ -120,25 +109,15 @@ export async function resolveBotRouteForSessionEntry(
   deps: BotSessionEntryRouteDeps,
 ): Promise<BotSessionEntryTarget | null> {
   const current = deps.readProfiles();
-  const profiles = findBotProfileForSession(current, sessionId)
-    ? current
-    : await deps.loadProfiles(true).catch(() => []);
-  const target = botRouteForOwnedSession(profiles, sessionId);
-  const bot = findBotProfileForSession(profiles, sessionId);
-  if (!target?.consumesAlert || !bot) return target;
-  if (!isBotHistoryProjection(bot.sessions.find((session) => session.id === sessionId))) return target;
-  // The history route re-checks ownership after it commits and redirects away when the
-  // projection was stale or the read fails; only a target that gate will show may dispose.
-  const shown = await deps.loadHistory(bot.id).then(
-    (rows) => botHistoryIncludesSession(rows, sessionId),
-    () => false,
-  );
-  return shown ? target : { ...target, consumesAlert: false };
+  if (findBotProfileForSession(current, sessionId)) return botRouteForOwnedSession(current, sessionId);
+  const profiles = await deps.loadProfiles(true).catch(() => []);
+  return botRouteForOwnedSession(profiles, sessionId);
 }
 
 export interface SessionEntryNavigatorDeps {
   resolveBotRoute: (sessionId: string) => Promise<BotSessionEntryTarget | null>;
-  openBotRoute: (route: string) => void;
+  /** `islandEntryId` is handed to a route whose gate disposes the card (gateConsumesAlert). */
+  openBotRoute: (route: string, islandEntryId?: string) => void;
   /** Asks main to dispose the card of this island click (see BotSessionEntryTarget). */
   consumeAlert: (sessionId: string, islandEntryId: string) => void;
   /** `isLatest` lets the ordinary path drop its own late async route result too. */
@@ -184,15 +163,16 @@ export function createSessionEntryNavigator(
         return;
       }
       // Navigation keeps its existing late-resolution behaviour; only disposal is forfeited.
-      if (target.consumesAlert && islandEntryId && commitCount === commitsAtOpen) {
+      const disposalId = islandEntryId && commitCount === commitsAtOpen ? islandEntryId : undefined;
+      if (target.consumesAlert && disposalId) {
         if (committedPath === target.route) {
-          deps.consumeAlert(sessionId, islandEntryId);
+          deps.consumeAlert(sessionId, disposalId);
         } else {
-          pending = { entry, sessionId, islandEntryId, route: target.route };
+          pending = { entry, sessionId, islandEntryId: disposalId, route: target.route };
         }
       }
       try {
-        deps.openBotRoute(target.route);
+        deps.openBotRoute(target.route, target.gateConsumesAlert ? disposalId : undefined);
       } catch (error) {
         if (pending?.entry === entry) pending = null;
         throw error;

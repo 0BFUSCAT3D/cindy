@@ -108,6 +108,7 @@ import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
 import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
 import { createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
 import { useSessionEntryLocationCommits } from '@/features/bots/useSessionEntryLocationCommits';
+import { islandEntryRouteState, requestIslandEntryAlertDisposal } from '@/features/bots/islandEntryAlert';
 import { requestProviderShareJoin } from '@/features/provider-share/joinIntent';
 import { ProviderShareGlobalHost } from '@/features/provider-share/ProviderShareGlobalHost';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
@@ -554,16 +555,21 @@ export function MainLayout() {
     resolveBotRoute: (sessionId) => resolveBotRouteForSessionEntry(sessionId, {
       readProfiles: getBotProfiles,
       loadProfiles: ensureBotProfilesLoaded,
-      loadHistory: (botId) => window.electronAPI.localDb.bots.history(botId),
     }),
-    openBotRoute: (route) => {
-      if (currentPathRef.current !== route) sessionEntryDepsRef.current.navigate(route);
+    openBotRoute: (route, islandEntryId) => {
+      // 只读历史由自己的归属门禁在显示后处置被点的卡:点击编号随路由状态交过去,已在该页也要重新交一次。
+      if (islandEntryId) {
+        sessionEntryDepsRef.current.navigate(route, {
+          replace: currentPathRef.current === route,
+          state: islandEntryRouteState(islandEntryId),
+        });
+      } else if (currentPathRef.current !== route) {
+        sessionEntryDepsRef.current.navigate(route);
+      }
     },
-    // 群专线 / 只读历史 / 不可用的委派任务没有可处置报错的横幅:目标地址提交后请 main
+    // 群专线 / 不可用的委派任务没有可处置报错的横幅:目标地址提交后请 main
     // 处置这次点击的那张卡(main 只认最近一次点击与当时的卡片身份,见 BotSessionEntryTarget)。
-    consumeAlert: (sessionId, islandEntryId) => {
-      void window.electronAPI.agentIsland?.consumeEntryAlert?.(sessionId, islandEntryId).catch(() => undefined);
-    },
+    consumeAlert: requestIslandEntryAlertDisposal,
     openOrdinary: (sessionId, messageClientId, isLatest) =>
       sessionEntryDepsRef.current.navigateToOrdinarySession(sessionId, messageClientId, isLatest),
   }));

@@ -4,10 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   params: { botId: 'bot-a', sessionId: 'chat-a' },
+  location: { state: null as unknown },
   supported: true,
 }));
 vi.mock('react-router-dom', () => ({
   useParams: () => mocks.params,
+  useLocation: () => mocks.location,
   useNavigate: () => vi.fn(),
   Navigate: () => null,
 }));
@@ -35,6 +37,7 @@ const profile = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.params = { botId: 'bot-a', sessionId: 'chat-a' };
+  mocks.location = { state: null };
   mocks.supported = true;
   vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   get.mockResolvedValue(profile);
@@ -145,6 +148,52 @@ describe('unavailable Bot task page never disposes island alerts by itself', () 
     get.mockRejectedValue(new Error('db busy'));
     const failed = render(<BotSessionView />);
     await waitFor(() => expect(failed.getByText('bots.sessionLoadFailedTitle')).toBeTruthy());
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
+  });
+});
+
+// 只读历史的提醒由它自己的归属门禁处置:灵动岛入口把点击编号放进路由状态,门禁确认并显示
+// 这段历史后才请 main 处置;门禁不放行(会被重定向走)或没有点击编号都不处置。
+describe('history ownership gate disposes the clicked island card', () => {
+  beforeEach(() => {
+    mocks.params = { botId: 'bot-a', sessionId: 'old-a' };
+    mocks.location = { state: { islandEntryId: '42' } };
+  });
+
+  it('disposes only once its gate has shown the transcript', async () => {
+    let resolveGate!: (rows: unknown[]) => void;
+    history.mockReturnValueOnce(new Promise((resolve) => { resolveGate = resolve; }));
+    const view = render(<BotHistorySessionView />);
+    await act(async () => {});
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
+    await act(async () => resolveGate([{ id: 'old-a' }]));
+    expect(view.getByTestId('chat')).toBeTruthy();
+    expect(consumeEntryAlert).toHaveBeenCalledExactlyOnceWith('old-a', '42');
+    // Re-rendering the same entry does not ask again; a new click on the open page does.
+    view.rerender(<BotHistorySessionView />);
+    mocks.location = { state: { islandEntryId: '43' } };
+    view.rerender(<BotHistorySessionView />);
+    expect(consumeEntryAlert).toHaveBeenLastCalledWith('old-a', '43');
+    expect(consumeEntryAlert).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the card when its gate redirects away (record gone or read failed)', async () => {
+    history.mockResolvedValueOnce([{ id: 'other' }]);
+    const gone = render(<BotHistorySessionView />);
+    await act(async () => {});
+    expect(gone.queryByTestId('chat')).toBeNull();
+    gone.unmount();
+    history.mockRejectedValueOnce(new Error('db busy'));
+    render(<BotHistorySessionView />);
+    await act(async () => {});
+    expect(consumeEntryAlert).not.toHaveBeenCalled();
+  });
+
+  it('never disposes without an island click id', async () => {
+    mocks.location = { state: null };
+    history.mockResolvedValueOnce([{ id: 'old-a' }]);
+    const view = render(<BotHistorySessionView />);
+    await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
     expect(consumeEntryAlert).not.toHaveBeenCalled();
   });
 });

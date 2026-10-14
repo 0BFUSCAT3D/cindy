@@ -91,10 +91,11 @@ describe('伙伴归属表', () => {
 
   // 伙伴任务页只挂活的主对话;其它角色送过去只会落到「这个伙伴任务已不可用」,
   // 那里没有能处置报错的横幅,灵动岛上的报错卡就永远消不掉。
-  it('历史任务走只读历史路由，点击即处置它的提醒', () => {
+  it('历史任务走只读历史路由，由历史页自己的归属门禁处置它的提醒', () => {
     expect(botRouteForOwnedSession([profile()], 's-old')).toEqual({
       route: '/bots/bot-a/history/s-old',
-      consumesAlert: true,
+      consumesAlert: false,
+      gateConsumesAlert: true,
     });
   });
 
@@ -133,17 +134,13 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
   function deps(over: {
     current?: BotProfile[];
     loaded?: BotProfile[];
-    history?: () => Promise<unknown[]>;
   }) {
     const loadProfiles = vi.fn<(refresh: boolean) => Promise<BotProfile[]>>(async () => over.loaded ?? []);
-    const loadHistory = vi.fn<(botId: string) => Promise<unknown[]>>(over.history ?? (async () => [{ id: 's-old' }]));
     return {
       loadProfiles,
-      loadHistory,
       deps: {
         readProfiles: () => over.current ?? [],
         loadProfiles,
-        loadHistory,
       },
     };
   }
@@ -158,32 +155,13 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
   });
 
   it('启动后从未进过伙伴页时先加载投影，再回伙伴页', async () => {
-    const { deps: d, loadProfiles, loadHistory } = deps({ loaded: [profile()] });
+    const { deps: d, loadProfiles } = deps({ loaded: [profile()] });
     await expect(resolveBotRouteForSessionEntry('s-old', d)).resolves.toEqual({
       route: '/bots/bot-a/history/s-old',
-      consumesAlert: true,
+      consumesAlert: false,
+      gateConsumesAlert: true,
     });
     expect(loadProfiles).toHaveBeenCalledWith(true);
-    expect(loadHistory).toHaveBeenCalledExactlyOnceWith('bot-a');
-  });
-
-  it('历史页归属门禁不会放行的目标（投影过期 / 读取失败）照常导航但不处置', async () => {
-    const gone = deps({ current: [profile()], history: async () => [{ id: 's-other' }] });
-    await expect(resolveBotRouteForSessionEntry('s-old', gone.deps)).resolves.toEqual({
-      route: '/bots/bot-a/history/s-old',
-      consumesAlert: false,
-    });
-    const failed = deps({ current: [profile()], history: async () => { throw new Error('db busy'); } });
-    await expect(resolveBotRouteForSessionEntry('s-old', failed.deps)).resolves.toEqual({
-      route: '/bots/bot-a/history/s-old',
-      consumesAlert: false,
-    });
-  });
-
-  it('只有历史目标才读历史归属', async () => {
-    const { deps: d, loadHistory } = deps({ current: [profile()] });
-    await resolveBotRouteForSessionEntry('s-main', d);
-    expect(loadHistory).not.toHaveBeenCalled();
   });
 
   it('投影已加载后新委派出去的任务（行上仍是 desktop）也会重读投影，回到接手伙伴', async () => {
@@ -243,8 +221,9 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       's-lane': { route: '/bots/groups/g-1', consumesAlert: true },
       's-delegated': { route: '/bots/bot-a/session/s-delegated', consumesAlert: true },
       's-main': { route: '/bots/bot-a', consumesAlert: false },
+      's-old': { route: '/bots/bot-a/history/s-old', consumesAlert: false, gateConsumesAlert: true },
     };
-    function setup(over: { openBotRoute?: (route: string) => void } = {}) {
+    function setup(over: { openBotRoute?: (route: string, islandEntryId?: string) => void } = {}) {
       const openBotRoute = vi.fn(over.openBotRoute ?? (() => undefined));
       const consumeAlert = vi.fn();
       const open = createSessionEntryNavigator({
@@ -265,7 +244,7 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       open.locationCommitted('/cc-agent/new');
       open('s-lane', undefined, 'entry-1');
       await settle();
-      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1');
+      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1', undefined);
       expect(consumeAlert).not.toHaveBeenCalled();
       open.locationCommitted('/bots/groups/g-1');
       expect(consumeAlert).toHaveBeenCalledTimes(1);
@@ -298,6 +277,27 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       open.locationCommitted('/bots/groups/g-1');
       await settle();
       open.locationCommitted('/bots/bot-a');
+      expect(consumeAlert).not.toHaveBeenCalled();
+    });
+
+    it('历史目标把点击编号交给历史页的归属门禁，导航器自己不处置', async () => {
+      const { open, openBotRoute, consumeAlert } = setup();
+      open.locationCommitted('/cc-agent/new');
+      open('s-old', undefined, 'entry-6');
+      await settle();
+      expect(openBotRoute).toHaveBeenLastCalledWith('/bots/bot-a/history/s-old', 'entry-6');
+      open.locationCommitted('/bots/bot-a/history/s-old');
+      // Already open: the click id is handed over again rather than consumed here.
+      open('s-old', undefined, 'entry-7');
+      await settle();
+      expect(openBotRoute).toHaveBeenLastCalledWith('/bots/bot-a/history/s-old', 'entry-7');
+      // Entries without a click id, and other targets, hand nothing over.
+      open('s-old');
+      await settle();
+      expect(openBotRoute).toHaveBeenLastCalledWith('/bots/bot-a/history/s-old', undefined);
+      open('s-lane', undefined, 'entry-8');
+      await settle();
+      expect(openBotRoute).toHaveBeenLastCalledWith('/bots/groups/g-1', undefined);
       expect(consumeAlert).not.toHaveBeenCalled();
     });
 
@@ -337,7 +337,7 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       open.locationCommitted('/elsewhere');
       resolveTarget(targets['s-lane']!);
       await settle();
-      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1');
+      expect(openBotRoute).toHaveBeenCalledWith('/bots/groups/g-1', undefined);
       open.locationCommitted('/bots/groups/g-1');
       expect(consumeAlert).not.toHaveBeenCalled();
 
@@ -349,6 +349,13 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
       await settle();
       open.locationCommitted('/bots/groups/g-1');
       expect(consumeAlert).not.toHaveBeenCalled();
+
+      // A history target does not get the click id handed to its gate either.
+      open('s-old', undefined, 'entry-9');
+      open.locationCommitted('/elsewhere');
+      resolveTarget(targets['s-old']!);
+      await settle();
+      expect(openBotRoute).toHaveBeenLastCalledWith('/bots/bot-a/history/s-old', undefined);
     });
 
     it('导航抛错时丢弃待处置，之后到达同一地址也不处置', async () => {
@@ -374,7 +381,6 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     const d = {
       readProfiles: () => [],
       loadProfiles: vi.fn(async () => { throw new Error('not ready'); }),
-      loadHistory: vi.fn(async () => []),
     };
     await expect(resolveBotRouteForSessionEntry('s-main', d)).resolves.toBeNull();
   });
