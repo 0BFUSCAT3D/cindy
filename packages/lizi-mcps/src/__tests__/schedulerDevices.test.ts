@@ -293,6 +293,16 @@ describe("cindy_scheduler cross-device routing", () => {
         ["r1", { preRunHook: { command: "node new.mjs", timeoutMs: 5000 } }],
       ],
     ]);
+    // null = 不限时：对方入口的表达是不带 timeoutMs 的整对象，同样一次写入。
+    s.invoke.mockClear();
+    await s.registry.call("schedule_update", {
+      id: "r1",
+      device: "mbp",
+      preRunHook: { command: "node new.mjs", timeoutMs: null },
+    });
+    expect(s.invoke.mock.calls).toEqual([
+      ["mbp", "update", ["r1", { preRunHook: { command: "node new.mjs" } }]],
+    ]);
   });
 
   it("addresses bound tasks on another computer with its device prefix both ways", async () => {
@@ -416,7 +426,6 @@ describe("cindy_scheduler cross-device routing", () => {
     for (const patch of [
       { bindToCurrentSession: true },
       { model: null },
-      { preRunHook: { command: "node x.mjs", timeoutMs: null } },
       { cronExpr: "not a cron" },
     ]) {
       const result = await s.registry.call("schedule_update", {
