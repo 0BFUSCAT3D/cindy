@@ -62,7 +62,7 @@ import {
   type ChatFileFetchArgs,
   buildDevicePathUrl,
 } from './chat-file.js';
-import { createFileTransferProgressReporter } from './transfer-progress.js';
+import { createFileTransferProgressReporter, fileTransferRequestId } from './transfer-progress.js';
 import { downloadChatEntry, type ChatDownloadDeps } from './chat-download.js';
 import { isTransientDeviceExportStatusError } from './device-export-status-error.js';
 import { makeSshChunkExecutor } from './ssh-media.js';
@@ -368,14 +368,16 @@ async function fetchRemoteBigFile(
 /** 进行中的聊天文件取回 / 下载:发起窗口 + requestId → 中止器(供提示条上的「取消」)。 */
 const chatTransfers = new Map<string, AbortController>();
 
-function chatTransferKey(wc: WebContents, requestId: string): string {
-  return `${wc.id}:${requestId}`;
+/** requestId 与进度事件同一判据(非空且 ≤64 字符),不合格时不登记、不可取消。 */
+function chatTransferKey(wc: WebContents, requestId: unknown): string | null {
+  const id = fileTransferRequestId(requestId);
+  return id ? `${wc.id}:${id}` : null;
 }
 
 /** 用户取消、发起窗口关闭或渲染进程崩溃时中止:停止轮询 / 关闭 SSH 流,不再落盘。 */
 function beginChatTransfer(wc: WebContents, requestId: unknown) {
   const abort = new AbortController();
-  const key = typeof requestId === 'string' && requestId ? chatTransferKey(wc, requestId) : null;
+  const key = chatTransferKey(wc, requestId);
   if (key) chatTransfers.set(key, abort);
   const onGone = () => abort.abort();
   wc.once('destroyed', onGone);
@@ -626,8 +628,8 @@ export function registerFileBrowserIpc(): void {
   ipcMain.handle(FILE_BROWSER_INVOKE.CHAT_FILE_CANCEL, (event, requestId: unknown) => {
     // 会中止主进程里的传输:与下载同一来源判据,只接受 Cindy 自有页面发起。
     assertTrustedAppRendererEvent(event);
-    if (typeof requestId !== 'string') return;
-    chatTransfers.get(chatTransferKey(event.sender, requestId))?.abort();
+    const key = chatTransferKey(event.sender, requestId);
+    if (key) chatTransfers.get(key)?.abort();
   });
 
   // chip 点亮预检:远端精确 stat,verdict 见 statChatFile 注释。查询型接口,
