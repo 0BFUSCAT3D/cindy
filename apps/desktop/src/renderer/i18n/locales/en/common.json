@@ -379,6 +379,12 @@
         "cancel": "Cancel"
       },
       "detailNote": "The agent runs on {{name}}'s computer or another computer {{name}} arranges, using their sign-in and quota. Chat content and files the agent reads pass through {{name}}'s computer and are saved on the computer that runs the session. To use it, choose it in the model list when you start a task.",
+      "credentialConsent": {
+        "label": "Trust {{name}}",
+        "description": "When on, tasks that use this share no longer ask before reading keys or other sensitive information, just like your own providers. Applies to this computer only.",
+        "ariaLabel": "Trust {{name}} ({{provider}})",
+        "writeFailed": "Could not save the trust setting"
+      },
       "modelsTitle": "Available Models",
       "modelsLoading": "Loading the models they shared…",
       "modelsRefused": "The owner’s computer isn’t allowing this share right now. It may not allow remote control, “Allow remote use” may be off for this provider, or their Cindy may still be starting. Try again shortly, or ask them to check both settings.",
@@ -428,6 +434,10 @@
     }
   },
   "providerGroup": {
+    "management": {
+      "note": "Managing the provider group on {{device}}. Changes are saved on that computer; keep it online.",
+      "unsupported": "The Cindy version on the computer with this group does not support remote management yet. Update Cindy on that computer first."
+    },
     "page": {
       "title": "{{provider}} · Remote & Sharing",
       "shareTitle": "Sharing"
@@ -3214,7 +3224,7 @@
         "rowLabelGroup": "{{provider}} · {{device}} · Provider Group",
         "groupBadge_one": "Provider Group · {{count}} computer",
         "groupBadge_other": "Provider Group · {{count}} computers",
-        "groupNote": "{{device}} made this provider a provider group. When you start a task with it, {{device}} assigns the task to one of the computers below by its group strategy, and moves it to another one if that computer runs into a problem. To change the group, go to Settings → Providers on {{device}}.",
+        "groupNote": "{{device}} made this provider a provider group. When you start a task with it, {{device}} assigns the task to one of the computers below by its group strategy, and moves it to another one if that computer runs into a problem. While {{device}} is online, use Remote & Sharing here to manage the group and its shares.",
         "groupMembersTitle": "Computers in the Group",
         "groupMembersFailed": "Couldn’t get the status of the computers in the group right now."
       },

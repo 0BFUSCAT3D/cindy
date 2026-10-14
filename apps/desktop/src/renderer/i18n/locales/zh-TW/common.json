@@ -377,6 +377,12 @@
         "cancel": "取消"
       },
       "detailNote": "Agent 在 {{name}} 的電腦或 {{name}} 安排的其他電腦上執行，使用的是對方的登入和配額。對話內容和 Agent 讀取的檔案內容會經過 {{name}} 的電腦，並儲存在實際執行任務的那台電腦上。新建任務時在模型列表裡選擇它就能用。",
+      "credentialConsent": {
+        "label": "信任 {{name}}",
+        "description": "開啟後，用這個分享的任務讀取金鑰等敏感資訊時不再跳出確認，和用自己的供應商一樣。只對這台電腦生效。",
+        "ariaLabel": "信任 {{name}}（{{provider}}）",
+        "writeFailed": "未能儲存信任設定"
+      },
       "modelsTitle": "可用的模型",
       "modelsLoading": "正在讀取對方開放的模型…",
       "modelsRefused": "對方電腦暫時不讓讀取這個分享：可能沒有允許遠端控制、關了這個供應商的「允許遠端呼叫」，也可能對方的 Cindy 剛啟動、還沒準備好。請稍後重試，或請對方檢查這兩項設定。",
@@ -426,6 +432,10 @@
     }
   },
   "providerGroup": {
+    "management": {
+      "note": "正在管理 {{device}} 上的供應商組。修改會儲存到那台電腦，請保持它在線。",
+      "unsupported": "建立組的電腦上的 Cindy 版本暫不支援遠端管理。請先更新那台電腦上的 Cindy。"
+    },
     "page": {
       "title": "{{provider}} · 遠端與分享",
       "shareTitle": "分享"
@@ -3189,7 +3199,7 @@
         "modelsEmpty": "這個供應商在那台電腦上還沒有開放可用的模型。",
         "rowLabelGroup": "{{provider}} · {{device}} · 供應商組",
         "groupBadge_other": "供應商組 · {{count}} 台電腦",
-        "groupNote": "{{device}} 把這個供應商建成了供應商組。在模型列表裡選它新建任務時，{{device}} 會依組策略把任務分給下面的一台電腦執行，那台出問題時自動換一台繼續。要修改組，請到 {{device}} 的「設定 → 模型供應商」。",
+        "groupNote": "{{device}} 把這個供應商建成了供應商組。在模型列表裡選它新建任務時，{{device}} 會依組策略把任務分給下面的一台電腦執行，那台出問題時自動換一台繼續。{{device}} 在線時，你可以從這裡的「遠端與分享」管理這個組和分享。",
         "groupMembersTitle": "組內電腦",
         "groupMembersFailed": "暫時讀不到組內電腦的狀態。"
       },

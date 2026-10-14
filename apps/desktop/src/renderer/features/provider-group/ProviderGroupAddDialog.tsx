@@ -20,6 +20,7 @@ import {
 import { ProviderSharePasteDialog } from '@/features/provider-share/ProviderSharePasteDialog';
 import { providerShareComputerName } from '@/features/provider-share/providerShareNames';
 import { cn } from '@/lib/utils';
+import { providerGroupManagementCommand } from './providerManagement';
 
 import {
   PROVIDER_GROUP_DEFAULT_LIMIT,
@@ -36,12 +37,14 @@ export function ProviderGroupAddDialog({
   providerId,
   providerName,
   config,
+  deviceId,
   onSave,
   onClose,
 }: {
   providerId: string;
   providerName: string;
   config: ProviderGroupConfig | null;
+  deviceId?: string;
   /** 保存成功返回 true；失败时调用方已提示，弹窗保持打开。 */
   onSave: (config: ProviderGroupConfig, success: string) => Promise<boolean>;
   onClose: () => void;
@@ -56,8 +59,7 @@ export function ProviderGroupAddDialog({
 
   useEffect(() => {
     let alive = true;
-    window.electronAPI.providerGroup
-      .command({ action: 'candidates', providerId })
+    providerGroupManagementCommand({ action: 'candidates', providerId }, deviceId)
       .then((list) => {
         if (alive) setCandidates(list);
       })
@@ -67,7 +69,7 @@ export function ProviderGroupAddDialog({
     return () => {
       alive = false;
     };
-  }, [providerId]);
+  }, [providerId, deviceId]);
 
   const selectable = useMemo(() => (candidates ?? []).filter((c) => !c.blocked), [candidates]);
 

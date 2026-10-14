@@ -111,6 +111,10 @@ export interface ProviderShareOwnerState {
   /** 分享服务可用(已登录、设备互联已连上本区域服务)。 */
   ready: boolean;
   shares: ProviderShareOwnedView[];
+  /** 本机分享里、链接由同账号另一台电脑生成的申请：由那台弹审批窗，本机只在管理页与提示点显示。 */
+  quietRequestIds?: string[];
+  /** 本机为同账号另一台电脑上的分享生成链接后收到的申请：由本机弹审批窗，处理转交那台电脑。 */
+  watchedRequests?: ProviderShareRequestedEvent[];
 }
 
 export interface ProviderShareLinkCreated {
@@ -121,6 +125,10 @@ export interface ProviderShareLinkCreated {
 export interface ProviderShareRequestedEvent {
   request: ProviderShareRequestItem;
   share: { shareId: string; providerId: string; providerLabel: string };
+  /** 分享在同账号另一台电脑上(本机生成了链接，由本机弹窗)；本机的分享不带。 */
+  hostDeviceId?: string;
+  /** true = 链接由同账号另一台电脑生成，由那台弹窗，本机不弹。 */
+  quiet?: boolean;
 }
 
 export interface ProviderShareSettledEvent {
@@ -141,7 +149,15 @@ export type ProviderShareCommand =
   | { action: 'send-request'; link: string }
   | { action: 'get-request'; requestId: string }
   | { action: 'withdraw'; requestId: string }
-  | { action: 'leave'; memberId: string };
+  | { action: 'leave'; memberId: string }
+  /** 受邀者：这个分享的任务里凭证类操作是否不再在本机确认(provider-sharing.md §9 第 7 条)。 */
+  | { action: 'get-credential-consent'; shareId: string }
+  | { action: 'set-credential-consent'; shareId: string; skip: boolean };
+
+/** 受邀者对一个分享的本机偏好：true = 凭证类操作不再确认。只对这台电脑生效。 */
+export interface ProviderShareCredentialConsentView {
+  skip: boolean;
+}
 
 export interface ProviderShareCommandResult {
   owned: ProviderShareOwnerState;
@@ -157,6 +173,8 @@ export interface ProviderShareCommandResult {
   'get-request': ProviderShareRequestState;
   withdraw: { ok: true };
   leave: { ok: true };
+  'get-credential-consent': ProviderShareCredentialConsentView;
+  'set-credential-consent': ProviderShareCredentialConsentView;
 }
 
 /** 任务记录里「Agent 在某个分享者的电脑上」的前缀(见 main/device-link/providerShareGuest)。 */

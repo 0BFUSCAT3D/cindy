@@ -7,8 +7,12 @@
  *  - 有分享但没有待处理的事时每 60 秒拉一次(受邀者退出等变化)；
  *  - 不认识的受邀者连进来时按需立即拉一次(限频)。
  * 本机做的暂停、删除先改本机快照、立即撤权，不等下一次拉取。
+ *
+ * 审批弹窗跟着生成链接的电脑(provider-sharing.md §4.1)：同账号另一台电脑经管理为本机的分享生成链接后，
+ * 窗口期内的新申请在本机只进管理页与提示点；那台电脑在同一窗口期关注本机的分享，由它弹审批窗。
  */
 import {
+  PROVIDER_SHARE_LINK_TTL_MS,
   parseProviderSharePeer,
   type ProviderShareOwned,
   type ProviderShareRequestItem,
@@ -28,6 +32,11 @@ const SLOW_POLL_MS = 60_000;
 /** 生成链接后保持快速拉取的时长：链接 5 分钟有效，再留出申请到达的余量。 */
 const HOT_AFTER_LINK_MS = 6 * 60_000;
 const ON_DEMAND_MIN_INTERVAL_MS = 5_000;
+/**
+ * 另一台电脑生成链接后由它弹审批窗的窗口期：申请须在链接 5 分钟有效期内发出，再留出拉取的余量。
+ * 两侧用同一时长：窗口期内本机静默、那台弹；过了窗口期才发现的申请照旧由本机弹。
+ */
+export const PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS = PROVIDER_SHARE_LINK_TTL_MS + 2 * 60_000;
 
 export interface ProviderShareGuestAccess {
   shareId: string;
@@ -38,8 +47,12 @@ export interface ProviderShareGuestAccess {
 export interface ProviderShareHostEvents {
   /** 快照变化(管理页刷新)。 */
   changed(shares: readonly ProviderShareOwned[]): void;
-  /** 出现新的待审批申请(审批弹窗与系统通知)。 */
-  requested(request: ProviderShareRequestItem, share: ProviderShareOwned): void;
+  /**
+   * 出现新的待审批申请(审批弹窗与系统通知)。quiet = 链接由同账号另一台电脑生成，由那台弹窗，本机不弹。
+   */
+  requested(request: ProviderShareRequestItem, share: ProviderShareOwned, quiet: boolean): void;
+  /** 本机为同账号另一台电脑上的分享生成链接后，那条分享出现新申请：由本机弹审批窗。 */
+  watchedRequested(item: ProviderShareWatchedRequest): void;
   /** 成员不再 active(暂停、删除、退出)：结束它的任务、断开它的连接；purge 时清理本机数据。 */
   revoked(member: ProviderShareMemberRef, purge: boolean): void;
   /**
@@ -54,6 +67,19 @@ export interface ProviderShareMemberRef {
   memberId: string;
 }
 
+/** 同账号另一台电脑上的分享里、由本机负责弹窗的待审批申请。 */
+export interface ProviderShareWatchedRequest {
+  request: ProviderShareRequestItem;
+  share: { shareId: string; providerId: string; providerLabel: string };
+  hostDeviceId: string;
+}
+
+interface RemoteLinkWatch {
+  hostDeviceId: string;
+  providerId: string;
+  until: number;
+}
+
 interface Runtime {
   events: ProviderShareHostEvents;
   scope: string | null;
@@ -66,6 +92,15 @@ interface Runtime {
   knownRequests: Set<string>;
   reconciled: boolean;
   stopped: boolean;
+  /** 本机分享：供应商 → 另一台电脑生成的链接的窗口期截止时刻。 */
+  quietUntil: Map<string, number>;
+  /** 本机分享里由另一台电脑弹窗的申请。 */
+  quietRequests: Set<string>;
+  /** 本机为另一台电脑上的分享生成了链接，窗口期内关注那条分享。 */
+  watches: RemoteLinkWatch[];
+  /** 关注到、仍待审批的申请。 */
+  watched: Map<string, ProviderShareWatchedRequest>;
+  watchedSeen: Set<string>;
 }
 
 let runtime: Runtime | null = null;
@@ -88,7 +123,7 @@ function schedule(rt: Runtime): void {
   rt.timer = null;
   // 暂时不可用(账号边界切换中等)时照常排下一次，拉取本身会核对作用域；只有停掉运行时才断链。
   if (runtime !== rt || rt.stopped) return;
-  const pending = rt.shares.some((share) => share.requests.length > 0);
+  const pending = rt.shares.some((share) => share.requests.length > 0) || rt.watched.size > 0;
   const hot = Date.now() < rt.hotUntil || pending;
   if (!hot && rt.shares.length === 0 && rt.fetchedAt > 0) return;
   rt.timer = setTimeout(() => { void refreshProviderShareHost('poll'); }, hot ? FAST_POLL_MS : SLOW_POLL_MS);
@@ -108,14 +143,56 @@ function applySnapshot(rt: Runtime, next: ProviderShareOwned[]): void {
       else if (member.status === 'active' && after.status !== 'active') rt.events.revoked({ shareId: share.shareId, memberId: member.memberId }, false);
     }
   }
+  const now = Date.now();
+  const pendingIds = new Set<string>();
   for (const share of next) {
     for (const request of share.requests) {
+      pendingIds.add(request.requestId);
       if (rt.knownRequests.has(request.requestId)) continue;
       rt.knownRequests.add(request.requestId);
-      rt.events.requested(request, share);
+      const quiet = (rt.quietUntil.get(share.providerId) ?? 0) > now;
+      if (quiet) rt.quietRequests.add(request.requestId);
+      rt.events.requested(request, share, quiet);
     }
   }
+  for (const requestId of rt.quietRequests) {
+    if (!pendingIds.has(requestId)) rt.quietRequests.delete(requestId);
+  }
+  for (const [providerId, until] of rt.quietUntil) {
+    if (until <= now) rt.quietUntil.delete(providerId);
+  }
   rt.events.changed(next);
+}
+
+/**
+ * 同账号其他电脑上的分享：窗口期内关注的那条分享出现的申请由本机弹窗；已关注的申请从快照里消失
+ * (在任一台电脑上处理、撤回或过期)时移除。只用于弹窗，不进入本机快照，不影响受邀者准入。
+ */
+function applyWatched(rt: Runtime, others: readonly ProviderShareOwned[]): void {
+  const now = Date.now();
+  rt.watches = rt.watches.filter((watch) => watch.until > now);
+  const present = new Set<string>();
+  for (const share of others) {
+    for (const request of share.requests) present.add(request.requestId);
+  }
+  for (const requestId of rt.watched.keys()) {
+    if (!present.has(requestId)) rt.watched.delete(requestId);
+  }
+  for (const share of others) {
+    if (!rt.watches.some((watch) => watch.hostDeviceId === share.hostDeviceId && watch.providerId === share.providerId)) continue;
+    for (const request of share.requests) {
+      // 弹过一次的不再弹(本机处理后，处理前发出的那次拉取可能还带着它)。
+      if (rt.watchedSeen.has(request.requestId)) continue;
+      rt.watchedSeen.add(request.requestId);
+      const item: ProviderShareWatchedRequest = {
+        request,
+        share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
+        hostDeviceId: share.hostDeviceId,
+      };
+      rt.watched.set(request.requestId, item);
+      rt.events.watchedRequested(item);
+    }
+  }
 }
 
 export function startProviderShareHost(events: ProviderShareHostEvents): void {
@@ -132,6 +209,11 @@ export function startProviderShareHost(events: ProviderShareHostEvents): void {
     knownRequests: new Set(),
     reconciled: false,
     stopped: false,
+    quietUntil: new Map(),
+    quietRequests: new Set(),
+    watches: [],
+    watched: new Map(),
+    watchedSeen: new Set(),
   };
   runtime = rt;
   void refreshProviderShareHost('start');
@@ -155,6 +237,7 @@ export function refreshProviderShareHost(reason: string): Promise<void> {
       const shares = await providerShareApi.listOwned();
       if (!current(rt)) return;
       const self = getDeviceId();
+      applyWatched(rt, self ? shares.filter((share) => share.hostDeviceId !== self) : []);
       applySnapshot(rt, shares.filter((share) => !self || share.hostDeviceId === self));
       if (!rt.reconciled) {
         rt.reconciled = true;
@@ -181,6 +264,42 @@ export function markProviderShareHostActive(durationMs = HOT_AFTER_LINK_MS): voi
 
 export function getProviderShareHostSnapshot(): readonly ProviderShareOwned[] {
   return runtime?.shares ?? [];
+}
+
+/** 同账号另一台电脑经管理为本机的这个供应商生成了链接：窗口期内的新申请由那台弹窗。 */
+export function quietProviderShareRequests(providerId: string): void {
+  const rt = runtime;
+  if (!rt) return;
+  rt.quietUntil.set(providerId, Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
+}
+
+/** 本机自己生成了链接：本机的人在场，新申请恢复由本机弹窗。 */
+export function clearProviderShareRequestQuiet(providerId: string): void {
+  runtime?.quietUntil.delete(providerId);
+}
+
+/** 本机为另一台电脑上的分享生成了链接：窗口期内关注那条分享，新申请由本机弹窗。 */
+export function watchProviderShareRequests(hostDeviceId: string, providerId: string): void {
+  const rt = runtime;
+  if (!rt) return;
+  rt.watches = [
+    ...rt.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId),
+    { hostDeviceId, providerId, until: Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS },
+  ];
+  markProviderShareHostActive(PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
+}
+
+/** 本机经管理处理了关注到的申请：立即移除，不等下一次拉取。 */
+export function forgetWatchedProviderShareRequest(requestId: string): void {
+  runtime?.watched.delete(requestId);
+}
+
+export function getProviderShareQuietRequestIds(): string[] {
+  return [...(runtime?.quietRequests ?? [])];
+}
+
+export function getProviderShareWatchedRequests(): ProviderShareWatchedRequest[] {
+  return [...(runtime?.watched.values() ?? [])];
 }
 
 /** 受邀者对端被拒的原因(只进日志，不发给对方)。 */

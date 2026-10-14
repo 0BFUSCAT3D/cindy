@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   providerShareGuestPeer,
@@ -39,6 +43,9 @@ vi.mock('../providerShareApi.js', () => ({
       if (state.receivedError) throw new Error('offline');
       return state.received;
     },
+    leave: async (memberId: string) => {
+      state.received = state.received.filter((share) => share.memberId !== memberId);
+    },
   },
   fetchIdentityCard: vi.fn(),
   sha256Hex: (value: string) => value,
@@ -47,15 +54,24 @@ vi.mock('../providerShareApi.js', () => ({
 
 import {
   applyLocalMemberChange,
+  clearProviderShareRequestQuiet,
+  forgetWatchedProviderShareRequest,
+  getProviderShareHostSnapshot,
+  getProviderShareQuietRequestIds,
+  getProviderShareWatchedRequests,
+  PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS,
   providerShareGuestAccess,
   providerShareGuestDenial,
   providerShareMemberMatcher,
+  quietProviderShareRequests,
   refreshProviderShareHost,
   startProviderShareHost,
   stopProviderShareHost,
+  watchProviderShareRequests,
 } from '../providerShareHost';
 import {
   isProviderShareRefusal,
+  leaveProviderShare,
   parseProviderShareAgentDeviceId,
   providerShareAgentDeviceId,
   resolveRemoteAgentTarget,
@@ -65,6 +81,13 @@ import {
   getReceivedSharesSnapshot,
   refreshReceivedShares,
 } from '../providerShareGuest';
+import {
+  configureProviderShareGuestPrefs,
+  flushProviderShareGuestPrefs,
+  isProviderShareCredentialConsentSkipped,
+  resetProviderShareGuestPrefsForTests,
+  setProviderShareCredentialConsent,
+} from '../providerShareGuestPrefs';
 
 const person = { displayName: 'Lizi', avatarUrl: null, region: 'global' as const };
 const share = (members: ProviderShareOwned['members'], requests: ProviderShareOwned['requests'] = []): ProviderShareOwned => ({
@@ -75,8 +98,13 @@ const member = (memberId: string, status: 'active' | 'paused' = 'active') => ({ 
 const guest = (memberId: string, device = 'laptop') => providerShareGuestPeer('share-1', memberId, device);
 
 function events() {
-  return { changed: vi.fn(), requested: vi.fn(), revoked: vi.fn(), reconcile: vi.fn() };
+  return { changed: vi.fn(), requested: vi.fn(), watchedRequested: vi.fn(), revoked: vi.fn(), reconcile: vi.fn() };
 }
+const pendingRequest = (requestId: string) => ({ ...person, requestId, pairingCode: '0427', createdAt: 'x', expiresAt: 'y' });
+const otherShare = (requests: ProviderShareOwned['requests'], providerId = 'anthropic'): ProviderShareOwned => ({
+  shareId: `share-${providerId}-group`, providerId, providerLabel: 'Anthropic', hostDeviceId: 'group-host',
+  createdAt: '2026-10-01T00:00:00.000Z', members: [member('g1')], requests,
+});
 
 beforeEach(() => {
   state.authenticated = true;
@@ -142,6 +170,7 @@ describe('provider share host snapshot', () => {
     await refreshProviderShareHost('again');
     expect(ev.requested).toHaveBeenCalledTimes(1);
     expect(ev.requested.mock.calls[0][0]).toEqual(request);
+    expect(ev.requested.mock.calls[0][2]).toBe(false);
     expect(ev.reconcile).toHaveBeenCalledTimes(1);
     const owned = ev.reconcile.mock.calls[0][0] as Map<string, Set<string>>;
     expect([...owned.get('share-1')!]).toEqual(['m1']);
@@ -183,6 +212,94 @@ describe('provider share host purge after pause', () => {
     state.owned = [share([])];
     await refreshProviderShareHost('left');
     expect(ev.revoked).toHaveBeenLastCalledWith({ shareId: 'share-1', memberId: 'm2' }, true);
+  });
+});
+
+// provider-sharing.md §4.1 第 4 步：审批弹窗跟着生成链接的电脑。
+describe('provider share approval follows the computer that generated the link', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps this computer quiet for requests on a link another computer generated, within the window only', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    state.owned = [share([member('m1')])];
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('test');
+
+    quietProviderShareRequests('anthropic');
+    state.owned = [share([member('m1')], [pendingRequest('r1')])];
+    await refreshProviderShareHost('remote-link');
+    expect(ev.requested).toHaveBeenLastCalledWith(pendingRequest('r1'), expect.objectContaining({ shareId: 'share-1' }), true);
+    expect(getProviderShareQuietRequestIds()).toEqual(['r1']);
+
+    // 窗口期过后才发现的申请照旧由本机弹。
+    vi.setSystemTime(new Date(Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1));
+    state.owned = [share([member('m1')], [pendingRequest('r1'), pendingRequest('r2')])];
+    await refreshProviderShareHost('late');
+    expect(ev.requested).toHaveBeenLastCalledWith(pendingRequest('r2'), expect.anything(), false);
+
+    // 处理掉的申请不再记作静默。
+    state.owned = [share([member('m1')], [pendingRequest('r2')])];
+    await refreshProviderShareHost('handled');
+    expect(getProviderShareQuietRequestIds()).toEqual([]);
+  });
+
+  it('resumes prompting here once this computer generates its own link', async () => {
+    state.owned = [share([member('m1')])];
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('test');
+    quietProviderShareRequests('anthropic');
+    clearProviderShareRequestQuiet('anthropic');
+    state.owned = [share([member('m1')], [pendingRequest('r1')])];
+    await refreshProviderShareHost('local-link');
+    expect(ev.requested).toHaveBeenLastCalledWith(pendingRequest('r1'), expect.anything(), false);
+    expect(getProviderShareQuietRequestIds()).toEqual([]);
+  });
+
+  it('prompts here for a watched share on another computer without letting it into this computer\'s snapshot', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    state.owned = [share([member('m1')]), otherShare([pendingRequest('w0')]), otherShare([pendingRequest('o1')], 'openai')];
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('test');
+    // 没有生成过链接：别的电脑上的申请这里不弹。
+    expect(ev.watchedRequested).not.toHaveBeenCalled();
+
+    watchProviderShareRequests('group-host', 'anthropic');
+    state.owned = [share([member('m1')]), otherShare([pendingRequest('w0'), pendingRequest('w1')]), otherShare([pendingRequest('o1')], 'openai')];
+    await refreshProviderShareHost('watch');
+    await refreshProviderShareHost('again');
+    expect(ev.watchedRequested.mock.calls.map(([item]) => item.request.requestId)).toEqual(['w0', 'w1']);
+    expect(ev.watchedRequested.mock.calls[1][0]).toEqual({
+      request: pendingRequest('w1'),
+      share: { shareId: 'share-anthropic-group', providerId: 'anthropic', providerLabel: 'Anthropic' },
+      hostDeviceId: 'group-host',
+    });
+    // 只用于弹窗：不进本机快照，不放行受邀者。
+    expect(getProviderShareHostSnapshot().map((item) => item.shareId)).toEqual(['share-1']);
+    expect(ev.requested).not.toHaveBeenCalled();
+
+    // 本机处理后立即移除；处理前发出的那次拉取还带着它也不再弹、不再加回。
+    forgetWatchedProviderShareRequest('w1');
+    await refreshProviderShareHost('stale');
+    expect(getProviderShareWatchedRequests().map((item) => item.request.requestId)).toEqual(['w0']);
+    expect(ev.watchedRequested).toHaveBeenCalledTimes(2);
+
+    // 在别处处理、撤回或过期：从快照里消失即移除。
+    state.owned = [share([member('m1')]), otherShare([])];
+    await refreshProviderShareHost('gone');
+    expect(getProviderShareWatchedRequests()).toEqual([]);
+
+    // 窗口期过后不再关注。
+    vi.setSystemTime(new Date(Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1));
+    state.owned = [share([member('m1')]), otherShare([pendingRequest('w2')])];
+    await refreshProviderShareHost('late');
+    expect(ev.watchedRequested).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -228,6 +345,50 @@ describe('provider share guest routing', () => {
 
   it('treats a missing runtime as not connected rather than removed', async () => {
     await expect(resolveRemoteAgentTargetWhenReady('share:share-1')).rejects.toThrow(/DEVICE_LINK_NOT_CONNECTED/);
+  });
+
+  describe('local credential-consent preference', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-share-guest-prefs-'));
+      configureProviderShareGuestPrefs({ resolvePath: () => path.join(dir, 'provider-share-guest-prefs.json') });
+    });
+    afterEach(async () => {
+      await flushProviderShareGuestPrefs();
+      resetProviderShareGuestPrefsForTests();
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('survives a failed refresh and a pause, and goes away once the owner removed the share', async () => {
+      state.received = [received('active')];
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+      await refreshReceivedShares('test');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+      state.receivedError = true;
+      await refreshReceivedShares('test');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+      state.receivedError = false;
+      state.received = [received('paused')];
+      await refreshReceivedShares('test');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+      state.received = [];
+      await refreshReceivedShares('test');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    });
+
+    it('is forgotten when the guest leaves the share', async () => {
+      state.received = [received('active')];
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+      await refreshReceivedShares('test');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+
+      await leaveProviderShare('m1');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    });
   });
 
   it('recognises the owner computer refusing a guest, including remote control turned off', () => {

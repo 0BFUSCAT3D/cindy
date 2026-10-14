@@ -9,7 +9,8 @@
  * 本机不能移出(§3)，该位置留空占位以保持列宽。
  */
 import { ChevronRight, CircleMinus, Monitor, MoreHorizontal } from 'lucide-react';
-import { useCallback, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import type { ProviderView } from '@cindy/model-providers';
 import { useTranslation } from 'react-i18next';
 
 import { formatQuotaResetAt } from '@/components/status/usageCardModel';
@@ -29,7 +30,6 @@ import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
 import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
 
 import {
   PROVIDER_GROUP_MAX_LIMIT,
@@ -46,20 +46,33 @@ import { GroupMemberDetailsButton, GroupMemberVersion } from './GroupMemberVersi
 import { providerWeeklyQuotaSource } from '../../../shared/providerQuotaSource';
 import { ProviderGroupAddDialog } from './ProviderGroupAddDialog';
 import { useProviderGroup } from './useProviderGroup';
+import { providerManagementErrorKey } from './providerManagement';
 
 const LIMIT_OPTIONS = Array.from({ length: PROVIDER_GROUP_MAX_LIMIT }, (_, i) => String(i + 1));
 const WEIGHT_OPTIONS = ['1', '2', '3', '5', '10', '20', '50', String(PROVIDER_GROUP_MAX_WEIGHT)];
 
-export function ProviderGroupSection({ providerId, providerName }: { providerId: string; providerName: string }) {
+export function ProviderGroupSection({ providerId, providerName, deviceId, deviceName, initialConfig, remoteProvider, onConfigChange }: {
+  providerId: string;
+  providerName: string;
+  deviceId?: string;
+  deviceName?: string;
+  initialConfig?: ProviderGroupConfig | null;
+  remoteProvider?: ProviderView;
+  onConfigChange?: (config: ProviderGroupConfig | null) => void;
+}) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
-  const group = useProviderGroup(providerId, { live: true });
+  const group = useProviderGroup(providerId, { live: true, deviceId, initialConfig });
   const { providers } = useProviders();
-  const provider = providers.find((entry) => entry.id === providerId);
+  const provider = deviceId ? remoteProvider : providers.find((entry) => entry.id === providerId);
   const supportsUsage = provider && providerWeeklyQuotaSource({ ...provider, connected: true, suspended: false }) === 'claude';
   const [addOpen, setAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const config = group.view?.config ?? null;
+  const blocked = saving || group.loading || group.failed;
+  useEffect(() => {
+    if (group.view) onConfigChange?.(group.view.config);
+  }, [group.view, onConfigChange]);
   const statuses = useMemo(
     () => new Map((group.view?.members ?? []).map((status) => [status.key, status])),
     [group.view],
@@ -73,13 +86,13 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
         if (success) toast.success(success);
         return true;
       } catch (error) {
-        toast.error(t(mapIpcErrorToI18nKey(error)));
+        toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         return false;
       } finally {
         setSaving(false);
       }
     },
-    [group, t],
+    [group, deviceId, t],
   );
 
   const updateMember = useCallback(
@@ -126,11 +139,11 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
       await group.remove();
       toast.success(t('providerGroup.toast.deleted', { provider: providerName }));
     } catch (error) {
-      toast.error(t(mapIpcErrorToI18nKey(error)));
+      toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
     } finally {
       setSaving(false);
     }
-  }, [confirm, group, providerName, t]);
+  }, [confirm, group, providerName, deviceId, t]);
 
   return (
     <section className="mt-6 shrink-0" aria-labelledby="provider-group-title" data-testid="provider-group-section">
@@ -141,11 +154,11 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
         {config && <span className="text-13 text-[var(--text-tertiary)]">{config.members.length}</span>}
         <span className="flex-1" />
         {config && (
-          <Button variant="secondary" size="sm" compact tone="quiet" disabled={saving} onClick={() => void deleteGroup()}>
+          <Button variant="secondary" size="sm" compact tone="quiet" disabled={blocked} onClick={() => void deleteGroup()}>
             {t('providerGroup.section.delete')}
           </Button>
         )}
-        <Button variant="primary" size="sm" compact disabled={saving || group.loading} onClick={() => setAddOpen(true)}>
+        <Button variant="primary" size="sm" compact disabled={blocked} onClick={() => setAddOpen(true)}>
           {t('providerGroup.section.addComputer')}
         </Button>
       </div>
@@ -156,7 +169,7 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
             {group.loading
               ? t('providerGroup.section.loading')
               : group.failed
-                ? t('providerGroup.section.loadFailed')
+                ? t(group.errorKey ?? 'providerGroup.section.loadFailed')
                 : t('providerGroup.section.empty', { provider: providerName })}
           </p>
         ) : (
@@ -168,7 +181,9 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
                 status={statuses.get(member.key)}
                 strategy={config.strategy}
                 first={index === 0}
-                disabled={saving}
+                disabled={blocked}
+                ownerDeviceId={deviceId ?? null}
+                ownerDeviceName={deviceName}
                 onChange={(patch) => updateMember(member.key, patch)}
                 onRemove={(label) => void removeMember(member, label)}
               />
@@ -182,7 +197,7 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
                 options={PROVIDER_GROUP_STRATEGIES.filter((value) => value !== 'usage' || supportsUsage || config.strategy === 'usage').map((value) => ({
                   value,
                   label: t(`providerGroup.strategy.${value}`),
-                  disabled: saving,
+                  disabled: blocked,
                 }))}
               />
               <span className="flex-1" />
@@ -199,7 +214,7 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
               </div>
               <Switch
                 checked={config.autoSwitch}
-                disabled={saving}
+                disabled={blocked}
                 aria-label={t('providerGroup.autoSwitch.label')}
                 onCheckedChange={(autoSwitch) => void save({ ...config, autoSwitch })}
               />
@@ -207,6 +222,11 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
           </>
         )}
       </div>
+      {config && group.failed && (
+        <p role="status" className="mt-2 text-12 leading-[1.5] text-[var(--text-secondary)]">
+          {t(group.errorKey ?? 'providerGroup.section.loadFailed')}
+        </p>
+      )}
       {config && (
         <p className="mt-2 text-12 leading-[1.5] text-[var(--text-tertiary)]">{t('providerGroup.section.note')}</p>
       )}
@@ -215,6 +235,7 @@ export function ProviderGroupSection({ providerId, providerName }: { providerId:
         <ProviderGroupAddDialog
           providerId={providerId}
           providerName={providerName}
+          deviceId={deviceId}
           config={config}
           onSave={(next, success) => save(next, success)}
           onClose={() => setAddOpen(false)}
@@ -230,6 +251,8 @@ function MemberRow({
   strategy,
   first,
   disabled,
+  ownerDeviceId,
+  ownerDeviceName,
   onChange,
   onRemove,
 }: {
@@ -238,6 +261,8 @@ function MemberRow({
   strategy: ProviderGroupStrategy;
   first: boolean;
   disabled: boolean;
+  ownerDeviceId: string | null;
+  ownerDeviceName?: string;
   onChange: (patch: Partial<ProviderGroupMember>) => void;
   onRemove: (label: string) => void;
 }) {
@@ -246,12 +271,12 @@ function MemberRow({
   // 分享来的电脑只用分享者的昵称称呼，不用电脑名(provider-sharing.md §6)。
   const ownerName = member.kind === 'share' ? (status?.ownerName ?? ownerNameOf(member.agentDeviceId)) : null;
   const label = member.kind === 'local'
-    ? t('providerGroup.member.local')
+    ? ownerDeviceId ? (ownerDeviceName ?? status?.label ?? member.key) : t('providerGroup.member.local')
     : member.kind === 'share'
       ? providerShareComputerName(t, ownerName)
       : (status?.label ?? member.label ?? member.key);
   const source = member.kind === 'local'
-    ? status?.label
+    ? ownerDeviceId ? t('providerGroup.member.sourceDevice') : status?.label
     : member.kind === 'device'
       ? t('providerGroup.member.sourceDevice')
       : t('providerGroup.member.sourceShare', { name: ownerName ?? '' });
@@ -345,7 +370,7 @@ function MemberRow({
           <Switch
             checked={!member.paused}
             disabled={disabled}
-            aria-label={t(member.kind === 'local'
+            aria-label={t(member.kind === 'local' && !ownerDeviceId
               ? 'providerGroup.member.assignLocalAria'
               : 'providerGroup.member.assignAria', { name: label })}
             onCheckedChange={(on) => onChange({ paused: !on })}
@@ -378,7 +403,7 @@ function MemberRow({
       {quotaOpen && (
         <GroupMemberQuota
           id={quotaId}
-          target={groupMemberQuotaTarget(member, null, selfDeviceId)}
+          target={groupMemberQuotaTarget(member, ownerDeviceId, selfDeviceId)}
           offline={status?.state === 'offline'}
         />
       )}

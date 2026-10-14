@@ -6,6 +6,7 @@
  * 选一台组内电脑运行 Agent。产品规则见 docs/product-rules/provider-groups.md。
  */
 import { isProviderShareAgentDeviceId, PROVIDER_SHARE_AGENT_DEVICE_PREFIX } from './providerShare.js';
+import type { ProviderManagementRequest, ProviderManagementResult } from './providerManagement';
 
 export const PROVIDER_GROUP_IPC = {
   /** Renderer → Main：全部操作走同一个命令通道。 */
@@ -142,7 +143,7 @@ export interface ProviderGroupCandidate {
   blocked?: ProviderGroupCandidateBlock;
 }
 
-export type ProviderGroupCommand =
+export type ProviderGroupLocalCommand =
   | { action: 'get'; providerId: string }
   | { action: 'candidates'; providerId: string }
   | { action: 'save'; providerId: string; config: ProviderGroupConfig }
@@ -154,6 +155,9 @@ export type ProviderGroupCommand =
   /** 这个任务此刻归哪个组(模型列表把它显示在组那一项下)。 */
   | { action: 'session-group'; sessionId: string };
 
+export type ProviderGroupCommand = ProviderGroupLocalCommand
+  | { action: 'remote-manage'; deviceId: string; request: ProviderManagementRequest };
+
 /**
  * 任务此刻归的组：`groupDeviceId` 为组所在电脑，null = 这台电脑自己建的组；`providerId` 是组那一项在组所在电脑上的
  * 供应商 id。没归组(或位置与绑定对不上)为 null。
@@ -161,7 +165,8 @@ export type ProviderGroupCommand =
 export type ProviderGroupSessionGroup = { groupDeviceId: string | null; providerId: string } | null;
 
 export type ProviderGroupCommandResult<C extends ProviderGroupCommand> =
-  C extends { action: 'list' } ? Record<string, ProviderGroupConfig>
+  C extends { action: 'remote-manage'; request: infer R extends ProviderManagementRequest } ? ProviderManagementResult<R>
+  : C extends { action: 'list' } ? Record<string, ProviderGroupConfig>
   : C extends { action: 'get' } ? ProviderGroupView
     : C extends { action: 'candidates' } ? ProviderGroupCandidate[]
       : C extends { action: 'save' } ? ProviderGroupView

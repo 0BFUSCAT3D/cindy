@@ -39,6 +39,8 @@ import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
+import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
+import type { ProviderShareManagementCommand } from '../../shared/providerManagement.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
   getControllerDisplayName,
@@ -49,6 +51,7 @@ import {
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import {
+  findReceivedShare,
   getReceivedShares,
   getReceivedSharesSnapshot,
   leaveProviderShare,
@@ -61,14 +64,23 @@ import {
   withdrawProviderShareRequest,
 } from './providerShareGuest.js';
 import {
+  configureProviderShareGuestPrefs,
+  isProviderShareCredentialConsentSkipped,
+  setProviderShareCredentialConsent,
+} from './providerShareGuestPrefs.js';
+import {
   applyLocalMemberChange,
   applyLocalRequestDecision,
+  clearProviderShareRequestQuiet,
   ensureProviderSharePeerKnown,
   getProviderShareHostSnapshot,
+  getProviderShareQuietRequestIds,
+  getProviderShareWatchedRequests,
   markProviderShareHostActive,
   providerShareGuestAccess,
   providerShareGuestDenial,
   providerShareMemberMatcher,
+  quietProviderShareRequests,
   refreshProviderShareHost,
   startProviderShareHost,
   stopProviderShareHost,
@@ -151,15 +163,27 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
     changed() {
       emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
     },
-    requested(request, share) {
+    requested(request, share, quiet) {
       emit(PROVIDER_SHARE_IPC.REQUESTED, {
         request,
         share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
+        ...(quiet ? { quiet: true } : {}),
       });
+      // 链接由另一台电脑生成：那台弹窗并发通知，这里只进管理页与提示点。
+      if (quiet) return;
       void notify(
         t('providerShare.notification.requestTitle'),
         format(t('providerShare.notification.requestBody'), { name: request.displayName, provider: share.providerLabel }),
         () => emit(PROVIDER_SHARE_IPC.OPEN_MANAGE, { providerId: share.providerId }),
+      );
+    },
+    watchedRequested(item) {
+      emit(PROVIDER_SHARE_IPC.REQUESTED, item);
+      // 审批弹窗已在排队：点通知只把窗口拉到前台。
+      void notify(
+        t('providerShare.notification.requestTitle'),
+        format(t('providerShare.notification.requestBody'), { name: item.request.displayName, provider: item.share.providerLabel }),
+        () => undefined,
       );
     },
     revoked(member, purge) {
@@ -218,7 +242,7 @@ function usageRange(range: unknown): ProviderShareUsageRange {
   return range;
 }
 
-function parseCommand(raw: unknown): ProviderShareCommand {
+export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'Invalid command');
   const value = raw as Record<string, unknown>;
   switch (value.action) {
@@ -254,6 +278,11 @@ function parseCommand(raw: unknown): ProviderShareCommand {
       return { action: value.action, requestId: text(value.requestId, 'requestId', 128) };
     case 'leave':
       return { action: 'leave', memberId: text(value.memberId, 'memberId', 128) };
+    case 'get-credential-consent':
+      return { action: 'get-credential-consent', shareId: text(value.shareId, 'shareId', 128) };
+    case 'set-credential-consent':
+      if (typeof value.skip !== 'boolean') throwIpcError('INVALID_PARAMS', 'skip is required');
+      return { action: 'set-credential-consent', shareId: text(value.shareId, 'shareId', 128), skip: value.skip };
     default:
       throwIpcError('INVALID_PARAMS', 'Unknown command');
   }
@@ -312,6 +341,8 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
         };
       })),
     }))),
+    quietRequestIds: getProviderShareQuietRequestIds(),
+    watchedRequests: getProviderShareWatchedRequests(),
   };
 }
 
@@ -346,17 +377,19 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
   };
 }
 
-async function createLink(providerId: string): Promise<ProviderShareLinkCreated> {
+async function createLink(providerId: string, assertCurrent: () => void = () => undefined): Promise<ProviderShareLinkCreated> {
   requireRunning();
   // 逐级开启：允许远程控制 → 允许被远程调用 → 分享。
   if (!readDeviceLinkSettings().remoteControlEnabled) throwIpcError('PRECONDITION_FAILED', 'Remote control is off');
   if (!isRemoteProviderInvocationAllowed(providerId)) throwIpcError('PRECONDITION_FAILED', 'Remote invocation is off for this provider');
   const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+  assertCurrent();
   const provider = providers.find((item) => item.id === providerId);
   if (!provider || !provider.connected || provider.agents.length === 0) throwIpcError('PRECONDITION_FAILED', 'Provider is not available');
   const hostDeviceId = getDeviceId();
   if (!hostDeviceId) throwIpcError('DEVICE_LINK_NOT_CONNECTED', 'Device is not registered');
   const identityCard = await fetchIdentityCard('share-link', sha256Hex(`${hostDeviceId}:${providerId}`));
+  assertCurrent();
   const created = await providerShareApi.createLink({
     providerId,
     // 名称可能自动带上登录身份(如「OpenAI · 邮箱」)，分享出去前去掉。
@@ -382,8 +415,11 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
       return ownerState(command.range);
     case 'own-usage':
       return ownUsage(command.providerId, command.range);
-    case 'create-link':
-      return createLink(command.providerId);
+    case 'create-link': {
+      const created = await createLink(command.providerId);
+      clearProviderShareRequestQuiet(command.providerId);
+      return created;
+    }
     case 'approve':
     case 'reject':
       requireRunning();
@@ -416,7 +452,50 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
     case 'leave':
       await leaveProviderShare(command.memberId);
       return { ok: true };
+    case 'get-credential-consent':
+      return { skip: isProviderShareCredentialConsentSkipped(command.shareId) };
+    case 'set-credential-consent': {
+      // 只能对现在还在名单里的分享设置；分享的区域记下来，清理时按已确认区域判断。
+      const share = findReceivedShare(command.shareId);
+      if (!share) throwIpcError('NOT_FOUND', 'This shared provider is no longer available');
+      await setProviderShareCredentialConsent(command.shareId, share.owner.region, command.skip);
+      return { skip: isProviderShareCredentialConsentSkipped(command.shareId) };
+    }
   }
+}
+
+/**
+ * 同账号管理只执行分享者操作；申请和成员必须属于这台电脑的分享。经管理生成的链接由发起的那台电脑
+ * 弹审批窗，本机在窗口期内静默；返回的 owned 只含这台电脑的分享，不带本机自己的弹窗安排。
+ */
+export async function executeProviderShareManagementCommand(command: ProviderShareManagementCommand): Promise<unknown> {
+  const owner = activeOwnerScopeKey();
+  const assertCurrent = () => {
+    if (activeOwnerScopeKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
+  };
+  if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member') {
+    requireRunning();
+    await refreshProviderShareHost('management');
+    assertCurrent();
+    const shares = getProviderShareHostSnapshot();
+    const found = command.action === 'set-member'
+      ? shares.some((share) => share.members.some((member) => member.memberId === command.memberId))
+      : shares.some((share) => share.requests.some((request) => request.requestId === command.requestId));
+    if (!found) throwIpcError('NOT_FOUND', 'The share request or member is no longer on this computer');
+  }
+  if (command.action === 'create-link') {
+    const created = await createLink(command.providerId, assertCurrent);
+    assertCurrent();
+    quietProviderShareRequests(command.providerId);
+    return created;
+  }
+  const result = await execute(command);
+  assertCurrent();
+  if (command.action === 'owned') {
+    const { ready, shares } = result as ProviderShareOwnerState;
+    return { ready, shares } satisfies ProviderShareOwnerState;
+  }
+  return result;
 }
 
 const CATALOG_READ_TIMEOUT_MS = 10_000;
@@ -466,6 +545,8 @@ async function receivedCatalogs(args: unknown[]): Promise<{ shares: ProviderShar
 }
 
 export function registerProviderShareIpc(): void {
+  // 受邀者对每个分享的本机偏好(「信任 {分享者}」)：按当前账号存放，读写时解析。
+  configureProviderShareGuestPrefs({ resolvePath: () => ownerScopedUserDataPath('provider-share-guest-prefs.json') });
   setProviderShareAccess({
     guestAccess: providerShareGuestAccess,
     ensureKnown: ensureProviderSharePeerKnown,
@@ -483,7 +564,7 @@ export function registerProviderShareIpc(): void {
     // 账号级操作：只接受本机应用窗口，不经设备互联代理。
     if (getDeviceLinkInvokeContext()) throwIpcError('PERMISSION_DENIED', 'Provider sharing is local only');
     assertTrustedAppRendererEvent(event);
-    return execute(parseCommand(raw));
+    return execute(parseProviderShareCommand(raw));
   });
 }
 

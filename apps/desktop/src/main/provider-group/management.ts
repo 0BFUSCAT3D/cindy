@@ -1,0 +1,34 @@
+/** dispatch 已验证同账号身份；管理范围只含组设置和分享者操作，禁止继续转发。 */
+import type { ProviderManagementReply, ProviderManagementRequest } from '../../shared/providerManagement.js';
+import type { ProviderGroupManagementCommand, ProviderShareManagementCommand } from '../../shared/providerManagement.js';
+import { isProviderManagementRequest } from '../../shared/providerManagement.js';
+import { activeOwnerScopeKey } from '../appSessionState.js';
+import { executeProviderShareManagementCommand, parseProviderShareCommand } from '../device-link/providerShareRuntime.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
+import { createProviderGroupCommandDeps, executeProviderGroupCommand, parseProviderGroupCommand } from './ipc.js';
+
+export function parseProviderManagementRequest(raw: unknown): ProviderManagementRequest {
+  if (!isProviderManagementRequest(raw)) throwIpcError('INVALID_PARAMS', 'Invalid provider management request');
+  if (raw.action === 'manage-group') {
+    const command = parseProviderGroupCommand(raw.command);
+    if (!['get', 'candidates', 'save', 'delete'].includes(command.action)) {
+      throwIpcError('PERMISSION_DENIED', 'This group operation is not available through management');
+    }
+    return { action: 'manage-group', command: command as ProviderGroupManagementCommand };
+  }
+  const command = parseProviderShareCommand(raw.command);
+  if (!['owned', 'own-usage', 'create-link', 'approve', 'reject', 'set-member'].includes(command.action)) {
+    throwIpcError('PERMISSION_DENIED', 'Only owner operations are available through management');
+  }
+  return { action: 'manage-share', command: command as ProviderShareManagementCommand };
+}
+
+export async function handleProviderManagementRequest(raw: unknown): Promise<ProviderManagementReply> {
+  const owner = activeOwnerScopeKey();
+  const request = parseProviderManagementRequest(raw);
+  const result = request.action === 'manage-group'
+    ? await executeProviderGroupCommand(createProviderGroupCommandDeps(), request.command)
+    : await executeProviderShareManagementCommand(request.command);
+  if (activeOwnerScopeKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
+  return { result, respondedAt: Date.now() };
+}

@@ -1,14 +1,17 @@
 /**
  * 分享者审批弹窗(设计稿场景 5)：只显示申请人的昵称和头像，以及同一个配对码供核对。
  * 右上角 × 与 Esc = 稍后处理，申请留在管理页「待处理」里(24 小时内有效)。
+ * 分享在同账号另一台电脑上时(本机生成的链接)，同意 / 拒绝转交那台电脑执行。
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { providerManagementErrorKey, providerShareManagementCommand } from '@/features/provider-group/providerManagement';
+import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
-import { extractIpcError, mapIpcErrorToI18nKey } from '@/utils/ipcError';
+import { extractIpcError } from '@/utils/ipcError';
 
 import {
   ProviderShareDialog,
@@ -32,17 +35,20 @@ export function ProviderShareApproveDialog({
   const { t } = useTranslation();
   const time = useShareTimeFormat();
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
-  const { request, share } = item;
+  const { request, share, hostDeviceId } = item;
   const name = request.displayName;
   const provider = share.providerLabel;
   const { providers } = useProviders();
-  const claudeEmail = sharesClaudeLoginEmail(providers.find((view) => view.id === share.providerId));
+  const remote = useDeviceProviders(hostDeviceId);
+  const claudeEmail = sharesClaudeLoginEmail(
+    (hostDeviceId ? remote.providers : providers).find((view) => view.id === share.providerId),
+  );
 
   const decide = async (action: 'approve' | 'reject') => {
     if (busy) return;
     setBusy(action);
     try {
-      await window.electronAPI.providerShare.command({ action, requestId: request.requestId });
+      await providerShareManagementCommand({ action, requestId: request.requestId }, hostDeviceId);
       removeProviderSharePendingRequest(request.requestId);
       toast.success(
         action === 'approve'
@@ -51,7 +57,7 @@ export function ProviderShareApproveDialog({
       );
       onClose();
     } catch (error) {
-      toast.error(t(mapIpcErrorToI18nKey(error)));
+      toast.error(t(providerManagementErrorKey(error, Boolean(hostDeviceId))));
       // 申请已不在(被撤回、过期或在别处处理)：不再停留在这条上。
       if (extractIpcError(error)?.code === 'NOT_FOUND') {
         removeProviderSharePendingRequest(request.requestId);

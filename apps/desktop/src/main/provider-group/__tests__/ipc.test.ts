@@ -13,7 +13,9 @@ vi.mock('../runtime.js', () => ({
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => 'owner-a' }));
-vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self') }));
+vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self'), remoteInvoke: vi.fn() }));
+// 同账号管理的转发另有 managementClient.test.ts；这里只测本机命令，不拉进分享运行时。
+vi.mock('../managementClient.js', () => ({ invokeProviderManagement: vi.fn() }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
 
 import type { ProviderGroupCandidate, ProviderGroupConfig } from '../../../shared/providerGroup';

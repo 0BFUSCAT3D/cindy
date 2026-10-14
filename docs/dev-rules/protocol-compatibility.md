@@ -943,6 +943,8 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **可选策略枚举扩展**：本地组配置与同账号组摘要的 `strategy` 增加 `usage`，原默认 `least` 不变。
   旧版桌面读取未知策略时归一化为 `least`，旧版手机不依赖这个字段；远程 `pick` 仍由组所在电脑执行，因此
   旧控制端连接新组所在电脑也能使用新策略。组所在电脑降级后按 `least` 分配，旧版再次保存组设置会写回 `least`。
+  2026-10-15 起配额排序（快到期先用、已用百分比低的先用）对所有策略生效，设置界面不再提供 `usage`；枚举值与归一化
+  保持不变，已存的 `usage` 照常读写，挑法与 `least` 相同。这只改组所在电脑本机的选择，不新增字段、不改通道。
 - **复用已有同账号通道**：向成员电脑调用 `maker:usage:claude-subscription`，参数 `[member.providerId]`；本机走同一
   订阅 reader。只信与请求一致的 `providerId` 回显；旧端未回显时仅允许默认 `anthropic`，具名账号按未知用量处理，
   避免旧端忽略参数后拿默认账号的额度代替。通道不可用、失败、超时或快照过期时按未知处理，分配照常进行。
@@ -1155,6 +1157,32 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
   (`groupReport` / `replaceReported`)，`maker-ipc/sessionProviderPartyUsage.ts`(`groupUsageReportOf`)；回归见
   `provider-group/__tests__/usageReporter.test.ts`、`remoteHandler.test.ts`、`usage/__tests__/providerPartyUsageStore.test.ts`、
   `maker-ipc/__tests__/sessionProviderPartyUsage.test.ts`。
+
+## 供应商组：同账号任意电脑管理(2026-10-14)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §9.8、§10 与
+[`provider-sharing.md`](../product-rules/provider-sharing.md) §4.1 第 4 步、§7.1。同账号电脑 C 管理组所在电脑 O 上的组与分享，
+组设置与分享仍保存在 O 上。
+
+- **`provider-group:remote` 新增 `action: 'manage-group'` / `'manage-share'`**(同一 channel、同一同账号 allowlist，
+  受邀者与共享任务访客照旧 `CHANNEL_NOT_ALLOWED`)：请求 `{ action, command }`，`command` 与本机命令同构，结构与校验在
+  `apps/desktop/src/shared/providerManagement.ts`。`manage-group` 只收 `get` / `candidates` / `save` / `delete`；
+  `manage-share` 只收 `owned` / `own-usage` / `create-link` / `approve` / `reject` / `set-member`，其余回
+  `[PERMISSION_DENIED]`。回包 `{ result, respondedAt }`，`respondedAt` 只用于把链接有效期换算到 C 的时钟。
+  - O 在执行前后核对账号未切换；`approve` / `reject` / `set-member` 先刷新快照，申请或成员不在 O 的分享里回 `[NOT_FOUND]`；
+    `owned` 的回包只含 `{ ready, shares }`，不带 O 自己的弹窗安排。不再转发给第三台电脑。
+  - C 不重放写请求；生成的链接在 C 的 Main 登记后才能复制。
+- **审批弹窗跟着生成链接的电脑**：O 执行 `manage-share` 的 `create-link` 后，7 分钟窗口内这个供应商的新申请在 O 上只推
+  `REQUESTED { quiet: true }`(进管理页与提示点，不弹窗、不发系统通知)；O 本机生成链接时取消静默。C 在同一窗口内照常拉取
+  账号的分享列表、关注 O 的那条分享，新申请经 `REQUESTED { hostDeviceId }` 在 C 上弹窗，同意 / 拒绝经 `manage-share` 转交 O。
+  这两个字段只在本机 Main → Renderer 之间，不跨设备；本机 `owned` 结果另带 `quietRequestIds` / `watchedRequests` 供审批宿主重载时使用。
+- **兼容**：旧 O 回 `CHANNEL_NOT_ALLOWED` 或 `[INVALID_PARAMS] unknown provider group action`，C 显示「建组电脑需要更新」，
+  不影响组的分配与使用。旧 C 不发这两个动作，仍只能只读查看。O 只在执行过 `manage-share` 的 `create-link` 后才静默，
+  旧 C 管不到 O，弹窗行为与之前相同。不改服务端、数据库与本地持久数据。
+- 实现：`apps/desktop/src/main/provider-group/management.ts`(O)、`managementClient.ts`(C)、`remoteRegistration.ts`，
+  `apps/desktop/src/main/device-link/providerShareHost.ts`(静默与关注)、`providerShareRuntime.ts`；回归见
+  `provider-group/__tests__/managementClient.test.ts`、`device-link/__tests__/providerShareRuntime.test.ts`、
+  `renderer/features/provider-share/__tests__/ProviderShareGlobalHost.test.tsx`、`providerShareFormat.test.ts`。
 
 ## 事实来源
 

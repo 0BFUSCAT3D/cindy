@@ -5,7 +5,8 @@
  *  - 已收到的分享(受邀者)：首个订阅者触发一次 `received`，之后靠 RECEIVED_CHANGED 推送。
  *    分享的状态、在线或所在电脑变化时刷新对应 `share:<id>` 的模型目录缓存，消失的分享作废缓存。
  *  - 待审批申请(分享者)：由全局审批宿主播种(`owned` 一次)、REQUESTED 推送追加、审批后移除；
- *    管理页每次读取 `owned` 也会发布到这里。设置页入口的提示点读这份。
+ *    本机管理页每次读取 `owned` 也会发布到这里。设置页入口的提示点读这份。其中带 hostDeviceId 的是
+ *    本机为同账号另一台电脑上的分享生成链接后、由本机负责弹窗的申请(provider-sharing.md §4.1)。
  *
  * 注意：`owned` 会让 main 进入快速拉取(每 5 秒)，所以这里**不**在每次 OWNED_CHANGED 都重读，
  * 只在还有待审批申请时重读(那时 main 本来就在快速拉取)，以便撤回、过期的申请及时消失。
@@ -26,7 +27,7 @@ import type {
 } from '../../../shared/providerShare';
 import {
   diffReceivedShares,
-  pendingRequestsFromOwned,
+  pendingRequestsFromOwnerState,
   providerShareAgentDeviceId,
   type ProviderSharePendingRequest,
 } from './providerShareFormat';
@@ -218,12 +219,17 @@ function setPending(next: readonly ProviderSharePendingRequest[]): void {
 
 /** 一份 owned 快照是本机待审批申请的权威来源：整体替换。 */
 export function publishProviderShareOwnerState(state: ProviderShareOwnerState): void {
-  setPending(state.ready ? pendingRequestsFromOwned(state.shares) : []);
+  setPending(pendingRequestsFromOwnerState(state));
 }
 
 export function addProviderShareRequested(event: ProviderShareRequestedEvent): void {
   if (pendingRequests.some((item) => item.request.requestId === event.request.requestId)) return;
-  setPending([...pendingRequests, { request: event.request, share: event.share }]);
+  setPending([...pendingRequests, {
+    request: event.request,
+    share: event.share,
+    ...(event.hostDeviceId ? { hostDeviceId: event.hostDeviceId } : {}),
+    ...(event.quiet ? { quiet: true } : {}),
+  }]);
 }
 
 export function removeProviderSharePendingRequest(requestId: string): void {

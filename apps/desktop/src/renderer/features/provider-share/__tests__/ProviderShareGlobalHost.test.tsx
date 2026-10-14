@@ -26,6 +26,10 @@ vi.mock('react-i18next', () => ({
 vi.mock('@/lib/toast', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => bus.auth }));
 vi.mock('@/lib/remoteCatalogSnapshot', () => ({ refreshRemoteCatalogSnapshot: vi.fn(async () => undefined) }));
+vi.mock('@/hooks/useDeviceProviders', () => ({
+  getCachedDeviceProviders: () => null,
+  useDeviceProviders: () => ({ providers: [], loading: false, error: null, unsupported: false }),
+}));
 vi.mock('@/features/cc-agent/lib/genericNewMakerRouteState', () => ({
   makeGenericNewMakerRouteState: () => ({ workspacePrompt: 'generic' }),
 }));
@@ -249,6 +253,51 @@ describe('ProviderShareGlobalHost', () => {
       expect.stringContaining('providerShare.apply.toastApproved'),
       expect.anything(),
     );
+  });
+
+  // provider-sharing.md §4.1 第 4 步：审批弹窗跟着生成链接的电脑。
+  it('does not pop requests on this computer\'s share when another computer generated the link', async () => {
+    currentOwner = { ...ownerState(), quietRequestIds: ['req-1'] };
+    renderHost();
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith({ action: 'owned', range: 'month' }));
+    act(() => {
+      for (const listener of bus.requested) {
+        listener({
+          request: { ...request, requestId: 'req-2' },
+          share: { shareId: 'share-1', providerId: 'xd', providerLabel: 'Cindy AI' },
+          quiet: true,
+        });
+      }
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull();
+  });
+
+  it('pops a request for another computer\'s share after generating its link here, and hands the decision to that computer', async () => {
+    currentOwner = ownerState([]);
+    const groupCommand = vi.fn(async () => ({ ok: true }));
+    Object.assign(window.electronAPI, { providerGroup: { command: groupCommand } });
+    renderHost();
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith({ action: 'owned', range: 'month' }));
+    act(() => {
+      for (const listener of bus.requested) {
+        listener({
+          request: { ...request, requestId: 'req-7', displayName: 'Kai' },
+          share: { shareId: 'share-group', providerId: 'anthropic', providerLabel: 'Anthropic' },
+          hostDeviceId: 'group-host',
+        });
+      }
+    });
+    const dialog = await screen.findByTestId('provider-share-approve-dialog');
+    expect(dialog.textContent).toContain('Kai');
+    fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.approve' }));
+    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+    expect(groupCommand).toHaveBeenCalledWith({
+      action: 'remote-manage',
+      deviceId: 'group-host',
+      request: { action: 'manage-share', command: { action: 'approve', requestId: 'req-7' } },
+    });
+    expect(bus.command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
   });
 
   it('opens the management page from a notification click', async () => {

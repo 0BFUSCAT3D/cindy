@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderShareReceived } from '@cindy/device-link';
 
+import { toast } from '@/lib/toast';
+
 import { ProviderSharePasteButton } from '../ProviderSharePasteDialog';
 import { ProviderShareReceivedDetail, ProviderShareReceivedRailGroup } from '../ProviderShareReceivedRail';
 import { resetProviderShareStoreForTests } from '../providerShareStore';
@@ -53,6 +55,7 @@ beforeEach(() => {
   resetProviderShareStoreForTests();
   joinSpy.mockClear();
   confirmSpy.mockClear();
+  vi.mocked(toast.error).mockClear();
   catalogDeviceIds.length = 0;
   catalog.value = { providers: [], loading: false, error: null, unsupported: false };
   received = [];
@@ -60,6 +63,7 @@ beforeEach(() => {
   command.mockImplementation(async (cmd: { action: string }) => {
     if (cmd.action === 'received') return received;
     if (cmd.action === 'leave') return { ok: true };
+    if (cmd.action === 'get-credential-consent') return { skip: false };
     throw new Error(`unexpected ${cmd.action}`);
   });
   Object.assign(window, {
@@ -171,5 +175,50 @@ describe('ProviderShareReceivedDetail', () => {
     };
     render(<ProviderShareReceivedDetail share={{ ...share, status: 'active' }} />);
     expect(screen.getByText('providerShare.received.modelsRefused')).toBeTruthy();
+  });
+
+  const consentSwitch = () =>
+    screen.findByRole('switch', { name: 'providerShare.received.credentialConsent.ariaLabel:{"name":"Magi","provider":"Cindy AI"}' });
+
+  it('reads whether credential operations skip confirmation here and saves a toggle', async () => {
+    let skip = true;
+    command.mockImplementation(async (cmd: { action: string; shareId?: string; skip?: boolean }) => {
+      if (cmd.action === 'received') return received;
+      if (cmd.action === 'get-credential-consent') return { skip };
+      if (cmd.action === 'set-credential-consent') {
+        skip = cmd.skip === true;
+        return { skip };
+      }
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    render(<ProviderShareReceivedDetail share={share} />);
+    const toggle = await consentSwitch();
+    // 标题写「信任 {分享者}」：信任的是分享给我的人。
+    expect(screen.getByText('providerShare.received.credentialConsent.label:{"name":"Magi"}')).toBeTruthy();
+    expect(screen.getByText('providerShare.received.credentialConsent.description')).toBeTruthy();
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-consent', shareId: 'share-1', skip: false }));
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('rolls the switch back and says so when the preference cannot be saved', async () => {
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'received') return received;
+      if (cmd.action === 'get-credential-consent') return { skip: false };
+      if (cmd.action === 'set-credential-consent') throw new Error('disk');
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    render(<ProviderShareReceivedDetail share={share} />);
+    const toggle = await consentSwitch();
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('providerShare.received.credentialConsent.writeFailed'));
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 });

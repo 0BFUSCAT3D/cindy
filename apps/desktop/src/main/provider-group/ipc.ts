@@ -1,5 +1,5 @@
 /**
- * 供应商组设置的 IPC：只接受本机应用窗口，不经设备互联代理(组是这台电脑上的设置)。
+ * 本机窗口的组命令入口；同账号远程管理由专用命令转交组所在电脑。
  */
 import { ipcMain } from 'electron';
 
@@ -10,12 +10,14 @@ import {
   isProviderGroupProviderId,
   normalizeProviderGroupConfig,
   type ProviderGroupCommand,
+  type ProviderGroupLocalCommand,
   type ProviderGroupConfig,
   type ProviderGroupSessionGroup,
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
-import { broadcast, getSelfDeviceId } from '../device-link/index.js';
+import { broadcast, getSelfDeviceId, remoteInvoke } from '../device-link/index.js';
+import { isProviderManagementRequest } from '../../shared/providerManagement.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { createLogger } from '../logger.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
@@ -31,6 +33,7 @@ import {
   readProviderGroupOfSession,
 } from './runtime.js';
 import { listProviderGroups, readProviderGroup, writeProviderGroup } from './store.js';
+import { invokeProviderManagement } from './managementClient.js';
 
 const log = createLogger('provider-group');
 
@@ -60,6 +63,14 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 export function parseProviderGroupCommand(raw: unknown): ProviderGroupCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'command required');
   const value = raw as Record<string, unknown>;
+  if (value.action === 'remote-manage') {
+    if (typeof value.deviceId !== 'string' || !REMOTE_DEVICE_ID_PATTERN.test(value.deviceId)
+      || !isProviderManagementRequest(value.request) || !value.request.command
+      || typeof value.request.command !== 'object' || Array.isArray(value.request.command)) {
+      throwIpcError('INVALID_PARAMS', 'Invalid remote provider management command');
+    }
+    return { action: 'remote-manage', deviceId: value.deviceId, request: value.request };
+  }
   if (value.action === 'list') return { action: 'list' };
   if (value.action === 'session-group') {
     if (typeof value.sessionId !== 'string' || !SESSION_ID_PATTERN.test(value.sessionId)) {
@@ -131,7 +142,7 @@ export async function markMembersUnreachableHere(
 }
 
 /** 业务体(依赖注入，单测直接调)。 */
-export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps, command: ProviderGroupCommand) {
+export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps, command: ProviderGroupLocalCommand) {
   if (command.action === 'list') return deps.listGroups();
   if (command.action === 'session-group') return deps.sessionGroup(command.sessionId);
   const { providerId } = command;
@@ -184,8 +195,8 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
   }
 }
 
-export function registerProviderGroupIpc(): void {
-  const deps: ProviderGroupCommandDeps = {
+export function createProviderGroupCommandDeps(): ProviderGroupCommandDeps {
+  return {
     router: getProviderGroupRouter(),
     directory: getProviderGroupDirectory(),
     readGroup: readProviderGroup,
@@ -206,10 +217,16 @@ export function registerProviderGroupIpc(): void {
       }
     },
   };
+}
+
+export function registerProviderGroupIpc(): void {
+  const deps = createProviderGroupCommandDeps();
 
   ipcMain.handle(PROVIDER_GROUP_IPC.COMMAND, async (event, raw: unknown) => {
     if (getDeviceLinkInvokeContext()) throwIpcError('PERMISSION_DENIED', 'Provider groups are local only');
     assertTrustedAppRendererEvent(event);
-    return executeProviderGroupCommand(deps, parseProviderGroupCommand(raw));
+    const command = parseProviderGroupCommand(raw);
+    if (command.action === 'remote-manage') return invokeProviderManagement(remoteInvoke, command.deviceId, command.request);
+    return executeProviderGroupCommand(deps, command);
   });
 }

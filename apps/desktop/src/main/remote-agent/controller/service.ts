@@ -71,6 +71,8 @@ export interface DeviceAgentServiceDeps {
   };
   /** 任务的「Agent 所在电脑」是不是分享来的供应商(受邀者任务)。 */
   isSharedProviderDevice?(deviceId: string): boolean;
+  /** 受邀者在设置里把这个分享切成了「信任 {分享者}」(每次操作前问一遍)。 */
+  skipSharedProviderCredentialConsent?(deviceId: string): boolean;
   /** 受邀者任务在本机抓取网页的出站通道(WebFetch)。 */
   webFetch?: GuardedFetch;
   /** 受邀者任务里凭证类操作确认卡上的说明(按界面语言)。 */
@@ -192,7 +194,13 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
         : {}),
       ...(webFetch ? { webFetch } : {}),
       ...(shared
-        ? { credentialConsent: { description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE } }
+        ? {
+            credentialConsent: {
+              description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE,
+              // 受邀者在设置里对这个分享选了「信任 {分享者}」：实时读，运行中切换下一步就生效。
+              skip: () => deps.skipSharedProviderCredentialConsent?.(input.deviceId) === true,
+            },
+          }
         : {}),
       prepareMcp: async ({ kind, opts: startOpts, vendorOptions }): Promise<PreparedRemoteMcp> => {
         const extra = await deps.prepareMcpBridge(deps.mcpProviders(), deps.logger, {
