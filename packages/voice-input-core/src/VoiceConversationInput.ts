@@ -1,9 +1,13 @@
 import type { AsrProvider, AsrSegment, AudioTrace } from "./types.js";
 import { ConversationActivity } from "./conversationActivity.js";
 
+const AUTO_SEND_QUIET_MS = 2_000;
+const FINAL_STABLE_MS = 350;
+
 export type ConversationInputEvent =
   | { type: "ready" }
   | { type: "speech-started" }
+  | { type: "speech-idle" }
   | { type: "draft"; text: string }
   | { type: "utterance"; id: string; text: string }
   | { type: "error"; text: string };
@@ -29,12 +33,23 @@ export class VoiceConversationInput {
   private settleTimer?: ReturnType<typeof setTimeout>;
   private rotationTimer?: ReturnType<typeof setTimeout>;
   private finalTimer?: ReturnType<typeof setTimeout>;
+  private awaitingSettlement = false;
+  private quietAfter = 0;
+  private stableAfter = 0;
 
   constructor(
     private readonly options: {
       createProvider: () => Promise<AsrProvider>;
       emit: (event: ConversationInputEvent) => void;
       rotationMs?: number;
+      // Numeric endpointing evidence only; the host owns logging and storage.
+      diagnostic?: (event: {
+        trigger: "manual" | "silence";
+        inactiveMs: number;
+        finalStableMs: number | null;
+        segments: number;
+        characters: number;
+      }) => void;
     },
   ) {}
 
@@ -47,7 +62,14 @@ export class VoiceConversationInput {
     if (this.closed) return;
     const activity = this.activity.push(pcm);
     this.speaking = activity.active;
+    // The 900ms acoustic release only commits ASR buffers. Sending always uses
+    // the same two-second quiet window, including soft speech seen only by ASR.
+    if (activity.sound) {
+      this.quietAfter = Date.now() + AUTO_SEND_QUIET_MS;
+      if (!this.manual) clearTimeout(this.settleTimer);
+    }
     if (activity.started) {
+      this.awaitingSettlement = true;
       clearTimeout(this.finalTimer);
       if (!this.manual) clearTimeout(this.settleTimer);
       this.options.emit({ type: "speech-started" });
@@ -61,6 +83,7 @@ export class VoiceConversationInput {
     }
     this.provider.appendAudio(pcm, trace);
     if (activity.ended) this.finishUtterance();
+    else if (activity.sound && !activity.active) this.scheduleSettlement();
   }
 
   finishUtterance(force = false): void {
@@ -115,6 +138,11 @@ export class VoiceConversationInput {
       if (this.consumed.has(key)) return;
       const prior = this.segments.get(key);
       if (prior?.final) return;
+      this.awaitingSettlement = true;
+      const text = segment.text.trim();
+      if ((text && text !== prior?.text.trim()) || !this.quietAfter)
+        this.quietAfter = Date.now() + AUTO_SEND_QUIET_MS;
+      this.stableAfter = Date.now() + FINAL_STABLE_MS;
       if (!prior?.text && segment.text.trim() && !this.speaking)
         this.options.emit({ type: "speech-started" });
       this.segments.set(key, { ...segment, generation });
@@ -157,7 +185,11 @@ export class VoiceConversationInput {
 
   private scheduleSettlement(): void {
     clearTimeout(this.settleTimer);
-    if ((this.speaking && !this.manual) || this.rotating || !this.segments.size)
+    if (
+      (this.speaking && !this.manual) ||
+      this.rotating ||
+      !this.awaitingSettlement
+    )
       return;
     if ([...this.segments.values()].some((segment) => !segment.final)) return;
     this.settleTimer = setTimeout(
@@ -165,8 +197,20 @@ export class VoiceConversationInput {
         if (this.closed || (this.speaking && !this.manual) || this.rotating)
           return;
         const text = this.draft();
+        this.options.diagnostic?.({
+          trigger: this.manual ? "manual" : "silence",
+          inactiveMs: Date.now() - this.quietAfter + AUTO_SEND_QUIET_MS,
+          finalStableMs: this.stableAfter
+            ? Date.now() - this.stableAfter + FINAL_STABLE_MS
+            : null,
+          segments: this.segments.size,
+          characters: text.length,
+        });
         for (const key of this.segments.keys()) this.consumed.add(key);
         this.segments.clear();
+        this.awaitingSettlement = false;
+        this.quietAfter = 0;
+        this.stableAfter = 0;
         this.manual = false;
         clearTimeout(this.finalTimer);
         if (text)
@@ -176,8 +220,15 @@ export class VoiceConversationInput {
             text,
           });
         this.options.emit({ type: "draft", text: "" });
+        if (!text) this.options.emit({ type: "speech-idle" });
       },
-      this.manual ? 0 : 350,
+      this.manual
+        ? 0
+        : Math.max(
+            0,
+            this.quietAfter - Date.now(),
+            this.stableAfter - Date.now(),
+          ),
     );
   }
 

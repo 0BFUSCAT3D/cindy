@@ -50,14 +50,103 @@ describe("continuous speech input", () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(events.filter((e) => e.type === "utterance")).toHaveLength(0);
     provider.segment({ id: "one", text: "你好。", final: true });
-    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(2000);
     provider.segment({ id: "one", text: "你好。", final: true });
     provider.segment({ id: "two", text: "你好。", final: true });
-    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(events.filter((e) => e.type === "utterance")).toEqual([
       { type: "utterance", id: "1", text: "你好。" },
       { type: "utterance", id: "2", text: "你好。" },
     ]);
+    await input.stop();
+  });
+
+  it("requires two quiet seconds for ASR-only soft speech and merges a thinking pause", async () => {
+    const provider = new Provider();
+    const events: ConversationInputEvent[] = [];
+    const diagnostic = vi.fn();
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider,
+      emit: (event) => events.push(event),
+      diagnostic,
+    });
+    await input.start();
+    provider.segment({ id: "soft", text: "first part", final: true });
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(events.some((event) => event.type === "utterance")).toBe(false);
+    // Continue within the thinking pause. Even a provider-finalized first part
+    // must remain in this utterance until the new activity has also settled.
+    input.appendAudio(pcm(2000, 200));
+    provider.segment({ id: "next", text: "second part", final: true });
+    await vi.advanceTimersByTimeAsync(900);
+    input.appendAudio(pcm(0, 900));
+    expect(provider.commitUtterance).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_099);
+    expect(events.some((event) => event.type === "utterance")).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events.filter((event) => event.type === "utterance")).toEqual([
+      { type: "utterance", id: "1", text: "first part second part" },
+    ]);
+    expect(diagnostic).toHaveBeenCalledExactlyOnceWith({
+      trigger: "silence",
+      inactiveMs: 2_000,
+      finalStableMs: 2_000,
+      segments: 2,
+      characters: 22,
+    });
+    await input.stop();
+  });
+
+  it("releases a noise-only onset after the quiet window without sending or waiting for an ASR segment", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider,
+      emit,
+    });
+    await input.start();
+    input.appendAudio(pcm(800, 200));
+    expect(emit).toHaveBeenCalledWith({ type: "speech-started" });
+    await vi.advanceTimersByTimeAsync(900);
+    input.appendAudio(pcm(0, 900));
+    await vi.advanceTimersByTimeAsync(1_099);
+    expect(emit).not.toHaveBeenCalledWith({ type: "speech-idle" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({ type: "speech-idle" });
+    expect(emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "utterance" }),
+    );
+    await input.stop();
+  });
+
+  it("does not let an unchanged final bypass the remaining quiet window or retain an empty draft", async () => {
+    const provider = new Provider();
+    const emit = vi.fn();
+    const input = new VoiceConversationInput({
+      createProvider: async () => provider,
+      emit,
+    });
+    await input.start();
+    provider.segment({ id: "one", text: "soft speech", final: false });
+    await vi.advanceTimersByTimeAsync(1_500);
+    provider.segment({ id: "one", text: "soft speech", final: true });
+    await vi.advanceTimersByTimeAsync(499);
+    expect(emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "utterance" }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    expect(emit).toHaveBeenCalledWith({
+      type: "utterance",
+      id: "1",
+      text: "soft speech",
+    });
+    provider.segment({ id: "empty", text: "discarded partial", final: false });
+    provider.segment({ id: "empty", text: "", final: true });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(emit).toHaveBeenCalledWith({ type: "speech-idle" });
+    expect(
+      emit.mock.calls.filter(([event]) => event.type === "utterance"),
+    ).toHaveLength(1);
     await input.stop();
   });
 
@@ -76,7 +165,7 @@ describe("continuous speech input", () => {
       expect.objectContaining({ type: "utterance" }),
     );
     provider.segment({ id: "a", text: "first", final: true, order: 0 });
-    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(emit).toHaveBeenCalledWith({
       type: "utterance",
       id: "1",
@@ -128,12 +217,12 @@ describe("continuous speech input", () => {
     const input = new VoiceConversationInput({
       createProvider,
       emit,
-      rotationMs: 1000,
+      rotationMs: 10_000,
     });
     await input.start();
     a.segment({ id: "same", text: "before", final: true });
-    await vi.advanceTimersByTimeAsync(350);
-    await vi.advanceTimersByTimeAsync(650);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(8000);
     const buffered = pcm(1000, 200);
     input.appendAudio(buffered);
     finish();
@@ -142,7 +231,7 @@ describe("continuous speech input", () => {
     a.segment({ id: "late", text: "ignore", final: true });
     b.segment({ id: "same", text: "after", final: true });
     input.appendAudio(pcm(0, 900));
-    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(
       emit.mock.calls
         .filter(([e]) => e.type === "utterance")
@@ -199,9 +288,9 @@ describe("continuous speech input", () => {
     await input.start();
     p.segment({ id: "noise", text: "", final: false });
     p.segment({ id: "noise", text: "", final: true });
-    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(2000);
     p.segment({ id: "speech", text: "hello", final: true });
-    await vi.advanceTimersByTimeAsync(350);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(emit.mock.calls.filter(([e]) => e.type === "utterance")).toEqual([
       [{ type: "utterance", id: "1", text: "hello" }],
     ]);

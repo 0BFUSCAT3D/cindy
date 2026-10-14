@@ -7,6 +7,7 @@ const make = (
   ),
 ) => {
   const assertCurrent = vi.fn();
+  const diagnostic = vi.fn();
   const speech = new SpeechSynthesisSession({
     connection: () => ({
       baseUrl: 'https://gateway.test/prefix/v1/',
@@ -15,14 +16,15 @@ const make = (
     }),
     fetch: fetcher,
     assertCurrent,
+    diagnostic,
   });
-  return { speech, fetcher, assertCurrent };
+  return { speech, fetcher, assertCurrent, diagnostic };
 };
 const input = { requestId: 'one', modelId: 'speech-model', voice: 'alloy', text: 'hello' };
 
 describe('speech transport', () => {
   it('preserves the server-provided endpoint prefix, sends the selected model, and pulls binary PCM', async () => {
-    const { speech, fetcher } = make();
+    const { speech, fetcher, diagnostic } = make();
     expect(await speech.start(input)).toEqual({ sampleRate: 24000 });
     expect(fetcher).toHaveBeenCalledWith(
       new URL('https://gateway.test/prefix/v1/audio/speech'),
@@ -40,6 +42,13 @@ describe('speech transport', () => {
     expect(new Uint8Array((await speech.read('one')).pcm)).toEqual(new Uint8Array([1, 2]));
     expect((await speech.read('one')).done).toBe(true);
     speech.cancel();
+    expect(diagnostic.mock.calls.map(([event]) => event.stage)).toEqual([
+      'request',
+      'headers',
+      'first_pcm',
+      'complete',
+    ]);
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toMatch(/hello|test-key|gateway\.test|alloy/);
   });
 
   it.each(['audio/mpeg', 'application/json'])(
@@ -53,10 +62,19 @@ describe('speech transport', () => {
   );
 
   it('does not pass upstream error bodies to the renderer', async () => {
-    const { speech } = make(
+    const { speech, diagnostic } = make(
       vi.fn(async () => new Response('upstream-sensitive-error', { status: 401 })),
     );
     await expect(speech.start(input)).rejects.toThrow(/^request$/);
+    expect(diagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'headers', httpStatus: 401 }),
+    );
+    expect(diagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'error', code: 'request' }),
+    );
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toMatch(
+      /upstream-sensitive-error|hello|test-key/,
+    );
   });
 
   it.each([new Uint8Array(), new Uint8Array([1])])(

@@ -19,6 +19,9 @@ import { VoiceConversationService } from './service.js';
 import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from './models.js';
 import { companionVoicePreference, updateCompanionVoicePreference } from './preferences.js';
 import type { VoiceInputSettings } from '../../shared/voiceInputData.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('voice-conversation');
 
 function boundedString(value: unknown, name: string, limit: number): string {
   const text = requireString(value, name);
@@ -48,6 +51,7 @@ export function registerVoiceConversationIpc(deps: {
   };
   const service = new VoiceConversationService({
     ...deps,
+    log,
     owner: () => (isAppSessionBoundaryPending() ? 'changing-account' : activeOwnerScopeKey()),
     assertCompanion: async (botId, sessionId) => {
       const bot = await getBotRemoteResourceSource(botId);
@@ -81,6 +85,8 @@ export function registerVoiceConversationIpc(deps: {
       try {
         return await action(event, ...args);
       } catch {
+        // Do not log args or upstream errors: either can include text or secrets.
+        log.warn('IPC operation failed', { operation: name });
         throwIpcError('PRECONDITION_FAILED', 'Voice conversation is unavailable.');
       }
     });

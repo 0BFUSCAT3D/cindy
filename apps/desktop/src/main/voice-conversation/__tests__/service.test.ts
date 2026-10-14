@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AsrSegment } from '@cindy/voice-input-core';
 import { VoiceConversationService } from '../service.js';
 import { hasVoiceConversationLease } from '../lease.js';
 
@@ -108,7 +109,7 @@ function fixture() {
     dispose: vi.fn(async () => {}),
     appendAudio: vi.fn(),
     flushAudio: vi.fn(async () => {}),
-    onSegment: vi.fn(),
+    onSegment: vi.fn<(callback: (segment: AsrSegment) => void) => void>(),
     onEvent: vi.fn(),
   };
   const deps = {
@@ -127,6 +128,7 @@ function fixture() {
         new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/pcm' } }),
     ),
     emit: vi.fn(),
+    log: { info: vi.fn(), warn: vi.fn() },
   };
   const service = new VoiceConversationService(deps);
   active.push(service);
@@ -134,6 +136,44 @@ function fixture() {
 }
 
 describe('local companion call ownership', () => {
+  it('logs send timing and speech stages through the injected logger without content or credentials', async () => {
+    vi.useFakeTimers();
+    const { service, deps, provider } = fixture();
+    await service.start(1, selection);
+    provider.onSegment.mock.calls[0][0]({ id: 'segment', text: 'private utterance', final: true });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(deps.log.info).toHaveBeenCalledWith('input settled', {
+      callId: selection.callId,
+      trigger: 'silence',
+      inactiveMs: 2_000,
+      finalStableMs: 2_000,
+      segments: 1,
+      characters: 17,
+    });
+    await service.speak(1, selection.callId, 'request-1', 'private reply');
+    await service.readSpeech(1, selection.callId, 'request-1');
+    await service.readSpeech(1, selection.callId, 'request-1');
+    expect(deps.log.info).toHaveBeenCalledWith(
+      'speech transport',
+      expect.objectContaining({
+        callId: selection.callId,
+        requestId: 'request-1',
+        protocol: 'openai',
+        stage: 'complete',
+        bytes: 2,
+      }),
+    );
+    const logs = JSON.stringify([...deps.log.info.mock.calls, ...deps.log.warn.mock.calls]);
+    for (const privateValue of [
+      'private utterance',
+      'private reply',
+      'test-key',
+      'gateway.test',
+      'alloy',
+    ])
+      expect(logs).not.toContain(privateValue);
+  });
+
   it('requires a real available speech model and the canonical companion task before allocating ASR', async () => {
     const { service, deps } = fixture();
     await expect(service.start(1, { ...selection, modelId: 'invented' })).rejects.toThrow(

@@ -1,6 +1,15 @@
 import { miniMaxPcmStream, speechRequest, type SpeechConnection } from './speechProtocols.js';
 import { SpeechError } from './speechError.js';
 export type { SpeechConnection } from './speechProtocols.js';
+export type SpeechDiagnostic = {
+  stage: 'request' | 'headers' | 'first_pcm' | 'complete' | 'cancelled' | 'error';
+  requestId: string;
+  protocol: SpeechConnection['protocol'];
+  elapsedMs: number;
+  bytes: number;
+  httpStatus?: number;
+  code?: SpeechError['code'] | 'headers_timeout' | 'read_timeout';
+};
 /** PCM speech transport with provider adapters. Reads are pulled by playback for bounded buffering. */
 export class SpeechSynthesisSession {
   private epoch = 0;
@@ -9,12 +18,17 @@ export class SpeechSynthesisSession {
   private requestId: string | null = null;
   private totalBytes = 0;
   private reading = false;
+  private diagnostic?: (
+    stage: SpeechDiagnostic['stage'],
+    details?: Pick<SpeechDiagnostic, 'httpStatus' | 'code'>,
+  ) => void;
 
   constructor(
     private readonly deps: {
       connection(): SpeechConnection;
       assertCurrent(): void;
       fetch: typeof fetch;
+      diagnostic?(event: SpeechDiagnostic): void;
     },
   ) {}
 
@@ -32,7 +46,22 @@ export class SpeechSynthesisSession {
     const controller = new AbortController();
     this.controller = controller;
     this.requestId = input.requestId;
-    const timer = setTimeout(() => controller.abort(), 30_000);
+    const startedAt = Date.now();
+    this.diagnostic = (stage, details = {}) =>
+      this.deps.diagnostic?.({
+        stage,
+        requestId: input.requestId,
+        protocol: connection.protocol,
+        elapsedMs: Date.now() - startedAt,
+        bytes: this.totalBytes,
+        ...details,
+      });
+    this.diagnostic('request');
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 30_000);
     let response: Response | undefined;
     try {
       response = await this.deps.fetch(url, {
@@ -47,6 +76,7 @@ export class SpeechSynthesisSession {
         await response.body?.cancel();
         throw new SpeechError('cancelled');
       }
+      this.diagnostic('headers', { httpStatus: response.status });
       if (!response.ok || !response.body) {
         await response.body?.cancel();
         throw new SpeechError('request');
@@ -71,7 +101,16 @@ export class SpeechSynthesisSession {
     } catch (error) {
       if (response?.body && !response.body.locked)
         void response.body.cancel().catch(() => undefined);
-      if (epoch === this.epoch) this.cancel();
+      if (epoch === this.epoch) {
+        this.diagnostic?.('error', {
+          code: timedOut
+            ? 'headers_timeout'
+            : error instanceof SpeechError
+              ? error.code
+              : 'request',
+        });
+        this.cancel('failed');
+      }
       throw error instanceof SpeechError ? error : new SpeechError('request');
     } finally {
       clearTimeout(timer);
@@ -91,27 +130,36 @@ export class SpeechSynthesisSession {
     const epoch = this.epoch;
     this.reading = true;
     const timer = setTimeout(() => {
-      if (epoch === this.epoch) this.cancel();
+      if (epoch === this.epoch) {
+        this.diagnostic?.('error', { code: 'read_timeout' });
+        this.cancel('failed');
+      }
     }, 15_000);
     try {
       const result = await reader.read();
       this.deps.assertCurrent();
       if (epoch !== this.epoch) throw new SpeechError('cancelled');
       const value = result.value ?? new Uint8Array();
+      const firstPcm = this.totalBytes === 0 && value.byteLength > 0;
       this.totalBytes += value.byteLength;
       if (value.byteLength > 1_048_576 || this.totalBytes > 24_000 * 2 * 600) {
-        this.cancel();
         throw new SpeechError('format');
       }
+      if (firstPcm) this.diagnostic?.('first_pcm');
       if (result.done) {
         if (this.totalBytes === 0 || this.totalBytes % 2 !== 0) throw new SpeechError('format');
         reader.releaseLock();
         this.reader = null;
         this.requestId = null;
+        this.diagnostic?.('complete');
+        this.diagnostic = undefined;
       }
       return { pcm: Uint8Array.from(value).buffer, done: result.done };
     } catch (error) {
-      if (epoch === this.epoch) this.cancel();
+      if (epoch === this.epoch) {
+        this.diagnostic?.('error', { code: error instanceof SpeechError ? error.code : 'request' });
+        this.cancel('failed');
+      }
       throw error instanceof SpeechError ? error : new SpeechError('request');
     } finally {
       clearTimeout(timer);
@@ -119,7 +167,9 @@ export class SpeechSynthesisSession {
     }
   }
 
-  cancel(): void {
+  cancel(reason: 'interrupted' | 'failed' = 'interrupted'): void {
+    if (reason === 'interrupted') this.diagnostic?.('cancelled');
+    this.diagnostic = undefined;
     ++this.epoch;
     this.controller?.abort();
     this.controller = null;

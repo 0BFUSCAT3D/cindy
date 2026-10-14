@@ -13,6 +13,7 @@ import type {
 import { acquireVoiceConversationLease, releaseVoiceConversationLease } from './lease.js';
 import { SpeechSynthesisSession, type SpeechConnection } from './speech.js';
 import { loadSpeechVoices } from './voices.js';
+import type { Logger } from '../logger.js';
 
 type Call = {
   id: string;
@@ -45,6 +46,7 @@ export class VoiceConversationService {
       connection(selection: SpeechModelSelection): SpeechConnection;
       fetch: typeof fetch;
       emit(sender: number, event: VoiceConversationEvent): void;
+      log?: Pick<Logger, 'info' | 'warn'>;
     },
   ) {}
 
@@ -82,6 +84,11 @@ export class VoiceConversationService {
       sender,
       owner,
       speech: new SpeechSynthesisSession({
+        diagnostic: (event) =>
+          this.deps.log?.[event.stage === 'error' ? 'warn' : 'info']('speech transport', {
+            previewId: selection.previewId,
+            ...event,
+          }),
         connection: () => binding,
         fetch: this.deps.fetch,
         assertCurrent: () => {
@@ -146,6 +153,7 @@ export class VoiceConversationService {
       if (this.call?.id !== id || this.deps.owner() !== owner) throw new Error('call_ended');
     };
     const input = new VoiceConversationInput({
+      diagnostic: (event) => this.deps.log?.info('input settled', { callId: id, ...event }),
       createProvider: async () => {
         assertCurrent();
         return this.deps.createProvider();
@@ -156,11 +164,24 @@ export class VoiceConversationService {
           void this.end(sender, id);
           return;
         }
+        if (event.type !== 'draft')
+          this.deps.log?.[event.type === 'error' ? 'warn' : 'info']('input event', {
+            callId: id,
+            event: event.type,
+            ...(event.type === 'utterance'
+              ? { utteranceId: event.id, characters: event.text.length }
+              : {}),
+          });
         this.deps.emit(sender, { callId: id, event });
         if (event.type === 'error') void this.end(sender, id);
       },
     });
     const speech = new SpeechSynthesisSession({
+      diagnostic: (event) =>
+        this.deps.log?.[event.stage === 'error' ? 'warn' : 'info']('speech transport', {
+          callId: id,
+          ...event,
+        }),
       connection: () => binding,
       fetch: this.deps.fetch,
       assertCurrent: () => {
@@ -171,13 +192,17 @@ export class VoiceConversationService {
       },
     });
     this.call = { id, owner, sender, selection, input, speech };
+    const startedAt = Date.now();
+    this.deps.log?.info('call starting', { callId: id, protocol: binding.protocol });
     try {
       await this.deps.assertCompanion(selection.botId, selection.sessionId);
       assertCurrent();
       await input.start();
       assertCurrent();
+      this.deps.log?.info('call ready', { callId: id, elapsedMs: Date.now() - startedAt });
       return { callId: id };
     } catch (error) {
+      this.deps.log?.warn('call start failed', { callId: id, elapsedMs: Date.now() - startedAt });
       await this.end(sender, id);
       throw error;
     }
@@ -223,6 +248,7 @@ export class VoiceConversationService {
     const call = this.call;
     if (!call || call.sender !== sender || (id && call.id !== id)) return;
     this.call = null;
+    this.deps.log?.info('call ended', { callId: call.id });
     this.deps.emit(call.sender, { callId: call.id, event: { type: 'ended' } });
     call.speech.cancel();
     try {

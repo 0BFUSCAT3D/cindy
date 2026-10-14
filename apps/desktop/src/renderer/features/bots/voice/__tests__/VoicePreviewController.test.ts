@@ -11,6 +11,8 @@ function fixture() {
     play: vi.fn(async (read: () => Promise<unknown>) => {
       await read();
     }),
+    pause: vi.fn(),
+    resume: vi.fn(),
     cancel: vi.fn(),
     close: vi.fn(),
   };

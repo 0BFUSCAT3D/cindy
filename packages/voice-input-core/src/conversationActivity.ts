@@ -13,7 +13,13 @@ export class ConversationActivity {
   push(
     pcm: ArrayBuffer,
     sampleRate = 16_000,
-  ): { level: number; started: boolean; ended: boolean; active: boolean } {
+  ): {
+    level: number;
+    started: boolean;
+    ended: boolean;
+    active: boolean;
+    sound: boolean;
+  } {
     const samples = new Int16Array(pcm);
     let energy = 0;
     for (const sample of samples) energy += sample * sample;
@@ -48,6 +54,7 @@ export class ConversationActivity {
       started,
       ended,
       active: this.active,
+      sound,
     };
   }
 }

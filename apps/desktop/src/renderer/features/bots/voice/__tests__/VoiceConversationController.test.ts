@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VoiceConversationApi, VoiceConversationEvent } from '@/../shared/voiceConversation';
 import type { ChatMessage } from '@/lib/makerChatStore';
 import { VoiceConversationController } from '../VoiceConversationController';
+
+const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock('@/lib/logger', () => ({ createLogger: () => log }));
+beforeEach(() => vi.clearAllMocks());
 
 const selection = { modelId: 'tts', voice: 'alloy' };
 const user = (id = 'user-1'): ChatMessage =>
@@ -39,7 +43,13 @@ function fixture() {
     stop: vi.fn(async () => {}),
     onPcm16k: vi.fn(),
   };
-  const player = { play: vi.fn(async () => {}), cancel: vi.fn(), close: vi.fn() };
+  const player = {
+    play: vi.fn(async () => {}),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    cancel: vi.fn(),
+    close: vi.fn(),
+  };
   const send = vi.fn(
     async (_text: string, created: (id: string) => void, current: () => boolean) => {
       if (!current()) return false;
@@ -89,7 +99,7 @@ describe('companion voice loop', () => {
     expect(f.microphone.stop).toHaveBeenCalledOnce();
   });
 
-  it('interrupts pending TTS immediately and discards its late response without stopping the task', async () => {
+  it('pauses on acoustic onset and cancels pending TTS only when a new utterance commits', async () => {
     const f = fixture();
     let finish!: (value: { sampleRate: number }) => void;
     f.api.speak.mockImplementationOnce(
@@ -104,14 +114,16 @@ describe('companion voice loop', () => {
     await Promise.resolve();
     f.controller.updateMessages([user(), reply()]);
     expect(f.api.speak).toHaveBeenCalledOnce();
+    const interruptions = f.api.interrupt.mock.calls.length;
     f.emit({ type: 'speech-started' });
-    expect(f.player.cancel).toHaveBeenCalled();
-    expect(f.api.interrupt).toHaveBeenCalledWith('call-1');
+    expect(f.player.pause).toHaveBeenCalledOnce();
+    expect(f.api.interrupt).toHaveBeenCalledTimes(interruptions);
+    f.utterance('actually, another question');
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2));
+    expect(f.api.interrupt).toHaveBeenCalledTimes(interruptions + 1);
     finish({ sampleRate: 24000 });
     await Promise.resolve();
     expect(f.player.play).not.toHaveBeenCalled();
-    f.utterance('actually, another question');
-    await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2));
     expect(f.api.end).not.toHaveBeenCalled();
     f.controller.end();
   });
@@ -180,7 +192,7 @@ describe('companion voice loop', () => {
     expect(f.controller.getSnapshot().phase).toBe('idle');
   });
 
-  it('an interruption before a delayed send acknowledgement does not resurrect its old reply', async () => {
+  it('keeps a delayed send acknowledgement through a false onset and reads its final reply after quiet', async () => {
     const f = fixture();
     let done!: () => void;
     f.send.mockImplementationOnce(async (_text, created) => {
@@ -198,6 +210,105 @@ describe('companion voice loop', () => {
     await Promise.resolve();
     f.controller.updateMessages([user('old-user'), reply()]);
     expect(f.api.speak).not.toHaveBeenCalled();
+    f.emit({ type: 'speech-idle' });
+    await vi.waitFor(() => expect(f.api.speak).toHaveBeenCalledOnce());
+    expect(f.player.resume).toHaveBeenCalled();
+    f.controller.end();
+  });
+
+  it('reads the first final reply after a noise-only onset and still reads the next turn', async () => {
+    const f = fixture();
+    await f.controller.start(selection);
+    f.utterance();
+    await Promise.resolve();
+    await Promise.resolve();
+    f.emit({ type: 'speech-started' });
+    f.controller.updateMessages([user(), reply()]);
+    expect(f.api.speak).not.toHaveBeenCalled();
+    f.emit({ type: 'draft', text: '' });
+    f.emit({ type: 'speech-idle' });
+    await vi.waitFor(() => expect(f.player.play).toHaveBeenCalledOnce());
+    f.emit({ type: 'speech-idle' });
+    expect(f.api.speak).toHaveBeenCalledOnce();
+    f.utterance('next question');
+    await Promise.resolve();
+    await Promise.resolve();
+    f.controller.updateMessages([user(), reply(), user('user-2'), reply('reply-2')]);
+    await vi.waitFor(() => expect(f.player.play).toHaveBeenCalledTimes(2));
+    expect(f.controller.getSnapshot().error).toBeNull();
+    // Existing logger receives identifiers and counts, never voice/reply text.
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('next question');
+    expect(JSON.stringify(log.info.mock.calls)).not.toContain('Hello back');
+    f.controller.end();
+  });
+
+  it('resumes an already playing reply after empty speech without requesting synthesis again', async () => {
+    const f = fixture();
+    let played!: () => void;
+    f.player.play.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          played = resolve;
+        }),
+    );
+    await f.controller.start(selection);
+    f.utterance();
+    await Promise.resolve();
+    await Promise.resolve();
+    f.controller.updateMessages([user(), reply()]);
+    await vi.waitFor(() => expect(f.player.play).toHaveBeenCalledOnce());
+    f.emit({ type: 'speech-started' });
+    expect(f.controller.getSnapshot().phase).toBe('listening');
+    f.emit({ type: 'speech-idle' });
+    expect(f.player.resume).toHaveBeenCalled();
+    expect(f.controller.getSnapshot().phase).toBe('speaking');
+    expect(f.api.speak).toHaveBeenCalledOnce();
+    played();
+    await vi.waitFor(() => expect(f.controller.getSnapshot().phase).toBe('listening'));
+    f.controller.end();
+  });
+
+  it.each(['permission', 'mute', 'end'] as const)(
+    'does not resume a held reply across the %s boundary',
+    async (boundary) => {
+      const f = fixture();
+      await f.controller.start(selection);
+      f.utterance();
+      await Promise.resolve();
+      await Promise.resolve();
+      f.emit({ type: 'speech-started' });
+      if (boundary === 'permission') f.controller.setBlocked(true);
+      else if (boundary === 'mute') f.controller.toggleMute();
+      else f.controller.end();
+      f.emit({ type: 'speech-idle' });
+      f.controller.updateMessages([user(), reply()]);
+      expect(f.api.speak).not.toHaveBeenCalled();
+      expect(f.player.close).toHaveBeenCalled();
+      f.controller.end();
+    },
+  );
+
+  it('does not restore reply ownership after an explicit stop before send acknowledgement', async () => {
+    const f = fixture();
+    let done!: () => void;
+    f.send.mockImplementationOnce(async (_text, created) => {
+      created('old-user');
+      await new Promise<void>((resolve) => {
+        done = resolve;
+      });
+      return true;
+    });
+    await f.controller.start(selection);
+    f.utterance();
+    f.emit({ type: 'speech-started' });
+    f.controller.interrupt();
+    done();
+    await Promise.resolve();
+    await Promise.resolve();
+    f.emit({ type: 'speech-idle' });
+    f.controller.updateMessages([user('old-user'), reply()]);
+    expect(f.api.speak).not.toHaveBeenCalled();
+    expect(f.controller.getSnapshot().phase).toBe('listening');
     f.controller.end();
   });
 

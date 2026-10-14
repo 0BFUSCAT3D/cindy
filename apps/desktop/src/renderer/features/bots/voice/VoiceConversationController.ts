@@ -3,9 +3,12 @@ import type {
   VoiceConversationSelection,
 } from '@/../shared/voiceConversation';
 import type { ChatMessage } from '@/lib/makerChatStore';
+import { createLogger } from '@/lib/logger';
 import type { PcmChunk } from '@/voice-input/WebMicAudioEngine';
 import type { SpeechPlayer } from './PcmSpeechPlayer';
 import { speechChunks, VoiceReplyTracker } from './VoiceReplyTracker';
+
+const log = createLogger('voice-conversation');
 
 export type VoicePhase =
   'idle' | 'connecting' | 'listening' | 'thinking' | 'preparing' | 'speaking' | 'paused' | 'error';
@@ -51,6 +54,8 @@ export class VoiceConversationController {
   private queued: string[] = [];
   private pendingStart: Promise<unknown> = Promise.resolve();
   private teardown: Promise<unknown> = Promise.resolve();
+  private speechCandidate = false;
+  private replyPhase: 'thinking' | 'preparing' | 'speaking' | null = null;
 
   constructor(
     private readonly deps: {
@@ -73,6 +78,8 @@ export class VoiceConversationController {
     return () => this.listeners.delete(listener);
   };
   private patch(patch: Partial<VoiceSnapshot>): void {
+    if (patch.phase && patch.phase !== this.state.phase)
+      log.info('phase changed', { callId: this.callId, from: this.state.phase, to: patch.phase });
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) listener();
   }
@@ -93,8 +100,25 @@ export class VoiceConversationController {
       this.unsubscribe = this.deps.api.onEvent(({ callId, event }) => {
         if (!current() || callId !== this.callId) return;
         if (event.type === 'speech-started') {
-          this.interrupt();
-          this.patch({ phase: 'listening' });
+          // An acoustic onset can be noise. Pause playback without consuming
+          // the reply; only a finalized, nonempty utterance replaces its owner.
+          if (!this.speechCandidate) {
+            this.speechCandidate = true;
+            this.player?.pause();
+            log.info('reply held for possible speech', { callId, pendingInput: this.pendingInput });
+            this.patch({ phase: 'listening', level: 0 });
+          }
+        } else if (event.type === 'speech-idle') {
+          if (this.speechCandidate) {
+            this.speechCandidate = false;
+            this.player?.resume();
+            log.info('reply resumed after empty speech', {
+              callId,
+              pendingInput: this.pendingInput,
+            });
+            this.setReplyPhase(this.replyPhase);
+            this.updateMessages(this.latestMessages);
+          }
         } else if (event.type === 'draft') {
           this.patch({ transcript: event.text });
         } else if (event.type === 'utterance') {
@@ -151,19 +175,28 @@ export class VoiceConversationController {
         await mic.stop();
         return;
       }
-      this.patch({ phase: this.pendingInput ? 'thinking' : 'listening' });
+      this.setReplyPhase(this.pendingInput ? 'thinking' : null);
       this.updateMessages(this.latestMessages);
     } catch {
       if (current()) this.fail('connection');
     }
   }
 
-  /** Speech onset fences old replies and audio before a new transcript is committed. */
-  interrupt(): void {
+  private setReplyPhase(phase: typeof this.replyPhase): void {
+    this.replyPhase = phase;
+    this.patch({ phase: this.speechCandidate ? 'listening' : (phase ?? 'listening'), level: 0 });
+  }
+
+  /** Explicit stop or a committed new utterance permanently relinquishes the old reply. */
+  interrupt(reason: 'user_stop' | 'new_utterance' = 'user_stop'): void {
+    log.info('reply interrupted', { callId: this.callId, reason, pendingInput: this.pendingInput });
     ++this.speechEpoch;
+    this.speechCandidate = false;
+    this.replyPhase = null;
     this.tracker.interrupt();
     this.pendingInput = null;
     this.player?.cancel();
+    this.player?.resume();
     if (this.callId) void this.deps.api.interrupt(this.callId).catch(() => undefined);
     if (
       this.state.phase === 'speaking' ||
@@ -177,8 +210,9 @@ export class VoiceConversationController {
     const current = () =>
       this.enabled && epoch === this.epoch && !this.blocked && !this.state.muted;
     if (!current()) return;
-    this.interrupt();
-    this.patch({ phase: 'thinking', transcript: '', unsent: '' });
+    this.interrupt('new_utterance');
+    this.setReplyPhase('thinking');
+    this.patch({ transcript: '', unsent: '' });
     const replyEpoch = this.speechEpoch;
     let clientId: string | null = null;
     try {
@@ -201,6 +235,7 @@ export class VoiceConversationController {
         return;
       }
       if (replyEpoch !== this.speechEpoch) return;
+      log.info('voice input accepted', { callId: this.callId, clientId, characters: text.length });
       this.pendingInput = clientId;
       this.tracker.expect(clientId);
       this.updateMessages(this.latestMessages);
@@ -228,17 +263,33 @@ export class VoiceConversationController {
 
   updateMessages(messages: readonly ChatMessage[]): void {
     this.latestMessages = messages;
-    if (!this.enabled || !this.callId || this.blocked || this.state.muted || !this.pendingInput)
+    if (
+      !this.enabled ||
+      !this.callId ||
+      this.blocked ||
+      this.state.muted ||
+      !this.pendingInput ||
+      this.speechCandidate
+    )
       return;
     const reply = this.tracker.take(messages);
     if (!reply) {
       if (!this.tracker.hasPendingReply) {
+        log.info('reply ownership superseded', {
+          callId: this.callId,
+          pendingInput: this.pendingInput,
+        });
         this.pendingInput = null;
-        this.patch({ phase: 'listening' });
+        this.setReplyPhase(null);
       }
       return;
     }
     this.pendingInput = null;
+    log.info('final reply selected', {
+      callId: this.callId,
+      replyId: reply.id,
+      characters: reply.text.length,
+    });
     void this.speak(reply.text);
   }
 
@@ -250,17 +301,25 @@ export class VoiceConversationController {
     if (!callId || !player) return;
     const current = () =>
       epoch === this.epoch && speechEpoch === this.speechEpoch && this.enabled && !this.blocked;
-    this.patch({ phase: 'preparing', level: 0 });
+    this.setReplyPhase('preparing');
     try {
       for (const [index, chunk] of speechChunks(text).entries()) {
         if (!current()) return;
         const requestId = `${speechEpoch}:${index}`;
+        log.info('speech requested', { callId, requestId, characters: chunk.length });
         const { sampleRate } = await this.deps.api.speak({ callId, requestId, text: chunk });
         if (!current()) return;
-        this.patch({ phase: 'speaking' });
-        await player.play(() => this.deps.api.readSpeech(callId, requestId), sampleRate);
+        this.setReplyPhase('speaking');
+        await player.play(
+          () => this.deps.api.readSpeech(callId, requestId),
+          sampleRate,
+          () => {
+            log.info('playback scheduled', { callId, requestId, sampleRate });
+          },
+        );
+        if (current()) log.info('playback completed', { callId, requestId });
       }
-      if (current()) this.patch({ phase: 'listening', level: 0 });
+      if (current()) this.setReplyPhase(null);
     } catch {
       if (current()) this.fail('speech');
     }
@@ -307,6 +366,7 @@ export class VoiceConversationController {
   }
 
   private fail(error: VoiceSnapshot['error'], text?: string): void {
+    log.warn('voice mode failed', { callId: this.callId, phase: this.state.phase, reason: error });
     const unsent = [text || this.state.transcript || this.state.unsent, ...this.queued]
       .filter(Boolean)
       .join(' ');
@@ -317,6 +377,8 @@ export class VoiceConversationController {
   private release(): void {
     ++this.epoch;
     ++this.speechEpoch;
+    this.speechCandidate = false;
+    this.replyPhase = null;
     this.queued = [];
     const callId = this.callId;
     const microphone = this.microphone;

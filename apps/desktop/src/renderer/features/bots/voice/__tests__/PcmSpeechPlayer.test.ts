@@ -17,13 +17,23 @@ class TestAudioContext {
   state = 'running';
   destination = {};
   sources: ReturnType<typeof createTestSource>[] = [];
+  private elapsed = 0;
+  private runningAt = Date.now();
   get currentTime() {
-    return Date.now() / 1000;
+    return this.elapsed + (this.state === 'running' ? (Date.now() - this.runningAt) / 1000 : 0);
   }
   constructor() {
     TestAudioContext.latest = this;
   }
-  resume = vi.fn(async () => {});
+  resume = vi.fn(async () => {
+    if (this.state === 'running') return;
+    this.runningAt = Date.now();
+    this.state = 'running';
+  });
+  suspend = vi.fn(async () => {
+    this.elapsed = this.currentTime;
+    this.state = 'suspended';
+  });
   close = vi.fn(async () => {
     this.state = 'closed';
   });
@@ -84,4 +94,44 @@ it('fences an IPC read that finishes after cancellation', async () => {
   await rejected;
   expect(TestAudioContext.latest.sources).toHaveLength(0);
   player.close();
+});
+
+it('freezes the audio clock and queued samples during a false onset, then continues without rereading', async () => {
+  const player = new PcmSpeechPlayer(vi.fn());
+  const read = vi.fn(async () => ({ pcm: new Int16Array(24_000).buffer, done: true }));
+  const started = vi.fn();
+  const playing = player.play(read, 24_000, started);
+  await vi.advanceTimersByTimeAsync(100);
+  const context = TestAudioContext.latest;
+  const sourcesBefore = [...context.sources];
+  player.pause();
+  await vi.advanceTimersByTimeAsync(0);
+  const position = context.currentTime;
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(context.currentTime).toBe(position);
+  expect(context.sources).toEqual(sourcesBefore);
+  expect(sourcesBefore.every((source) => source.stop.mock.calls.length === 0)).toBe(true);
+  player.resume();
+  await vi.advanceTimersByTimeAsync(1_100);
+  await playing;
+  expect(read).toHaveBeenCalledOnce();
+  expect(started).toHaveBeenCalledOnce();
+  expect(context.sources.slice(0, sourcesBefore.length)).toEqual(sourcesBefore);
+  player.close();
+});
+
+it('holds a synthesis response that arrives during noise and cancels a suspended player on teardown', async () => {
+  const player = new PcmSpeechPlayer(vi.fn());
+  player.pause();
+  const read = vi.fn(async () => ({ pcm: new Int16Array(2_400).buffer, done: true }));
+  const playing = player.play(read, 24_000);
+  const rejected = expect(playing).rejects.toThrow('Playback interrupted');
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(read).not.toHaveBeenCalled();
+  expect(TestAudioContext.latest.sources).toHaveLength(0);
+  player.close();
+  await rejected;
+  player.resume();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(TestAudioContext.latest.state).toBe('closed');
 });

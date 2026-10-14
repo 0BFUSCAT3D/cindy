@@ -18,7 +18,13 @@ export class Pcm16Decoder {
 }
 
 export interface SpeechPlayer {
-  play(read: () => Promise<{ pcm: ArrayBuffer; done: boolean }>, sampleRate: number): Promise<void>;
+  play(
+    read: () => Promise<{ pcm: ArrayBuffer; done: boolean }>,
+    sampleRate: number,
+    onStarted?: () => void,
+  ): Promise<void>;
+  pause(): void;
+  resume(): void;
   cancel(): void;
   close(): void;
 }
@@ -29,35 +35,37 @@ export class PcmSpeechPlayer implements SpeechPlayer {
   private generation = 0;
   private sources = new Set<AudioBufferSourceNode>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
+  private paused = false;
+  private contextTransition: Promise<void>;
+  private resumeWaiters = new Set<() => void>();
 
   constructor(private readonly onLevel: (level: number) => void) {
     // Construct/resume in the explicit Start gesture, before any network await.
     this.context = new AudioContext();
-    void this.context.resume().catch(() => undefined);
+    this.contextTransition = this.context.resume();
+    void this.contextTransition.catch(() => undefined);
   }
 
   async play(
     read: () => Promise<{ pcm: ArrayBuffer; done: boolean }>,
     sampleRate: number,
+    onStarted?: () => void,
   ): Promise<void> {
     this.cancel();
     const generation = this.generation;
     const decoder = new Pcm16Decoder();
     let nextAt = this.context.currentTime;
-    const assertActive = () => {
-      if (generation !== this.generation || this.context.state !== 'running')
-        throw new Error('Playback interrupted');
-    };
-    await this.context.resume();
+    let started = false;
+    this.updateContext();
     for (;;) {
-      assertActive();
+      await this.waitUntilRunning(generation);
       const chunk = await read();
-      assertActive();
+      await this.waitUntilRunning(generation);
       const samples = decoder.decode(chunk.pcm);
       for (let offset = 0; offset < samples.length; offset += 2_400) {
         while (nextAt - this.context.currentTime > 0.3) {
           await new Promise((resolve) => setTimeout(resolve, 25));
-          assertActive();
+          await this.waitUntilRunning(generation);
         }
         const part = samples.subarray(offset, offset + 2_400);
         const buffer = this.context.createBuffer(1, part.length, sampleRate);
@@ -78,12 +86,16 @@ export class PcmSpeechPlayer implements SpeechPlayer {
         const timer = setTimeout(
           () => {
             this.timers.delete(timer);
-            if (generation === this.generation) this.onLevel(level);
+            if (generation === this.generation && !this.paused) this.onLevel(level);
           },
           Math.max(0, nextAt - this.context.currentTime) * 1000,
         );
         this.timers.add(timer);
         source.start(nextAt);
+        if (!started) {
+          started = true;
+          onStarted?.();
+        }
         nextAt += part.length / sampleRate;
       }
       if (chunk.done) break;
@@ -91,13 +103,64 @@ export class PcmSpeechPlayer implements SpeechPlayer {
     decoder.finish();
     while (nextAt > this.context.currentTime) {
       await new Promise((resolve) => setTimeout(resolve, 25));
-      assertActive();
+      await this.waitUntilRunning(generation);
     }
     this.onLevel(0);
   }
 
+  // Suspend the audio clock as well as reads: queued samples resume from their
+  // exact position after a false onset, without another paid synthesis request.
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.onLevel(0);
+    this.updateContext();
+  }
+
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.updateContext();
+    this.wakePlayback();
+  }
+
+  private updateContext(): void {
+    // Serialize native transitions, consulting current intent so a late suspend
+    // cannot overtake Resume or reopen a context closed at an account boundary.
+    this.contextTransition = this.contextTransition
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.context.state === 'closed') return;
+        if (this.paused) await this.context.suspend();
+        else await this.context.resume();
+      });
+    void this.contextTransition.catch(() => undefined);
+  }
+
+  private async waitUntilRunning(generation: number): Promise<void> {
+    for (;;) {
+      if (generation !== this.generation || this.context.state === 'closed')
+        throw new Error('Playback interrupted');
+      if (this.paused) {
+        await new Promise<void>((resolve) => this.resumeWaiters.add(resolve));
+        continue;
+      }
+      await this.contextTransition;
+      if (generation !== this.generation) throw new Error('Playback interrupted');
+      if (this.paused) continue;
+      if (this.context.state !== 'running') throw new Error('Playback interrupted');
+      return;
+    }
+  }
+
+  private wakePlayback(): void {
+    for (const resolve of this.resumeWaiters) resolve();
+    this.resumeWaiters.clear();
+  }
+
   cancel(): void {
     ++this.generation;
+    this.wakePlayback();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
     for (const source of this.sources) {

@@ -26,6 +26,8 @@ vi.mock('@/voice-input/WebMicAudioEngine', () => ({
 vi.mock('../PcmSpeechPlayer', () => ({
   PcmSpeechPlayer: class {
     close = audio.close;
+    pause() {}
+    resume() {}
     cancel() {}
     async play() {}
   },
