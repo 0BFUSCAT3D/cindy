@@ -231,6 +231,20 @@ async function getTrackedFiles(baseRepo: string): Promise<Set<string>> {
 }
 
 /**
+ * 目标 worktree HEAD 树(= sourceBranch)里的文件。base 未跟踪、sourceBranch 已跟踪的
+ * 同名文件不能用 base 的本地副本覆盖(与 WorktreeManager 的 listProtectedClaudeSiviPaths
+ * 同一口径)。查询失败按空集处理(fail-open)。
+ */
+async function getHeadTreeFiles(root: string): Promise<Set<string>> {
+  try {
+    const { stdout } = await gitExec(['ls-tree', '-r', '-z', '--name-only', 'HEAD'], root);
+    return new Set(stdout.split('\0').filter(Boolean));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+/**
  * 把 baseRepo 下匹配 patterns 且未被 git tracked 的文件拷贝到 destRoot 下相同相对路径。
  *
  * 已存在的 dest 文件会被覆盖(fs.copyFile 默认行为)。软链复制为软链本身。
@@ -259,7 +273,11 @@ async function copyMatchedFiles(
   const matched = listAllFiles(baseRepo).filter(matches);
   if (matched.length === 0) return [];
 
-  const tracked = await getTrackedFiles(baseRepo);
+  const [trackedInBase, trackedInDestHead] = await Promise.all([
+    getTrackedFiles(baseRepo),
+    getHeadTreeFiles(destRoot),
+  ]);
+  const tracked = new Set([...trackedInBase, ...trackedInDestHead]);
   const results: IncludeFileResult[] = [];
 
   for (const rel of matched) {
@@ -340,7 +358,8 @@ export async function listChangedWorktreeIncludeFiles(
 
   for (const rel of srcFiles) {
     if (!matches(rel)) continue;
-    if (trackedInBase.has(rel)) continue;
+    // worktree 分支已跟踪的同名文件不是从 base 复制来的, 其改动由 git 自身的 dirty 检查负责。
+    if (trackedInBase.has(rel) || trackedInDest.has(rel)) continue;
 
     const srcAbs = path.join(baseRepo, rel);
     const destAbs = path.join(destRoot, rel);

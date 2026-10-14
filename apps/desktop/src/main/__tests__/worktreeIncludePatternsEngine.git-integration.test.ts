@@ -306,6 +306,37 @@ describe('listChangedWorktreeIncludeFiles', () => {
   });
 });
 
+describe('include files tracked on the worktree branch', () => {
+  it('neither overwrites nor reports a file the target branch already tracks', async () => {
+    const gitRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-wt-include-branch-'));
+    const repo = path.join(gitRoot, 'repo');
+    const worktree = path.join(gitRoot, 'worktree');
+    fs.mkdirSync(repo, { recursive: true });
+    try {
+      git(repo, 'init');
+      git(repo, 'config', 'user.name', 'XDMaker Test');
+      git(repo, 'config', 'user.email', 'test@xdmaker.local');
+      fs.writeFileSync(path.join(repo, '.worktreeinclude'), 'local.json\n');
+      git(repo, 'add', '.worktreeinclude');
+      git(repo, 'commit', '-m', 'init');
+      git(repo, 'branch', 'feature');
+      git(repo, 'worktree', 'add', worktree, 'feature');
+      fs.writeFileSync(path.join(worktree, 'local.json'), '{"branch":true}');
+      git(worktree, 'add', 'local.json');
+      git(worktree, 'commit', '-m', 'track local.json on feature');
+      fs.writeFileSync(path.join(repo, 'local.json'), '{"base":true}');
+
+      await expect(applyWorktreeIncludeFile(repo, worktree)).resolves.toEqual([
+        { relpath: 'local.json', status: 'skipped-tracked' },
+      ]);
+      expect(fs.readFileSync(path.join(worktree, 'local.json'), 'utf8')).toBe('{"branch":true}');
+      await expect(listChangedWorktreeIncludeFiles(repo, worktree)).resolves.toEqual([]);
+    } finally {
+      fs.rmSync(gitRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('copyWorktreeIncludeFiles restore mode', () => {
   let tmpRoot: string;
   let baseRepo: string;
