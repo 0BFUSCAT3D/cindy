@@ -98,6 +98,18 @@ describe('thread previews', () => {
     expect(io.threadPage).toHaveBeenCalledTimes(3);
   });
 
+  it('shows a new reply in the window even when a deletion keeps the reply count unchanged', async () => {
+    const root = message({ id: rootB, replyCount: 3 });
+    io.threadPage.mockResolvedValue([reply('b3', rootB), reply('b2', rootB), reply('b1', rootB)]);
+    projection.previews(room, [root], fullWindow([]));
+    await projection.settled();
+    // An older reply is deleted while b4 arrives: still three replies.
+    const newest = reply('b4', rootB);
+    const previews = projection.previews(room, [root], fullWindow([newest]));
+    expect(previews.get(rootB)!.map(m => m.id)).toEqual(['b3', 'b4']);
+    expect(io.threadPage).toHaveBeenCalledTimes(1);
+  });
+
   it('bounds concurrent reads and backs off a failed thread instead of failing the room', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     let active = 0, peak = 0;

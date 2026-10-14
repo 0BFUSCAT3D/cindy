@@ -145,6 +145,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
       }
       const result = new Map<string, M[]>();
       const missing: Array<{ cacheKey: string; item: M }> = [];
+      const windowStart = snapshot.reduce<bigint | null>((min, message) => min === null || BigInt(message.seq) < min ? BigInt(message.seq) : min, null);
       for (const root of page) {
         const count = root.replyCount ?? 0;
         if (root.threadRootId || count <= 0) continue;
@@ -153,7 +154,10 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         const cached = previews.get(cacheKey);
         // The window is a suffix of the room's sequence, so what it holds is the newest.
         if (complete || found.length >= Math.min(count, BOT_GROUP_THREAD_PREVIEW_REPLIES)) result.set(root.id, found);
-        else if (cached?.replyCount === count) result.set(root.id, cached.replies);
+        // A same count can hide a new reply beside a deleted old one: what the window holds
+        // comes first, and the cached page only fills in below it.
+        else if (cached?.replyCount === count) result.set(root.id, [...found,
+          ...cached.replies.filter(reply => windowStart === null || BigInt(reply.seq) < windowStart)]);
         else if (!waiting(cacheKey)) missing.push({ cacheKey, item: root });
       }
       fill(roomId, missing, async root => {
