@@ -12291,6 +12291,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     pluginTaskEpoch = snapshot;
     pluginTasks = createPluginTaskService({
       store: createPluginTaskStore(snapshot.client), assertCurrent, assertAuthorized: assertPlugin, resolveRoute,
+      readModelPreference: readPluginTaskConfig,
       readPermissionMode: pluginId => clampPluginTaskPermissionMode(readPluginTaskConfig(pluginId).permissionMode),
       setModel: async (taskId, route, assertUnchanged) => {
         const current = await sessionControlService.getSessionRuntime({ targetSessionId: taskId });

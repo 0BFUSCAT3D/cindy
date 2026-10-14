@@ -117,6 +117,7 @@ function fixture() {
   const deps: PluginTaskServiceDeps = {
     store,
     readPermissionMode: () => 'auto',
+    readModelPreference: () => route,
     assertAuthorized: () => {
       if (!current) throw new Error('Owner changed');
     },
@@ -951,6 +952,7 @@ it('does not apply a model after the task changes while route admission is pendi
 it('rechecks plugin defaults for the same task on every request without resetting unchanged tasks', async () => {
   const f = fixture();
   let preference = { ...f.route, model: 'grok' };
+  f.deps.readModelPreference = () => preference;
   f.deps.resolveRoute = vi.fn(async (_plugin, requested) => requested ?? { ...preference });
   // First install: creation already respects the saved preference.
   let task = await f.create();
@@ -983,6 +985,60 @@ it('rechecks plugin defaults for the same task on every request without resettin
   f.deps.resolveRoute = async () => {throw new PluginTaskError('ROUTE_UNAVAILABLE', 'Unavailable selection');};
   await expect(sync()).rejects.toMatchObject({code:'ROUTE_UNAVAILABLE'});
   expect(f.deps.setModel).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  { model: 'new-model' }, { providerId: 'new-provider' },
+  { agentKind: 'pi' as const }, { effort: 'low' }, { fastMode: true },
+])('rejects preferences changed during async route admission: %j', async patch => {
+  const f = fixture(), task = await f.create();
+  const preference = { ...f.route };
+  f.deps.readModelPreference = () => preference;
+  let entered!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  f.deps.resolveRoute = async () => { const captured = { ...preference }; entered(); await gate; return captured; };
+  f.deps.setModel = vi.fn(async (id, route, assertCurrent) => {
+    await assertCurrent();
+    const stored = f.tasks.get(id)!;
+    f.tasks.set(id, { ...stored, revision: stored.revision + 1, resolvedConfig: route });
+    return { status: 'applied' };
+  });
+  const request = { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' as const };
+  const pending = f.service.setModel('p', request);
+  await started;
+  Object.assign(preference, patch);
+  const rejected = expect(pending).rejects.toMatchObject({ code: 'STALE_REVISION' });
+  finish(); await rejected;
+  expect(f.deps.setModel).not.toHaveBeenCalled();
+  expect((await f.service.get('p', task.taskId)).revision).toBe(task.revision);
+  // No stale input was accepted; retry resolves and applies the newly saved choice.
+  f.deps.resolveRoute = async () => ({ ...preference });
+  const next = await f.service.setModel('p', request);
+  expect(next.task.resolvedConfig).toEqual(preference);
+});
+
+it('rechecks saved preferences at the runtime mutation boundary', async () => {
+  const f = fixture(), task = await f.create();
+  let preference = { ...f.route, model: 'chosen' };
+  f.deps.readModelPreference = () => preference;
+  f.deps.resolveRoute = async () => ({ ...preference });
+  const apply = vi.fn();
+  f.deps.setModel = async (_id, _route, assertCurrent) => {
+    preference = { ...preference, model: 'newer' };
+    await assertCurrent(); apply(); return { status: 'applied' };
+  };
+  await expect(f.service.setModel('p', { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' }))
+    .rejects.toMatchObject({ code: 'STALE_REVISION' });
+  expect(apply).not.toHaveBeenCalled();
+});
+
+it('does not reject explicit routes when unrelated plugin preferences change', async () => {
+  const f = fixture(), task = await f.create();
+  f.deps.readModelPreference = () => { throw Error('Explicit route must not read preferences'); };
+  f.deps.setModel = vi.fn(async (_id, _route, assertCurrent) => { await assertCurrent(); return { status: 'applied' }; });
+  await expect(f.service.setModel('p', { taskId: task.taskId, expectedRevision: task.revision, route: f.route }))
+    .resolves.toMatchObject({ status: 'applied' });
 });
 
 it('keeps taskless plans immutable instead of retroactively granting scope', async () => {
