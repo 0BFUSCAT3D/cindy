@@ -21,13 +21,13 @@ import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFil
  * - an adopted rewrite (official update / combine) carries recorded snapshots
  *   over to the rewritten result that contains them.
  *
- * A missing record proves "never recorded"; an unreadable one proves nothing
- * and must never read as "nothing pending" (see `hasPendingBuild`). It is
- * repaired at the next transition.
+ * A missing or unreadable record proves nothing and must never read as
+ * "nothing pending" (see hasPendingBuild). A valid record marked untrusted
+ * preserves its snapshots but remains unknown until a successful generation.
  */
 
 const FILE = 'pending-build.json';
-const HASH = /^[0-9a-f]{40,64}$/i;
+const HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const MAX_FILE_BYTES = 256 * 1024;
 /**
  * Generous bound against a damaged file growing without end. Newest entries are
@@ -41,34 +41,48 @@ export interface PendingBuildSnapshot {
   tree: string;
 }
 
+interface PendingBuildLedger {
+  snapshots: PendingBuildSnapshot[];
+  readable: boolean;
+  trusted: boolean;
+}
+
 const file = (root: string) => path.join(root, FILE);
 
 /**
- * The recorded snapshots, oldest first. `[]` when none was ever recorded;
- * `undefined` when the record is unreadable — which proves nothing and must
- * never read as "nothing pending".
+ * The recorded snapshots, oldest first. `undefined` means the record is
+ * missing or unreadable — which proves nothing and must never read as
+ * "nothing pending".
  */
-export function readPendingBuilds(root: string): PendingBuildSnapshot[] | undefined {
+function readLedger(root: string): PendingBuildLedger {
   let info;
   try {
     info = lstatSync(file(root));
-    if (!info.isFile() || info.isSymbolicLink()) return undefined;
+    if (!info.isFile() || info.isSymbolicLink())
+      return { snapshots: [], readable: false, trusted: false };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    return undefined;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return { snapshots: [], readable: false, trusted: false };
+    return { snapshots: [], readable: false, trusted: false };
   }
   const raw = readAtomicFileSync(file(root));
-  if (raw === null) return [];
-  if (raw.length > MAX_FILE_BYTES) return undefined;
+  if (raw === null || raw.length > MAX_FILE_BYTES)
+    return { snapshots: [], readable: false, trusted: false };
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
-    return undefined;
+    return { snapshots: [], readable: false, trusted: false };
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    return { snapshots: [], readable: false, trusted: false };
   const input = value as Record<string, unknown>;
-  if (input.schema !== 1 || !Array.isArray(input.snapshots)) return undefined;
+  if (
+    input.schema !== 1 ||
+    !Array.isArray(input.snapshots) ||
+    (input.trusted !== undefined && typeof input.trusted !== 'boolean')
+  )
+    return { snapshots: [], readable: false, trusted: false };
   const snapshots: PendingBuildSnapshot[] = [];
   for (const entry of input.snapshots) {
     const snapshot = entry as { commit?: unknown; tree?: unknown } | null;
@@ -80,28 +94,27 @@ export function readPendingBuilds(root: string): PendingBuildSnapshot[] | undefi
       typeof snapshot.tree !== 'string' ||
       !HASH.test(snapshot.tree)
     )
-      return undefined;
+      return { snapshots: [], readable: false, trusted: false };
     snapshots.push({ commit: snapshot.commit, tree: snapshot.tree });
   }
-  return snapshots;
+  return { snapshots, readable: true, trusted: input.trusted !== false };
 }
 
-function writePendingBuilds(root: string, snapshots: PendingBuildSnapshot[]): void {
+export function readPendingBuilds(root: string): PendingBuildSnapshot[] | undefined {
+  const ledger = readLedger(root);
+  return ledger.readable ? ledger.snapshots : undefined;
+}
+
+function writePendingBuilds(root: string, snapshots: PendingBuildSnapshot[], trusted = true): void {
   mkdirSync(root, { recursive: true });
-  atomicWriteFileSync(file(root), JSON.stringify({ schema: 1, snapshots }));
+  atomicWriteFileSync(file(root), JSON.stringify({ schema: 1, snapshots, trusted }));
 }
 
 /** The snapshot no longer exists in the source: its fact is stale. Absent record: nothing to do. */
 export function dropPendingBuild(root: string, snapshot: { commit: string; tree?: string }): void {
-  const known = readPendingBuilds(root);
-  if (known === undefined) {
-    // Repair an unreadable record at a transition: the source state it could not
-    // describe has just been superseded anyway.
-    writePendingBuilds(root, []);
-    return;
-  }
-  const kept = known.filter((entry) => entry.commit !== snapshot.commit);
-  if (kept.length !== known.length) writePendingBuilds(root, kept);
+  const ledger = readLedger(root);
+  const kept = ledger.snapshots.filter((entry) => entry.commit !== snapshot.commit);
+  if (kept.length !== ledger.snapshots.length) writePendingBuilds(root, kept, ledger.trusted);
 }
 
 /**
@@ -112,12 +125,12 @@ export function dropPendingBuild(root: string, snapshot: { commit: string; tree?
 export function recordPendingBuild(root: string, snapshot: PendingBuildSnapshot): void {
   if (!HASH.test(snapshot.commit) || !HASH.test(snapshot.tree))
     throw new Error('Invalid pending build snapshot');
-  const known = readPendingBuilds(root) ?? [];
-  const entries = known.filter(
+  const ledger = readLedger(root);
+  const entries = ledger.snapshots.filter(
     (entry) => entry.commit !== snapshot.commit || entry.tree !== snapshot.tree,
   );
   entries.push(snapshot);
-  writePendingBuilds(root, entries.slice(-MAX_SNAPSHOTS));
+  writePendingBuilds(root, entries.slice(-MAX_SNAPSHOTS), ledger.trusted);
 }
 
 /**
@@ -128,10 +141,9 @@ export function recordPendingBuild(root: string, snapshot: PendingBuildSnapshot)
  * recorded against the built source in between.
  */
 export function settlePendingBuilds(root: string): void {
-  const known = readPendingBuilds(root);
-  // An unreadable record is repaired here too: the generation that just
-  // finished settles whatever it could not describe.
-  if (known === undefined || known.length) writePendingBuilds(root, []);
+  const ledger = readLedger(root);
+  // A successful generation is the proof that settles even an unknown ledger.
+  if (!ledger.trusted || ledger.snapshots.length) writePendingBuilds(root, []);
 }
 
 /**
@@ -144,17 +156,18 @@ export function rewritePendingBuilds(
   to: PendingBuildSnapshot,
 ): void {
   if (!HASH.test(to.commit) || !HASH.test(to.tree)) return;
-  const known = readPendingBuilds(root) ?? [];
+  const ledger = readLedger(root);
+  const known = ledger.snapshots;
   const carried = new Set(from);
   const entries = known.map((entry) => (carried.has(entry.commit) ? to : entry));
   if (entries.some((entry) => entry === to)) {
     const unique = entries.filter(
       (entry, at) => entries.findIndex((other) => other === entry) === at,
     );
-    writePendingBuilds(root, unique.slice(-MAX_SNAPSHOTS));
+    writePendingBuilds(root, unique.slice(-MAX_SNAPSHOTS), ledger.trusted);
     return;
   }
-  writePendingBuilds(root, entries.slice(-MAX_SNAPSHOTS));
+  writePendingBuilds(root, entries.slice(-MAX_SNAPSHOTS), ledger.trusted);
 }
 
 /**
@@ -169,7 +182,7 @@ export function hasPendingBuild(
   root: string,
   head: { commit: string; tree: string },
 ): boolean | undefined {
-  const known = readPendingBuilds(root);
-  if (known === undefined) return undefined;
-  return known.some((entry) => entry.commit === head.commit);
+  const ledger = readLedger(root);
+  if (ledger.snapshots.some((entry) => entry.commit === head.commit)) return true;
+  return ledger.trusted ? false : undefined;
 }

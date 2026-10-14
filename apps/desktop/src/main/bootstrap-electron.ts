@@ -7558,6 +7558,7 @@ const registerIpcHandlers = () => {
   }
   ipcMain.handle('app:cindy-make-personal-remote', async (event, action: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actPersonalRemote(action);
   });
   // One Sync for every personal version; local Settings only, no device-link grant.
@@ -7570,10 +7571,12 @@ const registerIpcHandlers = () => {
   }
   ipcMain.handle('app:cindy-make-sync', async (event, request: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actPersonalSync(request);
   });
   ipcMain.handle('app:cindy-make-contribution', async (event, request: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actCindyMakeContribution(request);
   });
   ipcMain.handle('app:get-cindy-make-source-status', async (event) => {

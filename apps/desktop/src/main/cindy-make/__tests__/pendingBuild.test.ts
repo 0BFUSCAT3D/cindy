@@ -64,21 +64,43 @@ it('records the snapshot with its fact and keeps the newest entries', () => {
   recordPendingBuild(dir, B);
   expect(readPendingBuilds(dir)).toEqual([A, B]);
   expect(hasPendingBuild(dir, A)).toBe(true);
-  expect(hasPendingBuild(dir, C)).toBe(false);
+  expect(hasPendingBuild(dir, C)).toBeUndefined();
 });
 
-it('a missing record proves nothing was recorded; an unreadable one proves nothing', () => {
+it('treats a missing or unreadable record as unknown until a generation settles it', () => {
   const dir = root();
-  expect(readPendingBuilds(dir)).toEqual([]);
-  expect(hasPendingBuild(dir, A)).toBe(false);
+  expect(readPendingBuilds(dir)).toBeUndefined();
+  expect(hasPendingBuild(dir, A)).toBeUndefined();
   mkdirSync(path.join(dir), { recursive: true });
   writeFileSync(path.join(dir, 'pending-build.json'), '{ not json');
   expect(readPendingBuilds(dir)).toBeUndefined();
-  // Never "nothing pending": the caller fails closed as pending instead.
   expect(hasPendingBuild(dir, A)).toBeUndefined();
-  // The next transition repairs it.
+  const empty = new CindyMakeHistoryStore(path.join(dir, 'empty-history'));
+  expect(hasUnbuiltPersonalChanges(empty, dir, A, () => false)).toBe(true);
   settlePendingBuilds(dir);
   expect(readPendingBuilds(dir)).toEqual([]);
+  expect(hasPendingBuild(dir, A)).toBe(false);
+});
+
+it('does not clear an unreadable record when dropping a rolled-back snapshot', () => {
+  const dir = root();
+  writeFileSync(path.join(dir, 'pending-build.json'), '{ not json');
+  dropPendingBuild(dir, A);
+  expect(readPendingBuilds(dir)).toBeUndefined();
+  expect(hasPendingBuild(dir, A)).toBeUndefined();
+});
+
+it('accepts only Git SHA-1 or SHA-256 lengths', () => {
+  const dir = root();
+  expect(() => recordPendingBuild(dir, { commit: 'a'.repeat(41), tree: '1'.repeat(40) })).toThrow(
+    'Invalid pending build snapshot',
+  );
+  expect(() => recordPendingBuild(dir, { commit: 'a'.repeat(40), tree: '1'.repeat(63) })).toThrow(
+    'Invalid pending build snapshot',
+  );
+  expect(() =>
+    recordPendingBuild(dir, { commit: 'a'.repeat(64), tree: '1'.repeat(64) }),
+  ).not.toThrow();
 });
 
 it('a generated personal version settles the pending generation', () => {
@@ -168,9 +190,9 @@ describe('the unbuilt-changes decision', () => {
     expect(hasUnbuiltPersonalChanges(empty, dir, A, (commit) => commit === A.commit)).toBe(false);
   });
 
-  it('an established snapshot with no facts is not pending', () => {
+  it('a missing record fails closed even when no history fact exists', () => {
     const dir = root();
     const empty = new CindyMakeHistoryStore(path.join(dir, 'history'));
-    expect(hasUnbuiltPersonalChanges(empty, dir, A, () => false)).toBe(false);
+    expect(hasUnbuiltPersonalChanges(empty, dir, A, () => false)).toBe(true);
   });
 });
