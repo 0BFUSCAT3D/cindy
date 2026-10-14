@@ -302,7 +302,7 @@ describe('provider group quick picks with busy usable computers', () => {
   const FAST = member('device:fast:anthropic', 'device', 'fast');
   const SLOW = member('device:slow:anthropic', 'device', 'slow');
 
-  function quickRouter(localLoad: number | Promise<number | null>, fastLoad: number | null, localView = view('anthropic')) {
+  function quickRouter(localLoad: number | Promise<number | null>, fastLoad: number | null, localView = view('anthropic'), localGroupLoad = 0) {
     const config: ProviderGroupConfig = { strategy: 'order', autoSwitch: true, members: [LOCAL, FAST, SLOW] };
     const devices = ['fast', 'slow'].map((deviceId): DeviceLinkDeviceView => ({
       deviceId, name: deviceId, platform: 'win32', appVersion: '1.0.0', lastSeenAt: null,
@@ -324,11 +324,43 @@ describe('provider group quick picks with busy usable computers', () => {
     });
     const router = createProviderGroupRouter({
       directory, readGroup: () => config, listBindings: () => ({}), isTurnRunning: () => false,
-      externalRunning: (_providerId, key) => key === FAST.key ? fastLoad ?? 0 : 0,
+      externalRunning: (_providerId, key) => key === FAST.key ? fastLoad ?? 0 : key === LOCAL.key ? localGroupLoad : 0,
       now: () => 1_000, random: () => 0,
     });
     return { router, config, localRunning, readDeviceProviders };
   }
+
+  it.each([
+    { fastLoad: null, expected: LOCAL.key },
+    { fastLoad: 1, expected: FAST.key },
+  ].flatMap((scenario) => [false, true].map((own) => ({ ...scenario, own }))))(
+    'keeps local availability and group counts when its load read stalls (fast load=$fastLoad, own task=$own)',
+    async ({ fastLoad, expected, own }) => {
+      vi.useFakeTimers();
+      try {
+        const localLoad = new Promise<number | null>(() => undefined);
+        const { router, config } = quickRouter(localLoad, fastLoad, view('anthropic'), 2);
+        config.strategy = 'least';
+        const done = vi.fn();
+        void router.pick({
+          providerId: 'anthropic', agentKind: 'claude-code', model: MODEL, ...(own ? { localTask: true as const } : {}),
+        }).then(done);
+        await vi.advanceTimersByTimeAsync(PROVIDER_GROUP_PICK_QUICK_MS - 1);
+        expect(done).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(done).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          kind: 'member', member: expect.objectContaining({ key: expected }),
+        }));
+        const resolved = done.mock.calls[0][0].resolved as ResolvedProviderGroupMember[];
+        const local = resolved.find((member) => member.member.key === LOCAL.key);
+        expect(local).toMatchObject({ state: 'ok' });
+        expect(local?.reportedRunning).toBeUndefined();
+        expect(router.running('anthropic', LOCAL.key)).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it.each(['disconnected', 'wrong-model'] as const)('falls back within the quick window for an own task when local is %s', async (reason) => {
     vi.useFakeTimers();

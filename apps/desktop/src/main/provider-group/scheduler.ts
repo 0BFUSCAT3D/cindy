@@ -92,12 +92,12 @@ export function pickProviderGroupMember(
  * 非 Claude 订阅的)排在读得到的后面；全部读不到时不筛，原样交给组策略。保持组里的顺序。
  */
 function byQuota(open: readonly SchedulableMember[], now: number | undefined): readonly SchedulableMember[] {
-  const pool = expiringFirst(open, now) ?? open;
-  const known = pool.filter((m) => typeof m.usagePercent === 'number' && Number.isFinite(m.usagePercent));
-  if (known.length === 0) return pool;
-  const lowest = Math.min(...known.map((m) => m.usagePercent!));
+  const known = open.filter((member) => typeof member.usagePercent === 'number' && Number.isFinite(member.usagePercent));
+  if (known.length === 0) return open;
+  const pool = expiringFirst(known, now) ?? known;
+  const lowest = Math.min(...pool.map((member) => member.usagePercent!));
   // Small quota differences should not send every simultaneous task to the same computer.
-  return known.filter((m) => m.usagePercent! <= lowest + PROVIDER_GROUP_SIMILAR_USAGE_PERCENT);
+  return pool.filter((member) => member.usagePercent! <= lowest + PROVIDER_GROUP_SIMILAR_USAGE_PERCENT);
 }
 
 /**

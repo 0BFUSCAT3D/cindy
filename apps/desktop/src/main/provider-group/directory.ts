@@ -83,6 +83,7 @@ export interface ResolveMembersOptions {
 const CATALOG_TTL_MS = 15_000;
 const CATALOG_FAILURE_TTL_MS = 5_000;
 const DEVICES_TTL_MS = 10_000;
+const LOCAL_LOAD_TIMEOUT_MS = 1_000;
 
 const SHARE_REASON = /^\[REMOTE_AGENT_SHARE_(PAUSED|REMOVED|UNAVAILABLE)\]/;
 
@@ -165,10 +166,21 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
     const label = deps.localDeviceName();
     const appVersion = readProviderGroupAppVersion(deps.localAppVersion?.());
     const base = { member, label, ...(appVersion ? { appVersion } : {}) };
-    const view = await localGroupProvider(member.providerId);
-    if (!view || !view.connected || view.suspended) return { ...base, state: 'unavailable', reason: 'disconnected' };
-    const reportedRunning = await deps.localRunning?.(member.providerId).catch(() => null);
-    return { ...base, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const running = Promise.race([
+        deps.localRunning?.(member.providerId).catch(() => null),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), LOCAL_LOAD_TIMEOUT_MS);
+        }),
+      ]);
+      const view = await localGroupProvider(member.providerId);
+      if (!view || !view.connected || view.suspended) return { ...base, state: 'unavailable', reason: 'disconnected' };
+      const reportedRunning = await running;
+      return { ...base, state: 'ok', view, ...(typeof reportedRunning === 'number' ? { reportedRunning } : {}) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function resolveDevice(

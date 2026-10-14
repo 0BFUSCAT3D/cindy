@@ -121,7 +121,30 @@ describe('quota about to reset is used first', () => {
   });
 
   it.each(['least', 'order', 'round', 'weight'] as const)('comes before the %s strategy', (strategy) => {
-    expect(pick([m('a'), m('soon', { running: 1, weeklyResetAtMs: NOW + HOUR })], strategy)).toBe('soon');
+    expect(pick([m('a', { usagePercent: 10 }), m('soon', { usagePercent: 80, running: 1, weeklyResetAtMs: NOW + HOUR })], strategy)).toBe('soon');
+  });
+
+  it.each(['least', 'usage', 'order', 'round', 'weight'] as const)(
+    'keeps incomplete usage behind known usage before comparing reset times for %s', (strategy) => {
+      const members = [
+        m('unknown', { usagePercent: null, weeklyResetAtMs: NOW + 2 * HOUR }),
+        m('known', { usagePercent: 80, running: 1 }),
+      ];
+      expect(pick(members, strategy)).toBe('known');
+      expect(pick(members.map((member) => ({ ...member, running: member.running + 4 })), strategy)).toBe('known');
+    },
+  );
+
+  it('ignores reset times and keeps the original strategies when every usage reading is incomplete', () => {
+    const members = [
+      m('first', { usagePercent: null, running: 1 }),
+      m('expiring', { weeklyResetAtMs: NOW + 2 * HOUR }),
+    ];
+    expect(pick(members, 'order')).toBe('first');
+    expect(pick(members, 'least')).toBe('expiring');
+    expect(pick(members, 'usage')).toBe('expiring');
+    expect(pickProviderGroupMember(members, 'round', { now: NOW, lastPicked: 'expiring' })).toBe('first');
+    expect(pickProviderGroupMember(members, 'weight', { now: NOW, random: () => 0 })).toBe('first');
   });
 });
 
