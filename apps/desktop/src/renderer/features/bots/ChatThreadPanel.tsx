@@ -154,13 +154,15 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const request = useRef(0);
   const attempt = useRef<{ text: string; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
-  const load = useCallback(async (before?: number) => {
+  /** `onAccepted` runs only when this read's result is the one shown. */
+  const load = useCallback(async (before?: number, onAccepted?: () => void) => {
     const version = ++request.current, owner = getDataOwnerGeneration();
     const current = () => version === request.current && isDataOwnerGenerationCurrent(owner);
     try {
       const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: replies.map(message => message.id) });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
+      onAccepted?.();
       setRoot(result.root); setError('');
       setExecutionFailures(result.executionFailures ?? []);
       setReplies(previous => mergeBotGroupMessages(previous, result.replies));
@@ -185,8 +187,9 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     const target = findThreadMessageElement(contentRef.current, focus.messageId);
     if (target) { search.pages = -1; flashThreadTarget(target); return; }
     if (!hasMore || search.pages >= FOCUS_PAGE_LIMIT) { search.pages = -1; return; }
-    search.pages += 1;
-    void loadRef.current(replies[0]?.sequence);
+    // A push refresh may overtake this page; then its replies trigger the next attempt, and
+    // only a page that was merged counts against the limit.
+    void loadRef.current(replies[0]?.sequence, () => { search.pages += 1; });
   }, [focus, replies, hasMore]);
 
   /** One server operation per reply and person, so a retry never posts twice. */

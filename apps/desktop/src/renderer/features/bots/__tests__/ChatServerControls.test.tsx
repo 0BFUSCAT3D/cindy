@@ -2,7 +2,7 @@
 import { StrictMode, type ReactNode } from 'react';
 import { cleanup, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
 import { ChatThreadPanel } from '../ChatThreadPanel';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
@@ -97,6 +97,33 @@ describe('chat interaction controls', () => {
     expect(screen.getByText('Earlier reply')).toBeTruthy();
     expect(screen.getByText('Latest reply')).toBeTruthy();
     expect(mocks.thread.mock.calls.at(-1)?.[0]).toMatchObject({ sourceMessageIds: [older.id, latest.id] });
+  });
+
+  it('keeps looking for a shared reply when group pushes overtake its older-page reads', async () => {
+    const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply' };
+    const target = { ...message, id: 'target', sequence: 4, content: 'Target reply' };
+    const olderReads: Array<(value: unknown) => void> = [];
+    mocks.thread.mockImplementation(({ before }: { before?: number }) => before
+      ? new Promise(resolve => { olderReads.push(resolve); })
+      : Promise.resolve({ ok: true, root: message, replies: [latest], hasMore: true }));
+    let push!: (event: { groupId: string }, stamp: unknown) => void;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
+      chatServer: mocks, onBotGroupChanged: (listener: typeof push) => { push = listener; return () => {}; },
+    } } });
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    onTestFinished(() => { delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
+    render(<ChatThreadPanel group={group} rootId="root" focus={{ messageId: target.id, nonce: 1 }} onClose={vi.fn()} />);
+    await waitFor(() => expect(olderReads).toHaveLength(1));
+    // Each push refresh lands while an older page is in flight, so that page is discarded.
+    for (let overtaken = 1; overtaken <= 6; overtaken += 1) {
+      push({ groupId: 'room' }, null);
+      await waitFor(() => expect(olderReads).toHaveLength(overtaken + 1));
+      olderReads[overtaken - 1]!({ ok: true, root: message, replies: [], hasMore: true });
+    }
+    olderReads.at(-1)!({ ok: true, root: message, replies: [target], hasMore: false });
+    expect(await screen.findByText('Target reply')).toBeTruthy();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
   });
 
   it('preserves copy and image sharing beside thread replies and reactions in one toolbar', async () => {
