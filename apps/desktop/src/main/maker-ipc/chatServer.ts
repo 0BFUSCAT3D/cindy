@@ -1242,9 +1242,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }),
   };
   /**
-   * Quote snapshots of sends whose outcome is unknown (the POST went out, no answer came back).
-   * A retry of the same operation must post the same content, even if the original has been
-   * deleted since: the server then returns the message it already stored instead of a second one.
+   * Quote snapshots of sends that have not finished: from just before the POST until the send
+   * returns ok (post-send bookkeeping included) or the server definitely refuses the POST.
+   * Invariant: every retry of one clientId posts the same content, even if the original has been
+   * deleted since, so the server returns the message it already stored instead of a second one.
    */
   const postedQuotes = new Map<string, BotGroupQuoteView>();
   const sendMessage: BotGroupChatService['sendMessage'] = (input, origin) => safe(async () => {
@@ -1290,7 +1291,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (error instanceof ChatResponseError && error.status >= 400 && error.status < 500 && error.status !== 408) postedQuotes.delete(quoteKey);
       throw error;
     }
-    postedQuotes.delete(quoteKey);
     if (prepared?.ok) prepared.commit();
     const intent = intentVersion > (acceptedIntentVersions.get(i.groupId) ?? 0)
       ? await replacePlanIntent(i.groupId, intentVersion) : null;
@@ -1303,6 +1303,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }
     deps.log?.info?.('Chat group send confirmed', { groupId: i.groupId, messageId: result.id,
       trace: createHash('sha256').update(i.clientId).digest('hex').slice(0, 16), durationMs: Date.now() - started });
+    // Only a send that finished, bookkeeping included, has a receipt; until then a retry needs the same quote.
+    postedQuotes.delete(quoteKey);
     changed(i.groupId); return { ok: true as const, messageId: result.id };
   });
   // A lost controller ACK must not consume the phone upload or submit the same message twice.
