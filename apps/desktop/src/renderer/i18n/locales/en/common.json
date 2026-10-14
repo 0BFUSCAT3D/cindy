@@ -15655,7 +15655,7 @@
       },
       "stopConfirm": {
         "title": "Stop syncing to GitHub?",
-        "description": "This computer will stop uploading the personal version. The repository on your GitHub and the personal version on this computer both stay, and you can turn sync back on later.",
+        "description": "This computer will stop uploading the personal version. The repository on your GitHub and the personal version on this computer both stay, and you can enable sync again later.",
         "confirm": "Stop syncing",
         "cancel": "Cancel"
       },
@@ -15676,7 +15676,7 @@
       },
       "dialog": {
         "title": "Submit to Cindy",
-        "description": "Turn this change into a pull request on the official Cindy repository for the maintainers to review.",
+        "description": "Submit this change as a pull request on the official Cindy repository for the maintainers to review.",
         "loading": "Preparing this change…",
         "existing": "You already submitted this change (#{{number}}). Submitting again updates it.",
         "reopen": "The earlier submission #{{number}} was closed. Submitting again opens a new one.",
