@@ -148,12 +148,14 @@ export async function actCindyVersion(action: unknown, id: unknown): Promise<Cin
         // independent AUTO_START service and harden that runtime tree. Remove
         // must uninstall through that helper before deleting the runtime, or
         // the old SYSTEM service stays running and the hardened files cannot
-        // be deleted. Incomplete snapshots have no version.json.
+        // be deleted. Incomplete snapshots may have no version.json or may
+        // retain it after their executable/resources have been removed.
         let personal: ReturnType<typeof readPersonalVersion> | null = null;
         try {
           personal = readPersonalVersion(profile, targetId);
         } catch (error) {
-          if ((error as { code?: string }).code !== 'unavailable') throw error;
+          const code = (error as { code?: string }).code;
+          if (code !== 'unavailable' && code !== 'ENOENT') throw error;
         }
         if (personal) {
           await uninstallWindowsDesktopSupportFrom(path.join(directory, personal.resources));

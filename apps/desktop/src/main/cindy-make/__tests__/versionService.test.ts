@@ -32,6 +32,7 @@ vi.mock('../../remote-desktop/windowsHost.js', () => ({
 }));
 import { actCindyVersion, configureCindyVersions, getCindyVersions } from '../versionService';
 import {
+  readVersionJson,
   runnableBundlePaths,
   versionsRoot,
   versionDirectory,
@@ -260,6 +261,44 @@ describe('version management main boundary', () => {
     h.currentId = latestId;
     expect((await getCindyVersions()).personalUpdateAvailable).toBe(false);
   });
+  it.each(['Cindy.exe', 'resources'])(
+    'removes an incomplete personal snapshot missing %s without running its helper',
+    async (missingAsset) => {
+      await seedPersonal(id, 'a'.repeat(40));
+      setPersonal();
+      const directory = versionDirectory(h.profile, id);
+      const runtime = path.join(directory, 'runtime');
+      await rm(path.join(runtime, missingAsset), { recursive: true });
+      await writeFile(path.join(h.profile, 'keep.db'), 'keep data');
+
+      await expect(actCindyVersion('remove', 'personal')).resolves.toMatchObject({
+        versions: [{ id: 'original' }],
+      });
+
+      expect(uninstall).not.toHaveBeenCalled();
+      await expect(access(runtime)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
+      await expect(access(path.join(h.profile, 'keep.db'))).resolves.toBeUndefined();
+      expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({
+        id: null,
+      });
+    },
+  );
+  it.each(['ENOENT', 'EACCES'])(
+    'retains the personal snapshot when service removal fails with %s',
+    async (code) => {
+      await seedPersonal(id, 'a'.repeat(40));
+      setPersonal();
+      const directory = versionDirectory(h.profile, id);
+      uninstall.mockRejectedValueOnce(Object.assign(new Error('Service removal failed'), { code }));
+
+      await expect(actCindyVersion('remove', 'personal')).rejects.toThrow('unavailable');
+
+      expect(uninstall).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'runtime', 'resources'));
+      await expect(access(path.join(directory, 'runtime', 'Cindy.exe'))).resolves.toBeUndefined();
+      expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({ id });
+    },
+  );
   it.each(['personal', id])(
     'switches %s to the current personal slot, including old completion UUIDs',
     async (target) => {
