@@ -1,54 +1,51 @@
-import { useEffect, useLayoutEffect, useState, type KeyboardEvent } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Button } from '@/components/ui/button';
-import { Tooltip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
-import type { BotGroupMessageView, ChatReactor } from '../../../shared/botGroupChat';
+import { BotAvatar } from './BotAvatar';
+import type { BotGroupMemberView, BotGroupMessageView, ChatReactor } from '../../../shared/botGroupChat';
 
 type Reaction = NonNullable<BotGroupMessageView['reactions']>[number];
 type Loaded = { summary: string; reactors: ChatReactor[] | null };
 
 const key = (name: string) => `bots.groupChat.server.${name}`;
-// Keys that scroll a long list while the badge keeps keyboard focus; Enter/Space still toggle.
-const scrollKeys: Record<string, (el: HTMLElement) => number> = {
-  ArrowDown: () => 40, ArrowUp: () => -40,
-  PageDown: el => Math.max(40, el.clientHeight - 24), PageUp: el => -Math.max(40, el.clientHeight - 24),
-  End: el => el.scrollHeight, Home: el => -el.scrollHeight,
-};
+/** Like Telegram: a few reactors appear as avatars on the badge; more than this shows the count. */
+export const REACTION_AVATAR_LIMIT = 3;
 
 /** Self first, then current and former members by name. Actors without a member record are counted, never named. */
-function reactorList(reactors: ChatReactor[], t: TFunction, language: string) {
+function reactorOrder(reactors: ChatReactor[], language: string) {
   const collator = new Intl.Collator(language);
-  const named = reactors.filter(r => r.isSelf || r.name !== null)
-    .sort((a, b) => Number(b.isSelf) - Number(a.isSelf) || Number(a.formerMember) - Number(b.formerMember)
-      || collator.compare(a.name ?? '', b.name ?? '') || a.actorId.localeCompare(b.actorId));
-  const labels = named.map(r => r.isSelf ? t(key('reactorSelf'))
-    : r.formerMember ? t(key('reactorFormer'), { name: r.name }) : r.name!);
-  return { names: labels.length ? new Intl.ListFormat(language, { style: 'long', type: 'conjunction' }).format(labels) : null,
-    unavailable: reactors.length - named.length };
+  return [...reactors].sort((a, b) => Number(b.isSelf) - Number(a.isSelf)
+    || Number(a.name === null) - Number(b.name === null) || Number(a.formerMember) - Number(b.formerMember)
+    || collator.compare(a.name ?? '', b.name ?? '') || a.actorId.localeCompare(b.actorId));
 }
 
-/** A reaction badge. Clicking toggles the current actor's reaction; hover or keyboard focus only reads who reacted. */
-export function ChatReactionButton({ groupId, messageId, reaction, disabled, onToggle }: {
-  groupId?: string; messageId: string; reaction: Reaction; disabled: boolean; onToggle: () => void;
+function reactorNames(reactors: ChatReactor[], t: TFunction, language: string) {
+  const named = reactors.filter(r => r.isSelf || r.name !== null);
+  const labels = named.map(r => r.isSelf ? t(key('reactorSelf'))
+    : r.formerMember ? t(key('reactorFormer'), { name: r.name }) : r.name!);
+  const unavailable = reactors.length - named.length;
+  if (unavailable) labels.push(t(key('reactorsUnavailable'), { count: unavailable }));
+  return new Intl.ListFormat(language, { style: 'long', type: 'conjunction' }).format(labels);
+}
+
+/**
+ * A reaction badge. Clicking toggles the current actor's reaction. With only a few reactors the
+ * badge shows their avatars instead of a number; avatars come from the group member projection,
+ * and actors without one fall back to an initial, never an invented identity.
+ */
+export function ChatReactionButton({ groupId, messageId, reaction, members, disabled, onToggle }: {
+  groupId?: string; messageId: string; reaction: Reaction; members?: BotGroupMemberView[]; disabled: boolean; onToggle: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [overflowing, setOverflowing] = useState(false);
-  // State, not a ref: the portalled list mounts a render after the tooltip opens.
-  const [namesEl, setNamesEl] = useState<HTMLSpanElement | null>(null);
   // The authoritative summary changes on every add/remove, local or remote.
   const summary = `${reaction.count}:${reaction.me}`;
-  // The pointer may move from the badge into an open list to scroll it; that still counts as looking.
-  const looking = !!groupId && (hovered || focused || open);
-  // Read on hover intent, before the tooltip delay ends, and again whenever the summary
-  // changes while someone is looking. A superseded read never overwrites a newer one.
+  const wantsAvatars = !!groupId && reaction.count > 0 && reaction.count <= REACTION_AVATAR_LIMIT;
+  // Read whenever the summary changes; a superseded or cross-account read never lands.
   useEffect(() => {
-    if (!looking || !groupId) return;
+    if (!wantsAvatars || !groupId) return;
     let superseded = false;
     const owner = getDataOwnerGeneration();
     const settle = (reactors: ChatReactor[] | null) => {
@@ -57,55 +54,37 @@ export function ChatReactionButton({ groupId, messageId, reaction, disabled, onT
     window.electronAPI.maker.chatServer.reactors({ groupId, messageId, emoji: reaction.emoji })
       .then(result => settle(result.ok ? result.reactors : null), () => settle(null));
     return () => { superseded = true; };
-  }, [looking, groupId, messageId, reaction.emoji, summary]);
-  // Names read for an older summary stay visible only while they still describe it.
+  }, [wantsAvatars, groupId, messageId, reaction.emoji, summary]);
+  // Reactors read for an older summary are never shown for the current one. A failed read, or a list
+  // that disagrees with the count (a change still in flight), keeps the honest count instead.
   const current = loaded?.summary === summary ? loaded : null;
-  const list = current?.reactors ? reactorList(current.reactors, t, i18n.language) : null;
-  const status = !current ? t(key('reactorsLoading')) : !current.reactors ? t(key('reactorsFailed'))
-    : list?.unavailable ? t(key('reactorsUnavailable'), { count: list.unavailable }) : null;
-  const label = t(key('reactionCount'), { emoji: reaction.emoji, count: reaction.count });
-  // A long list scrolls inside the viewport-bounded tooltip instead of running off-screen. The
-  // 160px floor makes a cramped side overflow so the tooltip flips rather than shrinking to a line.
-  // Re-measure when positioning applies the height bound after the tooltip mounts.
-  useLayoutEffect(() => {
-    const el = namesEl;
-    if (!el) { setOverflowing(false); return; }
-    const measure = () => setOverflowing(el.scrollHeight > el.clientHeight + 1);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [namesEl, list?.names]);
-  const scroll = (event: KeyboardEvent<HTMLButtonElement>) => {
-    const el = namesEl, by = scrollKeys[event.key];
-    if (!el || !by || el.scrollHeight <= el.clientHeight) return;
-    event.preventDefault();
-    el.scrollBy({ top: by(el) });
-  };
-  const badge = (
+  const showAvatars = wantsAvatars && (!current || current.reactors?.length === reaction.count);
+  const reactors = showAvatars && current?.reactors ? reactorOrder(current.reactors, i18n.language) : null;
+  const countLabel = t(key('reactionCount'), { emoji: reaction.emoji, count: reaction.count });
+  const label = reactors?.length
+    ? t(key('reactionWho'), { emoji: reaction.emoji, count: reaction.count, names: reactorNames(reactors, t, i18n.language) })
+    : countLabel;
+  return (
     <Button variant={reaction.me ? 'primary' : 'secondary'} size="sm" compact
       disabled={disabled} aria-pressed={reaction.me} aria-label={label}
-      onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
-      onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-      onKeyDown={scroll} onClick={onToggle}>
-      <span>{reaction.emoji}</span><span>{reaction.count}</span>
+      className={showAvatars ? 'pr-1' : undefined} onClick={onToggle}>
+      <span>{reaction.emoji}</span>
+      {showAvatars ? (
+        // Fixed slots sized by the count, so loading and remote updates never shift the row.
+        <span aria-hidden className="flex items-center -space-x-1.5" data-testid="reaction-avatars">
+          {Array.from({ length: reaction.count }, (_, index) => {
+            const reactor = reactors?.[index];
+            const member = reactor && members?.find(m => m.actorId === reactor.actorId);
+            return reactor ? (
+              <BotAvatar key={reactor.actorId} size="xs" className="ring-2 ring-[var(--button-face-bg)]" bot={{
+                name: reactor.name ?? '', avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null,
+              }} />
+            ) : (
+              <span key={`slot-${index}`} className="h-5 w-5 rounded-full bg-[var(--surface-hover)] ring-2 ring-[var(--button-face-bg)]" />
+            );
+          })}
+        </span>
+      ) : <span>{reaction.count}</span>}
     </Button>
-  );
-  if (!groupId) return badge;
-  // The shared tooltip, made hoverable so the pointer can reach and scroll a long list.
-  return (
-    <Tooltip.Provider disableHoverableContent={false}>
-      <Tooltip.Root onOpenChange={setOpen}>
-        <Tooltip.Trigger asChild>{badge}</Tooltip.Trigger>
-        {/* aria-label keeps Radix from rendering the list a second time as the hidden tooltip text,
-          so the scroll region and its ref exist once; screen readers still get every name. */}
-        <Tooltip.Content aria-label={[label, list?.names, status].filter(Boolean).join('\n')} className="flex max-h-[min(320px,max(160px,var(--radix-tooltip-content-available-height)))] max-w-[min(320px,var(--radix-tooltip-content-available-width))] flex-col gap-0.5 break-words">
-          <span className="shrink-0 text-12 opacity-70">{label}</span>
-          {list?.names && <span ref={setNamesEl} data-testid="reactor-names" className="min-h-0 overflow-y-auto overscroll-contain">{list.names}</span>}
-          {status && <span className="shrink-0 opacity-70">{status}</span>}
-          {overflowing && <span className="shrink-0 text-12 opacity-70">{t(key('reactorsScrollHint'))}</span>}
-        </Tooltip.Content>
-      </Tooltip.Root>
-    </Tooltip.Provider>
   );
 }
