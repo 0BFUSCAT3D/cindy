@@ -94,7 +94,7 @@ export type DispatchWorkerMessageResult =
   | {
       ok: true;
       mode: 'dispatched' | 'queued' | 'steered';
-      /** Actual accepting runtime, when the dispatcher has already sent the message. */
+      /** Accepting runtime locally; remote delivery reports the execution device's Agent at enqueue. */
       agentKind?: AgentKind;
       /** 底层 dispatcher 为该消息生成的 clientId;queued 模式下即队列内寻址句柄。 */
       clientId: string;

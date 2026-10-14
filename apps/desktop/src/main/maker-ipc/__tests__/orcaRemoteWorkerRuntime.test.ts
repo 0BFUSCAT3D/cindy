@@ -26,6 +26,7 @@ interface FakeHistoryMessage {
 }
 
 interface FakeDevice {
+  agentKind?: string;
   offline: boolean;
   running: boolean;
   receipts: Record<string, string>;
@@ -62,7 +63,7 @@ function setup(device: Partial<FakeDevice> = {}) {
         return {
           id: 'remote-1',
           status: 'active',
-          agentKind: 'cc',
+          agentKind: state.agentKind ?? 'cc',
           workingDir: '/Users/demo/Interviews',
           model: 'claude-opus-5-5',
           effort: 'high',
@@ -146,7 +147,7 @@ describe('orca remote worker runtime', () => {
     const { runtime, state } = setup();
     await expect(
       runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: '转写这段访谈', clientId: 'c-1' }),
-    ).resolves.toEqual({ ok: true, mode: 'dispatched' });
+    ).resolves.toEqual({ ok: true, mode: 'dispatched', agentKind: 'claude-code' });
     expect(state.enqueued).toHaveLength(1);
     expect(state.enqueued[0]).toMatchObject({
       clientId: 'c-1',
@@ -393,12 +394,13 @@ describe('orca remote worker runtime', () => {
     expect(runtime.hasPendingReport('proxy-1')).toBe(false);
   });
 
-  it('treats a lost enqueue reply as delivered when the device already holds the message', async () => {
+  it.each(['cc', 'codex', 'pi'])('keeps the device Agent %s when the enqueue reply is lost but delivery is confirmed', async (agentKind) => {
     const lost = Object.assign(new Error('[INVOKE_TIMEOUT] no reply'), { inFlight: true });
-    const { runtime, state } = setup({ enqueueError: lost, receipts: { 'c-1': 'pending' } });
+    const { runtime, state, invoke } = setup({ agentKind, enqueueError: lost, receipts: { 'c-1': 'pending' } });
     await expect(
       runtime.dispatch({ proxySessionId: 'proxy-1', rawContent: 'x', clientId: 'c-1' }),
-    ).resolves.toEqual({ ok: true, mode: 'dispatched' });
+    ).resolves.toEqual({ ok: true, mode: 'dispatched', agentKind: agentKind === 'cc' ? 'claude-code' : agentKind });
+    expect(invoke.mock.calls.filter(([, channel]) => channel === 'maker:input:enqueue')).toHaveLength(1);
     expect(state.enqueued).toHaveLength(0);
     expect(runtime.hasPendingReport('proxy-1')).toBe(true);
   });

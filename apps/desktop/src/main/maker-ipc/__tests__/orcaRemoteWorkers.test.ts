@@ -775,6 +775,46 @@ describe('wrapTeamDeps', () => {
     workers.stop();
   });
 
+  const remoteAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+  const remoteSwitchCases = remoteAgentKinds.flatMap(from => remoteAgentKinds
+    .filter(to => to !== from).flatMap(to => ['dispatch', 'interrupt', 'queued'].map(mode => ({ from, to, mode }))));
+  it.each(remoteSwitchCases)('returns the execution device Agent after $from → $to ($mode)', async ({ from, to, mode }) => {
+    let remoteAgent = from;
+    const { workers, remoteInvoke } = await trackedWorker({ handle: (_device, channel) => {
+      if (channel === 'local-db:sessions:get') return ok({ status: 'active',
+        agentKind: remoteAgent === 'claude-code' ? 'cc' : remoteAgent,
+        workingDir: '/remote/work', model: 'remote-model' });
+      if (channel === 'maker:list-active') return ok({ format: 'active-sessions-v2',
+        sessions: [{ sessionId: 'remote-1', isTurnRunning: mode === 'queued' }] });
+      return undefined;
+    } });
+    try {
+      // The proxy was created earlier; switching on the execution device does
+      // not update that local seed. Read the current remote task for each send.
+      const wrapped = workers.wrapTeamDeps(baseDeps());
+      const params = { targetSessionId: 'proxy-1', workerId: 'w-1', message: 'Continue',
+        dispatchMeta: { source: 'mcp', context: 'send_to_worker' } };
+      const first = await wrapped.dispatchWorkerMessage(params);
+      expect(first).toMatchObject({ ok: true, mode: 'dispatched', agentKind: from });
+      remoteAgent = to;
+      if (mode === 'queued') await workers.runtime.pollNow();
+      const result = await (mode === 'interrupt'
+        ? wrapped.reserveWorkerMessage(params)
+        : wrapped.dispatchWorkerMessage(params));
+      if (mode === 'queued') {
+        expect(result).toMatchObject({ ok: true, mode: 'queued' });
+        expect(result).not.toHaveProperty('agentKind');
+      } else {
+        expect(result).toMatchObject({ ok: true, mode: 'dispatched', agentKind: to });
+      }
+      const enqueueCalls = remoteInvoke.mock.calls.filter(([, channel]) => channel === 'maker:input:enqueue');
+      expect(enqueueCalls).toHaveLength(2);
+      expect(enqueueCalls[1]![2][1]).toMatchObject({ createOpts: { agentKind: to } });
+      // The existing enqueue response is just a projection ({} in this old-peer fixture).
+      // No new response field or post-send retry is required for the Agent receipt.
+    } finally { workers.stop(); }
+  });
+
   it('fails the dispatch when the device is offline instead of queueing it', async () => {
     let offline = false;
     const { workers } = await trackedWorker({

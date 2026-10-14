@@ -43,7 +43,12 @@ export interface RemoteWorkerTurnEnd {
 }
 
 export type RemoteWorkerDispatchResult =
-  | { ok: true; mode: 'dispatched' | 'queued' }
+  | {
+      ok: true;
+      mode: 'dispatched' | 'queued';
+      /** Execution device's current Agent at enqueue; not a prediction of a pending switch. */
+      agentKind: AgentInputCreateOpts['agentKind'];
+    }
   | {
       ok: false;
       code: 'DEVICE_UNREACHABLE' | 'SESSION_NOT_FOUND' | 'SEND_FAILED';
@@ -656,10 +661,11 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
         }
         const baseline = state.awaiting?.baselineMessageId ?? (await lastAssistantMessage(ref)).id;
         if (!current(state)) throw new Error('remote worker owner changed');
+        const createOpts = createOptsFromRow(row);
         const item = buildRemoteWorkerQueuedMessage({
           clientId: params.clientId,
           rawContent: params.rawContent,
-          createOpts: createOptsFromRow(row),
+          createOpts,
           createdAt: new Date(deps.now()).toISOString(),
         });
         prepared = {
@@ -687,7 +693,7 @@ export function createOrcaRemoteWorkerRuntime(deps: OrcaRemoteWorkerRuntimeDeps)
           setReachable(ref.deviceId, true);
           const mode = state.inTurn ? 'queued' : 'dispatched';
           schedule();
-          return { ok: true, mode };
+          return { ok: true, mode, agentKind: createOpts.agentKind };
         };
         try {
           await deps.invoke(ref.deviceId, 'maker:input:enqueue', [ref.remoteSessionId, item]);

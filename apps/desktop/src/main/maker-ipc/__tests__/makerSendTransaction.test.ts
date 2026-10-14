@@ -14,6 +14,7 @@ import {
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-shared/chat-quotes';
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
+import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { describe, expect, it, vi } from 'vitest';
 import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '../autoReviewUserIntent.js';
 import {
@@ -3343,19 +3344,32 @@ describe('session-agent-switch handoff injection', () => {
     expect(bootstrapSession).not.toHaveBeenCalled();
   });
 
-  it.each([['lead', true], ['worker', true], ['lead', false], ['worker', false]] as const)(
-    'Orca queue/resume blocks a retained switch before persistence or dispatch: role=%s live=%s',
-    async (role, hasLive) => {
+  const remoteLead = JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'developer' });
+  const pendingGuardCases = [
+    { name: 'lead', orcaRole: 'lead', orcaRemoteLead: null, blocks: true },
+    { name: 'worker', orcaRole: 'worker', orcaRemoteLead: null, blocks: true },
+    { name: 'execution-device worker', orcaRole: null, orcaRemoteLead: remoteLead, blocks: true },
+    { name: 'released execution-device worker', orcaRole: null, orcaRemoteLead: JSON.stringify({ ...JSON.parse(remoteLead), releasedAt: 1 }), blocks: true },
+    { name: 'ordinary task with Orca input label', orcaRole: null, orcaRemoteLead: null, blocks: false },
+    { name: 'invalid remote binding', orcaRole: null, orcaRemoteLead: '{}', blocks: false },
+  ].flatMap((identity) => [true, false].flatMap((hasLive) =>
+    (['claude-code', 'codex', 'pi'] as const).map((targetAgentKind) => ({ ...identity, hasLive, targetAgentKind })),
+  ));
+  it.each(pendingGuardCases)(
+    'queue/resume retained switch guard: $name live=$hasLive target=$targetAgentKind',
+    async ({ orcaRole, orcaRemoteLead, blocks, hasLive, targetAgentKind }) => {
       const register = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
       const start = register.indexOf('    applyPendingAgentSwitch: async (sessionId, options) => {');
       expect(start).toBeGreaterThan(0);
       const adapter = register.slice(start, register.indexOf('    prepareUnhealthySession:', start));
-      const pending = new Map([['session-1', { targetAgentKind: 'claude-code' }]]);
+      const pending = new Map([['session-1', { targetAgentKind }]]);
       const beforeSend = vi.fn(async () => undefined);
       const bindings = {
         // UI-origin cross-engine preparation can return without clearing the intent.
         applyPendingAgentSwitchIfIdle: vi.fn(async () => undefined),
-        agentSwitchDeps: {}, agentSwitchPending: pending, getSessionOrcaRole: async () => role,
+        agentSwitchDeps: {}, agentSwitchPending: pending,
+        getSessionRowSnapshotStrict: vi.fn(async () => ({ orcaRole, orcaRemoteLead })),
+        parseOrcaRemoteLead,
         throwIpcError: (code: string, message: string) => { throw Object.assign(new Error(message), { code }); },
         providerGroupService: { beforeSend }, agentInputCoordinatorHolder: null,
         log: { warn: vi.fn() },
@@ -3371,6 +3385,12 @@ describe('session-agent-switch handoff injection', () => {
           origin: { kind: 'orca', senderLabel: 'Lead', displayText: 'Queued Orca input' },
           persistUserMessage: { clientId: 'queued-orca-1', content: 'Queued Orca input' },
         });
+      if (!blocks) {
+        await send();
+        expect(pending.has('session-1')).toBe(true);
+        expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+        return;
+      }
       await expect(send()).rejects.toThrow('Agent switch is still pending');
       expect(pending.has('session-1')).toBe(true);
       expect(deps.getSession).not.toHaveBeenCalled();
@@ -3382,6 +3402,7 @@ describe('session-agent-switch handoff injection', () => {
       bindings.applyPendingAgentSwitchIfIdle.mockImplementation(async () => { pending.clear(); });
       await send();
       expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+      expect(bindings.getSessionRowSnapshotStrict).toHaveBeenCalledTimes(1);
     },
   );
 
