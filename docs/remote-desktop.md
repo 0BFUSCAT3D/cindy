@@ -43,9 +43,11 @@ Desktop uses the local system cursor inside the remote picture, with standard
 shape hints from the host. Pointer size is independent of remote resolution and zoom.
 With the picture focused, Cmd/Ctrl+C/V are ordinary keys sent to the remote
 computer, so copy and paste act on its own clipboard exactly as they would locally;
-they never move content between computers. Cross-computer transfer is explicit: the
-settings panel's copy and paste actions copy selected remote content to the local
-clipboard or paste local content remotely. Transfers use the existing authorized
+the keys themselves never move content between computers. Content crosses
+computers only through two explicit features: the settings panel's copy and paste
+actions, which copy selected remote content to the local clipboard or paste local
+content remotely, and the optional clipboard synchronization described below,
+which the shortcuts merely trigger early when it is enabled. Transfers use the existing authorized
 Main bridge, are ordered and user-triggered, and report the specific failure
 (view only, empty, unsupported, too large, copy/paste failed) without reconnecting;
 Main logs only the action and error code. Capable hosts support text, HTML, RTF,
