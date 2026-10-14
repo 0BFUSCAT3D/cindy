@@ -259,7 +259,7 @@ export class ExecutorWorkspace {
   }
 
   /** 工具输出、诊断和可逆的 UTF-8 文本内容使用虚拟路径；二进制字节保持原样。 */
-  mapTextForAgent(text: string): string {
+  mapTextForAgent(text: string, context: 'text' | 'path' = 'text'): string {
     if (!this.virtualRoot) return text;
     const aliases = this.aliases.flatMap((alias) => {
       const real = alias.to.replace(/\\/g, '/');
@@ -273,7 +273,7 @@ export class ExecutorWorkspace {
       }
       return entries;
     });
-    return projectPathText(text, aliases);
+    return projectPathText(text, aliases, context);
   }
 
   /** 把 Agent 虚拟路径还原成本机路径，用于文本文件写回。 */

@@ -285,6 +285,58 @@ describe('virtual workspace', () => {
   });
 
   it.each([
+    { virtual: '/home/agent/workspace', sse: false },
+    { virtual: '/home/agent/workspace', sse: true },
+    { virtual: 'C:\\Agent\\workspace', sse: false },
+    { virtual: 'C:\\Agent\\workspace', sse: true },
+  ])('preserves structured MCP path fields and nested arrays at $virtual (SSE=$sse)', async ({ virtual, sse }) => {
+    const { project, executor } = setup(virtual);
+    const agentPath = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const realFile = path.join(project, '目录 空格', 'deep', 'report.txt');
+    const virtualFile = agentPath.join(virtual, '目录 空格', 'deep', 'report.txt');
+    const prose = path.join(project, 'README.md') + ' links to /api/v1 and relative/input.txt';
+    const virtualProse = agentPath.join(virtual, 'README.md') + ' links to /api/v1 and relative/input.txt';
+    const structuredContent = {
+      path: realFile,
+      paths: [realFile, [realFile], { path: realFile, text: prose }],
+      nested: { file_path: realFile, filePath: realFile, working_dir: path.dirname(realFile) },
+      text: prose,
+      enabled: true, count: 1, optional: null,
+    };
+    const response = { jsonrpc: '2.0', id: 1, result: {
+      structuredContent, content: [{ type: 'text', text: JSON.stringify({ path: realFile }) }, { type: 'text', text: prose }],
+    } };
+    const router = createReverseHttpRouter({
+      executor,
+      mcpTarget: () => ({ url: 'http://unused', headers: {} }),
+      fetch: async () => new Response(sse ? 'data: ' + JSON.stringify(response) + '\n\n' : JSON.stringify(response), {
+        headers: { 'content-type': sse ? 'text/event-stream' : 'application/json' },
+      }),
+    });
+    try {
+      const reply = await router({ method: 'POST', path: '/mcp/cindy_helper', headers: [], body: Buffer.from(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'path_probe', arguments: {} },
+      })).toString('base64') });
+      if (reply.type !== 'http') throw new Error('expected MCP HTTP reply');
+      const body = Buffer.from(reply.body!, 'base64').toString();
+      expect(JSON.parse(sse ? body.split('\n')[0].slice(6) : body)).toEqual({
+        jsonrpc: '2.0', id: 1, result: {
+          structuredContent: {
+            ...structuredContent,
+            path: virtualFile,
+            paths: [virtualFile, [virtualFile], { path: virtualFile, text: virtualProse }],
+            nested: { file_path: virtualFile, filePath: virtualFile, working_dir: agentPath.dirname(virtualFile) },
+            text: virtualProse,
+          },
+          content: [{ type: 'text', text: JSON.stringify({ path: virtualFile }) }, { type: 'text', text: virtualProse }],
+        },
+      });
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.each([
     { virtual: '/Users/agent/workspace', sse: false },
     { virtual: '/Users/agent/workspace', sse: true },
     { virtual: '/home/agent/workspace', sse: false },

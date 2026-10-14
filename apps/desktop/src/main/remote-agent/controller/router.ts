@@ -14,6 +14,7 @@ import type { RemoteAgentReply } from '@cindy/device-link';
 import { CINDY_EXEC_MCP_SERVER, handleExecMcpRequest } from '../executor/ccMcp';
 import { ExecutorRequestError, type RemoteExecutor } from '../executor/executor';
 import { resolveExecutorShell } from '../executor/shell';
+import { isPathTextField } from '../executor/workspace';
 
 /** 本任务可用的一个本机 MCP 服务：完整地址(已带本任务身份)与要附加的请求头。 */
 export interface LocalMcpTarget {
@@ -80,7 +81,7 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, mapArguments(item, name)]));
   };
-  const projectResult = (value: unknown): unknown => {
+  const projectResult = (value: unknown, key = ''): unknown => {
     if (typeof value === 'string') {
       if (value.startsWith('file://')) {
         try {
@@ -93,11 +94,11 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
           }
         } catch { /* 普通字符串或非本机 file URL，交给文本投影。 */ }
       }
-      return workspace.mapTextForAgent(value);
+      return workspace.mapTextForAgent(value, isPathTextField(key) ? 'path' : 'text');
     }
-    if (Array.isArray(value)) return value.map(projectResult);
+    if (Array.isArray(value)) return value.map((item) => projectResult(item, key));
     if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, projectResult(item)]));
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, projectResult(item, name)]));
   };
 
   async function forwardMcp(
