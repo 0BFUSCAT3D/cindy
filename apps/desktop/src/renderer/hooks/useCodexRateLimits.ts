@@ -124,8 +124,7 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
     }, providerId);
     if (authStartedUnsubscribe) entry.unsubscribe.push(authStartedUnsubscribe);
     const authReadyUnsubscribe = window.electronAPI?.maker?.usage?.onCodexAccountAuthReady?.(() => {
-      // Main emits this provider-scoped signal only after the new auth.json commits.
-      if (!entry.awaitingAuthCompletion) return;
+      // Main emits this only when the explicit account replacement has settled.
       entry.awaitingAuthCompletion = false;
       if (entry.listeners.size > 0) refreshEntry(entry);
     }, providerId);

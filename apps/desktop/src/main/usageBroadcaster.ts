@@ -57,7 +57,7 @@ export const USAGE_TODAY_TOKENS_CHANGED = 'usage:today-tokens-changed';
 export const USAGE_CODEX_ACCOUNT_CHANGED = 'usage:codex-account-changed';
 /** Provider-scoped signal emitted when an independent Codex account is about to be replaced. */
 export const USAGE_CODEX_ACCOUNT_AUTH_STARTED = 'usage:codex-account-auth-started';
-/** Provider-scoped signal emitted only after a Codex account login commit completes. */
+/** Provider-scoped signal emitted when the current Codex account credentials are safe to reread. */
 export const USAGE_CODEX_ACCOUNT_AUTH_READY = 'usage:codex-account-auth-ready';
 /** IPC channel: main → renderer 推 xAI(SuperGrok bridge)上游限流快照变化。 */
 export const USAGE_XAI_RATE_LIMIT_CHANGED = 'usage:xai-rate-limit-changed';
