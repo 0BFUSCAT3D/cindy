@@ -9,6 +9,7 @@ import {
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 
 const EMPTY_IDS: ReadonlySet<string> = new Set();
+const RECEIVED_LIST_RETRY_MS = 250;
 
 /**
  * 分享授权属于账号，但跨区连接的启用标记在各电脑本地。新落点必须同时出现在被控端名单中。
@@ -34,9 +35,12 @@ export function useControlledShareIds(
     let active = true;
     let revision = 0;
     let pending = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const invalidate = () => {
       revision += 1;
       pending = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
       setSnapshot(null);
     };
     const refresh = async () => {
@@ -52,6 +56,17 @@ export function useControlledShareIds(
           { includeCatalog: false },
         ]);
         if (!current()) return;
+        // 新版被控端在首次 refreshReceivedShares 完成前明确标记未就绪；
+        // 暂态空列表不能覆盖上一次结果，也不能被当成「被控端没有分享」。
+        const ready = !(value && typeof value === 'object' && !Array.isArray(value)
+          && (value as { ready?: unknown }).ready === false);
+        if (!ready) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            void refresh();
+          }, RECEIVED_LIST_RETRY_MS);
+          return;
+        }
         const ids = new Set(parseProviderShareReceivedCatalogs(value)
           .filter((share) => share.status === 'active')
           .map((share) => share.agentDeviceId));
@@ -72,6 +87,8 @@ export function useControlledShareIds(
     void refresh();
     return () => {
       active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
       unsubscribe?.();
       window.removeEventListener('focus', onFocus);
     };

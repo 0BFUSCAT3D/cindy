@@ -100,6 +100,22 @@ describe('useProviderShareAgentDevices', () => {
     expect(result.current.isReceived('share:controller-only')).toBe(true);
   });
 
+  it('retries a not-yet-ready controlled host instead of caching its transient empty list', async () => {
+    initial = [share({ shareId: 'both' })];
+    invoke.mockResolvedValueOnce({ ready: false, shares: [] }).mockResolvedValueOnce(hostShares({ shareId: 'both' }));
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(result.current.devices).toEqual([]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
+      expect(invoke).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps current/pending shares while excluding new shares paused or unknown on the controlled host', async () => {
     initial = ['current', 'pending', 'paused', 'unknown'].map((shareId) => share({ shareId }));
     invoke.mockResolvedValue(hostShares({ shareId: 'paused', status: 'paused' }));

@@ -52,6 +52,7 @@ import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } 
 import {
   findReceivedShare,
   getReceivedShares,
+  isReceivedSharesReady,
   getReceivedSharesSnapshot,
   leaveProviderShare,
   previewProviderShare,
@@ -452,8 +453,8 @@ const LINK_TTL_SAFETY_MS = 5_000;
  * `includeCatalog: false` 只返回分享元数据，供远控候选筛选使用，避免把完整目录读取的等待
  * 传播到分享发现。
  */
-async function receivedCatalogs(args: unknown[]): Promise<{ shares: ProviderShareReceivedCatalog[] }> {
-  if (!running) return { shares: [] };
+async function receivedCatalogs(args: unknown[]): Promise<{ ready: boolean; shares: ProviderShareReceivedCatalog[] }> {
+  if (!running) return { ready: false, shares: [] };
   const invoke = shareInvoke;
   const listArgs = Array.isArray(args) ? args.slice(0, 1) : [];
   const includeCatalog = !(
@@ -462,6 +463,7 @@ async function receivedCatalogs(args: unknown[]): Promise<{ shares: ProviderShar
   );
   const shares = getReceivedShares();
   return {
+    ready: isReceivedSharesReady(),
     shares: await Promise.all(shares.map(async (share): Promise<ProviderShareReceivedCatalog> => {
       const agentDeviceId = `share:${share.shareId}`;
       let catalog: unknown = null;
