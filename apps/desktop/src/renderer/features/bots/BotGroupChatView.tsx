@@ -196,6 +196,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
+  /** Refresh results applied so far; share follow-ups wait for the next one. */
+  const loadResults = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -251,6 +253,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   olderHasMore: result.group.hasMoreBefore,
                 },
           );
+          loadResults.current += 1;
           const shown = stateRef.current;
           if (shown.kind === 'ready') {
             const targets = quotedOlderOriginals(shown.older, result.group.messages);
@@ -330,15 +333,19 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   // Older shares checked before the latest edit, deletion or reset are re-checked from the
   // committed timeline, whichever of a refresh and an older page landed last. One refresh
   // checks up to the per-read cap, so a bounded number of follow-ups reaches all of them.
-  // Each version gets its own budget: an edit mid-way makes every card stale again.
-  const shareFollowUps = useRef<{ version: number | undefined; count: number }>({ version: undefined, count: 0 });
+  // Each version gets its own budget: an edit mid-way makes every card stale again. One
+  // follow-up at a time: other commits (an older page, a quote check) wait until a refresh
+  // result lands instead of spending the budget on reads that would replace it.
+  const shareFollowUps = useRef<{ version: number | undefined; count: number; awaiting: number | null }>({ version: undefined, count: 0, awaiting: null });
   useEffect(() => {
     const version = state.kind === 'ready' ? state.group.threadShareVersion : undefined;
-    if (shareFollowUps.current.version !== version) shareFollowUps.current = { version, count: 0 };
+    if (shareFollowUps.current.version !== version) shareFollowUps.current = { version, count: 0, awaiting: null };
     if (state.kind !== 'ready' || !staleBotGroupShares(state.older, version).length) { shareFollowUps.current.count = 0; return; }
+    if (shareFollowUps.current.awaiting === loadResults.current) return;
     const total = state.older.filter(message => message.threadShare).length;
     if (shareFollowUps.current.count >= Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) return;
     shareFollowUps.current.count += 1;
+    shareFollowUps.current.awaiting = loadResults.current;
     loadRef.current();
   }, [state]);
 

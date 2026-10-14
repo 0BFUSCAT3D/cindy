@@ -17,7 +17,11 @@ export interface ThreadMessage {
   content: Array<{ type: string; text?: string; fallback?: string; namespace?: string; schemaRevision?: number; data?: Record<string, unknown>; mediaId?: string; caption?: string }>;
 }
 
-/** Concurrent reads per refresh; the rest wait for a slot rather than fan out. */
+/**
+ * Concurrent reads per fill (a refresh fills previews and share sources separately); the rest
+ * wait for a slot rather than fan out. Reads are deduplicated per item while in flight, and a
+ * fill only covers the open page, so this bounds a refresh without a projection-wide queue.
+ */
 const READ_CONCURRENCY = 6;
 /** A failed read backs off from this delay, doubling, and retries on its own a few times. */
 const RETRY_MS = 30_000;

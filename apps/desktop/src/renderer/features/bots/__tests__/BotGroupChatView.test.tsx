@@ -2524,6 +2524,29 @@ describe('shares on older pages', () => {
     await settle();
     expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBeGreaterThan(1);
   });
+
+  it('waits for a follow-up before another, whatever else commits meanwhile', async () => {
+    const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
+      sharedByAuthor: false, content: '原文', attachments: [], createdAt: 1, edited: false, version: 1 };
+    const oldShare = msg({ id: 'old-share', sequence: 20, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 2, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] });
+    const followUps: Array<() => void> = [];
+    mocks.getBotGroup.mockImplementation((_groupId: string, options?: { beforeSequence?: number; shownShares?: unknown[] }) => {
+      if (options?.beforeSequence === 50) return Promise.resolve({ ok: true, group: { ...latest, messages: [oldShare] } });
+      if (options?.beforeSequence) return Promise.resolve({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [msg({ id: 'oldest', sequence: 1, content: '更早' })] } });
+      // A follow-up checking the stale share stays in flight until released.
+      if (options?.shownShares?.length) return new Promise(resolve => followUps.push(() => resolve({ ok: true, group: latest })));
+      return Promise.resolve({ ok: true, group: latest });
+    });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(followUps).toHaveLength(1));
+    // Another older page lands while that follow-up is still in flight.
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('更早');
+    await act(async () => { await Promise.resolve(); });
+    expect(followUps).toHaveLength(1);
+  });
 });
 
 describe('more older shares than one refresh re-reads', () => {
