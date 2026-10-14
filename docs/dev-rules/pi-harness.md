@@ -86,6 +86,10 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
 时仍保持仅文本；此默认值不写回用户配置，也不代表上游接口保证支持图片。活动任务沿用启动时
 能力快照。回归见 `pi-provider-routing.test.ts` 与 `piNativeProviders.test.ts`。
 
+Codex / Claude Code 复用的 `pi-provider-transport.ts` 原生桥接也沿用此缺省口径：
+活动目录的显式图片开关或模态声明优先于原生兜底资料，只有均未声明时才允许图片。
+此行为只决定图片是否进入原生 SDK 请求，不保证上游识图；回归见 `piProviderTransport.test.ts`。
+
 Cindy 显式设置:models.json、`settings.json` 的 `transport:sse` 与 `retry.maxRetries=6`
 （`retry.provider.maxRetries` 保持 0）、`--append-system-prompt`、`--session-dir`、启动时 RPC
 `set_auto_compaction{enabled:true}` / `set_thinking_level`。Pi 原生负责 threshold 与 overflow 压缩；
