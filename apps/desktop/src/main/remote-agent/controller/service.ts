@@ -84,7 +84,7 @@ const SHARED_PROVIDER_CREDENTIAL_NOTICE =
   "This task uses a shared provider, so what the agent reads passes through the sharer's computer or another computer they arrange. "
   + 'This may involve credentials, so it needs your confirmation. '
   + 'Always allow for this session skips further shared-provider credential confirmations in this task. '
-  + 'Changing its permission mode or quitting Cindy requires confirmation again.';
+  + 'Changing its permission mode or Plan mode, or quitting Cindy, requires confirmation again.';
 
 function mcpTargets(extra: PiExtraSpawnConfig | null): Map<string, LocalMcpTarget> {
   const targets = new Map<string, LocalMcpTarget>();

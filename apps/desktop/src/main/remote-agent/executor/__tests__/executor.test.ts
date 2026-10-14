@@ -1225,6 +1225,33 @@ describe('shared provider credentials', () => {
     }
   });
 
+  it('lets a new request ask right away after the permission mode changed under an open card', async () => {
+    const answers: Array<(result: ExecutorConfirmation) => void> = [];
+    const asked = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answers.push(resolve); }));
+    const { executor, gate } = sharedExecutor('full', asked);
+    const env: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const production: ExecutorAction = { kind: 'exec', command: 'cat .env.production', cwd: project };
+    const stale = executor.confirm(env);
+    let fresh: Promise<boolean> | undefined;
+    try {
+      executor.setGateMode('normal');
+      // 旧卡还没回答：切换权限档后的新请求不必等它。
+      fresh = executor.confirm(production);
+      await vi.waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
+      expect(asked).toHaveBeenNthCalledWith(2, production);
+      // 旧卡之后再回答，不建立授权。
+      answers[0]('session');
+      expect(await stale).toBe(false);
+      expect(gate.needsCredentialConsent(production)).toBe(true);
+      answers[1](true);
+      expect(await fresh).toBe(true);
+    } finally {
+      await executor.close();
+      for (const answer of answers) answer(false);
+      await Promise.all([stale, fresh]);
+    }
+  });
+
   it('does not queue a git command cancelled while it was being verified', async () => {
     let finishCheck!: (safe: boolean) => void;
     const gitCredentials = {

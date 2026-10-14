@@ -126,6 +126,8 @@ export class RemoteExecutor {
   private closed = false;
   private permissionGeneration = 0;
   private credentialConfirmationTail?: Promise<void>;
+  /** 当前占着确认排队位置的请求的放行函数。 */
+  private readonly credentialSlotReleases = new Set<() => void>();
   private readonly unwatchCredentialGrant?: () => void;
 
   constructor(private readonly opts: RemoteExecutorOptions) {
@@ -150,6 +152,7 @@ export class RemoteExecutor {
   setGateMode(mode: ExecutorGateMode): void {
     this.permissionGeneration += 1;
     this.gate.setMode(mode);
+    this.releaseCredentialQueue();
     this.opts.credentialGrant?.forget();
   }
 
@@ -157,6 +160,15 @@ export class RemoteExecutor {
   private revokeCredentialGrant(): void {
     this.permissionGeneration += 1;
     this.gate.setMode(this.gate.getMode());
+    this.releaseCredentialQueue();
+  }
+
+  /**
+   * 等待中的确认已作废(权限档变化或授权撤销)：放开它们占着的排队位置，之后的请求不必等旧卡；
+   * 旧卡之后的回答仍按 generation 丢弃。
+   */
+  private releaseCredentialQueue(): void {
+    for (const release of [...this.credentialSlotReleases]) release();
   }
 
   /** 本机用户在确认卡上允许了一个操作。 */
@@ -196,6 +208,7 @@ export class RemoteExecutor {
     const settled = new Promise<void>((resolve) => { settle = resolve; });
     const slot = previous ? previous.then(() => settled) : settled;
     this.credentialConfirmationTail = slot;
+    this.credentialSlotReleases.add(settle);
     // 自己的请求取消后立即让出：还在排队就不再等(后面的请求仍等前一张卡)；
     // 卡已弹出就不再挡住后面的请求，这张卡之后的回答会被丢弃。
     let onAbort: (() => void) | undefined;
@@ -221,6 +234,7 @@ export class RemoteExecutor {
       return true;
     } finally {
       if (onAbort) signal?.removeEventListener('abort', onAbort);
+      this.credentialSlotReleases.delete(settle);
       settle();
       void slot.then(() => {
         if (this.credentialConfirmationTail === slot) this.credentialConfirmationTail = undefined;
