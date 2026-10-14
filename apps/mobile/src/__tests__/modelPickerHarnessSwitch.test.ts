@@ -42,6 +42,7 @@ function harness(
   const env = {
     // These fixtures exercise ordinary tasks; Orca admission has its own suite.
     orcaModelSelectionUsesIntent:false,orcaRemoteAgentDeviceId:null,executionMakerForDevice,
+    isProviderShareAgentDeviceId:(id:unknown)=>typeof id === 'string' && id.startsWith('share:'),
     agentLocationMovable:true,
     remoteAgentCatalogs:[{ deviceId:'device-studio-mac', name:'工作室 Mac', status:'ready', providers:studioProviders }],
     remoteAgentDeviceName:(id:string)=>id === 'device-studio-mac' ? '工作室 Mac' : id,
