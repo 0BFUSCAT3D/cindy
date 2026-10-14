@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { confirmAgentLocationForPick } from '@/session/sessionAgentSwitchConfirmation';
+import { shouldBlockLegacyRemoteModelWindowSwitch } from '@cindy/maker-shared/agent-capabilities';
 
 vi.mock('react-native', () => ({ Alert: { alert: vi.fn() } }));
 
@@ -26,27 +27,31 @@ function visit(node: ts.Node) {
 }
 visit(source);
 
-function setup(orcaRole: 'lead' | 'worker' | null, supported = true, agentDeviceId: string | null = null) {
+function setup(orcaRole: 'lead' | 'worker' | null, supported = true, agentDeviceId: string | null = null,
+  windowState: { agent?: string; used?: number; current?: number; target?: number; hostGuard?: boolean } = {}) {
   const selection = { model: 'new-model', providerId: 'provider', effort: 'high', fastMode: true };
   const write = vi.fn(async (_intent: unknown) => true);
   const setModel = vi.fn(async () => true);
   const runControlAction = vi.fn(async (action: () => Promise<unknown>) => action());
   const bindings = {
-    currentSession: { orcaRole, agentDeviceId, agentKind: 'codex', model: 'old-model', effort: 'low', fastMode: false },
+    currentSession: { orcaRole, agentDeviceId, agentKind: windowState.agent ?? 'codex', model: 'old-model', effort: 'low', fastMode: false,
+      contextTokens: windowState.used, contextWindow: windowState.current },
     currentAgentDeviceId: agentDeviceId,
     remoteAgentCatalogs: ['current', 'other'].map(deviceId => ({ deviceId, providers: [] })),
-    sessionAgentSwitchSupported: supported, sessionAgentKind: 'codex', modelSheetAgentKind: 'codex',
+    sessionAgentSwitchSupported: supported, sessionAgentKind: windowState.agent ?? 'codex', modelSheetAgentKind: windowState.agent ?? 'codex',
     canUseRemoteSessionControls: true, canConfigureSessionModel: true, controlBusy: false,
     sessionId: 's1', deviceId: 'host', deviceIdRef: { current: 'host' },
     agentLocationMovable: false, controlledComputerName: 'Host', remoteAgentDeviceName: vi.fn(),
     agentSwitchIntent: { targetAgentKind: 'codex', ...selection },
-    modelSheetSelection: selection, modelSheetCapabilities: { supportsModelWindowSwitchGuard: true },
+    modelSheetSelection: selection, modelSheetCapabilities: { supportsModelWindowSwitchGuard: windowState.hostGuard !== false },
     sessionMirrorAccessors: {}, composerDeviceProviders: { providers: [] },
     resolveRowSelection: () => selection, reconcileRuntimeDraftWithCapabilities: () => selection,
-    resolveAgentCapability: () => ({ supportsFastMode: true, contextWindow: 200000 }),
-    normalizeMobileAgentCapabilities: () => ({ hasFastMode: true, supportsModelWindowSwitchGuard: true }),
+    resolveAgentCapability: () => ({ supportsFastMode: true, contextWindow: windowState.target ?? 200000 }),
+    normalizeMobileAgentCapabilities: () => ({ hasFastMode: true, supportsModelWindowSwitchGuard: windowState.hostGuard !== false }),
     maker: { getCapabilities: vi.fn(), setEffort: vi.fn(), setFastMode: vi.fn() },
     confirmAgentLocationForPick, intentChangesAgentLocation: () => false,
+    confirmMobileSessionAgentSwitch: vi.fn(async () => true),
+    shouldBlockLegacyRemoteModelWindowSwitch, showRemoteModelWindowUnsupported: vi.fn(),
     writeSessionAgentSwitchIntent: write, setComposerModel: setModel, runControlAction,
     setModelSheetOpen: vi.fn(), setModelSheetAgentKind: vi.fn(),
   };
@@ -54,6 +59,7 @@ function setup(orcaRole: 'lead' | 'worker' | null, supported = true, agentDevice
     'changeComposerSelectedEffort', 'changeComposerSelectedFastMode'];
   const compiled = ts.transpileModule(`const orcaModelSelectionUsesIntent = ${intentGate};
     const orcaRemoteAgentDeviceId = ${remoteCatalogGate};
+    const canStageOrcaModelSelection = ${callbacks.get('canStageOrcaModelSelection')};
     return {${names.map(name => `${name}: ${callbacks.get(name)}`).join(',')},
       catalogs: (${callbacks.get('modelSheetRemoteCatalogs')})()};`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -68,6 +74,63 @@ const picks = [
 ] as const;
 
 describe('Orca model-only selection', () => {
+  it.each(['claude-code', 'codex', 'pi'])('guards all pickers before staging a pressured %s shrink', async agent => {
+    for (const role of ['lead', 'worker'] as const) {
+      for (const hostGuard of [true, false]) {
+        for (const used of [180000, 240000]) {
+          for (const [name, input] of picks) {
+            const h = setup(role, true, null, { agent, used, current: 1000000, hostGuard });
+            await h.handlers[name]({ ...input, ...(name === 'selectUnifiedComposerModel' ? { agent } : {}) });
+            await vi.waitFor(() => expect(h.bindings.showRemoteModelWindowUnsupported).toHaveBeenCalledWith(200000));
+            expect(h.write).not.toHaveBeenCalled();
+            expect(h.setModel).not.toHaveBeenCalled();
+            expect(h.runControlAction).not.toHaveBeenCalled();
+            expect(h.bindings.currentSession.model).toBe('old-model');
+          }
+        }
+      }
+    }
+  });
+
+  it.each([
+    { used: 179999, current: 1000000 },
+    { used: 240000, current: 200000 },
+    { used: 240000, current: 100000 },
+    { used: undefined, current: undefined },
+  ])('keeps supported-host low-pressure, same/expanded and unknown windows selectable: %j', async state => {
+    for (const [name, input] of picks) {
+      const h = setup('worker', true, null, state);
+      await h.handlers[name](input);
+      await vi.waitFor(() => expect(h.write).toHaveBeenCalledTimes(1));
+      expect(h.bindings.showRemoteModelWindowUnsupported).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps legacy unknown-window and Pi checks before intent registration', async () => {
+    for (const agent of ['claude-code', 'codex', 'pi']) {
+      const h = setup('lead', true, null, { agent, hostGuard: false });
+      expect(await h.handlers.selectUnifiedComposerModel({ ...picks[1][1], agent })).toBe(false);
+      expect(h.write).not.toHaveBeenCalled();
+      expect(h.bindings.showRemoteModelWindowUnsupported).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('uses the chosen remote catalog window instead of the host catalog', async () => {
+    const h = setup('worker', true, 'current', { used: 240000, current: 1000000, target: 200000 });
+    expect(await h.handlers.selectUnifiedComposerModel(picks[1][1], { deviceId: 'current' })).toBe(false);
+    expect(h.write).not.toHaveBeenCalled();
+    expect(h.bindings.showRemoteModelWindowUnsupported).toHaveBeenCalledWith(200000);
+  });
+
+  it('does not apply the same-Agent window guard to cross-Agent picks or pending effort/Fast edits', async () => {
+    const h = setup('worker', true, null, { used: 240000, current: 1000000 });
+    expect(await h.handlers.selectUnifiedComposerModel({ ...picks[1][1], agent: 'pi' })).toBe(true);
+    h.handlers.changeComposerSelectedEffort('medium');
+    h.handlers.changeComposerSelectedFastMode(false);
+    expect(h.write).toHaveBeenCalledTimes(3);
+    expect(h.bindings.showRemoteModelWindowUnsupported).not.toHaveBeenCalled();
+  });
+
   it.each(['lead', 'worker'] as const)('keeps only the current remote catalog and selects in place for %s', async role => {
     const h = setup(role, true, 'current');
     expect(h.handlers.catalogs.map((item: { deviceId: string }) => item.deviceId)).toEqual(['current']);

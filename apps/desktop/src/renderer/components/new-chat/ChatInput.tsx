@@ -6482,6 +6482,7 @@ export function ChatInput({
       verifiedTargetContextWindow?: number,
       verifiedContextTokens?: number,
       requireDestructiveConfirmation = false,
+      stagingSameAgentSelection = false,
     ): Promise<boolean | number> => {
       if (!sessionId) return true;
       // Main owns SSH Codex window protection and deferred application. A new/failed
@@ -6503,30 +6504,32 @@ export function ChatInput({
           ?.supportsModelWindowSwitchGuard === true;
       if (
         !requireDestructiveConfirmation &&
+        !stagingSameAgentSelection &&
         remoteDeviceId &&
         runtimeAgentKind === 'pi' &&
         remotePiWindowGuardSupported
       ) {
         return true;
       }
+      const targetAgentKind = stagingSameAgentSelection ? runtimeAgentKind : currentModelAgentKind;
       const targetRouteProviderId =
-        targetProviderId !== undefined && currentModelAgentKind
+        targetProviderId !== undefined && targetAgentKind
           ? effectiveSourceIdForModel(
               providers,
               targetProviderId,
               newModelId,
-              currentModelAgentKind,
+              targetAgentKind,
             )
           : null;
       const targetContextWindow =
         verifiedTargetContextWindow ??
         (targetProviderId !== undefined
-          ? targetRouteProviderId && currentModelAgentKind
+          ? targetRouteProviderId && targetAgentKind
             ? resolveProviderModelContextWindow({
                 providers,
                 providerId: targetRouteProviderId,
                 modelId: newModelId,
-                agentKind: currentModelAgentKind,
+                agentKind: targetAgentKind,
               })
             : undefined
           : getModelById(newModelId, remoteDeviceId)?.contextWindow);
@@ -6754,6 +6757,19 @@ export function ChatInput({
       const exclusiveTurn = reserveAgentSwitchExclusive(sourceSessionId);
       try {
         await exclusiveTurn.ready;
+        // Same-Agent Orca picks stage instead of calling SET_MODEL. Keep its window
+        // preflight before registration, including same-id provider changes. Effort/
+        // Fast edits of an already selected route do not need another confirmation.
+        if (sessionOrcaRole && targetAgentKind === runtimeAgentKind &&
+            (targetAgentKind !== currentModelAgentKind || newModelId !== activeModel ||
+              providerId !== effectiveSourceId)) {
+          const proceed = await confirmModelSwitchContextGuard(
+            newModelId, deviceLinkDeviceId ?? getSessionDeviceId(sourceSessionId),
+            providerId, undefined, undefined, false, true,
+          );
+          if (!proceed || !isSessionScopeCurrent(sourceSessionId, currentSessionIdRef.current) ||
+              writeSeq !== getAgentSwitchWriteSeq(sourceSessionId)) return false;
+        }
         // 远程 Agent:这次选择落在哪台电脑。左侧栏点了另一台电脑的目录就用那台;否则沿用已登记
         // 的换位置意图 —— 意图期内在同一份目录里改选,不能被当成原来那台的选择。与任务当前
         // 所在电脑相同 = 位置不变,不带给 main(旧被控端 / 内部调用同样不带)。被控电脑上的任务
@@ -7053,6 +7069,12 @@ export function ChatInput({
     [
       sessionId,
       settingsLocked,
+      sessionOrcaRole,
+      runtimeAgentKind,
+      currentModelAgentKind,
+      activeModel,
+      effectiveSourceId,
+      confirmModelSwitchContextGuard,
       activeEffort,
       resolveModelEfforts,
       getRememberedEffort,
