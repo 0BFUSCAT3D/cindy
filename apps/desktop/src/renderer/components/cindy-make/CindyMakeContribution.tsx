@@ -188,10 +188,10 @@ export function CindyMakeContributionDialog({
   return (
     <Dialog.Root open onOpenChange={(open) => !busy.current && onOpenChange(open)}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[10000] bg-[var(--overlay-modal)]" />
+        <Dialog.Overlay className="fixed inset-0 z-[10000] modal-scrim" />
         <Dialog.Content
           onPointerDownOutside={(event) => event.preventDefault()}
-          className="fixed left-1/2 top-1/2 z-[10001] flex max-h-[85vh] w-[min(560px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-y-auto rounded-xl bg-[var(--confirm-bg)] p-4 shadow-[var(--confirm-shadow)] outline-none"
+          className="modal-panel fixed left-1/2 top-1/2 z-[10001] flex max-h-[85vh] w-[min(560px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-y-auto p-4 outline-none"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
