@@ -230,8 +230,8 @@ describe('ProviderGroupSection', () => {
     await screen.findAllByTestId('provider-group-member');
     fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.round' }));
     await waitFor(() => expect(stored?.strategy).toBe('round'));
-    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.usage' }));
-    await waitFor(() => expect(stored?.strategy).toBe('usage'));
+    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.order' }));
+    await waitFor(() => expect(stored?.strategy).toBe('order'));
     fireEvent.click(screen.getByRole('switch', { name: 'providerGroup.autoSwitch.label' }));
     await waitFor(() => expect(stored?.autoSwitch).toBe(false));
   });
@@ -245,24 +245,34 @@ describe('ProviderGroupSection', () => {
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ confirmVariant: 'destructive' }));
   });
 
-  it('shows the actual Chinese usage-balancing option and saves it for a disconnected subscription', async () => {
+  it('explains in Chinese that quota comes first for a disconnected subscription and shows an old usage group as least busy', async () => {
     realLocale = createInstance();
     await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
     providerState.providers[0].connected = false;
-    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    stored = { strategy: 'usage', autoSwitch: true, members: [LOCAL] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Claude" />);
-    const option = await screen.findByRole('radio', { name: '用量均衡' });
-    fireEvent.click(option);
-    await waitFor(() => expect(stored?.strategy).toBe('usage'));
-    expect(await screen.findByText('按5小时和每周用量分配')).toBeTruthy();
+    expect(await screen.findByText('配额快重置、用量低的电脑优先，相近时再按组策略')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '最少占用' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('给最闲的那台')).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: '按顺序' }));
+    await waitFor(() => expect(stored?.strategy).toBe('order'));
   });
 
-  it('does not offer subscription balancing for an API key connection', async () => {
+  it('does not show the quota hint for an API key connection', async () => {
     providerState.providers[0].auth.method = 'api-key';
     stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
     await screen.findAllByTestId('provider-group-member');
+    expect(screen.queryByText('providerGroup.strategy.quotaFirst')).toBeNull();
     expect(screen.queryByRole('radio', { name: 'providerGroup.strategy.usage' })).toBeNull();
+  });
+
+  it('shows the quota hint for a subscription group', async () => {
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findAllByTestId('provider-group-member');
+    expect(screen.getByText('providerGroup.strategy.quotaFirst')).toBeTruthy();
   });
 });
 

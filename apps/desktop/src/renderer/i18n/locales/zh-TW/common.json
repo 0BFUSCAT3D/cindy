@@ -470,13 +470,12 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
-      "usage": "用量均衡",
+      "quotaFirst": "配額快重置、用量低的電腦優先，相近時再依組策略",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例",
-        "usage": "按5小時和每週用量分配"
+        "weight": "依權重比例"
       }
     },
     "autoSwitch": {
