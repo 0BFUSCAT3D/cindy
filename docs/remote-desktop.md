@@ -60,8 +60,9 @@ pass at once; so does the controlled
 computer's own copy/cut chord (Cmd on macOS, Ctrl elsewhere; the other modifier
 is an ordinary key) about 200 ms after the key, and its paste chord holds the
 queued keys (at most 1 s) until the local clipboard has been pushed (pastes made
-while that push is still in flight wait on it, each for at most 1 s, rather than
-starting another); losing focus drops a held paste instead of sending it late. The 1.5 s poll remains only as a
+while that push is still in flight wait on it rather than starting another, and
+only the latest paste's wait, at most 1 s, opens the gate); losing focus drops a
+held paste instead of sending it late. The 1.5 s poll remains only as a
 fallback. A locked or busy computer and a clipboard that changed mid-read retry
 at a fixed 1.5 s without growing the backoff (the locked case shows its own
 notice); unexplained failures back off to at most 5 s and reset on focus or a

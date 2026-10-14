@@ -141,6 +141,8 @@ export class DesktopViewerController {
   private clipboardRevision = 0;
   /** The sync pass a paste shortcut is waiting on; later pastes share it. */
   private pasteSync: Promise<void> | null = null;
+  /** Serial of the latest paste wait: only it may open the picture's gate. */
+  private pasteWait = 0;
   private copyTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingSettings = false;
   private offers = new Set<import('@cindy/device-link').RemoteDesktopLease>();
@@ -1161,9 +1163,10 @@ export class DesktopViewerController {
    * picture gates its queue) until the local clipboard has been pushed, at
    * most CLIPBOARD_PASTE_WAIT_MS; copy pulls the computer's clipboard shortly
    * after. Neither waits for the regular poll. One push serves every paste
-   * made while it is in flight: a timeout releases that paste only, so a later
-   * paste still waits on the real push instead of a second request that Main
-   * would answer at once with the pending pass's snapshot.
+   * made while it is in flight, and only the latest paste's wait opens the
+   * gate (the picture re-arms it per paste): an earlier paste's deadline must
+   * not open it, and a second request would only get the pending pass's
+   * snapshot from Main at once.
    */
   private clipboardIntent(action: 'copy' | 'paste'): void {
     const wanted =
@@ -1177,10 +1180,12 @@ export class DesktopViewerController {
       }, CLIPBOARD_COPY_DELAY_MS);
       return;
     }
-    const epoch = this.epoch;
+    const epoch = this.epoch,
+      wait = ++this.pasteWait;
     const release = () => {
       // The picture resets its gate itself when a session ends or changes.
-      if (!this.disposed && epoch === this.epoch) this.runtime.receive({ type: 'inputGate' });
+      if (!this.disposed && epoch === this.epoch && wait === this.pasteWait)
+        this.runtime.receive({ type: 'inputGate' });
     };
     if (!wanted) {
       release();
