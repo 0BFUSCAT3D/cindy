@@ -32,12 +32,13 @@ describe('normalizeRemoteMessages', () => {
   });
 
   it('recognizes host-marked MCP App cards and leaves ordinary assistant content unchanged', () => {
-    const content = { mcpApp: { version: 1, serverId: 'example', serverRevision: 'revision', resourceUri: 'ui://example/app', tool: { name: 'draft', title: '申请表', inputSchema: { type: 'object' } }, arguments: {} } };
+    const content = { mcpApp: { version: 1, serverId: 'example', serverRevision: 'revision', resourceUri: 'ui://example/app', tool: { name: 'draft', title: '申请表', inputSchema: { type: 'object' } }, arguments: {},
+      result: { content: [{ type: 'text', text: 'Saved form result' }], _meta: { private: 'view-only' } } } };
     const output = normalizeRemoteMessages([
       message({ id: 'app', role: 'assistant', content, agentMeta: { mcpApp: true } }),
       message({ id: 'plain', role: 'assistant', content: '工具返回的文本' }),
     ]);
-    expect(output[0]).toMatchObject({ systemCardType: 'mcp-app', systemCardData: { title: '申请表' } });
+    expect(output[0]).toMatchObject({ systemCardType: 'mcp-app', systemCardData: { title: '申请表', fallbackText: 'Saved form result' } });
     expect(output[1]).toMatchObject({ body: '工具返回的文本' });
   });
 

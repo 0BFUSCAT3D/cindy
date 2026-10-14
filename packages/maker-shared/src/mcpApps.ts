@@ -59,6 +59,17 @@ export function parseMcpAppRecord(content: unknown): McpAppRecord | undefined {
     : undefined;
 }
 
+/** Read-only history uses public text blocks, never View-only metadata or embedded resources. */
+export function mcpAppHistoryText(record: McpAppRecord): string {
+  return (record.result?.content ?? [])
+    .flatMap((block) => {
+      if (!block || typeof block !== 'object') return [];
+      const value = block as { type?: unknown; text?: unknown };
+      return value.type === 'text' && typeof value.text === 'string' ? [value.text] : [];
+    })
+    .join('\n\n');
+}
+
 /** Trusted proxy. No privileged host API; relay only the actual inner window. */
 export const MCP_APP_SANDBOX_SCRIPT = `
 const frame=document.createElement('iframe');

@@ -2,12 +2,17 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 const state = vi.hoisted(() => ({
+  deviceId: undefined as string | undefined,
   controllers: [] as Array<{ open: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>,
   intersections: new Map<Element, (entries: Array<{ isIntersecting: boolean }>) => void>(),
 }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
-vi.mock('@/features/device-link/stickySessionOrigin', () => ({ getStickySessionDeviceId: () => undefined }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({
+  t: (key: string, values?: { title: string }) => key === 'mcpApps.cardTitle' ? values?.title : key,
+  i18n: { language: 'en' },
+}) }));
+vi.mock('@/features/device-link/stickySessionOrigin', () => ({ getStickySessionDeviceId: () => state.deviceId }));
 vi.mock('@/components/ui/button', () => ({ Button: ({ children }: { children: React.ReactNode }) => <button>{children}</button> }));
 vi.mock('@/components/ui/spinner', () => ({ Spinner: () => null }));
 vi.mock('@cindy/maker-shared/mcp-app-controller', () => ({
@@ -21,8 +26,10 @@ vi.mock('@cindy/maker-shared/mcp-app-controller', () => ({
   },
 }));
 import { McpAppCard } from '../McpAppCard';
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); state.controllers = []; state.intersections.clear(); });
-it('does not open offscreen history and releases each visible View before scrolling onward', async () => {
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); state.controllers = []; state.intersections.clear(); state.deviceId = undefined; });
+it.each([undefined, 'owner-device'])('releases offscreen history and opens visible owner cards on %s', async (deviceId) => {
+  state.deviceId = deviceId;
+  vi.stubGlobal('electronAPI', { maker: { mcpApps: vi.fn(async () => 'mounted-view') } });
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
   vi.stubGlobal('matchMedia', () => ({ matches: false }));
@@ -54,4 +61,32 @@ it('does not open offscreen history and releases each visible View before scroll
     container.remove();
   }
   expect(state.controllers.every((controller) => controller.close.mock.calls.length === 1)).toBe(true);
+});
+
+it.each(['light', 'dark'])('shows saved text without mounting an interactive guest View in %s mode', async (mode) => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  document.documentElement.classList.toggle('dark', mode === 'dark');
+  state.deviceId = sharedTaskHostPeer('shared-task', 'host-device');
+  const invoke = vi.fn();
+  vi.stubGlobal('electronAPI', { maker: { mcpApps: invoke }, deviceLink: { invoke } });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<McpAppCard sessionId="task" clientId="card" title="Saved form"
+      fallbackText="Saved result <script>window.attack=true</script>" />));
+    expect(container.textContent).toContain('Saved form');
+    expect(container.textContent).toContain('Saved result <script>window.attack=true</script>');
+    expect(container.textContent).toContain('mcpApps.sharedTaskReadOnly');
+    expect(container.textContent).not.toContain('mcpApps.loadFailed');
+    expect(container.querySelector('iframe, button, script')).toBeNull();
+    expect(state.controllers).toHaveLength(0);
+    expect(state.intersections.size).toBe(0);
+    expect(invoke).not.toHaveBeenCalled();
+    await act(async () => root.render(<McpAppCard sessionId="task" clientId="pending" title="Pending form" />));
+    expect(container.textContent).toContain('Pending form');
+    expect(container.textContent).toContain('mcpApps.sharedTaskReadOnly');
+  } finally {
+    await act(async () => root.unmount());
+    document.documentElement.classList.remove('dark');
+  }
 });

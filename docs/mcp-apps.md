@@ -71,6 +71,11 @@ SSH 远端使用既有认证桥和 Session instance 路由；只暴露实际配�
 仍拒绝无关的本机 MCP。伙伴的自定义 server 还需出现在冻结的工具装配名单里。
 设备互联和手机端只负责显示与转发，不下放凭证。远程调用授权已做 loopback 回归；
 尚未验证真实 SSH 主机与真机 Mobile 的端到端行为。
+共享任务访客在 Desktop 和 Mobile 只显示卡片名称、已保存结果中的 text 块和主人专属
+操作说明，不挂载交互 View、不请求 MCP Apps channel；没有文字结果时仍保留名称与说明。
+只读投影不展开 structuredContent、View-only `_meta` 或嵌入资源。房主本机及同账号远控
+继续使用交互卡片，Host 的访客拒绝规则保持不变。回归见两端 `McpAppCard` 测试与
+`packages/maker-shared/src/__tests__/mcpApps.test.ts`。
 
 资源上限为 4 MiB；每个远程查看端最多同时打开 4 个 View，本地查看端 16 个。
 远程文档（含 HTML、CSP、policy 与 viewId）和 poll 的完整事件数组按 UTF-8 JSON 字节

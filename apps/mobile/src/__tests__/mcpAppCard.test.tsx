@@ -3,15 +3,17 @@ import { act, createElement, useImperativeHandle } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Script } from 'node:vm';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 const state = vi.hoisted(() => ({
   props: {} as Record<string, any>,
   inject: vi.fn(),
   invoke: vi.fn(),
+  mode: 'light',
 }));
 vi.mock('react-native', () => ({
   View: ({ children }: { children: React.ReactNode }) => createElement('div', null, children),
   ActivityIndicator: () => null,
-  Pressable: () => null,
+  Pressable: () => createElement('button'),
   Linking: { openURL: vi.fn() },
   StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
 }));
@@ -26,7 +28,10 @@ vi.mock('expo-crypto', () => ({
   getRandomBytes: (length: number) => new Uint8Array(length).fill(1),
 }));
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
+  useTranslation: () => ({
+    t: (key: string, values?: { title: string }) => key === 'mcpApps.cardTitle' ? values?.title : key,
+    i18n: { language: 'en' },
+  }),
 }));
 vi.mock('@/components/AppText', () => ({
   Text: ({ children }: { children: React.ReactNode }) => createElement('span', null, children),
@@ -44,7 +49,7 @@ vi.mock('@/theme', () => {
     border: 'gray',
   };
   return {
-    useTheme: () => ({ colors, mode: 'light' }),
+    useTheme: () => ({ colors, mode: state.mode }),
     textStyles: {},
     fontWeight: {},
     radius: {},
@@ -66,6 +71,7 @@ beforeEach(() => {
   state.invoke.mockReset();
   state.inject.mockReset();
   state.props = {};
+  state.mode = 'light';
   state.invoke.mockImplementation(async (_device, _channel, [, input]) =>
     input.op === 'open' ? { ...doc } : input.op === 'poll' ? new Promise(() => {}) : {},
   );
@@ -227,4 +233,21 @@ it('cancels an offscreen pending open and disposes its late View without mountin
     'cancel-open',
     'teardown',
   ]);
+});
+
+it.each(['light', 'dark'])('renders read-only guest history without invoking the Host in %s mode', async (mode) => {
+  state.mode = mode;
+  const deviceId = sharedTaskHostPeer('shared-task', 'host-device');
+  await act(async () => root.render(<McpAppCard deviceId={deviceId} sessionId="task" clientId="card"
+    title="Saved form" fallbackText="Saved result <script>window.attack=true</script>" />));
+  expect(container.textContent).toContain('Saved form');
+  expect(container.textContent).toContain('Saved result <script>window.attack=true</script>');
+  expect(container.textContent).toContain('mcpApps.sharedTaskReadOnly');
+  expect(container.textContent).not.toContain('mcpApps.loadFailed');
+  expect(container.querySelector('[data-testid="mcp-webview"], button, script')).toBeNull();
+  expect(state.invoke).not.toHaveBeenCalled();
+  expect(state.inject).not.toHaveBeenCalled();
+  await act(async () => root.render(<McpAppCard deviceId={deviceId} sessionId="task" clientId="pending" title="Pending form" />));
+  expect(container.textContent).toContain('Pending form');
+  expect(container.textContent).toContain('mcpApps.sharedTaskReadOnly');
 });

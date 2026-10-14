@@ -128,7 +128,7 @@ import type {
   GhostSetupStepPhase,
 } from '../../shared/ghost';
 import * as messageService from '@/lib/messageService';
-import { parseMcpAppRecord } from '@cindy/maker-shared/mcp-apps';
+import { mcpAppHistoryText, parseMcpAppRecord } from '@cindy/maker-shared/mcp-apps';
 import * as sessionService from '@/lib/sessionService';
 // device-link 透明传输:远程(被控设备)会话的操作/读取走隧道,本地会话零变化。
 import {
@@ -18517,7 +18517,7 @@ function mapServerMessages(serverMsgs: Message[]): ChatMessage[] {
     if (mcpApp) return {
       clientId: m.clientId, role: 'assistant' as const, content: '', isStreaming: false,
       systemCardType: 'mcp-app' as const,
-      systemCardData: { title: mcpApp.tool.title ?? mcpApp.tool.name },
+      systemCardData: { title: mcpApp.tool.title ?? mcpApp.tool.name, fallbackText: mcpAppHistoryText(mcpApp) },
       mcpAppClientId: m.clientId,
     };
     const persistedCindyCard =

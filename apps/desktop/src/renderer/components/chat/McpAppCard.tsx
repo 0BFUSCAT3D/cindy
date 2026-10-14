@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { isSharedTaskPeer } from '@cindy/device-link';
 import {
   McpAppController,
   mcpAppFailureKey,
@@ -45,16 +46,35 @@ function hostContext(locale: string, element: HTMLElement): Record<string, unkno
   };
 }
 
-/** Untrusted HTML always sits across an origin boundary, without Cindy's preload. */
-export function McpAppCard({
-  sessionId,
-  clientId,
-  title,
-}: {
+interface McpAppCardProps {
   sessionId: string;
   clientId: string;
   title: string;
-}) {
+  fallbackText?: string;
+}
+
+export function McpAppCard(props: McpAppCardProps) {
+  const { t } = useTranslation();
+  // Shared-task peers can read history, but must not create an interactive View.
+  if (isSharedTaskPeer(getStickySessionDeviceId(props.sessionId))) {
+    const title = props.title ? t('mcpApps.cardTitle', { title: props.title }) : t('mcpApps.appName');
+    return (
+      <section className="my-3 rounded-xl border border-border p-3" aria-label={title}>
+        <div className="text-13 text-[var(--text-secondary)]">{title}</div>
+        {props.fallbackText && (
+          <p className="mt-3 whitespace-pre-wrap break-words text-14 text-[var(--text-primary)]">
+            {props.fallbackText}
+          </p>
+        )}
+        <p className="mt-3 text-13 text-[var(--text-secondary)]">{t('mcpApps.sharedTaskReadOnly')}</p>
+      </section>
+    );
+  }
+  return <InteractiveMcpAppCard {...props} />;
+}
+
+/** Untrusted HTML always sits across an origin boundary, without Cindy's preload. */
+function InteractiveMcpAppCard({ sessionId, clientId, title }: McpAppCardProps) {
   const { t, i18n } = useTranslation();
   const appTitle = title || t('mcpApps.appName');
   const root = useRef<HTMLDivElement>(null);

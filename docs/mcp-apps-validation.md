@@ -140,6 +140,26 @@ Mobile 与 Desktop 类型检查均通过。
 本次未重跑 Electron 沙箱，也未完成 macOS、Mobile 真机或完整卡片双主题目检。
 Mobile 原生卸载不能保留 WebView 时属于尽力通知，未将单测结果当作原生异步清理完成的证据。
 
+## 共享任务访客历史卡片补充验证（2026-10-15）
+
+Desktop 和 Mobile 在挂载交互卡片前识别共享任务 peer，只展示名称、保存结果中的
+text 块和主人专属操作说明。无结果时仍显示名称与说明；React / 原生 Text 将文字作为
+正文显示，不执行其中的 HTML，不展示 View-only `_meta`、structuredContent 或嵌入资源。
+Host 仍拒绝访客 MCP Apps 请求，房主本机和同账号远控仍使用原交互卡片。
+
+- 定向回归 9 文件 / 136 项通过：Desktop 卡片、历史投影及 IPC 17 项；Mobile 卡片、
+  历史投影、文字规范、五语 catalog 与来源文案 115 项；共享记录投影 4 项。覆盖访客
+  零 Host 调用、无 iframe/WebView/重试按钮、保存文字与空结果、主人本机/远控打开和离屏回收。
+- Desktop、Mobile typecheck 通过；maker-shared 无单独 typecheck，`build` 的
+  `tsc --noEmit` 通过。i18n key、术语检查及文档合同 10 项通过。
+- Desktop / 共享包改动文件 ESLint 除 `makerChatStore.ts` 外通过。该文件 3832、4159、
+  11184 行的 3 项错误及 11182 行的 1 项警告，在原 head 与工作区逐项相同；均在本轮
+  改动外。Mobile ESLint 未执行成功：包内没有 `eslint.config.*`，退出码 2，未添加临时配置
+  或放宽规则。
+- 两端新增说明已逐语核对简中、繁中、英、日、韩的含义及编码，未做母语者复核。
+  测试覆盖 Light/Dark 状态分支，不计作真实 UI 目检；本轮未启动 Electron 沙箱或 Metro，
+  未完成卡片双主题实机、macOS、Mobile 真机或真实双账号联调。
+
 ## 两个独立 App
 
 1. **申请表**：服务器使用官方 `registerAppTool`/`registerAppResource`，View 使用官方 App SDK。

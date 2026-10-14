@@ -15693,6 +15693,7 @@
     "limitAction": "リセットを使用 · 残り {{count}} 回"
   },
   "mcpApps": {
+    "sharedTaskReadOnly": "このカードを操作できるのはセッションのオーナーだけです。",
     "retry": "再読み込み",
     "loadFailed": "アプリを読み込めませんでした。接続を確認して再読み込みしてください。",
     "updateRequired": "このコンピューターはまだ MCP Apps に対応していません。このコンピューターの Cindy を更新してから、もう一度お試しください。",

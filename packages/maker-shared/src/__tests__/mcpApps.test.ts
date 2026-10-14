@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, parseMcpAppRecord } from '../mcpApps.js';
+import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord } from '../mcpApps.js';
 describe('MCP Apps cross-platform document contract', () => {
   it('escapes native bridge keys without changing their JavaScript value', () => {
     const key = '</script><script>attack</script>';
@@ -34,5 +34,24 @@ describe('MCP Apps cross-platform document contract', () => {
     expect(
       parseMcpAppRecord({ mcpApp: { ...record, result: { content: 'invalid' } } }),
     ).toBeUndefined();
+  });
+  it('projects only saved public text blocks for read-only history', () => {
+    const record = parseMcpAppRecord({ mcpApp: {
+      version: 1, serverId: 'example', serverRevision: 'revision', resourceUri: 'ui://example/app',
+      tool: { name: 'draft', inputSchema: { type: 'object' } }, arguments: { private: 'input' },
+    } })!;
+    expect(mcpAppHistoryText(record)).toBe('');
+    record.result = {
+      content: [
+        { type: 'text', text: 'Saved result' },
+        { type: 'image', data: 'private image' },
+        { type: 'resource', resource: { text: 'embedded HTML' } },
+        null, 'invalid', { type: 'text', text: 123 },
+        { type: 'text', text: '<script>plain text</script>' },
+      ],
+      structuredContent: { private: 'structured' },
+      _meta: { private: 'view-only' },
+    };
+    expect(mcpAppHistoryText(record)).toBe('Saved result\n\n<script>plain text</script>');
   });
 });

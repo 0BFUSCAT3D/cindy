@@ -214,6 +214,28 @@ describe('teammate result attachment history', () => {
 });
 
 // Both initial history and live message insertion use the same stored-row projection.
+describe('MCP App read-only history', () => {
+  it('keeps public text results alongside the card title for guest viewers', async () => {
+    const id = sid('mcp-app-history');
+    transportMocks.listMessages.mockResolvedValueOnce([{
+      id: 'app-row', clientId: 'app-card', sessionId: id, role: 'assistant', createdAt: Date.now(),
+      content: { mcpApp: {
+        version: 1, serverId: 'example', serverRevision: 'revision', resourceUri: 'ui://example/app',
+        tool: { name: 'draft', title: 'Saved form', inputSchema: { type: 'object' } }, arguments: {},
+        result: { content: [{ type: 'text', text: 'Saved form result' }], _meta: { private: 'view-only' } },
+      } },
+      agentMeta: { mcpApp: true },
+    }] as never);
+    makerChatStore.ensureInitialMessages(id);
+    await vi.waitFor(() => expect(makerChatStore.getSnapshot(id).historyLoaded).toBe(true));
+    expect(makerChatStore.getSnapshot(id).messages[0]).toMatchObject({
+      systemCardType: 'mcp-app',
+      systemCardData: { title: 'Saved form', fallbackText: 'Saved form result' },
+    });
+    expect(JSON.stringify(makerChatStore.getSnapshot(id).messages[0].systemCardData)).not.toContain('view-only');
+  });
+});
+
 describe('private group reply source', () => {
   it('keeps group provenance on assistant rows without relabeling normal private replies', async () => {
     const id = sid('group-private-source');

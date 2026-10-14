@@ -3,6 +3,7 @@ import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-n
 import { WebView } from 'react-native-webview';
 import { getRandomBytes } from 'expo-crypto';
 import { useTranslation } from 'react-i18next';
+import { isSharedTaskPeer } from '@cindy/device-link';
 import { Text } from '@/components/AppText';
 import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { useTheme, textStyles, fontWeight, radius, spacing } from '@/theme';
@@ -19,19 +20,37 @@ import {
   type AppRpc,
 } from '@cindy/maker-shared/mcp-app-controller';
 
-export function McpAppCard({
-  deviceId,
-  sessionId,
-  clientId,
-  title,
-  active = true,
-}: {
+interface McpAppCardProps {
   deviceId?: string;
   sessionId: string;
   clientId: string;
   title: string;
   active?: boolean;
-}) {
+  fallbackText?: string;
+}
+
+export function McpAppCard(props: McpAppCardProps) {
+  const { colors } = useTheme();
+  const { t } = useTranslation();
+  if (isSharedTaskPeer(props.deviceId)) {
+    return (
+      <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+        <View style={styles.header}>
+          <Text style={[styles.title, { color: colors.textPrimary }]}>
+            {props.title ? t('mcpApps.cardTitle', { title: props.title }) : t('mcpApps.appName')}
+          </Text>
+        </View>
+        {props.fallbackText ? (
+          <Text selectable style={[styles.historyText, { color: colors.textPrimary }]}>{props.fallbackText}</Text>
+        ) : null}
+        <Text style={[styles.error, { color: colors.textSecondary }]}>{t('mcpApps.sharedTaskReadOnly')}</Text>
+      </View>
+    );
+  }
+  return <InteractiveMcpAppCard {...props} />;
+}
+
+function InteractiveMcpAppCard({ deviceId, sessionId, clientId, title, active = true }: McpAppCardProps) {
   const { invoke } = useDeviceLink();
   const { colors, mode } = useTheme();
   const { t, i18n } = useTranslation();
@@ -264,5 +283,6 @@ const styles = StyleSheet.create({
   title: { ...textStyles.subtitle, fontWeight: fontWeight.medium, flex: 1 },
   action: { ...textStyles.body, fontWeight: fontWeight.medium },
   error: { ...textStyles.footnote, paddingHorizontal: spacing.md, paddingBottom: spacing.md },
+  historyText: { ...textStyles.bodyLarge, paddingHorizontal: spacing.md, paddingBottom: spacing.md },
   retry: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
 });

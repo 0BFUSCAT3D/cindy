@@ -3805,7 +3805,8 @@ function MessageBubble({
       ) : null}
       {item.message.systemCardType === 'mcp-app' ? (
         <ViewabilityGatedMcpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
-          clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? '')} />
+          clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? '')}
+          fallbackText={String(item.message.systemCardData?.fallbackText ?? '')} />
       ) : item.message.systemCardType ? (
         <MobileSystemCard
           autoResumeInFlight={isMobileAutoResumeRowInFlight({

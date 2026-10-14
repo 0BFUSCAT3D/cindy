@@ -1,5 +1,5 @@
 import { formatDuration } from '@cindy/maker-shared/message-render';
-import { parseMcpAppRecord } from '@cindy/maker-shared/mcp-apps';
+import { mcpAppHistoryText, parseMcpAppRecord } from '@cindy/maker-shared/mcp-apps';
 import { collectPluginInvocations, type PluginInvocation } from './pluginInvocations';
 import { extractPayloadToolResultFiles, extractPayloadToolCardIds, type PayloadToolFile } from '@cindy/maker-shared/payload-summary';
 import { placeBotTaskCardsAfterIntroduction, readBotCollaborationMeta, type BotCollaborationMeta } from '@cindy/maker-shared/botCollaboration';
@@ -295,7 +295,7 @@ export function normalizeRemoteMessages(
       if (app) {
         result.push({ key: messageNormalizeKey(message), source: message, kind: 'system', role: message.role,
           label: 'system:mcp-app', body: '', systemCardType: 'mcp-app',
-          systemCardData: { title: app.tool.title ?? app.tool.name }, align: 'agent', createdAt: message.createdAt });
+          systemCardData: { title: app.tool.title ?? app.tool.name, fallbackText: mcpAppHistoryText(app) }, align: 'agent', createdAt: message.createdAt });
         continue;
       }
       const authorization = readRecord(message.agentMeta?.botAuthorization);
