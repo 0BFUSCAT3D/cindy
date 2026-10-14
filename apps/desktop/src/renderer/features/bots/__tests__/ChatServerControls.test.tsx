@@ -349,5 +349,28 @@ describe('chat interaction controls', () => {
       type(input, '@Ann ok', 7);
       expect(input.selectionStart).toBe(7);
     });
+
+    it('keeps the retry id when a failed reply re-picks the same teammate for an earlier mention', async () => {
+      const input = renderThread();
+      mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' });
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      type(input, '@Ann @', 6);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      expect(input.value).toBe('@Ann @Bo ');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await screen.findByRole('alert');
+      const first = mocks.reply.mock.calls[0]![0];
+      expect(first.mentions).toEqual({ all: false, botIds: ['ann-chris', 'bo'] });
+      // Same Ann again for the first mention: text, targets and order are unchanged.
+      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[0]!);
+      expect(input.value).toBe('@Ann @Bo ');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
+      const second = mocks.reply.mock.calls[1]![0];
+      expect(second.mentions).toEqual(first.mentions);
+      expect(second.clientId).toBe(first.clientId);
+    });
   });
 });

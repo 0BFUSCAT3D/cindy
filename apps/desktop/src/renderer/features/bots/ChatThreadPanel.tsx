@@ -114,7 +114,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (group.archived || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
-    const picks = JSON.stringify(mention.tracked.map(pick => [pick.start, pick.botId]));
+    // In text order: re-picking the same teammate reorders `tracked` but is the same reply.
+    const picks = JSON.stringify([...mention.tracked].sort((a, b) => a.start - b.start).map(pick => [pick.start, pick.botId]));
     if (!attempt.current || attempt.current.text !== text || attempt.current.picks !== picks)
       attempt.current = { text, picks, id: crypto.randomUUID(), mentions: mention.resolve(text) };
     try {
