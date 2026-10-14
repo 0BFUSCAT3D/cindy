@@ -341,6 +341,29 @@ it('keeps explicitly text-only modalities closed despite the unknown-capability 
   expect(invocationModelRecord(model, upstream, 'google-generative-ai')!.supportsImageInput).toBe(false);
 });
 
+it.each(['flag', 'modalities'])('prioritizes active catalog text-only %s over a native image-capable descriptor', declaration => {
+  const native = PROVIDER_MODEL_CATALOG.providers.google.find(row => row.id === 'gemini-2.5-flash')!;
+  expect(native.supportsImageInput).toBe(true);
+  const provider = buildUserProvider({ id: 'google-catalog-override', name: 'Google', runtimes: {
+    pi: { baseUrl: native.upstream, wireProtocol: 'google-generative-ai', models: [{ id: native.id, name: native.name }] },
+  } });
+  const model = { ...provider.models.pi![0],
+    supportsImageInput: declaration === 'flag' ? false : undefined,
+    modalities: declaration === 'modalities' ? { input: ['text'], output: ['text'] } : undefined,
+  };
+  expect(invocationModelRecord(model, native.upstream, 'google-generative-ai')!.supportsImageInput).toBe(false);
+});
+
+it('keeps an undeclared active catalog model closed when its native descriptor explicitly disables images', () => {
+  const native = PROVIDER_MODEL_CATALOG.providers.deepseek.find(row => row.supportsImageInput === false)!;
+  expect(native.supportsImageInput).toBe(false);
+  const provider = buildUserProvider({ id: 'deepseek-catalog-undeclared', name: 'DeepSeek', runtimes: {
+    pi: { baseUrl: native.upstream, wireProtocol: 'openai-chat', models: [{ id: native.id, name: native.name }] },
+  } });
+  const model = { ...provider.models.pi![0], supportsImageInput: undefined, modalities: undefined };
+  expect(invocationModelRecord(model, native.upstream, native.execution.pi.api)!.supportsImageInput).toBe(false);
+});
+
 
 it.each(['individual', 'business', 'enterprise'])('sends Copilot Responses editor headers to the %s host', async account => {
   const row = PROVIDER_MODEL_CATALOG.providers['github-copilot'].find(row => row.execution.pi.api === 'openai-responses')!;
