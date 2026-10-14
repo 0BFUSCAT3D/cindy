@@ -256,6 +256,45 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     expect(dciRed!.slice(0, 3)).not.toEqual(p3d65Red!.slice(0, 3));
   });
 
+  it('converts every H.273 primaries code it supports with its own gamut and rejects the rest', async () => {
+    const pixels = [
+      { nits: [100, 100, 100] as [number, number, number], alpha: 65535 },
+      { nits: [20, 100, 20] as [number, number, number], alpha: 65535 },
+    ];
+    const convert = async (primaries: number) =>
+      rgbaAt(
+        (
+          await toSdrAvatarImage({
+            buffer: await syntheticPqPng(pixels, { cicp: [primaries, 16, 0, 1] }),
+            mimeType: 'image/png',
+          })
+        ).buffer,
+        [0, 1],
+      );
+    const results = new Map<number, number[][]>();
+    for (const code of [1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 22]) {
+      const [neutral, green] = await convert(code);
+      // 各自白点（含光源 C）适应到 D65 后中性色仍为中性。
+      expect(
+        Math.max(...neutral!.slice(0, 3)) - Math.min(...neutral!.slice(0, 3)),
+      ).toBeLessThanOrEqual(1);
+      results.set(code, [neutral!.slice(0, 3), green!.slice(0, 3)]);
+    }
+    // 未指定(2)按 BT.2020;显式声明的其它原色不再被当作 BT.2020。
+    expect(results.get(2)).toEqual(results.get(9));
+    for (const code of [5, 6, 22]) expect(results.get(code)![1]).not.toEqual(results.get(9)![1]);
+    expect(results.get(6)).toEqual(results.get(7));
+
+    for (const code of [0, 3, 10, 13, 23, 255]) {
+      await expect(
+        toSdrAvatarImage({
+          buffer: await syntheticPqPng(pixels, { cicp: [code, 16, 0, 1] }),
+          mimeType: 'image/png',
+        }),
+      ).rejects.toThrow(/INVALID_PARAMS.*primaries/);
+    }
+  });
+
   it('rejects HDR sources whose declared dimensions exceed the limit before decoding', async () => {
     const png = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
     // 改写 IHDR 宽高(1 亿 / 4 亿像素),文件仍只有几百字节;后者超过 sharp 默认像素上限。

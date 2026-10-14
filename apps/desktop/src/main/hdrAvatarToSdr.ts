@@ -164,7 +164,16 @@ type Chromaticities = {
 };
 
 const D65: [number, number] = [0.3127, 0.329];
+/** CIE 标准光源 C（BT.470 System M 与通用胶片原色的白点）。 */
+const ILLUMINANT_C: [number, number] = [0.31, 0.316];
 const BT709: Chromaticities = { r: [0.64, 0.33], g: [0.3, 0.6], b: [0.15, 0.06], white: D65 };
+/** BT.601 525 行（SMPTE 170M / 240M）。 */
+const SMPTE_170M: Chromaticities = {
+  r: [0.63, 0.34],
+  g: [0.31, 0.595],
+  b: [0.155, 0.07],
+  white: D65,
+};
 const BT2020: Chromaticities = {
   r: [0.708, 0.292],
   g: [0.17, 0.797],
@@ -176,12 +185,26 @@ const P3_D65: Chromaticities = { r: [0.68, 0.32], g: [0.265, 0.69], b: [0.15, 0.
 const DCI_P3: Chromaticities = { ...P3_D65, white: [0.314, 0.351] };
 const BRADFORD: Mat3 = [0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296];
 
-/** H.273 ColourPrimaries → 色度；HDR 内容未声明或未知时按惯例视为 BT.2020。 */
-function primariesFor(code: number): Chromaticities {
-  if (code === 1) return BT709;
-  if (code === 11) return DCI_P3;
-  if (code === 12) return P3_D65;
-  return BT2020;
+/**
+ * H.273 ColourPrimaries → 色度。2（未指定）按 HDR 惯例视为 BT.2020；10（ST 428-1 XYZ）
+ * 与保留值无法用 RGB 原色表达，返回 null 由调用方拒绝，不猜色域。
+ */
+const PRIMARIES_BY_CODE: Record<number, Chromaticities> = {
+  1: BT709,
+  2: BT2020,
+  4: { r: [0.67, 0.33], g: [0.21, 0.71], b: [0.14, 0.08], white: ILLUMINANT_C },
+  5: { r: [0.64, 0.33], g: [0.29, 0.6], b: [0.15, 0.06], white: D65 },
+  6: SMPTE_170M,
+  7: SMPTE_170M,
+  8: { r: [0.681, 0.319], g: [0.243, 0.692], b: [0.145, 0.049], white: ILLUMINANT_C },
+  9: BT2020,
+  11: DCI_P3,
+  12: P3_D65,
+  22: { r: [0.63, 0.34], g: [0.295, 0.605], b: [0.155, 0.077], white: D65 },
+};
+
+function primariesFor(code: number): Chromaticities | null {
+  return PRIMARIES_BY_CODE[code] ?? null;
 }
 
 function multiply(a: Mat3, b: Mat3): Mat3 {
@@ -335,6 +358,7 @@ async function toneMapToSdr(
   metadata: Metadata,
   format: AvatarFormat,
   cicp: Cicp,
+  primaries: Chromaticities,
   transfer: HdrTransfer,
   maxCllNits: number | null,
 ): Promise<AvatarImageBytes> {
@@ -366,7 +390,7 @@ async function toneMapToSdr(
     encodeLut[index] = Math.round(srgbEncode(index / 65535) * 255);
   }
 
-  const sourceToXyz = rgbToXyz(primariesFor(cicp.primaries));
+  const sourceToXyz = rgbToXyz(primaries);
   const toBt709 = multiply(invert(rgbToXyz(BT709)), sourceToXyz);
   const [yr, yg, yb] = [sourceToXyz[3], sourceToXyz[4], sourceToXyz[5]];
   const peakNits =
@@ -450,10 +474,14 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
   if ((metadata.width ?? 0) * (metadata.height ?? 0) > HDR_MAX_INPUT_PIXELS) {
     throwIpcError('INVALID_PARAMS', 'HDR avatar dimensions exceed the conversion limit');
   }
+  const primaries = cicp ? primariesFor(cicp.primaries) : null;
+  if (transfer && !primaries) {
+    throwIpcError('INVALID_PARAMS', 'HDR avatar declares unsupported colour primaries');
+  }
   try {
     return await serializeConversion(() =>
-      transfer && cicp
-        ? toneMapToSdr(image.buffer, metadata, format, cicp, transfer, png.maxCllNits)
+      transfer && cicp && primaries
+        ? toneMapToSdr(image.buffer, metadata, format, cicp, primaries, transfer, png.maxCllNits)
         : dropGainMap(image.buffer, metadata),
     );
   } catch {
