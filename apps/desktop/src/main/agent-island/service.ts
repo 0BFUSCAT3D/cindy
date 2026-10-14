@@ -2466,6 +2466,9 @@ export class AgentIslandService {
     if (this.state.appFocused && this.state.visibleSessionIds.has(nextSessionId)) {
       const focusChanged = requestAgentIslandSessionFocus(this.state, nextSessionId, now);
       if (focusChanged) this.publish();
+      // 已在看的目标未必能处置这张卡(如只读历史):这次点击仍要交给 renderer,
+      // 入口导航器发现目标地址已提交时直接按点击编号申请处置,不会再导航一次。
+      if (islandEntryId) openMainWindowSession(nextSessionId, { islandEntryId });
       return;
     }
 

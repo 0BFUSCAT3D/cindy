@@ -6255,6 +6255,23 @@ describe('AgentIslandService island-entry alert disposal', () => {
     }
   });
 
+  // The read-only history page reports its session as visible; a click on that card
+  // must still reach the renderer, whose navigator disposes it on the open target.
+  it('delivers the click id even when the target is the visible, focused session', async () => {
+    const { service, click, consume, island, mainWindow } = await setup();
+    const history = { sessionId: 'history', agentKind: 'codex' as const };
+    service.handleAgentEvent(history, terminalErrorEvent('history failure'));
+    service.setAppFocused(true);
+    mocks.browserWindowFromWebContents.mockReturnValue(mainWindow);
+    await registeredIpcHandler(AGENT_ISLAND_SET_VISIBLE_SESSION_CHANNEL)({ sender: mainWindow.webContents }, 'history');
+    // Passive visibility never clears an unread error.
+    expect(island.sessions.get('history')).toMatchObject({ phase: 'error', unread: true });
+    const entryId = click('history');
+    expect(entryId).toEqual(expect.any(String));
+    expect(consume('history', entryId)).toEqual({ ok: true, consumed: true });
+    expect(island.sessions.has('history')).toBe(false);
+  });
+
   // Run the production preload bridge source against the real registered handler, so
   // the renderer → main argument order (sessionId, islandEntryId) cannot drift.
   it('the production preload bridge reaches the handler with this click id', async () => {
