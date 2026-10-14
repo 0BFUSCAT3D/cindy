@@ -8,6 +8,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 
 import { createLogger } from '../logger.js';
 import * as authManager from '../authManager.js';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { isExternalOrganizationByokUser } from './organizationManaged.js';
 import { serverApiFetch, ServerApiError } from '../serverApiClient.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
@@ -104,12 +105,18 @@ function rotateCredentials(): Promise<CredentialsPayload> {
  * 按 host 的实际凭据筛选，覆盖不登记共享 proxy 状态的独立 session。
  */
 async function writeXdKeyWithCodexSideEffect(key: string): Promise<boolean> {
+  if (isAppSessionBoundaryPending()) return false;
+  const ownerScope = activeOwnerScopeKey();
   try {
     await prepareCodexForAuthModeChange({ allLocalHosts: true, credentialMode: 'gateway-key' });
   } catch (err) {
     log.warn('prepare codex before auto key write failed', {
       error: err instanceof Error ? err.message : String(err),
     });
+    return false;
+  }
+  if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== ownerScope) {
+    cancelCodexAuthModeChange();
     return false;
   }
   const ok = getProviderSecretStore().set('xd', key);
