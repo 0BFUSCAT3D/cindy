@@ -222,6 +222,39 @@ describe('HDR 头像转 SDR 后再预览 / 上传', () => {
   });
 });
 
+describe('保存途中切换账号', () => {
+  // 每次读取当前用户时推进一步:前 n 次仍是 u1,之后变成 u2,模拟在第 n 个 await 前后切号。
+  const switchAfter = (reads: number) => {
+    let count = 0;
+    return () => (++count <= reads ? 'u1' : 'u2');
+  };
+
+  it('HDR 转换(或排队)期间切号 → PRECONDITION_FAILED,不上传也不 PATCH', async () => {
+    const { deps } = makeDeps({ getCurrentUserId: switchAfter(1) });
+    await expect(
+      updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } }),
+    ).rejects.toSatisfy((e) => ipcCode(e) === 'PRECONDITION_FAILED');
+    expect(deps.toSdrAvatar).toHaveBeenCalledTimes(1);
+    expect(deps.uploadAvatar).not.toHaveBeenCalled();
+    expect(deps.patchProfile).not.toHaveBeenCalled();
+  });
+
+  it('上传期间切号 → PRECONDITION_FAILED,不把头像与旧名字 PATCH 到新账号', async () => {
+    const { deps } = makeDeps({ getCurrentUserId: switchAfter(2) });
+    await expect(
+      updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } }),
+    ).rejects.toSatisfy((e) => ipcCode(e) === 'PRECONDITION_FAILED');
+    expect(deps.uploadAvatar).toHaveBeenCalledTimes(1);
+    expect(deps.patchProfile).not.toHaveBeenCalled();
+  });
+
+  it('账号不变时照常上传并 PATCH', async () => {
+    const { deps, patches } = makeDeps({ getCurrentUserId: switchAfter(Infinity) });
+    await updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } });
+    expect(patches).toEqual([{ displayName: 'Lizi', avatarUrl: PUBLIC_URL }]);
+  });
+});
+
 describe('chooseAvatarFile(选图预校验,不上传)', () => {
   it('取消选择返回 canceled,不读文件', async () => {
     const { deps } = makeDeps();

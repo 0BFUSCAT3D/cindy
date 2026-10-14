@@ -101,6 +101,16 @@ function requireUserId(deps: ProfileEditDeps): string {
   return userId;
 }
 
+/**
+ * 保存过程中每次 await 之后、触达账号的副作用(上传 / PATCH)之前复查:上传与 PATCH
+ * 都按调用时的登录态取 token,中途切换账号会把资料写到新账号上。
+ */
+function requireSameUser(deps: ProfileEditDeps, userId: string): void {
+  if (deps.getCurrentUserId() !== userId) {
+    throwIpcError('PRECONDITION_FAILED', 'account changed while saving profile');
+  }
+}
+
 function parseAvatarAction(value: unknown): AvatarAction | null {
   if (value === null || typeof value !== 'object') return null;
   const action = value as { type?: unknown; filePath?: unknown };
@@ -163,12 +173,13 @@ export async function chooseAvatarFile(deps: ProfileEditDeps): Promise<ChooseAva
  *   - 两个字段都没变化 → 直接成功返回,零网络请求。
  * 上传成功但 PATCH 失败时,已传对象成为孤儿(bucket 生命周期规则兜底清理,
  * 契约见 oss-server 文档),客户端无需补偿删除。
+ * 中途切换账号 → PRECONDITION_FAILED,不向新账号上传或 PATCH。
  */
 export async function updateProfile(
   deps: ProfileEditDeps,
   rawParams: unknown,
 ): Promise<{ ok: true }> {
-  requireUserId(deps);
+  const userId = requireUserId(deps);
   const profile = deps.getServerProfile();
   if (!profile) throwIpcError('PRECONDITION_FAILED', 'not logged in');
 
@@ -212,6 +223,7 @@ export async function updateProfile(
     if (image.buffer.byteLength > AVATAR_MAX_BYTES) {
       throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${image.buffer.byteLength}`);
     }
+    requireSameUser(deps, userId);
     const uploaded = await deps.uploadAvatar(image);
     if (!uploaded.ok) {
       throwIpcError(
@@ -228,6 +240,7 @@ export async function updateProfile(
   if (nextDisplayName === undefined && nextAvatarUrl === undefined) {
     return { ok: true };
   }
+  requireSameUser(deps, userId);
   const patched = await deps.patchProfile({
     ...(nextDisplayName !== undefined ? { displayName: nextDisplayName } : {}),
     ...(nextAvatarUrl !== undefined ? { avatarUrl: nextAvatarUrl } : {}),
