@@ -1422,6 +1422,36 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     for (const h of [userMove, staged, otherModel, otherEngine]) expect(h.calls).toEqual([]);
   });
 
+  it('协同 Lead:Agent 在另一台电脑时可登记切回本机;Worker 与换到其它电脑仍拒绝', async () => {
+    const leadHome = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
+    const result = await performSessionAgentSwitch(leadHome.deps, backToTaskComputer);
+    expect(result).toMatchObject({ deferred: true, switched: false });
+    expect(leadHome.selectSameAgentModel).not.toHaveBeenCalled();
+    expect(leadHome.pending.get('s1')).toMatchObject({ targetAgentDeviceId: null });
+
+    const leadApply = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
+    await expect(
+      performSessionAgentSwitch(leadApply.deps, { ...backToTaskComputer, applyNow: true }),
+    ).resolves.toMatchObject({ switched: true });
+    expect(leadApply.deps.applyAgentSwitchToDb).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ agentDeviceId: null }),
+    );
+
+    const leadElsewhere = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
+    await expect(
+      performSessionAgentSwitch(leadElsewhere.deps, {
+        ...backToTaskComputer,
+        agentDeviceId: 'studio-mac',
+      }),
+    ).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+
+    const workerHome = relocationHarness({ orcaRole: 'worker', agentDeviceId: 'office-pc' });
+    await expect(performSessionAgentSwitch(workerHome.deps, backToTaskComputer)).rejects.toThrow(
+      /UNSUPPORTED_CAPABILITY/,
+    );
+  });
+
   it('非法位置参数被拒绝', async () => {
     const h = relocationHarness();
     await expect(performSessionAgentSwitch(h.deps, { ...backToTaskComputer, agentDeviceId: 'bad id!' }))
