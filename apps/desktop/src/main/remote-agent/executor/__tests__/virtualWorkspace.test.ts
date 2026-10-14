@@ -58,6 +58,8 @@ describe('virtual workspace', () => {
     const virtualScript = agentPath.join(virtual, '目录 空格', 'skill', 'probe.cjs');
     expect(projectPathText(nativeScript, [{ from: real, to: virtual }], 'path')).toBe(virtualScript);
     expect(projectPathText(nativeScript + '\r\n', [{ from: real, to: virtual }], 'path')).toBe(virtualScript + '\r\n');
+    expect(projectPathText(JSON.stringify(nativeScript), [{ from: real, to: virtual }], 'path')).toBe(JSON.stringify(virtualScript));
+    expect(projectPathText(JSON.stringify([nativeScript]), [{ from: real, to: virtual }], 'path')).toBe(JSON.stringify([virtualScript]));
     expect(projectPathText(real + realPath.sep, [{ from: real, to: virtual }])).toBe(virtual + agentPath.sep);
     expect(projectPathText(JSON.stringify({ message: 'Cannot load', path: nativeScript }), [{ from: real, to: virtual }]))
       .toBe(JSON.stringify({ message: 'Cannot load', path: virtualScript }));
@@ -204,6 +206,49 @@ describe('virtual workspace', () => {
       .toEqual(Buffer.from('The docs say "' + path.join(project, 'README.md') + ' links to /api/v1"'));
   });
 
+  it.each([
+    { from: '/home/agent/workspace', to: 'C:\\real\\project', source: path.posix, target: path.win32 },
+    { from: 'C:\\Agent\\workspace', to: '/real/project', source: path.win32, target: path.posix },
+  ])('keeps prose in JSON scalars and untyped arrays from $from', ({ from, to, source, target }) => {
+    const document = (directory: string, native: typeof path.win32) => {
+      const first = native.join(directory, 'README.md');
+      return [first + ' links to /api/v1', first + ' relative/input.txt', first + ' ' + native.join(directory, 'src', 'a.ts')];
+    };
+    const original = document(from, source);
+    const expected = document(to, target);
+    const aliases = [{ from, to }];
+    for (let index = 0; index < original.length; index += 1) {
+      expect(projectPathText(JSON.stringify(original[index]), aliases)).toBe(JSON.stringify(expected[index]));
+    }
+    expect(projectPathText(JSON.stringify([original, { text: original[0] }, JSON.stringify(original)]), aliases))
+      .toBe(JSON.stringify([expected, { text: expected[0] }, JSON.stringify(expected)]));
+  });
+
+  it.each(['/home/agent/workspace', 'C:\\Agent\\workspace'])('writes and reads JSON prose without changing non-path bytes at %s', async (virtual) => {
+    const { project, executor } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const prose = native.join(virtual, 'README.md') + ' links to /api/v1 and relative/input.txt';
+    const localProse = path.join(project, 'README.md') + ' links to /api/v1 and relative/input.txt';
+    const documents = (value: string) => [
+      JSON.stringify(value),
+      '[\r\n  ' + JSON.stringify(value) + ', [' + JSON.stringify(value) + '], 1.00e0, "\\u4e2d"\r\n]\r\n',
+      JSON.stringify(JSON.stringify([value])),
+    ];
+    const input = documents(prose);
+    const expected = documents(localProse);
+    try {
+      for (let index = 0; index < input.length; index += 1) {
+        const file = native.join(virtual, 'prose-' + index + '.json');
+        await executor.handle('fs.write', { path: file, data: Buffer.from(input[index]).toString('base64') });
+        expect(fs.readFileSync(path.join(project, 'prose-' + index + '.json'), 'utf8')).toBe(expected[index]);
+        const read = await executor.handle('fs.read', { path: file }) as { data: string };
+        expect(Buffer.from(read.data, 'base64').toString('utf8')).toBe(input[index]);
+      }
+    } finally {
+      await executor.close();
+    }
+  });
+
   it('escapes regex metacharacters and backslash path separators without matching other prefixes', () => {
     const from = 'C:\\Agent\\project[1].(data)$';
     const text = path.win32.join(from, 'src', 'a.ts') + ' C:\\Agent\\project1xdata\\src\\b.ts';
@@ -220,13 +265,38 @@ describe('virtual workspace', () => {
     const originalPath = source.join(from, '目录 空格', 'a.txt');
     const mappedPath = target.join(to, '目录 空格', 'a.txt');
     const aliases = [{ from, to }];
-    expect(projectPathText(JSON.stringify(originalPath), aliases)).toBe(JSON.stringify(mappedPath));
-    expect(projectPathText(JSON.stringify([originalPath, [originalPath]]), aliases)).toBe(JSON.stringify([mappedPath, [mappedPath]]));
+    // 纯跨平台用例注入已确认的路径；下面的真实文件回归验证存在性判据。
+    const isCompletePath = (mapped: string) => mapped === mappedPath;
+    expect(projectPathText(JSON.stringify(originalPath), aliases, 'text', isCompletePath)).toBe(JSON.stringify(mappedPath));
+    expect(projectPathText(JSON.stringify([originalPath, [originalPath]]), aliases, 'text', isCompletePath)).toBe(JSON.stringify([mappedPath, [mappedPath]]));
     const prose = source.join(from, 'README.md') + ' links to /api/v1';
     const mappedProse = target.join(to, 'README.md') + ' links to /api/v1';
     const original = { paths: [originalPath, [originalPath]], nested: { file_paths: [originalPath] }, text: prose, messages: [prose] };
     const mapped = { paths: [mappedPath, [mappedPath]], nested: { file_paths: [mappedPath] }, text: mappedProse, messages: [mappedProse] };
     expect(projectPathText(JSON.stringify(original), aliases)).toBe(JSON.stringify(mapped));
+  });
+
+  it.each(['/home/agent/workspace', 'C:\\Agent\\workspace'])('round-trips confirmed JSON paths and keeps future paths in explicit fields at %s', (virtual) => {
+    const { project, workspace } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const local = path.join(project, '目录 空格', 'a.txt');
+    fs.mkdirSync(path.dirname(local));
+    fs.writeFileSync(local, 'existing file');
+    const remote = native.join(virtual, '目录 空格', 'a.txt');
+    const localFuture = path.join(project, '尚未 创建', 'future.txt');
+    const remoteFuture = native.join(virtual, '尚未 创建', 'future.txt');
+    const values = (file: string, directory: string, future: string) => [
+      file, [file, [directory]], { paths: [future, [future]], nested: { file_paths: [future] } },
+    ];
+    const input = values(remote, native.dirname(remote), remoteFuture);
+    const expected = values(local, path.dirname(local), localFuture);
+    expect(fs.existsSync(localFuture)).toBe(false);
+    for (let index = 0; index < input.length; index += 1) {
+      const remoteBytes = Buffer.from(JSON.stringify(input[index]));
+      const localBytes = Buffer.from(JSON.stringify(expected[index]));
+      expect(workspace.mapInputFromAgent(remoteBytes)).toEqual(localBytes);
+      expect(workspace.mapOutputForAgent(localBytes)).toEqual(remoteBytes);
+    }
   });
 
   it.each([

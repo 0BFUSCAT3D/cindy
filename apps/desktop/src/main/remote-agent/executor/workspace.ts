@@ -83,11 +83,15 @@ export function isPathTextField(key: string): boolean {
   return /^(?:cwd|workdir|working_?dir|script|files?|paths?|directories)$|(?:^|_)(?:paths?|files?|dirs?|directory|directories|root)$|(?:Paths?|Files?|Dirs?|Directory|Directories|Root)$/.test(key);
 }
 
-export function mapJsonPathText(text: string, project: (value: string, context: 'text' | 'path') => string): string {
-  const root: unknown = JSON.parse(text);
-  const rootContext = typeof root === 'string' || Array.isArray(root) ? 'path' : 'text';
-  const frames: { type: 'object' | 'array'; context: 'text' | 'path'; key?: string }[] = [];
-  const valueContext = (): 'text' | 'path' => {
+type PathTextContext = 'text' | 'path' | 'untyped';
+
+export function mapJsonPathText(
+  text: string, project: (value: string, context: PathTextContext) => string, rootContext: PathTextContext = 'untyped',
+): string {
+  JSON.parse(text);
+  // 顶层字符串/数组也能承载正文，容器本身不提供完整路径的证据。
+  const frames: { type: 'object' | 'array'; context: PathTextContext; key?: string }[] = [];
+  const valueContext = (): PathTextContext => {
     const frame = frames.at(-1);
     return frame?.type === 'object' ? isPathTextField(frame.key ?? '') ? 'path' : 'text' : frame?.context ?? rootContext;
   };
@@ -118,28 +122,34 @@ export function mapJsonPathText(text: string, project: (value: string, context: 
 }
 
 /** 对已知目录做单次双向投影，最长前缀先匹配，防止替换结果再次被短祖先别名改写。 */
-export function projectPathText(text: string, aliases: readonly ExecutorPathAlias[], context: 'text' | 'path' = 'text'): string {
+export function projectPathText(
+  text: string, aliases: readonly ExecutorPathAlias[], context: 'text' | 'path' = 'text',
+  isCompletePath?: (mapped: string) => boolean,
+): string {
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
     .sort((a, b) => b.from.length - a.from.length);
   if (!entries.length) return text;
   const textPattern = pathTextPattern(entries, false);
-  const project = (value: string, valueContext: 'text' | 'path' = 'text'): string => {
+  const project = (value: string, valueContext: PathTextContext = 'text'): string => {
     // MCP 的 text 常嵌一层 JSON；Skill/命令输出和文本文件也可能是 JSON。
     // 先解码字符串再投影，才能识别 Windows 转义路径；只改变化的字符串 token，保留格式与其它字节。
     if (/^\s*[{["]/.test(value)) {
-      try { return mapJsonPathText(value, project); } catch { /* 普通文本继续按路径边界投影。 */ }
+      try { return mapJsonPathText(value, project, valueContext === 'path' ? 'path' : 'untyped'); } catch { /* 普通文本继续按路径边界投影。 */ }
     }
     // 脚本可能先打印日志再逐行输出 JSON；保留换行格式，逐行应用同一套转义处理。
     if (value.includes('\n')) return value.split('\n').map((line) => project(line, valueContext)).join('\n');
     // 整个字符串就是路径时(含已解码的 JSON 字符串)，空格也属于路径，不能截断后续分隔符。
     const lineEnd = value.endsWith('\r') ? '\r' : '';
     const pathValue = lineEnd ? value.slice(0, -1) : value;
-    if (valueContext === 'path') {
+    if (valueContext !== 'text') {
       for (const alias of entries) {
         if (stripAliasPrefix(pathValue, alias.from) === null) continue;
         const separator = alias.to.includes('\\') ? '\\' : '/';
         const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
-        return alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator) + lineEnd;
+        const mapped = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
+        // 无字段名的 JSON 值由调用方确认完整文件/目录；否则按正文逐 token 投影。
+        if (valueContext === 'path' || isCompletePath?.(mapped)) return mapped + lineEnd;
+        break;
       }
     }
     return value.replace(textPattern, (match: string, left: string, prefix: string, suffix: string) => {
@@ -273,7 +283,7 @@ export class ExecutorWorkspace {
       }
       return entries;
     });
-    return projectPathText(text, aliases, context);
+    return projectPathText(text, aliases, context, (mapped) => fs.existsSync(this.mapAlias(mapped)));
   }
 
   /** 把 Agent 虚拟路径还原成本机路径，用于文本文件写回。 */
@@ -282,7 +292,7 @@ export class ExecutorWorkspace {
     return projectPathText(text, this.aliases.map((alias) => ({
       from: alias.from.replace(/\\/g, '/'),
       to: alias.to,
-    })));
+    })), 'text', (mapped) => fs.existsSync(mapped));
   }
 
   /** 展示层延迟尚未传完整的虚拟路径；别名仍由当前执行器维护。 */

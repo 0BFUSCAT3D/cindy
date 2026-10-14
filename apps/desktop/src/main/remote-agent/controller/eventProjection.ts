@@ -41,7 +41,11 @@ function localText(value: string, workspace: ExecutorWorkspace): string {
   // 先处理 JSON 字符串，保留 Windows 转义、正文格式和非字符串字节。
   if (/^\s*[{["]/.test(value)) {
     try {
-      return mapJsonPathText(value, (decoded, context) => localText(context === 'path' ? workspace.mapAlias(decoded) : decoded, workspace));
+      return mapJsonPathText(value, (decoded, context) => {
+        const local = workspace.mapAlias(decoded);
+        const complete = context === 'path' || (context === 'untyped' && local !== decoded && fs.existsSync(local));
+        return localText(complete ? local : decoded, workspace);
+      });
     } catch { /* 非 JSON 按文件引用投影。 */ }
   }
   // 尖括号链接是明确的完整路径。代码段也可能是命令，含空白时只有已存在的完整
