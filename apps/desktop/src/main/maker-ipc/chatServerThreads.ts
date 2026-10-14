@@ -107,12 +107,13 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     const task = (async () => {
       let wrote = false;
       await eachLimited(items, async ({ cacheKey, item }) => {
+        // A read that outlived a reset or invalidation, whether it succeeded or failed, is
+        // dropped, and the reader is asked to read again: the refresh in between skipped it.
         try {
           const store = await read(item);
           retryAt.delete(cacheKey); settledRetry(roomId, cacheKey);
-          // A copy that outlived a reset is dropped, but the reader still needs a fresh read.
           if (store) { if (generation === started) store(); wrote = true; }
-        } catch { if (generation === started) scheduleRetry(roomId, cacheKey); }
+        } catch { if (generation === started) scheduleRetry(roomId, cacheKey); else wrote = true; }
         finally { inFlight.delete(cacheKey); }
       });
       if (wrote) io.filled(roomId);

@@ -212,6 +212,24 @@ describe('late reads after a reset or invalidation', () => {
     expect(io.message).toHaveBeenCalledTimes(2);
     expect(projection.shareSources(room, [share], []).get(sourceId)?.revision).toBe(2);
   });
+
+  it.each(['reset', 'invalidate'] as const)('asks for a fresh read when a read started before %s fails', async (clear) => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    let fail!: (error: Error) => void;
+    io.message.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; })).mockResolvedValue(reply(sourceId, rootA));
+    projection.shareSources(room, [share], []);
+    // An unrelated edit: the refresh it causes skips the read still in flight.
+    if (clear === 'reset') projection.reset(); else projection.invalidate(room, 'another-message');
+    expect(projection.shareSources(room, [share], []).has(sourceId)).toBe(false);
+    fail(new Error('offline'));
+    await projection.settled();
+    expect(io.filled).toHaveBeenCalledWith(room);
+    projection.shareSources(room, [share], []);
+    await projection.settled();
+    expect(io.message).toHaveBeenCalledTimes(2);
+    expect(projection.shareSources(room, [share], []).get(sourceId)?.id).toBe(sourceId);
+  });
 });
 
 describe('reply summaries', () => {

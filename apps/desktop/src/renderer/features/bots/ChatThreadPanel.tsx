@@ -62,10 +62,11 @@ function ThreadMessage({ group, message, shareScope, sharing, shared, posting, o
   if (message.kind === 'notice' && isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) return <BotGroupRuntimeFailureNotice name={message.authorName || member?.name || ''} code={message.runtimeFailureCode} />;
   // A share as a thread root shows the same quote as the main chat, in every state.
   const share = message.threadShare;
-  const postAction = onPost && !message.deleted && message.kind === 'message' ? shared?.bySelf && onReveal
-    ? { key: 'reveal-in-main', label: t(key('thread.viewInMain')), icon: <CornerDownRight size={14} strokeWidth={2} className="shrink-0" />, onSelect: onReveal }
-    : { key: 'post-to-main', label: t(key('thread.postToMain')), disabled: posting, icon: <MessageSquareShare size={14} strokeWidth={2} className="shrink-0" />, onSelect: onPost }
-    : undefined;
+  // Once the reader has posted it, posting again can only meet the same share: offer the
+  // jump when that share can be located, and nothing otherwise.
+  const postAction = !onPost || message.deleted || message.kind !== 'message' ? undefined
+    : shared?.bySelf ? onReveal && { key: 'reveal-in-main', label: t(key('thread.viewInMain')), icon: <CornerDownRight size={14} strokeWidth={2} className="shrink-0" />, onSelect: onReveal }
+    : { key: 'post-to-main', label: t(key('thread.postToMain')), disabled: posting, icon: <MessageSquareShare size={14} strokeWidth={2} className="shrink-0" />, onSelect: onPost };
   return <article {...{ [SHARE_SESSION_ATTR]: shareScope, [SHARE_MESSAGE_ATTR]: message.id }}
     className={`relative flex min-w-0 gap-2.5 ${sharing ? 'ml-10' : ''}`}>
     {sharing && <ShareMessageCheckbox clientId={message.id} />}

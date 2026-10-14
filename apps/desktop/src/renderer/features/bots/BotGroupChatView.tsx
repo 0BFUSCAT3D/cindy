@@ -166,7 +166,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [continuing, setContinuing] = useState(false);
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
-  const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
+  const loadRef = useRef<(merging?: readonly BotGroupMessageView[]) => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -182,7 +182,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     let requestVersion = 0;
     // Follow-up reads for older shares one refresh could not check; bounded per chain.
     let shareFollowUps = 0;
-    const load = async (additionalSources: string[] = []) => {
+    const load = async (merging: readonly BotGroupMessageView[] = []) => {
       const version = ++requestVersion;
       const owner = getDataOwnerGeneration();
       const api = botGroupApi();
@@ -195,10 +195,12 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       try {
         const displayed = stateRef.current;
         const shown = displayed.kind === 'ready' && displayed.group.id === groupId;
+        // An older page merged just before this read may not be on `displayed` yet.
+        const shownOlder = shown ? mergeBotGroupMessages(displayed.older, merging) : [];
         const sourceMessageIds = [...new Set([...(shown
-          ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
+          ? mergeBotGroupMessages(shownOlder, displayed.group.messages).map(message => message.id) : []), ...merging.map(message => message.id)])];
         // Older pages are not re-read, so their shares ask for the reply's current state.
-        const shownShares = shown ? botGroupShownShares(displayed.older, displayed.group.threadShareVersion) : [];
+        const shownShares = shown ? botGroupShownShares(shownOlder, displayed.group.threadShareVersion) : [];
         const result = sourceMessageIds.length || shownShares.length
           ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
           : await api.getBotGroup(groupId);
@@ -216,7 +218,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   olderHasMore: result.group.hasMoreBefore,
                 },
           );
-          const older = shown ? applyBotGroupThreadShareUpdates(displayed.older, result.group) : [];
+          const older = applyBotGroupThreadShareUpdates(shownOlder, result.group);
           const unchecked = staleBotGroupShares(older, result.group.threadShareVersion).length;
           const total = older.filter(message => message.threadShare).length;
           if (!unchecked) shareFollowUps = 0;
@@ -234,7 +236,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         if (isCurrent()) setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
       }
     };
-    loadRef.current = additionalSources => void load(additionalSources);
+    loadRef.current = merging => void load(merging);
     void load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
@@ -475,8 +477,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           olderHasMore: result.group.hasMoreBefore,
         };
       });
-      // A push may have refreshed before these sources were displayed. Reconcile their current state too.
-      if (newerRefresh) loadRef.current(result.group.messages.map(message => message.id));
+      // A push may have refreshed before this page was displayed: reconcile its sources and
+      // shares too. The page goes along because the merge above may not be committed yet.
+      if (newerRefresh) loadRef.current(result.group.messages);
     } catch {
       toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
     } finally {
