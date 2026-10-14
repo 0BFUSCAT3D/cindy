@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import type { AgentEvent } from '@cindy/maker-core';
 
-import type { ExecutorWorkspace } from '../executor/workspace';
+import { isPathTextField, type ExecutorWorkspace } from '../executor/workspace';
 
 const URL_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s\x60"'<>()[\]{}]+/gi;
 const TEXT_BOUNDARIES = new Set(['tool_use', 'tool_result', 'tool_result_full', 'interaction_request', 'done', 'error', 'compact_boundary']);
@@ -41,9 +41,11 @@ function localText(value: string, workspace: ExecutorWorkspace): string {
   if (/^\s*[{["]/.test(value)) {
     try {
       JSON.parse(value);
-      return value.replace(/"(?:\\[\s\S]|[^"\\])*"/g, (literal) => {
+      return value.replace(/"(?:\\[\s\S]|[^"\\])*"/g, (literal, offset: number) => {
+        if (/^\s*:/.test(value.slice(offset + literal.length))) return literal;
         const decoded = JSON.parse(literal) as string;
-        const local = localText(decoded, workspace);
+        const key = value.slice(0, offset).match(/("(?:\\[\s\S]|[^"\\])*")\s*:\s*$/)?.[1];
+        const local = localValue(decoded, workspace, key ? JSON.parse(key) as string : '') as string;
         return local === decoded ? literal : JSON.stringify(local);
       });
     } catch { /* 非 JSON 按文件引用投影。 */ }
@@ -65,11 +67,11 @@ function localText(value: string, workspace: ExecutorWorkspace): string {
   return parts.join('');
 }
 
-function localValue(value: unknown, workspace: ExecutorWorkspace): unknown {
-  if (typeof value === 'string') return localText(value, workspace);
-  if (Array.isArray(value)) return value.map((item) => localValue(item, workspace));
+function localValue(value: unknown, workspace: ExecutorWorkspace, key = ''): unknown {
+  if (typeof value === 'string') return localText(isPathTextField(key) ? workspace.mapAlias(value) : value, workspace);
+  if (Array.isArray(value)) return value.map((item) => localValue(item, workspace, key));
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, IDENTITY_FIELDS.has(key) ? item : localValue(item, workspace)]));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, IDENTITY_FIELDS.has(key) ? item : localValue(item, workspace, key)]));
 }
 
 /** 只暂存末尾未闭合的路径，避免地址被多个 delta 切开后漏掉映射。 */
@@ -116,46 +118,61 @@ function pendingPathIndex(text: string, workspace: ExecutorWorkspace): number {
 
 /** 保留原事件身份和增量/全文语义；仅把数据中的已知虚拟文件引用还原。 */
 export class RemoteEventProjection {
-  private pending: AgentEvent | null = null;
+  private pending = new Map<string, AgentEvent>();
 
   constructor(private readonly workspace: ExecutorWorkspace) {}
 
-  flush(): AgentEvent[] {
-    if (!this.pending) return [];
-    const event = this.pending;
-    this.pending = null;
-    return [{ ...event, data: localValue(event.data, this.workspace) }];
+  private streamKey(event: AgentEvent): string {
+    return JSON.stringify([event.source, event.turnScope, event.agentMeta?.parentUuid,
+      event.turnAttemptToken, event.sessionTurnGeneration, event.sessionInstanceId, event.backgroundTurnStartedAt]);
+  }
+
+  flush(stream?: string): AgentEvent[] {
+    const output: AgentEvent[] = [];
+    for (const key of stream === undefined ? this.pending.keys() : [stream]) {
+      const event = this.pending.get(key);
+      if (!event) continue;
+      this.pending.delete(key);
+      output.push({ ...event, data: localValue(event.data, this.workspace) });
+    }
+    return output;
   }
 
   project(event: AgentEvent): AgentEvent[] {
     const data = event.data as { text?: unknown; isFinal?: boolean; isFullText?: boolean; agentMessageId?: string } | null;
+    const stream = this.streamKey(event);
+    let pending = this.pending.get(stream);
     // 独立提示有自己的持久行，不能截断正在流式传输的正文路径。
     if (event.type === 'text' && event.standaloneText) {
       return [{ ...event, data: localValue(event.data, this.workspace) }];
     }
     if (event.type === 'text' && typeof data?.text === 'string' && !data.isFinal && !data.isFullText && !event.standaloneText) {
       const output: AgentEvent[] = [];
-      if (this.pending) {
-        const previous = this.pending.data as typeof data;
-        if (this.pending.source !== event.source || this.pending.turnScope !== event.turnScope
-          || previous?.agentMessageId !== data.agentMessageId) output.push(...this.flush());
+      if (pending) {
+        const previous = pending.data as typeof data;
+        if (previous?.agentMessageId !== data.agentMessageId) {
+          output.push(...this.flush(stream));
+          pending = undefined;
+        }
       }
-      const raw = (this.pending?.data as typeof data)?.text;
+      const raw = (pending?.data as typeof data)?.text;
       const text = (typeof raw === 'string' ? raw : '') + data.text;
       const boundary = pendingPathIndex(text, this.workspace);
-      this.pending = boundary < text.length ? { ...event, data: { ...data, text: text.slice(boundary) } } : null;
+      if (boundary < text.length) this.pending.set(stream, { ...event, data: { ...data, text: text.slice(boundary) } });
+      else this.pending.delete(stream);
       if (boundary) output.push({ ...event, data: { ...data, text: localText(text.slice(0, boundary), this.workspace) } });
       return output;
     }
     // 全文终态覆盖同一消息的未闭合尾段；先输出半截虚拟前缀会让 Claude 的前缀校准失效。
-    if (event.type === 'text' && this.pending && typeof data?.text === 'string' && (data.isFinal || data.isFullText)) {
-      const previous = this.pending.data as typeof data;
-      if (this.pending.source === event.source && this.pending.turnScope === event.turnScope
-        && previous?.agentMessageId === data.agentMessageId
-        && (data.isFullText || (typeof previous.text === 'string' && data.text.includes(previous.text)))) this.pending = null;
+    if (event.type === 'text' && pending && typeof data?.text === 'string' && (data.isFinal || data.isFullText)) {
+      const previous = pending.data as typeof data;
+      if (previous?.agentMessageId === data.agentMessageId
+        && (data.isFullText || (typeof previous.text === 'string' && data.text.includes(previous.text)))) this.pending.delete(stream);
     }
+    const terminal = !event.agentMeta?.parentUuid && event.turnScope !== 'background'
+      && ['done', 'error', 'compact_boundary'].includes(event.type);
     const output = event.type === 'text' || (event.turnScope !== 'background' && TEXT_BOUNDARIES.has(event.type))
-      ? this.flush() : [];
+      ? this.flush(terminal ? undefined : stream) : [];
     // agentMeta、session/tool id 和权限回执不经过递归文本改写。
     output.push({ ...event, data: event.type === 'interaction_request' ? event.data : localValue(event.data, this.workspace) });
     return output;

@@ -53,8 +53,8 @@ describe('virtual workspace', () => {
     expect(projectPathText(projectedLog, [{ from: virtual, to: real }])).toBe(log);
     const nativeScript = realPath.join(real, '目录 空格', 'skill', 'probe.cjs');
     const virtualScript = agentPath.join(virtual, '目录 空格', 'skill', 'probe.cjs');
-    expect(projectPathText(nativeScript, [{ from: real, to: virtual }])).toBe(virtualScript);
-    expect(projectPathText(nativeScript + '\r\n', [{ from: real, to: virtual }])).toBe(virtualScript + '\r\n');
+    expect(projectPathText(nativeScript, [{ from: real, to: virtual }], 'path')).toBe(virtualScript);
+    expect(projectPathText(nativeScript + '\r\n', [{ from: real, to: virtual }], 'path')).toBe(virtualScript + '\r\n');
     expect(projectPathText(real + realPath.sep, [{ from: real, to: virtual }])).toBe(virtual + agentPath.sep);
     expect(projectPathText('Cannot load "' + nativeScript + '"', [{ from: real, to: virtual }]))
       .toBe('Cannot load "' + virtualScript + '"');
@@ -124,6 +124,66 @@ describe('virtual workspace', () => {
     expect(workspace.mapCommand('node "' + script + '" && echo "/other/file"'))
       .toBe('node "' + mapped + '" && echo "/other/file"');
     await executor.close();
+  });
+
+  it.each([
+    '$file', '$' + '{file}', '$(printf "%s" "$file")', String.fromCharCode(96) + 'printf "%s" "$file"' + String.fromCharCode(96), '\\$file', '\\"quoted\\"', '*.txt',
+  ])('preserves Bash syntax in a quoted POSIX path suffix: %s', (expression) => {
+    const { project, workspace } = setup('/Users/agent/workspace');
+    const real = project.replace(/\\/g, '/');
+    const suffix = '/目录 空格/' + expression;
+    expect(workspace.mapCommand('cat "/Users/agent/workspace' + suffix + '"'))
+      .toBe('cat "' + real + suffix + '"');
+  });
+
+  it('preserves unquoted Bash expansions and quoted cmd variables after the mapped prefix', () => {
+    const { project, workspace } = setup('/Users/agent/workspace');
+    const real = project.replace(/\\/g, '/');
+    expect(workspace.mapCommand('cat /Users/agent/workspace/$file/*.txt'))
+      .toBe("cat '" + real + "'/$file/*.txt");
+    expect(workspace.mapCommand('cat "/Users/agent/workspace/目录 空格/%file%"', 'cmd'))
+      .toBe('cat "' + real + '/目录 空格/%file%"');
+  });
+
+  it('maps the Windows literal path before a Bash expansion without rewriting substitution contents', () => {
+    const virtual = 'C:\\Agent\\workspace';
+    const { project, workspace } = setup(virtual);
+    const expression = '$(printf "\\\\n%s" "$file")';
+    const command = 'cat "' + path.win32.join(virtual, '目录 空格') + '/' + expression + '"';
+    expect(workspace.mapCommand(command))
+      .toBe('cat "' + project.replace(/\\/g, '/') + '/目录 空格/' + expression + '"');
+  });
+
+  it.each([
+    { from: '/real/project', to: 'C:\\Agent\\workspace', source: path.posix, target: path.win32 },
+    { from: 'C:\\Agent\\workspace', to: '/real/project', source: path.win32, target: path.posix },
+  ])('maps each path token from $from without changing surrounding text', ({ from, to, source, target }) => {
+    const aliases = [{ from, to }];
+    const first = source.join(from, 'README.md');
+    const second = source.join(from, 'src', 'b.ts');
+    const mappedFirst = target.join(to, 'README.md');
+    const mappedSecond = target.join(to, 'src', 'b.ts');
+    expect(projectPathText(first + ' ' + second, aliases)).toBe(mappedFirst + ' ' + mappedSecond);
+    expect(projectPathText(first + ' links to /api/v1 and C:\\other\\file.txt', aliases))
+      .toBe(mappedFirst + ' links to /api/v1 and C:\\other\\file.txt');
+    const document = JSON.stringify({ text: first + ' links to /api/v1', path: source.join(from, '目录 空格', 'a.ts') });
+    expect(projectPathText(document, aliases)).toBe(JSON.stringify({ text: mappedFirst + ' links to /api/v1', path: target.join(to, '目录 空格', 'a.ts') }));
+  });
+
+  it.each(['/home/agent/workspace', 'C:\\Agent\\workspace'])('maps text file bytes token by token on input and output at %s', (virtual) => {
+    const { project, workspace } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const input = Buffer.from(native.join(virtual, 'a.ts') + ' ' + native.join(virtual, 'src', 'b.ts') + ' links to /api/v1');
+    const real = Buffer.from(path.join(project, 'a.ts') + ' ' + path.join(project, 'src', 'b.ts') + ' links to /api/v1');
+    expect(workspace.mapInputFromAgent(input)).toEqual(real);
+    expect(workspace.mapOutputForAgent(real)).toEqual(input);
+  });
+
+  it('escapes regex metacharacters and backslash path separators without matching other prefixes', () => {
+    const from = 'C:\\Agent\\project[1].(data)$';
+    const text = path.win32.join(from, 'src', 'a.ts') + ' C:\\Agent\\project1xdata\\src\\b.ts';
+    expect(projectPathText(text, [{ from, to: '/real/project' }]))
+      .toBe('/real/project/src/a.ts C:\\Agent\\project1xdata\\src\\b.ts');
   });
 
   it('maps Codex request paths and commands before permission checks and projects text file bytes', async () => {
@@ -292,7 +352,9 @@ describe('virtual workspace', () => {
       expect(lines[0]).toBe('Running Skill script');
       expect(JSON.parse(lines[1])).toEqual({ cwd: virtualDir, script: virtualScript, argument: virtual });
       const nativeResult = { cwd: fixtureDir, script, argument: project };
-      expect(JSON.parse(fs.readFileSync(path.join(fixtureDir, 'native-result.json'), 'utf8'))).toEqual(nativeResult);
+      const actualNative = JSON.parse(fs.readFileSync(path.join(fixtureDir, 'native-result.json'), 'utf8')) as typeof nativeResult;
+      expect(actualNative).toEqual({ cwd: expect.any(String), script, argument: project });
+      expect(fs.realpathSync.native(actualNative.cwd)).toBe(fs.realpathSync.native(fixtureDir));
       await executor.handle('fs.write', { path: agentPath.join(virtualDir, 'returned.json'), data: Buffer.from(lines[1]).toString('base64') });
       expect(JSON.parse(fs.readFileSync(path.join(fixtureDir, 'returned.json'), 'utf8'))).toEqual(nativeResult);
     } finally {

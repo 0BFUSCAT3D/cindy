@@ -106,6 +106,57 @@ describe('remote file references on the task computer', () => {
     expect((output[3].data as { agentMessageId: string }).agentMessageId).toBe('two');
   });
 
+  it('keeps interleaved Claude child deltas in their own path buffers and metadata', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const delta = (parentUuid: string, value: string): AgentEvent => ({
+      type: 'text', source: 'claude-code', turnScope: 'turn', agentMeta: { parentUuid }, data: { text: value, isFinal: false },
+    });
+    const output = await eventsFrom(controller, [
+      delta('child-a', 'A: ' + virtual.slice(0, 12)),
+      delta('child-b', 'B: ' + virtual + '/second'),
+      delta('child-a', virtual.slice(12) + '/first.txt '),
+      delta('child-b', '.txt '),
+    ]);
+    expect(output.filter((event) => event.agentMeta?.parentUuid === 'child-a').map(text).join(''))
+      .toBe('A: ' + path.join(real, 'first.txt') + ' ');
+    expect(output.filter((event) => event.agentMeta?.parentUuid === 'child-b').map(text).join(''))
+      .toBe('B: ' + path.join(real, 'second.txt') + ' ');
+    expect(output.every((event) => (event.data as { isFinal: boolean }).isFinal === false)).toBe(true);
+  });
+
+  it('keeps sibling paths pending across another child final snapshot and tool boundary', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const child = (parentUuid: string, value: string, isFullText = false): AgentEvent => ({
+      type: 'text', source: 'claude-code', agentMeta: { parentUuid, ...(isFullText ? { sdkSessionId: 'vendor-session' } : {}) }, data: { text: value, isFinal: isFullText, isFullText },
+    });
+    const output = await eventsFrom(controller, [
+      child('child-a', virtual.slice(0, 12)),
+      child('child-b', virtual + '/second'),
+      child('child-b', virtual + '/second.txt', true),
+      { type: 'tool_use', source: 'claude-code', agentMeta: { parentUuid: 'child-b' }, data: { toolName: 'Read', input: {} } },
+      child('child-a', virtual.slice(12) + '/first.txt '),
+    ]);
+    expect(output.filter((event) => event.type === 'text' && event.agentMeta?.parentUuid === 'child-a').map(text).join(''))
+      .toBe(path.join(real, 'first.txt') + ' ');
+    expect(output.filter((event) => event.type === 'text' && event.agentMeta?.parentUuid === 'child-b').map(text))
+      .toEqual([path.join(real, 'second.txt')]);
+  });
+
+  it.each(['done', 'close'] as const)('flushes every unfinished child path at the %s boundary', async (boundary) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const input: AgentEvent[] = ['child-a', 'child-b'].map((parentUuid) => ({
+      type: 'text', source: 'claude-code', agentMeta: { parentUuid }, data: { text: virtual + '/' + parentUuid + '.txt', isFinal: false },
+    }));
+    if (boundary === 'done') input.push({ type: 'done', source: 'claude-code', data: {} });
+    const output = await eventsFrom(controller, input);
+    expect(output.filter((event) => event.type === 'text').map((event) => ({ parentUuid: event.agentMeta?.parentUuid, text: text(event) })))
+      .toEqual(['child-a', 'child-b'].map((parentUuid) => ({ parentUuid, text: path.join(real, parentUuid + '.txt') })));
+    if (boundary === 'done') expect(output.at(-1)?.type).toBe('done');
+  });
+
   it('restores nested file changes and media file URLs while preserving external URLs, media identities and vendor metadata', async () => {
     const virtual = '/Users/agent/workspace';
     const { real, controller } = setup(virtual);

@@ -73,38 +73,44 @@ function stripAliasPrefix(input: string, from: string): string | null {
 /** 引号中的完整路径允许空格；普通文本仍以 shell 分隔符为边界。 */
 function pathTextPattern(aliases: readonly ExecutorPathAlias[]): RegExp {
   const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-    .map((part) => part.replace(/[.*+?^$()|[\]{}]/g, '\\$&')).join('[/\\\\]'));
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[/\\\\]'));
   const prefix = '(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])';
   return new RegExp('([\\x27\\x22])' + prefix + '([/\\\\][^\\r\\n]*?|)\\1|'
     + '(^|[^A-Za-z0-9_])' + prefix + '([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)', 'gi');
 }
 
+export function isPathTextField(key: string): boolean {
+  return /^(?:cwd|workdir|working_?dir|script|file|paths|directories)$|(?:^|_)(?:path|file|dir|directory|root)$|(?:Path|File|Dir|Directory|Root)$/.test(key);
+}
+
 /** 对已知目录做单次双向投影，最长前缀先匹配，防止替换结果再次被短祖先别名改写。 */
-export function projectPathText(text: string, aliases: readonly ExecutorPathAlias[]): string {
+export function projectPathText(text: string, aliases: readonly ExecutorPathAlias[], context: 'text' | 'path' = 'text'): string {
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
     .sort((a, b) => b.from.length - a.from.length);
   if (!entries.length) return text;
   const pattern = pathTextPattern(entries);
-  const project = (value: string): string => {
+  const project = (value: string, valueContext: 'text' | 'path' = 'text'): string => {
     // MCP 的 text 常嵌一层 JSON；Skill/命令输出和文本文件也可能是 JSON。
     // 先解码字符串再投影，才能识别 Windows 转义路径；只改变化的字符串 token，保留格式与其它字节。
     if (/^\s*[{["]/.test(value)) {
       let isJson = false;
       try { JSON.parse(value); isJson = true; } catch { /* 普通文本继续按路径边界投影。 */ }
       if (isJson) {
-        return value.replace(/"(?:\\[\s\S]|[^"\\])*"/g, (literal) => {
+        return value.replace(/"(?:\\[\s\S]|[^"\\])*"/g, (literal, offset: number) => {
+          if (/^\s*:/.test(value.slice(offset + literal.length))) return literal;
           const decoded = JSON.parse(literal) as string;
-          const projected = project(decoded);
+          const key = value.slice(0, offset).match(/("(?:\\[\s\S]|[^"\\])*")\s*:\s*$/)?.[1];
+          const projected = project(decoded, key && isPathTextField(JSON.parse(key) as string) ? 'path' : valueContext);
           return projected === decoded ? literal : JSON.stringify(projected);
         });
       }
     }
     // 脚本可能先打印日志再逐行输出 JSON；保留换行格式，逐行应用同一套转义处理。
-    if (value.includes('\n')) return value.split('\n').map(project).join('\n');
+    if (value.includes('\n')) return value.split('\n').map((line) => project(line, valueContext)).join('\n');
     // 整个字符串就是路径时(含已解码的 JSON 字符串)，空格也属于路径，不能截断后续分隔符。
     const lineEnd = value.endsWith('\r') ? '\r' : '';
     const pathValue = lineEnd ? value.slice(0, -1) : value;
-    if (!/[\r\x27\x22\x60;|&<>]/.test(pathValue)) {
+    if (valueContext === 'path') {
       for (const alias of entries) {
         if (stripAliasPrefix(pathValue, alias.from) === null) continue;
         const separator = alias.to.includes('\\') ? '\\' : '/';
@@ -120,7 +126,7 @@ export function projectPathText(text: string, aliases: readonly ExecutorPathAlia
       return left + alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator) + (quoted || '');
     });
   };
-  return project(text);
+  return project(text, context);
 }
 
 export class ExecutorWorkspace {
@@ -309,7 +315,7 @@ export class ExecutorWorkspace {
       if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value;
       if (context === 'single') return value.replace(/'/g, "'\\''");
       if (context === 'double') return value.replace(/[\\$\x60"]/g, '\\$&');
-      return /[\s'"\x60$;&|<>()[\\]{}!*?]/.test(value)
+      return /[\s'"\x60$;&|<>(){}!*?[\]\\]/.test(value)
         ? "'" + value.replace(/'/g, "'\\''") + "'"
         : value;
     };
@@ -318,8 +324,13 @@ export class ExecutorWorkspace {
       const alias = aliases.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
       if (!alias) return match;
       const separator = alias.to.includes('\\') ? '\\' : '/';
-      const target = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-      return left + quote(target, quoteContext(input, offset + left.length)) + (quoted || '');
+      const context = quoteContext(input, offset + left.length);
+      const windowsPath = /^[A-Za-z]:|^[/\\]{2}/.test(prefix);
+      const shellStart = dialect === 'bash' && context !== 'single' ? suffix.search(/[$\x60]|\\(?=[$\x60"\\])/) : -1;
+      const mappedSuffix = dialect === 'bash' && !windowsPath ? suffix : shellStart < 0
+        ? suffix.replace(/[\\/]/g, separator)
+        : suffix.slice(0, shellStart).replace(/[\\/]/g, separator) + suffix.slice(shellStart);
+      return left + quote(alias.to.replace(/[\\/]+$/, ''), context) + mappedSuffix + (quoted || '');
     });
   }
 
