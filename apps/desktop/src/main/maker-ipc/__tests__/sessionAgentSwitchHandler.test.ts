@@ -15,6 +15,7 @@ import {
 import { createAgentHandoffPendingRegistry } from '../agentHandoff';
 import { MAKER_INVOKE } from '../channels';
 import { IpcHarness } from './helpers/ipcHarness';
+import { runDeviceLinkInvokeContext } from '../../device-link/invoke-context';
 
 function makeRow(overrides: Partial<AgentSwitchSessionRow> = {}): AgentSwitchSessionRow {
   return {
@@ -1470,8 +1471,12 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     })).resolves.toMatchObject({ switched: true });
   });
 
-  it('协同任务:用户换位置仍拒绝，切换模型或引擎允许', async () => {
-    const row = { orcaRole: 'worker' as const, model: 'anthropic/claude-opus-5-5[1m]' };
+  it.each([
+    { orcaRole: 'worker' },
+    { orcaRole: null, orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker' }) },
+    { orcaRole: null, orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker', releasedAt: 1 }) },
+  ])('rejects user relocation while preserving harness/model selection: %j', async (identity) => {
+    const row = { ...identity, model: 'anthropic/claude-opus-5-5[1m]' };
     const { agentDeviceId: _omit, ...withoutLocation } = backToTaskComputer;
     const userMove = relocationHarness(row);
     await expect(performSessionAgentSwitch(userMove.deps, { ...backToTaskComputer, agentDeviceId: 'office-pc' }))
@@ -1519,6 +1524,22 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
       model: 'anthropic/claude-opus-5-5[1m]',
       agentDeviceId: null,
     });
+  });
+
+  it('passes a local window acknowledgement to same-Agent selection but rejects remote claims', async () => {
+    const h = relocationHarness({ orcaRole: 'worker', agentDeviceId: null });
+    const ipc = new IpcHarness();
+    registerMakerSessionAgentSwitchHandler(ipc, h.deps);
+    const select = (confirmedContextWindow: unknown) => ipc.invoke(MAKER_INVOKE.SWITCH_SESSION_AGENT,
+      's1', 'claude-code', 'small-model', 'xd', 'high', false, { confirmedContextWindow });
+    await select(200000);
+    expect(h.pending.get('s1')?.confirmedContextWindow).toBe(200000);
+    await expect(runDeviceLinkInvokeContext({ controllerDeviceId: 'controller', channel: MAKER_INVOKE.SWITCH_SESSION_AGENT },
+      () => select(100000))).rejects.toThrow(/PRECONDITION_FAILED/);
+    for (const invalid of [0, -1, 1.5, Number.NaN, '200000']) {
+      await expect(select(invalid)).rejects.toThrow(/INVALID_PARAMS/);
+    }
+    expect(h.pending.get('s1')?.confirmedContextWindow).toBe(200000);
   });
 });
 

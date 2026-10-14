@@ -73,7 +73,8 @@ describe('Orca same-Agent window preflight', () => {
 
       h.confirmDialog.mockResolvedValue(true);
       expect(await h.pick(agent, 'small', 'provider')).toBe(true);
-      expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', agent, 'small', 'provider', 'high', false);
+      expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', agent, 'small', 'provider', 'high', false,
+        { confirmedContextWindow: 200000 });
     }
   });
 
@@ -129,5 +130,26 @@ describe('Orca same-Agent window preflight', () => {
     expect(await h.pick('codex', 'small', 'provider')).toBe(false);
     expect(h.switchSessionAgent).not.toHaveBeenCalled();
     expect(h.release).toHaveBeenCalledOnce();
+  });
+
+  it('does not turn an unknown target window into acknowledgement', async () => {
+    const h = setup({ target: Number.NaN });
+    expect(await h.pick('codex', 'unknown', 'provider')).toBe(true);
+    expect(h.switchSessionAgent).toHaveBeenCalledWith('s1', 'codex', 'unknown', 'provider', 'high', false);
+  });
+
+  it('rechecks a pending route when selected again, while axis-only edits skip the dialog', async () => {
+    const h = setup();
+    h.bindings.makerChatStore.getAgentSwitchIntent = () => ({ target: 'codex', model: 'old-model', providerId: 'old-provider' }) as never;
+    // The callback holds the same store object; a send rejected for a changed
+    // window must be recoverable by selecting the pending model again.
+    expect(await h.pick('codex', 'old-model', 'old-provider')).toBe(false);
+    h.confirmDialog.mockResolvedValue(true);
+    expect(await h.pick('codex', 'old-model', 'old-provider')).toBe(true);
+    expect(h.switchSessionAgent).toHaveBeenLastCalledWith('s1', 'codex', 'old-model', 'old-provider', 'high', false,
+      { confirmedContextWindow: 200000 });
+    h.confirmDialog.mockClear();
+    expect(await h.pick('codex', 'old-model', 'old-provider', { effort: 'high', axesOnly: true })).toBe(true);
+    expect(h.confirmDialog).not.toHaveBeenCalled();
   });
 });

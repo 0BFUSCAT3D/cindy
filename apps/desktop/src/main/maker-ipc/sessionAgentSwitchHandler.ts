@@ -32,7 +32,8 @@
  */
 
 import type { AgentKind } from '@cindy/maker-core';
-import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
+import { getDeviceLinkInvokeContext, isDeviceLinkInvoke } from '../device-link/invoke-context.js';
+import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 import { createSharedTaskSettingGuard } from './sharedTaskSetting.js';
 
 import { MAKER_INVOKE } from './channels.js';
@@ -118,6 +119,8 @@ export interface AgentSwitchSessionRow {
   status: string;
   remoteHostId: string | null;
   orcaRole: string | null;
+  /** Execution-device Worker binding; these tasks have no local orcaRole. */
+  orcaRemoteLead?: string | null;
   sdkSessionId: string | null;
   source?: string | null;
   /** Agent 在哪台电脑运行(null / 缺省 = 任务所在电脑)。 */
@@ -333,7 +336,8 @@ export interface PendingAgentSwitchIntent {
   fastMode?: boolean;
   /**
    * Agent 在另一台电脑运行的任务：点选时按那台的目录确认过的目标上下文窗口。本机目录里没有
-   * 那台的模型，发送时据此做「换小窗口前先交接」。本机任务不设。
+   * 那台的模型，发送时据此做「换小窗口前先交接」。本机 Orca 也保留选择时核对的窗口，
+   * 发送时必须与实际目标窗口匹配，不能把 deferred 当作任意窗口的确认。
    */
   confirmedContextWindow?: number;
   /** 选择同时换 Agent 所在电脑(null = 任务所在电脑)；缺省 = 位置不变。 */
@@ -526,6 +530,8 @@ export async function performSessionAgentSwitch(
     /** 目标引擎下应生效的 effort / fastMode(renderer 按目标目录与预设解析好带入)。 */
     effort?: unknown;
     fastMode?: unknown;
+    /** Local picker acknowledgement of this route's checked context window. */
+    confirmedContextWindow?: unknown;
     /**
      * 选择的 Agent 位置(远程 Agent):undefined = 保持任务当前位置(内部调用与不认识该字段的
      * 旧控制端都走这里，不做推断)，null = 任务所在电脑，字符串 = 同账号另一台电脑。
@@ -568,6 +574,11 @@ export async function performSessionAgentSwitch(
 ): Promise<SessionAgentSwitchResult> {
   const { sessionId, targetAgentKind, model, providerId, signal } = params;
   throwIfAgentSwitchAborted(signal);
+  const confirmedContextWindow = params.confirmedContextWindow;
+  if (confirmedContextWindow !== undefined &&
+      (typeof confirmedContextWindow !== 'number' || !Number.isSafeInteger(confirmedContextWindow) || confirmedContextWindow <= 0)) {
+    throwIpcError('INVALID_PARAMS', 'confirmedContextWindow must be a positive integer');
+  }
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
     throwIpcError('INVALID_PARAMS', 'sessionId required');
   }
@@ -633,7 +644,8 @@ export async function performSessionAgentSwitch(
     params.applyNow === true &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
     row.model === model;
-  if (row.orcaRole && params.agentDeviceId !== undefined && !providerGroupRelocationOnly) {
+  if ((row.orcaRole || parseOrcaRemoteLead(row.orcaRemoteLead)) &&
+      params.agentDeviceId !== undefined && !providerGroupRelocationOnly) {
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent relocation is not supported for Orca sessions');
   }
   if (params.beforeMutation) await params.beforeMutation();
@@ -719,6 +731,7 @@ export async function performSessionAgentSwitch(
         ...(typeof params.effort === 'string' ? { effort: params.effort } : {}),
         ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
         sameAgentSelection: true,
+        ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
         ...(params.configStaged === true ? { configStaged: true } : {}),
       }, params.applyNow === true, params.assertSelectionCurrent, params.beforeMutation);
@@ -1279,6 +1292,13 @@ export function registerMakerSessionAgentSwitchHandler(
       options?: unknown,
     ) => {
       const context = getDeviceLinkInvokeContext();
+      const confirmedContextWindow = options && typeof options === 'object' && !Array.isArray(options)
+        ? (options as { confirmedContextWindow?: unknown }).confirmedContextWindow : undefined;
+      // Same trust boundary as SET_MODEL: remote controllers cannot authorize a
+      // destructive local-context rebuild by supplying a confirmation number.
+      if (isDeviceLinkInvoke() && confirmedContextWindow !== undefined) {
+        throwIpcError('PRECONDITION_FAILED', 'remote model-window confirmation is unsupported');
+      }
       const agentDeviceId =
         options && typeof options === 'object' && !Array.isArray(options) && 'agentDeviceId' in options
           ? (options as { agentDeviceId?: unknown }).agentDeviceId
@@ -1295,6 +1315,7 @@ export function registerMakerSessionAgentSwitchHandler(
         providerId,
         effort,
         fastMode,
+        ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
         ...(agentDeviceId !== undefined ? { agentDeviceId } : {}),
         assertSelectionCurrent: guard.admit,
       });

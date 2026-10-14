@@ -6431,6 +6431,7 @@ export function ChatInput({
           (await performAgentSwitchRef.current(intent.target, intent.model, intent.providerId, {
             fastMode: enabled,
             effort: intent.effort as Effort | undefined,
+            axesOnly: true,
           })) !== false
         );
       }
@@ -6546,6 +6547,8 @@ export function ChatInput({
           ? contextTokens
           : undefined;
       const hasVerifiedUsage = trustedContextTokens !== undefined;
+      const acceptedWindow = stagingSameAgentSelection && hasVerifiedTargetWindow && hasVerifiedUsage
+        ? targetContextWindow! : true;
       if (requireDestructiveConfirmation && (!hasVerifiedTargetWindow || !hasVerifiedUsage)) {
         return false;
       }
@@ -6568,12 +6571,12 @@ export function ChatInput({
         hasVerifiedWindows &&
         targetContextWindow >= currentContextWindow
       ) {
-        return true;
+        return acceptedWindow;
       }
       // Other SSH harnesses retain their existing admission until adapted separately.
       if (remoteHostId && (!hasVerifiedWindows || !hasVerifiedUsage)) return false;
       if (!requireDestructiveConfirmation && (!trustedContextTokens || trustedContextTokens <= 0)) {
-        return true;
+        return acceptedWindow;
       }
       const contextTokensForAssessment = trustedContextTokens ?? 0;
       const verdict = assessModelSwitchContext({
@@ -6582,7 +6585,7 @@ export function ChatInput({
         // 切窗安全线独立于各 harness 的日常 auto-compaction 设置。
         autoCompactThresholdPct: MODEL_WINDOW_SWITCH_FORCE_REBUILD_PCT,
       });
-      if (!requireDestructiveConfirmation && verdict.level === 'ok') return true;
+      if (!requireDestructiveConfirmation && verdict.level === 'ok') return acceptedWindow;
       const fmtTokens = (n: number): string =>
         n >= 1_000_000
           ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
@@ -6609,7 +6612,7 @@ export function ChatInput({
         toast.warning(t('newChat.chatInput.modelSwitchContextGuard.warnToast', vars), {
           duration: 4000,
         });
-        return true;
+        return acceptedWindow;
       }
       // Local overflow (≥100%): host performs a bounded handoff before switching.
       const accepted = await confirmDialog({
@@ -6728,6 +6731,8 @@ export function ChatInput({
       overrides?: {
         effort?: Effort;
         fastMode?: boolean;
+        /** Editing only axes keeps the existing route's window acknowledgement. */
+        axesOnly?: boolean;
         /**
          * 远程 Agent:这一行属于哪台电脑的目录(null = 本机)。与任务当前所在电脑不同 = 连 Agent
          * 的运行位置一起换。不传 = 沿用已登记的换位置意图,没有就是位置不变。
@@ -6757,18 +6762,20 @@ export function ChatInput({
       const exclusiveTurn = reserveAgentSwitchExclusive(sourceSessionId);
       try {
         await exclusiveTurn.ready;
+        let confirmedContextWindow: number | undefined;
         // Same-Agent Orca picks stage instead of calling SET_MODEL. Keep its window
         // preflight before registration, including same-id provider changes. Effort/
         // Fast edits of an already selected route do not need another confirmation.
-        if (sessionOrcaRole && targetAgentKind === runtimeAgentKind &&
+        if (sessionOrcaRole && targetAgentKind === runtimeAgentKind && !overrides?.axesOnly &&
             (targetAgentKind !== currentModelAgentKind || newModelId !== activeModel ||
-              providerId !== effectiveSourceId)) {
+              providerId !== effectiveSourceId || makerChatStore.getAgentSwitchIntent(sourceSessionId))) {
           const proceed = await confirmModelSwitchContextGuard(
             newModelId, deviceLinkDeviceId ?? getSessionDeviceId(sourceSessionId),
             providerId, undefined, undefined, false, true,
           );
           if (!proceed || !isSessionScopeCurrent(sourceSessionId, currentSessionIdRef.current) ||
               writeSeq !== getAgentSwitchWriteSeq(sourceSessionId)) return false;
+          if (typeof proceed === 'number') confirmedContextWindow = proceed;
         }
         // 远程 Agent:这次选择落在哪台电脑。左侧栏点了另一台电脑的目录就用那台;否则沿用已登记
         // 的换位置意图 —— 意图期内在同一份目录里改选,不能被当成原来那台的选择。与任务当前
@@ -6847,7 +6854,11 @@ export function ChatInput({
         const switchApi = deviceLinkDeviceId
           ? makerApiForDevice(deviceLinkDeviceId)
           : makerApiFor(sourceSessionId);
-        const result = relocateTo !== undefined
+        const switchOptions = {
+          ...(relocateTo !== undefined ? { agentDeviceId: relocateTo } : {}),
+          ...(!deviceLinkDeviceId && confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
+        };
+        const result = Object.keys(switchOptions).length > 0
           ? await switchApi.switchSessionAgent(
               sourceSessionId,
               targetAgentKind,
@@ -6855,7 +6866,7 @@ export function ChatInput({
               providerId,
               newEffort,
               targetFast,
-              { agentDeviceId: relocateTo },
+              switchOptions,
             )
           : await switchApi.switchSessionAgent(
               sourceSessionId,
@@ -7743,6 +7754,7 @@ export function ChatInput({
           (await performAgentSwitch(intent.target, intent.model, intent.providerId, {
             effort: newEffort,
             fastMode: intent.fastMode,
+            axesOnly: true,
           })) !== false
         );
       }
