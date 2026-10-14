@@ -2046,6 +2046,29 @@ describe('thread share follow-ups', () => {
     expect(mocks.shareToMain).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the reader's own share over another member's that the main chat has loaded", async () => {
+    const bobShare = msg({ id: 'bob-share', sequence: 2, authorKind: 'user', isSelf: false, authorBotId: 'bob', authorName: 'Bob', content: '↪ 卡片',
+      threadShare: { messageId: 'alice-reply', threadRootId: 'u1', status: 'available', authorKind: 'user', authorBotId: null, authorName: 'Alice',
+        sharedByAuthor: false, content: 'Alice says hi', attachments: [], createdAt: 1, edited: false } });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' }), bobShare] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    // The reader's earlier share of the same reply sits on a page the main chat has not loaded.
+    mocks.shareToMain.mockResolvedValue({ ok: true, messageId: 'my-old-share', alreadyShared: true });
+    const user = userEvent.setup();
+    renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!);
+    const panel = await screen.findByRole('complementary');
+    const reply = (await within(panel).findByText('Alice says hi')).closest('article')!;
+    expect(await within(reply).findByRole('button', { name: t('postedToMain') })).toBeTruthy();
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    expect(await within(reply).findByRole('button', { name: t('postedBySelf') })).toBeTruthy();
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: t('viewInMain') })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: t('postToMain') })).toBeNull();
+  });
+
   it('keeps every failed main-chat copy retryable, across switching threads', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })] }) });
     mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'first' }).mockResolvedValueOnce({ ok: true, messageId: 'second' });
@@ -2072,6 +2095,27 @@ describe('thread share follow-ups', () => {
     await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
     expect(mocks.shareToMain.mock.calls.map(([input]) => input.messageId)).toEqual(['first', 'second']);
     expect(mocks.reply).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a main-chat copy retryable when it fails after leaving the thread', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })] }) });
+    mocks.reply.mockResolvedValue({ ok: true, messageId: 'first' });
+    let fail!: () => void;
+    mocks.shareToMain.mockReturnValueOnce(new Promise(resolve => { fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' }); }));
+    const user = userEvent.setup();
+    renderView();
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    await user.click(first!);
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'one{Enter}');
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
+    // The copy is still on its way when the reader moves to another thread.
+    await user.click(second!);
+    await screen.findByText('Reply to u2');
+    await act(async () => fail());
+    await user.click(first!);
+    expect(await within(await screen.findByRole('complementary')).findByRole('button', { name: t('retryPost') })).toBeTruthy();
   });
 });
 
@@ -2170,6 +2214,31 @@ describe('more older shares than one refresh re-reads', () => {
     expect(refreshes.length).toBeLessThanOrEqual(3);
     expect(refreshes.every(ids => ids.length <= 200)).toBe(true);
     expect(screen.queryByText('↪ 卡片 0')).toBeNull();
+  });
+
+  it('checks a stale share even when a full batch of newer ones is still loading', { timeout: 20_000 }, async () => {
+    type Share = NonNullable<BotGroupMessageView['threadShare']>;
+    const shareOf = (i: number, extra: Partial<Share> = {}): Share => ({ messageId: `reply-${i}`, threadRootId: 'root', status: 'available', authorKind: 'bot',
+      authorBotId: 'xiaoman', authorName: '小满', sharedByAuthor: false, content: `原文 ${i}`, attachments: [], createdAt: 1, edited: false, version: 2, ...extra });
+    // The newest 200 are still being read by the main process; the oldest predates an edit.
+    const older = Array.from({ length: 201 }, (_, i) => msg({ id: `share-${i}`, sequence: i + 1, authorKind: 'user', isSelf: false, authorBotId: 'alice',
+      authorName: 'Alice', content: `↪ 卡片 ${i}`, threadShare: i === 0 ? shareOf(0, { version: 1 }) : shareOf(i, { status: 'loading', authorName: '', content: '' }) }));
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 2, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
+    const refreshes: Array<string[]> = [];
+    mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string; messageId: string }> }) => {
+      if (options?.beforeSequence) return { ok: true, group: { ...latest, hasMoreBefore: false, messages: older } };
+      refreshes.push((options?.shownShares ?? []).map(share => share.id));
+      const threadShareUpdates = Object.fromEntries((options?.shownShares ?? []).map(share => [share.id, share.messageId === 'reply-0'
+        ? shareOf(0, { content: '核对后的原文' }) : shareOf(Number(share.messageId.slice(6)), { status: 'loading', authorName: '', content: '' })]));
+      return { ok: true, group: { ...latest, threadShareUpdates } };
+    });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('核对后的原文')).toBeTruthy();
+    // The first refresh that checks older shares already takes the stale one.
+    expect(refreshes.find(ids => ids.length)).toContain('share-0');
+    expect(refreshes.every(ids => ids.length <= 200)).toBe(true);
   });
 });
 

@@ -824,13 +824,14 @@ function staleBotGroupShares(older: readonly BotGroupMessageView[], version: num
 }
 
 /**
- * Which older shares one refresh re-checks: stale or still-loading ones first, then the
- * newest, up to the per-read cap. The rest are checked by later refreshes.
+ * Which older shares one refresh re-checks, up to the per-read cap: stale ones first, so
+ * every capped batch advances; then still-loading ones, which the main process is already
+ * retrying; then the newest. The rest are checked by later refreshes.
  */
 function botGroupShownShares(older: readonly BotGroupMessageView[], version: number | undefined) {
   const withShares = older.filter(message => message.threadShare).reverse();
-  const first = new Set(withShares.filter(message => message.threadShare!.status === 'loading'
-    || (version !== undefined && (message.threadShare!.version ?? 0) < version)));
+  const stale = staleBotGroupShares(withShares, version);
+  const first = new Set([...stale, ...withShares.filter(message => message.threadShare!.status === 'loading')]);
   return [...first, ...withShares.filter(message => !first.has(message))].slice(0, BOT_GROUP_SHOWN_SHARES_MAX).map(message => ({
     id: message.id, messageId: message.threadShare!.messageId, threadRootId: message.threadShare!.threadRootId,
     ...(message.authorBotId ? { sharerId: message.authorBotId } : {}) }));

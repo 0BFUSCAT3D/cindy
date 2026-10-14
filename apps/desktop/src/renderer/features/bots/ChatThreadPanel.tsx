@@ -126,11 +126,14 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
   const [alsoSend, setAlsoSend] = useState(false);
   const unpostedKey = `${group.id}:${rootId}`;
   const [unposted, setUnpostedState] = useState<ReadonlySet<string>>(() => unpostedReplies().get(unpostedKey) ?? new Set());
-  const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => setUnpostedState(previous => {
-    const next = update(previous);
-    if (next.size) unpostedReplies().set(unpostedKey, next); else unpostedReplies().delete(unpostedKey);
-    return next;
-  });
+  // The queue is written first: a share may finish after this panel has closed, and the
+  // state below only mirrors it while the panel is open.
+  const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => {
+    const queue = unpostedReplies();
+    const next = update(queue.get(unpostedKey) ?? new Set());
+    if (next.size) queue.set(unpostedKey, next); else queue.delete(unpostedKey);
+    setUnpostedState(next);
+  };
   const [posting, setPosting] = useState<ReadonlySet<string>>(new Set());
   const postingRef = useRef(new Set<string>());
   /** Shares confirmed in this panel (reply → main-chat message, null when unknown). */
@@ -219,10 +222,12 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
     } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(key('requestFailed'))); }
     finally { sending.current = false; setBusy(false); }
   }
+  /** The reader's own share wins over another member's, even when only this panel knows it. */
   const sharedState = (messageId: string) => {
     const known = sharedReplies?.get(messageId);
-    if (known) return { bySelf: known.bySelf, shareId: known.messageId };
-    return posted.has(messageId) ? { bySelf: true, shareId: posted.get(messageId) ?? null } : null;
+    if (known?.bySelf) return { bySelf: true, shareId: known.messageId };
+    if (posted.has(messageId)) return { bySelf: true, shareId: posted.get(messageId) ?? null };
+    return known ? { bySelf: false, shareId: known.messageId } : null;
   };
   /** The share may sit on an older page the main chat has not loaded. */
   const revealShare = (shareId: string) => {
