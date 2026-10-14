@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   pushes: [] as Array<(payload: BotGroupChangedPayload, stamp?: unknown) => void>,
   toastError: vi.fn(),
   toastWarning: vi.fn(),
+  toastInfo: vi.fn(),
   /** Real paths the fake `getFilePath` knows; anything else is an in-memory bitmap. */
   filePaths: new Map<File, string>(),
   cacheImageFromBuffer: vi.fn(),
@@ -49,7 +50,6 @@ const mocks = vi.hoisted(() => ({
   ownerGeneration: 1,
   reply: vi.fn(),
   shareToMain: vi.fn(),
-  toastInfo: vi.fn(),
 }));
 
 // Partial: the shared attachment pieces pull in the app i18n instance, which needs initReactI18next.
@@ -269,6 +269,7 @@ beforeEach(() => {
   mocks.revoke.mockReset();
   mocks.navigate.mockReset();
   mocks.toastError.mockReset();
+  mocks.toastInfo.mockReset();
   mocks.pushes = [];
   mocks.getBotGroup.mockReset().mockResolvedValue({ ok: true, group: detail() });
   mocks.sendBotGroupMessage.mockReset().mockResolvedValue({ ok: true, messageId: 'u2' });
@@ -360,7 +361,7 @@ describe('BotGroupChatView', () => {
       mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
       const user = userEvent.setup();
       renderView();
-      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
       await user.click(trigger);
       const panel = screen.getByRole('complementary');
       if (duration === '200ms') {
@@ -388,7 +389,7 @@ describe('BotGroupChatView', () => {
       mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
       const user = userEvent.setup();
       renderView();
-      const triggers = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+      const triggers = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
       await user.click(triggers[0]!);
       await act(async () => motion.animations[0]!.finish());
       await user.click(screen.getByRole('button', { name: 'bots.close' }));
@@ -410,7 +411,7 @@ describe('BotGroupChatView', () => {
       mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
       const user = userEvent.setup();
       renderView();
-      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+      const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
       await user.click(trigger);
       await act(async () => motion.animations[0]!.finish());
       const panel = screen.getByRole('complementary');
@@ -442,9 +443,9 @@ describe('BotGroupChatView', () => {
     renderView();
     const main = (await screen.findByText('周六 8:10 有票')).closest('main')!;
     const composer = within(main).getByRole('textbox');
-    const triggers = within(main).getAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    const triggers = within(main).getAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
     await user.click(triggers[0]!);
-    const panel = screen.getByRole('complementary', { name: 'bots.groupChat.server.replies' });
+    const panel = screen.getByRole('complementary', { name: 'bots.groupChat.server.topic' });
     expect(panel.parentElement).toBe(main.parentElement);
     expect(main.parentElement?.className).toContain('flex');
     expect(main.className).toContain('flex-1');
@@ -471,7 +472,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
     await user.click(trigger);
     const panel = screen.getByRole('complementary');
     const input = within(panel).getByRole('textbox');
@@ -499,7 +500,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
     const main = trigger.closest('main')!;
     const composer = within(main).getByRole('textbox');
     for (const path of ['click', 'tab']) {
@@ -531,7 +532,7 @@ describe('BotGroupChatView', () => {
     renderView();
     const message = await screen.findByText('周六 8:10 有票');
     const main = message.closest('main')!;
-    const trigger = within(main).getAllByRole('button', { name: 'bots.groupChat.server.reply' })[0]!;
+    const trigger = within(main).getAllByRole('button', { name: 'bots.groupChat.server.startTopic' })[0]!;
     for (const target of [message, main]) {
       await user.click(trigger);
       const panel = screen.getByRole('complementary');
@@ -554,7 +555,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
     const main = trigger.closest('main')!;
     await user.click(trigger);
     const panel = screen.getByRole('complementary');
@@ -575,7 +576,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
     await user.click(trigger);
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Thread draft');
@@ -597,7 +598,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
     const header = screen.getByTestId('content-header');
     for (const button of within(header).getAllByRole('button')) {
       await user.click(trigger);
@@ -627,7 +628,7 @@ describe('BotGroupChatView', () => {
     Object.assign(window.electronAPI, { readTextFilePreview: vi.fn().mockResolvedValue({ success: true, data: 'Preview note content', size: 20 }) });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const panel = screen.getByRole('complementary');
     await user.type(within(panel).getByRole('textbox'), 'Unsent thread reply');
     if (kind === 'image') fireEvent.load(screen.getByAltText('photo.png'));
@@ -655,7 +656,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!;
+    const trigger = (await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!;
     const main = trigger.closest('main')!;
     await user.click(trigger);
     const panel = screen.getByRole('complementary');
@@ -680,7 +681,7 @@ describe('BotGroupChatView', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
     const user = userEvent.setup();
     renderView();
-    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!);
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
     const panel = screen.getByRole('complementary');
     await user.click((await within(panel).findAllByRole('button', { name: 'bots.groupChat.server.addReaction' }))[0]!);
     const reaction = await screen.findByRole('button', { name: '🎉' });
@@ -1189,6 +1190,328 @@ describe('BotGroupChatView', () => {
     await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(2));
     act(() => mocks.pushes.forEach((push) => push({ groupId: 'g1', change: 'deleted' })));
     expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
+  });
+
+  describe('引用回复', () => {
+    const quoteOf = (messageId: string, overrides: Partial<NonNullable<BotGroupMessageView['quote']>> = {}) => ({
+      messageId, authorName: '小满', authorKind: 'bot' as const, excerpt: '周六 8:10 有票', attachmentCount: 0, attachmentName: null, sequence: 2, ...overrides,
+    });
+    const quoteButton = async (id = 'b1') => {
+      await screen.findByText('周六 8:10 有票');
+      const row = document.querySelector(`[data-bot-group-message-id="${id}"]`) as HTMLElement;
+      return within(row).getByRole('button', { name: 'bots.groupChat.server.quoteReply' });
+    };
+    beforeEach(() => {
+      vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    });
+    afterEach(() => { vi.unstubAllGlobals(); });
+
+    it('quotes into the composer without opening a 话题, and removing it keeps the text', async () => {
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await quoteButton());
+      const preview = screen.getByTestId('bot-group-quote-preview');
+      expect(preview.textContent).toContain('bots.groupChat.quote.replyingTo:小满');
+      expect(preview.textContent).toContain('周六 8:10 有票');
+      expect(screen.queryByRole('complementary')).toBeNull();
+      const composer = screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' });
+      expect(document.activeElement).toBe(composer);
+      await user.type(composer, '那就这班');
+      await user.click(within(preview).getByRole('button', { name: 'bots.groupChat.quote.remove' }));
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+      expect((composer as HTMLTextAreaElement).value).toBe('那就这班');
+      expect(document.activeElement).toBe(composer);
+    });
+
+    it('Esc takes the quote off before anything else and keeps the draft', async () => {
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('草稿{Escape}');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+      expect((screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement).value).toBe('草稿');
+    });
+
+    it('sends only the quoted id in the current timeline, with a new idempotency key per quote', async () => {
+      const user = userEvent.setup();
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' }).mockResolvedValue({ ok: true, messageId: 'u2' });
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      expect(lastSend()).toMatchObject({ groupId: 'g1', text: '就这班', quote: { messageId: 'b1' }, mentions: { all: false, botIds: [] } });
+      // A failed send puts the quote back with the text; the retry reuses the attempt.
+      await waitFor(() => expect(screen.getByTestId('bot-group-quote-preview')).toBeTruthy());
+      const failedId = lastSend().clientId;
+      await user.keyboard('{Enter}');
+      expect(lastSend()).toMatchObject({ clientId: failedId, quote: { messageId: 'b1' } });
+      await waitFor(() => expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull());
+      // The same words quoting another message are a different send.
+      await user.click(await quoteButton('u1'));
+      await user.keyboard('就这班{Enter}');
+      expect(lastSend()).toMatchObject({ quote: { messageId: 'u1' } });
+      expect(lastSend().clientId).not.toBe(failedId);
+    });
+
+    it('never attaches a failed send\'s quote to text typed while it was on its way', async () => {
+      const user = userEvent.setup();
+      let fail!: () => void;
+      mocks.sendBotGroupMessage.mockImplementation(() => new Promise((resolve) => {
+        fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' });
+      }));
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledOnce());
+      const composer = screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement;
+      await user.type(composer, '另一件事');
+      await act(async () => fail());
+      expect(composer.value).toBe('另一件事');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
+    it('puts the text back without an unavailable quote', async () => {
+      const user = userEvent.setup();
+      mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.errors.quoteUnavailable'));
+      expect((screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement).value).toBe('就这班');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
+    it('offers no 引用回复 on a local group, a notice or a round divider', async () => {
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail() });
+      renderView();
+      await screen.findByText('周六 8:10 有票');
+      expect(screen.queryAllByRole('button', { name: 'bots.groupChat.server.quoteReply' })).toHaveLength(0);
+      cleanup();
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+      renderView();
+      await screen.findByText('周六 8:10 有票');
+      // Only the two chat messages; the notice and the divider have no toolbar.
+      expect(screen.getAllByRole('button', { name: 'bots.groupChat.server.quoteReply' })).toHaveLength(2);
+    });
+
+    it('jumps to and highlights a loaded original', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [...base.messages,
+        msg({ id: 'q1', sequence: 5, content: '那就这班', quote: quoteOf('b1', { excerpt: 'snapshot text' }) })] } });
+      renderView();
+      const block = await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' });
+      // The loaded original wins over the stored snapshot.
+      expect(block.textContent).toContain('周六 8:10 有票');
+      expect(block.textContent).not.toContain('snapshot text');
+      await user.click(block);
+      const target = document.querySelector('[data-bot-group-message-id="b1"]') as HTMLElement;
+      await waitFor(() => expect(target.className).toContain('search-match-bg'));
+      expect(document.activeElement).toBe(target);
+      expect(screen.queryByRole('complementary')).toBeNull();
+    });
+
+    it('shows a deleted original without its snapshot and never jumps', async () => {
+      const base = detail({ serverBacked: true });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [
+        msg({ id: 'b1', sequence: 2, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', deleted: true, content: '（消息已删除）' }),
+        msg({ id: 'q1', sequence: 5, content: '那就这班', quote: quoteOf('b1', { excerpt: '私密的原文' }) })] } });
+      renderView();
+      const block = await screen.findByTestId('bot-group-quote');
+      expect(block.getAttribute('data-quote-state')).toBe('deleted');
+      expect(block.tagName).toBe('DIV');
+      expect(block.textContent).toContain('bots.groupChat.quote.deleted');
+      expect(document.body.textContent).not.toContain('私密的原文');
+    });
+
+    it('pages back to an original that is not loaded yet', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' })] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '很早的原文', sequence: 1 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect((document.querySelector('[data-bot-group-message-id="old1"]') as HTMLElement | null)?.className).toContain('search-match-bg'));
+      expect(mocks.getBotGroup).toHaveBeenCalledWith('g1', expect.objectContaining({ beforeSequence: 50 }));
+    });
+
+    it('re-reads an original on an older page before jumping, and stops when it was deleted meanwhile', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
+      let deleted = false;
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [deleted ? { ...original, deleted: true, content: '（消息已删除）' } : original] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '很早的原文', sequence: 1 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect((document.querySelector('[data-bot-group-message-id="old1"]') as HTMLElement | null)?.className).toContain('search-match-bg'));
+      // Deleted on another client after it was paged in: the push re-read leaves older pages as they were.
+      deleted = true;
+      await user.click(screen.getByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect(mocks.toastInfo).toHaveBeenCalledWith('bots.groupChat.quote.deleted'));
+      expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', expect.objectContaining({ beforeSequence: 2 }));
+      expect(screen.getByTestId('bot-group-quote').getAttribute('data-quote-state')).toBe('deleted');
+      expect(document.body.textContent).not.toContain('很早的原文');
+    });
+
+    describe('quoted originals on older pages after a push', () => {
+      const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
+      const latest = msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '快照摘要', sequence: 1 }) });
+      /** The server's current page for `beforeSequence`, and a way to run the page loader. */
+      function serve(older: () => Promise<BotGroupMessageView[]>) {
+        const base = detail({ serverBacked: true, hasMoreBefore: true });
+        mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+          ? { ok: true, group: { ...base, hasMoreBefore: false, messages: await older() } }
+          : { ok: true, group: { ...base, messages: [latest] } });
+      }
+      const quoteState = () => screen.getByTestId('bot-group-quote').getAttribute('data-quote-state');
+      const push = () => act(async () => { mocks.pushes.forEach((listener) => listener({ groupId: 'g1', change: 'messages' })); });
+
+      it('drops a deleted original from the quote on a push, without a click', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('很早的原文'));
+        expect(quoteState()).toBe('live');
+        server = [{ ...original, deleted: true, content: '（消息已删除）' }];
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        expect(document.body.textContent).not.toContain('很早的原文');
+        expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', { beforeSequence: 2 });
+      });
+
+      it('follows an edited original on a push', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('很早的原文'));
+        server = [{ ...original, content: '改过的原文' }];
+        await push();
+        await waitFor(() => expect(screen.getByTestId('bot-group-quote').textContent).toContain('改过的原文'));
+        expect(quoteState()).toBe('live');
+      });
+
+      it('falls back to the snapshot and never jumps when the original cannot be re-read', async () => {
+        const user = userEvent.setup();
+        let fail = false;
+        serve(async () => { if (fail) throw new Error('offline'); return [original]; });
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        fail = true;
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('snapshot'));
+        expect(screen.getByTestId('bot-group-quote').textContent).toContain('快照摘要');
+        await user.click(screen.getByTestId('bot-group-quote'));
+        await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.timeline.loadEarlierFailed'));
+        expect(document.querySelector('[class*="search-match-bg"]')).toBeNull();
+      });
+
+      it('re-checks every quoted original across all opened pages on a single push', async () => {
+        const user = userEvent.setup();
+        const originals = [400, 300, 200, 100].map((sequence, index) => msg({ id: `o${index}`, sequence, authorKind: 'bot',
+          authorBotId: 'xiaoman', authorName: '小满', content: `原文${index}` }));
+        const quotes = originals.map((original, index) => msg({ id: `q${index}`, sequence: 501 + index, content: `回复${index}`,
+          quote: quoteOf(original.id, { excerpt: `快照${index}`, sequence: original.sequence }) }));
+        let server = originals;
+        const base = detail({ serverBacked: true, hasMoreBefore: true });
+        // One message per page, so each original sits on its own opened page.
+        mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => {
+          if (!options?.beforeSequence) return { ok: true, group: { ...base, messages: quotes } };
+          const page = server.filter((message) => message.sequence < options.beforeSequence!).slice(0, 1);
+          return { ok: true, group: { ...base, hasMoreBefore: page[0]!.sequence > 100, messages: page } };
+        });
+        renderView();
+        for (let page = 0; page < 4; page += 1) {
+          await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+          await screen.findByText(`原文${page}`, { selector: '[data-markdown]' });
+        }
+        server = originals.map((original, index) => index % 2 === 0
+          ? { ...original, deleted: true, content: '（消息已删除）' } : { ...original, content: `改过${index}` });
+        mocks.getBotGroup.mockClear();
+        await push();
+        await waitFor(() => expect(screen.getAllByTestId('bot-group-quote').map((block) => block.getAttribute('data-quote-state')))
+          .toEqual(['deleted', 'live', 'deleted', 'live']));
+        const blocks = screen.getAllByTestId('bot-group-quote');
+        expect(blocks[1]!.textContent).toContain('改过1');
+        expect(blocks[3]!.textContent).toContain('改过3');
+        expect(document.body.textContent).not.toMatch(/原文0|原文2/);
+        // One read for the latest page, then one per original's page; nothing beyond what was opened.
+        expect(mocks.getBotGroup.mock.calls.map(([, options]) => options?.beforeSequence).filter(Boolean)).toEqual([401, 301, 201, 101]);
+      });
+
+      it('shows a 话题 root\'s quote from the same verified messages', async () => {
+        const user = userEvent.setup();
+        let server = [original];
+        serve(async () => server);
+        mocks.thread.mockImplementation(async () => ({ ok: true, root: latest, replies: [], hasMore: false }));
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        server = [{ ...original, deleted: true, content: '（消息已删除）' }];
+        await push();
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        const row = document.querySelector('[data-bot-group-message-id="q1"]') as HTMLElement;
+        await user.click(within(row).getByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+        const panel = await screen.findByRole('complementary');
+        await waitFor(() => expect(within(panel).getByTestId('bot-group-quote').getAttribute('data-quote-state')).toBe('deleted'));
+        expect(panel.textContent).not.toContain('快照摘要');
+      });
+
+      it('lets a newer push win over an older re-read that answers late', async () => {
+        const user = userEvent.setup();
+        const pending: Array<(page: BotGroupMessageView[]) => void> = [];
+        let paging = true;
+        serve(() => paging ? Promise.resolve([original]) : new Promise((resolve) => pending.push(resolve)));
+        renderView();
+        await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+        await waitFor(() => expect(quoteState()).toBe('live'));
+        paging = false;
+        await push();
+        await waitFor(() => expect(pending).toHaveLength(1));
+        await push();
+        await waitFor(() => expect(pending).toHaveLength(2));
+        await act(async () => pending[1]!([{ ...original, deleted: true, content: '（消息已删除）' }]));
+        await waitFor(() => expect(quoteState()).toBe('deleted'));
+        // The superseded read arrives last with the pre-deletion copy; it must not bring the text back.
+        await act(async () => pending[0]!([original]));
+        expect(quoteState()).toBe('deleted');
+        expect(document.body.textContent).not.toContain('很早的原文');
+      });
+    });
+
+    it('says the original is out of reach instead of jumping elsewhere', async () => {
+      const user = userEvent.setup();
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: [msg({ id: 'other', sequence: 3, content: '别的消息' })] } }
+        : { ok: true, group: { ...base, messages: [msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('gone', { excerpt: '看不到的原文', sequence: 2 }) })] } });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.quote.jumpLabel:小满' }));
+      await waitFor(() => expect(mocks.toastInfo).toHaveBeenCalledWith('bots.groupChat.quote.unavailable'));
+      expect(document.querySelector('[class*="search-match-bg"]')).toBeNull();
+    });
+
+    it('keeps a quote draft inside its own group', async () => {
+      const user = userEvent.setup();
+      let view = renderView();
+      await user.click(await quoteButton());
+      expect(screen.getByTestId('bot-group-quote-preview')).toBeTruthy();
+      view.unmount();
+      mocks.groupId = 'g2';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'g2', serverBacked: true }) });
+      view = renderView();
+      await screen.findByText('周六 8:10 有票');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+      await user.keyboard('x');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
   });
 
   describe('分工', () => {
@@ -1846,7 +2169,7 @@ describe('thread previews and posting to the main chat', () => {
     expect(card.textContent).toContain(t('attachmentsSummary'));
     expect(card.textContent).toContain('bots.groupChat.server.replyCount');
     // The count lives in the preview; the toolbar keeps a plain reply icon.
-    const toolbarReply = screen.getByRole('button', { name: 'bots.groupChat.server.replyCount' });
+    const toolbarReply = screen.getByRole('button', { name: 'bots.groupChat.server.openTopic' });
     expect(toolbarReply.textContent).toBe('');
     await user.click(card);
     expect(await screen.findByRole('complementary')).toBeTruthy();
@@ -1884,7 +2207,7 @@ describe('thread previews and posting to the main chat', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const panel = await screen.findByRole('complementary');
     const toggle = within(panel).getByRole('checkbox', { name: t('alsoSend') });
     expect(toggle.getAttribute('aria-checked')).toBe('false');
@@ -1907,7 +2230,7 @@ describe('thread previews and posting to the main chat', () => {
     mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const panel = await screen.findByRole('complementary');
     await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
     await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
@@ -1927,7 +2250,7 @@ describe('thread previews and posting to the main chat', () => {
     mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const panel = await screen.findByRole('complementary');
     await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
     await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
@@ -1943,7 +2266,7 @@ describe('thread previews and posting to the main chat', () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })]) });
     const user = userEvent.setup();
     renderView();
-    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
     await user.click(first!);
     await user.click(within(await screen.findByRole('complementary')).getByRole('checkbox', { name: t('alsoSend') }));
     await user.click(second!);
@@ -1957,7 +2280,7 @@ describe('thread previews and posting to the main chat', () => {
       replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
     fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
     await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
@@ -1992,7 +2315,7 @@ describe('thread share follow-ups', () => {
     mocks.thread.mockResolvedValue({ ok: true, root, replies: [], hasMore: false });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.replyCount' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.openTopic' }));
     const panel = await screen.findByRole('complementary');
     await waitFor(() => expect(within(panel).getAllByRole('figure').length).toBe(1));
     expect(within(panel).queryByText('↪ 冒充: 卡片文字')).toBeNull();
@@ -2009,7 +2332,7 @@ describe('thread share follow-ups', () => {
     mocks.shareToMain.mockResolvedValue({ ok: true, messageId: 'old-share', alreadyShared: false });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
     fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
     await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
@@ -2029,7 +2352,7 @@ describe('thread share follow-ups', () => {
     mocks.shareToMain.mockResolvedValue({ ok: true, messageId: null, alreadyShared: true });
     const user = userEvent.setup();
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
     fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
     await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
@@ -2057,7 +2380,7 @@ describe('thread share follow-ups', () => {
     mocks.shareToMain.mockResolvedValue({ ok: true, messageId: 'my-old-share', alreadyShared: true });
     const user = userEvent.setup();
     renderView();
-    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' }))[0]!);
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
     const panel = await screen.findByRole('complementary');
     const reply = (await within(panel).findByText('Alice says hi')).closest('article')!;
     expect(await within(reply).findByRole('button', { name: t('postedToMain') })).toBeTruthy();
@@ -2075,7 +2398,7 @@ describe('thread share follow-ups', () => {
     mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
     const user = userEvent.setup();
     renderView();
-    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
     await user.click(first!);
     let panel = await screen.findByRole('complementary');
     for (const text of ['one', 'two']) {
@@ -2104,7 +2427,7 @@ describe('thread share follow-ups', () => {
     mocks.shareToMain.mockReturnValueOnce(new Promise(resolve => { fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' }); }));
     const user = userEvent.setup();
     renderView();
-    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.reply' });
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
     await user.click(first!);
     const panel = await screen.findByRole('complementary');
     await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
@@ -2252,7 +2575,7 @@ describe('pending main-chat copies across accounts', () => {
     mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
     const user = userEvent.setup();
     const view = renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     let panel = await screen.findByRole('complementary');
     await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
     await user.type(within(panel).getByRole('textbox'), 'from account A{Enter}');
@@ -2261,7 +2584,7 @@ describe('pending main-chat copies across accounts', () => {
     // Another account opens the same server group and thread.
     mocks.ownerGeneration = 2;
     renderView();
-    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.reply' }));
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     panel = await screen.findByRole('complementary');
     await within(panel).findByText('Reply to u1');
     expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull();

@@ -11,6 +11,17 @@
 
 > **增量适用原则**：wire protocol 兼容对所有跨端改动生效，不因是小改而豁免。
 
+## Model Access 复杂价目
+
+保持 V5，新增可组合的 `display_pricing` 能力声明，复用 `X-Cindy-Model-Capabilities` 与
+`Vary`。服务端只向声明支持的 V5 下发 `displayPricing`，旧 V5 和 V1–V4 不新增字段；
+新客户端接受旧服务端的无字段响应。缺失、null、空价目或无法理解的价目结构仅省略展示块，
+不拒绝模型或整份目录；新增对象属性忽略，未知单位原样保留，未知 priceType 不猜成 exact。
+模型必需字段及其它协议校验保持原规则。
+Gateway 边界对整块报价校验，非法或无有效币种即整体省略，保留模型。币种和折扣随同次
+模型快照投影，成功刷新缺字段会移除旧展示；没有新权限、数据库迁移或独立价格缓存。
+两端可独立升级，完整展示需两端支持。字段只用于报价展示，不参与账单或调用授权。
+
 ## 手机直连群的设置管理
 
 现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
@@ -1563,6 +1574,27 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 缺字段时沿用旧读取范围；新客户端以此翻页收集未见附件，保留每轮 40 个上限及缺失名称提示。
 `cindy.group-notice` v1 的 integration 卡映射到已有 plan-failed/member-failed/member-timeout
 展示提示，仅承担文案，不授予执行权限。Mobile 继续消费主机既有群资源投影，无新增原生能力。
+
+### 伙伴群聊引用回复（`cindy.quote` v1）
+
+主时间线的引用回复不使用服务器 `replyToId`：现行服务端要求它与 `threadRootId` 指向同一 Thread，
+主时间线会返回 `REPLY_THREAD_MISMATCH`。客户端在现有 `postMessage.content` 的 `card` 块里写入
+`namespace: "cindy.quote"`、`schemaRevision: 1`，`data` 为 `messageId`、`authorName`、`authorKind`
+（`user`/`bot`）、`excerpt`（≤280 字）、`attachmentCount`、`attachmentName`、`seq`，`fallback` 为
+语言中立的 `> 作者: 摘要`。服务端 schema、migration 与权限不变；`plainText` 收录 fallback 以便搜索。
+构造与严格解析只在 `packages/maker-shared/src/botGroupQuote.ts` 一处，Desktop main 与 Mobile 直连共用。
+
+- 发送：渲染进程 IPC `maker:bot-group:send` 的 `BotGroupSendInput` 追加可选 `quote: { messageId }`；
+  main 按当前账号 `GET /conversations/:room/messages/:id` 读取同群原消息后构造卡片，不信任调用方摘要。
+  不可用时返回新增错误码 `QUOTE_UNAVAILABLE`（旧渲染层按未知错误显示通用失败）。设备互联 `send`
+  动作本次不追加 `quote`，手机暂不发起引用；如需开放，须先加 Host 能力位，避免旧电脑静默丢引用。
+- 读取：`BotGroupMessageView` 追加可选 `quote`（含仅手机直连使用的 `originalDeleted`）。手机解析电脑投影时用
+  共享 `parseBotGroupQuoteView` 逐字段校验并保留 `quote`，同时保留原有的 `deleted` 墓碑供删除降级。识别出的卡片
+  不再拼进 `content`；其它 revision 或字段不合规时整块按普通文本显示 fallback。旧手机经电脑读取时
+  忽略新字段、只见正文；旧客户端直连或旧电脑看到 fallback 加正文。
+- 伙伴上下文：群消息数据块里的消息追加 `quote`，仍在 `untrustedJsonBlock` 内；不改变 `mentions`。
+- 后续：若服务端放开主时间线 `replyToId`（能力协商后），客户端可同时写 `replyToId` 获得外键约束与
+  删除感知，卡片继续承担快照与旧端兼容；两者并存时以 `replyToId` 为准。
 
 ## 委派任务的完成通知归属
 

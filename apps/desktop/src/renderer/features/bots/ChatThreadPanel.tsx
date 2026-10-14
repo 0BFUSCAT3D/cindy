@@ -13,11 +13,12 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCu
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMention, BotGroupMessageView } from '../../../shared/botGroupChat';
-import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
+import { isBotGroupRuntimeFailureCode, resolveBotGroupQuote } from '../../../shared/botGroupChat';
 import { resolveBotGroupMentions } from './botGroupMentions';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
+import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
@@ -51,8 +52,8 @@ export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: st
   });
 }
 
-function ThreadMessage({ group, message, shareScope, sharing, shared, posting, onPost, onReveal, onChanged, renderAttachments }: {
-  group: BotGroupDetail; message: BotGroupMessageView; shareScope: string; sharing: boolean;
+function ThreadMessage({ group, message, quoteSources, shareScope, sharing, shared, posting, onPost, onReveal, onChanged, renderAttachments }: {
+  group: BotGroupDetail; message: BotGroupMessageView; quoteSources: readonly BotGroupMessageView[]; shareScope: string; sharing: boolean;
   renderAttachments?: (attachments: BotGroupMessageView['attachments']) => ReactNode;
   /** Replies only: already in the main chat (by anyone), and whether the reader shared it. */
   shared?: { bySelf: boolean } | null; posting?: boolean; onPost?: () => void; onReveal?: () => void; onChanged: () => void;
@@ -73,6 +74,8 @@ function ThreadMessage({ group, message, shareScope, sharing, shared, posting, o
     <BotAvatar bot={{ name: message.authorName, avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null }} size="sm" />
     <div className="min-w-0 flex-1 space-y-1">
       <p className="text-13 font-medium leading-7 text-[var(--text-primary)]">{message.authorName}</p>
+      {/* A 话题 root may itself be a 引用回复; its original lives in the main timeline. */}
+      {message.quote ? <BotGroupQuoteBlock display={resolveBotGroupQuote(message.quote, quoteSources)} /> : null}
       {share ? <>
         <p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]">
           <CornerDownRight size={12} aria-hidden />{botGroupThreadShareLabel(share, t)}</p>
@@ -90,8 +93,12 @@ function ThreadMessage({ group, message, shareScope, sharing, shared, posting, o
   </article>;
 }
 
-export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealShare, onClose, renderAttachments }: {
-  group: BotGroupDetail; rootId: string;
+/**
+ * `quoteSources` are the main timeline's verified messages (older pages included), so a
+ * 话题 root's quote reads the same as it does in the timeline; without them, the latest page.
+ */
+export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, focus, sharedReplies, onRevealShare, onClose, renderAttachments }: {
+  group: BotGroupDetail; rootId: string; quoteSources?: readonly BotGroupMessageView[];
   /** A reply to bring into view; a new nonce repeats the jump. */
   focus?: { messageId: string; nonce: number } | null;
   sharedReplies?: BotGroupSharedReplies;
@@ -236,7 +243,7 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
   return <aside ref={panelRef} aria-labelledby={titleId}
         className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
-          <h2 id={titleId} className="text-15 font-medium text-[var(--text-primary)]">{t(key('replies'))}</h2>
+          <h2 id={titleId} className="text-15 font-medium text-[var(--text-primary)]">{t(key('topic'))}</h2>
           <Tip text={t('bots.close')}>
             <Button variant="secondary" tone="quiet" size="md"
               className="w-8 rounded-none px-0 [&::before]:rounded-full"
@@ -244,13 +251,13 @@ export function ChatThreadPanel({ group, rootId, focus, sharedReplies, onRevealS
           </Tip>
         </header>
         <div ref={contentRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-          {projectBotGroupExecutionFailures(root ? [root] : [], executionFailures).map(message => <ThreadMessage key={message.id} shareScope={shareScope} sharing={sharing} group={group} message={message}
+          {projectBotGroupExecutionFailures(root ? [root] : [], executionFailures).map(message => <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message}
             renderAttachments={renderAttachments} onChanged={() => void loadRef.current()} />)}
           <div className="border-t border-[var(--border-default)] pt-3 text-12 text-[var(--text-tertiary)]">{t(key('replies'))}</div>
           {hasMore && <Button variant="secondary" size="sm" onClick={() => void loadRef.current(replies[0]?.sequence)}>{t('bots.groupChat.timeline.loadEarlier')}</Button>}
           {projectBotGroupExecutionFailures(replies, executionFailures).map(message => {
             const shared = sharedState(message.id);
-            return <ThreadMessage key={message.id} shareScope={shareScope} sharing={sharing} group={group} message={message}
+            return <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message}
               shared={shared} posting={posting.has(message.id)}
               onPost={group.archived ? undefined : () => void postToMain(message.id, false)}
               onReveal={shared?.shareId ? () => revealShare(shared.shareId!) : undefined}
