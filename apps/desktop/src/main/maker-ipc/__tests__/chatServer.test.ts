@@ -41,7 +41,7 @@ vi.mock('ws', async () => {
     close() { this.emit('close'); }
   } };
 });
-import { withChatServer } from '../chatServer.js';
+import { REACTION_REVISION_MESSAGE_LIMIT, withChatServer } from '../chatServer.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
@@ -1121,6 +1121,18 @@ describe('Chat Server result delivery and refresh', () => {
     socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
     await vi.advanceTimersByTimeAsync(0);
     expect(await revisions()).toEqual({ room: 1, messages: {} });
+    // Per-message versions stay bounded: one more message past the limit re-versions the whole room instead.
+    const reacted = (ids: string[], cursor: string) => socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor,
+      changes: ids.map(id => ({ type: 'reaction.changed', entityId: id, data: { emoji: '👍', present: true } })) }));
+    const ids = Array.from({ length: REACTION_REVISION_MESSAGE_LIMIT }, (_, i) => `m${i}`);
+    reacted(ids, '7');
+    const state = await revisions();
+    expect(state?.room).toBe(1);
+    expect(Object.keys(state?.messages ?? {})).toHaveLength(REACTION_REVISION_MESSAGE_LIMIT);
+    reacted(['m0'], '8');
+    expect((await revisions())?.messages?.m0).toBe(2);
+    reacted(['one-more'], '9');
+    expect(await revisions()).toEqual({ room: 2, messages: {} });
   });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);

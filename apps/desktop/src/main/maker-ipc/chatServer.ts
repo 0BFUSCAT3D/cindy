@@ -87,6 +87,8 @@ const CHAT_AUTH_RETRY_MS = 60_000;
 /** Main-group messages kept as background for a Thread request (the Thread itself is read separately). */
 const THREAD_BACKGROUND_LIMIT = 30;
 const ATTACHMENT_REFRESH_COALESCE_MS = 200;
+/** Messages per group with their own reaction version; past this the group re-versions as a whole, like a reset. */
+export const REACTION_REVISION_MESSAGE_LIMIT = 500;
 const CHAT_REFRESHABLE_ERROR_CODES = new Set(['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED']);
 const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
@@ -185,12 +187,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // message; a reset that skipped events versions the whole room (and makes per-message versions moot).
   // Both ride on the group, so every loaded page and the Thread see them on refresh.
   const reactionRevisions = new Map<string, { room: number; messages: Record<string, number> }>();
+  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: (reactionRevisions.get(roomId)?.room ?? 0) + 1, messages: {} });
+  // A long-open group stays bounded: once too many messages carry their own version, the group re-versions instead.
   const bumpMessageReactions = (roomId: string, messageId: string) => {
     const revisions = reactionRevisions.get(roomId) ?? { room: 0, messages: {} };
+    if (!(messageId in revisions.messages) && Object.keys(revisions.messages).length >= REACTION_REVISION_MESSAGE_LIMIT) return resetReactions(roomId);
     revisions.messages[messageId] = (revisions.messages[messageId] ?? 0) + 1;
     reactionRevisions.set(roomId, revisions);
   };
-  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: (reactionRevisions.get(roomId)?.room ?? 0) + 1, messages: {} });
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
