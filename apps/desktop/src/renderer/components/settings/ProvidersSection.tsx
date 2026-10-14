@@ -2765,10 +2765,11 @@ export function ProvidersSection() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
   // 分享来的供应商深链(?receivedShare=<shareId>，来自模型选择器底部「配置模型」)：等分享列表到了再消费
-  // 并从 URL 摘除；这条分享已不在列表里(刚被撤销或退出)时只停在供应商页。
+  // 并从 URL 摘除；这条分享已不在列表里(刚被撤销或退出)时只停在供应商页。设备互联断开或换账号时 main
+  // 会先推一份空列表表示「暂时读不到」(providerShareStore 同一口径)，这时保留参数，等列表回来再选中。
   useEffect(() => {
     const target = searchParams.get(PROVIDER_SHARE_RECEIVED_PARAM);
-    if (!target || !receivedSharesLoaded) return;
+    if (!target || !receivedSharesLoaded || receivedShares.length === 0) return;
     if (receivedShares.some((share) => share.shareId === target)) {
       setShareManageProviderId(null);
       setFocusedModel(null);

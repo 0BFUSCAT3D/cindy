@@ -1087,15 +1087,24 @@ describe('ProvidersSection — 分享来的供应商深链', () => {
     hostCapable: true,
   };
 
+  /** 返回推送新名单的函数(模拟 main 的 RECEIVED_CHANGED)。 */
   function stubReceived(received: ProviderShareReceived[]) {
     resetProviderShareStoreForTests();
+    let push: ((list: ProviderShareReceived[]) => void) | null = null;
     const command = vi.fn(async (cmd: { action: string }) => {
       if (cmd.action === 'received') return received;
       throw new Error(`unexpected ${cmd.action}`);
     });
     Object.assign(window.electronAPI, {
-      providerShare: { command, onReceivedChanged: () => () => undefined },
+      providerShare: {
+        command,
+        onReceivedChanged: (listener: (list: ProviderShareReceived[]) => void) => {
+          push = listener;
+          return () => undefined;
+        },
+      },
     });
+    return (list: ProviderShareReceived[]) => act(() => push?.(list));
   }
 
   afterEach(() => resetProviderShareStoreForTests());
@@ -1109,10 +1118,24 @@ describe('ProvidersSection — 分享来的供应商深链', () => {
   });
 
   it('这条分享已不在列表里 → 只停在供应商页，参数同样清除', async () => {
-    stubReceived([]);
+    stubReceived([{ ...share, shareId: 'share-other' }]);
     renderAt('?tab=providers&receivedShare=share-gone');
 
     await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?tab=providers'));
     expect(screen.queryByTestId('provider-share-received-detail')).toBeNull();
+  });
+
+  it('名单暂时为空(断线、换账号) → 保留参数，名单回来后再选中', async () => {
+    const push = stubReceived([]);
+    renderAt('?tab=providers&receivedShare=share-1');
+
+    await waitFor(() => expect(window.electronAPI.providerShare.command).toHaveBeenCalledWith({ action: 'received' }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(screen.getByTestId('search').textContent).toBe('?tab=providers&receivedShare=share-1');
+    expect(screen.queryByTestId('provider-share-received-detail')).toBeNull();
+
+    push([share]);
+    await screen.findByTestId('provider-share-received-detail');
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?tab=providers'));
   });
 });
