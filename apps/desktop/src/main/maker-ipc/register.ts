@@ -12303,6 +12303,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           || (pendingAgent !== undefined && pendingAgent !== targetAgent);
         const result = await sessionControlService.setSessionRuntime({ targetSessionId: taskId,
           expectedGeneration: current.runtime.runtimeGeneration,
+          beforeMutation: assertUnchanged,
           patch: { ...(selectHarness ? { harness: targetAgent } : {}),
             model: route.model, providerId: route.providerId, effort: (route.effort || null) as Effort | null,
             fastMode: route.fastMode } });
