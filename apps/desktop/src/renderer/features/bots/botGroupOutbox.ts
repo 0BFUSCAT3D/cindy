@@ -25,11 +25,12 @@
  *   全部本地文件，失败时不留任何引用暂存路径的本地记录（服务端只引用已上传的副本）。
  * - 失败时交还输入框（输入框空着才交还，见 `registerBotGroupComposer`），否则留在时间线上
  *   显示没发出去，可重试或编辑；失败时输入框不在（切群、分享模式），回来注册输入框时同样交还。
- * - 切换账号整体清空，旧账号的迟到回执一律丢弃；群被删除时丢弃该群的条目。
+ * - 切换到另一个账号时整体清空，旧账号的迟到回执一律丢弃；同账号的 generation 修复、认证边界
+ *   短暂发布的 null、退出后重新登录同一账号都不清空。群被删除时丢弃该群的条目。
  */
 import { useCallback, useSyncExternalStore } from 'react';
 
-import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
+import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { isAnnotationBurnInError, materializeAnnotatedAttachmentsForSend } from '@/lib/annotationBurnIn';
 import { cleanupStagedChatAttachmentFiles } from '@/lib/chatAttachmentStageCleanup';
 import { setBotGroupOutboxAttachmentUrls } from '@/lib/composerDraftStore';
@@ -111,7 +112,17 @@ const PREVIEW_LIMIT = 32;
 const NO_PREVIEWS: ReadonlyMap<string, readonly BotGroupAttachment[]> = new Map();
 const EMPTY: readonly BotGroupOutboxEntry[] = [];
 
-let owner = getDataOwnerGeneration();
+/**
+ * The account the outbox holds messages for: the last non-null data owner. Only a different
+ * account replaces it — not a same-owner generation repair, not the null an auth boundary
+ * publishes for a moment, not signing back in to the same account.
+ */
+let account = getDataOwnerGeneration().dataOwnerId;
+
+function accountChanged(): boolean {
+  const current = getDataOwnerGeneration().dataOwnerId;
+  return current !== null && current !== account;
+}
 let generation = 0;
 let tick = 0;
 const groups = new Map<string, GroupOutbox>();
@@ -159,8 +170,11 @@ function releaseUnsubmitted(groupId: string, entries: readonly BotGroupOutboxEnt
 }
 
 function ensureOwner(): void {
-  if (isDataOwnerGenerationCurrent(owner)) return;
-  owner = getDataOwnerGeneration();
+  if (!accountChanged()) return;
+  const previous = account;
+  account = getDataOwnerGeneration().dataOwnerId;
+  // Nothing was held for another account yet: whatever is here was written for this one.
+  if (previous === null) return;
   generation += 1;
   // The previous account's queued and failed sends go with it; one being submitted settles itself.
   for (const [groupId, group] of groups) releaseUnsubmitted(groupId, group.entries);
@@ -288,7 +302,7 @@ async function submit(
   requestGeneration: number,
   files: readonly AttachedFile[],
 ): Promise<void> {
-  const isCurrent = () => requestGeneration === generation && isDataOwnerGenerationCurrent(owner);
+  const isCurrent = () => requestGeneration === generation && !accountChanged();
   // Dropped before its turn (account switch, deleted group): whoever dropped it released its files.
   if (!isCurrent()) return;
   const group = groups.get(groupId);
@@ -606,7 +620,7 @@ export function useBotGroupOutbox(groupId: string): readonly BotGroupOutboxEntry
 /** Test-only reset of the module state. */
 export function resetBotGroupOutboxForTests(): void {
   generation += 1;
-  owner = getDataOwnerGeneration();
+  account = getDataOwnerGeneration().dataOwnerId;
   groups.clear();
   preparing.clear();
   verifying.clear();

@@ -28,7 +28,9 @@ import {
 } from '../botGroupOutbox';
 
 const mocks = vi.hoisted(() => ({
-  owner: 1,
+  /** Data owner account (null = an auth boundary's fence); `generation` moves on same-owner repairs. */
+  owner: 1 as number | null,
+  generation: 0,
   send: vi.fn<(input: BotGroupSendInput) => Promise<BotGroupSendResult>>(),
   materialize: vi.fn(async (files: readonly AttachedFile[]) => [...files]),
   protectedUrls: [] as string[],
@@ -39,8 +41,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
-  getDataOwnerGeneration: () => mocks.owner,
-  isDataOwnerGenerationCurrent: (owner: number) => owner === mocks.owner,
+  getDataOwnerGeneration: () => ({ dataOwnerId: mocks.owner === null ? null : `account-${mocks.owner}`, generation: mocks.generation }),
 }));
 vi.mock('../botGroupStore', () => ({
   botGroupApi: () => ({ sendBotGroupMessage: mocks.send, getBotGroup: mocks.getBotGroup }),
@@ -140,6 +141,7 @@ function project(groupId: string, messages: BotGroupMessageView[]) {
 
 beforeEach(() => {
   mocks.owner = 1;
+  mocks.generation = 0;
   mocks.send.mockReset();
   mocks.materialize.mockReset().mockImplementation(async (files: readonly AttachedFile[]) => [...files]);
   mocks.protectedUrls = [];
@@ -754,6 +756,44 @@ describe('botGroupOutbox', () => {
       listGroups(['g1']);
       await flush();
       expect(mocks.getBotGroup).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the same account', () => {
+    const staged = (id: string) =>
+      ({ id, name: `${id}.txt`, path: `/staged/${id}.bin`, size: 1, category: 'text', mimeType: 'text/plain', type: 'file' }) as unknown as AttachedFile;
+
+    it('keeps queued, failed and in-flight messages through a same-owner generation repair and a passing null', async () => {
+      const inFlight = deferred();
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' }).mockReturnValueOnce(inFlight.promise);
+      enqueueBotGroupSend(draft({ clientId: 'failed' }, { files: [staged('failed')] }));
+      enqueueBotGroupSend(draft({ clientId: 'flying' }, { files: [staged('flying')] }));
+      enqueueBotGroupSend(draft({ clientId: 'queued' }, { files: [staged('queued')] }));
+      await flush();
+      // A repair keeps the account and moves the generation; an auth boundary publishes null for a moment.
+      mocks.generation += 1;
+      expect(getBotGroupOutbox('g1').map((entry) => entry.input.clientId)).toEqual(['failed', 'flying', 'queued']);
+      mocks.owner = null;
+      expect(getBotGroupOutbox('g1')).toHaveLength(3);
+      inFlight.resolve({ ok: true, messageId: 'm-flying' });
+      mocks.owner = 1;
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm-queued' });
+      await flush();
+      expect(getBotGroupOutbox('g1').map((entry) => `${entry.input.clientId}:${entry.status}`)).toEqual([
+        'failed:failed', 'flying:sent', 'queued:sent',
+      ]);
+      expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+    });
+
+    it('still clears for a different account, even after a null in between', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      enqueueBotGroupSend(draft({ clientId: 'failed' }, { files: [staged('failed')] }));
+      await flush();
+      mocks.owner = null;
+      expect(getBotGroupOutbox('g1')).toHaveLength(1);
+      mocks.owner = 2;
+      expect(getBotGroupOutbox('g1')).toEqual([]);
+      expect(mocks.cleanupStaged).toHaveBeenCalledWith([staged('failed')]);
     });
   });
 });
