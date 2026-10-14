@@ -110,6 +110,17 @@ function writePendingBuilds(root: string, snapshots: PendingBuildSnapshot[], tru
   atomicWriteFileSync(file(root), JSON.stringify({ schema: 1, snapshots, trusted }));
 }
 
+/** Establish a clean ledger only for a newly-created source with no prior record. */
+export function initializePendingBuilds(root: string): void {
+  try {
+    lstatSync(file(root));
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+  }
+  writePendingBuilds(root, []);
+}
+
 /** The snapshot no longer exists in the source: its fact is stale. Absent record: nothing to do. */
 export function dropPendingBuild(root: string, snapshot: { commit: string; tree?: string }): void {
   const ledger = readLedger(root);

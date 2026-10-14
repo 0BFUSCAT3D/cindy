@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   dropPendingBuild,
   hasPendingBuild,
+  initializePendingBuilds,
   readPendingBuilds,
   recordPendingBuild,
   rewritePendingBuilds,
@@ -65,6 +66,16 @@ it('records the snapshot with its fact and keeps the newest entries', () => {
   expect(readPendingBuilds(dir)).toEqual([A, B]);
   expect(hasPendingBuild(dir, A)).toBe(true);
   expect(hasPendingBuild(dir, C)).toBeUndefined();
+});
+
+it('initializes a fresh source as a trusted clean snapshot', () => {
+  const dir = root();
+  initializePendingBuilds(dir);
+  expect(readPendingBuilds(dir)).toEqual([]);
+  expect(hasPendingBuild(dir, A)).toBe(false);
+  writeFileSync(path.join(dir, 'pending-build.json'), '{ not json');
+  initializePendingBuilds(dir);
+  expect(readPendingBuilds(dir)).toBeUndefined();
 });
 
 it('treats a missing or unreadable record as unknown until a generation settles it', () => {

@@ -14,6 +14,7 @@ import { assertPnpmConfigContained } from './pnpmWriteRoots.js';
 import { readSourceRevisions, type SourceRevisions } from './sourceRevisions.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
 import { PERSONAL_UPSTREAM_REF } from './sourceContent.js';
+import { initializePendingBuilds } from './pendingBuild.js';
 import { checkMakeToolVersion, untilAborted } from './doctor.js';
 export const CINDY_SOURCE_REPOSITORY = 'https://github.com/makecindy/cindy.git';
 export { makeSourceRoot, makeSourceCheckoutPath } from './sourcePaths.js';
@@ -637,6 +638,7 @@ async function prepareCindySourceInternal(
         sourcePath,
         signal,
       ).catch(() => undefined);
+      initializePendingBuilds(root);
     }
     await emitProgress({
       status: 'preparing',

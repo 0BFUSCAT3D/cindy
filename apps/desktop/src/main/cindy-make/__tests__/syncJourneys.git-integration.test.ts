@@ -25,6 +25,7 @@ import {
 import { PERSONAL_UPSTREAM_REF } from '../sourceContent';
 import { rollbackUnbuiltHistory, hasUnbuiltPersonalChanges } from '../buildRollback';
 import {
+  initializePendingBuilds,
   recordPendingBuild,
   rewritePendingBuilds,
   settlePendingBuilds,
@@ -128,6 +129,7 @@ async function computer(w: World, name: string, options: { realGeneration?: bool
   await w.raw(['clone', w.official, source], w.root);
   await w.raw(['checkout', '-b', 'cindy-personal'], source);
   await w.raw(['update-ref', PERSONAL_UPSTREAM_REF, await w.head(source)], source);
+  initializePendingBuilds(recordRoot);
   const timeout = () => AbortSignal.timeout(60_000);
   const mergeGit: MergeGit = (args, cwd, indexFile) =>
     runSourceGit(
