@@ -110,4 +110,15 @@ describe('provider share guest prefs', () => {
     expect(isProviderShareCredentialConsentSkipped('memory-only')).toBe(true);
     await expect(setProviderShareCredentialConsent('not a share id', 'global', true)).rejects.toThrow();
   });
+
+  it('does not enable trust in memory when the durable write fails', async () => {
+    fs.mkdirSync(file(), { recursive: true });
+
+    await expect(setProviderShareCredentialConsent('write-fails', 'global', true)).rejects.toThrow();
+    expect(isProviderShareCredentialConsentSkipped('write-fails')).toBe(false);
+
+    fs.rmSync(file(), { recursive: true, force: true });
+    await setProviderShareCredentialConsent('write-fails', 'global', true);
+    expect(isProviderShareCredentialConsentSkipped('write-fails')).toBe(true);
+  });
 });

@@ -117,8 +117,10 @@ export async function setProviderShareCredentialConsent(shareId: string, region:
   const shares = new Map(load());
   if (skip) shares.set(shareId, { region, skipCredentialConsent: true });
   else shares.delete(shareId);
-  cache = { file, shares };
+  // Keep the previous cache until the durable write succeeds. A failed enable must not
+  // leave the running task path trusting a share that the UI has already reverted.
   await persist(file, shares);
+  cache = { file, shares };
 }
 
 /** 受邀者退出了这个分享：忘掉它的偏好。 */
