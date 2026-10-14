@@ -313,30 +313,6 @@ describe('chat interaction controls', () => {
       expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['ann-chris', 'ann-dana'] });
     });
 
-    it('starts a new attempt when a failed reply re-picks a namesake without changing the text', async () => {
-      const input = renderThread();
-      mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' });
-      type(input, '@');
-      fireEvent.click(screen.getAllByRole('option')[1]!);
-      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
-      await screen.findByRole('alert');
-      expect(input.value).toBe('@Ann ');
-      const first = mocks.reply.mock.calls[0]![0];
-      expect(first.mentions).toEqual({ all: false, botIds: ['ann-chris'] });
-      // Caret back to the end of the name and pick the other Ann: the text stays `@Ann `.
-      // As a user would: click back into the box with the caret after the name.
-      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
-      fireEvent.select(input);
-      expect(labels()).toEqual(['Ann', 'Ann']);
-      fireEvent.click(screen.getAllByRole('option')[1]!);
-      expect(input.value).toBe('@Ann ');
-      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
-      await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
-      const second = mocks.reply.mock.calls[1]![0];
-      expect(second.mentions).toEqual({ all: false, botIds: ['ann-dana'] });
-      expect(second.clientId).not.toBe(first.clientId);
-    });
-
     it('moves the caret past the space when a re-pick leaves the text unchanged, and does not pull it back later', () => {
       const input = renderThread();
       type(input, '@');
@@ -350,27 +326,41 @@ describe('chat interaction controls', () => {
       expect(input.selectionStart).toBe(7);
     });
 
-    it('keeps the retry id when a failed reply re-picks the same teammate for an earlier mention', async () => {
+    // One retry rule (bot-group-chat.md): a failed reply is retried with the same clientId only when the
+    // text and its targets are unchanged. Each row edits the draft between attempts without changing the text.
+    // Comparing only the text fails rows 1 and 4; comparing the pick records fails row 3; re-resolving
+    // against the live roster fails the roster-refresh test above.
+    const pickAt = (input: HTMLTextAreaElement, caret: number, option: number) => {
+      // As a user would: click back into the box with the caret after the name, then pick.
+      act(() => { input.blur(); input.setSelectionRange(caret, caret); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[option]!);
+    };
+    it.each([
+      { row: 're-pick the other namesake', draft: (input: HTMLTextAreaElement) => { type(input, '@'); fireEvent.click(screen.getAllByRole('option')[1]!); },
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 1), text: '@Ann ', first: ['ann-chris'], second: ['ann-dana'], reused: false },
+      { row: 're-pick the same teammate for an earlier mention', draft: (input: HTMLTextAreaElement) => {
+        type(input, '@'); fireEvent.click(screen.getAllByRole('option')[1]!); type(input, '@Ann @', 6); fireEvent.click(screen.getAllByRole('option')[3]!);
+      }, edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 0), text: '@Ann @Bo ', first: ['ann-chris', 'bo'], second: ['ann-chris', 'bo'], reused: true },
+      { row: 'pick the same teammate for a typed mention', draft: (input: HTMLTextAreaElement) => type(input, '@Bo '),
+        // The typed query `Bo` also matches the untranslated 所有人 key here, so Bo is the second option.
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 3, 1), text: '@Bo ', first: ['bo'], second: ['bo'], reused: true },
+      { row: 'pick one namesake for a typed mention', draft: (input: HTMLTextAreaElement) => type(input, '@Ann '),
+        edit: (input: HTMLTextAreaElement) => pickAt(input, 4, 1), text: '@Ann ', first: ['ann-chris', 'ann-dana'], second: ['ann-dana'], reused: false },
+    ])('retries a failed reply after "$row" with reused clientId = $reused', async ({ draft, edit, text, first, second, reused }) => {
       const input = renderThread();
       mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'REQUEST_TIMEOUT' });
-      type(input, '@');
-      fireEvent.click(screen.getAllByRole('option')[1]!);
-      type(input, '@Ann @', 6);
-      fireEvent.click(screen.getAllByRole('option')[3]!);
-      expect(input.value).toBe('@Ann @Bo ');
+      draft(input);
+      expect(input.value).toBe(text);
       fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
       await screen.findByRole('alert');
-      const first = mocks.reply.mock.calls[0]![0];
-      expect(first.mentions).toEqual({ all: false, botIds: ['ann-chris', 'bo'] });
-      // Same Ann again for the first mention: text, targets and order are unchanged.
-      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
-      fireEvent.click(screen.getAllByRole('option')[0]!);
-      expect(input.value).toBe('@Ann @Bo ');
+      edit(input);
+      expect(input.value).toBe(text);
       fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
       await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(2));
-      const second = mocks.reply.mock.calls[1]![0];
-      expect(second.mentions).toEqual(first.mentions);
-      expect(second.clientId).toBe(first.clientId);
+      const [one, two] = mocks.reply.mock.calls.map(call => call[0]);
+      expect(one.mentions).toEqual({ all: false, botIds: first });
+      expect(two.mentions).toEqual({ all: false, botIds: second });
+      expect(two.clientId === one.clientId).toBe(reused);
     });
   });
 });

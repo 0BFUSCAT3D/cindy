@@ -272,7 +272,8 @@ export function useBotGroupMentionPicker({
     tracked,
     setTracked,
     reset,
-    /** Resolve who the current text addresses, using the picks. */
-    resolve: (value: string) => resolveBotGroupMentions(value, { members, allLabels: resolveLabels, tracked }),
+    /** Resolve who the text addresses, using the picks; `roster` defaults to the current members. */
+    resolve: (value: string, roster: readonly BotGroupMemberView[] = members) =>
+      resolveBotGroupMentions(value, { members: roster, allLabels: resolveLabels, tracked }),
   };
 }

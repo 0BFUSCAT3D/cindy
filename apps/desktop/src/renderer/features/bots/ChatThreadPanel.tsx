@@ -20,6 +20,8 @@ import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
 import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 const key = (name: string) => `bots.groupChat.server.${name}`;
+const sameBotGroupMentions = (a: BotGroupMention, b: BotGroupMention) =>
+  a.all === b.all && a.botIds.length === b.botIds.length && a.botIds.every((botId, index) => botId === b.botIds[index]);
 const api = () => window.electronAPI.maker.chatServer;
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
@@ -78,13 +80,12 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const request = useRef(0);
-  const attempt = useRef<{ text: string; picks: string; id: string; mentions: BotGroupMention } | null>(null);
+  const attempt = useRef<{ text: string; roster: BotGroupDetail['members']; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const allLabel = t('bots.groupChat.mention.all');
   const allLabels = useMemo(() => [allLabel, '所有人', 'all', 'everyone'], [allLabel]);
-  // Same @ picker as the main composer. The retry key is the text plus the picked identities:
-  // re-picking a namesake can leave the text unchanged, while a roster refresh keeps the picks.
+  // Same @ picker as the main composer.
   const mention = useBotGroupMentionPicker({ text, members: group.members, textareaRef: inputRef, allLabels, onTextChange: value => {
     setText(value);
     if (attempt.current?.text !== value) attempt.current = null;
@@ -114,13 +115,16 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     if (group.archived || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
-    // In text order: re-picking the same teammate reorders `tracked` but is the same reply.
-    const picks = JSON.stringify([...mention.tracked].sort((a, b) => a.start - b.start).map(pick => [pick.start, pick.botId]));
-    if (!attempt.current || attempt.current.text !== text || attempt.current.picks !== picks)
-      attempt.current = { text, picks, id: crypto.randomUUID(), mentions: mention.resolve(text) };
+    // A retry reuses the attempt only for the same text and the same targets (bot-group-chat.md).
+    // Targets are re-resolved against the attempt's own roster: a roster refresh alone changes nothing
+    // and the host still rejects a departed target; re-picking someone else gets a new clientId.
+    const previous = attempt.current;
+    const current = previous && previous.text === text && sameBotGroupMentions(mention.resolve(text, previous.roster), previous.mentions)
+      ? previous : { text, roster: group.members, id: crypto.randomUUID(), mentions: mention.resolve(text) };
+    attempt.current = current;
     try {
-      const result = await api().reply({ groupId: group.id, rootId, text: attempt.current.text, clientId: attempt.current.id,
-        mentions: attempt.current.mentions });
+      const result = await api().reply({ groupId: group.id, rootId, text: current.text, clientId: current.id,
+        mentions: current.mentions });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
       setText(''); mention.reset(); attempt.current = null; void loadRef.current(); refreshBotGroups();
