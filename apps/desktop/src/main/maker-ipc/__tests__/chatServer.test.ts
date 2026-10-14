@@ -1091,13 +1091,16 @@ describe('Chat Server result delivery and refresh', () => {
     const recovered = await service.getGroup(roomId);
     expect(recovered.ok && recovered.group.messages[0].attachments[0].name).toBe('report.pdf');
   });
-  it('versions the room’s reactions on realtime reaction changes and resets, even when counts are unchanged', async () => {
+  it('versions only the changed message on realtime reaction changes and the whole room on resets', async () => {
     const message = { id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
       content: [{ type: 'text', text: 'Hi' }], createdAt: new Date().toISOString(), deleted: false, threadRootId: null,
       reactions: [{ emoji: '👍', count: 1, me: false }] };
     fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [message] } : response(route));
-    const revision = async () => { const r = await service.getGroup(roomId); return r.ok ? r.group.reactionRevision : undefined; };
-    expect(await revision()).toBe(0);
+    const revisions = async () => {
+      const r = await service.getGroup(roomId);
+      return r.ok ? { room: r.group.reactionRevision, messages: r.group.reactionRevisions } : undefined;
+    };
+    expect(await revisions()).toEqual({ room: 0, messages: {} });
     await vi.advanceTimersByTimeAsync(2000);
     const socket = fixture.sockets[0];
     // One member removes 👍 and another adds it in one batch: same count, different reactor.
@@ -1106,15 +1109,18 @@ describe('Chat Server result delivery and refresh', () => {
       { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: true } },
       { type: 'message.updated', entityId: message.id },
     ] }));
-    expect(await revision()).toBe(1);
-    // Other changes do not invalidate reactor reads.
-    socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '6', changes: [{ type: 'message.updated', entityId: message.id }] }));
-    expect(await revision()).toBe(1);
-    // A reset skips whatever changed while disconnected: the room counts as changed once.
+    expect(await revisions()).toEqual({ room: 0, messages: { [message.id]: 2 } });
+    // A reaction elsewhere leaves this message's version alone; other changes do not invalidate reactor reads.
+    socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '6', changes: [
+      { type: 'reaction.changed', entityId: 'other-message', data: { emoji: '🎉', present: true } },
+      { type: 'message.updated', entityId: message.id },
+    ] }));
+    expect(await revisions()).toEqual({ room: 0, messages: { [message.id]: 2, 'other-message': 1 } });
+    // A reset skips whatever changed while disconnected: the whole room counts as changed once.
     Object.defineProperty(socket, 'readyState', { value: 1 });
     socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(await revision()).toBe(2);
+    expect(await revisions()).toEqual({ room: 1, messages: {} });
   });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);

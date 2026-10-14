@@ -181,10 +181,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let companion: CompanionCloudRuntime | undefined;
   let companionSelf: string | null = null;
   let actorsStale = false;
-  // Who reacted can change while counts stay the same. Any realtime reaction change, or a reset that
-  // skipped events, versions the whole room, so every loaded page and the Thread see it on refresh.
-  const reactionRevisions = new Map<string, number>();
-  const bumpReactions = (roomId: string) => reactionRevisions.set(roomId, (reactionRevisions.get(roomId) ?? 0) + 1);
+  // Who reacted can change while counts stay the same. A realtime reaction change versions only its
+  // message; a reset that skipped events versions the whole room (and makes per-message versions moot).
+  // Both ride on the group, so every loaded page and the Thread see them on refresh.
+  const reactionRevisions = new Map<string, { room: number; messages: Record<string, number> }>();
+  const bumpMessageReactions = (roomId: string, messageId: string) => {
+    const revisions = reactionRevisions.get(roomId) ?? { room: 0, messages: {} };
+    revisions.messages[messageId] = (revisions.messages[messageId] ?? 0) + 1;
+    reactionRevisions.set(roomId, revisions);
+  };
+  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: (reactionRevisions.get(roomId)?.room ?? 0) + 1, messages: {} });
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -561,7 +567,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (event.scope.startsWith('conversation:')) {
             const roomId = event.scope.slice(13);
             if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
-            if ((event.changes ?? []).some((change: { type?: unknown }) => change.type === 'reaction.changed')) bumpReactions(roomId);
+            for (const change of event.changes ?? []) if (change.type === 'reaction.changed' && typeof change.entityId === 'string') {
+              bumpMessageReactions(roomId, change.entityId);
+            }
             changed(roomId);
             for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
           }
@@ -577,7 +585,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             void api<Snapshot>(`/conversations/${roomId}/snapshot`).then(value => {
               if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
               if (rooms.has(roomId)) advanceRoom(roomId, value.cursor);
-              bumpReactions(roomId);
+              resetReactions(roomId);
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());
@@ -732,7 +740,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const messages = summaryOnly ? [] : (await messageViews(roomId, page, s.members)).sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId) ?? 0, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? 0, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,

@@ -18,7 +18,7 @@ import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGr
 import { BotAvatar } from './BotAvatar';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
-import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
+import { ChatMessageActions, chatErrorKey, messageReactionRevision } from './ChatServerControls';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
 
@@ -46,7 +46,7 @@ function ThreadMessage({ group, message, quoteSources, shareScope, sharing, onCh
       <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
         <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
       </div>
-      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} members={group.members} reactionRevision={group.reactionRevision} align="left" onChanged={onChanged} />
+      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} members={group.members} reactionRevision={messageReactionRevision(group, message.id)} align="left" onChanged={onChanged} />
     </div>
   </article>;
 }

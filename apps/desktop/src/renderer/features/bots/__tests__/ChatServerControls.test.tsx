@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { StrictMode, type ReactNode } from 'react';
-import { cleanup, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
@@ -145,12 +145,24 @@ describe('chat interaction controls', () => {
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '👍', present: false });
   });
 
-  it('re-reads Thread reactors when the room reaction revision changes, even if the page is not reloaded', async () => {
-    const view = render(<ChatThreadPanel group={{ ...group, reactionRevision: 1 }} rootId="root" onClose={vi.fn()} />);
+  it('re-reads Thread reactors only when this message or the whole room changed, even if the page is not reloaded', async () => {
+    const thread = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
+      <ChatThreadPanel group={{ ...group, ...revisions }} rootId="root" onClose={vi.fn()} />;
+    const view = render(thread({ reactionRevision: 0, reactionRevisions: { root: 1 } }));
+    const rerender = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
+      view.rerender(<Tooltip.Provider>{thread(revisions)}</Tooltip.Provider>);
     await screen.findByRole('button', { name: k('reactionCount') });
     await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(1));
-    view.rerender(<Tooltip.Provider><ChatThreadPanel group={{ ...group, reactionRevision: 2 }} rootId="root" onClose={vi.fn()} /></Tooltip.Provider>);
+    // Someone reacted to another message: this badge keeps its reactors.
+    rerender({ reactionRevision: 0, reactionRevisions: { root: 1, other: 1 } });
+    await act(async () => {});
+    expect(mocks.reactors).toHaveBeenCalledTimes(1);
+    // Who reacted to this message changed.
+    rerender({ reactionRevision: 0, reactionRevisions: { root: 2, other: 1 } });
     await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(2));
+    // A reset counts every message as changed.
+    rerender({ reactionRevision: 1, reactionRevisions: {} });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(3));
   });
 
   it('uses the refreshed Thread root reaction state while the main timeline remains stale', async () => {

@@ -313,8 +313,10 @@ export interface BotGroupSummary {
 }
 
 export interface BotGroupDetail extends BotGroupSummary {
-  /** Room-wide; bumped by realtime reaction changes and resets, so a same-count change of who reacted is noticed. */
+  /** Room-wide; bumped when a reset skipped realtime events, so every message's reactors count as changed. */
   reactionRevision?: number;
+  /** Per message id; bumped by realtime reaction changes, so a same-count change of who reacted is noticed. */
+  reactionRevisions?: Record<string, number>;
   /** Oldest first. */
   messages: BotGroupMessageView[];
   /** Authorized current failures, independent of message pagination. Local/older hosts omit this. */

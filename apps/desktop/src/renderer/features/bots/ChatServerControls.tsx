@@ -11,7 +11,7 @@ import { Tip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { toast } from '@/lib/toast';
-import type { BotGroupMemberView, BotGroupMessageView } from '../../../shared/botGroupChat';
+import type { BotGroupDetail, BotGroupMemberView, BotGroupMessageView } from '../../../shared/botGroupChat';
 
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
@@ -19,12 +19,16 @@ const emojiChoices = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '
 const iconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] disabled:opacity-50';
 export { chatErrorKey } from './chatError';
 
+/** A message's reaction version: the room's reset version plus the message's own realtime changes. */
+export const messageReactionRevision = (group: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>, messageId: string) =>
+  `${group.reactionRevision ?? 0}:${group.reactionRevisions?.[messageId] ?? 0}`;
+
 /**
  * `onQuote` is 引用回复: a new main-timeline message that quotes this one. `onReply` opens the
  * message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after.
  */
 export function ChatMessageActions({ groupId, shareScope, message, members, reactionRevision, align = message.isSelf ? 'right' : 'left', onQuote, onReply, onChanged }: {
-  groupId?: string; shareScope: string; message: BotGroupMessageView; members?: BotGroupMemberView[]; reactionRevision?: number; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void; onChanged: () => void;
+  groupId?: string; shareScope: string; message: BotGroupMessageView; members?: BotGroupMemberView[]; reactionRevision?: string | number; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void; onChanged: () => void;
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
