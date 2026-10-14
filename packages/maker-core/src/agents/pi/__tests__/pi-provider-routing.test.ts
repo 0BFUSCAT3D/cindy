@@ -5644,6 +5644,63 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
+  it("arms startup plan mode without changing a running resumed Pi turn", async () => {
+    installPlanModeExtension();
+    captured.requestHandler = async (command) => {
+      if (command.type === "get_state") {
+        captured.onEvent?.({ type: "agent_start" });
+        return { success: true, data: { sessionFile: "/mock/s.jsonl", model: { contextWindow: 200_000 } } };
+      }
+      if (command.type === "get_entries") return { success: true, data: { entries: [] } };
+      return { success: true, data: {} };
+    };
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: "plan-resume-busy", workingDir: cwd, model: "local-model", planMode: true,
+    });
+    expect(handle.getPlanMode!()).toBe(true);
+    expect(handle.getExecutionPlanMode!()).toBe(false);
+    expect(captured.requests.some((request) => request.message === "/plan")).toBe(false);
+    await handle.close();
+  });
+
+  it("keeps a consumed plan snapshot active when a late checkbox clear arrives", async () => {
+    installPlanModeExtension();
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: "plan-late-clear", workingDir: cwd, model: "local-model",
+    });
+    await handle.send({ type: "user", content: "plan this" }, { planMode: true });
+    await handle.setPlanMode!(false);
+    expect(handle.getPlanMode!()).toBe(false);
+    expect(handle.getExecutionPlanMode!()).toBe(true);
+    expect(captured.requests.filter((request) => request.message === "/plan")).toHaveLength(1);
+    await handle.close();
+  });
+
+  it("does not dispatch a planned message when the native toggle fails", async () => {
+    installPlanModeExtension();
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: "plan-send-failure", workingDir: cwd, model: "local-model",
+    });
+    captured.requestHandler = async (command) => command.message === "/plan"
+      ? { success: false, error: "toggle failed" }
+      : { success: true, data: {} };
+    await expect(handle.send({ type: "user", content: "must remain read-only" }, { planMode: true }))
+      .rejects.toThrow("toggle failed");
+    expect(captured.requests.some((request) => request.message === "must remain read-only")).toBe(false);
+    expect(handle.getExecutionPlanMode!()).toBeNull();
+    await handle.close();
+  });
+
+  it("rejects an unavailable plan extension instead of dispatching an ordinary turn", async () => {
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: "plan-missing-extension", workingDir: cwd, model: "local-model",
+    });
+    await expect(handle.send({ type: "user", content: "plan only" }, { planMode: true }))
+      .rejects.toThrow("plan-mode extension is unavailable");
+    expect(captured.requests.some((request) => request.message === "plan only")).toBe(false);
+    await handle.close();
+  });
+
   it("keeps plan mode unknown after sync failure and refuses a blind toggle until it can resync", async () => {
     installPlanModeExtension();
     let entriesAvailable = false;

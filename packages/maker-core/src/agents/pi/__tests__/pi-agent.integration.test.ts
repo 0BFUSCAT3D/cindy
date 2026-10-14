@@ -1509,6 +1509,82 @@ describe.skipIf(!piAvailable)('PiAgent integration (real pi binary + fake gatewa
     },
   );
 
+  it.each(['snapshot', 'startup'] as const)(
+    'runs one read-only plan turn from %s, then restores ordinary tools',
+    { timeout: 60_000 },
+    async (source) => {
+      const workingDir = mkdtempSync(path.join(tmpdir(), 'pi-plan-turn-'));
+      let handle: AgentSessionHandle | undefined;
+      try {
+        handle = await new PiAgent(buildDeps()).startSession({
+          sessionId: `plan-turn-${source}`, workingDir, model: 'pi-test-model',
+          ...(source === 'startup' ? { planMode: true } : {}),
+        });
+        if (source === 'snapshot') {
+          await handle.setPlanMode!(true);
+          // Desktop consumes the checkbox before dispatching the frozen message.
+          await handle.setPlanMode!(false);
+        }
+        const sendTurn = async (planMode?: boolean) => {
+          const before = seenRequests.length;
+          const done = (async () => {
+            for await (const event of handle!.events()) if (event.type === 'done') break;
+          })();
+          await handle!.send({ type: 'user', content: 'Give a short plan.' },
+            planMode === undefined ? undefined : { planMode });
+          await done;
+          const requests = seenRequests.slice(before);
+          expect(requests).toHaveLength(1);
+          return JSON.parse(requests[0]!.body) as { tools: Array<{ name: string }>; system: unknown };
+        };
+        const planned = await sendTurn(source === 'snapshot' ? true : undefined);
+        expect(planned.tools.map((tool) => tool.name)).toContain('read');
+        expect(planned.tools.map((tool) => tool.name)).not.toContain('write');
+        expect(planned.tools.map((tool) => tool.name)).not.toContain('edit');
+        expect(handle.getPlanMode!()).toBe(false);
+        const ordinary = await sendTurn();
+        expect(ordinary.tools.map((tool) => tool.name)).toContain('write');
+        expect(ordinary.tools.map((tool) => tool.name)).toContain('edit');
+      } finally {
+        await handle?.close();
+        rmSync(workingDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('re-syncs native plan execution before the next ordinary message', { timeout: 60_000 }, async () => {
+    const workingDir = mkdtempSync(path.join(tmpdir(), 'pi-plan-execute-'));
+    let handle: AgentSessionHandle | undefined;
+    try {
+      handle = await new PiAgent(buildDeps()).startSession({
+        sessionId: 'plan-execute', workingDir, model: 'pi-test-model', planMode: true,
+      });
+      const resolver = vi.fn(async (request: { kind: string; questions?: Array<{ question: string }> }) => ({
+        kind: 'ask_user_question',
+        answers: { [request.questions![0]!.question]: 'Execute the plan (track progress)' },
+      }));
+      handle.setInteractionResolver!(resolver as never);
+      scriptedResponses.push(anthropicStreamBody('Plan:\n1. Say hello.'));
+      const before = seenRequests.length;
+      await handle.send({ type: 'user', content: 'Plan a greeting.' });
+      await vi.waitFor(() => expect(seenRequests.length).toBeGreaterThan(before + 1), { timeout: 20_000 });
+      await vi.waitFor(() => expect(handle!.isTurnRunning!()).toBe(false), { timeout: 20_000 });
+      expect(resolver).toHaveBeenCalled();
+      expect(handle.getPlanMode!()).toBe(false);
+      expect(handle.getExecutionPlanMode!()).toBe(false);
+      const next = seenRequests.length;
+      await handle.send({ type: 'user', content: 'An ordinary greeting.' });
+      await vi.waitFor(() => expect(seenRequests.length).toBeGreaterThan(next), { timeout: 20_000 });
+      const request = JSON.parse(seenRequests[next]!.body) as { tools: Array<{ name: string }> };
+      expect(request.tools.map((tool) => tool.name)).toContain('write');
+      await vi.waitFor(() => expect(handle!.isTurnRunning!()).toBe(false), { timeout: 20_000 });
+    } finally {
+      scriptedResponses.length = 0;
+      await handle?.close();
+      rmSync(workingDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['anthropic-messages', 'openai-completions'] as const)(
     'keeps native plan notifications separate from replies using %s',
     { timeout: 60_000 },
