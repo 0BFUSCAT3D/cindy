@@ -440,8 +440,12 @@ function RemoteFilePreviewContent() {
   const exportToUrl = useCallback(
     (relPath: string, mtimeMs: number, options?: ExportToUrlOptions): Promise<string> => {
       const stream = options?.stream ?? true;
+      const isCancelled = () => unmountedRef.current || options?.isCancelled?.() === true;
       if (singleAbsPath) {
-        return fetchRemoteAbsFileToUrl({ maker, deviceId, openLink, presignGet, stream }, singleAbsPath);
+        return fetchRemoteAbsFileToUrl(
+          { maker, deviceId, openLink, presignGet, stream, isCancelled },
+          singleAbsPath,
+        );
       }
       return exportRemoteFileToUrl(
         {
@@ -450,7 +454,7 @@ function RemoteFilePreviewContent() {
           openLink,
           presignGet,
           stream,
-          isCancelled: () => unmountedRef.current || options?.isCancelled?.() === true,
+          isCancelled,
           onProgress: options?.onProgress,
         },
         workdir,
