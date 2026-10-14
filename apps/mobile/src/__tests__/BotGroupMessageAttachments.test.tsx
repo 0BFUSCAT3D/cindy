@@ -74,7 +74,7 @@ vi.mock('@/session/CompanionMessageCard', () => ({ CompanionMessageCard: () => n
 vi.mock('@/session/PendingSendBubble', () => ({ PendingSendBubble: () => null }));
 vi.mock('@/session/messageActions', async (original) => ({ ...await original<object>(), copyMessageText: vi.fn(), writeClipboardText: vi.fn() }));
 
-import { BotGroupMessageAttachments } from '@/session/BotGroupMessageAttachments';
+import { BotGroupMessageAttachments, botGroupAttachmentRuns } from '@/session/BotGroupMessageAttachments';
 import { AttachmentStrip } from '@/session/MessageRenderer';
 import { MessageLoadingImage } from '@/session/MessageLoadingImage';
 import { buildMessageContentLayout } from '@/session/messageContentLayout';
@@ -199,3 +199,41 @@ describe('group image attachments outside LegendList (#5278)', () => {
     expect(reopened.querySelector('img')?.getAttribute('src')).toBe(thumbnailUrl);
   });
 });
+
+describe('group attachments the computer has not fetched yet', () => {
+  const ready = (id: string, name: string) => ({ id, name, category: 'file' as const, mimeType: 'text/plain', size: 1, url: null, path: null });
+  const pending = (id: string, name: string, state: 'loading' | 'unavailable') => ({ ...ready(id, name), mimeType: '', size: 0, state });
+
+  const picture = (id: string, name: string) => ({ id, name, category: 'image' as const, mimeType: 'image/png', size: 1, url: `xdt-image://cache/${id}.png`, path: null });
+  const summary = (runs: ReturnType<typeof botGroupAttachmentRuns>) =>
+    runs.map((run) => run.kind === 'pending' ? `${run.attachment.id}:${run.attachment.state}` : run.attachments.map((item) => item.id).join('+'));
+
+  it('keeps the sent order: neighbours of one kind share a strip, each pending one stands alone', () => {
+    const runs = botGroupAttachmentRuns([ready('a', 'a.txt'), pending('b', 'b.png', 'loading'), ready('c', 'c.txt'), ready('d', 'd.txt'), pending('e', 'e.md', 'unavailable')]);
+    expect(summary(runs)).toEqual(['a', 'b:loading', 'c+d', 'e:unavailable']);
+  });
+
+  it('never hands a strip both a picture and a file, since a strip draws pictures first', () => {
+    // [report.pdf, photo.png] must not become [photo.png, report.pdf].
+    expect(summary(botGroupAttachmentRuns([ready('r', 'report.pdf'), picture('p', 'photo.png')]))).toEqual(['r', 'p']);
+    expect(summary(botGroupAttachmentRuns([picture('p', 'a.png'), picture('q', 'b.png'), ready('r', 'r.pdf'), ready('s', 's.md'), picture('t', 't.png')])))
+      .toEqual(['p+q', 'r+s', 't']);
+  });
+
+  it('shows the loading / unavailable state instead of an openable file', async () => {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(BotGroupMessageAttachments, {
+      messageId: 'm', align: 'left', onResolveRemoteMedia: resolveMedia,
+      attachments: [pending('late', 'late.png', 'loading'), pending('gone', 'gone.md', 'unavailable')],
+    })));
+    // The real English copy: a status word under each name, never the "open it on your computer" file.
+    expect(host.querySelector('[aria-label="late.png, Loading…"]')).not.toBeNull();
+    expect(host.querySelector('[aria-label="gone.md, Unavailable right now"]')).not.toBeNull();
+    expect(host.textContent).toContain('Loading…');
+    expect(host.textContent).toContain('Unavailable right now');
+    expect(resolveMedia).not.toHaveBeenCalled();
+  });
+});
+

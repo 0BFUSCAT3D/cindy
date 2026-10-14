@@ -6,7 +6,8 @@
  * 旧电脑文件仍提示在电脑打开；服务器附件点击时独立授权，图片复用看图器，文件使用短期下载地址。
  */
 import { openBrowserAsync } from 'expo-web-browser';
-import { useTheme } from '@/theme';
+import { Text } from '@/components/AppText';
+import { spacing, textStyles, useTheme } from '@/theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, View, useWindowDimensions } from 'react-native';
 import { useTranslation } from 'react-i18next';
@@ -47,8 +48,9 @@ export function BotGroupMessageAttachments({ messageId, attachments, align, onRe
   const { t } = useTranslation();
   const { width } = useWindowDimensions();
   const layout = useMemo(() => buildMessageContentLayout({ screenWidth: width }), [width]);
-  const items = useMemo(() => attachments.map(botGroupAttachmentForDisplay), [attachments]);
+  const items = useMemo(() => attachments.filter(attachment => !attachment.state).map(botGroupAttachmentForDisplay), [attachments]);
   const gallery = useMemo(() => botGroupAttachmentGallery(messageId, items), [items, messageId]);
+  const runs = useMemo(() => botGroupAttachmentRuns(attachments), [attachments]);
   const [openUrl, setOpenUrl] = useState<string | null>(null);
   if (resolveServerMedia) return <ServerAttachments attachments={attachments} align={align} resolve={resolveServerMedia} />;
   const open = (payload: MessagePayload) => {
@@ -59,11 +61,56 @@ export function BotGroupMessageAttachments({ messageId, attachments, align, onRe
     Alert.alert(payload.kind === 'file' ? payload.title : '', t('groupChat.files.onComputer'));
   };
   return <>
-    <AttachmentStrip attachments={items} messageKey={messageId} align={align} layout={layout} onOpen={open}
-      onResolveRemoteMedia={onResolveRemoteMedia} usePreviewState={useState} />
+    {/* Sent order: an attachment the computer has not fetched yet keeps its place with its state. */}
+    {runs.map((run, index) => run.kind === 'pending'
+      ? <PendingAttachment key={run.attachment.id} attachment={run.attachment} align={align} layout={layout} />
+      : <AttachmentStrip key={index === 0 ? messageId : `${messageId}:${index}`} attachments={run.attachments.map(botGroupAttachmentForDisplay)}
+        messageKey={index === 0 ? messageId : `${messageId}:${index}`} align={align} layout={layout} onOpen={open}
+        onResolveRemoteMedia={onResolveRemoteMedia} usePreviewState={useState} />)}
     {openUrl ? <ImageLightbox images={gallery} initialUrl={openUrl} onClose={() => setOpenUrl(null)}
       onResolveRemoteMedia={onResolveRemoteMedia} /> : null}
   </>;
+}
+
+/**
+ * The message's attachments in sent order. `AttachmentStrip` draws its pictures before its
+ * files, so a strip only ever holds neighbours of one display kind; each attachment not on
+ * the computer yet stands alone.
+ */
+export function botGroupAttachmentRuns(attachments: readonly BotGroupAttachment[]): Array<
+  { kind: 'ready'; display: NormalizedAttachment['kind']; attachments: BotGroupAttachment[] }
+  | { kind: 'pending'; attachment: BotGroupAttachment & { state: NonNullable<BotGroupAttachment['state']> } }
+> {
+  const runs: ReturnType<typeof botGroupAttachmentRuns> = [];
+  for (const attachment of attachments) {
+    const { state } = attachment;
+    if (state) { runs.push({ kind: 'pending', attachment: { ...attachment, state } }); continue; }
+    const display = botGroupAttachmentForDisplay(attachment).kind;
+    const last = runs.at(-1);
+    if (last?.kind === 'ready' && last.display === display) last.attachments.push(attachment);
+    else runs.push({ kind: 'ready', display, attachments: [attachment] });
+  }
+  return runs;
+}
+
+/** The same file chip, plus the computer's loading / unavailable state; tapping explains it. */
+function PendingAttachment({ attachment, align, layout }: {
+  attachment: BotGroupAttachment & { state: NonNullable<BotGroupAttachment['state']> };
+  align: 'left' | 'right';
+  layout: ReturnType<typeof buildMessageContentLayout>;
+}) {
+  const { t } = useTranslation();
+  const { colors } = useTheme();
+  const loading = attachment.state === 'loading';
+  const status = t(loading ? 'groupChat.files.loading' : 'groupChat.files.unavailable');
+  return <View accessibilityLabel={`${attachment.name}, ${status}`} style={{ alignItems: align === 'right' ? 'flex-end' : 'flex-start', gap: spacing.xs }}>
+    <AttachmentStrip attachments={[{ kind: 'file', name: attachment.name, previewable: false }]} messageKey={attachment.id} align={align} layout={layout}
+      onOpen={() => Alert.alert(attachment.name, status)} usePreviewState={useState} />
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
+      {loading ? <ActivityIndicator size="small" color={colors.textTertiary} /> : null}
+      <Text style={[textStyles.caption, { color: colors.textTertiary }]}>{status}</Text>
+    </View>
+  </View>;
 }
 
 /** Signed download URLs are acquired on tap and kept only in the open viewer. */

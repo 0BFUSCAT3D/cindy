@@ -818,7 +818,11 @@ describe('group attachments', () => {
     await act(async () => { image.click(); });
     expect(byId('lightbox')?.getAttribute('data-url')).toBe('cindy-media://blobs/abc.png');
     expect(byId('lightbox')?.getAttribute('data-count')).toBe('1');
-    const file = strip.querySelector('[data-testid="attachment.file"]') as HTMLButtonElement;
+    // Sent order: the picture's strip, then the file's own strip (a strip draws pictures first).
+    const strips = [...users[0]!.querySelectorAll('[data-testid="attachmentStrip"]')];
+    expect(strips).toHaveLength(2);
+    expect(strips[0]).toBe(strip);
+    const file = strips[1]!.querySelector('[data-testid="attachment.file"]') as HTMLButtonElement;
     expect(file.textContent).toBe('brief.pdf');
     await act(async () => { file.click(); });
     expect(h.alert).toHaveBeenCalledWith('brief.pdf', 'groupChat.files.onComputer');

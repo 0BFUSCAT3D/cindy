@@ -219,7 +219,9 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
     // Two successes and one failure settle inside one window: one re-read shows their states.
     expect(onChanged.mock.calls.filter(([payload]) => payload.groupId === rooms[0])).toHaveLength(1);
     const settled = await timed(() => service.getGroup(rooms[0]));
-    expect(settled.value.ok && settled.value.group.messages[0].attachments.map(item => item.id)).toEqual([ids[0], ids[2]]);
+    // Every media block keeps its slot in message order; the failed one says so instead of vanishing.
+    expect(settled.value.ok && settled.value.group.messages[0].attachments.map(item => [item.id, item.state ?? 'ready']))
+      .toEqual([[ids[0], 'ready'], [ids[1], 'unavailable'], [ids[2], 'ready']]);
     // A failed file is not retried during its backoff, then is retried by the next read.
     expect(fixture.download).toHaveBeenCalledTimes(3);
     secondFails = false;
@@ -230,7 +232,8 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(onChanged.mock.calls.filter(([payload]) => payload.groupId === rooms[0])).toHaveLength(1);
     const recovered = await timed(() => service.getGroup(rooms[0]));
-    expect(recovered.value.ok && recovered.value.group.messages[0].attachments.map(item => item.id)).toEqual(ids);
+    expect(recovered.value.ok && recovered.value.group.messages[0].attachments.map(item => [item.id, item.state ?? 'ready']))
+      .toEqual(ids.map(mediaId => [mediaId, 'ready']));
   });
 
   it('notifies again for an attachment that settles after a coalesced re-read was sent', async () => {
@@ -283,7 +286,10 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
       expect(Math.max(...notices)).toBeGreaterThanOrEqual(Math.max(...settled));
       expect(notices.length).toBeLessThan(settled.length);
       const read = await timed(() => service.getGroup(rooms[0]));
-      expect(read.value.ok && read.value.group.messages[0].attachments).toHaveLength(lastFails ? 7 : 8);
+      // Eight slots either way; a failed last download is shown as unavailable, not dropped.
+      const attachments = read.value.ok ? read.value.group.messages[0].attachments : [];
+      expect(attachments).toHaveLength(8);
+      expect(attachments.map(item => item.state ?? 'ready')).toEqual([...Array(7).fill('ready'), lastFails ? 'unavailable' : 'ready']);
     });
 
     it('re-reads again when a download settles while the previous refresh is still in flight', async () => {
