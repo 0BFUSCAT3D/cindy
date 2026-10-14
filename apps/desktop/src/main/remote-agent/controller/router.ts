@@ -31,6 +31,13 @@ export interface ReverseHttpRouterDeps {
 const FORWARD_REQUEST_HEADERS = new Set(['content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id']);
 const FORWARD_RESPONSE_HEADERS = new Set(['content-type', 'mcp-session-id', 'mcp-protocol-version']);
 
+/** 本机工具已有的路径参数；兼容 MCP snake_case 与宿主 camelCase，正文和插件业务参数不做文本替换。 */
+const PATH_ARGUMENTS = new Set([
+  'path', 'paths', 'filepath', 'filepaths', 'directory', 'directories', 'dir', 'dirs',
+  'workingdir', 'workdir', 'cwd', 'root', 'libraryroot', 'sourcepath', 'destinationpath',
+  'savedir', 'outpath', 'htmlpath', 'imagepath', 'iconsource', 'attachments', 'extradirs', 'writabledirs',
+]);
+
 function json(status: number, value: unknown): Extract<RemoteAgentReply, { type: 'http' }> {
   return {
     type: 'http',
@@ -66,7 +73,7 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
   const mapArguments = (value: unknown, key = ''): unknown => {
     if (typeof value === 'string') {
       if (/^(?:cmd|command)$/.test(key)) return workspace.mapCommand(value, resolveExecutorShell().dialect);
-      if (/^(?:path|filePath|file_path|directory|workingDir|cwd|root|libraryRoot|sourcePath|destinationPath)$/i.test(key)) return workspace.mapAlias(value);
+      if (PATH_ARGUMENTS.has(key.replace(/_/g, '').toLowerCase())) return workspace.mapAlias(value);
       return value;
     }
     if (Array.isArray(value)) return value.map((item) => mapArguments(item, key));

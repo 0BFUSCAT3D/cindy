@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { registerGetCurrentSessionIdTool, XdtHelperToolRegistry } from '@cindy/mcps';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { mapExecServerParams, mapExecServerResult, execServerActions } from '../../controller/execServerRelay';
 import { RemoteExecutor } from '../executor';
@@ -25,6 +27,39 @@ function setup(virtual: string) {
 }
 
 describe('virtual workspace', () => {
+  it.each([
+    { real: 'C:\\Users\\local\\real project', virtual: '/home/agent/workspace', realPath: path.win32, agentPath: path.posix },
+    { real: '/Users/local/real project', virtual: 'C:\\Agent\\workspace', realPath: path.posix, agentPath: path.win32 },
+  ])('round-trips serialized JSON paths from $real to $virtual without changing its format', ({ real, virtual, realPath, agentPath }) => {
+    const document = (directory: string, native: typeof path.win32) => [
+      '{',
+      '  "working_dir": ' + JSON.stringify(directory) + ',',
+      '  "file": ' + JSON.stringify(native.join(directory, 'src', 'a.ts')) + ',',
+      '  "spaced_file": ' + JSON.stringify(native.join(directory, '目录 空格', 'skill', 'probe.cjs')) + ',',
+      '  "encoded": ' + JSON.stringify(JSON.stringify({ cwd: directory })) + ',',
+      '  "untouched": "\\u4e2d\\u6587",',
+      '  "number": 1.00e0',
+      '}',
+      '',
+    ].join('\n');
+    const original = document(real, realPath);
+    const projected = projectPathText(original, [{ from: real, to: virtual }]);
+    expect(projected).toBe(document(virtual, agentPath));
+    expect(JSON.parse(JSON.parse(projected).encoded).cwd).toBe(virtual);
+    expect(projectPathText(projected, [{ from: virtual, to: real }])).toBe(original);
+    const log = 'Starting script\r\n' + JSON.stringify({ cwd: real }) + '\r\n' + JSON.stringify({ cwd: real }) + '\r\n';
+    const projectedLog = 'Starting script\r\n' + JSON.stringify({ cwd: virtual }) + '\r\n' + JSON.stringify({ cwd: virtual }) + '\r\n';
+    expect(projectPathText(log, [{ from: real, to: virtual }])).toBe(projectedLog);
+    expect(projectPathText(projectedLog, [{ from: virtual, to: real }])).toBe(log);
+    const nativeScript = realPath.join(real, '目录 空格', 'skill', 'probe.cjs');
+    const virtualScript = agentPath.join(virtual, '目录 空格', 'skill', 'probe.cjs');
+    expect(projectPathText(nativeScript, [{ from: real, to: virtual }])).toBe(virtualScript);
+    expect(projectPathText(nativeScript + '\r\n', [{ from: real, to: virtual }])).toBe(virtualScript + '\r\n');
+    expect(projectPathText(real + realPath.sep, [{ from: real, to: virtual }])).toBe(virtual + agentPath.sep);
+    expect(projectPathText('Cannot load "' + nativeScript + '"', [{ from: real, to: virtual }]))
+      .toBe('Cannot load "' + virtualScript + '"');
+  });
+
   it.each(['/Users/agent/workspace', '/home/agent/workspace', 'C:\\Agent\\workspace'])('round-trips paths from %s and keeps authorization on real paths', async (virtual) => {
     const { project, workspace, executor, gate } = setup(virtual);
     const api = virtual.startsWith('C:') ? path.win32 : path.posix;
@@ -55,6 +90,8 @@ describe('virtual workspace', () => {
       .toBe(';`/virtual/project`? /virtual/project&x');
     const { workspace, project, executor } = setup('/Users/agent/workspace');
     expect(workspace.mapCommand('cd "/Users/agent/workspace"')).toContain(project.replace(/\\/g, '/'));
+    expect(projectPathText('cat "/real/project/src/a.ts" && echo "/other/file"', [{ from: '/real/project', to: 'C:\\Agent\\workspace' }]))
+      .toBe('cat "C:\\Agent\\workspace\\src\\a.ts" && echo "/other/file"');
     expect(workspace.mapTextForAgent(project)).toBe('/Users/agent/workspace');
     if (process.platform === 'win32') {
       const bashPath = '/' + project[0].toLowerCase() + project.slice(2).replace(/\\/g, '/');
@@ -76,6 +113,16 @@ describe('virtual workspace', () => {
     expect(workspace.mapCommand('node "/Users/agent/workspace/x.mjs" https://x/pull/1'))
       .toBe(`node "${real}/x.mjs" https://x/pull/1`);
     expect(workspace.mapCommand("echo '/Users/agent/workspace'")).toBe(`echo '${real}'`);
+    await executor.close();
+  });
+
+  it('maps the complete quoted Windows script path after a directory containing spaces', async () => {
+    const virtual = 'C:\\Agent\\workspace';
+    const { workspace, project, executor } = setup(virtual);
+    const script = path.win32.join(virtual, '目录 空格', 'skill', 'probe.cjs');
+    const mapped = project.replace(/\\/g, '/') + '/目录 空格/skill/probe.cjs';
+    expect(workspace.mapCommand('node "' + script + '" && echo "/other/file"'))
+      .toBe('node "' + mapped + '" && echo "/other/file"');
     await executor.close();
   });
 
@@ -122,5 +169,134 @@ describe('virtual workspace', () => {
       }
     }
     await executor.close();
+  });
+
+  it.each([
+    { virtual: '/Users/agent/workspace', sse: false },
+    { virtual: '/Users/agent/workspace', sse: true },
+    { virtual: '/home/agent/workspace', sse: false },
+    { virtual: '/home/agent/workspace', sse: true },
+    { virtual: 'C:\\Agent\\workspace', sse: false },
+    { virtual: 'C:\\Agent\\workspace', sse: true },
+  ])('returns a usable current directory to the Agent at $virtual (SSE=$sse)', async ({ virtual, sse }) => {
+    const { workspace, project, executor, gate } = setup(virtual);
+    const context = { sessionId: 'local-task', agentKind: 'codex' as const, workingDir: project };
+    const registry = new XdtHelperToolRegistry();
+    registerGetCurrentSessionIdTool(registry, { getSessionContext: () => context });
+    let receivedDirectory: string | undefined;
+    registry.register({
+      name: 'workspace_probe', category: 'cindy', description: 'Read the current directory on the task computer.',
+      inputShape: { working_dir: z.string() },
+      handler: async ({ working_dir }) => {
+        receivedDirectory = working_dir;
+        expect(gate.authorize({ kind: 'read', path: working_dir }).ok).toBe(true);
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ok: fs.statSync(working_dir).isDirectory(), working_dir,
+        }) }] };
+      },
+    });
+    const router = createReverseHttpRouter({
+      executor,
+      mcpTarget: () => ({ url: 'http://unused', headers: {} }),
+      fetch: async (_url, options) => {
+        const request = JSON.parse(Buffer.from(options!.body as Uint8Array).toString());
+        const result = await registry.call(request.params.arguments.name, request.params.arguments.args);
+        const message = JSON.stringify({ jsonrpc: '2.0', id: request.id, result });
+        return new Response(sse ? 'data: ' + message + '\n\n' : message, {
+          headers: { 'content-type': sse ? 'text/event-stream' : 'application/json' },
+        });
+      },
+    });
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const reply = await router({ method: 'POST', path: '/mcp/cindy_helper', headers: [], body: Buffer.from(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: { name, args } },
+      })).toString('base64') });
+      if (reply.type !== 'http') throw new Error('expected MCP HTTP reply');
+      const body = Buffer.from(reply.body!, 'base64').toString();
+      const message = JSON.parse(sse ? body.split('\n')[0].slice(6) : body);
+      expect(message.result.isError).not.toBe(true);
+      return JSON.parse(message.result.content[0].text);
+    };
+    try {
+      const current = await call('get_current_session_id', {});
+      expect(current).toEqual({ ok: true, session_id: 'local-task', agent_kind: 'codex', working_dir: virtual });
+      expect(await call('workspace_probe', { working_dir: current.working_dir })).toEqual({ ok: true, working_dir: virtual });
+      expect(receivedDirectory).toBe(project);
+      expect(context.workingDir).toBe(project);
+      expect(workspace.workingDir).toBe(project);
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it('restores helper, plugin and document path parameters while preserving their content and media identifiers', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { project, executor } = setup(virtual);
+    let received: Record<string, unknown> | undefined;
+    const content = JSON.stringify({ path: virtual });
+    const router = createReverseHttpRouter({
+      executor,
+      mcpTarget: () => ({ url: 'http://unused', headers: {} }),
+      fetch: async (_url, options) => {
+        received = JSON.parse(Buffer.from(options!.body as Uint8Array).toString()).params.arguments;
+        return new Response('{}', { headers: { 'content-type': 'application/json' } });
+      },
+    });
+    try {
+      await router({ method: 'POST', path: '/mcp/cindy', headers: [], body: Buffer.from(JSON.stringify({
+        method: 'tools/call', params: { name: 'example', arguments: {
+          workdir: virtual, dir: virtual, save_dir: virtual,
+          extra_dirs: [virtual], writableDirs: [virtual],
+          attachments: [virtual + '/image.png', 'cindy-media://blobs/abc.png', 'xdt-image://task/image.png'],
+          args: { working_dir: virtual, file_path: virtual + '/file.txt', outPath: virtual + '/out.pdf', htmlPath: virtual + '/in.html', imagePath: virtual + '/image.png' },
+          workers: [{ working_dir: virtual }],
+          content, text: virtual,
+        } },
+      })).toString('base64') });
+      expect(received).toEqual({
+        workdir: project, dir: project, save_dir: project,
+        extra_dirs: [project], writableDirs: [project],
+        attachments: [path.join(project, 'image.png'), 'cindy-media://blobs/abc.png', 'xdt-image://task/image.png'],
+        args: { working_dir: project, file_path: path.join(project, 'file.txt'), outPath: path.join(project, 'out.pdf'), htmlPath: path.join(project, 'in.html'), imagePath: path.join(project, 'image.png') },
+        workers: [{ working_dir: project }],
+        content, text: virtual,
+      });
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.each(['/Users/agent/workspace', 'C:\\Agent\\workspace'])('runs a Skill script in the real directory and returns JSON paths at %s', async (virtual) => {
+    const { project, executor } = setup(virtual);
+    const agentPath = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const fixtureDir = path.join(project, '目录 空格');
+    const virtualDir = agentPath.join(virtual, '目录 空格');
+    const script = path.join(fixtureDir, 'skill', 'probe.cjs');
+    const virtualScript = agentPath.join(virtualDir, 'skill', 'probe.cjs');
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, [
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'const result = { cwd: process.cwd(), script: __filename, argument: path.resolve(process.argv[2]) };',
+      'fs.writeFileSync("native-result.json", JSON.stringify(result));',
+      'console.log("Running Skill script");',
+      'console.log(JSON.stringify(result));',
+    ].join('\n'));
+    try {
+      const result = await executor.handle('exec.run', {
+        command: 'node "' + virtualScript + '" "' + virtual + '"', cwd: virtualDir,
+      }) as { output: string; exitCode: number };
+      expect(result.exitCode).toBe(0);
+      const output = Buffer.from(result.output, 'base64').toString();
+      const lines = output.trim().split(/\r?\n/);
+      expect(lines[0]).toBe('Running Skill script');
+      expect(JSON.parse(lines[1])).toEqual({ cwd: virtualDir, script: virtualScript, argument: virtual });
+      const nativeResult = { cwd: fixtureDir, script, argument: project };
+      expect(JSON.parse(fs.readFileSync(path.join(fixtureDir, 'native-result.json'), 'utf8'))).toEqual(nativeResult);
+      await executor.handle('fs.write', { path: agentPath.join(virtualDir, 'returned.json'), data: Buffer.from(lines[1]).toString('base64') });
+      expect(JSON.parse(fs.readFileSync(path.join(fixtureDir, 'returned.json'), 'utf8'))).toEqual(nativeResult);
+    } finally {
+      await executor.close();
+    }
   });
 });

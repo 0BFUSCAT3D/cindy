@@ -70,22 +70,57 @@ function stripAliasPrefix(input: string, from: string): string | null {
   return null;
 }
 
+/** 引号中的完整路径允许空格；普通文本仍以 shell 分隔符为边界。 */
+function pathTextPattern(aliases: readonly ExecutorPathAlias[]): RegExp {
+  const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
+    .map((part) => part.replace(/[.*+?^$()|[\]{}]/g, '\\$&')).join('[/\\\\]'));
+  const prefix = '(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])';
+  return new RegExp('([\\x27\\x22])' + prefix + '([/\\\\][^\\r\\n]*?|)\\1|'
+    + '(^|[^A-Za-z0-9_])' + prefix + '([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)', 'gi');
+}
+
 /** 对已知目录做单次双向投影，最长前缀先匹配，防止替换结果再次被短祖先别名改写。 */
 export function projectPathText(text: string, aliases: readonly ExecutorPathAlias[]): string {
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
     .sort((a, b) => b.from.length - a.from.length);
   if (!entries.length) return text;
-  const patterns = entries.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-    .map((part) => part.replace(/[.*+?^$()|[\]{}]/g, '\\$&')).join('[/\\\\]'));
-  // 左右都要求路径段边界，避免修改 longer/project2 或文本里的同前缀标识符。
-  // 这里的边界覆盖 shell 的 ;、反引号、?、& 等分隔符。
-  const pattern = new RegExp('(^|[^A-Za-z0-9_])(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])([/\\\\][^\\s\\x60;:|&)<>}\\]]*|)', 'gi');
-  return text.replace(pattern, (match: string, left: string, prefix: string, suffix: string) => {
-    const alias = entries.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
-    if (!alias) return match;
-    const separator = alias.to.includes('\\') ? '\\' : '/';
-    return left + alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-  });
+  const pattern = pathTextPattern(entries);
+  const project = (value: string): string => {
+    // MCP 的 text 常嵌一层 JSON；Skill/命令输出和文本文件也可能是 JSON。
+    // 先解码字符串再投影，才能识别 Windows 转义路径；只改变化的字符串 token，保留格式与其它字节。
+    if (/^\s*[{["]/.test(value)) {
+      let isJson = false;
+      try { JSON.parse(value); isJson = true; } catch { /* 普通文本继续按路径边界投影。 */ }
+      if (isJson) {
+        return value.replace(/"(?:\\[\s\S]|[^"\\])*"/g, (literal) => {
+          const decoded = JSON.parse(literal) as string;
+          const projected = project(decoded);
+          return projected === decoded ? literal : JSON.stringify(projected);
+        });
+      }
+    }
+    // 脚本可能先打印日志再逐行输出 JSON；保留换行格式，逐行应用同一套转义处理。
+    if (value.includes('\n')) return value.split('\n').map(project).join('\n');
+    // 整个字符串就是路径时(含已解码的 JSON 字符串)，空格也属于路径，不能截断后续分隔符。
+    const lineEnd = value.endsWith('\r') ? '\r' : '';
+    const pathValue = lineEnd ? value.slice(0, -1) : value;
+    if (!/[\r\x27\x22\x60;|&<>]/.test(pathValue)) {
+      for (const alias of entries) {
+        if (stripAliasPrefix(pathValue, alias.from) === null) continue;
+        const separator = alias.to.includes('\\') ? '\\' : '/';
+        const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
+        return alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator) + lineEnd;
+      }
+    }
+    return value.replace(pattern, (match: string, quoted: string, quotedPrefix: string, quotedSuffix: string, left: string, prefix: string, suffix: string) => {
+      if (quoted) { left = quoted; prefix = quotedPrefix; suffix = quotedSuffix; }
+      const alias = entries.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
+      if (!alias) return match;
+      const separator = alias.to.includes('\\') ? '\\' : '/';
+      return left + alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator) + (quoted || '');
+    });
+  };
+  return project(text);
 }
 
 export class ExecutorWorkspace {
@@ -244,11 +279,9 @@ export class ExecutorWorkspace {
     })).filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
       .sort((a, b) => b.from.length - a.from.length);
     if (!aliases.length) return command;
-    const patterns = aliases.map((alias) => alias.from.replace(/[\\/]+$/, '').split(/[\\/]/)
-      .map((part) => part.replace(/[.*+?^$()|[\\]{}]/g, '\\$&')).join('[/\\\\]'));
     // 路径尾部遇到引号即止：闭合引号属于外层 shell 语法，吞进路径会被按引号上下文转义
     // ('…mjs' → '…mjs'\'')，留下未闭合的引号。
-    const pattern = new RegExp('(^|[^A-Za-z0-9_])(' + patterns.join('|') + ')(?=$|[^A-Za-z0-9_])([/\\\\][^\\s\\x60\\x27\\x22;:|&)<>}\\]]*|)', 'gi');
+    const pattern = pathTextPattern(aliases);
     const quoteContext = (input: string, end: number): 'none' | 'single' | 'double' => {
       let quote: 'none' | 'single' | 'double' = 'none';
       let escaped = false;
@@ -275,12 +308,13 @@ export class ExecutorWorkspace {
         ? "'" + value.replace(/'/g, "'\\''") + "'"
         : value;
     };
-    return command.replace(pattern, (match: string, left: string, prefix: string, suffix: string, offset: number, input: string) => {
+    return command.replace(pattern, (match: string, quoted: string, quotedPrefix: string, quotedSuffix: string, left: string, prefix: string, suffix: string, offset: number, input: string) => {
+      if (quoted) { left = quoted; prefix = quotedPrefix; suffix = quotedSuffix; }
       const alias = aliases.find((entry) => stripAliasPrefix(prefix, entry.from) === '');
       if (!alias) return match;
       const separator = alias.to.includes('\\') ? '\\' : '/';
       const target = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-      return left + quote(target, quoteContext(input, offset + left.length));
+      return left + quote(target, quoteContext(input, offset + left.length)) + (quoted || '');
     });
   }
 
