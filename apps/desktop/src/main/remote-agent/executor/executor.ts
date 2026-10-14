@@ -186,6 +186,8 @@ export class RemoteExecutor {
       this.gate.recordCredentialExemption(action);
       return true;
     }
+    // 核实需要时间：期间请求被取消就不再排队(abort 事件不会重放给之后登记的监听)。
+    if (gitCheck && (this.closed || signal?.aborted || permissionGeneration !== this.permissionGeneration)) return false;
     // 同一任务可能并行调用工具。只排队确认，不排队执行；前一张卡建立任务授权后，
     // 后续请求重新检查，避免已经弹出的多张卡仍逐一等待用户回答。
     // 排队位置要等前一个位置放行、且自己的卡处理完才放行。

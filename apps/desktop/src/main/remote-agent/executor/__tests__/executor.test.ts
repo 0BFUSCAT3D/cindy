@@ -1225,6 +1225,34 @@ describe('shared provider credentials', () => {
     }
   });
 
+  it('does not queue a git command cancelled while it was being verified', async () => {
+    let finishCheck!: (safe: boolean) => void;
+    const gitCredentials = {
+      provesSafe: () => new Promise<boolean>((resolve) => { finishCheck = resolve; }),
+    } as unknown as GitCredentialHistory;
+    let answer!: (result: ExecutorConfirmation) => void;
+    const asked = vi.fn(() => new Promise<ExecutorConfirmation>((resolve) => { answer = resolve; }));
+    const { executor } = sharedExecutor('full', asked, gitCredentials);
+    const env: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    const git: ExecutorAction = { kind: 'exec', command: 'git remote show origin', cwd: project };
+    const pending = executor.confirm(env);
+    const abort = new AbortController();
+    try {
+      const checking = executor.confirm(git, abort.signal);
+      abort.abort();
+      finishCheck(false);
+      // 第一张卡还没回答：已取消的请求不能排在它后面等。
+      expect(await checking).toBe(false);
+      expect(asked).toHaveBeenCalledTimes(1);
+      answer(true);
+      expect(await pending).toBe(true);
+    } finally {
+      await executor.close();
+      answer(false);
+      await pending;
+    }
+  });
+
   it('does not queue a verified git command behind an unanswered credential card', async () => {
     const gitCredentials = {
       provesSafe: async () => true,
