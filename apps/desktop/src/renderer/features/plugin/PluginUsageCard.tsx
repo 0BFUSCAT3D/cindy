@@ -73,11 +73,11 @@ export function PluginUsageCard({
     });
   return (
     <section
-      className="mt-6 w-full max-w-[480px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-5"
+      className="mt-6 min-w-0 w-full rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-4"
       aria-labelledby={titleId}
     >
       <div className="flex items-center justify-between gap-3">
-        <h2 id={titleId} className="text-13 font-medium leading-5 text-[var(--text-secondary)]">
+        <h2 id={titleId} className="min-w-0 text-14 font-medium leading-[var(--text-sm-line-height)] text-[var(--text-primary)]">
           <Tip text={t('settings.ghosts.usage.explanation')}>
             <button
               type="button"
@@ -99,19 +99,19 @@ export function PluginUsageCard({
             loading={clearing}
             onClick={() => void clear()}
             aria-label={t('settings.ghosts.usage.clear')}
-            className="-mr-3 shrink-0"
+            className="shrink-0"
           >
             {t('settings.ghosts.usage.clearAction')}
           </Button>
         ) : null}
       </div>
       {state === 'loading' ? (
-        <p aria-live="polite" className="mt-3 text-13 leading-5 text-[var(--text-secondary)]">
+        <p aria-live="polite" className="mt-3 text-14 leading-[var(--text-sm-line-height)] text-[var(--text-secondary)]">
           {t('settings.ghosts.usage.loading')}
         </p>
       ) : state === 'failed' ? (
         <div className="mt-3 flex items-center justify-between gap-3">
-          <p className="text-13 leading-5 text-[var(--text-secondary)]">
+          <p className="min-w-0 text-14 leading-[var(--text-sm-line-height)] text-[var(--text-secondary)]">
             {t('settings.ghosts.usage.unavailable')}
           </p>
           <Button variant="secondary" tone="quiet" size="sm" onClick={() => void refresh()}>
@@ -119,22 +119,22 @@ export function PluginUsageCard({
           </Button>
         </div>
       ) : summary ? (
-        <dl className="mt-4 grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-5">
+        <dl className="mt-3 grid grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4">
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+            <dt className="text-12 leading-[var(--text-xs-line-height)] text-[var(--text-secondary)]">
               {t('settings.ghosts.usage.lastUsed')}
             </dt>
-            <dd className="mt-2 text-20 font-medium leading-8 tabular-nums text-[var(--text-primary)]">
+            <dd className="mt-1 break-words text-14 font-normal leading-[var(--text-sm-line-height)] tabular-nums text-[var(--text-primary)]">
               {summary.lastUsedAt === null
                 ? t('settings.ghosts.usage.never')
                 : time(summary.lastUsedAt)}
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+            <dt className="text-12 leading-[var(--text-xs-line-height)] text-[var(--text-secondary)]">
               {t('settings.ghosts.usage.last7Days')}
             </dt>
-            <dd className="mt-2 break-words text-24 font-medium leading-8 tabular-nums text-[var(--text-primary)]">
+            <dd className="mt-1 break-words text-14 font-normal leading-[var(--text-sm-line-height)] tabular-nums text-[var(--text-primary)]">
               {summary.callsLast7Days.toLocaleString(i18n.language)}
             </dd>
           </div>
