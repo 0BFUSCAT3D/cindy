@@ -320,9 +320,14 @@ describe('remote agent round trip', () => {
     });
     const sessionId = `grant-${randomUUID()}`;
     const full = { sessionId, workingDir: project, model: 'm', permissionMode: 'bypassPermissions' as const };
+    let skip = false;
     const depsFor = (deviceId: string) => ({
       ...makeDeps(host),
-      credentialConsent: { description: 'Only this task.', grant: credentialGrantFor(sessionId, deviceId) },
+      credentialConsent: {
+        description: 'Only this task.',
+        skip: () => skip,
+        grant: credentialGrantFor(sessionId, deviceId),
+      },
     });
     let localConfirmations = 0;
     // 打开一次 Agent、跑一轮、关闭(相当于 Orca Worker 一轮结束后被回收)。
@@ -351,6 +356,13 @@ describe('remote agent round trip', () => {
       await openRunClose(full);
       expect(localConfirmations).toBe(1);
       // 同一任务、同一分享、权限档未变：重建后不再确认。
+      await openRunClose(full);
+      expect(localConfirmations).toBe(1);
+      // 重建期间暂时打开分享级信任：恢复任务级授权不能因此丢失。
+      skip = true;
+      await openRunClose(full);
+      expect(localConfirmations).toBe(1);
+      skip = false;
       await openRunClose(full);
       expect(localConfirmations).toBe(1);
       // 另一个分享不沿用。

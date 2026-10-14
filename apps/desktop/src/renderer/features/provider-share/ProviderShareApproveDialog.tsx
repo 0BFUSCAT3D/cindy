@@ -43,6 +43,9 @@ export function ProviderShareApproveDialog({
   const claudeEmail = sharesClaudeLoginEmail(
     (hostDeviceId ? remote.providers : providers).find((view) => view.id === share.providerId),
   );
+  // 同账号另一台电脑的目录首帧可能还是空的；在确认供应商类型前不能允许同意，
+  // 否则 Claude 订阅的邮箱告知可能被漏掉。错误也保持阻断，避免未知状态被当成非 Claude。
+  const providerClassificationReady = !hostDeviceId || (!remote.loading && remote.error === null);
 
   const decide = async (action: 'approve' | 'reject') => {
     if (busy) return;
@@ -109,7 +112,7 @@ export function ProviderShareApproveDialog({
           palette="confirmation"
           size="lg"
           loading={busy === 'approve'}
-          disabled={busy !== null}
+          disabled={busy !== null || !providerClassificationReady}
           onClick={() => void decide('approve')}
         >
           {t('providerShare.approve.approve')}

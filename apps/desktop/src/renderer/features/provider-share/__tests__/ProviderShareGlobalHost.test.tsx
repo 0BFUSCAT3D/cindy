@@ -28,7 +28,7 @@ vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => bus.auth }));
 vi.mock('@/lib/remoteCatalogSnapshot', () => ({ refreshRemoteCatalogSnapshot: vi.fn(async () => undefined) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({
   getCachedDeviceProviders: () => null,
-  useDeviceProviders: () => ({ providers: [], loading: false, error: null, unsupported: false }),
+  useDeviceProviders: () => remoteCatalog,
 }));
 vi.mock('@/features/cc-agent/lib/genericNewMakerRouteState', () => ({
   makeGenericNewMakerRouteState: () => ({ workspacePrompt: 'generic' }),
@@ -62,6 +62,13 @@ const bus = vi.hoisted(() => ({
   manage: new Set<(event: { providerId: string }) => void>(),
 }));
 
+const remoteCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+  loading: false,
+  error: null as string | null,
+  unsupported: false,
+}));
+
 function listen<T>(set: Set<T>) {
   return (cb: T) => {
     set.add(cb);
@@ -92,6 +99,10 @@ beforeEach(() => {
   bus.requested.clear();
   bus.settled.clear();
   bus.manage.clear();
+  remoteCatalog.providers = [];
+  remoteCatalog.loading = false;
+  remoteCatalog.error = null;
+  remoteCatalog.unsupported = false;
   currentOwner = ownerState();
   bus.command.mockImplementation(async (command: { action: string }) => {
     if (command.action === 'owned') return currentOwner;
@@ -298,6 +309,34 @@ describe('ProviderShareGlobalHost', () => {
       request: { action: 'manage-share', command: { action: 'approve', requestId: 'req-7' } },
     });
     expect(bus.command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
+  });
+
+  it('blocks approval until the remote provider directory classifies the provider', async () => {
+    remoteCatalog.loading = true;
+    currentOwner = {
+      ready: true,
+      shares: [],
+      watchedRequests: [{
+        request,
+        share: { shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic' },
+        hostDeviceId: 'host',
+      }],
+    };
+    const view = renderHost();
+    await screen.findByTestId('provider-share-approve-dialog');
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(true);
+
+    remoteCatalog.loading = false;
+    remoteCatalog.providers = [{ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } }];
+    view.rerender(
+      <MemoryRouter initialEntries={['/cc-agent']}>
+        <ProviderShareGlobalHost />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 
   it('opens the management page from a notification click', async () => {
