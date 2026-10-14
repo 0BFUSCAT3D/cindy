@@ -66,8 +66,8 @@ import {
   configureProviderShareGuestPrefs,
   invalidateProviderShareGuestPrefsCache,
   isProviderShareCredentialConsentSkipped,
-  setProviderShareCredentialConsent,
 } from './providerShareGuestPrefs.js';
+import { setProviderShareCredentialConsentFromIpc } from './providerShareGuestPrefsIpc.js';
 import {
   applyLocalMemberChange,
   applyLocalRequestDecision,
@@ -437,7 +437,7 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
       // 只能对现在还在名单里的分享设置；分享的区域记下来，清理时按已确认区域判断。
       const share = findReceivedShare(command.shareId);
       if (!share) throwIpcError('NOT_FOUND', 'This shared provider is no longer available');
-      await setProviderShareCredentialConsent(command.shareId, share.owner.region, command.skip);
+      await setProviderShareCredentialConsentFromIpc(command.shareId, share.owner.region, command.skip);
       return { skip: isProviderShareCredentialConsentSkipped(command.shareId) };
     }
   }

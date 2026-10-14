@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createIpcError } from '../../../shared/ipc-errors.js';
+import { setProviderShareCredentialConsentFromIpc } from '../providerShareGuestPrefsIpc.js';
 
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn() }) }));
 
@@ -188,6 +190,48 @@ describe('provider share guest prefs', () => {
     expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
 
     invalidateProviderShareGuestPrefsCache();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+  });
+});
+
+describe('provider share guest prefs IPC boundary', () => {
+  it('saves and revokes trust through the IPC write path', async () => {
+    await setProviderShareCredentialConsentFromIpc('share-1', 'global', true);
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+    await setProviderShareCredentialConsentFromIpc('share-1', 'global', false);
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+  });
+
+  it.each(['mkdir', 'writeFile', 'rename'] as const)('hides filesystem paths when %s fails', async (operation) => {
+    const leakedPath = path.join(root, 'owners', owner, 'provider-share-guest-prefs.json.123.tmp');
+    const original = Object.assign(new Error(`EACCES: permission denied, ${operation} '${leakedPath}'`), { code: 'EACCES' });
+    vi.spyOn(fsp, operation).mockRejectedValueOnce(original);
+
+    const failure = await setProviderShareCredentialConsentFromIpc('share-1', 'global', true).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({
+      code: 'INTERNAL',
+      message: '[INTERNAL] Failed to save provider share credential consent',
+    });
+    expect(String(failure)).not.toContain(leakedPath);
+    expect(String(failure)).not.toContain('EACCES');
+    expect(failure).not.toHaveProperty('cause');
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+
+    // IPC 失败不能毒化串行写队列；用户下一次保存仍可成功。
+    await setProviderShareCredentialConsentFromIpc('share-1', 'global', true);
+    restart();
+    expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+  });
+
+  it('preserves an existing IPC error', async () => {
+    const original = createIpcError('PRECONDITION_FAILED', 'Provider sharing is not ready');
+    vi.spyOn(fsp, 'mkdir').mockRejectedValueOnce(original);
+
+    await expect(setProviderShareCredentialConsentFromIpc('share-1', 'global', true)).rejects.toBe(original);
     expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
   });
 });
