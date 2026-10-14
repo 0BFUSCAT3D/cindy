@@ -409,7 +409,7 @@ describe('botGroupOutbox', () => {
         usable('s1', 'a.png'),
         { ...mine[1], id: 's2' },
       ]);
-      // Older servers leave a copy out until it downloads: never show it missing or twice.
+      // Main leaves a copy out until it downloads: never show it missing or twice.
       expect(mergeBotGroupLocalAttachments([usable('s2', 'b.png')], mine)).toEqual([mine[0], usable('s2', 'b.png')]);
       // A burned-in image may come back renamed; equal counts pair the rest in order.
       expect(mergeBotGroupLocalAttachments([usable('s1', 'a-annotated.png'), usable('s2', 'b.png')], mine)).toEqual([
@@ -457,10 +457,25 @@ describe('botGroupOutbox', () => {
       expect(mergeBotGroupLocalAttachments(
         [placeholder('s1', 'photo-annotated.png'), usable('s2', 'photo.png')], mine,
       )).toEqual([{ ...mine[0], id: 's1' }, usable('s2', 'photo.png')]);
-      // Copies listed one by one as they download (older servers).
+      // Copies listed one by one as they download.
       expect(mergeBotGroupLocalAttachments([usable('s2', 'photo.png')], mine)).toEqual([mine[0], usable('s2', 'photo.png')]);
       expect(mergeBotGroupLocalAttachments([usable('s1', 'photo-annotated.png')], mine)).toEqual([
         usable('s1', 'photo-annotated.png'), mine[1],
+      ]);
+    });
+
+    it('keeps the local previews of files that share a name until every copy is listed', () => {
+      // Two different photo.png and a.png; downloads finish in any order.
+      const mine = [local('l1', 'photo.png'), local('l2', 'photo.png'), local('l3', 'a.png')];
+      // Only the second photo.png is in: which one it is cannot be told, so neither is replaced.
+      expect(mergeBotGroupLocalAttachments([usable('s2', 'photo.png')], mine)).toEqual(mine);
+      // A unique name still pairs on its own.
+      expect(mergeBotGroupLocalAttachments([usable('s2', 'photo.png'), usable('s3', 'a.png')], mine)).toEqual([
+        mine[0], mine[1], usable('s3', 'a.png'),
+      ]);
+      // Every copy listed: the send order decides.
+      expect(mergeBotGroupLocalAttachments([usable('s1', 'photo.png'), usable('s2', 'photo.png'), usable('s3', 'a.png')], mine)).toEqual([
+        usable('s1', 'photo.png'), usable('s2', 'photo.png'), usable('s3', 'a.png'),
       ]);
     });
   });

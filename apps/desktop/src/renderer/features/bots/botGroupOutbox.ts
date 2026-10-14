@@ -15,7 +15,7 @@
  *   仍以 messageId 为准。
  * - 附件：临时消息从输入的附件生成列表；带手绘标注的图片烧录完成后改用烧录后的本地预览
  *   （同一份烧录结果也用于提交与重试，不重复烧录；放回输入框的仍是带笔迹的原件）。真实消息到了
- *   而服务器副本还没下载好（没有 url / path，或旧版干脆还没出现在列表里）时，按同一 messageId
+ *   而服务器副本还没下载好（没有 url / path，或还没出现在列表里——main 只列已下载的副本）时，按同一 messageId
  *   把本地预览接到真实消息上，直到副本可用（见 `mergeBotGroupLocalAttachments`）。
  * - 离开输入框的附件不再受草稿保护：发件箱条目持有的图片地址（含标注原图与烧录副本）登记进
  *   存储清理的保护清单，条目移除时同步撤下；已确认消息的本地预览不登记——发送时 main 已在群的
@@ -430,26 +430,21 @@ function isUsable(attachment: BotGroupAttachment): boolean {
 
 /**
  * Pair the server's attachments of a message with the local ones it was sent with. The server
- * keeps the order they were sent in, so equal counts pair by position. An older server lists a
- * copy only once it is downloaded; then pair by name in that same order, so two files with the
- * same name never swap. Local names are the burned-in ones (see `prepared`), as on the server.
- * Returns, for each local attachment, the server copy it matches (or undefined), plus the
- * server attachments nothing local matched.
+ * keeps the order they were sent in, so equal counts pair by position. Main lists a copy only
+ * once it is downloaded, and downloads finish in any order: then a name that is unique among
+ * the local files pairs by name, while files sharing a name cannot be told apart and keep their
+ * local previews (their server copies wait unshown) until the counts match. Local names are the
+ * burned-in ones (see `prepared`), as on the server. Returns, for each local attachment, the
+ * server copy it matches (or undefined), plus the server attachments no local name accounts for.
  */
 function pairLocalAttachments(server: readonly BotGroupAttachment[], local: readonly BotGroupAttachment[]) {
   if (server.length === local.length) return { pairs: [...server], extra: [] as BotGroupAttachment[] };
-  const used = new Set<number>();
-  let next = 0;
-  const pairs: Array<BotGroupAttachment | undefined> = local.map((file) => {
-    for (let at = next; at < server.length; at += 1) {
-      if (server[at]!.name !== file.name) continue;
-      used.add(at);
-      next = at + 1;
-      return server[at];
-    }
-    return undefined;
-  });
-  return { pairs, extra: server.filter((_, at) => !used.has(at)) };
+  const counts = new Map<string, number>();
+  for (const file of local) counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
+  const pairs = local.map((file) =>
+    counts.get(file.name) === 1 ? server.find((copy) => copy.name === file.name) : undefined,
+  );
+  return { pairs, extra: server.filter((copy) => !counts.has(copy.name)) };
 }
 
 /**
