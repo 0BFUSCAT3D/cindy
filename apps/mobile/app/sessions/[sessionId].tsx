@@ -1,4 +1,5 @@
 import { useSessionHistorySearch } from '@/session/useSessionHistorySearch';
+import { useContentRecoveryDiagnostics } from '@/debug/useContentRecoveryDiagnostics';
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { getCachedDeviceProviders } from '@/device-link/deviceProvidersCache';
 import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
@@ -416,6 +417,8 @@ import {
 } from '@/session/queueEditLifecycle';
 import { findErrorTailClientId, isContinuationQueueItem, resolveSessionTailBanner } from '@/session/sessionTailBannerModel';
 import { SessionTailBanner } from '@/session/SessionTailBanner';
+import { useHistoryRecoveryNavigation } from '@/session/useHistoryRecoveryNavigation';
+import { canOfferCodexHistoryRecovery } from '@cindy/maker-shared/error-redaction';
 import {
   CONTINUE_AFTER_APP_EXIT_PROMPT,
   CONTINUE_AFTER_ERROR_PROMPT,
@@ -2331,12 +2334,7 @@ function SessionScreenContent() {
     && readAckSyncedKey === `${sessionId}:${connectionEpoch}`
     && !outboxRecoverySyncHeld
     ? 'recovered' : 'syncing';
-  const recoveryStartedAtRef = useRef(Date.now());
-  useEffect(() => {
-    if (contentRecoveryState === 'syncing') recoveryStartedAtRef.current = Date.now();
-    else console.debug('[device-link] content recovered', { elapsedMs: Date.now() - recoveryStartedAtRef.current });
-    mobileDebugLog('debug', 'recovery', 'content recovery state', { state: contentRecoveryState, elapsedMs: Date.now() - recoveryStartedAtRef.current });
-  }, [contentRecoveryState]);
+  useContentRecoveryDiagnostics(contentRecoveryState, `${deviceId}:${sessionId}`);
   const showConnectionBanner = useShowConnectionBanner(
     status,
     bannerError,
@@ -4453,6 +4451,18 @@ function SessionScreenContent() {
     () => sending || canStopQueue || remoteSessionRunning || currentTurnStreaming,
     [canStopQueue, currentTurnStreaming, remoteSessionRunning, sending],
   );
+  const {
+    begin: beginHistoryRecovery,
+    invalidate: invalidateHistoryRecoveryNavigation,
+    isPending: isHistoryRecoveryPending,
+    pending: historyRecoveryBusy,
+  } = useHistoryRecoveryNavigation({
+    source: JSON.stringify([auth.accountGeneration, deviceId, sessionId]),
+    running: isSessionStreaming,
+    startedAt: currentSession?.activeTurnStartedAt ?? null,
+    endedAt: currentSession?.lastTurnEndedAt ?? null,
+  });
+  useFocusEffect(useCallback(() => invalidateHistoryRecoveryNavigation, [invalidateHistoryRecoveryNavigation]));
   // Sending/queueing drives the composer immediately, but cannot reopen the loaded previous
   // turn before the new user message arrives. Only remote activity drives message grouping.
   const isMessageListStreaming = remoteSessionRunning || currentTurnStreaming;
@@ -6290,6 +6300,7 @@ function SessionScreenContent() {
       return;
     }
     const connectionDispatchBlockedAtSend = outboxConnectionBlockedNow();
+    invalidateHistoryRecoveryNavigation();
     sendInFlightRef.current = true;
     setSending(true);
     const messageWorkLease = remoteSessionStore.acquireSessionMessageWork(sessionId, true);
@@ -7728,7 +7739,8 @@ function SessionScreenContent() {
   }, [cancelQueueEdit, inputProjection.pendingQueue, queueEditing]);
 
   const retryQueueError = () => {
-    if (queueAvailabilityReason || !inputProjection.errorRetryText) return;
+    if (queueAvailabilityReason || !inputProjection.errorRetryText || isHistoryRecoveryPending()) return;
+    invalidateHistoryRecoveryNavigation();
     void runQueueAction(() => maker.input.retryLastError(sessionId));
   };
 
@@ -7826,12 +7838,13 @@ function SessionScreenContent() {
   const continueTailBanner = useCallback(async () => {
     const state = tailBannerState;
     const sessionAtSend = currentSession;
-    if (!state || tailBannerBusy || !sessionId) return;
+    if (!state || tailBannerBusy || !sessionId || isHistoryRecoveryPending()) return;
     if (!sessionAtSend || sessionAtSend.cacheSeeded) {
       setError(t('session.screen.sessionNotSyncedRetry'));
       return;
     }
     const interrupted = state.kind === 'interrupted' || state.continueKind === 'interrupted';
+    invalidateHistoryRecoveryNavigation();
     const prompt = interrupted ? CONTINUE_AFTER_APP_EXIT_PROMPT : CONTINUE_AFTER_ERROR_PROMPT;
     setTailBannerBusy(true);
     // 乐观熄灭:error-tail 走短窗口 hidden(交棒释放见上方声明处注释);interrupted
@@ -7863,7 +7876,7 @@ function SessionScreenContent() {
     } finally {
       setTailBannerBusy(false);
     }
-  }, [currentSession, maker, sessionId, t, tailBannerBusy, tailBannerState]);
+  }, [currentSession, invalidateHistoryRecoveryNavigation, isHistoryRecoveryPending, maker, sessionId, t, tailBannerBusy, tailBannerState]);
 
   //「忽略」:error-tail 持久化 dismiss(被控端 merge dismissed:true,重拉不复活),
   // 本地 dismissed 集合乐观熄灭 banner,同时错误卡回流消息流(errorTailClientId 排除
@@ -9173,6 +9186,33 @@ function SessionScreenContent() {
     );
   }, [deviceId, messageActionBusy, performForkAtMessage, t]);
 
+  const historyRecoveryError = inputProjection.error ?? (tailBannerState?.kind === 'error-tail'
+    ? tailBannerState.rawError ?? tailBannerState.text : '');
+  const canRecoverHistory = !isSharedTaskPeer(deviceId) && canUseRemoteSessionControls &&
+    !queueAvailabilityReason && !messageActionBusy && !tailBannerBusy && !queueBusy &&
+    Boolean(currentSession?.sdkSessionId) && canOfferCodexHistoryRecovery({
+      message: historyRecoveryError, agentKind: sessionAgentKind,
+      remoteHostId: currentSession?.remoteHostId, agentDeviceId: currentSession?.agentDeviceId,
+      running: isSessionStreaming || remoteSessionRunning,
+    });
+  const recoverReadableHistory = useCallback(async () => {
+    if (!canRecoverHistory || !deviceId) return;
+    const recovery = beginHistoryRecovery();
+    if (!recovery) return;
+    try {
+      const forked = await maker.forkStripEncrypted(sessionId);
+      if (!recovery.isCurrent() || !navigation.isFocused()) return;
+      remoteSessionStore.upsertDeviceSession(deviceId, deviceName, forked);
+      router.push({ pathname: '/sessions/[sessionId]', params: { sessionId: forked.id, deviceId, deviceName } });
+    } catch (err) {
+      if (recovery.isCurrent() && navigation.isFocused()) {
+        setError(formatRemoteError(err));
+      }
+    } finally {
+      recovery.release();
+    }
+  }, [beginHistoryRecovery, canRecoverHistory, deviceId, deviceName, maker, navigation, router, sessionId]);
+
   const openForkOrigin = useCallback(() => {
     const parentSessionId = currentSession?.parentSessionId;
     const forkedAtMessageId = currentSession?.forkedAtMessageId;
@@ -10097,7 +10137,8 @@ function SessionScreenContent() {
                             (resolveSessionTailBanner 内部已按 projection.error 抑制)。 */}
                         {tailBannerState ? (
                           <SessionTailBanner
-                            busy={tailBannerBusy}
+                            busy={tailBannerBusy || historyRecoveryBusy}
+                            onRecoverHistory={canRecoverHistory ? () => void recoverReadableHistory() : undefined}
                             onContinue={() => void continueTailBanner()}
                             onDismiss={dismissTailBanner}
                             state={tailBannerState}
@@ -10118,7 +10159,8 @@ function SessionScreenContent() {
                         {/* 队列状态横幅(错误 / 凭证等待 / 停止确认 / 暂停)。待发送气泡
                             不在这里,它们是消息流里的 pending_send 项。 */}
                         <InlineQueueSection
-                          busy={queueBusy}
+                          busy={queueBusy || historyRecoveryBusy}
+                          onRecoverHistory={canRecoverHistory ? () => void recoverReadableHistory() : undefined}
                           sessionSource={currentSession?.source}
                           onClearError={clearQueueError}
                           onCancelUsageLimitWait={cancelUsageLimitWait}
