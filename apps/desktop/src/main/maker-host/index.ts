@@ -47,6 +47,7 @@ import {
   CodexAgent,
   configureDefaultImageResizer,
   type AgentKind,
+  type AgentCredentialMode,
   type InteractionRequest,
   type AutoReviewDelegate,
   type McpProvider,
@@ -3235,7 +3236,7 @@ export async function waitForInitialCustomMcpRefresh(): Promise<void> {
  *
  * null-safe: getMaker() 还没构造过 codexAgent 时直接 no-op (此时也没进程要收)。
  */
-export async function prepareCodexForAuthModeChange(options: { allLocalHosts?: boolean } = {}): Promise<void> {
+export async function prepareCodexForAuthModeChange(options: { allLocalHosts?: boolean; credentialMode?: AgentCredentialMode } = {}): Promise<void> {
   if (_codexCredentialChangeGuard) {
     throw new Error('Codex credential mode change is already in progress');
   }
@@ -3254,6 +3255,7 @@ export async function prepareCodexForAuthModeChange(options: { allLocalHosts?: b
         await prepareLocalCodexCredentialModeSwitch({
           maker,
           isSessionInTurn,
+          ...(options.credentialMode ? { hostKeys: guard?.affectedHostKeys ?? [] } : {}),
         });
       } catch (e) {
         desktopMakerLogger.warn(
@@ -3311,7 +3313,7 @@ export function cancelCodexAuthModeChange(): void {
   guard?.release();
 }
 
-export async function finalizeCodexAfterAuthModeChange(options: { prepareMcpEnvironment?: boolean } = {}): Promise<void> {
+export async function finalizeCodexAfterAuthModeChange(options: { prepareMcpEnvironment?: boolean; refreshAuthState?: boolean } = {}): Promise<void> {
   // 只 dispose 本地 app-server, 让下一次本地 send 按新模式重新 spawn。
   // 远端 Codex host 使用远端 daemon / 远端用户配置,不能被本地 key / OAuth 变化误关。
   const guard = _codexCredentialChangeGuard;
@@ -3338,8 +3340,10 @@ export async function finalizeCodexAfterAuthModeChange(options: { prepareMcpEnvi
       } else {
         await agent?.disposeLocalHostForCredentialChange();
       }
-      clearCodexProxyAuthInjection();
-      await broadcastCodexRuntimeRoute();
+      if (options.refreshAuthState !== false) {
+        clearCodexProxyAuthInjection();
+        await broadcastCodexRuntimeRoute();
+      }
     } catch (e) {
       desktopMakerLogger.warn('restartCodexAfterAuthModeChange: dispose threw', {
         error: e instanceof Error ? e.message : String(e),
@@ -3347,6 +3351,8 @@ export async function finalizeCodexAfterAuthModeChange(options: { prepareMcpEnvi
       throw e;
     }
   }
+  // Gateway key rotation leaves OAuth state and unaffected hosts unchanged.
+  if (options.refreshAuthState === false) return;
   // proxy 路线: proxy 始终保活(两种 spawn 形态都依赖它), 仅在 app quit(bootstrap-electron onQuit)dispose。
   // codex 登录态变化只需上面 dispose codex agent 重 spawn —— 重 spawn 时按最新 OAuth 登录态冻结
   // authInjection(oauth-bearer / env-key), routingTransform 据此 + per-session 选择出路由。

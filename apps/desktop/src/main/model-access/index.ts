@@ -12,7 +12,6 @@ import { isExternalOrganizationByokUser } from './organizationManaged.js';
 import { serverApiFetch, ServerApiError } from '../serverApiClient.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
-import { getCodexProxyAuthInjectionState } from '../maker-host/codex-proxy-host.js';
 import {
   prepareCodexForAuthModeChange,
   prepareCodexForCustomProviderHostChange,
@@ -102,17 +101,11 @@ function rotateCredentials(): Promise<CredentialsPayload> {
  * 写 XD key(main 侧自动下发路径),带 codex env-key 重启副作用:
  * env-key spawn 的 codex app-server 把 gateway key 冻在子进程 env 里,写盘后
  * 必须重建才生效——与 renderer 手填走的 safe-storage IPC 同一套语义。
- * 非 env-key 形态零副作用(Claude 每 session 现读 key,天然跟随)。
+ * 按 host 的实际凭据筛选，覆盖不登记共享 proxy 状态的独立 session。
  */
 async function writeXdKeyWithCodexSideEffect(key: string): Promise<boolean> {
-  const needRestart = getCodexProxyAuthInjectionState() === 'env-key';
-  if (!needRestart) {
-    const stored = getProviderSecretStore().set('xd', key);
-    if (stored) notifyXdProviderKeyChanged();
-    return stored;
-  }
   try {
-    await prepareCodexForAuthModeChange();
+    await prepareCodexForAuthModeChange({ allLocalHosts: true, credentialMode: 'gateway-key' });
   } catch (err) {
     log.warn('prepare codex before auto key write failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -126,7 +119,7 @@ async function writeXdKeyWithCodexSideEffect(key: string): Promise<boolean> {
   }
   notifyXdProviderKeyChanged();
   try {
-    await finalizeCodexAfterAuthModeChange();
+    await finalizeCodexAfterAuthModeChange({ refreshAuthState: false });
   } catch (err) {
     // key 已写盘(新值有效);codex 重建失败只记日志,下次 spawn 自然用新 key。
     log.warn('finalize codex after auto key write failed', {

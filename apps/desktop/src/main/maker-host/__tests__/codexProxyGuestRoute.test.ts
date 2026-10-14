@@ -30,7 +30,7 @@ import { buildUserProvider } from '@cindy/model-providers';
 import type { RoutingDecision } from '@cindy/anthropic-compat-proxy';
 
 import { setCustomProviders } from '../active-catalog';
-import { createCodexGuestRoutingGuard, registerComposed, setCodexProxyGatewayKeyReader, unregister } from '../codex-proxy-host';
+import { createCodexGuestRoutingGuard, registerComposed, unregister } from '../codex-proxy-host';
 import { CODEX_CUSTOM_PROVIDER_ROUTE_ROOT } from '../codex-custom-provider-route';
 import { registerGuestProviderRoute, resetGuestProviderRoutesForTest } from '../guest-provider-route-store';
 import { clearAllSessionProviders, setSessionProvider } from '../session-provider-store';
@@ -65,7 +65,6 @@ describe('Codex proxy guard for shared-provider guests', () => {
     resetGuestProviderRoutesForTest();
     clearAllSessionProviders();
     setCustomProviders([]);
-    setCodexProxyGatewayKeyReader(() => null);
   });
 
   it('lets a guest request for a shared model continue to the session route', () => {
@@ -89,17 +88,13 @@ describe('Codex proxy guard for shared-provider guests', () => {
     expect(await statusOf(guard({ model: 'shared-model' }, ctx('/responses', { 'thread-id': 'owner-thread' })))).toBe(403);
   });
 
-  it('routes an unresolved request with the current gateway key only when that is the shared provider', async () => {
+  it('routes an unresolved request straight to the default upstream only when that is the shared provider', () => {
     const gateway = createCodexGuestRoutingGuard('xd', 'env-key');
     // 模型核对按 xd 的目录：这里的 fixture 没有 xd 模型，所以推理请求被拒；非推理路径只看默认路由。
-    setCodexProxyGatewayKeyReader(() => 'test-current-gateway-key');
-    expect(gateway({ model: 'gpt-image-1' }, ctx('/images/generations'))).toEqual({
-      headerOverride: { authorization: 'Bearer test-current-gateway-key' },
-    });
-    setCodexProxyGatewayKeyReader(() => null);
-    expect(await statusOf(gateway({ model: 'gpt-image-1' }, ctx('/images/generations')))).toBe(401);
+    expect(gateway({ model: 'gpt-image-1' }, ctx('/images/generations'))).toBeNull();
     const mismatched = createCodexGuestRoutingGuard('xd', 'oauth-bearer');
-    expect(await statusOf(mismatched({ model: 'gpt-image-1' }, ctx('/images/generations')))).toBe(403);
+    return statusOf(mismatched({ model: 'gpt-image-1' }, ctx('/images/generations')))
+      .then((status) => expect(status).toBe(403));
   });
 
   it('leaves custom-provider paths and control-plane requests to the frozen routing', () => {

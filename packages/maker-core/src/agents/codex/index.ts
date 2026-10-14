@@ -2329,8 +2329,9 @@ export class CodexAgent extends BaseAgent {
 
   async beginLocalHostCredentialChange(
     reason = 'CodexAgent local credential state changed',
-    options: { allLocalHosts?: boolean; forceRetire?: boolean; busyError?: () => Error } = {},
+    options: { allLocalHosts?: boolean; credentialMode?: AgentCredentialMode; forceRetire?: boolean; busyError?: () => Error } = {},
   ): Promise<{
+    affectedHostKeys: readonly string[];
     assertIdle(): void;
     retireActiveHost(): Promise<void>;
     finalize(): Promise<void>;
@@ -2370,7 +2371,15 @@ export class CodexAgent extends BaseAgent {
       ? [...new Set([
           ...this.hosts.keys(), ...this.hostPromises.keys(),
           ...this.hostSessionBindingLeases.keys(), ...this.retiringHosts.keys(),
-        ])].filter((candidate) => !candidate.startsWith('remote:'))
+        ])].filter((candidate) => {
+          if (candidate.startsWith('remote:')) return false;
+          if (!options.credentialMode) return true;
+          const mode = this.hostEffectiveCredentialModes.get(candidate)
+            ?? this.hostCredentialModes.get(candidate)
+            ?? this.hostPromises.get(candidate)?.credentialMode;
+          // Unresolved startup may still freeze the credential being replaced.
+          return mode === undefined || mode === options.credentialMode;
+        })
       : [key];
     const activeUseCount = (): number => affectedKeys().reduce((count, candidate) => {
       const host = this.hosts.get(candidate);
@@ -2390,6 +2399,7 @@ export class CodexAgent extends BaseAgent {
     };
 
     return {
+      affectedHostKeys: affectedKeys(),
       assertIdle: () => {
         const count = activeUseCount();
         if (count > 0) {

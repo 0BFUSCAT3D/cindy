@@ -2428,7 +2428,7 @@ function createCodexResponseObserver(): ResponseObserver {
 /**
  * 纯函数: 按 model(原始, 含 codex/ 前缀)+ spawn 鉴权注入方式决定 **默认** 上游 / 鉴权 override。
  * (会话显式选了供应商时由 resolveSessionRouteDecision 优先接管,不会走到这里。)
- *   - env-key spawn: 走默认上游 gateway,用当前 key 覆盖子进程启动时的旧 key;无 key 则本地拒绝。
+ *   - env-key spawn(codex 已带 gateway key): 全程 null(走默认上游 gateway, 不动 header)。
  *   - oauth-bearer spawn(codex 带 OAuth token):
  *       codex/ 折扣模型 → 换 gateway key, 默认上游(gateway); 无 key 则 null(passthrough, 上游会 401)。
  *       普通模型        → override 上游到 ChatGPT, 透传 OAuth token(不动 header)= 订阅默认。
@@ -2439,27 +2439,7 @@ export function decideCodexRoute(opts: {
   authInjection: CodexProxyAuthInjection;
   gatewayKey: string | null;
 }): RoutingDecision | null {
-  if (opts.authInjection === 'env-key') {
-    if (opts.gatewayKey) {
-      return { headerOverride: { authorization: `Bearer ${opts.gatewayKey}` } };
-    }
-    return {
-      localHandler: async ({ res }) => {
-        res.writeHead(401, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-        });
-        res.end(JSON.stringify({
-          error: {
-            type: 'authentication_error',
-            code: 'cindy_gateway_credentials_unavailable',
-            message: 'Cindy AI credentials are unavailable.',
-          },
-        }));
-      },
-    };
-  }
-  if (opts.authInjection === 'provider-oauth') return null;
+  if (opts.authInjection === 'env-key' || opts.authInjection === 'provider-oauth') return null;
   if (!opts.model) return null;
   const toGateway = gatewayProviderIdForRewrittenModel(opts.model) !== null;
   if (toGateway) {
@@ -3036,8 +3016,8 @@ export function createModelRoutingTransform(
     }
 
     // ① 该会话显式选了供应商 → 据 catalog 统一路由。thread-id header → threadToSession 反解 xdt sessionId。
-    //    oauth-bearer 态全量适用;env-key 态默认走网关,由 decideCodexRoute 换成当前网关 key。
-    //    例外:自定义(user)供应商和 host 注入鉴权的
+    //    oauth-bearer 态全量适用;env-key 态默认全量走网关、per-session 无意义(与 decideCodexRoute 的
+    //    env-key 短路一致,内置三家保持旧行为)。例外:自定义(user)供应商和 host 注入鉴权的
     //    供应商(provider-oauth-header 如 xAI、通用 Runner 的 oauth-token)必须按会话路由,
     //    因为它们的鉴权由 proxy 覆盖,不依赖 Codex 子进程凭证。
     if (sessionId && (
@@ -3106,17 +3086,17 @@ export function createModelRoutingTransform(
     //    spawn 时那把凭证 —— oauth-bearer 揣的 OAuth token 在网关无效(要 sk-)→ 401。
     //    故按 spawn 凭证回它的原生后端: oauth-bearer → ChatGPT 订阅后端(只 override 上游、透传 OAuth
     //    token,等价 stock codex 订阅模式轮 /models 的去处); provider-oauth → 唯一 provider-oauth
-    //    供应商的上游/令牌(当前 xAI),避免把占位 key 打到网关; env-key → 默认网关,同样换成当前 key。
+    //    供应商的上游/令牌(当前 xAI),避免把占位 key 打到网关; env-key → null(留默认网关, sk- key 本就有效)。
     //    `!model` 这道闸确保真实 /responses(永远带 model)绝不落进此分支,杜绝注册时序竞争误伤推理请求。
     if (!sessionId && !model) {
       if (authInjection === 'oauth-bearer') return { upstreamOverride: CODEX_OAUTH_UPSTREAM };
       if (authInjection === 'provider-oauth') {
         return resolveProviderOAuthControlRouteDecision('codex', gatewayKey);
       }
-      return decideCodexRoute({ model, authInjection, gatewayKey });
+      return null;
     }
 
-    // ② 未显式选供应商 → 回落默认路由(decideCodexRoute)。
+    // ② 未显式选供应商 → 回落默认路由(decideCodexRoute,与未升级行为字节级一致)。
     const decision = decideCodexRoute({ model, authInjection, gatewayKey });
     // codex/ 折扣模型该走 gateway 换 key 但没配 key → null(passthrough), 上游大概率 401, 记一条诊断。
     if (decision === null && authInjection === 'oauth-bearer' && model

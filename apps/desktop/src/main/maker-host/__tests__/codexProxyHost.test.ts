@@ -189,7 +189,7 @@ beforeAll(async () => {
 }, process.platform === 'win32' ? 120_000 : 60_000);
 
 
-/** 本地拒绝的 localHandler:执行它并返回写出的状态码与响应体。 */
+/** 本地 403 拒绝的 localHandler:执行它并返回写出的状态码与响应体。 */
 async function runLocalRefusal(decision: unknown): Promise<{ status: number; body: { error?: { code?: string } } }> {
   const handler = (decision as { localHandler?: (args: { res: unknown }) => Promise<void> }).localHandler;
   if (typeof handler !== 'function') throw new Error('expected a local refusal handler');
@@ -677,10 +677,10 @@ describe('createCrossProviderCompactionCompatTransform', () => {
 describe('decideCodexRoute', () => {
   const CHATGPT = 'https://chatgpt.com/backend-api/codex';
 
-  it.each(['gpt-5.5', 'codex/gpt-5.5', ''])('env-key spawn → 用当前 gateway key 覆盖请求头: %s', async (model) => {
+  it('env-key spawn → 不 override(codex 已带 gateway key, 走默认上游)', async () => {
     const { decideCodexRoute } = await import('../codex-proxy-host.js');
-    expect(decideCodexRoute({ model, authInjection: 'env-key', gatewayKey: 'test-current-gateway-key' }))
-      .toEqual({ headerOverride: { authorization: 'Bearer test-current-gateway-key' } });
+    expect(decideCodexRoute({ model: 'gpt-5.5', authInjection: 'env-key', gatewayKey: 'k' })).toBeNull();
+    expect(decideCodexRoute({ model: 'codex/gpt-5.5', authInjection: 'env-key', gatewayKey: 'k' })).toBeNull();
   });
 
   it('oauth-bearer + codex/ 折扣模型 → 换 gateway key', async () => {
@@ -1401,7 +1401,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
       },
     ));
 
-    expect(decision).toEqual({ headerOverride: { authorization: 'Bearer xd-gateway-key' } });
+    expect(decision).toBeNull();
     expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
 
     host.unregister('session-xd-no-projection');
@@ -1449,7 +1449,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       ));
 
-      expect(decision).toEqual({ headerOverride: { authorization: 'Bearer xd-gateway-key' } });
+      expect(decision).toBeNull();
       expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
     } finally {
       host.unregister('session-implicit-xd');
@@ -1477,7 +1477,6 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     );
     clearSessionProvider('session-native-hot-path');
     host.setCodexProxyAuthInjection('env-key');
-    host.setCodexProxyGatewayKeyReader(() => 'test-native-gateway-key');
 
     try {
       const decision = await Promise.resolve(host.createModelRoutingTransform()(
@@ -1493,14 +1492,13 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       ));
 
-      expect(decision).toEqual({ headerOverride: { authorization: 'Bearer test-native-gateway-key' } });
+      expect(decision).toBeNull();
       expect(providerViewsReader).not.toHaveBeenCalled();
     } finally {
       host.unregister('session-native-hot-path');
       clearSessionProvider('session-native-hot-path');
       setProviderViewsReader(async () => []);
       setXdGatewayModels([]);
-      host.setCodexProxyGatewayKeyReader(() => null);
     }
   });
 
@@ -2356,10 +2354,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
       },
     ));
 
-    expect(await runLocalRefusal(decision)).toMatchObject({
-      status: 401,
-      body: { error: { code: 'cindy_gateway_credentials_unavailable' } },
-    });
+    expect(decision).toBeNull();
     expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
 
     clearSessionProvider('session-xd-no-key');
@@ -2563,44 +2558,11 @@ describe('createModelRoutingTransform —— session-less 控制面请求(桶③
     })).toEqual({ upstreamOverride: CHATGPT });
   });
 
-  it.each(['responses', 'models'] as const)('env-key proxy 随凭据轮换更新 /%s,撤销后拒绝旧 key', async (endpoint) => {
-    const host = await freshCodexProxyHost();
-    const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
-    let gatewayKey: string | null = 'test-old-gateway-key';
-    const readKey = vi.fn(() => gatewayKey);
-    host.setCodexProxyGatewayKeyReader(readKey);
-    host.registerComposed('session-key-rotation', 'thread-key-rotation', 'PRODUCT_PROMPT');
-    setSessionProvider('session-key-rotation', 'xd');
-    // 独立 host 冻结 env-key 身份;其它 host 改写全局形态不应改变它的路由。
-    host.setCodexProxyAuthInjection('oauth-bearer');
-    const transform = host.createModelRoutingTransform('env-key');
-    const body = endpoint === 'responses' ? { model: 'gpt-5.5', input: [] } : undefined;
-    const headers = { authorization: 'Bearer test-old-gateway-key',
-      ...(endpoint === 'responses' ? { 'thread-id': 'thread-key-rotation' } : {}),
-    };
-    const ctx = { reqId: 1, method: endpoint === 'responses' ? 'POST' : 'GET', url: `/${endpoint}`, headers };
-
-    try {
-      expect(await transform(body, ctx)).toEqual({
-        headerOverride: { authorization: 'Bearer test-old-gateway-key' },
-      });
-      gatewayKey = 'test-new-gateway-key';
-      expect(await transform(body, { ...ctx, reqId: 2 })).toEqual({
-        headerOverride: { authorization: 'Bearer test-new-gateway-key' },
-      });
-      gatewayKey = null;
-      const refused = await transform(body, { ...ctx, reqId: 3 });
-      expect(await runLocalRefusal(refused)).toMatchObject({
-        status: 401,
-        body: { error: { code: 'cindy_gateway_credentials_unavailable' } },
-      });
-      expect(readKey).toHaveBeenCalledTimes(3);
-      expect(headers.authorization).toBe('Bearer test-old-gateway-key');
-    } finally {
-      host.unregister('session-key-rotation');
-      clearSessionProvider('session-key-rotation');
-      host.setCodexProxyGatewayKeyReader(() => null);
-    }
+  it('env-key + 无 session + 无 model(GET /models)→ null(留默认网关, sk- key 本就有效)', async () => {
+    const host = await import('../codex-proxy-host.js');
+    host.setCodexProxyAuthInjection('env-key');
+    const transform = host.createModelRoutingTransform();
+    expect(transform(undefined, { reqId: 1, method: 'GET', url: '/models', headers: {} })).toBeNull();
   });
 
   it('provider-oauth + 无 session + 无 model(GET /models)→ 路由到 provider OAuth 上游', async () => {
