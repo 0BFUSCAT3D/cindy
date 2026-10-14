@@ -3,9 +3,30 @@ import type { ReadResourceResult, Tool } from '@modelcontextprotocol/sdk/types.j
 import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { McpUiResourceMetaSchema } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { McpUiResourceMeta } from '@modelcontextprotocol/ext-apps';
+import type { McpAppRecord } from '../../shared/mcpApps.js';
 
 export const MCP_APPS_EXTENSION = 'io.modelcontextprotocol/ui';
 export const MCP_APPS_MAX_BYTES = 4 * 1024 * 1024;
+// Leave room for JSON-escaped history rows, initialization and input/result envelopes.
+export const MCP_APPS_MAX_CARD_BYTES = MCP_APPS_MAX_BYTES / 4;
+
+/** Bound the complete persisted card; never change the result returned to the model. */
+export function boundedAppRecord(record: McpAppRecord): McpAppRecord {
+  const fits = (value: McpAppRecord) =>
+    Buffer.byteLength(JSON.stringify({ mcpApp: value })) <= MCP_APPS_MAX_CARD_BYTES;
+  if (fits(record)) return record;
+  if (!record.result) throw new Error('MCP_APP_CARD_TOO_LARGE');
+  const bounded: McpAppRecord = {
+    ...record,
+    result: {
+      isError: true,
+      content: [{ type: 'text', text: 'MCP_APP_RESULT_TOO_LARGE' }],
+    },
+  };
+  // Input or tool metadata can exceed the budget even after removing the result.
+  if (!fits(bounded)) throw new Error('MCP_APP_CARD_TOO_LARGE');
+  return bounded;
+}
 
 export function uiToolUri(tool: Tool): string | undefined {
   const ui = tool._meta?.ui as { resourceUri?: unknown } | undefined;

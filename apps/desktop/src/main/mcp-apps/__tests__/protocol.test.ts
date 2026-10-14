@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import {
   appCsp,
+  boundedAppRecord,
   readAppResource,
   safeAppLink,
   toolVisibleTo,
   uiToolUri,
   MCP_APPS_MAX_BYTES,
+  MCP_APPS_MAX_CARD_BYTES,
 } from '../protocol.js';
 
 const tool = (ui: unknown): Tool => ({
@@ -15,12 +18,78 @@ const tool = (ui: unknown): Tool => ({
   _meta: { ui },
 });
 const uri = 'ui://example/app.html';
+const card = (result: NonNullable<McpAppRecord['result']>): McpAppRecord => ({
+  version: 1,
+  serverId: 'example',
+  serverRevision: 'revision',
+  resourceUri: uri,
+  tool: tool({ resourceUri: uri }),
+  arguments: {},
+  result,
+});
 describe('standard MCP Apps metadata and policy', () => {
+  it('preserves a complete card at the byte limit and replaces a result one byte over it', () => {
+    const record = card({ content: [{ type: 'text', text: '' }], _meta: { viewOnly: true } });
+    const overhead = Buffer.byteLength(JSON.stringify({ mcpApp: record }));
+    record.result!.content = [
+      { type: 'text', text: 'x'.repeat(MCP_APPS_MAX_CARD_BYTES - overhead) },
+    ];
+    expect(Buffer.byteLength(JSON.stringify({ mcpApp: record }))).toBe(MCP_APPS_MAX_CARD_BYTES);
+    expect(boundedAppRecord(record)).toBe(record);
+    const oversized = {
+      ...record,
+      result: {
+        ...record.result!,
+        content: [{ type: 'text', text: 'x'.repeat(MCP_APPS_MAX_CARD_BYTES - overhead + 1) }],
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify({ mcpApp: oversized }))).toBe(
+      MCP_APPS_MAX_CARD_BYTES + 1,
+    );
+    expect(boundedAppRecord(oversized).result).toEqual({
+      isError: true,
+      content: [{ type: 'text', text: 'MCP_APP_RESULT_TOO_LARGE' }],
+    });
+    expect(record.result!._meta).toEqual({ viewOnly: true });
+  });
+  it.each(['multibyte text', 'View-only metadata'] as const)(
+    'includes %s in the serialized byte budget',
+    (kind) => {
+      const record = card(
+        kind === 'multibyte text'
+          ? { content: [{ type: 'text', text: '汉'.repeat(MCP_APPS_MAX_CARD_BYTES / 2) }] }
+          : {
+              content: [{ type: 'text', text: 'small' }],
+              _meta: { viewOnly: 'x'.repeat(MCP_APPS_MAX_CARD_BYTES) },
+            },
+      );
+      if (kind === 'multibyte text')
+        expect(JSON.stringify({ mcpApp: record }).length).toBeLessThan(MCP_APPS_MAX_CARD_BYTES);
+      expect(boundedAppRecord(record).result).toEqual({
+        isError: true,
+        content: [{ type: 'text', text: 'MCP_APP_RESULT_TOO_LARGE' }],
+      });
+    },
+  );
+  it('bounds the whole card when input and result each fit separately', () => {
+    const record = card({
+      content: [{ type: 'text', text: 'x'.repeat(MCP_APPS_MAX_CARD_BYTES / 2) }],
+    });
+    record.arguments = { draft: 'y'.repeat(MCP_APPS_MAX_CARD_BYTES / 2) };
+    expect(Buffer.byteLength(JSON.stringify(record.result))).toBeLessThan(MCP_APPS_MAX_CARD_BYTES);
+    const bounded = boundedAppRecord(record);
+    expect(bounded.arguments).toEqual(record.arguments);
+    expect(bounded.result!.isError).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify({ mcpApp: bounded }))).toBeLessThanOrEqual(
+      MCP_APPS_MAX_CARD_BYTES,
+    );
+  });
   it('uses the standard same-origin base URI default for omitted and empty declarations', () => {
     expect(appCsp().header).toContain("base-uri 'self'");
     expect(appCsp({ csp: { baseUriDomains: [] } }).header).toContain("base-uri 'self'");
-    expect(appCsp({ csp: { baseUriDomains: ['https://assets.example.org'] } }).header)
-      .toContain('base-uri https://assets.example.org');
+    expect(appCsp({ csp: { baseUriDomains: ['https://assets.example.org'] } }).header).toContain(
+      'base-uri https://assets.example.org',
+    );
   });
   it('defaults tools to both audiences and enforces explicit visibility', () => {
     expect(toolVisibleTo(tool({}), 'app')).toBe(true);

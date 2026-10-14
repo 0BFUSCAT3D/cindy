@@ -13,6 +13,7 @@ import type { McpAppRecord, McpAppDocument } from '../../shared/mcpApps.js';
 import { AppConnection, type AppServerConfig } from './connection.js';
 import {
   appCsp,
+  boundedAppRecord,
   readAppResource,
   safeAppLink,
   toolVisibleTo,
@@ -518,6 +519,7 @@ export class McpAppsHost {
     owner = this.captureOwner(),
   ): Promise<void> {
     this.assertOwner(owner);
+    record = boundedAppRecord(record);
     let storageError: unknown;
     try {
       await this.deps.writeCard(sessionId, clientId, record);

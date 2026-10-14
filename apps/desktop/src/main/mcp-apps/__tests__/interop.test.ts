@@ -18,6 +18,7 @@ import { AppConnection } from '../connection.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
 import { setMcpAppsHost, registerAppServer } from '../runtime.js';
 import { createAppServerProxy } from '../serverProxy.js';
+import { MCP_APPS_MAX_BYTES, MCP_APPS_MAX_CARD_BYTES } from '../protocol.js';
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 
 let endpoint: Awaited<ReturnType<typeof startMockAppServer>>;
@@ -80,6 +81,7 @@ async function fixture(
   transport: 'http' | 'sse' = 'http',
   options: {
     cancelled?: boolean;
+    pending?: boolean;
     platform?: 'mobile' | 'desktop';
     appModes?: ('inline' | 'fullscreen')[];
     duringResource?: 'result' | 'cancelled' | 'clear' | 'server';
@@ -108,7 +110,7 @@ async function fixture(
     resourceUri: MOCK_RESOURCE,
     tool,
     arguments: input,
-    ...(options.cancelled ? { cancelled: 'User cancelled' } : { result }),
+    ...(options.cancelled ? { cancelled: 'User cancelled' } : options.pending ? {} : { result }),
   };
   const authorize = vi.fn(async () => {});
   const sendMessage = vi.fn(async () => {});
@@ -185,6 +187,7 @@ async function fixture(
   return {
     host,
     app,
+    client,
     card,
     document,
     config,
@@ -210,6 +213,108 @@ async function fixture(
 }
 
 describe('official MCP Apps interoperability', () => {
+  it('stores and delivers a bounded oversized-result failure to live and reopened remote Views', async () => {
+    const f = await fixture('http', { pending: true });
+    await vi.waitFor(() => expect(f.inputs).toHaveLength(1));
+    const oversized: CallToolResult = {
+      content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(MCP_APPS_MAX_BYTES) }],
+      structuredContent: { original: true },
+      _meta: { viewOnly: 'must not be persisted with the rejected payload' },
+    };
+    await f.host.updateResult('task', 'card', { ...f.card, result: oversized });
+    const persisted = f.write.mock.calls.at(-1)![2];
+    const failure = {
+      isError: true,
+      content: [{ type: 'text', text: 'MCP_APP_RESULT_TOO_LARGE' }],
+    };
+    expect(persisted.result).toEqual(failure);
+    expect(Buffer.byteLength(JSON.stringify({ mcpApp: persisted }))).toBeLessThan(
+      MCP_APPS_MAX_CARD_BYTES,
+    );
+    // A history row transports content as a JSON-escaped string, not as the raw card object.
+    expect(
+      Buffer.byteLength(JSON.stringify({ content: JSON.stringify({ mcpApp: persisted }) })),
+    ).toBeLessThan(MCP_APPS_MAX_BYTES);
+    await vi.waitFor(() => expect(f.results).toEqual([failure]));
+    expect(oversized.content[0]).toHaveProperty('data', 'A'.repeat(MCP_APPS_MAX_BYTES));
+    await f.host.teardown('renderer:1', 'task', f.document.viewId);
+
+    const document = await f.host.open('device:phone', 'task', 'card', {
+      platform: 'mobile',
+      theme: 'dark',
+    });
+    const reopened = new App(
+      { name: 'Reopened remote View', version: '1.0.0' },
+      {},
+      { autoResize: false },
+    );
+    const results: unknown[] = [];
+    reopened.ontoolresult = (result) => {
+      results.push(result);
+    };
+    cleanups.push(async () => {
+      await reopened.close();
+    });
+    await reopened.connect(new TestViewTransport(f.host, document.viewId, 'device:phone'));
+    await vi.waitFor(() => expect(results).toEqual([failure]));
+  });
+  it('rejects oversized card input before writing history', async () => {
+    const f = await fixture('http', { pending: true });
+    await expect(
+      f.host.updateResult('task', 'card', {
+        ...f.card,
+        arguments: { draft: 'x'.repeat(MCP_APPS_MAX_CARD_BYTES) },
+      }),
+    ).rejects.toThrow('MCP_APP_CARD_TOO_LARGE');
+    expect(f.write).not.toHaveBeenCalled();
+  });
+  it('keeps the original oversized model result while persisting only the bounded App failure', async () => {
+    const f = await fixture();
+    setMcpAppsHost(f.host);
+    registerAppServer(f.config.id, () => f.config);
+    const upstream: CallToolResult = {
+      content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(MCP_APPS_MAX_BYTES) }],
+      structuredContent: { original: true },
+      _meta: { viewOnly: 'private to the View' },
+    };
+    const getClient = vi.spyOn(AppConnection.prototype, 'getClient').mockResolvedValue(f.client);
+    const callTool = vi.spyOn(f.client, 'callTool').mockResolvedValueOnce(upstream);
+    const facade = createAppServerProxy(() => f.config, {
+      agentKind: 'codex',
+      sessionId: 'task',
+      workingDir: '',
+    });
+    const client = new Client({ name: 'model-client', version: '1' });
+    cleanups.push(async () => {
+      await client.close();
+      await facade.close();
+    });
+    try {
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await facade.connect(serverTransport);
+      await client.connect(clientTransport);
+      const result = await client.callTool({
+        name: 'draft_form',
+        arguments: { title: 'Draft', body: 'Review' },
+      });
+      expect(result.content).toEqual(upstream.content);
+      expect(result.structuredContent).toEqual(upstream.structuredContent);
+      expect(result).not.toHaveProperty('_meta');
+      expect(upstream._meta).toEqual({ viewOnly: 'private to the View' });
+      expect(f.write).toHaveBeenCalledTimes(2);
+      for (const [, , record] of f.write.mock.calls)
+        expect(Buffer.byteLength(JSON.stringify({ mcpApp: record }))).toBeLessThanOrEqual(
+          MCP_APPS_MAX_CARD_BYTES,
+        );
+      expect(f.write.mock.calls.at(-1)![2].result).toEqual({
+        isError: true,
+        content: [{ type: 'text', text: 'MCP_APP_RESULT_TOO_LARGE' }],
+      });
+    } finally {
+      callTool.mockRestore();
+      getClient.mockRestore();
+    }
+  });
   it.each(['result', 'cancelled'] as const)(
     'delivers %s when execution finishes while the App resource is loading',
     async (duringResource) => {

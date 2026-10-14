@@ -12,6 +12,8 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 
 ## 协议兼容矩阵
 
+卡片中的完整工具结果以 1 MiB 持久化预算为界；超限处理见下文「接入」。
+
 | 官方协议项                | Cindy 行为                                                                                                                                         | 验证                             |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | Client extension / MIME   | 声明 `io.modelcontextprotocol/ui` 与 `text/html;profile=mcp-app`                                                                                   | HTTP、SSE 官方 SDK 互操作        |
@@ -61,6 +63,11 @@ SSH 远端使用既有认证桥和 Session instance 路由；只暴露实际配�
 尚未验证真实 SSH 主机与真机 Mobile 的端到端行为。
 
 资源上限为 4 MiB；每个远程查看端最多同时打开 4 个 View，本地查看端 16 个。
+持久卡片按完整 `{mcpApp: record}` 的 UTF-8 JSON 字节计量，上限 1 MiB，
+为 4 MiB View/device-link 传输中的历史行转义、初始化和输入/结果封装保留余量。
+结果使卡片超限时，在写入前替换为标准 `isError` 与 `MCP_APP_RESULT_TOO_LARGE`，
+实时及重开 View 使用同一有界结果；原工具返回给模型的内容保持不变。
+输入或工具 metadata 本身超限时拒绝存卡，不写入超大历史，也不阻止原工具执行。
 Desktop 卡片仅在可见时打开，离屏或窗口隐藏时释放 View，重新可见后重新加载。
 查看远端卡片的 Renderer 重载、崩溃或销毁时，Main 回收该 Renderer 的 HTML 供片和额度；
 同文档导航、子 frame 导航、其他窗口与本地 Host 的供片不受影响。
@@ -112,7 +119,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 
 顺序运行协议、连接、授权与 IPC 回归，再分别启动真实 Electron 沙箱加载官方 SDK 申请表
 和独立 JSON-RPC 看板。HTTP/SSE、text/blob、metadata 来源、分页与变更通知、取消、
-销毁、显示、主题和 CSP 都纳入覆盖。当前结果为 97 项回归和两种 App 的沙箱检查通过，
+销毁、显示、主题和 CSP 都纳入覆盖。当前结果为 104 项回归和两种 App 的沙箱检查通过，
 逐项证据与边界见 [本地协议验证记录](./mcp-apps-validation.md)。
 
 ## 检查入口

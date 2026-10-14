@@ -24,18 +24,21 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
 本轮分别执行该入口的单测阶段与两个沙箱阶段，最终退出码均为 0：
-9 个测试文件、97 项测试通过；两个真实 Electron 集成检查分别输出
+9 个测试文件、104 项测试通过；两个真实 Electron 集成检查分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
 `pnpm.cmd --filter desktop typecheck` 与本轮修改代码、测试及模拟/验证脚本的定向 ESLint 也通过。
 自定义 MCP provider、Codex HTTP bridge 与 Pi 环境接入的 66 项回归通过。
+本轮新增 7 项大小回归：完整卡片按 UTF-8 JSON 字节限制为 1 MiB，超大结果在写入前
+变成标准有界错误；官方 View SDK 的实时/远程重开均能读取，模型仍收到原结果。
+恰好达到上限、超出一字节、多字节文本、View-only metadata 和输入/结果合计均纳入验证。
 
 | 测试文件                      | 通过数量 | 主要覆盖                                                                                  |
 | ----------------------------- | -------: | ----------------------------------------------------------------------------------------- |
-| `interop.test.ts`             |       22 | 官方 App SDK、HTTP/SSE、上游 instructions、初始化失败回复、加载期间完成/撤销、模型 facade |
+| `interop.test.ts`             |       25 | 官方 App SDK、HTTP/SSE、上游 instructions、初始化失败回复、加载期间完成/撤销、模型 facade |
 | `conformance.test.ts`         |       18 | 独立 JSON-RPC App、编码/metadata 组合、分页、通知、取消、能力协商                         |
 | `operations.test.ts`          |       11 | 任务与调用者绑定、输入校验、远程操作边界                                                  |
 | `ipc.test.ts`                 |        6 | 卡片持久化、清空与账号竞态、权限路由、公开错误                                            |
-| `protocol.test.ts`            |       18 | 标准 metadata、可见性、资源格式/大小、CSP 域声明与同源 base URI 默认值                    |
+| `protocol.test.ts`            |       22 | 标准 metadata、可见性、资源格式/大小、CSP 域声明与同源 base URI 默认值                    |
 | `sandboxProtocol.test.ts`     |       10 | 不同 origin、账号隔离、权限拒绝、Renderer 生命周期回收、嵌套导航与 Escape                 |
 | `remoteAuthorization.test.ts` |        5 | 真实 Session instance 路由、冻结装配名单、远程发现与执行授权                              |
 | `connection.test.ts`          |        3 | 首次失败及断线后独立重连、关闭竞态、不重放已发送工具                                      |
@@ -59,6 +62,8 @@ Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项
 工具数据全在内存中，不连接 GM 生产接口、不创建真实申请、不发送消息给其他人。
 
 ## 协议覆盖与证据
+
+卡片中的完整工具结果均指 1 MiB 序列化预算内的数据；超限只交付标准有界错误。
 
 | 协议项               | 本次验证                                                                                                                                                                                                                   |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -105,6 +110,7 @@ Desktop 声明 inline/fullscreen，Mobile 声明 inline；不声明 pip 或任�
 
 真实浏览器检查加载生产 Host/controller/custom-scheme sandbox，但卡片存储、权限与消息使用测试回调。
 尚未联调真实模型账号与完整 Cindy React 卡片，不等同于完整产品 UI 的 Light/Dark 实机目检。
+大小检查只约束本版本的新卡片写入，不批量改写此前已经保存的历史记录。
 上游 instructions 透传恢复模型既有的服务器说明，并在 facade 初始化时建立认证连接；
 本地协议 fixture 验证字段与失败语义，未实测真实模型的缓存率、启动耗时、用量或调用准确率。
 Mobile 真机、真实 SSH 主机、真实 GM endpoint 仍待端到端验收。
