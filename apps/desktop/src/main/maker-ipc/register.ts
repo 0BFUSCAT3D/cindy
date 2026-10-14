@@ -85,7 +85,7 @@ import { resolveBotAuthorizationDelivery, buildBotAuthorizationContinuation, com
 import { registerSessionSetModelHandler } from './sessionSetModelHandler.js';
 import { refreshSubscriptionAccountModels } from '../maker-host/subscription-account-models.js';
 import { syncSubscriptionAccountUsage } from '../usage/subscriptionAccountUsage.js';
-import { clearXaiRateLimitSnapshot } from '../usageBroadcaster.js';
+import { broadcastCodexAccountAuthReady, clearXaiRateLimitSnapshot } from '../usageBroadcaster.js';
 import { subscriptionAccountKind, subscriptionAccountState, loginSubscriptionAccount, logoutSubscriptionAccount, cancelSubscriptionAccountLogin, removeSubscriptionAccountCredentialsReversibly } from '../maker-host/subscription-account-auth.js';
 import { isCodexAccountProvider, codexAccountState, codexAccountLoginName, loginCodexAccount, logoutCodexAccount, cancelCodexAccountLogin, removeCodexAccountCredentialsReversibly, retireCodexAccount } from '../maker-host/codex-account-auth.js';
 import { projectRemoteBotDelegations } from './remoteBotDelegations.js';
@@ -6701,6 +6701,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           try { await maker.refreshAgentLocalModels('codex', { credentialMode: 'oauth-bearer', providerId }); }
           catch { /* Login remains valid; model refresh can be retried without changing credentials. */ }
           if (!current()) return;
+          broadcastCodexAccountAuthReady(providerId);
           broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {});
         } };
       }

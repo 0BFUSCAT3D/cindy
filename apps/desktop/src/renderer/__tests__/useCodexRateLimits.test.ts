@@ -120,19 +120,70 @@ describe('useCodexRateLimits', () => {
     expect(reader).toHaveBeenCalledTimes(3);
   });
 
-  it('does not clear independent account quota for a catalog update', async () => {
+  it('waits for the account-scoped auth-ready signal after late old pushes and reads', async () => {
+    const a = { ...result, providerId: 'openai-a' };
+    const refreshedA = { ...result, providerId: 'openai-a', primary: { usedPercent: 18, resetsAt: 'later' } };
     const b = { ...result, providerId: 'openai-b' };
-    let changed: (() => void) | undefined;
-    const reader = vi.fn().mockResolvedValueOnce(b).mockImplementation(() => new Promise(() => {}));
+    const accountChanges = new Map<string, (payload: unknown) => void>();
+    const authReady = new Map<string, () => void>();
+    const catalogChanges: Array<() => void> = [];
+    let resolveOldRead!: (value: MobileCodexRateLimitsResult) => void;
+    const reader = vi.fn()
+      .mockResolvedValueOnce(a)
+      .mockResolvedValueOnce(b)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOldRead = resolve; }))
+      .mockResolvedValueOnce(refreshedA)
+      .mockImplementation(() => new Promise(() => {}));
     vi.stubGlobal('electronAPI', { maker: {
-      usage: { getCodexRateLimits: reader },
-      onProvidersChanged: (callback: () => void) => { changed = callback; return vi.fn(); },
+      usage: {
+        getCodexRateLimits: reader,
+        onCodexAccountChanged: (callback: (payload: unknown) => void, providerId: string) => {
+          accountChanges.set(providerId, callback);
+          return () => accountChanges.delete(providerId);
+        },
+        onCodexAccountAuthReady: (callback: () => void, providerId: string) => {
+          authReady.set(providerId, callback);
+          return () => authReady.delete(providerId);
+        },
+      },
+      onProvidersChanged: (callback: () => void) => { catalogChanges.push(callback); return vi.fn(); },
     } });
-    const hook = renderHook(() => useCodexRateLimits(true, 'openai-b'));
-    await waitFor(() => expect(hook.result.current.snapshot).toBe(b));
-    act(() => changed?.());
-    expect(hook.result.current.snapshot).toBe(b);
+    const accountA = renderHook(() => useCodexRateLimits(true, 'openai-a'));
+    const accountB = renderHook(() => useCodexRateLimits(true, 'openai-b'));
+    await waitFor(() => {
+      expect(accountA.result.current.snapshot).toBe(a);
+      expect(accountB.result.current.snapshot).toBe(b);
+    });
+
+    // Catalog edits do not refresh either connected account.
+    act(() => catalogChanges.forEach(changed => changed()));
     expect(reader).toHaveBeenCalledTimes(2);
+
+    // A read started with the old credentials remains in flight when re-login retires them.
+    act(() => accountA.result.current.refresh());
+    expect(reader).toHaveBeenCalledTimes(3);
+    act(() => accountChanges.get('openai-a')?.(null));
+    expect(accountA.result.current.snapshot).toBeNull();
+
+    // Both an old usage push and a hover-triggered read can arrive before auth.json is replaced.
+    act(() => accountChanges.get('openai-a')?.(a));
+    act(() => accountA.result.current.refresh());
+    expect(reader).toHaveBeenCalledTimes(3);
+    act(() => catalogChanges.forEach(changed => changed()));
+    expect(reader).toHaveBeenCalledTimes(3);
+
+    // Only A's post-commit auth-ready signal can release its wait and refresh it.
+    act(() => authReady.get('openai-b')?.());
+    expect(reader).toHaveBeenCalledTimes(3);
+    act(() => authReady.get('openai-a')?.());
+    expect(reader).toHaveBeenCalledTimes(4);
+    await waitFor(() => expect(accountA.result.current.snapshot).toBe(refreshedA));
+    expect(accountB.result.current.snapshot).toBe(b);
+
+    // A stale pre-login response cannot overwrite the refreshed quota.
+    await act(async () => resolveOldRead(a));
+    expect(accountA.result.current.snapshot).toBe(refreshedA);
+    expect(accountB.result.current.snapshot).toBe(b);
   });
 
   it('isolates Cindy owner changes and late responses', async () => {

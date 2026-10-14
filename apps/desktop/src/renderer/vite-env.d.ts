@@ -6918,6 +6918,7 @@ interface ElectronAPI {
           fetchedAt: number;
         }) => void,
       ) => () => void;
+      onCodexAccountAuthReady: (cb: () => void, providerId: string) => () => void;
       onCodexAccountChanged: (
         cb: (p: {
           limitId?: string | null;

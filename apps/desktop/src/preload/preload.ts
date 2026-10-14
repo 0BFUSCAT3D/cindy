@@ -813,6 +813,9 @@ const fanOutMakerUsageClaudeAccount = createIpcFanOut('usage:claude-account-chan
 const fanOutMakerUsageCodexProviderAccount = createIpcFanOut(
   'usage:codex-provider-account-changed',
 );
+const fanOutMakerUsageCodexAccountAuthReady = createIpcFanOut(
+  'usage:codex-account-auth-ready',
+);
 const fanOutSubscriptionProviderAccount = createIpcFanOut(
   'usage:subscription-provider-account-changed',
 );
@@ -7790,6 +7793,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
               const scoped = payload as { providerId?: string; snapshot?: unknown };
               if (scoped?.providerId === providerId) cb(scoped.snapshot);
             }),
+      /** Fires for one Codex account after replacement auth credentials commit. */
+      onCodexAccountAuthReady: (cb: () => void, providerId: string) =>
+        fanOutMakerUsageCodexAccountAuthReady((payload: unknown) => {
+          const scoped = payload as { providerId?: string };
+          if (scoped?.providerId === providerId) cb();
+        }),
       /** xAI(SuperGrok bridge)限流快照推送 (bridge 每个成功上游响应解析 x-ratelimit-* 后推送)。 */
       onXaiRateLimitChanged: (cb: (payload: unknown) => void, providerId = 'xai') =>
         providerId === 'xai'

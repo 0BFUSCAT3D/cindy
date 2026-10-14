@@ -63,6 +63,7 @@ interface CachedRateLimits {
   unsubscribe: Array<() => void>;
   providerId: string;
   owner: ReturnType<typeof getDataOwnerGeneration>;
+  awaitingAuthCompletion: boolean;
 }
 const snapshots = new Map<string, CachedRateLimits>();
 let cacheOwner = getDataOwnerGeneration();
@@ -73,6 +74,9 @@ function publish(entry: CachedRateLimits, value: MobileCodexRateLimitsResult | n
 }
 
 function refreshEntry(entry: CachedRateLimits): void {
+  // A manual/hover refresh can still read the old auth.json during re-login.
+  // Wait for the main-process post-commit signal before allowing any read.
+  if (entry.awaitingAuthCompletion) return;
   const version = ++entry.version;
   entry.pendingReads++;
   void readCodexRateLimitsSafely(readCodexRateLimitsReader(), entry.providerId).then(next => {
@@ -96,6 +100,7 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   if (cached) return cached;
   const entry: CachedRateLimits = {
     providerId, owner, snapshot: null, version: 0, pendingReads: 0, listeners: new Set(), unsubscribe: [],
+    awaitingAuthCompletion: false,
   };
   snapshots.set(providerId, entry);
   const clear = () => {
@@ -105,13 +110,25 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   // Stay subscribed while panels are unmounted, so a replaced account cannot
   // seed the next panel with the previous identity's cached quota.
   const usageUnsubscribe = window.electronAPI?.maker?.usage?.onCodexAccountChanged?.(payload => {
-    if (payload === null) clear();
+    if (payload === null) {
+      entry.awaitingAuthCompletion = true;
+      clear();
+    }
     // The authoritative read itself emits a usage push. Suppress those echoes
     // while any read is pending rather than scheduling a recursive refresh.
-    else if (entry.listeners.size > 0 && entry.pendingReads === 0
+    else if (!entry.awaitingAuthCompletion && entry.listeners.size > 0 && entry.pendingReads === 0
       && isDataOwnerGenerationCurrent(entry.owner)) refreshEntry(entry);
   }, providerId);
   if (usageUnsubscribe) entry.unsubscribe.push(usageUnsubscribe);
+  if (providerId !== 'openai') {
+    const authReadyUnsubscribe = window.electronAPI?.maker?.usage?.onCodexAccountAuthReady?.(() => {
+      // Main emits this provider-scoped signal only after the new auth.json commits.
+      if (!entry.awaitingAuthCompletion) return;
+      entry.awaitingAuthCompletion = false;
+      if (entry.listeners.size > 0) refreshEntry(entry);
+    }, providerId);
+    if (authReadyUnsubscribe) entry.unsubscribe.push(authReadyUnsubscribe);
+  }
   if (providerId === 'openai') {
     const authUnsubscribe = readCodexAuthStateSubscriber()?.(payload => {
       if (payload.agentKind !== 'codex') return;
@@ -119,13 +136,6 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
       if (entry.listeners.size > 0) refreshEntry(entry);
     });
     if (authUnsubscribe) entry.unsubscribe.push(authUnsubscribe);
-  } else {
-    const providerUnsubscribe = window.electronAPI?.maker?.onProvidersChanged?.(() => {
-      // Catalog edits/renames aren't account changes. Main sends a scoped null
-      // usage push when credentials really change or the connection is removed.
-      if (entry.listeners.size > 0) refreshEntry(entry);
-    });
-    if (providerUnsubscribe) entry.unsubscribe.push(providerUnsubscribe);
   }
   return entry;
 }
