@@ -23,6 +23,16 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
     { deviceId: 'studio', name: 'Studio', isSelf: false },
   ],
 }));
+const localCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+}));
+const remoteCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
+  loading: false,
+  error: null as string | null,
+}));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => localCatalog }));
+vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => remoteCatalog }));
 vi.mock('@/contexts/AuthContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/contexts/AuthContext')>()),
   useOptionalAuthUser: () => ({ name: 'Magi', avatar: null }),
@@ -126,6 +136,10 @@ beforeEach(() => {
   resetProviderShareStoreForTests();
   localGroupsTesting.reset();
   localGroups = {};
+  localCatalog.providers = [];
+  remoteCatalog.providers = [];
+  remoteCatalog.loading = false;
+  remoteCatalog.error = null;
   confirmSpy.mockClear();
   command.mockReset();
   command.mockImplementation(async (cmd: { action: string }) => {
@@ -140,8 +154,20 @@ beforeEach(() => {
       providerShare: { command, onOwnedChanged: () => () => undefined, onReceivedChanged: () => () => undefined },
       // 页面上方的供应商组一块(由 ProviderGroupSection 自己的测试覆盖)：这里只给一个空组。
       providerGroup: {
-        command: async (cmd: { action: string; providerId: string }) =>
-          cmd.action === 'list' ? localGroups : { providerId: cmd.providerId, config: null, members: [] },
+        command: async (cmd: {
+          action: string;
+          providerId?: string;
+          request?: { action: string; command?: { action: string } };
+        }) => {
+          if (cmd.action === 'list') return localGroups;
+          if (cmd.action === 'remote-manage') {
+            const action = cmd.request?.command?.action;
+            if (action === 'owned') return owned();
+            if (action === 'own-usage') return ownUsage();
+            if (action === 'approve' || action === 'reject') return { ok: true };
+          }
+          return { providerId: cmd.providerId, config: null, members: [] };
+        },
         onChanged: () => () => undefined,
       },
     },
@@ -150,10 +176,22 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-function renderPage(gate: 'on' | 'remote-off' | 'invocation-off' = 'on') {
+function renderPage(
+  gate: 'on' | 'remote-off' | 'invocation-off' = 'on',
+  options: { deviceId?: string } = {},
+) {
   const onBack = vi.fn();
-  render(<ProviderShareManagePage providerId="xd" providerName="Cindy AI" providerIcon={null} gate={gate} onBack={onBack} />);
-  return { onBack };
+  const view = render(
+    <ProviderShareManagePage
+      providerId="xd"
+      providerName="Cindy AI"
+      providerIcon={null}
+      gate={gate}
+      deviceId={options.deviceId}
+      onBack={onBack}
+    />,
+  );
+  return { onBack, ...view };
 }
 
 describe('ProviderShareManagePage', () => {
@@ -297,5 +335,48 @@ describe('ProviderShareManagePage', () => {
     const create = screen.getByRole('button', { name: 'providerShare.manage.createLink' }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
     expect(screen.getByRole('status').textContent).toBe('providerShare.manage.gateInvocation');
+  });
+
+  it('shows the Claude subscription email notice on the management page', async () => {
+    localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'oauth', native: 'claude' } }];
+    renderPage();
+    await screen.findAllByTestId('provider-share-pending-row');
+    expect(screen.getByTestId('provider-share-claude-email-callout').textContent).toContain(
+      'providerShare.approve.calloutClaudeEmail',
+    );
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not show the Claude subscription email notice for a non-Claude provider', async () => {
+    localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
+    renderPage();
+    await screen.findAllByTestId('provider-share-pending-row');
+    expect(screen.queryByTestId('provider-share-claude-email-callout')).toBeNull();
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('blocks approval on a remote management page until the provider directory is ready', async () => {
+    remoteCatalog.loading = true;
+    const view = renderPage('on', { deviceId: 'studio' });
+    await screen.findAllByTestId('provider-share-pending-row');
+    expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement).disabled).toBe(false);
+
+    remoteCatalog.loading = false;
+    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'oauth', native: 'claude' } }];
+    view.rerender(
+      <ProviderShareManagePage
+        providerId="xd"
+        providerName="Cindy AI"
+        providerIcon={null}
+        gate="on"
+        deviceId="studio"
+        onBack={view.onBack}
+      />,
+    );
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(screen.getByTestId('provider-share-claude-email-callout')).toBeTruthy();
   });
 });

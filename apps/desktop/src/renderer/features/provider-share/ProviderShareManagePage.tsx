@@ -13,6 +13,8 @@ import type { ProviderView } from '@cindy/model-providers';
 import { Button } from '@/components/ui/button';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
+import { useDeviceProviders } from '@/hooks/useDeviceProviders';
+import { useProviders } from '@/hooks/useProviders';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { ProviderGroupSection } from '@/features/provider-group/ProviderGroupSection';
@@ -27,7 +29,7 @@ import type {
   ProviderShareUsageRange,
 } from '../../../shared/providerShare';
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
-import type { ProviderShareGate, ProviderSharePendingRequest } from './providerShareFormat';
+import { sharesClaudeLoginEmail, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
 import { ProviderUsageSection } from './ProviderUsageSection';
 import { publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
@@ -60,6 +62,8 @@ export function ProviderShareManagePage({
   const { confirm } = useConfirmDialog();
   const time = useShareTimeFormat();
   const devices = useDeviceLinkDeviceList();
+  const { providers } = useProviders();
+  const remoteCatalog = useDeviceProviders(deviceId);
   const selfDeviceName = deviceId ? deviceName ?? devices?.find((device) => device.deviceId === deviceId)?.name ?? null
     : devices?.find((device) => device.isSelf)?.name ?? null;
   const [remoteGroup, setRemoteGroup] = useState<ProviderGroupConfig | null>(initialGroup ?? null);
@@ -216,6 +220,12 @@ export function ProviderShareManagePage({
 
   const ready = state?.ready === true;
   const canCreateLink = gate === 'on' && ready && !loadFailed;
+  const providerForApproval = (deviceId ? remoteCatalog.providers : providers).find((provider) => provider.id === providerId)
+    ?? remoteProvider;
+  const sharesClaudeEmail = sharesClaudeLoginEmail(providerForApproval);
+  // 同账号另一台电脑的目录首帧可能还是空的；在确认供应商类型前不能允许同意，
+  // 否则 Claude 订阅的邮箱告知可能被漏掉。错误也保持阻断，避免未知状态被当成非 Claude。
+  const providerClassificationReady = !deviceId || (!remoteCatalog.loading && remoteCatalog.error === null);
 
   return (
     // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、
@@ -336,6 +346,11 @@ export function ProviderShareManagePage({
                     <span aria-hidden="true">·</span>
                     <span>{t('providerShare.manage.pending.expiresHint')}</span>
                   </div>
+                  {sharesClaudeEmail && (
+                    <p data-testid="provider-share-claude-email-callout" className="text-12 leading-[1.5] text-[var(--text-secondary)]">
+                      {t('providerShare.approve.calloutClaudeEmail', { name: item.request.displayName })}
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Button
@@ -351,7 +366,7 @@ export function ProviderShareManagePage({
                     variant="primary"
                     size="sm"
                     compact
-                    disabled={loadFailed || busy.has(item.request.requestId)}
+                    disabled={loadFailed || !providerClassificationReady || busy.has(item.request.requestId)}
                     onClick={() => void decide(item, 'approve')}
                   >
                     {t('providerShare.approve.approve')}
