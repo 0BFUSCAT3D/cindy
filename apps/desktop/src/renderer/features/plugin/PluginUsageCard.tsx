@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
@@ -16,6 +16,9 @@ export function PluginUsageCard({
   const [summary, setSummary] = useState<PluginUsageSummary | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [clearing, setClearing] = useState(false);
+  const clearingRef = useRef(clearing);
+  clearingRef.current = clearing;
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const load = useCallback(async () => {
     const next = await window.electronAPI.ghosts.usageSummary(ghostId);
     if (!next) throw new Error('Usage unavailable');
@@ -23,39 +26,47 @@ export function PluginUsageCard({
   }, [ghostId]);
   useEffect(() => {
     let live = true;
+    let inFlight = false;
     setSummary(null);
     setState('loading');
-    void load()
-      .then((value) => {
+    const read = async () => {
+      if (!live || inFlight) return;
+      inFlight = true;
+      try {
+        const value = await load();
         if (live) {
           setSummary(value);
           setState('ready');
         }
-      })
-      .catch(() => {
-        if (live) setState('failed');
-      });
+      } catch {
+        if (live) {
+          setSummary(null);
+          setState('failed');
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    const readWhenVisible = () => {
+      if (document.visibilityState === 'visible' && !clearingRef.current) void read();
+    };
+    void read();
+    const timer = window.setInterval(readWhenVisible, 5_000);
+    document.addEventListener('visibilitychange', readWhenVisible);
     return () => {
       live = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', readWhenVisible);
     };
-  }, [load]);
-  const refresh = async () => {
-    setState('loading');
-    try {
-      setSummary(await load());
-      setState('ready');
-    } catch {
-      setSummary(null);
-      setState('failed');
-    }
-  };
+  }, [load, refreshVersion]);
+  const refresh = () => setRefreshVersion((value) => value + 1);
   const clear = async () => {
     if (!summary || clearing || !confirmClear) return;
     setClearing(true);
     try {
       if (!(await confirmClear())) return;
       await window.electronAPI.ghosts.clearUsage(summary.subjectId);
-      await refresh();
+      refresh();
     } catch {
       setSummary(null);
       setState('failed');

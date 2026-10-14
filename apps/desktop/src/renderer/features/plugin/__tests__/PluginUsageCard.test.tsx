@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { PluginUsageCard } from '../PluginUsageCard';
 import { PluginSharedUsage } from '../PluginSharedUsage';
@@ -12,7 +12,11 @@ vi.mock('react-i18next', () => ({
     i18n: { language: 'en' },
   }),
 }));
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 const summary: PluginUsageSummary = {
   subjectId: 'subject1',
   recordingStartedAt: 1,
@@ -31,6 +35,71 @@ function api(load = vi.fn(async () => summary)) {
   });
   return { load, clear };
 }
+it('updates recent and rolling usage while the detail remains mounted', async () => {
+  vi.useFakeTimers();
+  const next = { ...summary, lastUsedAt: Date.UTC(2026, 9, 14, 12), callsLast7Days: 8 };
+  const { load } = api(vi.fn().mockResolvedValueOnce(summary).mockResolvedValue(next));
+  const view = render(<PluginUsageCard ghostId="plugin" />);
+  await act(async () => {});
+  const recent = view.container.querySelector('dd')!.textContent;
+  expect(screen.getByText('7')).toBeTruthy();
+  await act(async () => vi.advanceTimersByTimeAsync(5_000));
+  expect(screen.getByText('8')).toBeTruthy();
+  expect(view.container.querySelector('dd')!.textContent).not.toBe(recent);
+  expect(load).toHaveBeenCalledTimes(2);
+  view.unmount();
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(load).toHaveBeenCalledTimes(2);
+});
+it('pauses automatic reads while hidden and refreshes when visible again', async () => {
+  vi.useFakeTimers();
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  const { load } = api();
+  render(<PluginUsageCard ghostId="plugin" />);
+  await act(async () => {});
+  visibility.mockReturnValue('hidden');
+  await act(async () => vi.advanceTimersByTimeAsync(15_000));
+  expect(load).toHaveBeenCalledTimes(1);
+  visibility.mockReturnValue('visible');
+  await act(async () => fireEvent(document, new Event('visibilitychange')));
+  expect(load).toHaveBeenCalledTimes(2);
+});
+it('does not overlap polling or commit a response from a previous plugin', async () => {
+  vi.useFakeTimers();
+  let complete!: (value: PluginUsageSummary) => void;
+  const pending = new Promise<PluginUsageSummary>((resolve) => { complete = resolve; });
+  const { load } = api(vi.fn().mockResolvedValueOnce(summary).mockReturnValueOnce(pending)
+    .mockResolvedValue({ ...summary, callsLast7Days: 9 }));
+  const view = render(<PluginUsageCard ghostId="first" />);
+  await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(15_000));
+  expect(load).toHaveBeenCalledTimes(2);
+  view.rerender(<PluginUsageCard ghostId="second" />);
+  await act(async () => {});
+  expect(screen.getByText('9')).toBeTruthy();
+  await act(async () => complete({ ...summary, callsLast7Days: 8 }));
+  expect(screen.queryByText('8')).toBeNull();
+  expect(screen.getByText('9')).toBeTruthy();
+});
+it('holds automatic reads during clear confirmation and ignores a pre-clear response', async () => {
+  vi.useFakeTimers();
+  let complete!: (value: PluginUsageSummary) => void;
+  let confirm!: (value: boolean) => void;
+  const pending = new Promise<PluginUsageSummary>((resolve) => { complete = resolve; });
+  const { load, clear } = api(vi.fn().mockResolvedValueOnce(summary).mockReturnValueOnce(pending)
+    .mockResolvedValue({ ...summary, lastUsedAt: null, callsLast7Days: 0 }));
+  render(<PluginUsageCard ghostId="plugin" confirmClear={() => new Promise(resolve => { confirm = resolve; })} />);
+  await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(5_000));
+  fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.usage.clear' }));
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  expect(load).toHaveBeenCalledTimes(2);
+  await act(async () => confirm(true));
+  expect(clear).toHaveBeenCalledWith('subject1');
+  expect(screen.getByText('0')).toBeTruthy();
+  await act(async () => complete(summary));
+  expect(screen.queryByText('7')).toBeNull();
+});
 it('shows two personal metrics with a direct clear action after confirmation', async () => {
   const { load, clear } = api();
   const confirm = vi.fn(async () => true);
