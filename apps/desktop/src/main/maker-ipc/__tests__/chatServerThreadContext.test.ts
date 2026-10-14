@@ -201,11 +201,27 @@ describe('Chat Server Thread context reaches the Agent input', () => {
   });
 
   /** A main-timeline 引用回复 card, as the host writes it. */
-  function quoting(message: FakeMessage, original: FakeMessage) {
+  function quoting(message: FakeMessage, original: Pick<FakeMessage, 'id' | 'seq' | 'author'>, files: { count: number; name: string | null } = { count: 0, name: null }) {
     message.content.unshift(buildBotGroupQuoteCard({ messageId: original.id, authorName: original.author.name, authorKind: 'user',
-      excerpt: 'snapshot words', attachmentCount: 0, attachmentName: null, sequence: Number(original.seq) }) as never);
+      excerpt: 'snapshot words', attachmentCount: files.count, attachmentName: files.name, sequence: Number(original.seq) }) as never);
     return message;
   }
+
+  it('names the quoted file for the Agent, from the original when read and from the snapshot otherwise', async () => {
+    const live = post('', { media: ['live-plan.pdf'] });
+    const background = quoting(post('看看这个'), live);
+    // An original older than what this run reads: only its card snapshot is known.
+    const older = { id: uuid(++ids), seq: '1', author: { kind: 'human', name: 'Alex' } };
+    const request = quoting(post('@所有人 处理这个文件'), older, { count: 2, name: 'q3-report.pdf' });
+    request.mentions = bots.map(bot => bot.id);
+    trigger(request);
+    await vi.advanceTimersByTimeAsync(2000);
+    const data = payload(inputs('nova')[0]!.message);
+    expect(data.currentRequest.quote).toEqual({ messageId: older.id, from: 'Alex', text: 'snapshot words', attachments: 2, attachmentName: 'q3-report.pdf' });
+    const seen = JSON.stringify(data);
+    expect(seen).toContain(background.id);
+    expect(seen).toContain(JSON.stringify({ messageId: live.id, from: 'Alex', text: '', attachments: 1, attachmentName: 'live-plan.pdf' }));
+  });
 
   it('carries a 话题 root\'s quote into the Thread context, resolved against what this run read', async () => {
     const original = post('定价页分三档：免费、个人、团队。');

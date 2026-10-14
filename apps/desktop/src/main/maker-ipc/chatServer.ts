@@ -31,7 +31,7 @@ import {
   readImportedBotGroupRuntimeFailureCode,
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
   type BotGroupDetail, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
-  botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
+  botGroupQuoteAttachmentName, botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
 } from '../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal } from './botGroupChatService.js';
 import { readPersistedReplyText } from './botGroupChatService.js';
@@ -100,15 +100,19 @@ const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy
 const bodyText = (m: Message) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m).map(b => b.text ?? b.fallback ?? (b.type === 'media' ? `[附件: ${b.caption ?? '文件'}]` : '')).join('\n');
 /** Words of a message for a quote excerpt; attachments are summarized separately. */
 const quotedText = (m: Message) => bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n');
+const quotedAttachments = (m: Message) => m.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []);
+/** A quote's attachment summary as model input: how many, and which file it names. */
+const quoteAttachments = (count: number, name: string | null) => count ? { attachments: count, ...(name ? { attachmentName: name } : {}) } : {};
 /** A quote as model context: the original when it is in the same history, else the snapshot. */
 function quoteContext(m: Message, history: readonly Message[]) {
   const quote = m.deleted ? null : readBotGroupQuote(m.content);
   if (!quote) return {};
   const original = history.find(o => o.id === quote.messageId && o.threadRootId === null);
   if (original?.deleted) return { quote: { messageId: quote.messageId, deleted: true } };
-  const attachments = original ? original.content.filter(b => b.type === 'media').length : quote.attachmentCount;
+  const files = original ? quotedAttachments(original) : null;
   return { quote: { messageId: quote.messageId, from: original?.author.name ?? quote.authorName,
-    text: original ? botGroupQuoteExcerpt(quotedText(original)) : quote.excerpt, ...(attachments ? { attachments } : {}) } };
+    text: original ? botGroupQuoteExcerpt(quotedText(original)) : quote.excerpt,
+    ...(files ? quoteAttachments(files.length, botGroupQuoteAttachmentName(files)) : quoteAttachments(quote.attachmentCount, quote.attachmentName)) } };
 }
 // Presentation only: keep actor IDs and stored names independent of ownership labels.
 const memberName = (m: Member) => m.kind === 'bot' && m.ownerName.trim() ? `${m.name} (${m.ownerName.trim()})` : m.name;
@@ -565,7 +569,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (quoted.id !== messageId || quoted.deleted || quoted.threadRootId !== null || quoted.origin === 'system'
       || view.kind !== 'message' || view.authorKind === 'system') throw new Error('QUOTE_UNAVAILABLE');
     return botGroupQuoteFromMessage({ ...view, content: quotedText(quoted),
-      attachments: quoted.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []) });
+      attachments: quotedAttachments(quoted) });
   }
   // Attachments are independent of the text projection. A failed object store
   // request never rejects a room/Thread; subsequent reads retry after a backoff.
@@ -694,7 +698,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         organizerName: organizer.name, members: members.map(m => ({ botId: m.id, name: m.name, description: localBot(m.id)?.description ?? '' })),
         recent: s.messages.slice(0, 12).reverse().map(m => ({ from: m.author.name, text: bodyText(m) })), request: text,
         requestAttachments: attachments.map(a => a.name), currentSteps: proposed?.steps,
-        ...(quote ? { requestQuote: { from: quote.authorName, text: quote.excerpt, ...(quote.attachmentCount ? { attachments: quote.attachmentCount } : {}) } } : {}) }, controller.signal);
+        ...(quote ? { requestQuote: { from: quote.authorName, text: quote.excerpt, ...quoteAttachments(quote.attachmentCount, quote.attachmentName) } } : {}) }, controller.signal);
       // Steps read the plan's request; keep what it quotes beside it when the server's limit allows.
       const quoteLine = quote ? buildBotGroupQuoteCard(quote).fallback : '';
       const request = quoteLine && text.length + quoteLine.length + 2 <= 8000 ? `${text}\n\n${quoteLine}` : text;

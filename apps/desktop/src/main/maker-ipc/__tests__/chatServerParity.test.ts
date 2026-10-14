@@ -137,12 +137,13 @@ describe('server group feature parity', () => {
     const base = fixture.handle.getMockImplementation()!;
     fixture.handle.mockImplementation((route, method, data) => route === `/conversations/${roomId}/messages/${quotedId}`
       ? { body: { id: quotedId, seq: '7', authorId: secondBotId, author: { kind: 'bot', name: 'Peer' }, origin: 'bot', deleted: false,
-        threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [{ type: 'text', text: 'Landing page: hero, pricing, FAQ' }] } }
+        threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [{ type: 'text', text: 'Landing page: hero, pricing, FAQ' },
+          { type: 'media', mediaId: '80000000-0000-4000-8000-0000000000f1', caption: 'wireframe.png' }] } }
       : base(route, method, data));
     expect((await send({ text: 'Do this one', division: true, quote: { messageId: quotedId } })).ok).toBe(true); await flush();
     expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({ mode: 'forced', request: 'Do this one',
-      requestQuote: { from: 'Peer (Me)', text: 'Landing page: hero, pricing, FAQ' } }), expect.any(AbortSignal));
-    expect(planPosts()[0]?.[2]).toMatchObject({ request: 'Do this one\n\n> Peer (Me): Landing page: hero, pricing, FAQ' });
+      requestQuote: { from: 'Peer (Me)', text: 'Landing page: hero, pricing, FAQ', attachments: 1, attachmentName: 'wireframe.png' } }), expect.any(AbortSignal));
+    expect(planPosts()[0]?.[2]).toMatchObject({ request: 'Do this one\n\n> Peer (Me): Landing page: hero, pricing, FAQ 📎 wireframe.png' });
   });
 
   it('returns one available member to ordinary discussion using the real decision parser', async () => {

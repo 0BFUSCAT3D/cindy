@@ -33,7 +33,7 @@ export interface PlanDecisionInput {
   /** Names of what the user attached to `request`. */
   requestAttachments?: string[];
   /** 引用回复: the earlier group message `request` quotes, as the host read it. */
-  requestQuote?: { from: string; text: string; attachments?: number };
+  requestQuote?: { from: string; text: string; attachments?: number; attachmentName?: string };
   /** Current proposed steps when revising. */
   currentSteps?: Array<{ botId: string; task: string }>;
 }

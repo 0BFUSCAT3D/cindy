@@ -66,7 +66,8 @@ export interface BotGroupQuoteCard {
  * The attachment a quote names: the first with a name. A server attachment that has not
  * downloaded yet is a placeholder with only its id and (possibly empty) name.
  */
-function firstAttachmentName(attachments: readonly Pick<BotGroupAttachment, 'name'>[]): string | null {
+/** The attachment a quote names: the first named one, `…` when none has a name. */
+export function botGroupQuoteAttachmentName(attachments: readonly Pick<BotGroupAttachment, 'name'>[]): string | null {
   if (!attachments.length) return null;
   const named = attachments.find(attachment => attachment.name.trim());
   return named ? clip(named.name.trim(), ATTACHMENT_NAME_MAX) : '…';
@@ -91,7 +92,7 @@ export function botGroupQuoteFromMessage(message: Pick<BotGroupMessageView,
     authorKind: message.authorKind === 'user' ? 'user' : 'bot',
     excerpt: botGroupQuoteExcerpt(message.content),
     attachmentCount: message.attachments.length,
-    attachmentName: firstAttachmentName(message.attachments),
+    attachmentName: botGroupQuoteAttachmentName(message.attachments),
     sequence: Number.isSafeInteger(message.sequence) && message.sequence > 0 ? message.sequence : null,
   };
 }
@@ -214,7 +215,7 @@ export function resolveBotGroupQuote(
     authorName: original.authorName || quote.authorName,
     excerpt: botGroupQuoteExcerpt(original.content),
     ...(attachments.length
-      ? { attachmentCount: attachments.length, attachmentName: firstAttachmentName(attachments) }
+      ? { attachmentCount: attachments.length, attachmentName: botGroupQuoteAttachmentName(attachments) }
       : { attachmentCount: quote.attachmentCount, attachmentName: quote.attachmentName }),
   };
 }
