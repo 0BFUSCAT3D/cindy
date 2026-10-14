@@ -13,6 +13,7 @@ import React from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ProviderShareReceived } from '@cindy/device-link';
 import type { ProviderView } from '@cindy/model-providers';
 
 const {
@@ -133,6 +134,7 @@ import { updateCustomProvider } from '@/lib/customProviders';
 import { ProvidersSection } from '@/components/settings/ProvidersSection';
 import { useProviderSubscriptionCard } from '@/components/settings/useProviderSubscriptionCard';
 import { __testing as localProviderGroupsTesting } from '@/features/provider-group/useLocalProviderGroups';
+import { resetProviderShareStoreForTests } from '@/features/provider-share/providerShareStore';
 
 vi.mock('@/components/settings/useProviderSubscriptionCard', () => ({
   useProviderSubscriptionCard: vi.fn(() => null),
@@ -1066,5 +1068,51 @@ describe('ProvidersSection — 允许被远程调用与供应商组', () => {
     expect(within(row).getByRole('switch', { name: 'settings.providers.detail.remoteAccess.ariaLabel' })).toBeTruthy();
     expect(screen.queryByTestId('provider-group-row')).toBeNull();
     expect(command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'get' }));
+  });
+});
+
+// 模型面板底部「配置模型」在分享来的供应商上带 receivedShare，设置页直接选中那一条。
+describe('ProvidersSection — 分享来的供应商深链', () => {
+  const share: ProviderShareReceived = {
+    shareId: 'share-1',
+    memberId: 'mem-1',
+    providerId: 'anthropic',
+    providerLabel: 'Anthropic',
+    hostDeviceId: 'host-1',
+    deviceName: "Magi's Mac Mini",
+    owner: { displayName: 'Magi', avatarUrl: null, region: 'global' },
+    // 暂停中的分享不读对方目录，详情页不依赖 device-link。
+    status: 'paused',
+    hostOnline: true,
+    hostCapable: true,
+  };
+
+  function stubReceived(received: ProviderShareReceived[]) {
+    resetProviderShareStoreForTests();
+    const command = vi.fn(async (cmd: { action: string }) => {
+      if (cmd.action === 'received') return received;
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    Object.assign(window.electronAPI, {
+      providerShare: { command, onReceivedChanged: () => () => undefined },
+    });
+  }
+
+  afterEach(() => resetProviderShareStoreForTests());
+
+  it('receivedShare=<shareId> → 选中那条分享来的供应商；参数消费后清除', async () => {
+    stubReceived([share]);
+    renderAt('?tab=providers&receivedShare=share-1');
+
+    await screen.findByTestId('provider-share-received-detail');
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?tab=providers'));
+  });
+
+  it('这条分享已不在列表里 → 只停在供应商页，参数同样清除', async () => {
+    stubReceived([]);
+    renderAt('?tab=providers&receivedShare=share-gone');
+
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?tab=providers'));
+    expect(screen.queryByTestId('provider-share-received-detail')).toBeNull();
   });
 });

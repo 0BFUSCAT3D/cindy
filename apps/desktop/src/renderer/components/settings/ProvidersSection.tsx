@@ -125,7 +125,10 @@ import {
   pendingRequestCountByProvider,
   providerShareGate,
 } from '@/features/provider-share/providerShareFormat';
-import { PROVIDER_SHARE_MANAGE_PARAM } from '@/features/provider-share/providerShareNavigation';
+import {
+  PROVIDER_SHARE_MANAGE_PARAM,
+  PROVIDER_SHARE_RECEIVED_PARAM,
+} from '@/features/provider-share/providerShareNavigation';
 import {
   useProviderSharePendingRequests,
   useProviderShareReceived,
@@ -2444,7 +2447,7 @@ export function ProvidersSection() {
   // 选中本机供应商或登录引导时清空。
   const [selectedShareId, setSelectedShareId] = useState<string | null>(null);
   const [selectedRemoteKey, setSelectedRemoteKey] = useState<string | null>(null);
-  const { received: receivedShares } = useProviderShareReceived();
+  const { received: receivedShares, loaded: receivedSharesLoaded } = useProviderShareReceived();
   const selectedShare = selectedShareId
     ? receivedShares.find((share) => share.shareId === selectedShareId) ?? null
     : null;
@@ -2761,6 +2764,20 @@ export function ProvidersSection() {
     next.delete(PROVIDER_SHARE_MANAGE_PARAM);
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
+  // 分享来的供应商深链(?receivedShare=<shareId>，来自模型选择器底部「配置模型」)：等分享列表到了再消费
+  // 并从 URL 摘除；这条分享已不在列表里(刚被撤销或退出)时只停在供应商页。
+  useEffect(() => {
+    const target = searchParams.get(PROVIDER_SHARE_RECEIVED_PARAM);
+    if (!target || !receivedSharesLoaded) return;
+    if (receivedShares.some((share) => share.shareId === target)) {
+      setShareManageProviderId(null);
+      setFocusedModel(null);
+      selectShare(target);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete(PROVIDER_SHARE_RECEIVED_PARAM);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, receivedSharesLoaded, receivedShares, selectShare]);
   useEffect(() => {
     if (loading) return;
     const connect = searchParams.get('connect');

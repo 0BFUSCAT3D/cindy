@@ -25,6 +25,7 @@ import { remoteAgentProviders } from '@/components/new-chat/unifiedModelSelectio
 import { PermissionSelector } from '@/components/new-chat/PermissionSelector';
 import { VendorSegmentedSwitcher } from '@/components/new-chat/VendorSegmentedSwitcher';
 import { agentKindToVendor } from '@/components/sidebar/VendorIcon';
+import { providersSettingsPath } from '@/features/provider-share/providerShareNavigation';
 import { useAgentCapabilities } from '@/hooks/useAgentCapabilities';
 import { useDeviceProviders } from '@/hooks/useDeviceProviders';
 import { useProviders } from '@/hooks/useProviders';
@@ -1032,9 +1033,9 @@ export function CreateWorkerPopover({
                 onNavigateToProviders={
                   deviceId || isSidebarWindow()
                     ? undefined
-                    : () => {
+                    : (target) => {
                         onClose();
-                        navigate('/settings?tab=providers');
+                        navigate(providersSettingsPath(target));
                       }
                 }
                 modelMemory={modelMemory}

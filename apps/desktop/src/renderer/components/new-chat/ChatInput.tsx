@@ -125,6 +125,7 @@ import {
   resolveModelSelectorAgentIdentity,
   type EffortChangeOptions,
   type ModelMemoryAccessors,
+  type ProvidersNavigationTarget,
   type RemoteAgentSelectorOptions,
   type UnifiedSelectionAgentDevice,
 } from './ModelSelector';
@@ -414,6 +415,7 @@ import { appendMentionChip } from './mentionChipInsertion';
 // device-link 远程会话:设置变更不落本地 DB(会 404),改写远程内存层 + 运行时隧道。
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 import { readSessionProviderGroup } from '@/features/provider-group/sessionProviderGroup';
+import { providersSettingsPath } from '@/features/provider-share/providerShareNavigation';
 import { makerApiFor, makerApiForDevice, makerApiForSticky, subscribeRemoteCredentialSwitchOutcome } from '@/lib/makerTransport';
 import { SESSION_LINK_DROP_MIME } from '@/lib/sessionLinkDrop';
 
@@ -8372,8 +8374,8 @@ export function ChatInput({
     byModel: (modelId, expectedRevision) => performModelChange(modelId, expectedRevision),
   };
 
-  const handleNavigateToProviders = useCallback(() => {
-    navigate('/settings?tab=providers');
+  const handleNavigateToProviders = useCallback((target?: ProvidersNavigationTarget) => {
+    navigate(providersSettingsPath(target));
   }, [navigate]);
 
   const handleReconnectSource = useCallback(() => {
