@@ -282,6 +282,47 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     );
   });
 
+  it('rejects animated HDR instead of flattening it to the first frame, and leaves animated SDR alone', async () => {
+    const frames = await Promise.all(
+      ['#c80000', '#0000c8'].map((background) =>
+        sharp({ create: { width: 8, height: 8, channels: 3, background } }).png().toBuffer(),
+      ),
+    );
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hdr-avatar-'));
+    try {
+      const iccPath = path.join(dir, 'pq.icc');
+      await writeFile(iccPath, (await sharp(fixture('pq-bt2100.png')).metadata()).icc!);
+      const animatedWebp = (withPq: boolean) => {
+        const pipeline = sharp(frames, { join: { animated: true } });
+        return (withPq ? pipeline.withIccProfile(iccPath) : pipeline).webp().toBuffer();
+      };
+      const hdrWebp = await animatedWebp(true);
+      const hdrWebpMetadata = await sharp(hdrWebp).metadata();
+      expect(hdrWebpMetadata.pages).toBe(2);
+      expect(readIccCicp(hdrWebpMetadata.icc)?.transfer).toBe(16);
+      await expect(toSdrAvatarImage({ buffer: hdrWebp, mimeType: 'image/webp' })).rejects.toThrow(
+        /INVALID_PARAMS.*Animated/,
+      );
+      const sdrWebp = { buffer: await animatedWebp(false), mimeType: 'image/webp' };
+      expect(await toSdrAvatarImage(sdrWebp)).toBe(sdrWebp);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    // APNG:acTL 声明 2 帧;libvips 只解码默认图像,转换会丢掉其余帧。
+    const acTL = pngChunk('acTL', Buffer.from([0, 0, 0, 2, 0, 0, 0, 0]));
+    const hdrApng = insertAfterIhdr(
+      await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]),
+      acTL,
+    );
+    expect(readPngHdrChunks(hdrApng).animated).toBe(true);
+    await expect(toSdrAvatarImage({ buffer: hdrApng, mimeType: 'image/png' })).rejects.toThrow(
+      /INVALID_PARAMS.*Animated/,
+    );
+    const sdrApng = { buffer: insertAfterIhdr(frames[0]!, acTL), mimeType: 'image/png' };
+    expect(await toSdrAvatarImage(sdrApng)).toBe(sdrApng);
+  });
+
   it('runs concurrent conversions one at a time and keeps going after a failure', async () => {
     const valid = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
     const broken = valid.subarray(0, valid.length - 20);

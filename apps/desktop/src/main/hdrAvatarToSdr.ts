@@ -81,10 +81,18 @@ function sniffFormat(buffer: Buffer): AvatarFormat | null {
   return null;
 }
 
-/** 读取 IDAT 之前的 cICP / cLLI 块（PNG 规范要求二者都出现在 IDAT 之前）。 */
-export function readPngHdrChunks(buffer: Buffer): { cicp: Cicp | null; maxCllNits: number | null } {
+/**
+ * 读取 IDAT 之前的 cICP / cLLI 块，以及标记 APNG 的 acTL 块（PNG / APNG 规范要求三者
+ * 都出现在 IDAT 之前）。
+ */
+export function readPngHdrChunks(buffer: Buffer): {
+  cicp: Cicp | null;
+  maxCllNits: number | null;
+  animated: boolean;
+} {
   let cicp: Cicp | null = null;
   let maxCllNits: number | null = null;
+  let animated = false;
   let offset = 8;
   while (offset + 8 <= buffer.length) {
     const length = buffer.readUInt32BE(offset);
@@ -101,10 +109,12 @@ export function readPngHdrChunks(buffer: Buffer): { cicp: Cicp | null; maxCllNit
       // MaxCLL 单位 0.0001 cd/m²；0 表示未知。
       const value = buffer.readUInt32BE(data) / 10_000;
       maxCllNits = value > 0 ? value : null;
+    } else if (type === 'acTL') {
+      animated = true;
     }
     offset = data + length + 4;
   }
-  return { cicp, maxCllNits };
+  return { cicp, maxCllNits, animated };
 }
 
 /** 读取 ICC v4.4 的 `cicp` 标签；没有或结构不完整时返回 null。 */
@@ -407,12 +417,16 @@ async function toneMapToSdr(
 /**
  * 头像入口统一调用：HDR 输入返回转换后的 SDR 字节与真实 MIME，其它输入原样返回
  * 同一对象。头部无法解析且字节中没有 HDR 信号时按既有行为放行；带 HDR 信号却无法
- * 解析、超限或转换失败时一律拒绝，不把 HDR 字节静默落库或上传。
+ * 解析、超限、为多帧动画或转换失败时一律拒绝，不把 HDR 字节静默落库或上传，也不把
+ * 动画静默压成首帧。
  */
 export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarImageBytes> {
   const format = sniffFormat(image.buffer);
   if (!format) return image;
-  const png = format === 'png' ? readPngHdrChunks(image.buffer) : { cicp: null, maxCllNits: null };
+  const png =
+    format === 'png'
+      ? readPngHdrChunks(image.buffer)
+      : { cicp: null, maxCllNits: null, animated: false };
   const gainMapSignature = format === 'jpeg' && hasGainMapSignature(image.buffer);
   let metadata: Metadata;
   try {
@@ -429,6 +443,10 @@ export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarI
   const transfer = hdrTransferOf(cicp);
   const gainMap = format === 'jpeg' && (Boolean(metadata.gainMap) || gainMapSignature);
   if (!transfer && !gainMap) return image;
+  // 转换只处理单帧：动画 WebP（pages > 1）与 APNG（acTL；libvips 只读首帧）都会丢帧。
+  if ((metadata.pages ?? 1) > 1 || png.animated) {
+    throwIpcError('INVALID_PARAMS', 'Animated HDR avatars cannot be converted to SDR');
+  }
   if ((metadata.width ?? 0) * (metadata.height ?? 0) > HDR_MAX_INPUT_PIXELS) {
     throwIpcError('INVALID_PARAMS', 'HDR avatar dimensions exceed the conversion limit');
   }
