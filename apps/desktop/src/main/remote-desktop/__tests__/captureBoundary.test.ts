@@ -45,6 +45,8 @@ const h = vi.hoisted(() => ({
   inputFailure: null as null | (() => void),
   nativeStop: vi.fn(),
   nativeFrame: vi.fn(async () => 'frame'),
+  setWindow: vi.fn(),
+  handoff: null as null | { windowId: number; pid: number },
   input: vi.fn(),
   viewHeartbeat: vi.fn(),
   controllerRequest: vi.fn(async (..._args: any[]): Promise<unknown> => ({})),
@@ -174,6 +176,9 @@ vi.mock('../controller', () => ({
     hasLease(value: string) {
       return value === h.lease;
     }
+    handoffWindow(value: string) {
+      return value === h.lease ? h.handoff : null;
+    }
     isBackgroundViewing(value: string) {
       return value === h.lease && h.background;
     }
@@ -197,6 +202,7 @@ vi.mock('../nativeCapture', () => ({
   NativeDesktopCapture: class {
     stop = h.nativeStop;
     frame = h.nativeFrame;
+    setWindow = h.setWindow;
   },
 }));
 vi.mock('../inputHost', () => ({
@@ -286,6 +292,8 @@ beforeEach(() => {
   h.releaseControl.mockClear();
   h.nativeStop.mockClear();
   h.nativeFrame.mockClear();
+  h.setWindow.mockClear();
+  h.handoff = null;
   h.input.mockReset();
   h.viewHeartbeat.mockClear();
   // The host is constructed once at module load; keep its captured callback.
@@ -1337,4 +1345,28 @@ it('starts and retunes video for a background viewer without a new offer', async
     background: false,
   });
   expect(h.windows).toHaveLength(1);
+});
+
+it('streams only the 代输入 window: native window capture, no screen source, no audio', async () => {
+  h.handoff = { windowId: 4242, pid: 77 };
+  await expect(
+    h.deps.offer({ lease: h.lease, display: { id: '1' } }, 'sdp', { audio: true }, false, 'a'),
+  ).rejects.toThrow('DESKTOP_AUDIO_UNAVAILABLE');
+  h.setWindow.mockClear();
+  const pending = offer();
+  h.handlers.get(DESKTOP_LOCAL.REGISTER)(event());
+  await flush();
+  const command = h.owner.send.mock.calls[0][1];
+  // The window stream is the native overlay capture of that one window.
+  expect(h.setWindow).toHaveBeenLastCalledWith(4242);
+  expect(command).toMatchObject({ op: 'offer', nativeCapture: true, cursorOverlay: true });
+  expect(command.sourceId).toBeUndefined();
+  h.handlers.get(DESKTOP_LOCAL.REPLY)(event(), command.id, 'answer');
+  await pending;
+  // Relay frames read the same window.
+  h.nativeFrame.mockClear();
+  await h.deps.frame('1', false, h.lease);
+  expect(h.nativeFrame).toHaveBeenLastCalledWith('1', true, undefined);
+  h.deps.stopVideo();
+  expect(h.setWindow).toHaveBeenLastCalledWith(null);
 });
