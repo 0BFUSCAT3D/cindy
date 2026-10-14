@@ -149,6 +149,8 @@ export function LoginPage({
       (loginState?.step === 'error' && loginState.code === 'RATE_LIMITED'));
   const handoff = useLoginHandoff();
   const isAddAccount = intent === 'add-account';
+  const canLeaveProviderLoad =
+    !loginState || loginState.step === 'error' || loginState.step === 'entry';
   const accountListRef = useRef<HTMLDivElement>(null);
   const accountCount = loginState?.step === 'account-selection' ? loginState.accounts.length : 0;
 
@@ -188,7 +190,7 @@ export function LoginPage({
    * 在会话切过去之后落,不能由 requireConsent 提前落(竞态原因见那里的注释)。
    */
   const openLocalMode = async () => {
-    if (isLoading || localModePendingRef.current || !enterLocalMode) return;
+    if ((isLoading && !canLeaveProviderLoad) || localModePendingRef.current || !enterLocalMode) return;
     markLocalModeTransition(true);
     try {
       // 必须走 AuthContext.enterLocalMode():它调同一条 IPC,并用返回值立刻改
@@ -281,7 +283,11 @@ export function LoginPage({
     }
     pendingConsentAction.current = {
       action,
-      stamp: makeConsentStamp(loginState?.step, isLoading, loginState?.step === 'completed'),
+      stamp: makeConsentStamp(
+        loginState?.step,
+        isLoading && !(deferConsentPersist && canLeaveProviderLoad),
+        loginState?.step === 'completed',
+      ),
       deferConsentPersist,
     };
     setConsentDialogOpen(true);
@@ -299,7 +305,11 @@ export function LoginPage({
     if (!pending?.deferConsentPersist) persistPrivacyConsent();
     if (!pending) return;
     // 复验:弹窗期间 auth 状态被异步推进(登录完成/步骤切换/in-flight)则丢弃动作
-    const current = makeConsentStamp(loginState?.step, isLoading, loginState?.step === 'completed');
+    const current = makeConsentStamp(
+      loginState?.step,
+      isLoading && !(pending.deferConsentPersist && canLeaveProviderLoad),
+      loginState?.step === 'completed',
+    );
     if (canResumePendingConsent(pending.stamp, current)) pending.action();
   };
   const dismissConsent = () => {
@@ -334,9 +344,9 @@ export function LoginPage({
     return () => reportLoginPanelUnmounted();
   }, [reportLoginPanelMounted, reportLoginPanelUnmounted]);
   // 「跳过登录」常驻入口在面板内(identifier 视图 SKIP_ENTRY 文字链);footer 仅保留
-  // error 步的逃生入口——登录服务不可用时用户仍能进入本地模式(既有产品保证)。
+  // 准备态、离线入口和 error 步的逃生入口，不依赖登录服务恢复。
   const showLocalModeFooter =
-    !isAddAccount && loginState?.step === 'error' && !credentialStoreFailed;
+    !isAddAccount && canLeaveProviderLoad && !credentialStoreFailed;
   // 面板底部预留恒取全流程最大值(footer 124;协议行 48 被其覆盖):step 切换时
   // 面板/品牌层零跳位(规则 7,codex 审查 P1)。browser-redirect/completed 维持 0,
   // 与迁移前 main 口径一致(该两步由品牌 overlay/跳转态接管)。
@@ -1250,15 +1260,47 @@ export function LoginPage({
   };
 
   const renderContent = (): { node: ReactNode; ssoOrgGroupY: boolean } => {
+    const backToEntry = () => {
+      if (localModePendingRef.current) return;
+      setCredentialHelpOpen(false);
+      clearError();
+      setIdentifierFormatError(null);
+      if (isAddAccount && onClose) onClose();
+      else void dispatch({ type: 'back' });
+    };
+    if (loginState?.step === 'entry') {
+      // No provider config has arrived yet. Offer an explicit retry without
+      // inventing server-enabled login methods or automatically starting a load.
+      return {
+        ssoOrgGroupY: false,
+        node: (
+          <LoginPanel testId="login-panel-entry">
+            {isLoading && (
+              <LoginBackButton
+                label={t('login.back')}
+                disabled={localModePending}
+                onClick={backToEntry}
+              />
+            )}
+            <LoginTitleBlock title={t('login.title')} subtitle={t('login.subtitle')} />
+            <LoginPrimaryButton loading={isLoading} onClick={reset} testId="login-entry-continue">
+              {t(isLoading ? 'login.working' : 'login.continue')}
+            </LoginPrimaryButton>
+          </LoginPanel>
+        ),
+      };
+    }
     // preparing 伪态(loginState 尚未就绪;figma 5.2 准备态:loading 64 @(308,193))
     if (!loginState) {
       return {
         ssoOrgGroupY: false,
         node: (
           <LoginPanel testId="login-panel-preparing">
-            {isAddAccount && onClose ? (
-              <LoginBackButton label={t('login.back')} onClick={onClose} />
-            ) : null}
+            <LoginBackButton
+              label={t('login.back')}
+              disabled={localModePending}
+              onClick={backToEntry}
+            />
             <LoginTitleBlock title={t('login.preparing')} subtitle={t('login.preparingSubtitle')} />
             <LoginLoadingRing y={LOADING_RING.yPreparing} label={t('login.working')} />
           </LoginPanel>
@@ -1269,19 +1311,25 @@ export function LoginPage({
       // A rate limit can cover a still-valid form. Dismiss only the notice:
       // resetting main's flow would discard its ticket and require another code.
       const resumeForm = rateLimited && loginState.step !== 'error';
-      const returnFromError = resumeForm
-        ? () => {
-            if (localModePendingRef.current) return;
-            setCredentialHelpOpen(false);
-            clearError();
-          }
-        : reset;
+      const returnFromError = () => {
+        if (localModePendingRef.current) return;
+        if (isAddAccount && onClose) {
+          backToEntry();
+        } else if (credentialStoreFailed) {
+          reset();
+        } else if (resumeForm) {
+          setCredentialHelpOpen(false);
+          clearError();
+        } else {
+          backToEntry();
+        }
+      };
       return {
         ssoOrgGroupY: false,
         node: (
           <LoginPanel testId="login-panel-error">
             <LoginBackButton
-              disabled={isLoading || localModePending}
+              disabled={localModePending || (credentialStoreFailed && isLoading && !isAddAccount)}
               label={t('login.back')}
               onClick={returnFromError}
             />
@@ -1304,7 +1352,7 @@ export function LoginPage({
             {(credentialStoreFailed || rateLimited) && (
               <LoginTextLink
                 disabled={isLoading}
-                onClick={returnFromError}
+                onClick={resumeForm ? returnFromError : reset}
                 testId="login-credential-recheck"
               >
                 {t(resumeForm ? 'login.back' : 'credentialStore.recheck')}
@@ -1395,7 +1443,7 @@ export function LoginPage({
         <button
           data-testid="login-local-mode"
           type="button"
-          disabled={localModePending || isLoading}
+          disabled={localModePending}
           // error 步逃生入口与面板内文字按钮同口径:过协议门(2026-07-29 拍板)
           onClick={() => requireConsent(() => void openLocalMode(), { deferConsentPersist: true })}
           aria-describedby="login-local-mode-description"

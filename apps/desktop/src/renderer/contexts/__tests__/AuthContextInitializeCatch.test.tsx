@@ -86,6 +86,103 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe('login recovery ignores abandoned IPC results', () => {
+  it.each(['load', 'reset', 'add-account'] as const)(
+    'keeps the entry and the new loading state when an earlier %s finishes',
+    async (kind) => {
+      mocks.service.initialize.mockResolvedValue({ isAuthenticated: false, isCanary: false });
+      const hook = renderHook(() => ({ auth: useAuth(), login: useLogin({ autoLoad: false }) }), {
+        wrapper: AuthProvider,
+      });
+      await waitFor(() => expect(hook.result.current.auth.isInitializing).toBe(false));
+      let finishOld!: (result: DesktopLoginActionResult) => void;
+      const old = new Promise<DesktopLoginActionResult>((resolve) => {
+        finishOld = resolve;
+      });
+      const service =
+        kind === 'load'
+          ? mocks.service.getLoginState
+          : kind === 'add-account'
+            ? mocks.service.beginAddAccount
+            : mocks.service.dispatchLoginAction;
+      service.mockReturnValueOnce(old);
+      let oldAction!: Promise<unknown>;
+      act(() => {
+        oldAction =
+          kind === 'load'
+            ? hook.result.current.auth.loadLoginState()
+            : kind === 'add-account'
+              ? hook.result.current.auth.beginAddAccount()
+              : hook.result.current.login.dispatch({ type: 'reset' });
+      });
+      mocks.service.dispatchLoginAction.mockResolvedValueOnce({
+        success: true,
+        state: { step: 'entry' },
+      });
+      await act(async () => {
+        await hook.result.current.login.dispatch({ type: 'back' });
+      });
+      expect(hook.result.current.auth.loginState).toEqual({ step: 'entry' });
+      expect(hook.result.current.login.isLoading).toBe(false);
+
+      let finishNext!: (result: DesktopLoginActionResult) => void;
+      mocks.service.dispatchLoginAction.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishNext = resolve;
+        }),
+      );
+      let nextAction!: Promise<boolean>;
+      act(() => {
+        nextAction = hook.result.current.login.dispatch({ type: 'reset' });
+      });
+      await act(async () => {
+        finishOld({
+          success: false,
+          code: 'REQUEST_TIMEOUT',
+          state: { step: 'error', code: 'REQUEST_TIMEOUT', recoverTo: 'identifier' },
+        });
+        await oldAction;
+      });
+      expect(hook.result.current.auth.loginState).toEqual({ step: 'entry' });
+      expect(hook.result.current.login.errorCode).toBeNull();
+      expect(hook.result.current.login.isLoading).toBe(true);
+      await act(async () => {
+        finishNext({ success: true, state: { step: 'entry' } });
+        await nextAction;
+      });
+      expect(hook.result.current.login.isLoading).toBe(false);
+    },
+  );
+
+  it('does not reopen add-account login after it was closed', async () => {
+    mocks.service.initialize.mockResolvedValue({ isAuthenticated: false, isCanary: false });
+    const hook = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await waitFor(() => expect(hook.result.current.isInitializing).toBe(false));
+    let finish!: (result: DesktopLoginActionResult) => void;
+    mocks.service.beginAddAccount.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    let begin!: Promise<DesktopLoginActionResult>;
+    act(() => {
+      begin = hook.result.current.beginAddAccount();
+    });
+    await act(async () => {
+      await hook.result.current.cancelAddAccount();
+    });
+    await act(async () => {
+      finish({
+        success: false,
+        code: 'REQUEST_TIMEOUT',
+        state: { step: 'error', code: 'REQUEST_TIMEOUT', recoverTo: 'identifier' },
+      });
+      await begin;
+    });
+    expect(hook.result.current.loginState).toBeNull();
+  });
+});
+
 describe('AuthContext initialize .catch 归一未登录', () => {
   it.each(['load', 'add-account', 'dispatch'] as const)(
     'keeps Retry-After with the %s result through retries, success, rejection and cancellation',

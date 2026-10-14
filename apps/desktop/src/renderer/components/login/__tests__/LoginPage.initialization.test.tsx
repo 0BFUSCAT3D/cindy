@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { CindyAuthClient, reduceAuthFlow, type AuthFlowState } from '@cindy/auth-client';
 import { createScenarioFetch } from '@cindy/auth-client/fixtures';
-import type { DesktopLoginAction, DesktopLoginActionResult } from '../../../../shared/authIpc';
+import type {
+  DesktopLoginAction,
+  DesktopLoginActionResult,
+  DesktopLoginState,
+} from '../../../../shared/authIpc';
 
 const auth = vi.hoisted(() => ({
   value: {} as Record<string, unknown>,
@@ -30,11 +34,11 @@ import { AddAccountLoginPage } from '../AddAccountLoginPage';
 import { LoginPage } from '../LoginPage';
 
 let identifierState: AuthFlowState;
-let publishState: (state: AuthFlowState | null) => void;
+let publishState: (state: DesktopLoginState | null) => void;
 let epoch: number;
 
 function Harness({ addAccount = false }: { addAccount?: boolean }) {
-  const [loginState, setLoginState] = useState<AuthFlowState | null>(null);
+  const [loginState, setLoginState] = useState<DesktopLoginState | null>(null);
   publishState = setLoginState;
   auth.value = {
     loginState,
@@ -89,7 +93,7 @@ afterEach(() => {
 
 describe('login initialization ownership', () => {
   it.each([false, true])(
-    'returns from an initialization error to the login entry (addAccount=%s)',
+    'leaves an initialization error without requesting providers (addAccount=%s)',
     async (addAccount) => {
       const initialize = addAccount ? auth.beginAddAccount : auth.loadLoginState;
       initialize.mockImplementation(async () => {
@@ -101,12 +105,12 @@ describe('login initialization ownership', () => {
         publishState(state);
         return { success: false, code: state.code, state };
       });
-      // Publish the successful reset result through the same auth-state boundary
-      // consumed by the real useLogin hook and LoginPage.
+      // Navigation remains local even though no provider config was loaded.
       auth.dispatchLoginAction.mockImplementation(async (action) => {
-        if (action.type !== 'reset') throw new Error('expected reset');
-        publishState(identifierState);
-        return { success: true, state: identifierState };
+        if (action.type !== 'back') throw new Error('back must not retry');
+        const state = { step: 'entry' } as const;
+        publishState(state);
+        return { success: true, state };
       });
       render(<Harness addAccount={addAccount} />);
 
@@ -117,15 +121,57 @@ describe('login initialization ownership', () => {
 
       fireEvent.click(back);
 
-      await screen.findByTestId('login-panel-identifier');
-      expect(screen.getByTestId('login-input')).toBeTruthy();
+      if (addAccount) {
+        await waitFor(() => expect(auth.cancelAddAccount).toHaveBeenCalledOnce());
+        expect(auth.dispatchLoginAction).not.toHaveBeenCalled();
+        return;
+      }
+      await screen.findByTestId('login-panel-entry');
+      expect(screen.getByTestId('login-entry-continue')).toBeTruthy();
       expect(screen.queryByTestId('login-panel-error')).toBeNull();
       expect(screen.queryByTestId('login-error-text')).toBeNull();
       expect(screen.queryByTestId('login-error-retry')).toBeNull();
-      expect(auth.dispatchLoginAction).toHaveBeenCalledExactlyOnceWith({ type: 'reset' });
+      expect(auth.dispatchLoginAction).toHaveBeenCalledExactlyOnceWith({ type: 'back' });
       expect(auth.cancelAddAccount).not.toHaveBeenCalled();
     },
   );
+
+  it('allows Back and Skip Sign-In while an error retry is still pending', async () => {
+    auth.loadLoginState.mockImplementation(async () => {
+      const state = { step: 'error', code: 'REQUEST_TIMEOUT', recoverTo: 'identifier' } as const;
+      publishState(state);
+      return { success: false, code: state.code, state };
+    });
+    let finishRetry!: (result: DesktopLoginActionResult) => void;
+    auth.dispatchLoginAction.mockImplementation(async (action) => {
+      if (action.type === 'back') {
+        const state = { step: 'entry' } as const;
+        publishState(state);
+        return { success: true, state };
+      }
+      return new Promise((resolve) => {
+        finishRetry = resolve;
+      });
+    });
+    render(<Harness />);
+    await waitFor(() =>
+      expect((screen.getByTestId('login-error-retry') as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByTestId('login-error-retry'));
+    expect((screen.getByTestId('login-error-retry') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('login-back-button') as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTestId('login-local-mode') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('login-back-button'));
+    await screen.findByTestId('login-panel-entry');
+    await act(async () => finishRetry({ success: false, code: 'REQUEST_TIMEOUT', state: null }));
+    expect(screen.queryByTestId('login-error-text')).toBeNull();
+    expect((screen.getByTestId('login-entry-continue') as HTMLButtonElement).disabled).toBe(false);
+    expect(auth.loadLoginState).toHaveBeenCalledOnce();
+    expect(auth.dispatchLoginAction.mock.calls.map(([action]) => action.type)).toEqual([
+      'reset',
+      'back',
+    ]);
+  });
 
   it('opens add-account login without an invalidated load or a false failure', async () => {
     render(<Harness addAccount />);

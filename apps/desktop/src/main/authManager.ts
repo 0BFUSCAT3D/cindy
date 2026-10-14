@@ -408,7 +408,8 @@ function isOwnerChangeShellPending(): boolean {
  */
 const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 
-let loginFlowState: DesktopLoginState | null = null;
+// The offline entry is a renderer landing page, not an auth-server flow step.
+let loginFlowState: Exclude<DesktopLoginState, { step: 'entry' }> | null = null;
 let providerConfig: ProviderConfig | null = null;
 let discoveredMethods: LoginMethod[] = [];
 // These live only within the current fresh-login flow; no credentials reach Renderer.
@@ -5279,7 +5280,9 @@ async function finishFreshLogin(
   return completeLogin(outcome, expectedLoginFlowEpoch);
 }
 
-async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult> {
+async function runLoginAction(
+  action: Exclude<DesktopLoginAction, { type: 'back' }>,
+): Promise<DesktopLoginActionResult> {
   const actionLoginFlowEpoch = loginFlowEpoch;
   const startsBuildRealmFlow =
     action.type === 'discover' ||
@@ -5684,6 +5687,23 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   const parsedAction = parseDesktopLoginAction(action);
   if (!parsedAction) {
     return { success: false, code: 'INVALID_AUTH_ACTION', state: loginFlowState };
+  }
+  if (parsedAction.type === 'back') {
+    // Navigation must not wait for the provider request it is abandoning.
+    // Keep an accepted credential commit atomic, just like cancelAddAccountLogin.
+    if (isLoginFlowCommitSealed(loginFlowEpoch)) {
+      return { success: false, code: 'LOGIN_BUSY', state: loginFlowState };
+    }
+    const providers = providerConfig;
+    loginFlowEpoch += 1;
+    browserAuthorizationSlot.cancelActive();
+    resetLoginFlowState();
+    if (providers) {
+      providerConfig = providers;
+      loginFlowState = reduceAuthFlow(null, { type: 'providers-loaded', providers });
+      return { success: true, state: loginFlowState };
+    }
+    return { success: true, state: { step: 'entry' } };
   }
   if (parsedAction.type === 'cancel-browser') {
     const pendingAction = loginActionPromiseEpoch === loginFlowEpoch ? loginActionPromise : null;

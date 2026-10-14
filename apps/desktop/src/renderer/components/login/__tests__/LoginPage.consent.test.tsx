@@ -374,8 +374,8 @@ describe('consent guard(未勾选拦截个人登录链路)', () => {
     recoverTo: 'identifier',
   } as unknown as AuthFlowState;
 
-  it('error 步逃生入口未勾选 → 弹协议弹窗;同意 → 进本地模式并写同意记录', async () => {
-    mount(errorState, { errorCode: 'NETWORK_ERROR' });
+  it.each([false, true])('error 步逃生入口过协议门后进入本地模式（请求等待=%s）', async (isLoading) => {
+    mount(errorState, { errorCode: 'NETWORK_ERROR', isLoading });
     await act(async () => {
       fireEvent.click(screen.getByTestId('login-local-mode'));
     });
