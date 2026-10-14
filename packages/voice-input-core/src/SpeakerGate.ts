@@ -292,7 +292,11 @@ export class SpeakerGate implements AudioGate {
   private async decide(token: number, start: number, end: number): Promise<void> {
     const speech = this.readHeld(start, end);
     this.appendSpeechTail(speech);
-    const context = this.speechTailSlice(Math.max(this.minVerifySamples, end - start));
+    // VAD frame boundaries can make this window longer than speechTail's
+    // capacity. Preserve the whole window; history only pads short windows.
+    const context = speech.length >= this.minVerifySamples
+      ? speech
+      : this.speechTailSlice(this.minVerifySamples);
     const startedAt = now();
     const embedding = await this.withTimeout(this.engine.embed(context));
     if (token !== this.runToken || this.passthrough) return;

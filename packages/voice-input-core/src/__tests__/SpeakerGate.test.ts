@@ -19,6 +19,7 @@ const OWNER_PRINT = new Float32Array([1, 0]);
 
 class FakeEngine implements SpeakerGateEngine {
   embedCalls = 0;
+  embedInputs: Float32Array[] = [];
   failEmbed = false;
   hangEmbed = false;
 
@@ -36,6 +37,7 @@ class FakeEngine implements SpeakerGateEngine {
 
   async embed(samples: Float32Array): Promise<Float32Array | null> {
     this.embedCalls += 1;
+    this.embedInputs.push(samples.slice());
     if (this.failEmbed) throw new Error('model crashed');
     if (this.hangEmbed) return new Promise(() => {});
     let sum = 0;
@@ -107,6 +109,44 @@ function startGate(engine: FakeEngine, extra: Partial<ConstructorParameters<type
 }
 
 describe('SpeakerGate', () => {
+  it.each([0, 0.6])('verifies complete windows rounded to VAD frames after %s s of silence', async (silenceSec) => {
+    const engine = new FakeEngine();
+    const { gate, decisions, emitted, passthrough } = startGate(engine);
+    const audio = makeAudio([[0, silenceSec], [OWNER, 3.2]]);
+
+    pushAll(gate, audio);
+    await gate.finish();
+
+    const completeWindows = decisions.filter(({ startSample, endSample }) => endSample - startSample >= SPEAKER_GATE_SAMPLE_RATE);
+    expect(completeWindows.length).toBeGreaterThanOrEqual(2);
+    // 1.5 seconds does not align with 512-sample VAD frames. The model must
+    // receive the entire window it judges, including the rounded-up samples.
+    expect(completeWindows[0].endSample - completeWindows[0].startSample).toBeGreaterThan(1.5 * SPEAKER_GATE_SAMPLE_RATE);
+    decisions.forEach(({ startSample, endSample }, index) => {
+      if (endSample - startSample < SPEAKER_GATE_SAMPLE_RATE) return;
+      const expected = Float32Array.from(audio.slice(startSample, endSample), (sample) => sample / 32768);
+      expect(engine.embedInputs[index].length).toBe(expected.length);
+      expect(engine.embedInputs[index]).toEqual(expected);
+    });
+    expect(passthrough).toEqual([]);
+    expect(joined(emitted)).toEqual(audio);
+  });
+
+  it('still supplements a short final window with recent speech', async () => {
+    const engine = new FakeEngine();
+    const { gate, decisions } = startGate(engine);
+    const audio = makeAudio([[OWNER, 0.8], [OWNER / 2, 0.9]]);
+
+    pushAll(gate, audio);
+    await gate.finish();
+
+    const last = decisions[decisions.length - 1];
+    expect(last.endSample - last.startSample).toBeLessThan(SPEAKER_GATE_SAMPLE_RATE);
+    expect(engine.embedInputs[engine.embedInputs.length - 1]).toEqual(
+      Float32Array.from(audio.slice(-SPEAKER_GATE_SAMPLE_RATE), (sample) => sample / 32768),
+    );
+  });
+
   it('does not release new audio when an aborted finish resumes', async () => {
     let release!: (value: Float32Array) => void;
     const engine = new FakeEngine();
