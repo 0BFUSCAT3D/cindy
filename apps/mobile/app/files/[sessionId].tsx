@@ -504,23 +504,29 @@ function RemoteFileBrowserContent() {
   }, [absolutePathOf, deviceId, router, sessionId]);
 
   // 进行中的长按「导出/分享」:底栏一直显示到结束并带「取消」;取消或新的导出
-  // 接替后,旧一次的结果(含失败)一律丢弃,不再弹分享单。
-  const exportRunRef = useRef<{ cancelled: boolean } | null>(null);
+  // 接替后,旧一次的结果(含失败)一律丢弃,不再弹分享单。cancelled 给导出轮询与
+  // 结果检查用,abort 中止图片取件。
+  const exportRunRef = useRef<{ cancelled: boolean; abort: AbortController } | null>(null);
   const [exporting, setExporting] = useState(false);
-  const cancelExport = useCallback(() => {
+  const stopExportRun = useCallback(() => {
     const run = exportRunRef.current;
     if (!run) return;
     run.cancelled = true;
+    run.abort.abort();
     exportRunRef.current = null;
-    setExporting(false);
   }, []);
+  const cancelExport = useCallback(() => {
+    stopExportRun();
+    setExporting(false);
+  }, [stopExportRun]);
+  useEffect(() => stopExportRun, [stopExportRun]);
 
   const shareItem = useCallback((item: FileBrowserGridItem) => {
     // 导出/分享 = 系统分享单一步到位(iOS 分享单自带「存储图像」,不再单设保存)。
     setContextItem(null);
     if (item.kind !== 'file') return;
-    if (exportRunRef.current) exportRunRef.current.cancelled = true;
-    const run = { cancelled: false };
+    stopExportRun();
+    const run = { cancelled: false, abort: new AbortController() };
     exportRunRef.current = run;
     setExporting(true);
     void (async () => {
@@ -529,11 +535,14 @@ function RemoteFileBrowserContent() {
         let mime: string;
         if (item.thumb === 'image') {
           // 图片走媒体取件管线(与 lightbox 同源,命中它的解析缓存)。
-          const resolved = await resolveFileMedia({
-            kind: 'image',
-            url: remoteFileMediaUrl(absolutePathOf(item.relPath), item.mtimeMs),
-            previewable: false,
-          });
+          const resolved = await resolveFileMedia(
+            {
+              kind: 'image',
+              url: remoteFileMediaUrl(absolutePathOf(item.relPath), item.mtimeMs),
+              previewable: false,
+            },
+            { signal: run.abort.signal },
+          );
           url = resolved.url;
           mime = resolved.mimeType;
         } else {
@@ -568,7 +577,7 @@ function RemoteFileBrowserContent() {
         }
       }
     })();
-  }, [absolutePathOf, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, t, workdir]);
+  }, [absolutePathOf, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, stopExportRun, t, workdir]);
 
   /** lightbox 底部显式操作(与预览页底栏同构):复制路径 / 发送到会话。 */
   const lightboxActions = useMemo((): readonly ImageLightboxAction[] => [
@@ -1024,9 +1033,12 @@ function RemoteFileBrowserContent() {
         />
       )}
 
-      {!searchOpen ? (
+      {/* 导出进行中的提示与「取消」不随搜索隐藏:搜索期间导出仍在继续。 */}
+      {!searchOpen || exporting ? (
         <View style={styles.footer}>
-          <Text style={styles.footerStrong} testID="files.summary">{summary}</Text>
+          {!searchOpen ? (
+            <Text style={styles.footerStrong} testID="files.summary">{summary}</Text>
+          ) : null}
           {exporting ? (
             <FileTransferBusyNotice
               label={t('files.browser.exporting')}

@@ -624,6 +624,8 @@ export function registerFileBrowserIpc(): void {
   );
 
   ipcMain.handle(FILE_BROWSER_INVOKE.CHAT_FILE_CANCEL, (event, requestId: unknown) => {
+    // 会中止主进程里的传输:与下载同一来源判据,只接受 Cindy 自有页面发起。
+    assertTrustedAppRendererEvent(event);
     if (typeof requestId !== 'string') return;
     chatTransfers.get(chatTransferKey(event.sender, requestId))?.abort();
   });

@@ -118,7 +118,7 @@ type TextPreviewState =
 type RichTextKind = 'markdown' | 'html';
 
 type HtmlBrowserActions = Pick<HtmlBrowserChromeProps,
-  'busy' | 'notice' | 'onClose' | 'onShare' | 'onCopyPath' | 'onAddToTask'>;
+  'busy' | 'notice' | 'onCancelNotice' | 'onClose' | 'onShare' | 'onCopyPath' | 'onAddToTask'>;
 
 interface SiblingListing {
   key: string;
@@ -724,6 +724,8 @@ function RemoteFilePreviewContent() {
               htmlBrowserActions={{
                 busy: !!busyLabel,
                 notice: busyLabel ?? notice,
+                // busyLabel 只由导出 / 分享设置,进行中的提示带「取消」。
+                ...(busyLabel ? { onCancelNotice: cancelExport } : {}),
                 onClose: () => goBackGuarded(router),
                 onShare: () => void downloadAndShare(item),
                 onCopyPath: () => void copyPath(item),
