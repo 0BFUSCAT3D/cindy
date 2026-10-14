@@ -1501,6 +1501,7 @@ describe('Chat Server result delivery and refresh', () => {
       ['a server error', { status: 503, body: { error: { code: 'UNAVAILABLE' } } }, 'loading'],
       ['a timeout-like failure', null, 'loading'],
       ['forbidden', { status: 403, body: { error: { code: 'FORBIDDEN' } } }, 'unavailable'],
+      ['gone', { status: 410, body: { error: { code: 'GONE' } } }, 'unavailable'],
     ] as const)('never shows the card text when reading the reply hits %s', async (_label, reply, status) => {
       const outside = '70000000-0000-4000-8000-00000000000b';
       const share = msg('90000000-0000-4000-8000-00000000000b', 9, aliceId, { content: shareCard(outside) });

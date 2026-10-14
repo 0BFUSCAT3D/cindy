@@ -312,11 +312,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   const media = createChatMedia(api, current, deps.log, { allowLoopback: !app.isPackaged && process.env.XDT_ISOLATED === '1' && config.baseUrl === 'http://127.0.0.1:3018' });
   const threads = createThreadProjection<Message>({
     threadPage: (roomId, rootId, limit, before) => api<Message[]>(`/conversations/${roomId}/messages?threadRootId=${rootId}&limit=${limit}${before ? `&before=${before}` : ''}`),
-    // Not found and forbidden both mean this reader may not see the reply now.
-    message: (roomId, messageId) => api<Message>(`/conversations/${roomId}/messages/${messageId}`).catch(error => {
-      if (error instanceof ChatResponseError && (error.status === 404 || error.status === 403)) return null;
-      throw error;
-    }),
+    // The same visibility rule as every other single-message read.
+    message: async (roomId, messageId) => await readMessage(roomId, messageId) ?? null,
     filled: roomId => changed(roomId),
   });
   let upgrade: Promise<Map<string, string>> | undefined;
