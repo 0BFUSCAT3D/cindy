@@ -5332,7 +5332,10 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
           ...boundaryOptions,
           // Requested / rebuild closes own their follow-up; a self-close has no
           // done event, so queued user input would otherwise wait forever.
-          wakeQueuedInput: context.closeReason === 'unexpected',
+          // 'unexpected' only means no Maker reason was recorded: direct product
+          // closes (IM /new, archive sync) also land there, so require the
+          // runtime's own self-close signal before resurrecting the queue.
+          wakeQueuedInput: context.closeReason === 'unexpected' && session.wasClosedByRuntime(),
         };
         agentInputCoordinatorHolder?.onSessionClosed(session.id, options);
       },

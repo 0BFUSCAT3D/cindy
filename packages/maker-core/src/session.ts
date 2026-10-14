@@ -488,6 +488,13 @@ export class Session {
   private closePromise: Promise<void> | null = null;
   /** close/detach 一进入同步入口就置位，早于底层 handle 的异步关闭完成。 */
   private terminationStarted = false;
+  /**
+   * The runtime itself began this teardown (dead handle, crashed loop, failed
+   * dispatch, abort / terminal-error recovery). External close()/closeIfIdle()/
+   * detach() callers never set it, so a direct product close is not mistaken
+   * for a self-close even when no Maker close reason was recorded.
+   */
+  private runtimeInitiatedClose = false;
   private eventLoopStarted = false;
   /**
    * 最近一次已观察到的终态事件属于哪个 turn generation；事件迭代器可能在上一轮
@@ -1039,7 +1046,7 @@ export class Session {
           this.pendingPriorGeneration = null;
           originInstalled = false;
         }
-        await this.close();
+        await this.closeFromRuntime();
       }
       throw e;
     } finally {
@@ -1419,6 +1426,17 @@ export class Session {
   /** True once teardown has started, including an unconfirmed failed close. */
   hasStartedClosing(): boolean {
     return this.terminationStarted;
+  }
+
+  /** True when this runtime, not an external caller, started its own teardown. */
+  wasClosedByRuntime(): boolean {
+    return this.runtimeInitiatedClose;
+  }
+
+  /** Self-close: only claims the cause when no teardown has started yet. */
+  private closeFromRuntime(): Promise<void> {
+    if (!this.terminationStarted && this.status !== 'closed') this.runtimeInitiatedClose = true;
+    return this.close();
   }
 
   /**
@@ -3062,7 +3080,7 @@ export class Session {
         generation,
         graceMs: TERMINAL_ERROR_DRAIN_GRACE_MS,
       });
-      void this.close().catch((error) => {
+      void this.closeFromRuntime().catch((error) => {
         this.logger.warn('terminal error drain close failed', { error: String(error) });
       });
     }, TERMINAL_ERROR_DRAIN_GRACE_MS);
@@ -3303,7 +3321,7 @@ export class Session {
       { trigger: ctx.trigger, graceMs: ctx.graceMs },
     );
     try {
-      await this.close();
+      await this.closeFromRuntime();
     } catch (e) {
       this.logger.warn('abort recovery close failed', { trigger: ctx.trigger, error: String(e) });
     }
@@ -3356,7 +3374,7 @@ export class Session {
       this.logger.error('event loop crashed', { error: String(e) });
       if (this.closePromise || this.status === 'closed') return;
       // 先占住 closing gate，避免 terminal error listener 在死掉的 iterator 上重新 send。
-      const closing = this.close();
+      const closing = this.closeFromRuntime();
       if (this.terminalEventObservedGeneration !== this.turnGeneration) {
         this.fanOutEvent({
           type: 'error',
@@ -3393,6 +3411,7 @@ export class Session {
     const unfinishedTurn =
       this.hasUnsettledTurn();
     this.logger.debug('event loop ended (handle dead), auto-closing session', { unfinishedTurn });
+    this.runtimeInitiatedClose = true;
     this.terminationStarted = true;
     this.closePromise = Promise.resolve();
     this.settleUnfinishedTurn('Session event loop stopped unexpectedly without a terminal event');
