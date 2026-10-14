@@ -127,6 +127,28 @@ describe('gitignoreMatcher (.worktreeinclude)', () => {
     expect(gitignoreMatcher(['!.env.example', '.env*'])('.env.example')).toBe(true);
   });
 
+  it('treats a lone /** as everything under the repo root', () => {
+    const matches = gitignoreMatcher(['/**', '!*.log']);
+    expect(matches('.env')).toBe(true);
+    expect(matches('apps/web/.env')).toBe(true);
+    expect(matches('apps/debug.log')).toBe(false);
+  });
+
+  it('only lets a whole-segment ** cross directories', () => {
+    const embedded = gitignoreMatcher(['secret**.json']);
+    expect(embedded('secret-a.json')).toBe(true);
+    expect(embedded('apps/secret-a.json')).toBe(true);
+    expect(embedded('secret/private/key.json')).toBe(false);
+    const middle = gitignoreMatcher(['a/**/b.txt']);
+    expect(middle('a/b.txt')).toBe(true);
+    expect(middle('a/x/y/b.txt')).toBe(true);
+    expect(middle('c/a/b.txt')).toBe(false);
+    const leading = gitignoreMatcher(['**/local/*.json']);
+    expect(leading('local/a.json')).toBe(true);
+    expect(leading('apps/web/local/a.json')).toBe(true);
+    expect(leading('apps/web/local/x/a.json')).toBe(false);
+  });
+
   it('selects only directory contents for a trailing /**', () => {
     const matches = gitignoreMatcher(['config/**']);
     expect(matches('config/local.json')).toBe(true);

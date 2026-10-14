@@ -124,6 +124,29 @@ function globMatcher(patterns: readonly string[]): IncludeMatcher {
 }
 
 /**
+ * `.gitignore` 语法的 glob → RegExp(与 `.xdtworktreeinclude` 的 globToRegex 分开):
+ * 只有独占一段的 `**` 跨目录(开头或中间的 `**` 段表示 0 或多级目录);
+ * 段内的 `**`(如 `secret**.json`)与 `*` 相同, 不跨 `/`。
+ */
+function gitignoreGlobToRegex(glob: string): RegExp {
+  const segments = glob.split('/');
+  let out = '';
+  segments.forEach((segment, i) => {
+    const last = i === segments.length - 1;
+    if (segment === '**') {
+      out += last ? '.*' : '(?:.*\\/)?';
+      return;
+    }
+    out += segment
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*+/g, '[^/]*')
+      .replaceAll('?', '[^/]');
+    if (!last) out += '\\/';
+  });
+  return new RegExp(`^${out}$`);
+}
+
+/**
  * 按 `.gitignore` 语法匹配(Claude Code 的 `.worktreeinclude` 约定):
  *   - 不含 `/` 的规则匹配任意层级; 含 `/`(或以 `/` 开头)时相对仓库根目录
  *   - 末尾 `/` 只匹配目录; 选中目录即包含其下全部文件; 末尾 `/**` 只选目录里的内容
@@ -142,8 +165,12 @@ function gitignoreMatcher(patterns: readonly string[]): IncludeMatcher {
     if (p.endsWith('/')) p = p.slice(0, -1);
     const anchored = contentsOnly || p.includes('/');
     if (p.startsWith('/')) p = p.slice(1);
-    if (!p) continue;
-    rules.push({ re: globToRegex(anchored ? p : `**/${p}`), negate, dirOnly });
+    if (!p) {
+      // 单独的 `/**` 是仓库根目录里的全部内容。
+      if (contentsOnly) rules.push({ re: /^.+$/, negate, dirOnly: false });
+      continue;
+    }
+    rules.push({ re: gitignoreGlobToRegex(anchored ? p : `**/${p}`), negate, dirOnly });
   }
   return (rel) => {
     const segments = rel.split('/');
