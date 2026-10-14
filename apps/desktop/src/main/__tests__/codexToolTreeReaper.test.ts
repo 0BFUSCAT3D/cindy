@@ -89,6 +89,22 @@ describe('reapCodexToolTreesSync', () => {
     expect(killedPids(spawnSync)).toEqual([[101, 102, 103], [104]]);
   });
 
+  it('ignores an exited app-server whose pid is reused by another own child', async () => {
+    const spawnSync = psSpawn([
+      [100, process.pid], // e.g. quit watchdog shell reusing the old app-server pid
+      [101, 100],
+    ]);
+    const { registerCodexProcessRole, reapCodexToolTreesSync } = await importReaper({
+      platform: 'darwin',
+      spawnSync,
+    });
+    const dispose = registerCodexProcessRole(100, 'task-host');
+    dispose(); // transport confirmed the app-server exited
+
+    reapCodexToolTreesSync();
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
   it('skips a registered pid whose parent is no longer this process (pid reuse)', async () => {
     const spawnSync = psSpawn([
       [100, 1],
