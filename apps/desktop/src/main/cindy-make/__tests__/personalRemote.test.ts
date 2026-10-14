@@ -479,6 +479,7 @@ function harness(
     movedDuringPush?: string;
     /** What GitHub says about the bound repository. */
     health?: PersonalForkHealth | Error;
+    assertTrust?: () => void;
   } = {},
 ) {
   let record: PersonalRemoteRecord = options.record ?? { schema: 1 };
@@ -628,6 +629,7 @@ function harness(
   const deps: PersonalRemoteDeps = {
     source: 'source',
     read: () => structuredClone(record),
+    assertTrust: options.assertTrust,
     write: (next) => {
       record = structuredClone(next);
     },
@@ -1079,6 +1081,18 @@ describe('PersonalRemoteController', () => {
       error: 'interrupted',
     });
     expect(h.calls).toEqual([]);
+  });
+
+  it('does not rewrite a record when trust-bearing fields cannot be validated', () => {
+    const assertTrust = vi.fn(() => {
+      throw new Error('unprovable content trust');
+    });
+    const h = harness({
+      record: { schema: 1, running: 'sync' },
+      assertTrust,
+    });
+    expect(h.record()).toEqual({ schema: 1, running: 'sync' });
+    expect(assertTrust).toHaveBeenCalled();
   });
 
   it('records a local-only choice and disconnects without touching the fork', async () => {

@@ -645,6 +645,8 @@ export interface PersonalRemoteDeps {
   /** The managed checkout that owns `cindy-personal`. */
   source: string;
   read(): PersonalRemoteRecord;
+  /** Refuse to rewrite the record while trust-bearing fields are malformed. */
+  assertTrust?(): void;
   write(record: PersonalRemoteRecord): void;
   identity(): Promise<GithubIdentityResult>;
   ensureFork(identity: GithubIdentity): Promise<string>;
@@ -720,9 +722,10 @@ export class PersonalRemoteController {
   constructor(private readonly deps: PersonalRemoteDeps) {
     try {
       const record = deps.read();
+      deps.assertTrust?.();
       if (record.running) {
         const { running: _interrupted, ...rest } = record;
-        deps.write({ ...rest, error: 'interrupted' });
+        this.write({ ...rest, error: 'interrupted' });
       }
     } catch (error) {
       deps.log?.warn('cindy-make personal remote record unavailable', {
@@ -783,7 +786,7 @@ export class PersonalRemoteController {
         (record.error === 'account' && sameGithubLogin(record.login, identity.identity.login)))
     ) {
       const { error: _resolved, ...rest } = record;
-      this.deps.write(rest);
+      this.write(rest);
     }
     if (identity.status === 'connected' && !record.repository) {
       try {
@@ -920,7 +923,7 @@ export class PersonalRemoteController {
     if (this.runningKind || record.repository) return this.state();
     // Stopping the sharing keeps the content trust facts of what was already taken
     // over, including the rewrite history that carries their provenance.
-    this.deps.write({
+    this.write({
       schema: 1,
       choice: 'local',
       ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
@@ -938,7 +941,7 @@ export class PersonalRemoteController {
           await this.git(['remote', 'remove', PERSONAL_REMOTE_NAME]);
       });
       const { unverifiedRemote, rewrites } = this.deps.read();
-      this.deps.write({
+      this.write({
         schema: 1,
         choice: 'local',
         ...(unverifiedRemote ? { unverifiedRemote } : {}),
@@ -956,7 +959,12 @@ export class PersonalRemoteController {
   }
 
   private update(patch: Partial<PersonalRemoteRecord>): void {
-    this.deps.write({ ...this.deps.read(), ...patch, schema: 1 });
+    this.write({ ...this.deps.read(), ...patch, schema: 1 });
+  }
+
+  private write(record: PersonalRemoteRecord): void {
+    this.deps.assertTrust?.();
+    this.deps.write(record);
   }
 
   private start(
@@ -965,7 +973,7 @@ export class PersonalRemoteController {
   ): CindyMakePersonalRemoteState {
     // Persist the run marker first: if that fails nothing has started.
     const { error: _previous, ...record } = this.deps.read();
-    this.deps.write({ ...record, running: kind });
+    this.write({ ...record, running: kind });
     this.runningKind = kind;
     this.step = 'waiting';
     const setStep = (step: CindyMakeRemoteStep) => {
@@ -993,7 +1001,7 @@ export class PersonalRemoteController {
       } finally {
         try {
           const { running: _done, error: _stale, ...rest } = this.deps.read();
-          this.deps.write({ ...rest, ...(failure ? { error: failure } : {}) });
+          this.write({ ...rest, ...(failure ? { error: failure } : {}) });
         } catch {
           // The in-memory state below must still settle; a restart reports the run as interrupted.
         }

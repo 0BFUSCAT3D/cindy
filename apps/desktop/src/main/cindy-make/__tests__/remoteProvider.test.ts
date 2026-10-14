@@ -30,6 +30,25 @@ const project = (state: MakeRemoteSnapshot, dictionary: Record<string, unknown> 
   });
 
 describe('portable Cindy Make cards', () => {
+  it('projects personal sync and contribution status without adding remote write actions', () => {
+    const state = snapshot();
+    state.personal = {
+      remote: { sync: 'retrieved', error: 'network' },
+      contributions: [{ number: 42, state: 'open' }],
+    };
+    const card = project(state);
+    expect(card.display.subtitle).toContain(en.cindyMake.storage.status.retrieved);
+    expect(card.display.subtitle).toContain(en.cindyMake.storage.errors.network);
+    expect(card.display.subtitle).toContain(
+      en.cindyMake.contribution.state.open.replace('{{number}}', '42'),
+    );
+    expect(
+      card.actions?.some(
+        (action) => action.id.includes('sync') || action.id.includes('contribution'),
+      ),
+    ).toBe(false);
+  });
+
   it('forwards the latest scrubbed line and removes it when stopped or finished', () => {
     const state = snapshot();
     state.sharedBuild = {

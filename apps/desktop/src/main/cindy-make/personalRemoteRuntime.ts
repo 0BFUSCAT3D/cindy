@@ -16,6 +16,7 @@ import { createLogger } from '../logger.js';
 import { hasUnbuiltPersonalChanges as unbuiltPersonalChanges } from './buildRollback.js';
 import { recordPendingBuild, rewritePendingBuilds } from './pendingBuild.js';
 import type { PersonalSyncRemote } from './personalSync.js';
+import type { MakeRemotePersonalSnapshot } from './remoteProjection.js';
 import { captureMakeHistoryStore } from './historyOwner.js';
 import { cindyMakeManager } from './manager.js';
 import {
@@ -26,6 +27,7 @@ import {
   findPersonalFork,
   inspectPersonalFork,
   parsePersonalRemoteRecord,
+  parsePersonalRemoteTrust,
   personalGitEnv,
   readGithubIdentity,
   writePersonalRemoteRecord,
@@ -61,7 +63,8 @@ export function configurePersonalRemote(): void {
   const root = makeSourceRoot(userData);
   const file = path.join(root, 'personal-remote.json');
   const source = makeSourceCheckoutPath(userData);
-  const read = () => parsePersonalRemoteRecord(readAtomicFileSync(file));
+  const readRaw = () => readAtomicFileSync(file);
+  const read = () => parsePersonalRemoteRecord(readRaw());
   // Same credential order as the shared GitHub connection: the gh login, then
   // the current account's saved token. Neither is ever returned to the renderer.
   const identity = () =>
@@ -80,6 +83,9 @@ export function configurePersonalRemote(): void {
   controller = new PersonalRemoteController({
     source,
     read,
+    assertTrust: () => {
+      parsePersonalRemoteTrust(readRaw());
+    },
     write: (record) => writePersonalRemoteRecord(file, record),
     identity,
     ensureFork: (identity) => ensureOfficialFork(outboundFetch, identity),
@@ -249,6 +255,41 @@ export function personalRemoteForSync(): PersonalSyncRemote | undefined {
     sync: () => remote.syncNow(),
     tips: () => remote.fetchedTips(),
     keep: (side) => remote.keepSide(side),
+  };
+}
+
+/** Public, read-only facts for Mobile's Cindy Make task resource. */
+export async function readPersonalRemoteProjection(): Promise<
+  MakeRemotePersonalSnapshot | undefined
+> {
+  let remote: MakeRemotePersonalSnapshot['remote'];
+  try {
+    const state = controller?.state();
+    if (state?.sync || state?.error)
+      remote = {
+        ...(state.sync ? { sync: state.sync } : {}),
+        ...(state.error ? { error: state.error } : {}),
+      };
+  } catch {
+    // A malformed trust ledger remains unreadable and must not be normalized for a remote read.
+  }
+  let contributions: MakeRemotePersonalSnapshot['contributions'];
+  try {
+    contributions = await Promise.race([
+      contribution?.statuses() ?? Promise.resolve([]),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1_000)),
+    ]);
+  } catch {
+    contributions = undefined;
+  }
+  if (!remote && !contributions?.length) return undefined;
+  return {
+    ...(remote ? { remote } : {}),
+    ...(contributions?.length
+      ? {
+          contributions: contributions.slice(-8).map(({ number, state }) => ({ number, state })),
+        }
+      : {}),
   };
 }
 

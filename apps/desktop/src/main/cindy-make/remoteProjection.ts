@@ -4,10 +4,15 @@ import {
   parseCindyMakeBuildOutput,
 } from '../../shared/cindyMakeBuildDiagnostic.js';
 import type { MakeDoctorReport } from '../../shared/cindyMakeDoctor.js';
+import type { CindyMakeContributionState } from '../../shared/cindyMakeContribution.js';
 import type {
   CindyMakeCompletionMeta,
   CindyMakePersonalBuildState,
 } from '../../shared/cindyMakeSession.js';
+import type {
+  CindyMakeRemoteError,
+  CindyMakeRemoteSync,
+} from '../../shared/cindyMakePersonalRemote.js';
 
 export const MAKE_REMOTE_COLLECTION = 'cindy-make';
 export const makeRemoteRef = (sessionId: string) => ({
@@ -24,6 +29,17 @@ export interface MakeRemoteSnapshot {
   sharedBuild?: CindyMakePersonalBuildState;
   recoverable: boolean;
   sourceMergePending?: boolean;
+  personal?: MakeRemotePersonalSnapshot;
+}
+
+export interface MakeRemotePersonalSnapshot {
+  remote?: { sync?: CindyMakeRemoteSync; error?: CindyMakeRemoteError };
+  contributions?: readonly MakeRemoteContributionSnapshot[];
+}
+
+export interface MakeRemoteContributionSnapshot {
+  number: number;
+  state?: CindyMakeContributionState;
 }
 type Translate = (key: string, values?: Record<string, string>) => string;
 
@@ -214,6 +230,20 @@ export function projectMakeRemoteCard(source: MakeRemoteSnapshot, t: Translate):
       source.sourceMergePending,
     );
   }
+  const personalDetails: string[] = [];
+  if (source.personal?.remote?.sync)
+    personalDetails.push(t('cindyMake.storage.status.' + source.personal.remote.sync));
+  if (source.personal?.remote?.error)
+    personalDetails.push(t('cindyMake.storage.errors.' + source.personal.remote.error));
+  for (const contribution of source.personal?.contributions ?? []) {
+    personalDetails.push(
+      t('cindyMake.contribution.state.' + (contribution.state ?? 'submitted'), {
+        number: String(contribution.number),
+      }),
+    );
+  }
+  if (personalDetails.length)
+    description = [description, ...personalDetails].filter(Boolean).join('\n\n');
   const fallbackMarkdown = [title, description, ...details].filter(Boolean).join('\n\n');
   return {
     ref: makeRemoteRef(source.sessionId),
