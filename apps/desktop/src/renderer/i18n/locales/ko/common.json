@@ -9712,6 +9712,21 @@
       "addRemoteProject": "원격 프로젝트 추가"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "무료",
+        "estimated": "약 {{price}}",
+        "startingAt": "{{price}}부터",
+        "units": {
+          "token": "토큰",
+          "character": "문자",
+          "image": "장",
+          "second": "초",
+          "minute": "분",
+          "request": "요청",
+          "megapixel": "메가픽셀",
+          "megapixelSecond": "메가픽셀·초"
+        }
+      },
       "budgetNeedsApiKey": "이 모델은 설정에서 API key를 구성해야 사용할 수 있습니다",
       "paymentRequired": {
         "badge": "유료",

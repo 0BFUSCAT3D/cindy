@@ -9712,6 +9712,21 @@
       "addRemoteProject": "添加远程项目"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "免费",
+        "estimated": "约 {{price}}",
+        "startingAt": "{{price}} 起",
+        "units": {
+          "token": "token",
+          "character": "字符",
+          "image": "张",
+          "second": "秒",
+          "minute": "分钟",
+          "request": "次",
+          "megapixel": "百万像素",
+          "megapixelSecond": "百万像素·秒"
+        }
+      },
       "budgetNeedsApiKey": "此模型需先在设置里配置 API key 才能使用",
       "paymentRequired": {
         "badge": "付费",
