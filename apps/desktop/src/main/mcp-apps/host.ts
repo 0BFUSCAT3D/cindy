@@ -331,6 +331,15 @@ export class McpAppsHost {
         await this.deps.readCard(sessionId, clientId);
         this.view(caller, sessionId, viewId);
       };
+      const currentClient = async (signal: AbortSignal) => {
+        await assertCurrent();
+        signal.throwIfAborted();
+        const current = await connection.getClient();
+        // Reconnecting can outlive a cancellation, card clear or owner change.
+        await assertCurrent();
+        signal.throwIfAborted();
+        return current;
+      };
       bridge.oninitialized = () => {
         if (view.initialized || !bridge.getAppCapabilities()) return;
         view.initialized = true;
@@ -350,7 +359,7 @@ export class McpAppsHost {
         const target = (await connection.tools()).find((item) => item.name === params.name);
         if (!target || !toolVisibleTo(target, 'app')) throw new Error('MCP_APP_TOOL_NOT_VISIBLE');
         await this.deps.authorizeTool(sessionId, target, params.arguments ?? {}, extra.signal);
-        await assertCurrent();
+        const client = await currentClient(extra.signal);
         return (await client.callTool(params, CallToolResultSchema, {
           signal: extra.signal,
         })) as CallToolResult;
@@ -360,19 +369,19 @@ export class McpAppsHost {
         return { tools: (await connection.tools()).filter((item) => toolVisibleTo(item, 'app')) };
       });
       bridge.onreadresource = async (params, extra) => {
-        await assertCurrent();
+        const client = await currentClient(extra.signal);
         return client.readResource(params, { signal: extra.signal });
       };
       bridge.onlistresources = async (params, extra) => {
-        await assertCurrent();
+        const client = await currentClient(extra.signal);
         return client.listResources(params, { signal: extra.signal });
       };
       bridge.onlistresourcetemplates = async (params, extra) => {
-        await assertCurrent();
+        const client = await currentClient(extra.signal);
         return client.listResourceTemplates(params, { signal: extra.signal });
       };
       bridge.onlistprompts = async (params, extra) => {
-        await assertCurrent();
+        const client = await currentClient(extra.signal);
         return client.listPrompts(params, { signal: extra.signal });
       };
       bridge.onmessage = async (params) => {

@@ -401,6 +401,28 @@ describe('2026-01-26 MCP Apps conformance against an independent local server', 
       prompts: [{ name: 'explain_metrics' }],
     });
   });
+  it.each(['http', 'sse'] as const)('%s: reconnects an open View for each later server operation', async (transport) => {
+    const f = await fixture(transport);
+    const operations = [
+      ['tools/call', { name: 'refresh_metrics', arguments: { threshold: 42 } },
+        { structuredContent: { metrics: { threshold: 42, refreshes: 1 } } }],
+      ['resources/read', { uri: 'metrics://independent/requests' },
+        { contents: [{ text: 'Metric resource: metrics://independent/requests' }] }],
+      ['resources/list', { cursor: 'ui' }, { resources: [{ uri: RAW_RESOURCE }] }],
+      ['resources/templates/list', {}, { resourceTemplates: [{ uriTemplate: 'metrics://independent/{metric}' }] }],
+      ['prompts/list', {}, { prompts: [{ name: 'explain_metrics' }] }],
+    ] as const;
+    for (const [method, params, expected] of operations) {
+      const previous = await f.connection.getClient();
+      // Simulate the transport's close event without permanently closing the
+      // shared AppConnection, so the next request must create a new client.
+      previous.onclose?.();
+      await previous.close();
+      expect(await f.peer.request(method, params)).toMatchObject(expected);
+      expect(await f.connection.getClient()).not.toBe(previous);
+    }
+    expect(f.authorize).toHaveBeenCalledOnce();
+  });
   it('fans out standard list_changed notifications and exposes refreshed tool definitions', async () => {
     const f = await fixture();
     await f.peer.request('tools/call', { name: 'notify_change', arguments: {} });
