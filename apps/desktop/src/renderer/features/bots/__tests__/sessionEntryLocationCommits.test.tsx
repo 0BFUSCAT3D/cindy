@@ -3,10 +3,11 @@
  * 灵动岛卡片的处置等到 React Router 真正提交目标地址后才发。这里用真实的内存路由
  * (含延迟加载的目标)驱动入口导航器,与 MainLayout 用同一个上报 hook。
  */
+import { transferableAbortController } from 'node:util';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { Outlet, RouterProvider, createMemoryRouter, useNavigate } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionEntryNavigator, type BotSessionEntryTarget, type SessionEntryNavigator } from '../botSessionOwners';
 import { useSessionEntryLocationCommits } from '../useSessionEntryLocationCommits';
@@ -17,6 +18,8 @@ const targets: Record<string, BotSessionEntryTarget> = {
 };
 /** Sessions whose route lookup waits for releaseLookup (e.g. Bot profiles still loading). */
 const slowLookups = new Set(['lane-slow-lookup']);
+
+const routers: Array<ReturnType<typeof createMemoryRouter>> = [];
 
 function setup() {
   const consumeAlert = vi.fn<(sessionId: string, islandEntryId: string) => void>();
@@ -60,6 +63,7 @@ function setup() {
       ],
     },
   ], { initialEntries: ['/cc-agent/new'] });
+  routers.push(router);
   render(<RouterProvider router={router} />);
   return { router, consumeAlert, pathsAtConsume, open: () => navigator, releaseSlow, releaseLookup };
 }
@@ -68,7 +72,19 @@ const flush = () => act(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 });
 
-afterEach(() => cleanup());
+// React Router's Node-native Request requires a matching native AbortSignal (jsdom's
+// does not satisfy it on newer Node, e.g. 25.x).
+const nativeAbortController = transferableAbortController();
+beforeEach(() => {
+  vi.stubGlobal('AbortController', nativeAbortController.constructor);
+  vi.stubGlobal('AbortSignal', nativeAbortController.signal.constructor);
+});
+afterEach(() => {
+  cleanup();
+  // Abort pending navigations / loaders while the native signal globals are still in place.
+  for (const router of routers.splice(0)) router.dispose();
+  vi.unstubAllGlobals();
+});
 
 describe('island card disposal waits for the router to commit the target', () => {
   it('disposes once the target location is committed, never before', async () => {
