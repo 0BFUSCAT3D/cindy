@@ -135,7 +135,7 @@ export class RemoteEventProjection {
   }
 
   project(event: AgentEvent): AgentEvent[] {
-    const data = event.data as { text?: unknown; isFinal?: boolean; isFullText?: boolean; agentMessageId?: string } | null;
+    const data = event.data as { text?: unknown; isFinal?: boolean; isFullText?: boolean; isRunning?: boolean; agentMessageId?: string } | null;
     const stream = this.streamKey(event);
     let pending = this.pending.get(stream);
     // 独立提示有自己的持久行，不能截断正在流式传输的正文路径。
@@ -165,9 +165,11 @@ export class RemoteEventProjection {
       if (previous?.agentMessageId === data.agentMessageId
         && (data.isFullText || (typeof previous.text === 'string' && data.text.includes(previous.text)))) this.pending.delete(stream);
     }
+    // Agent 可先发停止状态，且不一定随后有 done；正文必须在停止状态前送出。
+    const stopped = event.type === 'status' && data?.isRunning === false;
     const terminal = !event.agentMeta?.parentUuid && event.turnScope !== 'background'
-      && ['done', 'error', 'compact_boundary'].includes(event.type);
-    const output = event.type === 'text' || TEXT_BOUNDARIES.has(event.type)
+      && (stopped || ['done', 'error', 'compact_boundary'].includes(event.type));
+    const output = event.type === 'text' || stopped || TEXT_BOUNDARIES.has(event.type)
       ? this.flush(terminal ? undefined : stream) : [];
     // agentMeta、session/tool id 和权限回执不经过递归文本改写。
     output.push({ ...event, data: event.type === 'interaction_request' ? event.data : localValue(event.data, this.workspace) });

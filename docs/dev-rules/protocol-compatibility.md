@@ -757,6 +757,7 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   B 回传的工具文件路径、文本文件链接与图片源路径在 A 的事件落库和广播前还原，文件卡及预览读取 A 的真实文件。
   行内代码含空白时，只有完整引用对应 A 上已存在的文件或目录才整体还原；否则逐路径 token 投影，保留命令参数。明确的链接目标与结构化路径不依赖文件存在性。
   流式正文按来源、轮次和子代理 parentUuid 分别暂存未传完整的文件引用，同一流的工具和终态边界补齐尾段；全局终态与关闭清空所有流，独立后台提示不打断正文路径。
+  `status { isRunning: false }` 也在转发前补齐尾段，不依赖后续 `done` 或关闭；仅前台顶层停止状态清空所有流，后台或子代理停止只补齐自身流，运行中或未声明停止的状态不打断正文路径。
   `file://` 与 `xdt-file://` / `xdt-audio://` 的文件路径按 URL 语法转换，HTTP 和 `cindy-media://` 地址保持原样。
   事件身份、Agent 元信息与权限回执不改写，原生 Agent 会话继续使用 B 的虚拟路径；旧消息不回填。
   回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts` 与 `remote-agent/__tests__/eventProjection.test.ts`。

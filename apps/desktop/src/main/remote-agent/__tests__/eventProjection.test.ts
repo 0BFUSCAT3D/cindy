@@ -251,7 +251,7 @@ describe('remote file references on the task computer', () => {
     });
   });
 
-  it.each(['tool_use', 'tool_result', 'done', 'error', 'compact_boundary'] as const)('flushes only the matching background stream before %s', async (boundary) => {
+  it.each(['tool_use', 'tool_result', 'done', 'error', 'compact_boundary', 'status'] as const)('flushes only the matching background stream before %s', async (boundary) => {
     const virtual = '/Users/agent/workspace';
     const { real, controller } = setup(virtual);
     const foreground: AgentEvent = { type: 'text', source: 'pi', data: { text: virtual.slice(0, 12), isFinal: false } };
@@ -262,7 +262,7 @@ describe('remote file references on the task computer', () => {
     const output = await eventsFrom(controller, [
       foreground, background,
       { ...background, backgroundTurnStartedAt: 2000, data: { text: virtual.slice(0, 12), isFinal: false } },
-      { ...background, type: boundary, data: {} },
+      { ...background, type: boundary, data: boundary === 'status' ? { isRunning: false } : {} },
       { ...foreground, data: { text: virtual.slice(12) + '/foreground.txt ', isFinal: false } },
       { ...background, backgroundTurnStartedAt: 2000, data: { text: virtual.slice(12) + '/other.txt ', isFinal: false } },
     ]);
@@ -272,6 +272,70 @@ describe('remote file references on the task computer', () => {
     ]);
     expect(output[0]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 1000 });
     expect(output[3]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 2000 });
+  });
+
+  it.each(['claude-code', 'codex', 'pi'] as const)('flushes all pending paths before foreground stopped status for %s without done or close', async (source) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const pending: AgentEvent[] = [
+      { type: 'text', source, data: { text: virtual + '/foreground.txt', isFinal: false } },
+      { type: 'text', source, agentMeta: { parentUuid: 'child' }, data: { text: virtual + '/child.txt', isFinal: false } },
+      { type: 'text', source, turnScope: 'background', backgroundTurnStartedAt: 1000, data: { text: virtual + '/background.txt', isFinal: false } },
+    ];
+    const stopped: AgentEvent = { type: 'status', source, data: { status: 'Done', isRunning: false, outputTokens: 7 } };
+    const input = [...pending, stopped];
+    const original = structuredClone(input);
+    try {
+      for (const event of input) controller.onEvent(event);
+      const output: AgentEvent[] = [];
+      for await (const event of controller.handle.events()) {
+        output.push(event);
+        if (event.type === 'status') break;
+      }
+      expect(output).toEqual([
+        ...pending.map((event) => ({ ...event, data: { ...event.data as object, text: path.join(real, path.posix.basename(text(event))) } })),
+        stopped,
+      ]);
+      expect(input).toEqual(original);
+    } finally {
+      controller.onClosed('closed');
+    }
+  });
+
+  it('flushes only the matching child path before stopped status', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const foreground: AgentEvent = { type: 'text', source: 'claude-code', data: { text: virtual.slice(0, 12), isFinal: false } };
+    const child = (parentUuid: string, value: string): AgentEvent => ({
+      ...foreground, agentMeta: { parentUuid }, data: { text: value, isFinal: false },
+    });
+    const stopped: AgentEvent = {
+      type: 'status', source: 'claude-code', agentMeta: { parentUuid: 'child-a' }, data: { status: 'Done', isRunning: false },
+    };
+    const output = await eventsFrom(controller, [
+      foreground, child('child-a', virtual + '/first.txt'), child('child-b', virtual.slice(0, 12)), stopped,
+      { ...foreground, data: { text: virtual.slice(12) + '/foreground.txt ', isFinal: false } },
+      child('child-b', virtual.slice(12) + '/second.txt '),
+    ]);
+    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
+      path.join(real, 'first.txt'), 'status', path.join(real, 'foreground.txt') + ' ', path.join(real, 'second.txt') + ' ',
+    ]);
+    expect(output[0].agentMeta).toEqual({ parentUuid: 'child-a' });
+    expect(output[1]).toEqual(stopped);
+    expect(output[3].agentMeta).toEqual({ parentUuid: 'child-b' });
+  });
+
+  it.each([true, undefined])('keeps an unfinished path pending across status with isRunning=%s', async (isRunning) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const status: AgentEvent = { type: 'status', source: 'codex', data: { status: 'Done', ...(isRunning === undefined ? {} : { isRunning }) } };
+    const output = await eventsFrom(controller, [
+      { type: 'text', source: 'codex', data: { text: virtual.slice(0, 12), isFinal: false } },
+      status,
+      { type: 'text', source: 'codex', data: { text: virtual.slice(12) + '/report.txt ', isFinal: false } },
+    ]);
+    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual(['status', path.join(real, 'report.txt') + ' ']);
+    expect(output[0]).toEqual(status);
   });
 
   it.each(['claude-code', 'codex', 'pi'] as const)('preserves the calibrated final reply and stream flags for %s', async (source) => {
