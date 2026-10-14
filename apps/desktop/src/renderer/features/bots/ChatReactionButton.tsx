@@ -71,10 +71,12 @@ export function ChatReactionButton({ groupId, messageId, reaction, revision = 0,
   // that disagrees with the count (a change still in flight), keeps the honest count instead.
   const current = loaded?.summary === summary ? loaded : null;
   const showAvatars = wantsAvatars && (!current || current.reactors?.length === reaction.count);
-  // Names follow the latest member projection; only actors no longer in it keep the name read with them.
+  // Membership follows the latest projection both ways: a current member takes its current name, and a
+  // named actor missing from it has left since the read. Only unrecorded actors stay unnamed.
   const reactors = showAvatars && current?.reactors ? reactorOrder(current.reactors.map(r => {
-    const member = members?.find(m => m.actorId === r.actorId);
-    return member ? { ...r, name: member.name, formerMember: false } : r;
+    if (!members) return r;
+    const member = members.find(m => m.actorId === r.actorId);
+    return member ? { ...r, name: member.name, formerMember: false } : r.name !== null ? { ...r, formerMember: true } : r;
   }), i18n.language) : null;
   const countLabel = t(key('reactionCount'), { emoji: reaction.emoji, count: reaction.count });
   const label = reactors?.length

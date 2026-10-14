@@ -151,6 +151,17 @@ describe('reaction avatars', () => {
     expect(images()).toEqual(['https://example.test/cindy-chris.png']);
   });
 
+  it('marks a reactor who left after the read, without another read', async () => {
+    mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('z', 'Zoe')] });
+    const view = render(actions([{ emoji: '👍', count: 1, me: false }]));
+    await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoe'));
+    // Zoe leaves; her reaction stays and the member list no longer has her.
+    view.rerender(<ChatMessageActions shareScope="group:room" groupId="room" members={members.filter(m => m.actorId !== 'z')}
+      onChanged={vi.fn()} message={message([{ emoji: '👍', count: 1, me: false }])} />);
+    expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoe (left)');
+    expect(mocks.reactors).toHaveBeenCalledTimes(1);
+  });
+
   it('follows member renames without another read', async () => {
     mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('z', 'Zoe')] });
     const view = render(actions([{ emoji: '👍', count: 1, me: false }]));
