@@ -28,6 +28,7 @@ import {
   parsePersonalRemoteRecord,
   personalGitEnv,
   readGithubIdentity,
+  writePersonalRemoteRecord,
   type PersonalRemoteGitOptions,
 } from './personalRemote.js';
 import { runSourceGit } from './sourceGit.js';
@@ -79,10 +80,7 @@ export function configurePersonalRemote(): void {
   controller = new PersonalRemoteController({
     source,
     read,
-    write: (record) => {
-      mkdirSync(root, { recursive: true });
-      atomicWriteFileSync(file, JSON.stringify(record));
-    },
+    write: (record) => writePersonalRemoteRecord(file, record),
     identity,
     ensureFork: (identity) => ensureOfficialFork(outboundFetch, identity),
     findPersonalFork: (identity) => findPersonalFork(outboundFetch, identity),

@@ -17,6 +17,7 @@ import {
 } from '../toolchainEnvironment.js';
 import { runSourceGit } from '../sourceGit.js';
 import { runSourcePnpm } from '../sourcePnpm.js';
+import { hasPendingBuild, readPendingBuilds } from '../pendingBuild.js';
 import type { DoctorProbeResult } from '../doctor.js';
 
 vi.mock('../sourceGit.js', () => ({ runSourceGit: vi.fn() }));
@@ -214,6 +215,10 @@ describe('Source and dependency preparation', () => {
       expect(storage).not.toHaveBeenCalled();
       const commands = vi.mocked(runSourceGit).mock.calls.map(([, args]) => args[0]);
       expect(commands).toContain(existing ? 'checkout' : 'clone');
+      // The personal branch was just created from the official baseline, even
+      // when reusing a checkout that did not have a personal branch yet.
+      expect(readPendingBuilds(root)).toEqual([]);
+      expect(hasPendingBuild(root, { commit: 'a'.repeat(40), tree: '1'.repeat(40) })).toBe(false);
       expect(commands).toContain('fetch');
       if (existing) expect(commands).not.toContain('clone');
     },
@@ -238,6 +243,27 @@ describe('Source and dependency preparation', () => {
         return '';
       });
     });
+
+    it.each(['missing', 'corrupt'] as const)(
+      'does not initialize a %s ledger when reusing an existing personal branch',
+      async (state) => {
+        if (state === 'corrupt') await writeFile(path.join(root, 'pending-build.json'), 'broken');
+        const result = await prepareCindySource(
+          env,
+          root,
+          { channel: 'dev', version: '0.0.0' },
+          new AbortController().signal,
+        );
+        expect(result.status).toBe('ready');
+        expect(readPendingBuilds(root)).toBeUndefined();
+        expect(
+          hasPendingBuild(root, { commit: 'a'.repeat(40), tree: '1'.repeat(40) }),
+        ).toBeUndefined();
+        expect(vi.mocked(runSourceGit).mock.calls.some(([, args]) => args[0] === 'clone')).toBe(
+          false,
+        );
+      },
+    );
 
     it('warms the cache without installing baseline dependencies or running scripts', async () => {
       const progress = vi.fn();

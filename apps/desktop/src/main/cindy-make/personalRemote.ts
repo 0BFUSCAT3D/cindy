@@ -17,6 +17,7 @@ import {
 import { assertNoGitOperation, commitPersonalFiles } from './localHistory.js';
 import { PERSONAL_UPSTREAM_REF, type ContentGit } from './sourceContent.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
+import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
 
 export const OFFICIAL_GITHUB_REPOSITORY = 'makecindy/cindy';
 /** Remote name for the user's fork; `origin` keeps pointing at the official repository. */
@@ -200,6 +201,15 @@ export function parsePersonalRemoteTrust(
     ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
     ...(record.rewrites ? { rewrites: record.rewrites } : {}),
   };
+}
+
+/** Persist a binding together with the content-trust facts kept beside the source. */
+export function writePersonalRemoteRecord(file: string, record: PersonalRemoteRecord): void {
+  // A lenient state read is useful for rendering, but never let a write turn a
+  // malformed trust field into a valid record that makes unverified content look
+  // safe. The existing bytes must be proven before they can be replaced.
+  parsePersonalRemoteTrust(readAtomicFileSync(file));
+  atomicWriteFileSync(file, JSON.stringify(record));
 }
 
 export class PersonalRemoteError extends Error {

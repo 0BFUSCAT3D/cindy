@@ -114,6 +114,62 @@ it('accepts only Git SHA-1 or SHA-256 lengths', () => {
   ).not.toThrow();
 });
 
+it.each(['missing', 'corrupt'] as const)(
+  'keeps an unknown %s baseline across integration, rewrite and rollback until generation',
+  (state) => {
+    const dir = root();
+    if (state === 'corrupt') writeFileSync(path.join(dir, 'pending-build.json'), 'broken');
+    const otherAccount = new CindyMakeHistoryStore(path.join(dir, 'other-owner'));
+    expect(hasUnbuiltPersonalChanges(otherAccount, dir, A, () => false)).toBe(true);
+    expect(hasUnbuiltPersonalChanges(otherAccount, dir, A, (commit) => commit === A.commit)).toBe(
+      false,
+    );
+
+    recordPendingBuild(dir, B);
+    expect(hasPendingBuild(dir, B)).toBe(true);
+    expect(hasPendingBuild(dir, A)).toBeUndefined();
+    rewritePendingBuilds(dir, [B.commit], C);
+    expect(hasPendingBuild(dir, C)).toBe(true);
+    expect(hasPendingBuild(dir, A)).toBeUndefined();
+    dropPendingBuild(dir, C);
+    expect(hasPendingBuild(dir, C)).toBeUndefined();
+    // Rolling back the new work must not hide another account's older work.
+    expect(hasUnbuiltPersonalChanges(otherAccount, dir, A, () => false)).toBe(true);
+
+    settlePendingBuilds(dir);
+    expect(hasUnbuiltPersonalChanges(otherAccount, dir, A, () => false)).toBe(false);
+    recordPendingBuild(dir, B);
+    expect(hasPendingBuild(dir, B)).toBe(true);
+    dropPendingBuild(dir, B);
+    expect(hasPendingBuild(dir, A)).toBe(false);
+  },
+);
+
+it.each([39, ...Array.from({ length: 23 }, (_, index) => index + 41), 65])(
+  'rejects %i-character object IDs instead of treating a damaged record as settled',
+  (length) => {
+    const dir = root();
+    for (const field of ['commit', 'tree'] as const) {
+      const snapshot = { ...A, [field]: 'a'.repeat(length) };
+      writeFileSync(
+        path.join(dir, 'pending-build.json'),
+        JSON.stringify({ schema: 1, snapshots: [snapshot] }),
+      );
+      expect(readPendingBuilds(dir)).toBeUndefined();
+      expect(hasPendingBuild(dir, A)).toBeUndefined();
+      expect(() => recordPendingBuild(dir, snapshot)).toThrow('Invalid pending build snapshot');
+    }
+  },
+);
+
+it.each([40, 64])('accepts complete %i-character Git object IDs', (length) => {
+  const dir = root();
+  const snapshot = { commit: 'a'.repeat(length), tree: '1'.repeat(length) };
+  recordPendingBuild(dir, snapshot);
+  expect(readPendingBuilds(dir)).toEqual([snapshot]);
+  expect(hasPendingBuild(dir, snapshot)).toBe(true);
+});
+
 it('a generated personal version settles the pending generation', () => {
   const dir = root();
   recordPendingBuild(dir, A);

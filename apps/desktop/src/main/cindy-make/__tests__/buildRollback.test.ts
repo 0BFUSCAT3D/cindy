@@ -1,10 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
-import { historyBuildRollback, restoreBuildSource, rollbackUnbuiltHistory } from '../buildRollback';
+import {
+  hasUnbuiltPersonalChanges,
+  historyBuildRollback,
+  restoreBuildSource,
+  rollbackUnbuiltHistory,
+} from '../buildRollback';
 import {
   hasPendingBuild,
+  initializePendingBuilds,
   readPendingBuilds,
   recordPendingBuild,
 } from '../pendingBuild';
@@ -26,6 +32,7 @@ afterEach(() => {
 function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'cindy-build-rollback-'));
   roots.push(root);
+  initializePendingBuilds(root);
   const store = new CindyMakeHistoryStore(root);
   let head = { commit: 'a'.repeat(40), tree: '1'.repeat(40) };
   let dirty = false;
@@ -98,9 +105,7 @@ it('a rollback drops the undone snapshots from the pending record as the source 
   expect(h.head()).toEqual({ commit: saved.commit, tree: saved.tree });
   // The undone snapshot left the source: its fact is gone with it; the restored
   // one keeps its own (it is still not generated here).
-  expect(readPendingBuilds(h.root)).toEqual([
-    { commit: saved.commit, tree: saved.tree },
-  ]);
+  expect(readPendingBuilds(h.root)).toEqual([{ commit: saved.commit, tree: saved.tree }]);
 });
 
 it('a restore that finds the source already restored still drops the stale fact', async () => {
@@ -109,6 +114,21 @@ it('a restore that finds the source already restored still drops the stale fact'
   recordPendingBuild(h.root, stale);
   await restoreBuildSource(h.git, h.root, h.head(), stale, h.root);
   expect(readPendingBuilds(h.root)).toEqual([]);
+});
+
+it('a failed generation cannot clear unknown pending work belonging to another account', async () => {
+  const h = fixture();
+  const earlier = h.head();
+  h.integrate('current-owner-task', 'new-work', 'b', '2');
+  writeFileSync(path.join(h.root, 'pending-build.json'), 'broken');
+  await rollbackUnbuiltHistory(h.store, h.root, h.git, () => false, h.root);
+  expect(h.head()).toEqual(earlier);
+  expect(h.store.read('current-owner-task')?.receipts).toEqual([]);
+  expect(readPendingBuilds(h.root)).toBeUndefined();
+  expect(hasUnbuiltPersonalChanges(h.store, h.root, earlier, () => false)).toBe(true);
+  expect(
+    hasUnbuiltPersonalChanges(h.store, h.root, earlier, (commit) => commit === earlier.commit),
+  ).toBe(false);
 });
 
 it('a restore that refuses to touch changed source keeps the fact', async () => {

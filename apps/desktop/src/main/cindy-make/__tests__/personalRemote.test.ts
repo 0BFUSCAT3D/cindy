@@ -1,6 +1,7 @@
 import os from 'node:os';
-import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   PersonalRemoteController,
   PersonalRemoteError,
@@ -11,12 +12,14 @@ import {
   parsePersonalRemoteRecord,
   parsePersonalRemoteTrust,
   readGithubIdentity,
+  writePersonalRemoteRecord,
   type PersonalForkHealth,
   type PersonalRemoteDeps,
   type PersonalRemoteGitOptions,
   type PersonalRemoteRecord,
 } from '../personalRemote';
 import type { CindyMakePersonalRemoteState } from '../../../shared/cindyMakePersonalRemote';
+import { readAtomicFileSync } from '../../utils/atomicWriteFile';
 
 vi.mock('../localHistory', async (load) => ({
   ...(await load<typeof import('../localHistory')>()),
@@ -32,6 +35,23 @@ const OTHER = 'd'.repeat(40);
 const MERGED_TREE = '9'.repeat(40);
 const COMBINED = '8'.repeat(40);
 const FORK_URL = 'https://github.com/octo/cindy.git';
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function storedRecord(raw: string | null) {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'cindy-personal-remote-'));
+  roots.push(root);
+  const file = path.join(root, 'personal-remote.json');
+  if (raw !== null) writeFileSync(file, raw);
+  return {
+    raw: () => readAtomicFileSync(file),
+    replaceRaw: (value: string) => writeFileSync(file, value),
+    read: () => parsePersonalRemoteRecord(readAtomicFileSync(file)),
+    write: (record: PersonalRemoteRecord) => writePersonalRemoteRecord(file, record),
+  };
+}
 
 const jsonResponse = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -126,6 +146,87 @@ describe('parsePersonalRemoteTrust', () => {
     ]) {
       expect(() => parsePersonalRemoteTrust(raw)).toThrow('unprovable content trust');
     }
+  });
+});
+
+describe('persisted personal remote trust', () => {
+  it.each([
+    ['invalid JSON', '{truncated'],
+    ['unknown schema', JSON.stringify({ schema: 2, unverifiedRemote: [OTHER] })],
+    ['non-array tips', JSON.stringify({ schema: 1, unverifiedRemote: OTHER })],
+    ['invalid tip', JSON.stringify({ schema: 1, unverifiedRemote: [OTHER, 'damaged'] })],
+    ['too many tips', JSON.stringify({ schema: 1, unverifiedRemote: Array(513).fill(OTHER) })],
+    [
+      'invalid rewrite',
+      JSON.stringify({ schema: 1, rewrites: [{ from: [OTHER], to: 'damaged' }] }),
+    ],
+  ])('keeps an unprovable record intact when a save starts: %s', async (_case, raw) => {
+    const store = storedRecord(raw);
+    const h = harness({ store });
+    try {
+      expect(() => h.controller.save()).toThrow('unprovable content trust');
+    } finally {
+      await h.controller.settled();
+    }
+    expect(store.raw()).toBe(raw);
+    expect(() => parsePersonalRemoteTrust(store.raw())).toThrow('unprovable content trust');
+    expect(h.calls).toEqual([]);
+    expect(h.ensureFork).not.toHaveBeenCalled();
+    expect(h.controller.state().running).toBeUndefined();
+  });
+
+  it('does not launder damaged trust while cleaning up an interrupted operation', () => {
+    const raw = JSON.stringify({
+      schema: 1,
+      choice: 'github',
+      login: 'octo',
+      repository: 'octo/cindy',
+      running: 'sync',
+      unverifiedRemote: OTHER,
+    });
+    const store = storedRecord(raw);
+    const h = harness({ store });
+    expect(store.raw()).toBe(raw);
+    expect(() => parsePersonalRemoteTrust(store.raw())).toThrow('unprovable content trust');
+    expect(h.calls).toEqual([]);
+  });
+
+  it('rechecks the stored trust before a local-only choice can overwrite it', () => {
+    const store = storedRecord(JSON.stringify({ schema: 1, choice: 'local' }));
+    const h = harness({ store });
+    // Damage can appear after construction; checking only startup is insufficient.
+    const raw = JSON.stringify({ schema: 1, rewrites: 'damaged' });
+    store.replaceRaw(raw);
+    expect(() => h.controller.keepLocal()).toThrow('unprovable content trust');
+    expect(store.raw()).toBe(raw);
+  });
+
+  it('keeps valid trust through interrupted-run cleanup, disconnect and a local-only choice', async () => {
+    const trust = { unverifiedRemote: [OTHER], rewrites: [{ from: [OTHER], to: NEWER }] };
+    const store = storedRecord(
+      JSON.stringify({
+        schema: 1,
+        choice: 'github',
+        login: 'octo',
+        repository: 'octo/cindy',
+        running: 'sync',
+        ...trust,
+      }),
+    );
+    const h = harness({ store });
+    expect(store.read()).toMatchObject({ error: 'interrupted', ...trust });
+    expect(store.read().running).toBeUndefined();
+    await h.controller.disconnect();
+    h.controller.keepLocal();
+    expect(store.read()).toEqual({ schema: 1, choice: 'local', ...trust });
+    expect(parsePersonalRemoteTrust(store.raw())).toEqual(trust);
+    expect(h.pushes()).toEqual([]);
+  });
+
+  it('allows a first local-only decision with no existing record', () => {
+    const store = storedRecord(null);
+    harness({ store }).controller.keepLocal();
+    expect(store.read()).toEqual({ schema: 1, choice: 'local' });
   });
 });
 
@@ -343,6 +444,7 @@ describe('ensureOfficialFork', () => {
 function harness(
   options: {
     record?: PersonalRemoteRecord;
+    store?: Pick<PersonalRemoteDeps, 'read' | 'write'>;
     remote?: string;
     local?: string;
     ancestors?: Array<[string, string]>;
@@ -529,6 +631,7 @@ function harness(
     write: (next) => {
       record = structuredClone(next);
     },
+    ...options.store,
     identity: async () =>
       options.identity === 'missing'
         ? { status: 'missing' }

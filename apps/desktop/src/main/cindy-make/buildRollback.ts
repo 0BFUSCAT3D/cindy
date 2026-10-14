@@ -124,7 +124,7 @@ export function hasUnbuiltPersonalChanges(
   if (store.readBuildRollback().length > 0) return true;
   if (hasUnbuiltHistory(store, head, isPublishedCommit)) return true;
   const pending = hasPendingBuild(recordRoot, head);
-  // An unreadable record (`undefined`) proves nothing: pending unless a
+  // A missing or unreadable record (`undefined`) proves nothing: pending unless a
   // generated personal version already covers this snapshot.
   return pending !== false && !isPublishedCommit(head.commit);
 }
