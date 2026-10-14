@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { AppBridge, type McpUiHostContext } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
@@ -19,6 +20,7 @@ import {
   toolVisibleTo,
   uiToolUri,
   MCP_APPS_MAX_BYTES,
+  MCP_APPS_MAX_REMOTE_BYTES,
 } from './protocol.js';
 
 export interface McpAppsHostDeps {
@@ -50,9 +52,10 @@ class ViewTransport implements Transport {
   onclose?: Transport['onclose'];
   seq = 0;
   readonly events: import('../../shared/mcpApps.js').McpAppHostEvent<JSONRPCMessage>[] = [];
-  private bytes = 0;
+  private bytes = 2; // The serialized array's brackets also count toward the budget.
   private wake?: () => void;
   private failed = false;
+  constructor(private readonly maxBytes: number) {}
   async start(): Promise<void> {}
   async send(message: JSONRPCMessage): Promise<void> {
     this.enqueue({ seq: ++this.seq, message });
@@ -61,12 +64,13 @@ class ViewTransport implements Transport {
     this.enqueue({ seq: ++this.seq, openLink: { id, url } });
   }
   private enqueue(event: (typeof this.events)[number]): void {
-    this.bytes += JSON.stringify(event).length;
-    if (this.failed || this.bytes > MCP_APPS_MAX_BYTES || this.events.length >= 256) {
+    const bytes = this.bytes + Buffer.byteLength(JSON.stringify(event)) + (this.events.length ? 1 : 0);
+    if (this.failed || bytes > this.maxBytes || this.events.length >= 256) {
       this.failed = true;
       this.wake?.();
       return;
     }
+    this.bytes = bytes;
     this.events.push(event);
     this.wake?.();
   }
@@ -74,7 +78,7 @@ class ViewTransport implements Transport {
     if (this.failed) throw new Error('MCP_APP_BACKPRESSURE');
     while (this.events[0]?.seq <= after) {
       const event = this.events.shift()!;
-      this.bytes -= JSON.stringify(event).length;
+      this.bytes -= Buffer.byteLength(JSON.stringify(event)) + (this.events.length ? 1 : 0);
     }
     if (!this.events.length) {
       if (this.wake) throw new Error('MCP_APP_POLL_ALREADY_PENDING');
@@ -280,7 +284,18 @@ export class McpAppsHost {
         (caller.startsWith('device:') ? 4 : 16)
       )
         throw new Error('MCP_APP_VIEW_LIMIT');
-      const transport = new ViewTransport();
+      const viewId = randomUUID();
+      const document: McpAppDocument = {
+        viewId,
+        html: resource.html,
+        csp: policy.header,
+        policy: policy.csp,
+        prefersBorder: resource.meta.prefersBorder !== false,
+      };
+      const remote = caller.startsWith('device:');
+      if (remote && Buffer.byteLength(JSON.stringify(document)) > MCP_APPS_MAX_REMOTE_BYTES)
+        throw new Error('MCP_APP_RESOURCE_TOO_LARGE');
+      const transport = new ViewTransport(remote ? MCP_APPS_MAX_REMOTE_BYTES : MCP_APPS_MAX_BYTES);
       const context: McpUiHostContext = {
         ...hostContext,
         toolInfo: { tool, id: clientId },
@@ -325,7 +340,6 @@ export class McpAppsHost {
         unlisten: [],
         links: new Map(),
       };
-      const viewId = randomUUID();
       this.views.set(viewId, view);
       if (!this.sweepTimer) {
         this.sweepTimer = setInterval(() => {
@@ -499,13 +513,7 @@ export class McpAppsHost {
         await this.disposeView(viewId, view);
         throw error;
       }
-      return {
-        viewId,
-        html: resource.html,
-        csp: policy.header,
-        policy: policy.csp,
-        prefersBorder: resource.meta.prefersBorder !== false,
-      };
+      return document;
     } catch (error) {
       if (detached) await this.releaseConnection(connection).catch(() => {});
       throw error;

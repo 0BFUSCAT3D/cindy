@@ -56,6 +56,11 @@ iOS 另保留显式顶层请求拦截。回归见 `apps/mobile/src/__tests__/mcp
 凭证留在 Main 的现有密钥存储中，不进入 iframe。Claude Code、Codex、Pi 都通过同一
 Host facade 调用自定义 MCP；支持 Apps 的工具执行时生成独立卡片，历史卡片可重新连接。
 不支持 UI 扩展的普通 MCP 保持文本工具使用方式。
+模型侧 facade 如实透传上游 capabilities；补全、资源订阅/退订、日志级别、普通扩展请求
+与 MCP task 方法仍由同一认证连接处理，资源更新、日志和 task 状态通知返回原模型连接。
+进度 token 映射及取消跟随单次请求；异步结果返回前再核对账号和服务器配置。
+工具调用仍检查 model 可见性。MCP task 异步调用沿用上游结果，不额外生成 App 卡片；
+这些模型侧能力不扩展 App 沙箱已声明的可选能力。
 
 SSH 远端使用既有认证桥和 Session instance 路由；只暴露实际配置的自定义 server，
 仍拒绝无关的本机 MCP。伙伴的自定义 server 还需出现在冻结的工具装配名单里。
@@ -63,6 +68,10 @@ SSH 远端使用既有认证桥和 Session instance 路由；只暴露实际配�
 尚未验证真实 SSH 主机与真机 Mobile 的端到端行为。
 
 资源上限为 4 MiB；每个远程查看端最多同时打开 4 个 View，本地查看端 16 个。
+远程文档（含 HTML、CSP、policy 与 viewId）和 poll 的完整事件数组按 UTF-8 JSON 字节
+计量，上限为 4 MiB 减 64 KiB，给 invoke-result 与路由封装留出余量；多字节文本、
+JSON 转义、数组括号和分隔符均计入。超限文档在保留 View 前明确拒绝；事件背压
+只作用于该 View，确认已消费事件时回收相同的 UTF-8 字节，不重建共享连接。
 持久卡片按完整 `{mcpApp: record}` 的 UTF-8 JSON 字节计量，上限 1 MiB，
 为 4 MiB View/device-link 传输中的历史行转义、初始化和输入/结果封装保留余量。
 结果使卡片超限时，在写入前替换为标准 `isError` 与 `MCP_APP_RESULT_TOO_LARGE`，
@@ -119,7 +128,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 
 顺序运行协议、连接、授权与 IPC 回归，再分别启动真实 Electron 沙箱加载官方 SDK 申请表
 和独立 JSON-RPC 看板。HTTP/SSE、text/blob、metadata 来源、分页与变更通知、取消、
-销毁、显示、主题和 CSP 都纳入覆盖。当前结果为 104 项回归和两种 App 的沙箱检查通过，
+销毁、显示、主题和 CSP 都纳入覆盖。当前结果为 118 项回归和两种 App 的沙箱检查通过，
 逐项证据与边界见 [本地协议验证记录](./mcp-apps-validation.md)。
 
 ## 检查入口

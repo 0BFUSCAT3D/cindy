@@ -24,13 +24,19 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
 本轮分别执行该入口的单测阶段与两个沙箱阶段，最终退出码均为 0：
-9 个测试文件、104 项测试通过；两个真实 Electron 集成检查分别输出
+11 个测试文件、118 项测试通过；两个真实 Electron 集成检查分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
 `pnpm.cmd --filter desktop typecheck` 与本轮修改代码、测试及模拟/验证脚本的定向 ESLint 也通过。
-自定义 MCP provider、Codex HTTP bridge 与 Pi 环境接入的 66 项回归通过。
-本轮新增 7 项大小回归：完整卡片按 UTF-8 JSON 字节限制为 1 MiB，超大结果在写入前
+前序自定义 MCP provider、Codex HTTP bridge 与 Pi 环境接入的 66 项回归通过；
+本轮重跑自定义 provider/registry、Codex 与 Pi 环境的 62 项回归通过。
+已有卡片大小回归：完整卡片按 UTF-8 JSON 字节限制为 1 MiB，超大结果在写入前
 变成标准有界错误；官方 View SDK 的实时/远程重开均能读取，模型仍收到原结果。
 恰好达到上限、超出一字节、多字节文本、View-only metadata 和输入/结果合计均纳入验证。
+本轮新增 14 项回归：远程完整文档和事件数组使用 4 MiB 减 64 KiB 的 UTF-8 JSON
+预算，覆盖多字节、引号/控制字符转义、真实 device-link invoke-result 分片编码、
+超限 View 不占额度、消费后字节回收及另一控制端继续工作；普通 MCP 的 HTTP/SSE
+补全、进行中的进度、订阅/退订、日志级别/通知、task 方法/状态通知和扩展请求均透传。
+无上游能力时不虚报，撤权拦住迟到结果和新请求，取消只传给原请求、不重放。
 
 | 测试文件                      | 通过数量 | 主要覆盖                                                                                  |
 | ----------------------------- | -------: | ----------------------------------------------------------------------------------------- |
@@ -43,6 +49,8 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 | `remoteAuthorization.test.ts` |        5 | 真实 Session instance 路由、冻结装配名单、远程发现与执行授权                              |
 | `connection.test.ts`          |        3 | 首次失败及断线后独立重连、关闭竞态、不重放已发送工具                                      |
 | `openLifecycle.test.ts`       |        4 | 加载超时、打开前取消、晚到 View 回收、调用者与任务隔离                                    |
+| `wireBudget.test.ts` | 7 | 完整文档/事件 UTF-8 JSON 大小、转义、device-link 编码、额度回收与控制端隔离 |
+| `serverProxy.test.ts` | 7 | 普通 MCP 能力、补全/进度、订阅/日志、task/扩展、取消和撤权 |
 
 作者侧修复另经 Desktop 卡片可见性、MCP 目录与 SSH bridge、安全守卫定向测试验证；
 Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项通过。共享 controller/
@@ -69,9 +77,11 @@ Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 扩展与 MIME          | Client 声明 `io.modelcontextprotocol/ui`；读取 `text/html;profile=mcp-app`；两种服务器与传输均可发现 UI                                                                                                                    |
 | 工具发现与可见性     | 支持 `_meta.ui.resourceUri` 和旧键；默认 model+app；模型看不到 App-only 工具，View 不能调用 model-only 工具；工具分页不会漏项                                                                                              |
-| HTML 资源            | text/blob 两种编码；优先 read metadata，缺失时从分页 resources/list 查找；拒绝错误 URI/MIME、非法 base64 和超过 4 MiB 的资源                                                                                               |
+| HTML 资源 | text/blob 两种编码；read/list metadata；拒绝错误 URI/MIME、非法 base64 和超过 4 MiB 的资源；远程完整文档按 UTF-8 JSON 计量，超限在保留 View 前拒绝 |
+| 远程响应大小与背压 | 完整文档及 poll 事件数组最多 4 MiB 减 64 KiB，预留 invoke-result 封装；UTF-8、JSON 转义、数组括号/分隔符计入；已消费事件按相同字节回收，另一控制端继续工作；见 `wireBudget.test.ts` |
 | 初始化、版本与 ping  | `ui/initialize` 协商 `2026-01-26`；未知请求版本返回实际支持版本；initialized 前不发输入/结果、拒绝工具调用；拒绝重复初始化；ping 正常                                                                                      |
-| 模型 MCP 初始化      | HTTP/SSE 上游 `instructions` 在标准 initialize 回复中逐字保留；SDK 的 serverInfo、capabilities 和版本协商保留；owner 变化时明确返回错误而非等待超时；回归见 `interop.test.ts`                                              |
+| 模型 MCP 初始化 | HTTP/SSE 上游 `instructions` 和实际 capabilities 在标准 initialize 中保留；SDK 的 serverInfo 和版本协商保留；owner 变化时明确回复错误；见 `interop.test.ts` 与 `serverProxy.test.ts` |
+| 模型 MCP 标准能力 | HTTP/SSE 补全、资源订阅/退订、日志级别/通知、task 方法/状态通知及扩展请求透传；任务式工具调用仍检查 model 可见性；取消不重放，迟到结果重新检查 owner/config；见 `serverProxy.test.ts` |
 | 输入、结果与模型隔离 | initialized 后按输入、结果顺序交付；text/image/audio、嵌入文本/二进制资源、resource_link、structuredContent 与 `_meta` 完整保留给 View；模型 facade 去掉结果根 `_meta`；加载期间完成或取消仍正确交付                       |
 | App 工具调用         | 只连接产生卡片的 server；按任务授权；拒绝授权时服务器不执行；保留工具 `isError` 与 View metadata；不重放写操作                                                                                                             |
 | 资源与列表变更       | resources/read/list/templates、prompts/list；resources/list 游标可继续分页；tools/resources/prompts 的 list_changed 到达 App，刷新后工具定义更新                                                                           |

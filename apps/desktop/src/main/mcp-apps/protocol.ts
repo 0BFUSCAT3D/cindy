@@ -7,6 +7,8 @@ import type { McpAppRecord } from '../../shared/mcpApps.js';
 
 export const MCP_APPS_EXTENSION = 'io.modelcontextprotocol/ui';
 export const MCP_APPS_MAX_BYTES = 4 * 1024 * 1024;
+// Bound serialized remote results, reserving space for invoke and routing metadata.
+export const MCP_APPS_MAX_REMOTE_BYTES = MCP_APPS_MAX_BYTES - 64 * 1024;
 // Leave room for JSON-escaped history rows, initialization and input/result envelopes.
 export const MCP_APPS_MAX_CARD_BYTES = MCP_APPS_MAX_BYTES / 4;
 

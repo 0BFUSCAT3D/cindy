@@ -5,14 +5,14 @@ import {
   ToolListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
   PromptListChangedNotificationSchema,
-  type ToolListChangedNotification,
-  type ResourceListChangedNotification,
-  type PromptListChangedNotification,
+  ResourceUpdatedNotificationSchema,
+  LoggingMessageNotificationSchema,
+  TaskStatusNotificationSchema,
+  type Notification,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 
-type AppServerNotification =
-  ToolListChangedNotification | ResourceListChangedNotification | PromptListChangedNotification;
+type AppServerNotification = Notification;
 import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { MCP_APPS_EXTENSION } from './protocol.js';
 
@@ -74,11 +74,17 @@ export class AppConnection {
           ToolListChangedNotificationSchema,
           ResourceListChangedNotificationSchema,
           PromptListChangedNotificationSchema,
+          ResourceUpdatedNotificationSchema,
+          LoggingMessageNotificationSchema,
+          TaskStatusNotificationSchema,
         ]) {
           client.setNotificationHandler(schema, (message) => {
             this.listeners.forEach((listener) => listener(message));
           });
         }
+        client.fallbackNotificationHandler = async (message) => {
+          this.listeners.forEach((listener) => listener(message));
+        };
         return client;
       }).catch(async (error) => {
         retire();

@@ -4,21 +4,26 @@ import type {
   Transport,
   TransportSendOptions,
 } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
   CallToolResultSchema,
-  ReadResourceRequestSchema,
-  ListResourcesRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
+  CreateTaskResultSchema,
+  ResultSchema,
+  SetLevelRequestSchema,
   ErrorCode,
   isJSONRPCErrorResponse,
   isJSONRPCRequest,
   isJSONRPCResultResponse,
   type CallToolResult,
+  type ClientRequest,
+  type Progress,
+  type Request,
   type RequestId,
+  type ServerCapabilities,
+  type ServerNotification,
+  type ServerRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpProviderContext } from '@cindy/maker-core';
 import type { McpAppRecord } from '../../shared/mcpApps.js';
@@ -30,19 +35,25 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('mcp-apps');
 
-/** Preserve the SDK handshake while attaching authenticated upstream instructions. */
+/** Preserve the SDK handshake while attaching authenticated upstream metadata. */
 class AppProxyServer extends McpServer {
   constructor(
     name: string,
-    private readonly readInstructions: () => Promise<string | undefined>,
+    private readonly readInitialize: () => Promise<{
+      instructions?: string;
+      capabilities: ServerCapabilities;
+    }>,
   ) {
     super(
       { name, version: '1.0.0' },
       {
         capabilities: {
           tools: { listChanged: true },
-          resources: { listChanged: true },
-          prompts: {},
+          resources: { listChanged: true, subscribe: true },
+          prompts: { listChanged: true },
+          completions: {},
+          logging: {},
+          tasks: { requests: { tools: { call: {} } } },
         },
       },
     );
@@ -79,9 +90,10 @@ class AppProxyServer extends McpServer {
       send: async (message, options?: TransportSendOptions) => {
         if (isJSONRPCResultResponse(message) && initializing.delete(message.id)) {
           try {
-            const instructions = await this.readInstructions();
-            if (instructions !== undefined)
-              message = { ...message, result: { ...message.result, instructions } };
+            // The SDK's internal superset permits forwarding. Only the actual
+            // upstream capabilities are advertised to the model client.
+            const upstream = await this.readInitialize();
+            message = { ...message, result: { ...message.result, ...upstream } };
           } catch {
             // A failed response send is only reported out of band by the SDK.
             // Return an initialize error instead of leaving the client waiting.
@@ -122,12 +134,68 @@ export function createAppServerProxy(
     assertCurrent();
     return host.registerConnection(connection, owner);
   };
-  const server = new AppProxyServer(config.id, async () => {
+  const currentClient = async (signal?: AbortSignal) => {
     registerOnUse();
     const client = await connection.getClient();
     assertCurrent();
-    return client.getInstructions();
+    signal?.throwIfAborted();
+    return client;
+  };
+  const requestOptions = (
+    request: Request,
+    extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => {
+    const token = request.params?._meta?.progressToken;
+    return {
+      signal: extra.signal,
+      onprogress:
+        token === undefined
+          ? undefined
+          : (progress: Progress) => {
+              try {
+                assertCurrent();
+              } catch {
+                return;
+              }
+              // Upstream owns any task queue; this facade only relays the notification.
+              void server.server
+                .notification(
+                  {
+                    method: 'notifications/progress',
+                    params: { ...progress, progressToken: token },
+                  },
+                  { relatedRequestId: extra.requestId },
+                )
+                .catch(() => {});
+            },
+    };
+  };
+  const server = new AppProxyServer(config.id, async () => {
+    const client = await currentClient();
+    return {
+      capabilities: client.getServerCapabilities() ?? {},
+      instructions: client.getInstructions(),
+    };
   });
+  // Ordinary MCP methods (completion, subscriptions, logging, tasks and
+  // extensions) retain their upstream behavior. tools/call stays below the
+  // explicit visibility and App-card handling boundary.
+  const forwardRequest = async (
+    request: Request,
+    extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => {
+    const client = await currentClient(extra.signal);
+    const result = await client.request(
+      request as ClientRequest,
+      ResultSchema,
+      requestOptions(request, extra),
+    );
+    assertCurrent();
+    return result;
+  };
+  server.server.fallbackRequestHandler = forwardRequest;
+  // Override the SDK's local log-level handler; the upstream owns its logging state.
+  server.server.setRequestHandler(SetLevelRequestSchema, forwardRequest);
   server.server.setRequestHandler(ListToolsRequestSchema, async () => {
     registerOnUse();
     return { tools: (await connection.tools()).filter((tool) => toolVisibleTo(tool, 'model')) };
@@ -139,6 +207,16 @@ export function createAppServerProxy(
     );
     extra.signal.throwIfAborted();
     if (!tool || !toolVisibleTo(tool, 'model')) throw new Error('MCP_APP_TOOL_NOT_VISIBLE');
+    if (request.params.task) {
+      const client = await currentClient(extra.signal);
+      const result = await client.request(
+        { method: 'tools/call', params: request.params },
+        CreateTaskResultSchema,
+        requestOptions(request, extra),
+      );
+      assertCurrent();
+      return result;
+    }
     const active = context.getSessionContext?.() ?? context;
     const uri = uiToolUri(tool);
     const sessionId = active.sessionId;
@@ -168,7 +246,11 @@ export function createAppServerProxy(
       extra.signal.throwIfAborted();
       result = (await (
         await connection.getClient()
-      ).callTool(request.params, CallToolResultSchema, { signal: extra.signal })) as CallToolResult;
+      ).callTool(
+        request.params,
+        CallToolResultSchema,
+        requestOptions(request, extra),
+      )) as CallToolResult;
     } catch (error) {
       if (record && sessionId) {
         try {
@@ -202,26 +284,6 @@ export function createAppServerProxy(
     const modelResult = { ...result };
     delete modelResult._meta;
     return modelResult;
-  });
-  server.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    registerOnUse();
-    return (await connection.getClient()).readResource(request.params);
-  });
-  server.server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
-    registerOnUse();
-    return (await connection.getClient()).listResources(request.params);
-  });
-  server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request) => {
-    registerOnUse();
-    return (await connection.getClient()).listResourceTemplates(request.params);
-  });
-  server.server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
-    registerOnUse();
-    return (await connection.getClient()).listPrompts(request.params);
-  });
-  server.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    registerOnUse();
-    return (await connection.getClient()).getPrompt(request.params);
   });
   const unlisten = connection.listen((message) => {
     try {
