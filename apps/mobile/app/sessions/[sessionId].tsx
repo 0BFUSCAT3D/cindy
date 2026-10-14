@@ -2638,6 +2638,8 @@ function SessionScreenContent() {
   const composerSwitchesAgent = composerDisplayAgentKind !== sessionAgentKind;
   const sessionAgentSwitchSupported = !!currentSession
     && supportsMobileSessionAgentSwitch(currentSession, capabilities);
+  // Orca 的同引擎模型选择也只登记意图，保留当前执行单元直到下一次发送。
+  const orcaModelSelectionUsesIntent = !!currentSession?.orcaRole && sessionAgentSwitchSupported;
   // 远程 Agent:模型列表在被控电脑自己的供应商之外,另列同账号其他电脑上开放了远程调用的供应商
   // (与桌面同一套,2026-10-07 产品裁决)。选另一台电脑的模型 = 把 Agent 挪过去,先二次确认;
   // 同一台电脑内换模型直接切。共享任务访客与 Orca 成员不能换电脑，SSH 不支持切换;
@@ -8422,7 +8424,7 @@ function SessionScreenContent() {
         hostName: controlledComputerName,
       });
       if (!location) return;
-      if (modelSheetAgentKind !== sessionAgentKind || location.agentDeviceId !== undefined) {
+      if (orcaModelSelectionUsesIntent || modelSheetAgentKind !== sessionAgentKind || location.agentDeviceId !== undefined) {
         await writeSessionAgentSwitchIntent({
           targetAgentKind: modelSheetAgentKind,
           model: next.model,
@@ -8471,6 +8473,7 @@ function SessionScreenContent() {
     modelSheetAgentKind,
     modelSheetCapabilities,
     modelSheetSelection,
+    orcaModelSelectionUsesIntent,
     remoteAgentDeviceName,
     runControlAction,
     sessionAgentKind,
@@ -8516,8 +8519,8 @@ function SessionScreenContent() {
       if (applied) setModelSheetAgentKind(config.agent);
       return applied;
     }
-    if (relocates) {
-      // 同引擎换电脑:原生会话在原来那台、接不上,同样走下一条消息生效的切换意图。
+    if (relocates || orcaModelSelectionUsesIntent) {
+      // 同引擎换电脑或 Orca 换模型均走下一条消息生效的切换意图。
       const applied = await writeSessionAgentSwitchIntent({
         targetAgentKind: config.agent,
         model: config.modelId,
@@ -8545,7 +8548,7 @@ function SessionScreenContent() {
   }, [canUseRemoteSessionControls,currentSession,controlBusy,composerDeviceProviders.providers,maker,
     sessionAgentKind,sessionAgentSwitchSupported,agentSwitchIntent,writeSessionAgentSwitchIntent,
     runControlAction,setComposerModel,sessionId,deviceId,agentLocationMovable,remoteAgentCatalogs,
-    remoteAgentDeviceName,controlledComputerName]);
+    remoteAgentDeviceName,controlledComputerName,orcaModelSelectionUsesIntent]);
 
   const selectComposerFlatModel = useCallback((option: MobileModelOption) => {
     setModelSheetOpen(false);
@@ -8571,7 +8574,7 @@ function SessionScreenContent() {
         hostName: controlledComputerName,
       });
       if (!location) return;
-      if (location.agentDeviceId !== undefined) {
+      if (location.agentDeviceId !== undefined || orcaModelSelectionUsesIntent) {
         await writeSessionAgentSwitchIntent({
           targetAgentKind: sessionAgentKind,
           model: option.id,
@@ -8596,7 +8599,7 @@ function SessionScreenContent() {
         },
       );
     })();
-  }, [agentLocationMovable, agentSwitchIntent, canUseRemoteSessionControls, controlledComputerName, currentSession, modelSheetAgentKind, modelSheetCapabilities, modelSheetSelection?.effort, modelSheetSelection?.fastMode, remoteAgentDeviceName, runControlAction, sessionAgentKind, setComposerModel, writeSessionAgentSwitchIntent]);
+  }, [agentLocationMovable, agentSwitchIntent, canUseRemoteSessionControls, controlledComputerName, currentSession, modelSheetAgentKind, modelSheetCapabilities, modelSheetSelection?.effort, modelSheetSelection?.fastMode, orcaModelSelectionUsesIntent, remoteAgentDeviceName, runControlAction, sessionAgentKind, setComposerModel, writeSessionAgentSwitchIntent]);
   const browseComposerModelAgent = useCallback(async (next: MobileSessionAgentKind) => {
     if (next === modelSheetAgentKind) return true;
     if (next !== sessionAgentKind) {
@@ -8609,10 +8612,10 @@ function SessionScreenContent() {
   }, [agentSwitchIntent, modelSheetAgentKind, sessionAgentKind, sessionAgentSwitchSupported]);
   const changeComposerSelectedEffort = useCallback((effort: string) => {
     if (!canConfigureSessionModel) return;
-    // 跨引擎 intent,或已登记「改回被控电脑」的同引擎 intent:改 intent 本身(带着位置),
+    // 跨引擎、换位置或 Orca 同引擎 intent:改 intent 本身(保留已有位置),
     // 否则 setEffort 的值会在发送时被 intent 里的旧值盖回。
     if (
-      (modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
+      (orcaModelSelectionUsesIntent || modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
       && agentSwitchIntent?.targetAgentKind === modelSheetAgentKind
     ) {
       void writeSessionAgentSwitchIntent({ ...agentSwitchIntent, effort });
@@ -8621,11 +8624,11 @@ function SessionScreenContent() {
     if (modelSheetAgentKind === sessionAgentKind) {
       void runControlAction(() => maker.setEffort(sessionId, effort), { effort });
     }
-  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
+  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, orcaModelSelectionUsesIntent, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
   const changeComposerSelectedFastMode = useCallback((enabled: boolean) => {
     if (!canConfigureSessionModel) return;
     if (
-      (modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
+      (orcaModelSelectionUsesIntent || modelSheetAgentKind !== sessionAgentKind || intentChangesAgentLocation(agentSwitchIntent))
       && agentSwitchIntent?.targetAgentKind === modelSheetAgentKind
     ) {
       void writeSessionAgentSwitchIntent({ ...agentSwitchIntent, fastMode: enabled });
@@ -8634,7 +8637,7 @@ function SessionScreenContent() {
     if (modelSheetAgentKind === sessionAgentKind) {
       void runControlAction(() => maker.setFastMode(sessionId, enabled), { fastMode: enabled });
     }
-  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
+  }, [agentSwitchIntent, canConfigureSessionModel, maker, modelSheetAgentKind, orcaModelSelectionUsesIntent, runControlAction, sessionAgentKind, sessionId, writeSessionAgentSwitchIntent]);
   const toggleComposerModelPicker = useCallback(() => {
     if (!canConfigureSessionModel) {
       setModelSheetOpen(false);

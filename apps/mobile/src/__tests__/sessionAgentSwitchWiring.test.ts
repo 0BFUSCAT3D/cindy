@@ -129,7 +129,7 @@ describe('session Agent switch UI wiring', () => {
       source.indexOf('const toggleComposerModelPicker'),
     );
     expect(toggles.match(
-      /\(modelSheetAgentKind !== sessionAgentKind \|\| intentChangesAgentLocation\(agentSwitchIntent\)\)/g,
+      /\(orcaModelSelectionUsesIntent \|\| modelSheetAgentKind !== sessionAgentKind \|\| intentChangesAgentLocation\(agentSwitchIntent\)\)/g,
     )).toHaveLength(2);
 
     // 模型药丸按 Agent 所在电脑的目录显示,带远程标记;读屏标签读出那台电脑。

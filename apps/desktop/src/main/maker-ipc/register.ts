@@ -19802,8 +19802,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       : ((runtimeStatus.effort ?? null) as SessionRuntimeProfile['effort']);
     const targetFastMode = atomicSelection?.fastMode ?? runtimeStatus.fastMode;
     const agentKind = dbToMakerAgentKind(runtimeStatus.agentKind as 'cc' | 'codex' | 'pi');
-    if (internalOptions.source === 'user' && !internalOptions.applyingUserSelectionOnSend &&
-        !runtimeStatus.orcaRole) {
+    if (internalOptions.source === 'user' && !internalOptions.applyingUserSelectionOnSend) {
       assertRuntimeOwnerCurrent();
       assertSharedTaskCurrent.admit();
       // 那台的目录里没有这个模型(例如控制端列的是任务所在电脑的目录)：现在就拒绝，
@@ -20226,7 +20225,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // A picker click records intent only. Keep the persisted route and native binding
       // authoritative until a real send holds this same lock and consumes the final choice.
       if (internalOptions.source === 'user' && !internalOptions.applyingUserSelectionOnSend &&
-          !runtimeStatus.remoteHostId && !runtimeStatus.orcaRole) {
+          !runtimeStatus.remoteHostId) {
         if (internalOptions.beforeMutation) await internalOptions.beforeMutation();
         assertRuntimeOwnerCurrent();
         assertSharedTaskCurrent.admit();
