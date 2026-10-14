@@ -1449,6 +1449,22 @@ describe('Chat Server result delivery and refresh', () => {
       expect(history.find((m: { id: string }) => m.id === shares[0].id)).toMatchObject({ sharedReplyId: botReply });
       expect(history.find((m: { id: string }) => m.id === execution.source_message_id)).not.toHaveProperty('sharedReplyId');
     });
+
+    it('marks a share in the main-group background of a Thread request as a reference too', async () => {
+      claimed = false;
+      const rootId = '90000000-0000-4000-8000-0000000000bb';
+      const source = { ...msg(execution.source_message_id, 2, selfId), threadRootId: rootId, content: [{ type: 'text', text: 'Bot, summarize' }] };
+      fixture.handle.mockImplementation((route, method, body) => route.includes('all=true') || route.includes('threadRootId=') ? { body: [source] }
+        : route.startsWith(`/conversations/${roomId}/messages?limit=`) ? { body: [shares[0]] }
+        : route === `/conversations/${roomId}/messages/${rootId}` ? { body: msg(rootId, 1, selfId) }
+        : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+      const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
+      expect(prompt).toContain('A message with sharedReplyId re-posts an existing thread reply');
+      const background = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.mainGroupBackground)!.mainGroupBackground;
+      expect(background).toEqual([expect.objectContaining({ id: shares[0].id, sharedReplyId: botReply })]);
+    });
   });
 });
 

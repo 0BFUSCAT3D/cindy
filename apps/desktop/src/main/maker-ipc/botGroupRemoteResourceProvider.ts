@@ -41,9 +41,11 @@ import {
   BOT_GROUP_REMOTE_RESOURCE_KIND,
   type BotGroupDetail,
   type BotGroupFailure,
+  type BotGroupMessageView,
   type BotGroupRemoteActionId,
   type BotGroupRemoteChatData,
   type BotGroupSummary,
+  type BotGroupThreadShareView,
 } from '../../shared/botGroupChat.js';
 import type { BotGroupChatService } from './botGroupChatService.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
@@ -178,6 +180,15 @@ export function botGroupRemoteItem(group: BotGroupSummary): RemoteCollectionItem
   };
 }
 
+function withoutPaths(attachments: BotGroupMessageView['attachments']): BotGroupMessageView['attachments'] {
+  return attachments.map((attachment) => ({ ...attachment, path: null }));
+}
+
+/** A shared reply carries its own attachments, downloaded to this computer. */
+function shareWithoutPaths(share: BotGroupThreadShareView): BotGroupThreadShareView {
+  return share.attachments.length > 0 ? { ...share, attachments: withoutPaths(share.attachments) } : share;
+}
+
 /** Host paths stay on the computer; the phone gets the folder name and attachment names only. */
 export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteChatData {
   return {
@@ -186,9 +197,12 @@ export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteCh
     projectDirName: detail.projectDir ? path.basename(detail.projectDir) : null,
     plans: detail.plans.map((plan) => ({ ...plan, workDir: null })),
     // Older phones consume message views only; derive from this read's state here.
-    messages: projectBotGroupExecutionFailures(detail.messages, detail.executionFailures).map((message) => (message.attachments.length > 0
-      ? { ...message, attachments: message.attachments.map((attachment) => ({ ...attachment, path: null })) }
-      : message)),
+    messages: projectBotGroupExecutionFailures(detail.messages, detail.executionFailures).map((message) => {
+      const view = message.attachments.length > 0 ? { ...message, attachments: withoutPaths(message.attachments) } : message;
+      return view.threadShare ? { ...view, threadShare: shareWithoutPaths(view.threadShare) } : view;
+    }),
+    ...(detail.threadShareUpdates ? { threadShareUpdates: Object.fromEntries(Object.entries(detail.threadShareUpdates)
+      .map(([id, share]) => [id, shareWithoutPaths(share)])) } : {}),
     supportsAttachments: true,
     supportsMemberRemoval: detail.serverBacked === true,
     supportsSettingsManagement: detail.serverBacked === true,

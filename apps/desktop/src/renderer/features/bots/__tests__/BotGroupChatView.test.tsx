@@ -1955,7 +1955,8 @@ describe('more older shares than one refresh re-reads', () => {
   const t = (name: string) => `bots.groupChat.server.thread.${name}`;
   beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
 
-  it('never keeps showing a share the refresh could not check, and gets to it within a few refreshes', async () => {
+  // Crossing the per-read cap takes more cards than a shared CI runner renders within the default.
+  it('never keeps showing a share the refresh could not check, and gets to it within a few refreshes', { timeout: 20_000 }, async () => {
     type Share = NonNullable<BotGroupMessageView['threadShare']>;
     const shareOf = (i: number, extra: Partial<Share> = {}): Share => ({ messageId: `reply-${i}`, threadRootId: 'root', status: 'available', authorKind: 'bot',
       authorBotId: 'xiaoman', authorName: '小满', sharedByAuthor: false, content: `原文 ${i}`, attachments: [], createdAt: 1, edited: false, version: 1, ...extra });

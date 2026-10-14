@@ -25,8 +25,10 @@ import {
   BOT_GROUP_CHAT_PRIMITIVE,
   BOT_GROUP_REMOTE_COLLECTION_ID,
   BOT_GROUP_REMOTE_RESOURCE_KIND,
+  type BotGroupAttachment,
   type BotGroupDetail,
   type BotGroupSummary,
+  type BotGroupThreadShareView,
 } from '../../../shared/botGroupChat.js';
 
 const context = { controllerDeviceId: 'phone-1' };
@@ -380,6 +382,23 @@ describe('bot group remote resources', () => {
     expect(JSON.stringify(rich)).not.toContain('/Users/me');
     const plain = await remoteResourceRegistry.get(context, { client: client(), ref: ref('g1') });
     expect(plain.blocks?.[0]?.fallbackMarkdown).toContain('📎 photo.png 📎 需求.pdf');
+  });
+
+  it('keeps host paths off the attachments of shared thread replies', async () => {
+    const file: BotGroupAttachment = { id: 'a2', name: '需求.pdf', category: 'pdf', mimeType: 'application/pdf', size: 4, url: null, path: '/Users/me/cache/需求.pdf' };
+    const share: BotGroupThreadShareView = {
+      messageId: 'r1', threadRootId: 'm1', status: 'available', authorKind: 'bot', authorBotId: 'abu', authorName: '阿布',
+      sharedByAuthor: false, content: '附件在这', attachments: [file], createdAt: 20, edited: false,
+    };
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({
+      messages: [{ ...detail().messages[0]!, id: 's1', threadShare: share }],
+      threadShareUpdates: { s0: { ...share, messageId: 'r0' } },
+    }) });
+    const rich = await remoteResourceRegistry.get(context, { client: client([BOT_GROUP_CHAT_PRIMITIVE]), ref: ref('g1') });
+    const data = rich.blocks![0]!.data as ReturnType<typeof botGroupRemoteChatData>;
+    expect(data.messages[0]!.threadShare!.attachments).toEqual([{ ...file, path: null }]);
+    expect(data.threadShareUpdates!.s0!.attachments).toEqual([{ ...file, path: null }]);
+    expect(JSON.stringify(rich)).not.toContain('/Users/me/cache');
   });
 
   it('writes nothing once the computer has switched accounts during the checks', async () => {
