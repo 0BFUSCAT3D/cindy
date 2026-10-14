@@ -1892,6 +1892,7 @@ export function ChatInput({
   // options; it can therefore use the same deferred handoff transaction as a
   // normal session. Remote sessions remain gated by their host capabilities.
   const sessionAgentSwitchSupported =
+    sessionOrcaRole !== undefined && runtimeAgentKind != null &&
     (!deviceLinkDeviceId || ccSupportsSessionAgentSwitch || codexSupportsSessionAgentSwitch);
 
   // 切换写入的串行链与写序号都按 session 存在**模块级**协调层(agentSwitchCoordinator),
@@ -7214,8 +7215,8 @@ export function ChatInput({
     [agentDeviceId, intentAgentDeviceId, deviceLinkDeviceId, deviceLinkDeviceName, confirmDialog, t],
   );
   const sessionRemoteAgentOptions = useMemo<RemoteAgentSelectorOptions | undefined>(() => {
-    // 本机任务,或被控电脑支持远程 Agent 的被控端任务;且会话内能走切换事务(SSH / 协同任务不行)。
-    if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter) return undefined;
+    // 本机或能力已确认的被控端任务可换电脑；SSH / Orca 不开放位置选择。
+    if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter || sessionOrcaRole !== null) return undefined;
     if (!remoteAgentDevices || (remoteAgentDevices.length === 0 && !effectiveAgentDeviceId)) {
       return undefined;
     }
@@ -7251,6 +7252,7 @@ export function ChatInput({
     taskComputerModelMemory,
     remoteHostId,
     sessionEngineFilter,
+    sessionOrcaRole,
     remoteAgentDevices,
     effectiveAgentDeviceId,
     intentAgentDeviceId,

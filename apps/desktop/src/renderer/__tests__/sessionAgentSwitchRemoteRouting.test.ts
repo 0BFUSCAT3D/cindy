@@ -910,6 +910,21 @@ describe('ChatInput 的入口门控与调用路由', () => {
 
   it('Orca 会话复用切换入口，角色未加载仍保留未知态', () => {
     expect(source).not.toContain('sessionOrcaRole === null &&');
+    const expression = source.match(/const sessionAgentSwitchSupported =\s*([\s\S]*?);/)?.[1];
+    expect(expression).toBeDefined();
+    const supported = new Function('sessionOrcaRole', 'runtimeAgentKind', 'deviceLinkDeviceId',
+      'ccSupportsSessionAgentSwitch', 'codexSupportsSessionAgentSwitch', `return ${expression};`);
+    for (const role of [null, 'lead', 'worker']) {
+      expect(supported(role, 'codex', null, false, false)).toBe(true);
+      expect(supported(role, undefined, null, true, true)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, false)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, true)).toBe(true);
+    }
+    expect(supported(undefined, 'codex', null, true, true)).toBe(false);
+    const remoteOptions = source.slice(source.indexOf('const sessionRemoteAgentOptions ='),
+      source.indexOf('// composer pill 尾部引擎小标'));
+    expect(remoteOptions).toContain('sessionOrcaRole !== null) return undefined;');
+    expect(remoteOptions).toContain('    sessionOrcaRole,');
     // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),

@@ -25,6 +25,7 @@ import type {
   ControlSteerOutcome,
 } from './agent-input-coordinator.js';
 import { runAcceptedCallback, runAcceptedRollback } from './acceptedCallbackRunner.js';
+import { prependHandoffToUserMessage } from './agentHandoff.js';
 
 const defaultLog = createLogger('maker-ipc');
 
@@ -154,6 +155,9 @@ export interface OrcaInterAgentDispatcherDeps<TSessionMeta> {
   getLiveSession: (sessionId: string) => PersistedUserMessageSession | null | undefined;
   /** Apply a deferred route while the per-session send lock is held. */
   applyPendingAgentSwitch?: (sessionId: string) => Promise<void>;
+  hasPendingAgentSwitch?: (sessionId: string) => boolean;
+  peekPendingHandoff?: (sessionId: string) => Promise<string | null>;
+  consumePendingHandoff?: (sessionId: string) => void;
   /** Uses the input coordinator's steer guards and preserves uncertain-delivery ownership. */
   steerControlInput?: (
     sessionId: string,
@@ -572,6 +576,11 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
         // Orca delivery bypasses the ordinary renderer send transaction. Apply
         // the same deferred route boundary before reading the live session.
         await deps.applyPendingAgentSwitch?.(params.targetSessionId);
+        // Cross-engine preparation may retain the intent without throwing. Never
+        // deliver to the old runtime, or bypass an unfinished recovery by resuming.
+        if (deps.hasPendingAgentSwitch?.(params.targetSessionId)) {
+          throw new Error('Agent switch is still pending; retry the send after recovery');
+        }
         await deps.prepareUnhealthySession?.(params.targetSessionId);
         const live = deps.getLiveSession(params.targetSessionId);
         if (!live) return null;
@@ -788,26 +797,36 @@ async function sendPersistedUserMessageToSession<TSessionMeta>(
   const { session, dbContent, agentMessage, clientId = deps.createId(), source, context, origin, onAccepted } = params;
   let turnChangeSetStarted = false;
   const humanIntent = restoreAutoReviewUserIntent(await deps.readAutoReviewHistory?.(session.id) ?? []);
+  const pendingHandoff = await deps.peekPendingHandoff?.(session.id);
+  const outgoingMessage = pendingHandoff
+    ? prependHandoffToUserMessage(agentMessage, pendingHandoff) as UserMessage
+    : agentMessage;
   const result = await resolveCollabDispatchResult(
-    () => session.send(agentMessage, {
-      planMode: false,
-      throwOnStartFailure: true,
-      [AUTO_REVIEW_SOURCE_CONTENT]: '',
-      [AUTO_REVIEW_USER_INTENT]: humanIntent,
-      [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
-      onAccepted: async () => {
-        // maker-core 会在 vendor handle.send 前 await 此 hook；必须先落库，再运行 accepted 副作用。
-        await deps.createDbMessage(session.id, {
-          clientId,
-          role: 'user',
-          content: dbContent,
-          agentMeta: { ...(origin ? { origin } : {}), autoReviewUserText: { kind: 'delegated-continuation' }, delivery: 'turn' },
-        });
-        await deps.beginDirectTurnChangeSet(session.id, clientId);
-        turnChangeSetStarted = true;
-        await runAcceptedCallback(onAccepted, session.id, clientId, deps.log ?? defaultLog);
-      },
-    }),
+    async () => {
+      const sendResult = await session.send(outgoingMessage, {
+        planMode: false,
+        throwOnStartFailure: true,
+        [AUTO_REVIEW_SOURCE_CONTENT]: '',
+        [AUTO_REVIEW_USER_INTENT]: humanIntent,
+        [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+        onAccepted: async () => {
+          // maker-core 会在 vendor handle.send 前 await 此 hook；必须先落库，再运行 accepted 副作用。
+          await deps.createDbMessage(session.id, {
+            clientId,
+            role: 'user',
+            content: dbContent,
+            agentMeta: { ...(origin ? { origin } : {}), autoReviewUserText: { kind: 'delegated-continuation' }, delivery: 'turn' },
+          });
+          await deps.beginDirectTurnChangeSet(session.id, clientId);
+          turnChangeSetStarted = true;
+          await runAcceptedCallback(onAccepted, session.id, clientId, deps.log ?? defaultLog);
+        },
+      });
+      // Keep the handoff for retries until the target actually accepts it. It is
+      // model-only context: dbContent and any requeued message stay unchanged.
+      if (pendingHandoff && sendResult.accepted) deps.consumePendingHandoff?.(session.id);
+      return sendResult;
+    },
     { source, context },
   );
   if (turnChangeSetStarted && !result.dispatched) {

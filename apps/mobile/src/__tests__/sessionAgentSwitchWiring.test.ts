@@ -76,8 +76,11 @@ describe('session Agent switch UI wiring', () => {
     // 唯一写出口把 intent 的位置作为第 7 参转给被控端;没有位置时不发(旧 6 参 wire)。
     expect(writer).toContain('nextIntent.agentDeviceId !== undefined');
     expect(writer).toContain('? { agentDeviceId: nextIntent.agentDeviceId }');
-    // 共享任务访客不能挪 Agent 位置，SSH 仍不支持切换；Orca 沿用同一切换事务。
+    // Orca 可以切 Agent，但和共享任务访客一样不能挪运行位置。
     expect(source).toContain('const agentLocationMovable = sessionAgentSwitchSupported');
+    const locationGate = source.slice(source.indexOf('const agentLocationMovable ='),
+      source.indexOf('/** Agent 现在所在的电脑'));
+    expect(locationGate).toContain('&& !currentSession.orcaRole');
     expect(source).toContain("&& !isSharedTaskPeer(deviceId)");
     expect(source).toContain("Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId')");
     // 模型列表另列其他电脑的供应商,选中态跟着下一条消息时 Agent 所在的电脑。

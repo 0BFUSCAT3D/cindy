@@ -1020,22 +1020,93 @@ it.each(['Do not publish', ''])('ordinary live continuation retains the last acc
   expect(result.ok).toBe(true);
 });
 
-it('applies a deferred Agent switch before direct Lead/Worker delivery', async () => {
+it.each(['lead', 'worker'] as const)('applies a deferred Agent switch before direct %s delivery', async (source) => {
+  const switched = createLiveSession(async (_message, opts) => {
+    await opts?.onAccepted?.();
+    return { accepted: true };
+  });
+  let current: ReturnType<typeof createLiveSession>;
+  let handoff: string | null = null;
+  const consume = vi.fn(() => { handoff = null; });
   const h = createHarness({
     applyPendingAgentSwitch: vi.fn(async () => {
       h.order.push('apply-switch');
+      if (current !== switched) handoff = 'History from the previous engine';
+      current = switched;
     }),
+    getLiveSession: () => current,
+    hasPendingAgentSwitch: () => false,
+    peekPendingHandoff: async () => handoff,
+    consumePendingHandoff: consume,
   });
+  current = h.liveSession;
 
-  const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage({
+  const message = {
     targetSessionId: 'target-session',
     rawContent: 'Continue on the new engine',
-    source: 'lead',
+    source,
     senderLabel: 'Lead',
     meta: { source: 'orca', context: 'agent-switch-boundary' },
-  });
+  };
+  const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage(message);
 
   expect(result).toMatchObject({ ok: true, mode: 'dispatched' });
   expect(h.deps.applyPendingAgentSwitch).toHaveBeenCalledWith('target-session');
-  expect(h.order.indexOf('apply-switch')).toBeLessThan(h.order.indexOf('send-called'));
+  expect(h.liveSession.send).not.toHaveBeenCalled();
+  const content = switched.send.mock.calls[0]?.[0].content;
+  expect(content).toContain('History from the previous engine');
+  expect(content).toContain(source === 'lead' ? '[From Orca Lead]' : '[From Orca Worker]');
+  expect(content).toContain(message.rawContent);
+  expect(consume).toHaveBeenCalledExactlyOnceWith('target-session');
+  expect(h.deps.createDbMessage).toHaveBeenCalledWith('target-session', expect.objectContaining({
+    content: JSON.stringify({ orcaSource: source, content: message.rawContent }),
+  }));
+  await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage(message);
+  expect(switched.send.mock.calls[1]?.[0].content).not.toContain('History from the previous engine');
+  expect(consume).toHaveBeenCalledTimes(1);
+});
+
+it.each([true, false])('blocks delivery and resume when a failed switch retains its intent (live=%s)', async (hasLive) => {
+  const accepted = vi.fn();
+  const h = createHarness({
+    applyPendingAgentSwitch: vi.fn(async () => undefined),
+    hasPendingAgentSwitch: () => true,
+  });
+  if (!hasLive) vi.mocked(h.deps.getLiveSession).mockReturnValue(undefined);
+  const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage({
+    targetSessionId: 'target-session', rawContent: 'Retry after recovery', source: 'lead', senderLabel: 'Lead',
+    meta: { source: 'orca', context: 'pending-switch' }, onAccepted: accepted,
+  });
+  expect(result).toMatchObject({ ok: false, dispatchOutcome: { code: 'SEND_FAILED' } });
+  expect(h.deps.hasPendingAgentSwitch?.('target-session')).toBe(true);
+  expect(h.liveSession.send).not.toHaveBeenCalled();
+  expect(h.deps.sendToSessionInternal).not.toHaveBeenCalled();
+  expect(h.deps.createDbMessage).not.toHaveBeenCalled();
+  expect(accepted).not.toHaveBeenCalled();
+});
+
+it.each(['rejected', 'throw', 'running'] as const)('keeps history for retry after %s direct delivery', async (failure) => {
+  const consume = vi.fn();
+  const h = createHarness({
+    peekPendingHandoff: async () => 'Pending history',
+    consumePendingHandoff: consume,
+  });
+  h.liveSession.send.mockImplementation(async () => {
+    if (failure === 'rejected') return { accepted: false, reason: 'cancelled-before-dispatch' };
+    if (failure === 'running') throw Object.assign(new Error('already running'), { code: 'SESSION_RUNNING' });
+    throw new Error('transport failed');
+  });
+  const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage({
+    targetSessionId: 'target-session', rawContent: 'Continue', source: 'lead', senderLabel: 'Lead',
+    meta: { source: 'orca', context: 'handoff-retry' },
+  });
+  expect(result.ok).toBe(failure === 'running');
+  expect(h.liveSession.send.mock.calls[0]?.[0].content).toContain('Pending history');
+  expect(consume).not.toHaveBeenCalled();
+  expect(h.deps.createDbMessage).not.toHaveBeenCalled();
+  if (failure === 'running') {
+    expect(result).toMatchObject({ mode: 'queued' });
+    expect(firstQueuedItem(h.queuedItems).text).not.toContain('Pending history');
+    expect(firstQueuedItem(h.queuedItems).persistedContent).not.toContain('Pending history');
+  }
 });
