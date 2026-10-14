@@ -474,8 +474,8 @@ describe('2026-01-26 MCP Apps conformance against an independent local server', 
       content: [{ type: 'text', text: 'latest' }],
       structuredContent: { threshold: 2 },
     });
-    expect(await f.host.modelContext('task')).toContain('latest');
-    expect(await f.host.modelContext('task')).not.toContain('"text":"old"');
+    expect((await f.host.modelContext('task')).text).toContain('latest');
+    expect((await f.host.modelContext('task')).text).not.toContain('"text":"old"');
     expect(f.send).not.toHaveBeenCalled();
     await f.peer.request('ui/message', {
       role: 'user',

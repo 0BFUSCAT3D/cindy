@@ -1356,9 +1356,11 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       let outgoing = uiLanguageNote
         ? prependNoteToWireUserMessage(withCindyMakeNote as HandoffWireMessage, uiLanguageNote)
         : withCindyMakeNote;
-      const appContext = await mcpAppModelContext(sessionId);
-      if (appContext && shouldPrependMobileClientPromptNote(normalized, sess.agentKind)) {
-        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, appContext);
+      const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        ? await mcpAppModelContext(sessionId)
+        : undefined;
+      if (appContext?.text) {
+        outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, appContext.text);
       }
       const meta = await deps.getSessionMeta(sessionId).catch(() => null);
       let persistUserMessage = readPersistUserMessageOption(so);
@@ -1724,6 +1726,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         }));
         sendAccepted = sendResult.accepted;
         if (sendAccepted) {
+          appContext?.consume();
           cleanupAfterAcceptance?.();
           await cleanupAcceptedNonPersistedMaterialization();
         } else {

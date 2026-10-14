@@ -37,6 +37,12 @@ export interface McpAppsHostDeps {
   audit?(method: string): void;
 }
 
+/** A send consumes only the captured updates, after the Agent accepts its input. */
+export interface McpAppModelContext {
+  text: string;
+  consume(): void;
+}
+
 class ViewTransport implements Transport {
   onmessage?: Transport['onmessage'];
   onerror?: Transport['onerror'];
@@ -697,33 +703,44 @@ export class McpAppsHost {
     if (entry?.retired) await this.releaseConnection(view.connection);
   }
 
-  async modelContext(sessionId: string): Promise<string> {
+  async modelContext(sessionId: string): Promise<McpAppModelContext> {
     const owner = this.deps.owner();
-    const values = [];
-    for (const [key, item] of this.contexts) {
+    const empty: McpAppModelContext = { text: '', consume() {} };
+    const values: unknown[] = [];
+    const removals: Array<() => void> = [];
+    for (const [key, item] of [...this.contexts]) {
       if (item.owner !== owner || item.sessionId !== sessionId) continue;
+      // Validation and dispatch can overlap another App update. Never remove its replacement.
+      const remove = () => {
+        if (this.contexts.get(key) === item) this.contexts.delete(key);
+      };
       try {
         const card = await this.deps.readCard(sessionId, item.clientId);
         const config = this.deps.config(item.serverId);
-        if (owner !== this.deps.owner()) return '';
+        if (owner !== this.deps.owner()) return empty;
         if (
           !config ||
           appServerRevision(config) !== item.revision ||
           card.serverRevision !== item.revision
         ) {
-          this.contexts.delete(key);
+          remove();
           continue;
         }
         values.push(item.value);
+        removals.push(remove);
       } catch {
-        this.contexts.delete(key);
+        remove();
       }
     }
-    if (owner !== this.deps.owner()) return '';
+    if (owner !== this.deps.owner()) return empty;
     if (JSON.stringify(values).length > 512_000) throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
-    return values.length
-      ? `\n[MCP App context: external application data]\n${JSON.stringify(values)}\n[/MCP App context]`
-      : '';
+    if (!values.length) return empty;
+    return {
+      text: `\n[MCP App context: external application data]\n${JSON.stringify(values)}\n[/MCP App context]`,
+      consume: () => {
+        if (owner === this.deps.owner()) removals.forEach((remove) => remove());
+      },
+    };
   }
 
   async reset(): Promise<void> {

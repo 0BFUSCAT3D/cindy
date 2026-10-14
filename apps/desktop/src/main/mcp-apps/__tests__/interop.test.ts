@@ -263,8 +263,8 @@ describe('official MCP Apps interoperability', () => {
     await f.app.updateModelContext({ structuredContent: { draft: 'old' } });
     await f.app.updateModelContext({ structuredContent: { draft: 'new' } });
     const context = await f.host.modelContext('task');
-    expect(context).toContain('new');
-    expect(context).not.toContain('old');
+    expect(context.text).toContain('new');
+    expect(context.text).not.toContain('old');
     expect(f.sendMessage).not.toHaveBeenCalled();
     await f.app.sendMessage({
       role: 'user',
@@ -274,10 +274,43 @@ describe('official MCP Apps interoperability', () => {
       { type: 'text', text: 'Continue editing' },
     ]);
     f.clear();
-    expect(await f.host.modelContext('task')).toBe('');
+    expect((await f.host.modelContext('task')).text).toBe('');
     await expect(
       f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
     ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+  });
+  it('consumes a captured context once and leaves later updates for the next send', async () => {
+    const f = await fixture();
+    await f.app.updateModelContext({ structuredContent: { draft: 'first' } });
+    const first = await f.host.modelContext('task');
+    expect(first.text).toContain('first');
+    // Reading prepares a send but must not consume data if dispatch later fails.
+    expect((await f.host.modelContext('task')).text).toBe(first.text);
+    first.consume();
+    expect((await f.host.modelContext('task')).text).toBe('');
+
+    await f.app.updateModelContext({ structuredContent: { draft: 'second' } });
+    const second = await f.host.modelContext('task');
+    await f.app.updateModelContext({ structuredContent: { draft: 'third' } });
+    second.consume();
+    first.consume();
+    const third = await f.host.modelContext('task');
+    expect(third.text).toContain('third');
+    expect(third.text).not.toContain('second');
+    third.consume();
+    expect((await f.host.modelContext('task')).text).toBe('');
+  });
+  it('keeps a newer update even when its contents match the accepted snapshot', async () => {
+    const f = await fixture();
+    const update = { structuredContent: { draft: 'same' } };
+    await f.app.updateModelContext(update);
+    const previous = await f.host.modelContext('task');
+    await f.app.updateModelContext(update);
+    previous.consume();
+    const next = await f.host.modelContext('task');
+    expect(next.text).toBe(previous.text);
+    next.consume();
+    expect((await f.host.modelContext('task')).text).toBe('');
   });
   it('supports the stable single-block ui/message shape', async () => {
     const f = await fixture();
@@ -352,7 +385,7 @@ describe('official MCP Apps interoperability', () => {
       'MCP_APP_VIEW_UNAVAILABLE',
     );
     f.changeOwner();
-    expect(await f.host.modelContext('task')).toBe('');
+    expect((await f.host.modelContext('task')).text).toBe('');
     await expect(
       f.host.dispatch('renderer:1', 'task', f.document.viewId, {
         jsonrpc: '2.0',

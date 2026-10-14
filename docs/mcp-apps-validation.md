@@ -67,7 +67,7 @@ Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项
 | 输入、结果与模型隔离 | initialized 后按输入、结果顺序交付；text/image/audio、嵌入文本/二进制资源、resource_link、structuredContent 与 `_meta` 完整保留给 View；模型 facade 去掉结果根 `_meta`；加载期间完成或取消仍正确交付 |
 | App 工具调用         | 只连接产生卡片的 server；按任务授权；拒绝授权时服务器不执行；保留工具 `isError` 与 View metadata；不重放写操作                                                                                       |
 | 资源与列表变更       | resources/read/list/templates、prompts/list；resources/list 游标可继续分页；tools/resources/prompts 的 list_changed 到达 App，刷新后工具定义更新                                                     |
-| 消息与模型上下文     | `ui/message` 支持稳定单块与数组形状、text/resource_link；上下文支持 text/structuredContent，后一次替换旧值；单独更新不启动轮次；未声明模态明确失败                                                   |
+| 消息与模型上下文     | `ui/message` 支持稳定单块与数组形状、text/resource_link；上下文支持 text/structuredContent，后一次替换旧值；发送接受后仅消费本次快照，失败或原生命令保留，更新与发送重叠时不丢新值；单独更新不启动轮次；未声明模态明确失败 |
 | 打开链接             | `ui/open-link` 转交查看端 controller；成功/失败均有 RPC 结果；拒绝 javascript 与含凭证的 URL；不让 App 自身导航离开资源                                                                              |
 | 显示与尺寸           | inline/fullscreen 协商；App 限制仅 inline 时返回 inline；pip 请求返回实际支持模式；host-context-changed 同步模式；真实浏览器按 size-changed 改变 iframe 高度                                         |
 | 环境与主题           | locale、时区、容器尺寸、安全区域和工具信息可读；Host context 可增量更新；真实 Electron 内两种 App 的 Light/Dark 背景随 CSS variables 切换                                                            |

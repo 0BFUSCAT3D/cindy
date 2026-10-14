@@ -16505,9 +16505,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     let steerPayload = steerLanguageNote
       ? prependNoteToWireUserMessage(withSteerNote as HandoffWireMessage, steerLanguageNote)
       : withSteerNote;
-    if (shouldPrependMobileClientPromptNote(normalized, sess.agentKind)) {
-      const appContext = await mcpAppModelContext(sessionId);
-      if (appContext) steerPayload = prependNoteToWireUserMessage(steerPayload as HandoffWireMessage, appContext);
+    const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      ? await mcpAppModelContext(sessionId)
+      : undefined;
+    if (appContext?.text) {
+      steerPayload = prependNoteToWireUserMessage(steerPayload as HandoffWireMessage, appContext.text);
     }
     try {
       const remote = isDeviceLinkInvoke();
@@ -16533,6 +16535,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         [AUTO_REVIEW_DELEGATED_CONTINUATION]: so[AUTO_REVIEW_DELEGATED_CONTINUATION],
         [AUTO_REVIEW_USER_INTENT]: restoredSteerIntent,
       });
+      appContext?.consume();
       log.info('steer: delivered', { sessionId, agentKind: sess.agentKind });
     } catch (err) {
       const messageText = err instanceof Error ? err.message : String(err);

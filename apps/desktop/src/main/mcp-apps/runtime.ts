@@ -1,5 +1,5 @@
 import type { AppServerConfig } from './connection.js';
-import type { McpAppsHost } from './host.js';
+import type { McpAppsHost, McpAppModelContext } from './host.js';
 import { clearMcpAppDocuments } from './sandboxProtocol.js';
 
 let host: McpAppsHost | undefined;
@@ -29,7 +29,7 @@ export function resetAppServers(): void {
   void host?.reset();
 }
 
-/** Applied only to the next user send, never on each field change or in system prompts. */
-export async function mcpAppModelContext(sessionId: string): Promise<string> {
-  return (await host?.modelContext(sessionId)) ?? '';
+/** Keep the snapshot pending until the send or steer carrying it is accepted. */
+export async function mcpAppModelContext(sessionId: string): Promise<McpAppModelContext> {
+  return (await host?.modelContext(sessionId)) ?? { text: '', consume() {} };
 }

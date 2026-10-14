@@ -50,20 +50,102 @@ function withUiLanguageUserMessage(content: string): { type: 'user'; content: st
 }
 describe('MCP App next-turn context', () => {
   it('adds the latest App context to the agent wire while keeping the persisted user message intact', async () => {
-    const context = '\n[MCP App context: external application data]\n{"draft":"updated"}\n[/MCP App context]';
-    const read = vi.spyOn(mcpApps, 'mcpAppModelContext').mockResolvedValueOnce(context);
+    const context =
+      '\n[MCP App context: external application data]\n{"draft":"updated"}\n[/MCP App context]';
+    const consume = vi.fn();
+    const read = vi
+      .spyOn(mcpApps, 'mcpAppModelContext')
+      .mockResolvedValueOnce({ text: context, consume });
     try {
       const { deps, session } = createDeps();
-      await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'Continue', undefined, {
-        persistUserMessage: { clientId: 'input', content: 'Continue' },
-      });
+      await createMakerSendTransaction(deps).sendToAgentAccepted(
+        'session-1',
+        'Continue',
+        undefined,
+        {
+          persistUserMessage: { clientId: 'input', content: 'Continue' },
+        },
+      );
       expect(read).toHaveBeenCalledWith('session-1');
       const call = vi.mocked(session.send).mock.calls[0][0];
       const wire = typeof call === 'string' ? call : call.content;
       expect(JSON.stringify(wire)).toContain('updated');
       expect(JSON.stringify(wire)).toContain('Continue');
-      expect(deps.createDbMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({ content: 'Continue' }), undefined);
-    } finally { read.mockRestore(); }
+      expect(deps.createDbMessage).toHaveBeenCalledWith(
+        'session-1',
+        expect.objectContaining({ content: 'Continue' }),
+        undefined,
+      );
+      expect(consume).toHaveBeenCalledOnce();
+    } finally {
+      read.mockRestore();
+    }
+  });
+  it.each(['rejected', 'throws'] as const)(
+    'keeps context when dispatch %s, consumes it on accepted retry and omits it afterwards',
+    async (failure) => {
+      let pending = true;
+      const consume = vi.fn(() => {
+        pending = false;
+      });
+      const read = vi
+        .spyOn(mcpApps, 'mcpAppModelContext')
+        .mockImplementation(async () =>
+          pending ? { text: 'APP_DRAFT', consume } : { text: '', consume() {} },
+        );
+      let first = true;
+      const session = createSession({
+        send: vi.fn(async (
+          _message: UserMessage | string,
+          options?: SessionSendOptions,
+        ): Promise<SessionSendResult> => {
+          await options?.onAccepted?.();
+          if (first) {
+            first = false;
+            if (failure === 'throws') throw new Error('Dispatch failed');
+            return { accepted: false, reason: 'cancelled-before-dispatch' };
+          }
+          return { accepted: true };
+        }),
+      });
+      const { deps } = createDeps({ getSession: () => session });
+      const transaction = createMakerSendTransaction(deps);
+      try {
+        const attempt = transaction.sendToAgentAccepted('session-1', 'Continue', undefined, {
+          persistUserMessage: { clientId: 'input', content: 'Continue' },
+        });
+        if (failure === 'throws') await expect(attempt).rejects.toThrow('Dispatch failed');
+        else await expect(attempt).resolves.toMatchObject({ accepted: false });
+        expect(consume).not.toHaveBeenCalled();
+        await expect(transaction.sendToAgentAccepted('session-1', 'Retry')).resolves.toMatchObject({
+          accepted: true,
+        });
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[1][0])).toContain('APP_DRAFT');
+        expect(consume).toHaveBeenCalledOnce();
+        await transaction.sendToAgentAccepted('session-1', 'Next');
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[2][0])).not.toContain('APP_DRAFT');
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+  it.each([
+    ['claude-code', '/compact'],
+    ['pi', '/skill:git'],
+  ] as const)('leaves context pending for the %s native command %s', async (agentKind, command) => {
+    const consume = vi.fn();
+    const read = vi
+      .spyOn(mcpApps, 'mcpAppModelContext')
+      .mockResolvedValue({ text: 'APP_DRAFT', consume });
+    try {
+      const session = createSession({ agentKind });
+      const { deps } = createDeps({ getSession: () => session });
+      await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', command);
+      expect(read).not.toHaveBeenCalled();
+      expect(consume).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
   });
 });
 

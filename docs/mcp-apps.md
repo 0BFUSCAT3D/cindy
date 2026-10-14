@@ -23,7 +23,7 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 | MCP 资源与通知            | 转发 resources/read/list/templates、工具列表、prompts/list 与 list_changed；不开放任意 server 或 endpoint                         | 官方 SDK、连接和操作测试         |
 | `ui/open-link`            | 仅 http/https，无内嵌凭证；在当前查看设备的系统浏览器打开，失败返回 RPC 错误                                                      | controller / Host / URL 单测     |
 | `ui/message`              | 支持 text、resourceLink；保留 user role 和真实 App 来源，复用发送与排队，不作为主人授权                                           | 官方 SDK 互操作、来源与发送回归  |
-| `ui/update-model-context` | 支持 text、structuredContent；按 View 替换最新值，不启动模型；下次发送附加外部应用上下文，不进入 system prompt                    | 官方 SDK、发送链回归             |
+| `ui/update-model-context` | 支持 text、structuredContent；按 View 替换最新值，不启动模型；下次发送或插话附加外部应用上下文，接受后消费这份快照，失败保留；不进入 system prompt | 官方 SDK、发送链回归             |
 | 显示模式 / 尺寸           | Desktop inline+fullscreen，Mobile inline；返回实际模式；size-changed 调整高度；Host context 同步模式变化                          | 互操作、controller 生命周期      |
 | 主题 / 环境               | Light/Dark、CSS variables、locale、时区、尺寸和设备能力通过 Host context 传递                                                     | Electron 中主题切换、类型检查    |
 | CSP / 权限                | 按 connect/resource/frame/baseUri domains 构建 CSP；默认拒绝未声明网络；权限声明为空，拒绝摄像头、麦克风、定位和剪贴板            | 注入单测、真实 Electron 阻域     |
@@ -78,7 +78,7 @@ pnpm.cmd --filter desktop mcp-apps:mock
 和独立 App SDK，页面无需联网下载代码。脚本不修改用户设置。
 
 1. AI 给 title/body 初值。
-2. 用户核对修改，`ui/update-model-context` 只更新下一轮上下文。
+2. 用户核对修改，`ui/update-model-context` 只更新下一次发送的上下文；发送或插话被接受后消费本次快照，失败时保留供重试。发送期间的新更新留给下一次发送，原生命令不消费上下文。
 3. 点击创建后调用 App-only `create_application`，返回内存申请编号和 `sent:false`。
 4. 点击“请 AI 继续修改”才发送消息并启动后续模型轮次。
 
