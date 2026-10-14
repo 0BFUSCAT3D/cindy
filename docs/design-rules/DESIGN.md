@@ -2026,7 +2026,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 - **颜色**：底 `--login-deletion-bubble-bg`（#FFFFFF / #1F1F1E）、描边 `--login-deletion-bubble-border`（#D7D7D4 / #3C3C3A），均为**固定亮 / 暗二值**——与 §16.2「`--login-*` 只分 light / dark、不随扩展主题」一致，**不得**改用 `var(--surface)` / `var(--chat-input-*)` 等会被扩展主题 override 的 alias（同 `--login-bg-base` 的改判先例）；移动端色板逐值一致。
 - **状态与文案**：`pending`（预计删除日期 + 重新登录可取消）/ `processing`（等待期结束、正在删除）/ `completed`（已删除 + 「我知道了」）三态；`cancelled` 在轮询侧拦截、不渲染气泡（改为登录后的一次性「注销已取消」提示）。五语言（zh-CN / zh-TW / en / ja / ko）× light / dark 全覆盖。
 
-桌面登录恢复：准备态、错误态及离线入口的返回与「跳过登录」不因登录方式请求仍在等待而禁用；重试仍单次执行。凭证存储错误保留原有的检查与帮助流程，不绕过存储恢复限制。返回使旧请求失效，迟到结果不得覆盖新入口；「跳过登录」保留协议同意门与先切换本地会话、再保存同意的顺序。覆盖见 `LoginPage.initialization.test.tsx`、`LoginPage.consent.test.tsx` 与 `authLoginBack.test.ts`。
+桌面登录恢复：准备态、错误态及离线入口的返回与「跳过登录」不因登录方式请求仍在等待而禁用；重试仍单次执行。凭证存储错误保留原有的检查与帮助流程，不绕过存储恢复限制。返回使旧请求失效，迟到结果不得覆盖新入口；「跳过登录」保留协议同意门与先切换本地会话、再保存同意的顺序。等待登录方式期间打开的跳过协议弹窗，在方式加载完成后仍可同意续接；登录完成、进入其他登录步骤或凭证存储故障仍取消续接。切换本地模式失败时保留可用表单，无表单的准备态进入可重试错误页，旧请求不得重新覆盖页面或解除新请求的等待。覆盖见 `LoginPage.initialization.test.tsx`、`LoginPage.consent.test.tsx`、`AuthContextInitializeCatch.test.tsx` 与 `authLoginBack.test.ts`。
 
 ### 16.5 深色模式与主题跟随
 

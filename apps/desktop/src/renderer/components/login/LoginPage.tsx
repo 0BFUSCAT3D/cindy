@@ -205,9 +205,8 @@ export function LoginPage({
       persistPrivacyConsent();
     } catch (error) {
       // 两个调用点都是 requireConsent(() => void openLocalMode()):抛出去没人接,
-      // 会变成 unhandled rejection。IPC 失败(main 未就绪/通道异常)时停在登录页
-      // 就是正确兜底——用户可重试或改走正常登录;这里只记日志,不自造错误 UI
-      // (登录页的 errorCode 归 main 的 loginFlowState 所有,renderer 不旁路写)。
+      // 会变成 unhandled rejection。AuthContext 在 IPC 失败时保留可用表单，
+      // 或把已废弃请求的准备态转成既有错误页；这里仅记录失败，允许用户重试。
       log.error('enter not-signed-in session failed', error);
     } finally {
       markLocalModeTransition(false);
@@ -236,7 +235,19 @@ export function LoginPage({
     stamp: ConsentStamp;
     // true = 同意时不在弹窗回调里落同意记录,由 action 自己落(见 requireConsent)
     deferConsentPersist: boolean;
+    // Only a skip opened during provider loading may survive its completion.
+    awaitingProviders: boolean;
   } | null>(null);
+  const pendingConsent = pendingConsentAction.current;
+  const providerLoadSettled =
+    pendingConsent?.awaitingProviders &&
+    !credentialStoreFailed &&
+    (canLeaveProviderLoad || loginState?.step === 'identifier');
+  const currentConsentStamp = makeConsentStamp(
+    providerLoadSettled ? pendingConsent.stamp.step : loginState?.step,
+    isLoading && !(pendingConsent?.deferConsentPersist && (canLeaveProviderLoad || providerLoadSettled)),
+    loginState?.step === 'completed',
+  );
 
   /* 把「用户明示同意《隐私政策》」这个事实落到 main。
      它是 TapDB 采集的前置条件(见 main/analytics-settings-store.ts):没有这条
@@ -289,6 +300,7 @@ export function LoginPage({
         loginState?.step === 'completed',
       ),
       deferConsentPersist,
+      awaitingProviders: deferConsentPersist && canLeaveProviderLoad && isLoading,
     };
     setConsentDialogOpen(true);
   };
@@ -305,12 +317,8 @@ export function LoginPage({
     if (!pending?.deferConsentPersist) persistPrivacyConsent();
     if (!pending) return;
     // 复验:弹窗期间 auth 状态被异步推进(登录完成/步骤切换/in-flight)则丢弃动作
-    const current = makeConsentStamp(
-      loginState?.step,
-      isLoading && !(pending.deferConsentPersist && canLeaveProviderLoad),
-      loginState?.step === 'completed',
-    );
-    if (canResumePendingConsent(pending.stamp, current)) pending.action();
+    if (pending.deferConsentPersist && credentialStoreFailed) return;
+    if (canResumePendingConsent(pending.stamp, currentConsentStamp)) pending.action();
   };
   const dismissConsent = () => {
     // 不同意 = 退回登录页,radio 保持未勾选
@@ -321,12 +329,13 @@ export function LoginPage({
   useEffect(() => {
     if (!consentDialogOpen) return;
     const pending = pendingConsentAction.current;
-    const step = loginState?.step ?? 'unknown';
-    if (step === 'completed' || (pending && step !== pending.stamp.step)) {
+    const step = currentConsentStamp.step;
+    if (step === 'completed' || (pending && step !== pending.stamp.step) ||
+      (pending?.deferConsentPersist && credentialStoreFailed)) {
       pendingConsentAction.current = null;
       setConsentDialogOpen(false);
     }
-  }, [consentDialogOpen, loginState?.step]);
+  }, [consentDialogOpen, currentConsentStamp.step, credentialStoreFailed]);
   const openLegalLink = (kind: 'terms' | 'privacy') => {
     // 链接经系统默认浏览器打开(shell:open-external 只放行 http(s),未登录可用);
     // URL 按构建区域分流(国内 protocol.xd.cn / 国际 protocol.xd.com)。

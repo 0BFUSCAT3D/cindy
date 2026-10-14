@@ -41,7 +41,7 @@ export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseL
     getAccountDeletionStatus,
     clearAccountDeletionReceipt,
     listAccounts,
-    enterLocalMode,
+    enterLocalMode: enterLocalModeFromAuth,
   } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -106,6 +106,21 @@ export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseL
       (await dispatchWithResult(action)).success,
     [dispatchWithResult],
   );
+
+  const enterLocalMode = useCallback(async () => {
+    const operation = ++operationRef.current;
+    loadingRef.current = true;
+    setIsLoading(true);
+    setErrorCode(null);
+    try {
+      await enterLocalModeFromAuth();
+    } finally {
+      if (operation === operationRef.current) {
+        loadingRef.current = false;
+        setIsLoading(false);
+      }
+    }
+  }, [enterLocalModeFromAuth]);
 
   return {
     isLoading,

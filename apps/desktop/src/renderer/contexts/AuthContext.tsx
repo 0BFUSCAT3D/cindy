@@ -610,12 +610,23 @@ export function AuthProvider({
   }, []);
 
   const enterLocalMode = useCallback(async () => {
-    loginOperationRef.current += 1;
+    const operation = ++loginOperationRef.current;
     // 本地模式也是一次 dataOwnerId 切换。必须走 applyIncomingState,不能自己拼半套
     // setter:漏接草稿 / prompt / 模型可见性 / 记忆分区会让跳过登录进主界面后仍读写
     // signed-out 槽(2026-08-21 #3201 Codex P1)。
-    const state = await runDataOwnerBoundary(() => authServiceRef.current!.enterLocalMode());
-    applyIncomingState(state);
+    try {
+      const state = await runDataOwnerBoundary(() => authServiceRef.current!.enterLocalMode());
+      applyIncomingState(state);
+    } catch (error) {
+      // The abandoned provider load can no longer settle preparing. Preserve any
+      // usable form or newer operation, otherwise expose the existing retry screen.
+      if (operation === loginOperationRef.current) {
+        setLoginState((current) => current ?? {
+          step: 'error', code: 'AUTH_REQUEST_FAILED', recoverTo: 'identifier',
+        });
+      }
+      throw error;
+    }
   }, [applyIncomingState, runDataOwnerBoundary]);
 
   const exitLocalMode = useCallback(async () => {

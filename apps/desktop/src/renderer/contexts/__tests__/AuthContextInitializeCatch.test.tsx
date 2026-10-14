@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     beginAddAccount: vi.fn<() => Promise<DesktopLoginActionResult>>(),
     cancelAddAccount: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
+    enterLocalMode: vi.fn<() => Promise<never>>(),
   },
   logError: vi.fn(),
   unhandled: [] as unknown[],
@@ -87,6 +88,52 @@ afterEach(() => {
 });
 
 describe('login recovery ignores abandoned IPC results', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'recovers a failed skip while the abandoned provider request later %ss',
+    async (settlement) => {
+      mocks.service.initialize.mockResolvedValue({ isAuthenticated: false, isCanary: false });
+      let finishLoad!: (result: DesktopLoginActionResult) => void;
+      let failLoad!: (error: Error) => void;
+      mocks.service.getLoginState.mockReturnValueOnce(new Promise((resolve, reject) => {
+        finishLoad = resolve;
+        failLoad = reject;
+      }));
+      const hook = renderHook(() => ({ auth: useAuth(), login: useLogin() }), {
+        wrapper: AuthProvider,
+      });
+      await waitFor(() => expect(hook.result.current.auth.isInitializing).toBe(false));
+      expect(hook.result.current.login.isLoading).toBe(true);
+      mocks.service.enterLocalMode.mockRejectedValueOnce(new Error('IPC unavailable'));
+      await act(async () => {
+        await expect(hook.result.current.login.enterLocalMode()).rejects.toThrow('IPC unavailable');
+      });
+      expect(hook.result.current.auth.loginState).toEqual({
+        step: 'error', code: 'AUTH_REQUEST_FAILED', recoverTo: 'identifier',
+      });
+      expect(hook.result.current.login.isLoading).toBe(false);
+
+      let finishRetry!: (result: DesktopLoginActionResult) => void;
+      mocks.service.dispatchLoginAction.mockReturnValueOnce(new Promise((resolve) => {
+        finishRetry = resolve;
+      }));
+      let retry!: Promise<boolean>;
+      act(() => { retry = hook.result.current.login.dispatch({ type: 'reset' }); });
+      await act(async () => {
+        if (settlement === 'resolve') finishLoad({ success: true, state: { step: 'entry' } });
+        else failLoad(new Error('late failure'));
+      });
+      expect(hook.result.current.auth.loginState?.step).toBe('error');
+      expect(hook.result.current.login.errorCode).toBeNull();
+      expect(hook.result.current.login.isLoading).toBe(true);
+      await act(async () => {
+        finishRetry({ success: true, state: { step: 'entry' } });
+        await retry;
+      });
+      expect(hook.result.current.auth.loginState?.step).toBe('entry');
+      expect(hook.result.current.login.isLoading).toBe(false);
+    },
+  );
+
   it.each(['load', 'reset', 'add-account'] as const)(
     'keeps the entry and the new loading state when an earlier %s finishes',
     async (kind) => {
@@ -178,6 +225,31 @@ describe('login recovery ignores abandoned IPC results', () => {
         state: { step: 'error', code: 'REQUEST_TIMEOUT', recoverTo: 'identifier' },
       });
       await begin;
+    });
+    expect(hook.result.current.loginState).toBeNull();
+  });
+
+  it('preserves a usable form when skipping fails and ignores a superseded skip failure', async () => {
+    mocks.service.initialize.mockResolvedValue({ isAuthenticated: false, isCanary: false });
+    const hook = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await waitFor(() => expect(hook.result.current.isInitializing).toBe(false));
+    const form = { step: 'verification-code', kind: 'email', identifier: 'test@example.invalid' } as const;
+    mocks.service.dispatchLoginAction.mockResolvedValueOnce({ success: true, state: form });
+    await act(async () => { await hook.result.current.dispatchLoginAction({ type: 'reset' }); });
+    mocks.service.enterLocalMode.mockRejectedValueOnce(new Error('skip failed'));
+    await act(async () => {
+      await expect(hook.result.current.enterLocalMode()).rejects.toThrow('skip failed');
+    });
+    expect(hook.result.current.loginState).toEqual(form);
+
+    let failSkip!: (error: Error) => void;
+    mocks.service.enterLocalMode.mockReturnValueOnce(new Promise((_, reject) => { failSkip = reject; }));
+    let skip!: Promise<void>;
+    act(() => { skip = hook.result.current.enterLocalMode(); });
+    await act(async () => { await hook.result.current.cancelAddAccount(); });
+    await act(async () => {
+      failSkip(new Error('old skip failed'));
+      await expect(skip).rejects.toThrow('old skip failed');
     });
     expect(hook.result.current.loginState).toBeNull();
   });

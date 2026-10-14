@@ -404,6 +404,37 @@ describe('consent guard(未勾选拦截个人登录链路)', () => {
     expect(screen.getByTestId('login-local-mode')).toBeTruthy();
   });
 
+  it.each([null, errorState])('keeps pending skip consent when providers finish from %j', async (initial) => {
+    const view = mount(initial, { isLoading: true });
+    fireEvent.click(screen.getByTestId('login-local-mode'));
+    loginHook.value.loginState = await identifierState('providers:cn-social');
+    loginHook.value.isLoading = false;
+    view.rerender(<LoginPage />);
+    expect(screen.getByTestId('login-consent-dialog')).toBeTruthy();
+    expect(acceptPrivacyConsent).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByTestId('login-consent-agree')); });
+    expect(enterLocalMode).toHaveBeenCalledOnce();
+    expect(acceptPrivacyConsent).toHaveBeenCalledOnce();
+    expect(enterLocalMode.mock.invocationCallOrder[0]).toBeLessThan(
+      acceptPrivacyConsent.mock.invocationCallOrder[0],
+    );
+  });
+
+  it.each([
+    { step: 'completed' },
+    { step: 'browser-redirect', label: 'SSO' },
+    { step: 'error', code: 'CREDENTIAL_STORE_UNAVAILABLE', recoverTo: 'identifier' },
+  ])('abandons pending skip consent on an unrelated transition to %j', (state) => {
+    const view = mount(null, { isLoading: true });
+    fireEvent.click(screen.getByTestId('login-local-mode'));
+    loginHook.value.loginState = state;
+    loginHook.value.isLoading = false;
+    view.rerender(<LoginPage />);
+    expect(screen.queryByTestId('login-consent-dialog')).toBeNull();
+    expect(enterLocalMode).not.toHaveBeenCalled();
+    expect(acceptPrivacyConsent).not.toHaveBeenCalled();
+  });
+
   it('旧游客圆钮入口已删除(圆钮行不再渲染 login-social-guest)', async () => {
     mount(await identifierState('providers:cn-social'));
     expect(screen.queryByTestId('login-social-guest')).toBeNull();
