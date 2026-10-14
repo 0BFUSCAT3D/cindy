@@ -81,6 +81,18 @@ describe('session Agent switch UI wiring', () => {
     const locationGate = source.slice(source.indexOf('const agentLocationMovable ='),
       source.indexOf('/** Agent 现在所在的电脑'));
     expect(locationGate).toContain('&& !currentSession.orcaRole');
+    expect(locationGate).toContain('&& !currentSession.orcaRemoteLead');
+    const expression = locationGate.match(/const agentLocationMovable = ([\s\S]*?);/)?.[1];
+    expect(expression).toBeDefined();
+    const movable = new Function('currentSession',
+      `const sessionAgentSwitchSupported = true, deviceId = 'host', isSharedTaskPeer = () => false;
+       return !!(${expression});`);
+    const worker = { agentDeviceId: null, orcaRole: null,
+      orcaRemoteLead: { leadDeviceId: 'lead', leadSessionId: 'lead-s1', workerLabel: 'worker' } };
+    expect(movable(worker)).toBe(false);
+    expect(movable({ ...worker, orcaRemoteLead: { ...worker.orcaRemoteLead, releasedAt: 1 } })).toBe(false);
+    expect(movable({ ...worker, orcaRemoteLead: null })).toBe(true);
+    expect(movable(null)).toBe(false);
     expect(source).toContain("&& !isSharedTaskPeer(deviceId)");
     expect(source).toContain("Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId')");
     // 模型列表另列其他电脑的供应商,选中态跟着下一条消息时 Agent 所在的电脑。

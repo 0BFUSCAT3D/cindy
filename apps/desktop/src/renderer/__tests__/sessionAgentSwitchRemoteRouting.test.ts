@@ -924,8 +924,19 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(supported(undefined, 'codex', null, true, true)).toBe(false);
     const remoteOptions = source.slice(source.indexOf('const sessionRemoteAgentOptions ='),
       source.indexOf('// composer pill 尾部引擎小标'));
-    expect(remoteOptions).toContain('sessionOrcaRole !== null) return undefined;');
+    expect(remoteOptions).toContain('sessionOrcaRole !== null || sessionOrcaRemoteWorker) return undefined;');
     expect(remoteOptions).toContain('    sessionOrcaRole,');
+    expect(remoteOptions).toContain('    sessionOrcaRemoteWorker,');
+    const relocationGuard = remoteOptions.match(/if \(([\s\S]*?)\) return undefined;/)?.[1];
+    expect(relocationGuard).toBeDefined();
+    const hidden = new Function('sessionOrcaRole', 'sessionOrcaRemoteWorker',
+      `const sessionId = 's1', agentLocationAware = true, remoteHostId = null, sessionEngineFilter = {};
+       return !!(${relocationGuard});`);
+    expect(hidden(null, false)).toBe(false);
+    for (const role of [null, 'lead', 'worker', undefined]) {
+      expect(hidden(role, true)).toBe(true);
+    }
+    expect(hidden(undefined, false)).toBe(true);
     // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),
@@ -934,6 +945,7 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(viewSource).toContain(
       'sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}',
     );
+    expect(viewSource).toContain('sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}');
   });
 
   it('本地与远程会话打开时都读回 main 权威意图,并经新鲜度守卫过滤过期响应', () => {

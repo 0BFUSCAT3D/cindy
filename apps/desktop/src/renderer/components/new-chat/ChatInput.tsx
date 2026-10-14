@@ -525,6 +525,8 @@ interface ChatInputProps {
    * Orca Lead/Worker 复用统一的延迟交接切换事务；该字段仍用于协同面板与身份展示。
    */
   sessionOrcaRole?: string | null;
+  /** Execution-device Worker binding, independent of the local Orca role. */
+  sessionOrcaRemoteWorker?: boolean;
   /** Initial workingDir from session data. */
   initialWorkingDir?: string | null;
   /**
@@ -1179,6 +1181,7 @@ export function ChatInput({
   runtimeEffective,
   runtimePending,
   sessionOrcaRole,
+  sessionOrcaRemoteWorker,
   initialWorkingDir,
   remoteHostId,
   deviceLinkDeviceId: _deviceLinkDeviceId,
@@ -1863,8 +1866,7 @@ export function ChatInput({
   // 一个会随机吞掉模型重选的入口。本机会话恒可用——main 与 renderer 同版本，不能因
   // capabilities 还没加载完而闪掉入口。
   // SSH 远程(remoteHostId)是另一套引擎生命周期,继续不支持,由调用点单独排除。
-  // Orca 会话(lead / worker)同样排除:被控端 handler 对带 orcaRole 的会话一律拒
-  // UNSUPPORTED_CAPABILITY。角色未加载(undefined)也 fail-closed,避免冷启动短暂露出入口。
+  // Orca 可原地切换 Agent；角色未加载(undefined)仍 fail-closed，避免冷启动短暂露出入口。
   // 切换事务与 SET_MODEL 都由**任务所在的被控电脑**执行,这两个能力位按它判定,不跟着模型目录
   // 走:Agent 在第三台电脑(目录读那台)且那台离线时,仍要能在这里把 Agent 改回被控电脑。
   // 目录本就在被控电脑时与上面同一份缓存;本机会话不读(下面 !deviceLinkDeviceId 直接放行)。
@@ -7249,7 +7251,8 @@ export function ChatInput({
   );
   const sessionRemoteAgentOptions = useMemo<RemoteAgentSelectorOptions | undefined>(() => {
     // 本机或能力已确认的被控端任务可换电脑；SSH / Orca 不开放位置选择。
-    if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter || sessionOrcaRole !== null) return undefined;
+    if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter ||
+        sessionOrcaRole !== null || sessionOrcaRemoteWorker) return undefined;
     if (!remoteAgentDevices || (remoteAgentDevices.length === 0 && !effectiveAgentDeviceId)) {
       return undefined;
     }
@@ -7286,6 +7289,7 @@ export function ChatInput({
     remoteHostId,
     sessionEngineFilter,
     sessionOrcaRole,
+    sessionOrcaRemoteWorker,
     remoteAgentDevices,
     effectiveAgentDeviceId,
     intentAgentDeviceId,

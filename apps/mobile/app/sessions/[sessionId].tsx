@@ -2648,6 +2648,7 @@ function SessionScreenContent() {
     && !isSharedTaskPeer(deviceId)
     && !!currentSession
     && !currentSession.orcaRole
+    && !currentSession.orcaRemoteLead
     && Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId');
   /** Agent 现在所在的电脑(null = 被控电脑)。 */
   const currentAgentDeviceId = sessionAgentRunsOnOtherComputer(currentSession)

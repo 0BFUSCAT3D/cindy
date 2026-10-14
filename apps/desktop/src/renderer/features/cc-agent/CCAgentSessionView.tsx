@@ -5651,9 +5651,9 @@ function CCAgentSessionContent({
                   runtimeAgentKind={session ? dbToMakerAgentKind(session.agentKind) : null}
                   runtimeEffective={session?.runtimeEffective}
                   runtimePending={session?.runtimePending}
-                  // 协同会话不参与跨引擎切换；session 未加载时保留 undefined 未知态，
-                  // 仅在完整元数据确认非 Orca 后传 null 开放入口。
+                  // session 未加载时保留 undefined 未知态；Orca 原地切换与换电脑分别门控。
                   sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}
+                  sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}
                   initialWorkingDir={session?.workingDir}
                   remoteHostId={session?.remoteHostId ?? null}
                   deviceLinkDeviceId={rightSidebarDeviceLinkDeviceId}
