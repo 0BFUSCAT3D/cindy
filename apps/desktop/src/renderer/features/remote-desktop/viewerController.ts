@@ -1160,7 +1160,10 @@ export class DesktopViewerController {
    * A clipboard shortcut typed into the picture. Paste holds the keys (the
    * picture gates its queue) until the local clipboard has been pushed, at
    * most CLIPBOARD_PASTE_WAIT_MS; copy pulls the computer's clipboard shortly
-   * after. Neither waits for the regular poll.
+   * after. Neither waits for the regular poll. One push serves every paste
+   * made while it is in flight: a timeout releases that paste only, so a later
+   * paste still waits on the real push instead of a second request that Main
+   * would answer at once with the pending pass's snapshot.
    */
   private clipboardIntent(action: 'copy' | 'paste'): void {
     const wanted =
@@ -1184,15 +1187,15 @@ export class DesktopViewerController {
       return;
     }
     if (!this.pasteSync) {
-      const pending: Promise<void> = Promise.race([
-        this.syncClipboard(),
-        new Promise<void>((resolve) => setTimeout(resolve, CLIPBOARD_PASTE_WAIT_MS)),
-      ]).finally(() => {
+      const pending: Promise<void> = this.syncClipboard().finally(() => {
         if (this.pasteSync === pending) this.pasteSync = null;
       });
       this.pasteSync = pending;
     }
-    void this.pasteSync.then(release, release);
+    void Promise.race([
+      this.pasteSync,
+      new Promise<void>((resolve) => setTimeout(resolve, CLIPBOARD_PASTE_WAIT_MS)),
+    ]).then(release, release);
   }
   private async syncClipboard(): Promise<void> {
     if (!this.state.ready || this.state.closing || !this.api.clipboardSync) return;

@@ -274,14 +274,30 @@ it('a paste shortcut holds the keys until the local clipboard has been pushed', 
   expect(snapshot.safety.notice).toBe('clipboardSyncSkipped');
 });
 
-it('a paste shortcut is released after one second when the sync pass stalls', async () => {
-  const clipboardSync = vi.fn(() => new Promise<RemoteViewerSafety>(() => {}));
+it('a paste shortcut is released after one second when the sync pass stalls; later pastes keep waiting on that pass', async () => {
+  const sync = deferred<RemoteViewerSafety>();
+  const clipboardSync = vi.fn(() => sync.promise);
   await syncOn(clipboardSync);
   runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
   await vi.advanceTimersByTimeAsync(999);
   expect(gateReleases()).toBe(0);
   await vi.advanceTimersByTimeAsync(1);
   expect(gateReleases()).toBe(1);
+  // The pass is still in flight: a second paste neither starts another one nor
+  // opens early; it is released by the real push within its own second.
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(clipboardSync).toHaveBeenCalledOnce();
+  expect(gateReleases()).toBe(1);
+  sync.resolve(idle);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(gateReleases()).toBe(2);
+  // Once that pass has settled, the next paste starts a fresh one.
+  clipboardSync.mockImplementationOnce(async () => idle);
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(clipboardSync).toHaveBeenCalledTimes(2);
+  expect(gateReleases()).toBe(3);
 });
 
 it('tells the picture which modifier is copy/paste on the controlled computer', async () => {
