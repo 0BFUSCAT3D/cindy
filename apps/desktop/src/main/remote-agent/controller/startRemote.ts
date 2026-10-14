@@ -94,7 +94,11 @@ export interface StartRemoteAgentDeps {
    * 凭证的命令不论权限档都要本机用户确认，没有批准时在本机弹确认卡；`description` 是卡上的说明。
    * 同账号任务不提供。
    */
-  credentialConsent?: { description: string };
+  credentialConsent?: {
+    description: string;
+    /** 受邀者把这个分享切成了「信任 {分享者}」：每次操作前问一遍，true 时与本机任务一样不弹卡。 */
+    skip?: () => boolean;
+  };
   /** 改写来自对方的事件(如工具名)。 */
   mapEvent?: (kind: RemoteAgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;
   /** 本机 Codex 程序(给对方的 Codex 提供 exec-server 执行环境)；缺省时不提供。 */
@@ -225,7 +229,7 @@ export async function startRemoteAgentSession(
   const applyDirs = () => workspace.setExtraDirs([...new Set([...extraDirs, ...writableDirs])]);
   const credentialConsent = deps.credentialConsent;
   const gate = new ExecutorGate(workspace, executorGateModeFor(opts.permissionMode, opts.planMode === true), Date.now, {
-    confirmCredentials: credentialConsent !== undefined,
+    confirmCredentials: credentialConsent ? () => credentialConsent.skip?.() !== true : false,
   });
   let controller: RemoteAgentHandleController | null = null;
   const executor = new RemoteExecutor({

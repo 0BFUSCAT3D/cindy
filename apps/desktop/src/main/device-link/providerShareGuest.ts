@@ -40,6 +40,7 @@ import {
   startProviderShareCrossRegion,
   stopProviderShareCrossRegion,
 } from './providerShareCrossRegion.js';
+import { forgetProviderShareGuestPrefs, pruneProviderShareGuestPrefs } from './providerShareGuestPrefs.js';
 
 const log = createLogger('provider-share:guest');
 
@@ -101,8 +102,17 @@ function allReceived(rt: Runtime | null): ProviderShareReceived[] {
   return rt ? [...rt.received, ...getCrossRegionReceived()] : [];
 }
 
+/** 已拿到权威名单的区域(本区域要拉到过一次；对方区域按跨区域运行时的已加载状态)。 */
+function confirmedRegions(rt: Runtime): Region[] {
+  return [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()];
+}
+
 function emitChanged(rt: Runtime): void {
-  if (current(rt)) rt.events.changed(allReceived(rt));
+  if (!current(rt)) return;
+  const received = allReceived(rt);
+  // 分享被分享者删除后，它在这台电脑上的本机偏好一起清掉；还没加载的区域不动。
+  pruneProviderShareGuestPrefs(new Set(received.map((share) => share.shareId)), confirmedRegions(rt));
+  rt.events.changed(received);
 }
 
 // ─── 任务绑定 ────────────────────────────────────────────────────
@@ -252,9 +262,7 @@ export function getReceivedSharesSnapshot(recovery?: ProviderShareFavoriteRecove
   }
   return {
     ownerStamp,
-    confirmedRegions: valid
-      ? [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()]
-      : [],
+    confirmedRegions: valid ? confirmedRegions(rt) : [],
     received: valid ? allReceived(rt) : [],
   };
 }
@@ -362,8 +370,11 @@ export async function withdrawProviderShareRequest(requestId: string): Promise<v
 }
 
 export async function leaveProviderShare(memberId: string): Promise<void> {
-  requireRuntime();
-  if (await crossRegionLeave(memberId)) return;
-  await providerShareApi.leave(memberId);
-  await refreshReceivedShares('left');
+  const rt = requireRuntime();
+  const shareId = allReceived(rt).find((share) => share.memberId === memberId)?.shareId ?? null;
+  const crossRegion = await crossRegionLeave(memberId);
+  if (!crossRegion) await providerShareApi.leave(memberId);
+  // 退出后这个分享的本机偏好(「信任 {分享者}」)一起忘掉。
+  if (shareId) forgetProviderShareGuestPrefs(shareId);
+  if (!crossRegion) await refreshReceivedShares('left');
 }

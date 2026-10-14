@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   providerShareGuestPeer,
@@ -39,6 +43,9 @@ vi.mock('../providerShareApi.js', () => ({
       if (state.receivedError) throw new Error('offline');
       return state.received;
     },
+    leave: async (memberId: string) => {
+      state.received = state.received.filter((share) => share.memberId !== memberId);
+    },
   },
   fetchIdentityCard: vi.fn(),
   sha256Hex: (value: string) => value,
@@ -56,6 +63,7 @@ import {
 } from '../providerShareHost';
 import {
   isProviderShareRefusal,
+  leaveProviderShare,
   parseProviderShareAgentDeviceId,
   providerShareAgentDeviceId,
   resolveRemoteAgentTarget,
@@ -65,6 +73,13 @@ import {
   getReceivedSharesSnapshot,
   refreshReceivedShares,
 } from '../providerShareGuest';
+import {
+  configureProviderShareGuestPrefs,
+  flushProviderShareGuestPrefs,
+  isProviderShareCredentialConsentSkipped,
+  resetProviderShareGuestPrefsForTests,
+  setProviderShareCredentialConsent,
+} from '../providerShareGuestPrefs';
 
 const person = { displayName: 'Lizi', avatarUrl: null, region: 'global' as const };
 const share = (members: ProviderShareOwned['members'], requests: ProviderShareOwned['requests'] = []): ProviderShareOwned => ({
@@ -228,6 +243,50 @@ describe('provider share guest routing', () => {
 
   it('treats a missing runtime as not connected rather than removed', async () => {
     await expect(resolveRemoteAgentTargetWhenReady('share:share-1')).rejects.toThrow(/DEVICE_LINK_NOT_CONNECTED/);
+  });
+
+  describe('local credential-consent preference', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-share-guest-prefs-'));
+      configureProviderShareGuestPrefs({ resolvePath: () => path.join(dir, 'provider-share-guest-prefs.json') });
+    });
+    afterEach(async () => {
+      await flushProviderShareGuestPrefs();
+      resetProviderShareGuestPrefsForTests();
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('survives a failed refresh and a pause, and goes away once the owner removed the share', async () => {
+      state.received = [received('active')];
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+      await refreshReceivedShares('test');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+      state.receivedError = true;
+      await refreshReceivedShares('test');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+      state.receivedError = false;
+      state.received = [received('paused')];
+      await refreshReceivedShares('test');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(true);
+
+      state.received = [];
+      await refreshReceivedShares('test');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    });
+
+    it('is forgotten when the guest leaves the share', async () => {
+      state.received = [received('active')];
+      startProviderShareGuest({ changed: vi.fn(), settled: vi.fn() });
+      await refreshReceivedShares('test');
+      await setProviderShareCredentialConsent('share-1', 'global', true);
+
+      await leaveProviderShare('m1');
+      expect(isProviderShareCredentialConsentSkipped('share-1')).toBe(false);
+    });
   });
 
   it('recognises the owner computer refusing a guest, including remote control turned off', () => {
