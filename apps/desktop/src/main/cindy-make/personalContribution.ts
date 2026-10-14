@@ -531,7 +531,8 @@ export class PersonalContribution {
         } else {
           // The lease requires the branch not to exist yet, so an earlier submission's
           // branch (whatever its pull request's state) is never rewritten.
-          for (let attempt = 0; attempt < 4; attempt += 1) {
+          for (let attempt = 0; ; attempt += 1) {
+            this.assertScope(scope);
             const candidate = attempt ? `${base}-${attempt + 1}` : base;
             try {
               await push(candidate, '');
@@ -541,8 +542,7 @@ export class PersonalContribution {
               // The name is taken — for example by the earlier submission's own
               // branch, which is never rewritten — or the push failed; a taken
               // name is retried under a new one.
-              if (attempt === 3 || classifyRemoteGitError(error) !== 'failed')
-                throw pushFailed(error);
+              if (classifyRemoteGitError(error) !== 'failed') throw pushFailed(error);
               // Any occupied candidate can be this client's own earlier push whose
               // pull request response was lost — the canonical name may belong to
               // an earlier closed pull request, sending this change to `-2` before
@@ -550,18 +550,21 @@ export class PersonalContribution {
               // this exact candidate instead of publishing a second one, and only
               // leave the name behind when it has no open pull request.
               const found = await this.openPullFor(candidate, identity);
+              const tip = (
+                await this.git(
+                  ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${candidate}`],
+                  { auth },
+                ).catch((lookup: unknown) => {
+                  throw pushFailed(lookup);
+                })
+              )
+                .split(/\s/)[0]
+                ?.trim();
+              // Only a confirmed occupied name advances the suffix. An unrelated
+              // push failure must stop instead of retrying names indefinitely.
+              if (!tip || !HASH.test(tip)) throw pushFailed(error);
               if (found) {
-                const tip = (
-                  await this.git(
-                    ['ls-remote', '--refs', PERSONAL_REMOTE_NAME, `refs/heads/${candidate}`],
-                    { auth },
-                  ).catch((lookup: unknown) => {
-                    throw pushFailed(lookup);
-                  })
-                )
-                  .split(/\s/)[0]
-                  ?.trim();
-                if (!tip || !HASH.test(tip)) throw pushFailed(error);
+                this.assertScope(scope);
                 await push(candidate, tip).catch((retry: unknown) => {
                   throw pushFailed(retry);
                 });
@@ -571,7 +574,6 @@ export class PersonalContribution {
               }
             }
           }
-          if (!branch) throw fail('failed');
         }
 
         // 6. Open the pull request, or update the one this change already has.
