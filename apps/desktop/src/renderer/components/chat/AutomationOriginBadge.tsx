@@ -3,6 +3,7 @@ import { MessageSquare, Send, Timer } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { useOptionalAuthDeviceId } from '@/contexts/AuthContext';
 import { BotAvatar } from '@/features/bots/BotAvatar';
 import { useBotProfiles } from '@/features/bots/botStore';
 import { useSessionNavigationMode } from '@/features/cc-agent/embeddedSessionNavigation';
@@ -118,11 +119,20 @@ export function AutomationOriginBadge({
   // 粘滞归属：relay 瞬时重连会清空镜像索引，此窗口内仍要把远程任务当远程处理，
   // 否则来源任务会被当成本机任务打开。
   const hostDeviceId = getStickySessionDeviceId(hostSessionId);
-  const liveSenderTitle = useLiveSessionTitle(senderSessionId, Boolean(hostDeviceId));
+  const selfDeviceId = useOptionalAuthDeviceId();
+  // 来源任务所在设备：跨设备投递带 senderDeviceId(指向本机时按本机任务打开)；否则与标签所在任务同一台。
+  const originDeviceId =
+    automationOrigin.kind === 'session' ? automationOrigin.senderDeviceId : undefined;
+  const senderDeviceId = originDeviceId
+    ? originDeviceId === selfDeviceId
+      ? undefined
+      : originDeviceId
+    : hostDeviceId;
+  const liveSenderTitle = useLiveSessionTitle(senderSessionId, Boolean(senderDeviceId));
   const senderBot =
     automationOrigin.kind === 'session' && automationOrigin.senderBotId
       ? (() => {
-          const profile = hostDeviceId
+          const profile = senderDeviceId
             ? undefined
             : botProfiles.find((item) => item.id === automationOrigin.senderBotId);
           return {
@@ -168,8 +178,7 @@ export function AutomationOriginBadge({
     }
     open = targetSessionId
       ? () => {
-          // 工具只能在同一台设备的任务之间投递：远程任务的来源任务也在那台设备上。
-          if (hostDeviceId) remoteProjectsStore.pinSessionOrigin(hostDeviceId, targetSessionId);
+          if (senderDeviceId) remoteProjectsStore.pinSessionOrigin(senderDeviceId, targetSessionId);
           navigate(`/cc-agent/${encodeURIComponent(targetSessionId)}`);
         }
       : null;

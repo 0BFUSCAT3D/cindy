@@ -2512,6 +2512,19 @@ describe('message source notes', () => {
     expect(persistedMeta(deps).sourceDevice).toEqual(pc);
   });
 
+  it('names the computer of a remote sending task instead of claiming the user is on it', async () => {
+    const { session, deps, transaction } = setup();
+    const remoteTaskOrigin = { ...taskOrigin, senderDeviceId: 'pc-1', senderDeviceName: 'Office PC' };
+    await transaction.sendToAgentAccepted('session-1', 'hello', undefined, {
+      sourceDevice: pc,
+      persistUserMessage: { clientId: 'm-1', content: 'hello', origin: remoteTaskOrigin },
+    });
+    expect(sentText(session)).toBe(
+      `${uiLanguageNote()}\n\n[消息来源] 本条由电脑「Office PC」(device_id: pc-1) 上的任务「整理周报」(session_id: sender-1) 发送，不是用户本人输入。\n\nhello`,
+    );
+    expect(persistedMeta(deps).origin).toEqual(remoteTaskOrigin);
+  });
+
   it('keeps the legacy mobile note when only the old mobile marker survives', async () => {
     const { session, deps, transaction } = setup();
     await transaction.sendToAgentAccepted('session-1', 'hello', undefined, {
@@ -2637,6 +2650,39 @@ describe('message source notes', () => {
     expect(stampTrustedDeviceLinkQueuedOrigin(forged, true)).not.toHaveProperty('sourceDevice');
     expect(stampTrustedDeviceLinkQueuedOrigin(forged, true, phone).sourceDevice).toEqual(phone);
     expect(forged.sourceDevice).toEqual({ deviceId: 'forged', platform: 'mobile' });
+  });
+
+  it('turns a remote task claim into a device-bound origin only for desktop controllers', () => {
+    const desktop = { deviceId: 'mac-2', platform: 'desktop' as const, name: 'MacBook Pro' };
+    const claimed = {
+      clientId: 'input-1',
+      text: 'please check',
+      remoteSessionSender: { sessionId: 'remote-task', title: '落地页\n任务' },
+      autoReviewUserText: { kind: 'user', text: 'please check' },
+    } as unknown as AgentInputQueuedMessage;
+    const stamped = stampTrustedDeviceLinkQueuedOrigin(claimed, true, desktop);
+    expect(stamped).not.toHaveProperty('remoteSessionSender');
+    expect(stamped).not.toHaveProperty('autoReviewUserText');
+    expect(stamped.origin).toEqual({
+      kind: 'session',
+      senderSessionId: 'remote-task',
+      displayText: 'please check',
+      senderSessionTitle: '落地页 任务',
+      senderDeviceId: 'mac-2',
+      senderDeviceName: 'MacBook Pro',
+    });
+    for (const untrusted of [
+      stampTrustedDeviceLinkQueuedOrigin(claimed, true, phone),
+      stampTrustedDeviceLinkQueuedOrigin(claimed, true),
+      stampTrustedDeviceLinkQueuedOrigin(claimed, false, desktop),
+    ]) {
+      expect(untrusted).not.toHaveProperty('remoteSessionSender');
+      expect(untrusted).not.toHaveProperty('origin');
+    }
+    expect(stampTrustedDeviceLinkQueuedOrigin({
+      ...claimed,
+      remoteSessionSender: { sessionId: '  ' },
+    } as AgentInputQueuedMessage, true, desktop)).not.toHaveProperty('origin');
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue.js';
+import { authorizeSessionQueueItem } from '../sessionControlService.js';
 import {
   projectSessionQueueForInspection,
   resolveSessionQueueCounts,
@@ -116,6 +117,20 @@ describe('projectSessionQueueForInspection', () => {
     ]);
   });
 
+  it('labels a task on another computer with its qualified id', () => {
+    const [entry] = projectSessionQueueForInspection([
+      queuedItem('q-remote', {
+        origin: {
+          kind: 'session',
+          senderSessionId: 'sender-session',
+          senderDeviceId: 'mac-2',
+          displayText: 'hi',
+        },
+      }),
+    ], [], null, []);
+    expect(entry?.sourceLabel).toBe('mac-2::sender-session');
+  });
+
   it('keeps pre-dispatch and direct-steer items visible, ordered, and deduplicated', () => {
     const active = queuedItem('q-active');
     const direct = queuedItem('q-direct');
@@ -221,5 +236,18 @@ describe('projectSessionQueueForInspection', () => {
         },
       }),
     ).rejects.toThrow('snapshot unavailable');
+  });
+});
+
+describe('authorizeSessionQueueItem', () => {
+  it('never treats a same-id task on this computer as the sender of a remote task message', () => {
+    const local = queuedItem('q-1', {
+      origin: { kind: 'session', senderSessionId: 'caller', displayText: 'hi' },
+    });
+    const remote = queuedItem('q-2', {
+      origin: { kind: 'session', senderSessionId: 'caller', senderDeviceId: 'mac-2', displayText: 'hi' },
+    });
+    expect(authorizeSessionQueueItem(local, 'caller').ok).toBe(true);
+    expect(authorizeSessionQueueItem(remote, 'caller').ok).toBe(false);
   });
 });

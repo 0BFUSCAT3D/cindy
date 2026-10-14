@@ -96,7 +96,11 @@ function queueSource(item: AgentInputQueuedMessage): SessionQueueInspectionEntry
 function queueSourceLabel(item: AgentInputQueuedMessage): string | null {
   if (item.origin?.kind === 'orca') return item.origin.senderLabel;
   if (item.origin?.kind === 'scheduler') return item.origin.scheduleName;
-  if (item.origin?.kind === 'session') return item.origin.senderSessionId;
+  // 跨设备来源与 list_sessions 的远程任务同一写法：`<device_id>::<session_id>`。
+  if (item.origin?.kind === 'session')
+    return item.origin.senderDeviceId
+      ? `${item.origin.senderDeviceId}::${item.origin.senderSessionId}`
+      : item.origin.senderSessionId;
   return null;
 }
 

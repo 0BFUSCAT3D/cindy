@@ -375,7 +375,20 @@ export interface AgentInputQueuedMessage {
         /** 来源会话属于某个伙伴时的伙伴身份快照；接收方标签改显示伙伴名与头像。 */
         senderBotId?: string;
         senderBotName?: string;
+        /**
+         * 来源任务在另一台同账号电脑上(send_to_session 跨设备投递)。只由被控端在
+         * input:enqueue 边界按 device-link 认证的控制端设备写入；名字是当时的展示名快照。
+         * 有它时 senderSessionId 是那台电脑上的任务 id，不参与本机排队消息授权。
+         */
+        senderDeviceId?: string;
+        senderDeviceName?: string;
       };
+  /**
+   * 另一台同账号电脑上的任务经 send_to_session 投递时自报的来源任务(wire 声明)。
+   * 被控端只在同账号电脑控制端的 input:enqueue 中采信，并转写成带 senderDeviceId 的
+   * `origin`；无论是否采信，入队前一律剥掉，不进队列与落库。
+   */
+  remoteSessionSender?: { sessionId: string; title?: string };
   /**
    * 本条由**手机控制端**入队 / 插入。
    *

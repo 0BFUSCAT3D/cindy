@@ -19,6 +19,7 @@ import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js'
 import { requestHostInteraction } from './interactionRouter.js';
 import { prepareCompanionImportDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
+import { localSessionIdOf, parseRemoteSessionTarget, sendToRemoteSession, type RemoteSessionHandoffResult } from './remoteSessionHandoff.js';
 import { MANAGED_LLAMACPP_PROVIDER_ID, llamaCppModelPreset, llamaCppMaxContextSize } from '../../shared/llamaCpp.js';
 import { getManagedLlamaCppService } from '../local-model-runtime/llamaCppService.js';
 import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLlamaCppProvider.js';
@@ -2356,7 +2357,7 @@ interface OrcaCollabService {
     execution?: SendToSessionExecutionOverrides;
     /** Host-owned create defaults for non-session callers such as scheduler script tasks. */
     createDefaults?: SendToSessionCreateDefaults;
-  }) => Promise<SendToSessionInternalResult>;
+  }) => Promise<SendToSessionInternalResult | RemoteSessionHandoffResult>;
   enableOrca: (
     leadSessionId: string,
     opts: EnableOrcaOptions,
@@ -10500,6 +10501,53 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   /**
+   * send_to_session 的目标若是另一台同账号电脑上的任务(`<device_id>::<session_id>`)，
+   * 经远程操作的入队通道投递；本机任务(含带本机前缀的写法)去掉前缀后交回本机路径。
+   */
+  async function routeSendToSessionTarget<P extends {
+    targetSessionId?: string;
+    message: string;
+    dispatcherSessionId?: string;
+    messagePurpose?: SessionMessagePurpose;
+  }>(params: P): Promise<{ remote: RemoteSessionHandoffResult } | { local: P }> {
+    const selfDeviceId = getSelfDeviceId();
+    const target = parseRemoteSessionTarget(params.targetSessionId, selfDeviceId);
+    if (!target) {
+      return {
+        local: params.targetSessionId
+          ? { ...params, targetSessionId: localSessionIdOf(params.targetSessionId, selfDeviceId) }
+          : params,
+      };
+    }
+    if (params.messagePurpose === 'coordination') {
+      return { remote: { ok: false, errorCode: 'INVALID_ARGS', message: 'coordination purpose is not supported for tasks on another computer' } };
+    }
+    if (!params.dispatcherSessionId) {
+      return { remote: { ok: false, errorCode: 'INVALID_ARGS', message: 'cross-device delivery requires a calling task' } };
+    }
+    const sender = await readSenderIdentity(params.dispatcherSessionId);
+    const remote = await sendToRemoteSession({
+      listDevices: () => handleListDevices(deviceDirectoryDeps()),
+      invoke: invokeBotPeer,
+      captureAccess: () => {
+        const owner = captureDataOwnerBroadcastScope();
+        const assertCurrent = () => {
+          if (!isDataOwnerBroadcastScopeCurrent(owner)) throw new Error('Data owner changed before delivery.');
+        };
+        assertCurrent();
+        return assertCurrent;
+      },
+      createId,
+      now: Date.now,
+    }, {
+      target,
+      message: params.message,
+      sender: { sessionId: params.dispatcherSessionId, title: sender.dispatcherSessionTitle },
+    });
+    return { remote };
+  }
+
+  /**
    * 来源标签用的发送方身份快照：任务标题，以及该任务所属伙伴（有则标签显示伙伴名）。
    * 读失败只降级为无标题 / 按普通任务显示，不影响投递。
    */
@@ -15313,7 +15361,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     stopSessionTurn: (params) => sessionControlService.stopSessionTurn(params),
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
-    sendToSession: async (params) => {
+    sendToSession: async (requested) => {
+      const routed = await routeSendToSessionTarget(requested);
+      if ('remote' in routed) return routed.remote;
+      const params = routed.local;
       const ownerScope = captureDataOwnerBroadcastScope();
       let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;
       try {
@@ -16486,6 +16537,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           device: steerDevice,
           host: steerDevice ? getHostSourceDevice() : undefined,
           legacyMobile: isMobileControllerInvoke() || so.fromMobileClient === true,
+          senderOrigin: so.sourceOrigin,
         })
       : null;
     const withSteerNote = steerNote

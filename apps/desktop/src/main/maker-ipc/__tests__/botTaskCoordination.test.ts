@@ -96,7 +96,7 @@ it.each<AgentEvent['type']>(['interaction_request', 'interaction_dismissed', 'er
 
 it('uses the registered host entry for both quiet and explicitly visible delegated sends', async () => {
   const source = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').replace(/\r\n/g, '\n');
-  const start = source.indexOf('    sendToSession: async (params) => {');
+  const start = source.indexOf('    sendToSession: async (requested) => {');
   const end = source.indexOf('    enableOrca:', start);
   expect(start).toBeGreaterThan(0);
   const code = ts.transpileModule('return ({' + source.slice(start, end) + '}).sendToSession;', {
@@ -105,8 +105,9 @@ it('uses the registered host entry for both quiet and explicitly visible delegat
   const send = vi.fn(async (params: unknown) => params);
   let currentOwner = true;
   const dispatch = new Function('captureDataOwnerBroadcastScope', 'isDataOwnerBroadcastScopeCurrent',
-    'classifySessionMessagePurpose', 'coordinationInput', 'sendToSessionInternal', code)(
-    () => 'owner', () => currentOwner, classifySessionMessagePurpose, coordinationInput, send);
+    'classifySessionMessagePurpose', 'coordinationInput', 'sendToSessionInternal', 'routeSendToSessionTarget', code)(
+    () => 'owner', () => currentOwner, classifySessionMessagePurpose, coordinationInput, send,
+    async (local: unknown) => ({ local }));
   await dispatch({ dispatcherSessionId: 'child', targetSessionId: 'parent', message: 'Agreement' });
   expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ forceQueue: true, botTaskCoordination: receipt,
     persistedContent: '[UI_ACTION_TRIGGER]Agreement', autoReviewUserText: { kind: 'delegated-continuation' } }));

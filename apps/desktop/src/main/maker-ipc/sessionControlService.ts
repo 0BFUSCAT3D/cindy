@@ -357,7 +357,9 @@ export function authorizeSessionQueueItem(
   item: AgentInputQueuedMessage,
   callerSessionId: string,
 ): { ok: true } | { ok: false; message: string } {
+  // 跨设备来源的 senderSessionId 属于另一台电脑，本机同 id 任务不是它的发送方。
   return item.origin?.kind === 'session' && item.origin.senderSessionId === callerSessionId
+    && !item.origin.senderDeviceId
     ? { ok: true }
     : { ok: false, message: 'queued message was not sent by the current session' };
 }

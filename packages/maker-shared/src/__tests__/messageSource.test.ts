@@ -5,6 +5,7 @@ import {
   describeMessageSourceSender,
   messageSourceIdEntries,
   formatSourceRef,
+  isRemoteSessionOrigin,
   promptSafeSourceName,
   messageSourceSenderFromMeta,
   readMessageSourceDevice,
@@ -191,6 +192,31 @@ describe('buildMessageSourceNote', () => {
     expect(buildMessageSourceNote({ kind: 'session' })).toBe('[消息来源] 本条由其他任务发送，不是用户本人输入。');
   });
 
+  it('names the computer of a task on another linked device', () => {
+    const sender = messageSourceSenderFromMeta({
+      origin: {
+        kind: 'session',
+        senderSessionId: 's-1',
+        senderSessionTitle: '发布检查',
+        senderDeviceId: 'dev-2',
+        senderDeviceName: 'MacBook\nPro',
+      },
+    });
+    expect(sender).toEqual({
+      kind: 'session',
+      sessionId: 's-1',
+      title: '发布检查',
+      deviceId: 'dev-2',
+      deviceName: 'MacBook Pro',
+    });
+    expect(buildMessageSourceNote(sender)).toBe(
+      '[消息来源] 本条由电脑「MacBook Pro」(device_id: dev-2) 上的任务「发布检查」(session_id: s-1) 发送，不是用户本人输入。',
+    );
+    expect(buildMessageSourceNote({ kind: 'session', sessionId: 's-1', deviceId: 'dev-2' })).toBe(
+      '[消息来源] 本条由电脑 (device_id: dev-2) 上的任务 (session_id: s-1) 发送，不是用户本人输入。',
+    );
+  });
+
   it('names a teammate with bot and session ids', () => {
     expect(
       buildMessageSourceNote({ kind: 'session', sessionId: 's-1', botId: 'b-1', botName: 'Lizi' }),
@@ -242,5 +268,14 @@ describe('private group reply provenance', () => {
     expect(readMessageSourceGroup(meta)).toEqual({ groupId: 'group-1', name: 'Design Room' });
     expect(describeMessageSourceSender(messageSourceSenderFromMeta(meta)!)).toContain('从群聊「Design Room」(group_id: group-1)');
     expect(readMessageSourceGroup({ sourceGroup: { name: 'No identity' } })).toBeUndefined();
+  });
+});
+
+describe('isRemoteSessionOrigin', () => {
+  it('only matches task origins stamped with a sender device', () => {
+    expect(isRemoteSessionOrigin({ kind: 'session', senderSessionId: 's', senderDeviceId: 'd' })).toBe(true);
+    expect(isRemoteSessionOrigin({ kind: 'session', senderSessionId: 's' })).toBe(false);
+    expect(isRemoteSessionOrigin({ kind: 'orca', senderDeviceId: 'd' })).toBe(false);
+    expect(isRemoteSessionOrigin(undefined)).toBe(false);
   });
 });

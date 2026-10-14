@@ -28,6 +28,18 @@ describe('toMessageAutomationOrigin', () => {
     });
   });
 
+  it('keeps the computer of a sending task on another device', () => {
+    expect(
+      toMessageAutomationOrigin({
+        kind: 'session',
+        senderSessionId: 'caller',
+        displayText: 'follow-up',
+        senderDeviceId: 'mac-2',
+        senderDeviceName: 'MacBook Pro',
+      }),
+    ).toEqual({ kind: 'session', senderSessionId: 'caller', senderDeviceId: 'mac-2' });
+  });
+
   it('carries the sender teammate identity when the source session belongs to one', () => {
     expect(
       toMessageAutomationOrigin({

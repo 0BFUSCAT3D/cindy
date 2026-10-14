@@ -34,7 +34,7 @@ import {
   prependNoteToWireUserMessage,
   type HandoffWireMessage,
 } from './agentHandoff.js';
-import type { MessageSourceDevice, MessageSourceHostDevice } from '@cindy/maker-shared/message-source';
+import { sanitizeSourceName, type MessageSourceDevice, type MessageSourceHostDevice } from '@cindy/maker-shared/message-source';
 import {
   buildClientEnvironmentNote,
   shouldPrependMobileClientPromptNote,
@@ -217,8 +217,31 @@ export function stampTrustedDeviceLinkQueuedOrigin(
   delete stamped.sourcePlugin;
   delete stamped.agentOmitsTriggerPrefix;
   delete stamped.botTaskCoordination;
+  const remoteSender = readRemoteSessionSender(stamped.remoteSessionSender);
+  delete stamped.remoteSessionSender;
   if (deviceLinkInvoke && sourceDevice) stamped.sourceDevice = { ...sourceDevice };
+  // 另一台同账号电脑上的任务经 send_to_session 投来：任务 id 与标题是那台电脑自报的，
+  // 设备取认证过的控制端。它不是用户输入，不带用户授权意图。
+  if (deviceLinkInvoke && sourceDevice?.platform === 'desktop' && remoteSender) {
+    delete stamped.autoReviewUserText;
+    stamped.origin = {
+      kind: 'session',
+      senderSessionId: remoteSender.sessionId,
+      displayText: item.text,
+      ...(remoteSender.title ? { senderSessionTitle: remoteSender.title } : {}),
+      senderDeviceId: sourceDevice.deviceId,
+      ...(sourceDevice.name ? { senderDeviceName: sourceDevice.name } : {}),
+    };
+  }
   return stamped;
+}
+
+function readRemoteSessionSender(value: unknown): { sessionId: string; title?: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { sessionId, title } = value as Record<string, unknown>;
+  if (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 256) return undefined;
+  const safeTitle = sanitizeSourceName(title);
+  return { sessionId: sessionId.trim(), ...(safeTitle ? { title: safeTitle } : {}) };
 }
 
 export function restoreTrustedDesktopQueuedOrigin(item: AgentInputQueuedMessage): AgentInputQueuedMessage {
@@ -1335,6 +1358,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             device: sourceDevice,
             host: sourceDevice ? deps.readHostDeviceIdentity?.() : undefined,
             legacyMobile: deps.isMobileClientInvoke?.() === true || so.fromMobileClient === true,
+            senderOrigin: soForReconcile.persistUserMessage?.origin,
           })
         : null;
       const withMobileNote = mobileClientNote

@@ -679,7 +679,8 @@ interface MessageActions {
   onLoadEarlier?: () => void | Promise<void>;
   onOpenForkOrigin?: () => void;
   /** 「由任务「X」发送」来源标签点击:跳到同一设备上的来源任务。 */
-  onOpenOriginSession?: (sessionId: string) => void;
+  /** originDeviceId:来源任务所在电脑;缺省为当前任务所在电脑。 */
+  onOpenOriginSession?: (sessionId: string, originDeviceId?: string) => void;
   /**
    * 本机(这台手机)的 device-link 设备 id:设备来源标签只标「别的设备」发来的消息,
    * 本机发出的不标(shouldShowSourceDevice)。
@@ -3173,7 +3174,7 @@ function SessionOriginLabel({
 }: {
   align: 'user' | 'agent';
   origin: NonNullable<NormalizedRemoteMessage['sessionOrigin']>;
-  onOpen?: (sessionId: string) => void;
+  onOpen?: (sessionId: string, originDeviceId?: string) => void;
   /** 原始 agentMeta:长按 ID 与桌面悬停、排队行同源(伙伴给伙伴 ID + 任务 ID)。 */
   sourceMeta?: unknown;
 }) {
@@ -3187,7 +3188,7 @@ function SessionOriginLabel({
       idText={sourceIdText(sourceMeta)
         ?? (senderSessionId ? t('message.renderer.sourceSessionId', { id: senderSessionId }) : undefined)}
       label={sessionOriginLabel(origin)}
-      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined}
+      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId, origin.senderDeviceId) : undefined}
       openHint={t('message.renderer.openSessionOrigin')}
       testID="message.sessionOrigin"
     />

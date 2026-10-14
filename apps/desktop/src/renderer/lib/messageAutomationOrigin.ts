@@ -11,6 +11,7 @@ import type {
  *   只显示「由自动化发送」。Hook 渠道消息复用 scheduler 形态（见 isHookSchedulerOrigin），
  *   界面显示渠道，不显示自动化；
  * - session：另一个任务经工具发送，点击跳来源任务；来源任务属于伙伴时带伙伴身份；
+ *   来源任务在另一台电脑上时带 senderDeviceId；
  * - orca：Lead / Worker 互发。卡片本身标明角色（orcaSenderLabel = Worker 的 role），
  *   来源标签只补可跳转的发送方任务——老数据没有 senderSessionId 时不出标签。
  */
@@ -35,11 +36,13 @@ export function toMessageAutomationOrigin(origin: unknown): MessageAutomationOri
   const senderSessionTitle = readNonEmptyString(value.senderSessionTitle);
   const senderBotId = readNonEmptyString(value.senderBotId);
   const senderBotName = readNonEmptyString(value.senderBotName);
+  const senderDeviceId = readNonEmptyString(value.senderDeviceId);
   return {
     kind: 'session',
     senderSessionId,
     ...(senderSessionTitle ? { senderSessionTitle } : {}),
     ...(senderBotId ? { senderBotId, ...(senderBotName ? { senderBotName } : {}) } : {}),
+    ...(senderDeviceId ? { senderDeviceId } : {}),
   };
 }
 

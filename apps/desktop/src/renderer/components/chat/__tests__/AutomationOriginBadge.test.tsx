@@ -3,12 +3,15 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ navigate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), selfDeviceId: 'self-device' as string | null }));
 
 vi.mock('react-router-dom', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router-dom')>();
   return { ...actual, useNavigate: () => mocks.navigate };
 });
+vi.mock('@/contexts/AuthContext', () => ({
+  useOptionalAuthDeviceId: () => mocks.selfDeviceId,
+}));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) =>
@@ -39,6 +42,7 @@ afterEach(() => {
   remoteProjectsStore.clear();
   __resetStickySessionOriginForTest();
   mocks.navigate.mockReset();
+  vi.restoreAllMocks();
 });
 
 describe('AutomationOriginBadge', () => {
@@ -64,6 +68,32 @@ describe('AutomationOriginBadge', () => {
 
     expect(pin).toHaveBeenCalledWith('dev-A', 'source-task');
     expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/source-task');
+  });
+
+  it('opens a source task on the computer that sent it across devices', () => {
+    const pin = vi.spyOn(remoteProjectsStore, 'pinSessionOrigin');
+    render(
+      <AutomationOriginBadge
+        automationOrigin={{ kind: 'session', senderSessionId: 'landing-task', senderDeviceId: 'mac-2' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    expect(pin).toHaveBeenCalledWith('mac-2', 'landing-task');
+    expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/landing-task');
+  });
+
+  it('opens a cross-device source task locally when it was sent from this computer', () => {
+    remoteProjectsStore.setDeviceSessions('dev-A', 'A', [remoteSession('host-task')]);
+    const pin = vi.spyOn(remoteProjectsStore, 'pinSessionOrigin');
+    render(
+      <AutomationOriginBadge
+        automationOrigin={{ kind: 'session', senderSessionId: 'local-task', senderDeviceId: 'self-device' }}
+        hostSessionId="host-task"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    expect(pin).not.toHaveBeenCalled();
+    expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/local-task');
   });
 
   it('renders a redacted shared-task source as static text', () => {

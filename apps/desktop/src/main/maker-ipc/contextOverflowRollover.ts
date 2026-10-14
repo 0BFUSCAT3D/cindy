@@ -298,7 +298,7 @@ export function withReplaySourceNotes(
     },
   );
   const device = readMessageSourceDevice(agentMeta);
-  const clientNote = device ? buildClientEnvironmentNote({ device }) : null;
+  const clientNote = device ? buildClientEnvironmentNote({ device, senderOrigin: agentMeta.origin }) : null;
   if (!sourceNote && !clientNote) return wire;
   let next = wire as HandoffWireMessage;
   if (sourceNote) next = prependNoteToWireUserMessage(next, sourceNote);

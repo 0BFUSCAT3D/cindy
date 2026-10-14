@@ -1,5 +1,6 @@
 import {
   buildClientDeviceNote,
+  isRemoteSessionOrigin,
   type MessageSourceDevice,
   type MessageSourceHostDevice,
 } from '@cindy/maker-shared/message-source';
@@ -65,6 +66,8 @@ export function buildMobileClientPromptNote(): string {
  *  - 有设备来源:`buildClientDeviceNote`(首句同样声明「不是用户消息」),手机再接产出偏好;
  *    另一台电脑只说设备事实。
  *  - 只有旧 `fromMobileClient` 标记:沿用旧版手机说明。
+ *  - 另一台电脑上的任务投递来的消息(`senderOrigin` 带 senderDeviceId):设备只是发送任务所在的
+ *    电脑,用户并没有在那台设备上远程操作,来源由 `[消息来源]` 说明,这里不加设备说明。
  *
  * 「逐字节稳定」在这里指**对同一台设备稳定**:设备名与 id 不随轮次变化,不含时间戳 /
  * 计数器等易变量;换一台设备操作时说明随之变化,这本来就是它要传达的事实。
@@ -73,7 +76,10 @@ export function buildClientEnvironmentNote(params: {
   device?: MessageSourceDevice;
   host?: MessageSourceHostDevice;
   legacyMobile?: boolean;
+  /** 本条落库的 origin；跨设备任务来源时不出设备说明。 */
+  senderOrigin?: unknown;
 }): string | null {
+  if (isRemoteSessionOrigin(params.senderOrigin)) return null;
   if (params.device) {
     const deviceNote = buildClientDeviceNote(params.device, params.host);
     return params.device.platform === 'mobile' ? `${deviceNote}${MOBILE_OUTPUT_PREFERENCE}` : deviceNote;

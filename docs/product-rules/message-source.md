@@ -53,6 +53,13 @@
 - 机器发来的排队消息只能删除和调整顺序；合成指令行只显示标签，不显示原文。
 - 分享图片不显示任何消息来源。
 
+## 另一台电脑上的任务发来的消息
+
+`send_to_session` 可以投递到同账号另一台电脑上的任务（`deviceId::sessionId`）。接收端按认证过的
+控制端设备与对方自报的任务盖章 `origin.senderDeviceId`：标签显示「由任务「Y」发送」并带设备标签，
+点击在那台电脑上打开来源任务；模型收到 `[消息来源] 本条由电脑「X」(device_id: …) 上的任务「Y」
+(session_id: …) 发送`，不再附「用户在另一台电脑上远程操作」的 `[客户端说明]`。
+
 ## 委派任务的内部协调
 
 `send_to_session` 的 `message_purpose` 区分 `coordination` 与 `user-visible`。

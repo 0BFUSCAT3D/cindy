@@ -66,6 +66,15 @@ export type SendToSessionCallback = (params: {
     | "LEAD_NOT_SUPPORTED"
     | "WORKTREE_UNAVAILABLE"
     | "HOST_NOT_READY"
+    | "INTERNAL"
+    | "REMOTE_DEVICE_OFFLINE"
+    | "REMOTE_DISABLED"
+    | "REMOTE_LINK_REQUIRED"
+    | "REMOTE_ACCESS_REVOKED"
+    | "REMOTE_UNSUPPORTED"
+    | "REMOTE_TIMEOUT"
+    | "REMOTE_PAYLOAD_TOO_LARGE"
+    | "DEVICE_LINK_NOT_READY"
   >
 >;
 
@@ -92,6 +101,7 @@ const DESCRIPTION = [
   "【working_dir(仅 create 模式)】缺省新 session 继承当前 session 的 workingDir;传 working_dir(绝对路径,目录须已存在)可把新 session 直接落到另一个项目目录——「从项目 A 的对话把任务 handoff 到项目 B 的全新对话」一次调用完成,无需先在 B 里找一个旧对话中转。与 use_worktree 组合时,worktree 的 base git 仓库从 working_dir 解析。路径不是绝对路径 / 不存在 / 不是目录 → 返 INVALID_ARGS(message 带原因)。jump 模式忽略此参数。",
   "",
   "【use_worktree(仅 create 模式)】use_worktree=true 时,host 会先从**新 session 的 workingDir**(即 working_dir 覆盖后的目录;未覆盖时为当前 workingDir,此时 session 自己在 worktree 里跑也能正确反推主仓库)解析出 base git 仓库,为新 session 预建一个正规 session worktree(<baseRepo>/.cindy-worktrees/<自动名> + cindy/<自动名> 分支,UI 有徽标,session 关闭时自动 stash 未提交改动后回收),新 session 的 workingDir 即该 worktree 路径,返回里带 worktree_path。历史 xdt/<自动名> 分支仍可恢复与回收。适用:新 session 要改代码 / checkout 分支,不能污染当前工作树时(如 PR 修复跟进)。workingDir 不是 git 仓库 / git 未装 / worktree 创建失败 → 返 WORKTREE_UNAVAILABLE(不静默降级);调用方可视情况去掉该参数重试(新 session 将直接共享当前 workingDir)。jump 模式忽略此参数。",
+  "【另一台电脑上的任务】target_session_id 写成 list_sessions(device=...) 返回的 `<device_id>::<session_id>`,消息投递到那台同账号电脑上该任务的输入队列(对方空闲即开始处理,忙时排队),对方看到「由电脑「X」上的任务「Y」发送」。只能投给既有任务,不能在别的电脑上新建;不支持 message_purpose=coordination。返回的 target_session_id 仍是带设备前缀的写法,可用 get_chat_history 读对方结果。",
   "当前 dispatcher session 不会被本工具关闭或改写,消息投递成功后立即返回。",
   "",
   "【典型场景】skill 把某个外部业务对象(issue / jira / pr / 任意自定义 key)绑定到一个 session:首次处理时不传 id 让工具新建并拿回 id 写绑定;二次处理同一对象时传 id 把新消息路由回那个 session,保留完整上下文。",
@@ -107,6 +117,8 @@ const DESCRIPTION = [
   "- AGENT_NOT_READY: 目标 session 恢复或投递时 agent 未能启动。skill 应告知用户稍后重试。",
   "- UNSUPPORTED_CAPABILITY: 目标 session 不接受跨任务投递（例如 host 管理的隔离 Review）。skill 不应重试或改走其它输入入口。",
   "- HOST_NOT_READY: 主进程服务尚未就绪。skill 应告知用户稍等几秒后重试。",
+  "- REMOTE_DEVICE_OFFLINE / REMOTE_DISABLED / REMOTE_ACCESS_REVOKED / REMOTE_LINK_REQUIRED / DEVICE_LINK_NOT_READY / REMOTE_UNSUPPORTED: 仅跨设备投递:目标电脑离线、未开远程控制、授权已撤销、连接未就绪或版本不支持。没有送达,告知用户原因,不要改投别的任务代替。",
+  "- REMOTE_TIMEOUT: 仅跨设备投递:等待回执超时,消息可能已送达。先用 get_chat_history 核对再决定是否重发。",
   "",
   "【重要】这不是 chat 对话工具,而是 session 间 handoff 的控制层入口。不要拿它替代普通的 user→agent 对话。",
 ].join("\n");
@@ -143,6 +155,7 @@ export function registerSendToSessionTool(
         .describe(
           `目标 ${BRAND_NAME} session 的 business id(新建 desktop session 是 UUID,` +
             "历史 session 可能是 cuid 或 IM 确定性 id,一律按不透明字符串处理、不校验格式)。" +
+            "另一台电脑上的任务用 list_sessions 返回的 `<device_id>::<session_id>`。" +
             "要发给已有任务时必传(不知道 id 先用 list_sessions 查);提供 → jump 到该既有 session。" +
             "省略 → create:静默新建一个专属 session 并立刻跑一轮,返回里回传新建 id——仅在明确要新建专属任务时省略。",
         ),

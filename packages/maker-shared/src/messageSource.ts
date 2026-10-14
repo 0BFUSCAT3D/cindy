@@ -54,6 +54,9 @@ export type MessageSourceSender =
       botId?: string;
       botName?: string;
       group?: MessageSourceGroup;
+      /** 来源任务在另一台同账号电脑上（origin.senderDeviceId）。 */
+      deviceId?: string;
+      deviceName?: string;
     }
   | { kind: 'plugin'; pluginId: string; name?: string }
   | { kind: 'shared-member'; memberId: string; name?: string };
@@ -190,12 +193,15 @@ export function messageSourceSenderFromMeta(meta: unknown): MessageSourceSender 
     const botId = readString(origin, 'senderBotId');
     const botName = readString(origin, 'senderBotName');
     const group = readMessageSourceGroup(record);
+    const deviceId = readString(origin, 'senderDeviceId');
+    const deviceName = sanitizeSourceName(origin.senderDeviceName);
     return {
       kind: 'session',
       ...(group ? { group } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(title ? { title } : {}),
       ...(botId ? { botId, ...(botName ? { botName } : {}) } : {}),
+      ...(deviceId ? { deviceId, ...(deviceName ? { deviceName } : {}) } : {}),
     };
   }
   const author = asRecord(record.sharedTaskAuthor);
@@ -205,6 +211,15 @@ export function messageSourceSenderFromMeta(meta: unknown): MessageSourceSender 
     if (memberId) return { kind: 'shared-member', memberId, ...(name ? { name } : {}) };
   }
   return undefined;
+}
+
+/**
+ * 另一台同账号电脑上的任务投递来的消息（origin.senderDeviceId 由被控端盖章）。
+ * 这类消息的设备是发送任务所在的电脑，不是「用户在那台设备上远程操作」。
+ */
+export function isRemoteSessionOrigin(origin: unknown): boolean {
+  const record = asRecord(origin);
+  return record?.kind === 'session' && readString(record, 'senderDeviceId') !== undefined;
 }
 
 export type MessageSourceIdKind = 'plugin' | 'teammate' | 'session' | 'automation' | 'member';
@@ -256,6 +271,10 @@ export function describeMessageSourceSender(sender: MessageSourceSender): string
         return `由伙伴${bot}${group}${via} 发送`;
       }
       const ref = formatSourceRef(sender.title, 'session_id', sender.sessionId);
+      if (sender.deviceId) {
+        const device = formatSourceRef(sender.deviceName, 'device_id', sender.deviceId);
+        return `由电脑${device} 上的任务${ref || ''} 发送`;
+      }
       return ref ? `由任务${ref} 发送` : '由其他任务发送';
     }
     case 'plugin':

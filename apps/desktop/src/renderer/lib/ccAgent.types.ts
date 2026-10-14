@@ -68,6 +68,8 @@ export interface MessageSessionOrigin {
   /** 来源任务属于某个伙伴时：标签显示伙伴名与头像（名字优先取实时资料，其次用快照）。 */
   senderBotId?: string;
   senderBotName?: string;
+  /** 来源任务在另一台同账号电脑上：点击时在那台电脑上打开来源任务。 */
+  senderDeviceId?: string;
   /**
    * Orca Lead / Worker 互发的消息：发送方角色名（Worker 为其 role）。卡片标题据此写
    * 「来自 Worker「role」的消息」；来源标签仍只在有 senderSessionId 时出现。

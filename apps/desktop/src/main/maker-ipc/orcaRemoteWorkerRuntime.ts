@@ -168,7 +168,7 @@ function agentKindOf(value: unknown): AgentInputCreateOpts['agentKind'] {
   return value === 'codex' || value === 'pi' ? value : 'claude-code';
 }
 
-interface RemoteSessionRow {
+export interface RemoteSessionRow {
   agentKind?: unknown;
   workingDir?: unknown;
   model?: unknown;
@@ -181,7 +181,7 @@ interface RemoteSessionRow {
 }
 
 /** 远端任务的建会话参数取自运行设备的任务记录；本机不知道它的原生会话 id 等运行态。 */
-function createOptsFromRow(row: RemoteSessionRow): AgentInputCreateOpts {
+export function createOptsFromRow(row: RemoteSessionRow): AgentInputCreateOpts {
   const str = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
   return {
     agentKind: agentKindOf(row.agentKind === 'cc' ? 'claude-code' : row.agentKind),

@@ -189,6 +189,8 @@ export interface NormalizedSessionOrigin {
   senderSessionTitle?: string;
   /** 来源任务属于伙伴时的伙伴名快照;有则标签显示伙伴名。 */
   senderBotName?: string;
+  /** 来源任务在另一台电脑上(跨设备 send_to_session);缺省时与当前任务同一台。 */
+  senderDeviceId?: string;
 }
 
 /**
@@ -1089,11 +1091,13 @@ function readSessionOrigin(message: RemoteMessage): Pick<NormalizedRemoteMessage
   const senderBotName = origin.kind === 'session' && readString(origin.senderBotId)
     ? (readString(origin.senderBotName)?.trim() || readString(origin.senderBotId)?.trim())
     : undefined;
+  const senderDeviceId = origin.kind === 'session' ? readString(origin.senderDeviceId)?.trim() : undefined;
   return {
     sessionOrigin: {
       senderSessionId,
       ...(senderSessionTitle ? { senderSessionTitle } : {}),
       ...(senderBotName ? { senderBotName } : {}),
+      ...(senderDeviceId ? { senderDeviceId } : {}),
     },
   };
 }

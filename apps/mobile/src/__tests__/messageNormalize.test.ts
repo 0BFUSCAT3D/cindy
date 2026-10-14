@@ -1261,6 +1261,20 @@ describe('normalizeRemoteMessages', () => {
         },
       }),
       message({
+        id: 'remote-task',
+        role: 'user',
+        content: 'check the link',
+        agentMeta: {
+          origin: {
+            kind: 'session',
+            senderSessionId: 'landing-task',
+            displayText: 'check the link',
+            senderDeviceId: 'mac-2',
+            senderDeviceName: 'MacBook Pro',
+          },
+        },
+      }),
+      message({
         id: 'shared-guest',
         role: 'user',
         content: 'redacted by host',
@@ -1278,6 +1292,7 @@ describe('normalizeRemoteMessages', () => {
       ['tool-sent', { senderSessionId: 'caller', senderSessionTitle: 'Release checklist' }, undefined],
       ['orca-report', { senderSessionId: 'worker-1' }, undefined],
       ['teammate-sent', { senderSessionId: 'bot-task', senderSessionTitle: 'Weekly feedback', senderBotName: 'Cindy' }, undefined],
+      ['remote-task', { senderSessionId: 'landing-task', senderDeviceId: 'mac-2' }, undefined],
       ['shared-guest', {}, undefined],
       ['legacy-orca', undefined, undefined],
     ]);

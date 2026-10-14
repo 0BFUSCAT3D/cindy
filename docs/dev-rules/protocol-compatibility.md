@@ -250,6 +250,28 @@ device-link 授权、撤权与 owner fence；仅有归属范围权限的调用�
 SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integrations/historyDevices.ts`、
 `localDb/ipc/historyQuery.ts` 和 `packages/lizi-mcps/src/__tests__/historyDevices.test.ts`。
 
+## Agent 跨设备投递任务消息
+
+`cindy_helper` 的 `send_to_session` 接受 `list_sessions` 返回的 `deviceId::sessionId`，把消息
+投进另一台同账号电脑上既有任务的输入队列；只做 jump，不在别的电脑上新建任务，也不支持
+`coordination` 用途。发送端先按设备目录要求对方是在线、开着远程控制的电脑，再用已有的
+`local-db:sessions:get` 读任务状态（归档、删除、不存在都不投递），最后走已有的
+`maker:input:enqueue`（持久入队、按 clientId 幂等）。不新增 channel、allowlist、relay、
+服务端 schema 或数据库 migration。超时只回报可能已送达，由调用方核对历史，不自动重发。
+
+队列项可选携带 wire 声明 `remoteSessionSender: { sessionId, title? }`。被控端在入队边界一律
+剥掉它，仅当调用来自同账号电脑控制端（`sourceDevice.platform === 'desktop'`）时转写成
+`origin: { kind: 'session', senderSessionId, senderSessionTitle?, senderDeviceId, senderDeviceName? }`，
+设备取认证过的控制端；同时清掉该条的用户授权意图。手机、共享任务访客和本机输入不采信。
+`senderDeviceId` 只用于展示与跳转：本机排队消息授权不认带设备的来源，共享任务访客照旧只收到
+`{ kind: 'session' }`。界面标签与 `[消息来源]` 写「由电脑「X」上的任务「Y」发送」，不再追加
+「用户在另一台电脑上远程操作」的 `[客户端说明]`。
+
+旧被控端忽略该字段，消息按「另一台电脑上的用户发送」显示；旧桌面与手机读到带
+`senderDeviceId` 的来源时按同设备任务打开，可能找不到来源任务。完整体验需要两端都更新。
+实现与回归见 `maker-ipc/remoteSessionHandoff.ts`、`makerSendTransaction.ts` 的
+`stampTrustedDeviceLinkQueuedOrigin` 及对应测试。
+
 ## Desktop 设备互联 Review
 
 桌面控制端的 /review 通过 maker:review:start 请求被控 Desktop 执行。证据收集、Reviewer

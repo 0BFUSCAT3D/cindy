@@ -9244,12 +9244,19 @@ function SessionScreenContent() {
     router,
   ]);
 
-  // 「由任务「X」发送」来源标签:工具只在同一设备的任务之间投递,来源任务与当前任务同设备。
-  const openOriginSession = useCallback((originSessionId: string) => {
-    if (!deviceId || !originSessionId || originSessionId === sessionId) return;
+  // 「由任务「X」发送」来源标签:跨设备投递的来源任务在 originDeviceId 那台电脑上,
+  // 其余来源与当前任务同设备。
+  const openOriginSession = useCallback((originSessionId: string, originDeviceId?: string) => {
+    const targetDeviceId = originDeviceId ?? deviceId;
+    if (!targetDeviceId || !originSessionId) return;
+    if (originSessionId === sessionId && targetDeviceId === deviceId) return;
+    const targetDeviceName = targetDeviceId === deviceId
+      ? deviceName
+      : remoteSessionStore.getSessions().find((item) => item.deviceLinkDeviceId === targetDeviceId)?.deviceLinkDeviceName
+        ?? targetDeviceId;
     router.push({
       pathname: '/sessions/[sessionId]',
-      params: { sessionId: originSessionId, deviceId, deviceName },
+      params: { sessionId: originSessionId, deviceId: targetDeviceId, deviceName: targetDeviceName },
     });
   }, [deviceId, deviceName, router, sessionId]);
 
