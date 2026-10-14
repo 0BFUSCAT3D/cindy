@@ -24,11 +24,13 @@ export function McpAppCard({
   sessionId,
   clientId,
   title,
+  active = true,
 }: {
   deviceId?: string;
   sessionId: string;
   clientId: string;
   title: string;
+  active?: boolean;
 }) {
   const { invoke } = useDeviceLink();
   const { colors, mode } = useTheme();
@@ -42,7 +44,7 @@ export function McpAppCard({
   const [loading, setLoading] = useState(true);
   const bridgeKey = useMemo(
     () => Array.from(getRandomBytes(24), (byte) => byte.toString(16).padStart(2, '0')).join(''),
-    [sessionId, clientId, attempt],
+    [deviceId, sessionId, clientId, attempt, active],
   );
   const webSource = useMemo(
     () =>
@@ -87,6 +89,12 @@ export function McpAppCard({
 
   useEffect(() => {
     let disposed = false;
+    if (!active) {
+      setDocument(undefined);
+      setError(undefined);
+      setLoading(false);
+      return;
+    }
     if (!deviceId) {
       setError('mcpApps.loadFailed');
       setLoading(false);
@@ -96,7 +104,9 @@ export function McpAppCard({
       (id, input) => invoke(deviceId, MCP_APPS_INVOKE, [id, input]),
       sessionId,
       clientId,
-      post,
+      (message) => {
+        if (!disposed) post(message);
+      },
       (message) => {
         if (disposed) return;
         if (message.method === 'ui/notifications/initialized') setLoading(false);
@@ -141,11 +151,12 @@ export function McpAppCard({
         void view.close().catch(() => {});
       });
     return () => {
-      disposed = true;
       view.prepareNativeClose();
+      disposed = true;
+      if (controller.current === view) controller.current = undefined;
       void view.close().catch(() => {});
     };
-  }, [invoke, deviceId, sessionId, clientId, attempt]);
+  }, [invoke, deviceId, sessionId, clientId, attempt, active]);
   useEffect(() => {
     void controller.current?.context(context).catch(() => {});
   }, [context]);
@@ -154,7 +165,7 @@ export function McpAppCard({
     <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
       <View style={styles.header}>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{title} · MCP App</Text>
-        {loading && <ActivityIndicator size="small" color={colors.textSecondary} />}
+        {active && loading && <ActivityIndicator size="small" color={colors.textSecondary} />}
         {error && (
           <Pressable
             accessibilityRole="button"
@@ -166,7 +177,7 @@ export function McpAppCard({
         )}
       </View>
       {error && <Text style={[styles.error, { color: colors.textSecondary }]}>{t(error)}</Text>}
-      {document && webSource && (
+      {active && document && webSource ? (
         <WebView
           ref={webview}
           style={{ height, backgroundColor: colors.surface }}
@@ -183,12 +194,18 @@ export function McpAppCard({
           setSupportMultipleWindows
           allowsInlineMediaPlayback={false}
           mediaPlaybackRequiresUserAction
-          onShouldStartLoadWithRequest={(request) =>
-            request.isTopFrame === false
-              ? mcpAppFrameUrlAllowed(request.url, document.policy?.frameDomains)
-              : request.url === 'about:blank' ||
-                request.url.startsWith(`https://${document.viewId}.cindy-app.invalid/`)
-          }
+          onShouldStartLoadWithRequest={(request) => {
+            if (request.url === 'about:blank' || request.url === webSource.baseUrl) return true;
+            // Android omits isTopFrame. The trusted proxy never navigates, and
+            // its opaque-origin App iframe has only allow-scripts: neither the
+            // App nor its descendants can navigate the top document or open a
+            // popup. Remaining requests can use the declared frame domains;
+            // retain iOS's explicit top-frame rejection as an additional guard.
+            return (
+              request.isTopFrame !== true &&
+              mcpAppFrameUrlAllowed(request.url, document.policy?.frameDomains)
+            );
+          }}
           onMessage={(event) => {
             try {
               const envelope = JSON.parse(event.nativeEvent.data) as {
@@ -223,7 +240,10 @@ export function McpAppCard({
             void controller.current?.close().catch(() => {});
           }}
         />
-      )}
+      ) : !error ? (
+        // Keep list geometry stable while the native View is released or loading.
+        <View style={{ height }} />
+      ) : null}
     </View>
   );
 }

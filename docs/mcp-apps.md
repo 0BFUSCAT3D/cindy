@@ -37,6 +37,13 @@ Host capabilities；不支持的调用明确失败，不静默丢内容。工具
 这项授权只适用于资源的后代 frame；App 自身和外层 proxy 仍保持原导航边界。
 未声明域、不同协议、其他 App 的供片地址和本地文件不会因此获得访问权限。
 
+Mobile 的可信外层 proxy 不跳转页面，App 通过只有 `allow-scripts` 的不透明来源 iframe
+加载；App 与其后代都不能跳转顶层页面或打开弹窗。Android 的 WebView 导航回调没有
+`isTopFrame`，因此声明的 `frameDomains` 仍按域校验，不把缺失字段当成顶层导航；
+iOS 另保留显式顶层请求拦截。回归见 `apps/mobile/src/__tests__/mcpAppCard.test.tsx`。
+手机卡片只在消息列表项可见或被定位时打开 View，离屏释放并保留高度占位，重新进入时
+重新读取；打开期间离屏会取消加载并回收晚到的 View，不重放 App 工具调用。
+
 ## 接入
 
 在 Cindy 设置中添加普通自定义 MCP，选择 Streamable HTTP 或 SSE 地址及所需认证。

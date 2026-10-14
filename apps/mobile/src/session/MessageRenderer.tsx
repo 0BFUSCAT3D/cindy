@@ -3801,7 +3801,7 @@ function MessageBubble({
         </View>
       ) : null}
       {item.message.systemCardType === 'mcp-app' ? (
-        <McpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
+        <ViewabilityGatedMcpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
           clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? 'MCP App')} />
       ) : item.message.systemCardType ? (
         <MobileSystemCard
@@ -5599,6 +5599,13 @@ function OrcaCollabCard({ card, screenWidth, blockKey }: {
     </CollabCardShell>
   );
 }
+
+const ViewabilityGatedMcpAppCard = memo(function ViewabilityGatedMcpAppCard(
+  props: Omit<ComponentProps<typeof McpAppCard>, 'active'>,
+) {
+  const heavyContentVisible = useContext(MessageHeavyContentVisibilityContext);
+  return <McpAppCard {...props} active={heavyContentVisible} />;
+});
 
 const ViewabilityGatedMermaidDiagram = memo(function ViewabilityGatedMermaidDiagram({
   source,
