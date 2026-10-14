@@ -35,6 +35,7 @@ import { type MobilePluginSetupAction } from "./pluginSetupActions";
 import type { authenticateMobilePluginOauth } from "./pluginOauthClient";
 import { openMobilePluginOauthSession } from "./pluginOauthSession";
 import { pluginOauthPlatformCrypto } from "./pluginOauthPlatformCrypto";
+import { remotePresentation } from "../../modules/cindy-remote-presentation/src";
 import { runMobilePluginAuthorization } from "./pluginAuthorizationController";
 
 export default function PluginSetupNativeForm({
@@ -63,7 +64,7 @@ export default function PluginSetupNativeForm({
     alive = useRef(true),
     lock = useRef(false),
     operation = useRef(0),
-    copiedCode = useRef<string | undefined>(undefined);
+    copiedVersion = useRef<string | undefined>(undefined);
   const live = useRef({ focused, epoch: link.connectionEpoch });
   live.current = { focused, epoch: link.connectionEpoch };
   const [selected, setSelected] = useState<MobilePluginSetupAction | undefined>(
@@ -82,9 +83,16 @@ export default function PluginSetupNativeForm({
     [],
   );
   const clearCopiedCode = async () => {
-    const code = copiedCode.current;
-    copiedCode.current = undefined;
-    if (code && (await Clipboard.getStringAsync().catch(() => "")) === code)
+    const version = copiedVersion.current;
+    copiedVersion.current = undefined;
+    // Compare the change counter instead of reading the clipboard, which would
+    // make iOS ask the user for paste permission.
+    if (
+      version &&
+      (await remotePresentation
+        ?.clipboardVersion?.()
+        .catch(() => undefined)) === version
+    )
       await Clipboard.setStringAsync("").catch(() => {});
   };
   const clear = () => {
@@ -336,8 +344,9 @@ export default function PluginSetupNativeForm({
                     onPress={() => {
                       const code = browser.code!;
                       void Clipboard.setStringAsync(code)
-                        .then(() => {
-                          copiedCode.current = code;
+                        .then(() => remotePresentation?.clipboardVersion?.())
+                        .then((version) => {
+                          copiedVersion.current = version;
                           if (!alive.current) void clearCopiedCode();
                         })
                         .catch(() => {});
