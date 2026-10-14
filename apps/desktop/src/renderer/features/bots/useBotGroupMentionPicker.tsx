@@ -128,6 +128,9 @@ export function useBotGroupMentionPicker({
   const choose = (option: MentionOption | undefined) => {
     if (!option || !query) return;
     const next = insertBotGroupMention(text, { start: query.start, end: caret }, option.label);
+    // A pick obeys the field's own maxLength, as typing does (a programmatic value would skip it).
+    const limit = textareaRef.current?.maxLength ?? -1;
+    if (limit >= 0 && next.text.length > limit) return;
     // Re-picking a namesake can leave the text as is; then no re-render moves the caret.
     if (next.text === text) textareaRef.current?.setSelectionRange(next.caret, next.caret);
     else pendingCaretRef.current = next.caret;

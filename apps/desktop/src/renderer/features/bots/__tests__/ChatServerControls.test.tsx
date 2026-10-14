@@ -326,6 +326,19 @@ describe('chat interaction controls', () => {
       expect(input.selectionStart).toBe(7);
     });
 
+    it('does not let a pick push the reply past its 8000-character limit', () => {
+      const input = renderThread();
+      const near = `${'x'.repeat(7996)} @`;
+      type(input, near);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      // `@Bo ` would make 8000 + 1 characters: the pick is refused, as typing past maxLength is.
+      expect(input.value).toBe(near);
+      type(input, `${'x'.repeat(7995)} @`);
+      fireEvent.click(screen.getAllByRole('option')[3]!);
+      expect(input.value).toBe(`${'x'.repeat(7995)} @Bo `);
+      expect(input.value).toHaveLength(8000);
+    });
+
     // One retry rule (bot-group-chat.md): a failed reply is retried with the same clientId only when the
     // text and its targets are unchanged. Each row edits the draft between attempts without changing the text.
     // Comparing only the text fails rows 1 and 4; comparing the pick records fails row 3; re-resolving
