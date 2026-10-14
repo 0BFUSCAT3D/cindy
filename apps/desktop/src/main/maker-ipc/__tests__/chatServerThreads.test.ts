@@ -270,6 +270,12 @@ describe('recovering from a failed read in a quiet room', () => {
     // 5 automatic retries with doubling gaps, then it waits for a push or a reopen.
     expect(io.threadPage).toHaveBeenCalledTimes(6);
     expect(gaps).toEqual([30_000, 60_000, 120_000, 240_000, 480_000]);
+    // Once it has given up, the next push or reopening reads again at once.
+    io.threadPage.mockResolvedValue([reply('r1', rootB)]);
+    projection.previews(room, [root], fullWindow([]));
+    await projection.settled();
+    expect(io.threadPage).toHaveBeenCalledTimes(7);
+    expect(projection.previews(room, [root], fullWindow([])).get(rootB)?.map(item => item.id)).toEqual(['r1']);
   });
 
   it.each(['dispose', 'reset'] as const)('cancels a pending retry on %s', async (stop) => {

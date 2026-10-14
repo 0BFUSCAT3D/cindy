@@ -78,10 +78,10 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
   function scheduleRetry(roomId: string, cacheKey: string) {
     const attempt = (failures.get(cacheKey) ?? 0) + 1;
     failures.set(cacheKey, attempt);
-    const at = Date.now() + RETRY_MS * 2 ** Math.min(attempt - 1, RETRY_ATTEMPTS - 1);
+    // After the last automatic attempt the next push or reopening retries at once.
+    if (attempt > RETRY_ATTEMPTS) { retryAt.delete(cacheKey); return; }
+    const at = Date.now() + RETRY_MS * 2 ** (attempt - 1);
     retryAt.set(cacheKey, at);
-    // After the last automatic attempt only a later read (a push or reopening) retries.
-    if (attempt > RETRY_ATTEMPTS) return;
     const pending = pendingRetries.get(roomId) ?? new Map<string, number>();
     pending.set(cacheKey, at); pendingRetries.set(roomId, pending);
     armRetry(roomId);
