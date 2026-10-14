@@ -1452,6 +1452,19 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     );
   });
 
+  it('协同 Lead 切回本机必须同引擎:换引擎仍拒绝', async () => {
+    const leadHome = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
+    await expect(
+      performSessionAgentSwitch(leadHome.deps, {
+        ...backToTaskComputer,
+        targetAgentKind: 'codex',
+        model: 'gpt-5.5',
+      }),
+    ).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    expect(leadHome.pending.get('s1')).toBeUndefined();
+    expect(leadHome.calls).toEqual([]);
+  });
+
   it('非法位置参数被拒绝', async () => {
     const h = relocationHarness();
     await expect(performSessionAgentSwitch(h.deps, { ...backToTaskComputer, agentDeviceId: 'bad id!' }))
