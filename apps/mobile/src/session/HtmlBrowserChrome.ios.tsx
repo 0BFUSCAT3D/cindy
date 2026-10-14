@@ -214,7 +214,7 @@ export function HtmlBrowserChrome(p: HtmlBrowserChromeProps) {
               gap: spacing.sm,
               backgroundColor: colors.surfaceElevated,
               padding: spacing.sm,
-              borderRadius: radius.pill,
+              borderRadius: radius.container,
             }}
           >
             <Text

@@ -83,7 +83,8 @@ async function copyRemoteFile(
  * 一次性分享临时文件:超出磁盘缓存预算的对象走 store 会被 LRU 立即逐出,
  * lookup 拿不到 → 分享失败。这里绕开 LRU 直接下到独立临时目录,只服务本次
  * 分享;文件留在系统 cache 区,OS 低存储时统一回收(罕见路径,不做主动清理)。
- * 传入 signal 时 http 下载可被「取消」真正中止(停止流量、删半成品),返回 null。
+ * 传入 signal 时 http 下载可被「取消」真正中止(停止流量、删半成品);任何来源在
+ * 取消后都不留分享副本,返回 null。
  */
 export async function downloadRemoteMediaShareTemp(
   url: string,
@@ -108,6 +109,11 @@ export async function downloadRemoteMediaShareTemp(
       target = new File(dir, `share-${unique}.${extOfMime(mimeType)}`);
     }
     const file = await copyRemoteFile(url, target, signal);
+    // 直连 file:// 复制与 data: 写入无法中途停止:结束后已取消就删掉这份副本。
+    if (signal?.aborted) {
+      if (file.exists) file.delete();
+      return null;
+    }
     return file.exists ? file.uri : null;
   } catch {
     return null; // 分享失败由调用方兜底提示

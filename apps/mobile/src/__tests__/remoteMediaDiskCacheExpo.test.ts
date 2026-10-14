@@ -133,6 +133,15 @@ describe('share temp downloads', () => {
     expect(io.cancel.mock.invocationCallOrder.at(-1)!).toBeLessThan(io.deleteAsync.mock.invocationCallOrder[0]!);
   });
 
+  it('removes a direct-transfer copy that finished after cancel', async () => {
+    const abort = new AbortController();
+    const result = downloadRemoteMediaShareTemp('file:///peer/staged', 'application/pdf', 'a.pdf', abort.signal);
+    abort.abort(); // local File.copy cannot be interrupted; the copy settles afterwards
+    expect(await result).toBeNull();
+    expect(io.copied.size).toBe(1);
+    expect(io.remove).toHaveBeenCalledExactlyOnceWith([...io.copied][0]);
+  });
+
   it('treats a non-2xx response as a failed download', async () => {
     io.resumable.mockResolvedValue({ status: 403 });
     expect(await downloadRemoteMediaShareTemp(
