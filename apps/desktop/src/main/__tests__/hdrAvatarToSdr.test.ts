@@ -228,6 +228,29 @@ describe('toSdrAvatarImage — PQ / HLG', () => {
     }
   });
 
+  it('adapts DCI-P3 (primaries 11) from the DCI white point instead of treating it as P3-D65', async () => {
+    const pixels = [
+      { nits: [100, 100, 100] as [number, number, number], alpha: 65535 },
+      { nits: [100, 20, 20] as [number, number, number], alpha: 65535 },
+    ];
+    const convert = async (primaries: number) =>
+      rgbaAt(
+        (
+          await toSdrAvatarImage({
+            buffer: await syntheticPqPng(pixels, { cicp: [primaries, 16, 0, 1] }),
+            mimeType: 'image/png',
+          })
+        ).buffer,
+        [0, 1],
+      );
+    const [[dciNeutral, dciRed], [, p3d65Red]] = [await convert(11), await convert(12)];
+    // 色适应后 DCI 白仍映射为中性色;饱和色则因白点不同而与 P3-D65 结果不同。
+    expect(
+      Math.max(...dciNeutral!.slice(0, 3)) - Math.min(...dciNeutral!.slice(0, 3)),
+    ).toBeLessThanOrEqual(1);
+    expect(dciRed!.slice(0, 3)).not.toEqual(p3d65Red!.slice(0, 3));
+  });
+
   it('rejects HDR sources whose declared dimensions exceed the limit before decoding', async () => {
     const png = await syntheticPqPng([{ nits: [203, 203, 203], alpha: 65535 }]);
     // 改写 IHDR 宽高(1 亿 / 4 亿像素),文件仍只有几百字节;后者超过 sharp 默认像素上限。

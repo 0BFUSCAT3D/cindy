@@ -146,17 +146,31 @@ function hasGainMapSignature(buffer: Buffer): boolean {
 // ── 色彩数学 ────────────────────────────────────────────────────────────────
 
 type Mat3 = [number, number, number, number, number, number, number, number, number];
-type Chromaticities = { r: [number, number]; g: [number, number]; b: [number, number] };
+type Chromaticities = {
+  r: [number, number];
+  g: [number, number];
+  b: [number, number];
+  white: [number, number];
+};
 
 const D65: [number, number] = [0.3127, 0.329];
-const BT709: Chromaticities = { r: [0.64, 0.33], g: [0.3, 0.6], b: [0.15, 0.06] };
-const BT2020: Chromaticities = { r: [0.708, 0.292], g: [0.17, 0.797], b: [0.131, 0.046] };
-const P3_D65: Chromaticities = { r: [0.68, 0.32], g: [0.265, 0.69], b: [0.15, 0.06] };
+const BT709: Chromaticities = { r: [0.64, 0.33], g: [0.3, 0.6], b: [0.15, 0.06], white: D65 };
+const BT2020: Chromaticities = {
+  r: [0.708, 0.292],
+  g: [0.17, 0.797],
+  b: [0.131, 0.046],
+  white: D65,
+};
+const P3_D65: Chromaticities = { r: [0.68, 0.32], g: [0.265, 0.69], b: [0.15, 0.06], white: D65 };
+/** SMPTE ST 431-2：与 P3-D65 同原色，但白点是 DCI 白。 */
+const DCI_P3: Chromaticities = { ...P3_D65, white: [0.314, 0.351] };
+const BRADFORD: Mat3 = [0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296];
 
 /** H.273 ColourPrimaries → 色度；HDR 内容未声明或未知时按惯例视为 BT.2020。 */
 function primariesFor(code: number): Chromaticities {
   if (code === 1) return BT709;
-  if (code === 11 || code === 12) return P3_D65;
+  if (code === 11) return DCI_P3;
+  if (code === 12) return P3_D65;
   return BT2020;
 }
 
@@ -190,19 +204,37 @@ function invert(m: Mat3): Mat3 {
   ];
 }
 
-/** 由 RGB 原色与 D65 白点推导线性 RGB → XYZ 矩阵。 */
-function rgbToXyz({ r, g, b }: Chromaticities): Mat3 {
-  const column = ([x, y]: [number, number]) => [x / y, 1, (1 - x - y) / y] as const;
-  const [rx, ry, rz] = column(r);
-  const [gx, gy, gz] = column(g);
-  const [bx, by, bz] = column(b);
-  const [wx, wy, wz] = column(D65);
+function xyToXyz([x, y]: [number, number]): [number, number, number] {
+  return [x / y, 1, (1 - x - y) / y];
+}
+
+function apply(m: Mat3, [x, y, z]: [number, number, number]): [number, number, number] {
+  return [
+    m[0] * x + m[1] * y + m[2] * z,
+    m[3] * x + m[4] * y + m[5] * z,
+    m[6] * x + m[7] * y + m[8] * z,
+  ];
+}
+
+function diagonal([a, b, c]: [number, number, number]): Mat3 {
+  return [a, 0, 0, 0, b, 0, 0, 0, c];
+}
+
+/**
+ * 由 RGB 原色与其白点推导线性 RGB → XYZ 矩阵；白点不是 D65 时再经 Bradford 色适应到 D65，
+ * 与后续 BT.709 / sRGB 的 D65 目标对齐。
+ */
+function rgbToXyz({ r, g, b, white }: Chromaticities): Mat3 {
+  const [rx, ry, rz] = xyToXyz(r);
+  const [gx, gy, gz] = xyToXyz(g);
+  const [bx, by, bz] = xyToXyz(b);
   const primaries: Mat3 = [rx, gx, bx, ry, gy, by, rz, gz, bz];
-  const s = invert(primaries);
-  const sr = s[0] * wx + s[1] * wy + s[2] * wz;
-  const sg = s[3] * wx + s[4] * wy + s[5] * wz;
-  const sb = s[6] * wx + s[7] * wy + s[8] * wz;
-  return [rx * sr, gx * sg, bx * sb, ry * sr, gy * sg, by * sb, rz * sr, gz * sg, bz * sb];
+  const toXyz = multiply(primaries, diagonal(apply(invert(primaries), xyToXyz(white))));
+  if (white === D65) return toXyz;
+  const [ls, ms, ss] = apply(BRADFORD, xyToXyz(white));
+  const [ld, md, sd] = apply(BRADFORD, xyToXyz(D65));
+  const scale = diagonal([ld / ls, md / ms, sd / ss]);
+  return multiply(multiply(invert(BRADFORD), multiply(scale, BRADFORD)), toXyz);
 }
 
 function pqToNits(encoded: number): number {
