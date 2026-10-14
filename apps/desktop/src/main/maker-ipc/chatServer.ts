@@ -181,10 +181,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let companion: CompanionCloudRuntime | undefined;
   let companionSelf: string | null = null;
   let actorsStale = false;
-  // Who reacted can change while the count stays the same; each realtime reaction change versions the message.
+  // Who reacted can change while counts stay the same. Any realtime reaction change, or a reset that
+  // skipped events, versions the whole room, so every loaded page and the Thread see it on refresh.
   const reactionRevisions = new Map<string, number>();
-  // A reset skips the missed events, so every message's reactions are treated as changed once.
-  let reactionResets = 0;
+  const bumpReactions = (roomId: string) => reactionRevisions.set(roomId, (reactionRevisions.get(roomId) ?? 0) + 1);
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -561,9 +561,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (event.scope.startsWith('conversation:')) {
             const roomId = event.scope.slice(13);
             if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
-            for (const change of event.changes ?? []) if (change.type === 'reaction.changed' && typeof change.entityId === 'string') {
-              reactionRevisions.set(change.entityId, (reactionRevisions.get(change.entityId) ?? 0) + 1);
-            }
+            if ((event.changes ?? []).some((change: { type?: unknown }) => change.type === 'reaction.changed')) bumpReactions(roomId);
             changed(roomId);
             for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
           }
@@ -579,7 +577,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             void api<Snapshot>(`/conversations/${roomId}/snapshot`).then(value => {
               if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
               if (rooms.has(roomId)) advanceRoom(roomId, value.cursor);
-              reactionResets++;
+              bumpReactions(roomId);
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());
@@ -644,7 +642,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const quote = m.deleted || planCard ? null : readBotGroupQuote(m.content);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}),
-      reactionRevision: (reactionRevisions.get(m.id) ?? 0) + reactionResets,
       authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: bodyText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
@@ -735,7 +732,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const messages = summaryOnly ? [] : (await messageViews(roomId, page, s.members)).sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
-    return { serverBacked: true, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId) ?? 0, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,

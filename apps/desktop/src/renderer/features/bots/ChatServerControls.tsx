@@ -23,8 +23,8 @@ export { chatErrorKey } from './chatError';
  * `onQuote` is 引用回复: a new main-timeline message that quotes this one. `onReply` opens the
  * message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after.
  */
-export function ChatMessageActions({ groupId, shareScope, message, members, align = message.isSelf ? 'right' : 'left', onQuote, onReply, onChanged }: {
-  groupId?: string; shareScope: string; message: BotGroupMessageView; members?: BotGroupMemberView[]; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void; onChanged: () => void;
+export function ChatMessageActions({ groupId, shareScope, message, members, reactionRevision, align = message.isSelf ? 'right' : 'left', onQuote, onReply, onChanged }: {
+  groupId?: string; shareScope: string; message: BotGroupMessageView; members?: BotGroupMemberView[]; reactionRevision?: number; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void; onChanged: () => void;
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
@@ -46,7 +46,7 @@ export function ChatMessageActions({ groupId, shareScope, message, members, alig
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} className="mt-1 flex flex-col gap-1">
       {!!message.reactions?.length && <div className={`flex flex-wrap items-center gap-1 ${align === 'right' ? 'justify-end' : ''}`}>
         {message.reactions.map(reaction => (
-          <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} revision={message.reactionRevision} members={members}
+          <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} revision={reactionRevision} members={members}
             disabled={busy || !groupId} onToggle={() => void react(reaction.emoji, !reaction.me)} />
         ))}
       </div>}

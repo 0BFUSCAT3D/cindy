@@ -145,6 +145,14 @@ describe('chat interaction controls', () => {
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '👍', present: false });
   });
 
+  it('re-reads Thread reactors when the room reaction revision changes, even if the page is not reloaded', async () => {
+    const view = render(<ChatThreadPanel group={{ ...group, reactionRevision: 1 }} rootId="root" onClose={vi.fn()} />);
+    await screen.findByRole('button', { name: k('reactionCount') });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(1));
+    view.rerender(<Tooltip.Provider><ChatThreadPanel group={{ ...group, reactionRevision: 2 }} rootId="root" onClose={vi.fn()} /></Tooltip.Provider>);
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(2));
+  });
+
   it('uses the refreshed Thread root reaction state while the main timeline remains stale', async () => {
     mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: [], hasMore: false })
       .mockResolvedValue({ ok: true, root: { ...message, reactions: [{ emoji: '👍', count: 1, me: false }] }, replies: [], hasMore: false });

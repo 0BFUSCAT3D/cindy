@@ -142,11 +142,11 @@ describe('reaction avatars', () => {
     mocks.reactors.mockResolvedValueOnce({ ok: true, reactors: [reactor('z', 'Zoe')] })
       .mockResolvedValueOnce({ ok: true, reactors: [reactor('c1', 'Cindy (Chris)')] });
     const view = render(<ChatMessageActions shareScope="group:room" groupId="room" members={members} onChanged={vi.fn()}
-      message={{ ...message([{ emoji: '👍', count: 1, me: false }]), reactionRevision: 3 }} />);
+      reactionRevision={3} message={message([{ emoji: '👍', count: 1, me: false }])} />);
     await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoe'));
-    // Zoe removed 👍 and Chris's companion added it: same count and `me`, a new realtime revision.
+    // Zoe removed 👍 and Chris's companion added it: same count and `me`, a new room reaction revision.
     view.rerender(<ChatMessageActions shareScope="group:room" groupId="room" members={members} onChanged={vi.fn()}
-      message={{ ...message([{ emoji: '👍', count: 1, me: false }]), reactionRevision: 4 }} />);
+      reactionRevision={4} message={message([{ emoji: '👍', count: 1, me: false }])} />);
     await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Cindy (Chris)'));
     expect(images()).toEqual(['https://example.test/cindy-chris.png']);
   });

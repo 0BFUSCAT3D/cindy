@@ -46,7 +46,7 @@ function ThreadMessage({ group, message, quoteSources, shareScope, sharing, onCh
       <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
         <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
       </div>
-      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} members={group.members} align="left" onChanged={onChanged} />
+      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} members={group.members} reactionRevision={group.reactionRevision} align="left" onChanged={onChanged} />
     </div>
   </article>;
 }

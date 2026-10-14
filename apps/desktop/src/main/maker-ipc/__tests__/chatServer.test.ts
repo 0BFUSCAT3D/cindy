@@ -1091,12 +1091,12 @@ describe('Chat Server result delivery and refresh', () => {
     const recovered = await service.getGroup(roomId);
     expect(recovered.ok && recovered.group.messages[0].attachments[0].name).toBe('report.pdf');
   });
-  it('versions a message’s reactions on every realtime reaction change, even when the count is unchanged', async () => {
+  it('versions the room’s reactions on realtime reaction changes and resets, even when counts are unchanged', async () => {
     const message = { id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
       content: [{ type: 'text', text: 'Hi' }], createdAt: new Date().toISOString(), deleted: false, threadRootId: null,
       reactions: [{ emoji: '👍', count: 1, me: false }] };
     fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [message] } : response(route));
-    const revision = async () => { const r = await service.getGroup(roomId); return r.ok ? r.group.messages[0].reactionRevision : undefined; };
+    const revision = async () => { const r = await service.getGroup(roomId); return r.ok ? r.group.reactionRevision : undefined; };
     expect(await revision()).toBe(0);
     await vi.advanceTimersByTimeAsync(2000);
     const socket = fixture.sockets[0];
@@ -1106,12 +1106,15 @@ describe('Chat Server result delivery and refresh', () => {
       { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: true } },
       { type: 'message.updated', entityId: message.id },
     ] }));
-    expect(await revision()).toBe(2);
-    // A reset skips whatever changed while disconnected: every message counts as changed once.
+    expect(await revision()).toBe(1);
+    // Other changes do not invalidate reactor reads.
+    socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '6', changes: [{ type: 'message.updated', entityId: message.id }] }));
+    expect(await revision()).toBe(1);
+    // A reset skips whatever changed while disconnected: the room counts as changed once.
     Object.defineProperty(socket, 'readyState', { value: 1 });
     socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(await revision()).toBe(3);
+    expect(await revision()).toBe(2);
   });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);

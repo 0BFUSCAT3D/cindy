@@ -840,7 +840,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
                   onLocateQuote={message.quote ? () => void locateQuoted(message.quote!) : undefined}
                   actions={message.kind === 'message' ? <ChatMessageActions
-                    groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message} members={group.members}
+                    groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message} members={group.members} reactionRevision={group.reactionRevision}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
                     onQuote={group.serverBacked && !group.archived && isBotGroupMessageQuotable(message)
                       ? () => setQuoteDraft(botGroupQuoteFromMessage(message)) : undefined}
