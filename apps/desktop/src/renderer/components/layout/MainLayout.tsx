@@ -554,6 +554,7 @@ export function MainLayout() {
     resolveBotRoute: (sessionId) => resolveBotRouteForSessionEntry(sessionId, {
       readProfiles: getBotProfiles,
       loadProfiles: ensureBotProfilesLoaded,
+      loadHistory: (botId) => window.electronAPI.localDb.bots.history(botId),
     }),
     openBotRoute: (route) => {
       if (currentPathRef.current !== route) sessionEntryDepsRef.current.navigate(route);

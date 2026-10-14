@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { CCAgentSessionView } from '@/features/cc-agent/CCAgentSessionView';
 import type { BotChatIdentity } from './BotSessionContentHeader';
+import { botHistoryIncludesSession } from './botSessionOwners';
 import { useBotIslandVisibleSession } from './useBotIslandVisibleSession';
 
 function readBotChatIdentity(bot: unknown, botId: string): BotChatIdentity | null {
@@ -46,16 +47,7 @@ function BotHistorySessionGateView() {
     void window.electronAPI.localDb.bots
       .history(botId)
       .then((rows) => {
-        if (cancelled) return;
-        const found = rows.some(
-          (row) =>
-            !!row &&
-            typeof row === 'object' &&
-            'id' in row &&
-            typeof (row as { id?: unknown }).id === 'string' &&
-            (row as { id: string }).id === sessionId,
-        );
-        setAllowed(found);
+        if (!cancelled) setAllowed(botHistoryIncludesSession(rows, sessionId));
       })
       .catch(() => {
         if (!cancelled) setAllowed(false);

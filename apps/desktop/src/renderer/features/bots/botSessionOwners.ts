@@ -68,7 +68,7 @@ export function botRouteForOwnedSession(
       consumesAlert: true,
     };
   }
-  if (projection?.kind === 'history' || projection?.role === 'history') {
+  if (isBotHistoryProjection(projection)) {
     return { route: `${botRoute}/history/${encodeURIComponent(sessionId)}`, consumesAlert: true };
   }
   const canonicalSessionId = bot.sessions.find(
@@ -83,10 +83,28 @@ export function botRouteForOwnedSession(
   };
 }
 
+function isBotHistoryProjection(projection: BotProfile['sessions'][number] | undefined): boolean {
+  return projection?.kind === 'history' || projection?.role === 'history';
+}
+
+/** The history route's ownership gate: `bots.history(botId)` rows must contain the Session. */
+export function botHistoryIncludesSession(rows: readonly unknown[], sessionId: string): boolean {
+  return rows.some(
+    (row) =>
+      !!row &&
+      typeof row === 'object' &&
+      'id' in row &&
+      typeof (row as { id?: unknown }).id === 'string' &&
+      (row as { id: string }).id === sessionId,
+  );
+}
+
 export interface BotSessionEntryRouteDeps {
   readProfiles: () => readonly BotProfile[];
   /** Loads the current owner's profiles; `refresh` re-reads an already loaded projection. */
   loadProfiles: (refresh: boolean) => Promise<readonly BotProfile[]>;
+  /** The same `bots.history(botId)` read the history route gates on. */
+  loadHistory: (botId: string) => Promise<readonly unknown[]>;
 }
 
 /**
@@ -102,9 +120,20 @@ export async function resolveBotRouteForSessionEntry(
   deps: BotSessionEntryRouteDeps,
 ): Promise<BotSessionEntryTarget | null> {
   const current = deps.readProfiles();
-  if (findBotProfileForSession(current, sessionId)) return botRouteForOwnedSession(current, sessionId);
-  const profiles = await deps.loadProfiles(true).catch(() => []);
-  return botRouteForOwnedSession(profiles, sessionId);
+  const profiles = findBotProfileForSession(current, sessionId)
+    ? current
+    : await deps.loadProfiles(true).catch(() => []);
+  const target = botRouteForOwnedSession(profiles, sessionId);
+  const bot = findBotProfileForSession(profiles, sessionId);
+  if (!target?.consumesAlert || !bot) return target;
+  if (!isBotHistoryProjection(bot.sessions.find((session) => session.id === sessionId))) return target;
+  // The history route re-checks ownership after it commits and redirects away when the
+  // projection was stale or the read fails; only a target that gate will show may dispose.
+  const shown = await deps.loadHistory(bot.id).then(
+    (rows) => botHistoryIncludesSession(rows, sessionId),
+    () => false,
+  );
+  return shown ? target : { ...target, consumesAlert: false };
 }
 
 export interface SessionEntryNavigatorDeps {

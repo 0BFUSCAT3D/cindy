@@ -133,13 +133,17 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
   function deps(over: {
     current?: BotProfile[];
     loaded?: BotProfile[];
+    history?: () => Promise<unknown[]>;
   }) {
     const loadProfiles = vi.fn<(refresh: boolean) => Promise<BotProfile[]>>(async () => over.loaded ?? []);
+    const loadHistory = vi.fn<(botId: string) => Promise<unknown[]>>(over.history ?? (async () => [{ id: 's-old' }]));
     return {
       loadProfiles,
+      loadHistory,
       deps: {
         readProfiles: () => over.current ?? [],
         loadProfiles,
+        loadHistory,
       },
     };
   }
@@ -154,12 +158,32 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
   });
 
   it('启动后从未进过伙伴页时先加载投影，再回伙伴页', async () => {
-    const { deps: d, loadProfiles } = deps({ loaded: [profile()] });
+    const { deps: d, loadProfiles, loadHistory } = deps({ loaded: [profile()] });
     await expect(resolveBotRouteForSessionEntry('s-old', d)).resolves.toEqual({
       route: '/bots/bot-a/history/s-old',
       consumesAlert: true,
     });
     expect(loadProfiles).toHaveBeenCalledWith(true);
+    expect(loadHistory).toHaveBeenCalledExactlyOnceWith('bot-a');
+  });
+
+  it('历史页归属门禁不会放行的目标（投影过期 / 读取失败）照常导航但不处置', async () => {
+    const gone = deps({ current: [profile()], history: async () => [{ id: 's-other' }] });
+    await expect(resolveBotRouteForSessionEntry('s-old', gone.deps)).resolves.toEqual({
+      route: '/bots/bot-a/history/s-old',
+      consumesAlert: false,
+    });
+    const failed = deps({ current: [profile()], history: async () => { throw new Error('db busy'); } });
+    await expect(resolveBotRouteForSessionEntry('s-old', failed.deps)).resolves.toEqual({
+      route: '/bots/bot-a/history/s-old',
+      consumesAlert: false,
+    });
+  });
+
+  it('只有历史目标才读历史归属', async () => {
+    const { deps: d, loadHistory } = deps({ current: [profile()] });
+    await resolveBotRouteForSessionEntry('s-main', d);
+    expect(loadHistory).not.toHaveBeenCalled();
   });
 
   it('投影已加载后新委派出去的任务（行上仍是 desktop）也会重读投影，回到接手伙伴', async () => {
@@ -350,6 +374,7 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     const d = {
       readProfiles: () => [],
       loadProfiles: vi.fn(async () => { throw new Error('not ready'); }),
+      loadHistory: vi.fn(async () => []),
     };
     await expect(resolveBotRouteForSessionEntry('s-main', d)).resolves.toBeNull();
   });
