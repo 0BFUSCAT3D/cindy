@@ -1030,8 +1030,10 @@ export function CreateWorkerPopover({
                 // 分离侧栏窗口固定在 /sidebar-window 壳路由,本地 navigate 会把辅助
                 // 窗口整壳替换成主设置路由(codex review)——与 OrcaWorkerPanel 的
                 // settingsEnabled={!isSidebarWindow()} 同禁用口径,不接线跳转。
+                // 只看任务所在电脑(远程控制的 Lead / 运行设备)：Worker 的 Agent 选在分享或其他电脑上时，
+                // 面板自己决定底部入口(分享来的供应商直达设置里那一条)。
                 onNavigateToProviders={
-                  deviceId || isSidebarWindow()
+                  leadDeviceId || executionDeviceId || isSidebarWindow()
                     ? undefined
                     : (target) => {
                         onClose();
