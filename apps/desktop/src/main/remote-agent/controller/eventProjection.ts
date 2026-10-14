@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import type { AgentEvent } from '@cindy/maker-core';
 
-import { isPathTextField, type ExecutorWorkspace } from '../executor/workspace';
+import { isPathTextField, mapJsonPathText, type ExecutorWorkspace } from '../executor/workspace';
 
 const URL_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s\x60"'<>()[\]{}]+/gi;
 const TEXT_BOUNDARIES = new Set(['tool_use', 'tool_result', 'tool_result_full', 'interaction_request', 'done', 'error', 'compact_boundary']);
@@ -40,14 +40,7 @@ function localText(value: string, workspace: ExecutorWorkspace): string {
   // 先处理 JSON 字符串，保留 Windows 转义、正文格式和非字符串字节。
   if (/^\s*[{["]/.test(value)) {
     try {
-      JSON.parse(value);
-      return value.replace(/"(?:\\[\s\S]|[^"\\])*"/g, (literal, offset: number) => {
-        if (/^\s*:/.test(value.slice(offset + literal.length))) return literal;
-        const decoded = JSON.parse(literal) as string;
-        const key = value.slice(0, offset).match(/("(?:\\[\s\S]|[^"\\])*")\s*:\s*$/)?.[1];
-        const local = localValue(decoded, workspace, key ? JSON.parse(key) as string : '') as string;
-        return local === decoded ? literal : JSON.stringify(local);
-      });
+      return mapJsonPathText(value, (decoded, context) => localText(context === 'path' ? workspace.mapAlias(decoded) : decoded, workspace));
     } catch { /* 非 JSON 按文件引用投影。 */ }
   }
   // Markdown 的代码引用和尖括号文件链接允许空格，需按完整路径还原。

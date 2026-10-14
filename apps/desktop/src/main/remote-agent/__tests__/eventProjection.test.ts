@@ -184,6 +184,21 @@ describe('remote file references on the task computer', () => {
     expect(text(output[2])).toBe('[图片](' + image.url + ') [网址](' + external + ')');
   });
 
+  it.each(['/home/agent/workspace', 'C:\\Agent\\workspace'])('restores JSON scalar paths and nested path arrays without normalizing quoted prose at %s', async (virtual) => {
+    const { real, controller } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const target = native.join(virtual, '目录 空格', 'a.txt');
+    const local = path.join(real, '目录 空格', 'a.txt');
+    const prose = 'The docs say "' + native.join(virtual, 'README.md') + ' links to /api/v1"';
+    const original = { paths: [target, [target]], nested: { file_paths: [target] }, text: prose, links: [remoteFileUrl(target)] };
+    const output = await eventsFrom(controller, [target, [target], original].map((value) => ({
+      type: 'tool_result_full', source: 'claude-code', data: { toolUseId: 'result', fullText: JSON.stringify(value) },
+    })));
+    expect(output.map((event) => JSON.parse((event.data as { fullText: string }).fullText))).toEqual([local, [local], {
+      paths: [local, [local]], nested: { file_paths: [local] }, text: 'The docs say "' + path.join(real, 'README.md') + ' links to /api/v1"', links: [pathToFileURL(local).href],
+    }]);
+  });
+
   it('uses updated aliases and leaves permission requests and non-aliased paths unchanged', async () => {
     const virtual = '/Users/agent/workspace';
     const { real, workspace, controller } = setup(virtual);

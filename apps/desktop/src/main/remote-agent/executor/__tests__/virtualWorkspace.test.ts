@@ -56,8 +56,8 @@ describe('virtual workspace', () => {
     expect(projectPathText(nativeScript, [{ from: real, to: virtual }], 'path')).toBe(virtualScript);
     expect(projectPathText(nativeScript + '\r\n', [{ from: real, to: virtual }], 'path')).toBe(virtualScript + '\r\n');
     expect(projectPathText(real + realPath.sep, [{ from: real, to: virtual }])).toBe(virtual + agentPath.sep);
-    expect(projectPathText('Cannot load "' + nativeScript + '"', [{ from: real, to: virtual }]))
-      .toBe('Cannot load "' + virtualScript + '"');
+    expect(projectPathText(JSON.stringify({ message: 'Cannot load', path: nativeScript }), [{ from: real, to: virtual }]))
+      .toBe(JSON.stringify({ message: 'Cannot load', path: virtualScript }));
   });
 
   it.each(['/Users/agent/workspace', '/home/agent/workspace', 'C:\\Agent\\workspace'])('round-trips paths from %s and keeps authorization on real paths', async (virtual) => {
@@ -177,6 +177,9 @@ describe('virtual workspace', () => {
     const real = Buffer.from(path.join(project, 'a.ts') + ' ' + path.join(project, 'src', 'b.ts') + ' links to /api/v1');
     expect(workspace.mapInputFromAgent(input)).toEqual(real);
     expect(workspace.mapOutputForAgent(real)).toEqual(input);
+    const quoted = 'The docs say "' + native.join(virtual, 'README.md') + ' links to /api/v1"';
+    expect(workspace.mapInputFromAgent(Buffer.from(quoted)))
+      .toEqual(Buffer.from('The docs say "' + path.join(project, 'README.md') + ' links to /api/v1"'));
   });
 
   it('escapes regex metacharacters and backslash path separators without matching other prefixes', () => {
@@ -184,6 +187,36 @@ describe('virtual workspace', () => {
     const text = path.win32.join(from, 'src', 'a.ts') + ' C:\\Agent\\project1xdata\\src\\b.ts';
     expect(projectPathText(text, [{ from, to: '/real/project' }]))
       .toBe('/real/project/src/a.ts C:\\Agent\\project1xdata\\src\\b.ts');
+    expect(projectPathText('"/REAL/project/a.ts"', [{ from: '/real/project', to: '/virtual/project' }], 'path'))
+      .toBe('"/REAL/project/a.ts"');
+  });
+
+  it.each([
+    { from: '/home/agent/workspace', to: 'C:\\real\\project', source: path.posix, target: path.win32 },
+    { from: 'C:\\Agent\\workspace', to: '/real/project', source: path.win32, target: path.posix },
+  ])('projects JSON scalar paths and inherited path arrays from $from', ({ from, to, source, target }) => {
+    const originalPath = source.join(from, '目录 空格', 'a.txt');
+    const mappedPath = target.join(to, '目录 空格', 'a.txt');
+    const aliases = [{ from, to }];
+    expect(projectPathText(JSON.stringify(originalPath), aliases)).toBe(JSON.stringify(mappedPath));
+    expect(projectPathText(JSON.stringify([originalPath, [originalPath]]), aliases)).toBe(JSON.stringify([mappedPath, [mappedPath]]));
+    const prose = source.join(from, 'README.md') + ' links to /api/v1';
+    const mappedProse = target.join(to, 'README.md') + ' links to /api/v1';
+    const original = { paths: [originalPath, [originalPath]], nested: { file_paths: [originalPath] }, text: prose, messages: [prose] };
+    const mapped = { paths: [mappedPath, [mappedPath]], nested: { file_paths: [mappedPath] }, text: mappedProse, messages: [mappedProse] };
+    expect(projectPathText(JSON.stringify(original), aliases)).toBe(JSON.stringify(mapped));
+  });
+
+  it.each([
+    { from: '/home/agent/workspace', to: 'C:\\real\\project', source: path.posix, target: path.win32 },
+    { from: 'C:\\Agent\\workspace', to: '/real/project', source: path.win32, target: path.posix },
+  ])('preserves quoted prose and maps every embedded path token from $from', ({ from, to, source, target }) => {
+    const first = source.join(from, 'README.md');
+    const second = source.join(from, 'src', 'a.ts');
+    const original = 'The docs say "' + first + ' links to /api/v1 and ' + second + '"';
+    const mapped = 'The docs say "' + target.join(to, 'README.md') + ' links to /api/v1 and ' + target.join(to, 'src', 'a.ts') + '"';
+    expect(projectPathText(original, [{ from, to }])).toBe(mapped);
+    expect(projectPathText(JSON.stringify([original]), [{ from, to }])).toBe(JSON.stringify([mapped]));
   });
 
   it('maps Codex request paths and commands before permission checks and projects text file bytes', async () => {
