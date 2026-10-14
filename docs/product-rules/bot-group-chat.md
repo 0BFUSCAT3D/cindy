@@ -482,7 +482,10 @@ Desktop 群聊只对 `TOKEN_EXPIRED`、`INVALID_TOKEN`、`AUTH_REQUIRED` 的 401
 不写路由、日志或持久存储，关闭弹窗或成功处理后清除。
 侧栏不常驻加群按钮；链接在发送方应用里不可点击时，从伙伴列表加号菜单的「输入邀请链接…」粘贴，
 预览与确认规则相同。该后备在 HTTPS 邀请落地页上线后再评估是否保留。
-本段只描述 Desktop 已有应用协议的消费，不声明存在 HTTPS 落地页或 Mobile 加群入口。
+「输入邀请链接…」也接受公开页链接 `https://…/chat-invite/join#<token>`，只取口令，交给当前账号的 Chat Server；
+规则与页面一致，见 [跨端协议兼容 · 群聊邀请公开链接](../dev-rules/protocol-compatibility.md)。
+「复制邀请链接」仍生成 `cindy://chat-invite/<token>`，三个环境部署公开页后再切换。
+本段不声明公开页已部署，也不新增 Mobile 加群入口。
 实现见 `main/deepLink.ts`、`renderer/features/bots/ChatInviteHost.tsx`、`ChatInviteDialog.tsx`；
 回归见 `ChatInviteHost.test.tsx`、`deepLink.test.ts`，离线浏览器转交（含残缺链接）见
 `chatInviteBrowserHandoff.test.tsx`，原生系统唤起仍需相应平台验收。

@@ -6,6 +6,7 @@ import { getClientEndpoint } from '../clientEndpointsService.js';
 import { readFile as readMedia } from '../cindy-media/blobStore.js';
 import { getAccessToken, refresh } from '../authManager.js';
 import { retryAfterDeadline } from '@cindy/auth-client';
+import { parseChatInvitationToken } from '@cindy/device-link';
 import { existsSync, readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -1278,9 +1279,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     try { return { ok: true as const, ...await fn() }; }
     catch (error) { return { ok: false as const, errorCode: error instanceof z.ZodError ? 'INVALID_INPUT' : error instanceof Error ? error.message : 'REQUEST_FAILED' }; }
   };
-  const inviteToken = (link: string) => z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(
-    z.string().max(100).parse(link).trim().replace(/^cindy:\/\/chat-invite\//, ''),
-  );
+  // Bare token, cindy://chat-invite/<token> or the public https page link; only the token
+  // reaches this account's own Chat Server. An unreadable link is INVALID_INPUT.
+  const inviteToken = (link: string) => z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(parseChatInvitationToken(link) ?? '');
   // Null is the server's non-expiring contract; omitted/invalid dates are never
   // treated as permanent links. Older servers keep their dated, single-use links.
   const inviteExpiry = z.string().refine(value => Number.isFinite(Date.parse(value))).nullable();
