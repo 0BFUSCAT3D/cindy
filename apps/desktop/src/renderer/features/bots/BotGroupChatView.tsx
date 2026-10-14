@@ -1271,10 +1271,12 @@ function BotGroupOutboxItem({
             >
               {t('bots.groupChat.outbox.edit')}
             </Button>
-            <Button variant="secondary" size="sm" compact type="button" onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
-              <RefreshCcw size={13} />
-              {t('bots.retry')}
-            </Button>
+            {entry.retryable !== false ? (
+              <Button variant="secondary" size="sm" compact type="button" onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
+                <RefreshCcw size={13} />
+                {t('bots.retry')}
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </BotGroupSelfBubble>

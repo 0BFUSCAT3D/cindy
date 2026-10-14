@@ -280,6 +280,24 @@ describe('botGroupOutbox', () => {
     expect(getBotGroupOutbox('g1').map((entry) => entry.input.clientId)).toEqual(['keep']);
   });
 
+  it('offers no 重试 when main refused the message itself: only 编辑 can change it', async () => {
+    registerBotGroupComposer('g1', { restore: vi.fn(() => false), notifyFailed: vi.fn() });
+    for (const errorCode of ['QUOTE_UNAVAILABLE', 'MENTION_UNAVAILABLE', 'INVALID_PARAMS', 'INVALID_ATTACHMENT', 'ATTACHMENT_TOO_LARGE'] as const) {
+      mocks.send.mockReset().mockResolvedValueOnce({ ok: false, errorCode, message: '' });
+      enqueueBotGroupSend(draft({ clientId: errorCode }));
+      await flush();
+      expect(getBotGroupOutbox('g1').find((entry) => entry.input.clientId === errorCode)).toMatchObject({ status: 'failed', retryable: false });
+      retryBotGroupSend('g1', errorCode);
+      await flush();
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+    }
+    // A failure that may pass later stays retryable.
+    mocks.send.mockReset().mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR', message: '' });
+    enqueueBotGroupSend(draft({ clientId: 'later' }));
+    await flush();
+    expect(getBotGroupOutbox('g1').find((entry) => entry.input.clientId === 'later')?.retryable).toBe(true);
+  });
+
   it('edits a failed message only into a composer that accepts it', async () => {
     const restore = vi.fn(() => false);
     registerBotGroupComposer('g1', { restore, notifyFailed: vi.fn() });

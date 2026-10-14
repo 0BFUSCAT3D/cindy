@@ -41,6 +41,7 @@ import { setBotGroupOutboxAttachmentUrls } from '@/lib/composerDraftStore';
 import type { AttachedFile } from '@/lib/fileTypes';
 import type {
   BotGroupAttachment,
+  BotGroupErrorCode,
   BotGroupMessageView,
   BotGroupQuoteView,
   BotGroupSendInput,
@@ -96,6 +97,8 @@ export interface BotGroupOutboxEntry extends BotGroupOutboxDraft {
   baseline?: number;
   /** i18n key explaining a failure. */
   errorKey?: string;
+  /** False when main refused the message itself: resending it unchanged can only fail again. */
+  retryable?: boolean;
 }
 
 /** The mounted composer of a group: takes a failed message back into the input when it is empty. */
@@ -115,6 +118,17 @@ interface GroupOutbox {
 }
 
 const CLAIMED_LIMIT = 64;
+/**
+ * Refusals of the message's own content (a quoted original or a named teammate that is gone,
+ * invalid fields or files): only 编辑 can change the outcome, so 重试 is not offered.
+ */
+const CONTENT_REFUSALS: ReadonlySet<BotGroupErrorCode> = new Set([
+  'QUOTE_UNAVAILABLE',
+  'MENTION_UNAVAILABLE',
+  'INVALID_PARAMS',
+  'INVALID_ATTACHMENT',
+  'ATTACHMENT_TOO_LARGE',
+]);
 const NO_PREVIEWS: ReadonlyMap<string, readonly BotGroupAttachment[]> = new Map();
 const EMPTY: readonly BotGroupOutboxEntry[] = [];
 
@@ -282,7 +296,7 @@ function prepare(groupId: string, clientId: string): Promise<readonly AttachedFi
 export function retryBotGroupSend(groupId: string, clientId: string): void {
   ensureOwner();
   const entry = groups.get(groupId)?.entries.find((candidate) => candidate.input.clientId === clientId);
-  if (!entry || entry.status !== 'failed') return;
+  if (!entry || entry.status !== 'failed' || entry.retryable === false) return;
   update(groupId, clientId, { status: 'sending', errorKey: undefined });
   schedule(groupId, clientId);
 }
@@ -341,6 +355,7 @@ async function submitOwned(
   update(groupId, clientId, { baseline: group.latestSequence });
   const api = botGroupApi();
   let errorKey = 'bots.groupChat.composer.sendFailed';
+  let retryable = true;
   try {
     if (!api) throw new Error('HOST_NOT_READY');
     // Drawn annotations are burned in first, as in a task; a failure keeps everything for a retry.
@@ -367,6 +382,7 @@ async function submitOwned(
     }
     // An original that is no longer available is not put back with the draft.
     if (result.errorCode === 'QUOTE_UNAVAILABLE') update(groupId, clientId, { quote: null });
+    retryable = !CONTENT_REFUSALS.has(result.errorCode);
     errorKey =
       result.errorCode === 'INVALID_PARAMS' && prepared.length > 0
         ? 'bots.groupChat.composer.attachmentsFailed'
@@ -379,7 +395,7 @@ async function submitOwned(
     }
     if (isAnnotationBurnInError(error)) errorKey = 'chat.media.annotateBurnFailedNotSent';
   }
-  const failed = update(groupId, clientId, { status: 'failed', errorKey, baseline: undefined });
+  const failed = update(groupId, clientId, { status: 'failed', errorKey, retryable, baseline: undefined });
   if (!failed) return;
   const composer = composers.get(groupId);
   if (composer?.restore(failed)) remove(groupId, clientId);

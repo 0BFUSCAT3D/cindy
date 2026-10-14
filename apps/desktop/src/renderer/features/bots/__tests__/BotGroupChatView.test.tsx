@@ -1561,6 +1561,24 @@ describe('BotGroupChatView', () => {
       expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
     });
 
+    it('keeps a message whose original became unavailable for 编辑 only, never 重试', async () => {
+      const user = userEvent.setup();
+      let refuse!: () => void;
+      mocks.sendBotGroupMessage.mockImplementation(() => new Promise((resolve) => {
+        refuse = () => resolve({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
+      }));
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledOnce());
+      await user.type(screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }), '另一件事');
+      await act(async () => refuse());
+      const failed = await screen.findByTestId('bot-group-outbox');
+      await waitFor(() => expect(failed.getAttribute('data-status')).toBe('failed'));
+      expect(within(failed).getByRole('button', { name: 'bots.groupChat.outbox.edit' })).toBeTruthy();
+      expect(within(failed).queryByRole('button', { name: /bots\.retry/ })).toBeNull();
+    });
+
     it('offers no 引用回复 on a local group, a notice or a round divider', async () => {
       mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail() });
       renderView();
