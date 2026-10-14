@@ -17,8 +17,9 @@
  *   （同一份烧录结果也用于提交与重试，不重复烧录；放回输入框的仍是带笔迹的原件）。真实消息到了
  *   而服务器副本还没下载好（没有 url / path，或旧版干脆还没出现在列表里）时，按同一 messageId
  *   把本地预览接到真实消息上，直到副本可用（见 `mergeBotGroupLocalAttachments`）。
- * - 离开输入框的附件不再受草稿保护：发件箱持有的图片地址（含标注原图与本地预览）登记进存储
- *   清理的保护清单，条目移除时同步撤下。尚未进入消息的暂存文件按归属回收：还没开始提交的条目
+ * - 离开输入框的附件不再受草稿保护：发件箱条目持有的图片地址（含标注原图与烧录副本）登记进
+ *   存储清理的保护清单，条目移除时同步撤下；已确认消息的本地预览不登记——发送时 main 已在群的
+ *   `bot-group-attachment` 引用下固定这些图片。尚未进入消息的暂存文件按归属回收：还没开始提交的条目
  *   （排队中、已失败）归发件箱，群被删除（含不在当前页的群：列表里消失且读取确认已不存在）或
  *   切换账号时立即回收；已开始提交的条目归它的那次请求，条目在烧录期间被丢弃就不再发出并回收，
  *   已交给 main 的等结果——成功（已进入消息）不碰，失败才回收。main 的发送在 IPC 返回前读完
@@ -30,7 +31,7 @@
  */
 import { useCallback, useSyncExternalStore } from 'react';
 
-import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { isAnnotationBurnInError, materializeAnnotatedAttachmentsForSend } from '@/lib/annotationBurnIn';
 import { cleanupStagedChatAttachmentFiles } from '@/lib/chatAttachmentStageCleanup';
 import { setBotGroupOutboxAttachmentUrls } from '@/lib/composerDraftStore';
@@ -108,7 +109,6 @@ interface GroupOutbox {
 }
 
 const CLAIMED_LIMIT = 64;
-const PREVIEW_LIMIT = 32;
 const NO_PREVIEWS: ReadonlyMap<string, readonly BotGroupAttachment[]> = new Map();
 const EMPTY: readonly BotGroupOutboxEntry[] = [];
 
@@ -131,7 +131,11 @@ const listeners = new Set<() => void>();
 /** One burn-in per message, shared by the bubble and its submission. */
 const preparing = new Map<string, Promise<readonly AttachedFile[]>>();
 
-/** Media only this outbox still refers to; storage cleanup must not sweep it. */
+/**
+ * Media only this outbox still refers to; storage cleanup must not sweep it. Previews of
+ * confirmed messages are not listed: the send pinned those images under the group's
+ * `bot-group-attachment` reference in main.
+ */
 function protectHeldMedia(): void {
   const urls: string[] = [];
   const add = (file: { url?: string | null; annotationSourceUrl?: string }) => {
@@ -143,7 +147,6 @@ function protectHeldMedia(): void {
       entry.files.forEach(add);
       entry.prepared?.forEach(add);
     }
-    for (const preview of group.previews.values()) preview.forEach(add);
   }
   setBotGroupOutboxAttachmentUrls(urls);
 }
@@ -399,7 +402,6 @@ export function noteBotGroupTimeline(groupId: string, messages: readonly BotGrou
     const message = byId.get(messageId);
     if (message && botGroupLocalAttachmentsSettled(message.attachments, local)) previews.delete(messageId);
   }
-  while (previews.size > PREVIEW_LIMIT) previews.delete(previews.keys().next().value!);
   if (previews.size !== group.previews.size || [...previews].some(([id, value]) => group.previews.get(id) !== value)) {
     group.previews = previews;
     changed = true;
@@ -508,11 +510,14 @@ function verifyGroupGone(groupId: string, attempt: number): void {
   const api = botGroupApi();
   if (!api) return;
   const requestGeneration = generation;
+  // A read that spans an owner change (same-account repair, an auth boundary's null) is no answer.
+  const requestOwner = getDataOwnerGeneration();
   let definite = false;
   verifying.add(groupId);
   void api
     .getBotGroup(groupId)
     .then((result) => {
+      if (!isDataOwnerGenerationCurrent(requestOwner)) return;
       definite = result.ok || result.errorCode === 'NOT_FOUND';
       if (requestGeneration === generation && !result.ok && result.errorCode === 'NOT_FOUND') discardBotGroupOutbox(groupId);
     })

@@ -272,9 +272,10 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     [state],
   );
   // Settle receipts only once the read that shows them is on screen, so a pending bubble
-  // never disappears a frame before its real message appears.
+  // never disappears a frame before its real message appears. Older pages count too: a
+  // message pushed off the latest page settles its previews once 查看更早的消息 shows it.
   useLayoutEffect(() => {
-    if (state.kind === 'ready') noteBotGroupTimeline(groupId, state.group.messages, state.readToken);
+    if (state.kind === 'ready') noteBotGroupTimeline(groupId, mergeBotGroupMessages(state.older, state.group.messages), state.readToken);
   }, [groupId, state]);
   const outbox = useBotGroupOutbox(groupId);
   const { pending: pendingSends, localAttachments } = useMemo(

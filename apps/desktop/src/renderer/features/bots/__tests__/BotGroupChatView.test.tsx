@@ -13,7 +13,7 @@ import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../featu
 import { markBotRead, getBotLastReadAt, botGroupReadKey, resetBotReadStateForTests } from '../botReadState';
 import { botGroupAttachmentScope } from '../botGroupAttachments';
 import { getBotGroupListSnapshot, refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
-import { getBotGroupOutbox, resetBotGroupOutboxForTests } from '../botGroupOutbox';
+import { getBotGroupOutbox, getBotGroupOutboxPreviews, resetBotGroupOutboxForTests } from '../botGroupOutbox';
 import { BotGroupChatView } from '../BotGroupChatView';
 import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
 import type {
@@ -1380,6 +1380,30 @@ describe('BotGroupChatView', () => {
       fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
       await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
       expect(mocks.sendBotGroupMessage.mock.calls[1]![0].clientId).toBe(mocks.sendBotGroupMessage.mock.calls[0]![0].clientId);
+    });
+
+    it('settles the local preview of a message pushed off the latest page once an older page shows it', async () => {
+      const send = pendingSend();
+      renderView();
+      await screen.findByRole('textbox');
+      pickFiles([diskFile('photo.png', 'image/png')]);
+      await screen.findByAltText('photo.png');
+      fireEvent.click(screen.getByRole('button', { name: 'bots.send' }));
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      // The receipt comes back; the next read's latest page no longer holds the message.
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ hasMoreBefore: true }) });
+      await send.resolve({ ok: true, messageId: 'u-old' });
+      pushMessages();
+      await waitFor(() => expect(getBotGroupOutbox('g1')).toEqual([]));
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(1);
+
+      const image = { id: 's1', name: 'photo.png', category: 'image' as const, mimeType: 'image/png', size: 7, url: 'cindy-media://blobs/server.png', path: null };
+      mocks.getBotGroup.mockResolvedValueOnce({
+        ok: true,
+        group: detail({ messages: [msg({ id: 'u-old', sequence: 0, attachments: [image] })], hasMoreBefore: false }),
+      });
+      fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+      await waitFor(() => expect(getBotGroupOutboxPreviews('g1').size).toBe(0));
     });
 
     it('drops the outbox of a group that reads as gone', async () => {

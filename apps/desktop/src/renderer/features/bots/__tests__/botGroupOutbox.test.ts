@@ -42,6 +42,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => ({ dataOwnerId: mocks.owner === null ? null : `account-${mocks.owner}`, generation: mocks.generation }),
+  isDataOwnerGenerationCurrent: (owner: { dataOwnerId: string | null; generation: number }) =>
+    owner.dataOwnerId === (mocks.owner === null ? null : `account-${mocks.owner}`) && owner.generation === mocks.generation,
 }));
 vi.mock('../botGroupStore', () => ({
   botGroupApi: () => ({ sendBotGroupMessage: mocks.send, getBotGroup: mocks.getBotGroup }),
@@ -794,6 +796,57 @@ describe('botGroupOutbox', () => {
       mocks.owner = 2;
       expect(getBotGroupOutbox('g1')).toEqual([]);
       expect(mocks.cleanupStaged).toHaveBeenCalledWith([staged('failed')]);
+    });
+  });
+
+  describe('previews of confirmed messages', () => {
+    const image = (id: string) =>
+      ({ id, name: `${id}.png`, path: `/tmp/${id}.png`, size: 1, category: 'image', mimeType: 'image/png', type: 'image', url: `cindy-media://blobs/${id}.png` }) as unknown as AttachedFile;
+    const loading = (messageId: string, name: string) => msg({ id: messageId, sequence: 1, attachments: [
+      { id: `media-${messageId}`, name, category: 'image', mimeType: 'image/png', size: 1, url: null, path: null },
+    ] });
+
+    it('are not listed for storage cleanup protection: main pinned them when the message was sent', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+      enqueueBotGroupSend(draft({ text: '' }, { files: [image('a')] }));
+      await flush();
+      noteBotGroupTimeline('g1', [loading('m1', 'a.png')], beginBotGroupTimelineRead());
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(1);
+      expect(mocks.protectedUrls).toEqual([]);
+    });
+
+    it('are never evicted while their server copies are not usable, however many there are', async () => {
+      const count = 40;
+      for (let i = 0; i < count; i += 1) mocks.send.mockResolvedValueOnce({ ok: true, messageId: `m${i}` });
+      for (let i = 0; i < count; i += 1) enqueueBotGroupSend(draft({ clientId: `c${i}`, text: '' }, { files: [image(`p${i}`)] }));
+      await flush();
+      noteBotGroupTimeline('g1', Array.from({ length: count }, (_, i) => ({ ...loading(`m${i}`, `p${i}.png`), sequence: i + 1 })), beginBotGroupTimelineRead());
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(count);
+      expect(getBotGroupOutbox('g1')).toEqual([]);
+    });
+
+    it('a gone-check read that spans an owner change is no answer; a later read under a stable owner decides', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      enqueueBotGroupSend(draft({ clientId: 'failed' }, { files: [image('kept')] }));
+      await flush();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        let answer!: (value: unknown) => void;
+        mocks.getBotGroup.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }))
+          .mockResolvedValueOnce({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+        listGroups([]);
+        await vi.advanceTimersByTimeAsync(0);
+        // Same account, repaired generation while the read was out.
+        mocks.generation += 1;
+        answer({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(getBotGroupOutbox('g1')).toHaveLength(1);
+        expect(mocks.cleanupStaged).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(BOT_GROUP_GONE_RETRY_MS[0]);
+        expect(getBotGroupOutbox('g1')).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
