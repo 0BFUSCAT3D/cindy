@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Button } from '@/components/ui/button';
@@ -43,9 +43,20 @@ export function ChatReactionButton({ groupId, messageId, reaction, members, disa
   // The authoritative summary changes on every add/remove, local or remote.
   const summary = `${reaction.count}:${reaction.me}`;
   const wantsAvatars = !!groupId && reaction.count > 0 && reaction.count <= REACTION_AVATAR_LIMIT;
-  // Read whenever the summary changes; a superseded or cross-account read never lands.
+  // Only badges near the viewport read, so opening a long history does not fire one read per badge.
+  const badgeRef = useRef<HTMLButtonElement>(null);
+  const [nearViewport, setNearViewport] = useState(() => typeof IntersectionObserver === 'undefined');
   useEffect(() => {
-    if (!wantsAvatars || !groupId) return;
+    const el = badgeRef.current;
+    if (!wantsAvatars || !el || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(entries => setNearViewport(entries.some(e => e.isIntersecting)), { rootMargin: '200px 0px' });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [wantsAvatars]);
+  const loadedSummary = loaded?.summary;
+  // Read when a visible badge's summary changes; a superseded or cross-account read never lands.
+  useEffect(() => {
+    if (!wantsAvatars || !groupId || !nearViewport || loadedSummary === summary) return;
     let superseded = false;
     const owner = getDataOwnerGeneration();
     const settle = (reactors: ChatReactor[] | null) => {
@@ -54,7 +65,7 @@ export function ChatReactionButton({ groupId, messageId, reaction, members, disa
     window.electronAPI.maker.chatServer.reactors({ groupId, messageId, emoji: reaction.emoji })
       .then(result => settle(result.ok ? result.reactors : null), () => settle(null));
     return () => { superseded = true; };
-  }, [wantsAvatars, groupId, messageId, reaction.emoji, summary]);
+  }, [wantsAvatars, groupId, nearViewport, loadedSummary, messageId, reaction.emoji, summary]);
   // Reactors read for an older summary are never shown for the current one. A failed read, or a list
   // that disagrees with the count (a change still in flight), keeps the honest count instead.
   const current = loaded?.summary === summary ? loaded : null;
@@ -65,7 +76,7 @@ export function ChatReactionButton({ groupId, messageId, reaction, members, disa
     ? t(key('reactionWho'), { emoji: reaction.emoji, count: reaction.count, names: reactorNames(reactors, t, i18n.language) })
     : countLabel;
   return (
-    <Button variant={reaction.me ? 'primary' : 'secondary'} size="sm" compact
+    <Button ref={badgeRef} variant={reaction.me ? 'primary' : 'secondary'} size="sm" compact
       disabled={disabled} aria-pressed={reaction.me} aria-label={label}
       className={showAvatars ? 'pr-1' : undefined} onClick={onToggle}>
       <span>{reaction.emoji}</span>

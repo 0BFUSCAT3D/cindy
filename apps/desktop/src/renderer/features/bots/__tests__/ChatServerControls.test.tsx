@@ -153,7 +153,8 @@ describe('chat interaction controls', () => {
     expect(reaction.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(reaction);
     await waitFor(() => expect(screen.getByRole('button', { name: k('reactionCount') }).getAttribute('aria-pressed')).toBe('false'));
-    expect(screen.getByRole('button', { name: k('reactionCount') }).textContent).toContain('1');
+    // One reactor: the badge settles on its count once the reactor read disagrees (mock returns none).
+    await waitFor(() => expect(screen.getByRole('button', { name: k('reactionCount') }).textContent).toContain('1'));
     expect(group.messages[0].reactions?.[0].me).toBe(true);
   });
 

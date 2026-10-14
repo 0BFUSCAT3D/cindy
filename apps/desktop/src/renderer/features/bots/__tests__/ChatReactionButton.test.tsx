@@ -72,6 +72,25 @@ describe('reaction avatars', () => {
     expect(mocks.react).not.toHaveBeenCalled();
   });
 
+  it('reads only once a badge is near the viewport, and not again for an unchanged reaction', async () => {
+    const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) { observers.push(callback); }
+      observe() {} disconnect() {}
+    });
+    mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('z', 'Zoe')] });
+    render(actions([{ emoji: '👍', count: 1, me: false }]));
+    // Off-screen history badges keep their slots without reading.
+    expect(avatars()?.children).toHaveLength(1);
+    expect(mocks.reactors).not.toHaveBeenCalled();
+    act(() => observers.forEach(notify => notify([{ isIntersecting: true }])));
+    await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoe'));
+    // Scrolling away and back does not re-read the same reaction state.
+    act(() => observers.forEach(notify => notify([{ isIntersecting: false }])));
+    act(() => observers.forEach(notify => notify([{ isIntersecting: true }])));
+    expect(mocks.reactors).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the count above the avatar limit and reads nothing', () => {
     render(actions([{ emoji: '👍', count: 4, me: false }]));
     expect(badge().textContent).toBe('👍4');
