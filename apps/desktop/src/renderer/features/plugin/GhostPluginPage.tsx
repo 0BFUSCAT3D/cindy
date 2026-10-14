@@ -748,8 +748,6 @@ export function GhostPluginPage({
             origin: pluginPresentationOrigin(marketItem),
             marketItem,
             author: presentation?.author ?? ghost.manifest.author ?? null,
-            // 同版本展示刷新由 main 标成 installed;legacy-unresolved 仍保留
-            // update-available,以便用户用市场包替换未验证的本地字节。
             marketUpdate: ghost.retirement ? null : pluginUpdateForInstalledVersion(marketItem),
           };
         }),
@@ -2391,7 +2389,6 @@ export function GhostPluginCard({
   /** 新版本权限变多、后台更新已暂停等用户确认(Main 按真实包判定)。 */
   updateNeedsConsent?: boolean;
   updateBusy?: boolean;
-  /** 本卡正在更新:更新胶囊换成 Spinner。 */
   updatePending?: boolean;
   onUpdate?: () => void;
   effectiveEnabled?: boolean;
@@ -2402,8 +2399,7 @@ export function GhostPluginCard({
   const { t } = useTranslation();
   const metadataId = useId();
   const enabled = effectiveEnabled ?? item.enabled;
-  // 未读(badge 槽):单条卡片走**呼吸**点(AttentionDot 形态规范——聚合入口
-  // 静态、单条呼吸)。有摘要时顶替静态描述:用户扫一眼就知道新内容是什么。
+  // 单卡未读点使用呼吸动效，未读摘要替换静态描述。
   const unread = useGhostUnread(item.id);
   const unreadSummary = useGhostUnreadSummary(item.id);
   const primary = ghostPrimaryAction(item);
@@ -2502,9 +2498,6 @@ export function GhostPluginCard({
           ) : null}
           {!enabled && !item.retirement ? ` · ${t('settings.ghosts.disabledTag')}` : ''}
         </span>
-        {/* 未读摘要顶替静态描述:静态描述用户早读过了,"新内容是什么"才是这一刻
-            的信息。摘要文字提到 primary 档以区别于常态描述(不另加色,颜色语义
-            留给那颗点)。 */}
         <span
           className={cn(
             'mt-1.5 line-clamp-2 text-13 leading-5',
@@ -2514,7 +2507,7 @@ export function GhostPluginCard({
           {item.retirement ? t('settings.ghosts.retirement.cardNotice') : unreadSummary || item.description || item.id}
         </span>
       </span>
-      {/* 右列只在真实控件上拦截冒泡;空白与「由 Agent 调用」提示仍走整卡进详情。 */}
+      {/* 仅真实控件拦截冒泡，右列空白仍可进入详情。 */}
       <span className="flex shrink-0 flex-col items-end justify-between gap-2 self-stretch">
         <span className="flex items-center gap-1.5">
           {updateVersion && onUpdate ? (

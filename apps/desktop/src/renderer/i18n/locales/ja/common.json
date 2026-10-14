@@ -6043,7 +6043,6 @@
         "manageAction": "管理",
         "manageAria": "{{name}} を管理",
         "agentInvoked": "Agent が自動で呼び出し",
-        "upToDate": "最新です",
         "oauthAuthorizationExpired": "認証期限切れ・再接続が必要",
         "installAria": "{{name}} をインストール"
       },
@@ -6695,10 +6694,7 @@
         "never": "呼び出しはまだありません",
         "clearTitle": "このプラグインの使用記録を消去しますか？",
         "clearDescription": "この端末の現在のアカウントの呼び出し記録とセッションへの関連を消去します。以降の呼び出しから記録を再開します。サーバーが受信済みの共有累計は取り消されません。",
-        "downloads": "ダウンロード",
         "downloadExplanation": "ダウンロード URL の累計リクエスト数です。パッケージ URL の発行成功ごとに 1 回と数え、更新、再インストール、新しい URL を取得する再試行も含みます。インストール成功数ではありません。",
-        "refresh": "記録を更新",
-        "more": "記録のオプション",
         "clearAction": "消去",
         "downloadsValue": "{{value}} ダウンロード",
         "usesValue": "{{value}} 利用",

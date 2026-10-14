@@ -6043,7 +6043,6 @@
         "manageAction": "管理",
         "manageAria": "管理 {{name}}",
         "agentInvoked": "Agent 自動呼叫",
-        "upToDate": "已是最新",
         "oauthAuthorizationExpired": "授權已失效，需重新連線",
         "installAria": "安裝 {{name}}"
       },
@@ -6695,10 +6694,7 @@
         "never": "尚未呼叫",
         "clearTitle": "清除此插件的使用記錄？",
         "clearDescription": "清除本機目前帳戶的呼叫記錄及任務關聯，後續呼叫重新開始記錄。已共享的累計統計不會撤回。",
-        "downloads": "下載",
         "downloadExplanation": "累計下載請求次數：成功取得安裝包下載位址後計一次，包括更新、重新安裝及重新取得位址的重試；不代表成功安裝次數。",
-        "refresh": "重新整理記錄",
-        "more": "記錄選項",
         "clearAction": "清除",
         "downloadsValue": "{{value}} 下載",
         "usesValue": "{{value}} 使用",

@@ -6043,7 +6043,6 @@
         "manageAction": "관리",
         "manageAria": "{{name}} 관리",
         "agentInvoked": "Agent가 자동 호출",
-        "upToDate": "최신 상태",
         "oauthAuthorizationExpired": "인증 만료 · 다시 연결 필요",
         "installAria": "{{name}} 설치"
       },
@@ -6695,10 +6694,7 @@
         "never": "아직 호출 없음",
         "clearTitle": "이 플러그인의 사용 기록을 지울까요?",
         "clearDescription": "이 컴퓨터의 현재 계정에서 호출 기록과 세션 연결을 지웁니다. 이후 호출부터 새로 기록합니다. 서버가 이미 받은 공유 합계는 취소되지 않습니다.",
-        "downloads": "다운로드",
         "downloadExplanation": "누적 다운로드 URL 요청 수입니다. 패키지 URL 발급 성공마다 1회로 집계하며 업데이트, 재설치, 새 URL을 요청하는 재시도도 포함합니다. 설치 완료 횟수가 아닙니다.",
-        "refresh": "기록 새로고침",
-        "more": "기록 옵션",
         "clearAction": "지우기",
         "downloadsValue": "{{value}} 다운로드",
         "usesValue": "{{value}} 사용",

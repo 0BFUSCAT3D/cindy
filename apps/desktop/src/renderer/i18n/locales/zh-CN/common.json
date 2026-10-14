@@ -6043,7 +6043,6 @@
         "manageAction": "管理",
         "manageAria": "管理 {{name}}",
         "agentInvoked": "Agent 自动调用",
-        "upToDate": "已是最新",
         "oauthAuthorizationExpired": "授权已失效，需重新连接",
         "installAria": "安装 {{name}}"
       },
@@ -6695,10 +6694,7 @@
         "never": "尚未调用",
         "clearTitle": "清除该插件的使用记录？",
         "clearDescription": "清除本机当前账户的调用记录及任务关联，后续调用重新开始记录。已共享的累计统计不会撤回。",
-        "downloads": "下载",
         "downloadExplanation": "累计下载请求次数：成功获取安装包下载地址后计一次，包括更新、重装及重新获取地址的重试；不代表成功安装次数。",
-        "refresh": "刷新记录",
-        "more": "记录选项",
         "clearAction": "清除",
         "downloadsValue": "{{value}} 下载",
         "usesValue": "{{value}} 使用",
