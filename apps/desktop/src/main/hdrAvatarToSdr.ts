@@ -395,25 +395,28 @@ async function toneMapToSdr(
 
 /**
  * 头像入口统一调用：HDR 输入返回转换后的 SDR 字节与真实 MIME，其它输入原样返回
- * 同一对象。头部无法解析时按既有行为放行；已识别为 HDR 但转换失败时拒绝，
- * 不把 HDR 字节静默落库或上传。
+ * 同一对象。头部无法解析且字节中没有 HDR 信号时按既有行为放行；带 HDR 信号却无法
+ * 解析、超限或转换失败时一律拒绝，不把 HDR 字节静默落库或上传。
  */
 export async function toSdrAvatarImage(image: AvatarImageBytes): Promise<AvatarImageBytes> {
   const format = sniffFormat(image.buffer);
   if (!format) return image;
+  const png = format === 'png' ? readPngHdrChunks(image.buffer) : { cicp: null, maxCllNits: null };
+  const gainMapSignature = format === 'jpeg' && hasGainMapSignature(image.buffer);
   let metadata: Metadata;
   try {
     // 只读头部、不解码像素：关闭默认像素上限，超大 HDR 才能被识别并在下方按尺寸拒绝。
     metadata = await sharp(image.buffer, { limitInputPixels: false }).metadata();
   } catch {
+    if (hdrTransferOf(png.cicp) || gainMapSignature) {
+      throwIpcError('INVALID_PARAMS', 'HDR avatar could not be converted to SDR');
+    }
     return image;
   }
-  const png = format === 'png' ? readPngHdrChunks(image.buffer) : { cicp: null, maxCllNits: null };
   // PNG 规范：cICP 优先于 iCCP；其它格式只有 ICC 能声明传递函数。
   const cicp = png.cicp ?? readIccCicp(metadata.icc);
   const transfer = hdrTransferOf(cicp);
-  const gainMap =
-    format === 'jpeg' && (Boolean(metadata.gainMap) || hasGainMapSignature(image.buffer));
+  const gainMap = format === 'jpeg' && (Boolean(metadata.gainMap) || gainMapSignature);
   if (!transfer && !gainMap) return image;
   if ((metadata.width ?? 0) * (metadata.height ?? 0) > HDR_MAX_INPUT_PIXELS) {
     throwIpcError('INVALID_PARAMS', 'HDR avatar dimensions exceed the conversion limit');

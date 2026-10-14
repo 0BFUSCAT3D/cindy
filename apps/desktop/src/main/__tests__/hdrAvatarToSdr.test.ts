@@ -348,6 +348,38 @@ describe('toSdrAvatarImage — SDR passthrough', () => {
     }
   });
 
+  it('rejects unparseable headers only when the bytes themselves carry an HDR signal', async () => {
+    // IHDR 宽度为 0(CRC 合法):sharp 读不出头部,但 cICP 块仍可直接从字节读到。
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#888' } })
+      .png()
+      .toBuffer();
+    const ihdr = Buffer.from(png.subarray(16, 29));
+    ihdr.writeUInt32BE(0, 0);
+    const brokenPng = (transfer: number) =>
+      Buffer.concat([
+        png.subarray(0, 8),
+        pngChunk('IHDR', ihdr),
+        pngChunk('cICP', Buffer.from([9, transfer, 0, 1])),
+        png.subarray(33),
+      ]);
+    const xmp = Buffer.from('<x:xmpmeta hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"/>', 'latin1');
+    const app1 = Buffer.alloc(4);
+    app1.writeUInt16BE(0xffe1, 0);
+    app1.writeUInt16BE(xmp.length + 2, 2);
+    const brokenGainMapJpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, xmp]);
+
+    for (const [buffer, mimeType] of [
+      [brokenPng(16), 'image/png'],
+      [brokenPng(18), 'image/png'],
+      [brokenGainMapJpeg, 'image/jpeg'],
+    ] as const) {
+      await expect(sharp(buffer).metadata()).rejects.toThrow();
+      await expect(toSdrAvatarImage({ buffer, mimeType })).rejects.toThrow(/INVALID_PARAMS/);
+    }
+    const sdr = { buffer: brokenPng(13), mimeType: 'image/png' };
+    expect(await toSdrAvatarImage(sdr)).toBe(sdr);
+  });
+
   it('passes through bytes it cannot parse, preserving the existing validation behaviour', async () => {
     for (const buffer of [
       Buffer.from([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]),
