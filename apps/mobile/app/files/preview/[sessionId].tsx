@@ -23,7 +23,7 @@ import { SystemNavigationBack, useSystemNavigationBack } from '@/platform/chrome
 import * as Clipboard from 'expo-clipboard';
 import { useAdaptiveWindow } from '@/platform/AdaptiveWindowContext';
 import { Image } from 'expo-image';
-import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownToLine, Copy, Database, File as FileIcon, Info, MessageSquarePlus, Share as ShareIcon } from 'lucide-react-native';
@@ -545,8 +545,8 @@ function RemoteFilePreviewContent() {
     exportRunRef.current = null;
     setBusyLabel(null);
   }, []);
-  // 离开预览页同样取消(与文件页一致):不再下载,也不在下一屏弹分享单。
-  useEffect(() => cancelExport, [cancelExport]);
+  // 离开预览页同样取消(与文件页一致,失焦即算离开):不再下载,也不在下一屏弹分享单。
+  useFocusEffect(useCallback(() => cancelExport, [cancelExport]));
 
   const downloadAndShare = useCallback(async (item: FileBrowserGridItem) => {
     if (busyLabel) return;
@@ -566,6 +566,7 @@ function RemoteFilePreviewContent() {
       if (run.cancelled) return;
       if (!localUri) throw new Error(t('files.preview.downloadFailed'));
       const sharing = await import('expo-sharing');
+      if (run.cancelled) return;
       await sharing.shareAsync(localUri, { mimeType: mime });
     } catch (err) {
       if (!run.cancelled) showNotice(formatRemoteError(err));

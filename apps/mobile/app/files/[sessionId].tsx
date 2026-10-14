@@ -519,7 +519,8 @@ function RemoteFileBrowserContent() {
     stopExportRun();
     setExporting(false);
   }, [stopExportRun]);
-  useEffect(() => stopExportRun, [stopExportRun]);
+  // 离开本屏即取消(含点进下一层目录:Expo Router 把本屏留在栈中不卸载,只失焦)。
+  useFocusEffect(useCallback(() => stopExportRun, [stopExportRun]));
 
   const shareItem = useCallback((item: FileBrowserGridItem) => {
     // 导出/分享 = 系统分享单一步到位(iOS 分享单自带「存储图像」,不再单设保存)。
@@ -567,6 +568,7 @@ function RemoteFileBrowserContent() {
         if (run.cancelled) return;
         if (!localUri) throw new Error(t('files.browser.downloadFailed'));
         const sharing = await import('expo-sharing');
+        if (run.cancelled) return;
         await sharing.shareAsync(localUri, { mimeType: mime });
       } catch (err) {
         if (!run.cancelled) showNotice(formatRemoteError(err));

@@ -20,8 +20,8 @@ const SHARE_TMP_DIR_NAME = "remote-media-share";
 
 /**
  * 可中止的 http 下载:新 API 的 File.downloadFileAsync 无法中途停止,这里沿用
- * androidInstaller 的 legacy DownloadResumable + cancelAsync;取消后不等原生
- * 回调(cancelAsync 后 downloadAsync 未必 settle),直接结束并删掉半成品。
+ * androidInstaller 的 legacy DownloadResumable + cancelAsync;取消后不等
+ * downloadAsync(cancelAsync 后它未必 settle),等 cancelAsync 结算后删掉半成品。
  */
 async function downloadCancellable(
   url: string,
@@ -46,6 +46,8 @@ async function downloadCancellable(
       throw new Error("DOWNLOAD_FAILED");
     return target;
   } catch (error) {
+    // 先等原生任务确认停止再删,否则可能删后又被写回半成品(同 androidInstaller)。
+    await task.cancelAsync().catch(() => undefined);
     await FileSystem.deleteAsync(target.uri, { idempotent: true }).catch(
       () => undefined,
     );

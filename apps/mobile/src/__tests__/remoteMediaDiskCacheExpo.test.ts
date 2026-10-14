@@ -129,6 +129,8 @@ describe('share temp downloads', () => {
     expect(await result).toBeNull();
     expect(io.cancel).toHaveBeenCalled();
     expect(io.deleteAsync).toHaveBeenCalledExactlyOnceWith(io.resumable.mock.calls[0]![1], { idempotent: true });
+    // The partial file is removed only after the native task has confirmed it stopped.
+    expect(io.cancel.mock.invocationCallOrder.at(-1)!).toBeLessThan(io.deleteAsync.mock.invocationCallOrder[0]!);
   });
 
   it('treats a non-2xx response as a failed download', async () => {

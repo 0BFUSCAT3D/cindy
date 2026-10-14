@@ -25,9 +25,12 @@ describe('remote file preview pager wiring', () => {
   it.each([
     ['app/files/[sessionId].tsx', 'stopExportRun'],
     ['app/files/preview/[sessionId].tsx', 'cancelExport'],
-  ])('cancels the in-flight export on leave and on Cancel, including the phone download, in %s', (path, stop) => {
+  ])('cancels the in-flight export on blur and on Cancel, including the phone download and share sheet, in %s', (path, stop) => {
     const routeSource = readSource(path);
-    expect(routeSource).toContain(`useEffect(() => ${stop}, [${stop}]);`);
+    // 失焦即取消:点进下一层 / 跳会话页时本屏留在栈中不卸载。
+    expect(routeSource).toContain(`useFocusEffect(useCallback(() => ${stop}, [${stop}]));`);
+    // 动态加载分享模块期间可能已取消:shareAsync 前必须再查一次。
+    expect(routeSource).toMatch(/await import\('expo-sharing'\);\n\s*if \(run\.cancelled\) return;\n\s*await sharing\.shareAsync/);
     expect(routeSource).toMatch(/run\.abort\.abort\(\);/);
     expect(routeSource).toMatch(/downloadRemoteMediaShareTemp\(url, mime, item\.name, run\.abort\.signal\)/);
   });
