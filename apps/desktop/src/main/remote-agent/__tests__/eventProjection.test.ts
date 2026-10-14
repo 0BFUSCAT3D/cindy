@@ -1,0 +1,186 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import type { AgentEvent } from '@cindy/maker-core';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { collectGeneratedFiles } from '../../../renderer/lib/generatedFiles';
+import { resolveToolFilePath } from '../../../renderer/lib/localPathResolver';
+import { mapClaudeHostedEvent } from '../controller/eventMap';
+import { createRemoteAgentHandle } from '../controller/proxyHandle';
+import type { RemoteAgentRunClient } from '../controller/runClient';
+import { RemoteExecutor } from '../executor/executor';
+import { ExecutorGate } from '../executor/gate';
+import { ExecutorWorkspace } from '../executor/workspace';
+
+let root: string;
+beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-event-projection-'))); });
+afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+function setup(virtual: string) {
+  const real = path.join(root, '真实 目录');
+  fs.mkdirSync(real);
+  const workspace = new ExecutorWorkspace({ workingDir: real, aliases: [{ from: virtual, to: real }] });
+  workspace.setVirtualRoot(virtual);
+  const controller = createRemoteAgentHandle({
+    client: {} as RemoteAgentRunClient,
+    started: { id: 'sdk-1', agentKind: 'claude-code', model: 'm', shadowDir: virtual, virtualWorkspace: true, methods: [], state: {} },
+    workspace, mapEvent: mapClaudeHostedEvent, recordApproval: () => {}, newId: () => 'request-id', dispose: async () => {},
+  });
+  return { real, workspace, controller };
+}
+
+async function eventsFrom(controller: ReturnType<typeof setup>['controller'], input: AgentEvent[]) {
+  const original = structuredClone(input);
+  for (const event of input) controller.onEvent(event);
+  controller.onClosed('closed');
+  const output: AgentEvent[] = [];
+  for await (const event of controller.handle.events()) output.push(event);
+  expect(input).toEqual(original);
+  return output;
+}
+
+function text(event: AgentEvent): string { return (event.data as { text: string }).text; }
+
+function remoteFileUrl(value: string): string {
+  return 'file://' + (/^[A-Za-z]:/.test(value) ? '/' : '') + value.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/').replace(/^([/]*[A-Za-z])%3A/, '$1:');
+}
+
+describe('remote file references on the task computer', () => {
+  it.each(['/Users/agent/workspace', '/home/agent/workspace', 'C:\\Agent\\workspace'])('opens a file generated at %s from its file card, tool result and reply link', async (virtual) => {
+    const { real, workspace, controller } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const target = native.join(virtual, '报告 文件.txt');
+    const local = path.join(real, '报告 文件.txt');
+    const executor = new RemoteExecutor({ workspace, gate: new ExecutorGate(workspace, 'normal'), rgPath: 'unused' });
+    try {
+      await executor.callTool('Write', { file_path: target, content: 'remote-provider-result' });
+      const result = await executor.callTool('Read', { file_path: target });
+      expect(result.content).toEqual([{ type: 'text', text: '1\tremote-provider-result' }]);
+      const output = await eventsFrom(controller, [
+        { type: 'tool_use', source: 'claude-code', data: { toolUseId: 'write-id', toolName: 'mcp__cindy_exec__Write', input: { file_path: target, content: 'remote-provider-result' } } },
+        { type: 'tool_result_full', source: 'claude-code', data: { toolUseId: 'write-id', fullText: JSON.stringify({ path: target, url: remoteFileUrl(target) }), isError: false } },
+        { type: 'text', source: 'claude-code', data: { text: '[报告](<' + remoteFileUrl(target) + '>)', isFinal: true } },
+      ]);
+      const tool = output[0].data as { toolName: string; input: { file_path: string } };
+      const files = collectGeneratedFiles([{ role: 'tool_use', toolName: tool.toolName, toolInput: tool.input }], real);
+      expect(files.map((file) => file.path)).toEqual([local]);
+      expect(fs.readFileSync(resolveToolFilePath(files[0].path, real), 'utf8')).toBe('remote-provider-result');
+      expect(JSON.parse((output[1].data as { fullText: string }).fullText)).toEqual({ path: local, url: pathToFileURL(local).href });
+      const replyUrl = text(output[2]).slice('[报告](<'.length, -2);
+      expect(fs.readFileSync(fileURLToPath(replyUrl), 'utf8')).toBe('remote-provider-result');
+    } finally {
+      await executor.close();
+    }
+  });
+
+  it.each(['/Users/agent/Library/Application Support/workspace', 'C:\\Agent\\工作 目录'])('restores links and inline paths split across single-character deltas at %s', async (virtual) => {
+    const { real, controller } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const target = native.join(virtual, '中文 空格', 'report.md');
+    const local = path.join(real, '中文 空格', 'report.md');
+    const reply = '文件在 ' + '\x60' + target + '\x60' + '，打开[报告](<' + remoteFileUrl(target) + '#L2>)。';
+    const output = await eventsFrom(controller, [...reply].map((character) => ({
+      type: 'text', source: 'codex', data: { text: character, isFinal: false, agentMessageId: 'message-1' },
+    })));
+    expect(output.map(text).join('')).toBe('文件在 ' + '\x60' + local + '\x60' + '，打开[报告](<' + pathToFileURL(local).href + '#L2>)。');
+    expect(output.every((event) => (event.data as { isFinal: boolean }).isFinal === false)).toBe(true);
+  });
+
+  it('keeps plain text live, flushes unfinished paths before tools and close, and separates message identities', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const output = await eventsFrom(controller, [
+      { type: 'text', source: 'codex', data: { text: '正在生成。', isFinal: false, agentMessageId: 'one' } },
+      { type: 'text', source: 'codex', data: { text: virtual + '/first.txt', isFinal: false, agentMessageId: 'one' } },
+      { type: 'tool_use', source: 'codex', data: { toolName: 'exec_command', input: { cmd: 'echo done' } } },
+      { type: 'text', source: 'codex', data: { text: virtual + '/second.txt', isFinal: false, agentMessageId: 'two' } },
+      { type: 'text', source: 'codex', data: { text: '下一条', isFinal: false, agentMessageId: 'three' } },
+      { type: 'text', source: 'codex', data: { text: virtual + '/last.txt', isFinal: false, agentMessageId: 'three' } },
+    ]);
+    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
+      '正在生成。', path.join(real, 'first.txt'), 'tool_use', path.join(real, 'second.txt'), '下一条', path.join(real, 'last.txt'),
+    ]);
+    expect((output[3].data as { agentMessageId: string }).agentMessageId).toBe('two');
+  });
+
+  it('restores nested file changes and media file URLs while preserving external URLs, media identities and vendor metadata', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const remote = virtual + '/image space.png';
+    const xdt = 'xdt-file://local/?path=' + encodeURIComponent(remote);
+    const external = 'https://example.com' + virtual + '/file.txt';
+    const vendorMetadata = { uuid: virtual + '/vendor-id', parentUuid: 'parent' };
+    const input: AgentEvent[] = [
+      { type: 'tool_use', source: 'codex', agentMeta: vendorMetadata, data: {
+        toolUseId: virtual + '/tool-id', toolName: 'file_change',
+        input: { changes: [{ kind: 'add', path: virtual + '/report.txt' }, { kind: 'update', path: virtual + '/old.txt', movePath: virtual + '/new.txt' }] },
+      } },
+      { type: 'image', source: 'codex', data: { url: xdt, sourcePath: remote, mediaId: 'cindy-media://blobs/opaque.png', external } },
+      { type: 'text', source: 'pi', data: { text: '[图片](' + xdt + ') [网址](' + external + ')', isFinal: true, isFullText: true } },
+    ];
+    const output = await eventsFrom(controller, input);
+    expect(output[0].agentMeta).toBe(vendorMetadata);
+    expect(output[0].data).toMatchObject({ toolUseId: virtual + '/tool-id', input: { changes: [
+      { path: path.join(real, 'report.txt') }, { path: path.join(real, 'old.txt'), movePath: path.join(real, 'new.txt') },
+    ] } });
+    const image = output[1].data as { url: string; external: string; mediaId: string };
+    expect(new URL(image.url).searchParams.get('path')).toBe(path.join(real, 'image space.png'));
+    expect(image.external).toBe(external);
+    expect(image.mediaId).toBe('cindy-media://blobs/opaque.png');
+    expect(text(output[2])).toBe('[图片](' + image.url + ') [网址](' + external + ')');
+  });
+
+  it('uses updated aliases and leaves permission requests and non-aliased paths unchanged', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, workspace, controller } = setup(virtual);
+    const additional = '/Users/agent/additional';
+    workspace.setAliases([{ from: virtual, to: real }, { from: additional, to: path.join(root, 'extra') }]);
+    const permission = { toolName: 'Read', input: { file_path: virtual + '/report.txt' } };
+    const output = await eventsFrom(controller, [
+      { type: 'text', source: 'claude-code', data: { text: additional + '/new.txt', isFinal: true } },
+      { type: 'interaction_request', source: 'claude-code', data: permission },
+      { type: 'tool_use', source: 'claude-code', data: { toolName: 'Read', input: { file_path: '/unmapped/file.txt' } } },
+    ]);
+    expect(text(output[0])).toBe(path.join(root, 'extra', 'new.txt'));
+    expect(output[1].data).toEqual(permission);
+    expect(output[2].data).toMatchObject({ input: { file_path: '/unmapped/file.txt' } });
+  });
+
+  it('keeps an unfinished reply path across a standalone background notice', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const output = await eventsFrom(controller, [
+      { type: 'text', source: 'pi', data: { text: '[报告](<file:///Users/agent/work', isFinal: false } },
+      { type: 'text', source: 'pi', standaloneText: true, turnScope: 'background', backgroundTurnStartedAt: 1000,
+        data: { text: '后台文件：\x60' + virtual + '/background.txt\x60', isFinal: true } },
+      { type: 'tool_result', source: 'pi', turnScope: 'background', data: { summary: '后台读取完成' } },
+      { type: 'text', source: 'pi', data: { text: 'space/report.txt>)', isFinal: false } },
+      { type: 'done', source: 'pi', data: {} },
+    ]);
+    expect(output.filter((event) => event.type === 'text' && !event.standaloneText).map(text).join(''))
+      .toBe('[报告](<' + pathToFileURL(path.join(real, 'report.txt')).href + '>)');
+    expect(output.find((event) => event.standaloneText)).toMatchObject({
+      turnScope: 'background', backgroundTurnStartedAt: 1000,
+      data: { text: '后台文件：\x60' + path.join(real, 'background.txt') + '\x60', isFinal: true },
+    });
+  });
+
+  it.each(['claude-code', 'codex', 'pi'] as const)('preserves the calibrated final reply and stream flags for %s', async (source) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const raw = '[报告](<' + remoteFileUrl(virtual + '/report.txt') + '>)';
+    const final = { text: raw, isFinal: true, ...(source === 'claude-code' ? {} : { isFullText: true }), agentMessageId: 'message' };
+    const output = await eventsFrom(controller, [
+      { type: 'text', source, data: { text: raw.slice(0, -2), isFinal: false, agentMessageId: 'message' } },
+      { type: 'text', source, data: { text: raw.slice(-2), isFinal: false, agentMessageId: 'message' } },
+      { type: 'text', source, data: final },
+      { type: 'done', source, data: {} },
+    ]);
+    const expected = '[报告](<' + pathToFileURL(path.join(real, 'report.txt')).href + '>)';
+    expect(output.filter((event) => event.type === 'text' && !(event.data as { isFinal?: boolean }).isFinal).map(text).join('')).toBe(expected);
+    expect(output.find((event) => event.type === 'text' && (event.data as { isFinal?: boolean }).isFinal)?.data).toEqual({ ...final, text: expected });
+  });
+});

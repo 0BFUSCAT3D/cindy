@@ -752,7 +752,11 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `get_current_session_id` 等工具的 JSON 文本及 Skill/命令的 JSON 输出先解码字符串再投影，保持合法转义与原有格式。
   独立路径字符串与引号内的路径保留中文和空格，空格之后的子路径也必须转换成目标电脑的分隔符。
   Agent 取到的当前目录可直接用于后续工具，A 的任务语境、执行 cwd 与权限检查始终使用真实目录。
-  回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts`。
+  B 回传的工具文件路径、文本文件链接与图片源路径在 A 的事件落库和广播前还原，文件卡及预览读取 A 的真实文件。
+  流式正文只暂存未传完整的文件引用，工具和终态边界补齐尾段；独立后台提示不打断正文路径。
+  `file://` 与 `xdt-file://` / `xdt-audio://` 的文件路径按 URL 语法转换，HTTP 和 `cindy-media://` 地址保持原样。
+  事件身份、Agent 元信息与权限回执不改写，原生 Agent 会话继续使用 B 的虚拟路径；旧消息不回填。
+  回归见 `remote-agent/executor/__tests__/virtualWorkspace.test.ts` 与 `remote-agent/__tests__/eventProjection.test.ts`。
 - **执行环境**(2026-10-07 裁决)：A 上的命令(Claude 的 Bash、Pi 的 `exec.run`、Codex exec-server、
   搜索)沿用 A 的 Desktop 完整环境，与本机 Agent 一致：真实用户目录、临时目录、`SSH_AUTH_SOCK`、
   git / gh / npm 配置与用户自己的环境变量照常可用，不另造假 HOME，也不剥离凭证类变量。任务由 A 的

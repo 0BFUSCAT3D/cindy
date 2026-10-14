@@ -256,6 +256,11 @@ export class ExecutorWorkspace {
     })));
   }
 
+  /** 展示层延迟尚未传完整的虚拟路径；别名仍由当前执行器维护。 */
+  agentPathPrefixes(): readonly string[] {
+    return this.virtualRoot ? this.aliases.map((alias) => alias.from) : [];
+  }
+
   mapOutputForAgent(data: Buffer): Buffer {
     const text = data.toString('utf8');
     // 二进制 stdout 不做 UTF-8 往返，避免 exec.run / process/output 改变原始字节。
