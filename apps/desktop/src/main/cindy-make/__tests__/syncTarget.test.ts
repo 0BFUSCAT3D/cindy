@@ -70,6 +70,20 @@ describe('official version Sync moves to', () => {
     },
   );
 
+  it('stops when the known original cannot be resolved instead of following the latest release', async () => {
+    for (const original of [
+      // The build commit is missing and the tag does not exist.
+      { version: '1.2.0' },
+      // The build commit is dirty and the tag does not exist.
+      { version: '1.2.0', commit: INSTALLED, dirty: true },
+    ]) {
+      const input = deps({ original, tagCommit: vi.fn(async () => undefined) });
+      await expect(pickSyncTarget(input)).rejects.toMatchObject({ code: 'unavailable' });
+      // Without a resolvable installed commit there is nothing to compare against.
+      expect(input.sameMigrations).not.toHaveBeenCalled();
+    }
+  });
+
   it('moves nothing when the installed release cannot be compared', async () => {
     const input = deps({
       fetch: vi.fn(async () => {

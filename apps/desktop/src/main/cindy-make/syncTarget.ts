@@ -67,7 +67,14 @@ export async function pickSyncTarget(deps: SyncTargetDeps): Promise<SyncTarget> 
     original.commit && !original.dirty && COMMIT.test(original.commit)
       ? original.commit
       : await deps.tagCommit(tag);
-  if (!installed || !COMMIT.test(installed) || installed === latest.commit) {
+  // The original's version is known but its commit cannot be resolved (the build
+  // commit is missing or dirty and the `v<version>` tag does not exist): the
+  // migrations cannot be compared. Stop here and let the caller report it —
+  // following the latest release unchecked could move the personal version onto
+  // an incompatible database migration (docs/cindy-make-upstream.md).
+  if (!installed || !COMMIT.test(installed))
+    throw Object.assign(new Error('unavailable'), { code: 'unavailable' });
+  if (installed === latest.commit) {
     await deps.fetch([latest.commit]);
     return follow;
   }
