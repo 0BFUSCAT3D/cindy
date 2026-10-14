@@ -13,6 +13,7 @@ import { createLogger } from '../logger.js';
 import { CINDY_PERSONAL_BRANCH, makeSourceRoot, makeSourceCheckoutPath } from './sourcePaths.js';
 import { PERSONAL_UPSTREAM_REF, snapshotContent } from './sourceContent.js';
 import { rollbackUnbuiltHistory } from './buildRollback.js';
+import { recordPendingBuild } from './pendingBuild.js';
 import { hasPublishedPersonalVersionCommit } from './versionStore.js';
 import {
   createMakeToolchainEnvironment,
@@ -73,7 +74,11 @@ const stableOwner = (key: string | undefined) => {
 };
 const ownerKey = () => stableOwner(captureDataOwnerBroadcastScope().ownerScopeKey);
 
-function recordAppliedMerge(state: CindyMakeMergeState, isCurrent: () => boolean): void {
+function recordAppliedMerge(
+  userData: string,
+  state: CindyMakeMergeState,
+  isCurrent: () => boolean,
+): void {
   if (
     !state.feature ||
     !state.commit ||
@@ -83,6 +88,10 @@ function recordAppliedMerge(state: CindyMakeMergeState, isCurrent: () => boolean
   )
     return;
   if (!isCurrent()) throw mergeError('busy');
+  // The pending-generation fact lands before its receipt (see `pendingBuild`):
+  // a crash in between must never leave an unbuilt integration invisible to the
+  // other accounts sharing this source.
+  recordPendingBuild(makeSourceRoot(userData), { commit: state.commit, tree: state.tree });
   captureMakeHistoryStore().receipt(state.feature.runId, {
     id: state.id,
     action: state.feature.action,
@@ -148,7 +157,7 @@ async function recoverAppliedMergeReceipt(
   )
     throw mergeError('baselineChanged');
   await command(['merge-base', '--is-ancestor', state.baselineCommit, commit], source);
-  recordAppliedMerge({ ...state, commit, tree }, isCurrent);
+  recordAppliedMerge(userData, { ...state, commit, tree }, isCurrent);
 }
 
 /** Called explicitly at bootstrap, before source reset can be invoked. */
@@ -316,7 +325,7 @@ export function configureUpstreamMerge(isRunning: (id: string) => boolean): void
         if (!isCurrent() || isRunning(plan.taskSessionId)) throw mergeError('busy');
         return prepareFeatureMerge(userData, state, plan, await git(), publish, isCurrent);
       },
-      applied: async (state, isCurrent) => recordAppliedMerge(state, isCurrent),
+      applied: async (state, isCurrent) => recordAppliedMerge(userData, state, isCurrent),
       apply: async (state, isCurrent, publish, options) => {
         if (state.feature && (!state.sessionId || state.commit))
           return applyFeatureMerge(userData, state, await git(), isCurrent, publish);
@@ -375,6 +384,7 @@ export function configureUpstreamMerge(isRunning: (id: string) => boolean): void
                   return command(args, cwd, index);
                 },
                 (commit) => hasPublishedPersonalVersionCommit(userData, commit),
+                root,
               );
               return true;
             });

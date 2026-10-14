@@ -650,6 +650,13 @@ export interface PersonalRemoteDeps {
   withSourceUse<T>(run: () => Promise<T>): Promise<T>;
   /** True while the commit carries integrations a failed generation could still undo. */
   hasUnbuiltChanges(commit: string, tree: string): Promise<boolean>;
+  /**
+   * The source is about to move to a snapshot carrying changes that are not
+   * generated on this computer yet (another device's, or another account's whose
+   * history this one may not read). Recorded with the snapshot it describes so
+   * the fact travels with the source (see `pendingBuild`).
+   */
+  recordUnbuilt?(snapshot: { commit: string; tree: string }): void;
   /** A generated personal version was built from this commit. */
   isBuilt(commit: string): boolean;
   /** No generation, unresolved official update or manual source sync owns `cindy-personal`. */
@@ -1513,6 +1520,13 @@ export class PersonalRemoteController {
             // provenance of content that is already on disk; over-marking after a
             // failed move is safe.
             this.recordUnverifiedRemote(remote);
+            // The adopted tip's own changes are not generated here yet: recorded
+            // with the snapshot so the fact travels with the source (see
+            // `pendingBuild`). The fork's own base proves "no changes of its own".
+            if (remote !== remoteBase) {
+              const adoptedTree = (await this.git(['rev-parse', `${remote}^{tree}`])).trim();
+              this.deps.recordUnbuilt?.({ commit: remote, tree: adoptedTree });
+            }
             // The base ref moves first: interrupted between the two writes, the
             // conservative fact is the new base — never a new tip under a stale one.
             await this.git(['update-ref', PERSONAL_UPSTREAM_REF, remoteBase]);
@@ -1582,6 +1596,11 @@ export class PersonalRemoteController {
       // Recorded before the move: an interrupted run must never lose the provenance
       // of content that is already on disk (over-marking is safe).
       this.recordUnverifiedRemote(remote);
+      // The adopted tip's changes are not generated here yet (see `pendingBuild`).
+      if (remote !== remoteBase) {
+        const adoptedTree = (await this.git(['rev-parse', `${remote}^{tree}`])).trim();
+        this.deps.recordUnbuilt?.({ commit: remote, tree: adoptedTree });
+      }
       // The base ref moves first for the same reason (see `keepSide`).
       await this.git(['update-ref', PERSONAL_UPSTREAM_REF, decided.base]);
       await this.git(['reset', '--keep', remote]);
@@ -1647,6 +1666,12 @@ export class PersonalRemoteController {
           ]);
           // Recorded before the move (over-marking after a failed move is safe).
           if (remote) this.recordUnverifiedRemote(remote);
+          // The combined result carries the GitHub side's changes, which are not
+          // generated on this computer yet (see `pendingBuild`).
+          {
+            const combinedTree = (await this.git(['rev-parse', `${decision.local}^{tree}`])).trim();
+            this.deps.recordUnbuilt?.({ commit: decision.local, tree: combinedTree });
+          }
           await this.git(['update-ref', PERSONAL_UPSTREAM_REF, base]);
           await this.git(['reset', '--keep', decision.local]);
           if ((await this.readLocalTip()) !== decision.local) throw remoteError('source');

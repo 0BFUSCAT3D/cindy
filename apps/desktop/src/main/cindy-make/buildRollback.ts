@@ -1,4 +1,5 @@
 import type { CindyMakeHistoryStore, MakeBuildRollbackEntry } from './historyStore.js';
+import { hasPendingBuild, dropPendingBuild } from './pendingBuild.js';
 import { contentRef, snapshotContent, taskContentRef, type ContentGit } from './sourceContent.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
 
@@ -10,20 +11,26 @@ export async function rollbackUnbuiltHistory(
   source: string,
   git: ContentGit,
   isPublishedCommit: IsPublishedCommit,
+  recordRoot?: string,
 ): Promise<void> {
-  const rollback = historyBuildRollback(store, source, isPublishedCommit);
+  const rollback = historyBuildRollback(store, source, isPublishedCommit, recordRoot);
   await rollback.recoverRollback(git);
   const commit = (await git(['rev-parse', 'HEAD'], source)).trim();
   const tree = await snapshotContent(git, source);
   await rollback.prepareRollback({ commit, tree }, git)();
 }
 
-/** Restore only an unchanged, unpublished build candidate; never discard user edits. */
+/**
+ * Restore only an unchanged, unpublished build candidate; never discard user edits.
+ * The restored-over snapshot leaves the source here, so its pending-generation
+ * fact is dropped with it (see `pendingBuild`).
+ */
 export async function restoreBuildSource(
   git: ContentGit,
   source: string,
   before: { commit: string; tree: string },
   after: { commit: string; tree: string },
+  recordRoot?: string,
 ): Promise<void> {
   const head = (await git(['rev-parse', 'HEAD'], source)).trim();
   const tree = await snapshotContent(git, source);
@@ -32,7 +39,12 @@ export async function restoreBuildSource(
     (await git(['status', '--porcelain'], source)).trim()
   )
     throw new Error('Personal source changed');
-  if (head === before.commit && tree === before.tree) return;
+  if (head === before.commit && tree === before.tree) {
+    // The source never carried `after`, or an earlier restore got here first:
+    // its fact is stale either way.
+    if (recordRoot) dropPendingBuild(recordRoot, after);
+    return;
+  }
   if (head !== after.commit || tree !== after.tree) throw new Error('Personal source changed');
   // Retain the failed candidate independently of the personal branch and task worktree.
   await git(['update-ref', 'refs/cindy-make/failed-builds/' + after.commit, after.commit], source);
@@ -42,6 +54,7 @@ export async function restoreBuildSource(
     (await snapshotContent(git, source)) !== before.tree
   )
     throw new Error('Personal source recovery incomplete');
+  if (recordRoot) dropPendingBuild(recordRoot, after);
 }
 
 /**
@@ -93,11 +106,35 @@ export function hasUnbuiltHistory(
   return unbuiltHistoryEntries(store.list(), head, isPublishedCommit).length > 0;
 }
 
+/**
+ * Whether the personal version at `head` carries changes that are not generated
+ * on this computer yet and a failed generation could still undo. The managed
+ * source is shared by every Cindy account on the device while the build history
+ * stays account-isolated: the account's own facts answer for its own
+ * integrations, and the device-level record (see `pendingBuild`) answers for
+ * whatever another account or another computer carried in — "this account has
+ * no receipts for it" never reads as "nothing is pending".
+ */
+export function hasUnbuiltPersonalChanges(
+  store: CindyMakeHistoryStore,
+  recordRoot: string,
+  head: { commit: string; tree: string },
+  isPublishedCommit: IsPublishedCommit,
+): boolean {
+  if (store.readBuildRollback().length > 0) return true;
+  if (hasUnbuiltHistory(store, head, isPublishedCommit)) return true;
+  const pending = hasPendingBuild(recordRoot, head);
+  // An unreadable record (`undefined`) proves nothing: pending unless a
+  // generated personal version already covers this snapshot.
+  return pending !== false && !isPublishedCommit(head.commit);
+}
+
 /** Build cleanup owns only the consecutive integrations not present in a saved version. */
 export function historyBuildRollback(
   store: CindyMakeHistoryStore,
   source: string,
   isPublishedCommit: IsPublishedCommit = () => false,
+  recordRoot?: string,
 ) {
   const recover = async (git: ContentGit) => {
     const entries = store.readBuildRollback();
@@ -123,6 +160,7 @@ export function historyBuildRollback(
         source,
         { commit: receipt.baselineCommit, tree: receipt.beforeTree },
         receipt,
+        recordRoot,
       );
       await git(
         previousTaskTree ? ['update-ref', ref, previousTaskTree] : ['update-ref', '-d', ref],

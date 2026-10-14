@@ -13,7 +13,8 @@ import { readGhostSecret } from '../secrets/providerSecretStore.js';
 import { readAtomicFileSync, atomicWriteFileSync } from '../utils/atomicWriteFile.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { createLogger } from '../logger.js';
-import { hasUnbuiltHistory } from './buildRollback.js';
+import { hasUnbuiltPersonalChanges as unbuiltPersonalChanges } from './buildRollback.js';
+import { recordPendingBuild, rewritePendingBuilds } from './pendingBuild.js';
 import type { PersonalSyncRemote } from './personalSync.js';
 import { captureMakeHistoryStore } from './historyOwner.js';
 import { cindyMakeManager } from './manager.js';
@@ -92,6 +93,7 @@ export function configurePersonalRemote(): void {
       cindyMakeManager.withProjectUse(root, () => cindyMakeManager.withProject(root, run)),
     withSourceUse: (run) => cindyMakeManager.withSourceReader(root, run),
     hasUnbuiltChanges: (commit, tree) => hasUnbuiltPersonalChanges(commit, tree),
+    recordUnbuilt: (snapshot) => recordPendingBuild(root, snapshot),
     isBuilt: (commit) => hasPublishedPersonalVersionCommit(userData, commit),
     sourceSettled: (withinSync) => cindyMakeManager.isSourceSettled(root, withinSync),
     officialBase: async () => {
@@ -190,17 +192,21 @@ export function configurePersonalRemote(): void {
 }
 
 /**
- * The personal version at `commit` carries integrations a failed generation could still
- * undo (or a build rollback is pending): it is not established yet.
+ * Whether the personal version at `commit` carries changes that are not generated
+ * on this computer yet and a failed generation could still undo (or a build
+ * rollback is pending): it is not established yet. The managed source is shared
+ * by every Cindy account on the device while the build history stays
+ * account-isolated, so the answer combines the account's own facts with the
+ * device-level record kept beside the source (see `pendingBuild`): "this account
+ * has no receipts for it" never reads as "nothing is pending".
  */
 export async function hasUnbuiltPersonalChanges(commit: string, tree: string): Promise<boolean> {
   const userData = app.getPath('userData');
-  const store = captureMakeHistoryStore();
-  return (
-    store.readBuildRollback().length > 0 ||
-    hasUnbuiltHistory(store, { commit, tree }, (candidate) =>
-      hasPublishedPersonalVersionCommit(userData, candidate),
-    )
+  return unbuiltPersonalChanges(
+    captureMakeHistoryStore(),
+    makeSourceRoot(userData),
+    { commit, tree },
+    (candidate) => hasPublishedPersonalVersionCommit(userData, candidate),
   );
 }
 
@@ -218,6 +224,7 @@ export function journalMergeProvenance(state: {
   feature?: unknown;
   baselineCommit?: string;
   commit?: string;
+  tree?: string;
   remote?: { commit?: string };
 }): void {
   const rewrite = adoptedRewrite(state);
@@ -225,6 +232,14 @@ export function journalMergeProvenance(state: {
   if (!controller) throw new Error('personal remote not configured');
   if (state.remote?.commit) controller.recordUnverifiedRemote(state.remote.commit);
   controller.recordRewrite(rewrite.from, rewrite.to);
+  // Recorded pending facts follow the content into the rewritten result that
+  // carries them; a result that combined in a GitHub version carries changes
+  // that are not generated on this computer yet either way (see `pendingBuild`).
+  if (state.commit && state.tree) {
+    const root = makeSourceRoot(app.getPath('userData'));
+    rewritePendingBuilds(root, rewrite.from, { commit: state.commit, tree: state.tree });
+    if (state.remote?.commit) recordPendingBuild(root, { commit: state.commit, tree: state.tree });
+  }
 }
 
 /** The GitHub steps of Sync; undefined when the personal version is not shared there. */

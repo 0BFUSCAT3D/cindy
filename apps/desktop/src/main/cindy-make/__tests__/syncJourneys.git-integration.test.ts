@@ -23,7 +23,14 @@ import {
   type MergeGit,
 } from '../upstreamMerge';
 import { PERSONAL_UPSTREAM_REF } from '../sourceContent';
-import { makeSourceCheckoutPath } from '../sourcePaths';
+import { rollbackUnbuiltHistory, hasUnbuiltPersonalChanges } from '../buildRollback';
+import {
+  recordPendingBuild,
+  rewritePendingBuilds,
+  settlePendingBuilds,
+} from '../pendingBuild';
+import { CindyMakeHistoryStore } from '../historyStore';
+import { CINDY_PERSONAL_BRANCH, makeSourceCheckoutPath, makeSourceRoot } from '../sourcePaths';
 import { runSourceGit } from '../sourceGit';
 import type { CindyMakeSyncState } from '../../../shared/cindyMakeSync';
 
@@ -102,10 +109,21 @@ async function world() {
 }
 type World = Awaited<ReturnType<typeof world>>;
 
-/** One computer: its managed source, the shared source-operation lifecycle, GitHub and Sync. */
-async function computer(w: World, name: string) {
+/**
+ * One computer: its managed source, the shared source-operation lifecycle, GitHub and Sync.
+ * `realGeneration` wires the real pending-generation facts (see `pendingBuild`): the
+ * device-level record beside the source, this device's generated versions and a real
+ * build history for the changes `change` integrates.
+ */
+async function computer(w: World, name: string, options: { realGeneration?: boolean } = {}) {
   const userData = path.join(w.root, name);
   const source = makeSourceCheckoutPath(userData);
+  const recordRoot = makeSourceRoot(userData);
+  const history = new CindyMakeHistoryStore(path.join(userData, 'history-owner'));
+  const generated = new Set<string>();
+  const isPublished = (commit: string) => generated.has(commit);
+  const unbuiltChanges = (commit: string, tree: string) =>
+    hasUnbuiltPersonalChanges(history, recordRoot, { commit, tree }, isPublished);
   await mkdir(path.dirname(source), { recursive: true });
   await w.raw(['clone', w.official, source], w.root);
   await w.raw(['checkout', '-b', 'cindy-personal'], source);
@@ -166,8 +184,13 @@ async function computer(w: World, name: string) {
       sourceExists: () => existsSync(path.join(source, '.git')),
       withProject: (run) => run(),
       withSourceUse: (run) => run(),
-      hasUnbuiltChanges: async () => false,
-      isBuilt: () => false,
+      hasUnbuiltChanges: options.realGeneration
+        ? async (commit: string, tree: string) => unbuiltChanges(commit, tree)
+        : async () => false,
+      isBuilt: options.realGeneration ? isPublished : () => false,
+      ...(options.realGeneration
+        ? { recordUnbuilt: (snapshot: { commit: string; tree: string }) => recordPendingBuild(recordRoot, snapshot) }
+        : {}),
       sourceSettled: () => true,
       officialBase: () => readRef(PERSONAL_UPSTREAM_REF),
       sourceChanged: () => {},
@@ -187,6 +210,16 @@ async function computer(w: World, name: string) {
         if (rewrite) {
           if (state.remote?.commit) remote.recordUnverifiedRemote(state.remote.commit);
           remote.recordRewrite(rewrite.from, rewrite.to);
+          if (options.realGeneration && state.commit && state.tree) {
+            rewritePendingBuilds(recordRoot, rewrite.from, {
+              commit: state.commit,
+              tree: state.tree,
+            });
+            // A combine carried in a GitHub version: its changes are not
+            // generated on this computer yet.
+            if (state.remote?.commit)
+              recordPendingBuild(recordRoot, { commit: state.commit, tree: state.tree });
+          }
         }
         sync?.operationChanged(state);
       },
@@ -232,7 +265,14 @@ async function computer(w: World, name: string) {
       },
       base: () => readRef(PERSONAL_UPSTREAM_REF),
       isAncestor,
-      unbuilt: async () => false,
+      unbuilt: options.realGeneration
+        ? async () => {
+            const commit = await readRef(`refs/heads/${CINDY_PERSONAL_BRANCH}`);
+            if (!commit) return false;
+            const tree = (await w.raw(['rev-parse', `${commit}^{tree}`], source)).trim();
+            return unbuiltChanges(commit, tree);
+          }
+        : async () => false,
       operation: () => merge.status(),
       resume: (options) => merge.resumeForSync(options),
       combine: (tips, options) => merge.combine(tips, options, true),
@@ -251,8 +291,11 @@ async function computer(w: World, name: string) {
   build();
 
   let at = 1_700_000_000 + name.charCodeAt(0) * 100_000;
+  let changes = 0;
   /** A finished task's change, committed like Cindy Make does. */
   const change = async (file: string, lines: string[]) => {
+    const before = await w.head(source);
+    const beforeTree = (await w.raw(['rev-parse', `${before}^{tree}`], source)).trim();
     await writeFile(path.join(source, file), text(lines));
     await w.raw(['add', '-A'], source);
     at += 10;
@@ -267,7 +310,33 @@ async function computer(w: World, name: string) {
       ],
       source,
     );
-    return w.head(source);
+    const tip = await w.head(source);
+    if (options.realGeneration) {
+      // As `recordAppliedMerge` does when a task's change is integrated: the
+      // pending-generation fact lands with (actually before) its receipt.
+      const runId = `change-${++changes}`;
+      const tree = (await w.raw(['rev-parse', `${tip}^{tree}`], source)).trim();
+      history.seed({
+        runId,
+        sessionId: runId,
+        title: file,
+        request: file,
+        createdAt: at,
+        updatedAt: at,
+      });
+      history.receipt(runId, {
+        id: `op-${runId}`,
+        action: 'integrate',
+        at,
+        baselineCommit: before,
+        commit: tip,
+        beforeTree,
+        tree,
+        taskTree: tree,
+      });
+      recordPendingBuild(recordRoot, { commit: tip, tree });
+    }
+    return tip;
   };
   const operation = () => merge.status();
   const run = async (step: () => unknown) => {
@@ -305,6 +374,32 @@ async function computer(w: World, name: string) {
     operation,
     reminders,
     states,
+    /** Generate the application from the current source: this device's own build. */
+    buildIt: async () => {
+      settlePendingBuilds(recordRoot);
+      generated.add(await w.head(source));
+    },
+    /** A failed generation rolls its unbuilt integrations back, as build cleanup does. */
+    failGeneration: () =>
+      rollbackUnbuiltHistory(
+        history,
+        source,
+        (args, cwd, indexFile) =>
+          runSourceGit(
+            { ...w.env, ...(indexFile ? { GIT_INDEX_FILE: indexFile } : {}) },
+            args,
+            cwd,
+            timeout(),
+          ),
+        isPublished,
+        recordRoot,
+      ),
+    /** The pending-generation judgement for the current personal version. */
+    unbuiltState: async () => {
+      const commit = await w.head(source);
+      const tree = (await w.raw(['rev-parse', `${commit}^{tree}`], source)).trim();
+      return unbuiltChanges(commit, tree);
+    },
     target: (next: { ref: string; commit: string }) => {
       target = next;
     },
@@ -427,6 +522,56 @@ journey('a second computer uses the personal version saved on GitHub', async (w)
   expect(await b.save()).toMatchObject({ repository: 'octo/cindy', sync: 'retrieved' });
   expect(await b.tip()).toBe(await a.tip());
   expect(await b.read('personal.txt')).toBe('from a\n');
+});
+
+journey(
+  'a change is generated before it is shared; the other computer takes the same source over and generates it itself',
+  async (w) => {
+    const a = await computer(w, 'a', { realGeneration: true });
+    await a.change('mine.txt', ['mine']);
+    // Not generated yet: binding GitHub publishes nothing of it.
+    expect(await a.save()).toMatchObject({ repository: 'octo/cindy', sync: 'pendingBuild' });
+    expect(await w.forkTip()).toBeUndefined();
+    // This computer generates its own application: the change is established and shared.
+    await a.buildIt();
+    expect(await a.sync()).toMatchObject({ done: { ref: 'v1' } });
+    expect(await w.forkTip()).toBe(await a.tip());
+
+    // The second computer takes the same source over — without this computer's
+    // build history — and generates its own application from it.
+    const b = await computer(w, 'b', { realGeneration: true });
+    expect(await b.save()).toMatchObject({ repository: 'octo/cindy', sync: 'retrieved' });
+    expect(await b.tip()).toBe(await a.tip());
+    expect(await b.read('mine.txt')).toBe('mine\n');
+    expect(await b.unbuiltState()).toBe(true);
+    await b.buildIt();
+    expect(await b.unbuiltState()).toBe(false);
+  },
+);
+
+journey('a failed generation rolls back without publishing or replacing the GitHub version', async (w) => {
+  const a = await computer(w, 'a', { realGeneration: true });
+  const first = await a.change('first.txt', ['first']);
+  await a.save();
+  await a.buildIt();
+  expect(await a.sync()).toMatchObject({ done: { ref: 'v1' } });
+  expect(await w.forkTip()).toBe(first);
+
+  // A second change waits for its generation: nothing replaces the GitHub version.
+  await a.change('second.txt', ['second']);
+  const failed = await a.tip();
+  expect(await a.sync()).toMatchObject({ done: { uploadAfterBuild: true } });
+  expect(await w.forkTip()).toBe(first);
+
+  // The generation fails and its unbuilt integrations are rolled back…
+  await a.failGeneration();
+  expect(await a.tip()).toBe(first);
+  expect(await a.unbuiltState()).toBe(false);
+  // …the failed change never reached GitHub and the version there is untouched.
+  expect(await w.forkTip()).toBe(first);
+  expect(await a.sync()).toMatchObject({ done: { ref: 'v1' } });
+  expect(await w.forkTip()).toBe(first);
+  expect(await w.forkTip()).not.toBe(failed);
 });
 
 journey('both computers changed different places: Sync combines and both end up equal', async (w) => {

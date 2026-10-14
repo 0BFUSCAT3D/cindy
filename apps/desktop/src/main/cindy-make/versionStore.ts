@@ -6,6 +6,8 @@ import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFil
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import { createMigrationRuntimeManifest } from '../localDb/migrationRunner.js';
 import { CINDY_VERSION_PROTOCOL, type CindyVersionInfo } from '../../shared/cindyVersions.js';
+import { settlePendingBuilds } from './pendingBuild.js';
+import { makeSourceRoot } from './sourcePaths.js';
 import type { CindyVersionEndpointSnapshot } from './versionRuntimeIdentity.js';
 
 export const VERSION_ID = /^[a-f0-9-]{36}$/;
@@ -277,6 +279,10 @@ export function publishPersonalVersion(profile: string, id: string): void {
   try {
     fs.unlinkSync(path.join(directory, 'staged.json'));
   } catch {}
+  // Generating a personal version settles the pending generation of the source
+  // it was built from (see `pendingBuild`): its changes have taken effect on
+  // this computer now.
+  settlePendingBuilds(makeSourceRoot(profile));
 }
 function personalVersionVerification(profile: string, id: string, original: OriginalVersion) {
   const item = readPersonalVersion(profile, id);
