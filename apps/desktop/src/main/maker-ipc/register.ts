@@ -5328,7 +5328,12 @@ const sessionBindings = createSessionBindingLifecycle<WiredSession, WiredSession
       // preserves the signal currently driving that rebuild, not the old queue.
       shouldPreserveInputBoundary: () => rehydrateCloseSuppression.isSuppressed(session.id),
       closeInputCoordinator: (options) => {
-        agentInputCoordinatorHolder?.onSessionClosed(session.id, options);
+        agentInputCoordinatorHolder?.onSessionClosed(session.id, {
+          ...options,
+          // Requested / rebuild closes own their follow-up; a self-close has no
+          // done event, so queued user input would otherwise wait forever.
+          wakeQueuedInput: context.closeReason === 'unexpected',
+        });
       },
       cleanupRuntimeState: () => cleanupClosedSessionRuntime(session),
     });
