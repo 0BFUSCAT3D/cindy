@@ -21,6 +21,10 @@ export interface DurableOutboxRecord {
   /** Canonical realm-qualified auth accountKey; unqualified pre-release rows are never claimed. */
   accountId: string;
   deviceId: string;
+  /** Permanent resource identity for sends queued from a companion, including after page exit/restart. */
+  resourceRef?: import('@cindy/device-link').RemoteResourceRef;
+  /** Stable disk/file identity when a cancelled creation is retried with a fresh session ID. */
+  storageSessionId?: string;
   item: MobileOutboxItem;
   createdAt: number;
   state: "queued" | "sending" | "confirming" | "host-owned" | "failed";
@@ -32,6 +36,8 @@ export interface DurableOutboxRecord {
   clearBoundaryMs?: number | null;
   /** Only hosts advertising durable delivery may receive an uncertain retry. */
   retrySafe?: boolean;
+  /** A persisted host user row was observed; only local history caching remains. */
+  historyConfirmed?: boolean;
   error?: string;
   cancelRequested?: boolean;
   /** Delivery is settled; retain the ledger solely until local cleanup succeeds. */
@@ -42,6 +48,8 @@ export interface DurableOutboxRecord {
   refreshUploads?: boolean;
   creation?: {
     draft: NewSessionDraft;
+    originalWorkingDir?: string;
+    cancelled?: true;
     deviceName: string;
     planModeArm: boolean;
     restorePermissionMode: string | null;
@@ -63,8 +71,9 @@ export function isDurableOutboxSettled(record: DurableOutboxRecord): boolean {
  * 已移交被控端的记录:持久投递已收下(或已落定)。会话 FIFO 只派发第一条未移交的记录,
  * 移交后的记录只做对账,不再挡后面的消息。
  */
-export function isDurableOutboxHandedOff(record: Pick<DurableOutboxRecord, 'state' | 'retrySafe' | 'cleanupOutcome'>): boolean {
-  return (record.state === "host-owned" && record.retrySafe === true) || record.cleanupOutcome !== undefined;
+export function isDurableOutboxHandedOff(record: Pick<DurableOutboxRecord, 'state' | 'retrySafe' | 'historyConfirmed' | 'cleanupOutcome'>): boolean {
+  return (record.state === "host-owned" && (record.retrySafe === true || record.historyConfirmed === true))
+    || record.cleanupOutcome !== undefined;
 }
 
 /** Preparation is local; only a persisted pre-enqueue proof permits offline disposal.
@@ -79,10 +88,10 @@ export const DURABLE_OUTBOX_PREFIX = "cindy.mobile.outbox.v1.";
 const PREFIX = DURABLE_OUTBOX_PREFIX;
 const EMPTY: readonly DurableOutboxRecord[] = Object.freeze([]);
 const keyFor = (
-  r: Pick<DurableOutboxRecord, "accountId" | "deviceId" | "item">,
+  r: Pick<DurableOutboxRecord, "accountId" | "deviceId" | "item" | "storageSessionId">,
 ) =>
   PREFIX +
-  [r.accountId, r.deviceId, r.item.sessionId, r.item.clientId]
+  [r.accountId, r.deviceId, r.storageSessionId ?? r.item.sessionId, r.item.clientId]
     .map(encodeURIComponent)
     .join("/");
 
@@ -121,6 +130,11 @@ export function createDurableOutbox(storage: OutboxStorage, reconcileDraft?: (
       const current = records.find((r) => keyFor(r) === keyFor(record));
       if (adding ? current !== undefined : current !== record)
         throw new Error("OUTBOX_STALE_WRITE");
+      if (next && keyFor(next) !== keyFor(record)) throw new Error("OUTBOX_IDENTITY_CHANGED");
+      if (next && next.item.sessionId !== record.item.sessionId
+        && (!record.creation?.cancelled || !next.creation || record.prepared)) {
+        throw new Error('OUTBOX_CREATION_OWNERSHIP_UNRESOLVED');
+      }
       if (next) await storage.setItem(keyFor(record), JSON.stringify(next));
       else await storage.removeItem(keyFor(record));
       // The disk write is already committed, even if logout raced its completion.
@@ -240,8 +254,15 @@ function isLoadableOutboxRecord(
     && !!row.deviceId
     && !!row.item?.sessionId
     && !!row.item.clientId
+    && (row.resourceRef === undefined || (row.resourceRef !== null
+      && typeof row.resourceRef.collectionId === 'string' && !!row.resourceRef.collectionId
+      && typeof row.resourceRef.kind === 'string' && !!row.resourceRef.kind
+      && typeof row.resourceRef.id === 'string' && !!row.resourceRef.id))
+    && (row.storageSessionId === undefined
+      || (typeof row.storageSessionId === 'string' && row.storageSessionId.length > 0))
     && keyFor(row) === key
     && Array.isArray(row.uploads)
+    && (row.historyConfirmed === undefined || typeof row.historyConfirmed === 'boolean')
     && (row.cleanupOutcome === undefined
       || row.cleanupOutcome === 'accepted'
       || row.cleanupOutcome === 'cancelled')

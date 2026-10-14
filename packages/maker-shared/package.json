@@ -17,6 +17,7 @@
     "./chat-quotes": "./src/chatQuotes.ts",
     "./command-display": "./src/commandDisplay.ts",
     "./client-endpoints": "./src/clientEndpoints.ts",
+    "./cindy-make-feature": "./src/cindyMakeFeature.ts",
     "./companion-import": "./src/companionImport.ts",
     "./composer-palette": "./src/composerPalette.ts",
     "./conversation-search": "./src/conversationSearch.ts",
@@ -29,6 +30,9 @@
     "./file-browser-grid": "./src/fileBrowserGrid.ts",
     "./file-preview": "./src/filePreview.ts",
     "./fixtures": "./src/fixtures.ts",
+    "./ghost-command": "./src/ghostCommand.ts",
+    "./goal-command": "./src/goalCommand.ts",
+    "./goal-verdict": "./src/goalVerdict.ts",
     "./history-gap": "./src/historyGap.ts",
     "./image-annotation": "./src/imageAnnotation.ts",
     "./interaction": "./src/interaction.ts",
@@ -41,6 +45,7 @@
     "./message-normalize": "./src/messageNormalize.ts",
     "./message-presentation": "./src/messagePresentation.ts",
     "./message-search": "./src/messageSearch.ts",
+    "./message-source": "./src/messageSource.ts",
     "./message-window": "./src/messageWindow.ts",
     "./orca-team": "./src/orcaTeam.ts",
     "./mobile-home": "./src/mobileHome.ts",
@@ -90,7 +95,8 @@
     "./botTimeline": "./src/botTimeline.ts",
     "./remote-desktop-viewer": "./src/remote-desktop/viewerRuntime.js",
     "./remote-desktop-mobile": "./src/remote-desktop/mobileHtml.ts",
-    "./remote-desktop-scripts": "./src/remote-desktop/viewerScripts.ts"
+    "./remote-desktop-scripts": "./src/remote-desktop/viewerScripts.ts",
+    "./teammate-todo": "./src/teammateTodo.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

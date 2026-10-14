@@ -182,6 +182,8 @@ vi.mock('@/hooks/useProviders', () => ({
 }));
 const remoteProvidersRef = vi.hoisted(() => ({ providers: [] as unknown[] }));
 vi.mock('@/hooks/useDeviceProviders', () => ({
+  getCachedDeviceProviders: () => ({ providers: remoteProvidersRef.providers }),
+  subscribeDeviceProviders: () => () => {},
   evictDeviceProviders: vi.fn(),
   prefetchDeviceProviders: vi.fn(async () => {}),
   useDeviceProviders: () => ({
@@ -217,7 +219,11 @@ import {
   addModelFavorite,
   listModelFavorites,
   updateModelFavorite,
+  setModelFavoritesOwner,
 } from '@/state/modelFavorites';
+import { setDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
+import { providerShareFavoriteSource, reconcileProviderShareFavorites } from '@/state/providerShareFavorites';
+import { toast } from '@/lib/toast';
 import { setModelEngineOverride } from '@/state/modelEnginePrefs';
 
 const onProviderChange = vi.fn();
@@ -263,6 +269,63 @@ beforeEach(() => {
   onProviderChange.mockClear();
   resetEnginePrefs();
   resetFavorites();
+});
+
+describe('分享模型收藏', () => {
+  const received = {
+    shareId: 's1', memberId: 'm1', providerId: 'anthropic', providerLabel: 'Anthropic',
+    hostDeviceId: 'host', deviceName: 'Host', status: 'active' as const, hostOnline: true, hostCapable: true,
+    owner: { displayName: 'Owner', avatarUrl: null, region: 'global' as const },
+  };
+  beforeEach(() => {
+    setDataOwnerGeneration('recipient', 1);
+    setModelFavoritesOwner('recipient');
+    reconcileProviderShareFavorites({ ownerStamp: { dataOwnerId: 'recipient', ownerGeneration: 1 }, confirmedRegions: ['global'], received: [received] });
+    remoteProvidersRef.providers = providersRef.providers.map((provider) => ({ ...provider as object, remoteInvocationEnabled: true }));
+  });
+  afterEach(() => {
+    remoteProvidersRef.providers = [];
+    setDataOwnerGeneration(null, 0);
+    vi.restoreAllMocks();
+  });
+
+  it('点击收藏后可见、可重新选择，完整配置保存在受邀者账号', async () => {
+    const onUnifiedSelect = vi.fn();
+    renderPanel({ deviceId: 'share:s1', onUnifiedSelect });
+    await act(async () => fireEvent.click(within(rowFor('Opus 5')).getByRole('button', { name: '存为收藏' })));
+    expect(listModelFavorites()).toEqual([expect.objectContaining({
+      providerId: providerShareFavoriteSource(received), modelId: 'claude-opus-5', agent: 'cc', effort: 'medium',
+    })]);
+    fireEvent.click(document.querySelector('[data-rail-item="favorites"]')!);
+    expect(within(screen.getByRole('listbox')).getAllByText('Opus 5')).toHaveLength(1);
+    await act(async () => fireEvent.click(rowFor('Opus 5')));
+    expect(onUnifiedSelect).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'anthropic', modelId: 'claude-opus-5', engine: 'cc', effort: 'medium', fast: false }));
+  });
+
+  it('存储写失败显示提示，收藏区不会出现未保存的条目', async () => {
+    const failed = vi.spyOn(toast, 'error').mockImplementation(() => 'test');
+    renderPanel({ deviceId: 'share:s1' });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    await act(async () => fireEvent.click(within(rowFor('Opus 5')).getByRole('button', { name: '存为收藏' })));
+    expect(failed).toHaveBeenCalledWith('newChat.modelSelector.unified.favoritesSaveFailed');
+    expect(listModelFavorites()).toEqual([]);
+  });
+
+  it('从分享供应商切到收藏侧栏仍保留分享来源，选择回传完整路由', async () => {
+    const onUnifiedSelect = vi.fn();
+    renderPanel({
+      remoteAgent: { devices: [{ deviceId: 'share:s1', name: '来自 Owner 的分享' }], selectedDeviceId: 'share:s1' },
+      onUnifiedSelect,
+    });
+    await act(async () => fireEvent.click(within(rowFor('Opus 5')).getByRole('button', { name: '存为收藏' })));
+    fireEvent.click(document.querySelector('[data-rail-item="favorites"]')!);
+    expect(within(screen.getByRole('listbox')).getAllByText('Opus 5')).toHaveLength(1);
+    await act(async () => fireEvent.click(rowFor('Opus 5')));
+    expect(onUnifiedSelect).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'anthropic', modelId: 'claude-opus-5', engine: 'cc', effort: 'medium', fast: false,
+      agentDevice: expect.objectContaining({ deviceId: 'share:s1' }),
+    }));
+  });
 });
 
 describe('统一面板 · 打折 GPT-5.6 与 GPT-6 包月互切', () => {
@@ -566,6 +629,9 @@ describe('统一模型选择器面板', () => {
     renderPanel({ followSession: { active: true, label: '跟随会话', onFollow } });
     const row = screen.getByText('跟随会话').closest('button') as HTMLElement;
     expect(row.getAttribute('aria-selected')).toBe('true');
+    // 模型菜单例外:选中行保留整行底色与勾。
+    expect(row.className).toContain('bg-sidebar-item-hover');
+    expect(row.querySelector('svg.lucide-check')).not.toBeNull();
     await act(async () => {
       fireEvent.click(row);
     });
@@ -606,6 +672,22 @@ describe('统一面板 · 会话内形态', () => {
     const list = screen.getByRole('listbox');
     expect(within(list).queryByRole('group', { name: '推荐' })).toBeNull();
     expect(list.querySelector('[data-group-provider="xd"]')).not.toBeNull();
+  });
+
+  it('选中的模型行保持整行底色、不加勾，名字保持 500(输入框菜单约定里模型面板的例外)', () => {
+    renderPanel({ vendorKey: 'codex', currentProviderId: 'xd', modelId: 'gpt-5.5' });
+    const list = screen.getByRole('listbox');
+    const selected = list.querySelector<HTMLElement>('[data-model-selected="true"]');
+    expect(selected).not.toBeNull();
+    expect(selected!.className).toContain('bg-sidebar-item-hover');
+    // 滑动高亮已盖住悬停行,静态底色在那一刻让位,两层半透明不叠深。
+    expect(selected!.className).toContain('data-[menu-active]:bg-transparent');
+    expect(selected!.querySelector('svg.lucide-check')).toBeNull();
+    expect(selected!.querySelector('span[title].font-medium')).not.toBeNull();
+    const other = Array.from(list.querySelectorAll<HTMLElement>('[data-unified-anchor]')).find(
+      (row) => row !== selected,
+    );
+    expect(other?.className).not.toContain('bg-sidebar-item-hover');
   });
 
   it('收藏置顶但不选中，推荐当前值优先并移除下方空供应商组', () => {
@@ -822,6 +904,11 @@ describe('统一面板 · 会话内形态', () => {
     // 量的是**全量视图**:同引擎视图里看不到的 Opus 5 也在 sizer 里。
     expect(sizer?.textContent).toContain('Opus 5');
     expect(sizer?.textContent).toContain('GPT-5.5');
+    // 组头与真实组头同字号同字重,量出的宽度才可信。
+    const realLabel = container.querySelector('[role="listbox"] [role="group"] > div');
+    const sizerLabel = sizer?.querySelector(':scope > div > div');
+    expect(sizerLabel?.className).toContain('text-12 font-medium leading-[1.33]');
+    expect(realLabel?.className).toContain('text-12 font-medium leading-[1.33]');
     // 不可见、零高度、不进 listbox、不带选中标记(自动对齐永远不会挑中它)。
     expect(sizer?.getAttribute('aria-hidden')).toBe('true');
     expect(sizer?.className).toContain('invisible');
@@ -843,7 +930,11 @@ describe('统一面板 · 会话内形态', () => {
   });
 
   it('跨引擎警示行不参与撑宽(w-0 min-w-full)', async () => {
-    renderPanel({ sessionEngineFilter, currentProviderId: 'xd', modelId: 'gpt-5.5' });
+    renderPanel({
+      sessionEngineFilter: { ...sessionEngineFilter, pendingTarget: 'claude-code' },
+      currentProviderId: 'xd',
+      modelId: 'gpt-5.5',
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '全部' }));
     });
@@ -856,16 +947,25 @@ describe('统一面板 · 会话内形态', () => {
     expect(warning.className).toContain('min-w-full');
   });
 
-  it('显式切到「全部」后出现有损警示,且能看到跨引擎模型', async () => {
+  it('「全部」视图未切换 Harness 时不显示有损警示,且能看到跨引擎模型', async () => {
     renderPanel({ sessionEngineFilter, currentProviderId: 'xd', modelId: 'gpt-5.5' });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '全部' }));
     });
     const list = screen.getByRole('listbox');
-    expect(list.querySelector('[data-cross-engine-warning]')?.textContent).toContain(
-      '切换引擎会重建上下文',
-    );
+    expect(list.querySelector('[data-cross-engine-warning]')).toBeNull();
     expect(within(list).getByText('Opus 5')).toBeTruthy();
+  });
+
+  it('已登记跨 Harness 切换时显示有损警示', () => {
+    renderPanel({
+      sessionEngineFilter: { ...sessionEngineFilter, pendingTarget: 'claude-code' },
+      currentProviderId: 'xd',
+      modelId: 'gpt-5.5',
+    });
+    expect(
+      screen.getByRole('listbox').querySelector('[data-cross-engine-warning]')?.textContent,
+    ).toContain('切换引擎会重建上下文');
   });
 
   it('选中跨引擎行走 onCrossEngineSelect,不走普通 onSelect', async () => {

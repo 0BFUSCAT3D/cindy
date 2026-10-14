@@ -55,6 +55,8 @@ export interface BotCapabilities {
   mcpServers: string[];
   memory: boolean;
   permissions: 'ask' | 'auto' | 'trusted';
+  /** 代输入: may this companion ask the owner to finish an on-screen step. Missing = allowed. */
+  inputHandoff?: boolean;
 }
 
 export interface BotModelOverride {
@@ -117,8 +119,10 @@ function normalizeSkillMode(
   return Array.isArray(configuredSkills) && configuredSkills.length > 0 ? 'allowlist' : 'inherit';
 }
 
-function normalizeCapabilityMode(_value: unknown, _configured: unknown): 'inherit' | 'allowlist' {
-  return 'allowlist';
+function normalizeCapabilityMode(value: unknown): 'inherit' | 'allowlist' {
+  // Main already migrates legacy grants. Preserve its mode so the settings
+  // editor can distinguish inherited access from an explicit (even empty) list.
+  return value === 'allowlist' ? 'allowlist' : 'inherit';
 }
 
 function normalizeStringList(value: unknown): string[] {
@@ -457,15 +461,15 @@ function defaultCapabilities(
     harness: primary.harness,
     modelChain: globalChain,
     modelChainOverride: null,
-    // A Bot starts with its own/profile capabilities, not the entire Cindy
-    // environment. Explicit grants remain available through the advanced UI.
+    // Share ordinary Agent tools; retain the companion’s own learned Skills.
     skillMode: 'allowlist',
     skillsExcluded: [],
-    toolsetMode: 'allowlist',
+    toolsetMode: 'inherit',
     toolsets: [],
-    mcpMode: 'allowlist',
+    mcpMode: 'inherit',
     mcpServers: [],
     memory: true,
+    inputHandoff: true,
     // 新建伙伴默认放手做(产品裁决 2026-08-18)。**只作用于「新建」**:读取既有
     // profile 的两条路径都显式跑 normalizeBotPermissions,缺字段的历史数据仍落
     // 'ask',与 main 侧投影一致,不会因为默认值变了就把老伙伴悄悄升成信任。
@@ -664,9 +668,9 @@ function normalizeDbProfile(value: unknown): BotProfile | null {
         resolvedModel.model ||
         normalizeBotModel(item.capabilities?.model, harness),
       modelOverride: rawCapabilities?.modelOverride === null ? null : modelOverride,
-      toolsetMode: normalizeCapabilityMode(rawCapabilities?.toolsetMode, toolsets),
+      toolsetMode: normalizeCapabilityMode(rawCapabilities?.toolsetMode),
       toolsets,
-      mcpMode: normalizeCapabilityMode(rawCapabilities?.mcpMode, rawCapabilities?.mcpServers),
+      mcpMode: normalizeCapabilityMode(rawCapabilities?.mcpMode),
       mcpServers: normalizeStringList(rawCapabilities?.mcpServers),
     },
     canonicalSessionId:

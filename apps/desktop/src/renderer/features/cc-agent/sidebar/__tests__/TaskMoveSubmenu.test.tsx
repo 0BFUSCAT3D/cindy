@@ -163,6 +163,13 @@ it.each(['bot'] as const)(
   },
 );
 
+it('keeps project moves but hides cross-computer copies when the agent runs on another computer', async () => {
+  await mount({ ...session, agentDeviceId: 'C' });
+  expect(screen.getByRole('menuitem', { name: /another/ })).toBeTruthy();
+  expect(screen.queryByText('taskMove.otherComputers')).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'B' })).toBeNull();
+});
+
 it.each(['desktop', 'shared', 'feishu'] as const)(
   'keeps cross-computer migration for a %s task',
   async (source) => {
@@ -177,14 +184,14 @@ it('explains missing migration support without offering a misleading load retry'
   fireEvent.keyDown(screen.getByRole('menuitem', { name: 'B' }), { key: 'ArrowRight' });
   expect(await screen.findByText('taskMove.upgradeComputer')).toBeTruthy();
   expect(screen.queryByRole('menuitem', { name: 'taskMove.retry' })).toBeNull();
-  expect(screen.queryByRole('menuitem', { name: 'taskMigration.defaultFolder' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'taskMigration.newProject' })).toBeNull();
 });
 it('keeps transient connection failures retryable without claiming an old version', async () => {
   h.request.mockRejectedValueOnce(new Error('MIGRATION_FAILED'));
   await mount();
   fireEvent.keyDown(screen.getByRole('menuitem', { name: 'B' }), { key: 'ArrowRight' });
   fireEvent.click(await screen.findByRole('menuitem', { name: 'taskMove.retry' }));
-  expect(await screen.findByRole('menuitem', { name: 'taskMigration.defaultFolder' })).toBeTruthy();
+  expect(await screen.findByRole('menuitem', { name: 'taskMigration.newProject' })).toBeTruthy();
   expect(screen.queryByText('taskMove.upgradeComputer')).toBeNull();
 });
 
@@ -201,8 +208,23 @@ it.each([false, true])(
     fireEvent.keyDown(screen.getByRole('menuitem', { name: 'B' }), { key: 'ArrowRight' });
     if (supported)
       expect(
-        await screen.findByRole('menuitem', { name: 'taskMigration.defaultFolder' }),
+        await screen.findByRole('menuitem', { name: 'taskMigration.newProject' }),
       ).toBeTruthy();
     else expect(await screen.findByText('taskMove.upgradeComputer')).toBeTruthy();
   },
 );
+
+it.each([
+  ['dialogue', 'taskMigration.dialogue'],
+  ['project', 'taskMigration.newProject'],
+] as const)('labels the no-project copy of a %s task as %s', async (workspaceKind, label) => {
+  await mount({ ...session, workspaceKind });
+  fireEvent.keyDown(screen.getByRole('menuitem', { name: 'B' }), { key: 'ArrowRight' });
+  fireEvent.click(await screen.findByRole('menuitem', { name: label }));
+  expect(h.destination).toHaveBeenCalledWith({
+    deviceId: 'B',
+    deviceName: 'B',
+    isSelf: false,
+    project: null,
+  });
+});

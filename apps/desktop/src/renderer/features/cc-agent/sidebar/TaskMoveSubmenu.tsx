@@ -33,6 +33,10 @@ export interface TaskMoveDestination {
   project: string | null;
 }
 
+/** Without a chosen project, a chat copy stays a chat and a project copy becomes a new project. */
+export const copyDefaultLabelKey = (session: Pick<Session, 'workspaceKind'>) =>
+  session.workspaceKind === 'dialogue' ? 'taskMigration.dialogue' : 'taskMigration.newProject';
+
 /** Same source-host business operation for recent projects, dialogue, and the folder picker. */
 export async function moveRemoteTaskProject(session: Session, workingDir: string | null) {
   const device = session.deviceLinkDeviceId;
@@ -184,8 +188,13 @@ export function TaskMoveSubmenu({
         ) : (
           localProjects
         )}
+        {/* Agent 在另一台电脑运行的任务可以换项目(那台按任务 id 定址 Agent 工作区)，
+            但不能复制到其他电脑：Agent 会话记录在那台，复制带不走。
+            另一台电脑派来的协同 Worker 同样不复制：协同归属在那台(main 同样拒绝)。 */}
         {['desktop', 'shared', 'feishu'].includes(session.source ?? 'desktop') &&
-          session.orcaRole !== 'worker' && (
+          session.orcaRole !== 'worker' &&
+          !session.agentDeviceId &&
+          !session.orcaRemoteLead && (
             <>
               <DropdownMenuSeparator />
               <div className="px-3 py-1.5 text-xs text-[var(--cmd-palette-item-meta)]">
@@ -207,6 +216,7 @@ export function TaskMoveSubmenu({
                     key={device.deviceId}
                     device={device}
                     team={session.orcaRole === 'lead'}
+                    defaultLabelKey={copyDefaultLabelKey(session)}
                     onSelect={onMigration}
                   />
                 ))
@@ -226,10 +236,12 @@ export function TaskMoveSubmenu({
 function DeviceProjects({
   device,
   team,
+  defaultLabelKey,
   onSelect,
 }: {
   device: DeviceLinkDeviceView;
   team: boolean;
+  defaultLabelKey: string;
   onSelect(value: TaskMoveDestination): void;
 }) {
   const { t } = useTranslation();
@@ -306,7 +318,7 @@ function DeviceProjects({
         ) : projects ? (
           <>
             <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => choose(null)}>
-              {t('taskMigration.defaultFolder')}
+              {t(defaultLabelKey)}
             </DropdownMenuItem>
             <SessionProjectMoveSubmenu
               heading={t('taskMigration.project')}

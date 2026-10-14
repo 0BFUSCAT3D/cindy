@@ -27,7 +27,7 @@
  *     the default Copy icon again).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Check,
   Copy,
@@ -35,6 +35,8 @@ import {
   Link2,
   MessageSquarePlus,
   MessageSquareReply,
+  MessagesSquare,
+  SmilePlus,
   Pencil,
   Share,
   Split,
@@ -46,6 +48,7 @@ import { cn } from '@/lib/utils';
 import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import { CHAT_COLOR_TRANSITION_CLASS, CHAT_ICON_BUTTON_CLASS } from './chatChrome';
 import { Spinner } from '@/components/ui/spinner';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip, Tooltip } from '@/components/ui/tooltip';
 import {
   DropdownMenu,
@@ -90,6 +93,12 @@ interface MessageActionBarProps {
   onAddToChat?: () => void;
   /** 进入「分享为图片」选择模式并预选本条。放在复制按钮右边(产品指定位置)。 */
   onShareAsImage?: () => void;
+  /** Thread replies use the same toolbar geometry as private-chat replies. */
+  replyAction?: { onClick: () => void; label: string; count?: number };
+  /** Quote this message into the current timeline's composer (group 引用回复); never opens a Thread. */
+  quoteAction?: { onClick: () => void; label: string };
+  /** The caller owns reaction persistence; the toolbar owns its trigger and placement. */
+  reactionAction?: { label: string; open: boolean; onOpenChange: (open: boolean) => void; disabled?: boolean; content: ReactNode };
   /** When provided, the More menu exposes single-message deletion. The
    *  parent owns confirmation + persistence; the promise keeps the action
    *  bar disabled until the flow resolves. */
@@ -142,6 +151,9 @@ export function MessageActionBar({
   onFork,
   onAddToChat,
   onShareAsImage,
+  replyAction,
+  quoteAction,
+  reactionAction,
   onDelete,
   onEdit,
   onRewind,
@@ -355,28 +367,59 @@ export function MessageActionBar({
     </Tooltip.Root>
   );
 
-  const replyBtn = simplifiedBotConversation && onAddToChat && (
+  const replyBtn = (replyAction || (simplifiedBotConversation && onAddToChat)) && (
     <Tooltip.Root key="reply">
       <Tooltip.Trigger asChild>
         <button
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            onAddToChat();
+            (replyAction?.onClick ?? onAddToChat)?.();
           }}
           disabled={inFlight}
-          className={actionButtonClass}
-          aria-label={t('chat.messageActionBar.reply')}
+          className={cn(actionButtonClass, replyAction?.count && 'w-auto min-w-6 gap-1 px-1')}
+          aria-label={replyAction?.label ?? t('chat.messageActionBar.reply')}
         >
-          <MessageSquareReply
-            size={14}
-            strokeWidth={2}
-            className={actionIconClass}
-          />
+          {replyAction ? <MessagesSquare size={14} strokeWidth={2} className={actionIconClass} />
+            : <MessageSquareReply size={14} strokeWidth={2} className={actionIconClass} />}
+          {!!replyAction?.count && <span className={cn('text-12 tabular-nums', actionIconClass)}>{replyAction.count}</span>}
         </button>
       </Tooltip.Trigger>
-      <Tooltip.Content>{t('chat.messageActionBar.reply')}</Tooltip.Content>
+      <Tooltip.Content>{replyAction?.label ?? t('chat.messageActionBar.reply')}</Tooltip.Content>
     </Tooltip.Root>
+  );
+
+  const quoteBtn = quoteAction && (
+    <Tip key="quote" text={quoteAction.label}>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          quoteAction.onClick();
+        }}
+        disabled={inFlight}
+        className={actionButtonClass}
+        aria-label={quoteAction.label}
+      >
+        <MessageSquareReply size={14} strokeWidth={2} className={actionIconClass} />
+      </button>
+    </Tip>
+  );
+
+  const reactionBtn = reactionAction && (
+    <Popover key="reaction" open={reactionAction.open} onOpenChange={reactionAction.onOpenChange}>
+      <Tip text={reactionAction.label}>
+        <PopoverTrigger asChild>
+          <button type="button" className={actionButtonClass} disabled={inFlight || reactionAction.disabled}
+            aria-label={reactionAction.label} onClick={event => event.stopPropagation()}>
+            <SmilePlus size={14} strokeWidth={2} className={actionIconClass} />
+          </button>
+        </PopoverTrigger>
+      </Tip>
+      <PopoverContent align={align === 'right' ? 'end' : 'start'} className="z-[80] w-fit p-2" aria-label={reactionAction.label}>
+        {reactionAction.content}
+      </PopoverContent>
+    </Popover>
   );
 
   const timeText = relText && (
@@ -571,10 +614,7 @@ export function MessageActionBar({
         onCloseAutoFocus={(event) => {
           if (menuInteractionFromPointerRef.current) event.preventDefault();
         }}
-        className={cn(
-          'min-w-[184px] rounded-xl border border-[var(--cmd-palette-border)]',
-          'bg-[var(--cmd-palette-bg)] p-1 text-[var(--cmd-palette-item-text)] shadow-none',
-        )}
+        className="min-w-[184px]"
       >
         {addToChatInMenu && (
           <DropdownMenuItem
@@ -616,7 +656,7 @@ export function MessageActionBar({
         {onDelete && (
           <>
             {(addToChatInMenu || copyLinkText || canRewind) && (
-              <DropdownMenuSeparator className="my-1 h-px bg-[var(--cmd-palette-border)]" />
+              <DropdownMenuSeparator />
             )}
             <DropdownMenuItem
               disabled={deleting}
@@ -640,19 +680,22 @@ export function MessageActionBar({
   // align='left'  → [copy][share][fork][edit][more][time][cost]
   // align='right' → [time][copy][share][fork][edit][more]   (user)
   // 伙伴对话:[copy][share][reply][more][time] / [time][copy][share][reply][edit][more]
+  // 群聊:[copy][share][引用回复][话题][表情][time]
   const items =
     align === 'left'
       ? [
           copyBtn,
           shareBtn,
           forkBtn,
+          quoteBtn,
           replyBtn,
+          reactionBtn,
           editBtn,
           moreMenu,
           timeText,
           simplifiedBotConversation ? null : costText || tokensText,
         ]
-      : [timeText, copyBtn, shareBtn, forkBtn, replyBtn, editBtn, moreMenu];
+      : [timeText, copyBtn, shareBtn, forkBtn, quoteBtn, replyBtn, reactionBtn, editBtn, moreMenu];
 
   return (
     <div
@@ -665,7 +708,7 @@ export function MessageActionBar({
         // Hover re-enters mid-fade interpolate from the current opacity
         // (browser CSS transition behavior — no replay from 0).
         'transition-opacity duration-[var(--motion-enter)] ease-[var(--motion-ease-out)] motion-reduce:transition-none',
-        simplifiedBotConversation || visible || menuOpen
+        simplifiedBotConversation || visible || menuOpen || reactionAction?.open
           ? 'opacity-100'
           : 'opacity-0 pointer-events-none focus-within:opacity-100 focus-within:pointer-events-auto',
         // Menu-owned actions dim the entire bar and block clicks. Fork only

@@ -1,3 +1,4 @@
+import { formatLocalizedSeconds } from './sessionDurationFormat';
 import { CompanionTaskResultCard } from './CompanionTaskResultCard';
 import { Component, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useLocalSearchParams } from 'expo-router';
@@ -7,9 +8,6 @@ import {
   CircleAlert,
   CircleCheck,
   GitPullRequest,
-  GitMerge,
-  GitPullRequestClosed,
-  GitPullRequestDraft,
   Square,
   ChevronRight,
   Layers,
@@ -53,6 +51,7 @@ const TRACE_AVATAR_SIZE = 20;
 const TRACE_HIT_SLOP = { top: 6, bottom: 6 } as const;
 const AUX_HIT_SLOP = { top: 6, bottom: 6 } as const;
 import { useRemoteCompanionQuery } from './useRemoteCompanionQuery';
+import { prStatusVisual } from './prStatusVisual';
 
 class CompanionRenderBoundary extends Component<
   { children: ReactNode; fallback: ReactNode; resetKey: string },
@@ -228,10 +227,12 @@ function CompanionTaskCard({
           ? t('devices.companions.duration.minutes', {
               n: Math.floor(seconds / 60),
             })
-          : t('devices.companions.duration.hoursMinutes', {
-              h: Math.floor(seconds / 3600),
-              m: Math.floor(seconds / 60) % 60,
-            });
+          : seconds >= 86_400
+            ? formatLocalizedSeconds(seconds)
+            : t('devices.companions.duration.hoursMinutes', {
+                h: Math.floor(seconds / 3600),
+                m: Math.floor(seconds / 60) % 60,
+              });
   const associated = useRemoteCompanionQuery<SessionPrRef[]>(
     deviceId,
     'git-context:pr-refs:list',
@@ -261,29 +262,8 @@ function CompanionTaskCard({
     const result = Array.isArray(prStatuses.value)
       ? prStatuses.value.find((s) => prStatusKey(s) === prStatusKey(ref))
       : undefined;
-    const kind = result?.ok ? result.status : null;
-    const Icon =
-      kind === 'merged'
-        ? GitMerge
-        : kind === 'closed'
-          ? GitPullRequestClosed
-          : kind === 'draft'
-            ? GitPullRequestDraft
-            : GitPullRequest;
-    return (
-      <Icon
-        size={iconSize.sm}
-        color={
-          kind === 'open'
-            ? colors.statusDone
-            : kind === 'closed'
-              ? colors.statusError
-              : kind === 'draft'
-                ? colors.textTertiary
-                : colors.textSecondary
-        }
-      />
-    );
+    const { Icon, color } = prStatusVisual(result?.ok ? result.status : null, colors);
+    return <Icon size={iconSize.sm} color={color} />;
   };
   const openPr = (url: string) => {
     setShowPrs(false);

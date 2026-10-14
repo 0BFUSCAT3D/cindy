@@ -6,6 +6,7 @@
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 import type { InstalledGhost } from '../../../../shared/ghost';
 
 const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
@@ -81,10 +82,6 @@ vi.mock('react-i18next', () => ({
         'settings.defaults.restore': 'Restore default',
         'settings.ghosts.detail.oauthScopeStale':
           'This authorization does not include newly added permissions. Reconnect to enable them.',
-        'settings.ghosts.detail.iosSimulatorAutoOpenTitle':
-          'Open the embedded Simulator panel automatically',
-        'settings.ghosts.detail.iosSimulatorAutoOpenDescription':
-          'Automatically reveal the right-side Simulator panel.',
       };
       return labels[key] ?? key;
     },
@@ -101,7 +98,7 @@ import {
   ToolDescriptionChip,
   ToolsSection,
 } from '../GhostPluginDetailView';
-import type { GhostPluginDetail } from '../lib/ghostPluginViewModel';
+import { toGhostPluginDetail, type GhostPluginDetail } from '../lib/ghostPluginViewModel';
 
 const permissions: GhostPermissionItem[] = [
   {
@@ -140,6 +137,7 @@ const permissions: GhostPermissionItem[] = [
 
 const detail: GhostPluginDetail = {
   id: 'builtin.example',
+  ghostId: 'builtin.example',
   name: 'Example',
   description: 'Example plugin',
   version: '1.2.3',
@@ -150,7 +148,6 @@ const detail: GhostPluginDetail = {
   tabPanel: false,
   hasMainView: false,
   mainViewTitle: null,
-  hostCapability: null,
   author: 'XD',
   contents: ['code'],
   permissions: [],
@@ -173,14 +170,7 @@ beforeEach(() => {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
-      maker: {
-        iosSimulator: {
-          getPreferences: vi.fn(async () => ({ autoOpenEmbeddedPanel: true })),
-          setAutoOpenEmbeddedPanel: vi.fn(async (enabled: boolean) => ({
-            autoOpenEmbeddedPanel: enabled,
-          })),
-        },
-      },
+
     },
   });
 });
@@ -210,7 +200,7 @@ describe('Ghost plugin detail sections', () => {
         ghost={
           { manifest: { id: 'cindy-github' }, enabled: true, trust: { level: 'unverified' } } as any
         }
-        detail={{ ...detail, id: 'cindy-github', hasSettingsUi: true }}
+        detail={{ ...detail, id: 'cindy-github', ghostId: 'cindy-github', hasSettingsUi: true }}
         panelStatus={null}
         onBack={vi.fn()}
         onToggle={vi.fn()}
@@ -223,9 +213,12 @@ describe('Ghost plugin detail sections', () => {
     );
     expect(verify).not.toHaveBeenCalled();
   });
-  it.each([{ status: 'missing' }, { status: 'auth', source: 'token' }])(
-    'connects GitHub from $status and reloads the installed plugin settings after authorization',
-    async (connection) => {
+  it.each([
+    { layout: 'legacy', connection: { status: 'missing' } },
+    { layout: 'root', connection: { status: 'auth', source: 'token' } },
+  ])(
+    'connects GitHub in $layout layout and reloads settings after authorization',
+    async ({ layout, connection }) => {
       vi.stubGlobal(
         'ResizeObserver',
         class {
@@ -242,16 +235,19 @@ describe('Ghost plugin detail sections', () => {
           startGithubSetup: async () => ({ phase: 'connected' }),
         },
       });
+      const ghost: InstalledGhost = {
+        manifest: { schemaVersion: 3, minCindyVersion: '0.1.0', kind: 'chip',
+          id: 'cindy-github', name: 'GitHub', version: '1.0.0', entry: 'main.js', settingsHtml: 'settings.html' },
+        dir: path.join('plugins', ...(layout === 'root' ? ['_ns', '_root'] : []), 'cindy-github'),
+        namespace: null,
+        enabled: true,
+        approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
+        trust: { ...detail.trust, publisherName: 'Cindy Plugin Market' },
+      };
       const { unmount } = render(
         <GhostPluginDetailView
-          ghost={
-            {
-              manifest: { id: 'cindy-github' },
-              enabled: true,
-              trust: { ...detail.trust, publisherName: 'Cindy Plugin Market' },
-            } as any
-          }
-          detail={{ ...detail, id: 'cindy-github', hasSettingsUi: true }}
+          ghost={ghost}
+          detail={toGhostPluginDetail(ghost)}
           panelStatus={null}
           onBack={vi.fn()}
           onToggle={vi.fn()}
@@ -515,92 +511,6 @@ describe('Ghost plugin detail sections', () => {
     expect(detailActions?.className).toContain('flex-nowrap');
   });
 
-  it('renders an enabled Host capability as a conversation action', async () => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-    const onUse = vi.fn();
-    render(
-      <GhostPluginDetailView
-        ghost={null}
-        detail={{ ...detail, canUse: false, hostCapability: 'ios-simulator' }}
-        panelStatus={null}
-        onBack={vi.fn()}
-        onToggle={vi.fn()}
-        onUse={onUse}
-        onUpdate={vi.fn()}
-        onUpdateFromFile={vi.fn()}
-        onUninstall={vi.fn()}
-        toggleDisabled={false}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'settings.ghosts.detail.chatAction' }));
-    expect(onUse).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      const preference = screen.getByRole('switch', {
-        name: 'Open the embedded Simulator panel automatically',
-      });
-      expect((preference as HTMLButtonElement).disabled).toBe(false);
-    });
-  });
-
-  it('shows and updates the Host-owned Simulator auto-open preference', async () => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-    const getPreferences = vi.fn(async () => ({ autoOpenEmbeddedPanel: false }));
-    const setAutoOpenEmbeddedPanel = vi.fn(async (enabled: boolean) => ({
-      autoOpenEmbeddedPanel: enabled,
-    }));
-    Object.defineProperty(window, 'electronAPI', {
-      configurable: true,
-      value: {
-        maker: {
-          iosSimulator: { getPreferences, setAutoOpenEmbeddedPanel },
-        },
-      },
-    });
-
-    render(
-      <GhostPluginDetailView
-        ghost={null}
-        detail={{ ...detail, canUse: false, hostCapability: 'ios-simulator' }}
-        panelStatus={null}
-        onBack={vi.fn()}
-        onToggle={vi.fn()}
-        onUse={vi.fn()}
-        onUpdate={vi.fn()}
-        onUpdateFromFile={vi.fn()}
-        onUninstall={vi.fn()}
-        toggleDisabled={false}
-      />,
-    );
-
-    const toggle = await screen.findByRole('switch', {
-      name: 'Open the embedded Simulator panel automatically',
-    });
-    await waitFor(() => {
-      expect(toggle.getAttribute('data-state')).toBe('unchecked');
-      expect((toggle as HTMLButtonElement).disabled).toBe(false);
-    });
-
-    fireEvent.click(toggle);
-    await waitFor(() => expect(setAutoOpenEmbeddedPanel).toHaveBeenCalledWith(true));
-    await waitFor(() => expect(toggle.getAttribute('data-state')).toBe('checked'));
-    expect(screen.getByText('Automatically reveal the right-side Simulator panel.')).toBeTruthy();
-  });
-
   it('routes a projected detail icon failure to market recovery', () => {
     vi.stubGlobal(
       'ResizeObserver',
@@ -793,13 +703,11 @@ describe('Ghost plugin detail sections', () => {
         disconnect() {}
       },
     );
-    // packaged 构建上 Main 会对 cindy- / filo- / xd- 前缀直接 GHOST_ID_RESERVED,
-    // 把这个必失败动作留在菜单里等于让用户选完文件才吃错误。
     // vitest 默认 DEV=true,这里显式模拟打包产物(DEV=false)。
     vi.stubEnv('DEV', false);
     // 显式标注类型:JSX prop 位置的内联展开会让 tsc 现推一个巨大的匿名类型,
     // desktop 的 typecheck 本就贴着 CI 的 4GB 堆上限跑,能省则省。
-    const officialDetail: GhostPluginDetail = { ...detail, id: 'cindy-art' };
+    const officialDetail: GhostPluginDetail = { ...detail, id: 'cindy-art', ghostId: 'cindy-art' };
     render(
       <GhostPluginDetailView
         ghost={null}
@@ -828,42 +736,48 @@ describe('Ghost plugin detail sections', () => {
     vi.unstubAllEnvs();
   });
 
-  it('keeps the local .cindy update entry for ordinary third-party plugins', async () => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-    // 同样是打包产物,但非保留前缀:Main 不会拒,入口必须留着。
-    vi.stubEnv('DEV', false);
-    render(
-      <GhostPluginDetailView
-        ghost={null}
-        detail={detail}
-        panelStatus={null}
-        onBack={vi.fn()}
-        onToggle={vi.fn()}
-        onUse={vi.fn()}
-        onUpdate={vi.fn()}
-        onUpdateFromFile={vi.fn()}
-        onUninstall={vi.fn()}
-        toggleDisabled={false}
-      />,
-    );
+  it.each(['builtin.example', 'xd-ordinary', 'filo-ordinary'])(
+    'keeps the local .cindy update entry actionable for ordinary root %s',
+    async (ghostId) => {
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+      vi.stubEnv('DEV', false);
+      const onUpdateFromFile = vi.fn();
+      const ordinaryDetail: GhostPluginDetail = { ...detail, id: ghostId, ghostId };
+      render(
+        <GhostPluginDetailView
+          ghost={null}
+          detail={ordinaryDetail}
+          panelStatus={null}
+          onBack={vi.fn()}
+          onToggle={vi.fn()}
+          onUse={vi.fn()}
+          onUpdate={vi.fn()}
+          onUpdateFromFile={onUpdateFromFile}
+          onUninstall={vi.fn()}
+          toggleDisabled={false}
+        />,
+      );
 
-    fireEvent.pointerDown(
-      screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
-      { button: 0, ctrlKey: false },
-    );
-    expect(
-      screen.getByRole('menuitem', { name: 'settings.ghosts.detail.updateFromFile' }),
-    ).toBeTruthy();
-    expect(screen.getByRole('separator')).toBeTruthy();
-    vi.unstubAllEnvs();
-  });
+      fireEvent.pointerDown(
+        screen.getByRole('button', { name: 'settings.ghosts.detail.moreActions' }),
+        { button: 0, ctrlKey: false },
+      );
+      const updateItem = screen.getByRole('menuitem', {
+        name: 'settings.ghosts.detail.updateFromFile',
+      });
+      expect(screen.getByRole('separator')).toBeTruthy();
+      fireEvent.click(updateItem);
+      expect(onUpdateFromFile).toHaveBeenCalledOnce();
+      vi.unstubAllEnvs();
+    },
+  );
 
   it('renders an export menu item only when onExport is provided', async () => {
     vi.stubGlobal(

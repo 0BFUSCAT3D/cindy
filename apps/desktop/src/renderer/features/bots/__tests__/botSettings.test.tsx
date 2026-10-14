@@ -17,7 +17,7 @@ vi.mock('@/components/onboarding/ConnectProviderCard', () => ({
 }));
 
 const translate = (key: string, opts?: Record<string, unknown>) =>
-  opts ? `${key}:${JSON.stringify(opts)}` : key;
+  key.startsWith('settings.builtinTools.plugins.') ? String(opts?.defaultValue ?? key) : opts ? `${key}:${JSON.stringify(opts)}` : key;
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ dataOwnerId: 'fixture-owner' }) }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
 
@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
   const sessionGet = vi.fn();
   return {
   navigate: vi.fn(),
+  retryBotInvitation: vi.fn(async (_id: string) => {}),
   onboarding: false,
   readSession: sessionGet,
   initialSearch: '' as string,
@@ -80,6 +81,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 
 vi.mock('../botStore', () => ({
   updateBotProfile: mocks.updateBotProfile,
+  retryBotInvitation: mocks.retryBotInvitation,
   chooseBotAvatar: mocks.chooseBotAvatar,
   setCanonicalBotSession: vi.fn(),
   useBotProfiles: () => mocks.profiles,
@@ -200,6 +202,7 @@ function renderSettings(overrides: Partial<BotProfile> = {}, initialSearch = 'se
 
 beforeEach(() => {
   mocks.navigate.mockReset();
+  mocks.retryBotInvitation.mockClear();
   mocks.onboarding = false;
   mocks.readSession.mockReset();
   mocks.updateBotProfile.mockReset();
@@ -297,6 +300,44 @@ describe('Bot entry after deletion', () => {
 });
 
 describe('Bot settings profile consolidation', () => {
+  it.each(['failed', 'welcome'] as const)('keeps model settings accessible while invitation is %s', async (stage) => {
+    renderSettings({ invitation: { stage }, canonicalSessionId: undefined });
+    expect(screen.getByLabelText('bots.nameLabel')).toHaveProperty('readOnly', true);
+    expect(screen.getByLabelText('bots.profile.summary')).toHaveProperty('readOnly', true);
+    expect(screen.getByLabelText('bots.profile.personality')).toHaveProperty('readOnly', true);
+    fireEvent.click(screen.getByRole('button', { name: 'bots.invitation.changeModel' }));
+    fireEvent.click(within(screen.getByTestId('bot-primary-model-controls')).getByTestId('codex-model-selector'));
+    await waitFor(() => expect(mocks.updateBotProfile).toHaveBeenCalledWith('bot-1', expect.objectContaining({
+      capabilities: expect.objectContaining({ modelChainOverride: [expect.objectContaining({ model: 'custom-model', harness: 'codex' })] }),
+    })));
+  });
+
+  it('waits for the replacement model to be saved before retrying the same invitation', async () => {
+    let finishSave!: () => void;
+    mocks.updateBotProfile.mockImplementationOnce(async (_id, patch) => {
+      await new Promise<void>(resolve => { finishSave = resolve; });
+      return { id: 'bot-1', currentVersion: 2, ...patch };
+    });
+    renderSettings({ invitation: { stage: 'failed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'bots.invitation.changeModel' }));
+    fireEvent.click(within(screen.getByTestId('bot-primary-model-controls')).getByTestId('codex-model-selector'));
+    fireEvent.click(screen.getByRole('button', { name: 'commonUi.retry' }));
+    await waitFor(() => expect(finishSave).toBeTypeOf('function'));
+    expect(mocks.retryBotInvitation).not.toHaveBeenCalled();
+    await act(async () => finishSave());
+    await waitFor(() => expect(mocks.retryBotInvitation).toHaveBeenCalledWith('bot-1'));
+  });
+
+  it('does not retry with the old model when saving the replacement fails', async () => {
+    mocks.updateBotProfile.mockRejectedValue(new Error('save unavailable'));
+    renderSettings({ invitation: { stage: 'failed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'bots.invitation.changeModel' }));
+    fireEvent.click(within(screen.getByTestId('bot-primary-model-controls')).getByTestId('codex-model-selector'));
+    fireEvent.click(screen.getByRole('button', { name: 'commonUi.retry' }));
+    await screen.findByText('bots.invitation.retryFailed');
+    expect(mocks.retryBotInvitation).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])('opens existing history without a model when onboarding is %s', async (onboarding) => {
     const existing = bot({ capabilities: capabilities({ modelChain: [], model: '' }) });
     mocks.profiles = [existing];
@@ -767,13 +808,25 @@ describe('same-Bot capability updates while editing settings', () => {
     return { agentKind, servers: [{ id: 'events', name: 'SSE Events', transport: 'sse', url: 'https://example.com/mcp', headers: {}, available: agentKind !== 'codex' }] };
   }
 
+  it('saves the explicit restriction mode when an inherited tool is turned off', async () => {
+    renderSettings({ capabilities: capabilities({ toolsetMode: 'inherit', toolsets: [] }) });
+    await openCapabilities();
+    expect(screen.getByRole('switch', { name: 'Documents' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Documents' }));
+    await waitFor(() => expect(mocks.updateBotProfile).toHaveBeenCalledWith('bot-1', {
+      capabilities: { toolsetMode: 'allowlist', toolsets: ['browser'] },
+      capabilityBaseline: { toolsets: [] },
+    }));
+    expect(screen.getByRole('switch', { name: 'Browser' }).getAttribute('aria-checked')).toBe('true');
+  });
+
   it.each(['provider', 'runtime', 'global chain'] as const)(
     'refreshes capability availability with the displayed default after %s changes', async (source) => {
       mocks.listCustomMcpServers.mockImplementation(async (context) =>
         sseCatalog(context?.modelChain?.[0]?.harness === 'codex' ? 'codex' : 'claude-code'));
       const view = renderSettings();
       await openCapabilities();
-      expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
+      expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
       const publish = () => {
         if (source === 'provider') {
           commitProvidersSnapshot(beginProvidersRefresh(), {
@@ -792,9 +845,9 @@ describe('same-Bot capability updates while editing settings', () => {
       expect(mocks.listCustomMcpServers).toHaveBeenLastCalledWith(expect.objectContaining({ modelChain: next }));
       expect(mocks.listAgentSkills).toHaveBeenLastCalledWith('codex', expect.anything());
       expect(mocks.listToolsets).toHaveBeenLastCalledWith('/bot/workspace', true, expect.objectContaining({ agentKind: 'codex' }));
-      expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
       await act(async () => { mocks.defaultModelChain = capabilities().modelChain; publish(); });
-      expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
+      expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
       expect(mocks.updateBotProfile).not.toHaveBeenCalled();
       view.unmount();
       expect(mocks.updateBotProfile).not.toHaveBeenCalled();
@@ -818,7 +871,7 @@ describe('same-Bot capability updates while editing settings', () => {
     });
     expect(mocks.listCustomMcpServers).toHaveBeenCalledTimes(calls);
     expect(mocks.listCustomMcpServers).toHaveBeenLastCalledWith(expect.objectContaining({ modelChain: [expect.objectContaining({ harness: 'codex', model: 'custom-model' })] }));
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText('bots.nameLabel') as HTMLInputElement).value).toBe('Pending name');
   });
 
@@ -830,14 +883,14 @@ describe('same-Bot capability updates while editing settings', () => {
     expect(mocks.listCustomMcpServers).toHaveBeenLastCalledWith(expect.objectContaining({ agentKind: 'codex', botSessionId: 'bot-1-chat', modelChain: capabilities().modelChain }));
     expect(mocks.listAgentSkills).toHaveBeenLastCalledWith('codex', expect.anything());
     expect(mocks.listToolsets).toHaveBeenLastCalledWith('/bot/workspace', true, expect.objectContaining({ agentKind: 'codex' }));
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
   });
 
   it('refreshes an open panel on pending fallback and ignores unrelated session pushes', async () => {
     mocks.listCustomMcpServers.mockResolvedValue(sseCatalog('claude-code'));
     renderSettings();
     await openCapabilities();
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
     const patched = mocks.onSessionPatched.mock.calls[0]![0];
     await act(async () => {
       patched({ sessionId: 'other', patch: { agentKind: 'codex' } });
@@ -850,7 +903,7 @@ describe('same-Bot capability updates while editing settings', () => {
     await act(async () => { patched({ sessionId: 'bot-1-chat', patch: { runtimePending: pending } }); });
     expect(mocks.listCustomMcpServers).toHaveBeenCalledTimes(2);
     expect(mocks.listCustomMcpServers).toHaveBeenLastCalledWith(expect.objectContaining({ agentKind: 'codex' }));
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
   });
 
   it.each(['deleted', 'unavailable'] as const)('refreshes MCP %s while open and preserves removal of selected references', async (change) => {
@@ -860,22 +913,22 @@ describe('same-Bot capability updates while editing settings', () => {
     expect(mocks.onMcpChanged).not.toHaveBeenCalled();
     mocks.listCustomMcpServers.mockResolvedValue(sseCatalog('claude-code'));
     await openCapabilities();
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(true);
     let finishRefresh!: (result: CustomMcpListResult) => void;
     mocks.listCustomMcpServers.mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
     await act(async () => { mocks.onMcpChanged.mock.calls[0]![0](); });
     // The old available catalog is invalidated immediately, while the selected ref stays removable.
-    expect((screen.getByRole('checkbox', { name: /events/ }) as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole('switch', { name: /events/ }) as HTMLInputElement).disabled).toBe(false);
     await act(async () => { finishRefresh(change === 'deleted' ? { agentKind: 'claude-code', servers: [] }
       : { ...sseCatalog('claude-code'), servers: sseCatalog('claude-code').servers.map((entry) => ({ ...entry, available: false })) }); });
-    const checkbox = screen.getByRole('checkbox', { name: change === 'deleted' ? /events/ : /SSE Events/ }) as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
+    const checkbox = screen.getByRole('switch', { name: change === 'deleted' ? /events/ : /SSE Events/ }) as HTMLInputElement;
+    expect(checkbox.getAttribute('aria-checked') === 'true').toBe(true);
     expect(checkbox.disabled).toBe(false);
     expect(mocks.updateBotProfile).not.toHaveBeenCalled();
     fireEvent.click(checkbox);
     await waitFor(() => expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', { capabilities: { mcpServers: [] }, capabilityBaseline: { mcpServers: ['events'] } }));
     if (change === 'unavailable') expect(checkbox.disabled).toBe(true);
-    else expect(screen.queryByRole('checkbox', { name: /events/ })).toBeNull();
+    else expect(screen.queryByRole('switch', { name: /events/ })).toBeNull();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'bots.settingsBack' })); });
     expect(screen.queryByTestId('bot-capability-editor')).toBeNull();
     expect(off).toHaveBeenCalledOnce();
@@ -892,13 +945,13 @@ describe('same-Bot capability updates while editing settings', () => {
     });
     renderSettings();
     await openCapabilities();
-    expect(screen.getByRole('checkbox', { name: 'old-skill' })).toBeTruthy();
+    expect(screen.getByRole('switch', { name: 'old-skill' })).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'bots.settingsBack' })); });
     expect(screen.queryByTestId('bot-capability-editor')).toBeNull();
     disk = ['new-skill'];
     await openCapabilities();
-    expect(screen.queryByRole('checkbox', { name: 'old-skill' })).toBeNull();
-    expect(screen.getByRole('checkbox', { name: 'new-skill' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'old-skill' })).toBeNull();
+    expect(screen.getByRole('switch', { name: 'new-skill' })).toBeTruthy();
     expect(mocks.listAgentSkills).toHaveBeenLastCalledWith('codex', {
       forceReload: true, workingDir: '/bot/workspace', remoteHostId,
     });
@@ -911,16 +964,16 @@ describe('same-Bot capability updates while editing settings', () => {
     mocks.onMcpChanged.mockReturnValue(off);
     const view = renderSettings();
     await openCapabilities();
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(false);
     let finishOld!: (result: CustomMcpListResult) => void;
     mocks.listCustomMcpServers.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
       .mockResolvedValue({ agentKind: 'claude-code', servers: [] });
     await act(async () => { mocks.onMcpChanged.mock.calls[0]![0](); });
-    expect(screen.queryByRole('checkbox', { name: /SSE Events/ })).toBeNull();
+    expect(screen.queryByRole('switch', { name: /SSE Events/ })).toBeNull();
     await act(async () => { mocks.onMcpChanged.mock.calls[0]![0](); });
     expect(mocks.listCustomMcpServers).toHaveBeenCalledTimes(3);
     await act(async () => { finishOld(sseCatalog('claude-code')); });
-    expect(screen.queryByRole('checkbox', { name: /SSE Events/ })).toBeNull();
+    expect(screen.queryByRole('switch', { name: /SSE Events/ })).toBeNull();
     expect(mocks.updateBotProfile).not.toHaveBeenCalled();
     view.unmount();
     expect(off).toHaveBeenCalledOnce();
@@ -935,9 +988,9 @@ describe('same-Bot capability updates while editing settings', () => {
     await openCapabilities();
     await act(async () => { fireEvent.click(within(screen.getByTestId('bot-primary-model-controls')).getByTestId('codex-model-selector')); });
     expect(mocks.listCustomMcpServers).toHaveBeenLastCalledWith(expect.objectContaining({ modelChain: [expect.objectContaining({ harness: 'codex' })] }));
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
     await act(async () => { finishOld(sseCatalog('claude-code')); });
-    expect((screen.getByRole('checkbox', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: /SSE Events/ }) as HTMLInputElement).disabled).toBe(true);
     expect(mocks.listAgentSkills).toHaveBeenCalledTimes(1);
     expect(mocks.listAgentSkills).toHaveBeenLastCalledWith('codex', expect.anything());
   });
@@ -962,17 +1015,17 @@ describe('same-Bot capability updates while editing settings', () => {
     const view = renderSettings({ capabilities: profile });
     await openCapabilities();
     expect(mocks.listCustomMcpServers).toHaveBeenCalledWith({ agentKind: 'claude-code', botSessionId: 'bot-1-chat', modelChain: profile.modelChain });
-    const unavailable = screen.getByRole('checkbox', { name: /Legacy MCP/ }) as HTMLInputElement;
+    const unavailable = screen.getByRole('switch', { name: /Legacy MCP/ }) as HTMLInputElement;
     expect(unavailable.disabled).toBe(true);
-    expect(unavailable.checked).toBe(false);
+    expect(unavailable.getAttribute('aria-checked') === 'true').toBe(false);
     unavailable.click();
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(mocks.updateBotProfile).not.toHaveBeenCalled();
-    expect((screen.getByRole('checkbox', { name: 'Shared Docs' }) as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole('switch', { name: 'Shared Docs' }) as HTMLInputElement).disabled).toBe(false);
 
     view.rerender(<BotSettings bot={bot({ currentVersion: 2, capabilities: { ...profile, mcpServers: ['bad-headers'] } })} onBack={view.onBack} onOpenSession={view.onOpenSession} />);
     expect(unavailable.disabled).toBe(false);
-    expect(unavailable.checked).toBe(true);
+    expect(unavailable.getAttribute('aria-checked') === 'true').toBe(true);
     fireEvent.click(unavailable);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', { capabilities: { mcpServers: [] }, capabilityBaseline: { mcpServers: ['bad-headers'] } });
@@ -987,20 +1040,20 @@ describe('same-Bot capability updates while editing settings', () => {
       <BotSettings bot={bot(profile)} onBack={view.onBack} onOpenSession={view.onOpenSession} />,
     );
     rerender({ ...selected, currentVersion: 2 });
-    expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(true);
     expect(mocks.updateBotProfile).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('checkbox', { name }));
+    fireEvent.click(screen.getByRole('switch', { name }));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', patch);
     // Restore externally, then remove externally: re-adding must also be dirty.
     rerender({ ...selected, currentVersion: 3 });
     rerender({ ...empty, currentVersion: 4 });
-    expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(false);
-    fireEvent.click(screen.getByRole('checkbox', { name }));
+    expect((screen.getByRole('switch', { name }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(false);
+    fireEvent.click(screen.getByRole('switch', { name }));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(mocks.updateBotProfile).toHaveBeenCalledTimes(2);
     expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', addPatch);
-    expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(true);
   });
 
   it('preserves pending text and per-item choices while incorporating external additions', async () => {
@@ -1008,11 +1061,11 @@ describe('same-Bot capability updates while editing settings', () => {
     const view = renderSettings({ capabilities: capabilities({ toolsetMode: 'allowlist' }) });
     await openCapabilities();
     fireEvent.change(screen.getByLabelText('bots.nameLabel'), { target: { value: 'Local name' } });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Browser' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Browser' }));
     view.rerender(<BotSettings bot={bot({ currentVersion: 2, capabilities: capabilities({ toolsetMode: 'allowlist', toolsets: ['docs'] }) })} onBack={view.onBack} onOpenSession={view.onOpenSession} />);
     expect((screen.getByLabelText('bots.nameLabel') as HTMLInputElement).value).toBe('Local name');
-    expect((screen.getByRole('checkbox', { name: 'Documents' }) as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole('checkbox', { name: 'Browser' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name: 'Documents' }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(true);
+    expect((screen.getByRole('switch', { name: 'Browser' }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', { name: 'Local name', capabilities: { toolsets: ['docs', 'browser'] }, capabilityBaseline: { toolsets: ['docs'] } });
   });
@@ -1056,7 +1109,7 @@ describe('same-Bot capability updates while editing settings', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
     expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', { name: 'Second name' });
     await openCapabilities();
-    expect((screen.getByRole('checkbox', { name: /release-check/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('switch', { name: /release-check/ }) as HTMLButtonElement).getAttribute('aria-checked') === 'true').toBe(true);
   });
 
   it('keeps a failed optimistic edit dirty and retries it after a profile rollback', async () => {
@@ -1079,10 +1132,10 @@ describe('same-Bot capability updates while editing settings', () => {
   it('uses host availability and still allows removing a joined unavailable toolset', async () => {
     const view = renderSettings();
     await openCapabilities();
-    expect((screen.getByRole('checkbox', { name: /Contacts/ }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: /Contacts/ }) as HTMLInputElement).disabled).toBe(true);
     view.rerender(<BotSettings bot={bot({ currentVersion: 2, capabilities: capabilities({ toolsetMode: 'allowlist', toolsets: ['contacts'] }) })} onBack={view.onBack} onOpenSession={view.onOpenSession} />);
-    expect((screen.getByRole('checkbox', { name: /Contacts/ }) as HTMLInputElement).disabled).toBe(false);
-    fireEvent.click(screen.getByRole('checkbox', { name: /Contacts/ }));
+    expect((screen.getByRole('switch', { name: /Contacts/ }) as HTMLInputElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('switch', { name: /Contacts/ }));
     await waitFor(() => expect(mocks.updateBotProfile).toHaveBeenLastCalledWith('bot-1', { capabilities: { toolsets: [] }, capabilityBaseline: { toolsets: ['contacts'] } }));
   });
 });

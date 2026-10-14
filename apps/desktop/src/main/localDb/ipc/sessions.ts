@@ -64,10 +64,11 @@ import { ensureDialogueWorkspaceDir } from '../dialogueWorkspace';
 import { recomputePrRefsForSession } from '../../git-context/prRefsStore';
 import * as imageCacheStore from '../../imageCacheStore';
 import { removeSessionRefsIfDeleted as removeDeletedSessionMediaRefs } from '../../cindy-media/ledger';
-import { removeWechatSessionAttachmentDir } from '../../im/wechat/mediaStaging';
+import { imAttachmentsRoot, removeImSessionAttachmentDirs } from '../../im/shared/inboundFileStaging';
 import { upsertRecentWorkdir } from './recentWorkdirs';
 import { createLogger } from '../../logger';
 import {
+  DESKTOP_TASK_LIST_SESSION_SOURCES,
   DESKTOP_VISIBLE_SESSION_SOURCES,
   isRetainableProjectSession,
 } from '../../../shared/sessionSource.js';
@@ -146,8 +147,6 @@ function compactTerminalSessionToolResults(
   });
 }
 type OwnerScope = ReturnType<typeof broadcastTap.captureDataOwnerBroadcastScope> | null;
-type SessionRemovalCancelOperations = (sessionId: string) => Promise<void>;
-type SessionRemovalCleanup = (sessionId: string) => Promise<void>;
 type SessionWorktreeRecycle = (sessionId: string, resources?: readonly string[]) => Promise<void>;
 export interface SessionRecycleScope {
   ownerScope: OwnerScope;
@@ -160,24 +159,7 @@ export interface RegisterSessionIpcOpts {
   /** Close a local Pi/Codex runtime only if its current turn is idle. */
   closeIdleSessionForMove?: (sessionId: string) => Promise<boolean>;
 }
-
-let sessionRemovalCancelOperations: SessionRemovalCancelOperations | null = null;
-let sessionRemovalCleanup: SessionRemovalCleanup | null = null;
 let sessionWorktreeRecycle: SessionWorktreeRecycle | null = null;
-
-/** Composition-root injection for Host-owned operations that must stop before worktree recycle. */
-export function setSessionRemovalCancelOperations(
-  cancelOperations: SessionRemovalCancelOperations | null,
-): void {
-  sessionRemovalCancelOperations = cancelOperations;
-}
-
-/** Composition-root injection for destructive cleanup after removal is revalidated. */
-export function setSessionRemovalCleanup(
-  cleanupRemovedSession: SessionRemovalCleanup | null,
-): void {
-  sessionRemovalCleanup = cleanupRemovedSession;
-}
 
 /** Composition-root injection keeps the localDb IPC layer independent of worktree implementation modules. */
 export function setSessionWorktreeRecycle(recycle: SessionWorktreeRecycle | null): void {
@@ -476,8 +458,7 @@ function broadcastWorktreeChanged(sessionId: string): void {
  * fire-and-forget:回收失败不影响状态写库(启动期 reconcile 兜底 deleted 场景)。
  * 先关子进程再回收——Windows 下 CLI 子进程 cwd 在 worktree 内会锁目录。
  * 既有动态 import 避免 localDb → maker-host / worktree 的静态模块环(worktreeStore
- * 反向 import 本文件的 setWorktreePathInDb)。Simulator 清理由启动组合层静态注入，
- * 避免在回收临界路径上延迟加载带原生副作用的 Host 模块。
+ * 反向 import 本文件的 setWorktreePathInDb)。
  *
  * 只为真正进入低层 worktree 回收的 session 广播。普通通知任务没有 worktree，仍会
  * 完成 runtime / media / owner 扫描，但不会让 renderer 扫描全部 worktree。共享路径
@@ -512,11 +493,6 @@ async function recycleSessionWorktreeInQueue(
     const ownerIsCurrent = (): boolean =>
       isOwnerScopeCurrent(ownerScope) && getDbClient().drizzle === mediaDb;
     if (!ownerIsCurrent()) return;
-    const cancelOperations = sessionRemovalCancelOperations;
-    const cleanupRemovedSession = sessionRemovalCleanup;
-    if (!cancelOperations || !cleanupRemovedSession) {
-      throw new Error('iOS Simulator session cleanup is not configured');
-    }
     const [mh, recycle] = await Promise.all([
       import('../../maker-host/index.js'),
       import('../../worktree/sessionRemovalRecycle.js'),
@@ -531,8 +507,6 @@ async function recycleSessionWorktreeInQueue(
         const shouldRecycle = await quiesceSessionBeforeWorktreeRecycle(targetSessionId, {
           isOwnerCurrent: ownerIsCurrent,
           isSessionStillRemovable: isStillRemovable,
-          cancelSessionOperations: cancelOperations,
-          cleanupRemovedSession,
           closeSession: async (id) => {
             await mh
               .getMakerIfReady()
@@ -584,7 +558,7 @@ async function recycleSessionWorktreeInQueue(
   }
 }
 
-function scheduleWorktreeRecycleForStatusChange(
+export function scheduleWorktreeRecycleForStatusChange(
   sessionId: string,
   status: unknown,
   capturedScope?: SessionRecycleScope,
@@ -671,6 +645,8 @@ export async function applyAgentSwitchToSessionRow(
     effort?: string;
     fastMode?: boolean;
     contextWindow?: number | null;
+    /** 远程 Agent 换电脑:undefined = 不动,null = 改回任务所在电脑。 */
+    agentDeviceId?: string | null;
   },
 ): Promise<void> {
   const ownerScope = captureOwnerScope();
@@ -683,6 +659,7 @@ export async function applyAgentSwitchToSessionRow(
     updatedAt: Date.now(),
   };
   if (patch.providerId !== undefined) setObj.providerId = patch.providerId;
+  if (patch.agentDeviceId !== undefined) setObj.agentDeviceId = patch.agentDeviceId;
   // effort 值域由 renderer 按目标引擎 capabilities 解析(schema 列是字面量联合,
   // 跨层传输后此处以 string 到达;非法值与直改 DB 同级,运行时由引擎侧收敛)。
   // 固定 effort 模型运行时为 null；sessions.effort NOT NULL，省略该字段。
@@ -709,6 +686,7 @@ export async function applyAgentSwitchToSessionRow(
       model: patch.model,
       sdkSessionId: nextSdkSessionId,
       ...(patch.providerId !== undefined ? { providerId: patch.providerId } : {}),
+      ...(patch.agentDeviceId !== undefined ? { agentDeviceId: patch.agentDeviceId } : {}),
       ...(persistableEffort !== undefined ? { effort: persistableEffort } : {}),
       ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
       ...(typeof patch.contextWindow === 'number' && patch.contextWindow > 0
@@ -852,10 +830,18 @@ export interface SessionRowSnapshot {
   providerId: string | null;
   /** Hook exact-takeover must reject SSH-owned sessions. */
   remoteHostId?: string | null;
+  /** 远程 Agent 所在电脑(null = 本机);限额自动继续据此不拿本机账号快照推算。 */
+  agentDeviceId?: string | null;
   /** Hook exact-takeover must reject internal Orca worker sessions. */
   orcaRole?: 'lead' | 'worker' | null;
+  /** 协同远端 Worker 标记(raw JSON);非空时不能再开启协同。 */
+  orcaRemoteLead?: string | null;
   /** Collab policy gate: remote session 的 codex / claude-code 均放行。 */
   agentKind?: string | null;
+  /** 会话来源(`bot` = 伙伴会话);限额自动继续据此排除伙伴。 */
+  source?: string | null;
+  /** 会话当前模型;限额判定据此只看该模型的额度窗口。 */
+  model?: string | null;
   /** Authoritative `/clear` visibility boundary (unix ms). */
   clearedAt?: number | null;
 }
@@ -876,8 +862,12 @@ async function selectSessionRowSnapshot(id: string): Promise<SessionRowSnapshot 
       providerId: sessions.providerId,
       clearedAt: sessions.clearedAt,
       remoteHostId: sessions.remoteHostId,
+      agentDeviceId: sessions.agentDeviceId,
       orcaRole: sessions.orcaRole,
+      orcaRemoteLead: sessions.orcaRemoteLead,
       agentKind: sessions.agentKind,
+      source: sessions.source,
+      model: sessions.model,
     })
     .from(sessions)
     .where(eq(sessions.id, id))
@@ -1270,6 +1260,34 @@ export function registerSessionIpc(
       const cap = clampLimit(limit, 20);
       const includePinned = shouldIncludePinnedSessions(options);
       const fresh = shouldBypassSessionListSingleFlight(options);
+      const rawBefore = options && typeof options === 'object' ? (options as { before?: unknown }).before : undefined;
+      let before: { updatedAt: number; id: string } | undefined;
+      if (rawBefore !== undefined) {
+        // Pagination is local renderer-only until remote capability negotiation exists.
+        assertTrustedAppRendererEvent(event);
+        const value = requireObject(rawBefore, 'before');
+        if (typeof value.updatedAt !== 'number' || !Number.isSafeInteger(value.updatedAt) || value.updatedAt < 0
+          || typeof value.id !== 'string' || !value.id || value.id.length > 200 || usageHistory || includePinned) {
+          throwIpcError('INVALID_PARAMS', 'Invalid session list cursor');
+        }
+        before = { updatedAt: value.updatedAt, id: value.id };
+      }
+
+      const rawIds = options && typeof options === 'object' ? (options as { ids?: unknown }).ids : undefined;
+      let ids: string[] | undefined;
+      if (rawIds !== undefined) {
+        // Exact-subset pagination remains local-only, like the continuation cursor.
+        assertTrustedAppRendererEvent(event);
+        if (!Array.isArray(rawIds) || rawIds.length > 10_000 || usageHistory || includePinned) {
+          throwIpcError('INVALID_PARAMS', 'Invalid session list IDs');
+        }
+        ids = [...new Set(rawIds.map((id, index) => {
+          const value = requireString(id, `ids[${index}]`);
+          if (value.length > 256) throwIpcError('INVALID_PARAMS', 'Session list ID too long');
+          return value;
+        }))];
+      }
+
       // 支持 Sidebar Filter 的 Active/Archived/All status 过滤。
       //   - 'active' / 'archived' → WHERE status = ?
       //   - 'all' / undefined / 其它非法值 → WHERE status != 'deleted'
@@ -1278,13 +1296,15 @@ export function registerSessionIpc(
       const statusFilter: 'active' | 'archived' | null =
         status === 'active' || status === 'archived' ? status : null;
       const loadRows = async () => {
+        if (ids?.length === 0) return [];
         // 按 DESKTOP_VISIBLE_SESSION_SOURCES 白名单过滤 — 包含 IM 渠道
         // (feishu/slack/discord)与本机自动化(scheduler/learn/shared);
-        // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。
-        const sourceFilter = inArray(sessions.source, DESKTOP_VISIBLE_SESSION_SOURCES);
+        // feishu 会话以「对话」分组展示(workspaceKind='dialogue')。/review 审查任务
+        // 只从来源任务的审查卡片打开,不进普通任务列表(用量历史仍包含)。
+        const sourceFilter = inArray(sessions.source, DESKTOP_TASK_LIST_SESSION_SOURCES);
         const statusWhere = () =>
           statusFilter ? eq(sessions.status, statusFilter) : ne(sessions.status, 'deleted');
-        const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere()), cap);
+        const rows = await selectSessionListRows(db, and(sourceFilter, statusWhere(), ids ? inArray(sessions.id, ids) : undefined), cap, before);
 
         let mergedRows = rows;
         if (includePinned) {
@@ -1317,7 +1337,7 @@ export function registerSessionIpc(
       // forceRefresh / status 重拉带 fresh，不并入写前那次查询。
       const result = usageHistory
         ? await loadUsageHistoryRows()
-        : userId && !fresh
+        : userId && !fresh && !before && !ids
           ? await runSessionListSingleFlight(
               buildSessionListFlightKey({
                 userId,
@@ -1387,6 +1407,14 @@ export function registerSessionIpc(
       !ALLOWED_ORCA_ROLES.has(bodyObj.orcaRole as string)
     ) {
       throwIpcError('INVALID_PARAMS', `invalid orcaRole: ${String(bodyObj.orcaRole)}`);
+    }
+    // Agent 在同账号另一台电脑运行：只接受设备 id 形态的值(与 maker:create-session 同一规则)。
+    if (
+      bodyObj.agentDeviceId !== undefined &&
+      bodyObj.agentDeviceId !== null &&
+      (typeof bodyObj.agentDeviceId !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(bodyObj.agentDeviceId))
+    ) {
+      throwIpcError('INVALID_PARAMS', 'agentDeviceId must be a device id');
     }
     const workspaceKind =
       (createBody?.workspaceKind as 'project' | 'dialogue' | undefined) ?? 'project';
@@ -2187,12 +2215,6 @@ export async function patchSessionMetaInDb(
         err: err instanceof Error ? err.message : String(err),
       });
     });
-    void removeWechatSessionAttachmentDir(sessionId).catch((err) => {
-      log.warn('WeChat session attachment cleanup failed', {
-        sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    });
   }
   cleanupSessionTerminalArtifacts(sessionId, patch.status);
   scheduleWorktreeRecycleForStatusChange(sessionId, patch.status, { ownerScope, mediaDb: db });
@@ -2494,7 +2516,7 @@ export async function deleteBotProfileAndDetachSessionsInDb(
       void imageCacheStore.removeSession(id).catch((error) => {
         log.warn('Bot task image cleanup failed', { sessionId: id, error: String(error) });
       });
-      void removeWechatSessionAttachmentDir(id).catch((error) => {
+      void removeImAttachmentsIfStillDeleted(id).catch((error) => {
         log.warn('Bot task attachment cleanup failed', { sessionId: id, error: String(error) });
       });
       void removeDeletedSessionMediaRefs(id, db).catch((error) => {
@@ -2717,6 +2739,33 @@ export async function resumeDeletedPiSubagentCleanup(): Promise<void> {
  * delete additionally stops and removes detached PI Subagents owned by the
  * parent task. All status writers must pass through this helper.
  */
+/**
+ * 个人 IM 附件目录的删除清理是异步的, 两类后到事件都不能让它删错:
+ *   - 同账号内, 确定性 IM 任务删除后再来消息会把同一 session id 原地复活并往同一目录
+ *     领养新附件 —— 在路由锁内复查任务仍是 deleted(行不存在也算)再删, 复活就保留;
+ *     读库失败按保留处理(宁可多留不可误删);
+ *   - 删除后切换账号, 另一账号可能有同 id 的任务 —— 目录根与账号作用域都在发起删除时
+ *     同步捕获: 只删发起账号自己的目录; 账号已切走时发起账号的任务不可能再被复活,
+ *     不再读(新账号的)库, 直接按捕获的根目录清理。
+ * 本函数须在发起删除的同步上下文里调用(捕获发生在第一个 await 之前)。
+ */
+function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
+  const ownerScope = captureOwnerScope();
+  const root = imAttachmentsRoot();
+  return withSessionRouteLock(sessionId, async () => {
+    if (isOwnerScopeCurrent(ownerScope)) {
+      let row: SessionRowSnapshot | null;
+      try {
+        row = await getSessionRowSnapshotStrict(sessionId);
+      } catch {
+        return;
+      }
+      if (row && row.status !== 'deleted') return;
+    }
+    await removeImSessionAttachmentDirs(sessionId, root);
+  });
+}
+
 function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): void {
   if (status !== 'deleted' && status !== 'archived') return;
   if (status === 'deleted') {
@@ -2727,6 +2776,13 @@ function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): vo
       });
     });
     scheduleDeletedPiSubagentCleanup(sessionId);
+    // 个人 IM 渠道(含微信)入站文件随任务删除清理 —— 归档保留, 与微信既有口径一致。
+    void removeImAttachmentsIfStillDeleted(sessionId).catch((err) => {
+      log.warn('IM session attachment cleanup failed', {
+        sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
   const attachRoot = path.join(app.getPath('userData'), 'hook-attachments');
   const attachDir = path.join(attachRoot, sessionId);

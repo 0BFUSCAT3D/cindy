@@ -96,6 +96,11 @@ export interface TaskMigrationView {
   error?: string;
   /** Project-relative entry blamed for `error` (e.g. a non-portable name). Absent on older hosts. */
   errorPath?: string;
+  /**
+   * Entries the copy left behind (a directory stands for its subtree), with why; `entries` is
+   * capped and `total` counts them all. Absent when nothing was skipped or on older hosts.
+   */
+  skipped?: { total: number; entries: Array<{ path: string; code: string }> };
   projects?: string[];
   agents?: Array<"cc" | "codex" | "pi">;
   /** Entire Orca graph, native contexts and per-member workspaces. Absence means unsupported. */

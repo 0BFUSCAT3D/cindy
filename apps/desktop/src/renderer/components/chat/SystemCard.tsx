@@ -1,3 +1,5 @@
+import { formatCompactionDuration, formatSessionDuration, formatShellDuration } from '@/lib/sessionDurationFormat';
+import { InputHandoffRecordRow, readInputHandoffRecordData } from '@/features/input-handoff/InputHandoffRecordRow';
 import { Button } from '@/components/ui/button';
 import { BotSessionTaskResultCard } from '@/features/bots/BotSessionTaskResultCard';
 /**
@@ -50,12 +52,12 @@ import {
   ACTIVITY_ROW_RADIUS_CLASS,
 } from './activityRowChrome';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { CindyMakeDoctorCard } from './CindyMakeDoctorCard';
 import { builtInSkillDescriptionKey } from '@/features/skillhub/lib/builtInSkillPresentation';
-import { CindyMakeCompleteCard } from '@/components/cindy-make/CindyMakeCompleteCard';
+import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 
 interface SystemCardProps {
   cardType:
+    | 'input-handoff'
     | 'cindy-make-doctor'
     | 'cindy-make'
     | 'help'
@@ -770,7 +772,9 @@ function CompactBoundaryCard({ data }: { data?: Record<string, unknown> }) {
   // post_tokens / duration_ms fields.
   const stats: string[] = [];
   if (saved > 0) stats.push(t('chat.systemCard.compact.savedTokens', { tokens: fmtTokens(saved) }));
-  if (durationMs > 0) stats.push(`${(durationMs / 1000).toFixed(1)}s`);
+  if (durationMs > 0) {
+    stats.push(formatCompactionDuration(durationMs, t));
+  }
   const triggerLabel =
     trigger === 'manual' ? t('chat.systemCard.compact.manual') : t('chat.systemCard.compact.auto');
 
@@ -801,14 +805,6 @@ function CompactBoundaryCard({ data }: { data?: Record<string, unknown> }) {
  * 它不是要读的信息面板,而是会话里的一条达成标记("目标已达成 · N 轮 · 耗时 X")。
  * 由 mapServerMessages 从持久化的 agentMeta.goalCompletion 派生(重开会话仍在)。
  */
-function fmtGoalDuration(ms: number): string {
-  const totalSec = Math.max(0, Math.round(ms / 1000));
-  if (totalSec < 60) return `${totalSec}s`;
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
-}
-
 function GoalCompleteCard({ data }: { data?: Record<string, unknown> }) {
   const { t } = useTranslation();
   const turnsUsed = typeof data?.turnsUsed === 'number' ? data.turnsUsed : 0;
@@ -816,7 +812,7 @@ function GoalCompleteCard({ data }: { data?: Record<string, unknown> }) {
   const reason = typeof data?.reason === 'string' ? data.reason : '';
   const label = t('goal.complete.record', {
     turns: turnsUsed,
-    duration: fmtGoalDuration(elapsedMs),
+    duration: formatSessionDuration(elapsedMs, t, { minimumSeconds: 0 }),
   });
 
   return (
@@ -948,7 +944,11 @@ function AutoResumeActionRow({
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const hasProgress = info.attempt !== undefined && info.maxAttempts !== undefined;
+  // 用量上限重置后的自动继续不是重连：不展示「第几次重试 / 累计重连」。
+  const usageLimitReset = info.usageLimitReset === true;
+  const hasProgress =
+    !usageLimitReset && info.attempt !== undefined && info.maxAttempts !== undefined;
+  const showSessionTotal = !usageLimitReset && info.sessionTotal !== undefined;
   // **转圈的判据是"此刻真的有 turn 在跑",不是"是不是 ephemeral 行"。**
   //
   // 一次中断的进行中状态跨两种载体:退避那 3–20 秒是 ephemeral 行(state='live'),续跑
@@ -963,7 +963,22 @@ function AutoResumeActionRow({
   //   - 已回填          → ✓ / ✗ 定格,`inFlight` 不参与(终态优先)
   const live = state === 'live' || (inFlight === true && info.outcome === undefined);
   const outcome = live ? undefined : info.outcome;
-  const label = live
+  const label = info.groupSwitchPending
+    ? t('chat.systemCard.autoResumePending.groupSwitch')
+    : info.agentSwitch
+    ? t(`chat.systemCard.autoResume.agentSwitch.${info.agentSwitch.cause}`, {
+        from: info.agentSwitch.from,
+        to: info.agentSwitch.to,
+      })
+    : info.agentReconnect
+    ? info.agentReconnect.computer
+      ? t('chat.systemCard.autoResume.agentReconnect.named', { computer: info.agentReconnect.computer })
+      : t('chat.systemCard.autoResume.agentReconnect.unnamed')
+    : info.groupSwitch
+    ? t('chat.systemCard.autoResume.groupSwitch')
+    : usageLimitReset
+    ? t('chat.systemCard.autoResume.labelUsageReset')
+    : live
     ? hasProgress
       ? t('chat.systemCard.autoResumePending.labelWithProgress', {
           attempt: info.attempt,
@@ -975,8 +990,10 @@ function AutoResumeActionRow({
       : outcome === 'failed'
         ? t('chat.systemCard.autoResume.labelFailed')
         : t('chat.systemCard.autoResume.labelNeutral');
-  const summary = summarizeInterruption(info.error);
-  const canExpand = Boolean(info.error) || hasProgress || info.sessionTotal !== undefined;
+  // 供应商组正在换电脑时错误先不呈现：行内不带原始错误(它只用来认出终态 event 的回声)。
+  const shownError = info.groupSwitchPending ? undefined : info.error;
+  const summary = summarizeInterruption(shownError);
+  const canExpand = Boolean(shownError) || hasProgress || showSessionTotal;
   return (
     <div className="flex flex-col">
       <button
@@ -1054,7 +1071,7 @@ function AutoResumeActionRow({
               </pre>
             </>
           )}
-          {(hasProgress || info.sessionTotal !== undefined) && (
+          {(hasProgress || showSessionTotal) && (
             <div className={cn('flex flex-wrap gap-x-4 gap-y-[2px] text-12', info.error && 'mt-2')}>
               {hasProgress && (
                 <span>
@@ -1064,7 +1081,7 @@ function AutoResumeActionRow({
                   })}
                 </span>
               )}
-              {info.sessionTotal !== undefined && (
+              {showSessionTotal && (
                 <span>
                   {t('chat.systemCard.autoResume.detail.sessionTotal', {
                     count: info.sessionTotal,
@@ -1102,7 +1119,28 @@ function isEnglishSourceHandoff(handoff: string): boolean {
  * 的上下文摘要全文)——默认不打扰,想看时可核查我们替用户做了什么交接。
  * 全灰度(docs/design-rules/cindy-design-system.md §4),无 chromatic 色;展开面板复用 msg-tool 系 token。
  */
-function AgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
+/**
+ * 远程 Agent 换电脑的分隔条文案:只有边界行带 toAgentDeviceId 时才是换电脑。null = 任务所在电脑 ——
+ * 在本机打开的任务就是「本机」;远程控制另一台电脑上的任务时那台不是本机,用切换时快照的名字。
+ */
+function agentRelocationLabel(
+  data: Record<string, unknown> | undefined,
+  sessionId: string | undefined,
+  t: ReturnType<typeof useTranslation>['t'],
+): string | null {
+  if (!data || !('toAgentDeviceId' in data)) return null;
+  const name =
+    typeof data.toAgentDeviceName === 'string' && data.toAgentDeviceName ? data.toAgentDeviceName : null;
+  if (data.toAgentDeviceId === null && (!sessionId || !getSessionDeviceId(sessionId))) {
+    return t('chat.systemCard.agentSwitch.relocatedHere');
+  }
+  if (name) return t('chat.systemCard.agentSwitch.relocatedTo', { device: name });
+  return data.toAgentDeviceId === null
+    ? t('chat.systemCard.agentSwitch.relocatedTaskComputer')
+    : t('chat.systemCard.agentSwitch.relocatedElsewhere');
+}
+
+function AgentSwitchCard({ data, sessionId }: { data?: Record<string, unknown>; sessionId?: string }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const engineLabel = (kind: unknown): string =>
@@ -1111,7 +1149,9 @@ function AgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const toLabel = engineLabel(data?.toAgentKind);
   const toModel = typeof data?.toModel === 'string' ? data.toModel : '';
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
-  const label = t('chat.systemCard.agentSwitch.label', { from: fromLabel, to: toLabel });
+  const label =
+    agentRelocationLabel(data, sessionId, t) ??
+    t('chat.systemCard.agentSwitch.label', { from: fromLabel, to: toLabel });
 
   return (
     <div className="w-full select-none py-2" role="separator" aria-label={label}>
@@ -1268,6 +1308,13 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
   const reviewerSessionId =
     typeof data?.reviewerSessionId === 'string' ? data.reviewerSessionId : '';
   const result = typeof data?.result === 'string' ? data.result : '';
+  const workspace = data?.workspace && typeof data.workspace === 'object'
+    ? data.workspace as Record<string, unknown> : null;
+  const reviewedDir = typeof workspace?.workingDir === 'string' ? workspace.workingDir : workingDir;
+  const reviewedBase = typeof workspace?.baseRef === 'string' ? workspace.baseRef : '';
+  const additionalDirs = Array.isArray(workspace?.additionalWorkingDirs)
+    ? workspace.additionalWorkingDirs.filter((dir): dir is string => typeof dir === 'string' && !!dir)
+    : [];
   const error = typeof data?.error === 'string' ? data.error : '';
   const failureCode =
     readReviewFailureCode(data?.failureCode) ?? reviewFailureCodeFromLegacyError(error);
@@ -1301,13 +1348,32 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
             compact
             tone="quiet"
             type="button"
-            onClick={() => navigate(`/cc-agent/${reviewerSessionId}`)}
+            onClick={() =>
+              navigate(`/cc-agent/${reviewerSessionId}`, {
+                state: {
+                  from: 'review-source',
+                  sourceSessionId:
+                    typeof data?.sourceSessionId === 'string' ? data.sourceSessionId : undefined,
+                },
+              })
+            }
           >
             {t('chat.systemCard.review.openTask')}
             <ArrowRight size={12} />
           </Button>
         )}
       </div>
+      {workspace && reviewedDir && (
+        <p className="mt-1 break-all pl-[23px] text-xs text-muted-foreground">
+          {t('chat.systemCard.review.directory')}{reviewedDir}
+          {reviewedBase && <> · {t('chat.systemCard.review.baseline')}{reviewedBase}</>}
+        </p>
+      )}
+      {workspace && additionalDirs.length > 0 && (
+        <p className="mt-0.5 break-all pl-[23px] text-xs text-muted-foreground">
+          {t('chat.systemCard.review.additionalDirectories')}{additionalDirs.join(', ')}
+        </p>
+      )}
       {status === 'running' && (
         <p className="mt-1 pl-[23px] text-xs text-muted-foreground">
           {t('chat.systemCard.review.readOnlyHint')}
@@ -1323,12 +1389,13 @@ function ReviewCard({ data, workingDir }: { data?: Record<string, unknown>; work
           {failureMessage}
         </p>
       )}
-      {(status === 'completed' || status === 'stale') && result && (
+      {result && status !== 'running' && (
         <div className="mt-3 border-t border-border pt-3">
+          {status === 'failed' && <p className="mb-2 text-xs text-muted-foreground">{t('chat.systemCard.review.unverifiedResult')}</p>}
           <MarkdownRenderer
             content={result}
-            workingDir={workingDir ?? ''}
-            allowPrivilegedLinks={status !== 'stale'}
+            workingDir={reviewedDir ?? ''}
+            allowPrivilegedLinks={status === 'completed'}
           />
         </div>
       )}
@@ -1343,10 +1410,12 @@ export function SystemCard({
   workingDir,
   autoResumeInFlight,
 }: SystemCardProps) {
+  if (
+    cardType === 'cindy-make-doctor' ||
+    cardType === 'cindy-make' ||
+    cardType === 'cindy-make-complete'
+  ) return null;
   switch (cardType) {
-    case 'cindy-make-doctor':
-    case 'cindy-make':
-      return <CindyMakeDoctorCard data={data} sessionId={sessionId} />;
     case 'help':
       return <HelpCard data={data} />;
     case 'cost':
@@ -1365,8 +1434,6 @@ export function SystemCard({
       return <GoalCompleteCard data={data} />;
     case 'goal-resumed':
       return <GoalResumedCard data={data as { kind?: string } | undefined} />;
-    case 'cindy-make-complete':
-      return <CindyMakeCompleteCard data={data} />;
     case 'auto-resume': {
       // 同一个卡类型承载两套自愈:带中断上下文的是本份的「重连」记录,没有的是 silent-stop
       // 的「已自动继续」分隔条 —— 后者保持原形态原文案,不被重连三态改写(copilot review)。
@@ -1380,7 +1447,7 @@ export function SystemCard({
     case 'auto-resume-pending':
       return <AutoResumeActionRow state="live" info={readAutoResumeInfo(data)} />;
     case 'agent-switch':
-      return <AgentSwitchCard data={data} />;
+      return <AgentSwitchCard data={data} sessionId={sessionId} />;
     case 'context-rebuild':
       return <ContextRebuildCard data={data} />;
     case 'learn':
@@ -1397,6 +1464,10 @@ export function SystemCard({
       return <BotAuthorizationCardView data={data} sessionId={sessionId} />;
     case 'bot-direct-message':
       return <BotDirectMessageCard data={data} sessionId={sessionId} />;
+    case 'input-handoff': {
+      const record = readInputHandoffRecordData(data);
+      return record ? <InputHandoffRecordRow record={record} at={typeof data?.at === 'string' ? data.at : undefined} /> : null;
+    }
     default:
       return null;
   }
@@ -1411,6 +1482,7 @@ export function SystemCard({
 // apps/desktop/src/main/commands/builtins.ts:CmdExecutionResult。
 
 function CmdCard({ data }: { data?: Record<string, unknown> }) {
+  const { t } = useTranslation();
   const cmdLine = (data?.cmdLine as string) ?? '';
   const cwd = (data?.cwd as string) ?? '';
   const exitCode = (data?.exitCode as number) ?? -1;
@@ -1458,7 +1530,9 @@ function CmdCard({ data }: { data?: Record<string, unknown> }) {
       <div className="flex items-center gap-2">
         <span className={cn(titleClass, 'mb-0')}>$ Shell</span>
         {statusChip}
-        <span className={cn(labelClass, 'text-12 ml-auto')}>{elapsedMs}ms</span>
+        <span className={cn(labelClass, 'text-12 ml-auto')}>
+          {formatShellDuration(elapsedMs, t)}
+        </span>
       </div>
 
       <pre className={cmdLineClass}>{cmdLine || '<empty>'}</pre>

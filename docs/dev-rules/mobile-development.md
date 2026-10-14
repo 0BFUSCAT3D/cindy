@@ -89,6 +89,18 @@ pnpm --filter mobile test:smoke
 - 旧 AsyncStorage 消息按需迁移：仅在文件缺失时读取旧条目，成功原子写入后再删除旧值；
   失败保留旧条目。回退到旧版不会读取新文件，会重新从主机获取消息。
   迁移与同一任务的写入／删除共用队列，退出账号等待在途迁移后清理两种存储。
+- 每次启动把剩余旧 AsyncStorage 消息条目逐条迁成文件（走同一按需迁移与按 key 队列，
+  成功后才删旧值；同 key 已有文件时以文件为准，只删旧值）：未打开会话的旧副本会占满 Android AsyncStorage 的 6 MiB 库，使发件箱、
+  草稿写入报 `SQLITE_FULL`（#5403）。旧副本含没有服务端副本的 `mobile-system-*` 卡片，
+  不能直接丢弃。
+- 发件箱写入遇到 `SQLITE_FULL` 时先执行上述迁移再重试一次；仍失败提示「手机本地存储已满」，
+  不把原始 SQLite 报错直接给用户，也不清理草稿、发件箱或其他非缓存数据。
+- 发送消息先沿用持久化发件箱保存；电脑上的用户消息已落库后，还须确认手机重开时使用的
+  历史快照已写入本地，才释放发件箱记录。快照尚旧或写入失败时保留原记录，退出、离线
+  重开仍能显示，后续按 `clientId` 与正式历史去重。已交给电脑的消息在任务不可见时不为
+  显示交接继续轮询或保留原始消息窗口；重新进入后沿用现有调度完成交接。旧电脑使用原始
+  消息窗口缓存；消息已经早于最近缓存窗口时正常交接，不在末尾留下旧的待发送气泡。
+  实现与回归见 `outboxHistoryCache.ts`、`outboxHistoryCache.test.ts`、`durableOutbox.test.ts`。
 - 删除逐项尝试旧条目和文件，不依赖新增文件写入；任一后端失败不阻止另一后端清理，
   单个文件失败也不阻止后续文件删除，全部尝试结束后统一报告失败。清理报错时可能仍有
   无法删除的残留，不能视为清理成功。新登录或切换账号必须在持久化
@@ -96,8 +108,7 @@ pnpm --filter mobile test:smoke
   退出账号仍完成凭证清除；若缓存清理失败，下次登录会先重试。无有效账号期间禁止
   读取或写入消息缓存，避免退出后的卸载回调重新落盘。
 - 首页分组等偏好继续使用 AsyncStorage。合并保存时读失败不得当成空配置；写失败
-  必须向用户提示，不能把未落盘的选择当成已保存。旧消息只按需迁移，升级首次启动
-  不会立即释放所有旧数据库占用。
+  必须向用户提示，不能把未落盘的选择当成已保存。
 - 文件写入失败（含磁盘空间不足）会提示检查剩余空间，并说明离线内容可能不完整。
   同一次启动最多提示一次，后台失败延后到前台提示；不把所有 I/O 错误都断言为磁盘已满。
 
@@ -227,8 +238,16 @@ Mobile 用 `runtimeVersion.policy: "fingerprint"`:OTA 热更只在**指纹一致
 启动检查、设置页与强制更新屏共用 `src/update/useBundleUpdatePrompt.ts` 的安装出口。
 Android 8 及以上的新原生包优先应用内下载 HTTPS APK；Android 7、旧包缺少
 `CindyAppInstaller`，或安装地址是网页时，继续使用浏览器。权限由自建构建的
-`app.config.js` 声明；同流程生成的官网 APK 和 Google Play AAB 当前共享这一原生配置，
-EAS 商店构建不声明。
+`app.config.js` 声明；Global 在同一次 Expo prebuild 后配置 `website` / `play` 变体：
+官网 APK 保留 `REQUEST_INSTALL_PACKAGES`，Play AAB 通过 Manifest overlay 移除该权限。
+变体只修改生成的 Android 工程，不修改 Expo 配置或 fingerprint 输入；EAS 商店构建不声明
+该权限。
+
+`scripts/build-android.mjs --region global --execute` 在输出产物前自动读取官网 APK 的
+权限和 Play AAB 内嵌的最终 Manifest，分别要求有／无安装权限，并回读两份产物的
+runtimeVersion 要求一致；读取失败或不满足条件即停止构建交付。此校验随每次实际构建执行，
+覆盖最终 Manifest 合并结果。`androidLocal.test.ts` 只验证变体 patch 和权限断言，不能替代
+Expo prebuild + Gradle 的实包验证；验证构建链时需保留上述实际产物校验结果。
 
 Global 自建 APK 与 Google Play AAB 共用自建 OTA 配置和原生构建流程，不能仅凭
 `IS_OTA_SELFHOST` 判断整包更新渠道。Android 原生安装桥读取系统记录的 installer：

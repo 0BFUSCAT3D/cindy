@@ -59,7 +59,6 @@ describe("ConversationShareSvg", () => {
             {
               clientId: "m",
               kind,
-              automationOriginLabel: "automation",
               body: "body",
               attachments: [
                 { kind: "image", name: "first", uri: "first" },
@@ -85,7 +84,6 @@ describe("ConversationShareSvg", () => {
           })),
         ].sort((a, b) => a.y - b.y);
         expect(visible.map((item) => item.text)).toEqual([
-          "automation",
           "first",
           "document",
           "second",
@@ -95,71 +93,6 @@ describe("ConversationShareSvg", () => {
         for (let i = 1; i < visible.length; i++) {
           expect(visible[i]!.y).toBeGreaterThan(visible[i - 1]!.y);
         }
-      }
-    },
-  );
-
-  it.each([0, 1, 2])(
-    "keeps attribution above all content with %i decoded attachments",
-    (decodedCount) => {
-      for (const body of ["", "message body"]) {
-        const image = {
-          uri: "data:image/png;base64,aGVsbG8=",
-          width: 40,
-          height: 20,
-        };
-        const urls = ["cindy-media://first", "cindy-media://second"];
-        const label = "Sent by automation: ".repeat(8);
-        const layout = buildConversationShareSvgLayout({
-          allShareableIds: ["previous", "skipped", "m", "next"],
-          colors,
-          width: 390,
-          messages: [
-            { clientId: "previous", kind: "assistant", body: "previous" },
-            {
-              clientId: "m",
-              kind: "user",
-              automationOriginLabel: label,
-              attachments: urls.map((uri) => ({
-                kind: "image",
-                name: "attachment",
-                uri,
-              })),
-              images: new Map(
-                urls.slice(0, decodedCount).map((uri) => [uri, image]),
-              ),
-              body,
-            },
-            { clientId: "next", kind: "assistant", body: "next" },
-          ],
-        });
-        const attribution = layout.bubbles[1]!;
-        expect(attribution.fill).toBeUndefined();
-        expect(attribution.stroke).toBeUndefined();
-        expect(attribution.textBlocks).toHaveLength(1);
-        expect(attribution.textBlocks[0]!.lines.length).toBeGreaterThan(1);
-        expect(attribution.textBlocks[0]!.lines.join(" ")).toContain(
-          "Sent by automation:",
-        );
-        expect(attribution.textBlocks[0]!.color).toBe(colors.textTertiary);
-        expect(layout.gaps[0]!.y).toBeLessThan(attribution.y);
-        expect(layout.images).toHaveLength(decodedCount);
-        const attributionBottom = attribution.y + attribution.height;
-        for (const item of [...layout.images, ...layout.bubbles.slice(2)]) {
-          expect(item.y).toBeGreaterThan(attributionBottom);
-        }
-        const content = layout.bubbles.slice(2, -1);
-        expect(content).toHaveLength(2 - decodedCount + (body ? 1 : 0));
-        expect(
-          content
-            .flatMap((bubble) => bubble.textBlocks)
-            .some((block) =>
-              block.lines.join(" ").includes("Sent by automation:"),
-            ),
-        ).toBe(false);
-        expect(layout.bubbles.at(-1)!.y).toBeGreaterThan(
-          layout.images.at(-1)?.y ?? attributionBottom,
-        );
       }
     },
   );
@@ -353,7 +286,6 @@ describe("ConversationShareSvg", () => {
       messages: [
         {
           attachments: [{ kind: "file", name: "token: sk-12345678" }],
-          automationOriginLabel: "token: sk-12345678",
           body: "hello",
           clientId: "a",
           kind: "assistant",
@@ -473,6 +405,25 @@ describe("ConversationShareSvg", () => {
     expect(layout.bubbles[1]?.textBlocks.at(-1)?.decoration).toBe(
       "line-through",
     );
+  });
+
+  it("wraps a strikethrough range split by a link once in the redacted fallback", () => {
+    const layout = buildConversationShareSvgLayout({
+      allShareableIds: ["m"],
+      colors,
+      messages: [
+        {
+          body: "改为 ~~见 https://a.example/x 旧版~~ 新版\n\npassword: private-secret",
+          clientId: "m",
+          kind: "assistant",
+        },
+      ],
+      width: 390,
+    });
+    const text = layout.bubbles[0]!.textBlocks.flatMap((block) => block.lines).join("");
+    expect(text).toContain("改为 ~~见 https://a.example/x 旧版~~ 新版");
+    expect(text).not.toContain("~~~~");
+    expect(text).not.toContain("private-secret");
   });
 
   it("waits for both footer assets before allowing export", async () => {

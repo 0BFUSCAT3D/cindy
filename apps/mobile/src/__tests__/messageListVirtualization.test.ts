@@ -35,12 +35,16 @@ describe('mobile message list container', () => {
     expect(source).not.toContain('MOBILE_TAIL_REVEAL_ITEM_COUNT');
     expect(listSource).not.toMatch(/\binitialScrollIndex\s*=/);
     // Manual data prepend 不能与 Android native MVCP 并行:它会在 cell 位置提交后异步补
-    // offset，中间坐标窗无 cell 而白屏。普通 data / size 变化仍由 LegendList 锚定。
+    // offset，中间坐标窗无 cell 而白屏。size 变化始终由 LegendList 锚定；data 变化只在读历史
+    // 时锚定——贴底跟随时锚定会把被整批替换的旧可见行钉住，重连补同步时先跳上去再拉回底部。
     expect(listSource).toContain('alignItemsAtEnd');
     expect(listSource).toContain('maintainScrollAtEnd');
     expect(listSource).toContain('maintainVisibleContentPosition={historyPrependNativeMvcpDisabled');
     expect(listSource).toContain('? false');
-    expect(listSource).toContain(': { data: true, size: true }}');
+    expect(listSource).toContain(': { data: anchorVisibleRowsOnDataChange, size: true }}');
+    expect(source).toContain(
+      'const anchorVisibleRowsOnDataChange = isAwayFromBottom || readingOlderRef.current;',
+    );
     expect(source).toContain('mobileHistoryPrependUsesAppOwnedAnchor(');
     expect(source).toContain('MOBILE_HISTORY_PREPEND_USES_APP_OWNED_ANCHOR');
     expect(source).toContain('captureMobileHistoryAnchor(');
@@ -70,15 +74,15 @@ describe('mobile message list container', () => {
     expect(source).not.toContain('visibleMessageKeys');
     expect(source).toContain("const MESSAGE_LIST_VIEWABILITY_CONFIG_ID = 'message-heavy-content';");
     expect(source).toContain('id: MESSAGE_LIST_VIEWABILITY_CONFIG_ID');
-    expect(source).toContain('useViewability<MobileMessageRenderItem>(');
-    expect(source).toContain('MESSAGE_LIST_VIEWABILITY_CONFIG_ID,');
-    expect(source).toContain('const [isViewable, setIsViewable] = useRecyclingState(false);');
-    expect(source).toContain('if (token.key !== itemKeyRef.current) return;');
+    expect(source).toContain('useMessageListItemVisible(item.key)');
+    expect(source).toContain('useMemo(() => new MessageListVisibility(), [scrollResetKey])');
+    expect(source).toContain('messageListVisibility.update(info.viewableItems)');
     expect(source).toContain('maxTextRunInlineFragments: ANDROID_SELECTABLE_TEXT_RUN_MAX_INLINE_FRAGMENTS');
-    expect(listSource).toContain('onFirstVisibleItemChanged={handleFirstVisibleItemChangedRef.current}');
+    expect(listSource).not.toContain('onFirstVisibleItemChanged');
     // Companion receipts observe visible rows through a ref, without broadcasting cell visibility.
-    // Ordinary tasks retain cell-local viewability and have no list-level receipt observer.
-    expect(listSource).toContain('onViewableItemsChanged={companion ? handleCompanionViewableItems : undefined}');
+    // Both modes publish visibility, but only companion chats acknowledge read receipts.
+    expect(listSource).toContain('onViewableItemsChanged={handleViewableItemsChanged}');
+    expect(source).toContain('if (companion) handleCompanionViewableItems(info)');
     // 上滑加载:LegendList 近顶阈值触发自动预取(替代手搓的滚动 metric 判定)。
     expect(listSource).toContain('onStartReached={handleStartReached}');
     // 自动预取必须是电平判定(shouldAutoLoadEarlier + 多时机重评估),不许退回只吃 onStartReached
@@ -238,10 +242,7 @@ describe('mobile message list container', () => {
 
     expect(source).toContain('key={scrollResetKey}');
     expect(source).not.toContain('tailWindowAnchor');
-    expect(source).toContain('previousUserMessageJumpTarget(listDataRef.current, firstVisibleIndexRef.current)');
-    expect(source).toContain('firstVisibleIndexRef.current = info.index;');
-    expect(source).not.toContain('setFirstVisibleIndex');
-    expect(source).toContain('refreshPreviousUserTarget();');
+    expect(source).not.toContain('previousUserButton');
     // 首次校正仍会命令式落底，但 opacity 揭示必须立即交给 UI-thread native driver；
     // 复杂消息占满 JS 时不能把 300ms 隐藏窗拖成长达数秒的白屏。
     expect(source).not.toContain('onLoad={handleListLoad}');
@@ -310,7 +311,7 @@ describe('mobile message list container', () => {
     const effectStart = source.indexOf('// Sending and the jump button');
     const effectEnd = source.indexOf('// 自动加载更早', effectStart);
     expect(source.slice(effectStart, effectEnd)).toContain('scrollToBottom();');
-    const jump = source.slice(source.indexOf('const scrollToBottom'), source.indexOf('const jumpToPreviousUserMessage'));
+    const jump = source.slice(source.indexOf('const scrollToBottom'), source.indexOf('// A retained list must not replay requests'));
     expect(jump.indexOf('userScrollForOlderRef.current = false')).toBeLessThan(
       jump.indexOf("scrollToEndProgrammatically(true, 'explicit')"),
     );
@@ -319,7 +320,7 @@ describe('mobile message list container', () => {
   it('routes manual jump-to-latest through the controller that owns seek and verification', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const callbackStart = source.indexOf('const scrollToBottom = useCallback');
-    const callbackEnd = source.indexOf('const jumpToPreviousUserMessage', callbackStart);
+    const callbackEnd = source.indexOf('// A retained list must not replay requests', callbackStart);
     const callbackSource = source.slice(callbackStart, callbackEnd);
     const scrollAt = callbackSource.indexOf("scrollToEndProgrammatically(true, 'explicit');");
 

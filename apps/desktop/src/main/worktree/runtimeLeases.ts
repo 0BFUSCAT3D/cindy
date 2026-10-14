@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
@@ -7,12 +8,13 @@ import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
 import { isManagedWorktreeDirectoryName } from '../../shared/managedWorktreePaths';
 import { notifyWorktreeRecycleOpportunity } from './recycleEvents';
 import { isReusedDesktopInstancePid, readDesktopProcessIdentity } from '../desktopProcessIdentity';
+import { isGitProcessTreeAlive } from './gitExec';
 
 function runtimeRoot(): string {
   return path.join(app.getPath('userData'), 'worktree-runtime-leases');
 }
 
-/** Source borrowing can cross release/dev/isolated profiles on the same machine. */
+/** Older clients may still hold cross-profile leases; keep reading/retrying them. */
 function sharedRuntimeRoot(): string {
   return path.join(app.getPath('appData'), 'Cindy', 'shared-worktree-runtime-leases');
 }
@@ -40,6 +42,7 @@ interface RuntimeKeepSentinel {
   /** Older release receipts omit this and refer to the in-tree keep marker. */
   file?: string;
   content: string;
+  /** Legacy numeric dev:ino:birthtimeMs, or lossless bigint:dev:ino:birthtimeNs. */
   identity: string;
 }
 
@@ -47,42 +50,17 @@ interface RuntimeKeepSentinel {
 export interface WorktreeRuntimeLease {
   readonly file: string;
   readonly physicalPath: string;
-  readonly sharedFile?: string;
   readonly keepSentinel?: RuntimeKeepSentinel;
 }
 
 export async function acquireWorktreeRuntimeLease(
   sessionId: string,
   cwd: string,
-  options: { crossProfile?: boolean } = {},
 ): Promise<WorktreeRuntimeLease | null> {
   const root = managedWorktreeRoot(cwd);
   if (!root) return null;
   return withWorktreeResourceLock(root, async () => {
-    const lease = await publishRuntimeLease(sessionId, await physicalWorktreeKey(root), runtimeRoot());
-    if (!options.crossProfile) return lease;
-    let shared: WorktreeRuntimeLease | undefined;
-    let keepSentinel: RuntimeKeepSentinel | undefined;
-    try {
-      // Publish both under the deletion lock. Keep the original profile copy
-      // readable by existing clients sharing this userData.
-      shared = await publishRuntimeLease(sessionId, lease.physicalPath, sharedRuntimeRoot());
-      // Older profiles already check Git's external worktree lock before
-      // recycling or pool reset. Build-time git clean cannot remove this file.
-      keepSentinel = await acquireRuntimeKeepSentinel(shared);
-      if (keepSentinel) {
-        // Ownership lives with a real borrower, not merely in a recognizable
-        // marker body that a user could have copied or edited. Existing v1
-        // readers ignore the additional field; a partial write fails closed.
-        await fs.writeFile(shared.file, JSON.stringify({
-          version: 1, pid: process.pid, path: lease.physicalPath, keepSentinel,
-        }));
-      }
-      return { ...lease, sharedFile: shared.file, keepSentinel };
-    } catch (error) {
-      await releaseWorktreeRuntimeLease({ ...lease, sharedFile: shared?.file, keepSentinel }).catch(() => undefined);
-      throw error;
-    }
+    return publishRuntimeLease(sessionId, await physicalWorktreeKey(root), runtimeRoot());
   });
 }
 
@@ -104,66 +82,27 @@ async function publishRuntimeLease(sessionId: string, physicalPath: string, dire
   return lease;
 }
 
-/** Validate Git's linked-worktree metadata before writing outside the source. */
-async function runtimeGitLockFile(root: string): Promise<string> {
-  const link = path.join(root, '.git');
-  const linkStat = await fs.lstat(link);
-  if (!linkStat.isFile() || linkStat.isSymbolicLink()) throw new Error('project requires a linked Git worktree');
-  const match = /^gitdir: (.+)$/.exec((await fs.readFile(link, 'utf8')).trim());
-  if (!match) throw new Error('invalid worktree Git link');
-  const gitDir = await physicalWorktreeKey(path.resolve(root, match[1]!));
-  const common = await physicalWorktreeKey(path.resolve(gitDir, (await fs.readFile(path.join(gitDir, 'commondir'), 'utf8')).trim()));
-  const backlink = await physicalWorktreeKey(path.resolve(gitDir, (await fs.readFile(path.join(gitDir, 'gitdir'), 'utf8')).trim()));
-  if (path.dirname(gitDir) !== path.join(common, 'worktrees') || backlink !== link
-    || gitDir === root || gitDir.startsWith(`${root}${path.sep}`)) {
-    throw new Error('worktree Git metadata must belong to the source and remain outside it');
-  }
-  return path.join(gitDir, 'locked');
-}
-
-async function acquireRuntimeKeepSentinel(lease: WorktreeRuntimeLease): Promise<RuntimeKeepSentinel | undefined> {
-  const file = await runtimeGitLockFile(lease.physicalPath);
-  const newContent = JSON.stringify({ kind: 'cindy-runtime-lock', version: 1, nonce: randomUUID() });
-  let created = false;
-  try {
-    await fs.writeFile(file, newContent, { flag: 'wx', mode: 0o600 });
-    created = true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-  }
-  // Never overwrite a user's existing Git lock, including files/directories.
-  await fs.stat(file);
-  const identity = await fs.lstat(file);
-  if (!identity.isFile() || identity.isSymbolicLink()) return undefined;
-  let content: string;
-  try { content = await fs.readFile(file, 'utf8'); } catch { return undefined; }
-  const marker = { file, content, identity: `${identity.dev}:${identity.ino}:${identity.birthtimeMs}` };
-  if (created) return content === newContent ? marker : undefined;
-  const directory = path.dirname(lease.file);
-  for (const name of await fs.readdir(directory)) {
-    if (!leaseNamePattern.test(name) || name === path.basename(lease.file)) continue;
-    try {
-      const other = JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'));
-      if (other.version !== 1 || typeof other.path !== 'string') throw new Error('unreadable worktree lease');
-      if (other.path === lease.physicalPath && other.keepSentinel?.file === file && other.keepSentinel?.content === content
-        && other.keepSentinel?.identity === marker.identity) return marker;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-  return undefined;
-}
-
 /** Called under the same physical lock as acquisition and old owner recyclers. */
 async function releaseRuntimeKeepSentinel(lease: WorktreeRuntimeLease): Promise<void> {
   const marker = lease.keepSentinel;
   if (!marker) return;
   const file = marker.file ?? path.join(lease.physicalPath, '.worktree-keep');
   try {
-    const identity = await fs.lstat(file);
-    if (!identity.isFile() || identity.isSymbolicLink()
-      || `${identity.dev}:${identity.ino}:${identity.birthtimeMs}` !== marker.identity
-      || await fs.readFile(file, 'utf8') !== marker.content) return;
+    if (marker.identity.startsWith('bigint:')) {
+      const identity = await fs.lstat(file, { bigint: true });
+      if (!identity.isFile() || identity.isSymbolicLink() || identity.ino === 0n
+        || `bigint:${identity.dev}:${identity.ino}:${identity.birthtimeNs}` !== marker.identity) return;
+    } else {
+      const identity = await fs.lstat(file);
+      // NTFS file IDs can exceed Number's exact integer range, and replacement
+      // files can inherit the old creation time. A rounded legacy ID cannot
+      // prove ownership: preserve that marker rather than delete a user's lock.
+      if (!identity.isFile() || identity.isSymbolicLink()
+        || !Number.isSafeInteger(identity.ino) || identity.ino <= 0
+        || !Number.isSafeInteger(identity.dev)
+        || `${identity.dev}:${identity.ino}:${identity.birthtimeMs}` !== marker.identity) return;
+    }
+    if (await fs.readFile(file, 'utf8') !== marker.content) return;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
@@ -187,11 +126,30 @@ async function releaseRuntimeKeepSentinel(lease: WorktreeRuntimeLease): Promise<
 }
 
 export async function releaseWorktreeRuntimeLease(lease: WorktreeRuntimeLease): Promise<void> {
-  const files: WorktreeRuntimeLease[] = [{ file: lease.file, physicalPath: lease.physicalPath }];
-  if (lease.sharedFile) files.push({ file: lease.sharedFile, physicalPath: lease.physicalPath, keepSentinel: lease.keepSentinel });
-  const results = await Promise.allSettled(files.map(releaseRuntimeLeaseFile));
-  const failure = results.find((result) => result.status === 'rejected');
-  if (failure?.status === 'rejected') throw failure.reason;
+  await releaseRuntimeLeaseFile(lease);
+}
+
+/** Record the detached git child that is still using a checkout lease. */
+export function recordWorktreeRuntimeLeaseChild(lease: WorktreeRuntimeLease, childPid: number): void {
+  if (!Number.isInteger(childPid) || childPid <= 0) return;
+  try {
+    const value = JSON.parse(fsSync.readFileSync(lease.file, 'utf8')) as {
+      version?: unknown;
+      pid?: unknown;
+      path?: unknown;
+      childPid?: unknown;
+      childPids?: unknown;
+    };
+    if (value.version !== 1 || value.pid !== process.pid || value.path !== lease.physicalPath) return;
+    const childPids = [
+      ...(Array.isArray(value.childPids) ? value.childPids : []),
+      ...(typeof value.childPid === 'number' ? [value.childPid] : []),
+      childPid,
+    ].filter((pid, index, all): pid is number => Number.isInteger(pid) && pid > 0 && all.indexOf(pid) === index);
+    fsSync.writeFileSync(lease.file, JSON.stringify({ ...value, childPid, childPids }), { mode: 0o600 });
+  } catch {
+    // Missing or partially written child evidence must stay protective.
+  }
 }
 
 async function removeRuntimeLeaseFile(lease: WorktreeRuntimeLease): Promise<void> {
@@ -366,4 +324,67 @@ export async function readWorktreeRuntimePaths(): Promise<Set<string> | null> {
     }
   }
   return paths;
+}
+
+/** A detached checkout can outlive git while its POSIX process group remains active. */
+/**
+ * Remove runtime leases left by a dead owner for an explicitly cancelled,
+ * unclaimed pre-created worktree.
+ *
+ * Normal recycle deliberately keeps leases from dead processes because they
+ * may belong to a detached child.  A pre-created worktree has no claimed
+ * session yet, and the caller has already fenced late creation under the
+ * session lock. Reclaim only a recorded checkout child whose owner and child
+ * have both exited. Older leases without child evidence, malformed records,
+ * and unknown process liveness remain protective.
+ */
+export async function reclaimOrphanedWorktreeRuntimeLeases(
+  worktreePath: string,
+): Promise<number> {
+  const target = await physicalWorktreeKey(worktreePath);
+  let reclaimed = 0;
+  for (const directory of [runtimeRoot(), sharedRuntimeRoot()]) {
+    let names: string[];
+    try {
+      names = await fs.readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      continue;
+    }
+    for (const name of names) {
+      if (!leaseNamePattern.test(name)) continue;
+      const file = path.join(directory, name);
+      try {
+        const value = JSON.parse(await fs.readFile(file, 'utf8')) as {
+          version?: unknown;
+          pid?: unknown;
+          path?: unknown;
+          childPid?: unknown;
+          childPids?: unknown;
+        };
+        const childPids = Array.isArray(value.childPids)
+          ? value.childPids.filter((pid): pid is number => typeof pid === 'number' && Number.isInteger(pid) && pid > 0)
+          : typeof value.childPid === 'number' && Number.isInteger(value.childPid) && value.childPid > 0
+            ? [value.childPid]
+            : [];
+        if (value.version !== 1 || typeof value.pid !== 'number'
+          || !Number.isInteger(value.pid) || value.pid <= 0
+          || typeof value.path !== 'string'
+          || await physicalWorktreeKey(value.path) !== target
+          || pidMayBeAlive(value.pid)
+          || childPids.length === 0
+          || (await Promise.all(childPids.map((pid) => isGitProcessTreeAlive(pid))).then((alive) => alive.some(Boolean)))) {
+          continue;
+        }
+        await fs.unlink(file);
+        reclaimed += 1;
+      } catch (error) {
+        // A concurrent release may win the race.  Any other read/parse/write
+        // failure stays protective and is retried by the normal maintenance
+        // path rather than authorizing deletion.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+      }
+    }
+  }
+  return reclaimed;
 }

@@ -22,7 +22,7 @@ import { searchConversations } from '../conversationSearch.js';
 const conversationSearchSource = readFileSync(
   resolve(__dirname, '..', 'conversationSearch.ts'),
   'utf8',
-);
+).replace(/\r\n?/g, '\n');
 
 describe('conversationSearch source invariants', () => {
   it('includes visible AskUser cards in content search roles', () => {
@@ -46,9 +46,11 @@ describe('conversationSearch source invariants', () => {
     expect(conversationSearchSource).toContain('title: row.title,');
   });
 
-  it('keeps ordinary task search on the desktop-visible source boundary by default', () => {
+  it('keeps ordinary task search on the task-list source boundary by default', () => {
+    // Same boundary as the sidebar: /review Reviewer tasks are opened from their
+    // source card, not found as ordinary tasks.
     expect(conversationSearchSource).toContain(
-      'hostScope.sessionSources === undefined\n    ? DESKTOP_VISIBLE_SESSION_SOURCES',
+      'hostScope.sessionSources === undefined\n    ? DESKTOP_TASK_LIST_SESSION_SOURCES',
     );
   });
 
@@ -95,6 +97,7 @@ function createSearchDb(): Database.Database {
       total_cost_is_approximate INTEGER NOT NULL DEFAULT 0,
       context_tokens INTEGER NOT NULL DEFAULT 0,
       context_window INTEGER NOT NULL DEFAULT 0,
+      context_window_runtime INTEGER,
       fast_mode INTEGER NOT NULL DEFAULT 0,
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,
@@ -119,6 +122,8 @@ function createSearchDb(): Database.Database {
       extra_dirs TEXT NOT NULL DEFAULT '[]',
       writable_dirs TEXT NOT NULL DEFAULT '[]',
       remote_host_id TEXT,
+      agent_device_id TEXT,
+      orca_remote_lead TEXT,
       active_turn_started_at INTEGER,
       active_turn_pid INTEGER,
       last_turn_ended_at INTEGER,

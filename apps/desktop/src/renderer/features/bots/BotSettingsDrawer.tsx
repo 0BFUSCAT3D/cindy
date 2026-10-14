@@ -3,6 +3,8 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { matchPath, useBlocker, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
+import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+
 import { BotPronounProvider, useBotTranslation } from './botPronounContext';
 import { BotSettings } from './BotsHomeView';
 import { useBotProfiles } from './botStore';
@@ -105,7 +107,7 @@ export function BotSettingsDrawer() {
     <Dialog.Root open={open} onOpenChange={(next) => !next && close()}>
       <Dialog.Portal>
         {/* Keep portaled controls inside the overlay’s React tree so its scroll lock allows them. */}
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[var(--overlay-modal)]">
+        <Dialog.Overlay className="modal-scrim fixed inset-0 z-50">
           <Dialog.Content
             onPointerDownOutside={(event) => event.preventDefault()}
             aria-describedby={undefined}
@@ -114,6 +116,9 @@ export function BotSettingsDrawer() {
               if (event.isComposing || event.keyCode === 229) event.preventDefault();
             }}
             className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-[var(--border-default)] bg-[var(--surface)] outline-none"
+            // The header shares the window title strip; without no-drag the page's drag
+            // regions underneath swallow the close button's clicks (see windowDrag.tsx).
+            style={WINDOW_NO_DRAG_STYLE}
           >
             <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
               <Dialog.Title className="text-15 font-medium text-[var(--text-primary)]">
@@ -140,8 +145,8 @@ export function BotSettingsDrawer() {
             ) : bot ? (
               <BotPronounProvider bot={bot}>
                 <BotSettings
-                  key={`${bot.id}:${open}:${initialPage}`}
-                  initialPage={initialPage}
+                  key={`${bot.id}:${open}:${requestedPage === 'model' ? 'model' : initialPage}`}
+                  initialPage={requestedPage === 'model' ? 'model' : initialPage}
                   beforeCloseRef={beforeCloseRef}
                   bot={bot}
                   onBack={performClose}

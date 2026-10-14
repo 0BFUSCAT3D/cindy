@@ -23,6 +23,8 @@ vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invo
 vi.mock('@/device-link/useMobileMakerTransport', () => ({
   useMobileMakerTransport: () => ({ resolveInteraction }),
 }));
+// 代输入 card has its own tests; its native modules (clipboard, secure store) are out of scope here.
+vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null }));
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
@@ -110,6 +112,21 @@ it.each(['permission', 'ask_user_question', 'plan_review'])('lets a shared guest
   expect(resolveInteraction).toHaveBeenCalledWith(requestId, expect.objectContaining(
     kind === 'ask_user_question' ? { kind, answers: { 'Continue?': 'Yes' } } : { kind, behavior: 'allow' },
   ));
+});
+
+it.each([false, true])('renders IM source once with companion=%s and keeps the operation as its title', async companion => {
+  const source = '来源：测试群\n原消息：检查目录';
+  remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'permission', requestId, toolName: 'Read', input: { path: '/tmp/test.txt' },
+    description: `${source}\n\nRead the requested file`, metadata: { imSourceDescription: source },
+  } }]);
+  await act(async () => root.render(<Harness companion={companion} />));
+  expect(host.textContent!.split(source)).toHaveLength(2);
+  expect(host.textContent).toContain('Read the requested file');
+  if (companion) {
+    const card = host.querySelector('[data-testid="interaction.permission.card"]')!;
+    expect(card.children[1].textContent).toBe('Read the requested file');
+  }
 });
 
 it('submits the host-provided Codex session approval from the shared guest always-allow button', async () => {

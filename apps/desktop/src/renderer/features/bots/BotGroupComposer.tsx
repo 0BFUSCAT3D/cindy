@@ -12,12 +12,17 @@
  * 负责人出安排（`division: true`），发出后标签清掉。安排进行中或等继续时不能再安排新的，
  * 菜单项置灰并说明原因。占位文字跟随未结束的安排，告诉用户这时说的话会交给谁。
  *
+ * 「引用回复」（§10）：页面持有当前群的待发引用，输入框上方显示紧凑的引用块，× 或 Esc
+ * 只取消引用、不动正文。引用随发送一起交给 main（只带消息 id，摘要由 main 从服务器读），
+ * 也是幂等键的一部分；发送失败时与正文一同放回，原消息已不可用时只放回正文。
+ *
  * 附件（§3.1）与普通聊天同一套：托盘状态来自页面持有的 `useAttachments`（整页拖入也能
  * 加），缩略图与拒收提示复用 ComposerAttachments；「+」→「添加文件、图片或视频…」、粘贴
  * 文件或截图都进托盘。有附件时可以不写字。发送前烧录图片标注，发出去之后才从托盘移走
  * 这一批；没发出去就原样留着。
  */
 import {
+  useEffect,
   useId,
   useLayoutEffect,
   useMemo,
@@ -38,6 +43,15 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tip } from '@/components/ui/tooltip';
+import { currentSelectedOption } from '@/components/ui/dropdown-menu-highlight';
+import {
+  COMPOSER_MENU_ROW,
+  MenuHighlightLayer,
+  menuPanelAttrs,
+  menuRowAttrs,
+  useMenuPanel,
+  withMenuLabels,
+} from '@/components/ui/menu-row';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import type { UseAttachmentsReturn } from '@/hooks/useAttachments';
@@ -49,14 +63,18 @@ import {
   BOT_GROUP_ATTACHMENTS_MAX,
   BOT_GROUP_MESSAGE_MAX_CHARS,
   type BotGroupMemberView,
+  type BotGroupQuoteDisplay,
+  type BotGroupQuoteView,
 } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
+import { BotGroupQuotePreview } from './BotGroupQuote';
 import { botGroupAttachmentSignature, toBotGroupAttachmentInputs } from './botGroupAttachments';
 import {
   filterBotGroupMentionCandidates,
   findBotGroupMentionQuery,
   insertBotGroupMention,
   resolveBotGroupMentions,
+  retainBotGroupTrackedMentions,
   type BotGroupTrackedMention,
 } from './botGroupMentions';
 import {
@@ -106,6 +124,8 @@ export function BotGroupComposer({
   attachments: attachmentState,
   attachmentScope,
   dragOver = false,
+  quote = null,
+  onQuoteChange,
   onSent,
 }: {
   groupId: string;
@@ -118,6 +138,9 @@ export function BotGroupComposer({
   attachmentScope: string;
   /** Files are being dragged over the page: the card shows the same drop hint as a task's. */
   dragOver?: boolean;
+  /** 引用回复 waiting to go with the next message, and how its original reads right now. */
+  quote?: { view: BotGroupQuoteView; display: BotGroupQuoteDisplay } | null;
+  onQuoteChange?: (quote: BotGroupQuoteView | null) => void;
   /** Called after main accepted the message, so the view can re-read at once. */
   onSent: () => void;
 }) {
@@ -137,20 +160,35 @@ export function BotGroupComposer({
   const [menuOpen, setMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // @ list: glide highlight on the aria-selected option; arrow keys stay in the textarea.
+  const mentionListRef = useMenuPanel<HTMLDivElement>(undefined, {
+    lockWidth: false,
+    options: {
+      current: currentSelectedOption,
+      currentAttributes: ['aria-selected'],
+      keyboardSource: document,
+    },
+  });
   const textRef = useRef(text);
   textRef.current = text;
+  const selectionRef = useRef({ start: 0, end: 0 });
   const attachmentsRef = useRef(attachmentState.attachments);
   attachmentsRef.current = attachmentState.attachments;
+  const quoteRef = useRef(quote?.view ?? null);
+  quoteRef.current = quote?.view ?? null;
+  const quotedMessageId = quote?.view.messageId ?? null;
   const focusInputOnMenuCloseRef = useRef(false);
   const pendingCaretRef = useRef<number | null>(null);
   const sendingRef = useRef(false);
   const stoppingRef = useRef(false);
-  /** Idempotency key for the text and attachments currently being (re)sent. */
+  /** Idempotency key for the text, targets and attachments currently being (re)sent. */
   const attemptRef = useRef<{
     text: string;
     clientId: string;
     division: boolean;
     attachments: string;
+    mentionSignature: string;
+    quoteId: string | null;
   } | null>(null);
 
   const activeMembers = useMemo(() => members.filter(isActiveBotGroupMember), [members]);
@@ -180,6 +218,11 @@ export function BotGroupComposer({
   const showStop = running && trimmed.length === 0 && attachmentCount === 0;
   const divisionBlocked = isBotGroupDivisionBlocked(planState);
 
+  // Picking 引用回复 brings the caret here, ready to type the reply.
+  useEffect(() => {
+    if (quotedMessageId) textareaRef.current?.focus();
+  }, [quotedMessageId]);
+
   // Auto-grow; the CSS max height caps it and turns on scrolling.
   useLayoutEffect(() => {
     const element = textareaRef.current;
@@ -195,7 +238,10 @@ export function BotGroupComposer({
 
   const syncCaret = () => {
     const element = textareaRef.current;
-    if (element) setCaret(element.selectionStart ?? element.value.length);
+    if (element) {
+      selectionRef.current = { start: element.selectionStart ?? element.value.length, end: element.selectionEnd ?? element.value.length };
+      setCaret(selectionRef.current.start);
+    }
   };
 
   const choose = (option: MentionOption | undefined) => {
@@ -203,14 +249,13 @@ export function BotGroupComposer({
     const next = insertBotGroupMention(text, { start: query.start, end: caret }, option.label);
     pendingCaretRef.current = next.caret;
     setText(next.text);
+    selectionRef.current = { start: next.caret, end: next.caret };
     setCaret(next.caret);
     setHighlight(0);
-    if (option.kind === 'member') {
-      setTracked((current) => [
-        ...current.filter((mention) => mention.botId !== option.member.botId),
-        { botId: option.member.botId, label: option.label },
-      ]);
-    }
+    setTracked(current => {
+      const remaining = retainBotGroupTrackedMentions(text, next.text, { members, allLabels: [allLabel], tracked: current, editStart: query.start, editEnd: caret });
+      return option.kind === 'member' ? [...remaining, { botId: option.member.botId, label: option.label, start: query.start }] : remaining;
+    });
     textareaRef.current?.focus();
   };
 
@@ -225,18 +270,23 @@ export function BotGroupComposer({
     const signature = botGroupAttachmentSignature(files);
     // The tag changes what main does with the text, so it is part of the idempotency key;
     // so are the attachments that go with it.
-    const attempt =
-      attemptRef.current?.text === trimmed &&
-      attemptRef.current.division === division &&
-      attemptRef.current.attachments === signature
-        ? attemptRef.current
-        : { text: trimmed, clientId: crypto.randomUUID(), division, attachments: signature };
-    attemptRef.current = attempt;
-    const mentions = resolveBotGroupMentions(trimmed, {
-      members: members.map((member) => ({ botId: member.botId, name: member.name })),
+    const mentions = resolveBotGroupMentions(text, {
+      members,
       allLabels: [allLabel],
       tracked,
     });
+    const mentionSignature = JSON.stringify([mentions.all, mentions.botIds]);
+    const sentQuote = quoteRef.current;
+    const quoteId = sentQuote?.messageId ?? null;
+    const attempt =
+      attemptRef.current?.text === trimmed &&
+      attemptRef.current.division === division &&
+      attemptRef.current.attachments === signature &&
+      attemptRef.current.mentionSignature === mentionSignature &&
+      attemptRef.current.quoteId === quoteId
+        ? attemptRef.current
+        : { text: trimmed, clientId: crypto.randomUUID(), division, attachments: signature, mentionSignature, quoteId };
+    attemptRef.current = attempt;
     const draft = text;
     sendingRef.current = true;
     setSending(true);
@@ -248,10 +298,16 @@ export function BotGroupComposer({
     setTracked([]);
     setDismissedStart(null);
     setDivision(false);
+    if (sentQuote) onQuoteChange?.(null);
     const owner = getDataOwnerGeneration();
-    const restore = () => {
-      // The tag comes back only with its own draft, never onto newly typed text.
-      if (attempt.division && !textRef.current) setDivision(true);
+    const restore = (keepQuote = true) => {
+      // The tag and the quote come back only with their own draft, never onto newly typed
+      // text; a quote picked meanwhile wins, and an unavailable original is not put back.
+      if (!textRef.current) {
+        if (attempt.division) setDivision(true);
+        setTracked(tracked);
+        if (keepQuote && sentQuote && !quoteRef.current) onQuoteChange?.(sentQuote);
+      }
       setText((current) => (current ? current : draft));
     };
     try {
@@ -266,11 +322,12 @@ export function BotGroupComposer({
         mentions,
         clientId: attempt.clientId,
         ...(attempt.division ? { division: true } : {}),
+        ...(sentQuote ? { quote: { messageId: sentQuote.messageId } } : {}),
         ...(prepared.length > 0 ? { attachments: toBotGroupAttachmentInputs(prepared) } : {}),
       });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) {
-        restore();
+        restore(result.errorCode !== 'QUOTE_UNAVAILABLE');
         toast.error(
           t(
             result.errorCode === 'INVALID_PARAMS' && prepared.length > 0
@@ -382,11 +439,16 @@ export function BotGroupComposer({
         ) : null}
         {popoverOpen ? (
           <div
+            ref={mentionListRef}
             id={listboxId}
             role="listbox"
             aria-label={t('bots.groupChat.mention.label')}
-            className="absolute bottom-full left-0 z-20 mb-2 flex w-64 max-w-full flex-col gap-0.5 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-1.5"
+            {...menuPanelAttrs}
+            // Shared menu panel (DESIGN §4): Board border and menu surface; no shadow, per the
+            // zero-shadow Bot surfaces (botDesignContract.test.ts).
+            className="absolute bottom-full left-0 z-20 mb-2 flex w-64 max-w-full flex-col gap-0.5 rounded-xl border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-1.5"
           >
+            <MenuHighlightLayer />
             {options.map((option, index) => (
               <div
                 key={option.kind === 'all' ? 'all' : option.member.botId}
@@ -397,10 +459,8 @@ export function BotGroupComposer({
                 onMouseDown={(event) => event.preventDefault()}
                 onMouseEnter={() => setHighlight(index)}
                 onClick={() => choose(option)}
-                className={cn(
-                  'flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-13 text-[var(--text-primary)]',
-                  index === activeIndex && 'bg-[var(--model-item-hover)]',
-                )}
+                {...menuRowAttrs()}
+                className={cn(COMPOSER_MENU_ROW, 'flex cursor-pointer items-center gap-2.5 px-2.5 py-1.5')}
               >
                 {option.kind === 'all' ? (
                   <span
@@ -412,9 +472,9 @@ export function BotGroupComposer({
                 ) : (
                   <BotAvatar bot={option.member} size="xs" className="h-6 w-6 text-12" />
                 )}
-                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {withMenuLabels(<span className="min-w-0 flex-1 truncate">{option.label}</span>)}
                 {option.kind === 'all' ? (
-                  <span className="shrink-0 text-12 text-[var(--text-tertiary)]">
+                  <span className="shrink-0 text-12 font-normal leading-[1.33] text-[var(--cmd-palette-item-meta)]">
                     {t('bots.groupChat.mention.allHint')}
                   </span>
                 ) : null}
@@ -457,6 +517,15 @@ export function BotGroupComposer({
               </span>
             </div>
           ) : null}
+          {quote && onQuoteChange ? (
+            <BotGroupQuotePreview
+              display={quote.display}
+              onRemove={() => {
+                onQuoteChange(null);
+                textareaRef.current?.focus();
+              }}
+            />
+          ) : null}
           {attachmentCount > 0 ? (
             <ThumbnailStrip
               attachments={attachmentState.attachments}
@@ -476,7 +545,11 @@ export function BotGroupComposer({
             onChange={(event) => {
               const value = event.target.value;
               const nextCaret = event.target.selectionStart ?? value.length;
+              const editStart = Math.min(selectionRef.current.start, nextCaret);
+              const editEnd = selectionRef.current.end;
               setText(value);
+              setTracked(current => retainBotGroupTrackedMentions(text, value, { members, allLabels: [allLabel], tracked: current, editStart, editEnd }));
+              selectionRef.current = { start: nextCaret, end: nextCaret };
               setCaret(nextCaret);
               setHighlight(0);
               // A dismissed picker stays closed only for the `@` it was closed on.
@@ -511,6 +584,12 @@ export function BotGroupComposer({
                   setDismissedStart(query.start);
                   return;
                 }
+              }
+              // Esc takes the quote off before anything else it would close; the text stays.
+              if (event.key === 'Escape' && quote && onQuoteChange) {
+                event.preventDefault();
+                onQuoteChange(null);
+                return;
               }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
@@ -573,7 +652,7 @@ export function BotGroupComposer({
                     }}
                   >
                     <Paperclip size={16} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />
-                    <span className="min-w-0 truncate text-13 font-medium text-[var(--text-primary)]">
+                    <span className="min-w-0 truncate">
                       {t('extraDirs.addFiles')}
                     </span>
                   </DropdownMenuItem>
@@ -587,10 +666,10 @@ export function BotGroupComposer({
                   >
                     <Users size={16} aria-hidden className="mt-0.5 shrink-0 text-[var(--text-secondary)]" />
                     <span className="flex min-w-0 flex-col gap-0.5">
-                      <span className="text-13 font-medium text-[var(--text-primary)]">
+                      <span>
                         {t('bots.groupChat.composer.division')}
                       </span>
-                      <span className="text-12 leading-normal text-[var(--text-tertiary)]">
+                      <span className="text-12 leading-[1.33] text-[var(--cmd-palette-item-meta)]">
                         {t(
                           divisionBlocked
                             ? 'bots.groupChat.composer.divisionBusy'

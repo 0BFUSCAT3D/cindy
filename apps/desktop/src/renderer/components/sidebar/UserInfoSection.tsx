@@ -18,7 +18,6 @@ import { useOptionalConfirmDialog } from '@/components/ui/confirm-dialog-provide
 import { useUpdateStatus } from '@/hooks/useUpdateStatus';
 import { useUpdateBannerDismiss } from '@/hooks/useUpdateBannerDismiss';
 import { useBetaChannelSettings } from '@/hooks/useBetaChannelSettings';
-import { useCindyVersions } from '@/lib/useCindyVersions';
 import { Tip } from '@/components/ui/tooltip';
 import { Spinner } from '@/components/ui/spinner';
 import {
@@ -94,7 +93,6 @@ export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSec
   const { status } = useUpdateStatus();
   const { dismissed, restore } = useUpdateBannerDismiss();
   const { state: betaChannelState } = useBetaChannelSettings();
-  const versions = useCindyVersions();
   const hasPendingUpdate = status === 'ready' || status === 'superseding';
   const isFlameReopen = hasPendingUpdate && dismissed;
   const showBetaLabel = !betaChannelState.loading && betaChannelState.enableBeta;
@@ -147,14 +145,8 @@ export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSec
   const appVersionLabelDetail = appRegionLabel
     ? `${appRegionLabel} · ${appDisplayVersionDetail}`
     : appDisplayVersionDetail;
-  const isPersonalVersion =
-    versions.state?.currentId !== undefined && versions.state.currentId !== 'original';
-  const visibleVersionLabel = isPersonalVersion
-    ? t('cindyMake.versions.personal')
-    : appVersionLabel;
-  const visibleVersionLabelDetail = isPersonalVersion
-    ? t('cindyMake.versions.personal') + ' · ' + appDisplayVersionDetail
-    : appVersionLabelDetail;
+  const visibleVersionLabel = appVersionLabel;
+  const visibleVersionLabelDetail = appVersionLabelDetail;
   const remoteAvailable = mode === 'cloud';
 
   const openSettings = () => {
@@ -274,9 +266,9 @@ export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSec
             >
               <AccountMenuAvatar account={account} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-13 font-medium">{primaryLabel}</span>
+                <span className="block truncate">{primaryLabel}</span>
                 {secondaryLabel ? (
-                  <span className="mt-0.5 block truncate text-11 text-[var(--text-secondary)]">
+                  <span className="mt-0.5 block truncate text-12 leading-[1.33] text-[var(--cmd-palette-item-meta)]">
                     {secondaryLabel}
                   </span>
                 ) : null}
@@ -284,7 +276,7 @@ export function UserInfoSection({ isCollapsed, onOpenUpdateNotice }: UserInfoSec
               {switching ? (
                 <Spinner size={14} className="shrink-0 text-[var(--text-secondary)]" />
               ) : account.isCurrent ? (
-                <span className="flex shrink-0 items-center gap-1 text-11 text-[var(--text-secondary)]">
+                <span className="flex shrink-0 items-center gap-1 text-12 leading-[1.33] text-[var(--cmd-palette-item-meta)]">
                   <Check className="h-4 w-4" aria-hidden="true" />
                   {t('sidebar.accountSwitcher.current')}
                 </span>

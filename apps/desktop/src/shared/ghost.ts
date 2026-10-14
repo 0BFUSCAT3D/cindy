@@ -9,10 +9,9 @@ import {
   type GhostLocale,
   type GhostManifestLocales,
 } from '@cindy/plugin-protocol';
-import type { IOSSimulatorMcpErrorCode } from '@cindy/mcps';
 import { findSplitChildByPanelKind, insertRootSplitPane, type Layout } from './layoutTree';
+import { PLUGIN_STORAGE_PART_RE } from './pluginStoragePartPattern.js';
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from './locale';
-import type { IOSSimulatorPublicInstance, IOSSimulatorPublicRouteStatus } from './iosSimulatorIpc';
 
 /**
  * 意识(Ghost,.cindy 文件)的清单数据模型与校验 —— main / renderer 共用。
@@ -67,11 +66,12 @@ export function ghostPartition(id: string): string {
   return `${GHOST_PARTITION_PREFIX}${id}`;
 }
 
-/** 从 Renderer claim 解析意识 id；不是合法 claim 返回 null。 */
+
+/** 从 Renderer claim 解析实例 storage part；不是合法 claim 返回 null。 */
 export function parseGhostPartition(partition: unknown): string | null {
   if (typeof partition !== 'string' || !partition.startsWith(GHOST_PARTITION_PREFIX)) return null;
   const id = partition.slice(GHOST_PARTITION_PREFIX.length);
-  return isValidGhostId(id) ? id : null;
+  return PLUGIN_STORAGE_PART_RE.test(id) ? id : null;
 }
 
 /**
@@ -139,10 +139,7 @@ const GHOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
  * 即授权(pick 模式,路径不回沙箱),或 tool-call 语境下带在途 callId + 绝对
  * 路径(目录在该会话 workdir 内自动放行,workdir 外弹确认卡)。远程工作区
  * v1 一律拒(fail closed)。
- * 'ios-simulator' = 内置 iOS 模拟器(2026-08-06):插件只能读取当前台前任务的
- * 脱敏状态摘要并请求 Host 打开既有模拟器面板。视频帧、输入、viewer lease、
- * UDID、Sidecar 路径/进程与任意 sessionId 均不跨插件边界；实际 WDA / Native
- * 路由、生命周期、恢复与 fallback 仍完全由 Host 管理。
+ * 'ios-simulator' is retired; retained only to round-trip legacy approval receipts.
  *
  * 以下名称只用于 schemaVersion 2 的兼容解析。schemaVersion 3 已移除 slots，
  * 运行时统一使用 GhostManifest 上的直接字段；未知 v2 slot 只用于兼容诊断，
@@ -851,9 +848,9 @@ export interface GhostSecretOauthDecl {
    * 可选:XDT server token broker 的 provider slug(2026-07-14,xd-atlassian
    * 意识化前置)。声明后 code 换 token 与 refresh 不直连 tokenUrl,改经主机
    * 调 XDT server 的授权 broker(带登录 JWT;client secret 在服务端,不随包
-   * 分发)。必须同时声明 redirectPort，并与 clientSecret 互斥。静态官方前缀照旧
-   * 放行；其余资格由装入来源与当前组织事实共同判定。校验层保持纯函数不感知
-   * 装入语境，门控在装入闸与连接闸。
+   * 分发)。必须同时声明 redirectPort，并与 clientSecret 互斥。资格按可信安装
+   * 事实判定，名称前缀不放行。校验层保持纯函数不感知装入语境，门控在装入闸
+   * 与连接闸。
    */
   tokenBroker?: string;
   /**
@@ -892,9 +889,9 @@ export const GHOST_OAUTH_BOUNCE_PATH_RE = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)
  *   只在 networkSlot 请求 GitHub API 时注入,不进入插件、Renderer、KV 或日志。
  * - 'oidc-token':值 = Cindy 为当前企业 Membership 签发的短时 Connection
  *   JWT。当前组织的可信市场安装，或企业作者通过 ghost_forge_install 明确安装且
- *   id 命中本组织登记前缀时可签发；手动导入默认不取得该资格。点名例外：
- *   ghostId 精确等于 mivo-canvas 的组织成员本地安装，在已装清单声明的精确
- *   oidc-token host 仅为 mivo-canvas.dsworks.cn 时可签发；其它本地插件、其它精确 host 仍不签发，已有市场记录（含 installed:false）仍走 digest。市场账本损坏不得当成无记录。
+ *   id 命中本组织登记前缀时可签发；手动导入默认不取得该资格。临时例外，只对 root 实例生效：
+ *   ghostId 精确等于 mivo-canvas、namespace 为 null 或尚未确认的旧 root 安装，在已装清单声明的精确
+ *   oidc-token host 仅为 mivo-canvas.dsworks.cn 时可签发；企业 namespace 下的同名插件、其它本地插件、其它精确 host 仍不签发，已有市场记录（含 installed:false）仍走 digest。市场账本损坏不得当成无记录。
  *   Host 根据当前组织和插件 id 推导 audience，插件不能声明或读取。
  *   令牌只在 networkSlot 发请求时注入，且永不进入 Node Worker。
  *
@@ -1537,6 +1534,7 @@ export interface GhostManifest {
   sessionContext?: true;
   pick?: true;
   workspace?: true;
+  /** @deprecated Retirement detection only. No runtime capability is granted. */
   iosSimulator?: true;
   /** v3 未知字段为前向兼容原样保留，但 Host 不解释也不授权。 */
   [key: string]: unknown;
@@ -1603,11 +1601,22 @@ export function isGhostInstallApprovalToken(value: unknown): value is string {
 
 /** 已装入主机的插件(批准清单 + 安装位置 + 启用态)。 */
 export interface InstalledGhost {
+  /** Host retirement projection; never supplied by plugin authors. */
+  retirement?: import('./featureRetirements').InstalledFeatureRetirement;
   /** Host receipt fact, not a manifest declaration. Missing means tasks need confirmation. */
   taskCapabilityApproved?: true;
   manifest: GhostManifest;
-  /** 安装目录绝对路径(userData/brain/<id>)。 */
+  /** 安装目录绝对路径(userData/brain/<id> 或 userData/brain/_ns/<org>/<id>)。 */
   dir: string;
+  /**
+   * Host-verified install namespace. Missing is not a confirmed identity.
+   * null is confirmed root; a string is a confirmed organization slug.
+   */
+  namespace?: string | null;
+  /** Registry confirmation. Pending and unconfirmed must not receive new privileges. */
+  namespaceState?: 'confirmed' | 'unconfirmed' | 'pending';
+  /** Stable storage key. Absent only on projections built before the registry loads. */
+  instanceKey?: string;
   /**
    * 是否启用。停用 = 面板与能力休眠(不注册、不渲染),但插件仍装着、
    * 布局位置保留;重新启用即恢复。批准安装的真身在 Host receipt 中；
@@ -1660,6 +1669,15 @@ export interface GhostTrustInfo {
   unknownReviewer?: boolean;
 }
 
+/** Shared PC/mobile display label; only Host-owned trust facts affect this result. */
+export function ghostTrustLabelKey(trust: GhostTrustInfo | undefined):
+  'official' | 'reviewed' | 'verifiedPublisher' | 'signedUnverified' | 'unsigned' {
+  return trust?.level === 'cindy-official' ? 'official'
+    : trust?.level === 'reviewed' ? 'reviewed'
+    : trust?.level === 'verified-publisher' ? 'verifiedPublisher'
+    : trust?.publisherSigned ? 'signedUnverified' : 'unsigned';
+}
+
 /** 意识面板的 panelKind(布局树寻址用)。 */
 // 返回类型收窄到模板字面量:右侧栏 TabKindId 含 `ghost:${string}` 分支,
 // 调用方无需再 as 断言;对既有 string 消费方完全兼容。
@@ -1693,12 +1711,17 @@ export function ghostContentKeys(manifest: GhostManifest): string[] {
   // skill 是信任面最高的内容(给主 Agent 灌指令),详情页必须如实露出。
   if (manifest.skill) keys.push('slotSkill');
   if (manifest.workspace === true) keys.push('slotWorkspace');
-  if (manifest.iosSimulator === true) keys.push('slotIOSSimulator');
   return keys;
 }
 
 export function isValidGhostId(id: unknown): id is string {
   return typeof id === 'string' && GHOST_ID_RE.test(id);
+}
+
+/** New author ids must start with a letter. Installed legacy ids may start with a digit. */
+const NEW_GHOST_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+export function isValidNewGhostId(id: unknown): id is string {
+  return typeof id === 'string' && NEW_GHOST_ID_RE.test(id);
 }
 
 /**
@@ -1730,23 +1753,23 @@ export function isOfficialGhostId(id: string): boolean {
 
 /**
  * 用户装入通道（拖入 / 选文件 / forge 转交 / 自定义市场）是否拒装该 id。
- * 当前与 `isOfficialGhostId` 等价；本批不放宽组织前缀。
+ * 仅保留 Cindy 平台前缀；XD/Filo 名字可普通导入，运行时资格另验可信来源。
  */
 export function isUserInstallReservedGhostId(id: string): boolean {
-  return isOfficialGhostId(id);
+  return id.startsWith(GHOST_OFFICIAL_ID_PREFIX);
 }
 
 /**
- * 该 id 是否命中 `oauth.tokenBroker` 的静态官方前缀资格。
- * 非官方资格由运行时 first-party 判据增量放行，不改这张静态表。
+ * 保留命名空间谓词，与 `isOfficialGhostId` 同口径。
+ * **不是** tokenBroker 授权：运行时资格见 ghostFirstPartyPrivilege。
  */
 export function isBrokerEligibleGhostId(id: string): boolean {
   return isOfficialGhostId(id);
 }
 
 /**
- * 该 id 能否拿宿主原语：OAuth 端口回收、身份头像代下载。
- * 仅认静态官方前缀；本轮不随 Broker 资格放宽。
+ * 保留命名空间谓词，与 `isOfficialGhostId` 同口径。
+ * **不是** 宿主原语授权：端口回收 / 头像代下载见 ghostFirstPartyPrivilege。
  */
 export function isFirstPartyHostPrivilegeGhostId(id: string): boolean {
   return isOfficialGhostId(id);
@@ -1801,8 +1824,7 @@ export interface GhostPermissionItem {
     | 'pick'
     | 'preview'
     | 'skill'
-    | 'workspace'
-    | 'ios-simulator';
+    | 'workspace';
   /** i18n key 后缀,消费方拼 `settings.ghosts.perm.<labelKey>`。 */
   labelKey: string;
   /** i18n 插值参数(工具名、指令名、面板标题等)。 */
@@ -2146,15 +2168,6 @@ export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionIt
       kind: 'workspace',
       labelKey: 'workspace',
       detailKey: 'workspaceDetail',
-    });
-  }
-  // 内置模拟器槽只给脱敏状态与 Host 面板入口；视频、输入和进程控制都不授权。
-  if (manifest.iosSimulator === true) {
-    items.push({
-      key: 'ios-simulator',
-      kind: 'ios-simulator',
-      labelKey: 'iosSimulator',
-      detailKey: 'iosSimulatorDetail',
     });
   }
   // session-context 槽:派活时可获知当前会话的项目目录位置(路径信息,
@@ -2878,10 +2891,14 @@ export function ghostWebviewEntryPaths(manifest: GhostManifest): string[] {
  * - 否则停在聊天区左侧,宽度占比/最小宽取清单声明。
  * 卸下时**不做**逆操作 —— 树数据保留正是"重装复活"的记忆来源(§6 规则 5)。
  */
-export function layoutWithGhostPanel(layout: Layout, manifest: GhostManifest): Layout | null {
+export function layoutWithGhostPanel(
+  layout: Layout,
+  manifest: GhostManifest,
+  instanceId: string = manifest.id,
+): Layout | null {
   if (!manifest.panel) return null;
   if (manifest.panel.position === 'tab') return null;
-  const kind = ghostPanelKind(manifest.id);
+  const kind = ghostPanelKind(instanceId);
   if (findSplitChildByPanelKind(layout, kind)) return null;
   // 停靠位置(相对主聊天窗):按 chat-main 的实际下标定插入点,不写死
   // 序号(未来树形态变化不至于错位)。停靠恒在聊天区左侧(2026-07-25 Lizi
@@ -2897,7 +2914,7 @@ export function layoutWithGhostPanel(layout: Layout, manifest: GhostManifest): L
   const result = insertRootSplitPane(
     layout,
     {
-      id: `ghost-${manifest.id}`,
+      id: `ghost-${instanceId}`,
       panelKind: kind,
       ...(manifest.panel.minWidth !== undefined ? { minWidth: manifest.panel.minWidth } : {}),
     },
@@ -6644,83 +6661,17 @@ export type GhostPipeWorkspaceResult =
       message: string;
     };
 
-/** 插件内置模拟器槽协议版本；能力按版本握手，不靠插件自报可用性。 */
-export const GHOST_IOS_SIMULATOR_CAPABILITY_API_VERSION = 1 as const;
+export const GHOST_MEDIA_HANDOVER_MIME = 'application/x-cindy-ghost-handover';
 
-/**
- * 插件可见的最小模拟器状态。刻意不含 sessionId、UDID、source fingerprint、
- * lease、device grant、mutation state、路径或诊断；这些值既不是状态面板所需，
- * 也可能被滥用于跨任务控制或设备指纹识别。
- */
-export interface GhostIOSSimulatorStatusSnapshot {
-  environment: {
-    platform: string;
-    supported: boolean;
-    ready: boolean;
-    xcodeVersion: string | null;
-    availableDeviceCount: number;
-  };
-  instances: Array<{
-    instanceId: string;
-    simulatorName: string;
-    generation: number;
-    lifecycleState: IOSSimulatorPublicInstance['lifecycleState'];
-    healthState: IOSSimulatorPublicInstance['healthState'];
-  }>;
-  routeStatuses: Array<{
-    instanceId: string;
-    generation: number;
-    stream: Pick<IOSSimulatorPublicRouteStatus['stream'], 'adapter' | 'encoding' | 'state'>;
-    input: Pick<IOSSimulatorPublicRouteStatus['input'], 'adapter' | 'state'>;
-  }>;
+export interface GhostMediaHandover {
+  uri: string;
+  sourceToken?: string;
 }
 
-/** Host 内部的只读投影结果；供 capability slot 消费，不直接跨 preload。 */
-export type GhostIOSSimulatorStatusProbeResult =
-  | { ok: true; status: GhostIOSSimulatorStatusSnapshot }
-  | { ok: false; errorCode: IOSSimulatorMcpErrorCode; message: string };
-
-/** 插件只能请求能力摘要、当前台前任务状态，或打开 Host 面板。 */
-export type GhostPipeIOSSimulatorRequest = { mobilePageId?: string } & (
-  | { type: 'ios-simulator-request'; kind: 'capabilities' }
-  | { type: 'ios-simulator-request'; kind: 'status' }
-  | { type: 'ios-simulator-request'; kind: 'open-panel'; instanceId?: string });
-
-export type GhostPipeIOSSimulatorErrorCode =
-  | IOSSimulatorMcpErrorCode
-  | 'PERMISSION_DENIED'
-  | 'INVALID_REQUEST'
-  | 'INSTANCE_NOT_OWNED'
-  | 'RATE_LIMITED'
-  | 'HOST_NOT_READY'
-  | 'IOS_SIMULATOR_HOST_ERROR';
-
-export type GhostPipeIOSSimulatorResult =
-  | {
-      ok: true;
-      apiVersion: typeof GHOST_IOS_SIMULATOR_CAPABILITY_API_VERSION;
-      kind: 'capabilities';
-      capabilities: {
-        status: true;
-        openHostPanel: true;
-        pluginVideo: false;
-        pluginInput: false;
-      };
-    }
-  | {
-      ok: true;
-      apiVersion: typeof GHOST_IOS_SIMULATOR_CAPABILITY_API_VERSION;
-      kind: 'status';
-      status: GhostIOSSimulatorStatusSnapshot;
-    }
-  | {
-      ok: true;
-      apiVersion: typeof GHOST_IOS_SIMULATOR_CAPABILITY_API_VERSION;
-      kind: 'open-panel';
-      instanceId?: string;
-    }
-  | { ok: false; errorCode: GhostPipeIOSSimulatorErrorCode; message: string };
-
+export interface GhostPanelMediaTarget {
+  ghostId: string;
+  instanceId?: string;
+}
 /**
  * 上行:preview 槽——请主机在右侧栏内置浏览器打开一个预览标签页。
  * url 必须命中身份卡 preview.hosts 白名单(ghostPreviewUrlAllowed);
@@ -6806,6 +6757,11 @@ export interface GhostScheduleDraftPush {
   /** 本次请求 id(renderer 去重用:重复推送不叠开多个面板)。 */
   requestId: string;
   ghostId: string;
+  /**
+   * 已知身份才带上。待迁移、或还没有 namespace 字段的旧安装省略。
+   * 不写入调度存储：给任务表加列是不可回退的 migration，这里只跟着打开面板的推送走。
+   */
+  namespace?: string | null;
   /** 插件展示名(主机填,用于面板上的来源标注)。 */
   ghostName: string;
   iconDataUrl?: string;
@@ -8578,6 +8534,18 @@ export interface GhostLibraryOverview {
   softLimitExceeded: boolean;
   /** 卸载后未删除的标记(重装自动清除;设置页以横幅提示)。 */
   orphaned: boolean;
+  /**
+   * 裸 id 下还留着这个插件以前的作品库，可以换回当前实例（设置页提供「接回」）。
+   * 没有可接回的旧库时为 null。
+   */
+  legacyLibrary: {
+    usedBytes: number;
+    fileCount: number;
+    /** uninstalled = 卸载时留下；unknown = 没有宿主身份记录，来源无法证明。 */
+    provenance: 'uninstalled' | 'unknown';
+  } | null;
+  /** 裸 id 下的旧作品库还被本机另一个安装（例如本地版）使用着，卸载它后才能接回。 */
+  legacyLibraryInUse: boolean;
 }
 
 /** 上行:主机代理 fetch 请求。 */

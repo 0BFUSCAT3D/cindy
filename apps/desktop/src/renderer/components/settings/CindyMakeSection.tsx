@@ -638,7 +638,7 @@ function CindyMakeSourceStatusCard({
       .catch(() => toast.error(t('cindyMakeDoctor.failed')));
   };
   return (
-    <section id="settings-search-settings-cindyMake-source-title"
+    <section
       className="min-w-0 text-14 text-[var(--text-primary)]"
       aria-label={t('settings.cindyMake.source.title')}
     >

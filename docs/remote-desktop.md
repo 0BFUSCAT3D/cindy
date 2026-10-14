@@ -29,30 +29,40 @@ It opens a clean, independent window with native mouse/keyboard input and a smal
 toolbar. Reopening the same target focuses its existing window. Full screen,
 display selection, sound, video settings and portable
 clipboard shortcuts are available. Resolution changes appear only for a capable
-host and affect its actual monitor. Ctrl+Alt+Esc releases keyboard focus;
-Cmd/Ctrl+W requests closing this viewer, including while it owns keyboard focus.
+host and affect its actual monitor. While the picture owns keyboard focus,
+shortcuts including Cmd/Ctrl+W go to the remote computer. Ctrl+Alt+Esc releases
+keyboard focus; without it, Cmd/Ctrl+W requests closing this viewer.
 Native window close and the close shortcut share a confirmation
 dialog only after a connection is established; cancelling keeps the connection and control lease. Confirmation belongs
 to the current window generation and cannot close a later connection.
+After confirmation, the local window closes immediately, retires its input and
+heartbeat authority, and sends lease cleanup in the background. A missing or
+failed remote reply cannot keep the window open or close a replacement window.
 
 Desktop uses the local system cursor inside the remote picture, with standard
 shape hints from the host. Pointer size is independent of remote resolution and zoom.
-With the picture focused, Cmd+C/V on macOS or Ctrl+C/V on Windows copies selected
-remote content to the local clipboard or pastes local content remotely. Transfers use
-the existing authorized Main bridge, are ordered and user-triggered, and report
-failure without reconnecting. Capable hosts support text, HTML, RTF, URLs and PNG;
-older hosts retain text-only behavior. Arbitrary files and cut are not bridged.
-Manual actions and progress are also available in the settings panel. Optional
-clipboard synchronization reuses Mobile's version, conflict and bounded-transfer
-logic, only while this viewer is focused and holds confirmed control. Contents
-stay in Main/native code and do not cross the viewer Renderer bridge.
+With the picture focused, Cmd/Ctrl+C/V are ordinary keys sent to the remote
+computer, so copy and paste act on its own clipboard exactly as they would locally;
+they never move content between computers. Cross-computer transfer is explicit: the
+settings panel's copy and paste actions copy selected remote content to the local
+clipboard or paste local content remotely. Transfers use the existing authorized
+Main bridge, are ordered and user-triggered, and report the specific failure
+(view only, empty, unsupported, too large, copy/paste failed) without reconnecting;
+Main logs only the action and error code. Capable hosts support text, HTML, RTF,
+URLs and PNG; older hosts retain text-only behavior. Arbitrary files and cut are
+not bridged. Optional clipboard synchronization reuses Mobile's version, conflict
+and bounded-transfer logic, only while this viewer is focused and holds confirmed
+control. Contents stay in Main/native code and do not cross the viewer Renderer bridge.
 
 The settings panel also supports host privacy screen, host mute, lock-on-exit and
 macOS-to-macOS automatic unlock. Non-secret preferences are scoped to the local
 account and target computer; only explicit overrides are stored. Host effects
 are capability-gated and applied after control is confirmed. Privacy failures
 remain visible ahead of mute or clipboard notices, with explicit retry. Explicit
-exit waits for the requested lock; reconnect and display changes do not lock.
+exit does not wait for the requested lock. The host receives the lock-on-exit
+policy at start and on heartbeats, then locks locally on stop, signaling loss or
+lease expiry. Live-lease resume/takeover and display changes do not lock; recovery
+after expiry waits for the already-triggered lock to finish.
 See [native credential behavior](remote-desktop-credentials.md) for password storage.
 Video quality changes are coalesced while negotiation is pending. The toolbar
 shows receive rate and clears stale network samples, while resolution discovery
@@ -119,10 +129,12 @@ network verification requirements below.
 The device detail page opens the real desktop of the selected computer. On the
 computer, enable **Settings → Remote control → Allow remote desktop**, as well
 as device control. Screen recording and accessibility permissions are granted
-in the operating system. The phone automatically requests control on connection
-when the host supports input, using the existing permission and ownership checks.
-**Controls → View only** releases control and preserves that choice when reconnecting
-within this page. The computer always has a **Disconnect**
+in the operating system. The phone takes control on connection when the host
+supports input, using the existing permission and ownership checks; a host that
+advertises `autoControl` grants it with the lease, with no separate request.
+**Controls → View only** is a local switch: the phone stops sending input while
+the computer keeps control, and the choice is preserved when reconnecting within
+this page. The computer always has a **Disconnect**
 button while being viewed or controlled.
 
 The host allows one active remote-desktop viewer at a time. Starting a new
@@ -801,6 +813,11 @@ first frame, with host authorization completed in parallel during Home entry.
 Entering releases control. A capture-renderer challenge/pong heartbeat renews
 only a view-only lease after host authorization while the viewer reports actual
 system PiP presentation.
+While background viewing is active the host caps the live video sender at the
+saver tier (2 Mbps, 30 fps, frame rate kept while moving) on the same peer, and
+lifts the cap as soon as the viewer returns to fullscreen or regains control; the
+viewer's own quality choice is not changed. A peer negotiated during background
+viewing starts at the same cap. This is host-local and needs no new capability.
 Closing PiP, closing WebRTC, local disconnect, revocation and the ordinary finite
 lease timeout all terminate background viewing. This does not grant indefinite
 background control or extend the lifetime of unrelated device links.

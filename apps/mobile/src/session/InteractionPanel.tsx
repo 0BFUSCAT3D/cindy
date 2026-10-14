@@ -1,4 +1,6 @@
 import { PluginSetupNativeActions } from '@/plugins/PluginSetupNativeActions';
+import { InputHandoffCard } from '@/inputHandoff/InputHandoffCard';
+import { parseInputHandoffSnapshotLike } from '@/inputHandoff/inputHandoffNative';
 import { mobilePluginSetupActions } from '@/plugins/pluginSetupActions';
 import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -107,6 +109,7 @@ const LOCALIZED_INTERACTION_KINDS = new Set([
   'rename_sessions_confirm',
   'ghost_grant_confirm',
   'plugin_setup',
+  'input_handoff',
 ]);
 
 function localizedInteractionKindKey(kind: string): string {
@@ -348,12 +351,15 @@ function InteractionPanelContent({
   }
   return (
     <View style={[styles.root, fillAvailableHeight && styles.rootFill, rootLayoutStyle]} testID="interaction.panel">
-      <PendingTaskHeader
-        onCollapse={canToggleCollapsed ? toggleCollapsed : undefined}
-        onSelectRequest={setActiveRequestId}
-        presentation={activeQueuePresentation}
-        touchLayout={touchLayout}
-      />
+      {/* 代输入条自带用途与位置,单独一条时不再叠一层队列头。 */}
+      {kind === 'input_handoff' && activeQueuePresentation.totalCount <= 1 ? null : (
+        <PendingTaskHeader
+          onCollapse={canToggleCollapsed ? toggleCollapsed : undefined}
+          onSelectRequest={setActiveRequestId}
+          presentation={activeQueuePresentation}
+          touchLayout={touchLayout}
+        />
+      )}
       <InteractionItem
         key={readRequestId(activeInteraction) ?? `${interactionKind(activeInteraction)}-${JSON.stringify(activeInteraction.request)}`}
         deviceId={deviceId}
@@ -634,6 +640,34 @@ function InteractionItem({
       />
     );
   }
+  // 代输入: values go through the sealed per-step channel inside the card;
+  // value-less decisions use resolve and wait for the Host's next snapshot.
+  if (kind === 'input_handoff') {
+    const snapshot = parseInputHandoffSnapshotLike(item.request);
+    if (!snapshot || !deviceId || isSharedTaskPeer(deviceId)) {
+      return (
+        <UnsupportedCard
+          message={t('interaction.panel.unsupportedType')}
+          request={item.request}
+          touchLayout={touchLayout}
+        />
+      );
+    }
+    return (
+      <InputHandoffCard
+        key={snapshot.requestId}
+        deviceId={deviceId}
+        snapshot={snapshot}
+        decisionBusy={busy}
+        onDecision={(decision) => void submitDecision(decision, { optimisticDismiss: false })}
+        // Claiming on first keystroke must not mark the card busy (that would
+        // disable the field being typed in); a failed claim is harmless.
+        onQuietDecision={(decision) => {
+          if (requestId) void resolveInteractionResilient(maker, sessionId, requestId, decision).catch(() => undefined);
+        }}
+      />
+    );
+  }
   // 配置通过独立加密 v3 原生入口；通用交互 resolve 仍只允许取消。
   // 旧 Host、共享访客及电脑本地回调保留电脑入口。
   if (kind === 'plugin_setup') {
@@ -823,6 +857,7 @@ function PermissionEvidence({
         <Text style={styles.companionMetaLabel}>{`${t(`interaction.companion.fields.${key}`)}  `}</Text>{value}
       </Text>)}
       <Text style={styles.companionMeta}><Text style={styles.companionMetaLabel}>{`${t('interaction.companion.operation')}  `}</Text>{presentation.toolName}</Text>
+      {presentation.sourceDescription ? <Text selectable style={styles.body}>{presentation.sourceDescription}</Text> : null}
       {presentation.autoReviewUnavailable ? <Text style={styles.body}>{t('interaction.permission.autoReviewUnavailable')}</Text> : null}
       {riskWarningText ? <View style={[styles.permissionRiskRow, armed && styles.permissionRiskRowArmed]} testID="interaction.permission.riskWarning">
         <Text style={styles.permissionRiskLabel}>{t('interaction.permission.highRisk')}</Text><Text style={styles.permissionRiskText}>{riskWarningText}</Text>
@@ -855,6 +890,9 @@ function PermissionEvidence({
           {presentation.toolName}
         </Text>
       </View>
+      {presentation.sourceDescription ? (
+        <Text selectable style={styles.permissionDescription}>{presentation.sourceDescription}</Text>
+      ) : null}
       {presentation.autoReviewUnavailable || presentation.description ? (
         <Text style={styles.permissionDescription}>
           {presentation.autoReviewUnavailable

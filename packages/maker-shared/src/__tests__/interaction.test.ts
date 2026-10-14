@@ -191,11 +191,12 @@ describe('interaction shared model', () => {
       requestId: 'p-unavailable',
       toolName: 'Bash',
       description: 'Automatic review could not finish, so this action needs your confirmation.',
-      metadata: { autoReviewUnavailable: true },
+      metadata: { autoReviewUnavailable: true, imSourceDescription: '来源：Telegram · 开发群' },
       input: { command: 'npx tsc --noEmit' },
     });
 
     expect(presentation.autoReviewUnavailable).toBe(true);
+    expect(presentation.sourceDescription).toBe('来源：Telegram · 开发群');
     expect(presentation.description).toBe(
       'Automatic review could not finish, so this action needs your confirmation.',
     );
@@ -635,6 +636,21 @@ describe('interaction shared model', () => {
     expect(interactionBlocksRemoteComposer({ request: { kind: 'plugin_setup', requestId: 's1', revision: 1 } })).toBe(false);
     expect(interactionBlocksRemoteComposer({ request: { kind: 'future_kind', requestId: 'f1' } })).toBe(false);
     expect(interactionBlocksRemoteComposer(null)).toBe(false);
+  });
+
+  it('lets the controller answer 代输入 without taking over its composer', () => {
+    const live = { request: { kind: 'input_handoff', requestId: 'h1', revision: 3 } };
+    const ended = { request: { kind: 'input_handoff', requestId: 'h1', revision: 4, terminal: true } };
+    expect(remoteInteractionHandling(live)).toBe('resolvable');
+    expect(remoteInteractionHandling(ended)).toBe('desktop-only');
+    // A Host-owned wait outlives the turn; the owner must still be able to chat.
+    expect(interactionBlocksRemoteComposer(live)).toBe(false);
+    expect(pendingInteractionsBlockRemoteComposer([live])).toBe(false);
+    // A question the turn is blocked on still comes first.
+    expect(sortPendingInteractions([
+      live,
+      { request: { kind: 'permission', requestId: 'p1' } },
+    ]).map((item) => item.request.requestId)).toEqual(['p1', 'h1']);
   });
 
   it('keys composer blocking off the whole pending set, not the card being viewed', () => {

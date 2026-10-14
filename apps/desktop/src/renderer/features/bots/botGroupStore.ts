@@ -2,12 +2,12 @@
  * 伙伴群聊列表的 renderer 镜像，以及分工（安排）操作的调用入口。
  *
  * 权威数据在 main（当前账号本地库的 bot_groups / members / messages），这里只缓存
- * `listBotGroups()` 的最新一份摘要，供侧栏「群聊」分组与群设置抽屉读取。main 每次
+ * `listBotGroups()` 的最新一份摘要，供统一侧栏与群设置抽屉读取。main 每次
  * 变更都会推 `onBotGroupChanged`，收到后整表重取；同一时刻只有一个请求在飞，期间
  * 再来的推送合并成一次补取。账号（data owner）切换时立即清空，旧账号的迟到响应
  * 一律丢弃（electron-security-and-process-boundaries §4–5：renderer 不持有真相）。
  */
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { seedBotGroupReadState } from './botReadState';
 
 import {
@@ -143,6 +143,15 @@ export function subscribeBotGroups(listener: () => void): () => void {
 
 export function useBotGroupList(): BotGroupListSnapshot {
   return useSyncExternalStore(subscribeBotGroups, getBotGroupListSnapshot, getBotGroupListSnapshot);
+}
+
+/** One listed group, or null; a null id reads nothing and never re-renders on list refreshes. */
+export function useBotGroupSummary(groupId: string | null): BotGroupSummary | null {
+  const read = useCallback(
+    () => (groupId ? getBotGroupListSnapshot().groups.find((group) => group.id === groupId) ?? null : null),
+    [groupId],
+  );
+  return useSyncExternalStore(subscribeBotGroups, read, read);
 }
 
 const NOT_READY: BotGroupMutationResult = { ok: false, errorCode: 'HOST_NOT_READY', message: '' };

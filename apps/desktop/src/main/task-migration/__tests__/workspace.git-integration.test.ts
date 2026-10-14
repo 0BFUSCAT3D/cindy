@@ -101,6 +101,55 @@ describe('cross-machine project snapshots', () => {
     await fs.writeFile(path.join(target, 'draft'), 'new machine edit');
     expect(await fs.readFile(path.join(source, 'draft'), 'utf8')).toBe('uncommitted\n');
   });
+  it('copies link chains, dangling links and modes, leaving external links behind', async () => {
+    // The CocoaPods / framework layout that used to block the whole copy.
+    await fs.mkdir(path.join(source, 'Fw', 'Versions', 'A', 'Headers'), { recursive: true });
+    await fs.writeFile(path.join(source, 'Fw', 'Versions', 'A', 'Headers', 'x.h'), 'x');
+    await fs.symlink('A', path.join(source, 'Fw', 'Versions', 'Current'), 'dir');
+    await fs.symlink('Versions/Current/Headers', path.join(source, 'Fw', 'Headers'), 'dir');
+    await fs.mkdir(path.join(source, 'Pods'));
+    await fs.symlink('../build/generated/gen.h', path.join(source, 'Pods', 'gen.h'));
+    // Archived after the link it passes through, which tar alone refuses to extract.
+    await fs.symlink('Fw/Versions', path.join(source, 'alias'), 'dir');
+    await fs.symlink('alias/Current/Headers/x.h', path.join(source, 'via'));
+    // Xcode leaves world-writable folders; the restore must not narrow them by the local umask.
+    await fs.mkdir(path.join(source, 'shared'));
+    await fs.writeFile(path.join(source, 'shared', 'open'), 'x');
+    await fs.chmod(path.join(source, 'shared'), 0o777);
+    await fs.chmod(path.join(source, 'shared', 'open'), 0o666);
+    await fs.symlink('../outside', path.join(source, 'out'));
+    const before = await inventoryWorktree(source);
+
+    const snapshot = await snapshotWorkspace(source, artifacts, randomUUID());
+    expect(snapshot.skipped).toEqual([{ path: 'out', code: 'MIGRATION_EXTERNAL_LINK' }]);
+    await restoreWorkspace(snapshot, artifacts, target);
+
+    const expected = { ...before };
+    delete expected.out;
+    expect({ ...(await inventoryWorktree(target)) }).toEqual(expected);
+    expect(await fs.readFile(path.join(target, 'Fw', 'Headers', 'x.h'), 'utf8')).toBe('x');
+    expect(await fs.readFile(path.join(target, 'via'), 'utf8')).toBe('x');
+    expect(await fs.readlink(path.join(target, 'Pods', 'gen.h'))).toBe('../build/generated/gen.h');
+  });
+  // symlink-platform-skip: Windows cannot create a FIFO or a directory name ending in a space.
+  it.skipIf(process.platform === 'win32')(
+    'leaves special files and unportable names behind and reports them',
+    async () => {
+      await fs.writeFile(path.join(source, 'kept'), 'x');
+      await fs.mkdir(path.join(source, 'trailing '));
+      await fs.writeFile(path.join(source, 'trailing ', 'inner'), 'x');
+      await fs.symlink('trailing /inner', path.join(source, 'into-skipped'));
+      await exec('mkfifo', [path.join(source, 'pipe')]);
+
+      const snapshot = await snapshotWorkspace(source, artifacts, randomUUID());
+      expect([...snapshot.skipped].sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+        { path: 'pipe', code: 'MIGRATION_UNSUPPORTED_ENTRY' },
+        { path: 'trailing ', code: 'MIGRATION_NONPORTABLE_PATH' },
+      ]);
+      await restoreWorkspace(snapshot, artifacts, target);
+      expect((await fs.readdir(target)).sort()).toEqual(['into-skipped', 'kept']);
+    },
+  );
   it('restores linked worktrees with HEAD, staged changes, unstaged changes and ignored files intact', async () => {
     await git(source, 'init', '-b', 'main');
     await git(source, 'config', 'user.name', 'Migration test');

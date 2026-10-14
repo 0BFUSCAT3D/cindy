@@ -4,7 +4,9 @@ import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as scrollModel from '@/session/messageScroll';
 import { createMobileTailFollower } from '@/session/messageTailFollower';
+import { RichContentRuntime } from '@/session/richContentRuntime';
 import { mobileDebugEnabled, mobileDebugLog, setMobileDebugSink } from '@/debug/mobileDebugLog';
+import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 
 // Execute the production callbacks without mounting Markdown/media/native views. Unlike source
 // assertions, this harness interleaves touch, native scroll, content-size, timers and frame delivery.
@@ -46,7 +48,7 @@ const opacityDeclaration = renderer!.body!.statements.flatMap(node => (
 const renderOpacity = new Function('listRevealed', 'initialRevealProgress',
   `return ${opacityDeclaration.initializer!.getText(source)};`) as (revealed: boolean, progress: object) => unknown;
 
-function harness() {
+function harness(richContent: RichContentRuntime | null = new RichContentRuntime()) {
   const ref = <T>(current: T) => ({ current });
   const state = {
     historyActiveRef: ref(true),
@@ -76,11 +78,13 @@ function harness() {
     metrics.offsetY = metrics.contentHeight - metrics.viewportHeight;
   });
   const environment = {
+    richContent,
     readingPosition: { write: vi.fn() }, reopeningPosition: undefined,
     captureCurrentHistoryAnchor: vi.fn((): { key: string; viewportOffset: number } | null => null),
     getCurrentHistoryTopOffsetAdjustment: vi.fn(() => 0),
     resolveMobileMessageHistoryAnchorOffset: vi.fn(() => 600),
     ...scrollModel, ...state, createMobileTailFollower, mobileDebugEnabled, mobileDebugLog,
+    sampleScrollDebug: createScrollDebugSampler(),
     initialRevealProgress: { setValue: vi.fn() }, setListRevealed: vi.fn(),
     listRef: ref({
       getState: () => ({ scrollLength: 800, scroll: state.scrollMetricsRef.current.offsetY,
@@ -129,6 +133,29 @@ beforeEach(() => {
 afterEach(() => { setMobileDebugSink(undefined); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('streaming follow yields to the reader', () => {
+  it('defers rich content during a drag without preventing reader ownership', () => {
+    const richContent = new RichContentRuntime();
+    const h = harness(richContent);
+    const render = vi.fn();
+    richContent.request(render);
+    h.handleScrollBeginDrag(h.scrollEvent(1200));
+    vi.advanceTimersByTime(150);
+    h.handleScroll(h.scrollEvent(1100));
+    expect(h.state.nearBottomRef.current).toBe(false);
+    vi.advanceTimersByTime(179);
+    expect(render).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(render).toHaveBeenCalledOnce();
+  });
+  it('preserves reader ownership without an Android rich content runtime', () => {
+    const h = harness(null);
+    h.handleScrollBeginDrag(h.scrollEvent(1200));
+    h.handleScroll(h.scrollEvent(1100));
+    h.handleScrollEndDrag();
+    settle();
+    expect(h.state.nearBottomRef.current).toBe(false);
+    expect(h.tailScroll).not.toHaveBeenCalled();
+  });
   it('ignores scroll and content growth while its retained task is hidden', () => {
     const h = harness();
     h.state.historyActiveRef.current = false;

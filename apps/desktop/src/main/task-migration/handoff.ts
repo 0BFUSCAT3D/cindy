@@ -1,3 +1,5 @@
+import type { SkippedEntry } from './portableEntries';
+
 /** Resumable copy progress. The source task is never retired. */
 export type MigrationStage = 'preparing' | 'transferring' | 'complete' | 'cancelled';
 export interface MigrationHandoff {
@@ -16,6 +18,8 @@ export interface MigrationHandoff {
   errorPath?: string;
   /** Bytes needed vs the limit, when `error` is a size failure. */
   errorSize?: { needed: number; limit: number };
+  /** Entries the prepared copy leaves behind; `entries` is capped, `total` is not. */
+  skipped?: { total: number; entries: SkippedEntry[] };
 }
 export interface HandoffDependencies {
   save(record: MigrationHandoff): Promise<void>;

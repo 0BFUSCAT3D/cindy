@@ -16,6 +16,8 @@
 - [模型资料优先级](model-metadata-precedence.md)：公共资料、默认/实报/用户覆盖、多账号身份与成员空值语义。
 - [本地模型筛选](local-model-selection.md)：候选、推荐、量化包装和硬件证据。
 - [供应商设置](provider-settings.md)：连接身份、状态、操作与用量展示。
+- [供应商分享](provider-sharing.md)：把远程供应商分享给其他账号的一次性链接、双方确认、管理页与跨区域规则（跨区域默认关闭）。
+- [供应商组](provider-groups.md)：一台电脑把多台电脑上的同一个供应商合成一组，本机、同账号其他电脑与分享的人都按组策略分配运行电脑（方案，未实现）。
 - [V4 全类型规范](../model-registry-v4-media.md)：媒体字段、成员投影及额外发布条件。
 
 - [`core-product-principles.md`](core-product-principles.md)：Cindy 的目的、连接本质、
@@ -28,5 +30,7 @@
   叫「任务」，任务 / 对话 / 消息的分层定义与判定规则，以及「任务」与 `task` 的歧义处理。
 - [`document-workshop-quality.md`](document-workshop-quality.md)：无插件文档基础能力的
   HTML-first 工序、四格式统一视觉语言、Session 作品卡和插件增强层边界。
+- [`input-handoff.md`](input-handoff.md)：代输入——Agent 把需要主人的一步（登录、密码、验证码、
+  授权、未知选项）交给主人逐步完成，值不留痕；兜底、提醒、结束判定与已知边界。
 - [`session-runtime-control.md`](session-runtime-control.md)：Agent 调整任务模型、来源、
   推理强度与 Fast 的统一控制面，baseline/effective/pending 状态和自动降级边界。

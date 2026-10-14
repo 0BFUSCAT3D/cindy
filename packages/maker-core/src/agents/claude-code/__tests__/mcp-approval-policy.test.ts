@@ -206,7 +206,6 @@ async function startSession(
       scope?: string;
     }>;
     turnChangeCapture?: AgentDeps['turnChangeCapture'];
-    getMcpToolApprovalPresentation?: AgentDeps['getMcpToolApprovalPresentation'];
     reviewAutoPermissionAction?: AgentDeps['reviewAutoPermissionAction'];
     resolveClaudeSubagentModelAccess?: AgentDeps['resolveClaudeSubagentModelAccess'];
     resolveVerifiedContextWindow?: AgentDeps['resolveVerifiedContextWindow'];
@@ -228,7 +227,6 @@ async function startSession(
   const deps = createDeps(policy, options?.mcpServerNames);
   deps.capabilityRouting = options?.capabilityRouting;
   deps.turnChangeCapture = options?.turnChangeCapture;
-  deps.getMcpToolApprovalPresentation = options?.getMcpToolApprovalPresentation;
   deps.reviewAutoPermissionAction = options?.reviewAutoPermissionAction;
   deps.resolveClaudeSubagentModelAccess = options?.resolveClaudeSubagentModelAccess;
   deps.resolveVerifiedContextWindow = options?.resolveVerifiedContextWindow;
@@ -295,7 +293,37 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
+const OUTPUT_DELIVERY_ROUTING = {
+  overrides: [
+    {
+      capabilityId: 'output-delivery',
+      source: { kind: 'harness-builtin', harness: 'claude-code', surface: 'tool', id: 'Artifact' },
+      invocation: 'disabled',
+    },
+    {
+      capabilityId: 'output-delivery',
+      source: { kind: 'harness-builtin', harness: 'claude-code', surface: 'mcp', id: 'claude.ai Claude Docs' },
+      invocation: 'disabled',
+    },
+  ],
+} as const satisfies CapabilityRoutingPolicy;
+
 describe('ClaudeCodeAgent canUseTool honors the host MCP approval policy', () => {
+  it('removes host-disabled built-in tools and MCP servers from a local session', async () => {
+    const { handle } = await startSession(undefined, {
+      capabilityRouting: OUTPUT_DELIVERY_ROUTING,
+    });
+    const options = sdkMock.query.mock.calls.at(-1)?.[0]?.options as {
+      disallowedTools?: string[];
+      settings?: { deniedMcpServers?: unknown };
+    };
+
+    expect(options.disallowedTools).toEqual(['Artifact']);
+    expect(options.settings?.deniedMcpServers).toEqual([
+      { serverName: 'claude.ai Claude Docs' },
+    ]);
+    await handle.close();
+  });
   it('captures known writes before execution and marks Bash opaque only after execution', async () => {
     const beforeKnownFileWrite = vi.fn(async () => undefined);
     const noteOpaqueWrite = vi.fn();
@@ -834,38 +862,6 @@ describe('ClaudeCodeAgent canUseTool honors the host MCP approval policy', () =>
     await handle.close();
   });
 
-  it('uses the host security disclosure for a progressive MCP action', async () => {
-    const disclosure = {
-      title: 'Allow Xcode to build this project?',
-      description:
-        'Build scripts may access files outside the project, and output is returned to the Agent.',
-    };
-    const { handle, canUseTool, seen } = await startSession(() => 'prompt-each-time', {
-      mcpServerNames: ['cindy_ios_simulator'],
-      getMcpToolApprovalPresentation: () => disclosure,
-    });
-
-    await canUseTool(
-      'mcp__cindy_ios_simulator__call_tool',
-      { name: 'build_app', args: {} },
-      {
-        toolUseID: 't-build',
-        title: 'Generic MCP approval',
-        description: 'Generic MCP description',
-        suggestions: SESSION_SUGGESTION,
-      },
-    );
-
-    expect(permissionRequests(seen)).toEqual([
-      expect.objectContaining({
-        title: disclosure.title,
-        description: disclosure.description,
-        suggestions: undefined,
-      }),
-    ]);
-    await handle.close();
-  });
-
   it('falls back to prompt-each-time when the policy throws or returns garbage', async () => {
     const thrower = await startSession(() => {
       throw new Error('policy exploded');
@@ -1359,7 +1355,6 @@ describe('remote sessions share the same permission semantics', () => {
       initMcpServerNames?: readonly string[];
       failedInitMcpServerNames?: readonly string[];
       getGhostRosterPrompt?: AgentDeps['getGhostRosterPrompt'];
-      getMcpToolApprovalPresentation?: AgentDeps['getMcpToolApprovalPresentation'];
       resolveClaudeSubagentModelAccess?: AgentDeps['resolveClaudeSubagentModelAccess'];
       reviewAutoPermissionAction?: AgentDeps['reviewAutoPermissionAction'];
     },
@@ -1372,7 +1367,6 @@ describe('remote sessions share the same permission semantics', () => {
     let onSubagentModelAccessRequest: ((raw: unknown) => Promise<{ status?: string }>) | undefined;
     const deps = createDeps(policy);
     deps.getGhostRosterPrompt = options?.getGhostRosterPrompt;
-    deps.getMcpToolApprovalPresentation = options?.getMcpToolApprovalPresentation;
     deps.capabilityRouting = options?.capabilityRouting;
     deps.resolveClaudeSubagentModelAccess = options?.resolveClaudeSubagentModelAccess;
     deps.reviewAutoPermissionAction = options?.reviewAutoPermissionAction;
@@ -1686,42 +1680,6 @@ describe('remote sessions share the same permission semantics', () => {
     await handle.close();
   });
 
-  it('uses the host security disclosure for remote progressive MCP actions', async () => {
-    const disclosure = {
-      title: 'Allow Xcode to build this project?',
-      description:
-        'Build scripts may access files outside the project, and output is returned to the Agent.',
-    };
-    const { handle, onApprovalRequest, seen } = await startRemoteSession(
-      () => 'prompt-each-time',
-      {
-        mcpServerNames: ['cindy_ios_simulator'],
-        getMcpToolApprovalPresentation: () => disclosure,
-        attachResolver: () => ({ kind: 'permission', behavior: 'deny' }),
-      },
-    );
-
-    const result = await onApprovalRequest({
-      requestId: 'r-build',
-      kind: 'permission',
-      toolName: 'mcp__cindy_ios_simulator__call_tool',
-      input: { name: 'build_app', args: {} },
-      title: 'Generic MCP approval',
-      description: 'Generic MCP description',
-      suggestions: SESSION_SUGGESTION,
-    });
-
-    expect(result.behavior).toBe('deny');
-    expect(permissionRequests(seen)).toEqual([
-      expect.objectContaining({
-        title: disclosure.title,
-        description: disclosure.description,
-        suggestions: undefined,
-      }),
-    ]);
-    await handle.close();
-  });
-
   it('fails closed instead of allowing when no resolver is attached', async () => {
     const { handle, onApprovalRequest } = await startRemoteSession(() => 'prompt');
 
@@ -1853,6 +1811,13 @@ describe('remote sessions share the same permission semantics', () => {
         denialMessage:
           'NATIVE_SUBAGENT_USER_INPUT_NOT_ALLOWED: report the question to the parent agent, which can decide whether to ask the user.',
       },
+      {
+        toolNamePrefix: 'mcp__cindy_helper__ask_user_question_async',
+        sourceServerId: 'cindy_helper',
+        invocation: 'root-only',
+        denialMessage:
+          'NATIVE_SUBAGENT_USER_INPUT_NOT_ALLOWED: report the question to the parent agent, which can decide whether to ask the user.',
+      },
     ]);
     await expect(
       natural.onApprovalRequest({
@@ -1962,7 +1927,10 @@ describe('remote sessions share the same permission semantics', () => {
       mcpServerNames: [userServerId],
     });
 
-    expect(remote.remoteStartParams?.toolGuards).toHaveLength(2);
+    expect(remote.remoteStartParams?.toolGuards).toHaveLength(3);
+    expect(remote.remoteStartParams?.toolGuards).toContainEqual(expect.objectContaining({
+      toolNamePrefix: 'mcp__cindy_helper__ask_user_question_async', invocation: 'root-only',
+    }));
     await expect(
       remote.onApprovalRequest({
         requestId: 'r-user-mcp-collision',
@@ -2044,7 +2012,10 @@ describe('remote sessions share the same permission semantics', () => {
       failedInitMcpServerNames: [userServerId],
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(failed.remoteStartParams?.toolGuards).toHaveLength(2);
+    expect(failed.remoteStartParams?.toolGuards).toHaveLength(3);
+    expect(failed.remoteStartParams?.toolGuards).toContainEqual(expect.objectContaining({
+      toolNamePrefix: 'mcp__cindy_helper__ask_user_question_async', invocation: 'root-only',
+    }));
     await expect(
       failed.onApprovalRequest({
         requestId: 'r-failed-settings-mcp-collision',
@@ -2055,5 +2026,34 @@ describe('remote sessions share the same permission semantics', () => {
     ).resolves.toMatchObject({ behavior: 'deny' });
     expect(permissionRequests(failed.seen)).toHaveLength(0);
     await failed.handle.close();
+  });
+});
+
+describe('remote sessions apply host-disabled built-in surfaces', () => {
+  it('passes disallowed tools and denied MCP servers to the remote daemon', async () => {
+    const config = await makeTempDir();
+    process.env.CLAUDE_CONFIG_DIR = config;
+    const workingDir = await makeTempDir();
+    let startParams: Record<string, unknown> | undefined;
+    const deps = createDeps(() => 'auto-approve');
+    deps.capabilityRouting = OUTPUT_DELIVERY_ROUTING;
+    deps.remoteCcQueryFactory = (async (args: { startParams: Record<string, unknown> }) => {
+      startParams = args.startParams;
+      return createFakeQuery() as never;
+    }) as NonNullable<AgentDeps['remoteCcQueryFactory']>;
+    const handle = await new ClaudeCodeAgent(deps).startSession({
+      sessionId: 'session-remote-output-routing',
+      model: 'claude-opus-4-6',
+      workingDir,
+      remoteHostId: 'remote-1',
+      permissionMode: 'default',
+    });
+
+    expect(startParams?.disallowedTools).toEqual(['Artifact']);
+    expect(
+      (startParams?.extraOptions as { settings?: { deniedMcpServers?: unknown } })
+        ?.settings?.deniedMcpServers,
+    ).toEqual([{ serverName: 'claude.ai Claude Docs' }]);
+    await handle.close();
   });
 });

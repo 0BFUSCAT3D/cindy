@@ -8,10 +8,19 @@ import { messages } from '../schema';
 /** Read-model headers only. Full content is read by ID after visible items are selected.
  * Candidate artifact results are conservative: the shared parser remains authoritative.
  * Invalid legacy JSON stays intact instead of disappearing from the history.
+ * Plain-text tool output (Codex stores most results this way) is folded like a
+ * JSON result; otherwise one long turn exhausts the scan budget on outlines alone.
+ * Media and card payloads require JSON, so plain text can only carry `xdt-file://`
+ * links or a bare `cindy-media://` URL. Real deliveries are short; long logs that
+ * merely mention those schemes are folded too.
  */
 export function historyOutlineContent(): SQL<string> {
   const body = messages.content;
   return sql<string>`CASE
+    WHEN ${messages.role} = 'tool_result' AND NOT json_valid(${body})
+      AND NOT (length(${body}) <= 16384
+        AND (instr(${body}, 'xdt-file://') > 0 OR instr(${body}, 'cindy-media://') > 0))
+      THEN json_quote(CASE WHEN instr(${body}, '<tool_use_error>') > 0 THEN '<tool_use_error>' ELSE '' END)
     WHEN NOT json_valid(${body}) THEN ${body}
     WHEN ${messages.role} = 'thinking' THEN json_object('isRedacted', json(CASE
       WHEN (json_type(${body}, '$') = 'text' AND length(json_extract(${body}, '$')) > 0)
@@ -54,13 +63,67 @@ export function historyOutlineContent(): SQL<string> {
 }
 
 
+/**
+ * Command artifact inference is CPU work on the main thread, repeated for every
+ * outline page of the same immutable tool_use row (切换伙伴即重算, #5503). Cache the
+ * inferred paths per row; the key carries the command length and a content hash so
+ * a re-used id with different text never serves stale paths.
+ */
+const COMMAND_ARTIFACT_CACHE_LIMIT = 2048;
+const commandArtifactCache = new Map<string, readonly string[]>();
+
+function commandArtifactCacheKey(id: string, command: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < command.length; index += 1) {
+    hash ^= command.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${id}\u0000${command.length}\u0000${hash >>> 0}`;
+}
+
+function cachedCommandArtifacts(id: string, command: string): readonly string[] {
+  const key = commandArtifactCacheKey(id, command);
+  const hit = commandArtifactCache.get(key);
+  if (hit) {
+    // Refresh recency so hot sessions stay cached while old pages age out.
+    commandArtifactCache.delete(key);
+    commandArtifactCache.set(key, hit);
+    return hit;
+  }
+  const paths = extractCommandOutputPathCandidates(command);
+  if (commandArtifactCache.size >= COMMAND_ARTIFACT_CACHE_LIMIT) {
+    const oldest = commandArtifactCache.keys().next().value;
+    if (oldest !== undefined) commandArtifactCache.delete(oldest);
+  }
+  commandArtifactCache.set(key, paths);
+  return paths;
+}
+
+/** Test seam: cache occupancy, and a reset so individual tests start cold. */
+export function commandArtifactCacheSize(): number {
+  return commandArtifactCache.size;
+}
+export function resetCommandArtifactCache(): void {
+  commandArtifactCache.clear();
+}
+
+/**
+ * An approximate fact that changes when a hidden body is rewritten in place (a later full
+ * tool result, a background completion). The outline already reads every body, so length
+ * and tail add CPU but no IO; grouping revisions hash it, and it never reaches the wire.
+ * A rewrite with the same length and the same last 24 characters is not detected.
+ */
+export function historyOutlineContentStamp(): SQL<string> {
+  return sql<string>`length(${messages.content}) || ':' || substr(${messages.content}, -24)`;
+}
+
 /** File content/patches never cross the outline query; commands yield only paths on the wire. */
 export function withHistoryArtifacts<T extends HistoryMessageSource>(row: T): T & Pick<HistoryMessageSource, 'historyArtifacts'> {
   if (row.role !== 'tool_use') return row;
   const tool = parseMessageToolUse(row);
   const descriptor = describeToolUse(tool.toolName, tool.input);
   const paths = descriptor.kind === 'command'
-    ? extractCommandOutputPathCandidates(descriptor.command) : createdPathsFromDescriptor(descriptor);
+    ? [...cachedCommandArtifacts(String(row.id), descriptor.command)] : createdPathsFromDescriptor(descriptor);
   const exclusions = descriptor.kind === 'file' && descriptor.action === 'edit'
     ? [{ path: descriptor.filePath, exclude: 'command' as const }]
     : descriptor.kind === 'fileChange' ? descriptor.changes.filter((change) => change.action !== 'add')

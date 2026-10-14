@@ -48,9 +48,14 @@ import type {
   AgentKind as RendererAgentKind,
   MessageAutomationOrigin,
 } from '@/lib/ccAgent.types';
+import type {
+  MessageSourceDevice,
+  MessageSourcePlugin,
+} from '@cindy/maker-shared/message-source';
+import { isRealAutomationOrigin } from '@/lib/messageAutomationOrigin';
+import { SHARE_SOURCE_ATTR } from '@/lib/shareConversationImage';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import type { AgentInputReference } from '../../../shared/agentInputQueue';
-import type { PersistedSessionReferenceMetadata } from '../../../shared/sessionReferenceMetadata';
 import {
   buildRewindDraftAttachments,
   startRewindSourceProbe,
@@ -60,6 +65,7 @@ import {
   useAgentCapabilities,
   type AgentKind as MakerAgentKind,
 } from '@/hooks/useAgentCapabilities';
+import { useAgentOnOtherDevice } from './AgentOnOtherDeviceContext';
 import { useChatSessionFile } from './ChatSessionFileContext';
 import { isRemoteFileOrigin, originDeviceId, toRemoteMediaOrigin } from '@/lib/sessionFileOrigin';
 import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
@@ -98,18 +104,18 @@ import {
 import { findLinkifyMatches } from './userMessageLinkify';
 import { SessionLinkChip } from './SessionLinkChip';
 import { ProjectLinkChip } from './ProjectLinkChip';
-import { buildSessionMessageDeepLink, parseSessionDeepLinkHref } from '@/lib/deepLink';
+import { buildSessionMessageDeepLink } from '@/lib/deepLink';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { insertSessionLinkIntoComposer } from '@/lib/composerActionsBus';
 import { MENTION_TOKEN_SPLIT, parseMentionToken } from '@/lib/mentionRefFormat';
-import { parseGhostCommandWord, splitGhostDirective } from '@/cindy-brain/ghostCommand';
+import { ghostCommandTokenLength, parseGhostCommandToken, splitGhostDirective } from '@/cindy-brain/ghostCommand';
 import { splitHostCapabilityDirective } from '@/cindy-brain/hostCapabilityInvocation';
 import {
   GhostFulfillmentContext,
   GhostSummonCard,
   type GhostSummonDisplay,
 } from './GhostSummonCard';
-import { AutomationOriginBadge } from './AutomationOriginBadge';
+import { MessageSourceLabels } from './MessageSourceLabels';
 import { UserMessageUrlLink } from './UserMessageUrlLink';
 import { InlineReferenceChip } from './InlineReferenceChip';
 import { QuoteChip } from './QuoteChip';
@@ -138,6 +144,8 @@ type UserImageItem =
 
 interface UserMessageProps {
   sharedAuthorName?: string;
+  /** 共享任务成员 id:作者行悬停显示。 */
+  sharedAuthorMemberId?: string;
   /** F2: session cwd used to resolve relative paths in inline @-chip refs.
    *  Stable per-session — only changes on session switch. */
   workingDir: string;
@@ -152,8 +160,6 @@ interface UserMessageProps {
    */
   allowPrivilegedLinks?: boolean;
   content: string;
-  /** Resolved range summaries for session links in this user message. */
-  sessionReferences?: PersistedSessionReferenceMetadata[];
   /** chat-text-quote:content 开头 blockquote 为引用功能产出(胶囊化渲染判据)。 */
   quotesEncoded?: boolean;
   /** Hidden semantic reference ranges; preserved only while visible text is unchanged. */
@@ -198,6 +204,10 @@ interface UserMessageProps {
   automationOrigin?: MessageAutomationOrigin;
   /** Hook 来源元数据;存在时渲染左对齐 Cindy 署名任务卡片(替代右对齐气泡)。 */
   hookSource?: ImMessageSource;
+  /** 手机 / 另一台电脑远程发来时的发送设备;查看者就是该设备时不显示标签。 */
+  sourceDevice?: MessageSourceDevice;
+  /** 插件任务派发的消息来源。 */
+  sourcePlugin?: MessageSourcePlugin;
   /** /goal 目标设定/更新标记:在气泡上方渲一个「目标 / 目标已更新」徽标。 */
   goalBadge?: { updated: boolean };
   /** 订阅槽①:本条消息被意识钩子拦下(未发出)。存在时气泡下方渲一条 error
@@ -273,7 +283,6 @@ function renderTextWithLinks(
   keyPrefix: string,
   onImageClick: ((xdtFileUrl: string) => void) | undefined,
   sessionId?: string,
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   interactive = true,
 ): React.ReactNode[] {
   if (!interactive) return [text];
@@ -296,14 +305,6 @@ function renderTextWithLinks(
         />,
       );
     } else if (match.kind === 'session') {
-      const target = parseSessionDeepLinkHref(match.href);
-      const referenceMetadata = target
-        ? sessionReferences?.find(
-            (reference) =>
-              reference.sessionId === target.sessionId &&
-              (reference.messageClientId ?? null) === target.messageClientId,
-          )
-        : undefined;
       // 会话深链 → chip(显式 label / 标题 / 短 ID),点击跳会话、带锚点定位
       // 消息。`[标题](深链)` markdown 形式(输入框粘贴 chip 化的序列化产物)
       // 带显式 label,SessionLinkChip 优先展示、不查库。
@@ -312,7 +313,6 @@ function renderTextWithLinks(
           key={`${keyPrefix}-session-${match.index}`}
           href={match.href}
           label={match.label}
-          referenceMetadata={referenceMetadata}
         />,
       );
     } else if (match.kind === 'project') {
@@ -414,7 +414,6 @@ function renderContentWithoutPastedText(
   /** remote 会话:@-chip 点击跳过本机 smart resolve,按 workdir 风格直接 join。 */
   remoteJoin = false,
   renderLegacySlashCommands = true,
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   interactive = true,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -459,7 +458,6 @@ function renderContentWithoutPastedText(
               `${li}-${pi}`,
               onImageClick,
               sessionId,
-              sessionReferences,
               interactive,
             ),
           );
@@ -475,7 +473,6 @@ function renderContentWithoutPastedText(
               `${li}-${pi}`,
               onImageClick,
               sessionId,
-              sessionReferences,
               interactive,
             ),
           );
@@ -569,7 +566,6 @@ function renderContentWithoutPastedText(
             `${li}-${pi}`,
             onImageClick,
             sessionId,
-            sessionReferences,
             interactive,
           ),
         );
@@ -741,7 +737,6 @@ export function renderContent(
   remoteJoin = false,
   pastedTextRanges: readonly PastedTextRange[] = [],
   slashCommandRanges?: readonly SlashCommandRange[],
-  sessionReferences?: readonly PersistedSessionReferenceMetadata[],
   /**
    * 粘贴段胶囊的点击入口(issue #946)。不传时胶囊退回不可交互,只剩 hover
    * tooltip —— 那正是"发出去就再也看不到全文"的旧行为,新调用点都应该传。
@@ -811,7 +806,6 @@ export function renderContent(
           sessionId,
           remoteJoin,
           useLegacySlashHeuristic,
-          sessionReferences,
           interactive,
         )}
       </span>
@@ -825,10 +819,10 @@ export function renderContent(
 
 export function UserMessage({
   sharedAuthorName,
+  sharedAuthorMemberId,
   workingDir,
   allowPrivilegedLinks = true,
   content,
-  sessionReferences,
   quotesEncoded,
   agentReferences,
   pastedTextRanges,
@@ -847,6 +841,8 @@ export function UserMessage({
   simplifiedBotConversation = false,
   automationOrigin,
   hookSource,
+  sourceDevice,
+  sourcePlugin,
   goalBadge,
   blockedByGhost,
 }: UserMessageProps) {
@@ -871,7 +867,10 @@ export function UserMessage({
   // 远端 cc daemon 会话暂不支持 Fork/Rewind 依赖的 query rebuild (MVP),
   // remoteHostId 非空时直接关掉这两个能力, 避免点了落到后端错误。
   const isRemote = Boolean(remoteHostId);
-  const forkSupported = !isRemote && (!agentKind || (capabilities?.fork?.supported ?? true));
+  // Agent 在另一台电脑运行：会话记录在那台，分叉入口先隐藏(回退照常可用)。
+  const agentOnOtherDevice = useAgentOnOtherDevice();
+  const forkSupported =
+    !isRemote && !agentOnOtherDevice && (!agentKind || (capabilities?.fork?.supported ?? true));
   const rewindSupported =
     !isRemote &&
     (!agentKind || (capabilities?.rewind?.supported ?? true));
@@ -958,10 +957,10 @@ export function UserMessage({
   // $指令 开头且确认命中意识时,气泡正文渲剥掉指令 token 的余文($token 的
   // 语义由气泡内的召唤标注行承载,正文不重复报幕);普通消息里的 $word 不受
   // 影响。2026-07-29 起取消「卡片即消息」合并形态:正文永远回归文字气泡。
-  const ghostCmdWord =
-    ghostDirective?.kind === 'command' ? parseGhostCommandWord(bubbleBody) : null;
+  const ghostCmd =
+    ghostDirective?.kind === 'command' ? parseGhostCommandToken(bubbleBody) : null;
   // 触发符恒为 1 个字符($ 或全角变体),token = 触发符 + 指令词。
-  const ghostCmdToken = ghostCmdWord ? bubbleBody.slice(0, 1 + ghostCmdWord.length) : null;
+  const ghostCmdToken = ghostCmd ? bubbleBody.slice(0, 1 + ghostCommandTokenLength(ghostCmd)) : null;
   const ghostPromptBody = ghostCmdToken ? bubbleBody.slice(ghostCmdToken.length).trim() : '';
   // 软提示兑现(语义调用):本条消息触发的那一轮 AI 真调了被提及的意识时,
   // 升级为与硬指令同形态的召唤标注行。判据来自 GhostFulfillmentContext
@@ -1005,7 +1004,8 @@ export function UserMessage({
   // 自动化任务注入的消息(模板化调度 prompt,每轮重复出现)用更低的收起
   // 阈值,收起后也只留 3 行(手打消息 14 行阈值 / 收起留 10 行不变)。
   // 其他任务经工具发来的消息不是每轮重复的模板，保持手打消息的收起口径。
-  const isScheduledAutomation = automationOrigin?.kind === 'scheduler';
+  // Hook 渠道消息复用自动化来源，但它是真人提问，不算自动化。
+  const isScheduledAutomation = isRealAutomationOrigin(automationOrigin);
   const collapseThreshold = isScheduledAutomation
     ? AUTOMATION_USER_MESSAGE_VISUAL_LINE_THRESHOLD
     : LONG_USER_MESSAGE_VISUAL_LINE_THRESHOLD;
@@ -1243,10 +1243,14 @@ export function UserMessage({
     if (editing && !isLastUserMessage) setEditing(false);
   }, [editing, isLastUserMessage]);
 
+  const orcaWorkerRole =
+    automationOrigin?.kind === 'session' ? automationOrigin.orcaSenderLabel : undefined;
   const orcaCardTitle =
     orcaCommunication?.orcaSource === 'lead'
       ? t('chat.userMessage.orcaFromLead')
-      : t('chat.userMessage.orcaFromWorker');
+      : orcaWorkerRole
+        ? t('chat.userMessage.orcaFromWorkerNamed', { role: orcaWorkerRole })
+        : t('chat.userMessage.orcaFromWorker');
 
   // Attachments belong to the user message independently of its visual shell.
   const messageActions = (
@@ -1340,13 +1344,29 @@ export function UserMessage({
               : 'max-w-[488px] items-end',
         )}
       >
-        {sharedAuthorName && <span className="text-12 text-[var(--text-secondary)]">{sharedAuthorName}</span>}
+        {sharedAuthorName && (
+          <span
+            {...{ [SHARE_SOURCE_ATTR]: '' }}
+            className="text-12 text-[var(--text-secondary)]"
+            title={
+              sharedAuthorMemberId
+                ? t('chat.userMessage.sourceIds.member', { id: sharedAuthorMemberId })
+                : undefined
+            }
+          >
+            {sharedAuthorName}
+          </span>
+        )}
         {orcaCommunication ? (
           <>
             {/* Orca 卡片标题只说明 Lead / Worker 角色；来源标签补上可跳转的发送方任务。 */}
-            {automationOrigin && (
-              <AutomationOriginBadge automationOrigin={automationOrigin} hostSessionId={sessionId} />
-            )}
+            <MessageSourceLabels
+              automationOrigin={automationOrigin}
+              sourceDevice={sourceDevice}
+              sourcePlugin={sourcePlugin}
+              hostSessionId={sessionId}
+              align="start"
+            />
             <div
               className={cn(
                 'w-full rounded-[8px] border border-[var(--msg-tool-card-border)]',
@@ -1384,7 +1404,13 @@ export function UserMessage({
         ) : hookSource && !editing ? (
           <>
             {/* hook 消息: Cindy 署名任务卡片(左对齐), 替代右对齐用户气泡 +
-                automation 标签。图片 / 文件附件仍属于同一条入站消息。 */}
+                automation 标签(卡片头已写明渠道)。图片 / 文件附件仍属于同一条入站消息。 */}
+            <MessageSourceLabels
+              sourceDevice={sourceDevice}
+              sourcePlugin={sourcePlugin}
+              hostSessionId={sessionId}
+              align="start"
+            />
             {imageAttachmentNodes}
             {fileAttachmentNodes}
             <HookTaskCard
@@ -1401,13 +1427,18 @@ export function UserMessage({
           </>
         ) : (
           <>
-            {/* 自动化 / 其他任务注入的消息:气泡上方右对齐渲染来源标签(不进气泡、不入
-            copyText)。自动化来源跳转自动化页并 focus 对应条目(与侧边栏自动化分组"编辑"
-            同款 query 机制;已删除时 SchedulerPage 的 focus 兜底回退到列表首条);
-            任务来源跳转发送方任务。 */}
-            {automationOrigin && (
-              <AutomationOriginBadge automationOrigin={automationOrigin} hostSessionId={sessionId} />
-            )}
+            {/* 自动化 / 其他任务 / 插件注入或远程设备发来的消息:气泡上方右对齐渲染来源
+            标签(不进气泡、不入 copyText)。自动化来源跳转自动化页并 focus 对应条目(与侧边栏
+            自动化分组"编辑"同款 query 机制;已删除时 SchedulerPage 的 focus 兜底回退到列表
+            首条);任务来源跳转发送方任务;Hook 渠道(编辑态或缺 hookSource 时走到这里)
+            只显示渠道;设备标签跳设置 → 我的设备。 */}
+            <MessageSourceLabels
+              automationOrigin={automationOrigin}
+              hookIm={hookSource?.im}
+              sourceDevice={sourceDevice}
+              sourcePlugin={sourcePlugin}
+              hostSessionId={sessionId}
+            />
             {/* /goal 目标设定/更新:气泡上方右对齐渲一个徽标(不进气泡、不入 copyText)。 */}
             {goalBadge && (
               <span
@@ -1471,6 +1502,10 @@ export function UserMessage({
             无余文时气泡只剩标注行。 */}
                 {(inlineQuoteCount > 0 || displayBubbleBody.trim() || ghostChipDisplay) && (
                   <div
+                    // 只剩插件标注行的气泡:分享图会剥掉标注,整泡一起去掉,不留空壳。
+                    {...(inlineQuoteCount === 0 && !displayBubbleBody.trim()
+                      ? { [SHARE_SOURCE_ATTR]: '' }
+                      : {})}
                     className={cn(
                       // overflow-wrap:anywhere（不是 break-words）才能让超长无空格序列
                       // 在任意字符处断行，并把内容的 min-content 缩小到一个字符宽。
@@ -1492,6 +1527,7 @@ export function UserMessage({
                  下方有正文/引用时加分隔线,单独成泡时不加。 */
                       <GhostSummonCard
                         directive={ghostChipDisplay}
+                        commandNamespace={ghostCmd?.namespace ?? undefined}
                         running={Boolean(sessionRunning) && Boolean(isLastUserMessage)}
                         {...(messageClientId ? { messageClientId } : {})}
                         className={
@@ -1578,7 +1614,6 @@ export function UserMessage({
                                         : ghostBodySourceStart + quoteTextSegmentStarts[index]!,
                                       segment.text.length,
                                     ),
-                                sessionReferences,
                                 longMessageCollapsed ? undefined : handlePastedTextChipClick,
                                 projectSentRanges(
                                   validAgentReferences,
@@ -1619,7 +1654,6 @@ export function UserMessage({
                                     displayBubbleSourceStart,
                                     displayBubbleBody.length,
                                   ),
-                              sessionReferences,
                               undefined,
                               bubbleAgentReferences,
                               false,
@@ -1652,7 +1686,6 @@ export function UserMessage({
                                     displayBubbleSourceStart,
                                     displayBubbleBody.length,
                                   ),
-                              sessionReferences,
                               handlePastedTextChipClick,
                               bubbleAgentReferences,
                             )}
