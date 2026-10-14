@@ -47,6 +47,7 @@ describe('草稿页:建到被控电脑的任务也能选第三台电脑', () => 
     expect(controlledBranch).toContain('selectControlledTaskAgentDevices({');
     expect(controlledBranch).toContain('controlledDeviceId: effectiveDeviceLinkDeviceId,');
     expect(controlledBranch).toContain('shareDevices: providerShareDevices,');
+    expect(draftRouteSource).toContain('useProviderShareAgentDevices([effectiveAgentDeviceId], effectiveDeviceLinkDeviceId)');
   });
 
   it('选了另一台电脑时模型目录跟着那台', () => {

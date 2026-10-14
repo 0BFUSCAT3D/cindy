@@ -179,7 +179,7 @@ describe('被控电脑上的任务:换 Agent 所在电脑', () => {
       sessionViewSource.indexOf(': undefined;', branch),
     );
     expect(remoteBranch).toContain('shareDevices: providerShareDevices,');
-    expect(sessionViewSource).toContain('useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId])');
+    expect(sessionViewSource).toContain('useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId], remoteDeviceId)');
     // ChatInput 只认调用方放进候选的分享。
     const inputStart = chatInputSource.indexOf('const deviceLinkAgentLocation =');
     expect(chatInputSource.slice(inputStart, inputStart + 800)).toContain(

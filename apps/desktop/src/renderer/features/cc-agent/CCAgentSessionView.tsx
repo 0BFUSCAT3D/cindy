@@ -2101,7 +2101,7 @@ function CCAgentSessionContent({
     devices: providerShareDevices,
     nameFor: providerShareDeviceName,
     isReceived: isReceivedProviderShare,
-  } = useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId]);
+  } = useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId], remoteDeviceId);
   // 被控电脑上的任务 Agent 现在 / 挂着的位置是分享时:分享按账号授予,本机也收到了同一条就经本机
   // 的分享通道读它的目录,模型按钮按分享显示(否则只能读到被控电脑自己的目录,显示「模型信息暂
   // 不可用」)。本机没收到的分享读不到,维持原样。
@@ -2142,7 +2142,7 @@ function CCAgentSessionContent({
             devices: selectableDevices,
             controlledDeviceId: remoteDeviceId,
             keepDeviceIds: [controlledAgentDeviceId, pendingAgentDeviceId],
-            // 分享按账号授予，同账号控制端也可读取全部可用分享；不要求任务先使用它。
+            // 新分享落点须由被控端名单确认；不要求任务先使用它。
             shareDevices: providerShareDevices,
           })
         : undefined;
