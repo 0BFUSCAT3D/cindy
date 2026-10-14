@@ -272,15 +272,25 @@ async function getHeadTreeFiles(root: string): Promise<Set<string>> {
 }
 
 /**
- * rel 本身或其任一父级是否受版本管理。父级被跟踪意味着它是文件或符号链接(Git 不跟踪
- * 目录), 在其下写入会顶掉受控内容或与后台 checkout 冲突——只看 Git 记录, 不依赖它是否
- * 已经落盘。
+ * 由受控路径集合得到冲突判定: rel 与任一受控路径相同、是其父级(受控文件或符号链接之下)、
+ * 或是其祖先目录(受控内容需要这个目录)时, 在 rel 写入都会顶掉受控内容或与后台 checkout
+ * 冲突。只看 Git 记录, 不依赖它是否已经落盘。
  */
-function isUnderTrackedPath(tracked: ReadonlySet<string>, rel: string): boolean {
-  for (let end = rel.length; end > 0; end = rel.lastIndexOf('/', end - 1)) {
-    if (tracked.has(rel.slice(0, end))) return true;
+function trackedPathConflict(tracked: Iterable<string>): (rel: string) => boolean {
+  const files = new Set(tracked);
+  const dirs = new Set<string>();
+  for (const file of files) {
+    for (let end = file.lastIndexOf('/'); end > 0; end = file.lastIndexOf('/', end - 1)) {
+      dirs.add(file.slice(0, end));
+    }
   }
-  return false;
+  return (rel) => {
+    if (dirs.has(rel)) return true;
+    for (let end = rel.length; end > 0; end = rel.lastIndexOf('/', end - 1)) {
+      if (files.has(rel.slice(0, end))) return true;
+    }
+    return false;
+  };
 }
 
 /**
@@ -341,7 +351,7 @@ async function copyMatchedFiles(
     getTrackedFiles(baseRepo),
     getHeadTreeFiles(destRoot),
   ]);
-  const tracked = new Set([...trackedInBase, ...trackedInDestHead]);
+  const conflictsWithTracked = trackedPathConflict([...trackedInBase, ...trackedInDestHead]);
   const results: IncludeFileResult[] = [];
 
   for (const rel of matched) {
@@ -364,7 +374,7 @@ async function copyMatchedFiles(
       continue;
     }
 
-    if (isUnderTrackedPath(tracked, rel)) {
+    if (conflictsWithTracked(rel)) {
       results.push({ relpath: rel, status: 'skipped-tracked' });
       continue;
     }
@@ -422,6 +432,7 @@ export async function listChangedWorktreeIncludeFiles(
     getTrackedFiles(baseRepo),
     getTrackedFiles(destRoot),
   ]);
+  const conflictsWithTracked = trackedPathConflict([...trackedInBase, ...trackedInDest]);
   const changed: ChangedIncludeFile[] = [];
   const destRootResolved = path.resolve(destRoot);
   const srcFiles = listAllFiles(baseRepo);
@@ -429,7 +440,7 @@ export async function listChangedWorktreeIncludeFiles(
   for (const rel of srcFiles) {
     if (!matches(rel)) continue;
     // worktree 分支已跟踪的同名文件不是从 base 复制来的, 其改动由 git 自身的 dirty 检查负责。
-    if (isUnderTrackedPath(trackedInBase, rel) || isUnderTrackedPath(trackedInDest, rel)) continue;
+    if (conflictsWithTracked(rel)) continue;
 
     const srcAbs = path.join(baseRepo, rel);
     const destAbs = path.join(destRoot, rel);

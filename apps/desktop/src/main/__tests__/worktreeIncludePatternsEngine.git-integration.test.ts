@@ -413,6 +413,40 @@ describe('include files under a path the target branch tracks', () => {
   });
 });
 
+describe('include files that are an ancestor of a path the target branch tracks', () => {
+  it('skips a file whose name the target branch needs as a directory', async () => {
+    const gitRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xdt-wt-include-ancestor-'));
+    const repo = path.join(gitRoot, 'repo');
+    const worktree = path.join(gitRoot, 'worktree');
+    fs.mkdirSync(repo, { recursive: true });
+    try {
+      git(repo, 'init');
+      git(repo, 'config', 'user.name', 'XDMaker Test');
+      git(repo, 'config', 'user.email', 'test@xdmaker.local');
+      fs.writeFileSync(path.join(repo, '.worktreeinclude'), '/config\n');
+      git(repo, 'add', '.worktreeinclude');
+      git(repo, 'commit', '-m', 'init');
+      git(repo, 'branch', 'feature');
+      git(repo, 'worktree', 'add', worktree, 'feature');
+      fs.mkdirSync(path.join(worktree, 'config'));
+      fs.writeFileSync(path.join(worktree, 'config', 'settings.json'), '{}');
+      git(worktree, 'add', 'config/settings.json');
+      git(worktree, 'commit', '-m', 'track config/settings.json');
+      git(repo, 'worktree', 'remove', '--force', worktree);
+      // base 里同名的 config 是未跟踪的普通文件; 目标分支需要 config 作为目录
+      fs.writeFileSync(path.join(repo, 'config'), 'LOCAL=1\n');
+      git(repo, 'worktree', 'add', '--no-checkout', worktree, 'feature');
+
+      await expect(applyWorktreeIncludeFile(repo, worktree)).resolves.toEqual([
+        { relpath: 'config', status: 'skipped-tracked' },
+      ]);
+      expect(fs.existsSync(path.join(worktree, 'config'))).toBe(false);
+    } finally {
+      fs.rmSync(gitRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('copyWorktreeIncludeFiles restore mode', () => {
   let tmpRoot: string;
   let baseRepo: string;
