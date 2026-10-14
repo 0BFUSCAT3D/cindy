@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
+import { confirmAgentLocationForPick } from '@/session/sessionAgentSwitchConfirmation';
+
+vi.mock('react-native', () => ({ Alert: { alert: vi.fn() } }));
 
 // Run the production callbacks without mounting native controls or remote services.
 const source = ts.createSourceFile('session.tsx', readFileSync(
@@ -9,11 +12,13 @@ const source = ts.createSourceFile('session.tsx', readFileSync(
 ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const callbacks = new Map<string, string>();
 let intentGate = '';
+let remoteCatalogGate = '';
 function visit(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && node.initializer) {
     const name = node.name.getText(source);
     if (name === 'orcaModelSelectionUsesIntent') intentGate = node.initializer.getText(source);
-    if (ts.isCallExpression(node.initializer) && node.initializer.expression.getText(source) === 'useCallback') {
+    if (name === 'orcaRemoteAgentDeviceId') remoteCatalogGate = node.initializer.getText(source);
+    if (ts.isCallExpression(node.initializer) && ['useCallback', 'useMemo'].includes(node.initializer.expression.getText(source))) {
       callbacks.set(name, node.initializer.arguments[0].getText(source));
     }
   }
@@ -21,13 +26,15 @@ function visit(node: ts.Node) {
 }
 visit(source);
 
-function setup(orcaRole: 'lead' | 'worker' | null, supported = true) {
+function setup(orcaRole: 'lead' | 'worker' | null, supported = true, agentDeviceId: string | null = null) {
   const selection = { model: 'new-model', providerId: 'provider', effort: 'high', fastMode: true };
   const write = vi.fn(async (_intent: unknown) => true);
   const setModel = vi.fn(async () => true);
   const runControlAction = vi.fn(async (action: () => Promise<unknown>) => action());
   const bindings = {
-    currentSession: { orcaRole, agentKind: 'codex', model: 'old-model', effort: 'low', fastMode: false },
+    currentSession: { orcaRole, agentDeviceId, agentKind: 'codex', model: 'old-model', effort: 'low', fastMode: false },
+    currentAgentDeviceId: agentDeviceId,
+    remoteAgentCatalogs: ['current', 'other'].map(deviceId => ({ deviceId, providers: [] })),
     sessionAgentSwitchSupported: supported, sessionAgentKind: 'codex', modelSheetAgentKind: 'codex',
     canUseRemoteSessionControls: true, canConfigureSessionModel: true, controlBusy: false,
     sessionId: 's1', deviceId: 'host', deviceIdRef: { current: 'host' },
@@ -39,14 +46,16 @@ function setup(orcaRole: 'lead' | 'worker' | null, supported = true) {
     resolveAgentCapability: () => ({ supportsFastMode: true, contextWindow: 200000 }),
     normalizeMobileAgentCapabilities: () => ({ hasFastMode: true, supportsModelWindowSwitchGuard: true }),
     maker: { getCapabilities: vi.fn(), setEffort: vi.fn(), setFastMode: vi.fn() },
-    confirmAgentLocationForPick: async () => ({}), intentChangesAgentLocation: () => false,
+    confirmAgentLocationForPick, intentChangesAgentLocation: () => false,
     writeSessionAgentSwitchIntent: write, setComposerModel: setModel, runControlAction,
     setModelSheetOpen: vi.fn(), setModelSheetAgentKind: vi.fn(),
   };
   const names = ['selectComposerModelRow', 'selectUnifiedComposerModel', 'selectComposerFlatModel',
     'changeComposerSelectedEffort', 'changeComposerSelectedFastMode'];
   const compiled = ts.transpileModule(`const orcaModelSelectionUsesIntent = ${intentGate};
-    return {${names.map(name => `${name}: ${callbacks.get(name)}`).join(',')}};`,
+    const orcaRemoteAgentDeviceId = ${remoteCatalogGate};
+    return {${names.map(name => `${name}: ${callbacks.get(name)}`).join(',')},
+      catalogs: (${callbacks.get('modelSheetRemoteCatalogs')})()};`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const handlers = new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
   return { handlers, write, setModel, runControlAction, bindings, selection };
@@ -59,6 +68,20 @@ const picks = [
 ] as const;
 
 describe('Orca model-only selection', () => {
+  it.each(['lead', 'worker'] as const)('keeps only the current remote catalog and selects in place for %s', async role => {
+    const h = setup(role, true, 'current');
+    expect(h.handlers.catalogs.map((item: { deviceId: string }) => item.deviceId)).toEqual(['current']);
+    expect(await h.handlers.selectUnifiedComposerModel(picks[1][1], { deviceId: 'current' })).toBe(true);
+    expect(h.write).toHaveBeenCalledWith({ targetAgentKind: 'codex', model: 'new-model',
+      providerId: 'provider', effort: 'high', fastMode: true });
+    for (const deviceId of [null, 'other']) {
+      expect(await h.handlers.selectUnifiedComposerModel(picks[1][1], { deviceId })).toBe(false);
+    }
+    expect(h.write).toHaveBeenCalledTimes(1);
+    expect(h.setModel).not.toHaveBeenCalled();
+    expect(h.bindings.currentSession.agentDeviceId).toBe('current');
+  });
+
   it.each(['lead', 'worker'] as const)('stages all three model pickers for %s without patching the current runtime', async role => {
     for (const [name, input, providerId] of picks) {
       const h = setup(role);

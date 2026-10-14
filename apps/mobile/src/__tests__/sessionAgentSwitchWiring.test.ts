@@ -85,7 +85,7 @@ describe('session Agent switch UI wiring', () => {
     expect(source).toContain("Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId')");
     // 模型列表另列其他电脑的供应商,选中态跟着下一条消息时 Agent 所在的电脑。
     expect(source).toContain(
-      'catalogs: remoteAgentCatalogs,\n                    selectedDeviceId: nextAgentDeviceId,',
+      'catalogs: modelSheetRemoteCatalogs,\n                    selectedDeviceId: nextAgentDeviceId,',
     );
     // 供应商组:归组的任务在组那一项里选模型留在此刻运行的那台;挂着换电脑的意图时不按组显示。
     expect(source).toContain('providerGroup: remoteProviderGroup,');
@@ -142,7 +142,11 @@ describe('session Agent switch UI wiring', () => {
     const source = readSource('app/sessions/[sessionId].tsx');
     expect(source).toContain('agentKind={modelSheetAgentKind}');
     expect(source).toContain('capabilities={modelSheetCapabilities}');
-    expect(source).toContain('flatOptions={modelSheetRuntimeOptions.modelOptions}');
+    expect(source).toContain('flatOptions={orcaRemoteAgentDeviceId ? [] : modelSheetRuntimeOptions.modelOptions}');
+    expect(source).toContain('providers={orcaRemoteAgentDeviceId ? [] : composerDeviceProviders.providers}');
+    expect(source).toContain('providersUnsupported={orcaRemoteAgentDeviceId ? false : composerDeviceProviders.unsupported}');
+    expect(source).toContain('...(agentLocationMovable || orcaRemoteAgentDeviceId');
+    expect(source).toContain('remoteAgentCatalogs.filter((catalog) => catalog.deviceId === orcaRemoteAgentDeviceId)');
     expect(source).toContain('selectedProviderId={modelSheetSelection.providerId}');
     expect(source).toContain('agentKind={agentSwitchIntent.targetAgentKind}');
   });

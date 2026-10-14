@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/lib/ccAgent.types';
@@ -1129,6 +1130,36 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(body).toMatch(
       /remoteMaker\.setModel\(\s*sessionId,\s*newModelId,\s*selectedProviderId,\s*expectedAgentSwitchRevision,/,
     );
+  });
+
+  it.each(['lead', 'worker'])('Desktop Orca %s routes same-Agent model and provider picks through the switch intent', async sessionOrcaRole => {
+    const parsed = ts.createSourceFile('ChatInput.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const callbacks = new Map<string, string>();
+    function visit(node: ts.Node) {
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)
+        && ['performModelChange', 'performProviderChange'].includes(node.name.getText(parsed))) {
+        callbacks.set(node.name.getText(parsed), node.initializer.arguments[0].getText(parsed));
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(parsed);
+    const switchAgent = vi.fn(async () => true);
+    const bindings = { sessionOrcaRole, settingsLocked: false, sessionId: 's1',
+      sessionAgentSwitchSupported: true, remoteHostId: null, runtimeAgentKind: 'codex',
+      makerChatStore: { getAgentSwitchIntent: () => null }, performAgentSwitch: switchAgent,
+      effectiveSourceId: 'provider-old', activeModel: 'model-old' };
+    function callback(name: string) {
+      expect(callbacks.has(name)).toBe(true);
+      const compiled = ts.transpileModule(`return ${callbacks.get(name)};`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      return new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
+    }
+    expect(await callback('performModelChange')('model-new')).toBe(true);
+    expect(switchAgent).toHaveBeenLastCalledWith('codex', 'model-new', 'provider-old');
+    expect(await callback('performProviderChange')('provider-new', 'model-new', 'high', undefined, true)).toBe(true);
+    expect(switchAgent).toHaveBeenLastCalledWith('codex', 'model-new', 'provider-new', { effort: 'high', fastMode: true });
+    switchAgent.mockResolvedValue(false);
+    expect(await callback('performModelChange')('rejected-model')).toBe(false);
   });
 
   it('await 返回后做会话作用域校验:旧会话响应不得借最新 ref 写进当前会话', () => {

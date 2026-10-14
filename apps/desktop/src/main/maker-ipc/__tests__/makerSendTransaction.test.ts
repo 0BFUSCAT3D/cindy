@@ -29,6 +29,8 @@ import {
 import type { MakerSessionCreateOpts } from '../sessionRequest';
 import { CredentialModeSwitchBusyError } from '../../maker-host/codex-credential-switch';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { createWorkingDirectoryRecovery } from '../workingDirectoryRecovery';
 import { createPreflightHarness, filesystemError } from './helpers/workingDirectoryPreflightHarness';
 import { buildCindyMakeTaskNote } from '../../cindy-make/taskNote';
@@ -3332,6 +3334,48 @@ describe('session-agent-switch handoff injection', () => {
     expect(getSession).not.toHaveBeenCalled();
     expect(bootstrapSession).not.toHaveBeenCalled();
   });
+
+  it.each([['lead', true], ['worker', true], ['lead', false], ['worker', false]] as const)(
+    'Orca queue/resume blocks a retained switch before persistence or dispatch: role=%s live=%s',
+    async (role, hasLive) => {
+      const register = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
+      const start = register.indexOf('    applyPendingAgentSwitch: async (sessionId, options) => {');
+      expect(start).toBeGreaterThan(0);
+      const adapter = register.slice(start, register.indexOf('    prepareUnhealthySession:', start));
+      const pending = new Map([['session-1', { targetAgentKind: 'claude-code' }]]);
+      const beforeSend = vi.fn(async () => undefined);
+      const bindings = {
+        // UI-origin cross-engine preparation can return without clearing the intent.
+        applyPendingAgentSwitchIfIdle: vi.fn(async () => undefined),
+        agentSwitchDeps: {}, agentSwitchPending: pending, getSessionOrcaRole: async () => role,
+        throwIpcError: (code: string, message: string) => { throw Object.assign(new Error(message), { code }); },
+        providerGroupService: { beforeSend }, agentInputCoordinatorHolder: null,
+        log: { warn: vi.fn() },
+      };
+      const compiled = ts.transpileModule(`return ({${adapter}}).applyPendingAgentSwitch;`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      const applyPendingAgentSwitch = new Function(...Object.keys(bindings), compiled)(...Object.values(bindings));
+      const { deps, session } = createDeps({ applyPendingAgentSwitch });
+      if (!hasLive) vi.mocked(deps.getSession).mockReturnValue(undefined);
+      const transaction = createMakerSendTransaction(deps);
+      const send = () => transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'Queued Orca input' },
+        { agentKind: 'codex', workingDir: 'C:/repo' }, {
+          origin: { kind: 'orca', senderLabel: 'Lead', displayText: 'Queued Orca input' },
+          persistUserMessage: { clientId: 'queued-orca-1', content: 'Queued Orca input' },
+        });
+      await expect(send()).rejects.toThrow('Agent switch is still pending');
+      expect(pending.has('session-1')).toBe(true);
+      expect(deps.getSession).not.toHaveBeenCalled();
+      expect(deps.bootstrapSession).not.toHaveBeenCalled();
+      expect(deps.createDbMessage).not.toHaveBeenCalled();
+      expect(session.send).not.toHaveBeenCalled();
+      expect(beforeSend).not.toHaveBeenCalled();
+      // Once recovery finishes, the very same queue/resume transaction can send.
+      bindings.applyPendingAgentSwitchIfIdle.mockImplementation(async () => { pending.clear(); });
+      await send();
+      expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('排队 drain 端到端:切换在派发时刻落实(关旧引擎)→ createOpts 按 DB 对齐新引擎 → 交接注入新引擎首条 + scheduler origin 透传', async () => {
     // 复刻 coordinator drain 一条排队 scheduler 心跳时对 sendToAgentAccepted 的调用:

@@ -16032,6 +16032,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
     applyPendingAgentSwitch: async (sessionId, options) => {
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
+      // Queued Orca delivery and resume both use this transaction. A failed
+      // cross-engine preparation may retain its intent without throwing.
+      if (agentSwitchPending.get(sessionId) && await getSessionOrcaRole(sessionId)) {
+        throwIpcError('PRECONDITION_FAILED', 'Agent switch is still pending; retry the send after recovery');
+      }
       // 已归组的任务所在那台现在不能用时，先换到组里下一台再发(失败不影响这次发送)；离线时先等它恢复，
       // 等的时候进行中行显示「重新连接中 n/5」。
       await providerGroupService?.beforeSend(sessionId, {
