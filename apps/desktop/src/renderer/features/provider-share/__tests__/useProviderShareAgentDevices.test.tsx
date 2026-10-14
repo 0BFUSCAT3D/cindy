@@ -93,7 +93,9 @@ describe('useProviderShareAgentDevices', () => {
     invoke.mockResolvedValue(hostShares({ shareId: 'both' }, { shareId: 'host-only' }));
     const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
     await waitFor(() => expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']));
-    expect(invoke).toHaveBeenCalledWith('host-b', PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL, []);
+    expect(invoke).toHaveBeenCalledWith('host-b', PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL, [
+      { includeCatalog: false },
+    ]);
     // host 的目录暂时读不到(catalog: null)不等于 host 没有加载分享；目录仍走既有分享读取。
     expect(result.current.isReceived('share:controller-only')).toBe(true);
   });

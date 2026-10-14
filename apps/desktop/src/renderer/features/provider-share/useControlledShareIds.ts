@@ -45,7 +45,12 @@ export function useControlledShareIds(
       const request = ++revision;
       const current = () => active && request === revision && isDataOwnerGenerationCurrent(owner);
       try {
-        const value = await link.invoke(deviceId, PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL, []);
+        // 这里只需确认被控端已加载哪些分享；不要让模型目录读取(每个分享
+        // 可能等待远端供应商响应数秒)阻塞候选发现。需要目录的页面仍使用
+        // `maker:provider:list` 的既有读取路径。
+        const value = await link.invoke(deviceId, PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL, [
+          { includeCatalog: false },
+        ]);
         if (!current()) return;
         const ids = new Set(parseProviderShareReceivedCatalogs(value)
           .filter((share) => share.status === 'active')
