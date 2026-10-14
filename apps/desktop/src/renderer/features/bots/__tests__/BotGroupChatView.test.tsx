@@ -1242,7 +1242,9 @@ describe('BotGroupChatView', () => {
       await waitFor(() => expect(outboxItems()).toHaveLength(0));
       expect(screen.getAllByText('早到的推送')).toHaveLength(1);
 
+      // The receipt settles against the timeline already on screen, with no further push.
       await send.resolve({ ok: true, messageId: 'u2' });
+      await waitFor(() => expect(getBotGroupOutbox('g1')).toHaveLength(0));
       pushMessages();
       await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(3));
       expect(screen.getAllByText('早到的推送')).toHaveLength(1);

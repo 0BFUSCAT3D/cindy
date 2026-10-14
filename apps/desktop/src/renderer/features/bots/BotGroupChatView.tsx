@@ -353,13 +353,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
+  const outbox = useBotGroupOutbox(groupId);
   // Settle receipts only once the read that shows them is on screen, so a pending bubble
   // never disappears a frame before its real message appears. Older pages count too: a
   // message pushed off the latest page settles its previews once 查看更早的消息 shows it.
+  // A receipt for a message the timeline already shows settles when it comes back.
   useLayoutEffect(() => {
     if (state.kind === 'ready') noteBotGroupTimeline(groupId, mergeBotGroupMessages(state.older, state.group.messages), state.readToken);
-  }, [groupId, state]);
-  const outbox = useBotGroupOutbox(groupId);
+  }, [groupId, state, outbox]);
   const { pending: pendingSends, localAttachments } = useMemo(
     () => projectBotGroupOutbox(outbox, messages, getBotGroupOutboxClaims(groupId), getBotGroupOutboxPreviews(groupId)),
     [groupId, messages, outbox],
