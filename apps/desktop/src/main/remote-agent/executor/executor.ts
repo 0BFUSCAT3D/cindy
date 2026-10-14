@@ -72,7 +72,7 @@ export interface RemoteExecutorOptions {
    * 「本任务总是允许」的任务级记录(credentialGrants.ts，由启动方按当前原始权限档写入)：Agent 实例被系统
    * 回收重建后据此恢复；缺省时只在本执行器内有效。
    */
-  credentialGrant?: { remember(): void; forget(): void };
+  credentialGrant?: { remember(): void; forget(): void; watch?(revoke: () => void): () => void };
 }
 
 export class ExecutorRequestError extends Error {
@@ -126,8 +126,11 @@ export class RemoteExecutor {
   private closed = false;
   private permissionGeneration = 0;
   private credentialConfirmationTail?: Promise<void>;
+  private readonly unwatchCredentialGrant?: () => void;
 
   constructor(private readonly opts: RemoteExecutorOptions) {
+    // 任务级授权在别处被删除(如 Agent 重建期间用户改了权限档)：收回本执行器已恢复的授权。
+    this.unwatchCredentialGrant = opts.credentialGrant?.watch?.(() => this.revokeCredentialGrant());
     this.workspace = opts.workspace;
     this.gate = opts.gate;
     this.rg = createRipgrepRunner(opts.rgPath);
@@ -148,6 +151,12 @@ export class RemoteExecutor {
     this.permissionGeneration += 1;
     this.gate.setMode(mode);
     this.opts.credentialGrant?.forget();
+  }
+
+  /** 撤销分享凭证的任务授权：与权限档变化一样清掉授权，并作废等待中的确认。 */
+  private revokeCredentialGrant(): void {
+    this.permissionGeneration += 1;
+    this.gate.setMode(this.gate.getMode());
   }
 
   /** 本机用户在确认卡上允许了一个操作。 */
@@ -237,6 +246,7 @@ export class RemoteExecutor {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.unwatchCredentialGrant?.();
     await this.shell.close();
   }
 

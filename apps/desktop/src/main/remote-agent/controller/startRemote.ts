@@ -250,7 +250,13 @@ export async function startRemoteAgentSession(
             controller?.confirm(credentialConfirmation(action, credentialConsent.description)) ?? false,
           gitCredentials: sharedGitCredentials,
           ...(grant
-            ? { credentialGrant: { remember: () => grant.remember(grantPermission()), forget: () => grant.forget() } }
+            ? {
+                credentialGrant: {
+                  remember: () => grant.remember(grantPermission()),
+                  forget: () => grant.forget(),
+                  watch: (revoke: () => void) => grant.watch(revoke),
+                },
+              }
             : {}),
         }
       : {}),

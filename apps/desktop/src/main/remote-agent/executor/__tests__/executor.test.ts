@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleExecMcpRequest } from '../ccMcp';
+import { credentialGrantFor, forgetCredentialGrants } from '../credentialGrants';
 import { RemoteExecutor, type ExecutorConfirmation, type RemoteExecutorOptions } from '../executor';
 import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor, type ExecutorAction } from '../gate';
 import type { PdfTextExtractor } from '../files';
@@ -614,6 +615,41 @@ describe('shared provider credentials', () => {
     });
     return { executor, gate, workspace };
   }
+
+  it('revokes a restored task grant when it is cleared before the rebuilt agent is published', async () => {
+    const sessionId = `revoke-${Date.now()}-${Math.random()}`;
+    const record = credentialGrantFor(sessionId, 'share:a');
+    record.remember('mode');
+    const unwatched = vi.fn();
+    const credentialGrant = {
+      remember: () => record.remember('mode'),
+      forget: () => record.forget(),
+      watch: (revoke: () => void) => {
+        const stop = record.watch(revoke);
+        return () => { unwatched(); stop(); };
+      },
+    };
+    const asked = vi.fn(async (): Promise<ExecutorConfirmation> => false);
+    const { executor, gate } = sharedExecutor('full', asked, undefined, credentialGrant);
+    const env: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
+    try {
+      // Agent 重建：新执行器恢复了授权，此时任务还没对外可见。
+      expect(record.restore('mode')).toBe(true);
+      gate.allowCredentialsForSession();
+      expect(gate.needsCredentialConsent(env)).toBe(false);
+      // 改权限档的入口只看到没有运行实例，删除记录：已恢复到执行器内存的授权也要收回。
+      forgetCredentialGrants(sessionId);
+      expect(gate.needsCredentialConsent(env)).toBe(true);
+      expect(await executor.confirm(env)).toBe(false);
+      expect(asked).toHaveBeenCalledTimes(1);
+      expect(record.restore('mode')).toBe(false);
+    } finally {
+      await executor.close();
+    }
+    // 关闭后注销，之后再删除不会碰到已关闭的执行器。
+    expect(unwatched).toHaveBeenCalledTimes(1);
+    expect(() => forgetCredentialGrants(sessionId)).not.toThrow();
+  });
 
   it('records only an explicit task-level grant and clears it when the permission mode changes', async () => {
     const env: ExecutorAction = { kind: 'exec', command: 'cat .env', cwd: project };
