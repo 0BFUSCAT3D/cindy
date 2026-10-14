@@ -10819,7 +10819,8 @@
       "downloadExtracting": "正在解壓縮…",
       "downloadUnsupported": "遠端電腦暫不支援下載資料夾，請更新該電腦上的 Cindy 後重試",
       "downloadNoSpace": "磁碟空間不足，無法完成下載",
-      "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載"
+      "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載",
+      "cancelTransfer": "取消"
     },
     "mivoAction": {
       "promptPlaceholder": "輸入提示詞，按 Enter 傳送",

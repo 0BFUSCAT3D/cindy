@@ -10820,7 +10820,8 @@
       "downloadExtracting": "展開しています…",
       "downloadUnsupported": "リモートコンピュータはまだフォルダのダウンロードに対応していません。そのコンピュータの Cindy を更新してから再試行してください",
       "downloadNoSpace": "ディスクの空き容量が足りないため、ダウンロードを完了できません",
-      "downloadSkipped": "ダウンロードフォルダに保存しましたが、一部のファイルはダウンロードできませんでした"
+      "downloadSkipped": "ダウンロードフォルダに保存しましたが、一部のファイルはダウンロードできませんでした",
+      "cancelTransfer": "キャンセル"
     },
     "mivoAction": {
       "promptPlaceholder": "プロンプトを入力し、Enter で送信",

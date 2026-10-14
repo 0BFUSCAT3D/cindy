@@ -72,6 +72,7 @@ import {
 } from '@/session/composerAttachmentInbox';
 import { mergePathIntoComposerDraft, shareMimeForFileName } from '@/session/fileBrowserActions';
 import { exportRemoteFileToUrl } from '@/session/fileBrowserExport';
+import { FileTransferBusyNotice } from '@/session/FileTransferBusyNotice';
 import {
   getCachedListingSync,
   loadAllFilesIndex,
@@ -502,11 +503,26 @@ function RemoteFileBrowserContent() {
     });
   }, [absolutePathOf, deviceId, router, sessionId]);
 
+  // 进行中的长按「导出/分享」:底栏一直显示到结束并带「取消」;取消或新的导出
+  // 接替后,旧一次的结果(含失败)一律丢弃,不再弹分享单。
+  const exportRunRef = useRef<{ cancelled: boolean } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const cancelExport = useCallback(() => {
+    const run = exportRunRef.current;
+    if (!run) return;
+    run.cancelled = true;
+    exportRunRef.current = null;
+    setExporting(false);
+  }, []);
+
   const shareItem = useCallback((item: FileBrowserGridItem) => {
     // 导出/分享 = 系统分享单一步到位(iOS 分享单自带「存储图像」,不再单设保存)。
     setContextItem(null);
     if (item.kind !== 'file') return;
-    showNotice(t('files.browser.exporting'));
+    if (exportRunRef.current) exportRunRef.current.cancelled = true;
+    const run = { cancelled: false };
+    exportRunRef.current = run;
+    setExporting(true);
     void (async () => {
       try {
         let url: string;
@@ -524,20 +540,32 @@ function RemoteFileBrowserContent() {
           // 非图片同样一步到系统分享单(两段式导出,与预览页分享同链路),
           // 不再折跳预览页多一步操作。
           url = await exportRemoteFileToUrl(
-            { maker, deviceId, openLink, presignGet, isCancelled: () => unmountedRef.current },
+            {
+              maker,
+              deviceId,
+              openLink,
+              presignGet,
+              isCancelled: () => unmountedRef.current || run.cancelled,
+            },
             workdir,
             item.relPath,
             item.mtimeMs,
           );
           mime = shareMimeForFileName(item.name);
         }
+        if (run.cancelled) return;
         const localUri = await downloadRemoteMediaShareTemp(url, mime, item.name);
+        if (run.cancelled) return;
         if (!localUri) throw new Error(t('files.browser.downloadFailed'));
         const sharing = await import('expo-sharing');
         await sharing.shareAsync(localUri, { mimeType: mime });
-        setNotice(null);
       } catch (err) {
-        showNotice(formatRemoteError(err));
+        if (!run.cancelled) showNotice(formatRemoteError(err));
+      } finally {
+        if (exportRunRef.current === run) {
+          exportRunRef.current = null;
+          setExporting(false);
+        }
       }
     })();
   }, [absolutePathOf, deviceId, maker, openLink, presignGet, resolveFileMedia, showNotice, t, workdir]);
@@ -999,9 +1027,17 @@ function RemoteFileBrowserContent() {
       {!searchOpen ? (
         <View style={styles.footer}>
           <Text style={styles.footerStrong} testID="files.summary">{summary}</Text>
-          <Text style={styles.footerText}>
-            {notice ?? (status === 'online' ? t('files.browser.footerOnline') : t('files.browser.footerConnecting'))}
-          </Text>
+          {exporting ? (
+            <FileTransferBusyNotice
+              label={t('files.browser.exporting')}
+              onCancel={cancelExport}
+              testID="files.exporting"
+            />
+          ) : (
+            <Text style={styles.footerText}>
+              {notice ?? (status === 'online' ? t('files.browser.footerOnline') : t('files.browser.footerConnecting'))}
+            </Text>
+          )}
         </View>
       ) : null}
 
