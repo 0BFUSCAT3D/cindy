@@ -55,14 +55,19 @@ and bounded-transfer logic while this viewer holds confirmed control. The
 computer's side stays enabled for the whole control session; focus only decides
 when this window reads its own clipboard: while focused, plus one bounded pass
 (1 s) right after it leaves the foreground so a copy made on the computer is
-already here. Regaining focus runs a pass at once; so does Cmd/Ctrl+C/X about
-200 ms after the key, and Cmd/Ctrl+V holds the queued keys (at most 1 s) until the
-local clipboard has been pushed. The 1.5 s poll remains only as a fallback. A
-locked or busy computer and a clipboard that changed mid-read retry at a fixed
-1.5 s without growing the backoff (the locked case shows its own notice);
-unexplained failures back off to at most 5 s and reset on focus or a shortcut.
-A multi-item local clipboard (several files) is skipped rather than failing the
-pass. Contents stay in Main/native code and do not cross the viewer Renderer bridge.
+already here. Regaining focus runs a pass at once; so does the controlled
+computer's own copy/cut chord (Cmd on macOS, Ctrl elsewhere; the other modifier
+is an ordinary key) about 200 ms after the key, and its paste chord holds the
+queued keys (at most 1 s) until the local clipboard has been pushed; losing focus
+drops a held paste instead of sending it late. The 1.5 s poll remains only as a
+fallback. A locked or busy computer and a clipboard that changed mid-read retry
+at a fixed 1.5 s without growing the backoff (the locked case shows its own
+notice); unexplained failures back off to at most 5 s and reset on focus or a
+shortcut. A multi-item local clipboard (several files) is skipped rather than
+failing the pass; if the computer copied something in the same interval, that is
+reported as a conflict like any simultaneous change, and copying again on either
+side syncs. Contents stay in Main/native code and do not cross the viewer
+Renderer bridge.
 
 The settings panel also supports host privacy screen, host mute, lock-on-exit and
 macOS-to-macOS automatic unlock. Non-secret preferences are scoped to the local

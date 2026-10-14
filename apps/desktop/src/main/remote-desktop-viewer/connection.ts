@@ -487,8 +487,9 @@ export class RemoteViewerConnection {
     const generation = this.generation;
     const live = () => this.active && generation === this.generation;
     if (this.focused()) {
-      this.safetyState.wake();
+      // Wake only after in-flight work settles: its failure would re-arm the backoff.
       await this.safetyState.idle();
+      this.safetyState.wake();
       if (live()) await this.safety(generation).catch(() => {});
       return;
     }
@@ -506,8 +507,8 @@ export class RemoteViewerConnection {
   /** A copy or paste in the picture: sync now instead of at the next poll. */
   async syncClipboard(generation: number): Promise<RemoteViewerSafety> {
     this.check(generation);
-    this.safetyState.wake();
     await this.safetyState.idle();
+    this.safetyState.wake();
     return this.safety(generation);
   }
   async safety(generation: number, retry = false): Promise<RemoteViewerSafety> {

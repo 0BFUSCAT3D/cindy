@@ -96,14 +96,14 @@ describe('standalone remote viewer authority', () => {
       tick.mockRestore();
     }
   });
-  it('a shortcut sync runs a fresh pass once the in-flight one settles', async () => {
-    let finish!: () => void;
+  it('a shortcut sync runs a fresh pass once the in-flight one settles, even if that one fails', async () => {
+    let finish!: (error: Error) => void;
     const tick = vi
       .spyOn(ClipboardSync.prototype, 'tick')
       .mockImplementationOnce(
         () =>
-          new Promise<void>((resolve) => {
-            finish = resolve;
+          new Promise<void>((_resolve, reject) => {
+            finish = reject;
           }),
       )
       .mockResolvedValue(undefined);
@@ -120,7 +120,8 @@ describe('standalone remote viewer authority', () => {
       await Promise.resolve();
       expect(synced).toBe(false);
       expect(tick).toHaveBeenCalledOnce();
-      finish();
+      // The failure arms the backoff; the shortcut still gets its own pass right away.
+      finish(new Error('DESKTOP_UNAVAILABLE'));
       await Promise.all([pending, sync]);
       expect(tick).toHaveBeenCalledTimes(2);
       await expect(connection.syncClipboard(generation + 1)).rejects.toThrow('DESKTOP_STOPPED');

@@ -143,8 +143,10 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   let pending = [],
     pendingSince = 0,
     sending = false,
-    // Deadline while a paste shortcut holds the queue (desktop only; 0 = open).
+    // Deadline while a paste shortcut holds the queue (desktop only; 0 = open),
+    // and which modifier is copy/paste on the controlled computer.
     inputGateUntil = 0,
+    clipboardModifier = "control",
     cx = 0.5,
     cy = 0.5,
     drag = false,
@@ -915,6 +917,12 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     clearTimeout(hold);
     if (gestureFrame !== null) cancelAnimationFrame(gestureFrame);
     gestureFrame = null;
+    // A paste still waiting for its clipboard push is abandoned, never sent
+    // late; the release itself must reach the computer at once.
+    if (inputGateUntil) {
+      inputGateUntil = 0;
+      pending = [];
+    }
     if (control) {
       queue({ kind: "release" });
       flush();
@@ -1525,8 +1533,8 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   // and +X ask it to pull the computer's new copy soon after. Both are intents:
   // the keys themselves still reach the computer unchanged.
   function clipboardShortcut(e, code) {
-    if (!config.desktop || e.repeat || e.altKey || !(e.metaKey || e.ctrlKey))
-      return;
+    const chord = clipboardModifier === "meta" ? e.metaKey : e.ctrlKey;
+    if (!config.desktop || e.repeat || e.altKey || !chord) return;
     if (code === "KeyV") {
       inputGateUntil = performance.now() + 1200;
       post({ type: "clipboardIntent", action: "paste" });
@@ -2384,6 +2392,9 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         seq = 0;
         epoch = message.epoch;
         macKeyboard = config.desktop && message.macKeyboard === true;
+        clipboardModifier =
+          message.clipboardModifier === "meta" ? "meta" : "control";
+        inputGateUntil = 0;
         dw = message.width;
         dh = message.height;
         fillHeight = message.fillHeight === true;

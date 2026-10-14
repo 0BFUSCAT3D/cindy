@@ -369,6 +369,10 @@ export class DesktopViewerController {
     this.epoch++;
     if (this.settingsTimer) clearTimeout(this.settingsTimer);
     this.settingsTimer = null;
+    // A paste waiting on the old session must not open the next session's gate.
+    this.pasteSync = null;
+    if (this.copyTimer) clearTimeout(this.copyTimer);
+    this.copyTimer = null;
     this.pendingSettings = false;
     this.mediaChanging = false;
     this.offers.clear();
@@ -436,6 +440,8 @@ export class DesktopViewerController {
         trickleIce: caps.trickleIce === true,
         audio: caps.systemAudio && this.state.settings.audio,
         macKeyboard: typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin',
+        // Only the controlled computer's own copy/paste modifier is a clipboard shortcut.
+        clipboardModifier: caps.platform === 'darwin' ? 'meta' : 'control',
       });
       this.runtime.receive({ type: 'mode', mode: 'pointer' });
       if (!caps.canControl) throw new Error('DESKTOP_INPUT_UNSUPPORTED');
@@ -1168,20 +1174,24 @@ export class DesktopViewerController {
       }, CLIPBOARD_COPY_DELAY_MS);
       return;
     }
+    const epoch = this.epoch;
     const release = () => {
-      if (!this.disposed) this.runtime.receive({ type: 'inputGate' });
+      // The picture resets its gate itself when a session ends or changes.
+      if (!this.disposed && epoch === this.epoch) this.runtime.receive({ type: 'inputGate' });
     };
     if (!wanted) {
       release();
       return;
     }
-    if (!this.pasteSync)
-      this.pasteSync = Promise.race([
+    if (!this.pasteSync) {
+      const pending: Promise<void> = Promise.race([
         this.syncClipboard(),
         new Promise<void>((resolve) => setTimeout(resolve, CLIPBOARD_PASTE_WAIT_MS)),
       ]).finally(() => {
-        this.pasteSync = null;
+        if (this.pasteSync === pending) this.pasteSync = null;
       });
+      this.pasteSync = pending;
+    }
     void this.pasteSync.then(release, release);
   }
   private async syncClipboard(): Promise<void> {

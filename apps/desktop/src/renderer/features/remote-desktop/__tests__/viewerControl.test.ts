@@ -3,6 +3,7 @@ import type {
   RememberedViewerResolution,
   RemoteDesktopViewerApi,
   RemoteViewerChannelRequest,
+  RemoteViewerSafety,
 } from '../../../../shared/remoteDesktopViewer';
 import {
   clipboardFailureKey,
@@ -256,10 +257,10 @@ const syncOn = async (clipboardSync: RemoteDesktopViewerApi['clipboardSync']) =>
 };
 const gateReleases = () =>
   runtime.receive.mock.calls.filter(([message]) => message.type === 'inputGate').length;
-const idle = { privacyActive: false, notice: null, clipboardProgress: null };
+const idle: RemoteViewerSafety = { privacyActive: false, notice: null, clipboardProgress: null };
 
 it('a paste shortcut holds the keys until the local clipboard has been pushed', async () => {
-  const sync = deferred<typeof idle>();
+  const sync = deferred<RemoteViewerSafety>();
   const clipboardSync = vi.fn(() => sync.promise);
   await syncOn(clipboardSync);
   runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
@@ -274,12 +275,51 @@ it('a paste shortcut holds the keys until the local clipboard has been pushed', 
 });
 
 it('a paste shortcut is released after one second when the sync pass stalls', async () => {
-  const clipboardSync = vi.fn(() => new Promise<typeof idle>(() => {}));
+  const clipboardSync = vi.fn(() => new Promise<RemoteViewerSafety>(() => {}));
   await syncOn(clipboardSync);
   runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
   await vi.advanceTimersByTimeAsync(999);
   expect(gateReleases()).toBe(0);
   await vi.advanceTimersByTimeAsync(1);
+  expect(gateReleases()).toBe(1);
+});
+
+it('tells the picture which modifier is copy/paste on the controlled computer', async () => {
+  await fixture(undefined, false, { caps: { platform: 'darwin' } });
+  expect(runtime.receive.mock.calls.find(([m]) => m.type === 'init')?.[0]).toMatchObject({
+    clipboardModifier: 'meta',
+  });
+  controller.dispose();
+  await fixture(undefined, false, { caps: { platform: 'win32' } });
+  expect(runtime.receive.mock.calls.findLast(([m]) => m.type === 'init')?.[0]).toMatchObject({
+    clipboardModifier: 'control',
+  });
+});
+
+it('a paste waiting on the old session never opens the gate of the next one', async () => {
+  const sync = deferred<RemoteViewerSafety>();
+  const clipboardSync = vi.fn(() => sync.promise);
+  await syncOn(clipboardSync);
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(clipboardSync).toHaveBeenCalledOnce();
+  // Reconnecting retires the old session; its sync may still settle later.
+  controller.retry();
+  await vi.advanceTimersByTimeAsync(0);
+  present();
+  await vi.advanceTimersByTimeAsync(0);
+  sync.resolve(idle);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(gateReleases()).toBe(0);
+  // The next session's paste starts its own pass and is released by it.
+  const again = deferred<RemoteViewerSafety>();
+  clipboardSync.mockImplementationOnce(() => again.promise);
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(clipboardSync).toHaveBeenCalledTimes(2);
+  expect(gateReleases()).toBe(0);
+  again.resolve(idle);
+  await vi.advanceTimersByTimeAsync(0);
   expect(gateReleases()).toBe(1);
 });
 
