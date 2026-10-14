@@ -139,8 +139,8 @@ export function ProviderShareReceivedRailGroup({
 }
 
 /**
- * 这个分享在本机的「信任 {分享者}」偏好：null = 还没读到(开关先不可点)。切换先改界面再写入，
- * 写入失败回退并提示。
+ * 这个分享在本机的「信任 {分享者}」偏好：null = 还没读到(开关先不可点)。保存期间保持已生效的
+ * 状态，成功后再切换；避免关闭尚未落盘时把仍在生效的信任显示为关闭。失败时保留原值并提示。
  */
 function useCredentialConsent(shareId: string) {
   const { t } = useTranslation();
@@ -165,8 +165,6 @@ function useCredentialConsent(shareId: string) {
   }, [shareId]);
   const update = (next: boolean) => {
     const currentRevision = revision.current;
-    const previous = skip;
-    setSkip(next);
     setSaving(true);
     void window.electronAPI.providerShare
       .command({ action: 'set-credential-consent', shareId, skip: next })
@@ -175,7 +173,6 @@ function useCredentialConsent(shareId: string) {
       })
       .catch(() => {
         if (revision.current !== currentRevision) return;
-        setSkip(previous);
         toast.error(t('providerShare.received.credentialConsent.writeFailed'));
       })
       .finally(() => {
