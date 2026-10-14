@@ -2420,8 +2420,11 @@ describe('thread share follow-ups', () => {
     expect(mocks.reply).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a main-chat copy retryable when it fails after leaving the thread', async () => {
-    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })] }) });
+  // The copy fails while the reader is in another thread, or after they came back to this one.
+  it.each(['away', 'back'] as const)('keeps a main-chat copy retryable when it fails after leaving the thread (reader %s)', async (where) => {
+    // The queue outlives a panel by design, so each case uses threads of its own.
+    const [rootA, rootB] = [`${where}-a`, `${where}-b`];
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: rootA, content: 'A' }), msg({ id: rootB, sequence: 2, content: 'B' })] }) });
     mocks.reply.mockResolvedValue({ ok: true, messageId: 'first' });
     let fail!: () => void;
     mocks.shareToMain.mockReturnValueOnce(new Promise(resolve => { fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' }); }));
@@ -2435,10 +2438,16 @@ describe('thread share follow-ups', () => {
     await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
     // The copy is still on its way when the reader moves to another thread.
     await user.click(second!);
-    await screen.findByText('Reply to u2');
-    await act(async () => fail());
+    await screen.findByText(`Reply to ${rootB}`);
+    if (where === 'away') await act(async () => fail());
     await user.click(first!);
-    expect(await within(await screen.findByRole('complementary')).findByRole('button', { name: t('retryPost') })).toBeTruthy();
+    const reopened = await screen.findByRole('complementary');
+    await within(reopened).findByText(`Reply to ${rootA}`);
+    if (where === 'back') {
+      expect(within(reopened).queryByRole('button', { name: t('retryPost') })).toBeNull();
+      await act(async () => fail());
+    }
+    expect(await within(reopened).findByRole('button', { name: t('retryPost') })).toBeTruthy();
   });
 });
 

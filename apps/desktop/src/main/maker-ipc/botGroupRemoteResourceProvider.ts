@@ -107,6 +107,20 @@ const COPY = {
     ja: '{name}さんがグループに参加しました',
     ko: '{name} 님이 그룹에 참여했습니다',
   },
+  sharedReplyYou: {
+    en: 'You shared a thread reply',
+    'zh-CN': '你贴回了一条话题回复',
+    'zh-TW': '你貼回了一則話題回覆',
+    ja: 'スレッドの返信を共有しました',
+    ko: '스레드 답글을 공유했습니다',
+  },
+  sharedReply: {
+    en: '{name} shared a thread reply',
+    'zh-CN': '{name} 贴回了一条话题回复',
+    'zh-TW': '{name} 貼回了一則話題回覆',
+    ja: '{name} がスレッドの返信を共有しました',
+    ko: '{name} 님이 스레드 답글을 공유했습니다',
+  },
 } satisfies Record<string, Copy>;
 
 function fill(template: string, vars: Record<string, string | number>): string {
@@ -141,6 +155,11 @@ export function botGroupRemotePreview(group: BotGroupSummary): RemoteLocalizedTe
   if (!last) return undefined;
   if (last.authorKind === 'system' && last.noticeCode === 'member-joined')
     return localized(COPY.memberJoined, { name: last.authorName });
+  // A share names who posted it; the card's own text is never quoted here.
+  if (last.threadShare) {
+    return last.authorKind === 'user' && last.isSelf !== false
+      ? localized(COPY.sharedReplyYou) : localized(COPY.sharedReply, { name: last.authorName.trim() });
+  }
   return last.authorKind === 'bot' && last.authorName
     ? localized(COPY.lastMessage, { name: last.authorName, text: last.preview })
     : last.preview;

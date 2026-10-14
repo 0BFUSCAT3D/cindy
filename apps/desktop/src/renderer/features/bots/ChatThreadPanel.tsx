@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -32,14 +32,27 @@ export type BotGroupSharedReplies = ReadonlyMap<string, { messageId: string; byS
 
 /**
  * Replies that reached a thread while their main-chat copy did not, per group and thread.
- * Kept outside the panel so switching threads and coming back still offers the retry.
+ * Kept outside the panel, and the only copy: a copy may fail after its panel closed, or
+ * while the same thread is open again, and either way that panel shows the retry.
  * Server groups keep their IDs across accounts, so the queue belongs to one data owner.
  */
-const unpostedStore = { owner: getDataOwnerGeneration(), replies: new Map<string, ReadonlySet<string>>() };
+const unpostedStore = { owner: getDataOwnerGeneration(), replies: new Map<string, ReadonlySet<string>>(), listeners: new Set<() => void>() };
+const NONE_UNPOSTED: ReadonlySet<string> = new Set();
 function unpostedReplies() {
   const owner = getDataOwnerGeneration();
   if (unpostedStore.owner !== owner) { unpostedStore.owner = owner; unpostedStore.replies.clear(); }
   return unpostedStore.replies;
+}
+function updateUnposted(key: string, update: (previous: ReadonlySet<string>) => ReadonlySet<string>) {
+  const queue = unpostedReplies();
+  const next = update(queue.get(key) ?? NONE_UNPOSTED);
+  if (next.size) queue.set(key, next); else queue.delete(key);
+  for (const listener of unpostedStore.listeners) listener();
+}
+function useUnposted(key: string): ReadonlySet<string> {
+  return useSyncExternalStore(
+    useCallback(listener => { unpostedStore.listeners.add(listener); return () => { unpostedStore.listeners.delete(listener); }; }, []),
+    () => unpostedReplies().get(key) ?? NONE_UNPOSTED);
 }
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
@@ -132,15 +145,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   // Off by default: a reply stays in the thread unless the user asks for both.
   const [alsoSend, setAlsoSend] = useState(false);
   const unpostedKey = `${group.id}:${rootId}`;
-  const [unposted, setUnpostedState] = useState<ReadonlySet<string>>(() => unpostedReplies().get(unpostedKey) ?? new Set());
-  // The queue is written first: a share may finish after this panel has closed, and the
-  // state below only mirrors it while the panel is open.
-  const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => {
-    const queue = unpostedReplies();
-    const next = update(queue.get(unpostedKey) ?? new Set());
-    if (next.size) queue.set(unpostedKey, next); else queue.delete(unpostedKey);
-    setUnpostedState(next);
-  };
+  const unposted = useUnposted(unpostedKey);
+  const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => updateUnposted(unpostedKey, update);
   const [posting, setPosting] = useState<ReadonlySet<string>>(new Set());
   const postingRef = useRef(new Set<string>());
   /** Shares confirmed in this panel (reply → main-chat message, null when unknown). */

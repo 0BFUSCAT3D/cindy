@@ -233,6 +233,14 @@ describe('bot group remote resources', () => {
     } });
   });
 
+  it('names who shared a thread reply, never the card text, the way the desktop sidebar does', () => {
+    const share = (extra: Record<string, unknown>) => botGroupRemotePreview(summary({ openPlan: null,
+      lastMessage: { authorName: '小满', preview: '', createdAt: 50, threadShare: true, ...extra } as never }));
+    expect(share({ authorKind: 'bot' })).toMatchObject({ fallback: '小满 shared a thread reply', translations: { 'zh-CN': '小满 贴回了一条话题回复' } });
+    expect(share({ authorKind: 'user', isSelf: false })).toMatchObject({ translations: { 'zh-CN': '小满 贴回了一条话题回复' } });
+    expect(share({ authorKind: 'user', isSelf: true })).toMatchObject({ fallback: 'You shared a thread reply', translations: { 'zh-CN': '你贴回了一条话题回复' } });
+  });
+
   it('sends the chat only to controllers that understand it, without host paths', async () => {
     const rich = await remoteResourceRegistry.get(context, { client: client([BOT_GROUP_CHAT_PRIMITIVE]), ref: ref('g1') });
     expect(rich.blocks?.[0]).toMatchObject({ primitive: BOT_GROUP_CHAT_PRIMITIVE });
