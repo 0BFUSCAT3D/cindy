@@ -99,15 +99,19 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     retryTimers.clear(); pendingRetries.clear(); failures.clear();
   }
 
-  // A read that was in flight across reset()/invalidate() may carry the old copy.
-  let generation = 0;
+  // A read that was in flight across reset()/invalidate() may carry the old copy. Edits only
+  // raise their own room, so a busy group never discards another group's reads; the sum of
+  // both counters only grows, which keeps a room's version ordered.
+  let epoch = 0;
+  const roomGenerations = new Map<string, number>();
+  const generation = (roomId: string) => epoch + (roomGenerations.get(roomId) ?? 0);
   const key = (roomId: string, id: string) => `${roomId}:${id}`;
   const waiting = (cacheKey: string) => inFlight.has(cacheKey) || (retryAt.get(cacheKey) ?? 0) > Date.now();
 
   function fill<T>(roomId: string, items: Array<{ cacheKey: string; item: T }>, read: (item: T) => Promise<(() => void) | null>) {
     if (!items.length) return;
     for (const { cacheKey } of items) inFlight.add(cacheKey);
-    const started = generation;
+    const started = generation(roomId);
     const task = (async () => {
       let wrote = false;
       await eachLimited(items, async ({ cacheKey, item }) => {
@@ -116,8 +120,8 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         try {
           const store = await read(item);
           retryAt.delete(cacheKey); settledRetry(roomId, cacheKey);
-          if (store) { if (generation === started) store(); wrote = true; }
-        } catch { if (generation === started) scheduleRetry(roomId, cacheKey); else wrote = true; }
+          if (store) { if (generation(roomId) === started) store(); wrote = true; }
+        } catch { if (generation(roomId) === started) scheduleRetry(roomId, cacheKey); else wrote = true; }
         finally { inFlight.delete(cacheKey); }
       });
       if (wrote) io.filled(roomId);
@@ -195,17 +199,17 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     },
     /** An edited or deleted message may be a cached reply or share source. */
     invalidate(roomId: string, messageId: string) {
-      generation += 1;
+      roomGenerations.set(roomId, (roomGenerations.get(roomId) ?? 0) + 1);
       sources.delete(key(roomId, messageId));
       for (const [cacheKey, entry] of previews)
         if (cacheKey.startsWith(`${roomId}:`) && entry.replies.some(reply => reply.id === messageId)) previews.delete(cacheKey);
     },
     /** Pushes may have been missed while disconnected. */
-    reset() { generation += 1; previews.clear(); sources.clear(); retryAt.clear(); cancelRetries(); },
+    reset() { epoch += 1; previews.clear(); sources.clear(); retryAt.clear(); cancelRetries(); },
     /** The adapter is gone (account switch or quit): no wake-up may outlive it. */
-    dispose() { generation += 1; cancelRetries(); },
-    /** Raised by every invalidation and reset; views checked at an older one may be stale. */
-    version() { return generation; },
+    dispose() { epoch += 1; cancelRetries(); },
+    /** Raised by every reset and by invalidations in this room; views checked at an older one may be stale. */
+    version(roomId: string) { return generation(roomId); },
     /** Tests: wait for background fills started so far. */
     async settled() { while (settling.size) await Promise.all([...settling]); },
   };

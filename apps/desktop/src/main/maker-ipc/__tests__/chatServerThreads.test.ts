@@ -230,6 +230,28 @@ describe('late reads after a reset or invalidation', () => {
     expect(io.message).toHaveBeenCalledTimes(2);
     expect(projection.shareSources(room, [share], []).get(sourceId)?.id).toBe(sourceId);
   });
+
+  it('keeps reads in one room when another room is edited', async () => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    const otherRoom = '10000000-0000-4000-8000-000000000002';
+    const pending = deferred<ThreadMessage | null>();
+    io.message.mockReturnValueOnce(pending.promise);
+    const before = projection.version(room);
+    projection.shareSources(room, [share], []);
+    projection.invalidate(otherRoom, 'elsewhere');
+    expect(projection.version(room)).toBe(before);
+    expect(projection.version(otherRoom)).toBeGreaterThan(before);
+    pending.resolve(reply(sourceId, rootA));
+    await projection.settled();
+    expect(io.message).toHaveBeenCalledTimes(1);
+    expect(projection.shareSources(room, [share], []).get(sourceId)?.id).toBe(sourceId);
+    // A reset still raises every room.
+    const edited = projection.version(otherRoom);
+    projection.reset();
+    expect(projection.version(room)).toBeGreaterThan(before);
+    expect(projection.version(otherRoom)).toBeGreaterThan(edited);
+  });
 });
 
 describe('reply summaries', () => {

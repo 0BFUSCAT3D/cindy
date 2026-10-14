@@ -636,7 +636,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   async function decorateThreads(roomId: string, views: BotGroupMessageView[], page: Message[], snapshot: Message[], members: Member[], withPreviews: boolean,
     shownShares: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }> = []) {
     // Taken before reading, so a change while this read is in progress marks it stale.
-    const version = threads.version();
+    const version = threads.version(roomId);
     const previews = withPreviews ? threads.previews(roomId, page, snapshot) : new Map<string, Message[]>();
     const sources = threads.sources(roomId, [...page.flatMap(m => readBotGroupThreadShareCard(m)?.messageId ?? []),
       ...shownShares.map(share => share.messageId)], [...snapshot, ...page]);
