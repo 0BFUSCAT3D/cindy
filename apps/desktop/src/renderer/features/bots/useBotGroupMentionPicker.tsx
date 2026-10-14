@@ -128,7 +128,9 @@ export function useBotGroupMentionPicker({
   const choose = (option: MentionOption | undefined) => {
     if (!option || !query) return;
     const next = insertBotGroupMention(text, { start: query.start, end: caret }, option.label);
-    pendingCaretRef.current = next.caret;
+    // Re-picking a namesake can leave the text as is; then no re-render moves the caret.
+    if (next.text === text) textareaRef.current?.setSelectionRange(next.caret, next.caret);
+    else pendingCaretRef.current = next.caret;
     onTextChange(next.text);
     selectionRef.current = { start: next.caret, end: next.caret };
     setCaret(next.caret);

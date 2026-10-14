@@ -336,5 +336,18 @@ describe('chat interaction controls', () => {
       expect(second.mentions).toEqual({ all: false, botIds: ['ann-dana'] });
       expect(second.clientId).not.toBe(first.clientId);
     });
+
+    it('moves the caret past the space when a re-pick leaves the text unchanged, and does not pull it back later', () => {
+      const input = renderThread();
+      type(input, '@');
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.selectionStart).toBe(5);
+      act(() => { input.blur(); input.setSelectionRange(4, 4); input.focus(); });
+      fireEvent.click(screen.getAllByRole('option')[1]!);
+      expect(input.value).toBe('@Ann ');
+      expect(input.selectionStart).toBe(5);
+      type(input, '@Ann ok', 7);
+      expect(input.selectionStart).toBe(7);
+    });
   });
 });
