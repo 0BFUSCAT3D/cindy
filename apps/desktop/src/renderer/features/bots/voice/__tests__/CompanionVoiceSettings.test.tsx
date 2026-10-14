@@ -256,7 +256,8 @@ it('repairs a saved API mismatch without reusing its voice or rewriting preferen
   renderSettings();
   await screen.findByText('bots.voiceMode.protocolCorrectedHint');
   expect(screen.queryByLabelText('bots.voiceMode.protocol')).toBeNull();
-  const voice = screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement;
+  // The protocol hint can render before the asynchronous voice catalog is ready.
+  const voice = (await screen.findByLabelText('bots.voiceMode.voiceId')) as HTMLInputElement;
   expect(voice.value).toBe('');
   expect(
     screen.getByRole('button', { name: 'bots.voiceMode.preview' }).hasAttribute('disabled'),
