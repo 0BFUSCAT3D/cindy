@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceLinkError, type InvokeResultPayload } from '@cindy/device-link';
 import { createSchedulerRemoteDeps } from '../schedulerDevices.js';
@@ -91,16 +93,68 @@ describe('desktop scheduler cross-device transport', () => {
     }
   });
 
-  it('treats a lost reply as possibly applied rather than not sent', async () => {
+  it('reports a write as possibly applied whenever the request left without a trustworthy result', async () => {
     const lost = Object.assign(new DeviceLinkError('NOT_CONNECTED', 'dropped'), { inFlight: true });
+    // 被控端 handler 完成后的可见性 / 账号复核失败：写入已经发生。
+    const postHandler = {
+      ok: false as const,
+      error: { code: 'IPC_ERROR' as const, message: '[NOT_FOUND] Session does not exist' },
+    };
+    for (const outcome of [lost, postHandler]) {
+      for (const op of ['update', 'pause', 'resume', 'delete', 'run-now'] as const) {
+        const s = setup(
+          vi.fn<Invoke>(async () => {
+            if (outcome instanceof Error) throw outcome;
+            return outcome as InvokeResultPayload;
+          }),
+        );
+        const result = await s.remote.invoke('mac', op, ['s1']);
+        expect(result).toMatchObject({ ok: false, code: 'REMOTE_RESULT_UNKNOWN' });
+        expect(result.ok === false && result.message).toContain('可能已生效');
+      }
+      // 读操作没有副作用：只是这次没读到。
+      const read = setup(
+        vi.fn<Invoke>(async () => {
+          if (outcome instanceof Error) throw outcome;
+          return outcome as InvokeResultPayload;
+        }),
+      );
+      expect(await read.remote.invoke('mac', 'get', ['s1'])).toMatchObject({
+        ok: false,
+        code: 'REMOTE_UNAVAILABLE',
+      });
+    }
+    // 定时任务自己的「不存在」仍是确定结果。
+    const notFound = setup(
+      vi.fn<Invoke>(async () => ({
+        ok: false,
+        error: { code: 'IPC_ERROR', message: '[NOT_FOUND] Schedule not found: s1' },
+      })),
+    );
+    expect(await notFound.remote.invoke('mac', 'delete', ['s1'])).toMatchObject({
+      ok: false,
+      code: 'NOT_FOUND',
+    });
+  });
+
+  it('does not read a reply that arrives after the local account changed', async () => {
     const s = setup(
       vi.fn<Invoke>(async () => {
-        throw lost;
+        s.changeOwner();
+        return { ok: true, result: { id: 's1', name: 'old account schedule' } };
       }),
     );
-    const result = await s.remote.invoke('mac', 'delete', ['s1']);
-    expect(result).toMatchObject({ ok: false, code: 'REMOTE_TIMEOUT' });
-    expect(result.ok === false && result.message).toContain('可能已生效');
+    const write = await s.remote.invoke('mac', 'pause', ['s1']);
+    expect(write).toMatchObject({ ok: false, code: 'REMOTE_RESULT_UNKNOWN' });
+    expect(JSON.stringify(write)).not.toContain('old account schedule');
+  });
+
+  it('keeps the post-handler rejection text in sync with the dispatcher', () => {
+    const dispatch = readFileSync(
+      fileURLToPath(new URL('../../device-link/dispatch.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(dispatch).toContain("throw new Error('[NOT_FOUND] Session does not exist')");
   });
 
   it('rejects a malformed list and never sends after the account changes', async () => {

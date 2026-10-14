@@ -268,71 +268,31 @@ describe("cindy_scheduler cross-device routing", () => {
     ).toEqual({ ok: true, data: [{ id: "run-local" }], scope: "local" });
   });
 
-  it("keeps the remote check timeout when only the command changes", async () => {
+  it("requires an explicit timeout when changing the check script on another computer", async () => {
+    // 对方入口整对象替换 preRunHook：省略会清成不限时，先读后写会覆盖并发修改。
     const s = setup();
-    s.invoke.mockImplementation(async (_device, op, args) =>
-      op === "get"
-        ? {
-            ok: true,
-            data: {
-              id: args[0],
-              preRunHook: { command: "old", timeoutMs: 180000 },
-            },
-          }
-        : { ok: true, data: { id: args[0] } },
-    );
-    await s.registry.call("schedule_update", {
+    const missing = await s.registry.call("schedule_update", {
       id: "r1",
       device: "mbp",
       preRunHook: { command: "node new.mjs" },
     });
-    expect(s.invoke.mock.calls).toEqual([
-      ["mbp", "get", ["r1"]],
-      [
-        "mbp",
-        "update",
-        ["r1", { preRunHook: { command: "node new.mjs", timeoutMs: 180000 } }],
-      ],
-    ]);
-    // 显式给了超时、或没动 preRunHook 时不多读一次。
-    s.invoke.mockClear();
+    expect(missing.isError).toBe(true);
+    expect(parse(missing)).toMatchObject({ ok: false, code: "INVALID_PARAMS" });
+    expect(parse(missing).message).toContain("timeoutMs");
+    expect(s.invoke).not.toHaveBeenCalled();
     await s.registry.call("schedule_update", {
       id: "r1",
       device: "mbp",
       preRunHook: { command: "node new.mjs", timeoutMs: 5000 },
     });
-    await s.registry.call("schedule_update", {
-      id: "r1",
-      device: "mbp",
-      name: "n",
-    });
-    expect(s.invoke.mock.calls.map(([, op]) => op)).toEqual([
-      "update",
-      "update",
+    // 一次写入，不先读。
+    expect(s.invoke.mock.calls).toEqual([
+      [
+        "mbp",
+        "update",
+        ["r1", { preRunHook: { command: "node new.mjs", timeoutMs: 5000 } }],
+      ],
     ]);
-  });
-
-  it("does not write the check script when the current timeout cannot be read", async () => {
-    const s = setup();
-    s.invoke.mockImplementation(async (_device, op) =>
-      op === "get"
-        ? { ok: false, code: "REMOTE_TIMEOUT", message: "slow" }
-        : { ok: true, data: {} },
-    );
-    const failed = await s.registry.call("schedule_update", {
-      id: "r1",
-      device: "mbp",
-      preRunHook: { command: "node new.mjs" },
-    });
-    expect(parse(failed)).toMatchObject({ ok: false, code: "REMOTE_TIMEOUT" });
-    s.invoke.mockImplementation(async () => ({ ok: true, data: null }));
-    const missing = await s.registry.call("schedule_update", {
-      id: "gone",
-      device: "mbp",
-      preRunHook: { command: "node new.mjs" },
-    });
-    expect(parse(missing)).toMatchObject({ ok: false, code: "NOT_FOUND" });
-    expect(s.invoke.mock.calls.every(([, op]) => op === "get")).toBe(true);
   });
 
   it("runs write tools on the named computer only", async () => {

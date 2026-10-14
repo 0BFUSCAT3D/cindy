@@ -67,10 +67,13 @@ describe('cross-device send_to_session sender', () => {
       [
         {
           ok: false,
+          // 隧道层的 NOT_FOUND 也可能来自 handler 完成后的复核：无法证明没投递。
           error: { code: 'IPC_ERROR', message: 'Error: [NOT_FOUND] Session does not exist' },
         },
-        'NOT_FOUND',
+        'DELIVERY_UNKNOWN',
       ],
+      // 目标任务不存在由 handler 以数据返回，是确定结果。
+      [{ ok: true, result: { ok: false, errorCode: 'NOT_FOUND', message: 'gone' } }, 'NOT_FOUND'],
       [{ ok: true, result: { ok: false, errorCode: 'ARCHIVED', message: 'archived' } }, 'ARCHIVED'],
       [
         // Agent 没能启动时消息可能已记入目标任务，不能原样透传成可直接重试的错误。

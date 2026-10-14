@@ -29,7 +29,30 @@ const MESSAGES: Record<string, string> = {
   REMOTE_UNSUPPORTED: '目标电脑的版本不支持远程管理定时任务',
   REMOTE_TIMEOUT: '目标电脑没有在限定时间内回应；写操作可能已生效，重试前请先查询确认',
   HOST_NOT_READY: '目标电脑的定时任务服务尚未就绪',
+  REMOTE_RESULT_UNKNOWN: '没有收到目标电脑的可信回执；写操作可能已生效，重试前请先查询确认',
 };
+
+const WRITE_OPS: ReadonlySet<SchedulerRemoteOp> = new Set([
+  'update',
+  'pause',
+  'resume',
+  'delete',
+  'run-now',
+]);
+
+/**
+ * 被控端 dispatch 在 handler **完成之后**还会复核可见性与账号 owner，失败时抛这句
+ * （apps/desktop/src/main/device-link/dispatch.ts）。定时任务 handler 自己的「不存在」是
+ * `Schedule not found: <id>`，两者文案不同，可以据此区分「没执行」与「执行后回执被拦」。
+ */
+const POST_HANDLER_REJECTION = '[NOT_FOUND] Session does not exist';
+
+/** 请求已发出但拿不到可信结果：写操作不能说没执行，读操作只是这次没读到。 */
+function unknownOutcome(op: SchedulerRemoteOp): { ok: false; code: string; message: string } {
+  return WRITE_OPS.has(op)
+    ? { ok: false, code: 'REMOTE_RESULT_UNKNOWN', message: MESSAGES.REMOTE_RESULT_UNKNOWN }
+    : { ok: false, code: 'REMOTE_UNAVAILABLE', message: '暂时无法取得目标电脑的结果' };
+}
 
 function failure(code: string, message: string): { ok: false; code: string; message: string } {
   const classified = classifyRemoteHistoryError(code, message);
@@ -62,26 +85,14 @@ export function createSchedulerRemoteDeps(deps: {
           message: MESSAGES.DEVICE_LINK_NOT_READY,
         };
       }
+      let response: InvokeResultPayload;
       try {
-        const response = await deps.invoke(deviceId, CHANNELS[op], args, {
-          preSend: assertCurrent,
-        });
-        assertCurrent();
-        if (!response.ok) return failure(response.error.code, response.error.message);
-        if (op === 'list' || op === 'list-runs') {
-          if (!Array.isArray(response.result)) {
-            return {
-              ok: false,
-              code: 'REMOTE_INVALID_RESPONSE',
-              message: '目标电脑返回了无法识别的结果',
-            };
-          }
-        }
-        return { ok: true, data: response.result ?? null };
+        response = await deps.invoke(deviceId, CHANNELS[op], args, { preSend: assertCurrent });
       } catch (error) {
         if (error instanceof DeviceLinkError) {
-          // inFlight = 请求已发出、回执丢失：写操作可能已生效，按超时口径如实说明。
-          return failure(error.inFlight ? 'INVOKE_TIMEOUT' : error.code, error.message);
+          // inFlight = 请求已发出、回执丢失。
+          if (error.inFlight) return unknownOutcome(op);
+          return failure(error.code, error.message);
         }
         const message = error instanceof Error ? error.message : '';
         if (/\[DEVICE_LINK_CONTROL_DISABLED]/.test(message))
@@ -92,6 +103,31 @@ export function createSchedulerRemoteDeps(deps: {
           ? { ok: false, code: 'REMOTE_UNAVAILABLE', message: '暂时无法连接目标电脑' }
           : classified;
       }
+      try {
+        assertCurrent();
+      } catch {
+        // 请求已发出、本机账号随后切换：回执属于上一个账号，不读取。
+        return unknownOutcome(op);
+      }
+      if (!response.ok) {
+        if (
+          response.error.code === 'IPC_ERROR' &&
+          response.error.message.includes(POST_HANDLER_REJECTION)
+        ) {
+          return unknownOutcome(op);
+        }
+        return failure(response.error.code, response.error.message);
+      }
+      if (op === 'list' || op === 'list-runs') {
+        if (!Array.isArray(response.result)) {
+          return {
+            ok: false,
+            code: 'REMOTE_INVALID_RESPONSE',
+            message: '目标电脑返回了无法识别的结果',
+          };
+        }
+      }
+      return { ok: true, data: response.result ?? null };
     },
   };
 }

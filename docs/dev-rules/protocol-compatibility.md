@@ -262,8 +262,8 @@ SSH 主机不自动成为设备目录成员。实现与回归见 `mcp-integratio
 都只多出 `scope: "local"`。跨电脑读取按电脑分组，离线、未开启远程控制、撤权、超时、不支持的电脑逐台
 列出，`partial` 表示覆盖不全。`schedule_update` 跨电脑时拒绝 `bindToCurrentSession` 和
 `intervalMs` 以外的 `null` 清空（JSON 边界表达不了「带 key 的 undefined」），明确报
-`INVALID_PARAMS`，不写出与意图不符的任务。被控端对 `preRunHook` 是整对象替换：只改 `command`
-时发起端先读对方现有 `timeoutMs` 并带上，读不到就不写。被控端不认识这些 channel（早于完整控制面的旧版本）时
+`INVALID_PARAMS`，不写出与意图不符的任务。被控端对 `preRunHook` 是整对象替换：跨电脑改它必须
+显式带 `timeoutMs`，否则报 `INVALID_PARAMS`（省略会清成不限时，发起端先读后写又会覆盖并发修改）。被控端不认识这些 channel（早于完整控制面的旧版本）时
 返回 `CHANNEL_NOT_ALLOWED`，发起端报 `REMOTE_UNSUPPORTED`。
 
 **发消息新增 `maker:session:handoff`。** `send_to_session` 的 `target_session_id` 传
@@ -286,9 +286,12 @@ allowlist 指纹随新增 channel 变化，两端版本不一致时沿用既有�
 没有链路时会先建链（与历史查询相同，`device="all"` 会与每台在线电脑建链），发送前的
 `LINK_NOT_OPEN` 重开后重发一次，其余不重放；工具层不另加重试或缓存。`maker:session:handoff`
 的隧道超时为 65s：被控端要等目标任务的发送锁并在需要时恢复 Agent 后才回执，默认 30s 会把已送达
-的慢恢复报成结果未知。请求已发出但没有可信回执（超时、在途断连、目标电脑报内部错误）时，发消息
-报 `DELIVERY_UNKNOWN`，定时任务写操作报 `REMOTE_TIMEOUT` 并说明可能已生效，由 Agent 先查询再
-决定；能证明没有进入目标任务的错误（离线、未开启、链路未建立、对方不支持、目标不存在或已归档）
+的慢恢复报成结果未知。请求已发出但没有可信回执时，发消息报 `DELIVERY_UNKNOWN`，定时任务写操作报 `REMOTE_TIMEOUT`
+或 `REMOTE_RESULT_UNKNOWN` 并说明可能已生效，由 Agent 先查询再决定。「没有可信回执」包括：
+超时、在途断连、本机账号在回执前切换、目标电脑报内部错误或 Agent 未就绪，以及被控端 dispatch 在
+handler 完成后复核可见性与账号失败（`[NOT_FOUND] Session does not exist`，定时任务 handler
+自己的不存在是 `Schedule not found`，据文案区分；发消息的目标不存在由 handler 以数据返回，
+隧道层 `NOT_FOUND` 一律按结果未知）。能证明没有进入目标任务的错误（离线、未开启、链路未建立、对方不支持、目标不存在或已归档）
 才报「没有发出」。发消息的账号 owner 检查用同一份记录覆盖整次调用：读来源任务标题前记录，
 发送前与收到回执后各核对一次；回执到达时账号已切换的按结果未知处理，不返回其中的任务信息。
 发消息没有幂等键，结果未知后的重发可能重复，工具说明要求先读聊天记录确认。

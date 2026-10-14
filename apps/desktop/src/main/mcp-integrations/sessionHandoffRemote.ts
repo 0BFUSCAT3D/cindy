@@ -101,8 +101,8 @@ function transportFailure(
         errorCode: 'REMOTE_UNAVAILABLE',
         message: '暂时无法连接目标电脑，消息没有发出。',
       };
-    case 'NOT_FOUND':
-      return { ok: false, errorCode: 'NOT_FOUND', message: '目标电脑上没有这个任务。' };
+    // 隧道层的 NOT_FOUND 不在此列：被控端在 handler 完成后复核可见性与账号时也抛它，
+    // 无法与投递前的拒绝区分，落到下面的结果未知。目标任务不存在由 handler 以数据返回。
     case 'INVALID_PARAMS':
       return { ok: false, errorCode: 'INVALID_ARGS', message: '目标电脑拒绝了这条消息的参数。' };
     default:

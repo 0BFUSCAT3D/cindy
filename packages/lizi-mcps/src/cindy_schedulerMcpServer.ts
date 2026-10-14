@@ -79,7 +79,7 @@ const D_CALL_TOOL =
   '错误码：' +
   '`SCHEDULER_NOT_READY` = scheduler 未启动（用户登出或切账号窗口期），可重试或提示用户登录；' +
   '`NOT_FOUND` = 指定 schedule id 在所查的电脑上不存在；' +
-  '`REMOTE_*` / `DEVICE_*` = 目标电脑离线、未开启远程控制、版本不支持或超时，按 code 如实报告；' +
+  '`REMOTE_*` / `DEVICE_*` = 目标电脑离线、未开启远程控制、版本不支持或超时，按 code 如实报告；`REMOTE_TIMEOUT` / `REMOTE_RESULT_UNKNOWN` 的写操作可能已生效，先查询再决定是否重试；' +
   '`INVALID_PARAMS` = 参数格式错（cron / timezone / 字段缺失等），按 message 修正；' +
   '`INVALID_ARGS` = zod schema 校验失败（返回 schema 自纠）；' +
   '`INTERNAL` = 其他底层错。';
