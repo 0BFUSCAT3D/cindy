@@ -357,11 +357,12 @@ it.each(['flag', 'modalities'])('prioritizes active catalog text-only %s over a 
 it('keeps an undeclared active catalog model closed when its native descriptor explicitly disables images', () => {
   const native = PROVIDER_MODEL_CATALOG.providers.deepseek.find(row => row.supportsImageInput === false)!;
   expect(native.supportsImageInput).toBe(false);
+  expect(native.execution.pi.api).toBe('openai-completions');
   const provider = buildUserProvider({ id: 'deepseek-catalog-undeclared', name: 'DeepSeek', runtimes: {
     pi: { baseUrl: native.upstream, wireProtocol: 'openai-chat', models: [{ id: native.id, name: native.name }] },
   } });
   const model = { ...provider.models.pi![0], supportsImageInput: undefined, modalities: undefined };
-  expect(invocationModelRecord(model, native.upstream, native.execution.pi.api)!.supportsImageInput).toBe(false);
+  expect(invocationModelRecord(model, native.upstream, 'openai-completions')!.supportsImageInput).toBe(false);
 });
 
 
