@@ -291,6 +291,31 @@ export async function copyWorktreeIncludeFiles(
   return copyMatchedFiles(baseRepo, destRoot, globMatcher(patterns), options);
 }
 
+/**
+ * 写入 destAbs 时的实际落点是否仍在 destRoot 内: 取 destAbs 自身或最近一个已存在的
+ * 父级, 解析全部符号链接后比较; 悬空链接或无法解析时按越界处理。
+ */
+function landsInside(destRoot: string, destAbs: string): boolean {
+  let probe = destAbs;
+  for (;;) {
+    try {
+      fs.lstatSync(probe);
+      break;
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) return false;
+      probe = parent;
+    }
+  }
+  try {
+    const realRoot = fs.realpathSync(destRoot);
+    const real = fs.realpathSync(probe);
+    return real === realRoot || real.startsWith(realRoot + path.sep);
+  } catch {
+    return false;
+  }
+}
+
 async function copyMatchedFiles(
   baseRepo: string,
   destRoot: string,
@@ -329,6 +354,12 @@ async function copyMatchedFiles(
 
     if (tracked.has(rel)) {
       results.push({ relpath: rel, status: 'skipped-tracked' });
+      continue;
+    }
+
+    // 词法检查看不到符号链接: 目标(或其父目录)若是指向外部的链接, 写入会落到 worktree 外。
+    if (!landsInside(destRoot, destAbs)) {
+      results.push({ relpath: rel, status: 'skipped-outside' });
       continue;
     }
 

@@ -205,6 +205,20 @@ describe('applyWorktreeIncludeFile', () => {
     await expect(copied()).resolves.toEqual(['.env', 'local.json']);
   });
 
+  it('does not write through a symlinked directory that leads outside the worktree', async () => {
+    const outside = path.join(tmpRoot, 'outside');
+    fs.mkdirSync(outside);
+    fs.mkdirSync(path.join(baseRepo, 'config'));
+    fs.writeFileSync(path.join(baseRepo, 'config', 'local.env'), 'SECRET=1\n');
+    fs.symlinkSync(outside, path.join(worktreePath, 'config'), 'junction');
+    fs.writeFileSync(path.join(baseRepo, '.worktreeinclude'), 'config/**\n');
+
+    await expect(applyWorktreeIncludeFile(baseRepo, worktreePath)).resolves.toEqual([
+      { relpath: 'config/local.env', status: 'skipped-outside' },
+    ]);
+    expect(fs.existsSync(path.join(outside, 'local.env'))).toBe(false);
+  });
+
   it('reports files changed under .worktreeinclude rules as dirty', async () => {
     fs.writeFileSync(path.join(baseRepo, '.worktreeinclude'), '.env\n');
     await applyWorktreeIncludeFile(baseRepo, worktreePath);
