@@ -125,6 +125,7 @@ describe('useCodexRateLimits', () => {
     const refreshedA = { ...result, providerId: 'openai-a', primary: { usedPercent: 18, resetsAt: 'later' } };
     const b = { ...result, providerId: 'openai-b' };
     const accountChanges = new Map<string, (payload: unknown) => void>();
+    const authStarted = new Map<string, () => void>();
     const authReady = new Map<string, () => void>();
     const catalogChanges: Array<() => void> = [];
     let resolveOldRead!: (value: MobileCodexRateLimitsResult) => void;
@@ -140,6 +141,10 @@ describe('useCodexRateLimits', () => {
         onCodexAccountChanged: (callback: (payload: unknown) => void, providerId: string) => {
           accountChanges.set(providerId, callback);
           return () => accountChanges.delete(providerId);
+        },
+        onCodexAccountAuthStarted: (callback: () => void, providerId: string) => {
+          authStarted.set(providerId, callback);
+          return () => authStarted.delete(providerId);
         },
         onCodexAccountAuthReady: (callback: () => void, providerId: string) => {
           authReady.set(providerId, callback);
@@ -162,6 +167,7 @@ describe('useCodexRateLimits', () => {
     // A read started with the old credentials remains in flight when re-login retires them.
     act(() => accountA.result.current.refresh());
     expect(reader).toHaveBeenCalledTimes(3);
+    act(() => authStarted.get('openai-a')?.());
     act(() => accountChanges.get('openai-a')?.(null));
     expect(accountA.result.current.snapshot).toBeNull();
 
@@ -184,6 +190,27 @@ describe('useCodexRateLimits', () => {
     await act(async () => resolveOldRead(a));
     expect(accountA.result.current.snapshot).toBe(refreshedA);
     expect(accountB.result.current.snapshot).toBe(b);
+  });
+
+  it('does not treat an unrelated scoped clear as a credential replacement', async () => {
+    const accountChanges = new Map<string, (payload: unknown) => void>();
+    const accountA = { ...result, providerId: 'openai-a' };
+    const resultAfterClear = { ...accountA, rateLimitResetCredits: { availableCount: 1, credits: [] } };
+    const reader = vi.fn().mockResolvedValueOnce(accountA).mockResolvedValueOnce(resultAfterClear);
+    vi.stubGlobal('electronAPI', { maker: { usage: {
+      getCodexRateLimits: reader,
+      onCodexAccountChanged: (callback: (payload: unknown) => void, providerId: string) => {
+        accountChanges.set(providerId, callback);
+        return () => accountChanges.delete(providerId);
+      },
+    } } });
+    const hook = renderHook(() => useCodexRateLimits(true, 'openai-a'));
+    await waitFor(() => expect(hook.result.current.snapshot).toBe(accountA));
+    act(() => accountChanges.get('openai-a')?.(null));
+    expect(hook.result.current.snapshot).toBeNull();
+    act(() => hook.result.current.refresh());
+    await waitFor(() => expect(hook.result.current.snapshot).toBe(resultAfterClear));
+    expect(reader).toHaveBeenCalledTimes(2);
   });
 
   it('isolates Cindy owner changes and late responses', async () => {

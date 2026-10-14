@@ -110,10 +110,7 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   // Stay subscribed while panels are unmounted, so a replaced account cannot
   // seed the next panel with the previous identity's cached quota.
   const usageUnsubscribe = window.electronAPI?.maker?.usage?.onCodexAccountChanged?.(payload => {
-    if (payload === null) {
-      entry.awaitingAuthCompletion = true;
-      clear();
-    }
+    if (payload === null) clear();
     // The authoritative read itself emits a usage push. Suppress those echoes
     // while any read is pending rather than scheduling a recursive refresh.
     else if (!entry.awaitingAuthCompletion && entry.listeners.size > 0 && entry.pendingReads === 0
@@ -121,6 +118,11 @@ function cachedRateLimits(providerId: string): CachedRateLimits {
   }, providerId);
   if (usageUnsubscribe) entry.unsubscribe.push(usageUnsubscribe);
   if (providerId !== 'openai') {
+    const authStartedUnsubscribe = window.electronAPI?.maker?.usage?.onCodexAccountAuthStarted?.(() => {
+      entry.awaitingAuthCompletion = true;
+      clear();
+    }, providerId);
+    if (authStartedUnsubscribe) entry.unsubscribe.push(authStartedUnsubscribe);
     const authReadyUnsubscribe = window.electronAPI?.maker?.usage?.onCodexAccountAuthReady?.(() => {
       // Main emits this provider-scoped signal only after the new auth.json commits.
       if (!entry.awaitingAuthCompletion) return;

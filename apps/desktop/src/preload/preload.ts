@@ -816,6 +816,9 @@ const fanOutMakerUsageCodexProviderAccount = createIpcFanOut(
 const fanOutMakerUsageCodexAccountAuthReady = createIpcFanOut(
   'usage:codex-account-auth-ready',
 );
+const fanOutMakerUsageCodexAccountAuthStarted = createIpcFanOut(
+  'usage:codex-account-auth-started',
+);
 const fanOutSubscriptionProviderAccount = createIpcFanOut(
   'usage:subscription-provider-account-changed',
 );
@@ -7796,6 +7799,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** Fires for one Codex account after replacement auth credentials commit. */
       onCodexAccountAuthReady: (cb: () => void, providerId: string) =>
         fanOutMakerUsageCodexAccountAuthReady((payload: unknown) => {
+          const scoped = payload as { providerId?: string };
+          if (scoped?.providerId === providerId) cb();
+        }),
+      /** Fires for one Codex account when explicit credential replacement begins. */
+      onCodexAccountAuthStarted: (cb: () => void, providerId: string) =>
+        fanOutMakerUsageCodexAccountAuthStarted((payload: unknown) => {
           const scoped = payload as { providerId?: string };
           if (scoped?.providerId === providerId) cb();
         }),
