@@ -20,10 +20,13 @@
  * - 离开输入框的附件不再受草稿保护：发件箱条目持有的图片地址（含标注原图与烧录副本）登记进
  *   存储清理的保护清单，条目移除时同步撤下；已确认消息的本地预览不登记——发送时 main 已在群的
  *   `bot-group-attachment` 引用下固定这些图片。尚未进入消息的暂存文件按归属回收：还没开始提交的条目
- *   （排队中、已失败）归发件箱，群被删除（含不在当前页的群：列表里消失且读取确认已不存在）或
- *   切换账号时立即回收；已开始提交的条目归它的那次请求，条目在烧录期间被丢弃就不再发出并回收，
+ *   （排队中、已失败）归发件箱，群被删除（含不在当前页的群：列表里消失且读取确认已不存在）时
+ *   立即回收；已开始提交的条目归它的那次请求，条目在烧录期间被丢弃就不再发出并回收，
  *   已交给 main 的等结果——成功（已进入消息）不碰，失败才回收。main 的发送在 IPC 返回前读完
  *   全部本地文件，失败时不留任何引用暂存路径的本地记录（服务端只引用已上传的副本）。
+ *   切换账号时同样按此发出回收，但 main 只删当前账号暂存目录里的副本，而 renderer 看到切换时
+ *   main 已在新账号（或边界）下：前一账号的副本留在它自己的暂存目录，renderer 无法再删，
+ *   不在发件箱范围内（main 的暂存副本按账号划界）。
  * - 失败时交还输入框（输入框空着才交还，见 `registerBotGroupComposer`），否则留在时间线上
  *   显示没发出去，可重试或编辑；失败时输入框不在（切群、分享模式），回来注册输入框时同样交还。
  * - 切换到另一个账号时整体清空，旧账号的迟到回执一律丢弃；同账号的 generation 修复、认证边界
@@ -305,6 +308,8 @@ async function submit(
   requestGeneration: number,
   files: readonly AttachedFile[],
 ): Promise<void> {
+  // An account switch nothing else noticed yet (no group open) settles the outbox here.
+  ensureOwner();
   const isCurrent = () => requestGeneration === generation && !accountChanged();
   // Dropped before its turn (account switch, deleted group): whoever dropped it released its files.
   if (!isCurrent()) return;

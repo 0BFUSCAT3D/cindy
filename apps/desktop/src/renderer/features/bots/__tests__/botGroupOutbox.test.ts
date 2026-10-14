@@ -622,6 +622,23 @@ describe('botGroupOutbox', () => {
       expect(mocks.send).toHaveBeenCalledTimes(1);
     });
 
+    it('on an account switch with no group open: a queued send settles the outbox when its turn comes', async () => {
+      const inFlight = deferred();
+      mocks.send.mockReturnValueOnce(inFlight.promise);
+      const shot = { ...staged('queued'), category: 'image', url: 'cindy-media://blobs/queued.png' } as unknown as AttachedFile;
+      enqueueBotGroupSend(draft({ clientId: 'flying' }));
+      enqueueBotGroupSend(draft({ clientId: 'queued' }, { files: [shot] }));
+      await flush();
+      expect(mocks.protectedUrls).toEqual(['cindy-media://blobs/queued.png']);
+      // Nothing calls into the outbox after the switch: the queue itself notices it.
+      mocks.owner = 2;
+      inFlight.resolve({ ok: true, messageId: 'm-late' });
+      await flush();
+      expect(mocks.protectedUrls).toEqual([]);
+      expect(released()).toEqual(['queued']);
+      expect(mocks.send).toHaveBeenCalledTimes(1);
+    });
+
     const goneGroup = () => {
       mocks.getBotGroup.mockImplementation(async (groupId: string) =>
         groupId === 'gone' ? { ok: false, errorCode: 'NOT_FOUND', message: '' } : { ok: true, group: {} });
