@@ -105,6 +105,7 @@ describe('parsePersonalRemoteRecord', () => {
           choice: 'local',
           rewrites: [{ from: [OTHER], to: NEWER }],
           unverifiedRemote: [OTHER],
+          unverifiedRemoteOverflow: true,
         }),
       ),
     ).toEqual({
@@ -112,6 +113,7 @@ describe('parsePersonalRemoteRecord', () => {
       choice: 'local',
       rewrites: [{ from: [OTHER], to: NEWER }],
       unverifiedRemote: [OTHER],
+      unverifiedRemoteOverflow: true,
     });
     expect(parsePersonalRemoteRecord(JSON.stringify({ schema: 2, choice: 'local' }))).toEqual({
       schema: 1,
@@ -156,6 +158,7 @@ describe('persisted personal remote trust', () => {
     ['non-array tips', JSON.stringify({ schema: 1, unverifiedRemote: OTHER })],
     ['invalid tip', JSON.stringify({ schema: 1, unverifiedRemote: [OTHER, 'damaged'] })],
     ['too many tips', JSON.stringify({ schema: 1, unverifiedRemote: Array(513).fill(OTHER) })],
+    ['invalid overflow marker', JSON.stringify({ schema: 1, unverifiedRemoteOverflow: false })],
     [
       'invalid rewrite',
       JSON.stringify({ schema: 1, rewrites: [{ from: [OTHER], to: 'damaged' }] }),
@@ -1014,6 +1017,19 @@ describe('PersonalRemoteController', () => {
     for (let i = 0; i < 20; i += 1) h.controller.recordUnverifiedRemote(String(i).padStart(40, 'a'));
     expect(h.record().unverifiedRemote).toContain(OTHER);
     expect(h.record().unverifiedRemote).toHaveLength(22);
+  });
+
+  it('keeps the trust ledger bounded and fails closed when it overflows', () => {
+    const tips = Array.from({ length: 512 }, (_, index) => index.toString(16).padStart(40, '0'));
+    const h = harness({ record: { schema: 1, unverifiedRemote: tips } });
+    const next = 'f'.repeat(40);
+    h.controller.recordUnverifiedRemote(next);
+    expect(h.record().unverifiedRemote).toEqual(tips);
+    expect(h.record().unverifiedRemoteOverflow).toBe(true);
+    expect(parsePersonalRemoteTrust(JSON.stringify(h.record()))).toMatchObject({
+      unverifiedRemote: tips,
+      unverifiedRemoteOverflow: true,
+    });
   });
 
   it('carries unverified provenance through rewrites even without a binding', () => {

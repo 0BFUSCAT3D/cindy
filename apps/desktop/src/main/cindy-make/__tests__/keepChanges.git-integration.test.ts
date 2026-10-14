@@ -247,6 +247,35 @@ it('names a change whose added line a resolved rebase only reordered', async () 
   }
 }, 60_000);
 
+it.each(['lines', 'hunks'] as const)('rejects reordered added %s while accepting their original sequence', async (shape) => {
+  const h = await repos();
+  try {
+    const guarded = ['if (authorized) {', 'deleteData()', '}'];
+    const original = shape === 'lines'
+      ? [...guarded, ...LINES.slice(1)]
+      : replace(0, 'acquire()', replace(5, 'release()'));
+    await h.write(h.source, 'feature.txt', original);
+    const reordered = await h.commit(h.source, '', 4_100);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    await h.write(worktree, 'feature.txt', shape === 'lines'
+      ? [guarded[1], guarded[0], guarded[2], ...LINES.slice(1)]
+      : replace(0, 'release()', replace(5, 'acquire()')));
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed', missing: { count: 1, commits: [reordered] },
+    });
+    await h.write(worktree, 'feature.txt', original.map((line, i) => i === 0 ? line + ' // official' : line));
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).resolves.toMatchObject({ status: 'merged' });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
 it('names a change whose deletion a resolved rebase kept only wrapped in punctuation', async () => {
   const h = await repos();
   try {

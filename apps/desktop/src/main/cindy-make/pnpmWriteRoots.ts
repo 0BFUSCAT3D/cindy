@@ -464,14 +464,26 @@ function checkArchiveManifest(where: string, text: string): void {
 /** `package.json` out of an archive pnpm installs from, without extracting it. */
 async function readArchiveManifest(file: string): Promise<string | undefined> {
   let manifest: string | undefined;
+  let manifestCount = 0;
   let entries = 0;
   let overflow = false;
+  let failure: Error | undefined;
   await tarList({
     file,
     filter: (entryPath: string, entry?: { size?: number }) => {
-      if (++entries > MAX_ARCHIVE_ENTRIES) throw refuse('archive holds too many entries');
+      if (++entries > MAX_ARCHIVE_ENTRIES) {
+        failure ??= refuse('archive holds too many entries');
+        return false;
+      }
       if (entryPath !== 'package/package.json') return false;
-      if ((entry?.size ?? 0) > MAX_CONFIG_BYTES) throw refuse('archive manifest too large');
+      if (++manifestCount > 1) {
+        failure ??= refuse('archive has duplicate manifests');
+        return false;
+      }
+      if ((entry?.size ?? 0) > MAX_CONFIG_BYTES) {
+        failure ??= refuse('archive manifest too large');
+        return false;
+      }
       return true;
     },
     onentry: (entry: ReadEntry) => {
@@ -488,6 +500,7 @@ async function readArchiveManifest(file: string): Promise<string | undefined> {
       });
     },
   });
+  if (failure) throw failure;
   if (overflow) throw refuse('archive manifest too large');
   return manifest;
 }

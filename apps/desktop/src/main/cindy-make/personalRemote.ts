@@ -49,9 +49,9 @@ export interface PersonalRewrite {
 }
 const MAX_REWRITES = 16;
 /**
- * Unverified sources are kept until a generated personal version covers them —
- * never dropped for age, or a flood of candidates could evict a live one and
- * make the trust check fail open. The bound only rejects a damaged local file.
+ * Unverified sources are kept until a generated personal version covers them.
+ * The bounded list is diagnostic storage; if it fills, an overflow marker keeps
+ * the install decision fail-closed instead of evicting a live source.
  */
 const MAX_UNVERIFIED_REMOTE = 512;
 
@@ -77,6 +77,8 @@ export interface PersonalRemoteRecord {
    * must not run lifecycle scripts on worktrees that contain them.
    */
   unverifiedRemote?: string[];
+  /** True when an older source tip could not fit in the bounded list; this is fail-closed. */
+  unverifiedRemoteOverflow?: boolean;
   error?: CindyMakeRemoteError;
   /** Present only while an operation runs; a restart turns it into `interrupted`. */
   running?: RemoteRunKind;
@@ -120,6 +122,7 @@ export function parsePersonalRemoteRecord(raw: string | null): PersonalRemoteRec
     );
     if (tips.length) record.unverifiedRemote = [...new Set(tips)].slice(-MAX_UNVERIFIED_REMOTE);
   }
+  if (input.unverifiedRemoteOverflow === true) record.unverifiedRemoteOverflow = true;
   // Rewrite lineage is provenance of already-taken-over content, not binding
   // state: it survives a disconnect (where `login`/`repository` are cleared) or
   // it would silently orphan the unverified tips it carries.
@@ -153,7 +156,7 @@ export function parsePersonalRemoteRecord(raw: string | null): PersonalRemoteRec
  */
 export function parsePersonalRemoteTrust(
   raw: string | null,
-): Pick<PersonalRemoteRecord, 'unverifiedRemote' | 'rewrites'> {
+): Pick<PersonalRemoteRecord, 'unverifiedRemote' | 'unverifiedRemoteOverflow' | 'rewrites'> {
   if (raw === null) return {};
   let value: unknown;
   try {
@@ -181,6 +184,8 @@ export function parsePersonalRemoteTrust(
       rawTips.some((tip) => typeof tip !== 'string' || !COMMIT.test(tip)))
   )
     throw new Error('unprovable content trust');
+  if (input.unverifiedRemoteOverflow !== undefined && input.unverifiedRemoteOverflow !== true)
+    throw new Error('unprovable content trust');
   const rawRewrites = input.rewrites;
   const wellFormedRewrite = (entry: unknown): boolean => {
     const rewrite = entry as { from?: unknown; to?: unknown } | null;
@@ -199,6 +204,7 @@ export function parsePersonalRemoteTrust(
     throw new Error('unprovable content trust');
   return {
     ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
+    ...(record.unverifiedRemoteOverflow ? { unverifiedRemoteOverflow: true } : {}),
     ...(record.rewrites ? { rewrites: record.rewrites } : {}),
   };
 }
@@ -927,6 +933,7 @@ export class PersonalRemoteController {
       schema: 1,
       choice: 'local',
       ...(record.unverifiedRemote ? { unverifiedRemote: record.unverifiedRemote } : {}),
+      ...(record.unverifiedRemoteOverflow ? { unverifiedRemoteOverflow: true } : {}),
       ...(record.rewrites ? { rewrites: record.rewrites } : {}),
     });
     return this.publish();
@@ -940,11 +947,12 @@ export class PersonalRemoteController {
         if (this.deps.sourceExists() && (await this.remoteUrl()) !== undefined)
           await this.git(['remote', 'remove', PERSONAL_REMOTE_NAME]);
       });
-      const { unverifiedRemote, rewrites } = this.deps.read();
+      const { unverifiedRemote, unverifiedRemoteOverflow, rewrites } = this.deps.read();
       this.write({
         schema: 1,
         choice: 'local',
         ...(unverifiedRemote ? { unverifiedRemote } : {}),
+        ...(unverifiedRemoteOverflow ? { unverifiedRemoteOverflow: true } : {}),
         ...(rewrites ? { rewrites } : {}),
       });
     });
@@ -1298,12 +1306,21 @@ export class PersonalRemoteController {
     )
       return;
     const tips = record.unverifiedRemote ?? [];
+    const nextTips =
+      tips.length && !tips.includes(to) && tips.length < MAX_UNVERIFIED_REMOTE
+        ? [...tips, to]
+        : tips;
     this.update({
       rewrites: [...(record.rewrites ?? []), { from, to }].slice(-MAX_REWRITES),
       // Unverified content this rewrite carried keeps its provenance under the new
-      // commit: the tip list follows the content, so evicting old rewrite edges
-      // (or dropping them on disconnect) can never orphan it.
-      ...(tips.length && !tips.includes(to) ? { unverifiedRemote: [...tips, to] } : {}),
+      // commit. If the bounded diagnostic list is full, keep the old entries and
+      // mark the omitted result unknown instead of evicting a live source.
+      ...(tips.length && !tips.includes(to)
+        ? {
+            unverifiedRemote: nextTips,
+            ...(nextTips === tips ? { unverifiedRemoteOverflow: true } : {}),
+          }
+        : {}),
     });
   }
 
@@ -1315,9 +1332,25 @@ export class PersonalRemoteController {
   recordUnverifiedRemote(commit: string): void {
     if (!COMMIT.test(commit)) return;
     const record = this.deps.read();
-    const known = record.unverifiedRemote ?? [];
+    const known = (record.unverifiedRemote ?? []).filter((tip) => !this.deps.isBuilt(tip));
     if (known.includes(commit)) return;
-    this.update({ unverifiedRemote: [...known, commit] });
+    if (this.deps.isBuilt(commit)) {
+      if (known.length !== (record.unverifiedRemote ?? []).length)
+        this.update({ unverifiedRemote: known });
+      return;
+    }
+    if (known.length >= MAX_UNVERIFIED_REMOTE) {
+      // Never evict an unverified source just to keep the JSON parseable. The
+      // overflow marker makes the guarded install path stay active for the
+      // omitted facts, while later syncs remain writable and can retain the
+      // bounded list for diagnostics.
+      this.update({ unverifiedRemote: known, unverifiedRemoteOverflow: true });
+      return;
+    }
+    this.update({
+      unverifiedRemote: [...known, commit],
+      ...(record.unverifiedRemoteOverflow ? { unverifiedRemoteOverflow: true } : {}),
+    });
   }
 
   /** Moving the checkout needs an idle, clean source on the personal branch. */

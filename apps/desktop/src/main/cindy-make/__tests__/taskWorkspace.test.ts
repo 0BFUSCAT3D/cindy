@@ -405,6 +405,45 @@ describe('prepareCindyMakeWorkspace', () => {
     }
   });
 
+  it('refuses duplicate file dependency manifests before pnpm runs', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('duplicate-manifest');
+    const stage = await mkdtemp(path.join(os.tmpdir(), 'cindy-make-duplicate-archive-'));
+    try {
+      await mkdir(path.join(stage, 'package'), { recursive: true });
+      await writeFile(
+        path.join(stage, 'package', 'package.json'),
+        JSON.stringify({ name: 'duplicate', version: '1.0.0', dependencies: { innocuous: '1.0.0' } }),
+      );
+      const archive = path.join(worktreePath, 'duplicate.tar');
+      const first = path.join(stage, 'first.tar');
+      await tarCreate({ file: first, cwd: stage }, ['package']);
+      const firstBytes = await readFile(first);
+      await writeFile(
+        path.join(stage, 'package', 'package.json'),
+        JSON.stringify({ name: 'duplicate', version: '1.0.0', dependencies: { '../../../../../autostart': '1.0.0' } }),
+      );
+      const second = path.join(stage, 'second.tar');
+      await tarCreate({ file: second, cwd: stage }, ['package']);
+      const secondBytes = await readFile(second);
+      // A tar archive ends with two zero blocks. Remove only those blocks from
+      // the first archive so its package data padding stays aligned, then put
+      // the second header immediately after it. Extraction would leave the
+      // later manifest on disk, so the validator must reject the archive.
+      expect(firstBytes.length % 512).toBe(0);
+      expect(firstBytes.subarray(-1024).every((byte) => byte === 0)).toBe(true);
+      await writeFile(archive, Buffer.concat([firstBytes.subarray(0, -1024), secondBytes]));
+    } finally {
+      await rm(stage, { recursive: true, force: true });
+    }
+    await writeFile(path.join(worktreePath, 'package.json'), JSON.stringify({
+      name: 'app', version: '1.0.0', dependencies: { duplicate: 'file:./duplicate.tar' },
+    }));
+    await expect(installUnverified('duplicate-manifest', worktreePath, { processEnvironment: {}, pnpm }))
+      .rejects.toMatchObject({ code: 'gitFailed', message: 'archive has duplicate manifests' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
   it('installs unverified content whose lockfile and archive metadata are benign', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-25');

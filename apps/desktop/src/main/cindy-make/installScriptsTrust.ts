@@ -11,6 +11,8 @@ const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 export interface InstallScriptsTrust {
   /** Fork tips taken over before this computer verified them (see `recordUnverifiedRemote`). */
   unverifiedRemote(): string[];
+  /** A bounded ledger overflowed; omitted provenance must remain guarded. */
+  unverifiedRemoteOverflow?(): boolean;
   /** Adopted history rewrites (official updates and combines), see `recordRewrite`. */
   rewrites(): PersonalRewrite[];
   /** Commits a generated personal version was published from. */
@@ -66,6 +68,7 @@ export async function remoteContentScriptsUnverified(
   trust: InstallScriptsTrust,
 ): Promise<boolean> {
   if (!COMMIT.test(baseCommit)) return true;
+  if (trust.unverifiedRemoteOverflow?.()) return true;
   for (const tip of trust.unverifiedRemote()) {
     if (!COMMIT.test(tip) || !(await reaches(trust, tip, baseCommit))) continue;
     let verified = false;
@@ -95,6 +98,7 @@ export function installScriptsTrust(
     );
   return {
     unverifiedRemote: () => record().unverifiedRemote ?? [],
+    unverifiedRemoteOverflow: () => record().unverifiedRemoteOverflow === true,
     rewrites: () => record().rewrites ?? [],
     published: () => publishedPersonalVersionCommits(userData),
     contains: async (ancestor, descendant) => {

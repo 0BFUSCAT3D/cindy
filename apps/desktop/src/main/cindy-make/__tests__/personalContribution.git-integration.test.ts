@@ -74,6 +74,7 @@ async function fixture(conflict: boolean) {
   await commit(official, 'official update');
 
   let store: Record<string, ContributionRecord> = {};
+  let failNextStoreWrite = false;
   const github = { number: 7, state: 'open' };
   const pull = () => ({
     number: github.number,
@@ -111,6 +112,10 @@ async function fixture(conflict: boolean) {
     ledgerPath: () => 'ledger.json',
     readStore: () => structuredClone(store),
     writeStore: (_file, next) => {
+      if (failNextStoreWrite) {
+        failNextStoreWrite = false;
+        throw new Error('disk full');
+      }
       store = structuredClone(next);
     },
     fetch: fetchFn as unknown as typeof fetch,
@@ -128,6 +133,9 @@ async function fixture(conflict: boolean) {
     fetchFn,
     github,
     store: () => store,
+    failNextStoreWrite: () => {
+      failNextStoreWrite = true;
+    },
     clean: () => rm(userData, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }),
   };
 }
@@ -216,6 +224,32 @@ it('opens a pull request with only this change, on the latest official main, sig
     expect(JSON.parse(String(created?.[1]?.body))).toMatchObject({
       head: 'octo:cindy-make-pr/run-1-2',
     });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
+it('reconciles a pushed update when its contribution ledger write fails', async () => {
+  const h = await fixture(false);
+  try {
+    const draft = await h.contribution.draft('run-1');
+    await h.contribution.submit({ ...draft, runId: 'run-1' });
+    const before = h.store()['run-1'].commit;
+    h.failNextStoreWrite();
+    await expect(
+      h.contribution.submit({ ...draft, runId: 'run-1', title: 'feat: 重试台账' }),
+    ).rejects.toThrow('disk full');
+    const branch = 'refs/heads/cindy-make-pr/run-1';
+    const remoteAfterFailure = (await h.raw(['rev-parse', branch], h.fork)).trim();
+    expect(remoteAfterFailure).not.toBe(before);
+
+    // The retry sees the old lease in its local ledger, fetches the branch tip,
+    // verifies its tree/parent/author, and records that already-pushed commit.
+    await expect(
+      h.contribution.submit({ ...draft, runId: 'run-1', title: 'feat: 重试台账' }),
+    ).resolves.toMatchObject({ number: 7, state: 'open' });
+    expect(h.store()['run-1'].commit).toBe(remoteAfterFailure);
+    expect(h.fetchFn.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
   } finally {
     await h.clean();
   }

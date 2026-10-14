@@ -141,7 +141,11 @@ export function recordPendingBuild(root: string, snapshot: PendingBuildSnapshot)
     (entry) => entry.commit !== snapshot.commit || entry.tree !== snapshot.tree,
   );
   entries.push(snapshot);
-  writePendingBuilds(root, entries.slice(-MAX_SNAPSHOTS), ledger.trusted);
+  const bounded = entries.slice(-MAX_SNAPSHOTS);
+  // Losing an older snapshot also loses the proof that a rollback can still be
+  // explained. Keep the entries for diagnostics, but force the next decision
+  // through the unknown/failed-closed path until a generation settles them.
+  writePendingBuilds(root, bounded, ledger.trusted && bounded.length === entries.length);
 }
 
 /**
@@ -175,10 +179,12 @@ export function rewritePendingBuilds(
     const unique = entries.filter(
       (entry, at) => entries.findIndex((other) => other === entry) === at,
     );
-    writePendingBuilds(root, unique.slice(-MAX_SNAPSHOTS), ledger.trusted);
+    const bounded = unique.slice(-MAX_SNAPSHOTS);
+    writePendingBuilds(root, bounded, ledger.trusted && bounded.length === unique.length);
     return;
   }
-  writePendingBuilds(root, entries.slice(-MAX_SNAPSHOTS), ledger.trusted);
+  const bounded = entries.slice(-MAX_SNAPSHOTS);
+  writePendingBuilds(root, bounded, ledger.trusted && bounded.length === entries.length);
 }
 
 /**

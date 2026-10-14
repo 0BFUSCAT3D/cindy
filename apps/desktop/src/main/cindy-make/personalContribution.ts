@@ -30,6 +30,11 @@ const OFFICIAL_MAIN_REF = 'refs/cindy-make/contribution/main';
 const HASH = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const RUN_ID = /^[A-Za-z0-9-]{1,128}$/;
 
+function remoteTip(output: string): string | undefined {
+  const tip = output.trim().split(/\s/)[0]?.trim();
+  return tip && HASH.test(tip) ? tip : undefined;
+}
+
 /** Durable record of one submitted change; owner-private like the Make history. */
 export interface ContributionRecord {
   runId: string;
@@ -467,7 +472,7 @@ export class PersonalContribution {
 
         // 4. One commit by the author, signed off with the same identity (DCO).
         await writeFile(message, `${title}\n\nSigned-off-by: ${name} <${email}>\n`, 'utf8');
-        const commit = (
+        let commit = (
           await this.git(
             ['-c', 'commit.gpgSign=false', 'commit-tree', tree, '-p', main, '-F', message],
             { indexFile: index, identity: { name, email } },
@@ -513,10 +518,28 @@ export class PersonalContribution {
             ).catch((lookup: unknown) => {
               throw pushFailed(lookup);
             });
-            if (current.trim()) throw pushFailed(error);
-            await push(branch, '').catch((retry: unknown) => {
-              throw pushFailed(retry);
-            });
+            if (current.trim()) {
+              // The push may already have succeeded before a local ledger write
+              // failed. Reusing a remote tip is safe only when it is exactly the
+              // commit this submission intended (same tree, parent and author);
+              // an unrelated collaborator update keeps the lease failure fatal.
+              this.assertScope(scope);
+              const recovered = await this.reconcilePushedCommit(
+                branch,
+                remoteTip(current),
+                tree,
+                main,
+                { name, email },
+                auth,
+              );
+              this.assertScope(scope);
+              if (!recovered) throw pushFailed(error);
+              commit = recovered;
+            } else {
+              await push(branch, '').catch((retry: unknown) => {
+                throw pushFailed(retry);
+              });
+            }
           }
           // The moved branch is recorded before the PR API call and before any
           // scope assertion — in the ledger pinned to the account that started the
@@ -601,6 +624,54 @@ export class PersonalContribution {
         await rm(temporary, { recursive: true, force: true });
       }
     });
+  }
+
+  /**
+   * A successful remote push can race the local contribution ledger write. On
+   * retry, adopt that remote commit only after fetching and checking its complete
+   * identity; never turn an arbitrary branch movement into this user's lease.
+   */
+  private async reconcilePushedCommit(
+    branch: string,
+    observed: string | undefined,
+    tree: string,
+    parent: string,
+    author: { name: string; email: string },
+    auth: { repository: string; token: string },
+  ): Promise<string | undefined> {
+    if (!observed) return undefined;
+    try {
+      await this.git(
+        [
+          'fetch',
+          '--no-tags',
+          '--no-write-fetch-head',
+          '--no-auto-maintenance',
+          PERSONAL_REMOTE_NAME,
+          'refs/heads/' + branch,
+        ],
+        { auth },
+      );
+      const current = remoteTip(
+        await this.git(['ls-remote', '--refs', PERSONAL_REMOTE_NAME, 'refs/heads/' + branch], { auth }),
+      );
+      if (current !== observed) return undefined;
+      if ((await this.git(['cat-file', '-t', observed])).trim() !== 'commit') return undefined;
+      if ((await this.git(['rev-parse', '--verify', observed + '^{tree}'])).trim() !== tree)
+        return undefined;
+      const parents = (await this.git(['show', '-s', '--format=%P', observed]))
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      if (parents.length !== 1 || parents[0] !== parent) return undefined;
+      const identity = (await this.git(['show', '-s', '--format=%an%x00%ae', observed])).trim();
+      if (identity !== author.name + '\0' + author.email) return undefined;
+      return observed;
+    } catch (error) {
+      const code = classifyRemoteGitError(error);
+      if (code === 'network' || code === 'github' || code === 'workflowScope') throw fail(code);
+      return undefined;
+    }
   }
 
   /** The open pull request an earlier attempt already opened for this branch. */

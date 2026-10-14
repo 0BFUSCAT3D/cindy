@@ -509,6 +509,20 @@ async function editsSurvive(
         carriers(content, beforeLines) + added.filter((line) => line === content).length;
       if (carriers(content, lines) < needed) return false;
     }
+    // The per-line occurrence check above is intentionally multiplicity-aware,
+    // but it does not preserve the structure of a multi-line edit. A resolution
+    // that moves an authorization guard and its call keeps every line while
+    // changing what the guard protects. Match the added lines as an ordered
+    // subsequence; if a resolution fuses several lines into one, fail closed
+    // rather than guessing.
+    if (added.length > 1) {
+      let after = -1;
+      for (const content of added) {
+        const at = lines.findIndex((line, index) => index > after && within(content, line));
+        if (at < 0) return false;
+        after = at;
+      }
+    }
     // A removed line is gone only when no line of the result carries its content:
     // a resolution that kept it adapted (`deny()` as `deny() // upstream note`)
     // did not apply the deletion and must not vouch for the change. Absence must

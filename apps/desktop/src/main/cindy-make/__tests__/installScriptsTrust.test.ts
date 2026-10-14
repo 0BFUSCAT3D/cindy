@@ -37,6 +37,15 @@ describe('remoteContentScriptsUnverified', () => {
     ).resolves.toBe(true);
   });
 
+  it('stays guarded when the trust ledger records an overflow', async () => {
+    await expect(
+      remoteContentScriptsUnverified(A, {
+        ...trust(),
+        unverifiedRemoteOverflow: () => true,
+      }),
+    ).resolves.toBe(true);
+  });
+
   it('runs the scripts again once a generated personal version covers the tip', async () => {
     await expect(
       remoteContentScriptsUnverified(A, {

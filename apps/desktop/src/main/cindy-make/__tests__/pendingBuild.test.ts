@@ -78,6 +78,36 @@ it('initializes a fresh source as a trusted clean snapshot', () => {
   expect(readPendingBuilds(dir)).toBeUndefined();
 });
 
+it.each(['integration', 'rewrite'] as const)(
+  'keeps a truncated %s ledger unknown after rolling back every retained snapshot',
+  (operation) => {
+    const dir = root();
+    initializePendingBuilds(dir);
+    recordPendingBuild(dir, A);
+    const later = Array.from({ length: 64 }, (_, i) => ({
+      commit: (i + 1).toString(16).padStart(40, '0'),
+      tree: (i + 1).toString(16).padStart(40, '0'),
+    }));
+    if (operation === 'integration') {
+      for (const snapshot of later) recordPendingBuild(dir, snapshot);
+    } else {
+      // A readable older ledger can exceed the current bound as well.
+      writeFileSync(path.join(dir, 'pending-build.json'), JSON.stringify({
+        schema: 1, snapshots: [A, ...later], trusted: true,
+      }));
+      rewritePendingBuilds(dir, [later.at(-1)!.commit], C);
+    }
+    expect(readPendingBuilds(dir)).toHaveLength(64);
+    for (const snapshot of readPendingBuilds(dir)!) dropPendingBuild(dir, snapshot);
+    expect(readPendingBuilds(dir)).toEqual([]);
+    expect(hasPendingBuild(dir, A)).toBeUndefined();
+    const otherAccount = new CindyMakeHistoryStore(path.join(dir, 'other-owner'));
+    expect(hasUnbuiltPersonalChanges(otherAccount, dir, A, () => false)).toBe(true);
+    settlePendingBuilds(dir);
+    expect(hasPendingBuild(dir, A)).toBe(false);
+  },
+);
+
 it('treats a missing or unreadable record as unknown until a generation settles it', () => {
   const dir = root();
   expect(readPendingBuilds(dir)).toBeUndefined();
