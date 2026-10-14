@@ -138,6 +138,50 @@ describe('standalone remote viewer authority', () => {
       tick.mockRestore();
     }
   });
+  it('a paste racing a focus wakeup for the same idle pass waits for the fresh pass the focus started', async () => {
+    let finishFirst!: () => void, finishSecond!: () => void;
+    const tick = vi
+      .spyOn(ClipboardSync.prototype, 'tick')
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishSecond = resolve;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const { connection, control } = syncFixture(() => true);
+    try {
+      const generation = await control();
+      const first = connection.safety(generation);
+      await vi.waitFor(() => expect(finishFirst).toBeTypeOf('function'));
+      // Both wakeups wait on the same in-flight pass; focus registered first.
+      const focus = connection.focusChanged();
+      let synced = false;
+      const sync = connection.syncClipboard(generation).then(() => {
+        synced = true;
+      });
+      finishFirst();
+      await first;
+      await vi.waitFor(() => expect(finishSecond).toBeTypeOf('function'));
+      await Promise.resolve();
+      await Promise.resolve();
+      // The paste shares the fresh pass instead of settling on a stale snapshot.
+      expect(tick).toHaveBeenCalledTimes(2);
+      expect(synced).toBe(false);
+      finishSecond();
+      await Promise.all([focus, sync]);
+      expect(synced).toBe(true);
+      expect(tick).toHaveBeenCalledTimes(2);
+    } finally {
+      tick.mockRestore();
+    }
+  });
   it.each(['target', 'owner'])(
     'does not block a new %s behind the old scope cleanup',
     async (changed) => {

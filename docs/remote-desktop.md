@@ -62,8 +62,10 @@ is an ordinary key) about 200 ms after the key, and its paste chord holds the
 queued keys (at most 1 s) until the local clipboard has been pushed (pastes made
 while that push is still in flight wait on it rather than starting another, and
 only the latest paste's wait, at most 1 s, opens the gate); losing focus drops a
-held paste instead of sending it late. The 1.5 s poll remains only as a
-fallback. A locked or busy computer and a clipboard that changed mid-read retry
+held paste instead of sending it late; the held keys do not age against the
+2 s input-freshness budget while the gate is closed. Only one sync pass runs at
+a time, and a wakeup that finds one in flight shares its result rather than a
+stale status. The 1.5 s poll remains only as a fallback. A locked or busy computer and a clipboard that changed mid-read retry
 at a fixed 1.5 s without growing the backoff (the locked case shows its own
 notice); unexplained failures back off to at most 5 s and reset on focus or a
 shortcut. A multi-item local clipboard (several files) is skipped rather than

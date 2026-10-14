@@ -860,6 +860,14 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   }
   function flush() {
     if (!pending.length) return;
+    // A paste shortcut waits for the controller to push the local clipboard
+    // first. That hold is deliberate (and each further paste re-arms it), so
+    // the batch's freshness clock only starts once the gate opens.
+    if (inputGateUntil) {
+      if (performance.now() < inputGateUntil) return;
+      inputGateUntil = 0;
+      pendingSince = performance.now();
+    }
     // Input is an intent about the picture the user saw, not durable work.
     // Never replay old clicks/typing after a stalled ACK or data channel drains.
     if (performance.now() - pendingSince >= 2000) {
@@ -869,11 +877,6 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       updateMouseButtons();
       post({ type: "inputOverflow" });
       return;
-    }
-    // A paste shortcut waits for the controller to push the local clipboard first.
-    if (inputGateUntil) {
-      if (performance.now() < inputGateUntil) return;
-      inputGateUntil = 0;
     }
     if (sending) return;
     // Do not route around a congested live data channel: the relay could
@@ -2172,6 +2175,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         release();
         break;
       case "inputGate":
+        if (inputGateUntil) pendingSince = performance.now();
         inputGateUntil = 0;
         flush();
         break;

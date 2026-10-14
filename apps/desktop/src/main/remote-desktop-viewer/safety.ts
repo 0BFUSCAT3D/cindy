@@ -61,7 +61,7 @@ export class ViewerSafety {
   private clipboard: ViewerClipboard | undefined;
   private revision = 0;
   private clipboardRevision = 0;
-  private pending = false;
+  private inflight: Promise<RemoteViewerSafety> | null = null;
   private settled: Promise<void> = Promise.resolve();
   async pause(): Promise<void> {
     this.invalidate();
@@ -131,13 +131,32 @@ export class ViewerSafety {
     clipboard?: ViewerClipboard;
     request<T>(request: RemoteDesktopRequest, check: () => void): Promise<T>;
   }): Promise<RemoteViewerSafety> {
-    if (this.pending || !options.current()) return this.snapshot();
+    // One pass at a time, and a caller that finds one in flight shares its
+    // result. Two wakeups that waited on the same idle() race for the fresh
+    // pass; the loser must not settle on a stale snapshot and open the paste
+    // gate before that pass has pushed the clipboard.
+    if (this.inflight) return this.inflight;
+    if (!options.current()) return this.snapshot();
     this.clipboard = options.clipboard;
-    this.pending = true;
     let settle!: () => void;
     this.settled = new Promise((resolve) => {
       settle = resolve;
     });
+    this.inflight = this.pass(options).finally(() => {
+      this.inflight = null;
+      settle();
+    });
+    return this.inflight;
+  }
+  private async pass(options: {
+    lease: string;
+    caps: RemoteDesktopCapabilities;
+    preferences: RemoteViewerPreferences;
+    current(): boolean;
+    clipboardCurrent(): boolean;
+    clipboard?: ViewerClipboard;
+    request<T>(request: RemoteDesktopRequest, check: () => void): Promise<T>;
+  }): Promise<RemoteViewerSafety> {
     const revision = this.revision;
     const clipboardRevision = this.clipboardRevision;
     const valid = () => revision === this.revision && options.current();
@@ -146,99 +165,94 @@ export class ViewerSafety {
     };
     const request = <T>(message: RemoteDesktopRequest) => options.request<T>(message, check);
     const { caps, lease, preferences } = options;
-    try {
-      for (const op of ['privacyScreen', 'hostMute', 'clipboardSync'] as const) {
-        if (op === 'clipboardSync' && Date.now() < this.retryAt) continue;
-        if (!caps[op] || this.applied.get(op) === preferences[op]) continue;
-        try {
-          check();
-          const result = await request<{ enabled?: boolean }>({
-            op,
-            lease,
-            enabled: preferences[op],
-            ...(op === 'privacyScreen' ? { lockOnExit: preferences.lockOnExit } : {}),
-          });
-          check();
-          this.applied.set(op, preferences[op]);
-          if (op === 'privacyScreen') this.privacyActive = result.enabled === true;
-          this.notices.delete(op);
-        } catch (error) {
-          if (!valid()) return this.snapshot();
-          // Retry is explicit for safety failures; synchronization follows its own schedule.
-          if (op === 'clipboardSync') this.recordClipboardFailure(error);
-          else {
-            this.notices.set(op, op === 'privacyScreen' ? 'privacyFailed' : 'hostMuteFailed');
-            this.applied.set(op, preferences[op]);
-          }
-        }
-      }
-      if (
-        !preferences.clipboardSync ||
-        !caps.clipboardSync ||
-        !options.clipboard ||
-        this.applied.get('clipboardSync') !== true ||
-        Date.now() < this.retryAt ||
-        !options.clipboardCurrent()
-      )
-        return this.snapshot();
-      const current = () =>
-        valid() && clipboardRevision === this.clipboardRevision && options.clipboardCurrent();
-      const clipboardCheck = () => {
-        if (!current()) throw new Error('DESKTOP_STOPPED');
-      };
-      const local = <T>(work: Promise<T>) =>
-        work.catch((error: unknown) => {
-          throw error instanceof Error && error.message === 'DESKTOP_CLIPBOARD_UNAVAILABLE'
-            ? new Error(VIEWER_CLIPBOARD_UNAVAILABLE)
-            : error;
-        });
-      const engine = new ClipboardSync(
-        {
-          lease,
-          current,
-          inline: caps.clipboardInline === true,
-          request: (message) => options.request(message, clipboardCheck),
-          localVersion: () => local(options.clipboard!.version(current)),
-          readLocal: () => local(options.clipboard!.read(current)),
-          writeLocal: (json, version) => local(options.clipboard!.write(json, version, current)),
-          localReadCache: this.localReadCache,
-          trace: (stage) => {
-            if (!valid()) return;
-            if (stage === 'content-skipped')
-              this.notices.set('clipboardSync', 'clipboardSyncSkipped');
-            else if (['phone-to-computer-complete', 'computer-to-phone-complete'].includes(stage))
-              this.notices.delete('clipboardSync');
-          },
-          digest: (json) => {
-            const c = parseClipboardContent(json);
-            return createHash('sha256')
-              .update(JSON.stringify([c.text, c.html, c.rtf, c.url, c.png]))
-              .digest('hex');
-          },
-        },
-        this.baseline,
-      );
-      // Results of a paused or refocused clipboard generation are stale: pauseClipboard stops
-      // the read (DESKTOP_CLIPBOARD_UNAVAILABLE), which must not count as a sync failure.
+    for (const op of ['privacyScreen', 'hostMute', 'clipboardSync'] as const) {
+      if (op === 'clipboardSync' && Date.now() < this.retryAt) continue;
+      if (!caps[op] || this.applied.get(op) === preferences[op]) continue;
       try {
-        await engine.tick();
-        if (current()) {
-          if (
-            ['clipboardSyncFailed', 'clipboardSyncPermission', 'clipboardSyncWaiting'].includes(
-              this.notices.get('clipboardSync') ?? '',
-            )
-          )
-            this.notices.delete('clipboardSync');
-          this.failures = 0;
-        }
+        check();
+        const result = await request<{ enabled?: boolean }>({
+          op,
+          lease,
+          enabled: preferences[op],
+          ...(op === 'privacyScreen' ? { lockOnExit: preferences.lockOnExit } : {}),
+        });
+        check();
+        this.applied.set(op, preferences[op]);
+        if (op === 'privacyScreen') this.privacyActive = result.enabled === true;
+        this.notices.delete(op);
       } catch (error) {
-        if (!current()) return this.snapshot();
-        this.recordClipboardFailure(error);
+        if (!valid()) return this.snapshot();
+        // Retry is explicit for safety failures; synchronization follows its own schedule.
+        if (op === 'clipboardSync') this.recordClipboardFailure(error);
+        else {
+          this.notices.set(op, op === 'privacyScreen' ? 'privacyFailed' : 'hostMuteFailed');
+          this.applied.set(op, preferences[op]);
+        }
       }
-      return this.snapshot();
-    } finally {
-      this.pending = false;
-      settle();
     }
+    if (
+      !preferences.clipboardSync ||
+      !caps.clipboardSync ||
+      !options.clipboard ||
+      this.applied.get('clipboardSync') !== true ||
+      Date.now() < this.retryAt ||
+      !options.clipboardCurrent()
+    )
+      return this.snapshot();
+    const current = () =>
+      valid() && clipboardRevision === this.clipboardRevision && options.clipboardCurrent();
+    const clipboardCheck = () => {
+      if (!current()) throw new Error('DESKTOP_STOPPED');
+    };
+    const local = <T>(work: Promise<T>) =>
+      work.catch((error: unknown) => {
+        throw error instanceof Error && error.message === 'DESKTOP_CLIPBOARD_UNAVAILABLE'
+          ? new Error(VIEWER_CLIPBOARD_UNAVAILABLE)
+          : error;
+      });
+    const engine = new ClipboardSync(
+      {
+        lease,
+        current,
+        inline: caps.clipboardInline === true,
+        request: (message) => options.request(message, clipboardCheck),
+        localVersion: () => local(options.clipboard!.version(current)),
+        readLocal: () => local(options.clipboard!.read(current)),
+        writeLocal: (json, version) => local(options.clipboard!.write(json, version, current)),
+        localReadCache: this.localReadCache,
+        trace: (stage) => {
+          if (!valid()) return;
+          if (stage === 'content-skipped')
+            this.notices.set('clipboardSync', 'clipboardSyncSkipped');
+          else if (['phone-to-computer-complete', 'computer-to-phone-complete'].includes(stage))
+            this.notices.delete('clipboardSync');
+        },
+        digest: (json) => {
+          const c = parseClipboardContent(json);
+          return createHash('sha256')
+            .update(JSON.stringify([c.text, c.html, c.rtf, c.url, c.png]))
+            .digest('hex');
+        },
+      },
+      this.baseline,
+    );
+    // Results of a paused or refocused clipboard generation are stale: pauseClipboard stops
+    // the read (DESKTOP_CLIPBOARD_UNAVAILABLE), which must not count as a sync failure.
+    try {
+      await engine.tick();
+      if (current()) {
+        if (
+          ['clipboardSyncFailed', 'clipboardSyncPermission', 'clipboardSyncWaiting'].includes(
+            this.notices.get('clipboardSync') ?? '',
+          )
+        )
+          this.notices.delete('clipboardSync');
+        this.failures = 0;
+      }
+    } catch (error) {
+      if (!current()) return this.snapshot();
+      this.recordClipboardFailure(error);
+    }
+    return this.snapshot();
   }
 }

@@ -348,6 +348,22 @@ it('a held paste is dropped, not sent late, when the window loses focus', () => 
   vi.advanceTimersByTime(1300);
   expect(events()).toEqual([{ kind: 'release' }]);
 });
+it('re-arming the paste gate never ages the held batch into an input overflow', () => {
+  const { chord } = macHost();
+  chord('KeyV');
+  vi.advanceTimersByTime(900);
+  chord('KeyV');
+  vi.advanceTimersByTime(900);
+  chord('KeyV');
+  // Older than the 2 s freshness budget, but held on purpose: no overflow, no reconnect.
+  vi.advanceTimersByTime(300);
+  expect(events()).toEqual([]);
+  expect(messages.some((m) => m.type === 'inputOverflow')).toBe(false);
+  viewer.receive({ type: 'inputGate' });
+  vi.advanceTimersByTime(34);
+  expect(events().filter((event) => event.kind === 'key')).toHaveLength(12);
+  expect(messages.some((m) => m.type === 'inputOverflow')).toBe(false);
+});
 it('releases a paste that the controller never answers after 1.2s, and never holds a copy', () => {
   const { input, chord } = macHost();
   chord('KeyC');
