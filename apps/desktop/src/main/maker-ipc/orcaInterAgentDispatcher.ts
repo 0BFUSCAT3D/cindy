@@ -152,6 +152,8 @@ export interface OrcaInterAgentDispatcherDeps<TSessionMeta> {
   getSessionMeta: (sessionId: string) => Promise<TSessionMeta | null>;
   getSessionRowSnapshot: (sessionId: string) => Promise<OrcaInterAgentSessionRowSnapshot | null>;
   getLiveSession: (sessionId: string) => PersistedUserMessageSession | null | undefined;
+  /** Apply a deferred route while the per-session send lock is held. */
+  applyPendingAgentSwitch?: (sessionId: string) => Promise<void>;
   /** Uses the input coordinator's steer guards and preserves uncertain-delivery ownership. */
   steerControlInput?: (
     sessionId: string,
@@ -567,6 +569,9 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
         });
       };
       const dispatchLive = async (): Promise<DispatchOrcaInterAgentMessageResult | null> => {
+        // Orca delivery bypasses the ordinary renderer send transaction. Apply
+        // the same deferred route boundary before reading the live session.
+        await deps.applyPendingAgentSwitch?.(params.targetSessionId);
         await deps.prepareUnhealthySession?.(params.targetSessionId);
         const live = deps.getLiveSession(params.targetSessionId);
         if (!live) return null;

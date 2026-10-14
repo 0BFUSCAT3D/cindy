@@ -73,7 +73,7 @@ describe('mobile session Agent switch contract', () => {
     };
     expect(supportsMobileSessionAgentSwitch({ remoteHostId: null, orcaRole: null }, supported)).toBe(true);
     expect(supportsMobileSessionAgentSwitch({ remoteHostId: 'ssh-1', orcaRole: null }, supported)).toBe(false);
-    expect(supportsMobileSessionAgentSwitch({ remoteHostId: null, orcaRole: 'lead' }, supported)).toBe(false);
+    expect(supportsMobileSessionAgentSwitch({ remoteHostId: null, orcaRole: 'lead' }, supported)).toBe(true);
     expect(supportsMobileSessionAgentSwitch(
       { remoteHostId: null, orcaRole: null },
       { ...supported, supportsSessionAgentSwitch: false },

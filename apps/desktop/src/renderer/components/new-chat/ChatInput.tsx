@@ -522,10 +522,7 @@ interface ChatInputProps {
   runtimePending?: SessionRuntimePendingProjection | null;
   /**
    * 会话的 Orca 角色(lead / worker;null = 已确认非协同;undefined = 元数据未加载)。
-   * 协同运行时对 agent 形态有独立
-   * 契约(docs/dev-rules/orca-team-architecture.md),被控端的 session-agent-switch handler
-   * 对任何带 orcaRole 的会话一律拒 UNSUPPORTED_CAPABILITY —— 入口据此隐藏,不给用户
-   * 一个点了必失败的控件(与手机端 supportsMobileSessionAgentSwitch 同口径)。
+   * Orca Lead/Worker 复用统一的延迟交接切换事务；该字段仍用于协同面板与身份展示。
    */
   sessionOrcaRole?: string | null;
   /** Initial workingDir from session data. */
@@ -1891,8 +1888,10 @@ export function ChatInput({
   const remoteAtomicModelSelectionSupported =
     hostCcCaps.capabilities?.supportsSessionAgentSwitchCas === true ||
     hostCodexCaps.capabilities?.supportsSessionAgentSwitchCas === true;
+  // Orca Lead/Worker keeps its workflow identity in the session row and vendor
+  // options; it can therefore use the same deferred handoff transaction as a
+  // normal session. Remote sessions remain gated by their host capabilities.
   const sessionAgentSwitchSupported =
-    sessionOrcaRole === null &&
     (!deviceLinkDeviceId || ccSupportsSessionAgentSwitch || codexSupportsSessionAgentSwitch);
 
   // 切换写入的串行链与写序号都按 session 存在**模块级**协调层(agentSwitchCoordinator),
@@ -7283,8 +7282,8 @@ export function ChatInput({
     ? (sessionFavoriteAnchor?.uid ?? null)
     : selectedFavoriteUid;
 
-  // 会话内拿不到跨引擎切换事务(SSH 远程会话 / 被控端不支持 session-agent-switch /
-  // Orca 会话)时,统一面板**不能**摆出其它引擎的行:useUnifiedRowActions.selectRow 只有在
+  // 会话内拿不到跨引擎切换事务(SSH 远程会话 / 被控端不支持 session-agent-switch)
+  // 时,统一面板**不能**摆出其它引擎的行:useUnifiedRowActions.selectRow 只有在
   // 传了 sessionEngineFilter 时才把跨引擎行改道给切换事务,没有它时跨引擎行会被当普通选中
   // 交给单引擎链路(onProviderChange 只换 model / provider),等于把另一个引擎的模型
   // 直接塞进当前会话。与旧面板同待遇:这类会话把联合列表锁定在当前引擎(旧版本来就是
@@ -7292,11 +7291,8 @@ export function ChatInput({
   //
   // 锁定用的必须是**已确认**的会话引擎,不能用 vendorKey 派生的 agentKind:
   // CCAgentSessionView 的 vendorKey 走 dbToMakerAgentKind(session?.agentKind),元数据到达
-  // 前回退成 'cc'。而 sessionOrcaRole 在同一窗口里是 undefined(≠ null)→
-  // sessionAgentSwitchSupported=false → 没有 sessionEngineFilter → 走到这条锁定分支。
-  // 两件事撞在一起的后果不是"闪一下":Codex 会话会摆出一张**纯 Claude** 的列表,而且此时
-  // 没有跨引擎兜底,点任意一行都会把 Claude 模型经 onProviderChange 塞进 Codex 会话
-  // (bug4)。所以身份未确认时不锁 —— 回落旧面板一帧,等 runtimeAgentKind 落地再进统一面板。
+  // 前回退成 'cc'。身份未确认时不锁，先保留兼容列表，等 runtimeAgentKind 落地再进入
+  // 统一面板的当前引擎路由。
   const sessionEngineConfirmed = !sessionId || runtimeAgentKind != null;
   const inSessionEngineLocked = Boolean(sessionId) && !sessionEngineFilter;
   const lockedSessionAgentKind =

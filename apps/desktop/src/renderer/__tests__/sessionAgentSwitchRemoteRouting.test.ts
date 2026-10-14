@@ -908,9 +908,9 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(body).toContain('co.fastMode = !!row.fastMode;');
   });
 
-  it('Orca 与角色未加载会话都 fail-closed:只有完整元数据确认非协同后开放入口', () => {
-    expect(source).toContain('sessionOrcaRole === null &&');
-    // 会话视图必须保留 undefined 未知态,不能在完整 session 回流前冒充「非协同」。
+  it('Orca 会话复用切换入口，角色未加载仍保留未知态', () => {
+    expect(source).not.toContain('sessionOrcaRole === null &&');
+    // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),
       'utf8',

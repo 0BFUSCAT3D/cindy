@@ -1019,3 +1019,23 @@ it.each(['Do not publish', ''])('ordinary live continuation retains the last acc
   const result=await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage({targetSessionId:'target-session',rawContent:'Publish now',source:'lead',senderLabel:'Lead',meta:{source:'orca',context:'ordinary-live'}});
   expect(result.ok).toBe(true);
 });
+
+it('applies a deferred Agent switch before direct Lead/Worker delivery', async () => {
+  const h = createHarness({
+    applyPendingAgentSwitch: vi.fn(async () => {
+      h.order.push('apply-switch');
+    }),
+  });
+
+  const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage({
+    targetSessionId: 'target-session',
+    rawContent: 'Continue on the new engine',
+    source: 'lead',
+    senderLabel: 'Lead',
+    meta: { source: 'orca', context: 'agent-switch-boundary' },
+  });
+
+  expect(result).toMatchObject({ ok: true, mode: 'dispatched' });
+  expect(h.deps.applyPendingAgentSwitch).toHaveBeenCalledWith('target-session');
+  expect(h.order.indexOf('apply-switch')).toBeLessThan(h.order.indexOf('send-called'));
+});

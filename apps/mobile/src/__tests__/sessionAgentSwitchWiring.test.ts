@@ -76,7 +76,7 @@ describe('session Agent switch UI wiring', () => {
     // 唯一写出口把 intent 的位置作为第 7 参转给被控端;没有位置时不发(旧 6 参 wire)。
     expect(writer).toContain('nextIntent.agentDeviceId !== undefined');
     expect(writer).toContain('? { agentDeviceId: nextIntent.agentDeviceId }');
-    // 共享任务访客不能挪 Agent 位置,SSH / Orca 不支持切换,旧被控端不投影位置字段。
+    // 共享任务访客不能挪 Agent 位置，SSH 仍不支持切换；Orca 沿用同一切换事务。
     expect(source).toContain('const agentLocationMovable = sessionAgentSwitchSupported');
     expect(source).toContain("&& !isSharedTaskPeer(deviceId)");
     expect(source).toContain("Object.prototype.hasOwnProperty.call(currentSession, 'agentDeviceId')");

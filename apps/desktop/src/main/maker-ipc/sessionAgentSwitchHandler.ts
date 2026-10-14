@@ -22,7 +22,8 @@
  *    下一条消息走既有 lazy-create 路径重试并复用其错误呈现(resume 模式先走
  *    上述回落再降级)。
  *
- * 边界:远程会话(remoteHostId)与 Orca 协同会话不支持切换(UNSUPPORTED_CAPABILITY);
+ * 边界:远程会话(remoteHostId)仍不支持切换(UNSUPPORTED_CAPABILITY)。Orca Lead/Worker
+ * 复用同一交接与停泊事务，协同身份由 vendorOptions/DB 在重建时恢复。
  * turn 进行中登记 pending 推迟到下一条消息发送时刻执行。
  *
  * 远程 Agent 换电脑(agentDeviceId 变化,null = 任务所在电脑):原生会话记录在原来运行 Agent
@@ -624,17 +625,17 @@ export async function performSessionAgentSwitch(
     // SSH 远程会话:agent 进程在远端机器,cc-manager 链路仅覆盖 Claude,v1 不支持切换。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for remote sessions');
   }
-  // 供应商组换电脑：同引擎同模型、只换位置。协同任务只放行这一种(内部 applyNow 调用)。
+  // Orca may switch harness/model, but Agent relocation remains an internal
+  // provider-group operation so the workflow's execution-device contract stays
+  // under the group scheduler.
   const providerGroupRelocationOnly =
     params.providerGroupRelocation === true &&
     params.applyNow === true &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
     row.model === model;
-  if (row.orcaRole && !providerGroupRelocationOnly) {
-    // Orca lead/worker:协同运行时对 agent 形态有独立契约(docs/dev-rules/orca-team-architecture.md),不掺和。
-    throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for Orca sessions');
+  if (row.orcaRole && params.agentDeviceId !== undefined && !providerGroupRelocationOnly) {
+    throwIpcError('UNSUPPORTED_CAPABILITY', 'agent relocation is not supported for Orca sessions');
   }
-
   if (params.beforeMutation) await params.beforeMutation();
   params.assertSelectionCurrent?.();
 

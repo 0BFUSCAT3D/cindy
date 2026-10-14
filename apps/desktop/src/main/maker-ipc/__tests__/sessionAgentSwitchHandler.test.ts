@@ -401,11 +401,19 @@ describe('performSessionAgentSwitch', () => {
     expect(calls).toEqual([]);
   });
 
-  it('远程会话与 Orca 会话抛 UNSUPPORTED_CAPABILITY', async () => {
+  it('远程会话仍拒绝切换，Orca Lead/Worker 复用跨引擎交接事务', async () => {
     const remote = makeDeps({ getSessionRow: vi.fn(async () => makeRow({ remoteHostId: 'host-1' })) });
     await expect(performSessionAgentSwitch(remote.deps, validParams)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
     const orca = makeDeps({ getSessionRow: vi.fn(async () => makeRow({ orcaRole: 'lead' })) });
-    await expect(performSessionAgentSwitch(orca.deps, validParams)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    await expect(performSessionAgentSwitch(orca.deps, validParams)).resolves.toMatchObject({
+      switched: true,
+      agentKind: 'codex',
+      model: 'gpt-5.5',
+    });
+    expect(orca.deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentKind: 'codex',
+      model: 'gpt-5.5',
+    }));
   });
 
   it('同引擎目标 = no-op 成功,不发生任何状态变更', async () => {
@@ -1392,8 +1400,9 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     })).resolves.toMatchObject({ switched: true });
   });
 
-  it('协同任务:用户换位置、登记意图、换模型或换引擎一律拒绝,即使带着组的标记', async () => {
+  it('协同任务:用户换位置仍拒绝，切换模型或引擎允许', async () => {
     const row = { orcaRole: 'worker' as const, model: 'anthropic/claude-opus-5-5[1m]' };
+    const { agentDeviceId: _omit, ...withoutLocation } = backToTaskComputer;
     const userMove = relocationHarness(row);
     await expect(performSessionAgentSwitch(userMove.deps, { ...backToTaskComputer, agentDeviceId: 'office-pc' }))
       .rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
@@ -1405,21 +1414,18 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
     const otherModel = relocationHarness(row);
     await expect(performSessionAgentSwitch(otherModel.deps, {
-      ...backToTaskComputer,
+      ...withoutLocation,
       model: 'claude-sonnet-5',
-      agentDeviceId: 'office-pc',
       applyNow: true,
-      providerGroupRelocation: true,
-    })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    })).resolves.toMatchObject({ switched: false });
     const otherEngine = relocationHarness(row);
     await expect(performSessionAgentSwitch(otherEngine.deps, {
-      ...backToTaskComputer,
+      ...withoutLocation,
       targetAgentKind: 'codex',
-      agentDeviceId: 'office-pc',
       applyNow: true,
-      providerGroupRelocation: true,
-    })).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
-    for (const h of [userMove, staged, otherModel, otherEngine]) expect(h.calls).toEqual([]);
+    })).resolves.toMatchObject({ switched: true });
+    expect(userMove.calls).toEqual([]);
+    expect(staged.calls).toEqual([]);
   });
 
   it('非法位置参数被拒绝', async () => {
