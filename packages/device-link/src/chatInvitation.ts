@@ -24,7 +24,8 @@ export function parseChatInvitationToken(input: string): string | null {
     return TOKEN.test(token) ? token : null;
   }
   // Trailing sentence punctuation is not part of a link; it can never complete a token.
-  const links = text.match(/https?:\/\/[^\s<>"'，。！？、（）「」“”‘’[\])]+/g)
+  // Brackets end a link (Markdown `[text](url)`) except around an IPv6 host such as `[::1]`.
+  const links = text.match(/https?:\/\/(?:\[[0-9A-Fa-f:.]+\])?[^\s<>"'，。！？、（）「」“”‘’[\])]+/g)
     ?.map((link) => link.replace(/[.,;!]+$/, ''))
     .filter((link) => {
       try { return new URL(link).pathname.endsWith(CHAT_INVITATION_PATH); } catch { return false; }

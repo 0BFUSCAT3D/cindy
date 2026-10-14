@@ -17,6 +17,12 @@ describe('chat invitation links', () => {
       `${page}?app=cindy`, `${page}?app=cindycn`, `${page}?app=cindydev`,
       `https://relay.example.test/prefix${CHAT_INVITATION_PATH}#${token}`,
       `http://localhost:3000${CHAT_INVITATION_PATH}#${token}`,
+      `http://127.0.0.1:3000${CHAT_INVITATION_PATH}#${token}`,
+      `http://[::1]:3000${CHAT_INVITATION_PATH}#${token}`,
+      `http://[::1]${CHAT_INVITATION_PATH}#${token}?app=cindydev`,
+      `本机预览：http://[::1]:3000${CHAT_INVITATION_PATH}#${token}。`,
+      `Local preview: http://[::1]:3000${CHAT_INVITATION_PATH}#${token}.`,
+      `[本机](http://[::1]:3000${CHAT_INVITATION_PATH}#${token})`,
       `邀请你加入群聊：${page}`, `Join us: ${page}.`, `「${page}」`, `[群聊](${page})`,
     ]) expect(parseChatInvitationToken(input)).toBe(token);
     // The secret lives only in the fragment, never in the HTTP request.
@@ -30,6 +36,10 @@ describe('chat invitation links', () => {
     ['the token in the path', `https://relay.example.test${CHAT_INVITATION_PATH}/${token}`],
     ['user info', `https://user:pass@relay.example.test${CHAT_INVITATION_PATH}#${token}`],
     ['plain http to a public host', `http://relay.example.test${CHAT_INVITATION_PATH}#${token}`],
+    ['plain http to a public IPv6 host', `http://[2001:db8::1]${CHAT_INVITATION_PATH}#${token}`],
+    ['two loopback IPv6 invitation links', `http://[::1]:3000${CHAT_INVITATION_PATH}#${token} https://[::1]${CHAT_INVITATION_PATH}#${token}`],
+    ['IPv6 user info', `https://user@[::1]${CHAT_INVITATION_PATH}#${token}`],
+    ['an IPv6 link with a query', `http://[::1]:3000${CHAT_INVITATION_PATH}?t=1#${token}`],
     ['an unknown app hint', `${page}?app=other`],
     ['a redirect hint', `${page}?redirect=https://evil.example.test`],
     ['two fragment parameters', `${page}?app=cindy?app=cindycn`],
