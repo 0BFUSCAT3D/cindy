@@ -15,6 +15,7 @@ import {
   type InstalledGhost,
 } from '../../../shared/ghost.js';
 const runtime = vi.hoisted(() => ({
+  confirmLegacyLibraryReattach: vi.fn(async (_plugin: unknown) => false),
   ghosts: [] as Array<{
     manifest: Record<string, unknown>;
     dir: string;
@@ -103,6 +104,7 @@ vi.mock('../../logger.js', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  confirmLegacyLibraryReattach: (plugin: unknown) => runtime.confirmLegacyLibraryReattach(plugin),
   getGhostManager: () => ({
     resumePendingResidentsOffline: runtime.resumeOfflineResidents,
     reconcilePendingRootNamespaces: runtime.reconcilePendingRootNamespaces,
@@ -249,6 +251,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 afterEach(() => {
   runtime.ghosts = [];
+  runtime.confirmLegacyLibraryReattach.mockReset();
+  runtime.confirmLegacyLibraryReattach.mockImplementation(async () => false);
   runtime.install.mockReset();
   runtime.inspect.mockReset();
   runtime.inspectedManifest = null;
@@ -2151,6 +2155,32 @@ describe('PluginMarketService migration and defaultInstall', () => {
     );
     expect(runtime.install.mock.calls[0]?.[1]?.pendingMarketRecord)
       .not.toHaveProperty('approvedPackageSha256');
+  });
+
+  it.each([true, false])('asks once before a first organization install and passes the answer (%s)', async (answer) => {
+    runtime.confirmLegacyLibraryReattach.mockImplementation(async () => answer);
+    const item = summary({ scope: 'organization', organizationId: 'org-1', ghostId: 'acme-tool', namespace: 'acme' });
+    runtime.install.mockResolvedValue({
+      manifest: manifest(item.ghostId),
+      dir: '/userData/cindy-brain/' + item.ghostId,
+      enabled: true,
+    });
+    const target = harness([item]);
+    await target.service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+    expect(runtime.confirmLegacyLibraryReattach).toHaveBeenCalledTimes(1);
+    expect(runtime.confirmLegacyLibraryReattach).toHaveBeenCalledWith({
+      ghostId: 'acme-tool', namespace: 'acme', pluginId: item.id, name: item.name,
+    });
+    const options = runtime.install.mock.calls[0]?.[1] as Record<string, unknown>;
+    if (answer) expect(options).toMatchObject({ reclaimLegacyBareInstance: true });
+    else expect(options).not.toHaveProperty('reclaimLegacyBareInstance');
+  });
+
+  it('does not ask about leftover libraries for a public install', async () => {
+    const item = summary();
+    runtime.install.mockResolvedValue({ manifest: manifest(), dir: '/userData/cindy-brain/cindy-test', enabled: true });
+    await harness([item]).service.install(item.id, reviewedInstallOptions(item), TEST_INSTALL_CONTEXT);
+    expect(runtime.confirmLegacyLibraryReattach).not.toHaveBeenCalled();
   });
 
   it('manual market install accepts the normalized setup manifest returned by detail', async () => {
@@ -5970,5 +6000,92 @@ describe('PluginMarketService install consent', () => {
       expect.stringMatching(/\.cindy$/),
       expect.objectContaining({ consent: { mode: 'confirmed', key: expect.any(String) } }),
     );
+  });
+});
+
+describe('organization catalog access error', () => {
+  const ORGANIZATION_PLUGIN_ID = `c${'e'.repeat(24)}`;
+
+  function deniedCatalog(publicItem: VisiblePluginSummary, code = 'PLUGIN_NAMESPACE_CLIENT_REQUIRED') {
+    return {
+      plugins: [publicItem],
+      removals: [],
+      currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: 'acme' },
+      organizationAccessError: { code, message: '企业部分不可用' },
+    };
+  }
+
+  it.each([
+    ['a full refresh', { deferReconciliation: false }],
+    ['a deferred reconciliation', { deferReconciliation: true }],
+  ] as const)('keeps public plugins and the installed organization plugin through %s', async (_label, options) => {
+    const publicItem = summary();
+    const h = harness([publicItem]);
+    h.api.listAll.mockResolvedValue(deniedCatalog(publicItem));
+    installOrganizationHelper();
+    h.ledger.upsertInstallation(removalRecord({
+      pluginId: ORGANIZATION_PLUGIN_ID,
+      ghostId: 'helper',
+      namespace: 'acme',
+      manifestDigest: ghostManifestDigest(manifest('helper')),
+    }));
+    const organizationRecord = h.ledger.installationForPlugin({ ghostId: 'helper', namespace: 'acme' });
+    const settled = vi.fn();
+
+    const snapshot = await h.service.snapshot({ ...options, onDeferredReconciliationSettled: settled });
+    if (options.deferReconciliation) await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce());
+
+    expect(snapshot.organizationAccessError).toBe('PLUGIN_NAMESPACE_CLIENT_REQUIRED');
+    expect(snapshot.unavailableReason).toBeNull();
+    expect(snapshot.items.map((entry) => entry.pluginId)).toContain(publicItem.id);
+    expect(runtime.uninstall).not.toHaveBeenCalled();
+    expect(h.ledger.installationForPlugin({ ghostId: 'helper', namespace: 'acme' })).toEqual(organizationRecord);
+  });
+
+  it.each([
+    'PLUGIN_NAMESPACE_CLIENT_REQUIRED',
+    'PLUGIN_ORGANIZATION_CONTEXT_UNAVAILABLE',
+    'PLUGIN_NAMESPACE_CONFIG_REQUIRED',
+  ])('reports %s instead of NOT_FOUND for an unlisted plugin without reading its detail', async (code) => {
+    const publicItem = summary();
+    const h = harness([publicItem]);
+    h.api.listAll.mockResolvedValue(deniedCatalog(publicItem, code));
+    const organizationItem = summary({ id: ORGANIZATION_PLUGIN_ID, ghostId: 'helper', scope: 'organization', organizationId: 'org-1' });
+
+    await expect(h.service.detail(ORGANIZATION_PLUGIN_ID)).rejects.toThrow(`[${code}]`);
+    await expect(h.service.install(
+      ORGANIZATION_PLUGIN_ID,
+      reviewedInstallOptions(organizationItem),
+      TEST_INSTALL_CONTEXT,
+    )).rejects.toThrow(`[${code}]`);
+    expect(h.api.detail).not.toHaveBeenCalled();
+    expect(h.api.download).not.toHaveBeenCalled();
+    expect(runtime.install).not.toHaveBeenCalled();
+  });
+
+  it('keeps NOT_FOUND for an unlisted plugin when the reason is not a known access code', async () => {
+    const publicItem = summary();
+    const h = harness([publicItem]);
+    h.api.listAll.mockResolvedValue(deniedCatalog(publicItem, 'PLUGIN_FUTURE_REASON'));
+
+    await expect(h.service.detail(ORGANIZATION_PLUGIN_ID)).rejects.toThrow('[NOT_FOUND]');
+    expect(h.api.detail).not.toHaveBeenCalled();
+  });
+
+  it('keeps a future organization access code with the public catalog', async () => {
+    const item = summary();
+    const h = harness([item]);
+    h.api.listAll.mockResolvedValueOnce({
+      plugins: [item],
+      removals: [],
+      currentOrganization: { organizationId: 'org-1', orgSlug: 'acme', pluginPrefix: 'acme' },
+      organizationAccessError: { code: 'PLUGIN_FUTURE_REASON', message: '以后再说' },
+    });
+
+    const snapshot = await h.service.snapshot({ discoveryOnly: true });
+
+    expect(snapshot.organizationAccessError).toBe('PLUGIN_FUTURE_REASON');
+    expect(snapshot.unavailableReason).toBeNull();
+    expect(snapshot.items.map((entry) => entry.pluginId)).toContain(item.id);
   });
 });

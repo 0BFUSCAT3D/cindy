@@ -1,4 +1,12 @@
 {
+  "logSupport": {
+    "title": "日誌與回饋",
+    "localFiles": "選擇問題當天的日誌。檔案未經去識別化處理，請先檢查。",
+    "uploaded": "日誌已上傳，上傳編號：{{code}}。回報時請附上編號。",
+    "close": "關閉",
+    "uploadDescription": "上傳後，請在回報中附上上傳編號。",
+    "uploadDetails": "查看上傳內容"
+  },
   "taskMove": {
     "upgradeComputer": "這台電腦的 Cindy 版本暫不支援移動任務。請更新「{{name}}」上的 Cindy 後再試。",
     "sourceProjects": "任務所在電腦的專案",
@@ -1112,12 +1120,9 @@
       "today": "今天",
       "manageTitle": "管理",
       "done": "完成",
-      "manageHero": "選單裡顯示什麼，\n按什麼順序。",
-      "manageHeroSub": "拖動調整順序；關掉的來源不在選單裡出現，也不參與上面的餘量判斷。",
       "sources": "餘量來源",
       "sourcesShown": "{{a}} / {{b}} 顯示",
       "statusIcon": "選單列圖示",
-      "statusIconSub": "單色，隨選單列深淺變化",
       "statusIconMode": {
         "icon": "只圖標",
         "lowest": "最低餘量",
@@ -1126,11 +1131,9 @@
       },
       "other": "其他",
       "lowAlert": "快用完時通知",
-      "lowAlertSub": "所有還有餘量的來源都快見底時，發一則系統通知",
       "privacy": "隱藏個人資訊",
-      "privacySub": "帳號只顯示首尾字母，任務標題也會隱藏，適合錄影和截圖",
       "usageScope": "用量統計範圍",
-      "manageFoot": "帳號登入和連線在 Cindy 設定 › 模型供應商 裡管理。",
+      "manageFoot": "管理模型供應商",
       "showSource": "在選單裡顯示 {{name}}",
       "reorderHint": "拖動，或用操作選單調整順序",
       "moveUp": "上移",
@@ -6090,7 +6093,12 @@
           "invalidPackage": "插件安裝包異常，無法安裝，請聯絡釋出者。",
           "downloadTimeout": "插件下載逾時，請稍後重試。",
           "downloadFailed": "插件下載失敗，請檢查網路後重試。",
-          "brokerRedirectPortRequired": "此插件宣告了授權 broker，但同一項 OAuth 設定缺少 redirectPort，無法從插件市場安裝。請聯絡釋出者補上該欄位並重新釋出。"
+          "brokerRedirectPortRequired": "此插件宣告了授權 broker，但同一項 OAuth 設定缺少 redirectPort，無法從插件市場安裝。請聯絡釋出者補上該欄位並重新釋出。",
+          "namespaceClientRequired": "目前版本無法查看企業插件，請更新 Cindy。已安裝的企業插件仍可使用。",
+          "organizationContextUnavailable": "暫時無法確認企業身份，請稍後重試。已安裝的企業插件仍可使用。",
+          "namespaceConfigRequired": "企業插件服務暫時無法使用。已安裝的企業插件仍可使用。",
+          "listChanged": "企業插件目錄已變化，請重試。",
+          "organizationUnavailable": "企業插件暫時無法使用。已安裝的企業插件仍可使用。"
         },
         "securityTitle": "安裝與權限",
         "securityDescription": "安裝包會在主處理程序中校驗大小與 SHA-256，再經 Cindy 插件清單校驗後原子安裝。安裝前會請你確認插件的權限，安裝好後即自動開啟，可隨時在插件頁停用；更新會保留當前生效狀態，新版本權限變多時會先請你確認。",
@@ -6570,7 +6578,23 @@
         "installLocationPickedPrefix": "已選擇：",
         "installLocationChange": "更改…",
         "bindAfterInstallFailed": "自訂儲存位置設定失敗，已回退預設位置",
-        "cancel": "取消"
+        "cancel": "取消",
+        "reattachTitle": "接回這個插件以前的作品資料？",
+        "reattachDescription": "這台電腦還保留著這個插件以前安裝時的作品資料，可能來自之前從本機匯入、後來解除安裝的版本。接回後，以前的畫布和圖片會繼續出現在這次安裝的插件裡；不接回則從空白開始，以前的資料仍保留在這台電腦上。",
+        "reattachConfirm": "接回",
+        "reattachSkip": "不接回",
+        "legacyFoundBanner": "這台電腦上還有這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），目前的安裝沒有使用它。",
+        "legacyReattach": "接回以前的作品資料",
+        "legacyReattachBusy": "正在接回…",
+        "legacyReattachConfirmTitle": "接回以前的作品資料？",
+        "legacyReattachConfirmDescription": "插件會改用以前留下的作品資料。目前的作品資料會移入回收站，保留 30 天，期滿後徹底清除。",
+        "legacyReattachConfirmText": "接回",
+        "legacyReattachDone": "已接回以前的作品資料",
+        "legacyReattachFailed": "接回失敗",
+        "legacyReattachNeedsRestart": "沒能清掉這個插件的快取。請重新啟動 Cindy 後再使用這個插件。",
+        "legacyInUseBanner": "這台電腦上另一個安裝（例如本機版）還在使用這個插件以前的作品資料。解除安裝那個版本後，可以在這裡接回。",
+        "legacyFoundUnknownBanner": "這台電腦上有一份可能是這個插件以前留下的作品資料（{{size}} · {{count}} 個檔案），沒有來源記錄，目前的安裝沒有使用它。",
+        "legacyReattachUnknownSource": "這份作品資料沒有來源記錄，可能是手動複製或用腳本搬過來的。請確認它屬於這個插件。"
       },
       "updateConfirm": {
         "title": "更新插件「{{name}}」？",
@@ -9759,6 +9783,21 @@
       "addRemoteProject": "新增遠端專案"
     },
     "modelSelector": {
+      "displayPricing": {
+        "free": "免費",
+        "estimated": "約 {{price}}",
+        "startingAt": "{{price}} 起",
+        "units": {
+          "token": "token",
+          "character": "字元",
+          "image": "張",
+          "second": "秒",
+          "minute": "分鐘",
+          "request": "次",
+          "megapixel": "百萬像素",
+          "megapixelSecond": "百萬像素·秒"
+        }
+      },
       "budgetNeedsApiKey": "此模型需先在設定裡配置 API key 才能使用",
       "paymentRequired": {
         "badge": "付費",
@@ -10588,6 +10627,8 @@
       "syncAuthFailed": "同步失敗：{{msg}}",
       "syncAuthDaemonRestartFailed": "憑證已推送到遠端，但舊 daemon 沒重啟 — 請重連遠端後再點重試",
       "invalidEncryptedContent": "由於更換供應商導致加密不可用，本任務只能在原供應商下使用，或點此 Fork 丟棄協議加密內容並在新任務繼續。",
+      "readableHistoryRecovery": "用可讀歷史建立新任務",
+      "readableHistoryRecoveryDescription": "如果重試仍然失敗，可用可讀歷史建立新任務，略過內部加密資訊。原任務會保留，失敗訊息不會自動重新傳送。",
       "forkStripEncrypted": "Fork 並剝離",
       "forkStripEncryptedRunning": "Fork 中…",
       "forkStripEncryptedTitle": "Fork 並剝離出新任務(去掉加密推理內容)",
@@ -14452,7 +14493,9 @@
         "description": "請將以下資訊寄送至客服信箱 {{email}}，以申請開立發票。",
         "requiredInfo": "郵件中請提供以下資訊：",
         "emailSubject": "申請開立訂單 {{orderId}} 的發票",
-        "emailBody": "您好，\n\n我想申請開立以下訂單的發票：\n\n────────────────────\n訂單號：{{orderId}}\n應用程式：{{application}}\n付款方式：{{paymentMethod}}\n開票金額：{{amount}}\n發票抬頭：\n聯絡人：\n聯絡電話：\n信箱：\n────────────────────\n\n謝謝。",
+        "personalInvoicePolicy": "Cindy 個人版儲值預設開立<strong>個人抬頭發票</strong>，抬頭可填寫姓名或「個人」。如需開立企業抬頭發票用於公司報銷，請提供<strong>加蓋公司公章的報銷說明</strong>，並在說明中註明開票抬頭。",
+        "invoiceTitleHint": "填寫說明：個人抬頭請填寫姓名或「個人」；如需企業抬頭用於公司報銷，請隨郵件附上加蓋公司公章、註明開票抬頭的報銷說明。",
+        "emailBody": "您好，\n\n我想申請開立以下訂單的發票：\n\n────────────────────\n訂單號：{{orderId}}\n應用程式：{{application}}\n付款方式：{{paymentMethod}}\n開票金額：{{amount}}\n發票抬頭：\n{{invoiceTitleHint}}\n\n聯絡人：\n聯絡電話：\n信箱：\n────────────────────\n\n謝謝。",
         "sendAction": "寄送開票申請",
         "emailCopied": "客服信箱已複製",
         "emailCopyFailed": "複製客服信箱失敗，請再試一次",

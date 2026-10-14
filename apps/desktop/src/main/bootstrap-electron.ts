@@ -88,6 +88,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { machineIdSync } from 'node-machine-id';
 import windowStateKeeper from 'electron-window-state';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
+import { assertCindyMakeEnabled } from './cindy-make/featureGate.js';
 import {
   shouldRequestSingleInstanceLock,
   resolveSingleInstanceLockUserDataDir,
@@ -577,6 +578,7 @@ import { initHeartbeatService } from './heartbeatService';
 import { registerRemoteDesktopIpc } from './remote-desktop';
 import { initAnalyticsSettingsService, noteAuthColdStartState } from './analyticsSettingsService';
 import { initLogUploadService, scheduleStartupBackfill } from './log-upload';
+import { createOpenLogsMenuItem, openLogsDirectory } from './logSupport';
 import { WindowManualDragController } from './windowManualDrag';
 import { issueWritableDirectoryPickerGrant } from './maker-ipc/writableDirectoryPickerGrant.js';
 // 设备互联(跨设备远程控制): relay 连接 host + 开关/设备列表 IPC
@@ -2915,6 +2917,8 @@ function installApplicationMenu(
     {
       label: labels.helpMenu,
       submenu: [
+        createOpenLogsMenuItem(),
+        { type: 'separator' },
         {
           label: labels.help,
           click: () => dispatchApplicationMenuCommand(mainWindow, 'open-help'),
@@ -3154,6 +3158,7 @@ function buildWindowsTrayMenu(): Menu {
       label: t('settings.windowBehavior.trayMenu.show'),
       click: () => focusMainWindow(),
     },
+    createOpenLogsMenuItem(),
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
@@ -3915,6 +3920,8 @@ const createWindow = () => {
     app.quit();
   });
   void ensureMainAppPresence('main-window-created', mainWindow);
+  // Keep diagnostics reachable from the tray even before login or if the renderer fails.
+  if (process.platform === 'win32') ensureWindowsTray();
 
   installApplicationMenu(
     mainWindow,
@@ -4873,7 +4880,7 @@ const registerIpcHandlers = () => {
       }
       windowsClosePromptFallback.acknowledge();
       writeWindowsCloseBehavior(behavior);
-      if (behavior === 'quit') destroyWindowsTray();
+      // The tray also provides diagnostics while running; only app shutdown owns its destruction.
       return behavior;
     },
   );
@@ -7508,25 +7515,18 @@ const registerIpcHandlers = () => {
     },
   );
 
-  // Settings → About: 打开 <userData>/logs 在系统文件管理器。
-  // 路径在主进程派生（renderer 不需要也不应该知道 userData 全路径）。
-  // 目录不存在时先创建，避免空安装首次点击失败。
-  ipcMain.handle('app:open-logs-dir', async (): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const logDir = path.join(app.getPath('userData'), 'logs');
-      fs.mkdirSync(logDir, { recursive: true });
-      const errMsg = await shell.openPath(logDir);
-      if (errMsg) return { success: false, error: errMsg };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
+  // Settings → About: shared local diagnostics entry, also available before login.
+  // The sender cannot choose a path.
+  ipcMain.handle('app:open-logs-dir', (event): Promise<{ success: boolean }> => {
+    assertTrustedAppRendererEvent(event);
+    return openLogsDirectory();
   });
 
   // Settings → Cindy Make: open Cindy's private managed-tool directory.
   // The path is derived in main so the renderer cannot choose an arbitrary folder.
   ipcMain.handle('app:open-cindy-make-tools-dir', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return openMakeToolsDirectory(app.getPath('userData'), {
       openPath: (directory) => shell.openPath(directory),
     });
@@ -7538,10 +7538,12 @@ const registerIpcHandlers = () => {
   configureUpstreamMerge((id) => getMakerIfReady()?.getSession(id)?.isTurnRunning() ?? false);
   ipcMain.handle('app:cindy-make-merge', async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actUpstreamMerge(input);
   });
   ipcMain.handle('app:get-cindy-make-source-status', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     const userData = app.getPath('userData');
     const root = makeSourceRoot(userData);
     const channel = !app.isPackaged
@@ -7585,12 +7587,14 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:get-cindy-make-settings', (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return readCindyMakeSettings();
   });
   ipcMain.handle(
     'app:set-cindy-make-sync-latest-before-build',
     (event, enabled: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       if (typeof enabled !== 'boolean')
         throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make setting');
       return writeCindyMakeSyncLatestBeforeBuild(enabled);
@@ -7598,6 +7602,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-make-history', async (event, selected?: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (
       selected !== undefined &&
       (typeof selected !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(selected))
@@ -7625,6 +7630,7 @@ const registerIpcHandlers = () => {
     'app:cindy-make-history-action',
     async (event, runId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       try {
         return await actCindyMakeHistory(runId, action);
       } catch (error) {
@@ -7641,6 +7647,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-make-history-build', async (event, selection: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await generateHistoryPersonalVersion(selection);
     } catch {
@@ -7650,6 +7657,7 @@ const registerIpcHandlers = () => {
   app.once('will-quit', stopMakeHistoryBuild);
   ipcMain.handle('app:cindy-make-history-cancel-build', async (event, buildId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await cancelHistoryPersonalVersion(buildId);
     } catch {
@@ -7658,6 +7666,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cindy-make-history-open-build', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       await openHistoryPersonalBuild();
     } catch {
@@ -7671,6 +7680,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cindy-versions-state', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     try {
       return await getCindyVersions();
     } catch {
@@ -7679,6 +7689,7 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cindy-versions-action', async (event, action: unknown, id: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return actCindyVersion(action, id);
   });
   onQuit('cindy-make-tests', () => cindyMakeTestController.stopAllAndWait(), 'async');
@@ -7687,6 +7698,7 @@ const registerIpcHandlers = () => {
     'app:cindy-make-test',
     async (event, sessionId: unknown, completionId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       return actCindyMakeTest(sessionId, completionId, action);
     },
   );
@@ -7704,6 +7716,7 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:get-cindy-make-state', async (event) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     refreshUpstreamMergeProjection();
     try {
       await restoreCindyMakeTaskState();
@@ -7724,6 +7737,7 @@ const registerIpcHandlers = () => {
     'app:manage-cindy-make-task',
     async (event, sessionId: unknown, action: unknown) => {
       assertTrustedAppRendererEvent(event);
+      assertCindyMakeEnabled();
       await manageCindyMakeTask(sessionId, action).catch((error) => {
         if (error instanceof Error && error.message.startsWith('[')) throw error;
         throwIpcError('INTERNAL', 'cleanupFailed');
@@ -7732,11 +7746,13 @@ const registerIpcHandlers = () => {
   );
   ipcMain.handle('app:cancel-cindy-make-source', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return { success: cancelCindySourcePreparation() };
   });
 
   ipcMain.handle('app:open-cindy-make-source-dir', async (event): Promise<{ success: boolean }> => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return openMakeSourceDirectory(app.getPath('userData'), {
       openPath: (directory) => shell.openPath(directory),
     });
@@ -7746,6 +7762,7 @@ const registerIpcHandlers = () => {
   // 只认 runId 形状;路径全部由 main 从 userData 派生,renderer 只拿回结果。
   ipcMain.handle('app:start-cindy-make-task', async (event, input: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     return startCindyMakeTask(input, event.sender.id).catch((error) => {
       if (error instanceof Error && error.message.startsWith('[')) throw error;
       throwIpcError('INTERNAL', 'Could not start Cindy Make preparation');
@@ -7753,12 +7770,14 @@ const registerIpcHandlers = () => {
   });
   ipcMain.handle('app:cancel-cindy-make-task', async (event, runId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (typeof runId !== 'string' || !CINDY_MAKE_RUN_ID_PATTERN.test(runId))
       throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make run');
     return { success: cindyMakeManager.cancel(runId, event.sender.id) === 'cancelled' };
   });
   ipcMain.handle('app:prepare-cindy-make-workspace', async (event, runId: unknown) => {
     assertTrustedAppRendererEvent(event);
+    assertCindyMakeEnabled();
     if (typeof runId !== 'string' || !CINDY_MAKE_RUN_ID_PATTERN.test(runId))
       throwIpcError('INVALID_PARAMS', 'Invalid Cindy Make run');
     const userData = app.getPath('userData');

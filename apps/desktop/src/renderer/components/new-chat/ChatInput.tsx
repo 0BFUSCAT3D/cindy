@@ -18,6 +18,7 @@ import { buildLocalSkillPathRoute } from '@/features/skillhub/lib/localRoutes';
 import { AudioLines, Folder, MessageSquarePlus, Mic, TriangleAlert, X } from 'lucide-react';
 import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
+import { CINDY_MAKE_ENABLED } from '@cindy/maker-shared/cindy-make-feature';
 import { requiresFullAccessConfirmation } from '@cindy/maker-shared/permission-mode';
 import { isAnnotationBurnInError } from '@/lib/annotationBurnIn';
 import { AttachmentRejectionStrip, ThumbnailStrip } from './ComposerAttachments';
@@ -1775,7 +1776,9 @@ export function ChatInput({
     optimistic: pendingRemoteSwitch,
   });
   const activeModel = composerSelection.display.model;
-  const activeEffort = composerSelection.display.effort ?? 'low';
+  // null = 投影未知/不可调档:回落到会话已持久化的档位(与运行实况一致),不能兜底成
+  // 字面量 'low'——该值会随下一条发送作为用户选择下发,把假档位写成真档位。
+  const activeEffort = composerSelection.display.effort ?? initialEffort ?? 'low';
   const activePermissionMode: PermissionMode =
     initialPermissionMode ?? localVendorDefaults.permissionMode;
 
@@ -5345,6 +5348,7 @@ export function ChatInput({
           ? commentsBeforeOptimisticClear
           : sourceOwnedExtras.comments;
         if (
+          CINDY_MAKE_ENABLED &&
           classifyCindyMakeCommand(editorText, slashCommandsReady ? mergedCommands : null).kind !== 'none'
         ) {
           const isMakeSourceCurrent = () =>
@@ -8542,7 +8546,7 @@ export function ChatInput({
   }, [showPromptPreview]);
   // 可见推荐本身就是一次可发送输入：按钮点击时会先把它同步写入正文，再走现有发送链。
   const canSend = hasComposerPayload || showRecommendationOverlay;
-  const makeNeedsNoModel = (noConnectedSource || selectedSourceDisconnected) && !!editor &&
+  const makeNeedsNoModel = CINDY_MAKE_ENABLED && (noConnectedSource || selectedSourceDisconnected) && !!editor &&
     !hasAttachments && classifyCindyMakeCommand(
       serializeEditorContent(editor).text, slashCommandsReady ? mergedCommands : null,
     ).kind === 'start';
