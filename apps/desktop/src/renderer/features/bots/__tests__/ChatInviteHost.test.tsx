@@ -104,6 +104,20 @@ it('lets the user dismiss an invitation while it is still loading', async () => 
   expect(screen.queryByRole('dialog')).toBeNull();
 });
 
+it('reads the invitation again when the same account moved to a newer data generation mid-request', async () => {
+  let finish!: (result: unknown) => void;
+  api.previewInvite.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  requestChatInvite(token); mount();
+  await waitFor(() => expect(api.previewInvite).toHaveBeenCalledTimes(1));
+  setDataOwnerGeneration('owner-a');
+  await act(async () => finish({ ok: true, groupId: 'stale-room', name: 'Stale result', inviterName: 'Old', joined: false }));
+  expect(screen.queryByText('Stale result')).toBeNull();
+  await screen.findByText('Invited group');
+  expect(api.previewInvite).toHaveBeenCalledTimes(2);
+  expect(api.previewInvite).toHaveBeenLastCalledWith({ link });
+  expect(api.acceptInvite).not.toHaveBeenCalled();
+});
+
 it('discards an old account preview while preserving its target through account selection', async () => {
   let finish!: (result: unknown) => void;
   api.previewInvite.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));

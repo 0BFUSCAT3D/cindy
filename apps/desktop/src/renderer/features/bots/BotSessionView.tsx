@@ -107,6 +107,11 @@ function BotSessionGateView() {
         : gateIdentity,
     [gateIdentity, liveName, liveAvatar, liveAvatarColor],
   );
+  const canonicalChat = gate.kind === 'ready' && gate.isCanonical;
+  const chatIdentity = useMemo(
+    () => (gateIdentity ? { ...(identity ?? gateIdentity), canonicalChat } : null),
+    [gateIdentity, identity, canonicalChat],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -269,7 +274,7 @@ function BotSessionGateView() {
         <div className="min-h-0 flex-1">
           <CCAgentSessionView
             botMentions={gate.mentions}
-            botIdentity={identity ?? gate.identity}
+            botIdentity={chatIdentity ?? gate.identity}
             botUnreadBoundaryAt={gate.unreadBoundaryAt}
             onBotReadThrough={gate.isCanonical ? onReadThrough : undefined}
             {...(readOnly ? { readOnly: true } : {})}

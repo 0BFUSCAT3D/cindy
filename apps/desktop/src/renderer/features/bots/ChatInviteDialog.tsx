@@ -66,6 +66,9 @@ export function ChatInviteDialog({ groupId, initialLink = '', malformedLink = fa
     busyRef.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
     const current = () => mounted.current && isDataOwnerGenerationCurrent(owner);
+    // Reading an invitation is side-effect free; a result discarded for an older owner
+    // generation is simply read again for the current one instead of leaving the dialog loading.
+    const reading = action === 'main' && !groupId && !preview;
     try {
       if (action === 'copy') {
         if (expired || (typeof expiry === 'string' && Date.parse(expiry) <= Date.now()) || revoked || !link) return;
@@ -120,6 +123,7 @@ export function ChatInviteDialog({ groupId, initialLink = '', malformedLink = fa
       if (mounted.current) {
         setBusy(false);
         if (action === 'revoke') setRevokeConfirm(false);
+        if (reading && !isDataOwnerGenerationCurrent(owner)) void run();
       }
     }
   }

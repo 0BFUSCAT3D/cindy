@@ -59,9 +59,7 @@ describe('BotSessionContentHeader', () => {
     const originalHeader = view.container.innerHTML;
     expect(screen.queryByRole('combobox', { name: 'bots.devicePicker.switchDevice' })).toBeNull();
     expect(screen.queryByText('bots.devicePicker.local')).toBeNull();
-    // Name lockup, add-to-group and settings: an active local teammate can be brought into a group.
-    expect(screen.getAllByRole('button')).toHaveLength(3);
-    expect(screen.getByRole('button', { name: 'bots.groupChat.addFromChat.triggerFor' })).toBeTruthy();
+    expect(screen.getAllByRole('button')).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'bots.settings' })).toBeTruthy();
 
     deviceData.remote = [remoteCindy];
@@ -71,6 +69,17 @@ describe('BotSessionContentHeader', () => {
     deviceData.remote = [];
     view.rerender(<BotSessionContentHeader bot={localCindy} />);
     expect(view.container.innerHTML).toBe(originalHeader);
+  });
+
+  it('offers add-to-group only in an active local teammate’s canonical private chat', () => {
+    deviceData.local = [localCindy];
+    const view = render(<BotSessionContentHeader bot={{ ...localCindy, canonicalChat: true }} />);
+    expect(screen.getByRole('button', { name: 'bots.groupChat.addFromChat.triggerFor' })).toBeTruthy();
+    // Channel routes and read-only history reuse this header without the canonical flag.
+    view.rerender(<BotSessionContentHeader bot={localCindy} />);
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.addFromChat.triggerFor' })).toBeNull();
+    view.rerender(<BotSessionContentHeader bot={{ ...localCindy, canonicalChat: true, deviceId: 'cloud', deviceName: 'Cloud' }} />);
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.addFromChat.triggerFor' })).toBeNull();
   });
 
   it('keeps the device label and opens settings for a sole remote Cindy', () => {

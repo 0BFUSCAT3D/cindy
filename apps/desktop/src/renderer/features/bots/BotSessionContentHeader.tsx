@@ -34,6 +34,8 @@ export interface BotChatIdentity {
   name: string;
   avatar?: string | null;
   avatarColor?: string | null;
+  /** Only the teammate's own canonical private chat (not channel routes or read-only history) can start a group. */
+  canonicalChat?: boolean;
 }
 
 export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
@@ -69,7 +71,7 @@ export function BotSessionContentHeader({ bot }: { bot: BotChatIdentity }) {
             {bot.deviceName}
           </span>
         ) : null}
-        {!bot.deviceId ? <BotAddToGroupMenu botId={bot.id} /> : null}
+        {bot.canonicalChat && !bot.deviceId ? <BotAddToGroupMenu botId={bot.id} /> : null}
         {!bot.deviceId && bot.sessionId ? (
           <button
             type="button"
