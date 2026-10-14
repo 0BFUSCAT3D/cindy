@@ -4005,6 +4005,12 @@ const r = await cindy.agent.requestSchedule({
 这描述准入检查，不是持续的 OS 目录隔离保证。首版用于可信本地工作区；同权限进程在检查后恶意置换目录对象仍可能改变实际 cwd，不提供此类对抗性沙箱。
 
 \`models()\` 返回统一目录可选项的完整 route、efforts 和 supportsFastMode。用户明确选择后将 route 原样传给 create，或用 \`setModel({taskId, expectedRevision, route})\` 修改已有自有任务。运行中按普通任务的安全边界切换，不修改应用默认。两方法使用前检查 capabilities.operations。
+当 \`capabilities().pluginDefaultModel === true\` 时，持续复用任务的插件可在每次新输入前调用
+\`setModel({taskId, expectedRevision, route:'plugin-default'})\`。Host 当次读取本插件的任务模型设置，
+复用 create 的模型解析规则（未指定时采用当前新任务选择），只同步模型、来源、引擎、强度和 Fast，
+不改权限、目录或其它任务。返回 \`{status,task}\`；配置相同返回 unchanged，不反复切换。
+后续 send 使用返回 task.revision。须先处理已接受/结果不确定的旧请求，再同步下一次输入，
+不得修改旧请求的回执或为模型变化重发。旧 Host 未声明此能力时保留原任务行为，不传入该 route。
 暂不支持接管任意现有任务、远程/伙伴任务、其它配置修改、归档、队列暂停或事件订阅。
 旧 \`agent.errand\` 接口不变。
 

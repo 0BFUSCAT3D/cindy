@@ -321,17 +321,24 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
       await save(row,{...data,settledLabels:[...new Set([...(data.settledLabels||[]),label])]});
     }),
     assertDispatch,
-    setModel: (pluginId: string, request: { taskId: string; expectedRevision: number; route: PluginTaskRoute }) => exclusive(async () => {
+    setModel: (pluginId: string, request: { taskId: string; expectedRevision: number; route: PluginTaskRoute | 'plugin-default' }) => exclusive(async () => {
       const assertUnchanged = async () => {
         const task = await ownTask(pluginId, request.taskId);
         if (task.status !== 'active') return fail('TASK_BUSY', '任务已归档，请先恢复任务');
         if (task.revision !== request.expectedRevision) return fail('STALE_REVISION', '任务配置已变化，请刷新后重试');
+        return task;
       };
       await assertUnchanged();
-      const route = await deps.resolveRoute(pluginId, request.route);
-      await assertUnchanged();
+      // Opt-in: persistent plugin workflows can re-read the user's current
+      // plugin selection before each new input, using the same resolver as create.
+      // Ordinary tasks and explicit routes retain their existing semantics.
+      const followDefault = request.route === 'plugin-default';
+      const route = await deps.resolveRoute(pluginId, request.route === 'plugin-default' ? undefined : request.route);
+      const task = await assertUnchanged();
+      if (followDefault && (['agentKind', 'providerId', 'model', 'effort', 'fastMode'] as const)
+        .every(key => task.resolvedConfig[key] === route[key])) return { status: 'unchanged', task };
       if (!deps.setModel) return fail('HOST_NOT_READY', '任务模型服务尚未就绪');
-      const result = await deps.setModel(request.taskId, route, assertUnchanged);
+      const result = await deps.setModel(request.taskId, route, async () => { await assertUnchanged(); });
       return { ...result, task: await ownTask(pluginId, request.taskId) };
     }),
     get: (pluginId: string, taskId: string) => exclusive(() => ownTask(pluginId, taskId)),

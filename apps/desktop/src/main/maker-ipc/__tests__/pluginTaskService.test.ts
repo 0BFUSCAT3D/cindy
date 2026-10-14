@@ -948,6 +948,43 @@ it('does not apply a model after the task changes while route admission is pendi
   expect(f.deps.setModel).not.toHaveBeenCalled();
 });
 
+it('rechecks plugin defaults for the same task on every request without resetting unchanged tasks', async () => {
+  const f = fixture();
+  let preference = { ...f.route, model: 'grok' };
+  f.deps.resolveRoute = vi.fn(async (_plugin, requested) => requested ?? { ...preference });
+  // First install: creation already respects the saved preference.
+  let task = await f.create();
+  expect(task.resolvedConfig.model).toBe('grok');
+  f.deps.setModel = vi.fn(async (id, route, assertCurrent) => {
+    await assertCurrent();
+    const stored = f.tasks.get(id)!;
+    f.tasks.set(id, { ...stored, revision: stored.revision + 1, resolvedConfig: route });
+    return { status: 'applied' };
+  });
+  const sync = async () => {
+    const result = await f.service.setModel('p', {taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default'});
+    task = result.task;
+    return result.status;
+  };
+  expect(await sync()).toBe('unchanged');
+  expect(f.deps.setModel).not.toHaveBeenCalled();
+  for (const model of ['astra', 'grok']) {
+    preference = {...preference, model};
+    expect(await sync()).toBe('applied');
+    const run = await f.service.send('p', {taskId:task.taskId, expectedRevision:task.revision, requestKey:model, text:'translate'});
+    expect(run.acceptedConfig.model).toBe(model);
+  }
+  expect(f.tasks.size).toBe(1);
+  expect(f.deps.setModel).toHaveBeenCalledTimes(2);
+  expect(await sync()).toBe('unchanged');
+  preference = {...preference, effort:'low', fastMode:true, providerId:'other-source'};
+  expect(await sync()).toBe('applied');
+  expect(task.resolvedConfig).toEqual(preference);
+  f.deps.resolveRoute = async () => {throw new PluginTaskError('ROUTE_UNAVAILABLE', 'Unavailable selection');};
+  await expect(sync()).rejects.toMatchObject({code:'ROUTE_UNAVAILABLE'});
+  expect(f.deps.setModel).toHaveBeenCalledTimes(3);
+});
+
 it('keeps taskless plans immutable instead of retroactively granting scope', async () => {
  const f=fixture(),task=await f.create();
  const old={concurrency:2,items:[{label:'sample',workingDir:'/answer',route:f.route}]};
