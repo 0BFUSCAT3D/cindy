@@ -380,6 +380,7 @@ import {
 } from '@/session/sessionAgentSwitch';
 import { formatProviderAccountLabel, resolveSessionUsageAccount } from '@/session/sessionUsageAccount';
 import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
+import { isProviderShareAgentDeviceId } from '@/session/providerShareAgentDevice';
 import { useSessionProviderGroup } from '@/session/useSessionProviderGroup';
 import {
   drainComposerAnnotationSubmissions,
@@ -2678,10 +2679,17 @@ function SessionScreenContent() {
       : remoteAgentCatalogs,
     [orcaRemoteAgentDeviceId, remoteAgentCatalogs],
   );
-  const modelCapabilitiesDeviceId = orcaRemoteAgentDeviceId ?? deviceId;
+  // `share:<id>` is a virtual catalog owned by the controlled computer; it is
+  // not a device-link peer that the phone can open directly.
+  const modelCapabilitiesDeviceId = orcaRemoteAgentDeviceId
+    && !isProviderShareAgentDeviceId(orcaRemoteAgentDeviceId)
+    ? orcaRemoteAgentDeviceId
+    : deviceId;
   const loadComposerAgentCapabilities = useCallback(
     (agent: MobileSessionAgentKind, catalogDeviceId: string | null = orcaRemoteAgentDeviceId) =>
-      (catalogDeviceId ? executionMakerForDevice(catalogDeviceId) : maker).getCapabilities(agent),
+      (catalogDeviceId && !isProviderShareAgentDeviceId(catalogDeviceId)
+        ? executionMakerForDevice(catalogDeviceId)
+        : maker).getCapabilities(agent),
     [executionMakerForDevice, maker, orcaRemoteAgentDeviceId],
   );
   // 供应商组(provider-groups.md §10):这个任务此刻归哪个组,选择器每次打开问一次被控电脑。归组的任务在组那一项里

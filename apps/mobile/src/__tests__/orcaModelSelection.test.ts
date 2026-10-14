@@ -51,6 +51,7 @@ function setup(orcaRole: 'lead' | 'worker' | null, supported = true, agentDevice
     normalizeMobileAgentCapabilities: (value: unknown) => value ?? ({ hasFastMode: true, supportsModelWindowSwitchGuard: windowState.hostGuard !== false }),
     maker: { getCapabilities: vi.fn(), setEffort: vi.fn(), setFastMode: vi.fn() },
     executionMakerForDevice: vi.fn((_id: string) => ({ getCapabilities: remoteCapabilities })),
+    isProviderShareAgentDeviceId: (id: unknown) => typeof id === 'string' && id.startsWith('share:'),
     confirmAgentLocationForPick, intentChangesAgentLocation: () => false,
     confirmMobileSessionAgentSwitch: vi.fn(async () => true),
     shouldBlockLegacyRemoteModelWindowSwitch, showRemoteModelWindowUnsupported: vi.fn(),
@@ -89,6 +90,14 @@ describe('Orca model-only selection', () => {
     expect(h.bindings.maker.getCapabilities).not.toHaveBeenCalled();
     expect(h.write).toHaveBeenCalledWith(expect.objectContaining({ targetAgentKind: agent }));
     expect(h.write.mock.calls[0][0]).not.toHaveProperty('agentDeviceId');
+  });
+
+  it('reads capabilities for a share catalog through the controlled computer', async () => {
+    const h = setup('worker', true, 'share:share-1');
+    h.bindings.maker.getCapabilities.mockResolvedValue({ hasFastMode: true, supportsModelWindowSwitchGuard: true });
+    await expect(h.handlers.loadComposerAgentCapabilities('codex')).resolves.toMatchObject({ hasFastMode: true });
+    expect(h.bindings.executionMakerForDevice).not.toHaveBeenCalled();
+    expect(h.bindings.maker.getCapabilities).toHaveBeenCalledWith('codex');
   });
 
   it('uses the selected computer Fast support instead of borrowing it from the task host', async () => {
