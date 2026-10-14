@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import {
   SPEAKER_MODEL_ASSETS,
@@ -29,10 +30,11 @@ type SpeakerModelStoreOptions = {
 /**
  * Downloads the speaker-gate models on demand and reports where they are.
  *
- * Files are fetched from the region CDN by content hash and only become
- * visible after the downloader verified SHA-256, so a present file of the
- * expected size is trusted. One download runs at a time; asking again while
- * it runs joins it.
+ * Files are fetched from the region CDN by content hash. Cached files must
+ * also pass SHA-256 before use; size alone cannot detect local corruption.
+ * Verification is reused while the file identity and timestamps are unchanged,
+ * keeping status polls and audio chunks from repeatedly hashing the models.
+ * One download runs at a time; asking again while it runs joins it.
  */
 export class SpeakerModelStore {
   private readonly download: (options: DownloadOptions) => Promise<DownloadResult>;
@@ -40,6 +42,7 @@ export class SpeakerModelStore {
   private abort: AbortController | null = null;
   private progress = new Map<string, number>();
   private lastError: VoiceSpeakerFilterStatus['downloadError'];
+  private readonly checkedFiles = new Map<string, { file: string; stamp: string; valid: boolean }>();
 
   constructor(private readonly options: SpeakerModelStoreOptions) {
     this.download = options.download ?? createDownloader();
@@ -146,12 +149,36 @@ export class SpeakerModelStore {
   }
 
   private isInstalled(asset: SpeakerModelAsset): boolean {
+    const file = this.localPath(asset);
     try {
-      const stat = fs.statSync(this.localPath(asset));
-      return stat.isFile() && stat.size === asset.bytes;
+      const stamp = this.fileStamp(file, asset.bytes);
+      if (stamp === null) {
+        this.checkedFiles.delete(asset.sha256);
+        return false;
+      }
+      const checked = this.checkedFiles.get(asset.sha256);
+      if (checked?.file === file && checked.stamp === stamp) return checked.valid;
+
+      const valid = createHash('sha256').update(fs.readFileSync(file)).digest('hex') === asset.sha256;
+      // Do not publish a result for a file replaced or written during the read.
+      if (this.fileStamp(file, asset.bytes) !== stamp) {
+        this.checkedFiles.delete(asset.sha256);
+        return false;
+      }
+      // Remember mismatches too, so polling a corrupt model does not rehash it.
+      this.checkedFiles.set(asset.sha256, { file, stamp, valid });
+      return valid;
     } catch {
+      this.checkedFiles.delete(asset.sha256);
       return false;
     }
+  }
+
+  private fileStamp(file: string, bytes: number): string | null {
+    const stat = fs.statSync(file, { bigint: true });
+    if (!stat.isFile() || stat.size !== BigInt(bytes)) return null;
+    // ctime and file identity catch replacements even when mtime is preserved.
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
   }
 
   /** Drops files from older model versions; keeps partial downloads. */

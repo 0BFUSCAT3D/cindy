@@ -2,12 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { speakerModelAsset, speakerModelLocalName, SpeakerGate } from '@cindy/voice-input-core';
 
 let tempDir = '';
 let owner = 'owner-1';
 let generation = 1;
+
+vi.mock('@cindy/voice-input-core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cindy/voice-input-core')>();
+  const assets = [
+    { role: 'vad', fileName: 'vad.onnx', sha256: createHash('sha256').update(Buffer.alloc(8)).digest('hex'), bytes: 8 },
+    { role: 'embedding', fileName: 'embed.onnx', sha256: createHash('sha256').update(Buffer.alloc(16)).digest('hex'), bytes: 16 },
+  ] as const;
+  return {
+    ...actual,
+    SPEAKER_MODEL_ASSETS: assets,
+    SPEAKER_MODEL_TOTAL_BYTES: 24,
+    speakerModelAsset: (role: string) => assets.find((asset) => asset.role === role),
+  };
+});
 
 vi.mock('electron', () => ({
   app: { getPath: () => tempDir, once: vi.fn() },
@@ -57,10 +72,7 @@ function installModels(): void {
   fs.mkdirSync(dir, { recursive: true });
   for (const role of ['vad', 'embedding'] as const) {
     const asset = speakerModelAsset(role);
-    // Only the size is checked; a sparse file of the right length is enough.
-    const fd = fs.openSync(path.join(dir, speakerModelLocalName(asset)), 'w');
-    fs.ftruncateSync(fd, asset.bytes);
-    fs.closeSync(fd);
+    fs.writeFileSync(path.join(dir, speakerModelLocalName(asset)), Buffer.alloc(asset.bytes));
   }
 }
 
@@ -110,6 +122,21 @@ describe('speaker filter service', () => {
     enroll();
     // The worker is started lazily; warming it fails harmlessly in tests.
     expect(getSpeakerFilterService().createGate(on)).toBeInstanceOf(SpeakerGate);
+  });
+
+  it.runIf(getSpeakerFilterService().supported)('does not load a same-size corrupt model into the gate', () => {
+    installModels();
+    enroll();
+    const service = getSpeakerFilterService();
+    expect(service.getStatus().modelState).toBe('ready');
+    const asset = speakerModelAsset('embedding');
+    const file = path.join(tempDir, 'voice-models', speakerModelLocalName(asset));
+    fs.writeFileSync(file, Buffer.alloc(asset.bytes, 1));
+    fs.utimesSync(file, new Date(0), new Date(0));
+    const warm = vi.spyOn(SpeakerEngineHost.prototype, 'warm');
+    expect(service.getStatus().modelState).toBe('missing');
+    expect(service.createGate(on)).toBeUndefined();
+    expect(warm).not.toHaveBeenCalled();
   });
 });
 
