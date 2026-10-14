@@ -258,6 +258,7 @@ import { useAvailableAgents } from '@/hooks/useAvailableAgents';
 import {
   useDeviceProviders,
   evictDeviceProviders,
+  parseDeviceProvidersPayload,
   prefetchDeviceProviders,
 } from '@/hooks/useDeviceProviders';
 import {
@@ -678,12 +679,14 @@ interface DraftTargetRequest {
   workingDir: string | null;
   /**
    * 已经 inline 拉到的被控端快照。只有「添加远程项目」那条路径有 —— 它为了验证设备可达,本来就
-   * 直接 invoke 过 capabilities / defaults,于是能立刻 seed,不必等 effect 再跑一轮隧道往返。
+   * 直接 invoke 过 capabilities / providers / defaults,于是能立刻 seed,不必等 effect 再跑一轮隧道往返。
    * 不给就把远程运行配置打回未加载,交给 seed effect 自己拉。
    */
   remoteSnapshot?: {
     capabilities: AgentCapabilities;
     defaults: RemoteDraftDefaults | null;
+    /** The target device's provider catalog, fetched alongside capabilities. */
+    providers: ProviderView[];
   };
 }
 
@@ -2307,7 +2310,14 @@ export function NewMakerDraftRoute() {
         // 的能力快照校准不了它(store 也不会清掉那台的选择)。只刷新被控电脑的草稿值。
         setRemoteDraftState({ status: 'ready', value: req.remoteSnapshot.defaults });
       } else if (req.remoteSnapshot) {
-        const { capabilities: freshCaps, defaults: freshDefaults } = req.remoteSnapshot;
+        const {
+          capabilities: freshCaps,
+          defaults: freshDefaults,
+          providers: freshProviders,
+        } = req.remoteSnapshot;
+        // Use the target device's inline catalog, not the previous render's providers.
+        // Switching task devices also clears the previous separate-Agent selection;
+        // same-device refreshes that retain a separate Agent are handled above.
         dlSeedKeyRef.current = req.deviceId ? `${req.deviceId}:${capabilityAgentKind}` : null;
         dlSeedCapabilitiesRef.current = freshCaps;
         if (deviceChanged) {
@@ -2317,7 +2327,7 @@ export function NewMakerDraftRoute() {
               freshDefaults,
               undefined,
               capabilityAgentKind,
-              agentCatalogProviders,
+              freshProviders,
             ),
           );
           dlRuntimeTouchedRef.current = false;
@@ -2342,14 +2352,14 @@ export function NewMakerDraftRoute() {
                   },
                   undefined,
                   capabilityAgentKind,
-                  agentCatalogProviders,
+                  freshProviders,
                 )
               : resolveDeviceLinkDraftDefaults(
                   freshCaps,
                   freshDefaults,
                   undefined,
                   capabilityAgentKind,
-                  agentCatalogProviders,
+                  freshProviders,
                 ),
           );
         }
@@ -2409,7 +2419,6 @@ export function NewMakerDraftRoute() {
       effectiveAgentDeviceId,
       draft.workingDir,
       capabilityAgentKind,
-      agentCatalogProviders,
       stripProjectRelativeMentions,
     ],
   );
@@ -2464,12 +2473,13 @@ export function NewMakerDraftRoute() {
         // useEffect 不会因 deps 不变重跑 fetch,只有 subscriber 通知路径能送达新数据。
         // 验证设备可达:直接 invoke 能力 + 供应商(不走 swallow 的 prefetch)。
         // 失败 throw → dialog 留 open,不破坏当前草稿状态。
-        const [freshCaps] = await Promise.all([
+        const [freshCaps, freshProviderPayload] = await Promise.all([
           window.electronAPI.deviceLink.invoke(target.deviceId, 'maker:get-capabilities', [
             capabilityAgentKind,
           ]) as Promise<AgentCapabilities>,
           window.electronAPI.deviceLink.invoke(target.deviceId, 'maker:provider:list', []),
         ]);
+        const freshProviders = parseDeviceProvidersPayload(freshProviderPayload).providers;
         // 只有旧版被控端明确不支持 defaults channel 时才回落 capabilities 默认；网络失败
         // 仍然是连接失败，必须让 dialog 保持打开，不能把 null 当成权威空配置。
         const freshDefaults = await window.electronAPI.deviceLink
@@ -2488,9 +2498,13 @@ export function NewMakerDraftRoute() {
           deviceId: target.deviceId,
           deviceName: target.deviceName,
           workingDir: target.path,
-          // 上面为验证可达已经 inline 拉过 capabilities 与 defaults,直接交给转移动作当场 seed /
+          // 上面为验证可达已经 inline 拉过 capabilities / providers / defaults,直接交给转移动作当场 seed /
           // 重校,省掉一次隧道往返;它同时会置 skip flag,避免 effect 再拉一次把值覆盖回去。
-          remoteSnapshot: { capabilities: freshCaps, defaults: freshDefaults },
+          remoteSnapshot: {
+            capabilities: freshCaps,
+            defaults: freshDefaults,
+            providers: freshProviders,
+          },
         });
         // prefetch 补回 hook 缓存:选的是**同一** deviceId 时 hook 的 effect 不会因 deps 变化重跑,
         // 只有 subscriber 通知路径能送达新数据。即使 prefetch 内部 swallow error,send / goal 的

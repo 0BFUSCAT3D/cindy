@@ -1630,7 +1630,8 @@ describe('Shared create project picker', () => {
     expect((body.match(/resolveDeviceLinkDraftDefaults\(/g) ?? []).length).toBeGreaterThanOrEqual(
       3,
     );
-    expect((body.match(/agentCatalogProviders,/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect((body.match(/freshProviders,/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect(body).not.toContain('agentCatalogProviders');
   });
 
   it('uses the selected provider catalog for remote effort recalculation', () => {
