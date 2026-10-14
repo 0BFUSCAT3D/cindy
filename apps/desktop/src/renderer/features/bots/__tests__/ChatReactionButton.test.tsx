@@ -151,6 +151,17 @@ describe('reaction avatars', () => {
     expect(images()).toEqual(['https://example.test/cindy-chris.png']);
   });
 
+  it('follows member renames without another read', async () => {
+    mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('z', 'Zoe')] });
+    const view = render(actions([{ emoji: '👍', count: 1, me: false }]));
+    await waitFor(() => expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoe'));
+    const renamed = members.map(m => m.actorId === 'z' ? { ...m, name: 'Zoey' } : m);
+    view.rerender(<ChatMessageActions shareScope="group:room" groupId="room" members={renamed} onChanged={vi.fn()}
+      message={message([{ emoji: '👍', count: 1, me: false }])} />);
+    expect(badge().getAttribute('aria-label')).toBe('👍 · 1: Zoey');
+    expect(mocks.reactors).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps click as the toggle', async () => {
     mocks.reactors.mockResolvedValue({ ok: true, reactors: [reactor('a', 'Dash', { isSelf: true })] });
     render(actions([{ emoji: '👍', count: 1, me: true }]));

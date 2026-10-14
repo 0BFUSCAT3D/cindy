@@ -183,6 +183,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let actorsStale = false;
   // Who reacted can change while the count stays the same; each realtime reaction change versions the message.
   const reactionRevisions = new Map<string, number>();
+  // A reset skips the missed events, so every message's reactions are treated as changed once.
+  let reactionResets = 0;
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -577,6 +579,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             void api<Snapshot>(`/conversations/${roomId}/snapshot`).then(value => {
               if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
               if (rooms.has(roomId)) advanceRoom(roomId, value.cursor);
+              reactionResets++;
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());
@@ -641,7 +644,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const quote = m.deleted || planCard ? null : readBotGroupQuote(m.content);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}),
-      reactionRevision: reactionRevisions.get(m.id) ?? 0,
+      reactionRevision: (reactionRevisions.get(m.id) ?? 0) + reactionResets,
       authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: bodyText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }

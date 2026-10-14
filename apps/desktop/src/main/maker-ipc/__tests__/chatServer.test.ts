@@ -1107,6 +1107,11 @@ describe('Chat Server result delivery and refresh', () => {
       { type: 'message.updated', entityId: message.id },
     ] }));
     expect(await revision()).toBe(2);
+    // A reset skips whatever changed while disconnected: every message counts as changed once.
+    Object.defineProperty(socket, 'readyState', { value: 1 });
+    socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await revision()).toBe(3);
   });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);
