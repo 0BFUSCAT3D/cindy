@@ -969,13 +969,14 @@ export function NewMakerDraftRoute() {
     useProviderShareAgentDevices([effectiveAgentDeviceId]);
   const remoteAgentDevices = useMemo(() => {
     if (effectiveDeviceLinkDeviceId) {
-      // 建到被控电脑的任务:候选去掉被控电脑本身;本机收到的分享被控电脑用不了,不并入。
+      // 建到被控电脑的任务:候选去掉被控电脑本身，分享沿用同账号的已收到列表。
       // 被控电脑不支持时不传,模型面板维持只列被控电脑的目录。
       return deviceLinkRemoteAgentSupported
         ? selectControlledTaskAgentDevices({
             devices: selectableDevices,
             controlledDeviceId: effectiveDeviceLinkDeviceId,
             keepDeviceIds: [effectiveAgentDeviceId],
+            shareDevices: providerShareDevices,
           })
         : undefined;
     }
