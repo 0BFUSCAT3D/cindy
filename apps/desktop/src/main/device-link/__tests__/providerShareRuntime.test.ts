@@ -260,6 +260,34 @@ describe('provider share approval follows the computer that generated the link',
     expect(getProviderShareQuietRequestIds()).toEqual([]);
   });
 
+  it('keeps the quiet approval ownership across a host runtime restart', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    state.owned = [share([member('m1')])];
+    const first = events();
+    startProviderShareHost(first);
+    await refreshProviderShareHost('test');
+    quietProviderShareRequests('anthropic');
+
+    stopProviderShareHost();
+    const restarted = events();
+    startProviderShareHost(restarted);
+    await refreshProviderShareHost('restart');
+    state.owned = [share([member('m1')], [pendingRequest('after-restart')])];
+    await refreshProviderShareHost('after-restart');
+
+    expect(restarted.requested).toHaveBeenLastCalledWith(
+      pendingRequest('after-restart'),
+      expect.objectContaining({ shareId: 'share-1' }),
+      true,
+    );
+    expect(getProviderShareQuietRequestIds()).toEqual(['after-restart']);
+
+    // 不让本测试的短期归属影响后续测试。
+    vi.setSystemTime(new Date(Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1));
+    stopProviderShareHost();
+  });
+
   it('prompts here for a watched share on another computer without letting it into this computer\'s snapshot', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));

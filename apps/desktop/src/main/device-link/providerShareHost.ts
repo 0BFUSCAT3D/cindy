@@ -105,6 +105,31 @@ interface Runtime {
 
 let runtime: Runtime | null = null;
 
+/**
+ * 远程管理生成链接后，host runtime 可能因设备互联断开、重新接管或账号边界重建。
+ * 这段归属只需存活到 7 分钟窗口结束，不写入磁盘；按账号作用域隔离，避免换账号时串用。
+ */
+const retainedQuietUntilByScope = new Map<string, Map<string, number>>();
+
+function activeQuietUntil(source: ReadonlyMap<string, number>): Map<string, number> {
+  const now = Date.now();
+  return new Map([...source].filter(([, until]) => until > now));
+}
+
+function retainQuietUntil(rt: Runtime): void {
+  if (rt.scope === null) return;
+  const active = activeQuietUntil(rt.quietUntil);
+  if (active.size > 0) retainedQuietUntilByScope.set(rt.scope, active);
+  else retainedQuietUntilByScope.delete(rt.scope);
+}
+
+function restoreQuietUntil(scope: string | null): Map<string, number> {
+  if (scope === null) return new Map();
+  const retained = retainedQuietUntilByScope.get(scope);
+  retainedQuietUntilByScope.delete(scope);
+  return retained ? activeQuietUntil(retained) : new Map();
+}
+
 function current(rt: Runtime): boolean {
   return runtime === rt && !rt.stopped && getAuthState().isAuthenticated && !isAppSessionBoundaryPending()
     && providerShareOwnerKey() === rt.scope;
@@ -197,9 +222,10 @@ function applyWatched(rt: Runtime, others: readonly ProviderShareOwned[]): void 
 
 export function startProviderShareHost(events: ProviderShareHostEvents): void {
   stopProviderShareHost();
+  const scope = providerShareOwnerKey();
   const rt: Runtime = {
     events,
-    scope: providerShareOwnerKey(),
+    scope,
     shares: [],
     fetchedAt: 0,
     hotUntil: 0,
@@ -209,7 +235,7 @@ export function startProviderShareHost(events: ProviderShareHostEvents): void {
     knownRequests: new Set(),
     reconciled: false,
     stopped: false,
-    quietUntil: new Map(),
+    quietUntil: restoreQuietUntil(scope),
     quietRequests: new Set(),
     watches: [],
     watched: new Map(),
@@ -224,6 +250,7 @@ export function stopProviderShareHost(): void {
   if (!rt) return;
   rt.stopped = true;
   if (rt.timer) clearTimeout(rt.timer);
+  retainQuietUntil(rt);
   runtime = null;
 }
 
