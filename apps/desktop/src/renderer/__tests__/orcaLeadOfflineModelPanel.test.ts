@@ -102,7 +102,7 @@ describe('ChatInput 接线', () => {
     const chatInput = read('../components/new-chat/ChatInput.tsx');
     expect(chatInput).toContain('orcaLeadLocalFallbackOpen(');
     expect(chatInput).toContain('sessionRemoteAgentDevicesForOrcaFallback(');
-    expect(chatInput).toContain('sessionAgentSwitchSupported({');
+    expect(chatInput).toContain('sessionAgentSwitchSupportedOf({');
   });
 });
 

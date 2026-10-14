@@ -909,7 +909,8 @@ describe('ChatInput 的入口门控与调用路由', () => {
   });
 
   it('Orca 与角色未加载会话都 fail-closed:只有完整元数据确认非协同后开放入口', () => {
-    expect(source).toContain('sessionOrcaRole === null &&');
+    expect(source).toContain('sessionAgentSwitchSupportedOf({');
+    expect(source).toContain('orcaLeadLocalFallbackOpen(');
     // 会话视图必须保留 undefined 未知态,不能在完整 session 回流前冒充「非协同」。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),

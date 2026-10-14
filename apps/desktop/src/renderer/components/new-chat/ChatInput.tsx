@@ -129,6 +129,11 @@ import {
   type UnifiedSelectionAgentDevice,
 } from './ModelSelector';
 import {
+  orcaLeadLocalFallbackOpen,
+  sessionAgentSwitchSupported as sessionAgentSwitchSupportedOf,
+  sessionRemoteAgentDevicesForOrcaFallback,
+} from './sessionAgentSwitchGate';
+import {
   enqueueEffortChange,
   getEffortChangeCoordinator,
   isSessionScopeCurrent,
@@ -1866,8 +1871,9 @@ export function ChatInput({
   // 一个会随机吞掉模型重选的入口。本机会话恒可用——main 与 renderer 同版本，不能因
   // capabilities 还没加载完而闪掉入口。
   // SSH 远程(remoteHostId)是另一套引擎生命周期,继续不支持,由调用点单独排除。
-  // Orca 会话(lead / worker)同样排除:被控端 handler 对带 orcaRole 的会话一律拒
-  // UNSUPPORTED_CAPABILITY。角色未加载(undefined)也 fail-closed,避免冷启动短暂露出入口。
+  // Orca 会话默认排除:被控端 handler 对带 orcaRole 的会话拒 UNSUPPORTED_CAPABILITY。
+  // 例外:Lead 的 Agent 在另一台电脑且目录读取失败时,只开放切回本机。角色未加载(undefined)
+  // 也 fail-closed,避免冷启动短暂露出入口。
   // 切换事务与 SET_MODEL 都由**任务所在的被控电脑**执行,这两个能力位按它判定,不跟着模型目录
   // 走:Agent 在第三台电脑(目录读那台)且那台离线时,仍要能在这里把 Agent 改回被控电脑。
   // 目录本就在被控电脑时与上面同一份缓存;本机会话不读(下面 !deviceLinkDeviceId 直接放行)。
@@ -1891,9 +1897,8 @@ export function ChatInput({
   const remoteAtomicModelSelectionSupported =
     hostCcCaps.capabilities?.supportsSessionAgentSwitchCas === true ||
     hostCodexCaps.capabilities?.supportsSessionAgentSwitchCas === true;
-  const sessionAgentSwitchSupported =
-    sessionOrcaRole === null &&
-    (!deviceLinkDeviceId || ccSupportsSessionAgentSwitch || codexSupportsSessionAgentSwitch);
+  const hostAgentSwitchCapable =
+    !deviceLinkDeviceId || ccSupportsSessionAgentSwitch || codexSupportsSessionAgentSwitch;
 
   // 切换写入的串行链与写序号都按 session 存在**模块级**协调层(agentSwitchCoordinator),
   // 不放组件 ref:用户切走再切回时旧组件已卸载但 invoke 仍在飞,新组件若另起空队列 /
@@ -2014,6 +2019,16 @@ export function ChatInput({
     codex: codexCaps,
     pi: piCaps,
     providers: remoteProviders,
+  });
+  const orcaLeadLocalFallback = orcaLeadLocalFallbackOpen({
+    sessionOrcaRole,
+    agentDeviceId: effectiveAgentDeviceId,
+    remoteCatalogStatus: remoteModelListStatus,
+  });
+  const sessionAgentSwitchSupported = sessionAgentSwitchSupportedOf({
+    sessionOrcaRole,
+    hostSwitchCapable: hostAgentSwitchCapable,
+    orcaLeadLocalFallback,
   });
   const providersLoading = catalogDeviceId
     ? remoteModelListStatus === 'loading'
@@ -7221,7 +7236,10 @@ export function ChatInput({
       return undefined;
     }
     return {
-      devices: remoteAgentDevices,
+      devices: sessionRemoteAgentDevicesForOrcaFallback(
+        remoteAgentDevices,
+        orcaLeadLocalFallback,
+      ),
       selectedDeviceId: effectiveAgentDeviceId,
       // 被控电脑上的任务:没在浏览其他电脑时列被控电脑自己的目录与它的镜像记忆。
       ...(deviceLinkDeviceId ? { homeDeviceId: deviceLinkDeviceId } : {}),
@@ -7255,6 +7273,7 @@ export function ChatInput({
     remoteAgentDevices,
     effectiveAgentDeviceId,
     intentAgentDeviceId,
+    orcaLeadLocalFallback,
     confirmAgentRelocation,
   ]);
 
