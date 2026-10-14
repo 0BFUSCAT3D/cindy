@@ -166,7 +166,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [continuing, setContinuing] = useState(false);
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
-  const loadRef = useRef<(merging?: readonly BotGroupMessageView[]) => void>(() => {});
+  const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -180,9 +180,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
-    // Follow-up reads for older shares one refresh could not check; bounded per chain.
-    let shareFollowUps = 0;
-    const load = async (merging: readonly BotGroupMessageView[] = []) => {
+    const load = async (additionalSources: string[] = []) => {
       const version = ++requestVersion;
       const owner = getDataOwnerGeneration();
       const api = botGroupApi();
@@ -195,12 +193,10 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       try {
         const displayed = stateRef.current;
         const shown = displayed.kind === 'ready' && displayed.group.id === groupId;
-        // An older page merged just before this read may not be on `displayed` yet.
-        const shownOlder = shown ? mergeBotGroupMessages(displayed.older, merging) : [];
         const sourceMessageIds = [...new Set([...(shown
-          ? mergeBotGroupMessages(shownOlder, displayed.group.messages).map(message => message.id) : []), ...merging.map(message => message.id)])];
+          ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
         // Older pages are not re-read, so their shares ask for the reply's current state.
-        const shownShares = shown ? botGroupShownShares(shownOlder, displayed.group.threadShareVersion) : [];
+        const shownShares = shown ? botGroupShownShares(displayed.older, displayed.group.threadShareVersion) : [];
         const result = sourceMessageIds.length || shownShares.length
           ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
           : await api.getBotGroup(groupId);
@@ -218,14 +214,6 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   olderHasMore: result.group.hasMoreBefore,
                 },
           );
-          const older = applyBotGroupThreadShareUpdates(shownOlder, result.group);
-          const unchecked = staleBotGroupShares(older, result.group.threadShareVersion).length;
-          const total = older.filter(message => message.threadShare).length;
-          if (!unchecked) shareFollowUps = 0;
-          else if (shareFollowUps < Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) {
-            shareFollowUps += 1;
-            setTimeout(() => { if (!cancelled) void load(); }, 0);
-          }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });
         } else {
@@ -236,7 +224,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         if (isCurrent()) setState((previous) => (previous.kind === 'ready' ? previous : { kind: 'error' }));
       }
     };
-    loadRef.current = merging => void load(merging);
+    loadRef.current = additionalSources => void load(additionalSources);
     void load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
@@ -257,6 +245,19 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       unsubscribe();
     };
   }, [groupId, reloadVersion]);
+
+  // Older shares checked before the latest edit, deletion or reset are re-checked from the
+  // committed timeline, whichever of a refresh and an older page landed last. One refresh
+  // checks up to the per-read cap, so a bounded number of follow-ups reaches all of them.
+  const shareFollowUps = useRef(0);
+  useEffect(() => {
+    if (state.kind !== 'ready') { shareFollowUps.current = 0; return; }
+    if (!staleBotGroupShares(state.older, state.group.threadShareVersion).length) { shareFollowUps.current = 0; return; }
+    const total = state.older.filter(message => message.threadShare).length;
+    if (shareFollowUps.current >= Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) return;
+    shareFollowUps.current += 1;
+    loadRef.current();
+  }, [state]);
 
   const group = state.kind === 'ready' ? state.group : null;
   // Until the timeline arrives, the header comes from the group's sidebar row (same account).
@@ -477,9 +478,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           olderHasMore: result.group.hasMoreBefore,
         };
       });
-      // A push may have refreshed before this page was displayed: reconcile its sources and
-      // shares too. The page goes along because the merge above may not be committed yet.
-      if (newerRefresh) loadRef.current(result.group.messages);
+      // A push may have refreshed before these sources were displayed. Reconcile their current state too.
+      if (newerRefresh) loadRef.current(result.group.messages.map(message => message.id));
     } catch {
       toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
     } finally {

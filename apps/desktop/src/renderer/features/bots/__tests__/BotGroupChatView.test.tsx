@@ -2100,25 +2100,28 @@ describe('shares on older pages', () => {
       shownShares: [{ id: 'old-share', messageId: 'old-reply', threadRootId: 'old-root', sharerId: 'alice-actor' }] }));
   });
 
-  it('checks the shares of an older page that lands after an edit refreshed the timeline', async () => {
+  // The reply is edited while an older page is on its way; either read may land first.
+  it.each(['refresh', 'page'] as const)('checks the shares of an older page that races an edit refresh (%s lands first)', async (first) => {
     const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
       sharedByAuthor: false, content: '编辑前的原文', attachments: [], createdAt: 1, edited: false, version: 1 };
     const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
     const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 1, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] });
-    let finish!: (result: { ok: true; group: BotGroupDetail }) => void;
+    let finishPage!: (result: { ok: true; group: BotGroupDetail }) => void;
+    let finishRefresh!: (result: { ok: true; group: BotGroupDetail }) => void;
     mocks.getBotGroup
       .mockResolvedValueOnce({ ok: true, group: latest })
-      .mockReturnValueOnce(new Promise(resolve => { finish = resolve; }))
-      .mockResolvedValueOnce({ ok: true, group: { ...latest, threadShareVersion: 2 } })
+      .mockReturnValueOnce(new Promise(resolve => { finishPage = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve; }))
       .mockImplementation(async (_groupId: string, options?: { shownShares?: Array<{ id: string }> }) => ({ ok: true, group: { ...latest, threadShareVersion: 2,
         ...(options?.shownShares?.some(item => item.id === 'old-share')
           ? { threadShareUpdates: { 'old-share': { ...share, content: '编辑后的原文', edited: true, version: 2 } } } : {}) } }));
     renderView();
     fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
-    // The reply is edited while that page is on its way; the push refresh finishes first.
     await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
     await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(3));
-    await act(async () => finish({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [oldShare] } }));
+    const page = () => finishPage({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [oldShare] } });
+    const refresh = () => finishRefresh({ ok: true, group: { ...latest, threadShareVersion: 2 } });
+    for (const land of first === 'refresh' ? [refresh, page] : [page, refresh]) await act(async () => land());
     expect(await screen.findByText('编辑后的原文')).toBeTruthy();
     expect(screen.queryByText('编辑前的原文')).toBeNull();
   });
