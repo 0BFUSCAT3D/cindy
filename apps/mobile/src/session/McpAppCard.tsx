@@ -164,7 +164,7 @@ export function McpAppCard({
   return (
     <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
       <View style={styles.header}>
-        <Text style={[styles.title, { color: colors.textPrimary }]}>{title} · MCP App</Text>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>{title ? t('mcpApps.cardTitle', { title }) : t('mcpApps.appName')}</Text>
         {active && loading && <ActivityIndicator size="small" color={colors.textSecondary} />}
         {error && (
           <Pressable

@@ -135,7 +135,8 @@ it('keeps declared iframe navigation in the WebView and safely injects App HTML'
     addEventListener: (name: string, listener: (event: unknown) => void) =>
       listeners.set(name, listener),
   };
-  const proxyScript = state.props.source.html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const proxyDocument = new DOMParser().parseFromString(state.props.source.html, 'text/html');
+  const proxyScript = proxyDocument.querySelector('script')!.textContent!;
   new Script(proxyScript).runInNewContext({ document: shell, window: proxy });
   listeners.get('message')!({
     source: proxy,

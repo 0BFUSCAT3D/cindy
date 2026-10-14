@@ -11139,6 +11139,7 @@
       "pluginSent": "由插件发送",
       "pluginViewDetail": "查看插件",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "任务 ID：{{id}}",
         "teammate": "伙伴 ID：{{id}}",
         "automation": "自动化 ID：{{id}}",
@@ -15695,7 +15696,10 @@
     "retry": "重新加载",
     "loadFailed": "应用加载失败。请检查连接后重新加载。",
     "updateRequired": "这台电脑暂不支持 MCP Apps，请更新电脑上的 Cindy 后再试。",
-    "messageSource": "MCP App",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "由 $t(mcpApps.appName)「{{name}}」发送",
+    "serverId": "MCP 服务器 ID：{{id}}",
     "exitFullscreen": "退出全屏"
   }
 }

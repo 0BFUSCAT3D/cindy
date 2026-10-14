@@ -27,7 +27,12 @@ import {
 import { SHARE_SOURCE_ATTR } from '@/lib/shareConversationImage';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import type { MessageSourceDevice, MessageSourcePlugin, MessageSourceGroup } from '@cindy/maker-shared/message-source';
+import {
+  messageSourceIdEntries,
+  type MessageSourceDevice,
+  type MessageSourcePlugin,
+  type MessageSourceGroup,
+} from '@cindy/maker-shared/message-source';
 
 import { AutomationOriginBadge, MessageSourceLabelShell } from './AutomationOriginBadge';
 
@@ -133,13 +138,17 @@ export function MessageSourcePluginBadge({
       kind="plugin"
       icon={<Puzzle size={11} strokeWidth={1.75} aria-hidden className="shrink-0" />}
       label={
-        isApp ? t('mcpApps.messageSource', { name: plugin.name ?? plugin.pluginId.slice(8) }) : plugin.name
-          ? t('chat.userMessage.pluginSentNamed', { name: plugin.name })
-          : t('chat.userMessage.pluginSent')
+        isApp
+          ? t('mcpApps.messageSource', { name: plugin.name ?? plugin.pluginId.slice(8) })
+          : plugin.name
+            ? t('chat.userMessage.pluginSentNamed', { name: plugin.name })
+            : t('chat.userMessage.pluginSent')
       }
       tooltip={joinSourceTooltip([
         interactive && t('chat.userMessage.pluginViewDetail'),
-        t('chat.userMessage.sourceIds.plugin', { id: plugin.pluginId }),
+        ...messageSourceIdEntries({ sourcePlugin: plugin }).map(({ kind, id }) =>
+          t(`chat.userMessage.sourceIds.${kind}`, { id }),
+        ),
       ])}
       onOpen={
         interactive ? () => navigate(`/plugins?ghost=${encodeURIComponent(plugin.pluginId)}`) : null

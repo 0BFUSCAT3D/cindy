@@ -11139,6 +11139,7 @@
       "pluginSent": "プラグインから送信",
       "pluginViewDetail": "プラグインを表示",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "セッション ID：{{id}}",
         "teammate": "仲間 ID：{{id}}",
         "automation": "自動化 ID：{{id}}",
@@ -15695,7 +15696,10 @@
     "retry": "再読み込み",
     "loadFailed": "アプリを読み込めませんでした。接続を確認して再読み込みしてください。",
     "updateRequired": "このコンピューターはまだ MCP Apps に対応していません。このコンピューターの Cindy を更新してから、もう一度お試しください。",
-    "messageSource": "MCP App",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "$t(mcpApps.appName)「{{name}}」から送信",
+    "serverId": "MCP サーバー ID：{{id}}",
     "exitFullscreen": "全画面表示を終了"
   }
 }

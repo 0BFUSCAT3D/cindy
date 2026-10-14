@@ -11180,6 +11180,7 @@
       "pluginSent": "Sent by plugin",
       "pluginViewDetail": "View plugin",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "Session ID: {{id}}",
         "teammate": "Teammate ID: {{id}}",
         "automation": "Automation ID: {{id}}",
@@ -15749,7 +15750,10 @@
     "retry": "Reload",
     "loadFailed": "The app could not load. Check the connection and reload.",
     "updateRequired": "This computer does not support MCP Apps yet. Update Cindy on that computer and try again.",
-    "messageSource": "MCP App",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
+    "serverId": "MCP Server ID: {{id}}",
     "exitFullscreen": "Exit Fullscreen"
   }
 }

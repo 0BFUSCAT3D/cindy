@@ -6815,7 +6815,7 @@ const MessageItem = memo(function MessageItem({
       );
     case 'assistant':
       if (message.systemCardType === 'mcp-app') {
-        return sessionId ? <McpAppCard sessionId={sessionId} clientId={message.clientId} title={String(message.systemCardData?.title ?? 'MCP App')} /> : null;
+        return sessionId ? <McpAppCard sessionId={sessionId} clientId={message.clientId} title={String(message.systemCardData?.title ?? '')} /> : null;
       }
       if (message.systemCardType) {
         const card = (

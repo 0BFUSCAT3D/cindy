@@ -3258,13 +3258,13 @@ function SourceDeviceLabel({
 /** 插件任务派发的消息:气泡外的来源标签;与气泡内的本轮插件调用头(PluginInvocationHeader)是两回事。 */
 function SourcePluginLabel({ align, plugin }: { align: 'user' | 'agent'; plugin: MessageSourcePlugin }) {
   const { colors } = useTheme();
-  const { t, i18n: i18nInstance } = useTranslation();
+  const { i18n: i18nInstance } = useTranslation();
   const label = useMemo(() => sourcePluginLabel(plugin), [plugin, i18nInstance.language]);
   return (
     <SourceLabelWithId
       align={align}
       icon={<Ghost color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
-      idText={t('message.renderer.sourcePluginId', { id: plugin.pluginId })}
+      idText={sourceIdText({ sourcePlugin: plugin })}
       label={label}
       testID="message.sourcePlugin"
     />
@@ -3805,7 +3805,7 @@ function MessageBubble({
       ) : null}
       {item.message.systemCardType === 'mcp-app' ? (
         <ViewabilityGatedMcpAppCard deviceId={actions.remoteDeviceId} sessionId={item.message.source.sessionId}
-          clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? 'MCP App')} />
+          clientId={item.message.source.clientId} title={String(item.message.systemCardData?.title ?? '')} />
       ) : item.message.systemCardType ? (
         <MobileSystemCard
           autoResumeInFlight={isMobileAutoResumeRowInFlight({

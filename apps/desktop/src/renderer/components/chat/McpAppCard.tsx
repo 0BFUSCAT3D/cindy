@@ -56,6 +56,7 @@ export function McpAppCard({
   title: string;
 }) {
   const { t, i18n } = useTranslation();
+  const appTitle = title || t('mcpApps.appName');
   const root = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<McpAppController | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
@@ -165,7 +166,7 @@ export function McpAppCard({
         }
         setBorder(document.prefersBorder);
         frame = window.document.createElement('iframe');
-        frame.title = title;
+        frame.title = appTitle;
         frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
         frame.setAttribute(
           'allow',
@@ -219,7 +220,7 @@ export function McpAppCard({
               .catch(() => {});
         });
     };
-  }, [sessionId, clientId, attempt, title, visible]);
+  }, [sessionId, clientId, attempt, appTitle, visible]);
 
   useEffect(() => {
     if (root.current)
@@ -247,10 +248,10 @@ export function McpAppCard({
           ? 'fixed inset-4 z-50 flex flex-col rounded-xl border border-border bg-[var(--surface-elevated)] p-3'
           : `my-3 overflow-hidden rounded-xl ${border ? 'border border-border' : ''}`
       }
-      aria-label={title}
+      aria-label={appTitle}
     >
       <div className="flex min-h-9 items-center justify-between gap-3 px-3 text-13 text-[var(--text-secondary)]">
-        <span>{title} · MCP App</span>
+        <span>{title ? t('mcpApps.cardTitle', { title }) : appTitle}</span>
         {loading && visible && <Spinner size="sm" />}
         {mode === 'fullscreen' && (
           <Button

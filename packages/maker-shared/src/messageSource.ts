@@ -217,7 +217,7 @@ export function isCrossDeviceSourceSessionId(sessionId: string | undefined): boo
   return split > 0 && split < sessionId.length - 2;
 }
 
-export type MessageSourceIdKind = 'plugin' | 'teammate' | 'session' | 'automation' | 'member';
+export type MessageSourceIdKind = 'plugin' | 'mcpApp' | 'teammate' | 'session' | 'automation' | 'member';
 
 export interface MessageSourceIdEntry {
   kind: MessageSourceIdKind;
@@ -231,7 +231,11 @@ export interface MessageSourceIdEntry {
  */
 export function messageSourceIdEntries(meta: unknown): MessageSourceIdEntry[] {
   const sender = messageSourceSenderFromMeta(meta);
-  if (sender?.kind === 'plugin') return [{ kind: 'plugin', id: sender.pluginId }];
+  if (sender?.kind === 'plugin') {
+    return sender.pluginId.startsWith('mcp-app:')
+      ? [{ kind: 'mcpApp', id: sender.pluginId.slice(8) }]
+      : [{ kind: 'plugin', id: sender.pluginId }];
+  }
   if (sender?.kind === 'shared-member') return [{ kind: 'member', id: sender.memberId }];
   if (sender?.kind === 'session') {
     return [

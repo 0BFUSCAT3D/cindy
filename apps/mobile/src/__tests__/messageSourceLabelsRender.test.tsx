@@ -480,6 +480,13 @@ describe("source labels reveal their ids on long press", () => {
   }
 
   it("shows plugin, session and automation ids, like the device label", () => {
+    const appSource = longPress(
+      [msg("app", "run", { sourcePlugin: { pluginId: "mcp-app:reports", name: "Reports" } })],
+      "message.sourcePlugin",
+    );
+    expect(appSource).toContain("由 MCP App「Reports」发送");
+    expect(appSource).toContain("MCP 服务器 ID：reports");
+    expect(appSource).not.toContain("mcp-app:reports");
     expect(
       longPress([msg("p1", "run", { sourcePlugin: { pluginId: "ghost-github", name: "GitHub" } })], "message.sourcePlugin"),
     ).toContain("插件 ID：ghost-github");

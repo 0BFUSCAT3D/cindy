@@ -2,6 +2,9 @@
   "retry": "Reload",
   "loadFailed": "The app could not load. Check the connection and reload.",
   "updateRequired": "This computer does not support MCP Apps yet. Update Cindy on that computer and try again.",
-  "messageSource": "MCP App",
+  "appName": "MCP App",
+  "cardTitle": "{{title}} · $t(mcpApps.appName)",
+  "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
+  "serverId": "MCP Server ID: {{id}}",
   "exitFullscreen": "Exit Fullscreen"
 }
