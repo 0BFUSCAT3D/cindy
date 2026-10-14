@@ -30,12 +30,16 @@ export function createAppServerProxy(
   const host = getMcpAppsHost();
   const owner = host.captureOwner();
   const connection = new AppConnection(config);
-  const connectionId = host.registerConnection(connection, owner);
   const assertCurrent = () => {
     host.assertOwner(owner);
     const current = readAppServer(config.id);
     if (!current || appServerRevision(current) !== appServerRevision(config))
       throw new Error('MCP_APP_SERVER_CHANGED');
+  };
+  // Bridge factories are created eagerly, but unused proxies must not retain a Host slot.
+  const registerOnUse = () => {
+    assertCurrent();
+    return host.registerConnection(connection, owner);
   };
   const server = new McpServer(
     { name: config.id, version: '1.0.0' },
@@ -44,11 +48,11 @@ export function createAppServerProxy(
     },
   );
   server.server.setRequestHandler(ListToolsRequestSchema, async () => {
-    assertCurrent();
+    registerOnUse();
     return { tools: (await connection.tools()).filter((tool) => toolVisibleTo(tool, 'model')) };
   });
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    assertCurrent();
+    const connectionId = registerOnUse();
     const tool = (await connection.tools()).find(
       (candidate) => candidate.name === request.params.name,
     );
@@ -119,23 +123,23 @@ export function createAppServerProxy(
     return modelResult;
   });
   server.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    assertCurrent();
+    registerOnUse();
     return (await connection.getClient()).readResource(request.params);
   });
   server.server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
-    assertCurrent();
+    registerOnUse();
     return (await connection.getClient()).listResources(request.params);
   });
   server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request) => {
-    assertCurrent();
+    registerOnUse();
     return (await connection.getClient()).listResourceTemplates(request.params);
   });
   server.server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
-    assertCurrent();
+    registerOnUse();
     return (await connection.getClient()).listPrompts(request.params);
   });
   server.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    assertCurrent();
+    registerOnUse();
     return (await connection.getClient()).getPrompt(request.params);
   });
   const unlisten = connection.listen((message) => {

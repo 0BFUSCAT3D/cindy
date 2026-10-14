@@ -5,6 +5,8 @@ Cindy 实现通用 MCP Apps Host。业务服务器按官方协议提供工具与
 也无需把页面做成 Cindy `.cindy` 插件。
 基准为 [官方 `2026-01-26` 规范](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)，
 Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK 保持现有 1.x。
+模型 facade 在首次工具、资源或 prompt 请求时登记连接，未使用的桥接工厂不占 Host 连接额度。
+代理关闭时释放连接；仍被打开的 View 使用的连接保留到该 View 关闭。
 
 ## 协议兼容矩阵
 

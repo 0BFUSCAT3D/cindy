@@ -402,6 +402,44 @@ describe('official MCP Apps interoperability', () => {
     ).rejects.toThrow('MCP_APP_SERVER_CHANGED');
     expect(f.authorize).not.toHaveBeenCalled();
   });
+  it('registers only used model facades and releases their connections on shutdown', async () => {
+    const f = await fixture();
+    setMcpAppsHost(f.host);
+    registerAppServer(f.config.id, () => f.config);
+    const register = vi.spyOn(f.host, 'registerConnection');
+    const release = vi.spyOn(f.host, 'releaseConnection');
+    // Unused first instances from retired bridge generations exceed the Host limit.
+    const facades = Array.from({ length: 300 }, () =>
+      createAppServerProxy(() => f.config, {
+        agentKind: 'codex',
+        sessionId: 'task',
+        workingDir: '',
+      }),
+    );
+    cleanups.push(async () => {
+      await Promise.allSettled(facades.map((facade) => facade.close()));
+    });
+    expect(register).not.toHaveBeenCalled();
+
+    const facade = facades[facades.length - 1];
+    const client = new Client({ name: 'model-client', version: '1' });
+    cleanups.push(async () => {
+      await client.close();
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await facade.connect(serverTransport);
+    await client.connect(clientTransport);
+    expect(register).not.toHaveBeenCalled();
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('draft_form');
+    expect(register).toHaveBeenCalledOnce();
+    const connection = register.mock.calls[0][0];
+    expect(connection.isClosed).toBe(false);
+    await client.listTools();
+    expect(register.mock.results[1].value).toBe(register.mock.results[0].value);
+    await facade.close();
+    await vi.waitFor(() => expect(connection.isClosed).toBe(true));
+    expect(release).toHaveBeenCalledWith(connection);
+  });
   it('the model facade strips UI metadata and never turns card-write failure into tool failure', async () => {
     const f = await fixture();
     setMcpAppsHost(f.host);
