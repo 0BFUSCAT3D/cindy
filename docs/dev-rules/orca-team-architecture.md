@@ -494,7 +494,7 @@ Codex thread start / resume 成功后必须注册 `threadId -> session context`�
 
 #### 6. Agent／模型选择在发送边界应用（状态：不变量）
 
-Lead／Worker 可选择新的 Agent／模型；选择先登记为 pending intent，不打断当前轮次。跨 Agent 切换在下一次发送前关闭旧 runtime 并重建，保留协同身份；协同直发先调用 `applyPendingAgentSwitchIfIdle`，队列出队与恢复继续复用统一发送事务。SSH 任务仍不支持跨 Agent 切换，用户不能借此改变 Agent 位置。effort 仍是 per-turn 参数。实现见 `sessionAgentSwitchHandler.ts`、`orcaInterAgentDispatcher.ts` 与 `register.ts`；回归见 `sessionRuntimeHarnessSelection.test.ts`、`orcaInterAgentDispatcher.test.ts` 和 `makerSendTransaction.test.ts`。
+Lead／Worker 可在 Claude Code、Codex、Pi 三者间双向切换并选择模型；选择先登记为 pending intent，不打断当前轮次。跨 Agent 切换在下一次发送前关闭旧 runtime 并重建，保留协同身份；协同直发先调用 `applyPendingAgentSwitchIfIdle`，队列出队与恢复继续复用统一发送事务。已派发的回执使用实际接受消息的 runtime 的 Agent，不能返回切换前的 Worker 快照；仍在队列中的消息沿用当前 Agent，不预报尚未执行的切换。SSH 任务仍不支持跨 Agent 切换，用户不能借此改变 Agent 位置。effort 仍是 per-turn 参数。实现见 `sessionAgentSwitchHandler.ts`、`orcaInterAgentDispatcher.ts`、`orcaTeamService.ts` 与 `register.ts`；三者六个方向与 Lead／Worker 的回归见 `sessionAgentSwitchHandler.test.ts`、`orcaInterAgentDispatcher.test.ts`、`orcaTeamService.test.ts` 和 `makerSendTransaction.test.ts`。
 
 Worker 创建与默认模型继承边界对历史短 ID 做 provider-aware 兼容：优先保留目标路由上
 可用的精确 ID；只有精确匹配失败、候选来源属于 managed Gateway、且

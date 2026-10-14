@@ -22,17 +22,18 @@ vi.mock('../../logger.js', () => ({
 }));
 
 interface TestSessionMeta {
-  agentKind: 'codex';
+  agentKind: 'claude-code' | 'codex' | 'pi';
   workDir: string;
   model: string;
 }
 
 function createLiveSession(
   send: (message: UserMessage, opts?: SessionSendOptions) => Promise<SessionSendResult>,
+  agentKind: TestSessionMeta['agentKind'] = 'codex',
 ) {
   return {
     id: 'target-session',
-    agentKind: 'codex' as const,
+    agentKind,
     isTurnRunning: vi.fn(() => false),
     send: vi.fn(send),
   };
@@ -563,9 +564,13 @@ describe('Orca lead/worker dispatcher', () => {
     expect(rollback).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves lazy-resume turn capture to sendToSessionInternal', async () => {
+  it.each(['claude-code', 'codex', 'pi'] as const)('leaves lazy-resume turn capture to sendToSessionInternal and reports its %s Agent', async (agentKind) => {
     const h = createHarness({
       getLiveSession: vi.fn(() => null),
+      sendToSessionInternal: vi.fn(async () => ({
+        ok: true, targetSessionId: 'target-session', agentKind, wakeKind: 'resumed',
+        targetTitle: 'Resumed target', targetLastUserSendAt: null,
+      } as const)),
     });
 
     const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage({
@@ -576,7 +581,7 @@ describe('Orca lead/worker dispatcher', () => {
       meta: { source: 'orca', context: 'resume-test' },
     });
 
-    expect(result).toMatchObject({ ok: true, mode: 'dispatched' });
+    expect(result).toMatchObject({ ok: true, mode: 'dispatched', agentKind });
     expect(h.deps.sendToSessionInternal).toHaveBeenCalledWith(expect.objectContaining({
       targetSessionId: 'target-session',
       clientId: 'client-1',
@@ -1020,11 +1025,36 @@ it.each(['Do not publish', ''])('ordinary live continuation retains the last acc
   expect(result.ok).toBe(true);
 });
 
-it.each(['lead', 'worker'] as const)('applies a deferred Agent switch before direct %s delivery', async (source) => {
+const switchAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+const directSwitchCases = (['lead', 'worker'] as const).flatMap((source) =>
+  switchAgentKinds.flatMap((from) => switchAgentKinds.filter((to) => to !== from).map((to) => ({
+    source, from, to, name: `${source} delivery: ${from} → ${to}`,
+  }))),
+);
+it('passes the dispatcher Agent receipt through the host worker adapter', async () => {
+  const register = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
+  const start = register.indexOf('    dispatchWorkerMessage: async ({');
+  const end = register.indexOf('    reserveWorkerMessage:', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const dispatched = vi.fn(async () => ({
+    ok: true, mode: 'dispatched', agentKind: 'pi', clientId: 'worker-input',
+    dispatchOutcome: { kind: 'session-dispatch', source: 'orca', dispatched: true },
+  }));
+  const compiled = ts.transpileModule(`return ({${register.slice(start, end)}}).dispatchWorkerMessage;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const dispatchWorkerMessage = new Function('dispatchOrEnqueueOrcaInterAgentMessage', compiled)(dispatched);
+  await expect(dispatchWorkerMessage({
+    targetSessionId: 'worker-session', message: 'Continue', workerId: 'worker-1',
+    dispatchMeta: { source: 'orca', context: 'switched-agent-receipt' },
+  })).resolves.toMatchObject({ ok: true, agentKind: 'pi' });
+});
+
+it.each(directSwitchCases)('applies a deferred Agent switch before direct $name', async ({ source, from, to }) => {
   const switched = createLiveSession(async (_message, opts) => {
     await opts?.onAccepted?.();
     return { accepted: true };
-  });
+  }, to);
   let current: ReturnType<typeof createLiveSession>;
   let handoff: string | null = null;
   const consume = vi.fn(() => { handoff = null; });
@@ -1039,7 +1069,8 @@ it.each(['lead', 'worker'] as const)('applies a deferred Agent switch before dir
     peekPendingHandoff: async () => handoff,
     consumePendingHandoff: consume,
   });
-  current = h.liveSession;
+  const previous = createLiveSession(async () => { throw new Error('must not send to the previous Agent'); }, from);
+  current = previous;
 
   const message = {
     targetSessionId: 'target-session',
@@ -1050,9 +1081,10 @@ it.each(['lead', 'worker'] as const)('applies a deferred Agent switch before dir
   };
   const result = await h.dispatcher.dispatchOrEnqueueOrcaInterAgentMessage(message);
 
-  expect(result).toMatchObject({ ok: true, mode: 'dispatched' });
+  expect(result).toMatchObject({ ok: true, mode: 'dispatched', agentKind: to });
   expect(h.deps.applyPendingAgentSwitch).toHaveBeenCalledWith('target-session');
-  expect(h.liveSession.send).not.toHaveBeenCalled();
+  expect(previous.send).not.toHaveBeenCalled();
+  expect(current.agentKind).toBe(to);
   const content = switched.send.mock.calls[0]?.[0].content;
   expect(content).toContain('History from the previous engine');
   expect(content).toContain(source === 'lead' ? '[From Orca Lead]' : '[From Orca Worker]');

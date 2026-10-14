@@ -39,6 +39,8 @@ export type DispatchOrcaInterAgentMessageResult =
   | {
       ok: true;
       mode: OrcaInterAgentDispatchMode;
+      /** Runtime that accepted the message; queued messages have not switched yet. */
+      agentKind?: AgentKind;
       clientId: string;
       dispatchOutcome: CollabDispatchSuccessOutcome | CollabDispatchQueuedOutcome;
       targetTitle?: string | null;
@@ -479,6 +481,7 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
             // The message joined the running turn. Accepted/commit callbacks claim a new
             // turn's running/auto-bridge identity, so they deliberately never run here.
             return { ok: true, mode: 'steered', clientId,
+              ...(liveTurn.agentKind ? { agentKind: liveTurn.agentKind } : {}),
               dispatchOutcome: { kind: 'session-dispatch', source: params.meta.source, dispatched: true },
               ...dispatchReceipt };
           }
@@ -553,6 +556,7 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
           return {
             ok: true,
             mode: result.wakeKind === 'queued' ? 'queued' : 'dispatched',
+            ...(result.wakeKind !== 'queued' ? { agentKind: result.agentKind } : {}),
             clientId,
             dispatchOutcome: result.wakeKind === 'queued'
               ? makeQueuedDispatchOutcome(params.meta.source)
@@ -607,7 +611,9 @@ export function createOrcaInterAgentDispatcher<TSessionMeta>(
               log,
             );
           }
-          return { ok: true, mode: 'dispatched', clientId, dispatchOutcome: result.dispatchOutcome, ...dispatchReceipt };
+          return { ok: true, mode: 'dispatched', clientId,
+            ...(live.agentKind ? { agentKind: live.agentKind } : {}),
+            dispatchOutcome: result.dispatchOutcome, ...dispatchReceipt };
         }
         if (result.dispatchOutcome.kind === 'host-send' && result.dispatchOutcome.code === 'SESSION_RUNNING') {
           await rollbackAcceptedForRequeue();

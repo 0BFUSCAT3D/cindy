@@ -29,6 +29,7 @@ import {
 import type { MakerSessionCreateOpts } from '../sessionRequest';
 import { CredentialModeSwitchBusyError } from '../../maker-host/codex-credential-switch';
 import path from 'node:path';
+import os from 'node:os';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { createWorkingDirectoryRecovery } from '../workingDirectoryRecovery';
@@ -37,6 +38,13 @@ import { buildCindyMakeTaskNote } from '../../cindy-make/taskNote';
 import { getResolvedMainLocale } from '../../i18n';
 import { buildMobileClientPromptNote } from '../mobileClientPromptNote';
 import { buildUiLanguageErrorNote } from '../uiLanguageErrorNote';
+import {
+  applyPendingAgentSwitchIfIdle,
+  createPendingAgentSwitchRegistry,
+  performSessionAgentSwitch,
+  type AgentSwitchSessionRow,
+  type MakerSessionAgentSwitchHandlerDeps,
+} from '../sessionAgentSwitchHandler';
 
 function uiLanguageNote(): string {
   return buildUiLanguageErrorNote(getResolvedMainLocale());
@@ -3376,6 +3384,86 @@ describe('session-agent-switch handoff injection', () => {
       expect(deps.createDbMessage).toHaveBeenCalledTimes(1);
     },
   );
+
+  const orcaAgentKinds = ['claude-code', 'codex', 'pi'] as const;
+  const orcaSwitchCases = (['lead', 'worker'] as const).flatMap((role) =>
+    orcaAgentKinds.flatMap((from) => orcaAgentKinds.filter((to) => to !== from).flatMap((to) =>
+      [true, false].map((hasLive) => ({ role, from, to, hasLive, name: `${role}: ${from} → ${to}, live=${hasLive}` })),
+    )),
+  );
+  it.each(orcaSwitchCases)('Orca queued/cold-resume $name applies the real switch before sending with role and history', async ({ role, from, to, hasLive }) => {
+    const pendingSwitches = createPendingAgentSwitchRegistry();
+    const previous = createSession({ agentKind: from });
+    let current: MakerSendTransactionSession | undefined = hasLive ? previous : undefined;
+    let row: AgentSwitchSessionRow = {
+      id: 'session-1', agentKind: from === 'claude-code' ? 'cc' : from, model: 'source-model',
+      providerId: 'source-provider', status: 'active', remoteHostId: null,
+      orcaRole: role, sdkSessionId: 'source-native-session',
+    };
+    let handoff: string | null = null;
+    const switchDeps: MakerSessionAgentSwitchHandlerDeps = {
+      pendingSwitches,
+      getSessionRow: async () => ({ ...row }),
+      getLiveSession: () => current,
+      closeSession: vi.fn(async () => { current = undefined; }),
+      listMessagesForHandoff: async () => [{ role: 'user', content: 'Existing collaboration progress', createdAt: 1 }],
+      applyAgentSwitchToDb: vi.fn(async (_id, patch) => {
+        row = { ...row, ...patch, providerId: patch.providerId ?? null, sdkSessionId: patch.sdkSessionId ?? null };
+      }),
+      setSessionProvider: vi.fn(),
+      insertBoundaryMessage: vi.fn(async () => 'switch-boundary'),
+      applyResumeFallbackAtomically: vi.fn(async () => { throw new Error('fresh target has no parked session to recover'); }),
+      setPendingHandoff: (_id, text) => { handoff = text; },
+      bootstrapSwitchedSession: vi.fn(async () => { throw new Error('queue must bootstrap through the send transaction'); }),
+      withCloseSuppressed: (_id, fn) => fn(),
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+    await performSessionAgentSwitch(switchDeps, {
+      sessionId: 'session-1', targetAgentKind: to, model: 'target-model', providerId: 'target-provider',
+    });
+    expect(switchDeps.closeSession).not.toHaveBeenCalled();
+    const { deps } = createDeps({
+      getSession: () => current,
+      applyPendingAgentSwitch: (id, options) => applyPendingAgentSwitchIfIdle(switchDeps, id, options),
+      reconcileCreateOptsWithDb: vi.fn(async (_id, opts) => {
+        opts.agentKind = row.agentKind === 'cc' ? 'claude-code' : row.agentKind as AgentKind;
+        opts.model = row.model ?? undefined;
+        opts.providerId = row.providerId;
+        opts.resumeSessionId = row.sdkSessionId ?? undefined;
+      }),
+      synthesizeOrcaVendorOptionsFromDb: vi.fn(async (_id, opts) => { opts.orcaRole = role; return true; }),
+      bootstrapSession: vi.fn(async (opts) => {
+        current = createSession({ agentKind: opts.agentKind as AgentKind, workDir: opts.workingDir });
+        return { session: current, didInjectOrcaInstructions: true, didInjectProjectContext: false };
+      }),
+      peekPendingHandoff: async () => handoff,
+      consumePendingHandoff: vi.fn(() => { handoff = null; }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    const origin = { kind: 'orca', senderLabel: role === 'worker' ? 'Lead' : 'Worker', displayText: 'Continue collaboration' } as const;
+    const result = await transaction.sendToAgentAccepted('session-1', { type: 'user', content: origin.displayText },
+      { agentKind: from, workingDir: path.join(os.tmpdir(), 'orca-switch-fixture'), resumeSessionId: 'source-native-session' }, {
+        origin, persistUserMessage: { clientId: 'orca-queued-input', content: origin.displayText },
+      });
+    expect(result).toMatchObject({ accepted: true });
+    expect(pendingSwitches.get('session-1')).toBeUndefined();
+    expect(previous.send).not.toHaveBeenCalled();
+    expect(current?.agentKind).toBe(to);
+    expect(row.orcaRole).toBe(role);
+    expect(deps.bootstrapSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      agentKind: to, model: 'target-model', providerId: 'target-provider', resumeSessionId: undefined, orcaRole: role,
+    }));
+    expect(deps.markOrcaRoleIfNeeded).toHaveBeenCalledWith('session-1', role);
+    const sent = vi.mocked(current!.send).mock.calls[0];
+    expect((sent[0] as UserMessage).content).toContain('Existing collaboration progress');
+    expect((sent[0] as UserMessage).content).toContain(origin.displayText);
+    expect(sent[1]?.origin).toEqual(origin);
+    expect(deps.createDbMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      content: origin.displayText, agentMeta: expect.objectContaining({ origin }),
+    }), undefined);
+    expect(deps.consumePendingHandoff).toHaveBeenCalledExactlyOnceWith('session-1');
+    expect(handoff).toBeNull();
+  });
 
   it('排队 drain 端到端:切换在派发时刻落实(关旧引擎)→ createOpts 按 DB 对齐新引擎 → 交接注入新引擎首条 + scheduler origin 透传', async () => {
     // 复刻 coordinator drain 一条排队 scheduler 心跳时对 sendToAgentAccepted 的调用:

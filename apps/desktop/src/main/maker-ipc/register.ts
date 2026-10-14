@@ -13754,6 +13754,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ok: true,
         mode: result.mode,
         clientId: result.clientId,
+        ...(result.agentKind ? { agentKind: result.agentKind } : {}),
         dispatchOutcome: result.dispatchOutcome,
         targetTitle: result.targetTitle ?? null,
         targetLastUserSendAt: result.targetLastUserSendAt ?? null,

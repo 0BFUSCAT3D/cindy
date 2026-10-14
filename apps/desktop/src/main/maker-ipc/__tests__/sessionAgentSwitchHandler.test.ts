@@ -78,6 +78,76 @@ const validParams = {
   providerId: null,
 };
 
+const orcaAgents = [
+  { kind: 'claude-code', dbKind: 'cc', model: 'claude-fable-5', providerId: 'anthropic' },
+  { kind: 'codex', dbKind: 'codex', model: 'gpt-6-astra', providerId: 'openai' },
+  { kind: 'pi', dbKind: 'pi', model: 'gpt-6-astra', providerId: 'openai' },
+] as const;
+const orcaSwitchCases = (['lead', 'worker'] as const).flatMap((role) =>
+  orcaAgents.flatMap((from) => orcaAgents.filter((to) => to.kind !== from.kind).map((to) => ({
+    role, from, to, name: `${role}: ${from.kind} → ${to.kind}`,
+  }))),
+);
+
+describe('Orca three-Agent switching', () => {
+  it.each(orcaSwitchCases)('$name stages until idle, preserves its role, and resumes the parked source on return', async ({ role, from, to }) => {
+    let row = makeRow({ agentKind: from.dbKind, model: from.model, providerId: from.providerId, orcaRole: role });
+    let running = true;
+    const pendingSwitches = createPendingAgentSwitchRegistry();
+    const parked = new Map<string, string>();
+    const { deps } = makeDeps({
+      pendingSwitches,
+      getSessionRow: vi.fn(async () => ({ ...row })),
+      getLiveSession: vi.fn(() => ({ isTurnRunning: () => running })),
+      findParkedEngineSession: vi.fn(async (_id, kind) => {
+        const sdkSessionId = parked.get(kind);
+        return sdkSessionId ? { sdkSessionId, watermarkCreatedAt: 0, watermarkRowid: 0 } : null;
+      }),
+      applyAgentSwitchToDb: vi.fn(async (_id, patch) => {
+        row = { ...row, ...patch, providerId: patch.providerId ?? null, sdkSessionId: patch.sdkSessionId ?? null };
+      }),
+      insertBoundaryMessage: vi.fn(async (_id, boundary) => {
+        if (boundary.fromSdkSessionId) parked.set(boundary.fromAgentKind, boundary.fromSdkSessionId);
+        return `boundary-${parked.size}`;
+      }),
+      bootstrapSwitchedSession: vi.fn(async () => { row.sdkSessionId ??= `native-${row.agentKind}`; }),
+    });
+
+    await expect(performSessionAgentSwitch(deps, {
+      sessionId: 's1', targetAgentKind: to.kind, model: to.model, providerId: to.providerId,
+    })).resolves.toMatchObject({ deferred: true, switched: false });
+    await applyPendingAgentSwitchIfIdle(deps, 's1', { bootstrapAfterSwitch: true });
+    expect(row).toMatchObject({ agentKind: from.dbKind, sdkSessionId: 'sdk-old', orcaRole: role });
+    expect(deps.closeSession).not.toHaveBeenCalled();
+    expect(pendingSwitches.get('s1')?.targetAgentKind).toBe(to.kind);
+
+    running = false;
+    await applyPendingAgentSwitchIfIdle(deps, 's1', { bootstrapAfterSwitch: true });
+    expect(row).toMatchObject({ agentKind: to.dbKind, model: to.model, providerId: to.providerId, orcaRole: role, sdkSessionId: `native-${to.dbKind}` });
+    expect(pendingSwitches.get('s1')).toBeUndefined();
+    expect(deps.closeSession).toHaveBeenCalledExactlyOnceWith('s1');
+    expect(deps.bootstrapSwitchedSession).toHaveBeenCalledExactlyOnceWith('s1');
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({ agentKind: to.dbKind, sdkSessionId: null }));
+    expect(deps.insertBoundaryMessage).toHaveBeenLastCalledWith('s1', expect.objectContaining({
+      fromAgentKind: from.dbKind, toAgentKind: to.dbKind, fromSdkSessionId: 'sdk-old',
+      consumed: false, resumed: false, handoff: expect.stringContaining('你好'),
+    }));
+
+    await performSessionAgentSwitch(deps, {
+      sessionId: 's1', targetAgentKind: from.kind, model: from.model, providerId: from.providerId,
+    });
+    await applyPendingAgentSwitchIfIdle(deps, 's1', { bootstrapAfterSwitch: true });
+    expect(row).toMatchObject({ agentKind: from.dbKind, model: from.model, providerId: from.providerId, orcaRole: role, sdkSessionId: 'sdk-old' });
+    expect(pendingSwitches.get('s1')).toBeUndefined();
+    expect(deps.insertBoundaryMessage).toHaveBeenLastCalledWith('s1', expect.objectContaining({
+      fromAgentKind: to.dbKind, toAgentKind: from.dbKind, resumed: true, consumed: false,
+      handoff: expect.stringContaining('now it is switching back to you'),
+    }));
+    expect(deps.closeSession).toHaveBeenCalledTimes(2);
+    expect(deps.bootstrapSwitchedSession).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('same-engine selection at send', () => {
   function selectionHarness() {
     const pending = createPendingAgentSwitchRegistry();
