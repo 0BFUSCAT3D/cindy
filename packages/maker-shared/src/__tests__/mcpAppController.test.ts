@@ -47,10 +47,10 @@ describe('MCP App transport lifecycle', () => {
   it('closes a View that finishes opening after its card unmounts', async () => {
     let resolve!: (value: unknown) => void;
     const invoke = vi.fn(
-      () =>
-        new Promise<unknown>((done) => {
+      async (_session: string, input: Record<string, unknown>) =>
+        input.op === 'open' ? new Promise<unknown>((done) => {
           resolve = done;
-        }),
+        }) : {},
     );
     const controller = new McpAppController(invoke, 'task', 'card', vi.fn(), vi.fn(), vi.fn());
     const pending = controller.open({});
@@ -59,6 +59,39 @@ describe('MCP App transport lifecycle', () => {
     resolve(document);
     expect(await pending).toBeUndefined();
     expect(invoke).toHaveBeenLastCalledWith('task', { op: 'teardown', viewId: 'view' });
+  });
+  it('gives slow resource loading a separate initialization window', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.invoke.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60_000));
+      return document;
+    });
+    const pending = f.controller.open({});
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await pending).toBe(document);
+    expect(f.error).not.toHaveBeenCalled();
+    f.controller.receive({ jsonrpc: '2.0', method: 'ui/notifications/initialized' });
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(f.error).not.toHaveBeenCalled();
+    await f.controller.close();
+  });
+  it('cancels the correlated open after a lost response without replaying it', async () => {
+    const f = fixture();
+    f.invoke.mockRejectedValueOnce(new Error('INVOKE_TIMEOUT'));
+    await expect(f.controller.open({})).rejects.toThrow('INVOKE_TIMEOUT');
+    const open = f.invoke.mock.calls[0][1];
+    await f.controller.close();
+    expect(f.invoke).toHaveBeenLastCalledWith('task', { op: 'cancel-open', openId: open.openId });
+    expect(f.invoke.mock.calls.filter(([, input]) => input.op === 'open')).toHaveLength(1);
+  });
+  it('handles trusted sandbox Escape through the display-mode operation', async () => {
+    const f = fixture();
+    await f.controller.open({});
+    f.controller.receive({ jsonrpc: '2.0', method: 'ui/notifications/sandbox-escape' });
+    expect(f.invoke).toHaveBeenLastCalledWith('task', { op: 'display-mode', viewId: 'view', mode: 'inline' });
+    expect(f.state).not.toHaveBeenCalled();
+    await f.controller.close();
   });
   it('times out initialization and releases the View without restarting a write', async () => {
     vi.useFakeTimers();

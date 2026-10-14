@@ -240,7 +240,7 @@ describe('official MCP Apps interoperability', () => {
       });
       expect(f.document.html).toContain('创建模拟申请');
       expect(
-        () => new Script(f.document.html.match(/<script>([\s\S]*)<\/script>/)![1]),
+        () => new Script(f.document.html.match(/<script>([\s\S]*)<\/script>/i)![1]),
       ).not.toThrow();
     },
   );

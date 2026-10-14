@@ -93,6 +93,7 @@ class ViewTransport implements Transport {
 }
 
 interface View {
+  openId?: string;
   owner: object;
   caller: string;
   sessionId: string;
@@ -119,6 +120,8 @@ export function appServerRevision(config: AppServerConfig): string {
 /** One official AppBridge per View; all requests are bound to a host-verified card. */
 export class McpAppsHost {
   private readonly views = new Map<string, View>();
+  private readonly opening = new Map<string, { owner: object; abort: AbortController }>();
+  private readonly cancelledOpens = new Map<string, { owner: object; until: number }>();
   private readonly connections = new Map<
     string,
     { owner: object; connection: AppConnection; retired?: boolean }
@@ -173,8 +176,65 @@ export class McpAppsHost {
     sessionId: string,
     clientId: string,
     hostContext: McpUiHostContext,
+    openId?: string,
+  ): Promise<McpAppDocument> {
+    const owner = this.captureOwner();
+    const key = JSON.stringify([caller, sessionId, openId ?? randomUUID()]);
+    this.pruneCancelledOpens();
+    if (this.cancelledOpens.get(key)?.owner === owner) throw new Error('MCP_APP_OPEN_CANCELLED');
+    if (this.opening.has(key) || this.opening.size >= 256) throw new Error('MCP_APP_VIEW_LIMIT');
+    const pending = { owner, abort: new AbortController() };
+    this.opening.set(key, pending);
+    const timer = setTimeout(() => pending.abort.abort(new Error('MCP_APP_OPEN_TIMEOUT')), 90_000);
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(pending.abort.signal.reason);
+      pending.abort.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([
+        this.openView(caller, sessionId, clientId, hostContext, pending.abort.signal, openId),
+        cancelled,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      pending.abort.signal.removeEventListener('abort', onAbort);
+      if (this.opening.get(key) === pending) this.opening.delete(key);
+    }
+  }
+
+  async cancelOpen(caller: string, sessionId: string, openId: string): Promise<void> {
+    const key = JSON.stringify([caller, sessionId, openId]);
+    this.pruneCancelledOpens();
+    // Cancellation may win the IPC authorization race before open reaches Host.
+    // Keep a bounded tombstone longer than the complete control-side budget.
+    if (this.cancelledOpens.size >= 512) this.cancelledOpens.delete(this.cancelledOpens.keys().next().value!);
+    this.cancelledOpens.set(key, { owner: this.captureOwner(), until: Date.now() + 180_000 });
+    const pending = this.opening.get(key);
+    if (pending && pending.owner === this.deps.owner())
+      pending.abort.abort(new Error('MCP_APP_OPEN_CANCELLED'));
+    for (const [id, view] of this.views) {
+      if (view.owner === this.deps.owner() && view.caller === caller &&
+          view.sessionId === sessionId && view.openId === openId)
+        await this.disposeView(id, view);
+    }
+  }
+
+  private pruneCancelledOpens(): void {
+    for (const [key, entry] of this.cancelledOpens)
+      if (entry.owner !== this.deps.owner() || entry.until <= Date.now()) this.cancelledOpens.delete(key);
+  }
+
+  private async openView(
+    caller: string,
+    sessionId: string,
+    clientId: string,
+    hostContext: McpUiHostContext,
+    signal: AbortSignal,
+    openId?: string,
   ): Promise<McpAppDocument> {
     await this.sweep();
+    signal.throwIfAborted();
     const owner = this.deps.owner();
     if (!owner) throw new Error('MCP_APP_OWNER_UNAVAILABLE');
     if (
@@ -183,6 +243,7 @@ export class McpAppsHost {
     )
       throw new Error('MCP_APP_VIEW_LIMIT');
     const record = await this.deps.readCard(sessionId, clientId);
+    signal.throwIfAborted();
     const config = this.deps.config(record.serverId);
     if (!config || appServerRevision(config) !== record.serverRevision)
       throw new Error('MCP_APP_SERVER_CHANGED');
@@ -197,10 +258,12 @@ export class McpAppsHost {
     if (detached) this.connections.get(registeredId)!.retired = true;
     try {
       const client = await connection.getClient();
-      const tool = (await connection.tools()).find((item) => item.name === record.tool.name);
+      signal.throwIfAborted();
+      const tool = (await connection.tools(signal)).find((item) => item.name === record.tool.name);
       if (!tool || uiToolUri(tool) !== record.resourceUri)
         throw new Error('MCP_APP_TOOL_UNAVAILABLE');
-      const loaded = await connection.resource(record.resourceUri);
+      const loaded = await connection.resource(record.resourceUri, signal);
+      signal.throwIfAborted();
       const resource = readAppResource(loaded.result, record.resourceUri, loaded.meta);
       const policy = appCsp(resource.meta);
       if (owner !== this.deps.owner()) throw new Error('MCP_APP_OWNER_CHANGED');
@@ -238,6 +301,7 @@ export class McpAppsHost {
         { hostContext: context },
       );
       const view: View = {
+        openId,
         owner,
         caller,
         sessionId,
@@ -403,6 +467,7 @@ export class McpAppsHost {
         // Register before rereading: tool completion during loading must reach this
         // View, and a clear or configuration change must prevent publishing it.
         const latest = await this.deps.readCard(sessionId, clientId);
+        signal.throwIfAborted();
         this.view(caller, sessionId, viewId);
         if (
           latest.serverId !== record.serverId ||
@@ -653,6 +718,9 @@ export class McpAppsHost {
   }
 
   async reset(): Promise<void> {
+    this.cancelledOpens.clear();
+    for (const pending of this.opening.values())
+      pending.abort.abort(new Error('MCP_APP_OWNER_CHANGED'));
     clearInterval(this.sweepTimer);
     this.sweepTimer = undefined;
     const views = [...this.views.entries()];

@@ -5,7 +5,7 @@ describe('MCP Apps cross-platform document contract', () => {
     const key = '</script><script>attack</script>';
     const html = mcpAppSandboxDocument(key);
     expect(html).not.toContain(key);
-    expect(html.match(/<script>/g)).toHaveLength(1);
+    expect(html.match(/<script>/gi)).toHaveLength(1);
     const encoded = html.match(/const bridgeKey=(.*?);/s)![1];
     expect(JSON.parse(encoded)).toBe(key);
   });

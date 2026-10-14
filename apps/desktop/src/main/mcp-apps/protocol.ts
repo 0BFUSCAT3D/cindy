@@ -66,7 +66,7 @@ export function appCsp(meta: McpUiResourceMeta = {}): {
     `font-src 'self' ${resources}`,
     `connect-src ${csp.connectDomains.join(' ') || "'none'"}`,
     `frame-src ${csp.frameDomains.join(' ') || "'none'"}`,
-    `base-uri ${csp.baseUriDomains.join(' ') || "'none'"}`,
+    `base-uri ${csp.baseUriDomains.join(' ') || "'self'"}`,
     "object-src 'none'",
     "form-action 'none'",
     "worker-src 'none'",

@@ -9,6 +9,7 @@ function fixture() {
     poll: vi.fn(async () => []),
     context: vi.fn(),
     teardown: vi.fn(),
+    cancelOpen: vi.fn(),
     displayMode: vi.fn(),
     linkResult: vi.fn(),
   };
@@ -34,7 +35,7 @@ describe('task-bound MCP App operations', () => {
         f.local,
       ),
     ).toBe(f.document);
-    expect(f.api.open).toHaveBeenCalledWith('renderer:1', 'task', 'card', { theme: 'dark' });
+    expect(f.api.open).toHaveBeenCalledWith('renderer:1', 'task', 'card', { theme: 'dark' }, undefined);
     expect(f.local.supply).toHaveBeenCalledWith(f.document, 'renderer:1');
     await handleMcpAppOperation(f.host, 'device:phone', 'task', {
       op: 'poll',
@@ -49,6 +50,8 @@ describe('task-bound MCP App operations', () => {
       success: false,
     });
     expect(f.api.linkResult).toHaveBeenCalledWith('device:phone', 'task', 'view', 'link', false);
+    await handleMcpAppOperation(f.host, 'device:phone', 'task', { op: 'cancel-open', openId: 'attempt' });
+    expect(f.api.cancelOpen).toHaveBeenCalledWith('device:phone', 'task', 'attempt');
   });
   it.each([
     { op: 'poll', viewId: 'view', after: -1 },

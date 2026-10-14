@@ -64,6 +64,7 @@ export function McpAppCard({
   const [height, setHeight] = useState(320);
   const [mode, setMode] = useState('inline');
   const [border, setBorder] = useState(true);
+  const [visible, setVisible] = useState(false);
   const locale = i18n.resolvedLanguage ?? i18n.language;
   const localeRef = useRef(locale);
   localeRef.current = locale;
@@ -71,6 +72,23 @@ export function McpAppCard({
   useEffect(() => {
     const element = root.current;
     if (!element) return;
+    let intersecting = false;
+    const update = () => setVisible(intersecting && document.visibilityState !== 'hidden');
+    const observer = new IntersectionObserver(([entry]) => {
+      intersecting = entry.isIntersecting;
+      update();
+    });
+    observer.observe(element);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const element = root.current;
+    if (!element || !visible) return;
     let disposed = false;
     let frame: HTMLIFrameElement | undefined;
     let localViewId: string | undefined;
@@ -173,6 +191,10 @@ export function McpAppCard({
     sizeObserver.observe(element);
     return () => {
       disposed = true;
+      controllerRef.current = undefined;
+      // Notify the App before hiding it, and release its slot without waiting
+      // for an offscreen frame's teardown response.
+      controller.prepareNativeClose();
       themeObserver.disconnect();
       sizeObserver.disconnect();
       // Atomic move preserves the Chromium frame during its bounded teardown handshake.
@@ -197,7 +219,7 @@ export function McpAppCard({
               .catch(() => {});
         });
     };
-  }, [sessionId, clientId, attempt, title]);
+  }, [sessionId, clientId, attempt, title, visible]);
 
   useEffect(() => {
     if (root.current)
@@ -229,7 +251,7 @@ export function McpAppCard({
     >
       <div className="flex min-h-9 items-center justify-between gap-3 px-3 text-13 text-[var(--text-secondary)]">
         <span>{title} · MCP App</span>
-        {loading && <Spinner size="sm" />}
+        {loading && visible && <Spinner size="sm" />}
         {mode === 'fullscreen' && (
           <Button
             data-exit-fullscreen

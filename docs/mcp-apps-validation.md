@@ -23,7 +23,7 @@
 pnpm.cmd --filter desktop test:mcp-apps:conformance
 ```
 
-本次退出码为 0：7 个测试文件、75 项测试通过；随后两个真实 Electron 集成检查分别输出
+本次退出码为 0：9 个测试文件、86 项测试通过；随后两个真实 Electron 集成检查分别输出
 `MCP_APPS_SANDBOX_VERDICT=passed` 和 `MCP_APPS_RAW_SANDBOX_VERDICT=passed`。
 `pnpm.cmd --filter desktop typecheck` 与 MCP Apps 代码及三个模拟/验证脚本的定向 ESLint 也通过。
 
@@ -33,9 +33,16 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 | `conformance.test.ts`         |       16 | 独立 JSON-RPC App、编码/metadata 组合、分页、通知、取消、能力协商  |
 | `operations.test.ts`          |       11 | 任务与调用者绑定、输入校验、远程操作边界                           |
 | `ipc.test.ts`                 |        6 | 卡片持久化、清空与账号竞态、权限路由、公开错误                     |
-| `protocol.test.ts`            |       17 | 标准 metadata、可见性、资源格式/大小、CSP 域声明                   |
-| `sandboxProtocol.test.ts`     |        4 | 不同 origin、账号隔离、供片撤销、嵌套 iframe 导航                  |
+| `protocol.test.ts`            |       18 | 标准 metadata、可见性、资源格式/大小、CSP 域声明与同源 base URI 默认值 |
+| `sandboxProtocol.test.ts`     |        7 | 不同 origin、账号隔离、权限拒绝、供片撤销、嵌套导航与 Escape       |
 | `remoteAuthorization.test.ts` |        5 | 真实 Session instance 路由、冻结装配名单、远程发现与执行授权       |
+| `connection.test.ts`          |        3 | 首次失败及断线后独立重连、关闭竞态、不重放已发送工具               |
+| `openLifecycle.test.ts`       |        4 | 加载超时、打开前取消、晚到 View 回收、调用者与任务隔离             |
+
+作者侧修复另经 Desktop 卡片可见性、MCP 目录与 SSH bridge、安全守卫定向测试验证；
+Mobile 的卡片导航/HTML 注入与三个受影响消息展示测试共 39 项通过。共享 controller/
+文档测试 13 项、device-link 超时与重试策略测试 31 项通过；Desktop、Mobile 与两个
+共享包的类型检查、定向 ESLint、i18n 及设计台账检查通过。未用本地定向结果替代完整 CI。
 
 ## 两个独立 App
 
@@ -66,7 +73,7 @@ pnpm.cmd --filter desktop test:mcp-apps:conformance
 | 环境与主题           | locale、时区、容器尺寸、安全区域和工具信息可读；Host context 可增量更新；真实 Electron 内两种 App 的 Light/Dark 背景随 CSS variables 切换                                                            |
 | sandbox 隔离         | 标准 sandbox-ready 与生产 proxy 供片；App 无 preload、require、process；不能读取不同 origin 的父文档；供片绑定当前账号                                                                               |
 | CSP 域声明           | 真实浏览器中 connect/resource/frame/baseUri 声明域可用；未声明 fetch 和嵌套导航均被阻断，禁止域 HTTP 请求计数为 0                                                                                    |
-| 系统权限             | Host permissions 为空；真实 Permissions Policy 拒绝 camera、microphone、geolocation、clipboard-write                                                                                                 |
+| 系统权限             | Host permissions 为空；真实 Permissions Policy 拒绝 camera、microphone、geolocation、clipboard-write；Electron request/check 两道守卫拒绝 App 及其外部后代 frame 的系统权限，真实 App 的通知权限请求返回 denied |
 | 取消与销毁           | `notifications/cancelled` 传到正在执行的 server 工具，且执行次数为 1；`ui/resource-teardown` 完成握手后释放；供片变为 404；清空、删 server 或账号切换后旧 View 不可用                                |
 | 未支持能力           | 不声明 sampling、downloadFile；相应请求与未知方法返回 `-32601`；不声明的图像/音频消息或上下文明确拒绝，不静默丢内容                                                                                  |
 

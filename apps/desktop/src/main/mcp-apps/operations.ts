@@ -6,7 +6,8 @@ import { MCP_APPS_MAX_BYTES, safeAppLink } from './protocol.js';
 
 const id = z.string().min(1).max(256);
 const request = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('open'), clientId: id, context: McpUiHostContextSchema.default({}) }),
+  z.object({ op: z.literal('open'), clientId: id, openId: id.optional(), context: McpUiHostContextSchema.default({}) }),
+  z.object({ op: z.literal('cancel-open'), openId: id }),
   z.object({ op: z.literal('message'), viewId: id, message: z.unknown() }),
   z.object({ op: z.literal('poll'), viewId: id, after: z.number().int().nonnegative().default(0) }),
   z.object({ op: z.literal('context'), viewId: id, context: McpUiHostContextSchema }),
@@ -48,10 +49,13 @@ export async function handleMcpAppOperation(
   const input = parsed.data;
   switch (input.op) {
     case 'open': {
-      const document = await host.open(caller, sessionId, input.clientId, input.context);
+      const document = await host.open(caller, sessionId, input.clientId, input.context, input.openId);
       local?.supply(document, caller);
       return document;
     }
+    case 'cancel-open':
+      await host.cancelOpen(caller, sessionId, input.openId);
+      return {};
     case 'message':
       await host.dispatch(caller, sessionId, input.viewId, input.message);
       return {};

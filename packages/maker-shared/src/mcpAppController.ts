@@ -8,6 +8,7 @@ export type AppRpc = {
   [key: string]: unknown;
 };
 export type AppInvoker = (sessionId: string, input: Record<string, unknown>) => Promise<unknown>;
+let nextOpenId = 0;
 
 /** The UI is a transport only; official negotiation, schemas and permissions live on the Host. */
 export class McpAppController {
@@ -20,6 +21,7 @@ export class McpAppController {
   private outbound: AppRpc[] = [];
   private initializeId?: string | number;
   private startupTimer?: ReturnType<typeof setTimeout>;
+  private readonly openId = `${Date.now()}:${++nextOpenId}`;
   constructor(
     private readonly invoke: AppInvoker,
     readonly sessionId: string,
@@ -31,12 +33,9 @@ export class McpAppController {
   ) {}
 
   async open(context: Record<string, unknown>): Promise<McpAppDocument | undefined> {
-    this.startupTimer = setTimeout(
-      () => this.fail(new Error('MCP_APP_INITIALIZATION_TIMEOUT')),
-      45_000,
-    );
     const document = (await this.invoke(this.sessionId, {
       op: 'open',
+      openId: this.openId,
       clientId: this.clientId,
       context,
     })) as McpAppDocument;
@@ -45,6 +44,12 @@ export class McpAppController {
       await this.invoke(this.sessionId, { op: 'teardown', viewId: document.viewId });
       return;
     }
+    // Resource loading has its own Host/remote budget. Give the App a complete
+    // initialization window after the document reaches this controller.
+    this.startupTimer = setTimeout(
+      () => this.fail(new Error('MCP_APP_INITIALIZATION_TIMEOUT')),
+      45_000,
+    );
     void this.poll();
     return document;
   }
@@ -65,6 +70,10 @@ export class McpAppController {
   receive(message: AppRpc): void {
     if (this.stopped || !this.document || !message || message.jsonrpc !== '2.0') return;
     if (this.teardownId !== undefined && message.id === this.teardownId) return;
+    if (message.method === 'ui/notifications/sandbox-escape') {
+      void this.displayMode('inline').catch((error) => this.fail(error));
+      return;
+    }
     if (message.method?.startsWith('ui/notifications/sandbox-')) return;
     if (this.closing && message.method) return;
     if (message.method === 'ui/initialize') this.initializeId = message.id;
@@ -175,7 +184,13 @@ export class McpAppController {
     this.closing = true;
     clearTimeout(this.startupTimer);
     this.startupTimer = undefined;
-    if (!this.document) return;
+    if (!this.document) {
+      // Correlate cancellation even if transport timeout lost the View response.
+      // Older v1 hosts may reject this additive operation; their idle lease still
+      // reclaims the orphan, and a late successful response is closed by open().
+      await this.invoke(this.sessionId, { op: 'cancel-open', openId: this.openId }).catch(() => {});
+      return;
+    }
     try {
       await this.invoke(this.sessionId, {
         op: 'teardown',

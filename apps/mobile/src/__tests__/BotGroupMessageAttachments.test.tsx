@@ -63,6 +63,7 @@ vi.mock('@/session/ImageLightbox', async () => {
   const { createElement } = await import('react');
   return { ImageLightbox: ({ initialUrl }: { initialUrl: string }) => createElement('div', { 'data-testid': 'lightbox', 'data-url': initialUrl }) };
 });
+vi.mock('@/session/McpAppCard', () => ({ McpAppCard: () => null }));
 vi.mock('@/session/mermaidWebView', () => ({ MermaidDiagram: () => null }));
 vi.mock('@/session/mathWebView', () => ({ MathFormulaWebView: () => null }));
 vi.mock('@/session/mediaPlayerWebView', () => ({ RemoteMediaPlayerWebView: () => null }));

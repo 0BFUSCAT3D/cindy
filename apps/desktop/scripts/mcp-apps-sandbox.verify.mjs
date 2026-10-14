@@ -160,6 +160,7 @@ try {
       }else assert.deepEqual(await inner().executeJavaScript("[document.querySelector('#title').value,document.querySelector('#body').value]"),['AI draft','Review before creating']);
       assert.deepEqual(await inner().executeJavaScript("[typeof window.testHost,typeof window.require,typeof window.process]"),['undefined','undefined','undefined']);
       assert.deepEqual(await inner().executeJavaScript("(()=>{const policy=document.permissionsPolicy??document.featurePolicy;return ['camera','microphone','geolocation','clipboard-write'].map(name=>policy.allowsFeature(name));})()"),[false,false,false,false]);
+      assert.equal(await inner().executeJavaScript("Notification.requestPermission()"),'denied');
       assert.equal(await inner().executeJavaScript("(()=>{try{window.parent.document.body;return false;}catch{return true;}})()"),true);
       assert.equal(await inner().executeJavaScript("getComputedStyle(document.body).backgroundColor"),'rgb(248, 248, 246)');
       stage='theme change';
@@ -174,7 +175,11 @@ try {
         stage='ui/message';await inner().executeJavaScript("document.querySelector('#ask').click()");await wait(()=>turns===1);
         stage='display mode';await inner().executeJavaScript("document.querySelector('#mode').click()");await wait(()=>window.webContents.executeJavaScript("window.testState.mode==='fullscreen'"));
         assert.equal(await inner().executeJavaScript("window.rawApp.request('ui/request-display-mode',{mode:'pip'}).then(result=>result.mode)"),'fullscreen');
-        await window.webContents.executeJavaScript("window.testController.displayMode('inline')");await wait(()=>inner().executeJavaScript("window.rawApp.hostContext.displayMode==='inline'"));
+        stage='Escape from focused App input';
+        await inner().executeJavaScript("document.querySelector('#threshold').focus()");
+        window.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
+        window.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+        await wait(()=>inner().executeJavaScript("window.rawApp.hostContext.displayMode==='inline'"));
         stage='declared connect and resource domains';
         assert.equal(await inner().executeJavaScript('fetch('+JSON.stringify(allowed+'/api')+').then(response=>response.text())'),'declared-domain');
         await inner().executeJavaScript('new Promise((resolve,reject)=>{const script=document.createElement("script");script.src='+JSON.stringify(allowed+'/asset.js')+';script.onload=()=>resolve(true);script.onerror=()=>reject(new Error("Declared script failed"));document.body.appendChild(script);})');

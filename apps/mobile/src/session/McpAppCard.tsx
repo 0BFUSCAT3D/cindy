@@ -79,7 +79,7 @@ export function McpAppCard({
   const contextRef = useRef(context);
   contextRef.current = context;
   const post = (message: AppRpc) => {
-    const serialized = JSON.stringify(JSON.stringify(message)).replace(/</g, '\u003c');
+    const serialized = JSON.stringify(JSON.stringify(message)).replace(/</g, '\\u003c');
     webview.current?.injectJavaScript(
       `window.dispatchEvent(new MessageEvent('message',{data:JSON.parse(${serialized}),source:window}));true;`,
     );
@@ -171,7 +171,9 @@ export function McpAppCard({
           ref={webview}
           style={{ height, backgroundColor: colors.surface }}
           source={webSource}
-          originWhitelist={['https://*.cindy-app.invalid', 'about:blank']}
+          // Route every navigation through the gate below; a whitelist miss
+          // otherwise bypasses it and asks the OS to open an external application.
+          originWhitelist={['*']}
           allowFileAccess={false}
           allowUniversalAccessFromFileURLs={false}
           sharedCookiesEnabled={false}

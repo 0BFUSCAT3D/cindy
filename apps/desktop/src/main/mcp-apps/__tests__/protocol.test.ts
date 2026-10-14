@@ -16,6 +16,12 @@ const tool = (ui: unknown): Tool => ({
 });
 const uri = 'ui://example/app.html';
 describe('standard MCP Apps metadata and policy', () => {
+  it('uses the standard same-origin base URI default for omitted and empty declarations', () => {
+    expect(appCsp().header).toContain("base-uri 'self'");
+    expect(appCsp({ csp: { baseUriDomains: [] } }).header).toContain("base-uri 'self'");
+    expect(appCsp({ csp: { baseUriDomains: ['https://assets.example.org'] } }).header)
+      .toContain('base-uri https://assets.example.org');
+  });
   it('defaults tools to both audiences and enforces explicit visibility', () => {
     expect(toolVisibleTo(tool({}), 'app')).toBe(true);
     expect(toolVisibleTo(tool({}), 'model')).toBe(true);
@@ -86,7 +92,7 @@ describe('standard MCP Apps metadata and policy', () => {
     ).toThrow('MCP_APP_RESOURCE_TOO_LARGE');
   });
   it('restricts omitted domains and keeps each declared domain in its directive', () => {
-    expect(appCsp().header).toContain("connect-src 'none'; frame-src 'none'; base-uri 'none'");
+    expect(appCsp().header).toContain("connect-src 'none'; frame-src 'none'; base-uri 'self'");
     const policy = appCsp({
       csp: {
         connectDomains: ['https://api.example.org', 'wss://*.example.org:443'],

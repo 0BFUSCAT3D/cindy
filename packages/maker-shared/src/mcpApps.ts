@@ -67,6 +67,10 @@ frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'
 frame.style.cssText='border:0;width:100%;height:100%;display:block';
 let loaded=false;
 const post=message=>window.ReactNativeWebView?window.ReactNativeWebView.postMessage(JSON.stringify({key:bridgeKey,message})):window.parent.postMessage(message,'*');
+window.addEventListener('keydown',event=>{
+ if(event.key==='Escape'&&!event.isComposing&&!event.repeat&&!event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey)
+  post({jsonrpc:'2.0',method:'ui/notifications/sandbox-escape',params:{}});
+});
 window.addEventListener('message',event=>{
  const message=event.data;
  if(!message||message.jsonrpc!=='2.0')return;

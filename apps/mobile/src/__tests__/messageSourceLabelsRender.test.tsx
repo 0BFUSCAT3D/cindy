@@ -207,6 +207,7 @@ vi.mock("@/session/MobileComposerInputRow", () => ({
   MOBILE_COMPOSER_CONTROL_SIZE: 44,
 }));
 vi.mock("@/session/ImageLightbox", () => ({ ImageLightbox: () => null }));
+vi.mock("@/session/McpAppCard", () => ({ McpAppCard: () => null }));
 vi.mock("@/session/mermaidWebView", () => ({ MermaidDiagram: () => null }));
 vi.mock("@/session/mathWebView", () => ({ MathFormulaWebView: () => null }));
 vi.mock("@/session/mediaPlayerWebView", () => ({

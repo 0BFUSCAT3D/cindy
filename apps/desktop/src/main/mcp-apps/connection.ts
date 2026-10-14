@@ -25,12 +25,15 @@ export interface AppServerConfig {
 
 /** Credentials and the MCP client always stay in Main, never in a View. */
 export class AppConnection {
-  readonly client = new Client(
-    { name: 'Cindy', version: '1.0.0' },
-    {
-      capabilities: { extensions: { [MCP_APPS_EXTENSION]: { mimeTypes: [RESOURCE_MIME_TYPE] } } },
-    },
-  );
+  private createClient(): Client {
+    return new Client(
+      { name: 'Cindy', version: '1.0.0' },
+      {
+        capabilities: { extensions: { [MCP_APPS_EXTENSION]: { mimeTypes: [RESOURCE_MIME_TYPE] } } },
+      },
+    );
+  }
+  private client?: Client;
   private connecting?: Promise<Client>;
   private closed = false;
   private readonly listeners = new Set<(message: AppServerNotification) => void>();
@@ -43,6 +46,8 @@ export class AppConnection {
   async getClient(): Promise<Client> {
     if (this.closed) throw new Error('MCP_APP_CONNECTION_CLOSED');
     if (!this.connecting) {
+      const client = this.createClient();
+      this.client = client;
       const requestInit = { headers: this.config.headers };
       const url = new URL(this.config.url);
       const transport =
@@ -55,37 +60,42 @@ export class AppConnection {
               },
             })
           : new StreamableHTTPClientTransport(url, { requestInit });
-      this.connecting = this.client.connect(transport, { timeout: 30_000 }).then(() => {
-        if (this.closed) throw new Error('MCP_APP_CONNECTION_CLOSED');
+      // A transport loss retires only this attempt. A later independent request
+      // may connect again; requests already sent are never replayed here.
+      const retire = () => {
+        if (this.client !== client) return;
+        this.client = undefined;
+        this.connecting = undefined;
+      };
+      client.onclose = retire;
+      this.connecting = client.connect(transport, { timeout: 30_000 }).then(() => {
+        if (this.closed || this.client !== client) throw new Error('MCP_APP_CONNECTION_CLOSED');
         for (const schema of [
           ToolListChangedNotificationSchema,
           ResourceListChangedNotificationSchema,
           PromptListChangedNotificationSchema,
         ]) {
-          this.client.setNotificationHandler(schema, (message) => {
+          client.setNotificationHandler(schema, (message) => {
             this.listeners.forEach((listener) => listener(message));
           });
         }
-        this.client.onclose = () => {
-          this.closed = true;
-        };
-        return this.client;
-      });
-      void this.connecting.catch(() => {
-        this.closed = true;
-        void this.client.close().catch(() => {});
+        return client;
+      }).catch(async (error) => {
+        retire();
+        await client.close().catch(() => {});
+        throw error;
       });
     }
     return this.connecting;
   }
 
-  async tools(): Promise<Tool[]> {
+  async tools(signal?: AbortSignal): Promise<Tool[]> {
     const client = await this.getClient();
     const tools: Tool[] = [];
     let cursor: string | undefined;
     const seen = new Set<string>();
     do {
-      const page = await client.listTools(cursor ? { cursor } : undefined);
+      const page = await client.listTools(cursor ? { cursor } : undefined, { signal });
       tools.push(...page.tools);
       cursor = page.nextCursor;
       if (cursor && seen.has(cursor)) throw new Error('MCP_APP_INVALID_PAGINATION');
@@ -98,7 +108,7 @@ export class AppConnection {
   async close(): Promise<void> {
     this.closed = true;
     this.listeners.clear();
-    await this.client.close();
+    await this.client?.close();
   }
 
   listen(listener: (message: AppServerNotification) => void): () => void {
@@ -106,9 +116,9 @@ export class AppConnection {
     return () => this.listeners.delete(listener);
   }
 
-  async resource(uri: string) {
+  async resource(uri: string, signal?: AbortSignal) {
     const client = await this.getClient();
-    const result = await client.readResource({ uri });
+    const result = await client.readResource({ uri }, { signal });
     if (result.contents.some((item) => item.uri === uri && item._meta?.ui !== undefined))
       return { result };
     let cursor: string | undefined;
@@ -116,7 +126,7 @@ export class AppConnection {
     // Metadata may live on resources/list. servers without listing still support read.
     try {
       do {
-        const page = await client.listResources(cursor ? { cursor } : undefined);
+        const page = await client.listResources(cursor ? { cursor } : undefined, { signal });
         const resource = page.resources.find((item) => item.uri === uri);
         if (resource) return { result, meta: resource._meta?.ui };
         cursor = page.nextCursor;
