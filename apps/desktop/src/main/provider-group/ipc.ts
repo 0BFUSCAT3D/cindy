@@ -41,7 +41,7 @@ export interface ProviderGroupCommandDeps {
   router: ProviderGroupRouter;
   directory: ProviderGroupDirectory;
   readGroup(providerId: string): ProviderGroupConfig | null;
-  writeGroup(providerId: string, config: unknown): Promise<ProviderGroupConfig | null>;
+  writeGroup(providerId: string, config: unknown, expectedConfig?: ProviderGroupConfig | null): Promise<ProviderGroupConfig | null>;
   /** 解除指向已不在组里的电脑的任务绑定；keep 为 null = 整个组已删除。 */
   pruneBindings(providerId: string, keep: ReadonlySet<string> | null): Promise<void>;
   /** 当前账号：等远端目录期间换了账号时不写入(否则会把上一个账号的组写进新账号)。 */
@@ -94,6 +94,18 @@ export function parseProviderGroupCommand(raw: unknown): ProviderGroupCommand {
     case 'save': {
       if (!value.config || typeof value.config !== 'object') throwIpcError('INVALID_PARAMS', 'config required');
       return { action: 'save', providerId, config: value.config as ProviderGroupConfig };
+    }
+    case 'save-if-current':
+    case 'delete-if-current': {
+      const expectedConfig = normalizeProviderGroupConfig(value.expectedConfig, providerId);
+      if (value.expectedConfig !== null && !expectedConfig) {
+        throwIpcError('INVALID_PARAMS', 'expectedConfig must be a group snapshot or null');
+      }
+      if (value.action === 'delete-if-current') return { action: value.action, providerId, expectedConfig };
+      if (!value.config || typeof value.config !== 'object' || Array.isArray(value.config)) {
+        throwIpcError('INVALID_PARAMS', 'config required');
+      }
+      return { action: value.action, providerId, config: value.config as ProviderGroupConfig, expectedConfig };
     }
     default:
       throwIpcError('INVALID_PARAMS', 'unknown provider group action');
@@ -158,11 +170,14 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
     case 'candidates':
       return deps.directory.listCandidates(providerId, deps.readGroup(providerId));
     case 'delete':
-      await deps.writeGroup(providerId, null);
+    case 'delete-if-current':
+      if (command.action === 'delete-if-current') await deps.writeGroup(providerId, null, command.expectedConfig);
+      else await deps.writeGroup(providerId, null);
       await deps.pruneBindings(providerId, null);
       deps.changed(providerId);
       return deps.router.view(providerId, { includeGuestSupport: true });
-    case 'save': {
+    case 'save':
+    case 'save-if-current': {
       const owner = deps.ownerKey();
       const next = normalizeProviderGroupConfig(command.config, providerId);
       if (next) {
@@ -187,7 +202,9 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
       if (deps.ownerKey() !== owner) {
         throwIpcError('PRECONDITION_FAILED', 'The account changed while saving the provider group');
       }
-      const written = await deps.writeGroup(providerId, next);
+      const written = command.action === 'save-if-current'
+        ? await deps.writeGroup(providerId, next, command.expectedConfig)
+        : await deps.writeGroup(providerId, next);
       await deps.pruneBindings(providerId, written ? new Set(written.members.map((m) => m.key)) : null);
       deps.changed(providerId);
       return deps.router.view(providerId, { includeGuestSupport: true });

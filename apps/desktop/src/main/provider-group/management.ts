@@ -11,7 +11,10 @@ export function parseProviderManagementRequest(raw: unknown): ProviderManagement
   if (!isProviderManagementRequest(raw)) throwIpcError('INVALID_PARAMS', 'Invalid provider management request');
   if (raw.action === 'manage-group') {
     const command = parseProviderGroupCommand(raw.command);
-    if (!['get', 'candidates', 'save', 'delete'].includes(command.action)) {
+    if (command.action === 'save' || command.action === 'delete') {
+      throwIpcError('UNSUPPORTED_CAPABILITY', 'Update the managing computer to save provider groups with conflict checks');
+    }
+    if (!['get', 'candidates', 'save-if-current', 'delete-if-current'].includes(command.action)) {
       throwIpcError('PERMISSION_DENIED', 'This group operation is not available through management');
     }
     return { action: 'manage-group', command: command as ProviderGroupManagementCommand };

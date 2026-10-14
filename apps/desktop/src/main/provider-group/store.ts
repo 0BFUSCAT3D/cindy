@@ -2,9 +2,12 @@
  * 供应商组设置：按账号存在本机(`provider-group-prefs.json`)，不同步到其他电脑。
  * 组只是「这台电脑上这个供应商」的一项设置，没有账号级的组(docs/product-rules/provider-groups.md §3)。
  */
+import { isDeepStrictEqual } from 'node:util';
+
 import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
 import {
   isProviderGroupProviderId,
   normalizeProviderGroupConfig,
@@ -57,10 +60,16 @@ export function listProviderGroups(): Record<string, ProviderGroupConfig> {
 export async function writeProviderGroup(
   providerId: string,
   config: unknown,
+  expectedConfig?: ProviderGroupConfig | null,
 ): Promise<ProviderGroupConfig | null> {
   if (!isProviderGroupProviderId(providerId)) throw new Error('Invalid provider id');
   const normalized = config === null ? null : normalizeProviderGroupConfig(config, providerId);
+  const expected = expectedConfig === undefined ? undefined : normalizeProviderGroupConfig(expectedConfig, providerId);
   const next = await store.updateAtomic(({ value }) => {
+    // 必须在已有跨进程写锁内重读并比较，不能在等待目录或写锁前检查后再无条件覆盖。
+    if (expected !== undefined && !isDeepStrictEqual(value.groups[providerId] ?? null, expected)) {
+      throwIpcError('PROVIDER_GROUP_CHANGED', 'The provider group changed while it was being edited');
+    }
     const groups = { ...value.groups };
     if (normalized) groups[providerId] = normalized;
     else delete groups[providerId];

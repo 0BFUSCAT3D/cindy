@@ -148,6 +148,9 @@ export type ProviderGroupLocalCommand =
   | { action: 'candidates'; providerId: string }
   | { action: 'save'; providerId: string; config: ProviderGroupConfig }
   | { action: 'delete'; providerId: string }
+  /** 设置页按编辑时的完整配置保存；null 表示当时尚未建组。独立动作让旧端明确拒绝。 */
+  | { action: 'save-if-current'; providerId: string; config: ProviderGroupConfig; expectedConfig: ProviderGroupConfig | null }
+  | { action: 'delete-if-current'; providerId: string; expectedConfig: ProviderGroupConfig | null }
   /** 同账号另一台电脑上这个供应商的组与组内电脑状态(只读)。 */
   | { action: 'remote-view'; providerId: string; deviceId: string }
   /** 本机全部组的设置(不读远端)。 */
@@ -169,8 +172,8 @@ export type ProviderGroupCommandResult<C extends ProviderGroupCommand> =
   : C extends { action: 'list' } ? Record<string, ProviderGroupConfig>
   : C extends { action: 'get' } ? ProviderGroupView
     : C extends { action: 'candidates' } ? ProviderGroupCandidate[]
-      : C extends { action: 'save' } ? ProviderGroupView
-        : C extends { action: 'delete' } ? ProviderGroupView
+      : C extends { action: 'save' | 'save-if-current' } ? ProviderGroupView
+        : C extends { action: 'delete' | 'delete-if-current' } ? ProviderGroupView
           : C extends { action: 'remote-view' } ? ProviderGroupView
             : C extends { action: 'session-group' } ? ProviderGroupSessionGroup
               : never;

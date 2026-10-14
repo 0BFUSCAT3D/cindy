@@ -16,6 +16,9 @@ vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => 'owner-a
 vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self'), remoteInvoke: vi.fn() }));
 // 同账号管理的转发另有 managementClient.test.ts；这里只测本机命令，不拉进分享运行时。
 vi.mock('../managementClient.js', () => ({ invokeProviderManagement: vi.fn() }));
+vi.mock('../../device-link/providerShareRuntime.js', () => ({
+  executeProviderShareManagementCommand: vi.fn(), parseProviderShareCommand: vi.fn(),
+}));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
 
 import type { ProviderGroupCandidate, ProviderGroupConfig } from '../../../shared/providerGroup';
@@ -26,6 +29,7 @@ import {
   PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS,
   type ProviderGroupCommandDeps,
 } from '../ipc';
+import { parseProviderManagementRequest } from '../management';
 
 const LOCAL = { key: 'local', kind: 'local' as const, agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
 const MINI = {
@@ -85,6 +89,27 @@ describe('parseProviderGroupCommand', () => {
       .toEqual({ action: 'session-group', sessionId: 'db5a0a2c-3084-408c-9f78-234fe3c6745c' });
     expect(() => parseProviderGroupCommand({ action: 'session-group' })).toThrow();
     expect(() => parseProviderGroupCommand({ action: 'session-group', sessionId: '../x' })).toThrow();
+  });
+
+  it('requires an explicit editing snapshot for conditional writes and rejects legacy remote writes', () => {
+    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    for (const action of ['save-if-current', 'delete-if-current'] as const) {
+      for (const expectedConfig of [null, config]) {
+        const parsed = parseProviderGroupCommand({ action, providerId: 'anthropic', config, expectedConfig });
+        expect(parsed).toMatchObject({ action, expectedConfig });
+        expect(parseProviderManagementRequest({ action: 'manage-group', command: parsed })).toEqual({
+          action: 'manage-group', command: parsed,
+        });
+      }
+      for (const expectedConfig of [undefined, false, [], {}, { members: [] }]) {
+        expect(() => parseProviderGroupCommand({ action, providerId: 'anthropic', config, expectedConfig }))
+          .toThrow(/INVALID_PARAMS/);
+      }
+    }
+    for (const action of ['save', 'delete']) {
+      expect(() => parseProviderManagementRequest({ action: 'manage-group', command: { action, providerId: 'anthropic', config } }))
+        .toThrow(/UNSUPPORTED_CAPABILITY/);
+    }
   });
 });
 
@@ -186,6 +211,35 @@ describe('executeProviderGroupCommand reads', () => {
 });
 
 describe('executeProviderGroupCommand save', () => {
+  it('passes the editing snapshot through candidate validation to the atomic writer', async () => {
+    const initial: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    const d = deps([{ key: MINI.key, kind: 'device', agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mac mini', providerName: 'Claude' }], initial);
+    // 目录读取期间另一个编辑已落盘；最终写入处检查，而不是只在开始时检查。
+    d.writeGroup.mockRejectedValueOnce(new Error('[PROVIDER_GROUP_CHANGED] changed while reading candidates'));
+    await expect(executeProviderGroupCommand(d, {
+      action: 'save-if-current', providerId: 'anthropic', expectedConfig: initial,
+      config: { ...initial, members: [LOCAL, MINI] },
+    })).rejects.toThrow(/PROVIDER_GROUP_CHANGED/);
+    expect(d.directory.listCandidates).toHaveBeenCalled();
+    expect(d.writeGroup).toHaveBeenCalledWith('anthropic', expect.objectContaining({
+      members: [LOCAL, { ...MINI, label: 'Mac mini' }],
+    }), initial);
+    expect(d.pruneBindings).not.toHaveBeenCalled();
+    expect(d.changed).not.toHaveBeenCalled();
+  });
+
+  it('does not release task bindings when a stale delete is rejected', async () => {
+    const initial: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    const d = deps([], initial);
+    d.writeGroup.mockRejectedValueOnce(new Error('[PROVIDER_GROUP_CHANGED] changed before delete'));
+    await expect(executeProviderGroupCommand(d, {
+      action: 'delete-if-current', providerId: 'anthropic', expectedConfig: initial,
+    })).rejects.toThrow(/PROVIDER_GROUP_CHANGED/);
+    expect(d.writeGroup).toHaveBeenCalledWith('anthropic', null, initial);
+    expect(d.pruneBindings).not.toHaveBeenCalled();
+    expect(d.changed).not.toHaveBeenCalled();
+  });
+
   it('accepts computers this computer can already use and takes their names from the directory', async () => {
     const d = deps([{ key: MINI.key, kind: 'device', agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mac mini', providerName: 'Claude' }]);
     await executeProviderGroupCommand(d, {

@@ -1164,12 +1164,17 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
 
 - **`provider-group:remote` 新增 `action: 'manage-group'` / `'manage-share'`**(同一 channel、同一同账号 allowlist，
   受邀者与共享任务访客照旧 `CHANNEL_NOT_ALLOWED`)：请求 `{ action, command }`，`command` 与本机命令同构，结构与校验在
-  `apps/desktop/src/shared/providerManagement.ts`。`manage-group` 只收 `get` / `candidates` / `save` / `delete`；
+  `apps/desktop/src/shared/providerManagement.ts`。`manage-group` 只收 `get` / `candidates` / `save-if-current` / `delete-if-current`；
   `manage-share` 只收 `owned` / `own-usage` / `create-link` / `approve` / `reject` / `set-member`，其余回
   `[PERMISSION_DENIED]`。回包 `{ result, respondedAt }`，`respondedAt` 只用于把链接有效期换算到 C 的时钟。
   - O 在执行前后核对账号未切换；`approve` / `reject` / `set-member` 先刷新快照，申请或成员不在 O 的分享里回 `[NOT_FOUND]`；
     `owned` 的回包只含 `{ ready, shares }`，不带 O 自己的弹窗安排。不再转发给第三台电脑。
   - C 不重放写请求；生成的链接在 C 的 Main 登记后才能复制。
+  - 组保存与删除必须携带编辑时的 `expectedConfig`（完整组配置，`null` = 当时尚未建组）。O 在已有跨进程文件写锁内
+    重读并比较，不一致回 `[PROVIDER_GROUP_CHANGED]`，不写入、不清理任务绑定。C 重新读取详情、提示本次操作未执行，
+    不自动重试写入。建组电脑自己的设置页使用同一条件写入，存储格式不变。
+    独立动作名保证旧 O 明确拒绝，不能忽略新增条件后无条件写入；新 O 拒绝旧 C 的 `save` / `delete`，回
+    `[UNSUPPORTED_CAPABILITY]`。完整编辑需两端更新；只读查询、分享者操作与组的分配使用不受影响。
 - **审批弹窗跟着生成链接的电脑**：O 执行 `manage-share` 的 `create-link` 后，7 分钟窗口内这个供应商的新申请在 O 上只推
   `REQUESTED { quiet: true }`(进管理页与提示点，不弹窗、不发系统通知)；O 本机生成链接时取消静默。C 在同一窗口内照常拉取
   账号的分享列表、关注 O 的那条分享，新申请经 `REQUESTED { hostDeviceId }` 在 C 上弹窗，同意 / 拒绝经 `manage-share` 转交 O。
@@ -1179,7 +1184,7 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
   旧 C 管不到 O，弹窗行为与之前相同。不改服务端、数据库与本地持久数据。
 - 实现：`apps/desktop/src/main/provider-group/management.ts`(O)、`managementClient.ts`(C)、`remoteRegistration.ts`，
   `apps/desktop/src/main/device-link/providerShareHost.ts`(静默与关注)、`providerShareRuntime.ts`；回归见
-  `provider-group/__tests__/managementClient.test.ts`、`device-link/__tests__/providerShareRuntime.test.ts`、
+  `provider-group/__tests__/{managementClient,ipc,stores}.test.ts`、`device-link/__tests__/providerShareRuntime.test.ts`、
   `renderer/features/provider-share/__tests__/ProviderShareGlobalHost.test.tsx`、`providerShareFormat.test.ts`。
 
 ## 事实来源

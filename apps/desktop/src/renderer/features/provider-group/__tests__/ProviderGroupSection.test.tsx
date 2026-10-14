@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderGroupConfig, ProviderGroupView } from '../../../../shared/providerGroup';
 import zhCN from '../../../i18n/locales/zh-CN/common.json';
 import { memberStatusText, ProviderGroupSection } from '../ProviderGroupSection';
+import { toast } from '@/lib/toast';
 import { __testing as localGroupsTesting, useLocalProviderGroupsState } from '../useLocalProviderGroups';
 import { __testing as groupViewTesting } from '../useProviderGroup';
 
@@ -104,7 +105,8 @@ beforeEach(() => {
   groupViewTesting.reset();
   confirmSpy.mockClear();
   command.mockReset();
-  command.mockImplementation(async (cmd: { action: string; config?: ProviderGroupConfig }) => {
+  vi.mocked(toast.error).mockClear();
+  command.mockImplementation(async (cmd: { action: string; config?: ProviderGroupConfig; expectedConfig?: ProviderGroupConfig | null }) => {
     if (cmd.action === 'list') return stored ? { anthropic: stored } : {};
     if (cmd.action === 'get') return viewOf(stored);
     if (cmd.action === 'candidates') {
@@ -113,11 +115,14 @@ beforeEach(() => {
         { key: 'share:s1:anthropic', kind: 'share', agentDeviceId: 'share:s1', providerId: 'anthropic', label: 'Studio-PC', providerName: 'Anthropic', ownerName: 'Kai', blocked: 'member' },
       ];
     }
-    if (cmd.action === 'save') {
+    if (cmd.action === 'save-if-current' || cmd.action === 'delete-if-current') {
+      if (JSON.stringify(cmd.expectedConfig) !== JSON.stringify(stored)) throw new Error('[PROVIDER_GROUP_CHANGED] changed elsewhere');
+    }
+    if (cmd.action === 'save-if-current') {
       stored = cmd.config ?? null;
       return viewOf(stored);
     }
-    if (cmd.action === 'delete') {
+    if (cmd.action === 'delete-if-current') {
       stored = null;
       return viewOf(null);
     }
@@ -152,11 +157,33 @@ describe('ProviderGroupSection', () => {
     expect((candidates[1] as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(candidates[0]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'providerGroup.add.confirm' }));
-    await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: 'save' })));
-    const saved = command.mock.calls.find(([cmd]) => cmd.action === 'save')![0].config as ProviderGroupConfig;
+    await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ action: 'save-if-current', expectedConfig: null })));
+    const saved = command.mock.calls.find(([cmd]) => cmd.action === 'save-if-current')![0].config as ProviderGroupConfig;
     expect(saved.members.map((m) => m.key)).toEqual(['local', MINI.key]);
     expect(saved).toMatchObject({ strategy: 'least', autoSwitch: true });
     expect(await screen.findAllByTestId('provider-group-member')).toHaveLength(2);
+  });
+
+  it.each(['save', 'delete'] as const)('refreshes a stale view after a rejected %s without replaying the write', async (operation) => {
+    const initial: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    stored = initial;
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findByTestId('provider-group-member');
+    await waitFor(() => expect((screen.getByRole('button', { name: 'providerGroup.section.delete' }) as HTMLButtonElement).disabled).toBe(false));
+    // 另一台电脑已经添加成员并改了上限，本页尚未轮询到。
+    const updated = { ...initial, members: [{ ...LOCAL, limit: 8 }, MINI] };
+    stored = updated;
+    if (operation === 'save') {
+      fireEvent.click(within(screen.getByTestId('provider-group-member')).getByRole('switch'));
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'providerGroup.section.delete' }));
+    }
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('ipcError.PROVIDER_GROUP_CHANGED'));
+    expect(await screen.findAllByTestId('provider-group-member')).toHaveLength(2);
+    expect(stored).toEqual(updated);
+    const writes = command.mock.calls.filter(([cmd]) => cmd.action.endsWith('-if-current'));
+    expect(writes).toHaveLength(1);
+    expect(writes[0][0]).toMatchObject({ action: `${operation}-if-current`, expectedConfig: initial });
   });
 
   it('expands a computer to show the quota of its own account', async () => {

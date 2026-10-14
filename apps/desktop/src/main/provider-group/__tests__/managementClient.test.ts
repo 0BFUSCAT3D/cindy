@@ -71,4 +71,16 @@ describe('provider management client', () => {
     await expect(invokeProviderManagement(old, 'group-host', createLink)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
     expect(host.watch).not.toHaveBeenCalled();
   });
+
+  it('forwards conditional writes and never retries a conflict or falls back to an unconditional old-host write', async () => {
+    const request: ProviderManagementRequest = {
+      action: 'manage-group', command: { action: 'delete-if-current', providerId: 'anthropic', expectedConfig: null },
+    };
+    const conflict = vi.fn(async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[PROVIDER_GROUP_CHANGED] changed' } })) as unknown as ProviderGroupRemoteInvoke;
+    await expect(invokeProviderManagement(conflict, 'group-host', request)).rejects.toThrow('[PROVIDER_GROUP_CHANGED]');
+    expect(conflict).toHaveBeenCalledExactlyOnceWith('group-host', PROVIDER_GROUP_REMOTE_CHANNEL, [request], expect.anything());
+    const old = vi.fn(async () => ({ ok: false, error: { code: 'IPC_ERROR', message: '[INVALID_PARAMS] unknown provider group action' } })) as unknown as ProviderGroupRemoteInvoke;
+    await expect(invokeProviderManagement(old, 'group-host', request)).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
+    expect(old).toHaveBeenCalledTimes(1);
+  });
 });

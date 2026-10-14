@@ -14,6 +14,7 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 import type { ProviderGroupConfig, ProviderGroupView } from '../../../shared/providerGroup';
 import { peekLocalProviderGroup } from './useLocalProviderGroups';
 import { providerGroupManagementCommand, providerManagementErrorKey } from './providerManagement';
+import { extractIpcError } from '@/utils/ipcError';
 
 /** 组内电脑在线、正在运行等状态的重读间隔。 */
 const REFRESH_INTERVAL_MS = 15_000;
@@ -111,14 +112,31 @@ export function useProviderGroup(providerId: string, options: { live?: boolean; 
   );
 
   const save = useCallback(
-    async (config: ProviderGroupConfig) =>
-      apply(await providerGroupManagementCommand({ action: 'save', providerId, config }, deviceId)),
-    [apply, providerId, deviceId],
+    async (config: ProviderGroupConfig) => {
+      try {
+        return apply(await providerGroupManagementCommand({
+          action: 'save-if-current', providerId, config, expectedConfig: view?.config ?? null,
+        }, deviceId));
+      } catch (error) {
+        if (extractIpcError(error)?.code === 'PROVIDER_GROUP_CHANGED') await reload();
+        throw error;
+      }
+    },
+    [apply, providerId, deviceId, view, reload],
   );
 
   const remove = useCallback(
-    async () => apply(await providerGroupManagementCommand({ action: 'delete', providerId }, deviceId)),
-    [apply, providerId, deviceId],
+    async () => {
+      try {
+        return apply(await providerGroupManagementCommand({
+          action: 'delete-if-current', providerId, expectedConfig: view?.config ?? null,
+        }, deviceId));
+      } catch (error) {
+        if (extractIpcError(error)?.code === 'PROVIDER_GROUP_CHANGED') await reload();
+        throw error;
+      }
+    },
+    [apply, providerId, deviceId, view, reload],
   );
 
   return { view, loading, failed, errorKey, reload, save, remove };

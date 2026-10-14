@@ -7,7 +7,7 @@ import type { ProviderShareCommand, ProviderShareCommandResult } from './provide
 
 export type ProviderGroupManagementCommand = Extract<
   ProviderGroupLocalCommand,
-  { action: 'get' | 'candidates' | 'save' | 'delete' }
+  { action: 'get' | 'candidates' | 'save-if-current' | 'delete-if-current' }
 >;
 
 export type ProviderShareManagementCommand = Extract<

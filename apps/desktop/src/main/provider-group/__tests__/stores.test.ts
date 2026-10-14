@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-group-store-test-'));
 
@@ -20,6 +20,7 @@ vi.mock('../../appSessionState.js', () => ({
 
 const store = await import('../store.js');
 const bindings = await import('../bindings.js');
+afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 describe('provider group store', () => {
   it('drops invalid groups and empty groups when reading', () => {
@@ -49,6 +50,43 @@ describe('provider group store', () => {
     expect(store.readProviderGroup('anthropic')?.strategy).toBe('order');
     await store.writeProviderGroup('anthropic', null);
     expect(store.readProviderGroup('anthropic')).toBeNull();
+  });
+
+  it('preserves another editor’s members and limits instead of overwriting them with an old snapshot', async () => {
+    const initial = (await store.writeProviderGroup('stale', { members: [{ kind: 'local' }] }))!;
+    const updated = (await store.writeProviderGroup('stale', {
+      ...initial,
+      members: [{ ...initial.members[0], limit: 8 }, { kind: 'device', agentDeviceId: 'mini', providerId: 'stale' }],
+    }, initial))!;
+    await expect(store.writeProviderGroup('stale', { ...initial, autoSwitch: false }, initial))
+      .rejects.toThrow('[PROVIDER_GROUP_CHANGED]');
+    await expect(store.writeProviderGroup('stale', null, initial)).rejects.toThrow('[PROVIDER_GROUP_CHANGED]');
+    expect(store.readProviderGroup('stale')).toEqual(updated);
+    // 重新读取后由用户再次修改，保留另一台已添加的电脑和上限。
+    const saved = await store.writeProviderGroup('stale', { ...updated, autoSwitch: false }, updated);
+    expect(saved).toEqual({ ...updated, autoSwitch: false });
+  });
+
+  it('compares under the file lock so only one of two concurrent edits can use the same snapshot', async () => {
+    const initial = (await store.writeProviderGroup('concurrent', { members: [{ kind: 'local' }] }))!;
+    const edits = [{ ...initial, autoSwitch: false }, { ...initial, strategy: 'round' as const }];
+    const results = await Promise.allSettled(edits.map((config) => store.writeProviderGroup('concurrent', config, initial)));
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toEqual([
+      expect.objectContaining({ reason: expect.objectContaining({ code: 'PROVIDER_GROUP_CHANGED' }) }),
+    ]);
+    expect(store.readProviderGroup('concurrent')).toEqual(edits[results.findIndex((result) => result.status === 'fulfilled')]);
+  });
+
+  it('protects concurrent creation and does not recreate a group deleted after it was read', async () => {
+    const config = { members: [{ kind: 'local' }] };
+    const created = await store.writeProviderGroup('creation', config, null);
+    await expect(store.writeProviderGroup('creation', { ...config, autoSwitch: false }, null))
+      .rejects.toThrow('[PROVIDER_GROUP_CHANGED]');
+    expect(store.readProviderGroup('creation')).toEqual(created);
+    await store.writeProviderGroup('creation', null, created);
+    await expect(store.writeProviderGroup('creation', created, created)).rejects.toThrow('[PROVIDER_GROUP_CHANGED]');
+    expect(store.readProviderGroup('creation')).toBeNull();
   });
 });
 
