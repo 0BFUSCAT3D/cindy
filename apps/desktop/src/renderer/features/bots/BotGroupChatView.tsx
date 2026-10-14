@@ -330,13 +330,15 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   // Older shares checked before the latest edit, deletion or reset are re-checked from the
   // committed timeline, whichever of a refresh and an older page landed last. One refresh
   // checks up to the per-read cap, so a bounded number of follow-ups reaches all of them.
-  const shareFollowUps = useRef(0);
+  // Each version gets its own budget: an edit mid-way makes every card stale again.
+  const shareFollowUps = useRef<{ version: number | undefined; count: number }>({ version: undefined, count: 0 });
   useEffect(() => {
-    if (state.kind !== 'ready') { shareFollowUps.current = 0; return; }
-    if (!staleBotGroupShares(state.older, state.group.threadShareVersion).length) { shareFollowUps.current = 0; return; }
+    const version = state.kind === 'ready' ? state.group.threadShareVersion : undefined;
+    if (shareFollowUps.current.version !== version) shareFollowUps.current = { version, count: 0 };
+    if (state.kind !== 'ready' || !staleBotGroupShares(state.older, version).length) { shareFollowUps.current.count = 0; return; }
     const total = state.older.filter(message => message.threadShare).length;
-    if (shareFollowUps.current >= Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) return;
-    shareFollowUps.current += 1;
+    if (shareFollowUps.current.count >= Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) return;
+    shareFollowUps.current.count += 1;
     loadRef.current();
   }, [state]);
 

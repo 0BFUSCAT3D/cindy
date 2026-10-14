@@ -2501,6 +2501,29 @@ describe('shares on older pages', () => {
     expect(await screen.findByText('编辑后的原文')).toBeTruthy();
     expect(screen.queryByText('编辑前的原文')).toBeNull();
   });
+
+  it('gives each new version its own follow-up budget', async () => {
+    const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
+      sharedByAuthor: false, content: '原文', attachments: [], createdAt: 1, edited: false, version: 1 };
+    const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
+    let version = 1;
+    // The server cannot confirm this share for now, so every refresh leaves it stale.
+    mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number }) => ({ ok: true, group: detail({ serverBacked: true,
+      threadShareVersion: version, ...(options?.beforeSequence ? { hasMoreBefore: false, messages: [oldShare] } : { hasMoreBefore: true, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] }) }) }));
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('原文');
+    const settle = async () => { for (let i = 0; i < 6; i += 1) await act(async () => { await Promise.resolve(); }); };
+    version = 2;
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await settle();
+    const afterFirstEdit = mocks.getBotGroup.mock.calls.length;
+    // A later edit: the stale card is re-checked again, not left on the first edit's spent budget.
+    version = 3;
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await settle();
+    expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBeGreaterThan(1);
+  });
 });
 
 describe('more older shares than one refresh re-reads', () => {
