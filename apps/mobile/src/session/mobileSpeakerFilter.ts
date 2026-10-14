@@ -81,7 +81,9 @@ let hydrating: Promise<void> | null = null;
 let hydrationOwner: MobileAuthOwnerGeneration | null = null;
 let profileRevision = 0;
 let prefsRevision = 0;
+let savedPrefs: StoredPrefs = { version: 1, enabled: false };
 let downloading: Promise<void> | null = null;
+let downloadRevision = 0;
 let downloadAbort: AbortController | null = null;
 let modelsLoaded: Promise<void> | null = null;
 const listeners = new Set<() => void>();
@@ -140,6 +142,7 @@ export function hydrateMobileSpeakerFilter(): Promise<void> {
     hydrating = null;
     profile = null;
     hydratedFor = null;
+    savedPrefs = { version: 1, enabled: false };
     profileRevision += 1;
     snapshot = {
       ...initialSnapshot(),
@@ -162,6 +165,7 @@ export function hydrateMobileSpeakerFilter(): Promise<void> {
     if (!isMobileAuthOwnerCurrent(owner)) return;
     profile = stored;
     hydratedFor = owner.accountKey;
+    savedPrefs = { version: 1, ...prefs };
     update({
       supported: isSpeakerOnnxAvailable(),
       hydrated: true,
@@ -207,7 +211,19 @@ async function writePrefs(): Promise<void> {
     ...(snapshot.strictnessCustomized ? { strictnessOverride: snapshot.strictness } : {}),
   };
   await serializeSpeakerFilterStorage(owner.accountKey, async () => {
-    if (isMobileAuthOwnerCurrent(owner)) await AsyncStorage.setItem(prefsKey(owner.accountKey), JSON.stringify(stored));
+    if (!isMobileAuthOwnerCurrent(owner)) return;
+    await AsyncStorage.setItem(prefsKey(owner.accountKey), JSON.stringify(stored));
+    if (isMobileAuthOwnerCurrent(owner)) savedPrefs = stored;
+  });
+}
+
+function restoreSavedPrefs(): void {
+  // Overlapping optimistic edits can all fail. Only a completed write is a
+  // rollback baseline, including the other setting stored in the same record.
+  update({
+    enabled: savedPrefs.enabled,
+    strictness: savedPrefs.strictnessOverride ?? DEFAULT_SPEAKER_GATE_STRICTNESS,
+    strictnessCustomized: savedPrefs.strictnessOverride !== undefined,
   });
 }
 
@@ -231,18 +247,17 @@ export async function setMobileSpeakerFilterEnabled(enabled: boolean): Promise<v
   const owner = getMobileAuthOwner();
   await hydrateMobileSpeakerFilter();
   if (!owner.accountKey || !isMobileAuthOwnerCurrent(owner)) return;
-  const previous = snapshot.enabled;
   const revision = ++prefsRevision;
   update({ enabled });
   try {
     await writePrefs();
   } catch (error) {
-    if (isMobileAuthOwnerCurrent(owner) && revision === prefsRevision) update({ enabled: previous });
+    if (isMobileAuthOwnerCurrent(owner) && revision === prefsRevision) restoreSavedPrefs();
     throw error;
   }
   if (!isMobileAuthOwnerCurrent(owner)) return;
   // The models are fetched the first time the user turns the filter on.
-  if (enabled && (snapshot.modelState === 'missing' || snapshot.modelState === 'failed')) {
+  if (snapshot.enabled && (snapshot.modelState === 'missing' || snapshot.modelState === 'failed')) {
     void downloadMobileSpeakerModels();
   }
 }
@@ -252,7 +267,6 @@ export async function setMobileSpeakerFilterStrictness(strictness: SpeakerGateSt
   const owner = getMobileAuthOwner();
   await hydrateMobileSpeakerFilter();
   if (!owner.accountKey || !isMobileAuthOwnerCurrent(owner)) return;
-  const previous = { strictness: snapshot.strictness, strictnessCustomized: snapshot.strictnessCustomized };
   const revision = ++prefsRevision;
   update(
     strictness === null
@@ -262,7 +276,7 @@ export async function setMobileSpeakerFilterStrictness(strictness: SpeakerGateSt
   try {
     await writePrefs();
   } catch (error) {
-    if (isMobileAuthOwnerCurrent(owner) && revision === prefsRevision) update(previous);
+    if (isMobileAuthOwnerCurrent(owner) && revision === prefsRevision) restoreSavedPrefs();
     throw error;
   }
 }
@@ -285,6 +299,7 @@ async function modelsInstalled(): Promise<boolean> {
 export function downloadMobileSpeakerModels(): Promise<void> {
   if (!snapshot.supported) return Promise.resolve();
   if (downloading) return downloading;
+  downloadRevision += 1;
   const controller = new AbortController();
   downloadAbort = controller;
   update({ modelState: 'downloading', downloadedBytes: 0, downloadError: undefined });
@@ -301,6 +316,7 @@ export function downloadMobileSpeakerModels(): Promise<void> {
       if (downloading === run) {
         downloading = null;
         downloadAbort = null;
+        downloadRevision += 1;
       }
     });
   downloading = run;
@@ -440,12 +456,23 @@ function ensureModelsLoaded(): Promise<void> {
   const vad = modelPath(speakerModelAsset('vad'));
   const embedding = modelPath(speakerModelAsset('embedding'));
   if (!vad || !embedding) return Promise.reject(new Error('speaker models are not installed'));
-  const loading = withInferenceTimeout(loadSpeakerModels({ vad, embedding }));
-  modelsLoaded = loading;
-  // A failed load must not stick; the next run tries again.
-  loading.catch(() => {
-    if (modelsLoaded === loading) modelsLoaded = null;
+  const loading = withInferenceTimeout(loadSpeakerModels({ vad, embedding })).catch(async (error: unknown) => {
+    if (modelsLoaded === loading) {
+      // The OS can purge cache after hydration. Repair on load failure without
+      // adding filesystem I/O to every inference call or microphone startup.
+      const revision = downloadRevision;
+      const installed = await modelsInstalled();
+      if (modelsLoaded === loading) {
+        modelsLoaded = null;
+        if (!installed && !downloading && revision === downloadRevision) {
+          update({ modelState: 'missing', downloadedBytes: 0, downloadError: undefined });
+          if (snapshot.enabled) void downloadMobileSpeakerModels();
+        }
+      }
+    }
+    throw error;
   });
+  modelsLoaded = loading;
   return loading;
 }
 
@@ -585,7 +612,9 @@ export const __testing = {
     hydrationOwner = null;
     profileRevision = 0;
     prefsRevision = 0;
+    savedPrefs = { version: 1, enabled: false };
     downloading = null;
+    downloadRevision = 0;
     downloadAbort = null;
     modelsLoaded = null;
     ownerSubscription?.();

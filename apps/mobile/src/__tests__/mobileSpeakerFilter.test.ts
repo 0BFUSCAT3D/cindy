@@ -131,6 +131,133 @@ describe('mobile speaker filter', () => {
     expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ strictness: 'standard', strictnessCustomized: false });
   });
 
+  it.each(['enabled', 'strictness', 'mixed'] as const)('restores committed preferences after overlapping %s writes fail', async (kind) => {
+    installModels();
+    const key = await signIn('user-a');
+    await service.setMobileSpeakerFilterStrictness('relaxed');
+    const saved = asyncStore.get(service.__testing.prefsKey(key));
+    let rejectFirst!: (error: Error) => void;
+    vi.mocked(AsyncStorage.setItem)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockRejectedValueOnce(new Error('second write failed'));
+    const first = kind === 'strictness'
+      ? service.setMobileSpeakerFilterStrictness('strict')
+      : service.setMobileSpeakerFilterEnabled(true);
+    const firstFailure = expect(first).rejects.toThrow('first write failed');
+    await vi.waitFor(() => expect(rejectFirst).toBeTypeOf('function'));
+    const second = kind === 'enabled'
+      ? service.setMobileSpeakerFilterEnabled(false)
+      : service.setMobileSpeakerFilterStrictness(null);
+    const secondFailure = expect(second).rejects.toThrow('second write failed');
+    await vi.waitFor(() => expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject(
+      kind === 'enabled' ? { enabled: false } : { strictnessCustomized: false },
+    ));
+    rejectFirst(new Error('first write failed'));
+    await Promise.all([firstFailure, secondFailure]);
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({
+      enabled: false, strictness: 'relaxed', strictnessCustomized: true,
+    });
+    expect(asyncStore.get(service.__testing.prefsKey(key))).toBe(saved);
+  });
+
+  it('rolls back to an overlapping successful write when the following write fails', async () => {
+    installModels();
+    const key = await signIn('user-a');
+    let finishFirst!: () => void;
+    vi.mocked(AsyncStorage.setItem)
+      .mockImplementationOnce(async (name, value) => {
+        await new Promise<void>((resolve) => { finishFirst = resolve; });
+        asyncStore.set(name, value);
+      })
+      .mockRejectedValueOnce(new Error('second write failed'));
+    const first = service.setMobileSpeakerFilterEnabled(true);
+    await vi.waitFor(() => expect(finishFirst).toBeTypeOf('function'));
+    const secondFailure = expect(service.setMobileSpeakerFilterStrictness('strict')).rejects.toThrow('second write failed');
+    await vi.waitFor(() => expect(service.getMobileSpeakerFilterSnapshot().strictness).toBe('strict'));
+    finishFirst();
+    await Promise.all([first, secondFailure]);
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({
+      enabled: true, strictness: 'standard', strictnessCustomized: false,
+    });
+    expect(JSON.parse(asyncStore.get(service.__testing.prefsKey(key))!)).toEqual({ version: 1, enabled: true });
+  });
+
+  it('does not use a late write from the previous account as the new rollback baseline', async () => {
+    installModels();
+    await signIn('user-a');
+    let finishFirst!: () => void;
+    vi.mocked(AsyncStorage.setItem).mockImplementationOnce(async (name, value) => {
+      await new Promise<void>((resolve) => { finishFirst = resolve; });
+      asyncStore.set(name, value);
+    });
+    const first = service.setMobileSpeakerFilterStrictness('strict');
+    await vi.waitFor(() => expect(finishFirst).toBeTypeOf('function'));
+    await signIn('user-b');
+    await service.setMobileSpeakerFilterStrictness('relaxed');
+    finishFirst();
+    await first;
+    vi.mocked(AsyncStorage.setItem).mockRejectedValueOnce(new Error('write failed'));
+    await expect(service.setMobileSpeakerFilterEnabled(true)).rejects.toThrow('write failed');
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({
+      enabled: false, strictness: 'relaxed', strictnessCustomized: true,
+    });
+  });
+
+  it('redownloads purged cache after a native load failure and can load again', async () => {
+    installModels();
+    const key = await signIn('user-a');
+    storeProfile(key);
+    service.__testing.reset();
+    await signIn('user-a');
+    await service.setMobileSpeakerFilterEnabled(true);
+    files.clear();
+    vi.mocked(loadSpeakerModels).mockRejectedValueOnce(new Error('model file missing'));
+    const states: string[] = [];
+    const unsubscribe = service.subscribeMobileSpeakerFilter(() => states.push(service.getMobileSpeakerFilterSnapshot().modelState));
+    try {
+      service.warmMobileSpeakerFilter();
+      await vi.waitFor(() => expect(FileSystem.createDownloadResumable).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(service.getMobileSpeakerFilterSnapshot().modelState).toBe('ready'));
+      expect(states).toContain('missing');
+      expect(states).toContain('downloading');
+      for (const asset of SPEAKER_MODEL_ASSETS) {
+        expect(files.get('file:///cache/voice-models/' + speakerModelLocalName(asset))).toBe(asset.bytes);
+      }
+      service.warmMobileSpeakerFilter();
+      await vi.waitFor(() => expect(loadSpeakerModels).toHaveBeenCalledTimes(2));
+      expect(service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('retries a native load error without redownloading intact model files', async () => {
+    installModels();
+    await signIn('user-a');
+    vi.mocked(loadSpeakerModels).mockRejectedValueOnce(new Error('native load failed'));
+    await expect(service.enrollMobileSpeaker([new ArrayBuffer(32_000)])).resolves.toEqual({ ok: false, reason: 'failed' });
+    expect(service.getMobileSpeakerFilterSnapshot().modelState).toBe('ready');
+    expect(FileSystem.createDownloadResumable).not.toHaveBeenCalled();
+    await service.enrollMobileSpeaker([new ArrayBuffer(32_000)]);
+    expect(loadSpeakerModels).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not overwrite a completed download with a stale cache check', async () => {
+    installModels();
+    await signIn('user-a');
+    vi.mocked(loadSpeakerModels).mockRejectedValueOnce(new Error('model file missing'));
+    let finishCheck!: (info: FileSystem.FileInfo) => void;
+    vi.mocked(FileSystem.getInfoAsync).mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
+    const pending = service.enrollMobileSpeaker([new ArrayBuffer(32_000)]);
+    await vi.waitFor(() => expect(finishCheck).toBeTypeOf('function'));
+    files.clear();
+    await service.downloadMobileSpeakerModels();
+    expect(FileSystem.createDownloadResumable).toHaveBeenCalledTimes(2);
+    finishCheck({ exists: false, isDirectory: false, uri: 'file:///cache/voice-models/missing' });
+    await pending;
+    expect(service.getMobileSpeakerFilterSnapshot().modelState).toBe('ready');
+  });
+
   it('loads the new owner even when the previous owner hydration is still pending', async () => {
     let release!: (value: string | null) => void;
     vi.mocked(getSecureItem).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
