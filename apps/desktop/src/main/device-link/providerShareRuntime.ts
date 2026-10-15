@@ -461,7 +461,8 @@ async function receivedCatalogs(args: unknown[]): Promise<{ ready: boolean; shar
     listArgs[0] && typeof listArgs[0] === 'object' && !Array.isArray(listArgs[0])
     && (listArgs[0] as { includeCatalog?: unknown }).includeCatalog === false
   );
-  const shares = getReceivedShares();
+  // 未全部就绪时也返回已加载的区域，但账号切换期间不得返回旧账号名单。
+  const shares = getReceivedSharesSnapshot().received;
   return {
     ready: isReceivedSharesReady(),
     shares: await Promise.all(shares.map(async (share): Promise<ProviderShareReceivedCatalog> => {

@@ -76,8 +76,12 @@ export function useControlledShareIds(
           { includeCatalog: false },
         ]);
         if (!current()) return;
-        // 新版被控端在首次 refreshReceivedShares 完成前明确标记未就绪；
-        // 暂态空列表不能覆盖上一次结果，也不能被当成「被控端没有分享」。
+        // ready 只表示各区域名单是否完整；已返回的分享仍可立即使用。
+        // 暂态空列表继续重查，不能因另一区域未就绪而丢弃已加载区域的分享。
+        const ids = new Set(parseProviderShareReceivedCatalogs(value)
+          .filter((share) => share.status === 'active')
+          .map((share) => share.agentDeviceId));
+        setSnapshot({ deviceId, owner, ids });
         const ready = !(value && typeof value === 'object' && !Array.isArray(value)
           && (value as { ready?: unknown }).ready === false);
         if (!ready) {
@@ -85,10 +89,6 @@ export function useControlledShareIds(
           return;
         }
         readinessRetryAttempt = 0;
-        const ids = new Set(parseProviderShareReceivedCatalogs(value)
-          .filter((share) => share.status === 'active')
-          .map((share) => share.agentDeviceId));
-        setSnapshot({ deviceId, owner, ids });
       } catch {
         // 旧主机、断链和读失败都不把控制端名单当成被控端可用性的证据。
         if (current()) setSnapshot(null);

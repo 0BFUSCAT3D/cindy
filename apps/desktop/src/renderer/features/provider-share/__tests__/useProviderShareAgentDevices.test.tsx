@@ -159,6 +159,37 @@ describe('useProviderShareAgentDevices', () => {
     }
   });
 
+  it.each(['local', 'cross-region'])('offers loaded %s shares while another region is not ready', async (available) => {
+    const delayed = available === 'local' ? 'cross-region' : 'local';
+    initial = [available, delayed, 'controller-only', 'paused'].map((shareId) => share({ shareId }));
+    invoke.mockResolvedValue({
+      ready: false,
+      ...hostShares({ shareId: available }, { shareId: 'paused', status: 'paused' }),
+    });
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:' + available]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:' + available]);
+
+      // A partial response still carries authoritative pause/removal updates.
+      invoke.mockResolvedValue({ ready: false, ...hostShares({ shareId: available, status: 'paused' }) });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(result.current.devices).toEqual([]);
+      invoke.mockResolvedValue({ ready: true, ...hostShares({ shareId: delayed }) });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:' + delayed]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+      expect(invoke).toHaveBeenCalledTimes(4);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps current/pending shares while excluding new shares paused or unknown on the controlled host', async () => {
     initial = ['current', 'pending', 'paused', 'unknown'].map((shareId) => share({ shareId }));
     invoke.mockResolvedValue(hostShares({ shareId: 'paused', status: 'paused' }));
