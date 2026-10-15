@@ -230,11 +230,13 @@ it.each([
   ['block comment', ['/* deleteData() */']],
   ['multiline block comment', ['/*', 'deleteData()', '*/']],
   ['HTML comment', ['<!--', 'deleteData()', '-->']],
+  // A closing fragment alone is still ambiguous; this fallback must not parse HTML.
+  ['HTML end-bang comment fragment', ['deleteData() --!>']],
   ['quoted text', ["const note = ' deleteData() ';"]],
   ['template literal', ['const note = `', 'deleteData()', '`;']],
   ['multiline quoted text', ['const note = "', 'deleteData()', '";']],
 ] as const)(
-  'does not vouch for an added call kept only inside %s',
+  'does not vouch for an added call amid %s syntax',
   async (_kind, resolution) => {
     const h = await repos();
     try {

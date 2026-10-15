@@ -474,11 +474,11 @@ async function editsSurvive(
     const content = await git(['show', `${result}:${name}`], cwd).catch(() => '');
     if (content.length >= 60 * 1024) return false;
     // A word subsequence cannot prove that code is still active inside a string
-    // or a block comment (including wrappers on other lines). This fallback is
-    // deliberately conservative across languages: strict patch/application
+    // or a block comment (including wrappers on other lines and HTML's --!> end).
+    // This fallback is deliberately conservative across languages: strict patch/application
     // checks may prove preservation, otherwise the existing missing-change flow
     // asks for a decision instead of guessing the file's syntax.
-    if (added.length && /['"\x60]|\/\*|\*\/|<!--|-->/.test(content)) return false;
+    if (added.length && /['"\x60]|\/\*|\*\/|<!--|--!?>/.test(content)) return false;
     const lines = content.split(/\r?\n/);
     const wordsOf = (line: string) => line.split(/\s+/).filter(Boolean);
     // One line carries another's content by an ordered, multiplicity-preserving
