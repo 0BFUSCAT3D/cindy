@@ -489,6 +489,22 @@ describe('Chat Server result delivery and refresh', () => {
     expect(JSON.stringify(failures)).not.toContain('private preparation details');
   });
 
+  it('settles a failed lane preparation at once instead of waiting for the turn\'s attachment downloads', async () => {
+    fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+    const files = Array.from({ length: 12 }, (_, n) => ({ type: 'media', mediaId: `60000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`, caption: `f${n}.pdf` }));
+    const source = { id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
+      content: [{ type: 'text', text: 'Read these' }, ...files], createdAt: new Date().toISOString(), deleted: false, threadRootId: null };
+    fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [source] } : response(route));
+    // Slow media never finishes within this test.
+    fixture.download.mockImplementation(() => new Promise(() => {}));
+    deps.ensureLane = vi.fn(async () => ({ ok: false as const, errorCode: 'NO_MODEL', message: 'private preparation details' }));
+    await vi.advanceTimersByTimeAsync(2000);
+    const failures = fixture.handle.mock.calls.filter(([, , body]) => body?.action === 'fail');
+    expect(failures).toHaveLength(1);
+    expect(failures[0][2]).toMatchObject({ detail: 'cindy-runtime-error:MODEL_UNAVAILABLE' });
+    expect(fixture.download.mock.calls.length).toBeLessThan(files.length);
+  });
+
   it.each([
     ['authentication_failed private credential', 'AUTH_REQUIRED'],
     ['ECONNRESET private endpoint', 'NETWORK_ERROR'],

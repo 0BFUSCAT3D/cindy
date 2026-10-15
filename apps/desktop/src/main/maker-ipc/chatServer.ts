@@ -1248,6 +1248,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (s.room.kind === 'direct') throw new Error('INVALID_EXECUTION_TRIGGER');
       // Lane setup (local) and the turn's context (server reads, attachment downloads) are
       // independent; both finish before the single lease check that precedes the dispatch.
+      // A failed setup settles at once: no further downloads start and none are waited for.
+      let laneFailed = false;
       const laneSetup = (async () => {
         // Metadata only: the server remains the sole message store and scheduler.
         if (!metadata.has(s.room.id)) metadata.set(s.room.id, (async () => {
@@ -1317,6 +1319,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         await deps.syncLanePermission?.(lane.sessionId, bot.id);
         return lane;
       })();
+      laneSetup.catch(() => { laneFailed = true; });
       const contextRead = (async () => {
         const history = await historyRead;
         let page = [...history];
@@ -1380,10 +1383,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // The first 40 files in that order that download are attached, as when they were read
         // one by one; a few download at once. A failed file frees its place for the next one.
         let next = 0;
-        while (next < candidates.length && attachments.length < 40) {
+        while (!laneFailed && next < candidates.length && attachments.length < 40) {
           const batch = candidates.slice(next, next + 40 - attachments.length);
           next += batch.length;
-          const results = await settleBounded(batch, TURN_DOWNLOAD_CONCURRENCY, candidate => media.download(s.room.id, id.parse(candidate.mediaId)));
+          const results = await settleBounded(batch, TURN_DOWNLOAD_CONCURRENCY, async candidate => {
+            if (laneFailed) throw new Error('LANE_FAILED');
+            return media.download(s.room.id, id.parse(candidate.mediaId));
+          });
           results.forEach((result, index) => {
             if (result.status === 'fulfilled') { attachments.push(result.value); mediaDelivery.set(batch[index]!.mediaId, 'included'); }
             else missingAttachments.push(batch[index]!.name);
@@ -1392,11 +1398,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         for (const candidate of candidates.slice(next)) missingAttachments.push(candidate.name);
         return { history, source, threadRootId, thread, focusMessages, attachments, missingAttachments, mediaDelivery };
       })();
-      const [laneResult, contextResult] = await Promise.allSettled([laneSetup, contextRead]);
-      if (laneResult.status === 'rejected') throw laneResult.reason;
-      if (contextResult.status === 'rejected') throw contextResult.reason;
-      const lane = laneResult.value;
-      const { history, source, threadRootId, thread, focusMessages, attachments, missingAttachments, mediaDelivery } = contextResult.value;
+      // Observed here so a read that fails after a failed setup is not an unhandled rejection.
+      contextRead.catch(() => undefined);
+      const lane = await laneSetup;
+      const { history, source, threadRootId, thread, focusMessages, attachments, missingAttachments, mediaDelivery } = await contextRead;
       if (!current()) throw new Error('OWNER_CHANGED');
       // A quote resolves against every message this run read; otherwise its card snapshot stands.
       const readMessages = [...history, ...focusMessages, ...(thread?.background ?? [])];
