@@ -1113,7 +1113,7 @@ import {
   storeCustomProviderHeaders,
   storeCustomProviderKey,
 } from '../secrets/providerSecretStore.js';
-import { reportCindyGatewayKeyRejected } from '../model-access/gatewayKeyRejection.js';
+import { reportCindyGatewayKeyRejectedForCurrentKey } from '../model-access/gatewayKeyRejection.js';
 import { isGatewayProxyTokenRecoveryErrorEventForProvider } from './gatewayProxyTokenRecovery.js';
 import {
   getSessionEffort,
@@ -4697,17 +4697,6 @@ function isRemoteAuthRetryErrorEvent(
   );
 }
 
-/** 智能体不回报所用 Key:按本机当前保存的 Cindy AI Key 上报失效。 */
-function reportAgentCindyGatewayKeyRejected(): void {
-  try {
-    reportCindyGatewayKeyRejected(readClaudeApiKey());
-  } catch (error) {
-    log.warn('Cindy AI key rejection report from agent turn failed', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
 function isGatewayProxyTokenRecoveryErrorEvent(sessionId: string, event: AgentEvent): boolean {
   return isGatewayProxyTokenRecoveryErrorEventForProvider(getSessionProvider(sessionId), event);
 }
@@ -5579,7 +5568,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   get handleAgentIslandEventAfterBroadcast() {
     return handleAgentIslandEventAfterBroadcast;
   },
-  reportAgentCindyGatewayKeyRejected,
+  // 智能体不回报所用 Key:走「按当前 Key、不占用触发机会」的入口(见 gatewayKeyRejection.ts)。
+  reportAgentCindyGatewayKeyRejected: reportCindyGatewayKeyRejectedForCurrentKey,
   get notifyGoalIdleAfterTurnSettled() {
     return notifyGoalIdleAfterTurnSettled;
   },

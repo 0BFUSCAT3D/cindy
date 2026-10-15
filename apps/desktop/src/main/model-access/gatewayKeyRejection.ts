@@ -40,7 +40,17 @@ export interface GatewayKeyRejectionDeps {
   };
 }
 
-export type GatewayKeyRejectionReporter = (usedKey: string | null | undefined) => void;
+/**
+ * 上报器。两个入口共用同一份「已触发过的 Key 指纹」:
+ *  - `reportUsedKey`:调用方知道请求实际携带的 Key(规则 A + 规则 B,触发即标记);
+ *  - `reportCurrentKey`:调用方不知道用的是哪把 Key(智能体回合终态)。它只在当前 Key
+ *    尚未被准确上报触发过时同步,且**不标记**——否则旧 Key 进程(未重启的 Codex、老任务)
+ *    的迟到 401 会把新 Key 唯一的触发机会用掉,新 Key 真失效时准确上报反被忽略。
+ */
+export interface GatewayKeyRejectionReporter {
+  reportUsedKey(usedKey: string | null | undefined): void;
+  reportCurrentKey(): void;
+}
 
 function keyFingerprint(key: string): string {
   return createHash('sha256').update(key).digest('hex');
@@ -52,34 +62,53 @@ export function createGatewayKeyRejectionReporter(
 ): GatewayKeyRejectionReporter {
   let lastTriggeredFingerprint: string | null = null;
 
-  return (usedKey) => {
+  const warn = (prefix: string, error: unknown): void => {
+    deps.log?.warn(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+  };
+
+  /** 共同的跳过条件;通过时返回本机当前 Key。 */
+  const currentServerKey = (): string | null => {
+    if (!deps.canUseCindyGateway()) return null;
+    if (deps.isSessionBoundaryPending()) return null;
+    if (deps.getCredentialSource() !== 'server') return null;
+    return deps.readCurrentKey() || null;
+  };
+
+  const triggerSync = (): void => {
+    deps.log?.info('Cindy AI key rejected by gateway, re-syncing credentials');
+    void deps.requestSync().catch((error: unknown) => {
+      warn('Cindy AI credentials re-sync after key rejection failed', error);
+    });
+  };
+
+  // 上报发生在各调用方的错误处理路径里,任何异常都不能改变调用方原有的失败语义。
+  const guarded = (run: () => void): void => {
     try {
+      run();
+    } catch (error) {
+      warn('Cindy AI key rejection report failed', error);
+    }
+  };
+
+  return {
+    reportUsedKey: (usedKey) => guarded(() => {
       if (!usedKey) return;
-      if (!deps.canUseCindyGateway()) return;
-      if (deps.isSessionBoundaryPending()) return;
-      if (deps.getCredentialSource() !== 'server') return;
+      const currentKey = currentServerKey();
       // 规则 A:只认本机当前这把 Key 的拒绝。
-      if (deps.readCurrentKey() !== usedKey) return;
+      if (!currentKey || currentKey !== usedKey) return;
       // 规则 B:同一把 Key 只触发一次。
       const fingerprint = keyFingerprint(usedKey);
       if (fingerprint === lastTriggeredFingerprint) return;
       lastTriggeredFingerprint = fingerprint;
-      deps.log?.info('Cindy AI key rejected by gateway, re-syncing credentials');
-      void deps.requestSync().catch((error: unknown) => {
-        deps.log?.warn(
-          `Cindy AI credentials re-sync after key rejection failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
-    } catch (error) {
-      // 上报发生在各调用方的错误处理路径里,任何异常都不能改变调用方原有的失败语义。
-      deps.log?.warn(
-        `Cindy AI key rejection report failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+      triggerSync();
+    }),
+    reportCurrentKey: () => guarded(() => {
+      const currentKey = currentServerKey();
+      if (!currentKey) return;
+      // 当前 Key 已被准确上报同步过一次:不再重复请求(服务端故障时避免每个失败回合都打一次)。
+      if (keyFingerprint(currentKey) === lastTriggeredFingerprint) return;
+      triggerSync();
+    }),
   };
 }
 
@@ -98,7 +127,15 @@ export function installCindyGatewayKeyRejectionReporter(
  * 初始化时(无凭据同步可触发)直接忽略。
  */
 export function reportCindyGatewayKeyRejected(usedKey: string | null | undefined): void {
-  installedReporter?.(usedKey);
+  installedReporter?.reportUsedKey(usedKey);
+}
+
+/**
+ * 不知道请求实际用哪把 Key 时的上报(智能体回合因 Key 失效终止)。按本机当前 Key 判断,
+ * 当前 Key 已被准确上报触发过则跳过;触发同步但不占用该 Key 的「只触发一次」机会。
+ */
+export function reportCindyGatewayKeyRejectedForCurrentKey(): void {
+  installedReporter?.reportCurrentKey();
 }
 
 /** 从请求头里取 `Authorization: Bearer <key>` 的 key;没有或格式不对返回 null。 */

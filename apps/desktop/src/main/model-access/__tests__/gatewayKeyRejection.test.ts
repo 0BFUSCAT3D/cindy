@@ -10,6 +10,7 @@ import {
   createGatewayKeyRejectionReporter,
   installCindyGatewayKeyRejectionReporter,
   reportCindyGatewayKeyRejected,
+  reportCindyGatewayKeyRejectedForCurrentKey,
   withCindyGatewayKeyRejectionReport,
   type GatewayKeyRejectionDeps,
 } from '../gatewayKeyRejection.js';
@@ -30,8 +31,10 @@ function harness(overrides: Partial<GatewayKeyRejectionDeps> = {}) {
     log,
     ...overrides,
   };
+  const reporter = createGatewayKeyRejectionReporter(deps);
   return {
-    report: createGatewayKeyRejectionReporter(deps),
+    report: reporter.reportUsedKey,
+    reportCurrent: reporter.reportCurrentKey,
     requestSync: (overrides.requestSync as typeof requestSync | undefined) ?? requestSync,
     log,
     setCurrentKey: (key: string | null) => {
@@ -128,6 +131,76 @@ describe('createGatewayKeyRejectionReporter', () => {
   });
 });
 
+describe('reportCurrentKey (agent turns that do not reveal the key they used)', () => {
+  it('re-syncs without consuming the accurate report for the current key', () => {
+    const h = harness();
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+    // 未占用机会:同一把 Key 的准确上报仍可触发一次。
+    h.report(KEY_A);
+    expect(h.requestSync).toHaveBeenCalledTimes(2);
+    for (const call of [...h.log.info.mock.calls, ...h.log.warn.mock.calls]) {
+      expect(JSON.stringify(call)).not.toContain(KEY_A);
+    }
+  });
+
+  it('skips once the current key was already re-synced by an accurate report', () => {
+    const h = harness();
+    h.report(KEY_A);
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+    h.reportCurrent();
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['gateway capability is unavailable', { canUseCindyGateway: () => false }],
+    ['an account switch is pending', { isSessionBoundaryPending: () => true }],
+    ['the key was entered manually', { getCredentialSource: () => 'manual' as const }],
+    ['there is no current key', { readCurrentKey: () => null }],
+  ])('skips when %s', (_label, overrides) => {
+    const h = harness(overrides);
+    h.reportCurrent();
+    expect(h.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('never lets stale agent failures consume a new key\'s single accurate trigger', () => {
+    const h = harness();
+    // 1. 准确上报 K1,触发同步。
+    h.report(KEY_A);
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+    // 2. 同步写入 K2。
+    h.setCurrentKey(KEY_B);
+    // 3. 仍带旧 Key 的智能体回合失败若干次:每次都同步,但不标记 K2。
+    h.reportCurrent();
+    h.reportCurrent();
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(4);
+    // 4. K2 真正失效时的准确上报仍触发一次。
+    h.report(KEY_B);
+    expect(h.requestSync).toHaveBeenCalledTimes(5);
+    h.report(KEY_B);
+    expect(h.requestSync).toHaveBeenCalledTimes(5);
+  });
+
+  it('swallows a rejected or throwing sync', async () => {
+    const requestSync = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    const h = harness({ requestSync });
+    expect(() => h.reportCurrent()).not.toThrow();
+    await vi.waitFor(() => expect(h.log.warn).toHaveBeenCalledTimes(1));
+
+    const t = harness({
+      requestSync: () => {
+        throw new Error('sync unavailable');
+      },
+    });
+    expect(() => t.reportCurrent()).not.toThrow();
+    expect(t.log.warn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('reportCindyGatewayKeyRejected singleton', () => {
   afterEach(() => installCindyGatewayKeyRejectionReporter(null));
 
@@ -135,11 +208,17 @@ describe('reportCindyGatewayKeyRejected singleton', () => {
     expect(() => reportCindyGatewayKeyRejected(KEY_A)).not.toThrow();
   });
 
-  it('delegates to the installed reporter', () => {
-    const reporter = vi.fn();
+  it('delegates both entries to the installed reporter', () => {
+    const reporter = { reportUsedKey: vi.fn(), reportCurrentKey: vi.fn() };
     installCindyGatewayKeyRejectionReporter(reporter);
     reportCindyGatewayKeyRejected(KEY_A);
-    expect(reporter).toHaveBeenCalledWith(KEY_A);
+    reportCindyGatewayKeyRejectedForCurrentKey();
+    expect(reporter.reportUsedKey).toHaveBeenCalledWith(KEY_A);
+    expect(reporter.reportCurrentKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('the current-key entry is a no-op before model-access installs a reporter', () => {
+    expect(() => reportCindyGatewayKeyRejectedForCurrentKey()).not.toThrow();
   });
 });
 
