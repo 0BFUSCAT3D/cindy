@@ -12,12 +12,20 @@
  * 本机删组或移出组员时，在绑定文件的 `released` 中同时记下解除过的任务，避免两次落盘之间切换账号
  * 丢掉解除记录。其他解除路径仍写 `provider-group-released.json`，两处记录共同阻止老任务自动纳入(§9.4)。
  * 旧文件缺少 `released` 视为空；旧版本写绑定时保留这个未知根字段。
+ * 组设置先在 `provider-group-prefs.json` 同步记下待清理意图；绑定读方立即按意图失效，
+ * 新写绑定前完成解除并逐代确认，避免组已提交但账号切换阻止后续清理时被重新加入恢复。
  */
 import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 import { isProviderGroupProviderId } from '../../shared/providerGroup.js';
-import { captureProviderManagementScope } from './managementScope.js';
+import { captureProviderManagementScope, withProviderGroupMutation } from './managementScope.js';
+import {
+  completeProviderGroupBindingCleanup,
+  listProviderGroupBindingCleanups,
+  readProviderGroup,
+  type ProviderGroupBindingCleanup,
+} from './store.js';
 
 export interface ProviderGroupBinding {
   /** 组所属的供应商(组所在电脑上的供应商 id)。 */
@@ -158,15 +166,60 @@ const releasedStore = createOverrideSettingsFile<ReleaseFile>({
   logLoadedValue: false,
 });
 
+function readLocalFile(): BindingFile {
+  store.invalidateIfChanged();
+  return store.read();
+}
+
+function pendingRelease(
+  binding: ProviderGroupBinding,
+  cleanups: Readonly<Record<string, ProviderGroupBindingCleanup>>,
+): boolean {
+  const cleanup = cleanups[binding.providerId];
+  return cleanup !== undefined && (cleanup.keepMemberKeys === null || !cleanup.keepMemberKeys.includes(binding.memberKey));
+}
+
+/** 组文件里的清理意图先使旧绑定失效，完成本机解除落盘后再逐代确认。 */
+async function finishPendingCleanups(assertCurrent: () => void): Promise<void> {
+  for (;;) {
+    assertCurrent();
+    const cleanups = listProviderGroupBindingCleanups();
+    const pending = Object.entries(cleanups);
+    if (pending.length === 0) return;
+    await store.updateAtomic(({ value }) => {
+      assertCurrent();
+      const sessions = { ...value.sessions };
+      const released = { ...value.released };
+      let changed = false;
+      for (const [sessionId, binding] of Object.entries(sessions)) {
+        if (!pendingRelease(binding, cleanups)) continue;
+        delete sessions[sessionId];
+        released[sessionId] = { providerId: binding.providerId, at: cleanups[binding.providerId].at };
+        changed = true;
+      }
+      return changed ? { sessions, released: prune(released) } : {};
+    });
+    assertCurrent();
+    for (const [providerId, cleanup] of pending) {
+      await completeProviderGroupBindingCleanup(providerId, cleanup.token);
+      assertCurrent();
+    }
+  }
+}
+
 /** 这个任务的绑定(本机的组或另一台电脑上的组，至多一个)。 */
 export function readProviderGroupBinding(sessionId: string): ProviderGroupBinding | null {
   if (!SESSION_ID_PATTERN.test(sessionId)) return null;
-  return store.read().sessions[sessionId] ?? remoteStore.read().sessions[sessionId] ?? null;
+  const cleanups = listProviderGroupBindingCleanups();
+  const local = readLocalFile().sessions[sessionId];
+  if (local) return pendingRelease(local, cleanups) ? null : local;
+  return remoteStore.read().sessions[sessionId] ?? null;
 }
 
 /** 本机的组的绑定(本机分配器据此统计各组内电脑上正在运行的任务)。 */
 export function listProviderGroupBindings(): Record<string, ProviderGroupBinding> {
-  return store.read().sessions;
+  const cleanups = listProviderGroupBindingCleanups();
+  return Object.fromEntries(Object.entries(readLocalFile().sessions).filter(([, binding]) => !pendingRelease(binding, cleanups)));
 }
 
 /** 另一台电脑上的组的绑定(据此向组所在电脑报告正在运行的任务)。 */
@@ -178,8 +231,10 @@ async function writeIn(
   target: typeof store,
   sessionId: string,
   binding: ProviderGroupBinding | null,
+  assertCurrent: () => void,
 ): Promise<void> {
   await target.updateAtomic(({ value }) => {
+    assertCurrent();
     const sessions = { ...value.sessions };
     if (binding) sessions[sessionId] = binding;
     else if (sessionId in sessions) delete sessions[sessionId];
@@ -204,30 +259,45 @@ export async function writeProviderGroupBinding(
   binding: { providerId: string; memberKey: string; groupDeviceId?: string | null } | null,
   now: number = Date.now(),
 ): Promise<void> {
+  const assertCurrent = captureProviderManagementScope();
   if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session id');
   const remote = typeof binding?.groupDeviceId === 'string';
   const normalized = binding ? normalizeBinding({ ...binding, at: now }, remote) : null;
   if (binding && !normalized) throw new Error('Invalid provider group binding');
-  await writeIn(remote ? remoteStore : store, sessionId, normalized);
-  await writeIn(remote ? store : remoteStore, sessionId, null);
-  // 重新由同一个组分配(例如清空后当作新任务)：之前解除过的记录作废。
-  const release = normalized ? releasedStore.read().sessions[sessionId] : undefined;
-  if (normalized && release && sameGroup(release, normalized)) {
-    await releasedStore.updateAtomic(({ value }) => {
-      const current = value.sessions[sessionId];
-      if (!current || !sameGroup(current, normalized)) return {};
-      const sessions = { ...value.sessions };
-      delete sessions[sessionId];
-      return { sessions };
-    });
-  }
+  await withProviderGroupMutation(async () => {
+    // 先完成之前已提交的移出，避免新分配覆盖旧绑定后失去该任务的解除证据。
+    await finishPendingCleanups(assertCurrent);
+    assertCurrent();
+    await writeIn(remote ? remoteStore : store, sessionId, normalized, assertCurrent);
+    assertCurrent();
+    await writeIn(remote ? store : remoteStore, sessionId, null, assertCurrent);
+    assertCurrent();
+    // 重新由同一个组分配(例如清空后当作新任务)：之前解除过的记录作废。
+    const release = normalized ? releasedStore.read().sessions[sessionId] : undefined;
+    if (normalized && release && sameGroup(release, normalized)) {
+      await releasedStore.updateAtomic(({ value }) => {
+        assertCurrent();
+        const current = value.sessions[sessionId];
+        if (!current || !sameGroup(current, normalized)) return {};
+        const sessions = { ...value.sessions };
+        delete sessions[sessionId];
+        return { sessions };
+      });
+      assertCurrent();
+    }
+  });
+  assertCurrent();
 }
 
 /** 这个任务曾因组内电脑被移出或这个组被删除而解除过这个组的绑定：不再自动纳入这个组(§9.4)。 */
 export function isProviderGroupReleased(sessionId: string, group: ProviderGroupRef): boolean {
   if (!SESSION_ID_PATTERN.test(sessionId)) return false;
-  const localRelease = store.read().released?.[sessionId];
+  const cleanups = listProviderGroupBindingCleanups();
+  const localFile = readLocalFile();
+  const localRelease = localFile.released?.[sessionId];
   if (localRelease && sameGroup(localRelease, group)) return true;
+  const binding = localFile.sessions[sessionId];
+  if (binding && sameGroup(binding, group) && pendingRelease(binding, cleanups)) return true;
   const release = releasedStore.read().sessions[sessionId];
   return release !== undefined && sameGroup(release, group);
 }
@@ -271,20 +341,28 @@ export async function pruneProviderGroupBindings(
   now: number = Date.now(),
 ): Promise<void> {
   const assertCurrent = captureProviderManagementScope();
-  await store.updateAtomic(({ value }) => {
+  await withProviderGroupMutation(async () => {
+    await finishPendingCleanups(assertCurrent);
     assertCurrent();
-    const sessions = { ...value.sessions };
-    const released = { ...value.released };
-    let changed = false;
-    for (const [sessionId, binding] of Object.entries(sessions)) {
-      if (binding.providerId !== providerId) continue;
-      if (keepMemberKeys?.has(binding.memberKey)) continue;
-      delete sessions[sessionId];
-      released[sessionId] = { providerId, at: now };
-      changed = true;
-    }
-    // 删除绑定与阻止自动恢复的记录共用一份文件、一把锁；提交后无需再写另一份文件。
-    return changed ? { sessions, released: prune(released) } : {};
+    // 已提交的移出已由意图回放完成；旧 IPC 请求恢复时，不能按过期快照再解除新分配。
+    const current = readProviderGroup(providerId);
+    if (current && (keepMemberKeys === null || current.members.length !== keepMemberKeys.size
+      || current.members.some((member) => !keepMemberKeys.has(member.key)))) return;
+    await store.updateAtomic(({ value }) => {
+      assertCurrent();
+      const sessions = { ...value.sessions };
+      const released = { ...value.released };
+      let changed = false;
+      for (const [sessionId, binding] of Object.entries(sessions)) {
+        if (binding.providerId !== providerId) continue;
+        if (keepMemberKeys?.has(binding.memberKey)) continue;
+        delete sessions[sessionId];
+        released[sessionId] = { providerId, at: now };
+        changed = true;
+      }
+      // 删除绑定与阻止自动恢复的记录共用一份文件、一把锁；提交后无需再写另一份文件。
+      return changed ? { sessions, released: prune(released) } : {};
+    });
   });
 }
 

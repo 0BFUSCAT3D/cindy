@@ -39,6 +39,51 @@ describe('provider group store', () => {
     expect(store.readProviderGroup('boundary')).toEqual(initial);
   });
 
+  it.each(['remove', 'delete'].flatMap((action) => ['owner', 'teardown'].map((boundary) => ({ action, boundary }))))(
+    'keeps committed $action cleanup through $boundary, restart and rejoin', async ({ action, boundary }) => {
+      const providerId = `committed-${action}-${boundary}`;
+      const sessionId = `${providerId}-task`;
+      const initial = (await store.writeProviderGroup(providerId, {
+        members: [{ kind: 'local' }, { kind: 'device', agentDeviceId: 'mini', providerId }],
+      }))!;
+      const removedKey = initial.members[1].key;
+      await bindings.writeProviderGroupBinding(sessionId, { providerId, memberKey: removedKey }, 1);
+      await bindings.writeProviderGroupBinding(`${sessionId}-kept`, { providerId, memberKey: 'local' }, 1);
+      const withLock = locks.withCrossProcessLock;
+      vi.spyOn(locks, 'withCrossProcessLock').mockImplementationOnce(async (...args) => {
+        const result = await withLock(...args);
+        if (boundary === 'owner') activeOwner = 'new-owner';
+        else scope.boundaryPending = true;
+        return result;
+      });
+      const next = action === 'delete' ? null : { ...initial, members: [initial.members[0]] };
+      await expect(store.writeProviderGroup(providerId, next)).rejects.toThrow(/PRECONDITION_FAILED/);
+      if (boundary === 'owner') {
+        expect(store.readProviderGroup(providerId)).toBeNull();
+        expect(bindings.readProviderGroupBinding(sessionId)).toBeNull();
+        expect(bindings.isProviderGroupReleased(sessionId, { providerId })).toBe(false);
+      }
+      activeOwner = 'owner-test';
+      scope.boundaryPending = false;
+      expect(store.readProviderGroup(providerId)).toEqual(next);
+      // 模拟请求被账号边界拒绝，IPC 根本没有执行 pruneBindings；切回后先把成员加回来。
+      await store.writeProviderGroup(providerId, initial);
+      vi.resetModules();
+      const restarted = await import('../bindings.js');
+      expect(restarted.readProviderGroupBinding(sessionId)).toBeNull();
+      expect(restarted.isProviderGroupReleased(sessionId, { providerId })).toBe(true);
+      expect(restarted.listProviderGroupBindings()[sessionId]).toBeUndefined();
+      expect(restarted.isProviderGroupReleased(`${sessionId}-kept`, { providerId })).toBe(action === 'delete');
+      // 新分配先完成旧清理，不能把新绑定吞掉；原任务只有显式重新分配才回到组里。
+      await restarted.writeProviderGroupBinding(`${sessionId}-new`, { providerId, memberKey: removedKey }, 2);
+      expect(restarted.readProviderGroupBinding(`${sessionId}-new`)).not.toBeNull();
+      expect(restarted.isProviderGroupReleased(sessionId, { providerId })).toBe(true);
+      await restarted.writeProviderGroupBinding(sessionId, { providerId, memberKey: removedKey }, 3);
+      expect(restarted.readProviderGroupBinding(sessionId)).not.toBeNull();
+      expect(restarted.isProviderGroupReleased(sessionId, { providerId })).toBe(false);
+    },
+  );
+
   it('drops invalid groups and empty groups when reading', () => {
     expect(store.__testing.normalize({
       groups: {
@@ -149,6 +194,163 @@ describe('provider group store', () => {
     } finally {
       fs.writeFileSync(file, previous);
     }
+  });
+
+  it('retains every removed member across rejoin and ignores an older cleanup acknowledgement', async () => {
+    const providerId = 'successive-cleanups';
+    const initial = (await store.writeProviderGroup(providerId, { members: [
+      { kind: 'local' },
+      { kind: 'device', agentDeviceId: 'mini', providerId },
+      { kind: 'device', agentDeviceId: 'studio', providerId },
+    ] }))!;
+    for (const member of initial.members) {
+      await bindings.writeProviderGroupBinding(`successive-${member.kind === 'local' ? 'local' : member.agentDeviceId}`,
+        { providerId, memberKey: member.key }, 1);
+    }
+    await store.writeProviderGroup(providerId, { ...initial, members: [initial.members[0], initial.members[2]] });
+    const first = store.listProviderGroupBindingCleanups()[providerId];
+    await store.writeProviderGroup(providerId, initial);
+    expect(store.listProviderGroupBindingCleanups()[providerId].token).toBe(first.token);
+    await store.writeProviderGroup(providerId, { ...initial, members: [initial.members[0], initial.members[1]] });
+    const second = store.listProviderGroupBindingCleanups()[providerId];
+    expect(second.token).not.toBe(first.token);
+    await store.completeProviderGroupBindingCleanup(providerId, first.token);
+    expect(store.listProviderGroupBindingCleanups()[providerId].token).toBe(second.token);
+    expect(bindings.readProviderGroupBinding('successive-local')).not.toBeNull();
+    expect(bindings.readProviderGroupBinding('successive-mini')).toBeNull();
+    expect(bindings.readProviderGroupBinding('successive-studio')).toBeNull();
+    await bindings.writeProviderGroupBinding('successive-new', { providerId, memberKey: 'local' }, 2);
+    expect(bindings.isProviderGroupReleased('successive-mini', { providerId })).toBe(true);
+    expect(bindings.isProviderGroupReleased('successive-studio', { providerId })).toBe(true);
+    expect(store.listProviderGroupBindingCleanups()[providerId]).toBeUndefined();
+  });
+
+  it('keeps the committed cleanup active if writing the binding release fails', async () => {
+    const providerId = 'pending-write-failure';
+    const config = (await store.writeProviderGroup(providerId, { members: [{ kind: 'local' }] }))!;
+    await bindings.writeProviderGroupBinding('pending-old', { providerId, memberKey: 'local' }, 1);
+    await store.writeProviderGroup(providerId, null);
+    await store.writeProviderGroup(providerId, config);
+    const pending = store.listProviderGroupBindingCleanups()[providerId];
+    const file = path.join(tmpDir, 'provider-group-bindings.json');
+    const before = fs.readFileSync(file, 'utf8');
+    const rename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (target === file) throw new Error('disk unavailable');
+      rename(source, target);
+    });
+    await expect(bindings.writeProviderGroupBinding('pending-new', { providerId, memberKey: 'local' }, 2))
+      .rejects.toThrow('disk unavailable');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(store.listProviderGroupBindingCleanups()[providerId]).toEqual(pending);
+    expect(bindings.readProviderGroupBinding('pending-old')).toBeNull();
+    expect(bindings.isProviderGroupReleased('pending-old', { providerId })).toBe(true);
+    vi.restoreAllMocks();
+    await bindings.writeProviderGroupBinding('pending-new', { providerId, memberKey: 'local' }, 2);
+    expect(store.listProviderGroupBindingCleanups()[providerId]).toBeUndefined();
+    expect(bindings.isProviderGroupReleased('pending-old', { providerId })).toBe(true);
+    expect(bindings.readProviderGroupBinding('pending-new')).not.toBeNull();
+  });
+
+  it('retains pending binding cleanup through an older group-settings writer', async () => {
+    const providerId = 'legacy-pending';
+    const config = (await store.writeProviderGroup(providerId, { members: [{ kind: 'local' }] }))!;
+    await bindings.writeProviderGroupBinding('legacy-pending-task', { providerId, memberKey: 'local' }, 1);
+    await store.writeProviderGroup(providerId, null);
+    const pending = store.listProviderGroupBindingCleanups()[providerId];
+    const { createOverrideSettingsFile } = await import('../../maker-host/override-settings-file.js');
+    const legacy = createOverrideSettingsFile<{ groups: Record<string, unknown> }>({
+      filePath: () => path.join(tmpDir, 'provider-group-prefs.json'),
+      defaults: { groups: {} },
+      normalize: (raw) => ({ groups: (raw as { groups?: Record<string, unknown> })?.groups ?? {} }),
+      log: { info: () => {}, warn: () => {} },
+      label: 'legacy-provider-group',
+    });
+    legacy.writePatch({ groups: { ...legacy.read().groups, [providerId]: config } });
+    vi.resetModules();
+    const restarted = await import('../bindings.js');
+    expect(store.listProviderGroupBindingCleanups()[providerId]).toEqual(pending);
+    expect(restarted.readProviderGroupBinding('legacy-pending-task')).toBeNull();
+    expect(restarted.isProviderGroupReleased('legacy-pending-task', { providerId })).toBe(true);
+  });
+
+  it('replays an unacknowledged cleanup if teardown begins after the release was committed', async () => {
+    const providerId = 'pending-ack';
+    const config = (await store.writeProviderGroup(providerId, { members: [{ kind: 'local' }] }))!;
+    await bindings.writeProviderGroupBinding('pending-ack-old', { providerId, memberKey: 'local' }, 1);
+    await store.writeProviderGroup(providerId, null);
+    const pending = store.listProviderGroupBindingCleanups()[providerId];
+    const withLock = locks.withCrossProcessLock;
+    let interrupted = false;
+    vi.spyOn(locks, 'withCrossProcessLock').mockImplementation(async (...args) => {
+      const result = await withLock(...args);
+      if (!interrupted && args[0].endsWith('provider-group-bindings.json.lock')) {
+        interrupted = true;
+        scope.boundaryPending = true;
+      }
+      return result;
+    });
+    await expect(bindings.pruneProviderGroupBindings(providerId, null)).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(store.listProviderGroupBindingCleanups()[providerId]).toEqual(pending);
+    const file = JSON.parse(fs.readFileSync(path.join(tmpDir, 'provider-group-bindings.json'), 'utf8'));
+    expect(file.released['pending-ack-old'].providerId).toBe(providerId);
+    scope.boundaryPending = false;
+    await store.writeProviderGroup(providerId, config);
+    await bindings.writeProviderGroupBinding('pending-ack-new', { providerId, memberKey: 'local' }, 2);
+    expect(store.listProviderGroupBindingCleanups()[providerId]).toBeUndefined();
+    expect(bindings.isProviderGroupReleased('pending-ack-old', { providerId })).toBe(true);
+    expect(bindings.readProviderGroupBinding('pending-ack-new')).not.toBeNull();
+  });
+
+  it('does not let a concurrent stale cleanup remove a fresh assignment', async () => {
+    const providerId = 'concurrent-pending';
+    const config = (await store.writeProviderGroup(providerId, { members: [{ kind: 'local' }] }))!;
+    await bindings.writeProviderGroupBinding('concurrent-pending-old', { providerId, memberKey: 'local' }, 1);
+    await store.writeProviderGroup(providerId, null);
+    await store.writeProviderGroup(providerId, config);
+    const withLock = locks.withCrossProcessLock;
+    let queued = false;
+    let startingSecond = false;
+    let second: Promise<void> | undefined;
+    let resumeSecond!: () => void;
+    const pauseSecond = new Promise<void>((resolve) => { resumeSecond = resolve; });
+    vi.spyOn(locks, 'withCrossProcessLock').mockImplementation(async (...args) => {
+      if (args[0].endsWith('provider-group-bindings.json.lock')) {
+        if (!queued) {
+          const result = await withLock(...args);
+          queued = true;
+          // 第一轮已解除旧绑定、尚未确认意图；另一写方此时仍可看到待清理快照。
+          startingSecond = true;
+          second = bindings.writeProviderGroupBinding('concurrent-pending-b', { providerId, memberKey: 'local' }, 3);
+          startingSecond = false;
+          return result;
+        }
+        if (startingSecond) await pauseSecond;
+      }
+      return withLock(...args);
+    });
+    try {
+      await bindings.writeProviderGroupBinding('concurrent-pending-a', { providerId, memberKey: 'local' }, 2);
+    } finally {
+      resumeSecond();
+    }
+    await second;
+    expect(bindings.readProviderGroupBinding('concurrent-pending-a')).not.toBeNull();
+    expect(bindings.readProviderGroupBinding('concurrent-pending-b')).not.toBeNull();
+    expect(bindings.isProviderGroupReleased('concurrent-pending-old', { providerId })).toBe(true);
+  });
+
+  it('does not prune a fresh assignment when an older delete command resumes after group recreation', async () => {
+    const providerId = 'late-delete';
+    const config = (await store.writeProviderGroup(providerId, { members: [{ kind: 'local' }] }))!;
+    await bindings.writeProviderGroupBinding('late-delete-old', { providerId, memberKey: 'local' }, 1);
+    await store.writeProviderGroup(providerId, null);
+    await store.writeProviderGroup(providerId, config);
+    await bindings.writeProviderGroupBinding('late-delete-new', { providerId, memberKey: 'local' }, 2);
+    // 之前的 delete 请求刚从 writeGroup 返回，此时不应再按旧的 null 快照解除新绑定。
+    await bindings.pruneProviderGroupBindings(providerId, null, 3);
+    expect(bindings.isProviderGroupReleased('late-delete-old', { providerId })).toBe(true);
+    expect(bindings.readProviderGroupBinding('late-delete-new')).not.toBeNull();
   });
 });
 
