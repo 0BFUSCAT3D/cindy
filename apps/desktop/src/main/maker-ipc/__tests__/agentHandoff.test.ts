@@ -130,6 +130,17 @@ describe('buildHandoffText', () => {
     expect(ordinary).toContain('== Retrieving earlier verbatim history (use when needed) ==');
     expect(ordinary).toContain('"session_ids":["s-task"],"limit":10');
     expect(ordinary).not.toContain('Recalling earlier history');
+
+    // 工具密集长历史触达硬上限时,回忆指引整段与结束标记一样必须保住。
+    const dense: HandoffSourceMessage[] = [msg('user', '开始')];
+    for (let i = 0; i < 400; i++) {
+      dense.push(msg('tool_use', { toolName: 'Bash', input: { command: `echo ${'x'.repeat(200)} ${i}` } }));
+    }
+    const capped = buildHandoffText(dense, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
+    expect(capped.length).toBeLessThanOrEqual(16_000);
+    expect(capped).toContain('== Recalling earlier history (use when needed) ==');
+    expect(capped).toContain('search before saying you have no record of it');
+    expect(capped.trimEnd().endsWith("== End of rebuild note; the user's new message follows ==")).toBe(true);
   });
 
   it('最近轮次逐字保留,更早轮次进单行提要', () => {

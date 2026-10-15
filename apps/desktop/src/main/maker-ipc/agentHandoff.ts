@@ -636,12 +636,17 @@ function splitTrailingTerminator(text: string): [body: string, tail: string] {
  * 英文 framing 比原中文长,触达上限更容易。
  */
 const RETRIEVAL_SECTION_HEADING = '== Retrieving earlier verbatim history';
+/** 伙伴主对话的检索指引标题(按需回忆口径),同样属于必须整段保住的尾部。 */
+const RECALL_SECTION_HEADING = '== Recalling earlier history';
 
 function splitMandatoryHandoffTail(text: string, opts: BuildHandoffOptions): {
   body: string;
   tail: string;
 } {
-  const retrievalAt = text.lastIndexOf(RETRIEVAL_SECTION_HEADING);
+  const retrievalAt = Math.max(
+    text.lastIndexOf(RETRIEVAL_SECTION_HEADING),
+    text.lastIndexOf(RECALL_SECTION_HEADING),
+  );
   if (retrievalAt >= 0) {
     return {
       body: text.slice(0, retrievalAt).trimEnd(),
