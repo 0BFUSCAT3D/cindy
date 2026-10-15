@@ -70,7 +70,8 @@ export function collectConversationShareMessages(
         maxVisibleLines,
         visualLineCapacity: maxVisibleLines ? MIN_HALF_WIDTH_UNITS_PER_VISUAL_LINE : undefined,
       });
-      if (projected?.kind === 'user' && isOwnUserMessage?.(item.message)) {
+      // IM 来源卡在聊天中不使用个人气泡色，即便其正文属于当前用户。
+      if (projected?.kind === 'user' && !item.message.hookSource && isOwnUserMessage?.(item.message)) {
         projected.ownUserBubble = true;
       }
       if (projected) messages.push(projected);
