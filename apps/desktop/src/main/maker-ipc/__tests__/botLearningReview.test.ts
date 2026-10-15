@@ -21,6 +21,8 @@ const h = vi.hoisted(() => ({
   gapRows: [] as any[],
   /** 本轮取材查询返回的行;null = 默认一条用户消息。 */
   turnRows: null as any[] | null,
+  /** 按账本 client_id 解析水位时返回的当前 rowid;null = 解析不到。 */
+  floorRowid: null as number | null,
 }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => h.owner,
@@ -30,9 +32,11 @@ vi.mock('../../appSessionState.js', () => ({
 vi.mock('../../localDb/client/current.js', () => {
   const db = {
     queryOne: async (sql: string) =>
-      sql.includes('MAX(rowid)')
-        ? { rowid: h.prevCompleted }
-        : h.visible
+      sql.includes('prev-completed')
+        ? h.prevCompleted ? { id: 'prev', rowid: h.prevCompleted } : undefined
+        : sql.includes('ledger-floor')
+          ? h.floorRowid === null ? undefined : { rowid: h.floorRowid }
+          : h.visible
           ? {
               botId: 'bot',
               capabilities: JSON.stringify({ memory: h.enabled }),
@@ -248,6 +252,8 @@ it('feeds the working memory to the review and writes an evidence-filtered ledge
     'bot',
     expect.objectContaining({
       coveredThroughRowid: 5,
+      // 水位同时记下当前回复的 client_id,作为瘦身重排后仍然可靠的持久判据。
+      coveredThroughMessageId: 'reply',
       commitments: [expect.objectContaining({ text: 'Lead every report with the conclusion', messageId: 'user' })],
     }),
     4,
@@ -275,16 +281,36 @@ it('advances the ledger watermark only through the contiguous backfilled prefix 
     gap(2, 41).map((m) => m.id),
   );
   expect(input.messages.at(-1).id).toBe('user');
-  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 41 }), 4);
-  // 下一轮从 41 接上,剩余一条补完:水位推进到当前回复(102)。
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 41, coveredThroughMessageId: 'g41' }), 4);
+  // 下一轮按 client_id 'g41' 解析回当前 rowid(41)接上,剩余一条补完:水位推进到当前回复(102)。
   h.meta = { turnCompleted: true };
-  h.working = { ...ledger, coveredThroughRowid: 41 };
+  h.working = { ...ledger, coveredThroughRowid: 41, coveredThroughMessageId: 'g41' };
+  h.floorRowid = 41;
   h.gapRows = gap(42, 42);
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
   await reviewTeammateLearning('session', 'reply2');
-  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 102 }), 4);
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 102, coveredThroughMessageId: 'reply2' }), 4);
   h.prevCompleted = 3;
   h.gapRows = [];
+  h.floorRowid = null;
+});
+
+it('resolves the ledger floor by client_id so a VACUUM-renumbered rowid cannot fake freshness, and starts a brand-new ledger from the beginning', async () => {
+  const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
+  // 瘦身后 rowid 重排:账本存的 500 已经没有意义,按 client_id 解析回当前的 1 接上,写回当前库的水位(5)而不是保留 500。
+  h.working = { version: 1, revision: 4, coveredThroughRowid: 500, coveredThroughMessageId: 'old-reply', updatedAt: 0, threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] };
+  h.floorRowid = 1;
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply');
+  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 1, 3, 'session', 41]);
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply' }), 4);
+  // 没有账本:从对话开头起算,整段历史按缺口分批回补,而不是从上一条完成回复直接跳过去。
+  h.meta = { turnCompleted: true };
+  h.working = null;
+  h.floorRowid = null;
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply2');
+  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 0, 3, 'session', 41]);
 });
 
 it('does not advance the watermark past the previous completed reply when the current turn itself was truncated', async () => {
@@ -296,6 +322,6 @@ it('does not advance the watermark past the previous completed reply when the cu
   ];
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
   await reviewTeammateLearning('session', 'reply');
-  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 3 }), 0);
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 3, coveredThroughMessageId: 'prev' }), 0);
   h.turnRows = null;
 });

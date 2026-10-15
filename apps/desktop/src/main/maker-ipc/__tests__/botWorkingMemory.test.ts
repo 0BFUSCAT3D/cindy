@@ -72,8 +72,9 @@ describe('applyWorkingMemoryProposal', () => {
         resolved: [],
       },
       messages,
-      { now, coveredThroughRowid: 42 },
+      { now, coveredThroughRowid: 42, coveredThroughMessageId: 'a1' },
     );
+    expect(next.coveredThroughMessageId).toBe('a1');
     expect(next.threads.map((t) => t.text)).toEqual(['改周报模板']);
     expect(next.commitments.map((c) => c.text)).toEqual(['周五前改完周报模板并发用户确认']);
     expect(next.commitments[0]).toMatchObject({ messageId: 'a1', trigger: '周五前' });
@@ -113,8 +114,16 @@ describe('applyWorkingMemoryProposal', () => {
     // 原样带回的条目连时间都不动,排序才能表达"最新优先"。
     expect(next.commitments.find((c) => c.id === 'c1')).toMatchObject({ messageId: 'old', updatedAt: 1 });
     expect(next.recentlyDone.map((d) => d.text)).toEqual(['测试已补上']);
-    // 水位只前进不后退。
+    // 旧式只带 rowid 的调用:水位只前进不后退。
     expect(next.coveredThroughRowid).toBe(10);
+    // 带 client_id 的调用已按当前库解析过(瘦身重排后 rowid 可能变小):照用,不被旧数字卡住。
+    const remapped = applyWorkingMemoryProposal(
+      { ...previous, coveredThroughRowid: 500, coveredThroughMessageId: 'old' },
+      { threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [], resolved: [] },
+      messages,
+      { now, coveredThroughRowid: 5, coveredThroughMessageId: 'a1' },
+    );
+    expect(remapped).toMatchObject({ coveredThroughRowid: 5, coveredThroughMessageId: 'a1' });
   });
 
   it('requires evidence to change a field of an existing item, allows evidenced clearing, and bumps time only on real change', () => {
@@ -361,18 +370,24 @@ describe('store', () => {
   });
 
   it('is fresh only when the ledger covers the latest completed reply of a companion chat', async () => {
-    await writeBotWorkingMemory(root, 'bot-1', { ...emptyWorkingMemory(), updatedAt: 1, coveredThroughRowid: 12 }, 0);
-    // 伙伴归属 → 最近一条已完成回复的 rowid。
-    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 12 }]);
+    // 账本存的 rowid(999)是瘦身前的数字,不作数;按 client_id 'r12' 解析回当前 rowid 再比较。
+    await writeBotWorkingMemory(root, 'bot-1', { ...emptyWorkingMemory(), updatedAt: 1, coveredThroughRowid: 999, coveredThroughMessageId: 'r12' }, 0);
+    // 伙伴归属 → 水位消息的当前 rowid → 最近一条已完成回复的 rowid。
+    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 12 }], [{ rowid: 12 }]);
     expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(true);
-    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 13 }]);
+    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 12 }], [{ rowid: 13 }]);
     expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
-    // 还没有已完成回复 / 非伙伴主对话 / 没有账本:都不算新鲜。
-    db.queue.push([{ botId: 'bot-1' }], [{ rowid: null }]);
+    // 还没有已完成回复 / 水位消息已不在 / 非伙伴主对话 / 没有账本 / 旧账本没有 client_id:都不算新鲜。
+    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 12 }], [{ rowid: null }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
+    db.queue.push([{ botId: 'bot-1' }], []);
     expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
     db.queue.push([]);
     expect(await isWorkingMemoryFreshForSession('s-task', root)).toBe(false);
     db.queue.push([{ botId: 'bot-none' }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
+    await writeBotWorkingMemory(root, 'bot-legacy', { ...emptyWorkingMemory(), updatedAt: 1, coveredThroughRowid: 12 }, 0);
+    db.queue.push([{ botId: 'bot-legacy' }]);
     expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
   });
 

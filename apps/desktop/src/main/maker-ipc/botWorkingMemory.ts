@@ -66,6 +66,12 @@ export interface BotWorkingMemory {
   revision: number;
   /** 语义层已经读过的最后一条消息 rowid;换窗线是否能提前取决于它是否覆盖最近完成轮。 */
   coveredThroughRowid: number;
+  /**
+   * 水位对应消息的 client_id。messages 用 TEXT 主键,隐藏 rowid 在数据库瘦身(VACUUM INTO)后
+   * 可能重排,持久判据以它为准:用的时候按 client_id 解析回当前 rowid。旧账本没有这一项时
+   * 按不新鲜处理,下一次复盘写入后自愈。
+   */
+  coveredThroughMessageId?: string;
   updatedAt: number;
   threads: WorkingThread[];
   commitments: WorkingCommitment[];
@@ -131,6 +137,9 @@ export function parseWorkingMemory(raw: unknown): BotWorkingMemory {
     ...empty,
     revision: typeof raw.revision === 'number' && raw.revision >= 0 ? Math.floor(raw.revision) : 0,
     coveredThroughRowid: typeof raw.coveredThroughRowid === 'number' && raw.coveredThroughRowid >= 0 ? Math.floor(raw.coveredThroughRowid) : 0,
+    ...(typeof raw.coveredThroughMessageId === 'string' && raw.coveredThroughMessageId
+      ? { coveredThroughMessageId: raw.coveredThroughMessageId }
+      : {}),
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : 0,
     threads: list('threads', WORKING_MEMORY_LIMITS.threads, (item, src) => ({
       ...item,
@@ -269,7 +278,7 @@ export function applyWorkingMemoryProposal(
   previous: BotWorkingMemory | null,
   proposal: WorkingMemoryProposal,
   messages: ProposalMessage[],
-  opts: { now: number; coveredThroughRowid: number },
+  opts: { now: number; coveredThroughRowid: number; coveredThroughMessageId?: string },
 ): Omit<BotWorkingMemory, 'revision' | 'version'> {
   const prev = previous ?? emptyWorkingMemory();
   const resolvedTexts = new Set(
@@ -324,8 +333,19 @@ export function applyWorkingMemoryProposal(
     return { ...rest, ...(value ? { [key]: value } : {}) } as unknown as T;
   };
 
+  // 水位:调用方带了 client_id 说明它已按当前库的 rowid 解析过(含瘦身重排后的回落),照用;
+  // 旧式只带 rowid 的调用保持"只前进不后退"。
+  const watermark =
+    opts.coveredThroughMessageId !== undefined
+      ? { coveredThroughRowid: opts.coveredThroughRowid, coveredThroughMessageId: opts.coveredThroughMessageId }
+      : opts.coveredThroughRowid > prev.coveredThroughRowid
+        ? { coveredThroughRowid: opts.coveredThroughRowid }
+        : {
+            coveredThroughRowid: prev.coveredThroughRowid,
+            ...(prev.coveredThroughMessageId ? { coveredThroughMessageId: prev.coveredThroughMessageId } : {}),
+          };
   return {
-    coveredThroughRowid: Math.max(prev.coveredThroughRowid, opts.coveredThroughRowid),
+    ...watermark,
     updatedAt: opts.now,
     threads: merge(prev.threads, proposal.threads, WORKING_MEMORY_LIMITS.threads, (prior, item, seed) => ({
       ...withField<WorkingThread, 'next'>(seed, 'next', resolveOptionalField(prior?.next, item.next)),
@@ -637,17 +657,25 @@ export async function pruneWithdrawnWorkingMemoryForSession(
 /**
  * 账本是否已覆盖会话最近一条已完成回复(`agent_meta.turnCompleted`,与学习复盘取材同一判据)。
  * 这是伙伴换窗线从 90% 提前到 70% 的依据:新鲜说明最近一轮的语义状态已进账本,宿主换窗
- * 不会丢东西。非伙伴主对话、没有账本、还没有已完成回复或读取失败一律 false——不新鲜就
- * 不提前,维持原来的线。
+ * 不会丢东西。水位按账本里的 client_id 解析回当前 rowid 再比较(rowid 在瘦身后可能重排,
+ * 存下的数字不可信);非伙伴主对话、没有账本、账本没有 client_id、水位消息已不在、还没有
+ * 已完成回复或读取失败一律 false——不新鲜就不提前,维持原来的线。
  */
 export async function isWorkingMemoryFreshForSession(sessionId: string, userDataDir: string): Promise<boolean> {
   try {
     const botId = await resolveCanonicalBotIdForSession(sessionId);
     if (!botId) return false;
     const stored = await readBotWorkingMemory(userDataDir, botId);
-    if (!stored) return false;
-    const [row] = await getDbClient()
-      .drizzle.select({ rowid: sql<number | null>`MAX(rowid)` })
+    if (!stored?.coveredThroughMessageId) return false;
+    const db = getDbClient().drizzle;
+    const [covered] = await db
+      .select({ rowid: sql<number | null>`rowid` })
+      .from(messages)
+      .where(and(eq(messages.sessionId, sessionId), eq(messages.clientId, stored.coveredThroughMessageId)))
+      .limit(1);
+    if (typeof covered?.rowid !== 'number') return false;
+    const [row] = await db
+      .select({ rowid: sql<number | null>`MAX(rowid)` })
       .from(messages)
       .where(
         and(
@@ -659,7 +687,7 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
       );
     const latest = row?.rowid;
     if (typeof latest !== 'number' || !(latest > 0)) return false;
-    return isWorkingMemoryFresh(stored, latest);
+    return isWorkingMemoryFresh({ ...stored, coveredThroughRowid: covered.rowid }, latest);
   } catch {
     return false;
   }

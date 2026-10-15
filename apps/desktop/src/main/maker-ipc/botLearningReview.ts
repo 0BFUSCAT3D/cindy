@@ -92,14 +92,13 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       });
       // /clear 之前的消息始终不取。
       const clearedAtFilter = `AND created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=?), 0)`;
-      const prevCompleted =
-        (
-          await db.queryOne<{ rowid: number | null }>(
-            `SELECT MAX(rowid) AS rowid FROM messages WHERE session_id=? AND rowid < ? AND rewind_at IS NULL
-             AND role='assistant' AND json_valid(agent_meta) AND json_extract(agent_meta, '$.turnCompleted')=1`,
-            [sessionId, row.rowid],
-          )
-        )?.rowid ?? 0;
+      const prev = await db.queryOne<{ id: string; rowid: number }>(
+        `SELECT client_id AS id, rowid FROM messages WHERE session_id=? AND rowid < ? AND rewind_at IS NULL
+         AND role='assistant' AND json_valid(agent_meta) AND json_extract(agent_meta, '$.turnCompleted')=1
+         ORDER BY rowid DESC LIMIT 1 /* prev-completed */`,
+        [sessionId, row.rowid],
+      );
+      const prevCompleted = prev?.rowid ?? 0;
       // 本轮取材:上一条完成回复之后到当前回复。
       const records = await db.query<Record_>(
         `
@@ -116,23 +115,42 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 缺口回补:账本上次覆盖到的行落后于上一条完成回复(某轮复盘 claim 后失败、CAS 冲突、
       // 模型漏回 working),那段内容不会再被单独复盘;按 rowid 升序分批补进本次取材,覆盖水位
       // 只推进到连续处理过的前缀末尾——补不完就不推进到当前回复,账本在补完前不算新鲜,换窗线
-      // 不会因为一份有缺口的账本提前。每批有界且至少前进一条,几轮即收敛。没有账本时从上一条
-      // 完成回复接起,不回溯整段历史。
-      const ledgerFloor = workingBefore ? workingBefore.coveredThroughRowid : prevCompleted;
-      let coveredThroughRowid = turnTruncated ? prevCompleted : row.rowid;
+      // 不会因为一份有缺口的账本提前。每批有界且至少前进一条,几轮即收敛。
+      //
+      // 水位的持久判据是消息 client_id(rowid 在瘦身 VACUUM 后可能重排),按它解析回当前 rowid;
+      // 解析不到(水位消息被删 / 撤回)退回存下的 rowid。没有账本(老对话第一次建账本、或首轮
+      // 复盘 claim 后失败)时从对话开头(/clear 之后)起算:整段历史按缺口分批回补,补完之前
+      // 不算新鲜,不跳过任何一轮。
+      type Watermark = { rowid: number; id: string | undefined };
+      const floor: Watermark = workingBefore
+        ? {
+            rowid:
+              (workingBefore.coveredThroughMessageId
+                ? (
+                    await db.queryOne<{ rowid: number }>(
+                      `SELECT rowid FROM messages WHERE session_id=? AND client_id=? /* ledger-floor */`,
+                      [sessionId, workingBefore.coveredThroughMessageId],
+                    )
+                  )?.rowid
+                : undefined) ?? workingBefore.coveredThroughRowid,
+            id: workingBefore.coveredThroughMessageId,
+          }
+        : { rowid: 0, id: undefined };
+      let covered: Watermark = turnTruncated ? { rowid: prevCompleted, id: prev?.id } : { rowid: row.rowid, id: replyId };
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
-      if (ledgerFloor < prevCompleted) {
+      if (floor.rowid < prevCompleted) {
         const gapRows = await db.query<Record_>(
           `
       SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
       WHERE session_id=? AND rewind_at IS NULL AND rowid > ? AND rowid <= ? ${clearedAtFilter}
       AND ${REVIEW_ROLES} ORDER BY rowid ASC LIMIT ?
     `,
-          [sessionId, ledgerFloor, prevCompleted, sessionId, GAP_BACKFILL_ROWS + 1],
+          [sessionId, floor.rowid, prevCompleted, sessionId, GAP_BACKFILL_ROWS + 1],
         );
         gapMessages = learningSnapshotPrefix(gapRows.slice(0, GAP_BACKFILL_ROWS).map(toSnapshot), GAP_BACKFILL_CHARS);
         if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapRows.length) {
-          coveredThroughRowid = gapMessages.length ? gapMessages[gapMessages.length - 1]!.order : ledgerFloor;
+          const last = gapMessages[gapMessages.length - 1];
+          covered = last ? { rowid: last.order, id: last.id } : floor;
         }
       }
       const messages = [...gapMessages, ...turnMessages].sort((a, b) => a.order - b.order);
@@ -224,7 +242,8 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
             row.botId,
             applyWorkingMemoryProposal(workingBefore, plan.working, messages, {
               now: Date.now(),
-              coveredThroughRowid,
+              coveredThroughRowid: covered.rowid,
+              ...(covered.id ? { coveredThroughMessageId: covered.id } : {}),
             }),
             workingBefore?.revision ?? 0,
           );
