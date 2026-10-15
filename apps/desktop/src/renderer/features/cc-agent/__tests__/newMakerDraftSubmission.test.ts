@@ -12,16 +12,21 @@ import type { Effort } from '@/lib/userPreferences.types';
 vi.mock('@/lib/makerTransport', () => ({ makerApiFor: vi.fn() }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({ getSessionDeviceId: vi.fn() }));
 
-// Execute the production route's complete send callback, without mounting the unrelated
-// home panels. Only external services and React closure state are fixtures; neither the
-// submit body nor Main's admission rules are copied or stubbed. This also catches effort
-// being dropped for create but leaking back into the first-message handoff.
+// Execute the route's actual effort derivation and complete submission callbacks,
+// without mounting unrelated home panels. External services and initial React state
+// are fixtures; derivation, submit bodies, IPC adapter and Main admission stay real.
 const source = ts.createSourceFile('NewMakerDraftRoute.tsx', readFileSync(
   resolve(__dirname, '../NewMakerDraftRoute.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const callbacks: Record<string, ts.Expression> = {};
 function visit(node: ts.Node) {
-  if (ts.isVariableDeclaration(node) && ['handleSend', 'handleCreateGoal'].includes(node.name.getText(source))
-      && node.initializer && ts.isCallExpression(node.initializer)) callbacks[node.name.getText(source)] = node.initializer.arguments[0];
+  if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer)) {
+    const name = ts.isIdentifier(node.name) ? node.name.text
+      : ts.isObjectBindingPattern(node.name) && node.name.elements.some(e => e.name.getText(source) === 'draftInitialEffort')
+        ? 'draftInitialSelection' : '';
+    if (['handleSend', 'handleCreateGoal', 'localDraftEffort', 'draftInitialSelection'].includes(name)) {
+      callbacks[name] = node.initializer.arguments[0];
+    }
+  }
   ts.forEachChild(node, visit);
 }
 visit(source);
@@ -50,6 +55,8 @@ function provider(id = providerId, efforts: PiReasoningEffort[] = []): ProviderV
 async function submit(options: {
   entry?: 'send' | 'goal';
   effort?: Effort;
+  submittedEffort?: Effort;
+  model?: string;
   providers?: ProviderView[];
   backendProviders?: ProviderView[];
   providerId?: string;
@@ -61,6 +68,8 @@ async function submit(options: {
   const backend = options.backendProviders ?? providers;
   const agentKind = options.agentKind ?? 'pi';
   const selectedProviderId = options.providerId ?? providerId;
+  const selectedModel = options.model ?? modelId;
+  const chatPrefs = Object.freeze({ effort: options.effort ?? 'medium' });
   const errors: unknown[] = [];
   const availableProviders = (agent: 'pi' | 'codex' | 'claude-code') =>
     backend.filter(p => p.connected).map(p => ({ id: p.id, name: p.name,
@@ -104,12 +113,13 @@ async function submit(options: {
     ...draftEffort, getModel, window,
     localProviders: providers, localProvidersLoading: false, providers,
     capabilityAgentKind: agentKind, persistedAgentKind: agentKind,
-    draftInitialModel: modelId, draftInitialEffort: options.effort ?? 'medium',
+    calibratedDraftModel: selectedModel, chatPrefs, getProviderModelEffort: () => undefined,
     chatInitialProviderId: selectedProviderId, chatInitialPermissionMode: 'default',
     effectiveSourceId: selectedProviderId,
     sendInFlightRef: { current: false }, effectiveCollab: { enabled: false },
     collabPolicy: { enabled: false }, collabPolicyEligible: false,
-    usesDeviceCatalog: false, isDeviceLinkDraft: false, isRemoteProjectDraft: !!options.remoteHostId,
+    usesDeviceCatalog: !!options.agentDeviceId, deviceLinkInitial: null,
+    isDeviceLinkDraft: false, isRemoteProjectDraft: !!options.remoteHostId,
     isAgentDeviceDraft: !!options.agentDeviceId, remoteModelListStatus: 'ready', remoteDraftState: { status: 'ready' },
     effectiveRemoteHostId: options.remoteHostId, effectiveAgentDeviceId: options.agentDeviceId,
     effectiveWorkingDir: options.remoteHostId ? '/remote/project' : null,
@@ -145,13 +155,17 @@ async function submit(options: {
     log: { warn: (...args: unknown[]) => errors.push(args), error: (...args: unknown[]) => errors.push(args) },
     toast: { error: noop, warning: noop },
   };
+  const localDraftEffort = runInNewContext(executable('localDraftEffort'), environment)();
+  const selection = runInNewContext(executable('draftInitialSelection'), { ...environment, localDraftEffort })();
+  Object.assign(environment, { draftInitialModel: selection.model, draftInitialEffort: selection.effort });
   const callback = runInNewContext(executable(options.entry === 'goal' ? 'handleCreateGoal' : 'handleSend'), environment);
   try {
     if (options.entry === 'goal') {
       try { await callback('hello goal', goalLimits); }
       catch (error) { errors.push(error); }
     } else {
-      await callback('hello', modelId, options.effort ?? 'medium', 'default', [], [], { providerId: selectedProviderId });
+      await callback('hello', selectedModel, options.submittedEffort ?? selection.effort ?? '',
+        'default', [], [], { providerId: selectedProviderId });
     }
     await finished;
     return { createSession, ipcCreate, sendMessage, setGoal, errors, environment };
@@ -160,12 +174,13 @@ async function submit(options: {
 
 describe('homepage submission to Main admission and first-message handoff', () => {
   it.each(['low', 'medium', 'high', 'xhigh'] as const)('omits remembered %s for a known no-effort Pi model', async effort => {
-    const result = await submit({ effort });
+    const result = await submit({ effort, submittedEffort: effort });
     expect(result.errors).toEqual([]);
     expect(result.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      model: modelId, providerId, agentKind: 'pi', effort: undefined,
+      model: modelId, providerId, agentKind: 'pi', effort: '',
     }));
-    expect(result.ipcCreate.mock.calls[0][0].effort).toBeUndefined();
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('');
+    expect(result.environment.chatPrefs.effort).toBe(effort);
     expect(result.sendMessage).toHaveBeenCalledWith('created', 'hello', modelId, '',
       'default', '/isolated/dialogue', [], [], expect.any(Object));
   });
@@ -176,7 +191,7 @@ describe('homepage submission to Main admission and first-message handoff', () =
     expect(result.sendMessage.mock.calls[0][3]).toBe('high');
   });
   it('still rejects an explicitly invalid effort on a model with supported levels', async () => {
-    const result = await submit({ providers: [provider(providerId, ['high'])] });
+    const result = await submit({ providers: [provider(providerId, ['high'])], submittedEffort: 'medium' });
     expect(String(result.errors[0])).toContain('not supported');
     expect(result.sendMessage).not.toHaveBeenCalled();
   });
@@ -197,10 +212,11 @@ describe('homepage submission to Main admission and first-message handoff', () =
     expect(result.errors).toEqual([]);
     expect(result.sendMessage.mock.calls[0][3]).toBe('medium');
   });
-  it('does not use local Pi metadata for SSH execution', async () => {
-    const result = await submit({ remoteHostId: 'fixture-host', backendProviders: [provider(providerId, ['medium'])] });
+  it('preserves the supported Pi selection and SSH host routing', async () => {
+    const result = await submit({ remoteHostId: 'fixture-host', providers: [provider(providerId, ['medium'])] });
     expect(result.errors).toEqual([]);
     expect(result.sendMessage.mock.calls[0][3]).toBe('medium');
+    expect(result.ipcCreate.mock.calls[0][0].remoteHostId).toBe('fixture-host');
   });
   it('does not use local metadata for an Agent running on another computer', async () => {
     const result = await submit({ agentDeviceId: 'other-computer', backendProviders: [provider(providerId, ['medium'])] });
@@ -216,14 +232,11 @@ describe('homepage submission to Main admission and first-message handoff', () =
   });
   it('retains the draft preference when switching away and back to a supported model', async () => {
     const memory = Object.freeze({ effort: 'high' as const });
-    const noEffort = await submit({ effort: draftEffort.resolveNewMakerDraftEffort({
-      currentEffort: memory.effort, efforts: [], defaultEffort: null,
-    }) });
+    const noEffort = await submit({ effort: memory.effort });
     expect(noEffort.errors).toEqual([]);
     expect(noEffort.sendMessage.mock.calls[0][3]).toBe('');
     const supported = await submit({ providers: [provider(providerId, ['low', 'high'])],
-      effort: draftEffort.resolveNewMakerDraftEffort({ currentEffort: memory.effort,
-        efforts: ['low', 'high'], defaultEffort: 'low' }),
+      effort: noEffort.environment.chatPrefs.effort,
     });
     expect(supported.errors).toEqual([]);
     expect(supported.sendMessage.mock.calls[0][3]).toBe('high');
@@ -242,10 +255,10 @@ describe('homepage New Goal submission to Main admission and goal start', () => 
     const result = await submit({ entry: 'goal', effort });
     expect(result.errors).toEqual([]);
     expect(result.ipcCreate.mock.calls[0][0]).toMatchObject({ model: modelId, providerId, agentKind: 'pi' });
-    expect(result.ipcCreate.mock.calls[0][0].effort).toBeUndefined();
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('');
     expect(result.setGoal).toHaveBeenCalledWith({ sessionId: 'created', objective: 'hello goal', limits: goalLimits });
     expect(result.sendMessage).not.toHaveBeenCalled();
-    expect(result.environment.draftInitialEffort).toBe(effort);
+    expect(result.environment.chatPrefs.effort).toBe(effort);
   });
   it('honors the exact provider rather than another provider with an empty table', async () => {
     const result = await submit({ entry: 'goal', providers: [provider(), provider('other', ['high'])], providerId: 'other', effort: 'high' });
@@ -253,8 +266,16 @@ describe('homepage New Goal submission to Main admission and goal start', () => 
     expect(result.ipcCreate.mock.calls[0][0].effort).toBe('high');
     expect(result.setGoal).toHaveBeenCalledOnce();
   });
-  it('keeps Main rejection for an invalid supported-model effort and does not start a goal', async () => {
+  it('calibrates the remembered goal effort against the supported table before creation', async () => {
     const result = await submit({ entry: 'goal', providers: [provider(providerId, ['high'])] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('high');
+    expect(result.environment.chatPrefs.effort).toBe('medium');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it('keeps Main rejection when authoritative goal capabilities differ from the draft catalog', async () => {
+    const result = await submit({ entry: 'goal', providers: [provider(providerId, ['medium'])],
+      backendProviders: [provider(providerId, ['high'])] });
     expect(String(result.errors[0])).toContain('not supported');
     expect(result.setGoal).not.toHaveBeenCalled();
   });
@@ -271,10 +292,18 @@ describe('homepage New Goal submission to Main admission and goal start', () => 
     expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
     expect(result.setGoal).toHaveBeenCalledOnce();
   });
-  it.each(['remoteHostId', 'agentDeviceId'] as const)('does not apply local no-effort metadata to %s execution', async field => {
-    const result = await submit({ entry: 'goal', [field]: 'remote-target', backendProviders: [provider(providerId, ['medium'])] });
+  it('preserves the supported Pi goal selection and SSH host routing', async () => {
+    const result = await submit({ entry: 'goal', remoteHostId: 'remote-target', providers: [provider(providerId, ['medium'])] });
     expect(result.errors).toEqual([]);
     expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.ipcCreate.mock.calls[0][0].remoteHostId).toBe('remote-target');
+    expect(result.setGoal).toHaveBeenCalledOnce();
+  });
+  it('does not apply local no-effort metadata to an Agent on another computer', async () => {
+    const result = await submit({ entry: 'goal', agentDeviceId: 'remote-target', backendProviders: [provider(providerId, ['medium'])] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.ipcCreate.mock.calls[0][0].agentDeviceId).toBe('remote-target');
     expect(result.setGoal).toHaveBeenCalledOnce();
   });
   it('uses the selected engine metadata', async () => {
@@ -296,5 +325,23 @@ describe('homepage New Goal submission to Main admission and goal start', () => 
     const result = await submit({ entry: 'goal', providers: [p] });
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.setGoal).not.toHaveBeenCalled();
+  });
+});
+
+describe.each(['send', 'goal'] as const)('%s draft model identity', entry => {
+  it('uses the selected model rather than another model with no effort levels', async () => {
+    const p = provider();
+    p.models.pi!.push({ ...p.models.pi![0], id: 'supported-model', efforts: ['high'], defaultEffort: 'high' });
+    const result = await submit({ entry, model: 'supported-model', effort: 'high', providers: [p] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0]).toMatchObject({ model: 'supported-model', effort: 'high', providerId });
+  });
+  it('preserves the draft effort when the exact model is missing from a loaded provider', async () => {
+    const p = provider();
+    p.models.pi = [];
+    const result = await submit({ entry, providers: [p], backendProviders: [provider(providerId, ['medium'])] });
+    expect(result.errors).toEqual([]);
+    expect(result.ipcCreate.mock.calls[0][0].effort).toBe('medium');
+    expect(result.environment.chatPrefs.effort).toBe('medium');
   });
 });
