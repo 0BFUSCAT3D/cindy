@@ -222,7 +222,9 @@ export function createAppServerProxy(
   server.server.setRequestHandler(SetLevelRequestSchema, forwardRequest);
   server.server.setRequestHandler(ListToolsRequestSchema, async () => {
     registerOnUse();
-    return { tools: (await connection.tools()).filter((tool) => toolVisibleTo(tool, 'model')) };
+    const tools = await connection.tools();
+    assertCurrent();
+    return { tools: tools.filter((tool) => toolVisibleTo(tool, 'model')) };
   });
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const connectionId = registerOnUse();

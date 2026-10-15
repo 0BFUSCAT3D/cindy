@@ -90,6 +90,40 @@ async function fixture() {
 
 describe('MCP App pre-call validation and card finalization', () => {
   it.each(['owner', 'server', 'config'] as const)(
+    'discards the model tool list after %s revocation during discovery',
+    async (kind) => {
+      const f = await fixture();
+      const discovery = deferred();
+      f.tools.mockImplementationOnce(async () => {
+        await discovery.promise;
+        return [tool];
+      });
+      const rejected = expect(f.client.listTools()).rejects.toThrow('MCP_APP_');
+      await vi.waitFor(() => expect(f.tools).toHaveBeenCalledOnce());
+      f.revoke(kind);
+      discovery.resolve();
+      await rejected;
+      expect(f.tools).toHaveBeenCalledOnce();
+      expect(f.writeCard).not.toHaveBeenCalled();
+      expect(f.callTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns the model tool list once after slow discovery while still authorized', async () => {
+    const f = await fixture();
+    const discovery = deferred();
+    f.tools.mockImplementationOnce(async () => {
+      await discovery.promise;
+      return [tool];
+    });
+    const pending = f.client.listTools();
+    await vi.waitFor(() => expect(f.tools).toHaveBeenCalledOnce());
+    discovery.resolve();
+    await expect(pending).resolves.toEqual({ tools: [tool] });
+    expect(f.tools).toHaveBeenCalledOnce();
+  });
+
+  it.each(['owner', 'server', 'config'] as const)(
     'does not create a pending card after %s revocation during tool discovery',
     async (kind) => {
       const f = await fixture();

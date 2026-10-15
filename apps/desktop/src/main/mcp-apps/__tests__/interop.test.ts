@@ -42,6 +42,7 @@ class TestViewTransport implements Transport {
   onmessage?: Transport['onmessage'];
   onclose?: Transport['onclose'];
   onerror?: Transport['onerror'];
+  failure?: unknown;
   private active = true;
   constructor(
     private host: McpAppsHost,
@@ -62,7 +63,11 @@ class TestViewTransport implements Transport {
               this.host.linkResult(this.caller, 'task', this.viewId, event.openLink.id, true);
             } else this.onmessage?.(event.message);
           }
-        } catch {
+        } catch (error) {
+          if (this.active) {
+            this.failure = error;
+            await this.close();
+          }
           return;
         }
       }
@@ -72,6 +77,7 @@ class TestViewTransport implements Transport {
     await this.host.dispatch(this.caller, 'task', this.viewId, message);
   }
   async close() {
+    if (!this.active) return;
     this.active = false;
     this.onclose?.();
   }
@@ -178,7 +184,8 @@ async function fixture(
   };
   const teardown = vi.fn(async () => ({}));
   app.onteardown = teardown;
-  await app.connect(new TestViewTransport(host, document.viewId, 'renderer:1', openLink));
+  const viewTransport = new TestViewTransport(host, document.viewId, 'renderer:1', openLink);
+  await app.connect(viewTransport);
   cleanups.push(async () => {
     await host.reset();
     await app.close();
@@ -187,6 +194,7 @@ async function fixture(
   return {
     host,
     app,
+    viewTransport,
     client,
     card,
     document,
@@ -390,7 +398,9 @@ describe('official MCP Apps interoperability', () => {
     expect((await f.host.modelContext('task')).text).toBe('');
     await expect(
       f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
-    ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    ).rejects.toThrow('Connection closed');
+    expect(f.viewTransport.failure).toMatchObject({ message: 'MCP_APP_CARD_UNAVAILABLE' });
+    expect(f.authorize).not.toHaveBeenCalled();
   });
   it.each(['card', 'owner', 'server'] as const)(
     'rechecks the live View after %s revocation during App-message preparation',
@@ -398,11 +408,15 @@ describe('official MCP Apps interoperability', () => {
       const f = await fixture();
       let finish!: () => void;
       let completed!: () => void;
-      const completion = new Promise<void>((resolve) => { completed = resolve; });
+      const completion = new Promise<void>((resolve) => {
+        completed = resolve;
+      });
       let failure: unknown;
       const dispatched = vi.fn();
       f.sendMessage.mockImplementationOnce(async (_id, _record, _content, assertCurrent) => {
-        await new Promise<void>((resolve) => { finish = resolve; });
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
         try {
           await assertCurrent();
           dispatched();
@@ -413,10 +427,9 @@ describe('official MCP Apps interoperability', () => {
           completed();
         }
       });
-      const abort = new AbortController();
-      const rejected = expect(f.app.sendMessage({ role: 'user', content: [
-        { type: 'text', text: 'Continue editing' },
-      ] }, { signal: abort.signal })).rejects.toThrow();
+      const rejected = expect(
+        f.app.sendMessage({ role: 'user', content: [{ type: 'text', text: 'Continue editing' }] }),
+      ).rejects.toThrow('Connection closed');
       await vi.waitFor(() => expect(finish).toBeDefined());
       if (kind === 'card') f.clear();
       else if (kind === 'owner') f.changeOwner();
@@ -424,11 +437,14 @@ describe('official MCP Apps interoperability', () => {
       finish();
       await completion;
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toMatch(/MCP_APP_(CARD_UNAVAILABLE|VIEW_UNAVAILABLE|SERVER_CHANGED)/);
-      // A revoked owner/server also closes the controller's polling authority.
-      // Cancel its pending SDK request rather than waiting for an undeliverable reply.
-      if (kind !== 'card') abort.abort();
+      expect((failure as Error).message).toMatch(
+        /MCP_APP_(CARD_UNAVAILABLE|VIEW_UNAVAILABLE|SERVER_CHANGED)/,
+      );
       await rejected;
+      expect(f.viewTransport.failure).toBeInstanceOf(Error);
+      expect((f.viewTransport.failure as Error).message).toMatch(
+        /MCP_APP_(CARD_UNAVAILABLE|VIEW_UNAVAILABLE|SERVER_CHANGED)/,
+      );
       expect(dispatched).not.toHaveBeenCalled();
       expect(f.sendMessage).toHaveBeenCalledOnce();
     },

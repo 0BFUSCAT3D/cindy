@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppBridge } from '@modelcontextprotocol/ext-apps/app-bridge';
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import type { JSONRPCMessage, Notification } from '@modelcontextprotocol/sdk/types.js';
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import type { AppConnection } from '../connection.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
@@ -71,6 +71,7 @@ async function fixture() {
     listResourceTemplates: vi.fn(),
     listPrompts: vi.fn(),
   };
+  let notify!: (message: Notification) => void;
   const connection = {
     getClient: async () => ({
       ...methods,
@@ -84,7 +85,10 @@ async function fixture() {
         ],
       },
     }),
-    listen: () => () => {},
+    listen: (listener: typeof notify) => {
+      notify = listener;
+      return () => {};
+    },
     close: vi.fn(async () => {}),
   } as unknown as AppConnection;
   const outgoing: JSONRPCMessage[] = [];
@@ -103,13 +107,14 @@ async function fixture() {
   // These cases exercise request completion, not the separate bounded teardown handshake.
   vi.spyOn(AppBridge.prototype, 'teardownResource').mockResolvedValue({});
   const authorizeTool = vi.fn(async () => {});
+  const readCard = vi.fn(async () => {
+    if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE');
+    return card;
+  });
   const host = new McpAppsHost({
     owner: () => owner,
     config: () => (enabled ? config : undefined),
-    readCard: async () => {
-      if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE');
-      return card;
-    },
+    readCard,
     writeCard: async () => {},
     authorizeTool,
     sendMessage: async () => {},
@@ -140,6 +145,10 @@ async function fixture() {
   );
   outgoing.length = 0;
   return {
+    host,
+    readCard,
+    poll: (after: number) => host.poll('renderer:1', 'task', document.viewId, after),
+    notify: () => notify({ method: 'notifications/tools/list_changed' }),
     methods,
     outgoing,
     dispatch,
@@ -155,6 +164,49 @@ async function fixture() {
 }
 
 describe('MCP App upstream result authorization', () => {
+  it('discards a queued open-link event after its card is revoked', async () => {
+    const f = await fixture();
+    const initial = await f.poll(0);
+    const after = initial.at(-1)!.seq;
+    await f.dispatch({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'ui/open-link',
+      params: { url: 'https://example.invalid/' },
+    });
+    const queued = await f.poll(after);
+    expect(queued).toContainEqual(
+      expect.objectContaining({
+        openLink: { id: expect.any(String), url: 'https://example.invalid/' },
+      }),
+    );
+    f.revoke('card');
+    await expect(f.poll(after)).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+  });
+
+  it('discards a notification arriving during a poll after its card is revoked', async () => {
+    const f = await fixture();
+    const initial = await f.poll(0);
+    const after = initial.at(-1)!.seq;
+    const rejected = expect(f.poll(after)).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    f.revoke('card');
+    f.notify();
+    await rejected;
+  });
+
+  it('delivers a notification arriving during a poll while its card remains current', async () => {
+    const f = await fixture();
+    const initial = await f.poll(0);
+    const pending = f.poll(initial.at(-1)!.seq);
+    f.notify();
+    await expect(pending).resolves.toContainEqual(
+      expect.objectContaining({
+        message: expect.objectContaining({ method: 'notifications/tools/list_changed' }),
+      }),
+    );
+  });
+
   it.each(['card', 'owner', 'server', 'config'] as const)(
     'does not request tool approval after %s revocation during tool discovery',
     async (revocation) => {

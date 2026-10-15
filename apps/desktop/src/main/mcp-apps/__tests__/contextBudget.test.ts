@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppBridge } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type { AppConnection } from '../connection.js';
+import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
 
 type ContextParams = { structuredContent: { draft: string } };
@@ -37,6 +38,8 @@ function fixture() {
   let owner = {};
   let visible = true;
   let enabled = true;
+  const cards = new Map<string, McpAppRecord>();
+  const archived = new Set<string>();
   const config = { id: 'example', url: 'https://mcp.example.invalid', transport: 'http' as const };
   const tool = {
     name: 'form',
@@ -77,9 +80,12 @@ function fixture() {
   });
   // Context budgeting does not exercise the separate teardown handshake.
   vi.spyOn(AppBridge.prototype, 'teardownResource').mockResolvedValue({});
-  const readCard = vi.fn(async () => {
+  const readCard = vi.fn(async (sessionId: string, clientId: string) => {
     if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE');
-    return record;
+    if (archived.has(sessionId)) throw new Error('MCP_APP_SESSION_UNAVAILABLE');
+    const card = cards.get(`${sessionId}:${clientId}`);
+    if (!card) throw new Error('MCP_APP_CARD_UNAVAILABLE');
+    return card;
   });
   const host = new McpAppsHost({
     owner: () => owner,
@@ -95,6 +101,8 @@ function fixture() {
   return {
     host,
     readCard,
+    cards,
+    archived,
     changeOwner() {
       owner = {};
     },
@@ -105,6 +113,10 @@ function fixture() {
       if (kind === 'config') config.url = 'https://changed.example.invalid';
     },
     async open(clientId: string, sessionId = 'task') {
+      cards.set(`${sessionId}:${clientId}`, {
+        ...record,
+        serverRevision: appServerRevision(config),
+      });
       const document = await host.open('renderer:1', sessionId, clientId, {});
       const request = async (method: string, params: Record<string, unknown>) => {
         const id = ++requestId;
@@ -114,7 +126,9 @@ function fixture() {
           method,
           params,
         });
-        await vi.waitFor(() => expect(outgoing).toContainEqual(expect.objectContaining({ id })));
+        await vi.waitFor(() => expect(outgoing).toContainEqual(expect.objectContaining({ id })), {
+          interval: 1,
+        });
         return outgoing.find((message) => 'id' in message && message.id === id)!;
       };
       await request('ui/initialize', {
@@ -126,12 +140,117 @@ function fixture() {
         jsonrpc: '2.0',
         method: 'ui/notifications/initialized',
       });
-      return (params: ContextParams) => request('ui/update-model-context', params);
+      return Object.assign((params: ContextParams) => request('ui/update-model-context', params), {
+        close: () => host.teardown('renderer:1', sessionId, document.viewId),
+      });
     },
   };
 }
 
 describe('MCP App UTF-8 model-context budgets', () => {
+  it.each(['card', 'session', 'config', 'owner'] as const)(
+    'reclaims the global context cap after %s revocation without another turn in the old tasks',
+    async (kind) => {
+      const f = fixture();
+      for (let index = 0; index < 256; index++) {
+        const update = await f.open('card', `task-${index}`);
+        expect(await update({ structuredContent: { draft: `draft-${index}` } })).toHaveProperty(
+          'result',
+        );
+        await update.close();
+      }
+      if (kind === 'card') f.cards.delete('task-0:card');
+      if (kind === 'session') f.archived.add('task-0');
+      if (kind === 'config') f.revoke('config');
+      if (kind === 'owner') f.revoke('owner');
+      const update = await f.open('new-card', 'new-task');
+      expect(await update({ structuredContent: { draft: 'new draft' } })).toHaveProperty('result');
+      expect(JSON.parse(contextJson((await f.host.modelContext('new-task')).text))).toEqual([
+        contextValue({ structuredContent: { draft: 'new draft' } }),
+      ]);
+      if (kind === 'card' || kind === 'session') {
+        expect(JSON.parse(contextJson((await f.host.modelContext('task-1')).text))).toEqual([
+          contextValue({ structuredContent: { draft: 'draft-1' } }),
+        ]);
+      }
+    },
+    20_000,
+  );
+
+  it('preserves valid contexts at the global cap and still allows their replacement', async () => {
+    const f = fixture();
+    for (let index = 0; index < 256; index++) {
+      const update = await f.open('card', `task-${index}`);
+      expect(await update({ structuredContent: { draft: `draft-${index}` } })).toHaveProperty(
+        'result',
+      );
+      await update.close();
+    }
+    const overflow = await f.open('new-card', 'new-task');
+    expect(await overflow({ structuredContent: { draft: 'overflow' } })).toHaveProperty(
+      'error.message',
+      expect.stringContaining('MCP_APP_CONTEXT_LIMIT'),
+    );
+    const replace = await f.open('card', 'task-0');
+    expect(await replace({ structuredContent: { draft: 'replacement' } })).toHaveProperty('result');
+    expect(JSON.parse(contextJson((await f.host.modelContext('task-0')).text))).toEqual([
+      contextValue({ structuredContent: { draft: 'replacement' } }),
+    ]);
+  }, 20_000);
+
+  it.each(['replacement', 'requesting-card'] as const)(
+    'revalidates %s after the context-cap cleanup reads other cards',
+    async (race) => {
+      const f = fixture();
+      for (let index = 0; index < 256; index++) {
+        const update = await f.open('card', `task-${index}`);
+        expect(await update({ structuredContent: { draft: `draft-${index}` } })).toHaveProperty(
+          'result',
+        );
+        await update.close();
+      }
+      const replace = await f.open('card', 'task-0');
+      const update = await f.open('new-card', 'new-task');
+      f.cards.delete('task-1:card');
+      const read = f.readCard.getMockImplementation()!;
+      let finish!: () => void;
+      let paused = false;
+      f.readCard.mockImplementation(async (...args) => {
+        if (args[0] === 'task-0' && !paused) {
+          paused = true;
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          throw new Error('MCP_APP_CARD_UNAVAILABLE');
+        }
+        return read(...args);
+      });
+      const pending = update({ structuredContent: { draft: 'new draft' } });
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      if (race === 'replacement') {
+        expect(await replace({ structuredContent: { draft: 'replacement' } })).toHaveProperty(
+          'result',
+        );
+      } else {
+        f.cards.delete('new-task:new-card');
+      }
+      finish();
+      if (race === 'replacement') {
+        expect(await pending).toHaveProperty('result');
+        expect(JSON.parse(contextJson((await f.host.modelContext('task-0')).text))).toEqual([
+          contextValue({ structuredContent: { draft: 'replacement' } }),
+        ]);
+      } else {
+        expect(await pending).toHaveProperty(
+          'error.message',
+          expect.stringContaining('MCP_APP_CARD_UNAVAILABLE'),
+        );
+        expect((await f.host.modelContext('new-task')).text).toBe('');
+      }
+    },
+    20_000,
+  );
+
   it.each(['card', 'owner', 'server', 'config'] as const)(
     'rejects a captured context after %s revocation',
     async (kind) => {
@@ -157,8 +276,8 @@ describe('MCP App UTF-8 model-context budgets', () => {
       const snapshot = await f.host.modelContext('task');
       const read = f.readCard.getMockImplementation()!;
       let finish!: () => void;
-      f.readCard.mockImplementationOnce(async () => {
-        const card = await read();
+      f.readCard.mockImplementationOnce(async (...args) => {
+        const card = await read(...args);
         await new Promise<void>((resolve) => {
           finish = resolve;
         });

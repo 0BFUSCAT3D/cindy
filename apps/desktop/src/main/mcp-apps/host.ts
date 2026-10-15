@@ -460,6 +460,11 @@ export class McpAppsHost {
         if (content?.some((block) => block.type !== 'text'))
           throw new Error('MCP_APP_CONTEXT_CONTENT_UNSUPPORTED');
         const key = `${sessionId}:${clientId}`;
+        if (this.contexts.size >= 256 && !this.contexts.has(key)) {
+          await this.pruneModelContexts();
+          // Pruning reads other cards and can outlive this View's authorization.
+          await assertCurrent();
+        }
         const next = {
           app: record.serverId,
           resourceUri: record.resourceUri,
@@ -474,7 +479,7 @@ export class McpAppsHost {
         values.push(next);
         if (Buffer.byteLength(JSON.stringify(values), 'utf8') > 512_000)
           throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
-        if (this.contexts.size >= 256 && !this.contexts.has(`${sessionId}:${clientId}`))
+        if (this.contexts.size >= 256 && !this.contexts.has(key))
           throw new Error('MCP_APP_CONTEXT_LIMIT');
         this.contexts.set(key, {
           owner,
@@ -685,8 +690,9 @@ export class McpAppsHost {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error('MCP_APP_INVALID_CURSOR');
     const view = this.view(caller, sessionId, id);
     if (after > view.transport.seq) throw new Error('MCP_APP_INVALID_CURSOR');
+    await this.assertCurrentView(id, view);
     const events = await view.transport.poll(after);
-    this.view(caller, sessionId, id);
+    await this.assertCurrentView(id, view);
     return events;
   }
 
@@ -774,6 +780,30 @@ export class McpAppsHost {
     await view.bridge.close();
     const entry = this.connections.get(this.connectionIds.get(view.connection) ?? '');
     if (entry?.retired) await this.releaseConnection(view.connection);
+  }
+
+  private async pruneModelContexts(): Promise<void> {
+    // Context survives a closed View until the next model turn. Reclaim revoked
+    // cards, archived tasks and obsolete configurations before refusing a new one.
+    for (const [key, item] of [...this.contexts]) {
+      let current = false;
+      if (item.owner === this.deps.owner()) {
+        try {
+          const card = await this.deps.readCard(item.sessionId, item.clientId);
+          const config = this.deps.config(item.serverId);
+          current =
+            item.owner === this.deps.owner() &&
+            !!config &&
+            appServerRevision(config) === item.revision &&
+            card.serverId === item.serverId &&
+            card.serverRevision === item.revision;
+        } catch {
+          // Unavailable cards cannot contribute model context.
+        }
+      }
+      // A concurrent update may have replaced the value while readCard waited.
+      if (!current && this.contexts.get(key) === item) this.contexts.delete(key);
+    }
   }
 
   async modelContext(sessionId: string): Promise<McpAppModelContext> {
