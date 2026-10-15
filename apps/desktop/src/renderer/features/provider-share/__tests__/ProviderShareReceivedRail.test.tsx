@@ -180,6 +180,104 @@ describe('ProviderShareReceivedDetail', () => {
   const consentSwitch = () =>
     screen.findByRole('switch', { name: 'providerShare.received.credentialConsent.ariaLabel:{"name":"Magi","provider":"Cindy AI"}' });
 
+  it.each([
+    { initial: true, outcome: 'success' },
+    { initial: true, outcome: 'failure' },
+    { initial: false, outcome: 'success' },
+    { initial: false, outcome: 'failure' },
+  ] as const)('keeps the effective trust state while saving (initial=$initial, outcome=$outcome)', async ({ initial, outcome }) => {
+    let finishSave!: (view: { skip: boolean }) => void;
+    let failSave!: (error: Error) => void;
+    const pendingSave = new Promise<{ skip: boolean }>((resolve, reject) => {
+      finishSave = resolve;
+      failSave = reject;
+    });
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'received') return received;
+      if (cmd.action === 'get-credential-consent') return { skip: initial };
+      if (cmd.action === 'set-credential-consent') return pendingSave;
+      throw new Error('unexpected ' + cmd.action);
+    });
+    render(<ProviderShareReceivedDetail share={share} />);
+    const toggle = await consentSwitch();
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    expect(toggle.getAttribute('aria-checked')).toBe(String(initial));
+
+    fireEvent.click(toggle);
+    expect(command).toHaveBeenCalledWith({ action: 'set-credential-consent', shareId: 'share-1', skip: !initial });
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    expect(toggle.getAttribute('aria-checked')).toBe(String(initial));
+
+    await act(async () => {
+      if (outcome === 'success') finishSave({ skip: !initial });
+      else failSave(new Error('disk'));
+    });
+    expect(toggle.getAttribute('aria-checked')).toBe(String(outcome === 'success' ? !initial : initial));
+    expect(toggle.hasAttribute('disabled')).toBe(false);
+    if (outcome === 'failure') {
+      expect(toast.error).toHaveBeenCalledWith('providerShare.received.credentialConsent.writeFailed');
+    } else {
+      expect(toast.error).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a stale save %s after switching shares', async (outcome) => {
+    let finishSave!: (view: { skip: boolean }) => void;
+    let failSave!: (error: Error) => void;
+    const pendingSave = new Promise<{ skip: boolean }>((resolve, reject) => {
+      finishSave = resolve;
+      failSave = reject;
+    });
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'received') return received;
+      if (cmd.action === 'get-credential-consent') return { skip: true };
+      if (cmd.action === 'set-credential-consent') return pendingSave;
+      throw new Error('unexpected ' + cmd.action);
+    });
+    const view = render(<ProviderShareReceivedDetail share={share} />);
+    const toggle = await consentSwitch();
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'set-credential-consent', shareId: 'share-1', skip: false }));
+
+    view.rerender(<ProviderShareReceivedDetail share={{ ...share, shareId: 'share-2', memberId: 'mem-2' }} />);
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+    await act(async () => {
+      if (outcome === 'success') finishSave({ skip: false });
+      else failSave(new Error('disk'));
+    });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(toggle.hasAttribute('disabled')).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('does not end a new share save when the previous share save finishes', async () => {
+    const saves = new Map<string, (view: { skip: boolean }) => void>();
+    command.mockImplementation(async (cmd: { action: string; shareId?: string }) => {
+      if (cmd.action === 'received') return received;
+      if (cmd.action === 'get-credential-consent') return { skip: true };
+      if (cmd.action === 'set-credential-consent') {
+        return new Promise<{ skip: boolean }>((resolve) => { saves.set(cmd.shareId!, resolve); });
+      }
+      throw new Error('unexpected ' + cmd.action);
+    });
+    const view = render(<ProviderShareReceivedDetail share={share} />);
+    const toggle = await consentSwitch();
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(saves.has('share-1')).toBe(true));
+
+    view.rerender(<ProviderShareReceivedDetail share={{ ...share, shareId: 'share-2', memberId: 'mem-2' }} />);
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(saves.has('share-2')).toBe(true));
+    await act(async () => { saves.get('share-1')!({ skip: false }); });
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    await act(async () => { saves.get('share-2')!({ skip: false }); });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(toggle.hasAttribute('disabled')).toBe(false);
+  });
+
   it('reads whether credential operations skip confirmation here and saves a toggle', async () => {
     let skip = true;
     command.mockImplementation(async (cmd: { action: string; shareId?: string; skip?: boolean }) => {
@@ -205,7 +303,7 @@ describe('ProviderShareReceivedDetail', () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it('rolls the switch back and says so when the preference cannot be saved', async () => {
+  it('keeps the saved choice and says so when the preference cannot be saved', async () => {
     command.mockImplementation(async (cmd: { action: string }) => {
       if (cmd.action === 'received') return received;
       if (cmd.action === 'get-credential-consent') return { skip: false };

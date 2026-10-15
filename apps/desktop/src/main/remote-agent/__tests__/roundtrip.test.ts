@@ -259,7 +259,7 @@ describe('remote agent round trip', () => {
       host.dispose();
     }
   });
-  it('skips the shared-provider credential card while the share is set to skip, and asks again once it is switched back', async () => {
+  it.each([false, true])('skips the shared-provider credential card only while trust is enabled (task grant wired: %s)', async (withTaskGrant) => {
     const env = path.join(project, '.env');
     fs.writeFileSync(env, 'TOKEN=one');
     const host = createRemoteAgentHost({
@@ -274,7 +274,11 @@ describe('remote agent round trip', () => {
     let skip = true;
     const deps = {
       ...makeDeps(host),
-      credentialConsent: { description: 'Only this task; content passes through the sharer.', skip: () => skip },
+      credentialConsent: {
+        description: 'Only this task; content passes through the sharer.',
+        skip: () => skip,
+        ...(withTaskGrant ? { grant: credentialGrantFor(opts.sessionId, 'share:skip') } : {}),
+      },
     };
     let localConfirmations = 0;
     const run = async (handle: AgentSessionHandle) => {
@@ -307,6 +311,7 @@ describe('remote agent round trip', () => {
       host.dispose();
     }
   });
+
   it('restores a task-level credential grant when the agent is rebuilt with the same share and permission mode', async () => {
     const env = path.join(project, '.env');
     fs.writeFileSync(env, 'TOKEN=one');

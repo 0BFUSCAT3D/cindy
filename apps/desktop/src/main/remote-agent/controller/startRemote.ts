@@ -98,9 +98,9 @@ export interface StartRemoteAgentDeps {
    */
   credentialConsent?: {
     description: string;
+    grant?: CredentialGrantRecord;
     /** 受邀者把这个分享切成了「信任 {分享者}」：每次操作前问一遍，true 时与本机任务一样不弹卡。 */
     skip?: () => boolean;
-    grant?: CredentialGrantRecord;
   };
   /** 改写来自对方的事件(如工具名)。 */
   mapEvent?: (kind: RemoteAgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;

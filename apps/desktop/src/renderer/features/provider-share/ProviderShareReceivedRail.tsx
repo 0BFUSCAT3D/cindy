@@ -6,7 +6,7 @@
  *
  * 模型清单读分享者电脑上分享给我的那份目录(`share:<id>`)，只读：开关与排序由分享者决定。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { readProviderShareGroupSize, type ProviderShareReceived } from '@cindy/device-link';
@@ -139,40 +139,45 @@ export function ProviderShareReceivedRailGroup({
 }
 
 /**
- * 这个分享在本机的「信任 {分享者}」偏好：null = 还没读到(开关先不可点)。切换先改界面再写入，
- * 写入失败回退并提示。
+ * 这个分享在本机的「信任 {分享者}」偏好：null = 还没读到(开关先不可点)。保存期间保持已生效的
+ * 状态，成功后再切换；避免关闭尚未落盘时把仍在生效的信任显示为关闭。失败时保留原值并提示。
  */
 function useCredentialConsent(shareId: string) {
   const { t } = useTranslation();
   const [skip, setSkip] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
+  const revision = useRef(0);
   useEffect(() => {
-    let cancelled = false;
+    const currentRevision = ++revision.current;
     setSkip(null);
+    setSaving(false);
     void window.electronAPI.providerShare
       .command({ action: 'get-credential-consent', shareId })
       .then((view) => {
-        if (!cancelled) setSkip(view.skip === true);
+        if (revision.current === currentRevision) setSkip(view.skip === true);
       })
       .catch(() => {
-        if (!cancelled) setSkip(false);
+        if (revision.current === currentRevision) setSkip(false);
       });
     return () => {
-      cancelled = true;
+      revision.current += 1;
     };
   }, [shareId]);
   const update = (next: boolean) => {
-    const previous = skip;
-    setSkip(next);
+    const currentRevision = revision.current;
     setSaving(true);
     void window.electronAPI.providerShare
       .command({ action: 'set-credential-consent', shareId, skip: next })
-      .then((view) => setSkip(view.skip === true))
+      .then((view) => {
+        if (revision.current === currentRevision) setSkip(view.skip === true);
+      })
       .catch(() => {
-        setSkip(previous);
+        if (revision.current !== currentRevision) return;
         toast.error(t('providerShare.received.credentialConsent.writeFailed'));
       })
-      .finally(() => setSaving(false));
+      .finally(() => {
+        if (revision.current === currentRevision) setSaving(false);
+      });
   };
   return { skip, saving, update };
 }
