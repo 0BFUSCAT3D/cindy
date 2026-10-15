@@ -62,6 +62,7 @@ class ViewTransport implements Transport {
   private bytes = 2; // The serialized array's brackets also count toward the budget.
   private wake?: () => void;
   private failed = false;
+  private closed = false;
   constructor(private readonly maxBytes: number) {}
   async start(): Promise<void> {}
   async send(message: JSONRPCMessage): Promise<void> {
@@ -83,6 +84,7 @@ class ViewTransport implements Transport {
     this.wake?.();
   }
   async poll(after: number): Promise<(typeof this.events)[number][]> {
+    if (this.closed) throw new Error('MCP_APP_VIEW_UNAVAILABLE');
     if (this.failed) throw new Error('MCP_APP_BACKPRESSURE');
     while (this.events[0]?.seq <= after) {
       const event = this.events.shift()!;
@@ -102,10 +104,13 @@ class ViewTransport implements Transport {
         };
       });
     }
+    if (this.closed) throw new Error('MCP_APP_VIEW_UNAVAILABLE');
     if (this.failed) throw new Error('MCP_APP_BACKPRESSURE');
     return this.events.filter((event) => event.seq > after);
   }
   async close(): Promise<void> {
+    // Revocation can win after Host authorization but before poll installs its wake.
+    this.closed = true;
     this.wake?.();
     this.onclose?.();
   }

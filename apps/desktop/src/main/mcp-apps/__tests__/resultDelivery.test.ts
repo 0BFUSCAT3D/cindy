@@ -9,6 +9,7 @@ const hosts: McpAppsHost[] = [];
 afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.reset()));
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const result: CallToolResult = {
@@ -115,6 +116,19 @@ async function initialize(host: McpAppsHost, view: Awaited<ReturnType<typeof ope
 }
 
 describe('MCP App result delivery authorization', () => {
+  it('rejects a poll immediately if disposal wins between authorization and installing its wake', async () => {
+    const f = fixture();
+    const view = await open(f.host, 'renderer:local');
+    vi.useFakeTimers();
+    let rejected = false;
+    const poll = expect(f.host.poll(view.caller, 'task', view.viewId, view.after))
+      .rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE').then(() => { rejected = true; });
+    // assertCurrentView resumes first, then removal wins before transport.poll.
+    await Promise.resolve().then(() => f.host.releaseCaller(view.caller));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rejected).toBe(true);
+    await poll;
+  });
   it.each(['result', 'cancelled'] as const)(
     'disposes initialized and waiting Views without delivering %s when persistence rejects a revoked card',
     async (kind) => {

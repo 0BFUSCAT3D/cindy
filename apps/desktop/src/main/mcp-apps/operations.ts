@@ -5,7 +5,7 @@ import type { McpAppDocument } from '../../shared/mcpApps.js';
 import { MCP_APPS_MAX_BYTES, safeAppLink } from './protocol.js';
 
 const id = z.string().min(1).max(256);
-const request = z.discriminatedUnion('op', [
+export const mcpAppOperationSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('open'), clientId: id, openId: id.optional(), context: McpUiHostContextSchema.default({}) }),
   z.object({ op: z.literal('cancel-open'), openId: id }),
   z.object({ op: z.literal('message'), viewId: id, message: z.unknown() }),
@@ -25,10 +25,6 @@ const request = z.discriminatedUnion('op', [
 ]);
 interface LocalViewDeps {
   supply(document: McpAppDocument, caller: string): void;
-  mount(document: unknown, caller: string): string;
-  unmount(id: string, caller: string): void;
-  assertCaller(id: string, caller: string): void;
-  openLink(url: string): Promise<void>;
 }
 /** Called only by the protocol's frame-verified channel, with Host-bound task and View IDs. */
 export async function handleMcpAppFrameOperation(
@@ -63,7 +59,7 @@ export async function handleMcpAppOperation(
     Buffer.byteLength(JSON.stringify(raw)) > MCP_APPS_MAX_BYTES
   )
     throw new Error('MCP_APP_INVALID_REQUEST');
-  const parsed = request.safeParse(raw);
+  const parsed = mcpAppOperationSchema.safeParse(raw);
   if (!parsed.success) throw new Error('MCP_APP_INVALID_REQUEST');
   const input = parsed.data;
   switch (input.op) {
@@ -100,20 +96,9 @@ export async function handleMcpAppOperation(
       host.linkResult(caller, sessionId, input.viewId, input.linkId, input.success);
       return {};
     case 'mount-remote':
-      if (local) return local.mount(input.document, caller);
-      break;
     case 'unmount-remote':
-      if (local) {
-        local.unmount(input.viewId, caller);
-        return {};
-      }
-      break;
     case 'open-link':
-      if (local) {
-        local.assertCaller(input.viewId, caller);
-        await local.openLink(safeAppLink(input.url));
-        return {};
-      }
+      if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
       break;
   }
   throw new Error('MCP_APP_INVALID_REQUEST');

@@ -19,6 +19,9 @@ const state = vi.hoisted(() => ({
   broadcast: vi.fn(),
   create: vi.fn(),
   trusted: vi.fn(),
+  invoke: vi.fn(),
+  open: vi.fn(),
+  dispatch: vi.fn(),
   remote: undefined as { controllerDeviceId: string; sharedTask?: object } | undefined,
   handle: undefined as
     ((event: unknown, session: unknown, input: unknown) => Promise<unknown>) | undefined,
@@ -34,6 +37,8 @@ vi.mock('electron', () => ({
 }));
 vi.mock('../host.js', () => ({
   McpAppsHost: class {
+    open = state.open;
+    dispatch = state.dispatch;
     constructor(deps: McpAppsHostDeps) {
       state.deps = deps;
     }
@@ -46,7 +51,10 @@ vi.mock('../sandboxProtocol.js', () => ({
   mountRemoteAppDocument: vi.fn(),
   unmountRemoteAppDocument: vi.fn(),
   assertMcpAppDocumentCaller: vi.fn(),
+  setMcpAppCallerCleanup: vi.fn(),
 }));
+vi.mock('../../device-link/index.js', () => ({ remoteInvoke: state.invoke }));
+vi.mock('../../appCapabilities.js', () => ({ getAppCapabilities: () => ({ canUseDeviceLink: true }) }));
 vi.mock('../../localDb/client/current.js', () => ({
   getCurrentDbClientSnapshot: () => state.owner,
 }));
@@ -71,6 +79,7 @@ vi.mock('../../utils/ipcValidate.js', () => ({
 }));
 import { sessions } from '../../localDb/schema.js';
 import { registerMcpAppsIpc } from '../ipc.js';
+import { mountRemoteAppDocument } from '../sandboxProtocol.js';
 const record = {
   version: 1 as const,
   serverId: 'example',
@@ -243,5 +252,42 @@ describe('MCP App persistence and IPC wiring', () => {
     await expect(state.handle!({}, 'task', { op: 'open', clientId: 'card' })).rejects.toThrow(
       'MCP_APP_OWNER_ONLY',
     );
+  });
+  it('routes remote cards through the dedicated Main control boundary and forbids remote relay pivots', async () => {
+    const event = { sender: { id: 1 } };
+    await expect(state.handle!(event, 'task', {
+      deviceId: 'other-computer', op: 'message', viewId: 'remote-view',
+      message: { jsonrpc: '2.0', id: 1, method: 'tools/call' },
+    })).rejects.toThrow('MCP_APP_FRAME_REQUIRED');
+    expect(state.trusted).toHaveBeenCalledOnce();
+    expect(state.invoke).not.toHaveBeenCalled();
+    state.remote = { controllerDeviceId: 'phone' };
+    await expect(state.handle!({}, 'task', { deviceId: 'other-computer', op: 'open', clientId: 'card' }))
+      .rejects.toThrow('MCP_APP_INVALID_REQUEST');
+    expect(state.invoke).not.toHaveBeenCalled();
+  });
+  it('keeps remote RPCs in Main while preserving the incoming Mobile Host contract', async () => {
+    const document = { viewId: 'remote-view', html: '<p>App</p>', csp: '', prefersBorder: true };
+    state.invoke.mockImplementation(async (_device, _channel, _args, options) => {
+      options.preSend();
+      return { ok: true, result: document };
+    });
+    vi.mocked(mountRemoteAppDocument).mockReturnValueOnce('local-view');
+    expect(await state.handle!({ sender: { id: 1 } }, 'task', {
+      deviceId: 'other-computer', op: 'open', clientId: 'card', openId: 'attempt',
+    })).toEqual({ ...document, viewId: 'local-view', transport: 'sandbox' });
+    const message = { jsonrpc: '2.0', id: 2, method: 'tools/call' };
+    const frame = vi.mocked(mountRemoteAppDocument).mock.calls.at(-1)![2]!;
+    await frame({ op: 'message', viewId: 'forged', message });
+    expect(state.invoke).toHaveBeenLastCalledWith('other-computer', 'maker:mcp-apps:v1',
+      ['task', { op: 'message', viewId: 'remote-view', message }], { preSend: expect.any(Function) });
+
+    // Mobile still reaches the execution Host over the existing same-account channel.
+    state.remote = { controllerDeviceId: 'phone' };
+    state.open.mockResolvedValue(document);
+    expect(await state.handle!({}, 'task', { op: 'open', clientId: 'card' })).toEqual(document);
+    expect(state.open).toHaveBeenCalledWith('device:phone', 'task', 'card', {}, undefined);
+    await state.handle!({}, 'task', { op: 'message', viewId: 'remote-view', message });
+    expect(state.dispatch).toHaveBeenCalledWith('device:phone', 'task', 'remote-view', message);
   });
 });

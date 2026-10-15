@@ -11,16 +11,18 @@ import { throwIpcError } from '../utils/ipcValidate.js';
 import { createLogger } from '../logger.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
+import { remoteInvoke } from '../device-link/index.js';
+import { getAppCapabilities } from '../appCapabilities.js';
 import { McpAppsHost, type McpAppsHostDeps } from './host.js';
 import { readAppServer, setMcpAppsHost } from './runtime.js';
 import { MCP_APPS_INVOKE, parseMcpAppRecord } from '../../shared/mcpApps.js';
 import { handleMcpAppOperation, handleMcpAppFrameOperation } from './operations.js';
+import { RemoteMcpAppViews } from './remoteViews.js';
 import {
   supplyMcpAppDocument,
   removeMcpAppDocument,
-  mountRemoteAppDocument,
-  unmountRemoteAppDocument,
   assertMcpAppDocumentCaller,
+  setMcpAppCallerCleanup,
 } from './sandboxProtocol.js';
 
 export function registerMcpAppsIpc(
@@ -143,6 +145,20 @@ export function registerMcpAppsIpc(
     audit: (method) => createLogger('mcp-apps').debug('App request', { method }),
   });
   setMcpAppsHost(host);
+  const remoteViews = new RemoteMcpAppViews({
+    owner: currentOwner,
+    invoke: async (deviceId, sessionId, input, preSend) => {
+      if (!getAppCapabilities().canUseDeviceLink) throw new Error('MCP_APP_OWNER_ONLY');
+      const result = await remoteInvoke(deviceId, MCP_APPS_INVOKE, [sessionId, input], { preSend });
+      if (result.ok) return result.result;
+      if (result.error.code === 'CHANNEL_NOT_ALLOWED') throw new Error('MCP_APP_CHANNEL_NOT_ALLOWED');
+      throw new Error(result.error.message);
+    },
+    openLink: (url) => shell.openExternal(url),
+  });
+  setMcpAppCallerCleanup(async (caller) => {
+    await Promise.allSettled([host.releaseCaller(caller), remoteViews.releaseCaller(caller)]);
+  });
   ipcMain.removeHandler(MCP_APPS_INVOKE);
   ipcMain.handle(MCP_APPS_INVOKE, async (event, sessionId: unknown, raw: unknown) => {
     const remote = getDeviceLinkInvokeContext();
@@ -151,6 +167,11 @@ export function registerMcpAppsIpc(
     if (typeof sessionId !== 'string') throwIpcError('INVALID_PARAMS', 'MCP_APP_INVALID_REQUEST');
     const caller = remote ? `device:${remote.controllerDeviceId}` : `renderer:${event.sender.id}`;
     try {
+      if (raw && typeof raw === 'object' && 'deviceId' in raw) {
+        // Incoming device-link calls cannot use this local-only route to pivot to another computer.
+        if (remote) throw new Error('MCP_APP_INVALID_REQUEST');
+        return await remoteViews.control(caller, raw.deviceId, sessionId, raw);
+      }
       return await handleMcpAppOperation(
         host,
         caller,
@@ -164,10 +185,6 @@ export function registerMcpAppsIpc(
                   assertMcpAppDocumentCaller(document.viewId, boundCaller);
                   await shell.openExternal(url);
                 })),
-              mount: mountRemoteAppDocument,
-              unmount: unmountRemoteAppDocument,
-              assertCaller: assertMcpAppDocumentCaller,
-              openLink: (url) => shell.openExternal(url),
             },
       );
     } catch (error) {

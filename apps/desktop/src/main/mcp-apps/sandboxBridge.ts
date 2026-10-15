@@ -36,10 +36,11 @@ async function poll(){
    after=event.seq;
    if(event.openLink){
     let success=false;
-    try{await invoke({op:'open-link',url:event.openLink.url});success=true;}catch{}
+    try{await invoke({op:'open-link',linkId:event.openLink.id,url:event.openLink.url});success=true;}catch{}
     await invoke({op:'link-result',linkId:event.openLink.id,success});
    }else{state(event.message);frame.contentWindow.postMessage(event.message,'*');}
   }
+  if(!events.length&&!stopped)await new Promise(resolve=>setTimeout(resolve,250));
  }}catch{fail();}
 }
 frame.src=${encode(resourceUrl)};

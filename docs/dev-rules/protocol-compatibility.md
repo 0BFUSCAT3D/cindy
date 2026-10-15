@@ -24,6 +24,12 @@ App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必�
 该次请求按失败收尾，完整外链交互需更新执行电脑；不降级为跳过授权，也不自动重放。
 旧查看端可继续连接新 Host，打开前复核需查看端更新；既有 wire 字段与权限范围不变。
 兼容矩阵、可选能力声明与验证入口见 [MCP Apps 接入](../mcp-apps.md)。
+Desktop 远程卡片复用查看端 Main 验证真实 frame 的通道；本机 IPC 的 `deviceId` 只选择
+目标，不跨 device-link 传递。Main 保存远端 View 绑定，顶层 Renderer 只提交界面控制，
+不能通过通用 `deviceLink.invoke` 发送 MCP Apps RPC，也不能提供 HTML 或指定 frame 的
+目标 View。新查看端 Main 可连接既有 v1 Host，外链仍要求 `authorize-link` 明确回执；
+Mobile 和旧查看端的 wire 保持原样，完整 frame 边界需更新 Desktop 查看端。
+没有新增 channel、allowlist、relay 或原生配置。回归见 `remoteViews.test.ts`。
 本机 Desktop 的 open 结果可选携带 `transport: "sandbox"`，只用于同版本 Main/Renderer
 切换到 Main 验证真实 frame 的直连通道，不向远程设备返回该字段。远程 v1 消息与原有
 channel 不变。

@@ -52,6 +52,22 @@ const document = {
   prefersBorder: true,
 };
 describe('MCP App local protocol isolation', () => {
+  it('gives remotely mounted documents the same authenticated bridge and releases their Main binding', async () => {
+    let handler!: (request: Request) => Promise<Response> | Response;
+    vi.spyOn(protocol, 'handle').mockImplementation((_scheme, callback) => { handler = callback; });
+    registerMcpAppProtocol();
+    const invoke = vi.fn(async () => ({}));
+    const dispose = vi.fn();
+    const id = mountRemoteAppDocument(document, 'renderer:1', invoke, dispose);
+    const response = await handler(new Request(`cindy-mcp-app://${id}/sandbox`));
+    expect(response.headers.get('Content-Security-Policy')).toContain("connect-src 'self'");
+    expect(await response.text()).toContain(`cindy-mcp-app://${id}/bridge`);
+    expect((await handler(new Request(`cindy-mcp-app://${id}/bridge`, { method: 'POST', body: '{}' }))).status).toBe(403);
+    expect(invoke).not.toHaveBeenCalled();
+    unmountRemoteAppDocument(id, 'renderer:1');
+    clearMcpAppDocuments();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
   it('authenticates the real sandbox frame, never the top Renderer or a forged channel key', async () => {
     let handler!: (request: Request) => Promise<Response> | Response;
     vi.spyOn(protocol, 'handle').mockImplementation((_scheme, callback) => { handler = callback; });

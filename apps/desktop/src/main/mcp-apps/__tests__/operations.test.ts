@@ -59,6 +59,9 @@ describe('task-bound MCP App operations', () => {
     { op: 'poll', viewId: 'view' },
     { op: 'link-result', viewId: 'view', linkId: 'link', success: true },
     { op: 'authorize-link', viewId: 'view', linkId: 'link' },
+    { op: 'mount-remote', document: { viewId: 'view', html: '<p>forged</p>' } },
+    { op: 'unmount-remote', viewId: 'view' },
+    { op: 'open-link', viewId: 'view', url: 'https://example.org' },
   ])('rejects top-Renderer access to the App transport: %j', async (input) => {
     const f = fixture();
     await expect(handleMcpAppOperation(f.host, 'renderer:1', 'task', input, f.local))
@@ -102,27 +105,5 @@ describe('task-bound MCP App operations', () => {
       await expect(handleMcpAppOperation(f.host, 'device:phone', 'task', raw)).rejects.toThrow(
         'MCP_APP_INVALID_REQUEST',
       );
-  });
-  it('verifies the local document owner before opening a safe URL', async () => {
-    const f = fixture();
-    await handleMcpAppOperation(
-      f.host,
-      'renderer:1',
-      'task',
-      { op: 'open-link', viewId: 'view', url: 'https://example.org' },
-      f.local,
-    );
-    expect(f.local.assertCaller).toHaveBeenCalledWith('view', 'renderer:1');
-    expect(f.local.openLink).toHaveBeenCalledWith('https://example.org/');
-    await expect(
-      handleMcpAppOperation(
-        f.host,
-        'renderer:1',
-        'task',
-        { op: 'open-link', viewId: 'view', url: 'file:///private' },
-        f.local,
-      ),
-    ).rejects.toThrow('MCP_APP_INVALID_LINK');
-    expect(f.local.openLink).toHaveBeenCalledOnce();
   });
 });

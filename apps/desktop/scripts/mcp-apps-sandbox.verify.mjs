@@ -16,6 +16,7 @@ import { createRawAppServer } from './mcp-apps-raw-fixture.mjs';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-mcp-app-sandbox-'));
 const independent = process.argv.includes('--raw');
+const remoteView = process.argv.includes('--remote');
 const assets = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.url === '/asset.js') {
@@ -112,6 +113,7 @@ try {
     import { AppConnection } from '../src/main/mcp-apps/connection.ts';
     import { appCsp } from '../src/main/mcp-apps/protocol.ts';
     import { handleMcpAppOperation, handleMcpAppFrameOperation } from '../src/main/mcp-apps/operations.ts';
+    import { RemoteMcpAppViews } from '../src/main/mcp-apps/remoteViews.ts';
     import { mcpAppSchemePrivilege, registerMcpAppProtocol, supplyMcpAppDocument, removeMcpAppDocument } from '../src/main/mcp-apps/sandboxProtocol.ts';
     app.setPath('userData',process.env.CINDY_MCP_APP_TEST_DIR+'/profile');
     protocol.registerSchemesAsPrivileged([mcpAppSchemePrivilege]);
@@ -134,12 +136,17 @@ try {
       host=new McpAppsHost({owner:()=>globalThis.mcpTestOwner,config:()=>config,readCard:async()=>record,writeCard:async(_s,_c,value)=>{record=value;},authorizeTool:async()=>{},sendMessage:async()=>{turns++;},disposeDocument:removeMcpAppDocument});
       record.connectionId=host.registerConnection(connection);
       registerMcpAppProtocol();
+      const remoteViews=new RemoteMcpAppViews({owner:()=>globalThis.mcpTestOwner,
+        invoke:async(device,session,input,preSend)=>{
+          assert.equal(device,'fixture-device');preSend();
+          return handleMcpAppOperation(host,'device:fixture-controller',session,input);
+        },openLink:async()=>{}});
       ipcMain.handle('test:mcp-app',async(event,input)=>{
         assert.equal(event.senderFrame,event.sender.mainFrame);
         const caller='renderer:'+event.sender.id;
+        if(process.env.CINDY_MCP_APP_TEST_REMOTE==='1')return remoteViews.control(caller,'fixture-device','task',input);
         return handleMcpAppOperation(host,caller,'task',input,{
           supply:(doc)=>supplyMcpAppDocument(doc,caller,raw=>handleMcpAppFrameOperation(host,caller,'task',doc.viewId,raw,async()=>{})),
-          mount:()=>{throw new Error('Unexpected mount');},unmount:()=>{},assertCaller:()=>{},openLink:async()=>{},
         });
       });
       window=new BrowserWindow({show:false,width:800,height:700,webPreferences:{preload:process.env.CINDY_MCP_APP_TEST_DIR+'/preload.cjs',sandbox:true,contextIsolation:true,nodeIntegration:false,nodeIntegrationInSubFrames:false,nodeIntegrationInWorker:false,webSecurity:true,allowRunningInsecureContent:false,experimentalFeatures:false,plugins:false,navigateOnDragDrop:false}});
@@ -210,6 +217,7 @@ try {
       await new Promise(resolve=>setTimeout(resolve,150));assert.equal(requests,0);
       const doc={viewId,html:'<!doctype html><body>owner test',csp:appCsp().header,prefersBorder:true};supplyMcpAppDocument(doc);globalThis.mcpTestOwner={};
       assert.equal((await net.fetch('cindy-mcp-app://'+viewId+'-view/resource')).status,404);
+      if(process.env.CINDY_MCP_APP_TEST_REMOTE==='1')console.log('MCP_APPS_REMOTE_FRAME_VERDICT=passed (Main-bound remote View, authenticated frame RPC, rejected Renderer forgery, remote teardown)');
       console.log(independent?'MCP_APPS_RAW_SANDBOX_VERDICT=passed (SDK-free dashboard, blob/list, tool/message/context, display/size, Light/Dark, declared CSP domains, teardown, owner)':'MCP_APPS_SANDBOX_VERDICT=passed (official App, edit/create, Light/Dark, origins, preload, CSP, navigation, teardown, owner)');
     }).catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{
       await host?.reset();await connection?.close();forbidden?.close();window?.destroy();app.exit(process.exitCode??0);
@@ -222,6 +230,7 @@ try {
     CINDY_MCP_APP_TEST_DIR: temporary,
     CINDY_MCP_APP_TEST_URL: endpoint.url,
     CINDY_MCP_APP_TEST_RAW: independent ? '1' : '0',
+    CINDY_MCP_APP_TEST_REMOTE: remoteView ? '1' : '0',
     CINDY_MCP_APP_TEST_ALLOWED: allowed,
   };
   delete environment.ELECTRON_RUN_AS_NODE;

@@ -22,6 +22,7 @@ const documents = new Map<
   string,
   {
     document: McpAppDocument; owner: object | null; caller?: string;
+    dispose?: () => void;
     bridge?: { key: string; frame?: WebFrameMain; invoke(input: unknown): Promise<unknown> };
   }
 >();
@@ -46,19 +47,24 @@ async function readBridgeBody(request: Request): Promise<string> {
 }
 export function supplyMcpAppDocument(
   document: McpAppDocument, caller?: string, invoke?: (input: unknown) => Promise<unknown>,
+  dispose?: () => void,
 ): void {
   documents.set(document.viewId, {
-    document, owner: getCurrentDbClientSnapshot(), caller,
+    document, owner: getCurrentDbClientSnapshot(), caller, dispose,
     bridge: invoke ? { key: randomUUID(), invoke } : undefined,
   });
 }
 export function removeMcpAppDocument(id: string): void {
+  const entry = documents.get(id);
   documents.delete(id);
+  entry?.dispose?.();
 }
 export function clearMcpAppDocuments(): void {
-  documents.clear();
+  for (const id of documents.keys()) removeMcpAppDocument(id);
 }
-export function mountRemoteAppDocument(input: unknown, caller: string): string {
+export function mountRemoteAppDocument(
+  input: unknown, caller: string, invoke?: (input: unknown) => Promise<unknown>, dispose?: () => void,
+): string {
   const document = input as McpAppDocument;
   if (!getCurrentDbClientSnapshot()) throw new Error('MCP_APP_OWNER_UNAVAILABLE');
   if (
@@ -71,12 +77,12 @@ export function mountRemoteAppDocument(input: unknown, caller: string): string {
     throw new Error('MCP_APP_VIEW_LIMIT');
   const policy = appCsp({ csp: document.policy });
   const id = randomUUID();
-  supplyMcpAppDocument({ ...document, viewId: id, csp: policy.header, policy: policy.csp }, caller);
+  supplyMcpAppDocument({ ...document, viewId: id, csp: policy.header, policy: policy.csp }, caller, invoke, dispose);
   return id;
 }
 export function unmountRemoteAppDocument(id: string, caller: string): void {
   if (documents.get(id)?.caller !== caller) throw new Error('MCP_APP_VIEW_UNAVAILABLE');
-  documents.delete(id);
+  removeMcpAppDocument(id);
 }
 export function assertMcpAppDocumentCaller(id: string, caller: string): void {
   const entry = documents.get(id);
@@ -121,7 +127,7 @@ export function registerMcpAppProtocol(): void {
     // A crashed/reloaded renderer cannot unmount its old documents; reload reuses its caller ID.
     const caller = `renderer:${contents.id}`;
     const releaseCaller = () => {
-      for (const [id, entry] of documents) if (entry.caller === caller) documents.delete(id);
+      for (const [id, entry] of documents) if (entry.caller === caller) removeMcpAppDocument(id);
       void callerCleanup?.(caller).catch(() => {});
     };
     contents.on('destroyed', releaseCaller);

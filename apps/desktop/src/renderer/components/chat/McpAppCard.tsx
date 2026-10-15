@@ -7,7 +7,6 @@ import {
   type AppRpc,
   type AppInvoker,
 } from '@cindy/maker-shared/mcp-app-controller';
-import { MCP_APPS_INVOKE } from '@cindy/maker-shared/mcp-apps';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
@@ -116,9 +115,8 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
     let frame: HTMLIFrameElement | undefined;
     let localViewId: string | undefined;
     const deviceId = getStickySessionDeviceId(sessionId);
-    const invoke: AppInvoker = deviceId
-      ? (id, input) => window.electronAPI.deviceLink.invoke(deviceId, MCP_APPS_INVOKE, [id, input])
-      : (id, input) => window.electronAPI.maker.mcpApps(id, input);
+    const invoke: AppInvoker = (id, input) =>
+      window.electronAPI.maker.mcpApps(id, deviceId ? { ...input, deviceId } : input);
     const post = (message: AppRpc) => frame?.contentWindow?.postMessage(message, '*');
     const fail = (error: unknown) => {
       if (!disposed) {
@@ -147,14 +145,6 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
         }
       },
       fail,
-      async (url) => {
-        if (!localViewId || disposed) throw new Error('MCP_APP_VIEW_UNAVAILABLE');
-        await window.electronAPI.maker.mcpApps(sessionId, {
-          op: 'open-link',
-          viewId: localViewId,
-          url,
-        });
-      },
     );
     controllerRef.current = controller;
     setLoading(true);
@@ -172,20 +162,7 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
       .open(hostContext(localeRef.current, element))
       .then(async (document) => {
         if (!document || disposed) return;
-        localViewId = deviceId
-          ? ((await window.electronAPI.maker.mcpApps(sessionId, {
-              op: 'mount-remote',
-              document,
-            })) as string)
-          : document.viewId;
-        if (disposed) {
-          if (deviceId)
-            void window.electronAPI.maker.mcpApps(sessionId, {
-              op: 'unmount-remote',
-              viewId: localViewId,
-            });
-          return;
-        }
+        localViewId = document.viewId;
         setBorder(document.prefersBorder);
         frame = window.document.createElement('iframe');
         frame.title = appTitle;
@@ -236,10 +213,6 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
         .finally(() => {
           frame?.remove();
           window.removeEventListener('message', receive);
-          if (deviceId && localViewId)
-            void window.electronAPI.maker
-              .mcpApps(sessionId, { op: 'unmount-remote', viewId: localViewId })
-              .catch(() => {});
         });
     };
   }, [sessionId, clientId, attempt, appTitle, visible]);

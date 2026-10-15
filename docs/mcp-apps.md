@@ -43,11 +43,18 @@ Host capabilities；不支持的调用明确失败，不静默丢内容。工具
 这项授权只适用于资源的后代 frame；App 自身和外层 proxy 仍保持原导航边界。
 未声明域、不同协议、其他 App 的供片地址和本地文件不会因此获得访问权限。
 
-本机 Desktop 的 App RPC 双向传输由可信 proxy 直接发给 Main，不经过顶层 Renderer。
+Desktop（本机和远程卡片）的 App RPC 双向传输由可信 proxy 直接发给 Main，不经过顶层 Renderer。
 Main 按 Chromium 的真实请求 frame、所属窗口、账号与供片记录验证通道，内部鉴别值不进入
 HTML、preload 返回值或 JavaScript Request。顶层 Renderer 的 message/poll/link-result
 操作被拒绝；它只观察初始化、尺寸、显示模式等界面状态，不能伪造 App 调用或 Host 结果。
 回归见 `sandboxProtocol.test.ts`、`sandboxBridge.test.ts` 与真实 Electron 沙箱验证。
+远程 Desktop 的专用本机入口仅允许打开、取消、环境和显示状态及关闭；Main 取得远端文档后
+绑定本机账号、窗口、任务、设备和远端 View，只将真实 frame 的请求转发到既有 device-link。
+通用 `deviceLink.invoke` 不再转发 MCP Apps channel，Renderer 也不能提供远端 HTML、
+重绑 View 或直接打开 App 外链。外链只能来自 Main 保存的轮询事件，在执行 Host 明确复核
+该 `linkId` 后由查看端 Main 打开。关闭期间保留 frame；窗口重载/崩溃仅取消和回收本窗口的
+加载及 View。短暂断连只重试该 View 的读取轮询，最多 30 秒，不重放工具/消息，不重置
+其他控制端或 relay。回归见 `remoteViews.test.ts` 与 `deviceLinkIpc.test.ts`；双机实测待补。
 App 发起的工具调用与工具、资源、模板、提示列表及资源读取在上游完成后，交付结果前再次核验
 当前 View、卡片、账号、服务器配置和取消信号；撤权后的晚到结果被丢弃，不重放上游调用。
 工具发现完成后、发起权限请求前也执行同一复核，避免已撤权的 View 弹出审批。
@@ -127,9 +134,9 @@ Host 资源加载最多 90 秒，远程打开
 连接暂时中断只重试读取轮询，最多 30 秒；后续独立请求可重新建立 MCP 连接，
 已发出的工具调用和消息不自动重放。
 长轮询等待前后均复核当前卡片、账号与配置；撤权后不交付已排队或晚到的外链与通知。
-本机 Desktop 在实际打开外链前再次复核 Host 的 View/card。远程 Desktop 与 Mobile
-共用控制器，在调用当前查看设备的浏览器前通过 `authorize-link` 复核执行 Host 的
-View/card 及仍在等待的 `linkId`，收到显式授权回执后还会检查控制器未关闭。
+本机 Desktop 在实际打开外链前再次复核 Host 的 View/card。远程 Desktop 由查看端 Main、
+Mobile 由共享控制器，在调用当前查看设备的浏览器前通过 `authorize-link` 复核执行 Host 的
+View/card 及仍在等待的 `linkId`，收到显式授权回执后还会检查查看端 View 未关闭。
 拒绝、超时、未知操作或缺少回执均不打开、不自动重试该动作，并向 Host 报告外链失败；
 旧执行端需更新才能为新查看端完成复核，旧查看端需更新才会执行这一步。
 回归见 `viewAuthorization.test.ts` 与 `mcpAppController.test.ts`。

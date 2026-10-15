@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
     open: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
     fail: (error: unknown) => void;
+    invoke: (session: string, input: Record<string, unknown>) => Promise<unknown>;
   }>,
   intersections: new Map<Element, (entries: Array<{ isIntersecting: boolean }>) => void>(),
 }));
@@ -35,7 +36,7 @@ vi.mock('@cindy/maker-shared/mcp-app-controller', () => ({
     context = vi.fn(async () => {});
     prepareNativeClose = vi.fn();
     constructor(
-      _invoke: unknown,
+      readonly invoke: (session: string, input: Record<string, unknown>) => Promise<unknown>,
       _session: string,
       _client: string,
       _post: unknown,
@@ -55,7 +56,9 @@ afterEach(() => {
 });
 it.each([undefined, 'owner-device'])('releases offscreen history and opens visible owner cards on %s', async (deviceId) => {
   state.deviceId = deviceId;
-  vi.stubGlobal('electronAPI', { maker: { mcpApps: vi.fn(async () => 'mounted-view') } });
+  const invoke = vi.fn(async () => ({}));
+  const generalInvoke = vi.fn();
+  vi.stubGlobal('electronAPI', { maker: { mcpApps: invoke }, deviceLink: { invoke: generalInvoke } });
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
   vi.stubGlobal('matchMedia', () => ({ matches: false }));
@@ -81,6 +84,10 @@ it.each([undefined, 'owner-device'])('releases offscreen history and opens visib
       expect(state.controllers).toHaveLength(i + 1);
       expect(state.controllers.filter((controller) => controller.close.mock.calls.length === 0)).toHaveLength(1);
       expect(container.querySelectorAll('iframe')).toHaveLength(1);
+      await state.controllers[i].invoke('task', { op: 'open', clientId: `card-${i}` });
+      expect(invoke).toHaveBeenLastCalledWith('task', deviceId
+        ? { op: 'open', clientId: `card-${i}`, deviceId } : { op: 'open', clientId: `card-${i}` });
+      expect(generalInvoke).not.toHaveBeenCalled();
     }
   } finally {
     await act(async () => root.unmount());
