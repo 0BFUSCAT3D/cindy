@@ -1414,8 +1414,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     shareToMain: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id }).strict().parse(input);
       const room = await resolveGroup(i.groupId);
-      const source = await api<Message>(`/conversations/${room}/messages/${i.messageId}`);
-      if (!isShareableThreadReply(source)) throw new Error('SHARE_UNAVAILABLE');
+      const source = await readMessage(room, i.messageId);
+      if (!source || !isShareableThreadReply(source)) throw new Error('SHARE_UNAVAILABLE');
       const members = await api<Member[]>(`/conversations/${room}/members`);
       const author = members.find(member => member.id === source.authorId);
       const card = buildBotGroupThreadShareCard({ messageId: source.id, threadRootId: source.threadRootId!,

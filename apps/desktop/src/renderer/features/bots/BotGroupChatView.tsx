@@ -362,7 +362,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const shares = new Map<string, { messageId: string; bySelf: boolean }>();
     for (const message of messages) {
       const share = message.threadShare;
-      if (!share) continue;
+      // Only a share the server resolved inside its claimed thread stands for that reply.
+      if (share?.status !== 'available') continue;
       const bySelf = message.authorKind === 'user' && message.isSelf !== false;
       // Prefer the reader's own share: it is the one a repeat would return.
       if (!shares.has(share.messageId) || bySelf) shares.set(share.messageId, { messageId: message.id, bySelf });

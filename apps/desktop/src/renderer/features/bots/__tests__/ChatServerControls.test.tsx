@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
 import { ChatThreadPanel } from '../ChatThreadPanel';
 import { flashThreadTarget } from '../BotGroupThreadViews';
+import { chatErrorKey } from '../chatError';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { queryShareableMessageIds, stripInteractiveElements } from '@/lib/shareConversationImage';
@@ -122,6 +123,11 @@ describe('chat interaction controls', () => {
     finish({ ok: true, messageId: 'share', alreadyShared: false });
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(mocks.shareToMain).toHaveBeenCalledTimes(1);
+  });
+
+  it('names an unavailable share only for posting; a missing message elsewhere stays generic', () => {
+    expect(chatErrorKey('SHARE_UNAVAILABLE')).toBe(k('thread.shareUnavailable'));
+    expect(chatErrorKey('MESSAGE_NOT_FOUND')).toBe(k('requestFailed'));
   });
 
   it.each([[true, 'auto'], [false, 'smooth']] as const)('jumps to a shared reply without smooth scrolling when reduced motion is %s', (reduced, behavior) => {

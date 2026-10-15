@@ -1431,7 +1431,8 @@ describe('Chat Server result delivery and refresh', () => {
     it.each([['a root message', rootId], ['a deleted reply', deletedReply], ['an unknown message', '70000000-0000-4000-8000-0000000000ff']])(
       'refuses to share %s', async (_label, messageId) => {
         const result = await service.chatServer!.shareToMain({ groupId: roomId, messageId });
-        expect(result).toMatchObject({ ok: false });
+        // A missing reply reads as unavailable here; MESSAGE_NOT_FOUND stays generic elsewhere.
+        expect(result).toMatchObject({ ok: false, errorCode: 'SHARE_UNAVAILABLE' });
         expect(fixture.handle.mock.calls.some(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')).toBe(false);
       });
 

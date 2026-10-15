@@ -2392,6 +2392,24 @@ describe('thread share follow-ups', () => {
     expect(screen.queryByRole('menuitem', { name: t('postToMain') })).toBeNull();
   });
 
+  it('does not count a share the server could not resolve in its claimed thread as posted', async () => {
+    // The reader's own card names the right reply but the wrong thread, so it resolved as unavailable.
+    const misplaced = msg({ id: 'my-bad-share', sequence: 2, content: '↪ 卡片',
+      threadShare: share({ messageId: 'alice-reply', threadRootId: 'elsewhere', status: 'unavailable', authorName: '', content: '' }) });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' }), misplaced] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    expect(within(reply).queryByRole('button', { name: t('postedBySelf') })).toBeNull();
+    expect(within(reply).queryByRole('button', { name: t('postedToMain') })).toBeNull();
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: t('postToMain') })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: t('viewInMain') })).toBeNull();
+  });
+
   it('keeps every failed main-chat copy retryable, across switching threads', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })] }) });
     mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'first' }).mockResolvedValueOnce({ ok: true, messageId: 'second' });
