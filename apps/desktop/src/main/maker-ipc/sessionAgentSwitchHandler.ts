@@ -53,6 +53,40 @@ function throwIfAgentSwitchAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+/**
+ * closeSession 失败时仍可切回本机的链路错误码。两侧都认：
+ * 裸码 = main→main 经 remoteAgentLinkError 保留的 DeviceLinkError.code；
+ * DEVICE_LINK_* = ipc.ts DEVICE_LINK_CODE_MAP 给 renderer 的映射名（消息里的前缀）。
+ * 不认：REMOTE_DISABLED / CHANNEL_NOT_ALLOWED / ACCESS_REVOKED / VERSION_MISMATCH / 裸 TIMEOUT / 无 code 的 REMOTE_AGENT_UNAVAILABLE。
+ * 改这里时对照 apps/desktop/src/main/device-link/ipc.ts 的 DEVICE_LINK_CODE_MAP。
+ */
+const AGENT_SWITCH_LINK_CLOSE_CODES = new Set([
+  'DEVICE_OFFLINE',
+  'INVOKE_TIMEOUT',
+  'DEVICE_UNRESPONSIVE',
+  'NOT_CONNECTED',
+  'LINK_NOT_OPEN',
+  'PEER_RESET',
+  'BACKPRESSURE',
+  'DEVICE_LINK_DEVICE_OFFLINE',
+  'DEVICE_LINK_TIMEOUT',
+  'DEVICE_LINK_DEVICE_UNRESPONSIVE',
+  'DEVICE_LINK_NOT_CONNECTED',
+  'DEVICE_LINK_BUSY',
+]);
+
+function agentSwitchLinkCloseErrorCode(error: unknown): string | null {
+  const tokens = new Set<string>();
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && code) tokens.add(code);
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  for (const match of message.matchAll(/\[([A-Z_]+)\]/g)) tokens.add(match[1]!);
+  for (const token of tokens) {
+    if (AGENT_SWITCH_LINK_CLOSE_CODES.has(token)) return token;
+  }
+  return null;
+}
+
 /** Phase 2:目标引擎的停泊原生会话绑定(localDb findParkedEngineSession 的投影)。 */
 export interface ParkedEngineSessionRef {
   sdkSessionId: string;
@@ -854,10 +888,14 @@ export async function performSessionAgentSwitch(
       try {
         await deps.closeSession(sessionId);
       } catch (error) {
-        if (!orcaLeadReturnHome) throw error;
-        // The remote close may have failed after its local handle was already torn down.
-        // Retry once to finish local cleanup; a second failure still blocks the route switch.
-        await deps.closeSession(sessionId);
+        const linkCode = orcaLeadReturnHome ? agentSwitchLinkCloseErrorCode(error) : null;
+        if (!linkCode) throw error;
+        // 旧远程 Session 的 close 已在本地 finish/dispose；链路失败只表示 close 请求没送到对方。
+        // Maker 把该实例标成 error 仍占 activeSessions，bootstrap/lazy-create 会再 close 一次后换新。
+        deps.log.warn('agent-switch: close failed while returning orca lead home; continuing', {
+          sessionId,
+          code: linkCode,
+        });
       }
     }
 
