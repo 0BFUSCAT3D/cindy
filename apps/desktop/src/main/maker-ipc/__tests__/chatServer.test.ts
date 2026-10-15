@@ -543,6 +543,8 @@ describe('Chat Server result delivery and refresh', () => {
       // A delivery file that no longer exists is simply not uploaded; the existing one goes up under the message identity.
       expect(fixture.upload).toHaveBeenCalledExactlyOnceWith(roomId, 'bot-delegation-task:task-1:1:result',
         [expect.objectContaining({ path: file!.absolutePath, name: 'file-01.md', size: 6 })], botId);
+      // The group refreshes at the end of the coalescing window, like any other change.
+      await vi.advanceTimersByTimeAsync(150);
       expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: roomId, change: 'messages' }), undefined);
     });
 

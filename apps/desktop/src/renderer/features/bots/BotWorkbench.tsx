@@ -633,7 +633,7 @@ function WorkbenchOutputs({ outputs, botName }: { outputs: ReadonlyArray<{ path:
             type="button"
             aria-expanded={all}
             onClick={() => setAll((value) => !value)}
-            className="ml-auto flex h-6 items-center rounded-[8px] px-1.5 text-12 text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            className="ml-auto flex h-6 items-center rounded-lg px-1.5 text-12 text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
             {t(all ? 'bots.workbench.outputsLess' : 'bots.workbench.outputsAll')}
           </button>
@@ -1162,13 +1162,13 @@ function TaskRow({
     <li
       ref={observe}
       data-workbench-row={tile.key}
-      className="group -mx-2 flex min-w-0 items-start gap-1 rounded-[8px] transition-colors hover:bg-[var(--surface-hover)]"
+      className="group -mx-2 flex min-w-0 items-start gap-1 rounded-lg transition-colors hover:bg-[var(--surface-hover)]"
     >
       <button
         type="button"
         onClick={() => onOpen(tile)}
         aria-label={t('bots.workbench.openTask', { title, state: t(`bots.workbench.group.${group}`) })}
-        className="flex min-w-0 flex-1 items-start gap-2 rounded-[8px] py-2 pl-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+        className="flex min-w-0 flex-1 items-start gap-2 rounded-lg py-2 pl-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
       >
         <LeadGlyph tile={tile} group={group} />
         <span className="flex min-w-0 flex-1 flex-col">
@@ -1220,7 +1220,7 @@ function SessionRowMenu({ row, canNavigate, actions }: { row: Session; canNaviga
         <button
           type="button"
           aria-label={t('ccAgent.sidebar.sessionMenu.moreActions')}
-          className="flex size-6 items-center justify-center rounded-[8px] text-[var(--text-tertiary)] opacity-0 outline-none transition-colors hover:bg-[var(--surface-chip)] hover:text-[var(--text-primary)] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] group-hover:opacity-100 data-[state=open]:opacity-100"
+          className="flex size-6 items-center justify-center rounded-lg text-[var(--text-tertiary)] opacity-0 outline-none transition-colors hover:bg-[var(--surface-chip)] hover:text-[var(--text-primary)] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] group-hover:opacity-100 data-[state=open]:opacity-100"
         >
           <MoreHorizontal size={14} aria-hidden />
         </button>
@@ -1304,7 +1304,7 @@ function TaskGroups({
                 onClick={() => setOpenDone((value) => !value)}
                 className={cn(
                   GROUP_HEADING_CLASS,
-                  '-mx-1 rounded-[8px] px-1 outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+                  '-mx-1 rounded-lg px-1 outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
                 )}
               >
                 <ChevronRight
@@ -1511,7 +1511,7 @@ type TranscriptState =
   | { kind: 'failed' };
 
 const DETAIL_ACTION_CLASS =
-  'inline-flex h-7 shrink-0 items-center gap-1 rounded-[8px] px-2 text-12 text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
+  'inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-12 text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
 
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -1692,7 +1692,7 @@ function TaskDetail({
           <button
             type="button"
             onClick={onBack}
-            className="shrink-0 rounded-[8px] px-1 outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            className="shrink-0 rounded-lg px-1 outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
             {t('bots.workbench.title')}
           </button>

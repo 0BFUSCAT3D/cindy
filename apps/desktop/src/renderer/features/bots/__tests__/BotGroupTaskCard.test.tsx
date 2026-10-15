@@ -6,8 +6,10 @@ import type { BotGroupTaskCardView } from '../../../../shared/botGroupChat';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key.replace('bots.groupChat.task.state.', 'state:') }),
 }));
-// Another owner's task never reaches the live link; the component must not need its stores.
-vi.mock('../BotSessionTaskLink', () => ({ BotSessionTaskLink: () => <span data-testid="live-link">live</span> }));
+// Another owner's task never reaches the live card; the component must not need its stores.
+vi.mock('../BotCollaborationCard', () => ({
+  BotTaskCard: ({ sessionId }: { sessionId?: string }) => <span data-testid="live-card">live:{sessionId}</span>,
+}));
 
 import { BotGroupTaskCard } from '../BotGroupTaskCard';
 
@@ -26,7 +28,7 @@ describe('BotGroupTaskCard', () => {
     expect(card.dataset.state).toBe('completed');
     expect(card.textContent).toContain('Launch post');
     expect(card.textContent).toContain('state:completed');
-    expect(screen.queryByTestId('live-link')).toBeNull();
+    expect(screen.queryByTestId('live-card')).toBeNull();
   });
 
   it('shows what a waiting task asks for', () => {
@@ -34,9 +36,9 @@ describe('BotGroupTaskCard', () => {
     expect(screen.getByTestId('bot-group-task').textContent).toContain('state:waiting · Which audience?');
   });
 
-  it('shows my own teammate\'s task as the live link', () => {
+  it('shows my own teammate\'s task as the live background-task card, read through the group lane', () => {
     render(<BotGroupTaskCard task={task('started')} owned />);
-    expect(screen.getByTestId('live-link')).toBeTruthy();
-    expect(screen.getByTestId('bot-group-task').textContent).toContain('state:started');
+    expect(screen.getByTestId('live-card').textContent).toBe('live:group-lane');
+    expect(screen.getByTestId('bot-group-task').textContent).not.toContain('state:started');
   });
 });
