@@ -20,3 +20,13 @@ export function prunePackagedRuntime(buildPath: string): void {
   // contains browser/ES5 bundles and maps, not files used by that entry.
   fs.rmSync(path.join(modules, 'exceljs', 'dist'), { recursive: true, force: true });
 }
+
+/** Drizzle snapshots are generator inputs; preserve journal, SQL and companions verbatim. */
+export function prunePackagedMigrationSnapshots(resourcesPath: string): void {
+  const meta = path.join(resourcesPath, 'drizzle', 'meta');
+  for (const entry of fs.readdirSync(meta, { withFileTypes: true })) {
+    if (entry.isFile() && /^\d{4}_snapshot\.json$/.test(entry.name)) {
+      fs.unlinkSync(path.join(meta, entry.name));
+    }
+  }
+}
