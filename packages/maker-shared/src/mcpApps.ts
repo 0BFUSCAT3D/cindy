@@ -72,6 +72,27 @@ export function mcpAppHistoryText(record: McpAppRecord): string {
     .join('\n\n');
 }
 
+/** Public history has no server identity, tool inputs, schema or View-only result. */
+export interface McpAppHistory {
+  title: string;
+  text: string;
+}
+
+/** Display full owner records and data-only guest summaries without minting a View grant. */
+export function parseMcpAppHistory(content: unknown): McpAppHistory | undefined {
+  const record = parseMcpAppRecord(content);
+  if (record) return {
+    title: typeof record.tool.title === 'string' ? record.tool.title : record.tool.name,
+    text: mcpAppHistoryText(record),
+  };
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return;
+  const value = (content as { mcpAppHistory?: unknown }).mcpAppHistory;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const summary = value as Record<string, unknown>;
+  if (summary.version === 1 && typeof summary.title === 'string' && typeof summary.text === 'string')
+    return { title: summary.title, text: summary.text };
+}
+
 /** Trusted proxy. No privileged host API; relay only the actual inner window. */
 export const MCP_APP_SANDBOX_SCRIPT = `
 const frame=document.createElement('iframe');

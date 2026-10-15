@@ -148,6 +148,82 @@ function fixture() {
 }
 
 describe('MCP App UTF-8 model-context budgets', () => {
+  it.each(['removed', 'replaced'] as const)(
+    'reclaims aggregate bytes from a %s card without waiting for another model turn',
+    async (kind) => {
+      const f = fixture();
+      const large = sizedContext(127_800);
+      for (let index = 0; index < 4; index++) {
+        const update = await f.open(`card-${index}`);
+        expect(await update(large)).toHaveProperty('result');
+        await update.close();
+      }
+      if (kind === 'removed') f.cards.delete('task:card-0');
+      else
+        f.cards.set('task:card-0', { ...f.cards.get('task:card-0')!, serverRevision: 'obsolete' });
+      const update = await f.open('new-card');
+      expect(await update(large)).toHaveProperty('result');
+      expect(JSON.parse(contextJson((await f.host.modelContext('task')).text))).toEqual(
+        Array.from({ length: 4 }, () => contextValue(large)),
+      );
+    },
+  );
+
+  it.each(['replacement', 'requesting-card', 'budget-refilled'] as const)(
+    'revalidates %s after aggregate-byte cleanup awaits another card',
+    async (race) => {
+      const f = fixture();
+      const large = sizedContext(127_800);
+      for (let index = 0; index < 4; index++) {
+        const update = await f.open(`card-${index}`);
+        expect(await update(large)).toHaveProperty('result');
+        await update.close();
+      }
+      const replace = await f.open('card-0');
+      const update = await f.open('new-card');
+      f.cards.delete('task:card-1');
+      const read = f.readCard.getMockImplementation()!;
+      let finish!: () => void;
+      let paused = false;
+      f.readCard.mockImplementation(async (...args) => {
+        if (args[1] === 'card-0' && !paused) {
+          paused = true;
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          if (race === 'replacement') throw new Error('MCP_APP_CARD_UNAVAILABLE');
+        }
+        return read(...args);
+      });
+      const pending = update(large);
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      if (race === 'replacement') {
+        expect(await replace({ structuredContent: { draft: 'replacement' } })).toHaveProperty(
+          'result',
+        );
+      } else if (race === 'requesting-card') {
+        f.cards.delete('task:new-card');
+      } else {
+        const refill = await f.open('refill');
+        expect(await refill(large)).toHaveProperty('result');
+      }
+      finish();
+      if (race === 'replacement') {
+        expect(await pending).toHaveProperty('result');
+        expect(JSON.parse(contextJson((await f.host.modelContext('task')).text))[0]).toEqual(
+          contextValue({ structuredContent: { draft: 'replacement' } }),
+        );
+      } else {
+        const error =
+          race === 'requesting-card' ? 'MCP_APP_CARD_UNAVAILABLE' : 'MCP_APP_CONTEXT_TOO_LARGE';
+        expect(await pending).toHaveProperty('error.message', expect.stringContaining(error));
+        expect(JSON.parse(contextJson((await f.host.modelContext('task')).text))).toHaveLength(
+          race === 'budget-refilled' ? 4 : 3,
+        );
+      }
+    },
+  );
+
   it.each(['card', 'session', 'config', 'owner'] as const)(
     'reclaims the global context cap after %s revocation without another turn in the old tasks',
     async (kind) => {

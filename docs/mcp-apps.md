@@ -83,7 +83,9 @@ SSH 远端使用既有认证桥和 Session instance 路由；只暴露实际配�
 尚未验证真实 SSH 主机与真机 Mobile 的端到端行为。
 共享任务访客在 Desktop 和 Mobile 只显示卡片名称、已保存结果中的 text 块和主人专属
 操作说明，不挂载交互 View、不请求 MCP Apps channel；没有文字结果时仍保留名称与说明。
-只读投影不展开 structuredContent、View-only `_meta` 或嵌入资源。房主本机及同账号远控
+历史、增量推送和离线队列在 Host 的共享访客 wire 边界统一投影为仅含版本、名称和公开
+文本的 `mcpAppHistory`；不下发调用参数、服务器身份、schema、structuredContent、
+View-only `_meta`、嵌入资源或未知附加字段，持久化的房主完整记录不变。房主本机及同账号远控
 继续使用交互卡片，Host 的访客拒绝规则保持不变。回归见两端 `McpAppCard` 测试与
 `packages/maker-shared/src/__tests__/mcpApps.test.ts`。
 
@@ -110,7 +112,7 @@ Desktop 在此期间保留隐藏 iframe 与回执监听。Mobile 原生 WebView 
 单次模型上下文按请求参数的 UTF-8 JSON 字节计量，上限 128,000 字节；每个任务的
 完整上下文数组上限 512,000 字节，包含 JSON 转义、数组括号和分隔符。更新与发送
 使用相同的计量方式，替换旧值释放预算；超限拒绝保留原值，不影响其他任务或账号。
-Host 最多保留 256 份待发送上下文；达到上限时先回收卡片失效、任务归档、账号或配置
+Host 最多保留 256 份待发送上下文；达到条数上限或任务聚合字节将超限时，先回收卡片失效、任务归档、账号或配置
 变化留下的旧值，再判断额度。关闭 View 不清除仍有效的上下文，并发更新不被旧清理覆盖。
 回归见 `contextBudget.test.ts`。发送与插话在实际派发前重新核验快照对应的卡片、账号与
 MCP 配置；普通发送在 metadata、附件及视觉准备后再次复核，插话也覆盖视觉准备后的

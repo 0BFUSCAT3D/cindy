@@ -471,14 +471,24 @@ export class McpAppsHost {
           content,
           structuredContent,
         };
-        const values = [...this.contexts.entries()]
-          .filter(
-            ([id, item]) => id !== key && item.owner === owner && item.sessionId === sessionId,
-          )
-          .map(([, item]) => item.value);
-        values.push(next);
-        if (Buffer.byteLength(JSON.stringify(values), 'utf8') > 512_000)
-          throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
+        const aggregateBytes = () => {
+          const values = [...this.contexts.entries()]
+            .filter(
+              ([id, item]) => id !== key && item.owner === owner && item.sessionId === sessionId,
+            )
+            .map(([, item]) => item.value);
+          values.push(next);
+          return Buffer.byteLength(JSON.stringify(values), 'utf8');
+        };
+        let bytes = aggregateBytes();
+        if (bytes > 512_000) {
+          await this.pruneModelContexts();
+          await assertCurrent();
+          bytes = aggregateBytes();
+        }
+        // Recompute from the live map after cleanup; no await may separate the
+        // final budget checks from publishing, or a concurrent update can overfill it.
+        if (bytes > 512_000) throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
         if (this.contexts.size >= 256 && !this.contexts.has(key))
           throw new Error('MCP_APP_CONTEXT_LIMIT');
         this.contexts.set(key, {

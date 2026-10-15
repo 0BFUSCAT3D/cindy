@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Script } from 'node:vm';
-import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord } from '../mcpApps.js';
+import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord, parseMcpAppHistory } from '../mcpApps.js';
 describe('MCP Apps cross-platform document contract', () => {
   function proxy(resourceUrl: string, requestedUrl = resourceUrl) {
     const frame = { setAttribute() {}, style: {}, src: '', srcdoc: '' };
@@ -84,5 +84,29 @@ describe('MCP Apps cross-platform document contract', () => {
       _meta: { private: 'view-only' },
     };
     expect(mcpAppHistoryText(record)).toBe('Saved result\n\n<script>plain text</script>');
+  });
+  it('accepts public guest history for display without granting access to an App View', () => {
+    const content = {
+      mcpAppHistory: { version: 1, title: 'Draft form', text: 'Saved result' },
+    };
+    expect(parseMcpAppHistory(content)).toEqual({
+      title: 'Draft form',
+      text: 'Saved result',
+    });
+    expect(parseMcpAppRecord(content)).toBeUndefined();
+    expect(
+      parseMcpAppHistory({
+        mcpAppHistory: { version: 1, title: 'Draft form', text: '' },
+      }),
+    ).toEqual({ title: 'Draft form', text: '' });
+  });
+  it.each([
+    null,
+    [],
+    { version: 2, title: 'Draft', text: 'result' },
+    { version: 1, title: {}, text: 'result' },
+    { version: 1, title: 'Draft', text: {} },
+  ])('rejects malformed public history %j', (mcpAppHistory) => {
+    expect(parseMcpAppHistory({ mcpAppHistory })).toBeUndefined();
   });
 });

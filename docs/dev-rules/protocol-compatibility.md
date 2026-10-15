@@ -9,6 +9,10 @@ App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必�
 `agentMeta.mcpApp` 标记；旧客户端不解析该字段，仍可阅读原工具返回的文本。
 新控制端连接旧 Host 时拒绝该 channel 并提示更新执行电脑，不回退到执行任意 HTML。
 完整交互需要执行电脑和查看端都支持 MCP Apps；共享任务访客不开放该入口。
+共享访客的消息历史与推送只携带 `content.mcpAppHistory: { version: 1, title, text }`，
+不发送完整 `mcpApp`、调用参数、服务器身份、schema、structuredContent 或 View-only `_meta`；
+`text` 仅来自结果的 text 块。同账号与本机继续读取完整记录，持久化数据不变。
+新查看端将摘要呈现为原有只读卡片；旧查看端不支持该摘要时不提供交互，完整只读显示需更新查看端。
 
 查看端只传标准 JSON-RPC 和界面环境；执行 Host 持有 MCP 连接、账号归属、工具可见性与
 审批决定。View 绑定 owner、task、card、caller 与配置版本，清空、回退、账号切换或配置
