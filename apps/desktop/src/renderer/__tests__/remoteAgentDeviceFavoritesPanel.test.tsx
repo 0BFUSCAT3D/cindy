@@ -677,6 +677,36 @@ describe('Cindy AI(xd)来源行：只有本机自己的 Cindy AI 保留简介(#6
     expect(sizer.textContent).not.toContain(HOST_DEVICE_NAME);
   });
 
+  it('浏览分享或其他电脑的目录时，定宽测量行按外来目录带来源', async () => {
+    renderPanel({ devices: xdDevices });
+    const sizer = () => document.querySelector('[data-width-sizer]') as HTMLElement;
+    await clickRail('remote:share:magi:xd');
+    for (const row of rowsOf(list(), SHARED)) expectDescription(row);
+    for (const row of rowsOf(sizer(), SHARED)) expectSource(row, SHARED_LABEL);
+    await clickRail('remote:device-c:xd');
+    for (const row of rowsOf(sizer(), REMOTE)) expectSource(row, REMOTE_LABEL);
+    expect(document.body.textContent).not.toContain(HOST_DEVICE_NAME);
+  });
+
+  it('直接打开分享的目录(不经远程 Agent)时，分享的 Cindy AI 同样带来源', async () => {
+    render(
+      React.createElement(ModelSelectorContent, {
+        modelId: 'qwen3.8-flash',
+        effort: 'high',
+        onModelChange: vi.fn(),
+        onEffortChange: vi.fn(),
+        currentProviderId: 'xd',
+        onProviderChange: vi.fn(),
+        vendorKey: 'cc',
+        deviceId: 'share:magi',
+      }),
+    );
+    await act(async () => {});
+    await clickRail('all');
+    for (const row of rowsOf(list(), SHARED)) expectSource(row, 'Cindy AI');
+    expect(document.body.textContent).not.toContain(HOST_DEVICE_NAME);
+  });
+
   it('远程控制被控电脑时，那台自己的 Cindy AI 仍按任务所在电脑的目录显示简介', async () => {
     catalogs.byDevice['device-b'] = [xdProvider([['glm-5.3-flash', LOCAL]])];
     render(
