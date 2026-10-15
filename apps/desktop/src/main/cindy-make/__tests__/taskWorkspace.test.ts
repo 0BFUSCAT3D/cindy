@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { create as tarCreate } from 'tar';
+import { create as tarCreate, Header, list as tarList } from 'tar';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -85,6 +85,23 @@ describe('prepareCindyMakeWorkspace', () => {
     await mkdir(worktreePath, { recursive: true });
     await writeFile(path.join(worktreePath, 'package.json'), '{"name":"app","version":"1.0.0"}');
     return worktreePath;
+  };
+
+  /** Raw POSIX archive names retain aliases that tar's packer may normalize. */
+  const writeManifestArchive = async (
+    file: string,
+    entries: { name: string; dependencies: Record<string, string> }[],
+  ): Promise<void> => {
+    const blocks: Buffer[] = [];
+    for (const entry of entries) {
+      const body = Buffer.from(
+        JSON.stringify({ name: 'local', version: '1.0.0', dependencies: entry.dependencies }),
+      );
+      const header = new Header({ path: entry.name, type: 'File', mode: 0o644, size: body.length });
+      header.encode();
+      blocks.push(header.block!, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+    }
+    await writeFile(file, Buffer.concat([...blocks, Buffer.alloc(1024)]));
   };
 
   const installUnverified = (
@@ -367,6 +384,84 @@ describe('prepareCindyMakeWorkspace', () => {
     expect(pnpm).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['root importer link', '.', 'link:../private'],
+    ['nested importer link', 'apps/client', 'link:../../../private'],
+    ['nested importer file version', 'apps/client', 'file:../private.tgz'],
+    ['package snapshot link', 'snapshots', 'link:../private'],
+    ['legacy package link', 'packages', 'link:../private'],
+  ])('refuses a lockfile path outside its actual resolution directory: %s', async (_name, section, version) => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('lockfile-context');
+    const dependency = { local: { specifier: 'link:./payload', version } };
+    const graph = section === 'snapshots' || section === 'packages'
+      ? { [section]: { 'parent@1.0.0': { dependencies: { local: version } } } }
+      : { importers: { [section]: { dependencies: dependency }, 'apps/other/deep': {} } };
+    await writeFile(
+      path.join(worktreePath, 'pnpm-lock.yaml'),
+      JSON.stringify({ lockfileVersion: '9.0', ...graph }),
+    );
+    await expect(
+      installUnverified('lockfile-context', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('keeps an importer-relative workspace link inside the worktree', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('lockfile-workspace');
+    await writeFile(
+      path.join(worktreePath, 'pnpm-lock.yaml'),
+      JSON.stringify({
+        lockfileVersion: '9.0',
+        importers: {
+          'apps/client': {
+            dependencies: { local: { specifier: 'workspace:*', version: 'link:../../packages/local' } },
+          },
+        },
+      }),
+    );
+    await installUnverified('lockfile-workspace', worktreePath, { processEnvironment: {}, pnpm });
+    expect(pnpm).toHaveBeenCalledOnce();
+  });
+
+  it('checks file versions from the lockfile root rather than a nested importer', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('lockfile-file-version');
+    await writeManifestArchive(path.join(worktreePath, 'local.tar'), [{
+      name: 'package/package.json', dependencies: { '../../../../../autostart': '1.0.0' },
+    }]);
+    await writeFile(
+      path.join(worktreePath, 'pnpm-lock.yaml'),
+      JSON.stringify({
+        lockfileVersion: '9.0',
+        importers: {
+          'apps/client': {
+            dependencies: { local: { specifier: 'file:../../local.tar', version: 'file:local.tar' } },
+          },
+        },
+      }),
+    );
+    await expect(
+      installUnverified('lockfile-file-version', worktreePath, { processEnvironment: {}, pnpm }),
+    ).rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { directory: '../private', type: 'directory' },
+    { tarball: 'file:../private.tgz' },
+  ])('refuses a lockfile resolution outside the lockfile directory: %j', async (resolution) => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('lockfile-resolution');
+    await writeFile(path.join(worktreePath, 'pnpm-lock.yaml'), JSON.stringify({
+      lockfileVersion: '9.0', packages: { 'local@1.0.0': { resolution } },
+    }));
+    await expect(installUnverified('lockfile-resolution', worktreePath, { processEnvironment: {}, pnpm }))
+      .rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
   it('refuses unverified content whose file dependency archive names traverse out', async () => {
     const pnpm = vi.fn(async () => undefined);
     const worktreePath = await withManifest('run-23');
@@ -443,6 +538,82 @@ describe('prepareCindyMakeWorkspace', () => {
       .rejects.toMatchObject({ code: 'gitFailed', message: 'archive has duplicate manifests' });
     expect(pnpm).not.toHaveBeenCalled();
   });
+
+  it.each([
+    'package/./package.json',
+    'package//package.json',
+    'package/child/../package.json',
+    'alternate/package.json',
+    './package/package.json',
+    '/package/package.json',
+  ])('checks the manifest extracted from the POSIX archive alias %s', async (name) => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('archive-alias');
+    const archive = path.join(worktreePath, 'local.tar');
+    await writeManifestArchive(archive, [{
+      name, dependencies: { '../../../../../autostart': '1.0.0' },
+    }]);
+    const names: string[] = [];
+    await tarList({ file: archive, onentry: (entry) => names.push(entry.path) });
+    expect(names).toEqual([name]);
+    await writeFile(path.join(worktreePath, 'package.json'), JSON.stringify({
+      name: 'app', version: '1.0.0', dependencies: { local: 'file:./local.tar' },
+    }));
+    await expect(installUnverified('archive-alias', worktreePath, { processEnvironment: {}, pnpm }))
+      .rejects.toMatchObject({ code: 'gitFailed' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('refuses a manifest overwritten through an archive alias: alias first %s', async (aliasFirst) => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('archive-alias-duplicate');
+    const entries: Parameters<typeof writeManifestArchive>[1] = [
+      { name: 'package/package.json', dependencies: { innocuous: '1.0.0' } },
+      { name: 'package/./package.json', dependencies: { '../../../../../autostart': '1.0.0' } },
+    ];
+    await writeManifestArchive(path.join(worktreePath, 'local.tar'), aliasFirst ? entries.reverse() : entries);
+    await writeFile(path.join(worktreePath, 'package.json'), JSON.stringify({
+      name: 'app', version: '1.0.0', dependencies: { local: 'file:./local.tar' },
+    }));
+    await expect(installUnverified('archive-alias-duplicate', worktreePath, { processEnvironment: {}, pnpm }))
+      .rejects.toMatchObject({ code: 'gitFailed', message: 'archive has duplicate manifests' });
+    expect(pnpm).not.toHaveBeenCalled();
+  });
+
+  it('allows a benign canonical archive manifest alias', async () => {
+    const pnpm = vi.fn(async () => undefined);
+    const worktreePath = await withManifest('archive-alias-benign');
+    await writeManifestArchive(path.join(worktreePath, 'local.tar'), [{
+      name: 'package/./package.json', dependencies: { innocuous: '1.0.0' },
+    }]);
+    await writeFile(path.join(worktreePath, 'package.json'), JSON.stringify({
+      name: 'app', version: '1.0.0', dependencies: { local: 'file:./local.tar' },
+    }));
+    await installUnverified('archive-alias-benign', worktreePath, { processEnvironment: {}, pnpm });
+    expect(pnpm).toHaveBeenCalledOnce();
+  });
+
+  it.each(['package/PACKAGE.JSON', 'package/package.json.'])(
+    'matches archive manifest aliases using host filesystem semantics: %s', async (alias) => {
+      const pnpm = vi.fn(async () => undefined);
+      const worktreePath = await withManifest('archive-host-alias');
+      await writeManifestArchive(path.join(worktreePath, 'local.tar'), [
+        { name: 'package/package.json', dependencies: { innocuous: '1.0.0' } },
+        { name: alias, dependencies: { innocuous: '1.0.0' } },
+      ]);
+      await writeFile(path.join(worktreePath, 'package.json'), JSON.stringify({
+        name: 'app', version: '1.0.0', dependencies: { local: 'file:./local.tar' },
+      }));
+      const install = installUnverified('archive-host-alias', worktreePath, { processEnvironment: {}, pnpm });
+      if (process.platform === 'win32') {
+        await expect(install).rejects.toMatchObject({ code: 'gitFailed', message: 'archive has duplicate manifests' });
+        expect(pnpm).not.toHaveBeenCalled();
+      } else {
+        await install;
+        expect(pnpm).toHaveBeenCalledOnce();
+      }
+    },
+  );
 
   it('installs unverified content whose lockfile and archive metadata are benign', async () => {
     const pnpm = vi.fn(async () => undefined);

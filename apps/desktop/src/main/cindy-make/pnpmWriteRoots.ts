@@ -238,9 +238,10 @@ function refusedLockfileId(id: string): boolean {
  * The frozen lockfile carries the whole transitive graph pnpm installs: its
  * dependency names — including those of package metadata no manifest check
  * ever saw — are joined under the write roots exactly like manifest names.
- * Values may legitimately resolve against any importer's directory or the
- * store, so a path spec only escapes when it leaves the worktree from all of
- * them; `file:` values name the archives checked next.
+ * Importer links resolve against that importer's directory. Resolved `file:`
+ * versions and package-snapshot links resolve against the lockfile directory;
+ * a different importer or the virtual store must never make an escape pass.
+ * `file:` values name the archives checked next.
  */
 function checkLockfile(file: string, base: string, text: string, archives: Set<string>): void {
   let lockfile: unknown;
@@ -253,22 +254,31 @@ function checkLockfile(file: string, base: string, text: string, archives: Set<s
   if (typeof lockfile !== 'object' || Array.isArray(lockfile))
     throw refuse(`unrecognized ${path.basename(file)}`);
   const root = path.dirname(file);
-  const dirs = [root, path.join(base, 'node_modules', '.pnpm')];
-  const importers = (lockfile as Record<string, unknown>).importers;
-  if (importers && typeof importers === 'object' && !Array.isArray(importers)) {
-    for (const name of Object.keys(importers)) {
+  const { importers, ...graph } = lockfile as Record<string, unknown>;
+  checkLockfileNode(file, base, root, path.basename(file), graph, 0, archives);
+  if (importers !== undefined) {
+    if (typeof importers !== 'object' || importers === null || Array.isArray(importers))
+      throw refuse(`unrecognized ${path.basename(file)} importers`);
+    for (const [name, importer] of Object.entries(importers)) {
       if (refusedWorkspacePattern(name))
         throw refuse(`pnpm lockfile importer leaves the worktree: ${name}`);
-      dirs.push(path.resolve(root, name));
+      checkLockfileNode(
+        file,
+        base,
+        path.resolve(root, name),
+        `${path.basename(file)}#importers#${name}`,
+        importer,
+        0,
+        archives,
+      );
     }
   }
-  checkLockfileNode(file, base, dirs, path.basename(file), lockfile, 0, archives);
 }
 
 function checkLockfileNode(
   file: string,
   base: string,
-  dirs: string[],
+  directory: string,
   where: string,
   node: unknown,
   depth: number,
@@ -277,7 +287,7 @@ function checkLockfileNode(
   if (depth > 16) throw refuse(`pnpm lockfile nests too deeply: ${where}`);
   if (Array.isArray(node)) {
     for (const nested of node)
-      checkLockfileNode(file, base, dirs, where, nested, depth + 1, archives);
+      checkLockfileNode(file, base, directory, where, nested, depth + 1, archives);
     return;
   }
   if (typeof node !== 'object' || node === null) return;
@@ -288,16 +298,26 @@ function checkLockfileNode(
       for (const [name, spec] of Object.entries(nested as Record<string, unknown>)) {
         if (fields === 'name' ? refusedDependencyName(name) : refusedPathLikeName(name))
           throw refuse(`pnpm dependency name leaves the worktree: ${name} in ${where}`);
-        if (typeof spec !== 'string') {
-          checkSpecMap(file, base, `${where}#${key}#${name}`, spec, fields, depth + 2, {
+        const specWhere = `${where}#${key}#${name}`;
+        const resolvedDirectory = (value: unknown) =>
+          typeof value === 'string' && /^file:/i.test(value.trim())
+            ? path.dirname(file)
+            : directory;
+        if (typeof spec === 'object' && spec !== null && !Array.isArray(spec)) {
+          // Inline importer records contain both the requested specifier
+          // (importer-relative) and its frozen version (`file:` is root-relative).
+          const { version, ...metadata } = spec as Record<string, unknown>;
+          checkSpecMap(file, base, specWhere, metadata, fields, depth + 2, { archives, directory });
+          checkSpecMap(file, base, `${specWhere}#version`, version, fields, depth + 2, {
             archives,
-            dirs,
+            directory: resolvedDirectory(version),
           });
           continue;
         }
-        // The spec resolves against the dependent's own directory; it escapes
-        // only when no directory pnpm may join it against stays in the tree.
-        checkDependencySpec(file, base, name, spec, { archives, dirs });
+        checkSpecMap(file, base, specWhere, spec, fields, depth + 2, {
+          archives,
+          directory: key === 'specifiers' ? directory : resolvedDirectory(spec),
+        });
       }
       continue;
     }
@@ -308,7 +328,18 @@ function checkLockfileNode(
         if (refusedLockfileId(id))
           throw refuse(`pnpm package identifier leaves the worktree: ${id}`);
     }
-    checkLockfileNode(file, base, dirs, `${where}#${key}`, nested, depth + 1, archives);
+    if (key === 'resolution' && typeof nested === 'object' && nested !== null) {
+      const resolution = nested as Record<string, unknown>;
+      for (const field of ['directory', 'tarball']) {
+        const value = resolution[field];
+        if (typeof value === 'string')
+          checkDependencySpec(file, base, `${where}#resolution#${field}`, value, {
+            archives,
+            directory: path.dirname(file),
+          });
+      }
+    }
+    checkLockfileNode(file, base, directory, `${where}#${key}`, nested, depth + 1, archives);
   }
 }
 
@@ -367,10 +398,10 @@ function specPathTarget(spec: string): string | undefined {
  * `file:` targets are collected for the archive check below: pnpm reads the
  * package metadata out of them, never out of a manifest we see.
  */
-/** Where a spec may resolve against: lockfile specs vary by the dependent's directory. */
+/** The one directory pnpm actually uses for this spec. */
 interface SpecOptions {
   archives?: Set<string>;
-  dirs?: string[];
+  directory?: string;
 }
 
 function checkDependencySpec(
@@ -382,16 +413,11 @@ function checkDependencySpec(
 ): void {
   const target = specPathTarget(spec);
   if (target === undefined) return;
-  const dirs = opts.dirs?.length ? opts.dirs : [path.dirname(file)];
-  const inside = dirs
-    .map((dir) => path.resolve(dir, target))
-    .filter((resolved) => {
-      const relative = path.relative(base, resolved);
-      return !relative.startsWith('..') && !path.isAbsolute(relative);
-    });
-  if (!inside.length) throw refuse(`pnpm dependency leaves the worktree: ${name}`);
-  if (opts.archives && /^file:/i.test(spec.trim()))
-    for (const resolved of inside) opts.archives.add(resolved);
+  const resolved = path.resolve(opts.directory ?? path.dirname(file), target);
+  const relative = path.relative(base, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative))
+    throw refuse(`pnpm dependency leaves the worktree: ${name}`);
+  if (opts.archives && /^file:/i.test(spec.trim())) opts.archives.add(resolved);
 }
 
 function checkDependencySpecs(
@@ -475,7 +501,23 @@ async function readArchiveManifest(file: string): Promise<string | undefined> {
         failure ??= refuse('archive holds too many entries');
         return false;
       }
-      if (entryPath !== 'package/package.json') return false;
+      // pnpm strips the archive's first directory when unpacking. Dot segments
+      // and repeated separators can name the same extracted manifest even
+      // though tar reports distinct entry names. Count that destination once.
+      const archivePath = entryPath.replace(/\\/g, '/');
+      if (path.posix.isAbsolute(archivePath) || /^[a-zA-Z]:/.test(archivePath)) {
+        // Unpackers can strip absolute prefixes before applying `strip: 1`.
+        // Refuse these instead of guessing which manifest would be installed.
+        failure ??= refuse('archive has an absolute entry');
+        return false;
+      }
+      const normalized = path.posix.normalize(archivePath);
+      const extracted = normalized.split('/').slice(1).join('/');
+      const canonical =
+        process.platform === 'win32'
+          ? extracted.split('/').map((part) => part.replace(/[ .]+$/, '').toLowerCase()).join('/')
+          : extracted;
+      if (canonical !== 'package.json') return false;
       if (++manifestCount > 1) {
         failure ??= refuse('archive has duplicate manifests');
         return false;
