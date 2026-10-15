@@ -121,7 +121,7 @@ describe('Chat Server result delivery and refresh', () => {
   const execution = { id: '40000000-0000-4000-8000-000000000001', conversation_id: roomId,
     source_message_id: '50000000-0000-4000-8000-000000000001', bot_id: botId,
     context_seq: '1', epoch: 1, status: 'running', access_mode: 'chat', access_revision: 1 };
-  const room = (id: string) => ({ id, name: 'Room', state: 'joined', response_mode: 'all', speaking_mode: 'auto',
+  const room = (id: string) => ({ id, kind: 'group', name: 'Room', state: 'joined', response_mode: 'all', speaking_mode: 'auto',
     created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z', revision: 1, archived: false });
   let service: BotGroupChatService;
   let deps: BotGroupChatServiceDeps;
@@ -2282,6 +2282,134 @@ describe('Chat Server result delivery and refresh', () => {
       expect(prompt).not.toContain('forged words');
     });
   });
+
+  describe('rooms that are not groups', () => {
+    const directId = '70000000-0000-4000-8000-000000000001';
+    const channelId = '70000000-0000-4000-8000-000000000002';
+    const futureId = '70000000-0000-4000-8000-000000000003';
+    const kinds: Record<string, string | undefined> = { [directId]: 'direct', [channelId]: 'channel', [futureId]: 'board' };
+    const roomOf = (id: string) => ({ ...room(id), kind: id in kinds ? kinds[id] : 'group' });
+    beforeEach(() => {
+      fixture.handle.mockImplementation((route, method) => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupLifecycleVersion: 1 } } };
+        if (route === '/conversations?limit=100') return { body: [roomOf(directId), roomOf(roomId), roomOf(channelId), roomOf(futureId)] };
+        if (route.endsWith('/snapshot')) return { body: { room: roomOf(route.split('/')[2]), cursor: '1', messages: [],
+          members: [{ id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined', role: 'owner' }] } };
+        if (method !== 'GET') return { body: { id: '80000000-0000-4000-8000-000000000001' } };
+        return response(route);
+      });
+    });
+    const writes = () => fixture.handle.mock.calls.filter(([route, method]) => method !== 'GET' && String(route).startsWith(`/conversations/${directId}`));
+
+    it('lists only group rooms, never direct companion chats, channels or unknown kinds', async () => {
+      const result = await service.listGroups();
+      expect(result.ok && result.groups.map(group => group.id)).toEqual([roomId]);
+      for (const other of [directId, channelId, futureId])
+        expect(fixture.handle.mock.calls.some(([route]) => String(route).startsWith(`/conversations/${other}/`))).toBe(false);
+    });
+
+    it.each([directId, channelId, futureId])('answers a missing group when %s is opened directly', async other => {
+      expect(await service.getGroup(other)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+    });
+
+    it.each([directId, channelId, futureId])('rejects dissolution, reactor reads and thread shares for %s without subscriptions or other room access', async groupId => {
+      await service.listGroups();
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets[0];
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(socket.send).mockClear();
+      fixture.handle.mockClear();
+      expect(await service.chatServer!.manage({ groupId, action: { type: 'dissolve', expectedRevision: 1 } }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.reactors({ groupId, messageId: roomId, emoji: '👍' }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.shareToMain({ groupId, messageId: roomId }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(fixture.handle.mock.calls.filter(([route]) => String(route).startsWith(`/conversations/${groupId}`) && !String(route).endsWith('/snapshot'))).toEqual([]);
+      expect(vi.mocked(socket.send).mock.calls.filter(([raw]) => String(raw).includes(groupId))).toEqual([]);
+    });
+
+    it('does not archive, leave, rename, re-member, post into or invite to a direct room through group actions', async () => {
+      expect(await service.deleteGroup(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.updateGroup({ groupId: directId, name: 'Renamed' })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.setMembers({ groupId: directId, botIds: [] })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.sendMessage({ groupId: directId, text: 'hi', clientId: 'client-direct-1', mentions: { all: false, botIds: [] } }))
+        .toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      // Raw-code entry points answer exactly like a missing room; the internal NOT_A_GROUP never leaves main.
+      expect(await service.chatServer!.manage({ groupId: directId, action: { type: 'member', actorId: selfId, action: 'leave' } }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.createInvite({ groupId: directId, clientId: 'invite-direct-1' })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.revokeInvite({ groupId: directId, link: `cindy://chat-invite/${'a'.repeat(43)}`, clientId: '90000000-0000-4000-8000-000000000001' }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(writes()).toEqual([]);
+    });
+
+    it('answers a missing group from round, plan, thread, reply and reaction entries without touching the room', async () => {
+      const planId = '80000000-0000-4000-8000-000000000002';
+      expect(await service.stopRound(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.continueRound(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.startPlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.dismissPlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.continuePlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.retryPlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.editPlanStep({ groupId: directId, planId, position: 0, action: 'remove' })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.chatServer!.thread({ groupId: directId, rootId: planId })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.reply({ groupId: directId, rootId: planId, text: 'hi', clientId: 'reply-direct-1', mentions: { all: false, botIds: [] } }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.react({ groupId: directId, messageId: planId, emoji: '👍', present: true })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      // Only the snapshot that answered "missing" was read; nothing else of the room was read or written.
+      expect(fixture.handle.mock.calls.filter(([route]) => String(route).startsWith(`/conversations/${directId}`) && !String(route).endsWith('/snapshot'))).toEqual([]);
+    });
+
+    it.each([directId, channelId, futureId])('fails a claimed execution in %s instead of running it as a group', async other => {
+      fixture.handle.mockImplementation((route, method) => {
+        if (route === '/executions/claim') { const next = claimed ? null : { ...execution, conversation_id: other }; claimed = true; return { body: { execution: next } }; }
+        if (route.endsWith('/snapshot')) return { body: { room: roomOf(route.split('/')[2]), cursor: '1', messages: [], members: [
+          { id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined', role: 'owner' },
+          { id: botId, kind: 'bot', ownerActorId: selfId, state: 'joined', role: 'member' }] } };
+        if (method !== 'GET') return { body: { id: '80000000-0000-4000-8000-000000000001' } };
+        return response(route);
+      });
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'active' }];
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.ensureLane).not.toHaveBeenCalled();
+      expect(deps.dispatch).not.toHaveBeenCalled();
+      const results = fixture.handle.mock.calls.filter(([route, , body]) => route === `/conversations/${other}/executions/${execution.id}`
+        && ['complete', 'fail'].includes(body?.action));
+      expect(results.map(call => call[2].action)).toEqual(['fail']);
+      // The rejected room was never subscribed, so a reconnect has nothing to resubscribe.
+      const socket = fixture.sockets[0];
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      const scopes = vi.mocked(socket.send).mock.calls.map(([raw]) => JSON.parse(String(raw)))
+        .filter(m => m.type === 'subscribe' && String(m.scope).startsWith('conversation:')).map(m => m.scope);
+      expect(scopes).toEqual([]);
+    });
+
+    it('never subscribes to a rejected room, so its traffic cannot invalidate the group list', async () => {
+      await service.getGroup(roomId);
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets[0];
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: '1' }));
+      vi.mocked(socket.send).mockClear();
+      expect(await service.getGroup(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.chatServer!.createInvite({ groupId: channelId, clientId: 'invite-channel-1' })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.thread({ groupId: futureId, rootId: roomId })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(vi.mocked(socket.send).mock.calls.filter(([raw]) => String(raw).includes('"subscribe"'))).toEqual([]);
+      // A later reconnect resubscribes only the group.
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      const scopes = vi.mocked(socket.send).mock.calls.map(([raw]) => JSON.parse(String(raw)))
+        .filter(m => m.type === 'subscribe' && String(m.scope).startsWith('conversation:')).map(m => m.scope);
+      expect(scopes).toEqual([`conversation:${roomId}`]);
+    });
+  });
 });
 
 
@@ -2305,7 +2433,7 @@ describe('Chat Server directed sends', () => {
       if (route === '/me') return { body: { actor: { id: selfId } } };
       if (route === '/actors') return { body: [{ id: botId, kind: 'bot', externalId: 'local-bot', name: 'Bot' }] };
       if (route.endsWith('/members')) return { body: members };
-      if (route.endsWith('/snapshot')) return { body: { room: { id: roomId, response_mode: responseMode }, members, messages: [], cursor: '0' } };
+      if (route.endsWith('/snapshot')) return { body: { room: { id: roomId, kind: 'group', response_mode: responseMode }, members, messages: [], cursor: '0' } };
       if (route.endsWith('/messages') && method === 'POST') return { body: { id: 'posted-message' } };
       return { body: [] };
     });
