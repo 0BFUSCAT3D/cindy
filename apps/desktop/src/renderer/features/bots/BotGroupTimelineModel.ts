@@ -312,19 +312,41 @@ export function runningBotGroupPlanStep(plan: BotGroupPlanView | null): BotGroup
 }
 
 /**
- * 「第 k 步」 on a step's hand-off message: the plan step done by the message's author. When the
- * author has several steps in the plan, the hand-offs are matched to them in order.
+ * 「第 k 步」 on a step's hand-off message. Where the plan names each step's latest hand-off, that
+ * message gets its step exactly, and a hand-off a redo replaced gets the step of the same
+ * author's next hand-off (a redo follows the step it redoes); one that matches nothing stays
+ * unnumbered rather than numbered wrong. Without those ids (Chat Server plans, older hosts) the
+ * author's hand-offs are matched to the author's steps in order.
  */
 export function botGroupHandoffStepNumbers(
   messages: readonly BotGroupMessageView[],
   plans: ReadonlyMap<string, BotGroupPlanView>,
 ): ReadonlyMap<string, number> {
   const numbers = new Map<string, number>();
+  const handoffs = messages.filter((message) => message.kind === 'message' && message.authorKind === 'bot'
+    && message.planId && message.authorBotId && plans.has(message.planId));
+  const exact = new Map<string, number>();
+  const exactPlans = new Set<string>();
+  for (const plan of plans.values()) {
+    plan.steps.forEach((step, index) => {
+      if (step.resultMessageId === undefined) return;
+      exactPlans.add(plan.id);
+      if (step.resultMessageId) exact.set(step.resultMessageId, index + 1);
+    });
+  }
+  const next = new Map<string, number>();
+  for (const message of [...handoffs].reverse()) {
+    if (!exactPlans.has(message.planId!)) continue;
+    const key = `${message.planId}:${message.authorBotId}`;
+    const number = exact.get(message.id) ?? next.get(key);
+    if (number === undefined) continue;
+    numbers.set(message.id, number);
+    next.set(key, number);
+  }
   const seen = new Map<string, number>();
-  for (const message of messages) {
-    if (message.kind !== 'message' || message.authorKind !== 'bot' || !message.planId || !message.authorBotId) continue;
-    const plan = plans.get(message.planId);
-    if (!plan) continue;
+  for (const message of handoffs) {
+    if (exactPlans.has(message.planId!)) continue;
+    const plan = plans.get(message.planId!)!;
     const key = `${plan.id}:${message.authorBotId}`;
     const nth = seen.get(key) ?? 0;
     const positions = plan.steps.flatMap((step, index) => (step.botId === message.authorBotId ? [index + 1] : []));

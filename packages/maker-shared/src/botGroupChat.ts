@@ -229,6 +229,8 @@ export interface BotGroupPlanStepView {
   botName: string;
   task: string;
   status: BotGroupPlanStepStatus;
+  /** The step's latest hand-off message (a redo replaces it); absent where the host does not report it. */
+  resultMessageId?: string | null;
 }
 
 export interface BotGroupPlanView {

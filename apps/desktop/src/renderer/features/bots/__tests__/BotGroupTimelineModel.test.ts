@@ -184,4 +184,26 @@ describe('plan hand-offs', () => {
     ], new Map([['p1', plan]]));
     expect([...numbers]).toEqual([['h1', 1], ['h2', 2], ['h3', 3]]);
   });
+
+  it('numbers hand-offs by the step they finished, through a redo and with earlier pages not loaded', () => {
+    const plan: BotGroupPlanView = {
+      id: 'p1', status: 'running', organizerBotId: 'mimi', organizerName: '咪咪', currentStep: 2, workDir: null, branch: null, createdAt: 1, updatedAt: 1,
+      steps: [
+        { position: 0, botId: 'mimi', botName: '咪咪', task: 'a', status: 'done', resultMessageId: 'h1-redo' },
+        { position: 1, botId: 'xiaoman', botName: '小满', task: 'b', status: 'done', resultMessageId: 'h2' },
+        { position: 2, botId: 'mimi', botName: '咪咪', task: 'c', status: 'done', resultMessageId: 'h3' },
+      ],
+    };
+    const plans = new Map([['p1', plan]]);
+    // Step 1 was redone after the user asked: its first hand-off is replaced, still step 1.
+    const numbers = botGroupHandoffStepNumbers([
+      msg({ id: 'h1', planId: 'p1' }),
+      msg({ id: 'h1-redo', planId: 'p1' }),
+      msg({ id: 'h2', planId: 'p1', authorBotId: 'xiaoman' }),
+      msg({ id: 'h3', planId: 'p1' }),
+    ], plans);
+    expect(Object.fromEntries(numbers)).toEqual({ h1: 1, 'h1-redo': 1, h2: 2, h3: 3 });
+    // Only the newest page is loaded: the third step is still the third step.
+    expect(Object.fromEntries(botGroupHandoffStepNumbers([msg({ id: 'h3', planId: 'p1' })], plans))).toEqual({ h3: 3 });
+  });
 });

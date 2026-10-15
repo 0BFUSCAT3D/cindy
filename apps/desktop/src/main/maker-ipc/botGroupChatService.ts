@@ -689,6 +689,7 @@ export function createBotGroupChatService(deps: BotGroupChatServiceDeps) {
       botName: step.botName,
       task: step.task,
       status: stepStatus(step.status),
+      resultMessageId: step.resultMessageId ?? null,
     })),
     currentStep: plan.currentStep ?? null,
     workDir: plan.workDir ?? null,
