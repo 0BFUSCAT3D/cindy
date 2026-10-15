@@ -1,3 +1,4 @@
+import { RemoveChatFromListButton } from './RemoveChatFromListButton';
 import type { ReactNode } from 'react';
 /**
  * 群聊页：顶栏（成员头像、群名、成员名单、群设置入口）+ 多作者时间线 + 输入框。
@@ -343,13 +344,16 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     void load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
-        if (!isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
-        if (payload.change === 'deleted') {
+        if (cancelled || !isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
+        if (payload.change === 'deleted' || (payload.change === 'list' && payload.listState?.hidden)) {
           requestVersion += 1;
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
           discardOutbox();
           setState({ kind: 'missing' });
+          // The authoritative hide can unmount the drawer before its IPC reply.
+          // This mounted page owns selection, so clear the route here as well.
+          if (payload.change === 'list') navigate('/bots');
           return;
         }
         void load();
@@ -360,7 +364,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       loadRef.current = () => {};
       unsubscribe();
     };
-  }, [groupId, reloadVersion]);
+  }, [groupId, reloadVersion, navigate]);
 
   const group = state.kind === 'ready' ? state.group : null;
   // Until the timeline arrives, the header comes from the group's sidebar row (same account).
@@ -773,6 +777,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               <ArrowLeft size={14} />
               {t('bots.backToBot')}
             </Button>
+            {!failed && groupId && <RemoveChatFromListButton key={groupId} groupId={groupId} onRemoved={() => navigate('/bots')} />}
             {failed ? (
               <Button
                 variant="cta"
@@ -814,7 +819,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             {formatBotMessageGroupTime(groupTime, i18n.language)}
           </p>
         ) : null}
-        <BotGroupOutboxItem entry={entry} mentionLabels={mentionLabels}
+        <BotGroupOutboxItem entry={entry} mentionLabels={mentionLabels} readOnly={Boolean(group.archived || group.dissolvedAt)}
           quote={entry.quote ? (
             <BotGroupQuoteBlock display={resolveBotGroupQuote(entry.quote, quoteSources)}
               onLocate={() => void locateQuoted(entry.quote!)} align="right" />
@@ -928,7 +933,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   actions={message.kind === 'message' ? <ChatMessageActions
                     groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message} members={group.members} reactionRevision={messageReactionRevision(group, message.id)}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
-                    onQuote={group.serverBacked && !group.archived && isBotGroupMessageQuotable(message)
+                    onQuote={group.serverBacked && !group.archived && !group.dissolvedAt && isBotGroupMessageQuotable(message)
                       ? () => setQuoteDraft(botGroupQuoteFromMessage(message)) : undefined}
                     onReply={group.serverBacked ? () => {
                       threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1004,7 +1009,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         </div>
       )}
       {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t('bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
+        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived || group.dissolvedAt ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t(group.dissolvedAt ? 'bots.groupChat.lifecycle.dissolved' : 'bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
         groupId={group.id}
         members={group.members}
         running={running}
@@ -1253,10 +1258,12 @@ const BOT_GROUP_SENDING_HINT_DELAY_MS = 600;
 function BotGroupOutboxItem({
   entry,
   mentionLabels,
+  readOnly,
   quote,
 }: {
   entry: BotGroupOutboxEntry;
   mentionLabels: readonly string[];
+  readOnly: boolean;
   quote?: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -1289,6 +1296,7 @@ function BotGroupOutboxItem({
               size="sm"
               compact
               type="button"
+              disabled={readOnly}
               onClick={() => {
                 if (!editBotGroupSend(entry.input.groupId, entry.input.clientId)) toast.warning(t('bots.groupChat.outbox.editBlocked'));
               }}
@@ -1296,7 +1304,7 @@ function BotGroupOutboxItem({
               {t('bots.groupChat.outbox.edit')}
             </Button>
             {entry.retryable !== false ? (
-              <Button variant="secondary" size="sm" compact type="button" onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
+              <Button variant="secondary" size="sm" compact type="button" disabled={readOnly} onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
                 <RefreshCcw size={13} />
                 {t('bots.retry')}
               </Button>

@@ -283,6 +283,10 @@ OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入�
 
 钉钉机器人连接的产品名称，沿用官方品牌写法；先登记为 proposed，待产品术语评审后再决定是否固化。
 
+### Dissolve group
+
+Irreversible group termination, distinct from archive, leave and personal list removal.
+
 ### Doubao
 
 模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。
