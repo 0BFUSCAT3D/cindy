@@ -9,6 +9,7 @@ import { messageToCamel } from '../localDb/mapper.js';
 import { captureDataOwnerBroadcastScope } from '../device-link/broadcast-tap.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { createLogger } from '../logger.js';
+import { getMcpAppRevisionKey } from '../secrets/providerSecretStore.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { remoteInvoke } from '../device-link/index.js';
@@ -49,6 +50,7 @@ export function registerMcpAppsIpc(
   const host = new McpAppsHost({
     owner: currentOwner,
     config: readAppServer,
+    revisionKey: getMcpAppRevisionKey,
     readCard: async (sessionId, clientId) => {
       const { owner } = await assertSession(sessionId);
       const [row] = await owner.client.drizzle

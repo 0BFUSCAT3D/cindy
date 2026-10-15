@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, randomBytes, createHmac } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { AppBridge, type McpUiHostContext } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -27,6 +27,8 @@ import {
 export interface McpAppsHostDeps {
   owner(): object | undefined;
   config(id: string): AppServerConfig | undefined;
+  /** Desktop injects an owner-scoped vault key so revisions survive restarts. */
+  revisionKey?(): string;
   readCard(sessionId: string, clientId: string): Promise<McpAppRecord>;
   writeCard(sessionId: string, clientId: string, record: McpAppRecord): Promise<void>;
   authorizeTool(
@@ -135,8 +137,12 @@ interface View {
   links: Map<string, (success: boolean) => void>;
 }
 
-export function appServerRevision(config: AppServerConfig): string {
-  return createHash('sha256')
+// Standalone, non-persistent Hosts still need a private key. Desktop supplies
+// its persistent vault key through revisionKey; this default never leaves Main.
+const transientRevisionKey = randomBytes(32).toString('hex');
+export function appServerRevision(config: AppServerConfig, key = transientRevisionKey): string {
+  return createHmac('sha256', key)
+    .update('cindy:mcp-app-server-revision:v1\0')
     .update(JSON.stringify([config.id, config.url, config.transport, config.headers]))
     .digest('hex');
 }
@@ -167,6 +173,10 @@ export class McpAppsHost {
   private readonly connectionIds = new WeakMap<AppConnection, string>();
   private sweepTimer?: ReturnType<typeof setInterval>;
   constructor(private readonly deps: McpAppsHostDeps) {}
+
+  serverRevision(config: AppServerConfig): string {
+    return appServerRevision(config, this.deps.revisionKey?.());
+  }
 
   captureOwner(): object {
     const owner = this.deps.owner();
@@ -290,7 +300,7 @@ export class McpAppsHost {
     const record = await this.deps.readCard(sessionId, clientId);
     signal.throwIfAborted();
     const config = this.deps.config(record.serverId);
-    if (!config || appServerRevision(config) !== record.serverRevision)
+    if (!config || this.serverRevision(config) !== record.serverRevision)
       throw new Error('MCP_APP_SERVER_CHANGED');
     const connectionId = (record as McpAppRecord & { connectionId?: string }).connectionId;
     const registered = connectionId ? this.connections.get(connectionId) : undefined;
@@ -651,7 +661,7 @@ export class McpAppsHost {
     )
       throw new Error('MCP_APP_VIEW_UNAVAILABLE');
     const config = this.deps.config(view.record.serverId);
-    if (!config || appServerRevision(config) !== view.record.serverRevision)
+    if (!config || this.serverRevision(config) !== view.record.serverRevision)
       throw new Error('MCP_APP_SERVER_CHANGED');
     view.lastUsed = Date.now();
     return view;
@@ -824,7 +834,7 @@ export class McpAppsHost {
           current =
             item.owner === this.deps.owner() &&
             !!config &&
-            appServerRevision(config) === item.revision &&
+            this.serverRevision(config) === item.revision &&
             card.serverId === item.serverId &&
             card.serverRevision === item.revision;
         } catch {
@@ -854,7 +864,7 @@ export class McpAppsHost {
         if (owner !== this.deps.owner()) return empty;
         if (
           !config ||
-          appServerRevision(config) !== item.revision ||
+          this.serverRevision(config) !== item.revision ||
           card.serverRevision !== item.revision
         ) {
           remove();
@@ -884,7 +894,7 @@ export class McpAppsHost {
           const config = this.deps.config(item.serverId);
           if (
             !config ||
-            appServerRevision(config) !== item.revision ||
+            this.serverRevision(config) !== item.revision ||
             cards[index].serverRevision !== item.revision
           )
             throw new Error('MCP_APP_SERVER_CHANGED');
@@ -925,7 +935,7 @@ export class McpAppsHost {
       if (
         view.owner !== this.deps.owner() ||
         !config ||
-        appServerRevision(config) !== view.record.serverRevision ||
+        this.serverRevision(config) !== view.record.serverRevision ||
         Date.now() - view.lastUsed > 60_000
       )
         await this.disposeView(id, view, true);

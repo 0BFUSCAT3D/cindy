@@ -29,7 +29,6 @@ import {
 import type { McpProviderContext } from '@cindy/maker-core';
 import type { McpAppRecord } from '../../shared/mcpApps.js';
 import { AppConnection, type AppServerConfig } from './connection.js';
-import { appServerRevision } from './host.js';
 import { getMcpAppsHost, readAppServer } from './runtime.js';
 import { toolVisibleTo, uiToolUri } from './protocol.js';
 import { createLogger } from '../logger.js';
@@ -152,7 +151,7 @@ export function createAppServerProxy(
   const assertCurrent = () => {
     host.assertOwner(owner);
     const current = readAppServer(config.id);
-    if (!current || appServerRevision(current) !== appServerRevision(config))
+    if (!current || host.serverRevision(current) !== host.serverRevision(config))
       throw new Error('MCP_APP_SERVER_CHANGED');
   };
   // Bridge factories are created eagerly, but unused proxies must not retain a Host slot.
@@ -261,7 +260,7 @@ export function createAppServerProxy(
       record = {
         version: 1,
         serverId: config.id,
-        serverRevision: appServerRevision(config),
+        serverRevision: host.serverRevision(config),
         resourceUri: uri,
         tool,
         arguments: request.params.arguments ?? {},

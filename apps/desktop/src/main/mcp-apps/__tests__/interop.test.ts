@@ -91,6 +91,7 @@ async function fixture(
     platform?: 'mobile' | 'desktop';
     appModes?: ('inline' | 'fullscreen')[];
     duringResource?: 'result' | 'cancelled' | 'clear' | 'server';
+    revisionKey?: () => string;
   } = {},
 ) {
   const config = {
@@ -112,7 +113,7 @@ async function fixture(
   let card: McpAppRecord = {
     version: 1,
     serverId: config.id,
-    serverRevision: appServerRevision(config),
+    serverRevision: appServerRevision(config, options.revisionKey?.()),
     resourceUri: MOCK_RESOURCE,
     tool,
     arguments: input,
@@ -128,6 +129,7 @@ async function fixture(
   const host = new McpAppsHost({
     owner: () => owner,
     config: () => (enabled ? config : undefined),
+    revisionKey: options.revisionKey,
     readCard: async () => {
       if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE');
       return card;
@@ -568,6 +570,29 @@ describe('official MCP Apps interoperability', () => {
   it('revokes a View when its configured server is removed', async () => {
     const f = await fixture();
     f.revoke();
+    await expect(
+      f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
+    ).rejects.toThrow('MCP_APP_SERVER_CHANGED');
+    expect(f.authorize).not.toHaveBeenCalled();
+  });
+  it('persists the injected private revision through the facade and revokes Views when the key changes', async () => {
+    let key = 'a'.repeat(64);
+    const f = await fixture('http', { revisionKey: () => key });
+    setMcpAppsHost(f.host);
+    registerAppServer(f.config.id, () => f.config);
+    const facade = createAppServerProxy(() => f.config, {
+      agentKind: 'codex', sessionId: 'task', workingDir: '',
+    });
+    const client = new Client({ name: 'model-client', version: '1' });
+    cleanups.push(async () => { await client.close(); await facade.close(); });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await facade.connect(serverTransport);
+    await client.connect(clientTransport);
+    await client.callTool({ name: 'draft_form', arguments: { title: 'Draft', body: 'Review' } });
+    const persisted = f.write.mock.calls.at(-1)![2];
+    expect(persisted.serverRevision).toBe(appServerRevision(f.config, key));
+    expect(persisted.serverRevision).not.toBe(appServerRevision(f.config));
+    key = 'b'.repeat(64);
     await expect(
       f.app.callServerTool({ name: 'create_application', arguments: { title: 'x', body: '' } }),
     ).rejects.toThrow('MCP_APP_SERVER_CHANGED');

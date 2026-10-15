@@ -22,6 +22,7 @@ const state = vi.hoisted(() => ({
   invoke: vi.fn(),
   open: vi.fn(),
   dispatch: vi.fn(),
+  revisionKey: vi.fn(() => 'a'.repeat(64)),
   remote: undefined as { controllerDeviceId: string; sharedTask?: object } | undefined,
   handle: undefined as
     ((event: unknown, session: unknown, input: unknown) => Promise<unknown>) | undefined,
@@ -45,6 +46,7 @@ vi.mock('../host.js', () => ({
   },
 }));
 vi.mock('../runtime.js', () => ({ setMcpAppsHost: vi.fn(), readAppServer: vi.fn() }));
+vi.mock('../../secrets/providerSecretStore.js', () => ({ getMcpAppRevisionKey: state.revisionKey }));
 vi.mock('../sandboxProtocol.js', () => ({
   supplyMcpAppDocument: vi.fn(),
   removeMcpAppDocument: vi.fn(),
@@ -147,6 +149,11 @@ beforeEach(() => {
   registerMcpAppsIpc(async () => {}, request);
 });
 describe('MCP App persistence and IPC wiring', () => {
+  it('injects the persistent vault key lazily instead of using a transient Host key', () => {
+    expect(state.revisionKey).not.toHaveBeenCalled();
+    expect(state.deps!.revisionKey!()).toBe('a'.repeat(64));
+    expect(state.revisionKey).toHaveBeenCalledOnce();
+  });
   it('reads only host-marked visible assistant cards and uses the task clear boundary', async () => {
     state.session.clearedAt = 100;
     expect(await state.deps!.readCard('task', 'card')).toEqual(record);
