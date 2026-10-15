@@ -288,6 +288,24 @@ describe('remote file references on the task computer', () => {
     expect(output[3]).toMatchObject({ turnScope: 'background', backgroundTurnStartedAt: 2000 });
   });
 
+  it.each([
+    { message: 'retrying', isTerminal: false },
+    { message: 'retrying', willRetry: true },
+  ])('keeps background paths pending across a recoverable foreground error (%j)', async (errorData) => {
+    const virtual = '/Users/agent/workspace';
+    const { real, controller } = setup(virtual);
+    const output = await eventsFrom(controller, [
+      { type: 'text', source: 'pi', turnScope: 'background', backgroundTurnStartedAt: 1000,
+        data: { text: virtual.slice(0, 12), isFinal: false } },
+      { type: 'error', source: 'pi', data: errorData },
+      { type: 'text', source: 'pi', turnScope: 'background', backgroundTurnStartedAt: 1000,
+        data: { text: virtual.slice(12) + '/background.txt ', isFinal: false } },
+    ]);
+    expect(output.map((event) => event.type === 'text' ? text(event) : event.type)).toEqual([
+      'error', path.join(real, 'background.txt') + ' ',
+    ]);
+  });
+
   it.each(['claude-code', 'codex', 'pi'] as const)('flushes all pending paths before foreground stopped status for %s without done or close', async (source) => {
     const virtual = '/Users/agent/workspace';
     const { real, controller } = setup(virtual);

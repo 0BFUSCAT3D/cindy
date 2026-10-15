@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import type { AgentEvent } from '@cindy/maker-core';
+import { isTerminalAgentErrorEvent, type AgentEvent } from '@cindy/maker-core';
 
 import { isPathTextField, mapJsonPathText, type ExecutorWorkspace } from '../executor/workspace';
 
@@ -172,7 +172,8 @@ export class RemoteEventProjection {
     // Agent 可先发停止状态，且不一定随后有 done；正文必须在停止状态前送出。
     const stopped = event.type === 'status' && data?.isRunning === false;
     const terminal = !event.agentMeta?.parentUuid && event.turnScope !== 'background'
-      && (stopped || ['done', 'error', 'compact_boundary'].includes(event.type));
+      && (stopped || ['done', 'compact_boundary'].includes(event.type)
+        || (event.type === 'error' && isTerminalAgentErrorEvent(event)));
     const output = event.type === 'text' || stopped || TEXT_BOUNDARIES.has(event.type)
       ? this.flush(terminal ? undefined : stream) : [];
     // agentMeta、session/tool id 和权限回执不经过递归文本改写。
