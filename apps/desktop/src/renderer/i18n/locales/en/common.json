@@ -9276,7 +9276,10 @@
         "permissionDenied": "You do not have permission to manage this group.",
         "serviceError": "The chat service could not complete the request. Try again later.",
         "groupArchived": "This group is archived. This action is unavailable.",
-        "quoteUnavailable": "The quoted message was deleted or is no longer visible. The quote was removed. Send again."
+        "quoteUnavailable": "The quoted message was deleted or is no longer visible. The quote was removed. Send again.",
+        "lifecycleUnavailable": "The current server or computer does not support this action yet.",
+        "groupDissolved": "This group has been dissolved. You can still read the available history.",
+        "lastOwner": "Transfer ownership or dissolve this group before leaving."
       },
       "organizer": "Organizer",
       "plan": {
@@ -9407,7 +9410,7 @@
           "removeHint": "They will lose access to messages. Their companions will also leave.",
           "addCompanion": "Invite my companion",
           "leave": "Leave group",
-          "leaveHint": "You and your companions will leave. Transfer ownership first if you own the group.",
+          "leaveHint": "You and your companions will leave this group. You will no longer receive new messages or have access to its history.",
           "soleOwnerHint": "You’re the only member left. Archive this group to keep its history and restore it later.",
           "archive": "Archive Group",
           "archiveHint": "Archiving disables this group for all members, stopping new messages and teammate runs. History is kept. Search for the group to view its history or unarchive it.",
@@ -9427,6 +9430,18 @@
           "companionPermissions": "Companion permissions",
           "configureCapabilities": "Tools and access settings"
         }
+      },
+      "lifecycle": {
+        "dissolve": "Dissolve group",
+        "dissolveNote": "This cannot be undone. Messaging will stop for everyone, active work will stop, and invitations will expire. Members keep access to the history they can already read.",
+        "hide": "Remove from my list",
+        "hideNote": "Remove this chat from your list on all your devices. This does not change membership, delete history, stop ongoing work, or affect other members.",
+        "leave": "Leave group",
+        "leaveNote": "You and your companions will leave this group. You will no longer receive new messages or have access to its history.",
+        "unavailable": "The current server or computer does not support this action yet.",
+        "dissolved": "This group has been dissolved. You can still read the available history.",
+        "failed": "Could not complete this action. Try again.",
+        "lastOwner": "Transfer ownership or dissolve this group before leaving."
       }
     },
     "joined": {

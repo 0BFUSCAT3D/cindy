@@ -81,6 +81,12 @@ export interface BuildHandoffOptions {
     | 'model-window-switch'
     | 'pi-prompt-timeout'
     | 'native-session-recovery';
+  /**
+   * 伙伴工作记忆账本的渲染段(botWorkingMemory.renderWorkingMemory):承诺、纠正、
+   * 等待、线索。它是代码摘录之外唯一的语义交接载体,排在工作状态区之后、提要之前;
+   * 非伙伴主对话或没有账本时不传。
+   */
+  workingMemory?: string | null;
 }
 
 /** 最近多少个用户轮次进入逐字区(其余进单行提要区)。 */
@@ -751,6 +757,9 @@ function assembleHandoffText(
     }
     sections.push(`== Work ledger (auto-extracted) ==\n${lines.join('\n')}`);
   }
+
+  // 工作记忆账本:宿主维护的语义状态,逐字段已自带标题与"不是授权"说明。
+  if (opts.workingMemory) sections.push(opts.workingMemory);
 
   if (earlier.length > 0) {
     const lines: string[] = [];

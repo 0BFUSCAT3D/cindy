@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
+import { chatGroupMembership } from '@cindy/maker-shared/botGroupPresentation';
 import {
   botGroupChatDataFromResource,
   botGroupErrorCode,
@@ -10,6 +11,7 @@ import {
   nextBotGroupSendAttempt,
   orderedBotGroups,
   parseBotGroupChatData,
+  canManageBotGroup,
 } from '@/session/botGroupRemote';
 
 function chatData(overrides: Record<string, unknown> = {}) {
@@ -213,6 +215,20 @@ describe('group rows', () => {
 });
 
 describe('actions', () => {
+  it('preserves leave and owner authority through the remote projection without granting management to ordinary members', () => {
+    const members = [
+      { botId: 'me', actorId: 'me', name: 'Me', isSelf: true, isOwned: true, role: 'member' },
+      { botId: 'bot', actorId: 'bot', name: 'Bot', isOwned: true, role: 'owner' },
+    ];
+    const ownGroup = parseBotGroupChatData(chatData({ serverBacked: true, supportsSettingsManagement: true, revision: 1, members }))!;
+    expect(chatGroupMembership(ownGroup)).toMatchObject({ owner: true, manager: true, canLeave: false });
+    expect(canManageBotGroup(ownGroup)).toBe(true);
+    const memberGroup = parseBotGroupChatData(chatData({ serverBacked: true, supportsSettingsManagement: true, revision: 1,
+      members: [members[0], { ...members[1], isOwned: false }] }))!;
+    expect(chatGroupMembership(memberGroup)).toMatchObject({ owner: false, manager: false, canLeave: true });
+    expect(canManageBotGroup(memberGroup)).toBe(false);
+  });
+
   it.each([
     [Object.assign(new Error('PLAN_OPEN'), { code: 'INVALID_PARAMS' }), 'PLAN_OPEN'],
     ['[INVALID_PARAMS] MEMBER_LIMIT', 'MEMBER_LIMIT'],

@@ -1549,6 +1549,34 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deliveries()).toHaveLength(2);
   });
 
+  it('rechecks a dissolved execution as soon as an already accepted heartbeat returns', async () => {
+    let finish!: (value: unknown) => void;
+    let hold = false, dissolved = false, laterChecks = 0;
+    fixture.handle.mockImplementation((route, _method, body) => {
+      if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupLifecycleVersion: 1 } } };
+      if (route.endsWith('/snapshot')) return { body: { room: { ...room(roomId), kind: 'group' }, cursor: '1', messages: [], members: [
+        { id: selfId, ownerActorId: selfId, state: 'joined', role: 'owner' },
+      ] } };
+      if (route.endsWith('/dissolve')) { dissolved = true; return { body: { revision: 2, dissolvedAt: '2026-10-15T00:00:00Z', dissolvedBy: selfId } }; }
+      if (body?.action === 'heartbeat') {
+        if (hold && !dissolved) return new Promise(resolve => { finish = resolve; });
+        if (dissolved) { laterChecks++; return { status: 409, body: { error: { code: 'GROUP_DISSOLVED' } } }; }
+      }
+      return response(route);
+    });
+    await start();
+    hold = true;
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(finish).toBeTypeOf('function');
+    expect(await service.chatServer!.manage({ groupId: roomId, action: { type: 'dissolve', expectedRevision: 1 } })).toMatchObject({ ok: true });
+    expect(deps.abortLane).not.toHaveBeenCalled();
+    finish({ body: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(laterChecks).toBe(1);
+    expect(deps.abortLane).toHaveBeenCalledExactlyOnceWith('lane');
+    expect(deps.dispatch).toHaveBeenCalledOnce();
+  });
+
   it('does not let an earlier heartbeat failure delete a pending terminal result', async () => {
     let rejectHeartbeat: (error: Error) => void = () => {};
     let heartbeatCount = 0, completes = 0;

@@ -1,3 +1,4 @@
+import { createConversationListState } from '@cindy/maker-shared/chatConversationList';
 /** Production chat transport. The server owns messages and execution leases;
  * local group rows only supply Agent lane metadata and the upgrade source. */
 import { app, net } from 'electron';
@@ -55,7 +56,7 @@ interface Message {
 }
 interface Room {
   id: string; name: string; topic: string; description: string; response_mode: 'all' | 'mentioned'; speaking_mode: 'auto' | 'sequential';
-  created_at: string; updated_at: string; revision: number; archived: boolean; organizer_id?: string | null; kind?: string;
+  created_at: string; updated_at: string; revision: number; archived: boolean; dissolved_at?: string | null; organizer_id?: string | null; kind?: string;
 }
 interface Snapshot { room: Room; members: Member[]; messages: Message[]; cursor: string }
 interface Execution {
@@ -232,6 +233,18 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   const executorId = `desktop:${randomUUID()}`;
   let actors: Actor[] = [];
   let selfId = '';
+  let supportsDissolve = false;
+  let supportsListRemoval = false;
+  const personalList = createConversationListState();
+  const syncPersonalList = async (force = false) => {
+    if (supportsListRemoval) await (force ? personalList.sync(api) : personalList.ensureSynced(api));
+  };
+  personalList.subscribe(row => {
+    if (!current()) return;
+    deps.onChanged?.({ groupId: row.conversationId, change: 'list', listState: row }, scope);
+    for (const [source, target] of upgradedGroups) if (target === row.conversationId)
+      deps.onChanged?.({ groupId: source, change: 'list', listState: row }, scope);
+  });
   // Cloud companions (cloud-companions.md): inert unless the server announces homes.
   let selfDeviceId: string | null = null;
   let companionHome = false;
@@ -272,6 +285,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     await api(`/conversations/${roomId}/messages/${sourceId}/cancel-planning`, 'POST', { operationId: `cancel-plan:${sourceId}:${failed}`, failed });
     pending.delete(sourceId);
     if (!pending.size) pendingPlanCancels.delete(roomId);
+  }
+  function retirePlanning(roomId: string) {
+    acceptedIntentVersions.set(roomId, ++nextIntentVersion);
+    planning.get(roomId)?.controller.abort(); planning.delete(roomId);
+    planIntents.delete(roomId); pendingPlanCancels.delete(roomId);
   }
   async function replacePlanIntent(roomId: string, version = ++nextIntentVersion) {
     acceptedIntentVersions.set(roomId, version);
@@ -526,7 +544,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     refreshActors = (async () => {
       actorsStale = false;
       profiles = await getDbClient().drizzle.select().from(botProfiles).where(undefined);
-      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean } }>('/me'); selfId = me.actor.id;
+      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me'); selfId = me.actor.id;
+      supportsDissolve = me.capabilities?.groupLifecycleVersion === 1;
+      supportsListRemoval = me.capabilities?.conversationListStateVersion === 1;
       groupDiscussionParity = me.capabilities?.groupDiscussionParity === 1;
       selfDeviceId = typeof me.deviceId === 'string' && me.deviceId ? me.deviceId : null;
       companionHome = !!deps.companionCloud && me.capabilities?.companionHome === true && !!selfDeviceId;
@@ -634,12 +654,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           reconnectDelay = 500; connected = true;
           ws.send(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '0' }));
           for (const [roomId, cursor] of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
-          for (const roomId of rooms.keys()) changed(roomId);
+          void syncPersonalList(true).then(() => { if (current() && socket === ws) { for (const roomId of rooms.keys()) changed(roomId); changed(''); } }).catch(() => ws.close());
         } else if (event.type === 'changes') {
           // This adapter stores no client history. Each invalidation re-reads authoritative
           // state; a reconnect resumes after the last cursor this process has read or acked.
           if (event.scope.startsWith('conversation:')) {
             const roomId = event.scope.slice(13);
+            if ((event.changes ?? []).some((change: { type?: string; data?: { dissolvedAt?: unknown } }) => change.type === 'conversation.updated' && change.data?.dissolvedAt)) retirePlanning(roomId);
             if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
             for (const change of event.changes ?? []) if (change.type === 'reaction.changed' && typeof change.entityId === 'string') {
               bumpMessageReactions(roomId, change.entityId);
@@ -648,11 +669,25 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
           }
           else {
-            for (const change of event.changes ?? []) if (change.type === 'membership.changed') changed(change.entityId);
+            for (const change of event.changes ?? []) {
+              if (change.type === 'conversation.list.changed') personalList.merge(change.data);
+              if (change.type === 'conversation.updated' && change.data?.dissolvedAt) retirePlanning(change.entityId);
+              if (change.type === 'membership.changed' || change.type === 'conversation.updated') changed(change.entityId);
+            }
             if (companionHome && (event.changes ?? []).some((change: { type?: unknown }) => change?.type === 'actor.changed')) void refreshHomes();
             changed('');
           }
           ws.send(JSON.stringify({ type: 'ack', scope: event.scope, cursor: event.cursor }));
+        } else if (event.type === 'scope_error' && event.scope === `actor:${selfId}`) {
+          const head = event.error?.details?.head;
+          if (event.error?.code !== 'RESET_REQUIRED' || typeof head !== 'string' || !/^\d+$/.test(head)) { ws.close(); return; }
+          void (async () => {
+            if (supportsListRemoval) await personalList.resync(api);
+            if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+            for (const roomId of rooms.keys()) changed(roomId);
+            changed('');
+            ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: head }));
+          })().catch(() => ws.close());
         } else if (event.type === 'scope_error' && event.scope.startsWith('conversation:')) {
           const roomId = event.scope.slice(13);
           if (event.error?.code === 'RESET_REQUIRED') {
@@ -681,6 +716,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   async function snapshot(roomId: string) {
     id.parse(roomId); await register();
     const value = await api<Snapshot>(`/conversations/${roomId}/snapshot`);
+    if (value.room.dissolved_at) retirePlanning(roomId);
     subscribe(roomId, value.cursor);
     return value;
   }
@@ -821,7 +857,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const messages = summaryOnly ? [] : (await messageViews(roomId, page, s.members)).sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, supportsGroupLeave: true, supportsDissolve, supportsListRemoval, dissolvedAt: s.room.dissolved_at ?? null, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: !s.room.dissolved_at && s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -1311,6 +1347,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }).finally(() => { polling = false; });
   }, 2000);
   const checking = new Set<Running>();
+  const recheck = new Set<Running>();
   async function checkLease(run: Running) {
     if (run.settlement) {
       // Auth/rate-limit waits need lease renewal; ordinary lost-response retries
@@ -1330,7 +1367,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       await deliverSettlement(run); return;
     }
-    if (checking.has(run) || running.get(run.execution.bot_id) !== run) return;
+    if (running.get(run.execution.bot_id) !== run) return;
+    if (checking.has(run)) { recheck.add(run); return; }
     checking.add(run);
     try {
       // Ordinary group replies can wait for approval too, just like plan steps.
@@ -1351,7 +1389,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (run.sessionId) await deps.abortLane(run.sessionId).catch(() => undefined);
         changed(run.execution.conversation_id);
       }
-    } finally { checking.delete(run); }
+    } finally {
+      checking.delete(run);
+      // A dissolve or change can arrive while an older heartbeat is in flight.
+      // Check the new authority once that response settles, without waiting 15s.
+      if (recheck.delete(run) && running.get(run.execution.bot_id) === run) void checkLease(run);
+    }
   }
   const heartbeat = setInterval(() => { for (const run of running.values()) void checkLease(run); }, 15000);
   timer.unref(); heartbeat.unref();
@@ -1407,8 +1450,29 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         actorAction.extend({ type: z.literal('member'), action: z.enum(['invite', 'leave', 'remove', 'ban', 'unban', 'role']), role: z.enum(['admin', 'member']).optional() }).strict(),
         actorAction.extend({ type: z.literal('transfer') }).strict(),
         actorAction.extend({ type: z.literal('botAccess'), access: z.enum(['none', 'chat', 'tools']), expectedRevision: z.number().int().positive() }).strict(),
+        z.object({ type: z.literal('hide') }).strict(),
+        z.object({ type: z.literal('dissolve'), expectedRevision: z.number().int().positive() }).strict(),
         z.object({ type: z.literal('archive'), archived: z.boolean(), expectedRevision: z.number().int().positive() }).strict(),
       ]).parse(input.action);
+      if (action.type === 'hide') {
+        if (!supportsListRemoval) throw new Error('LIFECYCLE_UNAVAILABLE');
+        // Deliberately no snapshot read: historical members can remove after leaving.
+        await personalList.setHidden(api, target, true, randomUUID());
+        changed(target); return { listState: personalList.get(target) };
+      }
+      if (action.type === 'dissolve') {
+        if (!supportsDissolve) throw new Error('LIFECYCLE_UNAVAILABLE');
+        const s = await snapshot(target);
+        if (s.room.kind !== 'group') throw new Error('GROUP_REQUIRED');
+        const owner = s.members.find(m => m.state === 'joined' && m.role === 'owner' && (m.id === selfId || m.ownerActorId === selfId));
+        if (!owner) throw new Error('OWNER_REQUIRED');
+        z.object({ revision: z.number().int().positive(), dissolvedAt: z.string().refine(value => Number.isFinite(Date.parse(value))), dissolvedBy: id })
+          .parse(await api(`/conversations/${target}/dissolve`, 'POST', { operationId: randomUUID(), expectedRevision: action.expectedRevision }, owner.id));
+        // Server settles executions and plans. Fence local planning without another write.
+        retirePlanning(target);
+        for (const run of running.values()) if (run.execution.conversation_id === target) void checkLease(run);
+        changed(target); return {};
+      }
       const { type, ...payload } = action;
       const route = type === 'update' || type === 'archive' ? '' : type === 'member' ? '/members' : type === 'botAccess' ? '/bot-access' : `/${type}`;
       const asManager = type === 'update' || type === 'archive' || type === 'transfer' || (type === 'member' && !['leave', 'invite'].includes(action.action));
@@ -1571,19 +1635,25 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   return {
     chatServer,
     listGroups: () => safe(async () => {
-      await register(); beginUpgrade();
+      await register(); await syncPersonalList(); beginUpgrade();
       const groups: BotGroupDetail[] = [];
       let after: string | undefined;
       do {
         const page = await api<Array<Room & { state: string }>>(`/conversations?limit=100${after ? `&after=${after}` : ''}`);
-        const joined = page.filter(r => r.state === 'joined' && r.kind !== 'direct');
+        const joined = page.filter(r => r.state === 'joined' && r.kind !== 'direct' && !personalList.hidden(r.id));
         for (let i = 0; i < joined.length; i += 8)
           groups.push(...await Promise.all(joined.slice(i, i + 8).map(r => detail(r.id, undefined, true))));
         after = page.length === 100 ? page.at(-1)!.id : undefined;
       } while (after);
-      return { ok: true as const, groups };
+      return { ok: true as const, groups: groups.filter(group => !personalList.hidden(group.id)) };
     }),
-    getGroup: (roomId, options) => safe(async () => ({ ok: true as const, group: await detail(await resolveGroup(id.parse(roomId)), options) })),
+    getGroup: (roomId, options) => safe(async () => {
+      const target = await resolveGroup(id.parse(roomId)); await syncPersonalList();
+      if (personalList.hidden(target)) throw new Error('CONVERSATION_NOT_FOUND');
+      const group = await detail(target, options);
+      if (personalList.hidden(target)) throw new Error('CONVERSATION_NOT_FOUND');
+      return { ok: true as const, group };
+    }),
     createGroup: input => safe(async () => {
       const i = groupInput.parse(input); await register(); beginUpgrade();
       const participants = i.botIds.map(botId => {
