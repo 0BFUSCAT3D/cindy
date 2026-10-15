@@ -108,18 +108,31 @@ function getSnapshot(): readonly BotFollowScope[] {
   return scopes;
 }
 
-/** 能被伙伴跟进的任务:本机、未归档、普通来源、不是伙伴自己的任务或 Orca worker。 */
-function isFollowableSession(session: Session): boolean {
-  if (session.status !== 'active') return false;
+/** 本机普通任务:不是远程任务、伙伴自己的主任务或 Orca worker。 */
+function isLocalPlainSession(session: Session): boolean {
   if (session.remoteHostId || session.deviceLinkDeviceId) return false;
   if (session.source === 'bot' || session.orcaRole === 'worker') return false;
   return isWorkbenchTaskSource(session.source);
 }
 
-function useScopedBots(session: Session, ids: (scope: BotFollowScope) => readonly string[] | undefined): BotProfile[] {
+/** 能被伙伴跟进的任务:本机、未归档的普通任务。 */
+function isFollowableSession(session: Session): boolean {
+  return session.status === 'active' && isLocalPlainSession(session);
+}
+
+/** 伙伴自己开的后台任务:归档后从工作台打开仍要标明归属并能回到该伙伴(cindy-bots-runtime.md 任务入口)。 */
+function isDelegatableSession(session: Session): boolean {
+  return (session.status === 'active' || session.status === 'archived') && isLocalPlainSession(session);
+}
+
+function useScopedBots(
+  session: Session,
+  eligible: (session: Session) => boolean,
+  ids: (scope: BotFollowScope) => readonly string[] | undefined,
+): BotProfile[] {
   const followScopes = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const profiles = useBotProfiles();
-  const followable = isFollowableSession(session);
+  const followable = eligible(session);
   const sessionId = session.id;
   return useMemo(() => {
     if (!followable || followScopes.length === 0) return [];
@@ -141,15 +154,15 @@ const delegatedIds = (scope: BotFollowScope) => scope.delegatedSessionIds;
 
 /** 正在负责这件任务的伙伴(按名字排序;隐藏、停用的伙伴不显示)。 */
 export function useSessionFollowers(session: Session): BotProfile[] {
-  return useScopedBots(session, responsibleIds);
+  return useScopedBots(session, isFollowableSession, responsibleIds);
 }
 
 /**
  * 这件任务是哪位伙伴自己开的后台任务(委派子任务);主人的任务被伙伴接手只算「在跟进」,
- * 不算伙伴的后台任务。旧宿主没有这份投影时不猜。
+ * 不算伙伴的后台任务。已归档的后台任务仍标归属。旧宿主没有这份投影时不猜。
  */
 export function useSessionDelegatingBot(session: Session): BotProfile | null {
-  return useScopedBots(session, delegatedIds)[0] ?? null;
+  return useScopedBots(session, isDelegatableSession, delegatedIds)[0] ?? null;
 }
 
 export const __testing = {

@@ -292,7 +292,10 @@ export function BotTaskCard({
     : (row?.artifacts ?? []).flatMap((file) => (file.absolutePath ? [file.absolutePath] : []));
   // Older remote hosts may omit the list; never let a missing field break the card.
   const fileCount = frozen ? frozen.artifacts.length : (row?.artifacts?.length ?? 0);
-  const workingDir = frozen?.workingDir ?? fileContext.workingDir;
+  // Relative links in the result belong to the background task's own directory, which may
+  // differ from the Bot's main task: the frozen receipt records it, the live card reads the
+  // child session's. The surrounding chat's directory is only the last resort.
+  const workingDir = frozen?.workingDir ?? session?.workingDir ?? fileContext.workingDir;
   const canOpen = Boolean(childSessionId) && !ref.originConflict;
   const canAddNote = state === 'running' && Boolean(childSessionId) && !ref.sourceDeviceId && !frozen;
   const resultLabel =

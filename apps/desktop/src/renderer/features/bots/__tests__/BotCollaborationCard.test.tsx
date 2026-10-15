@@ -48,7 +48,7 @@ vi.mock('@/contexts/PrRefsContext', () => ({
   usePrStatuses: () => ({ statuses: new Map(), successfulStatuses: new Map(), refreshError: false }),
 }));
 vi.mock('@/components/chat/MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ content }: any) => <div data-testid="markdown">{content}</div>,
+  MarkdownRenderer: ({ content, workingDir }: any) => <div data-testid="markdown" data-working-dir={workingDir}>{content}</div>,
 }));
 vi.mock('@/components/chat/ChatSessionFileContext', () => ({
   useChatSessionFile: () => ({ origin: { kind: 'local' }, sessionId: 'parent', workingDir: '/parent' }),
@@ -257,6 +257,8 @@ it('shows the result summary when completed and expands the result in place', as
     artifacts: [{ path: 'a.ts', absolutePath: '/child/a.ts', status: 'modified' }] });
   render(<BotSessionTaskCard data={data()} sessionId="parent" />);
   expect(cardState()).toBe('completed');
+  // The child session (title, working directory) has loaded.
+  await screen.findByRole('button', { name: 'Current title' });
   expect(screen.getByText('Retry capped at 3.')).toBeTruthy();
   expect(screen.getByText(/bots\.collab\.tookTime/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: /bots\.collab\.stop/ })).toBeNull();
@@ -265,6 +267,8 @@ it('shows the result summary when completed and expands the result in place', as
   fireEvent.click(toggle);
   expect(screen.getAllByTestId('markdown').map((node) => node.textContent))
     .toEqual(['Retry capped at 3.', '[a.ts](</child/a.ts>)']);
+  // Relative links in a live result resolve against the background task's own directory, not the chat's.
+  expect(screen.getAllByTestId('markdown').map((node) => node.getAttribute('data-working-dir'))).toEqual(['/child', '/child']);
   expect(screen.getByRole('button', { name: /bots\.collab\.collapseResult/ }).getAttribute('aria-expanded')).toBe('true');
   expect(screen.getByRole('button', { name: /bots\.collab\.artifactCount/ })).toBeTruthy();
 });

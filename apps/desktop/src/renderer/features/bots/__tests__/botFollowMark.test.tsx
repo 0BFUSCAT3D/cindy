@@ -134,6 +134,14 @@ describe('useSessionDelegatingBot', () => {
     expect(followScopes).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps naming the Bot for its archived background task, while the follow mark stays active-only', async () => {
+    followScopes.mockResolvedValueOnce([{ botId: 'bot-1', sessionIds: ['s2'], delegatedSessionIds: ['s2'] }]);
+    const archived = session({ id: 's2', status: 'archived' });
+    await act(async () => render(<><Owner session={archived} /><Row session={archived} /></>));
+    expect(screen.getByTestId('owner').textContent).toBe('Dash');
+    expect(screen.queryByTestId('bot-follow-mark')).toBeNull();
+  });
+
   it('does not guess from an older host that only lists responsibilities', async () => {
     await act(async () => render(<Owner session={session()} />));
     expect(screen.getByTestId('owner').textContent).toBe('none');
