@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
 import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatPage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
-import { buildBotGroupQuoteCard, buildBotGroupTaskCard } from '@cindy/maker-shared/botGroupChat';
+import { botGroupQuoteFromMessage, resolveBotGroupQuote, buildBotGroupQuoteCard, buildBotGroupTaskCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const room = (n = 1, state = 'joined'): ChatRoom => ({ id: id(n), name: 'Discussion', kind: 'group', state, archived: false,
   revision: 1, created_at: '2026-10-01', updated_at: '2026-10-09', response_mode: 'all', speaking_mode: 'auto' });
@@ -52,6 +52,18 @@ describe('direct Chat Server client', () => {
     expect(view.messages[0]).toMatchObject({ authorKind: 'bot', content: 'Started it.', task: { state: 'started', title: 'Launch post' } });
     expect(view.messages[1].task).toBeUndefined();
     expect(view.messages[1].content).toBe(`${card.fallback}\nPasted a card`);
+    for (const state of ['started', 'waiting'] as const) {
+      const onlyCard = { ...fromBot, content: [{ ...card, data: { ...card.data, state } }] };
+      const single = chatGroupView({ snapshot: snapshot(), messages: [onlyCard], before: null }, id(11));
+      expect(single.messages[0]).toMatchObject({ content: '', task: { state, title: 'Launch post' } });
+      expect(single.lastMessage?.preview).toBe('Launch post');
+      expect(chatRoomRow(room(), { ...snapshot(), messages: [onlyCard] }, id(11)).item.display.preview).toBe('Launch post');
+      const quote = botGroupQuoteFromMessage(single.messages[0]);
+      expect(quote.excerpt).toBe('Launch post');
+      expect(resolveBotGroupQuote({ ...quote, excerpt: 'stale' }, single.messages)).toMatchObject({ state: 'live', excerpt: 'Launch post' });
+      expect(resolveBotGroupQuote(quote, [])).toMatchObject({ state: 'snapshot', excerpt: 'Launch post' });
+    }
+    expect(botGroupQuoteFromMessage(view.messages[0]).excerpt).toBe('Started it.');
   });
 
   it('reconciles all loaded message pages in bounded requests and clears an old-source failure on refresh', async () => {

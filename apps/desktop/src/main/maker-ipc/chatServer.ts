@@ -34,7 +34,7 @@ import {
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
   type BotGroupDetail, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
   botGroupQuoteAttachmentName, botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
-  readBotGroupTaskCard,
+  readBotGroupTaskCard, botGroupMessageSummaryText,
 } from '../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal, BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { readPersistedReplyText } from './botGroupChatService.js';
@@ -154,7 +154,10 @@ export function splitChatMessageText(text: string, max = CHAT_MESSAGE_TEXT_MAX):
   return pieces;
 }
 /** Words of a message for a quote excerpt; attachments are summarized separately. */
-const quotedText = (m: Message) => bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n');
+const quotedText = (m: Message) => botGroupMessageSummaryText({
+  content: bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n'),
+  task: taskCardOf(m) ?? undefined, deleted: m.deleted,
+});
 const quotedAttachments = (m: Message) => m.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []);
 /** A quote's attachment summary as model input: how many, and which file it names. */
 const quoteAttachments = (count: number, name: string | null) => count ? { attachments: count, ...(name ? { attachmentName: name } : {}) } : {};
@@ -831,7 +834,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
-        preview: (lastView.content.trim() || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt,
+        preview: (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt,
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
