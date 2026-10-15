@@ -656,7 +656,7 @@ export function SessionContentHeader({
 
       {!isEditing && <OrcaRemoteLeadBadge session={session} />}
 
-      {!isEditing && <BotTaskOwnerChip sessionId={session.id} />}
+      {!isEditing && <BotTaskOwnerChip session={session} />}
 
       {!isEditing && !readOnly && (!sharedGuest || session.status === 'active') && (
         // 菜单打开就把归档/删除的 dirty 预检发出去:用户从展开菜单到点条目至少

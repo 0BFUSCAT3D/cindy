@@ -407,7 +407,8 @@ export function BotTaskCard({
         >
           {title}
         </button>
-        <span className="shrink-0 text-11 text-[var(--text-tertiary)]">{meta}</span>
+        {/* The title keeps its room in a narrow column (Thread open); the meta line gives way first. */}
+        <span className="min-w-0 max-w-[55%] shrink truncate text-11 text-[var(--text-tertiary)]">{meta}</span>
       </div>
       {line2 ? (
         <div className="mt-1 flex min-w-0 items-center gap-1.5 text-12 text-[var(--text-secondary)]">

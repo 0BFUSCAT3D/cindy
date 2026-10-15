@@ -3,25 +3,25 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import type { Session } from '@/lib/ccAgent.types';
 import { BotAvatar } from './BotAvatar';
-import { findBotProfileForSession } from './botSessionOwners';
-import { ensureBotProfilesLoaded, useBotProfiles } from './botStore';
+import { useSessionFollowers } from './botFollowScopes';
+import { ensureBotProfilesLoaded } from './botStore';
 
 /**
  * A Bot's background task opens in the ordinary task view; this quiet chip in
- * its header says whose task it is and leads back to that Bot. Ownership comes
- * only from the `bot_session_links` projection, never from the session row.
+ * its header says whose task it is and leads back to that Bot. Ownership is the
+ * same verifiable per-task responsibility the sidebar mark uses (the Bot that
+ * created the task, or explicitly took it over), never a guess from the session row.
  */
-export function BotTaskOwnerChip({ sessionId }: { sessionId: string }) {
+export function BotTaskOwnerChip({ session }: { session: Session }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const profiles = useBotProfiles();
   useEffect(() => {
     void ensureBotProfilesLoaded().catch(() => {});
   }, []);
-  const bot = findBotProfileForSession(profiles, sessionId);
-  const projection = bot?.sessions.find((session) => session.id === sessionId);
-  if (!bot || (projection?.role !== 'delegation' && projection?.kind !== 'worker')) return null;
+  const bot = useSessionFollowers(session)[0];
+  if (!bot) return null;
   return (
     <button
       type="button"
