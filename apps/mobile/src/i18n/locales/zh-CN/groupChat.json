@@ -151,7 +151,10 @@
     }
   },
   "files": {
-    "onComputer": "文件在电脑上，回电脑打开"
+    "onComputer": "文件在电脑上，回电脑打开",
+    "loading": "加载中…",
+    "unavailable": "暂时无法加载",
+    "untitled": "附件"
   },
   "settings": {
     "open": "群设置",

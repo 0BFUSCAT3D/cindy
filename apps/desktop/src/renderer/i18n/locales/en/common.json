@@ -9307,7 +9307,10 @@
         }
       },
       "files": {
-        "openFailed": "Couldn’t open the file. It may have been moved or deleted."
+        "openFailed": "Couldn’t open the file. It may have been moved or deleted.",
+        "untitled": "Attachment",
+        "loading": "Loading…",
+        "unavailable": "Unavailable right now"
       },
       "addFromChat": {
         "triggerFor": "Add {{name}} to a Group Chat",

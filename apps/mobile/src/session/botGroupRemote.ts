@@ -115,6 +115,7 @@ const PLAN_STATUSES = new Set<BotGroupPlanView['status']>([
 const STEP_STATUSES = new Set<BotGroupPlanStepView['status']>(['pending', 'running', 'done', 'failed']);
 const SPEAKER_ACTIVITIES = new Set<BotGroupSpeaker['activity']>(['reply', 'planning', 'step']);
 const ATTACHMENT_CATEGORIES = new Set<BotGroupAttachmentCategory>(['image', 'pdf', 'text', 'office', 'file']);
+const ATTACHMENT_STATES = new Set<NonNullable<BotGroupAttachment['state']>>(['loading', 'unavailable']);
 const MAX_ID = 256;
 const MAX_NAME = 512;
 const MAX_TEXT = 200_000;
@@ -182,6 +183,7 @@ function parseAttachment(value: unknown): BotGroupAttachment | null {
   if (!record || !attachmentId || !name) return null;
   const url = text(record.url, 4_096);
   const size = finite(record.size);
+  const state = enumOf(record.state, ATTACHMENT_STATES);
   return {
     id: attachmentId,
     name,
@@ -191,6 +193,8 @@ function parseAttachment(value: unknown): BotGroupAttachment | null {
     url: url && isPayloadDesktopLocalMediaUrl(url) ? url : null,
     path: null,
     ...(record.annotated === true ? { annotated: true } : {}),
+    // Not on the computer yet: kept so the phone shows loading / unavailable, not an openable file.
+    ...(state ? { state } : {}),
   };
 }
 
