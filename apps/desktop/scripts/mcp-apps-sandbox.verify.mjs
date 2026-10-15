@@ -171,6 +171,11 @@ try {
       assert.equal(await inner().executeJavaScript("Notification.requestPermission()"),'denied');
       assert.equal(await inner().executeJavaScript("(()=>{try{window.parent.document.body;return false;}catch{return true;}})()"),true);
       assert.equal(await inner().executeJavaScript("getComputedStyle(document.body).backgroundColor"),'rgb(248, 248, 246)');
+      stage='reject App-originated Host context';
+      const previousMode=await window.webContents.executeJavaScript('window.testState.mode');
+      await inner().executeJavaScript("window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{displayMode:'fullscreen'}},'*');window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/size-changed',params:{height:421}},'*');");
+      await wait(()=>window.webContents.executeJavaScript('window.testState.size?.height===421'));
+      assert.equal(await window.webContents.executeJavaScript('window.testState.mode'),previousMode);
       stage='theme change';
       await window.webContents.executeJavaScript("window.testController.context({theme:'dark',styles:{variables:{'--color-background-primary':'rgb(31,31,30)','--color-text-primary':'rgb(255,255,255)'}}})");
       await wait(async()=>await inner().executeJavaScript("getComputedStyle(document.body).backgroundColor")==='rgb(31, 31, 30)');

@@ -48,6 +48,9 @@ Main 按 Chromium 的真实请求 frame、所属窗口、账号与供片记录�
 HTML、preload 返回值或 JavaScript Request。顶层 Renderer 的 message/poll/link-result
 操作被拒绝；它只观察初始化、尺寸、显示模式等界面状态，不能伪造 App 调用或 Host 结果。
 回归见 `sandboxProtocol.test.ts`、`sandboxBridge.test.ts` 与真实 Electron 沙箱验证。
+其中 `host-context-changed` 只接受 Host 轮询返回的事件；App 自报的同名通知不能改变
+卡片显示模式，App 的初始化和尺寸通知仍正常转发。真实沙箱验证同时覆盖伪造通知被拒绝
+与标准 `ui/request-display-mode` 成功后的模式同步。
 远程 Desktop 的专用本机入口仅允许打开、取消、环境和显示状态及关闭；Main 取得远端文档后
 绑定本机账号、窗口、任务、设备和远端 View，只将真实 frame 的请求转发到既有 device-link。
 通用 `deviceLink.invoke` 不再转发 MCP Apps channel，Renderer 也不能提供远端 HTML、

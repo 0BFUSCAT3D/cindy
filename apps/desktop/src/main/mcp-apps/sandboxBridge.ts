@@ -7,8 +7,9 @@ frame.setAttribute('sandbox','allow-scripts allow-same-origin');
 frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-write 'none'");
 frame.style.cssText='border:0;width:100%;height:100%;display:block';
 let after=0,stopped=false;
-const state=message=>{
- if(['ui/notifications/initialized','ui/notifications/size-changed','ui/notifications/host-context-changed','ui/notifications/sandbox-escape'].includes(message.method))
+const state=(message,fromHost=false)=>{
+ // App notifications cannot assert Host-owned context such as display mode.
+ if(['ui/notifications/initialized','ui/notifications/size-changed','ui/notifications/sandbox-escape'].includes(message.method)||(fromHost&&message.method==='ui/notifications/host-context-changed'))
   window.parent.postMessage(message,'*');
 };
 const fail=()=>{if(stopped)return;stopped=true;window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/sandbox-failed'},'*');};
@@ -38,7 +39,7 @@ async function poll(){
     let success=false;
     try{await invoke({op:'open-link',linkId:event.openLink.id,url:event.openLink.url});success=true;}catch{}
     await invoke({op:'link-result',linkId:event.openLink.id,success});
-   }else{state(event.message);frame.contentWindow.postMessage(event.message,'*');}
+   }else{state(event.message,true);frame.contentWindow.postMessage(event.message,'*');}
   }
   if(!events.length&&!stopped)await new Promise(resolve=>setTimeout(resolve,250));
  }}catch{fail();}

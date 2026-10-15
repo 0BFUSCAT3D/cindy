@@ -47,3 +47,27 @@ it('gives the UI only display state while keeping Host results on the direct App
   expect(f.parent.postMessage).toHaveBeenCalledWith(size, '*');
   expect(f.parent.postMessage).toHaveBeenCalledOnce();
 });
+it('changes Renderer display state only from the Host poll, never from the App', async () => {
+  const f = fixture();
+  const context = { jsonrpc: '2.0', method: 'ui/notifications/host-context-changed',
+    params: { displayMode: 'fullscreen', theme: 'dark' } };
+  f.handlers.get('message')!({ source: f.frame.contentWindow, data: context });
+  expect(f.parent.postMessage).not.toHaveBeenCalled();
+  f.pending[0]({ ok: true, json: async () => [{ seq: 1, message: context }] });
+  for (let index = 0; index < 8; index++) await Promise.resolve();
+  expect(f.parent.postMessage).toHaveBeenCalledExactlyOnceWith(context, '*');
+  expect(f.frame.contentWindow.postMessage).toHaveBeenCalledExactlyOnceWith(context, '*');
+});
+it('still relays App readiness and size notifications to the Renderer and Host', () => {
+  const f = fixture();
+  const messages = [
+    { jsonrpc: '2.0', method: 'ui/notifications/initialized' },
+    { jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: 420 } },
+  ];
+  for (const message of messages) {
+    f.handlers.get('message')!({ source: f.frame.contentWindow, data: message });
+    expect(f.parent.postMessage).toHaveBeenCalledWith(message, '*');
+    expect(JSON.parse(f.fetch.mock.calls.at(-1)![1].body)).toEqual({ op: 'message', message });
+  }
+  expect(f.parent.postMessage).toHaveBeenCalledTimes(2);
+});
