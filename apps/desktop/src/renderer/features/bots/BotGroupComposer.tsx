@@ -17,14 +17,14 @@
  *
  * 附件（§3.1）与普通聊天同一套：托盘状态来自页面持有的 `useAttachments`（整页拖入也能
  * 加），缩略图与拒收提示复用 ComposerAttachments；「+」→「添加文件、图片或视频…」、粘贴
- * 文件或截图都进托盘。有附件时可以不写字。发送前烧录图片标注，发出去之后才从托盘移走
- * 这一批；没发出去就原样留着。
+ * 文件或截图都进托盘。有附件时可以不写字。发送即交给群聊发件箱，托盘马上空出；发件箱
+ * 负责标注烧录、顺序提交、失败后的原样恢复和重试。
  *
  * 草稿随群持久（与普通任务一样存进 composerDraftStore，附件已经在同一个键下）：切走再回来、
  * 分享选择时输入框暂时卸载，文字都还在；群被删除时随草稿一起丢弃。
  *
- * 乐观发送：按下发送的那一刻 `onSendStart` 交出这条消息的本地副本（页面立刻插进时间线），
- * main 答复后 `onSendSettled` 带回结果（成功带 messageId，失败页面撤掉副本、草稿放回）。
+ * 主群的乐观发送由 botGroupOutbox 统一管理；话题仍用 `onSendStart` / `onSendSettled`
+ * 把本地副本与回执交给话题时间线。
  *
  * 话题模式（`mode="thread"`）：同一个输入框用于话题回复——没有「+」菜单（不能安排分工；
  * Chat Server 的话题回复不带附件）、没有引用回复，发送键是「发送回复」，失败原因写在输入框
@@ -54,7 +54,6 @@ import { Tip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import type { UseAttachmentsReturn } from '@/hooks/useAttachments';
-import { isAnnotationBurnInError, materializeAnnotatedAttachmentsForSend } from '@/lib/annotationBurnIn';
 import {
   captureDraftDiscardToken,
   getDraft,
@@ -87,11 +86,9 @@ import {
 } from '../../../shared/botGroupChat';
 import { BotGroupQuotePreview } from './BotGroupQuote';
 import {
-  botGroupAttachmentPreview,
   botGroupAttachmentSignature,
   botGroupDraftDoc,
   botGroupDraftText,
-  toBotGroupAttachmentInputs,
 } from './botGroupAttachments';
 import { chatErrorKey } from './chatError';
 import {
@@ -101,6 +98,7 @@ import {
   type BotGroupComposerPlanState,
 } from './botGroupPresentation';
 import { botGroupApi } from './botGroupStore';
+import { botGroupSendSignature, enqueueBotGroupSend, registerBotGroupComposer } from './botGroupOutbox';
 import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 
 /** 话题 replies also accept the Chat Server's own 「everyone」 spellings. */
@@ -179,6 +177,7 @@ export function BotGroupComposer({
   onSendStart,
   onSendSettled,
   onSent,
+  onSending,
 }: {
   groupId: string;
   /** `thread`: a 话题's reply box (no 「+」 menu, attachments or quotes). */
@@ -207,16 +206,21 @@ export function BotGroupComposer({
   onSendSettled?: (clientId: string, outcome: BotGroupSendOutcome) => void;
   /** Called after main accepted the message, so the view can re-read at once. */
   onSent?: () => void;
+  /** Main-group send was queued; keep the timeline at the bottom. */
+  onSending?: () => void;
 }) {
   const { t } = useTranslation();
   const thread = mode === 'thread';
   const [text, setText] = useState(() => botGroupDraftText(getDraft(draftKey)?.text));
   const [error, setError] = useState('');
   const [stopping, setStopping] = useState(false);
-  /** A send is in flight: its attachments stay in the tray but cannot change. */
+  /** Thread send in flight; group sends are owned by the outbox. */
   const [sending, setSending] = useState(false);
   /** 「分工」 tag from 「+」→「安排分工」: this message goes to the organizer for a plan. */
   const [division, setDivision] = useState(false);
+  const divisionRef = useRef(division);
+  divisionRef.current = division;
+  const groupAttemptRef = useRef<{ clientId: string; signature: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -244,14 +248,10 @@ export function BotGroupComposer({
   const focusInputOnMenuCloseRef = useRef(false);
   const sendingRef = useRef(false);
   const stoppingRef = useRef(false);
-  /** Idempotency key for the text, targets and attachments currently being (re)sent. */
+  /** Thread retry identity: text and targets resolved against the original roster. */
   const attemptRef = useRef<{
     text: string;
     clientId: string;
-    division: boolean;
-    attachments: string;
-    mentionSignature: string;
-    quoteId: string | null;
     /** 话题 replies keep the targets resolved on the first attempt, with the roster of that moment. */
     mentions?: BotGroupMention;
     roster?: readonly BotGroupMemberView[];
@@ -314,7 +314,7 @@ export function BotGroupComposer({
       && sameBotGroupMentions(mention.resolve(text, previous.roster), previous.mentions)
         ? previous
         : {
-            text: trimmed, clientId: crypto.randomUUID(), division: false, attachments: '', mentionSignature: '', quoteId: null,
+            text: trimmed, clientId: crypto.randomUUID(),
             mentions: mention.resolve(text), roster: members,
           };
     attemptRef.current = attempt;
@@ -349,109 +349,91 @@ export function BotGroupComposer({
     }
   };
 
-  const send = async () => {
-    if (thread) { await sendThreadReply(); return; }
-    if (!canSend || sendingRef.current) return;
-    const api = botGroupApi();
-    if (!api) {
+  // A message that did not go out comes back only into an empty input: never over new
+  // text, a new tag or files added meanwhile. Pressing send again reuses its clientId.
+  // Registered once per group (mount / group change): re-registering on every render would
+  // pull a failed message back in the moment the user clears the input.
+  const restoreAttachmentsRef = useRef(attachmentState.restoreFiles);
+  restoreAttachmentsRef.current = attachmentState.restoreFiles;
+  const tRef = useRef(t);
+  tRef.current = t;
+  const onQuoteChangeRef = useRef(onQuoteChange);
+  onQuoteChangeRef.current = onQuoteChange;
+  useEffect(
+    () => thread ? undefined :
+      registerBotGroupComposer(groupId, {
+        restore: (entry) => {
+          if (textRef.current || attachmentsRef.current.length > 0 || divisionRef.current) return false;
+          groupAttemptRef.current = { clientId: entry.input.clientId, signature: entry.signature };
+          textRef.current = entry.draft;
+          setText(entry.draft);
+          mention.setTracked([...entry.tracked]);
+          const restoredDivision = entry.input.division === true;
+          divisionRef.current = restoredDivision;
+          if (restoredDivision) setDivision(true);
+          // A quote picked meanwhile wins.
+          if (entry.quote && !quoteRef.current) {
+            quoteRef.current = entry.quote;
+            onQuoteChangeRef.current?.(entry.quote);
+          }
+          if (entry.files.length > 0) attachmentsRef.current = restoreAttachmentsRef.current(entry.files);
+          return true;
+        },
+        notifyFailed: (errorKey) => toast.error(tRef.current(errorKey)),
+      }),
+    [groupId, thread],
+  );
+
+  const send = () => {
+    if (thread) { void sendThreadReply(); return; }
+    // A second Enter before the cleared input has rendered must not send the same draft twice.
+    if (!canSend || textRef.current !== text || attachmentsRef.current !== attachmentState.attachments) return;
+    if (!botGroupApi()) {
       toast.error(t('bots.groupChat.composer.sendFailed'));
       return;
     }
     const files: readonly AttachedFile[] = attachmentState.attachments;
-    const signature = botGroupAttachmentSignature(files);
-    // The tag changes what main does with the text, so it is part of the idempotency key;
-    // so are the attachments that go with it.
     const mentions = mention.resolve(text);
     const tracked = mention.tracked;
-    const mentionSignature = JSON.stringify([mentions.all, mentions.botIds]);
+    // Every field main gets is part of the attempt's identity (the tag changes what main does
+    // with the text, the quote is part of the message), and so are the attachments that go with it.
     const sentQuote = quoteRef.current;
-    const quoteId = sentQuote?.messageId ?? null;
-    const attempt =
-      attemptRef.current?.text === trimmed &&
-      attemptRef.current.division === division &&
-      attemptRef.current.attachments === signature &&
-      attemptRef.current.mentionSignature === mentionSignature &&
-      attemptRef.current.quoteId === quoteId
-        ? attemptRef.current
-        : { text: trimmed, clientId: crypto.randomUUID(), division, attachments: signature, mentionSignature, quoteId };
-    attemptRef.current = attempt;
-    const draft = text;
-    sendingRef.current = true;
-    setSending(true);
-    // Clear at once like any chat; a failed send puts the draft back if the
-    // user has not started typing something else meanwhile. Attachments stay in
-    // the tray until main has them.
+    const fields = {
+      groupId,
+      text: trimmed,
+      mentions,
+      ...(division ? { division: true } : {}),
+      ...(sentQuote ? { quote: { messageId: sentQuote.messageId } } : {}),
+    };
+    const signature = botGroupSendSignature({ ...fields, clientId: '' }, botGroupAttachmentSignature(files));
+    const clientId = groupAttemptRef.current?.signature === signature ? groupAttemptRef.current.clientId : crypto.randomUUID();
+    // The outbox owns this attempt now; a failure hands it back through `restore`.
+    groupAttemptRef.current = null;
+    enqueueBotGroupSend({
+      input: { ...fields, clientId },
+      signature,
+      draft: text,
+      tracked,
+      quote: sentQuote,
+      files,
+      attachmentScope,
+    });
+    // Clear at once like any chat, so the next message can be written while this one
+    // goes out. The batch leaves the tray without deleting its files: the message has them.
+    textRef.current = '';
     setText('');
     mention.reset();
     setDivision(false);
-    if (sentQuote) onQuoteChange?.(null);
-    onSendStart?.({
-      clientId: attempt.clientId,
-      text: attempt.text,
-      mentions,
-      attachments: files.map(botGroupAttachmentPreview),
-      quote: sentQuote,
-    });
-    const owner = getDataOwnerGeneration();
-    const restore = (keepQuote = true) => {
-      onSendSettled?.(attempt.clientId, { ok: false });
-      // The tag and the quote come back only with their own draft, never onto newly typed
-      // text; a quote picked meanwhile wins, and an unavailable original is not put back.
-      if (!textRef.current) {
-        if (attempt.division) setDivision(true);
-        mention.setTracked(tracked);
-        if (keepQuote && sentQuote && !quoteRef.current) onQuoteChange?.(sentQuote);
-      }
-      setText((current) => (current ? current : draft));
-    };
-    try {
-      // Drawn annotations are burned in first, as in a task; a failure keeps everything for a retry.
-      const prepared =
-        files.length > 0
-          ? ((await materializeAnnotatedAttachmentsForSend(files, attachmentScope, { burnFailure: 'abort' })) ?? [])
-          : [];
-      const result = await api.sendBotGroupMessage({
-        groupId,
-        text: attempt.text,
-        mentions,
-        clientId: attempt.clientId,
-        ...(attempt.division ? { division: true } : {}),
-        ...(sentQuote ? { quote: { messageId: sentQuote.messageId } } : {}),
-        ...(prepared.length > 0 ? { attachments: toBotGroupAttachmentInputs(prepared) } : {}),
-      });
-      if (!isDataOwnerGenerationCurrent(owner)) return;
-      if (!result.ok) {
-        restore(result.errorCode !== 'QUOTE_UNAVAILABLE');
-        toast.error(
-          t(
-            result.errorCode === 'INVALID_PARAMS' && prepared.length > 0
-              ? 'bots.groupChat.composer.attachmentsFailed'
-              : botGroupErrorKey(result.errorCode, 'bots.groupChat.composer.sendFailed'),
-          ),
-        );
-        return;
-      }
-      attemptRef.current = null;
-      if (files.length > 0) {
-        // Main now holds these files; take only this batch out of the tray (never delete
-        // them) and keep anything added while the message was on its way.
-        const sentIds = new Set(files.map((file) => file.id));
-        const remaining = attachmentsRef.current.filter((file) => !sentIds.has(file.id));
-        attachmentState.clearFiles();
-        attachmentState.restoreFiles(remaining);
-      }
-      onSendSettled?.(attempt.clientId, { ok: true, messageId: result.messageId });
-      onSent?.();
-    } catch (error) {
-      if (!isDataOwnerGenerationCurrent(owner)) return;
-      restore();
-      toast.error(
-        t(isAnnotationBurnInError(error) ? 'chat.media.annotateBurnFailedNotSent' : 'bots.groupChat.composer.sendFailed'),
-      );
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
+    divisionRef.current = false;
+    if (sentQuote) {
+      quoteRef.current = null;
+      onQuoteChange?.(null);
     }
+    if (files.length > 0) {
+      attachmentState.clearFiles();
+      attachmentsRef.current = [];
+    }
+    onSending?.();
   };
 
   /** Files copied in a file manager attach by path; a screenshot or copied image attaches as an image. */

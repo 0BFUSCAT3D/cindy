@@ -10,7 +10,7 @@
  * 迟到的回包。更早的消息按需翻页，连同其引用的安排合并进当前时间线。
  *
  * 发送是乐观的：按下发送，自己的消息立刻出现在末尾（发送中略淡），main 的详情里出现这条消息
- * 后原地换成正式那条（同一个 React key，不闪不跳）；失败就撤掉、草稿放回。
+ * 后原地换成正式那条（同一个 React key，不闪不跳）；失败优先放回空输入框，否则留在原行重试。
  *
  * 分工（§7）：安排卡、交接文件与「下一步 · 继续」「没做完 · 重试」见 BotGroupPlan.tsx；进行中
  * 条、发言行与顶栏状态见 BotGroupLiveStatus.tsx；这里把安排快照接到对应消息上并调用 main。
@@ -61,7 +61,7 @@ import { botGroupQuoteFromMessage, isBotGroupMessageQuotable, resolveBotGroupQuo
 import { useRegisterContentHeader } from '../feature-context';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
 import { botGroupAttachmentScope, refreshPendingBotGroupAttachments } from './botGroupAttachments';
-import { BotGroupComposer, type BotGroupOutgoingMessage, type BotGroupSendOutcome } from './BotGroupComposer';
+import { BotGroupComposer } from './BotGroupComposer';
 import {
   BotGroupHeaderStatusText,
   BotGroupProgressStrip,
@@ -84,14 +84,12 @@ import {
   botGroupMemberDisplayName,
   botGroupOwnedBotNames,
   layoutBotGroupTimeline,
-  matchBotGroupPendingSends,
   mergeBotGroupLatestPage,
   pendingBotGroupMessage,
   pendingBotGroupMessageId,
   runningBotGroupPlanStep,
   stabilizeById,
   type BotGroupLoadedTimeline,
-  type BotGroupPendingSend,
   type BotGroupTimelineMessage,
 } from './BotGroupTimelineModel';
 import {
@@ -108,10 +106,15 @@ import {
 } from './botGroupPresentation';
 import { botGroupApi, editBotGroupPlanStep, runBotGroupPlanAction, useBotGroupSummary } from './botGroupStore';
 import { botGroupReadKey, markBotRead } from './botReadState';
+import {
+  beginBotGroupTimelineRead, discardBotGroupOutbox, getBotGroupOutboxClaims,
+  getBotGroupOutboxPreviews, interleaveBotGroupOutbox, mergeBotGroupLocalAttachments,
+  noteBotGroupTimeline, projectBotGroupOutbox, useBotGroupOutbox,
+} from './botGroupOutbox';
 
 type GroupViewState =
   | { kind: 'loading' }
-  | ({ kind: 'ready' } & BotGroupLoadedTimeline)
+  | ({ kind: 'ready'; readToken: number } & BotGroupLoadedTimeline)
   | { kind: 'missing' }
   | { kind: 'error' };
 
@@ -221,13 +224,16 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [highlightId, setHighlightId] = useState<string | null>(null);
   /** Quoted originals on older pages not re-read since the last push: quotes use their snapshot. */
   const [unverifiedOriginals, setUnverifiedOriginals] = useState<ReadonlySet<string>>(NO_IDS);
-  /** Own messages on their way, shown at the end until main's copy arrives. */
-  const [pendingSends, setPendingSends] = useState<BotGroupPendingSend[]>([]);
   const loadingOlderRef = useRef(false);
   const locatingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    const discardOutbox = () => {
+      const shown = stateRef.current;
+      discardBotGroupOutbox(groupId);
+      if (shown.kind === 'ready' && shown.group.id !== groupId) discardBotGroupOutbox(shown.group.id);
+    };
     /** Bumped when a read starts (and on delete): re-checks spawned by older reads stop. */
     let version = 0;
     let inFlight = false;
@@ -235,6 +241,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const run = async (additionalSources: string[], changedIds: string[]) => {
       inFlight = true;
       const current = ++version;
+      const readToken = beginBotGroupTimelineRead();
       const owner = getDataOwnerGeneration();
       const api = botGroupApi();
       const isCurrent = () => !cancelled && current === version && isDataOwnerGenerationCurrent(owner);
@@ -256,10 +263,10 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           const shown = stateRef.current;
           setState((previous) => {
             if (previous.kind !== 'ready') {
-              return { kind: 'ready', group: result.group, older: [], olderPlans: [], olderHasMore: result.group.hasMoreBefore };
+              return { kind: 'ready', group: result.group, older: [], olderPlans: [], olderHasMore: result.group.hasMoreBefore, readToken };
             }
             const merged = mergeBotGroupLatestPage(previous, result.group);
-            return merged === previous ? previous : { kind: 'ready', ...merged };
+            return { kind: 'ready', ...merged, readToken };
           });
           if (shown.kind === 'ready') {
             const quoted = quotedOlderOriginals([...shown.older, ...shown.group.messages], result.group.messages);
@@ -285,6 +292,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             }
           }
         } else if (result.errorCode === 'NOT_FOUND') {
+          discardOutbox();
           setState({ kind: 'missing' });
         } else {
           // Keep a timeline that is already on screen; only a first read fails loudly.
@@ -362,6 +370,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           queued = null;
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
+          discardOutbox();
           setState({ kind: 'missing' });
           return;
         }
@@ -396,23 +405,40 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
-  /** Real message id → the key its optimistic copy had, so the row is kept, not remounted. */
+  const outboxGroupId = group?.id ?? groupId;
+  const outbox = useBotGroupOutbox(outboxGroupId);
+  useLayoutEffect(() => {
+    if (state.kind === 'ready') noteBotGroupTimeline(outboxGroupId, mergeBotGroupMessages(state.older, state.group.messages), state.readToken);
+  }, [outboxGroupId, state, outbox]);
+  const { pending, localAttachments, replacements } = useMemo(
+    () => projectBotGroupOutbox(outbox, realMessages, getBotGroupOutboxClaims(outboxGroupId), getBotGroupOutboxPreviews(outboxGroupId)),
+    [outboxGroupId, realMessages, outbox],
+  );
+  /** Retain the same row when a queue entry becomes the server's message. */
   const adoptedKeysRef = useRef(new Map<string, string>());
-  const pendingMatches = useMemo(() => matchBotGroupPendingSends(pendingSends, realMessages, adoptedKeysRef.current), [pendingSends, realMessages]);
-  for (const [clientId, messageId] of pendingMatches) adoptedKeysRef.current.set(messageId, pendingBotGroupMessageId(clientId));
-  useEffect(() => {
-    if (pendingMatches.size === 0) return;
-    setPendingSends((previous) => previous.filter((send) => !pendingMatches.has(send.clientId)));
-  }, [pendingMatches]);
+  for (const [messageId, clientId] of replacements) adoptedKeysRef.current.set(messageId, pendingBotGroupMessageId(clientId));
   const rows = useStableRows(useMemo<BotGroupTimelineMessage[]>(
-    () => [...realMessages, ...pendingSends.filter((send) => !pendingMatches.has(send.clientId)).map(pendingBotGroupMessage)],
-    [realMessages, pendingSends, pendingMatches],
+    () => interleaveBotGroupOutbox(realMessages, pending).map((row) => {
+      if (row.entry) {
+        const entry = row.entry;
+        return { ...pendingBotGroupMessage({
+          clientId: entry.input.clientId, text: entry.input.text, mentions: entry.input.mentions,
+          attachments: [...entry.attachments], quote: entry.quote ?? null,
+          createdAt: entry.createdAt, afterSequence: entry.after,
+        }), outbox: entry };
+      }
+      const local = localAttachments.get(row.message.id);
+      return local && row.message.isSelf !== false && !row.message.deleted
+        ? { ...row.message, attachments: mergeBotGroupLocalAttachments(row.message.attachments, local) }
+        : row.message;
+    }),
+    [realMessages, pending, localAttachments],
   ));
+  const unreadReceipts = pending.flatMap((entry) => entry.status === 'sent' && entry.messageId ? [entry.messageId] : []).join(',');
+  useEffect(() => { if (unreadReceipts) loadRef.current(); }, [unreadReceipts]);
   const messageByIdRef = useRef(new Map<string, BotGroupMessageView>());
   messageByIdRef.current = new Map(realMessages.map((message) => [message.id, message]));
   const lastRealSequence = realMessages[realMessages.length - 1]?.sequence ?? 0;
-  const lastRealSequenceRef = useRef(lastRealSequence);
-  lastRealSequenceRef.current = lastRealSequence;
   /** Rows after this sequence arrived while the page was open: they fade in. */
   const enterAfterRef = useRef<number | null>(null);
   if (enterAfterRef.current === null && state.kind === 'ready') enterAfterRef.current = lastRealSequence;
@@ -858,22 +884,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     }
     setThreadRootId(messageId);
   }, []);
-  const onSendStart = useCallback((message: BotGroupOutgoingMessage) => {
-    stickToBottomRef.current = true;
-    setPendingSends((previous) => [
-      ...previous.filter((send) => send.clientId !== message.clientId),
-      { ...message, createdAt: Date.now(), afterSequence: lastRealSequenceRef.current },
-    ]);
-  }, []);
-  const onSendSettled = useCallback((clientId: string, outcome: BotGroupSendOutcome) => {
-    setPendingSends((previous) => outcome.ok
-      ? previous.map((send) => (send.clientId === clientId ? { ...send, messageId: outcome.messageId } : send))
-      : previous.filter((send) => send.clientId !== clientId));
-  }, []);
-  const onSent = useCallback(() => {
-    stickToBottomRef.current = true;
-    loadRef.current();
-  }, []);
+  const onSending = useCallback(() => { stickToBottomRef.current = true; }, []);
 
   const planById = useMemo(() => new Map(plans.map((plan) => [plan.id, plan])), [plans]);
   const layout = useMemo(() => layoutBotGroupTimeline(rows), [rows]);
@@ -1164,9 +1175,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         dragOver={dragOver}
         quote={quoteDraft ? { view: quoteDraft, display: resolveBotGroupQuote(quoteDraft, quoteSources) } : null}
         onQuoteChange={setQuoteDraft}
-        onSendStart={onSendStart}
-        onSendSettled={onSendSettled}
-        onSent={onSent}
+        onSending={onSending}
       />}
       {group.migrationPending && <p role="status" className="px-4 py-2 text-13 text-[var(--text-secondary)]">{t('bots.groupChat.migrationPending')}</p>}
       {/* Whole-page drop hint, as over a task's chat area; the card repeats it. */}

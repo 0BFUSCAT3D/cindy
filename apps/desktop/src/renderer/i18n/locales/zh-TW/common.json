@@ -9182,6 +9182,12 @@
         "attachmentsFailed": "附件沒能送出，請檢查檔案是否還在，或移除後重試",
         "folderNotSupported": "資料夾不能作為附件，請選擇其中的檔案"
       },
+      "outbox": {
+        "sending": "傳送中…",
+        "failed": "沒有送出",
+        "edit": "編輯",
+        "editBlocked": "輸入框裡還有內容，先送出或清空，再編輯這則訊息"
+      },
       "quote": {
         "replyingTo": "引用 {{name}}",
         "remove": "取消引用",

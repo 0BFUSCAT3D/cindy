@@ -9182,6 +9182,12 @@
         "attachmentsFailed": "附件没能发出去，请检查文件是否还在，或移除后重试",
         "folderNotSupported": "文件夹不能作为附件，请选择其中的文件"
       },
+      "outbox": {
+        "sending": "发送中…",
+        "failed": "没发出去",
+        "edit": "编辑",
+        "editBlocked": "输入框里还有内容，先发出或清空，再编辑这条消息"
+      },
       "quote": {
         "replyingTo": "引用 {{name}}",
         "remove": "取消引用",

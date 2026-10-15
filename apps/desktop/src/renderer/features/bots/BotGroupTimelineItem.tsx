@@ -13,8 +13,11 @@
  * 行用 `memo` 包住：父组件只在这条消息（或它的引用、安排快照、高亮状态）真的变了时才会
  * 让它重绘；回调一律是父组件的稳定引用，按消息 id 调用。
  */
-import { memo, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { memo, useEffect, useState, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { CircleAlert, RefreshCcw } from 'lucide-react';
+import { toast } from '@/lib/toast';
+import { editBotGroupSend, retryBotGroupSend, type BotGroupOutboxEntry } from './botGroupOutbox';
 
 import { formatBotTimelineClock, formatBotTimelineDate } from '@cindy/maker-shared/botTimeline';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
@@ -317,11 +320,13 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
       <Row {...rowProps} block={continued ? 'continued' : 'author'}>
         <article
           {...shareAttrs}
-          aria-busy={message.pending ? true : undefined}
+          data-testid={message.outbox ? "bot-group-outbox" : undefined}
+          data-status={message.outbox?.status}
+          aria-busy={message.pending && message.outbox?.status !== 'failed' ? true : undefined}
           className={cn('group/message relative flex min-w-0 justify-end rounded-lg py-0.5', sharing && 'ml-10')}
         >
           {sharing && shareable ? <ShareMessageCheckbox clientId={message.id} /> : null}
-          <div className={cn('flex min-w-0 max-w-[78%] flex-col items-end gap-1.5 transition-opacity', message.pending && 'opacity-60')}>
+          <div className={cn('flex min-w-0 max-w-[78%] flex-col items-end gap-1.5 transition-opacity', message.pending && message.outbox?.status !== 'failed' && 'opacity-60')}>
             {quote}
             <BotGroupMessageAttachments attachments={message.attachments ?? []} align="end" />
             {hasText ? (
@@ -332,8 +337,9 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                 <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
               </div>
             ) : null}
-            {message.pending ? <span className="sr-only">{t('bots.groupChat.timeline.sending')}</span> : null}
-            <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} />
+            {message.outbox ? <BotGroupOutboxStatus entry={message.outbox} /> : null}
+            {message.pending && !message.outbox ? <span className="sr-only">{t('bots.groupChat.timeline.sending')}</span> : null}
+            {!message.pending ? <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} /> : null}
           </div>
           {actions}
         </article>
@@ -426,3 +432,52 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
 }
 
 export const BotGroupTimelineItem = memo(BotGroupTimelineItemImpl);
+
+/** Queue feedback shares the same message row, so receipts do not remount its content. */
+function BotGroupOutboxStatus({ entry }: { entry: BotGroupOutboxEntry }) {
+  const { t } = useTranslation();
+  const sending = entry.status === 'sending';
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!sending) {
+      setSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlow(true), 600);
+    return () => window.clearTimeout(timer);
+  }, [sending]);
+  return (
+    <>
+      {sending && slow ? (
+        <p role="status" className="select-none text-12 leading-[1.33] text-[var(--text-tertiary)]">
+          {t('bots.groupChat.outbox.sending')}
+        </p>
+      ) : null}
+      {entry.status === 'failed' ? (
+        <div role="alert" className="flex flex-wrap items-center justify-end gap-2">
+          <span className="flex select-none items-center gap-1 text-12 leading-[1.33] text-[var(--text-danger)]">
+            <CircleAlert size={13} aria-hidden className="shrink-0" />
+            {t('bots.groupChat.outbox.failed')}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            compact
+            type="button"
+            onClick={() => {
+              if (!editBotGroupSend(entry.input.groupId, entry.input.clientId)) toast.warning(t('bots.groupChat.outbox.editBlocked'));
+            }}
+          >
+            {t('bots.groupChat.outbox.edit')}
+          </Button>
+          {entry.retryable !== false ? (
+            <Button variant="secondary" size="sm" compact type="button" onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
+              <RefreshCcw size={13} />
+              {t('bots.retry')}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}

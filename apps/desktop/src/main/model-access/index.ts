@@ -36,6 +36,7 @@ import {
 } from '../../shared/modelAccess.js';
 import { getModelAccessCredentialsStore } from './credentialsStore.js';
 import { getAppCapabilities } from '../appCapabilities.js';
+import { installCindyGatewayKeyRejectionReporter } from './gatewayKeyRejection.js';
 import {
   createCredentialsSync,
   type CredentialsPayload,
@@ -498,6 +499,9 @@ function mapServerError(err: unknown): never {
  */
 export function initModelAccess(): void {
   const sync = getSync();
+  // 主进程各调用方遇到 Cindy 网关 401 时经此重新拉取凭据(服务端会探测并换发失效 Key)。
+  // 用静默同步:失败不降级状态、不清空模型列表(见 credentialsSync.resyncAfterKeyRejection)。
+  installCindyGatewayKeyRejectionReporter(() => getSync().resyncAfterKeyRejection());
   const byok = createByokRuntime(
     broadcastReferenceModelPricing,
     createByokCache(byokSnapshotSecretIo),
@@ -591,6 +595,7 @@ export function resetModelAccessForTest(): void {
     app.removeListener('browser-window-focus', foregroundRefreshListener);
     foregroundRefreshListener = null;
   }
+  installCindyGatewayKeyRejectionReporter(null);
   syncInstance = null;
   modelsSyncInflight = null;
   modelsSyncGen = -1;

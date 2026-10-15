@@ -22,10 +22,11 @@ import type {
   BotGroupPlanView,
   BotGroupQuoteView,
 } from '../../../shared/botGroupChat';
+import type { BotGroupOutboxEntry } from './botGroupOutbox';
 import { mergeBotGroupMessages, mergeBotGroupPlans } from './botGroupPresentation';
 
 /** A timeline row; `pending` marks the optimistic copy of a message still on its way. */
-export type BotGroupTimelineMessage = BotGroupMessageView & { pending?: true };
+export type BotGroupTimelineMessage = BotGroupMessageView & { pending?: true; outbox?: BotGroupOutboxEntry };
 
 /** Consecutive messages by one author within this window share one header. */
 export const BOT_GROUP_MERGE_WINDOW_MS = 5 * 60 * 1_000;
