@@ -2,7 +2,7 @@ import { Platform } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { remotePresentation } from "../../modules/cindy-remote-presentation/src";
 
-export interface CopiedCode {
+interface CopiedCode {
   code: string;
   /** iOS change count right after our write; absent when ownership is unproven. */
   version?: string;
@@ -12,15 +12,29 @@ const iosVersion = () =>
   remotePresentation?.clipboardVersion?.().catch(() => undefined) ??
   Promise.resolve(undefined);
 
-// Our own copies run one at a time, so their writes never fall between
-// another copy's version reads.
-let copying: Promise<unknown> = Promise.resolve();
+// All forms share one queue: neither copies nor cleanup may interrupt
+// another operation's version reads or ownership check.
+let pending: Promise<unknown> = Promise.resolve();
 
-/** Copy a device code and remember enough to clear it later only if it is still ours. */
-export function copyCode(code: string): Promise<CopiedCode> {
-  const result = copying.then(() => writeCode(code));
-  copying = result.catch(() => {});
+function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  const result = pending.then(operation);
+  pending = result.catch(() => {});
   return result;
+}
+
+/** One form owns its token; releasing it also waits for already requested copies. */
+export function createCopiedCodeClipboard() {
+  let copied: CopiedCode | undefined;
+  return {
+    copy: (code: string) =>
+      enqueue(async () => (copied = await writeCode(code))),
+    clear: () =>
+      enqueue(async () => {
+        const token = copied;
+        copied = undefined;
+        if (token) await clearCopiedCode(token);
+      }),
+  };
 }
 
 async function writeCode(code: string): Promise<CopiedCode> {
@@ -40,7 +54,7 @@ async function writeCode(code: string): Promise<CopiedCode> {
 }
 
 /** Clear the clipboard only while it still holds the copied code. */
-export async function clearCopiedCode(copied: CopiedCode): Promise<void> {
+async function clearCopiedCode(copied: CopiedCode): Promise<void> {
   if (Platform.OS === "ios") {
     // Reading the contents would trigger the iOS paste prompt. The native
     // write compares the change count and clears in one main-queue step.

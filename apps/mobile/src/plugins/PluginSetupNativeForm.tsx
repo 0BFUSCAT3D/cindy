@@ -34,11 +34,7 @@ import { type MobilePluginSetupAction } from "./pluginSetupActions";
 import type { authenticateMobilePluginOauth } from "./pluginOauthClient";
 import { openMobilePluginOauthSession } from "./pluginOauthSession";
 import { pluginOauthPlatformCrypto } from "./pluginOauthPlatformCrypto";
-import {
-  clearCopiedCode,
-  copyCode,
-  type CopiedCode,
-} from "./copiedCodeClipboard";
+import { createCopiedCodeClipboard } from "./copiedCodeClipboard";
 import { runMobilePluginAuthorization } from "./pluginAuthorizationController";
 
 export default function PluginSetupNativeForm({
@@ -66,8 +62,8 @@ export default function PluginSetupNativeForm({
   const owner = useRef(getMobileAuthOwner()).current,
     alive = useRef(true),
     lock = useRef(false),
-    operation = useRef(0),
-    copiedCode = useRef<CopiedCode | undefined>(undefined);
+    operation = useRef(0);
+  const [codeClipboard] = useState(createCopiedCodeClipboard);
   const live = useRef({ focused, epoch: link.connectionEpoch });
   live.current = { focused, epoch: link.connectionEpoch };
   const [selected, setSelected] = useState<MobilePluginSetupAction | undefined>(
@@ -81,15 +77,10 @@ export default function PluginSetupNativeForm({
     () => () => {
       alive.current = false;
       operation.current++;
-      void releaseCopiedCode();
+      void codeClipboard.clear();
     },
     [],
   );
-  const releaseCopiedCode = async () => {
-    const copied = copiedCode.current;
-    copiedCode.current = undefined;
-    if (copied) await clearCopiedCode(copied);
-  };
   const clear = () => {
     setSecret("");
     setHost("");
@@ -99,7 +90,7 @@ export default function PluginSetupNativeForm({
     clear();
     setSelected(undefined);
     setBrowser(undefined);
-    void releaseCopiedCode();
+    void codeClipboard.clear();
     onClosed();
   };
   useEffect(() => {
@@ -238,7 +229,7 @@ export default function PluginSetupNativeForm({
       }
     } finally {
       client?.dispose();
-      void releaseCopiedCode();
+      void codeClipboard.clear();
       lock.current = false;
       if (alive.current) {
         setBusy(false);
@@ -337,15 +328,7 @@ export default function PluginSetupNativeForm({
                     style={styles.row}
                     accessibilityRole="button"
                     onPress={() => {
-                      const code = browser.code!;
-                      // Copies settle in order; a failed copy keeps the
-                      // previous successful token.
-                      void copyCode(code)
-                        .then((copied) => {
-                          copiedCode.current = copied;
-                          if (!alive.current) void releaseCopiedCode();
-                        })
-                        .catch(() => {});
+                      void codeClipboard.copy(browser.code!).catch(() => {});
                     }}
                   >
                     <Text style={styles.body}>
