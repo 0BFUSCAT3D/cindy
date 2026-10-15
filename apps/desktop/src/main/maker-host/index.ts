@@ -126,6 +126,7 @@ import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
 import { remoteBackgroundInvoke, remoteInvoke } from '../device-link/index.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { parseProviderShareAgentDeviceId } from '../device-link/providerShareGuest.js';
+import { isProviderShareCredentialConsentSkipped } from '../device-link/providerShareGuestPrefs.js';
 import { t } from '../i18n.js';
 import { createHistoryRemoteDeps } from '../mcp-integrations/historyDevices.js';
 import { WorktreePool } from '../worktree/index.js';
@@ -363,7 +364,8 @@ import {
   registerCodexProcessRole,
 } from '../process-monitor/codex-process-registry.js';
 import { getOutboundPathSnapshotFor } from './outbound-proxy-resolver.js';
-import { createDesktopMakerMemoryManager, attachAgentsToMakerMemory } from './maker-memory-host.js';
+import { attachAgentsToMakerMemory, createDesktopMakerMemoryManager } from './maker-memory-host.js';
+import { createMemoryReviewOneShot } from './memory-review-one-shot.js';
 import { prepareExternalCodexSessionForResume, readCodexThreadStorageForArchive } from './codex-local-sessions.js';
 import {
   rehydrateCloseSuppression,
@@ -944,7 +946,12 @@ export function getMaker(): Maker {
 
     // Maker Memory manager — 先建 (agents={}), agents 创建后再 attach。
     // sqliteFactory + basePath 在工厂内部用 Electron API 准备好, maker-core 拿不到。
-    const makerMemoryManager = createDesktopMakerMemoryManager();
+    const makerMemoryManager = createDesktopMakerMemoryManager({
+      // memory_review 不锁死 review agent 的默认模型(haiku 在部分供应商网关上
+      // 不在账号可用清单, 403 user_model_access_denied): 先走共享辅助模型链,
+      // 链上没产出再由 manager 回退默认路由。
+      reviewOneShot: createMemoryReviewOneShot(),
+    });
 
     // Plugin registry — 先于 agent 构造, 让 createDesktopMcpProviders 拿 registry
     // 包进每个 MCP provider 的 isEnabled 闭包里。registry 内部读 <userData>/plugin-prefs.json
@@ -2764,6 +2771,11 @@ export function getMaker(): Maker {
         webFetch: guardedOutboundFetch,
         // 受邀者任务读写凭证类文件时，本机确认卡上的说明(provider-sharing.md §9 第 7 条)。
         sharedProviderCredentialNotice: () => t('newChat.sharedProviderCredential.description'),
+        // 受邀者在「分享给我的供应商」里对这个分享打开了「信任 {分享者}」：不弹卡，与本机任务一致。
+        skipSharedProviderCredentialConsent: (deviceId) => {
+          const shareId = parseProviderShareAgentDeviceId(deviceId);
+          return shareId !== null && isProviderShareCredentialConsentSkipped(shareId);
+        },
         logger: desktopMakerLogger,
       }),
       makerMemory: makerMemoryManager,
