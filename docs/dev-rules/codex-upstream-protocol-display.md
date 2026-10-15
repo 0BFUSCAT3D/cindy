@@ -20,4 +20,4 @@ pnpm --filter desktop exec vitest run src/renderer/components/settings/__tests__
 
 ## 未验证
 
-2026-10-15 在隔离开发版 Cindy-dev2-issue6015 里打开 Electron。新建供应商后切到 Codex：默认外层和按钮都是 OpenAI Responses（原生）。改成 Chat Completions 后外层立刻变成 Chat Completions（Cindy 桥接）。保存、回到供应商列表、再编辑连接，两边仍是 Chat。再改回 Responses 并保存重开，两边都是 Responses。没有发真实上游请求，没有改模型级显式覆盖。Windows 未测。未提交，未开 PR。
+2026-10-15 在隔离开发版 Cindy-dev2-issue6015 里打开 Electron。新建供应商后切到 Codex：默认外层和按钮都是 OpenAI Responses（原生）。改成 Chat Completions 后外层立刻变成 Chat Completions（Cindy 桥接）。保存、回到供应商列表、再编辑连接，两边仍是 Chat。再改回 Responses 并保存重开，两边都是 Responses。没有发真实上游请求，没有改模型级显式覆盖。Windows 未测。
