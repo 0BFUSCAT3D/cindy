@@ -1961,7 +1961,7 @@ describe('Chat Server result delivery and refresh', () => {
       expect(await service.getGroup(other)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
     });
 
-    it.each([directId, channelId, futureId])('rejects dissolution and reactor reads for %s without subscriptions or other room access', async groupId => {
+    it.each([directId, channelId, futureId])('rejects dissolution, reactor reads and thread shares for %s without subscriptions or other room access', async groupId => {
       await service.listGroups();
       await vi.advanceTimersByTimeAsync(2000);
       const socket = fixture.sockets[0];
@@ -1973,6 +1973,8 @@ describe('Chat Server result delivery and refresh', () => {
       expect(await service.chatServer!.manage({ groupId, action: { type: 'dissolve', expectedRevision: 1 } }))
         .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
       expect(await service.chatServer!.reactors({ groupId, messageId: roomId, emoji: '👍' }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.shareToMain({ groupId, messageId: roomId }))
         .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
       expect(fixture.handle.mock.calls.filter(([route]) => String(route).startsWith(`/conversations/${groupId}`) && !String(route).endsWith('/snapshot'))).toEqual([]);
       expect(vi.mocked(socket.send).mock.calls.filter(([raw]) => String(raw).includes(groupId))).toEqual([]);
