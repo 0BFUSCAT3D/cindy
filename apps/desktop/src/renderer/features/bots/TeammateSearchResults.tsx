@@ -7,6 +7,8 @@ import { BotAvatar } from './BotAvatar';
 import { useBotGroupList } from './botGroupStore';
 import { filterBotRoster, sortBotRoster } from './botRosterDisplay';
 import { useBotProfiles } from './botStore';
+import { useCompanionCloud } from './companionCloudStore';
+import { cloudRemoteBots, withoutShadowedBots } from './companionCloudPresentation';
 import { useRemoteBots } from './useRemoteBots';
 
 export interface TeammateSearchMatch {
@@ -24,8 +26,12 @@ export interface TeammateSearchMatch {
  * 群聊按群名与成员名。只读已有的名册投影,不发起额外查询。
  */
 export function useTeammateSearchMatches(rawQuery: string): TeammateSearchMatch[] {
-  const bots = useBotProfiles();
-  const remoteBots = useRemoteBots();
+  const cloud = useCompanionCloud();
+  const allBots = useBotProfiles();
+  const rosterRemoteBots = useRemoteBots();
+  // 与伙伴段同一份名册:隐藏已交给别的电脑的本机副本,每个云端伙伴只在主力电脑上列一行。
+  const bots = useMemo(() => withoutShadowedBots(allBots, cloud), [allBots, cloud]);
+  const remoteBots = useMemo(() => cloudRemoteBots(cloud, rosterRemoteBots), [rosterRemoteBots, cloud]);
   const { groups } = useBotGroupList();
   return useMemo(() => {
     const query = rawQuery.trim().toLocaleLowerCase();

@@ -9,12 +9,14 @@ const mocks = vi.hoisted(() => ({
   remoteBots: [] as unknown[],
   groups: [] as unknown[],
   navigate: vi.fn(),
+  cloud: { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] } as import('../../../../shared/companionCloud').CompanionCloudSnapshot,
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
 vi.mock('../botStore', () => ({ useBotProfiles: () => mocks.profiles }));
 vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => mocks.remoteBots }));
+vi.mock('../companionCloudStore', () => ({ useCompanionCloud: () => mocks.cloud }));
 vi.mock('../botGroupStore', () => ({ useBotGroupList: () => ({ groups: mocks.groups }) }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => <span data-testid="avatar" /> }));
 
@@ -23,6 +25,7 @@ function bot(id: string, name: string, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  mocks.cloud = { enabled: false, selfDeviceId: null, humanActorId: null, actors: [], demotedBotIds: [] };
   mocks.profiles = [
     bot('steward', 'PR steward', { skills: ['web-research'] }),
     bot('hidden', 'Hidden release steward', { hiddenAt: 2 }),
@@ -53,6 +56,11 @@ describe('teammates in the sidebar-wide search', () => {
     expect(names('release')).toEqual(['Hidden release steward']);
     expect(names('WEB-RESEARCH')).toEqual(['PR steward']);
     expect(names('周报')).toEqual(['Writer']);
+  });
+
+  it('leaves out local copies handed to another computer, like the teammates section', () => {
+    mocks.cloud = { ...mocks.cloud, demotedBotIds: ['writer'] };
+    expect(names('周报')).toEqual([]);
   });
 
   it('finds remote teammates by their computer and group chats by member names', () => {
