@@ -50,9 +50,10 @@ describe('BotGroupTaskCard', () => {
   });
 
   it('shows my own teammate\'s task as the live link', () => {
-    render(<BotGroupTaskCard task={task('started')} owned botId="bot-a" />);
+    render(<BotGroupTaskCard task={task('waiting', 'Which audience?')} owned botId="bot-a" />);
     expect(screen.getByTestId('live-link')).toBeTruthy();
-    expect(screen.getByTestId('bot-group-task').textContent).toContain('state:started');
+    // The posted state would go stale once the task moves on; the live link shows its own status.
+    expect(screen.getByTestId('bot-group-task').textContent).not.toContain('state:waiting');
   });
 
   it('shows my own teammate\'s task live on its home computer', () => {

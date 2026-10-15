@@ -28,14 +28,18 @@ export function BotGroupTaskCard({ task, owned, botId }: { task: BotGroupTaskCar
     >
       <ListTodo size={14} aria-hidden className="mt-[5px] shrink-0 text-[var(--text-tertiary)]" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        {/* Live: the link's own status icon follows the task; the state the card was posted with
+            would go stale (still 「等你确认」 after the answer), so it shows only on a snapshot. */}
         {live ? (
           <BotSessionTaskLink card={task.meta} sessionId={task.meta.parentSessionId ?? undefined} />
         ) : (
-          <span className="truncate text-14 leading-6 text-[var(--text-primary)]">{task.title}</span>
+          <>
+            <span className="truncate text-14 leading-6 text-[var(--text-primary)]">{task.title}</span>
+            <span className="min-w-0 break-words text-12 leading-5 text-[var(--text-tertiary)]">
+              {task.state === 'waiting' && task.summary ? `${state} · ${task.summary}` : state}
+            </span>
+          </>
         )}
-        <span className="min-w-0 break-words text-12 leading-5 text-[var(--text-tertiary)]">
-          {task.state === 'waiting' && task.summary ? `${state} · ${task.summary}` : state}
-        </span>
       </div>
     </div>
   );
