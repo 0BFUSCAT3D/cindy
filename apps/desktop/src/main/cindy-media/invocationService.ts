@@ -23,6 +23,7 @@ import { getCurrentDbClientUserId, getDbClient } from '../localDb/client/current
 import type { DbClient } from '../localDb/client/DbClient.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
+import { prepareGatewayMediaBilling } from '../usage/gatewayMediaBilling.js';
 import {
   fetchMediaInvocationGuide,
   listAvailableMediaModels,
@@ -471,6 +472,7 @@ async function dispatchRequest(input: {
   timeoutMs: number;
   maxResponseBytes: number;
   operation: 'submit' | 'poll';
+  recordBilling?(response: Response): Promise<void>;
 }): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
@@ -519,6 +521,7 @@ async function dispatchRequest(input: {
       signal: controller.signal,
     });
     responseStatus = response.status;
+    await input.recordBilling?.(response);
     log.info('media request response', {
       ...requestLog,
       status: response.status,
@@ -1373,6 +1376,7 @@ async function submitInvocation(
   invocation: StoredMediaInvocation,
   body: Record<string, unknown>,
   context?: MediaDownloadContext,
+  sessionId?: string,
 ): Promise<Record<string, unknown>> {
   const scope = currentAuthScope(context);
   assertAuthScope(scope, invocation.owner);
@@ -1466,6 +1470,10 @@ async function submitInvocation(
     }
     throw error;
   }
+  const recordBilling = invocation.guide.connection.providerId === 'xd'
+    ? await prepareGatewayMediaBilling({ model: invocation.modelId, sessionId, db })
+    : undefined;
+  assertAuthScope(scope, invocation.owner);
   const claimed = await transitionMediaInvocation(
     {
       id: invocation.id,
@@ -1502,6 +1510,7 @@ async function submitInvocation(
       timeoutMs: invocation.guide.request.timeoutMs,
       maxResponseBytes: invocation.guide.request.maxResponseBytes,
       operation: 'submit',
+      recordBilling,
     });
     if (invocation.guide.response.mode === 'sync') {
       const responseJson = JSON.stringify(response);
@@ -1850,6 +1859,8 @@ async function pollInvocation(
 export async function callCindyMedia(
   request: CindyMediaToolRequest,
   context?: MediaDownloadContext,
+  /** Trusted Host context; never supplied through the model's tool arguments. */
+  sessionId?: string,
 ): Promise<Record<string, unknown>> {
   try {
     if (request.action === 'resolve_local_path') {
@@ -1952,7 +1963,7 @@ export async function callCindyMedia(
     activeInvocations.add(operationKey);
     try {
       return await (request.action === 'request'
-        ? submitInvocation(invocation, request.body, context)
+        ? submitInvocation(invocation, request.body, context, sessionId)
         : pollInvocation(invocation, context));
     } finally {
       activeInvocations.delete(operationKey);

@@ -30,9 +30,11 @@ const mocks = vi.hoisted(() => ({
   videoConnection: vi.fn(),
   guide: vi.fn(),
   outboundFetch: vi.fn(),
+  prepareBilling: vi.fn(),
+  recordBilling: vi.fn<(response: Response) => Promise<void>>(async () => undefined),
   guardedOutboundFetch: vi.fn(),
   release: vi.fn(async () => undefined),
-  confirm: vi.fn(async (_input: { reasons: string[] }) => true),
+  confirm: vi.fn<(input: { reasons: string[] }) => Promise<boolean>>(async () => true),
   ingestMedia: vi.fn(),
   readBlob: vi.fn(),
   resolveBlob: vi.fn(),
@@ -91,6 +93,9 @@ vi.mock('../mediaRequestLog.js', async (importOriginal) => {
 vi.mock('../../maker-host/outbound-fetch.js', () => ({
   outboundFetch: mocks.outboundFetch,
   guardedOutboundFetch: mocks.guardedOutboundFetch,
+}));
+vi.mock('../../usage/gatewayMediaBilling.js', () => ({
+  prepareGatewayMediaBilling: mocks.prepareBilling,
 }));
 vi.mock('../../model-access/mediaModels.js', () => ({
   listAvailableMediaModels: mocks.models,
@@ -201,7 +206,7 @@ const callCindyMedia: typeof invokeMedia = (request, context = {
   assertActive: () => undefined,
   confirm: mocks.confirm,
   approvals: new Set<string>(),
-}) => invokeMedia(request, context);
+}, sessionId) => invokeMedia(request, context, sessionId);
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
 const MP4 = Buffer.from([
@@ -256,6 +261,8 @@ async function prepare(capability: MediaCapability = 'image.generate'): Promise<
 
 describe('Cindy Core media invocation state and security boundary', () => {
   beforeEach(() => {
+    mocks.recordBilling.mockClear();
+    mocks.prepareBilling.mockReset().mockResolvedValue(mocks.recordBilling);
     mocks.failRequestLog = false;
     mocks.confirm.mockReset().mockResolvedValue(true);
     mocks.currentUserId = `media-user-${crypto.randomUUID()}`;
@@ -577,7 +584,7 @@ describe('Cindy Core media invocation state and security boundary', () => {
       action: 'request',
       invocationId,
       body: { prompt: 'cat', model: 'agent-must-not-control-this' },
-    });
+    }, undefined, 'host-session');
 
     expect(result).toMatchObject({
       ok: true,
@@ -600,6 +607,25 @@ describe('Cindy Core media invocation state and security boundary', () => {
     });
     expect(mocks.outboundFetch).toHaveBeenCalledTimes(1);
     expect(mocks.ingestMedia).toHaveBeenCalledTimes(1);
+    expect(mocks.prepareBilling).toHaveBeenCalledExactlyOnceWith({
+      model: 'image-model', sessionId: 'host-session', db: mocks.db,
+    });
+    expect(mocks.recordBilling).toHaveBeenCalledOnce();
+  });
+
+  it('records a successful paid header before a malformed body is rejected', async () => {
+    mocks.guide.mockResolvedValue(resolvedGuide(operation({
+      mode: 'sync', media: [{ path: ['data'], encoding: 'base64', kind: 'image' }],
+    })));
+    const response = new Response('not-json', { status: 200 });
+    mocks.outboundFetch.mockResolvedValueOnce(response);
+    const invocationId = await prepare();
+    await expect(callCindyMedia({ action: 'request', invocationId, body: { prompt: 'cat' } }))
+      .resolves.toMatchObject({ ok: false });
+    expect(mocks.recordBilling).toHaveBeenCalledExactlyOnceWith(response);
+    await callCindyMedia({ action: 'request', invocationId, body: { prompt: 'retry' } });
+    expect(mocks.outboundFetch).toHaveBeenCalledOnce();
+    expect(mocks.recordBilling).toHaveBeenCalledOnce();
   });
 
   it.each([0, 1, 2])('materializes large base64 images with %i trailing padding characters', async (padding) => {
