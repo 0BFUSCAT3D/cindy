@@ -36,11 +36,7 @@ import {
 } from '../../shared/modelAccess.js';
 import { getModelAccessCredentialsStore } from './credentialsStore.js';
 import { getAppCapabilities } from '../appCapabilities.js';
-import { isAppSessionBoundaryPending } from '../appSessionState.js';
-import {
-  createGatewayKeyRejectionReporter,
-  installCindyGatewayKeyRejectionReporter,
-} from './gatewayKeyRejection.js';
+import { installCindyGatewayKeyRejectionReporter } from './gatewayKeyRejection.js';
 import {
   createCredentialsSync,
   type CredentialsPayload,
@@ -62,7 +58,6 @@ import {
   resetExecutableMediaModelCache,
 } from './mediaModels.js';
 export { isModelAccessReady } from './readiness.js';
-export { reportCindyGatewayKeyRejected } from './gatewayKeyRejection.js';
 
 const log = createLogger('modelAccess');
 
@@ -517,17 +512,7 @@ function mapServerError(err: unknown): never {
 export function initModelAccess(): void {
   const sync = getSync();
   // 主进程各调用方遇到 Cindy 网关 401 时经此重新拉取凭据(服务端会探测并换发失效 Key)。
-  installCindyGatewayKeyRejectionReporter(createGatewayKeyRejectionReporter({
-    canUseCindyGateway: () => getAppCapabilities().canUseCindyGateway,
-    isSessionBoundaryPending: isAppSessionBoundaryPending,
-    getCredentialSource: () => getModelAccessCredentialsStore().getSource(),
-    readCurrentKey: () => getProviderSecretStore().get('xd'),
-    requestSync: () => getSync().sync(),
-    log: {
-      info: (msg) => log.info(msg),
-      warn: (msg) => log.warn(msg),
-    },
-  }));
+  installCindyGatewayKeyRejectionReporter(() => getSync().sync());
   const byok = createByokRuntime(
     broadcastReferenceModelPricing,
     createByokCache(byokSnapshotSecretIo),

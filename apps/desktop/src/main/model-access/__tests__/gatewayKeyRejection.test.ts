@@ -5,6 +5,29 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// 单例的默认依赖(仅 singleton 用例经 install 使用;工厂用例全部显式注入)。
+const defaults = vi.hoisted(() => ({
+  canUseCindyGateway: true,
+  boundaryPending: false,
+  source: 'server' as 'server' | 'manual' | null,
+  currentKey: null as string | null,
+}));
+vi.mock('../../appCapabilities.js', () => ({
+  getAppCapabilities: () => ({ canUseCindyGateway: defaults.canUseCindyGateway }),
+}));
+vi.mock('../../appSessionState.js', () => ({
+  isAppSessionBoundaryPending: () => defaults.boundaryPending,
+}));
+vi.mock('../../logger.js', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+}));
+vi.mock('../../secrets/providerSecretStore.js', () => ({
+  getProviderSecretStore: () => ({ get: (id: string) => (id === 'xd' ? defaults.currentKey : null) }),
+}));
+vi.mock('../credentialsStore.js', () => ({
+  getModelAccessCredentialsStore: () => ({ getSource: () => defaults.source }),
+}));
+
 import {
   bearerKeyFromHeaders,
   createGatewayKeyRejectionReporter,
@@ -225,13 +248,40 @@ describe('reportCindyGatewayKeyRejected singleton', () => {
     expect(() => reportCindyGatewayKeyRejected(KEY_A)).not.toThrow();
   });
 
-  it('delegates both entries to the installed reporter', () => {
-    const reporter = { reportUsedKey: vi.fn(), reportCurrentKey: vi.fn() };
-    installCindyGatewayKeyRejectionReporter(reporter);
+  it('wires both entries to the default local dependencies and the installed sync', () => {
+    Object.assign(defaults, { canUseCindyGateway: true, boundaryPending: false, source: 'server', currentKey: KEY_A });
+    const requestSync = vi.fn(async () => undefined);
+    installCindyGatewayKeyRejectionReporter(requestSync);
+
+    reportCindyGatewayKeyRejectedForCurrentKey();
+    expect(requestSync).toHaveBeenCalledTimes(1);
+    reportCindyGatewayKeyRejected(KEY_B); // 规则 A:不是当前 Key
+    expect(requestSync).toHaveBeenCalledTimes(1);
+    reportCindyGatewayKeyRejected(KEY_A);
+    reportCindyGatewayKeyRejected(KEY_A);
+    expect(requestSync).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['gateway capability is unavailable', { canUseCindyGateway: false }],
+    ['an account switch is pending', { boundaryPending: true }],
+    ['the key was entered manually', { source: 'manual' as const }],
+  ])('default dependencies skip when %s', (_label, overrides) => {
+    Object.assign(defaults, { canUseCindyGateway: true, boundaryPending: false, source: 'server', currentKey: KEY_A }, overrides);
+    const requestSync = vi.fn(async () => undefined);
+    installCindyGatewayKeyRejectionReporter(requestSync);
     reportCindyGatewayKeyRejected(KEY_A);
     reportCindyGatewayKeyRejectedForCurrentKey();
-    expect(reporter.reportUsedKey).toHaveBeenCalledWith(KEY_A);
-    expect(reporter.reportCurrentKey).toHaveBeenCalledTimes(1);
+    expect(requestSync).not.toHaveBeenCalled();
+  });
+
+  it('uninstalls with null', () => {
+    Object.assign(defaults, { canUseCindyGateway: true, boundaryPending: false, source: 'server', currentKey: KEY_A });
+    const requestSync = vi.fn(async () => undefined);
+    installCindyGatewayKeyRejectionReporter(requestSync);
+    installCindyGatewayKeyRejectionReporter(null);
+    reportCindyGatewayKeyRejected(KEY_A);
+    expect(requestSync).not.toHaveBeenCalled();
   });
 
   it('the current-key entry is a no-op before model-access installs a reporter', () => {

@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import type { ModelAccessCredentialSource } from '../../shared/modelAccess.js';
+import { getAppCapabilities } from '../appCapabilities.js';
+import { isAppSessionBoundaryPending } from '../appSessionState.js';
+import { createLogger } from '../logger.js';
+import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
+import { getModelAccessCredentialsStore } from './credentialsStore.js';
 
 /**
  * gatewayKeyRejection.ts — Cindy AI Key 被网关拒绝(HTTP 401)后的统一上报入口。
@@ -18,9 +23,11 @@ import type { ModelAccessCredentialSource } from '../../shared/modelAccess.js';
  * 同步用 `sync()` 而不是 `retry()`:它尊重 unsupported / disabled 终态,自带 single-flight
  * 与内部重试;失败沿用现有同步表现,这里不新增提示。
  *
- * 依赖全部注入(工厂函数),进程内单例由 model-access/index.ts 在 initModelAccess 时组装
- * 并安装。调用方从本文件导入 `reportCindyGatewayKeyRejected`,不直接依赖 index.ts——
- * 后者会拉入 maker-host 等整张主进程依赖图,不适合被底层网络模块反向导入。
+ * 工厂函数的依赖全部注入,便于单测。进程内单例的默认依赖在本文件组装,只有凭据同步
+ * (`requestSync`)由 model-access/index.ts 在 initModelAccess 时经
+ * `installCindyGatewayKeyRejectionReporter` 提供。调用方从本文件导入上报入口,不直接依赖
+ * index.ts——后者会拉入 maker-host 等整张主进程依赖图,不适合被底层网络模块反向导入;
+ * 本文件的默认依赖也都不会反向导入 index.ts。
  */
 
 export interface GatewayKeyRejectionDeps {
@@ -123,11 +130,29 @@ export function createGatewayKeyRejectionReporter(
 
 let installedReporter: GatewayKeyRejectionReporter | null = null;
 
-/** model-access/index.ts 初始化时安装进程内单例;传 null 卸载(仅测试复位用)。 */
+/**
+ * model-access/index.ts 初始化时安装进程内单例,只需提供凭据同步;其余依赖用本机默认实现。
+ * 传 null 卸载(仅测试复位用)。
+ */
 export function installCindyGatewayKeyRejectionReporter(
-  reporter: GatewayKeyRejectionReporter | null,
+  requestSync: (() => Promise<unknown>) | null,
 ): void {
-  installedReporter = reporter;
+  if (!requestSync) {
+    installedReporter = null;
+    return;
+  }
+  const log = createLogger('modelAccess');
+  installedReporter = createGatewayKeyRejectionReporter({
+    canUseCindyGateway: () => getAppCapabilities().canUseCindyGateway,
+    isSessionBoundaryPending: isAppSessionBoundaryPending,
+    getCredentialSource: () => getModelAccessCredentialsStore().getSource(),
+    readCurrentKey: () => getProviderSecretStore().get('xd'),
+    requestSync,
+    log: {
+      info: (msg) => log.info(msg),
+      warn: (msg) => log.warn(msg),
+    },
+  });
 }
 
 /**
