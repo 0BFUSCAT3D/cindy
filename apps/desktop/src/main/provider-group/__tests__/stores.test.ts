@@ -5,7 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+
+const scope = vi.hoisted(() => ({ boundaryPending: false }));
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-group-store-test-'));
 
@@ -16,13 +18,24 @@ vi.mock('../../maker-host/logger-adapter.js', () => ({
 vi.mock('../../appSessionState.js', () => ({
   ownerScopedUserDataPath: (name: string) => path.join(tmpDir, name),
   activeOwnerScopeKey: () => 'owner-test',
+  isAppSessionBoundaryPending: () => scope.boundaryPending,
 }));
 
 const store = await import('../store.js');
 const bindings = await import('../bindings.js');
 afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+afterEach(() => { scope.boundaryPending = false; });
 
 describe('provider group store', () => {
+  it.each(['save', 'delete'])('does not %s when teardown starts before the file lock is acquired', async (action) => {
+    const initial = (await store.writeProviderGroup('boundary', { members: [{ kind: 'local' }] }))!;
+    const pending = store.writeProviderGroup('boundary', action === 'delete' ? null : { ...initial, autoSwitch: false }, initial);
+    // updateAtomic 已开始等待写锁，但 owner key 尚未推进。
+    scope.boundaryPending = true;
+    await expect(pending).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(store.readProviderGroup('boundary')).toEqual(initial);
+  });
+
   it('drops invalid groups and empty groups when reading', () => {
     expect(store.__testing.normalize({
       groups: {
@@ -91,6 +104,15 @@ describe('provider group store', () => {
 });
 
 describe('provider group bindings', () => {
+  it('keeps bindings and release records unchanged when teardown starts during the write-lock wait', async () => {
+    await bindings.writeProviderGroupBinding('boundary-task', { providerId: 'boundary', memberKey: 'local' }, 1);
+    const pending = bindings.pruneProviderGroupBindings('boundary', null);
+    scope.boundaryPending = true;
+    await expect(pending).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(bindings.readProviderGroupBinding('boundary-task')).toMatchObject({ providerId: 'boundary', memberKey: 'local' });
+    expect(bindings.isProviderGroupReleased('boundary-task', { providerId: 'boundary' })).toBe(false);
+  });
+
   it('keeps only well-formed bindings', () => {
     expect(bindings.__testing.normalize({
       sessions: {

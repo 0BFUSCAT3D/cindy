@@ -8,6 +8,7 @@ import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
+import { captureProviderManagementScope } from './managementScope.js';
 import {
   isProviderGroupProviderId,
   normalizeProviderGroupConfig,
@@ -62,10 +63,12 @@ export async function writeProviderGroup(
   config: unknown,
   expectedConfig?: ProviderGroupConfig | null,
 ): Promise<ProviderGroupConfig | null> {
+  const assertCurrent = captureProviderManagementScope();
   if (!isProviderGroupProviderId(providerId)) throw new Error('Invalid provider id');
   const normalized = config === null ? null : normalizeProviderGroupConfig(config, providerId);
   const expected = expectedConfig === undefined ? undefined : normalizeProviderGroupConfig(expectedConfig, providerId);
   const next = await store.updateAtomic(({ value }) => {
+    assertCurrent();
     // 必须在已有跨进程写锁内重读并比较，不能在等待目录或写锁前检查后再无条件覆盖。
     if (expected !== undefined && !isDeepStrictEqual(value.groups[providerId] ?? null, expected)) {
       throwIpcError('PROVIDER_GROUP_CHANGED', 'The provider group changed while it was being edited');
@@ -75,6 +78,7 @@ export async function writeProviderGroup(
     else delete groups[providerId];
     return { groups };
   });
+  assertCurrent();
   return next.groups[providerId] ?? null;
 }
 

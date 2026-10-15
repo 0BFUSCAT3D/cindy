@@ -16,6 +16,7 @@ import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 import { isProviderGroupProviderId } from '../../shared/providerGroup.js';
+import { captureProviderManagementScope } from './managementScope.js';
 
 export interface ProviderGroupBinding {
   /** 组所属的供应商(组所在电脑上的供应商 id)。 */
@@ -211,15 +212,23 @@ export function isProviderGroupReleased(sessionId: string, group: ProviderGroupR
   return release !== undefined && sameGroup(release, group);
 }
 
-async function writeReleases(sessionIds: readonly string[], group: ProviderGroupRef, now: number): Promise<void> {
+async function writeReleases(
+  sessionIds: readonly string[],
+  group: ProviderGroupRef,
+  now: number,
+  assertCurrent: () => void = () => undefined,
+): Promise<void> {
+  assertCurrent();
   const release = normalizeRelease({ ...group, groupDeviceId: group.groupDeviceId ?? undefined, at: now });
   const ids = sessionIds.filter((id) => SESSION_ID_PATTERN.test(id));
   if (!release || ids.length === 0) return;
   await releasedStore.updateAtomic(({ value }) => {
+    assertCurrent();
     const sessions = { ...value.sessions };
     for (const id of ids) sessions[id] = release;
     return { sessions: prune(sessions) };
   });
+  assertCurrent();
 }
 
 /** 记下这个任务因组内电脑被移出或组被删除而解除了这个组的绑定。 */
@@ -241,8 +250,10 @@ export async function pruneProviderGroupBindings(
   keepMemberKeys: ReadonlySet<string> | null,
   now: number = Date.now(),
 ): Promise<void> {
+  const assertCurrent = captureProviderManagementScope();
   const released: string[] = [];
   await store.updateAtomic(({ value }) => {
+    assertCurrent();
     const sessions = { ...value.sessions };
     released.length = 0;
     for (const [sessionId, binding] of Object.entries(sessions)) {
@@ -253,7 +264,8 @@ export async function pruneProviderGroupBindings(
     }
     return released.length > 0 ? { sessions } : {};
   });
-  await writeReleases(released, { providerId }, now);
+  assertCurrent();
+  await writeReleases(released, { providerId }, now, assertCurrent);
 }
 
 export const __testing = { normalize, normalizeRemote, normalizeReleased, prune };

@@ -13,7 +13,10 @@ vi.mock('../runtime.js', () => ({
 }));
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn(), listProviderGroups: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
-vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: vi.fn(() => 'owner-a') }));
+vi.mock('../../appSessionState.js', () => ({
+  activeOwnerScopeKey: vi.fn(() => 'owner-a'),
+  isAppSessionBoundaryPending: vi.fn(() => false),
+}));
 vi.mock('../../security/trustedAppRenderer.js', () => ({ assertTrustedAppRendererEvent: vi.fn() }));
 vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self'), remoteInvoke: vi.fn(), remoteBackgroundInvoke: vi.fn() }));
 // 同账号管理的转发另有 managementClient.test.ts；IPC 回归只替换转发，不拉进分享运行时。
@@ -33,8 +36,9 @@ import {
   PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS,
   type ProviderGroupCommandDeps,
 } from '../ipc';
-import { parseProviderManagementRequest } from '../management';
-import { activeOwnerScopeKey } from '../../appSessionState';
+import { handleProviderManagementRequest, parseProviderManagementRequest } from '../management';
+import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessionState';
+import { executeProviderShareManagementCommand, parseProviderShareCommand } from '../../device-link/providerShareRuntime';
 import { getProviderGroupDirectory, getProviderGroupRouter } from '../runtime';
 import { invokeProviderManagement } from '../managementClient';
 
@@ -49,6 +53,8 @@ const MINI = {
   weight: 1,
   paused: false,
 };
+
+afterEach(() => vi.mocked(isAppSessionBoundaryPending).mockReturnValue(false));
 
 function deps(candidates: ProviderGroupCandidate[], existing: ProviderGroupConfig | null = null) {
   let stored = existing;
@@ -244,6 +250,23 @@ describe('provider group IPC remote management', () => {
 
   afterEach(() => vi.mocked(activeOwnerScopeKey).mockReturnValue('owner-a'));
 
+  it.each(['entry', 'remote reply', 'reachability read'])('rejects management when teardown starts at %s without changing the owner key', async (stage) => {
+    const d = deps([]);
+    const remoteManage = vi.fn(async () => {
+      if (stage === 'remote reply') vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+      return view;
+    });
+    const readDeviceCatalog = vi.fn(async () => {
+      vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+      return [];
+    });
+    Object.assign(d, { directory: { ...d.directory, readDeviceCatalog } });
+    if (stage === 'entry') vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+    await expect(invokeRemoteCommand(d, remoteManage, groupRequests[0])).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(remoteManage).toHaveBeenCalledTimes(stage === 'entry' ? 0 : 1);
+    expect(readDeviceCatalog).toHaveBeenCalledTimes(stage === 'reachability read' ? 1 : 0);
+  });
+
   it.each(groupRequests)('marks unreachable members in a remote $command.action result without changing the group state', async (request) => {
     const d = deps([]);
     const remoteManage = vi.fn(async () => view);
@@ -292,6 +315,50 @@ describe('provider group IPC remote management', () => {
 });
 
 describe('executeProviderGroupCommand save', () => {
+  it.each(['save-if-current', 'delete-if-current'] as const)('refuses %s before any work while the old owner is being torn down', async (action) => {
+    const d = deps([]);
+    vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+    await expect(executeProviderGroupCommand(d, {
+      action, providerId: 'anthropic', expectedConfig: null,
+      config: { strategy: 'least', autoSwitch: true, members: [LOCAL] },
+    })).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(d.directory.listCandidates).not.toHaveBeenCalled();
+    expect(d.writeGroup).not.toHaveBeenCalled();
+    expect(d.pruneBindings).not.toHaveBeenCalled();
+  });
+
+  it('does not save when teardown starts during candidate lookup with the owner key unchanged', async () => {
+    const candidate = { key: MINI.key, kind: 'device' as const, agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mac mini', providerName: 'Claude' };
+    const d = deps([candidate]);
+    vi.mocked(d.directory.listCandidates).mockImplementationOnce(async () => {
+      vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+      return [candidate];
+    });
+    await expect(executeProviderGroupCommand(d, {
+      action: 'save-if-current', providerId: 'anthropic', expectedConfig: null,
+      config: { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] },
+    })).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(d.writeGroup).not.toHaveBeenCalled();
+    expect(d.pruneBindings).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['save-if-current', 'write'], ['save-if-current', 'prune'], ['save-if-current', 'view'],
+    ['delete-if-current', 'write'], ['delete-if-current', 'prune'], ['delete-if-current', 'view'],
+  ] as const)('stops %s after teardown begins during %s', async (action, stage) => {
+    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    const d = deps([], config);
+    const beginBoundary = () => vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+    if (stage === 'write') d.writeGroup.mockImplementationOnce(async () => { beginBoundary(); return config; });
+    if (stage === 'prune') d.pruneBindings.mockImplementationOnce(async () => { beginBoundary(); });
+    if (stage === 'view') vi.mocked(d.router.view).mockImplementationOnce(async () => { beginBoundary(); return { providerId: 'anthropic', config, members: [] }; });
+    await expect(executeProviderGroupCommand(d, { action, providerId: 'anthropic', config, expectedConfig: config }))
+      .rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(d.pruneBindings).toHaveBeenCalledTimes(stage === 'write' ? 0 : 1);
+    expect(d.changed).toHaveBeenCalledTimes(stage === 'view' ? 1 : 0);
+    expect(d.router.view).toHaveBeenCalledTimes(stage === 'view' ? 1 : 0);
+  });
+
   it('passes the editing snapshot through candidate validation to the atomic writer', async () => {
     const initial: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
     const d = deps([{ key: MINI.key, kind: 'device', agentDeviceId: 'mini', providerId: MINI.providerId, label: 'Mac mini', providerName: 'Claude' }], initial);
@@ -394,5 +461,30 @@ describe('executeProviderGroupCommand save', () => {
     })).rejects.toThrow(/PRECONDITION_FAILED/);
     expect(d.writeGroup).not.toHaveBeenCalled();
     expect(d.pruneBindings).not.toHaveBeenCalled();
+  });
+});
+
+describe('provider management receiver account boundary', () => {
+  it.each([
+    { action: 'manage-group', command: { action: 'get', providerId: 'anthropic' } },
+    { action: 'manage-share', command: { action: 'owned', range: '7d' } },
+  ] satisfies ProviderManagementRequest[])('refuses $action before dispatch when teardown is pending', async (request) => {
+    vi.mocked(getProviderGroupRouter).mockClear();
+    vi.mocked(executeProviderShareManagementCommand).mockClear();
+    vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+    await expect(handleProviderManagementRequest(request)).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(getProviderGroupRouter).not.toHaveBeenCalled();
+    expect(executeProviderShareManagementCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not return a successful share response after teardown begins with the same owner key', async () => {
+    const command = { action: 'owned', range: '7d' } as const;
+    vi.mocked(parseProviderShareCommand).mockReturnValueOnce(command);
+    vi.mocked(executeProviderShareManagementCommand).mockImplementationOnce(async () => {
+      vi.mocked(isAppSessionBoundaryPending).mockReturnValue(true);
+      return { ready: true, shares: [] };
+    });
+    await expect(handleProviderManagementRequest({ action: 'manage-share', command }))
+      .rejects.toThrow(/PRECONDITION_FAILED/);
   });
 });

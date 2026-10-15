@@ -35,6 +35,7 @@ import {
 } from './runtime.js';
 import { listProviderGroups, readProviderGroup, writeProviderGroup } from './store.js';
 import { invokeProviderManagement } from './managementClient.js';
+import { captureProviderManagementScope } from './managementScope.js';
 
 const log = createLogger('provider-group');
 
@@ -156,30 +157,41 @@ export async function markMembersUnreachableHere(
 
 /** 业务体(依赖注入，单测直接调)。 */
 export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps, command: ProviderGroupLocalCommand) {
+  const assertCurrent = captureProviderManagementScope(deps.ownerKey);
+  const result = await runProviderGroupCommand(deps, command, assertCurrent);
+  assertCurrent();
+  return result;
+}
+
+async function runProviderGroupCommand(
+  deps: ProviderGroupCommandDeps,
+  command: ProviderGroupLocalCommand,
+  assertCurrent: () => void,
+) {
   if (command.action === 'list') return deps.listGroups();
   if (command.action === 'session-group') return deps.sessionGroup(command.sessionId);
   const { providerId } = command;
   switch (command.action) {
     case 'get':
       return deps.router.view(providerId, { includeGuestSupport: true });
-    case 'remote-view':
-      return markMembersUnreachableHere(
-        await deps.remoteView(command.deviceId, providerId),
-        deps.directory,
-        deps.localDeviceId(),
-      );
+    case 'remote-view': {
+      const view = await deps.remoteView(command.deviceId, providerId);
+      assertCurrent();
+      return markMembersUnreachableHere(view, deps.directory, deps.localDeviceId());
+    }
     case 'candidates':
       return deps.directory.listCandidates(providerId, deps.readGroup(providerId));
     case 'delete':
     case 'delete-if-current':
       if (command.action === 'delete-if-current') await deps.writeGroup(providerId, null, command.expectedConfig);
       else await deps.writeGroup(providerId, null);
+      assertCurrent();
       await deps.pruneBindings(providerId, null);
+      assertCurrent();
       deps.changed(providerId);
       return deps.router.view(providerId, { includeGuestSupport: true });
     case 'save':
     case 'save-if-current': {
-      const owner = deps.ownerKey();
       const next = normalizeProviderGroupConfig(command.config, providerId);
       if (next) {
         // 新加入的电脑必须是这台电脑已经能用的同一个供应商(§3)，不能凭渲染端点名加入。
@@ -187,6 +199,7 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
         const added = next.members.filter((m) => m.kind !== 'local' && !previous.has(m.key));
         if (added.length > 0) {
           const candidates = await deps.directory.listCandidates(providerId, deps.readGroup(providerId));
+          assertCurrent();
           const allowed = new Set(candidates.filter((c) => !c.blocked).map((c) => c.key));
           const rejected = added.filter((m) => !allowed.has(m.key));
           if (rejected.length > 0) {
@@ -200,13 +213,13 @@ export async function executeProviderGroupCommand(deps: ProviderGroupCommandDeps
           }
         }
       }
-      if (deps.ownerKey() !== owner) {
-        throwIpcError('PRECONDITION_FAILED', 'The account changed while saving the provider group');
-      }
+      assertCurrent();
       const written = command.action === 'save-if-current'
         ? await deps.writeGroup(providerId, next, command.expectedConfig)
         : await deps.writeGroup(providerId, next);
+      assertCurrent();
       await deps.pruneBindings(providerId, written ? new Set(written.members.map((m) => m.key)) : null);
+      assertCurrent();
       deps.changed(providerId);
       return deps.router.view(providerId, { includeGuestSupport: true });
     }
@@ -245,10 +258,7 @@ export function registerProviderGroupIpc(): void {
     assertTrustedAppRendererEvent(event);
     const command = parseProviderGroupCommand(raw);
     if (command.action === 'remote-manage') {
-      const owner = deps.ownerKey();
-      const assertOwner = () => {
-        if (deps.ownerKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
-      };
+      const assertOwner = captureProviderManagementScope(deps.ownerKey);
       const result = await invokeProviderManagement(remoteInvoke, command.deviceId, command.request, remoteBackgroundInvoke);
       assertOwner();
       if (command.request.action !== 'manage-group' || command.request.command.action === 'candidates') return result;

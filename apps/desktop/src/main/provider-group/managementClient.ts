@@ -6,11 +6,11 @@ import { PROVIDER_GROUP_REMOTE_CHANNEL, PROVIDER_SHARE_LINK_TTL_MS } from '@cind
 
 import type { ProviderManagementReply, ProviderManagementRequest } from '../../shared/providerManagement.js';
 import type { ProviderShareOwnerState } from '../../shared/providerShare.js';
-import { activeOwnerScopeKey } from '../appSessionState.js';
 import { forgetWatchedProviderShareRequest, watchProviderShareRequests } from '../device-link/providerShareHost.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import type { ProviderGroupRemoteInvoke } from './remoteClient.js';
+import { captureProviderManagementScope } from './managementScope.js';
 
 export async function invokeProviderManagement(
   invoke: ProviderGroupRemoteInvoke,
@@ -18,10 +18,7 @@ export async function invokeProviderManagement(
   request: ProviderManagementRequest,
   readInvoke: ProviderGroupRemoteInvoke = invoke,
 ): Promise<unknown> {
-  const owner = activeOwnerScopeKey();
-  const assertOwner = () => {
-    if (activeOwnerScopeKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
-  };
+  const assertOwner = captureProviderManagementScope();
   const startedAt = Date.now();
   const response = await invoke(deviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [request], { preSend: assertOwner });
   assertOwner();

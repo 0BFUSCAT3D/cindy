@@ -2,10 +2,10 @@
 import type { ProviderManagementReply, ProviderManagementRequest } from '../../shared/providerManagement.js';
 import type { ProviderGroupManagementCommand, ProviderShareManagementCommand } from '../../shared/providerManagement.js';
 import { isProviderManagementRequest } from '../../shared/providerManagement.js';
-import { activeOwnerScopeKey } from '../appSessionState.js';
 import { executeProviderShareManagementCommand, parseProviderShareCommand } from '../device-link/providerShareRuntime.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { createProviderGroupCommandDeps, executeProviderGroupCommand, parseProviderGroupCommand } from './ipc.js';
+import { captureProviderManagementScope } from './managementScope.js';
 
 export function parseProviderManagementRequest(raw: unknown): ProviderManagementRequest {
   if (!isProviderManagementRequest(raw)) throwIpcError('INVALID_PARAMS', 'Invalid provider management request');
@@ -27,11 +27,11 @@ export function parseProviderManagementRequest(raw: unknown): ProviderManagement
 }
 
 export async function handleProviderManagementRequest(raw: unknown): Promise<ProviderManagementReply> {
-  const owner = activeOwnerScopeKey();
+  const assertCurrent = captureProviderManagementScope();
   const request = parseProviderManagementRequest(raw);
   const result = request.action === 'manage-group'
     ? await executeProviderGroupCommand(createProviderGroupCommandDeps(), request.command)
     : await executeProviderShareManagementCommand(request.command);
-  if (activeOwnerScopeKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
+  assertCurrent();
   return { result, respondedAt: Date.now() };
 }

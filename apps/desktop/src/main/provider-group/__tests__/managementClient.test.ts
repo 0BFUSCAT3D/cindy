@@ -3,11 +3,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ owner: 'owner-a' }));
+const state = vi.hoisted(() => ({ owner: 'owner-a', boundaryPending: false }));
 const host = vi.hoisted(() => ({ watch: vi.fn(), forget: vi.fn() }));
 const clipboard = vi.hoisted(() => ({ remember: vi.fn() }));
 
-vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => state.owner }));
+vi.mock('../../appSessionState.js', () => ({
+  activeOwnerScopeKey: () => state.owner,
+  isAppSessionBoundaryPending: () => state.boundaryPending,
+}));
 vi.mock('../../device-link/providerShareHost.js', () => ({
   watchProviderShareRequests: host.watch,
   forgetWatchedProviderShareRequest: host.forget,
@@ -28,12 +31,46 @@ const createLink: ProviderManagementRequest = { action: 'manage-share', command:
 
 beforeEach(() => {
   state.owner = 'owner-a';
+  state.boundaryPending = false;
   host.watch.mockReset();
   host.forget.mockReset();
   clipboard.remember.mockReset();
 });
 
 describe('provider management client', () => {
+  it('does not dispatch management while account teardown is pending with the same owner key', async () => {
+    state.boundaryPending = true;
+    const invoke = replying(null);
+    await expect(invokeProviderManagement(invoke, 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the account boundary after waiting to send', async () => {
+    const send = vi.fn();
+    const invoke: ProviderGroupRemoteInvoke = async (_deviceId, _channel, _args, options) => {
+      state.boundaryPending = true;
+      options?.preSend?.();
+      send();
+      return { ok: true };
+    };
+    await expect(invokeProviderManagement(invoke, 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    createLink,
+    { action: 'manage-share', command: { action: 'approve', requestId: 'r1' } },
+  ] satisfies ProviderManagementRequest[])('drops a $command.action reply during teardown before changing local state', async (request) => {
+    const invoke: ProviderGroupRemoteInvoke = async () => {
+      state.boundaryPending = true;
+      return { ok: true, result: { result: { link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() }, respondedAt: Date.now() } };
+    };
+    await expect(invokeProviderManagement(invoke, 'group-host', request)).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(host.watch).not.toHaveBeenCalled();
+    expect(host.forget).not.toHaveBeenCalled();
+    expect(clipboard.remember).not.toHaveBeenCalled();
+  });
+
   it('watches the group computer\'s share after generating a link there, so the request prompts here', async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     const invoke = replying({ link: 'https://cindy.app/s#token', expiresAt });

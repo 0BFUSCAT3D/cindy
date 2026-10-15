@@ -39,7 +39,8 @@ import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
-import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
+import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { captureProviderManagementScope } from '../provider-group/managementScope.js';
 import type { ProviderShareManagementCommand } from '../../shared/providerManagement.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
@@ -381,6 +382,7 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
 }
 
 async function createLink(providerId: string, assertCurrent: () => void = () => undefined): Promise<ProviderShareLinkCreated> {
+  assertCurrent();
   requireRunning();
   // 逐级开启：允许远程控制 → 允许被远程调用 → 分享。
   if (!readDeviceLinkSettings().remoteControlEnabled) throwIpcError('PRECONDITION_FAILED', 'Remote control is off');
@@ -401,6 +403,7 @@ async function createLink(providerId: string, assertCurrent: () => void = () => 
     deviceName: PROVIDER_SHARE_NEUTRAL_DEVICE_NAME,
     identityCard,
   });
+  assertCurrent();
   markProviderShareHostActive();
   void refreshProviderShareHost('link');
   // 倒计时按本机收到响应的时刻计算：链接刚签发，服务端从签发起算 5 分钟。不拿服务端的绝对时间
@@ -411,7 +414,8 @@ async function createLink(providerId: string, assertCurrent: () => void = () => 
   return { link, expiresAt };
 }
 
-async function execute(command: ProviderShareCommand): Promise<unknown> {
+async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
+  assertCurrent();
   switch (command.action) {
     case 'owned':
       if (running) markProviderShareHostActive(60_000);
@@ -419,7 +423,7 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
     case 'own-usage':
       return ownUsage(command.providerId, command.range);
     case 'create-link': {
-      const created = await createLink(command.providerId);
+      const created = await createLink(command.providerId, assertCurrent);
       clearProviderShareRequestQuiet(command.providerId);
       return created;
     }
@@ -428,12 +432,14 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
       requireRunning();
       if (command.action === 'approve') await providerShareApi.approve(command.requestId);
       else await providerShareApi.reject(command.requestId);
+      assertCurrent();
       applyLocalRequestDecision(command.requestId);
       void refreshProviderShareHost(command.action);
       return { ok: true };
     case 'set-member': {
       requireRunning();
       const result = await providerShareApi.setMember(command.memberId, command.status);
+      assertCurrent();
       applyLocalMemberChange(command.memberId, result.status);
       void refreshProviderShareHost('member');
       return { ok: true };
@@ -472,10 +478,7 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
  * 弹审批窗，本机在窗口期内静默；返回的 owned 只含这台电脑的分享，不带本机自己的弹窗安排。
  */
 export async function executeProviderShareManagementCommand(command: ProviderShareManagementCommand): Promise<unknown> {
-  const owner = activeOwnerScopeKey();
-  const assertCurrent = () => {
-    if (activeOwnerScopeKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
-  };
+  const assertCurrent = captureProviderManagementScope();
   if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member') {
     requireRunning();
     await refreshProviderShareHost('management');
@@ -492,7 +495,7 @@ export async function executeProviderShareManagementCommand(command: ProviderSha
     quietProviderShareRequests(command.providerId);
     return created;
   }
-  const result = await execute(command);
+  const result = await execute(command, assertCurrent);
   assertCurrent();
   if (command.action === 'owned') {
     const { ready, shares } = result as ProviderShareOwnerState;
