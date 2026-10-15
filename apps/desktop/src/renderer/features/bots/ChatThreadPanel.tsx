@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { SendButton } from '@/components/new-chat/SendButton';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/input';
 import { Tip } from '@/components/ui/tooltip';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
@@ -16,6 +16,10 @@ import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
+import {
+  BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
+  fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
+} from './botGroupComposerChrome';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
 import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
@@ -90,6 +94,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     setText(value);
     if (attempt.current?.text !== value) attempt.current = null;
   } });
+  useLayoutEffect(() => { if (inputRef.current) fitBotGroupComposerInput(inputRef.current); }, [text, sharing]);
+  useRefitBotGroupComposerInputOnResize(inputRef, !sharing);
   const load = useCallback(async (before?: number) => {
     const version = ++request.current, owner = getDataOwnerGeneration();
     const current = () => version === request.current && isDataOwnerGenerationCurrent(owner);
@@ -148,18 +154,28 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           {projectBotGroupExecutionFailures(replies, executionFailures).map(message => <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message} onChanged={() => void loadRef.current()} />)}
         </div>
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className="space-y-3 border-t border-[var(--border-default)] p-4">
-          {error && <p role="alert" className="text-13 text-[var(--error-fg)]">{error}</p>}
-          <div className="relative">
-            {mention.list}
-            <Textarea textareaRef={inputRef} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
-              {...mention.textareaProps} onChange={mention.onChange}
-              rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
-                if (e.nativeEvent.isComposing || e.keyCode === 229 || mention.onKeyDown(e)) return;
+          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className={BOT_GROUP_COMPOSER_DOCK}><div className={BOT_GROUP_COMPOSER_COLUMN}>
+          {error && <p role="alert" className="mb-2 px-1 text-13 leading-5 text-[var(--error-fg)]">{error}</p>}
+          {/* Read-only also means no @ picks while sending. */}
+          {busy ? null : mention.list}
+          {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
+          <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
+            <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
+              {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
+              maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
               }} />
+            <div className={BOT_GROUP_COMPOSER_FOOTER}>
+              {/* Send options for this reply go here, before the button. */}
+              <div className={BOT_GROUP_COMPOSER_FOOTER_START} />
+              <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
+                <Tip text={t(key('sendReply'))}>
+                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
+                </Tip>
+              </span>
+            </div>
           </div>
-          <div className="flex justify-end"><Button variant="cta" size="sm" loading={busy} disabled={group.archived || !text.trim()} onClick={() => void send()}>{t(key('sendReply'))}</Button></div>
-        </div>}
+        </div></div>}
   </aside>;
 }
