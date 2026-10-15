@@ -1868,11 +1868,23 @@
         "nameHint": "Leave empty to keep the current name",
         "changeAvatar": "Change avatar",
         "resetAvatar": "Restore default avatar",
+        "adjustAvatar": "Adjust avatar",
         "save": "Save Profile",
         "cancel": "Cancel",
         "syncHint": "Your name and avatar are saved to your account and synced across your devices.",
-        "avatarInvalid": "Please choose a PNG / JPG / WebP image under 5MB",
-        "saveFailed": "Failed to save, please try again"
+        "avatarInvalid": "Please choose a PNG / JPG / WebP image under 20MB",
+        "saveFailed": "Failed to save, please try again",
+        "crop": {
+          "title": "Adjust avatar",
+          "description": "Drag to reposition. Scroll or pinch to zoom.",
+          "done": "Apply Avatar Crop",
+          "stageLabel": "Avatar framing area. Use the arrow keys to move and plus or minus to zoom.",
+          "zoomLabel": "Zoom",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "Zoom in",
+          "zoomOut": "Zoom out",
+          "exportFailed": "Couldn't export the adjusted avatar"
+        }
       }
     },
     "help": {

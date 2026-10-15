@@ -1845,11 +1845,23 @@
         "nameHint": "空欄にすると現在の名前を維持します",
         "changeAvatar": "アバターを変更",
         "resetAvatar": "デフォルトのアバターに戻す",
+        "adjustAvatar": "アバターを調整",
         "save": "プロフィールを保存",
         "cancel": "キャンセル",
         "syncHint": "名前とアバターはアカウントに保存され、すべてのデバイスに同期されます。",
-        "avatarInvalid": "5MB 以下の PNG / JPG / WebP 画像を選択してください",
-        "saveFailed": "保存に失敗しました。もう一度お試しください"
+        "avatarInvalid": "20MB 以下の PNG / JPG / WebP 画像を選択してください",
+        "saveFailed": "保存に失敗しました。もう一度お試しください",
+        "crop": {
+          "title": "アバターを調整",
+          "description": "ドラッグで位置を調整し、スクロールまたはピンチで拡大・縮小します",
+          "done": "アバターの調整を完了",
+          "stageLabel": "アバターの表示範囲。矢印キーで移動し、プラスまたはマイナスキーで拡大・縮小します",
+          "zoomLabel": "ズーム",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "拡大",
+          "zoomOut": "縮小",
+          "exportFailed": "調整したアバターを書き出せませんでした"
+        }
       }
     },
     "help": {

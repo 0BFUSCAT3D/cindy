@@ -1845,11 +1845,23 @@
         "nameHint": "비워 두면 현재 이름이 유지됩니다",
         "changeAvatar": "아바타 변경",
         "resetAvatar": "기본 아바타로 복원",
+        "adjustAvatar": "아바타 조정",
         "save": "프로필 저장",
         "cancel": "취소",
         "syncHint": "이름과 아바타는 계정에 저장되고 모든 기기에 동기화됩니다.",
-        "avatarInvalid": "5MB 이하의 PNG / JPG / WebP 이미지를 선택해 주세요",
-        "saveFailed": "저장에 실패했습니다. 다시 시도해 주세요"
+        "avatarInvalid": "20MB 이하의 PNG / JPG / WebP 이미지를 선택해 주세요",
+        "saveFailed": "저장에 실패했습니다. 다시 시도해 주세요",
+        "crop": {
+          "title": "아바타 조정",
+          "description": "드래그해 위치를 조정하고, 스크롤하거나 핀치해 확대·축소하세요",
+          "done": "아바타 조정 완료",
+          "stageLabel": "아바타 표시 영역. 화살표 키로 이동하고 더하기 또는 빼기 키로 확대·축소합니다",
+          "zoomLabel": "확대/축소",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "확대",
+          "zoomOut": "축소",
+          "exportFailed": "조정한 아바타를 내보내지 못했습니다"
+        }
       }
     },
     "help": {
