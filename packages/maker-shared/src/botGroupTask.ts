@@ -48,7 +48,12 @@ export interface BotGroupTaskCardLabels {
 
 function clip(value: string, max: number): string {
   const text = value.replace(/\s+/g, ' ').trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  if (text.length <= max) return text;
+  let end = max - 1;
+  // Never split a surrogate pair (emoji and other astral characters are two UTF-16 units).
+  const high = text.charCodeAt(end - 1);
+  if (high >= 0xd800 && high <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}…`;
 }
 
 export function buildBotGroupTaskCard(view: BotGroupTaskCardView, labels: BotGroupTaskCardLabels): BotGroupTaskCard {

@@ -44,6 +44,15 @@ describe('group task card (bot-group-chat.md §10)', () => {
     expect(readBotGroupTaskCard(block)).toBeNull();
   });
 
+  it('clips a title or summary before an emoji rather than through it', () => {
+    // 118 characters then an emoji: a cut at 119 UTF-16 units would keep only its high surrogate.
+    const title = `${'a'.repeat(118)}😀 and more`;
+    const card = buildBotGroupTaskCard({ meta, state: 'waiting', title, summary: `${'b'.repeat(398)}😀 tail` }, en);
+    expect(card.data.title).toBe(`${'a'.repeat(118)}…`);
+    expect(card.data.summary).toBe(`${'b'.repeat(398)}…`);
+    expect(card.fallback).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+
   it('rejects a view whose task anchor is not a delegation request', () => {
     expect(parseBotGroupTaskCardView({ meta: { ...meta, role: 'interjection' }, state: 'completed', title: 't' })).toBeNull();
     expect(parseBotGroupTaskCardView(null)).toBeNull();
