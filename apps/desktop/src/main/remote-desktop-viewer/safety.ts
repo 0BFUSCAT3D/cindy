@@ -60,17 +60,10 @@ export function viewerClipboardFailure(error: unknown, failures: number): Viewer
 export class ViewerSafety {
   private clipboard: ViewerClipboard | undefined;
   private revision = 0;
-  private clipboardRevision = 0;
   private inflight: Promise<RemoteViewerSafety> | null = null;
   private settled: Promise<void> = Promise.resolve();
   async pause(): Promise<void> {
     this.invalidate();
-    await this.settled;
-  }
-  /** Stops local clipboard reads (window left the foreground). The computer's sync stays on. */
-  async pauseClipboard(): Promise<void> {
-    this.clipboardRevision++;
-    this.clipboard?.stop?.();
     await this.settled;
   }
   /** Resolves once in-flight work has settled, so a caller can run a fresh tick. */
@@ -158,7 +151,6 @@ export class ViewerSafety {
     request<T>(request: RemoteDesktopRequest, check: () => void): Promise<T>;
   }): Promise<RemoteViewerSafety> {
     const revision = this.revision;
-    const clipboardRevision = this.clipboardRevision;
     const valid = () => revision === this.revision && options.current();
     const check = () => {
       if (!valid()) throw new Error('DESKTOP_STOPPED');
@@ -199,8 +191,7 @@ export class ViewerSafety {
       !options.clipboardCurrent()
     )
       return this.snapshot();
-    const current = () =>
-      valid() && clipboardRevision === this.clipboardRevision && options.clipboardCurrent();
+    const current = () => valid() && options.clipboardCurrent();
     const clipboardCheck = () => {
       if (!current()) throw new Error('DESKTOP_STOPPED');
     };
@@ -236,8 +227,8 @@ export class ViewerSafety {
       },
       this.baseline,
     );
-    // Results of a paused or refocused clipboard generation are stale: pauseClipboard stops
-    // the read (DESKTOP_CLIPBOARD_UNAVAILABLE), which must not count as a sync failure.
+    // Authority changes stop pending reads. Their late results must not count
+    // as sync failures for the next control session.
     try {
       await engine.tick();
       if (current()) {

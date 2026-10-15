@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { RemoteViewerConnection } from '../connection';
-import { ViewerSafety } from '../safety';
+import { ViewerSafety, type ViewerClipboard } from '../safety';
 import {
   ClipboardSync,
   remoteDesktopVideoSettingsWire,
@@ -43,7 +43,13 @@ describe('standalone remote viewer authority', () => {
     vi.useRealTimers();
   });
   function syncFixture(focused: () => boolean, stop = vi.fn()) {
-    const request = vi.fn(async (_target, message, check) => {
+    const clipboard: ViewerClipboard = {
+      stop,
+      version: async () => '1',
+      read: async () => '',
+      write: async () => '1',
+    };
+    const request = vi.fn(async (_target, message, check): Promise<unknown> => {
       check();
       if (message.op === 'capabilities') return { clipboardSync: true };
       if (message.op === 'start') return { lease: 'lease', controlling: false };
@@ -57,7 +63,7 @@ describe('standalone remote viewer authority', () => {
       readClipboard: () => '',
       writeClipboard: () => {},
       preferences: () => ({ ...DEFAULT_VIEWER_PREFERENCES, clipboardSync: true }),
-      clipboard: { stop, version: async () => '1', read: async () => '', write: async () => '1' },
+      clipboard,
     });
     const enables = () =>
       request.mock.calls.filter(([, m]) => m.op === 'clipboardSync').map(([, m]) => m.enabled);
@@ -70,7 +76,7 @@ describe('standalone remote viewer authority', () => {
       await connection.request(generation, { op: 'control', lease: 'lease', enabled: true });
       return generation;
     };
-    return { connection, request, enables, control, stop };
+    return { connection, request, enables, control, stop, clipboard };
   }
   it('keeps the computer sync on across focus changes: one last pass on blur, an immediate one on focus', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -81,11 +87,11 @@ describe('standalone remote viewer authority', () => {
       const generation = await control();
       await connection.safety(generation);
       expect(tick).toHaveBeenCalledOnce();
-      // Leaving: the computer's latest copy still comes over, then local reads stop.
+      // Leaving admits a last pass without cancelling a queued shortcut pull.
       focused = false;
       await connection.focusChanged();
       expect(tick).toHaveBeenCalledTimes(2);
-      expect(stop).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
       // A copy chord's delayed pull lands after that pass but inside the 1 s grace.
       await connection.syncClipboard(generation);
       expect(tick).toHaveBeenCalledTimes(3);
@@ -101,7 +107,7 @@ describe('standalone remote viewer authority', () => {
       expect(tick).toHaveBeenCalledTimes(4);
       expect(enables()).toEqual([true]);
       connection.deactivate();
-      expect(stop).toHaveBeenCalledTimes(2);
+      expect(stop).toHaveBeenCalledOnce();
     } finally {
       tick.mockRestore();
     }
@@ -139,45 +145,49 @@ describe('standalone remote viewer authority', () => {
       tick.mockRestore();
     }
   });
-  it('a blur-started clipboard pass finishes even when the grace deadline passes mid-transfer', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const snapshot = { privacyActive: false, notice: null, clipboardProgress: null };
-    const captured: Array<Parameters<ViewerSafety['tick']>[0]> = [];
-    let finish!: () => void;
-    const tick = vi
-      .spyOn(ViewerSafety.prototype, 'tick')
-      .mockImplementationOnce(async (value) => {
-        captured.push(value);
-        await new Promise<void>((resolve) => {
-          finish = resolve;
+  it.each([true, false])(
+    'a pass admitted with focused=%s survives blur and grace expiry',
+    async (startFocused) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const snapshot = { privacyActive: false, notice: null, clipboardProgress: null };
+      const captured: Array<Parameters<ViewerSafety['tick']>[0]> = [];
+      let finish!: () => void;
+      const tick = vi
+        .spyOn(ViewerSafety.prototype, 'tick')
+        .mockImplementationOnce(async (value) => {
+          captured.push(value);
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          return snapshot;
+        })
+        .mockImplementation(async (value) => {
+          captured.push(value);
+          return snapshot;
         });
-        return snapshot;
-      })
-      .mockImplementation(async (value) => {
-        captured.push(value);
-        return snapshot;
-      });
-    let focused = true;
-    const { connection, control } = syncFixture(() => focused);
-    try {
-      const generation = await control();
-      focused = false;
-      const blur = connection.focusChanged();
-      await vi.waitFor(() => expect(captured).toHaveLength(1));
-      expect(captured[0].clipboardCurrent()).toBe(true);
-      // The deadline passes while the pass is still transferring: it may finish.
-      vi.setSystemTime(Date.now() + 1000);
-      expect(captured[0].clipboardCurrent()).toBe(true);
-      finish();
-      await blur;
-      // But no new pass may read the clipboard after the deadline.
-      await connection.safety(generation);
-      expect(captured).toHaveLength(2);
-      expect(captured[1].clipboardCurrent()).toBe(false);
-    } finally {
-      tick.mockRestore();
-    }
-  });
+      let focused = true;
+      const { connection, control } = syncFixture(() => focused);
+      try {
+        const generation = await control();
+        focused = startFocused;
+        const pass = startFocused ? connection.safety(generation) : connection.focusChanged();
+        await vi.waitFor(() => expect(captured).toHaveLength(1));
+        expect(captured[0].clipboardCurrent()).toBe(true);
+        // Neither a new blur nor grace expiry revokes an admitted pass.
+        focused = false;
+        vi.setSystemTime(Date.now() + 1000);
+        expect(captured[0].clipboardCurrent()).toBe(true);
+        finish();
+        await pass;
+        // But no new pass may read the clipboard after the deadline.
+        await connection.safety(generation);
+        expect(captured).toHaveLength(2);
+        expect(captured[1].clipboardCurrent()).toBe(false);
+      } finally {
+        tick.mockRestore();
+      }
+    },
+  );
   it('a paste racing a focus wakeup for the same idle pass waits for the fresh pass the focus started', async () => {
     let finishFirst!: () => void, finishSecond!: () => void;
     const tick = vi
@@ -222,6 +232,80 @@ describe('standalone remote viewer authority', () => {
       tick.mockRestore();
     }
   });
+  it.each(['finish', 'release', 'close'] as const)(
+    'a delayed copy queued behind blur survives blur cleanup but respects %s',
+    async (ending) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      let focused = true;
+      const { connection, request, clipboard, control } = syncFixture(() => focused);
+      let local = JSON.stringify({ text: 'before copy' });
+      let remote = local;
+      let remoteVersion = '1';
+      clipboard.read = async () => local;
+      const write = vi.fn(async (json: string) => {
+        local = json;
+        return '1';
+      });
+      clipboard.write = write;
+      let blockVersion = false;
+      let finishBlur!: (value: { version: string }) => void;
+      const originalRequest = request.getMockImplementation()!;
+      request.mockImplementation(async (target, message, check) => {
+        check();
+        if (message.op === 'capabilities') return { clipboardSync: true, clipboardInline: true };
+        if (message.op === 'clipboardVersion') {
+          if (blockVersion) {
+            blockVersion = false;
+            return new Promise((resolve) => {
+              finishBlur = resolve;
+            });
+          }
+          return { version: remoteVersion };
+        }
+        if (message.op === 'clipboardContent' && message.action === 'copy')
+          return { length: remote.length, data: remote };
+        return originalRequest(target, message, check);
+      });
+      const generation = await control();
+      await connection.safety(generation); // Establish both baselines using the real sync engine.
+      blockVersion = true;
+      focused = false;
+      const blur = connection.focusChanged();
+      await vi.waitFor(() => expect(finishBlur).toBeTypeOf('function'));
+      // The delayed copy waits on the blur pass, which read the old remote version.
+      const sync = connection.syncClipboard(generation);
+      await Promise.resolve();
+      remoteVersion = '2';
+      remote = JSON.stringify({ text: 'new remote copy' });
+      let secondCurrent!: () => boolean;
+      let finishCopy!: (version: string) => void;
+      clipboard.version = (current) =>
+        new Promise((resolve) => {
+          secondCurrent = current;
+          finishCopy = resolve;
+        });
+      finishBlur({ version: '1' });
+      await vi.waitFor(() => expect(secondCurrent).toBeTypeOf('function'));
+      try {
+        // Blur cleanup has run by now. Only the start deadline applies, not a
+        // second cancellation generation; crossing that deadline is harmless.
+        expect(secondCurrent()).toBe(true);
+        vi.setSystemTime(Date.now() + 1000);
+        expect(secondCurrent()).toBe(true);
+        if (ending === 'release')
+          await connection.request(generation, { op: 'control', lease: 'lease', enabled: false });
+        if (ending === 'close') connection.deactivate();
+        expect(secondCurrent()).toBe(ending === 'finish');
+      } finally {
+        clipboard.version = async () => '1';
+        finishCopy('1');
+        await Promise.allSettled([blur, sync]);
+      }
+      if (ending === 'finish')
+        expect(write).toHaveBeenCalledWith(remote, '1', expect.any(Function));
+      else expect(write).not.toHaveBeenCalled();
+    },
+  );
   it.each(['target', 'owner'])(
     'does not block a new %s behind the old scope cleanup',
     async (changed) => {

@@ -57,7 +57,12 @@ and bounded-transfer logic while this viewer holds confirmed control. The
 computer's side stays enabled for the whole control session; focus only decides
 when this window reads its own clipboard: while focused, plus 1 s after it leaves
 the foreground (one pass at once, and a copy chord's delayed pull landing in that
-second) so a copy made on the computer is already here. Regaining focus runs a
+second) so a copy made on the computer is already here. This deadline only gates
+the start of a pass: admitted work finishes across blur and deadline expiry,
+including a delayed copy waiting behind the blur-triggered pass. There is no
+separate blur cancellation generation; control/session changes still invalidate
+in-flight work, and the native counter helper retires on its existing idle timeout.
+Regaining focus runs a
 pass at once; so does the controlled
 computer's own copy/cut chord (Cmd on macOS, Ctrl elsewhere; the other modifier
 is an ordinary key) about 200 ms after the key, and its paste chord holds the

@@ -482,7 +482,7 @@ export class RemoteViewerConnection {
    * Focus only decides when this window reads its own clipboard; the computer's
    * sync stays enabled for the whole control session. Regaining focus syncs at
    * once; leaving runs one pass at once (so a copy made on the computer arrives
-   * here before the user pastes) and then pauses local reads. Local reads stay
+   * here before the user pastes). New local reads stay
    * allowed for CLIPBOARD_GRACE_MS after the blur, not just for that pass: a
    * copy chord's delayed pull (about 200 ms after the key) may land after it.
    */
@@ -500,8 +500,9 @@ export class RemoteViewerConnection {
     await this.safetyState.idle();
     if (!live() || this.focused()) return;
     await this.safety(generation).catch(() => {});
-    if (!live() || this.focused()) return;
-    await this.safetyState.pauseClipboard();
+    // No blur cleanup: idle() waiters may already have started the delayed
+    // copy pass. The grace gates new passes; ClipboardCounter retires itself
+    // when idle. Only authority changes cancel work already admitted.
   }
   /** A copy or paste in the picture: sync now instead of at the next poll. */
   async syncClipboard(generation: number): Promise<RemoteViewerSafety> {
@@ -523,9 +524,10 @@ export class RemoteViewerConnection {
         return false;
       }
     };
-    // The blur grace decides whether a pass may start; one that started in
-    // time finishes even if the deadline passes mid-transfer.
-    const graced = Date.now() < this.clipboardGrace;
+    // Focus and blur grace only admit a pass. Once admitted it finishes across
+    // focus changes and deadline expiry; authority and manual transfers still
+    // invalidate it through current()/clipboardPending.
+    const clipboardAllowed = this.focused() || Date.now() < this.clipboardGrace;
     const value =
       lease && this.caps
         ? await this.safetyState.tick({
@@ -533,8 +535,7 @@ export class RemoteViewerConnection {
             caps: this.caps,
             preferences: { ...this.preferencesValue },
             current,
-            clipboardCurrent: () =>
-              current() && !this.clipboardPending && (this.focused() || graced),
+            clipboardCurrent: () => current() && !this.clipboardPending && clipboardAllowed,
             clipboard: this.deps.clipboard,
             request: async (message, check) => {
               check();

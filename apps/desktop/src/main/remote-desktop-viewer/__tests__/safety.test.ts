@@ -32,7 +32,7 @@ it('does not apply opt-ins without confirmed control', async () => {
   await safety.tick({ ...options, current: () => false });
   expect(request).not.toHaveBeenCalled();
 });
-it('focus pause preserves privacy state and does not retry failed mute settings', async () => {
+it('background passes preserve privacy state and do not retry failed mute settings', async () => {
   const { safety, options, request } = fixture();
   request.mockImplementation(async (message: { op: string }) => {
     if (message.op === 'hostMute') throw new Error('DESKTOP_UNAVAILABLE');
@@ -40,9 +40,8 @@ it('focus pause preserves privacy state and does not retry failed mute settings'
   });
   await safety.tick(options);
   const before = safety.snapshot();
-  await safety.pauseClipboard();
-  expect(safety.snapshot()).toEqual(before);
   await safety.tick(options);
+  expect(safety.snapshot()).toEqual(before);
   expect(
     request.mock.calls.filter(([message]: [{ op: string }]) => message.op === 'privacyScreen'),
   ).toHaveLength(1);
@@ -72,7 +71,7 @@ it('pauses until old work settles and discards its late success', async () => {
   expect(request).toHaveBeenCalledTimes(1);
 });
 
-it('a window-switch pause keeps the stopped read from updating the notice or failure count', async () => {
+it('authority invalidation keeps a stopped read from updating the notice or failure count', async () => {
   const { safety, options } = fixture();
   const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
   let fail!: (error: Error) => void;
@@ -86,18 +85,16 @@ it('a window-switch pause keeps the stopped read from updating the notice or fai
     )
     .mockRejectedValueOnce(new Error('DESKTOP_UNAVAILABLE'))
     .mockResolvedValue(undefined);
-  let focused = true;
   const sync = {
     ...options,
     preferences: { ...options.preferences, clipboardSync: true },
-    clipboardCurrent: () => focused,
+    clipboardCurrent: () => true,
     clipboard: { version: async () => 'v', read: async () => '{}', write: async () => 'v' },
   };
   try {
     const stale = safety.tick(sync);
     await vi.waitFor(() => expect(tick).toHaveBeenCalledTimes(1));
-    focused = false;
-    const paused = safety.pauseClipboard();
+    const paused = safety.pause();
     // Pausing stops the in-flight read, which then reports the clipboard as unavailable.
     fail(new Error('DESKTOP_CLIPBOARD_UNAVAILABLE'));
     expect((await stale).notice).toBeNull();
@@ -105,7 +102,6 @@ it('a window-switch pause keeps the stopped read from updating the notice or fai
     expect(safety.snapshot().notice).toBeNull();
 
     // The stale result was not counted: the first real failure backs off 1.5s, not 3s.
-    focused = true;
     expect((await safety.tick(sync)).notice).toBe('clipboardSyncFailed');
     now.mockReturnValue(12000);
     await safety.tick(sync);
@@ -133,12 +129,13 @@ function syncFixture() {
   };
 }
 
-it('a window-switch pause keeps the computer sync enabled instead of toggling it', async () => {
+it('background passes keep the computer sync enabled without reading clipboard contents', async () => {
   const { safety, sync, clipboardEnables } = syncFixture();
   const tick = vi.spyOn(ClipboardSync.prototype, 'tick').mockResolvedValue(undefined);
   try {
     await safety.tick(sync);
-    await safety.pauseClipboard();
+    await safety.tick({ ...sync, clipboardCurrent: () => false });
+    expect(tick).toHaveBeenCalledOnce();
     await safety.tick(sync);
     expect(clipboardEnables()).toHaveLength(1);
     expect(tick).toHaveBeenCalledTimes(2);
