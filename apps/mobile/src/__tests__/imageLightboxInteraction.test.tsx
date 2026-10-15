@@ -10,7 +10,8 @@ import { buildOutboxItem, outboxDisplayItem, outboxItemAttachments, outboxItemWi
   type MobileOutboxThumb } from '@/session/sessionOutbox';
 import { buildPendingSendItems, pendingSendItemKey } from '@/session/pendingSendItems';
 import { computeVanishedQueueItems } from '@/session/queueSettling';
-import { getSentMessageImagePreview, rememberSentMessageImagePreviews, type GetSentMessageImagePreview, type SentMessageImagePreviews } from '@/session/sentMessageImagePreviews';
+import { getSentMessageImagePreview, rememberOutboxImagePreviews, rememberSentMessageImagePreviews, type GetSentMessageImagePreview, type SentMessageImagePreviews } from '@/session/sentMessageImagePreviews';
+import { createDurableOutbox, observeDurableOutboxSending, type DurableOutboxRecord } from '@/session/durableOutbox';
 import type { QueuedRemoteMessage, RemoteSerializedAttachment } from '@/session/types';
 import {
   ImageLightbox,
@@ -400,6 +401,77 @@ describe('pending image gallery updates', () => {
     expect(page().annotationStrokes).toEqual([]);
     expect(page().annotationDraftStroke).toBeNull();
     expect(page().naturalSize).toBeNull();
+  });
+
+  it.each([
+    ['failed', true], ['failed', false], ['sending', true], ['sending', false],
+  ] as const)('keeps a rehydrated %s outbox image and its strokes through queue/formal handoff (local preview: %s)', async (state, localPreview) => {
+    const files: RemoteSerializedAttachment[] = [0, 1].map((index) => ({ id: `photo-${index}`, name: `photo-${index}.jpg`,
+      category: 'image', path: `cindy-oss-attach://photo-${index}`, mimeType: 'image/jpeg', ext: 'jpg', size: 100,
+      sha256: String(index).repeat(64), ...(index === 1 ? { url: 'https://example.invalid/restored-1.jpg' } : {}) }));
+    const pdf = { ...files[0], id: 'pdf', name: 'document.pdf', category: 'pdf' as const };
+    const item = buildOutboxItem({ sessionId: 's', clientId: 'pending', text: '', permissionModeAtSend: 'ask',
+      readyAttachments: [files[0], pdf, files[1]], claimedUploads: [],
+      readyPreviews: [null, null, localPreview ? 'file:///durable-1.jpg' : null] });
+    const disk = new Map<string, string>();
+    const storage = { getAllKeys: async () => [...disk.keys()], getItem: async (key: string) => disk.get(key) ?? null,
+      setItem: async (key: string, value: string) => { disk.set(key, value); }, removeItem: async (key: string) => { disk.delete(key); } };
+    const initialStore = createDurableOutbox(storage);
+    await initialStore.activate('account');
+    await initialStore.add({ version: 1, accountId: 'account', deviceId: 'desktop', item, state,
+      sendAtMs: 1, createdAt: 1, uploads: [] } satisfies DurableOutboxRecord);
+    const restored = createDurableOutbox(storage);
+    await restored.activate('account');
+    const row = restored.getSnapshot()[0];
+    const onSending = vi.fn();
+    const unsubscribe = observeDurableOutboxSending(restored, 'desktop', 's', onSending, vi.fn());
+    try {
+      const previews: SentMessageImagePreviews = new Map();
+      // Capture on first render; the dispatch observer does not replay restored sends.
+      rememberOutboxImagePreviews(previews, 's', row.item, new Set([item.clientId]));
+      const getPreview: GetSentMessageImagePreview = (...args) => getSentMessageImagePreview(previews, 's', ...args);
+      const input = { settling: [], hiddenClientIds: new Set<string>(), sendingClientIds: new Set<string>(),
+        editingClientId: null, steeringClientIds: new Set<string>(), presentationByClientId: new Map(), getImagePreview: getPreview };
+      const initial = collectMobileMessageGalleryImages(buildPendingSendItems({ ...input, queue: [], outbox: [outboxDisplayItem(row.item)] }));
+      expect(initial).toHaveLength(1);
+      expect(initial[0].key).toBe('pending-slot-2');
+      const clicked = initial[0].payload;
+      const { props, render } = mount({ images: initial, initialUrl: initial[0].url, initialImageKey: initial[0].key,
+        annotation: { submitLabel: 'Send', onSubmit: vi.fn() } });
+      act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+      press('message.imageLightboxAnnotateButton');
+      const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+      fire(draw(), 'onStart', { x: 100, y: 200 });
+      fire(draw(), 'onFinalize', {}, true);
+      fire(draw(), 'onStart', { x: 200, y: 400 });
+      // Even a retry cannot be used to bootstrap identity: the observer already saw this clientId.
+      const queuedFiles = [files[0], pdf, files[1]].map((file, index) => ({ ...file, url: `https://example.invalid/queued-${index}.jpg` }));
+      const queued = { clientId: item.clientId, text: '', chatMessage: {}, files: queuedFiles } as unknown as QueuedRemoteMessage;
+      await restored.update(row, { state: 'queued' });
+      await restored.update(restored.getSnapshot()[0], { state: 'sending', prepared: queued });
+      expect(onSending).not.toHaveBeenCalled();
+      rememberSentMessageImagePreviews(previews, 's', item.clientId, queuedFiles, () => null);
+      const queueGallery = collectMobileMessageGalleryImages(buildPendingSendItems({ ...input, queue: [queued], outbox: [] }));
+      const formal = collectMobileMessageGalleryImages(buildMobileMessageRenderItems([{
+        id: 'server', clientId: item.clientId, sessionId: 's', role: 'user', toolUseId: null, agentMeta: null,
+        createdAt: '2026-10-16T00:00:00.000Z', content: { images: files.map((file, index) => ({
+          name: file.name, sha256: file.sha256, url: `https://example.invalid/formal-${index}.jpg`,
+        })) },
+      }]), undefined, undefined, 's', getPreview);
+      for (const gallery of [queueGallery, formal]) {
+        props.images = lightboxImagesForPayload(gallery, clicked, 'message-pending', props.images, true);
+        render();
+        expect(props.images).toHaveLength(2);
+        expect(props.images[1].key).toBe(initial[0].key);
+        const page = runtime.nodes.get('FlatList').renderItem({ item: props.images[1], index: 1 }).props;
+        expect(page.active).toBe(true);
+        expect(page.annotationStrokes).toEqual([{ points: [{ x: 0.25, y: 0.25 }] }]);
+        expect(page.annotationDraftStroke).toEqual({ points: [{ x: 0.5, y: 0.5 }] });
+        expect(page.naturalSize).toEqual({ width: 400, height: 800 });
+      }
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('keeps the current page, paging and sharing after URLs settle and the pending row leaves', async () => {

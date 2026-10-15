@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  getSentMessageImagePreview, pruneSentMessageImagePreviews, rememberSentMessageImagePreviews, type SentMessageImagePreviews,
+  getSentMessageImagePreview, pruneSentMessageImagePreviews, rememberOutboxImagePreviews,
+  rememberSentMessageImagePreviews, type SentMessageImagePreviews,
 } from '@/session/sentMessageImagePreviews';
 import { buildPendingSendItems } from '@/session/pendingSendItems';
+import { buildOutboxItem, outboxItemWithUpload } from '@/session/sessionOutbox';
 import type { QueuedRemoteMessage, RemoteSerializedAttachment } from '@/session/types';
 
 const image = (id: string, name = `${id}.jpg`): RemoteSerializedAttachment => ({
@@ -11,6 +13,42 @@ const image = (id: string, name = `${id}.jpg`): RemoteSerializedAttachment => ({
 });
 
 describe('sent image preview handoff', () => {
+  it('seeds restored mixed/partial outbox slots and extends the bridge as uploads finish', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const second = image('b');
+    let item = buildOutboxItem({ sessionId: 's', clientId: 'm', text: '', permissionModeAtSend: 'ask',
+      readyAttachments: [{ ...image('pdf'), category: 'pdf' }, second], readyPreviews: [null, 'file:///durable-b.jpg'],
+      claimedUploads: [{ localId: 'upload', kind: 'image', failed: true, previewUri: 'file:///durable-a.jpg' }] });
+    rememberOutboxImagePreviews(previews, 's', item);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, second.name, second.id))
+      .toMatchObject({ galleryImageKey: 'm-slot-1', uri: 'file:///durable-b.jpg' });
+    item = outboxItemWithUpload(item, 'upload', image('a'));
+    rememberOutboxImagePreviews(previews, 's', item);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 1, 'a.jpg', 'a'))
+      .toMatchObject({ galleryImageKey: 'm-slot-2', uri: 'file:///durable-a.jpg' });
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, second.name, second.id)?.galleryImageKey).toBe('m-slot-1');
+    expect(getSentMessageImagePreview(previews, 'other-session', 'm', 0, second.name, second.id)).toBeUndefined();
+    // A stale local row is captured first; the authoritative queue still replaces its images.
+    rememberSentMessageImagePreviews(previews, 's', 'm', [image('replacement', second.name)], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, second.name, second.id)).toBeUndefined();
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, second.name, 'replacement')?.galleryImageKey).toBeUndefined();
+  });
+
+  it('retains every restored live outbox identity without local image pixels', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const live = new Set(Array.from({ length: 65 }, (_, index) => `restored-${index}`));
+    for (const clientId of live) {
+      const item = buildOutboxItem({ sessionId: 's', clientId, text: '', permissionModeAtSend: 'ask',
+        readyAttachments: [image('a')], claimedUploads: [] });
+      rememberOutboxImagePreviews(previews, 's', item, live);
+    }
+    expect(previews.size).toBe(65);
+    for (const clientId of live) {
+      expect(getSentMessageImagePreview(previews, 's', clientId, 0, 'a.jpg', 'a'))
+        .toMatchObject({ galleryImageKey: `${clientId}-slot-0`, uri: null });
+    }
+  });
+
   it('keeps image order through mixed files and host URL materialization, including the formal message', () => {
     const previews: SentMessageImagePreviews = new Map();
     const files = [image('a'), { ...image('pdf'), category: 'pdf' as const }, image('b')];

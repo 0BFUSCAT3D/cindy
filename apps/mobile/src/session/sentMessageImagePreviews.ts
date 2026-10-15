@@ -1,4 +1,5 @@
 import type { RemoteSerializedAttachment } from '@/session/types';
+import { outboxItemAttachments, type MobileOutboxItem } from '@/session/sessionOutbox';
 
 export interface SentMessageImagePreview {
   attachmentId: string;
@@ -79,6 +80,21 @@ export function rememberSentMessageImagePreviews(
   if (images.length === 0) return;
   previews.set(key, images);
   pruneSentMessageImagePreviews(previews, sessionId, liveClientIds);
+}
+
+/** Restored rows need the same slot-to-attachment bridge as newly dispatched sends. */
+export function rememberOutboxImagePreviews(
+  previews: SentMessageImagePreviews,
+  sessionId: string,
+  item: MobileOutboxItem,
+  liveClientIds?: ReadonlySet<string>,
+): void {
+  const slotOf = (attachment: RemoteSerializedAttachment) => (
+    item.attachmentSlots.findIndex((entry) => entry?.id === attachment.id)
+  );
+  rememberSentMessageImagePreviews(previews, sessionId, item.clientId, outboxItemAttachments(item),
+    (attachment) => item.slotMeta[slotOf(attachment)]?.previewUri,
+    (attachment) => `${item.clientId}-slot-${slotOf(attachment)}`, liveClientIds);
 }
 
 export function getSentMessageImagePreview(

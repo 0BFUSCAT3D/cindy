@@ -15,6 +15,18 @@ describe('mobile message media thumbnail wiring', () => {
   const rendererSource = readTextLf(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
   const screenSource = readTextLf(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
 
+  it('seeds restored outbox identities before visible rows and authoritative queue captures', () => {
+    const pendingItems = screenSource.slice(
+      screenSource.indexOf('const pendingSendItems = useMemo('),
+      screenSource.indexOf('const messageListItems = useMemo('),
+    );
+    const seed = pendingItems.indexOf('rememberOutboxImagePreviews(');
+    expect(seed).toBeGreaterThan(-1);
+    expect(pendingItems).toContain('for (const item of outboxItems)');
+    expect(seed).toBeLessThan(pendingItems.indexOf('rememberSentAttachmentPreviews(item.clientId'));
+    expect(seed).toBeLessThan(pendingItems.indexOf('return buildPendingSendItems('));
+  });
+
   it('captures remote and settling queue identities before building their visible rows, without requesting pixels', () => {
     const pendingItems = screenSource.slice(
       screenSource.indexOf('const livePendingSendClientIds = useMemo('),
