@@ -213,6 +213,7 @@ Desktop 的运行时 refresh 遇到瞬时失败后，主动调用与定时重试
 | 语音输入声纹识别模型 | `userData/voice-models/<哈希前缀>-<文件名>.onnx`，按内容哈希从区域 CDN 下载并在可见前校验 SHA-256；不含个人数据，本机所有账号共用。新版本模型下载完成后删除旧版本文件 |
 | Mobile 语音输入声纹（生物特征） | SecureStore（iOS 钥匙串 / Android Keystore）键 `xdt.voiceSpeakerProfile.v1.<账号 key 的 SHA-256 前 32 位>`，内容同 Desktop：声纹向量、录入时间与模型哈希；开关与灵敏度 override 在 AsyncStorage `cindy.mobile.voice-speaker-filter.v1.<账号 key>`。只在本机，不同步、不上传、不进日志；退出登录时随该账号的其他本机数据一起删除（模型文件保留）；朗读音频只在内存中处理 |
 | Mobile 语音输入声纹识别模型 | `cacheDirectory/voice-models/`，与 Desktop 同一组按内容哈希下载、校验 SHA-256 后才可见的文件；放缓存目录以免进入 iCloud / Android 备份。系统清理缓存后，下次语音输入发现缺失会在后台重新下载，本次不过滤 |
+| 供应商分享：受邀者对分享的本机偏好 | `userData/owners/<账号>/provider-share-guest-prefs.json`，分享 id → 分享所属区域与「信任 {分享者}」（凭证操作不再确认）；只存显式打开的项，在同路径 `.lock` 跨进程安全锁内重读、修改和原子替换，拿不到锁不保存。持有权切换使排队和在途写入失效；已进入文件系统的替换在新持有者保存前完成，不能覆盖其撤销。不含昵称、对话或凭证。退出分享或分享从已确认区域的权威名单里消失时清掉 |
 | 用户明确导出的文件                  | 用户选择或任务明确指定的目标路径                                                                                                                                                                                                                                                                                                                                                                                |
 
 - 内置 Skill 的官方身份只授予当前 manifest 已提交且指纹匹配的 bundle：`.active` 必须是
