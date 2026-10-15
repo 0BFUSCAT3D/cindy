@@ -8,7 +8,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { MainViewHistoryProvider } from '@/contexts/MainViewHistoryContext';
 import { readMainEntryRoute, rememberMainEntry } from '@/lib/mainEntryPreference';
 import { useActiveMainView } from '@/hooks/useActiveMainView';
-import { BotsListView } from '@/features/bots/BotsListView';
 import en from '@/i18n/locales/en/common.json';
 import { MainEntryRedirect, useRememberMainEntry } from '../MainEntryRedirect';
 
@@ -28,7 +27,8 @@ function Layout() {
 function launch(path = '/') {
   const router = createMemoryRouter([{ element: <Layout />, children: [
     { path: '/', element: <MainEntryRedirect /> },
-    { path: '/bots', children: [{ path: 'list', element: <BotsListView /> }] },
+    // Stand-in for BotsHomeView: /bots resolves the last-viewed teammate (else Cindy).
+    { path: '/bots', children: [{ index: true, element: <div data-testid="teammate-entry" /> }] },
     { path: '*', element: <div /> },
   ] }], { initialEntries: [path] });
   const tree = () => <I18nextProvider i18n={i18n}><MainViewHistoryProvider ownerKey={auth.dataOwnerId ?? 'signed-out'} locationKey={router.state.location.key}>
@@ -46,26 +46,26 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('main entry startup', () => {
-  it('reopens the partner list after closing a partner chat, without restoring its id', async () => {
+  it('reopens the teammate entry after closing a partner chat, without restoring its id', async () => {
     const app = launch();
     await act(() => app.router.navigate('/bots/private-bot/session/private-task'));
     cleanup();
     launch();
-    expect(screen.getByTestId('route').textContent).toBe('/bots/list');
-    expect(screen.getByRole('main').textContent).toBe(en.bots.list.selectChat);
+    expect(screen.getByTestId('route').textContent).toBe('/bots');
+    expect(screen.getByTestId('teammate-entry')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(JSON.stringify(localStorage)).not.toContain('private-bot');
     expect(JSON.stringify(localStorage)).not.toContain('private-task');
   });
-  it('opens the unselected partner list after restarting from tasks', () => {
+  it('opens the teammate entry resolver after restarting from tasks', () => {
     launch('/bots/dash/session/dash-main');
     fireEvent.click(screen.getByText('Tasks'));
     expect(screen.getByTestId('route').textContent).toBe('/cc-agent');
     cleanup();
     launch();
     fireEvent.click(screen.getByText('Partners'));
-    expect(screen.getByTestId('route').textContent).toBe('/bots/list');
-    expect(screen.getByRole('main').textContent).toBe(en.bots.list.selectChat);
+    expect(screen.getByTestId('route').textContent).toBe('/bots');
+    expect(screen.getByTestId('teammate-entry')).toBeTruthy();
   });
   it('returns to the selected partner when switching areas without restarting', () => {
     launch('/bots/dash/session/dash-main');
@@ -79,24 +79,24 @@ describe('main entry startup', () => {
     app.rerender();
     await act(() => app.router.navigate('/cc-agent'));
     fireEvent.click(screen.getByText('Partners'));
-    expect(screen.getByTestId('route').textContent).toBe('/bots/list');
+    expect(screen.getByTestId('route').textContent).toBe('/bots');
   });
   it('keeps the task index behavior for no record and after returning to tasks', async () => {
     const app = launch();
     expect(screen.getByTestId('route').textContent).toBe('/cc-agent');
-    await act(() => app.router.navigate('/bots/list'));
+    await act(() => app.router.navigate('/bots'));
     await act(() => app.router.navigate('/cc-agent/task-a'));
     cleanup();
     launch();
     expect(screen.getByTestId('route').textContent).toBe('/cc-agent');
   });
   it.each(['/cc-agent/target?message=one', '/bots/target/session/chat', '/settings'])('preserves explicit startup route %s', (path) => {
-    rememberMainEntry('account-a', '/bots/list');
+    rememberMainEntry('account-a', '/bots');
     launch(path);
     expect(screen.getByTestId('route').textContent).toBe(path);
   });
   it('never redirects a notification arriving after restoration back to the list', async () => {
-    rememberMainEntry('account-a', '/bots/list');
+    rememberMainEntry('account-a', '/bots');
     const app = launch();
     await act(() => app.router.navigate('/cc-agent/notification-target'));
     expect(screen.getByTestId('route').textContent).toBe('/cc-agent/notification-target');
@@ -111,10 +111,10 @@ describe('main entry startup', () => {
     auth.dataOwnerId = 'account-a';
     app.rerender();
     await act(() => app.router.navigate('/'));
-    expect(screen.getByTestId('route').textContent).toBe('/bots/list');
+    expect(screen.getByTestId('route').textContent).toBe('/bots');
   });
   it('keeps signed-out and invalid preferences on the existing default', () => {
-    rememberMainEntry(null, '/bots/list');
+    rememberMainEntry(null, '/bots');
     expect(readMainEntryRoute(null)).toBe('/cc-agent');
     localStorage.setItem('cindy.mainEntry.v1.owner.account-a', '/bots/specific');
     expect(readMainEntryRoute('account-a')).toBe('/cc-agent');
