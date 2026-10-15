@@ -6,6 +6,16 @@ vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixt
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: () => null, save: vi.fn() }) }));
 vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' } }));
+// The real filesystem, except an `lstat` failure a test injects for a delivery file.
+const fsFault = vi.hoisted(() => ({ lstat: null as Error | null }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const lstat = (async (...args: Parameters<typeof actual.lstat>) => {
+    if (fsFault.lstat) throw fsFault.lstat;
+    return actual.lstat(...args);
+  }) as typeof actual.lstat;
+  return { ...actual, default: { ...actual, lstat }, lstat };
+});
 vi.mock('node:fs', () => ({ existsSync: fixture.exists, readFileSync: () => fixture.config || '{"baseUrl":"https://example.com","token":"test"}' }));
 vi.mock('../botGroupChatService.js', () => ({ readPersistedReplyText: vi.fn() }));
 vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ drizzle: {
@@ -645,6 +655,23 @@ describe('Chat Server result delivery and refresh', () => {
       const sent = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST');
       expect(sent).toHaveLength(posts);
       if (posts) expect(sent[0][2].content).toEqual([{ type: 'text', text: 'Done.' }, taskCard]);
+    });
+
+    it('retries the whole message when a delivery file cannot be checked for now, rather than dropping it', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route.endsWith('/messages') && method === 'POST') return { body: { id: '70000000-0000-4000-8000-000000000001' } };
+        return response(route);
+      });
+      const files = await deliveryFiles(1);
+      fsFault.lstat = Object.assign(new Error('EBUSY: resource busy or locked, lstat'), { code: 'EBUSY', syscall: 'lstat', errno: -16 });
+      try {
+        const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result',
+          text: 'Done.', card: taskCard, files });
+        expect(posted).toMatchObject({ ok: false, retryable: true });
+        expect(fixture.handle.mock.calls.some(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')).toBe(false);
+      } finally { fsFault.lstat = null; }
     });
 
     it('hands an old local-only group (a UUID too) to the local service, which refuses for good', async () => {

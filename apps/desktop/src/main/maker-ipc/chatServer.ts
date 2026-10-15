@@ -1898,7 +1898,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             const stat = await fs.lstat(file.absolutePath);
             if (stat.isFile()) produced.push({ id: file.absolutePath, name: path.basename(file.absolutePath), category: 'file',
               mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
-          } catch { /* a file deleted since the task finished is simply not delivered */ }
+          } catch (error) {
+            // Gone or unreadable for good (deleted since the task finished): simply not delivered.
+            // A transient filesystem failure keeps the whole message for a retry.
+            if (!fileRefusedHere(error)) throw error;
+          }
         }
         // Files go up one at a time so a refused file never holds back the others: a file this
         // computer cannot send (empty, over the size limit, unreadable) or the server definitely
