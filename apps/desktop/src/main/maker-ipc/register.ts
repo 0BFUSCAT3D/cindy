@@ -6174,7 +6174,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     closeSession: (sessionId) => maker.closeSession(sessionId),
     clearBackgroundActivity: clearClaudeSessionBackgroundActivity,
     // 「全部停止」是会话级止损:已排期的自动续跑必须撤掉,别在用户喊停后又补发一条。
-    noteSessionReset: resetAutomaticRecoveryForExplicitStop,
+    // 它不经过输入协调器的 Stop(错误与重试入口仍在)：供应商组进行中的换电脑也要作废，
+    // 用户停止不换(provider-groups.md §6.1，#5880)。
+    noteSessionReset: (sessionId) => {
+      resetAutomaticRecoveryForExplicitStop(sessionId);
+      providerGroupService?.noteUserAction(sessionId);
+    },
     notifyGoalStop: pauseGoalBeforeExplicitStop,
   });
 
