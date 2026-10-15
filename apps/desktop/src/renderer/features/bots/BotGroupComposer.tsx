@@ -59,6 +59,17 @@ import {
   type BotGroupQuoteView,
 } from '../../../shared/botGroupChat';
 import { BotGroupQuotePreview } from './BotGroupQuote';
+import {
+  BOT_GROUP_COMPOSER_CARD,
+  BOT_GROUP_COMPOSER_COLUMN,
+  BOT_GROUP_COMPOSER_DOCK,
+  BOT_GROUP_COMPOSER_FOOTER,
+  BOT_GROUP_COMPOSER_FOOTER_START,
+  BOT_GROUP_COMPOSER_INPUT,
+  fitBotGroupComposerInput,
+  keepBotGroupComposerInputFocus,
+  useRefitBotGroupComposerInputOnResize,
+} from './botGroupComposerChrome';
 import { botGroupAttachmentSignature } from './botGroupAttachments';
 import { botGroupSendSignature, enqueueBotGroupSend, registerBotGroupComposer } from './botGroupOutbox';
 import {
@@ -168,9 +179,9 @@ export function BotGroupComposer({
   useLayoutEffect(() => {
     const element = textareaRef.current;
     if (!element) return;
-    element.style.height = 'auto';
-    element.style.height = `${element.scrollHeight}px`;
+    fitBotGroupComposerInput(element);
   }, [text]);
+  useRefitBotGroupComposerInputOnResize(textareaRef);
 
   // A message that did not go out comes back only into an empty input: never over new
   // text, a new tag or files added meanwhile. Pressing send again reuses its clientId.
@@ -323,8 +334,8 @@ export function BotGroupComposer({
             : t('bots.groupChat.composer.placeholder');
 
   return (
-    <div className="shrink-0 px-5 pb-4 pt-2">
-      <div className="relative mx-auto w-full max-w-[760px]">
+    <div className={BOT_GROUP_COMPOSER_DOCK}>
+      <div className={BOT_GROUP_COMPOSER_COLUMN}>
         {/* Same floating slot above the card as a task's composer: files that did not attach. */}
         {attachmentState.rejections.length > 0 ? (
           <div className="pointer-events-none absolute bottom-full left-0 right-0 z-20 mb-2 flex flex-col items-center gap-1 px-3">
@@ -335,7 +346,7 @@ export function BotGroupComposer({
           </div>
         ) : null}
         {mention.list}
-        <div className="relative flex flex-col gap-2 rounded-xl border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)] px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-[var(--chat-input-border-focus)]">
+        <div className={BOT_GROUP_COMPOSER_CARD}>
           {dragOver ? (
             <div
               data-testid="bot-group-drop-hint"
@@ -415,10 +426,10 @@ export function BotGroupComposer({
                 setDivision(false);
               }
             }}
-            className="max-h-60 min-h-6 w-full resize-none overflow-y-auto bg-transparent text-15 leading-[1.6] text-[var(--chat-input-text)] outline-none placeholder:text-[var(--chat-input-placeholder)] focus-visible:outline-none"
+            className={BOT_GROUP_COMPOSER_INPUT}
           />
-          <div className="flex min-h-7 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className={BOT_GROUP_COMPOSER_FOOTER}>
+            <div className={BOT_GROUP_COMPOSER_FOOTER_START}>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -497,14 +508,16 @@ export function BotGroupComposer({
                 {hint}
               </span>
             </div>
-            <Tip text={actionLabel}>
-              <SendButton
-                disabled={showStop ? stopping : !canSend}
-                isStreaming={showStop}
-                ariaLabel={actionLabel}
-                onClick={() => (showStop ? void stop() : send())}
-              />
-            </Tip>
+            <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(textareaRef)}>
+              <Tip text={actionLabel}>
+                <SendButton
+                  disabled={showStop ? stopping : !canSend}
+                  isStreaming={showStop}
+                  ariaLabel={actionLabel}
+                  onClick={() => (showStop ? void stop() : send())}
+                />
+              </Tip>
+            </span>
           </div>
         </div>
       </div>
