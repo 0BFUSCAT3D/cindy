@@ -41,6 +41,7 @@ let host: HTMLDivElement;
 let frameId = 0;
 const select = vi.fn();
 const openLink = vi.fn();
+const openImage = vi.fn();
 const removeOutbox = vi.fn();
 const item: MobilePendingSendItem = {
   type: 'pending_send', key: 'message-a', clientId: 'a', phase: 'queued', text: 'hello',
@@ -69,6 +70,7 @@ function show(
   const actions: PendingSendBubbleActions = { selectedClientId, onSelect: select, onRemove: vi.fn(),
     onBeginEdit: vi.fn(), onSteer: vi.fn(), onRetryOutbox: vi.fn(), onRemoveOutbox: removeOutbox };
   act(() => root.render(<PendingSendBubble item={{ ...item, ...overrides }} actions={actions} viewerDeviceId={viewerDeviceId}
+    onOpenImage={openImage}
     renderImage={() => null} renderFile={() => null}
     renderText={() => <MessageBodyText testID="link" onPress={openLink}>link</MessageBodyText>} />));
 }
@@ -112,6 +114,41 @@ it('lets a real body link consume the pending tap before the frame commits', () 
   show(); touch('Start'); touch('End');
   act(() => host.querySelector<HTMLElement>('[data-testid="link"]')!.click());
   flush(); expect(openLink).toHaveBeenCalledOnce(); expect(select).not.toHaveBeenCalled();
+});
+it.each(['queued', 'uploading', 'sending', 'settling', 'editing', 'failed'] as const)(
+  'previews a %s image without changing queue selection or cancelling the send', (phase) => {
+    show({ phase, thumbs: [{ key: 'a-slot-0', uri: 'file:///photo.jpg', ossRef: null,
+      uploading: phase === 'uploading' }], attachmentCount: 1 });
+    act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+    flush();
+    expect(openImage).toHaveBeenCalledOnce();
+    expect(openImage.mock.calls[0][0]).toMatchObject({ kind: 'media', media: {
+      kind: 'image', url: 'file:///photo.jpg', previewable: true,
+    } });
+    expect(select).not.toHaveBeenCalled();
+    expect(removeOutbox).not.toHaveBeenCalled();
+  },
+);
+it('opens the host original rather than its local thumbnail and preserves expanded queue actions', () => {
+  show({ thumbs: [{ key: 'a-slot-0', uri: 'file:///photo.jpg', ossRef: 'cindy-media://blobs/photo.jpg',
+    uploading: false }], attachmentCount: 1 }, 'a');
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+  expect(openImage.mock.calls[0][0].media).toMatchObject({
+    url: 'cindy-media://blobs/photo.jpg', previewable: false,
+  });
+  expect(select).not.toHaveBeenCalled();
+  expect(host.querySelector('[data-testid="pendingSend.actions.a"]')).not.toBeNull();
+});
+it('keeps an unavailable upload reference disabled until a local image becomes available', () => {
+  const thumb = { key: 'a-slot-0', uri: null, ossRef: 'cindy-oss-attach://photo', uploading: false };
+  show({ thumbs: [thumb] });
+  expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(true);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+  expect(openImage).not.toHaveBeenCalled();
+  show({ thumbs: [{ ...thumb, uri: 'file:///photo.jpg' }] });
+  expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(false);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
+  expect(openImage).toHaveBeenCalledOnce();
 });
 it('shows the source label above the bubble and announces it with the queued message', () => {
   show({ source: { kind: 'automation', label: '由自动化「巡检」发送' } });

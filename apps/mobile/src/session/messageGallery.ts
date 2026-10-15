@@ -13,6 +13,7 @@ import { applySentAttachmentThumbOverlay, getSentAttachmentThumbUri } from '@/se
 import type { GetSentMessageImagePreview } from '@/session/sentMessageImagePreviews';
 import { i18n } from '@/i18n';
 import { svgAttachmentForDisplay } from '@/session/messageAttachments';
+import { pendingSendGalleryImage } from '@/session/pendingSendImages';
 
 /**
  * 全屏查看器的一页:图片或视频(同一条消息里的图片与视频可连续横滑;名字沿用
@@ -187,8 +188,10 @@ export function collectMobileMessageGalleryImages(
         // fork 来源标记只含导航 UI,no-op。
         break;
       case 'pending_send':
-        // 待发送气泡:附件还是 `cindy-oss-attach://` 中转引用 / 本地预览,不是可供
-        // lightbox 分页的正式媒体;等消息回流后由 message 路径入图集。
+        item.thumbs.forEach((thumb) => {
+          const image = pendingSendGalleryImage(thumb);
+          if (image) push(image.key, image.title, image.payload, image.previewUri);
+        });
         break;
       default:
         // 穷尽性保证:新增 render-item 变体会被 typecheck 拦下(入参 never)。运行时降级为 log+skip

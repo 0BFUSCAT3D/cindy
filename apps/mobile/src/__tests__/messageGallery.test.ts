@@ -9,6 +9,7 @@ import { buildMobileMessageRenderItems } from '@/session/messageRenderModel';
 import type { RemoteMessage } from '@/session/types';
 import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl } from '@/session/messageMarkdown';
 import { buildMediaPayload } from '@/session/messagePayload';
+import type { MobileOutboxThumb } from '@/session/sessionOutbox';
 
 const durableThumbs = vi.hoisted(() => new Map<string, string>());
 vi.mock('@/session/sentAttachmentThumbStore', async (importOriginal) => ({
@@ -34,7 +35,56 @@ function messageItem(key: string, message: Partial<MobileMessageRenderItem & { m
   } as MobileMessageRenderItem;
 }
 
+function pendingItem(key: string, thumbs: MobileOutboxThumb[]): MobileMessageRenderItem {
+  return {
+    type: 'pending_send', key, clientId: key, text: '', sentInlineTokens: [], phase: 'queued',
+    queueIndex: 1, thumbs, fileCount: 0, attachmentCount: thumbs.length, uploadedCount: thumbs.length,
+    errorText: null, actions: null, hint: null,
+  };
+}
+
 describe('message gallery', () => {
+  it.each([
+    ['file:///photo.jpg', null, 'file:///photo.jpg', true],
+    ['ph://photo', null, 'ph://photo', true],
+    ['content://photo', null, 'content://photo', true],
+    ['file:///photo.jpg', 'cindy-oss-attach://photo', 'file:///photo.jpg', true],
+    ['file:///photo.jpg', 'cindy-media://blobs/photo.jpg', 'cindy-media://blobs/photo.jpg', false],
+    [null, 'cindy-media://blobs/photo.jpg', 'cindy-media://blobs/photo.jpg', false],
+    ['file:///photo.jpg', 'https://example.com/photo.jpg', 'https://example.com/photo.jpg', true],
+  ] as const)('includes pending image %s / %s using a renderable source', (uri, ossRef, url, previewable) => {
+    const gallery = collectMobileMessageGalleryImages([pendingItem('pending', [
+      { key: 'photo', uri, ossRef, uploading: !ossRef },
+    ])]);
+    expect(gallery).toHaveLength(1);
+    expect(gallery[0]).toMatchObject({ url, groupKey: 'pending', payload: { media: { url, previewable } } });
+  });
+
+  it('uses the durable upload preview and keeps paging within the selected pending message', () => {
+    durableThumbs.set('cindy-oss-attach://pending', 'file:///durable.jpg');
+    try {
+      const gallery = collectMobileMessageGalleryImages([
+        pendingItem('pending-a', [
+          { key: 'a0', uri: 'file:///temporary.jpg', ossRef: 'cindy-media://blobs/a.jpg',
+            previewRef: 'cindy-oss-attach://pending', uploading: false },
+          { key: 'a1', uri: 'file:///b.jpg', ossRef: null, uploading: true },
+        ]),
+        pendingItem('pending-b', [{ key: 'b0', uri: 'file:///c.jpg', ossRef: null, uploading: false }]),
+      ]);
+      expect(gallery[0].previewUri).toBe('file:///durable.jpg');
+      expect(lightboxImagesForPayload(gallery, gallery[0].payload, 'pending-a').map((image) => image.key))
+        .toEqual(['a0', 'a1']);
+    } finally { durableThumbs.clear(); }
+  });
+
+  it('excludes pending placeholders that have no readable image yet', () => {
+    const gallery = collectMobileMessageGalleryImages([pendingItem('pending', [
+      { key: 'upload', uri: null, ossRef: 'cindy-oss-attach://missing', uploading: false },
+      { key: 'empty', uri: null, ossRef: null, uploading: true },
+    ])]);
+    expect(gallery).toEqual([]);
+  });
+
   it.each(['', ' "title"', " 'title'"])(
     'excludes out-of-workdir Markdown images from neighbor prefetch with title suffix %s', (title) => {
       const outside = 'xdt-file://open?path=%2Fprivate%2Fphoto.png&baseDir=%2F';

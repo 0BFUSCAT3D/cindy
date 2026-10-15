@@ -3029,6 +3029,7 @@ const RenderItemView = memo(function RenderItemView({
           <PendingSendBubble
             actions={actions.pendingSend}
             item={item}
+            onOpenImage={actions.onOpenPayload}
             screenWidth={actions.screenWidth}
             viewerDeviceId={actions.viewerDeviceId}
             renderImage={(uri, sourceUri, onError) => uri ? (
