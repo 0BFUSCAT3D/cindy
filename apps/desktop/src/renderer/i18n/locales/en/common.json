@@ -8896,6 +8896,8 @@
       "needsAttention": "Needs attention",
       "duplicate": "Duplicate teammate",
       "moreActions": "More actions for {{name}}",
+      "sectionExpand": "Expand teammates",
+      "sectionCollapse": "Collapse teammates",
       "noResults": "No matching teammates or groups"
     },
     "cancel": "Cancel",
