@@ -24,6 +24,30 @@ Gateway 边界对整块报价校验，非法或无有效币种即整体省略，
 
 ## 手机直连群的设置管理
 
+### 群解散与个人列表移除
+
+`GET /me` 明确声明 `groupLifecycleVersion: 1` / `conversationListStateVersion: 1` 才启用对应动作。
+缺能力或旧副本拒绝时显示不可用，不回退为 archive 或兼容 delete。服务端合同及迁移由
+`xindong/cindy-server#921` 提供；该 PR 的实际启动迁移核验与部署仍为独立上线条件。
+
+`POST /conversations/:id/dissolve` 带 operationId 与正整数 expectedRevision，只允许 joined owner
+（包括合法伙伴主人代演），且 kind 必须是 group。`dissolved_at` 是不可撤销的终态，归档只是其
+旧客户端只读兼容投影。保留原历史权限，停止现有执行与分工、失效邀请均由服务端事务负责；
+Desktop 收到终态后还会中止本机未完成的规划，沿原 lease 链停止执行；本机终止规划无需追加取消规划写入。
+
+`POST /conversations/:id/list-state` 带 operationId、hidden 与本人列表 expectedRevision（初始0）。
+它只移除本人账号跨设备列表，不退出、不删历史、不停止其他人的执行。已退出者通过
+`GET /conversation-list-state` 获取状态，无需先读已无权限的群快照。启动及重连先取个人状态，
+只合入更新的修订；成功回包或本人 human actor scope 的 `conversation.list.changed` 才清理本地
+列表、选择与未读镜像，失败保留列表。手机同时订阅群和本人 human scope，代演不替换账号订阅。
+
+现有 `bot-group-chat` 投影可选追加 supportsDissolve、supportsListRemoval、supportsGroupLeave、dissolvedAt；远程资源
+动作 `dissolve` / `leave` / `hide` 分别转发相同的服务端动作。hide 的 opaque result 返回
+`{listState:{conversationId,hidden,revision}}`，手机按修订合入同一账号投影，阻止旧电脑列表复活。
+Desktop 既有群变化推送新增 list 类型及可选 listState；旧窗口忽略未知类型仍会刷新列表。
+旧客户端与服务端可独立升级；完整行为要求服务端全副本及使用的客户端均支持。无新增 channel、
+SQLite schema、Mobile 原生依赖或 fingerprint 输入。
+
 现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
 声明该能力，手机读取最新群详情和已有成员角色后才开放管理。设置动作可带
 `expectedRevision`，Host 在调用服务前核验，群信息 PATCH 和归档继续携带该编辑版本给

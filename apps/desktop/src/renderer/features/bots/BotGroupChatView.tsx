@@ -1,3 +1,4 @@
+import { RemoveChatFromListButton } from './RemoveChatFromListButton';
 import type { ReactNode } from 'react';
 /**
  * 群聊页：顶栏（成员头像、群名、成员名单、群设置入口）+ 多作者时间线 + 输入框。
@@ -304,7 +305,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
         if (!isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
-        if (payload.change === 'deleted') {
+        if (payload.change === 'deleted' || (payload.change === 'list' && payload.listState?.hidden)) {
           requestVersion += 1;
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
@@ -713,6 +714,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               <ArrowLeft size={14} />
               {t('bots.backToBot')}
             </Button>
+            {!failed && groupId && <RemoveChatFromListButton key={groupId} groupId={groupId} onRemoved={() => navigate('/bots')} />}
             {failed ? (
               <Button
                 variant="cta"
@@ -918,7 +920,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         </div>
       )}
       {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t('bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
+        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t(group.dissolvedAt ? 'bots.groupChat.lifecycle.dissolved' : 'bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
         groupId={group.id}
         members={group.members}
         running={running}

@@ -44,3 +44,15 @@ it('does not authenticate or reconnect after owner change or disposal', async ()
     socket, ready: vi.fn(), changed: vi.fn(), unavailable: vi.fn() });
   current = false; resolve('old-owner'); await Promise.resolve(); expect(sockets).toHaveLength(0);
 });
+
+it('subscribes focused history and the human account scope together, forwarding personal state events', async () => {
+  const changed = vi.fn();
+  stop = subscribeChatServer({ baseUrl: 'https://chat.example.invalid', token: async () => 'fixture', current: () => true, socket,
+    ready: async () => [{ scope: 'conversation:room', cursor: '9' }, { scope: `actor:${actorId}`, cursor: '10' }], changed, unavailable: vi.fn() });
+  await Promise.resolve(); const ws = sockets[0];
+  await receive(ws, { type: 'ready', actorId });
+  expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe', scope: 'conversation:room', after: '9' }));
+  const changes = [{ type: 'conversation.list.changed', data: { conversationId: actorId, hidden: true, revision: 3 } }];
+  await receive(ws, { type: 'changes', scope: `actor:${actorId}`, cursor: '11', changes });
+  expect(changed).toHaveBeenCalledWith(changes);
+});

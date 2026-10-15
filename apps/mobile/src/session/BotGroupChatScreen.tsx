@@ -19,6 +19,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { showConfirm } from '@/platform/chrome';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -192,6 +193,24 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
     Alert.alert(chat.online ? botGroupActionErrorText(t, error, fallbackKey) : t(offlineKey));
   }, [chat.online, offlineKey, t]);
 
+  const hidePending = useRef(false);
+  const hideScope = useRef('');
+  const currentHideScope = `${groupId}:${deviceId}:${accountGeneration}`;
+  hideScope.current = currentHideScope;
+  useEffect(() => () => { hideScope.current = ''; }, []);
+  const removeFromList = async () => {
+    if (hidePending.current) return;
+    hidePending.current = true;
+    const captured = currentHideScope;
+    try {
+      if (!await showConfirm({ title: t('groupChat.lifecycle.hide'), message: t('groupChat.lifecycle.hideNote'),
+        cancelLabel: t('devices.common.cancel'), confirmLabel: t('groupChat.lifecycle.hide'), destructive: true }) || hideScope.current !== captured) return;
+      await chat.act('hide');
+      if (hideScope.current === captured) leave();
+    } catch (error) { if (hideScope.current === captured) Alert.alert(botGroupActionErrorText(t, error, 'groupChat.lifecycle.failed')); }
+    finally { hidePending.current = false; }
+  };
+
   const continueRound = async () => {
     if (continuing) return;
     setContinuing(true);
@@ -295,6 +314,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
         copy={t(errorCopyKey)}>
         <View style={styles.emptyActions}>
           <MainWindowActionButton action={{ label: t('shared.back'), onPress: leave, testID: 'botGroup.leave' }} />
+          {!failed ? <MainWindowActionButton action={{ label: t('groupChat.lifecycle.hide'), onPress: () => void removeFromList(), testID: 'botGroup.hide' }} /> : null}
           {failed ? <MainWindowActionButton action={{ label: t('devices.resources.retry'), tone: 'primary', onPress: chat.reload, testID: 'botGroup.retry' }} /> : null}
         </View>
       </MainWindowEmptyState>
@@ -308,6 +328,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
       )}
     >
       {floatingHeader ? null : offlineNote}
+      {group.dissolvedAt ? <Text style={styles.offline}>{t('groupChat.lifecycle.dissolved')}</Text> : null}
       <ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.timeline, floatingHeader && { paddingTop: headerHeight + spacing.md }]}
         scrollIndicatorInsets={floatingHeader ? { top: headerHeight } : undefined} keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
