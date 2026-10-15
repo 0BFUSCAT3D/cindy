@@ -5,7 +5,7 @@ import { Tooltip } from '@/components/ui/tooltip';
 import userEvent from '@testing-library/user-event';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { MarkdownMermaidBlock } from '@/components/chat/MarkdownMermaidBlock';
-import { queryShareableMessageIds } from '@/lib/shareConversationImage';
+import { prepareShareMessageClone, queryShareableMessageIds } from '@/lib/shareConversationImage';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { clearDraft, getDraft } from '@/lib/composerDraftStore';
@@ -24,6 +24,9 @@ import type {
 } from '../../../../shared/botGroupChat';
 
 const mocks = vi.hoisted(() => ({
+  // Keep translation identity stable so attachment effects do not reload on every render.
+  t: (key: string, options?: Record<string, unknown>) =>
+    options && 'name' in options ? `${key}:${String(options.name)}` : key,
   groupId: 'g1',
   navigate: vi.fn(),
   getBotGroup: vi.fn(),
@@ -48,14 +51,16 @@ const mocks = vi.hoisted(() => ({
   getControlledState: vi.fn(),
   revoke: vi.fn(),
   thread: vi.fn(),
+  ownerGeneration: { dataOwnerId: 'account-a', generation: 1 },
+  reply: vi.fn(),
+  shareToMain: vi.fn(),
 }));
 
 // Partial: the shared attachment pieces pull in the app i18n instance, which needs initReactI18next.
 vi.mock('react-i18next', async (original) => ({
   ...(await original<typeof import('react-i18next')>()),
   useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) =>
-      options && 'name' in options ? `${key}:${String(options.name)}` : key,
+    t: mocks.t,
     i18n: { language: 'en-US', resolvedLanguage: 'en' },
   }),
 }));
@@ -65,8 +70,9 @@ vi.mock('react-router-dom', () => ({
   useParams: () => ({ groupId: mocks.groupId }),
 }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
-  getDataOwnerGeneration: () => 1,
-  isDataOwnerGenerationCurrent: () => true,
+  getDataOwnerGeneration: () => mocks.ownerGeneration,
+  isDataOwnerGenerationCurrent: (owner: { dataOwnerId: string; generation: number }) =>
+    owner.dataOwnerId === mocks.ownerGeneration.dataOwnerId && owner.generation === mocks.ownerGeneration.generation,
   isDataOwnerPushCurrent: () => true,
 }));
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError, warning: mocks.toastWarning, info: mocks.toastInfo } }));
@@ -291,6 +297,9 @@ beforeEach(() => {
     replies: [msg({ id: `reply-${rootId}`, content: `Reply to ${rootId}` })],
     hasMore: false,
   }));
+  mocks.reply.mockReset().mockResolvedValue({ ok: true, messageId: 'new-reply' });
+  mocks.shareToMain.mockReset().mockResolvedValue({ ok: true, messageId: 'share-1', alreadyShared: false });
+  mocks.toastInfo.mockReset();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -309,7 +318,7 @@ beforeEach(() => {
       cleanupCachedImages: vi.fn(async () => undefined),
       getFileThumbnail: vi.fn(async () => null),
       maker: {
-        chatServer: { thread: mocks.thread, reactors: vi.fn(async () => ({ ok: true, reactors: [] })) },
+        chatServer: { thread: mocks.thread, reply: mocks.reply, shareToMain: mocks.shareToMain, reactors: vi.fn(async () => ({ ok: true, reactors: [] })) },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
         getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),
@@ -697,6 +706,7 @@ describe('BotGroupChatView', () => {
     expect(screen.getByRole('complementary')).toBe(panel);
     expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Unsent thread reply');
     await waitFor(() => expect(document.contains(preview)).toBe(false));
+    if (kind !== 'image') expect(window.electronAPI.readTextFilePreview).toHaveBeenCalledTimes(1);
     within(panel).getByRole('textbox').focus();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('complementary')).toBeNull();
@@ -2700,4 +2710,612 @@ it('keeps copy/share in each author row and shares only message content through 
     scroll.scrollTop = 900; fireEvent.scroll(scroll);
     expect(getBotLastReadAt(botGroupReadKey('g1'))).toBe(1200);
   } finally { focus.mockRestore(); resetBotReadStateForTests(); }
+});
+
+describe('thread previews and posting to the main chat', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  const preview = (id: string, authorName: string, text: string, extra: Record<string, unknown> = {}) => ({
+    id, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName, text, attachments: [], createdAt: 1_700_000_000_000, ...extra });
+  const share = (overrides: Partial<NonNullable<BotGroupMessageView['threadShare']>> = {}): NonNullable<BotGroupMessageView['threadShare']> => ({
+    messageId: 'reply-u1', threadRootId: 'u1', status: 'available', authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满',
+    sharedByAuthor: false, content: '原话：@咪咪 周六见', attachments: [], createdAt: 1_700_000_000_000, edited: false, ...overrides });
+  function group(messages: BotGroupMessageView[]) {
+    return detail({ serverBacked: true, messages });
+  }
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('shows the newest replies under the root and opens the thread from the preview', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([
+      msg({ id: 'u1', content: '去哪玩', replyCount: 3, threadPreview: { replies: [
+        preview('r2', '小满', '爬山吧，带上相机'),
+        preview('r3', '咪咪', '', { attachments: [{ name: 'map.png', category: 'image' }, { name: 'list.pdf', category: 'file' }] }),
+      ] } }),
+    ]) });
+    const user = userEvent.setup();
+    renderView();
+    const card = await screen.findByRole('button', { name: t('open') });
+    expect(card.textContent).toContain('小满');
+    expect(card.textContent).toContain('爬山吧，带上相机');
+    // An attachment-only reply still says what it carried.
+    expect(card.textContent).toContain(t('attachmentsSummary'));
+    expect(card.textContent).toContain('bots.groupChat.server.replyCount');
+    // Export the selected root, without its independently selectable thread replies.
+    const exported = prepareShareMessageClone(card.closest('article')!)!;
+    expect(exported.textContent).toContain('去哪玩');
+    expect(exported.textContent).not.toContain('爬山吧，带上相机');
+    expect(exported.textContent).not.toContain('map.png');
+    expect(exported.querySelector('[data-thread-preview]')).toBeNull();
+    // The count lives in the preview; the toolbar keeps a plain reply icon.
+    const toolbarReply = screen.getByRole('button', { name: 'bots.groupChat.server.openTopic' });
+    expect(toolbarReply.textContent).toBe('');
+    await user.click(card);
+    expect(await screen.findByRole('complementary')).toBeTruthy();
+    expect(mocks.thread).toHaveBeenCalledWith(expect.objectContaining({ rootId: 'u1' }));
+    await user.keyboard('{Escape}');
+    expect(document.activeElement).toBe(card);
+  });
+
+  it('keeps the original author and the sharer apart, and jumps from a share to its reply', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([
+      msg({ id: 'u1', content: '去哪玩' }),
+      msg({ id: 's-other', sequence: 2, authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ 小满: fallback', threadShare: share() }),
+      msg({ id: 's-own', sequence: 3, content: '↪ 我: fallback', threadShare: share({ messageId: 'reply-u1', authorKind: 'user', authorBotId: null, authorName: '我', sharedByAuthor: true, content: '我自己的回复' }) }),
+      msg({ id: 's-gone', sequence: 4, authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ x: fallback', threadShare: share({ status: 'unavailable', authorName: '', content: '' }) }),
+    ]) });
+    const user = userEvent.setup();
+    renderView();
+    const other = (await screen.findByText(`${t('sharedReplyFrom')}:小满`)).closest('article')!;
+    expect(within(other).getByText('Alice')).toBeTruthy();
+    expect(within(other).getByText('原话：@咪咪 周六见')).toBeTruthy();
+    expect(within(other).queryByText('↪ 小满: fallback')).toBeNull();
+    // A selected share keeps the quoted reply and authors, but not navigation controls.
+    const exported = prepareShareMessageClone(other)!;
+    expect(exported.textContent).toContain('Alice');
+    expect(exported.textContent).toContain('小满');
+    expect(exported.textContent).toContain('原话：@咪咪 周六见');
+    expect(exported.textContent).not.toContain(t('viewThread'));
+    const own = screen.getByText(t('alsoSent')).closest('article')!;
+    expect(within(own).getByText('我自己的回复')).toBeTruthy();
+    expect(screen.getByText(t('sourceUnavailable'))).toBeTruthy();
+    // An unverified card's own thread ID leads nowhere.
+    const gone = screen.getByText(t('sourceUnavailable')).closest('article')!;
+    expect(within(gone).queryByRole('button', { name: t('viewThread') })).toBeNull();
+    await user.click(within(other).getByRole('button', { name: t('viewThread') }));
+    const panel = await screen.findByRole('complementary');
+    await waitFor(() => expect(within(panel).getByText('Reply to u1').closest('article')!.className).toContain('ring-2'));
+    // The reply is already in the main chat: say so and lead back to it.
+    expect(within(panel).getByRole('button', { name: t('postedBySelf') })).toBeTruthy();
+    await user.click(within(panel).getByRole('button', { name: t('postedBySelf') }));
+    expect(own.className).toContain('ring-2');
+  });
+
+  it('sends to the thread only by default, and to both places when asked', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    const toggle = within(panel).getByRole('checkbox', { name: t('alsoSend') });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await user.type(within(panel).getByRole('textbox'), 'thread only{Enter}');
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(1));
+    expect(mocks.shareToMain).not.toHaveBeenCalled();
+    await user.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'reply-2' });
+    await user.type(within(panel).getByRole('textbox'), '@咪咪 both{Enter}');
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledWith({ groupId: 'g1', messageId: 'reply-2' }));
+    expect(mocks.reply).toHaveBeenCalledTimes(2);
+    expect(mocks.reply.mock.calls[1][0]).toMatchObject({ rootId: 'u1', text: '@咪咪 both' });
+    // Each send starts from the default again.
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+  });
+
+  it('retries only the main-chat copy after the reply already reached the thread', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
+    const retry = await within(panel).findByRole('button', { name: t('retryPost') });
+    // A thread refresh must not hide the retry.
+    act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
+    await waitFor(() => expect(mocks.thread.mock.calls.length).toBeGreaterThan(1));
+    expect(within(panel).getByText(t('alsoSendFailed'))).toBeTruthy();
+    await user.click(retry);
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
+    expect(mocks.shareToMain.mock.calls).toEqual([[{ groupId: 'g1', messageId: 'new-reply' }], [{ groupId: 'g1', messageId: 'new-reply' }]]);
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('drops an unavailable main-chat copy and reports why (after transient failure: %s)', async retrying => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    if (retrying) mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
+    mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SHARE_UNAVAILABLE' });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
+    if (retrying) await user.click(await within(panel).findByRole('button', { name: t('retryPost') }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith(t('shareUnavailable')));
+    expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull();
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(retrying ? 2 : 1);
+  });
+
+  it('keeps one send identity across a failed reply and never posts to the main chat before it lands', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledTimes(1));
+    expect(mocks.shareToMain).not.toHaveBeenCalled();
+    expect(within(panel).getByRole('checkbox', { name: t('alsoSend') }).getAttribute('aria-checked')).toBe('true');
+    await user.click(within(panel).getByRole('button', { name: 'bots.groupChat.server.sendReply' }));
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
+    expect(mocks.reply.mock.calls[1][0].clientId).toBe(mocks.reply.mock.calls[0][0].clientId);
+  });
+
+  it('does not carry the choice into another thread', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })]) });
+    const user = userEvent.setup();
+    renderView();
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
+    await user.click(first!);
+    await user.click(within(await screen.findByRole('complementary')).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.click(second!);
+    await screen.findByText('Reply to u2');
+    expect(within(screen.getByRole('complementary')).getByRole('checkbox', { name: t('alsoSend') }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('posts an existing reply, including someone else’s, from its menu', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    expect(mocks.shareToMain).toHaveBeenCalledWith({ groupId: 'g1', messageId: 'alice-reply' });
+    expect(await within(reply).findByRole('button', { name: t('postedBySelf') })).toBeTruthy();
+    expect(mocks.reply).not.toHaveBeenCalled();
+  });
+});
+
+describe('thread share follow-ups', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  const share = (overrides: Partial<NonNullable<BotGroupMessageView['threadShare']>> = {}): NonNullable<BotGroupMessageView['threadShare']> => ({
+    messageId: 'reply-x', threadRootId: 'u1', status: 'available', authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满',
+    sharedByAuthor: false, content: '服务器上的原文', attachments: [], createdAt: 1_700_000_000_000, edited: false, ...overrides });
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('shows a loading placeholder, never the card text, while the reply is read', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [
+      msg({ id: 's1', authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ 冒充: 卡片文字', threadShare: share({ status: 'loading', authorName: '', content: '' }) }),
+    ] }) });
+    renderView();
+    expect(await screen.findByText(t('loadingSource'))).toBeTruthy();
+    expect(screen.queryByText('↪ 冒充: 卡片文字')).toBeNull();
+  });
+
+  it.each(['unavailable', 'available'] as const)('keeps a %s share as a quote when it is the thread root', async status => {
+    const root = msg({ id: 's1', authorKind: 'user', isSelf: false, authorName: 'Alice', content: '↪ 冒充: 卡片文字', replyCount: 1,
+      threadShare: share(status === 'available'
+        ? { attachments: [{ id: 'f1', name: '路线.pdf', category: 'file', mimeType: 'application/pdf', size: 1, url: null, path: '/tmp/路线.pdf' }] }
+        : { status: 'unavailable', authorName: '', content: '' }) });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [root] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root, replies: [], hasMore: false });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.openTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await waitFor(() => expect(within(panel).getAllByRole('figure').length).toBe(1));
+    expect(within(panel).queryByText('↪ 冒充: 卡片文字')).toBeNull();
+    if (status === 'available') {
+      expect(within(panel).getByText('服务器上的原文')).toBeTruthy();
+      expect(within(panel).getByText('路线.pdf')).toBeTruthy();
+    } else expect(within(panel).getByText(t('sourceUnavailable'))).toBeTruthy();
+  });
+
+  it('keeps the share it got back and says when that share is on an older page', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' })] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    mocks.shareToMain.mockResolvedValue({ ok: true, messageId: 'old-share', alreadyShared: false });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    const badge = await within(reply).findByRole('button', { name: t('postedBySelf') });
+    expect((badge as HTMLButtonElement).disabled).toBe(false);
+    await user.click(badge);
+    expect(mocks.toastInfo).toHaveBeenCalledWith(t('shareNotLoaded'));
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: t('viewInMain') })).toBeTruthy();
+  });
+
+  it('stops offering to post a reply whose existing share cannot be located', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' })] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    // The server already has this person's share but could not say which message it is.
+    mocks.shareToMain.mockResolvedValue({ ok: true, messageId: null, alreadyShared: true });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    const badge = await within(reply).findByRole('button', { name: t('postedBySelf') });
+    expect((badge as HTMLButtonElement).disabled).toBe(true);
+    // With nothing else to offer for this reply, the menu itself may be gone.
+    const more = within(reply).queryByRole('button', { name: 'chat.messageActionBar.moreActions' });
+    if (more) {
+      fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+      await screen.findAllByRole('menuitem');
+    }
+    expect(screen.queryByRole('menuitem', { name: t('postToMain') })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: t('viewInMain') })).toBeNull();
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the reader's own share over another member's that the main chat has loaded", async () => {
+    const bobShare = msg({ id: 'bob-share', sequence: 2, authorKind: 'user', isSelf: false, authorBotId: 'bob', authorName: 'Bob', content: '↪ 卡片',
+      threadShare: { messageId: 'alice-reply', threadRootId: 'u1', status: 'available', authorKind: 'user', authorBotId: null, authorName: 'Alice',
+        sharedByAuthor: false, content: 'Alice says hi', attachments: [], createdAt: 1, edited: false } });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' }), bobShare] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    // The reader's earlier share of the same reply sits on a page the main chat has not loaded.
+    mocks.shareToMain.mockResolvedValue({ ok: true, messageId: 'my-old-share', alreadyShared: true });
+    const user = userEvent.setup();
+    renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
+    const panel = await screen.findByRole('complementary');
+    const reply = (await within(panel).findByText('Alice says hi')).closest('article')!;
+    expect(await within(reply).findByRole('button', { name: t('postedToMain') })).toBeTruthy();
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    await user.click(await screen.findByRole('menuitem', { name: t('postToMain') }));
+    expect(await within(reply).findByRole('button', { name: t('postedBySelf') })).toBeTruthy();
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: t('viewInMain') })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: t('postToMain') })).toBeNull();
+  });
+
+  it('does not count a share the server could not resolve in its claimed thread as posted', async () => {
+    // The reader's own card names the right reply but the wrong thread, so it resolved as unavailable.
+    const misplaced = msg({ id: 'my-bad-share', sequence: 2, content: '↪ 卡片',
+      threadShare: share({ messageId: 'alice-reply', threadRootId: 'elsewhere', status: 'unavailable', authorName: '', content: '' }) });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: '去哪玩' }), misplaced] }) });
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: '去哪玩' }), hasMore: false,
+      replies: [msg({ id: 'alice-reply', authorKind: 'user', isSelf: false, authorName: 'Alice', content: 'Alice says hi' })] });
+    const user = userEvent.setup();
+    renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
+    const reply = (await within(await screen.findByRole('complementary')).findByText('Alice says hi')).closest('article')!;
+    expect(within(reply).queryByRole('button', { name: t('postedBySelf') })).toBeNull();
+    expect(within(reply).queryByRole('button', { name: t('postedToMain') })).toBeNull();
+    fireEvent.pointerDown(within(reply).getByRole('button', { name: 'chat.messageActionBar.moreActions' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByRole('menuitem', { name: t('postToMain') })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: t('viewInMain') })).toBeNull();
+  });
+
+  it('keeps every failed main-chat copy retryable, across switching threads', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' }), msg({ id: 'u2', sequence: 2, content: 'B' })] }) });
+    mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'first' }).mockResolvedValueOnce({ ok: true, messageId: 'second' });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    renderView();
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
+    await user.click(first!);
+    let panel = await screen.findByRole('complementary');
+    for (const text of ['one', 'two']) {
+      await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+      await user.type(within(panel).getByRole('textbox'), `${text}{Enter}`);
+      await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledWith({ groupId: 'g1', messageId: text === 'one' ? 'first' : 'second' }));
+    }
+    await within(panel).findByRole('button', { name: t('retryPost') });
+    await user.click(second!);
+    await screen.findByText('Reply to u2');
+    expect(within(screen.getByRole('complementary')).queryByRole('button', { name: t('retryPost') })).toBeNull();
+    await user.click(first!);
+    panel = await screen.findByRole('complementary');
+    const retry = await within(panel).findByRole('button', { name: t('retryPost') });
+    mocks.shareToMain.mockClear().mockResolvedValue({ ok: true, messageId: 'share', alreadyShared: false });
+    await user.click(retry);
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
+    expect(mocks.shareToMain.mock.calls.map(([input]) => input.messageId)).toEqual(['first', 'second']);
+    expect(mocks.reply).toHaveBeenCalledTimes(2);
+  });
+
+  // The copy fails while the reader is in another thread, or after they came back to this one.
+  it.each(['away', 'back'] as const)('keeps a main-chat copy retryable when it fails after leaving the thread (reader %s)', async (where) => {
+    // The queue outlives a panel by design, so each case uses threads of its own.
+    const [rootA, rootB] = [`${where}-a`, `${where}-b`];
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: rootA, content: 'A' }), msg({ id: rootB, sequence: 2, content: 'B' })] }) });
+    mocks.reply.mockResolvedValue({ ok: true, messageId: 'first' });
+    let fail!: () => void;
+    mocks.shareToMain.mockReturnValueOnce(new Promise(resolve => { fail = () => resolve({ ok: false, errorCode: 'SERVICE_ERROR' }); }));
+    const user = userEvent.setup();
+    renderView();
+    const [first, second] = await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' });
+    await user.click(first!);
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'one{Enter}');
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
+    // The copy is still on its way when the reader moves to another thread.
+    await user.click(second!);
+    await screen.findByText(`Reply to ${rootB}`);
+    if (where === 'away') await act(async () => fail());
+    await user.click(first!);
+    const reopened = await screen.findByRole('complementary');
+    await within(reopened).findByText(`Reply to ${rootA}`);
+    if (where === 'back') {
+      expect(within(reopened).queryByRole('button', { name: t('retryPost') })).toBeNull();
+      await act(async () => fail());
+    }
+    expect(await within(reopened).findByRole('button', { name: t('retryPost') })).toBeTruthy();
+  });
+});
+
+describe('shares on older pages', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it('follows the reply after an edit or deletion without a click or reopen', async () => {
+    const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 冒充: 卡片文字',
+      threadShare: { messageId: 'old-reply', threadRootId: 'old-root', status: 'available', authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满',
+        sharedByAuthor: false, content: '加载时的原文', attachments: [], createdAt: 1, edited: false } });
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] });
+    mocks.getBotGroup
+      .mockResolvedValueOnce({ ok: true, group: latest })
+      .mockResolvedValueOnce({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [oldShare] } })
+      .mockResolvedValue({ ok: true, group: { ...latest, threadShareUpdates: { 'old-share': { ...oldShare.threadShare!, status: 'unavailable', authorName: '', content: '' } } } });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('加载时的原文')).toBeTruthy();
+    act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
+    expect(await screen.findByText(t('sourceUnavailable'))).toBeTruthy();
+    expect(screen.queryByText('加载时的原文')).toBeNull();
+    expect(screen.queryByText('↪ 冒充: 卡片文字')).toBeNull();
+    expect(mocks.getBotGroup).toHaveBeenLastCalledWith('g1', expect.objectContaining({
+      shownShares: [{ id: 'old-share', messageId: 'old-reply', threadRootId: 'old-root', sharerId: 'alice-actor' }] }));
+  });
+
+  // The reply is edited while an older page is on its way; either read may land first.
+  it.each(['refresh', 'page'] as const)('checks the shares of an older page that races an edit refresh (%s lands first)', async (first) => {
+    const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
+      sharedByAuthor: false, content: '编辑前的原文', attachments: [], createdAt: 1, edited: false, version: 1 };
+    const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 1, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] });
+    let finishPage!: (result: { ok: true; group: BotGroupDetail }) => void;
+    let finishRefresh!: (result: { ok: true; group: BotGroupDetail }) => void;
+    mocks.getBotGroup
+      .mockResolvedValueOnce({ ok: true, group: latest })
+      .mockReturnValueOnce(new Promise(resolve => { finishPage = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve; }))
+      .mockImplementation(async (_groupId: string, options?: { shownShares?: Array<{ id: string }> }) => ({ ok: true, group: { ...latest, threadShareVersion: 2,
+        ...(options?.shownShares?.some(item => item.id === 'old-share')
+          ? { threadShareUpdates: { 'old-share': { ...share, content: '编辑后的原文', edited: true, version: 2 } } } : {}) } }));
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(3));
+    const page = () => finishPage({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [oldShare] } });
+    const refresh = () => finishRefresh({ ok: true, group: { ...latest, threadShareVersion: 2 } });
+    for (const land of first === 'refresh' ? [refresh, page] : [page, refresh]) await act(async () => land());
+    expect(await screen.findByText('编辑后的原文')).toBeTruthy();
+    expect(screen.queryByText('编辑前的原文')).toBeNull();
+  });
+
+  it('checks each new version once without looping when a source cannot be confirmed', async () => {
+    const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
+      sharedByAuthor: false, content: '原文', attachments: [], createdAt: 1, edited: false, version: 1 };
+    const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
+    let version = 1;
+    // The server cannot confirm this share for now, so every refresh leaves it stale.
+    mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number }) => ({ ok: true, group: detail({ serverBacked: true,
+      threadShareVersion: version, ...(options?.beforeSequence ? { hasMoreBefore: false, messages: [oldShare] } : { hasMoreBefore: true, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] }) }) }));
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('原文');
+    const settle = async () => { for (let i = 0; i < 6; i += 1) await act(async () => { await Promise.resolve(); }); };
+    version = 2;
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await settle();
+    const afterFirstEdit = mocks.getBotGroup.mock.calls.length;
+    // A later edit is checked again; unchanged stale data never causes a refresh loop.
+    version = 3;
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await settle();
+    expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBe(2);
+    await settle();
+    expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBe(2);
+  });
+
+  it('waits for a follow-up before another, whatever else commits meanwhile', async () => {
+    const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
+      sharedByAuthor: false, content: '原文', attachments: [], createdAt: 1, edited: false, version: 1 };
+    const oldShare = msg({ id: 'old-share', sequence: 20, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 2, messages: [msg({ id: 'new', sequence: 50, content: '最新' })] });
+    const followUps: Array<() => void> = [];
+    mocks.getBotGroup.mockImplementation((_groupId: string, options?: { beforeSequence?: number; shownShares?: unknown[] }) => {
+      if (options?.beforeSequence === 50) return Promise.resolve({ ok: true, group: { ...latest, messages: [oldShare] } });
+      if (options?.beforeSequence) return Promise.resolve({ ok: true, group: { ...latest, hasMoreBefore: false, messages: [msg({ id: 'oldest', sequence: 1, content: '更早' })] } });
+      // A follow-up checking the stale share stays in flight until released.
+      if (options?.shownShares?.length) return new Promise(resolve => followUps.push(() => resolve({ ok: true, group: latest })));
+      return Promise.resolve({ ok: true, group: latest });
+    });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(followUps).toHaveLength(1));
+    // Another older page lands while that follow-up is still in flight.
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await screen.findByText('更早');
+    await act(async () => { await Promise.resolve(); });
+    expect(followUps).toHaveLength(1);
+  });
+});
+
+describe('more older shares than one refresh re-reads', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+
+  it.each(['source', 'attachment'] as const)('settles every older %s after overlapping completion pushes', { timeout: 20_000 }, async (pending) => {
+    const older = Array.from({ length: 201 }, (_, i) => msg({ id: `share-${i}`, sequence: i + 1, content: 'card fallback',
+      threadShare: { messageId: `reply-${i}`, threadRootId: 'root', status: pending === 'source' ? 'loading' : 'available',
+        authorKind: 'user', authorBotId: null, authorName: 'Alice', sharedByAuthor: true, content: pending === 'source' ? '' : `原文 ${i}`,
+        attachments: pending === 'attachment' ? [{ id: `file-${i}`, name: `pending-${i}.pdf`, category: 'file', mimeType: 'application/pdf', size: 0, url: null, path: null, state: 'loading' }] : [],
+        createdAt: 1, edited: false, version: 2 } }));
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 2, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
+    const finish: Array<() => void> = [];
+    mocks.getBotGroup.mockImplementation((_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string }> }) => {
+      if (options?.beforeSequence) return Promise.resolve({ ok: true, group: { ...latest, hasMoreBefore: false, messages: older } });
+      if (!options?.shownShares?.length) return Promise.resolve({ ok: true, group: latest });
+      const updates = Object.fromEntries(options.shownShares.map(ref => {
+        const i = Number(ref.id.slice(6));
+        return [ref.id, { ...older[i]!.threadShare!, status: 'available', content: `核对 ${i}`, attachments: [] }];
+      }));
+      return new Promise(resolve => finish.push(() => resolve({ ok: true, group: { ...latest, threadShareUpdates: updates } })));
+    });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(document.querySelectorAll('[data-share-message-id]').length).toBeGreaterThan(200));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    expect(finish).toHaveLength(2);
+    await act(async () => finish[1]!());
+    await act(async () => finish[0]!());
+    expect(await screen.findByText('核对 0')).toBeTruthy();
+    expect(screen.getByText('核对 200')).toBeTruthy();
+    expect(screen.queryByText(t('loadingSource'))).toBeNull();
+    expect(screen.queryByText('pending-0.pdf')).toBeNull();
+    expect(finish).toHaveLength(2);
+  });
+
+  it('checks all loaded shares in one refresh, including the oldest deleted source', { timeout: 20_000 }, async () => {
+    type Share = NonNullable<BotGroupMessageView['threadShare']>;
+    const shareOf = (i: number, extra: Partial<Share> = {}): Share => ({ messageId: `reply-${i}`, threadRootId: 'root', status: 'available', authorKind: 'bot',
+      authorBotId: 'xiaoman', authorName: '小满', sharedByAuthor: false, content: `原文 ${i}`, attachments: [], createdAt: 1, edited: false, version: 1, ...extra });
+    const older = Array.from({ length: 201 }, (_, i) => msg({ id: `share-${i}`, sequence: i + 1, authorKind: 'user', isSelf: false, authorBotId: 'alice',
+      authorName: 'Alice', content: `↪ 卡片 ${i}`, threadShare: shareOf(i) }));
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 1, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
+    let version = 1;
+    const refreshes: Array<string[]> = [];
+    mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string; messageId: string }> }) => {
+      if (options?.beforeSequence) return { ok: true, group: { ...latest, hasMoreBefore: false, messages: older } };
+      refreshes.push((options?.shownShares ?? []).map(share => share.id));
+      // The oldest share's reply has been deleted on the server since it was shown.
+      const threadShareUpdates = Object.fromEntries((options?.shownShares ?? []).map(share => [share.id, share.messageId === 'reply-0'
+        ? shareOf(0, { status: 'unavailable', authorName: '', content: '', version }) : shareOf(Number(share.messageId.slice(6)), { version })]));
+      return { ok: true, group: { ...latest, threadShareVersion: version, threadShareUpdates } };
+    });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('原文 0')).toBeTruthy();
+    version = 2;
+    act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
+    await screen.findByText(t('sourceUnavailable'));
+    await waitFor(() => expect(screen.queryByText(t('loadingSource'))).toBeNull());
+    expect(screen.queryByText('原文 0')).toBeNull();
+    expect(screen.getAllByText(t('sourceUnavailable')).length).toBe(1);
+    // Initial load and one push refresh: no per-batch follow-ups.
+    expect(refreshes).toHaveLength(2);
+    expect(refreshes[1]).toHaveLength(201);
+    expect(screen.queryByText('↪ 卡片 0')).toBeNull();
+  });
+
+  it('checks a stale share even when a full batch of newer ones is still loading', { timeout: 20_000 }, async () => {
+    type Share = NonNullable<BotGroupMessageView['threadShare']>;
+    const shareOf = (i: number, extra: Partial<Share> = {}): Share => ({ messageId: `reply-${i}`, threadRootId: 'root', status: 'available', authorKind: 'bot',
+      authorBotId: 'xiaoman', authorName: '小满', sharedByAuthor: false, content: `原文 ${i}`, attachments: [], createdAt: 1, edited: false, version: 2, ...extra });
+    // The newest 200 are still being read by the main process; the oldest predates an edit.
+    const older = Array.from({ length: 201 }, (_, i) => msg({ id: `share-${i}`, sequence: i + 1, authorKind: 'user', isSelf: false, authorBotId: 'alice',
+      authorName: 'Alice', content: `↪ 卡片 ${i}`, threadShare: i === 0 ? shareOf(0, { version: 1 }) : shareOf(i, { status: 'loading', authorName: '', content: '' }) }));
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 2, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
+    const refreshes: Array<string[]> = [];
+    mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string; messageId: string }> }) => {
+      if (options?.beforeSequence) return { ok: true, group: { ...latest, hasMoreBefore: false, messages: older } };
+      refreshes.push((options?.shownShares ?? []).map(share => share.id));
+      const threadShareUpdates = Object.fromEntries((options?.shownShares ?? []).map(share => [share.id, share.messageId === 'reply-0'
+        ? shareOf(0, { content: '核对后的原文' }) : shareOf(Number(share.messageId.slice(6)), { status: 'loading', authorName: '', content: '' })]));
+      return { ok: true, group: { ...latest, threadShareUpdates } };
+    });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('核对后的原文')).toBeTruthy();
+    // The first refresh that checks older shares already takes the stale one.
+    expect(refreshes.find(ids => ids.length)).toContain('share-0');
+    expect(refreshes.find(ids => ids.length)).toHaveLength(201);
+  });
+});
+
+describe('pending main-chat copies across accounts', () => {
+  const t = (name: string) => `bots.groupChat.server.thread.${name}`;
+  beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+  afterEach(() => { mocks.ownerGeneration = { dataOwnerId: 'account-a', generation: 1 }; });
+
+  it('does not offer one account\'s failed copy to the next account in the same group', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' })] }) });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const user = userEvent.setup();
+    const view = renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    let panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'from account A{Enter}');
+    await within(panel).findByRole('button', { name: t('retryPost') });
+    view.unmount();
+    // Another account opens the same server group and thread.
+    mocks.ownerGeneration = { dataOwnerId: 'account-b', generation: 2 };
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    panel = await screen.findByRole('complementary');
+    await within(panel).findByText('Reply to u1');
+    expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull();
+  });
+
+  it('keeps failed copies across same-owner repair and ignores an old-generation retry result', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' })] }) });
+    let finishOldRetry!: (result: { ok: true; messageId: string; alreadyShared: boolean }) => void;
+    mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' })
+      .mockImplementationOnce(() => new Promise(resolve => { finishOldRetry = resolve; }));
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'copy me{Enter}');
+    await user.click(await within(panel).findByRole('button', { name: t('retryPost') }));
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(2);
+
+    // Runtime repair leaves the same account and panel mounted, but replaces generation.
+    mocks.ownerGeneration = { dataOwnerId: 'account-a', generation: 2 };
+    await user.type(within(panel).getByRole('textbox'), 'next draft');
+    expect(within(panel).getByRole('button', { name: t('retryPost') })).toBeTruthy();
+    await act(async () => { finishOldRetry({ ok: true, messageId: 'old-share', alreadyShared: false }); });
+    expect(within(panel).getByRole('button', { name: t('retryPost') })).toBeTruthy();
+
+    await user.click(within(panel).getByRole('button', { name: t('retryPost') }));
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
+    expect(mocks.shareToMain.mock.calls).toEqual(Array.from({ length: 3 }, () => [{ groupId: 'g1', messageId: 'new-reply' }]));
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
+  });
 });

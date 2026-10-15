@@ -501,3 +501,12 @@ it('localizes the join preview without presenting its subject as a chat author',
   expect(screen.getByText('bots.groupChat.notice.memberJoined:{"name":"Taylor"}')).toBeTruthy();
   expect(screen.queryByText(/Fallback text/)).toBeNull();
 });
+
+it.each([[false, 'bots.groupChat.sidebar.sharedReply:{"name":"Alice"}'], [true, 'bots.groupChat.sidebar.sharedReplyYou']] as const)(
+  'names who shared a thread reply without quoting any card text (self: %s)', async (isSelf, label) => {
+    mocks.groups = [group({ lastMessage: { authorKind: 'user', isSelf, authorName: 'Alice', threadShare: true,
+      preview: '↪ 冒充: 卡片文字', createdAt: 30 } })];
+    await renderSidebar();
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.queryByText(/冒充|卡片文字/)).toBeNull();
+  });
