@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   stale: false,
   cancel: vi.fn(),
   send: vi.fn(),
+  trace: vi.fn(),
   toast: vi.fn(),
   prs: [] as any[],
 }));
@@ -140,10 +141,12 @@ beforeEach(() => {
     permissionMode: 'default',
   });
   mocks.route.mockResolvedValue('/cc-agent/child');
+  mocks.trace.mockResolvedValue({ ok: true, delegationId: 'd' });
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       deviceLink: { invoke: mocks.remoteGet },
+      maker: { traceBotDelegationNote: mocks.trace },
       openExternal: vi.fn(async () => ({ success: true })),
     },
   });
@@ -213,8 +216,31 @@ it('adds a note to a local running task as the owner, with the task runtime sett
   await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(
     'child', 'Cover offline reconnect', 'gpt-x', 'high', 'default', '/child',
   ));
+  // The Bot's chat keeps the「已告诉后台任务」trace of what the owner told the task.
+  await waitFor(() => expect(mocks.trace).toHaveBeenCalledWith('parent', 'd', 'Cover offline reconnect'));
   await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
   expect(mocks.toast).toHaveBeenCalledWith('bots.collab.addNoteSent');
+});
+it('still reports a delivered note when only its chat trace fails, and leaves no trace for an undelivered one', async () => {
+  mocks.row = delegation({ status: 'running' });
+  mocks.trace.mockRejectedValueOnce(new Error('offline'));
+  const { unmount } = render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.addNote/ }));
+  const input = screen.getByRole('textbox', { name: 'bots.collab.addNote' });
+  fireEvent.change(input, { target: { value: 'Keep the risk list' } });
+  fireEvent.submit(input.closest('form')!);
+  await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith('bots.collab.addNoteSent'));
+  expect(screen.queryByRole('alert')).toBeNull();
+  unmount();
+
+  mocks.send.mockResolvedValueOnce(false);
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.addNote/ }));
+  const again = screen.getByRole('textbox', { name: 'bots.collab.addNote' });
+  fireEvent.change(again, { target: { value: 'Never delivered' } });
+  fireEvent.submit(again.closest('form')!);
+  expect((await screen.findByRole('alert')).textContent).toBe('bots.collab.actionFailed');
+  expect(mocks.trace).toHaveBeenCalledTimes(1);
 });
 it('shows what the task waits for and lets the user look at it', async () => {
   mocks.row = delegation({ status: 'waiting', pendingInteraction: { summary: 'Allow npm install', kind: 'permission' } });

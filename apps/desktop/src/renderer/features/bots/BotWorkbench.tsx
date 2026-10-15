@@ -579,6 +579,11 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
         rowMenu={rowMenu}
         archivedFooter={pageControl(archivedPages, true)}
       />
+      {/* No「做完」group yet (nothing finished, no archived row loaded): a failed archived
+          read still needs its retry somewhere, or it could never be reloaded. */}
+      {archivedPages.error && !groups.some((group) => group.key === 'done') ? (
+        <div className="px-5">{pageControl(archivedPages, false)}</div>
+      ) : null}
       {activePages.error || (activePages.hasMore && !activePages.loading) ? (
         <div className="px-5">{pageControl(activePages, false)}</div>
       ) : null}

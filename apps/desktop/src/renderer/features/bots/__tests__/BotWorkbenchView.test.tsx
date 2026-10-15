@@ -10,6 +10,11 @@ const m = vi.hoisted(() => ({
   readTask: vi.fn(),
   sendMessage: vi.fn(async () => true),
   rows: { active: [] as Session[], archived: [] as Session[] },
+  pages: {
+    active: { loading: false, error: false, hasMore: false },
+    archived: { loading: false, error: false, hasMore: false },
+  },
+  load: { active: vi.fn(), archived: vi.fn() },
   activity: new Map<string, unknown>(),
 }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
@@ -24,10 +29,8 @@ vi.mock('../BotTodoList', () => ({ BotTodoList: () => <section aria-label="todos
 vi.mock('../useWorkbenchSessionPages', () => ({
   useWorkbenchSessionPages: (_scope: string, status: 'active' | 'archived') => ({
     rows: m.rows[status],
-    loading: false,
-    error: false,
-    hasMore: false,
-    load: vi.fn(),
+    ...m.pages[status],
+    load: m.load[status],
   }),
 }));
 vi.mock('../useWorkbenchSessionActions', () => ({
@@ -185,6 +188,21 @@ it('opens a Cindy task inside the panel, reads it, and returns to the list', asy
 
   fireEvent.click(within(crumb).getByRole('button', { name: 'bots.workbench.title' }));
   expect(await screen.findByRole('region', { name: 'bots.workbench.group.todo' })).toBeTruthy();
+});
+
+it('keeps a retry for a failed archived read when nothing is done or archived yet', async () => {
+  m.rows = { active: [session('s-run')], archived: [] };
+  m.pages.archived = { loading: false, error: true, hasMore: false };
+  try {
+    render(<BotWorkbench botId="bot-1" sessionId="bot-main" />);
+    await screen.findByRole('region', { name: 'bots.workbench.group.running' });
+    expect(screen.queryByRole('region', { name: 'bots.workbench.group.done' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'commonUi.retry' }));
+    expect(m.load.archived).toHaveBeenCalledTimes(1);
+    expect(m.load.active).not.toHaveBeenCalled();
+  } finally {
+    m.pages.archived = { loading: false, error: false, hasMore: false };
+  }
 });
 
 it('opens an archived task read-only, without restoring it or offering 补一句', async () => {

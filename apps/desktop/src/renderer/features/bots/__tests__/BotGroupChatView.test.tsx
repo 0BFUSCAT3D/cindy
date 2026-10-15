@@ -2160,6 +2160,22 @@ it('keeps copy/share in each author row and shares only message content through 
   } finally { focus.mockRestore(); resetBotReadStateForTests(); }
 });
 
+it('acknowledges a Bot’s plan card at the tail, the same range the unread badge counts', async () => {
+  resetBotReadStateForTests();
+  const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  markBotRead(botGroupReadKey('g1'), 100);
+  mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(plan(), [], { messages: [
+    msg({ id: 'b', authorKind: 'bot', content: 'First reply', createdAt: 200 }),
+    { ...planCard, createdAt: 300 },
+  ] }) });
+  const view = renderView();
+  try {
+    await screen.findByTestId('bot-group-plan');
+    act(() => window.dispatchEvent(new Event('focus')));
+    expect(getBotLastReadAt(botGroupReadKey('g1'))).toBe(300);
+  } finally { focus.mockRestore(); resetBotReadStateForTests(); view.unmount(); }
+});
+
 describe('Telegram / Slack-grade timeline', () => {
   function deferred<T>() {
     let resolve!: (value: T) => void;

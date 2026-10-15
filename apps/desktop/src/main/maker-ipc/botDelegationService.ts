@@ -3097,6 +3097,58 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   /**
+   * The owner typed a line into a running background task from its card in the Bot's
+   * chat. The line itself already went to the child as the owner's own message (the
+   * card sends it like typing in that task); this only leaves the same quiet trace a
+   * Bot's `message_session_task` leaves, so the Bot's chat shows what the task was told.
+   * Scoped like cancel: the task must belong to the Bot whose chat holds the card.
+   */
+  const traceOwnerNote = async (
+    callerSessionId: string,
+    delegationId: string,
+    text: string,
+  ): Promise<BotDelegationResult<{ delegationId: string }>> => {
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > MAX_INTERJECTION_CHARS) {
+      return { ok: false, errorCode: 'INVALID_ARGS', message: '消息内容为空或超长' };
+    }
+    const caller = await resolveCaller(callerSessionId);
+    if (!caller) {
+      return { ok: false, errorCode: 'NOT_A_BOT_SESSION', message: '当前任务不属于任何伙伴' };
+    }
+    const db = getDbClient().drizzle;
+    const [row] = await db
+      .select()
+      .from(botDelegations)
+      .where(and(eq(botDelegations.id, delegationId), callerTaskScope(caller)))
+      .limit(1);
+    if (!row) return { ok: false, errorCode: 'NOT_FOUND', message: '后台任务不存在' };
+    const preview = botInterjectionPreview(trimmed);
+    await persistTimelineMessage({
+      sessionId: callerSessionId,
+      // Not idempotent across calls on purpose: each 补一句 is its own line in the chat.
+      clientId: BOT_DELEGATION_CLIENT_ID.interjectionMirror(delegationId, `owner-${createId()}`),
+      role: 'assistant',
+      content: '',
+      createdAt: now(),
+      agentMeta: {
+        botCollaboration: {
+          ...await collaborationMeta(row, 'interjection'),
+          // Only the bounded first line; the full note lives in the child task.
+          ...(preview ? { interjectionPreview: preview } : {}),
+        },
+      },
+    });
+    emitChanged({
+      delegationId: row.id,
+      parentSessionId: row.parentSessionId,
+      childSessionId: row.childSessionId,
+      status: row.status as DelegationStatus,
+    });
+    return { ok: true, delegationId };
+  };
+
+  /**
    * Continue in the same visible Session, preserving history, worktree ownership
    * and callback targets. An archived/deleted Session needs explicit restoration.
    */
@@ -4453,6 +4505,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     messageSessionTask: expose(messageSessionTask),
     stopSessionTask: expose(stopSessionTask),
     cancelDelegation: expose((callerSessionId: string, delegationId: string) => withTaskOperation(delegationId, () => cancelDelegation(callerSessionId, delegationId))),
+    traceOwnerNote: expose(traceOwnerNote),
     cancelDelegationsForParentSession,
     cancelDelegationsForBot,
     settleSession,

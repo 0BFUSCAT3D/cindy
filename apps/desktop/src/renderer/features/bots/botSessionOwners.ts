@@ -56,6 +56,24 @@ export function botRouteForOwnedSession(
   return `/bots/${botId}/session/${id}`;
 }
 
+type LoadedBotProfilesReader = () => readonly BotProfile[] | null;
+let loadedBotProfilesReader: LoadedBotProfilesReader | null = null;
+
+/**
+ * botStore registers a reader for its loaded projection when its module loads, so
+ * route helpers in `lib/` (notification clicks, sidebar) read it synchronously without
+ * importing the store graph — and without a dynamic import on a click, which made the
+ * shared-task dialog tests time out on slow CI runners.
+ */
+export function registerLoadedBotProfilesReader(reader: LoadedBotProfilesReader | null): void {
+  loadedBotProfilesReader = reader;
+}
+
+/** The loaded Bot profiles, or null while the store is not loaded for this account. */
+export function readLoadedBotProfiles(): readonly BotProfile[] | null {
+  return loadedBotProfilesReader?.() ?? null;
+}
+
 export interface BotSessionEntryRouteDeps {
   readProfiles: () => readonly BotProfile[];
   /** Loads the current owner's profiles; `refresh` re-reads an already loaded projection. */

@@ -414,8 +414,10 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   }, [rows, quoteSources]);
 
   // Read marks: the newest incoming message (a Bot or another human) once it is in view.
+  // Same range as the unread count (`incomingMessageTimes`): spoken messages and a Bot's
+  // plan card; notices never count, so a plan card at the tail cannot leave a stuck badge.
   const latestIncomingAt = useMemo(() => realMessages.reduce((latest, message) =>
-    message.kind === 'message' && (message.authorKind === 'bot' || message.isSelf === false)
+    (message.kind === 'message' || message.kind === 'plan') && (message.authorKind === 'bot' || message.isSelf === false)
       ? Math.max(latest, message.createdAt) : latest, 0), [realMessages]);
   const latestIncomingRef = useRef(latestIncomingAt);
   latestIncomingRef.current = latestIncomingAt;

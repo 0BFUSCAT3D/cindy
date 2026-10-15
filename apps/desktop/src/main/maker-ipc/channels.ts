@@ -777,6 +777,11 @@ export const MAKER_INVOKE = {
   BOT_DELEGATIONS_LIST: 'maker:bot-delegations:list',
   /** Cindy Bot 父任务取消仍在运行或等待中的委派。 */
   BOT_DELEGATION_CANCEL: 'maker:bot-delegation:cancel',
+  /**
+   * 主人在伙伴聊天的任务卡上「补一句」后，给伙伴聊天留一条「已告诉后台任务：「…」」。
+   * 消息本身由渲染端以主人身份发进子任务；只本机可用，不进 device-link 白名单。
+   */
+  BOT_DELEGATION_NOTE_TRACE: 'maker:bot-delegation:note-trace',
   /** Read one hidden Bot-to-Bot conversation after a timeline trace is opened. */
   BOT_DIRECT_MESSAGE_THREAD_GET: 'maker:bot-direct-message-thread:get',
   /** 伙伴群聊：列表、详情、创建、修改、成员、删除、发言、继续讨论与停止。 */

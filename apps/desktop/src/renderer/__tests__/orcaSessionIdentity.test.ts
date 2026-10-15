@@ -8,12 +8,13 @@ import {
   isOrcaWorkerSession,
   resolveSessionRoute,
 } from '@/lib/orcaSessionIdentity';
+import { registerLoadedBotProfilesReader } from '@/features/bots/botSessionOwners';
+import type { BotProfile } from '@/features/bots/botStore';
 
-const bots = vi.hoisted(() => ({ loaded: true, profiles: [] as unknown[] }));
-vi.mock('@/features/bots/botStore', () => ({
-  hasLoadedBotProfiles: () => bots.loaded,
-  getBotProfiles: () => bots.profiles,
-}));
+// The loaded projection reaches the route helper through the registry botStore fills at
+// load; the store itself never loads here (no dynamic import on a click).
+const bots = { loaded: true, profiles: [] as unknown[] };
+registerLoadedBotProfilesReader(() => (bots.loaded ? (bots.profiles as BotProfile[]) : null));
 
 describe('orcaSessionIdentity', () => {
   let originalWindow: unknown;

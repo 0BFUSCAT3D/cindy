@@ -157,14 +157,30 @@ function StatusGlyph({ state }: { state: CardState }) {
   );
 }
 
-/** Local bot chats only: the owner adds a line to the original task like typing in it. */
-async function sendToTask(childSessionId: string, text: string): Promise<boolean> {
+/**
+ * Local bot chats only: the owner adds a line to the original task like typing in it.
+ * The Bot's chat then keeps the same quiet trace a Bot's own `message_session_task`
+ * leaves (first line only). The line is delivered before the trace, so a failed trace
+ * never turns a sent note into an error.
+ */
+async function sendToTask(
+  parentSessionId: string | null,
+  delegationId: string,
+  childSessionId: string,
+  text: string,
+): Promise<boolean> {
   const owner = getDataOwnerGeneration();
   const row = await sessionService.get(childSessionId);
   if (!isDataOwnerGenerationCurrent(owner) || !row?.workingDir) return false;
-  return makerChatStore.sendMessage(
+  const sent = await makerChatStore.sendMessage(
     childSessionId, text, row.model, row.effort, row.permissionMode, row.workingDir,
   );
+  if (sent && parentSessionId && isDataOwnerGenerationCurrent(owner)) {
+    await window.electronAPI.maker
+      .traceBotDelegationNote(parentSessionId, delegationId, text)
+      .catch(() => undefined);
+  }
+  return sent;
 }
 
 /**
@@ -307,7 +323,7 @@ export function BotTaskCard({
     setPending(true);
     setActionError(null);
     try {
-      if (await sendToTask(childSessionId, text)) {
+      if (await sendToTask(parentSessionId, card.delegationId, childSessionId, text)) {
         setNote('');
         setNoteOpen(false);
         toast.success(t('bots.collab.addNoteSent'));

@@ -1,7 +1,7 @@
 import type { OrcaRole, Session } from '@/lib/ccAgent.types';
 import { getSessionFor, orcaWorkflowsFor } from '@/lib/makerTransport';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
-import { botRouteForOwnedSession } from '@/features/bots/botSessionOwners';
+import { botRouteForOwnedSession, readLoadedBotProfiles } from '@/features/bots/botSessionOwners';
 
 export function isOrcaLeadSession(session: { orcaRole?: OrcaRole | null }): boolean {
   return session.orcaRole === 'lead';
@@ -34,20 +34,15 @@ export function getSessionRouteOwnerId(route: string): string | null {
 
 /**
  * The Bot page for a Bot's own chat (main task, history, channel chat), read from
- * the in-memory profile projection only: no IPC wait on a click. A background
- * task stays on its ordinary `/cc-agent/:id` route; an unloaded projection falls
- * back to the ordinary route too (the notification entry reloads it first).
+ * the in-memory profile projection only: no IPC and no module load on a click. A
+ * background task stays on its ordinary `/cc-agent/:id` route; an unloaded projection
+ * falls back to the ordinary route too (the notification entry reloads it first).
  */
-async function loadedBotChatRoute(sessionId: string): Promise<string | null> {
-  try {
-    // Lazy: botStore is already loaded by the shell; this keeps lib free of its graph.
-    const store = await import('@/features/bots/botStore');
-    if (!store.hasLoadedBotProfiles()) return null;
-    const route = botRouteForOwnedSession(store.getBotProfiles(), sessionId);
-    return route && !route.startsWith('/cc-agent/') ? route : null;
-  } catch {
-    return null;
-  }
+function loadedBotChatRoute(sessionId: string): string | null {
+  const profiles = readLoadedBotProfiles();
+  if (!profiles) return null;
+  const route = botRouteForOwnedSession(profiles, sessionId);
+  return route && !route.startsWith('/cc-agent/') ? route : null;
 }
 
 /**
@@ -75,7 +70,7 @@ export async function resolveSessionRoute(
   }
 
   // Notifications, task cards and the main sidebar agree on one page per task.
-  const botRoute = await loadedBotChatRoute(sessionId);
+  const botRoute = loadedBotChatRoute(sessionId);
   if (botRoute) return botRoute;
 
   return `/cc-agent/${sessionId}`;
