@@ -138,6 +138,38 @@ describe('useProviderShareAgentDevices', () => {
     }
   });
 
+  it('keeps controlled-host shares past the 64-entry catalog limit', async () => {
+    initial = Array.from({ length: 130 }, (_, i) => share({ shareId: `s${i}` }));
+    invoke.mockResolvedValue(hostShares(
+      ...initial.slice(0, 129).map(({ shareId }, i) => ({ shareId, status: i === 65 ? 'paused' as const : 'active' as const })),
+      { shareId: 'host-only' },
+    ));
+    const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+    await waitFor(() => expect(result.current.devices.map((d) => d.deviceId)).toEqual(
+      initial.slice(0, 129).filter((_, i) => i !== 65).map(({ shareId }) => `share:${shareId}`),
+    ));
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses only known active share identities and never reads the host catalog', async () => {
+    initial = ['valid', 'paused', 'unknown-status', 'mismatched', 'missing-status', 'controller-only']
+      .map((shareId) => share({ shareId }));
+    const readCatalog = vi.fn(() => { throw new Error('Catalog must not be read for identity discovery'); });
+    const valid = { shareId: 'valid', agentDeviceId: 'share:valid', status: 'active' };
+    Object.defineProperty(valid, 'catalog', { get: readCatalog });
+    invoke.mockResolvedValue({ ready: true, shares: [
+      null, [], 42, {}, valid,
+      { shareId: 'paused', agentDeviceId: 'share:paused', status: 'paused' },
+      { shareId: 'unknown-status', agentDeviceId: 'share:unknown-status', status: 'unknown' },
+      { shareId: 'mismatched', agentDeviceId: 'share:valid', status: 'active' },
+      { shareId: 'missing-status', agentDeviceId: 'share:missing-status' },
+      { shareId: 'host-only', agentDeviceId: 'share:host-only', status: 'active' },
+    ] });
+    const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+    await waitFor(() => expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:valid']));
+    expect(readCatalog).not.toHaveBeenCalled();
+  });
+
   it('caps readiness backoff and clears the pending retry after recovery', async () => {
     initial = [share({ shareId: 'both' })];
     invoke.mockResolvedValue({ ready: false, shares: [] });

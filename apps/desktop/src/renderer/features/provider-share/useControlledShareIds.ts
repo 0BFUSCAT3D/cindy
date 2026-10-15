@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
   isSharedTaskPeer,
-  parseProviderShareReceivedCatalogs,
   PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL,
   type ProviderShareReceived,
 } from '@cindy/device-link';
@@ -11,6 +10,24 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 const EMPTY_IDS: ReadonlySet<string> = new Set();
 const RECEIVED_LIST_RETRY_BASE_MS = 250;
 const RECEIVED_LIST_RETRY_MAX_MS = 30_000;
+
+/** 只核对本机已收到分享的身份和状态；完整目录解析的 64 条上限不适用于这份轻量名单。 */
+function readControlledShareIds(value: unknown, received: readonly ProviderShareReceived[]): ReadonlySet<string> {
+  const shares = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as { shares?: unknown }).shares : undefined;
+  const ids = new Set<string>();
+  if (!Array.isArray(shares)) return ids;
+  const knownShareIds = new Set(received.map((share) => share.shareId));
+  for (const raw of shares) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.shareId !== 'string' || !knownShareIds.has(entry.shareId) || entry.status !== 'active') continue;
+    const agentDeviceId = `share:${entry.shareId}`;
+    if (entry.agentDeviceId === agentDeviceId) ids.add(agentDeviceId);
+  }
+  // 展示名和模型目录仍取控制端既有数据；即使旧主机附带 catalog，也不在这里解析。
+  return ids;
+}
 
 /**
  * 分享授权属于账号，但跨区连接的启用标记在各电脑本地。新落点必须同时出现在被控端名单中。
@@ -82,9 +99,7 @@ export function useControlledShareIds(
         if (!current()) return;
         // ready 只表示各区域名单是否完整；已返回的分享仍可立即使用。
         // 暂态空列表继续重查，不能因另一区域未就绪而丢弃已加载区域的分享。
-        const ids = new Set(parseProviderShareReceivedCatalogs(value)
-          .filter((share) => share.status === 'active')
-          .map((share) => share.agentDeviceId));
+        const ids = readControlledShareIds(value, received);
         setSnapshot({ deviceId, owner, ids });
         const ready = !(value && typeof value === 'object' && !Array.isArray(value)
           && (value as { ready?: unknown }).ready === false);
