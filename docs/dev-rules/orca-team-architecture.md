@@ -496,12 +496,13 @@ Codex thread start / resume 成功后必须注册 `threadId -> session context`�
 
 Lead／Worker 可在 Claude Code、Codex、Pi 三者间双向切换并选择模型；选择先登记为 pending intent，不打断当前轮次。跨 Agent 切换在下一次发送前关闭旧 runtime 并重建，保留协同身份；协同直发先调用 `applyPendingAgentSwitchIfIdle`，队列出队与恢复继续复用统一发送事务。已派发的本地回执使用实际接受消息的 runtime 的 Agent，不能返回切换前的 Worker 快照；仍在队列中的消息沿用当前 Agent，不预报尚未执行的切换。SSH 任务仍不支持跨 Agent 切换，用户不能借此改变 Agent 位置。effort 仍是 per-turn 参数。实现见 `sessionAgentSwitchHandler.ts`、`orcaInterAgentDispatcher.ts`、`orcaTeamService.ts` 与 `register.ts`；三者六个方向与 Lead／Worker 的回归见 `sessionAgentSwitchHandler.test.ts`、`orcaInterAgentDispatcher.test.ts`、`orcaTeamService.test.ts` 和 `makerSendTransaction.test.ts`。
 
-运行设备 Worker 的派发仍经 `maker:input:enqueue`，成功只确认投递到那台电脑，不等于模型已经执行。非 queued 回执的 Agent 取该次派发从运行设备读取的任务配置（`cc` 归一为 `claude-code`），不取 Lead 端创建时的代理快照，也不预报运行设备尚未提交的切换。普通派发与打断改派复用这一口径；不增加 wire 字段或读取失败后的重派。运行设备出队、恢复发送时，统一事务同时识别本机 `orcaRole` 与持久化的 `orcaRemoteLead`；切换应用后意图仍在则拒绝发送到旧 Agent，不信任输入来源标签来判断身份。失败只阻断该任务本次发送，不断开共享链路、不影响其他 Worker。回归见 `orcaRemoteWorkers.test.ts`、`orcaRemoteWorkerRuntime.test.ts` 与 `makerSendTransaction.test.ts`。
+运行设备 Worker 的派发仍经 `maker:input:enqueue`，成功只确认投递到那台电脑，不等于模型已经执行。投递后经已有 `local-db:messages:around-client-id` 按该输入的 `clientId` 读取单条消息（`radius: 0`，正文限 1 字符）；非 queued 回执的 Agent 取接受输入时写入的消息行 `agentKind`（`cc` 归一为 `claude-code`），不取入队前或之后的任务配置。尚未接受、旧端缺少引擎字段或读取失败时只回 queued，不预报待切换引擎，也不把已投递输入变成失败重派。普通派发与打断改派复用这一口径；不增加 wire 字段或改变共享链路。运行设备出队、恢复发送时，统一事务同时识别本机 `orcaRole` 与持久化的 `orcaRemoteLead`；切换应用后意图仍在则拒绝发送到旧 Agent，不信任输入来源标签来判断身份。失败只阻断该任务本次发送，不断开共享链路、不影响其他 Worker。回归见 `orcaRemoteWorkers.test.ts`、`orcaRemoteWorkerRuntime.test.ts` 与 `makerSendTransaction.test.ts`。
 
 执行设备上的真实 Worker 同样受原地切换边界约束：切换 handler 从任务行读取 `orcaRemoteLead`，用户不能通过显式 `agentDeviceId` 将它迁到第三台电脑；同位置的三 Agent／模型切换仍允许。既有供应商组内部立即换位置例外保持不变。手机模型面板在 Orca Agent 已位于另一台电脑时，目标 Harness 的预取、能力缓存、面板加载和选中校验均从那台电脑读取；切换意图仍交给任务所属电脑执行，不因此开放换电脑。
 Desktop 与 Mobile 同时按已有的 `orcaRemoteLead` 投影隐藏换电脑入口，不把执行设备 Worker 的空 `orcaRole` 误认为普通任务，也不改变其协同角色。旧控制端仍由上述主进程拒绝迁移，不增加 wire 字段。
 
 Desktop Orca 同 Agent 选模继续复用普通任务的窗口检查与确认弹窗，将本次核对的具体窗口随本机切换意图保留。未知窗口只表示选择可以暂存，不等于同意重建；发送前需要重建时，确认窗口必须匹配当时核实的窗口（含 Pi 最终窗口）。未匹配则保留意图、停止发送；重新选择该模型会重新检查。仅调整 effort／Fast 保留同一路由的确认，换模型／来源不能继承。device-link 不接受控制端提交窗口确认数字，普通任务原有行为保持不变。回归见 `orcaModelWindowSelection.test.ts`、`orcaModelSelectionIntent.test.ts` 和 Mobile `orcaModelSelection.test.ts`。
+执行设备上只有 `orcaRemoteLead` 的 Worker 同样遵守上述窗口确认要求：初次检查与 Pi 最终窗口检查均不能使用普通任务的发送时默认确认；Pi 也不能用旧确认数字覆盖当前核实的窗口。
 
 Orca Agent 在另一台电脑时，同 Agent 选择在发送边界重读执行电脑的授权目录，按同一来源与模型的已核实窗口检查当前占用；不能把点选时的确认值当成最新窗口或默认确认。在线与冷恢复均走已有窗口交接入口，需要交接但确认值与最新窗口不符、目录不可读或交接未完成时保留意图、不落库新选择。目录仍无已核实窗口时沿用热切语义，不拿旧确认值猜测窗口并重建。窗口核实后的提交再次校验任务归属；失败只阻断该任务的本次发送，不重连、不重派，不影响共享链路上的其它任务。回归见 `orcaRemoteModelWindowSelection.test.ts`。
 

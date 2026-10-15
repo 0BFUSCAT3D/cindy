@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { applyPendingAgentSwitchIfIdle, createPendingAgentSwitchRegistry, type MakerSessionAgentSwitchHandlerDeps } from '../sessionAgentSwitchHandler';
+import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 
 // Execute the actual picker admission branches (local and agent-device), with
 // everything after admission represented by applyLive. No Electron bootstrap.
@@ -10,6 +11,7 @@ const source = ts.createSourceFile('register.ts', readFileSync(new URL('../regis
 const branches: string[] = [];
 const confirmationChecks: string[] = [];
 let applySelectionAdapter = '';
+let piWindowOverride = '';
 function visit(node: ts.Node) {
   if (ts.isPropertyAssignment(node)) {
     if (node.name.getText(source) === 'confirmedTargetPressure' && node.initializer.getText(source).includes('runtimeStatus.orcaRole')) {
@@ -21,9 +23,18 @@ function visit(node: ts.Node) {
     && node.thenStatement.getText(source).includes('pendingUntilSend: true')) {
     branches.push(node.getText(source));
   }
+  if (ts.isIfStatement(node) && node.thenStatement.getText(source).includes('targetContextWindow = confirmedContextWindow ?? targetContextWindow')) {
+    piWindowOverride = node.getText(source);
+  }
   ts.forEachChild(node, visit);
 }
 visit(source);
+const remoteLead = { leadDeviceId: 'lead-device', leadSessionId: 'lead-session', workerLabel: 'worker' };
+const orcaIdentities = [
+  { orcaRole: 'lead' },
+  { orcaRole: 'worker' },
+  { orcaRole: null, orcaRemoteLead: JSON.stringify(remoteLead) },
+];
 
 describe('Orca model-only picker intent admission', () => {
   it.each(['lead', 'worker'] as const)('stages %s model and axes on both execution locations until send', async orcaRole => {
@@ -100,14 +111,28 @@ describe('Orca model-only picker intent admission', () => {
     expect(confirmationChecks).toHaveLength(2);
     for (const expression of confirmationChecks) {
       const check = new Function('runtimeStatus', 'internalOptions', 'isDeviceLinkInvoke',
-        'confirmedContextWindow', 'targetContextWindow', 'finalPiWindow', `return ${expression};`);
-      for (const role of ['lead', 'worker']) {
-        expect(check({ orcaRole: role }, { source: 'user', applyingUserSelectionOnSend: true },
-          () => false, confirmed, 200000, 200000)).toBe(confirmed === 200000);
+        'confirmedContextWindow', 'targetContextWindow', 'finalPiWindow', 'parseOrcaRemoteLead', `return ${expression};`);
+      for (const identity of orcaIdentities) {
+        for (const remote of [false, true]) {
+          expect(check(identity, { source: 'user', applyingUserSelectionOnSend: true },
+            () => remote, confirmed, 200000, 200000, parseOrcaRemoteLead)).toBe(!remote && confirmed === 200000);
+        }
       }
       expect(check({ orcaRole: null }, { source: 'user', applyingUserSelectionOnSend: true },
-        () => false, confirmed, 200000, 200000)).toBe(true);
+        () => false, confirmed, 200000, 200000, parseOrcaRemoteLead)).toBe(true);
     }
+  });
+
+  it('keeps the verified Pi window for execution-device Workers instead of trusting an old confirmation', () => {
+    expect(piWindowOverride).not.toBe('');
+    const check = new Function('runtimeStatus', 'isDeviceLinkInvoke', 'runtimeAgentKind',
+      'confirmedContextWindow', 'targetContextWindow', 'parseOrcaRemoteLead',
+      `${piWindowOverride}; return targetContextWindow;`);
+    for (const identity of orcaIdentities) {
+      expect(check(identity, () => false, 'pi', 400000, 200000, parseOrcaRemoteLead)).toBe(200000);
+      expect(check(identity, () => false, 'pi', 400000, undefined, parseOrcaRemoteLead)).toBeUndefined();
+    }
+    expect(check({ orcaRole: null }, () => false, 'pi', 400000, 200000, parseOrcaRemoteLead)).toBe(400000);
   });
 
   it('retains intent when the send-time window still needs confirmation and retries with the new receipt', async () => {
