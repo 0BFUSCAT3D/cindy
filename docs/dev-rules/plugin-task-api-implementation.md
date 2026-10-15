@@ -258,6 +258,11 @@ getTeam 的 completedAt 可由宿主落盘的 turnCompleted 终态恢复：仅�
 
 Plan Mode 的本地及 device-link 切换与插件确认复用同一内存权限提交队列，由 Host 完成 runtime、落库与失败恢复；renderer 不再另写 DB 或发第二次回滚。原生 Plan 事件只异步登记镜像，不阻塞事件消费和 turn 收尾；落库前核对原账号、绑定 Session 及当前 armed 值，忽略迟到的旧事件。插件授权另同步核对现有稳定 Plan 状态（含未知/切换中），不等同于仅看数据库镜像。普通新输入 IPC 在 send/restart fence 外等已有权限提交完成后才进入发送；内部续跑、steering 与独立停止不等待该队列。上述复用不新增 Plan 代次、持久字段或后台重试，也不承诺跨工具事务。
 
+插件 `tasks.send` 与排队输入最终 `accept` 同样核对 live Session 的 `stablePlanModeState`；
+DB 中下一条输入的 armed 值为 false 不代表原生执行已退出 Plan。执行态开启、未知或切换中时拒绝；
+路由查询、回执保存后复核同一 Session 对象及已有 Plan generation，变更后不沿用旧授权。
+冷任务仍可入队，但最终接受必须匹配已启动的执行实例。读取、取消和同 requestKey 的回执查询保持原行为。
+
 ### 委派范围与 Host Auto 审阅
 
 首版保留 Codex 原生 `on-request`、`workspace-write` / `auto_review`。以下范围核验适用于进入 Host 审批的动作；原生常规工作区动作可能直接执行，不承诺每个读取或写入都经过 Host，也不把任务说明当作原生执行隔离。插件 API 的归属、撤权及权限检查保持；同一任务直接 Auto→Ask 仍沿原机制中断当前轮次。卸载仅撤销插件控制并移除包，不保证停止已派发的原生工作；Lead 降权也不承诺立即停止全部 Worker。用户可使用原有任务停止入口。此边界不新增原生沙箱、后台停机重试或另一套权限状态。
