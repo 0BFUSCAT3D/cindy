@@ -161,8 +161,8 @@
     "runsOnThisDevice": "執行在這台電腦",
     "inviteNotice": "持有邀請連結的使用者登入後即可加入，擁有與房主相同的 Agent 使用權限。",
     "offlineAutoClose": "房主電腦持續離線後，共享會自動結束。",
-    "inviteBoxHint": "將連結傳送給夥伴，對方點擊即可加入。手機端也可複製連結後開啟 Cindy。",
-    "invitationMessage": "邀請你加入「{{title}}」\n{{link}}\n點擊連結加入；手機端也可複製連結後開啟 Cindy，確認加入。",
+    "inviteBoxHint": "將連結傳送給夥伴，對方點擊即可加入，也可在 Cindy 中點「加入共享任務」貼上連結。",
+    "invitationMessage": "邀請你加入「{{title}}」\n{{link}}\n點擊連結加入；如果沒能開啟 Cindy，可在 Cindy 中點「加入共享任務」並貼上這條連結。",
     "membersWithLimit": "成員 · {{count}} 人（最多 2 位訪客）",
     "me": "我",
     "thisDevice": "這台電腦",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "此邀請屬於其他 Cindy 服務，請用對應的用戶端開啟連結",
     "managementIntro": "管理你發起和加入的共享。",
     "returnToTasks": "返回任務清單",
-    "invitationDetected": "發現共享任務邀請",
-    "notNow": "暫不加入",
     "closeAllLabel": "取消全部共享",
     "closeAllDescription": "所有訪客將無法繼續存取，任務記錄保留。"
   },
@@ -9122,6 +9120,12 @@
         "tooManyAttachments": "附件太多了，一則訊息最多 {{max}} 個",
         "attachmentsFailed": "附件沒能送出，請檢查檔案是否還在，或移除後重試",
         "folderNotSupported": "資料夾不能作為附件，請選擇其中的檔案"
+      },
+      "outbox": {
+        "sending": "傳送中…",
+        "failed": "沒有送出",
+        "edit": "編輯",
+        "editBlocked": "輸入框裡還有內容，先送出或清空，再編輯這則訊息"
       },
       "quote": {
         "replyingTo": "引用 {{name}}",
