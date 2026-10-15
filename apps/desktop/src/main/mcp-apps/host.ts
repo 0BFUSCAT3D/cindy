@@ -609,8 +609,8 @@ export class McpAppsHost {
           if (view.inputSent) await this.sendResult(id, view);
         }
     } catch (error) {
-      // Persistence and delivery both require a current card. Never retain a late
-      // completion for an uninitialized View after either authorization fails.
+      // Persistence and card-wide authorization failures revoke every matching View.
+      // Caller-local closure and transport failures are isolated inside sendResult.
       await Promise.allSettled(
         [...this.views]
           .filter(
@@ -642,15 +642,27 @@ export class McpAppsHost {
 
   private async sendResult(id: string, view: View): Promise<void> {
     if (view.resultSent || (!view.record.result && !view.record.cancelled)) return;
-    await this.assertCurrentView(id, view);
+    try {
+      await this.assertCurrentView(id, view);
+    } catch (error) {
+      // A caller can close while its card read is pending. The saved result
+      // still belongs to active peers; only shared authorization failures escape.
+      if (this.views.get(id) !== view) return;
+      throw error;
+    }
     // Initialization and completion can both wait on the same authorization read.
     if (view.resultSent) return;
-    if (view.record.result) {
-      view.resultSent = true;
-      await view.bridge.sendToolResult(view.record.result as CallToolResult);
-    } else if (view.record.cancelled) {
-      view.resultSent = true;
-      await view.bridge.sendToolCancelled({ reason: view.record.cancelled });
+    try {
+      if (view.record.result) {
+        view.resultSent = true;
+        await view.bridge.sendToolResult(view.record.result as CallToolResult);
+      } else if (view.record.cancelled) {
+        view.resultSent = true;
+        await view.bridge.sendToolCancelled({ reason: view.record.cancelled });
+      }
+    } catch {
+      // A broken transport cannot invalidate a successfully persisted card.
+      await this.disposeView(id, view).catch(() => {});
     }
   }
 

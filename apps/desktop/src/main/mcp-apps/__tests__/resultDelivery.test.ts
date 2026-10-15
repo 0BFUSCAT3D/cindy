@@ -20,6 +20,12 @@ const result: CallToolResult = {
 const completion = (kind: 'result' | 'cancelled') =>
   kind === 'result' ? { result } : { cancelled: 'Tool execution cancelled' };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function fixture() {
   const owner = {};
   const config = { id: 'example', url: 'https://mcp.example.invalid', transport: 'http' as const };
@@ -116,6 +122,48 @@ async function initialize(host: McpAppsHost, view: Awaited<ReturnType<typeof ope
 }
 
 describe('MCP App result delivery authorization', () => {
+  it.each([
+    ['result', true], ['result', false], ['cancelled', true], ['cancelled', false],
+  ] as const)('preserves %s for an initialized=%s peer when another caller closes during authorization', async (kind, initialized) => {
+    const f = fixture();
+    const closing = await open(f.host, 'renderer:closing');
+    await initialize(f.host, closing);
+    const peer = await open(f.host, 'device:phone');
+    if (initialized) await initialize(f.host, peer);
+    const reading = deferred<void>();
+    const pending = deferred<McpAppRecord>();
+    f.readCard.mockImplementationOnce(() => { reading.resolve(); return pending.promise; });
+    const record = { ...f.card, ...completion(kind) };
+    const update = f.host.updateResult('task', 'card', record);
+    await reading.promise;
+    await f.host.releaseCaller(closing.caller);
+    pending.resolve(record);
+    await expect(update).resolves.toBeUndefined();
+    expect(f.cards.get('card')).toEqual(record);
+    if (!initialized) await initialize(f.host, peer);
+    await vi.waitFor(() => expect(kind === 'result' ? f.sendResult : f.sendCancelled).toHaveBeenCalledOnce());
+    expect(f.dispose).toHaveBeenCalledExactlyOnceWith(closing.viewId);
+    await expect(f.host.assertViewAuthorized(peer.caller, 'task', peer.viewId)).resolves.toBeUndefined();
+    // Reopened callers also receive the successfully persisted completion.
+    const reopened = await open(f.host, 'renderer:reopened');
+    await initialize(f.host, reopened);
+    await vi.waitFor(() => expect(kind === 'result' ? f.sendResult : f.sendCancelled).toHaveBeenCalledTimes(2));
+  });
+
+  it.each(['result', 'cancelled'] as const)('isolates a %s transport failure to the affected View', async (kind) => {
+    const f = fixture();
+    const broken = await open(f.host, 'renderer:broken');
+    await initialize(f.host, broken);
+    const peer = await open(f.host, 'device:phone');
+    await initialize(f.host, peer);
+    const delivery = kind === 'result' ? f.sendResult : f.sendCancelled;
+    delivery.mockRejectedValueOnce(new Error('MCP_APP_TRANSPORT_CLOSED'));
+    await expect(f.host.updateResult('task', 'card', { ...f.card, ...completion(kind) })).resolves.toBeUndefined();
+    expect(delivery).toHaveBeenCalledTimes(2);
+    expect(f.dispose).toHaveBeenCalledExactlyOnceWith(broken.viewId);
+    await expect(f.host.assertViewAuthorized(peer.caller, 'task', peer.viewId)).resolves.toBeUndefined();
+  });
+
   it('rejects a poll immediately if disposal wins between authorization and installing its wake', async () => {
     const f = fixture();
     const view = await open(f.host, 'renderer:local');
