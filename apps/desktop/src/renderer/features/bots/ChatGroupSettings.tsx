@@ -34,6 +34,7 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
   const canLeave = membership.canLeave && !group.dissolvedAt;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const soleOwner = me?.role === 'owner' && group.members.length === 1;
   const [name, setName] = useState(group.name);
   const [topic, setTopic] = useState(group.topic ?? '');
   const [description, setDescription] = useState(group.description ?? '');
@@ -73,9 +74,9 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
     } catch { if (mounted.current && isDataOwnerGenerationCurrent(owner)) setError(t(chatErrorKey('REQUEST_FAILED'))); return false; }
     finally { busyRef.current = false; if (mounted.current) setBusy(false); }
   }
-  async function confirmed(action: ChatGroupAction, title: string, note: string, exit = false) {
+  async function confirmed(action: ChatGroupAction, title: string, note: string, exit = false, confirmText = t(key('confirm'))) {
     const owner = getDataOwnerGeneration();
-    if (await confirm({ presentation: 'standard', title, description: note, confirmText: t(key('confirm')),
+    if (await confirm({ presentation: 'standard', title, description: note, confirmText,
       cancelText: t('bots.cancel'), confirmVariant: 'destructive' }) && mounted.current && isDataOwnerGenerationCurrent(owner)) await mutate(action, exit);
   }
   const profileOpenChange = useCallback((open: boolean) => {
@@ -208,14 +209,17 @@ export function ChatGroupSettings({ group }: { group: BotGroupSummary }) {
           onValueChange={actorId => void mutate({ type: 'member', actorId, action: 'invite' })} />}
       </section>
       {group.dissolvedAt && <p className="text-13 text-[var(--text-secondary)]">{t('bots.groupChat.lifecycle.dissolved')}</p>}
-      <div className="flex flex-wrap gap-2 border-t border-[var(--border-default)] pt-5">
-        {canLeave && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'member', actorId: me!.actorId!, action: 'leave' }, t(key('leave')), t(key('leaveHint')), true)}>{t(key('leave'))}</Button>}
-        {manager && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'archive', archived: !group.archived, expectedRevision: group.revision! }, t(key(group.archived ? 'unarchive' : 'archive')), t(key(group.archived ? 'unarchiveHint' : 'archiveHint')))}>{t(key(group.archived ? 'unarchive' : 'archive'))}</Button>}
-        {owner && <Button variant="secondary" size="sm" disabled={busy || group.supportsDissolve !== true}
-          onClick={() => void confirmed({ type: 'dissolve', expectedRevision: group.revision! }, t('bots.groupChat.lifecycle.dissolve'), t('bots.groupChat.lifecycle.dissolveNote'))}>{t('bots.groupChat.lifecycle.dissolve')}</Button>}
-        <Button variant="secondary" size="sm" disabled={busy || group.supportsListRemoval !== true}
-          onClick={() => void confirmed({ type: 'hide' }, t('bots.groupChat.lifecycle.hide'), t('bots.groupChat.lifecycle.hideNote'), true)}>{t('bots.groupChat.lifecycle.hide')}</Button>
-        {((owner && !group.supportsDissolve) || !group.supportsListRemoval) && <p className="w-full text-12 text-[var(--text-secondary)]">{t('bots.groupChat.lifecycle.unavailable')}</p>}
+      <div className="space-y-3 border-t border-[var(--border-default)] pt-5">
+        {soleOwner && !group.archived && !group.dissolvedAt && <p className="text-13 text-[var(--text-secondary)]">{t(key('soleOwnerHint'))}</p>}
+        <div className="flex flex-wrap gap-2">
+          {canLeave && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'member', actorId: me!.actorId!, action: 'leave' }, t(key('leave')), t(key('leaveHint')), true)}>{t(key('leave'))}</Button>}
+          {manager && <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirmed({ type: 'archive', archived: !group.archived, expectedRevision: group.revision! }, t(key(group.archived ? 'unarchive' : 'archive')), t(key(group.archived ? 'unarchiveHint' : 'archiveHint')), false, t(key(group.archived ? 'unarchive' : 'archive')))}>{t(key(group.archived ? 'unarchive' : 'archive'))}</Button>}
+          {owner && <Button variant="secondary" size="sm" disabled={busy || group.supportsDissolve !== true}
+            onClick={() => void confirmed({ type: 'dissolve', expectedRevision: group.revision! }, t('bots.groupChat.lifecycle.dissolve'), t('bots.groupChat.lifecycle.dissolveNote'))}>{t('bots.groupChat.lifecycle.dissolve')}</Button>}
+          <Button variant="secondary" size="sm" disabled={busy || group.supportsListRemoval !== true}
+            onClick={() => void confirmed({ type: 'hide' }, t('bots.groupChat.lifecycle.hide'), t('bots.groupChat.lifecycle.hideNote'), true)}>{t('bots.groupChat.lifecycle.hide')}</Button>
+          {((owner && !group.supportsDissolve) || !group.supportsListRemoval) && <p className="w-full text-12 text-[var(--text-secondary)]">{t('bots.groupChat.lifecycle.unavailable')}</p>}
+        </div>
       </div>
     </div>
     <ProfileEditDialog open={editingProfile} onOpenChange={profileOpenChange} />
