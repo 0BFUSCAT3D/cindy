@@ -41,6 +41,7 @@ vi.mock('ws', async () => {
   } };
 });
 import { withChatServer } from '../chatServer.js';
+import { buildBotGroupThreadShareCard } from '../../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupChatService.js';
 
 describe('server group feature parity', () => {
@@ -144,6 +145,20 @@ describe('server group feature parity', () => {
     expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({ mode: 'forced', request: 'Do this one',
       requestQuote: { from: 'Peer (Me)', text: 'Landing page: hero, pricing, FAQ', attachments: 1, attachmentName: 'wireframe.png' } }), expect.any(AbortSignal));
     expect(planPosts()[0]?.[2]).toMatchObject({ request: 'Do this one\n\n> Peer (Me): Landing page: hero, pricing, FAQ 📎 wireframe.png' });
+  });
+
+  it('tells the organizer which recent message re-posts a thread reply', async () => {
+    const replyId = '80000000-0000-4000-8000-000000000002';
+    const card = buildBotGroupThreadShareCard({ messageId: replyId, threadRootId: '80000000-0000-4000-8000-000000000003', authorName: 'Peer', text: '@Peer 马上开工' });
+    arrange();
+    const base = fixture.handle.getMockImplementation()!;
+    fixture.handle.mockImplementation((route, method, data) => route.endsWith('/snapshot')
+      ? { body: { room: room(roomId), members, cursor: '1', messages: [{ id: '80000000-0000-4000-8000-000000000004', seq: '3', authorId: 'someone',
+        author: { kind: 'human', name: 'Alice' }, origin: 'human', deleted: false, threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [card] }] } }
+      : base(route, method, data));
+    expect((await send({ text: 'Do this one', division: true })).ok).toBe(true); await flush();
+    expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({
+      recent: [expect.objectContaining({ from: 'Alice', sharedReplyId: replyId })] }), expect.any(AbortSignal));
   });
 
   it('returns one available member to ordinary discussion using the real decision parser', async () => {

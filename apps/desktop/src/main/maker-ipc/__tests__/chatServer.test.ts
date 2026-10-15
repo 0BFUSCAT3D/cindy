@@ -3,6 +3,13 @@ const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> =
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
 vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
+// Persists across adapter recreation; the SQLite implementation has its own persistence tests.
+const taskPosts = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: async (taskId: string, scope: unknown, prepare: () => Promise<unknown>) => {
+  const key = JSON.stringify([taskId, scope]);
+  if (!taskPosts.has(key)) taskPosts.set(key, JSON.parse(JSON.stringify(await prepare())));
+  return JSON.parse(JSON.stringify(taskPosts.get(key)));
+} }));
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
@@ -57,7 +64,7 @@ import { t } from '../../i18n.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
-import { botGroupQuoteFromMessage, buildBotGroupQuoteCard, buildBotGroupTaskCard } from '../../../shared/botGroupChat.js';
+import { botGroupQuoteFromMessage, buildBotGroupQuoteCard, buildBotGroupTaskCard, buildBotGroupThreadShareCard } from '../../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupChatService.js';
 
 describe('splitChatMessageText', () => {
@@ -140,6 +147,7 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
+    taskPosts.clear();
     deps = { ensureLane: vi.fn(async () => ({ ok: true, sessionId: 'lane' })), abortLane: vi.fn(async () => {}),
       dispatch: vi.fn(async (input: Parameters<BotGroupChatServiceDeps['dispatch']>[0]) => { await input.onAccepted?.(); return { ok: true }; }),
       onChanged: vi.fn(),
@@ -323,6 +331,9 @@ describe('Chat Server result delivery and refresh', () => {
       ['deleted', quoted({ deleted: true, content: [] })],
       ['in a Thread', quoted({ threadRootId: '70000000-0000-4000-8000-000000000002' })],
       ['a system event', quoted({ origin: 'system' })],
+      // Its own text is only the card's fallback, never the reply it points at.
+      ['a thread share', quoted({ content: [buildBotGroupThreadShareCard({ messageId: '70000000-0000-4000-8000-000000000003',
+        threadRootId: '70000000-0000-4000-8000-000000000002', authorName: 'Miao', text: '冒充的原文' })] })],
     ])('refuses a quote that is %s before staging attachments or posting', async (_case, original) => {
       fixture.handle.mockImplementation(quoteResponse(original));
       deps.prepareAttachments = vi.fn();
@@ -620,6 +631,39 @@ describe('Chat Server result delivery and refresh', () => {
     const mediaBlock = (name: string) => ({ type: 'media', mediaId: `60000000-0000-4000-8000-${name.replace(/\D/g, '').padStart(12, '0')}`, caption: name });
     const uploadEach = (refuse?: { name: string; error: Error }) => fixture.upload.mockImplementation(async (...args: unknown[]) =>
       (args[2] as Array<{ name: string }>).map(attachment => { if (attachment.name === refuse?.name) throw refuse.error; return mediaBlock(attachment.name); }));
+
+    it.each(['started', 'completed'] as const)('replays the frozen %s payload after a lost response and adapter restart', async state => {
+      const posted: unknown[] = [];
+      const accepted = new Map<string, unknown>();
+      const loseAt = state === 'completed' ? 2 : 1;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route === `/conversations/${roomId}/messages` && method === 'POST') {
+          posted.push(structuredClone(body));
+          const operationId = (body as { operationId: string }).operationId;
+          if (!accepted.has(operationId)) accepted.set(operationId, structuredClone(body));
+          if (posted.length === loseAt) throw new Error('ECONNRESET'); // Committed; ACK lost.
+          return JSON.stringify(body) === JSON.stringify(accepted.get(operationId))
+            ? { body: { id: 'original-message' } }
+            : { status: 409, body: { error: { code: 'OPERATION_CONFLICT' } } };
+        }
+        return response(route);
+      });
+      const files = await deliveryFiles(1);
+      fixture.upload.mockResolvedValue([mediaBlock('1')]);
+      const input = { groupId: roomId, botId: 'local-bot', clientId: `task-snapshot:${state}`, text: state === 'completed' ? 'x'.repeat(8_001) : 'Original result',
+        card: buildBotGroupTaskCard({ meta: taskMeta, state, title: 'Original title' }, taskLabels), files };
+      expect(await service.postCompanionTaskMessage(input)).toMatchObject({ ok: false, retryable: true });
+      service.dispose();
+      service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      await (await import('node:fs/promises')).unlink(files[0]!.absolutePath);
+      const edited = { ...input, text: 'Edited result', card: buildBotGroupTaskCard({ meta: { ...taskMeta, fromBotName: 'Renamed bot' }, state, title: 'Renamed task' },
+        { ...taskLabels, task: '任务' }) };
+      expect(await service.postCompanionTaskMessage(edited)).toEqual({ ok: true, messageId: 'original-message' });
+      expect(posted).toHaveLength(loseAt * 2);
+      expect(posted.slice(loseAt)).toEqual(posted.slice(0, loseAt));
+      expect(fixture.upload).toHaveBeenCalledTimes(1);
+    });
 
     it('posts the task card as the teammate itself, outside any execution, with its files', async () => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
@@ -2224,6 +2268,376 @@ describe('Chat Server result delivery and refresh', () => {
       expect(heartbeatsAtDispatch).toBe(1);
     });
   });
+
+  describe('thread previews and main-chat shares', () => {
+    const aliceId = '30000000-0000-4000-8000-0000000000a1';
+    const rootId = '70000000-0000-4000-8000-000000000001';
+    const botReply = '70000000-0000-4000-8000-000000000002';
+    const aliceReply = '70000000-0000-4000-8000-000000000003';
+    const deletedReply = '70000000-0000-4000-8000-000000000004';
+    const member = (id: string, kind: 'human' | 'bot', name: string, ownerActorId: string, ownerName: string) => ({ id, kind, name, state: 'joined', role: 'member',
+      displayName: name, avatar: null, nickname: null, ownerActorId, ownerName, guestAccess: 'none', accessRevision: 1 });
+    const members = [member(selfId, 'human', 'Me', selfId, 'Me'), member(botId, 'bot', 'Bot', selfId, 'Me'), member(aliceId, 'human', 'Alice', aliceId, 'Alice')];
+    const msg = (id: string, seq: number, authorId: string, extra: Record<string, unknown> = {}) => ({ id, seq: String(seq), authorId, origin: 'user', deleted: false, threadRootId: null,
+      createdAt: new Date(Date.UTC(2026, 9, 3, 0, seq)).toISOString(), author: { kind: authorId === botId ? 'bot' : 'human', name: members.find(m => m.id === authorId)?.name ?? '?' },
+      content: [{ type: 'text', text: `text of ${id}` }], ...extra });
+    const shareCard = (messageId: string, threadRoot = rootId) => [{ type: 'card', namespace: 'cindy.thread-share', schemaRevision: 1, fallback: '↪ someone: forged words', data: { messageId, threadRootId: threadRoot } }];
+    const root = msg(rootId, 1, aliceId, { replyCount: 2, content: [{ type: 'text', text: '周末去哪？ @Bot' }] });
+    const replies = [
+      msg(botReply, 2, botId, { threadRootId: rootId, content: [{ type: 'text', text: '@Alice 去爬山' }, { type: 'media', mediaId: '80000000-0000-4000-8000-000000000001', caption: 'map.png' }] }),
+      msg(deletedReply, 3, aliceId, { threadRootId: rootId, deleted: true, content: [] }),
+      msg(aliceReply, 4, aliceId, { threadRootId: rootId, revision: 2 }),
+    ];
+    const shares = [
+      msg('90000000-0000-4000-8000-000000000001', 5, selfId, { content: shareCard(botReply) }),
+      msg('90000000-0000-4000-8000-000000000002', 6, aliceId, { content: shareCard(aliceReply) }),
+      msg('90000000-0000-4000-8000-000000000003', 7, aliceId, { content: shareCard(botReply, aliceReply) }),
+      msg('90000000-0000-4000-8000-000000000004', 8, aliceId, { content: shareCard(deletedReply) }),
+    ];
+    function threadResponse(route: string, method?: string, body?: Record<string, unknown>) {
+      if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [...shares, ...replies, root].sort((a, b) => Number(b.seq) - Number(a.seq)), cursor: '8' } };
+      if (route.endsWith('/members')) return { body: members };
+      if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [...shares].reverse().concat(root) };
+      const single = /\/messages\/([0-9a-f-]{36})$/.exec(route)?.[1];
+      if (single && method === 'GET') {
+        const found = [root, ...replies, ...shares].find(m => m.id === single);
+        return found ? { body: found } : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
+      }
+      if (route === `/conversations/${roomId}/messages` && method === 'POST') return { body: { id: `share-of-${(body?.content as Array<{ data: { messageId: string } }>)[0].data.messageId}` } };
+      return response(route);
+    }
+    beforeEach(() => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      fixture.download.mockResolvedValue({ id: 'map', name: 'map.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://map', path: null });
+      claimed = true;
+      fixture.handle.mockImplementation(threadResponse);
+    });
+
+    it.each([undefined, '   '])('uses the ordinary attachment name for caption %s in previews and share fallback', async caption => {
+      const source = msg(botReply, 2, botId, { threadRootId: rootId, content: [{ type: 'media', mediaId: '80000000-0000-4000-8000-000000000001', caption }] });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [source, root], cursor: '8' } };
+        if (route.endsWith(`/messages/${botReply}`)) return { body: source };
+        return threadResponse(route, method, body);
+      });
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages.find(m => m.id === rootId)!.threadPreview!.replies[0]!.attachments)
+        .toEqual([{ name: 'Attachment', category: 'file' }]);
+      expect((await service.chatServer!.shareToMain({ groupId: roomId, messageId: botReply })).ok).toBe(true);
+      const posted = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')![2];
+      expect(posted).toMatchObject({ content: [{ fallback: '↪ Bot (Me): Attachment' }] });
+    });
+
+    it('resolves every loaded old reference without a 200-card cutoff', async () => {
+      const shownShares = Array.from({ length: 201 }, (_, i) => ({ id: `90000000-0000-4000-8000-${String(i + 100).padStart(12, '0')}`, messageId: botReply, threadRootId: rootId }));
+      const result = await service.getGroup(roomId, { shownShares });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(Object.keys(result.group.threadShareUpdates!)).toHaveLength(201);
+      expect(Object.values(result.group.threadShareUpdates!).every(share => share.status === 'available')).toBe(true);
+    });
+
+    it('previews the newest replies and resolves each share from the server copy, not the card', async () => {
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      const byId = new Map(result.group.messages.map(m => [m.id, m]));
+      expect(byId.get(rootId)!.threadPreview!.replies.map(r => [r.id, r.authorName, r.text, r.attachments])).toEqual([
+        [botReply, 'Bot (Me)', '@Alice 去爬山', [{ name: 'map.png', category: 'image' }]],
+        [aliceReply, 'Alice', `text of ${aliceReply}`, []],
+      ]);
+      const [mine, alices, forged, deleted] = shares.map(share => byId.get(share.id)!.threadShare!);
+      expect(mine).toMatchObject({ status: 'available', messageId: botReply, threadRootId: rootId, authorName: 'Bot (Me)', authorBotId: 'local-bot',
+        authorKind: 'bot', sharedByAuthor: false, content: '@Alice 去爬山', edited: false });
+      expect(alices).toMatchObject({ status: 'available', authorName: 'Alice', sharedByAuthor: true, edited: true });
+      // A card that names the wrong thread or a deleted reply shows no borrowed words.
+      expect(forged).toMatchObject({ status: 'unavailable', authorName: '', content: '' });
+      expect(deleted).toMatchObject({ status: 'unavailable', content: '' });
+      expect(JSON.stringify(result.group.messages.map(m => m.threadShare))).not.toContain('forged words');
+      // Old phones read `content`: keep the server fallback there.
+      expect(byId.get(shares[0].id)!.content).toBe('↪ someone: forged words');
+      // Everything came from the snapshot window: no per-root or per-share reads.
+      expect(fixture.handle.mock.calls.filter(([route]) => route.includes('threadRootId=') || /\/messages\/[0-9a-f-]{36}$/.test(route))).toHaveLength(0);
+    });
+
+    it('posts a share as the current user, addressed only to them, with one stable operation per reply', async () => {
+      const first = await service.chatServer!.shareToMain({ groupId: roomId, messageId: botReply });
+      const again = await service.chatServer!.shareToMain({ groupId: roomId, messageId: botReply });
+      expect(first).toEqual({ ok: true, messageId: `share-of-${botReply}`, alreadyShared: false });
+      expect(again).toEqual(first);
+      const posts = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST');
+      expect(posts).toHaveLength(2);
+      expect(posts[0][2]).toEqual(posts[1][2]);
+      expect(posts[0][2]).toEqual({
+        operationId: `thread-share:${botReply}`, mentions: [selfId],
+        content: [{ type: 'card', namespace: 'cindy.thread-share', schemaRevision: 1, fallback: '↪ Bot (Me): @Alice 去爬山', data: { messageId: botReply, threadRootId: rootId } }],
+      });
+      // No thread placement, no deferred companion round, no X-Chat-Actor impersonation.
+      expect(posts[0][2]).not.toHaveProperty('threadRootId');
+      expect(posts[0][2]).not.toHaveProperty('deferExecution');
+    });
+
+    it.each([['a root message', rootId], ['a deleted reply', deletedReply], ['an unknown message', '70000000-0000-4000-8000-0000000000ff']])(
+      'refuses to share %s', async (_label, messageId) => {
+        const result = await service.chatServer!.shareToMain({ groupId: roomId, messageId });
+        // A missing reply reads as unavailable here; MESSAGE_NOT_FOUND stays generic elsewhere.
+        expect(result).toMatchObject({ ok: false, errorCode: 'SHARE_UNAVAILABLE' });
+        expect(fixture.handle.mock.calls.some(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')).toBe(false);
+      });
+
+    it('reports a repeat after the reply changed as already shared instead of posting again', async () => {
+      fixture.handle.mockImplementation((route, method, body) => route === `/conversations/${roomId}/messages` && method === 'POST'
+        ? { status: 409, body: { error: { code: 'OPERATION_CONFLICT' } } } : threadResponse(route, method, body));
+      expect(await service.chatServer!.shareToMain({ groupId: roomId, messageId: aliceReply })).toEqual({ ok: true, messageId: null, alreadyShared: true });
+    });
+
+    it('re-reads a cached share source only after the server reports it edited', async () => {
+      const outside = '70000000-0000-4000-8000-000000000009';
+      const share = msg('90000000-0000-4000-8000-000000000009', 9, aliceId, { content: shareCard(outside) });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [share], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [share] };
+        if (route.endsWith(`/messages/${outside}`)) return { body: msg(outside, 1, aliceId, { threadRootId: rootId }) };
+        return threadResponse(route, method, body);
+      });
+      const reads = () => fixture.handle.mock.calls.filter(([route]) => route.endsWith(`/messages/${outside}`)).length;
+      await service.getGroup(roomId);
+      await service.getGroup(roomId);
+      expect(reads()).toBe(1);
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets.at(-1)!;
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '10',
+        changes: [{ type: 'message.updated', entityId: outside }] }));
+      await service.getGroup(roomId);
+      expect(reads()).toBe(2);
+      // A cursor reset skips the pushes in between, so nothing cached may survive it.
+      Object.assign(socket, { readyState: 1 });
+      socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
+      await vi.advanceTimersByTimeAsync(0);
+      await service.getGroup(roomId);
+      expect(reads()).toBe(3);
+    });
+
+    it('does not reuse a cached share source after losing the room subscription', async () => {
+      const outside = '70000000-0000-4000-8000-00000000000a';
+      const share = msg('90000000-0000-4000-8000-00000000000a', 9, aliceId, { content: shareCard(outside) });
+      let visible = true;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [share], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [share] };
+        if (route.endsWith(`/messages/${outside}`)) return visible
+          ? { body: msg(outside, 1, aliceId, { threadRootId: rootId, content: [{ type: 'text', text: 'before you left' }] }) }
+          : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
+        return threadResponse(route, method, body);
+      });
+      const shareView = async () => {
+        const result = await service.getGroup(roomId);
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.messages.find(m => m.id === share.id)!.threadShare!;
+      };
+      expect(await shareView()).toMatchObject({ status: 'loading', content: '' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await shareView()).toMatchObject({ status: 'available', content: 'before you left' });
+      await vi.advanceTimersByTimeAsync(2000);
+      // Removed from the room; on rejoin the history window no longer covers that reply.
+      fixture.sockets.at(-1)!.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
+      visible = false;
+      expect(await shareView()).not.toMatchObject({ content: 'before you left' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await shareView()).toMatchObject({ status: 'unavailable', content: '' });
+    });
+
+    it.each([
+      ['a server error', { status: 503, body: { error: { code: 'UNAVAILABLE' } } }, 'loading'],
+      ['a timeout-like failure', null, 'loading'],
+      ['forbidden', { status: 403, body: { error: { code: 'FORBIDDEN' } } }, 'unavailable'],
+      ['gone', { status: 410, body: { error: { code: 'GONE' } } }, 'unavailable'],
+    ] as const)('never shows the card text when reading the reply hits %s', async (_label, reply, status) => {
+      const outside = '70000000-0000-4000-8000-00000000000b';
+      const share = msg('90000000-0000-4000-8000-00000000000b', 9, aliceId, { content: shareCard(outside) });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [share], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [share] };
+        if (route.endsWith(`/messages/${outside}`)) { if (!reply) throw new Error('socket hang up'); return reply; }
+        return threadResponse(route, method, body);
+      });
+      const read = async () => {
+        const result = await service.getGroup(roomId);
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.messages.find(m => m.id === share.id)!.threadShare!;
+      };
+      await read();
+      await vi.advanceTimersByTimeAsync(0);
+      const view = await read();
+      expect(view).toMatchObject({ status, content: '', authorName: '' });
+      expect(JSON.stringify(view)).not.toContain('forged words');
+    });
+
+    it('names the sharer in the sidebar and never quotes or resolves the card', async () => {
+      const forged = msg('90000000-0000-4000-8000-00000000000c', 20, aliceId, { content: shareCard(botReply) });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route === '/conversations?limit=100') return { body: [room(roomId)] };
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [forged, ...replies, root], cursor: '20' } };
+        return threadResponse(route, method, body);
+      });
+      const result = await service.listGroups();
+      if (!result.ok) throw new Error('Expected groups');
+      expect(result.groups[0]!.lastMessage).toMatchObject({ preview: '', threadShare: true, authorName: 'Alice' });
+      expect(JSON.stringify(result.groups)).not.toContain('forged words');
+      // The sidebar costs no per-group share or thread reads.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.handle.mock.calls.filter(([route]) => route.includes('threadRootId=') || /\/messages\/[0-9a-f-]{36}$/.test(route))).toHaveLength(0);
+    });
+
+    it('updates shares shown on older pages after an edit, a deletion or lost access, without a reload', async () => {
+      const outside = '70000000-0000-4000-8000-00000000000d';
+      const ref = { id: '90000000-0000-4000-8000-00000000000d', messageId: outside, threadRootId: rootId, sharerId: aliceId };
+      let source: Record<string, unknown> | null = msg(outside, 1, aliceId, { threadRootId: rootId, content: [{ type: 'text', text: 'v1' }] });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [root], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?limit=`)) return { body: [root] };
+        if (route.endsWith(`/messages/${outside}`)) return source ? { body: source } : { status: 404, body: { error: { code: 'MESSAGE_NOT_FOUND' } } };
+        return threadResponse(route, method, body);
+      });
+      const read = async () => {
+        const result = await service.getGroup(roomId, { shownShares: [ref] });
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.threadShareUpdates![ref.id]!;
+      };
+      const settle = async () => { await read(); await vi.advanceTimersByTimeAsync(0); return read(); };
+      expect(await read()).toMatchObject({ status: 'loading', content: '' });
+      vi.mocked(deps.onChanged!).mockClear();
+      await vi.advanceTimersByTimeAsync(150);
+      // The background read asks the open page to refresh: no click or reopen needed.
+      expect(deps.onChanged).toHaveBeenCalledWith({ groupId: roomId, change: 'messages' }, undefined);
+      expect(await read()).toMatchObject({ status: 'available', content: 'v1', sharedByAuthor: true, edited: false });
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets.at(-1)!;
+      source = { ...source, revision: 2, content: [{ type: 'text', text: 'v2' }] };
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '10', changes: [{ type: 'message.updated', entityId: outside }] }));
+      expect(await settle()).toMatchObject({ status: 'available', content: 'v2', edited: true });
+      source = { ...source, deleted: true, content: [] };
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '11', changes: [{ type: 'message.deleted', entityId: outside }] }));
+      expect(await settle()).toMatchObject({ status: 'unavailable', content: '' });
+      // Back to visible, then the reader loses access: the old text must not come back.
+      source = msg(outside, 1, aliceId, { threadRootId: rootId, content: [{ type: 'text', text: 'v3' }] });
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '12', changes: [{ type: 'message.updated', entityId: outside }] }));
+      expect(await settle()).toMatchObject({ status: 'available', content: 'v3' });
+      socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
+      source = null;
+      expect(await read()).not.toMatchObject({ content: 'v3' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await read()).toMatchObject({ status: 'unavailable', content: '' });
+    });
+
+    it('raises the share version on edits and lost access so unchecked older shares are not trusted', async () => {
+      const version = async () => {
+        const result = await service.getGroup(roomId);
+        if (!result.ok) throw new Error('Expected group');
+        return result.group.threadShareVersion!;
+      };
+      const start = await version();
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets.at(-1)!;
+      socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '10', changes: [{ type: 'message.deleted', entityId: botReply }] }));
+      const afterDelete = await version();
+      expect(afterDelete).toBeGreaterThan(start);
+      socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'FORBIDDEN' } }));
+      expect(await version()).toBeGreaterThan(afterDelete);
+      // Share views carry the version they were checked at.
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages.find(m => m.id === shares[0]!.id)!.threadShare!.version).toBe(result.group.threadShareVersion);
+    });
+
+    it('does not let 「继续讨论」 restart a re-posted reply', async () => {
+      const ask = msg('90000000-0000-4000-8000-0000000000aa', 1, selfId);
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route === `/conversations/${roomId}/messages?limit=100`) return { body: [shares[0], ask] };
+        if (route.endsWith('/executions')) return { body: [] };
+        return threadResponse(route, method, body);
+      });
+      expect(await service.continueRound(roomId)).toEqual({ ok: true });
+      expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}/messages/${ask.id}/continue`, 'POST', expect.anything());
+      expect(fixture.handle.mock.calls.some(([route]) => route.includes(`/messages/${shares[0].id}/continue`))).toBe(false);
+    });
+
+    it('keeps mixed-card text visible and eligible for discussion without marking it as a shared reply', async () => {
+      const mixed = msg(execution.source_message_id, 9, selfId, {
+        content: [...shareCard(botReply), { type: 'text', text: 'Bot, summarize this extra text' }],
+      });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [mixed], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?`)) return { body: [mixed] };
+        if (route.endsWith('/executions')) return { body: [] };
+        return threadResponse(route, method, body);
+      });
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages[0].threadShare).toBeUndefined();
+      expect(result.group.messages[0].content).toContain('Bot, summarize this extra text');
+      expect(await service.continueRound(roomId)).toEqual({ ok: true });
+      expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}/messages/${mixed.id}/continue`, 'POST', expect.anything());
+
+      claimed = false;
+      fixture.handle.mockImplementation((route, method, body) => route.includes('all=true') ? { body: [mixed] }
+        : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+      const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
+      const history = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.messages)!.messages;
+      expect(history.find((m: { id: string }) => m.id === mixed.id)).toMatchObject({ text: result.group.messages[0].content });
+      expect(history.find((m: { id: string }) => m.id === mixed.id)).not.toHaveProperty('sharedReplyId');
+    });
+
+    it('tells companions a share is a reference whose quoted @names address no one', async () => {
+      claimed = false;
+      fixture.handle.mockImplementation((route, method, body) => route.includes('all=true')
+        ? { body: [...shares, { ...msg(execution.source_message_id, 1, selfId), content: [{ type: 'text', text: 'Bot, summarize' }] }] }
+        : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+      const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
+      expect(prompt).toContain('A message with sharedReplyId re-posts an existing thread reply');
+      const history = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.messages)!.messages;
+      for (const share of shares) expect(history.find((m: { id: string }) => m.id === share.id))
+        .toMatchObject({ sharedReplyId: expect.any(String), text: '' });
+      expect(prompt).not.toContain('forged words');
+      expect(history.find((m: { id: string }) => m.id === execution.source_message_id)).not.toHaveProperty('sharedReplyId');
+    });
+
+    it('omits share fallback from arrangement context while retaining ordinary text', async () => {
+      deps.decidePlan = vi.fn(async () => null);
+      fixture.handle.mockImplementation((route, method, body) => route.endsWith('/messages') && method === 'POST'
+        ? { body: { id: execution.source_message_id } } : threadResponse(route, method, body));
+      expect(await service.sendMessage({ groupId: roomId, text: 'Plan our trip', clientId: 'share-context-plan',
+        division: true, mentions: { all: false, botIds: [] } })).toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.decidePlan).toHaveBeenCalledOnce();
+      const context = vi.mocked(deps.decidePlan).mock.calls[0][0];
+      expect(context.recent.filter(m => m.sharedReplyId)).toHaveLength(shares.length);
+      expect(context.recent.filter(m => m.sharedReplyId).every(m => m.text === '')).toBe(true);
+      expect(JSON.stringify(context)).not.toContain('forged words');
+      expect(context.recent).toContainEqual(expect.objectContaining({ text: '@Alice 去爬山\n[附件: map.png]' }));
+    });
+
+    it('marks a share in the main-group background of a Thread request as a reference too', async () => {
+      claimed = false;
+      const rootId = '90000000-0000-4000-8000-0000000000bb';
+      const source = { ...msg(execution.source_message_id, 2, selfId), threadRootId: rootId, content: [{ type: 'text', text: 'Bot, summarize' }] };
+      fixture.handle.mockImplementation((route, method, body) => route.includes('all=true') || route.includes('threadRootId=') ? { body: [source] }
+        : route.startsWith(`/conversations/${roomId}/messages?limit=`) ? { body: [shares[0]] }
+        : route === `/conversations/${roomId}/messages/${rootId}` ? { body: msg(rootId, 1, selfId) }
+        : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+      const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
+      expect(prompt).toContain('A message with sharedReplyId re-posts an existing thread reply');
+      const background = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.mainGroupBackground)!.mainGroupBackground;
+      expect(background).toEqual([expect.objectContaining({ id: shares[0].id, sharedReplyId: botReply, text: '' })]);
+      expect(prompt).not.toContain('forged words');
+    });
+  });
 });
 
 
@@ -2332,6 +2746,7 @@ describe('Chat authentication recovery and polling backoff', () => {
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
+    taskPosts.clear();
     fixture.handle.mockReset().mockImplementation(healthy);
     service = withChatServer({ dispose: vi.fn(), listGroups: async () => ({ ok: true, groups: [] }) } as unknown as BotGroupChatService, {} as BotGroupChatServiceDeps);
   });
@@ -2341,6 +2756,7 @@ describe('Chat authentication recovery and polling backoff', () => {
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
+    taskPosts.clear();
     vi.useRealTimers();
   });
 

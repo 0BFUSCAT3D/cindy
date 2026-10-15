@@ -6,9 +6,12 @@
  * 补读。回复用群聊同一个输入框的话题模式（BotGroupComposer `mode="thread"`），发出即乐观插入，
  * 服务器的回复到了原地替换；失败撤掉、文字放回，原因写在输入框上方。
  */
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
+import { findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
@@ -36,6 +39,37 @@ import { chatErrorKey, messageReactionRevision } from './ChatServerControls';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
 const STICK_TO_BOTTOM_PX = 48;
+/** Earlier pages read while looking for a reply opened from the main chat. */
+const FOCUS_PAGE_LIMIT = 5;
+
+/** Shares of this thread's replies that the main chat has loaded. */
+export type BotGroupSharedReplies = ReadonlyMap<string, { messageId: string; bySelf: boolean }>;
+
+/**
+ * Replies that reached a thread while their main-chat copy did not, per group and thread.
+ * Kept outside the panel, and the only copy: a copy may fail after its panel closed, or
+ * while the same thread is open again, and either way that panel shows the retry.
+ * Server groups keep their IDs across accounts, so the queue belongs to one data owner.
+ */
+const unpostedStore = { owner: getDataOwnerGeneration().dataOwnerId, replies: new Map<string, ReadonlySet<string>>(), listeners: new Set<() => void>() };
+const NONE_UNPOSTED: ReadonlySet<string> = new Set();
+function unpostedReplies() {
+  // Same-account runtime repairs advance generation without changing this queue's owner.
+  const owner = getDataOwnerGeneration().dataOwnerId;
+  if (unpostedStore.owner !== owner) { unpostedStore.owner = owner; unpostedStore.replies.clear(); }
+  return unpostedStore.replies;
+}
+function updateUnposted(key: string, update: (previous: ReadonlySet<string>) => ReadonlySet<string>) {
+  const queue = unpostedReplies();
+  const next = update(queue.get(key) ?? NONE_UNPOSTED);
+  if (next.size) queue.set(key, next); else queue.delete(key);
+  for (const listener of unpostedStore.listeners) listener();
+}
+function useUnposted(key: string): ReadonlySet<string> {
+  return useSyncExternalStore(
+    useCallback(listener => { unpostedStore.listeners.add(listener); return () => { unpostedStore.listeners.delete(listener); }; }, []),
+    () => unpostedReplies().get(key) ?? NONE_UNPOSTED);
+}
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
   const style = getComputedStyle(panel);
@@ -51,7 +85,15 @@ export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: st
  * `quoteSources` are the main timeline's verified messages (older pages included), so a
  * 话题 root's quote reads the same as it does in the timeline; without them, the latest page.
  */
-export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, onClose }: { group: BotGroupDetail; rootId: string; quoteSources?: readonly BotGroupMessageView[]; onClose: () => void }) {
+export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, focus, sharedReplies, onRevealShare, onClose }: {
+  group: BotGroupDetail; rootId: string; quoteSources?: readonly BotGroupMessageView[];
+  /** A reply to bring into view; a new nonce repeats the jump. */
+  focus?: { messageId: string; nonce: number } | null;
+  sharedReplies?: BotGroupSharedReplies;
+  /** Scroll the main chat to a share; false when it is not loaded there. */
+  onRevealShare?: (messageId: string) => boolean;
+  onClose: () => void;
+}) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language;
   const titleId = useId();
@@ -75,6 +117,15 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const [replies, setReplies] = useState<BotGroupMessageView[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState('');
+  // Off by default: a reply stays in the thread unless the user asks for both.
+  const [alsoSend, setAlsoSend] = useState(false);
+  const unpostedKey = `${group.id}:${rootId}`;
+  const unposted = useUnposted(unpostedKey);
+  const setUnposted = (update: (previous: ReadonlySet<string>) => ReadonlySet<string>) => updateUnposted(unpostedKey, update);
+  const [posting, setPosting] = useState<ReadonlySet<string>>(new Set());
+  const postingRef = useRef(new Set<string>());
+  /** Shares confirmed in this panel (reply → main-chat message, null when unknown). */
+  const [posted, setPosted] = useState<ReadonlyMap<string, string | null>>(new Map());
   const [pendingSends, setPendingSends] = useState<BotGroupPendingSend[]>([]);
   const repliesRef = useRef(replies);
   repliesRef.current = replies;
@@ -89,7 +140,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
    * Reads the latest page, or the page before `before`. `rereadOnly` re-reads an opened page for a
    * changed copy: it is not the oldest page, so its `hasMore` says nothing about what is loaded.
    */
-  const read = useCallback(async (before?: number, rereadOnly = false) => {
+  const read = useCallback(async (before?: number, rereadOnly = false, onAccepted?: () => void) => {
     const owner = getDataOwnerGeneration();
     const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
     const shown = repliesRef.current;
@@ -110,6 +161,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       const gap = !before && result.hasMore && result.replies.length > 0 && shown.length > 0
         && floor > shown.reduce((max, reply) => Math.max(max, reply.sequence), Number.NEGATIVE_INFINITY) + 1;
       if (!anchored(repliesRef.current)) return;
+      onAccepted?.();
       setReplies(previous => (anchored(previous)
         ? stabilizeById(previous, gap ? result.replies : mergeBotGroupMessages(previous, result.replies))
         : previous));
@@ -198,10 +250,75 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       ? previous.map((send) => (send.clientId === clientId ? { ...send, messageId: outcome.messageId } : send))
       : previous.filter((send) => send.clientId !== clientId));
   }, []);
-  const sendReply = useCallback(
-    (input: { text: string; clientId: string; mentions: BotGroupMessageView['mentions'] }) => api().reply({ groupId: group.id, rootId, ...input }),
-    [group.id, rootId],
-  );
+  // A share opened this thread: find its reply, reading back a few pages if needed.
+  const focusSearch = useRef<{ nonce: number; pages: number } | null>(null);
+  useEffect(() => {
+    if (!focus || !replies.length) return;
+    if (focusSearch.current?.nonce !== focus.nonce) focusSearch.current = { nonce: focus.nonce, pages: 0 };
+    const search = focusSearch.current;
+    if (search.pages < 0) return;
+    const target = findThreadMessageElement(contentRef.current, focus.messageId);
+    if (target) { stickToBottomRef.current = false; search.pages = -1; flashThreadTarget(target); return; }
+    if (!hasMore || search.pages >= FOCUS_PAGE_LIMIT) { search.pages = -1; return; }
+    // A push refresh may overtake this page; then its replies trigger the next attempt, and
+    // only a page that was merged counts against the limit.
+    void readRef.current(replies[0]?.sequence, false, () => { search.pages += 1; });
+  }, [focus, replies, hasMore]);
+
+  /** One server operation per reply and person, so a retry never posts twice. */
+  async function postToMain(messageId: string, fromComposer: boolean) {
+    if (readOnly || postingRef.current.has(messageId)) return false;
+    postingRef.current.add(messageId); setPosting(new Set(postingRef.current));
+    const owner = getDataOwnerGeneration();
+    const failed = (code?: string) => {
+      if (!isDataOwnerGenerationCurrent(owner)) return;
+      if (code === 'SHARE_UNAVAILABLE') {
+        setUnposted(previous => { const next = new Set(previous); next.delete(messageId); return next; });
+        toast.error(t(chatErrorKey(code)));
+      } else if (fromComposer) setUnposted(previous => new Set(previous).add(messageId));
+      else toast.error(t(code ? chatErrorKey(code) : key('requestFailed')));
+    };
+    try {
+      const result = await api().shareToMain({ groupId: group.id, messageId });
+      if (!isDataOwnerGenerationCurrent(owner)) return false;
+      if (!result.ok) { failed(result.errorCode); return false; }
+      setPosted(previous => new Map(previous).set(messageId, result.messageId));
+      setUnposted(previous => { const next = new Set(previous); next.delete(messageId); return next; });
+      if (result.alreadyShared && !fromComposer) toast.info(t(key('thread.alreadyPosted')));
+      refreshBotGroups();
+      return true;
+    } catch { failed(); return false; }
+    finally { postingRef.current.delete(messageId); setPosting(new Set(postingRef.current)); }
+  }
+  async function retryUnposted() {
+    // The queue belongs to the account that started the retry; stop once it is switched.
+    const owner = getDataOwnerGeneration();
+    for (const messageId of unposted) {
+      if (!isDataOwnerGenerationCurrent(owner)) return;
+      await postToMain(messageId, true);
+    }
+  }
+  /** The reader's own share wins over another member's, even when only this panel knows it. */
+  const sharedState = (messageId: string) => {
+    const known = sharedReplies?.get(messageId);
+    if (known?.bySelf) return { bySelf: true, shareId: known.messageId };
+    if (posted.has(messageId)) return { bySelf: true, shareId: posted.get(messageId) ?? null };
+    return known ? { bySelf: false, shareId: known.messageId } : null;
+  };
+  /** The share may sit on an older page the main chat has not loaded. */
+  const revealShare = (shareId: string) => {
+    if (!onRevealShare?.(shareId)) toast.info(t(key('thread.shareNotLoaded')));
+  };
+  const sendReply = async (input: { text: string; clientId: string; mentions: BotGroupMessageView['mentions'] }) => {
+    const owner = getDataOwnerGeneration();
+    const toMain = alsoSend;
+    const result = await api().reply({ groupId: group.id, rootId, ...input });
+    if (result.ok && isDataOwnerGenerationCurrent(owner)) {
+      setAlsoSend(false);
+      if (toMain) await postToMain(result.messageId, true);
+    }
+    return result;
+  };
   const onSent = useCallback(() => { refreshRef.current(); refreshBotGroups(); }, []);
 
   // Follow new replies while the reader is at the bottom, including content that grows later.
@@ -226,6 +343,11 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     const member = message.authorBotId ? memberById.get(message.authorBotId) : undefined;
     const authorName = (member && message.authorKind !== 'system' ? botGroupMemberDisplayName(member) : '') || message.authorName || member?.name || '';
     const owned = message.authorKind === 'user' && message.isSelf === false ? botGroupOwnedBotNames(member, members).join(separator) : '';
+    const shared = message.id !== root?.id && !message.pending ? sharedState(message.id) : null;
+    const onReveal = shared?.shareId ? () => revealShare(shared.shareId!) : undefined;
+    const postAction = readOnly || message.pending || message.id === root?.id || message.deleted || message.kind !== 'message' ? undefined
+      : shared?.bySelf ? onReveal && { key: 'reveal-in-main', label: t(key('thread.viewInMain')), icon: <CornerDownRight size={14} strokeWidth={2} className="shrink-0" />, onSelect: onReveal }
+      : { key: 'post-to-main', label: t(key('thread.postToMain')), disabled: posting.has(message.id), icon: <MessageSquareShare size={14} strokeWidth={2} className="shrink-0" />, onSelect: () => void postToMain(message.id, false) };
     return (
       <BotGroupTimelineItem
         message={message}
@@ -243,6 +365,11 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         // A 话题 root may itself be a 引用回复; its original lives in the main timeline.
         quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
         onChanged={onChanged}
+        menuActions={postAction ? [postAction] : undefined}
+        footer={shared ? <button type="button" onClick={onReveal} disabled={!onReveal}
+          className="-ml-1.5 inline-flex min-h-6 select-none items-center gap-1 self-start rounded-full px-1.5 text-12 text-[var(--text-tertiary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
+          <CornerDownRight size={12} aria-hidden />{t(key(shared.bySelf ? 'thread.postedBySelf' : 'thread.postedToMain'))}
+        </button> : null}
       />
     );
   };
@@ -280,6 +407,12 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
           getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <>
           {error && <p role="alert" className="px-4 pt-3 text-13 text-[var(--error-fg)]">{error}</p>}
+          {/* Kept apart from read errors: a thread refresh must not hide the retry. */}
+          {unposted.size > 0 && <div role="alert" className="mb-2 px-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-13 text-[var(--error-fg)]">
+            <span className="min-w-0">{t(key('thread.alsoSendFailed'), { count: unposted.size })}</span>
+            <Button variant="secondary" size="sm" compact disabled={readOnly} loading={[...unposted].some(id => posting.has(id))} onClick={() => void retryUnposted()}>
+              {t(key('thread.retryPost'))}</Button>
+          </div>}
           <div className="border-t border-[var(--border-default)]">
             <BotGroupComposer
               mode="thread"
@@ -288,6 +421,17 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
               members={members}
               running={false}
               disabled={readOnly}
+              footerStart={sending => (
+                <button type="button" role="checkbox" aria-checked={alsoSend} disabled={sending || readOnly}
+                  onClick={() => setAlsoSend(value => !value)}
+                  className="-ml-1.5 inline-flex min-h-7 min-w-0 select-none items-center gap-2 rounded-full px-1.5 text-13 text-[var(--text-secondary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50">
+                  <span aria-hidden className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--motion-fast)]',
+                    alsoSend ? 'bg-[var(--accent-cta-bg-pure)] text-[var(--accent-pure-cta-fg)]' : 'border border-[var(--border-default)]')}>
+                    {alsoSend ? <Check size={10} strokeWidth={3} /> : null}
+                  </span>
+                  <span className="min-w-0 truncate">{t(key('thread.alsoSend'))}</span>
+                </button>
+              )}
               sendReply={sendReply}
               onSendStart={onSendStart}
               onSendSettled={onSendSettled}

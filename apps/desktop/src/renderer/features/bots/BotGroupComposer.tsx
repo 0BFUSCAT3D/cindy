@@ -36,6 +36,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type ClipboardEvent,
   type KeyboardEvent,
 } from 'react';
@@ -178,6 +179,7 @@ export function BotGroupComposer({
   onSendSettled,
   onSent,
   onSending,
+  footerStart,
 }: {
   groupId: string;
   /** `thread`: a 话题's reply box (no 「+」 menu, attachments or quotes). */
@@ -208,6 +210,7 @@ export function BotGroupComposer({
   onSent?: () => void;
   /** Main-group send was queued; keep the timeline at the bottom. */
   onSending?: () => void;
+  footerStart?: (sending: boolean) => ReactNode;
 }) {
   const { t } = useTranslation();
   const thread = mode === 'thread';
@@ -609,6 +612,7 @@ export function BotGroupComposer({
           />
           <div className={BOT_GROUP_COMPOSER_FOOTER}>
             <div className={BOT_GROUP_COMPOSER_FOOTER_START}>
+              {footerStart?.(sending)}
               {thread ? null : (<>
               <input
                 ref={fileInputRef}

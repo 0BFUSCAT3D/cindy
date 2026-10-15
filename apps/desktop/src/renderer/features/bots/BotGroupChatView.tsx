@@ -52,6 +52,7 @@ import { ControlledBanner, useControlledBy, useComposerCollapsed } from '@/featu
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
 import type {
   BotGroupMemberView,
+  BotGroupDetail,
   BotGroupMessageView,
   BotGroupPlanAction,
   BotGroupPlanStepView,
@@ -63,6 +64,7 @@ import { useRegisterContentHeader } from '../feature-context';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
 import { botGroupAttachmentScope, refreshPendingBotGroupAttachments } from './botGroupAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
+import { findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import {
   BotGroupHeaderStatusText,
   BotGroupProgressStrip,
@@ -255,9 +257,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           return;
         }
         const displayed = stateRef.current;
-        const sourceMessageIds = [...new Set([...(displayed.kind === 'ready' && displayed.group.id === groupId
+        const shown = displayed.kind === 'ready' && displayed.group.id === groupId;
+        const sourceMessageIds = [...new Set([...(shown
           ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
-        const result = sourceMessageIds.length ? await api.getBotGroup(groupId, { sourceMessageIds }) : await api.getBotGroup(groupId);
+        // Older pages are not re-read, so their shares ask for the reply's current state.
+        const shownShares = shown ? botGroupShownShares(displayed.older) : [];
+        const result = sourceMessageIds.length || shownShares.length
+          ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
+          : await api.getBotGroup(groupId);
         if (!isApplicable()) return;
         if (result.ok) {
           readOwner.current = owner;
@@ -267,6 +274,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               return { kind: 'ready', group: result.group, older: [], olderPlans: [], olderHasMore: result.group.hasMoreBefore, readToken };
             }
             const merged = mergeBotGroupLatestPage(previous, result.group);
+            merged.older = applyBotGroupThreadShareUpdates(merged.older, result.group);
             return { kind: 'ready', ...merged, readToken };
           });
           if (shown.kind === 'ready') {
@@ -389,6 +397,15 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     };
   }, [groupId, reloadVersion, navigate]);
 
+  // An older page may land across a refresh. Recheck that set once per version; source
+  // and attachment completion pushes then refresh every displayed share together.
+  // The derived key stays unchanged if a read cannot confirm a source, avoiding a loop.
+  const staleSharesKey = state.kind === 'ready' && staleBotGroupShares(state.older, state.group.threadShareVersion).length
+    ? JSON.stringify([state.group.threadShareVersion, staleBotGroupShares(state.older, state.group.threadShareVersion).map(message => message.id)]) : '';
+  useEffect(() => {
+    if (staleSharesKey) loadRef.current();
+  }, [staleSharesKey]);
+
   const group = state.kind === 'ready' ? state.group : null;
   // Until the timeline arrives, the header comes from the group's sidebar row (same account).
   const listed = useBotGroupSummary(state.kind === 'loading' || state.kind === 'error' ? groupId : null);
@@ -409,6 +426,20 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
+  /** Thread replies already in the loaded main chat, with the share to reveal. */
+  const sharedReplies = useMemo(() => {
+    const shares = new Map<string, { messageId: string; bySelf: boolean }>();
+    for (const message of realMessages) {
+      const share = message.threadShare;
+      // Only a share the server resolved inside its claimed thread stands for that reply.
+      if (share?.status !== 'available') continue;
+      const bySelf = message.authorKind === 'user' && message.isSelf !== false;
+      // Prefer the reader's own share: it is the one a repeat would return.
+      if (!shares.has(share.messageId) || bySelf) shares.set(share.messageId, { messageId: message.id, bySelf });
+    }
+    return shares;
+  }, [realMessages]);
+  // The composer sends under the group's own id; an older local route can still lead here.
   const outboxGroupId = group?.id ?? groupId;
   const outbox = useBotGroupOutbox(outboxGroupId);
   useLayoutEffect(() => {
@@ -521,6 +552,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
   const threadRootIdRef = useRef(threadRootId);
   threadRootIdRef.current = threadRootId;
+  /** A reply to bring into view when a main-chat share opens its thread. */
+  const [threadFocus, setThreadFocus] = useState<{ messageId: string; nonce: number } | null>(null);
   const threadOpenerRef = useRef<HTMLElement | null>(null);
   const threadLayoutRef = useRef<HTMLDivElement>(null);
   const threadHeaderRef = useRef<HTMLDivElement>(null);
@@ -554,6 +587,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     threadCloseAnimationRef.current?.cancel();
     threadCloseAnimationRef.current = null;
   }, [threadRootId]);
+  /** From a thread reply back to where it was shared in the main chat. */
+  const revealMainMessage = useCallback((messageId: string) => {
+    const target = findThreadMessageElement(contentRef.current, messageId);
+    if (!target) return false;
+    stickToBottomRef.current = false;
+    flashThreadTarget(target);
+    return true;
+  }, []);
   useEffect(() => {
     if (!group?.serverBacked || !threadRootId) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -875,7 +916,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     const message = messageByIdRef.current.get(messageId);
     if (message) setQuoteDraft(botGroupQuoteFromMessage(message));
   }, []);
-  const onOpenThread = useCallback((messageId: string) => {
+  const onOpenThread = useCallback((messageId: string, focusMessageId?: string) => {
     threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (threadCloseAnimationRef.current) {
       threadCloseAnimationRef.current.cancel();
@@ -887,6 +928,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       }
     }
     setThreadRootId(messageId);
+    setThreadFocus(focusMessageId ? { messageId: focusMessageId, nonce: Date.now() } : null);
   }, []);
   const onSending = useCallback(() => { stickToBottomRef.current = true; }, []);
 
@@ -1196,9 +1238,42 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         />
       ) : null}
     </main>
-    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} quoteSources={quoteSources} onClose={closeThread} />}
+    {group.serverBacked && threadRootId && <ChatThreadPanel key={`${group.id}:${threadRootId}`} group={group} rootId={threadRootId} quoteSources={quoteSources}
+      focus={threadFocus} sharedReplies={sharedReplies} onRevealShare={revealMainMessage} onClose={closeThread} />}
     </div>
   );
+}
+
+/** Older shares checked before the latest edit, deletion or reset: they may be out of date. */
+function staleBotGroupShares(older: readonly BotGroupMessageView[], version: number | undefined) {
+  return older.filter(message => message.threadShare && version !== undefined && (message.threadShare.version ?? 0) < version);
+}
+
+/** One refresh covers all loaded references, including pending sources and attachments. */
+function botGroupShownShares(older: readonly BotGroupMessageView[]) {
+  return older.filter(message => message.threadShare).map(message => ({
+    id: message.id, messageId: message.threadShare!.messageId, threadRootId: message.threadShare!.threadRootId,
+    ...(message.authorBotId ? { sharerId: message.authorBotId } : {}) }));
+}
+
+/**
+ * Apply the refreshed older shares. One this refresh could not check that is older than the
+ * latest version stops quoting its old text until a later refresh confirms it.
+ */
+function applyBotGroupThreadShareUpdates(older: BotGroupMessageView[], group: Pick<BotGroupDetail, 'threadShareUpdates' | 'threadShareVersion'>) {
+  const { threadShareUpdates: updates, threadShareVersion: version } = group;
+  if (!updates && version === undefined) return older;
+  let changed = false;
+  const next = older.map(message => {
+    const share = message.threadShare;
+    if (!share) return message;
+    const update = updates?.[message.id];
+    if (update) { changed = true; return { ...message, threadShare: update }; }
+    if (version === undefined || (share.version ?? 0) >= version || share.status !== 'available') return message;
+    changed = true;
+    return { ...message, threadShare: { ...share, status: 'loading' as const, authorName: '', authorBotId: null, content: '', attachments: [], edited: false } };
+  });
+  return changed ? next : older;
 }
 
 function BotGroupTimelineLoading() {

@@ -436,6 +436,7 @@ function createDb(filename = ':memory:'): void {
       context_refs_json TEXT DEFAULT '[]' NOT NULL,
       artifact_refs_json TEXT DEFAULT '[]' NOT NULL,
       permission_snapshot_json TEXT DEFAULT '{}' NOT NULL,
+      group_task_posts_json TEXT DEFAULT '{}' NOT NULL,
       lineage_json TEXT DEFAULT '[]' NOT NULL,
       target_profile_version INTEGER,
       depth INTEGER DEFAULT 1 NOT NULL,

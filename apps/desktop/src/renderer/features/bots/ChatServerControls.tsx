@@ -51,6 +51,9 @@ interface ChatMessageActionProps {
   onQuote?: () => void;
   /** Opens the message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after. */
   onReply?: () => void;
+  replyCountShown?: boolean;
+  copyText?: string;
+  menuActions?: Parameters<typeof MessageActionBar>[0]['menuActions'];
   /** The current actor's reaction on `messageId` changed: re-read that message's copy. */
   onChanged: (messageId: string) => void;
 }
@@ -69,17 +72,17 @@ export function ChatMessageReactions({ groupId, message, members, reactionRevisi
   );
 }
 
-function ChatMessageToolbar({ groupId, shareScope, message, align = 'left', onQuote, onReply, onChanged, picker, onPickerChange }: ChatMessageActionProps & {
+function ChatMessageToolbar({ groupId, shareScope, message, align = 'left', onQuote, onReply, replyCountShown, copyText, menuActions, onChanged, picker, onPickerChange }: ChatMessageActionProps & {
   picker: boolean; onPickerChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const { busy, react } = useChatReaction(groupId, message.id, onChanged);
   return (
-    <MessageActionBar copyText={message.content} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}
+    <MessageActionBar copyText={copyText ?? message.content} menuActions={menuActions} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}
       align={align} hovered simplifiedBotConversation
       onShareAsImage={() => shareSelectionStore.enter(shareScope, message.id)}
       quoteAction={onQuote ? { onClick: onQuote, label: t(key('quoteReply')) } : undefined}
-      replyAction={onReply ? { onClick: onReply, count: message.replyCount,
+      replyAction={onReply ? { onClick: onReply, count: replyCountShown ? undefined : message.replyCount,
         label: message.replyCount ? t(key('openTopic'), { count: message.replyCount }) : t(key('startTopic')) } : undefined}
       reactionAction={groupId ? { label: t(key('addReaction')), open: picker, onOpenChange: onPickerChange, disabled: busy,
         content: <div className="grid grid-cols-6 gap-1">{emojiChoices.map(emoji =>

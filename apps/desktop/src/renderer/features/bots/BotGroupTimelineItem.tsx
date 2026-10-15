@@ -15,7 +15,8 @@
  */
 import { memo, useEffect, useState, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CircleAlert, RefreshCcw } from 'lucide-react';
+import { CircleAlert, CornerDownRight, RefreshCcw } from 'lucide-react';
+import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLabel } from './BotGroupThreadViews';
 import { toast } from '@/lib/toast';
 import { editBotGroupSend, retryBotGroupSend, type BotGroupOutboxEntry } from './botGroupOutbox';
 
@@ -188,7 +189,9 @@ export interface BotGroupTimelineItemProps {
   quoteDisplay?: BotGroupQuoteDisplay;
   onLocateQuote?: (quote: BotGroupQuoteView) => void;
   onQuote?: (messageId: string) => void;
-  onOpenThread?: (messageId: string) => void;
+  onOpenThread?: (messageId: string, focusMessageId?: string) => void;
+  menuActions?: Parameters<typeof ChatMessageHoverActions>[0]['menuActions'];
+  footer?: ReactNode;
   /** This client changed the message (a reaction): the timeline refreshes its copy. */
   onChanged: (messageId: string) => void;
   highlighted?: boolean;
@@ -304,6 +307,19 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
       align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
     />
   ) : null;
+  const share = message.threadShare;
+  const threadPreview = props.onOpenThread && (message.replyCount ?? 0) > 0 ? (
+    <BotGroupThreadPreview message={message} members={members}
+      align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
+      onOpen={() => props.onOpenThread!(message.id)} />
+  ) : null;
+  const shareBody = share ? <>
+    <p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]">
+      <CornerDownRight size={12} aria-hidden />{botGroupThreadShareLabel(share, t)}</p>
+    <BotGroupThreadShareQuote share={share} members={members}
+      attachments={<BotGroupMessageAttachments attachments={share.attachments} align="start" />}
+      onOpenThread={props.onOpenThread ? () => props.onOpenThread!(share.threadRootId, share.messageId) : undefined} />
+  </> : null;
   const actions = shareable ? (
     <ChatMessageHoverActions
       groupId={props.reactionGroupId}
@@ -313,6 +329,9 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
       onQuote={props.onQuote ? () => props.onQuote!(message.id) : undefined}
       onReply={props.onOpenThread ? () => props.onOpenThread!(message.id) : undefined}
       onChanged={props.onChanged}
+      copyText={share ? share.status === 'available' ? share.content : '' : undefined}
+      replyCountShown={Boolean(threadPreview)}
+      menuActions={props.menuActions}
     />
   ) : null;
 
@@ -329,8 +348,9 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           {sharing && shareable ? <ShareMessageCheckbox clientId={message.id} /> : null}
           <div className={cn('flex min-w-0 max-w-[78%] flex-col items-end gap-1.5 transition-opacity', message.pending && message.outbox?.status !== 'failed' && 'opacity-60')}>
             {quote}
-            <BotGroupMessageAttachments attachments={message.attachments ?? []} align="end" />
-            {hasText ? (
+            {shareBody}
+            {!share && <BotGroupMessageAttachments attachments={message.attachments ?? []} align="end" />}
+            {!share && hasText ? (
               <div
                 data-testid="bot-group-self-bubble"
                 className={`max-w-full rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3 py-1.5 text-[var(--msg-user-text)] ${BOT_GROUP_BODY_CLASS}`}
@@ -338,6 +358,8 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                 <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
               </div>
             ) : null}
+            {threadPreview}
+            {props.footer}
             {message.outbox ? <BotGroupOutboxStatus entry={message.outbox} readOnly={props.readOnly} /> : null}
             {message.pending && !message.outbox ? <span className="sr-only">{t('bots.groupChat.timeline.sending')}</span> : null}
             {!message.pending ? <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} /> : null}
@@ -411,16 +433,19 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
               {/* A task this teammate started from the group; mine is live where it runs, another owner's
                   is a snapshot. An author no longer in the group is unknown: its task may run on another
                   computer, so it stays a snapshot rather than a lookup on this one. */}
-              {message.task ? (
+              {shareBody}
+              {!share && message.task ? (
                 <BotGroupTaskCard task={message.task} owned={botGroupTaskOwned(message.authorBotId, members)}
                   botId={message.authorBotId} />
               ) : null}
-              {hasText ? (
+              {!share && hasText ? (
                 <div className={`min-w-0 text-[var(--msg-assistant-text)] ${BOT_GROUP_BODY_CLASS}`}>
                   <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
                 </div>
               ) : null}
-              <BotGroupMessageAttachments attachments={message.attachments ?? []} align="start" />
+              {!share && <BotGroupMessageAttachments attachments={message.attachments ?? []} align="start" />}
+              {threadPreview}
+              {props.footer}
               <BotGroupHandoffFiles files={message.files ?? []} workDir={props.plan?.workDir ?? null} />
               <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} onChanged={props.onChanged} />
             </div>
