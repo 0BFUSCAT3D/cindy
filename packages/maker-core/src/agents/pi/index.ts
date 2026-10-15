@@ -6397,7 +6397,9 @@ export class PiAgent extends BaseAgent {
         }
       }
       armedPlanMode = reviewMode ? false : (opts.planMode ?? planModeActive);
-      if (!reviewMode && opts.planMode !== undefined && !ctx.isStreaming && !ctx.pendingHostTurnStartToken) {
+      // Missing optional plan support must not tear down an otherwise usable
+      // session. Keep the armed intent; planned sends will reject before dispatch.
+      if (!reviewMode && planModeExtAvailable && opts.planMode !== undefined && !ctx.isStreaming && !ctx.pendingHostTurnStartToken) {
         await runExclusivePiRpc(() => applyPlanMode(opts.planMode!));
       }
     } catch (err) {

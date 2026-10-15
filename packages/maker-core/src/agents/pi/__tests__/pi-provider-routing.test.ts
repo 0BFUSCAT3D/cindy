@@ -5768,13 +5768,22 @@ describe("Pi provider-aware model routing", () => {
     await handle.close();
   });
 
-  it("rejects an unavailable plan extension instead of dispatching an ordinary turn", async () => {
+  it.each(["startup", "snapshot"])("keeps ordinary sends usable when the unavailable plan extension rejects %s intent", async (source) => {
     const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
       sessionId: "plan-missing-extension", workingDir: cwd, model: "local-model",
+      planMode: source === "startup",
     });
-    await expect(handle.send({ type: "user", content: "plan only" }, { planMode: true }))
+    await expect(handle.send({ type: "user", content: "plan only" }, source === "snapshot" ? { planMode: true } : undefined))
       .rejects.toThrow("plan-mode extension is unavailable");
     expect(captured.requests.some((request) => request.message === "plan only")).toBe(false);
+    expect(handle.getPlanMode!()).toBe(source === "startup");
+    expect(handle.getExecutionPlanMode!()).toBe(false);
+    expect(captured.closes).toBe(0);
+    await handle.setPlanMode!(false);
+    await handle.send({ type: "user", content: "ordinary message" });
+    expect(captured.requests.some((request) => request.message === "ordinary message")).toBe(true);
+    expect(captured.requests.some((request) => request.message === "/plan")).toBe(false);
+    expect(captured.closes).toBe(0);
     await handle.close();
   });
 

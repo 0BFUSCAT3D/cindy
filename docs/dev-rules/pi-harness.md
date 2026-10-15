@@ -68,8 +68,9 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   消息的一次性意图，与原生运行态分开；`StartSessionOptions.planMode` 设置起始档，
   `SendOptions.planMode` 快照决定本轮，切档与 prompt 在同一 RPC 串行段执行。发送后消耗
   勾选不关闭在途计划轮；下一条普通消息恢复普通工具。扩展缺失或切档失败时拒绝计划请求，
-  不悄悄按普通模式执行。resume 和原生 Execute/Refine 续轮从本机 session JSONL 校正
-  运行态；远端仍走 `get_entries`。原生续轮校正期间 Host 写操作保持不可用。
+  不悄悄按普通模式执行。缺失扩展不阻止会话启动，启动计划意图保留到发送时拒绝；
+  取消计划后普通消息仍可发送。resume 和原生 Execute/Refine 续轮从本机 session JSONL
+  校正运行态；远端仍走 `get_entries`。原生续轮校正期间 Host 写操作保持不可用。
 
 > Cindy 自有子代理的委派、控制、结果收口与测试边界见 [Pi 子代理设计](../research/pi-subagent-delegation.md)。与 Orca 协作模式分别维护。
 
