@@ -4,10 +4,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * 最小 drizzle 假链:每次 select() 按顺序弹出一组行;链上任何方法都返回自身并可 await。
+ * 最小 drizzle 假链:每次 select() 按顺序弹出一组行(弹出 Error 则该次查询 reject);
+ * 链上任何方法都返回自身并可 await。
  * 读取路径依次 select:伙伴归属 → 会话 cleared_at → 来源消息存活 → 进行中的后台任务。
  */
-const db = vi.hoisted(() => ({ queue: [] as unknown[][] }));
+const db = vi.hoisted(() => ({ queue: [] as (unknown[] | Error)[] }));
 vi.mock('../../localDb/client/current.js', () => ({
   getDbClient: () => ({
     drizzle: {
@@ -15,7 +16,7 @@ vi.mock('../../localDb/client/current.js', () => ({
         const rows = db.queue.shift() ?? [];
         const chain: Record<string, unknown> = {
           then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
-            Promise.resolve(rows).then(resolve, reject),
+            (rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows)).then(resolve, reject),
         };
         for (const name of ['from', 'innerJoin', 'where', 'limit']) chain[name] = () => chain;
         return chain;
@@ -317,6 +318,9 @@ describe('store', () => {
     expect(await readWorkingMemoryNoteForSession('s-task', root)).toBeNull();
     db.queue.push([]);
     expect(await pruneWithdrawnWorkingMemoryForSession('s-task', root)).toBe(0);
+    // 来源校验查询失败:不退回"未过滤",按没有账本返回 null(提前换窗也随之取消)。
+    db.queue.push([{ botId: 'bot-1' }], new Error('db down'));
+    expect(await readWorkingMemoryNoteForSession('s-bot', root)).toBeNull();
   });
 
   it('treats items whose source message predates /clear as withdrawn, and prunes them after the clear is persisted', async () => {
