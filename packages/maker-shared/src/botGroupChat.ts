@@ -555,6 +555,12 @@ export function botGroupPlanRouteKeyPrefix(groupId: string): string {
   return `group:${groupId}:plan:`;
 }
 
+/** Group id of any lane or 分工 Session route key (`group:<groupId>…`), or null for other routes. */
+export function parseBotGroupIdFromRouteKey(routeKey: string | null | undefined): string | null {
+  const match = typeof routeKey === 'string' ? /^group:([^:]+)(?::|$)/.exec(routeKey) : null;
+  return match ? match[1]! : null;
+}
+
 /** Plan id of a 分工 Session route key, or null for lanes and other routes. */
 export function parseBotGroupPlanRouteKey(routeKey: string | null | undefined): { groupId: string; planId: string } | null {
   const match = typeof routeKey === 'string' ? /^group:([^:]+)(?::access:(?:owner|tools|chat):[1-9][0-9]*)?:plan:([^:]+)$/.exec(routeKey) : null;
