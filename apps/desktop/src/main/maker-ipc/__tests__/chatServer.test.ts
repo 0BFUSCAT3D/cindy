@@ -1833,15 +1833,32 @@ describe('Chat Server result delivery and refresh', () => {
     it('tells companions a share is a reference whose quoted @names address no one', async () => {
       claimed = false;
       fixture.handle.mockImplementation((route, method, body) => route.includes('all=true')
-        ? { body: [shares[0], { ...msg(execution.source_message_id, 1, selfId), content: [{ type: 'text', text: 'Bot, summarize' }] }] }
+        ? { body: [...shares, { ...msg(execution.source_message_id, 1, selfId), content: [{ type: 'text', text: 'Bot, summarize' }] }] }
         : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
       await vi.advanceTimersByTimeAsync(2000);
       expect(deps.dispatch).toHaveBeenCalledOnce();
       const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
       expect(prompt).toContain('A message with sharedReplyId re-posts an existing thread reply');
       const history = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.messages)!.messages;
-      expect(history.find((m: { id: string }) => m.id === shares[0].id)).toMatchObject({ sharedReplyId: botReply });
+      for (const share of shares) expect(history.find((m: { id: string }) => m.id === share.id))
+        .toMatchObject({ sharedReplyId: expect.any(String), text: '' });
+      expect(prompt).not.toContain('forged words');
       expect(history.find((m: { id: string }) => m.id === execution.source_message_id)).not.toHaveProperty('sharedReplyId');
+    });
+
+    it('omits share fallback from arrangement context while retaining ordinary text', async () => {
+      deps.decidePlan = vi.fn(async () => null);
+      fixture.handle.mockImplementation((route, method, body) => route.endsWith('/messages') && method === 'POST'
+        ? { body: { id: execution.source_message_id } } : threadResponse(route, method, body));
+      expect(await service.sendMessage({ groupId: roomId, text: 'Plan our trip', clientId: 'share-context-plan',
+        division: true, mentions: { all: false, botIds: [] } })).toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.decidePlan).toHaveBeenCalledOnce();
+      const context = vi.mocked(deps.decidePlan).mock.calls[0][0];
+      expect(context.recent.filter(m => m.sharedReplyId)).toHaveLength(shares.length);
+      expect(context.recent.filter(m => m.sharedReplyId).every(m => m.text === '')).toBe(true);
+      expect(JSON.stringify(context)).not.toContain('forged words');
+      expect(context.recent).toContainEqual(expect.objectContaining({ text: '@Alice 去爬山\n[附件: map.png]' }));
     });
 
     it('marks a share in the main-group background of a Thread request as a reference too', async () => {
@@ -1857,7 +1874,8 @@ describe('Chat Server result delivery and refresh', () => {
       const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
       expect(prompt).toContain('A message with sharedReplyId re-posts an existing thread reply');
       const background = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.mainGroupBackground)!.mainGroupBackground;
-      expect(background).toEqual([expect.objectContaining({ id: shares[0].id, sharedReplyId: botReply })]);
+      expect(background).toEqual([expect.objectContaining({ id: shares[0].id, sharedReplyId: botReply, text: '' })]);
+      expect(prompt).not.toContain('forged words');
     });
   });
 });

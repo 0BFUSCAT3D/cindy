@@ -112,7 +112,8 @@ const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy
 const contentText = (m: Message, forModel: boolean) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m)
   .flatMap(b => b.type !== 'media' ? [b.text ?? b.fallback ?? ''] : forModel ? [b.text ?? b.fallback ?? `[附件: ${b.caption ?? '文件'}]`] : []).join('\n');
 /** What a Bot reads: each attachment stays a `[附件: …]` line beside the text. */
-const bodyText = (m: Message) => contentText(m, true);
+// A share's fallback is an old-client display only, never authoritative model context.
+const bodyText = (m: Message) => readBotGroupThreadShareCard(m) ? '' : contentText(m, true);
 /** What people read: attachments render from the media blocks (`messageViews`), not as text. */
 const displayText = (m: Message) => contentText(m, false);
 // The server makes a caption optional; an unnamed attachment still needs a visible name.
