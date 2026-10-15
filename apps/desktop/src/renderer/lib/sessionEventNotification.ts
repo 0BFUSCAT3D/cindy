@@ -126,10 +126,13 @@ function sendRemoteCompletionNotification(sessionId: string, deviceId: string, d
   const key = JSON.stringify([deviceId, sessionId]);
   if (pendingRemoteCompletions.has(key)) return;
   const activity = getRemoteSessionActivity(sessionId, deviceId);
-  if (activity?.phase === 'completed' && activity.completionNotification === 'teammate') return;
+  // A clear can arrive before the renderer's delayed done callback. Missing
+  // activity is not proof of a new completion (including on older hosts).
+  if (!activity) return;
+  if (activity.phase === 'completed' && (activity.completionNotification === 'teammate' || activity.completionNotification === 'silent')) return;
   if (activity?.phase === 'error' || activity?.phase === 'needs-interaction') return;
-  if (!activity || (activity.phase === 'completed' && activity.completionNotification !== 'pending')) {
-    deliver(); // Older hosts retain their original notification behavior.
+  if (activity.phase === 'completed' && activity.completionNotification !== 'pending') {
+    deliver(); // Older hosts still publish ordinary unread completion activity.
     return;
   }
   let sawPendingCompletion = activity.phase === 'completed';
@@ -146,7 +149,7 @@ function sendRemoteCompletionNotification(sessionId: string, deviceId: string, d
     pendingRemoteCompletions.delete(key);
     // Read, disconnect, error, interaction or a replacement turn supersedes this
     // completion request. Only the source's resolved ordinary completion sends.
-    if (latest?.phase === 'completed' && latest.completionNotification !== 'teammate') deliver();
+    if (latest?.phase === 'completed' && latest.completionNotification !== 'teammate' && latest.completionNotification !== 'silent') deliver();
   });
   pendingRemoteCompletions.set(key, cancel);
 }

@@ -2465,6 +2465,19 @@
       "note": "伙伴独立事务清单，含交办与获准信息中的主动发现；项目、执行任务与PR仅可选关联。不替代Session任务生命周期。"
     },
     {
+      "id": "voiceprint",
+      "status": "proposed",
+      "en": "Voiceprint",
+      "translations": {
+        "zh-CN": "声纹",
+        "zh-TW": "聲紋",
+        "ja": "声紋",
+        "ko": "성문"
+      },
+      "checkCase": false,
+      "note": "语音输入「识别我的声音」录入的本人声音特征，只存在本机、不同步。可写「录入声纹」「删除声纹」；不要写成声音指纹、声音模板。"
+    },
+    {
       "id": "companion-main-computer",
       "status": "proposed",
       "en": "Main computer",

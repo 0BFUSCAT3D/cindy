@@ -18,16 +18,19 @@
  *   .row-prev  { font-size:12.5px }                                      → text-12(仓库字号阶梯里最近的一档)
  *   .badge     { min-width:16px; height:16px; padding:0 4px; radius:9999 } → h-4 min-w-4 px-1 rounded-full
  *   .av-40     { 40px }                                                   → BotAvatar size="md"
- *   .side-list { padding:0 12px 12px }                                    → 容器 px-3
+ *   .side-list { padding:0 12px 12px }                                    → 容器 pl-3(伙伴段并入任务侧栏后,
+ *                                                                           右侧由侧栏滚动区统一留白)
  *
  * 未读角标依用户的侧栏细化反馈收小，数字采用等宽，预览不再随未读加粗。
+ * 2026-10-13 伙伴从整栏切换改为任务侧栏里的「伙伴」段(TeammatesSection):行几何不变,
+ * 段头改与置顶 / 全部任务段头同款。
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-const source = readFileSync(resolve(__dirname, '..', 'BotsSidebar.tsx'), 'utf8').replace(
+const source = readFileSync(resolve(__dirname, '..', 'TeammatesSection.tsx'), 'utf8').replace(
   /\r\n/g,
   '\n',
 );
@@ -109,13 +112,25 @@ describe('伙伴行的间距基线', () => {
       '<div className="px-3 py-3">',
     );
     expect(source).toContain("<BotCreateMenu label={t('bots.add')} />");
-    // 小节头与行内正文左边缘对齐:容器 px-3(12px) + 10px。
-    expect(source).toContain('<div className="flex items-center justify-between px-2.5 pb-2">');
     expect(source).toContain(
       'mb-1 flex items-center gap-2 px-2.5 text-10 font-medium text-[var(--sidebar-list-muted)]',
     );
-    // 列表容器本身:定稿 `.side-list{padding:0 12px 12px}`。
-    expect(source).toContain('<div className="flex min-h-0 flex-1 flex-col px-3 pt-2">');
+    // 列表容器:左 12px 与 `.side-list` 一致;不再自带滚动,随任务侧栏一起滚。
+    expect(source).toContain('<div className="flex flex-col pt-1 pr-0 pl-3">');
+    expect(code).not.toContain('overflow-y-auto');
+  });
+
+  it('段头与置顶 / 全部任务段头同款,收起后的头像行与行内正文左缘对齐', () => {
+    // 段头:高 24,左 24 / 右 12,与 PinnedSection 段头一致。
+    expect(source).toContain(
+      '<div className="group/sidebar-header flex h-6 items-center justify-between pr-3 pl-6">',
+    );
+    // 头像行起点 = 列表容器 12px + 行内边距 10px。
+    expect(source).toContain('<div ref={avatarRowRef} className="flex flex-nowrap items-center gap-2 overflow-hidden py-1 pr-0 pl-[22px]">');
+    // 段头动作是 20px 图标钮,与其它段头动作同尺寸。
+    expect(source).toContain('<BotCreateMenu variant="header" />');
+    // 加入群聊收进「+」菜单的「输入邀请链接…」(#6013),段头不再有单独的加群按钮。
+    expect(source).not.toContain('ChatJoinButton');
   });
 });
 
