@@ -214,6 +214,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   // Cloud companions (cloud-companions.md): inert unless the server announces homes.
   let selfDeviceId: string | null = null;
   let companionHome = false;
+  let directRoomClaims = false;
   let companion: CompanionCloudRuntime | undefined;
   let companionSelf: string | null = null;
   let actorsStale = false;
@@ -504,12 +505,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     refreshActors = (async () => {
       actorsStale = false;
       profiles = await getDbClient().drizzle.select().from(botProfiles).where(undefined);
-      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me'); selfId = me.actor.id;
+      const me = await api<{ actor: Actor; deviceId?: string | null; capabilities?: { groupDiscussionParity?: number; companionHome?: boolean; directRoomClaim?: boolean; groupLifecycleVersion?: number; conversationListStateVersion?: number } }>('/me'); selfId = me.actor.id;
       supportsDissolve = me.capabilities?.groupLifecycleVersion === 1;
       supportsListRemoval = me.capabilities?.conversationListStateVersion === 1;
       groupDiscussionParity = me.capabilities?.groupDiscussionParity === 1;
       selfDeviceId = typeof me.deviceId === 'string' && me.deviceId ? me.deviceId : null;
       companionHome = !!deps.companionCloud && me.capabilities?.companionHome === true && !!selfDeviceId;
+      // Work in a 1:1 room is only claimed by a copy that hands it to the companion's main task;
+      // a server without the capability never sees the field (its strict contract would reject it).
+      directRoomClaims = companionHome && me.capabilities?.directRoomClaim === true;
       // Refresh from the issuing auth server, never overwrite with a stale device cache.
       if (Date.now() - profileRefreshedAt > 60000) {
         await api('/profile/refresh', 'POST').then(() => { profileRefreshedAt = Date.now(); }).catch(() => undefined);
@@ -1365,7 +1369,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // installation is not yet confirmed to run it (the server only tells devices apart): never claim.
         if (companionHome && (companion?.isShadowed(actor.externalId) || !companion?.installConfirmed(actor.externalId))) continue;
         let claim: { execution: Execution | null };
-        const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1 };
+        const payload = { operationId: randomUUID(), executorId, accessPolicyVersion: 1, planVersion: 1, ...(directRoomClaims ? { directRoomVersion: 1 } : {}) };
         try {
           claim = await api('/executions/claim', 'POST', { ...payload, ...(memberJoinedClaims ? { memberJoinedVersion: 1 } : {}) }, actor.id);
         } catch (error) {
