@@ -512,7 +512,8 @@ function mapServerError(err: unknown): never {
 export function initModelAccess(): void {
   const sync = getSync();
   // 主进程各调用方遇到 Cindy 网关 401 时经此重新拉取凭据(服务端会探测并换发失效 Key)。
-  installCindyGatewayKeyRejectionReporter(() => getSync().sync());
+  // 用静默同步:失败不降级状态、不清空模型列表(见 credentialsSync.resyncAfterKeyRejection)。
+  installCindyGatewayKeyRejectionReporter(() => getSync().resyncAfterKeyRejection());
   const byok = createByokRuntime(
     broadcastReferenceModelPricing,
     createByokCache(byokSnapshotSecretIo),

@@ -25,8 +25,10 @@ import { getModelAccessCredentialsStore } from './credentialsStore.js';
  * 重试后以 failed 状态结束(不 reject),服务端也可能在网关鉴权缓存窗口内原样返回这把稍后
  * 才被撤销的 Key。永久标记会让这把 Key 之后的 401 一律被忽略,直到重启;窗口过后再允许
  * 触发一次即可自行恢复。窗口内不重复,则不会对着挂掉的服务端或误报的 401 反复请求。
- * 同步用 `sync()` 而不是 `retry()`:它尊重 unsupported / disabled 终态,自带 single-flight
- * 与内部重试;失败沿用现有同步表现,这里不新增提示。
+ * 同步用 `credentialsSync.resyncAfterKeyRejection()`:与 `sync()` 一样尊重 unsupported /
+ * disabled 终态、复用同世代在途同步、带内部重试;但不广播 syncing,失败不降级状态、不清空
+ * 模型列表(401 可能误报、凭据接口可能暂时不可用,降级会停掉 Cindy AI 且不再有请求触发
+ * 窗口后的重试)。这里不新增提示。
  *
  * 工厂函数的依赖全部注入,便于单测。进程内单例的默认依赖在本文件组装,只有凭据同步
  * (`requestSync`)由 model-access/index.ts 在 initModelAccess 时经
@@ -44,7 +46,7 @@ export interface GatewayKeyRejectionDeps {
   getCredentialSource(): ModelAccessCredentialSource | null;
   /** 本机当前保存的 Cindy AI Key(providerSecretStore 'xd')。 */
   readCurrentKey(): string | null;
-  /** 触发一次凭据同步(credentialsSync.sync())。 */
+  /** 触发一次凭据同步(credentialsSync.resyncAfterKeyRejection())。 */
   requestSync(): Promise<unknown>;
   log?: {
     info(message: string): void;
