@@ -1372,6 +1372,31 @@ describe('BotGroupChatView', () => {
       expect(document.body.textContent).not.toContain('很早的原文');
     });
 
+    it('re-reads the opened older page after reacting to a message on it', async () => {
+      const user = userEvent.setup();
+      const older = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的消息',
+        reactions: [{ emoji: '👍', count: 1, me: false }] });
+      const latest = msg({ id: 'new1', sequence: 50, content: '最近的消息' });
+      let server = [older];
+      const base = detail({ serverBacked: true, hasMoreBefore: true });
+      mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => options?.beforeSequence
+        ? { ok: true, group: { ...base, hasMoreBefore: false, messages: server } }
+        : { ok: true, group: { ...base, messages: [latest] } });
+      const react = vi.fn(async () => { server = [{ ...older, reactions: [{ emoji: '👍', count: 2, me: true }] }]; return { ok: true }; });
+      Object.assign((window.electronAPI as unknown as { maker: { chatServer: Record<string, unknown> } }).maker.chatServer, { react });
+      renderView();
+      await user.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+      const chip = await screen.findByRole('button', { name: 'bots.groupChat.server.reactionCount' });
+      expect(chip.getAttribute('aria-pressed')).toBe('false');
+      mocks.getBotGroup.mockClear();
+      await user.click(chip);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'bots.groupChat.server.reactionCount' }).getAttribute('aria-pressed')).toBe('true'));
+      expect(screen.getByRole('button', { name: 'bots.groupChat.server.reactionCount' }).textContent).toContain('2');
+      expect(react).toHaveBeenCalledWith({ groupId: 'g1', messageId: 'old1', emoji: '👍', present: true });
+      // The latest page as always, then only the page holding the changed message.
+      expect(mocks.getBotGroup.mock.calls.map(([, options]) => options?.beforeSequence)).toEqual([undefined, 2]);
+    });
+
     describe('quoted originals on older pages after a push', () => {
       const original = msg({ id: 'old1', sequence: 1, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '很早的原文' });
       const latest = msg({ id: 'q1', sequence: 50, content: '那就这班', quote: quoteOf('old1', { excerpt: '快照摘要', sequence: 1 }) });

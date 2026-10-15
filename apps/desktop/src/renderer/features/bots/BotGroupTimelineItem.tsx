@@ -229,7 +229,8 @@ export interface BotGroupTimelineItemProps {
   onLocateQuote?: (quote: BotGroupQuoteView) => void;
   onQuote?: (messageId: string) => void;
   onOpenThread?: (messageId: string) => void;
-  onChanged: () => void;
+  /** This client changed the message (a reaction): the timeline refreshes its copy. */
+  onChanged: (messageId: string) => void;
   highlighted?: boolean;
   /** Focusable only as a jump target, so a click elsewhere keeps its usual focus. */
   focusable?: boolean;

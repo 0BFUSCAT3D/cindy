@@ -20,7 +20,7 @@ const iconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-ful
 export { chatErrorKey } from './chatError';
 
 /** Adds or removes the current actor's reaction; the caller re-reads the authoritative message. */
-function useChatReaction(groupId: string | undefined, messageId: string, onChanged: () => void) {
+function useChatReaction(groupId: string | undefined, messageId: string, onChanged: (messageId: string) => void) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -32,7 +32,7 @@ function useChatReaction(groupId: string | undefined, messageId: string, onChang
       const result = await api().react({ groupId, messageId, emoji, present });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) toast.error(t(chatErrorKey(result.errorCode)));
-      else onChanged();
+      else onChanged(messageId);
     } catch { if (isDataOwnerGenerationCurrent(owner)) toast.error(t(key('requestFailed'))); }
     finally { busyRef.current = false; setBusy(false); }
   }
@@ -45,7 +45,8 @@ interface ChatMessageActionProps {
   onQuote?: () => void;
   /** Opens the message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after. */
   onReply?: () => void;
-  onChanged: () => void;
+  /** The current actor's reaction on `messageId` changed: re-read that message's copy. */
+  onChanged: (messageId: string) => void;
 }
 
 /** The reactions under a message's text; each chip toggles the current actor's reaction. */

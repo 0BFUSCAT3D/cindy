@@ -211,6 +211,31 @@ describe('chat interaction controls', () => {
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '👍', present: false });
   });
 
+  it('re-reads the opened older Thread page after reacting to a reply on it', async () => {
+    const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply', reactions: [] };
+    const older = { ...message, id: 'older', sequence: 4, content: 'Earlier reply', reactions: [{ emoji: '👍', count: 1, me: false }] };
+    let reacted = false;
+    mocks.thread.mockImplementation(async (input: { before?: number }) => input.before
+      // The re-read page's hasMore is not about the oldest loaded page, so it must be ignored.
+      ? { ok: true, root: message, replies: [reacted ? { ...older, reactions: [{ emoji: '👍', count: 2, me: true }] } : older], hasMore: input.before === 5 }
+      : { ok: true, root: message, replies: [latest], hasMore: true });
+    mocks.react.mockImplementation(async () => { reacted = true; return { ok: true }; });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    const earlier = (await screen.findByText('Earlier reply')).closest('article')!;
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeNull();
+    const chip = within(earlier).getByRole('button', { name: k('reactionCount') });
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(chip);
+    const earlierChip = () => within(screen.getByText('Earlier reply').closest('article')!).getByRole('button', { name: k('reactionCount') });
+    await waitFor(() => expect(earlierChip().getAttribute('aria-pressed')).toBe('true'));
+    expect(earlierChip().textContent).toContain('2');
+    expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'older', emoji: '👍', present: true });
+    expect(mocks.thread.mock.calls.map(([input]) => input.before)).toEqual([undefined, 100, undefined, 5]);
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeNull();
+    expect(screen.getByText('Latest reply')).toBeTruthy();
+  });
+
   it('uses the refreshed Thread root reaction state while the main timeline remains stale', async () => {
     mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: [], hasMore: false })
       .mockResolvedValue({ ok: true, root: { ...message, reactions: [{ emoji: '👍', count: 1, me: false }] }, replies: [], hasMore: false });

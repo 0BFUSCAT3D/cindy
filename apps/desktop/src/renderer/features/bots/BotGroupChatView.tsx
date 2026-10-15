@@ -205,7 +205,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [stopping, setStopping] = useState(false);
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
-  const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
+  const loadRef = useRef<(additionalSources?: string[], changedIds?: string[]) => void>(() => {});
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -231,8 +231,8 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     /** Bumped when a read starts (and on delete): re-checks spawned by older reads stop. */
     let version = 0;
     let inFlight = false;
-    let queued: string[] | null = null;
-    const run = async (additionalSources: string[]) => {
+    let queued: { sources: string[]; changed: string[] } | null = null;
+    const run = async (additionalSources: string[], changedIds: string[]) => {
       inFlight = true;
       const current = ++version;
       const owner = getDataOwnerGeneration();
@@ -262,8 +262,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             return merged === previous ? previous : { kind: 'ready', ...merged };
           });
           if (shown.kind === 'ready') {
-            const targets = quotedOlderOriginals([...shown.older, ...shown.group.messages], result.group.messages);
-            if (targets.length > 0) void recheckQuotedOriginals(api, targets, isCurrent);
+            const quoted = quotedOlderOriginals([...shown.older, ...shown.group.messages], result.group.messages);
+            // A message changed here (a reaction) that sits only on an opened older page: the
+            // latest page cannot refresh its copy, so its page is re-read like a quoted original's.
+            const latestIds = new Set(result.group.messages.map((message) => message.id));
+            const changed = shown.older.filter((message) => changedIds.includes(message.id)
+              && !latestIds.has(message.id) && !quoted.some((target) => target.id === message.id));
+            const targets = [...quoted, ...changed].sort((a, b) => b.sequence - a.sequence);
+            if (targets.length > 0) void recheckOlderCopies(api, targets, isCurrent);
           }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });
@@ -278,26 +284,30 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         if (queued && !cancelled) {
           const next = queued;
           queued = null;
-          void run(next);
+          void run(next.sources, next.changed);
         }
       }
     };
-    /** One read in flight; pushes meanwhile collapse into one follow-up read. */
-    const load = (additionalSources: string[] = []) => {
+    /**
+     * One read in flight; pushes meanwhile collapse into one follow-up read. `changedIds` are
+     * messages this client just changed (a reaction): their copies on opened older pages are
+     * re-read, since the latest page does not cover them.
+     */
+    const load = (additionalSources: string[] = [], changedIds: string[] = []) => {
       if (inFlight) {
-        queued = [...(queued ?? []), ...additionalSources];
+        queued = { sources: [...(queued?.sources ?? []), ...additionalSources], changed: [...(queued?.changed ?? []), ...changedIds] };
         return;
       }
-      void run(additionalSources);
+      void run(additionalSources, changedIds);
     };
     /**
-     * Re-reads the older pages holding quoted originals after a push and updates only messages
-     * already loaded; history that was never opened is not fetched. Each read covers at least the
-     * newest remaining original, so it ends after at most one read per original. A newer read
-     * supersedes this one; a failed read leaves the rest unverified, so their quotes show the
-     * snapshot, not the stale copy.
+     * Re-reads the older pages holding quoted originals (and copies this client changed) after a
+     * push and updates only messages already loaded; history that was never opened is not fetched.
+     * Each read covers at least the newest remaining target, so it ends after at most one read per
+     * target. A newer read supersedes this one; a failed read leaves the rest unverified, so their
+     * quotes show the snapshot, not the stale copy.
      */
-    const recheckQuotedOriginals = async (
+    const recheckOlderCopies = async (
       api: NonNullable<ReturnType<typeof botGroupApi>>,
       targets: BotGroupMessageView[],
       isCurrent: () => boolean,
@@ -329,7 +339,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         if (covered.length === 0) return;
       }
     };
-    loadRef.current = additionalSources => load(additionalSources);
+    loadRef.current = (additionalSources, changedIds) => load(additionalSources, changedIds);
     load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
@@ -811,7 +821,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const onPlanAction = useCallback((action: 'start' | 'dismiss', planId: string) => void actionsRef.current.runPlanAction(action, planId), []);
   const onEditStep = useCallback((planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) =>
     void actionsRef.current.editPlanStep(planId, step, action, botId), []);
-  const onChanged = useCallback(() => loadRef.current(), []);
+  const onChanged = useCallback((messageId: string) => loadRef.current([], [messageId]), []);
   const onQuote = useCallback((messageId: string) => {
     const message = messageByIdRef.current.get(messageId);
     if (message) setQuoteDraft(botGroupQuoteFromMessage(message));

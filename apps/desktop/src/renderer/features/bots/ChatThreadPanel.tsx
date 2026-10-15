@@ -81,7 +81,14 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const inFlightRef = useRef(false);
   const queuedRef = useRef(false);
 
-  const read = useCallback(async (before?: number) => {
+  /** Lowest sequence of the last latest-page read; replies below it live only on opened older pages. */
+  const latestFloorRef = useRef(Number.POSITIVE_INFINITY);
+
+  /**
+   * Reads the latest page, or the page before `before`. `rereadOnly` re-reads an opened page for a
+   * changed copy: it is not the oldest page, so its `hasMore` says nothing about what is loaded.
+   */
+  const read = useCallback(async (before?: number, rereadOnly = false) => {
     const owner = getDataOwnerGeneration();
     const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
     const shown = repliesRef.current;
@@ -93,9 +100,12 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       setError('');
       setExecutionFailures(result.executionFailures ?? []);
       setReplies(previous => stabilizeById(previous, mergeBotGroupMessages(previous, result.replies)));
-      if (before || shown.length === 0) setHasMore(result.hasMore);
+      if (!before) latestFloorRef.current = result.replies.reduce((min, reply) => Math.min(min, reply.sequence), Number.POSITIVE_INFINITY);
+      if (!rereadOnly && (before || shown.length === 0)) setHasMore(result.hasMore);
     } catch { if (current()) setError(t(key('requestFailed'))); }
   }, [group.id, rootId, t]);
+  const readRef = useRef(read);
+  readRef.current = read;
   /** One refresh in flight; pushes meanwhile collapse into one follow-up read. */
   const refresh = useCallback(() => {
     if (inFlightRef.current) { queuedRef.current = true; return; }
@@ -144,7 +154,13 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const lastRealSequenceRef = useRef(0);
   lastRealSequenceRef.current = realReplies[realReplies.length - 1]?.sequence ?? 0;
 
-  const onChanged = useCallback(() => refreshRef.current(), []);
+  // The root and the latest page come with every refresh; a reply opened through 「加载更早」 sits
+  // below that page, so the page holding it is re-read for its new reaction state.
+  const onChanged = useCallback((messageId: string) => {
+    refreshRef.current();
+    const reply = repliesRef.current.find(candidate => candidate.id === messageId);
+    if (reply && reply.sequence < latestFloorRef.current) void readRef.current(reply.sequence + 1, true);
+  }, []);
   const onSendStart = useCallback((message: BotGroupOutgoingMessage) => {
     stickToBottomRef.current = true;
     setPendingSends((previous) => [
