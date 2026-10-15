@@ -1854,13 +1854,13 @@
         "crop": {
           "title": "調整頭像",
           "description": "拖曳調整位置，捲動或雙指縮放",
-          "done": "完成",
+          "done": "完成頭像調整",
           "stageLabel": "頭像取景區域：用方向鍵移動，用加號或減號縮放",
           "zoomLabel": "縮放",
           "zoomValue": "{{percent}}%",
           "zoomIn": "放大",
           "zoomOut": "縮小",
-          "exportFailed": "無法處理這張圖片，請換一張試試"
+          "exportFailed": "未能匯出調整後的頭像"
         }
       }
     },

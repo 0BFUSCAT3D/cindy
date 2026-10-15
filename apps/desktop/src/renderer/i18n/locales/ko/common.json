@@ -1854,13 +1854,13 @@
         "crop": {
           "title": "아바타 조정",
           "description": "드래그해 위치를 조정하고, 스크롤하거나 핀치해 확대·축소하세요",
-          "done": "완료",
+          "done": "아바타 조정 완료",
           "stageLabel": "아바타 표시 영역. 화살표 키로 이동하고 더하기 또는 빼기 키로 확대·축소합니다",
           "zoomLabel": "확대/축소",
           "zoomValue": "{{percent}}%",
           "zoomIn": "확대",
           "zoomOut": "축소",
-          "exportFailed": "이 이미지를 처리할 수 없습니다. 다른 이미지를 사용해 보세요"
+          "exportFailed": "조정한 아바타를 내보내지 못했습니다"
         }
       }
     },
