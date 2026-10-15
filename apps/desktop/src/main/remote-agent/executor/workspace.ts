@@ -83,7 +83,13 @@ export function isPathTextField(key: string): boolean {
   return /^(?:cwd|workdir|working_?dir|script|files?|paths?|directories)$|(?:^|_)(?:paths?|files?|dirs?|directory|directories|root)$|(?:Paths?|Files?|Dirs?|Directory|Directories|Root)$/.test(key);
 }
 
-type PathTextContext = 'text' | 'path' | 'untyped';
+export type PathTextContext = 'text' | 'path' | 'ambiguous-path' | 'untyped';
+
+/** The existing script fields contain both executable paths and source text. */
+export function pathTextContext(key: string): PathTextContext {
+  if (key === 'script') return 'ambiguous-path';
+  return isPathTextField(key) ? 'path' : 'text';
+}
 
 export function mapJsonPathText(
   text: string, project: (value: string, context: PathTextContext) => string, rootContext: PathTextContext = 'untyped',
@@ -93,7 +99,7 @@ export function mapJsonPathText(
   const frames: { type: 'object' | 'array'; context: PathTextContext; key?: string }[] = [];
   const valueContext = (): PathTextContext => {
     const frame = frames.at(-1);
-    return frame?.type === 'object' ? isPathTextField(frame.key ?? '') ? 'path' : 'text' : frame?.context ?? rootContext;
+    return frame?.type === 'object' ? pathTextContext(frame.key ?? '') : frame?.context ?? rootContext;
   };
   return text.replace(/"(?:\\[\s\S]|[^"\\])*"|[{}[\],:]/g, (token, offset: number) => {
     if (token === '{' || token === '[') {
@@ -123,7 +129,7 @@ export function mapJsonPathText(
 
 /** 对已知目录做单次双向投影，最长前缀先匹配，防止替换结果再次被短祖先别名改写。 */
 export function projectPathText(
-  text: string, aliases: readonly ExecutorPathAlias[], context: 'text' | 'path' = 'text',
+  text: string, aliases: readonly ExecutorPathAlias[], context: PathTextContext = 'text',
   isCompletePath?: (mapped: string) => boolean,
 ): string {
   const entries = aliases.filter((alias) => alias.from.replace(/[\\/]+$/, '').length > 2)
@@ -134,7 +140,7 @@ export function projectPathText(
     // MCP 的 text 常嵌一层 JSON；Skill/命令输出和文本文件也可能是 JSON。
     // 先解码字符串再投影，才能识别 Windows 转义路径；只改变化的字符串 token，保留格式与其它字节。
     if (/^\s*[{["]/.test(value)) {
-      try { return mapJsonPathText(value, project, valueContext === 'path' ? 'path' : 'untyped'); } catch { /* 普通文本继续按路径边界投影。 */ }
+      try { return mapJsonPathText(value, project, valueContext === 'text' ? 'untyped' : valueContext); } catch { /* 普通文本继续按路径边界投影。 */ }
     }
     // 脚本可能先打印日志再逐行输出 JSON；保留换行格式，逐行应用同一套转义处理。
     if (value.includes('\n')) return value.split('\n').map((line) => project(line, valueContext)).join('\n');
@@ -147,7 +153,8 @@ export function projectPathText(
         const separator = alias.to.includes('\\') ? '\\' : '/';
         const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
         const mapped = alias.to.replace(/[\\/]+$/, '') + suffix.replace(/[\\/]/g, separator);
-        // 无字段名的 JSON 值由调用方确认完整文件/目录；否则按正文逐 token 投影。
+        // 明确的路径字段可整体映射；歧义字段(如 script)只有现存完整路径才整体映射，
+        // 否则按正文逐 token 投影，避免把脚本源码里的 /api/v1 等内容当成路径。
         if (valueContext === 'path' || isCompletePath?.(mapped)) return mapped + lineEnd;
         break;
       }
@@ -269,7 +276,7 @@ export class ExecutorWorkspace {
   }
 
   /** 工具输出、诊断和可逆的 UTF-8 文本内容使用虚拟路径；二进制字节保持原样。 */
-  mapTextForAgent(text: string, context: 'text' | 'path' = 'text'): string {
+  mapTextForAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
     const aliases = this.aliases.flatMap((alias) => {
       const real = alias.to.replace(/\\/g, '/');
@@ -287,12 +294,12 @@ export class ExecutorWorkspace {
   }
 
   /** 把 Agent 虚拟路径还原成本机路径，用于文本文件写回。 */
-  mapTextFromAgent(text: string): string {
+  mapTextFromAgent(text: string, context: PathTextContext = 'text'): string {
     if (!this.virtualRoot) return text;
     return projectPathText(text, this.aliases.map((alias) => ({
       from: alias.from.replace(/\\/g, '/'),
       to: alias.to,
-    })), 'text', (mapped) => fs.existsSync(mapped));
+    })), context, (mapped) => fs.existsSync(mapped));
   }
 
   /** 展示层延迟尚未传完整的虚拟路径；别名仍由当前执行器维护。 */

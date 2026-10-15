@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { isTerminalAgentErrorEvent, type AgentEvent } from '@cindy/maker-core';
 
-import { isPathTextField, mapJsonPathText, type ExecutorWorkspace } from '../executor/workspace';
+import { mapJsonPathText, pathTextContext, type ExecutorWorkspace, type PathTextContext } from '../executor/workspace';
 
 const URL_TEXT = /[a-z][a-z0-9+.-]*:\/\/[^\s\x60"'<>()[\]{}]+/gi;
 const TEXT_BOUNDARIES = new Set(['tool_use', 'tool_result', 'tool_result_full', 'interaction_request', 'done', 'error', 'compact_boundary']);
@@ -37,14 +37,15 @@ function localFileUrl(value: string, workspace: ExecutorWorkspace): string {
   return value;
 }
 
-function localText(value: string, workspace: ExecutorWorkspace): string {
+function localText(value: string, workspace: ExecutorWorkspace, context: PathTextContext = 'text'): string {
   // 先处理 JSON 字符串，保留 Windows 转义、正文格式和非字符串字节。
   if (/^\s*[{["]/.test(value)) {
     try {
       return mapJsonPathText(value, (decoded, context) => {
         const local = workspace.mapAlias(decoded);
-        const complete = context === 'path' || (context === 'untyped' && local !== decoded && fs.existsSync(local));
-        return localText(complete ? local : decoded, workspace);
+        const complete = context === 'path' || ((context === 'untyped' || context === 'ambiguous-path')
+          && local !== decoded && fs.existsSync(local));
+        return localText(complete ? local : decoded, workspace, context);
       });
     } catch { /* 非 JSON 按文件引用投影。 */ }
   }
@@ -60,15 +61,15 @@ function localText(value: string, workspace: ExecutorWorkspace): string {
   const parts: string[] = [];
   let end = 0;
   for (const match of value.matchAll(URL_TEXT)) {
-    parts.push(workspace.mapTextFromAgent(value.slice(end, match.index)), localFileUrl(match[0], workspace));
+    parts.push(workspace.mapTextFromAgent(value.slice(end, match.index), context), localFileUrl(match[0], workspace));
     end = match.index! + match[0].length;
   }
-  parts.push(workspace.mapTextFromAgent(value.slice(end)));
+  parts.push(workspace.mapTextFromAgent(value.slice(end), context));
   return parts.join('');
 }
 
 function localValue(value: unknown, workspace: ExecutorWorkspace, key = ''): unknown {
-  if (typeof value === 'string') return localText(isPathTextField(key) ? workspace.mapAlias(value) : value, workspace);
+  if (typeof value === 'string') return localText(value, workspace, pathTextContext(key));
   if (Array.isArray(value)) return value.map((item) => localValue(item, workspace, key));
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, IDENTITY_FIELDS.has(key) ? item : localValue(item, workspace, key)]));

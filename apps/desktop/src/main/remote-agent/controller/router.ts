@@ -14,7 +14,7 @@ import type { RemoteAgentReply } from '@cindy/device-link';
 import { CINDY_EXEC_MCP_SERVER, handleExecMcpRequest } from '../executor/ccMcp';
 import { ExecutorRequestError, type RemoteExecutor } from '../executor/executor';
 import { resolveExecutorShell } from '../executor/shell';
-import { isPathTextField } from '../executor/workspace';
+import { pathTextContext } from '../executor/workspace';
 
 /** 本任务可用的一个本机 MCP 服务：完整地址(已带本任务身份)与要附加的请求头。 */
 export interface LocalMcpTarget {
@@ -82,7 +82,9 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
         } catch { /* 普通字符串参数保持原样。 */ }
       }
       if (/^(?:cmd|command)$/.test(key)) return workspace.mapCommand(value, resolveExecutorShell().dialect);
-      if (isPathTextField(key)
+      const fieldContext = pathTextContext(key);
+      if (fieldContext === 'ambiguous-path') return workspace.mapTextFromAgent(value, fieldContext);
+      if (fieldContext === 'path'
         || PATH_ARGUMENTS.has(key.replace(/_/g, '').toLowerCase())
         || (key === 'project' && WORKBENCH_PROJECT_TOOLS.has(toolName))) return workspace.mapAlias(value);
       return value;
@@ -107,7 +109,7 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
           }
         } catch { /* 普通字符串或非本机 file URL，交给文本投影。 */ }
       }
-      return workspace.mapTextForAgent(value, isPathTextField(key) ? 'path' : 'text');
+      return workspace.mapTextForAgent(value, pathTextContext(key));
     }
     if (Array.isArray(value)) return value.map((item) => projectResult(item, key));
     if (!value || typeof value !== 'object') return value;

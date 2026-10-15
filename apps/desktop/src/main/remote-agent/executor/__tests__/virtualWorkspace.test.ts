@@ -311,6 +311,22 @@ describe('virtual workspace', () => {
     expect(projectPathText(JSON.stringify([original]), [{ from, to }])).toBe(JSON.stringify([mapped]));
   });
 
+  it.each(['/home/agent/workspace', 'C:\\Agent\\workspace'])('treats script fields as source unless they are existing complete paths at %s', (virtual) => {
+    const { project, workspace } = setup(virtual);
+    const native = virtual.startsWith('C:') ? path.win32 : path.posix;
+    const existing = path.join(project, '目录 空格', 'run.js');
+    fs.mkdirSync(path.dirname(existing), { recursive: true });
+    fs.writeFileSync(existing, 'console.log(1);');
+    const existingVirtual = native.join(virtual, '目录 空格', 'run.js');
+    const source = JSON.stringify({ script: native.join(virtual, 'run.js') + ' --url /api/v1' });
+    const sourceExpected = JSON.stringify({ script: path.join(project, 'run.js') + ' --url /api/v1' });
+    expect(workspace.mapInputFromAgent(Buffer.from(source))).toEqual(Buffer.from(sourceExpected));
+    const pathValue = JSON.stringify({ script: existingVirtual });
+    const pathExpected = JSON.stringify({ script: existing });
+    expect(workspace.mapInputFromAgent(Buffer.from(pathValue))).toEqual(Buffer.from(pathExpected));
+    expect(workspace.mapOutputForAgent(Buffer.from(pathExpected))).toEqual(Buffer.from(pathValue));
+  });
+
   it('maps Codex request paths and commands before permission checks and projects text file bytes', async () => {
     const { workspace, project, executor } = setup('/Users/agent/workspace');
     const params = mapExecServerParams({ path: 'file:///Users/agent/workspace/a.txt', dataBase64: Buffer.from(project).toString('base64') }, workspace);
