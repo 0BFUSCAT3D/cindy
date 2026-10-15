@@ -6,22 +6,22 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { BotTaskOwnerChip } from '../BotTaskOwnerChip';
 
-const mocks = vi.hoisted(() => ({ navigate: vi.fn(), ensure: vi.fn(), followers: new Map<string, unknown[]>() }));
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), ensure: vi.fn(), delegators: new Map<string, unknown>() }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => `${key}:${JSON.stringify(options)}` }),
 }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: ({ bot }: any) => <span data-avatar={bot.name} /> }));
 vi.mock('../botStore', () => ({ ensureBotProfilesLoaded: mocks.ensure }));
-// The same per-task responsibility the sidebar mark reads; the chip adds no second ownership rule.
+// The delegation projection of the same follow scopes the sidebar mark reads; the chip adds no second ownership rule.
 vi.mock('../botFollowScopes', () => ({
-  useSessionFollowers: (session: { id: string }) => mocks.followers.get(session.id) ?? [],
+  useSessionDelegatingBot: (session: { id: string }) => mocks.delegators.get(session.id) ?? null,
 }));
 
 const lizi = { id: 'bot/a', name: 'LiZi' };
 const session = (id: string) => ({ id, status: 'active', source: 'desktop' }) as any;
 beforeEach(() => {
-  mocks.followers = new Map([['task', [lizi]]]);
+  mocks.delegators = new Map([['task', lizi]]);
   mocks.ensure.mockReset().mockResolvedValue([]);
   mocks.navigate.mockReset();
 });

@@ -5,14 +5,14 @@ import { useNavigate } from 'react-router-dom';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import type { Session } from '@/lib/ccAgent.types';
 import { BotAvatar } from './BotAvatar';
-import { useSessionFollowers } from './botFollowScopes';
+import { useSessionDelegatingBot } from './botFollowScopes';
 import { ensureBotProfilesLoaded } from './botStore';
 
 /**
  * A Bot's background task opens in the ordinary task view; this quiet chip in
- * its header says whose task it is and leads back to that Bot. Ownership is the
- * same verifiable per-task responsibility the sidebar mark uses (the Bot that
- * created the task, or explicitly took it over), never a guess from the session row.
+ * its header says whose task it is and leads back to that Bot. Only a task the
+ * Bot started itself (a delegation child) is its background task; an ordinary
+ * task the Bot took over keeps the sidebar's follow mark and no chip.
  */
 export function BotTaskOwnerChip({ session }: { session: Session }) {
   const { t } = useTranslation();
@@ -20,7 +20,7 @@ export function BotTaskOwnerChip({ session }: { session: Session }) {
   useEffect(() => {
     void ensureBotProfilesLoaded().catch(() => {});
   }, []);
-  const bot = useSessionFollowers(session)[0];
+  const bot = useSessionDelegatingBot(session);
   if (!bot) return null;
   return (
     <button

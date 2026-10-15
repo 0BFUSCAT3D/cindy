@@ -71,16 +71,27 @@ export async function setTaskResponsibility(
   });
 }
 
+export interface TaskResponsibilityScope {
+  botId: string;
+  directories: string[];
+  /** Every task this Bot is responsible for: its own background tasks plus the ones it took over. */
+  sessionIds: string[];
+  /** Only the background tasks this Bot started itself (delegation children). */
+  delegatedSessionIds: string[];
+}
+
 /** Fail closed for a damaged companion, without removing other companions' marks. */
 export async function collectTaskResponsibilityScopes(
-  botIds: readonly string[], readIds: (botId: string) => Promise<string[]>,
-): Promise<Array<{ botId: string; directories: string[]; sessionIds: string[] }>> {
-  const scopes = await Promise.all(botIds.map(async (botId) => {
+  botIds: readonly string[],
+  readScope: (botId: string) => Promise<{ sessionIds: string[]; delegatedSessionIds?: string[] }>,
+): Promise<TaskResponsibilityScope[]> {
+  const scopes = await Promise.all(botIds.map(async (botId): Promise<TaskResponsibilityScope> => {
     try {
-      return { botId, directories: [], sessionIds: await readIds(botId) };
+      const scope = await readScope(botId);
+      return { botId, directories: [], sessionIds: scope.sessionIds, delegatedSessionIds: scope.delegatedSessionIds ?? [] };
     } catch {
       // Do not fall back to creation evidence: a damaged file may contain releases.
-      return { botId, directories: [], sessionIds: [] };
+      return { botId, directories: [], sessionIds: [], delegatedSessionIds: [] };
     }
   }));
   return scopes.filter((scope) => scope.sessionIds.length > 0);

@@ -57,8 +57,11 @@ it('keeps healthy companions visible while failing closed for a damaged release 
   await setTaskResponsibility(root, 'damaged', 'created', false, () => {});
   const file = path.join(botProfileDir(root, 'damaged'), 'task-responsibility.v1.json');
   await fs.writeFile(file, '{broken');
-  const scopes = await collectTaskResponsibilityScopes(['damaged', 'healthy'], async (botId) =>
-    responsibleSessionIds(botId === 'damaged' ? ['created'] : [], await readTaskResponsibilities(root, botId)));
-  expect(scopes).toEqual([{ botId: 'healthy', directories: [], sessionIds: ['owned'] }]);
+  const scopes = await collectTaskResponsibilityScopes(['damaged', 'healthy'], async (botId) => ({
+    sessionIds: responsibleSessionIds(botId === 'damaged' ? ['created'] : [], await readTaskResponsibilities(root, botId)),
+    delegatedSessionIds: botId === 'damaged' ? ['created'] : [],
+  }));
+  // A taken-over task is a responsibility, not one of the Bot's own background tasks.
+  expect(scopes).toEqual([{ botId: 'healthy', directories: [], sessionIds: ['owned'], delegatedSessionIds: [] }]);
   expect(await fs.readFile(file, 'utf8')).toBe('{broken');
 });

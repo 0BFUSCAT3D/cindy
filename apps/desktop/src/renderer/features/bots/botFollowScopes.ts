@@ -14,7 +14,10 @@ const log = createLogger('BotFollowScopes');
 
 export interface BotFollowScope {
   botId: string;
+  /** Every task the Bot is responsible for: its own background tasks and the ones it took over. */
   sessionIds?: readonly string[];
+  /** Only the background tasks the Bot started itself; older hosts omit it. */
+  delegatedSessionIds?: readonly string[];
 }
 
 const EMPTY: readonly BotFollowScope[] = [];
@@ -113,25 +116,40 @@ function isFollowableSession(session: Session): boolean {
   return isWorkbenchTaskSource(session.source);
 }
 
-/** 正在负责这件任务的伙伴(按名字排序;隐藏、停用的伙伴不显示)。 */
-export function useSessionFollowers(session: Session): BotProfile[] {
+function useScopedBots(session: Session, ids: (scope: BotFollowScope) => readonly string[] | undefined): BotProfile[] {
   const followScopes = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const profiles = useBotProfiles();
   const followable = isFollowableSession(session);
   const sessionId = session.id;
   return useMemo(() => {
     if (!followable || followScopes.length === 0) return [];
-    const following = new Set(
+    const matching = new Set(
       followScopes
-        .filter((scope) => Array.isArray(scope.sessionIds) && scope.sessionIds.includes(sessionId))
+        .filter((scope) => { const list = ids(scope); return Array.isArray(list) && list.includes(sessionId); })
         .map((scope) => scope.botId),
     );
-    if (following.size === 0) return [];
+    if (matching.size === 0) return [];
     return profiles
-      .filter((bot) => following.has(bot.id) && bot.enabled && !bot.hiddenAt
+      .filter((bot) => matching.has(bot.id) && bot.enabled && !bot.hiddenAt
         && (bot.status === undefined || bot.status === 'active'))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [followable, followScopes, profiles, sessionId]);
+  }, [followable, followScopes, ids, profiles, sessionId]);
+}
+
+const responsibleIds = (scope: BotFollowScope) => scope.sessionIds;
+const delegatedIds = (scope: BotFollowScope) => scope.delegatedSessionIds;
+
+/** 正在负责这件任务的伙伴(按名字排序;隐藏、停用的伙伴不显示)。 */
+export function useSessionFollowers(session: Session): BotProfile[] {
+  return useScopedBots(session, responsibleIds);
+}
+
+/**
+ * 这件任务是哪位伙伴自己开的后台任务(委派子任务);主人的任务被伙伴接手只算「在跟进」,
+ * 不算伙伴的后台任务。旧宿主没有这份投影时不猜。
+ */
+export function useSessionDelegatingBot(session: Session): BotProfile | null {
+  return useScopedBots(session, delegatedIds)[0] ?? null;
 }
 
 export const __testing = {
