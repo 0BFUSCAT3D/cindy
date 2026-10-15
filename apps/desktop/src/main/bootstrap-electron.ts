@@ -605,6 +605,7 @@ import { registerSharedTaskIpc } from './device-link/sharedTaskIpc.js';
 import { registerProviderShareIpc } from './device-link/providerShareRuntime.js';
 import { registerProviderGroupIpc } from './provider-group/ipc.js';
 import { registerProviderGroupRemoteHandler } from './provider-group/remoteRegistration.js';
+import { providerGroupReshare, registerProviderGroupReshare } from './provider-group/reshareRuntime.js';
 import {
   getUpdateRelaunchControllers,
   hasInFlightRemoteInvokes,
@@ -6051,6 +6052,10 @@ const registerIpcHandlers = () => {
     },
     readFile: (filePath) => fs.promises.readFile(filePath),
     toSdrAvatar: toSdrAvatarImage,
+    decodeAvatarImage: ({ buffer }) => {
+      const image = nativeImage.createFromBuffer(Buffer.from(buffer));
+      return image.isEmpty() ? null : image.getSize();
+    },
     uploadAvatar: async ({ buffer, mimeType }) => {
       const result = await uploadPublicAsset(
         {
@@ -9687,8 +9692,9 @@ app.on('ready', async () => {
   );
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerProviderShareIpc();
-  registerProviderGroupIpc();
+  registerProviderGroupIpc({ reshare: providerGroupReshare });
   registerProviderGroupRemoteHandler();
+  registerProviderGroupReshare();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {
     name: getControllerName,

@@ -35,6 +35,7 @@ import {
   crossRegionWithdraw,
   getCrossRegionReceived,
   getConfirmedCrossRegionReceivedRegions,
+  isCrossRegionReceivedComplete,
   isCrossRegionReceivedReady,
   ensureCrossRegionReceivedForFavorites,
   refreshProviderShareCrossRegion,
@@ -103,6 +104,9 @@ function allReceived(rt: Runtime | null): ProviderShareReceived[] {
   return rt ? [...rt.received, ...getCrossRegionReceived()] : [];
 }
 
+/** 已收到的分享变化的旁听者(见 onProviderShareReceivedChanged)。 */
+const receivedListeners = new Set<() => void>();
+
 /** 已拿到权威名单的区域(本区域要拉到过一次；对方区域按跨区域运行时的已加载状态)。 */
 function confirmedRegions(rt: Runtime): Region[] {
   return [...(rt.fetchedAt > 0 ? [getActiveAuthRealm()] : []), ...getConfirmedCrossRegionReceivedRegions()];
@@ -114,10 +118,39 @@ function emitChanged(rt: Runtime): Promise<void> | void {
   // 分享被分享者删除后，它在这台电脑上的本机偏好一起清掉；还没加载的区域不动。
   const pruning = pruneProviderShareGuestPrefs(new Set(received.map((share) => share.shareId)), confirmedRegions(rt));
   const notify = () => {
-    if (current(rt)) rt.events.changed(received);
+    if (!current(rt)) return;
+    rt.events.changed(received);
+    for (const listener of receivedListeners) {
+      try {
+        listener();
+      } catch (error) {
+        log.warn('received shares listener failed', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   };
   if (pruning) return pruning.then(notify);
   notify();
+}
+
+/**
+ * 已收到的分享变了：供应商组据此把已被删除或已退出的分享移出组(provider-groups.md §3)。只通知，不带内容；
+ * 读名单用 {@link getConfirmedReceivedShareIds}。
+ */
+export function onProviderShareReceivedChanged(listener: () => void): () => void {
+  receivedListeners.add(listener);
+  return () => {
+    receivedListeners.delete(listener);
+  };
+}
+
+/**
+ * 完整可信的已收到分享名单：本区域已拉到过，本账号可能有分享的对方区域也都已确认。只有这时才能据此认定某个分享
+ * 已被删除或已退出；说不准时为 null(还没拉到、拉取失败、换账号中)。
+ */
+export function getConfirmedReceivedShareIds(): ReadonlySet<string> | null {
+  const rt = runtime;
+  if (!rt || !current(rt) || rt.fetchedAt === 0 || !isCrossRegionReceivedComplete()) return null;
+  return new Set(allReceived(rt).map((share) => share.shareId));
 }
 
 // ─── 任务绑定 ────────────────────────────────────────────────────
