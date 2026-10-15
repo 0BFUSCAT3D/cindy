@@ -132,6 +132,19 @@ describe('MCP App local protocol isolation', () => {
       check(null, 'media', 'file://', { isMainFrame: true, requestingUrl: 'file:///host.html' }),
     ).toBe(true);
   });
+  it('preserves Electron host permission defaults without enabling synchronous clipboard reads', () => {
+    registerMcpAppProtocol();
+    const request = vi.mocked(session.defaultSession.setPermissionRequestHandler).mock.calls.at(-1)![0]!;
+    const check = vi.mocked(session.defaultSession.setPermissionCheckHandler).mock.calls.at(-1)![0]!;
+    const details = { isMainFrame: true, requestingUrl: 'file:///host.html' };
+    const callback = vi.fn();
+    request(null as unknown as WebContents, 'notifications', callback, details);
+    expect(callback).toHaveBeenCalledExactlyOnceWith(true);
+    for (const permission of ['media', 'notifications', 'geolocation'] as const) {
+      expect(check(null, permission, 'file://', details)).toBe(true);
+    }
+    expect(check(null, 'deprecated-sync-clipboard-read', 'file://', details)).toBe(false);
+  });
   it('denies permissions for external descendants by their real ancestry', () => {
     const resource = { url: 'cindy-mcp-app://view-view/resource', parent: null };
     const nested = { url: 'https://embed.example.org', parent: resource };

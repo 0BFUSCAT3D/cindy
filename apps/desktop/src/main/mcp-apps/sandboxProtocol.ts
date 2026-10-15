@@ -118,7 +118,10 @@ export function registerMcpAppProtocol(): void {
     callback(!isMcpAppPermissionRequest(contents, details));
   });
   session.defaultSession.setPermissionCheckHandler(
-    (contents, _permission, origin, details) =>
+    (contents, permission, origin, details) =>
+      // Electron 42 grants ordinary host checks by default, but explicitly denies
+      // this legacy clipboard read. Installing a handler must retain that denial.
+      permission !== 'deprecated-sync-clipboard-read' &&
       !isMcpAppPermissionRequest(contents, details, origin),
   );
   // CSP does not restrict a frame's own location navigation. Keep the policy-bearing
