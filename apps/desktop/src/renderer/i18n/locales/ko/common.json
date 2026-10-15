@@ -161,8 +161,8 @@
     "runsOnThisDevice": "이 PC에서 실행 중",
     "inviteNotice": "초대 링크를 가진 사용자는 로그인 후 참여할 수 있으며, 호스트와 동일한 Agent 권한을 갖습니다.",
     "offlineAutoClose": "호스트 컴퓨터가 계속 오프라인 상태이면 공유가 자동으로 종료됩니다.",
-    "inviteBoxHint": "동료에게 링크를 보내면 클릭하여 참여할 수 있습니다. 모바일에서는 링크를 복사한 뒤 Cindy를 열어도 됩니다.",
-    "invitationMessage": "“{{title}}”에 초대합니다\n{{link}}\n링크를 열어 참여하세요. 모바일에서는 링크를 복사한 뒤 Cindy를 열고 참여를 확인할 수도 있습니다.",
+    "inviteBoxHint": "동료에게 링크를 보내면 클릭하여 참여할 수 있습니다. Cindy의 ‘공유 세션 참여’에 링크를 붙여 넣어 참여할 수도 있습니다.",
+    "invitationMessage": "“{{title}}”에 초대합니다\n{{link}}\n링크를 열어 참여하세요. Cindy가 열리지 않으면 Cindy에서 ‘공유 세션 참여’를 선택하고 이 링크를 붙여 넣으세요.",
     "membersWithLimit": "멤버 · {{count}}명 (최대 게스트 2명)",
     "me": "나",
     "thisDevice": "이 PC",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "다른 Cindy 서비스의 초대입니다. 해당 앱에서 링크를 여세요.",
     "managementIntro": "시작하거나 참여한 공유를 관리합니다.",
     "returnToTasks": "작업 목록으로 돌아가기",
-    "invitationDetected": "공유 작업 초대를 찾았습니다",
-    "notNow": "나중에",
     "closeAllLabel": "모든 공유 중지",
     "closeAllDescription": "모든 게스트의 접근이 차단됩니다. 작업 기록은 유지됩니다."
   },
@@ -9263,7 +9261,10 @@
         "planning": "역할을 나누는 중…"
       },
       "files": {
-        "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
+        "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다",
+        "untitled": "첨부 파일",
+        "loading": "불러오는 중…",
+        "unavailable": "지금 불러올 수 없음"
       },
       "addFromChat": {
         "triggerFor": "{{name}}을(를) 그룹 채팅에 추가",
