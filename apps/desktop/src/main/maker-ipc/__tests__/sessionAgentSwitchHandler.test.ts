@@ -1277,6 +1277,21 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     expect(h.pending.get('s1')).toBeUndefined();
   });
 
+  it('Orca Lead 回到任务电脑时 close 失败后重试本地收尾', async () => {
+    const h = relocationHarness({ orcaRole: 'lead' });
+    vi.mocked(h.deps.closeSession).mockRejectedValueOnce(new Error('offline'));
+
+    await performSessionAgentSwitch(h.deps, backToTaskComputer);
+    await expect(applyPendingAgentSwitchIfIdle(h.deps, 's1')).resolves.toBeUndefined();
+
+    expect(h.deps.closeSession).toHaveBeenCalledTimes(2);
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentDeviceId: null,
+      sdkSessionId: null,
+    }));
+    expect(h.pending.get('s1')).toBeUndefined();
+  });
+
   it('挪到另一台电脑:登记前与落地前都按那台的目录校验', async () => {
     const h = relocationHarness({ agentDeviceId: null, providerId: 'xd' });
     await performSessionAgentSwitch(h.deps, {
