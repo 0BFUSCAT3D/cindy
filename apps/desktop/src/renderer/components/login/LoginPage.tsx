@@ -130,6 +130,7 @@ export function LoginPage({
     errorCode,
     retryAt,
     loginState,
+    credentialStoreUnavailable = false,
     hasAccountDeletionReceipt = false,
     getAccountDeletionStatus,
     clearAccountDeletionReceipt,
@@ -141,6 +142,7 @@ export function LoginPage({
   const { t, i18n } = useTranslation();
   const [credentialHelpOpen, setCredentialHelpOpen] = useState(false);
   const credentialStoreFailed =
+    credentialStoreUnavailable ||
     errorCode === 'CREDENTIAL_STORE_UNAVAILABLE' ||
     (loginState?.step === 'error' && loginState.code === 'CREDENTIAL_STORE_UNAVAILABLE');
   const rateLimited =
@@ -195,7 +197,12 @@ export function LoginPage({
    * 面板内入口仍由按钮 disabled 与协议门的 busy 复验挡住 in-flight。
    */
   const openLocalMode = async () => {
-    if ((isLoading && !canLeaveProviderLoad) || localModePendingRef.current || !enterLocalMode) return;
+    if (
+      credentialStoreFailed ||
+      (isLoading && !canLeaveProviderLoad) ||
+      localModePendingRef.current ||
+      !enterLocalMode
+    ) return;
     markLocalModeTransition(true);
     try {
       // 必须走 AuthContext.enterLocalMode():它调同一条 IPC,并用返回值立刻改
@@ -1286,49 +1293,10 @@ export function LoginPage({
       if (isAddAccount && onClose) onClose();
       else void dispatch({ type: 'back' });
     };
-    if (loginState?.step === 'entry') {
-      // No provider config has arrived yet. Offer an explicit retry without
-      // inventing server-enabled login methods or automatically starting a load.
-      return {
-        ssoOrgGroupY: false,
-        node: (
-          <LoginPanel testId="login-panel-entry">
-            {isLoading && (
-              <LoginBackButton
-                label={t('login.back')}
-                disabled={localModePending}
-                onClick={backToEntry}
-              />
-            )}
-            <LoginTitleBlock title={t('login.title')} subtitle={t('login.subtitle')} />
-            <LoginPrimaryButton loading={isLoading} onClick={reset} testId="login-entry-continue">
-              {t(isLoading ? 'login.working' : 'login.continue')}
-            </LoginPrimaryButton>
-          </LoginPanel>
-        ),
-      };
-    }
-    // preparing 伪态(loginState 尚未就绪;figma 5.2 准备态:loading 64 @(308,193))
-    if (!loginState) {
-      return {
-        ssoOrgGroupY: false,
-        node: (
-          <LoginPanel testId="login-panel-preparing">
-            <LoginBackButton
-              label={t('login.back')}
-              disabled={localModePending}
-              onClick={backToEntry}
-            />
-            <LoginTitleBlock title={t('login.preparing')} subtitle={t('login.preparingSubtitle')} />
-            <LoginLoadingRing y={LOADING_RING.yPreparing} label={t('login.working')} />
-          </LoginPanel>
-        ),
-      };
-    }
-    if (loginState.step === 'error' || credentialStoreFailed || rateLimited) {
+    if (loginState?.step === 'error' || credentialStoreFailed || rateLimited) {
       // A rate limit can cover a still-valid form. Dismiss only the notice:
       // resetting main's flow would discard its ticket and require another code.
-      const resumeForm = rateLimited && loginState.step !== 'error';
+      const resumeForm = rateLimited && loginState !== null && !canLeaveProviderLoad;
       const returnFromError = () => {
         if (localModePendingRef.current) return;
         if (isAddAccount && onClose) {
@@ -1397,7 +1365,7 @@ export function LoginPage({
                 `login.errors.${
                   credentialStoreFailed
                     ? 'CREDENTIAL_STORE_UNAVAILABLE'
-                    : loginState.step === 'error'
+                    : loginState?.step === 'error'
                       ? loginState.code
                       : errorCode
                 }`,
@@ -1406,6 +1374,45 @@ export function LoginPage({
                 },
               )}
             </LoginErrorText>
+          </LoginPanel>
+        ),
+      };
+    }
+    if (loginState?.step === 'entry') {
+      // No provider config has arrived yet. Offer an explicit retry without
+      // inventing server-enabled login methods or automatically starting a load.
+      return {
+        ssoOrgGroupY: false,
+        node: (
+          <LoginPanel testId="login-panel-entry">
+            {isLoading && (
+              <LoginBackButton
+                label={t('login.back')}
+                disabled={localModePending}
+                onClick={backToEntry}
+              />
+            )}
+            <LoginTitleBlock title={t('login.title')} subtitle={t('login.subtitle')} />
+            <LoginPrimaryButton loading={isLoading} onClick={reset} testId="login-entry-continue">
+              {t(isLoading ? 'login.working' : 'login.continue')}
+            </LoginPrimaryButton>
+          </LoginPanel>
+        ),
+      };
+    }
+    // preparing 伪态(loginState 尚未就绪;figma 5.2 准备态:loading 64 @(308,193))
+    if (!loginState) {
+      return {
+        ssoOrgGroupY: false,
+        node: (
+          <LoginPanel testId="login-panel-preparing">
+            <LoginBackButton
+              label={t('login.back')}
+              disabled={localModePending}
+              onClick={backToEntry}
+            />
+            <LoginTitleBlock title={t('login.preparing')} subtitle={t('login.preparingSubtitle')} />
+            <LoginLoadingRing y={LOADING_RING.yPreparing} label={t('login.working')} />
           </LoginPanel>
         ),
       };

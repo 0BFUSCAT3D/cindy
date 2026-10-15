@@ -17,6 +17,8 @@ const auth = vi.hoisted(() => ({
   loadLoginState: vi.fn<() => Promise<DesktopLoginActionResult>>(),
   beginAddAccount: vi.fn<() => Promise<DesktopLoginActionResult>>(),
   cancelAddAccount: vi.fn(async () => undefined),
+  enterLocalMode: vi.fn(async () => undefined),
+  acceptPrivacyConsent: vi.fn(async () => undefined),
   dispatchLoginAction: vi.fn<(action: DesktopLoginAction) => Promise<DesktopLoginActionResult>>(),
 }));
 
@@ -37,14 +39,24 @@ let identifierState: AuthFlowState;
 let publishState: (state: DesktopLoginState | null) => void;
 let epoch: number;
 
-function Harness({ addAccount = false }: { addAccount?: boolean }) {
-  const [loginState, setLoginState] = useState<DesktopLoginState | null>(null);
+function Harness({
+  addAccount = false,
+  credentialStoreUnavailable = false,
+  initialState = null,
+}: {
+  addAccount?: boolean;
+  credentialStoreUnavailable?: boolean;
+  initialState?: DesktopLoginState | null;
+}) {
+  const [loginState, setLoginState] = useState<DesktopLoginState | null>(initialState);
   publishState = setLoginState;
   auth.value = {
     loginState,
+    credentialStoreUnavailable,
     loadLoginState: auth.loadLoginState,
     beginAddAccount: auth.beginAddAccount,
     cancelAddAccount: auth.cancelAddAccount,
+    enterLocalMode: auth.enterLocalMode,
     dispatchLoginAction: auth.dispatchLoginAction,
   };
   return (
@@ -58,7 +70,7 @@ beforeEach(async () => {
   epoch = 0;
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
-    value: { platform: 'darwin' },
+    value: { platform: 'darwin', acceptPrivacyConsent: auth.acceptPrivacyConsent },
   });
   const providers = await new CindyAuthClient({
     baseUrl: 'https://auth.scenario.invalid',
@@ -92,6 +104,37 @@ afterEach(() => {
 });
 
 describe('login initialization ownership', () => {
+  it.each([null, { step: 'entry' } as const])(
+    'shows known credential recovery before a login response arrives from %j',
+    (initialState) => {
+      auth.loadLoginState.mockImplementation(() => new Promise(() => undefined));
+      render(<Harness credentialStoreUnavailable initialState={initialState} />);
+
+      expect(screen.getByTestId('login-panel-error')).toBeTruthy();
+      expect(screen.getByText('credentialStore.dialog.title')).toBeTruthy();
+      expect(screen.queryByTestId('login-panel-preparing')).toBeNull();
+      expect(screen.queryByTestId('login-panel-entry')).toBeNull();
+      expect(screen.queryByTestId('login-local-mode')).toBeNull();
+      expect(auth.enterLocalMode).not.toHaveBeenCalled();
+      expect(auth.acceptPrivacyConsent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('withdraws pending skip consent when credential health fails before the login response', () => {
+    auth.loadLoginState.mockImplementation(() => new Promise(() => undefined));
+    const view = render(<Harness />);
+    fireEvent.click(screen.getByTestId('login-local-mode'));
+    expect(screen.getByTestId('login-consent-dialog')).toBeTruthy();
+
+    view.rerender(<Harness credentialStoreUnavailable />);
+
+    expect(screen.getByTestId('login-panel-error')).toBeTruthy();
+    expect(screen.queryByTestId('login-consent-dialog')).toBeNull();
+    expect(screen.queryByTestId('login-local-mode')).toBeNull();
+    expect(auth.enterLocalMode).not.toHaveBeenCalled();
+    expect(auth.acceptPrivacyConsent).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     'leaves an initialization error without requesting providers (addAccount=%s)',
     async (addAccount) => {

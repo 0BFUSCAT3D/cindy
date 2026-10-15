@@ -5685,6 +5685,7 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
     if (isLoginFlowCommitSealed(loginFlowEpoch)) {
       return { success: false, code: 'LOGIN_BUSY', state: loginFlowState };
     }
+    if (!accessToken && credentialStoreHealth.unavailable) return getLoginState();
     const providers = providerConfig;
     loginFlowEpoch += 1;
     browserAuthorizationSlot.cancelActive();

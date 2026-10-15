@@ -31,7 +31,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function setup({ cached = false, sealed = false } = {}) {
+function setup({ cached = false, sealed = false, credentialStoreUnavailable = false } = {}) {
   const getProviders = vi.fn<() => Promise<ProviderConfig>>();
   const cancelActive = vi.fn();
   const deps = {
@@ -43,6 +43,8 @@ function setup({ cached = false, sealed = false } = {}) {
     awaitLoginProvidersWithPreparingGate: (promise: Promise<ProviderConfig>) => promise,
     browserAuthorizationSlot: { cancelActive },
     isLoginFlowCommitSealed: () => sealed,
+    isOwnerChangeShellPending: () => false,
+    credentialStoreUnavailable,
     log: { warn: vi.fn() },
     cachedProviders: cached ? providers : null,
   };
@@ -52,13 +54,14 @@ function setup({ cached = false, sealed = false } = {}) {
     let providerConfig = cachedProviders, sessionInvalidationPromise = null;
     let loginActionPromise = null, loginActionPromiseEpoch = null, accessToken = null;
     const AUTH_REGION = 'global', activeAuthRealm = 'global';
-    const credentialStoreHealth = { unavailable: false };
+    const credentialStoreHealth = { unavailable: credentialStoreUnavailable };
     let handledLoginEmail = null, pendingPersonalLogin = null, discoveredMethods = [];
     let pendingAccountToken = null, pendingAccountRefreshToken = null, pendingAccountMemberships = [];
     let pendingLoginTicket = 'old-ticket', pendingBindTicket = null, pendingSsoVerificationTicket = null;
     let pendingAuthRealm = null, pendingAccountDeletionRestored = false;
     ${functionSource('function resetLoginFlowState()', 'function sealLoginFlowCommit(')}
     ${functionSource('async function loadLoginProviders(', 'async function discoverOrganizationRealm(')}
+    ${functionSource('export async function getLoginState()', 'async function completeLogin(')}
     ${functionSource('async function runLoginAction(', 'export async function refresh(')}
     return {
       dispatch: dispatchLoginAction,
@@ -75,6 +78,19 @@ function setup({ cached = false, sealed = false } = {}) {
 }
 
 describe('login Back without an auth-server round trip', () => {
+  it.each([false, true])('preserves credential recovery and private progress (cached=%s)', async (cached) => {
+    const main = setup({ cached, credentialStoreUnavailable: true });
+    expect(await main.dispatch({ type: 'back' })).toEqual({
+      success: false,
+      code: 'CREDENTIAL_STORE_UNAVAILABLE',
+      state: { step: 'error', code: 'CREDENTIAL_STORE_UNAVAILABLE', recoverTo: 'identifier' },
+    });
+    expect(main.snapshot().ticket).toBe('old-ticket');
+    expect(main.snapshot().epoch).toBe(1);
+    expect(main.cancelActive).not.toHaveBeenCalled();
+    expect(main.getProviders).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     'returns locally and clears private progress (cached=%s)',
     async (cached) => {

@@ -8,6 +8,7 @@ interface UseLoginReturn {
   errorCode: string | null;
   retryAt: number | undefined;
   loginState: ReturnType<typeof useAuth>['loginState'];
+  credentialStoreUnavailable: ReturnType<typeof useAuth>['credentialStoreUnavailable'];
   hasAccountDeletionReceipt: boolean;
   getAccountDeletionStatus: ReturnType<typeof useAuth>['getAccountDeletionStatus'];
   clearAccountDeletionReceipt: ReturnType<typeof useAuth>['clearAccountDeletionReceipt'];
@@ -35,6 +36,7 @@ interface UseLoginReturn {
 export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseLoginReturn {
   const {
     loginState,
+    credentialStoreUnavailable,
     loadLoginState,
     dispatchLoginAction,
     hasAccountDeletionReceipt,
@@ -130,6 +132,7 @@ export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseL
         ? loginState?.retryAt
         : undefined,
     loginState,
+    credentialStoreUnavailable,
     hasAccountDeletionReceipt,
     getAccountDeletionStatus,
     clearAccountDeletionReceipt,
