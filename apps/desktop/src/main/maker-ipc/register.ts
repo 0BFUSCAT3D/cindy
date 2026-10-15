@@ -603,6 +603,7 @@ import {
   pruneWorkingMemoryForSession,
   readWorkingMemoryNoteForSession,
 } from './botWorkingMemory.js';
+import { listBotRecallSessionIds } from '../localDb/botHistoryScope.js';
 import { createWireNoteMemory } from './wireNoteMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
 import { configureBotCanonicalReplacementCoordinator } from './botCanonicalReplacementCoordinator.js';
@@ -997,6 +998,7 @@ import {
 } from './sessionAgentSwitchHandler.js';
 import { pendingHarnessRuntimeMutation, setSessionRuntimeHarness } from './sessionRuntimeHarnessSelection.js';
 import {
+  COMPANION_SESSION_IDS_LIMIT,
   extractAgentIslandPromptText,
   extractPlainText,
   prependNoteToWireUserMessage,
@@ -12139,6 +12141,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const chat = botGroupChatServiceHolder?.chatServer;
     return chat ? chat.reply(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
   });
+  ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_SHARETOMAIN, async (event, input) => {
+    assertTrustedAppRendererEvent(event);
+    const chat = botGroupChatServiceHolder?.chatServer;
+    return chat ? chat.shareToMain(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
+  });
   ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_REACT, async (event, input) => {
     assertTrustedAppRendererEvent(event);
     const chat = botGroupChatServiceHolder?.chatServer;
@@ -16442,6 +16449,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
     readWorkingMemoryNote,
     isWorkingMemoryFresh: (sessionId) => isWorkingMemoryFreshForSession(sessionId, ownerScopedUserDataPath()),
+    // 伙伴自有会话(当前 + 恢复前旧对话整体优先,后台任务补足),写进回忆指引限定 history 工具范围。
+    listCompanionSessionIds: (sessionId) => listBotRecallSessionIds(sessionId, COMPANION_SESSION_IDS_LIMIT),
     findLatestUser: findLatestUserMessageForRebuild,
     findLatestRebuildMeta: findLatestContextRebuildMeta,
     getLiveSession: (sessionId) => maker.getSession(sessionId),
