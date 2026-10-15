@@ -2194,6 +2194,9 @@ describe('thread previews and posting to the main chat', () => {
     const own = screen.getByText(t('alsoSent')).closest('article')!;
     expect(within(own).getByText('我自己的回复')).toBeTruthy();
     expect(screen.getByText(t('sourceUnavailable'))).toBeTruthy();
+    // An unverified card's own thread ID leads nowhere.
+    const gone = screen.getByText(t('sourceUnavailable')).closest('article')!;
+    expect(within(gone).queryByRole('button', { name: t('viewThread') })).toBeNull();
     await user.click(within(other).getByRole('button', { name: t('viewThread') }));
     const panel = await screen.findByRole('complementary');
     await waitFor(() => expect(within(panel).getByText('Reply to u1').closest('article')!.className).toContain('ring-2'));

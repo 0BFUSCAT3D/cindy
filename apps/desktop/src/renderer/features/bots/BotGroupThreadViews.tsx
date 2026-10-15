@@ -138,7 +138,8 @@ export function BotGroupThreadShareQuote({ share, members, attachments, onOpenTh
           {t(key(share.status === 'loading' ? 'loadingSource' : 'sourceUnavailable'))}
         </p>
       )}
-      {onOpenThread ? <button type="button" onClick={onOpenThread}
+      {/* Only a verified share leads anywhere: the card's own thread ID is not trusted. */}
+      {onOpenThread && available ? <button type="button" onClick={onOpenThread}
         className={cn('-ml-1.5 inline-flex min-h-6 w-fit select-none items-center gap-1 rounded-full px-1.5 text-12 text-[var(--text-secondary)] transition-colors duration-[var(--motion-fast)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]', FOCUS)}>
         <CornerDownRight size={12} aria-hidden />
         {t(key('viewThread'))}
