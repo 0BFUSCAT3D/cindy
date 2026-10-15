@@ -9259,7 +9259,10 @@
         "planning": "正在安排…"
       },
       "files": {
-        "openFailed": "文件没能打开，可能已被移动或删除"
+        "openFailed": "文件没能打开，可能已被移动或删除",
+        "untitled": "附件",
+        "loading": "加载中…",
+        "unavailable": "暂时无法加载"
       },
       "addFromChat": {
         "triggerFor": "将 {{name}} 添加到群聊",

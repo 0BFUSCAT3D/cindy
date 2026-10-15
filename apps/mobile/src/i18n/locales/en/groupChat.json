@@ -141,7 +141,10 @@
     "step": "Working on it…"
   },
   "files": {
-    "onComputer": "These files are on your computer. Open them there."
+    "onComputer": "These files are on your computer. Open them there.",
+    "loading": "Loading…",
+    "unavailable": "Unavailable right now",
+    "untitled": "Attachment"
   },
   "settings": {
     "open": "Group Settings",

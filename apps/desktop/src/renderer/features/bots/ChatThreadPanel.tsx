@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { SendButton } from '@/components/new-chat/SendButton';
@@ -22,6 +22,8 @@ import {
   BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
   fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
 } from './botGroupComposerChrome';
+import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
+import { refreshPendingBotGroupAttachments } from './botGroupAttachments';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { ChatMessageActions, chatErrorKey, messageReactionRevision } from './ChatServerControls';
@@ -71,9 +73,8 @@ export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: st
   });
 }
 
-function ThreadMessage({ group, message, quoteSources, shareScope, sharing, shared, posting, onPost, onReveal, onChanged, renderAttachments }: {
+function ThreadMessage({ group, message, quoteSources, shareScope, sharing, shared, posting, onPost, onReveal, onChanged }: {
   group: BotGroupDetail; message: BotGroupMessageView; quoteSources: readonly BotGroupMessageView[]; shareScope: string; sharing: boolean;
-  renderAttachments?: (attachments: BotGroupMessageView['attachments']) => ReactNode;
   /** Replies only: already in the main chat (by anyone), and whether the reader shared it. */
   shared?: { bySelf: boolean } | null; posting?: boolean; onPost?: () => void; onReveal?: () => void; onChanged: () => void;
 }) {
@@ -98,10 +99,11 @@ function ThreadMessage({ group, message, quoteSources, shareScope, sharing, shar
       {share ? <>
         <p className="flex select-none items-center gap-1 text-12 text-[var(--text-tertiary)]">
           <CornerDownRight size={12} aria-hidden />{botGroupThreadShareLabel(share, t)}</p>
-        <BotGroupThreadShareQuote share={share} members={group.members} attachments={renderAttachments?.(share.attachments)} />
-      </> : <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
+        <BotGroupThreadShareQuote share={share} members={group.members} attachments={<BotGroupMessageAttachments attachments={share.attachments} align="start" />} />
+      </> : message.content.trim() ? <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
         <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
-      </div>}
+      </div> : null}
+      {!share && <BotGroupMessageAttachments attachments={message.attachments} align="start" />}
       {shared && <button type="button" onClick={onReveal} disabled={!onReveal}
         className="-ml-1.5 inline-flex min-h-6 select-none items-center gap-1 rounded-full px-1.5 text-12 text-[var(--text-tertiary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
         <CornerDownRight size={12} aria-hidden />{t(key(shared.bySelf ? 'thread.postedBySelf' : 'thread.postedToMain'))}
@@ -116,7 +118,7 @@ function ThreadMessage({ group, message, quoteSources, shareScope, sharing, shar
  * `quoteSources` are the main timeline's verified messages (older pages included), so a
  * 话题 root's quote reads the same as it does in the timeline; without them, the latest page.
  */
-export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, focus, sharedReplies, onRevealShare, onClose, renderAttachments }: {
+export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, focus, sharedReplies, onRevealShare, onClose }: {
   group: BotGroupDetail; rootId: string; quoteSources?: readonly BotGroupMessageView[];
   /** A reply to bring into view; a new nonce repeats the jump. */
   focus?: { messageId: string; nonce: number } | null;
@@ -124,8 +126,6 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   /** Scroll the main chat to a share; false when it is not loaded there. */
   onRevealShare?: (messageId: string) => boolean;
   onClose: () => void;
-  /** The main chat's attachment view, reused for a shared reply at the thread root. */
-  renderAttachments?: (attachments: BotGroupMessageView['attachments']) => ReactNode;
 }) {
   const { t } = useTranslation();
   const titleId = useId();
@@ -183,6 +183,17 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       setExecutionFailures(result.executionFailures ?? []);
       setReplies(previous => mergeBotGroupMessages(previous, result.replies));
       if (before || replies.length === 0) setHasMore(result.hasMore);
+      if (before === undefined && result.replies.length > 0) {
+        const latestFrom = Math.min(...result.replies.map(message => message.sequence));
+        const refreshed = await refreshPendingBotGroupAttachments(replies, latestFrom, async page => {
+          const earlier = await api().thread({ groupId: group.id, rootId, before: page });
+          return earlier.ok && current() ? earlier.replies : null;
+        });
+        if (refreshed && current()) {
+          const fresh = new Map(refreshed.map(message => [message.sequence, message]));
+          setReplies(previous => previous.map(message => message.sequence < latestFrom ? fresh.get(message.sequence) ?? message : message));
+        }
+      }
     } catch { if (current()) setError(t(key('requestFailed'))); }
   }, [group.id, rootId, t, replies]);
   const loadRef = useRef(load); loadRef.current = load;
@@ -285,7 +296,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         </header>
         <div ref={contentRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
           {projectBotGroupExecutionFailures(root ? [root] : [], executionFailures).map(message => <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message}
-            renderAttachments={renderAttachments} onChanged={() => void loadRef.current()} />)}
+            onChanged={() => void loadRef.current()} />)}
           <div className="border-t border-[var(--border-default)] pt-3 text-12 text-[var(--text-tertiary)]">{t(key('replies'))}</div>
           {hasMore && <Button variant="secondary" size="sm" onClick={() => void loadRef.current(replies[0]?.sequence)}>{t('bots.groupChat.timeline.loadEarlier')}</Button>}
           {projectBotGroupExecutionFailures(replies, executionFailures).map(message => {
