@@ -540,6 +540,21 @@ describe('group composer', () => {
     });
   }
 
+  it.each([true, false])('locks an existing draft when dissolved without being archived (direct server %s)', async server => {
+    h.chat.server = server;
+    const live = group({ openPlan: null, archived: false });
+    await render(live);
+    await type('Unsent draft');
+    expect(h.row.editable).toBe(true);
+    expect(byId('botGroup.composer.send')?.disabled).toBe(false);
+    await render({ ...live, dissolvedAt: '2026-10-15T00:00:00.000Z' });
+    expect(h.row.editable).toBe(false);
+    expect(byId('botGroup.composer.send')?.disabled).toBe(true);
+    await click('botGroup.composer.send');
+    expect(h.chat.act).not.toHaveBeenCalled();
+    expect(node.textContent).toContain('好的，我看看');
+  });
+
   it('offers 所有人 first, inserts a picked teammate and sends the resolved mentions', async () => {
     await render(group({ openPlan: null }));
     await type('请 @');

@@ -369,7 +369,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
           onEditStep={(planId, step, action, botId) => void editPlanStep(planId, step, action, botId)}
           onInteractionError={(message) => { if (message) Alert.alert(message); }} />
       </ScrollView>
-      <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={chat.online && !group.archived}
+      <BotGroupComposer members={group.members} identityFor={identityFor} deviceId={deviceId} online={chat.online && !group.archived && !group.dissolvedAt}
         running={group.round.status === 'running'} planState={botGroupComposerPlanState(openBotGroupPlan(group))}
         divisionSupported={!chat.server} attachmentsSupported={group.supportsAttachments === true} onSend={send} onStop={stop} />
     </KeyboardAvoidingView>;

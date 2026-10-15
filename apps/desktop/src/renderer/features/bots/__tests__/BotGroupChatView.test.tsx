@@ -351,6 +351,20 @@ describe('BotGroupChatView', () => {
     expect(screen.queryByText('bots.groupChat.server.settings.archived')).toBeNull();
   });
 
+  it('replaces the composer with read-only history when dissolved without being archived', async () => {
+    const live = detail({ serverBacked: true, archived: false,
+      messages: [msg({ content: 'Preserved dissolved history' })],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: live });
+    renderView();
+    await screen.findByRole('textbox');
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...live, dissolvedAt: '2026-10-15T00:00:00.000Z' } });
+    act(() => { mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'updated' })); });
+    await screen.findByText('bots.groupChat.lifecycle.dissolved');
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByText('Preserved dissolved history')).toBeTruthy();
+  });
+
   function mockThreadMotion(duration: string) {
     const style = document.createElement('style');
     style.textContent = `aside { --motion-base: ${duration}; --motion-ease-move: linear; }`;

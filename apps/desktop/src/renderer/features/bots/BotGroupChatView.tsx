@@ -847,7 +847,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   actions={message.kind === 'message' ? <ChatMessageActions
                     groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
-                    onQuote={group.serverBacked && !group.archived && isBotGroupMessageQuotable(message)
+                    onQuote={group.serverBacked && !group.archived && !group.dissolvedAt && isBotGroupMessageQuotable(message)
                       ? () => setQuoteDraft(botGroupQuoteFromMessage(message)) : undefined}
                     onReply={group.serverBacked ? () => {
                       threadOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -923,7 +923,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         </div>
       )}
       {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t(group.dissolvedAt ? 'bots.groupChat.lifecycle.dissolved' : 'bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
+        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived || group.dissolvedAt ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t(group.dissolvedAt ? 'bots.groupChat.lifecycle.dissolved' : 'bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
         groupId={group.id}
         members={group.members}
         running={running}
