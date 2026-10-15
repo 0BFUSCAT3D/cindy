@@ -505,13 +505,26 @@ function harness(
         if (released) resolve(localTip);
         else pendingHang.push(() => resolve(localTip));
       });
-    // Commits without a patch-equivalent on the other side (`options.cherry` lists them).
+    // Fixture history and strict tree-proof answers. Real positional preservation
+    // is covered by the repeated-block Git journeys.
+    const changes = (options.cherry ?? '')
+      .split('\n')
+      .filter((line) => /^[+-] /.test(line))
+      .map((line) => line.slice(2).trim());
     const unique = (options.cherry ?? '')
       .split('\n')
       .filter((line) => line.startsWith('+ '))
       .map((line) => line.slice(2).trim());
-    if (args[0] === 'rev-list' && args.includes('--cherry-pick'))
-      return args[1] === '--count' ? String(unique.length) : unique.join('\n');
+    if (args[0] === 'log') {
+      if (args.includes('--merges')) return (options.merges ?? []).join('\n');
+      if (args.includes('--left-only')) return '';
+      return changes
+        .map((commit) => [commit, 'Test', 'test@example.invalid', '1', 'change'].join('\0'))
+        .join('\n');
+    }
+    if (args[0] === 'rev-list' && args.includes('--right-only'))
+      return args[1] === '--count' ? String(changes.length) : changes.join('\n');
+    if (args[0] === 'rev-list' && args.includes('--left-only')) return '0';
     if (args[0] === 'rev-list' && args.includes('--merges'))
       return args[1] === '--count'
         ? String((options.merges ?? []).length)
@@ -548,6 +561,14 @@ function harness(
       }
       if (args.length === 2 && args[0] === 'rev-parse' && args[1].endsWith('^'))
         return options.forkPoint ?? '';
+    }
+    if (args[0] === 'merge-tree') {
+      if (
+        unique.includes(args.at(-1)!) ||
+        (options.remergeDiff && options.merges?.includes(args.at(-1)!))
+      )
+        throw Object.assign(new Error('not carried'), { exitCode: 1 });
+      return 'e'.repeat(40);
     }
     if (opts?.auth)
       expect(opts.auth).toEqual({
@@ -1163,7 +1184,7 @@ describe('PersonalRemoteController', () => {
     await h.controller.settled();
     expect(h.record().sync).toBe('synced');
     expect(h.commands()).toContain(
-      `show --remerge-diff --no-ext-diff --no-color --format= ${OTHER}`,
+      `show --remerge-diff --no-ext-diff --no-textconv --no-color --format= --name-only ${OTHER}`,
     );
   });
 
@@ -1269,7 +1290,8 @@ describe('PersonalRemoteController', () => {
     const h = harness({ ...bothChanged, ...extra });
     h.controller.save();
     await h.controller.settled();
-    expect(h.commands().some((command) => command.startsWith('merge-tree'))).toBe(false);
+    // Read-only preservation checks may run, but no replay commit may be created.
+    expect(h.commands().some((command) => command.startsWith('commit-tree'))).toBe(false);
     expect(h.pushes()).toEqual([]);
     expect(h.localTip()).toBe(LOCAL);
     expect(h.record().sync).toBe(sync);
@@ -1498,7 +1520,7 @@ describe('PersonalRemoteController', () => {
     });
     h.controller.save();
     await h.controller.settled();
-    expect(h.commands().some((command) => command.startsWith('merge-tree'))).toBe(false);
+    expect(h.commands().some((command) => command.startsWith('commit-tree'))).toBe(false);
     expect(h.pushes()).toEqual([]);
     expect(h.record().sync).toBe('needsMerge');
   });

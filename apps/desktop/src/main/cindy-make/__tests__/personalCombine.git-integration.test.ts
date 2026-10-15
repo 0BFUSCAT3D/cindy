@@ -151,7 +151,19 @@ it('keeps both computers’ changes through a conflict resolved in the isolated 
       ],
       worktree,
     );
-    const applied = await applyUpstreamMerge(h.userData, result, h.git);
+    const refused = await applyUpstreamMerge(h.userData, result, h.git).catch((error) => error);
+    expect(refused).toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [h.local] },
+    });
+    expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(h.local);
+    const applied = await applyUpstreamMerge(
+      h.userData,
+      { ...result, missing: refused.missing },
+      h.git,
+      () => true,
+      { acceptMissing: true },
+    );
     expect(applied.status).toBe('merged');
     expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe(
       'from the other computer\nfrom this computer\n',
@@ -344,7 +356,7 @@ it.each([false, true])(
   60_000,
 );
 
-it('adopts a resolved conflict between commits that share the task identity', async () => {
+it('asks before adopting a fused conflict between commits that share the task identity', async () => {
   const h = await fixture(true, true);
   try {
     const result = await preparePersonalCombine(h.userData, h.state, h.git, async () => {});
@@ -370,7 +382,17 @@ it('adopts a resolved conflict between commits that share the task identity', as
       ],
       worktree,
     );
-    await expect(applyUpstreamMerge(h.userData, result, h.git)).resolves.toMatchObject({
+    const refused = await applyUpstreamMerge(h.userData, result, h.git).catch((error) => error);
+    expect(refused).toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [h.local] },
+    });
+    expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(h.local);
+    await expect(
+      applyUpstreamMerge(h.userData, { ...result, missing: refused.missing }, h.git, () => true, {
+        acceptMissing: true,
+      }),
+    ).resolves.toMatchObject({
       status: 'merged',
     });
   } finally {

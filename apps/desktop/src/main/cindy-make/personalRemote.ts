@@ -16,6 +16,7 @@ import {
 } from '../../shared/cindyMakePersonalRemote.js';
 import { assertNoGitOperation, commitPersonalFiles } from './localHistory.js';
 import { PERSONAL_UPSTREAM_REF, type ContentGit } from './sourceContent.js';
+import { uncarriedChanges } from './carriedChanges.js';
 import { CINDY_PERSONAL_BRANCH } from './sourcePaths.js';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
 
@@ -1094,36 +1095,15 @@ export class PersonalRemoteController {
     return this.exitsZero(['merge-base', '--is-ancestor', ancestor, descendant]);
   }
 
-  /**
-   * Every change on `from` also exists in `into` with the same patch. A patch
-   * comparison cannot see what a merge commit adds beyond its automatic result, so
-   * only merges whose remerge diff is empty (the check used before adopting an
-   * official rebase) are accepted; any other merge, or an unreadable one, fails closed.
-   */
+  /** The same position-aware proof used before adopting an official update. */
   private async containsChanges(into: string, from: string): Promise<boolean> {
-    const merges = await this.commits(['--merges', `${into}..${from}`]);
-    if (!merges) return false;
-    for (const merge of merges) {
-      try {
-        const extra = await this.git([
-          'show',
-          '--remerge-diff',
-          '--no-ext-diff',
-          '--no-color',
-          '--format=',
-          merge,
-        ]);
-        if (extra.trim()) return false;
-      } catch {
-        return false;
-      }
+    const git: ContentGit = (args, _cwd, indexFile) =>
+      this.git(args, indexFile ? { indexFile } : undefined);
+    try {
+      return (await uncarriedChanges(git, this.deps.source, from, into, into)).length === 0;
+    } catch {
+      return false;
     }
-    // Every commit of `from` that `into` lacks has the same patch there.
-    return (
-      (
-        await this.git(['rev-list', '--count', '--cherry-pick', '--right-only', '--no-merges', `${into}...${from}`])
-      ).trim() === '0'
-    );
   }
 
   /** Commit hashes for `rev-list` arguments; undefined when Git output was cut at its capture limit. */
@@ -1198,7 +1178,10 @@ export class PersonalRemoteController {
       if (extra === undefined || extra.trim()) return undefined;
     }
     // Output is size-limited; a truncated list must not silently drop the newest changes.
-    const unique = await this.commits(['--cherry-pick', '--right-only', '--no-merges', `${remote}...${local}`]);
+    // patch-id drops positions: identical edits in two repeated blocks are two
+    // distinct changes. Reapply every non-ancestor commit; merge-tree determines
+    // whether the original change is already carried without fuzzy placement.
+    const unique = await this.commits(['--right-only', '--no-merges', `${remote}...${local}`]);
     const range = await this.commits(['--reverse', '--topo-order', '--no-merges', `${fork}..${local}`]);
     if (!unique || !range) return undefined;
     const missing = new Set(unique);

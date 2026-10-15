@@ -154,12 +154,12 @@ it('adopts an official update that already contains a personal change as the sam
   }
 }, 60_000);
 
-it('adopts a resolved official update whose task commits share one identity', async () => {
+it('asks before adopting a fused resolution whose task commits share one identity', async () => {
   const h = await repos();
   try {
     // Two task commits in the same second: the clean one must not vouch for the conflicting one.
     await h.write(h.source, 'feature.txt', replace(0, 'mine'));
-    await h.commit(h.source, '', 5_000);
+    const fused = await h.commit(h.source, '', 5_000);
     await h.write(h.source, 'clean.txt', ['clean']);
     await h.commit(h.source, '', 5_000);
     await h.write(h.official, 'feature.txt', replace(0, 'official'));
@@ -170,7 +170,21 @@ it('adopts a resolved official update whose task commits share one identity', as
     await h.write(worktree, 'feature.txt', replace(0, 'official and mine'));
     await h.git(['add', '-A'], worktree);
     await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
-    await expect(applyUpstreamMerge(h.userData, state, h.git)).resolves.toMatchObject({
+    const refused = await applyUpstreamMerge(h.userData, state, h.git).catch((error) => error);
+    expect(refused).toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [fused] },
+    });
+    // Text in a fused line cannot prove its original meaning; the user can still
+    // accept this exact reviewed result through the existing confirmation.
+    expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe(
+      text(replace(0, 'mine')),
+    );
+    await expect(
+      applyUpstreamMerge(h.userData, { ...state, missing: refused.missing }, h.git, () => true, {
+        acceptMissing: true,
+      }),
+    ).resolves.toMatchObject({
       status: 'merged',
     });
     expect(await readFile(path.join(h.source, 'clean.txt'), 'utf8')).toBe('clean\n');
@@ -235,6 +249,10 @@ it.each([
   ['quoted text', ["const note = ' deleteData() ';"]],
   ['template literal', ['const note = `', 'deleteData()', '`;']],
   ['multiline quoted text', ['const note = "', 'deleteData()', '";']],
+  ['disabled single-line control flow', ['if (false) deleteData()']],
+  ['disabled block', ['if (false) {', 'deleteData()', '}']],
+  ['disabled loop', ['while (false) {', 'deleteData()', '}']],
+  ['early return', ['return', 'deleteData()']],
 ] as const)(
   'does not vouch for an added call amid %s syntax',
   async (_kind, resolution) => {
@@ -266,6 +284,97 @@ it.each([
   },
   60_000,
 );
+
+it.each(['current', 'older'] as const)(
+  'does not vouch for the wrong repeated block with %s Git',
+  async (version) => {
+    const original = ['admin:', 'deny()', ...LINES, 'guest:', 'deny()', 'end'];
+    const h = await repos(original);
+    const git: MergeGit = (args, cwd, index) =>
+      version === 'older' && args[0] === 'merge-tree'
+        ? Promise.reject(Object.assign(new Error('usage'), { exitCode: 129 }))
+        : h.git(args, cwd, index);
+    try {
+      const intended = original.map((line, at) => (at === 1 ? 'allow()' : line));
+      await h.write(h.source, 'feature.txt', intended);
+      const misplaced = await h.commit(h.source, '', 4_075);
+      const upstream = original.map((line, at) => (at === 0 ? 'admin: official' : line));
+      await h.write(h.official, 'feature.txt', upstream);
+      const target = await h.commit(h.official, 'official v2');
+      const state = await prepareUpstreamMerge(
+        h.userData,
+        update(h, target),
+        h.git,
+        async () => {},
+      );
+      expect(state.status).toBe('conflict');
+      const worktree = mergeWorktree(h.userData, state.id);
+      // The resolver preserves the rebase identity but applies -deny/+allow to guest.
+      await h.write(
+        worktree,
+        'feature.txt',
+        upstream.map((line, at) => (at === original.length - 2 ? 'allow()' : line)),
+      );
+      await h.git(['add', '-A'], worktree);
+      await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+      await expect(applyUpstreamMerge(h.userData, state, git)).rejects.toMatchObject({
+        code: 'checksFailed',
+        missing: { count: 1, commits: [misplaced] },
+      });
+      expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(misplaced);
+    } finally {
+      await h.clean();
+    }
+  },
+  60_000,
+);
+
+it('keeps sequential personal changes that intentionally supersede each other', async () => {
+  const h = await repos();
+  try {
+    await h.write(h.source, 'feature.txt', replace(3, 'alpha'));
+    await h.commit(h.source, '', 4_076);
+    await h.write(h.source, 'feature.txt', replace(3, 'beta'));
+    await h.commit(h.source, '', 4_077);
+    await h.write(h.official, 'official.txt', ['v2']);
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('merged');
+    expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe(
+      text(replace(3, 'beta')),
+    );
+    expect(await readFile(path.join(h.source, 'official.txt'), 'utf8')).toBe('v2\n');
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
+it('does not let patch-id equivalence hide a change in another repeated block', async () => {
+  const padding = Array.from({ length: 10 }, (_, i) => 'padding ' + i);
+  const block = [...padding, 'deny()', ...padding];
+  const original = ['admin:', ...block, 'guest:', ...block];
+  const h = await repos(original);
+  try {
+    await h.write(
+      h.source,
+      'feature.txt',
+      original.map((line, at) => (at === 11 ? 'allow()' : line)),
+    );
+    const misplaced = await h.commit(h.source, '', 4_080);
+    await h.write(
+      h.official,
+      'feature.txt',
+      original.map((line, at) => (at === 11 + block.length + 1 ? 'allow()' : line)),
+    );
+    const target = await h.commit(h.official, 'official v2');
+    await h.git(['fetch', h.official, target], h.source);
+    await expect(uncarriedChanges(h.git, h.source, misplaced, target, target)).resolves.toEqual([
+      misplaced,
+    ]);
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
 
 it('names a change whose added line a resolved rebase only reordered', async () => {
   const h = await repos();
@@ -313,7 +422,7 @@ it.each(['lines', 'hunks'] as const)('rejects reordered added %s while accepting
     await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
       code: 'checksFailed', missing: { count: 1, commits: [reordered] },
     });
-    await h.write(worktree, 'feature.txt', original.map((line, i) => i === 0 ? line + ' // official' : line));
+    await h.write(worktree, 'feature.txt', original);
     await expect(applyUpstreamMerge(h.userData, state, h.git)).resolves.toMatchObject({ status: 'merged' });
   } finally {
     await h.clean();
@@ -454,7 +563,7 @@ it('journals the adopted rewrite as unverified before the source moves', async (
     const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
     expect(state.status).toBe('conflict');
     const worktree = mergeWorktree(h.userData, state.id);
-    await h.write(worktree, 'feature.txt', replace(0, 'official and mine'));
+    await h.write(worktree, 'feature.txt', replace(0, 'mine'));
     await h.git(['add', '-A'], worktree);
     await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
     const timeline: string[] = [];
@@ -525,7 +634,7 @@ it('keeps the source in place when the provenance journal cannot be written', as
     const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
     expect(state.status).toBe('conflict');
     const worktree = mergeWorktree(h.userData, state.id);
-    await h.write(worktree, 'feature.txt', replace(0, 'official and mine'));
+    await h.write(worktree, 'feature.txt', replace(0, 'mine'));
     await h.git(['add', '-A'], worktree);
     await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
     const timeline: string[] = [];
@@ -610,7 +719,7 @@ it('keeps a merge commit’s own edits: missing until the resolver puts them bac
   }
 }, 60_000);
 
-it('accepts the other computer’s own rewrite of a change it already carries', async () => {
+it('asks before accepting an adjacent rewrite that cannot be proved, then keeps it', async () => {
   const h = await repos();
   try {
     const fork = path.join(h.userData, 'fork.git');
@@ -650,7 +759,22 @@ it('accepts the other computer’s own rewrite of a change it already carries', 
       // Replaying the original next to the resolved rewrite conflicts; the resolver keeps
       // the rewrite, which leaves the original empty.
       await skip(h, result);
-      await expect(applyUpstreamMerge(h.userData, result, h.git)).resolves.toMatchObject({
+      const refused = await applyUpstreamMerge(h.userData, result, h.git).catch((error) => error);
+      expect(refused).toMatchObject({
+        code: 'checksFailed',
+        missing: { count: 1, commits: [mine] },
+      });
+      // The adjacent official edit makes the three-tree proof ambiguous even
+      // though the resolver kept this line. Only the user's confirmation may
+      // accept that precise result; the source stays put until then.
+      expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe(
+        text(replace(4, 'mine')),
+      );
+      await expect(
+        applyUpstreamMerge(h.userData, { ...result, missing: refused.missing }, h.git, () => true, {
+          acceptMissing: true,
+        }),
+      ).resolves.toMatchObject({
         status: 'merged',
       });
     } else expect(result.status).toBe('merged');

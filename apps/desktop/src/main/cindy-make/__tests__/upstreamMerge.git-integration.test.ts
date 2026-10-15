@@ -607,12 +607,23 @@ it('isolates conflicts, preserves personal files, and applies a resolved merge i
     expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe('local feature\n');
     await writeFile(path.join(worktree, 'feature.txt'), 'local feature\nupstream fix\n');
     await h.git(['add', '.'], worktree);
-    const applied = await applyUpstreamMerge(h.userData, result, h.git);
+    const refused = await applyUpstreamMerge(h.userData, result, h.git).catch((error) => error);
+    expect(refused).toMatchObject({
+      code: 'checksFailed',
+      missing: { count: 1, commits: [result.baselineCommit] },
+    });
+    expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(result.baselineCommit);
+    const confirmed = { ...result, missing: refused.missing };
+    const applied = await applyUpstreamMerge(h.userData, confirmed, h.git, () => true, {
+      acceptMissing: true,
+    });
     expect(applied.status).toBe('merged');
     expect(await readFile(path.join(h.source, 'feature.txt'), 'utf8')).toBe(
       'local feature\nupstream fix\n',
     );
-    expect(await applyUpstreamMerge(h.userData, result, h.git)).toEqual(applied);
+    expect(
+      await applyUpstreamMerge(h.userData, confirmed, h.git, () => true, { acceptMissing: true }),
+    ).toEqual(applied);
     expect(await h.git(['merge-base', 'main', 'cindy-personal'], h.source)).toBe(
       h.state.upstreamCommit,
     );
@@ -631,7 +642,13 @@ it('preserves personal work added during resolution and refuses to overwrite con
     await h.git(['add', '.'], worktree);
     await writeFile(path.join(h.source, 'new-personal.txt'), 'new feature\n');
 
-    await expect(applyUpstreamMerge(h.userData, result, h.git)).rejects.toMatchObject({
+    const refused = await applyUpstreamMerge(h.userData, result, h.git).catch((error) => error);
+    expect(refused).toMatchObject({ code: 'checksFailed', missing: { count: 1 } });
+    await expect(
+      applyUpstreamMerge(h.userData, { ...result, missing: refused.missing }, h.git, () => true, {
+        acceptMissing: true,
+      }),
+    ).rejects.toMatchObject({
       code: 'baselineChanged',
     });
     expect(await readFile(path.join(h.source, 'new-personal.txt'), 'utf8')).toBe('new feature\n');

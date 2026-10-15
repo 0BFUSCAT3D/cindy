@@ -451,7 +451,7 @@ journey('without GitHub: Sync moves the personal version to a new official relea
   expect(await a.tip()).toBe(tip);
 });
 
-journey('without GitHub: a conflict is resolved in its task and Sync continues by itself', async (w) => {
+journey('without GitHub: a fused conflict waits for confirmation, then Sync continues', async (w) => {
   const a = await computer(w, 'a');
   await a.change('feature.txt', set(2, 'mine'));
   const v2 = await w.release('v2', 'feature.txt', set(2, 'official'));
@@ -460,6 +460,10 @@ journey('without GitHub: a conflict is resolved in its task and Sync continues b
   // Nothing moved on this computer while it waits.
   expect(await a.read('feature.txt')).toBe(text(set(2, 'mine')));
   await a.resolve('feature.txt', set(2, 'official and mine'));
+  expect(a.reminders).toHaveLength(1);
+  await a.turnEnds();
+  expect(a.state().waiting).toMatchObject({ reason: 'missing', missing: 1 });
+  await a.accept();
   expect(a.state()).toEqual({ done: { at: 1, ref: 'v2' } });
   expect(await a.read('feature.txt')).toBe(text(set(2, 'official and mine')));
   expect(await a.base()).toBe(v2.commit);
@@ -495,9 +499,9 @@ journey('a restart while the conflict is handled continues from the same task', 
   a.restart();
   expect(a.state().waiting).toMatchObject({ kind: 'official', reason: 'interrupted' });
   // The user says "continue" in the task; its Agent finishes the work.
-  await a.resolve('feature.txt', set(2, 'official and mine'));
+  await a.resolve('feature.txt', set(2, 'mine'));
   expect(a.state()).toEqual({ done: { at: 1, ref: 'v2' } });
-  expect(await a.read('feature.txt')).toBe(text(set(2, 'official and mine')));
+  expect(await a.read('feature.txt')).toBe(text(set(2, 'mine')));
 });
 
 journey('Abandon leaves the personal version exactly as it was', async (w) => {
@@ -592,6 +596,33 @@ journey('both computers changed different places: Sync combines and both end up 
   for (const file of ['a.txt', 'a2.txt', 'b.txt']) expect(await a.read(file)).toBeTruthy();
 });
 
+journey('two matching edits in different repeated blocks are both kept', async (w) => {
+  const a = await computer(w, 'a');
+  const b = await computer(w, 'b');
+  const padding = Array.from({ length: 10 }, (_, i) => 'padding ' + i);
+  const block = [...padding, 'deny()', ...padding];
+  const original = ['admin:', ...block, 'guest:', ...block];
+  await a.change('feature.txt', original);
+  await a.save();
+  await b.save();
+  await a.change(
+    'feature.txt',
+    original.map((line, at) => (at === 11 ? 'allow()' : line)),
+  );
+  await a.sync();
+  await b.change(
+    'feature.txt',
+    original.map((line, at) => (at === 11 + block.length + 1 ? 'allow()' : line)),
+  );
+  expect(await b.sync()).toEqual({ done: { at: 1, ref: 'v1' } });
+  expect(await b.read('feature.txt')).toBe(
+    text(
+      original.map((line, at) => (at === 11 || at === 11 + block.length + 1 ? 'allow()' : line)),
+    ),
+  );
+  expect(await w.forkTip()).toBe(await b.tip());
+});
+
 journey('both computers changed the same line: the conflict task keeps both, then it is shared', async (w) => {
   const a = await computer(w, 'a');
   const b = await computer(w, 'b');
@@ -604,6 +635,10 @@ journey('both computers changed the same line: the conflict task keeps both, the
   // GitHub keeps the other computer's version until the result is adopted.
   expect(await w.forkTip()).toBe(await a.tip());
   await b.resolve('feature.txt', set(4, 'from a and b'));
+  expect(b.reminders).toHaveLength(1);
+  await b.turnEnds();
+  expect(b.state().waiting).toMatchObject({ reason: 'missing', missing: 1 });
+  await b.accept();
   expect(b.state()).toEqual({ done: { at: 1, ref: 'v1' } });
   // The combine adopted the fork's tip through the shared merge lifecycle: its
   // content is unverified on this computer until a generated version covers it.
@@ -693,6 +728,10 @@ journey('a conflicting official release is resolved once; the other computer tak
   b.target(v2);
   expect((await a.sync()).waiting).toMatchObject({ kind: 'official' });
   await a.resolve('feature.txt', set(2, 'official and mine'));
+  expect(a.reminders).toHaveLength(1);
+  await a.turnEnds();
+  expect(a.state().waiting).toMatchObject({ reason: 'missing', missing: 1 });
+  await a.accept();
   expect(a.state()).toEqual({ done: { at: 1, ref: 'v2' } });
   expect(await w.forkTip()).toBe(await a.tip());
   // No second conflict on the other computer: it uses the resolved version.
