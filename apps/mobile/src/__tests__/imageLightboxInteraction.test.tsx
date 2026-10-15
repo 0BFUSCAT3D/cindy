@@ -352,7 +352,7 @@ describe('pending image gallery updates', () => {
     expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
   });
 
-  it('resets annotation and dimensions when a queued edit replaces the active attachment in the same slot', async () => {
+  it.each(['neighbor', 'replaced image'])('resets annotation and dimensions when a queued edit replaces the active attachment (opened from %s)', async (openedFrom) => {
     const collectQueued = (id: string, url: string) => collectMobileMessageGalleryImages(buildPendingSendItems({
       queue: [{ clientId: 'pending', text: '', chatMessage: {}, files: [
         { id, name: 'same.jpg', category: 'image', path: url, url },
@@ -362,8 +362,8 @@ describe('pending image gallery updates', () => {
       editingClientId: null, steeringClientIds: new Set(), presentationByClientId: new Map(),
     }));
     const initial = collectQueued('original', 'https://example.invalid/original.jpg');
-    // Open the unchanged neighbor, then page to the image another device will replace.
-    const clicked = initial[1].payload;
+    // Cover both the original click and paging from an unchanged neighbor before a remote edit.
+    const clicked = initial[openedFrom === 'neighbor' ? 1 : 0].payload;
     const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
     const { props, render } = mount({ images: initial, initialUrl: clicked.media.url,
       annotation: { submitLabel: 'Send', onSubmit } });

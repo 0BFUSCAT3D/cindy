@@ -239,6 +239,11 @@ export function lightboxImagesForPayload(
   sourceGroupKey?: string | null,
   previousImages?: readonly MobileMessageGalleryImage[] | null,
 ): MobileMessageGalleryImage[] {
+  // 待发送消息仍在时跟随该消息的当前图集：编辑可替换最初点开的附件身份。
+  if (payload.galleryImageKey && sourceGroupKey) {
+    const currentGroup = images.filter((image) => image.groupKey === sourceGroupKey);
+    if (currentGroup.length > 0) return currentGroup;
+  }
   const url = payload.media.url.trim();
   // 待发送附件的临时文件、持久副本、远端原图地址会变化，匹配应跟随附件身份。
   const matches = images.filter((image) => payload.galleryImageKey
@@ -255,11 +260,14 @@ export function lightboxImagesForPayload(
       return images.filter((image) => image.groupKey === groupKey);
     }
   }
-  // 待发送行交接成正式消息后会退出列表；已经打开的查看器保留最后一份图集，
-  // 直到关闭，不因队列状态变化把第二页截成单图或串到另一条消息。
-  if (payload.galleryImageKey && previousImages?.some((image) => (
-    image.key === payload.galleryImageKey && (!sourceGroupKey || image.groupKey === sourceGroupKey)
-  ))) return [...previousImages];
+  // 来源消息离开图集后保留其最新快照；最初点开的附件可能已被编辑替换，
+  // 因此有来源时按消息归属取快照，不能依赖旧附件身份或串到别的消息。
+  if (payload.galleryImageKey && previousImages) {
+    const previousGroup = previousImages.filter((image) => sourceGroupKey
+      ? image.groupKey === sourceGroupKey
+      : image.key === payload.galleryImageKey);
+    if (previousGroup.length > 0) return sourceGroupKey ? previousGroup : [...previousImages];
+  }
   return [{
     key: 'lightbox:payload',
     title: payload.title,

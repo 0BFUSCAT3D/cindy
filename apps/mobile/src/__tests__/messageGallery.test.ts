@@ -128,6 +128,30 @@ describe('message gallery', () => {
     expect(lightboxImagesForPayload(unrelated, unrelated[0].payload, 'other', previous)).toEqual(unrelated);
   });
 
+  it.each([1, 2])('uses the current pending message when the clicked attachment is replaced (%i images)', (count) => {
+    const initialThumbs = Array.from({ length: count }, (_, index) => ({
+      key: `pending-slot-${index}:original`, uri: `file:///original-${index}.jpg`, ossRef: null, uploading: false,
+    }));
+    const initial = collectMobileMessageGalleryImages([pendingItem('pending', initialThumbs)]);
+    const clickedIndex = count - 1;
+    const clicked = initial[clickedIndex].payload;
+    let previous = initial;
+    // The original clicked identity remains absent across later queue updates.
+    for (const version of ['replacement', 'edited-again']) {
+      const current = collectMobileMessageGalleryImages([pendingItem('pending', initialThumbs.map((thumb, index) => (
+        index === clickedIndex ? { ...thumb, key: `pending-slot-${index}:${version}`, uri: `file:///${version}.jpg` } : thumb
+      )))]);
+      previous = lightboxImagesForPayload(current, clicked, 'pending', previous);
+      expect(previous).toEqual(current);
+    }
+    // Once the row leaves, keep the latest gallery rather than resurrecting the originally clicked image.
+    const unrelated = collectMobileMessageGalleryImages([pendingItem('other', initialThumbs.map((thumb) => (
+      { ...thumb, key: `other:${thumb.key}` }
+    )))]);
+    expect(lightboxImagesForPayload(unrelated, clicked, 'pending', previous)).toEqual(previous);
+    expect(lightboxImagesForPayload([], clicked, 'pending', previous)).toEqual(previous);
+  });
+
   it.each(['', ' "title"', " 'title'"])(
     'excludes out-of-workdir Markdown images from neighbor prefetch with title suffix %s', (title) => {
       const outside = 'xdt-file://open?path=%2Fprivate%2Fphoto.png&baseDir=%2F';
