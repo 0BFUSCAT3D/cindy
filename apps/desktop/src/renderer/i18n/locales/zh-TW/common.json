@@ -1845,11 +1845,23 @@
         "nameHint": "留空則保持當前名字",
         "changeAvatar": "更換頭像",
         "resetAvatar": "恢復預設頭像",
+        "adjustAvatar": "調整頭像",
         "save": "儲存資料",
         "cancel": "取消",
         "syncHint": "名字和頭像會儲存到帳號，並同步到你的所有裝置",
-        "avatarInvalid": "請選擇 5MB 以內的 PNG / JPG / WebP 圖片",
-        "saveFailed": "儲存失敗，請重試"
+        "avatarInvalid": "請選擇 20MB 以內的 PNG / JPG / WebP 圖片",
+        "saveFailed": "儲存失敗，請重試",
+        "crop": {
+          "title": "調整頭像",
+          "description": "拖曳調整位置，捲動或雙指縮放",
+          "done": "完成頭像調整",
+          "stageLabel": "頭像取景區域：用方向鍵移動，用加號或減號縮放",
+          "zoomLabel": "縮放",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "放大",
+          "zoomOut": "縮小",
+          "exportFailed": "未能匯出調整後的頭像"
+        }
       }
     },
     "help": {
@@ -8735,7 +8747,9 @@
     "list": {
       "createMenu": "新增",
       "createTeammate": "新增夥伴",
+      "joinWithLink": "輸入邀請連結…",
       "startChat": "開始對話",
+      "selectChat": "選擇夥伴或群聊，開始對話",
       "typing": "正在輸入…",
       "unread": "{{count}} 則未讀訊息",
       "search": "搜尋夥伴或群聊",
@@ -8750,7 +8764,8 @@
       "pinned": "已置頂",
       "needsAttention": "需要處理",
       "duplicate": "複製夥伴",
-      "moreActions": "{{name}} 的更多操作"
+      "moreActions": "{{name}} 的更多操作",
+      "noResults": "找不到符合的夥伴或群組"
     },
     "cancel": "取消",
     "save": "儲存",
@@ -9209,6 +9224,15 @@
       "files": {
         "openFailed": "檔案沒能開啟，可能已被移動或刪除"
       },
+      "addFromChat": {
+        "triggerFor": "將 {{name}} 新增至群聊",
+        "addTo": "將 {{name}} 新增至",
+        "newGroup": "發起群聊…",
+        "existingGroup": "新增至現有群聊",
+        "added": "已將 {{name}} 加入「{{group}}」",
+        "openGroup": "開啟群組",
+        "unavailable": "{{name}} 暫時無法加入群聊"
+      },
       "server": {
         "quoteReply": "引用回覆",
         "startTopic": "建立話題",
@@ -9238,8 +9262,11 @@
         "copied": "已複製邀請連結",
         "createLink": "產生邀請連結",
         "accept": "接受並加入",
-        "openGroup": "開啟群組",
         "previewInvite": "查看邀請",
+        "linkDescription": "確認後你會成為群組成員，可閱讀群聊記錄。",
+        "loadingInvite": "正在讀取邀請…",
+        "retryInvite": "重新讀取邀請",
+        "malformedInvite": "邀請連結不完整或格式不正確，請向邀請人重新取得連結。",
         "invalidInvite": "邀請無效、已使用、已過期或已撤銷，請取得新的邀請連結。",
         "notAllowed": "目前帳號沒有權限，請檢查帳號或聯絡群主。",
         "loginRequired": "請先登入目前帳號，再重試。",
@@ -9279,13 +9306,14 @@
           "addCompanion": "邀請我的夥伴",
           "leave": "退出群組",
           "leaveHint": "你和你帶來的夥伴將退出群組。群主需要先轉讓身分。",
+          "soleOwnerHint": "群組裡只剩你。可以封存群組，保留歷史記錄，以後再恢復使用。",
           "archive": "封存群組",
-          "archiveHint": "封存後保留群聊記錄，停止新訊息和夥伴執行。",
+          "archiveHint": "封存會對所有成員停用本群組，停止新訊息與夥伴執行。歷史記錄保留，之後可透過搜尋找到本群組、查看歷史並取消封存。",
           "confirm": "確認",
           "lastOwner": "請先將群主轉讓給其他成員，再退出或移除目前的群主。",
           "conflict": "群組設定已更新，請重新整理後再試。",
           "unarchive": "取消封存",
-          "unarchiveHint": "恢復新訊息與夥伴執行。",
+          "unarchiveHint": "取消封存後，本群組對所有成員恢復新訊息與夥伴執行。",
           "archived": "本群已封存，可繼續查看歷史記錄。",
           "noneHint": "本群只有夥伴的主人可以讓夥伴回應。",
           "companionPermissions": "夥伴權限",
@@ -10900,7 +10928,8 @@
       "downloadExtracting": "正在解壓縮…",
       "downloadUnsupported": "遠端電腦暫不支援下載資料夾，請更新該電腦上的 Cindy 後重試",
       "downloadNoSpace": "磁碟空間不足，無法完成下載",
-      "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載"
+      "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載",
+      "cancelTransfer": "取消"
     },
     "mivoAction": {
       "promptPlaceholder": "輸入提示詞，按 Enter 傳送",
