@@ -189,16 +189,17 @@ export class NativeDesktopCapture {
     overlay = false,
     settings?: RemoteDesktopVideoSettings,
   ): Promise<string | RemoteDesktopCursorFrame | null> {
-    const started = performance.now();
-    const value = await this.read(display, overlay, settings);
-    if (value !== RESTART) return value;
-    // The session locked or unlocked mid-request; a helper started for the new
-    // state answers now so a pending first frame does not fail the connection.
-    // It shares the remaining cold-start budget, keeping the whole wait within
-    // the offer deadline (captureReadyMs + FRAME_MS < hostMs).
-    const remaining = REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs - (performance.now() - started);
-    const retry = await this.read(display, overlay, settings, Math.max(FRAME_MS, remaining));
-    return retry === RESTART ? null : retry;
+    const deadline = performance.now() + REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs;
+    let value = await this.read(display, overlay, settings);
+    // Invariant: a lock/unlock restart (helper exit 6, powerMonitor, or both for
+    // the same transition) never ends a pending read early. Each restart retries
+    // on a helper started for the new state within one shared deadline, so the
+    // whole wait stays within captureReadyMs + FRAME_MS < hostMs.
+    while (value === RESTART && performance.now() < deadline) {
+      const remaining = deadline - performance.now();
+      value = await this.read(display, overlay, settings, Math.max(FRAME_MS, remaining));
+    }
+    return value === RESTART ? null : value;
   }
 
   private async read(

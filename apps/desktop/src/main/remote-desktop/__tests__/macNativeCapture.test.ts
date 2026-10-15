@@ -126,6 +126,30 @@ it('continues a pending first frame on a fresh helper when the app sees a lock t
   await expect(pending).resolves.toEqual(frame);
 });
 
+it('survives the helper exit and the app event both restarting for one unlock', async () => {
+  const settings = { fps: 30, quality: 'auto', audio: false } as const;
+  const frame = { jpeg: 'abcd', cursor: null };
+  const helper = () =>
+    Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(),
+    });
+  const { child, owner } = setup();
+  const pending = owner.frame('1', true, settings);
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledOnce());
+  h.spawn.mockReturnValue(helper());
+  child.emit('exit', 6);
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+  const last = helper();
+  h.spawn.mockReturnValue(last);
+  owner.restart();
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(3));
+  last.stdout.write(JSON.stringify(frame) + '\n');
+  await expect(pending).resolves.toEqual(frame);
+});
+
 it('keeps an unlock restart within the remaining cold-start budget', async () => {
   vi.useFakeTimers();
   const settings = { fps: 30, quality: 'auto', audio: false } as const;
