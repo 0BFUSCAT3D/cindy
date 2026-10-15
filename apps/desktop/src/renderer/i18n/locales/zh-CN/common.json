@@ -765,6 +765,7 @@
     "clipboardSyncFailed": "同步暂时失败，正在自动重试。开关保持开启。",
     "clipboardSyncSkipped": "当前内容无法同步，已跳过。请检查粘贴权限，或复制文字、图片后重试。",
     "clipboardSyncPermission": "同步已暂停，请允许粘贴权限后重试。开关保持开启。",
+    "clipboardSyncWaiting": "远程电脑的剪贴板暂时无法访问（可能已锁屏），解锁后会自动继续同步。",
     "lockingOnExit": "正在锁定电脑…",
     "lockOnExit": "退出后锁定电脑",
     "lockOnExitHint": "退出远程桌面时锁屏。重连或切换 App 不会触发。",

@@ -773,6 +773,7 @@
     "clipboardSyncFailed": "Sync temporarily failed. Retrying automatically; your setting stays on.",
     "clipboardSyncSkipped": "This content could not be synced and was skipped. Check paste access, or copy text or an image to try again.",
     "clipboardSyncPermission": "Sync is paused. Allow paste access, then retry. Your setting stays on.",
+    "clipboardSyncWaiting": "The remote computer’s clipboard is not available right now (it may be locked). Sync resumes automatically.",
     "lockingOnExit": "Locking computer…",
     "lockOnExit": "Lock Computer on Exit",
     "lockOnExitHint": "Locks when you leave remote desktop. Reconnecting or switching apps does not lock the computer.",
