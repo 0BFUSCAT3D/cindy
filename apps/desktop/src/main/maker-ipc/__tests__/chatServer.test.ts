@@ -1232,6 +1232,16 @@ describe('Chat Server result delivery and refresh', () => {
     expect(deps.workDir.prepare).not.toHaveBeenCalled();
     expect(deps.dispatch).toHaveBeenCalledWith(expect.objectContaining({ toolsDisabled: true, message: expect.stringContaining('Discuss the draft') }));
   });
+  it('projects which computer runs my companion, so a phone reaching the group through here reads its tasks there', async () => {
+    fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'active' }];
+    fixture.handle.mockImplementation(route => route === '/actors'
+      ? { body: [{ id: botId, kind: 'bot', externalId: 'local-bot', name: 'Bot', homeDeviceId: 'home-pc' }] }
+      : route.endsWith('/snapshot') ? { body: { ...response(route).body,
+        members: [{ id: botId, kind: 'bot', name: 'Bot', state: 'joined', role: 'member', ownerActorId: selfId, ownerName: 'Me' }] } } : response(route));
+    await service.listGroups();
+    const result = await service.getGroup(roomId);
+    expect(result.ok && result.group.members[0]).toMatchObject({ botId: 'local-bot', isOwned: true, homeDeviceId: 'home-pc' });
+  });
   it('projects hidden paused local companions with their real local identity and never claims work for them', async () => {
     fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'paused', hiddenAt: 1 }];
     fixture.handle.mockImplementation(route => route.endsWith('/snapshot') ? { body: { ...response(route).body,

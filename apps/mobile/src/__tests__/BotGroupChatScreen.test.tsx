@@ -201,8 +201,9 @@ vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsM
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
 vi.mock('@/session/ThinkingDots', () => ({ ThinkingDots: () => null }));
-// The live card of my own teammate's task reads the computer over device-link; not under test here.
-vi.mock('@/session/CompanionMessageCard', () => ({ CompanionTaskCard: () => null }));
+// The live card of my own teammate's task reads the computer over device-link; only which computer is under test.
+const taskCardDevices = vi.hoisted(() => [] as string[]);
+vi.mock('@/session/CompanionMessageCard', () => ({ CompanionTaskCard: ({ deviceId }: { deviceId: string }) => { taskCardDevices.push(deviceId); return null; } }));
 import { BotGroupChatScreen } from '@/session/BotGroupChatScreen';
 import { parseBotGroupChatData } from '@/session/botGroupRemote';
 
@@ -338,6 +339,22 @@ describe('group timeline', () => {
     expect(all('botGroup.task.live')).toHaveLength(1);
     // A companion whose computer the account does not know stays a snapshot.
     expect(byId('botGroup.task')!.textContent).toContain('整理行程');
+  });
+
+  it('reads my own teammate\'s live task on its home computer when the group is opened through another computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-5', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-5', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true, homeDeviceId: 'pc' },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: true, homeDeviceId: null },
+    ] });
+    data.messages.push(message('t5', 24, { authorBotId: 'mimi', authorName: '咪咪', content: '我开了个任务', task: { meta, state: 'started', title: '官网首页' } }),
+      message('t6', 25, { authorBotId: 'abu', authorName: '阿布', content: '我也开了', task: { meta: { ...meta, delegationId: 'task-6', fromBotId: 'abu' }, state: 'started', title: '整理行程' } }));
+    taskCardDevices.length = 0;
+    // Opened through 'mac', which is not 咪咪's home; 阿布's home is unknown, so it stays on 'mac'.
+    await render(parseBotGroupChatData(data)!);
+    expect(all('botGroup.task.live')).toHaveLength(2);
+    expect([...new Set(taskCardDevices)].sort()).toEqual(['mac', 'pc']);
   });
 
   it('shows a task from an author who has left the group as a snapshot, never a lookup on this phone\'s computer', async () => {
