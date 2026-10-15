@@ -107,7 +107,8 @@ function BotSessionGateView() {
         : gateIdentity,
     [gateIdentity, liveName, liveAvatar, liveAvatarColor],
   );
-  const canonicalChat = gate.kind === 'ready' && gate.isCanonical;
+  // A read-only demoted copy offers no add-to-group entry, like its settings.
+  const canonicalChat = gate.kind === 'ready' && gate.isCanonical && !shadowed;
   const chatIdentity = useMemo(
     () => (gateIdentity ? { ...(identity ?? gateIdentity), canonicalChat } : null),
     [gateIdentity, identity, canonicalChat],

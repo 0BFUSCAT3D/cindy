@@ -138,6 +138,7 @@ describe('a demoted copy', () => {
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
     expect(view.getByTestId('shadow-banner').textContent).toBe('bot-1');
     expect(view.getByTestId('chat').getAttribute('data-readonly')).toBe('yes');
+    expect(view.getByTestId('chat').dataset.canonicalChat).toBe('false');
   });
 
   it('keeps an ordinary companion writable', async () => {
@@ -145,5 +146,6 @@ describe('a demoted copy', () => {
     await waitFor(() => expect(view.getByTestId('chat')).toBeTruthy());
     expect(view.queryByTestId('shadow-banner')).toBeNull();
     expect(view.getByTestId('chat').getAttribute('data-readonly')).toBe('no');
+    expect(view.getByTestId('chat').dataset.canonicalChat).toBe('true');
   });
 });
