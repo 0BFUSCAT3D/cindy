@@ -109,10 +109,10 @@ describe('MCP Apps over the existing remote bridge', () => {
       await denied.text();
     }
   });
-  it('allows unbound discovery but rejects resource access and a batch containing execution', async () => {
+  it('rejects unbound discovery, resource access and a batch containing execution', async () => {
     const f = await fixture();
     const discovery = await f.request(f.base, list);
-    expect(discovery.status).toBe(200);
+    expect(discovery.status).toBe(401);
     await discovery.text();
     for (const body of [
       { jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'ui://example/app' } },
@@ -137,10 +137,13 @@ describe('MCP Apps over the existing remote bridge', () => {
     }
     expect(receivedNotification).not.toHaveBeenCalled();
   });
-  it('keeps the initialization notification available before Session binding', async () => {
+  it('requires a bound route for the initialization notification as well', async () => {
     const f = await fixture();
     const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
-    const allowed = await f.request(f.base, initialized);
+    const unbound = await f.request(f.base, initialized);
+    expect(unbound.status).toBe(401);
+    await unbound.text();
+    const allowed = await f.request(f.bound, initialized);
     expect(allowed.status).toBe(202);
     await allowed.text();
     // A method name alone must not turn a request into a handshake exemption.
@@ -246,6 +249,67 @@ describe('MCP Apps over the existing remote bridge', () => {
       expect(createAppServer).toHaveBeenCalledTimes(created + 1);
     },
   );
+  it('does not create a credentialed facade for a process-wide remote App URL', async () => {
+    const f = await fixture();
+    const created = createAppServer.mock.calls.length;
+    const response = await fetch(f.base, {
+      method: 'POST', headers, body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      }),
+    });
+    expect(response.status).toBe(401);
+    await response.text();
+    expect(createAppServer).toHaveBeenCalledTimes(created);
+  });
+  it('binds remote Codex startup discovery to its frozen Session and revokes the lease', async () => {
+    const f = await fixture();
+    const url = f.base + '?instance=codex-instance';
+    const context = {
+      agentKind: 'codex' as const, sessionId: 'codex-task', sessionInstanceId: 'codex-instance',
+      workingDir: '/remote', remoteHostId: 'host',
+      vendorOptions: { [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [], cindyRuntimeMcpServerNames: [] as string[] },
+    };
+    const initialize = {
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+    };
+    const created = createAppServer.mock.calls.length;
+    await bridge!.withDiscoveryContext(context, async () => {
+      const denied = await fetch(url, { method: 'POST', headers, body: JSON.stringify(initialize) });
+      expect(denied.status).toBe(403);
+      await denied.text();
+      expect(createAppServer).toHaveBeenCalledTimes(created);
+    });
+    context.vendorOptions.cindyRuntimeMcpServerNames = ['example'];
+    let id = '';
+    const request = async (body: unknown) => fetch(url, {
+      method: 'POST', headers: { ...headers, 'mcp-session-id': id }, body: JSON.stringify(body),
+    });
+    await bridge!.withDiscoveryContext(context, async () => {
+      const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(initialize) });
+      expect(response.status).toBe(200);
+      id = response.headers.get('mcp-session-id')!;
+      await response.text();
+      const discovery = await request(list);
+      expect(discovery.status).toBe(200);
+      expect(await discovery.text()).toContain('context');
+      const execution = await request(call);
+      expect(execution.status).toBe(401);
+      await execution.text();
+    });
+    const expired = await request(list);
+    expect(expired.status).toBe(401);
+    await expired.text();
+    bridge!.registerThreadContext('codex-thread', context);
+    const execution = await request(call);
+    expect(execution.status).toBe(200);
+    expect(await execution.text()).toContain('codex-instance');
+    bridge!.unregisterThreadContext('codex-thread', 'codex-instance');
+    const revoked = await request(list);
+    expect(revoked.status).toBe(401);
+    await revoked.text();
+  });
   it('keeps injection inside both the configured and frozen custom-server sets', async () => {
     await fixture();
     const gates = { collabEnabled: false, memoryEnabled: false };

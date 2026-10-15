@@ -43,6 +43,7 @@ import {
 } from '../mcp-integrations/codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from '../mcp-integrations/remoteMcpBridgeToken.js';
 import { appServerIds } from '../mcp-apps/runtime.js';
+import { readAllowedBuiltinPluginIds } from '../mcp-integrations/codexBuiltinToolPolicy.js';
 
 const log = createLogger('codex-remote-mcp');
 
@@ -202,9 +203,9 @@ export function invalidateRemoteCodexMcpEndpointState(hostId: string): void {
   });
 }
 
-/** Bind the remote daemon's disabled helper transport to one concrete Session.
+/** Bind the remote daemon's disabled helper and App transports to one concrete Session.
  * Read the port at use time: SSH forwarding is established after host construction.
- * Only Bot MCP policy enables this transport; ordinary remote threads keep it disabled.
+ * Only Bot MCP policy enables the helper; Apps follow the thread's frozen mounts.
  */
 export function buildRemoteCodexSessionMcpConfig(
   hostId: string,
@@ -214,6 +215,7 @@ export function buildRemoteCodexSessionMcpConfig(
     serverNames: string[];
     collabEnabled: boolean;
     makerMemoryEnabled: boolean;
+    vendorOptions?: Record<string, unknown>;
   },
 ): Record<string, unknown> {
   const prefs = readPortPrefs()[hostId];
@@ -225,21 +227,26 @@ export function buildRemoteCodexSessionMcpConfig(
     botHelperEnabled: true,
   });
   // A written config is not proof that a busy daemon has loaded this generation.
-  // Never combine a new route with its old token or pre-helper server config.
-  if (!serverNames.includes(REMOTE_BOT_HELPER_SERVER_NAME) || prefs.appliedFingerprint !== computeRemoteMcpFingerprint({
+  // Never combine a new route with its old token or unloaded server config.
+  if (!serverNames.length || prefs.appliedFingerprint !== computeRemoteMcpFingerprint({
     token,
     bridgeInstanceId: opts.bridgeInstanceId,
     remotePort: prefs.remotePort,
     serverNames,
   })) return {};
-  return {
-    [`mcp_servers.${REMOTE_BOT_HELPER_SERVER_NAME}.url`]: withMcpRouteIdentity(
-      `http://127.0.0.1:${prefs.remotePort}/mcp/${REMOTE_BOT_HELPER_SERVER_NAME}`,
-      { sessionInstanceId },
-    ),
-    [`mcp_servers.${REMOTE_BOT_HELPER_SERVER_NAME}.bearer_token_env_var`]: TOKEN_ENV,
-    [`mcp_servers.${REMOTE_BOT_HELPER_SERVER_NAME}.enabled`]: false,
-  };
+  const apps = new Set(appServerIds());
+  const frozen = readAllowedBuiltinPluginIds(opts.vendorOptions) !== null;
+  const mounted = opts.vendorOptions?.cindyRuntimeMcpServerNames;
+  return Object.fromEntries(serverNames
+    .filter((name) => name === REMOTE_BOT_HELPER_SERVER_NAME || apps.has(name))
+    .flatMap((name) => [
+      [`mcp_servers.${name}.url`, withMcpRouteIdentity(
+        `http://127.0.0.1:${prefs.remotePort}/mcp/${name}`, { sessionInstanceId },
+      )],
+      [`mcp_servers.${name}.bearer_token_env_var`, TOKEN_ENV],
+      [`mcp_servers.${name}.enabled`, name !== REMOTE_BOT_HELPER_SERVER_NAME &&
+        (!frozen || (Array.isArray(mounted) && mounted.includes(name)))],
+    ]));
 }
 
 // ── 远端 config.toml 管理段 (纯函数, 便于单测) ──────────────────────────────
@@ -261,7 +268,9 @@ export function renderManagedMcpBlock(opts: {
       `[mcp_servers.${name}]`,
       `url = "http://127.0.0.1:${opts.remotePort}/mcp/${name}"`,
       `bearer_token_env_var = "${TOKEN_ENV}"`,
-      ...(name === REMOTE_BOT_HELPER_SERVER_NAME ? ['enabled = false'] : []),
+      // Only process-wide built-ins can initialize without a Session. Every
+      // other managed name is a custom App facade, bound by the thread config.
+      ...(name === REMOTE_BOT_HELPER_SERVER_NAME || !REMOTE_ALLOWED_SERVER_NAMES.has(name) ? ['enabled = false'] : []),
       'startup_timeout_sec = 600',
       'tool_timeout_sec = 600',
       '',
@@ -313,7 +322,7 @@ function isManagedResidueLine(line: string): boolean {
 }
 
 /**
- * 受管 table 内我们自己写的标量行 (trim 后)。`enabled` 是 cindy_helper 的禁用标记,
+ * 受管 table 内我们自己写的标量行 (trim 后)。`enabled` 是 helper / App 的禁用标记,
  * 与两个 timeout 同属受管段; 旧版本没把它当受管内容, 刷新时它连同其后的 timeout
  * 会留在 end 标记之外, 累积两份就是 TOML duplicate-key, codex 起不来 (#4776)。
  */

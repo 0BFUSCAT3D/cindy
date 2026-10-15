@@ -367,10 +367,22 @@ export async function startCodexHttpBridge(
         log.warn('rejected scoped remote token for non-collab server', { serverName });
         return;
       }
+      // A process-wide remote daemon has no frozen mount policy. App facades
+      // may attach upstream credentials only for an explicitly bound Session,
+      // including Codex's short-lived discovery lease before thread/start returns.
+      const remoteAppContext = remoteAppServer
+        ? sessionTokenCtx ?? (instanceQuery === null ? undefined
+          : threadContextStore.getContextForSessionInstanceId(instanceQuery) ?? discoveryContexts.get(instanceQuery))
+        : undefined;
+      if (remoteAppServer && (!remoteAppContext?.remoteHostId || !remoteAppContext.sessionId)) {
+        res.statusCode = 401;
+        res.end('MCP App server requires a bound Session');
+        return;
+      }
       // Bind Pi and scoped remote App mounts before initialization or transport lookup: an
       // excluded facade could otherwise attach Main-held upstream credentials,
       // or borrow a transport initialized by another Session.
-      if ((isPiSessionToken || remoteAppServer) && !isFrozenMcpServerAllowed(serverName, sessionTokenCtx)) {
+      if ((isPiSessionToken || remoteAppServer) && !isFrozenMcpServerAllowed(serverName, remoteAppContext ?? sessionTokenCtx)) {
         res.statusCode = 403;
         res.end('MCP server is not mounted for this Session');
         return;
