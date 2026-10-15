@@ -298,13 +298,31 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (previousSourceId) await cancelPlanning(roomId, previousSourceId);
     for (const [sourceId, failed] of pendingPlanCancels.get(roomId) ?? []) await cancelPlanning(roomId, sourceId, failed);
   }
-  /** A failed cancel stays pending and is retried once here (and by the next intent). */
+  /**
+   * A failed cancel stays pending and is retried once here, then with backoff until it lands
+   * (the next intent flushes it too): nothing else would release the deferred message.
+   */
   async function cancelPlanningWithRetry(roomId: string, cancel: () => Promise<void>) {
     try { await cancel(); }
     catch (error) {
       deps.log?.warn('Group arrangement cancel will retry', { groupId: roomId, ...chatErrorDiagnostic(error) });
-      await flushPlanCancels(roomId).catch(retryError => deps.log?.warn('Group arrangement cancel failed', { groupId: roomId, ...chatErrorDiagnostic(retryError) }));
+      await flushPlanCancels(roomId).catch(retryError => {
+        deps.log?.warn('Group arrangement cancel failed', { groupId: roomId, ...chatErrorDiagnostic(retryError) });
+        schedulePlanCancelRetry(roomId);
+      });
     }
+  }
+  const planCancelRetries = new Map<string, ReturnType<typeof setTimeout>>();
+  function schedulePlanCancelRetry(roomId: string, attempt = 1) {
+    if (planCancelRetries.has(roomId) || !current()) return;
+    planCancelRetries.set(roomId, setTimeout(() => {
+      planCancelRetries.delete(roomId);
+      if (!current() || !pendingPlanCancels.get(roomId)?.size) return;
+      void flushPlanCancels(roomId).catch(error => {
+        deps.log?.warn('Group arrangement cancel failed', { groupId: roomId, ...chatErrorDiagnostic(error) });
+        schedulePlanCancelRetry(roomId, attempt + 1);
+      });
+    }, Math.min(60_000, 1_000 * 2 ** Math.min(attempt, 6))));
   }
   async function replacePlanIntent(roomId: string, version = ++nextIntentVersion) {
     const { intent, previousSourceId } = installPlanIntent(roomId, version);
@@ -1980,6 +1998,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       attachmentRefreshes.clear();
       for (const pending of pendingChanges.values()) clearTimeout(pending);
       pendingChanges.clear();
+      for (const retry of planCancelRetries.values()) clearTimeout(retry);
+      planCancelRetries.clear();
       for (const run of running.values()) {
         run.releaseToolAuthority?.();
         if (run.sessionId) void deps.abortLane(run.sessionId).catch(() => undefined);
