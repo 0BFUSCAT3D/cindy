@@ -470,13 +470,12 @@
       "round": "輪詢",
       "order": "依順序",
       "weight": "依權重",
-      "usage": "用量均衡",
+      "quotaFirst": "能讀取 Claude 訂閱用量時，先用配額快重置的電腦，再選用量低的，相近時依組策略",
       "description": {
         "least": "給最閒的那臺",
         "round": "依序輪流",
         "order": "排前面的優先",
-        "weight": "依權重比例",
-        "usage": "按5小時和每週用量分配"
+        "weight": "依權重比例"
       }
     },
     "autoSwitch": {
@@ -5263,8 +5262,9 @@
           "descriptions": {
             "unsupported": "此保護僅可在 macOS 上使用。",
             "disabled": "Cindy 執行期間會阻止 Codex 連線至 Work Louder 鍵盤；不會限制 Cindy 本身。",
-            "recovery-required": "保護已停止，但 NODE_OPTIONS 尚未安全還原。請先重試還原，再重新開啟。",
-            "error": "Cindy 無法更新 Codex 保護；原有 NODE_OPTIONS 已保留或等待還原。"
+            "paused": "此保護因影響其他應用程式已暫停。若應用程式仍異常，請結束舊版 Cindy，再完全結束並重新開啟受影響的應用程式。",
+            "recovery-required": "保護已暫停，但舊的啟動設定尚未清理完成。請點擊「還原環境」，完成後完全結束並重新開啟受影響的應用程式。",
+            "error": "Cindy 無法讀取或清理舊的保護設定；此保護仍保持暫停。"
           },
           "restartRequired": "請完全結束並重新開啟 Codex 以生效"
         },
@@ -6536,6 +6536,9 @@
         "slotWorkspace": "工作區任務"
       },
       "commandPaletteTag": "插件指令",
+      "commandPaletteSource": {
+        "team": "團隊共享"
+      },
       "library": {
         "title": "持久作品庫",
         "loading": "正在讀取庫資訊…",
@@ -9380,6 +9383,44 @@
       "memory": "已記住：{{title}}",
       "skillCreated": "已建立技能：{{title}}",
       "skillUpdated": "已更新技能：{{title}}"
+    },
+    "cloud": {
+      "homeLabel": "主力電腦",
+      "thisComputer": "這台電腦",
+      "homeOffline": "主力電腦「{{device}}」離線",
+      "homeOfflineShort": "主力電腦離線",
+      "homeUnreachable": "主力電腦「{{device}}」沒有開放遠端控制",
+      "homeReadOnly": "主力電腦：{{device}}",
+      "continueHere": "在這台電腦繼續",
+      "takeOverHint": "在這台電腦繼續後，{{name}} 改在這裡執行，下面的對話一起帶過來。",
+      "takingOver": "正在這台電腦上準備 {{name}}…",
+      "takeOverConflict": "{{name}} 已經換到「{{device}}」繼續了",
+      "takeOverOffline": "連不上伺服器，暫時無法在這台電腦繼續",
+      "takeOverFailed": "未能在這台電腦上接手 {{name}}",
+      "notEnabled": "目前的伺服器不支援更換主力電腦",
+      "readOnlyNote": "這裡是雲端儲存的對話，只能檢視",
+      "empty": "還沒有雲端對話",
+      "loadFailed": "未能讀取雲端對話",
+      "reload": "重新讀取對話",
+      "loadOlder": "載入更早的訊息",
+      "unknownDevice": "另一台電腦",
+      "loadingDevices": "正在讀取電腦清單…",
+      "devicesFailed": "未能讀取電腦清單",
+      "noTargets": "沒有可接手的電腦。另一台電腦需要上線、登入同一帳號，並開啟「允許同帳號裝置控制本機」",
+      "resumeToMove": "先恢復 {{name}}，再換到另一台電腦",
+      "moveTo": "交給「{{device}}」",
+      "transferTitle": "把 {{name}} 交給「{{device}}」？",
+      "transferDescription": "從現在起 {{name}} 在「{{device}}」上執行。工作目錄和連線留在這台電腦，這台電腦上的對話變為歷史紀錄。",
+      "transferAction": "交給「{{device}}」",
+      "transferred": "{{name}} 已交給「{{device}}」",
+      "transferConflict": "{{name}} 的主力電腦已經變了，這次沒有交出",
+      "transferOffline": "連不上伺服器，{{name}} 仍在這台電腦執行",
+      "transferBusy": "{{name}} 還在回覆，等這一輪結束再換電腦",
+      "transferFailed": "未能把 {{name}} 交給「{{device}}」",
+      "targetUnavailable": "「{{device}}」現在無法使用，它需要上線並開啟遠端控制",
+      "shadowTitle": "這個夥伴已在「{{device}}」上執行",
+      "shadowHint": "這裡的對話只能檢視。",
+      "openOnHome": "開啟「{{device}}」上的夥伴"
     }
   },
   "common": {
@@ -10207,7 +10248,7 @@
       "saveEdit": "儲存文字"
     },
     "sharedProviderCredential": {
-      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；重新開啟任務或切換權限模式後需再次確認。"
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者或其安排的電腦。這一步可能涉及憑證（如金鑰、.env），需要你確認後才繼續。選擇「本任務總是允許」後，本任務後續憑證操作不再額外確認；切換權限模式、計畫模式或結束 Cindy 後需再次確認。"
     },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
