@@ -39,6 +39,7 @@ import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricing.js';
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
+import { ownerScopedUserDataPath } from '../appSessionState.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
   getControllerDisplayName,
@@ -49,7 +50,9 @@ import {
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
 import {
+  findReceivedShare,
   getReceivedShares,
+  isReceivedSharesReady,
   getReceivedSharesSnapshot,
   leaveProviderShare,
   previewProviderShare,
@@ -60,6 +63,12 @@ import {
   stopProviderShareGuest,
   withdrawProviderShareRequest,
 } from './providerShareGuest.js';
+import {
+  configureProviderShareGuestPrefs,
+  invalidateProviderShareGuestPrefsCache,
+  isProviderShareCredentialConsentSkipped,
+} from './providerShareGuestPrefs.js';
+import { setProviderShareCredentialConsentFromIpc } from './providerShareGuestPrefsIpc.js';
 import {
   applyLocalMemberChange,
   applyLocalRequestDecision,
@@ -144,6 +153,7 @@ function revoke(match: (controller: string) => boolean, purge: boolean): void {
 
 /** 设备互联连上(本实例持有连接)时启动；断开、登出或失去持有权时停止。 */
 export function startProviderShareRuntime(broadcast: Broadcast, options: { invoke?: ShareInvoke } = {}): void {
+  invalidateProviderShareGuestPrefsCache();
   broadcastFn = broadcast;
   shareInvoke = options.invoke ?? null;
   running = true;
@@ -194,6 +204,7 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
 }
 
 export function stopProviderShareRuntime(): void {
+  invalidateProviderShareGuestPrefsCache();
   running = false;
   shareInvoke = null;
   stopProviderShareHost();
@@ -254,6 +265,11 @@ function parseCommand(raw: unknown): ProviderShareCommand {
       return { action: value.action, requestId: text(value.requestId, 'requestId', 128) };
     case 'leave':
       return { action: 'leave', memberId: text(value.memberId, 'memberId', 128) };
+    case 'get-credential-consent':
+      return { action: 'get-credential-consent', shareId: text(value.shareId, 'shareId', 128) };
+    case 'set-credential-consent':
+      if (typeof value.skip !== 'boolean') throwIpcError('INVALID_PARAMS', 'skip is required');
+      return { action: 'set-credential-consent', shareId: text(value.shareId, 'shareId', 128), skip: value.skip };
     default:
       throwIpcError('INVALID_PARAMS', 'Unknown command');
   }
@@ -416,6 +432,15 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
     case 'leave':
       await leaveProviderShare(command.memberId);
       return { ok: true };
+    case 'get-credential-consent':
+      return { skip: isProviderShareCredentialConsentSkipped(command.shareId) };
+    case 'set-credential-consent': {
+      // 只能对现在还在名单里的分享设置；分享的区域记下来，清理时按已确认区域判断。
+      const share = findReceivedShare(command.shareId);
+      if (!share) throwIpcError('NOT_FOUND', 'This shared provider is no longer available');
+      await setProviderShareCredentialConsentFromIpc(command.shareId, share.owner.region, command.skip);
+      return { skip: isProviderShareCredentialConsentSkipped(command.shareId) };
+    }
   }
 }
 
@@ -425,17 +450,25 @@ const LINK_TTL_SAFETY_MS = 5_000;
 /**
  * 手机(同账号)经被控电脑读取这台电脑收到的分享与各自的模型目录。目录由分享者电脑过滤为
  * 分享的那个供应商；读不到(离线、已暂停)时 catalog 为 null，不影响其他分享。
+ * `includeCatalog: false` 只返回分享元数据，供远控候选筛选使用，避免把完整目录读取的等待
+ * 传播到分享发现。
  */
-async function receivedCatalogs(args: unknown[]): Promise<{ shares: ProviderShareReceivedCatalog[] }> {
-  if (!running) return { shares: [] };
+async function receivedCatalogs(args: unknown[]): Promise<{ ready: boolean; shares: ProviderShareReceivedCatalog[] }> {
+  if (!running) return { ready: false, shares: [] };
   const invoke = shareInvoke;
   const listArgs = Array.isArray(args) ? args.slice(0, 1) : [];
-  const shares = getReceivedShares();
+  const includeCatalog = !(
+    listArgs[0] && typeof listArgs[0] === 'object' && !Array.isArray(listArgs[0])
+    && (listArgs[0] as { includeCatalog?: unknown }).includeCatalog === false
+  );
+  // 未全部就绪时也返回已加载的区域，但账号切换期间不得返回旧账号名单。
+  const shares = getReceivedSharesSnapshot().received;
   return {
+    ready: isReceivedSharesReady(),
     shares: await Promise.all(shares.map(async (share): Promise<ProviderShareReceivedCatalog> => {
       const agentDeviceId = `share:${share.shareId}`;
       let catalog: unknown = null;
-      if (invoke && share.status === 'active') {
+      if (includeCatalog && invoke && share.status === 'active') {
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           const result = await Promise.race([
@@ -466,6 +499,8 @@ async function receivedCatalogs(args: unknown[]): Promise<{ shares: ProviderShar
 }
 
 export function registerProviderShareIpc(): void {
+  // 受邀者对每个分享的本机偏好(「信任 {分享者}」)：按当前账号存放，读写时解析。
+  configureProviderShareGuestPrefs({ resolvePath: () => ownerScopedUserDataPath('provider-share-guest-prefs.json') });
   setProviderShareAccess({
     guestAccess: providerShareGuestAccess,
     ensureKnown: ensureProviderSharePeerKnown,

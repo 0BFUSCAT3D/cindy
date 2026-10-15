@@ -22,9 +22,10 @@
  *    下一条消息走既有 lazy-create 路径重试并复用其错误呈现(resume 模式先走
  *    上述回落再降级)。
  *
- * 边界:远程会话(remoteHostId)与 Orca 协同会话不支持切换(UNSUPPORTED_CAPABILITY);
- * 例外:Orca Lead 从另一台电脑显式切回本机(agentDeviceId=null)且目标引擎与当前相同
- * 时允许登记/落地;模型/来源可随本机目录改变。Worker、换电脑、换引擎仍拒;
+ * 边界:SSH 远程会话(remoteHostId)不支持切换。Orca Lead/Worker 可在当前 Agent 位置
+ * 复用交接与停泊事务，协同身份由 vendorOptions/DB 在重建时恢复；位置迁移由供应商组调度。
+ * 唯一用户发起的迁移例外:远端 Orca Lead 可在同引擎下切回任务本机(agentDeviceId=null)，
+ * 模型与来源随本机目录改变；Worker、切往其它电脑及换引擎仍拒绝。
  * turn 进行中登记 pending 推迟到下一条消息发送时刻执行。
  *
  * 远程 Agent 换电脑(agentDeviceId 变化,null = 任务所在电脑):原生会话记录在原来运行 Agent
@@ -33,7 +34,8 @@
  */
 
 import type { AgentKind } from '@cindy/maker-core';
-import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
+import { getDeviceLinkInvokeContext, isDeviceLinkInvoke } from '../device-link/invoke-context.js';
+import { parseOrcaRemoteLead } from '../../shared/orcaRemoteWorker.js';
 import { createSharedTaskSettingGuard } from './sharedTaskSetting.js';
 
 import { MAKER_INVOKE } from './channels.js';
@@ -153,6 +155,8 @@ export interface AgentSwitchSessionRow {
   status: string;
   remoteHostId: string | null;
   orcaRole: string | null;
+  /** Execution-device Worker binding; these tasks have no local orcaRole. */
+  orcaRemoteLead?: string | null;
   sdkSessionId: string | null;
   source?: string | null;
   /** Agent 在哪台电脑运行(null / 缺省 = 任务所在电脑)。 */
@@ -368,7 +372,8 @@ export interface PendingAgentSwitchIntent {
   fastMode?: boolean;
   /**
    * Agent 在另一台电脑运行的任务：点选时按那台的目录确认过的目标上下文窗口。本机目录里没有
-   * 那台的模型，发送时据此做「换小窗口前先交接」。本机任务不设。
+   * 那台的模型，发送时据此做「换小窗口前先交接」。本机 Orca 也保留选择时核对的窗口，
+   * 发送时必须与实际目标窗口匹配，不能把 deferred 当作任意窗口的确认。
    */
   confirmedContextWindow?: number;
   /** 选择同时换 Agent 所在电脑(null = 任务所在电脑)；缺省 = 位置不变。 */
@@ -561,6 +566,8 @@ export async function performSessionAgentSwitch(
     /** 目标引擎下应生效的 effort / fastMode(renderer 按目标目录与预设解析好带入)。 */
     effort?: unknown;
     fastMode?: unknown;
+    /** Local picker acknowledgement of this route's checked context window. */
+    confirmedContextWindow?: unknown;
     /**
      * 选择的 Agent 位置(远程 Agent):undefined = 保持任务当前位置(内部调用与不认识该字段的
      * 旧控制端都走这里，不做推断)，null = 任务所在电脑，字符串 = 同账号另一台电脑。
@@ -603,6 +610,11 @@ export async function performSessionAgentSwitch(
 ): Promise<SessionAgentSwitchResult> {
   const { sessionId, targetAgentKind, model, providerId, signal } = params;
   throwIfAgentSwitchAborted(signal);
+  const confirmedContextWindow = params.confirmedContextWindow;
+  if (confirmedContextWindow !== undefined &&
+      (typeof confirmedContextWindow !== 'number' || !Number.isSafeInteger(confirmedContextWindow) || confirmedContextWindow <= 0)) {
+    throwIpcError('INVALID_PARAMS', 'confirmedContextWindow must be a positive integer');
+  }
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
     throwIpcError('INVALID_PARAMS', 'sessionId required');
   }
@@ -660,24 +672,24 @@ export async function performSessionAgentSwitch(
     // SSH 远程会话:agent 进程在远端机器,cc-manager 链路仅覆盖 Claude,v1 不支持切换。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for remote sessions');
   }
-  // 供应商组换电脑：同引擎同模型、只换位置。协同任务只放行这一种(内部 applyNow 调用)。
+  // Orca may switch harness/model at the current Agent position. Relocation stays
+  // under provider-group scheduling, except a remote Lead explicitly returning home
+  // on the same engine after its remote catalog becomes unavailable.
   const providerGroupRelocationOnly =
     params.providerGroupRelocation === true &&
     params.applyNow === true &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
     row.model === model;
-  // Orca Lead 的 Agent 在另一台电脑时允许显式切回本机(null),且必须同引擎。
-  // 跨电脑、Worker、换引擎入口仍拒。
   const orcaLeadReturnHome =
     row.orcaRole === 'lead' &&
     (row.agentDeviceId ?? null) !== null &&
     requestedAgentDeviceId === null &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind);
-  if (row.orcaRole && !providerGroupRelocationOnly && !orcaLeadReturnHome) {
-    // Orca lead/worker:协同运行时对 agent 形态有独立契约(docs/dev-rules/orca-team-architecture.md),不掺和。
-    throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for Orca sessions');
+  const isOrcaSession = Boolean(row.orcaRole || parseOrcaRemoteLead(row.orcaRemoteLead));
+  if (isOrcaSession && params.agentDeviceId !== undefined &&
+      !providerGroupRelocationOnly && !orcaLeadReturnHome) {
+    throwIpcError('UNSUPPORTED_CAPABILITY', 'agent relocation is not supported for Orca sessions');
   }
-
   if (params.beforeMutation) await params.beforeMutation();
   params.assertSelectionCurrent?.();
 
@@ -761,6 +773,7 @@ export async function performSessionAgentSwitch(
         ...(typeof params.effort === 'string' ? { effort: params.effort } : {}),
         ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
         sameAgentSelection: true,
+        ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
         ...(params.runtimeSource ? { runtimeSource: params.runtimeSource } : {}),
         ...(params.configStaged === true ? { configStaged: true } : {}),
       }, params.applyNow === true, params.assertSelectionCurrent, params.beforeMutation);
@@ -1332,6 +1345,13 @@ export function registerMakerSessionAgentSwitchHandler(
       options?: unknown,
     ) => {
       const context = getDeviceLinkInvokeContext();
+      const confirmedContextWindow = options && typeof options === 'object' && !Array.isArray(options)
+        ? (options as { confirmedContextWindow?: unknown }).confirmedContextWindow : undefined;
+      // Same trust boundary as SET_MODEL: remote controllers cannot authorize a
+      // destructive local-context rebuild by supplying a confirmation number.
+      if (isDeviceLinkInvoke() && confirmedContextWindow !== undefined) {
+        throwIpcError('PRECONDITION_FAILED', 'remote model-window confirmation is unsupported');
+      }
       const agentDeviceId =
         options && typeof options === 'object' && !Array.isArray(options) && 'agentDeviceId' in options
           ? (options as { agentDeviceId?: unknown }).agentDeviceId
@@ -1348,6 +1368,7 @@ export function registerMakerSessionAgentSwitchHandler(
         providerId,
         effort,
         fastMode,
+        ...(confirmedContextWindow !== undefined ? { confirmedContextWindow } : {}),
         ...(agentDeviceId !== undefined ? { agentDeviceId } : {}),
         assertSelectionCurrent: guard.admit,
       });
