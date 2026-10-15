@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { useDeviceLinkReconnectEpoch } from '../features/device-link/useDeviceLinkReconnectEpoch';
 import { CLAUDE_QUOTA_STATE_READ, isClaudeQuotaClear } from '../../shared/claudeQuotaState';
 /**
  * useRemoteDeviceUsage — device-link 远程会话各计费形态的被控端用量镜像集。
@@ -83,7 +85,12 @@ export function requestRemoteCodexAccountRefresh(deviceId: string, providerId?: 
 export function useRemoteClaudeAccountUsage(
   deviceId: string | null,
 ): ClaudeAccountUsageSnapshot | null {
-  return claudeAccountMirror.useMirror(deviceId);
+  const epoch = useDeviceLinkReconnectEpoch(deviceId ?? undefined);
+  const usage = claudeAccountMirror.useMirror(deviceId);
+  useEffect(() => {
+    if (deviceId && epoch > 0) claudeAccountMirror.request(deviceId, undefined, true);
+  }, [deviceId, epoch]);
+  return usage;
 }
 
 /** 被控端 xAI 订阅周用量镜像(远程 xai 形态会话 chip 用)。 */

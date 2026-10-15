@@ -36,6 +36,7 @@ type PushListener = (
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn<(deviceId: string, channel: string, args: unknown[]) => Promise<unknown>>(),
   pushListeners: [] as PushListener[],
+  presenceListeners: [] as Array<(value: { deviceId: string; online: boolean }) => void>,
 }));
 
 function emitPush(push: { deviceId: string; channel: string; payload: unknown }): void {
@@ -57,11 +58,17 @@ beforeEach(() => {
   resetRemoteClaudeSessionRouteCacheForTest();
   mocks.invoke.mockReset();
   mocks.pushListeners.length = 0;
+  mocks.presenceListeners.length = 0;
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       deviceLink: {
         invoke: mocks.invoke,
+        onPresenceChanged: (listener: (value: { deviceId: string; online: boolean }) => void) => {
+          mocks.presenceListeners.push(listener);
+          return () => { mocks.presenceListeners = mocks.presenceListeners.filter(item => item !== listener); };
+        },
+        onStatusChanged: () => () => {},
         onRemotePush: (cb: PushListener) => {
           mocks.pushListeners.push(cb);
           return () => {
@@ -375,4 +382,33 @@ it('retains remote quota on unavailable reads but replays a missed unlimited cle
   const cleared = renderHook(() => useRemoteClaudeAccountUsage('device-quota'));
   await flushMicrotasks();
   expect(cleared.result.current).toBeNull();
+});
+
+it('rereads only the recovered quota peer while consumers remain mounted', async () => {
+  const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
+  mocks.invoke.mockResolvedValue(quota);
+  const a = renderHook(() => useRemoteClaudeAccountUsage('peer-a'));
+  const b = renderHook(() => useRemoteClaudeAccountUsage('peer-b'));
+  await flushMicrotasks();
+  mocks.invoke.mockClear();
+  mocks.invoke.mockResolvedValue({ quotaState: 'unlimited' });
+  act(() => mocks.presenceListeners.forEach(cb => cb({ deviceId: 'peer-a', online: false })));
+  act(() => mocks.presenceListeners.forEach(cb => cb({ deviceId: 'peer-a', online: true })));
+  await flushMicrotasks();
+  expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  expect(mocks.invoke.mock.calls[0]?.[0]).toBe('peer-a');
+  expect(a.result.current).toBeNull();
+  expect(b.result.current).toEqual(quota);
+});
+
+it('queues a recovery read when a previous quota request is still in flight', async () => {
+  let finish!: (value: unknown) => void;
+  mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  mocks.invoke.mockResolvedValue({ quotaState: 'unlimited' });
+  const a = renderHook(() => useRemoteClaudeAccountUsage('peer-pending'));
+  act(() => mocks.presenceListeners.forEach(cb => cb({ deviceId: 'peer-pending', online: true })));
+  await act(async () => finish(null));
+  await flushMicrotasks();
+  expect(mocks.invoke).toHaveBeenCalledTimes(2);
+  expect(a.result.current).toBeNull();
 });
