@@ -6334,7 +6334,7 @@ interface ElectronAPI {
       effort?: string,
       fastMode?: boolean,
       /** 远程 Agent:同时换 Agent 所在电脑(null = 任务所在电脑)。不传 = 位置不变。 */
-      options?: { agentDeviceId?: string | null },
+      options?: { agentDeviceId?: string | null; confirmedContextWindow?: number },
     ) => Promise<{
       switched: boolean;
       agentKind: 'claude-code' | 'codex' | 'pi';
