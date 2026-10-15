@@ -5,6 +5,8 @@ import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
 import { ChatThreadPanel } from '../ChatThreadPanel';
+import { botGroupThreadDraftKey } from '../botGroupAttachments';
+import { clearDraft } from '@/lib/composerDraftStore';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { queryShareableMessageIds, stripInteractiveElements } from '@/lib/shareConversationImage';
@@ -32,6 +34,8 @@ const render = (ui: ReactNode) => renderUI(<Tooltip.Provider>{ui}</Tooltip.Provi
 beforeEach(() => {
   vi.clearAllMocks(); mocks.ownerCurrent = true;
   shareSelectionStore.reset();
+  // The thread reply keeps a draft per thread; one test's unsent text must not start the next.
+  clearDraft(botGroupThreadDraftKey(group.id, 'root'));
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   mocks.status.mockResolvedValue({ enabled: true, connected: true });
   mocks.react.mockResolvedValue({ ok: true });
@@ -75,23 +79,26 @@ describe('chat interaction controls', () => {
     expect(input.style.height).toBe('96px');
   });
 
-  it('keeps a sending thread reply focused and locked, then sends it only once', async () => {
+  it('keeps the focus in a sending thread reply, shows it in the thread at once, and sends it only once', async () => {
     let settle: (value: { ok: true; messageId: string }) => void = () => {};
     mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
     render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
     const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
     const sendButton = screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement;
     expect(sendButton.disabled).toBe(true);
+    input.focus();
     fireEvent.change(input, { target: { value: 'In flight' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(input.readOnly).toBe(true));
+    // Optimistic: the reply moves into the thread while main answers; the input is free again but
+    // nothing else goes out until this reply settles.
+    await waitFor(() => expect(input.value).toBe(''));
     expect(document.activeElement).toBe(input);
     expect(sendButton.disabled).toBe(true);
     fireEvent.keyDown(input, { key: 'Enter' });
     fireEvent.click(sendButton);
     expect(mocks.reply).toHaveBeenCalledOnce();
     settle({ ok: true, messageId: 'reply' });
-    await waitFor(() => expect(input.value).toBe(''));
+    await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
     expect(input.readOnly).toBe(false);
     expect(document.activeElement).toBe(input);
   });
@@ -357,21 +364,22 @@ describe('chat interaction controls', () => {
       expect(mocks.reply).toHaveBeenCalledOnce();
     });
 
-    it('keeps the list closed while a reply is sending, so the read-only text cannot change', async () => {
+    it('closes the list once a reply is sent, so a late pick cannot rewrite what went out', async () => {
       const input = renderThread();
       let settle: (value: { ok: true; messageId: string }) => void = () => {};
       mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
       type(input, '@B');
       expect(labels()).toContain('Bo');
       fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
-      await waitFor(() => expect(input.readOnly).toBe(true));
+      // The reply left the input the moment it was sent; the picker has nothing to complete.
+      await waitFor(() => expect(input.value).toBe(''));
       expect(screen.queryByRole('listbox')).toBeNull();
       fireEvent.keyDown(input, { key: 'Enter' });
       fireEvent.keyDown(input, { key: 'Tab' });
-      expect(input.value).toBe('@B');
+      expect(input.value).toBe('');
       settle({ ok: true, messageId: 'reply' });
-      await waitFor(() => expect(input.value).toBe(''));
-      expect(mocks.reply).toHaveBeenCalledOnce();
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(screen.queryByRole('listbox')).toBeNull();
     });
 
     it('treats an e-mail address as text and forgets a pick once its name is edited', async () => {

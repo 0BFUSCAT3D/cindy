@@ -65,6 +65,17 @@ import type { AttachedFile } from '@/lib/fileTypes';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import {
+  BOT_GROUP_COMPOSER_CARD,
+  BOT_GROUP_COMPOSER_COLUMN,
+  BOT_GROUP_COMPOSER_DOCK,
+  BOT_GROUP_COMPOSER_FOOTER,
+  BOT_GROUP_COMPOSER_FOOTER_START,
+  BOT_GROUP_COMPOSER_INPUT,
+  fitBotGroupComposerInput,
+  keepBotGroupComposerInputFocus,
+  useRefitBotGroupComposerInputOnResize,
+} from './botGroupComposerChrome';
+import {
   BOT_GROUP_ATTACHMENTS_MAX,
   BOT_GROUP_MESSAGE_MAX_CHARS,
   type BotGroupAttachment,
@@ -282,13 +293,12 @@ export function BotGroupComposer({
   }, [persistDraft, text]);
   useEffect(() => () => persistDraft(textRef.current), [persistDraft]);
 
-  // Auto-grow; the CSS max height caps it and turns on scrolling.
+  // Auto-grow; the CSS max height caps it and turns on scrolling. A width change (window
+  // resize, the 话题 panel opening) rewraps the text, so the height is fitted again then.
   useLayoutEffect(() => {
-    const element = textareaRef.current;
-    if (!element) return;
-    element.style.height = 'auto';
-    element.style.height = `${element.scrollHeight}px`;
+    if (textareaRef.current) fitBotGroupComposerInput(textareaRef.current);
   }, [text]);
+  useRefitBotGroupComposerInputOnResize(textareaRef);
 
   /**
    * 话题 reply: a retry reuses the attempt only for the same text and the same targets
@@ -517,8 +527,8 @@ export function BotGroupComposer({
   const noop = () => undefined;
 
   return (
-    <div className={cn('shrink-0 pb-4 pt-2', thread ? 'px-4' : 'px-5')}>
-      <div className="relative mx-auto w-full max-w-[760px]">
+    <div className={cn(BOT_GROUP_COMPOSER_DOCK, thread && 'px-4')}>
+      <div className={BOT_GROUP_COMPOSER_COLUMN}>
         {error ? <p role="alert" className="mb-2 text-13 text-[var(--error-fg)]">{error}</p> : null}
         {/* Same floating slot above the card as a task's composer: files that did not attach. */}
         {attachmentState.rejections.length > 0 ? (
@@ -530,7 +540,7 @@ export function BotGroupComposer({
           </div>
         ) : null}
         {mention.list}
-        <div className="relative flex flex-col gap-2 rounded-xl border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)] px-3.5 pb-2.5 pt-3 transition-colors focus-within:border-[var(--chat-input-border-focus)]">
+        <div className={BOT_GROUP_COMPOSER_CARD}>
           {dragOver ? (
             <div
               data-testid="bot-group-drop-hint"
@@ -613,10 +623,10 @@ export function BotGroupComposer({
                 setDivision(false);
               }
             }}
-            className="max-h-60 min-h-6 w-full resize-none overflow-y-auto bg-transparent text-15 leading-[1.6] text-[var(--chat-input-text)] outline-none placeholder:text-[var(--chat-input-placeholder)] focus-visible:outline-none"
+            className={BOT_GROUP_COMPOSER_INPUT}
           />
-          <div className="flex min-h-7 items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className={BOT_GROUP_COMPOSER_FOOTER}>
+            <div className={BOT_GROUP_COMPOSER_FOOTER_START}>
               {thread ? null : (<>
               <input
                 ref={fileInputRef}
@@ -697,14 +707,17 @@ export function BotGroupComposer({
                 {hint}
               </span>
             </div>
-            <Tip text={actionLabel}>
-              <SendButton
-                disabled={showStop ? stopping : !canSend}
-                isStreaming={showStop}
-                ariaLabel={actionLabel}
-                onClick={() => void (showStop ? stop() : send())}
-              />
-            </Tip>
+            {/* A mouse click must not move the caret out of the input (the button disables itself right after). */}
+            <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(textareaRef)}>
+              <Tip text={actionLabel}>
+                <SendButton
+                  disabled={showStop ? stopping : !canSend}
+                  isStreaming={showStop}
+                  ariaLabel={actionLabel}
+                  onClick={() => void (showStop ? stop() : send())}
+                />
+              </Tip>
+            </span>
           </div>
         </div>
       </div>
