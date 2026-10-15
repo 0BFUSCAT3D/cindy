@@ -31,11 +31,16 @@ export async function copyCode(code: string): Promise<CopiedCode> {
 
 /** Clear the clipboard only while it still holds the copied code. */
 export async function clearCopiedCode(copied: CopiedCode): Promise<void> {
-  // iOS asks for paste permission when the contents are read, so compare the
-  // change count there. Android has no such prompt; compare the contents.
-  const owned =
-    Platform.OS === "ios"
-      ? copied.version !== undefined && (await iosVersion()) === copied.version
-      : (await Clipboard.getStringAsync().catch(() => "")) === copied.code;
-  if (owned) await Clipboard.setStringAsync("").catch(() => {});
+  if (Platform.OS === "ios") {
+    // Reading the contents would trigger the iOS paste prompt. The native
+    // write compares the change count and clears in one main-queue step.
+    if (copied.version !== undefined)
+      await remotePresentation
+        ?.syncClipboard?.(JSON.stringify({ text: "" }), copied.version)
+        .catch(() => {});
+    return;
+  }
+  // Android has no paste prompt; compare the contents.
+  if ((await Clipboard.getStringAsync().catch(() => "")) === copied.code)
+    await Clipboard.setStringAsync("").catch(() => {});
 }

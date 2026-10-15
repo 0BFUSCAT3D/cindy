@@ -30,7 +30,15 @@ vi.mock("expo-clipboard", () => ({
   setStringAsync: h.setString,
 }));
 vi.mock("../../modules/cindy-remote-presentation/src", () => ({
-  remotePresentation: { clipboardVersion: async () => String(h.count) },
+  remotePresentation: {
+    clipboardVersion: async () => String(h.count),
+    syncClipboard: async (json: string, version: string) => {
+      if (String(h.count) !== version) throw new Error("CLIPBOARD_CHANGED");
+      h.text = JSON.parse(json).text;
+      h.count++;
+      return String(h.count);
+    },
+  },
 }));
 
 import { clearCopiedCode, copyCode } from "@/plugins/copiedCodeClipboard";
