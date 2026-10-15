@@ -81,6 +81,33 @@ it("keeps the latest iOS copy clearable when the user taps copy twice quickly", 
   expect(h.text).toBe("");
 });
 
+it("settles copies in call order and lets a failed copy keep the earlier token", async () => {
+  const settled: string[] = [];
+  h.setString.mockImplementationOnce(async (value: string) => {
+    h.text = value;
+    h.count++;
+    return true;
+  });
+  h.setString.mockRejectedValueOnce(new Error("write failed"));
+  let token: { code: string; version?: string } | undefined;
+  await Promise.allSettled([
+    copyCode("CODE-1").then((copied) => {
+      settled.push("first");
+      token = copied;
+    }),
+    copyCode("CODE-1").then(
+      (copied) => {
+        token = copied;
+      },
+      () => settled.push("second-failed"),
+    ),
+  ]);
+  expect(settled).toEqual(["first", "second-failed"]);
+  expect(token?.version).toBe("6");
+  await clearCopiedCode(token!);
+  expect(h.text).toBe("");
+});
+
 it("compares contents on Android, so returning from the browser still clears the code", async () => {
   h.os = "android";
   const copied = await copyCode("CODE-1");

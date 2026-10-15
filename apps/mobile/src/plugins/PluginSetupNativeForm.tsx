@@ -67,8 +67,7 @@ export default function PluginSetupNativeForm({
     alive = useRef(true),
     lock = useRef(false),
     operation = useRef(0),
-    copiedCode = useRef<CopiedCode | undefined>(undefined),
-    copyAttempt = useRef(0);
+    copiedCode = useRef<CopiedCode | undefined>(undefined);
   const live = useRef({ focused, epoch: link.connectionEpoch });
   live.current = { focused, epoch: link.connectionEpoch };
   const [selected, setSelected] = useState<MobilePluginSetupAction | undefined>(
@@ -339,11 +338,10 @@ export default function PluginSetupNativeForm({
                     accessibilityRole="button"
                     onPress={() => {
                       const code = browser.code!;
-                      const attempt = ++copyAttempt.current;
+                      // Copies settle in order; a failed copy keeps the
+                      // previous successful token.
                       void copyCode(code)
                         .then((copied) => {
-                          // Only the latest copy owns the cleanup token.
-                          if (attempt !== copyAttempt.current) return;
                           copiedCode.current = copied;
                           if (!alive.current) void releaseCopiedCode();
                         })
