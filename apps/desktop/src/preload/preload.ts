@@ -34,6 +34,11 @@ import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
 import { DEVICE_LINK_PUSH } from '../shared/deviceLinkIpc';
 import { PROVIDER_SHARE_IPC, type ProviderShareCommand } from '../shared/providerShare';
 import { PROVIDER_GROUP_IPC, type ProviderGroupCommand } from '../shared/providerGroup';
+import {
+  VOICE_SPEAKER_FILTER_CHANNELS,
+  type VoiceSpeakerEnrollResult,
+  type VoiceSpeakerFilterStatus,
+} from '../shared/voiceSpeakerFilter';
 import type { MobileCodexRateLimitsResult, MobileCodexRateLimitResetResult } from '@cindy/maker-shared/device-link-contract';
 import type { AppearanceSettings } from '../shared/appearanceSettings';
 import type { DialogueWorkspaceSettingsState } from '../shared/dialogueWorkspaceSettings';
@@ -57,6 +62,7 @@ import {
 } from '../shared/projectOrderSettings';
 import type { SessionDragPreviewPalette } from '../shared/sessionDragPreview';
 import {
+  AGENT_ISLAND_CONSUME_ENTRY_ALERT_CHANNEL,
   AGENT_ISLAND_GET_DISPLAY_OPTIONS_CHANNEL,
   AGENT_ISLAND_PREVIEW_SOUND_CHANNEL,
   AGENT_ISLAND_SELECT_SOUND_FILE_CHANNEL,
@@ -671,6 +677,7 @@ const fanOutVoiceInputDictionaryLearningEvidence = createIpcFanOut(
   'voice-input:dictionary-learning-evidence',
 );
 const fanOutVoiceInputDataChanged = createIpcFanOut('voice-input:data-changed');
+const fanOutVoiceSpeakerStatusChanged = createIpcFanOut(VOICE_SPEAKER_FILTER_CHANNELS.statusChanged);
 // 挂起/锁屏 → renderer 释放 fast activation 的保活麦克风(见 shared/voiceInputPowerIpc)。
 const fanOutVoiceInputPowerStateChange = createIpcFanOut(VOICE_INPUT_POWER_STATE_CHANNEL);
 // 应用级快捷键 override 变化广播 (设置页改绑 / reset 后 main 推全量 overrides,
@@ -849,6 +856,7 @@ const fanOutProviderShareRequested = createIpcFanOut(PROVIDER_SHARE_IPC.REQUESTE
 const fanOutProviderShareSettled = createIpcFanOut(PROVIDER_SHARE_IPC.SETTLED);
 const fanOutProviderShareOpenJoin = createIpcFanOut(PROVIDER_SHARE_IPC.OPEN_JOIN);
 const fanOutProviderShareOpenManage = createIpcFanOut(PROVIDER_SHARE_IPC.OPEN_MANAGE);
+const fanOutProviderShareReshareRequested = createIpcFanOut(PROVIDER_SHARE_IPC.RESHARE_REQUESTED);
 const fanOutDeviceLinkOwnershipChanged = createIpcFanOut('device-link:ownership-changed');
 // 控制端:目标设备「无响应」熔断状态翻转(payload = { deviceId, unresponsive })
 const fanOutDeviceLinkResponsivenessChanged = createIpcFanOut('device-link:responsiveness-changed');
@@ -1698,6 +1706,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       throwVoiceInputSyncError(result);
     },
     onDataChanged: fanOutVoiceInputDataChanged,
+    speakerFilter: {
+      getStatus: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.getStatus),
+      downloadModels: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.downloadModels),
+      cancelDownload: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.cancelDownload),
+      enroll: (clips: ArrayBuffer[]): Promise<VoiceSpeakerEnrollResult> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.enroll, { clips }),
+      deleteProfile: (): Promise<VoiceSpeakerFilterStatus> =>
+        ipcRenderer.invoke(VOICE_SPEAKER_FILTER_CHANNELS.deleteProfile),
+      onStatusChanged: fanOutVoiceSpeakerStatusChanged,
+    },
     // options.suspend 表示「录制期挂起」这个意图。main 侧会丢掉与存盘不一致的同步请求
     // (过时的广播回声),而挂起传的 null 恰恰故意与存盘不同,必须能区分开。
     setGlobalShortcut: (
@@ -1986,6 +2007,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke(AGENT_ISLAND_SET_VISIBLE_SESSION_CHANNEL, sessionId),
     setEnabled: (enabled: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke(AGENT_ISLAND_SET_ENABLED_CHANNEL, enabled),
+    /** 灵动岛点击的目标地址已提交且没有处置控件:处置这次点击(islandEntryId)的那张卡。 */
+    consumeEntryAlert: (sessionId: string, islandEntryId: string): Promise<{ ok: true; consumed: boolean }> =>
+      ipcRenderer.invoke(AGENT_ISLAND_CONSUME_ENTRY_ALERT_CHANNEL, sessionId, islandEntryId),
     /** 按侧栏「任务范围」筛过的远程设备任务活动(灵动岛 / 桌面通知用)。 */
     setRemoteSessions: (sessions: AgentIslandRemoteSessionInput[]): Promise<{ ok: true }> =>
       ipcRenderer.invoke(AGENT_ISLAND_SET_REMOTE_SESSIONS_CHANNEL, sessions),
@@ -2123,12 +2147,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }> => ipcRenderer.invoke('profile:get-state'),
   profileChooseAvatar: (): Promise<{
     canceled: boolean;
-    filePath?: string;
     previewDataUrl?: string;
   }> => ipcRenderer.invoke('profile:choose-avatar'),
   profileUpdate: (params: {
     name: string | null;
-    avatar: { type: 'keep' } | { type: 'set'; filePath: string } | { type: 'reset' };
+    avatar:
+      | { type: 'keep' }
+      | { type: 'set'; data: Uint8Array; mimeType: 'image/png' | 'image/jpeg' }
+      | { type: 'reset' };
   }): Promise<{ ok: true }> => ipcRenderer.invoke('profile:update', params),
   onAuthStateChange: fanOutAuthStateChange,
   onAuthSessionExpired: fanOutAuthSessionExpired,
@@ -3779,21 +3805,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // cindy://(+ 历史 xdt-maker://)deep link / --open-folder 推送 — main 端解析后通过此 channel 通知 renderer。
   // payload 形态在 vite-env.d.ts 上声明:
-  //   - { type: 'session', id, messageClientId? } : 跳路由到指定 session(可带消息锚点)
+  //   - { type: 'session', id, messageClientId?, islandEntryId? } : 跳路由到指定 session(可带消息锚点;
+  //     islandEntryId 只由主进程的灵动岛点击写入,供目标地址提交后处置被点的那张卡)
   //   - { type: 'project', workingDir }    : 聚焦已有 project 节点
   //   - { type: 'new-session', workingDir }: 新建对话且预填 workingDir (右键 "通过 Cindy 打开")
   //   - { type: 'share-import', filePath } : 打开 .cshare/.xdtshare 会话导入向导
+  //   - { type: 'provider-share-join', link } : 打开供应商分享申请弹窗
   //   - { type: 'settings', tab, connect? }: 打开设置页 (connect 为可选 provider / preset id,
   //     来自 cindy://settings/providers?connect=<providerId> 深链, per-type 白名单再校验)
   onDeepLinkNavigate: (
     callback: (
       payload:
-        | { type: 'session'; id: string; messageClientId?: string }
+        | { type: 'session'; id: string; messageClientId?: string; islandEntryId?: string }
         | { type: 'project'; workingDir: string }
         | { type: 'new-session'; workingDir: string }
         | { type: 'share-import'; filePath: string }
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
+        | { type: 'provider-share-join'; link: string }
         | { type: 'chat-invite'; token: string }
         | { type: 'chat-invite-malformed' }
         | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
@@ -3810,9 +3839,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         invitation?: unknown;
         token?: unknown;
         server?: unknown;
+        link?: unknown;
         tab?: unknown;
         connect?: unknown;
         messageClientId?: unknown;
+        islandEntryId?: unknown;
       };
       if (p.type === 'session' && typeof p.id === 'string' && p.id.length > 0) {
         callback({
@@ -3820,6 +3851,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
           id: p.id,
           ...(typeof p.messageClientId === 'string' && p.messageClientId.length > 0
             ? { messageClientId: p.messageClientId }
+            : {}),
+          // 主进程的点击编号是递增数字串;不合格时只丢这个字段,照常导航但不处置提醒。
+          ...(typeof p.islandEntryId === 'string' && /^[0-9]{1,32}$/.test(p.islandEntryId)
+            ? { islandEntryId: p.islandEntryId }
             : {}),
         });
       } else if (p.type === 'settings' && (p.tab === 'voice-input' || p.tab === 'providers')) {
@@ -3841,6 +3876,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         callback({ type: 'chat-invite-malformed' });
       } else if (p.type === 'shared-task-join' && typeof p.invitation === 'string' && /^[A-Za-z0-9_-]{43}$/.test(p.invitation) && typeof p.server === 'string' && p.server.length <= 2048) {
         callback({ type: 'shared-task-join', invitation: p.invitation, server: p.server });
+      } else if (
+        p.type === 'provider-share-join' &&
+        typeof p.link === 'string' &&
+        p.link.length > 0 &&
+        p.link.length <= 4096
+      ) {
+        callback({ type: 'provider-share-join', link: p.link });
       } else if (
         p.type === 'provider-import' &&
         typeof p.importId === 'string' &&
@@ -3872,12 +3914,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // MainLayout mount 和供应商导入唤醒事件共用此入口，take 一次清空。
   // 详见 main/deepLink.ts 的 pending buffer 段。
   takePendingDeepLink: (): Promise<
-    | { type: 'session'; id: string; messageClientId?: string }
+    | { type: 'session'; id: string; messageClientId?: string; islandEntryId?: string }
     | { type: 'project'; workingDir: string }
     | { type: 'new-session'; workingDir: string }
     | { type: 'share-import'; filePath: string }
     | { type: 'provider-import'; importId: string }
     | { type: 'shared-task-join'; invitation: string; server: string }
+    | { type: 'provider-share-join'; link: string }
     | { type: 'chat-invite'; token: string }
     | { type: 'chat-invite-malformed' }
     | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string }
@@ -4542,6 +4585,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onSettled: fanOutProviderShareSettled,
     onOpenJoin: fanOutProviderShareOpenJoin,
     onOpenManage: fanOutProviderShareOpenManage,
+    onReshareRequested: fanOutProviderShareReshareRequested,
   },
   // 供应商组：这台电脑上某个供应商的组设置(只接受本机应用窗口)。
   providerGroup: {
@@ -5988,6 +6032,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:chat-server:reply', input),
       react: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['react']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['react']> =>
         ipcRenderer.invoke('maker:chat-server:react', input),
+      reactors: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['reactors']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['reactors']> =>
+        ipcRenderer.invoke('maker:chat-server:reactors', input),
       createInvite: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['createInvite']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['createInvite']> =>
         ipcRenderer.invoke('maker:chat-server:createInvite', input),
       revokeInvite: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['revokeInvite']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['revokeInvite']> =>

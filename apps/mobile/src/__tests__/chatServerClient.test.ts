@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { i18n } from '@/i18n';
 import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
 import { buildBotGroupQuoteCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -70,6 +71,26 @@ describe('direct Chat Server client', () => {
       expect(JSON.stringify(view.messages)).not.toContain('cindy-runtime-error:');
       expect(chatRoomRow(room(), { ...snapshot(), messages: [source] }, id(11)).item.display.preview).not.toContain('cindy-runtime-error:');
     }
+  });
+  it('names a media block the server sent without a caption, in the attachment and the list preview', () => {
+    const untitled = i18n.t('groupChat.files.untitled');
+    expect(untitled).not.toBe('groupChat.files.untitled');
+    const unnamed = { ...message(22), content: [{ type: 'media', mediaId: id(33) }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [unnamed], before: null }, id(11));
+    expect(view.messages[0]!.attachments.map(attachment => attachment.name)).toEqual([untitled]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [unnamed] }, id(11)).item.display.preview).toBe(untitled);
+  });
+  it('shows media as the message attachments, not as caption text, and keeps typed look-alike text', () => {
+    const withText = { ...message(20), content: [{ type: 'text', text: '我写的 [附件: a.png]' }, { type: 'media', mediaId: id(30), caption: 'clipboard-1.png' }] };
+    const onlyMedia = { ...message(21), content: [{ type: 'media', mediaId: id(31), caption: 'a.png' }, { type: 'media', mediaId: id(32), caption: 'b.pdf' }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [onlyMedia, withText], before: null }, id(11));
+    expect(view.messages.map(({ content, attachments }) => ({ content, names: attachments.map(attachment => attachment.name) }))).toEqual([
+      { content: '我写的 [附件: a.png]', names: ['clipboard-1.png'] },
+      { content: '', names: ['a.png', 'b.pdf'] },
+    ]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [onlyMedia] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
+    const blankText = { ...onlyMedia, content: [{ type: 'text', text: ' \n' }, ...onlyMedia.content] };
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [blankText] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
   });
   it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('reads executions and projects a safe notice beside its visible source: %s', async failure_code => {
     const source = message(20);
@@ -220,4 +241,43 @@ describe('direct Chat Server client', () => {
     await expect(createChatServerClient(request).list()).rejects.toThrow('INVALID_CHAT_LIST');
   });
 
+});
+
+describe('group lifecycle contract', () => {
+  function lifecycle(options: { supported?: boolean; kind?: string; role?: string; reject?: boolean } = {}) {
+    const request = vi.fn().mockImplementation(async (path: string, method?: string) => {
+      if (path === '/me') return { actor: { id: id(11), kind: 'human' }, ...(options.supported === false ? {} : { capabilities: { groupLifecycleVersion: 1, conversationListStateVersion: 1 } }) };
+      if (path.startsWith('/conversation-list-state?')) return [];
+      if (path.endsWith('/snapshot')) return { ...snapshot(), room: { ...room(), kind: options.kind ?? 'group' },
+        members: [{ id: id(12), ownerActorId: id(11), state: 'joined', kind: 'bot', role: options.role ?? 'owner' }] };
+      if (path.endsWith('/list-state')) {
+        if (options.reject) throw new Error('REVISION_CONFLICT');
+        return { conversationId: id(1), hidden: true, revision: 1 };
+      }
+      if (method === 'POST') return { revision: 2, dissolvedAt: '2026-10-15T00:00:00Z', dissolvedBy: id(12) };
+      return [];
+    });
+    return { client: createChatServerClient(request), request };
+  }
+  it('uses the owned companion owner and an explicit revision for dissolution', async () => {
+    const { client, request } = lifecycle();
+    await client.dissolve(id(1), 1, 'fixture-dissolve');
+    expect(request).toHaveBeenLastCalledWith(`/conversations/${id(1)}/dissolve`, 'POST', { operationId: 'fixture-dissolve', expectedRevision: 1 }, id(12));
+    expect(request.mock.calls.some(([, method]) => method === 'PATCH')).toBe(false);
+  });
+  it.each([{ kind: 'direct', code: 'GROUP_REQUIRED' }, { role: 'admin', code: 'OWNER_REQUIRED' }, { supported: false, code: 'LIFECYCLE_UNAVAILABLE' }])('refuses unsupported or unauthorized dissolution %j', async ({ code, ...options }) => {
+    const { client, request } = lifecycle(options);
+    await expect(client.dissolve(id(1), 1, 'fixture-dissolve')).rejects.toThrow(code);
+    expect(request.mock.calls.some(([, method]) => method === 'POST' || method === 'PATCH')).toBe(false);
+  });
+  it('hides after leave without snapshot access and does not hide a failed write', async () => {
+    const failed = lifecycle({ reject: true });
+    await expect(failed.client.hide(id(1), 'fixture-hide')).rejects.toThrow('REVISION_CONFLICT');
+    expect(failed.client.personalList.hidden(id(1))).toBe(false);
+    const { client, request } = lifecycle();
+    await client.hide(id(1), 'fixture-hide');
+    expect(client.personalList.hidden(id(1))).toBe(true);
+    expect(request.mock.calls.some(([path]) => path.endsWith('/snapshot'))).toBe(false);
+    expect(request).toHaveBeenLastCalledWith(`/conversations/${id(1)}/list-state`, 'POST', { operationId: 'fixture-hide', hidden: true, expectedRevision: 0 });
+  });
 });

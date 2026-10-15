@@ -41,6 +41,7 @@ import { getResolvedMainLocale } from '../../i18n';
 import { buildMobileClientPromptNote } from '../mobileClientPromptNote';
 import { buildUiLanguageErrorNote } from '../uiLanguageErrorNote';
 import * as mcpApps from '../../mcp-apps/runtime.js';
+import { createWireNoteMemory } from '../wireNoteMemory';
 import {
   applyPendingAgentSwitchIfIdle,
   createPendingAgentSwitchRegistry,
@@ -186,7 +187,11 @@ describe('MCP App next-turn context', () => {
           return { accepted: true };
         }),
       });
-      const { deps } = createDeps({ getSession: () => session });
+      const memory = createWireNoteMemory();
+      const { deps } = createDeps({
+        getSession: () => session,
+        planRepeatableWireNotes: (sessionId, notes, opts) => memory.plan(sessionId, notes, opts),
+      });
       const transaction = createMakerSendTransaction(deps);
       try {
         const attempt = transaction.sendToAgentAccepted('session-1', 'Continue', undefined, {
@@ -195,13 +200,16 @@ describe('MCP App next-turn context', () => {
         if (failure === 'throws') await expect(attempt).rejects.toThrow('Dispatch failed');
         else await expect(attempt).resolves.toMatchObject({ accepted: false });
         expect(consume).not.toHaveBeenCalled();
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[0][0])).toContain(uiLanguageNote());
         await expect(transaction.sendToAgentAccepted('session-1', 'Retry')).resolves.toMatchObject({
           accepted: true,
         });
         expect(JSON.stringify(vi.mocked(session.send).mock.calls[1][0])).toContain('APP_DRAFT');
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[1][0])).toContain(uiLanguageNote());
         expect(consume).toHaveBeenCalledOnce();
         await transaction.sendToAgentAccepted('session-1', 'Next');
         expect(JSON.stringify(vi.mocked(session.send).mock.calls[2][0])).not.toContain('APP_DRAFT');
+        expect(JSON.stringify(vi.mocked(session.send).mock.calls[2][0])).not.toContain(uiLanguageNote());
       } finally {
         read.mockRestore();
       }
@@ -3873,5 +3881,144 @@ it('persists coordination audit metadata and dispatches the model without a prom
   expect(previewUserPrompt).not.toHaveBeenCalled();
   expect(vi.mocked(deps.createDbMessage).mock.calls[0]?.[1]).toMatchObject({
     role: 'user', content: '[UI_ACTION_TRIGGER]Coordination', agentMeta: { botTaskCoordinationInput: receipt },
+  });
+});
+
+describe('working memory refresh after native compaction', () => {
+  const note = '[Working memory refresh · internal context]\n- 周五前改完周报模板';
+
+  it('prepends the refresh note once and consumes that generation only after the engine accepted the turn', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 7, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    expect(vi.mocked(session.send).mock.calls[0]?.[0]).toBe(`${uiLanguageNote()}\n\n${note}\n\nhello`);
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 7);
+
+    const rejecting = createSession({ agentKind: 'codex', send: vi.fn(async () => ({ accepted: false }) as SessionSendResult) });
+    const { deps: rejectedDeps } = createDeps({
+      getSession: vi.fn(() => rejecting),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 7, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(rejectedDeps).sendToAgentAccepted('session-1', 'hello').catch(() => undefined);
+    expect(rejectedDeps.consumeWorkingMemoryRefresh).not.toHaveBeenCalled();
+  });
+
+  it('skips the refresh when a rebuild handoff already carries the ledger, but still consumes that generation', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekPendingHandoff: vi.fn(async () => 'HANDOFF'),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 3, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    const sent = vi.mocked(session.send).mock.calls[0]?.[0] as string;
+    expect(sent).toContain('HANDOFF');
+    expect(sent).not.toContain('Working memory refresh');
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 3);
+  });
+
+  it('consumes the marker even when the session has no ledger, and nothing when none is pending', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 2, note: null })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    expect(vi.mocked(session.send).mock.calls[0]?.[0]).toBe(withUiLanguageNote('hello'));
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 2);
+
+    const { deps: idle, session: idleSession } = createDeps({
+      peekWorkingMemoryRefresh: vi.fn(async () => null),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(idle).sendToAgentAccepted('session-1', 'hello');
+    expect(idleSession.send).toHaveBeenCalledOnce();
+    expect(idle.consumeWorkingMemoryRefresh).not.toHaveBeenCalled();
+  });
+});
+
+describe('repeatable environment notes are sent only when they change', () => {
+  const host = { deviceId: 'mac-1', name: 'Mac' };
+  const phone = { deviceId: 'phone-1', name: 'iPhone', platform: 'mobile' as const };
+  const pc = { deviceId: 'pc-1', name: 'Office PC', platform: 'desktop' as const };
+
+  function setup(overrides: Partial<MakerSendTransactionDeps> = {}) {
+    const memory = createWireNoteMemory();
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      readHostDeviceIdentity: vi.fn(() => host),
+      planRepeatableWireNotes: (sessionId, notes, opts) => memory.plan(sessionId, notes, opts),
+      ...overrides,
+    });
+    return { session, deps, memory, transaction: createMakerSendTransaction(deps) };
+  }
+  const sentAt = (session: MakerSendTransactionSession, index: number) =>
+    vi.mocked(session.send).mock.calls[index]?.[0] as string;
+
+  it('drops the UI language and device notes on the second turn from the same device', async () => {
+    const { session, transaction } = setup();
+    const opts = { sourceDevice: phone, persistUserMessage: { clientId: 'm-1', content: 'hello' } };
+    await transaction.sendToAgentAccepted('session-1', 'hello', undefined, opts);
+    await transaction.sendToAgentAccepted('session-1', 'again', undefined, { ...opts, persistUserMessage: { clientId: 'm-2', content: 'again' } });
+
+    expect(sentAt(session, 0)).toContain(uiLanguageNote());
+    expect(sentAt(session, 0)).toContain('[客户端说明]');
+    expect(sentAt(session, 1)).toBe('again');
+  });
+
+  it('resends just the device note when the controller changes, and the full set after a handoff', async () => {
+    const { session, transaction } = setup({
+      peekPendingHandoff: vi.fn(async () => null),
+    });
+    await transaction.sendToAgentAccepted('session-1', 'a', undefined, { sourceDevice: phone });
+    await transaction.sendToAgentAccepted('session-1', 'b', undefined, { sourceDevice: pc });
+    expect(sentAt(session, 1)).not.toContain(uiLanguageNote());
+    expect(sentAt(session, 1)).toContain('另一台电脑「Office PC」');
+
+    vi.mocked(session.send).mockClear();
+    const { session: fresh, transaction: afterHandoff } = setup({
+      peekPendingHandoff: vi.fn(async () => 'HANDOFF'),
+    });
+    await afterHandoff.sendToAgentAccepted('session-1', 'c', undefined, { sourceDevice: pc });
+    expect(sentAt(fresh, 0)).toContain(uiLanguageNote());
+    expect(sentAt(fresh, 0)).toContain('HANDOFF');
+  });
+
+  it('keeps resending while the engine has not accepted the turn', async () => {
+    const session = createSession({
+      agentKind: 'codex',
+      send: vi.fn(async () => ({ accepted: false }) as SessionSendResult),
+    });
+    const { transaction } = setup({ getSession: vi.fn(() => session) });
+    await transaction.sendToAgentAccepted('session-1', 'a').catch(() => undefined);
+    await transaction.sendToAgentAccepted('session-1', 'b').catch(() => undefined);
+    expect(sentAt(session, 0)).toContain(uiLanguageNote());
+    expect(sentAt(session, 1)).toContain(uiLanguageNote());
+  });
+
+  it('leaves slash-command turns alone without marking the notes as seen', async () => {
+    const session = createSession({ agentKind: 'claude-code' });
+    const { transaction } = setup({ getSession: vi.fn(() => session) });
+    await transaction.sendToAgentAccepted('session-1', '/compact');
+    await transaction.sendToAgentAccepted('session-1', 'hello');
+    expect(sentAt(session, 0)).toBe('/compact');
+    expect(sentAt(session, 1)).toContain(uiLanguageNote());
+  });
+
+  it('sends every note each turn when no memory is wired (legacy behaviour)', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({ getSession: vi.fn(() => session) });
+    const transaction = createMakerSendTransaction(deps);
+    await transaction.sendToAgentAccepted('session-1', 'a');
+    await transaction.sendToAgentAccepted('session-1', 'b');
+    expect(sentAt(session, 1)).toBe(withUiLanguageNote('b'));
   });
 });

@@ -75,6 +75,7 @@ import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErr
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
 import { providerGroupSwitchCause } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
+import { providerGroupReshare } from '../provider-group/reshareRuntime.js';
 import {
   isRemoteProviderInvocationAllowed,
   setRemoteProviderInvocationEnabled,
@@ -160,12 +161,7 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 import { createId } from '@paralleldrive/cuid2';
-import {
-  GATEWAY_PROXY_TOKEN_INVALID_REASON,
-  isCindyGatewayProviderId,
-  isGatewayProxyTokenInvalidError,
-  redactSensitiveText,
-} from '@cindy/maker-shared/error-redaction';
+import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import {
   isProductTurnCompletionTailEvent,
@@ -603,6 +599,14 @@ import {
   type BotCompactRuntimeRefreshOutcome,
   type BotCompactRuntimeSession,
 } from './botCompactRuntimeRefresh.js';
+import {
+  buildWorkingMemoryRefreshNote,
+  createWorkingMemoryRefreshRegistry,
+  pruneWithdrawnWorkingMemoryForSession,
+  pruneWorkingMemoryForSession,
+  readWorkingMemoryNoteForSession,
+} from './botWorkingMemory.js';
+import { createWireNoteMemory } from './wireNoteMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
 import { configureBotCanonicalReplacementCoordinator } from './botCanonicalReplacementCoordinator.js';
 import { botSessionInputBlockReason, isShadowedCompanionCanonical, SHADOWED_COMPANION_INPUT_MESSAGE } from './botSessionInputGuard.js';
@@ -613,6 +617,9 @@ import {
   ensureCodexMcpBridgeStartedForRemote,
   finalizeCodexAfterAuthModeChange,
   getMaker,
+  listCodexGatewayHostKeys,
+  refreshCodexGatewayHost,
+  setCodexGatewayKeyRefreshHook,
   listSshCodexProviders,
   disposeRemoteCodexHostAfterRestart,
   getMakerIfReady,
@@ -882,6 +889,7 @@ import {
   stampTrustedDesktopQueuedOrigin,
   TRUSTED_DESKTOP_QUEUE_ORIGIN,
 } from './makerSendTransaction.js';
+import { findLatestAssistantTranscriptUuid } from './latestAssistantTranscriptUuid.js';
 import {
   installDesktopInteractionHandler,
   installInteractionLifecycleObserver,
@@ -1120,6 +1128,8 @@ import {
   storeCustomProviderHeaders,
   storeCustomProviderKey,
 } from '../secrets/providerSecretStore.js';
+import { reportCindyGatewayKeyRejectedForCurrentKey } from '../model-access/gatewayKeyRejection.js';
+import { isGatewayProxyTokenRecoveryErrorEventForProvider } from './gatewayProxyTokenRecovery.js';
 import {
   getSessionEffort,
   getSessionFastMode,
@@ -1225,6 +1235,7 @@ import {
   runMemoryChangeWithCodexRestart,
   type MemoryChangeParts,
 } from './deferredCodexRestart.js';
+import { GatewayCodexRestartService } from './gatewayCodexRestart.js';
 import {
   createDeferredRestartSettledWake,
   createDeferredRestartQueueGate,
@@ -3262,6 +3273,18 @@ type BotCompactRuntimeRefreshHandler = (
  * and let the instance-scoped coordinator own all compact settle signals.
  */
 let botCompactRuntimeRefreshHandler: BotCompactRuntimeRefreshHandler | null = null;
+/**
+ * 伙伴工作记忆账本(botWorkingMemory):换窗交接带账本;原生压缩后下一次发送补一份。
+ * 登记对所有会话生效,真正注入只在伙伴主对话且有账本时发生。
+ */
+const workingMemoryRefresh = createWorkingMemoryRefreshRegistry();
+const readWorkingMemoryNote = (sessionId: string): Promise<string | null> =>
+  readWorkingMemoryNoteForSession(sessionId, ownerScopedUserDataPath());
+/**
+ * 逐轮环境说明(界面语言 / 客户端设备 / 个人版制作说明)的去重记忆:同一原生上下文里内容
+ * 没变就不重复前置。原生压缩边界、`/clear`、换窗重建后整体重发一次(见 wireNoteMemory.ts)。
+ */
+const wireNoteMemory = createWireNoteMemory();
 const botCompactRuntimeRefreshCoordinator = createBotCompactRuntimeRefreshCoordinator({
   hasPendingInteraction: hasPendingAgentInteractionForSession,
   refresh: (session, boundary) =>
@@ -4056,6 +4079,7 @@ function settlePendingCredentialSwitch(sessionId: string, source: string): void 
 // 路径经 holder 调用; 未注入时 no-op。
 let refreshRemoteCodexMcpOnTurnSettledHolder: ((sessionId: string) => void) | null = null;
 let deferredCodexRestartHolder: DeferredCodexRestartService | null = null;
+let gatewayCodexRestartHolder: GatewayCodexRestartService | null = null;
 let pendingAgentSwitchApplyHolder:
   ((
     sessionId: string,
@@ -4289,6 +4313,7 @@ export function isSessionTurnPendingCompletion(sessionId: string): boolean {
  */
 export function clearDeferredCodexRestartForOwnerBoundary(): void {
   deferredCodexRestartHolder?.clear();
+  gatewayCodexRestartHolder?.clear();
 }
 
 /** Reuse the owner-scoped idle retry for settings whose persistence already succeeded. */
@@ -4703,13 +4728,7 @@ function isRemoteAuthRetryErrorEvent(
 }
 
 function isGatewayProxyTokenRecoveryErrorEvent(sessionId: string, event: AgentEvent): boolean {
-  if (event.type !== 'error' || !isTerminalTurnErrorEvent(event)) return false;
-  const data = event.data as { message?: unknown; reason?: unknown } | undefined;
-  return (
-    isCindyGatewayProviderId(getSessionProvider(sessionId)) &&
-    (data?.reason === GATEWAY_PROXY_TOKEN_INVALID_REASON ||
-      isGatewayProxyTokenInvalidError(typeof data?.message === 'string' ? data.message : ''))
-  );
+  return isGatewayProxyTokenRecoveryErrorEventForProvider(getSessionProvider(sessionId), event);
 }
 
 function handleAgentIslandInteractionAfterBroadcast(
@@ -5110,6 +5129,7 @@ async function settleSilentStopDone(
   settlePendingCredentialSwitch(sessionId, `silent-stop:${reason}`);
   settlePendingSessionRuntimeControlHolder?.(sessionId, `silent-stop:${reason}`);
   deferredCodexRestartHolder?.onSessionSettled();
+  gatewayCodexRestartHolder?.onSessionSettled();
   agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
   refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
   fireSilentStopSettled(sessionId, reason);
@@ -5434,6 +5454,7 @@ function cleanupClosedSessionRuntime(session: WiredSession): void {
   // 会话关闭:兑现延迟凭证切换(直接写 route),并唤醒被它挡住的等待者。
   pendingCredentialSwitchHolder?.onSessionClosed(session.id);
   deferredCodexRestartHolder?.onSessionSettled();
+  gatewayCodexRestartHolder?.onSessionSettled();
   agentInputCoordinatorHolder?.onExternalTurnSettled(session.id);
   try {
     refreshRemoteCodexMcpOnTurnSettledHolder?.(session.id);
@@ -5479,6 +5500,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   onUnsuccessfulProductTurn: interruptProductTurn,
   deferUnsuccessfulProductTurn: (owner) => deferredProductTurnFailureGate.defer(owner),
   get botCompactRuntimeRefreshCoordinator() { return botCompactRuntimeRefreshCoordinator; },
+  get workingMemoryRefresh() { return workingMemoryRefresh; },
+  get wireNoteMemory() { return wireNoteMemory; },
   get attemptBotCompactRuntimeRefresh() { return attemptBotCompactRuntimeRefresh; },
   get botDelegationServiceHolder() { return botDelegationServiceHolder; },
   get botGroupChatServiceHolder() { return botGroupChatServiceHolder; },
@@ -5579,6 +5602,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   get handleAgentIslandEventAfterBroadcast() {
     return handleAgentIslandEventAfterBroadcast;
   },
+  // 智能体不回报所用 Key:走「按当前 Key、不占用触发机会」的入口(见 gatewayKeyRejection.ts)。
+  reportAgentCindyGatewayKeyRejected: reportCindyGatewayKeyRejectedForCurrentKey,
   get notifyGoalIdleAfterTurnSettled() {
     return notifyGoalIdleAfterTurnSettled;
   },
@@ -5590,6 +5615,9 @@ const sessionEventDependencies: SessionEventDependencies = {
   },
   get deferredCodexRestartHolder() {
     return deferredCodexRestartHolder;
+  },
+  get gatewayCodexRestartHolder() {
+    return gatewayCodexRestartHolder;
   },
   get refreshRemoteCodexMcpOnTurnSettledHolder() {
     return refreshRemoteCodexMcpOnTurnSettledHolder;
@@ -6654,6 +6682,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     cancelCodexCustomProviderHostChange: cancelCodexAuthModeChange,
     beginRouteMutation: (providerId) => beginProviderRouteMutation(providerId),
     broadcastChanged: () => broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {}),
+    kickProviderGroupReshare: (reason) => providerGroupReshare.kick(reason),
     listProviderIds: () => getDesktopSelectableCatalog().providers.map((provider) => provider.id),
     setProviderOrder: (providerIds) => setProviderOrder(providerIds),
     getProviderOrder: () => readProviderOrder(),
@@ -10008,6 +10037,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     closeSession: (sessionId) => maker.closeSession(sessionId, 'agent-switch'),
     listMessagesForHandoff: (sessionId, after) =>
       listMessagesForAgentHandoff(sessionId, 400, after),
+    readWorkingMemoryNote,
     findParkedEngineSession: (sessionId, targetDbKind) =>
       findParkedEngineSession(sessionId, targetDbKind),
     applyAgentSwitchToDb: async (sessionId, patch) => {
@@ -10251,6 +10281,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     getMessage: getMessageDeletionTarget,
     listMessagesForContext: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
+    readWorkingMemoryNote: (sessionId, opts) =>
+      readWorkingMemoryNoteForSession(sessionId, ownerScopedUserDataPath(), opts),
+    pruneWorkingMemory: (sessionId, deletedMessageIds) =>
+      pruneWorkingMemoryForSession(sessionId, ownerScopedUserDataPath(), deletedMessageIds),
     getLiveSession: (sessionId) => maker.getSession(sessionId),
     hasBackgroundActivity: getClaudeSessionBackgroundActivity,
     closeSession: (sessionId) => maker.closeSession(sessionId),
@@ -12112,6 +12146,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     const chat = botGroupChatServiceHolder?.chatServer;
     return chat ? chat.react(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
+  });
+  ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_REACTORS, async (event, input) => {
+    assertTrustedAppRendererEvent(event);
+    const chat = botGroupChatServiceHolder?.chatServer;
+    return chat ? chat.reactors(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
   });
   ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_CREATEINVITE, async (event, input) => {
     assertTrustedAppRendererEvent(event);
@@ -15876,13 +15915,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     };
     try {
-      return await enqueueDurableWrite(`user:${sessionId}:${message.clientId}`, (ownerScope) => {
+      return await enqueueDurableWrite(`user:${sessionId}:${message.clientId}`, async (ownerScope) => {
         // Coordinator accepts can stamp transcriptParentUuid early; this late FIFO
         // fallback covers makerSendTransaction/direct createDbMessage paths.
-        const transcriptParentUuid = getLastAssistantTranscriptUuid(sessionId);
         const hasTranscriptParent =
           typeof message.agentMeta?.transcriptParentUuid === 'string' &&
           message.agentMeta.transcriptParentUuid.length > 0;
+        // 会话关闭（如远程电脑断线）会清掉内存里的值，重发的第一条消息就没有锚点；
+        // 这时从库里补回上一条 assistant 的 uuid。
+        const transcriptParentUuid = hasTranscriptParent
+          ? undefined
+          : getLastAssistantTranscriptUuid(sessionId)
+            ?? await Promise.resolve().then(() => findLatestAssistantTranscriptUuid(sessionId)).catch(() => undefined);
         const enrichedMessage =
           transcriptParentUuid && !hasTranscriptParent
             ? { ...message, agentMeta: { ...message.agentMeta, transcriptParentUuid } }
@@ -16233,6 +16277,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     isCindyMakeSession: async (sessionId) =>
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
+    // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
+    // 标记仍由事务在 accepted 后按代次消费。
+    peekWorkingMemoryRefresh: async (sessionId) => {
+      const generation = workingMemoryRefresh.pendingGeneration(sessionId);
+      if (generation === null) return null;
+      const rendered = await readWorkingMemoryNote(sessionId);
+      return { generation, note: rendered ? buildWorkingMemoryRefreshNote(rendered) : null };
+    },
+    consumeWorkingMemoryRefresh: (sessionId, generation) => workingMemoryRefresh.consume(sessionId, generation),
+    planRepeatableWireNotes: (sessionId, notes, opts) => wireNoteMemory.plan(sessionId, notes, opts),
     applyPendingAgentSwitch: async (sessionId, options) => {
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
       // Queued Orca delivery and resume both use this transaction. A failed
@@ -16389,6 +16443,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return resolveConfiguredContextWindow(catalog, makerAgentKind, providerId, modelId);
     },
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
+    readWorkingMemoryNote,
     findLatestUser: findLatestUserMessageForRebuild,
     findLatestRebuildMeta: findLatestContextRebuildMeta,
     getLiveSession: (sessionId) => maker.getSession(sessionId),
@@ -16488,6 +16543,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // overflow 终态已先走 coordinator onTurnEvent('error')，会留下 active-turn
       // recovery 和错误横幅。重放绕开 coordinator，随后的 done 会被 recovery 吃掉。
       agentInputCoordinatorHolder?.clearError(sessionId);
+      // 新原生上下文没看过任何环境说明:下一轮整体重发(重放路径不经 send 事务)。
+      wireNoteMemory.reset(sessionId);
     },
     getRecoveryAbortSignal: (sessionId) => {
       const coordinator = agentInputCoordinatorHolder!;
@@ -16710,21 +16767,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 设备来源只认盖章值(coordinator 透传 / 直连 IPC 边界按 async context 盖);没有设备
     // 信息时沿用旧手机判据:IPC 直连 steer 时 async context 在;coordinator 投递时靠透传。
     const steerDevice = readWireSourceDevice(so.sourceDevice);
-    const steerNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+    const steerAllowsEnvironmentNotes = shouldPrependMobileClientPromptNote(normalized, sess.agentKind);
+    const steerNote = steerAllowsEnvironmentNotes
       ? buildClientEnvironmentNote({
           device: steerDevice,
           host: steerDevice ? getHostSourceDevice() : undefined,
           legacyMobile: isMobileControllerInvoke() || so.fromMobileClient === true,
         })
       : null;
-    const withSteerNote = steerNote
-      ? prependNoteToWireUserMessage(withSteerSourceNote as HandoffWireMessage, steerNote)
-      : withSteerSourceNote;
-    const steerLanguageNote = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+    const steerLanguageNote = steerAllowsEnvironmentNotes
       ? buildUiLanguageErrorNote(turnUiLanguageFromSendOpts(so, getResolvedMainLocale()))
       : null;
-    let steerPayload = steerLanguageNote
-      ? prependNoteToWireUserMessage(withSteerNote as HandoffWireMessage, steerLanguageNote)
+    // 环境说明与 send 事务共用同一份去重记忆:插话进的是同一个原生上下文。
+    const steerNotePlan = steerAllowsEnvironmentNotes
+      ? wireNoteMemory.plan(sessionId, { 'client-environment': steerNote, 'ui-language': steerLanguageNote }, { force: false })
+      : null;
+    const steerPlannedNotes = steerNotePlan?.notes ?? {};
+    const withSteerNote = steerPlannedNotes['client-environment']
+      ? prependNoteToWireUserMessage(withSteerSourceNote as HandoffWireMessage, steerPlannedNotes['client-environment'])
+      : withSteerSourceNote;
+    let steerPayload = steerPlannedNotes['ui-language']
+      ? prependNoteToWireUserMessage(withSteerNote as HandoffWireMessage, steerPlannedNotes['ui-language'])
       : withSteerNote;
     const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
       ? await mcpAppModelContext(sessionId)
@@ -16764,6 +16827,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         [AUTO_REVIEW_USER_INTENT]: restoredSteerIntent,
       });
       appContext?.consume();
+      steerNotePlan?.commit();
       log.info('steer: delivered', { sessionId, agentKind: sess.agentKind });
     } catch (err) {
       const messageText = err instanceof Error ? err.message : String(err);
@@ -17122,6 +17186,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         settlePendingCredentialSwitch(sessionId, `reconcile:${source}`);
         settlePendingSessionRuntimeControlHolder?.(sessionId, `reconcile:${source}`);
         deferredCodexRestartHolder?.onSessionSettled();
+        gatewayCodexRestartHolder?.onSessionSettled();
         agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
         refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
       } catch (err) {
@@ -17186,6 +17251,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settlePendingCredentialSwitch(sessionId, `reconcile:${source}`);
       settlePendingSessionRuntimeControlHolder?.(sessionId, `reconcile:${source}`);
       deferredCodexRestartHolder?.onSessionSettled();
+      gatewayCodexRestartHolder?.onSessionSettled();
       agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
       refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
     } catch (err) {
@@ -18028,7 +18094,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       hasPendingCredentialSwitchEntry: (sessionId) =>
         pendingCredentialSwitchHolder?.has(sessionId) === true,
       isSessionRestarting: (sessionId) =>
-        deferredCodexRestartHolder?.isSessionRestarting(sessionId) === true,
+        deferredCodexRestartHolder?.isSessionRestarting(sessionId) === true ||
+        gatewayCodexRestartHolder?.isSessionRestarting(sessionId) === true,
     }),
     emitProjection: (projection) => {
       broadcastToAllWindows(MAKER_PUSH.INPUT_PROJECTION, projection);
@@ -18408,11 +18475,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     logger: log,
   });
   deferredCodexRestartHolder = deferredCodexRestartService;
+  const gatewayCodexRestartService = new GatewayCodexRestartService({
+    listHostKeys: listCodexGatewayHostKeys,
+    restartHost: refreshCodexGatewayHost,
+    hasBusySession: (hostKey) => maker.listActiveSessions().some(session =>
+      session.agentKind === 'codex' && !session.remoteHostId &&
+      (session.codexHostKey ?? 'local') === hostKey && isLocalSessionBusy(session, isSessionInTurn)),
+    listSessionIds: (hostKey) => maker.listActiveSessions().filter(session =>
+      session.agentKind === 'codex' && !session.remoteHostId &&
+      (session.codexHostKey ?? 'local') === hostKey).map(session => session.id),
+    onQueueGateReleased: createDeferredRestartSettledWake({
+      wakeSession: (sessionId, reason) => inputCoordinator.wakeSession(sessionId, reason),
+    }),
+    logger: log,
+  });
+  gatewayCodexRestartHolder = gatewayCodexRestartService;
+  setCodexGatewayKeyRefreshHook(() => gatewayCodexRestartService.schedule());
   // 新本地 Codex 会话加入 shared host 前先尝试兑现 pending 的延迟重启,
   // 让它直接在新状态的 fresh host 上起跑(maker-host onBeforeStart 接线)。
-  setBeforeLocalCodexSessionStartHook(() =>
-    deferredCodexRestartService.flushBeforeLocalCodexSessionStart(),
-  );
+  setBeforeLocalCodexSessionStartHook(async () => {
+    await gatewayCodexRestartService.flushBeforeLocalCodexSessionStart();
+    await deferredCodexRestartService.flushBeforeLocalCodexSessionStart();
+  });
 
   const requireSessionId = (value: unknown): string => {
     if (typeof value !== 'string' || value.length === 0) {
@@ -19762,6 +19846,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // DB 重建,把旧交接捞回来再缓存住。墓碑同步生效,窗口内的 send 立刻拿到 null;
         // clear 纪元则要等下面 cleared_at 落库之后才推进。
         agentHandoffPending.invalidate(sid);
+        // 清空后的原生上下文没看过任何环境说明:下一轮整体重发。
+        wireNoteMemory.reset(sid);
+        // 清空前登记的压缩刷新标记同样作废:否则清空后的第一次发送会把清空前的账本注入。
+        workingMemoryRefresh.reset(sid);
         getAgentIslandService()?.notifyQueueEmptied(sid);
         // 清上下文后,active 目标失去其依据(objective 引用的内容已被抹掉)→ 一并清除目标。
         goalClearObserver?.(sid);
@@ -19776,6 +19864,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           typeof clearBoundary === 'number' ? clearBoundary : new Date(clearBoundary).getTime();
         try {
           await clearSessionContextInDb(sid, clearBoundaryMs);
+          // cleared_at 落库后,清空前产生的伙伴工作记忆条目一并持久清掉(与 rewind / 删除
+          // 同一失效模式);失败不影响 clear,渲染时按 cleared_at 的统一过滤仍兜底。
+          await pruneWithdrawnWorkingMemoryForSession(sid, ownerScopedUserDataPath()).catch(() => 0);
         } catch (err) {
           // The in-memory fence is still authoritative for this process. Keep
           // /clear remains a local cleanup action even when persistence fails;

@@ -20,8 +20,10 @@ import {
   BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
   fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
 } from './botGroupComposerChrome';
+import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
+import { refreshPendingBotGroupAttachments } from './botGroupAttachments';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
-import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
+import { ChatMessageActions, chatErrorKey, messageReactionRevision } from './ChatServerControls';
 import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const sameBotGroupMentions = (a: BotGroupMention, b: BotGroupMention) =>
@@ -49,10 +51,11 @@ function ThreadMessage({ group, message, quoteSources, shareScope, sharing, onCh
       <p className="text-13 font-medium leading-7 text-[var(--text-primary)]">{message.authorName}</p>
       {/* A 话题 root may itself be a 引用回复; its original lives in the main timeline. */}
       {message.quote ? <BotGroupQuoteBlock display={resolveBotGroupQuote(message.quote, quoteSources)} /> : null}
-      <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
+      {message.content.trim() ? <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
         <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
-      </div>
-      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} align="left" onChanged={onChanged} />
+      </div> : null}
+      <BotGroupMessageAttachments attachments={message.attachments} align="start" />
+      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} members={group.members} reactionRevision={messageReactionRevision(group, message.id)} align="left" onChanged={onChanged} />
     </div>
   </article>;
 }
@@ -66,6 +69,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const titleId = useId();
   const shareScope = `bot-group:${group.id}:thread:${rootId}`;
   const sharing = useShareSelectionActive(shareScope);
+  const readOnly = Boolean(group.archived || group.dissolvedAt);
   const contentRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -107,6 +111,17 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       setExecutionFailures(result.executionFailures ?? []);
       setReplies(previous => mergeBotGroupMessages(previous, result.replies));
       if (before || replies.length === 0) setHasMore(result.hasMore);
+      if (before === undefined && result.replies.length > 0) {
+        const latestFrom = Math.min(...result.replies.map(message => message.sequence));
+        const refreshed = await refreshPendingBotGroupAttachments(replies, latestFrom, async page => {
+          const earlier = await api().thread({ groupId: group.id, rootId, before: page });
+          return earlier.ok && current() ? earlier.replies : null;
+        });
+        if (refreshed && current()) {
+          const fresh = new Map(refreshed.map(message => [message.sequence, message]));
+          setReplies(previous => previous.map(message => message.sequence < latestFrom ? fresh.get(message.sequence) ?? message : message));
+        }
+      }
     } catch { if (current()) setError(t(key('requestFailed'))); }
   }, [group.id, rootId, t, replies]);
   const loadRef = useRef(load); loadRef.current = load;
@@ -118,7 +133,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     return () => { request.current++; stop(); };
   }, [group.id, rootId]);
   async function send() {
-    if (group.archived || sending.current || !text.trim()) return;
+    if (readOnly || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
     // A retry reuses the attempt only for the same text and the same targets (bot-group-chat.md).
@@ -157,12 +172,12 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className={BOT_GROUP_COMPOSER_DOCK}><div className={BOT_GROUP_COMPOSER_COLUMN}>
           {error && <p role="alert" className="mb-2 px-1 text-13 leading-5 text-[var(--error-fg)]">{error}</p>}
           {/* Read-only also means no @ picks while sending. */}
-          {busy ? null : mention.list}
+          {busy || readOnly ? null : mention.list}
           {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
           <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
             <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
               {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
-              maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
+              maxLength={8000} readOnly={busy} disabled={readOnly} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
                 if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
               }} />
@@ -171,7 +186,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
               <div className={BOT_GROUP_COMPOSER_FOOTER_START} />
               <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
                 <Tip text={t(key('sendReply'))}>
-                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
+                  <SendButton ariaLabel={t(key('sendReply'))} disabled={readOnly || busy || !text.trim()} onClick={() => void send()} />
                 </Tip>
               </span>
             </div>

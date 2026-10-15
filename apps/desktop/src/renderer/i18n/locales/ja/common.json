@@ -161,8 +161,8 @@
     "runsOnThisDevice": "このパソコンで実行中",
     "inviteNotice": "招待リンクを持つユーザーはログイン後に参加でき、所有者と同じ Agent 権限を持ちます。",
     "offlineAutoClose": "ホストのパソコンがオフラインのままだと、共有は自動的に終了します。",
-    "inviteBoxHint": "リンクを送ると、相手はクリックして参加できます。モバイルではリンクをコピーして Cindy を開くこともできます。",
-    "invitationMessage": "「{{title}}」への招待です\n{{link}}\nリンクを開いて参加してください。モバイルではリンクをコピーして Cindy を開き、参加を確認することもできます。",
+    "inviteBoxHint": "リンクを送ると、相手はクリックして参加できます。Cindy の「共有セッションに参加」にリンクを貼り付けて参加することもできます。",
+    "invitationMessage": "「{{title}}」への招待です\n{{link}}\nリンクを開いて参加してください。Cindy が開かない場合は、Cindy の「共有セッションに参加」からこのリンクを貼り付けてください。",
     "membersWithLimit": "メンバー · {{count}} 人（ゲストは最大 2 人）",
     "me": "自分",
     "thisDevice": "このパソコン",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "この招待は別の Cindy サービスのものです。対応するアプリでリンクを開いてください。",
     "managementIntro": "開始した共有と参加した共有を管理します。",
     "returnToTasks": "タスク一覧に戻る",
-    "invitationDetected": "共有タスクへの招待が見つかりました",
-    "notNow": "今は参加しない",
     "closeAllLabel": "すべての共有を停止",
     "closeAllDescription": "すべてのゲストがアクセスできなくなります。タスクの履歴は保持されます。"
   },
@@ -260,6 +258,22 @@
         "title": "{{name}} との共有を削除しますか？",
         "description": "{{name}} はすぐに {{provider}} を使えなくなり、実行中のセッションは停止します。再び共有するには新しいリンクが必要です。使用量の記録は残ります。",
         "confirm": "共有を削除"
+      },
+      "reshare": {
+        "applying": "{{owner}} のプロバイダーグループ経由での利用を希望しています",
+        "requestedAt": "{{time}}にリクエスト",
+        "usageHint": "同意すると、{{name}} のセッションをこのパソコンで実行でき、使用量は {{owner}} の分として記録されます",
+        "approve": "同意",
+        "reject": "拒否",
+        "listTitle": "{{owner}} のプロバイダーグループ経由で利用",
+        "stateApproved": "同意済み",
+        "stateRejected": "未同意",
+        "revoke": "同意を取り消す",
+        "revokeAria": "{{name}} への同意を取り消す",
+        "approveAria": "{{name}} の利用に同意する",
+        "toastApproved": "{{name}} が {{owner}} のプロバイダーグループ経由で {{provider}} を使えるようにしました",
+        "toastRejected": "{{name}} のリクエストを拒否しました",
+        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました"
       }
     },
     "toast": {
@@ -308,7 +322,7 @@
       "factFiles": "プロジェクトのファイルとコマンドは引き続きあなたのパソコンで実行されます",
       "factFilesDetail": "あなたのセッションの権限が適用されます",
       "factPrivacy": "チャットの内容と Agent が読み取ったファイルの内容は {{name}} のパソコンを経由し、実際にセッションを実行するパソコンに保存されます",
-      "factPrivacyDetail": "{{name}} に表示されるのはあなたのニックネームとアバターだけです",
+      "factPrivacyDetail": "{{name}} と、同意が必要なほかのパソコンの持ち主に表示されるのは、あなたのニックネームとアバターだけです",
       "factApproval": "申請を送った後、{{name}} が承認すると有効になります",
       "factApprovalDetail": "{{name}} はこの共有をいつでも停止または削除できます",
       "send": "申請を送信",
@@ -428,7 +442,9 @@
       "approvedTitle": "共有の申請が承認されました",
       "approvedBody": "{{name}} が {{provider}} の共有を承認しました",
       "rejectedTitle": "共有の申請は承認されませんでした",
-      "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした"
+      "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした",
+      "reshareTitle": "新しい利用リクエスト",
+      "reshareBody": "{{name}} が {{owner}} のプロバイダーグループ経由で、あなたの共有した {{provider}} を使いたいと希望しています"
     }
   },
   "providerGroup": {
@@ -501,6 +517,8 @@
       "sourceShare": "{{name}} からの共有",
       "shareComputer": "{{name}} のパソコン",
       "shareComputerUnknown": "共有されたパソコン",
+      "accountCount_other": "{{count}} 個のアカウント",
+      "accountFallback": "アカウント {{index}}",
       "quota": {
         "loading": "クォータを読み込み中…",
         "unavailable": "このパソコンのクォータを今は読み取れません",
@@ -540,7 +558,22 @@
         "lastDescription": "グループ内の最後のパソコンです。外すと {{provider}} のプロバイダーグループは削除されます。",
         "confirm": "グループから外す"
       },
-      "sourceGroupOwner": "グループを作成したパソコン"
+      "sourceGroupOwner": "グループを作成したパソコン",
+      "reshare": {
+        "allApproved": "共有相手も利用できます",
+        "waiting_other": "共有相手 {{count}} 人が {{owner}} の同意を待っています",
+        "rejected_other": "{{owner}} は共有相手 {{count}} 人に同意しませんでした",
+        "needsUpdate": "{{owner}} が Cindy を更新すると、共有相手への同意ができるようになります",
+        "unknown": "{{owner}} が共有相手に同意しているかはまだわかりません",
+        "title": "共有相手がこのパソコンを使えるか",
+        "description": "{{owner}} が 1 人ずつ同意します。同意されていない人のセッションはこのパソコンに割り当てられません。",
+        "state": {
+          "approved": "同意済み",
+          "pending": "同意待ち",
+          "rejected": "未同意",
+          "unknown": "未確認"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "{{provider}} のプロバイダーグループを削除しますか？",
@@ -564,6 +597,7 @@
     },
     "toast": {
       "added_other": "{{count}} 台のパソコンを {{provider}} のプロバイダーグループに追加しました",
+      "addedAccounts_other": "{{count}} 個のアカウントを {{provider}} のプロバイダーグループに追加しました",
       "removed": "{{name}} をプロバイダーグループから外しました",
       "deleted": "{{provider}} のプロバイダーグループを削除しました"
     }
@@ -732,6 +766,7 @@
     "clipboardSyncFailed": "同期に一時的に失敗しました。自動で再試行します。設定はオンのままです。",
     "clipboardSyncSkipped": "この内容は同期できないためスキップしました。ペーストの許可を確認するか、テキストや画像をコピーして再試行してください。",
     "clipboardSyncPermission": "同期を一時停止しました。ペーストを許可してから再試行してください。設定はオンのままです。",
+    "clipboardSyncWaiting": "リモートのパソコンのクリップボードに現在アクセスできません（ロック中の可能性があります）。自動で同期を再開します。",
     "lockingOnExit": "コンピューターをロック中…",
     "lockOnExit": "終了時にパソコンをロック",
     "lockOnExitHint": "リモートデスクトップを終了するとロックします。再接続やアプリ切り替えではロックしません。",
@@ -1845,11 +1880,23 @@
         "nameHint": "空欄にすると現在の名前を維持します",
         "changeAvatar": "アバターを変更",
         "resetAvatar": "デフォルトのアバターに戻す",
+        "adjustAvatar": "アバターを調整",
         "save": "プロフィールを保存",
         "cancel": "キャンセル",
         "syncHint": "名前とアバターはアカウントに保存され、すべてのデバイスに同期されます。",
-        "avatarInvalid": "5MB 以下の PNG / JPG / WebP 画像を選択してください",
-        "saveFailed": "保存に失敗しました。もう一度お試しください"
+        "avatarInvalid": "20MB 以下の PNG / JPG / WebP 画像を選択してください",
+        "saveFailed": "保存に失敗しました。もう一度お試しください",
+        "crop": {
+          "title": "アバターを調整",
+          "description": "ドラッグで位置を調整し、スクロールまたはピンチで拡大・縮小します",
+          "done": "アバターの調整を完了",
+          "stageLabel": "アバターの表示範囲。矢印キーで移動し、プラスまたはマイナスキーで拡大・縮小します",
+          "zoomLabel": "ズーム",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "拡大",
+          "zoomOut": "縮小",
+          "exportFailed": "調整したアバターを書き出せませんでした"
+        }
       }
     },
     "help": {
@@ -2157,7 +2204,8 @@
         "basics": "基本",
         "refinement": "整え方",
         "preferences": "設定",
-        "usageData": "使用量"
+        "usageData": "使用量",
+        "speakerFilter": "声紋フィルター"
       },
       "serviceSource": {
         "label": "音声サービス",
@@ -2453,6 +2501,80 @@
         "toast": {
           "copied": "コピーしました",
           "copyFailed": "コピーに失敗しました"
+        }
+      },
+      "speakerFilter": {
+        "label": "自分の声を認識",
+        "hint": "音声入力中は周りの人の声をミュートし、あなたの話した内容だけを認識に送ります。事前に声紋の登録が必要です。あなたと同時に話された声は完全には取り除けません。",
+        "ariaLabel": "「自分の声を認識」を切り替え",
+        "unsupported": "このパソコンでは声紋認識を利用できません。",
+        "privacy": "声紋はこのパソコンにだけ暗号化して保存され、アップロードや他のデバイスへの同期は行われません。",
+        "actionFailed": "操作に失敗しました。しばらくしてからもう一度お試しください。",
+        "model": {
+          "needed": "初回は約 {{size}} の認識モデルをダウンロードします。",
+          "download": "ダウンロード",
+          "downloading": "認識モデルをダウンロード中（{{done}} / {{total}}）",
+          "cancel": "キャンセル",
+          "retry": "再試行",
+          "failed": {
+            "network": "認識モデルのダウンロードに失敗しました。ネットワークを確認してもう一度お試しください。",
+            "disk": "認識モデルを保存できませんでした。ディスクの空き容量を確認してもう一度お試しください。",
+            "checksum": "ダウンロードした認識モデルの検証に失敗しました。もう一度お試しください。",
+            "unavailable": "現在、認識モデルを取得できません。しばらくしてからもう一度お試しください。"
+          }
+        },
+        "profile": {
+          "missing": "声紋が未登録です",
+          "missingHint": "声紋を登録すると有効になります。約 20 秒かかります。",
+          "enrolled": "声紋を登録済み",
+          "enrolledAt": "{{date}} に登録",
+          "enroll": "声紋を登録",
+          "reenroll": "登録し直す",
+          "delete": "声紋を削除",
+          "deleted": "声紋を削除しました",
+          "deleteConfirm": {
+            "title": "声紋を削除しますか？",
+            "description": "削除すると、もう一度登録するまで音声入力で周りの人の声を除外しなくなります。",
+            "confirm": "削除",
+            "cancel": "キャンセル"
+          }
+        },
+        "strictness": {
+          "label": "厳しさ",
+          "hint": "厳しくするほど周りの人の声が入りにくくなりますが、騒がしい場所では自分の言葉も途切れやすくなります。",
+          "options": {
+            "relaxed": "ゆるめ",
+            "standard": "標準",
+            "strict": "厳しめ"
+          }
+        },
+        "enroll": {
+          "title": "声紋を登録",
+          "description": "普段音声入力を使う場所で、下の {{clips}} つの文章をいつもの話し方で読み上げてください。1 つにつき {{seconds}} 秒録音します。録音中は他の人が話さないようにしてください。",
+          "stepsAriaLabel": "読み上げる文章",
+          "step": "{{current}} / {{total}}",
+          "record": "読み上げを開始",
+          "rerecord": "この文章を録り直す",
+          "recording": "録音中、残り {{seconds}} 秒",
+          "recorded": "録音済み",
+          "cancel": "キャンセル",
+          "submit": "完了",
+          "done": "声紋を登録しました",
+          "passages": {
+            "p1": "今日の午前中は今週の作業予定を整理して、午後には話し合いたい課題をまとめて、みんなに先に送っておきます。",
+            "p2": "明日天気が良ければ少し早めに出発して、途中で果物やお菓子を買い、お昼は公園で食べましょう。",
+            "p3": "この文章をもう少し簡潔にして、重要な数字と結論は残したうえで、要点を三つから五つの文でまとめてください。"
+          },
+          "errors": {
+            "too_short": "{{index}} つ目の録音は話している時間が短すぎます。長く止まらずに読み上げて、録り直してください。",
+            "no_embedding": "{{index}} つ目の録音から声紋を読み取れませんでした。録り直してください。",
+            "inconsistent": "{{index}} つ目の録音が他と同じ人の声に聞こえません。他の人の声や雑音が入った可能性があります。録り直してください。",
+            "models_missing": "認識モデルのダウンロードがまだ完了していません。しばらくしてからお試しください。",
+            "storage_unavailable": "システムのキーチェーンを利用できないため、声紋を暗号化して保存できません。しばらくしてからお試しください。",
+            "failed": "声紋を作成できませんでした。もう一度お試しください。",
+            "microphone": "マイクを使用できません。マイクの許可とデバイスを確認してください。",
+            "noAudio": "マイクから音が届いていません。デバイスを確認してもう一度お試しください。"
+          }
         }
       }
     },
@@ -8737,6 +8859,8 @@
       "needsAttention": "対応が必要",
       "duplicate": "仲間を複製",
       "moreActions": "{{name}} のその他の操作",
+      "sectionExpand": "仲間を展開",
+      "sectionCollapse": "仲間を折りたたむ",
       "noResults": "一致するパートナーやグループはありません"
     },
     "cancel": "キャンセル",
@@ -8998,6 +9122,12 @@
         "attachmentsFailed": "添付ファイルを送信できませんでした。ファイルが残っているか確認するか、削除してから再試行してください",
         "folderNotSupported": "フォルダーは添付できません。中のファイルを選んでください"
       },
+      "outbox": {
+        "sending": "送信中…",
+        "failed": "送信できませんでした",
+        "edit": "編集",
+        "editBlocked": "入力欄に内容があります。送信するか消してから、このメッセージを編集してください"
+      },
       "quote": {
         "replyingTo": "{{name}} を引用",
         "remove": "引用を外す",
@@ -9105,7 +9235,10 @@
         "permissionDenied": "このグループを管理する権限がありません。",
         "serviceError": "チャットサービスで処理を完了できません。しばらくしてから再試行してください。",
         "groupArchived": "このグループはアーカイブ済みのため操作できません。",
-        "quoteUnavailable": "引用したメッセージは削除されたか、表示できなくなりました。引用を外したので、もう一度送信してください。"
+        "quoteUnavailable": "引用したメッセージは削除されたか、表示できなくなりました。引用を外したので、もう一度送信してください。",
+        "lifecycleUnavailable": "現在のサーバーまたはコンピューターは、この操作にまだ対応していません。",
+        "groupDissolved": "このグループは解散しました。閲覧権限のある履歴は引き続き確認できます。",
+        "lastOwner": "退出する前にオーナーを譲渡するか、グループを解散してください。"
       },
       "organizer": "まとめ役",
       "plan": {
@@ -9134,7 +9267,10 @@
         "planning": "役割分担を考えています…"
       },
       "files": {
-        "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります"
+        "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります",
+        "untitled": "添付ファイル",
+        "loading": "読み込み中…",
+        "unavailable": "読み込めません"
       },
       "addFromChat": {
         "triggerFor": "{{name}} をグループチャットに追加",
@@ -9155,6 +9291,11 @@
         "sendReply": "返信を送信",
         "addReaction": "リアクションを追加",
         "reactionCount": "{{emoji}} · {{count}} 件のリアクション",
+        "reactionWho": "{{emoji}} · {{count}} 件のリアクション：{{names}}",
+        "reactorSelf": "あなた",
+        "reactorFormer": "{{name}}（現在はグループにいません）",
+        "reactorsUnavailable_one": "ほか {{count}} 人のメンバー情報は表示できません",
+        "reactorsUnavailable_other": "ほか {{count}} 人のメンバー情報は表示できません",
         "invite": "グループに招待",
         "join": "グループに参加",
         "inviteDescription": "招待を承諾するとメンバーになり、チャット履歴を閲覧できます。",
@@ -9217,7 +9358,7 @@
           "removeHint": "メッセージの閲覧と送信ができなくなります。そのメンバーのパートナーも退出します。",
           "addCompanion": "自分のパートナーを招待",
           "leave": "グループを退出",
-          "leaveHint": "あなたとあなたのパートナーが退出します。オーナーは先に所有権を譲渡してください。",
+          "leaveHint": "あなたとあなたの仲間がグループから退出します。新しいメッセージは届かなくなり、グループの履歴を閲覧できなくなります。",
           "soleOwnerHint": "メンバーはあなただけです。グループをアーカイブすると履歴が残り、後で再開できます。",
           "archive": "グループをアーカイブ",
           "archiveHint": "アーカイブすると、すべてのメンバーに対して新しいメッセージとパートナーの実行が停止します。履歴は保持されます。グループを検索して履歴を閲覧したり、アーカイブを解除したりできます。",
@@ -9237,6 +9378,18 @@
           "companionPermissions": "仲間の権限",
           "configureCapabilities": "ツールと利用権限の設定"
         }
+      },
+      "lifecycle": {
+        "dissolve": "グループを解散",
+        "dissolveNote": "この操作は取り消せません。全員がメッセージを送信できなくなり、進行中の作業は停止し、招待は無効になります。メンバーはこれまで閲覧できた履歴を引き続き確認できます。",
+        "hide": "自分のリストから削除",
+        "hideNote": "すべての自分のデバイスでリストからこのチャットを削除します。メンバーの状態、履歴、進行中の作業、他のメンバーには影響しません。",
+        "leave": "グループを退出",
+        "leaveNote": "あなたとあなたの仲間がグループから退出します。新しいメッセージは届かなくなり、グループの履歴を閲覧できなくなります。",
+        "unavailable": "現在のサーバーまたはコンピューターは、この操作にまだ対応していません。",
+        "dissolved": "このグループは解散しました。閲覧権限のある履歴は引き続き確認できます。",
+        "failed": "操作を完了できませんでした。もう一度お試しください。",
+        "lastOwner": "退出する前にオーナーを譲渡するか、グループを解散してください。"
       }
     },
     "joined": {

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { transferableAbortController } from 'node:util';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -7,11 +8,14 @@ import { BotsFeatureLayout } from '../BotsFeatureLayout';
 import { BotsListView } from '../BotsListView';
 import { refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
 
+// React Router uses Node's Request, so its signal must come from the same realm.
+const NativeAbortController = transferableAbortController().constructor;
+
 vi.mock('../botStore', () => ({ useBotProfiles: () => [] }));
-vi.mock('../BotsSidebar', () => ({ BotsSidebar: () => null }));
+// The layout registers the shared task sidebar (with the teammates section); not under test here.
+vi.mock('../../cc-agent/useRegisterCCAgentSidebar', () => ({ useRegisterCCAgentSidebar: vi.fn() }));
 vi.mock('../BotSettingsDrawer', () => ({ BotSettingsDrawer: () => null }));
 vi.mock('../BotGroupSettingsDrawer', () => ({ BotGroupSettingsDrawer: () => null }));
-vi.mock('../../feature-context', () => ({ useOwnTopNavScrollableRows: vi.fn() }));
 
 let groups: BotGroupSummary[];
 function group(id = 'room', archived = false): BotGroupSummary {
@@ -21,13 +25,18 @@ function group(id = 'room', archived = false): BotGroupSummary {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('AbortController', NativeAbortController);
   resetBotGroupStoreForTests();
   groups = [group()];
   Object.defineProperty(window, 'electronAPI', { configurable: true, value: { maker: {
     listBotGroups: vi.fn(async () => ({ ok: true, groups })),
   } } });
 });
-afterEach(() => { cleanup(); resetBotGroupStoreForTests(); });
+afterEach(() => {
+  cleanup();
+  resetBotGroupStoreForTests();
+  vi.unstubAllGlobals();
+});
 
 async function refresh() {
   await act(async () => { refreshBotGroups(); });

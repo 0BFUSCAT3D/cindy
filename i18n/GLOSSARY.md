@@ -283,6 +283,10 @@ OAuth 2.0 Device Authorization Grant 中由用户在另一设备验证页输入�
 
 钉钉机器人连接的产品名称，沿用官方品牌写法；先登记为 proposed，待产品术语评审后再决定是否固化。
 
+### Dissolve group
+
+Irreversible group termination, distinct from archive, leave and personal list removal.
+
 ### Doubao
 
 模型显示品牌采用官方中文名称，版本号和变体原样保留；仅用于展示与搜索，不改模型 ID 或用户保存的名称。
@@ -628,6 +632,10 @@ Cindy 里的**持久 AI 助手实体**（原名 Bot）：有长期身份、自�
 ### Voice dictionary
 
 语音输入的用户自定义术语表(人名、产品名、代号与其常见误识别写法),在同账号的电脑之间自动同步、手机只读查看。当前先采用四语直译并登记为待讨论术语,避免与「自定义词典」「术语表」「用户词库」等说法混用。
+
+### Voiceprint
+
+语音输入「识别我的声音」录入的本人声音特征，只存在本机、不同步。可写「录入声纹」「删除声纹」；不要写成声音指纹、声音模板。
 
 ### Wallpaper
 

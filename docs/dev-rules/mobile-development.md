@@ -205,6 +205,31 @@ pnpm --filter mobile test:smoke
 与 `IncomingShareBridge.tsx`。回归：`src/__tests__/incomingShare*.test.ts` 和
 `nativeIntent.test.ts`。上述 TS 层修复不修改原生配置或模块，不需要为此改变 runtime fingerprint。
 
+## Android release 代码优化
+
+所有地区共用 `app.json` 的 `expo-build-properties.android` 配置，在 release 构建中开启
+R8 代码混淆／裁剪与资源裁剪。`plugins/with-android-release-optimization.js` 在每次
+prebuild 时将 Expo 模板默认的 `proguard-android.txt` 换成
+`proguard-android-optimize.txt`，避免默认规则中的 `-dontoptimize` 禁用代码优化。
+不要手改生成的 `android/` 工程；clean prebuild 会覆盖它。应用和依赖 SDK 的必要 keep
+规则继续生效，遇到反射／JNI 兼容问题时只补充实际需要保留的入口，不整体关闭 R8。
+
+这些原生配置参与 runtime fingerprint，首次启用须按下文冷更边界处理，并使用 release
+原生包回归启动、登录、通知和原生模块调用。
+
+SDK 规则随依赖一起进入应用的最终 R8 配置，不在应用侧重复保留全部依赖：
+
+| Android SDK / 桥接 | 保留规则来源与边界 |
+| --- | --- |
+| React Native、Reanimated / Worklets | 使用依赖自带的 consumer rules，保留 JNI / TurboModule / Fabric 入口。 |
+| Expo 原生模块 | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。 |
+| 微信 OpenSDK 6.8.38 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。 |
+| TapSDK 4.10.5 | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。 |
+| Nimbus JOSE JWT 10.9.1 | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
+
+升级 SDK 时核对其 AAR/JAR 的 consumer rules、应用的最终 `configuration.txt` 和 release
+运行结果。共享的 Expo 配置也可能改变 iOS 指纹，冷更范围以指纹比对为准。
+
 ## 原生配置与 runtime fingerprint(冷更边界)
 
 ### 伙伴通信通知

@@ -31,6 +31,7 @@ import {
 } from '@cindy/maker-shared/botGroupChat';
 import { formatRemoteError } from '@cindy/maker-shared/device-link-contract';
 import { isPayloadDesktopLocalMediaUrl } from '@cindy/maker-shared/payload-summary';
+import { chatGroupMembership } from '@cindy/maker-shared/botGroupPresentation';
 
 /** Member links point at the teammates collection; avatars come from its cached rows. */
 export const BOT_GROUP_TEAMMATES_COLLECTION_ID = 'teammates';
@@ -43,7 +44,7 @@ export function botGroupResourceRef(groupId: string): RemoteResourceRef {
 
 export function canManageBotGroup(group: BotGroupRemoteChatData) {
   return group.serverBacked === true && !group.archived && group.supportsSettingsManagement === true
-    && group.revision !== undefined && group.members.some(member => member.isOwned && (member.role === 'owner' || member.role === 'admin'));
+    && group.revision !== undefined && chatGroupMembership(group).manager;
 }
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -114,6 +115,7 @@ const PLAN_STATUSES = new Set<BotGroupPlanView['status']>([
 const STEP_STATUSES = new Set<BotGroupPlanStepView['status']>(['pending', 'running', 'done', 'failed']);
 const SPEAKER_ACTIVITIES = new Set<BotGroupSpeaker['activity']>(['reply', 'planning', 'step']);
 const ATTACHMENT_CATEGORIES = new Set<BotGroupAttachmentCategory>(['image', 'pdf', 'text', 'office', 'file']);
+const ATTACHMENT_STATES = new Set<NonNullable<BotGroupAttachment['state']>>(['loading', 'unavailable']);
 const MAX_ID = 256;
 const MAX_NAME = 512;
 const MAX_TEXT = 200_000;
@@ -179,6 +181,7 @@ function parseAttachment(value: unknown): BotGroupAttachment | null {
   if (!record || !attachmentId || !name) return null;
   const url = text(record.url, 4_096);
   const size = finite(record.size);
+  const state = enumOf(record.state, ATTACHMENT_STATES);
   return {
     id: attachmentId,
     name,
@@ -188,6 +191,8 @@ function parseAttachment(value: unknown): BotGroupAttachment | null {
     url: url && isPayloadDesktopLocalMediaUrl(url) ? url : null,
     path: null,
     ...(record.annotated === true ? { annotated: true } : {}),
+    // Not on the computer yet: kept so the phone shows loading / unavailable, not an openable file.
+    ...(state ? { state } : {}),
   };
 }
 
@@ -346,6 +351,10 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
     name,
     serverBacked: record.serverBacked === true,
     archived: record.archived === true,
+    dissolvedAt: text(record.dissolvedAt, 64),
+    supportsDissolve: record.supportsDissolve === true,
+    supportsGroupLeave: record.supportsGroupLeave === true,
+    supportsListRemoval: record.supportsListRemoval === true,
     ...(Number.isSafeInteger(record.revision) && Number(record.revision) > 0 ? { revision: Number(record.revision) } : {}),
     supportsMemberRemoval: record.supportsMemberRemoval === true,
     supportsSettingsManagement: record.supportsSettingsManagement === true,
@@ -391,6 +400,9 @@ const ERROR_CODES: readonly BotGroupErrorCode[] = [
   'PERMISSION_DENIED',
   'SERVICE_ERROR',
   'GROUP_ARCHIVED',
+  'GROUP_DISSOLVED',
+  'LIFECYCLE_UNAVAILABLE',
+  'LAST_OWNER',
   'MEMBER_LIMIT',
   'MEMBER_UNAVAILABLE',
   'MENTION_UNAVAILABLE',

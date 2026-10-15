@@ -161,8 +161,8 @@
     "runsOnThisDevice": "运行在这台电脑",
     "inviteNotice": "持有邀请链接的用户登录后即可加入，拥有与房主相同的 Agent 使用权限。",
     "offlineAutoClose": "房主电脑持续离线后，共享会自动结束。",
-    "inviteBoxHint": "将链接发送给伙伴，对方点击即可加入。手机端也可复制链接后打开 Cindy。",
-    "invitationMessage": "邀请你加入「{{title}}」\n{{link}}\n点击链接加入；手机端也可复制链接后打开 Cindy，确认加入。",
+    "inviteBoxHint": "将链接发送给伙伴，对方点击即可加入，也可在 Cindy 中点「加入共享任务」粘贴链接。",
+    "invitationMessage": "邀请你加入「{{title}}」\n{{link}}\n点击链接加入；如果没能打开 Cindy，可在 Cindy 中点「加入共享任务」并粘贴这条链接。",
     "membersWithLimit": "成员 · {{count}} 人（最多 2 位访客）",
     "me": "我",
     "thisDevice": "这台电脑",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "此邀请属于其他 Cindy 服务，请用对应的客户端打开链接",
     "managementIntro": "管理你发起和加入的共享。",
     "returnToTasks": "返回任务列表",
-    "invitationDetected": "发现共享任务邀请",
-    "notNow": "暂不加入",
     "closeAllLabel": "取消全部共享",
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
@@ -260,6 +258,22 @@
         "title": "删除对 {{name}} 的分享？",
         "description": "{{name}} 将立即无法使用 {{provider}}，正在运行的任务会停止。之后要再分享，需要重新生成链接。用量记录会保留。",
         "confirm": "删除分享"
+      },
+      "reshare": {
+        "applying": "想经 {{owner}} 的供应商组使用",
+        "requestedAt": "{{time}}请求",
+        "usageHint": "同意后，{{name}} 的任务可以在这台电脑上运行，用量算在 {{owner}} 名下",
+        "approve": "同意",
+        "reject": "拒绝",
+        "listTitle": "经 {{owner}} 的供应商组使用",
+        "stateApproved": "已同意",
+        "stateRejected": "未同意",
+        "revoke": "撤回同意",
+        "revokeAria": "撤回对 {{name}} 的同意",
+        "approveAria": "同意 {{name}} 使用",
+        "toastApproved": "已同意 {{name}} 经 {{owner}} 的供应商组使用 {{provider}}",
+        "toastRejected": "已拒绝 {{name}} 的请求",
+        "toastRevoked": "已撤回对 {{name}} 的同意，正在运行的任务已停止"
       }
     },
     "toast": {
@@ -308,7 +322,7 @@
       "factFiles": "你的项目文件和命令仍在你自己的电脑上执行",
       "factFilesDetail": "由你的任务权限把关",
       "factPrivacy": "对话内容和 Agent 读取的文件内容会经过 {{name}} 的电脑，并保存在实际运行任务的那台电脑上",
-      "factPrivacyDetail": "{{name}} 只会看到你的昵称和头像",
+      "factPrivacyDetail": "{{name}} 和需要同意你使用的其他电脑主人只会看到你的昵称和头像",
       "factApproval": "发送申请后，需要 {{name}} 同意才会生效",
       "factApprovalDetail": "{{name}} 可以随时关闭或删除这个分享",
       "send": "发送申请",
@@ -428,7 +442,9 @@
       "approvedTitle": "分享申请已通过",
       "approvedBody": "{{name}} 已同意分享 {{provider}}",
       "rejectedTitle": "分享申请未通过",
-      "rejectedBody": "{{name}} 没有同意分享 {{provider}}"
+      "rejectedBody": "{{name}} 没有同意分享 {{provider}}",
+      "reshareTitle": "新的使用请求",
+      "reshareBody": "{{name}} 想经 {{owner}} 的供应商组使用你分享的 {{provider}}"
     }
   },
   "providerGroup": {
@@ -501,6 +517,8 @@
       "sourceShare": "来自 {{name}} 的分享",
       "shareComputer": "{{name}} 的电脑",
       "shareComputerUnknown": "分享来的电脑",
+      "accountCount_other": "{{count}} 个账号",
+      "accountFallback": "账号 {{index}}",
       "quota": {
         "loading": "正在读取配额…",
         "unavailable": "暂时读不到这台电脑的配额",
@@ -540,7 +558,22 @@
         "lastDescription": "它是组里最后一台电脑，移出后会删除 {{provider}} 的供应商组。",
         "confirm": "移出组"
       },
-      "sourceGroupOwner": "组所在电脑"
+      "sourceGroupOwner": "组所在电脑",
+      "reshare": {
+        "allApproved": "分享的人可以用",
+        "waiting_other": "{{count}} 位分享的人等待 {{owner}} 同意",
+        "rejected_other": "{{owner}} 未同意 {{count}} 位分享的人",
+        "needsUpdate": "{{owner}} 的 Cindy 更新后才能同意给分享的人用",
+        "unknown": "还不知道 {{owner}} 是否同意给分享的人用",
+        "title": "分享的人能否用这台电脑",
+        "description": "需要 {{owner}} 逐人同意。没同意的人，任务不会分到这台电脑。",
+        "state": {
+          "approved": "已同意",
+          "pending": "等待同意",
+          "rejected": "未同意",
+          "unknown": "还没问到"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "删除 {{provider}} 的供应商组？",
@@ -564,6 +597,7 @@
     },
     "toast": {
       "added_other": "已把 {{count}} 台电脑加入 {{provider}} 的供应商组",
+      "addedAccounts_other": "已把 {{count}} 个账号加入 {{provider}} 的供应商组",
       "removed": "已把 {{name}} 移出供应商组",
       "deleted": "已删除 {{provider}} 的供应商组"
     }
@@ -732,6 +766,7 @@
     "clipboardSyncFailed": "同步暂时失败，正在自动重试。开关保持开启。",
     "clipboardSyncSkipped": "当前内容无法同步，已跳过。请检查粘贴权限，或复制文字、图片后重试。",
     "clipboardSyncPermission": "同步已暂停，请允许粘贴权限后重试。开关保持开启。",
+    "clipboardSyncWaiting": "远程电脑的剪贴板暂时无法访问（可能已锁屏），解锁后会自动继续同步。",
     "lockingOnExit": "正在锁定电脑…",
     "lockOnExit": "退出后锁定电脑",
     "lockOnExitHint": "退出远程桌面时锁屏。重连或切换 App 不会触发。",
@@ -1845,11 +1880,23 @@
         "nameHint": "留空则保持当前名字",
         "changeAvatar": "更换头像",
         "resetAvatar": "恢复默认头像",
+        "adjustAvatar": "调整头像",
         "save": "保存资料",
         "cancel": "取消",
         "syncHint": "名字和头像会保存到账号，并同步到你的所有设备",
-        "avatarInvalid": "请选择 5MB 以内的 PNG / JPG / WebP 图片",
-        "saveFailed": "保存失败，请重试"
+        "avatarInvalid": "请选择 20MB 以内的 PNG / JPG / WebP 图片",
+        "saveFailed": "保存失败，请重试",
+        "crop": {
+          "title": "调整头像",
+          "description": "拖动调整位置，滚动或双指缩放",
+          "done": "完成头像调整",
+          "stageLabel": "头像取景区域：用方向键移动，用加号或减号缩放",
+          "zoomLabel": "缩放",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "放大",
+          "zoomOut": "缩小",
+          "exportFailed": "未能导出调整后的头像"
+        }
       }
     },
     "help": {
@@ -2157,7 +2204,8 @@
         "basics": "基础",
         "refinement": "润色",
         "preferences": "偏好",
-        "usageData": "用量"
+        "usageData": "用量",
+        "speakerFilter": "声纹过滤"
       },
       "serviceSource": {
         "label": "语音服务",
@@ -2453,6 +2501,80 @@
         "toast": {
           "copied": "已复制",
           "copyFailed": "复制失败"
+        }
+      },
+      "speakerFilter": {
+        "label": "识别我的声音",
+        "hint": "语音输入时把旁人的声音静音，只把你说的话送去识别。需要先录入声纹；别人和你同时说话时无法完全滤掉。",
+        "ariaLabel": "切换识别我的声音",
+        "unsupported": "这台电脑的系统暂不支持声纹识别。",
+        "privacy": "声纹只保存在这台电脑上并加密存储，不会上传，也不会同步到其他设备。",
+        "actionFailed": "操作失败，请稍后重试。",
+        "model": {
+          "needed": "首次使用需要下载约 {{size}} 的识别模型。",
+          "download": "下载",
+          "downloading": "正在下载识别模型（{{done}} / {{total}}）",
+          "cancel": "取消",
+          "retry": "重试",
+          "failed": {
+            "network": "识别模型下载失败，请检查网络后重试。",
+            "disk": "识别模型无法保存，请检查磁盘空间后重试。",
+            "checksum": "下载的识别模型校验未通过，请重试。",
+            "unavailable": "暂时无法获取识别模型，请稍后重试。"
+          }
+        },
+        "profile": {
+          "missing": "还没有录入声纹",
+          "missingHint": "录入声纹后才会生效，大约需要 20 秒。",
+          "enrolled": "已录入声纹",
+          "enrolledAt": "{{date}} 录入",
+          "enroll": "录入声纹",
+          "reenroll": "重新录入",
+          "delete": "删除声纹",
+          "deleted": "声纹已删除",
+          "deleteConfirm": {
+            "title": "删除声纹？",
+            "description": "删除后语音输入不再过滤旁人的声音，直到你重新录入。",
+            "confirm": "删除",
+            "cancel": "取消"
+          }
+        },
+        "strictness": {
+          "label": "灵敏度",
+          "hint": "越严格越不容易放进旁人的声音，但在嘈杂环境里也更容易剪掉你自己的话。",
+          "options": {
+            "relaxed": "宽松",
+            "standard": "标准",
+            "strict": "严格"
+          }
+        },
+        "enroll": {
+          "title": "录入声纹",
+          "description": "请在平时使用语音输入的地方，用平常的语气朗读下面 {{clips}} 段文字，每段录音 {{seconds}} 秒。录音时请不要让别人说话。",
+          "stepsAriaLabel": "朗读段落",
+          "step": "第 {{current}} / {{total}} 段",
+          "record": "开始朗读",
+          "rerecord": "重录这段",
+          "recording": "正在录音，还剩 {{seconds}} 秒",
+          "recorded": "这段已录好",
+          "cancel": "取消",
+          "submit": "完成",
+          "done": "声纹已录入",
+          "passages": {
+            "p1": "今天上午我先整理一下这周的工作安排，下午再把需要讨论的问题列出来，发给大家提前看看。",
+            "p2": "如果明天的天气不错，我们可以早点出发，路上顺便买些水果和零食，中午就在公园里吃饭。",
+            "p3": "请帮我把这段内容改得更简洁一些，保留关键数字和结论，然后用三到五句话总结一下重点。"
+          },
+          "errors": {
+            "too_short": "第 {{index}} 段里说话的时间太短，请重录这段，朗读时不要停顿太久。",
+            "no_embedding": "第 {{index}} 段没能识别出声纹，请重录这段。",
+            "inconsistent": "第 {{index}} 段和其他几段不像同一个人，可能混进了别人的声音或噪音，请重录这段。",
+            "models_missing": "识别模型还没有下载完成，请稍后再试。",
+            "storage_unavailable": "系统钥匙串暂时不可用，声纹无法加密保存，请稍后重试。",
+            "failed": "生成声纹失败，请重试。",
+            "microphone": "无法使用麦克风，请检查麦克风权限和设备。",
+            "noAudio": "麦克风没有传来声音，请检查设备后重试。"
+          }
         }
       }
     },
@@ -8737,6 +8859,8 @@
       "needsAttention": "需要处理",
       "duplicate": "复制伙伴",
       "moreActions": "{{name}} 的更多操作",
+      "sectionExpand": "展开伙伴",
+      "sectionCollapse": "收起伙伴",
       "noResults": "没有匹配的伙伴或群聊"
     },
     "cancel": "取消",
@@ -8998,6 +9122,12 @@
         "attachmentsFailed": "附件没能发出去，请检查文件是否还在，或移除后重试",
         "folderNotSupported": "文件夹不能作为附件，请选择其中的文件"
       },
+      "outbox": {
+        "sending": "发送中…",
+        "failed": "没发出去",
+        "edit": "编辑",
+        "editBlocked": "输入框里还有内容，先发出或清空，再编辑这条消息"
+      },
       "quote": {
         "replyingTo": "引用 {{name}}",
         "remove": "取消引用",
@@ -9105,7 +9235,10 @@
         "permissionDenied": "你没有执行此操作的群管理权限。",
         "serviceError": "群聊服务处理失败，请稍后重试。",
         "groupArchived": "本群已归档，不能执行此操作。",
-        "quoteUnavailable": "引用的消息已删除或不可见，已取消引用，请再发送一次"
+        "quoteUnavailable": "引用的消息已删除或不可见，已取消引用，请再发送一次",
+        "lifecycleUnavailable": "当前服务器或电脑暂不支持此操作。",
+        "groupDissolved": "群聊已解散，仍可查看有权访问的历史消息。",
+        "lastOwner": "请先转让群主或解散群聊，再退出。"
       },
       "organizer": "负责人",
       "plan": {
@@ -9134,7 +9267,10 @@
         "planning": "正在安排…"
       },
       "files": {
-        "openFailed": "文件没能打开，可能已被移动或删除"
+        "openFailed": "文件没能打开，可能已被移动或删除",
+        "untitled": "附件",
+        "loading": "加载中…",
+        "unavailable": "暂时无法加载"
       },
       "addFromChat": {
         "triggerFor": "将 {{name}} 添加到群聊",
@@ -9155,6 +9291,11 @@
         "sendReply": "发送回复",
         "addReaction": "添加表情回应",
         "reactionCount": "{{emoji}} · {{count}} 人回应",
+        "reactionWho": "{{emoji}} · {{count}} 人回应：{{names}}",
+        "reactorSelf": "你",
+        "reactorFormer": "{{name}}（已不在群中）",
+        "reactorsUnavailable_one": "另有 {{count}} 位成员的信息暂不可用",
+        "reactorsUnavailable_other": "另有 {{count}} 位成员的信息暂不可用",
         "invite": "邀请加入群聊",
         "join": "加入群聊",
         "inviteDescription": "对方接受邀请后会成为群成员，可阅读群聊记录。",
@@ -9217,7 +9358,7 @@
           "removeHint": "该成员将无法继续查看或发消息；如果是伙伴的主人，其伙伴也会退出。",
           "addCompanion": "邀请我的伙伴",
           "leave": "退出群",
-          "leaveHint": "你和你带来的伙伴将退出群。群主需要先转让身份。",
+          "leaveHint": "你和你的伙伴将退出此群聊，不再接收新消息，也无法查看群历史。",
           "soleOwnerHint": "群里只剩你。可以归档群，保留历史记录，以后再恢复使用。",
           "archive": "归档群",
           "archiveHint": "归档会对所有成员停用本群，停止新消息和伙伴执行。历史记录保留，之后可通过搜索找到本群、查看历史并取消归档。",
@@ -9237,6 +9378,18 @@
           "companionPermissions": "伙伴权限",
           "configureCapabilities": "工具与授权设置"
         }
+      },
+      "lifecycle": {
+        "dissolve": "解散群聊",
+        "dissolveNote": "解散后无法恢复。所有成员将无法发送消息，进行中的工作会停止，邀请会失效。成员仍可查看原本有权访问的历史消息。",
+        "hide": "从我的列表移除",
+        "hideNote": "从你所有设备的列表中移除此群聊。不改变成员关系，不删除历史消息、不停止进行中的工作，也不影响其他成员。",
+        "leave": "退出群聊",
+        "leaveNote": "你和你的伙伴将退出此群聊，不再接收新消息，也无法查看群历史。",
+        "unavailable": "当前服务器或电脑暂不支持此操作。",
+        "dissolved": "群聊已解散，仍可查看有权访问的历史消息。",
+        "failed": "操作未完成，请重试。",
+        "lastOwner": "请先转让群主或解散群聊，再退出。"
       }
     },
     "joined": {

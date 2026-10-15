@@ -70,7 +70,48 @@ fragment 只允许一个闭集 `app` 提示，不允许额外 `#` / `?` 段；�
 sgp-prod 都部署该页面后，才把 `createInvite` 生成的链接切换为 https。旧客户端点击 https 链接
 经页面转到 `cindy://` 仍可用，但粘贴 https 链接需要新版客户端。Chat Server API 不变。
 
+## 群消息附件的结构化投影
+
+Chat Server 群消息投影（Desktop IPC 与 `bot-group-chat` 远程资源共用 `BotGroupMessageView`）的
+`content` 不再包含 `[附件: 文件名]` 占位行，附件只在 `attachments` 里。尚未取到电脑的服务器附件也
+保留一项，`url`、`path` 为 null，并带可选 `state: 'loading' | 'unavailable'`；取到后同一 `id` 换成
+完整附件、`state` 缺省。新版手机解析该字段，在原位置显示「加载中」/「暂时无法加载」，点开说明状态而不当作
+可打开的文件；旧手机忽略该字段，把这一项显示为带文件名的文件条，旧版 Markdown 回退仍为 `📎 文件名`。手机直连同样只从 media 块投影附件，正文不再拼 caption。给伙伴的上下文文本不变。
+不改 channel、能力、服务端 schema、数据库或 Mobile 原生指纹。
+
 ## 手机直连群的设置管理
+
+### 群解散与个人列表移除
+
+`GET /me` 明确声明 `groupLifecycleVersion: 1` / `conversationListStateVersion: 1` 才启用对应动作。
+缺能力或旧副本拒绝时显示不可用，不回退为 archive 或兼容 delete。服务端合同及迁移由
+`xindong/cindy-server#921` 提供；该 PR 的实际启动迁移核验与部署仍为独立上线条件。
+
+`POST /conversations/:id/dissolve` 带 operationId 与正整数 expectedRevision，只允许 joined owner
+（包括合法伙伴主人代演），且 kind 必须是 group。`dissolved_at` 是不可撤销的终态，归档只是其
+旧客户端只读兼容投影。保留原历史权限，停止现有执行与分工、失效邀请均由服务端事务负责；
+Desktop 收到终态后还会中止本机未完成的规划，沿原 lease 链停止执行；本机终止规划无需追加取消规划写入。
+
+`POST /conversations/:id/list-state` 带 operationId、hidden 与本人列表 expectedRevision（初始0）。
+它只移除本人账号跨设备列表，不退出、不删历史、不停止其他人的执行。已退出者通过
+`GET /conversation-list-state` 获取状态，无需先读已无权限的群快照。启动及重连先取个人状态，
+只合入更新的修订；成功回包或本人 human actor scope 的 `conversation.list.changed` 才清理本地
+列表、选择与未读镜像，失败保留列表。手机同时订阅群和本人 human scope，代演不替换账号订阅。
+同账号并发全量同步共用一次请求；普通聊天刷新复用已同步状态与事件，启动、重连及手机主动刷新重新读取。
+同步失败不把缓存标记为已就绪。手机列表重新挂载时先纳入已有个人状态，直连离线也不恢复旧电脑回包。
+actor scope 遇到 RESET_REQUIRED 时，在在途读取完成后重新读取个人状态，再按服务端 head 续订；
+Desktop 与 Mobile 均受当前账号、socket 身份保护。个人移除成功时由仍挂载的聊天页完成返回列表，
+设置面板因列表更新先卸载不会吞掉成功导航，离开页面后的旧回包也不能改变新页面。
+手机收到跨设备本人 hidden 事件也由当前聊天页返回列表，本机回执与事件共用一次导航；
+设置面板每次关闭/身份切换都会清空 busy，旧打开周期的请求不能覆盖新周期状态。
+Desktop 解散或变更期间遇到在途 heartbeat，会合并排队一次后续租约检查，避免漏掉权威终止。
+
+现有 `bot-group-chat` 投影可选追加 supportsDissolve、supportsListRemoval、supportsGroupLeave、dissolvedAt；远程资源
+动作 `dissolve` / `leave` / `hide` 分别转发相同的服务端动作。hide 的 opaque result 返回
+`{listState:{conversationId,hidden,revision}}`，手机按修订合入同一账号投影，阻止旧电脑列表复活。
+Desktop 既有群变化推送新增 list 类型及可选 listState；旧窗口忽略未知类型仍会刷新列表。
+旧客户端与服务端可独立升级；完整行为要求服务端全副本及使用的客户端均支持。无新增 channel、
+SQLite schema、Mobile 原生依赖或 fingerprint 输入。
 
 现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
 声明该能力，手机读取最新群详情和已有成员角色后才开放管理。设置动作可带
@@ -963,7 +1004,8 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   B 上受邀者会话的 Agent 自带工具按白名单开放(产品规则 §9 第 5 条，不改 wire)；受邀者电脑上的 `cindy_exec` 在任务的
   Agent 位置是 `share:` 时为 Claude Code 追加 `WebFetch`(在受邀者电脑抓取，tools/list 追加项)：旧版受邀者不列，受邀者就没有
   WebFetch；旧版分享者上它与自带 WebFetch 并存。两种组合都不报错，也不改 wire；
-  remote-agent wire 本身不变。新错误码 `REMOTE_AGENT_SHARE_PAUSED` / `REMOTE_AGENT_SHARE_REMOVED` / `REMOTE_AGENT_SHARE_UNAVAILABLE`
+  remote-agent wire 本身不变(2026-10-15 起受邀者可多调一个 op `reshare`、open 多一个可选 `reshareKey`，channel 白名单不变，
+  见「供应商组：转分享需原主人逐人同意」)。新错误码 `REMOTE_AGENT_SHARE_PAUSED` / `REMOTE_AGENT_SHARE_REMOVED` / `REMOTE_AGENT_SHARE_UNAVAILABLE`
   只在受邀者本机产生(分享者电脑回 `ACCESS_REVOKED`、relay 回 `REMOTE_DISABLED` 时改写成 `UNAVAILABLE`)；
   控制这台电脑的旧版手机没有对应文案，显示通用的发送失败提示。分享出去的 `maker:provider:list` 去掉分享者的账号身份
   (`subscriptionAccount` / `openAiAccount` 与名称里的登录名、邮箱，`@cindy/device-link` 的 `scrubSharedProvider`)，
@@ -1078,6 +1120,29 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
   `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
 
+## 供应商组：同一台电脑的几个账号按电脑聚合（2026-10-15）
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §10。组成员的键与分配不变，只给展示与计数补两项可选字段：
+
+- 组设置成员新增可选 `providerName`(加入时那台电脑上这个供应商的显示名快照，保存时以候选目录为准)；同账号目录里的组摘要
+  (`maker:provider:list` 的 `group.members[]`)与 `provider-group:remote` 的 `view` 成员状态也带可选 `providerName`
+  (状态优先用那台电脑当前的供应商名)。按显示名校验(去空白、≤128、无控制字符)，不合格就丢弃。
+- 分享来的组员新增可选 `hostDeviceId`(分享者那台电脑的设备 id，本账号收到的分享里本来就有)：加入时取自候选目录，
+  保存时渲染端给的值以目录为准、渲染端漏带时沿用已存的；旧组由 `removedShares.ts` 的 `recordShareHosts` 在对账已收到的
+  分享时补记(只补名单里有的，没变化不写)。随组摘要发给同账号电脑(含手机)，不显示、不用于连接；只接受设备 id 格式，
+  其余组员类型上的这一项丢弃。物理电脑键：分享来的有它时按它，没有时按分享各算一台。
+- 旧端忽略这两个字段(旧版本读写组设置会丢掉它们，升级后由对账与下次保存补回)；新端读到旧组所在电脑的回包没有
+  `providerName` 时用组设置里的快照，都没有时界面写「账号 N」。不新增 channel，不改 relay、服务器或数据库。
+  组摘要本来就不发给受邀者，受邀者的匿名状态也不带这两项。
+- **给受邀者的 `groupSize` 与匿名状态改为按物理电脑**：`sharedProviderGroupSize` 用 `providerGroupDeviceCount`，
+  `readSharedGroupStatus` 把同一台电脑的几个账号合成一项(`sharedGroupComputerStates`，取最能接任务的状态)，两者项数一致，
+  仍满足 `readProviderShareGroupStatus` 的「状态数 = 台数」校验；新旧受邀者都按原格式读，只是项数变少。
+- 实现：`shared/providerGroup.ts`、`provider-group/router.ts`、`ipc.ts`、`directory.ts`、`removedShares.ts`、
+  `reshareRuntime.ts`、`sharedStatus.ts`、`remoteHandler.ts`，界面聚合在
+  `renderer/features/provider-group/providerGroupPresentation.ts`，手机计数在 `apps/mobile/src/session/remoteProviderGroups.ts`；
+  回归见 `shared/__tests__/providerGroup.test.ts`、`provider-group/__tests__/` 下 `ipc`、`directory`、`removedShares`、
+  `sharedStatus`、`remoteHandler` 测试与界面、手机同名测试。
+
 ## 供应商组：Claude 订阅额度筛选与用量均衡（2026-10-12）
 
 产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5。选电脑仍由组所在电脑完成：先排除额度耗尽的成员，
@@ -1160,6 +1225,46 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
   `provider-group/guestRelay.ts`(运行中失败的冷却)、`provider-group/guestSwitch.ts` 与 `provider-group/service.ts`(G 侧凭证与
   自动交接)、`maker-ipc/sessionAgentSwitchHandler.ts`(仅内部可用的 `forceRelocation`)；回归见
   `remote-agent/__tests__/groupRelay.test.ts`、`provider-group/__tests__/service.test.ts`、`guestSwitch.test.ts`。
+
+## 供应商组：转分享需原主人逐人同意(2026-10-15)
+
+产品规则见 [`provider-sharing.md`](../product-rules/provider-sharing.md) §4.3 与 [`provider-groups.md`](../product-rules/provider-groups.md)
+§4。组所在电脑 O 的组里有分享来的组内电脑 M(O 的账号是 M 的受邀者)，O 又把组所在的供应商分享给了 G：G 的任务要经 O 中转到
+M 上运行，必须先由 M 的主人逐人同意(按 G 的账号，不按设备)。O 与 M 之间沿用 `maker:remote-agent:v1`，新增三项可选内容；
+G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote-agent:v1` 的新 op，不改 `PROVIDER_SHARE_CHANNELS`、
+`REMOTE_INVOKE_ALLOWLIST` 与 allowlist 哈希)。
+
+- **caps 新增可选 `reshareConsent: true`**(`RemoteAgentCaps`，`parseRemoteAgentCaps` 白名单只认 `true`)：M 能记下并核对转分享的
+  同意。只回给受邀者对端(同账号控制端经组使用不需要同意)。O 只给声明了它的 M 报人；未声明的旧 M 给不出同意，O 不把受邀者的
+  任务分给它，设置页提示那台需要更新。O 在每次 open 前现查(含绕过分配的已有绑定续接)，不能沿用降级前的能力或同意缓存。
+- **新 op `reshare { entries: [{ key, name, avatar? }] }`**(`parseRemoteAgentRequest`)：O 把它此刻分享的人整体报给 M(整体替换
+  调用方上一份；调用方按本地 peer key 的(分享、成员、设备)区分)。`key` 是 O 按(O 的分享 id, G 的成员 id)派生的不透明键(格式同
+  `REMOTE_AGENT_RELAY_KEY_PATTERN`，同一个人从哪台设备来都相同)；`name`(≤128 字符，无控制字符)与 `avatar`(只收 https)由 O 转述，
+  只用来让 M 的主人认出是谁。最多 256 项、键不能重复。回包 `{ entries: [{ key, state: 'pending' | 'approved' | 'rejected' }] }`
+  (`parseRemoteAgentReshareResult`，不认识的状态与请求外的键丢弃)。M 只接受受邀者对端，其他调用方回 `REMOTE_AGENT_INVALID`；旧 M
+  不认识这个 op 同样回 `REMOTE_AGENT_INVALID`。替换语义使重复发送安全；O 只在本机分享快照已拉到时才报，避免空名单清掉已有同意。
+  单次请求上限是 wire 防护，不是分享人数上限：超过 256 人时，O 先从 M 的 caps 读取 `reshareBatch: true`，再用不透明的
+  `batch: { id, index, count }` 按 256 人分片顺序发送；每片响应只带当前片的状态、同一批次信息与 `complete`，最后一片才表示接收端已整体替换。
+  M 可以乱序接收并在内存暂存，缺片或未收齐时保留上一份已落盘审批名单；未完成批次 10 分钟后过期，新批次替换同一来源的旧批次。
+  批次数不设按人数的固定上限，接收端按序列化字节总预算限制未完成批次，超预算返回可重试的忙碌错误；已完成批次在过期前对重复片段回同一完成状态，避免重试重新创建待处理批次。
+  没有 `reshareBatch` 的旧 M 不能安全接收大名单，O 标记需要更新且不发送任何部分名单。
+- **open 载荷新增可选 `reshareKey`**(`remote-agent/wire.ts`，同 relay 键格式)：O 把受邀者任务转给分享来的 M 时带上这个人的键
+  (同账号组内电脑不带；G 自己填的不转发)。M 收到受邀者对端带 `relay` 的 open(即被转来的任务，含续接)时，只有主人同意过
+  (调用方, `reshareKey`)才运行：带了 `reshareKey` 而没同意回新错误码 `REMOTE_AGENT_RESHARE_NOT_ALLOWED`(带这个字段即表示 O 认识它)；
+  没带(旧 O)回已有的 `REMOTE_AGENT_PROVIDER_NOT_ALLOWED`，旧 O 照常换组里下一台、转给 G 时统一成「暂时不可用」。
+  主人撤回同意时 M 立即结束这个人经组转来的任务；M 在所有异步查询结束后、登记任务前再次核对同意，核对与登记之间不等待。
+  O 收到 `REMOTE_AGENT_RESHARE_NOT_ALLOWED` 时重新核对同意情况，之后不再选它。
+- O 移出最后一个组引用时，在本机组设置里原子记下待清空代次；`reshare` 空名单得到有效回包后才删除该代次，失败每分钟重试，
+  重启后继续。重新加入时先清空再报人；迟到的确认不能吞掉再次移出的新代次。不新增 wire 字段，沿用整体替换的幂等语义。
+- O 给 G 的匿名组状态(`groupStatus`)里，没同意过 G 的分享来的电脑显示 `unavailable`(那台给不出同意时 `needs-update`)，与实际
+  分配一致；`groupSize` 不变。
+- 已知局限：M 只能按 O 自报的 `relay` 认出被转来的任务；改过的 O 不带 `relay` 时 M 分不出(防误分享，不防恶意，与供应商分享
+  「默认信任分享对象」一致)。更早的 O(P2b 之前)不带 `relay`，M 同样分不出。
+- 不改 relay、服务器与数据库(M 的同意记录在本机 `provider-share-reshare.json`)。实现：`packages/device-link/src/remoteAgent.ts`、
+  `remote-agent/host/runHost.ts`、`host/groupRelay.ts`(`reshareKeyFor`)、`device-link/providerShareReshare.ts`(M 侧记录)、
+  `provider-group/reshare.ts` 与 `reshareRuntime.ts`(O 侧报人与缓存)、`provider-group/guestRelay.ts`(选电脑)；回归见
+  `packages/device-link/src/__tests__/remoteAgent.test.ts`、`remote-agent/__tests__/groupRelay.test.ts`、
+  `provider-group/__tests__/reshare.test.ts`、`guestRelay.test.ts`、`device-link/__tests__/providerShareReshare.test.ts`。
 
 ## 供应商分享：受邀者不看分享者的电脑名，组只给台数(2026-10-10)
 
@@ -1766,20 +1871,24 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 - 后续：若服务端放开主时间线 `replyToId`（能力协商后），客户端可同时写 `replyToId` 获得外键约束与
   删除感知，卡片继续承担快照与旧端兼容；两者并存时以 `replyToId` 为准。
 
-## 委派任务的完成通知归属
+## 委派任务与自动任务的完成通知策略
 
 既有 `SessionActivityPayload` 可选字段 `completionNotification` 影响远端桌面、手机与飞书完成通知：
-`pending` 表示该轮终态回传正在判定，`teammate` 表示同一委派执行结果已成功交回伙伴；
+`pending` 表示该轮终态回传正在判定，`teammate` 表示同一委派执行结果已成功交回伙伴，
+`silent` 表示本轮完成静默（即使保留历史未读，也不重新弹出、响铃或发外部通知）；
 缺省或未知值按普通任务完成通知处理。完成 phase、摘要和 attention 在 pending 阶段照常发送，
 回传决定通过同一活动通道更新；执行宿主等到真实 `done` 的回传边界再决定，前置
 `status: Done` 不能提前消费归属。本机外部通知共用这一决定；控制端的手机/飞书调用
-在活动仍运行或 `pending` 时等待同一活动通道更新，已回传伙伴则取消调用。已读、断开、
+在活动仍运行或 `pending` 时等待同一活动通道更新，已回传伙伴或本轮静默则取消调用。
+没有活动记录（例如静默完成的清除帧早于 renderer 的 done 回调）不能当作新完成的证据。
+`silent` 随未读账本和重连快照保留，新一轮运行清除；聊天过程与历史未读不受影响。已读、断开、
 新一轮运行、报错或待交互使旧完成调用失效，不延迟错误与待答通知，也不更改任何未读。
 控制端桌面仅对已观察运行的任务补发必要 fallback 一次，重连的
 基线终态不补发历史提醒。错误与待交互不受此字段影响。
 
-新控制端连接旧执行端沿用原通知；旧控制端忽略该字段，仍可能发独立完成外部通知，完整远端
-去重需要两端更新。手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
+新控制端连接旧执行端时，明确的普通未读完成仍按原规则通知；旧控制端忽略该字段或未知枚举，
+仍可能发独立完成通知，完整远端去重和保留旧未读时的静默需要两端更新。
+手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
 移动列表继续原 phase/attention 语义。无需服务端、数据库 migration 或 Mobile fingerprint 改动。
 
 ## 伙伴创建时选择模型
