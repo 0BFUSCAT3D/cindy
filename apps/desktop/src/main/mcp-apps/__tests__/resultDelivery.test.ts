@@ -4,6 +4,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import type { AppConnection } from '../connection.js';
 import { McpAppsHost, appServerRevision, type McpAppsHostDeps } from '../host.js';
+import { handleMcpAppOperation } from '../operations.js';
 
 const hosts: McpAppsHost[] = [];
 afterEach(async () => {
@@ -57,8 +58,9 @@ function fixture() {
     cards.set(clientId, record);
   });
   const dispose = vi.fn();
+  const callTool = vi.fn(async () => result);
   const connection = {
-    getClient: async () => ({ getServerCapabilities: () => ({}) }),
+    getClient: async () => ({ getServerCapabilities: () => ({ tools: {} }), callTool }),
     tools: async () => [tool],
     resource: async () => ({
       result: { contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: '<p>Form</p>' }] },
@@ -82,7 +84,7 @@ function fixture() {
   const sendResult = vi.spyOn(AppBridge.prototype, 'sendToolResult');
   const sendCancelled = vi.spyOn(AppBridge.prototype, 'sendToolCancelled');
   const sendInput = vi.spyOn(AppBridge.prototype, 'sendToolInput');
-  return { host, card, cards, readCard, writeCard, dispose, sendResult, sendCancelled, sendInput };
+  return { host, card, cards, readCard, writeCard, dispose, sendResult, sendCancelled, sendInput, callTool };
 }
 
 async function open(host: McpAppsHost, caller: string, clientId = 'card') {
@@ -122,6 +124,49 @@ async function initialize(host: McpAppsHost, view: Awaited<ReturnType<typeof ope
 }
 
 describe('MCP App result delivery authorization', () => {
+  it.each(['device:phone', 'device:desktop'])(
+    'acknowledges a slow tools/call before completion and polls its result once for %s',
+    async (caller) => {
+      const f = fixture();
+      const view = await open(f.host, caller);
+      await initialize(f.host, view);
+      const healthy = await open(f.host, 'device:healthy');
+      await initialize(f.host, healthy);
+      vi.useFakeTimers();
+      const upstream = deferred<CallToolResult>();
+      f.callTool.mockReturnValueOnce(upstream.promise);
+      let acknowledged = false;
+      const ack = handleMcpAppOperation(f.host, caller, 'task', {
+        op: 'message', viewId: view.viewId,
+        message: { jsonrpc: '2.0', id: 100, method: 'tools/call', params: { name: 'form', arguments: {} } },
+      }).then((value) => { acknowledged = true; return value; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(acknowledged).toBe(true);
+      await expect(ack).resolves.toEqual({});
+      expect(f.callTool).toHaveBeenCalledOnce();
+      // Beyond both controllers' ordinary invoke windows, the View and original
+      // tool request remain live. No retry, replay, or link reset is needed.
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(f.callTool).toHaveBeenCalledOnce();
+      await expect(f.host.assertViewAuthorized(caller, 'task', view.viewId)).resolves.toBeUndefined();
+      await handleMcpAppOperation(f.host, healthy.caller, 'task', {
+        op: 'message', viewId: healthy.viewId,
+        message: { jsonrpc: '2.0', id: 101, method: 'ping' },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      const peerEvents = await f.host.poll(healthy.caller, 'task', healthy.viewId, healthy.after);
+      expect(peerEvents.some((event) => event.message && 'id' in event.message && event.message.id === 101 && 'result' in event.message)).toBe(true);
+      upstream.resolve(result);
+      await vi.advanceTimersByTimeAsync(0);
+      const events = await f.host.poll(caller, 'task', view.viewId, view.after);
+      const replies = events.filter((event) => event.message && 'id' in event.message && event.message.id === 100);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message).toMatchObject({ id: 100, result });
+      expect(f.callTool).toHaveBeenCalledOnce();
+      vi.useRealTimers();
+    },
+  );
+
   it.each(['pending', 'result', 'cancelled'] as const)(
     'restores an orphaned %s card without replaying its original tool',
     async (kind) => {
