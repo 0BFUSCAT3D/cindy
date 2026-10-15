@@ -44,10 +44,11 @@ export type BotGroupSharedReplies = ReadonlyMap<string, { messageId: string; byS
  * while the same thread is open again, and either way that panel shows the retry.
  * Server groups keep their IDs across accounts, so the queue belongs to one data owner.
  */
-const unpostedStore = { owner: getDataOwnerGeneration(), replies: new Map<string, ReadonlySet<string>>(), listeners: new Set<() => void>() };
+const unpostedStore = { owner: getDataOwnerGeneration().dataOwnerId, replies: new Map<string, ReadonlySet<string>>(), listeners: new Set<() => void>() };
 const NONE_UNPOSTED: ReadonlySet<string> = new Set();
 function unpostedReplies() {
-  const owner = getDataOwnerGeneration();
+  // Same-account runtime repairs advance generation without changing this queue's owner.
+  const owner = getDataOwnerGeneration().dataOwnerId;
   if (unpostedStore.owner !== owner) { unpostedStore.owner = owner; unpostedStore.replies.clear(); }
   return unpostedStore.replies;
 }

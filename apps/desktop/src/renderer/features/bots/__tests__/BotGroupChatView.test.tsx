@@ -51,7 +51,7 @@ const mocks = vi.hoisted(() => ({
   getControlledState: vi.fn(),
   revoke: vi.fn(),
   thread: vi.fn(),
-  ownerGeneration: 1,
+  ownerGeneration: { dataOwnerId: 'account-a', generation: 1 },
   reply: vi.fn(),
   shareToMain: vi.fn(),
 }));
@@ -71,7 +71,8 @@ vi.mock('react-router-dom', () => ({
 }));
 vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => mocks.ownerGeneration,
-  isDataOwnerGenerationCurrent: () => true,
+  isDataOwnerGenerationCurrent: (owner: { dataOwnerId: string; generation: number }) =>
+    owner.dataOwnerId === mocks.ownerGeneration.dataOwnerId && owner.generation === mocks.ownerGeneration.generation,
   isDataOwnerPushCurrent: () => true,
 }));
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.toastError, warning: mocks.toastWarning, info: mocks.toastInfo } }));
@@ -3202,7 +3203,7 @@ describe('more older shares than one refresh re-reads', () => {
 describe('pending main-chat copies across accounts', () => {
   const t = (name: string) => `bots.groupChat.server.thread.${name}`;
   beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
-  afterEach(() => { mocks.ownerGeneration = 1; });
+  afterEach(() => { mocks.ownerGeneration = { dataOwnerId: 'account-a', generation: 1 }; });
 
   it('does not offer one account\'s failed copy to the next account in the same group', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' })] }) });
@@ -3216,11 +3217,38 @@ describe('pending main-chat copies across accounts', () => {
     await within(panel).findByRole('button', { name: t('retryPost') });
     view.unmount();
     // Another account opens the same server group and thread.
-    mocks.ownerGeneration = 2;
+    mocks.ownerGeneration = { dataOwnerId: 'account-b', generation: 2 };
     renderView();
     await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
     panel = await screen.findByRole('complementary');
     await within(panel).findByText('Reply to u1');
     expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull();
+  });
+
+  it('keeps failed copies across same-owner repair and ignores an old-generation retry result', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, messages: [msg({ id: 'u1', content: 'A' })] }) });
+    let finishOldRetry!: (result: { ok: true; messageId: string; alreadyShared: boolean }) => void;
+    mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' })
+      .mockImplementationOnce(() => new Promise(resolve => { finishOldRetry = resolve; }));
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'copy me{Enter}');
+    await user.click(await within(panel).findByRole('button', { name: t('retryPost') }));
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(2);
+
+    // Runtime repair leaves the same account and panel mounted, but replaces generation.
+    mocks.ownerGeneration = { dataOwnerId: 'account-a', generation: 2 };
+    await user.type(within(panel).getByRole('textbox'), 'next draft');
+    expect(within(panel).getByRole('button', { name: t('retryPost') })).toBeTruthy();
+    await act(async () => { finishOldRetry({ ok: true, messageId: 'old-share', alreadyShared: false }); });
+    expect(within(panel).getByRole('button', { name: t('retryPost') })).toBeTruthy();
+
+    await user.click(within(panel).getByRole('button', { name: t('retryPost') }));
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull());
+    expect(mocks.shareToMain.mock.calls).toEqual(Array.from({ length: 3 }, () => [{ groupId: 'g1', messageId: 'new-reply' }]));
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
   });
 });
