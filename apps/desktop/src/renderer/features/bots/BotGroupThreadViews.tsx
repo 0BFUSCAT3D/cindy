@@ -32,7 +32,8 @@ export function findThreadMessageElement(container: HTMLElement | null, messageI
 
 /** Bring a jumped-to message into view and outline it briefly, without moving focus. */
 export function flashThreadTarget(target: HTMLElement) {
-  target.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+  target.scrollIntoView?.({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
   target.classList.add(...FLASH_CLASSES);
   window.setTimeout(() => target.classList.remove(...FLASH_CLASSES), FLASH_MS);
 }

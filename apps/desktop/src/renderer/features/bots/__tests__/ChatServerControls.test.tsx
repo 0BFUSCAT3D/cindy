@@ -5,13 +5,14 @@ import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
 import { ChatThreadPanel } from '../ChatThreadPanel';
+import { flashThreadTarget } from '../BotGroupThreadViews';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { queryShareableMessageIds, stripInteractiveElements } from '@/lib/shareConversationImage';
 
 const mocks = vi.hoisted(() => ({
   status: vi.fn(), react: vi.fn(), thread: vi.fn(), reply: vi.fn(), createInvite: vi.fn(), previewInvite: vi.fn(), acceptInvite: vi.fn(),
-  refresh: vi.fn(), ownerCurrent: true,
+  refresh: vi.fn(), shareToMain: vi.fn(), ownerCurrent: true,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
 vi.mock('@/components/chat/MarkdownRenderer', () => ({ MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div> }));
@@ -97,6 +98,38 @@ describe('chat interaction controls', () => {
     expect(screen.getByText('Earlier reply')).toBeTruthy();
     expect(screen.getByText('Latest reply')).toBeTruthy();
     expect(mocks.thread.mock.calls.at(-1)?.[0]).toMatchObject({ sourceMessageIds: [older.id, latest.id] });
+  });
+
+  it('stops a bulk retry of main-chat copies once the account is switched', async () => {
+    mocks.reply.mockResolvedValueOnce({ ok: true, messageId: 'first' }).mockResolvedValueOnce({ ok: true, messageId: 'second' });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    render(<ChatThreadPanel group={group} rootId="retry-root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') });
+    for (const [count, text] of [[1, 'one'], [2, 'two']] as const) {
+      fireEvent.click(screen.getByRole('checkbox', { name: k('thread.alsoSend') }));
+      fireEvent.change(input, { target: { value: text } });
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(count));
+    }
+    const retry = await screen.findByRole('button', { name: k('thread.retryPost') });
+    let finish!: (value: unknown) => void;
+    mocks.shareToMain.mockClear().mockReturnValueOnce(new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue({ ok: true, messageId: 'share', alreadyShared: false });
+    fireEvent.click(retry);
+    await waitFor(() => expect(mocks.shareToMain).toHaveBeenCalledTimes(1));
+    // The account changes while the first copy is in flight: the second must not go out.
+    mocks.ownerCurrent = false;
+    finish({ ok: true, messageId: 'share', alreadyShared: false });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([[true, 'auto'], [false, 'smooth']] as const)('jumps to a shared reply without smooth scrolling when reduced motion is %s', (reduced, behavior) => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: reduced && query === '(prefers-reduced-motion: reduce)' }));
+    const target = document.createElement('article');
+    target.scrollIntoView = vi.fn();
+    flashThreadTarget(target);
+    expect(target.scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior });
   });
 
   it('keeps looking for a shared reply when group pushes overtake its older-page reads', async () => {

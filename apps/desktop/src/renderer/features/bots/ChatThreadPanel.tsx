@@ -215,7 +215,12 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     finally { postingRef.current.delete(messageId); setPosting(new Set(postingRef.current)); }
   }
   async function retryUnposted() {
-    for (const messageId of unposted) await postToMain(messageId, true);
+    // The queue belongs to the account that started the retry; stop once it is switched.
+    const owner = getDataOwnerGeneration();
+    for (const messageId of unposted) {
+      if (!isDataOwnerGenerationCurrent(owner)) return;
+      await postToMain(messageId, true);
+    }
   }
   async function send() {
     if (group.archived || sending.current || !text.trim()) return;
