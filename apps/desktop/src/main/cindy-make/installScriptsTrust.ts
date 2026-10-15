@@ -68,7 +68,14 @@ export async function remoteContentScriptsUnverified(
   trust: InstallScriptsTrust,
 ): Promise<boolean> {
   if (!COMMIT.test(baseCommit)) return true;
-  if (trust.unverifiedRemoteOverflow?.()) return true;
+  if (trust.unverifiedRemoteOverflow?.()) {
+    // Omitted tips cannot be vouched for individually. A generated version must
+    // instead cover this task's *whole base*. Keep the overflow marker so later
+    // content which that generation did not cover is still guarded.
+    for (const commit of trust.published())
+      if (COMMIT.test(commit) && (await reaches(trust, baseCommit, commit))) return false;
+    return true;
+  }
   for (const tip of trust.unverifiedRemote()) {
     if (!COMMIT.test(tip) || !(await reaches(trust, tip, baseCommit))) continue;
     let verified = false;

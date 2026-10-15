@@ -17,9 +17,10 @@ function trust(
   const ancestry = new Set((overrides.ancestry ?? []).map(([a, b]) => `${a}>${b}`));
   return {
     unverifiedRemote: overrides.unverifiedRemote ?? (() => []),
+    unverifiedRemoteOverflow: overrides.unverifiedRemoteOverflow,
     rewrites: overrides.rewrites ?? (() => []),
     published: overrides.published ?? (() => []),
-    contains: overrides.contains ?? (async (a, b) => ancestry.has(`${a}>${b}`)),
+    contains: overrides.contains ?? (async (a, b) => a === b || ancestry.has(`${a}>${b}`)),
   };
 }
 
@@ -44,6 +45,39 @@ describe('remoteContentScriptsUnverified', () => {
         unverifiedRemoteOverflow: () => true,
       }),
     ).resolves.toBe(true);
+  });
+
+  it.each(['exact', 'descendant', 'rewrite'] as const)(
+    'allows an overflowed ledger only when a published version covers the whole task base: %s',
+    async (coverage) => {
+      const facts = trust({
+        unverifiedRemoteOverflow: () => true,
+        published: () => [coverage === 'exact' ? A : B],
+        ancestry: coverage === 'descendant' ? [[A, B]] : [[REWRITTEN, B]],
+        rewrites: () => coverage === 'rewrite' ? [{ from: [A], to: REWRITTEN }] : [],
+      });
+      await expect(remoteContentScriptsUnverified(A, facts)).resolves.toBe(false);
+      // The persistent overflow is not cleared: a different, uncovered task base
+      // must still skip scripts, even after that generation.
+      await expect(remoteContentScriptsUnverified(TIP, facts)).resolves.toBe(true);
+      expect(facts.unverifiedRemoteOverflow?.()).toBe(true);
+    },
+  );
+
+  it('does not use an earlier or invalid published commit to settle an overflow', async () => {
+    await expect(remoteContentScriptsUnverified(A, trust({
+      unverifiedRemoteOverflow: () => true,
+      published: () => [B, 'invalid'],
+      ancestry: [[B, A]],
+    }))).resolves.toBe(true);
+  });
+
+  it('does not settle an overflow when published coverage cannot be read', async () => {
+    await expect(remoteContentScriptsUnverified(A, trust({
+      unverifiedRemoteOverflow: () => true,
+      published: () => [B],
+      contains: async () => { throw new Error('git failed'); },
+    }))).rejects.toThrow('git failed');
   });
 
   it('runs the scripts again once a generated personal version covers the tip', async () => {
