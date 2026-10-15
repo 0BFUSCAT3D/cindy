@@ -92,6 +92,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     const owner = getDataOwnerGeneration();
     const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
     const shown = repliesRef.current;
+    // An older page belongs below the reply it was read from; a latest page that started over
+    // meanwhile dropped that reply, and the page would sit under the new one with the gap still in it.
+    const anchorId = before ? shown[0]?.id : undefined;
+    const anchored = (replies: BotGroupMessageView[]) => !anchorId || replies.some(reply => reply.id === anchorId);
     try {
       const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id) });
       if (!current()) return;
@@ -104,7 +108,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       // start over from it, as on first load, so 「查看更早」 reads on from right below it.
       const gap = !before && result.hasMore && result.replies.length > 0 && shown.length > 0
         && floor > shown.reduce((max, reply) => Math.max(max, reply.sequence), Number.NEGATIVE_INFINITY);
-      setReplies(previous => stabilizeById(previous, gap ? result.replies : mergeBotGroupMessages(previous, result.replies)));
+      if (!anchored(repliesRef.current)) return;
+      setReplies(previous => (anchored(previous)
+        ? stabilizeById(previous, gap ? result.replies : mergeBotGroupMessages(previous, result.replies))
+        : previous));
       if (!before) latestFloorRef.current = floor;
       if (!rereadOnly && (before || shown.length === 0 || gap)) setHasMore(result.hasMore);
     } catch { if (current()) setError(t(key('requestFailed'))); }

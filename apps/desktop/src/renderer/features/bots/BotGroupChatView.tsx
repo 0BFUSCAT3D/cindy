@@ -617,6 +617,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     if (base.kind !== 'ready' || loadingOlderRef.current) return null;
     const loaded = mergeBotGroupMessages(base.older, base.group.messages);
     const before = beforeSequence ?? loaded[0]?.sequence;
+    const anchorId = loaded[0]?.id;
     const api = botGroupApi();
     if (!before || !api) return null;
     const owner = getDataOwnerGeneration();
@@ -630,6 +631,11 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         toast.error(t('bots.groupChat.timeline.loadEarlierFailed'));
         return null;
       }
+      // The latest page started over meanwhile (more than a page arrived): this page was read
+      // below a timeline that is gone and would sit under the new one with the gap still in it.
+      const stillLoaded = (timeline: typeof base) => !anchorId || (timeline.kind === 'ready'
+        && (timeline.group.messages.some(message => message.id === anchorId) || timeline.older.some(message => message.id === anchorId)));
+      if (!stillLoaded(stateRef.current)) return null;
       const element = scrollRef.current;
       const current = stateRef.current;
       const shownFirst = current.kind === 'ready' ? mergeBotGroupMessages(current.older, current.group.messages)[0]?.sequence : undefined;
@@ -638,7 +644,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       if (element && prepends) prependAnchorRef.current = { height: element.scrollHeight, top: element.scrollTop };
       const newerRefresh = current.kind === 'ready' && current.group !== base.group;
       setState((previous) => {
-        if (previous.kind !== 'ready') return previous;
+        if (previous.kind !== 'ready' || !stillLoaded(previous)) return previous;
         // A newer push refresh wins over an older in-flight pagination request.
         const executionFailures = previous.group === base.group
           ? result.group.executionFailures ?? previous.group.executionFailures

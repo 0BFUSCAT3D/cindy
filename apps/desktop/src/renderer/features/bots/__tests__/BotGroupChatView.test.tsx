@@ -740,6 +740,26 @@ describe('BotGroupChatView', () => {
     expect(screen.queryByText('bots.groupChat.notice.runtimeFailure.AUTH_REQUIRED:Bot')).toBeNull();
   });
 
+  it('drops an older page that answers after the latest page started over', async () => {
+    const latest = msg({ id: 'latest', sequence: 100, content: 'Latest question' });
+    const source = msg({ id: 'older', sequence: 4, content: 'Earlier question' });
+    const far = msg({ id: 'far', sequence: 300, content: 'Far question' });
+    let finish: ((result: { ok: true; group: BotGroupDetail }) => void) | undefined;
+    const pending = new Promise<{ ok: true; group: BotGroupDetail }>(resolve => { finish = resolve; });
+    mocks.getBotGroup.mockResolvedValueOnce({ ok: true, group: detail({ messages: [latest], hasMoreBefore: true }) })
+      .mockReturnValueOnce(pending)
+      .mockResolvedValue({ ok: true, group: detail({ messages: [far], hasMoreBefore: true }) });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    // More than a page arrives while the older page is still on its way: the timeline starts over.
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'round' })));
+    await screen.findByText('Far question');
+    await act(async () => finish?.({ ok: true, group: detail({ messages: [source], hasMoreBefore: false }) }));
+    expect(screen.queryByText('Earlier question')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(mocks.getBotGroup.mock.calls.at(-1)?.[1]).toMatchObject({ beforeSequence: 300 }));
+  });
+
   it.each([false, true])('clears retried failures on an older timeline page when the newest page is refreshed (initial failure: %s)', async initialFailure => {
     const source = msg({ id: 'older-source', sequence: 4, content: 'Earlier question' });
     const failure = { executionId: 'older', epoch: 1, sourceMessageId: source.id, botId: 'bot', botName: 'Bot', code: 'AUTH_REQUIRED' as const, planId: null };

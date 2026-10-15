@@ -166,6 +166,26 @@ describe('chat interaction controls', () => {
     await waitFor(() => expect(mocks.thread.mock.calls.at(-1)?.[0]).toMatchObject({ before: 200 }));
   });
 
+  it('drops an older Thread page that answers after the latest page started over', async () => {
+    const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply' };
+    const older = { ...message, id: 'older', sequence: 4, content: 'Earlier reply' };
+    const far = { ...message, id: 'far', sequence: 300, content: 'Far reply' };
+    let finish!: (value: unknown) => void;
+    mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: [latest], hasMore: true })
+      .mockReturnValueOnce(new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue({ ok: true, root: message, replies: [far], hasMore: true });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    // More than a page arrives while the older page is still on its way.
+    const root = screen.getByText('Root message').closest('article')!;
+    fireEvent.click(within(root).getByRole('button', { name: k('reactionCount') }));
+    await screen.findByText('Far reply');
+    await act(async () => finish({ ok: true, root: message, replies: [older], hasMore: false }));
+    expect(screen.queryByText('Earlier reply')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(mocks.thread.mock.calls.at(-1)?.[0]).toMatchObject({ before: 300 }));
+  });
+
   it('clears a retried failure on an older loaded Thread page without dropping its reply', async () => {
     const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply' };
     const older = { ...message, id: 'older', sequence: 4, content: 'Earlier reply' };
