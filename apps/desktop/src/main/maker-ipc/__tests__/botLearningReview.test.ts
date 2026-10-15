@@ -259,12 +259,17 @@ it('feeds the working memory to the review and writes an evidence-filtered ledge
     }),
     4,
   );
-  // 没有 working 字段的旧格式输出:账本不动。
+  // 模型省略 working(本轮没改动):条目不加不删,但水位仍要跟上这一轮,否则一句问候就让账本不新鲜。
   h.meta = { turnCompleted: true };
   h.writeWorking.mockClear();
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [] }) });
   await reviewTeammateLearning('session', 'reply2');
-  expect(h.writeWorking).not.toHaveBeenCalled();
+  expect(h.writeWorking).toHaveBeenCalledWith(
+    '/test-owner',
+    'bot',
+    expect.objectContaining({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply2', commitments: [], corrections: [] }),
+    4,
+  );
 });
 
 it('advances the ledger watermark only through the contiguous backfilled prefix while a gap is still being caught up', async () => {

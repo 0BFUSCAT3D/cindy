@@ -23,11 +23,21 @@ import {
   readBotWorkingMemory,
   workingMemoryForReview,
   writeBotWorkingMemory,
+  type WorkingMemoryProposal,
 } from './botWorkingMemory.js';
 
 const running = new Map<string, Promise<void>>();
 /** 本轮取材最多取多少条消息;超出即视为截断,水位不推进到当前回复。 */
 const TURN_REVIEW_ROWS = 80;
+/** 模型省略 working(本轮没改动)时用的空提案:不加不删,只让水位跟上。 */
+const EMPTY_WORKING_PROPOSAL: WorkingMemoryProposal = {
+  threads: [],
+  commitments: [],
+  waiting: [],
+  corrections: [],
+  recentlyDone: [],
+  resolved: [],
+};
 /** 缺口回补每批最多取多少条消息 / 多少字符;单条正文已截到 6000 字,所以每批至少前进一条。 */
 const GAP_BACKFILL_ROWS = 40;
 const GAP_BACKFILL_CHARS = 16000;
@@ -233,12 +243,15 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       );
       if (!result.ok || !current()) return;
       const plan = learningReviewSchema.parse(JSON.parse(result.text));
-      if (plan.working && (await readOwner())) {
+      // 每次校验通过的复盘都写回水位:模型按指令在"本轮没改动"时省略 working,但这一轮同样
+      // 已被复盘过,水位必须跟上,否则一句问候就让账本被判不新鲜、70% 换窗悄悄退回 90%。
+      // 没有提案时按空提案合并——旧条目原样保留,只推进水位(和 client_id)。
+      if (await readOwner()) {
         try {
           await writeBotWorkingMemory(
             root,
             row.botId,
-            applyWorkingMemoryProposal(workingBefore, plan.working, messages, {
+            applyWorkingMemoryProposal(workingBefore, plan.working ?? EMPTY_WORKING_PROPOSAL, messages, {
               now: Date.now(),
               coveredThroughRowid: covered.rowid,
               ...(covered.id ? { coveredThroughMessageId: covered.id } : {}),
