@@ -101,11 +101,8 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
       .getAccount('claude-code')
       .then((res) => {
         if (cancelled) return;
-        if (res === null) {
-          if (lastSnapshot?.ownerKey === ownerKey) lastSnapshot = null;
-          setSnapshot(null);
-          return;
-        }
+        // A read may return null when main has no snapshot for this owner.
+        // Only an explicit clear push is authoritative enough to evict cached quota.
         if (!isSnapshot(res)) return;
         lastSnapshot = { ownerKey, cachedAt: Date.now(), usage: res };
         setSnapshot(lastSnapshot);

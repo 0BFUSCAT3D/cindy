@@ -133,3 +133,23 @@ it('clears the mounted and warm quota cache when the main process reports no lim
   expect(reopened.result.current.usage).toBeNull();
   await waitFor(() => expect(reopened.result.current.loading).toBe(false));
 });
+
+
+it('preserves owner-bound warm quota when a refresh has no main snapshot', async () => {
+  state.owner = 'quota-unavailable';
+  state.membership = 'org';
+  state.quota.mockResolvedValue({ spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 });
+  const first = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(first.result.current.usage?.spend).toBe(12));
+  first.unmount();
+  // No active listener while main switches accounts; returning to this owner
+  // can yield null after a failed request, without invalidating its warm data.
+  state.quota.mockResolvedValue(null);
+  const reopened = renderHook(() => useClaudeAccountUsageResult(true));
+  act(() => reopened.result.current.refresh());
+  await waitFor(() => expect(state.quota).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(reopened.result.current.loading).toBe(false));
+  expect(reopened.result.current.usage?.spend).toBe(12);
+  reopened.unmount();
+  expect(renderHook(() => useClaudeAccountUsageResult(true)).result.current.usage?.spend).toBe(12);
+});
