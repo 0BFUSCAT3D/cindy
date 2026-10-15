@@ -5,7 +5,7 @@ import { Tooltip } from '@/components/ui/tooltip';
 import userEvent from '@testing-library/user-event';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { MarkdownMermaidBlock } from '@/components/chat/MarkdownMermaidBlock';
-import { queryShareableMessageIds } from '@/lib/shareConversationImage';
+import { prepareShareMessageClone, queryShareableMessageIds } from '@/lib/shareConversationImage';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { clearDraft, getDraft } from '@/lib/composerDraftStore';
@@ -2296,6 +2296,12 @@ describe('thread previews and posting to the main chat', () => {
     // An attachment-only reply still says what it carried.
     expect(card.textContent).toContain(t('attachmentsSummary'));
     expect(card.textContent).toContain('bots.groupChat.server.replyCount');
+    // Export the selected root, without its independently selectable thread replies.
+    const exported = prepareShareMessageClone(card.closest('article')!)!;
+    expect(exported.textContent).toContain('去哪玩');
+    expect(exported.textContent).not.toContain('爬山吧，带上相机');
+    expect(exported.textContent).not.toContain('map.png');
+    expect(exported.querySelector('[data-thread-preview]')).toBeNull();
     // The count lives in the preview; the toolbar keeps a plain reply icon.
     const toolbarReply = screen.getByRole('button', { name: 'bots.groupChat.server.openTopic' });
     expect(toolbarReply.textContent).toBe('');
@@ -2319,6 +2325,12 @@ describe('thread previews and posting to the main chat', () => {
     expect(within(other).getByText('Alice')).toBeTruthy();
     expect(within(other).getByText('原话：@咪咪 周六见')).toBeTruthy();
     expect(within(other).queryByText('↪ 小满: fallback')).toBeNull();
+    // A selected share keeps the quoted reply and authors, but not navigation controls.
+    const exported = prepareShareMessageClone(other)!;
+    expect(exported.textContent).toContain('Alice');
+    expect(exported.textContent).toContain('小满');
+    expect(exported.textContent).toContain('原话：@咪咪 周六见');
+    expect(exported.textContent).not.toContain(t('viewThread'));
     const own = screen.getByText(t('alsoSent')).closest('article')!;
     expect(within(own).getByText('我自己的回复')).toBeTruthy();
     expect(screen.getByText(t('sourceUnavailable'))).toBeTruthy();

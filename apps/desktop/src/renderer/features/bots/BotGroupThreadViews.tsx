@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { CHAT_BODY_CLASS } from '@/components/chat/chatChrome';
 import { formatAbsolute, useRelativeTime } from '@/hooks/useRelativeTime';
-import { SHARE_MESSAGE_ATTR } from '@/lib/shareConversationImage';
+import { SHARE_EXCLUDE_ATTR, SHARE_MESSAGE_ATTR } from '@/lib/shareConversationImage';
 import { cn } from '@/lib/utils';
 import type {
   BotGroupMemberView,
@@ -65,7 +65,7 @@ export function BotGroupThreadPreview({ message, members, align, onOpen }: {
   const relative = useRelativeTime(latestAt, { hovered });
   if (count <= 0) return null;
   return (
-    <button type="button" data-thread-preview={message.id}
+    <button type="button" data-thread-preview={message.id} {...{ [SHARE_EXCLUDE_ATTR]: '' }}
       aria-label={t(key('open'), { count })} aria-describedby={replies.length ? linesId : undefined}
       onClick={onOpen} onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
       className={cn('group/thread flex w-full min-w-0 max-w-[520px] select-none flex-col gap-1.5 rounded-xl border border-[var(--border-default)] px-3 py-2 text-left transition-colors duration-[var(--motion-fast)] hover:bg-[var(--surface-hover)]',
@@ -139,7 +139,7 @@ export function BotGroupThreadShareQuote({ share, members, attachments, onOpenTh
         </p>
       )}
       {/* Only a verified share leads anywhere: the card's own thread ID is not trusted. */}
-      {onOpenThread && available ? <button type="button" onClick={onOpenThread}
+      {onOpenThread && available ? <button type="button" onClick={onOpenThread} {...{ [SHARE_EXCLUDE_ATTR]: '' }}
         className={cn('-ml-1.5 inline-flex min-h-6 w-fit select-none items-center gap-1 rounded-full px-1.5 text-12 text-[var(--text-secondary)] transition-colors duration-[var(--motion-fast)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]', FOCUS)}>
         <CornerDownRight size={12} aria-hidden />
         {t(key('viewThread'))}
