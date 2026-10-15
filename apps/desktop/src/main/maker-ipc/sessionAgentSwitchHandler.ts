@@ -53,16 +53,26 @@ function throwIfAgentSwitchAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-/** closeSession 失败时仍可切回本机的链路错误码(离线/不可达/超时/忙)。不认裸 REMOTE_AGENT_UNAVAILABLE / PEER_TOO_OLD。 */
+/**
+ * closeSession 失败时仍可切回本机的链路错误码。两侧都认：
+ * 裸码 = main→main 经 remoteAgentLinkError 保留的 DeviceLinkError.code；
+ * DEVICE_LINK_* = ipc.ts DEVICE_LINK_CODE_MAP 给 renderer 的映射名（消息里的前缀）。
+ * 不认：REMOTE_DISABLED / CHANNEL_NOT_ALLOWED / ACCESS_REVOKED / VERSION_MISMATCH / 裸 TIMEOUT / 无 code 的 REMOTE_AGENT_UNAVAILABLE。
+ * 改这里时对照 apps/desktop/src/main/device-link/ipc.ts 的 DEVICE_LINK_CODE_MAP。
+ */
 const AGENT_SWITCH_LINK_CLOSE_CODES = new Set([
-  'DEVICE_LINK_NOT_CONNECTED',
+  'DEVICE_OFFLINE',
+  'INVOKE_TIMEOUT',
+  'DEVICE_UNRESPONSIVE',
+  'NOT_CONNECTED',
+  'LINK_NOT_OPEN',
+  'PEER_RESET',
+  'BACKPRESSURE',
   'DEVICE_LINK_DEVICE_OFFLINE',
   'DEVICE_LINK_TIMEOUT',
+  'DEVICE_LINK_DEVICE_UNRESPONSIVE',
+  'DEVICE_LINK_NOT_CONNECTED',
   'DEVICE_LINK_BUSY',
-  'NOT_CONNECTED',
-  'DEVICE_OFFLINE',
-  'TIMEOUT',
-  'INVOKE_TIMEOUT',
 ]);
 
 function agentSwitchLinkCloseErrorCode(error: unknown): string | null {
