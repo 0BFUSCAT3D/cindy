@@ -641,6 +641,22 @@ describe('Chat Server result delivery and refresh', () => {
       if (posts) expect(sent[0][2].content).toEqual([{ type: 'text', text: 'Done.' }, taskCard]);
     });
 
+    it('hands an old local-only group (a UUID too) to the local service, which refuses for good', async () => {
+      const localPost = vi.fn(async () => ({ ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false }));
+      // The local history lists this group and nothing upgraded it: it is not a server room.
+      const legacy = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [{ id: roomId }] })), postCompanionTaskMessage: localPost,
+        settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      const requestsBefore = fixture.requests.length;
+      try {
+        fixture.token = '';
+        const input = { groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:started', text: '', card: taskCard };
+        expect(await legacy.postCompanionTaskMessage(input)).toEqual({ ok: false, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false });
+        expect(localPost).toHaveBeenCalledExactlyOnceWith(input);
+        // Decided from local records alone: no registration, no request, even while logged out.
+        expect(fixture.requests).toHaveLength(requestsBefore);
+      } finally { legacy.dispose(); }
+    });
+
     it('refuses for good when the teammate is no longer a member', async () => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
       fixture.handle.mockImplementation(route => route.endsWith('/snapshot')

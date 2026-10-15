@@ -435,6 +435,18 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const mirrors = new Set(links.flatMap(link => /^group:([^:]+):access:/.exec(link.routeKey ?? '')?.[1] ?? []));
     return result.groups.filter(group => !mirrors.has(group.id) && !workspaces().read(group.id));
   }
+  /**
+   * The server room a task started from `groupId` posts into, without touching the network:
+   * the upgraded room of an old local group, or the id itself for a server room. `null` is an old
+   * local group that has no room (yet): its local history row exists and is still a local source.
+   */
+  const taskRoomFor = async (groupId: string): Promise<string | null> => {
+    if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
+    if (!id.safeParse(groupId).success) return null;
+    const [localRow] = await getDbClient().drizzle.select({ id: botGroups.id }).from(botGroups).where(eq(botGroups.id, groupId)).limit(1);
+    if (localRow && (await localSources()).some(group => group.id === groupId)) return null;
+    return groupId;
+  };
   const resolveGroup = async (groupId: string) => {
     await register();
     if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
@@ -1563,7 +1575,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const refused = (errorCode: string): BotGroupTaskPostResult => ({ ok: false, errorCode, retryable: false });
       try {
         if (!current()) return refused('OWNER_CHANGED');
-        const roomId = id.safeParse(input.groupId).success ? input.groupId : null;
+        // An old local-only group has a UUID too: it is told from a server room by its local
+        // history row and upgrade mapping, never by id shape. Such a group cannot carry a
+        // teammate's own message, so the local service refuses for good and the result falls
+        // back to the owner's private chat instead of retrying forever (bot-group-chat.md §10).
+        const roomId = await taskRoomFor(input.groupId);
         if (!roomId) return local.postCompanionTaskMessage(input);
         await register();
         const actor = actors.find(a => a.kind === 'bot' && a.externalId === input.botId);
