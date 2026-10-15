@@ -15,6 +15,10 @@ const h = vi.hoisted(() => ({
   skills: [] as any[],
   working: null as any,
   writeWorking: vi.fn(),
+  /** 上一条完成回复的 rowid;当前回复是它 + 2(默认 5)。 */
+  prevCompleted: 3 as number | null,
+  /** 缺口回补查询(ORDER BY rowid ASC)返回的行。 */
+  gapRows: [] as any[],
 }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => h.owner,
@@ -23,22 +27,31 @@ vi.mock('../../appSessionState.js', () => ({
 }));
 vi.mock('../../localDb/client/current.js', () => {
   const db = {
-    queryOne: async () =>
-      h.visible
-        ? {
-            botId: 'bot',
-            capabilities: JSON.stringify({ memory: h.enabled }),
-            rowid: 5,
-            meta: JSON.stringify(h.meta),
-          }
-        : undefined,
-    query: vi.fn(async () => [
-      {
-        id: 'user',
-        role: 'user',
-        content: JSON.stringify('Please always summarize the conclusion first.'),
-      },
-    ]),
+    queryOne: async (sql: string) =>
+      sql.includes('MAX(rowid)')
+        ? { rowid: h.prevCompleted }
+        : h.visible
+          ? {
+              botId: 'bot',
+              capabilities: JSON.stringify({ memory: h.enabled }),
+              // 当前回复:上一条完成回复 + 2(中间隔一条用户消息);默认 5。
+              rowid: (h.prevCompleted ?? 0) + 2,
+              meta: JSON.stringify(h.meta),
+            }
+          : undefined,
+    query: vi.fn(async (sql: string) =>
+      sql.includes('ORDER BY rowid ASC')
+        ? h.gapRows
+        : [
+            {
+              id: 'user',
+              role: 'user',
+              content: JSON.stringify('Please always summarize the conclusion first.'),
+              // 本轮的用户消息:紧跟在上一条完成回复之后。
+              order: (h.prevCompleted ?? 0) + 1,
+            },
+          ],
+    ),
   };
   return { getDbClient: () => db };
 });
@@ -220,10 +233,14 @@ it('feeds the working memory to the review and writes an evidence-filtered ledge
   await reviewTeammateLearning('session', 'reply');
   const input = JSON.parse(h.model.mock.calls[0]![1] as string);
   expect(input.workingMemory).toEqual({ threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] });
-  // 取材下界带上账本上次覆盖到的行(1),失败轮次下次复盘补上;且不取 /clear 之前的消息。
+  // 本轮取材从上一条完成回复(3)接起;账本只覆盖到 1,缺口 (1,3] 另按升序分批回补;都不取 /clear 之前的消息。
   const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
-  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 5, 'session', 5, 1, 'session']);
-  expect(String(query.mock.calls.at(-1)![0])).toContain('cleared_at');
+  const recent = query.mock.calls.slice(-2);
+  expect(recent.map((call) => call[1])).toEqual([
+    ['session', 5, 3, 'session'],
+    ['session', 1, 3, 'session', 41],
+  ]);
+  expect(recent.every((call) => String(call[0]).includes('cleared_at'))).toBe(true);
   expect(h.writeWorking).toHaveBeenCalledWith(
     '/test-owner',
     'bot',
@@ -239,4 +256,31 @@ it('feeds the working memory to the review and writes an evidence-filtered ledge
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [] }) });
   await reviewTeammateLearning('session', 'reply2');
   expect(h.writeWorking).not.toHaveBeenCalled();
+});
+
+it('advances the ledger watermark only through the contiguous backfilled prefix while a gap is still being caught up', async () => {
+  const ledger = { version: 1, revision: 4, coveredThroughRowid: 1, updatedAt: 0, threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] };
+  const gap = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => ({ id: `g${from + i}`, role: 'assistant', content: JSON.stringify(`gap ${from + i}`), order: from + i }));
+  h.working = { ...ledger };
+  h.prevCompleted = 100;
+  // 缺口 (1,100] 里有 41 条,超过每批 40 条:只补前 40 条,水位停在第 40 条(rowid 41),不推进到当前回复。
+  h.gapRows = gap(2, 42);
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply');
+  const input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
+  expect(input.messages.filter((m: { id: string }) => m.id.startsWith('g')).map((m: { id: string }) => m.id)).toEqual(
+    gap(2, 41).map((m) => m.id),
+  );
+  expect(input.messages.at(-1).id).toBe('user');
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 41 }), 4);
+  // 下一轮从 41 接上,剩余一条补完:水位推进到当前回复(102)。
+  h.meta = { turnCompleted: true };
+  h.working = { ...ledger, coveredThroughRowid: 41 };
+  h.gapRows = gap(42, 42);
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply2');
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 102 }), 4);
+  h.prevCompleted = 3;
+  h.gapRows = [];
 });

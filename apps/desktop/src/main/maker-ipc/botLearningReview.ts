@@ -11,6 +11,7 @@ import { learningReceiptPublisher } from './botLearningFeedback.js';
 import {
   hasLearningEvidence,
   learningSnapshotBudget,
+  learningSnapshotPrefix,
   learningReviewInstructions,
   learningReviewSchema,
 } from './botLearningReviewPlan.js';
@@ -25,6 +26,10 @@ import {
 } from './botWorkingMemory.js';
 
 const running = new Map<string, Promise<void>>();
+/** 缺口回补每批最多取多少条消息 / 多少字符;单条正文已截到 6000 字,所以每批至少前进一条。 */
+const GAP_BACKFILL_ROWS = 40;
+const GAP_BACKFILL_CHARS = 16000;
+const REVIEW_ROLES = `role IN ('user','assistant','tool_use','tool_result')`;
 /** Once per durable successful reply; serial per teammate, outside the chat/agent loop. */
 export async function reviewTeammateLearning(sessionId: string, replyId: string): Promise<void> {
   const owner = activeOwnerScopeKey();
@@ -76,36 +81,56 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       const root = ownerScopedUserDataPath();
       // 工作记忆账本随同一次复盘维护(不另起模型调用);读不到按空账本,写入 CAS 失败放弃本轮。
       const workingBefore = await readBotWorkingMemory(root, row.botId);
-      // 取材窗口从「上一条完成回复」和「账本上次覆盖到的行」中较早的一处接上:某轮复盘在
-      // claim 之后失败(模型出错、进程退出、CAS 冲突)不会再被重跑,若只从上一条完成回复
-      // 接起,那一轮就永远进不了账本,而账本的 coveredThroughRowid 却会被后面的成功写入
-      // 直接跳过去——换窗线提前的判据因此会把有缺口的账本当成新鲜的。没有账本时沿用
-      // 上一条完成回复(不回溯整段历史);/clear 之前的消息始终不取。
-      const ledgerFloor = workingBefore ? workingBefore.coveredThroughRowid : null;
-      const records = await db.query<{ id: string; role: string; content: string; order: number }>(
+      type Record_ = { id: string; role: string; content: string; order: number };
+      const toSnapshot = (m: Record_) => ({
+        id: m.id,
+        role: m.role,
+        order: m.order,
+        text: (typeof JSON.parse(m.content) === 'string' ? JSON.parse(m.content) : m.content).slice(0, 6000),
+      });
+      // /clear 之前的消息始终不取。
+      const clearedAtFilter = `AND created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=?), 0)`;
+      const prevCompleted =
+        (
+          await db.queryOne<{ rowid: number | null }>(
+            `SELECT MAX(rowid) AS rowid FROM messages WHERE session_id=? AND rowid < ? AND rewind_at IS NULL
+             AND role='assistant' AND json_valid(agent_meta) AND json_extract(agent_meta, '$.turnCompleted')=1`,
+            [sessionId, row.rowid],
+          )
+        )?.rowid ?? 0;
+      // 本轮取材:上一条完成回复之后到当前回复。
+      const records = await db.query<Record_>(
         `
       SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
-      WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > MIN(COALESCE((
-        SELECT MAX(rowid) FROM messages WHERE session_id=? AND rowid < ? AND rewind_at IS NULL
-        AND role='assistant' AND json_valid(agent_meta) AND json_extract(agent_meta, '$.turnCompleted')=1
-      ), 0), COALESCE(?, 9223372036854775807))
-      AND created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=?), 0)
-      AND role IN ('user','assistant','tool_use','tool_result') ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT 80
+      WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > ? ${clearedAtFilter}
+      AND ${REVIEW_ROLES} ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT 80
     `,
-        [sessionId, row.rowid, sessionId, row.rowid, ledgerFloor, sessionId],
+        [sessionId, row.rowid, prevCompleted, sessionId],
       );
-      const messages = learningSnapshotBudget(
-        records.map((m) => ({
-          id: m.id,
-          role: m.role,
-          order: m.order,
-          text: (typeof JSON.parse(m.content) === 'string'
-            ? JSON.parse(m.content)
-            : m.content
-          ).slice(0, 6000),
-        })),
-        40000,
-      ).sort((a, b) => a.order - b.order);
+      const turnMessages = learningSnapshotBudget(records.map(toSnapshot), 40000);
+      // 缺口回补:账本上次覆盖到的行落后于上一条完成回复(某轮复盘 claim 后失败、CAS 冲突、
+      // 模型漏回 working),那段内容不会再被单独复盘;按 rowid 升序分批补进本次取材,覆盖水位
+      // 只推进到连续处理过的前缀末尾——补不完就不推进到当前回复,账本在补完前不算新鲜,换窗线
+      // 不会因为一份有缺口的账本提前。每批有界且至少前进一条,几轮即收敛。没有账本时从上一条
+      // 完成回复接起,不回溯整段历史。
+      const ledgerFloor = workingBefore ? workingBefore.coveredThroughRowid : prevCompleted;
+      let coveredThroughRowid = row.rowid;
+      let gapMessages: ReturnType<typeof toSnapshot>[] = [];
+      if (ledgerFloor < prevCompleted) {
+        const gapRows = await db.query<Record_>(
+          `
+      SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
+      WHERE session_id=? AND rewind_at IS NULL AND rowid > ? AND rowid <= ? ${clearedAtFilter}
+      AND ${REVIEW_ROLES} ORDER BY rowid ASC LIMIT ?
+    `,
+          [sessionId, ledgerFloor, prevCompleted, sessionId, GAP_BACKFILL_ROWS + 1],
+        );
+        gapMessages = learningSnapshotPrefix(gapRows.slice(0, GAP_BACKFILL_ROWS).map(toSnapshot), GAP_BACKFILL_CHARS);
+        if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapRows.length) {
+          coveredThroughRowid = gapMessages.length ? gapMessages[gapMessages.length - 1]!.order : ledgerFloor;
+        }
+      }
+      const messages = [...gapMessages, ...turnMessages].sort((a, b) => a.order - b.order);
       if (!messages.some((m) => m.role === 'user') || !current()) return;
       const [{ getMaker }, { requestUtilityText }] = await Promise.all([
         import('../maker-host/index.js'),
@@ -194,7 +219,7 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
             row.botId,
             applyWorkingMemoryProposal(workingBefore, plan.working, messages, {
               now: Date.now(),
-              coveredThroughRowid: row.rowid,
+              coveredThroughRowid,
             }),
             workingBefore?.revision ?? 0,
           );
