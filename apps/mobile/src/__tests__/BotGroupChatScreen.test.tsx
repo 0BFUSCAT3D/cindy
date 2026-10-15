@@ -183,10 +183,12 @@ vi.mock('@/session/ImageLightbox', () => ({
   ImageLightbox: ({ images, initialUrl }: any) => el('div', { 'data-testid': 'lightbox', 'data-url': initialUrl, 'data-count': String(images.length) }),
 }));
 vi.mock('@/session/MessageRenderer', () => ({
-  AttachmentStrip: ({ attachments, onOpen, align }: any) => el('div', { 'data-testid': 'attachmentStrip', 'data-align': align },
+  AttachmentStrip: ({ attachments, onOpen, onOpenFile, align }: any) => el('div', { 'data-testid': 'attachmentStrip', 'data-align': align },
     attachments.map((item: any, index: number) => el('button', {
       key: index, 'data-testid': `attachment.${item.kind}`, 'data-uri': item.uri ?? '',
-      onClick: () => onOpen(item.kind === 'image'
+      onClick: () => item.kind === 'file' && onOpenFile
+        ? onOpenFile(attachments.slice(0, index).filter((attachment: any) => attachment.kind === 'file').length)
+        : onOpen(item.kind === 'image'
         ? { kind: 'media', media: { kind: 'image', url: item.uri, previewable: false } }
         : { kind: 'file', title: item.name, body: '' }),
     }, item.name))),

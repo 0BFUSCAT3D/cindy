@@ -3,6 +3,7 @@ import { act, createElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResolveRemoteMediaFn } from '@/session/remoteMedia';
+import { openBrowserAsync } from 'expo-web-browser';
 
 // Keep the real group attachment, AttachmentStrip, MediaPreview and LegendList hooks.
 // Only native surfaces and unrelated viewers are replaced for Node rendering.
@@ -91,7 +92,7 @@ const resolveMedia = vi.fn<ResolveRemoteMediaFn>(async () => ({
   ossKey: 'thumbnail', size: 10, expiresAt: '',
 }));
 
-beforeEach(() => { resolveMedia.mockClear(); imageEvents.clear(); });
+beforeEach(() => { resolveMedia.mockClear(); imageEvents.clear(); vi.mocked(openBrowserAsync).mockClear(); });
 
 async function renderAttachment(messageId: string) {
   host = document.createElement('div');
@@ -208,6 +209,36 @@ describe('group attachments the computer has not fetched yet', () => {
   const summary = (runs: ReturnType<typeof botGroupAttachmentRuns>) =>
     runs.map((run) => run.kind === 'pending' ? `${run.attachment.id}:${run.attachment.state}` : run.attachments.map((item) => item.id).join('+'));
 
+  it.each(['left', 'right'] as const)('groups direct-server files while opening each same-named attachment by ID (%s)', async (align) => {
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    const resolveServerMedia = vi.fn(async (id: string) => ({ ...ready(id, 'same.txt'),
+      category: id === 'photo' ? 'image' as const : 'file' as const,
+      url: `https://example.invalid/signed/${id}`, mimeType: id === 'photo' ? 'image/png' : 'text/plain' }));
+    await act(async () => root!.render(createElement(BotGroupMessageAttachments, {
+      messageId: 'direct', align, onResolveRemoteMedia: resolveMedia, resolveServerMedia,
+      attachments: [ready('first', 'same.txt'), ready('second', 'same.txt'),
+        pending('gone', 'gone.md', 'unavailable'), ready('photo', 'photo.png')],
+    })));
+    const chips = [...host.querySelectorAll<HTMLElement>('[data-testid^="message.filePreviewButton"]')];
+    expect(chips).toHaveLength(4);
+    expect(chips[0]!.parentElement).toBe(chips[1]!.parentElement);
+    expect(chips[1]!.parentElement).not.toBe(chips[3]!.parentElement);
+    expect(resolveServerMedia).not.toHaveBeenCalled();
+    expect(resolveMedia).not.toHaveBeenCalled();
+    await act(async () => chips[1]!.click());
+    await act(async () => chips[0]!.click());
+    expect(resolveServerMedia.mock.calls.map(([id]) => id)).toEqual(['second', 'first']);
+    expect(vi.mocked(openBrowserAsync).mock.calls.map(([url]) => url)).toEqual([
+      'https://example.invalid/signed/second', 'https://example.invalid/signed/first',
+    ]);
+    await act(async () => chips[3]!.click());
+    expect(resolveServerMedia).toHaveBeenLastCalledWith('photo');
+    expect(host.querySelector('[data-testid="lightbox"]')?.getAttribute('data-url')).toBe('https://example.invalid/signed/photo');
+    expect(openBrowserAsync).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the sent order: neighbours of one kind share a strip, each pending one stands alone', () => {
     const runs = botGroupAttachmentRuns([ready('a', 'a.txt'), pending('b', 'b.png', 'loading'), ready('c', 'c.txt'), ready('d', 'd.txt'), pending('e', 'e.md', 'unavailable')]);
     expect(summary(runs)).toEqual(['a', 'b:loading', 'c+d', 'e:unavailable']);
@@ -236,4 +267,3 @@ describe('group attachments the computer has not fetched yet', () => {
     expect(resolveMedia).not.toHaveBeenCalled();
   });
 });
-

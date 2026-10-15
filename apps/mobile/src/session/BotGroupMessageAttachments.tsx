@@ -52,7 +52,7 @@ export function BotGroupMessageAttachments({ messageId, attachments, align, onRe
   const gallery = useMemo(() => botGroupAttachmentGallery(messageId, items), [items, messageId]);
   const runs = useMemo(() => botGroupAttachmentRuns(attachments), [attachments]);
   const [openUrl, setOpenUrl] = useState<string | null>(null);
-  if (resolveServerMedia) return <ServerAttachments attachments={attachments} align={align} resolve={resolveServerMedia} />;
+  if (resolveServerMedia) return <ServerAttachments runs={runs} align={align} layout={layout} resolve={resolveServerMedia} />;
   const open = (payload: MessagePayload) => {
     if (payload.kind === 'media' && payload.media.kind === 'image') {
       setOpenUrl(payload.media.url);
@@ -114,14 +114,14 @@ function PendingAttachment({ attachment, align, layout }: {
 }
 
 /** Signed download URLs are acquired on tap and kept only in the open viewer. */
-function ServerAttachments({ attachments, align, resolve }: {
+function ServerAttachments({ runs, align, layout, resolve }: {
   align: 'left' | 'right';
-  attachments: readonly BotGroupAttachment[]; resolve(id: string): Promise<BotGroupAttachment>;
+  runs: ReturnType<typeof botGroupAttachmentRuns>;
+  layout: ReturnType<typeof buildMessageContentLayout>;
+  resolve(id: string): Promise<BotGroupAttachment>;
 }) {
   const { t } = useTranslation();
   const { colors } = useTheme();
-  const { width } = useWindowDimensions();
-  const layout = useMemo(() => buildMessageContentLayout({ screenWidth: width }), [width]);
   const [image, setImage] = useState<BotGroupAttachment | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const pending = useRef(false);
@@ -140,11 +140,15 @@ function ServerAttachments({ attachments, align, resolve }: {
     finally { pending.current = false; if (mounted.current) setBusy(null); }
   };
   return <>
-    {attachments.map(attachment => <View key={attachment.id}>
-      <AttachmentStrip attachments={[{ kind: 'file', name: attachment.name, previewable: false }]}
-        messageKey={attachment.id} align={align} layout={layout} onOpen={() => { void open(attachment.id); }} usePreviewState={useState} />
-      {busy === attachment.id ? <ActivityIndicator color={colors.textSecondary} /> : null}
-    </View>)}
+    {runs.map(run => run.kind === 'pending'
+      ? <PendingAttachment key={run.attachment.id} attachment={run.attachment} align={align} layout={layout} />
+      : <View key={run.attachments[0]!.id}>
+        {/* No URL before tapping: every entry is a file chip, addressed by position rather than name. */}
+        <AttachmentStrip attachments={run.attachments.map(attachment => ({ kind: 'file', name: attachment.name, previewable: false }))}
+          messageKey={run.attachments[0]!.id} align={align} layout={layout}
+          onOpenFile={index => { void open(run.attachments[index]!.id); }} usePreviewState={useState} />
+        {run.attachments.some(attachment => busy === attachment.id) ? <ActivityIndicator color={colors.textSecondary} /> : null}
+      </View>)}
     {image?.url ? <ImageLightbox images={botGroupAttachmentGallery(image.id, [botGroupAttachmentForDisplay(image)])}
       initialUrl={image.url} onClose={() => setImage(null)} /> : null}
   </>;
