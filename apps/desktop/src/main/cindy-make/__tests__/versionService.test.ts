@@ -286,6 +286,33 @@ describe('version management main boundary', () => {
       id: null,
     });
   });
+  it('removes an incomplete personal snapshot from another CPU architecture after uninstalling its surviving helper', async () => {
+    await seedPersonal(id, 'a'.repeat(40));
+    setPersonal();
+    const directory = versionDirectory(h.profile, id);
+    const recordFile = path.join(directory, 'version.json');
+    const record = readVersionJson<Record<string, unknown>>(recordFile)!;
+    record.arch = process.arch === 'x64' ? 'arm64' : 'x64';
+    writeVersionJson(recordFile, record);
+    const runtime = path.join(directory, 'runtime');
+    await rm(path.join(runtime, 'Cindy.exe'), { recursive: true });
+    await mkdir(path.join(runtime, 'resources', 'tools', 'remote-desktop'), { recursive: true });
+    await writeFile(
+      path.join(runtime, 'resources', 'tools', 'remote-desktop', 'cindy-windows-desktop-host.exe'),
+      'native helper',
+    );
+
+    await expect(actCindyVersion('remove', 'personal')).resolves.toMatchObject({
+      versions: [{ id: 'original' }],
+    });
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'runtime', 'resources'));
+    await expect(access(runtime)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(path.join(directory, 'version.json'))).resolves.toBeUndefined();
+    expect(readVersionJson(path.join(versionsRoot(h.profile), 'personal.json'))).toEqual({
+      id: null,
+    });
+  });
   it('removes an incomplete personal snapshot missing its resources without running its helper', async () => {
     await seedPersonal(id, 'a'.repeat(40));
     setPersonal();

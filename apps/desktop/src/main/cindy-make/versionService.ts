@@ -26,7 +26,7 @@ import {
   personalVersionId,
   readOriginalVersion,
   readPersonalVersion,
-  readPersonalVersionRecord,
+  readPersonalVersionRecordForCleanup,
   readVersionJson,
   sameVersionPath,
   selectedVersion,
@@ -162,7 +162,7 @@ export async function actCindyVersion(action: unknown, id: unknown): Promise<Cin
           // the resources still contain the installed service helper. Validate
           // that durable record and resource path before attempting that helper.
           try {
-            const record = readPersonalVersionRecord(profile, targetId);
+            const record = readPersonalVersionRecordForCleanup(profile, targetId);
             const resources = path.join(directory, record.resources);
             if (
               sameVersionPath(
