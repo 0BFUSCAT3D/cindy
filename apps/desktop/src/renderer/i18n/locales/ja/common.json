@@ -260,6 +260,22 @@
         "title": "{{name}} との共有を削除しますか？",
         "description": "{{name}} はすぐに {{provider}} を使えなくなり、実行中のセッションは停止します。再び共有するには新しいリンクが必要です。使用量の記録は残ります。",
         "confirm": "共有を削除"
+      },
+      "reshare": {
+        "applying": "{{owner}} のプロバイダーグループ経由での利用を希望しています",
+        "requestedAt": "{{time}}にリクエスト",
+        "usageHint": "同意すると、{{name}} のセッションをこのパソコンで実行でき、使用量は {{owner}} の分として記録されます",
+        "approve": "同意",
+        "reject": "拒否",
+        "listTitle": "{{owner}} のプロバイダーグループ経由で利用",
+        "stateApproved": "同意済み",
+        "stateRejected": "未同意",
+        "revoke": "同意を取り消す",
+        "revokeAria": "{{name}} への同意を取り消す",
+        "approveAria": "{{name}} の利用に同意する",
+        "toastApproved": "{{name}} が {{owner}} のプロバイダーグループ経由で {{provider}} を使えるようにしました",
+        "toastRejected": "{{name}} のリクエストを拒否しました",
+        "toastRevoked": "{{name}} への同意を取り消しました。実行中のセッションは停止しました"
       }
     },
     "toast": {
@@ -308,7 +324,7 @@
       "factFiles": "プロジェクトのファイルとコマンドは引き続きあなたのパソコンで実行されます",
       "factFilesDetail": "あなたのセッションの権限が適用されます",
       "factPrivacy": "チャットの内容と Agent が読み取ったファイルの内容は {{name}} のパソコンを経由し、実際にセッションを実行するパソコンに保存されます",
-      "factPrivacyDetail": "{{name}} に表示されるのはあなたのニックネームとアバターだけです",
+      "factPrivacyDetail": "{{name}} と、同意が必要なほかのパソコンの持ち主に表示されるのは、あなたのニックネームとアバターだけです",
       "factApproval": "申請を送った後、{{name}} が承認すると有効になります",
       "factApprovalDetail": "{{name}} はこの共有をいつでも停止または削除できます",
       "send": "申請を送信",
@@ -428,7 +444,9 @@
       "approvedTitle": "共有の申請が承認されました",
       "approvedBody": "{{name}} が {{provider}} の共有を承認しました",
       "rejectedTitle": "共有の申請は承認されませんでした",
-      "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした"
+      "rejectedBody": "{{name}} は {{provider}} の共有を承認しませんでした",
+      "reshareTitle": "新しい利用リクエスト",
+      "reshareBody": "{{name}} が {{owner}} のプロバイダーグループ経由で、あなたの共有した {{provider}} を使いたいと希望しています"
     }
   },
   "providerGroup": {
@@ -540,7 +558,22 @@
         "lastDescription": "グループ内の最後のパソコンです。外すと {{provider}} のプロバイダーグループは削除されます。",
         "confirm": "グループから外す"
       },
-      "sourceGroupOwner": "グループを作成したパソコン"
+      "sourceGroupOwner": "グループを作成したパソコン",
+      "reshare": {
+        "allApproved": "共有相手も利用できます",
+        "waiting_other": "共有相手 {{count}} 人が {{owner}} の同意を待っています",
+        "rejected_other": "{{owner}} は共有相手 {{count}} 人に同意しませんでした",
+        "needsUpdate": "{{owner}} が Cindy を更新すると、共有相手への同意ができるようになります",
+        "unknown": "{{owner}} が共有相手に同意しているかはまだわかりません",
+        "title": "共有相手がこのパソコンを使えるか",
+        "description": "{{owner}} が 1 人ずつ同意します。同意されていない人のセッションはこのパソコンに割り当てられません。",
+        "state": {
+          "approved": "同意済み",
+          "pending": "同意待ち",
+          "rejected": "未同意",
+          "unknown": "未確認"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "{{provider}} のプロバイダーグループを削除しますか？",
@@ -2169,7 +2202,8 @@
         "basics": "基本",
         "refinement": "整え方",
         "preferences": "設定",
-        "usageData": "使用量"
+        "usageData": "使用量",
+        "speakerFilter": "声紋フィルター"
       },
       "serviceSource": {
         "label": "音声サービス",
@@ -2465,6 +2499,80 @@
         "toast": {
           "copied": "コピーしました",
           "copyFailed": "コピーに失敗しました"
+        }
+      },
+      "speakerFilter": {
+        "label": "自分の声を認識",
+        "hint": "音声入力中は周りの人の声をミュートし、あなたの話した内容だけを認識に送ります。事前に声紋の登録が必要です。あなたと同時に話された声は完全には取り除けません。",
+        "ariaLabel": "「自分の声を認識」を切り替え",
+        "unsupported": "このパソコンでは声紋認識を利用できません。",
+        "privacy": "声紋はこのパソコンにだけ暗号化して保存され、アップロードや他のデバイスへの同期は行われません。",
+        "actionFailed": "操作に失敗しました。しばらくしてからもう一度お試しください。",
+        "model": {
+          "needed": "初回は約 {{size}} の認識モデルをダウンロードします。",
+          "download": "ダウンロード",
+          "downloading": "認識モデルをダウンロード中（{{done}} / {{total}}）",
+          "cancel": "キャンセル",
+          "retry": "再試行",
+          "failed": {
+            "network": "認識モデルのダウンロードに失敗しました。ネットワークを確認してもう一度お試しください。",
+            "disk": "認識モデルを保存できませんでした。ディスクの空き容量を確認してもう一度お試しください。",
+            "checksum": "ダウンロードした認識モデルの検証に失敗しました。もう一度お試しください。",
+            "unavailable": "現在、認識モデルを取得できません。しばらくしてからもう一度お試しください。"
+          }
+        },
+        "profile": {
+          "missing": "声紋が未登録です",
+          "missingHint": "声紋を登録すると有効になります。約 20 秒かかります。",
+          "enrolled": "声紋を登録済み",
+          "enrolledAt": "{{date}} に登録",
+          "enroll": "声紋を登録",
+          "reenroll": "登録し直す",
+          "delete": "声紋を削除",
+          "deleted": "声紋を削除しました",
+          "deleteConfirm": {
+            "title": "声紋を削除しますか？",
+            "description": "削除すると、もう一度登録するまで音声入力で周りの人の声を除外しなくなります。",
+            "confirm": "削除",
+            "cancel": "キャンセル"
+          }
+        },
+        "strictness": {
+          "label": "厳しさ",
+          "hint": "厳しくするほど周りの人の声が入りにくくなりますが、騒がしい場所では自分の言葉も途切れやすくなります。",
+          "options": {
+            "relaxed": "ゆるめ",
+            "standard": "標準",
+            "strict": "厳しめ"
+          }
+        },
+        "enroll": {
+          "title": "声紋を登録",
+          "description": "普段音声入力を使う場所で、下の {{clips}} つの文章をいつもの話し方で読み上げてください。1 つにつき {{seconds}} 秒録音します。録音中は他の人が話さないようにしてください。",
+          "stepsAriaLabel": "読み上げる文章",
+          "step": "{{current}} / {{total}}",
+          "record": "読み上げを開始",
+          "rerecord": "この文章を録り直す",
+          "recording": "録音中、残り {{seconds}} 秒",
+          "recorded": "録音済み",
+          "cancel": "キャンセル",
+          "submit": "完了",
+          "done": "声紋を登録しました",
+          "passages": {
+            "p1": "今日の午前中は今週の作業予定を整理して、午後には話し合いたい課題をまとめて、みんなに先に送っておきます。",
+            "p2": "明日天気が良ければ少し早めに出発して、途中で果物やお菓子を買い、お昼は公園で食べましょう。",
+            "p3": "この文章をもう少し簡潔にして、重要な数字と結論は残したうえで、要点を三つから五つの文でまとめてください。"
+          },
+          "errors": {
+            "too_short": "{{index}} つ目の録音は話している時間が短すぎます。長く止まらずに読み上げて、録り直してください。",
+            "no_embedding": "{{index}} つ目の録音から声紋を読み取れませんでした。録り直してください。",
+            "inconsistent": "{{index}} つ目の録音が他と同じ人の声に聞こえません。他の人の声や雑音が入った可能性があります。録り直してください。",
+            "models_missing": "認識モデルのダウンロードがまだ完了していません。しばらくしてからお試しください。",
+            "storage_unavailable": "システムのキーチェーンを利用できないため、声紋を暗号化して保存できません。しばらくしてからお試しください。",
+            "failed": "声紋を作成できませんでした。もう一度お試しください。",
+            "microphone": "マイクを使用できません。マイクの許可とデバイスを確認してください。",
+            "noAudio": "マイクから音が届いていません。デバイスを確認してもう一度お試しください。"
+          }
         }
       }
     },
@@ -8765,6 +8873,8 @@
       "needsAttention": "対応が必要",
       "duplicate": "仲間を複製",
       "moreActions": "{{name}} のその他の操作",
+      "sectionExpand": "仲間を展開",
+      "sectionCollapse": "仲間を折りたたむ",
       "noResults": "一致するパートナーやグループはありません"
     },
     "cancel": "キャンセル",

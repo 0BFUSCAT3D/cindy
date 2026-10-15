@@ -260,6 +260,22 @@
         "title": "删除对 {{name}} 的分享？",
         "description": "{{name}} 将立即无法使用 {{provider}}，正在运行的任务会停止。之后要再分享，需要重新生成链接。用量记录会保留。",
         "confirm": "删除分享"
+      },
+      "reshare": {
+        "applying": "想经 {{owner}} 的供应商组使用",
+        "requestedAt": "{{time}}请求",
+        "usageHint": "同意后，{{name}} 的任务可以在这台电脑上运行，用量算在 {{owner}} 名下",
+        "approve": "同意",
+        "reject": "拒绝",
+        "listTitle": "经 {{owner}} 的供应商组使用",
+        "stateApproved": "已同意",
+        "stateRejected": "未同意",
+        "revoke": "撤回同意",
+        "revokeAria": "撤回对 {{name}} 的同意",
+        "approveAria": "同意 {{name}} 使用",
+        "toastApproved": "已同意 {{name}} 经 {{owner}} 的供应商组使用 {{provider}}",
+        "toastRejected": "已拒绝 {{name}} 的请求",
+        "toastRevoked": "已撤回对 {{name}} 的同意，正在运行的任务已停止"
       }
     },
     "toast": {
@@ -308,7 +324,7 @@
       "factFiles": "你的项目文件和命令仍在你自己的电脑上执行",
       "factFilesDetail": "由你的任务权限把关",
       "factPrivacy": "对话内容和 Agent 读取的文件内容会经过 {{name}} 的电脑，并保存在实际运行任务的那台电脑上",
-      "factPrivacyDetail": "{{name}} 只会看到你的昵称和头像",
+      "factPrivacyDetail": "{{name}} 和需要同意你使用的其他电脑主人只会看到你的昵称和头像",
       "factApproval": "发送申请后，需要 {{name}} 同意才会生效",
       "factApprovalDetail": "{{name}} 可以随时关闭或删除这个分享",
       "send": "发送申请",
@@ -428,7 +444,9 @@
       "approvedTitle": "分享申请已通过",
       "approvedBody": "{{name}} 已同意分享 {{provider}}",
       "rejectedTitle": "分享申请未通过",
-      "rejectedBody": "{{name}} 没有同意分享 {{provider}}"
+      "rejectedBody": "{{name}} 没有同意分享 {{provider}}",
+      "reshareTitle": "新的使用请求",
+      "reshareBody": "{{name}} 想经 {{owner}} 的供应商组使用你分享的 {{provider}}"
     }
   },
   "providerGroup": {
@@ -540,7 +558,22 @@
         "lastDescription": "它是组里最后一台电脑，移出后会删除 {{provider}} 的供应商组。",
         "confirm": "移出组"
       },
-      "sourceGroupOwner": "组所在电脑"
+      "sourceGroupOwner": "组所在电脑",
+      "reshare": {
+        "allApproved": "分享的人可以用",
+        "waiting_other": "{{count}} 位分享的人等待 {{owner}} 同意",
+        "rejected_other": "{{owner}} 未同意 {{count}} 位分享的人",
+        "needsUpdate": "{{owner}} 的 Cindy 更新后才能同意给分享的人用",
+        "unknown": "还不知道 {{owner}} 是否同意给分享的人用",
+        "title": "分享的人能否用这台电脑",
+        "description": "需要 {{owner}} 逐人同意。没同意的人，任务不会分到这台电脑。",
+        "state": {
+          "approved": "已同意",
+          "pending": "等待同意",
+          "rejected": "未同意",
+          "unknown": "还没问到"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "删除 {{provider}} 的供应商组？",
@@ -2169,7 +2202,8 @@
         "basics": "基础",
         "refinement": "润色",
         "preferences": "偏好",
-        "usageData": "用量"
+        "usageData": "用量",
+        "speakerFilter": "声纹过滤"
       },
       "serviceSource": {
         "label": "语音服务",
@@ -2465,6 +2499,80 @@
         "toast": {
           "copied": "已复制",
           "copyFailed": "复制失败"
+        }
+      },
+      "speakerFilter": {
+        "label": "识别我的声音",
+        "hint": "语音输入时把旁人的声音静音，只把你说的话送去识别。需要先录入声纹；别人和你同时说话时无法完全滤掉。",
+        "ariaLabel": "切换识别我的声音",
+        "unsupported": "这台电脑的系统暂不支持声纹识别。",
+        "privacy": "声纹只保存在这台电脑上并加密存储，不会上传，也不会同步到其他设备。",
+        "actionFailed": "操作失败，请稍后重试。",
+        "model": {
+          "needed": "首次使用需要下载约 {{size}} 的识别模型。",
+          "download": "下载",
+          "downloading": "正在下载识别模型（{{done}} / {{total}}）",
+          "cancel": "取消",
+          "retry": "重试",
+          "failed": {
+            "network": "识别模型下载失败，请检查网络后重试。",
+            "disk": "识别模型无法保存，请检查磁盘空间后重试。",
+            "checksum": "下载的识别模型校验未通过，请重试。",
+            "unavailable": "暂时无法获取识别模型，请稍后重试。"
+          }
+        },
+        "profile": {
+          "missing": "还没有录入声纹",
+          "missingHint": "录入声纹后才会生效，大约需要 20 秒。",
+          "enrolled": "已录入声纹",
+          "enrolledAt": "{{date}} 录入",
+          "enroll": "录入声纹",
+          "reenroll": "重新录入",
+          "delete": "删除声纹",
+          "deleted": "声纹已删除",
+          "deleteConfirm": {
+            "title": "删除声纹？",
+            "description": "删除后语音输入不再过滤旁人的声音，直到你重新录入。",
+            "confirm": "删除",
+            "cancel": "取消"
+          }
+        },
+        "strictness": {
+          "label": "灵敏度",
+          "hint": "越严格越不容易放进旁人的声音，但在嘈杂环境里也更容易剪掉你自己的话。",
+          "options": {
+            "relaxed": "宽松",
+            "standard": "标准",
+            "strict": "严格"
+          }
+        },
+        "enroll": {
+          "title": "录入声纹",
+          "description": "请在平时使用语音输入的地方，用平常的语气朗读下面 {{clips}} 段文字，每段录音 {{seconds}} 秒。录音时请不要让别人说话。",
+          "stepsAriaLabel": "朗读段落",
+          "step": "第 {{current}} / {{total}} 段",
+          "record": "开始朗读",
+          "rerecord": "重录这段",
+          "recording": "正在录音，还剩 {{seconds}} 秒",
+          "recorded": "这段已录好",
+          "cancel": "取消",
+          "submit": "完成",
+          "done": "声纹已录入",
+          "passages": {
+            "p1": "今天上午我先整理一下这周的工作安排，下午再把需要讨论的问题列出来，发给大家提前看看。",
+            "p2": "如果明天的天气不错，我们可以早点出发，路上顺便买些水果和零食，中午就在公园里吃饭。",
+            "p3": "请帮我把这段内容改得更简洁一些，保留关键数字和结论，然后用三到五句话总结一下重点。"
+          },
+          "errors": {
+            "too_short": "第 {{index}} 段里说话的时间太短，请重录这段，朗读时不要停顿太久。",
+            "no_embedding": "第 {{index}} 段没能识别出声纹，请重录这段。",
+            "inconsistent": "第 {{index}} 段和其他几段不像同一个人，可能混进了别人的声音或噪音，请重录这段。",
+            "models_missing": "识别模型还没有下载完成，请稍后再试。",
+            "storage_unavailable": "系统钥匙串暂时不可用，声纹无法加密保存，请稍后重试。",
+            "failed": "生成声纹失败，请重试。",
+            "microphone": "无法使用麦克风，请检查麦克风权限和设备。",
+            "noAudio": "麦克风没有传来声音，请检查设备后重试。"
+          }
         }
       }
     },
@@ -8765,6 +8873,8 @@
       "needsAttention": "需要处理",
       "duplicate": "复制伙伴",
       "moreActions": "{{name}} 的更多操作",
+      "sectionExpand": "展开伙伴",
+      "sectionCollapse": "收起伙伴",
       "noResults": "没有匹配的伙伴或群聊"
     },
     "cancel": "取消",

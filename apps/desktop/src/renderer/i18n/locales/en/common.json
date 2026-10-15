@@ -262,6 +262,22 @@
         "title": "Remove Sharing with {{name}}?",
         "description": "{{name}} will immediately lose access to {{provider}}, and any running sessions will stop. To share again, you’ll need a new link. Usage records are kept.",
         "confirm": "Remove Share"
+      },
+      "reshare": {
+        "applying": "wants to use it through {{owner}}’s provider group",
+        "requestedAt": "Requested {{time}}",
+        "usageHint": "If you agree, {{name}}’s sessions can run on this computer, and usage counts under {{owner}}",
+        "approve": "Agree",
+        "reject": "Decline",
+        "listTitle": "Using it through {{owner}}’s provider group",
+        "stateApproved": "Agreed",
+        "stateRejected": "Declined",
+        "revoke": "Withdraw",
+        "revokeAria": "Withdraw agreement for {{name}}",
+        "approveAria": "Agree to {{name}} using it",
+        "toastApproved": "{{name}} can now use {{provider}} through {{owner}}’s provider group",
+        "toastRejected": "Declined {{name}}’s request",
+        "toastRevoked": "Withdrew agreement for {{name}}. Running sessions were stopped."
       }
     },
     "toast": {
@@ -310,7 +326,7 @@
       "factFiles": "Your project files and commands still run on your own computer",
       "factFilesDetail": "Your session permissions still apply",
       "factPrivacy": "Chat content and files the Agent reads pass through {{name}}’s computer and are saved on the computer that runs the session",
-      "factPrivacyDetail": "{{name}} only sees your nickname and avatar",
+      "factPrivacyDetail": "{{name}}, and owners of other computers who need to agree, only see your nickname and avatar",
       "factApproval": "After you send the request, it takes effect only once {{name}} approves",
       "factApprovalDetail": "{{name}} can pause or remove this share at any time",
       "send": "Send Request",
@@ -430,7 +446,9 @@
       "approvedTitle": "Share Request Approved",
       "approvedBody": "{{name}} shared {{provider}} with you",
       "rejectedTitle": "Share Request Declined",
-      "rejectedBody": "{{name}} declined to share {{provider}}"
+      "rejectedBody": "{{name}} declined to share {{provider}}",
+      "reshareTitle": "New Usage Request",
+      "reshareBody": "{{name}} wants to use your shared {{provider}} through {{owner}}’s provider group"
     }
   },
   "providerGroup": {
@@ -545,7 +563,24 @@
         "lastDescription": "It’s the last computer in the group, so removing it deletes the {{provider}} provider group.",
         "confirm": "Remove from Group"
       },
-      "sourceGroupOwner": "Hosts the group"
+      "sourceGroupOwner": "Hosts the group",
+      "reshare": {
+        "allApproved": "Available to people you share with",
+        "waiting_one": "{{count}} person you share with is waiting for {{owner}} to agree",
+        "waiting_other": "{{count}} people you share with are waiting for {{owner}} to agree",
+        "rejected_one": "{{owner}} declined {{count}} person you share with",
+        "rejected_other": "{{owner}} declined {{count}} people you share with",
+        "needsUpdate": "{{owner}} needs to update Cindy before agreeing to people you share with",
+        "unknown": "Not yet known whether {{owner}} agrees to people you share with",
+        "title": "Can people you share with use this computer",
+        "description": "{{owner}} agrees person by person. Tasks from people without agreement aren’t assigned to this computer.",
+        "state": {
+          "approved": "Agreed",
+          "pending": "Waiting",
+          "rejected": "Declined",
+          "unknown": "Not checked yet"
+        }
+      }
     },
     "deleteConfirm": {
       "title": "Delete the {{provider}} provider group?",
@@ -2192,7 +2227,8 @@
         "basics": "Basics",
         "refinement": "Refinement",
         "preferences": "Preferences",
-        "usageData": "Usage"
+        "usageData": "Usage",
+        "speakerFilter": "Voiceprint filter"
       },
       "serviceSource": {
         "label": "Voice service",
@@ -2488,6 +2524,80 @@
         "toast": {
           "copied": "Copied",
           "copyFailed": "Copy failed"
+        }
+      },
+      "speakerFilter": {
+        "label": "Recognize my voice",
+        "hint": "Mutes other people during voice input so only what you say is transcribed. Requires a recorded voiceprint; speech that overlaps yours cannot be fully removed.",
+        "ariaLabel": "Toggle recognize my voice",
+        "unsupported": "Voiceprint recognition is not available on this computer.",
+        "privacy": "Your voiceprint stays on this computer, encrypted. It is never uploaded or synced to other devices.",
+        "actionFailed": "Something went wrong. Try again later.",
+        "model": {
+          "needed": "The first use downloads a recognition model of about {{size}}.",
+          "download": "Download",
+          "downloading": "Downloading recognition model ({{done}} / {{total}})",
+          "cancel": "Cancel",
+          "retry": "Retry",
+          "failed": {
+            "network": "The recognition model failed to download. Check your network and try again.",
+            "disk": "The recognition model could not be saved. Check your free disk space and try again.",
+            "checksum": "The downloaded recognition model failed verification. Try again.",
+            "unavailable": "The recognition model is unavailable right now. Try again later."
+          }
+        },
+        "profile": {
+          "missing": "No voiceprint yet",
+          "missingHint": "Record your voiceprint to enable filtering. It takes about 20 seconds.",
+          "enrolled": "Voiceprint recorded",
+          "enrolledAt": "Recorded {{date}}",
+          "enroll": "Record voiceprint",
+          "reenroll": "Record again",
+          "delete": "Delete voiceprint",
+          "deleted": "Voiceprint deleted",
+          "deleteConfirm": {
+            "title": "Delete voiceprint?",
+            "description": "Voice input will stop filtering out other people until you record your voiceprint again.",
+            "confirm": "Delete",
+            "cancel": "Cancel"
+          }
+        },
+        "strictness": {
+          "label": "Strictness",
+          "hint": "Stricter lets fewer other voices through, but in noisy places it may also cut off more of your own words.",
+          "options": {
+            "relaxed": "Relaxed",
+            "standard": "Standard",
+            "strict": "Strict"
+          }
+        },
+        "enroll": {
+          "title": "Record voiceprint",
+          "description": "Where you usually use voice input, read the {{clips}} passages below in your normal voice. Each recording lasts {{seconds}} seconds. Make sure no one else is talking.",
+          "stepsAriaLabel": "Passages to read",
+          "step": "{{current}} of {{total}}",
+          "record": "Start reading",
+          "rerecord": "Record this one again",
+          "recording": "Recording, {{seconds}} s left",
+          "recorded": "Recorded",
+          "cancel": "Cancel",
+          "submit": "Done",
+          "done": "Voiceprint recorded",
+          "passages": {
+            "p1": "This morning I will go over the plan for the week, and in the afternoon I will list the questions we need to discuss and send them out so everyone can read them first.",
+            "p2": "If the weather is nice tomorrow, we can leave a little earlier, pick up some fruit and snacks on the way, and have lunch in the park.",
+            "p3": "Please make this text more concise, keep the key numbers and conclusions, and then sum up the main points in three to five sentences."
+          },
+          "errors": {
+            "too_short": "Passage {{index}} has too little speech. Record it again without long pauses.",
+            "no_embedding": "No voiceprint could be read from passage {{index}}. Record it again.",
+            "inconsistent": "Passage {{index}} does not sound like the same person as the others; another voice or noise may have been picked up. Record it again.",
+            "models_missing": "The recognition model has not finished downloading. Try again shortly.",
+            "storage_unavailable": "The system keychain is unavailable, so the voiceprint cannot be stored encrypted. Try again later.",
+            "failed": "The voiceprint could not be created. Try again.",
+            "microphone": "The microphone cannot be used. Check microphone permission and the device.",
+            "noAudio": "No sound came from the microphone. Check the device and try again."
+          }
         }
       }
     },
@@ -8805,6 +8915,8 @@
       "needsAttention": "Needs attention",
       "duplicate": "Duplicate teammate",
       "moreActions": "More actions for {{name}}",
+      "sectionExpand": "Expand teammates",
+      "sectionCollapse": "Collapse teammates",
       "noResults": "No matching teammates or groups"
     },
     "cancel": "Cancel",

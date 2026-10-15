@@ -241,6 +241,8 @@ type VoiceInputDictionaryAdviceInput =
 type VoiceInputDictionaryLearningAction =
   import('@cindy/voice-input-core').DictationDictionaryLearningAction;
 type VoiceInputSettingsData = import('../shared/voiceInputData').VoiceInputSettings;
+type VoiceSpeakerFilterStatusData = import('../shared/voiceSpeakerFilter').VoiceSpeakerFilterStatus;
+type VoiceSpeakerEnrollResultData = import('../shared/voiceSpeakerFilter').VoiceSpeakerEnrollResult;
 type VoiceInputSettingsPatchData = import('../shared/voiceInputData').VoiceInputSettingsPatch;
 type VoiceInputHistoryEntryData = import('../shared/voiceInputData').VoiceInputHistoryEntry;
 type VoiceInputDataSnapshot = import('../shared/voiceInputData').VoiceInputDataSnapshot;
@@ -1811,6 +1813,16 @@ interface ElectronAPI {
     updateHistoryEntry: (id: string, text: string) => void;
     deleteHistoryEntry: (id: string) => void;
     onDataChanged: (callback: (payload: VoiceInputDataSnapshot) => void) => () => void;
+    /** 「识别我的声音」:模型与声纹都留在本机,Renderer 只拿到状态。 */
+    speakerFilter: {
+      getStatus: () => Promise<VoiceSpeakerFilterStatusData>;
+      downloadModels: () => Promise<VoiceSpeakerFilterStatusData>;
+      cancelDownload: () => Promise<VoiceSpeakerFilterStatusData>;
+      /** PCM16 单声道 16 kHz 朗读片段,数量固定为 VOICE_SPEAKER_ENROLLMENT_CLIP_COUNT。 */
+      enroll: (clips: ArrayBuffer[]) => Promise<VoiceSpeakerEnrollResultData>;
+      deleteProfile: () => Promise<VoiceSpeakerFilterStatusData>;
+      onStatusChanged: (callback: (status: VoiceSpeakerFilterStatusData) => void) => () => void;
+    };
     /** options.suspend = 录制期挂起（故意与存盘不同）；不带它的请求会被 main 按存盘校验。 */
     setGlobalShortcut: (
       shortcut: VoiceInputShortcut | null,
@@ -3953,6 +3965,8 @@ interface ElectronAPI {
     onSettled(cb: (event: import('../shared/providerShare').ProviderShareSettledEvent) => void): () => void;
     onOpenJoin(cb: (event: { link: string }) => void): () => void;
     onOpenManage(cb: (event: { providerId: string }) => void): () => void;
+    /** 有人请求把这里分享的供应商经他的供应商组转给别人用(转分享)。 */
+    onReshareRequested(cb: () => void): () => void;
   };
   providerGroup: {
     command<C extends import('../shared/providerGroup').ProviderGroupCommand>(
