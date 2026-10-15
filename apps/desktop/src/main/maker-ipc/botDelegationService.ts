@@ -817,7 +817,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   type GroupTaskRow = Pick<DelegationRow,
-    'id' | 'requestingBotId' | 'targetBotId' | 'objective' | 'parentSessionId' | 'childSessionId'
+    'id' | 'requestingBotId' | 'targetBotId' | 'objective' | 'parentSessionId' | 'childSessionId' | 'runSequence'
   >;
 
   /** The card's fallback line, in this computer's UI language, for clients that do not know the card. */
@@ -875,18 +875,23 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
    * The 「进行中」 card is posted with backoff for as long as the task runs (a group outage may
    * outlast any fixed number of tries); `restore` posts it again after a restart. The post is
    * idempotent by client id, so a card already in the group is never repeated, and a retry
-   * after the task ended stays away. The result message carries the card again.
+   * after the task ended (or moved on to another run) stays away. The result message carries
+   * the card again. A continued task posts a fresh card for each run; the first run keeps the
+   * client id it always had.
    */
   const postGroupTaskStart = (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
     const run = (async () => {
       try {
         if (attempt > 0) {
           // A retry after the task already ended would put a stale 「进行中」 card under its result.
-          const current = await getDbClient().drizzle.select({ status: botDelegations.status }).from(botDelegations)
-            .where(eq(botDelegations.id, row.id)).get();
-          if (!current || !isActiveDelegation(current.status as DelegationStatus)) return;
+          const current = await getDbClient().drizzle.select({ status: botDelegations.status, runSequence: botDelegations.runSequence })
+            .from(botDelegations).where(eq(botDelegations.id, row.id)).get();
+          if (!current || !isActiveDelegation(current.status as DelegationStatus) || current.runSequence !== row.runSequence) return;
         }
-        const posted = await postGroupTaskEvent(home, row, { clientId: `bot-delegation-task:${row.id}:started`, text: '', state: 'started' });
+        const clientId = row.runSequence > 1
+          ? `bot-delegation-task:${row.id}:${row.runSequence}:started`
+          : `bot-delegation-task:${row.id}:started`;
+        const posted = await postGroupTaskEvent(home, row, { clientId, text: '', state: 'started' });
         if (posted.ok) return;
         if (!posted.retryable) {
           log.warn('group refused the task card', { delegationId: row.id, groupId: home.groupId, errorCode: posted.errorCode });
@@ -2537,6 +2542,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       childSessionId,
       permissionSnapshotJson,
       createdAt,
+      runSequence: 1,
     };
     // The requesting timeline is the user's only guaranteed place to find and
     // control this task. Persist its card before starting the child Session;
@@ -3330,6 +3336,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         });
       }
       scheduleTimeout(row.id, deadlineAt);
+      // The group still shows the last run's end: tell it this run is under way.
+      const groupHome = groupHomeOf(nextSnapshot);
+      if (groupHome) void postGroupTaskStart(groupHome, { ...reopenedRow, runSequence: row.runSequence + 1 });
       const dispatched = await attemptDispatch(row.id);
       return {
         ok: true,
