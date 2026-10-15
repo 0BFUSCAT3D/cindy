@@ -121,7 +121,7 @@ import { resetAgentCapabilitiesCache } from '@/session/agentCapabilitiesCache';
 import { resetComposerPaletteCache } from '@/session/composerPaletteCache';
 import { clearRemoteResourceCache } from '@/device-link/remoteResourceCache';
 import { clearCachedHomeListSnapshot } from '@/session/mobileHomeListCache';
-import { invalidateMobileAuthOwnerForSwitch, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
+import { getMobileAuthOwner, invalidateMobileAuthOwnerForSwitch, setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { updateCredentialAccessToken } from '@/remote-desktop/credentialIdentity';
 import { clearCachedSessionMessages } from '@/session/mobileSessionMessageCache';
 import { clearHistoryDisk } from '@/session/remoteHistoryDiskCache';
@@ -2913,6 +2913,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 继续收到旧账号的任务通知。token 此刻可能已失效(账号不可用),失败静默,
     // 残留由 server 侧 APNs 410 回收与换账号重注册的让位逻辑兜底。
     // Invalidate in-flight remote creates before any async logout cleanup begins.
+    const cleanupOwner = getMobileAuthOwner();
+    // Switching temporarily empties the owner fence; retain the terminating
+    // session's account before clearing its user and realm.
+    const cleanupAccountKey = cleanupOwner.accountKey || (userRef.current
+      ? accountVaultKey(activeAuthRealmRef.current, userRef.current.id)
+      : '');
     setMobileAuthOwner(null);
     setAccountGeneration((value) => value + 1);
     // 同步失效认证代次，必须早于第一个 await。否则推送 token 注销的网络等待窗口内，
@@ -2947,7 +2953,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // deviceId,不清就会让下一个账号读到上一个账号的词条并发给润色模型。
     await clearAllMobileVoiceDictionaryCaches().catch(() => undefined);
     // 声纹是这个账号的生物特征数据,随账号的其他本机数据一起清;模型文件不含账号数据,保留。
-    await clearMobileSpeakerFilterForAccount(invitationHistoryAccountKey).catch(() => {
+    await clearMobileSpeakerFilterForAccount(cleanupAccountKey).catch(() => {
       // The storage helper retains the account's retry marker. Still complete
       // credential removal; neither an account id nor a voiceprint is logged.
       console.warn('[auth] speaker filter cleanup pending; will retry');
