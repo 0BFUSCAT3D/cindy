@@ -870,8 +870,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   const groupPostTimers = new Set<ReturnType<typeof setTimeout>>();
-  /** Start-card posts still on their way, by task: a later card waits for them (see `afterGroupTaskStart`). */
+  /** Start-card posts still on their way, by task and run: old retries cannot replace a resumed run. */
   const groupStartPosts = new Map<string, Promise<void>>();
+  const groupStartPostKey = (row: Pick<GroupTaskRow, 'id' | 'runSequence'>): string => `${row.id}:${row.runSequence}`;
   /**
    * The 「进行中」 card is posted with backoff for as long as the task runs (a group outage may
    * outlast any fixed number of tries); `restore` posts it again after a restart. The post is
@@ -881,6 +882,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
    * client id it always had.
    */
   const postGroupTaskStart = (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
+    const key = groupStartPostKey(row);
     const run = (async () => {
       try {
         if (attempt > 0) {
@@ -908,9 +910,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       timer.unref?.();
       groupPostTimers.add(timer);
     })().finally(() => {
-      if (groupStartPosts.get(row.id) === run) groupStartPosts.delete(row.id);
+      if (groupStartPosts.get(key) === run) groupStartPosts.delete(key);
     });
-    groupStartPosts.set(row.id, run);
+    groupStartPosts.set(key, run);
     return run;
   };
   /**
@@ -918,7 +920,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
    * group before the 「进行中」 card still in flight: later cards wait for that post to settle.
    * A retry scheduled for later re-checks the task state itself and stays away once it ended.
    */
-  const afterGroupTaskStart = (delegationId: string): Promise<void> => groupStartPosts.get(delegationId) ?? Promise.resolve();
+  const afterGroupTaskStart = (row: Pick<GroupTaskRow, 'id' | 'runSequence'>): Promise<void> =>
+    groupStartPosts.get(groupStartPostKey(row)) ?? Promise.resolve();
 
   const collaborationMeta = async (
     row: Pick<DelegationRow,
@@ -1121,7 +1124,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
         .where(eq(botDelegations.id, params.id)).get())?.snapshot);
       if (home) {
-        await afterGroupTaskStart(params.id);
+        await afterGroupTaskStart(params);
         const posted = await postGroupTaskEvent(home, params, {
           clientId: `bot-delegation-task:${params.id}:${params.runSequence}:result`,
           text: params.resultSummary ?? '',
@@ -1640,7 +1643,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     let privateFallback = !home;
     if (home) {
       try {
-        await afterGroupTaskStart(row.id);
+        await afterGroupTaskStart(row);
         const posted = await postGroupTaskEvent(home, row, {
           clientId: `bot-delegation-task:${row.id}:interaction:${pending.requestId}`,
           text: '',
