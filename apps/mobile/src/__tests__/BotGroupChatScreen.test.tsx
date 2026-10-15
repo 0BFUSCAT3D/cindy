@@ -323,6 +323,21 @@ describe('group timeline', () => {
     expect(byId('botGroup.task.live')).toBeNull();
   });
 
+  it('shows a task from an author who has left the group as a snapshot, never a lookup on this phone\'s computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-2', fromBotId: 'gone', fromBotName: '离开的伙伴', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-2', objective: '整理行程' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true },
+    ] });
+    data.messages.push(message('t2', 21, { authorBotId: 'gone', authorName: '离开的伙伴', content: '我也开了',
+      task: { meta, state: 'started', title: '整理行程' } }));
+    await render(parseBotGroupChatData(data)!);
+    const card = byId('botGroup.task')!;
+    expect(card.textContent).toContain('整理行程');
+    expect(card.textContent).toContain('groupChat.task.state.started');
+    expect(byId('botGroup.task.live')).toBeNull();
+  });
+
   it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {
     h.platform.OS = 'android';
     await render();
