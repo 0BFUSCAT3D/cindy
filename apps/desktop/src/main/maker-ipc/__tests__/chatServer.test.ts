@@ -1975,6 +1975,23 @@ describe('Chat Server result delivery and refresh', () => {
       expect(writes()).toEqual([]);
     });
 
+    it('answers a missing group from round, plan, thread, reply and reaction entries without touching the room', async () => {
+      const planId = '80000000-0000-4000-8000-000000000002';
+      expect(await service.stopRound(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.continueRound(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.startPlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.dismissPlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.continuePlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.retryPlan({ groupId: directId, planId })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.editPlanStep({ groupId: directId, planId, position: 0, action: 'remove' })).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await service.chatServer!.thread({ groupId: directId, rootId: planId })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.reply({ groupId: directId, rootId: planId, text: 'hi', clientId: 'reply-direct-1', mentions: { all: false, botIds: [] } }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.react({ groupId: directId, messageId: planId, emoji: '👍', present: true })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      // Only the snapshot that answered "missing" was read; nothing else of the room was read or written.
+      expect(fixture.handle.mock.calls.filter(([route]) => String(route).startsWith(`/conversations/${directId}`) && !String(route).endsWith('/snapshot'))).toEqual([]);
+    });
+
     it.each([directId, channelId, futureId])('fails a claimed execution in %s instead of running it as a group', async other => {
       fixture.handle.mockImplementation((route, method) => {
         if (route === '/executions/claim') { const next = claimed ? null : { ...execution, conversation_id: other }; claimed = true; return { body: { execution: next } }; }
@@ -2012,6 +2029,7 @@ describe('Chat Server result delivery and refresh', () => {
       vi.mocked(socket.send).mockClear();
       expect(await service.getGroup(directId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
       expect(await service.chatServer!.createInvite({ groupId: channelId, clientId: 'invite-channel-1' })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.thread({ groupId: futureId, rootId: roomId })).toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
       expect(vi.mocked(socket.send).mock.calls.filter(([raw]) => String(raw).includes('"subscribe"'))).toEqual([]);
       // A later reconnect resubscribes only the group.
       socket.emit('message', JSON.stringify({ type: 'ready' }));

@@ -697,6 +697,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     subscribe(roomId, value.cursor);
     return value;
   }
+  /** Every groupId entry resolves through here: a room that is not a group answers as missing before any other read or write. */
+  async function groupRoom(groupId: string) {
+    const room = await resolveGroup(groupId);
+    await groupSnapshot(room);
+    return room;
+  }
   function managementActor(s: Snapshot) {
     const eligible = s.members.filter(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role));
     return (eligible.find(m => m.role === 'owner') ?? eligible.find(m => m.id === selfId) ?? eligible[0])?.id;
@@ -911,7 +917,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   async function actPlan(input: unknown, action: string) {
     const i = z.object({ groupId: id, planId: id, position: z.number().int().min(0).max(11).optional(),
       action: z.enum(['remove','reassign']).optional(), botId: z.string().optional() }).parse(input);
-    const room = await resolveGroup(i.groupId);
+    const room = await groupRoom(i.groupId);
     await replacePlanIntent(room);
     const plans = await api<ServerPlan[]>(`/conversations/${room}/plans?ids=${i.planId}`);
     const plan = plans.find(p => p.id === i.planId); if (!plan) throw new Error('PLAN_CLOSED');
@@ -1519,7 +1525,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     status: async () => ({ enabled: true, connected: current() && connected }),
     thread: input => result(async () => {
       const i = z.object({ groupId: id, rootId: id, before: z.number().int().positive().optional(), sourceMessageIds: z.array(id).optional() }).parse(input);
-      i.groupId = await resolveGroup(i.groupId); subscribe(i.groupId);
+      i.groupId = await groupRoom(i.groupId);
       const members = await api<Member[]>(`/conversations/${i.groupId}/members`);
       const root = await api<Message>(`/conversations/${i.groupId}/messages/${i.rootId}`);
       const page = await api<Message[]>(`/conversations/${i.groupId}/messages?threadRootId=${i.rootId}&limit=50${i.before ? `&before=${i.before}` : ''}`);
@@ -1557,7 +1563,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     reply: input => result(async () => {
       const i = z.object({ groupId: id, rootId: id, text: z.string().trim().min(1).max(8000), clientId: operationId,
         mentions: z.object({ all: z.boolean(), botIds: z.array(z.string()).max(100) }) }).parse(input);
-      await register();
+      i.groupId = await groupRoom(i.groupId);
       const posted = await api<{ id: string }>(`/conversations/${i.groupId}/messages`, 'POST', {
         operationId: i.clientId, threadRootId: i.rootId, content: [{ type: 'text', text: i.text }], mentions: await mentionIds(i.groupId, i.mentions),
       });
@@ -1565,6 +1571,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }),
     react: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128), present: z.boolean() }).parse(input);
+      i.groupId = await groupRoom(i.groupId);
       await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions`, 'POST', { operationId: randomUUID(), emoji: i.emoji, present: i.present });
       changed(i.groupId); return {};
     }),
@@ -1761,7 +1768,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       changed(i.groupId); return { ok: true as const };
     }),
     stopRound: roomId => safe(async () => {
-      const room = await resolveGroup(id.parse(roomId));
+      const room = await groupRoom(id.parse(roomId));
       await replacePlanIntent(room);
       const plans = await api<ServerPlan[]>(`/conversations/${room}/plans`);
       for (const plan of plans.filter(p => ['proposed','running','waiting'].includes(p.status))) await actPlan({ groupId: room, planId: plan.id }, 'stop');
@@ -1797,7 +1804,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       changed(room); return { ok: true as const };
     }),
     continueRound: groupId => safe(async () => {
-      const room = await resolveGroup(id.parse(groupId));
+      const room = await groupRoom(id.parse(groupId));
       const history = await api<Message[]>(`/conversations/${room}/messages?limit=100`);
       const executions = await api<Execution[]>(`/conversations/${room}/executions`);
       const sourceId = executions.find(e => !e.plan_id && ordinaryExecution(e))?.source_message_id ?? history.find(discussionSource)?.id;
