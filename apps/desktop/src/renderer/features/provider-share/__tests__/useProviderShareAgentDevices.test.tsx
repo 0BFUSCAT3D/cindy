@@ -49,6 +49,8 @@ let push: ((list: ProviderShareReceived[]) => void) | null = null;
 let initial: ProviderShareReceived[] = [];
 let linkStatus: ((payload: { status: 'online' | 'connecting' | 'stopped' }) => void) | null = null;
 let linkPresence: ((payload: { deviceId: string; online: boolean; remoteControlEnabled: boolean }) => void) | null = null;
+let linkPeerReset: ((payload: { deviceId: string }) => void) | null = null;
+let linkControlTarget: ((payload: { deviceId: string; enabled: boolean; disabledControlDeviceIds: string[] }) => void) | null = null;
 const invoke = vi.fn();
 const unavailablePresence = [
   { label: 'offline', online: false, remoteControlEnabled: true },
@@ -69,6 +71,8 @@ beforeEach(() => {
   initial = [];
   linkStatus = null;
   linkPresence = null;
+  linkPeerReset = null;
+  linkControlTarget = null;
   invoke.mockReset().mockResolvedValue(hostShares());
   setDataOwnerGeneration('owner', 1);
   Object.assign(window, {
@@ -82,6 +86,14 @@ beforeEach(() => {
         onPresenceChanged: (callback: typeof linkPresence) => {
           linkPresence = callback;
           return () => { linkPresence = null; };
+        },
+        onPeerLinkReset: (callback: typeof linkPeerReset) => {
+          linkPeerReset = callback;
+          return () => { linkPeerReset = null; };
+        },
+        onControlTargetChanged: (callback: typeof linkControlTarget) => {
+          linkControlTarget = callback;
+          return () => { linkControlTarget = null; };
         },
       },
       providerShare: {
@@ -336,6 +348,101 @@ describe('useProviderShareAgentDevices', () => {
     setDataOwnerGeneration('another-owner', 2);
     await act(async () => finish(hostShares({ shareId: 'both' })));
     expect(result.current.devices).toEqual([]);
+  });
+
+  it('retries a failed share query on peer reset without relay or presence changes', async () => {
+    initial = [share({ shareId: 'both' })];
+    invoke.mockRejectedValueOnce(new Error('[DEVICE_LINK_PEER_RESET] peer reset'));
+    const { result, unmount } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    invoke.mockResolvedValue(hostShares({ shareId: 'both' }));
+    await act(async () => {
+      linkPeerReset?.({ deviceId: 'host-c' });
+      linkControlTarget?.({ deviceId: 'host-c', enabled: false, disabledControlDeviceIds: ['host-c'] });
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    await act(async () => { linkPeerReset?.({ deviceId: 'host-b' }); });
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    unmount();
+    expect(linkPeerReset).toBeNull();
+    expect(linkControlTarget).toBeNull();
+  });
+
+  it.each(['peer reset', 'local control disabled'])('ignores an old share response after %s recovery', async (reason) => {
+    initial = [share({ shareId: 'old' }), share({ shareId: 'new' })];
+    let finish!: (value: unknown) => void;
+    invoke.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    invoke.mockResolvedValue(hostShares({ shareId: 'new' }));
+    await act(async () => {
+      if (reason === 'peer reset') linkPeerReset?.({ deviceId: 'host-b' });
+      else {
+        linkControlTarget?.({ deviceId: 'host-b', enabled: false, disabledControlDeviceIds: ['host-b'] });
+        linkControlTarget?.({ deviceId: 'host-b', enabled: true, disabledControlDeviceIds: [] });
+      }
+    });
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:new']);
+    await act(async () => finish(hostShares({ shareId: 'old' })));
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:new']);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('pauses queries while local control is disabled and resumes when enabled', async () => {
+    initial = [share({ shareId: 'both' })];
+    invoke.mockResolvedValue({ ready: false, ...hostShares({ shareId: 'both' }) });
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
+      act(() => linkControlTarget?.({ deviceId: 'host-b', enabled: false, disabledControlDeviceIds: ['host-b'] }));
+      expect(result.current.devices).toEqual([]);
+      await act(async () => {
+        linkPeerReset?.({ deviceId: 'host-b' });
+        linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true });
+        linkStatus?.({ status: 'online' });
+        window.dispatchEvent(new Event('focus'));
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(invoke).toHaveBeenCalledTimes(1);
+      invoke.mockResolvedValue(hostShares({ shareId: 'both' }));
+      await act(async () => {
+        linkControlTarget?.({ deviceId: 'host-b', enabled: true, disabledControlDeviceIds: [] });
+      });
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
+      await act(async () => {
+        linkControlTarget?.({ deviceId: 'host-b', enabled: true, disabledControlDeviceIds: [] });
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(invoke).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['relay offline', 'peer unavailable'])('does not query on peer reset or local enable while %s', async (reason) => {
+    initial = [share({ shareId: 'both' })];
+    invoke.mockResolvedValue(hostShares({ shareId: 'both' }));
+    const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+    await waitFor(() => expect(result.current.devices).toHaveLength(1));
+    await act(async () => {
+      if (reason === 'relay offline') linkStatus?.({ status: 'connecting' });
+      else linkPresence?.({ deviceId: 'host-b', online: false, remoteControlEnabled: true });
+      linkPeerReset?.({ deviceId: 'host-b' });
+      linkControlTarget?.({ deviceId: 'host-b', enabled: true, disabledControlDeviceIds: [] });
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(result.current.devices).toEqual([]);
+    await act(async () => {
+      if (reason === 'relay offline') linkStatus?.({ status: 'online' });
+      else linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true });
+    });
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 
   it('names shares by owner only (numbering repeats), never by the sharer’s computer', async () => {

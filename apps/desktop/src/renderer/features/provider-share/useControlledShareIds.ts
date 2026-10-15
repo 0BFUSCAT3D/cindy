@@ -16,7 +16,7 @@ const RECEIVED_LIST_RETRY_MAX_MS = 30_000;
  * 分享授权属于账号，但跨区连接的启用标记在各电脑本地。新落点必须同时出现在被控端名单中。
  * 复用手机的只读查询，不恢复跨区连接、不修改授权；只消费名单，catalog 为 null 仍可保留。
  * 就绪后跟随已有的 received 推送刷新(包括后台轮询)；首次未就绪时按有上限的指数退避重查。
- * 失败只收起新的分享落点；被控电脑恢复在线且允许远程控制时重新查询，
+ * 失败只收起新的分享落点；目标恢复可用、peer 复位或本机重新开启控制时重新查询，
  * 不重连 peer/relay，也不影响普通设备或本机供应商。
  */
 export function useControlledShareIds(
@@ -38,6 +38,8 @@ export function useControlledShareIds(
     let revision = 0;
     let pending = false;
     let peerAvailable: boolean | undefined;
+    let relayAvailable: boolean | undefined;
+    let localControlEnabled: boolean | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let readinessRetryAttempt = 0;
     const invalidate = () => {
@@ -61,7 +63,8 @@ export function useControlledShareIds(
       }, delay);
     };
     const refresh = async () => {
-      if (!active || pending || peerAvailable === false || !isDataOwnerGenerationCurrent(owner)) return;
+      if (!active || pending || peerAvailable === false || relayAvailable === false
+        || localControlEnabled === false || !isDataOwnerGenerationCurrent(owner)) return;
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
@@ -99,6 +102,7 @@ export function useControlledShareIds(
     };
     const onFocus = () => { void refresh(); };
     const unsubscribe = link.onStatusChanged?.(({ status }) => {
+      relayAvailable = status === 'online';
       peerAvailable = undefined;
       invalidate();
       if (status === 'online') void refresh();
@@ -112,6 +116,18 @@ export function useControlledShareIds(
       invalidate();
       if (available) void refresh();
     });
+    const unsubscribePeerReset = link.onPeerLinkReset?.((event) => {
+      if (event.deviceId !== deviceId) return;
+      // 只重查当前目标；建链与合并在途 open 仍由 main 的既有 invoke 路径处理。
+      invalidate();
+      void refresh();
+    });
+    const unsubscribeControlTarget = link.onControlTargetChanged?.((event) => {
+      if (event.deviceId !== deviceId || event.enabled === localControlEnabled) return;
+      localControlEnabled = event.enabled;
+      invalidate();
+      if (event.enabled) void refresh();
+    });
     window.addEventListener('focus', onFocus);
     void refresh();
     return () => {
@@ -120,6 +136,8 @@ export function useControlledShareIds(
       retryTimer = null;
       unsubscribe?.();
       unsubscribePresence?.();
+      unsubscribePeerReset?.();
+      unsubscribeControlTarget?.();
       window.removeEventListener('focus', onFocus);
     };
   }, [deviceId, owner, received]);
