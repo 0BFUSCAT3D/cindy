@@ -41,7 +41,7 @@ vi.mock('ws', async () => {
     close() { this.emit('close'); }
   } };
 });
-import { withChatServer } from '../chatServer.js';
+import { REACTION_REVISION_MESSAGE_LIMIT, withChatServer } from '../chatServer.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
@@ -131,6 +131,53 @@ describe('Chat Server result delivery and refresh', () => {
       : response(route));
     await expect(service.updateGroup({ groupId: roomId, name: 'Draft', expectedRevision: 1 }))
       .resolves.toEqual({ ok: false, errorCode: 'REVISION_CONFLICT', message: 'REVISION_CONFLICT' });
+  });
+  it('lists every reactor by actor ID, past the room cap, without the register-time writes', async () => {
+    const messageId = '50000000-0000-4000-8000-000000000009';
+    const actor = (n: number) => `70000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const former = actor(1), unknown = actor(2);
+    // Former members keep their reactions, so one emoji can exceed the 1000-member room cap.
+    const all = [selfId, botId, former, unknown, ...Array.from({ length: 1101 }, (_, n) => actor(100 + n))].sort();
+    fixture.handle.mockImplementation(route => {
+      if (route === `/conversations/${roomId}/members`) return { body: [
+        { id: selfId, kind: 'human', name: 'Dash', ownerName: 'Dash', state: 'joined' },
+        { id: botId, kind: 'bot', name: 'Cindy', ownerName: 'Chris', state: 'joined' },
+        { id: former, kind: 'human', name: 'Ada', ownerName: 'Ada', state: 'left' },
+      ] };
+      if (route.startsWith(`/conversations/${roomId}/messages/${messageId}/reactions?`)) {
+        const query = new URLSearchParams(route.split('?')[1]);
+        expect(query.get('emoji')).toBe('🎉');
+        const after = query.get('after');
+        return { body: all.filter(a => !after || a > after).slice(0, 100).map(actor_id => ({ actor_id })) };
+      }
+      return response(route);
+    });
+    const result = await service.chatServer!.reactors({ groupId: roomId, messageId, emoji: '🎉' });
+    if (!result.ok) throw new Error(result.errorCode);
+    expect(result.reactors.map(r => r.actorId)).toEqual(all);
+    const byId = new Map(result.reactors.map(r => [r.actorId, r]));
+    expect(byId.get(selfId)).toEqual({ actorId: selfId, name: 'Dash', isSelf: true, formerMember: false });
+    expect(byId.get(botId)).toEqual({ actorId: botId, name: 'Cindy (Chris)', isSelf: false, formerMember: false });
+    expect(byId.get(former)).toEqual({ actorId: former, name: 'Ada', isSelf: false, formerMember: true });
+    expect(byId.get(unknown)).toEqual({ actorId: unknown, name: null, isSelf: false, formerMember: false });
+    expect(fixture.handle.mock.calls.filter(([route]) => String(route).includes('/reactions'))).toHaveLength(12);
+    // Hover is read-only: no actor/profile sync, no write of any kind.
+    expect(fixture.handle.mock.calls.every(([, method]) => method === 'GET')).toBe(true);
+    expect(fixture.handle.mock.calls.some(([route]) => route === '/actors')).toBe(false);
+  });
+  it('fails instead of looping or truncating when a full reactor page does not advance', async () => {
+    const messageId = '50000000-0000-4000-8000-000000000009';
+    const page = Array.from({ length: 100 }, (_, n) => ({ actor_id: `70000000-0000-4000-8000-${String(n).padStart(12, '0')}` }));
+    fixture.handle.mockImplementation(route => route.includes('/reactions?') ? { body: page }
+      : route.endsWith('/members') ? { body: [] } : response(route));
+    await expect(service.chatServer!.reactors({ groupId: roomId, messageId, emoji: '🎉' }))
+      .resolves.toEqual({ ok: false, errorCode: 'CHAT_RESPONSE_INVALID' });
+    expect(fixture.handle.mock.calls.filter(([route]) => String(route).includes('/reactions'))).toHaveLength(2);
+  });
+  it('rejects a malformed reactor query before reaching the server', async () => {
+    await expect(service.chatServer!.reactors({ groupId: roomId, messageId: 'not-a-message', emoji: '🎉' }))
+      .resolves.toEqual({ ok: false, errorCode: 'INVALID_INPUT' });
+    expect(fixture.handle.mock.calls.some(([route]) => String(route).includes('/reactions'))).toBe(false);
   });
   it('an additive invite preserves people and all previously joined companions', async () => {
     const other = '60000000-0000-4000-8000-000000000002';
@@ -1044,6 +1091,70 @@ describe('Chat Server result delivery and refresh', () => {
     const recovered = await service.getGroup(roomId);
     expect(recovered.ok && recovered.group.messages[0].attachments[0].name).toBe('report.pdf');
   });
+  it('versions only the changed message on realtime reaction changes and the whole room on resets', async () => {
+    const message = { id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },
+      content: [{ type: 'text', text: 'Hi' }], createdAt: new Date().toISOString(), deleted: false, threadRootId: null,
+      reactions: [{ emoji: '👍', count: 1, me: false }] };
+    fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [message] } : response(route));
+    const revisions = async () => {
+      const r = await service.getGroup(roomId);
+      return r.ok ? { room: r.group.reactionRevision, messages: r.group.reactionRevisions } : undefined;
+    };
+    const initial = (await revisions())!.room!;
+    expect(await revisions()).toEqual({ room: initial, messages: {} });
+    await vi.advanceTimersByTimeAsync(2000);
+    const socket = fixture.sockets[0];
+    // One member removes 👍 and another adds it in one batch: same count, different reactor.
+    socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '5', changes: [
+      { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: false } },
+      { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: true } },
+      { type: 'message.updated', entityId: message.id },
+    ] }));
+    expect(await revisions()).toEqual({ room: initial, messages: { [message.id]: 2 } });
+    // A reaction elsewhere leaves this message's version alone; other changes do not invalidate reactor reads.
+    socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '6', changes: [
+      { type: 'reaction.changed', entityId: 'other-message', data: { emoji: '🎉', present: true } },
+      { type: 'message.updated', entityId: message.id },
+    ] }));
+    expect(await revisions()).toEqual({ room: initial, messages: { [message.id]: 2, 'other-message': 1 } });
+    // A reset skips whatever changed while disconnected: the whole room counts as changed once.
+    Object.defineProperty(socket, 'readyState', { value: 1 });
+    socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
+    await vi.advanceTimersByTimeAsync(0);
+    const reset = (await revisions())!.room!;
+    expect(reset).toBeGreaterThan(initial);
+    expect(await revisions()).toEqual({ room: reset, messages: {} });
+    // Per-message versions stay bounded: one more message past the limit re-versions the whole room instead.
+    const reacted = (ids: string[], cursor: string) => socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor,
+      changes: ids.map(id => ({ type: 'reaction.changed', entityId: id, data: { emoji: '👍', present: true } })) }));
+    const ids = Array.from({ length: REACTION_REVISION_MESSAGE_LIMIT }, (_, i) => `m${i}`);
+    reacted(ids, '7');
+    const state = await revisions();
+    expect(state?.room).toBe(reset);
+    expect(Object.keys(state?.messages ?? {})).toHaveLength(REACTION_REVISION_MESSAGE_LIMIT);
+    reacted(['m0'], '8');
+    expect((await revisions())?.messages?.m0).toBe(2);
+    reacted(['one-more'], '9');
+    const capped = (await revisions())!.room!;
+    expect(capped).toBeGreaterThan(reset);
+    expect(await revisions()).toEqual({ room: capped, messages: {} });
+  });
+  it('starts a recreated chat runtime above every reaction version the previous one handed out', async () => {
+    // A same-owner repair replaces the runtime while mounted badges keep their read; whatever changed in between
+    // must not look unchanged just because the new runtime's counters start over.
+    let generation = 0;
+    deps.captureOwnerScope = () => ({ generation }) as unknown as ReturnType<NonNullable<typeof deps.captureOwnerScope>>;
+    deps.isOwnerScopeCurrent = scope => (scope as unknown as { generation: number }).generation === generation;
+    service.dispose();
+    service = withChatServer({ listGroups: async () => ({ ok: true, groups: [] }), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    const room = async () => { const r = await service.getGroup(roomId); return r.ok ? r.group.reactionRevision : undefined; };
+    const before = (await room())!;
+    expect(await room()).toBe(before);
+    generation += 1;
+    const after = (await room())!;
+    expect(after).toBeGreaterThan(before);
+    expect(await room()).toBe(after);
+  });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);
     await vi.advanceTimersByTimeAsync(2000);
@@ -1377,6 +1488,12 @@ describe('Chat Server directed sends', () => {
     const input = { groupId: roomId, text: '@Bot hello', clientId: `directed-send-${++nextSendId}`, mentions };
     return entry === 'thread' ? service.chatServer!.reply({ ...input, rootId }) : service.sendMessage(input);
   };
+
+  it('maps each owned Chat Server actor back to its local teammate for entry points outside group settings', async () => {
+    const result = await service.chatServer!.ownedBots();
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.bots.some(bot => bot.botId === 'local-bot' && typeof bot.actorId === 'string')).toBe(true);
+  });
 
   it.each(['main', 'thread'])('rejects a selected bot that left before the %s send instead of posting empty mentions', async entry => {
     await service.chatServer!.ownedBots();
