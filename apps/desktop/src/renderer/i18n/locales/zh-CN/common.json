@@ -10831,7 +10831,8 @@
       "downloadExtracting": "正在解压…",
       "downloadUnsupported": "远程电脑暂不支持下载文件夹，请更新该电脑上的 Cindy 后重试",
       "downloadNoSpace": "磁盘空间不足，无法完成下载",
-      "downloadSkipped": "已下载到「下载」文件夹，但有部分文件未能下载"
+      "downloadSkipped": "已下载到「下载」文件夹，但有部分文件未能下载",
+      "cancelTransfer": "取消"
     },
     "mivoAction": {
       "promptPlaceholder": "输入提示词，回车发送",

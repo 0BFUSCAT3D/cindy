@@ -10831,7 +10831,8 @@
       "downloadExtracting": "압축 푸는 중…",
       "downloadUnsupported": "원격 컴퓨터가 아직 폴더 다운로드를 지원하지 않습니다. 해당 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요",
       "downloadNoSpace": "디스크 공간이 부족해 다운로드를 완료할 수 없습니다",
-      "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다"
+      "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다",
+      "cancelTransfer": "취소"
     },
     "mivoAction": {
       "promptPlaceholder": "프롬프트를 입력하고 Enter로 전송",

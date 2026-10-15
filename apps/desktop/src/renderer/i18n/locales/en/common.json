@@ -10872,7 +10872,8 @@
       "downloadExtracting": "Unpacking…",
       "downloadUnsupported": "The remote computer can't download folders yet. Update Cindy on that computer and try again",
       "downloadNoSpace": "Not enough disk space to finish the download",
-      "downloadSkipped": "Saved to Downloads, but some files could not be downloaded"
+      "downloadSkipped": "Saved to Downloads, but some files could not be downloaded",
+      "cancelTransfer": "Cancel"
     },
     "mivoAction": {
       "promptPlaceholder": "Type a prompt, press Enter to send",
