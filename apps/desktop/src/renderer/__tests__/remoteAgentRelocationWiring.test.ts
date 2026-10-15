@@ -63,7 +63,14 @@ describe('ChatInput:换位置进切换事务', () => {
       'overrides?.agentDeviceId !== undefined ? overrides.agentDeviceId : pendingAgentDeviceId;',
     );
     expect(chatInputSource).toContain('requestedAgentDeviceId !== agentDeviceId');
-    expect(chatInputSource).toContain('{ agentDeviceId: relocateTo },');
+    const start = chatInputSource.indexOf('const switchOptions = {');
+    expect(start).toBeGreaterThan(0);
+    const options = chatInputSource.slice(start, chatInputSource.indexOf('};', start));
+    expect(options).toContain('...(relocateTo !== undefined ? { agentDeviceId: relocateTo } : {})');
+    expect(options).toContain('!deviceLinkDeviceId && confirmedContextWindow !== undefined');
+    const invoke = chatInputSource.indexOf('await switchApi.switchSessionAgent(', start);
+    expect(invoke).toBeGreaterThan(start);
+    expect(chatInputSource.slice(invoke, chatInputSource.indexOf(')', invoke))).toContain('switchOptions,');
   });
 
   it('回声匹配把位置算进意图;登记时写入位置;换电脑不写本机新建任务记忆', () => {
@@ -84,7 +91,7 @@ describe('ChatInput:换位置进切换事务', () => {
 
   it('只对本机任务、或支持远程 Agent 的被控端任务开放,且要能走切换事务', () => {
     expect(chatInputSource).toContain(
-      'if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter) return undefined;',
+      'if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter ||\n        sessionOrcaRole !== null || sessionOrcaRemoteWorker) return undefined;',
     );
     expect(chatInputSource).toContain('agentDeviceId: selection.agentDevice?.deviceId ?? null,');
   });

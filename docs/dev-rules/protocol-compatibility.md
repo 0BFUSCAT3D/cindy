@@ -929,6 +929,18 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
 
 ## 协同远端 Worker：Worker 在另一台电脑运行
 
+Orca 原地 Agent 切换补充边界：执行设备任务按既有 `orca_remote_lead` 判定，
+与 `orca_role` 一样拒绝用户换 Agent 位置，不新增 wire 字段或版本要求。
+Mobile 对已在另一台电脑运行的 Orca Agent，按所展示的模型目录所在电脑查询
+`maker:get-capabilities`；登记切换仍发给任务所在电脑。旧端保持原能力校验，
+不会因目标电脑未注册该 Harness 而回退到别的电脑执行。
+
+Desktop 本机 `maker:switch-session-agent` 的可选第 7 参增加
+`confirmedContextWindow`（正整数），仅供同 Agent 选模保留已核对的窗口。
+Renderer 与本机 Host 同包升级；不向 device-link 发送该字段，Host 对远程传入
+显式拒绝，沿用 SET_MODEL 的本机确认边界。无此字段仍可登记选择，但 Orca
+发送时若需要未确认的窗口重建，会保留意图并拒绝发送，用户可重新选择后确认。
+
 与上一节方向相反：协同的 Lead 与团队留在 A，单个 Worker 的任务、目录、命令与文件都在 B(运行设备)。
 B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 0124，JSON 见
 `apps/desktop/src/shared/orcaRemoteWorker.ts`)记录派活电脑与 Lead；派活、停止与回报复用现有会话通道。
