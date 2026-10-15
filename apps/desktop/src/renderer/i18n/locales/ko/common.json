@@ -8719,6 +8719,7 @@
     "list": {
       "createMenu": "새로 만들기",
       "createTeammate": "새 파트너",
+      "joinWithLink": "초대 링크 입력…",
       "startChat": "대화 시작하기",
       "selectChat": "파트너 또는 그룹 채팅을 선택해 대화를 시작하세요",
       "typing": "입력 중…",
@@ -9135,6 +9136,15 @@
       "files": {
         "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
       },
+      "addFromChat": {
+        "triggerFor": "{{name}}을(를) 그룹 채팅에 추가",
+        "addTo": "{{name}} 추가할 그룹",
+        "newGroup": "그룹 채팅 만들기…",
+        "existingGroup": "기존 그룹에 추가",
+        "added": "{{name}}을(를) \"{{group}}\"에 추가했습니다",
+        "openGroup": "그룹 열기",
+        "unavailable": "{{name}}은(는) 지금 그룹 채팅에 참여할 수 없습니다"
+      },
       "server": {
         "quoteReply": "인용 답글",
         "startTopic": "스레드 만들기",
@@ -9163,8 +9173,11 @@
         "copied": "초대 링크를 복사했습니다",
         "createLink": "초대 링크 만들기",
         "accept": "수락하고 참여",
-        "openGroup": "그룹 열기",
         "previewInvite": "초대 확인",
+        "linkDescription": "참여하면 그룹 구성원이 되어 대화 기록을 볼 수 있습니다.",
+        "loadingInvite": "초대를 불러오는 중…",
+        "retryInvite": "초대 다시 불러오기",
+        "malformedInvite": "초대 링크가 불완전하거나 형식이 올바르지 않습니다. 초대한 사람에게 새 링크를 요청하세요.",
         "invalidInvite": "유효하지 않거나 사용, 만료 또는 취소된 초대입니다. 새 링크를 받으세요.",
         "notAllowed": "현재 계정에 권한이 없습니다. 계정을 확인하거나 그룹 소유자에게 문의하세요.",
         "loginRequired": "현재 계정에 로그인한 후 다시 시도하세요.",
