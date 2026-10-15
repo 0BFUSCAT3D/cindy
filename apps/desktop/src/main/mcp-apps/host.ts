@@ -297,7 +297,7 @@ export class McpAppsHost {
       (caller.startsWith('device:') ? 4 : 16)
     )
       throw new Error('MCP_APP_VIEW_LIMIT');
-    const record = await this.deps.readCard(sessionId, clientId);
+    let record = await this.deps.readCard(sessionId, clientId);
     signal.throwIfAborted();
     const config = this.deps.config(record.serverId);
     if (!config || this.serverRevision(config) !== record.serverRevision)
@@ -305,6 +305,14 @@ export class McpAppsHost {
     const connectionId = (record as McpAppRecord & { connectionId?: string }).connectionId;
     const registered = connectionId ? this.connections.get(connectionId) : undefined;
     const detached = !registered || registered.owner !== owner || registered.connection.isClosed;
+    // An unknown connection belongs to a previous Host lifetime. Its original
+    // call cannot finish here, and replaying it could repeat a side effect.
+    // Persist the terminal state before reconnecting, even if loading later fails.
+    if (!registered && !record.result && !record.cancelled) {
+      record = { ...record, cancelled: 'Tool execution interrupted before completion' };
+      await this.updateResult(sessionId, clientId, record, owner);
+      signal.throwIfAborted();
+    }
     const connection =
       registered?.owner === owner && !registered.connection.isClosed
         ? registered.connection

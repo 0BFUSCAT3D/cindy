@@ -122,6 +122,40 @@ async function initialize(host: McpAppsHost, view: Awaited<ReturnType<typeof ope
 }
 
 describe('MCP App result delivery authorization', () => {
+  it.each(['pending', 'result', 'cancelled'] as const)(
+    'restores an orphaned %s card without replaying its original tool',
+    async (kind) => {
+      const f = fixture();
+      const saved = { ...f.card, connectionId: 'previous-host-connection',
+        ...(kind === 'pending' ? {} : completion(kind)) };
+      f.cards.set('card', saved);
+      const local = await open(f.host, 'renderer:restored');
+      await initialize(f.host, local);
+      if (kind === 'result') {
+        await vi.waitFor(() => expect(f.sendResult).toHaveBeenCalledExactlyOnceWith(result));
+        expect(f.sendCancelled).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() => expect(f.sendCancelled).toHaveBeenCalledOnce());
+        expect(f.cards.get('card')?.cancelled).toBe(kind === 'pending'
+          ? 'Tool execution interrupted before completion' : saved.cancelled);
+      }
+      expect(f.writeCard).toHaveBeenCalledTimes(kind === 'pending' ? 1 : 0);
+      const phone = await open(f.host, 'device:phone');
+      await initialize(f.host, phone);
+      await vi.waitFor(() => expect(kind === 'result' ? f.sendResult : f.sendCancelled).toHaveBeenCalledTimes(2));
+      expect(f.writeCard).toHaveBeenCalledTimes(kind === 'pending' ? 1 : 0);
+    },
+  );
+
+  it('does not publish a restored pending View if its terminal state cannot be saved', async () => {
+    const f = fixture();
+    f.cards.set('card', { ...f.card, connectionId: 'previous-host-connection' });
+    f.writeCard.mockRejectedValueOnce(new Error('Persistence unavailable'));
+    await expect(open(f.host, 'renderer:restored')).rejects.toThrow('Persistence unavailable');
+    expect(f.sendInput).not.toHaveBeenCalled();
+    expect(f.sendCancelled).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['result', true], ['result', false], ['cancelled', true], ['cancelled', false],
   ] as const)('preserves %s for an initialized=%s peer when another caller closes during authorization', async (kind, initialized) => {

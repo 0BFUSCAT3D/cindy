@@ -3,6 +3,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { encodeReliableFrames } from '../../../../../../packages/device-link/src/transport.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
 import type { AppConnection } from '../connection.js';
+import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import { MCP_APPS_MAX_BYTES, MCP_APPS_MAX_REMOTE_BYTES } from '../protocol.js';
 
 const hosts: McpAppsHost[] = [];
@@ -30,7 +31,7 @@ function fixture() {
     inputSchema: { type: 'object' as const },
     _meta: { ui: { resourceUri: uri } },
   };
-  const record = {
+  const record: McpAppRecord = {
     version: 1 as const,
     serverId: config.id,
     serverRevision: appServerRevision(config),
@@ -59,6 +60,8 @@ function fixture() {
     sendMessage: async () => {},
     connection: () => connection,
   });
+  // These budget cases model an active tool, not an orphan from a previous Host.
+  record.connectionId = host.registerConnection(connection);
   hosts.push(host);
   return { host, resource, readResource, connection, contents };
 }
