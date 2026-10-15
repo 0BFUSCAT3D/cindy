@@ -142,6 +142,9 @@ describe('buildHandoffText', () => {
     });
     expect(truncated).toContain('The host could list only your newest 50 chats');
     expect(truncated).toContain('search once more without session_ids and treat any hit as possibly yours but unverified');
+    // 截断分支不再先断言"清单外一律无关"——那会和"更早的自有对话存在"互斥;改为"可能是旧对话也可能无关"。
+    expect(truncated).toContain('may be an older chat of yours or an unrelated task');
+    expect(truncated).not.toContain('hits from sessions outside that list are unrelated context');
     // 宿主没给清单:只认当前对话。防御性上限 = 工具单次 session_ids 上限 50。
     const alone = buildHandoffText(messages, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
     expect(alone).toContain('"session_ids":["s-bot"]}');
