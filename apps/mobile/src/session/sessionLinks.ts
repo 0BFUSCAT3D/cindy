@@ -1,3 +1,4 @@
+import { parseSharedTaskPeer } from '@cindy/device-link';
 import { BRAND_IDENTITY, allDeepLinkSchemes } from '@cindy/maker-shared/brand-identity';
 
 // 深链双 scheme(身份单点派生):cindy 主 + xdt-maker 永久兼容(存量消息里的
@@ -35,7 +36,9 @@ function sessionDeepLinkQuery(
 ): string {
   const pairs: string[] = [];
   if (messageClientId) pairs.push(`message=${encodeURIComponent(messageClientId)}`);
-  if (opts?.deviceId) pairs.push(`device=${encodeURIComponent(opts.deviceId)}`);
+  // 共享任务句柄只在当前客户端有效;跨端链接携带房主的真实电脑 ID。
+  const deviceId = parseSharedTaskPeer(opts?.deviceId)?.deviceId ?? opts?.deviceId;
+  if (deviceId) pairs.push(`device=${encodeURIComponent(deviceId)}`);
   return pairs.length > 0 ? `?${pairs.join('&')}` : '';
 }
 

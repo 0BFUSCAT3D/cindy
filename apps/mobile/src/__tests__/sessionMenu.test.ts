@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 import { i18n } from '@/i18n';
 import {
   addSessionExtraDir,
@@ -167,6 +168,10 @@ describe('sessionMenu navigation', () => {
       .toBe('cindy://session/abc?device=physical');
     expect(sessionMenuCopyLink(session({ id: 'abc', canonicalDeviceId: 'canonical', deviceLinkDeviceId: 'physical' })))
       .toBe('cindy://session/abc?device=canonical');
+    expect(sessionMenuCopyLink(session({
+      id: 'abc',
+      deviceLinkDeviceId: sharedTaskHostPeer('shared-task', 'host-device'),
+    }))).toBe('cindy://session/abc?device=host-device');
   });
 
   it('settles back navigation in two stages', () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { sharedTaskHostPeer } from '@cindy/device-link';
 import {
   buildMobileSessionDeepLink,
   buildMobileSessionMessageDeepLink,
@@ -96,6 +97,16 @@ describe('session links', () => {
     });
     // 缺设备时保持旧格式。
     expect(buildMobileSessionMessageDeepLink('abc', 'c1', { deviceId: null })).toBe('cindy://session/abc?message=c1');
+  });
+
+  it('exports shared-task links with the physical host device instead of a local peer handle', () => {
+    const deviceId = sharedTaskHostPeer('shared-task', 'host-device');
+    expect(buildMobileSessionDeepLink('abc', { deviceId })).toBe(
+      'cindy://session/abc?device=host-device',
+    );
+    expect(buildMobileSessionMessageDeepLink('abc', 'm1', { deviceId })).toBe(
+      'cindy://session/abc?message=m1&device=host-device',
+    );
   });
 
   it('resolves the device for a session link, falling back when the target is not listed', () => {
