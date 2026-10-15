@@ -139,3 +139,23 @@ describe('collectConversationShareMessages', () => {
     ]);
   });
 });
+
+describe('collectConversationShareMessages 气泡归属', () => {
+  it('只给判定为自己发的用户消息标记 ownUserBubble', () => {
+    const items = [
+      messageItem('mine', 'user'),
+      messageItem('guest', 'user', { sharedAuthorName: 'Guest' }),
+      messageItem('reply', 'assistant'),
+    ];
+    const messages = collectConversationShareMessages(
+      items,
+      () => false,
+      (message) => !message.sharedAuthorName,
+    );
+    expect(messages.map((message) => [message.clientId, message.ownUserBubble === true])).toEqual([
+      ['mine', true],
+      ['guest', false],
+      ['reply', false],
+    ]);
+  });
+});

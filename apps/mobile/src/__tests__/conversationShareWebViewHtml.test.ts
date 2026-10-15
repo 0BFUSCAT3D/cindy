@@ -579,3 +579,51 @@ describe("buildConversationShareHtml 富内容导出", () => {
     expect(html).not.toContain('share-bubble-user">');
   });
 });
+
+describe("buildConversationShareHtml 与聊天气泡同款渲染", () => {
+  const ownUserBubble = { background: "#e8f0ff", border: "#b5c8ef" };
+  const html = buildConversationShareHtml({
+    allShareableIds: ["short", "own", "multi"],
+    colors: { ...colors, ownUserBubble },
+    contentWidth: 390,
+    selectedMessages: [
+      { body: "短消息", clientId: "short", kind: "user" },
+      { body: "自己发的", clientId: "own", kind: "user", ownUserBubble: true },
+      { body: "第一行\n第二行", clientId: "multi", kind: "user" },
+    ],
+  });
+  const css = (selector: string) =>
+    html.match(new RegExp(`\\n\\s*${selector.replace(/\./g, "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+
+  it("用户气泡用细描边与普通边框色,不用次要文字色的粗框", () => {
+    expect(css(".share-bubble-user")).toContain("border: 0.5px solid #dddddd");
+    expect(css(".share-bubble-user")).not.toContain("#555555");
+  });
+
+  it("左右边距与消息流一致,短消息气泡上下更紧凑", () => {
+    expect(css("#xdt-content.share-stage")).toContain("padding: 24px 16px");
+    expect(css(".share-bubble-user.share-bubble-compact")).toContain("padding: 8px 12px");
+    expect(html).toContain("share-bubble-user share-bubble-compact");
+    expect(html).toContain("share-bubble-user share-bubble-standard");
+  });
+
+  it("自己发的消息沿用「我的消息气泡颜色」", () => {
+    expect(css(".share-bubble-own")).toContain("background: #e8f0ff");
+    expect(css(".share-bubble-own")).toContain("border-color: #b5c8ef");
+    expect(html.match(/share-bubble-own"/g)).toHaveLength(1);
+  });
+
+  it("默认气泡外观不输出自定义颜色规则", () => {
+    const plain = buildConversationShareHtml({
+      allShareableIds: ["own"],
+      colors,
+      contentWidth: 390,
+      selectedMessages: [{ body: "x", clientId: "own", kind: "user", ownUserBubble: true }],
+    });
+    expect(plain).not.toContain(".share-bubble-own {");
+  });
+
+  it("段内换行像聊天里一样保留", () => {
+    expect(html).toMatch(/#xdt-content p,[^{]*\{\s*white-space: pre-wrap;/);
+  });
+});
