@@ -65,3 +65,13 @@ it('keeps healthy companions visible while failing closed for a damaged release 
   expect(scopes).toEqual([{ botId: 'healthy', directories: [], sessionIds: ['owned'], delegatedSessionIds: [] }]);
   expect(await fs.readFile(file, 'utf8')).toBe('{broken');
 });
+
+it('keeps a Bot that released its only background task as that task\'s origin', async () => {
+  await setTaskResponsibility(root, 'origin', 'child', false, () => {});
+  const scopes = await collectTaskResponsibilityScopes(['origin', 'idle'], async (botId) => ({
+    sessionIds: responsibleSessionIds(botId === 'origin' ? ['child'] : [], await readTaskResponsibilities(root, botId)),
+    delegatedSessionIds: botId === 'origin' ? ['child'] : [],
+  }));
+  // Nothing followed any more, but the owner chip still names the Bot; a Bot with nothing at all stays out.
+  expect(scopes).toEqual([{ botId: 'origin', directories: [], sessionIds: [], delegatedSessionIds: ['child'] }]);
+});

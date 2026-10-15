@@ -94,5 +94,7 @@ export async function collectTaskResponsibilityScopes(
       return { botId, directories: [], sessionIds: [], delegatedSessionIds: [] };
     }
   }));
-  return scopes.filter((scope) => scope.sessionIds.length > 0);
+  // A Bot that released its only background task is still that task's origin: keep the scope
+  // for the owner chip even when nothing is followed any more.
+  return scopes.filter((scope) => scope.sessionIds.length > 0 || scope.delegatedSessionIds.length > 0);
 }
