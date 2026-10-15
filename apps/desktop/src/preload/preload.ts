@@ -6013,6 +6013,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:chat-server:shareToMain', input),
       react: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['react']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['react']> =>
         ipcRenderer.invoke('maker:chat-server:react', input),
+      reactors: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['reactors']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['reactors']> =>
+        ipcRenderer.invoke('maker:chat-server:reactors', input),
       createInvite: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['createInvite']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['createInvite']> =>
         ipcRenderer.invoke('maker:chat-server:createInvite', input),
       revokeInvite: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['revokeInvite']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['revokeInvite']> =>

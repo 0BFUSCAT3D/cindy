@@ -1,9 +1,9 @@
 import { chatErrorKey } from './chatError';
 import { useRef, useState } from 'react';
 import { ChatInviteDialog } from './ChatInviteDialog';
+import { ChatReactionButton } from './ChatReactionButton';
 import { UserPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
 import { MessageActionBar } from '@/components/chat/MessageActionBar';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { SHARE_EXCLUDE_ATTR } from '@/lib/shareConversationImage';
@@ -11,7 +11,7 @@ import { Tip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { toast } from '@/lib/toast';
-import type { BotGroupMessageView } from '../../../shared/botGroupChat';
+import type { BotGroupDetail, BotGroupMemberView, BotGroupMessageView } from '../../../shared/botGroupChat';
 
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
@@ -19,12 +19,16 @@ const emojiChoices = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '
 const iconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] disabled:opacity-50';
 export { chatErrorKey } from './chatError';
 
+/** A message's reaction version: the room's reset version plus the message's own realtime changes. */
+export const messageReactionRevision = (group: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>, messageId: string) =>
+  `${group.reactionRevision ?? 0}:${group.reactionRevisions?.[messageId] ?? 0}`;
+
 /**
  * `onQuote` is 引用回复: a new main-timeline message that quotes this one. `onReply` opens the
  * message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after.
  */
-export function ChatMessageActions({ groupId, shareScope, message, align = message.isSelf ? 'right' : 'left', onQuote, onReply, replyCountShown = false, copyText, menuActions, onChanged }: {
-  groupId?: string; shareScope: string; message: BotGroupMessageView; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void;
+export function ChatMessageActions({ groupId, shareScope, message, members, reactionRevision, align = message.isSelf ? 'right' : 'left', onQuote, onReply, replyCountShown = false, copyText, menuActions, onChanged }: {
+  groupId?: string; shareScope: string; message: BotGroupMessageView; members?: BotGroupMemberView[]; reactionRevision?: string | number; align?: 'left' | 'right'; onQuote?: () => void; onReply?: () => void;
   /** The thread preview already shows the count; keep the toolbar icon quiet. */
   replyCountShown?: boolean;
   copyText?: string;
@@ -51,12 +55,8 @@ export function ChatMessageActions({ groupId, shareScope, message, align = messa
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} className="mt-1 flex flex-col gap-1">
       {!!message.reactions?.length && <div className={`flex flex-wrap items-center gap-1 ${align === 'right' ? 'justify-end' : ''}`}>
         {message.reactions.map(reaction => (
-          <Button key={reaction.emoji} variant={reaction.me ? 'primary' : 'secondary'} size="sm" compact
-            disabled={busy || !groupId} aria-pressed={reaction.me}
-            aria-label={t(key('reactionCount'), { emoji: reaction.emoji, count: reaction.count })}
-            onClick={() => void react(reaction.emoji, !reaction.me)}>
-            <span>{reaction.emoji}</span><span>{reaction.count}</span>
-          </Button>
+          <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} revision={reactionRevision} members={members}
+            disabled={busy || !groupId} onToggle={() => void react(reaction.emoji, !reaction.me)} />
         ))}
       </div>}
       <MessageActionBar copyText={copyText ?? message.content} menuActions={menuActions} createdAt={message.createdAt ? new Date(message.createdAt).toISOString() : undefined}

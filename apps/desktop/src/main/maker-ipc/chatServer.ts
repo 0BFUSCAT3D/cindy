@@ -91,6 +91,10 @@ const CHAT_AUTH_RETRY_MS = 60_000;
 /** Main-group messages kept as background for a Thread request (the Thread itself is read separately). */
 const THREAD_BACKGROUND_LIMIT = 30;
 const ATTACHMENT_REFRESH_COALESCE_MS = 200;
+/** Messages per group with their own reaction version; past this the group re-versions as a whole, like a reset. */
+export const REACTION_REVISION_MESSAGE_LIMIT = 500;
+// Room reaction versions come from one process-wide sequence, so they never repeat across chat runtimes.
+let reactionRevisionSequence = 0;
 const CHAT_REFRESHABLE_ERROR_CODES = new Set(['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED']);
 const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
@@ -188,6 +192,21 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let companion: CompanionCloudRuntime | undefined;
   let companionSelf: string | null = null;
   let actorsStale = false;
+  // Who reacted can change while counts stay the same. A realtime reaction change versions only its
+  // message; a reset that skipped events versions the whole room (and makes per-message versions moot).
+  // Both ride on the group, so every loaded page and the Thread see them on refresh. A recreated runtime
+  // (same owner, badges still mounted) may have missed changes while switching, so its rooms start above
+  // every version handed out before.
+  const runtimeReactionRevision = ++reactionRevisionSequence;
+  const reactionRevisions = new Map<string, { room: number; messages: Record<string, number> }>();
+  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: ++reactionRevisionSequence, messages: {} });
+  // A long-open group stays bounded: once too many messages carry their own version, the group re-versions instead.
+  const bumpMessageReactions = (roomId: string, messageId: string) => {
+    const revisions = reactionRevisions.get(roomId) ?? { room: runtimeReactionRevision, messages: {} };
+    if (!(messageId in revisions.messages) && Object.keys(revisions.messages).length >= REACTION_REVISION_MESSAGE_LIMIT) return resetReactions(roomId);
+    revisions.messages[messageId] = (revisions.messages[messageId] ?? 0) + 1;
+    reactionRevisions.set(roomId, revisions);
+  };
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -571,8 +590,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (event.scope.startsWith('conversation:')) {
             const roomId = event.scope.slice(13);
             if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
-            for (const change of event.changes ?? [])
+            for (const change of event.changes ?? []) {
               if (change.type === 'message.updated' || change.type === 'message.deleted') threads.invalidate(roomId, change.entityId);
+              if (change.type === 'reaction.changed' && typeof change.entityId === 'string') bumpMessageReactions(roomId, change.entityId);
+            }
             changed(roomId);
             for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
           }
@@ -590,6 +611,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               if (rooms.has(roomId)) advanceRoom(roomId, value.cursor);
               // Edits and deletions before the new cursor will never be pushed.
               threads.reset();
+              resetReactions(roomId);
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());
@@ -795,7 +817,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const lastView = last ? messageView(last, s.members) : null;
     // The sidebar never resolves shares: it names the sharer and never quotes the card's text.
     const lastIsShare = !!last && !!readBotGroupThreadShareCard(last);
-    return { serverBacked: true, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -1449,6 +1471,31 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128), present: z.boolean() }).parse(input);
       await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions`, 'POST', { operationId: randomUUID(), emoji: i.emoji, present: i.present });
       changed(i.groupId); return {};
+    }),
+    reactors: input => result(async () => {
+      const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128) }).strict().parse(input);
+      // Read-only: reuse the registered actor, or read it without the actor/profile sync in register().
+      const self = selfId || (await api<{ actor: { id: string } }>('/me')).actor.id;
+      // Every member state is listed, so actors who have since left keep their group name.
+      const members = await api<Member[]>(`/conversations/${i.groupId}/members`);
+      const page = z.array(z.object({ actor_id: id }).passthrough());
+      // One entry per actor ID, never merged by display name.
+      const actorIds = new Set<string>();
+      // Former members stay listed, so a reaction can outgrow the room cap: read until a short page.
+      for (let after = ''; ;) {
+        const query = new URLSearchParams({ emoji: i.emoji, limit: '100', ...(after ? { after } : {}) });
+        const rows = page.parse(await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions?${query}`));
+        const known = actorIds.size;
+        for (const row of rows) actorIds.add(row.actor_id);
+        if (rows.length < 100) break;
+        // A full page must advance the cursor; otherwise fail rather than loop or truncate silently.
+        if (actorIds.size === known) throw new Error('CHAT_RESPONSE_INVALID');
+        after = rows[rows.length - 1].actor_id;
+      }
+      return { reactors: [...actorIds].map(actorId => {
+        const member = members.find(m => m.id === actorId);
+        return { actorId, name: member ? memberName(member) : null, isSelf: actorId === self, formerMember: !!member && member.state !== 'joined' };
+      }) };
     }),
     createInvite: input => result(async () => {
       const i = z.object({ groupId: id, clientId: operationId }).parse(input);

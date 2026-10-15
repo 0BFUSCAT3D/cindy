@@ -23,6 +23,9 @@ import type {
 } from '../../../../shared/botGroupChat';
 
 const mocks = vi.hoisted(() => ({
+  // Keep translation identity stable so attachment effects do not reload on every render.
+  t: (key: string, options?: Record<string, unknown>) =>
+    options && 'name' in options ? `${key}:${String(options.name)}` : key,
   groupId: 'g1',
   navigate: vi.fn(),
   getBotGroup: vi.fn(),
@@ -56,8 +59,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('react-i18next', async (original) => ({
   ...(await original<typeof import('react-i18next')>()),
   useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) =>
-      options && 'name' in options ? `${key}:${String(options.name)}` : key,
+    t: mocks.t,
     i18n: { language: 'en-US', resolvedLanguage: 'en' },
   }),
 }));
@@ -308,7 +310,7 @@ beforeEach(() => {
       cleanupCachedImages: vi.fn(async () => undefined),
       getFileThumbnail: vi.fn(async () => null),
       maker: {
-        chatServer: { thread: mocks.thread, reply: mocks.reply, shareToMain: mocks.shareToMain },
+        chatServer: { thread: mocks.thread, reply: mocks.reply, shareToMain: mocks.shareToMain, reactors: vi.fn(async () => ({ ok: true, reactors: [] })) },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
         getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),
@@ -662,6 +664,7 @@ describe('BotGroupChatView', () => {
     expect(screen.getByRole('complementary')).toBe(panel);
     expect((within(panel).getByRole('textbox') as HTMLTextAreaElement).value).toBe('Unsent thread reply');
     await waitFor(() => expect(document.contains(preview)).toBe(false));
+    if (kind !== 'image') expect(window.electronAPI.readTextFilePreview).toHaveBeenCalledTimes(1);
     within(panel).getByRole('textbox').focus();
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('complementary')).toBeNull();

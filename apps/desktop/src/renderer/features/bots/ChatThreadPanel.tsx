@@ -24,7 +24,7 @@ import {
 } from './botGroupComposerChrome';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
-import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
+import { ChatMessageActions, chatErrorKey, messageReactionRevision } from './ChatServerControls';
 import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const sameBotGroupMentions = (a: BotGroupMention, b: BotGroupMention) =>
@@ -106,7 +106,7 @@ function ThreadMessage({ group, message, quoteSources, shareScope, sharing, shar
         className="-ml-1.5 inline-flex min-h-6 select-none items-center gap-1 rounded-full px-1.5 text-12 text-[var(--text-tertiary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
         <CornerDownRight size={12} aria-hidden />{t(key(shared.bySelf ? 'thread.postedBySelf' : 'thread.postedToMain'))}
       </button>}
-      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} align="left" onChanged={onChanged}
+      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} members={group.members} reactionRevision={messageReactionRevision(group, message.id)} align="left" onChanged={onChanged}
         copyText={share ? share.status === 'available' ? share.content : '' : undefined} menuActions={postAction ? [postAction] : undefined} />
     </div>
   </article>;
