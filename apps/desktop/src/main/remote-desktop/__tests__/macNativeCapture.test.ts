@@ -20,6 +20,8 @@ beforeEach(() => {
 afterEach(() => {
   owners.splice(0).forEach((o) => o.stop());
   vi.unstubAllGlobals();
+  // A failed fake-timer case must not leave later cases waiting on frozen time.
+  vi.useRealTimers();
 });
 function setup() {
   const child = Object.assign(new EventEmitter(), {
@@ -78,7 +80,6 @@ it('waits out a slow helper start but bounds later frames to the steady-state wa
   await expect(next).resolves.toBeNull();
   expect(child.kill).toHaveBeenCalledOnce();
   expect(h.spawn).toHaveBeenCalledOnce();
-  vi.useRealTimers();
 });
 
 it('captures only the 代输入 window, never the display, and returns to the display after', async () => {
