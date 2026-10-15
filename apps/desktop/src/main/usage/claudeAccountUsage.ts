@@ -317,6 +317,13 @@ export function readClaudeAccountUsageSnapshot(): ClaudeAccountUsageSnapshot | n
   return owner && snapshotOwnerKey === owner.key ? snapshot : null;
 }
 
+/** Authoritative no-limit state is replayable even if no renderer heard its push. */
+export function readClaudeAccountQuotaClear(): { quotaState: 'unlimited' } | null {
+  const owner = currentQuotaOwner();
+  return owner && snapshotOwnerKey === owner.key && snapshot === null
+    ? { quotaState: 'unlimited' } : null;
+}
+
 function broadcast(payload: ClaudeAccountUsageSnapshot | null): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {

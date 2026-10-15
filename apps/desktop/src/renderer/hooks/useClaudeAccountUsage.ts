@@ -25,6 +25,7 @@
  * 启用；自定义供应商即使复用相同 host 也不会读这份账号配额。
  */
 
+import { CLAUDE_QUOTA_STATE_READ, isClaudeQuotaClear } from '../../shared/claudeQuotaState';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { MoneyCurrency } from '../../shared/regionalMoney';
@@ -90,19 +91,19 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
     if (!ownerKey) return;
     const cached = lastSnapshot?.ownerKey === ownerKey ? lastSnapshot : null;
     if (cached) setSnapshot(cached);
-    // Reopening settings reuses the same account snapshot as the task status bar.
-    if (revision === 0 && cached && Date.now() - cached.cachedAt < 60_000) {
-      setRequest({ ownerKey, loading: false });
-      return;
-    }
+    // Display warm data immediately, but read again to replay a missed authoritative clear.
     let cancelled = false;
     setRequest({ ownerKey, loading: true });
     void window.electronAPI.maker.usage
-      .getAccount('claude-code')
+      .getAccount('claude-code', CLAUDE_QUOTA_STATE_READ)
       .then((res) => {
         if (cancelled) return;
-        // A read may return null when main has no snapshot for this owner.
-        // Only an explicit clear push is authoritative enough to evict cached quota.
+        if (isClaudeQuotaClear(res)) {
+          if (lastSnapshot?.ownerKey === ownerKey) lastSnapshot = null;
+          setSnapshot(null);
+          return;
+        }
+        // Unavailable reads must retain the last owner-bound snapshot.
         if (!isSnapshot(res)) return;
         lastSnapshot = { ownerKey, cachedAt: Date.now(), usage: res };
         setSnapshot(lastSnapshot);

@@ -1,3 +1,4 @@
+import { CLAUDE_QUOTA_STATE_READ, isClaudeQuotaClear } from '../../shared/claudeQuotaState';
 /**
  * useRemoteDeviceUsage — device-link 远程会话各计费形态的被控端用量镜像集。
  *
@@ -45,7 +46,12 @@ const codexAccountMirror = createRemoteDeviceUsageMirror<RemoteCodexAccountUsage
 });
 const claudeAccountMirror = createRemoteDeviceUsageMirror<ClaudeAccountUsageSnapshot>({
   invokeChannel: 'maker:usage:account',
-  invokeArgs: ['claude-code'],
+  invokeArgs: ['claude-code', CLAUDE_QUOTA_STATE_READ],
+  decodeRead: (value) => {
+    if (isClaudeQuotaClear(value)) return null;
+    if (!value || typeof value !== 'object' || !('maxBudget' in value)) return undefined;
+    return value as ClaudeAccountUsageSnapshot;
+  },
   pushChannel: 'usage:claude-account-changed',
 });
 const xaiSubscriptionMirror = createRemoteDeviceUsageMirror<XaiSubscriptionUsageSnapshot>({

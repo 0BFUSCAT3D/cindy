@@ -19,6 +19,7 @@ import { createRemoteDeviceUsageMirror } from '../hooks/remoteDeviceUsageMirror'
 import {
   selectRemoteCodexAccountUsage,
   useRemoteCodexAccountUsage,
+  useRemoteClaudeAccountUsage,
   useRemoteXaiRateLimit,
   resetRemoteDeviceUsageMirrorsForTest,
 } from '../hooks/useRemoteDeviceUsage';
@@ -356,4 +357,22 @@ describe('remote account parity', () => {
     rerender({ device: 'device-2' });
     expect(seen).toEqual([null]);
   });
+});
+
+it('retains remote quota on unavailable reads but replays a missed unlimited clear', async () => {
+  const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
+  mocks.invoke.mockResolvedValue(quota);
+  const first = renderHook(() => useRemoteClaudeAccountUsage('device-quota'));
+  await flushMicrotasks();
+  expect(first.result.current).toEqual(quota);
+  first.unmount();
+  mocks.invoke.mockResolvedValue(null);
+  const unavailable = renderHook(() => useRemoteClaudeAccountUsage('device-quota'));
+  await flushMicrotasks();
+  expect(unavailable.result.current).toEqual(quota);
+  unavailable.unmount();
+  mocks.invoke.mockResolvedValue({ quotaState: 'unlimited' });
+  const cleared = renderHook(() => useRemoteClaudeAccountUsage('device-quota'));
+  await flushMicrotasks();
+  expect(cleared.result.current).toBeNull();
 });

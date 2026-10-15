@@ -58,6 +58,12 @@ describe('Cindy AI enterprise quota refresh', () => {
     mocks.managed.mockResolvedValue('unlimited');
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'unlimited' });
+    mocks.managed.mockResolvedValue(null);
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'unlimited' });
+    mocks.auth = { ...mocks.auth, dataOwnerId: 'other-owner' };
+    expect(api.readClaudeAccountQuotaClear()).toBeNull();
     expect(mocks.broadcast).toHaveBeenLastCalledWith('usage:claude-account-changed', null);
     expect(mocks.outbound).not.toHaveBeenCalled();
   });
