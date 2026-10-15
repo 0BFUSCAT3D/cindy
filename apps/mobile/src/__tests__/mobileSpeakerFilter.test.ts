@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { accountVaultKey } from '@cindy/auth-client';
 import { buildSpeakerEnrollment, SPEAKER_MODEL_ASSETS, SpeakerGate, speakerModelAsset, speakerModelLocalName } from '@cindy/voice-input-core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -225,7 +226,7 @@ describe('mobile speaker filter', () => {
       }
       service.warmMobileSpeakerFilter();
       await vi.waitFor(() => expect(loadSpeakerModels).toHaveBeenCalledTimes(2));
-      expect(service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+      expect(await service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
     } finally {
       unsubscribe();
     }
@@ -322,7 +323,7 @@ describe('mobile speaker filter', () => {
     await signIn('user-a');
     const state = service.getMobileSpeakerFilterSnapshot();
     expect(state).toMatchObject({ hydrated: true, enabled: false, strictness: 'standard', enrolled: false });
-    expect(service.createMobileSpeakerGate()).toBeUndefined();
+    expect(await service.createMobileSpeakerGate()).toBeUndefined();
   });
 
   it('builds a gate only when on, enrolled and the models are on disk', async () => {
@@ -331,10 +332,69 @@ describe('mobile speaker filter', () => {
     const { getMobileAuthOwner } = await import('@/auth/authOwnerGeneration');
     storeProfile(getMobileAuthOwner().accountKey);
     await service.hydrateMobileSpeakerFilter();
-    expect(service.createMobileSpeakerGate()).toBeUndefined();
+    expect(await service.createMobileSpeakerGate()).toBeUndefined();
 
     await service.setMobileSpeakerFilterEnabled(true);
-    expect(service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+    expect(await service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+  });
+
+  it.each(['cold start', 'account switch'] as const)('waits for saved state on the first recording after %s', async scenario => {
+    installModels();
+    if (scenario === 'account switch') await signIn('user-b');
+    const key = accountVaultKey('global', 'user-a');
+    storeProfile(key);
+    asyncStore.set(service.__testing.prefsKey(key), JSON.stringify({ version: 1, enabled: true }));
+    const read = vi.mocked(getSecureItem).getMockImplementation()!;
+    let release!: () => void;
+    vi.mocked(getSecureItem).mockImplementationOnce(async name => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return read(name);
+    });
+    setMobileAuthOwner('user-a', 'global');
+    const gate = service.createMobileSpeakerGate();
+    let completed = false;
+    void gate.then(() => { completed = true; });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(completed).toBe(false);
+    expect(service.getMobileSpeakerFilterSnapshot().enabled).toBe(false);
+    release();
+    expect(await gate).toBeInstanceOf(SpeakerGate);
+    expect(loadSpeakerModels).not.toHaveBeenCalled(); // State only; native load stays lazy.
+  });
+
+  it('does not give an old startup the next account\'s gate', async () => {
+    installModels();
+    for (const key of [accountVaultKey('global', 'user-a'), accountVaultKey('global', 'user-b')]) {
+      storeProfile(key);
+      asyncStore.set(service.__testing.prefsKey(key), JSON.stringify({ version: 1, enabled: true }));
+    }
+    let release!: (value: string | null) => void;
+    vi.mocked(getSecureItem).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    setMobileAuthOwner('user-a', 'global');
+    const oldGate = service.createMobileSpeakerGate();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    setMobileAuthOwner('user-b', 'global');
+    expect(await service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+    release(secureStore.get(service.__testing.profileKey(accountVaultKey('global', 'user-a')))!);
+    expect(await oldGate).toBeUndefined();
+  });
+
+  it('bounds a stalled keychain read and uses the recovered state on the next run', async () => {
+    installModels();
+    const key = accountVaultKey('global', 'user-a');
+    storeProfile(key);
+    asyncStore.set(service.__testing.prefsKey(key), JSON.stringify({ version: 1, enabled: true }));
+    let release!: (value: string | null) => void;
+    vi.mocked(getSecureItem).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    setMobileAuthOwner('user-a', 'global');
+    vi.useFakeTimers();
+    const gate = service.createMobileSpeakerGate();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(await gate).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+    release(secureStore.get(service.__testing.profileKey(key))!);
+    expect(await service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('ignores a voiceprint made by another model', async () => {
@@ -362,7 +422,7 @@ describe('mobile speaker filter', () => {
 
     await signIn('user-b');
     expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ enabled: false, strictness: 'standard', enrolled: false });
-    expect(service.createMobileSpeakerGate()).toBeUndefined();
+    expect(await service.createMobileSpeakerGate()).toBeUndefined();
   });
 
   it('restoring the default strictness drops the override', async () => {
@@ -413,7 +473,7 @@ describe('mobile speaker filter', () => {
     expect(secureStore.has(service.__testing.profileKey(other))).toBe(true);
     expect(files.size).toBe(SPEAKER_MODEL_ASSETS.length);
     expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ enabled: false, enrolled: false });
-    expect(service.createMobileSpeakerGate()).toBeUndefined();
+    expect(await service.createMobileSpeakerGate()).toBeUndefined();
   });
 
   it('does not restore a logged-out voiceprint on sign-in until cleanup succeeds', async () => {

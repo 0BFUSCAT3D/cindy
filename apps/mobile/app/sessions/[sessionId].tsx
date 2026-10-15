@@ -5501,6 +5501,7 @@ function SessionScreenContent() {
           credential.settings?.language,
           CINDY_MANAGED_REFINER_PROVIDER,
         );
+      const audioGate = await createMobileSpeakerGate();
       if (voiceStartupSeqRef.current !== startupSeq) {
         // This run never opened the microphone; release only its claimed ASR.
         void prewarmedVoice?.asr.stop().catch(() => undefined);
@@ -5515,7 +5516,7 @@ function SessionScreenContent() {
         const controller = createMobileVoiceControllerSession({
           credential,
           // "Recognize my voice": undefined unless enabled, enrolled and the models are on disk.
-          audioGate: createMobileSpeakerGate(),
+          audioGate,
           ...(prewarmedVoice ? { asr: prewarmedVoice.asr } : {}),
           connectionProvider: (providerId: string) => voiceContext.createAsrConnection(providerId),
           refinerTargetProvider: (providerId: string, options?: { refreshAccessToken?: boolean }) =>

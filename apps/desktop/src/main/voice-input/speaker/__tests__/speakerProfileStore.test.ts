@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -92,6 +93,79 @@ describe('SpeakerProfileStore', () => {
     expect(store.read()).not.toBeNull();
     store.delete();
     expect(fs.existsSync(file)).toBe(false);
+    expect(store.read()).toBeNull();
+  });
+
+  it.each(['write', 'rename'] as const)('removes the temporary voiceprint after a failed %s and keeps the committed profile', failure => {
+    const file = path.join(dir, 'profile.json');
+    const store = new SpeakerProfileStore(() => file, fakeCipher());
+    store.write(Float32Array.of(1, 0));
+    const previous = fs.readFileSync(file, 'utf8');
+    const originalWrite = fs.writeFileSync;
+    if (failure === 'write') {
+      vi.spyOn(fs, 'writeFileSync').mockImplementationOnce((target, data, options) => {
+        originalWrite(target, data, options);
+        throw new Error('disk error');
+      });
+    } else {
+      vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => { throw new Error('disk error'); });
+    }
+    expect(() => store.write(Float32Array.of(0, 1))).toThrow('disk error');
+    expect(fs.existsSync(`${file}.${process.pid}.tmp`)).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe(previous);
+    expect(Array.from(store.read()!.embedding)).toEqual([1, 0]);
+  });
+
+  it('reclaims crashed writers on read without touching live writers or unrelated files', () => {
+    const file = path.join(dir, 'profile.json');
+    const deadPid = process.pid + 1;
+    const old = `${file}.${deadPid}.tmp`;
+    const live = `${file}.${process.pid + 2}.tmp`;
+    const unrelated = path.join(dir, 'other-profile.json.123.tmp');
+    for (const target of [old, live, unrelated, `${file}.notes.tmp`]) fs.writeFileSync(target, 'fixture');
+    vi.spyOn(process, 'kill').mockImplementation(pid => {
+      if (pid === deadPid) throw Object.assign(new Error('no process'), { code: 'ESRCH' });
+      return true;
+    });
+    expect(new SpeakerProfileStore(() => file, fakeCipher()).read()).toBeNull();
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(unrelated)).toBe(true);
+    expect(fs.existsSync(`${file}.notes.tmp`)).toBe(true);
+  });
+
+  it('explicit deletion removes all matching temporary files even without a committed profile', () => {
+    const file = path.join(dir, 'profile.json');
+    const otherAccount = path.join(dir, 'other-account');
+    fs.mkdirSync(otherAccount);
+    const otherFile = path.join(otherAccount, 'profile.json.123.tmp');
+    fs.writeFileSync(otherFile, 'other account');
+    for (const pid of [123, 456, process.pid]) fs.writeFileSync(`${file}.${pid}.tmp`, 'ciphertext fixture');
+    new SpeakerProfileStore(() => file, fakeCipher()).delete();
+    expect(fs.readdirSync(dir)).toEqual(['other-account']);
+    expect(fs.readFileSync(otherFile, 'utf8')).toBe('other account');
+  });
+
+  it('attempts every deletion, reports a locked temporary file and allows retry', () => {
+    const file = path.join(dir, 'profile.json');
+    const store = new SpeakerProfileStore(() => file, fakeCipher());
+    store.write(Float32Array.of(1, 0));
+    const locked = `${file}.123.tmp`;
+    const other = `${file}.456.tmp`;
+    fs.writeFileSync(locked, 'ciphertext fixture');
+    fs.writeFileSync(other, 'ciphertext fixture');
+    const originalRm = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (target === locked) throw new Error('file locked');
+      originalRm(target, options);
+    });
+    expect(() => store.delete()).toThrow('Speaker profile cleanup failed');
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(other)).toBe(false);
+    expect(fs.existsSync(locked)).toBe(true);
+    spy.mockRestore();
+    store.delete();
+    expect(fs.existsSync(locked)).toBe(false);
     expect(store.read()).toBeNull();
   });
 });

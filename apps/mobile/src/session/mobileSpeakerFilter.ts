@@ -37,9 +37,8 @@ import { logMobileVoice } from './mobileVoiceDiagnostics';
  * "Recognize my voice" on mobile. Same models, thresholds and gate as desktop;
  * inference runs through ONNX Runtime in the cindy-speaker-onnx module.
  *
- * Everything dictation start needs is kept in memory so building the gate
- * never adds an await before the microphone opens. When anything is not
- * ready the run is simply not filtered.
+ * Dictation start waits for saved preferences and the voiceprint before
+ * choosing its gate. Model loading stays lazy; failures still pass through.
  *
  * The voiceprint is biometric data: it stays on this device, in the OS
  * keychain/keystore through SecureStore, one per account, and is never
@@ -73,6 +72,7 @@ type Profile = { embedding: Float32Array; createdAt: number };
 
 const MAX_EMBEDDING_DIM = 4096;
 const DOWNLOAD_STALL_MS = 60_000;
+const HYDRATION_START_TIMEOUT_MS = 1_500;
 
 let snapshot: MobileSpeakerFilterSnapshot = initialSnapshot();
 let profile: Profile | null = null;
@@ -486,12 +486,27 @@ export function warmMobileSpeakerFilter(): void {
 }
 
 /**
- * The gate for one dictation run, or undefined when the filter is off or not
- * ready. Synchronous by design: it never delays opening the microphone.
+ * The gate for one dictation run. Await saved state so the first run after
+ * launch/account switch uses the user's setting. Bound storage stalls without
+ * waiting for model download or native model loading before opening the mic.
  */
-export function createMobileSpeakerGate(): SpeakerGate | undefined {
-  void hydrateMobileSpeakerFilter();
+export async function createMobileSpeakerGate(): Promise<SpeakerGate | undefined> {
   const owner = getMobileAuthOwner();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      hydrateMobileSpeakerFilter(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('speaker hydration timed out')), HYDRATION_START_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    logMobileVoice('warn', 'speaker gate passthrough', { reason: 'hydration_timeout' });
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!isMobileAuthOwnerCurrent(owner)) return undefined;
   if (!snapshot.supported || !snapshot.enabled || hydratedFor !== owner.accountKey || !profile) return undefined;
   if (snapshot.modelState !== 'ready') {
     // The OS may have purged the cached models; bring them back for next time.

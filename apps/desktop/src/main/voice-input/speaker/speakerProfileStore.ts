@@ -49,6 +49,9 @@ export class SpeakerProfileStore {
   read(): SpeakerProfile | null {
     const file = this.filePath();
     if (this.cache?.file === file) return this.cache.profile;
+    // Recover abandoned atomic writes after a crash. A busy/locked file can be
+    // retried later; it must not make the committed profile unreadable.
+    try { this.removeTemporaryFiles(file, true); } catch { /* Retried on delete/write. */ }
     const profile = this.load(file);
     // A failed read (e.g. keychain still locked) is retried next time.
     this.cache = profile ? { file, profile } : null;
@@ -69,9 +72,16 @@ export class SpeakerProfileStore {
     };
     const file = this.filePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    try { this.removeTemporaryFiles(file, true); } catch { /* Explicit delete reports failures. */ }
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(stored), { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(stored), { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } finally {
+      // Includes a partial write or failed rename; preserve the original I/O
+      // error if cleanup also fails. Startup/delete retry any remaining file.
+      try { fs.rmSync(tmp, { force: true }); } catch { /* Retried on read/write/delete. */ }
+    }
     const profile = { embedding: Float32Array.from(embedding), createdAt };
     this.cache = { file, profile };
     return profile;
@@ -79,8 +89,40 @@ export class SpeakerProfileStore {
 
   delete(): void {
     const file = this.filePath();
-    fs.rmSync(file, { force: true });
     this.cache = null;
+    const errors: unknown[] = [];
+    try { fs.rmSync(file, { force: true }); } catch (error) { errors.push(error); }
+    try { this.removeTemporaryFiles(file, false); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, 'Speaker profile cleanup failed');
+  }
+
+  private removeTemporaryFiles(file: string, staleOnly: boolean): void {
+    const dir = path.dirname(file);
+    const prefix = `${path.basename(file)}.`;
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    const errors: unknown[] = [];
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+      const pidText = name.slice(prefix.length, -4);
+      if (!/^[1-9]\d*$/.test(pidText)) continue;
+      const pid = Number(pidText);
+      if (staleOnly && pid !== process.pid) {
+        try {
+          process.kill(pid, 0);
+          continue; // Another instance may be in the middle of its atomic write.
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') continue;
+        }
+      }
+      try { fs.rmSync(path.join(dir, name), { force: true }); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Speaker profile temporary cleanup failed');
   }
 
   private load(file: string): SpeakerProfile | null {
