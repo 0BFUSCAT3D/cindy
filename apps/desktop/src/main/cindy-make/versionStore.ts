@@ -4,11 +4,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import originalFs from 'original-fs';
 import { atomicWriteFileSync, readAtomicFileSync } from '../utils/atomicWriteFile.js';
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
+import { createLogger } from '../logger.js';
 import { createMigrationRuntimeManifest } from '../localDb/migrationRunner.js';
 import { CINDY_VERSION_PROTOCOL, type CindyVersionInfo } from '../../shared/cindyVersions.js';
 import { settlePendingBuilds } from './pendingBuild.js';
 import { makeSourceRoot } from './sourcePaths.js';
 import type { CindyVersionEndpointSnapshot } from './versionRuntimeIdentity.js';
+
+const log = createLogger('CindyMakeVersionStore');
 
 export const VERSION_ID = /^[a-f0-9-]{36}$/;
 export const ORIGINAL_DEV_ENV_KEYS = [
@@ -267,20 +270,28 @@ async function assertRuntimeLinksInside(directory: string): Promise<void> {
   };
   await walk(directory);
 }
-export function publishPersonalVersion(profile: string, id: string): void {
+export function publishPersonalVersion(
+  profile: string,
+  id: string,
+  writeSelection: typeof writeVersionJson = writeVersionJson,
+): void {
   const directory = versionDirectory(profile, id);
   assertVersionDirectory(profile, directory);
   const staged = readVersionJson<PersonalVersion>(path.join(directory, 'staged.json'));
   if (!staged || staged.id !== id) throw versionError('unavailable');
   writeVersionJson(path.join(directory, 'version.json'), staged);
-  // Finish the pending-build proof before switching the selected slot. If the
-  // ledger cannot be written (for example, a full disk), the old personal slot
-  // remains authoritative and build rollback cannot leave it pointing at a
-  // directory that was removed from the failed generation.
-  settlePendingBuilds(makeSourceRoot(profile));
   // The slot changes only after the complete application has been saved. UUIDs are
   // private immutable generations, not additional user-selectable personal versions.
-  writeVersionJson(path.join(versionsRoot(profile), 'personal.json'), { id });
+  // This is the commit point: on failure the pending ledger is still untouched;
+  // after success no bookkeeping error may make build cleanup remove this version.
+  writeSelection(path.join(versionsRoot(profile), 'personal.json'), { id });
+  try {
+    settlePendingBuilds(makeSourceRoot(profile));
+  } catch {
+    // A stale/unknown ledger is conservative. The saved version independently
+    // proves its generated commit; rolling it back could instead lose that proof.
+    log.warn('Personal version published; pending-build ledger could not be settled');
+  }
   try {
     fs.unlinkSync(path.join(directory, 'staged.json'));
   } catch {}
