@@ -215,6 +215,8 @@ int main(int argc, const char *argv[]) {
     };
     void (^reply)(void) = ^{
       if (!requested || !latest) return;
+      // An unfiltered lock-screen stream must never deliver a frame after unlock.
+      if (lockedStart && !sessionLocked()) _exit(6);
       requested = NO;
       NSData *data;
       if (overlay) {

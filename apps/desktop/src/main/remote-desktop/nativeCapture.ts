@@ -25,6 +25,7 @@ const name = 'cindy-macos-desktop-capture';
 // A running helper answers within this; a fresh one may still be starting capture.
 const FRAME_MS = 3000;
 const UNLOCKED_EXIT = 6;
+const RESTART = Symbol('restart');
 let building: Promise<string> | null = null;
 async function binary(): Promise<string> {
   if (process.platform === 'linux') return resolveLinuxCaptureBinary();
@@ -181,13 +182,26 @@ export class NativeDesktopCapture {
   private config = '';
   private generation = 0;
   private busy = false;
-  private cancel: ((error?: Error) => void) | null = null;
+  private cancel: ((reason?: Error | typeof RESTART) => void) | null = null;
 
   async frame(
     display: string,
     overlay = false,
     settings?: RemoteDesktopVideoSettings,
   ): Promise<string | RemoteDesktopCursorFrame | null> {
+    const value = await this.read(display, overlay, settings);
+    if (value !== RESTART) return value;
+    // The helper left the lock screen mid-request; its filtered replacement
+    // answers now so a pending first frame does not fail the connection.
+    const retry = await this.read(display, overlay, settings);
+    return retry === RESTART ? null : retry;
+  }
+
+  private async read(
+    display: string,
+    overlay: boolean,
+    settings?: RemoteDesktopVideoSettings,
+  ): Promise<string | RemoteDesktopCursorFrame | null | typeof RESTART> {
     const profile = desktopVideoProfile(settings);
     const fps = desktopVideoFramerate(settings);
     if (process.platform === 'win32') {
@@ -291,9 +305,9 @@ export class NativeDesktopCapture {
         child.on('exit', (code) => {
           if (this.child !== child) return;
           // The macOS helper captured the lock screen unfiltered and the session
-          // unlocked: the next frame restarts it with the window filter.
+          // unlocked: restart it with the window filter.
           if (code === UNLOCKED_EXIT) {
-            this.cancel?.();
+            this.cancel?.(RESTART);
             this.stop();
             return;
           }
@@ -312,59 +326,64 @@ export class NativeDesktopCapture {
       const frameBytes = overlay && !linux ? profile.maxFrameBytes : 1_000_000;
       const jpegLimit = Math.ceil(frameBytes / 3) * 4;
       const textLimit = jpegLimit + 166_664;
-      return await new Promise<string | RemoteDesktopCursorFrame | null>((resolve, reject) => {
-        let text = '';
-        const finish = (frame: string | RemoteDesktopCursorFrame | null, error?: Error) => {
-          if (frame && generation === this.generation)
-            this.confirmedExclusion = this.excludedWindows;
-          clearTimeout(timer);
-          child.stdout.off('data', receive);
-          this.cancel = null;
-          if (error) reject(error);
-          else resolve(frame);
-        };
-        const receive = (chunk: Buffer) => {
-          text += chunk.toString('ascii');
-          if (text.length > (overlay || linux ? textLimit : 240_001)) {
-            this.stop();
-            return;
-          }
-          if (!text.endsWith('\n')) return;
-          if (overlay) {
-            try {
-              const value = JSON.parse(text) as RemoteDesktopCursorFrame;
-              if (
-                typeof value.jpeg !== 'string' ||
-                value.jpeg.length > jpegLimit ||
-                !/^[A-Za-z0-9+/]+={0,2}$/.test(value.jpeg) ||
-                (value.cursor !== null && !isRemoteDesktopCursor(value.cursor))
-              )
-                throw new Error('INVALID_CURSOR_FRAME');
-              finish(generation === this.generation ? value : null);
-            } catch {
+      return await new Promise<string | RemoteDesktopCursorFrame | null | typeof RESTART>(
+        (resolve, reject) => {
+          let text = '';
+          const finish = (
+            frame: string | RemoteDesktopCursorFrame | null | typeof RESTART,
+            error?: Error,
+          ) => {
+            if (frame && frame !== RESTART && generation === this.generation)
+              this.confirmedExclusion = this.excludedWindows;
+            clearTimeout(timer);
+            child.stdout.off('data', receive);
+            this.cancel = null;
+            if (error) reject(error);
+            else resolve(frame);
+          };
+          const receive = (chunk: Buffer) => {
+            text += chunk.toString('ascii');
+            if (text.length > (overlay || linux ? textLimit : 240_001)) {
               this.stop();
+              return;
             }
-            return;
-          }
-          const jpeg = text.slice(0, -1);
-          if (!/^[A-Za-z0-9+/]+={0,2}$/.test(jpeg)) {
+            if (!text.endsWith('\n')) return;
+            if (overlay) {
+              try {
+                const value = JSON.parse(text) as RemoteDesktopCursorFrame;
+                if (
+                  typeof value.jpeg !== 'string' ||
+                  value.jpeg.length > jpegLimit ||
+                  !/^[A-Za-z0-9+/]+={0,2}$/.test(value.jpeg) ||
+                  (value.cursor !== null && !isRemoteDesktopCursor(value.cursor))
+                )
+                  throw new Error('INVALID_CURSOR_FRAME');
+                finish(generation === this.generation ? value : null);
+              } catch {
+                this.stop();
+              }
+              return;
+            }
+            const jpeg = text.slice(0, -1);
+            if (!/^[A-Za-z0-9+/]+={0,2}$/.test(jpeg)) {
+              this.stop();
+              return;
+            }
+            finish(generation === this.generation ? jpeg : null);
+          };
+          // Starting capture and the first cursor read can take seconds on a busy
+          // or high-resolution Mac; only later frames use the steady-state bound.
+          const waitMs = cold ? REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs : FRAME_MS;
+          const timer = setTimeout(() => {
+            if (generation === this.generation)
+              log.warn(`Native capture produced no frame within ${waitMs}ms cold=${cold}`);
             this.stop();
-            return;
-          }
-          finish(generation === this.generation ? jpeg : null);
-        };
-        // Starting capture and the first cursor read can take seconds on a busy
-        // or high-resolution Mac; only later frames use the steady-state bound.
-        const waitMs = cold ? REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs : FRAME_MS;
-        const timer = setTimeout(() => {
-          if (generation === this.generation)
-            log.warn(`Native capture produced no frame within ${waitMs}ms cold=${cold}`);
-          this.stop();
-        }, waitMs);
-        this.cancel = (error) => finish(null, error);
-        child.stdout.on('data', receive);
-        child.stdin.write('f');
-      });
+          }, waitMs);
+          this.cancel = (reason) => (reason === RESTART ? finish(RESTART) : finish(null, reason));
+          child.stdout.on('data', receive);
+          child.stdin.write('f');
+        },
+      );
     } finally {
       // A cancelled old request must not reset a newer reader's backpressure.
       if (generation === this.generation) this.busy = false;

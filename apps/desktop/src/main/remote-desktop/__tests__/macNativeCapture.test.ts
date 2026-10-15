@@ -81,15 +81,23 @@ it('waits out a slow helper start but bounds later frames to the steady-state wa
   vi.useRealTimers();
 });
 
-it('restarts quietly when the helper exits for an unlock, but reports other exits', async () => {
+it('answers a pending frame from the restarted helper after an unlock, but reports other exits', async () => {
   const settings = { fps: 30, quality: 'auto', audio: false } as const;
+  const frame = { jpeg: 'abcd', cursor: null };
   const unlocked = setup();
   const pending = unlocked.owner.frame('1', true, settings);
   await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledOnce());
+  const replacement = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(),
+  });
+  h.spawn.mockReturnValue(replacement);
   unlocked.child.emit('exit', 6);
-  await expect(pending).resolves.toBeNull();
-  void unlocked.owner.frame('1', true, settings);
   await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+  replacement.stdout.write(JSON.stringify(frame) + '\n');
+  await expect(pending).resolves.toEqual(frame);
 
   const crashed = setup();
   const failing = crashed.owner.frame('1', true, settings);
