@@ -3574,6 +3574,8 @@ export function createTurnRunner(
     if (isQuotaExhaustionFailure(errData)) {
       msg = terminalErrorText(errData, {
         providerLabel: await resolveSessionProviderLabel(state.makerSession.id),
+        surface: 'personal',
+        supportsModelCommand: richIm !== null,
       });
     }
     if (turn?.streamingHandle) {

@@ -234,20 +234,28 @@ export interface QuotaFailureNoticeOptions {
   providerLabel?: string | null;
   /**
    * 哪个入口的任务 —— 「怎么处理」要指到对的地方:
-   * - `personal`(默认): 个人 bot / 个人 IM 渠道, `/model` 直接改这个任务, 默认模型在
+   * - `personal`: 个人 bot / 个人 IM 渠道, 支持时 `/model` 直接改这个任务, 默认模型在
    *   这个 bot 自己的卡片(如「Telegram 机器人」)的「新对话配置」里;
    * - `official`: 官方 bot, `/model` 与官方卡片工作目录里的模型改的是**目录默认**,
    *   已有任务保持原模型, 所以要接着 `/new` 开新任务, 或在 Cindy 里直接给任务换模型。
    */
-  surface?: 'personal' | 'official';
+  surface: 'personal' | 'official';
+  /** 个人渠道只有富卡输出支持 /model；未声明时指向 Cindy 内的当前任务。 */
+  supportsModelCommand?: boolean;
 }
 
-function quotaRecoveryHint(surface: 'personal' | 'official'): string {
-  if (surface === 'official') {
+function quotaRecoveryHint(options: QuotaFailureNoticeOptions): string {
+  if (options.surface === 'official') {
     return (
       'Cindy 不会自动更换模型或供应商。可以发 /model，或在 Cindy 的 设置 → IM 机器人 →' +
       '「Telegram」等官方 bot 卡片的工作目录里换一个模型（改的是这个目录的默认，已有任务保持原模型），' +
       '然后发 /new 开新任务；也可以在 Cindy 里直接给这个任务换模型。额度恢复后也可以直接重发这条消息。'
+    );
+  }
+  if (!options.supportsModelCommand) {
+    return (
+      'Cindy 不会自动更换模型或供应商。可以在 Cindy 里打开这个任务，给它换一个供应商或模型，' +
+      '然后回到这里重发这条消息。额度恢复后也可以直接重发这条消息。'
     );
   }
   return (
@@ -259,7 +267,7 @@ function quotaRecoveryHint(surface: 'personal' | 'official'): string {
 
 export function quotaFailureNotice(
   data: unknown,
-  options?: QuotaFailureNoticeOptions,
+  options: QuotaFailureNoticeOptions,
 ): string | null {
   if (!isQuotaExhaustionFailure(data)) return null;
   const { message, codexErrorInfo } = terminalErrorRecord(data);
@@ -268,19 +276,20 @@ export function quotaFailureNotice(
     : codexErrorInfo === 'usageLimitExceeded' || USAGE_LIMIT_RE.test(message)
       ? '账号用量已达上限'
       : '账号余额或配额不足';
-  const label = options?.providerLabel?.trim();
+  const label = options.providerLabel?.trim();
   const who = label ? `「${label}」` : '当前供应商';
   const upstream = redactSensitiveText(message.replace(/\s+/g, ' ').trim()).slice(0, 300);
   return [
     `${QUOTA_FAILURE_NOTICE_PREFIX}：${who}${reason}，这个任务暂时无法继续。`,
-    quotaRecoveryHint(options?.surface ?? 'personal'),
+    quotaRecoveryHint(options),
     ...(upstream ? [`上游原文：${upstream}`] : []),
   ].join('\n');
 }
 
 /**
  * 终态 error 事件的 data -> 渠道要展示的失败文案: 已知 reason 与过载类使用可操作说明,
- * 其它错误沿用上游原文。
+ * 其它错误沿用上游原文。额度指引须由 IM 调用方显式传入入口选项，避免定时任务的
+ * 运行记录与通知误用 bot 命令和设置路径。
  *
  * 单独抽出来是因为渠道侧有**两条**终态收口路径 —— 用户 turn 的 handleTurnErrorAsync
  * 与调度转播的 finalizeTranspond。此前只有前者做了映射, 定时任务的卡片在重试耗尽
@@ -299,7 +308,7 @@ export function terminalErrorText(data: unknown, options?: QuotaFailureNoticeOpt
   return (
     toolLoopFailureNotice(data) ??
     overloadFailureNotice(message, errorStatus, codexErrorInfo) ??
-    quotaFailureNotice(data, options) ??
+    (options ? quotaFailureNotice(data, options) : null) ??
     message
   );
 }
