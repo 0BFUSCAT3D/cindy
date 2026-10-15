@@ -395,7 +395,7 @@ export class McpAppsHost {
       const currentClient = async (signal: AbortSignal) => {
         await assertCurrent();
         signal.throwIfAborted();
-        const current = await connection.getClient();
+        const current = await connection.getClient(signal);
         // Reconnecting can outlive a cancellation, card clear or owner change.
         await assertCurrent();
         signal.throwIfAborted();

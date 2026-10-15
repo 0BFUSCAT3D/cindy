@@ -223,6 +223,44 @@ async function fixture(
 }
 
 describe('official MCP Apps interoperability', () => {
+  it.each(['http', 'sse'] as const)('cancels a %s App resource request waiting for reconnect without disturbing a peer', async (transport) => {
+    const f = await fixture(transport);
+    await vi.waitFor(() => expect(f.inputs).toHaveLength(1));
+    await f.client.close();
+    const acquiring = vi.spyOn(AppConnection.prototype, 'getClient');
+    const read = vi.spyOn(Client.prototype, 'readResource');
+    const connect = Client.prototype.connect;
+    let release: (() => void) | undefined;
+    cleanups.push(async () => release?.());
+    // Exercise the real shared connection attempt and per-waiter cancellation.
+    vi.spyOn(Client.prototype, 'connect').mockImplementationOnce(function (this: Client, ...args: Parameters<Client['connect']>) {
+      return new Promise<void>((resolve, reject) => {
+        release = () => {
+          release = undefined;
+          void connect.call(this, ...args).then(resolve, reject);
+        };
+      });
+    });
+    const abort = new AbortController();
+    const pending = f.app.readServerResource({ uri: MOCK_RESOURCE }, { signal: abort.signal });
+    const rejected = expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const cancelled = vi.fn();
+    const waiter = acquiring.mock.results.at(-1)!.value as Promise<Client>;
+    void waiter.catch(cancelled);
+    abort.abort();
+    await rejected;
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+    expect(read).not.toHaveBeenCalled();
+
+    const healthy = f.app.readServerResource({ uri: MOCK_RESOURCE });
+    const completed = expect(healthy).resolves.toMatchObject({ contents: [{ uri: MOCK_RESOURCE }] });
+    await vi.waitFor(() => expect(acquiring).toHaveBeenCalledTimes(2));
+    release!();
+    await completed;
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it('stores and delivers a bounded oversized-result failure to live and reopened remote Views', async () => {
     const f = await fixture('http', { pending: true });
     await vi.waitFor(() => expect(f.inputs).toHaveLength(1));
