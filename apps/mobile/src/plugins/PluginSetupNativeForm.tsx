@@ -10,7 +10,6 @@ import {
 } from "react-native";
 import { useIsFocused } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
-import * as Clipboard from "expo-clipboard";
 import { PLUGIN_OAUTH_CHANNEL } from "@cindy/device-link";
 import { useTranslation } from "react-i18next";
 import { Text, TextInput } from "@/components/AppText";
@@ -35,7 +34,11 @@ import { type MobilePluginSetupAction } from "./pluginSetupActions";
 import type { authenticateMobilePluginOauth } from "./pluginOauthClient";
 import { openMobilePluginOauthSession } from "./pluginOauthSession";
 import { pluginOauthPlatformCrypto } from "./pluginOauthPlatformCrypto";
-import { remotePresentation } from "../../modules/cindy-remote-presentation/src";
+import {
+  clearCopiedCode,
+  copyCode,
+  type CopiedCode,
+} from "./copiedCodeClipboard";
 import { runMobilePluginAuthorization } from "./pluginAuthorizationController";
 
 export default function PluginSetupNativeForm({
@@ -64,7 +67,7 @@ export default function PluginSetupNativeForm({
     alive = useRef(true),
     lock = useRef(false),
     operation = useRef(0),
-    copiedVersion = useRef<string | undefined>(undefined);
+    copiedCode = useRef<CopiedCode | undefined>(undefined);
   const live = useRef({ focused, epoch: link.connectionEpoch });
   live.current = { focused, epoch: link.connectionEpoch };
   const [selected, setSelected] = useState<MobilePluginSetupAction | undefined>(
@@ -78,22 +81,14 @@ export default function PluginSetupNativeForm({
     () => () => {
       alive.current = false;
       operation.current++;
-      void clearCopiedCode();
+      void releaseCopiedCode();
     },
     [],
   );
-  const clearCopiedCode = async () => {
-    const version = copiedVersion.current;
-    copiedVersion.current = undefined;
-    // Compare the change counter instead of reading the clipboard, which would
-    // make iOS ask the user for paste permission.
-    if (
-      version &&
-      (await remotePresentation
-        ?.clipboardVersion?.()
-        .catch(() => undefined)) === version
-    )
-      await Clipboard.setStringAsync("").catch(() => {});
+  const releaseCopiedCode = async () => {
+    const copied = copiedCode.current;
+    copiedCode.current = undefined;
+    if (copied) await clearCopiedCode(copied);
   };
   const clear = () => {
     setSecret("");
@@ -104,7 +99,7 @@ export default function PluginSetupNativeForm({
     clear();
     setSelected(undefined);
     setBrowser(undefined);
-    void clearCopiedCode();
+    void releaseCopiedCode();
     onClosed();
   };
   useEffect(() => {
@@ -243,7 +238,7 @@ export default function PluginSetupNativeForm({
       }
     } finally {
       client?.dispose();
-      void clearCopiedCode();
+      void releaseCopiedCode();
       lock.current = false;
       if (alive.current) {
         setBusy(false);
@@ -343,11 +338,10 @@ export default function PluginSetupNativeForm({
                     accessibilityRole="button"
                     onPress={() => {
                       const code = browser.code!;
-                      void Clipboard.setStringAsync(code)
-                        .then(() => remotePresentation?.clipboardVersion?.())
-                        .then((version) => {
-                          copiedVersion.current = version;
-                          if (!alive.current) void clearCopiedCode();
+                      void copyCode(code)
+                        .then((copied) => {
+                          copiedCode.current = copied;
+                          if (!alive.current) void releaseCopiedCode();
                         })
                         .catch(() => {});
                     }}

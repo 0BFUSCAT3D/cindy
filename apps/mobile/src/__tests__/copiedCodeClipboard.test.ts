@@ -1,0 +1,75 @@
+import { beforeEach, expect, it, vi } from "vitest";
+
+const h = vi.hoisted(() => ({
+  os: "ios",
+  text: "",
+  count: 0,
+  // Simulates another app writing between our write and the next version read.
+  interleave: false,
+  getString: vi.fn(async () => h.text),
+  setString: vi.fn(async (value: string) => {
+    h.text = value;
+    h.count++;
+    if (h.interleave) {
+      h.interleave = false;
+      h.text = "other";
+      h.count++;
+    }
+    return true;
+  }),
+}));
+vi.mock("react-native", () => ({
+  Platform: {
+    get OS() {
+      return h.os;
+    },
+  },
+}));
+vi.mock("expo-clipboard", () => ({
+  getStringAsync: h.getString,
+  setStringAsync: h.setString,
+}));
+vi.mock("../../modules/cindy-remote-presentation/src", () => ({
+  remotePresentation: { clipboardVersion: async () => String(h.count) },
+}));
+
+import { clearCopiedCode, copyCode } from "@/plugins/copiedCodeClipboard";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  Object.assign(h, { os: "ios", text: "before", count: 5, interleave: false });
+});
+
+it("clears its own iOS write by change count without reading the clipboard", async () => {
+  const copied = await copyCode("CODE-1");
+  expect(copied).toEqual({ code: "CODE-1", version: "6" });
+  await clearCopiedCode(copied);
+  expect(h.text).toBe("");
+  expect(h.getString).not.toHaveBeenCalled();
+});
+
+it("keeps a later iOS copy, including one that lands before the version read", async () => {
+  const later = await copyCode("CODE-1");
+  await h.setString("mine");
+  await clearCopiedCode(later);
+  expect(h.text).toBe("mine");
+
+  h.interleave = true;
+  const raced = await copyCode("CODE-2");
+  expect(raced.version).toBeUndefined();
+  await clearCopiedCode(raced);
+  expect(h.text).toBe("other");
+  expect(h.getString).not.toHaveBeenCalled();
+});
+
+it("compares contents on Android, so returning from the browser still clears the code", async () => {
+  h.os = "android";
+  const copied = await copyCode("CODE-1");
+  await clearCopiedCode(copied);
+  expect(h.text).toBe("");
+
+  const replaced = await copyCode("CODE-2");
+  await h.setString("mine");
+  await clearCopiedCode(replaced);
+  expect(h.text).toBe("mine");
+});
