@@ -186,10 +186,12 @@ vi.mock('@/session/ImageLightbox', () => ({
   ImageLightbox: ({ images, initialUrl }: any) => el('div', { 'data-testid': 'lightbox', 'data-url': initialUrl, 'data-count': String(images.length) }),
 }));
 vi.mock('@/session/MessageRenderer', () => ({
-  AttachmentStrip: ({ attachments, onOpen, align }: any) => el('div', { 'data-testid': 'attachmentStrip', 'data-align': align },
+  AttachmentStrip: ({ attachments, onOpen, onOpenFile, align }: any) => el('div', { 'data-testid': 'attachmentStrip', 'data-align': align },
     attachments.map((item: any, index: number) => el('button', {
       key: index, 'data-testid': `attachment.${item.kind}`, 'data-uri': item.uri ?? '',
-      onClick: () => onOpen(item.kind === 'image'
+      onClick: () => item.kind === 'file' && onOpenFile
+        ? onOpenFile(attachments.slice(0, index).filter((attachment: any) => attachment.kind === 'file').length)
+        : onOpen(item.kind === 'image'
         ? { kind: 'media', media: { kind: 'image', url: item.uri, previewable: false } }
         : { kind: 'file', title: item.name, body: '' }),
     }, item.name))),
@@ -836,7 +838,11 @@ describe('group attachments', () => {
     await act(async () => { image.click(); });
     expect(byId('lightbox')?.getAttribute('data-url')).toBe('cindy-media://blobs/abc.png');
     expect(byId('lightbox')?.getAttribute('data-count')).toBe('1');
-    const file = strip.querySelector('[data-testid="attachment.file"]') as HTMLButtonElement;
+    // Sent order: the picture's strip, then the file's own strip (a strip draws pictures first).
+    const strips = [...users[0]!.querySelectorAll('[data-testid="attachmentStrip"]')];
+    expect(strips).toHaveLength(2);
+    expect(strips[0]).toBe(strip);
+    const file = strips[1]!.querySelector('[data-testid="attachment.file"]') as HTMLButtonElement;
     expect(file.textContent).toBe('brief.pdf');
     await act(async () => { file.click(); });
     expect(h.alert).toHaveBeenCalledWith('brief.pdf', 'groupChat.files.onComputer');

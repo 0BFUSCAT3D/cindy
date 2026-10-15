@@ -200,6 +200,12 @@ export interface BotGroupAttachment {
   /** The file on this computer; always null in a controller's copy. */
   path: string | null;
   annotated?: boolean;
+  /**
+   * A server attachment whose bytes are not on this computer yet: `loading` until the
+   * download settles, `unavailable` after it failed (a later read retries). `url` and
+   * `path` are null and only `id` and `name` are known. Absent once the file is here.
+   */
+  state?: 'loading' | 'unavailable';
 }
 
 /**

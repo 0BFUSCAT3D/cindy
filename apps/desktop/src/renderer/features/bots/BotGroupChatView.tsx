@@ -24,14 +24,11 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { attachGhostMediaToSession, getGhostMediaHandoverFromDataTransfer } from '@/cindy-brain/ghostMediaHandover';
-import { ChatImageView } from '@/components/chat/ChatImageView';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
 import { ShareMessageCheckbox } from '@/components/chat/ShareMessageCheckbox';
 import { shareSelectionStore, useShareSelectionActive } from '@/components/chat/shareSelectionStore';
 import { SHARE_SESSION_ATTR, SHARE_MESSAGE_ATTR } from '@/lib/shareConversationImage';
-import { TextLightbox } from '@/components/chat/TextLightbox';
-import { UserAttachmentChip } from '@/components/chat/UserAttachmentChip';
 import { CHAT_BODY_CLASS } from '@/components/chat/chatChrome';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { Button } from '@/components/ui/button';
@@ -55,7 +52,6 @@ import { cn } from '@/lib/utils';
 import { ControlledBanner, useControlledBy, useComposerCollapsed } from '@/features/remote-device/ControlledBanner';
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
 import type {
-  BotGroupAttachment,
   BotGroupDetail,
   BotGroupMemberView,
   BotGroupMessageView,
@@ -71,7 +67,8 @@ import { useRegisterContentHeader } from '../feature-context';
 import { BotAvatar } from './BotAvatar';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
-import { botGroupAttachmentScope, splitBotGroupMessageAttachments } from './botGroupAttachments';
+import { botGroupAttachmentScope, refreshPendingBotGroupAttachments } from './botGroupAttachments';
+import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { ChatInviteButton, ChatMessageActions, messageReactionRevision } from './ChatServerControls';
@@ -250,6 +247,19 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           if (shown.kind === 'ready') {
             const targets = quotedOlderOriginals(shown.older, result.group.messages);
             if (targets.length > 0) void recheckQuotedOriginals(api, targets, isCurrent);
+          }
+          if (displayed.kind === 'ready' && displayed.group.id === groupId && result.group.messages.length > 0) {
+            const latestFrom = Math.min(...result.group.messages.map((message) => message.sequence));
+            const refreshed = await refreshPendingBotGroupAttachments(displayed.older, latestFrom, async (before) => {
+              const page = await api.getBotGroup(groupId, { beforeSequence: before });
+              return page.ok && isCurrent() ? page.group.messages : null;
+            });
+            if (refreshed && isCurrent()) {
+              const fresh = new Map(refreshed.map((message) => [message.sequence, message]));
+              setState((previous) => previous.kind === 'ready' && previous.group.id === groupId
+                ? { ...previous, older: previous.older.map((message) => fresh.get(message.sequence) ?? message) }
+                : previous);
+            }
           }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });
@@ -1061,7 +1071,7 @@ function BotGroupTimelineItem({
         {sharing && <ShareMessageCheckbox clientId={message.id} />}
         <div className="flex min-w-0 max-w-[72%] flex-col items-end gap-2">
           {quoteDisplay ? <BotGroupQuoteBlock display={quoteDisplay} onLocate={onLocateQuote} align="right" /> : null}
-          <BotGroupUserAttachments attachments={message.attachments} />
+          <BotGroupMessageAttachments attachments={message.attachments} align="end" />
           {hasText ? (
             <div
               className={`max-w-full whitespace-pre-wrap break-words rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2.5 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}
@@ -1126,54 +1136,13 @@ function BotGroupTimelineItem({
                 <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
               </div>
             ) : null}
-            <BotGroupUserAttachments attachments={message.attachments} />
+            <BotGroupMessageAttachments attachments={message.attachments} align="start" />
             <BotGroupHandoffFiles files={message.files} workDir={plan?.workDir ?? null} />
             {actions}
           </>
         )}
       </div>
     </article>
-  );
-}
-
-/**
- * A user message's images and files, drawn like a task's user bubble: each image as the
- * same attached-image view (click for the lightbox, right-click to copy or reveal), files
- * as the same chips (text preview or the system app, right-click menu).
- */
-function BotGroupUserAttachments({ attachments }: { attachments: readonly BotGroupAttachment[] }) {
-  const [textPreview, setTextPreview] = useState<{ path: string; name: string } | null>(null);
-  const chipRef = useRef<HTMLElement | null>(null);
-  const { images, files } = splitBotGroupMessageAttachments(attachments);
-  if (images.length === 0 && files.length === 0) return null;
-  return (
-    <>
-      {images.map((image) => (
-        <ChatImageView key={image.id} src={image.url} filename={image.name} variant="user-attached" />
-      ))}
-      {files.length > 0 ? (
-        <div className="flex flex-wrap items-end justify-end gap-1.5">
-          {files.map((file) => (
-            <UserAttachmentChip
-              key={file.id}
-              file={{ name: file.name, path: file.path }}
-              onOpenTextPreview={(chip) => {
-                chipRef.current = chip;
-                setTextPreview({ path: file.path, name: file.name });
-              }}
-            />
-          ))}
-        </div>
-      ) : null}
-      {textPreview ? (
-        <TextLightbox
-          filePath={textPreview.path}
-          fileName={textPreview.name}
-          triggerRef={chipRef}
-          onClose={() => setTextPreview(null)}
-        />
-      ) : null}
-    </>
   );
 }
 

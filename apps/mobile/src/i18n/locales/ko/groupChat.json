@@ -141,7 +141,10 @@
     "step": "작업 중…"
   },
   "files": {
-    "onComputer": "파일은 컴퓨터에 있습니다. 컴퓨터에서 열어 주세요"
+    "onComputer": "파일은 컴퓨터에 있습니다. 컴퓨터에서 열어 주세요",
+    "loading": "불러오는 중…",
+    "unavailable": "지금 불러올 수 없음",
+    "untitled": "첨부 파일"
   },
   "settings": {
     "open": "그룹 설정",
