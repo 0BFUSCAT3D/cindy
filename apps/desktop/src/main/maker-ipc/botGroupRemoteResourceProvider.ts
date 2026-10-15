@@ -41,9 +41,11 @@ import {
   BOT_GROUP_REMOTE_RESOURCE_KIND,
   type BotGroupDetail,
   type BotGroupFailure,
+  type BotGroupMessageView,
   type BotGroupRemoteActionId,
   type BotGroupRemoteChatData,
   type BotGroupSummary,
+  type BotGroupThreadShareView,
 } from '../../shared/botGroupChat.js';
 import type { BotGroupChatService } from './botGroupChatService.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
@@ -105,6 +107,20 @@ const COPY = {
     ja: '{name}さんがグループに参加しました',
     ko: '{name} 님이 그룹에 참여했습니다',
   },
+  sharedReplyYou: {
+    en: 'You shared a thread reply',
+    'zh-CN': '你贴回了一条话题回复',
+    'zh-TW': '你貼回了一則話題回覆',
+    ja: 'スレッドの返信を共有しました',
+    ko: '스레드 답글을 공유했습니다',
+  },
+  sharedReply: {
+    en: '{name} shared a thread reply',
+    'zh-CN': '{name} 贴回了一条话题回复',
+    'zh-TW': '{name} 貼回了一則話題回覆',
+    ja: '{name} がスレッドの返信を共有しました',
+    ko: '{name} 님이 스레드 답글을 공유했습니다',
+  },
 } satisfies Record<string, Copy>;
 
 function fill(template: string, vars: Record<string, string | number>): string {
@@ -139,6 +155,11 @@ export function botGroupRemotePreview(group: BotGroupSummary): RemoteLocalizedTe
   if (!last) return undefined;
   if (last.authorKind === 'system' && last.noticeCode === 'member-joined')
     return localized(COPY.memberJoined, { name: last.authorName });
+  // A share names who posted it; the card's own text is never quoted here.
+  if (last.threadShare) {
+    return last.authorKind === 'user' && last.isSelf !== false
+      ? localized(COPY.sharedReplyYou) : localized(COPY.sharedReply, { name: last.authorName.trim() });
+  }
   return last.authorKind === 'bot' && last.authorName
     ? localized(COPY.lastMessage, { name: last.authorName, text: last.preview })
     : last.preview;
@@ -178,6 +199,15 @@ export function botGroupRemoteItem(group: BotGroupSummary): RemoteCollectionItem
   };
 }
 
+function withoutPaths(attachments: BotGroupMessageView['attachments']): BotGroupMessageView['attachments'] {
+  return attachments.map((attachment) => ({ ...attachment, path: null }));
+}
+
+/** A shared reply carries its own attachments, downloaded to this computer. */
+function shareWithoutPaths(share: BotGroupThreadShareView): BotGroupThreadShareView {
+  return share.attachments.length > 0 ? { ...share, attachments: withoutPaths(share.attachments) } : share;
+}
+
 /** Host paths stay on the computer; the phone gets the folder name and attachment names only. */
 export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteChatData {
   return {
@@ -186,9 +216,12 @@ export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteCh
     projectDirName: detail.projectDir ? path.basename(detail.projectDir) : null,
     plans: detail.plans.map((plan) => ({ ...plan, workDir: null })),
     // Older phones consume message views only; derive from this read's state here.
-    messages: projectBotGroupExecutionFailures(detail.messages, detail.executionFailures).map((message) => (message.attachments.length > 0
-      ? { ...message, attachments: message.attachments.map((attachment) => ({ ...attachment, path: null })) }
-      : message)),
+    messages: projectBotGroupExecutionFailures(detail.messages, detail.executionFailures).map((message) => {
+      const view = message.attachments.length > 0 ? { ...message, attachments: withoutPaths(message.attachments) } : message;
+      return view.threadShare ? { ...view, threadShare: shareWithoutPaths(view.threadShare) } : view;
+    }),
+    ...(detail.threadShareUpdates ? { threadShareUpdates: Object.fromEntries(Object.entries(detail.threadShareUpdates)
+      .map(([id, share]) => [id, shareWithoutPaths(share)])) } : {}),
     supportsAttachments: true,
     supportsMemberRemoval: detail.serverBacked === true,
     supportsSettingsManagement: detail.serverBacked === true,
