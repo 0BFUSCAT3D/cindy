@@ -1,4 +1,4 @@
-import { historyWorkSummaries, type HistoryMessageSource, type HistoryViewPage } from './historyView.js';
+import { historyWorkSummaries, retainHistoryViewPrefix, type HistoryMessageSource, type HistoryViewPage } from './historyView.js';
 import type { HistoryViewSnapshot, HistoryWorkDetailState } from './historyViewController.js';
 import { historyViewEndMs } from './historyViewHandoff.js';
 
@@ -59,24 +59,25 @@ export function historySnapshotCovers<T extends HistoryMessageSource>(
 }
 
 /**
- * The latest page read ahead, in the shape a view restores from disk. Expanded work keeps its
- * cached body only while that range is unchanged; anything else opens folded.
+ * Read ahead uses the same continuous-prefix rule as an open view. Unchanged work keeps
+ * its cached body even after collapse; expansion is a display preference, not retention.
  */
 export function historySnapshotFromPage<T extends HistoryMessageSource>(
   page: HistoryViewPage<T>,
   previous: HistoryViewSnapshot<T> | null | undefined,
 ): HistoryViewSnapshot<T> {
+  const retained = retainHistoryViewPrefix(page, previous);
   const details = new Map<string, HistoryWorkDetailState<T>>();
   const expanded = new Set<string>();
-  for (const summary of historyWorkSummaries(page.items)) {
+  for (const summary of historyWorkSummaries(retained.items)) {
     const detail = previous?.details.get(summary.key);
-    if (!previous?.expanded.has(summary.key) || !detail?.complete || detail.loading || detail.error
+    if (!detail?.complete || detail.loading || detail.error
       || detail.revision !== summary.revision) continue;
     details.set(summary.key, detail);
-    expanded.add(summary.key);
+    if (previous?.expanded.has(summary.key)) expanded.add(summary.key);
   }
   return {
-    items: page.items, details, expanded, nextCursor: page.nextCursor, hasMore: page.hasMore,
+    items: retained.items, details, expanded, nextCursor: retained.nextCursor, hasMore: retained.hasMore,
     loading: false, ready: true, error: null,
   };
 }

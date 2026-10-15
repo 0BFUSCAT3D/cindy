@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { projectHistoryView, type HistoryViewPage, type HistoryViewSnapshot } from '@cindy/maker-shared/message-window';
+import { HistoryViewController, projectHistoryView, type HistoryViewPage, type HistoryViewSnapshot } from '@cindy/maker-shared/message-window';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
 import { clearHistoryDisk, historyDiskAuthority, readHistoryDisk, writeHistoryDisk } from '@/session/remoteHistoryDiskCache';
 import { prefetchRemoteHistories } from '@/session/remoteHistoryPrefetch';
@@ -101,5 +101,28 @@ describe('history read ahead after a list refresh', () => {
     await prefetchRemoteHistories(DEVICE, reader, () => true);
     release();
     expect(reader.readHistoryView.mock.calls.map(([sessionId]) => sessionId)).toEqual(['other']);
+  });
+
+  it('restores previously read history offline after background read ahead saves a newer page', async () => {
+    setMobileAuthOwner('user-1');
+    const earlier: RemoteMessage = { ...row('u1', 1), role: 'user' };
+    const answer = row('a1', 2);
+    const latest: RemoteMessage = { ...row('u2', 3), role: 'user' };
+    const reply = row('a2', 9);
+    await writeHistoryDisk(historyDiskAuthority(DEVICE, 's'), snapshotOf([earlier, answer, latest]));
+    remoteSessionStore.setDeviceSessions(DEVICE, 'Mac', [session('s', reply.createdAt)]);
+    const reader = { readHistoryView: vi.fn(async () => ({
+      ...page([latest, reply]), hasMore: true, nextCursor: latest.id,
+    })) };
+    await prefetchRemoteHistories(DEVICE, reader, () => true);
+
+    const transport = { page: vi.fn(), details: vi.fn(), expanded: vi.fn() };
+    const offline = new HistoryViewController<RemoteMessage>(transport);
+    offline.setNetworkAvailable(false);
+    await offline.restoreCachedView(() => readHistoryDisk(historyDiskAuthority(DEVICE, 's')));
+    expect(offline.getSnapshot().items).toEqual(page([earlier, answer, latest, reply]).items);
+    expect(offline.getSnapshot()).toMatchObject({ hasMore: false, nextCursor: null });
+    expect(await offline.locate(earlier.clientId, earlier.createdAt)).toEqual(earlier);
+    expect(transport.page).not.toHaveBeenCalled();
   });
 });

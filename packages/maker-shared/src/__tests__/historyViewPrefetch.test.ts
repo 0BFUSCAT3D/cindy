@@ -54,4 +54,46 @@ describe('history read ahead', () => {
     expect([...next.details.keys()]).toEqual(['same']);
     expect(next).toMatchObject({ ready: true, loading: false, error: null, hasMore: true, nextCursor: 'older' });
   });
+
+  it.each([true, false])('retains previously read pages and their pagination (hasMore=%s)', (hasMore) => {
+    const previous: HistoryViewSnapshot<HistoryMessageSource> = {
+      items: [work('earlier', 'r1'), work('latest', 'r1')],
+      details: new Map([['earlier', detail('r1')], ['latest', detail('r1')]]),
+      expanded: new Set(['earlier']), nextCursor: hasMore ? 'oldest' : null,
+      hasMore, loading: false, ready: true, error: null,
+    };
+    const next = historySnapshotFromPage({ version: 1,
+      items: [work('latest', 'r1'), work('new', 'r1')], hasMore: true, nextCursor: 'latest' }, previous);
+    expect(next.items.map(item => item.key)).toEqual(['earlier', 'latest', 'new']);
+    expect(next).toMatchObject({ hasMore, nextCursor: previous.nextCursor });
+    expect([...next.details.keys()]).toEqual(['earlier', 'latest']);
+    expect([...next.expanded]).toEqual(['earlier']);
+  });
+
+  it('keeps read details after collapse, but removes changed and absent ranges', () => {
+    const previous: HistoryViewSnapshot<HistoryMessageSource> = {
+      items: [work('same', 'r1'), work('changed', 'r1'), work('removed', 'r1')],
+      details: new Map(['same', 'changed', 'removed'].map(key => [key, detail('r1')])),
+      expanded: new Set(), nextCursor: null, hasMore: false, loading: false, ready: true, error: null,
+    };
+    const next = historySnapshotFromPage({ version: 1,
+      items: [work('same', 'r1'), work('changed', 'r2')], hasMore: false, nextCursor: null }, previous);
+    expect([...next.details.keys()]).toEqual(['same']);
+    expect(next.expanded.size).toBe(0);
+  });
+
+  it('does not join disconnected history or restore rows removed by an authoritative full page', () => {
+    const previous: HistoryViewSnapshot<HistoryMessageSource> = {
+      items: [work('earlier', 'r1'), work('latest', 'r1')], details: new Map(), expanded: new Set(),
+      nextCursor: 'oldest', hasMore: true, loading: false, ready: true, error: null,
+    };
+    for (const page of [
+      { version: 1 as const, items: [work('unrelated', 'r1'), work('latest', 'r1')], hasMore: true, nextCursor: 'gap' },
+      { version: 1 as const, items: [work('latest', 'r1')], hasMore: false, nextCursor: null },
+    ]) {
+      expect(historySnapshotFromPage(page, previous)).toMatchObject({
+        items: page.items, hasMore: page.hasMore, nextCursor: page.nextCursor,
+      });
+    }
+  });
 });
