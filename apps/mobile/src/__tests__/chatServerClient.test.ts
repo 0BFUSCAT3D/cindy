@@ -31,7 +31,8 @@ describe('direct Chat Server client', () => {
 
   it('reads a task card on a teammate message as its task, and only there (bot-group-chat.md §10)', () => {
     const card = buildBotGroupTaskCard({ meta: { v: 1, role: 'delegation-request', delegationId: 'task-1', fromBotId: 'bot', fromBotName: 'Bot',
-      toBotId: null, toBotName: 'Cindy', parentSessionId: 'lane', childSessionId: 'child', objective: 'Launch post' }, state: 'started', title: 'Launch post' });
+      toBotId: null, toBotName: 'Cindy', parentSessionId: 'lane', childSessionId: 'child', objective: 'Launch post' }, state: 'started', title: 'Launch post' },
+    { task: 'Task', untitled: 'Background task', states: { started: 'In progress', waiting: 'Waiting', completed: 'Done', failed: 'Failed', cancelled: 'Cancelled', 'timed-out': 'Timed out' } });
     const fromBot = { ...message(20), authorId: id(12), author: { kind: 'bot', name: 'Bot' }, content: [{ type: 'text', text: 'Started it.' }, card] };
     const fromHuman = { ...message(21), content: [card, { type: 'text', text: 'Pasted a card' }] };
     const view = chatGroupView({ snapshot: snapshot(), messages: [fromBot, fromHuman], before: null }, id(11));

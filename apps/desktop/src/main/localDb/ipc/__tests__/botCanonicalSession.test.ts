@@ -4260,6 +4260,29 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('posts a timed-out group task to the group as timed out, in the sender\'s language, not as failed', async () => {
+    await seedPair(); seedGroupLane();
+    vi.useFakeTimers();
+    setMainLocale('en');
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => ({ ok: true as const, messageId: `posted:${input.clientId}` }));
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Deadline work.', timeoutMs: 1000 });
+      if (!task.ok) throw new Error(task.message);
+      runtime.advance(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      // Stored as failed + TIMEOUT; every reader of the card sees the same normalised state as the owner's live view.
+      expect(h.sqlite!.prepare('SELECT status FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).toBe('failed');
+      expect(await runtime.delegation.getSessionTask('group-lane', task.delegationId)).toMatchObject({ task: { status: 'timed-out' } });
+      expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        clientId: `bot-delegation-task:${task.delegationId}:1:result`,
+        card: expect.objectContaining({ fallback: '[Task] Deadline work. · Timed out', data: expect.objectContaining({ state: 'timed-out' }) }),
+      }));
+      expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).not.toBeNull();
+    } finally { release(); runtime.dispose(); vi.useRealTimers(); }
+  });
+
   it.each(['retry', 'replay', 'restart'] as const)('continues admitted group work after the originating execution ends during %s', async recovery => {
     await seedPair(); seedGroupLane();
     vi.useFakeTimers();

@@ -9131,6 +9131,7 @@
         "planning": "正在安排…"
       },
       "task": {
+        "label": "任务",
         "state": {
           "started": "进行中",
           "waiting": "等你确认",

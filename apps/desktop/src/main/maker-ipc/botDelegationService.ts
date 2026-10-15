@@ -47,7 +47,8 @@ import type {
   BotDelegationInterjectResult,
 } from '../../shared/botCollaboration.js';
 import { BOT_DELEGATION_CLIENT_ID } from '../../shared/botCollaboration.js';
-import { buildBotGroupTaskCard, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
+import { buildBotGroupTaskCard, type BotGroupTaskCardLabels, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
+import { t } from '../i18n.js';
 import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { ensureBotWorkspaceDir } from './botProfileFolder.js';
 import type { SessionQueuedMessageControlResult, SessionSteerResult, SessionStopResult } from './sessionControlService.js';
@@ -807,6 +808,26 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     'id' | 'requestingBotId' | 'targetBotId' | 'objective' | 'parentSessionId' | 'childSessionId'
   >;
 
+  /** The card's fallback line, in this computer's UI language, for clients that do not know the card. */
+  const groupTaskCardLabels = (): BotGroupTaskCardLabels => ({
+    task: t('bots.groupChat.task.label'),
+    untitled: t('bots.collab.backgroundTask'),
+    states: {
+      started: t('bots.groupChat.task.state.started'),
+      waiting: t('bots.groupChat.task.state.waiting'),
+      completed: t('bots.groupChat.task.state.completed'),
+      failed: t('bots.groupChat.task.state.failed'),
+      cancelled: t('bots.groupChat.task.state.cancelled'),
+      'timed-out': t('bots.groupChat.task.state.timed-out'),
+    },
+  });
+
+  /** The state a terminal task shows on its card: a timeout is stored as `failed` + `TIMEOUT` error. */
+  const terminalCardState = (
+    row: { status: Extract<DelegationStatus, 'completed' | 'failed' | 'cancelled' | 'timed-out'>; lastError?: string | null },
+  ): BotGroupTaskCardState =>
+    sessionTaskViewStatus({ status: row.status, lastError: row.lastError ?? null }) === 'timed-out' ? 'timed-out' : row.status;
+
   /** One task event as the teammate's own group message, carrying the task card. */
   const postGroupTaskEvent = async (
     home: { groupId: string },
@@ -823,7 +844,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       state: event.state,
       title: child?.title?.trim() || row.objective.split('\n')[0]!.slice(0, 120),
       ...(event.summary ? { summary: event.summary } : {}),
-    });
+    }, groupTaskCardLabels());
     return deps.postGroupTaskMessage({
       groupId: home.groupId, botId: row.requestingBotId, clientId: event.clientId, text: event.text, card,
       ...(event.files?.length ? { files: event.files } : {}),
@@ -1074,7 +1095,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         const posted = await postGroupTaskEvent(home, params, {
           clientId: `bot-delegation-task:${params.id}:${params.runSequence}:result`,
           text: params.resultSummary ?? '',
-          state: params.status,
+          state: terminalCardState(params),
           files: artifacts.filter((file) => file.status !== 'deleted').map((file) => ({ absolutePath: file.absolutePath })),
         });
         if (!(await completionStillPending())) return false;

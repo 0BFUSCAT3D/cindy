@@ -9131,6 +9131,7 @@
         "planning": "役割分担を考えています…"
       },
       "task": {
+        "label": "タスク",
         "state": {
           "started": "進行中",
           "waiting": "確認待ち",

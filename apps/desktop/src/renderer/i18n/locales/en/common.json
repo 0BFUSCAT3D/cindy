@@ -9168,6 +9168,7 @@
         "planning": "Splitting the work…"
       },
       "task": {
+        "label": "Task",
         "state": {
           "started": "In progress",
           "waiting": "Waiting for your confirmation",

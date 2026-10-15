@@ -34,28 +34,31 @@ export interface BotGroupTaskCard {
 const TITLE_MAX = 120;
 const SUMMARY_MAX = 400;
 
-const STATE_FALLBACK: Record<BotGroupTaskCardState, string> = {
-  started: '进行中',
-  waiting: '等你确认',
-  completed: '已完成',
-  failed: '失败了',
-  cancelled: '已取消',
-  'timed-out': '已超时',
-};
+/**
+ * Words for the `fallback` line, supplied by the sender in its own UI language: this
+ * module has no locale, and a card is read by clients in any language.
+ */
+export interface BotGroupTaskCardLabels {
+  /** Short noun before the title, e.g. "Task". */
+  task: string;
+  /** Title for a task that has none yet. */
+  untitled: string;
+  states: Record<BotGroupTaskCardState, string>;
+}
 
 function clip(value: string, max: number): string {
   const text = value.replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-export function buildBotGroupTaskCard(view: BotGroupTaskCardView): BotGroupTaskCard {
-  const title = clip(view.title, TITLE_MAX) || '后台任务';
+export function buildBotGroupTaskCard(view: BotGroupTaskCardView, labels: BotGroupTaskCardLabels): BotGroupTaskCard {
+  const title = clip(view.title, TITLE_MAX) || clip(labels.untitled, TITLE_MAX);
   const summary = view.summary ? clip(view.summary, SUMMARY_MAX) : undefined;
   return {
     type: 'card',
     namespace: BOT_GROUP_TASK_NAMESPACE,
     schemaRevision: BOT_GROUP_TASK_SCHEMA_REVISION,
-    fallback: `[任务] ${title} · ${STATE_FALLBACK[view.state]}${summary ? `：${summary}` : ''}`,
+    fallback: `[${labels.task}] ${title} · ${labels.states[view.state]}${summary ? `: ${summary}` : ''}`,
     data: { meta: view.meta, state: view.state, title, ...(summary ? { summary } : {}) },
   };
 }

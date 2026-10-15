@@ -9131,6 +9131,7 @@
         "planning": "역할을 나누는 중…"
       },
       "task": {
+        "label": "작업",
         "state": {
           "started": "진행 중",
           "waiting": "확인 대기 중",

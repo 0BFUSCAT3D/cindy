@@ -26,7 +26,7 @@ import { botGroups, botProfiles, botGroupMembers, botGroupMessages, botGroupPlan
 import { UI_ACTION_TRIGGER_PREFIX } from '../../shared/interruptedTurn.js';
 import { untrustedJsonBlock } from '../../shared/untrustedPrompt.js';
 import {
-  BOT_GROUP_CLIENT_ID, isBotGroupNoReplyText,
+  BOT_GROUP_ATTACHMENTS_MAX, BOT_GROUP_CLIENT_ID, isBotGroupNoReplyText,
   isBotGroupRuntimeFailureCode, type BotGroupRuntimeFailureCode,
   readImportedBotGroupRuntimeFailureCode,
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
@@ -93,6 +93,8 @@ const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
 const retryableResponse = (error: ChatResponseError) => recoverableAuth(error)
   || error.status >= 500 || [408, 429].includes(error.status);
+/** A file this computer will never be able to send (chatServerMedia): retrying cannot help. */
+const LOCAL_FILE_REFUSALS = new Set(['ATTACHMENT_TOO_LARGE', 'ATTACHMENT_UNAVAILABLE']);
 const id = z.string().uuid();
 const memberJoinedTrigger = z.object({ type: z.literal('member.joined'), messageId: id, actorId: id,
   displayName: z.string().min(1).refine(value => value.trim().length > 0) }).strict();
@@ -1574,25 +1576,37 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
           } catch { /* a file deleted since the task finished is simply not delivered */ }
         }
-        // A transient upload failure is reported as retryable so the files are sent later with the
-        // same message; only a file the server definitely refuses (too large, unsupported) is left out.
-        let uploaded: ChatContentBlock[];
-        try {
-          uploaded = await media.upload(roomId, input.clientId, produced, actor.id);
-        } catch (error) {
-          if (!(error instanceof ChatResponseError) || retryableResponse(error)) throw error;
-          deps.log?.warn('Chat task delivery files refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
-          uploaded = [];
+        // Files go up one at a time so a refused file never holds back the others: a file this
+        // computer cannot send (empty, over the size limit) or the server definitely refuses is
+        // left out with a warning, while a transient failure keeps the whole message for a retry.
+        const uploaded: ChatContentBlock[] = [];
+        for (const file of produced) {
+          try {
+            uploaded.push(...await media.upload(roomId, input.clientId, [file], actor.id));
+          } catch (error) {
+            const refusedHere = error instanceof Error && !(error instanceof ChatResponseError) && LOCAL_FILE_REFUSALS.has(error.message);
+            if (!refusedHere && (!(error instanceof ChatResponseError) || retryableResponse(error))) throw error;
+            deps.log?.warn('Chat task delivery file refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
+          }
         }
-        // The server takes 8000 characters per message: a longer result continues in follow-up
-        // messages (same idempotent operation id family), never silently cut.
+        // The server takes 8000 characters and BOT_GROUP_ATTACHMENTS_MAX files per message: a longer
+        // result and further files continue in follow-up messages (same idempotent operation id
+        // family), never silently cut.
         const [first = '', ...rest] = splitChatMessageText(input.text.trim());
+        const fileBatches: ChatContentBlock[][] = [];
+        for (let at = 0; at < uploaded.length; at += BOT_GROUP_ATTACHMENTS_MAX) fileBatches.push(uploaded.slice(at, at + BOT_GROUP_ATTACHMENTS_MAX));
+        const [firstFiles = [], ...moreFiles] = fileBatches;
         const posted = await api<{ id: string }>(`/conversations/${roomId}/messages`, 'POST', {
-          operationId: input.clientId, content: [...(first ? [{ type: 'text', text: first }] : []), input.card, ...uploaded], mentions: [],
+          operationId: input.clientId, content: [...(first ? [{ type: 'text', text: first }] : []), input.card, ...firstFiles], mentions: [],
         }, actor.id);
         for (const [index, text] of rest.entries()) {
           await api(`/conversations/${roomId}/messages`, 'POST', {
             operationId: `${input.clientId}:${index + 2}`, content: [{ type: 'text', text }], mentions: [],
+          }, actor.id);
+        }
+        for (const [index, files] of moreFiles.entries()) {
+          await api(`/conversations/${roomId}/messages`, 'POST', {
+            operationId: `${input.clientId}:files:${index + 2}`, content: files, mentions: [],
           }, actor.id);
         }
         changed(roomId);

@@ -481,9 +481,33 @@ describe('Chat Server result delivery and refresh', () => {
   describe('independent tasks started from the group (bot-group-chat.md §10)', () => {
     const taskMeta = { v: 1, role: 'delegation-request', delegationId: 'task-1', fromBotId: 'local-bot', fromBotName: 'Bot', toBotId: null,
       toBotName: 'Cindy', parentSessionId: 'lane', childSessionId: 'child-1', objective: 'Write the launch post' } as const;
-    const taskCard = buildBotGroupTaskCard({ meta: taskMeta, state: 'started', title: 'Launch post' });
+    const taskLabels = { task: 'Task', untitled: 'Background task', states: { started: 'In progress', waiting: 'Waiting', completed: 'Done', failed: 'Failed', cancelled: 'Cancelled', 'timed-out': 'Timed out' } };
+    const taskCard = buildBotGroupTaskCard({ meta: taskMeta, state: 'started', title: 'Launch post' }, taskLabels);
     const joined = (id: string, kind: 'bot' | 'human') => ({ id, kind, name: kind === 'bot' ? 'Bot' : 'Me', state: 'joined', role: 'member',
       ownerActorId: selfId, ownerName: '', nickname: null, displayName: kind === 'bot' ? 'Bot' : 'Me', guestAccess: 'none', accessRevision: 1 });
+    // Delivery files are read from disk before upload: a real directory, cleaned up after each test.
+    let deliveryDir = '';
+    const deliveryFiles = async (count: number): Promise<Array<{ absolutePath: string }>> => {
+      const fs = await import('node:fs/promises');
+      const os = await import('node:os');
+      const nodePath = await import('node:path');
+      deliveryDir = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'cindy-task-files-'));
+      return Promise.all(Array.from({ length: count }, async (_, index) => {
+        const absolutePath = nodePath.join(deliveryDir, `file-${String(index + 1).padStart(2, '0')}.md`);
+        await fs.writeFile(absolutePath, `file ${index + 1}`);
+        return { absolutePath };
+      }));
+    };
+    afterEach(async () => {
+      if (deliveryDir) await (await import('node:fs/promises')).rm(deliveryDir, { recursive: true, force: true });
+      deliveryDir = '';
+      // Per-file upload stand-ins must not outlive their test: later tests expect the default empty upload.
+      fixture.upload.mockReset();
+      fixture.upload.mockImplementation(async () => []);
+    });
+    const mediaBlock = (name: string) => ({ type: 'media', mediaId: `60000000-0000-4000-8000-${name.replace(/\D/g, '').padStart(12, '0')}`, caption: name });
+    const uploadEach = (refuse?: { name: string; error: Error }) => fixture.upload.mockImplementation(async (...args: unknown[]) =>
+      (args[2] as Array<{ name: string }>).map(attachment => { if (attachment.name === refuse?.name) throw refuse.error; return mediaBlock(attachment.name); }));
 
     it('posts the task card as the teammate itself, outside any execution, with its files', async () => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
@@ -493,8 +517,9 @@ describe('Chat Server result delivery and refresh', () => {
         if (route.endsWith('/messages') && method === 'POST') return { body: { id: '70000000-0000-4000-8000-000000000001' } };
         return response(route);
       });
+      const [file] = await deliveryFiles(1);
       const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result',
-        text: 'Done: the post is drafted.', card: { ...taskCard, data: { ...taskCard.data, state: 'completed' } }, files: [{ absolutePath: '/no/such/file.md' }] });
+        text: 'Done: the post is drafted.', card: { ...taskCard, data: { ...taskCard.data, state: 'completed' } }, files: [file!, { absolutePath: '/no/such/file.md' }] });
       expect(posted).toEqual({ ok: true, messageId: '70000000-0000-4000-8000-000000000001' });
       const post = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')!;
       expect(post[2]).toEqual({ operationId: 'bot-delegation-task:task-1:1:result', mentions: [],
@@ -502,9 +527,51 @@ describe('Chat Server result delivery and refresh', () => {
           { type: 'media', mediaId: '60000000-0000-4000-8000-000000000001', caption: 'post.md' }] });
       // Never as the owner: the teammate's actor signs the message.
       expect(fixture.requests.findLast(request => request.url.endsWith(`/conversations/${roomId}/messages`))?.actor).toBe(botId);
-      // A delivery file that no longer exists is simply not uploaded.
-      expect(fixture.upload).toHaveBeenCalledWith(roomId, 'bot-delegation-task:task-1:1:result', [], botId);
+      // A delivery file that no longer exists is simply not uploaded; the existing one goes up under the message identity.
+      expect(fixture.upload).toHaveBeenCalledExactlyOnceWith(roomId, 'bot-delegation-task:task-1:1:result',
+        [expect.objectContaining({ path: file!.absolutePath, name: 'file-01.md', size: 6 })], botId);
       expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: roomId, change: 'messages' }), undefined);
+    });
+
+    it('leaves out one file this computer cannot send and still posts the result with the others', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      const files = await deliveryFiles(3);
+      uploadEach({ name: 'file-02.md', error: new Error('ATTACHMENT_UNAVAILABLE') });
+      const warn = vi.fn();
+      deps.log = { warn };
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route.endsWith('/messages') && method === 'POST') return { body: { id: '70000000-0000-4000-8000-000000000001' } };
+        return response(route);
+      });
+      const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result',
+        text: 'Done.', card: taskCard, files });
+      expect(posted).toEqual({ ok: true, messageId: '70000000-0000-4000-8000-000000000001' });
+      const sent = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST');
+      expect(sent).toHaveLength(1);
+      expect(sent[0][2].content).toEqual([{ type: 'text', text: 'Done.' }, taskCard, mediaBlock('file-01.md'), mediaBlock('file-03.md')]);
+      expect(warn).toHaveBeenCalledWith('Chat task delivery file refused', expect.objectContaining({ groupId: roomId }));
+    });
+
+    it('continues more than 20 delivery files in follow-up messages under stable operation ids', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      const files = await deliveryFiles(23);
+      uploadEach();
+      let posts = 0;
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route.endsWith('/messages') && method === 'POST') return { body: { id: `7000000${++posts}-0000-4000-8000-000000000001` } };
+        return response(route);
+      });
+      const text = `${'a'.repeat(7990)}\n${'b'.repeat(20)}`;
+      const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result', text, card: taskCard, files });
+      expect(posted).toEqual({ ok: true, messageId: '70000001-0000-4000-8000-000000000001' });
+      const bodies = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST').map(([, , body]) => body);
+      expect(bodies.map(body => body.operationId)).toEqual(['bot-delegation-task:task-1:1:result', 'bot-delegation-task:task-1:1:result:2', 'bot-delegation-task:task-1:1:result:files:2']);
+      expect(bodies[0].content).toEqual([{ type: 'text', text: 'a'.repeat(7990) }, taskCard, ...files.slice(0, 20).map((_, index) => mediaBlock(`file-${String(index + 1).padStart(2, '0')}.md`))]);
+      expect(bodies[1].content).toEqual([{ type: 'text', text: 'b'.repeat(20) }]);
+      expect(bodies[2].content).toEqual([mediaBlock('file-21.md'), mediaBlock('file-22.md'), mediaBlock('file-23.md')]);
+      expect(bodies.every(body => body.content.filter((block: { type: string }) => block.type === 'media').length <= 20)).toBe(true);
     });
 
     it.each([
@@ -544,6 +611,7 @@ describe('Chat Server result delivery and refresh', () => {
     it.each([
       ['a transient upload failure is retried with the message', new Error('ECONNRESET'), { ok: false, retryable: true }, 0],
       ['a file the server refuses is left out, the result still posts', new ChatResponseError('PAYLOAD_TOO_LARGE', 413), { ok: true }, 1],
+      ['a file too large to ever send is left out, the result still posts', new Error('ATTACHMENT_TOO_LARGE'), { ok: true }, 1],
     ])('%s', async (_label, failure, expected, posts) => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
       fixture.upload.mockRejectedValueOnce(failure);
@@ -553,7 +621,7 @@ describe('Chat Server result delivery and refresh', () => {
         return response(route);
       });
       const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result',
-        text: 'Done.', card: taskCard, files: [{ absolutePath: '/no/such/file.md' }] });
+        text: 'Done.', card: taskCard, files: await deliveryFiles(1) });
       expect(posted).toMatchObject(expected);
       const sent = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST');
       expect(sent).toHaveLength(posts);
