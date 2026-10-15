@@ -108,7 +108,8 @@ function liftRepliesFromWorkGroup(
     ? group.startedAtMs + group.durationMs : null;
   const flush = (nextReply: MessageRenderItem | null) => {
     if (pending.length === 0) return;
-    if (pending.length === 1 && pending[0].type === 'work_group') {
+    // Deferred history owns loading/retry state on the outer group, even with one inner group.
+    if (!group.deferred && pending.length === 1 && pending[0].type === 'work_group') {
       out.push(pending[0]);
     } else {
       const starts = pending.map(renderItemStartMs).filter((ms): ms is number => ms !== null);

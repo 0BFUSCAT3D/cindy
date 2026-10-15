@@ -205,6 +205,25 @@ describe('teammate final-result presentation', () => {
     expect(group.deferred).toBe(deferred);
   });
 
+  it('keeps deferred history controls when lifting a reply after one nested work group', () => {
+    const deferred = { owner: {}, key: 'range', expanded: false, loading: false, failed: true,
+      previewComplete: false, toggle: vi.fn(), retry: vi.fn(), setVisible: vi.fn() };
+    const nested: RenderItem = { type: 'work_group', key: 'work-inner', isStreaming: false, children: [tool('t')] };
+    const reply = message('delivered', 'assistant', 'Here is the result', { explicitDelivery: true });
+    const history: RenderItem = { type: 'work_group', key: 'work-history', isStreaming: false, children: [nested, reply], deferred };
+    const result = simplifyBotRenderItems([history], false);
+    expect(shape(result)).toBe('work-history[work-inner[tools-t]], msg-delivered');
+    const retained = result[0];
+    expect(retained.type === 'work_group' && retained.deferred).toBe(deferred);
+    expect(result[1]).toBe(reply);
+    expect(deferred.setVisible).not.toHaveBeenCalled();
+    expect(deferred.retry).not.toHaveBeenCalled();
+    expect(history.children).toEqual([nested, reply]);
+    // Ordinary complete groups still unwrap the single inner group with its stable key.
+    const complete = simplifyBotRenderItems([{ ...history, deferred: undefined }], false);
+    expect(complete).toEqual([nested, reply]);
+  });
+
   it('shows a running turn as a live work group and a finished turn as the summary with the answer outside', () => {
     const at = (offset: number) => new Date(Date.parse('2026-10-15T08:00:00Z') + offset).toISOString();
     const running = [message('u', 'user', 'Fix it', { createdAt: at(0) }),
