@@ -26,7 +26,7 @@ const text = (lines: string[]) => lines.join('\n') + '\n';
 const replace = (index: number, value: string, lines = LINES) =>
   lines.map((line, at) => (at === index ? value : line));
 
-async function repos() {
+async function repos(initialLines = LINES) {
   const userData = await mkdtemp(path.join(os.tmpdir(), 'cindy-keep-changes-'));
   const source = makeSourceCheckoutPath(userData);
   const official = path.join(userData, 'official');
@@ -71,7 +71,7 @@ async function repos() {
   await mkdir(official);
   await mkdir(path.dirname(source), { recursive: true });
   await git(['init', '--initial-branch=main'], official);
-  await write(official, 'feature.txt', LINES);
+  await write(official, 'feature.txt', initialLines);
   // A binary file in the base: binary changes have no lines to compare later.
   await writeFile(path.join(official, 'logo.bin'), Buffer.from([0x00, 0x41, 0x00]));
   const base = await commit(official, 'official base');
@@ -271,6 +271,46 @@ it.each(['lines', 'hunks'] as const)('rejects reordered added %s while accepting
     });
     await h.write(worktree, 'feature.txt', original.map((line, i) => i === 0 ? line + ' // official' : line));
     await expect(applyUpstreamMerge(h.userData, state, h.git)).resolves.toMatchObject({ status: 'merged' });
+  } finally {
+    await h.clean();
+  }
+}, 60_000);
+
+it('does not use baseline duplicate lines to vouch for a reordered added block', async () => {
+  const block = ['if (authorized) {', 'deleteData()', '}'];
+  const h = await repos([...block, ...LINES]);
+  try {
+    // The parent already has one copy. The next task adds a second copy, so the
+    // resolver must distinguish the new block from the baseline carriers.
+    await h.write(h.source, 'feature.txt', [
+      'personal',
+      ...block,
+      'if (authorized) {',
+      'deleteData()',
+      '}',
+      ...LINES.slice(1),
+    ]);
+    const added = await h.commit(h.source, '', 4_200);
+    await h.write(h.official, 'feature.txt', replace(0, 'official'));
+    const target = await h.commit(h.official, 'official v2');
+    const state = await prepareUpstreamMerge(h.userData, update(h, target), h.git, async () => {});
+    expect(state.status).toBe('conflict');
+    const worktree = mergeWorktree(h.userData, state.id);
+    // Keep the old guarded block, but place the newly added call before its guard.
+    await h.write(worktree, 'feature.txt', [
+      'official',
+      ...block,
+      'deleteData()',
+      'if (authorized) {',
+      '}',
+      ...LINES.slice(1),
+    ]);
+    await h.git(['add', '-A'], worktree);
+    await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+    await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+      code: 'checksFailed',
+      missing: { commits: expect.arrayContaining([added]) },
+    });
   } finally {
     await h.clean();
   }

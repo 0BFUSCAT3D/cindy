@@ -34,11 +34,13 @@ describe('portable Cindy Make cards', () => {
     const state = snapshot();
     state.personal = {
       remote: { sync: 'retrieved', error: 'network' },
+      personalSync: { running: true, step: 'official' },
       contributions: [{ number: 42, state: 'open' }],
     };
     const card = project(state);
     expect(card.display.subtitle).toContain(en.cindyMake.storage.status.retrieved);
     expect(card.display.subtitle).toContain(en.cindyMake.storage.errors.network);
+    expect(card.display.subtitle).toContain(en.cindyMake.sync.step.official);
     expect(card.display.subtitle).toContain(
       en.cindyMake.contribution.state.open.replace('{{number}}', '42'),
     );

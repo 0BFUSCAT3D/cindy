@@ -25,6 +25,7 @@ import {
   type VersionProfile,
 } from '../versionStore';
 import { cleanupPersonalVersions } from '../personalVersionCleanup';
+import * as pendingBuild from '../pendingBuild';
 vi.mock('../../logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
@@ -140,6 +141,24 @@ describe('local Cindy version snapshots', () => {
     await mkdir(path.join(h.userData, 'cindy-make', 'source'), { recursive: true });
     await rm(path.join(h.userData, 'cindy-make'), { recursive: true });
     expect(await verifyPersonalVersion(h.userData, first, h.original)).toMatchObject({ id: first });
+  });
+  it('keeps the previous selected version when settling the pending ledger fails', async () => {
+    const h = await fixture();
+    const first = (await h.retain())!;
+    publishPersonalVersion(h.userData, first);
+    const second = (await h.retain())!;
+    const settle = vi.spyOn(pendingBuild, 'settlePendingBuilds').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    try {
+      expect(() => publishPersonalVersion(h.userData, second)).toThrow('disk full');
+    } finally {
+      settle.mockRestore();
+    }
+    expect(personalVersionId(h.userData)).toBe(first);
+    expect(fs.existsSync(path.join(versionDirectory(h.userData, second), 'version.json'))).toBe(
+      true,
+    );
   });
   it('keeps only the latest personal slot while staging and preserves running files and publication facts', async () => {
     const h = await fixture();

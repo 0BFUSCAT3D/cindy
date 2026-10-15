@@ -273,16 +273,17 @@ export function publishPersonalVersion(profile: string, id: string): void {
   const staged = readVersionJson<PersonalVersion>(path.join(directory, 'staged.json'));
   if (!staged || staged.id !== id) throw versionError('unavailable');
   writeVersionJson(path.join(directory, 'version.json'), staged);
+  // Finish the pending-build proof before switching the selected slot. If the
+  // ledger cannot be written (for example, a full disk), the old personal slot
+  // remains authoritative and build rollback cannot leave it pointing at a
+  // directory that was removed from the failed generation.
+  settlePendingBuilds(makeSourceRoot(profile));
   // The slot changes only after the complete application has been saved. UUIDs are
   // private immutable generations, not additional user-selectable personal versions.
   writeVersionJson(path.join(versionsRoot(profile), 'personal.json'), { id });
   try {
     fs.unlinkSync(path.join(directory, 'staged.json'));
   } catch {}
-  // Generating a personal version settles the pending generation of the source
-  // it was built from (see `pendingBuild`): its changes have taken effect on
-  // this computer now.
-  settlePendingBuilds(makeSourceRoot(profile));
 }
 function personalVersionVerification(profile: string, id: string, original: OriginalVersion) {
   const item = readPersonalVersion(profile, id);

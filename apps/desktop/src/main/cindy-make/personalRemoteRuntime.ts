@@ -18,6 +18,7 @@ import { recordPendingBuild, rewritePendingBuilds } from './pendingBuild.js';
 import type { PersonalSyncRemote } from './personalSync.js';
 import type { MakeRemotePersonalSnapshot } from './remoteProjection.js';
 import { captureMakeHistoryStore } from './historyOwner.js';
+import { broadcastMakeRemoteChanged } from './remoteBroadcast.js';
 import { cindyMakeManager } from './manager.js';
 import {
   PersonalRemoteController,
@@ -149,6 +150,14 @@ export function configurePersonalRemote(): void {
       return { name: await value('user.name'), email: await value('user.email') };
     },
     withSourceUse: (run) => cindyMakeManager.withSourceReader(root, run),
+    onChanged: (runId) => {
+      try {
+        const sessionId = captureMakeHistoryStore().read(runId)?.sessionId;
+        if (sessionId) broadcastMakeRemoteChanged(sessionId);
+      } catch {
+        // A missing or malformed history record must not affect a successful submission.
+      }
+    },
     now: Date.now,
   });
   // Share each newly established personal version: after a generation settles
@@ -263,6 +272,7 @@ export async function readPersonalRemoteProjection(): Promise<
   MakeRemotePersonalSnapshot | undefined
 > {
   let remote: MakeRemotePersonalSnapshot['remote'];
+  let personalSync: MakeRemotePersonalSnapshot['personalSync'];
   try {
     const state = controller?.state();
     if (state?.sync || state?.error)
@@ -273,6 +283,7 @@ export async function readPersonalRemoteProjection(): Promise<
   } catch {
     // A malformed trust ledger remains unreadable and must not be normalized for a remote read.
   }
+  personalSync = cindyMakeManager.getState().personalSync;
   let contributions: MakeRemotePersonalSnapshot['contributions'];
   try {
     contributions = await Promise.race([
@@ -282,9 +293,10 @@ export async function readPersonalRemoteProjection(): Promise<
   } catch {
     contributions = undefined;
   }
-  if (!remote && !contributions?.length) return undefined;
+  if (!remote && !personalSync && !contributions?.length) return undefined;
   return {
     ...(remote ? { remote } : {}),
+    ...(personalSync ? { personalSync } : {}),
     ...(contributions?.length
       ? {
           contributions: contributions.slice(-8).map(({ number, state }) => ({ number, state })),

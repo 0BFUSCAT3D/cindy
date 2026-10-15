@@ -104,6 +104,8 @@ export interface ContributionDeps {
   ledgerPath(): string;
   readStore(file: string): Record<string, ContributionRecord>;
   writeStore(file: string, store: Record<string, ContributionRecord>): void;
+  /** Invalidate read-only Cindy Make resources after the ledger changes. */
+  onChanged?(runId: string): void;
   fetch: typeof fetch;
   /** The author's own Git identity, if configured on this computer. */
   gitIdentity(): Promise<{ name?: string; email?: string }>;
@@ -619,6 +621,11 @@ export class PersonalContribution {
         };
         this.deps.writeStore(ledger, { ...this.deps.readStore(ledger), [input.runId]: record });
         this.statusCache = undefined;
+        try {
+          this.deps.onChanged?.(input.runId);
+        } catch {
+          // Resource invalidation is advisory; never turn a committed submission into a failure.
+        }
         return this.view(record, 'open');
       } finally {
         await rm(temporary, { recursive: true, force: true });

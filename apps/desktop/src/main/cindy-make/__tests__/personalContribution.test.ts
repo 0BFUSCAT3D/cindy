@@ -165,6 +165,63 @@ describe('PersonalContribution', () => {
     expect(deps.git).not.toHaveBeenCalled();
   });
 
+  it('invalidates the read-only resource after a successful submission', async () => {
+    const onChanged = vi.fn();
+    const git = vi.fn(async (args: string[]) => {
+      const op = args.includes('commit-tree')
+        ? 'commit-tree'
+        : args.includes('write-tree')
+          ? 'write-tree'
+          : args[0];
+      switch (op) {
+        case 'fetch':
+        case 'read-tree':
+        case 'apply':
+        case 'push':
+          return '';
+        case 'diff':
+          return args.includes('--name-only') ? 'app.txt\0' : '';
+        case 'ls-files':
+          return '';
+        case 'rev-parse':
+          return args[1]?.includes('{tree}') ? A : B;
+        case 'write-tree':
+        case 'commit-tree':
+          return B;
+        default:
+          throw new Error('unexpected git ' + args.join(' '));
+      }
+    });
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Response(
+            JSON.stringify({
+              number: 9,
+              html_url: 'https://github.com/makecindy/cindy/pull/9',
+              state: 'open',
+            }),
+            { status: 201 },
+          )
+        : new Response('{}', { status: 404 }),
+    );
+    const { contribution } = harness({
+      git: git as unknown as ContributionDeps['git'],
+      fetch: fetchFn as unknown as typeof fetch,
+      onChanged,
+    });
+    await expect(
+      contribution.submit({
+        runId: 'run',
+        title: 'feat: x',
+        body: '',
+        name: 'Ada',
+        email: 'ada@example.com',
+      }),
+    ).resolves.toMatchObject({ number: 9, state: 'open' });
+    expect(onChanged).toHaveBeenCalledOnce();
+    expect(onChanged).toHaveBeenCalledWith('run');
+  });
+
   it('stops the submission when the Cindy account changes while it runs', async () => {
     let scope = 'owner-1';
     const writes: unknown[] = [];

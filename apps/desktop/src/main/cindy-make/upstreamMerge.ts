@@ -504,10 +504,34 @@ async function editsSurvive(
     // copy, and a line added twice must be there twice.
     const before = await git(['show', `${commit}^:${name}`], cwd).catch(() => '');
     const beforeLines = before.split(/\r?\n/);
+    // Keep baseline carriers out of the ordering proof. Without this reservation
+    // a file that already had the same guard/call pair can vouch for a newly added
+    // pair whose copies were reordered by conflict resolution. A carrier that
+    // cannot be identified in order is deliberately unprovable; the strict checks
+    // will make the user decide instead of guessing which duplicate was added.
+    const baselineIndexes = new Set<number>();
+    for (const content of new Set(added)) {
+      let after = -1;
+      for (const baselineLine of beforeLines.filter((line) => within(content, line))) {
+        const at = lines.findIndex(
+          (line, index) =>
+            index > after &&
+            !baselineIndexes.has(index) &&
+            within(content, line) &&
+            within(baselineLine, line),
+        );
+        if (at < 0) return false;
+        baselineIndexes.add(at);
+        after = at;
+      }
+    }
+    const available = lines.filter((_, index) => !baselineIndexes.has(index));
     for (const content of new Set(added)) {
       const needed =
         carriers(content, beforeLines) + added.filter((line) => line === content).length;
       if (carriers(content, lines) < needed) return false;
+      if (carriers(content, available) < added.filter((line) => line === content).length)
+        return false;
     }
     // The per-line occurrence check above is intentionally multiplicity-aware,
     // but it does not preserve the structure of a multi-line edit. A resolution
@@ -518,7 +542,7 @@ async function editsSurvive(
     if (added.length > 1) {
       let after = -1;
       for (const content of added) {
-        const at = lines.findIndex((line, index) => index > after && within(content, line));
+        const at = available.findIndex((line, index) => index > after && within(content, line));
         if (at < 0) return false;
         after = at;
       }
