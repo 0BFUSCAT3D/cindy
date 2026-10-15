@@ -32,11 +32,13 @@ function server() {
   }));
   return server;
 }
+const createAppServer = vi.fn(server);
 afterEach(async () => {
   clearAppServerConfigs();
   await bridge?.shutdown();
   bridge = undefined;
   receivedNotification.mockClear();
+  createAppServer.mockClear();
 });
 const headers = {
   authorization: 'Bearer invalid-test-only-remote-token',
@@ -47,12 +49,12 @@ async function fixture(vendorOptions: Record<string, unknown> = {}) {
   for (const id of ['example', 'not-mounted'])
     registerAppServer(id, () => ({ id, url: 'http://127.0.0.1:1/mcp', transport: 'http' }));
   bridge = await startCodexHttpBridge({
-    serverFactories: { example: server, 'not-mounted': server, cindy_ssh: server },
+    serverFactories: { example: createAppServer, 'not-mounted': server, cindy_ssh: server },
     appServerNames: ['example'],
     additionalBearerTokens: () => ['invalid-test-only-remote-token'],
     logger: log,
   });
-  bridge.registerSessionCtx('task', {
+  const setPolicy = (vendorOptions: Record<string, unknown>) => bridge!.registerSessionCtx('task', {
     agentKind: 'claude-code',
     sessionId: 'task',
     sessionInstanceId: 'instance',
@@ -60,6 +62,7 @@ async function fixture(vendorOptions: Record<string, unknown> = {}) {
     remoteHostId: 'host',
     vendorOptions,
   });
+  setPolicy(vendorOptions);
   const base = bridge.url('example');
   const bound = base + '?session=task&instance=instance';
   const init = await fetch(bound, {
@@ -85,7 +88,7 @@ async function fixture(vendorOptions: Record<string, unknown> = {}) {
       headers: { ...headers, 'mcp-session-id': id },
       body: JSON.stringify(body),
     });
-  return { base, bound, request };
+  return { base, bound, request, setPolicy };
 }
 const list = { jsonrpc: '2.0', id: 2, method: 'tools/list' };
 const call = {
@@ -165,13 +168,14 @@ describe('MCP Apps over the existing remote bridge', () => {
     expect(receivedNotification).not.toHaveBeenCalled();
   });
   it('enforces the frozen custom-server mount for notifications as well', async () => {
-    const f = await fixture({
+    const f = await fixture();
+    f.setPolicy({
       [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [],
       cindyRuntimeMcpServerNames: [],
     });
     const notification = { jsonrpc: '2.0', method: 'example/side-effect' };
     const denied = await f.request(f.bound, notification);
-    expect(denied.status).toBe(401);
+    expect(denied.status).toBe(403);
     await denied.text();
     expect(receivedNotification).not.toHaveBeenCalled();
   });
@@ -188,13 +192,14 @@ describe('MCP Apps over the existing remote bridge', () => {
     await revoked.text();
   });
   it('applies frozen Bot policy to discovery and execution together', async () => {
-    const f = await fixture({
+    const f = await fixture();
+    f.setPolicy({
       [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [],
       cindyRuntimeMcpServerNames: [],
     });
     for (const body of [list, call]) {
       const denied = await f.request(f.bound, body);
-      expect(denied.status).toBe(401);
+      expect(denied.status).toBe(403);
       await denied.text();
     }
     bridge!.registerSessionCtx('task', {
@@ -214,6 +219,33 @@ describe('MCP Apps over the existing remote bridge', () => {
       await allowed.text();
     }
   });
+  it.each(['?session=task', '?session=task&instance=instance'])(
+    'rejects scoped Bot initialization before creating an excluded facade: %s',
+    async (query) => {
+      const f = await fixture();
+      f.setPolicy({
+        [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [],
+        cindyRuntimeMcpServerNames: [],
+      });
+      const created = createAppServer.mock.calls.length;
+      const initialize = {
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      };
+      const denied = await fetch(f.base + query, { method: 'POST', headers, body: JSON.stringify(initialize) });
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).toBe('MCP server is not mounted for this Session');
+      expect(createAppServer).toHaveBeenCalledTimes(created);
+      f.setPolicy({
+        [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [],
+        cindyRuntimeMcpServerNames: ['example'],
+      });
+      const allowed = await fetch(f.base + query, { method: 'POST', headers, body: JSON.stringify(initialize) });
+      expect(allowed.status).toBe(200);
+      await allowed.text();
+      expect(createAppServer).toHaveBeenCalledTimes(created + 1);
+    },
+  );
   it('keeps injection inside both the configured and frozen custom-server sets', async () => {
     await fixture();
     const gates = { collabEnabled: false, memoryEnabled: false };

@@ -367,10 +367,10 @@ export async function startCodexHttpBridge(
         log.warn('rejected scoped remote token for non-collab server', { serverName });
         return;
       }
-      // Bind Pi's frozen mount before initialization or transport lookup: an
+      // Bind Pi and scoped remote App mounts before initialization or transport lookup: an
       // excluded facade could otherwise attach Main-held upstream credentials,
       // or borrow a transport initialized by another Session.
-      if (isPiSessionToken && !isFrozenMcpServerAllowed(serverName, sessionTokenCtx)) {
+      if ((isPiSessionToken || remoteAppServer) && !isFrozenMcpServerAllowed(serverName, sessionTokenCtx)) {
         res.statusCode = 403;
         res.end('MCP server is not mounted for this Session');
         return;
