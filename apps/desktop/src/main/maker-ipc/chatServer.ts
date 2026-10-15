@@ -32,8 +32,9 @@ import {
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
   type BotGroupDetail, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
   botGroupQuoteAttachmentName, botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
+  readBotGroupTaskCard,
 } from '../../shared/botGroupChat.js';
-import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal } from './botGroupChatService.js';
+import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal, BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
@@ -99,7 +100,15 @@ type ExecutionContext = { kind: 'message' } | { kind: 'member.joined'; trigger: 
 const ordinaryExecution = (execution: Execution) => execution.trigger === undefined && execution.trigger_type == null;
 const groupInput = z.object({ name: z.string().trim().min(1).max(40), botIds: z.array(z.string().min(1)).max(6) });
 // A recognized quote card is shown as the quote, not as body text; unknown revisions keep their fallback.
-const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy.local-history' || b.data?.activity === true) && !readBotGroupQuoteCard(b));
+// A task card is the message's task only on a teammate's own message; a human may not post one for it.
+const taskCardOf = (m: Message) => m.author.kind === 'bot' ? m.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
+const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy.local-history' || b.data?.activity === true) && !readBotGroupQuoteCard(b)
+  && !(m.author.kind === 'bot' && readBotGroupTaskCard(b)));
+/**
+ * docs/product-rules/bot-group-chat.md §4.4 / §7.4: a reply or step may run tools for as long as
+ * two hours; time waiting on the user is not counted. A hung lane is ended by its own idle watchdog.
+ */
+const TURN_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const bodyText = (m: Message) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m).map(b => b.text ?? b.fallback ?? (b.type === 'media' ? `[附件: ${b.caption ?? '文件'}]` : '')).join('\n');
 /** Words of a message for a quote excerpt; attachments are summarized separately. */
 const quotedText = (m: Message) => bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n');
@@ -159,6 +168,7 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
     retryPlan: (...args) => service().retryPlan(...args),
     editPlanStep: (...args) => service().editPlanStep(...args),
     settleLaneTurn: (...args) => service().settleLaneTurn(...args),
+    postCompanionTaskMessage: (...args) => service().postCompanionTaskMessage(...args),
     dispose: () => { active.dispose(); local.dispose(); },
   };
 }
@@ -634,8 +644,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       noticeCode: runtimeFailureCode === 'RUNTIME_TIMEOUT' ? 'member-timeout' : 'member-failed', runtimeFailureCode,
       planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
     const quote = m.deleted || planCard ? null : readBotGroupQuote(m.content);
+    const task = m.deleted || planCard ? null : taskCardOf(m);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
-      isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}),
+      isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}), ...(task ? { task } : {}),
       authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: bodyText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
@@ -1239,7 +1250,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const paused = !!deps.hasPendingInteraction?.(run.sessionId);
       if (paused) run.pauseStarted ??= Date.now();
       else if (run.pauseStarted !== undefined) { run.started += Date.now() - run.pauseStarted; run.pauseStarted = undefined; }
-      const timedOut = !paused && Date.now() - run.started > (run.plan ? 2 * 60 * 60 * 1000 : 300000);
+      const timedOut = !paused && Date.now() - run.started > TURN_TIMEOUT_MS;
       if (timedOut) {
         await settleExecution(run, { sessionId: run.sessionId, activeInputClientId: run.clientId,
           outcome: 'error', resultText: '', failureCode: 'RUNTIME_TIMEOUT' }, true);
@@ -1525,6 +1536,45 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (terminal.activeInputClientId ? terminal.activeInputClientId !== run.clientId : !run.accepted) return false;
       await settleExecution(run, terminal, terminal.undispatched);
       return true;
+    },
+    // A teammate's own message about an independent task it started from this group
+    // (bot-group-chat.md §10): posted outside any execution, as that teammate, never as the owner.
+    postCompanionTaskMessage: async (input: BotGroupTaskPostInput): Promise<BotGroupTaskPostResult> => {
+      const refused = (errorCode: string): BotGroupTaskPostResult => ({ ok: false, errorCode, retryable: false });
+      try {
+        if (!current()) return refused('OWNER_CHANGED');
+        const roomId = id.safeParse(input.groupId).success ? input.groupId : null;
+        if (!roomId) return local.postCompanionTaskMessage(input);
+        await register();
+        const actor = actors.find(a => a.kind === 'bot' && a.externalId === input.botId);
+        if (!actor) return refused('BOT_UNAVAILABLE');
+        const s = await snapshot(roomId);
+        if (s.room.archived || !s.members.some(m => m.id === actor.id && m.state === 'joined')) return refused('MEMBER_UNAVAILABLE');
+        const produced: BotGroupAttachment[] = [];
+        const fs = await import('node:fs/promises');
+        for (const file of input.files ?? []) {
+          try {
+            const stat = await fs.lstat(file.absolutePath);
+            if (stat.isFile()) produced.push({ id: file.absolutePath, name: path.basename(file.absolutePath), category: 'file',
+              mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
+          } catch { /* a file deleted since the task finished is simply not delivered */ }
+        }
+        // A delivery file that cannot be uploaded must not hold back the result text and card.
+        const uploaded = await media.upload(roomId, input.clientId, produced, actor.id).catch(error => {
+          deps.log?.warn('Chat task delivery files skipped', { groupId: roomId, ...chatErrorDiagnostic(error) });
+          return [];
+        });
+        const text = input.text.trim().slice(0, 8000);
+        const posted = await api<{ id: string }>(`/conversations/${roomId}/messages`, 'POST', {
+          operationId: input.clientId, content: [...(text ? [{ type: 'text', text }] : []), input.card, ...uploaded], mentions: [],
+        }, actor.id);
+        changed(roomId);
+        return { ok: true, messageId: posted.id };
+      } catch (error) {
+        deps.log?.warn('Chat task message post failed', { groupId: input.groupId, ...chatErrorDiagnostic(error) });
+        return { ok: false, errorCode: error instanceof Error ? error.message : 'REQUEST_FAILED',
+          retryable: !(error instanceof ChatResponseError) || retryableResponse(error) };
+      }
     },
     setMembers: input => safe(async () => {
       const i = z.object({ groupId: id, botIds: z.array(z.string()).max(6), addOnly: z.boolean().optional() }).parse(input);

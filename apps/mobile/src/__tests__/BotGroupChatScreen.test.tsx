@@ -75,7 +75,7 @@ vi.mock('react-i18next', async (importOriginal) => ({
 vi.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${++h.uuid}` }));
 vi.mock('lucide-react-native', () => Object.fromEntries(
   ['ChevronLeft', 'Settings2', 'Plus', 'Square', 'Users', 'X', 'Check', 'CircleAlert', 'CircleCheck', 'CircleDashed', 'FileText', 'Sparkles', 'Folder', 'Camera', 'Image',
-    'Layers', 'ListChecks', 'Ellipsis', 'ChevronRight', 'ChevronDown']
+    'Layers', 'ListChecks', 'ListTodo', 'Ellipsis', 'ChevronRight', 'ChevronDown']
     .map((name) => [name, () => null]),
 ));
 vi.mock('@/theme', async () => ({
@@ -201,6 +201,8 @@ vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsM
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
 vi.mock('@/session/ThinkingDots', () => ({ ThinkingDots: () => null }));
+// The live card of my own teammate's task reads the computer over device-link; not under test here.
+vi.mock('@/session/CompanionMessageCard', () => ({ CompanionTaskCard: () => null }));
 import { BotGroupChatScreen } from '@/session/BotGroupChatScreen';
 import { parseBotGroupChatData } from '@/session/botGroupRemote';
 
@@ -302,6 +304,23 @@ describe('group timeline', () => {
     await render(parseBotGroupChatData(deleted)!);
     expect(byId('botGroup.quote')!.textContent).toContain('groupChat.quote.deleted');
     expect(node.textContent).not.toContain('私密的原文');
+  });
+
+  it('shows a task another owner\'s teammate started from the group as its posted title and state', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-1', fromBotId: 'abu', fromBotName: '阿布', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-1', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: false },
+    ] });
+    data.messages.push(message('t1', 20, { authorBotId: 'abu', authorName: '阿布', content: '我开了个任务',
+      task: { meta, state: 'waiting', title: '官网首页', summary: '首页要放几个案例？' } }));
+    await render(parseBotGroupChatData(data)!);
+    const card = byId('botGroup.task')!;
+    expect(card.textContent).toContain('官网首页');
+    expect(card.textContent).toContain('groupChat.task.state.waiting');
+    expect(card.textContent).toContain('首页要放几个案例？');
+    expect(byId('botGroup.task.live')).toBeNull();
   });
 
   it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {

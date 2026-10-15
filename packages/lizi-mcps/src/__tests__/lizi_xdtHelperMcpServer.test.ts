@@ -328,7 +328,7 @@ describe("cindy_helper MCP server", () => {
       delegationId: "session-task-1",
       childSessionId: "desktop-child-session",
       status: "running",
-      completionDestination: 'teammate-private-chat',
+      completionDestination: 'group',
       deadlineAt: 1_788_000_000_000,
     }));
     const messageSessionTask = vi.fn(async () => ({
@@ -414,7 +414,7 @@ describe("cindy_helper MCP server", () => {
       expect(sessionTask).toMatchObject({
         ok: true,
         action: "start_session_task",
-        completion_destination: 'teammate-private-chat',
+        completion_destination: 'group',
         task_id: "session-task-1",
         session_id: "desktop-child-session",
         deadline_at: 1_788_000_000_000,

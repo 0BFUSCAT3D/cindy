@@ -47,6 +47,8 @@ import type {
   BotDelegationInterjectResult,
 } from '../../shared/botCollaboration.js';
 import { BOT_DELEGATION_CLIENT_ID } from '../../shared/botCollaboration.js';
+import { buildBotGroupTaskCard, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
+import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { ensureBotWorkspaceDir } from './botProfileFolder.js';
 import type { SessionQueuedMessageControlResult, SessionSteerResult, SessionStopResult } from './sessionControlService.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
@@ -191,6 +193,12 @@ export interface BotDelegationServiceDeps {
       | { ok: false; errorCode: string; message: string }
     >;
   };
+  /**
+   * A task started from a group lives in that group (bot-group-chat.md §10): its card,
+   * confirmations and result are posted there as the teammate's own messages. A definite
+   * refusal (not retryable) falls back to the owner's private chat so no result is lost.
+   */
+  postGroupTaskMessage?: (input: BotGroupTaskPostInput) => Promise<BotGroupTaskPostResult>;
   now?: () => number;
   createId?: () => string;
   maxActiveChildren?: number;
@@ -782,6 +790,62 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
    * 冻结这次协作双方的展示身份。名字后来改了不回填历史消息——消息流讲的是
    * 「当时谁把活交给了谁」，不是「他们现在叫什么」。
    */
+  /** The group a task was started from, by its persisted origin route (bot-group-chat.md §10). */
+  const groupHomeOf = (permissionSnapshotJson: string | null | undefined): { groupId: string; routeKey: string } | null => {
+    const route = parseRecord(permissionSnapshotJson).groupOriginRoute;
+    const match = typeof route === 'string' ? /^group:([^:]+)/.exec(route) : null;
+    return match ? { groupId: match[1]!, routeKey: route as string } : null;
+  };
+
+  type GroupTaskRow = Pick<DelegationRow,
+    'id' | 'requestingBotId' | 'targetBotId' | 'objective' | 'parentSessionId' | 'childSessionId'
+  >;
+
+  /** One task event as the teammate's own group message, carrying the task card. */
+  const postGroupTaskEvent = async (
+    home: { groupId: string },
+    row: GroupTaskRow,
+    event: { clientId: string; text: string; state: BotGroupTaskCardState; summary?: string; files?: Array<{ absolutePath: string }> },
+  ): Promise<BotGroupTaskPostResult> => {
+    if (!deps.postGroupTaskMessage) return { ok: false, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false };
+    const meta = await collaborationMeta(row, 'delegation-request');
+    const child = row.childSessionId ? await getDbClient().drizzle
+      .select({ title: sessions.title }).from(sessions)
+      .where(eq(sessions.id, row.childSessionId)).get() : undefined;
+    const card = buildBotGroupTaskCard({
+      meta,
+      state: event.state,
+      title: child?.title?.trim() || row.objective.split('\n')[0]!.slice(0, 120),
+      ...(event.summary ? { summary: event.summary } : {}),
+    });
+    return deps.postGroupTaskMessage({
+      groupId: home.groupId, botId: row.requestingBotId, clientId: event.clientId, text: event.text, card,
+      ...(event.files?.length ? { files: event.files } : {}),
+    });
+  };
+
+  const groupPostTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** The start card is best effort with backoff; the result message carries the card again. */
+  const postGroupTaskStart = async (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
+    try {
+      const posted = await postGroupTaskEvent(home, row, { clientId: `bot-delegation-task:${row.id}:started`, text: '', state: 'started' });
+      if (posted.ok) return;
+      if (!posted.retryable) {
+        log.warn('group refused the task card', { delegationId: row.id, groupId: home.groupId, errorCode: posted.errorCode });
+        return;
+      }
+    } catch (error) {
+      log.warn('Bot task group card deferred', { delegationId: row.id, error: error instanceof Error ? error.message : String(error) });
+    }
+    if (attempt >= 6) return;
+    const timer = setTimeout(() => {
+      groupPostTimers.delete(timer);
+      void postGroupTaskStart(home, row, attempt + 1);
+    }, Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt));
+    timer.unref?.();
+    groupPostTimers.add(timer);
+  };
+
   const collaborationMeta = async (
     row: Pick<DelegationRow,
       'id' | 'requestingBotId' | 'targetBotId' | 'objective' | 'parentSessionId' | 'childSessionId'
@@ -989,8 +1053,59 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         scheduleCompletionRetry(params, attempt);
         return false;
       }
-      const targetSessionId = await requesterLiveSessionId(params.requestingBotId, params.parentSessionId);
+      // A group task reports back in its group as the teammate's own message; the lane that
+      // started it is never woken. Only a definite refusal falls back to the owner's main chat.
+      const home = groupHomeOf((await getDbClient().drizzle
+        .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
+        .where(eq(botDelegations.id, params.id)).get())?.snapshot);
+      if (home) {
+        const posted = await postGroupTaskEvent(home, params, {
+          clientId: `bot-delegation-task:${params.id}:${params.runSequence}:result`,
+          text: params.resultSummary ?? '',
+          state: params.status,
+          files: artifacts.filter((file) => file.status !== 'deleted').map((file) => ({ absolutePath: file.absolutePath })),
+        });
+        if (!(await completionStillPending())) return false;
+        if (posted.ok) {
+          if (!(await ensureResultReceipt())) {
+            scheduleCompletionRetry(params, attempt);
+            return false;
+          }
+          const [marked] = await getDbClient().drizzle
+            .update(botDelegations)
+            .set({ completionDeliveredAt: now(), updatedAt: now() })
+            .where(and(
+              eq(botDelegations.id, params.id),
+              eq(botDelegations.runSequence, params.runSequence),
+              eq(botDelegations.status, params.status),
+              params.childSessionId === null
+                ? isNull(botDelegations.childSessionId)
+                : eq(botDelegations.childSessionId, params.childSessionId),
+              isNull(botDelegations.completionDeliveredAt),
+            ))
+            .returning({ id: botDelegations.id });
+          if (!marked && await completionStillPending()) {
+            scheduleCompletionRetry(params, attempt);
+            return false;
+          }
+          clearCompletionRetryTimer(params.id);
+          return !!marked;
+        }
+        if (posted.retryable) {
+          scheduleCompletionRetry(params, attempt);
+          return false;
+        }
+        log.warn('group refused the task result; delivering to the owner private chat instead', {
+          delegationId: params.id, groupId: home.groupId, errorCode: posted.errorCode,
+        });
+      }
+      const targetSessionId = await requesterLiveSessionId(params.requestingBotId, home ? null : params.parentSessionId);
       if (!targetSessionId && await holdCompletionForStoppedRequester(params)) return false;
+      if (home && targetSessionId && targetSessionId !== receiptSessionId) {
+        // The owner reads the result where the wake-up lands, not in the hidden lane.
+        receiptSessionId = targetSessionId;
+        await persistResultReceipt(targetSessionId);
+      }
       if (!targetSessionId) {
         log.warn('defer Bot delegation wake-up: requester has no live task', {
           delegationId: params.id,
@@ -1021,7 +1136,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       // The target may have been deleted while dispatch was accepting the
       // hidden message. A rehomed receipt alone does not wake its replacement.
       // Leave this run pending so the stable completion ID is dispatched there.
-      const currentTargetSessionId = await requesterLiveSessionId(params.requestingBotId, params.parentSessionId);
+      const currentTargetSessionId = await requesterLiveSessionId(params.requestingBotId, home ? null : params.parentSessionId);
       if (currentTargetSessionId !== targetSessionId) {
         scheduleCompletionRetry(params, attempt);
         return false;
@@ -1169,7 +1284,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         parent?.status === 'active'
         && parent.profileStatus === 'active'
         && parent.botId === requestingBotId
-        && (parent.role === 'canonical' || parent.role === 'delegation')
+        // A group lane is a live requester only for the task it started (bot-group-chat.md §10);
+        // the lane is never woken by this service, its group gets the messages instead.
+        && (parent.role === 'canonical' || parent.role === 'delegation' || parent.role === 'group')
       );
     };
     if (parentSessionId && (await liveRequesterTask(parentSessionId))) return parentSessionId;
@@ -1444,8 +1561,40 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       pending.request.kind === 'permission' ? `请求工具: ${pending.request.toolName}` : '',
       '你是用户的代理。能按用户已表达的意图安全决定，就用 `message_session_task` 直接回答；拿不准才用一句人话问用户。不要让用户去子任务窗口处理，也不要复述内部编号。',
     ].filter(Boolean).join('\n\n');
-    try {
-      const requesterSessionId = await requesterLiveSessionId(row.requestingBotId, row.parentSessionId);
+    // A group task asks in its group: the owner opens the task from the card to answer.
+    // Tool names and arguments stay on this computer; only a question's words are shared.
+    const home = groupHomeOf(row.permissionSnapshotJson);
+    let privateFallback = !home;
+    if (home) {
+      try {
+        const posted = await postGroupTaskEvent(home, row, {
+          clientId: `bot-delegation-task:${row.id}:interaction:${pending.requestId}`,
+          text: '',
+          state: 'waiting',
+          ...(pending.request.kind === 'permission' ? {} : { summary: pending.summary }),
+        });
+        if (!stillPending() || (row.childSessionId && heldSessionIds.has(row.childSessionId))) return;
+        if (posted.ok) {
+          clearInteractionRetryTimer(row.id);
+          return;
+        }
+        if (!posted.retryable) {
+          log.warn('group refused the task notice; asking in the owner private chat instead', {
+            delegationId: row.id, groupId: home.groupId, errorCode: posted.errorCode,
+          });
+          privateFallback = true;
+        }
+      } catch (error) {
+        log.warn('Bot task group notice deferred', {
+          delegationId: row.id,
+          requestId: pending.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (privateFallback) try {
+      // A lane is never woken; a refused group notice goes to the owner's main chat.
+      const requesterSessionId = await requesterLiveSessionId(row.requestingBotId, home ? null : row.parentSessionId);
       if (!stillPending() || (row.childSessionId && heldSessionIds.has(row.childSessionId))) return;
       const dispatched = requesterSessionId
         ? await deps.dispatch({
@@ -1459,7 +1608,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         // Acceptance in a parent that was deleted or archived during dispatch
         // does not wake its replacement. The client ID is stable per target,
         // so retrying is safe even if the first send was merely queued.
-        const currentTarget = await requesterLiveSessionId(row.requestingBotId, row.parentSessionId);
+        const currentTarget = await requesterLiveSessionId(row.requestingBotId, home ? null : row.parentSessionId);
         if (currentTarget === requesterSessionId || !stillPending()) {
           clearInteractionRetryTimer(row.id);
           return;
@@ -2160,20 +2309,10 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     status: 'queued' | 'running' | 'failed';
     deadlineAt: number;
   }>> => {
-    // The execution caller remains the group lane. Only its owner may create
-    // independent work, whose durable cards/decisions return to that owner's
-    // existing teammate chat rather than the hidden, short-lived group lane.
-    let parentSessionId = input.callerSessionId;
-    if (input.caller.role === 'group') {
-      await input.caller.groupAuthority?.refresh();
-      const ensured = await ensureCanonicalSession(input.caller.botId, input.caller.groupAuthority?.refresh)
-        .finally(() => input.caller.groupAuthority?.refresh());
-      if (!ensured.ok) return ensured;
-      // Resolve the authoritative link again rather than trusting a stale recovery result.
-      parentSessionId = await requesterLiveSessionId(input.caller.botId, null) ?? '';
-    }
-    if (!parentSessionId) return { ok: false, errorCode: 'TARGET_CANONICAL_UNAVAILABLE',
-      message: new GroupToolAuthorizationError().message };
+    // The execution caller remains the parent, including a group lane: work started from a
+    // group stays in that group (bot-group-chat.md §10). Its card, confirmations and result
+    // are posted there as the teammate's messages; the lane itself is never woken for them.
+    const parentSessionId = input.callerSessionId;
     const delegationId = createId();
     let childSessionId = resolveBusinessSessionId(undefined);
     if (input.useWorktree) {
@@ -2340,6 +2479,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       };
     }
     scheduleTimeout(delegationId, plan.limits.deadlineAt);
+    // The group sees the card as soon as the task exists; the lane's own reply follows later.
+    const groupHome = input.caller.role === 'group' ? groupHomeOf(permissionSnapshotJson) : null;
+    if (groupHome) void postGroupTaskStart(groupHome, mirrorRow);
     // A group task is independently authorized by the post-commit check above.
     // Its persisted permission snapshot also governs retries/restoration; do not
     // retain the short-lived originating execution in its delivery retry closure.
@@ -2362,7 +2504,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     input: SessionTaskInput,
   ): Promise<BotDelegationResult<{
     modelRoute: BotModelRoute;
-    completionDestination?: 'teammate-private-chat';
+    /** `group`: the card, confirmations and result stay in the group this was started from. */
+    completionDestination?: 'group';
     delegationId: string;
     childSessionId: string;
     /**
@@ -2498,7 +2641,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       childSessionId: started.childSessionId,
       status: started.status,
       deadlineAt: started.deadlineAt,
-      ...(caller.role === 'group' ? { completionDestination: 'teammate-private-chat' as const } : {}),
+      ...(caller.role === 'group' ? { completionDestination: 'group' as const } : {}),
       modelRoute: {
         harness: taskRuntime.agentKind === 'codex' ? 'codex' : taskRuntime.agentKind === 'pi' ? 'pi' : 'claude',
         model: taskRuntime.model,
@@ -2514,21 +2657,20 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   ): Promise<BotDelegationResult<{ delegations: BotDelegationView[] }>> => {
     // History cards need saved titles even when their chat or teammate is inactive.
     // Only this read path accepts history links; task operations still use resolveCaller.
+    // A group lane reads only the tasks started from its group, for the cards posted there.
     const caller = await resolveLinkedSession(callerSessionId);
     if (!caller
       || caller.sessionSource !== 'bot'
       || (caller.sessionStatus !== 'active' && caller.sessionStatus !== 'archived')
       || caller.profileStatus === 'deleting'
-      || !['canonical', 'history', 'delegation'].includes(caller.role)) {
+      || !['canonical', 'history', 'delegation', 'group'].includes(caller.role)) {
       return { ok: false, errorCode: 'NOT_A_BOT_SESSION', message: '当前任务不属于任何伙伴' };
     }
     const db = getDbClient().drizzle;
     const rows = await db
       .select()
       .from(botDelegations)
-      .where(
-        eq(botDelegations.requestingBotId, caller.botId),
-      )
+      .where(callerTaskScope(caller))
       .orderBy(desc(botDelegations.createdAt));
     const profiles = await db
       .select({ id: botProfiles.id, displayName: botProfiles.displayName })
@@ -3221,10 +3363,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       };
     }
     if (!isActiveDelegation(row.status as DelegationStatus)) {
-      const returnSessionId = caller.role === 'group' ? await requesterLiveSessionId(caller.botId, null) : callerSessionId;
+      // Reopened group work keeps its group home; the lane that reopens it becomes the parent.
       await caller.groupAuthority?.refresh();
-      if (!returnSessionId) throw new GroupToolAuthorizationError();
-      return reopenTerminalDelegation(returnSessionId, caller.botId, row, input.text, caller.groupAuthority);
+      return reopenTerminalDelegation(callerSessionId, caller.botId, row, input.text, caller.groupAuthority);
     }
     const result = await interjectDelegation(
       callerSessionId,
@@ -4226,6 +4367,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     timers.clear();
     for (const timer of retryTimers.values()) clearTimeout(timer);
     retryTimers.clear();
+    for (const timer of groupPostTimers) clearTimeout(timer);
+    groupPostTimers.clear();
     for (const timer of completionRetryTimers.values()) clearTimeout(timer);
     completionRetryTimers.clear();
     for (const timer of interactionRetryTimers.values()) clearTimeout(timer);

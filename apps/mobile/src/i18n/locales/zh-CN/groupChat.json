@@ -140,6 +140,16 @@
     "planning": "正在安排…",
     "step": "正在做…"
   },
+  "task": {
+    "state": {
+      "started": "进行中",
+      "waiting": "等你确认",
+      "completed": "已完成",
+      "failed": "失败了",
+      "cancelled": "已取消",
+      "timed-out": "已超时"
+    }
+  },
   "files": {
     "onComputer": "文件在电脑上，回电脑打开"
   },

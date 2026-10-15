@@ -9130,6 +9130,16 @@
       "speaking": {
         "planning": "역할을 나누는 중…"
       },
+      "task": {
+        "state": {
+          "started": "진행 중",
+          "waiting": "확인 대기 중",
+          "completed": "완료",
+          "failed": "실패",
+          "cancelled": "취소됨",
+          "timed-out": "시간 초과"
+        }
+      },
       "files": {
         "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
       },

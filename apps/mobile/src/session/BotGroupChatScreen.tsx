@@ -68,6 +68,7 @@ import { SessionHeaderNativeBlur } from './SessionHeaderNativeControls';
 import { CompanionEntering } from './CompanionEntering';
 import { BotGroupComposer, type BotGroupSendInput } from './BotGroupComposer';
 import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
+import { BotGroupTaskCard } from './BotGroupTaskCard';
 import { BotGroupMarkdownText, BotGroupUserText } from './BotGroupMessageText';
 import { BotGroupQuote } from './BotGroupQuote';
 import {
@@ -537,6 +538,8 @@ function BotGroupTimelineItem({
           onStart={() => onPlanAction('start')} onDismiss={() => onPlanAction('dismiss')} onEditStep={onEditStep} />
         : <>
           {quoteDisplay ? <BotGroupQuote display={quoteDisplay} /> : null}
+          {/* A task this teammate started from the group; mine is live, another owner's is a snapshot. */}
+          {message.task ? <BotGroupTaskCard task={message.task} owned={member?.isOwned !== false} deviceId={deviceId} /> : null}
           {message.attachments?.length ? <BotGroupMessageAttachments messageId={message.id} attachments={message.attachments} align="left" onResolveRemoteMedia={resolveMedia} resolveServerMedia={resolveServerMedia} /> : null}
           {message.content.trim() ? <BotGroupMarkdownText content={message.content} /> : null}
           <BotGroupHandoffFiles files={message.files} />

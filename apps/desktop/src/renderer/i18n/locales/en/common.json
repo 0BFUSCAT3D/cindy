@@ -9167,6 +9167,16 @@
       "speaking": {
         "planning": "Splitting the work…"
       },
+      "task": {
+        "state": {
+          "started": "In progress",
+          "waiting": "Waiting for your confirmation",
+          "completed": "Done",
+          "failed": "Failed",
+          "cancelled": "Cancelled",
+          "timed-out": "Timed out"
+        }
+      },
       "files": {
         "openFailed": "Couldn’t open the file. It may have been moved or deleted."
       },

@@ -428,8 +428,8 @@ function registerStartSessionTaskEntry(
             expects_result: true,
             ...(result.completionDestination ? { completion_destination: result.completionDestination } : {}),
             guidance:
-              (result.completionDestination === 'teammate-private-chat'
-                ? 'Tell the owner that the task card, permission/questions, and final result will appear in their private chat with this teammate. '
+              (result.completionDestination === 'group'
+                ? 'This task lives in this group: its card is already posted here, and anything it needs confirmed plus its final result will arrive here as your own messages. Tell the group briefly what you started; do not promise a private-chat update. '
                 : '') + "The task card tracks progress and the result will return automatically. Do not start it again. Treat model_route and task/session ids as internal bookkeeping; do not echo them or the delegated instruction in ordinary replies unless the user asks for these details.",
           })
         : errorPayload(result.errorCode, result.message);

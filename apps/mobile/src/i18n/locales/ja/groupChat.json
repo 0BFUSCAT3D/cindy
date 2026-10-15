@@ -140,6 +140,16 @@
     "planning": "役割分担を考えています…",
     "step": "作業中…"
   },
+  "task": {
+    "state": {
+      "started": "進行中",
+      "waiting": "確認待ち",
+      "completed": "完了",
+      "failed": "失敗",
+      "cancelled": "キャンセル済み",
+      "timed-out": "タイムアウト"
+    }
+  },
   "files": {
     "onComputer": "ファイルはパソコンにあります。パソコンで開いてください"
   },

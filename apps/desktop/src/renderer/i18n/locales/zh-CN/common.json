@@ -9130,6 +9130,16 @@
       "speaking": {
         "planning": "正在安排…"
       },
+      "task": {
+        "state": {
+          "started": "进行中",
+          "waiting": "等你确认",
+          "completed": "已完成",
+          "failed": "失败了",
+          "cancelled": "已取消",
+          "timed-out": "已超时"
+        }
+      },
       "files": {
         "openFailed": "文件没能打开，可能已被移动或删除"
       },

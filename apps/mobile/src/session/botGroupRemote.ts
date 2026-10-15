@@ -14,6 +14,7 @@ import {
   BOT_GROUP_REMOTE_RESOURCE_KIND,
   isBotGroupRuntimeFailureCode,
   parseBotGroupQuoteView,
+  parseBotGroupTaskCardView,
   type BotGroupAttachment,
   type BotGroupAttachmentCategory,
   type BotGroupErrorCode,
@@ -205,6 +206,8 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
     ? record.noticeCode as BotGroupMessageView['noticeCode']
     : null;
   const quote = parseBotGroupQuoteView(record.quote);
+  // A task this teammate started from the group (bot-group-chat.md §10); older computers send none.
+  const task = authorKind === 'bot' ? parseBotGroupTaskCardView(record.task) : null;
   return {
     id: messageId,
     sequence,
@@ -222,6 +225,7 @@ function parseMessage(value: unknown): BotGroupMessageView | null {
     // 引用回复 and the tombstone it degrades to; older computers send neither.
     ...(record.deleted === true ? { deleted: true } : {}),
     ...(quote ? { quote } : {}),
+    ...(task ? { task } : {}),
     attachments: Array.isArray(record.attachments)
       ? record.attachments.slice(0, BOT_GROUP_ATTACHMENTS_MAX).flatMap((raw) => {
         const attachment = parseAttachment(raw);

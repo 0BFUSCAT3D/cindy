@@ -77,6 +77,7 @@ import { ChatInviteButton, ChatMessageActions } from './ChatServerControls';
 import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
+import { BotGroupTaskCard } from './BotGroupTaskCard';
 import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import {
   BotGroupHandoffFiles,
@@ -1116,6 +1117,8 @@ function BotGroupTimelineItem({
         ) : (
           <>
             {quoteDisplay ? <BotGroupQuoteBlock display={quoteDisplay} onLocate={onLocateQuote} /> : null}
+            {/* A task this teammate started from the group; mine is live, another owner's is a snapshot. */}
+            {message.task ? <BotGroupTaskCard task={message.task} owned={member?.isOwned !== false} /> : null}
             {hasText ? (
               <div className={`min-w-0 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
                 <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />

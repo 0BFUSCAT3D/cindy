@@ -3,8 +3,10 @@
  * Product rules: docs/product-rules/bot-group-chat.md.
  */
 import type { BotGroupQuoteInput, BotGroupQuoteView } from './botGroupQuote';
+import type { BotGroupTaskCardView } from './botGroupTask';
 
 export * from './botGroupQuote';
+export * from './botGroupTask';
 
 export const BOT_GROUP_MIN_MEMBERS = 2;
 export const BOT_GROUP_MAX_MEMBERS = 6;
@@ -144,6 +146,8 @@ export interface BotGroupMessageView {
   replyCount?: number;
   /** 引用回复: the earlier main-timeline message this one quotes; not a Thread parent. */
   quote?: BotGroupQuoteView;
+  /** An independent task this teammate started from the group (bot-group-chat.md §10). */
+  task?: BotGroupTaskCardView;
   reactions?: Array<{ emoji: string; count: number; me: boolean }>;
   id: string;
   sequence: number;
