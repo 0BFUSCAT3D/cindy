@@ -4306,6 +4306,21 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('keeps the teammate\'s full objective out of the group task card that every member can read', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => ({ ok: true as const, messageId: `posted:${input.clientId}` }));
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Redo the launch page\nUse the private pricing notes in ~/owner-only.md' });
+      if (!task.ok) throw new Error(task.message);
+      await vi.waitFor(() => expect(postGroupTaskMessage).toHaveBeenCalled());
+      const { card } = postGroupTaskMessage.mock.calls[0]![0] as unknown as { card: unknown };
+      expect(JSON.stringify(card)).not.toContain('private pricing');
+      expect(card).toMatchObject({ data: { title: 'Redo the launch page', meta: { objective: 'Redo the launch page', delegationId: task.delegationId } } });
+    } finally { release(); runtime.dispose(); }
+  });
+
   it('tells the teammate a task from an old local-only group reports to the owner privately', async () => {
     await seedPair(); seedGroupLane();
     const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
