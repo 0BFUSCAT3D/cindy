@@ -1750,6 +1750,25 @@ describe('换到供应商组那一项：由组选一台能用的电脑(provider-
     expect(commitBinding).toHaveBeenCalledTimes(1);
     expect(pending.get('s1')).toBeUndefined();
   });
+
+  it('协同任务已在另一台电脑:组选回那台时提交带上位置,窗口按那台的目录判断', async () => {
+    const pending = createPendingAgentSwitchRegistry();
+    const row = makeRow({ agentKind: 'cc', model: 'claude-fable-5', providerId: 'xd', agentDeviceId: 'studio-mac', orcaRole: 'lead' });
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      getSessionRow: vi.fn(async () => row),
+      assertAgentDeviceRouteUsable: vi.fn(async () => undefined),
+      resolveProviderGroupTarget: vi.fn(async () => ({ agentDeviceId: 'studio-mac', providerId: 'xd' })),
+      selectSameAgentModel: vi.fn(async () => ({ deferred: false })),
+    });
+    await performSessionAgentSwitch(deps, { ...toGroup, model: 'claude-haiku-5-5' });
+    await applyPendingAgentSwitchIfIdle(deps, 's1');
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      model: 'claude-haiku-5-5',
+      agentDeviceId: 'studio-mac',
+      sdkSessionId: null,
+    }));
+  });
 });
 
 describe('relocateForFreshStart (opening a task elsewhere when its own computer failed to start)', () => {

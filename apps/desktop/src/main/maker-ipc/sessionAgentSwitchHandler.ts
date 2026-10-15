@@ -887,7 +887,10 @@ export async function performSessionAgentSwitch(
       sdkSessionId: parked?.sdkSessionId ?? null,
       ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
       ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
-      ...(agentDeviceChanges ? { agentDeviceId: targetAgentDeviceId } : {}),
+      // 组选回的当前位置在另一台电脑时也带上位置：提交按它判断窗口该查哪台的目录，不能拿本机目录。
+      ...(agentDeviceChanges || (orcaGroupReturnRebuild && targetAgentDeviceId)
+        ? { agentDeviceId: targetAgentDeviceId }
+        : {}),
     });
     if (normalizedProviderId !== undefined) {
       deps.setSessionProvider(sessionId, normalizedProviderId);
