@@ -496,15 +496,24 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     return result.groups.filter(group => !mirrors.has(group.id) && !workspaces().read(group.id));
   }
   /**
-   * The server room a task started from `groupId` posts into, without touching the network:
-   * the upgraded room of an old local group, or the id itself for a server room. `null` is an old
-   * local group that has no room (yet): its local history row exists and is still a local source.
+   * The server room a task started from `groupId` posts into: the upgraded room of an old
+   * local group, or the id itself for a server room. Before returning `null` for a local source,
+   * recover its account-scoped migration receipt; background migration may not have run yet.
    */
   const taskRoomFor = async (groupId: string): Promise<string | null> => {
     if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
     if (!id.safeParse(groupId).success) return null;
     const [localRow] = await getDbClient().drizzle.select({ id: botGroups.id }).from(botGroups).where(eq(botGroups.id, groupId)).limit(1);
-    if (localRow && (await localSources()).some(group => group.id === groupId)) return null;
+    if (localRow && (await localSources()).some(group => group.id === groupId)) {
+      // Registration identifies the receipt's actor/endpoint scope. Transient failure leaves delivery
+      // retryable rather than permanently falling back to private chat before we know the route.
+      await register();
+      if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
+      const receipt = chatMigrationReceipts(config.baseUrl, selfId, current).read(groupId);
+      if (!receipt) return null;
+      upgradedGroups.set(groupId, receipt.roomId);
+      return receipt.roomId;
+    }
     return groupId;
   };
   const resolveGroup = async (groupId: string) => {

@@ -4,7 +4,8 @@ vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, re
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
 vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
-vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: () => null, save: vi.fn() }) }));
+const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
+vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
 vi.mock('electron', () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => '/isolated' } }));
 // The real filesystem, except an `lstat` failure a test injects for a delivery file.
 const fsFault = vi.hoisted(() => ({ lstat: null as Error | null }));
@@ -138,6 +139,7 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.handle.mockImplementation(response);
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
+    migration.read.mockReset().mockReturnValue(null);
     deps = { ensureLane: vi.fn(async () => ({ ok: true, sessionId: 'lane' })), abortLane: vi.fn(async () => {}),
       dispatch: vi.fn(async (input: Parameters<BotGroupChatServiceDeps['dispatch']>[0]) => { await input.onAccepted?.(); return { ok: true }; }),
       onChanged: vi.fn(),
@@ -727,14 +729,50 @@ describe('Chat Server result delivery and refresh', () => {
       // The local history lists this group and nothing upgraded it: it is not a server room.
       const legacy = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [{ id: roomId }] })), postCompanionTaskMessage: localPost,
         settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
-      const requestsBefore = fixture.requests.length;
       try {
-        fixture.token = '';
         const input = { groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:started', text: '', card: taskCard };
         expect(await legacy.postCompanionTaskMessage(input)).toEqual({ ok: false, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false });
         expect(localPost).toHaveBeenCalledExactlyOnceWith(input);
-        // Decided from local records alone: no registration, no request, even while logged out.
-        expect(fixture.requests).toHaveLength(requestsBefore);
+        expect(migration.read).toHaveBeenCalledWith(roomId);
+        expect(fixture.handle.mock.calls.some(([route, method]) => route.endsWith('/messages') && method === 'POST')).toBe(false);
+      } finally { legacy.dispose(); }
+    });
+
+    it.each(['channel', 'started', 'completed'] as const)('restores an upgraded local task route before the first migration poll (%s)', async state => {
+      const target = '10000000-0000-4000-8000-000000000099';
+      migration.read.mockReturnValue({ roomId: target, sequence: 12, version: 2 });
+      const localPost = vi.fn(async () => ({ ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false }));
+      const legacy = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [{ id: roomId }] })), postCompanionTaskMessage: localPost,
+        settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      fixture.handle.mockImplementation((route, method) => {
+        if (route === `/conversations/${target}/snapshot`) return { body: { room: room(target), members: [joined(botId, 'bot'), joined(selfId, 'human')], messages: [], cursor: '1' } };
+        if (route === `/conversations/${target}/messages` && method === 'POST') return { body: { id: 'posted-task' } };
+        return response(route);
+      });
+      try {
+        // A fresh service has an empty in-memory map; no timer/list read has started its migration.
+        if (state === 'channel') expect(await legacy.hasCompanionTaskChannel(roomId)).toBe(true);
+        else {
+          expect(await legacy.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: `task-restart:${state}`,
+            text: '', card: { ...taskCard, data: { ...taskCard.data, state } } })).toEqual({ ok: true, messageId: 'posted-task' });
+          expect(fixture.requests.findLast(request => request.url.endsWith(`/conversations/${target}/messages`))?.actor).toBe(botId);
+        }
+        expect(migration.read).toHaveBeenCalledWith(roomId);
+        expect(localPost).not.toHaveBeenCalled();
+        expect(fixture.handle.mock.calls.some(([route, method]) => route === '/conversations' && method === 'POST')).toBe(false);
+      } finally { legacy.dispose(); }
+    });
+
+    it.each(['identity', 'receipt'] as const)('keeps task delivery retryable when the migration %s cannot be read on restart', async failure => {
+      const localPost = vi.fn(async () => ({ ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false }));
+      const legacy = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [{ id: roomId }] })), postCompanionTaskMessage: localPost,
+        settleLaneTurn: vi.fn(async () => false), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      if (failure === 'identity') fixture.token = '';
+      else migration.read.mockImplementation(() => { throw new Error('RECEIPT_READ_FAILED'); });
+      try {
+        expect(await legacy.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'task-restart:completed', text: '', card: taskCard }))
+          .toMatchObject({ ok: false, retryable: true });
+        expect(localPost).not.toHaveBeenCalled();
       } finally { legacy.dispose(); }
     });
 
@@ -1937,6 +1975,7 @@ describe('Chat authentication recovery and polling backoff', () => {
     fixture.requests = [];
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
+    migration.read.mockReset().mockReturnValue(null);
     fixture.handle.mockReset().mockImplementation(healthy);
     service = withChatServer({ dispose: vi.fn(), listGroups: async () => ({ ok: true, groups: [] }) } as unknown as BotGroupChatService, {} as BotGroupChatServiceDeps);
   });
@@ -1945,6 +1984,7 @@ describe('Chat authentication recovery and polling backoff', () => {
     service.dispose();
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
+    migration.read.mockReset().mockReturnValue(null);
     vi.useRealTimers();
   });
 
