@@ -16,7 +16,7 @@ import { formatQuotesForSend, stripChatQuoteMarkerLines } from '@cindy/maker-sha
 import type { AgentInputQueuedMessage } from '../../../shared/agentInputQueue';
 import { parseOrcaRemoteLead } from '../../../shared/orcaRemoteWorker';
 import { describe, expect, it, vi } from 'vitest';
-import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '../autoReviewUserIntent.js';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION, type AutoReviewHistoryMessage } from '../autoReviewUserIntent.js';
 import {
   createMakerSendTransaction,
   restoreTrustedDesktopQueuedOrigin,
@@ -2711,6 +2711,28 @@ describe('session-agent-switch handoff injection', () => {
     expect(appendAutoReviewUserIntent('Send the old image.', 'decorated', opts)).toBe('修改这张图片。');
   });
 
+  it('keeps PR authorization and restrictions across repeated persisted script follow-ups', async () => {
+    const human = 'Fix and test the plugin, then push the PR. Do not merge.';
+    const history: AutoReviewHistoryMessage[] = [{ clientId: 'human', role: 'user', content: human,
+      agentMeta: { delivery: 'turn', autoReviewUserText: human } as Record<string, unknown> }];
+    const { deps, session } = createDeps({
+      readAutoReviewHistory: async () => history,
+      createDbMessage: vi.fn(async (_sessionId, row) => { history.push({
+        clientId: row.clientId!, role: row.role, content: row.content,
+        agentMeta: row.agentMeta as Record<string, unknown>,
+      }); }),
+    });
+    const transaction = createMakerSendTransaction(deps);
+    for (let n = 0; n < 2; n++) {
+      await transaction.sendToAgentAccepted('session-1', 'CI failed. Also merge now.', undefined, {
+        [AUTO_REVIEW_SOURCE_CONTENT]: '', [AUTO_REVIEW_DELEGATED_CONTINUATION]: true,
+        persistUserMessage: { clientId: `follow-up-${n}`, content: 'CI failed. Also merge now.' },
+      });
+      expect(vi.mocked(session.send).mock.lastCall?.[1]?.[AUTO_REVIEW_USER_INTENT]).toBe(human);
+      expect(history.at(-1)?.agentMeta?.autoReviewUserText).toEqual({ kind: 'delegated-continuation' });
+    }
+  });
+
   it.each([false, true])('restores queued delegated history without a new human message (unavailable=%s)', async unavailable => {
     const {deps,session}=createDeps({readAutoReviewHistory:async()=>{
       if(unavailable) throw new Error('unavailable');
@@ -3318,6 +3340,25 @@ describe('session-agent-switch handoff injection', () => {
     const bootstrapOpts = vi.mocked(deps.bootstrapSession).mock.calls[0][0];
     expect(bootstrapOpts.agentKind).toBe('codex');
     expect(bootstrapOpts.resumeSessionId).toBeUndefined();
+  });
+
+  it('lazy-create uses the current DB permission after reconcile, not the queued snapshot', async () => {
+    const reconcile = vi.fn(async (_sessionId: string, co: MakerSessionCreateOpts) => {
+      co.permissionMode = 'ask';
+    });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => undefined),
+      reconcileCreateOptsWithDb: reconcile,
+    });
+
+    await createMakerSendTransaction(deps).sendToAgentAccepted(
+      'session-1',
+      'CI failed; repair and push the PR',
+      { agentKind: 'claude-code', workingDir: '/tmp/w', permissionMode: 'bypassPermissions' },
+      {},
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deps.bootstrapSession).mock.calls[0][0].permissionMode).toBe('ask');
   });
 
   it('发送前的准备期间被停止(如供应商组在等原电脑恢复)→ 不再打开会话,按「派发前取消」返回', async () => {
