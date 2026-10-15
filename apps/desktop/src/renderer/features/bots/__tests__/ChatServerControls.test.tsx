@@ -3,7 +3,8 @@ import { StrictMode, type ReactNode } from 'react';
 import { act, cleanup, createEvent, fireEvent, render as renderUI, screen, waitFor, within } from '@testing-library/react';
 import { Tooltip } from '@/components/ui/tooltip';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatInviteButton, ChatJoinButton, ChatMessageActions } from '../ChatServerControls';
+import { ChatInviteButton, ChatMessageActions } from '../ChatServerControls';
+import { ChatInviteDialog } from '../ChatInviteDialog';
 import { ChatThreadPanel } from '../ChatThreadPanel';
 import type { BotGroupDetail, BotGroupMessageView } from '../../../../shared/botGroupChat';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
@@ -212,10 +213,10 @@ describe('chat interaction controls', () => {
     expect(group.messages[0].reactions?.[0].me).toBe(true);
   });
 
-  it('shows invitation preview first; only explicit acceptance joins', async () => {
+  it('shows a pasted invitation preview first; only explicit acceptance joins', async () => {
     const joined = vi.fn();
-    render(<StrictMode><ChatJoinButton onJoined={joined} /></StrictMode>);
-    fireEvent.click(await screen.findByRole('button', { name: k('join') }));
+    render(<StrictMode><ChatInviteDialog onClose={vi.fn()} onJoined={joined} /></StrictMode>);
+    expect(mocks.previewInvite).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole('textbox', { name: k('inviteLink') }), { target: { value: 'cindy://chat-invite/test' } });
     fireEvent.click(screen.getByRole('button', { name: k('previewInvite') }));
     await screen.findByText('Invited group');

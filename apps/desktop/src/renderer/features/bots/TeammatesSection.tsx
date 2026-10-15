@@ -49,7 +49,6 @@ import { refreshBotGroups, useBotGroupList } from './botGroupStore';
 import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 import { chatErrorKey } from './chatError';
 import { subscribeBotReadState, getBotLastReadAtMap, isBotGroupUnread } from './botReadState';
-import { ChatJoinButton } from './ChatServerControls';
 import { withoutBotGroupLanes } from './botGroupLane';
 import {
   botListSubtitle,
@@ -507,7 +506,6 @@ export function TeammatesSection() {
               {showHidden ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
             </button>
           ) : null}
-          <ChatJoinButton compact onJoined={id => navigate(`/bots/groups/${encodeURIComponent(id)}`)} />
           <BotCreateMenu variant="header" />
         </div>
       </div>
