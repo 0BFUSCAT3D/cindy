@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   controllers: [] as Array<{
     open: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
+    displayMode: ReturnType<typeof vi.fn>;
+    message: (message: { method: string; params?: Record<string, unknown> }) => void;
     fail: (error: unknown) => void;
     invoke: (session: string, input: Record<string, unknown>) => Promise<unknown>;
   }>,
@@ -20,8 +22,8 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
 }) }));
 vi.mock('@/features/device-link/stickySessionOrigin', () => ({ getStickySessionDeviceId: () => state.deviceId }));
 vi.mock('@/components/ui/button', () => ({
-  Button: ({ children, onClick }: React.ComponentProps<'button'>) => (
-    <button onClick={onClick}>{children}</button>
+  Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
+    <button {...props}>{children}</button>
   ),
 }));
 vi.mock('@/components/ui/spinner', () => ({ Spinner: () => null }));
@@ -35,12 +37,15 @@ vi.mock('@cindy/maker-shared/mcp-app-controller', () => ({
     close = vi.fn(async () => {});
     context = vi.fn(async () => {});
     prepareNativeClose = vi.fn();
+    displayMode = vi.fn(async (displayMode: string) => {
+      this.message({ method: 'ui/notifications/host-context-changed', params: { displayMode } });
+    });
     constructor(
       readonly invoke: (session: string, input: Record<string, unknown>) => Promise<unknown>,
       _session: string,
       _client: string,
       _post: unknown,
-      _message: unknown,
+      readonly message: (message: { method: string; params?: Record<string, unknown> }) => void,
       readonly fail: (error: unknown) => void,
     ) { state.controllers.push(this); }
   },
@@ -150,7 +155,7 @@ it.each(['light', 'dark'])('keeps saved text readable after App failures and ret
     expect(container.querySelector('[role="alert"]')?.textContent).toBe('mcpApps.loadFailed');
     expect(container.querySelector('iframe, script')).toBeNull();
     // Retry must remain observable even after the empty iframe area collapses.
-    expect(observed).toBe(container.querySelector('section'));
+    expect(observed).toBe(container.querySelector('dialog'));
     state.openError = undefined;
     await act(async () => container.querySelector('button')!.click());
     expect(container.textContent).not.toContain(saved);
@@ -159,6 +164,68 @@ it.each(['light', 'dark'])('keeps saved text readable after App failures and ret
     await act(async () => state.controllers[1].fail(new Error('offline')));
     expect(container.textContent).toContain(saved);
     expect(container.querySelector('iframe, script')).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    document.documentElement.classList.remove('dark');
+  }
+});
+
+it.each(['light', 'dark'])('keeps the live App mounted while entering and leaving the native fullscreen modal in %s mode', async (mode) => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  document.documentElement.classList.toggle('dark', mode === 'dark');
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  vi.stubGlobal('matchMedia', () => ({ matches: false }));
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(private callback: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+    observe(element: Element) { state.intersections.set(element, this.callback); }
+    disconnect() {}
+  });
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<><button>Opener</button>
+      <McpAppCard sessionId="task" clientId="card" title="Live form" /></>));
+    await act(async () => [...state.intersections.values()][0]([{ isIntersecting: true }]));
+    const opener = container.querySelector('button')!;
+    opener.focus();
+    const dialog = container.querySelector('dialog')!;
+    const frame = dialog.querySelector('iframe')!;
+    const appWindow = frame.contentWindow;
+    // JSDOM has no native modal/top-layer implementation; this suite covers
+    // the retained document and controller lifecycle, not browser Tab traversal.
+    const close = vi.fn(() => dialog.removeAttribute('open'));
+    const showModal = vi.fn(() => dialog.setAttribute('open', ''));
+    Object.defineProperties(dialog, { close: { value: close }, showModal: { value: showModal } });
+    await act(async () => state.controllers[0].message({
+      method: 'ui/notifications/host-context-changed', params: { displayMode: 'fullscreen' },
+    }));
+    expect(dialog.getAttribute('role')).toBe('dialog');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.getAttribute('aria-label')).toBe('Live form');
+    expect(showModal).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(dialog.querySelector('[data-exit-fullscreen]'));
+    const cancel = new Event('cancel', { cancelable: true });
+    await act(async () => { dialog.dispatchEvent(cancel); });
+    expect(cancel.defaultPrevented).toBe(true);
+    expect(state.controllers[0].displayMode).toHaveBeenCalledWith('inline');
+    expect(dialog.getAttribute('role')).toBe('region');
+    expect(dialog.hasAttribute('aria-modal')).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    expect(dialog.querySelector('iframe')).toBe(frame);
+    expect(frame.contentWindow).toBe(appWindow);
+    expect(state.controllers).toHaveLength(1);
+    expect(state.controllers[0].close).not.toHaveBeenCalled();
+    await act(async () => state.controllers[0].message({
+      method: 'ui/notifications/host-context-changed', params: { displayMode: 'fullscreen' },
+    }));
+    await act(async () => state.controllers[0].fail(new Error('offline')));
+    expect(document.activeElement).toBe(opener);
+    expect(dialog.getAttribute('aria-modal')).toBeNull();
+    expect(dialog.querySelector('iframe')).toBeNull();
+    expect(close).toHaveBeenCalled();
   } finally {
     await act(async () => root.unmount());
     container.remove();

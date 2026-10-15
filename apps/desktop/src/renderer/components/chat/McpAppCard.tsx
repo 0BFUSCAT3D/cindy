@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import {
@@ -76,7 +76,7 @@ export function McpAppCard(props: McpAppCardProps) {
 function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: McpAppCardProps) {
   const { t, i18n } = useTranslation();
   const appTitle = title || t('mcpApps.appName');
-  const card = useRef<HTMLElement>(null);
+  const card = useRef<HTMLDialogElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<McpAppController | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
@@ -221,30 +221,39 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
     if (root.current)
       void controllerRef.current?.context(hostContext(locale, root.current)).catch(() => {});
   }, [locale]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (mode !== 'fullscreen') return;
+    const dialog = card.current;
+    if (!dialog) return;
     const previousFocus = document.activeElement as HTMLElement | null;
-    root.current?.parentElement
-      ?.querySelector<HTMLButtonElement>('button[data-exit-fullscreen]')
-      ?.focus();
-    const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') void controllerRef.current?.displayMode('inline').catch(() => {});
-    };
-    window.addEventListener('keydown', key);
+    // The same native dialog stays mounted inline and fullscreen. Its modal
+    // top layer supplies inert background and cross-frame Tab containment
+    // without moving or remounting the live, cross-origin App document.
+    dialog.close();
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>('button[data-exit-fullscreen]')?.focus();
     return () => {
-      window.removeEventListener('keydown', key);
+      dialog.close();
+      dialog.setAttribute('open', '');
       if (previousFocus?.isConnected) previousFocus.focus();
     };
   }, [mode]);
   return (
-    <section
+    <dialog
       ref={card}
+      open
       className={
         mode === 'fullscreen'
-          ? 'fixed inset-4 z-50 flex flex-col rounded-xl border border-border bg-[var(--surface-elevated)] p-3'
-          : `my-3 overflow-hidden rounded-xl ${border ? 'border border-border' : ''}`
+          ? 'fixed inset-4 z-50 m-0 flex h-auto max-h-none w-auto max-w-none flex-col rounded-xl border border-border bg-[var(--surface-elevated)] p-3 text-inherit backdrop:bg-transparent'
+          : `static mx-0 my-3 w-full max-w-none overflow-hidden rounded-xl bg-transparent p-0 text-inherit ${border ? 'border border-border' : 'border-0'}`
       }
+      role={mode === 'fullscreen' ? 'dialog' : 'region'}
+      aria-modal={mode === 'fullscreen' ? true : undefined}
       aria-label={appTitle}
+      onCancel={(event) => {
+        event.preventDefault();
+        void controllerRef.current?.displayMode('inline').catch(() => {});
+      }}
     >
       <div className="flex min-h-9 items-center justify-between gap-3 px-3 text-13 text-[var(--text-secondary)]">
         <span>{title ? t('mcpApps.cardTitle', { title }) : appTitle}</span>
@@ -284,6 +293,6 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
           flex: mode === 'fullscreen' ? 1 : undefined,
         }}
       />
-    </section>
+    </dialog>
   );
 }
