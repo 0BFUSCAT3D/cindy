@@ -55,7 +55,7 @@ vi.mock('../sandboxProtocol.js', () => ({
   assertMcpAppDocumentCaller: vi.fn(),
   setMcpAppCallerCleanup: vi.fn(),
 }));
-vi.mock('../../device-link/index.js', () => ({ remoteInvoke: state.invoke }));
+vi.mock('../../device-link/index.js', () => ({ remoteInvoke: state.invoke, getRemoteLinkCloseEpoch: () => 0 }));
 vi.mock('../../appCapabilities.js', () => ({ getAppCapabilities: () => ({ canUseDeviceLink: true }) }));
 vi.mock('../../localDb/client/current.js', () => ({
   getCurrentDbClientSnapshot: () => state.owner,

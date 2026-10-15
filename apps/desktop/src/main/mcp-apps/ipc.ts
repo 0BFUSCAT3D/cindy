@@ -12,7 +12,7 @@ import { createLogger } from '../logger.js';
 import { getMcpAppRevisionKey } from '../secrets/providerSecretStore.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
-import { remoteInvoke } from '../device-link/index.js';
+import { getRemoteLinkCloseEpoch, remoteInvoke } from '../device-link/index.js';
 import { getAppCapabilities } from '../appCapabilities.js';
 import { McpAppsHost, type McpAppsHostDeps } from './host.js';
 import { readAppServer, setMcpAppsHost } from './runtime.js';
@@ -149,6 +149,7 @@ export function registerMcpAppsIpc(
   setMcpAppsHost(host);
   const remoteViews = new RemoteMcpAppViews({
     owner: currentOwner,
+    closeEpoch: getRemoteLinkCloseEpoch,
     invoke: async (deviceId, sessionId, input, preSend) => {
       if (!getAppCapabilities().canUseDeviceLink) throw new Error('MCP_APP_OWNER_ONLY');
       const result = await remoteInvoke(deviceId, MCP_APPS_INVOKE, [sessionId, input], { preSend });

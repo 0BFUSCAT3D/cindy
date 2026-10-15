@@ -16,12 +16,13 @@ const documentSchema = z.object({
 });
 interface RemoteViewDeps {
   owner(): object | null | undefined;
+  closeEpoch(deviceId: string): number;
   invoke(deviceId: string, sessionId: string, input: Record<string, unknown>, preSend: () => void): Promise<unknown>;
   openLink(url: string): Promise<void>;
 }
 interface Opening {
   owner: object; caller: string; deviceId: string; sessionId: string; openId?: string;
-  remoteOpenId: string; cancelled: boolean;
+  remoteOpenId: string; cancelled: boolean; closeEpoch: number;
 }
 interface RemoteView extends Opening {
   localId: string; remoteId: string; links: Map<string, string>; closing?: Promise<void>;
@@ -33,15 +34,21 @@ export class RemoteMcpAppViews {
   private readonly views = new Map<string, RemoteView>();
   constructor(private readonly deps: RemoteViewDeps) {}
 
+  private assertLink(entry: Opening): void {
+    if (this.deps.closeEpoch(entry.deviceId) !== entry.closeEpoch) throw new Error('MCP_APP_LINK_CLOSED');
+  }
+
   private async call(entry: Opening, input: Record<string, unknown>, assertCurrent = () => {}): Promise<unknown> {
     const preSend = () => {
       if (this.deps.owner() !== entry.owner) throw new Error('MCP_APP_OWNER_CHANGED');
+      this.assertLink(entry);
       assertCurrent();
     };
     preSend();
     return this.deps.invoke(entry.deviceId, entry.sessionId, input, preSend);
   }
   private assertView(view: RemoteView): void {
+    this.assertLink(view);
     if (this.views.get(view.localId) !== view || this.deps.owner() !== view.owner)
       throw new Error('MCP_APP_VIEW_UNAVAILABLE');
     assertMcpAppDocumentCaller(view.localId, view.caller);
@@ -107,13 +114,15 @@ export class RemoteMcpAppViews {
     if (!owner) throw new Error('MCP_APP_OWNER_UNAVAILABLE');
     const count = [...this.opening, ...this.views.values()].filter((entry) => entry.caller === caller && entry.owner === owner).length;
     if (count >= 16) throw new Error('MCP_APP_VIEW_LIMIT');
-    const entry: Opening = { owner, caller, deviceId, sessionId, openId: input.openId, remoteOpenId: randomUUID(), cancelled: false };
+    const entry: Opening = { owner, caller, deviceId, sessionId, openId: input.openId,
+      remoteOpenId: randomUUID(), cancelled: false, closeEpoch: this.deps.closeEpoch(deviceId) };
     this.opening.add(entry);
     let remoteId: string | undefined;
     try {
       const raw = await this.call(entry, { ...input, openId: entry.remoteOpenId }, () => {
         if (entry.cancelled) throw new Error('MCP_APP_OPEN_CANCELLED');
       });
+      this.assertLink(entry);
       const document = documentSchema.parse(raw);
       remoteId = document.viewId;
       if (Buffer.byteLength(JSON.stringify(document)) > MCP_APPS_MAX_REMOTE_BYTES)
