@@ -189,11 +189,15 @@ export class NativeDesktopCapture {
     overlay = false,
     settings?: RemoteDesktopVideoSettings,
   ): Promise<string | RemoteDesktopCursorFrame | null> {
+    const started = performance.now();
     const value = await this.read(display, overlay, settings);
     if (value !== RESTART) return value;
     // The helper left the lock screen mid-request; its filtered replacement
-    // answers now so a pending first frame does not fail the connection.
-    const retry = await this.read(display, overlay, settings);
+    // answers now so a pending first frame does not fail the connection. It
+    // shares the remaining cold-start budget, keeping the whole wait within
+    // the offer deadline (captureReadyMs + FRAME_MS < hostMs).
+    const remaining = REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs - (performance.now() - started);
+    const retry = await this.read(display, overlay, settings, Math.max(FRAME_MS, remaining));
     return retry === RESTART ? null : retry;
   }
 
@@ -201,6 +205,7 @@ export class NativeDesktopCapture {
     display: string,
     overlay: boolean,
     settings?: RemoteDesktopVideoSettings,
+    coldMs: number = REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs,
   ): Promise<string | RemoteDesktopCursorFrame | null | typeof RESTART> {
     const profile = desktopVideoProfile(settings);
     const fps = desktopVideoFramerate(settings);
@@ -373,7 +378,7 @@ export class NativeDesktopCapture {
           };
           // Starting capture and the first cursor read can take seconds on a busy
           // or high-resolution Mac; only later frames use the steady-state bound.
-          const waitMs = cold ? REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs : FRAME_MS;
+          const waitMs = cold ? Math.round(coldMs) : FRAME_MS;
           const timer = setTimeout(() => {
             if (generation === this.generation)
               log.warn(`Native capture produced no frame within ${waitMs}ms cold=${cold}`);

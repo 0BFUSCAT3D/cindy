@@ -106,6 +106,29 @@ it('answers a pending frame from the restarted helper after an unlock, but repor
   await expect(failing).rejects.toThrow('DESKTOP_VIDEO_UNAVAILABLE');
 });
 
+it('keeps an unlock restart within the remaining cold-start budget', async () => {
+  vi.useFakeTimers();
+  const settings = { fps: 30, quality: 'auto', audio: false } as const;
+  const unlocked = setup();
+  const pending = unlocked.owner.frame('1', true, settings);
+  await vi.advanceTimersByTimeAsync(REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs - 1000);
+  const replacement = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(),
+  });
+  h.spawn.mockReturnValue(replacement);
+  unlocked.child.emit('exit', 6);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(h.spawn).toHaveBeenCalledTimes(2);
+  // Only the steady-state floor remains, not a second full cold start.
+  await vi.advanceTimersByTimeAsync(3000);
+  await expect(pending).resolves.toBeNull();
+  expect(replacement.kill).toHaveBeenCalledOnce();
+  vi.useRealTimers();
+});
+
 it('captures only the 代输入 window, never the display, and returns to the display after', async () => {
   const { owner } = setup();
   owner.setExcludedWindows([7, 8]);
