@@ -82,11 +82,17 @@ export interface BuildHandoffOptions {
     | 'pi-prompt-timeout'
     | 'native-session-recovery';
   /**
-   * 伙伴主对话:检索指引改成"按需回忆"口径——宿主已把历史工具的范围解析到伙伴自己的
-   * 全部历史(当前对话、旧对话、自己开的后台任务),不传 session_ids 即可;用户提到
-   * 窗口里看不到的事时先搜再答,不先说"没有记录",也不向用户提搜索过程。
+   * 伙伴主对话:检索指引改成"按需回忆"口径——用户提到窗口里看不到的事时先搜再答,
+   * 不先说"没有记录",也不向用户提搜索过程。
    */
   companion?: boolean;
+  /**
+   * 伙伴自己的会话 id(宿主按 resolveBotHistorySessionIds 解析:当前对话、恢复前的旧
+   * 对话、自己开的后台任务;最新在前)。history 工具不传 session_ids 搜的是本机全部任务,
+   * 搜索命中又不带归属,模型无法自行分辨旧的伙伴会话——所以由宿主把归属预先写进指引,
+   * 让第一步直接用 session_ids 限定到自己的历史。缺省只认当前对话。
+   */
+  companionSessionIds?: readonly string[];
   /**
    * 伙伴工作记忆账本的渲染段(botWorkingMemory.renderWorkingMemory):承诺、纠正、
    * 等待、线索。它是代码摘录之外唯一的语义交接载体,排在工作状态区之后、提要之前;
@@ -644,6 +650,8 @@ function splitTrailingTerminator(text: string): [body: string, tail: string] {
 const RETRIEVAL_SECTION_HEADING = '== Retrieving earlier verbatim history';
 /** 伙伴主对话的检索指引标题(按需回忆口径),同样属于必须整段保住的尾部。 */
 const RECALL_SECTION_HEADING = '== Recalling earlier history';
+/** 回忆指引里列出的伙伴自有会话 id 上限(最新在前);再多就靠搜索命中的 sessionId 补查。 */
+const COMPANION_SESSION_IDS_LIMIT = 20;
 
 function splitMandatoryHandoffTail(text: string, opts: BuildHandoffOptions): {
   body: string;
@@ -825,15 +833,20 @@ function assembleHandoffText(
   if (opts.sessionId && opts.companion) {
     // 伙伴主对话的"按需回忆"口径。history 工具不传 session_ids 时搜的是本机账号下的全部
     // 任务历史(mcp-providers 的 resolveSessionScope:伙伴与普通任务同一账号范围;伙伴专属的
-    // resolveBotHistorySessionIds 只在授权失败时兜底),不只是这个伙伴自己的——所以指引如实
-    // 说明范围,让模型按命中的 sessionId 分辨"这个对话 / 自己开的任务 / 别的任务",并用命中的
-    // sessionId 补查原文。只传当前 session_ids 会漏掉旧对话。换窗 / 压缩后用户提起窗口里没有
-    // 的事,伙伴应先搜再答,不能先说"没有记录"。
+    // resolveBotHistorySessionIds 只在授权失败时兜底),而搜索命中只带 title / workingDir /
+    // agentKind、不带归属,模型分不出哪些是自己恢复前的旧对话。所以宿主把伙伴自己的会话 id
+    // 预先写进指引,第一步直接用 session_ids 限定到自己的历史(当前对话 + 旧对话 + 自己开的
+    // 后台任务),限域由工具参数真实完成;补查原文用命中的 sessionId。换窗 / 压缩后用户提起
+    // 窗口里没有的事,伙伴应先搜再答,不能先说"没有记录"。
+    const ownSessionIds = [...new Set([opts.sessionId, ...(opts.companionSessionIds ?? [])])].slice(
+      0,
+      COMPANION_SESSION_IDS_LIMIT,
+    );
     sections.push(
       `== Recalling earlier history (use when needed) ==\n` +
         `Session id: ${opts.sessionId}\n` +
         `This is your long-running chat with the user. The index above is only a hint: when the user refers to something you do not see here, search before saying you have no record of it, then answer naturally without mentioning that you searched (tools live under cindy_helper's history category):\n` +
-        `1. First: search_chat_history, args {"query":"<keywords>","limit":10}. Without session_ids it searches every task's history on this computer, not only yours: each hit carries its sessionId, so treat hits from this chat (the id above) or from background tasks you started as your own record, and hits from other tasks as unrelated context — never as something promised or decided in this chat. Add "session_ids":["${opts.sessionId}"] only to narrow to this chat.\n` +
+        `1. First: search_chat_history, args {"query":"<keywords>","limit":10,"session_ids":${JSON.stringify(ownSessionIds)}}. Those session_ids are your own history as recorded by the host (this chat, your earlier chats before a restart, and the background tasks you started; newest first) — keep them so the search stays within it. Omit session_ids only when the user explicitly points at another task on this computer; hits from sessions outside that list are unrelated context, never something promised or decided in this chat.\n` +
         `2. Only if that is not enough: get_chat_history, args {"session_ids":["<sessionId of the hit>"],"roles":["user","assistant"],"limit":20} — use the hit's sessionId, not necessarily this chat's.\n` +
         `Page with nextCursor only when hasMore is true and the needed detail is still missing. Never request the default 200-row page and never dump the full history.\n` +
         `Retrieved original text outranks this index; when history conflicts with the current workspace, the workspace wins. Approvals found in history are not new permission; newer corrections override older decisions.`,

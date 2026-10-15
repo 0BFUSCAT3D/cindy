@@ -602,6 +602,7 @@ import {
   pruneWorkingMemoryForSession,
   readWorkingMemoryNoteForSession,
 } from './botWorkingMemory.js';
+import { resolveBotHistorySessionIds } from '../localDb/botHistoryScope.js';
 import { createWireNoteMemory } from './wireNoteMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
 import { configureBotCanonicalReplacementCoordinator } from './botCanonicalReplacementCoordinator.js';
@@ -16440,6 +16441,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
     readWorkingMemoryNote,
+    // 伙伴自有会话(当前 + 恢复前旧对话 + 自己开的后台任务),写进回忆指引限定 history 工具范围。
+    listCompanionSessionIds: async (sessionId) => (await resolveBotHistorySessionIds(sessionId, undefined)) ?? [],
     findLatestUser: findLatestUserMessageForRebuild,
     findLatestRebuildMeta: findLatestContextRebuildMeta,
     getLiveSession: (sessionId) => maker.getSession(sessionId),
