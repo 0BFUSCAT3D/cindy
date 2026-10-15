@@ -1,3 +1,4 @@
+import { readOrganizationAccountUsage } from './organizationAccountUsage.js';
 /**
  * claudeAccountUsage — Claude 账号配额 (LiteLLM spend / max_budget) 拉取与广播。
  *
@@ -203,6 +204,13 @@ function resolveDailyActivitySpend(activity: LiteLlmDailyActivity): { todaySpend
 }
 
 async function fetchOnce(authenticatedUserId?: string): Promise<ClaudeAccountUsageSnapshot | null> {
+  // Enterprise AIGateway inference endpoints need not expose LiteLLM management APIs.
+  // Resolve the signed-in member's tenant in Model Access. Nova/older servers keep
+  // the existing direct query; authorization/network errors never trigger fallback.
+  if (getAuthState().mode === 'cloud') {
+    const managed = await readOrganizationAccountUsage();
+    if (managed !== undefined) return managed;
+  }
   // 币种优先取账号目录声明。取不到时**不放弃整个快照**,回落本地账本币种:
   // 手填 XD key 是明确支持的兜底流程(Model Access 处于 disabled / failed 时),那时没有
   // 目录可推导,若直接 return 会让这些会话永久看不到账号配额 —— 比"币种按账本回落"更糟。

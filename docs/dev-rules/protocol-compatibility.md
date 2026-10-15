@@ -1749,3 +1749,13 @@ PC 同源 ghostPermissionItems 声明摘要投影并排除 tool，以请求 loca
 当前 PC 窗口的停靠位置不在此声明投影内，有面板只报告存在，无面板沿用 PC 文案。
 旧 Host 缺字段时新手机仅显示原有 Version 与资源 Identifier，说明其余数据未提供；旧控制端忽略新增字段。
 服务端、relay、协议版本及原生 fingerprint 均不变。
+
+### Cindy AI 企业周期配额
+
+云端组织账号优先通过 Model Access `GET /api/model-access/quota` 查询本人周期配额，
+不再假定推理入口暴露 LiteLLM 管理 API。返回 spend/maxBudget/budgetResetAt/currency；
+沿用现有 account-usage IPC 和账号作用域缓存，所以设置卡片与任务用量提示使用相同来源。
+服务端尚未提供接口（404），或明确返回 501/MODEL_ACCESS_QUOTA_NOT_SUPPORTED（Nova），
+才使用原有网关查询。鉴权失败、上游故障或响应无效均显示不可用，不回退或借用其他身份数据。
+本接口尚无当日统计，todaySpend 为 null；未设周期上限时不伪造有限配额。
+本地手填网关和个人计费路径保持原协议。无新环境变量或数据库变更。
