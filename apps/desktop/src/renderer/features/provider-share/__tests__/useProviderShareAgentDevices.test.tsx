@@ -48,8 +48,12 @@ function share(partial: Partial<ProviderShareReceived>): ProviderShareReceived {
 let push: ((list: ProviderShareReceived[]) => void) | null = null;
 let initial: ProviderShareReceived[] = [];
 let linkStatus: ((payload: { status: 'online' | 'connecting' | 'stopped' }) => void) | null = null;
-let linkPresence: ((payload: { deviceId: string; online: boolean }) => void) | null = null;
+let linkPresence: ((payload: { deviceId: string; online: boolean; remoteControlEnabled: boolean }) => void) | null = null;
 const invoke = vi.fn();
+const unavailablePresence = [
+  { label: 'offline', online: false, remoteControlEnabled: true },
+  { label: 'remote control disabled', online: true, remoteControlEnabled: false },
+];
 
 function hostShares(...entries: Array<{ shareId: string; status?: 'active' | 'paused' }>) {
   return { shares: entries.map((entry) => ({
@@ -245,38 +249,38 @@ describe('useProviderShareAgentDevices', () => {
     expect(result.current.devices).toEqual([]);
     invoke.mockResolvedValue(hostShares({ shareId: 'both' }));
     await act(async () => {
-      linkPresence?.({ deviceId: 'host-c', online: false });
-      linkPresence?.({ deviceId: 'host-c', online: true });
-      linkPresence?.({ deviceId: 'host-b', online: false });
+      linkPresence?.({ deviceId: 'host-c', online: false, remoteControlEnabled: true });
+      linkPresence?.({ deviceId: 'host-c', online: true, remoteControlEnabled: true });
+      linkPresence?.({ deviceId: 'host-b', online: false, remoteControlEnabled: true });
     });
     expect(invoke).toHaveBeenCalledTimes(1);
-    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true }); });
+    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
     expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
     expect(invoke).toHaveBeenCalledTimes(2);
     // Busy/name updates on an already-online peer must not start another query.
-    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true }); });
+    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
     expect(invoke).toHaveBeenCalledTimes(2);
     unmount();
     expect(linkPresence).toBeNull();
     expect(linkStatus).toBeNull();
   });
 
-  it('ignores a pre-offline response arriving after the controlled host has recovered', async () => {
+  it.each(unavailablePresence)('ignores an old response after the controlled host recovers from $label', async ({ online, remoteControlEnabled }) => {
     initial = [share({ shareId: 'old' }), share({ shareId: 'new' })];
     let finish!: (value: unknown) => void;
     invoke.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
     await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
-    act(() => linkPresence?.({ deviceId: 'host-b', online: false }));
+    act(() => linkPresence?.({ deviceId: 'host-b', online, remoteControlEnabled }));
     invoke.mockResolvedValue(hostShares({ shareId: 'new' }));
-    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true }); });
+    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
     expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:new']);
     await act(async () => finish(hostShares({ shareId: 'old' })));
     expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:new']);
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
-  it('pauses readiness retries while the controlled host is offline and resumes on presence', async () => {
+  it.each(unavailablePresence)('pauses readiness retries while the controlled host is $label and resumes on presence', async ({ online, remoteControlEnabled }) => {
     initial = [share({ shareId: 'both' })];
     invoke.mockResolvedValue({ ready: false, ...hostShares({ shareId: 'both' }) });
     vi.useFakeTimers();
@@ -284,7 +288,7 @@ describe('useProviderShareAgentDevices', () => {
       const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
-      act(() => linkPresence?.({ deviceId: 'host-b', online: false }));
+      act(() => linkPresence?.({ deviceId: 'host-b', online, remoteControlEnabled }));
       expect(result.current.devices).toEqual([]);
       await act(async () => {
         window.dispatchEvent(new Event('focus'));
@@ -292,7 +296,7 @@ describe('useProviderShareAgentDevices', () => {
       });
       expect(invoke).toHaveBeenCalledTimes(1);
       invoke.mockResolvedValue(hostShares({ shareId: 'both' }));
-      await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true }); });
+      await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
       expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
       expect(invoke).toHaveBeenCalledTimes(2);
@@ -300,6 +304,27 @@ describe('useProviderShareAgentDevices', () => {
       cleanup();
       vi.useRealTimers();
     }
+  });
+
+  it('invalidates and reloads shares when remote control is toggled while the host stays online', async () => {
+    initial = [share({ shareId: 'old' }), share({ shareId: 'new' })];
+    invoke.mockResolvedValue(hostShares({ shareId: 'old' }));
+    const { result } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+    await waitFor(() => expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:old']));
+    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
+    invoke.mockClear();
+    await act(async () => {
+      linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: false });
+      linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: false });
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(result.current.devices).toEqual([]);
+    expect(invoke).not.toHaveBeenCalled();
+    invoke.mockResolvedValue(hostShares({ shareId: 'new' }));
+    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:new']);
+    await act(async () => { linkPresence?.({ deviceId: 'host-b', online: true, remoteControlEnabled: true }); });
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an in-flight result after an account generation change', async () => {

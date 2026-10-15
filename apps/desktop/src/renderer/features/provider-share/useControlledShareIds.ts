@@ -16,7 +16,7 @@ const RECEIVED_LIST_RETRY_MAX_MS = 30_000;
  * 分享授权属于账号，但跨区连接的启用标记在各电脑本地。新落点必须同时出现在被控端名单中。
  * 复用手机的只读查询，不恢复跨区连接、不修改授权；只消费名单，catalog 为 null 仍可保留。
  * 就绪后跟随已有的 received 推送刷新(包括后台轮询)；首次未就绪时按有上限的指数退避重查。
- * 失败只收起新的分享落点；被控电脑恢复上线时重新查询，
+ * 失败只收起新的分享落点；被控电脑恢复在线且允许远程控制时重新查询，
  * 不重连 peer/relay，也不影响普通设备或本机供应商。
  */
 export function useControlledShareIds(
@@ -37,7 +37,7 @@ export function useControlledShareIds(
     let active = true;
     let revision = 0;
     let pending = false;
-    let peerOnline: boolean | undefined;
+    let peerAvailable: boolean | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let readinessRetryAttempt = 0;
     const invalidate = () => {
@@ -61,7 +61,7 @@ export function useControlledShareIds(
       }, delay);
     };
     const refresh = async () => {
-      if (!active || pending || peerOnline === false || !isDataOwnerGenerationCurrent(owner)) return;
+      if (!active || pending || peerAvailable === false || !isDataOwnerGenerationCurrent(owner)) return;
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
@@ -99,16 +99,18 @@ export function useControlledShareIds(
     };
     const onFocus = () => { void refresh(); };
     const unsubscribe = link.onStatusChanged?.(({ status }) => {
-      peerOnline = undefined;
+      peerAvailable = undefined;
       invalidate();
       if (status === 'online') void refresh();
     });
     const unsubscribePresence = link.onPresenceChanged?.((presence) => {
-      if (presence.deviceId !== deviceId || presence.online === peerOnline) return;
-      peerOnline = presence.online;
-      // relay 仍在线时目标电脑也可能独立掉线；旧响应和重试不能越过这次掉线。
+      if (presence.deviceId !== deviceId) return;
+      const available = presence.online && presence.remoteControlEnabled;
+      if (available === peerAvailable) return;
+      peerAvailable = available;
+      // 与 main 的 presence 判定一致：掉线或关闭远控均作废旧响应并停止重试。
       invalidate();
-      if (presence.online) void refresh();
+      if (available) void refresh();
     });
     window.addEventListener('focus', onFocus);
     void refresh();
