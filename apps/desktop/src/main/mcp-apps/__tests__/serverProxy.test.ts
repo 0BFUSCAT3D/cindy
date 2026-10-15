@@ -480,6 +480,83 @@ describe('ordinary MCP compatibility through the App facade', () => {
     expect(f.writeCard).not.toHaveBeenCalled();
   });
 
+  it.each(['http', 'sse'] as const)(
+    'withholds View-only metadata from synchronous and task tool results over %s',
+    async (transport) => {
+      const f = await fixture(transport);
+      const publicResult = {
+        content: [{ type: 'text' as const, text: 'Public result', _meta: { publicBlock: true } }],
+        structuredContent: { completed: false, _meta: { publicStructured: true } },
+        isError: true,
+        extension: 'public extension',
+      };
+      const result = { ...publicResult, _meta: { viewOnly: 'private task result' } };
+      callTool.mockResolvedValueOnce(result);
+      f.upstream.server.setRequestHandler(GetTaskPayloadRequestSchema, async () => result);
+
+      await expect(f.client.callTool({ name: 'plain' })).resolves.toEqual(publicResult);
+      await expect(
+        f.client.request(
+          { method: 'tools/call', params: { name: 'plain', task: { ttl: 60_000 } } },
+          CreateTaskResultSchema,
+        ),
+      ).resolves.toEqual({ task });
+      await expect(
+        f.client.request(
+          { method: 'tasks/result', params: { taskId: task.taskId } },
+          CallToolResultSchema,
+        ),
+      ).resolves.toEqual(publicResult);
+      expect(result._meta).toEqual({ viewOnly: 'private task result' });
+      expect(f.writeCard).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves protocol metadata on ordinary forwarded task status results', async () => {
+    const f = await fixture();
+    const status = { ...task, _meta: { 'example/status': 'public protocol metadata' } };
+    f.upstream.server.setRequestHandler(GetTaskRequestSchema, async () => status);
+    await expect(
+      f.client.request(
+        { method: 'tasks/get', params: { taskId: task.taskId } },
+        GetTaskResultSchema,
+      ),
+    ).resolves.toEqual(status);
+  });
+
+  it.each(revocations)(
+    'rejects a late task tool result after %s revocation without replay',
+    async (kind) => {
+      const f = await fixture();
+      let finish!: () => void;
+      const retrieve = vi.fn(
+        () =>
+          new Promise<CallToolResult>((resolve) => {
+            finish = () =>
+              resolve({
+                content: [{ type: 'text', text: 'Late task result' }],
+                _meta: { viewOnly: 'private task result' },
+              });
+          }),
+      );
+      f.upstream.server.setRequestHandler(GetTaskPayloadRequestSchema, retrieve);
+      const readResult = () =>
+        f.client.request(
+          { method: 'tasks/result', params: { taskId: task.taskId } },
+          CallToolResultSchema,
+        );
+      const error = kind === 'owner' ? 'MCP_APP_OWNER_CHANGED' : 'MCP_APP_SERVER_CHANGED';
+      const rejected = expect(readResult()).rejects.toThrow(error);
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      revoke(f, kind);
+      finish();
+      await rejected;
+      await expect(readResult()).rejects.toThrow(error);
+      expect(retrieve).toHaveBeenCalledOnce();
+      expect(f.writeCard).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['owner', 'server'] as const)(
     'rejects late completion results and new calls after %s revocation',
     async (kind) => {

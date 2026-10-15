@@ -36,6 +36,13 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('mcp-apps');
 
+/** Tool-result root metadata belongs to Views, including results retrieved from tasks. */
+function modelToolResult<T extends { _meta?: unknown }>(result: T) {
+  const modelResult = { ...result };
+  delete modelResult._meta;
+  return modelResult;
+}
+
 /** Preserve the SDK handshake while attaching authenticated upstream metadata. */
 class AppProxyServer extends McpServer {
   constructor(
@@ -210,6 +217,7 @@ export function createAppServerProxy(
       requestOptions(request, extra),
     );
     assertCurrent();
+    if (request.method === 'tasks/result') return modelToolResult(result);
     return result;
   };
   server.server.fallbackRequestHandler = forwardRequest;
@@ -309,9 +317,7 @@ export function createAppServerProxy(
     }
     // Card persistence may yield while the owner or server configuration changes.
     assertCurrent();
-    const modelResult = { ...result };
-    delete modelResult._meta;
-    return modelResult;
+    return modelToolResult(result);
   });
   const unlisten = connection.listen((message) => {
     try {
