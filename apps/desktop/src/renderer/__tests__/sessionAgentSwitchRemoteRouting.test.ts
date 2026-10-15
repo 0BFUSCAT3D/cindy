@@ -909,26 +909,45 @@ describe('ChatInput 的入口门控与调用路由', () => {
     expect(body).toContain('co.fastMode = !!row.fastMode;');
   });
 
-  it('Orca 复用原位置切换入口；Lead 离线回本机时只列任务电脑并锁定引擎', () => {
+  it('Orca 会话复用切换入口，角色未加载仍保留未知态', () => {
     expect(source).not.toContain('sessionOrcaRole === null &&');
-    expect(source).toContain('sessionAgentSwitchSupportedOf({');
-    expect(source).toContain('    runtimeAgentKind,');
-    expect(source).toContain('    hostSwitchCapable: hostAgentSwitchCapable,');
-    expect(source).toContain('orcaLeadLocalFallbackOpen({');
-    expect(source).toContain('intentAgentDeviceId === null');
-
+    const expression = source.match(/const sessionAgentSwitchSupported =\s*([\s\S]*?);/)?.[1];
+    expect(expression).toBeDefined();
+    const supported = new Function('sessionOrcaRole', 'runtimeAgentKind', 'deviceLinkDeviceId',
+      'ccSupportsSessionAgentSwitch', 'codexSupportsSessionAgentSwitch', `return ${expression};`);
+    for (const role of [null, 'lead', 'worker']) {
+      expect(supported(role, 'codex', null, false, false)).toBe(true);
+      expect(supported(role, undefined, null, true, true)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, false)).toBe(false);
+      expect(supported(role, 'codex', 'host', false, true)).toBe(true);
+    }
+    expect(supported(undefined, 'codex', null, true, true)).toBe(false);
     const remoteOptions = source.slice(source.indexOf('const sessionRemoteAgentOptions ='),
       source.indexOf('// composer pill 尾部引擎小标'));
-    expect(remoteOptions).toContain('const isOrcaSession = sessionOrcaRole !== null || sessionOrcaRemoteWorker;');
-    expect(remoteOptions).toContain('(isOrcaSession && !orcaLeadLocalFallback)');
-    expect(remoteOptions).toContain('sessionRemoteAgentDevicesForOrcaFallback(remoteAgentDevices, orcaLeadLocalFallback)');
-    expect(remoteOptions).toContain('homeDeviceId: deviceLinkDeviceId');
-
+    expect(remoteOptions).toContain('    sessionOrcaRole,');
+    expect(remoteOptions).toContain('    sessionOrcaRemoteWorker,');
+    const relocationGuard = remoteOptions.match(/if \(([\s\S]*?)\) return undefined;/)?.[1];
+    expect(relocationGuard).toBeDefined();
+    const hidden = new Function('sessionOrcaRole', 'sessionOrcaRemoteWorker', 'deviceLinkDeviceId',
+      `const sessionId = 's1', agentLocationAware = true, remoteHostId = null, sessionEngineFilter = {};
+       return !!(${relocationGuard});`);
+    // 本机的 Lead / Worker 与普通任务一样可换 Agent 所在电脑。
+    for (const role of [null, 'lead', 'worker']) {
+      expect(hidden(role, false, null)).toBe(false);
+    }
+    // 被控电脑上的协同任务先不开放(旧版被控端会拒绝);普通被控任务不受影响。
+    expect(hidden('lead', false, 'host')).toBe(true);
+    expect(hidden('worker', false, 'host')).toBe(true);
+    expect(hidden(null, false, 'host')).toBe(false);
+    for (const role of [null, 'lead', 'worker', undefined]) {
+      expect(hidden(role, true, null)).toBe(true);
+    }
+    expect(hidden(undefined, false, null)).toBe(true);
+    // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     const viewSource = readFileSync(
       resolve(process.cwd(), 'src/renderer/features/cc-agent/CCAgentSessionView.tsx'),
       'utf8',
     );
-    // 会话视图必须保留 undefined 未知态，避免在完整 session 回流前冒充具体身份。
     expect(viewSource).toContain(
       'sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}',
     );

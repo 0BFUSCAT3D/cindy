@@ -9,7 +9,7 @@ import { openBrowserAsync } from 'expo-web-browser';
 import { Text } from '@/components/AppText';
 import { spacing, textStyles, useTheme } from '@/theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { BotGroupAttachment } from '@cindy/maker-shared/botGroupChat';
 import { ImageLightbox } from './ImageLightbox';
@@ -17,13 +17,17 @@ import { AttachmentStrip } from './MessageRenderer';
 import { buildMessageContentLayout } from './messageContentLayout';
 import type { MobileMessageGalleryImage } from './messageGallery';
 import type { NormalizedAttachment } from './messageNormalize';
-import { buildAttachmentPayload, type MessagePayload } from './messagePayload';
+import { buildAttachmentPayload, isPayloadDirectPreviewableUrl, type MessagePayload } from './messagePayload';
 import type { ResolveRemoteMediaFn } from './remoteMedia';
 
-/** A group attachment in the shape session messages render; an image without an address is a file. */
+/**
+ * A group attachment in the shape session messages render; an image without an address is a file.
+ * An authorized HTTPS image loads directly; `cindy-media://` and older media addresses are fetched from the computer.
+ */
 export function botGroupAttachmentForDisplay(attachment: BotGroupAttachment): NormalizedAttachment {
   return attachment.category === 'image' && attachment.url
-    ? { kind: 'image', name: attachment.name, uri: attachment.url, ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}), previewable: false }
+    ? { kind: 'image', name: attachment.name, uri: attachment.url, ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+      previewable: isPayloadDirectPreviewableUrl(attachment.url) }
     : { kind: 'file', name: attachment.name, ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}), previewable: false };
 }
 
@@ -140,16 +144,25 @@ function ServerAttachments({ runs, align, layout, resolve }: {
     finally { pending.current = false; if (mounted.current) setBusy(null); }
   };
   return <>
+    {/* Stretch like a session strip, so the chip keeps the same width as in a task message. */}
     {runs.map(run => run.kind === 'pending'
       ? <PendingAttachment key={run.attachment.id} attachment={run.attachment} align={align} layout={layout} />
-      : <View key={run.attachments[0]!.id}>
+      : <View key={run.attachments[0]!.id} style={styles.serverAttachment}>
         {/* No URL before tapping: every entry is a file chip, addressed by position rather than name. */}
         <AttachmentStrip attachments={run.attachments.map(attachment => ({ kind: 'file', name: attachment.name, previewable: false }))}
           messageKey={run.attachments[0]!.id} align={align} layout={layout}
           onOpenFile={index => { void open(run.attachments[index]!.id); }} usePreviewState={useState} />
-        {run.attachments.some(attachment => busy === attachment.id) ? <ActivityIndicator color={colors.textSecondary} /> : null}
+        {run.attachments.some(attachment => busy === attachment.id)
+          ? <ActivityIndicator color={colors.textSecondary} style={align === 'right' ? styles.busyRight : styles.busyLeft} />
+          : null}
       </View>)}
     {image?.url ? <ImageLightbox images={botGroupAttachmentGallery(image.id, [botGroupAttachmentForDisplay(image)])}
       initialUrl={image.url} onClose={() => setImage(null)} /> : null}
   </>;
 }
+
+const styles = StyleSheet.create({
+  serverAttachment: { alignSelf: 'stretch' },
+  busyLeft: { alignSelf: 'flex-start' },
+  busyRight: { alignSelf: 'flex-end' },
+});

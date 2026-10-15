@@ -7,7 +7,7 @@
  *   2. 换位置带着目标电脑进切换事务,意图期内的后续改选沿用意图里的电脑;
  *   3. 意图期内模型目录跟随意图里的电脑,选回任务当前所在电脑不带位置;
  *   4. 只对本机任务、或支持远程 Agent 的被控电脑上的任务开放,且要能走切换事务(SSH / 旧被控端 /
- *      共享任务访客不开放;协同任务默认不开放,仅 Lead 在 Agent 所在电脑目录读取失败时开放回任务本机)。
+ *      共享任务访客 / 协同任务不开放)。
  *
  * 2026-10-09 起被控电脑上的任务也开放(用户反馈:A 远控 B 的任务选不到 C 的远程供应商,手机能)。
  */
@@ -90,13 +90,10 @@ describe('ChatInput:换位置进切换事务', () => {
   });
 
   it('只对本机任务、或支持远程 Agent 的被控端任务开放,且要能走切换事务', () => {
-    // 协同任务默认不开放换位置；唯一例外是 Lead 的 Agent 所在电脑目录读取失败时只开放回任务本机
-    // (orcaLeadLocalFallback，门控见 sessionAgentSwitchGate.ts)，行为用例在 orcaLeadLocalFallbackRelocate。
     expect(chatInputSource).toContain(
-      'if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter ||\n        (isOrcaSession && !orcaLeadLocalFallback)) return undefined;',
-    );
-    expect(chatInputSource).toContain(
-      'const isOrcaSession = sessionOrcaRole !== null || sessionOrcaRemoteWorker;',
+      'if (!sessionId || !agentLocationAware || remoteHostId || !sessionEngineFilter ||\n' +
+        '        sessionOrcaRole === undefined || (sessionOrcaRole !== null && deviceLinkDeviceId) ||\n' +
+        '        sessionOrcaRemoteWorker) return undefined;',
     );
     expect(chatInputSource).toContain('agentDeviceId: selection.agentDevice?.deviceId ?? null,');
   });
@@ -128,9 +125,10 @@ describe('被控电脑上的任务:换 Agent 所在电脑', () => {
   });
 
   it('换位置带给被控端的前提与面板入口同一个判定', () => {
-    const start = chatInputSource.indexOf('const relocateTo =');
+    const start = chatInputSource.indexOf('const resolveRelocateTo = () => {');
     expect(start).toBeGreaterThan(0);
-    expect(chatInputSource.slice(start, start + 200)).toContain('agentLocationAware &&');
+    expect(chatInputSource.slice(start, start + 400)).toContain('return agentLocationAware &&');
+    expect(chatInputSource).toContain('const relocateTo = resolveRelocateTo();');
   });
 
   it('面板不浏览其他电脑时列被控电脑的目录与它的镜像记忆', () => {

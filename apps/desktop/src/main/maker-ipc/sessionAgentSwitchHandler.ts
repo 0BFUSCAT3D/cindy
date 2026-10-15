@@ -22,10 +22,10 @@
  *    下一条消息走既有 lazy-create 路径重试并复用其错误呈现(resume 模式先走
  *    上述回落再降级)。
  *
- * 边界:SSH 远程会话(remoteHostId)不支持切换。Orca Lead/Worker 可在当前 Agent 位置
- * 复用交接与停泊事务，协同身份由 vendorOptions/DB 在重建时恢复；位置迁移由供应商组调度。
- * 唯一用户发起的迁移例外:远端 Orca Lead 可在同引擎下切回任务本机(agentDeviceId=null)，
- * 模型与来源随本机目录改变；Worker、切往其它电脑及换引擎仍拒绝。
+ * 边界:远程会话(remoteHostId)仍不支持切换(UNSUPPORTED_CAPABILITY)。Orca Lead/Worker
+ * 复用同一交接与停泊事务，协同身份由 vendorOptions/DB 在重建时恢复。
+ * Orca Lead 的 Agent 在另一台电脑时，关闭旧远程会话若因链路失败(离线/不可达/超时/拥塞/无响应)
+ * 而没送到对方，不挡住 Lead 离开那台电脑；其它错误仍原样抛出。
  * turn 进行中登记 pending 推迟到下一条消息发送时刻执行。
  *
  * 远程 Agent 换电脑(agentDeviceId 变化,null = 任务所在电脑):原生会话记录在原来运行 Agent
@@ -672,22 +672,16 @@ export async function performSessionAgentSwitch(
     // SSH 远程会话:agent 进程在远端机器,cc-manager 链路仅覆盖 Claude,v1 不支持切换。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for remote sessions');
   }
-  // Orca may switch harness/model at the current Agent position. Relocation stays
-  // under provider-group scheduling, except a remote Lead explicitly returning home
-  // on the same engine after its remote catalog becomes unavailable.
+  // Orca Lead / Worker tasks live on this computer, so moving their Agent works like
+  // a normal task (2026-10-16). An execution-device Worker's task lives on that device;
+  // its Agent only moves through the provider group's internal relocation.
   const providerGroupRelocationOnly =
     params.providerGroupRelocation === true &&
     params.applyNow === true &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
     row.model === model;
-  const orcaLeadReturnHome =
-    row.orcaRole === 'lead' &&
-    (row.agentDeviceId ?? null) !== null &&
-    requestedAgentDeviceId === null &&
-    normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind);
-  const isOrcaSession = Boolean(row.orcaRole || parseOrcaRemoteLead(row.orcaRemoteLead));
-  if (isOrcaSession && params.agentDeviceId !== undefined &&
-      !providerGroupRelocationOnly && !orcaLeadReturnHome) {
+  if (parseOrcaRemoteLead(row.orcaRemoteLead) &&
+      params.agentDeviceId !== undefined && !providerGroupRelocationOnly) {
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent relocation is not supported for Orca sessions');
   }
   if (params.beforeMutation) await params.beforeMutation();
@@ -746,9 +740,13 @@ export async function performSessionAgentSwitch(
   const forcedRelocation =
     !agentDeviceChanges && params.forceRelocation === true && params.applyNow === true && targetAgentDeviceId !== null;
   const relocating = agentDeviceChanges || forcedRelocation;
+  // 协同任务点了别处的供应商组、组又选回当前位置：同引擎原地换模型在发送时要用点选时核对过的窗口，
+  // 而这次点选按换电脑登记、没有窗口确认，换到更小窗口的模型时会一直卡在发送前。用户已确认过按交接
+  // 重新开始，这里照此全量交接重建，不走原地换模型。
+  const orcaGroupReturnRebuild = groupResolvedToCurrentPosition && !!row.orcaRole && fromDbKind === toDbKind;
   // 落到另一台电脑的完整切换(换引擎或换电脑)：登记与落地前都按那台的目录裁决。同引擎同位置
   // 的模型选择走 selectSameAgentModel，在 SET_MODEL 链路里裁决。
-  if (targetAgentDeviceId && (relocating || fromDbKind !== toDbKind)) {
+  if (targetAgentDeviceId && (relocating || orcaGroupReturnRebuild || fromDbKind !== toDbKind)) {
     await deps.assertAgentDeviceRouteUsable?.(
       targetAgentDeviceId,
       targetAgentKind,
@@ -759,7 +757,7 @@ export async function performSessionAgentSwitch(
     throwIfAgentSwitchAborted(signal);
     params.assertSelectionCurrent?.();
   }
-  if (fromDbKind === toDbKind && !relocating) {
+  if (fromDbKind === toDbKind && !relocating && !orcaGroupReturnRebuild) {
     // Only picker calls stage a model choice here. Internal cross-engine apply/recovery
     // callers retain the existing same-engine no-op; send consumes staged choices below.
     // 组把换电脑的意图选回了当前位置(groupResolvedToCurrentPosition)：这次 applyNow 提交
@@ -865,7 +863,7 @@ export async function performSessionAgentSwitch(
   // Phase 2:目标引擎有停泊原生会话 → resume + 增量交接(只补离开期间的进展,
   // 工作状态区仍按全量历史提取);无绑定 → v1 全量交接 + 全新原生会话。
   // 换电脑时停泊的原生会话在原来那台电脑上，目标电脑接不上，一律全量交接。
-  const parked = deps.findParkedEngineSession && !relocating
+  const parked = deps.findParkedEngineSession && !relocating && !orcaGroupReturnRebuild
     ? await deps.findParkedEngineSession(sessionId, toDbKind)
     : null;
   const fullSourceMessages = await deps.listMessagesForHandoff(sessionId);
@@ -895,17 +893,21 @@ export async function performSessionAgentSwitch(
     handoff = buildFullHandoff();
   }
 
+  // Orca Lead 的 Agent 在另一台电脑时,旧远程 Session 的 close 请求可能因对方不可达而没送到;
+  // 这种链路失败不该挡住 Lead 离开那台电脑(普通任务与 Worker 的关闭失败语义不变)。
+  const orcaLeadLeavingRemote = row.orcaRole === 'lead' && currentAgentDeviceId !== null;
+
   return deps.withCloseSuppressed(sessionId, async () => {
     throwIfAgentSwitchAborted(signal);
     if (live) {
       try {
         await deps.closeSession(sessionId);
       } catch (error) {
-        const linkCode = orcaLeadReturnHome ? agentSwitchLinkCloseErrorCode(error) : null;
+        const linkCode = orcaLeadLeavingRemote ? agentSwitchLinkCloseErrorCode(error) : null;
         if (!linkCode) throw error;
         // 旧远程 Session 的 close 已在本地 finish/dispose；链路失败只表示 close 请求没送到对方。
         // Maker 把该实例标成 error 仍占 activeSessions，bootstrap/lazy-create 会再 close 一次后换新。
-        deps.log.warn('agent-switch: close failed while returning orca lead home; continuing', {
+        deps.log.warn('agent-switch: close failed while an orca lead leaves its remote computer; continuing', {
           sessionId,
           code: linkCode,
         });
@@ -936,7 +938,10 @@ export async function performSessionAgentSwitch(
       sdkSessionId: parked?.sdkSessionId ?? null,
       ...(typeof params.effort === 'string' && params.effort ? { effort: params.effort } : {}),
       ...(typeof params.fastMode === 'boolean' ? { fastMode: params.fastMode } : {}),
-      ...(agentDeviceChanges ? { agentDeviceId: targetAgentDeviceId } : {}),
+      // 组选回的当前位置在另一台电脑时也带上位置：提交按它判断窗口该查哪台的目录，不能拿本机目录。
+      ...(agentDeviceChanges || (orcaGroupReturnRebuild && targetAgentDeviceId)
+        ? { agentDeviceId: targetAgentDeviceId }
+        : {}),
     });
     if (normalizedProviderId !== undefined) {
       deps.setSessionProvider(sessionId, normalizedProviderId);

@@ -3376,10 +3376,7 @@ function ModelSelectorContentView({
     ): Promise<boolean> =>
       runLiveWrite(() =>
         relocate!(
-          browsingBoundGroupEntry &&
-            (remoteAgentDevices?.length ?? 0) > 0 &&
-            row.providerId === boundEntry!.providerId &&
-            currentProviderId
+          browsingBoundGroupEntry && row.providerId === boundEntry!.providerId && currentProviderId
             ? { ...row, providerId: currentProviderId, agentDevice: currentAgentDevice }
             : { ...row, agentDevice: remoteBrowseDevice },
         ),

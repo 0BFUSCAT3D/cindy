@@ -17,7 +17,7 @@ import {
 import { toast } from '@/lib/toast';
 import { matchesModelName } from '@/lib/modelDisplayNames';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { favoritesSyncFailureI18nKey } from './sessionAgentSwitchGate';
+import { favoritesSyncFailureI18nKey } from './favoritesSyncFailure';
 import { Check, Loader2, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 

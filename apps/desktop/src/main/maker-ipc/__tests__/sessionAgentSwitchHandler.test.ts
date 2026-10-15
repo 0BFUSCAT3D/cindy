@@ -1447,7 +1447,27 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     expect(local.deps.insertBoundaryMessage).not.toHaveBeenCalled();
   });
 
-  it('协同任务:只接受供应商组内部的立即换位置(同引擎同模型)', async () => {
+  it.each(['lead', 'worker'])('协同任务 %s:用户换电脑与普通任务一样登记意图,发送时落地', async (orcaRole) => {
+    const h = relocationHarness({ orcaRole, agentDeviceId: null, providerId: 'xd' });
+    await performSessionAgentSwitch(h.deps, {
+      ...backToTaskComputer,
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+      agentDeviceId: 'share:alice-share',
+    });
+    expect(h.selectSameAgentModel).not.toHaveBeenCalled();
+    expect(h.assertAgentDeviceRouteUsable).toHaveBeenCalledWith('share:alice-share', 'claude-code', 'claude-opus-5-5', 'anthropic');
+    expect(h.pending.get('s1')).toMatchObject({ targetAgentDeviceId: 'share:alice-share' });
+
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentDeviceId: 'share:alice-share',
+      sdkSessionId: null,
+    }));
+    expect(h.pending.get('s1')).toBeUndefined();
+  });
+
+  it('协同任务:供应商组内部的立即换位置照常可用(同引擎同模型)', async () => {
     const lead = relocationHarness({ orcaRole: 'lead', model: 'anthropic/claude-opus-5-5[1m]' });
     const result = await performSessionAgentSwitch(lead.deps, {
       ...backToTaskComputer,
@@ -1473,10 +1493,9 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
   });
 
   it.each([
-    { orcaRole: 'worker' },
     { orcaRole: null, orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker' }) },
     { orcaRole: null, orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker', releasedAt: 1 }) },
-  ])('rejects user relocation while preserving harness/model selection: %j', async (identity) => {
+  ])('execution-device Worker rejects user relocation while preserving harness/model selection: %j', async (identity) => {
     const row = { ...identity, model: 'anthropic/claude-opus-5-5[1m]' };
     const { agentDeviceId: _omit, ...withoutLocation } = backToTaskComputer;
     const userMove = relocationHarness(row);
@@ -1504,58 +1523,7 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     expect(staged.calls).toEqual([]);
   });
 
-  it('协同 Lead:Agent 在另一台电脑时可登记切回本机;Worker 与换到其它电脑仍拒绝', async () => {
-    const leadHome = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
-    const result = await performSessionAgentSwitch(leadHome.deps, backToTaskComputer);
-    expect(result).toMatchObject({ deferred: true, switched: false });
-    expect(leadHome.selectSameAgentModel).not.toHaveBeenCalled();
-    expect(leadHome.pending.get('s1')).toMatchObject({ targetAgentDeviceId: null });
-
-    const leadApply = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
-    await expect(
-      performSessionAgentSwitch(leadApply.deps, { ...backToTaskComputer, applyNow: true }),
-    ).resolves.toMatchObject({ switched: true });
-    expect(leadApply.deps.applyAgentSwitchToDb).toHaveBeenCalledWith(
-      's1',
-      expect.objectContaining({ agentDeviceId: null }),
-    );
-
-    const leadElsewhere = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
-    await expect(
-      performSessionAgentSwitch(leadElsewhere.deps, {
-        ...backToTaskComputer,
-        agentDeviceId: 'studio-mac',
-      }),
-    ).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
-
-    const workerHome = relocationHarness({ orcaRole: 'worker', agentDeviceId: 'office-pc' });
-    await expect(performSessionAgentSwitch(workerHome.deps, backToTaskComputer)).rejects.toThrow(
-      /UNSUPPORTED_CAPABILITY/,
-    );
-
-    const remoteWorkerHome = relocationHarness({
-      orcaRole: null,
-      orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker' }),
-      agentDeviceId: 'office-pc',
-    });
-    await expect(performSessionAgentSwitch(remoteWorkerHome.deps, backToTaskComputer))
-      .rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
-  });
-
-  it('协同 Lead 切回本机必须同引擎:换引擎仍拒绝', async () => {
-    const leadHome = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
-    await expect(
-      performSessionAgentSwitch(leadHome.deps, {
-        ...backToTaskComputer,
-        targetAgentKind: 'codex',
-        model: 'gpt-5.5',
-      }),
-    ).rejects.toThrow(/UNSUPPORTED_CAPABILITY/);
-    expect(leadHome.pending.get('s1')).toBeUndefined();
-    expect(leadHome.calls).toEqual([]);
-  });
-
-  it('协同 Lead 切回本机:关闭旧远程会话遇链路错误仍提交本机位置', async () => {
+  it('协同 Lead 离开远程电脑:关闭旧远程会话遇链路错误仍提交新位置', async () => {
     const linkError = Object.assign(
       new Error('[REMOTE_AGENT_UNAVAILABLE] [DEVICE_LINK_DEVICE_OFFLINE] target offline'),
       { code: 'DEVICE_OFFLINE' },
@@ -1593,7 +1561,7 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     expect(pending.pending.get('s1')).toBeUndefined();
   });
 
-  it('协同 Lead 切回本机:关闭失败非链路类仍中止且不写库', async () => {
+  it('协同 Lead 离开远程电脑:关闭失败非链路类仍中止且不写库', async () => {
     const h = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
     vi.mocked(h.deps.closeSession).mockImplementationOnce(async () => {
       h.calls.push('close');
@@ -1623,7 +1591,7 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     ['LINK_NOT_OPEN', 'link not open'],
     ['PEER_RESET', 'peer reset'],
     ['BACKPRESSURE', 'request expired before socket write within 10000ms'],
-  ] as const)('协同 Lead 切回本机:remoteAgentLinkError(%s) 后仍提交本机位置', async (code, message) => {
+  ] as const)('协同 Lead 离开远程电脑:remoteAgentLinkError(%s) 后仍提交新位置', async (code, message) => {
     const wrapped = remoteAgentLinkError(Object.assign(new Error(message), { code }));
     const h = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
     vi.mocked(h.deps.closeSession).mockImplementationOnce(async () => {
@@ -1648,7 +1616,7 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     ['VERSION_MISMATCH', 'version mismatch'],
     [undefined, '[REMOTE_AGENT_UNAVAILABLE] the agent did not start on that computer'],
     ['TIMEOUT', 'local timeout'],
-  ] as const)('协同 Lead 切回本机:非链路码 %s 仍中止且不写库', async (code, message) => {
+  ] as const)('协同 Lead 离开远程电脑:非链路码 %s 仍中止且不写库', async (code, message) => {
     const wrapped = code === undefined
       ? new Error(message)
       : remoteAgentLinkError(Object.assign(new Error(message), { code }));
@@ -1673,6 +1641,20 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     await expect(
       performSessionAgentSwitch(h.deps, { ...backToTaskComputer, applyNow: true }),
     ).rejects.toThrow(/BACKPRESSURE|REMOTE_AGENT_UNAVAILABLE/);
+    expect(h.deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
+  });
+
+  it('协同 Worker 关闭旧远程会话遇链路错误仍中止(容错只给 Lead)', async () => {
+    const wrapped = remoteAgentLinkError(
+      Object.assign(new Error('target device offline'), { code: 'DEVICE_OFFLINE' }),
+    );
+    const h = relocationHarness({ orcaRole: 'worker', agentDeviceId: 'office-pc' });
+    vi.mocked(h.deps.closeSession).mockImplementationOnce(async () => {
+      throw wrapped;
+    });
+    await expect(
+      performSessionAgentSwitch(h.deps, { ...backToTaskComputer, applyNow: true }),
+    ).rejects.toThrow(/REMOTE_AGENT_UNAVAILABLE|offline/);
     expect(h.deps.applyAgentSwitchToDb).not.toHaveBeenCalled();
   });
 
@@ -1871,6 +1853,57 @@ describe('换到供应商组那一项：由组选一台能用的电脑(provider-
     );
     expect(row.model).toBe('claude-opus-5-5');
     expect(pending.get('s1')).toBeUndefined();
+  });
+
+  it.each(['lead', 'worker'])('协同任务 %s:组选回当前位置时按交接重建,不走需要点选窗口确认的原地换模型', async (orcaRole) => {
+    const pending = createPendingAgentSwitchRegistry();
+    const row = makeRow({ agentKind: 'cc', model: 'claude-fable-5', providerId: 'xd', agentDeviceId: null, orcaRole });
+    const selectSameAgentModel = vi.fn(async () => ({ deferred: false }));
+    const commitBinding = vi.fn(async () => undefined);
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      getSessionRow: vi.fn(async () => row),
+      assertAgentDeviceRouteUsable: vi.fn(async () => undefined),
+      resolveProviderGroupTarget: vi.fn(async () => ({ agentDeviceId: null, providerId: 'xd', commitBinding })),
+      selectSameAgentModel,
+    });
+    await performSessionAgentSwitch(deps, { ...toGroup, model: 'claude-haiku-5-5' });
+    await applyPendingAgentSwitchIfIdle(deps, 's1');
+
+    expect(selectSameAgentModel).not.toHaveBeenCalled();
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      model: 'claude-haiku-5-5',
+      providerId: 'xd',
+      sdkSessionId: null,
+    }));
+    expect(deps.applyAgentSwitchToDb).not.toHaveBeenCalledWith('s1', expect.objectContaining({ agentDeviceId: expect.anything() }));
+    expect(deps.insertBoundaryMessage).toHaveBeenCalledWith('s1', expect.objectContaining({
+      fromModel: 'claude-fable-5',
+      toModel: 'claude-haiku-5-5',
+      resumed: false,
+    }));
+    expect(deps.setPendingHandoff).toHaveBeenCalledTimes(1);
+    expect(commitBinding).toHaveBeenCalledTimes(1);
+    expect(pending.get('s1')).toBeUndefined();
+  });
+
+  it('协同任务已在另一台电脑:组选回那台时提交带上位置,窗口按那台的目录判断', async () => {
+    const pending = createPendingAgentSwitchRegistry();
+    const row = makeRow({ agentKind: 'cc', model: 'claude-fable-5', providerId: 'xd', agentDeviceId: 'studio-mac', orcaRole: 'lead' });
+    const { deps } = makeDeps({
+      pendingSwitches: pending,
+      getSessionRow: vi.fn(async () => row),
+      assertAgentDeviceRouteUsable: vi.fn(async () => undefined),
+      resolveProviderGroupTarget: vi.fn(async () => ({ agentDeviceId: 'studio-mac', providerId: 'xd' })),
+      selectSameAgentModel: vi.fn(async () => ({ deferred: false })),
+    });
+    await performSessionAgentSwitch(deps, { ...toGroup, model: 'claude-haiku-5-5' });
+    await applyPendingAgentSwitchIfIdle(deps, 's1');
+    expect(deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      model: 'claude-haiku-5-5',
+      agentDeviceId: 'studio-mac',
+      sdkSessionId: null,
+    }));
   });
 });
 

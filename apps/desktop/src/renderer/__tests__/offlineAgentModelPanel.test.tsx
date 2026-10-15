@@ -122,7 +122,7 @@ function renderRemoteAgentPicker(onRelocate: (selection: RemoteAgentRelocation) 
       onEffortChange={vi.fn()}
       onProviderChange={vi.fn()}
       remoteAgent={{
-        devices: [],
+        devices: [{ deviceId: 'cloud-device', name: 'Cloud computer' }],
         selectedDeviceId: 'cloud-device',
         homeDeviceId: 'task-device',
         onRelocate,
@@ -198,8 +198,8 @@ afterEach(() => {
   }
 });
 
-describe('Orca Lead 离线目录回退的真实模型面板', () => {
-  it('云端目录超时后显示错误与本机格；选择本机模型调用切换 IPC 并传 agentDeviceId=null', async () => {
+describe('Agent 所在电脑离线时的真实模型面板(协同任务与普通任务同一套)', () => {
+  it('云端目录超时后显示错误与重试；点本机供应商格选本机模型，切换 IPC 带 agentDeviceId=null', async () => {
     const relocate = vi.fn(async (selection) => {
       await makerApiForDevice('task-device').switchSessionAgent(
         'session-1',
@@ -249,15 +249,6 @@ describe('Orca Lead 离线目录回退的真实模型面板', () => {
       false,
       { agentDeviceId: null },
     ]);
-  });
-
-  it('云端目录在线且没有离线回退入口时不列本机供应商格', async () => {
-    fixtures.cloudOnline = true;
-    renderRemoteDevicePicker();
-    await openPicker();
-
-    await screen.findAllByText('Cloud model');
-    expect(screen.queryByRole('button', { name: 'Task computer provider' })).toBeNull();
   });
 
   it.each([
