@@ -595,6 +595,13 @@ import {
   type BotCompactRuntimeRefreshOutcome,
   type BotCompactRuntimeSession,
 } from './botCompactRuntimeRefresh.js';
+import {
+  buildWorkingMemoryRefreshNote,
+  createWorkingMemoryRefreshRegistry,
+  pruneWithdrawnWorkingMemoryForSession,
+  pruneWorkingMemoryForSession,
+  readWorkingMemoryNoteForSession,
+} from './botWorkingMemory.js';
 import { createWireNoteMemory } from './wireNoteMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
 import { configureBotCanonicalReplacementCoordinator } from './botCanonicalReplacementCoordinator.js';
@@ -3263,6 +3270,13 @@ type BotCompactRuntimeRefreshHandler = (
  */
 let botCompactRuntimeRefreshHandler: BotCompactRuntimeRefreshHandler | null = null;
 /**
+ * 伙伴工作记忆账本(botWorkingMemory):换窗交接带账本;原生压缩后下一次发送补一份。
+ * 登记对所有会话生效,真正注入只在伙伴主对话且有账本时发生。
+ */
+const workingMemoryRefresh = createWorkingMemoryRefreshRegistry();
+const readWorkingMemoryNote = (sessionId: string): Promise<string | null> =>
+  readWorkingMemoryNoteForSession(sessionId, ownerScopedUserDataPath());
+/**
  * 逐轮环境说明(界面语言 / 客户端设备 / 个人版制作说明)的去重记忆:同一原生上下文里内容
  * 没变就不重复前置。原生压缩边界、`/clear`、换窗重建后整体重发一次(见 wireNoteMemory.ts)。
  */
@@ -5482,6 +5496,7 @@ const sessionEventDependencies: SessionEventDependencies = {
   onUnsuccessfulProductTurn: interruptProductTurn,
   deferUnsuccessfulProductTurn: (owner) => deferredProductTurnFailureGate.defer(owner),
   get botCompactRuntimeRefreshCoordinator() { return botCompactRuntimeRefreshCoordinator; },
+  get workingMemoryRefresh() { return workingMemoryRefresh; },
   get wireNoteMemory() { return wireNoteMemory; },
   get attemptBotCompactRuntimeRefresh() { return attemptBotCompactRuntimeRefresh; },
   get botDelegationServiceHolder() { return botDelegationServiceHolder; },
@@ -10018,6 +10033,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     closeSession: (sessionId) => maker.closeSession(sessionId, 'agent-switch'),
     listMessagesForHandoff: (sessionId, after) =>
       listMessagesForAgentHandoff(sessionId, 400, after),
+    readWorkingMemoryNote,
     findParkedEngineSession: (sessionId, targetDbKind) =>
       findParkedEngineSession(sessionId, targetDbKind),
     applyAgentSwitchToDb: async (sessionId, patch) => {
@@ -10261,6 +10277,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     getMessage: getMessageDeletionTarget,
     listMessagesForContext: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
+    readWorkingMemoryNote: (sessionId, opts) =>
+      readWorkingMemoryNoteForSession(sessionId, ownerScopedUserDataPath(), opts),
+    pruneWorkingMemory: (sessionId, deletedMessageIds) =>
+      pruneWorkingMemoryForSession(sessionId, ownerScopedUserDataPath(), deletedMessageIds),
     getLiveSession: (sessionId) => maker.getSession(sessionId),
     hasBackgroundActivity: getClaudeSessionBackgroundActivity,
     closeSession: (sessionId) => maker.closeSession(sessionId),
@@ -16258,6 +16278,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     isCindyMakeSession: async (sessionId) =>
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
+    // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
+    // 标记仍由事务在 accepted 后按代次消费。
+    peekWorkingMemoryRefresh: async (sessionId) => {
+      const generation = workingMemoryRefresh.pendingGeneration(sessionId);
+      if (generation === null) return null;
+      const rendered = await readWorkingMemoryNote(sessionId);
+      return { generation, note: rendered ? buildWorkingMemoryRefreshNote(rendered) : null };
+    },
+    consumeWorkingMemoryRefresh: (sessionId, generation) => workingMemoryRefresh.consume(sessionId, generation),
     planRepeatableWireNotes: (sessionId, notes, opts) => wireNoteMemory.plan(sessionId, notes, opts),
     applyPendingAgentSwitch: async (sessionId, options) => {
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
@@ -16415,6 +16444,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return resolveConfiguredContextWindow(catalog, makerAgentKind, providerId, modelId);
     },
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
+    readWorkingMemoryNote,
     findLatestUser: findLatestUserMessageForRebuild,
     findLatestRebuildMeta: findLatestContextRebuildMeta,
     getLiveSession: (sessionId) => maker.getSession(sessionId),
@@ -19785,6 +19815,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         agentHandoffPending.invalidate(sid);
         // 清空后的原生上下文没看过任何环境说明:下一轮整体重发。
         wireNoteMemory.reset(sid);
+        // 清空前登记的压缩刷新标记同样作废:否则清空后的第一次发送会把清空前的账本注入。
+        workingMemoryRefresh.reset(sid);
         getAgentIslandService()?.notifyQueueEmptied(sid);
         // 清上下文后,active 目标失去其依据(objective 引用的内容已被抹掉)→ 一并清除目标。
         goalClearObserver?.(sid);
@@ -19799,6 +19831,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           typeof clearBoundary === 'number' ? clearBoundary : new Date(clearBoundary).getTime();
         try {
           await clearSessionContextInDb(sid, clearBoundaryMs);
+          // cleared_at 落库后,清空前产生的伙伴工作记忆条目一并持久清掉(与 rewind / 删除
+          // 同一失效模式);失败不影响 clear,渲染时按 cleared_at 的统一过滤仍兜底。
+          await pruneWithdrawnWorkingMemoryForSession(sid, ownerScopedUserDataPath()).catch(() => 0);
         } catch (err) {
           // The in-memory fence is still authoritative for this process. Keep
           // /clear remains a local cleanup action even when persistence fails;

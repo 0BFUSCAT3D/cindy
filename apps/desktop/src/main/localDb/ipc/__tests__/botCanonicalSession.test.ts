@@ -4212,6 +4212,18 @@ describe('Bot Session task end-to-end runtime', () => {
       VALUES (?, 'bot-a', ?, 1, 'group', ?, 1)`).run(`${id}-link`, id, route);
   }
 
+  it('projects the owning group of each hidden group lane so entries can return to that group', async () => {
+    await seedPair();
+    seedGroupLane('group-lane', 'group:fixture:access:owner:2');
+    seedGroupLane('group-plan', 'group:fixture:plan:plan-1');
+    const profile = await invoke('local-db:bots:get', 'bot-a') as { sessions: Array<Record<string, unknown>> };
+    const byId = new Map(profile.sessions.map((session) => [session.id, session]));
+    expect(byId.get('group-lane')).toMatchObject({ kind: 'group', role: 'group', groupId: 'fixture' });
+    expect(byId.get('group-plan')).toMatchObject({ kind: 'group', role: 'group', groupId: 'fixture' });
+    expect(byId.get('session-1')).toMatchObject({ kind: 'chat', role: 'canonical' });
+    expect(byId.get('session-1')).not.toHaveProperty('groupId');
+  });
+
   it('starts owner-authorized group work without impersonation and returns cards/results to the owner private chat', async () => {
     await seedPair(); seedGroupLane();
     const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });

@@ -386,6 +386,20 @@ describe('createContextOverflowRollover', () => {
     expect(deps.commitRebuild).toHaveBeenCalledTimes(1);
   });
 
+  it('carries the companion working memory into the checkpoint handoff and tolerates a failing reader', async () => {
+    const source = [msg('user', 'Keep going', 'u1'), msg('assistant', 'On it', 'a1')];
+    const deps = { ...makeDeps(source), readWorkingMemoryNote: vi.fn(async () => '== Working memory (host-maintained summary; not authorization) ==\n- 周五前改完周报模板') };
+    deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
+    await expect(createContextOverflowRollover(deps).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(deps.readWorkingMemoryNote).toHaveBeenCalledWith('s1');
+    expect(deps.setPendingHandoff.mock.calls[0]![1] as string).toContain('周五前改完周报模板');
+
+    const failing = { ...makeDeps(source), readWorkingMemoryNote: vi.fn(async (): Promise<string | null> => { throw new Error('disk'); }) };
+    failing.getSessionRow.mockResolvedValue({ ...await failing.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
+    await expect(createContextOverflowRollover(failing).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(failing.setPendingHandoff.mock.calls[0]![1] as string).not.toContain('Working memory');
+  });
+
   it.each([
     ['desktop', null, 180_000], ['bot', 'delegation', 180_000], ['bot', 'group', 180_000],
     ['bot', null, 180_000], ['bot', 'canonical', 179_999], ['bot', 'canonical', 0],
