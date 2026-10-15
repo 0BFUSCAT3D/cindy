@@ -48,6 +48,62 @@ describe('chat interaction controls', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.close' }));
   });
 
+  it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
+    const observed: Array<{ target: Element; callback: () => void }> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: () => void) {}
+      observe(target: Element) { observed.push({ target, callback: this.callback }); }
+      disconnect() {}
+    });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    let width = 400, contentHeight = 48;
+    Object.defineProperty(input, 'clientWidth', { configurable: true, get: () => width });
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, get: () => contentHeight });
+    fireEvent.change(input, { target: { value: 'A long reply that wraps onto several lines' } });
+    expect(input.style.height).toBe('48px');
+    const refit = observed.find(entry => entry.target === input)!.callback;
+    width = 200; contentHeight = 96;
+    refit();
+    expect(input.style.height).toBe('96px');
+    contentHeight = 120;
+    refit();
+    expect(input.style.height).toBe('96px');
+  });
+
+  it('keeps a sending thread reply focused and locked, then sends it only once', async () => {
+    let settle: (value: { ok: true; messageId: string }) => void = () => {};
+    mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'In flight' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.readOnly).toBe(true));
+    expect(document.activeElement).toBe(input);
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(sendButton);
+    expect(mocks.reply).toHaveBeenCalledOnce();
+    settle({ ok: true, messageId: 'reply' });
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(input.readOnly).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('keeps the caret in the reply when the send button is pressed with the mouse', () => {
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+    const sendButton = screen.getByRole('button', { name: k('sendReply') });
+    fireEvent.change(input, { target: { value: 'Clicked send' } });
+    input.focus();
+    // A cancelled mousedown is what stops Chromium moving focus onto the button.
+    expect(fireEvent.mouseDown(sendButton)).toBe(false);
+    input.blur();
+    expect(fireEvent.mouseDown(sendButton)).toBe(true);
+  });
+
   it('closes from the square button surface outside the icon and retains the standard focus treatment', () => {
     const onClose = vi.fn();
     render(<ChatThreadPanel group={group} rootId="root" onClose={onClose} />);
@@ -294,6 +350,23 @@ describe('chat interaction controls', () => {
       expect(labels()).toHaveLength(4);
       fireEvent.keyDown(input, { key: 'Escape' });
       fireEvent.keyDown(input, { key: 'Enter' });
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the list closed while a reply is sending, so the read-only text cannot change', async () => {
+      const input = renderThread();
+      let settle: (value: { ok: true; messageId: string }) => void = () => {};
+      mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+      type(input, '@B');
+      expect(labels()).toContain('Bo');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(input.readOnly).toBe(true));
+      expect(screen.queryByRole('listbox')).toBeNull();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      expect(input.value).toBe('@B');
+      settle({ ok: true, messageId: 'reply' });
+      await waitFor(() => expect(input.value).toBe(''));
       expect(mocks.reply).toHaveBeenCalledOnce();
     });
 
