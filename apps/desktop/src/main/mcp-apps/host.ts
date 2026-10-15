@@ -730,6 +730,17 @@ export class McpAppsHost {
     if (view.initialized) view.bridge.setHostContext(view.context);
   }
 
+  async authorizeLink(
+    caller: string,
+    sessionId: string,
+    id: string,
+    linkId: string,
+  ): Promise<void> {
+    const view = this.view(caller, sessionId, id);
+    await this.assertCurrentView(id, view);
+    if (!view.links.has(linkId)) throw new Error('MCP_APP_LINK_UNAVAILABLE');
+  }
+
   linkResult(
     caller: string,
     sessionId: string,

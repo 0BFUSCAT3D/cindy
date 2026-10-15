@@ -14,7 +14,8 @@ afterEach(() => vi.useRealTimers());
 function fixture(poll: () => Promise<unknown> = never) {
   const invoke = vi.fn(
     async (_session: string, input: Record<string, unknown>): Promise<unknown> =>
-      input.op === 'open' ? document : input.op === 'poll' ? poll() : {},
+      input.op === 'open' ? document : input.op === 'poll' ? poll()
+        : input.op === 'authorize-link' ? { authorized: true } : {},
   );
   const post = vi.fn(),
     state = vi.fn(),
@@ -22,6 +23,16 @@ function fixture(poll: () => Promise<unknown> = never) {
     link = vi.fn(async () => {});
   const controller = new McpAppController(invoke, 'task', 'card', post, state, error, link);
   return { controller, invoke, post, state, error, link };
+}
+function linkFixture(authorize: () => Promise<unknown>) {
+  const poll = vi.fn()
+    .mockResolvedValueOnce([{ seq: 1, openLink: { id: 'link', url: 'https://example.org/' } }])
+    .mockImplementation(never);
+  const f = fixture(poll);
+  const invoke = f.invoke.getMockImplementation()!;
+  f.invoke.mockImplementation(async (session, input) =>
+    input.op === 'authorize-link' ? authorize() : invoke(session, input));
+  return f;
 }
 describe('MCP App transport lifecycle', () => {
   it('keeps local Desktop RPC out of the Renderer while retaining UI state and Host-owned teardown', async () => {
@@ -257,6 +268,68 @@ describe('MCP App transport lifecycle', () => {
       expect.objectContaining({ openLink: expect.anything() }),
     );
     await f.controller.close();
+  });
+  it.each([
+    'MCP_APP_CARD_UNAVAILABLE',
+    'MCP_APP_VIEW_UNAVAILABLE',
+    'MCP_APP_SERVER_CHANGED',
+    'MCP_APP_INVALID_REQUEST',
+    'INVOKE_TIMEOUT',
+  ])('does not open a returned link when final Host authorization fails: %s', async (reason) => {
+    const f = linkFixture(async () => { throw new Error(reason); });
+    await f.controller.open({});
+    await flush();
+    expect(f.link).not.toHaveBeenCalled();
+    expect(f.invoke).toHaveBeenCalledWith('task', {
+      op: 'authorize-link', viewId: 'view', linkId: 'link',
+    });
+    expect(f.invoke).toHaveBeenCalledWith('task', {
+      op: 'link-result', viewId: 'view', linkId: 'link', success: false,
+    });
+    expect(f.invoke.mock.calls.filter(([, input]) => input.op === 'authorize-link')).toHaveLength(1);
+    expect(f.error).not.toHaveBeenCalled();
+    await f.controller.close();
+  });
+  it.each([{}, { authorized: false }, null])(
+    'requires an explicit Host authorization receipt before opening a link: %j',
+    async (authorization) => {
+      const f = linkFixture(async () => authorization);
+      await f.controller.open({});
+      await flush();
+      expect(f.link).not.toHaveBeenCalled();
+      expect(f.invoke).toHaveBeenCalledWith('task', {
+        op: 'link-result', viewId: 'view', linkId: 'link', success: false,
+      });
+      await f.controller.close();
+    },
+  );
+  it('waits for final execution-Host authorization before opening the link once', async () => {
+    let authorize!: (value: unknown) => void;
+    const f = linkFixture(() => new Promise((resolve) => { authorize = resolve; }));
+    await f.controller.open({});
+    await flush();
+    expect(f.invoke).toHaveBeenCalledWith('task', {
+      op: 'authorize-link', viewId: 'view', linkId: 'link',
+    });
+    expect(f.link).not.toHaveBeenCalled();
+    authorize({ authorized: true });
+    await flush();
+    expect(f.link).toHaveBeenCalledExactlyOnceWith('https://example.org/');
+    expect(f.invoke).toHaveBeenCalledWith('task', {
+      op: 'link-result', viewId: 'view', linkId: 'link', success: true,
+    });
+    await f.controller.close();
+  });
+  it('discards a late link authorization when the controller has closed', async () => {
+    let authorize!: (value: unknown) => void;
+    const f = linkFixture(() => new Promise((resolve) => { authorize = resolve; }));
+    await f.controller.open({});
+    await flush();
+    await f.controller.close();
+    authorize({ authorized: true });
+    await flush();
+    expect(f.link).not.toHaveBeenCalled();
+    expect(f.invoke.mock.calls.some(([, input]) => input.op === 'link-result')).toBe(false);
   });
   it('host display changes never synthesize View request IDs', async () => {
     const f = fixture();

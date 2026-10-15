@@ -154,20 +154,35 @@ export class McpAppController {
           if (!Number.isSafeInteger(event.seq) || event.seq <= this.after) continue;
           this.after = event.seq;
           if (event.openLink) {
+            const viewId = this.document.viewId;
             void (async () => {
               let success = false;
               try {
                 if (this.openLink && !this.closing) {
-                  await this.openLink(event.openLink.url);
-                  success = true;
+                  const authorization = await this.invoke(this.sessionId, {
+                    op: 'authorize-link',
+                    viewId,
+                    linkId: event.openLink.id,
+                  });
+                  if (
+                    !authorization ||
+                    typeof authorization !== 'object' ||
+                    (authorization as { authorized?: unknown }).authorized !== true
+                  )
+                    throw new Error('MCP_APP_LINK_NOT_AUTHORIZED');
+                  // Closing can win while the execution Host checks the current card.
+                  if (!this.closing && !this.stopped && this.document?.viewId === viewId) {
+                    await this.openLink(event.openLink.url);
+                    success = true;
+                  }
                 }
               } catch {
                 /* Report the failed link action to the Host so its RPC can finish. */
               }
-              if (!this.stopped && this.document)
+              if (!this.stopped && this.document?.viewId === viewId)
                 await this.invoke(this.sessionId, {
                   op: 'link-result',
-                  viewId: this.document.viewId,
+                  viewId,
                   linkId: event.openLink.id,
                   success,
                 });

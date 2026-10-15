@@ -127,7 +127,12 @@ Host 资源加载最多 90 秒，远程打开
 连接暂时中断只重试读取轮询，最多 30 秒；后续独立请求可重新建立 MCP 连接，
 已发出的工具调用和消息不自动重放。
 长轮询等待前后均复核当前卡片、账号与配置；撤权后不交付已排队或晚到的外链与通知。
-回归见 `viewAuthorization.test.ts`。
+本机 Desktop 在实际打开外链前再次复核 Host 的 View/card。远程 Desktop 与 Mobile
+共用控制器，在调用当前查看设备的浏览器前通过 `authorize-link` 复核执行 Host 的
+View/card 及仍在等待的 `linkId`，收到显式授权回执后还会检查控制器未关闭。
+拒绝、超时、未知操作或缺少回执均不打开、不自动重试该动作，并向 Host 报告外链失败；
+旧执行端需更新才能为新查看端完成复核，旧查看端需更新才会执行这一步。
+回归见 `viewAuthorization.test.ts` 与 `mcpAppController.test.ts`。
 App 消息排队期间只在 Main 保留当前卡片/View 的私有 guard；正常 drain 和排队插话
 均在最终派发时重新核验，插话也在 Session 异步准备之后检查。guard 不进入公开队列
 投影、历史或持久快照；恢复后的 App 队列行无法重建活授权，会明确失败，需要从当前

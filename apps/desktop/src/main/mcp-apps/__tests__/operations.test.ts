@@ -12,6 +12,7 @@ function fixture() {
     cancelOpen: vi.fn(),
     displayMode: vi.fn(),
     linkResult: vi.fn(),
+    authorizeLink: vi.fn(async () => {}),
   };
   const host = api as unknown as McpAppsHost;
   const local = {
@@ -57,6 +58,7 @@ describe('task-bound MCP App operations', () => {
     { op: 'message', viewId: 'view', message: { jsonrpc: '2.0', id: 1, method: 'tools/call' } },
     { op: 'poll', viewId: 'view' },
     { op: 'link-result', viewId: 'view', linkId: 'link', success: true },
+    { op: 'authorize-link', viewId: 'view', linkId: 'link' },
   ])('rejects top-Renderer access to the App transport: %j', async (input) => {
     const f = fixture();
     await expect(handleMcpAppOperation(f.host, 'renderer:1', 'task', input, f.local))
@@ -76,6 +78,7 @@ describe('task-bound MCP App operations', () => {
   it.each([
     { op: 'poll', viewId: 'view', after: -1 },
     { op: 'poll', viewId: 'view', after: 1.5 },
+    { op: 'authorize-link', viewId: 'view', linkId: '' },
     { op: 'open', clientId: '' },
     { op: 'open', clientId: 'card', context: { theme: 'other' } },
     { op: 'teardown', viewId: 'view', alreadyNotified: 'true' },

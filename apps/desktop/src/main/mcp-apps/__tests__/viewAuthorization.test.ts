@@ -4,7 +4,7 @@ import type { JSONRPCMessage, Notification } from '@modelcontextprotocol/sdk/typ
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import type { AppConnection } from '../connection.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
-import { handleMcpAppFrameOperation } from '../operations.js';
+import { handleMcpAppFrameOperation, handleMcpAppOperation } from '../operations.js';
 
 const hosts: McpAppsHost[] = [];
 afterEach(async () => {
@@ -51,7 +51,7 @@ const requests = [
   ['prompts/list', {}, 'listPrompts', { prompts: [{ name: marker }] }],
 ] as const;
 
-async function fixture() {
+async function fixture(caller = 'renderer:1') {
   let owner = {};
   let enabled = true;
   let visible = true;
@@ -122,9 +122,9 @@ async function fixture() {
     connection: () => connection,
   });
   hosts.push(host);
-  const document = await host.open('renderer:1', 'task', 'card', {});
+  const document = await host.open(caller, 'task', 'card', {});
   const dispatch = (message: JSONRPCMessage) =>
-    host.dispatch('renderer:1', 'task', document.viewId, message);
+    host.dispatch(caller, 'task', document.viewId, message);
   await dispatch({
     jsonrpc: '2.0',
     id: 1,
@@ -149,7 +149,7 @@ async function fixture() {
     host,
     viewId: document.viewId,
     readCard,
-    poll: (after: number) => host.poll('renderer:1', 'task', document.viewId, after),
+    poll: (after: number) => host.poll(caller, 'task', document.viewId, after),
     notify: () => notify({ method: 'notifications/tools/list_changed' }),
     methods,
     outgoing,
@@ -177,8 +177,69 @@ describe('MCP App upstream result authorization', () => {
     const events = await f.poll(initial.at(-1)!.seq);
     const link = events.find((event) => event.openLink)?.openLink;
     expect(link).toEqual({ id: expect.any(String), url: 'https://example.invalid/' });
-    return { op: 'open-link', url: link!.url };
+    return { op: 'open-link', url: link!.url, linkId: link!.id };
   }
+
+  it.each(['card', 'owner', 'server', 'config'] as const)(
+    'rejects remote link authorization after %s revocation following a returned poll',
+    async (revocation) => {
+      const f = await fixture('device:phone');
+      const link = await returnedLink(f);
+      f.revoke(revocation);
+      await expect(
+        handleMcpAppOperation(f.host, 'device:phone', 'task', {
+          op: 'authorize-link',
+          viewId: f.viewId,
+          linkId: link.linkId,
+        }),
+      ).rejects.toThrow(/MCP_APP_(CARD_UNAVAILABLE|VIEW_UNAVAILABLE|SERVER_CHANGED)/);
+    },
+  );
+
+  it('authorizes only the active link bound to the exact remote caller and task', async () => {
+    const f = await fixture('device:phone');
+    const link = await returnedLink(f);
+    const input = { op: 'authorize-link', viewId: f.viewId, linkId: link.linkId };
+    for (const [caller, task] of [
+      ['device:other', 'task'],
+      ['device:phone', 'other-task'],
+    ])
+      await expect(handleMcpAppOperation(f.host, caller, task, input)).rejects.toThrow(
+        'MCP_APP_VIEW_UNAVAILABLE',
+      );
+    await expect(
+      handleMcpAppOperation(f.host, 'device:phone', 'task', {
+        ...input,
+        linkId: 'unknown-link',
+      }),
+    ).rejects.toThrow('MCP_APP_LINK_UNAVAILABLE');
+    await expect(handleMcpAppOperation(f.host, 'device:phone', 'task', input)).resolves.toEqual({
+      authorized: true,
+    });
+    f.host.linkResult('device:phone', 'task', f.viewId, link.linkId, false);
+    await expect(handleMcpAppOperation(f.host, 'device:phone', 'task', input)).rejects.toThrow(
+      'MCP_APP_LINK_UNAVAILABLE',
+    );
+  });
+
+  it('rechecks the remote View when its owner changes during final link authorization', async () => {
+    const f = await fixture('device:phone');
+    const link = await returnedLink(f);
+    const current = await f.readCard();
+    const pending = deferred<McpAppRecord>();
+    f.readCard.mockClear().mockReturnValueOnce(pending.promise);
+    const rejected = expect(
+      handleMcpAppOperation(f.host, 'device:phone', 'task', {
+        op: 'authorize-link',
+        viewId: f.viewId,
+        linkId: link.linkId,
+      }),
+    ).rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE');
+    await vi.waitFor(() => expect(f.readCard).toHaveBeenCalledOnce());
+    f.revoke('owner');
+    pending.resolve(current);
+    await rejected;
+  });
 
   it('opens a returned link when its bound View and card remain current', async () => {
     const f = await fixture();

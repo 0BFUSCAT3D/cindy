@@ -18,6 +18,11 @@ App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必�
 审批决定。View 绑定 owner、task、card、caller 与配置版本，清空、回退、账号切换或配置
 撤销后旧操作失效。轮询可有界重试，工具调用、消息发送与创建申请不自动重放。
 远程外链动作单独传给控制端，在当前查看设备打开，不在执行电脑打开。
+新远程查看端打开前通过同一 channel 的只读 `authorize-link`（`viewId` / `linkId`）
+向执行 Host 复核当前卡片、账号、配置与未结束的外链请求，且只接受显式
+`{ authorized: true }` 回执。旧 Host 拒绝该增量操作或回执缺失时不打开外链，
+该次请求按失败收尾，完整外链交互需更新执行电脑；不降级为跳过授权，也不自动重放。
+旧查看端可继续连接新 Host，打开前复核需查看端更新；既有 wire 字段与权限范围不变。
 兼容矩阵、可选能力声明与验证入口见 [MCP Apps 接入](../mcp-apps.md)。
 本机 Desktop 的 open 结果可选携带 `transport: "sandbox"`，只用于同版本 Main/Renderer
 切换到 Main 验证真实 frame 的直连通道，不向远程设备返回该字段。远程 v1 消息与原有

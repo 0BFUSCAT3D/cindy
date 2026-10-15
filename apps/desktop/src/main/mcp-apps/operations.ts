@@ -18,6 +18,7 @@ const request = z.discriminatedUnion('op', [
     mode: z.enum(['inline', 'fullscreen', 'pip']),
   }),
   z.object({ op: z.literal('link-result'), viewId: id, linkId: id, success: z.boolean() }),
+  z.object({ op: z.literal('authorize-link'), viewId: id, linkId: id }),
   z.object({ op: z.literal('mount-remote'), document: z.unknown() }),
   z.object({ op: z.literal('unmount-remote'), viewId: id }),
   z.object({ op: z.literal('open-link'), viewId: id, url: z.string().max(8192) }),
@@ -90,6 +91,10 @@ export async function handleMcpAppOperation(
     case 'display-mode':
       host.displayMode(caller, sessionId, input.viewId, input.mode);
       return {};
+    case 'authorize-link':
+      if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
+      await host.authorizeLink(caller, sessionId, input.viewId, input.linkId);
+      return { authorized: true };
     case 'link-result':
       if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
       host.linkResult(caller, sessionId, input.viewId, input.linkId, input.success);
