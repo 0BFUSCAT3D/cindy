@@ -117,25 +117,23 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 只推进到连续处理过的前缀末尾——补不完就不推进到当前回复,账本在补完前不算新鲜,换窗线
       // 不会因为一份有缺口的账本提前。每批有界且至少前进一条,几轮即收敛。
       //
-      // 水位的持久判据是消息 client_id(rowid 在瘦身 VACUUM 后可能重排),按它解析回当前 rowid;
-      // 解析不到(水位消息被删 / 撤回)退回存下的 rowid。没有账本(老对话第一次建账本、或首轮
-      // 复盘 claim 后失败)时从对话开头(/clear 之后)起算:整段历史按缺口分批回补,补完之前
-      // 不算新鲜,不跳过任何一轮。
+      // 水位的持久判据是消息 client_id(rowid 在瘦身 VACUUM 后可能重排),按它解析回当前 rowid。
+      // 存下的 rowid 数字在任何情况下都不拿来当下界:旧账本没有 client_id、或水位消息已被删 /
+      // 撤回解析不到,以及根本没有账本(老对话第一次建账本、首轮复盘 claim 后失败),一律从对话
+      // 开头(/clear 之后)起算——整段历史按缺口分批回补,补完之前不算新鲜,不跳过任何一轮。
       type Watermark = { rowid: number; id: string | undefined };
-      const floor: Watermark = workingBefore
-        ? {
-            rowid:
-              (workingBefore.coveredThroughMessageId
-                ? (
-                    await db.queryOne<{ rowid: number }>(
-                      `SELECT rowid FROM messages WHERE session_id=? AND client_id=? /* ledger-floor */`,
-                      [sessionId, workingBefore.coveredThroughMessageId],
-                    )
-                  )?.rowid
-                : undefined) ?? workingBefore.coveredThroughRowid,
-            id: workingBefore.coveredThroughMessageId,
-          }
-        : { rowid: 0, id: undefined };
+      const resolvedFloor = workingBefore?.coveredThroughMessageId
+        ? (
+            await db.queryOne<{ rowid: number }>(
+              `SELECT rowid FROM messages WHERE session_id=? AND client_id=? /* ledger-floor */`,
+              [sessionId, workingBefore.coveredThroughMessageId],
+            )
+          )?.rowid
+        : undefined;
+      const floor: Watermark =
+        resolvedFloor !== undefined
+          ? { rowid: resolvedFloor, id: workingBefore!.coveredThroughMessageId }
+          : { rowid: 0, id: undefined };
       let covered: Watermark = turnTruncated ? { rowid: prevCompleted, id: prev?.id } : { rowid: row.rowid, id: replyId };
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
       if (floor.rowid < prevCompleted) {

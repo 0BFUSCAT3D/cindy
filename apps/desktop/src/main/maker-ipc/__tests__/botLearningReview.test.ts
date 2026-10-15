@@ -239,12 +239,13 @@ it('feeds the working memory to the review and writes an evidence-filtered ledge
   await reviewTeammateLearning('session', 'reply');
   const input = JSON.parse(h.model.mock.calls[0]![1] as string);
   expect(input.workingMemory).toEqual({ threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] });
-  // 本轮取材从上一条完成回复(3)接起;账本只覆盖到 1,缺口 (1,3] 另按升序分批回补;都不取 /clear 之前的消息。
+  // 本轮取材从上一条完成回复(3)接起;旧账本没有 client_id,存下的 rowid(1)不作数,缺口从对话开头(0)
+  // 按升序分批回补;都不取 /clear 之前的消息。
   const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
   const recent = query.mock.calls.slice(-2);
   expect(recent.map((call) => call[1])).toEqual([
     ['session', 5, 3, 'session'],
-    ['session', 1, 3, 'session', 41],
+    ['session', 0, 3, 'session', 41],
   ]);
   expect(recent.every((call) => String(call[0]).includes('cleared_at'))).toBe(true);
   expect(h.writeWorking).toHaveBeenCalledWith(
@@ -304,6 +305,12 @@ it('resolves the ledger floor by client_id so a VACUUM-renumbered rowid cannot f
   await reviewTeammateLearning('session', 'reply');
   expect(query.mock.calls.at(-1)![1]).toEqual(['session', 1, 3, 'session', 41]);
   expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply' }), 4);
+  // 有 client_id 但解析不到(水位消息已被删 / 撤回):同样不信存下的 500,从对话开头回补。
+  h.meta = { turnCompleted: true };
+  h.floorRowid = null;
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply-gone');
+  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 0, 3, 'session', 41]);
   // 没有账本:从对话开头起算,整段历史按缺口分批回补,而不是从上一条完成回复直接跳过去。
   h.meta = { turnCompleted: true };
   h.working = null;
