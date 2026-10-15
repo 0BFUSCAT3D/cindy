@@ -30,6 +30,7 @@ vi.mock('@/hooks/useDeviceProviders', () => ({
   getCachedDeviceProviders: () => null,
   useDeviceProviders: () => remoteCatalog,
 }));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => localCatalog }));
 vi.mock('@/features/cc-agent/lib/genericNewMakerRouteState', () => ({
   makeGenericNewMakerRouteState: () => ({ workspacePrompt: 'generic' }),
 }));
@@ -60,6 +61,10 @@ const bus = vi.hoisted(() => ({
   requested: new Set<(event: ProviderShareRequestedEvent) => void>(),
   settled: new Set<(event: ProviderShareSettledEvent) => void>(),
   manage: new Set<(event: { providerId: string }) => void>(),
+}));
+
+const localCatalog = vi.hoisted(() => ({
+  providers: [] as Array<{ id: string; source: string; auth: { method: string; native?: string } }>,
 }));
 
 const remoteCatalog = vi.hoisted(() => ({
@@ -99,6 +104,7 @@ beforeEach(() => {
   bus.requested.clear();
   bus.settled.clear();
   bus.manage.clear();
+  localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
   remoteCatalog.providers = [];
   remoteCatalog.loading = false;
   remoteCatalog.error = null;
@@ -286,6 +292,7 @@ describe('ProviderShareGlobalHost', () => {
 
   it('pops a request for another computer\'s share after generating its link here, and hands the decision to that computer', async () => {
     currentOwner = ownerState([]);
+    remoteCatalog.providers = [{ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } }];
     const groupCommand = vi.fn(async () => ({ ok: true }));
     Object.assign(window.electronAPI, { providerGroup: { command: groupCommand } });
     renderHost();
@@ -310,6 +317,57 @@ describe('ProviderShareGlobalHost', () => {
     });
     expect(bus.command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
   });
+
+  it.each(['empty', 'unrelated'])('blocks a local approval when its provider directory is %s', async (catalog) => {
+    localCatalog.providers = catalog === 'empty' ? [] : [{ id: 'openai', source: 'builtin', auth: { method: 'oauth' } }];
+    renderHost();
+    await screen.findByTestId('provider-share-approve-dialog');
+    const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(bus.command).not.toHaveBeenCalledWith({ action: 'approve', requestId: 'req-1' });
+    const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+    expect(reject.disabled).toBe(false);
+    fireEvent.click(reject);
+    await waitFor(() => expect(bus.command).toHaveBeenCalledWith({ action: 'reject', requestId: 'req-1' }));
+  });
+
+  it.each(['empty', 'unrelated', 'loading', 'failed'])(
+    'blocks a remote approval when its provider directory is %s, even if the local provider is known',
+    async (catalog) => {
+      localCatalog.providers = [{ id: 'anthropic', source: 'builtin', auth: { method: 'oauth' } }];
+      remoteCatalog.providers = catalog === 'empty' ? [] : [{
+        id: catalog === 'unrelated' ? 'openai' : 'anthropic', source: 'builtin', auth: { method: 'oauth' },
+      }];
+      remoteCatalog.loading = catalog === 'loading';
+      remoteCatalog.error = catalog === 'failed' ? 'directory unavailable' : null;
+      currentOwner = {
+        ready: true,
+        shares: [],
+        watchedRequests: [{
+          request,
+          share: { shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic' },
+          hostDeviceId: 'host',
+        }],
+      };
+      const groupCommand = vi.fn(async () => ({ ok: true }));
+      Object.assign(window.electronAPI, { providerGroup: { command: groupCommand } });
+      renderHost();
+      await screen.findByTestId('provider-share-approve-dialog');
+      const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+      expect(approve.disabled).toBe(true);
+      fireEvent.click(approve);
+      expect(groupCommand).not.toHaveBeenCalled();
+      const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+      expect(reject.disabled).toBe(false);
+      fireEvent.click(reject);
+      await waitFor(() => expect(groupCommand).toHaveBeenCalledWith({
+        action: 'remote-manage',
+        deviceId: 'host',
+        request: { action: 'manage-share', command: { action: 'reject', requestId: 'req-1' } },
+      }));
+    },
+  );
 
   it('blocks approval until the remote provider directory classifies the provider', async () => {
     remoteCatalog.loading = true;
@@ -337,6 +395,7 @@ describe('ProviderShareGlobalHost', () => {
     await waitFor(() =>
       expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false),
     );
+    expect(screen.getByTestId('provider-share-approve-dialog').textContent).toContain('providerShare.approve.calloutClaudeEmail');
   });
 
   it('opens the management page from a notification click', async () => {

@@ -220,12 +220,11 @@ export function ProviderShareManagePage({
 
   const ready = state?.ready === true;
   const canCreateLink = gate === 'on' && ready && !loadFailed;
-  const providerForApproval = (deviceId ? remoteCatalog.providers : providers).find((provider) => provider.id === providerId)
-    ?? remoteProvider;
+  const providerForApproval = (deviceId ? remoteCatalog.providers : providers).find((provider) => provider.id === providerId);
   const sharesClaudeEmail = sharesClaudeLoginEmail(providerForApproval);
-  // 同账号另一台电脑的目录首帧可能还是空的；在确认供应商类型前不能允许同意，
-  // 否则 Claude 订阅的邮箱告知可能被漏掉。错误也保持阻断，避免未知状态被当成非 Claude。
-  const providerClassificationReady = !deviceId || (!remoteCatalog.loading && remoteCatalog.error === null);
+  // 审批只用当前目录中的目标供应商分类；进入管理页时的旧投影不能证明它仍然存在。
+  const providerClassificationReady = providerForApproval !== undefined
+    && (!deviceId || (!remoteCatalog.loading && remoteCatalog.error === null));
 
   return (
     // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderView } from '@cindy/model-providers';
 
 import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState } from '../../../../shared/providerShare';
@@ -136,7 +137,7 @@ beforeEach(() => {
   resetProviderShareStoreForTests();
   localGroupsTesting.reset();
   localGroups = {};
-  localCatalog.providers = [];
+  localCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
   remoteCatalog.providers = [];
   remoteCatalog.loading = false;
   remoteCatalog.error = null;
@@ -178,7 +179,7 @@ afterEach(() => cleanup());
 
 function renderPage(
   gate: 'on' | 'remote-off' | 'invocation-off' = 'on',
-  options: { deviceId?: string } = {},
+  options: { deviceId?: string; remoteProvider?: ProviderView } = {},
 ) {
   const onBack = vi.fn();
   const view = render(
@@ -188,6 +189,7 @@ function renderPage(
       providerIcon={null}
       gate={gate}
       deviceId={options.deviceId}
+      remoteProvider={options.remoteProvider}
       onBack={onBack}
     />,
   );
@@ -354,6 +356,56 @@ describe('ProviderShareManagePage', () => {
     expect(screen.queryByTestId('provider-share-claude-email-callout')).toBeNull();
     expect((screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it.each(['empty', 'unrelated'])('blocks a local management approval when its provider directory is %s', async (catalog) => {
+    localCatalog.providers = catalog === 'empty' ? [] : [{ id: 'openai', source: 'builtin', auth: { method: 'oauth' } }];
+    renderPage();
+    await screen.findAllByTestId('provider-share-pending-row');
+    const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(command).not.toHaveBeenCalledWith({ action: 'approve', requestId: 'req-1' });
+    const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+    expect(reject.disabled).toBe(false);
+    fireEvent.click(reject);
+    await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'reject', requestId: 'req-1' }));
+  });
+
+  it.each(['empty', 'unrelated', 'loading', 'failed'])(
+    'blocks a remote management approval when its provider directory is %s, even with an earlier provider snapshot',
+    async (catalog) => {
+      remoteCatalog.providers = catalog === 'empty' ? [] : [{
+        id: catalog === 'unrelated' ? 'openai' : 'xd', source: 'builtin', auth: { method: 'oauth', native: 'claude' },
+      }];
+      remoteCatalog.loading = catalog === 'loading';
+      remoteCatalog.error = catalog === 'failed' ? 'directory unavailable' : null;
+      const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
+      renderPage('on', {
+        deviceId: 'studio',
+        remoteProvider: {
+          id: 'xd', name: 'Cindy AI', source: 'builtin', agents: ['claude-code'],
+          auth: { method: 'oauth', native: 'claude' }, routing: {}, models: {}, connected: true,
+        },
+      });
+      await screen.findAllByTestId('provider-share-pending-row');
+      const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+      expect(approve.disabled).toBe(true);
+      fireEvent.click(approve);
+      expect(remoteCommand).not.toHaveBeenCalledWith({
+        action: 'remote-manage',
+        deviceId: 'studio',
+        request: { action: 'manage-share', command: { action: 'approve', requestId: 'req-1' } },
+      });
+      const reject = screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement;
+      expect(reject.disabled).toBe(false);
+      fireEvent.click(reject);
+      await waitFor(() => expect(remoteCommand).toHaveBeenCalledWith({
+        action: 'remote-manage',
+        deviceId: 'studio',
+        request: { action: 'manage-share', command: { action: 'reject', requestId: 'req-1' } },
+      }));
+    },
+  );
 
   it('blocks approval on a remote management page until the provider directory is ready', async () => {
     remoteCatalog.loading = true;
