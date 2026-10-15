@@ -47,7 +47,7 @@ import type {
   BotCollaborationRole,
   BotDelegationInterjectResult,
 } from '../../shared/botCollaboration.js';
-import { BOT_DELEGATION_CLIENT_ID, botInterjectionPreview } from '../../shared/botCollaboration.js';
+import { BOT_DELEGATION_CLIENT_ID, BOT_INTERJECTION_MAX_CHARS as MAX_INTERJECTION_CHARS, botInterjectionPreview } from '../../shared/botCollaboration.js';
 import { buildBotGroupTaskCard, type BotGroupTaskCardLabels, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
 import { t } from '../i18n.js';
 import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
@@ -59,8 +59,6 @@ import { readBotTaskModelOverride, type BotModelRoute } from '../../shared/botMo
 import { validateTaskModel, resolveTaskModelSelection, type TaskModelSelection } from './appDefaultModelControl.js';
 
 const ACTIVE_DELEGATION_STATUSES = ['queued', 'running', 'waiting'] as const;
-/** 一条补充消息的正文上限：够写清「先别做 X，改做 Y」，又不至于变成另一项任务。 */
-const MAX_INTERJECTION_CHARS = 4_000;
 const DEFAULT_MAX_DEPTH = 1;
 const DEFAULT_MAX_ACTIVE_CHILDREN = 10;
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;

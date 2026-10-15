@@ -62,6 +62,9 @@ export interface BotCollaborationMeta {
   };
 }
 
+/** Maximum trimmed note length, in UTF-16 code units; shared by delivery UI and host validation. */
+export const BOT_INTERJECTION_MAX_CHARS = 4_000;
+
 /** 补充消息留痕摘要的上限：只取首行，主聊天不复制完整指令。 */
 export const BOT_INTERJECTION_PREVIEW_MAX = 200;
 

@@ -221,6 +221,28 @@ it('adds a note to a local running task as the owner, with the task runtime sett
   await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
   expect(mocks.toast).toHaveBeenCalledWith('bots.collab.addNoteSent');
 });
+it.each([4000, 4001])('checks the trace length limit before delivering a %i-character note', async length => {
+  mocks.row = delegation({ status: 'running' });
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.addNote/ }));
+  const input = screen.getByRole('textbox', { name: 'bots.collab.addNote' }) as HTMLInputElement;
+  const text = '字'.repeat(length);
+  // Programmatic change bypasses the native input limit: submit must also validate before sending.
+  fireEvent.change(input, { target: { value: text } });
+  fireEvent.submit(input.closest('form')!);
+  if (length === 4000) {
+    await waitFor(() => expect(mocks.trace).toHaveBeenCalledWith('parent', 'd', text));
+    expect(mocks.send).toHaveBeenCalledWith('child', text, 'gpt-x', 'high', 'default', '/child');
+    expect(mocks.toast).toHaveBeenCalledWith('bots.collab.addNoteSent');
+  } else {
+    expect((await screen.findByRole('alert')).textContent).toBe('bots.collab.actionFailed');
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.trace).not.toHaveBeenCalled();
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(input.value).toBe(text);
+  }
+  expect(input.maxLength).toBe(4000);
+});
 it('still reports a delivered note when only its chat trace fails, and leaves no trace for an undelivered one', async () => {
   mocks.row = delegation({ status: 'running' });
   mocks.trace.mockRejectedValueOnce(new Error('offline'));

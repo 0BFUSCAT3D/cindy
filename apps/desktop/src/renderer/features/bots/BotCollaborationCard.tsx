@@ -30,7 +30,7 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { readWorkingPhase, WORKING_PHASE_KEYS } from '../../../shared/workingStatus';
 import type { BotCollaborationMeta } from '../../../shared/botCollaboration';
-import { readBotCollaborationMeta } from '../../../shared/botCollaboration';
+import { BOT_INTERJECTION_MAX_CHARS, readBotCollaborationMeta } from '../../../shared/botCollaboration';
 import { isActiveDelegationStatus } from './botDelegationLive';
 import { useBotTaskSession } from './BotSessionTaskLink';
 import { useRemoteBots } from './useRemoteBots';
@@ -169,6 +169,7 @@ async function sendToTask(
   childSessionId: string,
   text: string,
 ): Promise<boolean> {
+  if (text.length > BOT_INTERJECTION_MAX_CHARS) return false;
   const owner = getDataOwnerGeneration();
   const row = await sessionService.get(childSessionId);
   if (!isDataOwnerGenerationCurrent(owner) || !row?.workingDir) return false;
@@ -451,6 +452,7 @@ export function BotTaskCard({
           <input
             autoFocus
             value={note}
+            maxLength={BOT_INTERJECTION_MAX_CHARS}
             disabled={pending}
             onChange={(event) => setNote(event.target.value)}
             onKeyDown={(event) => {
