@@ -115,6 +115,36 @@ describe('provider management client', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
+  it('does not subtract link creation time before the remote response', async () => {
+    let now = 100_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const invoke: ProviderGroupRemoteInvoke = vi.fn(async () => {
+        now = 200_000;
+        return {
+          ok: true,
+          result: {
+            result: { link: 'https://cindy.app/s#slow', expiresAt: new Date(1_300_000).toISOString() },
+            respondedAt: 1_000_000,
+          },
+        };
+      }) as unknown as ProviderGroupRemoteInvoke;
+      host.watch.mockImplementationOnce(async () => {
+        now = 230_000;
+      });
+
+      await expect(invokeProviderManagement(invoke, 'group-host', createLink)).resolves.toMatchObject({
+        link: 'https://cindy.app/s#slow',
+      });
+      expect(clipboard.remember).toHaveBeenCalledWith(
+        'https://cindy.app/s#slow',
+        new Date(500_000).toISOString(),
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('does not register or return a link when saving its approval watch fails', async () => {
     host.watch.mockRejectedValueOnce(new Error('[PRECONDITION_FAILED] approval setup failed'));
     const invoke = replying({ link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() });

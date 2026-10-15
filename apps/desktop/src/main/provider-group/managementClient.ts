@@ -19,7 +19,6 @@ export async function invokeProviderManagement(
   readInvoke: ProviderGroupRemoteInvoke = invoke,
 ): Promise<unknown> {
   const assertOwner = captureProviderManagementScope();
-  const startedAt = Date.now();
   const response = await invoke(deviceId, PROVIDER_GROUP_REMOTE_CHANNEL, [request], { preSend: assertOwner });
   assertOwner();
   if (!response.ok) {
@@ -39,11 +38,13 @@ export async function invokeProviderManagement(
       || typeof created.expiresAt !== 'string' || !Number.isFinite(Date.parse(created.expiresAt))) {
       throwIpcError('PRECONDITION_FAILED', 'Invalid provider share link');
     }
-    const remaining = Math.max(0, Math.min(PROVIDER_SHARE_LINK_TTL_MS, Date.parse(created.expiresAt) - reply.respondedAt)
-      - Math.max(0, Date.now() - startedAt));
-    const expiresAt = new Date(Date.now() + remaining).toISOString();
+    const responseReceivedAt = Date.now();
+    const remoteRemaining = Math.max(0, Math.min(PROVIDER_SHARE_LINK_TTL_MS, Date.parse(created.expiresAt) - reply.respondedAt));
     await watchProviderShareRequests(deviceId, request.command.providerId, () => readProviderManagementShares(readInvoke, deviceId));
     assertOwner();
+    const postResponseElapsed = Math.max(0, Date.now() - responseReceivedAt);
+    const remaining = Math.max(0, remoteRemaining - postResponseElapsed);
+    const expiresAt = new Date(Date.now() + remaining).toISOString();
     rememberIssuedClipboardText(created.link, expiresAt);
     return { link: created.link, expiresAt };
   }
