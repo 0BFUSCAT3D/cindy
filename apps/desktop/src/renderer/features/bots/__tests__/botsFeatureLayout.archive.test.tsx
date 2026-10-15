@@ -8,10 +8,10 @@ import { BotsListView } from '../BotsListView';
 import { refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
 
 vi.mock('../botStore', () => ({ useBotProfiles: () => [] }));
-vi.mock('../BotsSidebar', () => ({ BotsSidebar: () => null }));
+// The layout registers the shared task sidebar (with the teammates section); not under test here.
+vi.mock('../../cc-agent/useRegisterCCAgentSidebar', () => ({ useRegisterCCAgentSidebar: vi.fn() }));
 vi.mock('../BotSettingsDrawer', () => ({ BotSettingsDrawer: () => null }));
 vi.mock('../BotGroupSettingsDrawer', () => ({ BotGroupSettingsDrawer: () => null }));
-vi.mock('../../feature-context', () => ({ useOwnTopNavScrollableRows: vi.fn() }));
 
 let groups: BotGroupSummary[];
 function group(id = 'room', archived = false): BotGroupSummary {

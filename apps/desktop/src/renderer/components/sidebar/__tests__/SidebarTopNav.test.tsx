@@ -4,7 +4,6 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MainViewHistoryProvider } from '@/contexts/MainViewHistoryContext';
-import { publishNavigationAttention } from '@/lib/navigationAttentionStore';
 import { SidebarRailNavigation, SidebarTopNav, type SidebarRailSearchOptions } from '../SidebarTopNav';
 import {
   __testing as navigationTesting,
@@ -30,9 +29,7 @@ const SITES: MainViewMock = {
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, vars?: { name?: string }) =>
-      ({ 'sidebar.tabs.bots': '伙伴', 'sidebar.backToSessions': '返回任务' })[key] ??
-        (vars?.name ? `${key}: ${vars.name}` : key),
+    t: (key: string, vars?: { name?: string }) => (vars?.name ? `${key}: ${vars.name}` : key),
   }),
 }));
 const unreadMock = vi.hoisted(() => ({ ordinary: false }));
@@ -51,14 +48,17 @@ vi.mock('../GhostMainViewNavEntries', () => ({
   MAIN_VIEW_ICONS: { globe: () => null },
 }));
 vi.mock('@/features/cc-agent/sidebar/SidebarInlineSearch', () => ({
-  SidebarInlineSearch: ({ openSignal, onFocusLeave }: { openSignal: number; onFocusLeave?: () => void }) =>
-    <button aria-label="Search row" data-open-signal={openSignal} onBlur={onFocusLeave}>Search row</button>,
+  // Clicking stands in for typing a query: the real row reports that search became active.
+  SidebarInlineSearch: ({ openSignal, onFocusLeave, onSearchActive }: {
+    openSignal: number; onFocusLeave?: () => void; onSearchActive?: () => void;
+  }) =>
+    <button aria-label="Search row" data-open-signal={openSignal} onBlur={onFocusLeave} onClick={onSearchActive}>Search row</button>,
 }));
 vi.mock('@/features/cc-agent/sidebar/conversationSearchContext', () => ({
   useConversationSearchContext: () => ({ search: searchMock, allKnownProjects: [], openSignal: 0 }),
 }));
 
-afterEach(() => { cleanup(); publishNavigationAttention({ tasks: 0, teammates: 0 }); });
+afterEach(() => { cleanup(); });
 
 /** Pretend the owner's first run already happened, so plugins keep their default (More). */
 function seedKnownPlugins(ids: string[]) {
@@ -76,8 +76,8 @@ beforeEach(() => {
   localStorage.removeItem('sidebar-navigation:apps:v1');
   navigationTesting.resetArrivals();
   setSidebarNavigationPrefs(OWNER, {
-    order: ['automations', 'plugins', 'bots', 'search'],
-    visible: ['automations', 'plugins', 'bots', 'search'],
+    order: ['automations', 'plugins', 'search'],
+    visible: ['automations', 'plugins', 'search'],
   });
 });
 
@@ -115,8 +115,8 @@ describe('Retirement attention across sidebar navigation placements', () => {
       const inMore = placement.endsWith('more');
       if (inMore) {
         setSidebarNavigationPrefs(OWNER, {
-          order: ['automations', 'plugins', 'bots', 'search'],
-          visible: ['automations', 'bots', 'search'],
+          order: ['automations', 'plugins', 'search'],
+          visible: ['automations', 'search'],
         });
       }
       const ui = () => (
@@ -155,72 +155,44 @@ describe('Retirement attention across sidebar navigation placements', () => {
   );
 });
 
-describe('Sidebar teammate return action', () => {
+describe('Sidebar navigation rows and More', () => {
   const openMore = () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'sidebar.navigation.more' }), {
       button: 0,
       ctrlKey: false,
     });
   };
+  const activateSearch = () => fireEvent.click(screen.getByRole('button', { name: 'Search row' }));
 
-  it('shows the destination count, preserves it when switching sections, hides zero and reuses 99+ overflow', () => {
-    publishNavigationAttention({ tasks: 4, teammates: 105 });
+  it('no longer offers Teammates as a navigation entry or a More item', () => {
     render(<Harness initialPath="/cc-agent" />);
-    expect(screen.getByRole('button', { name: '伙伴' }).textContent).toBe('伙伴99+');
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    expect(screen.getByRole('button', { name: '返回任务' }).textContent).toBe('返回任务4');
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
-    expect(screen.getByRole('button', { name: '伙伴' }).textContent).toBe('伙伴99+');
-    act(() => publishNavigationAttention({ tasks: 4, teammates: 0 }));
-    expect(screen.getByRole('button', { name: '伙伴' }).textContent).toBe('伙伴');
-  });
-
-  it('keeps the teammate count on its More item and narrow rail tile', () => {
-    publishNavigationAttention({ tasks: 0, teammates: 3 });
-    setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'search'],
-    });
-    render(<Harness initialPath="/cc-agent" />);
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'sidebar.navigation.more' }), { button: 0, ctrlKey: false });
-    expect(screen.getByRole('menuitem', { name: /伙伴/ }).textContent).toBe('伙伴3');
-    cleanup();
-    setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots', 'search'],
-    });
-    render(<MainViewHistoryProvider><MemoryRouter initialEntries={['/cc-agent']}>
-      <SidebarRailNavigation renderSearch={() => null} />
-    </MemoryRouter></MainViewHistoryProvider>);
-    expect(screen.getByRole('button', { name: '伙伴' }).textContent).toBe('3');
+    expect(screen.queryByRole('button', { name: 'sidebar.tabs.bots' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'sidebar.backToSessions' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Open teammate' }));
+    // On a teammate chat the same rows stay; there is no "back to tasks" swap.
+    expect(screen.queryByRole('button', { name: 'sidebar.backToSessions' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'sidebar.tabs.plugins' })).toBeTruthy();
+    openMore();
+    expect(screen.queryByRole('menuitem', { name: /sidebar\.tabs\.bots|sidebar\.backToSessions/ })).toBeNull();
   });
 
   it('moves every unchecked entry into More and opens the same destination', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['bots', 'plugins', 'search', 'automations'],
+      order: ['plugins', 'search', 'automations'],
       visible: [],
     });
     render(<Harness initialPath="/cc-agent/session-1" />);
     expect(screen.queryByRole('button', { name: 'ccAgent.layout.automations' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'sidebar.tabs.plugins' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '伙伴' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Search row' })).toBeNull();
 
     openMore();
-    const hidden = ['伙伴', 'sidebar.tabs.plugins', 'sidebar.navigation.items.search', 'ccAgent.layout.automations'];
+    const hidden = ['sidebar.tabs.plugins', 'sidebar.navigation.items.search', 'ccAgent.layout.automations'];
     const items = hidden.map((name) => screen.getByRole('menuitem', { name }));
     expect(items.every((item, index) =>
       index === 0 || Boolean(items[index - 1].compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING),
     )).toBe(true);
     fireEvent.click(items[0]);
-    expect(screen.getByTestId('location').textContent).toBe('/bots/list');
-
-    openMore();
-    fireEvent.click(screen.getByRole('menuitem', { name: '返回任务' }));
-    expect(screen.getByTestId('location').textContent).toBe('/cc-agent/session-1');
-
-    openMore();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'sidebar.tabs.plugins' }));
     expect(screen.getByTestId('location').textContent).toBe('/plugins');
 
     openMore();
@@ -230,8 +202,8 @@ describe('Sidebar teammate return action', () => {
 
   it('opens an unchecked Search from More without changing its saved visibility', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'plugins'],
     });
     render(<Harness initialPath="/cc-agent" />);
     expect(screen.queryByRole('button', { name: 'Search row' })).toBeNull();
@@ -249,7 +221,7 @@ describe('Sidebar teammate return action', () => {
     vi.useFakeTimers();
     try {
       setSidebarNavigationPrefs(OWNER, {
-        order: ['automations', 'plugins', 'bots', 'search'],
+        order: ['automations', 'plugins', 'search'],
         visible: ['automations', 'search'],
       });
       render(<Harness initialPath="/cc-agent" />);
@@ -282,7 +254,7 @@ describe('Sidebar teammate return action', () => {
 
   it('still moves focus into More when it is opened from the keyboard', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
+      order: ['automations', 'plugins', 'search'],
       visible: ['automations', 'search'],
     });
     render(<Harness initialPath="/cc-agent" />);
@@ -295,7 +267,7 @@ describe('Sidebar teammate return action', () => {
 
   it('keeps checked entries out of More', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
+      order: ['automations', 'plugins', 'search'],
       visible: ['automations', 'search'],
     });
     render(<Harness initialPath="/cc-agent" />);
@@ -303,13 +275,12 @@ describe('Sidebar teammate return action', () => {
     expect(screen.queryByRole('menuitem', { name: 'ccAgent.layout.automations' })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: 'sidebar.navigation.items.search' })).toBeNull();
     expect(screen.getByRole('menuitem', { name: 'sidebar.tabs.plugins' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '伙伴' })).toBeTruthy();
   });
 
   it('places Search in the saved order and does not add an Issue entry', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['search', 'plugins', 'automations', 'bots'],
-      visible: ['search', 'plugins', 'automations', 'bots'],
+      order: ['search', 'plugins', 'automations'],
+      visible: ['search', 'plugins', 'automations'],
     });
     render(<Harness initialPath="/cc-agent" />);
     const search = screen.getByRole('button', { name: 'Search row' });
@@ -320,8 +291,8 @@ describe('Sidebar teammate return action', () => {
 
   it('hides Search until an active query needs its input again', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'plugins'],
     });
     const view = render(<Harness initialPath="/cc-agent" />);
     expect(screen.queryByRole('button', { name: 'Search row' })).toBeNull();
@@ -337,22 +308,21 @@ describe('Sidebar teammate return action', () => {
 
   it('keeps entries after a mid-list Search reachable while a query is pinned', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'search', 'plugins', 'bots'],
-      visible: ['automations', 'search', 'plugins', 'bots'],
+      order: ['automations', 'search', 'plugins'],
+      visible: ['automations', 'search', 'plugins'],
     });
     searchMock.query = 'needle';
     render(<Harness initialPath="/cc-agent" />);
     const search = screen.getByRole('button', { name: 'Search row' });
     const plugins = screen.getByRole('button', { name: 'sidebar.tabs.plugins' });
     expect(search.compareDocumentPosition(plugins) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole('button', { name: '伙伴' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'sidebar.navigation.more' })).toBeTruthy();
   });
 
   it('keeps a hidden Search accessible for a project-scoped search', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'plugins'],
     });
     searchMock.lockedProjectKey = 'project-1';
     render(<Harness initialPath="/cc-agent" />);
@@ -362,8 +332,8 @@ describe('Sidebar teammate return action', () => {
     mainViewsMock.routeCapable = [SITES];
     mainViewsMock.sidebarVisible = [SITES];
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'app:xd-sites', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots', 'search'],
+      order: ['automations', 'app:xd-sites', 'plugins', 'search'],
+      visible: ['automations', 'plugins', 'search'],
     });
     render(<Harness initialPath="/cc-agent" />);
     const automations = screen.getByRole('button', { name: 'ccAgent.layout.automations' });
@@ -387,8 +357,8 @@ describe('Sidebar teammate return action', () => {
     render(<Harness initialPath="/cc-agent" />);
     expect(screen.getByRole('button', { name: '站点' })).toBeTruthy();
     act(() => setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots', 'search'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'plugins', 'search'],
       appsAtTop: [],
     }));
     expect(screen.queryByRole('button', { name: '站点' })).toBeNull();
@@ -437,41 +407,48 @@ describe('Sidebar teammate return action', () => {
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
       .toEqual(['sidebar.navigation.customize.title']);
   });
-  it('respects hidden teammate navigation in the narrow rail', () => {
-    setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins'],
-    });
-    render(<MainViewHistoryProvider><MemoryRouter initialEntries={['/cc-agent']}>
+  it('renders nothing in the rail slot other features borrow', () => {
+    // Teammates used to lend other features' rails a tile here; the task rail's
+    // CollapsedView owns that entry now.
+    const view = render(<MainViewHistoryProvider><MemoryRouter initialEntries={['/plugins']}>
       <SidebarTopNav section="rail" />
     </MemoryRouter></MainViewHistoryProvider>);
-    expect(screen.queryByRole('button', { name: '伙伴' })).toBeNull();
-    act(() => setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots', 'search'],
-    }));
+    expect(view.container.childElementCount).toBe(0);
   });
-  it('keeps the previous task when visiting automations before teammates', () => {
+
+  it('keeps the previous task when visiting automations before plugins', () => {
     const sessionPath = '/cc-agent/session-1?remoteHostId=host-1#message-2';
     render(<Harness initialPath={sessionPath} />);
     fireEvent.click(screen.getByRole('button', { name: 'ccAgent.layout.automations' }));
     expect(screen.getByRole('button', { name: 'ccAgent.layout.automations' }).getAttribute('aria-current')).toBe('page');
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+    fireEvent.click(screen.getByRole('button', { name: 'sidebar.tabs.plugins' }));
+    expect(screen.getByTestId('location').textContent).toBe('/plugins');
+    // Searching outside the task view returns to it, where the results are drawn.
+    activateSearch();
     expect(screen.getByTestId('location').textContent).toBe(sessionPath);
     expect(screen.getByRole('button', { name: 'ccAgent.layout.automations' }).hasAttribute('aria-current')).toBe(false);
   });
 
   it.each(['/cc-agent/scheduled', '/cc-agent/scheduled/?filter=enabled#schedule-1'])(
-    'returns to the task index after entering teammates from %s without a previous task',
+    'returns to the task index after entering plugins from %s without a previous task',
     (initialPath) => {
       render(<Harness initialPath={initialPath} />);
-      fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-      fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+      fireEvent.click(screen.getByRole('button', { name: 'sidebar.tabs.plugins' }));
+      activateSearch();
       expect(screen.getByTestId('location').textContent).toBe('/cc-agent');
       expect(screen.getByRole('button', { name: 'ccAgent.layout.automations' }).hasAttribute('aria-current')).toBe(false);
     },
   );
+
+  it('keeps a teammate chat open when search becomes active on it', () => {
+    // Teammates share the task sidebar, so results show in place instead of leaving the chat.
+    render(<Harness initialPath="/bots/teammate-2" />);
+    activateSearch();
+    expect(screen.getByTestId('location').textContent).toBe('/bots/teammate-2');
+    fireEvent.click(screen.getByRole('button', { name: 'Open plugins' }));
+    activateSearch();
+    expect(screen.getByTestId('location').textContent).toBe('/cc-agent');
+  });
 
   it('does not seed a new owner from the unchanged router entry', () => {
     const oldPath = '/cc-agent/old-owner-session?remoteHostId=old-host#message-2';
@@ -489,56 +466,23 @@ describe('Sidebar teammate return action', () => {
     const view = render(<PersistentRouter owner="one" />);
     view.rerender(<PersistentRouter owner="two" />);
     expect(screen.getByTestId('location').textContent).toBe(oldPath);
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+    fireEvent.click(screen.getByRole('button', { name: 'sidebar.tabs.plugins' }));
+    activateSearch();
     expect(screen.getByTestId('location').textContent).toBe('/cc-agent');
 
     const newPath = '/cc-agent/new-owner-session?remoteHostId=new-host#message-3';
     fireEvent.click(screen.getByRole('button', { name: 'Open task' }));
     view.rerender(<PersistentRouter owner="two" />);
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+    fireEvent.click(screen.getByRole('button', { name: 'sidebar.tabs.plugins' }));
+    activateSearch();
     expect(screen.getByTestId('location').textContent).toBe(newPath);
-  });
-
-  it('changes the existing entry and restores both destinations across sidebar remounts', () => {
-    const sessionPath = '/cc-agent/session-1?remoteHostId=host-1#message-2';
-    render(<Harness initialPath={sessionPath} />);
-    const initialButtonCount = screen.getAllByRole('button').length;
-    const entry = screen.getByRole('button', { name: '伙伴' });
-    expect(entry.querySelector('.lucide-bot')).not.toBeNull();
-    fireEvent.click(entry);
-
-    const back = screen.getByRole('button', { name: '返回任务' });
-    expect(back.textContent).toBe('返回任务');
-    expect(back.querySelector('.lucide-arrow-left')).not.toBeNull();
-    expect(back.hasAttribute('aria-current')).toBe(false);
-    expect(back.hasAttribute('aria-pressed')).toBe(false);
-    expect(back.className).not.toContain('bg-sidebar-item-active');
-    expect(screen.queryByRole('button', { name: '伙伴' })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(initialButtonCount);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open teammate' }));
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
-    expect(screen.getByTestId('location').textContent).toBe(sessionPath);
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    expect(screen.getByTestId('location').textContent).toBe('/bots/teammate-2');
-  });
-
-  it('returns a direct teammate entry to the session index, even after visiting plugins', () => {
-    render(<Harness initialPath="/bots/teammate-2" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open plugins' }));
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    expect(screen.getByTestId('location').textContent).toBe('/bots/teammate-2');
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
-    expect(screen.getByTestId('location').textContent).toBe('/cc-agent');
   });
 
   it('discards remembered destinations when the account scope changes', () => {
     const view = render(<Harness initialPath="/cc-agent/private-session" />);
-    fireEvent.click(screen.getByRole('button', { name: '伙伴' }));
-    view.rerender(<Harness initialPath="/bots" owner="two" />);
-    fireEvent.click(screen.getByRole('button', { name: '返回任务' }));
+    fireEvent.click(screen.getByRole('button', { name: 'sidebar.tabs.plugins' }));
+    view.rerender(<Harness initialPath="/plugins" owner="two" />);
+    activateSearch();
     expect(screen.getByTestId('location').textContent).toBe('/cc-agent');
   });
 });
@@ -578,11 +522,11 @@ describe('Narrow rail navigation', () => {
 
   it('lays out checked entries in the saved order', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['search', 'bots', 'automations', 'plugins'],
-      visible: ['search', 'bots', 'automations', 'plugins'],
+      order: ['search', 'plugins', 'automations'],
+      visible: ['search', 'plugins', 'automations'],
     });
     renderRail();
-    const names = ['Rail search', '伙伴', 'ccAgent.layout.automations', 'sidebar.tabs.plugins'];
+    const names = ['Rail search', 'sidebar.tabs.plugins', 'ccAgent.layout.automations'];
     const tiles = names.map((name) => screen.getByRole('button', { name }));
     expect(tiles.every((tile, index) =>
       index === 0 || Boolean(tiles[index - 1].compareDocumentPosition(tile) & Node.DOCUMENT_POSITION_FOLLOWING),
@@ -593,8 +537,8 @@ describe('Narrow rail navigation', () => {
     renderRail();
     expect(screen.queryByRole('button', { name: 'sidebar.navigation.more' })).toBeNull();
     act(() => setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'bots', 'search'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'search'],
     }));
     openMore();
     expect(screen.getByRole('menuitem', { name: 'sidebar.tabs.plugins' })).toBeTruthy();
@@ -607,8 +551,8 @@ describe('Narrow rail navigation', () => {
     mainViewsMock.routeCapable = [SITES, other, off];
     mainViewsMock.sidebarVisible = [SITES, other];
     setSidebarNavigationPrefs(OWNER, {
-      order: ['app:xd-sites', 'automations', 'plugins', 'bots', 'search', 'app:other', 'app:off'],
-      visible: ['automations', 'plugins', 'bots', 'search'],
+      order: ['app:xd-sites', 'automations', 'plugins', 'search', 'app:other', 'app:off'],
+      visible: ['automations', 'plugins', 'search'],
       appsAtTop: ['app:xd-sites'],
     });
     renderRail();
@@ -626,13 +570,12 @@ describe('Narrow rail navigation', () => {
 
   it('moves unchecked entries into More and opens the same destination', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['plugins', 'automations', 'bots', 'search'],
+      order: ['plugins', 'automations', 'search'],
       visible: ['search'],
     });
     renderRail();
     expect(screen.queryByRole('button', { name: 'sidebar.tabs.plugins' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'ccAgent.layout.automations' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '伙伴' })).toBeNull();
 
     openMore();
     expect(screen.queryByRole('menuitem', { name: 'sidebar.navigation.items.search' })).toBeNull();
@@ -643,16 +586,12 @@ describe('Narrow rail navigation', () => {
     openMore();
     fireEvent.click(screen.getByRole('menuitem', { name: 'sidebar.tabs.plugins' }));
     expect(screen.getByTestId('location').textContent).toBe('/plugins');
-
-    openMore();
-    fireEvent.click(screen.getByRole('menuitem', { name: '伙伴' }));
-    expect(screen.getByTestId('location').textContent).toBe('/bots/list');
   });
 
   it('opens an unchecked Search from More and hides it again once closed', async () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'plugins'],
     });
     renderRail();
     expect(screen.queryByRole('button', { name: 'Rail search' })).toBeNull();
@@ -666,8 +605,8 @@ describe('Narrow rail navigation', () => {
 
   it('keeps a hidden Search for a project-scoped search request', () => {
     setSidebarNavigationPrefs(OWNER, {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'plugins', 'bots'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations', 'plugins'],
     });
     renderRail({ forceSearch: true });
     expect(screen.getByRole('button', { name: 'Rail search' }).getAttribute('data-default-open'))
@@ -760,7 +699,7 @@ describe('Plugins joining the sidebar', () => {
 
   it('shows each account its own navigation layout', () => {
     setSidebarNavigationPrefs('owner-2', {
-      order: ['automations', 'plugins', 'bots', 'search'],
+      order: ['automations', 'plugins', 'search'],
       visible: ['automations'],
     });
     const view = renderNav();
@@ -788,13 +727,14 @@ describe('Plugins joining the sidebar', () => {
 
   it('starts a fresh Customize draft when the account changes while it is open', () => {
     setSidebarNavigationPrefs('owner-2', {
-      order: ['automations', 'plugins', 'bots', 'search'],
-      visible: ['automations', 'search'],
+      order: ['automations', 'plugins', 'search'],
+      visible: ['automations'],
     });
     const view = renderNav();
     openMore();
     fireEvent.click(screen.getByRole('menuitem', { name: 'sidebar.navigation.customize.title' }));
-    // Account A unchecks Plugins in the draft, then the account switches before Done.
+    // Account A unchecks Plugins in the draft (Search stays checked), then the account
+    // switches before Done.
     fireEvent.click(screen.getByRole('checkbox', { name: 'sidebar.navigation.items.plugins' }));
     authMock.owner = 'owner-2';
     view.rerender(
@@ -804,10 +744,10 @@ describe('Plugins joining the sidebar', () => {
         </MemoryRouter>
       </MainViewHistoryProvider>,
     );
-    expect(screen.getByRole('checkbox', { name: 'sidebar.navigation.items.bots' }).getAttribute('aria-checked'))
+    expect(screen.getByRole('checkbox', { name: 'sidebar.navigation.items.search' }).getAttribute('aria-checked'))
       .toBe('false');
     fireEvent.click(screen.getByRole('button', { name: 'sidebar.navigation.customize.done' }));
-    expect(getSidebarNavigationPrefs('owner-2').visible).toEqual(['automations', 'search']);
-    expect(getSidebarNavigationPrefs(OWNER).visible).toEqual(['automations', 'plugins', 'bots', 'search']);
+    expect(getSidebarNavigationPrefs('owner-2').visible).toEqual(['automations']);
+    expect(getSidebarNavigationPrefs(OWNER).visible).toEqual(['automations', 'plugins', 'search']);
   });
 });
