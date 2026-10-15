@@ -4306,6 +4306,32 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('posts a fresh in-progress card to the group for each continued run of a group task', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => ({ ok: true as const, messageId: `posted:${input.clientId}` }));
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'First pass' });
+      if (!task.ok) throw new Error(task.message);
+      await runtime.runPendingTurns();
+      const id = task.delegationId;
+      expect(postGroupTaskMessage.mock.calls.map(([input]) => input.clientId))
+        .toEqual([`bot-delegation-task:${id}:started`, `bot-delegation-task:${id}:1:result`]);
+      expect(await runtime.delegation.messageSessionTask('group-lane', id, { kind: 'message', text: 'One more pass.' }))
+        .toMatchObject({ ok: true, resumed: true });
+      // The group no longer shows the first run's 「已完成」 while the second one runs.
+      await vi.waitFor(() => expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        clientId: `bot-delegation-task:${id}:2:started`, card: expect.objectContaining({ data: expect.objectContaining({ state: 'started' }) }),
+      })));
+      await runtime.runPendingTurns();
+      expect(postGroupTaskMessage.mock.calls.map(([input]) => input.clientId)).toEqual([
+        `bot-delegation-task:${id}:started`, `bot-delegation-task:${id}:1:result`,
+        `bot-delegation-task:${id}:2:started`, `bot-delegation-task:${id}:2:result`,
+      ]);
+    } finally { release(); runtime.dispose(); }
+  });
+
   it('keeps the teammate\'s full objective out of the group task card that every member can read', async () => {
     await seedPair(); seedGroupLane();
     const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
