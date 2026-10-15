@@ -127,7 +127,7 @@ import { updateCredentialAccessToken } from '@/remote-desktop/credentialIdentity
 import { clearCachedSessionMessages } from '@/session/mobileSessionMessageCache';
 import { clearHistoryDisk } from '@/session/remoteHistoryDiskCache';
 import { clearAllMobileVoiceCredentials } from '@/session/mobileVoiceCredentialStore';
-import { clearMobileSpeakerFilterForAccount } from '@/session/mobileSpeakerFilterStorage';
+import { clearMobileSpeakerFilterForAccount, retryPendingMobileSpeakerFilterCleanup } from '@/session/mobileSpeakerFilterStorage';
 import {
   clearAllMobileVoiceDictionaryCaches,
   setMobileVoiceDictionaryAccountScope,
@@ -1444,6 +1444,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken,
     ],
   );
+
+  useEffect(() => {
+    const retry = () => {
+      void retryPendingMobileSpeakerFilterCleanup().catch(() => {
+        console.warn('[auth] speaker filter cleanup pending; will retry');
+      });
+    };
+    retry();
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') retry();
+    });
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2942,7 +2955,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // deviceId,不清就会让下一个账号读到上一个账号的词条并发给润色模型。
     await clearAllMobileVoiceDictionaryCaches().catch(() => undefined);
     // 声纹是这个账号的生物特征数据,随账号的其他本机数据一起清;模型文件不含账号数据,保留。
-    await clearMobileSpeakerFilterForAccount(invitationHistoryAccountKey);
+    await clearMobileSpeakerFilterForAccount(invitationHistoryAccountKey).catch(() => {
+      // The storage helper retains the account's retry marker. Still complete
+      // credential removal; neither an account id nor a voiceprint is logged.
+      console.warn('[auth] speaker filter cleanup pending; will retry');
+    });
     await clearCachedSessionMessages().catch(() => undefined);
     await clearHistoryDisk();
     // 首页设备+会话快照与消息缓存一样属于账号数据,登出必须清掉。

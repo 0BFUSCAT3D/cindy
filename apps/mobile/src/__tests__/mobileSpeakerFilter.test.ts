@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSpeakerEnrollment, SPEAKER_MODEL_ASSETS, SpeakerGate, speakerModelAsset, speakerModelLocalName } from '@cindy/voice-input-core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import { getSecureItem, setSecureItem } from '@/auth/secureStorage';
+import { deleteSecureItem, getSecureItem, setSecureItem } from '@/auth/secureStorage';
 import { loadSpeakerModels, nativeSpeakerOnnxRunner } from '../../modules/cindy-speaker-onnx/src';
 
 vi.mock('@cindy/voice-input-core', async (importOriginal) => {
@@ -414,6 +414,25 @@ describe('mobile speaker filter', () => {
     expect(files.size).toBe(SPEAKER_MODEL_ASSETS.length);
     expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ enabled: false, enrolled: false });
     expect(service.createMobileSpeakerGate()).toBeUndefined();
+  });
+
+  it('does not restore a logged-out voiceprint on sign-in until cleanup succeeds', async () => {
+    installModels();
+    const key = await signIn('user-a');
+    storeProfile(key);
+    await service.setMobileSpeakerFilterEnabled(true);
+    setMobileAuthOwner(null);
+    const { clearMobileSpeakerFilterForAccount } = await import('@/session/mobileSpeakerFilterStorage');
+    vi.mocked(deleteSecureItem)
+      .mockRejectedValueOnce(new Error('keychain unavailable'))
+      .mockRejectedValueOnce(new Error('keychain still unavailable'));
+    await expect(clearMobileSpeakerFilterForAccount(key)).rejects.toThrow('cleanup pending');
+    await signIn('user-a');
+    expect(secureStore.has(service.__testing.profileKey(key))).toBe(true);
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ hydrated: false, enabled: false, enrolled: false });
+    await service.hydrateMobileSpeakerFilter();
+    expect(secureStore.has(service.__testing.profileKey(key))).toBe(false);
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ hydrated: true, enabled: false, enrolled: false });
   });
 
   it('deletes the voiceprint', async () => {
