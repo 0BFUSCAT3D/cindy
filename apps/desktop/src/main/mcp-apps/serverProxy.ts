@@ -161,7 +161,7 @@ export function createAppServerProxy(
   };
   const currentClient = async (signal?: AbortSignal) => {
     registerOnUse();
-    const client = await connection.getClient();
+    const client = await connection.getClient(signal);
     assertCurrent();
     signal?.throwIfAborted();
     return client;

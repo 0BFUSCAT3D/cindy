@@ -723,6 +723,47 @@ describe('ordinary MCP compatibility through the App facade', () => {
     expect(callTool).toHaveBeenCalledOnce();
   });
 
+  it.each(['http', 'sse'] as const)('cancels an ordinary %s request waiting for reconnect without disturbing another waiter', async (transport) => {
+    const acquiring = vi.spyOn(AppConnection.prototype, 'getClient');
+    const f = await fixture(transport);
+    const initialClient = await acquiring.mock.results[0]!.value as Client;
+    await initialClient.close();
+    const before = acquiring.mock.calls.length;
+    const connect = Client.prototype.connect;
+    let release: (() => void) | undefined;
+    cleanup.push(async () => release?.());
+    // Hold the next real connection attempt before its handshake; the
+    // AppConnection's shared-attempt and per-waiter cancellation remain real.
+    vi.spyOn(Client.prototype, 'connect').mockImplementationOnce(function (this: Client, ...args: Parameters<Client['connect']>) {
+      return new Promise<void>((resolve, reject) => {
+        release = () => {
+          release = undefined;
+          void connect.call(this, ...args).then(resolve, reject);
+        };
+      });
+    });
+    const abort = new AbortController();
+    const pending = f.client.complete(completionParams, { signal: abort.signal });
+    const rejected = expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const cancelled = vi.fn();
+    const waiter = acquiring.mock.results.at(-1)!.value as Promise<Client>;
+    void waiter.catch(cancelled);
+    abort.abort();
+    await rejected;
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+    expect(complete).not.toHaveBeenCalled();
+
+    const healthy = f.client.complete(completionParams);
+    const completed = expect(healthy).resolves.toMatchObject({
+      completion: { values: ['draft-completed'] },
+    });
+    await vi.waitFor(() => expect(acquiring).toHaveBeenCalledTimes(before + 2));
+    release!();
+    await completed;
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
   it('forwards cancellation to the single upstream request without replaying it', async () => {
     const f = await fixture();
     const cancelled = vi.fn();
