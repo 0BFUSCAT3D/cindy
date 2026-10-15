@@ -423,15 +423,19 @@ describe('pending image gallery updates', () => {
   });
 
   it.each([
-    ['hash', false], ['hash', true], ['url', false], ['url', true],
-  ] as const)('keeps a remote queued image through formal history without a local preview (%s, gap: %s)', async (proof, gap) => {
+    ['hash', false, 1], ['hash', true, 1], ['url', false, 1], ['url', true, 1],
+    ['hash', false, 65], ['hash', true, 65],
+  ] as const)('keeps a remote queued image through formal history without a local preview (%s, gap: %s, live messages: %s)', async (proof, gap, liveCount) => {
     const files: RemoteSerializedAttachment[] = [0, 1].map((index) => ({ id: `photo-${index}`, name: `photo-${index}.jpg`,
       category: 'image', path: index === 0 ? 'cindy-oss-attach://unreadable' : 'cindy-media://blobs/queued-1.jpg',
       mimeType: 'image/jpeg', ext: 'jpg', size: 100, ...(proof === 'hash' ? { sha256: String(index).repeat(64) } : {}) }));
     const previews: SentMessageImagePreviews = new Map();
     const getPreview: GetSentMessageImagePreview = (...args) => getSentMessageImagePreview(previews, 's', ...args);
     // The session observes a remote/reopened queue, with no local outbox or preview URI.
-    rememberSentMessageImagePreviews(previews, 's', 'pending', files, () => null);
+    const liveClientIds = new Set(['pending', ...Array.from({ length: liveCount - 1 }, (_, index) => `other-${index}`)]);
+    for (const clientId of liveClientIds) {
+      rememberSentMessageImagePreviews(previews, 's', clientId, files, () => null, undefined, liveClientIds);
+    }
     const initial = collectMobileMessageGalleryImages(buildPendingSendItems({
       queue: [{ clientId: 'pending', text: '', chatMessage: {}, files } as unknown as QueuedRemoteMessage],
       settling: [], outbox: [], hiddenClientIds: new Set(), sendingClientIds: new Set(), editingClientId: null,
@@ -477,6 +481,48 @@ describe('pending image gallery updates', () => {
     expect(onSubmit.mock.calls[0]).toEqual([props.images[1], `file:///${formalUrls[1].split('/').at(-1)}`,
       [{ points: [{ x: 0.25, y: 0.25 }] }, { points: [{ x: 0.5, y: 0.5 }] }],
       { mimeType: 'image/jpeg', naturalWidth: 400, naturalHeight: 800 }]);
+  });
+
+  it.each(['ph://photo', 'content://media/1', 'assets-library://photo'])('previews %s but waits for a materialized file before enabling actions', async (uri) => {
+    const thumb = { key: 'pending-slot-0', uri, ossRef: null, uploading: true };
+    const initial = collect([thumb]);
+    const onShareImage = vi.fn();
+    const onSubmit = vi.fn<NonNullable<ImageLightboxProps['annotation']>['onSubmit']>(() => new Promise<void>(() => undefined));
+    const onResolveRemoteMedia = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: uri,
+      onShareImage, onResolveRemoteMedia, annotation: { submitLabel: 'Send', allowDirectSubmit: true, onSubmit } });
+    const preview = runtime.nodes.get('message.imageLightboxPreviewLayer') ?? runtime.nodes.get('Image');
+    act(() => preview.onLoad({ source: { width: 400, height: 800 } }));
+    expect(preview.source.uri).toBe(uri);
+    doubleTapAtCorner();
+    finishAnimations();
+    expect(runtime.nodes.get('Image').style[1].current.transform[4].scale).toBe(2.5);
+    doubleTapAtCorner();
+    finishAnimations();
+    expect(runtime.nodes.get('message.imageLightboxAnnotateButton').disabled).toBe(true);
+    expect(runtime.nodes.has('message.imageLightboxShareButton')).toBe(false);
+    expect(runtime.nodes.get('message.imageLightboxSendToChatButton').disabled).toBe(true);
+    press('message.imageLightboxAnnotateButton');
+    press('message.imageLightboxSendToChatButton');
+    await act(async () => { await Promise.resolve(); });
+    expect(onShareImage).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onResolveRemoteMedia).not.toHaveBeenCalled();
+    props.images = collect([{ ...thumb, uri: 'file:///materialized.jpg', uploading: false }]);
+    render();
+    expect(props.images[0].key).toBe(initial[0].key);
+    expect(runtime.nodes.get('message.imageLightboxAnnotateButton').disabled).toBe(false);
+    expect(runtime.nodes.get('message.imageLightboxShareButton').disabled).toBe(false);
+    await act(async () => { press('message.imageLightboxShareButton'); });
+    expect(onShareImage.mock.calls[0]?.[1]).toBe('file:///materialized.jpg');
+    press('message.imageLightboxAnnotateButton');
+    const draw = gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw, 'onStart', { x: 100, y: 200 });
+    fire(draw, 'onFinalize', {}, true);
+    press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit.mock.calls[0]?.[1]).toBe('file:///materialized.jpg');
+    expect(onSubmit.mock.calls[0]?.[2]).toEqual([{ points: [{ x: 0.25, y: 0.25 }] }]);
   });
 
   it.each([

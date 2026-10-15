@@ -19,6 +19,34 @@ const messageKey = (sessionId: string, clientId: string) => JSON.stringify([sess
 /** Known attachments keep their identity when a queue edit changes their position. */
 export const sentImageGalleryKey = (clientId: string, attachmentId: string): string => `${clientId}-attachment:${attachmentId}`;
 
+/** Live sends retain their identity; only departed messages count toward the history budget. */
+export function pruneSentMessageImagePreviews(
+  previews: SentMessageImagePreviews,
+  sessionId: string,
+  liveClientIds: ReadonlySet<string> = new Set(),
+  previousLiveClientIds: ReadonlySet<string> = liveClientIds,
+): void {
+  // A freshly handed-off message is recent history, even if it waited in the queue
+  // longer than 64 completed sends. Preserve its bridge while formal history mounts.
+  for (const clientId of previousLiveClientIds) {
+    if (liveClientIds.has(clientId)) continue;
+    const key = messageKey(sessionId, clientId);
+    const images = previews.get(key);
+    if (!images) continue;
+    previews.delete(key);
+    previews.set(key, images);
+  }
+  const liveKeys = new Set([...liveClientIds].map((clientId) => messageKey(sessionId, clientId)));
+  let historicalCount = 0;
+  for (const key of previews.keys()) if (!liveKeys.has(key)) historicalCount += 1;
+  for (const key of previews.keys()) {
+    if (historicalCount <= 64) break;
+    if (liveKeys.has(key)) continue;
+    previews.delete(key);
+    historicalCount -= 1;
+  }
+}
+
 /** Presentation-only attachment identities, with optional local pixels for immediate previews. */
 export function rememberSentMessageImagePreviews(
   previews: SentMessageImagePreviews,
@@ -27,6 +55,7 @@ export function rememberSentMessageImagePreviews(
   attachments: readonly RemoteSerializedAttachment[],
   previewOf: (attachment: RemoteSerializedAttachment) => string | null | undefined,
   galleryKeyOf?: (attachment: RemoteSerializedAttachment) => string | undefined,
+  liveClientIds?: ReadonlySet<string>,
 ): void {
   const key = messageKey(sessionId, clientId);
   const previous = previews.get(key);
@@ -44,7 +73,7 @@ export function rememberSentMessageImagePreviews(
   previews.delete(key);
   if (images.length === 0) return;
   previews.set(key, images);
-  while (previews.size > 64) previews.delete(previews.keys().next().value!);
+  pruneSentMessageImagePreviews(previews, sessionId, liveClientIds);
 }
 
 export function getSentMessageImagePreview(

@@ -51,6 +51,7 @@ describe('message gallery', () => {
     ['file:///photo.jpg', null, 'file:///photo.jpg', true],
     ['ph://photo', null, 'ph://photo', true],
     ['content://photo', null, 'content://photo', true],
+    ['assets-library://photo', null, 'assets-library://photo', true],
     ['file:///photo.jpg', 'cindy-oss-attach://photo', 'file:///photo.jpg', true],
     ['file:///photo.jpg', 'cindy-media://blobs/photo.jpg', 'cindy-media://blobs/photo.jpg', false],
     [null, 'cindy-media://blobs/photo.jpg', 'cindy-media://blobs/photo.jpg', false],

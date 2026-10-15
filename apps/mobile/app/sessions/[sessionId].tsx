@@ -453,6 +453,7 @@ import { buildMobileImageAttachmentCandidate } from '@/session/mobileImageAttach
 import { useMobileLocalAttachments } from '@/session/useMobileLocalAttachments';
 import {
   getSentMessageImagePreview,
+  pruneSentMessageImagePreviews,
   rememberSentMessageImagePreviews,
   type SentMessageImagePreviews,
 } from '@/session/sentMessageImagePreviews';
@@ -1572,16 +1573,18 @@ function SessionScreenContent() {
    * 排队气泡里的图不能等 sentAttachmentThumbStore 那条链(上传落定 → 拷进自有目录 →
    * AsyncStorage hydrate)——期间查询一律返回 null,气泡只能画空占位格。发送时手边就有
    * 预览,记下来直接用;store 仍是重开会话 / 预览失效后的后备。
-   * 最多保留 64 条消息的预览；正式内容还会核对图片指纹，防止同名替换误用旧图。
+   * 活跃发送条目全部保留，另保留最近 64 条历史记录；正式内容还会核对图片指纹。
    */
   const sentImagePreviewsRef = useRef<SentMessageImagePreviews>(new Map());
+  const liveImagePreviewClientIdsRef = useRef<ReadonlySet<string>>(new Set());
   const rememberSentAttachmentPreviews = useCallback((
     clientId: string,
     attachments: readonly RemoteSerializedAttachment[],
     previewOf: (attachment: RemoteSerializedAttachment) => string | null | undefined,
     galleryKeyOf?: (attachment: RemoteSerializedAttachment) => string | undefined,
   ) => {
-    rememberSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, clientId, attachments, previewOf, galleryKeyOf);
+    rememberSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, clientId, attachments,
+      previewOf, galleryKeyOf, liveImagePreviewClientIdsRef.current);
   }, [sessionId]);
   const getSentImagePreview = useCallback((clientId: string, imageIndex: number, name: string, attachmentId?: string, sha256?: string, sourceRef?: string) => (
     getSentMessageImagePreview(sentImagePreviewsRef.current, sessionId, clientId, imageIndex, name, attachmentId, sha256, sourceRef)
@@ -6005,6 +6008,12 @@ function SessionScreenContent() {
   // diff 计数只认已落库的消息。
   const pendingSendItems = useMemo(
     () => {
+      const liveClientIds = new Set([
+        ...settlingItemsForRender, ...inputProjection.pendingQueue, ...outboxDisplayItems,
+      ].map((item) => item.clientId));
+      // Also prune when the last live message leaves and the capture loop below is empty.
+      pruneSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, liveClientIds, liveImagePreviewClientIdsRef.current);
+      liveImagePreviewClientIdsRef.current = liveClientIds;
       // Remote/reopened queues have no local send snapshot. Remember identities without
       // fetching pixels so formal history can inherit their open viewer pages too.
       // The authoritative queue wins over a stale settling copy of the same message.
@@ -6045,6 +6054,7 @@ function SessionScreenContent() {
       i18nInstance.language,
       getSentImagePreview,
       rememberSentAttachmentPreviews,
+      sessionId,
       inputProjection,
       outboxDisplayItems,
       queueBusy,

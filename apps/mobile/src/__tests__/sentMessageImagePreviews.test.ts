@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  getSentMessageImagePreview, rememberSentMessageImagePreviews, type SentMessageImagePreviews,
+  getSentMessageImagePreview, pruneSentMessageImagePreviews, rememberSentMessageImagePreviews, type SentMessageImagePreviews,
 } from '@/session/sentMessageImagePreviews';
 import { buildPendingSendItems } from '@/session/pendingSendItems';
 import type { QueuedRemoteMessage, RemoteSerializedAttachment } from '@/session/types';
@@ -51,6 +51,44 @@ describe('sent image preview handoff', () => {
     for (let n = 0; n < 65; n++) rememberSentMessageImagePreviews(previews, 's', String(n), [image('a')], () => 'file:///a.jpg');
     expect(previews.size).toBe(64);
     expect(getSentMessageImagePreview(previews, 's', '0', 0, 'a.jpg')).toBeUndefined();
+  });
+
+  it('retains all live messages in addition to 64 historical records, then releases departed identities', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const live = new Set(Array.from({ length: 65 }, (_, index) => `live-${index}`));
+    for (const clientId of live) rememberSentMessageImagePreviews(previews, 's', clientId, [image('a')],
+      () => 'file:///local.jpg', () => `${clientId}-slot-0`, live);
+    for (let index = 0; index < 65; index++) rememberSentMessageImagePreviews(previews, 's', `past-${index}`,
+      [image('a')], () => null, undefined, live);
+    expect(previews.size).toBe(129);
+    for (const clientId of live) {
+      expect(getSentMessageImagePreview(previews, 's', clientId, 0, 'a.jpg', 'a'))
+        .toMatchObject({ uri: 'file:///local.jpg', galleryImageKey: `${clientId}-slot-0` });
+    }
+    expect(getSentMessageImagePreview(previews, 's', 'past-0', 0, 'a.jpg', 'a')).toBeUndefined();
+    expect(getSentMessageImagePreview(previews, 's', 'past-1', 0, 'a.jpg', 'a')).toBeDefined();
+    // A completed/cancelled message stops being protected even if no new image is recorded.
+    const previousLive = new Set(live);
+    live.delete('live-0');
+    pruneSentMessageImagePreviews(previews, 's', live, previousLive);
+    expect(previews.size).toBe(128);
+    // Just completed is recent history: do not lose its identity at the exact formal handoff.
+    expect(getSentMessageImagePreview(previews, 's', 'live-0', 0, 'a.jpg', 'a')?.galleryImageKey).toBe('live-0-slot-0');
+    expect(getSentMessageImagePreview(previews, 's', 'past-1', 0, 'a.jpg', 'a')).toBeUndefined();
+    pruneSentMessageImagePreviews(previews, 's', new Set(), live);
+    expect(previews.size).toBe(64);
+  });
+
+  it('scopes live-message retention to the current session', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    rememberSentMessageImagePreviews(previews, 'other', 'live', [image('a')], () => null);
+    const live = new Set(['live']);
+    rememberSentMessageImagePreviews(previews, 's', 'live', [image('a')], () => null, undefined, live);
+    for (let index = 0; index < 64; index++) rememberSentMessageImagePreviews(previews, 's', `past-${index}`,
+      [image('a')], () => null, undefined, live);
+    expect(getSentMessageImagePreview(previews, 'other', 'live', 0, 'a.jpg', 'a')).toBeUndefined();
+    expect(getSentMessageImagePreview(previews, 's', 'live', 0, 'a.jpg', 'a')).toBeDefined();
+    expect(previews.size).toBe(65);
   });
 
   it('remembers observed queue identity without local pixels and replaces it on remote edits', () => {

@@ -606,15 +606,18 @@ export const ImageLightbox = memo(function ImageLightbox({
   }));
 
   const activeUri = activeImage ? displayUriFor(activeImage) : null;
+  // Expo can display library handles, but sharing/annotation need the file or remote
+  // original supplied later by the existing upload pipeline. Do not enable dead-end actions.
+  const activeActionsReady = !!activeUri && !/^(?:ph|content|assets-library):\/\//.test(activeUri);
   const pageLabel = lightboxPageLabel(activeIndex, images.length);
   // 工具栏从打开那一刻就在:原图还在取件时先置灰,就绪即可用,不让工具「晚到」。
   // 取件结果是 data: 等不可分享地址时才收起分享。
   const shareVisible = !!onShareImage && !!activeImage && !activeIsVideo
     && (!activeUri || canShareLightboxImage(activeUri));
-  const shareEnabled = shareVisible && !!activeUri;
+  const shareEnabled = shareVisible && activeActionsReady;
 
   const handleShare = useCallback(() => {
-    if (!activeImage || !activeUri || !onShareImage || sharingRef.current || submittingRef.current) return;
+    if (!activeImage || !activeUri || !activeActionsReady || !onShareImage || sharingRef.current || submittingRef.current) return;
     const state = resolveMap[activeImage.url];
     const mimeType = (state?.status === 'ready' ? state.media.mimeType : undefined)
       ?? activeImage.payload.media.mimeType;
@@ -632,7 +635,7 @@ export const ImageLightbox = memo(function ImageLightbox({
         sharingRef.current = false;
         setSharing(false);
       });
-  }, [activeImage, activeUri, onShareImage, resolveMap]);
+  }, [activeImage, activeUri, activeActionsReady, onShareImage, resolveMap]);
 
   // 活跃页 MIME:取件结果优先,保留附件已知类型,最后兜底 URI 后缀。
   const activeResolveState = activeImage ? resolveMap[activeImage.url] : undefined;
@@ -652,7 +655,7 @@ export const ImageLightbox = memo(function ImageLightbox({
   // 画笔要等图片自然尺寸就位(坐标换算基准),否则进入标注后作画静默无效:
   // 此前按钮置灰禁用,与撤销的禁用态同观感。宿主给出暂不可标注的原因时,按钮
   // 同样置灰但可点,点按说明原因(否则用户不知道为什么不能画)。
-  const annotateReady = annotateVisible && !!activeUri && !!activeNaturalSize;
+  const annotateReady = annotateVisible && activeActionsReady && !!activeNaturalSize;
   const annotateBlockedReason = annotateReady && activeImage
     ? annotation?.annotationBlockedReason?.(activeImage)
     : undefined;
@@ -669,10 +672,10 @@ export const ImageLightbox = memo(function ImageLightbox({
   }, [annotateReady, activeImage, annotation, t]);
   // 独立直发(发送到对话):不要求可标注——gif 等不可画的图同样能转发。
   const directSubmitVisible = !!annotation?.allowDirectSubmit && !!activeImage && !activeIsVideo;
-  const directSubmitEnabled = directSubmitVisible && !!activeUri;
+  const directSubmitEnabled = directSubmitVisible && activeActionsReady;
 
   const handleSubmitAnnotation = useCallback(() => {
-    if (!annotation || !activeImage || !activeUri || submittingRef.current || sharingRef.current) return;
+    if (!annotation || !activeImage || !activeUri || !activeActionsReady || submittingRef.current || sharingRef.current) return;
     submittingRef.current = true;
     setAnnotationSubmitting(true);
     // 点击提交时另一根手指可能还在画,把屏幕上最后一笔也纳入同一快照。
@@ -697,7 +700,7 @@ export const ImageLightbox = memo(function ImageLightbox({
         submittingRef.current = false;
         setAnnotationSubmitting(false);
       });
-  }, [annotation, activeImage, activeUri, activeMimeType, activeNaturalSize, strokes]);
+  }, [annotation, activeImage, activeUri, activeActionsReady, activeMimeType, activeNaturalSize, strokes]);
 
   // Android 物理返回键触发 Modal.onRequestClose,不受手势层/按钮层的
   // isAnnotating 禁用覆盖(review 发现:会绕开"标注模式中关闭均禁用"保护

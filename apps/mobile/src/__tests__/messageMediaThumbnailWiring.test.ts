@@ -24,6 +24,11 @@ describe('mobile message media thumbnail wiring', () => {
     const capture = pendingItems.indexOf('rememberSentAttachmentPreviews(item.clientId, item.files ?? [], () => null)');
     expect(capture).toBeGreaterThan(-1);
     expect(capture).toBeLessThan(pendingItems.indexOf('return buildPendingSendItems('));
+    expect(pendingItems).toContain('...settlingItemsForRender, ...inputProjection.pendingQueue, ...outboxDisplayItems,');
+    const pruning = pendingItems.indexOf('pruneSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, liveClientIds, liveImagePreviewClientIdsRef.current)');
+    expect(pruning).toBeGreaterThan(-1);
+    expect(pruning).toBeLessThan(capture);
+    expect(screenSource).toContain('previewOf, galleryKeyOf, liveImagePreviewClientIdsRef.current)');
   });
 
   it('threads onResolveRemoteMedia from actions through both media blocks into MediaPreview', () => {
