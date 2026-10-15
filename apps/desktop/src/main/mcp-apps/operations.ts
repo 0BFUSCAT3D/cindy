@@ -34,10 +34,12 @@ export async function handleMcpAppFrameOperation(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('MCP_APP_INVALID_REQUEST');
   const input = raw as Record<string, unknown>;
   if (input.op === 'open-link') {
-    if (typeof input.url !== 'string' || input.url.length > 8192) throw new Error('MCP_APP_INVALID_LINK');
+    const linkId = id.safeParse(input.linkId);
+    if (typeof input.url !== 'string' || input.url.length > 8192 || !linkId.success)
+      throw new Error('MCP_APP_INVALID_LINK');
     const url = safeAppLink(input.url);
-    // A returned poll event is not a grant: the card can be revoked before this POST.
-    await host.assertViewAuthorized(caller, sessionId, viewId);
+    // A queued event is not a grant: its card or pending link may have expired.
+    await host.authorizeLink(caller, sessionId, viewId, linkId.data, url);
     await openLink(url);
     return {};
   }

@@ -134,7 +134,7 @@ interface View {
   context: McpUiHostContext;
   lastUsed: number;
   unlisten: (() => void)[];
-  links: Map<string, (success: boolean) => void>;
+  links: Map<string, { url: string; resolve: (success: boolean) => void }>;
 }
 
 // Standalone, non-persistent Hosts still need a private key. Desktop supplies
@@ -526,10 +526,13 @@ export class McpAppsHost {
             view.links.delete(id);
             resolve(false);
           }, 10_000);
-          view.links.set(id, (success) => {
-            clearTimeout(timer);
-            view.links.delete(id);
-            resolve(success);
+          view.links.set(id, {
+            url,
+            resolve: (success) => {
+              clearTimeout(timer);
+              view.links.delete(id);
+              resolve(success);
+            },
           });
           transport.openLink(id, url);
         });
@@ -750,10 +753,13 @@ export class McpAppsHost {
     sessionId: string,
     id: string,
     linkId: string,
+    url?: string,
   ): Promise<void> {
     const view = this.view(caller, sessionId, id);
     await this.assertCurrentView(id, view);
-    if (!view.links.has(linkId)) throw new Error('MCP_APP_LINK_UNAVAILABLE');
+    const link = view.links.get(linkId);
+    if (!link) throw new Error('MCP_APP_LINK_UNAVAILABLE');
+    if (url !== undefined && link.url !== url) throw new Error('MCP_APP_INVALID_LINK');
   }
 
   linkResult(
@@ -763,7 +769,7 @@ export class McpAppsHost {
     linkId: string,
     success: boolean,
   ): void {
-    this.view(caller, sessionId, id).links.get(linkId)?.(success);
+    this.view(caller, sessionId, id).links.get(linkId)?.resolve(success);
   }
 
   displayMode(
@@ -814,7 +820,7 @@ export class McpAppsHost {
       clearInterval(this.sweepTimer);
       this.sweepTimer = undefined;
     }
-    view.links.forEach((resolve) => resolve(false));
+    view.links.forEach((link) => link.resolve(false));
     this.deps.disposeDocument?.(id);
     view.unlisten.forEach((remove) => remove());
     await view.bridge.close();

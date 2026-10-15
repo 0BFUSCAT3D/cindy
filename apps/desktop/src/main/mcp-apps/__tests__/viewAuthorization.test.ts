@@ -8,6 +8,7 @@ import { handleMcpAppFrameOperation, handleMcpAppOperation } from '../operations
 
 const hosts: McpAppsHost[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(hosts.splice(0).map((host) => host.reset()));
   vi.restoreAllMocks();
 });
@@ -256,6 +257,52 @@ describe('MCP App upstream result authorization', () => {
       ),
     ).resolves.toEqual({});
     expect(openLink).toHaveBeenCalledExactlyOnceWith(input.url);
+  });
+
+  it.each([
+    { linkId: undefined },
+    { linkId: 'unknown-link' },
+    { url: 'https://another.example.invalid/' },
+  ])('does not open a link with a missing or mismatched pending request: %j', async (patch) => {
+    const f = await fixture();
+    const input = await returnedLink(f);
+    const openLink = vi.fn(async () => {});
+    await expect(
+      handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', f.viewId, { ...input, ...patch }, openLink),
+    ).rejects.toThrow(/MCP_APP_(INVALID_LINK|LINK_UNAVAILABLE)/);
+    expect(openLink).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a completed link request', async () => {
+    const f = await fixture();
+    const input = await returnedLink(f);
+    f.host.linkResult('renderer:1', 'task', f.viewId, input.linkId, false);
+    const openLink = vi.fn(async () => {});
+    await expect(
+      handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', f.viewId, input, openLink),
+    ).rejects.toThrow('MCP_APP_LINK_UNAVAILABLE');
+    expect(openLink).not.toHaveBeenCalled();
+  });
+
+  it.each(['before', 'during'] as const)('does not open a link that expires %s final authorization', async (when) => {
+    const f = await fixture();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const input = await returnedLink(f);
+    const current = await f.readCard();
+    const pending = deferred<McpAppRecord>();
+    const openLink = vi.fn(async () => {});
+    if (when === 'before') await vi.advanceTimersByTimeAsync(10_001);
+    else f.readCard.mockClear().mockReturnValueOnce(pending.promise);
+    const rejected = expect(
+      handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', f.viewId, input, openLink),
+    ).rejects.toThrow('MCP_APP_LINK_UNAVAILABLE');
+    if (when === 'during') {
+      expect(f.readCard).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10_001);
+      pending.resolve(current);
+    }
+    await rejected;
+    expect(openLink).not.toHaveBeenCalled();
   });
 
   it.each(['card', 'owner', 'server', 'config'] as const)(
