@@ -292,6 +292,65 @@ describe('pending image gallery updates', () => {
     expect(runtime.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 400 });
   });
 
+  it('keeps the replacement and its annotation when an earlier image becomes readable', async () => {
+    const initial = collect([thumbs[1]]);
+    const replacement = { ...thumbs[1], key: `${thumbs[1].key}:replacement`, uri: 'file:///replacement.jpg' };
+    const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url,
+      annotation: { submitLabel: 'Send', onSubmit } });
+    props.images = collect([replacement]);
+    render();
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    press('message.imageLightboxAnnotateButton');
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    fire(draw(), 'onFinalize', {}, true);
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    props.images = collect([thumbs[0], replacement]);
+    render();
+    const page = runtime.nodes.get('FlatList').renderItem({ item: props.images[1], index: 1 }).props;
+    expect(page.active).toBe(true);
+    expect(page.annotationStrokes).toEqual([{ points: [{ x: 0.25, y: 0.25 }] }]);
+    expect(page.annotationDraftStroke).toEqual({ points: [{ x: 0.5, y: 0.5 }] });
+    press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit.mock.calls[0]).toEqual([
+      props.images[1], replacement.uri,
+      [{ points: [{ x: 0.25, y: 0.25 }] }, { points: [{ x: 0.5, y: 0.5 }] }],
+      { mimeType: undefined, naturalWidth: 400, naturalHeight: 800 },
+    ]);
+  });
+
+  it('keeps sharing the replacement when the original page later reappears', async () => {
+    const initial = collect(thumbs);
+    const replacement = { ...thumbs[0], key: `${thumbs[0].key}:replacement`, uri: 'file:///replacement.jpg' };
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, onShareImage });
+    props.images = collect([replacement, thumbs[1]]);
+    render();
+    props.images = collect([replacement, thumbs[1], thumbs[0]]);
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('1 / 3');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe(replacement.uri);
+  });
+
+  it('uses the latest page position when an already shifted active attachment is replaced', async () => {
+    const last = { ...thumbs[1], key: 'last', uri: 'file:///last.jpg' };
+    const replacement = { ...last, key: 'last:replacement', uri: 'file:///replacement.jpg' };
+    const initial = collect([...thumbs, last]);
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: last.uri, onShareImage });
+    props.images = collect([thumbs[1], last]);
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    props.images = collect([thumbs[1], replacement, thumbs[0]]);
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 3');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe(replacement.uri);
+  });
+
   it('preserves completed and in-progress annotation strokes when the same pending image shifts pages', async () => {
     const initial = collect([{ ...thumbs[0], uri: null }, thumbs[1]]);
     const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
@@ -411,6 +470,13 @@ describe('pending image gallery updates', () => {
     expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
     await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
     expect(onShareImage.mock.lastCall?.[0].url).toBe(initial[1].url);
+    // After rebuilding the keys, moving this page must follow its adopted key.
+    const updated = collect([{ ...thumbs[1], uri: 'https://example.invalid/current.jpg' }])[0];
+    props.images = [{ ...updated, key: props.images[1].key }, props.images[0]];
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('1 / 2');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe('https://example.invalid/current.jpg');
   });
 });
 

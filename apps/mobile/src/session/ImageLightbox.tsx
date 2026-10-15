@@ -17,7 +17,7 @@
  */
 import { useNavigation } from 'expo-router';
 import { Image } from 'expo-image';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -236,6 +236,16 @@ export const ImageLightbox = memo(function ImageLightbox({
   const urlIndex = keyIndex < 0 ? images.findIndex((image) => image.url === activePage.url) : -1;
   const activeIndex = keyIndex >= 0 ? keyIndex : urlIndex >= 0 ? urlIndex
     : Math.max(0, Math.min(activePage.index, images.length - 1));
+  const activePageKey = images[activeIndex]?.key;
+  const activePageUrl = images[activeIndex]?.url;
+  // 记住这次实际显示的身份与位置；换图或钳制后，后续更新继续跟随新图，不能找回旧图。
+  useLayoutEffect(() => {
+    if (activePageKey === undefined || activePageUrl === undefined) return;
+    setActivePage((previous) => previous.key === activePageKey
+      && previous.url === activePageUrl && previous.index === activeIndex
+      ? previous
+      : { key: activePageKey, url: activePageUrl, index: activeIndex });
+  }, [activePageKey, activePageUrl, activeIndex]);
   const [zoomed, setZoomed] = useState(false);
   /** 捏合/平移进行中 chrome 不接收触摸,避免底栏抢走双指。 */
   const [chromeInteractive, setChromeInteractive] = useState(true);
