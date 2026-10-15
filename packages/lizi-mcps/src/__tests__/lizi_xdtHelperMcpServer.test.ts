@@ -420,6 +420,8 @@ describe("cindy_helper MCP server", () => {
         deadline_at: 1_788_000_000_000,
       });
       expect(sessionTask).not.toHaveProperty("delegationId");
+      // The card is posted in the background: the teammate must not say it is already there.
+      expect((sessionTask as { guidance?: string }).guidance).not.toContain("already posted");
       expect(startSessionTask).toHaveBeenLastCalledWith(
         expect.objectContaining({
           callerSessionId: "bot-parent-session",
