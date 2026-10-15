@@ -199,6 +199,7 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
     editPlanStep: (...args) => service().editPlanStep(...args),
     settleLaneTurn: (...args) => service().settleLaneTurn(...args),
     postCompanionTaskMessage: (...args) => service().postCompanionTaskMessage(...args),
+    hasCompanionTaskChannel: (...args) => service().hasCompanionTaskChannel(...args),
     dispose: () => { active.dispose(); local.dispose(); },
   };
 }
@@ -1584,6 +1585,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     },
     // A teammate's own message about an independent task it started from this group
     // (bot-group-chat.md §10): posted outside any execution, as that teammate, never as the owner.
+    /** A server room (or an old local group already upgraded to one) carries task messages. */
+    hasCompanionTaskChannel: async (groupId: string): Promise<boolean> => (await taskRoomFor(groupId)) !== null,
     postCompanionTaskMessage: async (input: BotGroupTaskPostInput): Promise<BotGroupTaskPostResult> => {
       const refused = (errorCode: string): BotGroupTaskPostResult => ({ ok: false, errorCode, retryable: false });
       try {

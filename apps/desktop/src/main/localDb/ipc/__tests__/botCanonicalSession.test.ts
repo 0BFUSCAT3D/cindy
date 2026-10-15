@@ -3859,6 +3859,7 @@ describe('Bot Session task end-to-end runtime', () => {
     onInteractionDispatched?: () => Promise<void>;
     /** The group message channel for tasks started from a group (bot-group-chat.md §10). */
     postGroupTaskMessage?: Parameters<typeof createBotDelegationService>[0]['postGroupTaskMessage'];
+    groupHasTaskChannel?: Parameters<typeof createBotDelegationService>[0]['groupHasTaskChannel'];
   } = {}) {
     const accountReady = options.accountReady ?? (() => true);
     const started: StartedTurn[] = [];
@@ -4074,6 +4075,7 @@ describe('Bot Session task end-to-end runtime', () => {
     const delegation = createBotDelegationService({
       maxActiveChildren: options.maxActiveChildren,
       postGroupTaskMessage: options.postGroupTaskMessage,
+      groupHasTaskChannel: options.groupHasTaskChannel,
       readSessionExecution: options.readSessionExecution,
       collectArtifacts: options.collectArtifacts,
       discardDelegationQueuedInputs: options.discardDelegationQueuedInputs ?? (coordinator
@@ -4285,6 +4287,18 @@ describe('Bot Session task end-to-end runtime', () => {
       await settled;
       expect(landed).toEqual([`bot-delegation-task:${task.delegationId}:started`, `bot-delegation-task:${task.delegationId}:1:result`]);
       expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).not.toBeNull();
+    } finally { release(); runtime.dispose(); }
+  });
+
+  it('tells the teammate a task from an old local-only group reports to the owner privately', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const groupHasTaskChannel = vi.fn(async () => false);
+    const runtime = createDelegationRuntime({ groupHasTaskChannel });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Local group work' });
+      expect(task).toMatchObject({ ok: true, completionDestination: 'private' });
+      expect(groupHasTaskChannel).toHaveBeenCalledWith('fixture');
     } finally { release(); runtime.dispose(); }
   });
 

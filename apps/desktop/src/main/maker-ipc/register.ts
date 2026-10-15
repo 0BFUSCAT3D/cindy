@@ -12031,6 +12031,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     postGroupTaskMessage: async (input) => botGroupChatServiceHolder
       ? botGroupChatServiceHolder.postCompanionTaskMessage(input)
       : { ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: true },
+    groupHasTaskChannel: async (groupId) => botGroupChatServiceHolder
+      ? botGroupChatServiceHolder.hasCompanionTaskChannel(groupId) : true,
   });
   registerBotLifecycleHandlers({
     maker,

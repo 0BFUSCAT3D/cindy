@@ -200,6 +200,11 @@ export interface BotDelegationServiceDeps {
    * refusal (not retryable) falls back to the owner's private chat so no result is lost.
    */
   postGroupTaskMessage?: (input: BotGroupTaskPostInput) => Promise<BotGroupTaskPostResult>;
+  /**
+   * Whether a group can carry a teammate's own task messages (a Chat Server room). An old
+   * local-only group cannot: its task's confirmations and result go to the owner's private chat.
+   */
+  groupHasTaskChannel?: (groupId: string) => Promise<boolean>;
   now?: () => number;
   createId?: () => string;
   maxActiveChildren?: number;
@@ -2568,8 +2573,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     input: SessionTaskInput,
   ): Promise<BotDelegationResult<{
     modelRoute: BotModelRoute;
-    /** `group`: the card, confirmations and result stay in the group this was started from. */
-    completionDestination?: 'group';
+    /**
+     * `group`: the card, confirmations and result stay in the group this was started from.
+     * `private`: started from an old local-only group, which cannot carry them; they go to the
+     * owner's private chat with the teammate instead (bot-group-chat.md §10).
+     */
+    completionDestination?: 'group' | 'private';
     delegationId: string;
     childSessionId: string;
     /**
@@ -2699,13 +2708,16 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       },
     });
     if (!started.ok) return started;
+    const groupId = caller.role === 'group' ? /^group:([^:]+)/.exec(caller.routeKey ?? '')?.[1] ?? null : null;
+    const completionDestination = groupId === null ? null
+      : await deps.groupHasTaskChannel?.(groupId).catch(() => true) === false ? 'private' as const : 'group' as const;
     return {
       ok: true,
       delegationId: started.delegationId,
       childSessionId: started.childSessionId,
       status: started.status,
       deadlineAt: started.deadlineAt,
-      ...(caller.role === 'group' ? { completionDestination: 'group' as const } : {}),
+      ...(completionDestination ? { completionDestination } : {}),
       modelRoute: {
         harness: taskRuntime.agentKind === 'codex' ? 'codex' : taskRuntime.agentKind === 'pi' ? 'pi' : 'claude',
         model: taskRuntime.model,

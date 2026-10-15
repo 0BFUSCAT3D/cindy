@@ -430,7 +430,9 @@ function registerStartSessionTaskEntry(
             guidance:
               (result.completionDestination === 'group'
                 ? 'This task lives in this group: its card is already posted here, and anything it needs confirmed plus its final result will arrive here as your own messages. Tell the group briefly what you started; do not promise a private-chat update. '
-                : '') + "The task card tracks progress and the result will return automatically. Do not start it again. Treat model_route and task/session ids as internal bookkeeping; do not echo them or the delegated instruction in ordinary replies unless the user asks for these details.",
+                : result.completionDestination === 'private'
+                  ? 'This older group cannot carry task messages: anything the task needs confirmed and its final result go to your owner\'s private chat with you, not here. Tell the group briefly what you started and that the result will reach your owner privately. '
+                  : '') + "The task card tracks progress and the result will return automatically. Do not start it again. Treat model_route and task/session ids as internal bookkeeping; do not echo them or the delegated instruction in ordinary replies unless the user asks for these details.",
           })
         : errorPayload(result.errorCode, result.message);
     },
