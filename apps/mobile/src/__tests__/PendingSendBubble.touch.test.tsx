@@ -6,10 +6,12 @@ import type { GestureResponderEvent } from 'react-native';
 import { PendingSendBubble, type PendingSendBubbleActions } from '@/session/PendingSendBubble';
 import { MessageBodyText } from '@/session/ShareMessageCheckbox';
 import type { MobilePendingSendItem } from '@/session/pendingSendItems';
+import { collectMobileMessageGalleryImages, lightboxImagesForPayload } from '@/session/messageGallery';
 
-const { handlers, frames } = vi.hoisted(() => ({
+const { handlers, frames, durableThumbs } = vi.hoisted(() => ({
   handlers: new Map<string, Record<string, unknown>>(),
   frames: new Map<number, FrameRequestCallback>(),
+  durableThumbs: new Map<string, string>(),
 }));
 vi.mock('react-native', async () => {
   const { createElement } = await import('react');
@@ -26,7 +28,7 @@ vi.mock('lucide-react-native', () => ({ Check: () => null, AlertCircle: () => nu
   Bot: () => null, Ghost: () => null, Send: () => null, Timer: () => null,
   Monitor: () => null, Smartphone: () => null }));
 vi.mock('@/session/SentInlineAtomBody', () => ({ SentInlineAtomBody: () => null }));
-vi.mock('@/session/sentAttachmentThumbStore', () => ({ getSentAttachmentThumbUri: () => null,
+vi.mock('@/session/sentAttachmentThumbStore', () => ({ getSentAttachmentThumbUri: (ref: string) => durableThumbs.get(ref) ?? null,
   useSentAttachmentThumbsVersion: () => 0 }));
 vi.mock('react-i18next', () => ({ initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({ t: (key: string) => key }) }));
@@ -55,6 +57,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   handlers.clear(); frames.clear();
+  durableThumbs.clear();
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.set(++frameId, cb); return frameId; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
@@ -149,6 +152,20 @@ it('keeps an unavailable upload reference disabled until a local image becomes a
   expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(false);
   act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-0"]')!.click());
   expect(openImage).toHaveBeenCalledOnce();
+});
+it('opens the full gallery when a durable copy arrives after the thumbnail locks its temporary URI', () => {
+  const thumbs = [0, 1].map((index) => ({ key: `a-slot-${index}`, uri: `file:///temporary-${index}.jpg`,
+    ossRef: `cindy-oss-attach://photo-${index}`, uploading: false }));
+  show({ thumbs, attachmentCount: 2 });
+  durableThumbs.set(thumbs[1].ossRef, 'file:///durable-1.jpg');
+  show({ thumbs, attachmentCount: 2 });
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-1"]')!.click());
+  const payload = openImage.mock.calls[0][0];
+  const gallery = collectMobileMessageGalleryImages([{ ...item, thumbs, attachmentCount: 2 }]);
+  expect(lightboxImagesForPayload(gallery, payload, item.key)).toHaveLength(2);
+  expect(payload.media.url).toBe('file:///temporary-1.jpg');
+  expect(gallery[1].url).toBe('file:///durable-1.jpg');
+  expect(select).not.toHaveBeenCalled();
 });
 it('shows the source label above the bubble and announces it with the queued message', () => {
   show({ source: { kind: 'automation', label: '由自动化「巡检」发送' } });

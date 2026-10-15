@@ -85,6 +85,49 @@ describe('message gallery', () => {
     expect(gallery).toEqual([]);
   });
 
+  it('keeps the second pending image in its gallery as uploads settle to new URLs', () => {
+    const thumbs = [0, 1].map((index) => ({ key: `pending-slot-${index}`, uri: `file:///temporary-${index}.jpg`,
+      ossRef: `cindy-oss-attach://pending-${index}`, uploading: true }));
+    const initial = collectMobileMessageGalleryImages([pendingItem('pending', thumbs)]);
+    const opened = initial[1].payload;
+    try {
+      durableThumbs.set(thumbs[1].ossRef, 'file:///durable-1.jpg');
+      const durable = collectMobileMessageGalleryImages([pendingItem('pending', thumbs)]);
+      const durablePages = lightboxImagesForPayload(durable, opened, 'pending');
+      expect(durablePages.map((image) => image.key)).toEqual(thumbs.map((thumb) => thumb.key));
+      expect(galleryImageIndexForPayload(durablePages, opened)).toBe(1);
+      const settled = collectMobileMessageGalleryImages([pendingItem('pending', thumbs.map((thumb, index) => ({
+        ...thumb, uploading: false, ossRef: `cindy-media://blobs/settled-${index}.jpg`,
+      })))]);
+      const settledPages = lightboxImagesForPayload(settled, opened, 'pending');
+      expect(settledPages).toHaveLength(2);
+      expect(galleryImageIndexForPayload(settledPages, opened)).toBe(1);
+      expect(settledPages[1].url).toBe('cindy-media://blobs/settled-1.jpg');
+    } finally { durableThumbs.clear(); }
+  });
+
+  it('keeps distinct pending attachment slots even when they settle to the same content URL', () => {
+    const gallery = collectMobileMessageGalleryImages([pendingItem('pending', [0, 1].map((index) => ({
+      key: `pending-slot-${index}`, uri: null, ossRef: 'cindy-media://blobs/same.jpg', uploading: false,
+    })))]);
+    expect(gallery).toHaveLength(2);
+    expect(galleryImageIndexForPayload(gallery, gallery[1].payload)).toBe(1);
+  });
+
+  it('retains the open pending gallery through row handoff without using another message with the same URL', () => {
+    const previous = collectMobileMessageGalleryImages([pendingItem('pending', [0, 1].map((index) => ({
+      key: `pending-slot-${index}`, uri: `file:///local-${index}.jpg`, ossRef: null, uploading: false,
+    })))]);
+    const opened = previous[1].payload;
+    const unrelated = collectMobileMessageGalleryImages([messageItem('other', {
+      attachments: [{ kind: 'image', name: 'same.jpg', uri: opened.media.url, previewable: true }],
+    })]);
+    expect(lightboxImagesForPayload(unrelated, opened, 'pending', previous)).toEqual(previous);
+    expect(lightboxImagesForPayload([], opened, 'pending', previous)).toEqual(previous);
+    // A different click must not inherit a previous viewer's pending gallery.
+    expect(lightboxImagesForPayload(unrelated, unrelated[0].payload, 'other', previous)).toEqual(unrelated);
+  });
+
   it.each(['', ' "title"', " 'title'"])(
     'excludes out-of-workdir Markdown images from neighbor prefetch with title suffix %s', (title) => {
       const outside = 'xdt-file://open?path=%2Fprivate%2Fphoto.png&baseDir=%2F';

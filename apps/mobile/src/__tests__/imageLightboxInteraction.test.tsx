@@ -4,8 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAttachmentPayload } from '@/session/messagePayload';
 import { svgAttachmentForDisplay } from '@/session/messageAttachments';
-import { collectMobileMessageGalleryImages, lightboxImagesForPayload } from '@/session/messageGallery';
+import { collectMobileMessageGalleryImages, galleryImageIndexForPayload, lightboxImagesForPayload } from '@/session/messageGallery';
 import type { MobileMessageRenderItem } from '@/session/messageRenderModel';
+import type { MobileOutboxThumb } from '@/session/sessionOutbox';
 import {
   ImageLightbox,
   type ImageLightboxProps,
@@ -32,6 +33,7 @@ const runtime = vi.hoisted(() => ({
   insets: { top: 40, bottom: 20, left: 0, right: 0 },
   gesture: null as GestureNode | null,
   alerts: [] as Array<[string, string, Array<{ text: string; style?: string; onPress?: () => void }>]>,
+  scrollToOffset: vi.fn(),
 }));
 
 vi.mock("expo-router", () => ({
@@ -79,7 +81,7 @@ vi.mock("react-native", async () => {
       runtime.nodes.set("FlatList", props);
       useImperativeHandle(
         props.ref,
-        () => ({ scrollToOffset: () => undefined }),
+        () => ({ scrollToOffset: runtime.scrollToOffset }),
         [],
       );
       return props.renderItem({ item: props.data[0], index: 0 });
@@ -215,6 +217,7 @@ beforeEach(() => {
   runtime.dimensions = { width: 400, height: 800 };
   runtime.insets = { top: 40, bottom: 20, left: 0, right: 0 };
   runtime.alerts = [];
+  runtime.scrollToOffset.mockClear();
   root = createRoot(document.createElement("div"));
 });
 afterEach(() => act(() => root.unmount()));
@@ -244,6 +247,69 @@ function mount(overrides: Partial<ImageLightboxProps> = {}) {
   render();
   return { props, render };
 }
+
+describe('pending image gallery updates', () => {
+  const collect = (thumbs: MobileOutboxThumb[]) => collectMobileMessageGalleryImages([{
+    type: 'pending_send', key: 'pending', clientId: 'pending', phase: 'queued', text: '',
+    thumbs, attachmentCount: thumbs.length, uploadedCount: 0, fileCount: 0, queueIndex: 1,
+    sentInlineTokens: [], errorText: null, actions: null, hint: null,
+  }]);
+  const thumbs = [0, 1].map((index) => ({ key: `pending-slot-${index}`, uri: `file:///temporary-${index}.jpg`,
+    ossRef: null, uploading: true }));
+
+  it('keeps the current page, paging and sharing after URLs settle and the pending row leaves', async () => {
+    const initial = collect(thumbs);
+    const clicked = initial[1].payload;
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: clicked.media.url, onShareImage });
+    expect(runtime.nodes.get('FlatList').initialScrollIndex).toBe(1);
+    const updated = collect(thumbs.map((thumb, index) => ({
+      ...thumb, uploading: false, ossRef: `https://example.invalid/settled-${index}.jpg`,
+    })));
+    props.images = lightboxImagesForPayload(updated, clicked, 'pending', props.images);
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe(updated[1].url);
+    // Paging away from the originally clicked page must also survive a row handoff.
+    act(() => runtime.nodes.get('FlatList').onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 0 } } }));
+    props.images = lightboxImagesForPayload([], clicked, 'pending', props.images);
+    render();
+    expect(runtime.nodes.get('FlatList').data).toHaveLength(2);
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('1 / 2');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe(updated[0].url);
+  });
+
+  it('anchors the current image when an earlier pending placeholder becomes readable', () => {
+    const initial = collect([{ ...thumbs[0], uri: null }, thumbs[1]]);
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url });
+    props.images = collect(thumbs);
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    expect(runtime.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 400 });
+  });
+
+  it('opens the clicked second slot even if its preview URL changed before the viewer mounted', () => {
+    const clicked = collect(thumbs)[1].payload;
+    const updated = collect(thumbs.map((thumb) => ({ ...thumb, uri: thumb.uri.replace('temporary', 'durable') })));
+    const images = lightboxImagesForPayload(updated, clicked, 'pending');
+    mount({ images, initialUrl: images[galleryImageIndexForPayload(images, clicked)]?.url ?? clicked.media.url });
+    expect(runtime.nodes.get('FlatList').initialScrollIndex).toBe(1);
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+  });
+
+  it('keeps ordinary message pages selected when a completed work group rebuilds its keys', async () => {
+    const initial = collect(thumbs);
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: initial[1].url, onShareImage });
+    props.images = initial.map((image) => ({ ...image, key: `completed:${image.key}` }));
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe(initial[1].url);
+  });
+});
 
 describe('Markdown gallery prefetch boundaries', () => {
   it('does not fetch a titled outside-workdir image when a neighboring image is opened', async () => {

@@ -41,7 +41,10 @@ import {
 import { i18n } from '@/i18n';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 
-export type MessagePayload = SharedMessagePayload<NormalizedToolDiff, NormalizedToolMedia>;
+export type MessagePayload = SharedMessagePayload<NormalizedToolDiff, NormalizedToolMedia> & {
+  /** Mobile 查看器内的附件身份，不参与跨端传输；地址变化时仍能定位同一页。 */
+  galleryImageKey?: string;
+};
 
 export {
   buildPayloadToolDiff,

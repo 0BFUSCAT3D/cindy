@@ -226,7 +226,16 @@ export const ImageLightbox = memo(function ImageLightbox({
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const urls = useMemo(() => images.map((image) => image.url), [images]);
-  const [activeIndex, setActiveIndex] = useState(() => lightboxInitialIndex(urls, initialUrl));
+  const [activePage, setActivePage] = useState(() => {
+    const index = lightboxInitialIndex(urls, initialUrl);
+    return { key: images[index]?.key, url: images[index]?.url, index };
+  });
+  // 地址升级或相邻附件就绪时，页码跟随图片身份，不跟随旧数组下标。
+  // 普通消息在流式工作组收尾时会换 key，仍按原地址找回；删除当前页才钳制下标。
+  const keyIndex = images.findIndex((image) => image.key === activePage.key);
+  const urlIndex = keyIndex < 0 ? images.findIndex((image) => image.url === activePage.url) : -1;
+  const activeIndex = keyIndex >= 0 ? keyIndex : urlIndex >= 0 ? urlIndex
+    : Math.max(0, Math.min(activePage.index, images.length - 1));
   const [zoomed, setZoomed] = useState(false);
   /** 捏合/平移进行中 chrome 不接收触摸,避免底栏抢走双指。 */
   const [chromeInteractive, setChromeInteractive] = useState(true);
@@ -433,13 +442,10 @@ export const ImageLightbox = memo(function ImageLightbox({
   const imageErrorRetryUsedRef = useRef<Set<string>>(new Set());
   const listRef = useRef<FlatList<MobileMessageGalleryImage>>(null);
 
-  // 旋转(宽度变化)时按 activeIndex 重锚:FlatList 保留的是旧宽度下的像素
-  // contentOffset,不重锚会让可见页与页码 / 分享目标错位。
+  // 旋转或图集变动导致页码变化时重锚，保持画面、页码和分享目标一致。
   useEffect(() => {
     listRef.current?.scrollToOffset({ animated: false, offset: activeIndex * width });
-    // activeIndex 不进依赖:翻页由手势滚动驱动,这里只响应宽度突变
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [width]);
+  }, [activeIndex, width]);
 
   const resolveImage = useCallback((
     image: MobileMessageGalleryImage,
@@ -721,7 +727,7 @@ export const ImageLightbox = memo(function ImageLightbox({
           keyExtractor={(image) => image.key}
           onMomentumScrollEnd={(event) => {
             const index = lightboxPageIndex(event.nativeEvent.contentOffset.x, width, images.length);
-            setActiveIndex(index);
+            setActivePage({ key: images[index]?.key, url: images[index]?.url, index });
           }}
           pagingEnabled
           ref={listRef}

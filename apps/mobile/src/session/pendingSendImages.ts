@@ -5,7 +5,7 @@ import { isDesktopLocalMediaUrl, isDirectPreviewableMediaUrl } from '@/session/r
 import { getSentAttachmentThumbUri } from '@/session/sentAttachmentThumbStore';
 import type { MobileOutboxThumb } from '@/session/sessionOutbox';
 
-/** The thumbnail button and gallery must open the same source, including before upload finishes. */
+/** Stable slot identity connects the button and gallery while preview/original URLs settle. */
 export function pendingSendGalleryImage(
   thumb: MobileOutboxThumb,
   displayedUri?: string | null,
@@ -29,7 +29,10 @@ export function pendingSendGalleryImage(
     key: thumb.key,
     title,
     url,
-    payload: buildMediaPayload({ kind: 'image', url, previewable: !isDesktopLocalMediaUrl(url) }, title),
+    payload: {
+      ...buildMediaPayload({ kind: 'image', url, previewable: !isDesktopLocalMediaUrl(url) }, title),
+      galleryImageKey: thumb.key,
+    },
     ...(localUrl ? { previewUri: localUrl } : {}),
   };
 }

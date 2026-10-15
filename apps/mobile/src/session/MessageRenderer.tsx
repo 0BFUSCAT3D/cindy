@@ -179,6 +179,7 @@ import {
 } from '@/session/userMessageCollapse';
 import {
   collectMobileMessageGalleryImages,
+  galleryImageIndexForPayload,
   isLightboxMediaKind,
   lightboxImagesForPayload,
   type MobileMessageGalleryImage,
@@ -1703,9 +1704,12 @@ export function MessageRenderer({
   // 避免取件 effect / FlatList / LightboxPage memo 每帧全部失效。
   const lightboxImagesRef = useRef<readonly MobileMessageGalleryImage[] | null>(null);
   const lightboxImages = useMemo(() => {
-    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) return null;
-    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey);
+    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) {
+      lightboxImagesRef.current = null;
+      return null;
+    }
     const prev = lightboxImagesRef.current;
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev);
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
       return p.key === n.key
@@ -2898,7 +2902,7 @@ export function MessageRenderer({
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
-          initialUrl={payload.media.url}
+          initialUrl={lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]?.url ?? payload.media.url}
           onClose={closePayload}
           onReleaseRemoteMedia={onReleaseRemoteMedia}
           onResolveRemoteMedia={onResolveRemoteMedia}

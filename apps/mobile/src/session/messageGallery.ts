@@ -67,7 +67,8 @@ export function collectMobileMessageGalleryImages(
   ) => {
     const url = payload.media.url.trim();
     if (!url || !isLightboxMediaKind(payload.media.kind)) return;
-    const dedupeKey = `${currentGroupKey}::${url}`;
+    // 待发送的两个附件可能物化到同一个内容地址，仍须与两个可点击缩略图逐槽对应。
+    const dedupeKey = `${currentGroupKey}::${payload.galleryImageKey ? `slot:${payload.galleryImageKey}` : `url:${url}`}`;
     if (seenUrls.has(dedupeKey)) return;
     seenUrls.add(dedupeKey);
     images.push({ key, title, url, payload, groupKey: currentGroupKey, ...(previewUri ? { previewUri } : {}) });
@@ -213,6 +214,9 @@ export function galleryImageIndexForPayload(
   payload: MessagePayload | null,
 ): number {
   if (!payload || payload.kind !== 'media' || !isLightboxMediaKind(payload.media.kind)) return -1;
+  if (payload.galleryImageKey) {
+    return images.findIndex((image) => image.key === payload.galleryImageKey);
+  }
   const url = payload.media.url.trim();
   if (!url) return -1;
   return images.findIndex((image) => image.url === url);
@@ -233,9 +237,13 @@ export function lightboxImagesForPayload(
   images: readonly MobileMessageGalleryImage[],
   payload: Extract<MessagePayload, { kind: 'media' }>,
   sourceGroupKey?: string | null,
+  previousImages?: readonly MobileMessageGalleryImage[] | null,
 ): MobileMessageGalleryImage[] {
   const url = payload.media.url.trim();
-  const matches = url ? images.filter((image) => image.url === url) : [];
+  // 待发送附件的临时文件、持久副本、远端原图地址会变化，匹配应跟随附件身份。
+  const matches = images.filter((image) => payload.galleryImageKey
+    ? image.key === payload.galleryImageKey
+    : !!url && image.url === url);
   if (matches.length > 0) {
     if (sourceGroupKey && matches.some((image) => image.groupKey === sourceGroupKey)) {
       return images.filter((image) => image.groupKey === sourceGroupKey);
@@ -247,6 +255,11 @@ export function lightboxImagesForPayload(
       return images.filter((image) => image.groupKey === groupKey);
     }
   }
+  // 待发送行交接成正式消息后会退出列表；已经打开的查看器保留最后一份图集，
+  // 直到关闭，不因队列状态变化把第二页截成单图或串到另一条消息。
+  if (payload.galleryImageKey && previousImages?.some((image) => (
+    image.key === payload.galleryImageKey && (!sourceGroupKey || image.groupKey === sourceGroupKey)
+  ))) return [...previousImages];
   return [{
     key: 'lightbox:payload',
     title: payload.title,
