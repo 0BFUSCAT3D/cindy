@@ -102,6 +102,7 @@ async function fixture() {
   });
   // These cases exercise request completion, not the separate bounded teardown handshake.
   vi.spyOn(AppBridge.prototype, 'teardownResource').mockResolvedValue({});
+  const authorizeTool = vi.fn(async () => {});
   const host = new McpAppsHost({
     owner: () => owner,
     config: () => (enabled ? config : undefined),
@@ -110,7 +111,7 @@ async function fixture() {
       return card;
     },
     writeCard: async () => {},
-    authorizeTool: async () => {},
+    authorizeTool,
     sendMessage: async () => {},
     connection: () => connection,
   });
@@ -143,6 +144,7 @@ async function fixture() {
     outgoing,
     dispatch,
     config,
+    authorizeTool,
     revoke(kind: 'card' | 'owner' | 'server' | 'config') {
       if (kind === 'card') visible = false;
       if (kind === 'owner') owner = {};
@@ -153,6 +155,47 @@ async function fixture() {
 }
 
 describe('MCP App upstream result authorization', () => {
+  it.each(['card', 'owner', 'server', 'config'] as const)(
+    'does not request tool approval after %s revocation during tool discovery',
+    async (revocation) => {
+      const f = await fixture();
+      const pending = deferred<Array<typeof tool>>();
+      f.methods.tools.mockClear().mockReturnValueOnce(pending.promise);
+      await f.dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: requests[0][1] });
+      await vi.waitFor(() => expect(f.methods.tools).toHaveBeenCalledOnce());
+      f.revoke(revocation);
+      pending.resolve([tool]);
+      await vi.waitFor(() => expect(f.outgoing).toContainEqual(expect.objectContaining({ id: 2 })));
+      expect(f.outgoing).toContainEqual(
+        expect.objectContaining({ id: 2, error: expect.anything() }),
+      );
+      expect(f.authorizeTool).not.toHaveBeenCalled();
+      expect(f.methods.callTool).not.toHaveBeenCalled();
+      expect(f.methods.tools).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('requests approval once after slow tool discovery when the View remains current', async () => {
+    const f = await fixture();
+    const pending = deferred<Array<typeof tool>>();
+    f.methods.tools.mockClear().mockReturnValueOnce(pending.promise);
+    f.methods.callTool.mockResolvedValueOnce(requests[0][3]);
+    await f.dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: requests[0][1] });
+    await vi.waitFor(() => expect(f.methods.tools).toHaveBeenCalledOnce());
+    expect(f.authorizeTool).not.toHaveBeenCalled();
+    pending.resolve([tool]);
+    await vi.waitFor(() => expect(f.outgoing).toContainEqual(expect.objectContaining({ id: 2 })));
+    expect(f.outgoing).toContainEqual({ jsonrpc: '2.0', id: 2, result: requests[0][3] });
+    expect(f.authorizeTool).toHaveBeenCalledExactlyOnceWith(
+      'task',
+      tool,
+      {},
+      expect.any(AbortSignal),
+    );
+    expect(f.methods.callTool).toHaveBeenCalledOnce();
+    expect(f.methods.tools).toHaveBeenCalledOnce();
+  });
+
   it.each(['card', 'owner', 'server', 'config'] as const)(
     'discards a completed App tool result after %s revocation without replaying it',
     async (revocation) => {

@@ -399,7 +399,8 @@ export class McpAppsHost {
       };
       bridge.oncalltool = async (params, extra) => {
         await assertCurrent();
-        const target = (await connection.tools()).find((item) => item.name === params.name);
+        const tools = await currentResult(connection.tools(extra.signal), extra.signal);
+        const target = tools.find((item) => item.name === params.name);
         if (!target || !toolVisibleTo(target, 'app')) throw new Error('MCP_APP_TOOL_NOT_VISIBLE');
         await this.deps.authorizeTool(sessionId, target, params.arguments ?? {}, extra.signal);
         const client = await currentClient(extra.signal);

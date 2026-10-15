@@ -25,7 +25,7 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 | 工具输入 / 结果           | initialized 后先给完整 arguments，再给完整 ContentBlock、structuredContent 和 View-only `_meta`；模型结果去掉根 `_meta`                            | 初始化 / 顺序 / 结果互操作       |
 | 工具输入片段              | 可选；当前在工具调用时发送完整输入，无 partial 通知                                                                                                | 完整输入顺序测试                 |
 | 取消 / 销毁               | 标准 cancelled 与 resource-teardown；等待响应，有界退出，撤销本地供片                                                                              | 官方 SDK 与 Electron 集成        |
-| App 调工具                | 只连接产生该卡片的 MCP server；复用任务权限卡；审批后与结果返回前再次核对归属、清空与配置                                                          | 可见性 / owner / 撤销 / IPC 回归 |
+| App 调工具                | 只连接产生该卡片的 MCP server；复用任务权限卡；发起审批前、审批后与结果返回前再次核对归属、清空与配置                                              | 可见性 / owner / 撤销 / IPC 回归 |
 | MCP 资源与通知            | 转发 resources/read/list/templates、工具列表、prompts/list 与 list_changed；不开放任意 server 或 endpoint                                          | 官方 SDK、连接和操作测试         |
 | `ui/open-link`            | 仅 http/https，无内嵌凭证；在当前查看设备的系统浏览器打开，失败返回 RPC 错误                                                                       | controller / Host / URL 单测     |
 | `ui/message`              | 支持 text、resourceLink；原生命令转为普通文字，历史保留原文；保留 user role 和真实 App 来源，不作为主人授权；入队及最终派发前重新核验卡片和 View | 官方 SDK 互操作、来源与发送回归  |
@@ -50,6 +50,7 @@ HTML、preload 返回值或 JavaScript Request。顶层 Renderer 的 message/pol
 回归见 `sandboxProtocol.test.ts`、`sandboxBridge.test.ts` 与真实 Electron 沙箱验证。
 App 发起的工具调用与工具、资源、模板、提示列表及资源读取在上游完成后，交付结果前再次核验
 当前 View、卡片、账号、服务器配置和取消信号；撤权后的晚到结果被丢弃，不重放上游调用。
+工具发现完成后、发起权限请求前也执行同一复核，避免已撤权的 View 弹出审批。
 回归见 `viewAuthorization.test.ts`。
 
 Mobile 的可信外层 proxy 不跳转页面，App 通过只有 `allow-scripts` 的不透明来源 iframe
