@@ -1578,6 +1578,31 @@ describe('Chat Server result delivery and refresh', () => {
       fixture.handle.mockImplementation(threadResponse);
     });
 
+    it.each([undefined, '   '])('uses the ordinary attachment name for caption %s in previews and share fallback', async caption => {
+      const source = msg(botReply, 2, botId, { threadRootId: rootId, content: [{ type: 'media', mediaId: '80000000-0000-4000-8000-000000000001', caption }] });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [source, root], cursor: '8' } };
+        if (route.endsWith(`/messages/${botReply}`)) return { body: source };
+        return threadResponse(route, method, body);
+      });
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages.find(m => m.id === rootId)!.threadPreview!.replies[0]!.attachments)
+        .toEqual([{ name: 'Attachment', category: 'file' }]);
+      expect((await service.chatServer!.shareToMain({ groupId: roomId, messageId: botReply })).ok).toBe(true);
+      const posted = fixture.handle.mock.calls.find(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST')![2];
+      expect(posted).toMatchObject({ content: [{ fallback: '↪ Bot (Me): Attachment' }] });
+    });
+
+    it('resolves every loaded old reference without a 200-card cutoff', async () => {
+      const shownShares = Array.from({ length: 201 }, (_, i) => ({ id: `90000000-0000-4000-8000-${String(i + 100).padStart(12, '0')}`, messageId: botReply, threadRootId: rootId }));
+      const result = await service.getGroup(roomId, { shownShares });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(Object.keys(result.group.threadShareUpdates!)).toHaveLength(201);
+      expect(Object.values(result.group.threadShareUpdates!).every(share => share.status === 'available')).toBe(true);
+    });
+
     it('previews the newest replies and resolves each share from the server copy, not the card', async () => {
       const result = await service.getGroup(roomId);
       if (!result.ok) throw new Error('Expected group');

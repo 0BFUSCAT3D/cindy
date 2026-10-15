@@ -234,9 +234,9 @@ export function threadPreviewText(message: ThreadMessage): string {
     .replace(/\s+/g, ' ').trim().slice(0, 280);
 }
 
-export function threadPreviewAttachments(message: ThreadMessage) {
+export function threadPreviewAttachments(message: ThreadMessage, attachmentName: (block: ThreadMessage['content'][number]) => string) {
   return message.content.flatMap(block => block.type === 'media' && block.mediaId ? [{
-    name: block.caption ?? '',
+    name: attachmentName(block),
     category: /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg)$/i.test(block.caption ?? '') ? 'image' as const : 'file' as const,
   }] : []);
 }

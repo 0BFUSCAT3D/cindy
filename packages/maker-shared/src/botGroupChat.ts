@@ -537,9 +537,6 @@ export interface BotGroupGetOptions {
   shownShares?: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }>;
 }
 
-/** Older-page shares re-resolved per refresh; later ones wait for a reload. */
-export const BOT_GROUP_SHOWN_SHARES_MAX = 200;
-
 export type BotGroupChange = 'created' | 'updated' | 'deleted' | 'messages' | 'round' | 'plan';
 
 export interface BotGroupChangedPayload {

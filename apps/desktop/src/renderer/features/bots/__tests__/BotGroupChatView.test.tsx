@@ -3055,7 +3055,7 @@ describe('shares on older pages', () => {
     expect(screen.queryByText('编辑前的原文')).toBeNull();
   });
 
-  it('gives each new version its own follow-up budget', async () => {
+  it('checks each new version once without looping when a source cannot be confirmed', async () => {
     const share = { messageId: 'old-reply', threadRootId: 'old-root', status: 'available' as const, authorKind: 'bot' as const, authorBotId: 'xiaoman', authorName: '小满',
       sharedByAuthor: false, content: '原文', attachments: [], createdAt: 1, edited: false, version: 1 };
     const oldShare = msg({ id: 'old-share', sequence: 1, authorKind: 'user', isSelf: false, authorBotId: 'alice-actor', authorName: 'Alice', content: '↪ 卡片文字', threadShare: share });
@@ -3071,11 +3071,13 @@ describe('shares on older pages', () => {
     await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
     await settle();
     const afterFirstEdit = mocks.getBotGroup.mock.calls.length;
-    // A later edit: the stale card is re-checked again, not left on the first edit's spent budget.
+    // A later edit is checked again; unchanged stale data never causes a refresh loop.
     version = 3;
     await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
     await settle();
-    expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBeGreaterThan(1);
+    expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBe(2);
+    await settle();
+    expect(mocks.getBotGroup.mock.calls.length - afterFirstEdit).toBe(2);
   });
 
   it('waits for a follow-up before another, whatever else commits meanwhile', async () => {
@@ -3106,8 +3108,39 @@ describe('more older shares than one refresh re-reads', () => {
   const t = (name: string) => `bots.groupChat.server.thread.${name}`;
   beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
 
-  // Crossing the per-read cap takes more cards than a shared CI runner renders within the default.
-  it('never keeps showing a share the refresh could not check, and gets to it within a few refreshes', { timeout: 20_000 }, async () => {
+  it.each(['source', 'attachment'] as const)('settles every older %s after overlapping completion pushes', { timeout: 20_000 }, async (pending) => {
+    const older = Array.from({ length: 201 }, (_, i) => msg({ id: `share-${i}`, sequence: i + 1, content: 'card fallback',
+      threadShare: { messageId: `reply-${i}`, threadRootId: 'root', status: pending === 'source' ? 'loading' : 'available',
+        authorKind: 'user', authorBotId: null, authorName: 'Alice', sharedByAuthor: true, content: pending === 'source' ? '' : `原文 ${i}`,
+        attachments: pending === 'attachment' ? [{ id: `file-${i}`, name: `pending-${i}.pdf`, category: 'file', mimeType: 'application/pdf', size: 0, url: null, path: null, state: 'loading' }] : [],
+        createdAt: 1, edited: false, version: 2 } }));
+    const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 2, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
+    const finish: Array<() => void> = [];
+    mocks.getBotGroup.mockImplementation((_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string }> }) => {
+      if (options?.beforeSequence) return Promise.resolve({ ok: true, group: { ...latest, hasMoreBefore: false, messages: older } });
+      if (!options?.shownShares?.length) return Promise.resolve({ ok: true, group: latest });
+      const updates = Object.fromEntries(options.shownShares.map(ref => {
+        const i = Number(ref.id.slice(6));
+        return [ref.id, { ...older[i]!.threadShare!, status: 'available', content: `核对 ${i}`, attachments: [] }];
+      }));
+      return new Promise(resolve => finish.push(() => resolve({ ok: true, group: { ...latest, threadShareUpdates: updates } })));
+    });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(document.querySelectorAll('[data-share-message-id]').length).toBeGreaterThan(200));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    expect(finish).toHaveLength(2);
+    await act(async () => finish[1]!());
+    await act(async () => finish[0]!());
+    expect(await screen.findByText('核对 0')).toBeTruthy();
+    expect(screen.getByText('核对 200')).toBeTruthy();
+    expect(screen.queryByText(t('loadingSource'))).toBeNull();
+    expect(screen.queryByText('pending-0.pdf')).toBeNull();
+    expect(finish).toHaveLength(2);
+  });
+
+  it('checks all loaded shares in one refresh, including the oldest deleted source', { timeout: 20_000 }, async () => {
     type Share = NonNullable<BotGroupMessageView['threadShare']>;
     const shareOf = (i: number, extra: Partial<Share> = {}): Share => ({ messageId: `reply-${i}`, threadRootId: 'root', status: 'available', authorKind: 'bot',
       authorBotId: 'xiaoman', authorName: '小满', sharedByAuthor: false, content: `原文 ${i}`, attachments: [], createdAt: 1, edited: false, version: 1, ...extra });
@@ -3116,13 +3149,9 @@ describe('more older shares than one refresh re-reads', () => {
     const latest = detail({ serverBacked: true, hasMoreBefore: true, threadShareVersion: 1, messages: [msg({ id: 'new', sequence: 500, content: '最新' })] });
     let version = 1;
     const refreshes: Array<string[]> = [];
-    let release!: () => void;
-    const followUp = new Promise<void>(resolve => { release = resolve; });
     mocks.getBotGroup.mockImplementation(async (_groupId: string, options?: { beforeSequence?: number; shownShares?: Array<{ id: string; messageId: string }> }) => {
       if (options?.beforeSequence) return { ok: true, group: { ...latest, hasMoreBefore: false, messages: older } };
       refreshes.push((options?.shownShares ?? []).map(share => share.id));
-      // Hold the read that finally checks the oldest share, to see what shows meanwhile.
-      if (version > 1 && options?.shownShares?.some(share => share.id === 'share-0')) await followUp;
       // The oldest share's reply has been deleted on the server since it was shown.
       const threadShareUpdates = Object.fromEntries((options?.shownShares ?? []).map(share => [share.id, share.messageId === 'reply-0'
         ? shareOf(0, { status: 'unavailable', authorName: '', content: '', version }) : shareOf(Number(share.messageId.slice(6)), { version })]));
@@ -3134,16 +3163,13 @@ describe('more older shares than one refresh re-reads', () => {
     expect(await screen.findByText('原文 0')).toBeTruthy();
     version = 2;
     act(() => { for (const push of mocks.pushes) push({ groupId: 'g1', change: 'messages' }); });
-    // Not checked by the first refresh: its old text goes away before anything confirms it.
-    await waitFor(() => expect(refreshes.some(ids => ids.includes('share-0'))).toBe(true));
-    expect(screen.queryByText('原文 0')).toBeNull();
-    expect(screen.getAllByText(t('loadingSource')).length).toBe(1);
-    act(() => release());
+    await screen.findByText(t('sourceUnavailable'));
     await waitFor(() => expect(screen.queryByText(t('loadingSource'))).toBeNull());
+    expect(screen.queryByText('原文 0')).toBeNull();
     expect(screen.getAllByText(t('sourceUnavailable')).length).toBe(1);
-    // Bounded: the push plus at most a couple of follow-ups, each within the per-read cap.
-    expect(refreshes.length).toBeLessThanOrEqual(3);
-    expect(refreshes.every(ids => ids.length <= 200)).toBe(true);
+    // Initial load and one push refresh: no per-batch follow-ups.
+    expect(refreshes).toHaveLength(2);
+    expect(refreshes[1]).toHaveLength(201);
     expect(screen.queryByText('↪ 卡片 0')).toBeNull();
   });
 
@@ -3169,7 +3195,7 @@ describe('more older shares than one refresh re-reads', () => {
     expect(await screen.findByText('核对后的原文')).toBeTruthy();
     // The first refresh that checks older shares already takes the stale one.
     expect(refreshes.find(ids => ids.length)).toContain('share-0');
-    expect(refreshes.every(ids => ids.length <= 200)).toBe(true);
+    expect(refreshes.find(ids => ids.length)).toHaveLength(201);
   });
 });
 

@@ -79,7 +79,7 @@ import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
-import { BOT_GROUP_SHOWN_SHARES_MAX, isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
+import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import {
   BotGroupHandoffFiles,
   BotGroupOrganizerTag,
@@ -213,8 +213,6 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const [planPending, setPlanPending] = useState<PlanPending | null>(null);
   const planPendingRef = useRef(false);
   const loadRef = useRef<(additionalSources?: string[]) => void>(() => {});
-  /** Refresh results applied so far; share follow-ups wait for the next one. */
-  const loadResults = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -259,7 +257,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         const sourceMessageIds = [...new Set([...(shown
           ? mergeBotGroupMessages(displayed.older, displayed.group.messages).map(message => message.id) : []), ...additionalSources])];
         // Older pages are not re-read, so their shares ask for the reply's current state.
-        const shownShares = shown ? botGroupShownShares(displayed.older, displayed.group.threadShareVersion) : [];
+        const shownShares = shown ? botGroupShownShares(displayed.older) : [];
         const result = sourceMessageIds.length || shownShares.length
           ? await api.getBotGroup(groupId, { sourceMessageIds, ...(shownShares.length ? { shownShares } : {}) })
           : await api.getBotGroup(groupId);
@@ -278,7 +276,6 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   readToken,
                 },
           );
-          loadResults.current += 1;
           const shown = stateRef.current;
           if (shown.kind === 'ready') {
             const targets = quotedOlderOriginals(shown.older, result.group.messages);
@@ -371,24 +368,14 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     };
   }, [groupId, reloadVersion]);
 
-  // Older shares checked before the latest edit, deletion or reset are re-checked from the
-  // committed timeline, whichever of a refresh and an older page landed last. One refresh
-  // checks up to the per-read cap, so a bounded number of follow-ups reaches all of them.
-  // Each version gets its own budget: an edit mid-way makes every card stale again. One
-  // follow-up at a time: other commits (an older page, a quote check) wait until a refresh
-  // result lands instead of spending the budget on reads that would replace it.
-  const shareFollowUps = useRef<{ version: number | undefined; count: number; awaiting: number | null }>({ version: undefined, count: 0, awaiting: null });
+  // An older page may land across a refresh. Recheck that set once per version; source
+  // and attachment completion pushes then refresh every displayed share together.
+  // The derived key stays unchanged if a read cannot confirm a source, avoiding a loop.
+  const staleSharesKey = state.kind === 'ready' && staleBotGroupShares(state.older, state.group.threadShareVersion).length
+    ? JSON.stringify([state.group.threadShareVersion, staleBotGroupShares(state.older, state.group.threadShareVersion).map(message => message.id)]) : '';
   useEffect(() => {
-    const version = state.kind === 'ready' ? state.group.threadShareVersion : undefined;
-    if (shareFollowUps.current.version !== version) shareFollowUps.current = { version, count: 0, awaiting: null };
-    if (state.kind !== 'ready' || !staleBotGroupShares(state.older, version).length) { shareFollowUps.current.count = 0; return; }
-    if (shareFollowUps.current.awaiting === loadResults.current) return;
-    const total = state.older.filter(message => message.threadShare).length;
-    if (shareFollowUps.current.count >= Math.ceil(total / BOT_GROUP_SHOWN_SHARES_MAX) + 1) return;
-    shareFollowUps.current.count += 1;
-    shareFollowUps.current.awaiting = loadResults.current;
-    loadRef.current();
-  }, [state]);
+    if (staleSharesKey) loadRef.current();
+  }, [staleSharesKey]);
 
   const group = state.kind === 'ready' ? state.group : null;
   // Until the timeline arrives, the header comes from the group's sidebar row (same account).
@@ -1099,16 +1086,9 @@ function staleBotGroupShares(older: readonly BotGroupMessageView[], version: num
   return older.filter(message => message.threadShare && version !== undefined && (message.threadShare.version ?? 0) < version);
 }
 
-/**
- * Which older shares one refresh re-checks, up to the per-read cap: stale ones first, so
- * every capped batch advances; then still-loading ones, which the main process is already
- * retrying; then the newest. The rest are checked by later refreshes.
- */
-function botGroupShownShares(older: readonly BotGroupMessageView[], version: number | undefined) {
-  const withShares = older.filter(message => message.threadShare).reverse();
-  const stale = staleBotGroupShares(withShares, version);
-  const first = new Set([...stale, ...withShares.filter(message => message.threadShare!.status === 'loading')]);
-  return [...first, ...withShares.filter(message => !first.has(message))].slice(0, BOT_GROUP_SHOWN_SHARES_MAX).map(message => ({
+/** One refresh covers all loaded references, including pending sources and attachments. */
+function botGroupShownShares(older: readonly BotGroupMessageView[]) {
+  return older.filter(message => message.threadShare).map(message => ({
     id: message.id, messageId: message.threadShare!.messageId, threadRootId: message.threadShare!.threadRootId,
     ...(message.authorBotId ? { sharerId: message.authorBotId } : {}) }));
 }

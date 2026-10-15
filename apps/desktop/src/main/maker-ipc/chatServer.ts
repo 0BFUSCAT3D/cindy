@@ -32,7 +32,7 @@ import {
   isBotGroupRuntimeFailureCode, type BotGroupRuntimeFailureCode,
   readImportedBotGroupRuntimeFailureCode,
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
-  buildBotGroupThreadShareCard, botGroupThreadShareOperationId, readBotGroupThreadShareCard, BOT_GROUP_SHOWN_SHARES_MAX,
+  buildBotGroupThreadShareCard, botGroupThreadShareOperationId, readBotGroupThreadShareCard,
   type BotGroupThreadShareView,
   type BotGroupDetail, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
   botGroupQuoteAttachmentName, botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
@@ -783,7 +783,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         const replyView = messageView(reply, members);
         return replyView.kind === 'message' ? [{ id: reply.id, authorKind: replyView.authorKind, authorBotId: replyView.authorBotId,
           authorName: replyView.authorName, isSelf: replyView.isSelf, text: threadPreviewText(reply),
-          attachments: threadPreviewAttachments(reply), createdAt: replyView.createdAt }] : [];
+          attachments: threadPreviewAttachments(reply, attachmentName), createdAt: replyView.createdAt }] : [];
       });
       if (replies?.length) view.threadPreview = { replies };
       const card = readBotGroupThreadShareCard(message);
@@ -797,7 +797,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     id.parse(roomId);
     const o = z.object({ beforeSequence: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).optional(),
       sourceMessageIds: z.array(id).optional(),
-      shownShares: z.array(z.object({ id, messageId: id, threadRootId: id, sharerId: z.string().min(1).max(200).optional() })).max(BOT_GROUP_SHOWN_SHARES_MAX).optional() }).parse(options ?? {});
+      shownShares: z.array(z.object({ id, messageId: id, threadRootId: id, sharerId: z.string().min(1).max(200).optional() })).optional() }).parse(options ?? {});
     const query = new URLSearchParams({ limit: String(o.limit ?? 100) });
     if (o.beforeSequence) query.set('before', String(o.beforeSequence));
     // Independent reads share a round trip. Each is awaited in the former serial order, so the
@@ -1459,7 +1459,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const author = members.find(member => member.id === source.authorId);
       const card = buildBotGroupThreadShareCard({ messageId: source.id, threadRootId: source.threadRootId!,
         authorName: author ? memberName(author) : source.author.name,
-        text: threadPreviewText(source) || threadPreviewAttachments(source).map(file => file.name).join(', ') });
+        text: threadPreviewText(source) || threadPreviewAttachments(source, attachmentName).map(file => file.name).join(', ') });
       try {
         const posted = await api<{ id: string }>(`/conversations/${room}/messages`, 'POST', {
           operationId: botGroupThreadShareOperationId(source.id), content: [card],
