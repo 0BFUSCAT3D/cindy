@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { historyPrefetchVersion, historySnapshotCovers, historySnapshotFromPage, selectHistoryPrefetchSessions } from '../historyViewPrefetch.js';
+import { historyPrefetchVersion, historySnapshotCovers, historySnapshotForCache, historySnapshotFromPage, selectHistoryPrefetchSessions } from '../historyViewPrefetch.js';
 import type { HistoryViewSnapshot } from '../historyViewController.js';
 import type { HistoryMessageSource, HistoryViewItem, HistoryWorkSummary } from '../historyView.js';
 
@@ -12,6 +12,22 @@ const work = (key: string, revision: string, endedAtMs = 0): HistoryViewItem<His
 const detail = (revision: string) => ({ messages: [], revision, lastMessageId: 'x', loading: false, complete: true, error: null });
 
 describe('history read ahead', () => {
+  it('discards collapsed details before expanded ones and folds only if the latest page still cannot fit', () => {
+    const page = { version: 1 as const, items: [work('collapsed', 'r1'), work('expanded', 'r1')], hasMore: false, nextCursor: null };
+    const previous: HistoryViewSnapshot<HistoryMessageSource> = {
+      ...page, details: new Map([['collapsed', detail('r1')], ['expanded', detail('r1')]]),
+      expanded: new Set(['expanded']), loading: false, ready: true, error: null,
+    };
+    const expanded = historySnapshotForCache(page, previous, snapshot => snapshot.details.size <= 1)!;
+    expect([...expanded.details.keys()]).toEqual(['expanded']);
+    expect([...expanded.expanded]).toEqual(['expanded']);
+    const folded = historySnapshotForCache(page, previous, snapshot => snapshot.details.size === 0)!;
+    expect(folded.items).toEqual(page.items);
+    expect(folded.expanded.size).toBe(0);
+    expect(previous.details.size).toBe(2);
+    expect(previous.expanded.size).toBe(1);
+  });
+
   it('reads only the newest changed tasks it has not read at their current version', () => {
     const ms = (second: number) => Date.parse(`2026-10-11T00:00:0${second}Z`);
     const sessions = [

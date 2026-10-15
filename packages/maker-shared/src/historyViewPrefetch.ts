@@ -81,3 +81,26 @@ export function historySnapshotFromPage<T extends HistoryMessageSource>(
     loading: false, ready: true, error: null,
   };
 }
+
+/** Fit read-ahead to the existing platform budget before invoking a cache writer. */
+export function historySnapshotForCache<T extends HistoryMessageSource>(
+  page: HistoryViewPage<T>,
+  previous: HistoryViewSnapshot<T> | null | undefined,
+  fits: (snapshot: HistoryViewSnapshot<T>) => boolean,
+): HistoryViewSnapshot<T> | null {
+  const merged = historySnapshotFromPage(page, previous);
+  if (fits(merged)) return merged;
+  const withoutCollapsed = (snapshot: HistoryViewSnapshot<T>): HistoryViewSnapshot<T> => ({
+    ...snapshot, details: new Map([...snapshot.details].filter(([key]) => snapshot.expanded.has(key))),
+  });
+  const expandedOnly = withoutCollapsed(merged);
+  if (fits(expandedOnly)) return expandedOnly;
+  // Removing the prefix must also restore the latest page's cursor/hasMore, so the
+  // omitted rows remain reachable online. Never slice rows out of a work range.
+  const latest = withoutCollapsed(historySnapshotFromPage(page, previous ? { ...previous, items: [] } : null));
+  if (fits(latest)) return latest;
+  const folded = { ...latest, details: new Map<string, HistoryWorkDetailState<T>>(), expanded: new Set<string>() };
+  // A latest page that cannot fit even folded must not clear the existing mirror or
+  // be recorded as successfully prefetched. The next normal refresh may try again.
+  return fits(folded) ? folded : null;
+}
