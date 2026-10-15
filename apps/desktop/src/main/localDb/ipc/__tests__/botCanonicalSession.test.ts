@@ -4290,6 +4290,22 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('clips a long group task title without splitting an emoji', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => ({ ok: true as const, messageId: `posted:${input.clientId}` }));
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: `${'a'.repeat(59)}😀 and more\nDetails` });
+      if (!task.ok) throw new Error(task.message);
+      await vi.waitFor(() => expect(postGroupTaskMessage).toHaveBeenCalled());
+      const card = (postGroupTaskMessage.mock.calls[0]![0] as unknown as { card: { fallback: string; data: { title: string } } }).card;
+      // The task's own title is cut at 60 units, before the emoji rather than through it.
+      expect(card.data.title).toBe('a'.repeat(59));
+      expect(card.fallback).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+    } finally { release(); runtime.dispose(); }
+  });
+
   it('tells the teammate a task from an old local-only group reports to the owner privately', async () => {
     await seedPair(); seedGroupLane();
     const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
