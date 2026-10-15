@@ -156,13 +156,14 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
           getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className={BOT_GROUP_COMPOSER_DOCK}><div className={BOT_GROUP_COMPOSER_COLUMN}>
           {error && <p role="alert" className="mb-2 px-1 text-13 leading-5 text-[var(--error-fg)]">{error}</p>}
-          {mention.list}
+          {/* Read-only also means no @ picks while sending. */}
+          {busy ? null : mention.list}
           {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
           <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
             <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
               {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
               maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
-                if (e.nativeEvent.isComposing || e.keyCode === 229 || mention.onKeyDown(e)) return;
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
               }} />
             <div className={BOT_GROUP_COMPOSER_FOOTER}>

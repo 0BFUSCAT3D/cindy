@@ -353,6 +353,23 @@ describe('chat interaction controls', () => {
       expect(mocks.reply).toHaveBeenCalledOnce();
     });
 
+    it('keeps the list closed while a reply is sending, so the read-only text cannot change', async () => {
+      const input = renderThread();
+      let settle: (value: { ok: true; messageId: string }) => void = () => {};
+      mocks.reply.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+      type(input, '@B');
+      expect(labels()).toContain('Bo');
+      fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+      await waitFor(() => expect(input.readOnly).toBe(true));
+      expect(screen.queryByRole('listbox')).toBeNull();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      expect(input.value).toBe('@B');
+      settle({ ok: true, messageId: 'reply' });
+      await waitFor(() => expect(input.value).toBe(''));
+      expect(mocks.reply).toHaveBeenCalledOnce();
+    });
+
     it('treats an e-mail address as text and forgets a pick once its name is edited', async () => {
       const input = renderThread();
       type(input, 'mail a@');
