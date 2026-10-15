@@ -15,6 +15,7 @@
  * inside the store.
  */
 
+import type { InputHandoffSnapshot } from '@cindy/device-link';
 import {
   useCallback,
   useEffect,
@@ -277,6 +278,8 @@ interface UseCCAgentChatReturn {
   pendingGhostGrantConfirm: PendingGhostGrantConfirm | null;
   /** Device Link Desktop controller: read-only host confirmation status. */
   pendingRemoteDesktopConfirmation: PendingRemoteDesktopConfirmation | null;
+  /** 代输入: current step snapshot (structure only; values stay in the card). */
+  pendingInputHandoff: InputHandoffSnapshot | null;
   /** ghost_grant_confirm: Respond to the pending ghost file-grant confirm card */
   respondToGhostGrantConfirm: (
     result: { confirmed: true; allowDirs?: boolean } | { confirmed: false },
@@ -927,6 +930,7 @@ export function useCCAgentChat(
     respondToRenameSessionsConfirm,
     pendingGhostGrantConfirm: lightState.pendingGhostGrantConfirm,
     pendingRemoteDesktopConfirmation: lightState.pendingRemoteDesktopConfirmation,
+    pendingInputHandoff: lightState.pendingInputHandoff,
     respondToGhostGrantConfirm,
     planViewerState: lightState.planViewerState,
     setPlanViewerState,

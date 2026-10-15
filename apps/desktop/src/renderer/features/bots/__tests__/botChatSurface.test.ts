@@ -63,6 +63,8 @@ describe('伙伴输入框只保留对话动作', () => {
     expect(sessionView).toContain('onStartVoiceConversation={voiceModeAvailable ? startVoiceMode : undefined}');
     expect(sessionView).toContain('voiceConversationDisabled={voiceModeBlocked}');
     expect(sessionView).toContain('voiceConversationActive={voiceModeOpen}');
+    const voiceGate = sessionView.match(/const voiceModeBlocked = Boolean\([\s\S]*?\);/)?.[0];
+    expect(voiceGate).toContain('pendingInputHandoff');
   });
 
   it('伙伴保留标准权限 chip，仅隐藏模型选择器', () => {

@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/input';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { ConnectProviderCard } from '@/components/onboarding/ConnectProviderCard';
@@ -55,6 +56,9 @@ import {
   shouldDeferCanonicalBotSessionNavigation,
   withBotCanonicalSessionReadTimeout,
 } from './botNavigation';
+import { useCompanionCloud } from './companionCloudStore';
+import { withoutShadowedBots } from './companionCloudPresentation';
+import { BotHomeComputerSetting } from './BotHomeComputerSetting';
 import { BotLifecycleSettings } from './BotLifecycleSettings';
 import { BotInvitationWelcome } from './BotInvitationWelcome';
 import { BotModelChainEditor } from './BotModelChainEditor';
@@ -519,6 +523,7 @@ export function BotSettings({
                 </button>
               ))}
             </div>
+            <BotHomeComputerSetting bot={bot} />
             <div className="mt-6">
               <BotLifecycleSettings
                 bot={bot}
@@ -670,6 +675,18 @@ export function BotSettings({
                 autosave.onEdit('instant');
               }}
             />
+            <div className="mt-5 flex items-start gap-3 border-t border-[var(--border-default)] pt-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-13 font-medium text-[var(--text-primary)]">{t('bots.capabilities.inputHandoff.title')}</p>
+                <p className="mt-1 text-12 leading-5 text-[var(--text-secondary)]">{t('bots.capabilities.inputHandoff.description')}</p>
+              </div>
+              <Switch
+                aria-label={t('bots.capabilities.inputHandoff.title')}
+                className="mt-0.5 shrink-0"
+                checked={capabilities.inputHandoff !== false}
+                onCheckedChange={(value) => updateCapability('inputHandoff', value === true)}
+              />
+            </div>
           </div>
         )}
         {page === 'history' ? (
@@ -768,7 +785,9 @@ export function BotsHomeView() {
   const history = useContext(MainViewHistoryContext);
   const selectedBot = useMemo(() => bots.find((bot) => bot.id === botId && bot.status !== 'deleting') ?? null, [botId, bots]);
   const profilesLoaded = hasLoadedBotProfiles();
-  const entryTarget = botEntryTarget(bots, history?.current.lastBotId);
+  const cloud = useCompanionCloud();
+  // Demoted copies (home moved to another computer) are never the entry choice.
+  const entryTarget = botEntryTarget(withoutShadowedBots(bots, cloud), history?.current.lastBotId);
   // An empty profile projection can predate the newly connected source/runtime.
   // Only followers may resume from live defaults; Main resolves the actual route
   // when opening the canonical task without writing a per-Bot override.

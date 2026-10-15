@@ -96,6 +96,7 @@ import { PermissionPrompt } from '@/components/new-chat/PermissionPrompt';
 import { IssueConfirmCard } from './IssueConfirmCard';
 import { RenameSessionsConfirmCard } from './RenameSessionsConfirmCard';
 import { GhostGrantConfirmCard } from './GhostGrantConfirmCard';
+import { InputHandoffCard } from '@/features/input-handoff/InputHandoffCard';
 import { RemoteDesktopConfirmationNotice } from './RemoteDesktopConfirmationNotice';
 import { AskUserQuestionPrompt } from '@/components/new-chat/AskUserQuestionPrompt';
 import { PluginSetupPrompt } from '@/components/new-chat/PluginSetupPrompt';
@@ -1805,6 +1806,7 @@ function CCAgentSessionContent({
     respondToRenameSessionsConfirm,
     pendingGhostGrantConfirm,
     pendingRemoteDesktopConfirmation,
+    pendingInputHandoff,
     respondToGhostGrantConfirm,
     lastExpandedPlanViewerState,
     updatePlanContent,
@@ -4101,7 +4103,7 @@ function CCAgentSessionContent({
   useEffect(() => { if (!voiceModeAvailable) setVoiceModeOpen(false); }, [voiceModeAvailable]);
   const voiceModeBlocked = Boolean(pendingPermission || pendingAskUser || pendingPlanReview
     || pendingPluginSetup || pendingIssueConfirm || pendingRenameSessionsConfirm
-    || pendingGhostGrantConfirm || pendingRemoteDesktopConfirmation || sessionBinding.attached
+    || pendingGhostGrantConfirm || pendingRemoteDesktopConfirmation || pendingInputHandoff || sessionBinding.attached
     || remoteHandoffPreparing || cindyMakeInputLocked || queuePaused);
   const messageReadAloud = useMessageReadAloud({
     botId: botChatIdentity?.id,
@@ -5318,7 +5320,8 @@ function CCAgentSessionContent({
                       pendingIssueConfirm ||
                       pendingRenameSessionsConfirm ||
                       pendingGhostGrantConfirm ||
-                      pendingRemoteDesktopConfirmation
+                      pendingRemoteDesktopConfirmation ||
+                      pendingInputHandoff
                     )
                   }
                   className="mb-0"
@@ -5542,7 +5545,8 @@ function CCAgentSessionContent({
                     pendingIssueConfirm ||
                     pendingRenameSessionsConfirm ||
                     pendingGhostGrantConfirm ||
-                    pendingRemoteDesktopConfirmation
+                    pendingRemoteDesktopConfirmation ||
+                    pendingInputHandoff
                   )
                 }
                 placeholder={
@@ -5619,6 +5623,13 @@ function CCAgentSessionContent({
                     key={pendingGhostGrantConfirm.requestId}
                     pending={pendingGhostGrantConfirm}
                     onRespond={respondToGhostGrantConfirm}
+                  />
+                ) : pendingInputHandoff && sessionId && !isSharedTaskPeer(remoteDeviceId ?? '') ? (
+                  <InputHandoffCard
+                    key={pendingInputHandoff.requestId}
+                    sessionId={sessionId}
+                    snapshot={pendingInputHandoff}
+                    remote={!!remoteDeviceId}
                   />
                 ) : pendingRemoteDesktopConfirmation ? (
                   <RemoteDesktopConfirmationNotice
