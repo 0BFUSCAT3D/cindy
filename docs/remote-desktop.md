@@ -980,7 +980,10 @@ payload) reports `unavailable` even when SCM is gone, so Settings still
 offers Remove. Removing an intact packaged personal version uninstalls that
 version's lock-screen service through its own helper before deleting the
 snapshot, so a UUID-specific AUTO_START service cannot outlive the
-runtime tree it hardened. An incomplete snapshot with a missing executable
+runtime tree it hardened. Cleanup validates the recorded platform and paths
+without requiring the current CPU architecture to match, so switching a
+Windows profile between x64 and arm64 can retire the old service first. An
+incomplete snapshot with a missing executable
 but intact resources first uses its validated resources record to uninstall the
 surviving helper; when the resources directory is missing too, cleanup skips the
 helper. In both cases removal clears the personal-version slot but retains the

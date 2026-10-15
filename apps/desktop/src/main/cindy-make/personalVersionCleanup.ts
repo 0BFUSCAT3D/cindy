@@ -6,7 +6,7 @@ import { uninstallWindowsDesktopSupportFrom } from '../remote-desktop/windowsHos
 import {
   assertVersionDirectory,
   personalVersionId,
-  readPersonalVersionRecord,
+  readPersonalVersionRecordForCleanup,
   readVersionJson,
   selectedVersion,
   versionDirectory,
@@ -76,7 +76,7 @@ export async function cleanupPersonalVersions(profile: string): Promise<void> {
         try {
           // Never touch unpublished builds or unknown directories. The small record stays
           // usable by history rollback after its bulky runtime has been retired.
-          const item = readPersonalVersionRecord(profile, id);
+          const item = readPersonalVersionRecordForCleanup(profile, id);
           const directory = versionDirectory(profile, id);
           const runtime = path.join(directory, 'runtime');
           if (!fs.existsSync(runtime)) continue;

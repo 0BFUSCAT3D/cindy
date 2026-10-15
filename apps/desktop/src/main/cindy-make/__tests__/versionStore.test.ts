@@ -208,6 +208,27 @@ describe('local Cindy version snapshots', () => {
     expect(fs.existsSync(path.join(versionDirectory(h.userData, first), 'runtime'))).toBe(false);
     expect(fs.existsSync(path.join(versionDirectory(h.userData, second), 'runtime'))).toBe(true);
   });
+  it('retires a replaced personal runtime from another CPU architecture', async () => {
+    const h = await fixture();
+    const first = (await h.retain())!;
+    publishPersonalVersion(h.userData, first);
+    const recordFile = path.join(versionDirectory(h.userData, first), 'version.json');
+    const record = readVersionJson<Record<string, unknown>>(recordFile)!;
+    record.arch = process.arch === 'x64' ? 'arm64' : 'x64';
+    writeVersionJson(recordFile, record);
+    const firstResources = path.join(
+      versionDirectory(h.userData, first),
+      record.resources as string,
+    );
+    const second = (await h.retain())!;
+    publishPersonalVersion(h.userData, second);
+
+    await cleanupPersonalVersions(h.userData);
+
+    expect(uninstall).toHaveBeenCalledExactlyOnceWith(firstResources);
+    expect(fs.existsSync(path.join(versionDirectory(h.userData, first), 'runtime'))).toBe(false);
+    expect(fs.existsSync(path.join(versionDirectory(h.userData, second), 'runtime'))).toBe(true);
+  });
   it('keeps a replaced personal runtime when lock-screen uninstall fails', async () => {
     const h = await fixture();
     const first = (await h.retain())!;
