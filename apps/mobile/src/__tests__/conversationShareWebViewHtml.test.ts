@@ -616,7 +616,7 @@ describe("buildConversationShareHtml 与聊天气泡同款渲染", () => {
     ],
   });
   const css = (selector: string) =>
-    html.match(new RegExp(`\\n\\s*${selector.replace(/\./g, "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+    html.match(new RegExp(`\\n\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`))?.[1] ?? "";
 
   it("用户气泡用细描边与普通边框色,不用次要文字色的粗框", () => {
     expect(css(".share-bubble-user")).toContain("border: 0.5px solid #dddddd");
