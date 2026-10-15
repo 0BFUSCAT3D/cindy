@@ -1249,10 +1249,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (ownDirectRoom) { await runDirectExecution(run, bot.id, s.room.id); return; }
       // Any other 1:1 room is never answered as a group.
       if (s.room.kind === 'direct') throw new Error('INVALID_EXECUTION_TRIGGER');
-      // Lane setup (local) and the turn's context (server reads, attachment downloads) are
-      // independent; both finish before the single lease check that precedes the dispatch.
-      // A failed setup settles at once: no further downloads start and none are waited for.
-      let laneFailed = false;
+      // Lane setup and context metadata reads run together; attachment bytes wait for setup
+      // to succeed so a failed setup cannot leave downloads running after settlement.
       const laneSetup = (async () => {
         // Metadata only: the server remains the sole message store and scheduler.
         if (!metadata.has(s.room.id)) metadata.set(s.room.id, (async () => {
@@ -1322,7 +1320,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         await deps.syncLanePermission?.(lane.sessionId, bot.id);
         return lane;
       })();
-      laneSetup.catch(() => { laneFailed = true; });
       const contextRead = (async () => {
         const history = await historyRead;
         let page = [...history];
@@ -1367,6 +1364,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           page = await api<Message[]>(`/conversations/${s.room.id}/messages?all=true&limit=100&before=${before}`);
           attachmentHistory.push(...page);
         }
+        // Downloads share the media cache with other consumers. Start them only after the
+        // lane is ready, rather than cancelling a shared download on setup failure.
+        await laneSetup;
         const attachments: BotGroupAttachment[] = [];
         const missingAttachments: string[] = [];
         // Attach a bounded newest set, and retain the names of older files in context.
@@ -1386,11 +1386,10 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         // The first 40 files in that order that download are attached, as when they were read
         // one by one; a few download at once. A failed file frees its place for the next one.
         let next = 0;
-        while (!laneFailed && next < candidates.length && attachments.length < 40) {
+        while (next < candidates.length && attachments.length < 40) {
           const batch = candidates.slice(next, next + 40 - attachments.length);
           next += batch.length;
           const results = await settleBounded(batch, TURN_DOWNLOAD_CONCURRENCY, async candidate => {
-            if (laneFailed) throw new Error('LANE_FAILED');
             return media.download(s.room.id, id.parse(candidate.mediaId));
           });
           results.forEach((result, index) => {
