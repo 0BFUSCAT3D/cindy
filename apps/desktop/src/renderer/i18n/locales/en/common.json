@@ -9158,6 +9158,12 @@
         "attachmentsFailed": "Attachments not sent. Check that the files still exist, or remove them and try again.",
         "folderNotSupported": "Folders can’t be attached. Choose the files inside instead."
       },
+      "outbox": {
+        "sending": "Sending…",
+        "failed": "Not sent",
+        "edit": "Edit",
+        "editBlocked": "Send or clear what’s in the input first, then edit this message."
+      },
       "quote": {
         "replyingTo": "Quoting {{name}}",
         "remove": "Remove quote",
