@@ -168,7 +168,7 @@ export interface CodexHttpBridge {
    */
   unregisterSessionCtx(sessionId: string, expectedCtx?: LiziMcpSessionContext): void;
   /**
-   * per-session bearer token (pi 会话用)。与主 token 同权但按会话隔离:
+   * per-session bearer token (pi 会话用)。按会话隔离,冻结伙伴仅能访问实际挂载的 server:
    * pi 每个会话在 spawn 前生成独立 token,经 env-file 交给远端进程 —— 单个
    * 会话的 env-file 泄漏只暴露该会话的 bridge 权限,不殃及其它会话与本地
    * codex 主 token(R5 安全审计 C-2)。必须与 registerSessionCtx 成对注册,
@@ -205,6 +205,13 @@ export interface StartCodexHttpBridgeOptions {
   /** Explicit configured user MCP facades in this bridge generation; never arbitrary built-ins. */
   appServerNames?: readonly string[];
   logger: Logger;
+}
+
+/** Descriptor filtering alone cannot authorize a route on the process-wide bridge. */
+function isFrozenMcpServerAllowed(serverName: string, context?: LiziMcpSessionContext): boolean {
+  if (readAllowedBuiltinPluginIds(context?.vendorOptions) === null) return true;
+  const mounted = context?.vendorOptions?.cindyRuntimeMcpServerNames;
+  return Array.isArray(mounted) && mounted.includes(serverName);
 }
 
 export async function startCodexHttpBridge(
@@ -254,8 +261,8 @@ export async function startCodexHttpBridge(
 
       // bearer token 鉴权:主 token (per-run, 本地 codex 子进程) / 额外 token
       // (persistent, 远端常驻 codex daemon 与远端 cc 共用) / per-session token
-      // (pi 会话, 按 ?session= 隔离, 见 interface 注释)。主 token 与 pi
-      // per-session token 全通;额外 token 只允许访问 REMOTE_ALLOWED_SERVER_NAMES
+      // (pi 会话, 按 ?session= 隔离, 见 interface 注释)。Pi token 核对冻结伙伴的实际挂载;
+      // 主 token 沿用 Codex 线程策略;额外 token 只允许访问 REMOTE_ALLOWED_SERVER_NAMES
       // 白名单 (协同、记忆、伙伴 helper；helper 另有 Session 实例与能力面校验)。
       // URL 解析提前:per-session token 匹配需要 session query,纯解析无副作用。
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -358,6 +365,14 @@ export async function startCodexHttpBridge(
         res.statusCode = 403;
         res.end();
         log.warn('rejected scoped remote token for non-collab server', { serverName });
+        return;
+      }
+      // Bind Pi's frozen mount before initialization or transport lookup: an
+      // excluded facade could otherwise attach Main-held upstream credentials,
+      // or borrow a transport initialized by another Session.
+      if (isPiSessionToken && !isFrozenMcpServerAllowed(serverName, sessionTokenCtx)) {
+        res.statusCode = 403;
+        res.end('MCP server is not mounted for this Session');
         return;
       }
       const createMcpServer = opts.serverFactories[serverName];
@@ -692,9 +707,7 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
         // and extension notifications can mutate the credentialed upstream too.
         return item.method !== 'notifications/initialized';
       });
-      const mounted = activeContext?.vendorOptions?.cindyRuntimeMcpServerNames;
-      const frozenBot = readAllowedBuiltinPluginIds(activeContext?.vendorOptions) !== null;
-      if ((frozenBot && (!Array.isArray(mounted) || !mounted.includes(serverName))) ||
+      if (!isFrozenMcpServerAllowed(serverName, activeContext) ||
         (needsSession && (!activeContext?.remoteHostId || !activeContext.sessionId || !activeContext.sessionInstanceId))) {
         res.statusCode = 401;res.end('MCP App server requires a bound Session instance');return;
       }
