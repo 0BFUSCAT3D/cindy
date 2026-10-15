@@ -17,7 +17,7 @@ describe('mobile message media thumbnail wiring', () => {
 
   it('captures remote and settling queue identities before building their visible rows, without requesting pixels', () => {
     const pendingItems = screenSource.slice(
-      screenSource.indexOf('const pendingSendItems = useMemo('),
+      screenSource.indexOf('const livePendingSendClientIds = useMemo('),
       screenSource.indexOf('const messageListItems = useMemo('),
     );
     expect(pendingItems).toContain('for (const item of [...settlingItemsForRender, ...inputProjection.pendingQueue])');
@@ -25,10 +25,12 @@ describe('mobile message media thumbnail wiring', () => {
     expect(capture).toBeGreaterThan(-1);
     expect(capture).toBeLessThan(pendingItems.indexOf('return buildPendingSendItems('));
     expect(pendingItems).toContain('...settlingItemsForRender, ...inputProjection.pendingQueue, ...outboxDisplayItems,');
-    const pruning = pendingItems.indexOf('pruneSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, liveClientIds, liveImagePreviewClientIdsRef.current)');
+    const pruning = pendingItems.indexOf('pruneSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, livePendingSendClientIds, liveImagePreviewClientIdsRef.current)');
     expect(pruning).toBeGreaterThan(-1);
     expect(pruning).toBeLessThan(capture);
     expect(screenSource).toContain('previewOf, galleryKeyOf, liveImagePreviewClientIdsRef.current)');
+    expect(pendingItems).toContain('new Set([...livePendingSendClientIds].map(pendingSendItemKey))');
+    expect(screenSource).toContain('pendingSendGroupKeys={pendingSendGroupKeys}');
   });
 
   it('threads onResolveRemoteMedia from actions through both media blocks into MediaPreview', () => {
@@ -150,7 +152,8 @@ describe('mobile message media thumbnail wiring', () => {
     expect(rendererSource).toContain('<ImageLightbox');
     expect(rendererSource).toContain('initialImageKey={payload.galleryImageKey}');
     expect(rendererSource).toContain('const sourceGroupPresent = listData.some((item) => item.key === payloadSourceGroupKey);');
-    expect(rendererSource).toContain('lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent)');
+    expect(rendererSource).toContain('pendingSendGroupKeys?.has(payloadSourceGroupKey) === true');
+    expect(rendererSource).toContain('lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent, retainPendingSnapshot)');
     expect(rendererSource).toContain("const imageLightboxOpen = historyActive && payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind);");
     expect(rendererSource).toContain('payload={historyActive ? payload : null}');
     expect(rendererSource).toContain('() => (imageLightboxOpen');

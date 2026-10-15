@@ -8,7 +8,8 @@ import { collectMobileMessageGalleryImages, galleryImageIndexForPayload, lightbo
 import { buildMobileMessageRenderItems, type MobileMessageRenderItem } from '@/session/messageRenderModel';
 import { buildOutboxItem, outboxDisplayItem, outboxItemAttachments, outboxItemWithUpload,
   type MobileOutboxThumb } from '@/session/sessionOutbox';
-import { buildPendingSendItems } from '@/session/pendingSendItems';
+import { buildPendingSendItems, pendingSendItemKey } from '@/session/pendingSendItems';
+import { computeVanishedQueueItems } from '@/session/queueSettling';
 import { getSentMessageImagePreview, rememberSentMessageImagePreviews, type GetSentMessageImagePreview, type SentMessageImagePreviews } from '@/session/sentMessageImagePreviews';
 import type { QueuedRemoteMessage, RemoteSerializedAttachment } from '@/session/types';
 import {
@@ -285,6 +286,63 @@ describe('pending image gallery updates', () => {
     expect(onShareImage).not.toHaveBeenCalled();
   });
 
+  it.each(['remote middle removal', 'local cancellation', 'settling expiry', 'outbox cancellation']
+    .flatMap((reason) => [false, true].map((annotating) => ({ reason, annotating }))))(
+    'closes the removed pending image after $reason (annotating: $annotating)', async ({ reason, annotating }) => {
+      const file: RemoteSerializedAttachment = { id: 'photo', name: 'photo.jpg', category: 'image',
+        path: 'https://example.invalid/photo.jpg', mimeType: 'image/jpeg', ext: 'jpg', size: 100 };
+      const target = { clientId: 'target', text: '', chatMessage: {}, files: [file] } as unknown as QueuedRemoteMessage;
+      const head = { ...target, clientId: 'head', files: [] };
+      const before = reason === 'remote middle removal' ? [head, target] : [target];
+      const after = reason === 'remote middle removal' ? [head] : [];
+      const input = { outbox: [], hiddenClientIds: new Set<string>(), sendingClientIds: new Set<string>(),
+        editingClientId: null, steeringClientIds: new Set<string>(), presentationByClientId: new Map() };
+      const sourceKey = pendingSendItemKey(target.clientId);
+      const initial = reason === 'outbox cancellation'
+        ? collectMobileMessageGalleryImages(buildPendingSendItems({ ...input, queue: [], settling: [],
+          outbox: [outboxDisplayItem(buildOutboxItem({ sessionId: 's', clientId: target.clientId, text: '',
+            permissionModeAtSend: 'ask', readyAttachments: [file], readyPreviews: ['file:///preview.jpg'], claimedUploads: [] }))] }))
+        : collectMobileMessageGalleryImages(buildPendingSendItems({ ...input, queue: before, settling: [] }));
+      const clicked = initial[0].payload;
+      const onClose = vi.fn();
+      const onShareImage = vi.fn();
+      const onSubmit = vi.fn();
+      const { props, render } = mount({ images: initial, initialUrl: initial[0].url, onClose, onShareImage,
+        annotation: { submitLabel: 'Send', onSubmit } });
+      if (annotating) {
+        act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+        press('message.imageLightboxAnnotateButton');
+        const draw = gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+        fire(draw, 'onStart', { x: 100, y: 200 });
+        fire(draw, 'onFinalize', {}, true);
+      } else {
+        expect(runtime.nodes.has('message.imageLightboxShareButton')).toBe(true);
+      }
+      const settling = reason === 'outbox cancellation' ? [] : computeVanishedQueueItems({ previous: before, current: after,
+        previousSteeringClientIds: new Set(), currentSteeringClientIds: new Set(), hiddenClientIds: new Set(),
+        locallyRemovedClientIds: new Set(reason === 'local cancellation' ? [target.clientId] : []) });
+      expect(settling.map((item) => item.clientId)).toEqual(reason === 'settling expiry' ? [target.clientId] : []);
+      if (reason === 'settling expiry') {
+        // Head departure is ambiguous: preserve the open viewer while the existing settling window is live.
+        props.images = lightboxImagesForPayload([], clicked, sourceKey, props.images, false, true);
+        render();
+        expect(onClose).not.toHaveBeenCalled();
+      }
+      const current = collectMobileMessageGalleryImages(buildPendingSendItems({ ...input, queue: after, settling: [] }));
+      props.images = lightboxImagesForPayload(current, clicked, sourceKey, props.images, false, false);
+      // The fixture's node registry also contains unmounted controls unless cleared before rendering.
+      runtime.nodes.clear();
+      render();
+      expect(props.images).toEqual([]);
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(runtime.nodes.has('message.imageLightboxShareButton')).toBe(false);
+      if (runtime.nodes.has('message.imageLightboxAnnotationSubmit')) press('message.imageLightboxAnnotationSubmit');
+      await act(async () => { await Promise.resolve(); });
+      expect(onShareImage).not.toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['ready', 'uploading', 'remote-only'])('preserves annotations through the real %s outbox-to-queue handoff', (phase) => {
     const file: RemoteSerializedAttachment = { id: 'photo', name: 'same.jpg', category: 'image',
       path: 'cindy-oss-attach://photo', url: phase === 'remote-only' ? 'https://example.invalid/original.jpg' : 'cindy-oss-attach://photo',
@@ -360,7 +418,7 @@ describe('pending image gallery updates', () => {
     expect(onShareImage.mock.lastCall?.[0].url).toBe(updated[1].url);
     // Paging away from the originally clicked page must also survive a row handoff.
     act(() => runtime.nodes.get('FlatList').onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 0 } } }));
-    props.images = lightboxImagesForPayload([], clicked, 'pending', props.images);
+    props.images = lightboxImagesForPayload([], clicked, 'pending', props.images, false, true);
     render();
     expect(runtime.nodes.get('FlatList').data).toHaveLength(2);
     expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('1 / 2');
@@ -411,7 +469,7 @@ describe('pending image gallery updates', () => {
       expect(props.images[1].key).toBe(initial[0].key);
     }
     if (gap) {
-      props.images = lightboxImagesForPayload([], clicked, 'message-pending', props.images, false);
+      props.images = lightboxImagesForPayload([], clicked, 'message-pending', props.images, false, true);
       render();
     }
     const formal = collectMobileMessageGalleryImages(buildMobileMessageRenderItems([{
@@ -470,7 +528,7 @@ describe('pending image gallery updates', () => {
     fire(draw(), 'onFinalize', {}, true);
     fire(draw(), 'onStart', { x: 200, y: 400 });
     if (gap) {
-      props.images = lightboxImagesForPayload([], clicked, 'message-pending', props.images, false);
+      props.images = lightboxImagesForPayload([], clicked, 'message-pending', props.images, false, true);
       render();
     }
     const formalUrls = ['cindy-media://blobs/formal-0.jpg', proof === 'hash'

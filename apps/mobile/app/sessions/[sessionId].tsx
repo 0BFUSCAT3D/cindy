@@ -397,6 +397,7 @@ import {
 import {
   mergePendingSendItems,
   buildPendingSendItems,
+  pendingSendItemKey,
   type MobilePendingSendActions,
 } from '@/session/pendingSendItems';
 import { isSourceDeviceRemoved } from '@/session/messageSourceLabels';
@@ -6006,14 +6007,16 @@ function SessionScreenContent() {
   // 「气泡在中间 → 消失 → 在底部重新出现」。进 data 后与正式消息同容器、同 key,回流即
   // 原地变实(见 pendingSendItems.ts)。只喂给消息列表,不进 renderItems——搜索 / 相册 /
   // diff 计数只认已落库的消息。
+  const livePendingSendClientIds = useMemo(() => new Set([
+    ...settlingItemsForRender, ...inputProjection.pendingQueue, ...outboxDisplayItems,
+  ].map((item) => item.clientId)), [settlingItemsForRender, inputProjection.pendingQueue, outboxDisplayItems]);
+  const pendingSendGroupKeys = useMemo(() => new Set([...livePendingSendClientIds].map(pendingSendItemKey)),
+    [livePendingSendClientIds]);
   const pendingSendItems = useMemo(
     () => {
-      const liveClientIds = new Set([
-        ...settlingItemsForRender, ...inputProjection.pendingQueue, ...outboxDisplayItems,
-      ].map((item) => item.clientId));
       // Also prune when the last live message leaves and the capture loop below is empty.
-      pruneSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, liveClientIds, liveImagePreviewClientIdsRef.current);
-      liveImagePreviewClientIdsRef.current = liveClientIds;
+      pruneSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, livePendingSendClientIds, liveImagePreviewClientIdsRef.current);
+      liveImagePreviewClientIdsRef.current = livePendingSendClientIds;
       // Remote/reopened queues have no local send snapshot. Remember identities without
       // fetching pixels so formal history can inherit their open viewer pages too.
       // The authoritative queue wins over a stale settling copy of the same message.
@@ -6056,6 +6059,7 @@ function SessionScreenContent() {
       rememberSentAttachmentPreviews,
       sessionId,
       inputProjection,
+      livePendingSendClientIds,
       outboxDisplayItems,
       queueBusy,
       queueEditing?.clientId,
@@ -10116,6 +10120,7 @@ function SessionScreenContent() {
                     items={messageListItems}
                     itemsStructureKey={messageListStructureKey}
                     pendingSend={pendingSendActions}
+                    pendingSendGroupKeys={pendingSendGroupKeys}
                     getSentImagePreview={getSentImagePreview}
                     loadingEarlier={historyView.snapshot.ready ? historyView.view.isLoadingOlder() : loadingEarlier}
                     loadEarlierProgressKey={oldestLoadedMessageCursor}

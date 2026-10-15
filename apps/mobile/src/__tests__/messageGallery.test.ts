@@ -126,8 +126,8 @@ describe('message gallery', () => {
     const unrelated = collectMobileMessageGalleryImages([messageItem('other', {
       attachments: [{ kind: 'image', name: 'same.jpg', uri: opened.media.url, previewable: true }],
     })]);
-    expect(lightboxImagesForPayload(unrelated, opened, 'pending', previous)).toEqual(previous);
-    expect(lightboxImagesForPayload([], opened, 'pending', previous)).toEqual(previous);
+    expect(lightboxImagesForPayload(unrelated, opened, 'pending', previous, false, true)).toEqual(previous);
+    expect(lightboxImagesForPayload([], opened, 'pending', previous, false, true)).toEqual(previous);
     // A different click must not inherit a previous viewer's pending gallery.
     expect(lightboxImagesForPayload(unrelated, unrelated[0].payload, 'other', previous)).toEqual(unrelated);
   });
@@ -143,7 +143,7 @@ describe('message gallery', () => {
       steeringClientIds: new Set(), presentationByClientId: new Map() });
     let previous = collectMobileMessageGalleryImages([row]);
     const opened = previous[1].payload;
-    if (gap) previous = lightboxImagesForPayload([], opened, row.key, previous, false);
+    if (gap) previous = lightboxImagesForPayload([], opened, row.key, previous, false, true);
     const message: RemoteMessage = { id: 'server-history-id', clientId: item.clientId, sessionId: 's',
       role: 'user', content: { images: files.map((file, index) => ({
         name: file.name, url: `cindy-media://blobs/formal-${index}.jpg`,
@@ -174,7 +174,20 @@ describe('message gallery', () => {
     const current = collectMobileMessageGalleryImages([row]);
     expect(lightboxImagesForPayload(current, previous[0].payload, row.key, previous, true)).toEqual([]);
     // Actual row departure still preserves the open snapshot during handoff.
-    expect(lightboxImagesForPayload([], previous[0].payload, row.key, previous, false)).toEqual(previous);
+    expect(lightboxImagesForPayload([], previous[0].payload, row.key, previous, false, true)).toEqual(previous);
+  });
+
+  it.each([false, true])('discards a removed pending message instead of retaining its snapshot (same URL in another message: %s)', (duplicate) => {
+    const previous = collectMobileMessageGalleryImages([pendingItem('pending', [
+      { key: 'pending-slot-0', uri: 'file:///removed.jpg', ossRef: null, uploading: false },
+    ])]);
+    const opened = previous[0].payload;
+    const current = duplicate ? collectMobileMessageGalleryImages([messageItem('other', {
+      attachments: [{ kind: 'image', name: 'same.jpg', uri: opened.media.url, previewable: true }],
+    })]) : [];
+    expect(lightboxImagesForPayload(current, opened, 'pending', previous, false, false)).toEqual([]);
+    // Even with no retained snapshot, the canceled payload must not revive itself as a single image.
+    expect(lightboxImagesForPayload(current, opened, 'pending', null, false, false)).toEqual([]);
   });
 
   it('keeps proven attachment identities in formal history while deduplicating their Markdown reference', () => {
@@ -229,8 +242,8 @@ describe('message gallery', () => {
     const unrelated = collectMobileMessageGalleryImages([pendingItem('other', initialThumbs.map((thumb) => (
       { ...thumb, key: `other:${thumb.key}` }
     )))]);
-    expect(lightboxImagesForPayload(unrelated, clicked, 'pending', previous)).toEqual(previous);
-    expect(lightboxImagesForPayload([], clicked, 'pending', previous)).toEqual(previous);
+    expect(lightboxImagesForPayload(unrelated, clicked, 'pending', previous, false, true)).toEqual(previous);
+    expect(lightboxImagesForPayload([], clicked, 'pending', previous, false, true)).toEqual(previous);
   });
 
   it.each(['', ' "title"', " 'title'"])(

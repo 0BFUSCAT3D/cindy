@@ -247,6 +247,7 @@ export function lightboxImagesForPayload(
   sourceGroupKey?: string | null,
   previousImages?: readonly MobileMessageGalleryImage[] | null,
   sourceGroupPresent = false,
+  retainPendingSnapshot = false,
 ): MobileMessageGalleryImage[] {
   // 待发送消息仍在时跟随该消息的当前图集：编辑可替换最初点开的附件身份。
   if (payload.galleryImageKey && sourceGroupKey) {
@@ -270,8 +271,10 @@ export function lightboxImagesForPayload(
       return images.filter((image) => image.groupKey === groupKey);
     }
   }
-  // 来源消息离开图集后保留其最新快照；最初点开的附件可能已被编辑替换，
-  // 因此有来源时按消息归属取快照，不能依赖旧附件身份或串到别的消息。
+  // Only a live outbox/queue/settling item may bridge a temporary gap in formal history.
+  // Canceled rows and expired settling items must not revive their original payload.
+  if (payload.galleryImageKey && !retainPendingSnapshot) return [];
+  // 最初点开的附件可能已被编辑替换，因此有来源时按消息归属保留最新快照。
   if (payload.galleryImageKey && previousImages) {
     const previousGroup = previousImages.filter((image) => sourceGroupKey
       ? image.groupKey === sourceGroupKey

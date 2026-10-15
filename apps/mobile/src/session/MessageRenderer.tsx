@@ -759,6 +759,7 @@ export function MessageRenderer({
   shareSelectionBusy,
   onQuoteSelection,
   pendingSend,
+  pendingSendGroupKeys,
   getSentImagePreview,
   onReadTextFilePreview,
   onReleaseRemoteMedia,
@@ -804,6 +805,8 @@ export function MessageRenderer({
   focusedRequestKey?: number | string | null;
   followLatestRequestKey?: number | string | null;
   items: readonly MobileMessageRenderItem[];
+  /** Live outbox, queued and settling rows; an absent source cannot retain its viewer forever. */
+  pendingSendGroupKeys?: ReadonlySet<string>;
   /** Stable while streaming only changes row content; structural list derivations key off this. */
   itemsStructureKey?: unknown;
   /** Oldest loaded host cursor; synthetic cards must not mask successful history prepends. */
@@ -1710,7 +1713,8 @@ export function MessageRenderer({
     }
     const prev = lightboxImagesRef.current;
     const sourceGroupPresent = listData.some((item) => item.key === payloadSourceGroupKey);
-    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent);
+    const retainPendingSnapshot = !!payloadSourceGroupKey && pendingSendGroupKeys?.has(payloadSourceGroupKey) === true;
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent, retainPendingSnapshot);
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
       return p.key === n.key
@@ -1723,7 +1727,7 @@ export function MessageRenderer({
     }
     lightboxImagesRef.current = next;
     return next;
-  }, [galleryImages, imageLightboxOpen, listData, payload, payloadSourceGroupKey]);
+  }, [galleryImages, imageLightboxOpen, listData, payload, payloadSourceGroupKey, pendingSendGroupKeys]);
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
