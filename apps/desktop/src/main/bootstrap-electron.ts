@@ -539,6 +539,7 @@ import {
   installVoiceInputPowerRelease,
 } from './voice-input/powerReleaseNotifier';
 import { reapClaudeOrphansSync } from './claude-orphan-reaper';
+import { reapCodexToolTreesSync } from './codex-tool-tree-reaper';
 import { startAgentProcessPriorityWatcher } from './agent-process-priority';
 import { registerProcessMonitorIpc } from './process-monitor/ipc.js';
 import { disposeWindowsProcessScanWorkers } from './process-monitor/windowsProcessScanWorkerClient.js';
@@ -9754,6 +9755,8 @@ app.on('ready', async () => {
 // Sync 阶段: 同步触发, 不等结果。只放真正同步的清理 (释放本地句柄 / 取消定时器)。
 //   - reap-claude-children: 必须在 shutdown-maker 之前同步完成；SDK abort 掐掉
 //     claude.exe 后 Windows 上子进程会被 reparent 到 System, PPID 链断了就无法安全识别。
+//   - reap-codex-tool-trees: 同理须先于 shutdown-maker；app-server EOF 退出后,
+//     exec_command 起的工具后代(如 xcodebuild → swift-frontend)会挂到 launchd 继续跑(#6024)。
 //   - authManager / google auth: 同步释放定时器+回调引用。
 //     注意 token.dispose() 只清内存状态, 不删盘上的 refresh token (那是 logout 干的)。
 // interrupted-turn-resume:退出编排一启动就冻结「turn 在飞」标记的写入 —— 否则
@@ -9779,6 +9782,13 @@ onQuit(
   'reap-claude-children',
   () => {
     reapClaudeOrphansSync();
+  },
+  'sync',
+);
+onQuit(
+  'reap-codex-tool-trees',
+  () => {
+    reapCodexToolTreesSync();
   },
   'sync',
 );
