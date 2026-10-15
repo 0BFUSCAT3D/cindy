@@ -847,15 +847,19 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     event: { clientId: string; text: string; state: BotGroupTaskCardState; summary?: string; files?: Array<{ absolutePath: string }> },
   ): Promise<BotGroupTaskPostResult> => {
     if (!deps.postGroupTaskMessage) return { ok: false, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false };
-    const meta = await collaborationMeta(row, 'delegation-request');
     const child = row.childSessionId ? await getDbClient().drizzle
       .select({ title: sessions.title }).from(sessions)
       .where(eq(sessions.id, row.childSessionId)).get() : undefined;
+    // The card builder clips the title on a character boundary; clipping here could split an emoji.
+    const title = child?.title?.trim() || row.objective.split('\n')[0]!;
+    // Every group member can read the card's data: the objective the teammate wrote may hold what
+    // was never said in the group, so the card carries only its title (the owner's live card reads
+    // the task itself).
+    const meta = { ...await collaborationMeta(row, 'delegation-request'), objective: title };
     const card = buildBotGroupTaskCard({
       meta,
       state: event.state,
-      // The card builder clips the title on a character boundary; clipping here could split an emoji.
-      title: child?.title?.trim() || row.objective.split('\n')[0]!,
+      title,
       ...(event.summary ? { summary: event.summary } : {}),
     }, groupTaskCardLabels());
     return deps.postGroupTaskMessage({
