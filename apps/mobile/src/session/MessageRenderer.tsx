@@ -1728,6 +1728,9 @@ export function MessageRenderer({
     lightboxImagesRef.current = next;
     return next;
   }, [galleryImages, imageLightboxOpen, listData, payload, payloadSourceGroupKey, pendingSendGroupKeys]);
+  const initialLightboxImage = lightboxImages
+    ? lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]
+    : undefined;
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
@@ -2907,8 +2910,8 @@ export function MessageRenderer({
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
-          initialImageKey={payload.galleryImageKey}
-          initialUrl={lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]?.url ?? payload.media.url}
+          initialImageKey={initialLightboxImage?.key ?? payload.galleryImageKey}
+          initialUrl={initialLightboxImage?.url ?? payload.media.url}
           onClose={closePayload}
           onReleaseRemoteMedia={onReleaseRemoteMedia}
           onResolveRemoteMedia={onResolveRemoteMedia}

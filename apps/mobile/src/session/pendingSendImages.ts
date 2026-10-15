@@ -9,6 +9,7 @@ import type { MobileOutboxThumb } from '@/session/sessionOutbox';
 export function pendingSendGalleryImage(
   thumb: MobileOutboxThumb,
   displayedUri?: string | null,
+  slot?: number,
 ): MobileMessageGalleryImage | null {
   const previewRef = thumb.previewRef ?? thumb.ossRef;
   const previewUri = displayedUri === undefined
@@ -32,6 +33,7 @@ export function pendingSendGalleryImage(
     payload: {
       ...buildMediaPayload({ kind: 'image', url, previewable: !isDesktopLocalMediaUrl(url) }, title),
       galleryImageKey: thumb.key,
+      galleryImageSlot: slot,
     },
     ...(localUrl ? { previewUri: localUrl } : {}),
   };

@@ -891,6 +891,32 @@ describe('pending image gallery updates', () => {
     expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
   });
 
+  it.each([false, true])('opens the clicked second slot after replacement before mounting (duplicate URL: %s)', async (duplicate) => {
+    const original = thumbs.map((thumb) => ({ ...thumb, uri: 'https://example.invalid/old.jpg' }));
+    const clicked = collect(original)[1].payload;
+    const updated = collect([original[0], { ...original[1], key: 'replacement',
+      uri: duplicate ? original[0].uri : 'https://example.invalid/replacement.jpg' }]);
+    const images = lightboxImagesForPayload(updated, clicked, 'pending');
+    const initialImage = images[galleryImageIndexForPayload(images, clicked)];
+    const onShareImage = vi.fn();
+    // Mirror the renderer's selected-image props; identity must disambiguate equal URLs.
+    const { props, render } = mount({ images,
+      initialImageKey: initialImage?.key ?? clicked.galleryImageKey,
+      initialUrl: initialImage?.url ?? clicked.media.url, onShareImage });
+    expect(runtime.nodes.get('FlatList').initialScrollIndex).toBe(1);
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0]).toBe(images[1].payload.media);
+
+    // Adopt the replacement on the very first render, so later shifts still follow its identity.
+    props.images = [{ ...images[0], key: 'inserted',
+      payload: { ...images[0].payload, galleryImageKey: 'inserted' } }, ...images];
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('3 / 3');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0]).toBe(images[1].payload.media);
+  });
+
   it.each(['neighbor', 'replaced image'])('resets annotation and dimensions when a queued edit replaces the active attachment (opened from %s)', async (openedFrom) => {
     const collectQueued = (id: string, url: string) => collectMobileMessageGalleryImages(buildPendingSendItems({
       queue: [{ clientId: 'pending', text: '', chatMessage: {}, files: [

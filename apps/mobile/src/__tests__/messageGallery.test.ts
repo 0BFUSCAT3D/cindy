@@ -118,6 +118,28 @@ describe('message gallery', () => {
     expect(galleryImageIndexForPayload(gallery, gallery[1].payload)).toBe(1);
   });
 
+  it('locates the replacement of a clicked slot when an earlier placeholder becomes readable before opening', () => {
+    const thumbs = [
+      { key: 'earlier', uri: null, ossRef: null, uploading: true },
+      { key: 'clicked', uri: 'file:///clicked.jpg', ossRef: null, uploading: false },
+    ];
+    const clicked = collectMobileMessageGalleryImages([pendingItem('pending', thumbs)])[0].payload;
+    const current = collectMobileMessageGalleryImages([pendingItem('pending', [
+      { ...thumbs[0], uri: 'file:///earlier.jpg' },
+      { ...thumbs[1], key: 'replacement', uri: 'file:///replacement.jpg' },
+    ])]);
+    const images = lightboxImagesForPayload(current, clicked, 'pending');
+    expect(galleryImageIndexForPayload(images, clicked)).toBe(1);
+  });
+
+  it('prefers an unchanged attachment identity to its old position when a queued edit reorders images', () => {
+    const thumbs = [0, 1].map((index) => ({ key: `slot-${index}`, uri: 'file:///duplicate.jpg',
+      ossRef: null, uploading: false }));
+    const clicked = collectMobileMessageGalleryImages([pendingItem('pending', thumbs)])[1].payload;
+    const reordered = collectMobileMessageGalleryImages([pendingItem('pending', [...thumbs].reverse())]);
+    expect(galleryImageIndexForPayload(reordered, clicked)).toBe(0);
+  });
+
   it('retains the open pending gallery through row handoff without using another message with the same URL', () => {
     const previous = collectMobileMessageGalleryImages([pendingItem('pending', [0, 1].map((index) => ({
       key: `pending-slot-${index}`, uri: `file:///local-${index}.jpg`, ossRef: null, uploading: false,

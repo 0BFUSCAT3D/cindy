@@ -197,8 +197,8 @@ export function collectMobileMessageGalleryImages(
         // fork 来源标记只含导航 UI,no-op。
         break;
       case 'pending_send':
-        item.thumbs.forEach((thumb) => {
-          const image = pendingSendGalleryImage(thumb);
+        item.thumbs.forEach((thumb, slot) => {
+          const image = pendingSendGalleryImage(thumb, undefined, slot);
           if (image) push(image.key, image.title, image.payload, image.previewUri);
         });
         break;
@@ -223,7 +223,11 @@ export function galleryImageIndexForPayload(
 ): number {
   if (!payload || payload.kind !== 'media' || !isLightboxMediaKind(payload.media.kind)) return -1;
   if (payload.galleryImageKey) {
-    return images.findIndex((image) => image.key === payload.galleryImageKey);
+    const identityIndex = images.findIndex((image) => image.key === payload.galleryImageKey);
+    if (identityIndex >= 0 || payload.galleryImageSlot === undefined) return identityIndex;
+    // The selected message's slot can be replaced between the press and viewer mount.
+    // Count placeholders too; readable-page indices can change while uploads settle.
+    return images.findIndex((image) => image.payload.galleryImageSlot === payload.galleryImageSlot);
   }
   const url = payload.media.url.trim();
   if (!url) return -1;

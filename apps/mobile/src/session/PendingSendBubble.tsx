@@ -159,12 +159,14 @@ function useThumbCellUri(
 
 function ThumbCell({
   thumb,
+  slot,
   resolveRemoteMedia,
   renderImage,
   onOpenImage,
 }: {
   renderImage: (uri: string | null, sourceUri: string | null, onError: () => void) => ReactNode;
   thumb: MobileOutboxThumb;
+  slot: number;
   resolveRemoteMedia?: ResolveRemoteMediaFn;
   onOpenImage?: (payload: MessagePayload) => void;
 }) {
@@ -172,7 +174,7 @@ function ThumbCell({
   const { colors } = useTheme();
   const [failedUris, setFailedUris] = useState<readonly string[]>([]);
   const uri = useThumbCellUri(thumb, resolveRemoteMedia, failedUris);
-  const image = pendingSendGalleryImage(thumb, uri);
+  const image = pendingSendGalleryImage(thumb, uri, slot);
   const canOpen = !!image && !!onOpenImage;
   return (
     <Pressable
@@ -217,9 +219,9 @@ function AttachmentThumbStrip({
   if (thumbs.length === 0) return null;
   return (
     <View style={[styles.thumbStrip, { gap }]} testID="pendingSend.thumbStrip">
-      {thumbs.map((thumb) => (
+      {thumbs.map((thumb, slot) => (
         <ThumbCell renderImage={renderImage} key={thumb.key} resolveRemoteMedia={resolveRemoteMedia}
-          thumb={thumb} onOpenImage={onOpenImage} />
+          thumb={thumb} slot={slot} onOpenImage={onOpenImage} />
       ))}
     </View>
   );

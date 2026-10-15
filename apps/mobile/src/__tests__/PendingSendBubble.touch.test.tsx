@@ -163,8 +163,20 @@ it('opens the full gallery when a durable copy arrives after the thumbnail locks
   const payload = openImage.mock.calls[0][0];
   const gallery = collectMobileMessageGalleryImages([{ ...item, thumbs, attachmentCount: 2 }]);
   expect(lightboxImagesForPayload(gallery, payload, item.key)).toHaveLength(2);
+  expect(payload.galleryImageSlot).toBe(1);
   expect(payload.media.url).toBe('file:///temporary-1.jpg');
   expect(gallery[1].url).toBe('file:///durable-1.jpg');
+  expect(select).not.toHaveBeenCalled();
+});
+it('captures the clicked slot without skipping an earlier unreadable thumbnail', () => {
+  const thumbs = [
+    { key: 'a-slot-0', uri: null, ossRef: null, uploading: true },
+    { key: 'a-slot-1', uri: 'file:///clicked.jpg', ossRef: null, uploading: false },
+  ];
+  show({ thumbs, attachmentCount: 2 });
+  expect(handlers.get('pendingSend.image.a-slot-0')?.disabled).toBe(true);
+  act(() => host.querySelector<HTMLElement>('[data-testid="pendingSend.image.a-slot-1"]')!.click());
+  expect(openImage.mock.calls[0][0]).toMatchObject({ galleryImageKey: 'a-slot-1', galleryImageSlot: 1 });
   expect(select).not.toHaveBeenCalled();
 });
 it('shows the source label above the bubble and announces it with the queued message', () => {

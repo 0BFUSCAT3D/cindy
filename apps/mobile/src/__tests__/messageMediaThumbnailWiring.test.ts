@@ -162,7 +162,9 @@ describe('mobile message media thumbnail wiring', () => {
 
   it('routes image and video payloads to the fullscreen ImageLightbox instead of the generic modal', () => {
     expect(rendererSource).toContain('<ImageLightbox');
-    expect(rendererSource).toContain('initialImageKey={payload.galleryImageKey}');
+    expect(rendererSource).toContain('lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]');
+    expect(rendererSource).toContain('initialImageKey={initialLightboxImage?.key ?? payload.galleryImageKey}');
+    expect(rendererSource).toContain('initialUrl={initialLightboxImage?.url ?? payload.media.url}');
     expect(rendererSource).toContain('const sourceGroupPresent = listData.some((item) => item.key === payloadSourceGroupKey);');
     expect(rendererSource).toContain('pendingSendGroupKeys?.has(payloadSourceGroupKey) === true');
     expect(rendererSource).toContain('lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent, retainPendingSnapshot)');
