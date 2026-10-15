@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { i18n } from '@/i18n';
 import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
 import { buildBotGroupQuoteCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -70,6 +71,26 @@ describe('direct Chat Server client', () => {
       expect(JSON.stringify(view.messages)).not.toContain('cindy-runtime-error:');
       expect(chatRoomRow(room(), { ...snapshot(), messages: [source] }, id(11)).item.display.preview).not.toContain('cindy-runtime-error:');
     }
+  });
+  it('names a media block the server sent without a caption, in the attachment and the list preview', () => {
+    const untitled = i18n.t('groupChat.files.untitled');
+    expect(untitled).not.toBe('groupChat.files.untitled');
+    const unnamed = { ...message(22), content: [{ type: 'media', mediaId: id(33) }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [unnamed], before: null }, id(11));
+    expect(view.messages[0]!.attachments.map(attachment => attachment.name)).toEqual([untitled]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [unnamed] }, id(11)).item.display.preview).toBe(untitled);
+  });
+  it('shows media as the message attachments, not as caption text, and keeps typed look-alike text', () => {
+    const withText = { ...message(20), content: [{ type: 'text', text: '我写的 [附件: a.png]' }, { type: 'media', mediaId: id(30), caption: 'clipboard-1.png' }] };
+    const onlyMedia = { ...message(21), content: [{ type: 'media', mediaId: id(31), caption: 'a.png' }, { type: 'media', mediaId: id(32), caption: 'b.pdf' }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [onlyMedia, withText], before: null }, id(11));
+    expect(view.messages.map(({ content, attachments }) => ({ content, names: attachments.map(attachment => attachment.name) }))).toEqual([
+      { content: '我写的 [附件: a.png]', names: ['clipboard-1.png'] },
+      { content: '', names: ['a.png', 'b.pdf'] },
+    ]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [onlyMedia] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
+    const blankText = { ...onlyMedia, content: [{ type: 'text', text: ' \n' }, ...onlyMedia.content] };
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [blankText] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
   });
   it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('reads executions and projects a safe notice beside its visible source: %s', async failure_code => {
     const source = message(20);

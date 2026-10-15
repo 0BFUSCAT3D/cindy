@@ -200,6 +200,12 @@ export interface BotGroupAttachment {
   /** The file on this computer; always null in a controller's copy. */
   path: string | null;
   annotated?: boolean;
+  /**
+   * A server attachment whose bytes are not on this computer yet: `loading` until the
+   * download settles, `unavailable` after it failed (a later read retries). `url` and
+   * `path` are null and only `id` and `name` are known. Absent once the file is here.
+   */
+  state?: 'loading' | 'unavailable';
 }
 
 /**
@@ -313,6 +319,10 @@ export interface BotGroupSummary {
 }
 
 export interface BotGroupDetail extends BotGroupSummary {
+  /** Room-wide; bumped when a reset skipped realtime events or the chat runtime was recreated, so every message's reactors count as changed. */
+  reactionRevision?: number;
+  /** Per message id; bumped by realtime reaction changes, so a same-count change of who reacted is noticed. */
+  reactionRevisions?: Record<string, number>;
   /** Oldest first. */
   messages: BotGroupMessageView[];
   /** Authorized current failures, independent of message pagination. Local/older hosts omit this. */
@@ -531,6 +541,12 @@ export function botGroupPlanRouteKeyPrefix(groupId: string): string {
   return `group:${groupId}:plan:`;
 }
 
+/** Group id of any lane or 分工 Session route key (`group:<groupId>…`), or null for other routes. */
+export function parseBotGroupIdFromRouteKey(routeKey: string | null | undefined): string | null {
+  const match = typeof routeKey === 'string' ? /^group:([^:]+)(?::|$)/.exec(routeKey) : null;
+  return match ? match[1]! : null;
+}
+
 /** Plan id of a 分工 Session route key, or null for lanes and other routes. */
 export function parseBotGroupPlanRouteKey(routeKey: string | null | undefined): { groupId: string; planId: string } | null {
   const match = typeof routeKey === 'string' ? /^group:([^:]+)(?::access:(?:owner|tools|chat):[1-9][0-9]*)?:plan:([^:]+)$/.exec(routeKey) : null;
@@ -540,6 +556,8 @@ export function parseBotGroupPlanRouteKey(routeKey: string | null | undefined): 
 
 /** Named, credential-free Desktop chat capabilities. Older/local-only hosts omit them. */
 export type ChatServerResult<T> = ({ ok: true } & T) | { ok: false; errorCode: string };
+/** One reacting actor. `name` is null when the group has no member record for it. */
+export interface ChatReactor { actorId: string; name: string | null; isSelf: boolean; formerMember: boolean }
 export interface ChatInvitePreview {
   groupId: string; name: string; inviterName: string; expiresAt: string | null; joined: boolean;
   /** Omitted by old servers, whose links remain dated and single-use. */
@@ -554,7 +572,8 @@ export type ChatGroupAction =
   | { type: 'archive'; archived: boolean; expectedRevision: number };
 export interface ChatServerApi {
   manage(input: { groupId: string; action: ChatGroupAction }): Promise<ChatServerResult<Record<never, never>>>;
-  ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; name: string }> }>>;
+  /** `botId` is the local teammate id behind each Chat Server actor. */
+  ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; botId?: string; name: string }> }>>;
   refreshProfile(): Promise<ChatServerResult<Record<never, never>>>;
   status(): Promise<{ enabled: boolean; connected: boolean }>;
   thread(input: { groupId: string; rootId: string; before?: number; sourceMessageIds?: string[] }): Promise<ChatServerResult<{
@@ -564,6 +583,8 @@ export interface ChatServerApi {
   }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
   react(input: { groupId: string; messageId: string; emoji: string; present: boolean }): Promise<ChatServerResult<Record<never, never>>>;
+  /** Read-only: who added one emoji to a message. Names use the group member projection. */
+  reactors(input: { groupId: string; messageId: string; emoji: string }): Promise<ChatServerResult<{ reactors: ChatReactor[] }>>;
   createInvite(input: { groupId: string; clientId: string }): Promise<ChatServerResult<{ link: string; expiresAt: string | null; reusable?: boolean }>>;
   revokeInvite(input: { groupId: string; link: string; clientId: string }): Promise<ChatServerResult<{ revoked: true }>>;
   previewInvite(input: { link: string }): Promise<ChatServerResult<ChatInvitePreview>>;

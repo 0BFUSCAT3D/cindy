@@ -3,9 +3,11 @@
 import { app, net } from 'electron';
 import { uploadPublicAsset } from '../ossPublicUpload.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
+import { t } from '../i18n.js';
 import { readFile as readMedia } from '../cindy-media/blobStore.js';
 import { getAccessToken, refresh } from '../authManager.js';
 import { retryAfterDeadline } from '@cindy/auth-client';
+import { parseChatInvitationToken } from '@cindy/device-link';
 import { existsSync, readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -87,6 +89,10 @@ const CHAT_AUTH_RETRY_MS = 60_000;
 /** Main-group messages kept as background for a Thread request (the Thread itself is read separately). */
 const THREAD_BACKGROUND_LIMIT = 30;
 const ATTACHMENT_REFRESH_COALESCE_MS = 200;
+/** Messages per group with their own reaction version; past this the group re-versions as a whole, like a reset. */
+export const REACTION_REVISION_MESSAGE_LIMIT = 500;
+// Room reaction versions come from one process-wide sequence, so they never repeat across chat runtimes.
+let reactionRevisionSequence = 0;
 const CHAT_REFRESHABLE_ERROR_CODES = new Set(['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED']);
 const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
@@ -100,7 +106,15 @@ const ordinaryExecution = (execution: Execution) => execution.trigger === undefi
 const groupInput = z.object({ name: z.string().trim().min(1).max(40), botIds: z.array(z.string().min(1)).max(6) });
 // A recognized quote card is shown as the quote, not as body text; unknown revisions keep their fallback.
 const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy.local-history' || b.data?.activity === true) && !readBotGroupQuoteCard(b));
-const bodyText = (m: Message) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m).map(b => b.text ?? b.fallback ?? (b.type === 'media' ? `[附件: ${b.caption ?? '文件'}]` : '')).join('\n');
+const contentText = (m: Message, forModel: boolean) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m)
+  .flatMap(b => b.type !== 'media' ? [b.text ?? b.fallback ?? ''] : forModel ? [b.text ?? b.fallback ?? `[附件: ${b.caption ?? '文件'}]`] : []).join('\n');
+/** What a Bot reads: each attachment stays a `[附件: …]` line beside the text. */
+const bodyText = (m: Message) => contentText(m, true);
+/** What people read: attachments render from the media blocks (`messageViews`), not as text. */
+const displayText = (m: Message) => contentText(m, false);
+// The server makes a caption optional; an unnamed attachment still needs a visible name.
+const attachmentName = (b: Message['content'][number]) => b.caption?.trim() || t('bots.groupChat.files.untitled');
+const mediaNames = (m: Message) => m.deleted ? '' : m.content.flatMap(b => b.type === 'media' ? [attachmentName(b)] : []).join(', ');
 /** Words of a message for a quote excerpt; attachments are summarized separately. */
 const quotedText = (m: Message) => bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n');
 const quotedAttachments = (m: Message) => m.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []);
@@ -181,6 +195,21 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let companion: CompanionCloudRuntime | undefined;
   let companionSelf: string | null = null;
   let actorsStale = false;
+  // Who reacted can change while counts stay the same. A realtime reaction change versions only its
+  // message; a reset that skipped events versions the whole room (and makes per-message versions moot).
+  // Both ride on the group, so every loaded page and the Thread see them on refresh. A recreated runtime
+  // (same owner, badges still mounted) may have missed changes while switching, so its rooms start above
+  // every version handed out before.
+  const runtimeReactionRevision = ++reactionRevisionSequence;
+  const reactionRevisions = new Map<string, { room: number; messages: Record<string, number> }>();
+  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: ++reactionRevisionSequence, messages: {} });
+  // A long-open group stays bounded: once too many messages carry their own version, the group re-versions instead.
+  const bumpMessageReactions = (roomId: string, messageId: string) => {
+    const revisions = reactionRevisions.get(roomId) ?? { room: runtimeReactionRevision, messages: {} };
+    if (!(messageId in revisions.messages) && Object.keys(revisions.messages).length >= REACTION_REVISION_MESSAGE_LIMIT) return resetReactions(roomId);
+    revisions.messages[messageId] = (revisions.messages[messageId] ?? 0) + 1;
+    reactionRevisions.set(roomId, revisions);
+  };
   let profiles: Array<typeof botProfiles.$inferSelect> = [];
   const workspaces = () => chatServerWorkspaces(config.baseUrl, selfId, current);
   const planning = new Map<string, { botId: string; controller: AbortController }>();
@@ -557,6 +586,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           if (event.scope.startsWith('conversation:')) {
             const roomId = event.scope.slice(13);
             if (rooms.has(roomId)) advanceRoom(roomId, event.cursor);
+            for (const change of event.changes ?? []) if (change.type === 'reaction.changed' && typeof change.entityId === 'string') {
+              bumpMessageReactions(roomId, change.entityId);
+            }
             changed(roomId);
             for (const run of running.values()) if (run.execution.conversation_id === roomId) void checkLease(run);
           }
@@ -572,6 +604,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             void api<Snapshot>(`/conversations/${roomId}/snapshot`).then(value => {
               if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
               if (rooms.has(roomId)) advanceRoom(roomId, value.cursor);
+              resetReactions(roomId);
               changed(roomId);
               ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: value.cursor }));
             }).catch(() => ws.close());
@@ -612,7 +645,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         b.namespace === 'cindy.membership' && b.schemaRevision === 1 && b.data?.type === 'member.joined' &&
         id.safeParse(b.data.actorId).success && typeof b.data.displayName === 'string' && b.data.displayName.trim()) : undefined;
       return { id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
-        authorBotId: null, authorName: joined ? String(joined.data!.displayName) : '', content: bodyText(m),
+        authorBotId: null, authorName: joined ? String(joined.data!.displayName) : '', content: displayText(m),
         threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
         noticeCode: joined ? 'member-joined' : null, planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
     }
@@ -621,7 +654,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (noticeCode === 'member-failed' || noticeCode === 'member-timeout' || noticeCode === 'plan-failed') return {
       id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
       authorBotId: localBot(m.authorId)?.id ?? null, authorName: members.find(member => member.id === m.authorId)?.name ?? '',
-      content: bodyText(m), threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
+      content: displayText(m), threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
       noticeCode, planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt),
     };
     const member = members.find(member => member.id === m.authorId);
@@ -636,7 +669,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const quote = m.deleted || planCard ? null : readBotGroupQuote(m.content);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}),
-      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: bodyText(m),
+      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: displayText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
   /**
@@ -660,6 +693,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   // Attachments are independent of the text projection. A failed object store
   // request never rejects a room/Thread; subsequent reads retry after a backoff.
+  // Until the bytes are here the view keeps a named placeholder in its place, so
+  // a slow or failed download is shown as such instead of disappearing.
   const downloads = new Map<string, { value?: BotGroupAttachment; retryAt: number }>();
   // A page's attachments settle close together; one re-read of the room and sidebar shows
   // them all instead of one full re-read per file.
@@ -675,7 +710,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     return messages.map(message => {
       const view = messageView(message, members);
       for (const block of message.content) if (!message.deleted && block.type === 'media' && block.mediaId) {
-        const mediaId = id.parse(block.mediaId);
+        const placeholder = (state: 'loading' | 'unavailable'): BotGroupAttachment => ({ id: block.mediaId!, name: attachmentName(block),
+          category: 'file', mimeType: '', size: 0, url: null, path: null, state });
+        const parsed = id.safeParse(block.mediaId);
+        if (!parsed.success) { view.attachments.push(placeholder('unavailable')); continue; }
+        const mediaId = parsed.data;
         const key = `${roomId}:${mediaId}`;
         let cached = downloads.get(key);
         if (!cached || (!cached.value && Date.now() >= cached.retryAt)) {
@@ -687,7 +726,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           }).catch(() => { entry.retryAt = Date.now() + 30000; })
             .finally(() => attachmentsChanged(roomId));
         }
-        if (cached.value) view.attachments.push(cached.value);
+        view.attachments.push(cached.value ?? placeholder(cached.retryAt === Infinity ? 'loading' : 'unavailable'));
       }
       return view;
     });
@@ -726,7 +765,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const messages = summaryOnly ? [] : (await messageViews(roomId, page, s.members)).sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
-    return { serverBacked: true, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
@@ -734,9 +773,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           isOwned: m.ownerActorId === selfId, guestAccess: m.guestAccess, accessRevision: m.accessRevision,
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
-      }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: lastView ? {
+      }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
-        preview: lastView.content.slice(0, 80), createdAt: lastView.createdAt,
+        preview: (lastView.content.trim() || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt,
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
@@ -1278,9 +1317,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     try { return { ok: true as const, ...await fn() }; }
     catch (error) { return { ok: false as const, errorCode: error instanceof z.ZodError ? 'INVALID_INPUT' : error instanceof Error ? error.message : 'REQUEST_FAILED' }; }
   };
-  const inviteToken = (link: string) => z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(
-    z.string().max(100).parse(link).trim().replace(/^cindy:\/\/chat-invite\//, ''),
-  );
+  // Bare token, cindy://chat-invite/<token> or the public https page link; only the token
+  // reaches this account's own Chat Server. An unreadable link is INVALID_INPUT.
+  const inviteToken = (link: string) => z.string().regex(/^[A-Za-z0-9_-]{43}$/).parse(parseChatInvitationToken(link) ?? '');
   // Null is the server's non-expiring contract; omitted/invalid dates are never
   // treated as permanent links. Older servers keep their dated, single-use links.
   const inviteExpiry = z.string().refine(value => Number.isFinite(Date.parse(value))).nullable();
@@ -1294,7 +1333,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   const operationId = z.string().min(8).max(160).regex(/^[a-zA-Z0-9_.:-]+$/);
   const chatServer: ChatServerApi = {
-    ownedBots: () => result(async () => { await register(); return { bots: actors.filter(a => a.kind === 'bot' && localBot(a.id)?.status === 'active').map(a => ({ actorId: a.id, name: a.name })) }; }),
+    ownedBots: () => result(async () => { await register(); return { bots: actors.flatMap(a => { const bot = a.kind === 'bot' ? localBot(a.id) : undefined; return bot?.status === 'active' ? [{ actorId: a.id, botId: bot.id, name: a.name }] : []; }) }; }),
     refreshProfile: () => result(async () => {
       await api('/profile/refresh', 'POST'); profileRefreshedAt = Date.now();
       for (const roomId of rooms.keys()) changed(roomId);
@@ -1344,6 +1383,31 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128), present: z.boolean() }).parse(input);
       await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions`, 'POST', { operationId: randomUUID(), emoji: i.emoji, present: i.present });
       changed(i.groupId); return {};
+    }),
+    reactors: input => result(async () => {
+      const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128) }).strict().parse(input);
+      // Read-only: reuse the registered actor, or read it without the actor/profile sync in register().
+      const self = selfId || (await api<{ actor: { id: string } }>('/me')).actor.id;
+      // Every member state is listed, so actors who have since left keep their group name.
+      const members = await api<Member[]>(`/conversations/${i.groupId}/members`);
+      const page = z.array(z.object({ actor_id: id }).passthrough());
+      // One entry per actor ID, never merged by display name.
+      const actorIds = new Set<string>();
+      // Former members stay listed, so a reaction can outgrow the room cap: read until a short page.
+      for (let after = ''; ;) {
+        const query = new URLSearchParams({ emoji: i.emoji, limit: '100', ...(after ? { after } : {}) });
+        const rows = page.parse(await api(`/conversations/${i.groupId}/messages/${i.messageId}/reactions?${query}`));
+        const known = actorIds.size;
+        for (const row of rows) actorIds.add(row.actor_id);
+        if (rows.length < 100) break;
+        // A full page must advance the cursor; otherwise fail rather than loop or truncate silently.
+        if (actorIds.size === known) throw new Error('CHAT_RESPONSE_INVALID');
+        after = rows[rows.length - 1].actor_id;
+      }
+      return { reactors: [...actorIds].map(actorId => {
+        const member = members.find(m => m.id === actorId);
+        return { actorId, name: member ? memberName(member) : null, isSelf: actorId === self, formerMember: !!member && member.state !== 'joined' };
+      }) };
     }),
     createInvite: input => result(async () => {
       const i = z.object({ groupId: id, clientId: operationId }).parse(input);

@@ -364,7 +364,8 @@ import {
   registerCodexProcessRole,
 } from '../process-monitor/codex-process-registry.js';
 import { getOutboundPathSnapshotFor } from './outbound-proxy-resolver.js';
-import { createDesktopMakerMemoryManager, attachAgentsToMakerMemory } from './maker-memory-host.js';
+import { attachAgentsToMakerMemory, createDesktopMakerMemoryManager } from './maker-memory-host.js';
+import { createMemoryReviewOneShot } from './memory-review-one-shot.js';
 import { prepareExternalCodexSessionForResume, readCodexThreadStorageForArchive } from './codex-local-sessions.js';
 import {
   rehydrateCloseSuppression,
@@ -592,6 +593,53 @@ let _codexCredentialChangeGuard: CodexLocalCredentialChangeGuard | null = null;
 let _beforeLocalCodexSessionStartHook: (() => Promise<void>) | null = null;
 export function setBeforeLocalCodexSessionStartHook(hook: (() => Promise<void>) | null): void {
   _beforeLocalCodexSessionStartHook = hook;
+}
+
+/** IPC owns the existing idle retry and input queue wake lifecycle. */
+let _scheduleCodexGatewayKeyRefresh: (() => void) | null = null;
+export function setCodexGatewayKeyRefreshHook(hook: () => void): void {
+  _scheduleCodexGatewayKeyRefresh = hook;
+  // Credential sync can precede IPC registration while utility hosts already
+  // exist. Reconcile those consumers once when the idle retry service attaches.
+  hook();
+}
+
+export function scheduleCodexGatewayKeyRefresh(): void {
+  _scheduleCodexGatewayKeyRefresh?.();
+}
+
+export function listCodexGatewayHostKeys(): string[] {
+  return _codexAgent?.getLocalHostKeysForCredentialMode('gateway-key') ?? [];
+}
+
+/** Refresh one gateway consumer after persistence, without changing OAuth state or other hosts. */
+export async function refreshCodexGatewayHost(
+  targetHostKey: string,
+  stillValid: () => Promise<boolean>,
+): Promise<void> {
+  if (_codexCredentialChangeGuard) throw new CodexCredentialModeSwitchBusyError([]);
+  const maker = _maker;
+  const agent = _codexAgent;
+  if (!maker || !agent) return;
+  const guard = await agent.beginLocalHostCredentialChange('Cindy AI key changed', {
+    allLocalHosts: true,
+    credentialMode: 'gateway-key',
+    targetHostKey,
+    busyError: () => new CodexCredentialModeSwitchBusyError([]),
+  });
+  try {
+    if (!await stillValid() || _maker !== maker || _codexAgent !== agent) return;
+    await prepareLocalCodexCredentialModeSwitch({
+      maker,
+      isSessionInTurn,
+      hostKeys: guard.affectedHostKeys.filter(key => agent.getLocalHostKeysForCredentialMode('gateway-key').includes(key)),
+    });
+    if (_maker !== maker || _codexAgent !== agent) return;
+    guard.assertIdle();
+    await guard.finalize();
+  } finally {
+    guard.release();
+  }
 }
 
 // Process-lifetime IPC binding: its reconciler reads the dynamic Maker facade and
@@ -945,7 +993,12 @@ export function getMaker(): Maker {
 
     // Maker Memory manager — 先建 (agents={}), agents 创建后再 attach。
     // sqliteFactory + basePath 在工厂内部用 Electron API 准备好, maker-core 拿不到。
-    const makerMemoryManager = createDesktopMakerMemoryManager();
+    const makerMemoryManager = createDesktopMakerMemoryManager({
+      // memory_review 不锁死 review agent 的默认模型(haiku 在部分供应商网关上
+      // 不在账号可用清单, 403 user_model_access_denied): 先走共享辅助模型链,
+      // 链上没产出再由 manager 回退默认路由。
+      reviewOneShot: createMemoryReviewOneShot(),
+    });
 
     // Plugin registry — 先于 agent 构造, 让 createDesktopMcpProviders 拿 registry
     // 包进每个 MCP provider 的 isEnabled 闭包里。registry 内部读 <userData>/plugin-prefs.json

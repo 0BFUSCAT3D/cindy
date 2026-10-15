@@ -403,6 +403,11 @@ export interface ContextOverflowRolloverDeps {
   ): number | null;
   getAutoCompactThresholdPct?(): number | undefined;
   listMessages(sessionId: string): Promise<OverflowSourceMessage[]>;
+  /**
+   * 伙伴工作记忆账本的渲染段(botWorkingMemory):换窗交接里带上承诺 / 纠正 / 等待。
+   * 非伙伴主对话或无账本返回 null;读取失败也按 null,账本不能挡住换窗。
+   */
+  readWorkingMemoryNote?(sessionId: string): Promise<string | null>;
   /** 不受 handoff 窗口限制的最近 user，避免工具密集 turn 把身份扫丢。 */
   findLatestUser?(sessionId: string): Promise<OverflowSourceMessage | null>;
   findLatestRebuildMeta(
@@ -534,6 +539,14 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
   // One automatic continuation per source input, not one per replacement thread.
   const continuedInputs = new Map<string, string>();
 
+  // 账本是增强:读不到、抛错都按没有,绝不挡住换窗。
+  const readWorkingMemoryNote = async (sessionId: string): Promise<string | null> => {
+    try {
+      return (await deps.readWorkingMemoryNote?.(sessionId)) ?? null;
+    } catch {
+      return null;
+    }
+  };
   const runRecover = async (
     sessionId: string,
     errorData: unknown,
@@ -608,6 +621,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         reason: oversized ? 'native-session-recovery' : 'context-overflow',
         includeToolResults: oversized || isCanonicalBotContext(sessionRow),
         companion: isCanonicalBotContext(sessionRow),
+        workingMemory: await readWorkingMemoryNote(sessionId),
       });
       await deps.commitRebuild(sessionId, handoff, {
         reason: 'context-overflow',
@@ -799,6 +813,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sessionId,
       reason: 'model-window-switch',
       companion: isCanonicalBotContext(sessionRow),
+      workingMemory: await readWorkingMemoryNote(sessionId),
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: 'model-window-switch',
@@ -917,6 +932,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       reason: companion || isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
       includeToolResults: companion || isOversizedHistoryErrorData(lastError),
       companion,
+      workingMemory: await readWorkingMemoryNote(sessionId),
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: rebuildReason,
@@ -975,6 +991,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
             reason: 'native-session-recovery',
             includeToolResults: !target || isCanonicalBotContext(row),
             companion: isCanonicalBotContext(row),
+            workingMemory: await readWorkingMemoryNote(sessionId),
           });
           // Durable handoff, SDK reset and complete target route succeed or fail together.
           // No user turn or tool call is replayed by this control-plane operation.

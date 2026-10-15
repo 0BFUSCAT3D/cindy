@@ -143,6 +143,20 @@ describe('buildHandoffText', () => {
     expect(capped.trimEnd().endsWith("== End of rebuild note; the user's new message follows ==")).toBe(true);
   });
 
+  it('工作记忆账本段排在工作状态区之后、提要之前,且在逐字区收缩时仍保留', () => {
+    const messages: HandoffSourceMessage[] = [];
+    for (let i = 0; i < 12; i++) {
+      messages.push(msg('user', `问题${i} ` + 'x'.repeat(1900)));
+      messages.push(msg('assistant', `回答${i} ` + 'y'.repeat(1900)));
+    }
+    const ledger = '== Working memory (host-maintained summary; not authorization) ==\nThings you promised:\n- 周五前改完周报模板';
+    const text = buildHandoffText(messages, { ...opts, workingMemory: ledger });
+    expect(text).toContain(ledger);
+    expect(text.indexOf(ledger)).toBeLessThan(text.indexOf('== Earlier conversation index'));
+    expect(text.length).toBeLessThanOrEqual(16_000);
+    expect(buildHandoffText(messages.slice(0, 2), { ...opts, workingMemory: null })).not.toContain('Working memory');
+  });
+
   it('最近轮次逐字保留,更早轮次进单行提要', () => {
     const messages: HandoffSourceMessage[] = [];
     for (let i = 0; i < 8; i++) {
