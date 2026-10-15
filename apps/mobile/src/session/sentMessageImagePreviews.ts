@@ -3,7 +3,10 @@ import type { RemoteSerializedAttachment } from '@/session/types';
 export interface SentMessageImagePreview {
   attachmentId: string;
   name: string;
+  /** Reference used to find the retained local thumbnail. */
   sourceRef: string;
+  /** Latest reference observed under this attachment ID, including host materialization. */
+  currentSourceRef?: string;
   sha256?: string;
   uri: string | null;
   galleryImageKey?: string;
@@ -64,8 +67,10 @@ export function rememberSentMessageImagePreviews(
     const prior = previous?.find((entry) => entry?.attachmentId === attachment.id);
     // Preserve the outbox identity through URL materialization; a replaced file ID cannot inherit it.
     const galleryImageKey = galleryKeyOf?.(attachment) ?? prior?.galleryImageKey;
+    const currentSourceRef = attachment.url ?? attachment.path;
     return { attachmentId: attachment.id, name: attachment.originalName ?? attachment.name,
-      sourceRef: uri || !prior?.uri ? attachment.url ?? attachment.path : prior.sourceRef,
+      sourceRef: uri || !prior?.uri ? currentSourceRef : prior.sourceRef,
+      currentSourceRef,
       sha256: attachment.sha256, uri: uri || prior?.uri || null,
       ...(galleryImageKey ? { galleryImageKey } : {}) };
   });
@@ -91,7 +96,9 @@ export function getSentMessageImagePreview(
   // Formal content omits file IDs. Prove the pixels still match before reusing a local image;
   // a same-name queue edit on another device must never resurrect the old preview.
   const matches = (entry: SentMessageImagePreview | null | undefined): entry is SentMessageImagePreview => (
-    !!entry && entry.name === name && (!!sha256 && entry.sha256 === sha256 || entry.sourceRef === sourceRef)
+    !!entry && entry.name === name && (
+      !!sha256 && entry.sha256 === sha256 || (entry.currentSourceRef ?? entry.sourceRef) === sourceRef
+    )
   );
   const indexed = entries?.[imageIndex];
   if (matches(indexed)) return indexed;

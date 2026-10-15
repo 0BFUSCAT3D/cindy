@@ -125,16 +125,23 @@ describe('sent image preview handoff', () => {
     expect(getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', undefined, 'changed')).toBeUndefined();
   });
 
-  it('refreshes a metadata-only source reference as a queue attachment materializes without a hash', () => {
+  it.each([null, 'file:///original.jpg'])('tracks a materialized queue reference without a hash while retaining preview %s', (uri) => {
     const previews: SentMessageImagePreviews = new Map();
     const file = { ...image('a'), sha256: undefined };
-    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => null);
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => uri, () => 'm-slot-1');
     const materialized = { ...file, url: 'cindy-media://blobs/a.jpg' };
     rememberSentMessageImagePreviews(previews, 's', 'm', [materialized], () => null);
     expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, undefined, materialized.url))
-      .toMatchObject({ attachmentId: file.id, sourceRef: materialized.url, uri: null });
+      .toMatchObject({ attachmentId: file.id, sourceRef: uri ? file.url : materialized.url, uri, galleryImageKey: 'm-slot-1' });
     expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, undefined, 'cindy-media://blobs/replaced.jpg'))
       .toBeUndefined();
+    // A new attachment ID must not inherit the previous URL bridge or its local pixels.
+    const replacement = { ...file, id: 'replacement', url: 'cindy-media://blobs/replaced.jpg' };
+    rememberSentMessageImagePreviews(previews, 's', 'm', [replacement], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, undefined, materialized.url)).toBeUndefined();
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, undefined, replacement.url))
+      .toMatchObject({ attachmentId: replacement.id, uri: null });
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, replacement.id)?.galleryImageKey).toBeUndefined();
   });
 
   it('does not choose an ambiguous formal image after its position changes', () => {

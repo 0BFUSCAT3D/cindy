@@ -368,10 +368,12 @@ describe('pending image gallery updates', () => {
     expect(onShareImage.mock.lastCall?.[0].url).toBe(updated[0].url);
   });
 
-  it.each([false, true])('keeps the second image and its strokes when formal history makes the earlier upload readable (gap: %s)', async (gap) => {
+  it.each([
+    ['hash', false], ['hash', true], ['materialized queue', false], ['materialized queue', true],
+  ] as const)('keeps the second image and its strokes through formal history (%s, gap: %s)', async (proof, gap) => {
     const files: RemoteSerializedAttachment[] = [0, 1].map((index) => ({ id: `photo-${index}`, name: `photo-${index}.jpg`,
       category: 'image', path: `cindy-oss-attach://photo-${index}`, mimeType: 'image/jpeg', ext: 'jpg', size: 100,
-      sha256: String(index).repeat(64) }));
+      ...(proof === 'hash' ? { sha256: String(index).repeat(64) } : {}) }));
     let item = buildOutboxItem({ sessionId: 's', clientId: 'pending', text: '', permissionModeAtSend: 'ask',
       readyAttachments: [], claimedUploads: files.map((file, index) => ({ localId: file.id, failed: false,
         kind: 'image', ...(index === 1 ? { previewUri: 'file:///temporary-1.jpg' } : {}) })) });
@@ -397,6 +399,17 @@ describe('pending image gallery updates', () => {
       (file) => file.id === files[1].id ? 'file:///durable-1.jpg' : null,
       (file) => `${item.clientId}-slot-${item.attachmentSlots.findIndex((entry) => entry?.id === file.id)}`);
     const getPreview: GetSentMessageImagePreview = (...args) => getSentMessageImagePreview(previews, 's', ...args);
+    if (proof === 'materialized queue') {
+      const queuedFiles = files.map((file, index) => ({ ...file, url: `cindy-media://blobs/formal-${index}.jpg` }));
+      // The session observes Desktop's new URL under the same attachment ID, without new local pixels.
+      rememberSentMessageImagePreviews(previews, 's', item.clientId, queuedFiles, () => null);
+      const queued = collectMobileMessageGalleryImages(buildPendingSendItems({ ...input, outbox: [],
+        queue: [{ clientId: item.clientId, text: '', chatMessage: {}, files: queuedFiles } as unknown as QueuedRemoteMessage],
+        getImagePreview: getPreview }));
+      props.images = lightboxImagesForPayload(queued, clicked, 'message-pending', props.images, true);
+      await act(async () => { render(); });
+      expect(props.images[1].key).toBe(initial[0].key);
+    }
     if (gap) {
       props.images = lightboxImagesForPayload([], clicked, 'message-pending', props.images, false);
       render();
