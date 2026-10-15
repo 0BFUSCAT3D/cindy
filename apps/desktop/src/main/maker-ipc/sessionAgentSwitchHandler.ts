@@ -636,15 +636,15 @@ export async function performSessionAgentSwitch(
     // SSH 远程会话:agent 进程在远端机器,cc-manager 链路仅覆盖 Claude,v1 不支持切换。
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent switch is not supported for remote sessions');
   }
-  // Orca may switch harness/model, but Agent relocation remains an internal
-  // provider-group operation so the workflow's execution-device contract stays
-  // under the group scheduler.
+  // Orca Lead / Worker tasks live on this computer, so moving their Agent works like
+  // a normal task (2026-10-16). An execution-device Worker's task lives on that device;
+  // its Agent only moves through the provider group's internal relocation.
   const providerGroupRelocationOnly =
     params.providerGroupRelocation === true &&
     params.applyNow === true &&
     normalizeDbAgentKind(row.agentKind) === makerToDbAgentKind(targetAgentKind) &&
     row.model === model;
-  if ((row.orcaRole || parseOrcaRemoteLead(row.orcaRemoteLead)) &&
+  if (parseOrcaRemoteLead(row.orcaRemoteLead) &&
       params.agentDeviceId !== undefined && !providerGroupRelocationOnly) {
     throwIpcError('UNSUPPORTED_CAPABILITY', 'agent relocation is not supported for Orca sessions');
   }

@@ -1446,7 +1446,27 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
     expect(local.deps.insertBoundaryMessage).not.toHaveBeenCalled();
   });
 
-  it('协同任务:只接受供应商组内部的立即换位置(同引擎同模型)', async () => {
+  it.each(['lead', 'worker'])('协同任务 %s:用户换电脑与普通任务一样登记意图,发送时落地', async (orcaRole) => {
+    const h = relocationHarness({ orcaRole, agentDeviceId: null, providerId: 'xd' });
+    await performSessionAgentSwitch(h.deps, {
+      ...backToTaskComputer,
+      model: 'claude-opus-5-5',
+      providerId: 'anthropic',
+      agentDeviceId: 'share:alice-share',
+    });
+    expect(h.selectSameAgentModel).not.toHaveBeenCalled();
+    expect(h.assertAgentDeviceRouteUsable).toHaveBeenCalledWith('share:alice-share', 'claude-code', 'claude-opus-5-5', 'anthropic');
+    expect(h.pending.get('s1')).toMatchObject({ targetAgentDeviceId: 'share:alice-share' });
+
+    await applyPendingAgentSwitchIfIdle(h.deps, 's1');
+    expect(h.deps.applyAgentSwitchToDb).toHaveBeenCalledWith('s1', expect.objectContaining({
+      agentDeviceId: 'share:alice-share',
+      sdkSessionId: null,
+    }));
+    expect(h.pending.get('s1')).toBeUndefined();
+  });
+
+  it('协同任务:供应商组内部的立即换位置照常可用(同引擎同模型)', async () => {
     const lead = relocationHarness({ orcaRole: 'lead', model: 'anthropic/claude-opus-5-5[1m]' });
     const result = await performSessionAgentSwitch(lead.deps, {
       ...backToTaskComputer,
@@ -1472,10 +1492,9 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
   });
 
   it.each([
-    { orcaRole: 'worker' },
     { orcaRole: null, orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker' }) },
     { orcaRole: null, orcaRemoteLead: JSON.stringify({ leadDeviceId: 'lead-device', leadSessionId: 'lead-1', workerLabel: 'worker', releasedAt: 1 }) },
-  ])('rejects user relocation while preserving harness/model selection: %j', async (identity) => {
+  ])('execution-device Worker rejects user relocation while preserving harness/model selection: %j', async (identity) => {
     const row = { ...identity, model: 'anthropic/claude-opus-5-5[1m]' };
     const { agentDeviceId: _omit, ...withoutLocation } = backToTaskComputer;
     const userMove = relocationHarness(row);
