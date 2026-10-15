@@ -2,6 +2,8 @@
 import { readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readBotGroupTaskCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
 import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
+// The app's `@/i18n` sets up this default instance; importing it here would pull React bindings into a plain client.
+import i18next from 'i18next';
 
 export interface ChatRoom {
   id: string; name: string; state?: string; kind: string; archived: boolean;
@@ -62,10 +64,19 @@ const memberName = (member: ChatMember) => member.kind === 'bot' && member.owner
 // A recognized 引用回复 card renders as the quote; an unknown revision keeps its readable fallback.
 // A task card is the message's task only on a teammate's own message (bot-group-chat.md §10).
 const taskCardOf = (message: ChatMessage) => message.author.kind === 'bot' ? message.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
-const contentText = (message: ChatMessage) => message.deleted || readImportedBotGroupRuntimeFailureCode(message) ? '' : message.content
-  .filter(block => !readBotGroupQuoteCard(block) && !(message.author.kind === 'bot' && readBotGroupTaskCard(block)))
+const bodyBlocks = (message: ChatMessage) => message.deleted || readImportedBotGroupRuntimeFailureCode(message) ? []
+  : message.content.filter(block => !readBotGroupQuoteCard(block) && !(message.author.kind === 'bot' && readBotGroupTaskCard(block)));
+// Media blocks are the message's attachments; only the list preview falls back to their names.
+const contentText = (message: ChatMessage) => bodyBlocks(message)
+  .flatMap(block => block.type === 'media' ? [] : [block.text ?? block.fallback ?? '']).join('\n');
+// The cloud companion transcript has no attachment strip, so it keeps captions inline.
+export const chatMessageText = (message: ChatMessage) => bodyBlocks(message)
   .map(block => block.text ?? block.fallback ?? (block.type === 'media' ? block.caption ?? '' : '')).join('\n');
-export const chatMessageText = (message: ChatMessage) => contentText(message);
+// The server makes a caption optional; an unnamed attachment still needs a visible name.
+const attachmentName = (block: ChatMessage['content'][number]) => block.caption?.trim()
+  || (i18next.isInitialized ? i18next.t('groupChat.files.untitled') : '') || 'Attachment';
+const mediaNames = (message: ChatMessage) => message.deleted ? '' : message.content
+  .flatMap(block => block.type === 'media' ? [attachmentName(block)] : []).join(', ');
 
 /** Empty device identity means a server-owned conversation, never a fictitious computer. */
 export function chatRoomRow(room: ChatRoom, snapshot?: ChatSnapshot, selfId?: string): HostedRemoteCollectionItem {
@@ -78,7 +89,7 @@ export function chatRoomRow(room: ChatRoom, snapshot?: ChatSnapshot, selfId?: st
     ref: { collectionId: 'bot-groups', kind: 'bot-group', id: room.id },
     revision: String(room.head ?? room.revision), display: { title: room.name,
       subtitle: members.map(memberName).join(' · '),
-      ...(snapshot ? { preview: last ? contentText(last).slice(0, 160) || members.map(memberName).join(' · ') : '' } : {}),
+      ...(snapshot ? { preview: last ? (contentText(last).trim() || mediaNames(last)).slice(0, 160) || members.map(memberName).join(' · ') : '' } : {}),
       timestamp: Date.parse(last?.createdAt ?? room.updated_at),
       lastReplyAt: snapshot && selfId ? chatLastReplyAt(snapshot.messages, selfId) : undefined },
     links: members.map(member => ({ rel: 'member', label: memberName(member),
@@ -163,7 +174,7 @@ export function chatGroupView(page: ChatPage, selfId: string, actors: readonly C
       noticeCode: joined ? 'member-joined' : null, planId: null, files: [],
       attachments: message.deleted ? [] : message.content.flatMap(block => {
         if (block.type !== 'media' || !block.mediaId) return [];
-        return [{ id: block.mediaId, name: block.caption ?? '', category: 'file' as const,
+        return [{ id: block.mediaId, name: attachmentName(block), category: 'file' as const,
           mimeType: '', size: 0, url: null, path: null }];
       }), createdAt: Date.parse(message.createdAt) };
   });

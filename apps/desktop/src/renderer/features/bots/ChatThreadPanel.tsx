@@ -16,7 +16,7 @@ import { shareSelectionStore, useShareSelectionActive } from '@/components/chat/
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMessageView } from '../../../shared/botGroupChat';
 import { resolveBotGroupQuote } from '../../../shared/botGroupChat';
-import { botGroupThreadDraftKey } from './botGroupAttachments';
+import { botGroupThreadDraftKey, refreshPendingBotGroupAttachments } from './botGroupAttachments';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotGroupComposer, type BotGroupOutgoingMessage, type BotGroupSendOutcome } from './BotGroupComposer';
@@ -114,6 +114,18 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         : previous));
       if (!before) latestFloorRef.current = floor;
       if (!rereadOnly && (before || shown.length === 0 || gap)) setHasMore(result.hasMore);
+      // A refresh reads only the latest page: replies on opened older pages keep the attachments they
+      // arrived with, so re-read the pages whose attachments were not here yet.
+      if (!before && !gap && result.replies.length > 0) {
+        const refreshed = await refreshPendingBotGroupAttachments(shown, floor, async page => {
+          const earlier = await api().thread({ groupId: group.id, rootId, before: page });
+          return earlier.ok && current() ? earlier.replies : null;
+        });
+        if (refreshed && current()) {
+          const fresh = new Map(refreshed.map(message => [message.sequence, message]));
+          setReplies(previous => previous.map(message => message.sequence < floor ? fresh.get(message.sequence) ?? message : message));
+        }
+      }
     } catch { if (current()) setError(t(key('requestFailed'))); }
   }, [group.id, rootId, t]);
   const readRef = useRef(read);

@@ -29,7 +29,7 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => 1, isDataOwnerGenerationCurrent: () => mocks.ownerCurrent, isDataOwnerPushCurrent: () => true,
 }));
 const k = (name: string) => `bots.groupChat.server.${name}`;
-const message = { id: 'root', kind: 'message', authorKind: 'user', isSelf: false, authorName: 'Human', content: 'Root message', reactions: [{ emoji: '👍', count: 2, me: true }] } as BotGroupMessageView;
+const message = { id: 'root', kind: 'message', authorKind: 'user', isSelf: false, authorName: 'Human', content: 'Root message', reactions: [{ emoji: '👍', count: 2, me: true }], attachments: [] } as unknown as BotGroupMessageView;
 const group = { id: 'room', members: [], messages: [message] } as unknown as BotGroupDetail;
 const render = (ui: ReactNode) => renderUI(<Tooltip.Provider>{ui}</Tooltip.Provider>);
 beforeEach(() => {
@@ -219,6 +219,46 @@ describe('chat interaction controls', () => {
     fireEvent.click(screen.getByRole('button', { name: k('addReaction') }));
     fireEvent.click(screen.getByRole('button', { name: '🎉' }));
     await waitFor(() => expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '🎉', present: true }));
+  });
+
+  it('shows the Thread root and reply attachments as pictures, chips and honest states, never as body text', async () => {
+    const image = { id: 'img', name: 'clipboard-1791877522388.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/img.png', path: null };
+    const loading = { id: 'late', name: 'late.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' };
+    const lost = { id: 'lost', name: 'spec.pdf', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' };
+    const file = { id: 'doc', name: 'notes.md', category: 'text', mimeType: 'text/markdown', size: 1, url: null, path: '/tmp/notes.md' };
+    mocks.thread.mockResolvedValue({ ok: true, root: { ...message, content: '只要伙伴能管理session', attachments: [image, loading] },
+      replies: [{ ...message, id: 'reply', sequence: 2, content: '', attachments: [file, lost] }], hasMore: false });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const root = (await screen.findByText('只要伙伴能管理session')).closest('article')!;
+    expect(within(root).getByAltText('clipboard-1791877522388.png')).toBeTruthy();
+    expect(within(root).getByText('chat.imageMissing.loading')).toBeTruthy();
+    expect(within(root).getByText('late.png')).toBeTruthy();
+    const reply = screen.getByText('notes.md').closest('article')!;
+    expect(within(reply).getByRole('button', { name: 'notes.md' })).toBeTruthy();
+    expect(within(reply).getByRole('status', { name: 'spec.pdf, bots.groupChat.files.unavailable' })).toBeTruthy();
+    expect(within(reply).queryByRole('button', { name: /spec\.pdf/ })).toBeNull();
+    expect(document.body.textContent).not.toContain('[附件:');
+  });
+
+  it('updates an attachment on an earlier Thread page when its download finishes', async () => {
+    let push: ((event: { groupId: string }, stamp?: unknown) => void) | undefined;
+    (window.electronAPI.maker as unknown as { onBotGroupChanged: unknown }).onBotGroupChanged = (callback: typeof push) => { push = callback; return () => {}; };
+    let arrived = false;
+    const latest = { ...message, id: 'latest', sequence: 60, content: 'Latest reply' };
+    const older = (ready: boolean) => ({ ...message, id: 'older', sequence: 5, content: 'Earlier reply', attachments: [ready
+      ? { id: 'old', name: 'old.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/old.png', path: null }
+      : { id: 'old', name: 'old.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' }] });
+    mocks.thread.mockImplementation(async ({ before }: { before?: number }) => before === undefined
+      ? { ok: true, root: message, replies: [latest], hasMore: true }
+      : { ok: true, root: message, replies: [older(arrived)], hasMore: false });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('chat.imageMissing.loading')).toBeTruthy();
+    arrived = true;
+    push?.({ groupId: 'room' });
+    expect(await screen.findByAltText('old.png')).toBeTruthy();
+    expect(screen.queryByText('chat.imageMissing.loading')).toBeNull();
+    expect(mocks.thread.mock.calls.map(([input]) => (input as { before?: number }).before)).toEqual([undefined, 60, undefined, 6]);
   });
 
   it('shares thread messages separately from the main timeline and excludes controls from the image', async () => {

@@ -60,7 +60,7 @@ import type {
 import { botGroupQuoteFromMessage, isBotGroupMessageQuotable, resolveBotGroupQuote } from '../../../shared/botGroupChat';
 import { useRegisterContentHeader } from '../feature-context';
 import { BotGroupAvatarStack } from './BotGroupAvatars';
-import { botGroupAttachmentScope } from './botGroupAttachments';
+import { botGroupAttachmentScope, refreshPendingBotGroupAttachments } from './botGroupAttachments';
 import { BotGroupComposer, type BotGroupOutgoingMessage, type BotGroupSendOutcome } from './BotGroupComposer';
 import {
   BotGroupHeaderStatusText,
@@ -270,6 +270,19 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               && !latestIds.has(message.id) && !quoted.some((target) => target.id === message.id));
             const targets = [...quoted, ...changed].sort((a, b) => b.sequence - a.sequence);
             if (targets.length > 0) void recheckOlderCopies(api, targets, isCurrent);
+          }
+          if (displayed.kind === 'ready' && displayed.group.id === groupId && result.group.messages.length > 0) {
+            const latestFrom = Math.min(...result.group.messages.map((message) => message.sequence));
+            const refreshed = await refreshPendingBotGroupAttachments(displayed.older, latestFrom, async (before) => {
+              const page = await api.getBotGroup(groupId, { beforeSequence: before });
+              return page.ok && isCurrent() ? page.group.messages : null;
+            });
+            if (refreshed && isCurrent()) {
+              const fresh = new Map(refreshed.map((message) => [message.sequence, message]));
+              setState((previous) => previous.kind === 'ready' && previous.group.id === groupId
+                ? { ...previous, older: previous.older.map((message) => fresh.get(message.sequence) ?? message) }
+                : previous);
+            }
           }
         } else if (result.errorCode === 'NOT_FOUND') {
           setState({ kind: 'missing' });

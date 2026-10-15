@@ -52,6 +52,7 @@ vi.mock('ws', async () => {
   } };
 });
 import { ChatResponseError, REACTION_REVISION_MESSAGE_LIMIT, splitChatMessageText, withChatServer } from '../chatServer.js';
+import { t } from '../../i18n.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
@@ -407,8 +408,10 @@ describe('Chat Server result delivery and refresh', () => {
       const result = await service.getGroup(roomId);
       if (!result.ok) throw new Error('Expected group');
       const view = result.group.messages[0]!;
-      expect(view.attachments).toEqual([]);
-      expect(botGroupQuoteFromMessage(view)).toMatchObject({ excerpt: '[附件: plan.pdf]' });
+      // The downloading file keeps its named slot, so the quote names it structurally,
+      // not through an `[附件: …]` line in the excerpt.
+      expect(view.attachments).toEqual([expect.objectContaining({ id: mediaId, name: 'plan.pdf', state: 'loading' })]);
+      expect(botGroupQuoteFromMessage(view)).toMatchObject({ excerpt: '', attachmentCount: 1, attachmentName: 'plan.pdf' });
     });
 
     it('shows a valid card as the quote and an unknown revision as plain fallback text', async () => {
@@ -1335,15 +1338,90 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.download.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
     fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [message] } : response(route));
     const result = await service.getGroup(roomId);
-    expect(result.ok && result.group.messages[0].content).toContain('Readable text');
+    expect(result.ok && result.group.messages[0].content).toBe('Readable text');
+    expect(result.ok && result.group.messages[0].attachments).toEqual([expect.objectContaining({ id: mediaId, name: 'report.pdf', state: 'loading', url: null, path: null })]);
     reject(new Error('OBJECT_STORE_UNAVAILABLE')); await vi.advanceTimersByTimeAsync(0);
-    expect((await service.getGroup(roomId)).ok).toBe(true);
+    const failed = await service.getGroup(roomId);
+    expect(failed.ok && failed.group.messages[0].attachments).toEqual([expect.objectContaining({ id: mediaId, name: 'report.pdf', state: 'unavailable' })]);
     expect(fixture.download).toHaveBeenCalledOnce();
     fixture.download.mockResolvedValue({ id: mediaId, name: 'report.pdf', category: 'file', path: '/test/report.pdf', url: null });
     await vi.advanceTimersByTimeAsync(30000);
     await service.getGroup(roomId); await vi.advanceTimersByTimeAsync(0);
     const recovered = await service.getGroup(roomId);
-    expect(recovered.ok && recovered.group.messages[0].attachments[0].name).toBe('report.pdf');
+    expect(recovered.ok && recovered.group.messages[0].attachments).toEqual([{ id: mediaId, name: 'report.pdf', category: 'file', path: '/test/report.pdf', url: null }]);
+  });
+  describe('attachment text projection', () => {
+    const rootId = '60000000-0000-4000-8000-0000000000a1';
+    const imageId = '60000000-0000-4000-8000-0000000000b1';
+    const secondImageId = '60000000-0000-4000-8000-0000000000b2';
+    const message = (id: string, seq: string, content: unknown[], threadRootId: string | null = null) => ({ id, seq, authorId: selfId,
+      author: { kind: 'human', name: 'Me' }, content, createdAt: '2026-10-03T00:00:00Z', deleted: false, threadRootId });
+    const image = (mediaId: string, caption: string) => ({ type: 'media', mediaId, caption });
+    beforeEach(() => {
+      fixture.download.mockImplementation(async (_room: string, mediaId: string) => ({ id: mediaId, name: `${mediaId}.png`, category: 'image',
+        mimeType: 'image/png', size: 1, url: `cindy-media://blobs/${mediaId}.png`, path: null }));
+    });
+    it('keeps the attachment out of the main timeline text, sidebar preview included', async () => {
+      const page = [
+        message(rootId, '3', [{ type: 'text', text: '这个Thread的问题很大...' }, image(imageId, 'clipboard-1791878467493.png')]),
+        message('60000000-0000-4000-8000-0000000000a2', '4', [image(imageId, 'a.png'), image(secondImageId, 'b.png')]),
+      ];
+      fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [...page].reverse() }
+        // The composer may keep a stray space or newline beside the attachments: still previewed by their names.
+        : route.endsWith('/snapshot') ? { body: { ...response(route).body, messages: [{ ...page[1], content: [{ type: 'text', text: ' \n' }, ...page[1].content] }] } } : response(route));
+      await service.getGroup(roomId); await vi.advanceTimersByTimeAsync(0);
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('group missing');
+      const [withText, imagesOnly] = result.group.messages;
+      expect(withText.content).toBe('这个Thread的问题很大...');
+      expect(withText.attachments).toEqual([expect.objectContaining({ id: imageId, category: 'image', url: `cindy-media://blobs/${imageId}.png` })]);
+      expect(imagesOnly.content).toBe('');
+      expect(imagesOnly.attachments.map(attachment => attachment.id)).toEqual([imageId, secondImageId]);
+      expect(result.group.lastMessage?.preview).toBe('a.png, b.png');
+      expect(JSON.stringify(result.group)).not.toContain('[附件:');
+    });
+    it('shows the Thread root and its replies with their attachments instead of a text marker', async () => {
+      const root = message(rootId, '3', [{ type: 'text', text: '只要伙伴能管理session' }, image(imageId, 'clipboard-1791877522388.png')]);
+      const reply = message('60000000-0000-4000-8000-0000000000a3', '5', [image(secondImageId, 'reply.png')], rootId);
+      fixture.handle.mockImplementation(route => route.endsWith(`/messages/${rootId}`) ? { body: root }
+        : route.includes('threadRootId=') ? { body: [reply] } : route.endsWith('/members') ? { body: [] } : response(route));
+      const first = await service.chatServer!.thread({ groupId: roomId, rootId });
+      expect(first.ok && first.root.attachments).toEqual([expect.objectContaining({ id: imageId, state: 'loading' })]);
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await service.chatServer!.thread({ groupId: roomId, rootId });
+      if (!result.ok) throw new Error('thread missing');
+      expect(result.root.content).toBe('只要伙伴能管理session');
+      expect(result.root.attachments).toEqual([expect.objectContaining({ id: imageId, category: 'image', url: `cindy-media://blobs/${imageId}.png` })]);
+      expect(result.replies[0]).toMatchObject({ content: '', attachments: [expect.objectContaining({ id: secondImageId, category: 'image' })] });
+    });
+    it('keeps a typed look-alike marker, and an unreadable media reference stays visible as unavailable', async () => {
+      const typed = '我写的 [附件: clipboard-1.png] 是正文';
+      fixture.handle.mockImplementation(route => route.includes('/messages?')
+        ? { body: [message(rootId, '3', [{ type: 'text', text: typed }, { type: 'media', mediaId: 'not-a-uuid', caption: 'lost.png' }])] }
+        : response(route));
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('group missing');
+      expect(result.group.messages[0].content).toBe(typed);
+      expect(result.group.messages[0].attachments).toEqual([expect.objectContaining({ id: 'not-a-uuid', name: 'lost.png', state: 'unavailable' })]);
+    });
+    it('names an attachment the server sent without a caption, in the timeline and the sidebar', async () => {
+      const untitled = t('bots.groupChat.files.untitled');
+      expect(untitled).not.toBe('');
+      fixture.download.mockImplementation(() => new Promise(() => {}));
+      const unnamed = message(rootId, '3', [{ type: 'media', mediaId: imageId }]);
+      fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [unnamed] }
+        : route.endsWith('/snapshot') ? { body: { ...response(route).body, messages: [unnamed] } } : response(route));
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('group missing');
+      expect(result.group.messages[0].attachments).toEqual([expect.objectContaining({ id: imageId, name: untitled, state: 'loading' })]);
+      expect(result.group.lastMessage?.preview).toBe(untitled);
+    });
+    it('still tells the Bot which attachment a history message carried', async () => {
+      const source = { ...message(execution.source_message_id, '1', [{ type: 'text', text: 'Look' }, image(imageId, 'shot.png')]), origin: 'user' };
+      fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [source] } : response(route));
+      await start();
+      expect(vi.mocked(deps.dispatch).mock.calls[0][0].message).toContain('[附件: shot.png]');
+    });
   });
   it('versions only the changed message on realtime reaction changes and the whole room on resets', async () => {
     const message = { id: execution.source_message_id, seq: '1', authorId: selfId, author: { kind: 'human', name: 'Me' },

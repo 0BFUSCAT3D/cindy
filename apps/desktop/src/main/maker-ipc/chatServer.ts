@@ -3,6 +3,7 @@
 import { app, net } from 'electron';
 import { uploadPublicAsset } from '../ossPublicUpload.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
+import { t } from '../i18n.js';
 import { readFile as readMedia } from '../cindy-media/blobStore.js';
 import { getAccessToken, refresh } from '../authManager.js';
 import { retryAfterDeadline } from '@cindy/auth-client';
@@ -159,12 +160,20 @@ const groupInput = z.object({ name: z.string().trim().min(1).max(40), botIds: z.
 const taskCardOf = (m: Message) => m.author.kind === 'bot' ? m.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
 const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy.local-history' || b.data?.activity === true) && !readBotGroupQuoteCard(b)
   && !(m.author.kind === 'bot' && readBotGroupTaskCard(b)));
+const contentText = (m: Message, forModel: boolean) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m)
+  .flatMap(b => b.type !== 'media' ? [b.text ?? b.fallback ?? ''] : forModel ? [b.text ?? b.fallback ?? `[附件: ${b.caption ?? '文件'}]`] : []).join('\n');
+/** What a Bot reads: each attachment stays a `[附件: …]` line beside the text. */
+const bodyText = (m: Message) => contentText(m, true);
+/** What people read: attachments render from the media blocks (`messageViews`), not as text. */
+const displayText = (m: Message) => contentText(m, false);
+// The server makes a caption optional; an unnamed attachment still needs a visible name.
+const attachmentName = (b: Message['content'][number]) => b.caption?.trim() || t('bots.groupChat.files.untitled');
+const mediaNames = (m: Message) => m.deleted ? '' : m.content.flatMap(b => b.type === 'media' ? [attachmentName(b)] : []).join(', ');
 /**
  * docs/product-rules/bot-group-chat.md §4.4 / §7.4: a reply or step may run tools for as long as
  * two hours; time waiting on the user is not counted. A hung lane is ended by its own idle watchdog.
  */
 const TURN_TIMEOUT_MS = 2 * 60 * 60 * 1000;
-const bodyText = (m: Message) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m).map(b => b.text ?? b.fallback ?? (b.type === 'media' ? `[附件: ${b.caption ?? '文件'}]` : '')).join('\n');
 /** One server message holds this much text. */
 const CHAT_MESSAGE_TEXT_MAX = 8000;
 /** Splits long text into message-sized pieces, preferring a line break near the limit; '' → []. */
@@ -843,7 +852,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         b.namespace === 'cindy.membership' && b.schemaRevision === 1 && b.data?.type === 'member.joined' &&
         id.safeParse(b.data.actorId).success && typeof b.data.displayName === 'string' && b.data.displayName.trim()) : undefined;
       return { id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
-        authorBotId: null, authorName: joined ? String(joined.data!.displayName) : '', content: bodyText(m),
+        authorBotId: null, authorName: joined ? String(joined.data!.displayName) : '', content: displayText(m),
         threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
         noticeCode: joined ? 'member-joined' : null, planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
     }
@@ -852,7 +861,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (noticeCode === 'member-failed' || noticeCode === 'member-timeout' || noticeCode === 'plan-failed') return {
       id: m.id, sequence: Number(m.seq), kind: 'notice', authorKind: 'system', isSelf: false,
       authorBotId: localBot(m.authorId)?.id ?? null, authorName: members.find(member => member.id === m.authorId)?.name ?? '',
-      content: bodyText(m), threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
+      content: displayText(m), threadRootId: m.threadRootId, replyCount: 0, reactions: [], mentions: { all: false, botIds: [] },
       noticeCode, planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt),
     };
     const member = members.find(member => member.id === m.authorId);
@@ -868,7 +877,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const task = m.deleted || planCard ? null : taskCardOf(m);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
       isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}), ...(task ? { task } : {}),
-      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: bodyText(m),
+      authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: displayText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
   /**
@@ -908,6 +917,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   }
   // Attachments are independent of the text projection. A failed object store
   // request never rejects a room/Thread; subsequent reads retry after a backoff.
+  // Until the bytes are here the view keeps a named placeholder in its place, so
+  // a slow or failed download is shown as such instead of disappearing.
   const downloads = new Map<string, { value?: BotGroupAttachment; retryAt: number }>();
   // A page's attachments settle close together; one re-read of the room and sidebar shows
   // them all instead of one full re-read per file.
@@ -923,7 +934,11 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     return messages.map(message => {
       const view = messageView(message, members);
       for (const block of message.content) if (!message.deleted && block.type === 'media' && block.mediaId) {
-        const mediaId = id.parse(block.mediaId);
+        const placeholder = (state: 'loading' | 'unavailable'): BotGroupAttachment => ({ id: block.mediaId!, name: attachmentName(block),
+          category: 'file', mimeType: '', size: 0, url: null, path: null, state });
+        const parsed = id.safeParse(block.mediaId);
+        if (!parsed.success) { view.attachments.push(placeholder('unavailable')); continue; }
+        const mediaId = parsed.data;
         const key = `${roomId}:${mediaId}`;
         let cached = downloads.get(key);
         if (!cached || (!cached.value && Date.now() >= cached.retryAt)) {
@@ -935,7 +950,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           }).catch(() => { entry.retryAt = Date.now() + 30000; })
             .finally(() => attachmentsChanged(roomId));
         }
-        if (cached.value) view.attachments.push(cached.value);
+        view.attachments.push(cached.value ?? placeholder(cached.retryAt === Infinity ? 'loading' : 'unavailable'));
       }
       return view;
     });
@@ -989,9 +1004,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
-      }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: lastView ? {
+      }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
-        preview: lastView.content.slice(0, 80), createdAt: lastView.createdAt,
+        preview: (lastView.content.trim() || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt,
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),

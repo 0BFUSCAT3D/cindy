@@ -151,7 +151,10 @@
     }
   },
   "files": {
-    "onComputer": "檔案在電腦上，回電腦開啟"
+    "onComputer": "檔案在電腦上，回電腦開啟",
+    "loading": "載入中…",
+    "unavailable": "暫時無法載入",
+    "untitled": "附件"
   },
   "settings": {
     "open": "群聊設定",

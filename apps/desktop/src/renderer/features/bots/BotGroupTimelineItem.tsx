@@ -13,20 +13,16 @@
  * 行用 `memo` 包住：父组件只在这条消息（或它的引用、安排快照、高亮状态）真的变了时才会
  * 让它重绘；回调一律是父组件的稳定引用，按消息 id 调用。
  */
-import { memo, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { formatBotTimelineClock, formatBotTimelineDate } from '@cindy/maker-shared/botTimeline';
-import { ChatImageView } from '@/components/chat/ChatImageView';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareMessageCheckbox } from '@/components/chat/ShareMessageCheckbox';
-import { TextLightbox } from '@/components/chat/TextLightbox';
-import { UserAttachmentChip } from '@/components/chat/UserAttachmentChip';
 import { Button } from '@/components/ui/button';
 import { SHARE_MESSAGE_ATTR, SHARE_SESSION_ATTR } from '@/lib/shareConversationImage';
 import { cn } from '@/lib/utils';
 import type {
-  BotGroupAttachment,
   BotGroupMemberView,
   BotGroupPlanStepView,
   BotGroupPlanView,
@@ -35,7 +31,6 @@ import type {
 } from '../../../shared/botGroupChat';
 import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
-import { splitBotGroupMessageAttachments } from './botGroupAttachments';
 import { splitBotGroupMentionSegments } from './botGroupMentions';
 import { botGroupNoticeKey } from './botGroupPresentation';
 import {
@@ -45,6 +40,7 @@ import {
   BotGroupPlanEndDivider,
   type BotGroupPlanCardAction,
 } from './BotGroupPlan';
+import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { BotGroupTaskCard } from './BotGroupTaskCard';
@@ -160,47 +156,6 @@ export function BotGroupDateDivider({ timestamp, locale }: { timestamp: number; 
         {formatBotTimelineDate(timestamp, locale)}
       </span>
     </div>
-  );
-}
-
-/**
- * A user message's images and files, drawn like a task's user bubble: each image as the
- * same attached-image view (click for the lightbox, right-click to copy or reveal), files
- * as the same chips (text preview or the system app, right-click menu).
- */
-export function BotGroupUserAttachments({ attachments = [], align = 'left' }: { attachments?: readonly BotGroupAttachment[]; align?: 'left' | 'right' }) {
-  const [textPreview, setTextPreview] = useState<{ path: string; name: string } | null>(null);
-  const chipRef = useRef<HTMLElement | null>(null);
-  const { images, files } = splitBotGroupMessageAttachments(attachments);
-  if (images.length === 0 && files.length === 0) return null;
-  return (
-    <>
-      {images.map((image) => (
-        <ChatImageView key={image.id} src={image.url} filename={image.name} variant="user-attached" />
-      ))}
-      {files.length > 0 ? (
-        <div className={cn('flex flex-wrap items-end gap-1.5', align === 'right' && 'justify-end')}>
-          {files.map((file) => (
-            <UserAttachmentChip
-              key={file.id}
-              file={{ name: file.name, path: file.path }}
-              onOpenTextPreview={(chip) => {
-                chipRef.current = chip;
-                setTextPreview({ path: file.path, name: file.name });
-              }}
-            />
-          ))}
-        </div>
-      ) : null}
-      {textPreview ? (
-        <TextLightbox
-          filePath={textPreview.path}
-          fileName={textPreview.name}
-          triggerRef={chipRef}
-          onClose={() => setTextPreview(null)}
-        />
-      ) : null}
-    </>
   );
 }
 
@@ -368,7 +323,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           {sharing && shareable ? <ShareMessageCheckbox clientId={message.id} /> : null}
           <div className={cn('flex min-w-0 max-w-[78%] flex-col items-end gap-1.5 transition-opacity', message.pending && 'opacity-60')}>
             {quote}
-            <BotGroupUserAttachments attachments={message.attachments} align="right" />
+            <BotGroupMessageAttachments attachments={message.attachments ?? []} align="end" />
             {hasText ? (
               <div
                 data-testid="bot-group-self-bubble"
@@ -458,7 +413,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                   <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
                 </div>
               ) : null}
-              <BotGroupUserAttachments attachments={message.attachments} />
+              <BotGroupMessageAttachments attachments={message.attachments ?? []} align="start" />
               <BotGroupHandoffFiles files={message.files ?? []} workDir={props.plan?.workDir ?? null} />
               <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} onChanged={props.onChanged} />
             </div>

@@ -9333,7 +9333,10 @@
         }
       },
       "files": {
-        "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります"
+        "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります",
+        "untitled": "添付ファイル",
+        "loading": "読み込み中…",
+        "unavailable": "読み込めません"
       },
       "addFromChat": {
         "triggerFor": "{{name}} をグループチャットに追加",
