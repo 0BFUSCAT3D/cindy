@@ -30,6 +30,7 @@ import {
   createWorkingMemoryRefreshRegistry,
   emptyWorkingMemory,
   isWorkingMemoryFresh,
+  isWorkingMemoryFreshForSession,
   parseWorkingMemory,
   pruneWithdrawnWorkingMemoryForSession,
   pruneWorkingMemoryForMessages,
@@ -350,6 +351,22 @@ describe('store', () => {
     expect(after.commitments.map((c) => c.id)).toEqual(['c-after']);
     expect(after.corrections).toEqual([]);
     expect(after.waiting).toEqual([]);
+  });
+
+  it('is fresh only when the ledger covers the latest completed reply of a companion chat', async () => {
+    await writeBotWorkingMemory(root, 'bot-1', { ...emptyWorkingMemory(), updatedAt: 1, coveredThroughRowid: 12 }, 0);
+    // 伙伴归属 → 最近一条已完成回复的 rowid。
+    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 12 }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(true);
+    db.queue.push([{ botId: 'bot-1' }], [{ rowid: 13 }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
+    // 还没有已完成回复 / 非伙伴主对话 / 没有账本:都不算新鲜。
+    db.queue.push([{ botId: 'bot-1' }], [{ rowid: null }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
+    db.queue.push([]);
+    expect(await isWorkingMemoryFreshForSession('s-task', root)).toBe(false);
+    db.queue.push([{ botId: 'bot-none' }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
   });
 
   it('treats a corrupt or foreign file as no ledger', async () => {

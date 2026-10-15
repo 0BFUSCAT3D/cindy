@@ -400,6 +400,42 @@ describe('createContextOverflowRollover', () => {
     expect(failing.setPendingHandoff.mock.calls[0]![1] as string).not.toContain('Working memory');
   });
 
+  it('checkpoints a companion at 70% only when the working memory is fresh, and keeps the 90% line otherwise', async () => {
+    const source = [msg('user', 'Keep going', 'u1'), msg('assistant', 'On it', 'a1')];
+    const bot = async (deps: ReturnType<typeof makeDeps>, contextTokens: number) =>
+      deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens });
+
+    // 新鲜:70%(窗口 200K → 140K)即换窗。
+    const fresh = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true) };
+    await bot(fresh, 140_000);
+    await expect(createContextOverflowRollover(fresh).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(fresh.isWorkingMemoryFresh).toHaveBeenCalledWith('s1');
+
+    // 不新鲜:75% 不换窗;到 90% 不问账本照旧换窗。
+    const stale = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => false) };
+    await bot(stale, 150_000);
+    await expect(createContextOverflowRollover(stale).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(stale.closeSession).not.toHaveBeenCalled();
+    stale.isWorkingMemoryFresh.mockClear();
+    await bot(stale, 180_000);
+    await expect(createContextOverflowRollover(stale).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(stale.isWorkingMemoryFresh).not.toHaveBeenCalled();
+
+    // 70% 以下不读账本。
+    const below = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true) };
+    await bot(below, 139_999);
+    await expect(createContextOverflowRollover(below).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(below.isWorkingMemoryFresh).not.toHaveBeenCalled();
+
+    // 判据抛错按不新鲜;没接判据的调用方维持 90%。
+    const failing = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async (): Promise<boolean> => { throw new Error('disk'); }) };
+    await bot(failing, 150_000);
+    await expect(createContextOverflowRollover(failing).prepareUnhealthySession('s1')).resolves.toBe(false);
+    const legacy = makeDeps(source);
+    await bot(legacy, 150_000);
+    await expect(createContextOverflowRollover(legacy).prepareUnhealthySession('s1')).resolves.toBe(false);
+  });
+
   it.each([
     ['desktop', null, 180_000], ['bot', 'delegation', 180_000], ['bot', 'group', 180_000],
     ['bot', null, 180_000], ['bot', 'canonical', 179_999], ['bot', 'canonical', 0],

@@ -17,7 +17,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current.js';
 import { botDelegations, botProfiles, botSessionLinks, messages, sessions } from '../localDb/schema.js';
@@ -629,6 +629,37 @@ export async function pruneWithdrawnWorkingMemoryForSession(
     return await pruneBotWorkingMemoryForMessages(userDataDir, botId, withdrawn);
   } catch {
     return 0;
+  }
+}
+
+/**
+ * 账本是否已覆盖会话最近一条已完成回复(`agent_meta.turnCompleted`,与学习复盘取材同一判据)。
+ * 这是伙伴换窗线从 90% 提前到 70% 的依据:新鲜说明最近一轮的语义状态已进账本,宿主换窗
+ * 不会丢东西。非伙伴主对话、没有账本、还没有已完成回复或读取失败一律 false——不新鲜就
+ * 不提前,维持原来的线。
+ */
+export async function isWorkingMemoryFreshForSession(sessionId: string, userDataDir: string): Promise<boolean> {
+  try {
+    const botId = await resolveCanonicalBotIdForSession(sessionId);
+    if (!botId) return false;
+    const stored = await readBotWorkingMemory(userDataDir, botId);
+    if (!stored) return false;
+    const [row] = await getDbClient()
+      .drizzle.select({ rowid: sql<number | null>`MAX(rowid)` })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.sessionId, sessionId),
+          isNull(messages.rewindAt),
+          eq(messages.role, 'assistant'),
+          sql`json_valid(${messages.agentMeta}) AND json_extract(${messages.agentMeta}, '$.turnCompleted') = 1`,
+        ),
+      );
+    const latest = row?.rowid;
+    if (typeof latest !== 'number' || !(latest > 0)) return false;
+    return isWorkingMemoryFresh(stored, latest);
+  } catch {
+    return false;
   }
 }
 

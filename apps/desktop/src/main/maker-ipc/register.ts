@@ -598,6 +598,7 @@ import {
 import {
   buildWorkingMemoryRefreshNote,
   createWorkingMemoryRefreshRegistry,
+  isWorkingMemoryFreshForSession,
   pruneWithdrawnWorkingMemoryForSession,
   pruneWorkingMemoryForSession,
   readWorkingMemoryNoteForSession,
@@ -16440,6 +16441,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
     readWorkingMemoryNote,
+    isWorkingMemoryFresh: (sessionId) => isWorkingMemoryFreshForSession(sessionId, ownerScopedUserDataPath()),
     findLatestUser: findLatestUserMessageForRebuild,
     findLatestRebuildMeta: findLatestContextRebuildMeta,
     getLiveSession: (sessionId) => maker.getSession(sessionId),

@@ -39,6 +39,11 @@ export { isPiPromptRpcTimeoutError } from '../../shared/inputError.js';
 
 const SYNTHETIC_TRIGGER_PREFIX = '[UI_ACTION_TRIGGER]';
 const BOT_CONTEXT_CHECKPOINT_RATIO = 0.9;
+/**
+ * 伙伴工作记忆账本已覆盖最近完成轮时的换窗线。宿主换窗不调用模型,交接基线远小于原生压缩
+ * 后的残留;账本新鲜时提前换窗能替掉一次把整窗送去总结的原生压缩。不新鲜则维持 90%。
+ */
+const BOT_CONTEXT_CHECKPOINT_RATIO_FRESH = 0.7;
 
 export const CODEX_HISTORY_CONTINUE_MESSAGE =
   'Continue the unfinished task from the retained history. Do not repeat completed actions. ' +
@@ -408,6 +413,11 @@ export interface ContextOverflowRolloverDeps {
    * 非伙伴主对话或无账本返回 null;读取失败也按 null,账本不能挡住换窗。
    */
   readWorkingMemoryNote?(sessionId: string): Promise<string | null>;
+  /**
+   * 账本是否已覆盖最近一条完成回复(botWorkingMemory.isWorkingMemoryFreshForSession)。
+   * true 时伙伴换窗线提前到 70%;缺省 / false / 抛错都按不新鲜,维持 90%。
+   */
+  isWorkingMemoryFresh?(sessionId: string): Promise<boolean>;
   /** 不受 handoff 窗口限制的最近 user，避免工具密集 turn 把身份扫丢。 */
   findLatestUser?(sessionId: string): Promise<OverflowSourceMessage | null>;
   findLatestRebuildMeta(
@@ -545,6 +555,13 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       return (await deps.readWorkingMemoryNote?.(sessionId)) ?? null;
     } catch {
       return null;
+    }
+  };
+  const isWorkingMemoryFresh = async (sessionId: string): Promise<boolean> => {
+    try {
+      return (await deps.isWorkingMemoryFresh?.(sessionId)) === true;
+    } catch {
+      return false;
     }
   };
   const runRecover = async (
@@ -870,7 +887,13 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     const window = effectiveContextWindow(sessionRow.model, reportedWindow, verified);
     // At a send boundary, checkpoint a pressured companion before the next turn
     // enters native compaction. Native compaction remains enabled within a turn.
-    const pressure = shouldRebuildForContextPressure(usedTokens, companion ? window * BOT_CONTEXT_CHECKPOINT_RATIO : window);
+    // 账本新鲜(复盘已覆盖最近完成轮)时线提前到 70%;不新鲜维持 90%,免得换窗丢掉还没进
+    // 账本的内容。只有落在 70%–90% 之间才去读账本。
+    const pressure = companion
+      ? shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO) ||
+        (shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO_FRESH) &&
+          (await isWorkingMemoryFresh(sessionId)))
+      : shouldRebuildForContextPressure(usedTokens, window);
     const compactFailed = liveUsage?.needsRollover === true;
     const piByteRecoveryFailed = sessionRow.agentKind === 'pi' && isPiRequestBodyRecoveryExhausted(lastError);
     const tokenViolated =
