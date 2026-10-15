@@ -205,8 +205,11 @@ export function readBotGroupThreadShareCard(message: {
 }): { messageId: string; threadRootId: string } | null {
   // A share lives in the main chat; a card copied into a thread is just content.
   if (message.deleted === true || (message.threadRootId !== null && message.threadRootId !== undefined)) return null;
-  const card = message.content.find(block => block.type === 'card' && block.namespace === BOT_GROUP_THREAD_SHARE_NAMESPACE
-    && block.schemaRevision === THREAD_SHARE_REVISION);
+  // Classify the whole message, not a block: hiding mixed content would disagree with Agent history.
+  if (message.content.length !== 1) return null;
+  const card = message.content[0];
+  if (card?.type !== 'card' || card.namespace !== BOT_GROUP_THREAD_SHARE_NAMESPACE
+    || card.schemaRevision !== THREAD_SHARE_REVISION) return null;
   if (!card?.data || typeof card.data !== 'object' || Array.isArray(card.data)) return null;
   const { messageId, threadRootId } = card.data as Record<string, unknown>;
   if (typeof messageId !== 'string' || typeof threadRootId !== 'string' || !UUID.test(messageId) || !UUID.test(threadRootId)

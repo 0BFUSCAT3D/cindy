@@ -22,6 +22,15 @@ describe('thread share card', () => {
     expect(botGroupThreadShareOperationId(reply)).toMatch(/^[a-zA-Z0-9_.:-]{8,160}$/);
   });
 
+  it.each(['text', 'media', 'card'])('keeps a share mixed with another %s block as ordinary content in either order', type => {
+    const card = buildBotGroupThreadShareCard({ messageId: reply, threadRootId: root, authorName: 'A', text: 'reply' });
+    const extra = type === 'card' ? card : { type };
+    for (const content of [[card, extra], [extra, card]]) {
+      expect(readBotGroupThreadShareCard({ threadRootId: null, content })).toBeNull();
+    }
+    expect(readBotGroupThreadShareCard({ content: [] })).toBeNull();
+  });
+
   it.each([
     ['inside a thread', { threadRootId: root }],
     ['deleted', { deleted: true, threadRootId: null }],

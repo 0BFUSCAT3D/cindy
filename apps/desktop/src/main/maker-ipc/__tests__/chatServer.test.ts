@@ -1724,6 +1724,34 @@ describe('Chat Server result delivery and refresh', () => {
       expect(fixture.handle.mock.calls.some(([route]) => route.includes(`/messages/${shares[0].id}/continue`))).toBe(false);
     });
 
+    it('keeps mixed-card text visible and eligible for discussion without marking it as a shared reply', async () => {
+      const mixed = msg(execution.source_message_id, 9, selfId, {
+        content: [...shareCard(botReply), { type: 'text', text: 'Bot, summarize this extra text' }],
+      });
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members, messages: [mixed], cursor: '9' } };
+        if (route.startsWith(`/conversations/${roomId}/messages?`)) return { body: [mixed] };
+        if (route.endsWith('/executions')) return { body: [] };
+        return threadResponse(route, method, body);
+      });
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages[0].threadShare).toBeUndefined();
+      expect(result.group.messages[0].content).toContain('Bot, summarize this extra text');
+      expect(await service.continueRound(roomId)).toEqual({ ok: true });
+      expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}/messages/${mixed.id}/continue`, 'POST', expect.anything());
+
+      claimed = false;
+      fixture.handle.mockImplementation((route, method, body) => route.includes('all=true') ? { body: [mixed] }
+        : route.endsWith('/snapshot') || route.endsWith('/members') ? threadResponse(route, method, body) : response(route));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+      const prompt = vi.mocked(deps.dispatch).mock.calls[0][0].message;
+      const history = [...prompt.matchAll(/<untrusted-data>\n(.*?)\n<\/untrusted-data>/g)].map(match => JSON.parse(match[1])).find(block => block.messages)!.messages;
+      expect(history.find((m: { id: string }) => m.id === mixed.id)).toMatchObject({ text: result.group.messages[0].content });
+      expect(history.find((m: { id: string }) => m.id === mixed.id)).not.toHaveProperty('sharedReplyId');
+    });
+
     it('tells companions a share is a reference whose quoted @names address no one', async () => {
       claimed = false;
       fixture.handle.mockImplementation((route, method, body) => route.includes('all=true')
