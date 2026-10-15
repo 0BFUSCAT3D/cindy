@@ -3,6 +3,10 @@ import { normalizeDbAgentKind, dbToMakerAgentKind } from '../../shared/agentKind
 import { and, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
 import { app } from 'electron';
 import { syncPersonalRemoteBeforeTask } from './personalRemoteRuntime.js';
+import {
+  hasRetainedSourceOperation,
+  syncSourceBeforeCindyMakeTask,
+} from './upstreamMergeRuntime.js';
 import { cindyMakeManager } from './manager.js';
 import {
   createMakeToolchainEnvironment,
@@ -541,9 +545,6 @@ export async function startCindyMakeTask(raw: unknown, sender: number): Promise<
       // The task worktree must branch from the latest verified personal source.
       // Keep the visible task shell while this runs so conflicts and Stop remain recoverable.
       phase('updatingSource', publish);
-      const { syncSourceBeforeCindyMakeTask, hasRetainedSourceOperation } = await import(
-        './upstreamMergeRuntime.js'
-      );
       for (let attempt = 0; ; attempt += 1) {
         // A Sync in progress finishes first; the task then starts from its result.
         await cindyMakeManager.whenManualSourceSyncIdle(signal);
