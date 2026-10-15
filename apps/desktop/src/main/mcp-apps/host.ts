@@ -605,6 +605,10 @@ export class McpAppsHost {
     }
   }
 
+  async assertViewAuthorized(caller: string, sessionId: string, id: string): Promise<void> {
+    await this.assertCurrentView(id, this.view(caller, sessionId, id));
+  }
+
   private async assertCurrentView(id: string, view: View): Promise<void> {
     this.view(view.caller, view.sessionId, id);
     const latest = await this.deps.readCard(view.sessionId, view.clientId);

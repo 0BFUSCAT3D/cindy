@@ -38,7 +38,10 @@ export async function handleMcpAppFrameOperation(
   const input = raw as Record<string, unknown>;
   if (input.op === 'open-link') {
     if (typeof input.url !== 'string' || input.url.length > 8192) throw new Error('MCP_APP_INVALID_LINK');
-    await openLink(safeAppLink(input.url));
+    const url = safeAppLink(input.url);
+    // A returned poll event is not a grant: the card can be revoked before this POST.
+    await host.assertViewAuthorized(caller, sessionId, viewId);
+    await openLink(url);
     return {};
   }
   if (!['message', 'poll', 'link-result'].includes(String(input.op))) throw new Error('MCP_APP_INVALID_REQUEST');

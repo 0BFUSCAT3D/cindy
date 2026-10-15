@@ -4,6 +4,7 @@ import type { JSONRPCMessage, Notification } from '@modelcontextprotocol/sdk/typ
 import type { McpAppRecord } from '../../../shared/mcpApps.js';
 import type { AppConnection } from '../connection.js';
 import { McpAppsHost, appServerRevision } from '../host.js';
+import { handleMcpAppFrameOperation } from '../operations.js';
 
 const hosts: McpAppsHost[] = [];
 afterEach(async () => {
@@ -146,6 +147,7 @@ async function fixture() {
   outgoing.length = 0;
   return {
     host,
+    viewId: document.viewId,
     readCard,
     poll: (after: number) => host.poll('renderer:1', 'task', document.viewId, after),
     notify: () => notify({ method: 'notifications/tools/list_changed' }),
@@ -164,6 +166,82 @@ async function fixture() {
 }
 
 describe('MCP App upstream result authorization', () => {
+  async function returnedLink(f: Awaited<ReturnType<typeof fixture>>) {
+    const initial = await f.poll(0);
+    await f.dispatch({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'ui/open-link',
+      params: { url: 'https://example.invalid/' },
+    });
+    const events = await f.poll(initial.at(-1)!.seq);
+    const link = events.find((event) => event.openLink)?.openLink;
+    expect(link).toEqual({ id: expect.any(String), url: 'https://example.invalid/' });
+    return { op: 'open-link', url: link!.url };
+  }
+
+  it('opens a returned link when its bound View and card remain current', async () => {
+    const f = await fixture();
+    const input = await returnedLink(f);
+    const openLink = vi.fn(async () => {});
+    await expect(
+      handleMcpAppFrameOperation(
+        f.host,
+        'renderer:1',
+        'task',
+        f.viewId,
+        { ...input, viewId: 'forged-view', sessionId: 'forged-task' },
+        openLink,
+      ),
+    ).resolves.toEqual({});
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(input.url);
+  });
+
+  it.each(['card', 'owner', 'server', 'config'] as const)(
+    'does not open a returned link after %s revocation',
+    async (revocation) => {
+      const f = await fixture();
+      const input = await returnedLink(f);
+      f.revoke(revocation);
+      const openLink = vi.fn(async () => {});
+      await expect(
+        handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', f.viewId, input, openLink),
+      ).rejects.toThrow(/MCP_APP_(CARD_UNAVAILABLE|VIEW_UNAVAILABLE|SERVER_CHANGED)/);
+      expect(openLink).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not open a returned link after its View is released', async () => {
+    const f = await fixture();
+    const input = await returnedLink(f);
+    await f.host.releaseCaller('renderer:1');
+    const openLink = vi.fn(async () => {});
+    await expect(
+      handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', f.viewId, input, openLink),
+    ).rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE');
+    expect(openLink).not.toHaveBeenCalled();
+  });
+
+  it.each(['owner', 'server', 'config'] as const)(
+    'does not open a returned link after %s revocation during the card check',
+    async (revocation) => {
+      const f = await fixture();
+      const input = await returnedLink(f);
+      const current = await f.readCard();
+      const pending = deferred<McpAppRecord>();
+      f.readCard.mockClear().mockReturnValueOnce(pending.promise);
+      const openLink = vi.fn(async () => {});
+      const rejected = expect(
+        handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', f.viewId, input, openLink),
+      ).rejects.toThrow(/MCP_APP_(VIEW_UNAVAILABLE|SERVER_CHANGED)/);
+      await vi.waitFor(() => expect(f.readCard).toHaveBeenCalledOnce());
+      f.revoke(revocation);
+      pending.resolve(current);
+      await rejected;
+      expect(openLink).not.toHaveBeenCalled();
+    },
+  );
+
   it('discards a queued open-link event after its card is revoked', async () => {
     const f = await fixture();
     const initial = await f.poll(0);
