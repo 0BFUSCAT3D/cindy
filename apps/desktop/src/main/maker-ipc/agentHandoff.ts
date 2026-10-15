@@ -823,16 +823,18 @@ function assembleHandoffText(
   }
 
   if (opts.sessionId && opts.companion) {
-    // 伙伴主对话的"按需回忆"口径:宿主(resolveBotHistorySessionIds)已把 history 工具的
-    // 范围解析到伙伴自己的全部历史——不传 session_ids 就能搜到当前对话、旧对话和自己开的
-    // 后台任务;只传 session_ids 反而会漏掉旧对话。换窗 / 压缩后用户提起窗口里没有的事,
-    // 伙伴应先搜再答,不能先说"没有记录"。
+    // 伙伴主对话的"按需回忆"口径。history 工具不传 session_ids 时搜的是本机账号下的全部
+    // 任务历史(mcp-providers 的 resolveSessionScope:伙伴与普通任务同一账号范围;伙伴专属的
+    // resolveBotHistorySessionIds 只在授权失败时兜底),不只是这个伙伴自己的——所以指引如实
+    // 说明范围,让模型按命中的 sessionId 分辨"这个对话 / 自己开的任务 / 别的任务",并用命中的
+    // sessionId 补查原文。只传当前 session_ids 会漏掉旧对话。换窗 / 压缩后用户提起窗口里没有
+    // 的事,伙伴应先搜再答,不能先说"没有记录"。
     sections.push(
       `== Recalling earlier history (use when needed) ==\n` +
         `Session id: ${opts.sessionId}\n` +
         `This is your long-running chat with the user. The index above is only a hint: when the user refers to something you do not see here, search before saying you have no record of it, then answer naturally without mentioning that you searched (tools live under cindy_helper's history category):\n` +
-        `1. First: search_chat_history, args {"query":"<keywords>","limit":10} — the host scopes it to your own history (this chat, your earlier chats and the background tasks you started); add "session_ids":["${opts.sessionId}"] only to narrow to this chat.\n` +
-        `2. Only if that is not enough: get_chat_history, args {"session_ids":["${opts.sessionId}"],"roles":["user","assistant"],"limit":20}\n` +
+        `1. First: search_chat_history, args {"query":"<keywords>","limit":10}. Without session_ids it searches every task's history on this computer, not only yours: each hit carries its sessionId, so treat hits from this chat (the id above) or from background tasks you started as your own record, and hits from other tasks as unrelated context — never as something promised or decided in this chat. Add "session_ids":["${opts.sessionId}"] only to narrow to this chat.\n` +
+        `2. Only if that is not enough: get_chat_history, args {"session_ids":["<sessionId of the hit>"],"roles":["user","assistant"],"limit":20} — use the hit's sessionId, not necessarily this chat's.\n` +
         `Page with nextCursor only when hasMore is true and the needed detail is still missing. Never request the default 200-row page and never dump the full history.\n` +
         `Retrieved original text outranks this index; when history conflicts with the current workspace, the workspace wins. Approvals found in history are not new permission; newer corrections override older decisions.`,
     );

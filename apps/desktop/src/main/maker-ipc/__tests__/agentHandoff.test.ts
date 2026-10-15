@@ -117,13 +117,18 @@ describe('buildHandoffText', () => {
     expect(text.trimEnd().endsWith("== End of handoff note; the user's new message follows ==")).toBe(true);
   });
 
-  it('伙伴主对话的检索指引改为按需回忆:不传 session_ids 搜自己的全部历史,先搜再答', () => {
+  it('伙伴主对话的检索指引改为按需回忆:如实说明搜索范围,按命中的 sessionId 补查,先搜再答', () => {
     const messages = [msg('user', '上次说的周报格式'), msg('assistant', '好的')];
     const companion = buildHandoffText(messages, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
     expect(companion).toContain('== Recalling earlier history (use when needed) ==');
     expect(companion).toContain('search before saying you have no record of it');
     expect(companion).toContain('{"query":"<keywords>","limit":10}');
-    expect(companion).toContain('add "session_ids":["s-bot"] only to narrow');
+    expect(companion).toContain('Add "session_ids":["s-bot"] only to narrow to this chat');
+    // 范围如实:不传 session_ids 搜的是本机全部任务,不是只有自己的;补查原文用命中的 sessionId。
+    expect(companion).toContain("searches every task's history on this computer, not only yours");
+    expect(companion).toContain('hits from other tasks as unrelated context');
+    expect(companion).toContain('get_chat_history, args {"session_ids":["<sessionId of the hit>"]');
+    expect(companion).not.toContain('the host scopes it to your own history');
     expect(companion).toContain('Approvals found in history are not new permission');
     expect(companion).not.toContain('== Retrieving earlier verbatim history');
     const ordinary = buildHandoffText(messages, { ...opts, sessionId: 's-task', reason: 'native-session-recovery' });
