@@ -102,6 +102,27 @@ describe('provider management client', () => {
     expect(clipboard.remember).not.toHaveBeenCalled();
   });
 
+  it('does not register a link for copying until its approval watch has been saved', async () => {
+    let finishSave!: () => void;
+    host.watch.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
+    const invoke = replying({ link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const creating = invokeProviderManagement(invoke, 'group-host', createLink);
+    await vi.waitFor(() => expect(host.watch).toHaveBeenCalledTimes(1));
+    expect(clipboard.remember).not.toHaveBeenCalled();
+    finishSave();
+    await expect(creating).resolves.toMatchObject({ link: 'https://cindy.app/s#test' });
+    expect(clipboard.remember).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not register or return a link when saving its approval watch fails', async () => {
+    host.watch.mockRejectedValueOnce(new Error('[PRECONDITION_FAILED] approval setup failed'));
+    const invoke = replying({ link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    await expect(invokeProviderManagement(invoke, 'group-host', createLink)).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(clipboard.remember).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('drops a watched request once it is approved or rejected here, but not when the group computer refused', async () => {
     await invokeProviderManagement(replying({ ok: true }), 'group-host', { action: 'manage-share', command: { action: 'approve', requestId: 'r1' } });
     await invokeProviderManagement(replying({ ok: true }), 'group-host', { action: 'manage-share', command: { action: 'reject', requestId: 'r2' } });

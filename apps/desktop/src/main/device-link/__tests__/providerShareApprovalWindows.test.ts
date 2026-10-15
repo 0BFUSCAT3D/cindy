@@ -5,7 +5,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({ scope: 'owner-a', boundaryPending: false, owned: [] as unknown[] }));
-vi.mock('../../appSessionState.js', () => ({ isAppSessionBoundaryPending: () => state.boundaryPending }));
+const clipboard = vi.hoisted(() => ({ remember: vi.fn() }));
+vi.mock('../../appSessionState.js', () => ({
+  activeOwnerScopeKey: () => state.scope,
+  isAppSessionBoundaryPending: () => state.boundaryPending,
+}));
+vi.mock('../../textClipboard.js', () => ({ rememberIssuedClipboardText: clipboard.remember }));
 vi.mock('../../authManager.js', () => ({ getAuthState: () => ({ isAuthenticated: true }), getDeviceId: () => 'host-device' }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn(), info: vi.fn() }) }));
 vi.mock('../../maker-host/remote-provider-access-store.js', () => ({ isRemoteProviderInvocationAllowed: () => true }));
@@ -39,6 +44,7 @@ beforeEach(async () => {
   state.scope = 'owner-a';
   state.boundaryPending = false;
   state.owned = [];
+  clipboard.remember.mockReset();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-10-15T08:00:00Z'));
   await loadProcess();
@@ -126,6 +132,36 @@ describe('approval ownership across a complete application restart', () => {
 });
 
 describe('approval ownership storage', () => {
+  it.each(['quiet', 'clear', 'watch'] as const)('rejects %s setup after the runtime stops without changing stored ownership', async (action) => {
+    host.startProviderShareHost(events());
+    if (action === 'clear') await host.quietProviderShareRequests('anthropic');
+    host.stopProviderShareHost();
+    const original = fs.existsSync(filePath()) ? fs.readFileSync(filePath(), 'utf8') : null;
+    const setup = action === 'quiet' ? host.quietProviderShareRequests('anthropic')
+      : action === 'clear' ? host.clearProviderShareRequestQuiet('anthropic')
+        : host.watchProviderShareRequests('group-host', 'anthropic', async () => []);
+    await expect(setup).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(fs.existsSync(filePath()) ? fs.readFileSync(filePath(), 'utf8') : null).toBe(original);
+  });
+
+  it('does not expose a remote link when its reply arrives after the approval runtime stops', async () => {
+    const { invokeProviderManagement } = await import('../../provider-group/managementClient');
+    host.startProviderShareHost(events());
+    const invoke = vi.fn(async () => {
+      host.stopProviderShareHost(); // 回包已到，账号没变，但设备互联的 runtime 已被停止。
+      return { ok: true as const, result: {
+        result: { link: 'https://cindy.app/s#test', expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        respondedAt: Date.now(),
+      } };
+    });
+    await expect(invokeProviderManagement(invoke, 'group-host', {
+      action: 'manage-share', command: { action: 'create-link', providerId: 'anthropic' },
+    })).rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(clipboard.remember).not.toHaveBeenCalled();
+    expect(fs.existsSync(filePath())).toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps both sides of concurrently saved windows without storing link or person details', async () => {
     const until = Date.now() + windows.PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
     await Promise.all([

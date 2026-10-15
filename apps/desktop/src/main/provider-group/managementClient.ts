@@ -42,9 +42,9 @@ export async function invokeProviderManagement(
     const remaining = Math.max(0, Math.min(PROVIDER_SHARE_LINK_TTL_MS, Date.parse(created.expiresAt) - reply.respondedAt)
       - Math.max(0, Date.now() - startedAt));
     const expiresAt = new Date(Date.now() + remaining).toISOString();
-    rememberIssuedClipboardText(created.link, expiresAt);
     await watchProviderShareRequests(deviceId, request.command.providerId, () => readProviderManagementShares(readInvoke, deviceId));
     assertOwner();
+    rememberIssuedClipboardText(created.link, expiresAt);
     return { link: created.link, expiresAt };
   }
   if (request.action === 'manage-share' && (request.command.action === 'approve' || request.command.action === 'reject')) {

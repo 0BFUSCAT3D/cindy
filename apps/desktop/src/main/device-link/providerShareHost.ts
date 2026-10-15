@@ -400,9 +400,8 @@ export function getProviderShareHostSnapshot(): readonly ProviderShareOwned[] {
 /** 同账号另一台电脑经管理为本机的这个供应商生成了链接：窗口期内的新申请由那台弹窗。 */
 export async function quietProviderShareRequests(providerId: string): Promise<void> {
   const rt = runtime;
-  if (!rt) return;
+  assertApprovalWindowCurrent(rt);
   const assertCurrent = () => assertApprovalWindowCurrent(rt);
-  assertCurrent();
   const until = Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
   await updateProviderShareApprovalWindows((value) => ({
     ...value, quietUntil: { ...value.quietUntil, [providerId]: until },
@@ -413,9 +412,8 @@ export async function quietProviderShareRequests(providerId: string): Promise<vo
 /** 本机自己生成了链接：本机的人在场，新申请恢复由本机弹窗。 */
 export async function clearProviderShareRequestQuiet(providerId: string): Promise<void> {
   const rt = runtime;
-  if (!rt) return;
+  assertApprovalWindowCurrent(rt);
   const assertCurrent = () => assertApprovalWindowCurrent(rt);
-  assertCurrent();
   await updateProviderShareApprovalWindows((value) => {
     const quietUntil = { ...value.quietUntil };
     delete quietUntil[providerId];
@@ -431,9 +429,8 @@ export async function watchProviderShareRequests(
   readShares: RemoteLinkWatch['readShares'],
 ): Promise<void> {
   const rt = runtime;
-  if (!rt) return;
+  assertApprovalWindowCurrent(rt);
   const assertCurrent = () => assertApprovalWindowCurrent(rt);
-  assertCurrent();
   const until = Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
   await updateProviderShareApprovalWindows((value) => ({
     ...value,
@@ -447,8 +444,8 @@ export async function watchProviderShareRequests(
   markProviderShareHostActive(PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
 }
 
-function assertApprovalWindowCurrent(rt: Runtime): void {
-  if (!current(rt)) throwIpcError('PRECONDITION_FAILED', 'The account or runtime changed during provider share approval setup');
+function assertApprovalWindowCurrent(rt: Runtime | null): asserts rt is Runtime {
+  if (!rt || !current(rt)) throwIpcError('PRECONDITION_FAILED', 'The account or runtime changed during provider share approval setup');
 }
 
 /** 本机经管理处理了关注到的申请：立即移除，不等下一次拉取。 */
