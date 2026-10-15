@@ -5,7 +5,7 @@
  * 调用方退回「当前供应商」的说法, 不为一个名字挡住失败消息。
  */
 import { eq } from 'drizzle-orm';
-import { effectiveSourceIdForModel } from '@cindy/model-providers';
+import { actualSourceIdForModel } from '@cindy/model-providers';
 
 import { dbToMakerAgentKind } from '../../../shared/agentKindConversion.js';
 import { getDbClient } from '../../localDb/client/current';
@@ -28,7 +28,10 @@ export async function resolveSessionProviderLabel(sessionId: string): Promise<st
     const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
     // 内存里的来源比库里新(本轮刚切过、尚未落库时以运行中的为准)。
     const selected = hasSessionProvider(sessionId) ? getSessionProvider(sessionId) : row.providerId;
-    const providerId = effectiveSourceIdForModel(
+    // 「运行中会话」口径(与实际路由层 provider-route 一致): 停用 / 退役的拷贝仍算数 ——
+    // 运行中的任务不因停用改道, 说明里的供应商必须是真正报额度错的那一家, 不能是
+    // 新路由口径(effectiveSourceIdForModel)过滤后落到的替代来源。
+    const providerId = actualSourceIdForModel(
       providers,
       selected?.trim() || null,
       row.model,
