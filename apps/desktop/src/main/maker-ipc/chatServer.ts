@@ -18,6 +18,7 @@ import { createChatMedia } from './chatServerMedia.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief } from './botGroupDivision.js';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
+import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGroupTaskPostSnapshot.js';
 import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -1747,53 +1748,60 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (!actor) return refused('BOT_UNAVAILABLE');
         const s = await snapshot(roomId);
         if (s.room.archived || !s.members.some(m => m.id === actor.id && m.state === 'joined')) return refused('MEMBER_UNAVAILABLE');
-        const produced: BotGroupAttachment[] = [];
-        const fs = await import('node:fs/promises');
-        for (const file of input.files ?? []) {
-          try {
-            const stat = await fs.lstat(file.absolutePath);
-            if (stat.isFile()) produced.push({ id: file.absolutePath, name: path.basename(file.absolutePath), category: 'file',
-              mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
-          } catch (error) {
-            // Gone or unreadable for good (deleted since the task finished): simply not delivered.
-            // A transient filesystem failure keeps the whole message for a retry.
-            if (!fileRefusedHere(error)) throw error;
-          }
-        }
-        // Files go up one at a time so a refused file never holds back the others: a file this
-        // computer cannot send (empty, over the size limit, unreadable) or the server definitely
-        // refuses is left out with a warning, while a transient failure keeps the whole message for a retry.
-        const uploaded: ChatContentBlock[] = [];
-        for (const file of produced) {
-          try {
-            uploaded.push(...await media.upload(roomId, input.clientId, [file], actor.id));
-          } catch (error) {
-            if (!fileRefusedHere(error) && (!(error instanceof ChatResponseError) || retryableResponse(error))) throw error;
-            deps.log?.warn('Chat task delivery file refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
-          }
-        }
-        // The server takes 8000 characters and BOT_GROUP_ATTACHMENTS_MAX files per message: a longer
-        // result and further files continue in follow-up messages (same idempotent operation id
-        // family), never silently cut.
-        const [first = '', ...rest] = splitChatMessageText(input.text.trim());
-        const fileBatches: ChatContentBlock[][] = [];
-        for (let at = 0; at < uploaded.length; at += BOT_GROUP_ATTACHMENTS_MAX) fileBatches.push(uploaded.slice(at, at + BOT_GROUP_ATTACHMENTS_MAX));
-        const [firstFiles = [], ...moreFiles] = fileBatches;
-        const posted = await api<{ id: string }>(`/conversations/${roomId}/messages`, 'POST', {
-          operationId: input.clientId, content: [...(first ? [{ type: 'text', text: first }] : []), input.card, ...firstFiles], mentions: [],
-        }, actor.id);
-        for (const [index, text] of rest.entries()) {
-          await api(`/conversations/${roomId}/messages`, 'POST', {
-            operationId: `${input.clientId}:${index + 2}`, content: [{ type: 'text', text }], mentions: [],
-          }, actor.id);
-        }
-        for (const [index, files] of moreFiles.entries()) {
-          await api(`/conversations/${roomId}/messages`, 'POST', {
-            operationId: `${input.clientId}:files:${index + 2}`, content: files, mentions: [],
-          }, actor.id);
+        const frozen = await prepareBotGroupTaskPost(input.card.data.meta.delegationId,
+          { endpoint: config.baseUrl, selfId, roomId, clientId: input.clientId }, async () => {
+            const produced: BotGroupAttachment[] = [];
+            const fs = await import('node:fs/promises');
+            for (const file of input.files ?? []) {
+              try {
+                const stat = await fs.lstat(file.absolutePath);
+                if (stat.isFile()) produced.push({ id: file.absolutePath, name: path.basename(file.absolutePath), category: 'file',
+                  mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
+              } catch (error) {
+                // Gone or unreadable for good (deleted since the task finished): simply not delivered.
+                // A transient filesystem failure keeps the whole message for a retry.
+                if (!fileRefusedHere(error)) throw error;
+              }
+            }
+            // Files go up one at a time so a refused file never holds back the others: a file this
+            // computer cannot send (empty, over the size limit, unreadable) or the server definitely
+            // refuses is left out with a warning, while a transient failure keeps the whole message for a retry.
+            const uploaded: ChatContentBlock[] = [];
+            for (const file of produced) {
+              try {
+                uploaded.push(...await media.upload(roomId, input.clientId, [file], actor.id));
+              } catch (error) {
+                if (!fileRefusedHere(error) && (!(error instanceof ChatResponseError) || retryableResponse(error))) throw error;
+                deps.log?.warn('Chat task delivery file refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
+              }
+            }
+            // The server takes 8000 characters and BOT_GROUP_ATTACHMENTS_MAX files per message: a longer
+            // result and further files continue in follow-up messages (same idempotent operation id
+            // family), never silently cut.
+            const [first = '', ...rest] = splitChatMessageText(input.text.trim());
+            const fileBatches: ChatContentBlock[][] = [];
+            for (let at = 0; at < uploaded.length; at += BOT_GROUP_ATTACHMENTS_MAX) fileBatches.push(uploaded.slice(at, at + BOT_GROUP_ATTACHMENTS_MAX));
+            const [firstFiles = [], ...moreFiles] = fileBatches;
+            const messages: BotGroupTaskPostSnapshot['messages'] = [{
+              operationId: input.clientId, content: [...(first ? [{ type: 'text', text: first }] : []), input.card, ...firstFiles], mentions: [],
+            }];
+            for (const [index, text] of rest.entries()) messages.push({
+              operationId: `${input.clientId}:${index + 2}`, content: [{ type: 'text', text }], mentions: [],
+            });
+            for (const [index, files] of moreFiles.entries()) messages.push({
+              operationId: `${input.clientId}:files:${index + 2}`, content: files, mentions: [],
+            });
+            return { actorId: actor.id, messages };
+          });
+        // Persist every part before the first POST. Retries (including after restart) use the
+        // same card, localized fallback, text and media references even if their sources change.
+        let messageId = '';
+        for (const body of frozen.messages) {
+          const posted = await api<{ id: string }>(`/conversations/${roomId}/messages`, 'POST', body, frozen.actorId);
+          messageId ||= posted.id;
         }
         changed(roomId);
-        return { ok: true, messageId: posted.id };
+        return { ok: true, messageId };
       } catch (error) {
         deps.log?.warn('Chat task message post failed', { groupId: input.groupId, ...chatErrorDiagnostic(error) });
         return { ok: false, errorCode: error instanceof Error ? error.message : 'REQUEST_FAILED',

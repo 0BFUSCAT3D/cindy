@@ -3,6 +3,13 @@ const fixture = vi.hoisted(() => ({ upload: vi.fn(async (): Promise<unknown[]> =
 vi.mock('../../authManager.js', () => ({ getAccessToken: () => fixture.token, refresh: fixture.refresh }));
 vi.mock('../../clientEndpointsService.js', () => ({ getClientEndpoint: () => 'https://chat.cindy.app' }));
 vi.mock('../chatServerMedia.js', () => ({ createChatMedia: () => ({ upload: fixture.upload, download: fixture.download }) }));
+// Persists across adapter recreation; the SQLite implementation has its own persistence tests.
+const taskPosts = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../botGroupTaskPostSnapshot.js', () => ({ prepareBotGroupTaskPost: async (taskId: string, scope: unknown, prepare: () => Promise<unknown>) => {
+  const key = JSON.stringify([taskId, scope]);
+  if (!taskPosts.has(key)) taskPosts.set(key, JSON.parse(JSON.stringify(await prepare())));
+  return JSON.parse(JSON.stringify(taskPosts.get(key)));
+} }));
 vi.mock('../chatServerWorkspaces.js', () => ({ chatServerWorkspaces: () => ({ read: () => null, save: vi.fn() }) }));
 const migration = vi.hoisted(() => ({ read: vi.fn<(_groupId: string) => { roomId: string; sequence: number; version: 2 } | null>(() => null) }));
 vi.mock('../chatMigrationReceipts.js', () => ({ chatMigrationReceipts: () => ({ read: migration.read, save: vi.fn() }) }));
@@ -140,6 +147,7 @@ describe('Chat Server result delivery and refresh', () => {
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
+    taskPosts.clear();
     deps = { ensureLane: vi.fn(async () => ({ ok: true, sessionId: 'lane' })), abortLane: vi.fn(async () => {}),
       dispatch: vi.fn(async (input: Parameters<BotGroupChatServiceDeps['dispatch']>[0]) => { await input.onAccepted?.(); return { ok: true }; }),
       onChanged: vi.fn(),
@@ -583,6 +591,39 @@ describe('Chat Server result delivery and refresh', () => {
     const mediaBlock = (name: string) => ({ type: 'media', mediaId: `60000000-0000-4000-8000-${name.replace(/\D/g, '').padStart(12, '0')}`, caption: name });
     const uploadEach = (refuse?: { name: string; error: Error }) => fixture.upload.mockImplementation(async (...args: unknown[]) =>
       (args[2] as Array<{ name: string }>).map(attachment => { if (attachment.name === refuse?.name) throw refuse.error; return mediaBlock(attachment.name); }));
+
+    it.each(['started', 'completed'] as const)('replays the frozen %s payload after a lost response and adapter restart', async state => {
+      const posted: unknown[] = [];
+      const accepted = new Map<string, unknown>();
+      const loseAt = state === 'completed' ? 2 : 1;
+      fixture.handle.mockImplementation((route, method, body) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route === `/conversations/${roomId}/messages` && method === 'POST') {
+          posted.push(structuredClone(body));
+          const operationId = (body as { operationId: string }).operationId;
+          if (!accepted.has(operationId)) accepted.set(operationId, structuredClone(body));
+          if (posted.length === loseAt) throw new Error('ECONNRESET'); // Committed; ACK lost.
+          return JSON.stringify(body) === JSON.stringify(accepted.get(operationId))
+            ? { body: { id: 'original-message' } }
+            : { status: 409, body: { error: { code: 'OPERATION_CONFLICT' } } };
+        }
+        return response(route);
+      });
+      const files = await deliveryFiles(1);
+      fixture.upload.mockResolvedValue([mediaBlock('1')]);
+      const input = { groupId: roomId, botId: 'local-bot', clientId: `task-snapshot:${state}`, text: state === 'completed' ? 'x'.repeat(8_001) : 'Original result',
+        card: buildBotGroupTaskCard({ meta: taskMeta, state, title: 'Original title' }, taskLabels), files };
+      expect(await service.postCompanionTaskMessage(input)).toMatchObject({ ok: false, retryable: true });
+      service.dispose();
+      service = withChatServer({ listGroups: vi.fn(async () => ({ ok: true, groups: [] })), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+      await (await import('node:fs/promises')).unlink(files[0]!.absolutePath);
+      const edited = { ...input, text: 'Edited result', card: buildBotGroupTaskCard({ meta: { ...taskMeta, fromBotName: 'Renamed bot' }, state, title: 'Renamed task' },
+        { ...taskLabels, task: '任务' }) };
+      expect(await service.postCompanionTaskMessage(edited)).toEqual({ ok: true, messageId: 'original-message' });
+      expect(posted).toHaveLength(loseAt * 2);
+      expect(posted.slice(loseAt)).toEqual(posted.slice(0, loseAt));
+      expect(fixture.upload).toHaveBeenCalledTimes(1);
+    });
 
     it('posts the task card as the teammate itself, outside any execution, with its files', async () => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
@@ -1976,6 +2017,7 @@ describe('Chat authentication recovery and polling backoff', () => {
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
+    taskPosts.clear();
     fixture.handle.mockReset().mockImplementation(healthy);
     service = withChatServer({ dispose: vi.fn(), listGroups: async () => ({ ok: true, groups: [] }) } as unknown as BotGroupChatService, {} as BotGroupChatServiceDeps);
   });
@@ -1985,6 +2027,7 @@ describe('Chat authentication recovery and polling backoff', () => {
     fixture.token = 'isolated-test-token';
     fixture.refresh.mockReset().mockResolvedValue(true);
     migration.read.mockReset().mockReturnValue(null);
+    taskPosts.clear();
     vi.useRealTimers();
   });
 
