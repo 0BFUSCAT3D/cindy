@@ -134,15 +134,23 @@ describe('buildHandoffText', () => {
     expect(companion).toContain('"to":"<createdAt of the hit>","order":"desc"');
     expect(companion).toContain('"context_radius":6');
     expect(companion).not.toContain('the host scopes it to your own history');
-    // 宿主没给清单:只认当前对话。超过上限只列最新的 20 个。
+    // 清单没放全时给退路;放全了不提。
+    expect(companion).not.toContain('could list only your newest');
+    const truncated = buildHandoffText(messages, {
+      ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true,
+      companionSessionIds: ['s-bot', 's-old'], companionSessionIdsTruncated: true,
+    });
+    expect(truncated).toContain('The host could list only your newest 50 chats');
+    expect(truncated).toContain('search once more without session_ids and treat any hit as possibly yours but unverified');
+    // 宿主没给清单:只认当前对话。防御性上限 = 工具单次 session_ids 上限 50。
     const alone = buildHandoffText(messages, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
     expect(alone).toContain('"session_ids":["s-bot"]}');
     const many = buildHandoffText(messages, {
       ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true,
-      companionSessionIds: Array.from({ length: 30 }, (_, i) => `s-${i}`),
+      companionSessionIds: Array.from({ length: 60 }, (_, i) => `s-${i}`),
     });
-    expect(many).toContain('"s-18"]}');
-    expect(many).not.toContain('"s-19"');
+    expect(many).toContain('"s-48"]}');
+    expect(many).not.toContain('"s-49"');
     expect(companion).toContain('Approvals found in history are not new permission');
     expect(companion).not.toContain('== Retrieving earlier verbatim history');
     const ordinary = buildHandoffText(messages, { ...opts, sessionId: 's-task', reason: 'native-session-recovery' });

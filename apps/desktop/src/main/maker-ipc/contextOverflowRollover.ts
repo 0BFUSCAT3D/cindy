@@ -409,10 +409,11 @@ export interface ContextOverflowRolloverDeps {
    */
   readWorkingMemoryNote?(sessionId: string): Promise<string | null>;
   /**
-   * 伙伴自己的会话 id(botHistoryScope.resolveBotHistorySessionIds,最新在前),写进回忆指引
-   * 让 history 工具按 session_ids 限定到自己的历史。非伙伴返回 [];失败也按 [],不挡换窗。
+   * 伙伴自己的会话清单(botHistoryScope.listBotRecallSessionIds:私聊优先、后台任务补足,
+   * 并告知私聊是否没放全),写进回忆指引让 history 工具按 session_ids 限定到自己的历史。
+   * 非伙伴返回空清单;失败也按空清单,不挡换窗。
    */
-  listCompanionSessionIds?(sessionId: string): Promise<string[]>;
+  listCompanionSessionIds?(sessionId: string): Promise<{ sessionIds: string[]; chatsTruncated: boolean }>;
   /** 不受 handoff 窗口限制的最近 user，避免工具密集 turn 把身份扫丢。 */
   findLatestUser?(sessionId: string): Promise<OverflowSourceMessage | null>;
   findLatestRebuildMeta(
@@ -553,12 +554,17 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     }
   };
   // 伙伴自有会话清单同样是增强:非伙伴不查,读不到按只认当前对话。
-  const listCompanionSessionIds = async (sessionId: string, companion: boolean): Promise<string[]> => {
-    if (!companion) return [];
+  const companionRecall = async (
+    sessionId: string,
+    companion: boolean,
+  ): Promise<{ companionSessionIds: string[]; companionSessionIdsTruncated: boolean }> => {
+    const none = { companionSessionIds: [], companionSessionIdsTruncated: false };
+    if (!companion) return none;
     try {
-      return (await deps.listCompanionSessionIds?.(sessionId)) ?? [];
+      const own = await deps.listCompanionSessionIds?.(sessionId);
+      return own ? { companionSessionIds: own.sessionIds, companionSessionIdsTruncated: own.chatsTruncated } : none;
     } catch {
-      return [];
+      return none;
     }
   };
   const runRecover = async (
@@ -635,7 +641,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         reason: oversized ? 'native-session-recovery' : 'context-overflow',
         includeToolResults: oversized || isCanonicalBotContext(sessionRow),
         companion: isCanonicalBotContext(sessionRow),
-        companionSessionIds: await listCompanionSessionIds(sessionId, isCanonicalBotContext(sessionRow)),
+        ...(await companionRecall(sessionId, isCanonicalBotContext(sessionRow))),
         workingMemory: await readWorkingMemoryNote(sessionId),
       });
       await deps.commitRebuild(sessionId, handoff, {
@@ -828,7 +834,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sessionId,
       reason: 'model-window-switch',
       companion: isCanonicalBotContext(sessionRow),
-      companionSessionIds: await listCompanionSessionIds(sessionId, isCanonicalBotContext(sessionRow)),
+      ...(await companionRecall(sessionId, isCanonicalBotContext(sessionRow))),
       workingMemory: await readWorkingMemoryNote(sessionId),
     });
     await deps.commitRebuild(sessionId, handoff, {
@@ -948,7 +954,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       reason: companion || isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
       includeToolResults: companion || isOversizedHistoryErrorData(lastError),
       companion,
-      companionSessionIds: await listCompanionSessionIds(sessionId, companion),
+      ...(await companionRecall(sessionId, companion)),
       workingMemory: await readWorkingMemoryNote(sessionId),
     });
     await deps.commitRebuild(sessionId, handoff, {
@@ -1008,7 +1014,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
             reason: 'native-session-recovery',
             includeToolResults: !target || isCanonicalBotContext(row),
             companion: isCanonicalBotContext(row),
-            companionSessionIds: await listCompanionSessionIds(sessionId, isCanonicalBotContext(row)),
+            ...(await companionRecall(sessionId, isCanonicalBotContext(row))),
             workingMemory: await readWorkingMemoryNote(sessionId),
           });
           // Durable handoff, SDK reset and complete target route succeed or fail together.

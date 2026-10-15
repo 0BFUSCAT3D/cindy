@@ -372,7 +372,7 @@ describe('createContextOverflowRollover', () => {
       msg('assistant', 'Keyboard controls are ready. Next: add touch controls.', 'a1'),
     ]);
     deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), agentKind, source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
-    const withOwn = { ...deps, listCompanionSessionIds: vi.fn(async () => ['s1', 's-old', 's-bg']) };
+    const withOwn = { ...deps, listCompanionSessionIds: vi.fn(async () => ({ sessionIds: ['s1', 's-old', 's-bg'], chatsTruncated: false })) };
     const rollover = createContextOverflowRollover(withOwn);
     await expect(rollover.prepareUnhealthySession('s1')).resolves.toBe(true);
     const handoff = deps.setPendingHandoff.mock.calls[0]![1] as string;
@@ -383,6 +383,7 @@ describe('createContextOverflowRollover', () => {
     expect(withOwn.listCompanionSessionIds).toHaveBeenCalledWith('s1');
     expect(handoff).toContain('== Recalling earlier history (use when needed) ==');
     expect(handoff).toContain('{"query":"<keywords>","limit":10,"session_ids":["s1","s-old","s-bg"]}');
+    expect(handoff).not.toContain('could list only your newest');
     expect(handoff.length).toBeLessThanOrEqual(16_000);
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
     // Persisted reset prevents another checkpoint after a cold restart.
@@ -402,7 +403,7 @@ describe('createContextOverflowRollover', () => {
     const failing = {
       ...makeDeps(source),
       readWorkingMemoryNote: vi.fn(async (): Promise<string | null> => { throw new Error('disk'); }),
-      listCompanionSessionIds: vi.fn(async (): Promise<string[]> => { throw new Error('db'); }),
+      listCompanionSessionIds: vi.fn(async (): Promise<{ sessionIds: string[]; chatsTruncated: boolean }> => { throw new Error('db'); }),
     };
     failing.getSessionRow.mockResolvedValue({ ...await failing.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens: 180_000 });
     await expect(createContextOverflowRollover(failing).prepareUnhealthySession('s1')).resolves.toBe(true);
