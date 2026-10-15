@@ -3464,40 +3464,59 @@ it('persists coordination audit metadata and dispatches the model without a prom
 describe('working memory refresh after native compaction', () => {
   const note = '[Working memory refresh · internal context]\n- 周五前改完周报模板';
 
-  it('prepends the refresh note once and consumes it only after the engine accepted the turn', async () => {
+  it('prepends the refresh note once and consumes that generation only after the engine accepted the turn', async () => {
     const session = createSession({ agentKind: 'codex' });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
-      peekWorkingMemoryRefreshNote: vi.fn(async () => note),
-      consumeWorkingMemoryRefreshNote: vi.fn(),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 7, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
     });
     await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
     expect(vi.mocked(session.send).mock.calls[0]?.[0]).toBe(`${uiLanguageNote()}\n\n${note}\n\nhello`);
-    expect(deps.consumeWorkingMemoryRefreshNote).toHaveBeenCalledWith('session-1');
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 7);
 
     const rejecting = createSession({ agentKind: 'codex', send: vi.fn(async () => ({ accepted: false }) as SessionSendResult) });
     const { deps: rejectedDeps } = createDeps({
       getSession: vi.fn(() => rejecting),
-      peekWorkingMemoryRefreshNote: vi.fn(async () => note),
-      consumeWorkingMemoryRefreshNote: vi.fn(),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 7, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
     });
     await createMakerSendTransaction(rejectedDeps).sendToAgentAccepted('session-1', 'hello').catch(() => undefined);
-    expect(rejectedDeps.consumeWorkingMemoryRefreshNote).not.toHaveBeenCalled();
+    expect(rejectedDeps.consumeWorkingMemoryRefresh).not.toHaveBeenCalled();
   });
 
-  it('skips the refresh when a rebuild handoff already carries the ledger, but still clears the flag', async () => {
+  it('skips the refresh when a rebuild handoff already carries the ledger, but still consumes that generation', async () => {
     const session = createSession({ agentKind: 'codex' });
     const { deps } = createDeps({
       getSession: vi.fn(() => session),
       peekPendingHandoff: vi.fn(async () => 'HANDOFF'),
-      peekWorkingMemoryRefreshNote: vi.fn(async () => note),
-      consumeWorkingMemoryRefreshNote: vi.fn(),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 3, note })),
+      consumeWorkingMemoryRefresh: vi.fn(),
     });
     await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
     const sent = vi.mocked(session.send).mock.calls[0]?.[0] as string;
     expect(sent).toContain('HANDOFF');
     expect(sent).not.toContain('Working memory refresh');
-    expect(deps.peekWorkingMemoryRefreshNote).not.toHaveBeenCalled();
-    expect(deps.consumeWorkingMemoryRefreshNote).toHaveBeenCalledWith('session-1');
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 3);
+  });
+
+  it('consumes the marker even when the session has no ledger, and nothing when none is pending', async () => {
+    const session = createSession({ agentKind: 'codex' });
+    const { deps } = createDeps({
+      getSession: vi.fn(() => session),
+      peekWorkingMemoryRefresh: vi.fn(async () => ({ generation: 2, note: null })),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+    expect(vi.mocked(session.send).mock.calls[0]?.[0]).toBe(withUiLanguageNote('hello'));
+    expect(deps.consumeWorkingMemoryRefresh).toHaveBeenCalledWith('session-1', 2);
+
+    const { deps: idle, session: idleSession } = createDeps({
+      peekWorkingMemoryRefresh: vi.fn(async () => null),
+      consumeWorkingMemoryRefresh: vi.fn(),
+    });
+    await createMakerSendTransaction(idle).sendToAgentAccepted('session-1', 'hello');
+    expect(idleSession.send).toHaveBeenCalledOnce();
+    expect(idle.consumeWorkingMemoryRefresh).not.toHaveBeenCalled();
   });
 });

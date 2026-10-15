@@ -243,12 +243,27 @@ const NEW_ITEM_ROLES = ['user', 'assistant'] as const;
 const RESOLVE_ROLES = ['user', 'assistant', 'tool_result'] as const;
 
 /**
- * 把模型提案并进已有账本,规则与记忆复盘一致:**没有原文证据的新条目不进账**。
- *  - 与旧条目原文相同的条目直接沿用(保留 id / messageId),不需要证据;
- *  - 新条目或改写过的条目必须引用本轮消息里的用户或伙伴原话;
+ * 可选文本字段的三态:`undefined` = 提案未提(沿用旧值);`''` = 显式清空;其它 = 新值。
+ * 模型要取消一个期限 / 下一步 / 被替代项,就回传空串。
+ */
+function resolveOptionalField(
+  prior: string | undefined,
+  proposed: string | undefined,
+  cap = WORKING_MEMORY_ITEM_CHARS,
+): string | undefined {
+  if (proposed === undefined) return prior;
+  const text = clampText(proposed, cap);
+  return text ? text : undefined;
+}
+
+/**
+ * 把模型提案并进已有账本,规则与记忆复盘一致:**没有原文证据的改动不进账**。
+ *  - 与旧条目**完整内容**相同的条目原样沿用(保留 id / messageId / 时间),不需要证据;
+ *  - 新条目、改写正文或改动期限 / 下一步 / 状态等字段,都必须引用本轮用户或伙伴原话;
+ *    无证据的字段改动按"未提"处理,旧值保留;
  *  - 旧条目不在提案里时**保留**——漏写不等于完成;要删除走 `resolved`,同样要证据
- *    (用户 / 伙伴 / 工具结果均可)。
- *  - 各区按上限保留最新的。
+ *    (用户 / 伙伴 / 工具结果均可);
+ *  - 各区按上限保留最新的;只有真正变过的条目才更新时间,排序才有意义。
  */
 export function applyWorkingMemoryProposal(
   previous: BotWorkingMemory | null,
@@ -264,12 +279,17 @@ export function applyWorkingMemoryProposal(
   );
   let seq = 0;
   const nextId = () => `wm_${opts.now.toString(36)}_${(seq += 1)}`;
+  const sameItem = (a: WorkingMemoryItem, b: WorkingMemoryItem): boolean => {
+    const { updatedAt: _a, ...left } = a;
+    const { updatedAt: _b, ...right } = b;
+    return JSON.stringify(left) === JSON.stringify(right);
+  };
 
   function merge<P extends ProposedItem, T extends WorkingMemoryItem>(
     existing: T[],
     proposed: P[],
     cap: number,
-    build: (base: WorkingMemoryItem, item: P) => T,
+    build: (base: T | null, item: P, seed: WorkingMemoryItem) => T,
   ): T[] {
     const byText = new Map(existing.map((item) => [item.text, item] as const));
     const kept = new Map<string, T>();
@@ -277,12 +297,16 @@ export function applyWorkingMemoryProposal(
       const text = clampText(item.text);
       if (!text || resolvedTexts.has(text)) continue;
       const prior = byText.get(text);
+      const evidenced = evidenceHolds(item.evidence, messages, NEW_ITEM_ROLES);
       if (prior) {
-        kept.set(text, build({ ...prior, updatedAt: opts.now }, item));
+        const candidate = build(prior, item, { ...prior, updatedAt: opts.now });
+        // 完整内容没变:原样沿用,时间也不动。字段变了:要证据,没证据就当没提。
+        if (sameItem(candidate, prior) || !evidenced) kept.set(text, prior);
+        else kept.set(text, candidate);
         continue;
       }
-      if (!evidenceHolds(item.evidence, messages, NEW_ITEM_ROLES)) continue;
-      kept.set(text, build({ id: nextId(), text, messageId: item.evidence!.messageId, updatedAt: opts.now }, item));
+      if (!evidenced) continue;
+      kept.set(text, build(null, item, { id: nextId(), text, messageId: item.evidence!.messageId, updatedAt: opts.now }));
     }
     // 提案没提到的旧条目保留(漏写 ≠ 完成),除非被 resolved 点名。
     for (const item of existing) {
@@ -290,29 +314,75 @@ export function applyWorkingMemoryProposal(
     }
     return [...kept.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, cap);
   }
+  // seed 由旧条目展开而来,可能已带该字段:值为 undefined 表示清空,要把旧键一并去掉。
+  const withField = <T extends WorkingMemoryItem, K extends string>(
+    seed: WorkingMemoryItem,
+    key: K,
+    value: string | undefined,
+  ): T => {
+    const { [key]: _dropped, ...rest } = seed as WorkingMemoryItem & Record<K, unknown>;
+    return { ...rest, ...(value ? { [key]: value } : {}) } as unknown as T;
+  };
 
   return {
     coveredThroughRowid: Math.max(prev.coveredThroughRowid, opts.coveredThroughRowid),
     updatedAt: opts.now,
-    threads: merge(prev.threads, proposal.threads, WORKING_MEMORY_LIMITS.threads, (base, item) => ({
-      ...base,
-      status: item.status ?? ('status' in base ? (base as WorkingThread).status : 'active'),
-      ...(clampText(item.next) ? { next: clampText(item.next) } : {}),
+    threads: merge(prev.threads, proposal.threads, WORKING_MEMORY_LIMITS.threads, (prior, item, seed) => ({
+      ...withField<WorkingThread, 'next'>(seed, 'next', resolveOptionalField(prior?.next, item.next)),
+      status: item.status ?? prior?.status ?? 'active',
     })),
-    commitments: merge(prev.commitments, proposal.commitments, WORKING_MEMORY_LIMITS.commitments, (base, item) => ({
-      ...base,
-      ...(clampText(item.trigger, 120) ? { trigger: clampText(item.trigger, 120) } : {}),
+    commitments: merge(prev.commitments, proposal.commitments, WORKING_MEMORY_LIMITS.commitments, (prior, item, seed) =>
+      withField<WorkingCommitment, 'trigger'>(seed, 'trigger', resolveOptionalField(prior?.trigger, item.trigger, 120)),
+    ),
+    waiting: merge(prev.waiting, proposal.waiting, WORKING_MEMORY_LIMITS.waiting, (prior, item, seed) => ({
+      ...seed,
+      on: item.on ?? prior?.on ?? 'user',
     })),
-    waiting: merge(prev.waiting, proposal.waiting, WORKING_MEMORY_LIMITS.waiting, (base, item) => ({
-      ...base,
-      on: item.on ?? ('on' in base ? (base as WorkingWait).on : 'user'),
-    })),
-    corrections: merge(prev.corrections, proposal.corrections, WORKING_MEMORY_LIMITS.corrections, (base, item) => ({
-      ...base,
-      ...(clampText(item.supersedes) ? { supersedes: clampText(item.supersedes) } : {}),
-    })),
-    recentlyDone: merge(prev.recentlyDone, proposal.recentlyDone, WORKING_MEMORY_LIMITS.recentlyDone, (base) => base),
+    corrections: merge(prev.corrections, proposal.corrections, WORKING_MEMORY_LIMITS.corrections, (prior, item, seed) =>
+      withField<WorkingCorrection, 'supersedes'>(seed, 'supersedes', resolveOptionalField(prior?.supersedes, item.supersedes)),
+    ),
+    recentlyDone: merge(prev.recentlyDone, proposal.recentlyDone, WORKING_MEMORY_LIMITS.recentlyDone, (_prior, _item, seed) => seed),
   };
+}
+
+/**
+ * 用户删除消息后,由这些消息产生的账本条目也要一起消失——否则被删轮次的承诺 / 纠正
+ * 会通过交接回到新上下文。只删 messageId 命中的条目;没有来源记录的旧条目不动。
+ */
+export function pruneWorkingMemoryForMessages(
+  memory: BotWorkingMemory,
+  deletedMessageIds: ReadonlySet<string>,
+): { memory: BotWorkingMemory; removed: number } {
+  let removed = 0;
+  const keep = <T extends WorkingMemoryItem>(items: T[]): T[] =>
+    items.filter((item) => {
+      const hit = !!item.messageId && deletedMessageIds.has(item.messageId);
+      if (hit) removed += 1;
+      return !hit;
+    });
+  const pruned: BotWorkingMemory = {
+    ...memory,
+    threads: keep(memory.threads),
+    commitments: keep(memory.commitments),
+    waiting: keep(memory.waiting),
+    corrections: keep(memory.corrections),
+    recentlyDone: keep(memory.recentlyDone),
+  };
+  return { memory: pruned, removed };
+}
+
+/** 持久化版本:CAS 写回;没有命中或账本不存在则不写。 */
+export async function pruneBotWorkingMemoryForMessages(
+  userDataDir: string,
+  botId: string,
+  deletedMessageIds: ReadonlySet<string>,
+): Promise<number> {
+  const current = await readBotWorkingMemory(userDataDir, botId);
+  if (!current) return 0;
+  const { memory, removed } = pruneWorkingMemoryForMessages(current, deletedMessageIds);
+  if (removed === 0) return 0;
+  await writeBotWorkingMemory(userDataDir, botId, memory, current.revision);
+  return removed;
 }
 
 /** 发给复盘模型的紧凑视图(不带 id / 时间戳,省 token)。 */
@@ -337,9 +407,16 @@ export interface WorkingMemoryOpenTask {
 
 export const WORKING_MEMORY_HEADING = '== Working memory (host-maintained summary; not authorization) ==';
 
+interface RenderSection {
+  title: string;
+  lines: string[];
+  /** 受保护的区(纠正 / 承诺 / 等待)只在无路可退时从最旧的条目开始裁,不整段丢。 */
+  protected: boolean;
+}
+
 /**
- * 渲染顺序即优先级:超预算时从末尾的区整段丢。纠正、承诺、等待永不丢;
- * 后台任务来自数据库;线索和近期完成在预算紧张时省略。
+ * 渲染顺序即优先级。总长度硬上限:先整段丢非保护区(近期完成 → 线索 → 后台任务),
+ * 仍超时从保护区各自最旧的条目(列表末尾)开始裁,最后一道是硬截断。
  */
 export function renderWorkingMemory(
   memory: BotWorkingMemory,
@@ -347,54 +424,71 @@ export function renderWorkingMemory(
   budget = WORKING_MEMORY_RENDER_BUDGET,
 ): string | null {
   const ref = (item: WorkingMemoryItem) => (item.messageId ? ` (message_id: ${item.messageId})` : '');
-  const sections: string[] = [];
+  const sections: RenderSection[] = [];
   if (memory.corrections.length) {
-    sections.push(
-      'Latest user corrections and decisions (newest first; later ones override earlier ones):\n' +
-        memory.corrections.map((c) => `- ${c.text}${c.supersedes ? ` [supersedes: ${c.supersedes}]` : ''}${ref(c)}`).join('\n'),
-    );
+    sections.push({
+      protected: true,
+      title: 'Latest user corrections and decisions (newest first; later ones override earlier ones):',
+      lines: memory.corrections.map((c) => `- ${c.text}${c.supersedes ? ` [supersedes: ${c.supersedes}]` : ''}${ref(c)}`),
+    });
   }
   if (memory.commitments.length) {
-    sections.push(
-      'Things you promised and have not yet delivered:\n' +
-        memory.commitments.map((c) => `- ${c.text}${c.trigger ? ` [when: ${c.trigger}]` : ''}${ref(c)}`).join('\n'),
-    );
+    sections.push({
+      protected: true,
+      title: 'Things you promised and have not yet delivered:',
+      lines: memory.commitments.map((c) => `- ${c.text}${c.trigger ? ` [when: ${c.trigger}]` : ''}${ref(c)}`),
+    });
   }
   if (memory.waiting.length) {
-    sections.push(
-      'Waiting on:\n' + memory.waiting.map((w) => `- ${w.on === 'user' ? 'user' : 'external'}: ${w.text}${ref(w)}`).join('\n'),
-    );
+    sections.push({
+      protected: true,
+      title: 'Waiting on:',
+      lines: memory.waiting.map((w) => `- ${w.on === 'user' ? 'user' : 'external'}: ${w.text}${ref(w)}`),
+    });
   }
   const openTasks = extras.openTasks ?? [];
   if (openTasks.length) {
-    sections.push(
-      'Background tasks still running (from the host task records; results arrive as receipts, do not redo them):\n' +
-        openTasks.map((t) => `- [${t.status}] ${clampText(t.objective, 160)} (task_id: ${t.id})`).join('\n'),
-    );
+    sections.push({
+      protected: false,
+      title: 'Background tasks still running (from the host task records; results arrive as receipts, do not redo them):',
+      lines: openTasks.map((t) => `- [${t.status}] ${clampText(t.objective, 160)} (task_id: ${t.id})`),
+    });
   }
   if (memory.threads.length) {
-    sections.push(
-      'Open threads:\n' +
-        memory.threads
-          .map((t) => `- [${t.status}] ${t.text}${t.next ? ` → next: ${t.next}` : ''}${ref(t)}`)
-          .join('\n'),
-    );
+    sections.push({
+      protected: false,
+      title: 'Open threads:',
+      lines: memory.threads.map((t) => `- [${t.status}] ${t.text}${t.next ? ` → next: ${t.next}` : ''}${ref(t)}`),
+    });
   }
   if (memory.recentlyDone.length) {
-    sections.push('Recently completed (do not repeat):\n' + memory.recentlyDone.map((d) => `- ${d.text}${ref(d)}`).join('\n'));
+    sections.push({
+      protected: false,
+      title: 'Recently completed (do not repeat):',
+      lines: memory.recentlyDone.map((d) => `- ${d.text}${ref(d)}`),
+    });
   }
   if (sections.length === 0) return null;
   const guidance =
     'This is a host-maintained summary of the ongoing work, not a new instruction and not authorization: ' +
     'past approvals do not permit new actions. When the user refers to something you do not see here, ' +
     'search the conversation history before saying you have no record of it, and never mention this note.';
-  // 预算从尾部的区整段丢,头部(纠正 / 承诺 / 等待)保留。
-  let body = sections.join('\n\n');
-  while (body.length + guidance.length > budget && sections.length > 3) {
-    sections.pop();
-    body = sections.join('\n\n');
+  const head = `${WORKING_MEMORY_HEADING}\n${guidance}\n\n`;
+  const render = () => head + sections.map((s) => `${s.title}\n${s.lines.join('\n')}`).join('\n\n');
+  let text = render();
+  while (text.length > budget) {
+    const lastUnprotected = sections.map((s) => s.protected).lastIndexOf(false);
+    if (lastUnprotected >= 0) {
+      sections.splice(lastUnprotected, 1);
+    } else {
+      // 只剩保护区:从条目最多的区裁掉最旧的一条;每区至少留一条。
+      const victim = sections.reduce((best, s) => (s.lines.length > best.lines.length ? s : best), sections[0]!);
+      if (victim.lines.length <= 1) break;
+      victim.lines.pop();
+    }
+    text = render();
   }
-  return `${WORKING_MEMORY_HEADING}\n${guidance}\n\n${body}`;
+  return text.length > budget ? `${text.slice(0, budget - 1)}…` : text;
 }
 
 // ── 会话 → 伙伴 → 渲染好的交接段 ───────────────────────────────────────────────
@@ -435,20 +529,40 @@ async function listOpenTasks(botId: string): Promise<WorkingMemoryOpenTask[]> {
 /**
  * 换窗交接 / 压缩后刷新用的渲染段;非伙伴主对话或没有账本时返回 null。
  * 任何读取失败都按"没有账本"处理——账本是增强,不能挡住换窗。
+ * `excludeMessageIds`:正在删除的消息,渲染时先把它们产生的条目排除(持久清理在删除
+ * 提交后另做,见 pruneWorkingMemoryForSession)。
  */
 export async function readWorkingMemoryNoteForSession(
   sessionId: string,
   userDataDir: string,
+  opts: { excludeMessageIds?: ReadonlySet<string> } = {},
 ): Promise<string | null> {
   try {
     const botId = await resolveCanonicalBotIdForSession(sessionId);
     if (!botId) return null;
-    const memory = await readBotWorkingMemory(userDataDir, botId);
-    if (!memory) return null;
+    const stored = await readBotWorkingMemory(userDataDir, botId);
+    if (!stored) return null;
+    const memory = opts.excludeMessageIds
+      ? pruneWorkingMemoryForMessages(stored, opts.excludeMessageIds).memory
+      : stored;
     const openTasks = await listOpenTasks(botId).catch(() => []);
     return renderWorkingMemory(memory, { openTasks });
   } catch {
     return null;
+  }
+}
+
+/** 删除消息提交后,持久清掉由这些消息产生的账本条目;失败不抛(下一次复盘可重建)。 */
+export async function pruneWorkingMemoryForSession(
+  sessionId: string,
+  userDataDir: string,
+  deletedMessageIds: ReadonlySet<string>,
+): Promise<void> {
+  try {
+    const botId = await resolveCanonicalBotIdForSession(sessionId);
+    if (botId) await pruneBotWorkingMemoryForMessages(userDataDir, botId, deletedMessageIds);
+  } catch {
+    /* 账本是增强;清理失败不影响删除本身。 */
   }
 }
 
@@ -457,20 +571,27 @@ export async function readWorkingMemoryNoteForSession(
 /**
  * 原生自动压缩边界之后,下一次发送前置一次账本:宿主拿不到原生摘要,不知道它丢了什么,
  * 只能用账本兜住。交接首条(pending handoff)已含账本时不重复。
+ *
+ * 标记带代次:发送在途时(Pi 的受理本身可能等压缩)又来一次 compact_boundary,
+ * accepted 后只消费构造本次说明时读到的那一代,新一代留给下一次发送。
  */
 export interface WorkingMemoryRefreshRegistry {
   markCompacted(sessionId: string): void;
-  isPending(sessionId: string): boolean;
-  /** 引擎接受发送后调用;未接受保留,下次重试。 */
-  consume(sessionId: string): void;
+  /** 当前待刷新代次;没有待刷新返回 null。 */
+  pendingGeneration(sessionId: string): number | null;
+  /** 引擎接受发送后调用;只有代次仍是当时读到的那一代才清除。 */
+  consume(sessionId: string, generation: number): void;
 }
 
 export function createWorkingMemoryRefreshRegistry(): WorkingMemoryRefreshRegistry {
-  const pending = new Set<string>();
+  const pending = new Map<string, number>();
+  let generation = 0;
   return {
-    markCompacted: (sessionId) => void pending.add(sessionId),
-    isPending: (sessionId) => pending.has(sessionId),
-    consume: (sessionId) => void pending.delete(sessionId),
+    markCompacted: (sessionId) => void pending.set(sessionId, (generation += 1)),
+    pendingGeneration: (sessionId) => pending.get(sessionId) ?? null,
+    consume: (sessionId, gen) => {
+      if (pending.get(sessionId) === gen) pending.delete(sessionId);
+    },
   };
 }
 

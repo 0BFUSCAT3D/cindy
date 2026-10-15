@@ -12,6 +12,7 @@ import {
   emptyWorkingMemory,
   isWorkingMemoryFresh,
   parseWorkingMemory,
+  pruneWorkingMemoryForMessages,
   readBotWorkingMemory,
   renderWorkingMemory,
   WORKING_MEMORY_HEADING,
@@ -85,11 +86,67 @@ describe('applyWorkingMemoryProposal', () => {
       messages,
       { now, coveredThroughRowid: 5 },
     );
-    expect(next.commitments.map((c) => c.text)).toEqual(['周五前改完周报模板', '给设计稿加暗色模式']);
-    expect(next.commitments[0]).toMatchObject({ id: 'c1', messageId: 'old', updatedAt: now });
+    expect(next.commitments.map((c) => c.text)).toEqual(['给设计稿加暗色模式', '周五前改完周报模板']);
+    // 原样带回的条目连时间都不动,排序才能表达"最新优先"。
+    expect(next.commitments.find((c) => c.id === 'c1')).toMatchObject({ messageId: 'old', updatedAt: 1 });
     expect(next.recentlyDone.map((d) => d.text)).toEqual(['测试已补上']);
     // 水位只前进不后退。
     expect(next.coveredThroughRowid).toBe(10);
+  });
+
+  it('requires evidence to change a field of an existing item, allows evidenced clearing, and bumps time only on real change', () => {
+    const previous: BotWorkingMemory = {
+      ...emptyWorkingMemory(),
+      commitments: [{ id: 'c1', text: '周五前改完周报模板', trigger: '周五前', updatedAt: 1 }],
+      threads: [{ id: 't1', text: '周报模板改版', status: 'active', next: '发用户确认', updatedAt: 1 }],
+    };
+    const base = { threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [], resolved: [] };
+    // 无证据改期限 → 当没提,旧值与时间都保留。
+    const unproven = applyWorkingMemoryProposal(
+      previous,
+      { ...base, commitments: [{ text: '周五前改完周报模板', trigger: '下周一' }] },
+      messages,
+      { now, coveredThroughRowid: 1 },
+    );
+    expect(unproven.commitments[0]).toMatchObject({ id: 'c1', trigger: '周五前', updatedAt: 1 });
+    // 有证据的改期限 → 接受并更新时间;有证据的空串 → 清空。
+    const proven = applyWorkingMemoryProposal(
+      previous,
+      {
+        ...base,
+        commitments: [{ text: '周五前改完周报模板', trigger: '下周一', evidence: { messageId: 'u1', quote: '周五前把周报模板' } }],
+        threads: [{ text: '周报模板改版', next: '', evidence: { messageId: 'a1', quote: '改完发你确认' } }],
+      },
+      messages,
+      { now, coveredThroughRowid: 1 },
+    );
+    expect(proven.commitments[0]).toMatchObject({ id: 'c1', trigger: '下周一', updatedAt: now });
+    expect(proven.threads[0]).toMatchObject({ id: 't1', status: 'active', updatedAt: now });
+    expect(proven.threads[0]).not.toHaveProperty('next');
+    // 字段省略 → 沿用旧值,不算变化。
+    const omitted = applyWorkingMemoryProposal(
+      previous,
+      { ...base, threads: [{ text: '周报模板改版', evidence: { messageId: 'a1', quote: '改完发你确认' } }] },
+      messages,
+      { now, coveredThroughRowid: 1 },
+    );
+    expect(omitted.threads[0]).toMatchObject({ id: 't1', next: '发用户确认', updatedAt: 1 });
+  });
+
+  it('prunes items that came from deleted messages', () => {
+    const memory: BotWorkingMemory = {
+      ...emptyWorkingMemory(),
+      commitments: [
+        { id: 'c1', text: '来自被删轮次的承诺', messageId: 'gone', updatedAt: 1 },
+        { id: 'c2', text: '仍然有效的承诺', messageId: 'kept', updatedAt: 2 },
+        { id: 'c3', text: '没有来源记录的旧承诺', updatedAt: 3 },
+      ],
+      corrections: [{ id: 'x', text: '被删的纠正', messageId: 'gone', updatedAt: 1 }],
+    };
+    const { memory: pruned, removed } = pruneWorkingMemoryForMessages(memory, new Set(['gone']));
+    expect(removed).toBe(2);
+    expect(pruned.commitments.map((c) => c.id)).toEqual(['c2', 'c3']);
+    expect(pruned.corrections).toEqual([]);
   });
 
   it('caps each section to its limit keeping the newest', () => {
@@ -133,12 +190,38 @@ describe('renderWorkingMemory', () => {
     expect(text).toContain('Recently completed');
   });
 
-  it('drops trailing sections under budget but never the corrections, commitments or waiting', () => {
-    const text = renderWorkingMemory(memory, {}, 500)!;
+  it('drops trailing sections first (newest-last region) and keeps corrections, commitments and waiting', () => {
+    const full = renderWorkingMemory(memory)!;
+    const text = renderWorkingMemory(memory, {}, full.length - 1)!;
+    expect(text.length).toBeLessThanOrEqual(full.length - 1);
     expect(text).toContain('先结论后细节');
     expect(text).toContain('周五前改完周报模板');
     expect(text).toContain('用户确认配色');
+    expect(text).toContain('Open threads');
     expect(text).not.toContain('Recently completed');
+  });
+
+  it('always stays within the budget: protected sections shed their oldest items, each keeping at least one', () => {
+    const big = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, text: `${prefix} ${'很长的条目内容'.repeat(20)} ${i}`, updatedAt: n - i }));
+    const bloated: BotWorkingMemory = {
+      ...emptyWorkingMemory(),
+      corrections: big('纠正', 8),
+      commitments: big('承诺', 10),
+      waiting: big('等待', 6).map((w) => ({ ...w, on: 'user' as const })),
+    };
+    const budget = 1_500;
+    const text = renderWorkingMemory(bloated, {}, budget)!;
+    expect(text.length).toBeLessThanOrEqual(budget);
+    // 最新的(列表最前)留着,最旧的先被裁。
+    expect(text).toContain('纠正 ');
+    expect(text).toContain('承诺 ');
+    expect(text).toContain('等待 ');
+    expect(text).toContain('纠正 很长');
+    expect(text).not.toContain(' 7\n');
+    // 只有线索也会被裁进预算,而不是因为"区数不足"直接发超预算文本。
+    const threadsOnly: BotWorkingMemory = { ...emptyWorkingMemory(), threads: big('线索', 8).map((t) => ({ ...t, status: 'active' as const })) };
+    expect(renderWorkingMemory(threadsOnly, {}, 600)!.length).toBeLessThanOrEqual(600);
   });
 
   it('returns null for an empty ledger', () => {
@@ -197,13 +280,20 @@ describe('helpers', () => {
     expect(view).toEqual({ threads: [], commitments: [], waiting: [{ text: '等确认', on: 'external' }], corrections: [], recentlyDone: [] });
   });
 
-  it('refresh registry is a one-shot per session and the note wraps the rendered ledger', () => {
+  it('refresh registry consumes only the generation that was read, so a compaction during an in-flight send survives', () => {
     const registry = createWorkingMemoryRefreshRegistry();
-    expect(registry.isPending('s')).toBe(false);
+    expect(registry.pendingGeneration('s')).toBeNull();
     registry.markCompacted('s');
-    expect(registry.isPending('s')).toBe(true);
-    registry.consume('s');
-    expect(registry.isPending('s')).toBe(false);
+    const first = registry.pendingGeneration('s')!;
+    expect(first).toBeGreaterThan(0);
+    // 发送在途时又压缩了一次:新一代替换旧一代。
+    registry.markCompacted('s');
+    const second = registry.pendingGeneration('s')!;
+    expect(second).toBeGreaterThan(first);
+    registry.consume('s', first);
+    expect(registry.pendingGeneration('s')).toBe(second);
+    registry.consume('s', second);
+    expect(registry.pendingGeneration('s')).toBeNull();
     const note = buildWorkingMemoryRefreshNote('BODY');
     expect(note).toContain('[Working memory refresh');
     expect(note).toContain('BODY');

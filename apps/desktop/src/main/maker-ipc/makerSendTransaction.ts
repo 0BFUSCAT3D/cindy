@@ -510,10 +510,12 @@ export interface MakerSendTransactionDeps {
   consumeWorkingDirectoryRecoveryNote?(sessionId: string, note: string): void;
   /**
    * 伙伴工作记忆刷新(botWorkingMemory):原生自动压缩之后的下一次发送前置一次账本,
-   * 只进 wire payload;交接首条(pending handoff)已含账本时不重复。accepted 后 consume。
+   * 只进 wire payload;交接首条(pending handoff)已含账本时不重复。
+   * 返回 null = 没有待刷新;`note` 为 null = 有标记但该会话没有账本(仍要消费)。
+   * accepted 后只消费当时读到的 `generation`:发送在途时再来一次压缩边界,新一代留给下次。
    */
-  peekWorkingMemoryRefreshNote?(sessionId: string): Promise<string | null>;
-  consumeWorkingMemoryRefreshNote?(sessionId: string): void;
+  peekWorkingMemoryRefresh?(sessionId: string): Promise<{ generation: number; note: string | null } | null>;
+  consumeWorkingMemoryRefresh?(sessionId: string, generation: number): void;
   /**
    * 计划对账:会话里若有待处理计划,返回一段只进 wire payload 的指示文本。
    * sealedTurnId 只用于已完成计划的一次性保护,跨过 accepted 后才消费。
@@ -1224,11 +1226,11 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, workdirRecoveryNote)
         : normalized;
       const pendingHandoff = (await deps.peekPendingHandoff?.(sessionId)) ?? null;
-      // 原生压缩后的账本刷新:交接首条已含账本时不重复(但同样在 accepted 后消费)。
-      const workingMemoryRefreshNote =
-        !pendingHandoff && shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
-          ? ((await deps.peekWorkingMemoryRefreshNote?.(sessionId).catch(() => null)) ?? null)
-          : null;
+      // 原生压缩后的账本刷新:交接首条已含账本时不重复(但同样在 accepted 后消费当时那一代)。
+      const workingMemoryRefresh = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+        ? ((await deps.peekWorkingMemoryRefresh?.(sessionId).catch(() => null)) ?? null)
+        : null;
+      const workingMemoryRefreshNote = !pendingHandoff ? workingMemoryRefresh?.note ?? null : null;
       const withWorkingMemoryRefresh = workingMemoryRefreshNote
         ? prependNoteToWireUserMessage(withRecoveryNote as HandoffWireMessage, workingMemoryRefreshNote)
         : withRecoveryNote;
@@ -1758,9 +1760,10 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         if (workdirRecoveryNote && sendResult.accepted) {
           deps.consumeWorkingDirectoryRecoveryNote?.(sessionId, workdirRecoveryNote);
         }
-        // 交接首条已经带了账本;刷新标记一并消费,避免下一轮再补一份。
-        if ((workingMemoryRefreshNote || pendingHandoff) && sendResult.accepted) {
-          deps.consumeWorkingMemoryRefreshNote?.(sessionId);
+        // 只消费构造本次说明时读到的那一代;交接首条已带账本时同样消费。发送期间新来的
+        // 压缩边界代次不同,留给下一次发送。
+        if (workingMemoryRefresh && sendResult.accepted) {
+          deps.consumeWorkingMemoryRefresh?.(sessionId, workingMemoryRefresh.generation);
         }
         if (planReconcile?.sealedTurnId && sendResult.accepted) {
           try {

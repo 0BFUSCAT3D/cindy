@@ -598,6 +598,7 @@ import {
 import {
   buildWorkingMemoryRefreshNote,
   createWorkingMemoryRefreshRegistry,
+  pruneWorkingMemoryForSession,
   readWorkingMemoryNoteForSession,
 } from './botWorkingMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
@@ -10233,7 +10234,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     getMessage: getMessageDeletionTarget,
     listMessagesForContext: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
-    readWorkingMemoryNote,
+    readWorkingMemoryNote: (sessionId, opts) =>
+      readWorkingMemoryNoteForSession(sessionId, ownerScopedUserDataPath(), opts),
+    pruneWorkingMemory: (sessionId, deletedMessageIds) =>
+      pruneWorkingMemoryForSession(sessionId, ownerScopedUserDataPath(), deletedMessageIds),
     getLiveSession: (sessionId) => maker.getSession(sessionId),
     hasBackgroundActivity: getClaudeSessionBackgroundActivity,
     closeSession: (sessionId) => maker.closeSession(sessionId),
@@ -16169,17 +16173,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     isCindyMakeSession: async (sessionId) =>
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
-    // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无。
-    peekWorkingMemoryRefreshNote: async (sessionId) => {
-      if (!workingMemoryRefresh.isPending(sessionId)) return null;
+    // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无账本,
+    // 标记仍由事务在 accepted 后按代次消费。
+    peekWorkingMemoryRefresh: async (sessionId) => {
+      const generation = workingMemoryRefresh.pendingGeneration(sessionId);
+      if (generation === null) return null;
       const rendered = await readWorkingMemoryNote(sessionId);
-      if (!rendered) {
-        workingMemoryRefresh.consume(sessionId);
-        return null;
-      }
-      return buildWorkingMemoryRefreshNote(rendered);
+      return { generation, note: rendered ? buildWorkingMemoryRefreshNote(rendered) : null };
     },
-    consumeWorkingMemoryRefreshNote: (sessionId) => workingMemoryRefresh.consume(sessionId),
+    consumeWorkingMemoryRefresh: (sessionId, generation) => workingMemoryRefresh.consume(sessionId, generation),
     applyPendingAgentSwitch: async (sessionId, options) => {
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
       // 已归组的任务所在那台现在不能用时，先换到组里下一台再发(失败不影响这次发送)；离线时先等它恢复，
