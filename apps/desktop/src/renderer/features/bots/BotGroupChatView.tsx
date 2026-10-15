@@ -396,9 +396,9 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
-  const pendingMatches = useMemo(() => matchBotGroupPendingSends(pendingSends, realMessages), [pendingSends, realMessages]);
   /** Real message id → the key its optimistic copy had, so the row is kept, not remounted. */
   const adoptedKeysRef = useRef(new Map<string, string>());
+  const pendingMatches = useMemo(() => matchBotGroupPendingSends(pendingSends, realMessages, adoptedKeysRef.current), [pendingSends, realMessages]);
   for (const [clientId, messageId] of pendingMatches) adoptedKeysRef.current.set(messageId, pendingBotGroupMessageId(clientId));
   useEffect(() => {
     if (pendingMatches.size === 0) return;

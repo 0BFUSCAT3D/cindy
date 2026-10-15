@@ -12,6 +12,7 @@ import {
   matchBotGroupPendingSends,
   mergeBotGroupLatestPage,
   pendingBotGroupMessage,
+  pendingBotGroupMessageId,
   settleBotGroupPendingSends,
   stabilizeById,
   type BotGroupLoadedTimeline,
@@ -101,6 +102,16 @@ describe('optimistic sends', () => {
     const displayed = [own('old', 1, '好'), own('srv-a', 3, '好'), own('srv-b', 4, '好')];
     expect([...matchBotGroupPendingSends(pending, displayed)]).toEqual([['a', 'srv-a'], ['b', 'srv-b']]);
     expect(settleBotGroupPendingSends(pending, displayed)).toEqual([]);
+  });
+
+  it('never lets a later send of the same words claim the message an earlier send already became', () => {
+    // 'a' settled into srv-a and left the pending list; 'b' (same words) is still on its way.
+    const adopted = new Map([['srv-a', pendingBotGroupMessageId('a')]]);
+    const displayed = [own('srv-a', 3, '好')];
+    expect(matchBotGroupPendingSends([send('b', '好')], displayed, adopted).size).toBe(0);
+    // Its own echo still settles it, and so does a re-render while 'a' itself is still pending.
+    expect([...matchBotGroupPendingSends([send('b', '好')], [...displayed, own('srv-b', 4, '好')], adopted)]).toEqual([['b', 'srv-b']]);
+    expect([...matchBotGroupPendingSends([send('a', '好')], displayed, adopted)]).toEqual([['a', 'srv-a']]);
   });
 
   it('keeps a send whose message has not arrived, and the same array when nothing settled', () => {

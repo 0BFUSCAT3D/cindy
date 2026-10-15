@@ -181,11 +181,14 @@ const NO_MATCHES: ReadonlyMap<string, string> = new Map();
 /**
  * Which pending sends have shown up, as clientId → message id. A send main accepted matches its
  * message id; before the answer it matches the first own message after it with the same text and
- * as many attachments (each message settles one send).
+ * as many attachments (each message settles one send). `adopted` (real message id → the pending
+ * row key that already took it) carries those settlements across renders, so a later send of the
+ * same words never claims a message an earlier send already became.
  */
 export function matchBotGroupPendingSends(
   pending: readonly BotGroupPendingSend[],
   displayed: readonly BotGroupMessageView[],
+  adopted: ReadonlyMap<string, string> = NO_MATCHES,
 ): ReadonlyMap<string, string> {
   if (pending.length === 0) return NO_MATCHES;
   const ids = new Set(displayed.map((message) => message.id));
@@ -200,7 +203,8 @@ export function matchBotGroupPendingSends(
   for (const send of pending) {
     if (send.messageId) continue;
     const text = send.text.trim();
-    const echo = displayed.find((message) => !claimed.has(message.id) && isOwnMessage(message)
+    const key = pendingBotGroupMessageId(send.clientId);
+    const echo = displayed.find((message) => !claimed.has(message.id) && (adopted.get(message.id) ?? key) === key && isOwnMessage(message)
       && message.sequence > send.afterSequence && message.content.trim() === text
       && message.attachments.length === send.attachments.length);
     if (!echo) continue;

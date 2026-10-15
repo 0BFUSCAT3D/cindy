@@ -162,8 +162,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const separator = t('bots.groupChat.memberSeparator');
 
   const realReplies = useMemo(() => projectBotGroupExecutionFailures(replies, executionFailures), [replies, executionFailures]);
-  const pendingMatches = useMemo(() => matchBotGroupPendingSends(pendingSends, realReplies), [pendingSends, realReplies]);
   const adoptedKeysRef = useRef(new Map<string, string>());
+  const pendingMatches = useMemo(() => matchBotGroupPendingSends(pendingSends, realReplies, adoptedKeysRef.current), [pendingSends, realReplies]);
   for (const [clientId, messageId] of pendingMatches) adoptedKeysRef.current.set(messageId, pendingBotGroupMessageId(clientId));
   useEffect(() => {
     if (pendingMatches.size === 0) return;
