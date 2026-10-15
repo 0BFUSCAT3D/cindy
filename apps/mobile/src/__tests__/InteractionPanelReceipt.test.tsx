@@ -292,6 +292,34 @@ it('keeps a typed custom answer when the pending request is refetched or the car
   expect(input()?.value).toBe('No, figure it out');
 });
 
+it('starts over when the same request replaces its questions', async () => {
+  const first = { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] };
+  const second = { question: 'Second?', options: [{ label: 'A' }, { label: 'B' }] };
+  remoteSessionStore.setPendingInteractions('s1', [{ request: { kind: 'ask_user_question', requestId, questions: [first, second] } }]);
+  await act(async () => root.render(<Harness />));
+  const question = () => (host.textContent!.includes('Second?') ? 'Second?' : host.textContent!.includes('First?') ? 'First?' : null);
+  const input = () => host.querySelector<HTMLInputElement>('[data-testid="interaction.ask.customInput"]');
+  await click('interaction.ask.option.1');
+  await click('interaction.ask.submitButton');
+  expect(question()).toBe('Second?');
+  await click('interaction.ask.showCustomButton');
+  await act(async () => {
+    input()!.value = 'Old payload answer';
+    input()!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // 同一 requestId 的问题从两道变成一道:旧题号与输入都不能带进新内容。
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{ request: {
+    kind: 'ask_user_question', requestId, questions: [first],
+  } }]));
+  expect(question()).toBe('First?');
+  expect(input()).toBeNull();
+  resolveInteraction.mockResolvedValueOnce({ accepted: true });
+  await click('interaction.ask.option.2');
+  await click('interaction.ask.submitButton');
+  expect(resolveInteraction).toHaveBeenCalledTimes(1);
+  expect(resolveInteraction.mock.calls[0][1]).toMatchObject({ answers: { 'First?': 'No' } });
+});
+
 
 it.each(['allowOnce', 'deny'])('companion permission preserves complete evidence and %s receipt', async (action) => {
   const content = 'unique-complete-payload-' + 'x'.repeat(800);

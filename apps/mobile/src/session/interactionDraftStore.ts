@@ -2,6 +2,8 @@ export interface AskUserDraft {
   answers: Record<string, string>;
   currentIndex: number;
   customInput: string;
+  /** 保存草稿时的问题内容;同一 requestId 的问题变了,旧草稿不再恢复。 */
+  questionsIdentity?: string;
   selectedLabels: string[];
   showCustomInput: boolean;
 }
@@ -53,6 +55,7 @@ function cloneDraft(draft: AskUserDraft): AskUserDraft {
     answers: { ...draft.answers },
     currentIndex: Math.max(0, Math.floor(draft.currentIndex)),
     customInput: draft.customInput,
+    ...(draft.questionsIdentity !== undefined ? { questionsIdentity: draft.questionsIdentity } : {}),
     selectedLabels: [...draft.selectedLabels],
     showCustomInput: draft.showCustomInput,
   };

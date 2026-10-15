@@ -916,27 +916,46 @@ function PermissionEvidence({
   );
 }
 
-function AskUserQuestionCard({
-  busy,
-  item,
-  onDecision,
-  touchLayout,
-}: {
+type AskUserQuestionCardProps = {
   busy: boolean;
   item: PendingInteraction;
   onDecision(decision: Record<string, unknown>): void;
   touchLayout: InteractionTouchLayout;
-}) {
+};
+
+function AskUserQuestionCard(props: AskUserQuestionCardProps) {
+  const questions = useMemo(() => normalizeAskQuestions(props.item.request.questions), [props.item.request.questions]);
+  // 与桌面 AskUserQuestionPrompt 同口径:内容相同的重新拉取保持挂载与输入;
+  // 同一 requestId 的问题内容真变了,则重挂并丢弃旧内容的草稿。
+  const questionsIdentity = JSON.stringify(questions.map((question) => [
+    question.question,
+    question.header,
+    question.multiSelect,
+    (question.options ?? []).map((option) => [option.label, option.description]),
+  ]));
+  return <AskUserQuestionForm key={questionsIdentity} {...props} questions={questions} questionsIdentity={questionsIdentity} />;
+}
+
+function AskUserQuestionForm({
+  busy,
+  item,
+  onDecision,
+  questions,
+  questionsIdentity,
+  touchLayout,
+}: AskUserQuestionCardProps & { questions: AskQuestion[]; questionsIdentity: string }) {
   const styles = useInteractionStyles();
   const { colors } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
   const companion = useContext(CompanionInteractionContext);
   const requestId = readRequestId(item) ?? '';
-  const questions = useMemo(() => normalizeAskQuestions(item.request.questions), [item.request.questions]);
   const draftCompletedRef = useRef(false);
-  // 卡片按 requestId 挂载(InteractionItem 的 key),草稿在首帧同步恢复,
+  // 表单按 requestId + 问题内容挂载,草稿在首帧同步恢复,
   // 避免先渲染空状态再被同步 effect 覆盖。
-  const [initialDraft] = useState(() => readAskUserDraft(requestId));
+  const [initialDraft] = useState(() => {
+    const draft = readAskUserDraft(requestId);
+    return draft?.questionsIdentity === questionsIdentity ? draft : null;
+  });
   const [currentIndex, setCurrentIndex] = useState(() =>
     Math.min(initialDraft?.currentIndex ?? 0, Math.max(0, questions.length - 1)));
   const [answers, setAnswers] = useState<Record<string, string>>(() => initialDraft?.answers ?? {});
@@ -970,6 +989,7 @@ function AskUserQuestionCard({
       answers,
       currentIndex,
       customInput,
+      questionsIdentity,
       selectedLabels: [...selectedLabels],
       showCustomInput,
     });
@@ -1030,6 +1050,7 @@ function AskUserQuestionCard({
       saveAskUserDraft(requestId, {
         answers: nextAnswers, currentIndex,
         customInput: finalSelection.customInput,
+        questionsIdentity,
         selectedLabels: [...finalSelection.selectedLabels],
         showCustomInput: finalSelection.showCustomInput,
       });
