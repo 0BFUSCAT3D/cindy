@@ -32,7 +32,7 @@ import {
   type BotGroupPendingSend,
   type BotGroupTimelineMessage,
 } from './BotGroupTimelineModel';
-import { chatErrorKey } from './ChatServerControls';
+import { chatErrorKey, messageReactionRevision } from './ChatServerControls';
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
 const STICK_TO_BOTTOM_PX = 48;
@@ -226,6 +226,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
         shareScope={shareScope}
         sharing={sharing}
         reactionGroupId={group.id}
+        reactionRevision={messageReactionRevision(group, message.id)}
         // A 话题 root may itself be a 引用回复; its original lives in the main timeline.
         quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
         onChanged={onChanged}

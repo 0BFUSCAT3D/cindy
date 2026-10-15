@@ -792,6 +792,7 @@ export const MAKER_INVOKE = {
   CHAT_SERVER_THREAD: 'maker:chat-server:thread',
   CHAT_SERVER_REPLY: 'maker:chat-server:reply',
   CHAT_SERVER_REACT: 'maker:chat-server:react',
+  CHAT_SERVER_REACTORS: 'maker:chat-server:reactors',
   CHAT_SERVER_CREATEINVITE: 'maker:chat-server:createInvite',
   CHAT_SERVER_REVOKEINVITE: 'maker:chat-server:revokeInvite',
   CHAT_SERVER_PREVIEWINVITE: 'maker:chat-server:previewInvite',

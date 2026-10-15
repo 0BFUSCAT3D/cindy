@@ -70,7 +70,7 @@ import {
   botGroupHeaderStatus,
   type BotGroupLiveSpeaker,
 } from './BotGroupLiveStatus';
-import { ChatInviteButton } from './ChatServerControls';
+import { ChatInviteButton, messageReactionRevision } from './ChatServerControls';
 import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import {
   BotGroupOrganizerTag,
@@ -1073,6 +1073,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   shareScope={shareScope}
                   sharing={sharing}
                   reactionGroupId={group.serverBacked ? group.id : undefined}
+                  reactionRevision={messageReactionRevision(group, message.id)}
                   quoteDisplay={quoteDisplays.get(message.id)?.display}
                   onLocateQuote={onLocateQuote}
                   onQuote={quotable ? onQuote : undefined}

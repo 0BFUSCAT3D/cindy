@@ -225,6 +225,8 @@ export interface BotGroupTimelineItemProps {
   sharing: boolean;
   /** Server group id: reactions and the toolbar's reaction picker. */
   reactionGroupId?: string;
+  /** The message's reaction version (`messageReactionRevision`): who reacted is re-read when it moves. */
+  reactionRevision?: string;
   quoteDisplay?: BotGroupQuoteDisplay;
   onLocateQuote?: (quote: BotGroupQuoteView) => void;
   onQuote?: (messageId: string) => void;
@@ -376,7 +378,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
               </div>
             ) : null}
             {message.pending ? <span className="sr-only">{t('bots.groupChat.timeline.sending')}</span> : null}
-            <ChatMessageReactions groupId={props.reactionGroupId} message={message} align="right" onChanged={props.onChanged} />
+            <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} />
           </div>
           {actions}
         </article>
@@ -458,7 +460,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
               ) : null}
               <BotGroupUserAttachments attachments={message.attachments} />
               <BotGroupHandoffFiles files={message.files ?? []} workDir={props.plan?.workDir ?? null} />
-              <ChatMessageReactions groupId={props.reactionGroupId} message={message} onChanged={props.onChanged} />
+              <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} onChanged={props.onChanged} />
             </div>
           )}
         </div>

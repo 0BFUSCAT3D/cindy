@@ -311,7 +311,7 @@ beforeEach(() => {
       cleanupCachedImages: vi.fn(async () => undefined),
       getFileThumbnail: vi.fn(async () => null),
       maker: {
-        chatServer: { thread: mocks.thread },
+        chatServer: { thread: mocks.thread, reactors: vi.fn(async () => ({ ok: true, reactors: [] })) },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
         getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),

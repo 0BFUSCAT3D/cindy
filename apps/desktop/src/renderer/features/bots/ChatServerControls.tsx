@@ -1,9 +1,9 @@
 import { chatErrorKey } from './chatError';
 import { useRef, useState } from 'react';
 import { ChatInviteDialog } from './ChatInviteDialog';
+import { ChatReactionButton } from './ChatReactionButton';
 import { UserPlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
 import { MessageActionBar } from '@/components/chat/MessageActionBar';
 import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { SHARE_EXCLUDE_ATTR } from '@/lib/shareConversationImage';
@@ -11,13 +11,17 @@ import { Tip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { toast } from '@/lib/toast';
-import type { BotGroupMessageView } from '../../../shared/botGroupChat';
+import type { BotGroupDetail, BotGroupMemberView, BotGroupMessageView } from '../../../shared/botGroupChat';
 
 const key = (name: string) => `bots.groupChat.server.${name}`;
 const api = () => window.electronAPI.maker.chatServer;
 const emojiChoices = ['👍', '❤️', '😂', '🎉', '👀', '🙏', '✅', '🤔', '🔥', '👏', '🚀', '💯'];
 const iconClass = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] disabled:opacity-50';
 export { chatErrorKey } from './chatError';
+
+/** A message's reaction version: the room's reset version plus the message's own realtime changes. */
+export const messageReactionRevision = (group: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>, messageId: string) =>
+  `${group.reactionRevision ?? 0}:${group.reactionRevisions?.[messageId] ?? 0}`;
 
 /** Adds or removes the current actor's reaction; the caller re-reads the authoritative message. */
 function useChatReaction(groupId: string | undefined, messageId: string, onChanged: (messageId: string) => void) {
@@ -41,6 +45,8 @@ function useChatReaction(groupId: string | undefined, messageId: string, onChang
 
 interface ChatMessageActionProps {
   groupId?: string; shareScope: string; message: BotGroupMessageView; align?: 'left' | 'right';
+  /** Who can be named on a reaction badge, and the message's reaction version (see `messageReactionRevision`). */
+  members?: readonly BotGroupMemberView[]; reactionRevision?: string | number;
   /** 引用回复: a new main-timeline message that quotes this one. */
   onQuote?: () => void;
   /** Opens the message's Thread (话题) — 创建话题 before anyone answered, 查看话题 after. */
@@ -50,19 +56,14 @@ interface ChatMessageActionProps {
 }
 
 /** The reactions under a message's text; each chip toggles the current actor's reaction. */
-export function ChatMessageReactions({ groupId, message, align = 'left', onChanged }: Pick<ChatMessageActionProps, 'groupId' | 'message' | 'align' | 'onChanged'>) {
-  const { t } = useTranslation();
+export function ChatMessageReactions({ groupId, message, members, reactionRevision, align = 'left', onChanged }: Pick<ChatMessageActionProps, 'groupId' | 'message' | 'members' | 'reactionRevision' | 'align' | 'onChanged'>) {
   const { busy, react } = useChatReaction(groupId, message.id, onChanged);
   if (!message.reactions?.length) return null;
   return (
     <div {...{ [SHARE_EXCLUDE_ATTR]: '' }} className={`mt-1 flex flex-wrap items-center gap-1 ${align === 'right' ? 'justify-end' : ''}`}>
       {message.reactions.map(reaction => (
-        <Button key={reaction.emoji} variant={reaction.me ? 'primary' : 'secondary'} size="sm" compact
-          disabled={busy || !groupId} aria-pressed={reaction.me}
-          aria-label={t(key('reactionCount'), { emoji: reaction.emoji, count: reaction.count })}
-          onClick={() => void react(reaction.emoji, !reaction.me)}>
-          <span>{reaction.emoji}</span><span>{reaction.count}</span>
-        </Button>
+        <ChatReactionButton key={reaction.emoji} groupId={groupId} messageId={message.id} reaction={reaction} revision={reactionRevision} members={members}
+          disabled={busy || !groupId} onToggle={() => void react(reaction.emoji, !reaction.me)} />
       ))}
     </div>
   );

@@ -325,6 +325,10 @@ export interface BotGroupSummary {
 }
 
 export interface BotGroupDetail extends BotGroupSummary {
+  /** Room-wide; bumped when a reset skipped realtime events or the chat runtime was recreated, so every message's reactors count as changed. */
+  reactionRevision?: number;
+  /** Per message id; bumped by realtime reaction changes, so a same-count change of who reacted is noticed. */
+  reactionRevisions?: Record<string, number>;
   /** Oldest first. */
   messages: BotGroupMessageView[];
   /** Authorized current failures, independent of message pagination. Local/older hosts omit this. */
@@ -552,6 +556,8 @@ export function parseBotGroupPlanRouteKey(routeKey: string | null | undefined): 
 
 /** Named, credential-free Desktop chat capabilities. Older/local-only hosts omit them. */
 export type ChatServerResult<T> = ({ ok: true } & T) | { ok: false; errorCode: string };
+/** One reacting actor. `name` is null when the group has no member record for it. */
+export interface ChatReactor { actorId: string; name: string | null; isSelf: boolean; formerMember: boolean }
 export interface ChatInvitePreview {
   groupId: string; name: string; inviterName: string; expiresAt: string | null; joined: boolean;
   /** Omitted by old servers, whose links remain dated and single-use. */
@@ -577,6 +583,8 @@ export interface ChatServerApi {
   }>>;
   reply(input: { groupId: string; rootId: string; text: string; clientId: string; mentions: BotGroupMention }): Promise<ChatServerResult<{ messageId: string }>>;
   react(input: { groupId: string; messageId: string; emoji: string; present: boolean }): Promise<ChatServerResult<Record<never, never>>>;
+  /** Read-only: who added one emoji to a message. Names use the group member projection. */
+  reactors(input: { groupId: string; messageId: string; emoji: string }): Promise<ChatServerResult<{ reactors: ChatReactor[] }>>;
   createInvite(input: { groupId: string; clientId: string }): Promise<ChatServerResult<{ link: string; expiresAt: string | null; reusable?: boolean }>>;
   revokeInvite(input: { groupId: string; link: string; clientId: string }): Promise<ChatServerResult<{ revoked: true }>>;
   previewInvite(input: { link: string }): Promise<ChatServerResult<ChatInvitePreview>>;
