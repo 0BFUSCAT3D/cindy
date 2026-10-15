@@ -209,6 +209,7 @@ export interface BotGroupTimelineItemProps {
   /** Finish time of each done step (1-based), read off its hand-off message. */
   planDoneAt?: ReadonlyMap<number, number>;
   onPlanAction?: (action: 'start' | 'dismiss', planId: string) => void;
+  readOnly?: boolean;
   onEditStep?: (planId: string, step: BotGroupPlanStepView, action: 'reassign' | 'remove', botId?: string) => void;
 }
 
@@ -337,7 +338,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
                 <BotGroupMessageText content={message.content} mentionLabels={mentionLabels} />
               </div>
             ) : null}
-            {message.outbox ? <BotGroupOutboxStatus entry={message.outbox} /> : null}
+            {message.outbox ? <BotGroupOutboxStatus entry={message.outbox} readOnly={props.readOnly} /> : null}
             {message.pending && !message.outbox ? <span className="sr-only">{t('bots.groupChat.timeline.sending')}</span> : null}
             {!message.pending ? <ChatMessageReactions groupId={props.reactionGroupId} message={message} members={members} reactionRevision={props.reactionRevision} align="right" onChanged={props.onChanged} /> : null}
           </div>
@@ -434,7 +435,7 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
 export const BotGroupTimelineItem = memo(BotGroupTimelineItemImpl);
 
 /** Queue feedback shares the same message row, so receipts do not remount its content. */
-function BotGroupOutboxStatus({ entry }: { entry: BotGroupOutboxEntry }) {
+function BotGroupOutboxStatus({ entry, readOnly }: { entry: BotGroupOutboxEntry; readOnly?: boolean }) {
   const { t } = useTranslation();
   const sending = entry.status === 'sending';
   const [slow, setSlow] = useState(false);
@@ -464,6 +465,7 @@ function BotGroupOutboxStatus({ entry }: { entry: BotGroupOutboxEntry }) {
             size="sm"
             compact
             type="button"
+            disabled={readOnly}
             onClick={() => {
               if (!editBotGroupSend(entry.input.groupId, entry.input.clientId)) toast.warning(t('bots.groupChat.outbox.editBlocked'));
             }}
@@ -471,7 +473,7 @@ function BotGroupOutboxStatus({ entry }: { entry: BotGroupOutboxEntry }) {
             {t('bots.groupChat.outbox.edit')}
           </Button>
           {entry.retryable !== false ? (
-            <Button variant="secondary" size="sm" compact type="button" onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
+            <Button variant="secondary" size="sm" compact type="button" disabled={readOnly} onClick={() => retryBotGroupSend(entry.input.groupId, entry.input.clientId)}>
               <RefreshCcw size={13} />
               {t('bots.retry')}
             </Button>

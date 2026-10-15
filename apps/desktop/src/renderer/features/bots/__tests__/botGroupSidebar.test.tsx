@@ -336,6 +336,19 @@ describe('TeammatesSection group chats', () => {
     expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/g1?groupSettings=1');
   });
 
+  it.each([false, true])('keeps dissolved groups out of archive actions (archived: %s)', async archived => {
+    mocks.groups = [{ ...managedGroup(archived), dissolvedAt: '2026-10-15T12:00:00Z' }];
+    await renderSidebar();
+    if (archived) expect(screen.queryByText('周末出游')).toBeNull();
+    else {
+      fireEvent.keyDown(screen.getByText('周末出游').closest('button')!, { key: 'F10', shiftKey: true });
+      expect(screen.queryByRole('menuitem', { name: archiveKey })).toBeNull();
+      expect(screen.queryByRole('menuitem', { name: 'bots.groupChat.server.settings.unarchive' })).toBeNull();
+      expect(await screen.findByRole('menuitem', { name: 'bots.groupChat.settings.title' })).toBeTruthy();
+    }
+    expect(mocks.manage).not.toHaveBeenCalled();
+  });
+
   it('lists groups alongside teammates with an author preview and opens them', async () => {
     mocks.groups = [group(), group({ id: 'g2', name: '读书会', lastMessage: null, updatedAt: 1 })];
     mocks.params = { groupId: 'g1' };

@@ -415,4 +415,28 @@ describe('bot group remote resources', () => {
       { kind: 'navigate', target: { kind: 'resource', ref: ref('g9') } },
     ]);
   });
+  it('forwards explicit dissolution and leave separately from compatibility archive/delete', async () => {
+    const group = detail({ serverBacked: true, revision: 5, supportsDissolve: true });
+    group.members[0] = { ...group.members[0], actorId: 'self', isSelf: true, isOwned: true, role: 'owner' };
+    service.getGroup.mockResolvedValue({ ok: true, group });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'dissolve', resourceRef: ref('g1'), input: { expectedRevision: 5 } });
+    expect(service.chatServer.manage).toHaveBeenLastCalledWith({ groupId: 'g1', action: { type: 'dissolve', expectedRevision: 5 } });
+    await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'leave', resourceRef: ref('g1') });
+    expect(service.chatServer.manage).toHaveBeenLastCalledWith({ groupId: 'g1', action: { type: 'member', actorId: 'self', action: 'leave' } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+  });
+  it('allows personal removal after leave through the account-authorized server service', async () => {
+    service.getGroup.mockResolvedValue({ ok: false, errorCode: 'NOT_FOUND' });
+    const listState = { conversationId: 'g1', hidden: true, revision: 4 };
+    service.chatServer.manage.mockResolvedValue({ ok: true, listState });
+    const result = await remoteResourceRegistry.invoke(context, { client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID,
+      actionId: 'hide', resourceRef: ref('g1') });
+    expect(result.result).toEqual({ listState });
+    expect(service.getGroup).not.toHaveBeenCalled();
+    expect(service.chatServer.manage).toHaveBeenLastCalledWith({ groupId: 'g1', action: { type: 'hide' } });
+    expect(service.deleteGroup).not.toHaveBeenCalled();
+  });
+
 });

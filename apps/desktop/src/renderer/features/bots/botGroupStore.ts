@@ -38,6 +38,8 @@ const EMPTY_SNAPSHOT: BotGroupListSnapshot = { groups: [], loaded: false };
 let snapshot: BotGroupListSnapshot = EMPTY_SNAPSHOT;
 let owner = getDataOwnerGeneration();
 let generation = 0;
+const personalList = new Map<string, { hidden: boolean; revision: number }>();
+const visibleGroups = (groups: readonly BotGroupSummary[]) => groups.filter(group => !personalList.get(group.id)?.hidden);
 let inFlight: Promise<void> | null = null;
 let refreshQueued = false;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -69,6 +71,7 @@ function ensureOwner(): void {
   refreshQueued = false;
   cancelPushRefresh();
   snapshot = EMPTY_SNAPSHOT;
+  personalList.clear();
 }
 
 function cancelPushRefresh(): void {
@@ -108,11 +111,11 @@ export function refreshBotGroups(): void {
       // Every change kind re-reads the list, including 'plan' (open-plan status in the row).
       const result = await api.listBotGroups();
       if (!isCurrent()) return;
-      if (result.ok) seedBotGroupReadState(result.groups);
+      if (result.ok) seedBotGroupReadState(visibleGroups(result.groups));
       // An unchanged list keeps its snapshot: subscribers (sidebar, Dock badge) do not re-render.
-      if (result.ok && snapshot.loaded && JSON.stringify(result.groups) === JSON.stringify(snapshot.groups)) return;
+      if (result.ok && snapshot.loaded && JSON.stringify(visibleGroups(result.groups)) === JSON.stringify(snapshot.groups)) return;
       // 失败时保留上一份列表：侧栏不因一次读失败把所有群清空。
-      applySnapshot(result.ok ? { groups: result.groups, loaded: true } : { ...snapshot, loaded: true });
+      applySnapshot(result.ok ? { groups: visibleGroups(result.groups), loaded: true } : { ...snapshot, loaded: true });
     } catch {
       if (isCurrent()) applySnapshot({ ...snapshot, loaded: true });
     }
@@ -137,8 +140,15 @@ export function startBotGroupSync(): () => void {
   if (syncUsers === 1) {
     const api = botGroupApi();
     if (api && typeof api.onBotGroupChanged === 'function') {
-      unsubscribePush = api.onBotGroupChanged((_payload, ownerStamp) => {
+      unsubscribePush = api.onBotGroupChanged((payload, ownerStamp) => {
         if (!isDataOwnerPushCurrent(ownerStamp)) return;
+        ensureOwner();
+        if (payload.change === 'list' && payload.listState && (personalList.get(payload.groupId)?.revision ?? 0) < payload.listState.revision) {
+          personalList.set(payload.groupId, payload.listState);
+          const groups = visibleGroups(snapshot.groups);
+          seedBotGroupReadState(groups);
+          applySnapshot({ ...snapshot, groups });
+        }
         schedulePushRefresh();
       });
     }

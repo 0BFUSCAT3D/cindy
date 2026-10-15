@@ -4302,6 +4302,49 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('keeps a resumed run start in flight when an older run backoff fires', async () => {
+    await seedPair(); seedGroupLane();
+    vi.useFakeTimers();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    let releaseStart: () => void = () => {};
+    const startLanded = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const landed: string[] = [];
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => {
+      if (input.clientId.endsWith(':2:started')) await startLanded;
+      else if (input.clientId.endsWith(':started')) {
+        return { ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: true };
+      }
+      landed.push(input.clientId);
+      return { ok: true as const, messageId: `posted:${input.clientId}` };
+    });
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'First pass' });
+      if (!task.ok) throw new Error(task.message);
+      const id = task.delegationId;
+      await runtime.runPendingTurns();
+      expect(landed).toEqual([`bot-delegation-task:${id}:1:result`]);
+      expect(await runtime.delegation.messageSessionTask('group-lane', id, { kind: 'message', text: 'One more pass.' }))
+        .toMatchObject({ ok: true, resumed: true });
+      // Run 1's scheduled retry observes run 2 and exits while run 2's start is still pending.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(postGroupTaskMessage.mock.calls.map(([input]) => input.clientId)).toEqual([
+        `bot-delegation-task:${id}:started`, `bot-delegation-task:${id}:1:result`,
+        `bot-delegation-task:${id}:2:started`,
+      ]);
+      const settled = runtime.runPendingTurns();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(landed).toEqual([`bot-delegation-task:${id}:1:result`]);
+      expect(postGroupTaskMessage).not.toHaveBeenCalledWith(expect.objectContaining({ clientId: `bot-delegation-task:${id}:2:result` }));
+      releaseStart();
+      await settled;
+      expect(landed).toEqual([
+        `bot-delegation-task:${id}:1:result`, `bot-delegation-task:${id}:2:started`,
+        `bot-delegation-task:${id}:2:result`,
+      ]);
+    } finally { releaseStart(); release(); runtime.dispose(); vi.useRealTimers(); }
+  });
+
   it('clips a long group task title without splitting an emoji', async () => {
     await seedPair(); seedGroupLane();
     const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });

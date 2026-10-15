@@ -338,6 +338,14 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('BotGroupChatView', () => {
+  it('clears the selected route when an authoritative personal hide unmounts settings', async () => {
+    renderView();
+    await screen.findByRole('textbox');
+    act(() => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'list', listState: { hidden: true, revision: 1 } })));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots');
+    expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
   it('keeps archived history readable and restores the composer only after the group is unarchived', async () => {
     const archived = detail({ serverBacked: true, archived: true,
       messages: [msg({ content: 'Preserved group history' })],
@@ -352,6 +360,20 @@ describe('BotGroupChatView', () => {
     await screen.findByRole('textbox');
     expect(screen.getByText('Preserved group history')).toBeTruthy();
     expect(screen.queryByText('bots.groupChat.server.settings.archived')).toBeNull();
+  });
+
+  it('replaces the composer with read-only history when dissolved without being archived', async () => {
+    const live = detail({ serverBacked: true, archived: false,
+      messages: [msg({ content: 'Preserved dissolved history' })],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: live });
+    renderView();
+    await screen.findByRole('textbox');
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...live, dissolvedAt: '2026-10-15T00:00:00.000Z' } });
+    act(() => { mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'updated' })); });
+    await screen.findByText('bots.groupChat.lifecycle.dissolved');
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByText('Preserved dissolved history')).toBeTruthy();
   });
 
   function mockThreadMotion(duration: string) {
@@ -1512,6 +1534,34 @@ describe('BotGroupChatView', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
       await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(3));
       expect(lastSend().clientId).toBe(firstAttempt!.clientId);
+    });
+
+    it.each([
+      { archived: true, dissolvedAt: undefined },
+      { archived: false, dissolvedAt: '2026-10-15T00:00:00.000Z' },
+    ])('keeps terminal outbox messages readable without retry or edit: %j', async (terminal) => {
+      const send = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '待重试的消息' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      fireEvent.change(input, { target: { value: '保留的草稿' } });
+      await send.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+      const failed = await screen.findByTestId('bot-group-outbox');
+
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, ...terminal }) });
+      pushMessages();
+      await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+      expect(within(failed).getByText('待重试的消息')).toBeTruthy();
+      const edit = within(failed).getByRole('button', { name: 'bots.groupChat.outbox.edit' }) as HTMLButtonElement;
+      const retry = within(failed).getByRole('button', { name: /bots\.retry/ }) as HTMLButtonElement;
+      expect(edit.disabled).toBe(true);
+      expect(retry.disabled).toBe(true);
+      fireEvent.click(edit);
+      fireEvent.click(retry);
+      expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1);
+      expect(getBotGroupOutbox('g1')).toHaveLength(1);
     });
 
     it('keeps the local image on screen while the server copy of a confirmed message is still loading', async () => {

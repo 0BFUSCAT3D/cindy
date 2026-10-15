@@ -1,3 +1,4 @@
+import { RemoveChatFromListButton } from './RemoveChatFromListButton';
 /**
  * 群聊页：顶栏（成员头像、群名、成员与负责人、此刻谁在做什么、群设置入口）+ 多作者时间线 +
  * 进行中条 + 输入框。
@@ -364,14 +365,17 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
-        if (!isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
-        if (payload.change === 'deleted') {
+        if (cancelled || !isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
+        if (payload.change === 'deleted' || (payload.change === 'list' && payload.listState?.hidden)) {
           cancelled = true;
           queued = null;
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
           discardOutbox();
           setState({ kind: 'missing' });
+          // The authoritative hide can unmount the drawer before its IPC reply.
+          // This mounted page owns selection, so clear the route here as well.
+          if (payload.change === 'list') navigate('/bots');
           return;
         }
         load();
@@ -383,7 +387,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       loadRef.current = () => {};
       unsubscribe();
     };
-  }, [groupId, reloadVersion]);
+  }, [groupId, reloadVersion, navigate]);
 
   const group = state.kind === 'ready' ? state.group : null;
   // Until the timeline arrives, the header comes from the group's sidebar row (same account).
@@ -976,6 +980,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
               <ArrowLeft size={14} />
               {t('bots.backToBot')}
             </Button>
+            {!failed && groupId && <RemoveChatFromListButton key={groupId} groupId={groupId} onRemoved={() => navigate('/bots')} />}
             {failed ? (
               <Button
                 variant="cta"
@@ -1001,7 +1006,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   const continueId = continuableRoundEndId(realMessages, group.round);
   const pendingFor = (planId: string | null) =>
     planId && planPending?.planId === planId ? planPending.action : null;
-  const canQuote = !!group.serverBacked && !group.archived;
+  const canQuote = !!group.serverBacked && !group.archived && !group.dissolvedAt;
   const enterAfter = enterAfterRef.current;
 
   return (
@@ -1098,6 +1103,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   sharing={sharing}
                   reactionGroupId={group.serverBacked ? group.id : undefined}
                   reactionRevision={messageReactionRevision(group, message.id)}
+                  readOnly={Boolean(group.archived || group.dissolvedAt)}
                   quoteDisplay={quoteDisplays.get(message.id)?.display}
                   onLocateQuote={onLocateQuote}
                   onQuote={quotable ? onQuote : undefined}
@@ -1164,7 +1170,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
         />
       ) : null}
       {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t('bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
+        getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 760} /> : group.archived || group.dissolvedAt ? <p className="border-t border-[var(--border-default)] p-4 text-center text-13 text-[var(--text-tertiary)]">{t(group.dissolvedAt ? 'bots.groupChat.lifecycle.dissolved' : 'bots.groupChat.server.settings.archived')}</p> : <BotGroupComposer
         groupId={group.id}
         draftKey={attachmentScope}
         members={group.members}
