@@ -9,7 +9,8 @@ import { buildMobileMessageRenderItems } from '@/session/messageRenderModel';
 import type { RemoteMessage } from '@/session/types';
 import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl } from '@/session/messageMarkdown';
 import { buildMediaPayload } from '@/session/messagePayload';
-import type { MobileOutboxThumb } from '@/session/sessionOutbox';
+import { buildOutboxItem, outboxDisplayItem, type MobileOutboxThumb } from '@/session/sessionOutbox';
+import { buildPendingSendItems } from '@/session/pendingSendItems';
 
 const durableThumbs = vi.hoisted(() => new Map<string, string>());
 vi.mock('@/session/sentAttachmentThumbStore', async (importOriginal) => ({
@@ -126,6 +127,36 @@ describe('message gallery', () => {
     expect(lightboxImagesForPayload([], opened, 'pending', previous)).toEqual(previous);
     // A different click must not inherit a previous viewer's pending gallery.
     expect(lightboxImagesForPayload(unrelated, unrelated[0].payload, 'other', previous)).toEqual(unrelated);
+  });
+
+  it.each([false, true])('hands an outbox snapshot to the formal message with a different server ID (history gap: %s)', (gap) => {
+    const files = [0, 1].map((index) => ({ id: `upload-${index}`, name: `photo-${index}.jpg`,
+      category: 'image' as const, path: `cindy-oss-attach://upload-${index}`, size: 100, ext: 'jpg', mimeType: 'image/jpeg' }));
+    const item = buildOutboxItem({ clientId: 'mobile-client-id', sessionId: 's', text: '',
+      readyAttachments: files, readyPreviews: ['file:///outbox-0.jpg', 'file:///outbox-1.jpg'],
+      claimedUploads: [], permissionModeAtSend: 'ask' });
+    const [row] = buildPendingSendItems({ queue: [], settling: [], outbox: [outboxDisplayItem(item)],
+      hiddenClientIds: new Set(), sendingClientIds: new Set(), editingClientId: null,
+      steeringClientIds: new Set(), presentationByClientId: new Map() });
+    let previous = collectMobileMessageGalleryImages([row]);
+    const opened = previous[1].payload;
+    if (gap) previous = lightboxImagesForPayload([], opened, row.key, previous, false);
+    const message: RemoteMessage = { id: 'server-history-id', clientId: item.clientId, sessionId: 's',
+      role: 'user', content: { images: files.map((file, index) => ({
+        name: file.name, url: `cindy-media://blobs/formal-${index}.jpg`,
+      })) }, toolUseId: null, agentMeta: null, createdAt: '2026-01-01T00:00:00.000Z' };
+    // A separate message has identical image URLs, and the server's ID differs from clientId.
+    const rows = buildMobileMessageRenderItems([{ ...message, id: 'other-server-id', clientId: 'other' }, message]);
+    expect(rows.some((entry) => entry.key === row.key)).toBe(true);
+    const gallery = collectMobileMessageGalleryImages(rows);
+    const current = lightboxImagesForPayload(gallery, opened, row.key, previous, true);
+    expect(current).toHaveLength(2);
+    expect(current.map((image) => image.groupKey)).toEqual([row.key, row.key]);
+    expect(current.map((image) => image.url)).toEqual([
+      'cindy-media://blobs/formal-0.jpg', 'cindy-media://blobs/formal-1.jpg',
+    ]);
+    expect(current.every((image) => image.payload.media.previewable === false)).toBe(true);
+    expect(current).not.toEqual(previous);
   });
 
   it.each(['text only', 'non-image files', 'unreadable replacement'])('does not retain deleted pending images when the source row remains (%s)', (edit) => {

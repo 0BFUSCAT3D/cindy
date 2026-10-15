@@ -174,6 +174,8 @@ export interface ImageLightboxAnnotationConfig {
 export interface ImageLightboxProps {
   images: readonly MobileMessageGalleryImage[];
   initialUrl: string;
+  /** Same-content attachment slots can share a URL; prefer the clicked attachment's identity. */
+  initialImageKey?: string;
   onClose(): void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   /** 关闭时逐出本次取过的视频(与通用查看器一致;图片缩略图常驻列表不逐出)。 */
@@ -213,6 +215,7 @@ export interface ImageLightboxProps {
 export const ImageLightbox = memo(function ImageLightbox({
   images,
   initialUrl,
+  initialImageKey,
   onClose,
   onResolveRemoteMedia,
   onReleaseRemoteMedia,
@@ -226,26 +229,33 @@ export const ImageLightbox = memo(function ImageLightbox({
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const urls = useMemo(() => images.map((image) => image.url), [images]);
+  const initialKeyIndex = initialImageKey ? images.findIndex((image) => image.key === initialImageKey) : -1;
+  const initialIndex = initialKeyIndex >= 0 ? initialKeyIndex : lightboxInitialIndex(urls, initialUrl);
   const [activePage, setActivePage] = useState(() => {
-    const index = lightboxInitialIndex(urls, initialUrl);
-    return { key: images[index]?.key, url: images[index]?.url, index };
+    const image = images[initialIndex];
+    return { key: image?.key, url: image?.url, galleryImageKey: image?.payload.galleryImageKey, index: initialIndex };
   });
   // 地址升级或相邻附件就绪时，页码跟随图片身份，不跟随旧数组下标。
   // 普通消息在流式工作组收尾时会换 key，仍按原地址找回；删除当前页才钳制下标。
   const keyIndex = images.findIndex((image) => image.key === activePage.key);
-  const urlIndex = keyIndex < 0 ? images.findIndex((image) => image.url === activePage.url) : -1;
+  // Stable attachment keys distinguish duplicate URLs. A missing key means replacement/removal;
+  // URL fallback is only for ordinary message pages whose render keys can be rebuilt.
+  const urlIndex = keyIndex < 0 && !activePage.galleryImageKey
+    ? images.findIndex((image) => image.url === activePage.url) : -1;
   const activeIndex = keyIndex >= 0 ? keyIndex : urlIndex >= 0 ? urlIndex
     : Math.max(0, Math.min(activePage.index, images.length - 1));
   const activePageKey = images[activeIndex]?.key;
   const activePageUrl = images[activeIndex]?.url;
+  const activeGalleryImageKey = images[activeIndex]?.payload.galleryImageKey;
   // 记住这次实际显示的身份与位置；换图或钳制后，后续更新继续跟随新图，不能找回旧图。
   useLayoutEffect(() => {
     if (activePageKey === undefined || activePageUrl === undefined) return;
     setActivePage((previous) => previous.key === activePageKey
       && previous.url === activePageUrl && previous.index === activeIndex
+      && previous.galleryImageKey === activeGalleryImageKey
       ? previous
-      : { key: activePageKey, url: activePageUrl, index: activeIndex });
-  }, [activePageKey, activePageUrl, activeIndex]);
+      : { key: activePageKey, url: activePageUrl, galleryImageKey: activeGalleryImageKey, index: activeIndex });
+  }, [activePageKey, activePageUrl, activeGalleryImageKey, activeIndex]);
   const [zoomed, setZoomed] = useState(false);
   /** 捏合/平移进行中 chrome 不接收触摸,避免底栏抢走双指。 */
   const [chromeInteractive, setChromeInteractive] = useState(true);
@@ -736,11 +746,12 @@ export const ImageLightbox = memo(function ImageLightbox({
           decelerationRate="fast"
           getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
           horizontal
-          initialScrollIndex={lightboxInitialIndex(urls, initialUrl)}
+          initialScrollIndex={initialIndex}
           keyExtractor={(image) => image.key}
           onMomentumScrollEnd={(event) => {
             const index = lightboxPageIndex(event.nativeEvent.contentOffset.x, width, images.length);
-            setActivePage({ key: images[index]?.key, url: images[index]?.url, index });
+            const image = images[index];
+            setActivePage({ key: image?.key, url: image?.url, galleryImageKey: image?.payload.galleryImageKey, index });
           }}
           pagingEnabled
           ref={listRef}

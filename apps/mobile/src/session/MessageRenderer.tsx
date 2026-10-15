@@ -2903,6 +2903,7 @@ export function MessageRenderer({
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
+          initialImageKey={payload.galleryImageKey}
           initialUrl={lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]?.url ?? payload.media.url}
           onClose={closePayload}
           onReleaseRemoteMedia={onReleaseRemoteMedia}

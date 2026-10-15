@@ -377,6 +377,29 @@ describe('pending image gallery updates', () => {
     expect(runtime.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 400 });
   });
 
+  it.each([0, 1])('follows the replacement of pending slot %i instead of a neighbor with the same old URL', async (index) => {
+    const original = thumbs.map((thumb) => ({ ...thumb, uri: 'https://example.invalid/duplicate.jpg' }));
+    const initial = collect(original);
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, onShareImage });
+    act(() => runtime.nodes.get('FlatList').onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: index * 400 } } }));
+    const replacement = { ...original[index], key: `${original[index].key}:replaced`, uri: 'https://example.invalid/replacement.jpg' };
+    props.images = collect(original.map((thumb, slot) => slot === index ? replacement : thumb));
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe(`${index + 1} / 2`);
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0].url).toBe(replacement.uri);
+  });
+
+  it.each([0, 1])('opens the clicked pending slot %i when multiple attachments have the same URL', (index) => {
+    const images = collect(thumbs.map((thumb) => ({ ...thumb, uri: 'https://example.invalid/duplicate.jpg' })));
+    mount({ images, initialUrl: images[index].url, initialImageKey: images[index].key });
+    const list = runtime.nodes.get('FlatList');
+    expect(list.initialScrollIndex).toBe(index);
+    expect(list.renderItem({ item: images[index], index }).props.active).toBe(true);
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe(`${index + 1} / 2`);
+  });
+
   it('keeps the replacement and its annotation when an earlier image becomes readable', async () => {
     const initial = collect([thumbs[1]]);
     const replacement = { ...thumbs[1], key: `${thumbs[1].key}:replacement`, uri: 'file:///replacement.jpg' };
@@ -547,7 +570,8 @@ describe('pending image gallery updates', () => {
   });
 
   it('keeps ordinary message pages selected when a completed work group rebuilds its keys', async () => {
-    const initial = collect(thumbs);
+    // Ordinary message pages have no stable pending attachment identity.
+    const initial = collect(thumbs).map((image) => ({ ...image, payload: { ...image.payload, galleryImageKey: undefined } }));
     const onShareImage = vi.fn();
     const { props, render } = mount({ images: initial, initialUrl: initial[1].url, onShareImage });
     props.images = initial.map((image) => ({ ...image, key: `completed:${image.key}` }));
