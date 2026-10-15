@@ -14,6 +14,10 @@ export const mcpAppSchemePrivilege = {
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
 };
 const frameHeader = 'X-Cindy-Mcp-App-Frame';
+let callerCleanup: ((caller: string) => Promise<void>) | undefined;
+export function setMcpAppCallerCleanup(cleanup?: (caller: string) => Promise<void>): void {
+  callerCleanup = cleanup;
+}
 const documents = new Map<
   string,
   {
@@ -116,13 +120,14 @@ export function registerMcpAppProtocol(): void {
   app.on('web-contents-created', (_event, contents) => {
     // A crashed/reloaded renderer cannot unmount its old documents; reload reuses its caller ID.
     const caller = `renderer:${contents.id}`;
-    const releaseRemoteDocuments = () => {
+    const releaseCaller = () => {
       for (const [id, entry] of documents) if (entry.caller === caller) documents.delete(id);
+      void callerCleanup?.(caller).catch(() => {});
     };
-    contents.on('destroyed', releaseRemoteDocuments);
-    contents.on('render-process-gone', releaseRemoteDocuments);
+    contents.on('destroyed', releaseCaller);
+    contents.on('render-process-gone', releaseCaller);
     contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-      if (isMainFrame && !isInPlace) releaseRemoteDocuments();
+      if (isMainFrame && !isInPlace) releaseCaller();
     });
     // DOM keyboard events do not bubble out of a cross-origin App frame. Deliver
     // Escape to the trusted sandbox, which relays the exit to its own controller.

@@ -25,7 +25,7 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 | 工具输入 / 结果           | initialized 后先给完整 arguments，再给完整 ContentBlock、structuredContent 和 View-only `_meta`；模型结果去掉根 `_meta`                            | 初始化 / 顺序 / 结果互操作       |
 | 工具输入片段              | 可选；当前在工具调用时发送完整输入，无 partial 通知                                                                                                | 完整输入顺序测试                 |
 | 取消 / 销毁               | 标准 cancelled 与 resource-teardown；等待响应，有界退出，撤销本地供片                                                                              | 官方 SDK 与 Electron 集成        |
-| App 调工具                | 只连接产生该卡片的 MCP server；复用任务权限卡；审批后再次核对归属、清空与配置                                                                      | 可见性 / owner / 撤销 / IPC 回归 |
+| App 调工具                | 只连接产生该卡片的 MCP server；复用任务权限卡；审批后与结果返回前再次核对归属、清空与配置                                                          | 可见性 / owner / 撤销 / IPC 回归 |
 | MCP 资源与通知            | 转发 resources/read/list/templates、工具列表、prompts/list 与 list_changed；不开放任意 server 或 endpoint                                          | 官方 SDK、连接和操作测试         |
 | `ui/open-link`            | 仅 http/https，无内嵌凭证；在当前查看设备的系统浏览器打开，失败返回 RPC 错误                                                                       | controller / Host / URL 单测     |
 | `ui/message`              | 支持 text、resourceLink；原生命令转为普通文字，历史保留原文；保留 user role 和真实 App 来源，不作为主人授权；入队及最终派发前重新核验卡片和 View | 官方 SDK 互操作、来源与发送回归  |
@@ -48,6 +48,9 @@ Main 按 Chromium 的真实请求 frame、所属窗口、账号与供片记录�
 HTML、preload 返回值或 JavaScript Request。顶层 Renderer 的 message/poll/link-result
 操作被拒绝；它只观察初始化、尺寸、显示模式等界面状态，不能伪造 App 调用或 Host 结果。
 回归见 `sandboxProtocol.test.ts`、`sandboxBridge.test.ts` 与真实 Electron 沙箱验证。
+App 发起的工具调用与工具、资源、模板、提示列表及资源读取在上游完成后，交付结果前再次核验
+当前 View、卡片、账号、服务器配置和取消信号；撤权后的晚到结果被丢弃，不重放上游调用。
+回归见 `viewAuthorization.test.ts`。
 
 Mobile 的可信外层 proxy 不跳转页面，App 通过只有 `allow-scripts` 的不透明来源 iframe
 加载；App 与其后代都不能跳转顶层页面或打开弹窗。Android 的 WebView 导航回调没有
@@ -99,8 +102,10 @@ Desktop 卡片仅在可见时打开，离屏或窗口隐藏时释放 View，重�
 Desktop 在此期间保留隐藏 iframe 与回执监听。Mobile 原生 WebView 无法保留到
 异步卸载完成时，只能尽力提前通知，未收到回执仍在同一上限后回收 Host View。
 回归见 `packages/maker-shared/src/__tests__/mcpAppController.test.ts`。
-查看远端卡片的 Renderer 重载、崩溃或销毁时，Main 回收该 Renderer 的 HTML 供片和额度；
-同文档导航、子 frame 导航、其他窗口与本地 Host 的供片不受影响。
+承载本地或远端卡片的 Renderer 重载、崩溃或销毁时，Main 同时回收该 Renderer 的 HTML
+供片和 Host View，立即释放额度，并取消该查看端尚未完成的加载，拒绝晚到 View；同文档
+导航、子 frame 导航、其他窗口和设备的 View 及仍被使用的连接不受影响。
+回归见 `sandboxProtocol.test.ts` 与 `openLifecycle.test.ts`。
 单次模型上下文 128 KB，每个任务总计 512 KB。Host 资源加载最多 90 秒，远程打开
 请求等待 120 秒；文档到达后再给 App 45 秒初始化。控制端取消或丢失打开回执时，
 使用可选 `openId` 和 `cancel-open` 回收该次加载或晚到 View，不影响其他查看端。

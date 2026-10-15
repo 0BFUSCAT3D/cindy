@@ -27,6 +27,52 @@ function fixture() {
   return { host, resource, disposeDocument, connection };
 }
 describe('MCP App open cancellation', () => {
+  it('reclaims a reloaded caller quota immediately without closing shared connections', async () => {
+    const f = fixture();
+    const old = [];
+    for (let i = 0; i < 16; i++) old.push(await f.host.open('renderer:1', 'task', 'card', {}));
+    const other = await f.host.open('renderer:2', 'task', 'card', {});
+    const phone = await f.host.open('device:phone', 'task', 'card', {});
+    await expect(f.host.open('renderer:1', 'task', 'card', {})).rejects.toThrow('MCP_APP_VIEW_LIMIT');
+
+    const cleanup = f.host.releaseCaller('renderer:1');
+    // No sweep, asynchronous iframe teardown or connection shutdown may delay reuse.
+    expect(f.disposeDocument).toHaveBeenCalledTimes(16);
+    for (const document of old) {
+      expect(f.disposeDocument).toHaveBeenCalledWith(document.viewId);
+      expect(() => f.host.context('renderer:1', 'task', document.viewId, {})).toThrow('MCP_APP_VIEW_UNAVAILABLE');
+    }
+    for (let i = 0; i < 16; i++) await f.host.open('renderer:1', 'task', 'card', {});
+    await cleanup;
+    expect(() => f.host.context('renderer:2', 'task', other.viewId, {})).not.toThrow();
+    expect(() => f.host.context('device:phone', 'task', phone.viewId, {})).not.toThrow();
+    expect(f.connection.close).not.toHaveBeenCalled();
+  });
+
+  it('cancels only the exiting caller pending loads and refuses their late Views', async () => {
+    const f = fixture();
+    const data = await f.resource('ui://form');
+    let finish!: () => void;
+    f.resource.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(data); }));
+    const slow = f.host.open('renderer:1', 'task', 'card', {}, 'old');
+    const rejected = expect(slow).rejects.toThrow('MCP_APP_OPEN_CANCELLED');
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const other = await f.host.open('renderer:2', 'task', 'card', {});
+    let finishOther!: () => void;
+    f.resource.mockImplementationOnce(() => new Promise((resolve) => { finishOther = () => resolve(data); }));
+    const otherPending = f.host.open('device:phone', 'task', 'card', {});
+    await vi.waitFor(() => expect(finishOther).toBeDefined());
+    await f.host.releaseCaller('renderer:1');
+    await rejected;
+    finish();
+    finishOther();
+    expect(await otherPending).toHaveProperty('viewId');
+    expect(() => f.host.context('renderer:2', 'task', other.viewId, {})).not.toThrow();
+    expect(f.disposeDocument).not.toHaveBeenCalled();
+    expect(f.connection.close).not.toHaveBeenCalled();
+    for (let i = 0; i < 16; i++) await f.host.open('renderer:1', 'task', 'card', {}, `replacement-${i}`);
+  });
+
   it('cancels a pending open without touching another controller or replaying anything', async () => {
     const f = fixture();
     const healthy = await f.host.open('device:healthy', 'task', 'card', {}, 'same-id');

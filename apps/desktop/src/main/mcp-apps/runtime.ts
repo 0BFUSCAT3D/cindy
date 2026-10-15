@@ -1,11 +1,12 @@
 import type { AppServerConfig } from './connection.js';
 import type { McpAppsHost, McpAppModelContext } from './host.js';
-import { clearMcpAppDocuments } from './sandboxProtocol.js';
+import { clearMcpAppDocuments, setMcpAppCallerCleanup } from './sandboxProtocol.js';
 
 let host: McpAppsHost | undefined;
 const configs = new Map<string, () => AppServerConfig>();
 export function setMcpAppsHost(value: McpAppsHost): void {
   host = value;
+  setMcpAppCallerCleanup((caller) => value.releaseCaller(caller));
 }
 export function getMcpAppsHost(): McpAppsHost {
   if (!host) throw new Error('MCP_APPS_NOT_READY');

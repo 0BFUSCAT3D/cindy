@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { app, protocol, session, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
+import type { McpAppsHost } from '../host.js';
+import { setMcpAppsHost } from '../runtime.js';
 vi.mock('electron', async (original) => {
   const electron = await original<typeof import('electron')>();
   return {
@@ -33,10 +35,12 @@ import {
   isMcpAppFrameNavigationAllowed,
   isMcpAppPermissionRequest,
   supplyMcpAppDocument,
+  setMcpAppCallerCleanup,
   unmountRemoteAppDocument,
 } from '../sandboxProtocol.js';
 afterEach(() => {
   clearMcpAppDocuments();
+  setMcpAppCallerCleanup();
   app.removeAllListeners('web-contents-created');
   vi.restoreAllMocks();
   state.owner = {};
@@ -187,8 +191,10 @@ describe('MCP App local protocol isolation', () => {
     expect(() => assertMcpAppDocumentCaller(id, 'renderer:1')).toThrow('MCP_APP_VIEW_UNAVAILABLE');
   });
   it.each(['destroyed', 'render-process-gone', 'reload'] as const)(
-    'reclaims only the affected renderer remote documents on %s',
+    'reclaims only the affected renderer documents and Host Views on %s',
     async (cause) => {
+      const releaseCaller = vi.fn(async () => {});
+      setMcpAppsHost({ releaseCaller } as unknown as McpAppsHost);
       let handler!: (request: Request) => Promise<Response> | Response;
       vi.spyOn(protocol, 'handle').mockImplementation((_scheme, callback) => {
         handler = callback;
@@ -207,8 +213,10 @@ describe('MCP App local protocol isolation', () => {
       contents.emit('did-start-navigation', {}, 'cindy://app#task', true, true);
       contents.emit('did-start-navigation', {}, 'cindy-mcp-app://view/resource', false, false);
       expect(() => assertMcpAppDocumentCaller(oldIds[0], 'renderer:1')).not.toThrow();
+      expect(releaseCaller).not.toHaveBeenCalled();
       if (cause === 'reload') contents.emit('did-start-navigation', {}, 'cindy://app', false, true);
       else contents.emit(cause);
+      expect(releaseCaller).toHaveBeenCalledExactlyOnceWith('renderer:1');
 
       for (const id of oldIds) {
         expect(() => assertMcpAppDocumentCaller(id, 'renderer:1')).toThrow(

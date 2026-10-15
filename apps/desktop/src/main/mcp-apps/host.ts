@@ -137,7 +137,7 @@ export function appServerRevision(config: AppServerConfig): string {
 /** One official AppBridge per View; all requests are bound to a host-verified card. */
 export class McpAppsHost {
   private readonly views = new Map<string, View>();
-  private readonly opening = new Map<string, { owner: object; abort: AbortController }>();
+  private readonly opening = new Map<string, { owner: object; caller: string; abort: AbortController }>();
   private readonly cancelledOpens = new Map<string, { owner: object; until: number }>();
   private readonly connections = new Map<
     string,
@@ -200,7 +200,7 @@ export class McpAppsHost {
     this.pruneCancelledOpens();
     if (this.cancelledOpens.get(key)?.owner === owner) throw new Error('MCP_APP_OPEN_CANCELLED');
     if (this.opening.has(key) || this.opening.size >= 256) throw new Error('MCP_APP_VIEW_LIMIT');
-    const pending = { owner, abort: new AbortController() };
+    const pending = { owner, caller, abort: new AbortController() };
     this.opening.set(key, pending);
     const timer = setTimeout(() => pending.abort.abort(new Error('MCP_APP_OPEN_TIMEOUT')), 90_000);
     let onAbort!: () => void;
@@ -235,6 +235,18 @@ export class McpAppsHost {
           view.sessionId === sessionId && view.openId === openId)
         await this.disposeView(id, view);
     }
+  }
+
+  async releaseCaller(caller: string): Promise<void> {
+    for (const pending of this.opening.values())
+      if (pending.caller === caller) pending.abort.abort(new Error('MCP_APP_OPEN_CANCELLED'));
+    // The renderer and its iframes are already gone. Revoke Views synchronously,
+    // without waiting for teardown or the idle sweep, before its replacement opens.
+    await Promise.allSettled(
+      [...this.views]
+        .filter(([, view]) => view.caller === caller)
+        .map(([id, view]) => this.disposeView(id, view)),
+    );
   }
 
   private pruneCancelledOpens(): void {
@@ -363,6 +375,14 @@ export class McpAppsHost {
         signal.throwIfAborted();
         return current;
       };
+      const currentResult = async <T>(pending: Promise<T>, signal: AbortSignal): Promise<T> => {
+        const result = await pending;
+        // Authorization can change while the server is working. Discard the late
+        // result before AppBridge can send it; never replay the upstream request.
+        await assertCurrent();
+        signal.throwIfAborted();
+        return result;
+      };
       bridge.oninitialized = () => {
         if (view.initialized || !bridge.getAppCapabilities()) return;
         view.initialized = true;
@@ -383,29 +403,34 @@ export class McpAppsHost {
         if (!target || !toolVisibleTo(target, 'app')) throw new Error('MCP_APP_TOOL_NOT_VISIBLE');
         await this.deps.authorizeTool(sessionId, target, params.arguments ?? {}, extra.signal);
         const client = await currentClient(extra.signal);
-        return (await client.callTool(params, CallToolResultSchema, {
-          signal: extra.signal,
-        })) as CallToolResult;
+        return (await currentResult(
+          client.callTool(params, CallToolResultSchema, { signal: extra.signal }),
+          extra.signal,
+        )) as CallToolResult;
       };
-      bridge.setRequestHandler(ListToolsRequestSchema, async () => {
+      bridge.setRequestHandler(ListToolsRequestSchema, async (_params, extra) => {
         await assertCurrent();
-        return { tools: (await connection.tools()).filter((item) => toolVisibleTo(item, 'app')) };
+        const tools = await currentResult(connection.tools(extra.signal), extra.signal);
+        return { tools: tools.filter((item) => toolVisibleTo(item, 'app')) };
       });
       bridge.onreadresource = async (params, extra) => {
         const client = await currentClient(extra.signal);
-        return client.readResource(params, { signal: extra.signal });
+        return currentResult(client.readResource(params, { signal: extra.signal }), extra.signal);
       };
       bridge.onlistresources = async (params, extra) => {
         const client = await currentClient(extra.signal);
-        return client.listResources(params, { signal: extra.signal });
+        return currentResult(client.listResources(params, { signal: extra.signal }), extra.signal);
       };
       bridge.onlistresourcetemplates = async (params, extra) => {
         const client = await currentClient(extra.signal);
-        return client.listResourceTemplates(params, { signal: extra.signal });
+        return currentResult(
+          client.listResourceTemplates(params, { signal: extra.signal }),
+          extra.signal,
+        );
       };
       bridge.onlistprompts = async (params, extra) => {
         const client = await currentClient(extra.signal);
-        return client.listPrompts(params, { signal: extra.signal });
+        return currentResult(client.listPrompts(params, { signal: extra.signal }), extra.signal);
       };
       bridge.onmessage = async (params) => {
         await assertCurrent();
