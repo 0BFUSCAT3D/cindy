@@ -611,6 +611,9 @@ import {
   ensureCodexMcpBridgeStartedForRemote,
   finalizeCodexAfterAuthModeChange,
   getMaker,
+  listCodexGatewayHostKeys,
+  refreshCodexGatewayHost,
+  setCodexGatewayKeyRefreshHook,
   listSshCodexProviders,
   disposeRemoteCodexHostAfterRestart,
   getMakerIfReady,
@@ -1224,6 +1227,7 @@ import {
   runMemoryChangeWithCodexRestart,
   type MemoryChangeParts,
 } from './deferredCodexRestart.js';
+import { GatewayCodexRestartService } from './gatewayCodexRestart.js';
 import {
   createDeferredRestartSettledWake,
   createDeferredRestartQueueGate,
@@ -4060,6 +4064,7 @@ function settlePendingCredentialSwitch(sessionId: string, source: string): void 
 // 路径经 holder 调用; 未注入时 no-op。
 let refreshRemoteCodexMcpOnTurnSettledHolder: ((sessionId: string) => void) | null = null;
 let deferredCodexRestartHolder: DeferredCodexRestartService | null = null;
+let gatewayCodexRestartHolder: GatewayCodexRestartService | null = null;
 let pendingAgentSwitchApplyHolder:
   ((
     sessionId: string,
@@ -4293,6 +4298,7 @@ export function isSessionTurnPendingCompletion(sessionId: string): boolean {
  */
 export function clearDeferredCodexRestartForOwnerBoundary(): void {
   deferredCodexRestartHolder?.clear();
+  gatewayCodexRestartHolder?.clear();
 }
 
 /** Reuse the owner-scoped idle retry for settings whose persistence already succeeded. */
@@ -5114,6 +5120,7 @@ async function settleSilentStopDone(
   settlePendingCredentialSwitch(sessionId, `silent-stop:${reason}`);
   settlePendingSessionRuntimeControlHolder?.(sessionId, `silent-stop:${reason}`);
   deferredCodexRestartHolder?.onSessionSettled();
+  gatewayCodexRestartHolder?.onSessionSettled();
   agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
   refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
   fireSilentStopSettled(sessionId, reason);
@@ -5438,6 +5445,7 @@ function cleanupClosedSessionRuntime(session: WiredSession): void {
   // 会话关闭:兑现延迟凭证切换(直接写 route),并唤醒被它挡住的等待者。
   pendingCredentialSwitchHolder?.onSessionClosed(session.id);
   deferredCodexRestartHolder?.onSessionSettled();
+  gatewayCodexRestartHolder?.onSessionSettled();
   agentInputCoordinatorHolder?.onExternalTurnSettled(session.id);
   try {
     refreshRemoteCodexMcpOnTurnSettledHolder?.(session.id);
@@ -5595,6 +5603,9 @@ const sessionEventDependencies: SessionEventDependencies = {
   },
   get deferredCodexRestartHolder() {
     return deferredCodexRestartHolder;
+  },
+  get gatewayCodexRestartHolder() {
+    return gatewayCodexRestartHolder;
   },
   get refreshRemoteCodexMcpOnTurnSettledHolder() {
     return refreshRemoteCodexMcpOnTurnSettledHolder;
@@ -17114,6 +17125,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         settlePendingCredentialSwitch(sessionId, `reconcile:${source}`);
         settlePendingSessionRuntimeControlHolder?.(sessionId, `reconcile:${source}`);
         deferredCodexRestartHolder?.onSessionSettled();
+        gatewayCodexRestartHolder?.onSessionSettled();
         agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
         refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
       } catch (err) {
@@ -17178,6 +17190,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settlePendingCredentialSwitch(sessionId, `reconcile:${source}`);
       settlePendingSessionRuntimeControlHolder?.(sessionId, `reconcile:${source}`);
       deferredCodexRestartHolder?.onSessionSettled();
+      gatewayCodexRestartHolder?.onSessionSettled();
       agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
       refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
     } catch (err) {
@@ -18020,7 +18033,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       hasPendingCredentialSwitchEntry: (sessionId) =>
         pendingCredentialSwitchHolder?.has(sessionId) === true,
       isSessionRestarting: (sessionId) =>
-        deferredCodexRestartHolder?.isSessionRestarting(sessionId) === true,
+        deferredCodexRestartHolder?.isSessionRestarting(sessionId) === true ||
+        gatewayCodexRestartHolder?.isSessionRestarting(sessionId) === true,
     }),
     emitProjection: (projection) => {
       broadcastToAllWindows(MAKER_PUSH.INPUT_PROJECTION, projection);
@@ -18400,11 +18414,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     logger: log,
   });
   deferredCodexRestartHolder = deferredCodexRestartService;
+  const gatewayCodexRestartService = new GatewayCodexRestartService({
+    listHostKeys: listCodexGatewayHostKeys,
+    restartHost: refreshCodexGatewayHost,
+    hasBusySession: (hostKey) => maker.listActiveSessions().some(session =>
+      session.agentKind === 'codex' && !session.remoteHostId &&
+      (session.codexHostKey ?? 'local') === hostKey && isLocalSessionBusy(session, isSessionInTurn)),
+    listSessionIds: (hostKey) => maker.listActiveSessions().filter(session =>
+      session.agentKind === 'codex' && !session.remoteHostId &&
+      (session.codexHostKey ?? 'local') === hostKey).map(session => session.id),
+    onQueueGateReleased: createDeferredRestartSettledWake({
+      wakeSession: (sessionId, reason) => inputCoordinator.wakeSession(sessionId, reason),
+    }),
+    logger: log,
+  });
+  gatewayCodexRestartHolder = gatewayCodexRestartService;
+  setCodexGatewayKeyRefreshHook(() => gatewayCodexRestartService.schedule());
   // 新本地 Codex 会话加入 shared host 前先尝试兑现 pending 的延迟重启,
   // 让它直接在新状态的 fresh host 上起跑(maker-host onBeforeStart 接线)。
-  setBeforeLocalCodexSessionStartHook(() =>
-    deferredCodexRestartService.flushBeforeLocalCodexSessionStart(),
-  );
+  setBeforeLocalCodexSessionStartHook(async () => {
+    await gatewayCodexRestartService.flushBeforeLocalCodexSessionStart();
+    await deferredCodexRestartService.flushBeforeLocalCodexSessionStart();
+  });
 
   const requireSessionId = (value: unknown): string => {
     if (typeof value !== 'string' || value.length === 0) {
