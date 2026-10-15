@@ -9215,7 +9215,7 @@
         "openTopic": "查看话题 · {{count}} 条回复",
         "topic": "话题",
         "replies": "回复",
-        "replyCount": "{{count}} 条回复",
+        "replyCount_other": "{{count}} 条回复",
         "replyPlaceholder": "回复这条消息，可用 @ 点名伙伴…",
         "sendReply": "发送回复",
         "addReaction": "添加表情回应",

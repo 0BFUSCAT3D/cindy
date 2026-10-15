@@ -9215,7 +9215,7 @@
         "openTopic": "스레드 보기 · 답글 {{count}}개",
         "topic": "스레드",
         "replies": "답글",
-        "replyCount": "답글 {{count}}개",
+        "replyCount_other": "답글 {{count}}개",
         "replyPlaceholder": "이 메시지에 답글을 쓰세요. @로 파트너를 멘션할 수 있어요…",
         "sendReply": "답글 보내기",
         "addReaction": "이모지 반응 추가",

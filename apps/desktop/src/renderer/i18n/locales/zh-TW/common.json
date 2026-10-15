@@ -9215,7 +9215,7 @@
         "openTopic": "查看話題 · {{count}} 則回覆",
         "topic": "話題",
         "replies": "回覆",
-        "replyCount": "{{count}} 則回覆",
+        "replyCount_other": "{{count}} 則回覆",
         "replyPlaceholder": "回覆這則訊息，可用 @ 點名夥伴…",
         "sendReply": "傳送回覆",
         "addReaction": "新增表情回應",

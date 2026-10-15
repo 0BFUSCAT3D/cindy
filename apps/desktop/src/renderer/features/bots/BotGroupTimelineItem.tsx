@@ -283,6 +283,12 @@ function SystemLine({ children, testId }: { children: ReactNode; testId?: string
   );
 }
 
+/** A task card is live only for a member of this group whose teammate is mine; unknown authors are snapshots. */
+export function botGroupTaskOwned(authorBotId: string | null, members: readonly BotGroupMemberView[]): boolean {
+  const author = authorBotId ? members.find((member) => member.botId === authorBotId) : undefined;
+  return author !== undefined && author.isOwned !== false;
+}
+
 function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
   const { t } = useTranslation();
   const { message, continued, authorName, members, mentionLabels, locale, shareScope, sharing } = props;
@@ -437,12 +443,11 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           ) : (
             <div className="flex min-w-0 flex-col gap-1">
               {quote}
-              {/* A task this teammate started from the group; mine is live, another owner's is a snapshot. */}
+              {/* A task this teammate started from the group; mine is live, another owner's is a snapshot.
+                  An author no longer in the group is unknown: its task may run on another computer, so
+                  it stays a snapshot rather than a lookup on this one. */}
               {message.task ? (
-                <BotGroupTaskCard
-                  task={message.task}
-                  owned={props.members.find(m => m.botId === message.authorBotId)?.isOwned !== false}
-                />
+                <BotGroupTaskCard task={message.task} owned={botGroupTaskOwned(message.authorBotId, members)} />
               ) : null}
               {hasText ? (
                 <div className={`min-w-0 text-[var(--msg-assistant-text)] ${BOT_GROUP_BODY_CLASS}`}>

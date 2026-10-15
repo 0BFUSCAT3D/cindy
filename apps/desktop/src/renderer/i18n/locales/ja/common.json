@@ -9215,7 +9215,7 @@
         "openTopic": "スレッドを表示 · {{count}} 件の返信",
         "topic": "スレッド",
         "replies": "返信",
-        "replyCount": "返信 {{count}} 件",
+        "replyCount_other": "返信 {{count}} 件",
         "replyPlaceholder": "このメッセージに返信。@ でパートナーを指定できます…",
         "sendReply": "返信を送信",
         "addReaction": "リアクションを追加",
