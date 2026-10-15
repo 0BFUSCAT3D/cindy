@@ -387,6 +387,12 @@ export interface BotGroupRoundView {
 
 export interface BotGroupSummary {
   serverBacked?: boolean;
+  /** Explicit server capabilities; absent on old servers/hosts. */
+  supportsDissolve?: boolean;
+  /** Upgraded host forwards leave explicitly; absent on old compatibility hosts. */
+  supportsGroupLeave?: boolean;
+  supportsListRemoval?: boolean;
+  dissolvedAt?: string | null;
   archived?: boolean;
   migrationPending?: boolean;
   canInvite?: boolean;
@@ -446,6 +452,9 @@ export type BotGroupErrorCode =
   | 'PERMISSION_DENIED'
   | 'SERVICE_ERROR'
   | 'GROUP_ARCHIVED'
+  | 'GROUP_DISSOLVED'
+  | 'LIFECYCLE_UNAVAILABLE'
+  | 'LAST_OWNER'
   | 'INVALID_PARAMS'
   | 'REVISION_CONFLICT'
   | 'NOT_FOUND'
@@ -537,11 +546,13 @@ export interface BotGroupGetOptions {
   shownShares?: Array<{ id: string; messageId: string; threadRootId: string; sharerId?: string }>;
 }
 
-export type BotGroupChange = 'created' | 'updated' | 'deleted' | 'messages' | 'round' | 'plan';
+export type BotGroupChange = 'created' | 'updated' | 'deleted' | 'messages' | 'round' | 'plan' | 'list';
 
 export interface BotGroupChangedPayload {
   groupId: string;
   change: BotGroupChange;
+  /** Personal state, only emitted after an authoritative account-scoped reply/event. */
+  listState?: { hidden: boolean; revision: number };
 }
 
 export function isBotGroupNoReplyText(text: string): boolean {
@@ -572,7 +583,7 @@ export const BOT_GROUP_MEMBER_LINK_REL = 'member';
  * Remote actions. `create` is collection-level ({ name, botIds }); the others target a group:
  * `send` ({ text, mentions, clientId, division? }), `continue`, `stop`, `update`
  * ({ name?, replyMode?, speakingMode?, organizerBotId? } — never a host path),
- * `set-members` ({ botIds }), `remove-member` ({ actorId }, capability-gated), `delete`, `plan-start` / `plan-dismiss` / `plan-continue` /
+ * `set-members` ({ botIds }), `dissolve` ({ expectedRevision }), `leave`, `hide`, `remove-member` ({ actorId }, capability-gated), `delete`, `plan-start` / `plan-dismiss` / `plan-continue` /
  * `plan-retry` ({ planId }) and `plan-edit` ({ planId, position, action, botId? }).
  * A refused action fails with the `BotGroupErrorCode` as its message.
  */
@@ -586,6 +597,9 @@ export type BotGroupRemoteActionId =
   | 'add-member'
   | 'remove-member'
   | 'delete'
+  | 'dissolve'
+  | 'leave'
+  | 'hide'
   | 'plan-start'
   | 'plan-dismiss'
   | 'plan-continue'
@@ -672,9 +686,11 @@ export type ChatGroupAction =
   | { type: 'member'; actorId: string; action: 'invite' | 'leave' | 'remove' | 'ban' | 'unban' | 'role'; role?: 'admin' | 'member' }
   | { type: 'transfer'; actorId: string }
   | { type: 'botAccess'; actorId: string; access: 'none' | 'chat' | 'tools'; expectedRevision: number }
+  | { type: 'dissolve'; expectedRevision: number }
+  | { type: 'hide' }
   | { type: 'archive'; archived: boolean; expectedRevision: number };
 export interface ChatServerApi {
-  manage(input: { groupId: string; action: ChatGroupAction }): Promise<ChatServerResult<Record<never, never>>>;
+  manage(input: { groupId: string; action: ChatGroupAction }): Promise<ChatServerResult<{ listState?: { conversationId: string; hidden: boolean; revision: number } }>>;
   /** `botId` is the local teammate id behind each Chat Server actor. */
   ownedBots(): Promise<ChatServerResult<{ bots: Array<{ actorId: string; botId?: string; name: string }> }>>;
   refreshProfile(): Promise<ChatServerResult<Record<never, never>>>;

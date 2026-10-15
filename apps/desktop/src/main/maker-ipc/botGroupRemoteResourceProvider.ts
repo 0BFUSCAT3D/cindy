@@ -385,6 +385,14 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
         ? request.resourceRef.id
         : null;
       if (!groupId) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
+      // Personal state is authorized by the account's historical membership, even after leave.
+      if (actionId === 'hide') {
+        const server = ownerService().chatServer;
+        if (!server) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'LIFECYCLE_UNAVAILABLE');
+        const hidden = await server.manage({ groupId, action: { type: 'hide' } });
+        if (!hidden.ok) refuse(chatGroupFailure(new Error(hidden.errorCode)));
+        return { result: { listState: hidden.listState }, effects: [{ kind: 'refresh-collection', collectionId: BOT_GROUP_REMOTE_COLLECTION_ID }] };
+      }
       // Every action re-checks that the phone may still see this group, and any teammate it names.
       const visibleGroup = await readVisibleGroup(groupId);
       // New controllers bind a write to the snapshot they edited. Older controllers
@@ -456,6 +464,18 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
         case 'add-member':
           result = await current.setMembers({ groupId, botIds: [input.botId as string], addOnly: true });
           break;
+        case 'dissolve':
+        case 'leave': {
+          if (!visibleGroup.serverBacked || !current.chatServer)
+            throw new RemoteResourceRegistryError('INVALID_PARAMS', 'LIFECYCLE_UNAVAILABLE');
+          const self = visibleGroup.members.find(member => member.isSelf);
+          if (actionId === 'leave' && !self?.actorId) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'NOT_FOUND');
+          const receipt = await current.chatServer.manage({ groupId, action: actionId === 'dissolve'
+            ? { type: 'dissolve', expectedRevision: input.expectedRevision as number }
+            : { type: 'member', action: 'leave', actorId: self!.actorId! } });
+          if (!receipt.ok) refuse(chatGroupFailure(new Error(receipt.errorCode)));
+          return { effects: [{ kind: 'refresh-collection', collectionId: BOT_GROUP_REMOTE_COLLECTION_ID }] };
+        }
         case 'delete':
           if (visibleGroup.serverBacked && input.expectedRevision !== undefined) {
             if (!current.chatServer || !visibleGroup.members.some(member => member.isOwned && member.role === 'owner'))

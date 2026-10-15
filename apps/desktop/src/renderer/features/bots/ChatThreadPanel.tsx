@@ -132,6 +132,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const titleId = useId();
   const shareScope = `bot-group:${group.id}:thread:${rootId}`;
   const sharing = useShareSelectionActive(shareScope);
+  const readOnly = Boolean(group.archived || group.dissolvedAt);
   const contentRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -222,7 +223,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
 
   /** One server operation per reply and person, so a retry never posts twice. */
   async function postToMain(messageId: string, fromComposer: boolean) {
-    if (postingRef.current.has(messageId)) return false;
+    if (readOnly || postingRef.current.has(messageId)) return false;
     postingRef.current.add(messageId); setPosting(new Set(postingRef.current));
     const owner = getDataOwnerGeneration();
     const failed = (code?: string) => {
@@ -254,7 +255,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     }
   }
   async function send() {
-    if (group.archived || sending.current || !text.trim()) return;
+    if (readOnly || sending.current || !text.trim()) return;
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
     const toMain = alsoSend;
@@ -307,7 +308,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
             const shared = sharedState(message.id);
             return <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message}
               shared={shared} posting={posting.has(message.id)}
-              onPost={group.archived ? undefined : () => void postToMain(message.id, false)}
+              onPost={readOnly ? undefined : () => void postToMain(message.id, false)}
               onReveal={shared?.shareId ? () => revealShare(shared.shareId!) : undefined}
               onChanged={() => void loadRef.current()} />;
           })}
@@ -318,22 +319,22 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           {/* Kept apart from read errors: a thread refresh must not hide the retry. */}
           {unposted.size > 0 && <div role="alert" className="mb-2 px-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-13 text-[var(--error-fg)]">
             <span className="min-w-0">{t(key('thread.alsoSendFailed'), { count: unposted.size })}</span>
-            <Button variant="secondary" size="sm" compact loading={[...unposted].some(id => posting.has(id))} onClick={() => void retryUnposted()}>
+            <Button variant="secondary" size="sm" compact disabled={readOnly} loading={[...unposted].some(id => posting.has(id))} onClick={() => void retryUnposted()}>
               {t(key('thread.retryPost'))}</Button>
           </div>}
           {/* Read-only also means no @ picks while sending. */}
-          {busy ? null : mention.list}
+          {busy || readOnly ? null : mention.list}
           {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
           <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
             <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
               {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
-              maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
+              maxLength={8000} readOnly={busy} disabled={readOnly} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
                 if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
               }} />
             <div className={BOT_GROUP_COMPOSER_FOOTER}>
               <div className={BOT_GROUP_COMPOSER_FOOTER_START}>
-                <button type="button" role="checkbox" aria-checked={alsoSend} disabled={busy || group.archived}
+                <button type="button" role="checkbox" aria-checked={alsoSend} disabled={busy || readOnly}
                   onClick={() => setAlsoSend(value => !value)}
                   className="-ml-1.5 inline-flex min-h-7 min-w-0 select-none items-center gap-2 rounded-full px-1.5 text-13 text-[var(--text-secondary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50">
                   <span aria-hidden className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--motion-fast)]',
@@ -345,7 +346,7 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
               </div>
               <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
                 <Tip text={t(key('sendReply'))}>
-                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
+                  <SendButton ariaLabel={t(key('sendReply'))} disabled={readOnly || busy || !text.trim()} onClick={() => void send()} />
                 </Tip>
               </span>
             </div>

@@ -47,10 +47,42 @@ beforeEach(() => {
 afterEach(() => { cleanup(); shareSelectionStore.reset(); vi.unstubAllGlobals(); });
 
 describe('chat interaction controls', () => {
-  it('focuses the close button when the archived thread reply input is disabled', () => {
-    render(<ChatThreadPanel group={{ ...group, archived: true }} rootId="root" onClose={vi.fn()} />);
+  it.each([{ archived: true }, { archived: false, dissolvedAt: '2026-10-15T00:00:00.000Z' }])('keeps terminal thread replies read-only and focuses close (%j)', async state => {
+    render(<ChatThreadPanel group={{ ...group, ...state }} rootId="root" onClose={vi.fn()} />);
+    await screen.findByText('Root message');
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByRole('checkbox', { name: k('thread.alsoSend') }) as HTMLButtonElement).disabled).toBe(true);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'bots.close' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Unsent reply' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect((screen.getByRole('button', { name: k('sendReply') }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.reply).not.toHaveBeenCalled();
+  });
+
+  it.each(['GROUP_DISSOLVED', 'CONVERSATION_DISSOLVED'])('maps dissolution error %s to its explanation', code => {
+    expect(chatErrorKey(code)).toBe('bots.groupChat.lifecycle.dissolved');
+  });
+
+  it.each([{ archived: true }, { dissolvedAt: '2026-10-15T00:00:00.000Z' }])('stops sharing and retrying thread copies after the group becomes read-only (%j)', async state => {
+    const room = { ...group, id: `terminal-${JSON.stringify(state)}` };
+    mocks.thread.mockResolvedValue({ ok: true, root: message, replies: [{ ...message, id: 'reply', kind: 'message', content: 'Existing reply' }], hasMore: false });
+    mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+    mocks.shareToMain.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR' });
+    const view = render(<ChatThreadPanel group={room} rootId="root" onClose={vi.fn()} />);
+    await screen.findByText('Existing reply');
+    fireEvent.click(screen.getByRole('checkbox', { name: k('thread.alsoSend') }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Send to both' } });
+    fireEvent.click(screen.getByRole('button', { name: k('sendReply') }));
+    await screen.findByRole('button', { name: k('thread.retryPost') });
+    view.rerender(<Tooltip.Provider><ChatThreadPanel group={{ ...room, ...state }} rootId="root" onClose={vi.fn()} /></Tooltip.Provider>);
+    const retry = screen.getByRole('button', { name: k('thread.retryPost') }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(true);
+    fireEvent.click(retry);
+    const reply = screen.getByText('Existing reply').closest('article')!;
+    const more = within(reply).queryByRole('button', { name: 'chat.messageActionBar.moreActions' });
+    if (more) fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+    expect(screen.queryByRole('menuitem', { name: k('thread.postToMain') })).toBeNull();
+    expect(mocks.shareToMain).toHaveBeenCalledOnce();
   });
 
   it('refits a typed thread reply when the panel width changes, not when only its height does', () => {
