@@ -47,6 +47,8 @@ const mocks = vi.hoisted(() => ({
   getControlledState: vi.fn(),
   revoke: vi.fn(),
   thread: vi.fn(),
+  /** Live activity of the speaking Session (null = not running on this machine). */
+  activity: null as null | { compactDetail: string; startedAtMs: number | null; phase: string },
 }));
 
 // Partial: the shared attachment pieces pull in the app i18n instance, which needs initReactI18next.
@@ -96,7 +98,7 @@ vi.mock('../BotAvatar', () => ({
 vi.mock('../BotGenerationLabel', () => ({
   BotGenerationLabel: ({ phase }: { phase?: string }) => <span>{`phase:${phase}`}</span>,
 }));
-vi.mock('@/state/agentIslandActivity', () => ({ useAgentIslandActivity: () => null }));
+vi.mock('@/state/agentIslandActivity', () => ({ useAgentIslandActivity: () => mocks.activity }));
 
 beforeAll(() => {
   // jsdom has no layout; scrolling is a no-op here.
@@ -2322,6 +2324,30 @@ describe('Telegram / Slack-grade timeline', () => {
     expect(screen.getByTestId('bot-group-plan').textContent).toContain('bots.groupChat.elapsed.minutes');
     fireEvent.click(within(strip).getByRole('button', { name: 'bots.groupChat.progress.stop' }));
     await waitFor(() => expect(mocks.stopBotGroupRound).toHaveBeenCalledWith('g1'));
+  });
+
+  it('does not show the silence marker as the running step’s current action', async () => {
+    const running = plan({
+      status: 'running',
+      currentStep: 0,
+      steps: [{ ...plan().steps[0]!, status: 'running' }, plan().steps[1]!],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(running, [], {
+      speakingBotIds: ['mimi'],
+      round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: 'plan-mimi', activity: 'step' }], canContinue: false },
+    }) });
+    mocks.activity = { compactDetail: 'NO_REPLY', startedAtMs: Date.now() - 5_000, phase: 'running' };
+    try {
+      renderView();
+      const strip = await screen.findByTestId('bot-group-progress');
+      expect(strip.textContent).toContain('想清楚这页讲什么');
+      expect(strip.textContent).not.toContain('NO_REPLY');
+      mocks.activity = { compactDetail: '正在读 README.md', startedAtMs: Date.now() - 5_000, phase: 'running' };
+      fireEvent.click(within(strip).getByRole('button', { name: 'bots.groupChat.progress.viewProcess' }));
+      await waitFor(() => expect(screen.getByTestId('bot-group-progress').textContent).toContain('正在读 README.md'));
+    } finally {
+      mocks.activity = null;
+    }
   });
 
   it('highlights @mentions of members in teammates’ messages too', async () => {

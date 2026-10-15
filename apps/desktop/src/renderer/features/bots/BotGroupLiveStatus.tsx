@@ -15,7 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useAgentIslandActivity } from '@/state/agentIslandActivity';
-import type { BotGroupMemberView, BotGroupSpeakerActivity, BotGroupSummary } from '../../../shared/botGroupChat';
+import { isBotGroupNoReplyText, type BotGroupMemberView, type BotGroupSpeakerActivity, type BotGroupSummary } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
 import { BotGenerationLabel } from './BotGenerationLabel';
 import { formatBotGroupElapsed, useBotGroupNow } from './BotGroupElapsed';
@@ -122,7 +122,10 @@ export function BotGroupProgressStrip({
   if (!step && (!lead || now - since < BOT_GROUP_PROGRESS_STRIP_DELAY_MS)) return null;
   const member = step ? step.member : lead?.member;
   const name = step ? step.displayName : lead?.displayName ?? '';
-  const action = live?.compactDetail?.trim() || '';
+  // The Session's compact detail may still be the previous turn's silence marker (NO_REPLY);
+  // that is not an action anyone should read.
+  const rawAction = live?.compactDetail?.trim() || '';
+  const action = isBotGroupNoReplyText(rawAction) ? '' : rawAction;
   const canView = !!sessionId && live?.phase === 'running';
   return (
     <div className="shrink-0 px-5 pt-2">
