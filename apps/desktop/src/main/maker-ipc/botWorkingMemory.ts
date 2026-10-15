@@ -535,9 +535,10 @@ function sourceMessageIds(memory: BotWorkingMemory): string[] {
 }
 
 /**
- * 账本条目的来源消息里,已经不在会话可见时间线上的那些:被 rewind(含「编辑上一条消息」)
- * 软删(`rewind_at` 非空)、被删除成墓碑、或根本找不到。这些条目和被删消息产生的条目一样,
- * 不能再借交接回到新上下文。
+ * 账本条目的来源消息里,已经不在会话可见时间线上的那些:在 `/clear` 边界之前
+ * (`created_at <= sessions.cleared_at`,与 listMessagesForAgentHandoff 同一判据)、被 rewind
+ * (含「编辑上一条消息」)软删(`rewind_at` 非空)、被删除成墓碑、或根本找不到。这些条目和
+ * 被删消息产生的条目一样,不能再借交接回到新上下文。
  */
 export async function listWithdrawnSourceMessageIds(
   sessionId: string,
@@ -545,12 +546,26 @@ export async function listWithdrawnSourceMessageIds(
 ): Promise<Set<string>> {
   const ids = sourceMessageIds(memory);
   if (ids.length === 0) return new Set();
-  const rows = await getDbClient()
-    .drizzle.select({ clientId: messages.clientId, rewindAt: messages.rewindAt, role: messages.role })
+  const db = getDbClient().drizzle;
+  const [session] = await db
+    .select({ clearedAt: sessions.clearedAt })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  const clearedAt = session?.clearedAt ?? null;
+  const rows = await db
+    .select({ clientId: messages.clientId, rewindAt: messages.rewindAt, role: messages.role, createdAt: messages.createdAt })
     .from(messages)
     .where(and(eq(messages.sessionId, sessionId), inArray(messages.clientId, ids)));
   const live = new Set(
-    rows.filter((row) => row.rewindAt === null && row.role !== 'message_tombstone').map((row) => row.clientId),
+    rows
+      .filter(
+        (row) =>
+          row.rewindAt === null &&
+          row.role !== 'message_tombstone' &&
+          (clearedAt === null || row.createdAt > clearedAt),
+      )
+      .map((row) => row.clientId),
   );
   return new Set(ids.filter((id) => !live.has(id)));
 }
@@ -596,8 +611,9 @@ export async function pruneWorkingMemoryForSession(
 }
 
 /**
- * rewind 提交成功后调用:按数据库现状持久清掉来源已撤回的条目。rewind 不返回被软删的
- * 消息清单,所以直接对账而不是接收 id 列表;失败不抛,渲染时的统一过滤仍兜底。
+ * rewind / `/clear` 提交成功后调用:按数据库现状持久清掉来源已撤回的条目。两条路径都不
+ * 返回被移出时间线的消息清单,所以直接对账而不是接收 id 列表;失败不抛,渲染时的统一
+ * 过滤仍兜底。
  */
 export async function pruneWithdrawnWorkingMemoryForSession(
   sessionId: string,
@@ -631,6 +647,8 @@ export interface WorkingMemoryRefreshRegistry {
   pendingGeneration(sessionId: string): number | null;
   /** 引擎接受发送后调用;只有代次仍是当时读到的那一代才清除。 */
   consume(sessionId: string, generation: number): void;
+  /** `/clear` 时调用:清空前登记的压缩标记作废,不能在清空后的第一次发送注入旧账本。 */
+  reset(sessionId: string): void;
 }
 
 export function createWorkingMemoryRefreshRegistry(): WorkingMemoryRefreshRegistry {
@@ -642,6 +660,7 @@ export function createWorkingMemoryRefreshRegistry(): WorkingMemoryRefreshRegist
     consume: (sessionId, gen) => {
       if (pending.get(sessionId) === gen) pending.delete(sessionId);
     },
+    reset: (sessionId) => void pending.delete(sessionId),
   };
 }
 

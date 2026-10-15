@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * 最小 drizzle 假链:每次 select() 按顺序弹出一组行;链上任何方法都返回自身并可 await。
- * 读取路径依次 select:伙伴归属 → 来源消息存活 → 进行中的后台任务。
+ * 读取路径依次 select:伙伴归属 → 会话 cleared_at → 来源消息存活 → 进行中的后台任务。
  */
 const db = vi.hoisted(() => ({ queue: [] as unknown[][] }));
 vi.mock('../../localDb/client/current.js', () => ({
@@ -293,19 +293,19 @@ describe('store', () => {
       0,
     );
     const dbRows = [
-      { clientId: 'live', rewindAt: null, role: 'assistant' },
-      { clientId: 'rewound', rewindAt: 1_700_000_000_000, role: 'user' },
-      { clientId: 'tomb', rewindAt: null, role: 'message_tombstone' },
+      { clientId: 'live', rewindAt: null, role: 'assistant', createdAt: 10 },
+      { clientId: 'rewound', rewindAt: 1_700_000_000_000, role: 'user', createdAt: 10 },
+      { clientId: 'tomb', rewindAt: null, role: 'message_tombstone', createdAt: 10 },
     ];
-    // 渲染:伙伴归属 → 来源存活 → 后台任务。
-    db.queue.push([{ botId: 'bot-1' }], dbRows, []);
+    // 渲染:伙伴归属 → 会话 cleared_at → 来源存活 → 后台任务。
+    db.queue.push([{ botId: 'bot-1' }], [{ clearedAt: null }], dbRows, []);
     const note = (await readWorkingMemoryNoteForSession('s-bot', root))!;
     expect(note).toContain('仍在时间线上的承诺');
     expect(note).not.toContain('撤回');
     expect(note).not.toContain('墓碑');
     // 磁盘上还没清;rewind 提交后对账持久清掉。
     expect((await readBotWorkingMemory(root, 'bot-1'))!.commitments).toHaveLength(3);
-    db.queue.push([{ botId: 'bot-1' }], dbRows);
+    db.queue.push([{ botId: 'bot-1' }], [{ clearedAt: null }], dbRows);
     expect(await pruneWithdrawnWorkingMemoryForSession('s-bot', root)).toBe(3);
     const after = (await readBotWorkingMemory(root, 'bot-1'))!;
     expect(after.commitments.map((c) => c.id)).toEqual(['c-live']);
@@ -316,6 +316,40 @@ describe('store', () => {
     expect(await readWorkingMemoryNoteForSession('s-task', root)).toBeNull();
     db.queue.push([]);
     expect(await pruneWithdrawnWorkingMemoryForSession('s-task', root)).toBe(0);
+  });
+
+  it('treats items whose source message predates /clear as withdrawn, and prunes them after the clear is persisted', async () => {
+    await writeBotWorkingMemory(
+      root,
+      'bot-1',
+      {
+        ...emptyWorkingMemory(),
+        updatedAt: 1,
+        commitments: [
+          { id: 'c-after', text: '清空之后答应的事', messageId: 'after', updatedAt: 3 },
+          { id: 'c-before', text: '清空之前答应的事', messageId: 'before', updatedAt: 2 },
+        ],
+        corrections: [{ id: 'x-before', text: '清空之前的纠正', messageId: 'before', updatedAt: 2 }],
+        waiting: [{ id: 'w-before', text: '清空之前在等的回复', messageId: 'before', on: 'user', updatedAt: 2 }],
+      },
+      0,
+    );
+    const clearedAt = 1_000;
+    const dbRows = [
+      { clientId: 'after', rewindAt: null, role: 'assistant', createdAt: clearedAt + 1 },
+      // 清空边界本身也算清空前(与 listMessagesForAgentHandoff 的 createdAt > clearedAt 一致)。
+      { clientId: 'before', rewindAt: null, role: 'user', createdAt: clearedAt },
+    ];
+    db.queue.push([{ botId: 'bot-1' }], [{ clearedAt }], dbRows, []);
+    const note = (await readWorkingMemoryNoteForSession('s-bot', root))!;
+    expect(note).toContain('清空之后答应的事');
+    expect(note).not.toContain('清空之前');
+    db.queue.push([{ botId: 'bot-1' }], [{ clearedAt }], dbRows);
+    expect(await pruneWithdrawnWorkingMemoryForSession('s-bot', root)).toBe(3);
+    const after = (await readBotWorkingMemory(root, 'bot-1'))!;
+    expect(after.commitments.map((c) => c.id)).toEqual(['c-after']);
+    expect(after.corrections).toEqual([]);
+    expect(after.waiting).toEqual([]);
   });
 
   it('treats a corrupt or foreign file as no ledger', async () => {
@@ -357,6 +391,12 @@ describe('helpers', () => {
     expect(registry.pendingGeneration('s')).toBe(second);
     registry.consume('s', second);
     expect(registry.pendingGeneration('s')).toBeNull();
+    // /clear:清空前登记的标记作废,清空后第一次发送不再注入旧账本;其它会话不受影响。
+    registry.markCompacted('s');
+    registry.markCompacted('other');
+    registry.reset('s');
+    expect(registry.pendingGeneration('s')).toBeNull();
+    expect(registry.pendingGeneration('other')).not.toBeNull();
     const note = buildWorkingMemoryRefreshNote('BODY');
     expect(note).toContain('[Working memory refresh');
     expect(note).toContain('BODY');

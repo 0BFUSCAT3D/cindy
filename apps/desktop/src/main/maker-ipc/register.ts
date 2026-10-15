@@ -603,6 +603,7 @@ import {
 import {
   buildWorkingMemoryRefreshNote,
   createWorkingMemoryRefreshRegistry,
+  pruneWithdrawnWorkingMemoryForSession,
   pruneWorkingMemoryForSession,
   readWorkingMemoryNoteForSession,
 } from './botWorkingMemory.js';
@@ -19785,6 +19786,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         agentHandoffPending.invalidate(sid);
         // 清空后的原生上下文没看过任何环境说明:下一轮整体重发。
         wireNoteMemory.reset(sid);
+        // 清空前登记的压缩刷新标记同样作废:否则清空后的第一次发送会把清空前的账本注入。
+        workingMemoryRefresh.reset(sid);
         getAgentIslandService()?.notifyQueueEmptied(sid);
         // 清上下文后,active 目标失去其依据(objective 引用的内容已被抹掉)→ 一并清除目标。
         goalClearObserver?.(sid);
@@ -19799,6 +19802,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           typeof clearBoundary === 'number' ? clearBoundary : new Date(clearBoundary).getTime();
         try {
           await clearSessionContextInDb(sid, clearBoundaryMs);
+          // cleared_at 落库后,清空前产生的伙伴工作记忆条目一并持久清掉(与 rewind / 删除
+          // 同一失效模式);失败不影响 clear,渲染时按 cleared_at 的统一过滤仍兜底。
+          await pruneWithdrawnWorkingMemoryForSession(sid, ownerScopedUserDataPath()).catch(() => 0);
         } catch (err) {
           // The in-memory fence is still authoritative for this process. Keep
           // /clear remains a local cleanup action even when persistence fails;
