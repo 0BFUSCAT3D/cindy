@@ -9,12 +9,14 @@ import {
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 
 const EMPTY_IDS: ReadonlySet<string> = new Set();
-const RECEIVED_LIST_RETRY_MS = 250;
+const RECEIVED_LIST_RETRY_BASE_MS = 250;
+const RECEIVED_LIST_RETRY_MAX_MS = 30_000;
 
 /**
  * 分享授权属于账号，但跨区连接的启用标记在各电脑本地。新落点必须同时出现在被控端名单中。
  * 复用手机的只读查询，不恢复跨区连接、不修改授权；只消费名单，catalog 为 null 仍可保留。
- * 跟随已有的 received 推送刷新(包括后台轮询)，无需另起定时器。失败只收起新的分享落点，
+ * 就绪后跟随已有的 received 推送刷新(包括后台轮询)；首次未就绪时按有上限的指数退避重查。
+ * 失败只收起新的分享落点，
  * 不重连 peer/relay，也不影响普通设备或本机供应商。
  */
 export function useControlledShareIds(
@@ -36,15 +38,33 @@ export function useControlledShareIds(
     let revision = 0;
     let pending = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let readinessRetryAttempt = 0;
     const invalidate = () => {
       revision += 1;
       pending = false;
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = null;
+      readinessRetryAttempt = 0;
       setSnapshot(null);
+    };
+    const scheduleReadinessRetry = () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      const delay = Math.min(
+        RECEIVED_LIST_RETRY_MAX_MS,
+        RECEIVED_LIST_RETRY_BASE_MS * 2 ** Math.min(readinessRetryAttempt, 7),
+      );
+      readinessRetryAttempt += 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void refresh();
+      }, delay);
     };
     const refresh = async () => {
       if (!active || pending || !isDataOwnerGenerationCurrent(owner)) return;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       pending = true;
       const request = ++revision;
       const current = () => active && request === revision && isDataOwnerGenerationCurrent(owner);
@@ -61,12 +81,10 @@ export function useControlledShareIds(
         const ready = !(value && typeof value === 'object' && !Array.isArray(value)
           && (value as { ready?: unknown }).ready === false);
         if (!ready) {
-          retryTimer = setTimeout(() => {
-            retryTimer = null;
-            void refresh();
-          }, RECEIVED_LIST_RETRY_MS);
+          scheduleReadinessRetry();
           return;
         }
+        readinessRetryAttempt = 0;
         const ids = new Set(parseProviderShareReceivedCatalogs(value)
           .filter((share) => share.status === 'active')
           .map((share) => share.agentDeviceId));

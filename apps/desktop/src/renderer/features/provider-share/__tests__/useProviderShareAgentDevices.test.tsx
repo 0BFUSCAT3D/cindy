@@ -116,6 +116,49 @@ describe('useProviderShareAgentDevices', () => {
     }
   });
 
+  it('caps readiness backoff and clears the pending retry after recovery', async () => {
+    initial = [share({ shareId: 'both' })];
+    invoke.mockResolvedValue({ ready: false, shares: [] });
+    vi.useFakeTimers();
+    try {
+      const { result, unmount } = renderHook(() => useProviderShareAgentDevices([], 'host-b'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(invoke).toHaveBeenCalledTimes(1);
+      let calls = 1;
+      for (const delay of [250, 500, 1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(delay - 1); });
+        expect(invoke).toHaveBeenCalledTimes(calls);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(invoke).toHaveBeenCalledTimes(++calls);
+      }
+      invoke.mockResolvedValue(hostShares({ shareId: 'both' }));
+      await act(async () => { window.dispatchEvent(new Event('focus')); });
+      expect(result.current.devices.map((d) => d.deviceId)).toEqual(['share:both']);
+      expect(invoke).toHaveBeenCalledTimes(++calls);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+      expect(invoke).toHaveBeenCalledTimes(calls);
+
+      invoke.mockResolvedValue({ ready: false, shares: [] });
+      await act(async () => { window.dispatchEvent(new Event('focus')); });
+      expect(invoke).toHaveBeenCalledTimes(++calls);
+      await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+      expect(invoke).toHaveBeenCalledTimes(calls);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(invoke).toHaveBeenCalledTimes(++calls);
+      act(() => linkStatus?.({ status: 'stopped' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+      expect(invoke).toHaveBeenCalledTimes(calls);
+      await act(async () => { linkStatus?.({ status: 'online' }); });
+      expect(invoke).toHaveBeenCalledTimes(++calls);
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+      expect(invoke).toHaveBeenCalledTimes(calls);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps current/pending shares while excluding new shares paused or unknown on the controlled host', async () => {
     initial = ['current', 'pending', 'paused', 'unknown'].map((shareId) => share({ shareId }));
     invoke.mockResolvedValue(hostShares({ shareId: 'paused', status: 'paused' }));
