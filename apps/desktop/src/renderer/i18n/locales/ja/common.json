@@ -8719,7 +8719,9 @@
     "list": {
       "createMenu": "新規作成",
       "createTeammate": "パートナーを作成",
+      "joinWithLink": "招待リンクを入力…",
       "startChat": "会話を始める",
+      "selectChat": "パートナーやグループチャットを選んで、会話を始めましょう",
       "typing": "入力中…",
       "unread": "{{count}} 件の未読メッセージ",
       "search": "パートナーやグループチャットを検索",
@@ -8734,7 +8736,8 @@
       "pinned": "固定済み",
       "needsAttention": "対応が必要",
       "duplicate": "仲間を複製",
-      "moreActions": "{{name}} のその他の操作"
+      "moreActions": "{{name}} のその他の操作",
+      "noResults": "一致するパートナーやグループはありません"
     },
     "cancel": "キャンセル",
     "save": "保存",
@@ -9133,6 +9136,15 @@
       "files": {
         "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります"
       },
+      "addFromChat": {
+        "triggerFor": "{{name}} をグループチャットに追加",
+        "addTo": "{{name}} の追加先",
+        "newGroup": "グループチャットを作成…",
+        "existingGroup": "既存のグループに追加",
+        "added": "{{name}} を「{{group}}」に追加しました",
+        "openGroup": "グループを開く",
+        "unavailable": "{{name}} は現在グループチャットに参加できません"
+      },
       "server": {
         "quoteReply": "引用して返信",
         "startTopic": "スレッドを作成",
@@ -9161,8 +9173,11 @@
         "copied": "招待リンクをコピーしました",
         "createLink": "招待リンクを作成",
         "accept": "承諾して参加",
-        "openGroup": "グループを開く",
         "previewInvite": "招待を確認",
+        "linkDescription": "参加するとメンバーになり、チャット履歴を閲覧できます。",
+        "loadingInvite": "招待を読み込んでいます…",
+        "retryInvite": "招待を再読み込み",
+        "malformedInvite": "招待リンクが不完全か、形式が正しくありません。招待した人に新しいリンクを依頼してください。",
         "invalidInvite": "招待が無効、使用済み、期限切れ、または無効化されています。新しいリンクを取得してください。",
         "notAllowed": "このアカウントに権限がありません。アカウントを確認するか、グループ管理者に連絡してください。",
         "loginRequired": "ログインしてから再試行してください。",
@@ -9203,8 +9218,9 @@
           "addCompanion": "自分のパートナーを招待",
           "leave": "グループを退出",
           "leaveHint": "あなたとあなたのパートナーが退出します。オーナーは先に所有権を譲渡してください。",
+          "soleOwnerHint": "メンバーはあなただけです。グループをアーカイブすると履歴が残り、後で再開できます。",
           "archive": "グループをアーカイブ",
-          "archiveHint": "履歴を残し、新しいメッセージとパートナーの実行を停止します。",
+          "archiveHint": "アーカイブすると、すべてのメンバーに対して新しいメッセージとパートナーの実行が停止します。履歴は保持されます。グループを検索して履歴を閲覧したり、アーカイブを解除したりできます。",
           "confirm": "確認",
           "lastOwner": "退出またはオーナーを削除する前に、別のメンバーに所有権を譲渡してください。",
           "conflict": "設定が更新されました。再読み込みしてお試しください。",
@@ -9215,7 +9231,7 @@
           "auto": "同時に発言",
           "sequential": "順番に発言",
           "unarchive": "アーカイブを解除",
-          "unarchiveHint": "メッセージとパートナーの実行を再開します。",
+          "unarchiveHint": "アーカイブを解除すると、すべてのメンバーに対してメッセージとパートナーの実行が再開します。",
           "archived": "アーカイブ済みです。履歴は引き続き閲覧できます。",
           "noneHint": "このグループでは仲間の所有者だけが応答を依頼できます。",
           "companionPermissions": "仲間の権限",
@@ -10831,7 +10847,8 @@
       "downloadExtracting": "展開しています…",
       "downloadUnsupported": "リモートコンピュータはまだフォルダのダウンロードに対応していません。そのコンピュータの Cindy を更新してから再試行してください",
       "downloadNoSpace": "ディスクの空き容量が足りないため、ダウンロードを完了できません",
-      "downloadSkipped": "ダウンロードフォルダに保存しましたが、一部のファイルはダウンロードできませんでした"
+      "downloadSkipped": "ダウンロードフォルダに保存しましたが、一部のファイルはダウンロードできませんでした",
+      "cancelTransfer": "キャンセル"
     },
     "mivoAction": {
       "promptPlaceholder": "プロンプトを入力し、Enter で送信",

@@ -540,6 +540,7 @@ import {
   installVoiceInputPowerRelease,
 } from './voice-input/powerReleaseNotifier';
 import { reapClaudeOrphansSync } from './claude-orphan-reaper';
+import { reapCodexToolTreesSync } from './codex-tool-tree-reaper';
 import { startAgentProcessPriorityWatcher } from './agent-process-priority';
 import { registerProcessMonitorIpc } from './process-monitor/ipc.js';
 import { disposeWindowsProcessScanWorkers } from './process-monitor/windowsProcessScanWorkerClient.js';
@@ -1012,6 +1013,7 @@ import {
   popUpWindowsTrayMenu,
   requestWindowsTrayQuit,
 } from './windowsTrayLifecycle.js';
+import { createLinuxTrayController } from './linuxTrayLifecycle.js';
 import {
   applyLinuxMainWindowCloseBehavior,
   createCloseBehaviorPromptFallbackController,
@@ -3026,7 +3028,7 @@ ipcMain.handle('app-menu:set-locale', (_event, locale: unknown): { ok: true } =>
   if (mainWindow) {
     installApplicationMenu(mainWindow, currentApplicationMenuLocale);
   }
-  invalidateWindowsTrayMenu();
+  refreshDesktopTrayMenus();
   getAgentIslandService()?.refreshLocalization();
   refreshMenubarLocalization();
   return { ok: true };
@@ -3188,7 +3190,7 @@ const activeWindowsTrayMenus = new Set<Menu>();
 const windowsTrayLog = createLogger('windows-tray');
 const CLOSE_BEHAVIOR_PROMPT_FALLBACK_DELAY_MS = 2_000;
 
-function buildWindowsTrayMenu(): Menu {
+function buildDesktopTrayMenu(): Menu {
   return Menu.buildFromTemplate([
     {
       label: t('settings.windowBehavior.trayMenu.show'),
@@ -3198,14 +3200,15 @@ function buildWindowsTrayMenu(): Menu {
     { type: 'separator' },
     {
       label: t('settings.windowBehavior.trayMenu.quit'),
-      click: () => quitFromWindowsTray(),
+      click: () => quitFromDesktopTray(),
     },
   ]);
 }
 
-/** 语言切换后丢弃缓存的菜单,下一次右键按新语言重建。 */
-function invalidateWindowsTrayMenu(): void {
+/** Windows rebuilds lazily on right-click; Linux must republish its native menu. */
+function refreshDesktopTrayMenus(): void {
   windowsTrayMenu = null;
+  linuxTray.refreshMenu();
 }
 
 function openWindowsTrayMenu(): void {
@@ -3219,7 +3222,7 @@ function openWindowsTrayMenu(): void {
   popUpWindowsTrayMenu<Menu>({
     tray: windowsTray,
     menu: windowsTrayMenu,
-    buildMenu: buildWindowsTrayMenu,
+    buildMenu: buildDesktopTrayMenu,
     retainMenu: (menu) => {
       windowsTrayMenu = menu;
     },
@@ -3240,7 +3243,7 @@ function openWindowsTrayMenu(): void {
   });
 }
 
-function quitFromWindowsTray(): void {
+function quitFromDesktopTray(): void {
   requestWindowsTrayQuit({
     hasActiveTurn: () => {
       try {
@@ -3270,6 +3273,26 @@ function destroyWindowsTray(): void {
   windowsTray = null;
   windowsTrayMenu = null;
 }
+
+const linuxTrayLog = createLogger('linux-tray');
+const linuxTray = createLinuxTrayController<Menu>({
+  createTray: () => {
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'icon.png')
+      : path.join(__dirname, '../../resources/icon.png');
+    const icon = nativeImage.createFromPath(iconPath);
+    if (icon.isEmpty()) throw new Error(`tray icon is empty: ${iconPath}`);
+    // Keep the source resolution: Linux panels choose their own icon size/scale.
+    return new Tray(icon);
+  },
+  buildMenu: buildDesktopTrayMenu,
+  showWindow: () => focusMainWindow(),
+  onError: (error) => {
+    linuxTrayLog.error('Linux tray operation failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  },
+});
 
 function ensureWindowsTray(): boolean {
   if (windowsTray && !windowsTray.isDestroyed()) return true;
@@ -3434,6 +3457,7 @@ app.on('before-quit', () => {
   windowsClosePromptFallback.dispose();
   linuxClosePromptFallback.dispose();
   destroyWindowsTray();
+  linuxTray.dispose();
   disposeUpdatePresentationRecovery();
   authCredentialRecovery.dispose();
 });
@@ -3958,6 +3982,9 @@ const createWindow = () => {
   void ensureMainAppPresence('main-window-created', mainWindow);
   // Keep diagnostics reachable from the tray even before login or if the renderer fails.
   if (process.platform === 'win32') ensureWindowsTray();
+  // Tray construction is not proof that a Linux panel hosts the icon. Keep the
+  // existing minimize/quit close choices so an absent tray never strands a hidden window.
+  if (process.platform === 'linux') linuxTray.ensure();
 
   installApplicationMenu(
     mainWindow,
@@ -9757,6 +9784,8 @@ app.on('ready', async () => {
 // Sync 阶段: 同步触发, 不等结果。只放真正同步的清理 (释放本地句柄 / 取消定时器)。
 //   - reap-claude-children: 必须在 shutdown-maker 之前同步完成；SDK abort 掐掉
 //     claude.exe 后 Windows 上子进程会被 reparent 到 System, PPID 链断了就无法安全识别。
+//   - reap-codex-tool-trees: 同理须先于 shutdown-maker；app-server EOF 退出后,
+//     exec_command 起的工具后代(如 xcodebuild → swift-frontend)会挂到 launchd 继续跑(#6024)。
 //   - authManager / google auth: 同步释放定时器+回调引用。
 //     注意 token.dispose() 只清内存状态, 不删盘上的 refresh token (那是 logout 干的)。
 // interrupted-turn-resume:退出编排一启动就冻结「turn 在飞」标记的写入 —— 否则
@@ -9782,6 +9811,13 @@ onQuit(
   'reap-claude-children',
   () => {
     reapClaudeOrphansSync();
+  },
+  'sync',
+);
+onQuit(
+  'reap-codex-tool-trees',
+  () => {
+    reapCodexToolTreesSync();
   },
   'sync',
 );

@@ -8719,7 +8719,9 @@
     "list": {
       "createMenu": "새로 만들기",
       "createTeammate": "새 파트너",
+      "joinWithLink": "초대 링크 입력…",
       "startChat": "대화 시작하기",
+      "selectChat": "파트너 또는 그룹 채팅을 선택해 대화를 시작하세요",
       "typing": "입력 중…",
       "unread": "읽지 않은 메시지 {{count}}개",
       "search": "파트너 또는 그룹 채팅 검색",
@@ -8734,7 +8736,8 @@
       "pinned": "고정됨",
       "needsAttention": "확인 필요",
       "duplicate": "동료 복제",
-      "moreActions": "{{name}} 추가 작업"
+      "moreActions": "{{name}} 추가 작업",
+      "noResults": "검색과 일치하는 파트너나 그룹이 없어요"
     },
     "cancel": "취소",
     "save": "저장",
@@ -9133,6 +9136,15 @@
       "files": {
         "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
       },
+      "addFromChat": {
+        "triggerFor": "{{name}}을(를) 그룹 채팅에 추가",
+        "addTo": "{{name}} 추가할 그룹",
+        "newGroup": "그룹 채팅 만들기…",
+        "existingGroup": "기존 그룹에 추가",
+        "added": "{{name}}을(를) \"{{group}}\"에 추가했습니다",
+        "openGroup": "그룹 열기",
+        "unavailable": "{{name}}은(는) 지금 그룹 채팅에 참여할 수 없습니다"
+      },
       "server": {
         "quoteReply": "인용 답글",
         "startTopic": "스레드 만들기",
@@ -9161,8 +9173,11 @@
         "copied": "초대 링크를 복사했습니다",
         "createLink": "초대 링크 만들기",
         "accept": "수락하고 참여",
-        "openGroup": "그룹 열기",
         "previewInvite": "초대 확인",
+        "linkDescription": "참여하면 그룹 구성원이 되어 대화 기록을 볼 수 있습니다.",
+        "loadingInvite": "초대를 불러오는 중…",
+        "retryInvite": "초대 다시 불러오기",
+        "malformedInvite": "초대 링크가 불완전하거나 형식이 올바르지 않습니다. 초대한 사람에게 새 링크를 요청하세요.",
         "invalidInvite": "유효하지 않거나 사용, 만료 또는 취소된 초대입니다. 새 링크를 받으세요.",
         "notAllowed": "현재 계정에 권한이 없습니다. 계정을 확인하거나 그룹 소유자에게 문의하세요.",
         "loginRequired": "현재 계정에 로그인한 후 다시 시도하세요.",
@@ -9203,8 +9218,9 @@
           "addCompanion": "내 파트너 초대",
           "leave": "그룹 나가기",
           "leaveHint": "본인과 자신의 파트너가 그룹을 나갑니다. 소유자는 먼저 소유권을 이전해야 합니다.",
+          "soleOwnerHint": "그룹에 나만 남았어요. 그룹을 보관하면 기록을 유지하고 나중에 다시 사용할 수 있어요.",
           "archive": "그룹 보관",
-          "archiveHint": "기록을 보존하고 새 메시지와 파트너 실행을 중단합니다.",
+          "archiveHint": "그룹을 보관하면 모든 멤버의 새 메시지와 파트너 실행이 중지돼요. 기록은 유지돼요. 그룹을 검색해 기록을 보거나 보관을 해제할 수 있어요.",
           "confirm": "확인",
           "lastOwner": "나가거나 소유자를 내보내기 전에 다른 멤버에게 소유권을 이전하세요.",
           "conflict": "다른 멤버가 설정을 변경했습니다. 새로 고침 후 다시 시도하세요.",
@@ -9215,7 +9231,7 @@
           "auto": "동시에 발언",
           "sequential": "차례로 발언",
           "unarchive": "그룹 보관 해제",
-          "unarchiveHint": "메시지와 파트너 실행을 재개합니다.",
+          "unarchiveHint": "보관을 해제하면 모든 멤버의 메시지와 파트너 실행이 재개돼요.",
           "archived": "보관된 그룹입니다. 기록은 계속 볼 수 있습니다.",
           "noneHint": "이 그룹에서는 동료의 소유자만 응답을 요청할 수 있습니다.",
           "companionPermissions": "동료 권한",
@@ -10831,7 +10847,8 @@
       "downloadExtracting": "압축 푸는 중…",
       "downloadUnsupported": "원격 컴퓨터가 아직 폴더 다운로드를 지원하지 않습니다. 해당 컴퓨터의 Cindy를 업데이트한 후 다시 시도하세요",
       "downloadNoSpace": "디스크 공간이 부족해 다운로드를 완료할 수 없습니다",
-      "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다"
+      "downloadSkipped": "다운로드 폴더에 저장했지만 일부 파일은 다운로드하지 못했습니다",
+      "cancelTransfer": "취소"
     },
     "mivoAction": {
       "promptPlaceholder": "프롬프트를 입력하고 Enter로 전송",
