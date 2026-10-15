@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   alert: vi.fn(),
   confirm: vi.fn(),
   leave: vi.fn(),
+  focused: true,
   closeSettings: null as null | (() => void),
   row: null as any,
   inputs: {} as Record<string, any>,
@@ -57,7 +58,7 @@ vi.mock('react-native', () => {
   };
 });
 vi.mock('expo-router', () => ({
-  useIsFocused: () => true,
+  useIsFocused: () => h.focused,
   Stack: { Screen: () => null },
   useRouter: () => ({ back: vi.fn(), replace: vi.fn() }),
   useFocusEffect: (effect: () => void) => useEffect(effect, [effect]),
@@ -270,7 +271,7 @@ beforeEach(() => {
   h.management = null;
   vi.clearAllMocks();
   h.uuid = 0; h.inputs = {}; h.teammateQuery = ''; h.teammates = { rows: [], loading: false, failed: false };
-  h.platform.OS = 'ios'; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
+  h.platform.OS = 'ios'; h.focused = true; h.keyboardAvoidingView = null; h.headerBlur = []; h.headerFade = [];
   h.chat = { reload: vi.fn(), act: vi.fn(async () => ({ effects: [] })), online: true };
   h.discarded = []; h.deleted = [];
   h.local = {
@@ -874,6 +875,16 @@ describe('group settings', () => {
     await render(null, 'missing');
     expect(h.leave).toHaveBeenCalledOnce();
     await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a hidden background page from navigating another route and leaves when focused again', async () => {
+    await render(group({ serverBacked: true }));
+    h.focused = false; h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).not.toHaveBeenCalled();
+    h.focused = true;
+    await render(null, 'missing');
     expect(h.leave).toHaveBeenCalledOnce();
   });
 

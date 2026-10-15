@@ -199,14 +199,15 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
   hideScope.current = currentHideScope;
   useEffect(() => () => { hideScope.current = ''; }, []);
   const leftScope = useRef('');
+  const focusedRef = useRef(focused); focusedRef.current = focused;
   const leaveCurrentChat = useCallback((captured: string) => {
-    if (hideScope.current !== captured || leftScope.current === captured) return;
+    if (!focusedRef.current || hideScope.current !== captured || leftScope.current === captured) return;
     leftScope.current = captured;
     leave();
   }, [leave]);
   useEffect(() => {
-    if (chat.listHidden) leaveCurrentChat(currentHideScope);
-  }, [chat.listHidden, currentHideScope, leaveCurrentChat]);
+    if (focused && chat.listHidden) leaveCurrentChat(currentHideScope);
+  }, [focused, chat.listHidden, currentHideScope, leaveCurrentChat]);
   const actFromSettings: typeof chat.act = async (action, input) => {
     const captured = currentHideScope;
     const receipt = await chat.act(action, input);
