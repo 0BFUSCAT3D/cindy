@@ -22,6 +22,20 @@ Gateway 边界对整块报价校验，非法或无有效币种即整体省略，
 模型快照投影，成功刷新缺字段会移除旧展示；没有新权限、数据库迁移或独立价格缓存。
 两端可独立升级，完整展示需两端支持。字段只用于报价展示，不参与账单或调用授权。
 
+## 群聊邀请公开链接
+
+device-link-server 的公开页 `<deviceLinkBase>/chat-invite/join#<token>[?app=cindy|cindycn|cindydev]`
+与 Desktop 粘贴解析共用同一规则：口令为 43 位 base64url，只放在 fragment；URL 无 query、无用户信息；
+fragment 只允许一个闭集 `app` 提示，不允许额外 `#` / `?` 段；协议为 https，仅本机回环地址允许 http。
+页面在电脑上唤起既有 `cindy://chat-invite/<token>`，手机不唤起。客户端解析见
+`packages/device-link/src/chatInvitation.ts`（`parseChatInvitationToken`），继续接受裸口令与
+`cindy://chat-invite/<token>`；链接主机只校验形状，从不作为请求地址，也不据此切换 Chat Server
+或登录区域，口令只以请求正文发给当前账号的 Chat Server。
+
+发布顺序：先发布接受 https 粘贴的客户端，并保留「伙伴 → + → 输入邀请链接…」；sh-dev、sh-prod、
+sgp-prod 都部署该页面后，才把 `createInvite` 生成的链接切换为 https。旧客户端点击 https 链接
+经页面转到 `cindy://` 仍可用，但粘贴 https 链接需要新版客户端。Chat Server API 不变。
+
 ## 手机直连群的设置管理
 
 现有 `bot-group-chat` 数据可选追加 `supportsSettingsManagement`。仅服务器群的新版 Host
@@ -1718,20 +1732,24 @@ Chat Server `/me` 追加 `capabilities.groupDiscussionParity: 1`。Desktop 只�
 - 后续：若服务端放开主时间线 `replyToId`（能力协商后），客户端可同时写 `replyToId` 获得外键约束与
   删除感知，卡片继续承担快照与旧端兼容；两者并存时以 `replyToId` 为准。
 
-## 委派任务的完成通知归属
+## 委派任务与自动任务的完成通知策略
 
 既有 `SessionActivityPayload` 可选字段 `completionNotification` 影响远端桌面、手机与飞书完成通知：
-`pending` 表示该轮终态回传正在判定，`teammate` 表示同一委派执行结果已成功交回伙伴；
+`pending` 表示该轮终态回传正在判定，`teammate` 表示同一委派执行结果已成功交回伙伴，
+`silent` 表示本轮完成静默（即使保留历史未读，也不重新弹出、响铃或发外部通知）；
 缺省或未知值按普通任务完成通知处理。完成 phase、摘要和 attention 在 pending 阶段照常发送，
 回传决定通过同一活动通道更新；执行宿主等到真实 `done` 的回传边界再决定，前置
 `status: Done` 不能提前消费归属。本机外部通知共用这一决定；控制端的手机/飞书调用
-在活动仍运行或 `pending` 时等待同一活动通道更新，已回传伙伴则取消调用。已读、断开、
+在活动仍运行或 `pending` 时等待同一活动通道更新，已回传伙伴或本轮静默则取消调用。
+没有活动记录（例如静默完成的清除帧早于 renderer 的 done 回调）不能当作新完成的证据。
+`silent` 随未读账本和重连快照保留，新一轮运行清除；聊天过程与历史未读不受影响。已读、断开、
 新一轮运行、报错或待交互使旧完成调用失效，不延迟错误与待答通知，也不更改任何未读。
 控制端桌面仅对已观察运行的任务补发必要 fallback 一次，重连的
 基线终态不补发历史提醒。错误与待交互不受此字段影响。
 
-新控制端连接旧执行端沿用原通知；旧控制端忽略该字段，仍可能发独立完成外部通知，完整远端
-去重需要两端更新。手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
+新控制端连接旧执行端时，明确的普通未读完成仍按原规则通知；旧控制端忽略该字段或未知枚举，
+仍可能发独立完成通知，完整远端去重和保留旧未读时的静默需要两端更新。
+手机外部推送在执行端及远控 Desktop 的通知出口完成去重，手机无需新增协议处理；
 移动列表继续原 phase/attention 语义。无需服务端、数据库 migration 或 Mobile fingerprint 改动。
 
 ## 伙伴创建时选择模型

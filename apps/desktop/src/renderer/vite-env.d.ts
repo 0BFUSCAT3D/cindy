@@ -2179,12 +2179,14 @@ interface ElectronAPI {
   }>;
   profileChooseAvatar: () => Promise<{
     canceled: boolean;
-    filePath?: string;
     previewDataUrl?: string;
   }>;
   profileUpdate: (params: {
     name: string | null;
-    avatar: { type: 'keep' } | { type: 'set'; filePath: string } | { type: 'reset' };
+    avatar:
+      | { type: 'keep' }
+      | { type: 'set'; data: Uint8Array; mimeType: 'image/png' | 'image/jpeg' }
+      | { type: 'reset' };
   }) => Promise<{ ok: true }>;
 
   // Slack 官方 MCP(slackOfficial)已于 2026-07-15 退役(能力迁入内置意识 cindy-slack);
@@ -2717,6 +2719,8 @@ interface ElectronAPI {
           message?: string;
         }
     >;
+    /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
+    chatCancel: (requestId: string) => Promise<void>;
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
@@ -2921,6 +2925,7 @@ interface ElectronAPI {
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
         | { type: 'provider-share-join'; link: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => void,
@@ -2940,6 +2945,7 @@ interface ElectronAPI {
     | { type: 'provider-import'; importId: string }
     | { type: 'shared-task-join'; invitation: string; server: string }
     | { type: 'chat-invite'; token: string }
+    | { type: 'chat-invite-malformed' }
     | { type: 'provider-share-join'; link: string }
     | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' }
     | null
