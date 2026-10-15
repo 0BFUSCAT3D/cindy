@@ -29,6 +29,7 @@ import {
 import type { McpProviderContext } from '@cindy/maker-core';
 import type { McpAppRecord } from '../../shared/mcpApps.js';
 import { AppConnection, type AppServerConfig } from './connection.js';
+import { appServerRevision } from './host.js';
 import { getMcpAppsHost, readAppServer } from './runtime.js';
 import { toolVisibleTo, uiToolUri } from './protocol.js';
 import { createLogger } from '../logger.js';
@@ -127,6 +128,9 @@ export function createAppServerProxy(
   context: McpProviderContext,
 ): McpServer {
   const config = readConfig();
+  // Main-only live checks use a process-private key, independent of the vault.
+  // Never persist this fingerprint or expose it as an App-card revision.
+  const liveRevision = appServerRevision(config);
   const host = getMcpAppsHost();
   const owner = host.captureOwner();
   const connection = new AppConnection(config, {
@@ -151,7 +155,7 @@ export function createAppServerProxy(
   const assertCurrent = () => {
     host.assertOwner(owner);
     const current = readAppServer(config.id);
-    if (!current || host.serverRevision(current) !== host.serverRevision(config))
+    if (!current || appServerRevision(current) !== liveRevision)
       throw new Error('MCP_APP_SERVER_CHANGED');
   };
   // Bridge factories are created eagerly, but unused proxies must not retain a Host slot.
@@ -257,17 +261,17 @@ export function createAppServerProxy(
     const clientId = `mcp-app:${randomUUID()}`;
     let record: McpAppRecord | undefined;
     if (uri && sessionId) {
-      record = {
-        version: 1,
-        serverId: config.id,
-        serverRevision: host.serverRevision(config),
-        resourceUri: uri,
-        tool,
-        arguments: request.params.arguments ?? {},
-        connectionId,
-      } as McpAppRecord;
-      // UI persistence failure must not prevent or change a tool's actual outcome.
+      // Vault and UI persistence failure must not change a tool's actual outcome.
       try {
+        record = {
+          version: 1,
+          serverId: config.id,
+          serverRevision: host.serverRevision(config),
+          resourceUri: uri,
+          tool,
+          arguments: request.params.arguments ?? {},
+          connectionId,
+        } as McpAppRecord;
         await host.updateResult(sessionId, clientId, record, owner);
       } catch {
         log.warn('MCP App card could not be stored');

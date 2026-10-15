@@ -674,6 +674,40 @@ describe('official MCP Apps interoperability', () => {
     await vi.waitFor(() => expect(connection.isClosed).toBe(true));
     expect(release).toHaveBeenCalledWith(connection);
   });
+  it('keeps ordinary MCP requests usable while the persistent App revision vault is unavailable', async () => {
+    let vaultAvailable = true;
+    const f = await fixture('http', {
+      revisionKey: () => {
+        if (!vaultAvailable) throw new Error('MCP_APP_REVISION_KEY_UNAVAILABLE');
+        return 'a'.repeat(64);
+      },
+    });
+    vaultAvailable = false;
+    setMcpAppsHost(f.host);
+    registerAppServer(f.config.id, () => f.config);
+    const facade = createAppServerProxy(() => f.config, {
+      agentKind: 'codex', sessionId: 'task', workingDir: '',
+    });
+    const client = new Client({ name: 'model-client', version: '1' });
+    cleanups.push(async () => { await client.close(); await facade.close(); });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await facade.connect(serverTransport);
+    await client.connect(clientTransport);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['draft_form', 'model_only']);
+    f.write.mockClear();
+    expect((await client.callTool({ name: 'model_only', arguments: {} })).isError).not.toBe(true);
+    const result = await client.callTool({
+      name: 'draft_form', arguments: { title: 'Vault unavailable', body: 'Keep tool execution' },
+    });
+    expect(result.content).toEqual([{ type: 'text', text: 'Draft: Vault unavailable' }]);
+    expect(result).not.toHaveProperty('_meta');
+    expect(f.write).not.toHaveBeenCalled();
+    // No transient revision is persisted as a substitute for the inaccessible vault.
+    await expect(f.host.open('renderer:1', 'task', 'card', {}))
+      .rejects.toThrow('MCP_APP_REVISION_KEY_UNAVAILABLE');
+    f.config.url += '/changed';
+    await expect(client.listTools()).rejects.toThrow('MCP_APP_SERVER_CHANGED');
+  });
   it.each(['http', 'sse'] as const)(
     'preserves upstream instructions in the %s model initialize response',
     async (transport) => {
