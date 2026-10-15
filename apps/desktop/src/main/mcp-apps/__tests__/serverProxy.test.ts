@@ -29,6 +29,7 @@ import {
   isJSONRPCNotification,
   type CallToolRequest,
   type CallToolResult,
+  type ListToolsResult,
   type ClientRequest,
   type CompleteRequest,
   type CompleteResult,
@@ -672,6 +673,55 @@ describe('ordinary MCP compatibility through the App facade', () => {
       expect(f.writeCard).toHaveBeenCalledTimes(2);
     },
   );
+
+  it.each(
+    (['http', 'sse'] as const).flatMap((transport) =>
+      (['tools/list', 'tools/call'] as const).flatMap((method) =>
+        [0, 1].map((page) => ({ transport, method, page })),
+      ),
+    ),
+  )('cancels $transport $method discovery on page $page without executing or replaying a tool', async ({ transport, method, page }) => {
+    const f = await fixture(transport);
+    const tool = { name: 'plain', inputSchema: { type: 'object' as const } };
+    const discovered = vi.fn();
+    const cancelled = vi.fn();
+    let release: (() => void) | undefined;
+    cleanup.push(async () => release?.());
+    f.upstream.server.setRequestHandler(ListToolsRequestSchema, (request, extra) => {
+      discovered(request.params?.cursor);
+      if (page === 1 && !request.params?.cursor)
+        return { tools: [tool], nextCursor: 'next' };
+      return new Promise<ListToolsResult>((resolve, reject) => {
+        release = () => resolve({ tools: [] });
+        extra.signal.addEventListener('abort', () => {
+          cancelled();
+          reject(new Error('discovery cancelled'));
+        }, { once: true });
+      });
+    });
+    const abort = new AbortController();
+    const pending = method === 'tools/list'
+      ? f.client.listTools(undefined, { signal: abort.signal })
+      : f.client.callTool({ name: 'plain' }, CallToolResultSchema, { signal: abort.signal });
+    const rejected = expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(discovered).toHaveBeenCalledTimes(page + 1);
+    if (page === 1) expect(discovered).toHaveBeenLastCalledWith('next');
+    abort.abort();
+    await rejected;
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+    expect(discovered).toHaveBeenCalledTimes(page + 1);
+    expect(callTool).not.toHaveBeenCalled();
+    expect(f.writeCard).not.toHaveBeenCalled();
+
+    // Cancelling discovery must leave the connection usable for a new request.
+    f.upstream.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [tool] }));
+    await expect(f.client.listTools()).resolves.toMatchObject({ tools: [tool] });
+    await expect(f.client.callTool({ name: 'plain' })).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'plain result' }],
+    });
+    expect(callTool).toHaveBeenCalledOnce();
+  });
 
   it('forwards cancellation to the single upstream request without replaying it', async () => {
     const f = await fixture();

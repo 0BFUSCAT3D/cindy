@@ -228,15 +228,15 @@ export function createAppServerProxy(
   };
   // Override the SDK's local log-level handler; the upstream owns its logging state.
   server.server.setRequestHandler(SetLevelRequestSchema, forwardRequest);
-  server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
     registerOnUse();
-    const tools = await connection.tools();
+    const tools = await connection.tools(extra.signal);
     assertCurrent();
     return { tools: tools.filter((tool) => toolVisibleTo(tool, 'model')) };
   });
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const connectionId = registerOnUse();
-    const tool = (await connection.tools()).find(
+    const tool = (await connection.tools(extra.signal)).find(
       (candidate) => candidate.name === request.params.name,
     );
     extra.signal.throwIfAborted();
