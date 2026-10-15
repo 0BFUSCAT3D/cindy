@@ -1138,4 +1138,20 @@ describe('ProvidersSection — 分享来的供应商深链', () => {
     await screen.findByTestId('provider-share-received-detail');
     await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?tab=providers'));
   });
+
+  it('名单暂时为空期间用户改选了别的供应商 → 放弃跳转，名单回来后不切走右栏', async () => {
+    providersState.providers = [makeProvider('anthropic', { name: 'Anthropic', connected: true })];
+    const push = stubReceived([]);
+    renderAt('?tab=providers&receivedShare=share-1');
+
+    await waitFor(() => expect(window.electronAPI.providerShare.command).toHaveBeenCalledWith({ action: 'received' }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    fireEvent.click(await screen.findByRole('button', { name: /^Anthropic/ }));
+    await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?tab=providers'));
+
+    push([share]);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(screen.queryByTestId('provider-share-received-detail')).toBeNull();
+    expect(screen.getByTestId('provider-detail-identity').textContent).toContain('Anthropic');
+  });
 });
