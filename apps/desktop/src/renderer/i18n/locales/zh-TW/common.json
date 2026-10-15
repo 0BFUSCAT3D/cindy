@@ -765,6 +765,7 @@
     "clipboardSyncFailed": "同步暫時失敗，正在自動重試。開關保持開啟。",
     "clipboardSyncSkipped": "目前內容無法同步，已略過。請檢查貼上權限，或複製文字、圖片後重試。",
     "clipboardSyncPermission": "同步已暫停，請允許貼上權限後重試。開關保持開啟。",
+    "clipboardSyncWaiting": "遠端電腦的剪貼簿暫時無法存取（可能已鎖定螢幕），解鎖後會自動繼續同步。",
     "lockingOnExit": "正在鎖定電腦…",
     "lockOnExit": "退出後鎖定電腦",
     "lockOnExitHint": "離開遠端桌面時鎖定螢幕。重新連線或切換 App 不會觸發。",
@@ -8857,6 +8858,8 @@
       "needsAttention": "需要處理",
       "duplicate": "複製夥伴",
       "moreActions": "{{name}} 的更多操作",
+      "sectionExpand": "展開夥伴",
+      "sectionCollapse": "收起夥伴",
       "noResults": "找不到符合的夥伴或群組"
     },
     "cancel": "取消",

@@ -143,6 +143,10 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   let pending = [],
     pendingSince = 0,
     sending = false,
+    // Deadline while a paste shortcut holds the queue (desktop only; 0 = open),
+    // and which modifier is copy/paste on the controlled computer.
+    inputGateUntil = 0,
+    clipboardModifier = "control",
     cx = 0.5,
     cy = 0.5,
     drag = false,
@@ -861,6 +865,14 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
   }
   function flush() {
     if (!pending.length) return;
+    // A paste shortcut waits for the controller to push the local clipboard
+    // first. That hold is deliberate (and each further paste re-arms it), so
+    // the batch's freshness clock only starts once the gate opens.
+    if (inputGateUntil) {
+      if (performance.now() < inputGateUntil) return;
+      inputGateUntil = 0;
+      pendingSince = performance.now();
+    }
     // Input is an intent about the picture the user saw, not durable work.
     // Never replay old clicks/typing after a stalled ACK or data channel drains.
     if (performance.now() - pendingSince >= 2000) {
@@ -913,6 +925,12 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     clearTimeout(hold);
     if (gestureFrame !== null) cancelAnimationFrame(gestureFrame);
     gestureFrame = null;
+    // A paste still waiting for its clipboard push is abandoned, never sent
+    // late; the release itself must reach the computer at once.
+    if (inputGateUntil) {
+      inputGateUntil = 0;
+      pending = [];
+    }
     if (control) {
       queue({ kind: "release" });
       flush();
@@ -1518,6 +1536,19 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
     hardwareKeys.clear();
     commandKeys.clear();
   }
+  // Desktop only. Cmd/Ctrl+V holds the queue until the controller has pushed
+  // the local clipboard (or `inputGate` / the deadline releases it); Cmd/Ctrl+C
+  // and +X ask it to pull the computer's new copy soon after. Both are intents:
+  // the keys themselves still reach the computer unchanged.
+  function clipboardShortcut(e, code) {
+    const chord = clipboardModifier === "meta" ? e.metaKey : e.ctrlKey;
+    if (!config.desktop || e.repeat || e.altKey || !chord) return;
+    if (code === "KeyV") {
+      inputGateUntil = performance.now() + 1200;
+      post({ type: "clipboardIntent", action: "paste" });
+    } else if (code === "KeyC" || code === "KeyX")
+      post({ type: "clipboardIntent", action: "copy" });
+  }
   listen(document, "keydown", (e) => {
     if (config.desktop) {
       if (e.ctrlKey && e.altKey && e.code === "Escape") {
@@ -1551,7 +1582,9 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       return;
     if (control && validKeys.has(normalizedKey(e.code))) {
       e.preventDefault();
-      pressKey(normalizedKey(e.code));
+      const code = normalizedKey(e.code);
+      clipboardShortcut(e, code);
+      pressKey(code);
     }
   });
   listen(document, "keyup", (e) => {
@@ -2146,6 +2179,11 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
       case "releaseInput":
         release();
         break;
+      case "inputGate":
+        if (inputGateUntil) pendingSince = performance.now();
+        inputGateUntil = 0;
+        flush();
+        break;
       case "theme":
         if (/^#[0-9a-f]{3,8}$/i.test(message.surface)) {
           document.body.style.background = config.nativeMedia
@@ -2363,6 +2401,9 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         seq = 0;
         epoch = message.epoch;
         macKeyboard = config.desktop && message.macKeyboard === true;
+        clipboardModifier =
+          message.clipboardModifier === "meta" ? "meta" : "control";
+        inputGateUntil = 0;
         dw = message.width;
         dh = message.height;
         fillHeight = message.fillHeight === true;
@@ -2428,6 +2469,7 @@ export function mountRemoteDesktopViewer(root, postMessage, config) {
         // existing sequence fence so a late old ACK cannot unlock a new batch.
         seq++;
         sending = false;
+        inputGateUntil = 0;
         control = message.enabled;
         if (!control) showKeyboard(false);
         pending = [];
