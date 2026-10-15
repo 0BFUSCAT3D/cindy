@@ -235,6 +235,12 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
+    // The composer queues under the group's own id, which an older local route may not match.
+    const discardOutbox = () => {
+      const shown = stateRef.current;
+      discardBotGroupOutbox(groupId);
+      if (shown.kind === 'ready' && shown.group.id !== groupId) discardBotGroupOutbox(shown.group.id);
+    };
     const load = async (additionalSources: string[] = []) => {
       const version = ++requestVersion;
       const owner = getDataOwnerGeneration();
@@ -273,7 +279,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           }
         } else if (result.errorCode === 'NOT_FOUND') {
           // Gone for this account (deleted, archived or left): nothing of it is left to send.
-          discardBotGroupOutbox(groupId);
+          discardOutbox();
           setState({ kind: 'missing' });
         } else {
           // Keep a timeline that is already on screen; only a first read fails loudly.
@@ -331,7 +337,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
           requestVersion += 1;
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
-          discardBotGroupOutbox(groupId);
+          discardOutbox();
           setState({ kind: 'missing' });
           return;
         }
@@ -353,17 +359,19 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     () => (state.kind === 'ready' ? projectBotGroupExecutionFailures(mergeBotGroupMessages(state.older, state.group.messages), state.group.executionFailures) : []),
     [state],
   );
-  const outbox = useBotGroupOutbox(groupId);
+  // The composer sends under the group's own id; an older local route can still lead here.
+  const outboxGroupId = group?.id ?? groupId;
+  const outbox = useBotGroupOutbox(outboxGroupId);
   // Settle receipts only once the read that shows them is on screen, so a pending bubble
   // never disappears a frame before its real message appears. Older pages count too: a
   // message pushed off the latest page settles its previews once 查看更早的消息 shows it.
   // A receipt for a message the timeline already shows settles when it comes back.
   useLayoutEffect(() => {
-    if (state.kind === 'ready') noteBotGroupTimeline(groupId, mergeBotGroupMessages(state.older, state.group.messages), state.readToken);
-  }, [groupId, state, outbox]);
+    if (state.kind === 'ready') noteBotGroupTimeline(outboxGroupId, mergeBotGroupMessages(state.older, state.group.messages), state.readToken);
+  }, [outboxGroupId, state, outbox]);
   const { pending: pendingSends, localAttachments } = useMemo(
-    () => projectBotGroupOutbox(outbox, messages, getBotGroupOutboxClaims(groupId), getBotGroupOutboxPreviews(groupId)),
-    [groupId, messages, outbox],
+    () => projectBotGroupOutbox(outbox, messages, getBotGroupOutboxClaims(outboxGroupId), getBotGroupOutboxPreviews(outboxGroupId)),
+    [outboxGroupId, messages, outbox],
   );
   // A receipt the timeline does not show yet: read again so the real message takes its place.
   const unreadReceipts = pendingSends.flatMap((entry) => (entry.status === 'sent' && entry.messageId ? [entry.messageId] : [])).join(',');

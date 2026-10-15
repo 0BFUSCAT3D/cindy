@@ -1220,6 +1220,27 @@ describe('BotGroupChatView', () => {
     const pushMessages = (groupId = 'g1') =>
       act(() => mocks.pushes.forEach((push) => push({ groupId, change: 'messages' })));
 
+    it('shows and settles the message when an older local route opens a migrated group', async () => {
+      // The route still carries the local id; main answers with the group's server room id.
+      const send = pendingSend();
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'room-1' }) });
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '迁移后的群' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(outboxItems()).toHaveLength(1);
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      expect((mocks.sendBotGroupMessage.mock.calls[0]![0] as { groupId: string }).groupId).toBe('room-1');
+
+      mocks.getBotGroup.mockResolvedValue({
+        ok: true,
+        group: detail({ id: 'room-1', messages: [...detail().messages, msg({ id: 'u2', sequence: 5, content: '迁移后的群' })] }),
+      });
+      await send.resolve({ ok: true, messageId: 'u2' });
+      await waitFor(() => expect(getBotGroupOutbox('room-1')).toHaveLength(0));
+      expect(screen.getAllByText('迁移后的群')).toHaveLength(1);
+    });
+
     it('shows the message as soon as it is sent and swaps in the real one without a duplicate', async () => {
       const send = pendingSend();
       renderView();
