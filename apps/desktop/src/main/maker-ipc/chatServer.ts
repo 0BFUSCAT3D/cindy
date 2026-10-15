@@ -9,7 +9,7 @@ import { retryAfterDeadline } from '@cindy/auth-client';
 import { existsSync, readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { migrateLocalGroups } from './chatServerMigration.js';
+import { migrateLocalGroups, type ChatContentBlock } from './chatServerMigration.js';
 import { chatErrorDiagnostic, chatGroupFailure } from './chatServerErrors.js';
 import { createChatMedia } from './chatServerMedia.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
@@ -81,7 +81,7 @@ interface Running {
   pauseStarted?: number;
   releaseToolAuthority?: () => void;
 }
-class ChatResponseError extends Error {
+export class ChatResponseError extends Error {
   constructor(code: string, readonly status: number, readonly retryAt?: number, readonly details?: unknown) { super(code); }
 }
 const CHAT_AUTH_RETRY_MS = 60_000;
@@ -110,6 +110,21 @@ const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy
  */
 const TURN_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const bodyText = (m: Message) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m).map(b => b.text ?? b.fallback ?? (b.type === 'media' ? `[附件: ${b.caption ?? '文件'}]` : '')).join('\n');
+/** One server message holds this much text. */
+const CHAT_MESSAGE_TEXT_MAX = 8000;
+/** Splits long text into message-sized pieces, preferring a line break near the limit; '' → []. */
+export function splitChatMessageText(text: string, max = CHAT_MESSAGE_TEXT_MAX): string[] {
+  const pieces: string[] = [];
+  let rest = text;
+  while (rest.length > max) {
+    const cut = rest.lastIndexOf('\n', max);
+    const at = cut > max / 2 ? cut : max;
+    pieces.push(rest.slice(0, at));
+    rest = rest.slice(at).replace(/^\n/, '');
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
+}
 /** Words of a message for a quote excerpt; attachments are summarized separately. */
 const quotedText = (m: Message) => bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n');
 const quotedAttachments = (m: Message) => m.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []);
@@ -1559,15 +1574,27 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
               mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
           } catch { /* a file deleted since the task finished is simply not delivered */ }
         }
-        // A delivery file that cannot be uploaded must not hold back the result text and card.
-        const uploaded = await media.upload(roomId, input.clientId, produced, actor.id).catch(error => {
-          deps.log?.warn('Chat task delivery files skipped', { groupId: roomId, ...chatErrorDiagnostic(error) });
-          return [];
-        });
-        const text = input.text.trim().slice(0, 8000);
+        // A transient upload failure is reported as retryable so the files are sent later with the
+        // same message; only a file the server definitely refuses (too large, unsupported) is left out.
+        let uploaded: ChatContentBlock[];
+        try {
+          uploaded = await media.upload(roomId, input.clientId, produced, actor.id);
+        } catch (error) {
+          if (!(error instanceof ChatResponseError) || retryableResponse(error)) throw error;
+          deps.log?.warn('Chat task delivery files refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
+          uploaded = [];
+        }
+        // The server takes 8000 characters per message: a longer result continues in follow-up
+        // messages (same idempotent operation id family), never silently cut.
+        const [first = '', ...rest] = splitChatMessageText(input.text.trim());
         const posted = await api<{ id: string }>(`/conversations/${roomId}/messages`, 'POST', {
-          operationId: input.clientId, content: [...(text ? [{ type: 'text', text }] : []), input.card, ...uploaded], mentions: [],
+          operationId: input.clientId, content: [...(first ? [{ type: 'text', text: first }] : []), input.card, ...uploaded], mentions: [],
         }, actor.id);
+        for (const [index, text] of rest.entries()) {
+          await api(`/conversations/${roomId}/messages`, 'POST', {
+            operationId: `${input.clientId}:${index + 2}`, content: [{ type: 'text', text }], mentions: [],
+          }, actor.id);
+        }
         changed(roomId);
         return { ok: true, messageId: posted.id };
       } catch (error) {

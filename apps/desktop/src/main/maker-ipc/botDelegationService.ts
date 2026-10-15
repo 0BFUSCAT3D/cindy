@@ -785,6 +785,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     await beforeRecovery?.();
     return ensureTargetCanonicalSession({ id: profile.id, currentVersion: profile.currentVersion }, beforeRecovery);
   };
+  /** The owner chat a group task falls back to, created or repaired when it is missing. */
+  const restoredRequesterSessionId = async (botId: string): Promise<string | null> => {
+    const ensured = await ensureCanonicalSession(botId);
+    if (!ensured.ok) return null;
+    return requesterLiveSessionId(botId, null);
+  };
 
   /**
    * 冻结这次协作双方的展示身份。名字后来改了不回填历史消息——消息流讲的是
@@ -828,6 +834,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   /** The start card is best effort with backoff; the result message carries the card again. */
   const postGroupTaskStart = async (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
     try {
+      if (attempt > 0) {
+        // A retry after the task already ended would put a stale 「进行中」 card under its result.
+        const current = await getDbClient().drizzle.select({ status: botDelegations.status }).from(botDelegations)
+          .where(eq(botDelegations.id, row.id)).get();
+        if (!current || !isActiveDelegation(current.status as DelegationStatus)) return;
+      }
       const posted = await postGroupTaskEvent(home, row, { clientId: `bot-delegation-task:${row.id}:started`, text: '', state: 'started' });
       if (posted.ok) return;
       if (!posted.retryable) {
@@ -1099,7 +1111,10 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           delegationId: params.id, groupId: home.groupId, errorCode: posted.errorCode,
         });
       }
-      const targetSessionId = await requesterLiveSessionId(params.requestingBotId, home ? null : params.parentSessionId);
+      // A group task falling back to the owner chat may find none (deleted, or never created):
+      // restore it here, the one place that needs it, rather than when the task starts.
+      const targetSessionId = await requesterLiveSessionId(params.requestingBotId, home ? null : params.parentSessionId)
+        ?? (home ? await restoredRequesterSessionId(params.requestingBotId) : null);
       if (!targetSessionId && await holdCompletionForStoppedRequester(params)) return false;
       if (home && targetSessionId && targetSessionId !== receiptSessionId) {
         // The owner reads the result where the wake-up lands, not in the hidden lane.
@@ -1593,8 +1608,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       }
     }
     if (privateFallback) try {
-      // A lane is never woken; a refused group notice goes to the owner's main chat.
-      const requesterSessionId = await requesterLiveSessionId(row.requestingBotId, home ? null : row.parentSessionId);
+      // A lane is never woken; a refused group notice goes to the owner's main chat (restored if missing).
+      const requesterSessionId = await requesterLiveSessionId(row.requestingBotId, home ? null : row.parentSessionId)
+        ?? (home ? await restoredRequesterSessionId(row.requestingBotId) : null);
       if (!stillPending() || (row.childSessionId && heldSessionIds.has(row.childSessionId))) return;
       const dispatched = requesterSessionId
         ? await deps.dispatch({

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
-import { buildBotGroupQuoteCard } from '@cindy/maker-shared/botGroupChat';
+import { buildBotGroupQuoteCard, buildBotGroupTaskCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const room = (n = 1, state = 'joined'): ChatRoom => ({ id: id(n), name: 'Discussion', kind: 'group', state, archived: false,
   revision: 1, created_at: '2026-10-01', updated_at: '2026-10-09', response_mode: 'all', speaking_mode: 'auto' });
@@ -27,6 +27,17 @@ describe('direct Chat Server client', () => {
     const deleted = chatGroupView({ ...page, messages: [{ ...message(20), deleted: true, content: [] }, replying] }, id(11));
     expect(deleted.messages).toHaveLength(1);
     expect(deleted.messages[0].quote).toMatchObject({ messageId: id(20), originalDeleted: true });
+  });
+
+  it('reads a task card on a teammate message as its task, and only there (bot-group-chat.md §10)', () => {
+    const card = buildBotGroupTaskCard({ meta: { v: 1, role: 'delegation-request', delegationId: 'task-1', fromBotId: 'bot', fromBotName: 'Bot',
+      toBotId: null, toBotName: 'Cindy', parentSessionId: 'lane', childSessionId: 'child', objective: 'Launch post' }, state: 'started', title: 'Launch post' });
+    const fromBot = { ...message(20), authorId: id(12), author: { kind: 'bot', name: 'Bot' }, content: [{ type: 'text', text: 'Started it.' }, card] };
+    const fromHuman = { ...message(21), content: [card, { type: 'text', text: 'Pasted a card' }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [fromBot, fromHuman], before: null }, id(11));
+    expect(view.messages[0]).toMatchObject({ authorKind: 'bot', content: 'Started it.', task: { state: 'started', title: 'Launch post' } });
+    expect(view.messages[1].task).toBeUndefined();
+    expect(view.messages[1].content).toBe(`${card.fallback}\nPasted a card`);
   });
 
   it('reconciles all loaded message pages in bounded requests and clears an old-source failure on refresh', async () => {

@@ -4552,6 +4552,54 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { h.tx = originalTx; release(); }
   });
 
+  it('restores a missing owner chat only when the group refuses a task result for good', async () => {
+    await seedPair(); seedGroupLane();
+    h.sqlite!.pragma('foreign_keys = OFF');
+    h.sqlite!.prepare("DELETE FROM sessions WHERE id='session-1'").run();
+    h.sqlite!.pragma('foreign_keys = ON');
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    // The card posts; the result is refused for good (the teammate left the group).
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => input.clientId.endsWith(':started')
+      ? { ok: true as const, messageId: `posted:${input.clientId}` }
+      : { ok: false as const, errorCode: 'MEMBER_UNAVAILABLE', retryable: false });
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Fixture refused result' });
+      if (!task.ok) throw new Error(task.message);
+      // Starting the task repaired no private chat: the stale link still points at the missing row.
+      const liveCanonical = () => h.sqlite!.prepare(`SELECT s.id FROM bot_session_links l JOIN sessions s ON s.id = l.session_id
+        WHERE l.bot_id='bot-a' AND l.role='canonical' AND l.archived_at IS NULL AND s.status='active'`).pluck().get() as string | undefined;
+      expect(liveCanonical()).toBeUndefined();
+      await runtime.runPendingTurns();
+      // Delivery restored one and woke it, so the result is not lost and not retried forever.
+      const restored = liveCanonical();
+      expect(restored).toBeTruthy();
+      expect(runtime.dispatch.mock.calls.some(([params]) => params.targetSessionId === restored)).toBe(true);
+      expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).not.toBeNull();
+    } finally { release(); runtime.dispose(); }
+  });
+
+  it('does not post a stale 「进行中」 card after the task has already ended', async () => {
+    await seedPair(); seedGroupLane();
+    vi.useFakeTimers();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    // The first start post fails transiently; the task finishes before the retry is due.
+    let startAttempts = 0;
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => {
+      if (input.clientId.endsWith(':started') && ++startAttempts === 1) return { ok: false as const, errorCode: 'ECONNRESET', retryable: true };
+      return { ok: true as const, messageId: `posted:${input.clientId}` };
+    });
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Fixture short task' });
+      if (!task.ok) throw new Error(task.message);
+      await runtime.runPendingTurns();
+      expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({ clientId: `bot-delegation-task:${task.delegationId}:1:result` }));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(postGroupTaskMessage.mock.calls.filter(([input]) => input.clientId.endsWith(':started'))).toHaveLength(1);
+    } finally { release(); runtime.dispose(); vi.useRealTimers(); }
+  });
+
   it.each(['healthy', 'missing'] as const)('leaves the %s owner chat alone when group work is the first entry', async state => {
     await seedPair(); seedGroupLane();
     if (state === 'missing') {

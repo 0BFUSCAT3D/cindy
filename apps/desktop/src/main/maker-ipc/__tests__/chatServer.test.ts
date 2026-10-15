@@ -41,7 +41,7 @@ vi.mock('ws', async () => {
     close() { this.emit('close'); }
   } };
 });
-import { withChatServer } from '../chatServer.js';
+import { ChatResponseError, withChatServer } from '../chatServer.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
@@ -519,6 +519,45 @@ describe('Chat Server result delivery and refresh', () => {
       });
       const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:started', text: '', card: taskCard });
       expect(posted).toMatchObject({ ok: false, retryable });
+    });
+
+    it('continues a long result in follow-up messages instead of cutting it', async () => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      let posts = 0;
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route.endsWith('/messages') && method === 'POST') return { body: { id: `7000000${++posts}-0000-4000-8000-000000000001` } };
+        return response(route);
+      });
+      const text = `${'a'.repeat(7990)}\n${'b'.repeat(20)}\n${'c'.repeat(8000)}${'d'.repeat(10)}`;
+      const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result', text, card: taskCard });
+      expect(posted).toEqual({ ok: true, messageId: '70000001-0000-4000-8000-000000000001' });
+      const bodies = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST').map(([, , body]) => body);
+      expect(bodies.map(body => body.operationId)).toEqual(['bot-delegation-task:task-1:1:result', 'bot-delegation-task:task-1:1:result:2', 'bot-delegation-task:task-1:1:result:3']);
+      // The first piece breaks at the line before the limit and carries the card; nothing is lost.
+      expect(bodies[0].content).toEqual([{ type: 'text', text: 'a'.repeat(7990) }, taskCard]);
+      expect(bodies[1].content).toEqual([{ type: 'text', text: `${'b'.repeat(20)}\n${'c'.repeat(7979)}` }]);
+      expect(bodies[2].content).toEqual([{ type: 'text', text: `${'c'.repeat(21)}${'d'.repeat(10)}` }]);
+      expect(bodies.every(body => body.content.every((block: { text?: string }) => (block.text ?? '').length <= 8000))).toBe(true);
+    });
+
+    it.each([
+      ['a transient upload failure is retried with the message', new Error('ECONNRESET'), { ok: false, retryable: true }, 0],
+      ['a file the server refuses is left out, the result still posts', new ChatResponseError('PAYLOAD_TOO_LARGE', 413), { ok: true }, 1],
+    ])('%s', async (_label, failure, expected, posts) => {
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
+      fixture.upload.mockRejectedValueOnce(failure);
+      fixture.handle.mockImplementation((route, method) => {
+        if (route.endsWith('/snapshot')) return { body: { room: room(roomId), members: [joined(botId, 'bot')], messages: [], cursor: '1' } };
+        if (route.endsWith('/messages') && method === 'POST') return { body: { id: '70000000-0000-4000-8000-000000000001' } };
+        return response(route);
+      });
+      const posted = await service.postCompanionTaskMessage({ groupId: roomId, botId: 'local-bot', clientId: 'bot-delegation-task:task-1:1:result',
+        text: 'Done.', card: taskCard, files: [{ absolutePath: '/no/such/file.md' }] });
+      expect(posted).toMatchObject(expected);
+      const sent = fixture.handle.mock.calls.filter(([route, method]) => route === `/conversations/${roomId}/messages` && method === 'POST');
+      expect(sent).toHaveLength(posts);
+      if (posts) expect(sent[0][2].content).toEqual([{ type: 'text', text: 'Done.' }, taskCard]);
     });
 
     it('refuses for good when the teammate is no longer a member', async () => {

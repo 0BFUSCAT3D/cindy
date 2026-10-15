@@ -1,5 +1,5 @@
 /** The existing Chat Server HTTP contract; no device-link or executor registration. */
-import { readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
+import { readBotGroupExecutionFailure, readBotGroupQuote, readBotGroupQuoteCard, readBotGroupTaskCard, readImportedBotGroupRuntimeFailureCode, type BotGroupAttachment, type BotGroupMemberView, type BotGroupMessageView, type BotGroupRemoteChatData } from '@cindy/maker-shared/botGroupChat';
 import { botGroupExecutionFailureBatches, projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import type { HostedRemoteCollectionItem } from '@/device-link/remoteResources';
 
@@ -60,8 +60,10 @@ export function chatRejection(error: unknown, status: number, code: string): Rec
 const memberName = (member: ChatMember) => member.kind === 'bot' && member.ownerName?.trim()
   ? `${member.name} (${member.ownerName.trim()})` : member.name;
 // A recognized 引用回复 card renders as the quote; an unknown revision keeps its readable fallback.
+// A task card is the message's task only on a teammate's own message (bot-group-chat.md §10).
+const taskCardOf = (message: ChatMessage) => message.author.kind === 'bot' ? message.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
 const contentText = (message: ChatMessage) => message.deleted || readImportedBotGroupRuntimeFailureCode(message) ? '' : message.content
-  .filter(block => !readBotGroupQuoteCard(block))
+  .filter(block => !readBotGroupQuoteCard(block) && !(message.author.kind === 'bot' && readBotGroupTaskCard(block)))
   .map(block => block.text ?? block.fallback ?? (block.type === 'media' ? block.caption ?? '' : '')).join('\n');
 export const chatMessageText = (message: ChatMessage) => contentText(message);
 
@@ -145,7 +147,9 @@ export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteCha
     const joined = message.origin === 'system' && !message.deleted && message.content.find(block =>
       block.type === 'card' && block.namespace === 'cindy.membership' && block.schemaRevision === 1 && block.data?.type === 'member.joined');
     const quote = message.origin === 'system' ? null : readBotGroupQuote(message.content);
+    const task = message.origin === 'system' ? null : taskCardOf(message);
     return { id: message.id, sequence: index + 1, kind: message.origin === 'system' ? 'notice' : 'message',
+      ...(task ? { task } : {}),
       authorKind: message.origin === 'system' ? 'system' : message.author.kind === 'human' ? 'user' : 'bot',
       authorBotId: message.authorId, authorName: joined && typeof joined.data?.displayName === 'string' ? joined.data.displayName
         : member ? memberName(member) : message.author.name,
