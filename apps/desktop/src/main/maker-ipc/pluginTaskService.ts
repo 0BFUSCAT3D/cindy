@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { Session } from '@cindy/maker-core';
 import type { PluginTaskRoute, PluginTaskRun, PluginTaskView, PluginTeamPlan } from '../../shared/pluginTasks.js';
 import { isPluginTeamPlanWithinBudget, PLUGIN_TASK_RECEIPT_MAX_JSON_CHARS } from '../../shared/pluginTasks.js';
 import {
@@ -111,6 +112,7 @@ export interface PluginTaskServiceDeps {
   ): Promise<void>;
   setModel?(taskId: string, route: PluginTaskRoute, assertCurrent: () => Promise<void>): Promise<{ status: string }>;
   readSession(taskId: string): Promise<PluginTaskView | null>;
+  readLiveSession(taskId: string): Pick<Session, 'instanceId' | 'stablePlanModeState'> | undefined;
   assertTeamPlanUnstarted?(taskId: string): Promise<void>;
   dispatch(
     pluginId: string,
@@ -153,9 +155,27 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
     operations = Promise.all([operations, result.catch(() => undefined)]).then(() => undefined);
     return result;
   };
-  const assertDispatch = async (pluginId: string, taskId: string) => {
+  // The persisted/UI choice can be consumed while Pi is still executing Plan.
+  // Keep one live authority across awaits; queued acceptance must also match
+  // the runtime selected by the input coordinator, including for cold tasks.
+  const capturePlanGuard = (taskId: string, execution?: SessionExecutionIdentity) => {
+    const live = deps.readLiveSession(taskId);
+    const plan = live?.stablePlanModeState;
+    const generation = plan?.generation;
+    const assertCurrent = () => {
+      const current = deps.readLiveSession(taskId);
+      const state = current?.stablePlanModeState;
+      if (current !== live || (execution && current?.instanceId !== execution.instanceId)
+        || (live && (!plan || plan.enabled || !state || state.enabled || state.generation !== generation)))
+        fail('PERMISSION_DENIED', 'Task Plan Mode is active, unknown or changing');
+    };
+    assertCurrent();
+    return assertCurrent;
+  };
+  const assertDispatch = async (pluginId: string, taskId: string, assertPlanCurrent = capturePlanGuard(taskId)) => {
     const view = await ownTask(pluginId, taskId);
     deps.assertAuthorized(pluginId);
+    assertPlanCurrent();
     if (view.status !== 'active') return fail('TASK_BUSY', 'Archived tasks cannot accept input');
     if (!isPluginTaskPermissionAllowed(view.permissionMode, deps.readPermissionMode(pluginId), view.planModeEnabled))
       return fail('PERMISSION_DENIED', 'Task permission exceeds plugin dispatch policy');
@@ -360,14 +380,15 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
           fingerprint,
         );
         if (previous)
-          return { run: JSON.parse(previous.payload) as PluginTaskRun, dispatch: false };
+          return { run: JSON.parse(previous.payload) as PluginTaskRun, dispatch: false as const };
+        const assertPlanCurrent = capturePlanGuard(view.taskId);
         if (!isPluginTaskPermissionAllowed(view.permissionMode, deps.readPermissionMode(pluginId), view.planModeEnabled)) return fail('PERMISSION_DENIED', 'Task permission exceeds plugin dispatch policy');
         if (view.status !== 'active')
           return fail('TASK_BUSY', 'Archived tasks cannot accept input');
         if (view.revision !== request.expectedRevision)
           return fail('REVISION_CONFLICT', 'Task configuration changed');
         await deps.resolveRoute(pluginId, view.resolvedConfig);
-        await assertDispatch(pluginId, view.taskId);
+        await assertDispatch(pluginId, view.taskId, assertPlanCurrent);
         const runId = id();
         const run: PluginTaskRun = {
           runId,
@@ -379,10 +400,11 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
           usage: { status: 'unavailable', reason: 'Per-input usage has not been reconciled.' },
         };
         deps.assertAuthorized(pluginId);
+        assertPlanCurrent();
         await deps.store.insert(
           newReceipt(pluginId, 'send', view.taskId, request.requestKey, fingerprint, run, runId),
         );
-        return { run, dispatch: true };
+        return { run, dispatch: true as const, assertPlanCurrent };
       });
       if (!prepared.dispatch) return prepared.run;
       let failure: 'failed' | 'reconciling' | undefined;
@@ -390,7 +412,8 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
       // Never hold the receipt lock while entering Session dispatch/control. The
       // coordinator awaits accept() before vendor dispatch under its own lock.
       try {
-        await assertDispatch(pluginId, prepared.run.taskId);
+        await assertDispatch(pluginId, prepared.run.taskId, prepared.assertPlanCurrent);
+        prepared.assertPlanCurrent();
         dispatchStarted = true;
         const outcome = await deps.dispatch(
           pluginId,
@@ -473,18 +496,22 @@ export function createPluginTaskService(deps: PluginTaskServiceDeps) {
               continue;
             return fail('REQUEST_EXPIRED', 'Input was already settled');
           }
+          const assertPlanCurrent = capturePlanGuard(taskId, execution);
           const view = await ownTask(row.pluginId, taskId);
+          assertPlanCurrent();
           if (view.status !== 'active') return fail('TASK_BUSY', 'Archived tasks cannot accept input');
           if (!isPluginTaskPermissionAllowed(view.permissionMode, deps.readPermissionMode(row.pluginId), view.planModeEnabled)) return fail('PERMISSION_DENIED', 'Task permission exceeds plugin dispatch policy');
           if (hash(view.resolvedConfig) !== hash(run.acceptedConfig))
             return fail('ROUTE_UNAVAILABLE', 'Accepted route changed before dispatch');
           await deps.resolveRoute(row.pluginId, run.acceptedConfig);
-          await assertDispatch(row.pluginId, taskId);
+          await assertDispatch(row.pluginId, taskId, assertPlanCurrent);
+          assertPlanCurrent();
           run.inputClientIds = [...new Set([...(run.inputClientIds ?? []), item.clientId])];
           run.execution = execution;
           run.status = 'running';
           await save(row, run);
-          await assertDispatch(row.pluginId, taskId);
+          await assertDispatch(row.pluginId, taskId, assertPlanCurrent);
+          assertPlanCurrent();
         }
       }),
     settle: (

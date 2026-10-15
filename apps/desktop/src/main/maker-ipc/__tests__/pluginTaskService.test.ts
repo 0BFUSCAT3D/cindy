@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
+import { Session } from '@cindy/maker-core';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -114,6 +115,7 @@ function fixture() {
     fastMode: false,
   };
   const execution = { instanceId: 'native', generation: 1 };
+  const live = { instanceId: execution.instanceId, stablePlanModeState: { enabled: false, generation: 0 } };
   const deps: PluginTaskServiceDeps = {
     store,
     readPermissionMode: () => 'auto',
@@ -131,6 +133,7 @@ function fixture() {
       tasks.set(taskId, { taskId, title, resolvedConfig, revision: 1, status: 'active', permissionMode: 'plan' });
     }),
     readSession: async (id) => copy(tasks.get(id) ?? null),
+    readLiveSession: () => live,
     dispatch: vi.fn(async () => ({ ok: true })),
     inspect: vi.fn(async () => ({ execution: null, pending: [] })),
     cancel: vi.fn(async () => 'cancelled' as const),
@@ -160,6 +163,94 @@ function fixture() {
     },
   };
 }
+
+describe('plugin dispatch uses live Plan execution authority', () => {
+  it.each(['send', 'accept'] as const)('%s rejects consumed Pi intent while execution is active, unknown or switching', async entry => {
+    const f = fixture(), task = await f.create();
+    Object.assign(f.tasks.get(task.taskId)!, { permissionMode: 'auto', planModeEnabled: false });
+    let executionPlan: boolean | null = false;
+    let releaseEvents!: () => void, releaseSwitch!: () => void;
+    const eventsClosed = new Promise<void>(resolve => { releaseEvents = resolve; });
+    const switching = new Promise<void>(resolve => { releaseSwitch = resolve; });
+    const logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child() { return logger; } };
+    const session = new Session({ id: task.taskId, sessionInstanceId: f.execution.instanceId,
+      agentKind: 'pi', workDir: '/answer', permissionMode: 'auto', logger,
+      capabilities: { planMode: { supported: true } } as never,
+      handle: { id: 'pi', agentKind: 'pi', model: 'test',
+        async *events() { await eventsClosed; }, async close() { releaseEvents(); }, setInteractionResolver() {},
+        getPlanMode: () => false, getExecutionPlanMode: () => executionPlan,
+        setPlanMode: async () => { await switching; },
+      } as never,
+    });
+    f.deps.readLiveSession = () => session;
+    const request = { taskId: task.taskId, expectedRevision: task.revision, requestKey: 'live-plan', text: 'continue' };
+    const queued = entry === 'accept' ? await f.service.send('p', request) : undefined;
+    vi.mocked(f.deps.dispatch).mockClear();
+    const invoke = () => entry === 'send' ? f.service.send('p', request)
+      : f.service.accept(task.taskId, { clientId: queued!.inputMessageId }, f.execution);
+    try {
+      for (const value of [true, null]) {
+        executionPlan = value;
+        expect(session.getPlanMode()).toBe(false);
+        await expect(invoke()).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      }
+      executionPlan = false;
+      const pending = session.setPlanMode(true);
+      expect(session.stablePlanModeState).toBeNull();
+      await expect(invoke()).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      expect(f.deps.dispatch).not.toHaveBeenCalled();
+      releaseSwitch();
+      await pending;
+      // Native/Host recovery to a stable non-plan state restores the same API.
+      if (entry === 'send') await expect(invoke()).resolves.toMatchObject({ status: 'queued' });
+      else await expect(invoke()).resolves.toBeUndefined();
+    } finally {
+      releaseSwitch();
+      await session.close();
+    }
+  });
+
+  it.each(['send', 'accept'] as const)('%s rechecks the same live session after async route and receipt work', async entry => {
+    for (const point of ['route', 'receipt', 'instance', 'generation']) {
+      const f = fixture(), task = await f.create();
+      Object.assign(f.tasks.get(task.taskId)!, { permissionMode: 'auto', planModeEnabled: false });
+      let live = { instanceId: f.execution.instanceId, stablePlanModeState: { enabled: false, generation: 0 } };
+      f.deps.readLiveSession = () => live;
+      const request = { taskId: task.taskId, expectedRevision: task.revision, requestKey: 'async-plan', text: 'continue' };
+      const queued = entry === 'accept' ? await f.service.send('p', request) : undefined;
+      vi.mocked(f.deps.dispatch).mockClear();
+      const change = () => {
+        if (point === 'instance') live = { ...live };
+        else if (point === 'generation') live.stablePlanModeState.generation++;
+        else live.stablePlanModeState.enabled = true;
+      };
+      if (point === 'receipt') {
+        const method = entry === 'send' ? 'insert' : 'save';
+        const original = f.deps.store[method];
+        f.deps.store[method] = async row => { await original(row); change(); };
+      } else f.deps.resolveRoute = async () => { change(); return f.route; };
+      const result = entry === 'send' ? f.service.send('p', request)
+        : f.service.accept(task.taskId, { clientId: queued!.inputMessageId }, f.execution);
+      if (entry === 'send' && point === 'receipt') await expect(result).resolves.toMatchObject({ status: 'failed' });
+      else await expect(result).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+      expect(f.deps.dispatch).not.toHaveBeenCalled();
+    }
+  });
+
+  it('allows cold tasks to queue but requires the accepting live instance', async () => {
+    const f = fixture();
+    f.deps.readLiveSession = () => undefined;
+    const run = await f.send();
+    await expect(f.service.accept(run.taskId, { clientId: run.inputMessageId }, f.execution))
+      .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    f.deps.readLiveSession = () => ({ instanceId: 'replacement', stablePlanModeState: { enabled: false, generation: 0 } });
+    await expect(f.service.accept(run.taskId, { clientId: run.inputMessageId }, f.execution))
+      .rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    const live = { instanceId: f.execution.instanceId, stablePlanModeState: { enabled: false, generation: 0 } };
+    f.deps.readLiveSession = () => live;
+    await expect(f.service.accept(run.taskId, { clientId: run.inputMessageId }, f.execution)).resolves.toBeUndefined();
+  });
+});
 
 it('serializes source archival behind creation and keeps old tasks inaccessible to the replacement', async () => {
   const fixtureState = fixture();
