@@ -1505,8 +1505,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       if (action.type === 'dissolve') {
         if (!supportsDissolve) throw new Error('LIFECYCLE_UNAVAILABLE');
-        const s = await snapshot(target);
-        if (s.room.kind !== 'group') throw new Error('GROUP_REQUIRED');
+        const s = await groupSnapshot(target);
         const owner = s.members.find(m => m.state === 'joined' && m.role === 'owner' && (m.id === selfId || m.ownerActorId === selfId));
         if (!owner) throw new Error('OWNER_REQUIRED');
         z.object({ revision: z.number().int().positive(), dissolvedAt: z.string().refine(value => Number.isFinite(Date.parse(value))), dissolvedBy: id })
@@ -1581,6 +1580,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }),
     reactors: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128) }).strict().parse(input);
+      // Keep this read-only entry free of actor registration and subscriptions while applying the same room allowlist.
+      const s = await api<Snapshot>(`/conversations/${i.groupId}/snapshot`);
+      if (!isGroupRoom(s.room)) throw new Error('NOT_A_GROUP');
       // Read-only: reuse the registered actor, or read it without the actor/profile sync in register().
       const self = selfId || (await api<{ actor: { id: string } }>('/me')).actor.id;
       // Every member state is listed, so actors who have since left keep their group name.

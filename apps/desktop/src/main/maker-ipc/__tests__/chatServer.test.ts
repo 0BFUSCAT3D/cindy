@@ -1940,6 +1940,7 @@ describe('Chat Server result delivery and refresh', () => {
     const roomOf = (id: string) => ({ ...room(id), kind: id in kinds ? kinds[id] : 'group' });
     beforeEach(() => {
       fixture.handle.mockImplementation((route, method) => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupLifecycleVersion: 1 } } };
         if (route === '/conversations?limit=100') return { body: [roomOf(directId), roomOf(roomId), roomOf(channelId), roomOf(futureId)] };
         if (route.endsWith('/snapshot')) return { body: { room: roomOf(route.split('/')[2]), cursor: '1', messages: [],
           members: [{ id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined', role: 'owner' }] } };
@@ -1958,6 +1959,23 @@ describe('Chat Server result delivery and refresh', () => {
 
     it.each([directId, channelId, futureId])('answers a missing group when %s is opened directly', async other => {
       expect(await service.getGroup(other)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+    });
+
+    it.each([directId, channelId, futureId])('rejects dissolution and reactor reads for %s without subscriptions or other room access', async groupId => {
+      await service.listGroups();
+      await vi.advanceTimersByTimeAsync(2000);
+      const socket = fixture.sockets[0];
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(socket.send).mockClear();
+      fixture.handle.mockClear();
+      expect(await service.chatServer!.manage({ groupId, action: { type: 'dissolve', expectedRevision: 1 } }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(await service.chatServer!.reactors({ groupId, messageId: roomId, emoji: '👍' }))
+        .toMatchObject({ ok: false, errorCode: 'CONVERSATION_NOT_FOUND' });
+      expect(fixture.handle.mock.calls.filter(([route]) => String(route).startsWith(`/conversations/${groupId}`) && !String(route).endsWith('/snapshot'))).toEqual([]);
+      expect(vi.mocked(socket.send).mock.calls.filter(([raw]) => String(raw).includes(groupId))).toEqual([]);
     });
 
     it('does not archive, leave, rename, re-member, post into or invite to a direct room through group actions', async () => {

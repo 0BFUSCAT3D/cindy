@@ -203,7 +203,7 @@ describe('Chat Server membership notices', () => {
     expect(fixture.handle).toHaveBeenCalledWith(`/conversations/${roomId}/dissolve`, 'POST', expect.objectContaining({ expectedRevision: 1, operationId: expect.any(String) }));
     expect(fixture.handle.mock.calls.some(([, method]) => method === 'PATCH')).toBe(false);
   });
-  it.each([{ kind: 'direct', code: 'GROUP_REQUIRED' }, { role: 'admin', code: 'OWNER_REQUIRED' }, { role: 'member', code: 'OWNER_REQUIRED' }])('refuses invalid dissolution %j', async ({ code, ...options }) => {
+  it.each([{ kind: 'direct', code: 'CONVERSATION_NOT_FOUND' }, { role: 'admin', code: 'OWNER_REQUIRED' }, { role: 'member', code: 'OWNER_REQUIRED' }])('refuses invalid dissolution %j', async ({ code, ...options }) => {
     lifecycle(options);
     expect(await service.chatServer!.manage({ groupId: roomId, action: { type: 'dissolve', expectedRevision: 1 } })).toMatchObject({ ok: false, errorCode: code });
     expect(fixture.handle.mock.calls.some(([route]) => route.endsWith('/dissolve'))).toBe(false);
