@@ -41,6 +41,8 @@ import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessi
 import { executeProviderShareManagementCommand, parseProviderShareCommand } from '../../device-link/providerShareRuntime';
 import { getProviderGroupDirectory, getProviderGroupRouter } from '../runtime';
 import { invokeProviderManagement } from '../managementClient';
+import { pruneProviderGroupBindings } from '../bindings';
+import { readProviderGroup, writeProviderGroup } from '../store';
 
 const LOCAL = { key: 'local', kind: 'local' as const, agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
 const MINI = {
@@ -465,9 +467,38 @@ describe('executeProviderGroupCommand save', () => {
 });
 
 describe('provider management receiver account boundary', () => {
+  it('refreshes reshare coordination after a remote group edit without adding local-only consent details to the reply', async () => {
+    const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    const d = deps([], config);
+    vi.mocked(getProviderGroupDirectory).mockReturnValue(d.directory);
+    vi.mocked(getProviderGroupRouter).mockReturnValue(d.router);
+    vi.mocked(readProviderGroup).mockReturnValue(config);
+    vi.mocked(writeProviderGroup).mockResolvedValue(config);
+    vi.mocked(pruneProviderGroupBindings).mockResolvedValue();
+    const onGroupChanged = vi.fn();
+    const reply = await handleProviderManagementRequest({
+      action: 'manage-group', command: { action: 'save-if-current', providerId: 'anthropic', config, expectedConfig: config },
+    }, { onGroupChanged });
+    expect(onGroupChanged).toHaveBeenCalledExactlyOnceWith('anthropic');
+    expect(reply.result).toEqual({ providerId: 'anthropic', config, members: [] });
+  });
+
+  it('accepts reshare decisions as owner operations and keeps forwarding operations outside the management scope', async () => {
+    const command = { action: 'reshare-decide', id: 'rs-pending', decision: 'approve' } as const;
+    vi.mocked(parseProviderShareCommand).mockReturnValue(command);
+    expect(parseProviderManagementRequest({ action: 'manage-share', command })).toEqual({ action: 'manage-share', command });
+    vi.mocked(executeProviderShareManagementCommand).mockResolvedValueOnce({ ok: true });
+    expect(await handleProviderManagementRequest({ action: 'manage-share', command })).toMatchObject({ result: { ok: true } });
+    expect(executeProviderShareManagementCommand).toHaveBeenLastCalledWith(command);
+    vi.mocked(parseProviderShareCommand).mockReturnValueOnce({ action: 'received' });
+    expect(() => parseProviderManagementRequest({ action: 'manage-share', command: { action: 'received' } }))
+      .toThrow(/PERMISSION_DENIED/);
+  });
+
   it.each([
     { action: 'manage-group', command: { action: 'get', providerId: 'anthropic' } },
     { action: 'manage-share', command: { action: 'owned', range: '7d' } },
+    { action: 'manage-share', command: { action: 'reshare-decide', id: 'rs-pending', decision: 'approve' } },
   ] satisfies ProviderManagementRequest[])('refuses $action before dispatch when teardown is pending', async (request) => {
     vi.mocked(getProviderGroupRouter).mockClear();
     vi.mocked(executeProviderShareManagementCommand).mockClear();

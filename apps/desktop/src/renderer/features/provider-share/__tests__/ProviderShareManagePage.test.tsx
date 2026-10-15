@@ -7,7 +7,11 @@ import type { ProviderGroupConfig } from '../../../../shared/providerGroup';
 import type { ProviderOwnUsageView, ProviderShareOwnerState } from '../../../../shared/providerShare';
 import { __testing as localGroupsTesting } from '../../provider-group/useLocalProviderGroups';
 import { ProviderShareManagePage } from '../ProviderShareManagePage';
-import { getProviderSharePendingRequests, resetProviderShareStoreForTests } from '../providerShareStore';
+import {
+  getProviderSharePendingRequests,
+  getProviderSharePendingReshares,
+  resetProviderShareStoreForTests,
+} from '../providerShareStore';
 
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
@@ -329,6 +333,65 @@ describe('ProviderShareManagePage', () => {
       expect(command).toHaveBeenCalledWith({ action: 'set-member', memberId: 'mem-1', status: 'remove' }),
     );
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ confirmVariant: 'destructive' }));
+  });
+
+  // 转分享(provider-sharing.md §4.3)：成员想经自己的供应商组把这里的供应商转给别人用，主人逐人处理。
+  it.each([undefined, 'studio'])('handles reshare decisions on the provider’s computer (%s)', async (deviceId) => {
+    command.mockImplementation(async (cmd: { action: string }) => {
+      if (cmd.action === 'owned') {
+        const state = owned();
+        state.shares[0]!.members[0]!.reshares = [
+          { id: 'rs-pending', name: 'Carol', avatarUrl: null, state: 'pending', requestedAt: Date.now() - 1_000, decidedAt: null },
+          { id: 'rs-approved', name: 'Dave', avatarUrl: null, state: 'approved', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+          { id: 'rs-rejected', name: 'Erin', avatarUrl: null, state: 'rejected', requestedAt: Date.now() - 9_000, decidedAt: Date.now() - 5_000 },
+        ];
+        return state;
+      }
+      if (cmd.action === 'own-usage') return ownUsage();
+      if (cmd.action === 'received') return [];
+      if (cmd.action === 'reshare-decide') return { ok: true };
+      throw new Error(`unexpected ${cmd.action}`);
+    });
+    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' } }];
+    const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
+    if (deviceId) {
+      remoteCommand.mockImplementation(async (cmd) => {
+        if (cmd.action === 'remote-manage' && cmd.request.action === 'manage-share') {
+          if (cmd.request.command.action === 'reshare-decide') return { ok: true };
+          return command(cmd.request.command);
+        }
+        return { providerId: 'xd', config: null, members: [] };
+      });
+    }
+    const expectDecision = async (id: string, decision: 'approve' | 'reject') => {
+      const decidedCommand = { action: 'reshare-decide', id, decision };
+      if (deviceId) {
+        await waitFor(() => expect(remoteCommand).toHaveBeenCalledWith({
+          action: 'remote-manage', deviceId, request: { action: 'manage-share', command: decidedCommand },
+        }));
+        expect(command).not.toHaveBeenCalledWith(decidedCommand);
+      } else {
+        await waitFor(() => expect(command).toHaveBeenCalledWith(decidedCommand));
+      }
+    };
+    renderPage('on', { deviceId });
+    const pending = await screen.findByTestId('provider-share-reshare-row');
+    expect(pending.textContent).toContain('Carol');
+    expect(pending.textContent).toContain('providerShare.manage.reshare.applying:{"owner":"Lizi"}');
+    expect(getProviderSharePendingReshares().map((item) => item.reshare.id)).toEqual(deviceId ? [] : ['rs-pending']);
+    fireEvent.click(within(pending).getByRole('button', { name: 'providerShare.manage.reshare.approve' }));
+    await expectDecision('rs-pending', 'approve');
+
+    // 处理过的人列在这个成员下方：已同意的可撤回，拒绝的可改为同意。
+    const decided = screen.getAllByTestId('provider-share-reshare-item');
+    expect(decided.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Dave'),
+      expect.stringContaining('Erin'),
+    ]);
+    fireEvent.click(within(decided[0]!).getByRole('button', { name: /providerShare\.manage\.reshare\.revokeAria/ }));
+    await expectDecision('rs-approved', 'reject');
+    fireEvent.click(within(decided[1]!).getByRole('button', { name: /providerShare\.manage\.reshare\.approveAria/ }));
+    await expectDecision('rs-rejected', 'approve');
   });
 
   it('disables link creation and explains why when sharing is gated', async () => {

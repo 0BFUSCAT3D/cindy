@@ -20,17 +20,20 @@ export function parseProviderManagementRequest(raw: unknown): ProviderManagement
     return { action: 'manage-group', command: command as ProviderGroupManagementCommand };
   }
   const command = parseProviderShareCommand(raw.command);
-  if (!['owned', 'own-usage', 'create-link', 'approve', 'reject', 'set-member'].includes(command.action)) {
+  if (!['owned', 'own-usage', 'create-link', 'approve', 'reject', 'set-member', 'reshare-decide'].includes(command.action)) {
     throwIpcError('PERMISSION_DENIED', 'Only owner operations are available through management');
   }
   return { action: 'manage-share', command: command as ProviderShareManagementCommand };
 }
 
-export async function handleProviderManagementRequest(raw: unknown): Promise<ProviderManagementReply> {
+export async function handleProviderManagementRequest(
+  raw: unknown,
+  options: { onGroupChanged?: (providerId: string) => void } = {},
+): Promise<ProviderManagementReply> {
   const assertCurrent = captureProviderManagementScope();
   const request = parseProviderManagementRequest(raw);
   const result = request.action === 'manage-group'
-    ? await executeProviderGroupCommand(createProviderGroupCommandDeps(), request.command)
+    ? await executeProviderGroupCommand(createProviderGroupCommandDeps(options), request.command)
     : await executeProviderShareManagementCommand(request.command);
   assertCurrent();
   return { result, respondedAt: Date.now() };

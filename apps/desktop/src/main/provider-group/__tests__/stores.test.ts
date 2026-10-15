@@ -10,21 +10,24 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 const scope = vi.hoisted(() => ({ boundaryPending: false }));
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-group-store-test-'));
+let activeOwner = 'owner-test';
 
 vi.mock('electron', () => ({ app: { getPath: () => tmpDir } }));
 vi.mock('../../maker-host/logger-adapter.js', () => ({
   desktopMakerLogger: { child: () => ({ info: () => {}, warn: () => {}, error: () => {} }) },
 }));
 vi.mock('../../appSessionState.js', () => ({
-  ownerScopedUserDataPath: (name: string) => path.join(tmpDir, name),
-  activeOwnerScopeKey: () => 'owner-test',
+  ownerScopedUserDataPath: (name: string) => activeOwner === 'owner-test' ? path.join(tmpDir, name) : path.join(tmpDir, activeOwner, name),
+  activeOwnerScopeKey: () => activeOwner,
   isAppSessionBoundaryPending: () => scope.boundaryPending,
 }));
 
 const store = await import('../store.js');
 const bindings = await import('../bindings.js');
-afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
-afterEach(() => { scope.boundaryPending = false; });
+const locks = await import('../../device-link/crossProcessLock.js');
+
+afterEach(() => { scope.boundaryPending = false; activeOwner = 'owner-test'; vi.restoreAllMocks(); });
+afterAll(async () => { await fs.promises.rm(tmpDir, { recursive: true, force: true }); });
 
 describe('provider group store', () => {
   it.each(['save', 'delete'])('does not %s when teardown starts before the file lock is acquired', async (action) => {
@@ -101,6 +104,52 @@ describe('provider group store', () => {
     await expect(store.writeProviderGroup('creation', created, created)).rejects.toThrow('[PROVIDER_GROUP_CHANGED]');
     expect(store.readProviderGroup('creation')).toBeNull();
   });
+
+  it('persists cleanup with group removal and retains it through restart, rejoin, and stale acknowledgements', async () => {
+    const config = { strategy: 'least', members: [{ kind: 'local' }, { kind: 'share', agentDeviceId: 'share:a1', providerId: 'anthropic' }] };
+    await store.writeProviderGroup('anthropic', config);
+    await store.writeProviderGroup('anthropic', null);
+    const token = store.listProviderGroupReshareCleanups()['share:a1'];
+    expect(token).toBeDefined();
+    const file = path.join(tmpDir, 'provider-group-prefs.json');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ reshareCleanups: { 'share:a1': token } });
+    // 重新创建存储实例，不复用缓存，证明清理来自磁盘。
+    vi.resetModules();
+    const restarted = await import('../store.js');
+    expect(restarted.listProviderGroupReshareCleanups()['share:a1']).toBe(token);
+    await restarted.writeProviderGroup('anthropic', config);
+    expect(restarted.listProviderGroupReshareCleanups()['share:a1']).toBe(token);
+    await restarted.writeProviderGroup('anthropic', null);
+    const nextToken = restarted.listProviderGroupReshareCleanups()['share:a1'];
+    expect(nextToken).not.toBe(token);
+    await restarted.completeProviderGroupReshareCleanup('share:a1', token);
+    expect(restarted.listProviderGroupReshareCleanups()['share:a1']).toBe(nextToken);
+    await restarted.completeProviderGroupReshareCleanup('share:a1', nextToken);
+    expect(restarted.listProviderGroupReshareCleanups()).toEqual({});
+  });
+
+  it('only queues cleanup when a shared computer leaves its last group', async () => {
+    const config = { members: [{ kind: 'share', agentDeviceId: 'share:overlap', providerId: 'anthropic' }] };
+    await store.writeProviderGroup('anthropic', config);
+    await store.writeProviderGroup('openai', config);
+    await store.writeProviderGroup('anthropic', null);
+    expect(store.listProviderGroupReshareCleanups()['share:overlap']).toBeUndefined();
+    await store.writeProviderGroup('openai', null);
+    expect(store.listProviderGroupReshareCleanups()['share:overlap']).toBeDefined();
+  });
+
+  it('preserves an unreadable file instead of overwriting its pending cleanups', async () => {
+    const file = path.join(tmpDir, 'provider-group-prefs.json');
+    const previous = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '{broken-json');
+    try {
+      store.listProviderGroupReshareCleanups();
+      await expect(store.writeProviderGroup('anthropic', null)).rejects.toThrow(/unreadable/);
+      expect(fs.readFileSync(file, 'utf8')).toBe('{broken-json');
+    } finally {
+      fs.writeFileSync(file, previous);
+    }
+  });
 });
 
 describe('provider group bindings', () => {
@@ -151,6 +200,25 @@ describe('provider group bindings', () => {
     await bindings.pruneProviderGroupBindings('anthropic', null);
     expect(bindings.readProviderGroupBinding('a')).toBeNull();
     expect(bindings.readProviderGroupBinding('c')).not.toBeNull();
+  });
+
+  it('does not write old cleanup releases into the new account after the binding write lock is released', async () => {
+    activeOwner = 'new-owner';
+    await bindings.writeProviderGroupBinding('scope-task', { providerId: 'anthropic', memberKey: 'local' }, 1);
+    activeOwner = 'owner-test';
+    await bindings.writeProviderGroupBinding('scope-task', { providerId: 'anthropic', memberKey: 'local' }, 1);
+    const withLock = locks.withCrossProcessLock;
+    vi.spyOn(locks, 'withCrossProcessLock').mockImplementationOnce(async (...args) => {
+      const result = await withLock(...args);
+      // 落盘成功，但释放锁的异步收尾返回前切账号。
+      activeOwner = 'new-owner';
+      return result;
+    });
+    await bindings.pruneProviderGroupBindings('anthropic', null, 10);
+    expect(bindings.readProviderGroupBinding('scope-task')).not.toBeNull();
+    expect(bindings.isProviderGroupReleased('scope-task', { providerId: 'anthropic' })).toBe(false);
+    activeOwner = 'owner-test';
+    expect(bindings.readProviderGroupBinding('scope-task')).toBeNull();
   });
 
   it('remembers, per group, the tasks released by removing a computer or deleting the group', async () => {

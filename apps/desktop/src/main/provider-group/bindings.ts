@@ -251,6 +251,7 @@ export async function pruneProviderGroupBindings(
   now: number = Date.now(),
 ): Promise<void> {
   const assertCurrent = captureProviderManagementScope();
+  const owner = activeOwnerScopeKey();
   const released: string[] = [];
   await store.updateAtomic(({ value }) => {
     assertCurrent();
@@ -264,6 +265,8 @@ export async function pruneProviderGroupBindings(
     }
     return released.length > 0 ? { sessions } : {};
   });
+  // 原子写落盘后的锁释放也会等待；旧账号的解除记录不能落到此时切入的新账号。
+  if (activeOwnerScopeKey() !== owner) return;
   assertCurrent();
   await writeReleases(released, { providerId }, now, assertCurrent);
 }
