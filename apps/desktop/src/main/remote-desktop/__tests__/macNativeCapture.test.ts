@@ -106,6 +106,26 @@ it('answers a pending frame from the restarted helper after an unlock, but repor
   await expect(failing).rejects.toThrow('DESKTOP_VIDEO_UNAVAILABLE');
 });
 
+it('continues a pending first frame on a fresh helper when the app sees a lock transition', async () => {
+  const settings = { fps: 30, quality: 'auto', audio: false } as const;
+  const frame = { jpeg: 'abcd', cursor: null };
+  const { child, owner } = setup();
+  const pending = owner.frame('1', true, settings);
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledOnce());
+  const replacement = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(),
+  });
+  h.spawn.mockReturnValue(replacement);
+  owner.restart();
+  expect(child.kill).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+  replacement.stdout.write(JSON.stringify(frame) + '\n');
+  await expect(pending).resolves.toEqual(frame);
+});
+
 it('keeps an unlock restart within the remaining cold-start budget', async () => {
   vi.useFakeTimers();
   const settings = { fps: 30, quality: 'auto', audio: false } as const;

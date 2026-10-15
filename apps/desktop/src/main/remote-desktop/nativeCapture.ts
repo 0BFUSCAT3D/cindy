@@ -192,9 +192,9 @@ export class NativeDesktopCapture {
     const started = performance.now();
     const value = await this.read(display, overlay, settings);
     if (value !== RESTART) return value;
-    // The helper left the lock screen mid-request; its filtered replacement
-    // answers now so a pending first frame does not fail the connection. It
-    // shares the remaining cold-start budget, keeping the whole wait within
+    // The session locked or unlocked mid-request; a helper started for the new
+    // state answers now so a pending first frame does not fail the connection.
+    // It shares the remaining cold-start budget, keeping the whole wait within
     // the offer deadline (captureReadyMs + FRAME_MS < hostMs).
     const remaining = REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs - (performance.now() - started);
     const retry = await this.read(display, overlay, settings, Math.max(FRAME_MS, remaining));
@@ -312,8 +312,7 @@ export class NativeDesktopCapture {
           // The macOS helper captured the lock screen unfiltered and the session
           // unlocked: restart it with the window filter.
           if (code === UNLOCKED_EXIT) {
-            this.cancel?.(RESTART);
-            this.stop();
+            this.restart();
             return;
           }
           log.warn(`Native capture helper exited code=${code}`);
@@ -395,12 +394,20 @@ export class NativeDesktopCapture {
     }
   }
 
-  stop(): void {
+  /**
+   * A lock or unlock: the helper never carries pixels across the transition,
+   * but a pending read continues on a fresh helper instead of failing.
+   */
+  restart(): void {
+    this.stop(RESTART);
+  }
+
+  stop(reason?: typeof RESTART): void {
     this.confirmedExclusion = '';
     this.generation++;
     this.windows?.close();
     this.windows = null;
-    this.cancel?.();
+    this.cancel?.(reason);
     this.cancel = null;
     const child = this.child;
     this.child = null;
