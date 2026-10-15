@@ -1113,7 +1113,8 @@ describe('Chat Server result delivery and refresh', () => {
         message('60000000-0000-4000-8000-0000000000a2', '4', [image(imageId, 'a.png'), image(secondImageId, 'b.png')]),
       ];
       fixture.handle.mockImplementation(route => route.includes('/messages?') ? { body: [...page].reverse() }
-        : route.endsWith('/snapshot') ? { body: { ...response(route).body, messages: [page[1]] } } : response(route));
+        // The composer may keep a stray space or newline beside the attachments: still previewed by their names.
+        : route.endsWith('/snapshot') ? { body: { ...response(route).body, messages: [{ ...page[1], content: [{ type: 'text', text: ' \n' }, ...page[1].content] }] } } : response(route));
       await service.getGroup(roomId); await vi.advanceTimersByTimeAsync(0);
       const result = await service.getGroup(roomId);
       if (!result.ok) throw new Error('group missing');
