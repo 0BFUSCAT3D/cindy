@@ -455,6 +455,20 @@ describe('botGroupOutbox', () => {
       expect(getBotGroupOutboxPreviews('g1').size).toBe(0);
     });
 
+    it('drops the previews of a message deleted before its server copies were usable', async () => {
+      mocks.send.mockResolvedValueOnce({ ok: true, messageId: 'm1' });
+      const file = { id: 'l1', name: 'a.png', path: '/tmp/a.png', size: 1, category: 'image', mimeType: 'image/png',
+        url: 'cindy-media://blobs/l1.png', type: 'image' } as unknown as AttachedFile;
+      enqueueBotGroupSend(draft({ text: '' }, { files: [file] }));
+      await flush();
+      noteBotGroupTimeline('g1', [msg({ id: 'm1', sequence: 1, attachments: [placeholder('s1', 'a.png')] })], beginBotGroupTimelineRead());
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(1);
+
+      // Deleted on another device: the tombstone has no attachments, and the preview goes with it.
+      noteBotGroupTimeline('g1', [msg({ id: 'm1', sequence: 1, deleted: true, attachments: [] })], beginBotGroupTimelineRead());
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(0);
+    });
+
     it('lays the previews over the copy a re-read shows before the receipt', async () => {
       const pending = deferred();
       mocks.send.mockReturnValueOnce(pending.promise);

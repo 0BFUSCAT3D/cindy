@@ -881,7 +881,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
             const groupTime = timeGroups.get(timelineMessage.id);
             // My own message just confirmed: keep the local attachment previews until the server copies are usable.
             const local = localAttachments.get(timelineMessage.id);
-            const message = local && timelineMessage.isSelf !== false
+            const message = local && timelineMessage.isSelf !== false && !timelineMessage.deleted
               ? { ...timelineMessage, attachments: mergeBotGroupLocalAttachments(timelineMessage.attachments, local) }
               : timelineMessage;
             return (

@@ -434,7 +434,8 @@ export function noteBotGroupTimeline(groupId: string, messages: readonly BotGrou
   }
   for (const [messageId, local] of previews) {
     const message = byId.get(messageId);
-    if (message && botGroupLocalAttachmentsSettled(message.attachments, local)) previews.delete(messageId);
+    // A message deleted meanwhile (here or on another device) shows no attachments at all.
+    if (message && (message.deleted || botGroupLocalAttachmentsSettled(message.attachments, local))) previews.delete(messageId);
   }
   if (previews.size !== group.previews.size || [...previews].some(([id, value]) => group.previews.get(id) !== value)) {
     group.previews = previews;
