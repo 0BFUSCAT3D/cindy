@@ -262,6 +262,57 @@ describe('MCP Apps over the existing remote bridge', () => {
     await response.text();
     expect(createAppServer).toHaveBeenCalledTimes(created);
   });
+  it('enforces the same mount boundary for local Codex primary-token discovery and execution', async () => {
+    const f = await fixture();
+    const localHeaders = { ...headers, authorization: `Bearer ${bridge!.token}` };
+    const url = f.base + '?instance=local-instance';
+    const context = {
+      agentKind: 'codex' as const, sessionId: 'local-task', sessionInstanceId: 'local-instance',
+      workingDir: '/local',
+      vendorOptions: { [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [], cindyRuntimeMcpServerNames: [] as string[] },
+    };
+    const initialize = {
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+    };
+    const created = createAppServer.mock.calls.length;
+    const unbound = await fetch(f.base, { method: 'POST', headers: localHeaders, body: JSON.stringify(initialize) });
+    expect(unbound.status).toBe(401);
+    await unbound.text();
+    await bridge!.withDiscoveryContext(context, async () => {
+      const excluded = await fetch(url, { method: 'POST', headers: localHeaders, body: JSON.stringify(initialize) });
+      expect(excluded.status).toBe(403);
+      await excluded.text();
+    });
+    expect(createAppServer).toHaveBeenCalledTimes(created);
+    context.vendorOptions.cindyRuntimeMcpServerNames = ['example'];
+    let id = '';
+    const request = async (body: unknown) => fetch(url, {
+      method: 'POST', headers: { ...localHeaders, 'mcp-session-id': id }, body: JSON.stringify(body),
+    });
+    await bridge!.withDiscoveryContext(context, async () => {
+      const response = await fetch(url, { method: 'POST', headers: localHeaders, body: JSON.stringify(initialize) });
+      expect(response.status).toBe(200);
+      id = response.headers.get('mcp-session-id')!;
+      await response.text();
+      const listed = await request(list);
+      expect(listed.status).toBe(200);
+      await listed.text();
+      const premature = await request(call);
+      expect(premature.status).toBe(401);
+      await premature.text();
+    });
+    bridge!.registerThreadContext('local-thread', context);
+    const called = await request(call);
+    expect(called.status).toBe(200);
+    expect(await called.text()).toContain('local-instance');
+    context.vendorOptions.cindyRuntimeMcpServerNames = [];
+    for (const body of [list, call]) {
+      const excluded = await request(body);
+      expect(excluded.status).toBe(403);
+      await excluded.text();
+    }
+  });
   it('binds remote Codex startup discovery to its frozen Session and revokes the lease', async () => {
     const f = await fixture();
     const url = f.base + '?instance=codex-instance';

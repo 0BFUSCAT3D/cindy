@@ -43,7 +43,7 @@ import {
 } from '../mcp-integrations/codexHttpBridge.js';
 import { getRemoteMcpBridgeToken } from '../mcp-integrations/remoteMcpBridgeToken.js';
 import { appServerIds } from '../mcp-apps/runtime.js';
-import { readAllowedBuiltinPluginIds } from '../mcp-integrations/codexBuiltinToolPolicy.js';
+import { isFrozenMcpServerAllowed } from '../mcp-integrations/codexBuiltinToolPolicy.js';
 
 const log = createLogger('codex-remote-mcp');
 
@@ -235,8 +235,6 @@ export function buildRemoteCodexSessionMcpConfig(
     serverNames,
   })) return {};
   const apps = new Set(appServerIds());
-  const frozen = readAllowedBuiltinPluginIds(opts.vendorOptions) !== null;
-  const mounted = opts.vendorOptions?.cindyRuntimeMcpServerNames;
   return Object.fromEntries(serverNames
     .filter((name) => name === REMOTE_BOT_HELPER_SERVER_NAME || apps.has(name))
     .flatMap((name) => [
@@ -245,7 +243,7 @@ export function buildRemoteCodexSessionMcpConfig(
       )],
       [`mcp_servers.${name}.bearer_token_env_var`, TOKEN_ENV],
       [`mcp_servers.${name}.enabled`, name !== REMOTE_BOT_HELPER_SERVER_NAME &&
-        (!frozen || (Array.isArray(mounted) && mounted.includes(name)))],
+        isFrozenMcpServerAllowed(opts.vendorOptions, name)],
     ]));
 }
 

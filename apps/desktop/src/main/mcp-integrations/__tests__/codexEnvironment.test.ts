@@ -11,7 +11,8 @@ import {
   shutdownCodexEnvironment,
   unregisterCodexMcpThreadContext,
 } from '../codexEnvironment.js';
-import { CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY } from '../codexBuiltinToolPolicy.js';
+import { CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY, CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY } from '../codexBuiltinToolPolicy.js';
+import { registerAppServer, clearAppServerConfigs } from '../../mcp-apps/runtime.js';
 import { CINDY_MAKE_VENDOR_OPTION_KEY } from '../../../shared/cindyMakeSession.js';
 import { CustomMcpProvider } from '../custom-mcp-provider.js';
 
@@ -85,6 +86,7 @@ describe('codexEnvironment', () => {
   afterEach(async () => {
     setCodexEnvironmentShutdownHook(null);
     await shutdownCodexEnvironment();
+    clearAppServerConfigs();
   });
 
   it('reuses one bridge and exposes unbound MCP server URLs', async () => {
@@ -142,16 +144,28 @@ describe('codexEnvironment', () => {
     const provider = new CustomMcpProvider({
       id: 'custom_test', name: 'Custom Test', transport, url: 'https://example.test/mcp', headers: {},
     }, () => 'test-only-token', appProxy);
+    registerAppServer(provider.name, () => provider.appServerConfig());
     const config = await getCodexExtraSpawnConfig({
       mcpProviders: [provider], logger: noopLogger(),
     });
     expect(config.bridgeServerNames).toContain('custom_test');
     expect(config.extraArgs.join('\n')).not.toContain('test-only-token');
     expect(Object.values(config.extraEnv)).not.toContain('test-only-token');
+    expect(config.extraArgs).toContain('mcp_servers.custom_test.enabled=false');
+    const vendorOptions = { [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [], cindyRuntimeMcpServerNames: [] as string[] };
+    expect(config.buildSessionMcpConfig!('local-instance', { vendorOptions }))
+      .toHaveProperty('mcp_servers.custom_test.enabled', false);
+    vendorOptions.cindyRuntimeMcpServerNames = ['custom_test'];
+    const bound = config.buildSessionMcpConfig!('local-instance', { vendorOptions });
+    expect(bound).toHaveProperty('mcp_servers.custom_test.enabled', true);
+    const url = bound['mcp_servers.custom_test.url'] as string;
 
     // Each MCP client needs its own facade; rebuilding must keep the provider receiver too.
     for (const id of [1, 2]) {
-      const response = await fetch(config.bridge!.url(provider.name), {
+      const response = await config.bridge!.withDiscoveryContext({
+        agentKind: 'codex', sessionId: 'local-task', sessionInstanceId: 'local-instance',
+        workingDir: '/test', vendorOptions,
+      }, () => fetch(url, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${config.bridge!.token}`,
@@ -163,7 +177,7 @@ describe('codexEnvironment', () => {
           params: { protocolVersion: '2024-11-05', capabilities: {},
             clientInfo: { name: 'test-client', version: '1.0.0' } },
         }),
-      });
+      }));
       const body = await response.text();
       expect(response.status).toBe(200);
       expect(body).toContain('"name":"custom_test"');

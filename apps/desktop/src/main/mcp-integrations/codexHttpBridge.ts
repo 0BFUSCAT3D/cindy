@@ -28,8 +28,7 @@ import {
   createCodexMcpThreadContextStore,
   isSameCodexMcpSessionContext,
 } from './codexMcpThreadContextStore.js';
-import { isFrozenBuiltinPluginAllowed } from './codexBuiltinToolPolicy.js';
-import { readAllowedBuiltinPluginIds } from './codexBuiltinToolPolicy.js';
+import { isFrozenBuiltinPluginAllowed, isFrozenMcpServerAllowed } from './codexBuiltinToolPolicy.js';
 import { appServerIds } from '../mcp-apps/runtime.js';
 
 const SERVER_HEADER = 'Lizi_MCPS/1.0';
@@ -147,7 +146,7 @@ export interface CodexHttpBridge {
   instanceId: string;
   /** 拼出 codex 端 config 用的 URL，例如 http://127.0.0.1:54321/mcp/lizi_feishu */
   url(serverName: string): string;
-  /** Temporary startup identity, usable only by tools/list before thread registration. */
+  /** Startup identity for App initialization and tools/list, never tool execution. */
   withDiscoveryContext<T>(ctx: LiziMcpSessionContext, run: () => Promise<T>): Promise<T>;
   registerThreadContext(threadId: string, ctx: LiziMcpSessionContext): void;
   unregisterThreadContext(threadId: string, expectedSessionInstanceId?: string): void;
@@ -205,13 +204,6 @@ export interface StartCodexHttpBridgeOptions {
   /** Explicit configured user MCP facades in this bridge generation; never arbitrary built-ins. */
   appServerNames?: readonly string[];
   logger: Logger;
-}
-
-/** Descriptor filtering alone cannot authorize a route on the process-wide bridge. */
-function isFrozenMcpServerAllowed(serverName: string, context?: LiziMcpSessionContext): boolean {
-  if (readAllowedBuiltinPluginIds(context?.vendorOptions) === null) return true;
-  const mounted = context?.vendorOptions?.cindyRuntimeMcpServerNames;
-  return Array.isArray(mounted) && mounted.includes(serverName);
 }
 
 export async function startCodexHttpBridge(
@@ -360,29 +352,31 @@ export async function startCodexHttpBridge(
       // scoped (persistent) token 仅限远端白名单 server:
       // 同一 remote-forward 能摸到完整 /mcp/<name> 路由, 不得经它初始化
       // cindy_ssh 等其余本机 server — codex-connector P1。
-      const remoteAppServer = isScopedRemoteToken && opts.appServerNames?.includes(serverName) === true && appServerIds().includes(serverName);
+      const appServer = opts.appServerNames?.includes(serverName) === true;
+      const remoteAppServer = isScopedRemoteToken && appServer && appServerIds().includes(serverName);
       if (isScopedRemoteToken && !REMOTE_ALLOWED_SERVER_NAMES.has(serverName) && !remoteAppServer) {
         res.statusCode = 403;
         res.end();
         log.warn('rejected scoped remote token for non-collab server', { serverName });
         return;
       }
-      // A process-wide remote daemon has no frozen mount policy. App facades
+      // A process-wide daemon has no frozen mount policy. App facades
       // may attach upstream credentials only for an explicitly bound Session,
       // including Codex's short-lived discovery lease before thread/start returns.
-      const remoteAppContext = remoteAppServer
+      const appContext = appServer
         ? sessionTokenCtx ?? (instanceQuery === null ? undefined
           : threadContextStore.getContextForSessionInstanceId(instanceQuery) ?? discoveryContexts.get(instanceQuery))
         : undefined;
-      if (remoteAppServer && (!remoteAppContext?.remoteHostId || !remoteAppContext.sessionId)) {
+      if (appServer && (!appContext?.sessionId || (isScopedRemoteToken && !appContext.remoteHostId))) {
         res.statusCode = 401;
         res.end('MCP App server requires a bound Session');
         return;
       }
-      // Bind Pi and scoped remote App mounts before initialization or transport lookup: an
+      // Bind frozen mounts for every token before initialization or transport lookup: an
       // excluded facade could otherwise attach Main-held upstream credentials,
       // or borrow a transport initialized by another Session.
-      if ((isPiSessionToken || remoteAppServer) && !isFrozenMcpServerAllowed(serverName, remoteAppContext ?? sessionTokenCtx)) {
+      if ((appServer && !appServerIds().includes(serverName)) ||
+        ((isPiSessionToken || appServer) && !isFrozenMcpServerAllowed((appContext ?? sessionTokenCtx)?.vendorOptions, serverName))) {
         res.statusCode = 403;
         res.end('MCP server is not mounted for this Session');
         return;
@@ -406,6 +400,7 @@ export async function startCodexHttpBridge(
         threadContextStore,
         discoveryContexts,
         remoteAppServer,
+        appServer,
         pluginId: opts.pluginIdByServerName?.[serverName],
         sessionTokenCtx,
         threadInstanceQuery: sessionQuery === null ? instanceQuery : null,
@@ -609,6 +604,7 @@ interface DispatchOpts {
   discoveryContexts: ReadonlyMap<string, LiziMcpSessionContext>;
   remoteBotHelper?: boolean;
   remoteAppServer?: boolean;
+  appServer?: boolean;
   pluginId?: string;
   /** per-session token 命中时解析出的 ctx;存在即优先于 _meta.threadId 路由。 */
   sessionTokenCtx?: LiziMcpSessionContext;
@@ -645,6 +641,7 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
     threadInstanceQuery,
     remoteBotHelper,
     remoteAppServer,
+    appServer,
   } = opts;
 
   const sessionIdHeader = req.headers['mcp-session-id'];
@@ -709,8 +706,8 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
         });
       }
     }
-    // The remote token must never open the ordinary local helper surface.
-    if (remoteAppServer && parsedBody && typeof parsedBody === 'object') {
+    // Discovery and execution share the App's frozen mount policy on every route.
+    if (appServer && parsedBody && typeof parsedBody === 'object') {
       const requests = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
       const needsSession = requests.some((item) => {
         if (!item || typeof item !== 'object') return true;
@@ -719,8 +716,9 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
         // and extension notifications can mutate the credentialed upstream too.
         return item.method !== 'notifications/initialized';
       });
-      if (!isFrozenMcpServerAllowed(serverName, activeContext) ||
-        (needsSession && (!activeContext?.remoteHostId || !activeContext.sessionId || !activeContext.sessionInstanceId))) {
+      if (!isFrozenMcpServerAllowed(activeContext?.vendorOptions, serverName) ||
+        (needsSession && (!activeContext?.sessionId || !activeContext.sessionInstanceId ||
+          (remoteAppServer && !activeContext.remoteHostId)))) {
         res.statusCode = 401;res.end('MCP App server requires a bound Session instance');return;
       }
     }
