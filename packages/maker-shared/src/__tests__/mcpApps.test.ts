@@ -1,14 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Script } from 'node:vm';
 import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord, parseMcpAppHistory, projectMcpAppContent } from '../mcpApps.js';
 describe('MCP Apps cross-platform document contract', () => {
-  function proxy(resourceUrl: string, requestedUrl = resourceUrl) {
-    const frame = { setAttribute() {}, style: {}, src: '', srcdoc: '' };
+  function proxy(resourceUrl?: string, requestedUrl = resourceUrl) {
+    const attributes: Record<string, string> = {};
+    const frame = {
+      setAttribute: (name: string, value: string) => { attributes[name] = value; },
+      style: {}, src: '', srcdoc: '', contentWindow: { postMessage: vi.fn() },
+    };
     let receive!: (event: unknown) => void;
     let mounted = false;
     const window = {
       location: { href: 'http://127.0.0.1:5002/proxy.html' },
-      parent: { postMessage() {} },
+      parent: { postMessage: vi.fn() },
       addEventListener: (name: string, listener: (event: unknown) => void) => {
         if (name === 'message') receive = listener;
       },
@@ -20,7 +24,8 @@ describe('MCP Apps cross-platform document contract', () => {
     receive({ source: window.parent, data: { jsonrpc: '2.0',
       method: 'ui/notifications/sandbox-resource-ready',
       params: { resourceUrl: requestedUrl, html: '<script>untrusted</script>' } } });
-    return { frame, mounted };
+    window.parent.postMessage.mockClear();
+    return { frame, mounted, attributes, window, receive };
   }
   it('pins the proxy resource URL to its Host-generated cross-origin document', () => {
     const result = proxy('http://127.0.0.1:5001/resource.html', 'http://127.0.0.1:5002/attack.html');
@@ -28,10 +33,45 @@ describe('MCP Apps cross-platform document contract', () => {
     expect(result.frame.src).toBe('http://127.0.0.1:5001/resource.html');
     expect(result.frame.srcdoc).toBe('');
   });
-  it.each(['http://127.0.0.1:5002/app.html', 'javascript:alert(1)', 'file:///private'])
-    ('refuses a same-origin or privileged resource URL: %s', (url) => {
+  it.each(['http://127.0.0.1:5002/app.html', 'javascript:alert(1)', 'file:///private'])(
+    'refuses a same-origin or privileged resource URL: %s', (url) => {
       expect(proxy(url).mounted).toBe(false);
-    });
+    },
+  );
+  it('keeps an inline srcdoc App opaque rather than granting access to the proxy origin', () => {
+    const result = proxy();
+    expect(result.mounted).toBe(true);
+    expect(result.frame.srcdoc).toBe('<script>untrusted</script>');
+    expect(result.attributes.sandbox).toBe('allow-scripts');
+  });
+  it.each([
+    ['http://127.0.0.1:5001/resource.html', 'http://127.0.0.1:5001'],
+    ['cindy-mcp-app://example-view/resource', 'cindy-mcp-app://example-view'],
+  ])('binds both RPC directions to the original resource origin: %s', (resourceUrl, origin) => {
+    const result = proxy(resourceUrl);
+    const message = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool' } };
+    result.receive({ source: result.frame.contentWindow, origin, data: message });
+    expect(result.window.parent.postMessage).toHaveBeenCalledExactlyOnceWith(message, '*');
+    result.receive({ source: result.window.parent, data: { jsonrpc: '2.0', id: 1, result: { private: 'result' } } });
+    expect(result.frame.contentWindow.postMessage).toHaveBeenCalledExactlyOnceWith(
+      { jsonrpc: '2.0', id: 1, result: { private: 'result' } }, origin,
+    );
+  });
+  it.each(['https://frame.example.org', 'http://127.0.0.1:5002', 'null', undefined])(
+    'rejects the original WindowProxy after navigation to another origin: %s', (origin) => {
+      const result = proxy('http://127.0.0.1:5001/resource.html');
+      result.receive({ source: result.frame.contentWindow, origin,
+        data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool' } } });
+      expect(result.window.parent.postMessage).not.toHaveBeenCalled();
+    },
+  );
+  it('does not mistake a descendant or sibling for the App even when its origin matches', () => {
+    const result = proxy('http://127.0.0.1:5001/resource.html');
+    result.receive({ source: {}, origin: 'http://127.0.0.1:5001',
+      data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool' } } });
+    expect(result.window.parent.postMessage).not.toHaveBeenCalled();
+    expect(result.frame.contentWindow.postMessage).not.toHaveBeenCalled();
+  });
   it('escapes native bridge keys without changing their JavaScript value', () => {
     const key = '</script><script>attack</script>';
     const html = mcpAppSandboxDocument(key);

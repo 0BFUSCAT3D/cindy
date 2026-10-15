@@ -114,6 +114,7 @@ frame.setAttribute('sandbox','allow-scripts');
 frame.setAttribute('allow',"camera 'none'; microphone 'none'; geolocation 'none'; clipboard-write 'none'");
 frame.style.cssText='border:0;width:100%;height:100%;display:block';
 let loaded=false;
+let resourceOrigin='null';
 const post=message=>window.ReactNativeWebView?window.ReactNativeWebView.postMessage(JSON.stringify({key:bridgeKey,message})):window.parent.postMessage(message,'*');
 window.addEventListener('keydown',event=>{
  if(event.key==='Escape'&&!event.isComposing&&!event.repeat&&!event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey)
@@ -123,6 +124,8 @@ window.addEventListener('message',event=>{
  const message=event.data;
  if(!message||message.jsonrpc!=='2.0')return;
  if(event.source===frame.contentWindow){
+  // WindowProxy identity survives navigation; a replacement document gets no bridge.
+  if(!loaded||event.origin!==resourceOrigin)return;
   if(typeof message.method==='string'&&message.method.startsWith('ui/notifications/sandbox-'))return;
   post(message);return;
  }
@@ -134,13 +137,15 @@ window.addEventListener('message',event=>{
    const resource=new URL(resourceUrl),proxy=new URL(window.location.href);
    if(!['http:','https:','cindy-mcp-app:'].includes(resource.protocol)||resource.username||resource.password||
     resource.protocol===proxy.protocol&&resource.host===proxy.host)return;
+   // URL.origin can be null for Electron's registered custom scheme.
+   resourceOrigin=resource.protocol+'//'+resource.host;
    frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=resource.href;
   }
   else{frame.srcdoc=message.params.html;}
   loaded=true;
   document.body.appendChild(frame);return;
  }
- frame.contentWindow?.postMessage(message,'*');
+ if(loaded)frame.contentWindow?.postMessage(message,resourceOrigin==='null'?'*':resourceOrigin);
 });
 post({jsonrpc:'2.0',method:'ui/notifications/sandbox-proxy-ready',params:{}});
 `;
