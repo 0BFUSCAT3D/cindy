@@ -1,7 +1,8 @@
 /**
  * 供应商组设置的 IPC 业务体：入参校验，以及「新加入的电脑必须是这台电脑已经能用的同一个供应商」。
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ipcMain, type IpcMainInvokeEvent } from 'electron';
 
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn() } }));
 vi.mock('../runtime.js', () => ({
@@ -10,11 +11,12 @@ vi.mock('../runtime.js', () => ({
   getProviderGroupRemoteClient: vi.fn(),
   readProviderGroupOfSession: vi.fn(),
 }));
-vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn() }));
+vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn(), listProviderGroups: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
-vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => 'owner-a' }));
+vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: vi.fn(() => 'owner-a') }));
+vi.mock('../../security/trustedAppRenderer.js', () => ({ assertTrustedAppRendererEvent: vi.fn() }));
 vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self'), remoteInvoke: vi.fn(), remoteBackgroundInvoke: vi.fn() }));
-// 同账号管理的转发另有 managementClient.test.ts；这里只测本机命令，不拉进分享运行时。
+// 同账号管理的转发另有 managementClient.test.ts；IPC 回归只替换转发，不拉进分享运行时。
 vi.mock('../managementClient.js', () => ({ invokeProviderManagement: vi.fn() }));
 vi.mock('../../device-link/providerShareRuntime.js', () => ({
   executeProviderShareManagementCommand: vi.fn(), parseProviderShareCommand: vi.fn(),
@@ -22,14 +24,19 @@ vi.mock('../../device-link/providerShareRuntime.js', () => ({
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) }));
 
 import type { ProviderGroupCandidate, ProviderGroupConfig } from '../../../shared/providerGroup';
+import type { ProviderManagementRequest } from '../../../shared/providerManagement';
 import {
   executeProviderGroupCommand,
   markMembersUnreachableHere,
   parseProviderGroupCommand,
+  registerProviderGroupIpc,
   PROVIDER_GROUP_REACHABILITY_CHECK_TIMEOUT_MS,
   type ProviderGroupCommandDeps,
 } from '../ipc';
 import { parseProviderManagementRequest } from '../management';
+import { activeOwnerScopeKey } from '../../appSessionState';
+import { getProviderGroupDirectory, getProviderGroupRouter } from '../runtime';
+import { invokeProviderManagement } from '../managementClient';
 
 const LOCAL = { key: 'local', kind: 'local' as const, agentDeviceId: null, providerId: 'anthropic', limit: 4, weight: 1, paused: false };
 const MINI = {
@@ -207,6 +214,80 @@ describe('executeProviderGroupCommand reads', () => {
     expect(await executeProviderGroupCommand(d, { action: 'session-group', sessionId: 's1' }))
       .toEqual({ groupDeviceId: 'mini', providerId: 'anthropic' });
     expect(sessionGroup).toHaveBeenCalledWith('s1');
+  });
+});
+
+describe('provider group IPC remote management', () => {
+  const config: ProviderGroupConfig = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+  const view = {
+    providerId: 'anthropic', config,
+    members: [{ key: MINI.key, kind: 'device' as const, label: 'mini', state: 'available' as const, running: 2, limit: 4, weight: 1, paused: false }],
+  };
+  const groupRequests: ProviderManagementRequest[] = [
+    { action: 'manage-group', command: { action: 'get', providerId: 'anthropic' } },
+    { action: 'manage-group', command: { action: 'save-if-current', providerId: 'anthropic', config, expectedConfig: config } },
+  ];
+  // 走真正注册的 IPC listener，确保进入管理页的路径也使用查看端可达性投影。
+  function invokeRemoteCommand(
+    d: ProviderGroupCommandDeps,
+    remoteManage: (deviceId: string, request: ProviderManagementRequest) => Promise<unknown>,
+    request: ProviderManagementRequest,
+  ) {
+    vi.mocked(activeOwnerScopeKey).mockImplementation(d.ownerKey);
+    vi.mocked(getProviderGroupDirectory).mockReturnValue(d.directory);
+    vi.mocked(getProviderGroupRouter).mockReturnValue(d.router);
+    vi.mocked(invokeProviderManagement).mockImplementation((_invoke, deviceId, command) => remoteManage(deviceId, command));
+    registerProviderGroupIpc();
+    const listener = vi.mocked(ipcMain.handle).mock.calls.at(-1)![1];
+    return listener({} as IpcMainInvokeEvent, { action: 'remote-manage', deviceId: 'group-host', request });
+  }
+
+  afterEach(() => vi.mocked(activeOwnerScopeKey).mockReturnValue('owner-a'));
+
+  it.each(groupRequests)('marks unreachable members in a remote $command.action result without changing the group state', async (request) => {
+    const d = deps([]);
+    const remoteManage = vi.fn(async () => view);
+    const readDeviceCatalog = vi.fn(async () => { throw new Error('unreachable from this computer'); });
+    Object.assign(d, { directory: { ...d.directory, readDeviceCatalog } });
+    const result = await invokeRemoteCommand(d, remoteManage, request);
+    expect(remoteManage).toHaveBeenCalledExactlyOnceWith('group-host', request);
+    expect(readDeviceCatalog).toHaveBeenCalledExactlyOnceWith('mini');
+    expect(result).toMatchObject({ members: [{ key: MINI.key, state: 'available', running: 2, unreachableHere: true }] });
+    expect(view.members[0]).not.toHaveProperty('unreachableHere');
+  });
+
+  it('keeps candidates and share management results unchanged, and accepts a deleted group without probing members', async () => {
+    const d = deps([]);
+    const readDeviceCatalog = vi.fn();
+    const remoteManage = vi.fn();
+    Object.assign(d, { directory: { ...d.directory, readDeviceCatalog } });
+    const cases: { request: ProviderManagementRequest; result: unknown }[] = [
+      { request: { action: 'manage-group', command: { action: 'candidates', providerId: 'anthropic' } }, result: [] },
+      { request: { action: 'manage-share', command: { action: 'owned', range: '7d' } }, result: { ready: true, shares: [] } },
+      { request: { action: 'manage-group', command: { action: 'delete-if-current', providerId: 'anthropic', expectedConfig: config } }, result: { providerId: 'anthropic', config: null, members: [] } },
+    ];
+    for (const { request, result } of cases) {
+      remoteManage.mockResolvedValueOnce(result);
+      expect(await invokeRemoteCommand(d, remoteManage, request)).toEqual(result);
+    }
+    expect(remoteManage).toHaveBeenCalledTimes(3);
+    expect(readDeviceCatalog).not.toHaveBeenCalled();
+  });
+
+  it.each(['remote reply', 'reachability read'])('drops a remote group view when the account changes during %s', async (stage) => {
+    const d = deps([]);
+    const remoteManage = vi.fn(async () => {
+      if (stage === 'remote reply') d.switchOwner('owner-b');
+      return view;
+    });
+    const readDeviceCatalog = vi.fn(async () => {
+      d.switchOwner('owner-b');
+      return [];
+    });
+    Object.assign(d, { directory: { ...d.directory, readDeviceCatalog } });
+    await expect(invokeRemoteCommand(d, remoteManage, groupRequests[0]))
+      .rejects.toThrow(/PRECONDITION_FAILED/);
+    expect(readDeviceCatalog).toHaveBeenCalledTimes(stage === 'remote reply' ? 0 : 1);
   });
 });
 

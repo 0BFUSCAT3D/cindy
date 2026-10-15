@@ -9,6 +9,7 @@ import {
   PROVIDER_GROUP_IPC,
   isProviderGroupProviderId,
   normalizeProviderGroupConfig,
+  parseProviderGroupRemoteView,
   type ProviderGroupCommand,
   type ProviderGroupLocalCommand,
   type ProviderGroupConfig,
@@ -243,7 +244,23 @@ export function registerProviderGroupIpc(): void {
     if (getDeviceLinkInvokeContext()) throwIpcError('PERMISSION_DENIED', 'Provider groups are local only');
     assertTrustedAppRendererEvent(event);
     const command = parseProviderGroupCommand(raw);
-    if (command.action === 'remote-manage') return invokeProviderManagement(remoteInvoke, command.deviceId, command.request, remoteBackgroundInvoke);
+    if (command.action === 'remote-manage') {
+      const owner = deps.ownerKey();
+      const assertOwner = () => {
+        if (deps.ownerKey() !== owner) throwIpcError('PRECONDITION_FAILED', 'The account changed during provider management');
+      };
+      const result = await invokeProviderManagement(remoteInvoke, command.deviceId, command.request, remoteBackgroundInvoke);
+      assertOwner();
+      if (command.request.action !== 'manage-group' || command.request.command.action === 'candidates') return result;
+      // 管理读取与保存后的组视图也按查看端直连能力投影，不能把组所在电脑看到的可用误当成本机可达。
+      const view = await markMembersUnreachableHere(
+        parseProviderGroupRemoteView(result, command.request.command.providerId),
+        deps.directory,
+        deps.localDeviceId(),
+      );
+      assertOwner();
+      return view;
+    }
     return executeProviderGroupCommand(deps, command);
   });
 }
