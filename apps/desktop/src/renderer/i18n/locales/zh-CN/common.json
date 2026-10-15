@@ -470,13 +470,12 @@
       "round": "轮询",
       "order": "按顺序",
       "weight": "按权重",
-      "usage": "用量均衡",
+      "quotaFirst": "能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略",
       "description": {
         "least": "给最闲的那台",
         "round": "依次轮流",
         "order": "排前面的优先",
-        "weight": "按权重比例",
-        "usage": "按5小时和每周用量分配"
+        "weight": "按权重比例"
       }
     },
     "autoSwitch": {
@@ -751,7 +750,10 @@
     "copy": "复制到本机",
     "paste": "粘贴到远程电脑",
     "clipboardSyncHint": "此窗口在前台时，双向同步文字、图片和富文本。",
-    "credentialRequired": "请完成 Mac 密码验证。如果无法验证，请更新两台电脑上的 Cindy。"
+    "credentialRequired": "请完成 Mac 密码验证。如果无法验证，请更新两台电脑上的 Cindy。",
+    "handoffEnded": "这次代输入已经结束，没有可显示的窗口。",
+    "handoffUnavailable": "这台电脑暂时不能只显示这个窗口。请在那台电脑上更新 Cindy，或开启远程桌面。",
+    "handoffWindow": "代输入 · {{app}}"
   },
   "ipcError": {
     "DEVICE_LINK_BUSY": "远端繁忙，请稍后重试。",
@@ -1637,6 +1639,7 @@
         "done": "已完成 ✓",
         "error": "执行失败",
         "needsReply": "需要你回复",
+        "inputHandoff": "需要你代为输入",
         "externalDone": "Cindy · 任务「{{title}}」已完成 ✓",
         "externalError": "Cindy · 任务「{{title}}」执行失败",
         "externalNeedsReply": "Cindy · 任务「{{title}}」需要你回复",
@@ -5253,8 +5256,9 @@
           "descriptions": {
             "unsupported": "此保护仅在 macOS 上可用。",
             "disabled": "Cindy 运行期间阻止 Codex 连接 Work Louder 键盘；不会限制 Cindy 本身。",
-            "recovery-required": "保护已停止，但 NODE_OPTIONS 尚未安全恢复。请先重试恢复，再重新开启。",
-            "error": "Cindy 无法更新 Codex 保护；原有 NODE_OPTIONS 已保留或等待恢复。"
+            "paused": "此保护因影响其他应用已暂停。若应用仍异常，请退出旧版 Cindy，再完全退出并重新打开受影响应用。",
+            "recovery-required": "保护已暂停，但旧的启动设置尚未清理完成。请点击“恢复环境”，完成后完全退出并重新打开受影响应用。",
+            "error": "Cindy 无法读取或清理旧的保护设置；此保护仍保持暂停。"
           },
           "restartRequired": "请完全退出并重新打开 Codex 以生效"
         },
@@ -6532,6 +6536,9 @@
         "slotWorkspace": "工作区任务"
       },
       "commandPaletteTag": "插件指令",
+      "commandPaletteSource": {
+        "team": "团队共享"
+      },
       "library": {
         "title": "持久作品库",
         "loading": "正在读取库信息…",
@@ -9270,7 +9277,11 @@
       "configure": "前往配置",
       "empty_toolset": "当前执行环境没有可用的内置工具。",
       "empty_mcp": "尚未添加自定义 MCP 服务。",
-      "empty_skill": "暂无可选的技能。"
+      "empty_skill": "暂无可选的技能。",
+      "inputHandoff": {
+        "title": "代输入",
+        "description": "遇到需要你本人输入的登录信息、密码或验证码时，允许这位伙伴请你在任意设备上填写。你填写的内容不会交给它。"
+      }
     },
     "guided": {
       "title": "创建伙伴",
@@ -9378,6 +9389,44 @@
       "memory": "已记住：{{title}}",
       "skillCreated": "已建立技能：{{title}}",
       "skillUpdated": "已更新技能：{{title}}"
+    },
+    "cloud": {
+      "homeLabel": "主力电脑",
+      "thisComputer": "这台电脑",
+      "homeOffline": "主力电脑「{{device}}」离线",
+      "homeOfflineShort": "主力电脑离线",
+      "homeUnreachable": "主力电脑「{{device}}」没有开放远程控制",
+      "homeReadOnly": "主力电脑：{{device}}",
+      "continueHere": "在这台电脑继续",
+      "takeOverHint": "在这台电脑继续后，{{name}} 改在这里运行，下面的对话一起带过来。",
+      "takingOver": "正在这台电脑上准备 {{name}}…",
+      "takeOverConflict": "{{name}} 已经换到「{{device}}」继续了",
+      "takeOverOffline": "连不上服务器，暂时无法在这台电脑继续",
+      "takeOverFailed": "未能在这台电脑上接手 {{name}}",
+      "notEnabled": "当前服务器不支持更换主力电脑",
+      "readOnlyNote": "这里是云端保存的对话，只能查看",
+      "empty": "还没有云端对话",
+      "loadFailed": "未能读取云端对话",
+      "reload": "重新读取对话",
+      "loadOlder": "加载更早的消息",
+      "unknownDevice": "另一台电脑",
+      "loadingDevices": "正在读取电脑列表…",
+      "devicesFailed": "未能读取电脑列表",
+      "noTargets": "没有可接手的电脑。另一台电脑需要在线、登录同一账号，并开启「允许同账号设备控制本机」",
+      "resumeToMove": "先恢复 {{name}}，再换到另一台电脑",
+      "moveTo": "交给「{{device}}」",
+      "transferTitle": "把 {{name}} 交给「{{device}}」？",
+      "transferDescription": "从现在起 {{name}} 在「{{device}}」上运行。工作目录和连接留在这台电脑，这台电脑上的对话变为历史记录。",
+      "transferAction": "交给「{{device}}」",
+      "transferred": "{{name}} 已交给「{{device}}」",
+      "transferConflict": "{{name}} 的主力电脑已经变了，这次没有交出",
+      "transferOffline": "连不上服务器，{{name}} 仍在这台电脑运行",
+      "transferBusy": "{{name}} 还在回复，等这一轮结束再换电脑",
+      "transferFailed": "未能把 {{name}} 交给「{{device}}」",
+      "targetUnavailable": "「{{device}}」现在不可用，它需要在线并开启远程控制",
+      "shadowTitle": "这个伙伴已在「{{device}}」上运行",
+      "shadowHint": "这里的对话只能查看。",
+      "openOnHome": "打开「{{device}}」上的伙伴"
     }
   },
   "common": {
@@ -10205,7 +10254,7 @@
       "saveEdit": "保存文本"
     },
     "sharedProviderCredential": {
-      "description": "这个任务用的是分享来的供应商，Agent 读到的内容会经过分享者或其安排的电脑。这一步可能涉及凭证（如密钥、.env），需要你确认后才继续。选择「本任务总是允许」后，本任务后续凭证操作不再额外确认；重新打开任务或切换权限档后需再次确认。"
+      "description": "这个任务用的是分享来的供应商，Agent 读到的内容会经过分享者或其安排的电脑。这一步可能涉及凭证（如密钥、.env），需要你确认后才继续。选择「本任务总是允许」后，本任务后续凭证操作不再额外确认；切换权限档、计划模式或退出 Cindy 后需再次确认。"
     },
     "mediaDownload": {
       "title": "允许下载生成的媒体？",
@@ -11587,7 +11636,8 @@
         "awaitingPermission": "等待授权",
         "awaitingQuestion": "等待你的回复",
         "awaitingPlan": "等待计划审阅",
-        "awaitingPluginSetup": "等待插件设置"
+        "awaitingPluginSetup": "等待插件设置",
+        "awaitingInputHandoff": "等待代输入"
       },
       "showAllSessions": "显示全部 {{count}} 项",
       "allSessions": "全部任务",
@@ -13153,6 +13203,125 @@
       "allowDirs": "同时允许这些文件所在目录(本任务内同目录媒体文件不再询问)",
       "allow": "允许",
       "deny": "拒绝"
+    }
+  },
+  "inputHandoff": {
+    "originWarning": {
+      "insecure": "这个页面没有使用安全连接，输入的内容可能被他人读取。",
+      "ip-address": "这个页面使用 IP 地址而不是域名，请确认它是你预期的网站。",
+      "local-host": "这个页面来自本机服务，请确认它是你预期的程序。",
+      "local-file": "这个页面是本地文件，请确认它是你预期的内容。",
+      "punycode": "这个网址包含特殊字符，可能在冒充其他网站，请仔细核对。",
+      "embedded-frame": "输入框位于嵌入的其他网站中，请确认来源可信。"
+    },
+    "agentControlled": "这个界面由 Agent 打开。填写前请确认它确实是你要登录的地方。",
+    "error": {
+      "decision": "操作没有送达，请重试。",
+      "stale": "界面已经变化，请按最新内容操作。",
+      "submit": "输入没有送达，请重试。"
+    },
+    "terminal": {
+      "succeeded": "已交还给 Agent。",
+      "cancelled": "已取消代输入。",
+      "failed": "代输入已结束。",
+      "expired": "等待时间过长，代输入已结束。"
+    },
+    "failure": {
+      "permission": "Cindy 没有读取这台电脑界面的权限。请在系统设置的辅助功能中允许 Cindy。",
+      "target_gone": "目标窗口已关闭。",
+      "unreadable": "无法读取这个界面。可以在宿主电脑上直接完成，然后交还给 Agent。",
+      "action_failed": "刚才的操作没有生效，请检查界面后重试。",
+      "timeout": "等待时间过长，代输入已结束。",
+      "unsupported": "这台电脑暂不支持代输入。",
+      "origin_changed": "填写前页面已变化，什么都没有填入。请确认现在的页面后再填写。",
+      "picture_unavailable": "没能显示这一步的画面。请在系统设置中允许 Cindy 录制屏幕，并确认窗口没有被最小化。",
+      "screen_locked": "这台电脑的屏幕已锁定（显示器休眠也会锁屏）。请先唤醒并解锁，再让 Agent 重试。",
+      "nothing_to_fill": "这个界面没有需要你输入的内容，已交还给 Agent 继续。"
+    },
+    "phase": {
+      "reading": "正在读取界面…",
+      "working": "正在填写…",
+      "finishing": "看起来已经完成，{{count}} 秒后交还给 Agent。",
+      "finishingNow": "看起来已经完成，正在交还给 Agent…"
+    },
+    "action": {
+      "stay": "还没完成",
+      "done": "交还给 Agent",
+      "claim": "改在这里处理",
+      "picture": "看画面",
+      "backToForm": "回到表单",
+      "liveView": "实时画面",
+      "fill": "填写",
+      "skip": "跳过",
+      "continue": "继续",
+      "close": "取消",
+      "showPassword": "显示密码",
+      "hidePassword": "隐藏密码",
+      "scan": "扫码"
+    },
+    "remoteUnavailable": "这台电脑不能从远程接收输入。请在宿主电脑上完成这一步，再交还给 Agent。",
+    "unnamedField": "输入框",
+    "passwordField": "密码",
+    "codeField": "验证码",
+    "filledHint": "已有内容；留空则保持不变。",
+    "record": {
+      "doneOn_one": "主人在 {{device}} 完成了 {{count}} 步输入",
+      "doneOn_other": "主人在 {{device}} 完成了 {{count}} 步输入",
+      "doneHost_one": "主人在宿主电脑上完成了 {{count}} 步输入",
+      "doneHost_other": "主人在宿主电脑上完成了 {{count}} 步输入",
+      "donePhone_one": "主人在手机上完成了 {{count}} 步输入",
+      "donePhone_other": "主人在手机上完成了 {{count}} 步输入",
+      "doneElsewhere_one": "主人在另一台设备上完成了 {{count}} 步输入",
+      "doneElsewhere_other": "主人在另一台设备上完成了 {{count}} 步输入",
+      "done": "代输入已完成",
+      "nothingToFill": "无需输入，已交还给 Agent",
+      "cancelled": "代输入已取消",
+      "expired": "代输入已超时",
+      "failed": "代输入未完成"
+    },
+    "holder": {
+      "elsewhere": "正在 {{device}} 上处理，也可以改在这里处理。",
+      "host": "宿主电脑",
+      "phone": "手机",
+      "otherDevice": "另一台设备"
+    },
+    "agentNote": "Agent 补充：{{note}}",
+    "picture": {
+      "hint": "点按画面里的位置，Cindy 会在宿主电脑上点按同一个位置。",
+      "open": "显示这一步的画面",
+      "alt": "目标窗口的画面",
+      "loading": "正在获取画面…",
+      "error": "没能取得画面，请重试。",
+      "field": "当前输入框",
+      "type": "输入",
+      "typeEnter": "输入并回车"
+    },
+    "deviceCode": {
+      "prompt": "用这个代码登录",
+      "copy": "复制代码",
+      "copied": "已复制代码",
+      "copyFailed": "复制失败",
+      "open": "在本设备打开",
+      "openFailed": "无法打开链接",
+      "then": "在打开的页面输入代码并完成登录，然后点「交还给 Agent」。"
+    },
+    "nothingLeft": "这里没有需要你填写的了。",
+    "dialogNote": "只会填进电脑上的这一处，不会交给 Agent，也不会保存。",
+    "qr": {
+      "open": "在本机打开 {{site}}",
+      "copyLink": "复制链接",
+      "copyText": "复制内容",
+      "copied": "已复制。",
+      "copyFailed": "没能复制，请重试。",
+      "loading": "正在获取二维码…",
+      "scanned": "已扫码，等你在手机上确认。确认后会自动继续。",
+      "hint": "用手机扫描这个码完成登录。登录后会自动继续。",
+      "hintLink": "用手机扫描这个码，或在本机打开链接完成登录。登录后会自动继续。",
+      "copyImage": "复制图片",
+      "imageCopied": "已复制图片。",
+      "openFailed": "没能打开这个链接。可以用手机扫描这个码。",
+      "alt": "电脑上的二维码。点击会点在电脑上的这个码上。",
+      "failed": "没能取得二维码，点击重试。"
     }
   },
   "commandPalette": {
