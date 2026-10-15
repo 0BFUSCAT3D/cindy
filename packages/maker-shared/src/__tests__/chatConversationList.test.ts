@@ -2,6 +2,19 @@ import { expect, it, vi } from 'vitest';
 import { createConversationListState } from '../chatConversationList';
 const id = '00000000-0000-4000-8000-000000000001';
 
+it('starts a fresh scan after an older in-flight read when an event cursor resets', async () => {
+  const list = createConversationListState();
+  let finish!: (value: unknown) => void;
+  const request = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+    .mockResolvedValue([{ conversationId: id, hidden: true, revision: 2 }]);
+  const initial = list.sync(request);
+  const reset = list.resync(request);
+  finish([{ conversationId: id, hidden: false, revision: 1 }]);
+  await Promise.all([initial, reset]);
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(list.hidden(id)).toBe(true);
+});
+
 it('shares concurrent reads and avoids full-page downloads until an explicit reconnect', async () => {
   const list = createConversationListState();
   let resolve!: (value: unknown) => void;

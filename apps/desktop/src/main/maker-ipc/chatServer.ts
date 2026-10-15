@@ -591,6 +591,16 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
             changed('');
           }
           ws.send(JSON.stringify({ type: 'ack', scope: event.scope, cursor: event.cursor }));
+        } else if (event.type === 'scope_error' && event.scope === `actor:${selfId}`) {
+          const head = event.error?.details?.head;
+          if (event.error?.code !== 'RESET_REQUIRED' || typeof head !== 'string' || !/^\d+$/.test(head)) { ws.close(); return; }
+          void (async () => {
+            if (supportsListRemoval) await personalList.resync(api);
+            if (!current() || socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+            for (const roomId of rooms.keys()) changed(roomId);
+            changed('');
+            ws.send(JSON.stringify({ type: 'subscribe', scope: event.scope, after: head }));
+          })().catch(() => ws.close());
         } else if (event.type === 'scope_error' && event.scope.startsWith('conversation:')) {
           const roomId = event.scope.slice(13);
           if (event.error?.code === 'RESET_REQUIRED') {

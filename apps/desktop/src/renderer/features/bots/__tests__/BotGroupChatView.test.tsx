@@ -327,6 +327,14 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('BotGroupChatView', () => {
+  it('clears the selected route when an authoritative personal hide unmounts settings', async () => {
+    renderView();
+    await screen.findByRole('textbox');
+    act(() => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'list', listState: { hidden: true, revision: 1 } })));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots');
+    expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
   function mockThreadMotion(duration: string) {
     const style = document.createElement('style');
     style.textContent = `aside { --motion-base: ${duration}; --motion-ease-move: linear; }`;

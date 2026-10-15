@@ -166,8 +166,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
       if (!await showConfirm({ title: t(`groupChat.lifecycle.${action}`), message: t(`groupChat.lifecycle.${action}Note`),
         cancelLabel: t('devices.common.cancel'), confirmLabel: t(`groupChat.lifecycle.${action}`), destructive: true }) || active.current !== captured) return;
       await lifecycleProps.act(action, action === 'dissolve' ? { expectedRevision: lifecycleGroup.revision } : undefined);
-      if (active.current !== captured) return;
-      if (action === 'hide') onDeleted();
+      // The owning screen completes hide/leave navigation even if this sheet unmounted.
     } catch (error) {
       if (active.current === captured) setErrors(current => ({ ...current, lifecycle: botGroupActionErrorText(t, error, 'groupChat.lifecycle.failed') }));
     } finally { busyRef.current = null; if (active.current === captured) setBusy(null); }
@@ -347,7 +346,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
       </View>
 
       </View>
-      {(!group.serverBacked || (canManageBotGroup(group) && !group.dissolvedAt)) && <View style={[styles.section, (readOnly || !online) && styles.inheritedInactive]}>
+      {(!group.serverBacked || (canManageBotGroup(group) && !leavesGroup && !group.dissolvedAt)) && <View style={[styles.section, (readOnly || !online) && styles.inheritedInactive]}>
         <Pressable accessibilityRole="button" accessibilityLabel={t(archivesGroup ? 'groupChat.settings.archive' : 'groupChat.settings.delete')} disabled={deleteLocked}
           onPress={() => void remove()}
           style={({ pressed }) => [styles.group, styles.memberRow, pressed && mobileInteractionStyles.pressed, !readOnly && online && deleteLocked && styles.inactive]}

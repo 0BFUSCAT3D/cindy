@@ -10,6 +10,19 @@ function socket(): MockSocket {
 }
 const receive = async (ws: ChatSocket, data: unknown) => { ws.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); await Promise.resolve(); await Promise.resolve(); };
 let stop = () => {};
+it('waits for reset state before resubscribing and ignores completion after disposal', async () => {
+  let finish!: () => void;
+  const reset = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+  stop = subscribeChatServer({ baseUrl: 'https://chat.example.invalid', token: async () => 'fixture', current: () => true,
+    socket, ready: async () => ({ scope: `actor:${actorId}`, cursor: '0' }), changed: vi.fn(), unavailable: vi.fn(), reset });
+  await Promise.resolve(); const ws = sockets[0];
+  await receive(ws, { type: 'ready', actorId });
+  await receive(ws, { type: 'scope_error', scope: `actor:${actorId}`, error: { code: 'RESET_REQUIRED', details: { head: '50' } } });
+  expect(reset).toHaveBeenCalledOnce();
+  expect(ws.send).not.toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe', scope: `actor:${actorId}`, after: '50' }));
+  stop(); finish(); await Promise.resolve(); await Promise.resolve();
+  expect(ws.send).not.toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe', scope: `actor:${actorId}`, after: '50' }));
+});
 afterEach(() => { stop(); sockets.length = 0; vi.useRealTimers(); });
 it('authenticates inside the socket, acknowledges string cursors and reconnects without replaying writes', async () => {
   vi.useFakeTimers(); const changed = vi.fn(); const token = vi.fn(async () => 'fixture-token');

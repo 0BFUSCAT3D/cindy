@@ -198,6 +198,14 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
   const currentHideScope = `${groupId}:${deviceId}:${accountGeneration}`;
   hideScope.current = currentHideScope;
   useEffect(() => () => { hideScope.current = ''; }, []);
+  const actFromSettings: typeof chat.act = async (action, input) => {
+    const captured = currentHideScope;
+    const receipt = await chat.act(action, input);
+    // The list listener may already have unmounted settings; the screen still
+    // owns this route and can complete navigation after the acknowledgement.
+    if ((action === 'hide' || action === 'leave') && hideScope.current === captured) leave();
+    return receipt;
+  };
   const removeFromList = async () => {
     if (hidePending.current) return;
     hidePending.current = true;
@@ -371,7 +379,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
       {body}
     </>}
     {group ? <BotGroupSettingsSheet readOnly={chat.server} visible={settings} group={group} host={host} identityFor={identityFor} online={chat.online}
-      act={chat.act} onClose={() => setSettings(false)}
+      act={actFromSettings} onClose={() => setSettings(false)}
       onRefresh={chat.reload}
       onClosed={() => { if (leaveAfterSettings.current) { leaveAfterSettings.current = false; leave(); } }}
       onDeleted={onGroupDeleted} /> : null}

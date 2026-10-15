@@ -832,6 +832,36 @@ describe('group settings', () => {
     expect(byId('botGroup.settings')).not.toBeNull();
   }
 
+  it.each([true, false])('leaves after confirmed personal hide even when settings unmounts before the reply (direct=%s)', async direct => {
+    h.chat.server = direct;
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    expect(h.chat.act).toHaveBeenLastCalledWith('hide', undefined);
+    await render(null, 'missing');
+    expect(byId('botGroup.settings')).toBeNull();
+    expect(h.leave).not.toHaveBeenCalled();
+    await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('navigates only once when a personal hide completes before the list rerenders', async () => {
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('does not navigate from an old hide acknowledgement after leaving the screen', async () => {
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    await act(async () => root.render(el('div')));
+    await act(async () => { finish(); });
+    expect(h.leave).not.toHaveBeenCalled();
+  });
+
   it('follows a remote rename on blur without saving an untouched name', async () => {
     await openSettings();
     await act(async () => { h.inputs['botGroup.settings.name'].onFocus(); });
@@ -890,8 +920,9 @@ describe('group settings', () => {
     expect(byId('botGroup.settings.addable')).toBeNull();
     await click('botGroup.settings.retry'); expect(refresh).toHaveBeenCalledOnce();
     expect(h.chat.act).not.toHaveBeenCalled();
-    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.archive');
-    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.settings.archiveNote');
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.hide')?.disabled).toBe(true);
+    expect(byId('botGroup.settings')?.textContent).toContain('groupChat.lifecycle.unavailable');
     expect(byId('botGroup.settings')?.textContent).not.toContain('groupChat.settings.deleteNote');
   });
 
@@ -956,26 +987,27 @@ describe('group settings', () => {
     expect(byId('botGroup.settings.memberMenu.abu.action.remove:abu')?.disabled).toBe(true);
   });
 
-  it.each(['member', 'admin'] as const)('retains compatibility-entry leave for a server %s without granting archive', async (role) => {
-    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
-    data.members[0] = { ...data.members[0], isOwned: true, role };
+  it.each(['member', 'admin'] as const)('uses explicit leave for a server %s without granting archive or compatibility delete', async (role) => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsGroupLeave: true, revision: 5 });
+    data.members[0] = { ...data.members[0], actorId: 'human', isSelf: true, isOwned: true, role };
     await openSettings(data);
     expect(h.inputs['botGroup.settings.name'].editable).toBe(role === 'admin');
     expect(byId('botGroup.settings.add')?.disabled).toBe(role !== 'admin');
-    expect(byId('botGroup.settings.delete')?.disabled).toBe(false);
-    expect(byId('botGroup.settings.delete')?.textContent).toContain('groupChat.settings.delete');
-    await click('botGroup.settings.delete');
-    expect(h.chat.act).toHaveBeenCalledWith('delete', {});
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.leave')?.disabled).toBe(false);
+    await click('botGroup.settings.leave');
+    expect(h.chat.act).toHaveBeenCalledWith('leave', undefined);
     expect(h.leave).toHaveBeenCalledOnce();
   });
 
-  it('keeps compatibility leave disabled when the computer is offline', async () => {
-    const data = group({ serverBacked: true, supportsSettingsManagement: true, revision: 5 });
-    data.members[0] = { ...data.members[0], isOwned: true, role: 'member' };
+  it('keeps explicit leave disabled when the computer is offline', async () => {
+    const data = group({ serverBacked: true, supportsSettingsManagement: true, supportsGroupLeave: true, revision: 5 });
+    data.members[0] = { ...data.members[0], actorId: 'human', isSelf: true, isOwned: true, role: 'member' };
     h.chat.online = false;
     await openSettings(data);
-    expect(byId('botGroup.settings.delete')?.disabled).toBe(true);
-    await click('botGroup.settings.delete');
+    expect(byId('botGroup.settings.delete')).toBeNull();
+    expect(byId('botGroup.settings.leave')?.disabled).toBe(true);
+    await click('botGroup.settings.leave');
     expect(h.chat.act).not.toHaveBeenCalled();
   });
 

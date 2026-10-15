@@ -304,12 +304,15 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
     void load();
     const unsubscribe =
       botGroupApi()?.onBotGroupChanged?.((payload, ownerStamp) => {
-        if (!isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
+        if (cancelled || !isDataOwnerPushCurrent(ownerStamp) || payload.groupId !== groupId) return;
         if (payload.change === 'deleted' || (payload.change === 'list' && payload.listState?.hidden)) {
           requestVersion += 1;
           // Unsent attachments go with the group (staged copies included).
           discardDraft(botGroupAttachmentScope(groupId));
           setState({ kind: 'missing' });
+          // The authoritative hide can unmount the drawer before its IPC reply.
+          // This mounted page owns selection, so clear the route here as well.
+          if (payload.change === 'list') navigate('/bots');
           return;
         }
         void load();
@@ -320,7 +323,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       loadRef.current = () => {};
       unsubscribe();
     };
-  }, [groupId, reloadVersion]);
+  }, [groupId, reloadVersion, navigate]);
 
   const group = state.kind === 'ready' ? state.group : null;
   // Until the timeline arrives, the header comes from the group's sidebar row (same account).

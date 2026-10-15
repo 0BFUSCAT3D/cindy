@@ -138,7 +138,7 @@ export function useChatServerRoster(enabled: boolean) {
           }
           await read({ reason: 'connected' });
           return { scope: `actor:${actorId}`, cursor };
-        }, changed: changes => { for (const change of changes ?? []) if (change.type === 'conversation.list.changed') api.client.personalList.merge(change.data); void read({ reason: 'changed' }); }, available: () => { subscribed = true; }, unavailable: () => { subscribed = false; } });
+        }, reset: () => api.client.resyncListState(), changed: changes => { for (const change of changes ?? []) if (change.type === 'conversation.list.changed') api.client.personalList.merge(change.data); void read({ reason: 'changed' }); }, available: () => { subscribed = true; }, unavailable: () => { subscribed = false; } });
       }).catch(() => {}); // HTTP read presents endpoint errors.
     };
     start();
@@ -220,7 +220,7 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
           if (!freshRead.current || !latest || latest.identity !== identity) throw new Error('CHAT_READ_FAILED');
           return head === null ? { scope: `conversation:${groupId}`, cursor: latest.page.snapshot.cursor }
             : [{ scope: `conversation:${groupId}`, cursor: latest.page.snapshot.cursor }, { scope: `actor:${actorId}`, cursor: head }];
-        }, changed: changes => { for (const change of changes ?? []) if (change.type === 'conversation.list.changed') api.client.personalList.merge(change.data); reload(); }, available: () => { subscribed = true; }, unavailable: () => { subscribed = false; freshRead.current = false; } });
+        }, reset: () => api.client.resyncListState(), changed: changes => { for (const change of changes ?? []) if (change.type === 'conversation.list.changed') api.client.personalList.merge(change.data); reload(); }, available: () => { subscribed = true; }, unavailable: () => { subscribed = false; freshRead.current = false; } });
       }).catch(() => {}); // Read presents endpoint errors.
     };
     start();

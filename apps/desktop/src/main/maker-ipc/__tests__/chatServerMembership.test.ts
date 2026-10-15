@@ -137,6 +137,29 @@ describe('Chat Server membership notices', () => {
     expect(fixture.handle.mock.calls.some(([route, method]) => method === 'POST' && route.includes('/messages'))).toBe(false);
   });
 
+  it('resyncs personal state and resumes actor events at the reset head', async () => {
+    lifecycle();
+    let states: unknown[] = [];
+    const handle = fixture.handle.getMockImplementation()!;
+    fixture.handle.mockImplementation((route, ...args) => route.startsWith('/conversation-list-state?') ? { body: states } : handle(route, ...args));
+    await service.listGroups();
+    await vi.advanceTimersByTimeAsync(2000);
+    const socket = fixture.sockets[0]!;
+    Object.defineProperty(socket, 'readyState', { value: 1 });
+    socket.emit('message', JSON.stringify({ type: 'ready' }));
+    await vi.advanceTimersByTimeAsync(0);
+    states = [{ conversationId: roomId, hidden: true, revision: 1 }];
+    socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `actor:${selfId}`, error: { code: 'RESET_REQUIRED', details: { head: '42' } } }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '42' }));
+    expect(await service.listGroups()).toMatchObject({ ok: true, groups: [] });
+    expect(changed.mock.calls.map(([payload]) => payload)).toContainEqual(expect.objectContaining({ groupId: roomId, change: 'list', listState: expect.objectContaining({ hidden: true }) }));
+    socket.emit('message', JSON.stringify({ type: 'changes', scope: `actor:${selfId}`, cursor: '43', changes: [
+      { type: 'conversation.list.changed', data: { conversationId: roomId, hidden: false, revision: 2 } },
+    ] }));
+    expect((await service.getGroup(roomId)).ok).toBe(true);
+  });
+
   it('never continues a discussion from an admission event', async () => {
     expect((await service.continueRound(roomId)).ok).toBe(false);
     expect(fixture.handle.mock.calls.some(([route]) => route.endsWith('/continue'))).toBe(false);

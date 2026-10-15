@@ -15,6 +15,7 @@ export function subscribeChatServer(options: {
   socket(url: string): ChatSocket;
   ready(actorId: string): Promise<{ scope: string; cursor: string } | Array<{ scope: string; cursor: string }>>;
   changed(changes?: Array<{ type: string; data: unknown }>): void; unavailable(): void; available?(): void;
+  reset?(): Promise<void>;
 }) {
   let stopped = false;
   let socket: ChatSocket | undefined;
@@ -55,7 +56,9 @@ export function subscribeChatServer(options: {
             // A full authenticated reload clears removed membership and resets expired cursors.
             options.changed(value.changes);
             if (value.error?.code === 'RESET_REQUIRED' && value.error?.details?.head) {
-              ws.send(JSON.stringify({ type: 'subscribe', scope: value.scope, after: chatCursor(value.error.details.head) }));
+              const head = chatCursor(value.error.details.head);
+              await options.reset?.();
+              if (current(ws) && ws.readyState === 1) ws.send(JSON.stringify({ type: 'subscribe', scope: value.scope, after: head }));
             } else { stopped = true; options.unavailable(); ws.close(); }
           } else if (value.type === 'error') ws.close();
         })().catch(() => { if (current(ws)) ws.close(); });

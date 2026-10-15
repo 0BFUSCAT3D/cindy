@@ -50,6 +50,9 @@ export function createConversationListState() {
     subscribe(notify: (row: ConversationListState) => void) { listeners.add(notify); return () => { listeners.delete(notify); }; },
     sync,
     ensureSynced: (request: Request) => sync(request, false),
+    // A reset's head may be newer than the start of an existing scan. Finish that
+    // scan first, then read again so resubscribing at the supplied head loses no gap.
+    async resync(request: Request) { if (syncing) await syncing; await sync(request); },
     async setHidden(request: Request, id: string, hidden: boolean, operationId: string) {
       if (!uuid.test(id)) throw new Error('INVALID_CHAT_ID');
       // Read first, including after leaving. A lost acknowledgement is safe to retry.
