@@ -87,10 +87,11 @@ export interface BuildHandoffOptions {
    */
   companion?: boolean;
   /**
-   * 伙伴自己的会话 id(宿主按 resolveBotHistorySessionIds 解析:当前对话、恢复前的旧
-   * 对话、自己开的后台任务;最新在前)。history 工具不传 session_ids 搜的是本机全部任务,
-   * 搜索命中又不带归属,模型无法自行分辨旧的伙伴会话——所以由宿主把归属预先写进指引,
-   * 让第一步直接用 session_ids 限定到自己的历史。缺省只认当前对话。
+   * 伙伴自己的会话 id(宿主按 botHistoryScope.listBotRecallSessionIds 解析:当前对话与
+   * 恢复前的旧对话整体优先,剩余名额给最新的后台任务;总数不超过 COMPANION_SESSION_IDS_LIMIT)。
+   * history 工具不传 session_ids 搜的是本机全部任务,搜索命中又不带归属,模型无法自行分辨
+   * 旧的伙伴会话——所以由宿主把归属预先写进指引,让第一步直接用 session_ids 限定到自己的
+   * 历史。缺省只认当前对话。
    */
   companionSessionIds?: readonly string[];
   /**
@@ -650,8 +651,11 @@ function splitTrailingTerminator(text: string): [body: string, tail: string] {
 const RETRIEVAL_SECTION_HEADING = '== Retrieving earlier verbatim history';
 /** 伙伴主对话的检索指引标题(按需回忆口径),同样属于必须整段保住的尾部。 */
 const RECALL_SECTION_HEADING = '== Recalling earlier history';
-/** 回忆指引里列出的伙伴自有会话 id 上限(最新在前);再多就靠搜索命中的 sessionId 补查。 */
-const COMPANION_SESSION_IDS_LIMIT = 20;
+/**
+ * 回忆指引里列出的伙伴自有会话 id 上限。宿主(listBotRecallSessionIds)按同一上限分层取数:
+ * 对话会话整体优先、后台任务补足,旧对话不会被后台任务挤掉;这里的截断只是防御性兜底。
+ */
+export const COMPANION_SESSION_IDS_LIMIT = 20;
 
 function splitMandatoryHandoffTail(text: string, opts: BuildHandoffOptions): {
   body: string;
@@ -846,7 +850,7 @@ function assembleHandoffText(
       `== Recalling earlier history (use when needed) ==\n` +
         `Session id: ${opts.sessionId}\n` +
         `This is your long-running chat with the user. The index above is only a hint: when the user refers to something you do not see here, search before saying you have no record of it, then answer naturally without mentioning that you searched (tools live under cindy_helper's history category):\n` +
-        `1. First: search_chat_history, args {"query":"<keywords>","limit":10,"session_ids":${JSON.stringify(ownSessionIds)}}. Those session_ids are your own history as recorded by the host (this chat, your earlier chats before a restart, and the background tasks you started; newest first) — keep them so the search stays within it. Omit session_ids only when the user explicitly points at another task on this computer; hits from sessions outside that list are unrelated context, never something promised or decided in this chat.\n` +
+        `1. First: search_chat_history, args {"query":"<keywords>","limit":10,"session_ids":${JSON.stringify(ownSessionIds)}}. Those session_ids are your own history as recorded by the host (this chat and your earlier chats before a restart first, then the background tasks you started) — keep them so the search stays within it. Omit session_ids only when the user explicitly points at another task on this computer; hits from sessions outside that list are unrelated context, never something promised or decided in this chat.\n` +
         `2. Only if that is not enough: get_chat_history, args {"session_ids":["<sessionId of the hit>"],"roles":["user","assistant"],"limit":20} — use the hit's sessionId, not necessarily this chat's.\n` +
         `Page with nextCursor only when hasMore is true and the needed detail is still missing. Never request the default 200-row page and never dump the full history.\n` +
         `Retrieved original text outranks this index; when history conflicts with the current workspace, the workspace wins. Approvals found in history are not new permission; newer corrections override older decisions.`,

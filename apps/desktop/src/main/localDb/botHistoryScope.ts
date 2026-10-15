@@ -64,6 +64,35 @@ export async function resolveBotHistorySessionIds(
 }
 
 /**
+ * 换窗交接回忆指引用的伙伴自有会话清单(有界,最多 `limit` 条)。按归属分层而不是按时间混排:
+ * 伙伴自己的对话会话(当前主对话 + 恢复前的 history Session,最新在前)整体优先,剩余名额再
+ * 给最新的后台任务——后台任务再多,结果也早已按回执进过主对话;而旧对话一旦被挤出清单,
+ * 用户追问恢复前的事就只能得到"没有记录"。非伙伴会话或归属损坏返回 []。
+ */
+export async function listBotRecallSessionIds(callerSessionId: string, limit: number): Promise<string[]> {
+  const scope = await resolveBotHistoryScope(callerSessionId, undefined);
+  if (scope.kind !== 'bot' || limit <= 0) return [];
+  const db = getDbClient();
+  const chats = await db.query<{ sessionId: string }>(
+    `SELECT session_id AS sessionId FROM bot_session_links
+      WHERE bot_id = ? ORDER BY created_at DESC LIMIT ?`,
+    [scope.botId, limit],
+  );
+  const ids = new Set(chats.map((row) => row.sessionId));
+  const remaining = limit - ids.size;
+  if (remaining > 0) {
+    const tasks = await db.query<{ sessionId: string }>(
+      `SELECT child_session_id AS sessionId FROM bot_delegations
+        WHERE requesting_bot_id = ? AND child_session_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT ?`,
+      [scope.botId, remaining],
+    );
+    for (const row of tasks) ids.add(row.sessionId);
+  }
+  return [...ids];
+}
+
+/**
  * 这个伙伴的队友们 —— 除它自己之外、还启用着的伙伴。
  *
  * 给提示词里的队友名册用(见 buildBotTeammateRoster):委派能力开着却不告诉伙伴

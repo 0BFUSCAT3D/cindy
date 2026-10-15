@@ -10,7 +10,7 @@ vi.mock('../client/current.js', () => ({
   }),
 }));
 
-import { resolveBotHistorySessionIds } from '../botHistoryScope.js';
+import { listBotRecallSessionIds, resolveBotHistorySessionIds } from '../botHistoryScope.js';
 
 beforeEach(() => {
   h.sqlite = new Database(':memory:');
@@ -33,5 +33,24 @@ describe('resolveBotHistorySessionIds', () => {
   it('leaves ordinary tasks unscoped and fails closed for unknown callers', async () => {
     expect(await resolveBotHistorySessionIds('owner-task', undefined)).toBeNull();
     expect(await resolveBotHistorySessionIds('missing', undefined)).toEqual([]);
+  });
+});
+
+describe('listBotRecallSessionIds', () => {
+  it('keeps every chat session ahead of background tasks within the bound, newest first', async () => {
+    // 恢复前的旧对话(更早)+ 当前对话,再加一堆比它们都新的后台任务。
+    h.sqlite!.exec(`
+      INSERT INTO bot_session_links VALUES ('bot-main-old', 'bot-1', 0);
+      ${Array.from({ length: 6 }, (_, i) => `INSERT INTO bot_delegations VALUES ('bot-1', 'task-${i}', ${10 + i});`).join('\n')}
+    `);
+    const ids = await listBotRecallSessionIds('bot-main', 4);
+    expect(ids).toEqual(['bot-main', 'bot-main-old', 'task-5', 'task-4']);
+    // 名额够时全部带上;非伙伴 / 未知调用方 / 零名额都为空。
+    expect(await listBotRecallSessionIds('bot-main', 50)).toEqual([
+      'bot-main', 'bot-main-old', 'task-5', 'task-4', 'task-3', 'task-2', 'task-1', 'task-0', 'child-1',
+    ]);
+    expect(await listBotRecallSessionIds('owner-task', 4)).toEqual([]);
+    expect(await listBotRecallSessionIds('missing', 4)).toEqual([]);
+    expect(await listBotRecallSessionIds('bot-main', 0)).toEqual([]);
   });
 });
