@@ -338,6 +338,48 @@ it('tells the picture which modifier is copy/paste on the controlled computer', 
   });
 });
 
+it('a display switch that drops and regains control without a reconnect drops the old paste sync', async () => {
+  const first = deferred<RemoteViewerSafety>();
+  const clipboardSync = vi.fn(() => first.promise);
+  await fixture(undefined, true, {
+    api: {
+      clipboardSync,
+      preferences: async () => ({
+        audio: true,
+        privacyScreen: false,
+        hostMute: false,
+        clipboardSync: true,
+        lockOnExit: false,
+      }),
+    },
+  });
+  present();
+  await vi.advanceTimersByTimeAsync(0);
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(clipboardSync).toHaveBeenCalledOnce();
+  // Changing the resolution suspends control and re-acquires it; no cancel() runs.
+  await controller.resolution(mode4k);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(
+    runtime.receive.mock.calls.filter(([m]) => m.type === 'control').map(([m]) => m.enabled),
+  ).toContain(false);
+  expect(inputEnabled()).toBe(true);
+  const second = deferred<RemoteViewerSafety>();
+  clipboardSync.mockImplementationOnce(() => second.promise);
+  const before = gateReleases();
+  runtime.post?.({ type: 'clipboardIntent', action: 'paste', epoch: 'lease' });
+  await vi.advanceTimersByTimeAsync(0);
+  // The retired pass is not reused, and its late settlement opens nothing.
+  expect(clipboardSync).toHaveBeenCalledTimes(2);
+  first.resolve(idle);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(gateReleases()).toBe(before);
+  second.resolve(idle);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(gateReleases()).toBe(before + 1);
+});
+
 it('a paste waiting on the old session never opens the gate of the next one', async () => {
   const sync = deferred<RemoteViewerSafety>();
   const clipboardSync = vi.fn(() => sync.promise);

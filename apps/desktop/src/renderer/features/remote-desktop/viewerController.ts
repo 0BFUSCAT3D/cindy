@@ -502,6 +502,14 @@ export class DesktopViewerController {
       this.state.ready && !this.state.controlPending && this.session.lease?.controlling === true;
     if (controlling === this.state.controlling) return;
     this.clipboardRevision++;
+    if (!controlling) {
+      // Main retires the sync of a lost control generation (a display switch
+      // with auto-control drops and regains control without a reconnect); a
+      // paste after control returns must start its own pass, not wait on it.
+      this.pasteSync = null;
+      if (this.copyTimer) clearTimeout(this.copyTimer);
+      this.copyTimer = null;
+    }
     this.publish({ controlling });
     this.runtime.receive({ type: 'control', enabled: controlling });
     if (controlling) void this.applyRememberedResolution();
