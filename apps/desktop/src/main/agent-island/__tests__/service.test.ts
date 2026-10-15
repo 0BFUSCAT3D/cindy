@@ -6255,6 +6255,25 @@ describe('AgentIslandService island-entry alert disposal', () => {
     }
   });
 
+  // Review P1:重试在同一毫秒内又落新终态时,毫秒时间戳的身份会撞上,旧点击会误处置
+  // 新提醒。卡片身份用无碰撞的活动代数后,新报错卡必须留下。
+  it('a same-millisecond terminal after the click never gets consumed by the old click', async () => {
+    const { service, click, consume, island } = await setup();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000_000);
+      service.handleAgentEvent(lane, terminalErrorEvent('first failure'));
+      const entryId = click('lane');
+      // 同一毫秒内重试并再次失败:新的报错卡是新的提醒。
+      service.handleUserPrompt(lane, 'try again');
+      service.handleAgentEvent(lane, terminalErrorEvent('second failure'));
+      expect(consume('lane', entryId)).toEqual({ ok: true, consumed: false });
+      expect(island.sessions.get('lane')).toMatchObject({ phase: 'error', unread: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The read-only history page reports its session as visible; a click on that card
   // must still reach the renderer, whose navigator disposes it on the open target.
   it('delivers the click id even when the target is the visible, focused session', async () => {

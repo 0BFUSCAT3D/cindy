@@ -172,6 +172,11 @@ interface AgentIslandSessionState {
   sortActivityAt: number;
   lastActivityAt: number;
   /**
+   * 无碰撞的活动代数(全局单调不复用):卡片身份用它而不是毫秒时间戳 —— 同一毫秒内
+   * 再落新终态时时间戳会撞上(review P1),旧点击会误处置新提醒。
+   */
+  activityGeneration: number;
+  /**
    * 非 null = 镜像另一台设备(device-link「我控制它」)上运行的任务,生命周期由
    * {@link syncAgentIslandDeviceSessions} 的输入决定;本机 Maker 事件不会触达它。
    */
@@ -234,6 +239,20 @@ export interface AgentIslandRemoteUnreadTerminal {
   sessionId: string;
   phase: 'completed' | 'error';
   lastActivityAt: number;
+}
+
+// 卡片身份的无碰撞活动代数:全局单调递增、不复用。不要退回毫秒时间戳 —— 重试在同一
+// 毫秒内再落新终态时时间戳会撞上(review P1),旧点击会误处置新提醒。
+let agentIslandActivityGeneration = 0;
+
+function nextActivityGeneration(): number {
+  return ++agentIslandActivityGeneration;
+}
+
+/** 任何活动都推进代数(卡片身份随之变化);仅重挂注意力等非活动路径不得调用。 */
+function touchSessionActivity(session: AgentIslandSessionState, now: number): void {
+  session.lastActivityAt = now;
+  session.activityGeneration = nextActivityGeneration();
 }
 
 export function createAgentIslandState(): AgentIslandState {
@@ -511,7 +530,7 @@ export function applyAgentIslandUserPrompt(
   const line = appendActivityLine(session, 'user', text);
   if (line) enqueueMessagePreview(session, line, now);
   session.sortActivityAt = now;
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
   return true;
 }
 
@@ -600,7 +619,7 @@ export function applyAgentIslandEvent(
   if (event.type === 'compact_boundary') {
     if (!foreground || !session.running || session.workingPhase !== 'compacting') return false;
     session.workingPhase = 'thinking';
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return true;
   }
   if (event.type === 'thinking') {
@@ -608,13 +627,13 @@ export function applyAgentIslandEvent(
     // public status nor wake the roster/resource subscribers.
     if (!session.running || session.workingPhase === 'thinking' || session.workingPhase?.startsWith('reviewing-')) return false;
     session.workingPhase = 'thinking';
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return true;
   }
   if (event.type !== 'error') {
     session.reconnectStatus = null;
   }
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
 
   if (event.type === 'text') {
     if (foreground) session.workingPhase = 'replying';
@@ -750,7 +769,7 @@ export function applyAgentIslandEvent(
         : session.detail;
       session.detailSource = 'interaction';
       session.completedUntil = null;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       return true;
     }
     session.permissionRequestId = null;
@@ -848,7 +867,7 @@ export function applyAgentIslandInteractionRequest(
     session.pendingPermissionCanAllowForSession.delete(request.requestId);
   }
   if (!activateRequest) {
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return;
   }
   session.phase = 'needs-interaction';
@@ -864,7 +883,7 @@ export function applyAgentIslandInteractionRequest(
   deferActiveTransientReveal(state, 'queued');
   requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
   syncVisibleInteractionSuppression(state, now);
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
 }
 
 export function applyAgentIslandInteractionDismissed(
@@ -897,7 +916,7 @@ function dismissPendingInteraction(
   if (session.permissionRequestId === requestId) {
     restorePendingPermissionAction(session);
   }
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
   if (session.pendingInteractionIds.size > 0) {
     restorePendingInteractionKind(session);
     return;
@@ -956,7 +975,8 @@ export type AgentIslandSessionReadAckResult = 'cleared' | 'noop' | 'not-found' |
 
 /**
  * 灵动岛上一张未读完成 / 报错卡的身份。点击时记下,导航落地后再比对:任何后续活动
- * (新一轮开始、新的报错或完成)都会改变它,旧点击因此不会处置后来的提醒。
+ * (新一轮开始、新的报错或完成)都会改变它,旧点击因此不会处置后来的提醒。身份用
+ * 无碰撞的活动代数而非毫秒时间戳,同毫秒内的新终态也拉得开。
  * 只认本机会话当前展示的未读终态;运行中、等待交互或只剩远程账本时返回 null。
  */
 export function readAgentIslandUnreadTerminalStamp(
@@ -965,7 +985,7 @@ export function readAgentIslandUnreadTerminalStamp(
 ): string | null {
   const session = state.sessions.get(sessionId);
   if (!session || session.sourceDeviceId !== null || !isUnreadTerminalLedger(session)) return null;
-  return `${session.phase}:${session.lastActivityAt}`;
+  return `${session.phase}:${session.activityGeneration}`;
 }
 
 export function acknowledgeAgentIslandSessionRead(
@@ -1200,7 +1220,7 @@ function applyDeviceSessionPhase(
       session.workingPhase = workingPhase;
       session.detail = input.detail;
       session.detailSource = input.detail ? 'status' : null;
-      if (changed) session.lastActivityAt = now;
+      if (changed) touchSessionActivity(session, now);
       return { changed, event: null };
     }
     case 'needs-interaction': {
@@ -1210,7 +1230,7 @@ function applyDeviceSessionPhase(
         markSessionRunning(state, session, now);
         session.pendingInteractionIds.add(DEVICE_SESSION_INTERACTION_ID);
         session.phase = 'needs-interaction';
-        session.lastActivityAt = now;
+        touchSessionActivity(session, now);
         if (previous !== null) {
           deferActiveTransientReveal(state, 'queued');
           requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
@@ -1235,7 +1255,7 @@ function applyDeviceSessionPhase(
       }
       clearDeviceSessionInteraction(session);
       session.running = false;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       // 先换掉上一轮的摘要,且必须先于 complete:有摘要可显示时就不再补「完成」占位。
       session.activityLines = [];
       mirrorDeviceSessionSummary(session, input.detail);
@@ -1254,7 +1274,7 @@ function applyDeviceSessionPhase(
       session.detail = input.detail;
       session.detailSource = input.detail ? 'status' : null;
       session.completedUntil = null;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       if (observed) {
         session.errorUntil = now + AGENT_ISLAND_ERROR_DWELL_MS;
         requestAttentionReveal(state, session, now, AGENT_ISLAND_ERROR_REVEAL_DWELL_MS, { forceUnread: true });
@@ -2528,6 +2548,7 @@ function getOrCreateSession(
     startedAt: now,
     sortActivityAt: now,
     lastActivityAt: now,
+    activityGeneration: nextActivityGeneration(),
     sourceDeviceId: null,
   };
   state.sessions.set(meta.sessionId, session);
