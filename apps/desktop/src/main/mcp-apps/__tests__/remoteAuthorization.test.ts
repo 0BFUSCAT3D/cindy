@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Logger } from '@cindy/maker-core';
 import { getLiziMcpSessionContext } from '@cindy/mcps';
@@ -10,6 +10,7 @@ import {
 } from '../../mcp-integrations/codexHttpBridge.js';
 import { CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY } from '../../mcp-integrations/codexBuiltinToolPolicy.js';
 let bridge: CodexHttpBridge | undefined;
+const receivedNotification = vi.fn();
 const log = {
   trace() {},
   debug() {},
@@ -23,6 +24,9 @@ const log = {
 } as Logger;
 function server() {
   const server = new McpServer({ name: 'example', version: '1' });
+  server.server.fallbackNotificationHandler = async (notification) => {
+    receivedNotification(notification, getLiziMcpSessionContext()?.sessionInstanceId);
+  };
   server.tool('context', {}, async () => ({
     content: [{ type: 'text', text: getLiziMcpSessionContext()?.sessionInstanceId ?? 'unbound' }],
   }));
@@ -32,6 +36,7 @@ afterEach(async () => {
   clearAppServerConfigs();
   await bridge?.shutdown();
   bridge = undefined;
+  receivedNotification.mockClear();
 });
 const headers = {
   authorization: 'Bearer invalid-test-only-remote-token',
@@ -114,6 +119,61 @@ describe('MCP Apps over the existing remote bridge', () => {
       expect(denied.status).toBe(401);
       await denied.text();
     }
+  });
+  it('requires a Session for standard and extension notifications, including mixed batches', async () => {
+    const f = await fixture();
+    const notifications = [
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 42 } },
+      { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 'test', progress: 1 } },
+      { jsonrpc: '2.0', method: 'example/side-effect', params: { value: 'test' } },
+    ];
+    for (const body of [...notifications, [list, notifications[2]]]) {
+      const denied = await f.request(f.base, body);
+      expect(denied.status).toBe(401);
+      await denied.text();
+    }
+    expect(receivedNotification).not.toHaveBeenCalled();
+  });
+  it('keeps the initialization notification available before Session binding', async () => {
+    const f = await fixture();
+    const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
+    const allowed = await f.request(f.base, initialized);
+    expect(allowed.status).toBe(202);
+    await allowed.text();
+    // A method name alone must not turn a request into a handshake exemption.
+    const denied = await f.request(f.base, { ...initialized, id: 4 });
+    expect(denied.status).toBe(401);
+    await denied.text();
+  });
+  it('forwards a notification with the verified Session context and rejects revoked routes', async () => {
+    const f = await fixture();
+    const notification = { jsonrpc: '2.0', method: 'example/side-effect', params: { value: 'test' } };
+    const allowed = await f.request(f.bound, notification);
+    expect(allowed.status).toBe(202);
+    await allowed.text();
+    await vi.waitFor(() => expect(receivedNotification).toHaveBeenCalledWith(notification, 'instance'));
+    receivedNotification.mockClear();
+    for (const url of [f.base + '?session=task', f.base + '?session=task&instance=stale']) {
+      const denied = await f.request(url, notification);
+      expect(denied.status).toBe(401);
+      await denied.text();
+    }
+    bridge!.unregisterSessionCtx('task');
+    const revoked = await f.request(f.bound, notification);
+    expect(revoked.status).toBe(401);
+    await revoked.text();
+    expect(receivedNotification).not.toHaveBeenCalled();
+  });
+  it('enforces the frozen custom-server mount for notifications as well', async () => {
+    const f = await fixture({
+      [CODEX_ALLOWED_BUILTIN_PLUGIN_IDS_KEY]: [],
+      cindyRuntimeMcpServerNames: [],
+    });
+    const notification = { jsonrpc: '2.0', method: 'example/side-effect' };
+    const denied = await f.request(f.bound, notification);
+    expect(denied.status).toBe(401);
+    await denied.text();
+    expect(receivedNotification).not.toHaveBeenCalled();
   });
   it('never exposes unrelated local servers or a custom server absent from this bridge', async () => {
     const f = await fixture();

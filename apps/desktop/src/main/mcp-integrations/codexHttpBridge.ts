@@ -685,7 +685,13 @@ async function dispatchToTransport(opts: DispatchOpts): Promise<void> {
     // The remote token must never open the ordinary local helper surface.
     if (remoteAppServer && parsedBody && typeof parsedBody === 'object') {
       const requests = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
-      const needsSession = requests.some(item => item && typeof item === 'object' && 'id' in item && !['ping', 'tools/list'].includes(String(item.method)));
+      const needsSession = requests.some((item) => {
+        if (!item || typeof item !== 'object') return true;
+        if ('id' in item) return !['ping', 'tools/list'].includes(String(item.method));
+        // Only the transport handshake may precede Session binding. Standard
+        // and extension notifications can mutate the credentialed upstream too.
+        return item.method !== 'notifications/initialized';
+      });
       const mounted = activeContext?.vendorOptions?.cindyRuntimeMcpServerNames;
       const frozenBot = readAllowedBuiltinPluginIds(activeContext?.vendorOptions) !== null;
       if ((frozenBot && (!Array.isArray(mounted) || !mounted.includes(serverName))) ||
