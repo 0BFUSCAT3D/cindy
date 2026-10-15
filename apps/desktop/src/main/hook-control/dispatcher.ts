@@ -79,6 +79,7 @@ import { HOOK_CHAT_WORKSPACE_ALIAS } from '../../shared/hookControlIpc.js';
 import { captureImContext, type ImContextSnapshot } from '../../shared/imMessageSource.js';
 import type { GroupHistoryAccessScope } from '../im/shared/groupHistoryAccess.js';
 import { hookReplyTarget } from '../im/shared/autoReviewReferences.js';
+import { QUOTA_FAILURE_NOTICE_PREFIX } from '../im/shared/turnRetryNotice.js';
 import { groupHistoryAccessForExternalKey } from './groupHistoryScope.js';
 import { isPathWithin } from './paths.js';
 import { createAckReactions, type AckReactionTask } from './ackReactions.js';
@@ -220,8 +221,10 @@ export interface HookRunRequest {
    */
   workspaceKind?: 'dialogue';
   /**
-   * 本次派发的目录别名(内置「对话」= chat)—— runner 据此查本地的目录模型
-   * 来源偏好(workspaceProviderSourceStore)。缺省 = 老 server 未带 workspace。
+   * 目录别名(内置「对话」= chat)—— runner 据此查本地的目录偏好与来源偏好
+   * (workspacePrefsStore / workspaceProviderSourceStore)。新建取本次派发的目录;
+   * 复用 / 接管取任务当前目录对应的别名(跟随默认按它读默认)。缺省 = 老 server
+   * 未带 workspace, 或目录已不在任何映射别名下。
    */
   workspaceAlias?: string;
   title: string | null;
@@ -487,6 +490,8 @@ export const HOOK_ROUTE_UNAVAILABLE_PREFIX = 'hook session route unavailable:';
 
 function hookFailureReasonForLog(errorMessage: string | null | undefined): string {
   const message = errorMessage ?? '';
+  // 额度说明里带供应商名与上游原文, 日志只记类别。
+  if (message.startsWith(QUOTA_FAILURE_NOTICE_PREFIX)) return 'provider-quota-exhausted';
   if (!message.startsWith(HOOK_ROUTE_UNAVAILABLE_PREFIX)) return 'unclassified';
   return message.replace(/\s+/g, ' ').slice(0, 300);
 }
@@ -2198,6 +2203,18 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
     const inDialogueRoot = (dir: string | null): boolean =>
       dir !== null && dialogue !== undefined && (dialogue.rootDirs?.() ?? [dialogue.rootDir()])
         .some((root) => isPathWithin(root, dir));
+    /**
+     * 复用 / 接管的任务所在目录的别名 —— runner 据此读这个目录的默认模型(跟随默认)。
+     * 按任务当前目录取最长匹配的映射别名(与失效接管找回逻辑工作区同一判据);
+     * 对话根下的是内置「对话」。
+     */
+    const workspaceAliasFor = (dir: string): { workspaceAlias?: string } => {
+      if (inDialogueRoot(dir)) return { workspaceAlias: HOOK_CHAT_WORKSPACE_ALIAS };
+      const alias = Object.entries(getConnection(connectionId)?.workspaces ?? config.workspaces)
+        .filter(([, root]) => isPathWithin(root, dir))
+        .sort(([, left], [, right]) => path.resolve(right).length - path.resolve(left).length)[0]?.[0];
+      return alias !== undefined ? { workspaceAlias: alias } : {};
+    };
     // 显式接管的目标失效时会从旧目录 / 本次别名提示里挑一个安全落点, 然后
     // 复用下方的新建路径。普通派发仍原样使用 payload.workspace。
     let effectiveWorkspace = payload.workspace;
@@ -2269,6 +2286,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             isNew: false,
             laneKind,
             workingDir: info.workingDir as string,
+            ...workspaceAliasFor(info.workingDir as string),
             agentKind,
             model,
             effort,
@@ -2448,6 +2466,7 @@ export function createHookDispatcher(deps: HookDispatcherDeps): HookDispatcher {
             isNew: false,
             laneKind,
             workingDir,
+            ...workspaceAliasFor(workingDir),
             agentKind,
             model,
             effort,

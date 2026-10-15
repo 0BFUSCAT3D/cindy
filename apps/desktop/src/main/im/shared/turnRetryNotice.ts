@@ -28,6 +28,7 @@
  * (见 docs/dev-rules/engineering-conventions.md §5)。
  */
 
+import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import {
   isAutoReviewConfirmUndeliveredNotice,
   isAutoReviewUnavailableNotice,
@@ -36,6 +37,8 @@ import {
   parseTerminalRateLimitRetryProgress,
   parseToolLoopErrorDetails,
 } from '@cindy/maker-core';
+
+import { isQuotaExhaustedErrorMessage } from '../../../shared/providerErrors.js';
 
 /**
  * Auto 档「自动审批不可用」-> 渠道说明。
@@ -162,6 +165,94 @@ function toolLoopFailureNotice(data: unknown): string | null {
 }
 
 /**
+ * 额度类失败说明的固定开头。hook 主日志只记失败类别(原文可能带用户内容),
+ * dispatcher 据此把这类失败记成 provider-quota-exhausted, 而不是 unclassified。
+ */
+export const QUOTA_FAILURE_NOTICE_PREFIX = '⚠️ 供应商额度不足';
+
+const SPEND_CAP_RE = /\bspend(?:ing)?[-_ ]?cap\b/i;
+const USAGE_LIMIT_RE = /\busage\s+limit\b/i;
+
+function terminalErrorRecord(data: unknown): {
+  message: string;
+  errorStatus?: number;
+  codexErrorInfo?: string;
+  sdkError?: string;
+  reason?: string;
+} {
+  const record =
+    data && typeof data === 'object'
+      ? (data as {
+          message?: unknown;
+          errorStatus?: unknown;
+          codexErrorInfo?: unknown;
+          sdkError?: unknown;
+          reason?: unknown;
+        })
+      : null;
+  // 判**值**而不是判 key 是否存在: 上游 payload 带一个 message: undefined 时, 'in' 判定
+  // 会成立并 String(undefined) 出字面量 "undefined" 给用户看, 同时让过载文案映射取决于这个
+  // 意外字符串而不是真实内容(copilot 低置信提示)。null / undefined 一律退回 String(data)。
+  const message =
+    record?.message !== undefined && record.message !== null
+      ? String(record.message)
+      : String(data);
+  return {
+    message,
+    ...(typeof record?.errorStatus === 'number' ? { errorStatus: record.errorStatus } : {}),
+    ...(typeof record?.codexErrorInfo === 'string' ? { codexErrorInfo: record.codexErrorInfo } : {}),
+    ...(typeof record?.sdkError === 'string' ? { sdkError: record.sdkError } : {}),
+    ...(typeof record?.reason === 'string' ? { reason: record.reason } : {}),
+  };
+}
+
+/**
+ * 终态错误是不是「供应商账号的额度 / 花费上限 / 余额用完了」。
+ *
+ * 文案判据复用 shared 的 `isQuotaExhaustedErrorMessage`(桌面错误横幅同一份, 底层是 Codex
+ * 终态重投、伙伴候选恢复共用的 maker-shared 判定), 只额外认上游给出的结构化信号, 不在
+ * 这里另写一套措辞表。普通 429 限流不算 —— 那类错误等一会儿就好, 换供应商不是正确出口。
+ */
+export function isQuotaExhaustionFailure(data: unknown): boolean {
+  if (data === null || data === undefined) return false;
+  const e = terminalErrorRecord(data);
+  if (e.reason === 'provider_quota_limit') return true;
+  if (e.sdkError === 'billing_error') return true;
+  if (e.codexErrorInfo === 'usageLimitExceeded') return true;
+  if (e.errorStatus === 402) return true;
+  return isQuotaExhaustedErrorMessage(e.message);
+}
+
+/**
+ * 额度类终态错误 -> 渠道可读的失败说明; 不是这类错误返回 null。
+ *
+ * 说清三件事: 哪个供应商、什么原因、怎么处理。**不自动更换模型或供应商**(与 openSession
+ * 模型准入「不会自动更换模型或供应商」同一口径): 换哪个供应商、花不花钱由用户决定。
+ * 上游原文(脱敏、截断)附在最后, 用户转给工作区管理员或排查时用得上。
+ */
+export function quotaFailureNotice(
+  data: unknown,
+  options?: { providerLabel?: string | null },
+): string | null {
+  if (!isQuotaExhaustionFailure(data)) return null;
+  const { message, codexErrorInfo } = terminalErrorRecord(data);
+  const reason = SPEND_CAP_RE.test(message)
+    ? '已达到工作区所有者设置的花费上限'
+    : codexErrorInfo === 'usageLimitExceeded' || USAGE_LIMIT_RE.test(message)
+      ? '账号用量已达上限'
+      : '账号余额或配额不足';
+  const label = options?.providerLabel?.trim();
+  const who = label ? `「${label}」` : '当前供应商';
+  const upstream = redactSensitiveText(message.replace(/\s+/g, ' ').trim()).slice(0, 300);
+  return [
+    `${QUOTA_FAILURE_NOTICE_PREFIX}：${who}${reason}，这个任务暂时无法继续。`,
+    'Cindy 不会自动更换模型或供应商。可以发 /model 给这个任务换一个供应商或模型，' +
+      '或在 Cindy 的 设置 → IM 机器人 里修改这个渠道的默认模型；额度恢复后也可以直接重发这条消息。',
+    ...(upstream ? [`上游原文：${upstream}`] : []),
+  ].join('\n');
+}
+
+/**
  * 终态 error 事件的 data -> 渠道要展示的失败文案: 已知 reason 与过载类使用可操作说明,
  * 其它错误沿用上游原文。
  *
@@ -171,30 +262,21 @@ function toolLoopFailureNotice(data: unknown): string | null {
  * P1)。两边共用本函数, 顺带保证 errorStatus(Anthropic 529 只有状态码、message 里
  * 不一定带 529)不被丢掉。
  */
-export function terminalErrorText(data: unknown): string {
+export function terminalErrorText(
+  data: unknown,
+  options?: { providerLabel?: string | null },
+): string {
   if (data && typeof data === 'object' && 'reason' in data && data.reason === 'output-limit') {
     return '模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。';
   }
   if (data && typeof data === 'object' && 'reason' in data && data.reason === 'silent-stop-exhausted') {
     return '模型连续多次返回空响应，自动续跑已暂停。';
   }
-  const record =
-    data && typeof data === 'object'
-      ? (data as { message?: unknown; errorStatus?: unknown; codexErrorInfo?: unknown })
-      : null;
-  // 判**值**而不是判 key 是否存在: 上游 payload 带一个 message: undefined 时, 'in' 判定
-  // 会成立并 String(undefined) 出字面量 "undefined" 给用户看, 同时让过载文案映射取决于这个
-  // 意外字符串而不是真实内容(copilot 低置信提示)。null / undefined 一律退回 String(data)。
-  const message =
-    record?.message !== undefined && record.message !== null
-      ? String(record.message)
-      : String(data);
-  const errorStatus = typeof record?.errorStatus === 'number' ? record.errorStatus : undefined;
-  const codexErrorInfo =
-    typeof record?.codexErrorInfo === 'string' ? record.codexErrorInfo : undefined;
+  const { message, errorStatus, codexErrorInfo } = terminalErrorRecord(data);
   return (
     toolLoopFailureNotice(data) ??
     overloadFailureNotice(message, errorStatus, codexErrorInfo) ??
+    quotaFailureNotice(data, options) ??
     message
   );
 }

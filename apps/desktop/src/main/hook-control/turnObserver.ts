@@ -108,6 +108,8 @@ export interface HookTurnObserver {
   readonly finished: Promise<void>;
   /** Stable reason from the terminal error; available after teardown. */
   readonly errorReason: string | null;
+  /** 终态错误事件的原始 data(未映射); 调用方按需补上下文重新组织失败说明。 */
+  readonly errorData: unknown;
   /** 摘监听 + 停止发射。幂等; 收口后自动调用过。 */
   stop(): void;
   /** 真正的新交互请求边界；等待提示的后续文案更新不得重复调用。 */
@@ -156,6 +158,7 @@ export function observeHookTurn(
   });
 
   let errorReason: string | null = null;
+  let errorData: unknown = null;
   let turnOrigin: SendOrigin | undefined;
   let stopListening: (() => void) | undefined;
   const finished = new Promise<void>((resolve, reject) => {
@@ -309,6 +312,7 @@ export function observeHookTurn(
           reason?: unknown;
         } | null;
         errorReason = typeof data?.reason === 'string' ? data.reason : null;
+        errorData = data;
         // Seal the already received text before teardown; trailing done is no
         // longer observed once the terminal error rejects finished.
         if (errorReason === 'output-limit') presenter.seal();
@@ -332,6 +336,7 @@ export function observeHookTurn(
   return {
     finished,
     get errorReason() { return errorReason; },
+    get errorData() { return errorData; },
     stop(): void {
       stopListening?.();
       stopListening = undefined;

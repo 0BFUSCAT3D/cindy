@@ -1,8 +1,12 @@
 /**
- * 个人 IM 渠道任务跟随渠道默认 —— 读写 `sessions.im_default_route` 并驱动切换。
+ * IM 任务跟随渠道默认 —— 读写 `sessions.im_default_route` 并驱动切换。
  *
- * 时机: 渠道自有任务收到下一条消息、进入 send 锁之后(acquirePendingAgentSwitchForImSend
- * 的回调)。切换走与伙伴模型对齐同一套路由选择(跨引擎带交接, 会话忙时留意图);
+ * 个人 IM 渠道(createImChannelDefaultRouteSync, 默认 = 渠道设置)与官方 hook
+ * (hook-control/session-runner, 默认 = 工作目录偏好 > IM 默认)共用同一套判定、切换与
+ * 一次性提示, 只各自注入「哪些任务归我管、默认怎么读」(DefaultRouteFollowPolicy)。
+ *
+ * 时机: 任务收到下一条渠道消息、进入 send 锁之后(个人渠道经
+ * acquirePendingAgentSwitchForImSend 的回调, 官方 hook 经 withSendToSessionLock)。切换走与伙伴模型对齐同一套路由选择(跨引擎带交接, 会话忙时留意图);
  * 任何失败都只记日志、保持原路由, 绝不挡住用户这条消息。判定规则见
  * channelDefaultRoute.ts。
  */
@@ -29,6 +33,7 @@ import {
 } from '../defaultSessionSettings';
 import {
   buildImDefaultRouteRecord,
+  buildImManualRouteOverrideRecord,
   decideImDefaultRoute,
   imDefaultRouteMayNeedSync,
   parseImDefaultRouteRecord,
@@ -37,6 +42,7 @@ import {
   serializeImDefaultRouteRecord,
   type ImDefaultRoute,
   type ImDefaultRouteDecision,
+  type ImDefaultRouteNotice,
   type ImDefaultRouteRecord,
 } from './channelDefaultRoute';
 import { resetSessionToDefaults, toCoreAgentKind, type ImSessionRow } from './sessionRepo';
@@ -65,9 +71,44 @@ export interface ImChannelDefaultRouteSync {
    * 自己取放 send 锁, 从不抛错。
    */
   syncBeforeWiring(sessionId: string): Promise<void>;
+  /**
+   * 对齐时判定「不跟随」(单独改过路由)且默认刚改过、需要告诉用户的一次性提示;
+   * 取走即清。每一版默认最多提示一次(记录里的 noticeFp)。
+   */
+  takeNotice(sessionId: string): ImDefaultRouteNotice | null;
 }
 
-interface SessionRouteRow {
+/** 一类任务「跟随默认」的取值策略: 哪些任务归它管、默认设置的指纹与解析。 */
+export interface DefaultRouteFollowPolicy<C> {
+  /** 日志里的来源名。 */
+  label: string;
+  /** 这类任务自己的、可跟随的本机活跃任务。 */
+  ownsRow(row: SessionRouteRow): boolean;
+  /** 此刻默认设置的指纹(同步, 每条消息都会读; 不碰供应商目录)。 */
+  fingerprint(ctx: C): string;
+  /** 默认设置此刻落到的路由; 解析不出来时抛错(本条消息保持原路由)。 */
+  resolveTarget(
+    ctx: C,
+    providers: ProviderView[],
+  ): Promise<{ route: ImDefaultRoute; fingerprint: string }>;
+  isRouteUsable: RouteAuthCheck;
+  /**
+   * 没有跟随记录的任务(本功能之前建的)在消息到来时按值认领: 当前路由就是此刻的默认
+   * 才开始跟随; 否则证明不了是否单独改过, 按单独改过立碑并提示一次。
+   * 个人渠道不开 —— 它们由保存设置 / 启动时的回填按**旧**默认认领。
+   */
+  adoptUnrecorded?: boolean;
+}
+
+/** 与 ImChannelDefaultRouteSync 同语义, 每次调用带上解析默认所需的上下文。 */
+export interface DefaultRouteFollower<C> {
+  previewSwitchTarget(sessionId: string, ctx: C): Promise<ImDefaultRoute | null>;
+  syncUnderLock(sessionId: string, ctx: C): Promise<boolean>;
+  syncBeforeWiring(sessionId: string, ctx: C): Promise<void>;
+  takeNotice(sessionId: string): ImDefaultRouteNotice | null;
+}
+
+export interface SessionRouteRow {
   source: string | null;
   status: string;
   remoteHostId: string | null;
@@ -147,10 +188,15 @@ async function listProviders(): Promise<ProviderView[] | null> {
 
 interface Evaluation {
   decision: ImDefaultRouteDecision;
-  record: ImDefaultRouteRecord;
+  /** null = 没有跟随记录的历史任务(仅 adoptUnrecorded 的策略会走到这里)。 */
+  record: ImDefaultRouteRecord | null;
   current: ImDefaultRoute;
   target: ImDefaultRoute;
   targetFingerprint: string;
+  /** 本次读到的默认设置指纹 —— 提示去重(noticeFp)按它记。 */
+  settingsFp: string;
+  /** 会话上挂着待应用的切换意图(用户刚挑的选择即将落地时不提示)。 */
+  hasPendingIntent: boolean;
   providers: ProviderView[];
   /**
    * 任务当前的 Fast 开关。渠道默认不存 Fast, 跟随切换只管 Agent/模型/来源/档位,
@@ -159,55 +205,87 @@ interface Evaluation {
   currentFastMode: boolean;
 }
 
-export function createImChannelDefaultRouteSync(deps: {
-  source: ImDefaultSettingsChannel;
-  config: ImOrchestratorConfig;
-  isRouteUsable: RouteAuthCheck;
-}): ImChannelDefaultRouteSync {
-  const { source, config } = deps;
+type FollowingEvaluation = Evaluation & { record: ImDefaultRouteRecord };
 
-  async function evaluate(sessionId: string): Promise<Evaluation | 'defer-unknown' | null> {
+/** 墓碑还没有提示基线: 先记下此刻的设置指纹, 之后默认再改才提示。 */
+interface NoticeBaseline {
+  baseline: ImDefaultRouteRecord;
+  settingsFp: string;
+}
+
+function pendingIntentRoute(sessionId: string) {
+  const pending = readPendingAgentSwitchRoute(sessionId);
+  return {
+    pending,
+    intent: pending
+      ? {
+          agentKind: pending.agentKind,
+          model: pending.model,
+          providerId: pending.providerId,
+          effort: pending.effort ?? null,
+        }
+      : undefined,
+  };
+}
+
+export function createDefaultRouteFollower<C>(policy: DefaultRouteFollowPolicy<C>): DefaultRouteFollower<C> {
+  const { label } = policy;
+  const notices = new Map<string, ImDefaultRouteNotice>();
+
+  async function evaluate(
+    sessionId: string,
+    ctx: C,
+  ): Promise<Evaluation | NoticeBaseline | 'defer-unknown' | null> {
     const row = await readSessionRouteRow(sessionId);
-    if (!row || !isChannelOwnedRow(row, source)) return null;
+    if (!row || !policy.ownsRow(row)) return null;
     const record = parseImDefaultRouteRecord(row.imDefaultRoute);
-    // 用户单独改过路由(墓碑): 永不跟随, 不必解析新默认。
-    if (record?.manual) return null;
-    if (!imDefaultRouteMayNeedSync(record, readImDefaultSettingsFingerprint(source))) return null;
+    const settingsFp = policy.fingerprint(ctx);
+    const { pending, intent } = pendingIntentRoute(sessionId);
+    if (record?.manual) {
+      // 用户单独改过路由(墓碑): 永不跟随。默认改过、且还没就这一版提示过时才解析
+      // 新默认 —— 只为告诉用户「仍在用自己的选择」。
+      if (record.noticeFp === settingsFp) return null;
+      if (record.noticeFp === undefined) return { baseline: record, settingsFp };
+    } else if (!record) {
+      // 待落地的用户选择优先: 等它落地(会立碑)再说。
+      if (!policy.adoptUnrecorded || intent) return null;
+    } else if (!imDefaultRouteMayNeedSync(record, settingsFp)) {
+      return null;
+    }
     const providers = await listProviders();
     // 目录拿不到就无法可靠比对来源, 本条消息先按原路由走 —— 但若记录仍认领着在世
     // 的系统意图, 调用方必须暂缓通用意图应用(PR #5155 review P2)。
     if (!providers) return 'defer-unknown';
-    const defaults = await resolveImSessionDefaults(config, providers, source);
-    const target: ImDefaultRoute = {
-      agentKind: defaults.agentKind,
-      model: defaults.model,
-      providerId: defaults.providerId,
-      effort: defaults.effort,
-    };
+    const resolved = await policy.resolveTarget(ctx, providers);
+    const target = resolved.route;
     const current = currentRouteOf(row);
-    const pending = readPendingAgentSwitchRoute(sessionId);
-    const decision = decideImDefaultRoute({
-      record,
-      current,
-      target,
-      targetFp: defaults.fingerprint,
-      pendingIntent: pending
-        ? {
-            agentKind: pending.agentKind,
-            model: pending.model,
-            providerId: pending.providerId,
-            effort: pending.effort ?? null,
-          }
-        : undefined,
-      pendingRev: pending?.rev,
-      normalizeProvider: providerNormalizer(providers),
-    });
+    const normalizeProvider = providerNormalizer(providers);
+    let decision: ImDefaultRouteDecision;
+    if (record?.manual) {
+      decision = { kind: 'manual' };
+    } else if (!record) {
+      decision = sameImDefaultRoute(current, target, normalizeProvider)
+        ? { kind: 'adopt' }
+        : { kind: 'manual' };
+    } else {
+      decision = decideImDefaultRoute({
+        record,
+        current,
+        target,
+        targetFp: resolved.fingerprint,
+        pendingIntent: intent,
+        pendingRev: pending?.rev,
+        normalizeProvider,
+      });
+    }
     return {
       decision,
       record,
       current,
       target,
-      targetFingerprint: defaults.fingerprint,
+      targetFingerprint: resolved.fingerprint,
+      settingsFp,
+      hasPendingIntent: intent !== undefined,
       providers,
       currentFastMode: row.fastMode === true,
     };
@@ -220,10 +298,10 @@ export function createImChannelDefaultRouteSync(deps: {
       .where(eq(sessions.id, sessionId));
   }
 
-  async function switchRoute(sessionId: string, e: Evaluation): Promise<boolean> {
-    if (!(await deps.isRouteUsable(e.target))) {
+  async function switchRoute(sessionId: string, e: FollowingEvaluation): Promise<boolean> {
+    if (!(await policy.isRouteUsable(e.target))) {
       log.warn(
-        `default route sync skipped: new ${source} default unusable ` +
+        `default route sync skipped: new ${label} default unusable ` +
           `session=...${sessionId.slice(-8)} target=${e.target.agentKind}/${e.target.model}`,
       );
       return false;
@@ -304,7 +382,7 @@ export function createImChannelDefaultRouteSync(deps: {
    * 忙时登记的跟随意图由这里自己应用, 不交给通用发送路径: 同引擎应用失败在那边会
    * 直接让用户这条消息失败。这里失败则撤回意图、保持原路由。
    */
-  async function applyStaged(sessionId: string, e: Evaluation): Promise<boolean> {
+  async function applyStaged(sessionId: string, e: FollowingEvaluation): Promise<boolean> {
     let outcome: 'applied' | 'staged';
     try {
       outcome = await applySessionRouteUnderSendLock(sessionId, null, e.current.agentKind);
@@ -337,12 +415,61 @@ export function createImChannelDefaultRouteSync(deps: {
     );
   }
 
-  async function previewSwitchTarget(sessionId: string): Promise<ImDefaultRoute | null> {
+  /**
+   * 不跟随(用户单独改过, 或证明不了出身的历史路由): 路由一律不动。默认改过、任务又
+   * 不在新默认上时登记一次提示 —— 先把「已就这一版提示过」写进记录再登记, 写失败
+   * 就不提示, 保证每一版默认最多提示一次。
+   */
+  async function settleNotFollowing(sessionId: string, e: Evaluation): Promise<void> {
+    const normalize = providerNormalizer(e.providers);
+    const notify =
+      !e.hasPendingIntent &&
+      e.record?.noticeFp !== e.settingsFp &&
+      !sameImDefaultRoute(e.current, e.target, normalize);
+    let next: string | null = null;
+    if (!e.record) {
+      // 无记录的历史任务不在默认上: 证明不了是否单独改过, 按单独改过立碑, 不再反复判定。
+      next = buildImManualRouteOverrideRecord(e.current, e.settingsFp);
+    } else {
+      const clearStale = e.decision.kind === 'manual' && e.decision.clearStalePending === true;
+      if (clearStale || notify) {
+        // 用户的选择顶掉了本功能登记的待生效意图: 清掉过时声称, 但绝不动用户的意图。
+        const base: ImDefaultRouteRecord = clearStale
+          ? {
+              v: 1,
+              fp: e.record.fp,
+              route: e.record.route,
+              ...(e.record.manual ? { manual: true } : {}),
+              ...(e.record.noticeFp !== undefined ? { noticeFp: e.record.noticeFp } : {}),
+            }
+          : e.record;
+        next = serializeImDefaultRouteRecord(notify ? { ...base, noticeFp: e.settingsFp } : base);
+      }
+    }
+    if (next !== null) await writeRecord(sessionId, next);
+    if (!notify) return;
+    const labelOf = (route: ImDefaultRoute): string | null => {
+      const id = normalize(route);
+      return e.providers.find((provider) => provider.id === id)?.name ?? null;
+    };
+    notices.set(sessionId, {
+      current: e.current,
+      currentProviderLabel: labelOf(e.current),
+      target: e.target,
+      targetProviderLabel: labelOf(e.target),
+    });
+    log.info(
+      `default route not followed (task keeps its own route) session=...${sessionId.slice(-8)} ` +
+        `current=${e.current.agentKind}/${e.current.model} default=${e.target.agentKind}/${e.target.model}`,
+    );
+  }
+
+  async function previewSwitchTarget(sessionId: string, ctx: C): Promise<ImDefaultRoute | null> {
     try {
-      const e = await evaluate(sessionId);
-      if (!e || e === 'defer-unknown') return null;
+      const e = await evaluate(sessionId, ctx);
+      if (!e || e === 'defer-unknown' || 'baseline' in e) return null;
       if (e.decision.kind !== 'switch' && e.decision.kind !== 'staged') return null;
-      return (await deps.isRouteUsable(e.target)) ? e.target : null;
+      return (await policy.isRouteUsable(e.target)) ? e.target : null;
     } catch (err) {
       log.warn(`default route preview failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       return null;
@@ -357,20 +484,9 @@ export function createImChannelDefaultRouteSync(deps: {
   async function followClaimStillPending(sessionId: string): Promise<boolean> {
     try {
       const row = await readSessionRouteRow(sessionId);
-      if (!row || !isChannelOwnedRow(row, source)) return false;
-      const pending = readPendingAgentSwitchRoute(sessionId);
-      return recordClaimsPendingIntent(
-        parseImDefaultRouteRecord(row.imDefaultRoute),
-        pending
-          ? {
-              agentKind: pending.agentKind,
-              model: pending.model,
-              providerId: pending.providerId,
-              effort: pending.effort ?? null,
-            }
-          : undefined,
-        pending?.rev,
-      );
+      if (!row || !policy.ownsRow(row)) return false;
+      const { pending, intent } = pendingIntentRoute(sessionId);
+      return recordClaimsPendingIntent(parseImDefaultRouteRecord(row.imDefaultRoute), intent, pending?.rev);
     } catch (err) {
       log.warn(
         `default route pending-claim check failed (non-fatal) session=...${sessionId.slice(-8)}: ` +
@@ -380,25 +496,30 @@ export function createImChannelDefaultRouteSync(deps: {
     }
   }
 
-  async function syncUnderLock(sessionId: string): Promise<boolean> {
+  async function syncUnderLock(sessionId: string, ctx: C): Promise<boolean> {
     try {
-      const e = await evaluate(sessionId);
+      const e = await evaluate(sessionId, ctx);
       if (e === 'defer-unknown') return await followClaimStillPending(sessionId);
       if (!e) return false;
+      if ('baseline' in e) {
+        await writeRecord(sessionId, serializeImDefaultRouteRecord({ ...e.baseline, noticeFp: e.settingsFp }));
+        return false;
+      }
+      const following = e.record ? (e as FollowingEvaluation) : null;
       switch (e.decision.kind) {
         case 'adopt':
           if (e.decision.cancelPendingIntent) cancelPendingAgentSwitchForSession(sessionId);
           await writeRecord(sessionId, buildImDefaultRouteRecord(e.targetFingerprint, e.current));
+          if (!e.record) {
+            log.info(`default route adopted for unrecorded task session=...${sessionId.slice(-8)}`);
+          }
           return false;
         case 'switch':
-          return await switchRoute(sessionId, e);
+          return following ? await switchRoute(sessionId, following) : false;
         case 'staged':
-          return await applyStaged(sessionId, e);
+          return following ? await applyStaged(sessionId, following) : false;
         case 'manual':
-          // 用户的选择顶掉了本功能登记的待生效意图: 清掉过时声称, 但绝不动用户的意图。
-          if (e.decision.clearStalePending) {
-            await writeRecord(sessionId, buildImDefaultRouteRecord(e.record.fp, e.record.route));
-          }
+          await settleNotFollowing(sessionId, e);
           return false;
       }
     } catch (err) {
@@ -410,9 +531,9 @@ export function createImChannelDefaultRouteSync(deps: {
     }
   }
 
-  async function syncBeforeWiring(sessionId: string): Promise<void> {
+  async function syncBeforeWiring(sessionId: string, ctx: C): Promise<void> {
     try {
-      const release = await acquirePendingAgentSwitchForImSend(sessionId, () => syncUnderLock(sessionId));
+      const release = await acquirePendingAgentSwitchForImSend(sessionId, () => syncUnderLock(sessionId, ctx));
       release();
     } catch (err) {
       log.warn(
@@ -422,7 +543,45 @@ export function createImChannelDefaultRouteSync(deps: {
     }
   }
 
-  return { previewSwitchTarget, syncUnderLock, syncBeforeWiring };
+  function takeNotice(sessionId: string): ImDefaultRouteNotice | null {
+    const notice = notices.get(sessionId) ?? null;
+    notices.delete(sessionId);
+    return notice;
+  }
+
+  return { previewSwitchTarget, syncUnderLock, syncBeforeWiring, takeNotice };
+}
+
+export function createImChannelDefaultRouteSync(deps: {
+  source: ImDefaultSettingsChannel;
+  config: ImOrchestratorConfig;
+  isRouteUsable: RouteAuthCheck;
+}): ImChannelDefaultRouteSync {
+  const { source, config } = deps;
+  const follower = createDefaultRouteFollower<void>({
+    label: source,
+    ownsRow: (row) => isChannelOwnedRow(row, source),
+    fingerprint: () => readImDefaultSettingsFingerprint(source),
+    resolveTarget: async (_ctx, providers) => {
+      const defaults = await resolveImSessionDefaults(config, providers, source);
+      return {
+        route: {
+          agentKind: defaults.agentKind,
+          model: defaults.model,
+          providerId: defaults.providerId,
+          effort: defaults.effort,
+        },
+        fingerprint: defaults.fingerprint,
+      };
+    },
+    isRouteUsable: deps.isRouteUsable,
+  });
+  return {
+    previewSwitchTarget: (sessionId) => follower.previewSwitchTarget(sessionId, undefined),
+    syncUnderLock: (sessionId) => follower.syncUnderLock(sessionId, undefined),
+    syncBeforeWiring: (sessionId) => follower.syncBeforeWiring(sessionId, undefined),
+    takeNotice: (sessionId) => follower.takeNotice(sessionId),
+  };
 }
 
 /**

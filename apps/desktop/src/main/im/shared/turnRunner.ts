@@ -166,7 +166,8 @@ import {
   tokenRateFromStatus,
   type TurnActivityState,
 } from './turnActivity';
-import { terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { isQuotaExhaustionFailure, terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { resolveSessionProviderLabel } from './sessionProviderLabel';
 import { createTurnPresenter, DEFAULT_PRESENTER_POLICY, type TurnPresenter } from './turnPresenter';
 import {
   toCoreAgentKind,
@@ -178,7 +179,7 @@ import {
 } from './sessionRepo';
 import type { ImCardBuilders } from './cardBuilders';
 import type { ImChannelAdapter } from './types';
-import { sameImDefaultRoute, type ImDefaultRoute } from './channelDefaultRoute';
+import { formatImDefaultRouteNotice, sameImDefaultRoute, type ImDefaultRoute } from './channelDefaultRoute';
 import type { ImChannelDefaultRouteSync } from './channelDefaultRouteSync';
 import {
   changeSessionPermissionMode,
@@ -656,8 +657,12 @@ export interface ImTurnRunnerDeps {
     sessionId: string,
     opts?: { channelOwned?: boolean },
   ) => Promise<() => void>;
-  /** 渠道默认跟随: 发送前授权检查按真实会跑的路由判断; 未接线的任务接线前先对齐。 */
-  channelDefaultRoute?: Pick<ImChannelDefaultRouteSync, 'previewSwitchTarget' | 'syncBeforeWiring'>;
+  /**
+   * 渠道默认跟随: 发送前授权检查按真实会跑的路由判断; 未接线的任务接线前先对齐;
+   * 单独改过路由、不跟随新默认的任务在发送前提示一次。
+   */
+  channelDefaultRoute?: Pick<ImChannelDefaultRouteSync, 'previewSwitchTarget' | 'syncBeforeWiring'> &
+    Partial<Pick<ImChannelDefaultRouteSync, 'takeNotice'>>;
 }
 
 export function createTurnRunner(
@@ -1298,6 +1303,22 @@ export function createTurnRunner(
         await refreshSessionAfterPendingAgentSwitch(state, rowId, userId);
       } else {
         await refreshSessionAfterPendingAgentSwitch(state, rowId, userId);
+      }
+      // 渠道默认改过, 这个任务却因单独改过路由没有跟随: 回答之前先告诉用户一次,
+      // 免得改了设置却不知道为什么没生效。发送失败不影响这条消息。
+      const routeNotice = deps.channelDefaultRoute?.takeNotice?.(rowId);
+      if (routeNotice) {
+        void im
+          .sendText(userId, formatImDefaultRouteNotice(routeNotice, 'personal'), {
+            threadTs: item.turn.scopeKey,
+          })
+          .catch((err: unknown) => {
+            log.warn(
+              `[${channel}/turn] default-route notice send failed (non-fatal): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
       }
       // 发送时刻的实际路由兜底: 授权检查只验过「将要切到」的新默认路由, 跟随切换
       // 失败被吞后这条消息会按旧路由发送 —— 按实际路由补一次授权检查, 旧供应商断开
@@ -3543,7 +3564,7 @@ export function createTurnRunner(
     // 或内部英文 SDK 串——从本地化文案回归英文实现细节(review #844 codex P1)。
     // hook runner 与调度转播共用同一个 helper，三条渠道链路口径一致；上游原文留在
     // 本地日志。
-    const msg = terminalErrorText(errData);
+    let msg = terminalErrorText(errData);
     if (turn) clearSilentStopSettleWait(turn);
     if (turn) clearActivityTicker(turn);
     if (turn) {
@@ -3568,6 +3589,12 @@ export function createTurnRunner(
       } catch {
         // 建卡失败 → 下面按"没有输出面"处理(另发一条消息)。
       }
+    }
+    // 额度类失败要说清是哪个供应商: 名字只在这里按需读一次(尽力而为, 读不到退回「当前供应商」)。
+    if (isQuotaExhaustionFailure(errData)) {
+      msg = terminalErrorText(errData, {
+        providerLabel: await resolveSessionProviderLabel(state.makerSession.id),
+      });
     }
     if (turn?.streamingHandle) {
       const view = composeStreamingView(turn);

@@ -41,6 +41,11 @@ export interface ImDefaultRouteRecord {
    * (greptile P1 补充, PR #5155)。
    */
   manual?: true;
+  /**
+   * 不跟随的任务已就哪一版默认设置(指纹)提示过「仍在用自己的路由」。默认每改一次
+   * 最多提示一次; 缺省 = 还没有基线(墓碑刚立下时不知道当时的设置指纹)。
+   */
+  noticeFp?: string;
 }
 
 const AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
@@ -93,11 +98,13 @@ export function parseImDefaultRouteRecord(json: string | null | undefined): ImDe
   if (pendingRoute === null) return null;
   const pendingFp = typeof r.pendingFp === 'string' ? r.pendingFp : undefined;
   const pendingRev = typeof r.pendingRev === 'number' && Number.isFinite(r.pendingRev) ? r.pendingRev : undefined;
+  const noticeFp = typeof r.noticeFp === 'string' ? r.noticeFp : undefined;
   return {
     v: 1,
     fp: r.fp,
     route,
     ...(manual ? { manual: true } : {}),
+    ...(noticeFp !== undefined ? { noticeFp } : {}),
     ...(pendingRoute ? { pendingRoute } : {}),
     ...(pendingRoute && pendingFp ? { pendingFp } : {}),
     ...(pendingRoute && pendingRev !== undefined ? { pendingRev } : {}),
@@ -131,8 +138,53 @@ export function buildImDefaultRouteRecord(
  * 用户单独改过路由的永久标记(脱离跟随)。同值重选在路由值上无痕 —— 记录一旦写成
  * 这份墓碑就不再跟随渠道默认, `/new` 重置会用普通记录覆盖它、重新跟随。
  */
-export function buildImManualRouteOverrideRecord(route: ImDefaultRoute): string {
-  return serializeImDefaultRouteRecord({ v: 1, fp: '', route, manual: true });
+export function buildImManualRouteOverrideRecord(route: ImDefaultRoute, noticeFp?: string): string {
+  return serializeImDefaultRouteRecord({
+    v: 1,
+    fp: '',
+    route,
+    manual: true,
+    ...(noticeFp !== undefined ? { noticeFp } : {}),
+  });
+}
+
+/** 不跟随默认的一次性提示: 任务仍在用的路由与它没有跟随的那个默认。 */
+export interface ImDefaultRouteNotice {
+  current: ImDefaultRoute;
+  currentProviderLabel: string | null;
+  target: ImDefaultRoute;
+  targetProviderLabel: string | null;
+}
+
+const AGENT_LABELS: Record<AgentKind, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  pi: 'Pi',
+};
+
+function describeRoute(route: ImDefaultRoute, providerLabel: string | null): string {
+  const agent = AGENT_LABELS[route.agentKind] ?? route.agentKind;
+  return `${agent} · ${route.model}${providerLabel ? `（${providerLabel}）` : ''}`;
+}
+
+/**
+ * 渠道里的一次性提示文案(硬编码中文, 与其它渠道说明同规)。
+ *
+ * - `personal`: 个人 bot / 个人 IM 渠道 —— `/model` 改的就是这个任务的路由。
+ * - `official`: 官方 bot —— 那边的 `/model` 改的是工作目录的默认模型, 改不动一个
+ *   单独改过路由的任务, 所以出口是 `/new` 或在 Cindy 里给任务换模型。
+ */
+export function formatImDefaultRouteNotice(
+  notice: ImDefaultRouteNotice,
+  surface: 'personal' | 'official',
+): string {
+  const current = describeRoute(notice.current, notice.currentProviderLabel);
+  const target = describeRoute(notice.target, notice.targetProviderLabel);
+  const next =
+    surface === 'personal'
+      ? '发 /model 可以给这个任务切换模型，或发 /new 开一个使用新默认的任务。'
+      : '发 /new 可以开一个使用新默认的任务，或在 Cindy 里给这个任务换模型。';
+  return `ℹ️ 这个任务仍在使用 ${current}，没有跟随渠道默认（现在是 ${target}）：单独改过模型的任务会保持自己的选择。${next}`;
 }
 
 /**

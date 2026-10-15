@@ -7,8 +7,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isQuotaExhaustionFailure,
   overloadFailureNotice,
   overloadRetryNotice,
+  QUOTA_FAILURE_NOTICE_PREFIX,
   terminalErrorText,
   turnRetryNotice,
 } from '../turnRetryNotice';
@@ -288,5 +290,48 @@ describe('terminalErrorText', () => {
     // 值存在就照常取值(含非字符串)。
     expect(terminalErrorText({ message: 0 })).toBe('0');
     expect(terminalErrorText({ message: 'boom' })).toBe('boom');
+  });
+});
+
+describe('额度类终态错误', () => {
+  const SPEND_CAP =
+    'You hit your spend cap set by the owner of your workspace. Ask them to raise it to keep using Codex.';
+
+  it('花费上限: 说清哪个供应商、什么原因、怎么处理, 并附上游原文', () => {
+    const text = terminalErrorText({ message: SPEND_CAP }, { providerLabel: 'OpenAI' });
+    expect(text.startsWith(QUOTA_FAILURE_NOTICE_PREFIX)).toBe(true);
+    expect(text).toContain('「OpenAI」已达到工作区所有者设置的花费上限');
+    expect(text).toContain('Cindy 不会自动更换模型或供应商');
+    expect(text).toContain('/model');
+    expect(text).toContain('设置 → IM 机器人');
+    expect(text).toContain(`上游原文：${SPEND_CAP}`);
+  });
+
+  it('拿不到供应商名时退回「当前供应商」', () => {
+    expect(terminalErrorText({ message: SPEND_CAP })).toContain('当前供应商已达到工作区所有者设置的花费上限');
+  });
+
+  it('认上游的结构化信号: 402 / billing_error / provider_quota_limit / usageLimitExceeded', () => {
+    expect(isQuotaExhaustionFailure({ message: 'Payment Required', errorStatus: 402 })).toBe(true);
+    expect(isQuotaExhaustionFailure({ message: 'billing', sdkError: 'billing_error' })).toBe(true);
+    expect(isQuotaExhaustionFailure({ message: 'x', reason: 'provider_quota_limit' })).toBe(true);
+    expect(terminalErrorText({ message: 'limit', codexErrorInfo: 'usageLimitExceeded' })).toContain(
+      '账号用量已达上限',
+    );
+    expect(terminalErrorText({ message: 'insufficient_quota' })).toContain('账号余额或配额不足');
+  });
+
+  it('普通限流 / 其它错误不算额度耗尽, 沿用原有映射', () => {
+    expect(isQuotaExhaustionFailure({ message: 'rate limit exceeded', errorStatus: 429 })).toBe(false);
+    expect(isQuotaExhaustionFailure({ message: 'process exited with code 1' })).toBe(false);
+    expect(isQuotaExhaustionFailure(null)).toBe(false);
+    expect(terminalErrorText({ message: 'process exited with code 1' }, { providerLabel: 'OpenAI' })).toBe(
+      'process exited with code 1',
+    );
+  });
+
+  it('上游原文脱敏后再附上', () => {
+    const text = terminalErrorText({ message: 'insufficient_quota for key sk-abcdefghijklmnop' });
+    expect(text).not.toContain('sk-abcdefghijklmnop');
   });
 });

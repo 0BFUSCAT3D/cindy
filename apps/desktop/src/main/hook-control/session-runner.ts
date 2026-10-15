@@ -121,6 +121,19 @@ import {
 } from '../im/shared/openChannelSession.js';
 import { describeInteractionSource } from '../im/shared/interactionSource';
 import { hookAutoReviewReferences } from '../im/shared/autoReviewReferences.js';
+import { isQuotaExhaustionFailure, terminalErrorText } from '../im/shared/turnRetryNotice.js';
+import { resolveSessionProviderLabel } from '../im/shared/sessionProviderLabel.js';
+import {
+  fingerprintImDefaultSettings,
+  formatImDefaultRouteNotice,
+} from '../im/shared/channelDefaultRoute.js';
+import { createDefaultRouteFollower } from '../im/shared/channelDefaultRouteSync.js';
+import { withSendToSessionLock } from '../maker-ipc/sendToSessionLock.js';
+import {
+  appendDefaultRouteNotice,
+  isHookDefaultRouteRow,
+  writeHookDefaultRouteRecord,
+} from './defaultRouteFollow.js';
 import { groupLaneOf } from './groupWindow';
 
 import {
@@ -164,33 +177,24 @@ function mainOwnedChannelOrigin(value: string | undefined): TurnPermissionOrigin
 /** 路由不可用时附在错误后的恢复指引(渠道回帖与 request ledger 都看得到)。 */
 const ROUTE_RESELECT_HINT = '。请在 设置 → IM 机器人 中为这个渠道的工作目录重新选择模型。';
 
-/**
- * 新会话 agent/model/effort/permissionMode/providerId 合成: IM provider 按目录偏好
- * (dispatch options)优先, 缺省落桌面端 IM 新会话默认值(草稿, 建 session 那
- * 一刻实时读; 权限无草稿概念, 缺省 bypassPermissions; 来源无 override 通道,
- * 草稿默认仅作优先值, 最终收敛到已连接来源)—— 与桌面端/IM 新开会话同一
- * 数据源, 取代旧版的硬编码兜底模型。
- */
-async function resolveNewSessionConfig(
-  overrides: {
-    agentKind: string | null;
-    model: string | null;
-    effort: string | null;
-    permissionMode: string | null;
-  },
-  log: { warn(msg: string): void },
-  sourceIm?: string | null,
-  workspaceCtx?: { alias: string | undefined; teamId: string | null },
-): Promise<ResolvedHookSessionConfig> {
-  let providers: ProviderView[] | null = null;
-  try {
-    providers = await getDesktopProviderService().listProviders({ allowSideEffects: true });
-  } catch (err) {
-    log.warn(
-      `hook provider catalog unavailable; falling back to maker capabilities: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+type HookDispatchOverrides = {
+  agentKind: string | null;
+  model: string | null;
+  effort: string | null;
+  permissionMode: string | null;
+};
+type HookWorkspaceCtx = { alias: string | undefined; teamId: string | null };
 
+/**
+ * 新任务路由取值链的全部输入(同步读本机文件, 不碰供应商目录): 目录偏好合并后的
+ * 显式值、目录来源偏好、IM 默认设置。resolveNewSessionConfig 与「跟随默认」的指纹
+ * 共用这一份, 免得两边对「默认由什么决定」各说各话。
+ */
+function hookDefaultInputs(
+  overrides: HookDispatchOverrides,
+  sourceIm: string | null | undefined,
+  workspaceCtx: HookWorkspaceCtx | undefined,
+) {
   const prefsChannel: HookPrefsChannel | null =
     sourceIm === 'telegram' || sourceIm === 'x' || sourceIm === 'slack' ? sourceIm : null;
   const workspaceAlias = workspaceCtx?.alias;
@@ -203,14 +207,73 @@ async function resolveNewSessionConfig(
     overrides,
     prefsChannel !== null && workspaceAlias !== undefined && isWorkspacePrefsMigrated(prefsChannel),
   );
+  // 目录级来源偏好(纯本地, 用户在工作目录映射行显式选的来源)优先于草稿默认来源。
+  const workdirProviderId =
+    prefsChannel !== null && workspaceAlias
+      ? getWorkspaceProviderSource(prefsChannel, workspaceCtx.teamId, workspaceAlias)
+      : null;
+  // 官方 Telegram hook 与个人 Bot 是两个独立入口。个人 Bot 使用
+  // channel='telegram'；官方群继续读取 global，避免任一设置卡静默
+  // 改写另一入口的新会话路由。
+  const imDefaults = readImDefaultSettings(sourceIm === 'slack' ? 'slack' : undefined);
+  return { channel: prefsChannel, mergedOverrides, workdirProviderId, imDefaults };
+}
+
+/**
+ * 官方 hook 任务的「默认设置指纹」: 取值链输入任一变化(目录偏好、目录来源、IM 默认)
+ * 才需要重新解析。权限档不在内 —— 它不跟随(与个人渠道同口径)。
+ */
+function hookDefaultsFingerprint(
+  overrides: HookDispatchOverrides,
+  sourceIm: string | null | undefined,
+  workspaceCtx: HookWorkspaceCtx | undefined,
+): string {
+  const { mergedOverrides, workdirProviderId, imDefaults } = hookDefaultInputs(
+    overrides,
+    sourceIm,
+    workspaceCtx,
+  );
+  return JSON.stringify([
+    'hook',
+    mergedOverrides.agentKind,
+    mergedOverrides.model,
+    mergedOverrides.effort,
+    workdirProviderId,
+    fingerprintImDefaultSettings(imDefaults),
+  ]);
+}
+
+/**
+ * 新会话 agent/model/effort/permissionMode/providerId 合成: IM provider 按目录偏好
+ * (dispatch options)优先, 缺省落桌面端 IM 新会话默认值(草稿, 建 session 那
+ * 一刻实时读; 权限无草稿概念, 缺省 bypassPermissions; 来源无 override 通道,
+ * 草稿默认仅作优先值, 最终收敛到已连接来源)—— 与桌面端/IM 新开会话同一
+ * 数据源, 取代旧版的硬编码兜底模型。
+ */
+async function resolveNewSessionConfig(
+  overrides: HookDispatchOverrides,
+  log: { warn(msg: string): void },
+  sourceIm?: string | null,
+  workspaceCtx?: HookWorkspaceCtx,
+): Promise<ResolvedHookSessionConfig> {
+  let providers: ProviderView[] | null = null;
+  try {
+    providers = await getDesktopProviderService().listProviders({ allowSideEffects: true });
+  } catch (err) {
+    log.warn(
+      `hook provider catalog unavailable; falling back to maker capabilities: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const { channel, mergedOverrides, workdirProviderId, imDefaults } = hookDefaultInputs(
+    overrides,
+    sourceIm,
+    workspaceCtx,
+  );
 
   const resolved = resolveHookSessionConfig(
     {
-      readDefaults: () =>
-        // 官方 Telegram hook 与个人 Bot 是两个独立入口。个人 Bot 使用
-        // channel='telegram'；官方群继续读取 global，避免任一设置卡静默
-        // 改写另一入口的新会话路由。
-        readImDefaultSettings(sourceIm === 'slack' ? 'slack' : undefined),
+      readDefaults: () => imDefaults,
       // 可执行清单按**启用**口径,不叠加「显示 / 隐藏」偏好:隐藏只是陈列过滤
       // (选择器不列),被 IM 显式点名或兜底选中仍然合法;停用的模型与供应商已由
       // visibleModelUnion 内建的准入过滤(model.disabled / suspended)剔除,点名
@@ -228,19 +291,6 @@ async function resolveNewSessionConfig(
     mergedOverrides,
   );
 
-  // 目录级来源偏好(纯本地, 用户在工作目录映射行显式选的来源)优先于草稿默认来源。
-  const channel =
-    sourceIm === 'telegram'
-      ? ('telegram' as const)
-      : sourceIm === 'x'
-        ? ('x' as const)
-        : sourceIm === 'slack'
-          ? ('slack' as const)
-          : null;
-  const workdirProviderId =
-    channel !== null && workspaceCtx?.alias
-      ? getWorkspaceProviderSource(channel, workspaceCtx.teamId, workspaceCtx.alias)
-      : null;
   // 目录来源是和目录模型一起选的(issue #5912)。目录模型为空、改为继承 IM 默认时,
   // 残留来源若账号仍可用、只是目录里根本没有这个继承来的模型,它已不再描述用户可见的
   // 选择 —— 设置页显示的就是继承模型 —— 按 IM 默认自己的来源路由。来源账号断开 /
@@ -299,6 +349,45 @@ async function resolveNewSessionConfig(
   }
   return { ...resolved, model: lenient.model, providerId: lenient.providerId };
 }
+
+interface HookFollowContext {
+  overrides: HookDispatchOverrides;
+  sourceIm: string | null | undefined;
+  workspaceCtx: HookWorkspaceCtx;
+  log: { warn(msg: string): void };
+}
+
+/**
+ * 官方 hook 任务跟随默认: 没单独改过路由的已有任务, 默认(目录偏好 / IM 默认)一改,
+ * 下一条消息就切到新默认; 单独改过的不动、提示一次。判定与切换与个人渠道同一套
+ * (createDefaultRouteFollower), hook 侧零件见 defaultRouteFollow.ts。
+ */
+const hookDefaultRouteFollower = createDefaultRouteFollower<HookFollowContext>({
+  label: 'hook',
+  ownsRow: isHookDefaultRouteRow,
+  fingerprint: (ctx) => hookDefaultsFingerprint(ctx.overrides, ctx.sourceIm, ctx.workspaceCtx),
+  resolveTarget: async (ctx) => {
+    const fingerprint = hookDefaultsFingerprint(ctx.overrides, ctx.sourceIm, ctx.workspaceCtx);
+    const resolved = await resolveNewSessionConfig(
+      ctx.overrides,
+      ctx.log,
+      ctx.sourceIm,
+      ctx.workspaceCtx,
+    );
+    return {
+      route: {
+        agentKind: resolved.agentKind,
+        model: resolved.model,
+        providerId: resolved.providerId,
+        effort: resolved.effort ?? null,
+      },
+      fingerprint,
+    };
+  },
+  // 解析走的就是新任务同一套可用性裁决(来源失效 / 模型停用会抛错), 解析得出即可用。
+  isRouteUsable: async () => true,
+  adoptUnrecorded: true,
+});
 
 /**
  * 广播「新会话已建」给所有窗口 + device-link tap —— renderer sessionsStore
@@ -568,6 +657,31 @@ export function createMakerHookSessionRunner(deps: {
           return false;
         }
       };
+      /**
+       * 记下新任务按哪一版默认建的(跟随默认的起点)。指纹取自建任务时同一份取值链输入;
+       * 失败只影响以后跟不跟随(下一条消息会按值认领), 不挡这一轮。
+       */
+      const recordNewTaskDefaultRoute = async (sessionId: string): Promise<void> => {
+        try {
+          await writeHookDefaultRouteRecord(
+            sessionId,
+            hookDefaultsFingerprint(
+              {
+                agentKind: req.agentKind,
+                model: req.model,
+                effort: req.effort,
+                permissionMode: req.permissionMode,
+              },
+              req.source?.im,
+              { alias: req.workspaceAlias, teamId: req.source?.teamId ?? null },
+            ),
+          );
+        } catch (err) {
+          log.warn(
+            `hook default route record failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      };
 
       // 新建: 按「偏好 > 草稿默认」合成; 复用/接管: session meta 权威, 下方覆盖
       const resolved = req.isNew
@@ -595,6 +709,35 @@ export function createMakerHookSessionRunner(deps: {
       // 复用/接管路径的持久化来源(sessions.provider_id, 用户在聊天里切过的
       // 来源以它为权威); 新建路径恒 null, 由下方草稿默认解析
       let rowProviderId: string | null = null;
+      /** 这个任务没有跟随新默认时附在回复末尾的一次性提示。 */
+      let routeNotice: string | null = null;
+      if (!req.isNew) {
+        // 跟随默认: 必须在读 meta 之前对齐 —— 切换(含跨引擎)落地后下面读到的就是新路由。
+        // 只在 send 锁里做跟随本身, 不顺带应用其它待切换意图(hook 发送路径一直不管那些)。
+        // 任何失败都只记日志、按原路由继续, 不挡这条消息。
+        const followCtx: HookFollowContext = {
+          overrides: {
+            agentKind: req.agentKind,
+            model: req.model,
+            effort: req.effort,
+            permissionMode: req.permissionMode,
+          },
+          sourceIm: req.source?.im,
+          workspaceCtx: { alias: req.workspaceAlias, teamId: req.source?.teamId ?? null },
+          log,
+        };
+        try {
+          await withSendToSessionLock(req.sessionId, () =>
+            hookDefaultRouteFollower.syncUnderLock(req.sessionId, followCtx),
+          );
+        } catch (err) {
+          log.warn(
+            `hook default route sync failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        const notice = hookDefaultRouteFollower.takeNotice(req.sessionId);
+        if (notice) routeNotice = formatImDefaultRouteNotice(notice, 'official');
+      }
       if (!req.isNew) {
         // 复用/接管: session 自己的 meta 是权威(workDir/model/agentKind/
         // permissionMode), sdkSessionId 用于冷 resume; effort 不覆盖、权限档
@@ -772,6 +915,8 @@ export function createMakerHookSessionRunner(deps: {
             assertAccount?.();
             await setSessionSourceInDb(req.sessionId, req.source.im);
           }
+          assertAccount?.();
+          await recordNewTaskDefaultRoute(req.sessionId);
           assertAccount?.();
           await touchUserSendInDb(req.sessionId).catch((err) => {
             log.warn(
@@ -995,6 +1140,7 @@ export function createMakerHookSessionRunner(deps: {
         if ((req.source?.im === 'telegram' || req.source?.im === 'x') && accountStillCurrent()) {
           await setSessionSourceInDb(session.id, req.source.im);
         }
+        if (accountStillCurrent()) await recordNewTaskDefaultRoute(session.id);
         if (accountStillCurrent()) broadcastSessionCreated(session.id);
       }
       // worktree 场景补写 sessions.worktree_path(同 send_to_session 做法):
@@ -1467,7 +1613,13 @@ export function createMakerHookSessionRunner(deps: {
             session.id, turnTextsFor(observer), extraImageAbsPaths, allowedFileRoots, log,
           )
           : { finalText: '' };
-        return { ...fail(err instanceof Error ? err.message : String(err)), ...collected };
+        // 额度类失败要说清是哪个供应商: 名字只在这里按需读一次(读不到退回「当前供应商」)。
+        const message = isQuotaExhaustionFailure(observer.errorData)
+          ? terminalErrorText(observer.errorData, {
+            providerLabel: await resolveSessionProviderLabel(session.id),
+          })
+          : err instanceof Error ? err.message : String(err);
+        return { ...fail(appendDefaultRouteNotice(message, routeNotice)), ...collected };
       } finally {
         // 无论正常收口还是超时/错误,未决交互都按默认收口并释放中央 route
         finalizeInteractions();
@@ -1497,6 +1649,7 @@ export function createMakerHookSessionRunner(deps: {
           `item${inboundAttachmentFailures === 1 ? '' : 's'} could not be prepared.`;
         finalText = `${finalText.trimEnd()}${finalText.trim().length > 0 ? '\n\n' : ''}${warning}`;
       }
+      finalText = appendDefaultRouteNotice(finalText, routeNotice);
       return {
         status: 'ok',
         finalText,

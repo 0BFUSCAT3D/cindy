@@ -7,7 +7,8 @@
  * (`buildImManualRouteOverrideRecord`); `/new` 重置会用普通记录覆盖、重新跟随。
  *
  * 本模块保持叶子(只依赖 localDb 与纯逻辑), maker-ipc 与 IM 侧都能调用, 不引入
- * 循环依赖。只给渠道自有任务写 —— 其它任务没有跟随记录, 写了只是垃圾。
+ * 循环依赖。只给会跟随默认的任务写: 个人渠道自有任务, 以及已有跟随记录的其它任务
+ * (官方 hook 建的任务) —— 其它任务没有跟随语义, 写了只是垃圾。
  */
 import { eq } from 'drizzle-orm';
 
@@ -20,7 +21,11 @@ import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../../appSessi
 import { getDbClient } from '../../localDb/client/current';
 import { sessions } from '../../localDb/schema';
 import { createLogger } from '../../logger';
-import { buildImManualRouteOverrideRecord, type ImDefaultRoute } from './channelDefaultRoute';
+import {
+  buildImManualRouteOverrideRecord,
+  parseImDefaultRouteRecord,
+  type ImDefaultRoute,
+} from './channelDefaultRoute';
 
 const log = createLogger('im:default-route');
 
@@ -44,6 +49,7 @@ export async function markImSessionManualRouteOverride(sessionId: string): Promi
       effort: sessions.effort,
       feishuBotAppId: sessions.feishuBotAppId,
       imBotContextId: sessions.imBotContextId,
+      imDefaultRoute: sessions.imDefaultRoute,
     })
     .from(sessions)
     .where(eq(sessions.id, sessionId))
@@ -51,8 +57,12 @@ export async function markImSessionManualRouteOverride(sessionId: string): Promi
   if (!row) return;
   if (row.status !== 'active' || row.remoteHostId || row.orcaRole || !row.model) return;
   const source = row.source;
-  if (!source || !IM_DEFAULT_SETTINGS_CHANNELS.includes(source as ImDefaultSettingsChannel)) return;
-  if (source === 'feishu' ? !row.feishuBotAppId : !row.imBotContextId) return;
+  const channelOwned =
+    !!source &&
+    IM_DEFAULT_SETTINGS_CHANNELS.includes(source as ImDefaultSettingsChannel) &&
+    (source === 'feishu' ? !!row.feishuBotAppId : !!row.imBotContextId);
+  // 官方 hook 的任务没有渠道标记列, 认跟随记录: 有记录 = 它在跟随(或已脱离)默认。
+  if (!channelOwned && !parseImDefaultRouteRecord(row.imDefaultRoute)) return;
   const route: ImDefaultRoute = {
     agentKind: dbToMakerAgentKind(row.agentKind),
     model: row.model,

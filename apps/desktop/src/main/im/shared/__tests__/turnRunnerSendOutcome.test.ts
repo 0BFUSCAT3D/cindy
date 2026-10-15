@@ -4576,6 +4576,49 @@ describe('初始流式输出面创建失败的收口降级(#2164)', () => {
       }
     });
 
+    it('tells the user once when the task keeps its own route instead of the new default', async () => {
+      const order: string[] = [];
+      const h = createSessionHarness(async () => ({ accepted: true }), 'feishu-session');
+      const maker = coldMakerHarness(h.session, order);
+      mocks.getMaker.mockReturnValue(maker);
+      mocks.feishuIm.sendText.mockResolvedValue(undefined);
+      const channelDefaultRoute = {
+        previewSwitchTarget: vi.fn(async () => null),
+        syncBeforeWiring: vi.fn(async () => undefined),
+        takeNotice: vi.fn()
+          .mockReturnValueOnce({
+            current: { agentKind: 'codex' as const, model: 'gpt-6-astra', providerId: 'openai', effort: 'high' },
+            currentProviderLabel: 'OpenAI',
+            target: { agentKind: 'claude-code' as const, model: 'claude-opus-4-8', providerId: null, effort: 'high' },
+            targetProviderLabel: null,
+          })
+          .mockReturnValue(null),
+      };
+      const localRunner = createTurnRunner(fakeAdapter, fakeRepo, fakeCards, {
+        acquirePendingAgentSwitch: vi.fn(async () => vi.fn()),
+        channelDefaultRoute,
+      });
+      try {
+        await localRunner.runAgentTurn({
+          botContextId: 'cli_test_bot',
+          userId: 'ou_user',
+          userMessageId: 'msg-follow-notice',
+          text: 'hello',
+          attachments: [],
+        });
+
+        expect(channelDefaultRoute.takeNotice).toHaveBeenCalledWith('feishu-session');
+        const notices = mocks.feishuIm.sendText.mock.calls.filter(([, text]) =>
+          String(text).includes('没有跟随渠道默认'),
+        );
+        expect(notices).toHaveLength(1);
+        expect(notices[0]![1]).toContain('Codex · gpt-6-astra（OpenAI）');
+        expect(notices[0]![1]).toContain('/model');
+      } finally {
+        localRunner.disposeAllSessions();
+      }
+    });
+
     it('checks auth against the followed route when the old default is unusable', async () => {
       // 旧默认指向已断开的供应商; 新默认可用 —— 不能先被「缺授权」挡掉。
       mocks.listProviders.mockResolvedValue(providersWith(['claude-opus-4-7', 'claude-opus-4-8']));
