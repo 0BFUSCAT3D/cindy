@@ -1492,7 +1492,7 @@ describe('远程 Agent:选模型时换 Agent 所在电脑', () => {
       expect.stringMatching(/returning|home|close/i),
       expect.objectContaining({ sessionId: 's1', code: expect.any(String) }),
     );
-    expect(applyNow.calls).toEqual(['close', 'db', 'provider', 'boundary', 'pending']);
+    expect(applyNow.calls).toEqual(['close', 'db', 'provider', 'boundary', 'pending', 'bootstrap']);
 
     const pending = relocationHarness({ orcaRole: 'lead', agentDeviceId: 'office-pc' });
     await performSessionAgentSwitch(pending.deps, backToTaskComputer);

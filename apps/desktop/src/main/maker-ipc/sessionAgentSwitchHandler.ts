@@ -53,6 +53,30 @@ function throwIfAgentSwitchAborted(signal: AbortSignal | undefined): void {
   }
 }
 
+/** closeSession 失败时仍可切回本机的链路错误码(离线/不可达/超时/忙)。不认裸 REMOTE_AGENT_UNAVAILABLE / PEER_TOO_OLD。 */
+const AGENT_SWITCH_LINK_CLOSE_CODES = new Set([
+  'DEVICE_LINK_NOT_CONNECTED',
+  'DEVICE_LINK_DEVICE_OFFLINE',
+  'DEVICE_LINK_TIMEOUT',
+  'DEVICE_LINK_BUSY',
+  'NOT_CONNECTED',
+  'DEVICE_OFFLINE',
+  'TIMEOUT',
+  'INVOKE_TIMEOUT',
+]);
+
+function agentSwitchLinkCloseErrorCode(error: unknown): string | null {
+  const tokens = new Set<string>();
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && code) tokens.add(code);
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  for (const match of message.matchAll(/\[([A-Z_]+)\]/g)) tokens.add(match[1]!);
+  for (const token of tokens) {
+    if (AGENT_SWITCH_LINK_CLOSE_CODES.has(token)) return token;
+  }
+  return null;
+}
+
 /** Phase 2:目标引擎的停泊原生会话绑定(localDb findParkedEngineSession 的投影)。 */
 export interface ParkedEngineSessionRef {
   sdkSessionId: string;
@@ -851,7 +875,18 @@ export async function performSessionAgentSwitch(
   return deps.withCloseSuppressed(sessionId, async () => {
     throwIfAgentSwitchAborted(signal);
     if (live) {
-      await deps.closeSession(sessionId);
+      try {
+        await deps.closeSession(sessionId);
+      } catch (error) {
+        const linkCode = orcaLeadReturnHome ? agentSwitchLinkCloseErrorCode(error) : null;
+        if (!linkCode) throw error;
+        // 旧远程 Session 的 close 已在本地 finish/dispose；链路失败只表示 close 请求没送到对方。
+        // Maker 把该实例标成 error 仍占 activeSessions，bootstrap/lazy-create 会再 close 一次后换新。
+        deps.log.warn('agent-switch: close failed while returning orca lead home; continuing', {
+          sessionId,
+          code: linkCode,
+        });
+      }
     }
 
     // 停用轴:提交点重裁决(PR #744 review 第十五轮)—— parked 数据加载、handoff
