@@ -981,8 +981,10 @@ offers Remove. Removing an intact packaged personal version uninstalls that
 version's lock-screen service through its own helper before deleting the
 snapshot, so a UUID-specific AUTO_START service cannot outlive the
 runtime tree it hardened. An incomplete snapshot with a missing executable
-or resources directory remains removable without executing its helper; removal
-clears the personal-version slot but retains the publication record and user data.
+but intact resources first uses its validated resources record to uninstall the
+surviving helper; when the resources directory is missing too, cleanup skips the
+helper. In both cases removal clears the personal-version slot but retains the
+publication record and user data.
 This incomplete-runtime cleanup does not verify or repair an already-installed
 service. Regression coverage: [versionService.test.ts](../apps/desktop/src/main/cindy-make/__tests__/versionService.test.ts).
 Original-user leftover GENERIC

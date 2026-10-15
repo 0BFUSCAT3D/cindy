@@ -26,7 +26,9 @@ import {
   personalVersionId,
   readOriginalVersion,
   readPersonalVersion,
+  readPersonalVersionRecord,
   readVersionJson,
+  sameVersionPath,
   selectedVersion,
   versionDirectory,
   versionsRoot,
@@ -156,6 +158,23 @@ export async function actCindyVersion(action: unknown, id: unknown): Promise<Cin
         } catch (error) {
           const code = (error as { code?: string }).code;
           if (code !== 'unavailable' && code !== 'ENOENT') throw error;
+          // A missing executable can make the full record unreadable even though
+          // the resources still contain the installed service helper. Validate
+          // that durable record and resource path before attempting that helper.
+          try {
+            const record = readPersonalVersionRecord(profile, targetId);
+            const resources = path.join(directory, record.resources);
+            if (
+              sameVersionPath(
+                fs.realpathSync(resources),
+                path.join(fs.realpathSync(directory), record.resources),
+              )
+            )
+              personal = record;
+          } catch (recordError) {
+            const recordCode = (recordError as { code?: string }).code;
+            if (recordCode !== 'unavailable' && recordCode !== 'ENOENT') throw recordError;
+          }
         }
         if (personal) {
           await uninstallWindowsDesktopSupportFrom(path.join(directory, personal.resources));
