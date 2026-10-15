@@ -3105,6 +3105,59 @@ describe('utility one-shot candidates', () => {
       expect(reportKeyRejected).toHaveBeenCalledWith('proxy-key-sent');
     });
 
+    it.each([
+      [401, 1],
+      [500, 0],
+    ] as const)('LiteLLM budget retry rejected with HTTP %s reports the sent key %s times', async (status, reports) => {
+      chainState.refs = ['litellm-gpt-5.4-mini'];
+      readKey.mockReturnValue('proxy-key-sent');
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            choices: [{ message: { content: '' }, finish_reason: 'length' }],
+            usage: { completion_tokens: 800 },
+          }),
+        } as never)
+        .mockResolvedValueOnce({ ok: false, status, body: { cancel: vi.fn(async () => undefined) } } as never);
+
+      const result = await requestUtilityText(makerMock(false), 'hello', { maxTokens: 800 });
+
+      expect(result).toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(reportKeyRejected).toHaveBeenCalledTimes(reports);
+      if (reports > 0) expect(reportKeyRejected).toHaveBeenCalledWith('proxy-key-sent');
+    });
+
+    it.each([
+      [401, 1],
+      [500, 0],
+    ] as const)('explicit XD budget retry rejected with HTTP %s reports the sent key %s times', async (status, reports) => {
+      activeCatalog.mockReturnValue(xdCatalog as never);
+      readKey.mockReturnValue('xd-key-sent');
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          text: async () => JSON.stringify({
+            choices: [{ message: { content: '' }, finish_reason: 'length' }],
+            usage: { completion_tokens: 800 },
+          }),
+        } as never)
+        .mockResolvedValueOnce({ ok: false, status, body: { cancel: vi.fn(async () => undefined) } } as never);
+
+      const result = await requestUtilityText(makerMock(false), 'generate', {
+        providerId: 'xd',
+        agentKind: 'claude-code',
+        model: 'gpt-5.5',
+        maxTokens: 800,
+      });
+
+      expect(result).toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(reportKeyRejected).toHaveBeenCalledTimes(reports);
+      if (reports > 0) expect(reportKeyRejected).toHaveBeenCalledWith('xd-key-sent');
+    });
+
     it('reports the key of the cindy-gateway Auto-review candidate rejected with 401', async () => {
       readKey.mockReturnValue('review-key-sent');
       fetchMock.mockResolvedValueOnce(unauthorized() as never);

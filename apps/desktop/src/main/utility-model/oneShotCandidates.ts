@@ -1479,6 +1479,7 @@ async function requestLiteLlmText(input: {
         parsed = await budgeted.json() as ChatCompletionBody;
         text = chatCompletionChoicesText(parsed);
       } else {
+        if (budgeted.status === 401) reportCindyGatewayKeyRejected(input.apiKey);
         await budgeted.body?.cancel().catch(() => undefined);
       }
     }
@@ -1746,6 +1747,7 @@ async function requestProviderHttpText(input: {
         raw = await budgeted.text();
         text = wireResponseText(input.wire, raw);
       } else {
+        if (budgeted.status === 401) input.onUnauthorized?.();
         await budgeted.body?.cancel().catch(() => undefined);
       }
     }
