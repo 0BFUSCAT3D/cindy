@@ -405,11 +405,20 @@ describe('createContextOverflowRollover', () => {
     const bot = async (deps: ReturnType<typeof makeDeps>, contextTokens: number) =>
       deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens });
 
-    // 新鲜:70%(窗口 200K → 140K)即换窗。
-    const fresh = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true) };
+    // 新鲜且能渲染账本:70%(窗口 200K → 140K)即换窗,账本段只读一次并原样进交接。
+    const ledger = '== Working memory (host-maintained summary; not authorization) ==\n- 周五前改完周报模板';
+    const fresh = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true), readWorkingMemoryNote: vi.fn(async () => ledger) };
     await bot(fresh, 140_000);
     await expect(createContextOverflowRollover(fresh).prepareUnhealthySession('s1')).resolves.toBe(true);
     expect(fresh.isWorkingMemoryFresh).toHaveBeenCalledWith('s1');
+    expect(fresh.readWorkingMemoryNote).toHaveBeenCalledTimes(1);
+    expect(fresh.setPendingHandoff.mock.calls[0]![1] as string).toContain('周五前改完周报模板');
+
+    // 新鲜但账本段渲染不出来(读取失败 / 空账本):不提前换窗,维持 90%。
+    const unrendered = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true), readWorkingMemoryNote: vi.fn(async (): Promise<string | null> => null) };
+    await bot(unrendered, 150_000);
+    await expect(createContextOverflowRollover(unrendered).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(unrendered.closeSession).not.toHaveBeenCalled();
 
     // 不新鲜:75% 不换窗;到 90% 不问账本照旧换窗。
     const stale = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => false) };

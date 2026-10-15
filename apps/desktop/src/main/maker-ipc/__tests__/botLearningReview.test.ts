@@ -1,4 +1,5 @@
 import { beforeEach, it, expect, vi } from 'vitest';
+import { getDbClient } from '../../localDb/client/current.js';
 const h = vi.hoisted(() => ({
   owner: 'owner',
   enabled: true,
@@ -31,13 +32,13 @@ vi.mock('../../localDb/client/current.js', () => {
             meta: JSON.stringify(h.meta),
           }
         : undefined,
-    query: async () => [
+    query: vi.fn(async () => [
       {
         id: 'user',
         role: 'user',
         content: JSON.stringify('Please always summarize the conclusion first.'),
       },
-    ],
+    ]),
   };
   return { getDbClient: () => db };
 });
@@ -219,6 +220,10 @@ it('feeds the working memory to the review and writes an evidence-filtered ledge
   await reviewTeammateLearning('session', 'reply');
   const input = JSON.parse(h.model.mock.calls[0]![1] as string);
   expect(input.workingMemory).toEqual({ threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] });
+  // 取材下界带上账本上次覆盖到的行(1),失败轮次下次复盘补上;且不取 /clear 之前的消息。
+  const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
+  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 5, 'session', 5, 1, 'session']);
+  expect(String(query.mock.calls.at(-1)![0])).toContain('cleared_at');
   expect(h.writeWorking).toHaveBeenCalledWith(
     '/test-owner',
     'bot',

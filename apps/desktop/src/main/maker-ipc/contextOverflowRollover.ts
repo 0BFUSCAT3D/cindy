@@ -888,11 +888,14 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
     // At a send boundary, checkpoint a pressured companion before the next turn
     // enters native compaction. Native compaction remains enabled within a turn.
     // 账本新鲜(复盘已覆盖最近完成轮)时线提前到 70%;不新鲜维持 90%,免得换窗丢掉还没进
-    // 账本的内容。只有落在 70%–90% 之间才去读账本。
+    // 账本的内容。只有落在 70%–90% 之间才去读账本;提前换窗必须拿到渲染好的账本段并原样
+    // 带进交接——同一个快照只读一次,免得判新鲜之后第二次读取失败,交接反而没带账本。
+    let earlyWorkingMemory: string | undefined;
     const pressure = companion
       ? shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO) ||
         (shouldRebuildForContextPressure(usedTokens, window * BOT_CONTEXT_CHECKPOINT_RATIO_FRESH) &&
-          (await isWorkingMemoryFresh(sessionId)))
+          (await isWorkingMemoryFresh(sessionId)) &&
+          (earlyWorkingMemory = (await readWorkingMemoryNote(sessionId)) ?? undefined) !== undefined)
       : shouldRebuildForContextPressure(usedTokens, window);
     const compactFailed = liveUsage?.needsRollover === true;
     const piByteRecoveryFailed = sessionRow.agentKind === 'pi' && isPiRequestBodyRecoveryExhausted(lastError);
@@ -952,7 +955,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sessionId,
       reason: companion || isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
       includeToolResults: companion || isOversizedHistoryErrorData(lastError),
-      workingMemory: await readWorkingMemoryNote(sessionId),
+      workingMemory: earlyWorkingMemory ?? (await readWorkingMemoryNote(sessionId)),
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: rebuildReason,

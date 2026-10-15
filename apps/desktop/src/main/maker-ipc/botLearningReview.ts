@@ -73,15 +73,26 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
     .catch(() => {})
     .then(async () => {
       if (!current() || !(await readOwner())) return;
+      const root = ownerScopedUserDataPath();
+      // 工作记忆账本随同一次复盘维护(不另起模型调用);读不到按空账本,写入 CAS 失败放弃本轮。
+      const workingBefore = await readBotWorkingMemory(root, row.botId);
+      // 取材窗口从「上一条完成回复」和「账本上次覆盖到的行」中较早的一处接上:某轮复盘在
+      // claim 之后失败(模型出错、进程退出、CAS 冲突)不会再被重跑,若只从上一条完成回复
+      // 接起,那一轮就永远进不了账本,而账本的 coveredThroughRowid 却会被后面的成功写入
+      // 直接跳过去——换窗线提前的判据因此会把有缺口的账本当成新鲜的。没有账本时沿用
+      // 上一条完成回复(不回溯整段历史);/clear 之前的消息始终不取。
+      const ledgerFloor = workingBefore ? workingBefore.coveredThroughRowid : null;
       const records = await db.query<{ id: string; role: string; content: string; order: number }>(
         `
       SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
-      WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > COALESCE((
+      WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > MIN(COALESCE((
         SELECT MAX(rowid) FROM messages WHERE session_id=? AND rowid < ? AND rewind_at IS NULL
         AND role='assistant' AND json_valid(agent_meta) AND json_extract(agent_meta, '$.turnCompleted')=1
-      ), 0) AND role IN ('user','assistant','tool_use','tool_result') ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT 80
+      ), 0), COALESCE(?, 9223372036854775807))
+      AND created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=?), 0)
+      AND role IN ('user','assistant','tool_use','tool_result') ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT 80
     `,
-        [sessionId, row.rowid, sessionId, row.rowid],
+        [sessionId, row.rowid, sessionId, row.rowid, ledgerFloor, sessionId],
       );
       const messages = learningSnapshotBudget(
         records.map((m) => ({
@@ -113,7 +124,6 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
           )
         : [];
       if (!current()) return;
-      const root = ownerScopedUserDataPath();
       const catalog = await listBotSkills(root, row.botId);
       const skills = (
         await Promise.all(
@@ -145,8 +155,6 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
         enabled: s.enabled,
       }));
       if (JSON.stringify({ memoryIndex, skillIndex }).length > 24000) return;
-      // 工作记忆账本随同一次复盘维护(不另起模型调用);读不到按空账本,写入 CAS 失败放弃本轮。
-      const workingBefore = await readBotWorkingMemory(root, row.botId);
       const result = await requestUtilityText(
         maker,
         JSON.stringify({
