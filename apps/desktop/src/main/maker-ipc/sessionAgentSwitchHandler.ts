@@ -851,7 +851,14 @@ export async function performSessionAgentSwitch(
   return deps.withCloseSuppressed(sessionId, async () => {
     throwIfAgentSwitchAborted(signal);
     if (live) {
-      await deps.closeSession(sessionId);
+      try {
+        await deps.closeSession(sessionId);
+      } catch (error) {
+        if (!orcaLeadReturnHome) throw error;
+        // The remote close may have failed after its local handle was already torn down.
+        // Retry once to finish local cleanup; a second failure still blocks the route switch.
+        await deps.closeSession(sessionId);
+      }
     }
 
     // 停用轴:提交点重裁决(PR #744 review 第十五轮)—— parked 数据加载、handoff
