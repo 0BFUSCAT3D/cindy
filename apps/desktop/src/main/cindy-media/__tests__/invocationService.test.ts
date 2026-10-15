@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   outboundFetch: vi.fn(),
   prepareBilling: vi.fn(),
   recordBilling: vi.fn<(response: Response) => Promise<void>>(async () => undefined),
+  finishBilling: vi.fn(),
   guardedOutboundFetch: vi.fn(),
   release: vi.fn(async () => undefined),
   confirm: vi.fn<(input: { reasons: string[] }) => Promise<boolean>>(async () => true),
@@ -261,8 +262,11 @@ async function prepare(capability: MediaCapability = 'image.generate'): Promise<
 
 describe('Cindy Core media invocation state and security boundary', () => {
   beforeEach(() => {
-    mocks.recordBilling.mockClear();
-    mocks.prepareBilling.mockReset().mockResolvedValue(mocks.recordBilling);
+    mocks.recordBilling.mockReset().mockResolvedValue(undefined);
+    mocks.finishBilling.mockReset();
+    mocks.prepareBilling.mockReset().mockResolvedValue(
+      Object.assign(mocks.recordBilling, { finish: mocks.finishBilling }),
+    );
     mocks.failRequestLog = false;
     mocks.confirm.mockReset().mockResolvedValue(true);
     mocks.currentUserId = `media-user-${crypto.randomUUID()}`;
@@ -626,6 +630,43 @@ describe('Cindy Core media invocation state and security boundary', () => {
     await callCindyMedia({ action: 'request', invocationId, body: { prompt: 'retry' } });
     expect(mocks.outboundFetch).toHaveBeenCalledOnce();
     expect(mocks.recordBilling).toHaveBeenCalledOnce();
+    expect(mocks.finishBilling).toHaveBeenCalledOnce();
+  });
+
+  it('reads the paid response and ends its network deadline while accounting is still pending', async () => {
+    mocks.guide.mockResolvedValue(resolvedGuide(operation({
+      mode: 'sync', media: [{ path: ['data'], encoding: 'base64', kind: 'image' }],
+    })));
+    const invocationId = await prepare();
+    let finishBilling!: () => void;
+    mocks.recordBilling.mockImplementationOnce(() => new Promise<void>(resolve => { finishBilling = resolve; }));
+    const response = Response.json({ data: PNG.toString('base64') });
+    mocks.outboundFetch.mockResolvedValueOnce(response);
+    vi.useFakeTimers();
+    try {
+      const result = callCindyMedia({ action: 'request', invocationId, body: { prompt: 'cat' } });
+      await vi.waitFor(() => expect(response.bodyUsed).toBe(true));
+      await vi.advanceTimersByTimeAsync(5_001);
+      expect(mocks.outboundFetch.mock.calls[0][1].signal.aborted).toBe(false);
+      finishBilling();
+      await expect(result).resolves.toMatchObject({ ok: true, status: 'complete' });
+      expect(mocks.finishBilling).toHaveBeenCalledOnce();
+    } finally {
+      finishBilling?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases the accounting database when dispatch fails before any response', async () => {
+    mocks.guide.mockResolvedValue(resolvedGuide(operation({
+      mode: 'sync', media: [{ path: ['data'], encoding: 'base64', kind: 'image' }],
+    })));
+    const invocationId = await prepare();
+    mocks.outboundFetch.mockRejectedValueOnce(new Error('connection reset'));
+    await expect(callCindyMedia({ action: 'request', invocationId, body: { prompt: 'cat' } }))
+      .resolves.toMatchObject({ ok: false });
+    expect(mocks.recordBilling).not.toHaveBeenCalled();
+    expect(mocks.finishBilling).toHaveBeenCalledOnce();
   });
 
   it.each([0, 1, 2])('materializes large base64 images with %i trailing padding characters', async (padding) => {

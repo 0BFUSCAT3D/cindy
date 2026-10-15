@@ -1,5 +1,6 @@
 import { getDbClient, getCurrentDbClientUserId } from '../localDb/client/current.js';
 import type { DbClient } from '../localDb/client/DbClient.js';
+import { retainDbClient } from '../localDb/client/pendingOperations.js';
 import { localDayKey } from '../localDb/dailySpend.js';
 import { createLogger } from '../logger.js';
 import {
@@ -22,12 +23,16 @@ import {
 
 const log = createLogger('gatewayMediaBilling');
 
+export type GatewayMediaBillingRecorder = ((response: Response) => Promise<void>) & {
+  finish(): void;
+};
+
 /** Capture the account, database and settlement currency before the paid dispatch. */
 export async function prepareGatewayMediaBilling(input: {
   model: string;
   sessionId?: string;
   db?: DbClient;
-}): Promise<(response: Response) => Promise<void>> {
+}): Promise<GatewayMediaBillingRecorder> {
   const ownerScope = captureDataOwnerBroadcastScope();
   const dbOwnerId = getCurrentDbClientUserId();
   const db = input.db ?? (dbOwnerId ? getDbClient() : null);
@@ -41,10 +46,9 @@ export async function prepareGatewayMediaBilling(input: {
   if (!isDataOwnerBroadcastScopeCurrent(ownerScope) || getCurrentDbClientUserId() !== dbOwnerId) {
     throw new Error('Media billing account changed before dispatch');
   }
-  let handled = false;
-  return async (response) => {
-    if (handled || !response.ok) return;
-    handled = true;
+  const finish = db ? retainDbClient(db) : () => undefined;
+  const record = async (response: Response): Promise<void> => {
+    if (!response.ok) return;
     const value = response.headers.get('X-Nova-AIGateway-Billing');
     const billing = parseGatewayMediaBillingHeader(value);
     if (!billing) {
@@ -58,7 +62,7 @@ export async function prepareGatewayMediaBilling(input: {
     }
     try {
       const now = Date.now();
-      // Called only for the original submit response, before reading/downloading its body.
+      // Called only for the original submit response; body reading may proceed in parallel.
       // Polling and recovery of persisted results never reapply this delta.
       const { session, turnCost } = await enqueueDurableWrite('media-billing', async () => {
         const session = await db.tx('usage.recordMediaSpend', {
@@ -115,4 +119,9 @@ export async function prepareGatewayMediaBilling(input: {
       );
     }
   };
+  let recording: Promise<void> | undefined;
+  return Object.assign(
+    (response: Response) => recording ??= record(response).finally(finish),
+    { finish },
+  );
 }

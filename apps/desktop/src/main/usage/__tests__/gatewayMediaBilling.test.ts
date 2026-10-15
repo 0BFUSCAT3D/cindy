@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseGatewayMediaBillingHeader } from '../gatewayMediaBillingHeader.js';
+import type { DbClient } from '../../localDb/client/DbClient.js';
+import { waitForRetainedDbClient } from '../../localDb/client/pendingOperations.js';
 
 const mocks = vi.hoisted(() => ({
   owner: 'owner-a',
@@ -137,9 +139,16 @@ describe('Gateway media billing', () => {
   });
 
   it('retains the original database after an account switch without notifying the new owner', async () => {
-    const record = await prepareGatewayMediaBilling({ model: 'image' });
+    const db = { tx: mocks.tx } as unknown as DbClient;
+    const record = await prepareGatewayMediaBilling({ model: 'image', db });
+    let drained = false;
+    const draining = waitForRetainedDbClient(db).then(() => { drained = true; });
     mocks.owner = 'owner-b';
+    await Promise.resolve();
+    expect(drained).toBe(false);
     await record(response({ cost: 1 }));
+    await draining;
+    expect(drained).toBe(true);
     expect(mocks.tx).toHaveBeenCalledOnce();
     expect(mocks.sessionPush).not.toHaveBeenCalled();
     expect(mocks.todayPush).not.toHaveBeenCalled();

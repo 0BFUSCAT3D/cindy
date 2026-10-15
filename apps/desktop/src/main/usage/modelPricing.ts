@@ -317,6 +317,8 @@ async function hydrateFromDisk(scope: string): Promise<ModelPricingCatalog | nul
       gatewayAccountCurrency = raw.accountCurrency;
       gatewayAccountCurrencyScope = scope;
       gatewayCurrencyConflictScope = raw.currencyConflict === true ||
+        // Legacy v9 snapshots cannot distinguish an omitted currency from a mixed catalog.
+        (raw.currencyConflict === undefined && raw.accountCurrency === null) ||
         new Set(Object.values(pricing.xd ?? {}).filter((quote) => !quote.currencyInferred)
           .map((quote) => quote.currency)).size > 1 ? scope : null;
       setActiveLedgerCurrency(raw.accountCurrency);

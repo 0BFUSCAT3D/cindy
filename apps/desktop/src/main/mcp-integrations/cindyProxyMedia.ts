@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createCindyProxyMediaService } from '../cindy-proxy-media/service.js';
 import type { CindyProxyMediaService } from '../cindy-proxy-media/types.js';
 import {
@@ -13,9 +14,14 @@ import { mediaErrorForLog } from '../cindy-media/mediaRequestLog.js';
 import { getProviderSecretStore } from '../secrets/providerSecretStore.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { getAppCapabilities } from '../appCapabilities.js';
-import { prepareGatewayMediaBilling } from '../usage/gatewayMediaBilling.js';
 
 const log = createLogger('art');
+const billingSession = new AsyncLocalStorage<string | undefined>();
+
+/** The session comes from the Host's active same-plugin call, never plugin arguments. */
+export function withCindyMediaBillingSession<T>(sessionId: string | undefined, run: () => T): T {
+  return billingSession.run(sessionId, run);
+}
 
 let artService: CindyProxyMediaService | null = null;
 /** 构建单例时捕获的 baseUrl;model-access 下发切换 endpoint 后据此重建。 */
@@ -45,10 +51,15 @@ const gatewayMediaFetch: typeof fetch = async (input, init) => {
     const value = init.body.get('model');
     if (typeof value === 'string') model = value;
   }
-  const recordBilling = await prepareGatewayMediaBilling({ model });
-  const response = await fetch(input, init);
-  await recordBilling(response);
-  return response;
+  const { prepareGatewayMediaBilling } = await import('../usage/gatewayMediaBilling.js');
+  const recordBilling = await prepareGatewayMediaBilling({ model, sessionId: billingSession.getStore() });
+  try {
+    const response = await fetch(input, init);
+    await recordBilling(response);
+    return response;
+  } finally {
+    recordBilling.finish();
+  }
 };
 
 /**

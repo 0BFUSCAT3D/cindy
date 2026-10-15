@@ -168,6 +168,24 @@ describe('media settlement currency', () => {
     replaceGatewayModelPricing([{ id: 'image', currency: 'CNY' }, { id: 'video', currency: 'USD' }]);
     expect(await getGatewayMediaBillingCurrency()).toBeNull();
   });
+
+  it('does not relabel header charges using a remembered currency when a legacy v9 cache is ambiguous', async () => {
+    replaceGatewayModelPricing([{ id: 'image', currency: 'CNY' }]);
+    await __flushAccountCurrencyStoreForTesting();
+    await vi.waitFor(async () => {
+      expect(JSON.parse(await readFile(userDataPath('cache', 'model-pricing.json'), 'utf8')).accountCurrency).toBe('CNY');
+    });
+    await writeFile(userDataPath('cache', 'model-pricing.json'), JSON.stringify({
+      version: 9, scope: expectedScope(), fetchedAt: Date.now(), accountCurrency: null, pricing: {},
+    }));
+    __resetModelPricingCacheForTesting();
+    __resetAccountCurrencyStoreForTesting();
+    __resetActiveLedgerCurrencyForTesting();
+    expect(await getGatewayMediaBillingCurrency()).toBeNull();
+    // A newly written no-currency snapshot explicitly rules out a conflict.
+    replaceGatewayModelPricing([{ id: 'image' }]);
+    expect(await getGatewayMediaBillingCurrency()).toBe('CNY');
+  });
 });
 
 describe('gateway model pricing projection', () => {
