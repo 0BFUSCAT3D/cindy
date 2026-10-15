@@ -115,6 +115,9 @@ export async function transcribeLiteLlmAudioFile(input: LiteLlmAudioFileTranscri
     body: form,
   });
 
+  // proxyApiKey is the Cindy AI key sent to the Cindy gateway. Report on the status
+  // before reading the body so an interrupted body read cannot drop the report.
+  if (response.status === 401) reportCindyGatewayKeyRejected(input.proxyApiKey);
   const text = await response.text();
   let parsed: unknown;
   try {
@@ -124,8 +127,6 @@ export async function transcribeLiteLlmAudioFile(input: LiteLlmAudioFileTranscri
   }
 
   if (!response.ok) {
-    // proxyApiKey is the Cindy AI key sent to the Cindy gateway.
-    if (response.status === 401) reportCindyGatewayKeyRejected(input.proxyApiKey);
     throw new Error(transcriptionErrorMessage(parsed, text, response.status));
   }
 

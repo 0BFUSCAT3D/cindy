@@ -447,6 +447,8 @@ export function createCindyProxySearchService(deps: CindyProxySearchDeps): Cindy
       }
 
       const requestId = requestIdOf(response);
+      // 拿到状态码就上报,不依赖后续正文读取成功(读正文中断时也不能漏报)。
+      if (response.status === 401) deps.onKeyRejected?.(apiKey);
       let body: string;
       try {
         body = await response.text();
@@ -472,7 +474,6 @@ export function createCindyProxySearchService(deps: CindyProxySearchDeps): Cindy
       }
       const latencyMs = Date.now() - startedAt;
       if (!response.ok) {
-        if (response.status === 401) deps.onKeyRejected?.(apiKey);
         const failure = classifyHttpFailure(response.status, body);
         deps.log?.warn('cindy search request rejected', {
           logicalProvider: 'cindy',

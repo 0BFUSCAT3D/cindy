@@ -15,11 +15,16 @@ import { getModelAccessCredentialsStore } from './credentialsStore.js';
  * 调用方(辅助模型、搜索、媒体、向量、额度、语音、智能体终态)在 401 时把**本次请求
  * 实际携带的 Key** 交给这里,由这里决定是否触发一次凭据同步。
  *
- * 规则刻意只有两条,不加冷却 / 退避 / 计时器:
+ * 规则只有两条,不加退避或定时检查:
  *  - 规则 A:上报的 Key 必须等于本机当前保存的 Key——旧请求的迟到 401 不能为已换上的
  *    新 Key 再触发同步;
- *  - 规则 B:每把 Key 只触发一次——内存只记上一次触发的 Key 的 SHA-256 指纹(不存明文),
- *    同一把 Key 的后续 401 全部忽略,换了 Key 之后才可能再次触发。
+ *  - 规则 B:同一把 Key 在 `CINDY_KEY_REJECTION_RETRIGGER_WINDOW_MS`(5 分钟)内最多触发
+ *    一次——内存只记上一次触发的 Key 的 SHA-256 指纹(不存明文)和触发时间,换了 Key 立即
+ *    可再触发。
+ * 为什么按时间窗口而不是「每把 Key 永远只触发一次」:`sync()` 在服务端暂时不可用时会在内部
+ * 重试后以 failed 状态结束(不 reject),服务端也可能在网关鉴权缓存窗口内原样返回这把稍后
+ * 才被撤销的 Key。永久标记会让这把 Key 之后的 401 一律被忽略,直到重启;窗口过后再允许
+ * 触发一次即可自行恢复。窗口内不重复,则不会对着挂掉的服务端或误报的 401 反复请求。
  * 同步用 `sync()` 而不是 `retry()`:它尊重 unsupported / disabled 终态,自带 single-flight
  * 与内部重试;失败沿用现有同步表现,这里不新增提示。
  *
@@ -45,17 +50,22 @@ export interface GatewayKeyRejectionDeps {
     info(message: string): void;
     warn(message: string): void;
   };
+  /** 当前时间(毫秒),默认 Date.now;测试注入假时钟。 */
+  now?(): number;
 }
+
+/** 同一把 Key 两次触发同步之间的最短间隔。 */
+export const CINDY_KEY_REJECTION_RETRIGGER_WINDOW_MS = 5 * 60_000;
 
 /**
  * 上报器,两个入口:
- *  - `reportUsedKey`:调用方知道请求实际携带的 Key(规则 A + 规则 B,触发即标记
- *    `lastTriggeredFingerprint`);
- *  - `reportCurrentKey`:调用方不知道用的是哪把 Key(智能体回合终态)。当前 Key 已被
- *    准确上报触发过,或已被本入口触发过,都跳过;本入口只标记自己的
- *    `lastCurrentKeyTriggeredFingerprint`,**不标记**准确上报的记录——否则旧 Key 进程
- *    (未重启的 Codex、老任务)的迟到 401 会把新 Key 唯一的触发机会用掉,新 Key 真失效时
- *    准确上报反被忽略。单独记录则保证卡在旧 Key 上的任务对同一把当前 Key 只多触发 1 次。
+ *  - `reportUsedKey`:调用方知道请求实际携带的 Key(规则 A + 规则 B,触发即记入
+ *    `lastTriggered`);
+ *  - `reportCurrentKey`:调用方不知道用的是哪把 Key(智能体回合终态)。当前 Key 在窗口内
+ *    已被准确上报触发过,或已被本入口触发过,都跳过;本入口只记自己的
+ *    `lastCurrentKeyTriggered`,**不写**准确上报的记录——否则旧 Key 进程(未重启的 Codex、
+ *    老任务)的迟到 401 会占用新 Key 的触发机会,新 Key 真失效时准确上报反被忽略。单独记录
+ *    则保证卡在旧 Key 上的任务对同一把当前 Key 每个窗口只多触发 1 次。
  */
 export interface GatewayKeyRejectionReporter {
   reportUsedKey(usedKey: string | null | undefined): void;
@@ -66,13 +76,30 @@ function keyFingerprint(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
-/** 组装一个上报器;内存里只保留上一次已触发 Key 的指纹。 */
+interface TriggerRecord {
+  fingerprint: string;
+  at: number;
+}
+
+/** 组装一个上报器;内存里只保留上一次已触发 Key 的指纹与触发时间。 */
 export function createGatewayKeyRejectionReporter(
   deps: GatewayKeyRejectionDeps,
 ): GatewayKeyRejectionReporter {
-  let lastTriggeredFingerprint: string | null = null;
+  const now = deps.now ?? Date.now;
+  let lastTriggered: TriggerRecord | null = null;
   /** 只供 reportCurrentKey 读写;reportUsedKey 既不读也不写它。 */
-  let lastCurrentKeyTriggeredFingerprint: string | null = null;
+  let lastCurrentKeyTriggered: TriggerRecord | null = null;
+
+  /** 同一指纹且仍在窗口内(时钟回拨视为窗口已过,避免长时间卡住)。 */
+  const triggeredRecently = (
+    record: TriggerRecord | null,
+    fingerprint: string,
+    at: number,
+  ): boolean => {
+    if (!record || record.fingerprint !== fingerprint) return false;
+    const elapsed = at - record.at;
+    return elapsed >= 0 && elapsed < CINDY_KEY_REJECTION_RETRIGGER_WINDOW_MS;
+  };
 
   const warn = (prefix: string, error: unknown): void => {
     deps.log?.warn(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
@@ -108,21 +135,23 @@ export function createGatewayKeyRejectionReporter(
       const currentKey = currentServerKey();
       // 规则 A:只认本机当前这把 Key 的拒绝。
       if (!currentKey || currentKey !== usedKey) return;
-      // 规则 B:同一把 Key 只触发一次。
+      // 规则 B:同一把 Key 在窗口内最多触发一次。
       const fingerprint = keyFingerprint(usedKey);
-      if (fingerprint === lastTriggeredFingerprint) return;
-      lastTriggeredFingerprint = fingerprint;
+      const at = now();
+      if (triggeredRecently(lastTriggered, fingerprint, at)) return;
+      lastTriggered = { fingerprint, at };
       triggerSync();
     }),
     reportCurrentKey: () => guarded(() => {
       const currentKey = currentServerKey();
       if (!currentKey) return;
-      // 当前 Key 已被准确上报或本入口同步过一次:不再重复请求。旧 Key 进程在当前 Key 有效时
-      // 会每轮失败,服务端每次都原样返回当前 Key,不单独记录就会每条消息都请求一次。
+      // 当前 Key 在窗口内已被准确上报或本入口同步过:不再重复请求。旧 Key 进程在当前 Key
+      // 有效时会每轮失败,服务端每次都原样返回当前 Key,不单独记录就会每条消息都请求一次。
       const fingerprint = keyFingerprint(currentKey);
-      if (fingerprint === lastTriggeredFingerprint) return;
-      if (fingerprint === lastCurrentKeyTriggeredFingerprint) return;
-      lastCurrentKeyTriggeredFingerprint = fingerprint;
+      const at = now();
+      if (triggeredRecently(lastTriggered, fingerprint, at)) return;
+      if (triggeredRecently(lastCurrentKeyTriggered, fingerprint, at)) return;
+      lastCurrentKeyTriggered = { fingerprint, at };
       triggerSync();
     }),
   };
@@ -166,7 +195,7 @@ export function reportCindyGatewayKeyRejected(usedKey: string | null | undefined
 
 /**
  * 不知道请求实际用哪把 Key 时的上报(智能体回合因 Key 失效终止)。按本机当前 Key 判断,
- * 当前 Key 已被准确上报触发过则跳过;触发同步但不占用该 Key 的「只触发一次」机会。
+ * 当前 Key 在窗口内已被任一入口触发过则跳过;触发同步但不占用准确上报的触发机会。
  */
 export function reportCindyGatewayKeyRejectedForCurrentKey(): void {
   installedReporter?.reportCurrentKey();

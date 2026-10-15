@@ -22,6 +22,24 @@ describe('LiteLlmTranscriptionProvider', () => {
     reportKeyRejectedMock.mockReset();
   });
 
+  it('reports a 401 even when reading the response body fails', async () => {
+    outboundFetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => {
+        throw new TypeError('terminated');
+      },
+    });
+
+    await expect(transcribeLiteLlmAudioFile({
+      proxyApiKey: 'sk-sent',
+      baseUrl: 'https://gateway.example',
+      bytes: Buffer.from([1, 2, 3]),
+    })).rejects.toThrow('terminated');
+    expect(reportKeyRejectedMock).toHaveBeenCalledTimes(1);
+    expect(reportKeyRejectedMock).toHaveBeenCalledWith('sk-sent');
+  });
+
   it.each([
     [401, 1],
     [403, 0],

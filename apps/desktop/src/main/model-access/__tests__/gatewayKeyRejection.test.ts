@@ -31,6 +31,7 @@ vi.mock('../credentialsStore.js', () => ({
 import {
   bearerKeyFromHeaders,
   createGatewayKeyRejectionReporter,
+  CINDY_KEY_REJECTION_RETRIGGER_WINDOW_MS,
   installCindyGatewayKeyRejectionReporter,
   reportCindyGatewayKeyRejected,
   reportCindyGatewayKeyRejectedForCurrentKey,
@@ -43,6 +44,7 @@ const KEY_B = 'sk-test-invalid-b';
 
 function harness(overrides: Partial<GatewayKeyRejectionDeps> = {}) {
   let currentKey: string | null = KEY_A;
+  let clock = 1_000_000;
   const requestSync = vi.fn(async () => undefined);
   const log = { info: vi.fn(), warn: vi.fn() };
   const deps: GatewayKeyRejectionDeps = {
@@ -52,6 +54,7 @@ function harness(overrides: Partial<GatewayKeyRejectionDeps> = {}) {
     readCurrentKey: () => currentKey,
     requestSync,
     log,
+    now: () => clock,
     ...overrides,
   };
   const reporter = createGatewayKeyRejectionReporter(deps);
@@ -63,8 +66,13 @@ function harness(overrides: Partial<GatewayKeyRejectionDeps> = {}) {
     setCurrentKey: (key: string | null) => {
       currentKey = key;
     },
+    advance: (ms: number) => {
+      clock += ms;
+    },
   };
 }
+
+const WINDOW = CINDY_KEY_REJECTION_RETRIGGER_WINDOW_MS;
 
 describe('createGatewayKeyRejectionReporter', () => {
   it('re-syncs once when the current server-issued key is rejected', () => {
@@ -103,6 +111,27 @@ describe('createGatewayKeyRejectionReporter', () => {
     h.setCurrentKey(null);
     h.report(KEY_A);
     expect(h.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('triggers at most once per key within the window, and again after it (rule B)', () => {
+    const h = harness();
+    h.report(KEY_A);
+    h.advance(WINDOW - 1);
+    h.report(KEY_A);
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+    // 同步失败(failed resolve)或服务端暂时原样返回旧 Key 后,窗口过去即可自行恢复。
+    h.advance(1);
+    h.report(KEY_A);
+    h.report(KEY_A);
+    expect(h.requestSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats a clock moved backwards as an expired window', () => {
+    const h = harness();
+    h.report(KEY_A);
+    h.advance(-1);
+    h.report(KEY_A);
+    expect(h.requestSync).toHaveBeenCalledTimes(2);
   });
 
   it('triggers once per key and again after the key changes (rule B)', () => {
@@ -173,6 +202,29 @@ describe('reportCurrentKey (agent turns that do not reveal the key they used)', 
     h.reportCurrent();
     h.reportCurrent();
     expect(h.requestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the same window to repeated agent failures', () => {
+    const h = harness();
+    h.reportCurrent();
+    h.advance(WINDOW - 1);
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+    h.advance(1);
+    h.reportCurrent();
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets an accurate report re-trigger only after its own window', () => {
+    const h = harness();
+    h.report(KEY_A);
+    h.reportCurrent(); // 准确上报的窗口内:跳过
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+    h.advance(WINDOW);
+    h.reportCurrent(); // 窗口已过:智能体路径可再触发
+    h.report(KEY_A); // 智能体路径没占用准确上报的机会
+    expect(h.requestSync).toHaveBeenCalledTimes(3);
   });
 
   it('can trigger again once the current key changes', () => {
