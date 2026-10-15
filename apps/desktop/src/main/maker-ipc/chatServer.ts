@@ -667,7 +667,13 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       registeredAt = Date.now();
       const key = JSON.stringify([selfId, actors.map(a => [a.id, a.kind, a.externalId, a.name, a.avatar ?? null]),
         profiles.map(p => [p.id, p.status, p.displayName, p.avatar, p.avatarColor])]);
-      if (key !== registryKey) { registryKey = key; summaries.clear(); snapshots.clear(); }
+      if (key !== registryKey) {
+        const replaced = registryKey !== '';
+        registryKey = key; summaries.clear(); snapshots.clear();
+        // A list or room read may have finished on the old registry while this ran (a background
+        // refresh, or actor.changed racing its own list notice): tell them to read again.
+        if (replaced) { changed(''); for (const roomId of rooms.keys()) changed(roomId); }
+      }
     })().finally(() => { refreshActors = undefined; });
     return refreshActors;
   }

@@ -1409,6 +1409,19 @@ describe('Chat Server result delivery and refresh', () => {
     expect(after).toBeGreaterThan(before);
     expect(await room()).toBe(after);
   });
+  it('asks the list and open rooms to read again when a later registration changes names or avatars', async () => {
+    await service.getGroup(roomId);
+    await vi.advanceTimersByTimeAsync(300);
+    vi.mocked(deps.onChanged!).mockClear();
+    fixture.handle.mockImplementation(route => route === '/actors'
+      ? { body: [{ id: botId, kind: 'bot', externalId: 'local-bot', name: 'Renamed' }] } : response(route));
+    // Reads return on the old registry; the next background registration replaces it afterwards.
+    await vi.advanceTimersByTimeAsync(6000);
+    await service.getGroup(roomId);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: '' }), undefined);
+    expect(deps.onChanged).toHaveBeenCalledWith(expect.objectContaining({ groupId: roomId }), undefined);
+  });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);
     await vi.advanceTimersByTimeAsync(2000);
