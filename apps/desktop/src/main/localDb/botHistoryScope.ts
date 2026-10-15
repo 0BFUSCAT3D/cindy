@@ -65,18 +65,28 @@ export async function resolveBotHistorySessionIds(
 
 /**
  * 换窗交接回忆指引用的伙伴自有会话清单(有界,最多 `limit` 条)。按归属分层而不是按时间混排:
- * 伙伴自己的对话会话(当前主对话 + 恢复前的 history Session,最新在前)整体优先,剩余名额再
- * 给最新的后台任务——后台任务再多,结果也早已按回执进过主对话;而旧对话一旦被挤出清单,
- * 用户追问恢复前的事就只能得到"没有记录"。非伙伴会话或归属损坏返回 []。
+ * 伙伴自己的私聊会话(当前主对话 + 恢复前的 history Session,最新在前)整体优先,剩余名额再
+ * 给最新的、由它发起的后台任务——后台任务再多,结果也早已按回执进过主对话;而旧对话一旦被
+ * 挤出清单,用户追问恢复前的事就只能得到"没有记录"。
+ *
+ * 只算私聊:`group`(群专线,不进主时间线)和 `delegation`(受派任务)链接都不是这段私聊,
+ * 受派任务完成后会转成 `history`(tx.ts 的委派收尾),所以还要按 bot_delegations 的
+ * target_bot_id 把"别人派给我的"排除掉,否则群消息 / 受派内容会被当成私聊里的承诺。
+ * 非伙伴会话或归属损坏返回 []。
  */
 export async function listBotRecallSessionIds(callerSessionId: string, limit: number): Promise<string[]> {
   const scope = await resolveBotHistoryScope(callerSessionId, undefined);
   if (scope.kind !== 'bot' || limit <= 0) return [];
   const db = getDbClient();
   const chats = await db.query<{ sessionId: string }>(
-    `SELECT session_id AS sessionId FROM bot_session_links
-      WHERE bot_id = ? ORDER BY created_at DESC LIMIT ?`,
-    [scope.botId, limit],
+    `SELECT l.session_id AS sessionId FROM bot_session_links l
+      WHERE l.bot_id = ? AND l.role IN ('canonical', 'history')
+        AND NOT EXISTS (
+          SELECT 1 FROM bot_delegations d
+           WHERE d.child_session_id = l.session_id AND d.target_bot_id = ?
+        )
+      ORDER BY l.created_at DESC LIMIT ?`,
+    [scope.botId, scope.botId, limit],
   );
   const ids = new Set(chats.map((row) => row.sessionId));
   const remaining = limit - ids.size;

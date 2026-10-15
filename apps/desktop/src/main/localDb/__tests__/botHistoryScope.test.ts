@@ -16,11 +16,11 @@ beforeEach(() => {
   h.sqlite = new Database(':memory:');
   h.sqlite.exec(`
     CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT);
-    CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, created_at INTEGER);
-    CREATE TABLE bot_delegations (requesting_bot_id TEXT, child_session_id TEXT, created_at INTEGER);
+    CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, created_at INTEGER, role TEXT NOT NULL DEFAULT 'canonical');
+    CREATE TABLE bot_delegations (requesting_bot_id TEXT, child_session_id TEXT, created_at INTEGER, target_bot_id TEXT);
     INSERT INTO sessions VALUES ('bot-main', 'bot'), ('owner-task', 'desktop'), ('child-1', 'desktop');
-    INSERT INTO bot_session_links VALUES ('bot-main', 'bot-1', 1), ('other-bot-main', 'bot-2', 2);
-    INSERT INTO bot_delegations VALUES ('bot-1', 'child-1', 3), ('bot-1', NULL, 4), ('bot-2', 'child-2', 5);
+    INSERT INTO bot_session_links (session_id, bot_id, created_at) VALUES ('bot-main', 'bot-1', 1), ('other-bot-main', 'bot-2', 2);
+    INSERT INTO bot_delegations (requesting_bot_id, child_session_id, created_at) VALUES ('bot-1', 'child-1', 3), ('bot-1', NULL, 4), ('bot-2', 'child-2', 5);
   `);
 });
 afterEach(() => h.sqlite?.close());
@@ -38,10 +38,18 @@ describe('resolveBotHistorySessionIds', () => {
 
 describe('listBotRecallSessionIds', () => {
   it('keeps every chat session ahead of background tasks within the bound, newest first', async () => {
-    // 恢复前的旧对话(更早)+ 当前对话,再加一堆比它们都新的后台任务。
+    // 恢复前的旧对话(更早)+ 当前对话,再加一堆比它们都新的后台任务;群专线、受派任务
+    // (含完成后转成 history 的)都不是私聊,哪怕更新也不进清单。
     h.sqlite!.exec(`
-      INSERT INTO bot_session_links VALUES ('bot-main-old', 'bot-1', 0);
-      ${Array.from({ length: 6 }, (_, i) => `INSERT INTO bot_delegations VALUES ('bot-1', 'task-${i}', ${10 + i});`).join('\n')}
+      INSERT INTO bot_session_links (session_id, bot_id, created_at, role) VALUES
+        ('bot-main-old', 'bot-1', 0, 'history'),
+        ('bot-group-lane', 'bot-1', 20, 'group'),
+        ('bot-received-live', 'bot-1', 21, 'delegation'),
+        ('bot-received-done', 'bot-1', 22, 'history');
+      INSERT INTO bot_delegations (requesting_bot_id, child_session_id, created_at, target_bot_id) VALUES
+        ('bot-2', 'bot-received-live', 21, 'bot-1'),
+        ('bot-2', 'bot-received-done', 22, 'bot-1');
+      ${Array.from({ length: 6 }, (_, i) => `INSERT INTO bot_delegations (requesting_bot_id, child_session_id, created_at) VALUES ('bot-1', 'task-${i}', ${10 + i});`).join('\n')}
     `);
     const ids = await listBotRecallSessionIds('bot-main', 4);
     expect(ids).toEqual(['bot-main', 'bot-main-old', 'task-5', 'task-4']);

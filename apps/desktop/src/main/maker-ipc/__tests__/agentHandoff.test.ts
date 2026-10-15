@@ -129,7 +129,10 @@ describe('buildHandoffText', () => {
     // 第一步用宿主给的自有会话 id 限定搜索范围;补查原文用命中的 sessionId。
     expect(companion).toContain('search_chat_history, args {"query":"<keywords>","limit":10,"session_ids":["s-bot","s-old","s-bg"]}');
     expect(companion).toContain('hits from sessions outside that list are unrelated context');
-    expect(companion).toContain('get_chat_history, args {"session_ids":["<sessionId of the hit>"]');
+    // 补查原文按命中的 sessionId + createdAt 锚定(工具默认最新在前,不锚定会读到会话末尾)。
+    expect(companion).toContain('get_chat_history, args {"session_ids":["<sessionId of the hit>"],"from":"<createdAt of the hit>","order":"asc"');
+    expect(companion).toContain('"to":"<createdAt of the hit>","order":"desc"');
+    expect(companion).toContain('"context_radius":6');
     expect(companion).not.toContain('the host scopes it to your own history');
     // 宿主没给清单:只认当前对话。超过上限只列最新的 20 个。
     const alone = buildHandoffText(messages, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
