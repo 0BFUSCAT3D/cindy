@@ -26,7 +26,7 @@ describe('sent image preview handoff', () => {
       hiddenClientIds: new Set(), sendingClientIds: new Set(), editingClientId: null,
       steeringClientIds: new Set(), presentationByClientId: new Map(), getImagePreview: getPreview });
     expect(pending.thumbs.map((thumb) => [thumb.key, thumb.uri])).toEqual([
-      ['message-slot-0', 'file:///a.jpg'], ['message-slot-2', 'file:///b.jpg'],
+      ['message-slot-0:a', 'file:///a.jpg'], ['message-slot-2:b', 'file:///b.jpg'],
     ]);
     expect(pending.thumbs[0].previewRef).toBe(files[0].url);
     // Formal messages have no file ID; the accepted message and image position remain stable.

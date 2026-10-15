@@ -7,6 +7,8 @@ import { svgAttachmentForDisplay } from '@/session/messageAttachments';
 import { collectMobileMessageGalleryImages, galleryImageIndexForPayload, lightboxImagesForPayload } from '@/session/messageGallery';
 import type { MobileMessageRenderItem } from '@/session/messageRenderModel';
 import type { MobileOutboxThumb } from '@/session/sessionOutbox';
+import { buildPendingSendItems } from '@/session/pendingSendItems';
+import type { QueuedRemoteMessage } from '@/session/types';
 import {
   ImageLightbox,
   type ImageLightboxProps,
@@ -348,6 +350,56 @@ describe('pending image gallery updates', () => {
     mount({ images, initialUrl: images[galleryImageIndexForPayload(images, clicked)]?.url ?? clicked.media.url });
     expect(runtime.nodes.get('FlatList').initialScrollIndex).toBe(1);
     expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+  });
+
+  it('resets annotation and dimensions when a queued edit replaces the active attachment in the same slot', async () => {
+    const collectQueued = (id: string, url: string) => collectMobileMessageGalleryImages(buildPendingSendItems({
+      queue: [{ clientId: 'pending', text: '', chatMessage: {}, files: [
+        { id, name: 'same.jpg', category: 'image', path: url, url },
+        { id: 'neighbor', name: 'neighbor.jpg', category: 'image', path: 'https://example.invalid/neighbor.jpg' },
+      ] } as unknown as QueuedRemoteMessage],
+      settling: [], outbox: [], hiddenClientIds: new Set(), sendingClientIds: new Set(),
+      editingClientId: null, steeringClientIds: new Set(), presentationByClientId: new Map(),
+    }));
+    const initial = collectQueued('original', 'https://example.invalid/original.jpg');
+    // Open the unchanged neighbor, then page to the image another device will replace.
+    const clicked = initial[1].payload;
+    const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
+    const { props, render } = mount({ images: initial, initialUrl: clicked.media.url,
+      annotation: { submitLabel: 'Send', onSubmit } });
+    act(() => runtime.nodes.get('FlatList').onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 0 } } }));
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    press('message.imageLightboxAnnotateButton');
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    fire(draw(), 'onFinalize', {}, true);
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    const page = () => runtime.nodes.get('FlatList').renderItem({ item: props.images[0], index: 0 }).props;
+
+    // A new URL for the same attachment must retain both strokes and known dimensions.
+    const settled = collectQueued('original', 'https://example.invalid/settled.jpg');
+    props.images = lightboxImagesForPayload(settled, clicked, 'message-pending', props.images);
+    render();
+    expect(page().annotationStrokes).toEqual([{ points: [{ x: 0.25, y: 0.25 }] }]);
+    expect(page().annotationDraftStroke).toEqual({ points: [{ x: 0.5, y: 0.5 }] });
+    expect(page().naturalSize).toEqual({ width: 400, height: 800 });
+
+    const replaced = collectQueued('replacement', 'https://example.invalid/replacement.jpg');
+    props.images = lightboxImagesForPayload(replaced, clicked, 'message-pending', props.images);
+    render();
+    expect(page().annotationStrokes).toEqual([]);
+    expect(page().annotationDraftStroke).toBeNull();
+    expect(page().naturalSize).toBeNull();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('1 / 2');
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 800, height: 400 } }));
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    fire(draw(), 'onFinalize', {}, true);
+    press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit.mock.calls[0]).toEqual([
+      replaced[0], replaced[0].url, [{ points: [{ x: 0.5, y: 0.5 }] }],
+      { mimeType: undefined, naturalWidth: 800, naturalHeight: 400 },
+    ]);
   });
 
   it('keeps ordinary message pages selected when a completed work group rebuilds its keys', async () => {
