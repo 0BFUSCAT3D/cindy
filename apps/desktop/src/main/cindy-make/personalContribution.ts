@@ -837,22 +837,25 @@ export class PersonalContribution {
       return { number: pull.number as number, url: pull.html_url, closed: pull.state === 'closed' };
     };
     const pulls = `${API}/repos/${OFFICIAL_GITHUB_REPOSITORY}/pulls`;
-    if (input.existing) {
+    const update = async (number: number): Promise<{ number: number; url: string; closed: boolean }> => {
       // The dialog promised "update": this pull request is edited in place. A state
       // that changed under way (a maintainer closed it mid-flight) aborts instead of
       // publishing a second PR the user never confirmed.
-      const current = await request(`${pulls}/${input.existing.number}`, { method: 'GET' });
+      const current = await request(`${pulls}/${number}`, { method: 'GET' });
       const open = current.ok ? !(await parse(current)).closed : false;
       if (!current.ok) await current.body?.cancel();
       if (!open) throw fail('failed');
-      const response = await request(`${pulls}/${input.existing.number}`, {
+      const response = await request(`${pulls}/${number}`, {
         method: 'PATCH',
-        body: JSON.stringify({ title: input.title, body: input.body }),
+        // This commit contains only the confirmed change on official main. A
+        // maintainer may have retargeted the PR since the last submission.
+        body: JSON.stringify({ title: input.title, body: input.body, base: 'main' }),
       });
       if (response.ok) return parse(response);
       await response.body?.cancel();
       throw fail('failed');
-    }
+    };
+    if (input.existing) return update(input.existing.number);
     const created = await request(pulls, {
       method: 'POST',
       body: JSON.stringify({
@@ -875,7 +878,7 @@ export class PersonalContribution {
       if (listed.ok) {
         const pullsFound = (await listed.json().catch(() => [])) as unknown[];
         const first = Array.isArray(pullsFound) ? pullsFound[0] : undefined;
-        if (first) return parse(new Response(JSON.stringify(first)));
+        if (first) return update((await parse(new Response(JSON.stringify(first)))).number);
       } else await listed.body?.cancel();
     }
     throw fail([401, 403, 404].includes(status) ? 'github' : 'failed');

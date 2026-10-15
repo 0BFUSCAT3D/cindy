@@ -183,6 +183,8 @@ it('opens a pull request with only this change, on the latest official main, sig
     // Submitting again updates the same branch and pull request.
     await h.contribution.submit({ ...draft, runId: 'run-1', title: 'feat: 更新后的标题' });
     expect(h.fetchFn.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true);
+    const patch = h.fetchFn.mock.calls.find(([, init]) => init?.method === 'PATCH')?.[1];
+    expect(JSON.parse(String(patch?.body))).toMatchObject({ base: 'main' });
     expect((await h.raw(['log', '-1', '--format=%s', branch], h.fork)).trim()).toBe(
       'feat: 更新后的标题',
     );

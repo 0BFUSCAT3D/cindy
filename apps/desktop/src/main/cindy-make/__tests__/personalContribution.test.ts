@@ -333,7 +333,7 @@ describe('PersonalContribution', () => {
     expect(deps.git).not.toHaveBeenCalled();
   });
 
-  it('invalidates the read-only resource after a successful submission', async () => {
+  it.each(['created', 'duplicate'] as const)('invalidates the read-only resource after a successful submission: %s', async (creation) => {
     const onChanged = vi.fn();
     const git = vi.fn(async (args: string[]) => {
       const op = args.includes('commit-tree')
@@ -360,18 +360,24 @@ describe('PersonalContribution', () => {
           throw new Error('unexpected git ' + args.join(' '));
       }
     });
-    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
-      init?.method === 'POST'
-        ? new Response(
-            JSON.stringify({
-              number: 9,
-              html_url: 'https://github.com/makecindy/cindy/pull/9',
-              state: 'open',
-            }),
-            { status: 201 },
-          )
-        : new Response('{}', { status: 404 }),
-    );
+    const pull = {
+      number: 9, html_url: 'https://github.com/makecindy/cindy/pull/9',
+      state: 'open', base: { ref: 'another-base' },
+    };
+    let posted = false;
+    const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        posted = true;
+        return creation === 'duplicate'
+          ? new Response('{}', { status: 422 })
+          : new Response(JSON.stringify(pull), { status: 201 });
+      }
+      if (String(url).includes('/pulls?state=open'))
+        return new Response(JSON.stringify(posted ? [pull] : []), { status: 200 });
+      if (String(url).endsWith('/pulls/9'))
+        return new Response(JSON.stringify(pull), { status: 200 });
+      return new Response('{}', { status: 404 });
+    });
     const { contribution } = harness({
       git: git as unknown as ContributionDeps['git'],
       fetch: fetchFn as unknown as typeof fetch,
@@ -389,6 +395,10 @@ describe('PersonalContribution', () => {
     ).resolves.toMatchObject({ number: 9, state: 'open' });
     expect(onChanged).toHaveBeenCalledOnce();
     expect(onChanged).toHaveBeenCalledWith('run');
+    if (creation === 'duplicate') {
+      const patch = fetchFn.mock.calls.find(([, init]) => init?.method === 'PATCH')?.[1];
+      expect(JSON.parse(String(patch?.body))).toMatchObject({ base: 'main' });
+    }
   });
 
   it('stops the submission when the Cindy account changes while it runs', async () => {
@@ -443,7 +453,7 @@ describe('PersonalContribution', () => {
     expect(git.mock.calls.some(([args]) => args[0] === 'push')).toBe(false);
   });
 
-  it('records the moved branch before updating the pull request', async () => {
+  it('records the moved branch and restores main when updating a retargeted pull request', async () => {
     let store: Record<string, ContributionRecord> = {
       run: {
         runId: 'run',
@@ -488,6 +498,7 @@ describe('PersonalContribution', () => {
             number: 3,
             html_url: 'https://github.com/makecindy/cindy/pull/3',
             state: 'open',
+            base: { ref: 'another-base' },
           }),
           { status: 200 },
         );
@@ -515,6 +526,8 @@ describe('PersonalContribution', () => {
     // The push this client already made is recorded: a retry leases against it
     // instead of failing forever against a branch this client itself moved.
     expect(store.run).toMatchObject({ number: 3, branch: 'cindy-make-pr/run', commit: B });
+    const patch = fetchFn.mock.calls.find(([, init]) => init?.method === 'PATCH')?.[1];
+    expect(JSON.parse(String(patch?.body))).toMatchObject({ base: 'main' });
   });
 
   it('records the pushed commit in the initiating ledger even when the account switches', async () => {
@@ -857,6 +870,8 @@ describe('PersonalContribution', () => {
       ]);
       expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
       expect(fetchFn.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(true);
+      const patch = fetchFn.mock.calls.find(([, init]) => init?.method === 'PATCH')?.[1];
+      expect(JSON.parse(String(patch?.body))).toMatchObject({ base: 'main' });
       expect(store.run).toMatchObject({ number: 7, branch: reconciledBranch, commit: B });
     },
   );
