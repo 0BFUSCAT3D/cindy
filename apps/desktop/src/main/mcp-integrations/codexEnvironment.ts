@@ -323,7 +323,8 @@ async function doStart(
     if (!toClaudeSdkConfig) continue;
 
     const createServer = (): McpServer => {
-      const cfg = toClaudeSdkConfig(ctx) as
+      // Class providers read instance state, including when creating later client facades.
+      const cfg = toClaudeSdkConfig.call(provider, ctx) as
         | { type?: string; name?: string; instance?: unknown }
         | null;
       if (cfg?.type !== 'sdk' || !cfg.instance) {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import type { Logger, McpProvider } from '@cindy/maker-core';
+import type { Logger, McpProvider, McpProviderContext } from '@cindy/maker-core';
+import type { AppServerConfig } from '../../mcp-apps/connection.js';
 import {
   getActiveCodexBridgeServerNames,
   getCodexExtraSpawnConfig,
@@ -12,6 +13,7 @@ import {
 } from '../codexEnvironment.js';
 import { CODEX_DISABLED_BUILTIN_PLUGIN_IDS_KEY } from '../codexBuiltinToolPolicy.js';
 import { CINDY_MAKE_VENDOR_OPTION_KEY } from '../../../shared/cindyMakeSession.js';
+import { CustomMcpProvider } from '../custom-mcp-provider.js';
 
 function noopLogger(): Logger {
   const logger: Logger = {
@@ -121,6 +123,53 @@ describe('codexEnvironment', () => {
     );
     expect(replacementUrl.searchParams.get('instance')).toBe('instance-2');
     expect(replacementUrl.toString()).not.toBe(boundUrl.toString());
+  });
+
+  it.each(['http', 'sse'] as const)('keeps a %s custom MCP facade available across Codex clients', async (transport) => {
+    const instances: McpServer[] = [];
+    const appProxy = vi.fn((read: () => AppServerConfig, context: McpProviderContext) => {
+      expect(read()).toEqual({
+        id: 'custom_test',
+        url: 'https://example.test/mcp',
+        transport,
+        headers: { Authorization: 'Bearer test-only-token' },
+      });
+      expect(context.agentKind).toBe('codex');
+      const server = new McpServer({ name: 'custom_test', version: '1.0.0' });
+      instances.push(server);
+      return server;
+    });
+    const provider = new CustomMcpProvider({
+      id: 'custom_test', name: 'Custom Test', transport, url: 'https://example.test/mcp', headers: {},
+    }, () => 'test-only-token', appProxy);
+    const config = await getCodexExtraSpawnConfig({
+      mcpProviders: [provider], logger: noopLogger(),
+    });
+    expect(config.bridgeServerNames).toContain('custom_test');
+    expect(config.extraArgs.join('\n')).not.toContain('test-only-token');
+    expect(Object.values(config.extraEnv)).not.toContain('test-only-token');
+
+    // Each MCP client needs its own facade; rebuilding must keep the provider receiver too.
+    for (const id of [1, 2]) {
+      const response = await fetch(config.bridge!.url(provider.name), {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${config.bridge!.token}`,
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id, method: 'initialize',
+          params: { protocolVersion: '2024-11-05', capabilities: {},
+            clientInfo: { name: 'test-client', version: '1.0.0' } },
+        }),
+      });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain('"name":"custom_test"');
+    }
+    expect(appProxy).toHaveBeenCalledTimes(2);
+    expect(instances[0]).not.toBe(instances[1]);
   });
 
   it('disables cindy_make per thread unless the Session carries the Cindy Make marker', async () => {
