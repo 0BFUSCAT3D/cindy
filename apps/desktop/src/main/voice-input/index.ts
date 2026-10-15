@@ -1803,6 +1803,8 @@ async function createVoiceInputProvider(
         sourceLanguage,
         missingCredentialMessage: profile.missingCredentialMessage,
         errorFallbackMessage: profile.errorFallbackMessage,
+        // 这条直连网关的 WebSocket 携带 Cindy AI Key;握手 401 时上报 Key 失效。
+        onAuthorizationRejected: reportCindyGatewayKeyRejected,
       });
     }
     throw new Error(`Unsupported native ASR protocol ${nativeConfig.protocolProfile}.`);
