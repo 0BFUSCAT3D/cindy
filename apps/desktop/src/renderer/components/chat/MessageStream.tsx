@@ -2729,10 +2729,13 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
   item,
   context,
   compact,
+  replyColumnSpacer,
 }: {
   item: Extract<RenderItem, { type: 'work_group' }>;
   context: WorkGroupRenderContext;
   compact: boolean;
+  /** 伙伴聊天：隐形头像占位，让工作过程与回复正文同列对齐。 */
+  replyColumnSpacer?: ReactNode;
 }) {
   // 完成态外层时间线可包含内层 work_group。递归只负责形状映射,
   // 具体折叠 / 直接详情逻辑全部复用 WorkGroupBlock。
@@ -2768,6 +2771,19 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
     };
   };
   const childItems = item.children.map(toWorkGroupChild);
+  const block = (
+    <WorkGroupBlock
+      // 单层前缀约定 `work:<clientId>` — item.key 形如 `work-<cid>`,
+      // 去掉 `work-` 后拼 `<role>:<id>`,与 agent: / thinking: 同构。
+      blockId={`work:${item.key.slice('work-'.length)}`}
+      durationMs={item.durationMs}
+      isStreaming={item.isStreaming}
+      startedAtMs={item.startedAtMs}
+      childItems={childItems}
+      compact={compact}
+      deferred={item.deferred}
+    />
+  );
   return (
     // data-message-client-ids:组折叠时子卡片/聚合块整体 unmount,
     // 精确锚点消失 —— 后台任务面板「点行跳聊天」经 ~= 回退查询
@@ -2779,17 +2795,7 @@ export const WorkGroupRenderItemView = memo(function WorkGroupRenderItemView({
       className="scroll-mt-20"
       data-message-client-ids={collectWorkGroupClientIds(item.children).join(' ')}
     >
-      <WorkGroupBlock
-        // 单层前缀约定 `work:<clientId>` — item.key 形如 `work-<cid>`,
-        // 去掉 `work-` 后拼 `<role>:<id>`,与 agent: / thinking: 同构。
-        blockId={`work:${item.key.slice('work-'.length)}`}
-        durationMs={item.durationMs}
-        isStreaming={item.isStreaming}
-        startedAtMs={item.startedAtMs}
-        childItems={childItems}
-        compact={compact}
-        deferred={item.deferred}
-      />
+      {replyColumnSpacer ? withAssistantAvatar(replyColumnSpacer, block) : block}
     </div>
   );
 });
@@ -6136,6 +6142,17 @@ export function MessageStream({
     previousLocalFileRefsRef.current = localFileRefs;
   }, [localFileRefs]);
 
+  // 伙伴聊天的工作过程与回复正文同列：只占头像宽度，不重复画脸。memo 住以保持
+  // WorkGroupRenderItemView 的 memo 比较成立。
+  const botReplyColumnSpacer = useMemo(
+    () =>
+      simplifiedBotConversation && assistantAvatar ? (
+        <span aria-hidden="true" className="invisible">
+          {assistantAvatar}
+        </span>
+      ) : undefined,
+    [assistantAvatar, simplifiedBotConversation],
+  );
   const workGroupRenderContext = useMemo<WorkGroupRenderContext>(
     () => ({
       workingDir,
@@ -6455,7 +6472,10 @@ export function MessageStream({
                           key={item.key}
                           item={item}
                           context={workGroupRenderContext}
-                          compact={simplifiedBotConversation}
+                          // 伙伴聊天与普通任务同一套工作过程：运行中露最近 5 条活动与计时，
+                          // 完成后收成「已工作 Xs」，不另走 compact 分支。
+                          compact={false}
+                          replyColumnSpacer={botReplyColumnSpacer}
                         />
                       );
                     }
@@ -6877,7 +6897,10 @@ const MessageItem = memo(function MessageItem({
             workingDir={workingDir}
           />
         );
-        return simplifiedBotConversation && (message.systemCardType === 'bot-session-task' || message.systemCardType === 'bot-session-task-result')
+        return simplifiedBotConversation && (message.systemCardType === 'bot-session-task'
+          || message.systemCardType === 'bot-session-task-result'
+          || message.systemCardType === 'bot-session-task-message'
+          || message.systemCardType === 'bot-direct-message')
           ? withAssistantAvatar(
               assistantAvatar ? (
                 <span aria-hidden="true" className="invisible">

@@ -78,12 +78,26 @@ describe('伙伴归属表', () => {
     expect(findBotProfileForSession([bot], 'stale-mirror')).toBeUndefined();
   });
 
-  it('通知点击把主任务送回伙伴页，子任务保留自己的任务地址', () => {
-    const bot = profile({ id: 'bot/a' });
+  it('同一个任务只有一个地址：主任务回伙伴页，历史走历史页，后台任务走普通任务页', () => {
+    const bot = profile({
+      id: 'bot/a',
+      sessions: [
+        { id: 's-main', role: 'canonical', kind: 'chat' },
+        { id: 's-telegram', role: 'route' },
+        { id: 's-old', role: 'history', kind: 'history' },
+        { id: 's-task', role: 'delegation', kind: 'worker' },
+        { id: 's-worker', kind: 'worker' },
+        { id: 's-lane', role: 'group', kind: 'group' },
+      ] as unknown as BotProfile['sessions'],
+    });
     expect(botRouteForOwnedSession([bot], 's-main')).toBe('/bots/bot%2Fa');
     expect(botRouteForOwnedSession([bot], 's-telegram')).toBe(
       '/bots/bot%2Fa/session/s-telegram',
     );
+    expect(botRouteForOwnedSession([bot], 's-old')).toBe('/bots/bot%2Fa/history/s-old');
+    expect(botRouteForOwnedSession([bot], 's-task')).toBe('/cc-agent/s-task');
+    expect(botRouteForOwnedSession([bot], 's-worker')).toBe('/cc-agent/s-worker');
+    expect(botRouteForOwnedSession([bot], 's-lane')).toBeNull();
     expect(botRouteForOwnedSession([bot], 'not-owned')).toBeNull();
   });
 });
@@ -111,11 +125,11 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
 
   it('启动后从未进过伙伴页时先加载投影，再回伙伴页', async () => {
     const { deps: d, loadProfiles } = deps({ loaded: [profile()] });
-    await expect(resolveBotRouteForSessionEntry('s-old', d)).resolves.toBe('/bots/bot-a/session/s-old');
+    await expect(resolveBotRouteForSessionEntry('s-old', d)).resolves.toBe('/bots/bot-a/history/s-old');
     expect(loadProfiles).toHaveBeenCalledWith(true);
   });
 
-  it('投影已加载后新委派出去的任务（行上仍是 desktop）也会重读投影，回到接手伙伴', async () => {
+  it('投影已加载后新委派出去的任务（行上仍是 desktop）也会重读投影，打开普通任务页', async () => {
     const stale = profile();
     const delegated = profile({
       id: 'bot-b',
@@ -127,7 +141,7 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     });
     const { deps: d, loadProfiles } = deps({ current: [stale], loaded: [stale, delegated] });
     await expect(resolveBotRouteForSessionEntry('s-delegated', d)).resolves.toBe(
-      '/bots/bot-b/session/s-delegated',
+      '/cc-agent/s-delegated',
     );
     expect(loadProfiles).toHaveBeenCalledWith(true);
   });
@@ -160,6 +174,21 @@ describe('通知入口在伙伴投影未加载时的路由', () => {
     expect(isLatest()).toBe(true);
     open('third');
     expect(isLatest()).toBe(false);
+  });
+
+  it('后台任务走普通任务入口，保留消息锚点与灵动岛上报', async () => {
+    const openBotRoute = vi.fn();
+    const openOrdinary = vi.fn();
+    const open = createSessionEntryNavigator({
+      resolveBotRoute: async () => '/cc-agent/s-task',
+      openBotRoute,
+      openOrdinary,
+    });
+    open('s-task', 'message-9');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(openBotRoute).not.toHaveBeenCalled();
+    expect(openOrdinary).toHaveBeenCalledWith('s-task', 'message-9', expect.any(Function));
   });
 
   it('加载投影失败时退回普通任务路由，不吞掉这次点击', async () => {

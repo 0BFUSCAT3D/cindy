@@ -42,3 +42,9 @@ it('lets a companion owner manage a group owned by their companion', async () =>
   expect(screen.getByRole('button', { name: key('transfer') })).toBeTruthy();
   await waitFor(() => expect(mocks.ownedBots).toHaveBeenCalled());
 });
+it('labels reply and speaking modes with the same words as the local group settings', () => {
+  render(<MemoryRouter><ChatGroupSettings group={{ ...group(true), replyMode: 'all', speakingMode: 'auto' }} /></MemoryRouter>);
+  expect(screen.getByRole('combobox', { name: 'bots.groupChat.settings.replyMode' }).textContent).toContain('bots.groupChat.settings.replyModeAll');
+  expect(screen.getByRole('combobox', { name: 'bots.groupChat.settings.speakingMode' }).textContent).toContain('bots.groupChat.settings.speakingModeAuto');
+  expect(screen.queryByText(key('replyMode'))).toBeNull();
+});

@@ -16,23 +16,58 @@ const mocks = vi.hoisted(() => ({
   pin: vi.fn(),
   running: new Map(),
   activity: null as any,
-  attached: false,
+  resolved: true,
+  stale: false,
+  cancel: vi.fn(),
+  send: vi.fn(),
+  toast: vi.fn(),
+  prs: [] as any[],
 }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...await importOriginal<typeof import('react-i18next')>(),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) =>
+      options && Object.keys(options).length ? `${key}:${JSON.stringify(options)}` : key,
+  }),
+}));
 vi.mock('react-router-dom', () => ({ useNavigate: () => mocks.navigate }));
-vi.mock('../botDelegationLive', () => ({ useBotDelegation: () => ({ row: mocks.row }) }));
+vi.mock('../botDelegationLive', () => ({
+  useBotDelegation: () => ({ row: mocks.row, resolved: mocks.resolved, stale: mocks.stale }),
+  isActiveDelegationStatus: (status: string) => ['queued', 'running', 'waiting'].includes(status),
+}));
+vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [] }));
+vi.mock('@/lib/makerTransport', () => ({
+  makerApiForSticky: () => ({ cancelBotDelegation: mocks.cancel }),
+}));
+vi.mock('@/lib/toast', () => ({ toast: { success: mocks.toast } }));
+vi.mock('@/cindy-brain/ghostUnreadStore', () => ({ useElementVisible: () => ({ ref: () => {}, visible: false }) }));
+vi.mock('@/contexts/PrRefsContext', () => ({
+  usePrActions: () => ({ registerPrConsumer: () => () => {}, invalidateRemotePrRefs: () => {} }),
+  usePrRefsForSession: () => mocks.prs,
+  usePrStatuses: () => ({ statuses: new Map(), successfulStatuses: new Map(), refreshError: false }),
+}));
+vi.mock('@/components/chat/MarkdownRenderer', () => ({
+  MarkdownRenderer: ({ content }: any) => <div data-testid="markdown">{content}</div>,
+}));
+vi.mock('@/components/chat/ChatSessionFileContext', () => ({
+  useChatSessionFile: () => ({ origin: { kind: 'local' }, sessionId: 'parent', workingDir: '/parent' }),
+  ChatSessionFileProvider: ({ children }: any) => children,
+}));
 vi.mock('@/lib/sessionService', () => ({ get: mocks.get }));
 vi.mock('@/lib/orcaSessionIdentity', () => ({ resolveSessionRoute: mocks.route }));
 vi.mock('@/lib/sessionsStore', () => ({
   sessionsStore: { subscribe: () => () => {}, subscribePatches: () => () => {} },
 }));
-vi.mock('@/components/ui/tooltip', () => ({ Tip: ({ children }: any) => children }));
 vi.mock('@/state/agentIslandActivity', () => ({ useAgentIslandActivity: () => mocks.activity }));
 vi.mock('@/features/device-link/remoteSessionActivityStore', () => ({
   useRemoteSessionActivity: () => null,
 }));
 vi.mock('@/lib/makerChatStore', () => ({
-  makerChatStore: { subscribeAll: () => () => {}, getRunningSnapshot: () => mocks.running },
+  makerChatStore: {
+    subscribeAll: () => () => {},
+    getRunningSnapshot: () => mocks.running,
+    sendMessage: mocks.send,
+  },
 }));
 vi.mock('@/lib/sessionAttentionStore', () => ({ useSessionAttentionKind: () => undefined }));
 vi.mock('@/features/cc-agent/hooks/useSessionDisplayRunningState', () => ({
@@ -62,16 +97,6 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
     },
   },
 }));
-vi.mock('@/features/cc-agent/sidebar/SessionStatusIcon', () => ({
-  SessionStatusIcon: ({ session, isRunning, isAttached }: any) => (
-    <i
-      data-testid="original-harness"
-      data-kind={session.agentKind}
-      data-running={isRunning}
-      data-attached={isAttached}
-    />
-  ),
-}));
 const card: BotCollaborationMeta = {
   v: 1,
   role: 'delegation-request',
@@ -88,6 +113,11 @@ const data = (value = card) => ({ ...value });
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.row = null;
+  mocks.resolved = true;
+  mocks.stale = false;
+  mocks.prs = [];
+  mocks.cancel.mockResolvedValue({ ok: true, delegationId: 'd', childSessionId: 'child' });
+  mocks.send.mockResolvedValue(true);
   mocks.remoteRows = [];
   mocks.remoteReadCurrent = true;
   mocks.remoteGet.mockResolvedValue({
@@ -104,16 +134,17 @@ beforeEach(() => {
     title: 'Current title',
     agentKind: 'codex',
     status: 'active',
+    workingDir: '/child',
+    model: 'gpt-x',
+    effort: 'high',
+    permissionMode: 'default',
   });
   mocks.route.mockResolvedValue('/cc-agent/child');
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       deviceLink: { invoke: mocks.remoteGet },
-      binding: {
-        resolveSession: vi.fn(async () => ({ attached: false })),
-        onChanged: () => () => {},
-      },
+      openExternal: vi.fn(async () => ({ success: true })),
     },
   });
 });
@@ -124,21 +155,106 @@ it('only renders valid requesting-side task references', () => {
   rerender(<BotSessionTaskCard data={data({ ...card, role: 'guest-request' })} />);
   expect(container.firstChild).toBeNull();
 });
-it('uses the actual session title and native harness, and opens that same session without mutating it', async () => {
+const cardState = () => document.querySelector('[data-bot-task-card]')?.getAttribute('data-bot-task-card');
+const at = Date.parse('2026-10-15T08:00:00Z');
+const delegation = (fields: Record<string, unknown>) => ({
+  id: 'd', childSessionId: 'child', title: 'Row title', status: 'running', pendingInteraction: null,
+  resultSummary: null, artifacts: [], lastError: null, createdAt: at, acceptedAt: at, completedAt: null,
+  updatedAt: at, ...fields,
+});
+it('uses the actual session title and harness, and opens that same session without mutating it', async () => {
   render(<BotSessionTaskCard data={data()} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Current title' }));
   await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/child'));
   expect(mocks.route).toHaveBeenCalledWith('child', expect.objectContaining({ id: 'child' }));
-  expect(screen.getByTestId('original-harness').getAttribute('data-kind')).toBe('codex');
-  expect(screen.getAllByRole('button')).toHaveLength(1);
+  expect(screen.getByText('bots.collab.backgroundTask · Codex')).toBeTruthy();
 });
 it('takes actual runtime state instead of treating an ended delegation as completed work', async () => {
   mocks.row = { childSessionId: 'child', status: 'done' };
   mocks.running.set('child', { isRunning: true });
   render(<BotSessionTaskCard data={data()} />);
   await screen.findByRole('button', { name: 'Current title' });
-  expect(screen.getByTestId('original-harness').getAttribute('data-running')).toBe('true');
+  await waitFor(() => expect(cardState()).toBe('running'));
   expect(screen.queryByText('bots.collab.status.done')).toBeNull();
+});
+it('shows the current action and elapsed time while running, and stops through the delegation', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+  vi.setSystemTime(at + 65_000);
+  try {
+    mocks.row = delegation({ status: 'running' });
+    mocks.activity = { phase: 'running', compactDetail: 'Running pnpm test', currentTurnActive: true };
+    render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+    expect(cardState()).toBe('running');
+    expect(screen.getByText('Running pnpm test')).toBeTruthy();
+    expect(screen.getByText(/bots\.collab\.elapsed/).textContent).toContain('bots.collab.duration.minutes');
+    expect(screen.getByRole('button', { name: /bots\.collab\.watchWork/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.stop/ }));
+    await act(async () => {});
+    expect(mocks.cancel).toHaveBeenCalledWith('parent', 'd');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+it('reports a failed stop without pretending the task stopped', async () => {
+  mocks.row = delegation({ status: 'running' });
+  mocks.cancel.mockResolvedValue({ ok: false, errorCode: 'X', message: 'Could not stop' });
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.stop/ }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Could not stop');
+  expect(cardState()).toBe('running');
+});
+it('adds a note to a local running task as the owner, with the task runtime settings', async () => {
+  mocks.row = delegation({ status: 'running' });
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.addNote/ }));
+  const input = screen.getByRole('textbox', { name: 'bots.collab.addNote' });
+  fireEvent.change(input, { target: { value: '  Cover offline reconnect  ' } });
+  fireEvent.submit(input.closest('form')!);
+  await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(
+    'child', 'Cover offline reconnect', 'gpt-x', 'high', 'default', '/child',
+  ));
+  await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+  expect(mocks.toast).toHaveBeenCalledWith('bots.collab.addNoteSent');
+});
+it('shows what the task waits for and lets the user look at it', async () => {
+  mocks.row = delegation({ status: 'waiting', pendingInteraction: { summary: 'Allow npm install', kind: 'permission' } });
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  expect(cardState()).toBe('waiting');
+  expect(screen.getByText(/bots\.collab\.awaitingConfirm:.*Allow npm install/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /bots\.collab\.lookAt/ }));
+  await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/cc-agent/child'));
+  expect(screen.getByRole('button', { name: /bots\.collab\.stop/ })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /bots\.collab\.addNote/ })).toBeNull();
+});
+it('shows the result summary when completed and expands the result in place', async () => {
+  mocks.row = delegation({ status: 'completed', completedAt: at + 14 * 60_000, resultSummary: 'Retry capped at 3.',
+    artifacts: [{ path: 'a.ts', absolutePath: '/child/a.ts', status: 'modified' }] });
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  expect(cardState()).toBe('completed');
+  expect(screen.getByText('Retry capped at 3.')).toBeTruthy();
+  expect(screen.getByText(/bots\.collab\.tookTime/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /bots\.collab\.stop/ })).toBeNull();
+  const toggle = screen.getByRole('button', { name: /bots\.collab\.expandResult/ });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(toggle);
+  expect(screen.getAllByTestId('markdown').map((node) => node.textContent))
+    .toEqual(['Retry capped at 3.', '[a.ts](</child/a.ts>)']);
+  expect(screen.getByRole('button', { name: /bots\.collab\.collapseResult/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByRole('button', { name: /bots\.collab\.artifactCount/ })).toBeTruthy();
+});
+it('shows the failure reason in one line', () => {
+  mocks.row = delegation({ status: 'timed-out', lastError: 'TIMEOUT: upstream did not finish' });
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  expect(cardState()).toBe('failed');
+  expect(screen.getByText('upstream did not finish')).toBeTruthy();
+  expect(screen.getByText('bots.collab.status.timed-out')).toBeTruthy();
+  expect(screen.getByRole('button', { name: /bots\.collab\.expandDetails/ })).toBeTruthy();
+});
+it('keeps the stale warning when the task row cannot refresh', () => {
+  mocks.row = delegation({ status: 'running' });
+  mocks.stale = true;
+  render(<BotSessionTaskCard data={data()} sessionId="parent" />);
+  expect(screen.getByText('bots.collab.stale')).toBeTruthy();
 });
 it('preserves archived identity when opening; viewing never calls unarchive', async () => {
   mocks.get.mockResolvedValue({
@@ -163,15 +279,18 @@ it('keeps a readable fallback when metadata is unavailable without inventing a h
   expect(
     (screen.getByRole('button', { name: 'Original request' }) as HTMLButtonElement).disabled,
   ).toBe(false);
-  expect(screen.queryByTestId('original-harness')).toBeNull();
+  expect(screen.getByText('bots.collab.backgroundTask')).toBeTruthy();
 });
 it('pins remote child reads and navigation to the parent device', async () => {
   mocks.origin.mockImplementation((id: string) => (id === 'parent' ? 'mac-a' : undefined));
+  mocks.row = delegation({ status: 'running' });
   render(<BotSessionTaskCard data={data()} />);
   await screen.findByRole('button', { name: 'Remote title' });
   expect(mocks.remoteGet).toHaveBeenCalledWith('mac-a', 'local-db:sessions:get', ['child']);
   expect(mocks.get).not.toHaveBeenCalled();
-  expect(screen.getByTestId('original-harness').getAttribute('data-kind')).toBe('pi');
+  expect(screen.getByText('bots.collab.backgroundTask · Pi')).toBeTruthy();
+  // Sending as the owner is local-only; a remote task keeps open/stop.
+  expect(screen.queryByRole('button', { name: /bots\.collab\.addNote/ })).toBeNull();
   act(() => {
     mocks.remoteRows = [{ ...mocks.remoteRows[0], title: 'Remote renamed' }];
     mocks.remoteChanged();
@@ -184,10 +303,15 @@ it('does not read a conflicting child origin', () => {
   render(<BotSessionTaskCard data={data()} />);
   expect(mocks.get).not.toHaveBeenCalled();
 });
-it('keeps interjections as quiet traces', () => {
+it('keeps legacy interjections as quiet traces', () => {
   render(<BotSessionTaskMessageTrace data={data({ ...card, role: 'interjection' })} />);
   expect(screen.getByText('bots.collab.messageSent')).toBeTruthy();
   expect(screen.queryByRole('button')).toBeNull();
+});
+it('shows what was told to the task when the trace carries a preview', () => {
+  render(<BotSessionTaskMessageTrace data={data({ ...card, role: 'interjection', interjectionPreview: 'Cover offline reconnect' })} />);
+  expect(screen.getByText('bots.collab.messageSentWithText:{"text":"Cover offline reconnect"}')).toBeTruthy();
+  expect(screen.queryByText('bots.collab.messageSent')).toBeNull();
 });
 
 it('keeps a newer remote mirror instead of publishing a stale GET', async () => {
@@ -209,5 +333,5 @@ it('keeps a newer remote mirror instead of publishing a stale GET', async () => 
   });
   await act(async () => resolve({ id: 'child', title: 'Stale title', agentKind: 'pi' }));
   expect(screen.getByRole('button', { name: 'New remote title' })).toBeTruthy();
-  expect(screen.getByTestId('original-harness').getAttribute('data-kind')).toBe('codex');
+  expect(screen.getByText('bots.collab.backgroundTask · Codex')).toBeTruthy();
 });

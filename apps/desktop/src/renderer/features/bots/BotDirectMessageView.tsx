@@ -7,6 +7,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { makerApiForDevice } from '@/lib/makerTransport';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { Spinner } from '@/components/ui/spinner';
+import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import {
   getDataOwnerGeneration,
   isDataOwnerGenerationCurrent,
@@ -171,13 +172,14 @@ export function BotDirectMessageView() {
                     {sender.name} · {formatBotMessageGroupTime(message.createdAt, i18n.language)}
                   </div>
                   <div
-                    className={`whitespace-pre-wrap break-words rounded-[12px] border px-3.5 py-2.5 text-14 leading-[1.6] text-[var(--text-primary)] ${
+                    className={`min-w-0 max-w-full break-words rounded-[12px] border px-3.5 py-2.5 text-14 leading-[1.6] text-[var(--text-primary)] ${
                       ownSide
                         ? 'border-[var(--msg-user-border)] bg-[var(--msg-user-bg)]'
                         : 'border-[var(--border-default)] bg-[var(--surface-chip)]'
                     }`}
                   >
-                    {message.content}
+                    {/* Teammate-authored text: rendered like chat, never with privileged links. */}
+                    <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
                   </div>
                 </div>
                 {ownSide ? <BotAvatar bot={sender} size="sm" /> : null}

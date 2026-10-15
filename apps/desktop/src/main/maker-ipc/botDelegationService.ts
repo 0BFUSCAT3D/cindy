@@ -46,7 +46,7 @@ import type {
   BotCollaborationRole,
   BotDelegationInterjectResult,
 } from '../../shared/botCollaboration.js';
-import { BOT_DELEGATION_CLIENT_ID } from '../../shared/botCollaboration.js';
+import { BOT_DELEGATION_CLIENT_ID, botInterjectionPreview } from '../../shared/botCollaboration.js';
 import { buildBotGroupTaskCard, type BotGroupTaskCardLabels, type BotGroupTaskCardState } from '../../shared/botGroupChat.js';
 import { t } from '../i18n.js';
 import type { BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
@@ -3060,7 +3060,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         message: dispatched?.message ?? '消息未能送达后台任务',
       };
     }
-    // 父任务只留发送状态；完整指令已经投递并保存在子任务，不再复制到主聊天。
+    // 父任务只留发送状态与首行摘要；完整指令已经投递并保存在子任务，不再复制到主聊天。
     // 写不进去不回滚投递——话已经送到了，回滚只会让两边记账不一致。
     await persistTimelineMessage({
       sessionId: callerSessionId,
@@ -3069,7 +3069,11 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       content: '',
       createdAt: now(),
       agentMeta: {
-        botCollaboration: await collaborationMeta(row, 'interjection'),
+        botCollaboration: {
+          ...await collaborationMeta(row, 'interjection'),
+          // 只留首行摘要，让主聊天看得出补充了什么；完整指令仍只在子任务里。
+          ...(botInterjectionPreview(trimmed) ? { interjectionPreview: botInterjectionPreview(trimmed) } : {}),
+        },
       },
     }).catch((error) => {
       log.warn('failed to mirror a Session task message into the requesting task', {

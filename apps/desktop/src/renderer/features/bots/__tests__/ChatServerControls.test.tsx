@@ -13,7 +13,11 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(), react: vi.fn(), thread: vi.fn(), reply: vi.fn(), createInvite: vi.fn(), previewInvite: vi.fn(), acceptInvite: vi.fn(),
   refresh: vi.fn(), ownerCurrent: true,
 }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
+// Partial: the 话题 reply box shares the group composer, whose attachment pieces pull in the app i18n instance.
+vi.mock('react-i18next', async (original) => ({
+  ...(await original<typeof import('react-i18next')>()),
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
+}));
 vi.mock('@/components/chat/MarkdownRenderer', () => ({ MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div> }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => null }));
 vi.mock('../botGroupStore', () => ({ refreshBotGroups: mocks.refresh }));
@@ -22,7 +26,7 @@ vi.mock('@/contexts/dataOwnerGeneration', () => ({
   getDataOwnerGeneration: () => 1, isDataOwnerGenerationCurrent: () => mocks.ownerCurrent, isDataOwnerPushCurrent: () => true,
 }));
 const k = (name: string) => `bots.groupChat.server.${name}`;
-const message = { id: 'root', authorName: 'Human', content: 'Root message', reactions: [{ emoji: '👍', count: 2, me: true }] } as BotGroupMessageView;
+const message = { id: 'root', kind: 'message', authorKind: 'user', isSelf: false, authorName: 'Human', content: 'Root message', reactions: [{ emoji: '👍', count: 2, me: true }] } as BotGroupMessageView;
 const group = { id: 'room', members: [], messages: [message] } as unknown as BotGroupDetail;
 const render = (ui: ReactNode) => renderUI(<Tooltip.Provider>{ui}</Tooltip.Provider>);
 beforeEach(() => {

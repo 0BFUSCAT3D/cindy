@@ -28,9 +28,14 @@ export function findBotProfileForSession(
 }
 
 /**
- * Resolve the public Bot route for a notification or other session-only entry.
- * The stable main task stays on the short Bot route; child and historical tasks
- * retain their own session id so opening a notification never loses context.
+ * The one route for a Bot-owned session, shared by notifications, task cards and
+ * the main sidebar so every entry reaches the same page:
+ * - the stable main task → `/bots/:id`;
+ * - archived history → `/bots/:id/history/:sid`;
+ * - a background (delegation) task → `/cc-agent/:sid`, the ordinary task view it
+ *   really is (diffs, model picker), never a Bot skin that cannot open it;
+ * - a hidden group-chat lane → null: it is not navigable on its own;
+ * - other Bot chats (e.g. channel tasks) → `/bots/:id/session/:sid`.
  */
 export function botRouteForOwnedSession(
   profiles: readonly BotProfile[],
@@ -38,12 +43,17 @@ export function botRouteForOwnedSession(
 ): string | null {
   const bot = findBotProfileForSession(profiles, sessionId);
   if (!bot) return null;
+  const projection = bot.sessions.find((session) => session.id === sessionId);
   const canonicalSessionId = bot.sessions.find(
     (session) => session.role === 'canonical' || session.kind === 'chat',
   )?.id;
-  return canonicalSessionId === sessionId
-    ? `/bots/${encodeURIComponent(bot.id)}`
-    : `/bots/${encodeURIComponent(bot.id)}/session/${encodeURIComponent(sessionId)}`;
+  const botId = encodeURIComponent(bot.id);
+  const id = encodeURIComponent(sessionId);
+  if (canonicalSessionId === sessionId) return `/bots/${botId}`;
+  if (projection?.role === 'group' || projection?.kind === 'group') return null;
+  if (projection?.role === 'delegation' || projection?.kind === 'worker') return `/cc-agent/${id}`;
+  if (projection?.role === 'history' || projection?.kind === 'history') return `/bots/${botId}/history/${id}`;
+  return `/bots/${botId}/session/${id}`;
 }
 
 export interface BotSessionEntryRouteDeps {
@@ -91,7 +101,9 @@ export function createSessionEntryNavigator(
     const isLatest = () => sequence === entry;
     void deps.resolveBotRoute(sessionId).then((route) => {
       if (!isLatest()) return;
-      if (route) deps.openBotRoute(route);
+      // A background task opens like any ordinary task, so message anchors and
+      // the Agent Island visible-session report still apply.
+      if (route && !route.startsWith('/cc-agent/')) deps.openBotRoute(route);
       else deps.openOrdinary(sessionId, messageClientId, isLatest);
     });
   };

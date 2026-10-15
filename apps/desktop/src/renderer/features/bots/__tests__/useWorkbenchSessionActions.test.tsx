@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { WorkbenchSessionList } from '../WorkbenchSessionList';
+import { useWorkbenchSessionActions } from '../useWorkbenchSessionActions';
+
 const m = vi.hoisted(() => ({
   run: vi.fn(),
   unarchive: vi.fn(),
@@ -10,34 +11,20 @@ const m = vi.hoisted(() => ({
   preflight: vi.fn(),
   close: vi.fn(),
   binding: vi.fn(),
+  patchMeta: vi.fn(),
   running: new Set<string>(),
   attached: new Set<string>(),
   changed: vi.fn(),
   warning: vi.fn(),
+  error: vi.fn(),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (s: string) => s }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
-vi.mock('@/features/cc-agent/sidebar/SessionCard', () => ({
-  SessionCard: (p: any) => (
-    <div data-testid="native-row" data-variant={p.variant} data-status={p.session.status}>
-      <button onClick={() => p.onClick(p.session.id)}>open</button>
-      <button onClick={() => p.onAction(p.session.id, 'unarchive')}>restore</button>
-      <button onClick={() => p.onAction(p.session.id, 'archive', 'shared')}>archive</button>
-    </div>
-  ),
-}));
 vi.mock('@/features/cc-agent/hooks/useSessionLifecycleActions', () => ({
   useSessionLifecycleActions: () => ({ runSessionAction: m.run, unarchiveSession: m.unarchive }),
 }));
-vi.mock('@/features/cc-agent/hooks/useSessionDisplayRunningState', () => ({
-  useSessionDisplayRunningState: () => ({ displayRunningSessionIds: m.running }),
-}));
 vi.mock('@/hooks/useSessionRunningStatus', () => ({
-  useSessionRunningStatus: () => ({
-    runningSessionIds: m.running,
-    notifications: new Set(),
-    clearNotification: vi.fn(),
-  }),
+  useSessionRunningStatus: () => ({ runningSessionIds: m.running, clearNotification: vi.fn() }),
 }));
 vi.mock('@/hooks/useAttachedSessionIds', () => ({ useAttachedSessionIds: () => m.attached }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({
@@ -48,18 +35,25 @@ vi.mock('@/lib/orcaSessionIdentity', () => ({
 }));
 vi.mock('@/lib/worktreeRemovalWarning', () => ({ resolveWorktreeRemovalPreflight: m.preflight }));
 vi.mock('@/lib/sessionsStore', () => ({ sessionsStore: { patchLocal: vi.fn() } }));
-vi.mock('@/lib/sessionService', () => ({ patchMeta: vi.fn(), update: vi.fn() }));
+vi.mock('@/lib/sessionService', () => ({ patchMeta: m.patchMeta }));
 vi.mock('@/features/cc-agent/hooks/helpers/sidebarFilterCore', () => ({
   persistManualPinnedOrder: vi.fn(),
 }));
-vi.mock('@/lib/toast', () => ({ toast: { warning: m.warning, error: vi.fn() } }));
-const row = {
+vi.mock('@/lib/toast', () => ({ toast: { warning: m.warning, error: m.error } }));
+
+const archivedRow = {
   id: 'original',
   title: 'Original',
   status: 'archived',
   agentKind: 'codex',
   workingDir: '/project',
 } as any;
+const activeRow = { ...archivedRow, id: 'live', status: 'active', pinnedAt: null } as any;
+
+function setup(rows = [archivedRow, activeRow]) {
+  return renderHook(() => useWorkbenchSessionActions(rows, m.changed)).result;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   m.running = new Set();
@@ -68,45 +62,77 @@ beforeEach(() => {
   m.preflight.mockResolvedValue('clean');
   m.close.mockResolvedValue({ closed: ['shared'] });
   m.binding.mockResolvedValue({ attached: false });
+  m.patchMeta.mockResolvedValue(undefined);
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: { binding: { resolveSession: m.binding }, sharedTask: { account: m.close } },
   });
 });
 afterEach(cleanup);
-it('opens the original archived session through the native row without restoring it', async () => {
-  render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
-  expect(screen.getByTestId('native-row').getAttribute('data-variant')).toBe('list');
-  fireEvent.click(screen.getByText('open'));
+
+it('opens the original archived session in the task page without restoring it', async () => {
+  const result = setup();
+  act(() => result.current.open('original'));
   await waitFor(() => expect(m.navigate).toHaveBeenCalledWith('/cc-agent/original'));
   expect(m.unarchive).not.toHaveBeenCalled();
   expect(m.run).not.toHaveBeenCalled();
 });
+
 it('restores only through the explicit existing lifecycle action', async () => {
-  render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
-  fireEvent.click(screen.getByText('restore'));
-  await waitFor(() => expect(m.unarchive).toHaveBeenCalledWith('original'));
+  const result = setup();
+  await act(() => result.current.action('original', 'unarchive'));
+  expect(m.unarchive).toHaveBeenCalledWith('original');
+  expect(m.changed).toHaveBeenCalled();
 });
+
 it.each(['running', 'attached'] as const)('retains the %s archive guard', async (kind) => {
-  m[kind].add('original');
-  render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
-  fireEvent.click(screen.getByText('archive'));
-  await waitFor(() => expect(m.warning).toHaveBeenCalled());
+  m[kind].add('live');
+  const result = setup();
+  await act(() => result.current.action('live', 'archive'));
+  expect(m.warning).toHaveBeenCalled();
   expect(m.run).not.toHaveBeenCalled();
 });
+
+it('archives a clean task without asking and refreshes the list', async () => {
+  const result = setup();
+  await act(() => result.current.action('live', 'archive'));
+  expect(m.confirm).not.toHaveBeenCalled();
+  expect(m.run).toHaveBeenCalledWith('live', 'archive', { activeSessionId: null });
+  expect(m.changed).toHaveBeenCalled();
+});
+
+it('always confirms delete, and cancelling deletes nothing', async () => {
+  m.confirm.mockResolvedValue(false);
+  const result = setup();
+  await act(() => result.current.action('live', 'delete'));
+  expect(m.confirm).toHaveBeenCalled();
+  expect(m.run).not.toHaveBeenCalled();
+});
+
 it('cancelling unknown worktree confirmation does not close sharing or archive', async () => {
   m.preflight.mockResolvedValue('unknown');
   m.confirm.mockResolvedValue(false);
-  render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
-  fireEvent.click(screen.getByText('archive'));
-  await waitFor(() => expect(m.confirm).toHaveBeenCalled());
+  const result = setup();
+  await act(() => result.current.action('live', 'archive', 'shared'));
+  expect(m.confirm).toHaveBeenCalled();
   expect(m.close).not.toHaveBeenCalled();
   expect(m.run).not.toHaveBeenCalled();
 });
+
 it('does not archive a shared task when existing shared close fails', async () => {
   m.close.mockResolvedValue({ closed: [] });
-  render(<WorkbenchSessionList sessions={[row]} onChanged={m.changed} />);
-  fireEvent.click(screen.getByText('archive'));
-  await waitFor(() => expect(m.close).toHaveBeenCalled());
+  const result = setup();
+  await act(() => result.current.action('live', 'archive', 'shared'));
+  expect(m.close).toHaveBeenCalled();
   expect(m.run).not.toHaveBeenCalled();
+  expect(m.error).toHaveBeenCalled();
+});
+
+it('pins and unpins through the shared session metadata path', async () => {
+  const result = setup();
+  await act(() => result.current.togglePin('live'));
+  expect(m.patchMeta).toHaveBeenCalledWith('live', { pinnedAt: expect.any(String) });
+  const pinned = setup([{ ...activeRow, pinnedAt: '2026-10-01T00:00:00.000Z' }]);
+  await act(() => pinned.current.togglePin('live'));
+  expect(m.patchMeta).toHaveBeenLastCalledWith('live', { pinnedAt: null });
 });

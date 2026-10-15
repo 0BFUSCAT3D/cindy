@@ -9,6 +9,12 @@ import {
   resolveSessionRoute,
 } from '@/lib/orcaSessionIdentity';
 
+const bots = vi.hoisted(() => ({ loaded: true, profiles: [] as unknown[] }));
+vi.mock('@/features/bots/botStore', () => ({
+  hasLoadedBotProfiles: () => bots.loaded,
+  getBotProfiles: () => bots.profiles,
+}));
+
 describe('orcaSessionIdentity', () => {
   let originalWindow: unknown;
 
@@ -30,6 +36,8 @@ describe('orcaSessionIdentity', () => {
 
   afterEach(() => {
     (globalThis as unknown as { window?: unknown }).window = originalWindow;
+    bots.loaded = true;
+    bots.profiles = [];
     vi.restoreAllMocks();
   });
 
@@ -105,6 +113,29 @@ describe('orcaSessionIdentity', () => {
     api.localDb.sessions.get.mockResolvedValue({ orcaRole: null, source });
     await expect(resolveSessionRoute('old-make')).resolves.toBe('/cc-agent');
     expect(api.localDb.orcaWorkflows.getByWorkerSession).not.toHaveBeenCalled();
+  });
+
+  it('opens a Bot chat on its Bot page and keeps a background task on the ordinary route', async () => {
+    bots.profiles = [{
+      id: 'bot-a',
+      sessions: [
+        { id: 'bot-main', role: 'canonical', kind: 'chat' },
+        { id: 'bot-old', role: 'history', kind: 'history' },
+        { id: 'bot-task', role: 'delegation', kind: 'worker' },
+        { id: 'bot-lane', role: 'group', kind: 'group' },
+      ],
+    }];
+    await expect(resolveSessionRoute('bot-main', { orcaRole: null, source: 'bot' })).resolves.toBe('/bots/bot-a');
+    await expect(resolveSessionRoute('bot-old', { orcaRole: null })).resolves.toBe('/bots/bot-a/history/bot-old');
+    await expect(resolveSessionRoute('bot-task', { orcaRole: null, source: 'desktop' })).resolves.toBe('/cc-agent/bot-task');
+    await expect(resolveSessionRoute('bot-lane', { orcaRole: null })).resolves.toBe('/cc-agent/bot-lane');
+    await expect(resolveSessionRoute('plain-3', { orcaRole: null })).resolves.toBe('/cc-agent/plain-3');
+  });
+
+  it('falls back to the ordinary route while Bot profiles are not loaded, without waiting on IPC', async () => {
+    bots.loaded = false;
+    bots.profiles = [{ id: 'bot-a', sessions: [{ id: 'bot-main', role: 'canonical', kind: 'chat' }] }];
+    await expect(resolveSessionRoute('bot-main', { orcaRole: null })).resolves.toBe('/cc-agent/bot-main');
   });
 
   it('routes orphaned Orca workers back through the index fallback', async () => {

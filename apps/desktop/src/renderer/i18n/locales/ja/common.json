@@ -8619,11 +8619,22 @@
         "ref": "参考",
         "noRef": "参考リンクはありません。",
         "openPr": "GitHub で PR #{{number}} を開く",
-        "refBlocked": "このパスは任せたプロジェクトの外にあるため開きませんでした。"
+        "refBlocked": "このパスは任せたプロジェクトの外にあるため開きませんでした。",
+        "stopLabel": "停止",
+        "doing": "実行中の作業",
+        "outputs": "これまでの成果物",
+        "recent": "最近の内容"
       },
       "openTask": "「{{title}}」を開く（{{state}}）",
       "outputs": "成果物",
       "outputsEmpty": "{{name}} が作ったファイルはここに表示されます。",
+      "outputsAll": "すべて",
+      "outputsLess": "折りたたむ",
+      "summary": {
+        "waiting_other": "返信待ち {{count}} 件",
+        "running_other": "実行中 {{count}} 件",
+        "todo_other": "やること {{count}} 件"
+      },
       "state": {
         "running": "実行中",
         "waiting": "返信待ち",
@@ -8663,6 +8674,11 @@
       },
       "line": {
         "waiting": "あなたの返信を待っています",
+        "waitingPermission": "あなたの承認を待っています",
+        "waitingQuestion": "あなたの回答を待っています",
+        "waitingPlan": "プランの確認を待っています",
+        "waitingAction": "あなたの操作を待っています",
+        "waitingFor": "{{label}}：{{text}}",
         "queued": "待機中",
         "interrupted": "前回は最後まで実行されませんでした",
         "errored": "前回エラーが発生しました",
@@ -8879,6 +8895,10 @@
       "description": "パートナー全体に共通する設定です。個々のパートナーの設定は、その子のページにあります。",
       "rosterNote": "あらかじめ用意された顔ぶれは、バージョンごとに増えていきます。"
     },
+    "session": {
+      "ownedByBot": "{{name}} のバックグラウンドタスク",
+      "backToBot": "{{name}} に戻る"
+    },
     "collab": {
       "backgroundTask": "バックグラウンドタスク",
       "trackedTask": "独立して実行し、結果を自動で返します",
@@ -8912,7 +8932,21 @@
         "daysHoursMinutes": "{{d}}日{{h}}時間{{m}}分"
       },
       "viewResult": "結果を見る",
-      "noWrittenResult": "テキストの結果はありません。"
+      "noWrittenResult": "テキストの結果はありません。",
+      "addNote": "ひとこと追加",
+      "addNotePlaceholder": "バックグラウンドタスクに伝える内容（Enter で送信）",
+      "addNoteSent": "バックグラウンドタスクに送信しました",
+      "stop": "停止",
+      "lookAt": "確認する",
+      "awaitingConfirm": "あなたの確認待ち：{{summary}}",
+      "awaitingConfirmGeneric": "あなたの確認待ち",
+      "elapsed": "経過 {{duration}}",
+      "tookTime": "所要 {{duration}}",
+      "expandResult": "結果を表示",
+      "collapseResult": "結果を閉じる",
+      "expandDetails": "詳細を表示",
+      "collapseDetails": "詳細を閉じる",
+      "messageSentWithText": "バックグラウンドタスクに伝えました：「{{text}}」"
     },
     "directMessage": {
       "sentTo": "{{name}} にメッセージを送信",
@@ -8923,11 +8957,40 @@
       "close": "会話を閉じる",
       "unavailable": "この仲間同士の会話は利用できません。",
       "empty": "表示できるメッセージはまだありません。",
-      "limitReached": "今回の会話は上限に達し、双方がそれぞれのメインタスクに戻りました"
+      "limitReached": "今回の会話は上限に達し、双方がそれぞれのメインタスクに戻りました",
+      "sentHeader": "{{name}} へ送信",
+      "receivedHeader": "{{name}} から",
+      "expandThread": "やり取りを表示",
+      "exchangeCountShort": "{{count}} 件のやり取り",
+      "exchangeCountShort_one": "{{count}} 件のやり取り",
+      "exchangeCountShort_other": "{{count}} 件のやり取り",
+      "expand": "表示",
+      "collapse": "閉じる",
+      "fullThread": "会話全体",
+      "threadClosed": "今回の仲間同士の会話は終了しました · 閲覧のみ"
     },
     "groupChat": {
       "migrationPending": "過去の履歴の一部をアップロード中です。自動的に再試行します。このチャットは引き続き利用できます。",
       "memberSeparator": "、",
+      "ownerOf": "{{name}} のオーナー",
+      "elapsed": {
+        "seconds": "{{count}} 秒",
+        "minutes": "{{count}} 分",
+        "hours": "{{hours}} 時間 {{minutes}} 分"
+      },
+      "progress": {
+        "step": "ステップ {{step}}/{{total}}",
+        "speaking": "{{name}} が返信中…",
+        "elapsed": "経過 {{time}}",
+        "viewProcess": "経過を見る",
+        "hideProcess": "経過を閉じる",
+        "stop": "停止"
+      },
+      "header": {
+        "stepRunning": "{{name}} がステップ {{step}} を作業中",
+        "speaking": "{{name}} が返信中…",
+        "planning": "{{name}} が役割分担を考え中…"
+      },
       "memberCount_one": "仲間 {{count}} 人",
       "memberCount_other": "仲間 {{count}} 人",
       "nameLabel": "グループ名",
@@ -9009,6 +9072,8 @@
         "emptyTitle": "このグループにはまだメッセージがありません",
         "emptyDescription": "話しかけると仲間たちが会話を続けます。@ で仲間を指名すると、その仲間だけが返信します。",
         "roundEnded": "仲間たちの発言が終わりました",
+        "stepTag": "ステップ {{count}}",
+        "sending": "送信中",
         "continue": "議論を続ける",
         "continueFailed": "議論を続けられませんでした。もう一度お試しください",
         "nextStep": "次のステップ:",
@@ -9111,7 +9176,7 @@
         "missing": "この計画は読み込めなくなりました",
         "start": "開始する",
         "dismiss": "今回はやめる",
-        "editHint": "担当や手順を変えたいときは、そのまま話しかけてください",
+        "editHint": "ステップをクリックすると担当を変えられます",
         "pauseNote": "1 ステップ終わるごとに止まり、「次へ進む」を押すまで待ちます。",
         "superseded": "更新済み",
         "dismissed": "見送りました",
@@ -9150,6 +9215,7 @@
         "openTopic": "スレッドを表示 · {{count}} 件の返信",
         "topic": "スレッド",
         "replies": "返信",
+        "replyCount": "返信 {{count}} 件",
         "replyPlaceholder": "このメッセージに返信。@ でパートナーを指定できます…",
         "sendReply": "返信を送信",
         "addReaction": "リアクションを追加",
@@ -9208,7 +9274,6 @@
           "transfer": "所有権を譲渡",
           "transferTitle": "{{name}} に所有権を譲渡しますか？",
           "transferHint": "相手がオーナーになり、あなたは管理者になります。パートナーもオーナーになれます。",
-          "remove": "グループから削除",
           "removeTitle": "{{name}} をグループから削除しますか？",
           "removeHint": "メッセージの閲覧と送信ができなくなります。そのメンバーのパートナーも退出します。",
           "addCompanion": "自分のパートナーを招待",
@@ -9219,12 +9284,6 @@
           "confirm": "確認",
           "lastOwner": "退出またはオーナーを削除する前に、別のメンバーに所有権を譲渡してください。",
           "conflict": "設定が更新されました。再読み込みしてお試しください。",
-          "replyMode": "メンションがない場合",
-          "speakingMode": "発言順",
-          "all": "全パートナーが返信可能",
-          "mentioned": "メンション時のみ",
-          "auto": "同時に発言",
-          "sequential": "順番に発言",
           "unarchive": "アーカイブを解除",
           "unarchiveHint": "メッセージとパートナーの実行を再開します。",
           "archived": "アーカイブ済みです。履歴は引き続き閲覧できます。",
@@ -15932,7 +15991,6 @@
     "suggested": "提案",
     "candidate": "日付を確認",
     "overdue": "期限超過",
-    "today": "今日",
     "next": "次の手順",
     "outcome": "完了条件",
     "value": "取り組む理由",
@@ -15962,7 +16020,6 @@
     "name": "タイトル",
     "progress": "進捗",
     "link": "根拠のリンク（任意）",
-    "saved": "保存済み",
     "page": "{{start}}–{{end}} / {{count}}",
     "previous": "前へ",
     "following": "次へ",
@@ -15974,17 +16031,16 @@
     "close": "閉じる",
     "laterConflict": "延期しても期限は変わりません",
     "legacyEvidence": "旧記録の完了の根拠は未確認です",
-    "noPermission": "未接続または未承認の情報源です",
-    "copy": "コピー",
-    "undo": "元に戻す",
     "history": "完了履歴",
-    "clockNote": "日付のみの期限は表示されたタイムゾーンの一日の終わりです。日時にはタイムゾーンが保持されます。",
     "deleted": "削除済み",
     "muted": "今後提案しない",
     "deferred": "延期中",
     "continue": "続ける",
-    "addTime": "時刻を追加",
-    "dateOnly": "日付のみ"
+    "filter": "絞り込み",
+    "deleteConfirmTitle": "この項目を削除しますか？",
+    "deleteConfirmBody": "今後は表示されず、同じ問題も再び挙がりません。「非表示 / あとで」から元に戻せます。",
+    "muteConfirmTitle": "この問題を今後提案しないようにしますか？",
+    "muteConfirmBody": "同じ問題は今後 Todo に表示されません。「非表示 / あとで」から元に戻せます。"
   },
   "codexResets": {
     "retryReset": "リセットを再試行",

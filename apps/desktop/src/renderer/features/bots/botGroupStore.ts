@@ -3,9 +3,11 @@
  *
  * 权威数据在 main（当前账号本地库的 bot_groups / members / messages），这里只缓存
  * `listBotGroups()` 的最新一份摘要，供统一侧栏与群设置抽屉读取。main 每次
- * 变更都会推 `onBotGroupChanged`，收到后整表重取；同一时刻只有一个请求在飞，期间
- * 再来的推送合并成一次补取。账号（data owner）切换时立即清空，旧账号的迟到响应
- * 一律丢弃（electron-security-and-process-boundaries §4–5：renderer 不持有真相）。
+ * 变更都会推 `onBotGroupChanged`，收到后整表重取（IPC 没有单群摘要读取）：推送先攒
+ * 300ms 再读一次，一段对话里连发的推送只读一两次；同一时刻只有一个请求在飞，期间再来的
+ * 合并成一次补取；读回的摘要与当前一致时不通知订阅者，侧栏与角标不重绘。账号（data
+ * owner）切换时立即清空，旧账号的迟到响应一律丢弃（electron-security-and-process-boundaries
+ * §4–5：renderer 不持有真相）。
  */
 import { useCallback, useSyncExternalStore } from 'react';
 import { seedBotGroupReadState } from './botReadState';
@@ -38,7 +40,10 @@ let owner = getDataOwnerGeneration();
 let generation = 0;
 let inFlight: Promise<void> | null = null;
 let refreshQueued = false;
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let syncUsers = 0;
+/** Pushes within this window collapse into one list read. */
+const PUSH_REFRESH_DELAY_MS = 300;
 let unsubscribePush: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
@@ -62,7 +67,22 @@ function ensureOwner(): void {
   generation += 1;
   inFlight = null;
   refreshQueued = false;
+  cancelPushRefresh();
   snapshot = EMPTY_SNAPSHOT;
+}
+
+function cancelPushRefresh(): void {
+  if (pushTimer !== null) clearTimeout(pushTimer);
+  pushTimer = null;
+}
+
+/** A push changed something: read the list once the burst has settled. */
+function schedulePushRefresh(): void {
+  if (pushTimer !== null) return;
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    refreshBotGroups();
+  }, PUSH_REFRESH_DELAY_MS);
 }
 
 function applySnapshot(next: BotGroupListSnapshot): void {
@@ -89,6 +109,8 @@ export function refreshBotGroups(): void {
       const result = await api.listBotGroups();
       if (!isCurrent()) return;
       if (result.ok) seedBotGroupReadState(result.groups);
+      // An unchanged list keeps its snapshot: subscribers (sidebar, Dock badge) do not re-render.
+      if (result.ok && snapshot.loaded && JSON.stringify(result.groups) === JSON.stringify(snapshot.groups)) return;
       // 失败时保留上一份列表：侧栏不因一次读失败把所有群清空。
       applySnapshot(result.ok ? { groups: result.groups, loaded: true } : { ...snapshot, loaded: true });
     } catch {
@@ -117,7 +139,7 @@ export function startBotGroupSync(): () => void {
     if (api && typeof api.onBotGroupChanged === 'function') {
       unsubscribePush = api.onBotGroupChanged((_payload, ownerStamp) => {
         if (!isDataOwnerPushCurrent(ownerStamp)) return;
-        refreshBotGroups();
+        schedulePushRefresh();
       });
     }
   }
@@ -127,6 +149,7 @@ export function startBotGroupSync(): () => void {
     if (syncUsers === 0) {
       unsubscribePush?.();
       unsubscribePush = null;
+      cancelPushRefresh();
     }
   };
 }
@@ -204,6 +227,7 @@ export function resetBotGroupStoreForTests(): void {
   generation += 1;
   inFlight = null;
   refreshQueued = false;
+  cancelPushRefresh();
   owner = getDataOwnerGeneration();
   snapshot = EMPTY_SNAPSHOT;
   listeners.clear();

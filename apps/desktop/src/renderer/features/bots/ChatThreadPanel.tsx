@@ -1,32 +1,41 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+/**
+ * 话题（Thread）面板：与主时间线同一套消息行（BotGroupTimelineItem）与密度规则——根消息、
+ * 「N 条回复」分隔、回复按作者五分钟合并；有新回复且读者在底部时跟到底。
+ *
+ * 读取：进入读一次，之后本群每条推送重读；同一时刻只有一个读取在飞，期间的推送合并成一次
+ * 补读。回复用群聊同一个输入框的话题模式（BotGroupComposer `mode="thread"`），发出即乐观插入，
+ * 服务器的回复到了原地替换；失败撤掉、文字放回，原因写在输入框上方。
+ */
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { SendButton } from '@/components/new-chat/SendButton';
 import { Button } from '@/components/ui/button';
 import { Tip } from '@/components/ui/tooltip';
-import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
-import { ShareMessageCheckbox } from '@/components/chat/ShareMessageCheckbox';
 import { shareSelectionStore, useShareSelectionActive } from '@/components/chat/shareSelectionStore';
-import { SHARE_SESSION_ATTR, SHARE_MESSAGE_ATTR } from '@/lib/shareConversationImage';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent, isDataOwnerPushCurrent } from '@/contexts/dataOwnerGeneration';
-import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMention, BotGroupMessageView } from '../../../shared/botGroupChat';
-import { isBotGroupRuntimeFailureCode, resolveBotGroupQuote } from '../../../shared/botGroupChat';
+import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMessageView } from '../../../shared/botGroupChat';
+import { resolveBotGroupQuote } from '../../../shared/botGroupChat';
+import { botGroupThreadDraftKey } from './botGroupAttachments';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
-import { BotAvatar } from './BotAvatar';
-import { BotGroupQuoteBlock } from './BotGroupQuote';
+import { BotGroupComposer, type BotGroupOutgoingMessage, type BotGroupSendOutcome } from './BotGroupComposer';
+import { BotGroupTimelineItem } from './BotGroupTimelineItem';
 import {
-  BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
-  fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
-} from './botGroupComposerChrome';
-import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
-import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
-import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
+  botGroupMemberDisplayName,
+  botGroupOwnedBotNames,
+  layoutBotGroupTimeline,
+  matchBotGroupPendingSends,
+  pendingBotGroupMessage,
+  pendingBotGroupMessageId,
+  stabilizeById,
+  type BotGroupPendingSend,
+  type BotGroupTimelineMessage,
+} from './BotGroupTimelineModel';
+import { chatErrorKey } from './ChatServerControls';
 const key = (name: string) => `bots.groupChat.server.${name}`;
-const sameBotGroupMentions = (a: BotGroupMention, b: BotGroupMention) =>
-  a.all === b.all && a.botIds.length === b.botIds.length && a.botIds.every((botId, index) => botId === b.botIds[index]);
 const api = () => window.electronAPI.maker.chatServer;
+const STICK_TO_BOTTOM_PX = 48;
 
 export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: string): Animation | null {
   const style = getComputedStyle(panel);
@@ -38,35 +47,19 @@ export function animateThreadPanelWidth(panel: HTMLElement, from: string, to: st
   });
 }
 
-function ThreadMessage({ group, message, quoteSources, shareScope, sharing, onChanged }: { group: BotGroupDetail; message: BotGroupMessageView; quoteSources: readonly BotGroupMessageView[]; shareScope: string; sharing: boolean; onChanged: () => void }) {
-  const member = group.members.find(m => m.botId === message.authorBotId);
-  if (message.kind === 'notice' && isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) return <BotGroupRuntimeFailureNotice name={message.authorName || member?.name || ''} code={message.runtimeFailureCode} />;
-  return <article {...{ [SHARE_SESSION_ATTR]: shareScope, [SHARE_MESSAGE_ATTR]: message.id }}
-    className={`relative flex min-w-0 gap-2.5 ${sharing ? 'ml-10' : ''}`}>
-    {sharing && <ShareMessageCheckbox clientId={message.id} />}
-    <BotAvatar bot={{ name: message.authorName, avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null }} size="sm" />
-    <div className="min-w-0 flex-1 space-y-1">
-      <p className="text-13 font-medium leading-7 text-[var(--text-primary)]">{message.authorName}</p>
-      {/* A 话题 root may itself be a 引用回复; its original lives in the main timeline. */}
-      {message.quote ? <BotGroupQuoteBlock display={resolveBotGroupQuote(message.quote, quoteSources)} /> : null}
-      <div className="break-words text-14 leading-relaxed text-[var(--text-primary)]">
-        <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />
-      </div>
-      <ChatMessageActions groupId={group.id} shareScope={shareScope} message={message} align="left" onChanged={onChanged} />
-    </div>
-  </article>;
-}
-
 /**
  * `quoteSources` are the main timeline's verified messages (older pages included), so a
  * 话题 root's quote reads the same as it does in the timeline; without them, the latest page.
  */
 export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, onClose }: { group: BotGroupDetail; rootId: string; quoteSources?: readonly BotGroupMessageView[]; onClose: () => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
   const titleId = useId();
   const shareScope = `bot-group:${group.id}:thread:${rootId}`;
   const sharing = useShareSelectionActive(shareScope);
   const contentRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const panel = panelRef.current;
@@ -80,63 +73,139 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   const [executionFailures, setExecutionFailures] = useState<BotGroupExecutionFailureView[]>([]);
   const [replies, setReplies] = useState<BotGroupMessageView[]>([]);
   const [hasMore, setHasMore] = useState(false);
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const request = useRef(0);
-  const attempt = useRef<{ text: string; roster: BotGroupDetail['members']; id: string; mentions: BotGroupMention } | null>(null);
-  const sending = useRef(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const allLabel = t('bots.groupChat.mention.all');
-  const allLabels = useMemo(() => [allLabel, '所有人', 'all', 'everyone'], [allLabel]);
-  // Same @ picker as the main composer.
-  const mention = useBotGroupMentionPicker({ text, members: group.members, textareaRef: inputRef, allLabels, onTextChange: value => {
-    setText(value);
-    if (attempt.current?.text !== value) attempt.current = null;
-  } });
-  useLayoutEffect(() => { if (inputRef.current) fitBotGroupComposerInput(inputRef.current); }, [text, sharing]);
-  useRefitBotGroupComposerInputOnResize(inputRef, !sharing);
-  const load = useCallback(async (before?: number) => {
-    const version = ++request.current, owner = getDataOwnerGeneration();
-    const current = () => version === request.current && isDataOwnerGenerationCurrent(owner);
+  const [pendingSends, setPendingSends] = useState<BotGroupPendingSend[]>([]);
+  const repliesRef = useRef(replies);
+  repliesRef.current = replies;
+  const aliveRef = useRef(true);
+  const inFlightRef = useRef(false);
+  const queuedRef = useRef(false);
+
+  const read = useCallback(async (before?: number) => {
+    const owner = getDataOwnerGeneration();
+    const current = () => aliveRef.current && isDataOwnerGenerationCurrent(owner);
+    const shown = repliesRef.current;
     try {
-      const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: replies.map(message => message.id) });
+      const result = await api().thread({ groupId: group.id, rootId, before, sourceMessageIds: shown.map(message => message.id) });
       if (!current()) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
-      setRoot(result.root); setError('');
+      setRoot(previous => (previous && JSON.stringify(previous) === JSON.stringify(result.root) ? previous : result.root));
+      setError('');
       setExecutionFailures(result.executionFailures ?? []);
-      setReplies(previous => mergeBotGroupMessages(previous, result.replies));
-      if (before || replies.length === 0) setHasMore(result.hasMore);
+      setReplies(previous => stabilizeById(previous, mergeBotGroupMessages(previous, result.replies)));
+      if (before || shown.length === 0) setHasMore(result.hasMore);
     } catch { if (current()) setError(t(key('requestFailed'))); }
-  }, [group.id, rootId, t, replies]);
-  const loadRef = useRef(load); loadRef.current = load;
-  useEffect(() => {
-    void loadRef.current();
-    const stop = window.electronAPI.maker.onBotGroupChanged((event, stamp) => {
-      if (isDataOwnerPushCurrent(stamp) && event.groupId === group.id) void loadRef.current();
+  }, [group.id, rootId, t]);
+  /** One refresh in flight; pushes meanwhile collapse into one follow-up read. */
+  const refresh = useCallback(() => {
+    if (inFlightRef.current) { queuedRef.current = true; return; }
+    inFlightRef.current = true;
+    void read().finally(() => {
+      inFlightRef.current = false;
+      if (queuedRef.current && aliveRef.current) {
+        queuedRef.current = false;
+        refresh();
+      }
     });
-    return () => { request.current++; stop(); };
+  }, [read]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    aliveRef.current = true;
+    refreshRef.current();
+    const stop = window.electronAPI.maker.onBotGroupChanged((event, stamp) => {
+      if (isDataOwnerPushCurrent(stamp) && event.groupId === group.id) refreshRef.current();
+    });
+    return () => { aliveRef.current = false; stop(); };
   }, [group.id, rootId]);
-  async function send() {
-    if (group.archived || sending.current || !text.trim()) return;
-    sending.current = true; setBusy(true); setError('');
-    const owner = getDataOwnerGeneration();
-    // A retry reuses the attempt only for the same text and the same targets (bot-group-chat.md).
-    // Targets are re-resolved against the attempt's own roster: a roster refresh alone changes nothing
-    // and the host still rejects a departed target; re-picking someone else gets a new clientId.
-    const previous = attempt.current;
-    const current = previous && previous.text === text && sameBotGroupMentions(mention.resolve(text, previous.roster), previous.mentions)
-      ? previous : { text, roster: group.members, id: crypto.randomUUID(), mentions: mention.resolve(text) };
-    attempt.current = current;
-    try {
-      const result = await api().reply({ groupId: group.id, rootId, text: current.text, clientId: current.id,
-        mentions: current.mentions });
-      if (!isDataOwnerGenerationCurrent(owner)) return;
-      if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
-      setText(''); mention.reset(); attempt.current = null; void loadRef.current(); refreshBotGroups();
-    } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(key('requestFailed'))); }
-    finally { sending.current = false; setBusy(false); }
-  }
+
+  const members = group.members;
+  const mentionLabels = useMemo(
+    () => [t('bots.groupChat.mention.all'), ...members.flatMap((member) => [member.name, botGroupMemberDisplayName(member), member.nickname || member.displayName || member.name])],
+    [members, t],
+  );
+  const memberById = useMemo(() => new Map(members.map((member) => [member.botId, member])), [members]);
+  const separator = t('bots.groupChat.memberSeparator');
+
+  const realReplies = useMemo(() => projectBotGroupExecutionFailures(replies, executionFailures), [replies, executionFailures]);
+  const pendingMatches = useMemo(() => matchBotGroupPendingSends(pendingSends, realReplies), [pendingSends, realReplies]);
+  const adoptedKeysRef = useRef(new Map<string, string>());
+  for (const [clientId, messageId] of pendingMatches) adoptedKeysRef.current.set(messageId, pendingBotGroupMessageId(clientId));
+  useEffect(() => {
+    if (pendingMatches.size === 0) return;
+    setPendingSends((previous) => previous.filter((send) => !pendingMatches.has(send.clientId)));
+  }, [pendingMatches]);
+  const replyRows = useMemo<BotGroupTimelineMessage[]>(
+    () => [...realReplies, ...pendingSends.filter((send) => !pendingMatches.has(send.clientId)).map(pendingBotGroupMessage)],
+    [realReplies, pendingSends, pendingMatches],
+  );
+  const rootRows = useMemo(() => projectBotGroupExecutionFailures(root ? [root] : [], executionFailures), [root, executionFailures]);
+  const layout = useMemo(() => layoutBotGroupTimeline(replyRows), [replyRows]);
+  const lastRealSequenceRef = useRef(0);
+  lastRealSequenceRef.current = realReplies[realReplies.length - 1]?.sequence ?? 0;
+
+  const onChanged = useCallback(() => refreshRef.current(), []);
+  const onSendStart = useCallback((message: BotGroupOutgoingMessage) => {
+    stickToBottomRef.current = true;
+    setPendingSends((previous) => [
+      ...previous.filter((send) => send.clientId !== message.clientId),
+      { ...message, createdAt: Date.now(), afterSequence: lastRealSequenceRef.current },
+    ]);
+  }, []);
+  const onSendSettled = useCallback((clientId: string, outcome: BotGroupSendOutcome) => {
+    setPendingSends((previous) => outcome.ok
+      ? previous.map((send) => (send.clientId === clientId ? { ...send, messageId: outcome.messageId } : send))
+      : previous.filter((send) => send.clientId !== clientId));
+  }, []);
+  const sendReply = useCallback(
+    (input: { text: string; clientId: string; mentions: BotGroupMessageView['mentions'] }) => api().reply({ groupId: group.id, rootId, ...input }),
+    [group.id, rootId],
+  );
+  const onSent = useCallback(() => { refreshRef.current(); refreshBotGroups(); }, []);
+
+  // Follow new replies while the reader is at the bottom, including content that grows later.
+  const lastKey = replyRows[replyRows.length - 1]?.id ?? '';
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (element && stickToBottomRef.current) element.scrollTop = element.scrollHeight;
+  }, [lastKey, replyRows.length, root]);
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current) scroller.scrollTop = scroller.scrollHeight;
+    });
+    observer.observe(content);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, []);
+
+  const renderRow = (message: BotGroupTimelineMessage, continued: boolean) => {
+    const member = message.authorBotId ? memberById.get(message.authorBotId) : undefined;
+    const authorName = (member && message.authorKind !== 'system' ? botGroupMemberDisplayName(member) : '') || message.authorName || member?.name || '';
+    const owned = message.authorKind === 'user' && message.isSelf === false ? botGroupOwnedBotNames(member, members).join(separator) : '';
+    return (
+      <BotGroupTimelineItem
+        message={message}
+        continued={continued}
+        authorName={authorName}
+        avatar={{ name: authorName, avatar: member?.avatar ?? null, avatarUrl: member?.avatarUrl, avatarColor: member?.avatarColor ?? null }}
+        ownerOf={owned || undefined}
+        members={members}
+        mentionLabels={mentionLabels}
+        locale={locale}
+        shareScope={shareScope}
+        sharing={sharing}
+        reactionGroupId={group.id}
+        // A 话题 root may itself be a 引用回复; its original lives in the main timeline.
+        quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
+        onChanged={onChanged}
+      />
+    );
+  };
+  const replyCount = Math.max(root?.replyCount ?? 0, realReplies.filter(reply => reply.kind === 'message').length);
+
   return <aside ref={panelRef} aria-labelledby={titleId}
         className="flex h-full min-w-0 w-1/2 max-w-[min(50%,28rem)] shrink-0 flex-col overflow-hidden border-l border-[var(--border-default)] bg-[var(--surface)]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-default)] px-5">
@@ -147,35 +216,42 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
               aria-label={t('bots.close')} onClick={onClose}><X size={17} aria-hidden /></Button>
           </Tip>
         </header>
-        <div ref={contentRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-          {projectBotGroupExecutionFailures(root ? [root] : [], executionFailures).map(message => <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message} onChanged={() => void loadRef.current()} />)}
-          <div className="border-t border-[var(--border-default)] pt-3 text-12 text-[var(--text-tertiary)]">{t(key('replies'))}</div>
-          {hasMore && <Button variant="secondary" size="sm" onClick={() => void loadRef.current(replies[0]?.sequence)}>{t('bots.groupChat.timeline.loadEarlier')}</Button>}
-          {projectBotGroupExecutionFailures(replies, executionFailures).map(message => <ThreadMessage key={message.id} quoteSources={quoteSources} shareScope={shareScope} sharing={sharing} group={group} message={message} onChanged={() => void loadRef.current()} />)}
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 pb-4 pt-3"
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < STICK_TO_BOTTOM_PX;
+          }}>
+          <div ref={contentRef} className="flex min-w-0 flex-col">
+            {rootRows.map(message => <Fragment key={message.id}>{renderRow(message, false)}</Fragment>)}
+            <div data-testid="bot-group-thread-replies" className="mt-3 flex select-none items-center gap-3 text-12 text-[var(--text-tertiary)]">
+              <span className="shrink-0">{replyCount > 0 ? t(key('replyCount'), { count: replyCount }) : t(key('replies'))}</span>
+              <span aria-hidden className="h-px flex-1 bg-[var(--border-default)]" />
+            </div>
+            {hasMore && <div className="mt-2"><Button variant="secondary" size="sm" onClick={() => void read(replies[0]?.sequence)}>{t('bots.groupChat.timeline.loadEarlier')}</Button></div>}
+            {replyRows.map(message => (
+              <Fragment key={adoptedKeysRef.current.get(message.id) ?? message.id}>
+                {renderRow(message, layout.get(message.id)?.continued ?? false)}
+              </Fragment>
+            ))}
+          </div>
         </div>
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className={BOT_GROUP_COMPOSER_DOCK}><div className={BOT_GROUP_COMPOSER_COLUMN}>
-          {error && <p role="alert" className="mb-2 px-1 text-13 leading-5 text-[var(--error-fg)]">{error}</p>}
-          {/* Read-only also means no @ picks while sending. */}
-          {busy ? null : mention.list}
-          {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
-          <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
-            <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
-              {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
-              maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
-                if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
-              }} />
-            <div className={BOT_GROUP_COMPOSER_FOOTER}>
-              {/* Send options for this reply go here, before the button. */}
-              <div className={BOT_GROUP_COMPOSER_FOOTER_START} />
-              <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
-                <Tip text={t(key('sendReply'))}>
-                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
-                </Tip>
-              </span>
-            </div>
+          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <>
+          {error && <p role="alert" className="px-4 pt-3 text-13 text-[var(--error-fg)]">{error}</p>}
+          <div className="border-t border-[var(--border-default)]">
+            <BotGroupComposer
+              mode="thread"
+              groupId={group.id}
+              draftKey={botGroupThreadDraftKey(group.id, rootId)}
+              members={members}
+              running={false}
+              disabled={!!group.archived}
+              sendReply={sendReply}
+              onSendStart={onSendStart}
+              onSendSettled={onSendSettled}
+              onSent={onSent}
+            />
           </div>
-        </div></div>}
+        </>}
   </aside>;
 }

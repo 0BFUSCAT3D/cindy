@@ -11,7 +11,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { clearDraft, getDraft } from '@/lib/composerDraftStore';
 import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../feature-context';
 import { markBotRead, getBotLastReadAt, botGroupReadKey, resetBotReadStateForTests } from '../botReadState';
-import { botGroupAttachmentScope } from '../botGroupAttachments';
+import { botGroupAttachmentScope, botGroupThreadDraftKey } from '../botGroupAttachments';
 import { getBotGroupListSnapshot, refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
 import { BotGroupChatView } from '../BotGroupChatView';
 import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
@@ -259,6 +259,8 @@ function renderView() {
 beforeEach(() => {
   window.localStorage.clear();
   for (const id of ['g1', 'g2']) clearDraft(botGroupAttachmentScope(id));
+  // 话题 reply drafts persist like the group's own; start every test without one.
+  for (const root of ['u1', 'b1', 'q1', 'm']) clearDraft(botGroupThreadDraftKey('g1', root));
   mocks.toastWarning.mockReset();
   mocks.filePaths = new Map();
   mocks.cacheImageFromBuffer.mockReset().mockResolvedValue({ url: 'cindy-media://blobs/pasted.png', filename: 'pasted.png' });
@@ -869,8 +871,9 @@ describe('BotGroupChatView', () => {
   it('renders user, teammate, notice and round-end rows with the header lockup', async () => {
     renderView();
     expect(await screen.findByText('周六 8:10 有票')).toBeTruthy();
-    // The user's mention renders as a chip inside the right-aligned bubble.
-    expect(screen.getByText('@小满').className).toContain('rounded-full');
+    // The user's own message is a right-aligned bubble rendered as Markdown.
+    expect(screen.getByTestId('bot-group-self-bubble').textContent).toBe('@小满 帮我查余票');
+    expect(screen.getByTestId('bot-group-self-bubble').querySelector('[data-markdown]')).toBeTruthy();
     expect(screen.getByText('bots.groupChat.notice.memberTimeout:咪咪')).toBeTruthy();
     expect(screen.getByText('bots.groupChat.timeline.roundEnded')).toBeTruthy();
     const header = screen.getByTestId('content-header');
@@ -1208,7 +1211,7 @@ describe('BotGroupChatView', () => {
       messageId, authorName: '小满', authorKind: 'bot' as const, excerpt: '周六 8:10 有票', attachmentCount: 0, attachmentName: null, sequence: 2, ...overrides,
     });
     const quoteButton = async (id = 'b1') => {
-      await screen.findByText('周六 8:10 有票');
+      await screen.findAllByText('周六 8:10 有票');
       const row = document.querySelector(`[data-bot-group-message-id="${id}"]`) as HTMLElement;
       return within(row).getByRole('button', { name: 'bots.groupChat.server.quoteReply' });
     };
@@ -1533,7 +1536,8 @@ describe('BotGroupChatView', () => {
       expect(card.textContent).toContain('bots.groupChat.plan.intro');
       expect(card.textContent).toContain('想清楚这页讲什么');
       expect(card.textContent).toContain('画设计稿');
-      expect(screen.getByText('bots.groupChat.organizer')).toBeTruthy();
+      // The organizer tag sits next to the plan card's author (the header shows it too).
+      expect(within(card.closest('article')!).getByText('bots.groupChat.organizer')).toBeTruthy();
       expect(screen.getByText('bots.groupChat.plan.editHint')).toBeTruthy();
       expect(screen.getByText('bots.groupChat.plan.pauseNote')).toBeTruthy();
       expect(screen.getByRole('textbox').getAttribute('placeholder')).toBe(
@@ -1957,7 +1961,8 @@ describe('BotGroupChatView', () => {
           },
         ],
       });
-      await waitFor(() => expect(screen.queryByText('report.pdf')).toBeNull());
+      // The tray is empty; the optimistic copy of the message shows the file until main's copy arrives.
+      await waitFor(() => expect(within(input.parentElement!).queryByText('report.pdf')).toBeNull());
       expect(getDraft(botGroupAttachmentScope('g1'))?.attachments ?? []).toEqual([]);
     });
 
@@ -2003,7 +2008,8 @@ describe('BotGroupChatView', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
       await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
       expect(lastSend().clientId).toBe(firstClientId);
-      await waitFor(() => expect(screen.queryByText('report.pdf')).toBeNull());
+      // The tray is empty; the optimistic copy of the message shows the file until main's copy arrives.
+      await waitFor(() => expect(within(input.parentElement!).queryByText('report.pdf')).toBeNull());
     });
 
     it('holds a message over the attachment limit with a hint', async () => {
@@ -2090,7 +2096,7 @@ describe('BotGroupChatView', () => {
       const image = await screen.findByAltText('截图.png');
       expect(image.getAttribute('src')).toBe('cindy-media://blobs/abc.png');
       const article = image.closest('article')!;
-      expect(article.querySelector('.whitespace-pre-wrap')).toBeNull();
+      expect(article.querySelector('[data-testid="bot-group-self-bubble"]')).toBeNull();
       const chip = screen.getByRole('button', { name: '报告.pdf' });
       expect(article.contains(chip)).toBe(true);
       // A PDF is not text: it opens in the system app, as from a task's chip.
@@ -2098,7 +2104,7 @@ describe('BotGroupChatView', () => {
       await waitFor(() => expect(mocks.openPath).toHaveBeenCalledWith('/Users/me/报告.pdf'));
 
       const withText = screen.getByAltText('草图.png').closest('article')!;
-      expect(withText.querySelector('.whitespace-pre-wrap')?.textContent).toBe('再看这张');
+      expect(withText.querySelector('[data-testid="bot-group-self-bubble"]')?.textContent).toBe('再看这张');
     });
   });
 });
@@ -2150,4 +2156,208 @@ it('keeps copy/share in each author row and shares only message content through 
     scroll.scrollTop = 900; fireEvent.scroll(scroll);
     expect(getBotLastReadAt(botGroupReadKey('g1'))).toBe(1200);
   } finally { focus.mockRestore(); resetBotReadStateForTests(); }
+});
+
+describe('Telegram / Slack-grade timeline', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+  const push = (change: BotGroupChangedPayload['change'] = 'messages') =>
+    act(async () => { mocks.pushes.forEach((listener) => listener({ groupId: 'g1', change })); });
+  const own = (id: string, sequence: number, content: string, createdAt = 1_700_000_000_000) =>
+    msg({ id, sequence, content, createdAt, isSelf: true });
+
+  it('shows a sent message at once and swaps in main’s copy in place', async () => {
+    const sent = deferred<{ ok: true; messageId: string }>();
+    mocks.sendBotGroupMessage.mockReturnValue(sent.promise);
+    renderView();
+    const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '在吗' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.value).toBe('');
+    const bubble = await screen.findByText('在吗');
+    const row = bubble.closest('[data-bot-group-message-id]') as HTMLElement;
+    expect(row.dataset.botGroupMessageId).toMatch(/^pending:/);
+    expect(row.querySelector('article')?.getAttribute('aria-busy')).toBe('true');
+    // The pending copy has no toolbar: it cannot be quoted, shared or answered yet.
+    expect(within(row).queryByRole('button', { name: 'chat.messageActionBar.copy' })).toBeNull();
+    const base = detail();
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...base, messages: [...base.messages, own('u9', 5, '在吗')] } });
+    await act(async () => sent.resolve({ ok: true, messageId: 'u9' }));
+    await waitFor(() => expect(row.dataset.botGroupMessageId).toBe('u9'));
+    // Same row element: no remount, no flash.
+    expect(document.contains(row)).toBe(true);
+    expect(screen.getAllByText('在吗')).toHaveLength(1);
+  });
+
+  it('takes the pending copy back and restores the draft when the send fails', async () => {
+    mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'SERVICE_ERROR', message: '' });
+    renderView();
+    const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '没发出去' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.value).toBe('没发出去'));
+    expect(document.querySelector('[data-bot-group-message-id^="pending:"]')).toBeNull();
+  });
+
+  it('collapses pushes during a read into one follow-up read and shows every result', async () => {
+    renderView();
+    await screen.findByText('周六 8:10 有票');
+    const first = deferred<{ ok: true; group: BotGroupDetail }>();
+    const second = deferred<{ ok: true; group: BotGroupDetail }>();
+    mocks.getBotGroup.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await push();
+    await push();
+    await push();
+    // One read in flight; the later pushes wait for it instead of discarding it.
+    expect(mocks.getBotGroup).toHaveBeenCalledTimes(2);
+    const base = detail();
+    await act(async () => first.resolve({ ok: true, group: { ...base, messages: [...base.messages, msg({ id: 'x1', sequence: 5, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '第一条回复' })] } }));
+    expect(screen.getByText('第一条回复')).toBeTruthy();
+    await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(3));
+    await act(async () => second.resolve({ ok: true, group: { ...base, messages: [...base.messages,
+      msg({ id: 'x1', sequence: 5, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '第一条回复' }),
+      msg({ id: 'x2', sequence: 6, authorKind: 'bot', authorBotId: 'mimi', authorName: '咪咪', content: '第二条回复' })] } }));
+    expect(screen.getByText('第一条回复')).toBeTruthy();
+    expect(screen.getByText('第二条回复')).toBeTruthy();
+    expect(mocks.getBotGroup).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps messages pushed out of the newest page on screen', async () => {
+    const rows = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) =>
+      msg({ id: `r${from + index}`, sequence: from + index, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: `第${from + index}条` }));
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: rows(1, 3), hasMoreBefore: true }) });
+    renderView();
+    await screen.findByText('第1条');
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: rows(3, 5), hasMoreBefore: true }) });
+    await push();
+    await screen.findByText('第5条');
+    expect(screen.getByText('第1条')).toBeTruthy();
+    expect(screen.getByText('第2条')).toBeTruthy();
+    // Older history is still offered above them.
+    expect(screen.getByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeTruthy();
+  });
+
+  it('merges consecutive messages by one author and divides days', async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(12, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 30, 0, 0);
+    const bot = (id: string, sequence: number, createdAt: number, content: string) =>
+      msg({ id, sequence, createdAt, content, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满' });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
+      bot('a', 1, yesterday.getTime(), '昨天第一条'),
+      bot('b', 2, yesterday.getTime() + 60_000, '昨天第二条'),
+      bot('c', 3, today.getTime(), '今天第一条'),
+    ] }) });
+    renderView();
+    await screen.findByText('今天第一条');
+    const article = (text: string) => screen.getByText(text).closest('article')!;
+    expect(article('昨天第一条').querySelector('[data-avatar]')).toBeTruthy();
+    expect(within(article('昨天第一条')).getByText('小满')).toBeTruthy();
+    // The merged line has no avatar or name, only a time in its gutter.
+    expect(article('昨天第二条').querySelector('[data-avatar]')).toBeNull();
+    expect(within(article('昨天第二条')).queryByText('小满')).toBeNull();
+    expect(article('昨天第二条').querySelector('time')).toBeTruthy();
+    // A new day starts a new block under its own date line.
+    expect(article('今天第一条').querySelector('[data-avatar]')).toBeTruthy();
+    expect(screen.getAllByTestId('bot-group-date-divider')).toHaveLength(2);
+  });
+
+  it('keeps the unsent text with the group across a remount', async () => {
+    let view = renderView();
+    const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '写了一半的话\n第二行' } });
+    view.unmount();
+    view = renderView();
+    expect(((await screen.findByRole('textbox')) as HTMLTextAreaElement).value).toBe('写了一半的话\n第二行');
+    view.unmount();
+    // Another group starts empty.
+    mocks.groupId = 'g2';
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'g2' }) });
+    renderView();
+    expect(((await screen.findByRole('textbox')) as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('shows the organizer deciding about a split in the header and as a speaking line', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({
+      speakingBotIds: ['mimi'],
+      planningBotId: 'mimi',
+      round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: null, activity: 'planning' }], canContinue: false },
+    }) });
+    renderView();
+    const row = await screen.findByTestId('bot-group-speaking');
+    expect(row.getAttribute('data-activity')).toBe('planning');
+    expect(row.textContent).toContain('咪咪');
+    expect(row.textContent).toContain('bots.groupChat.speaking.planning');
+    expect(screen.getByTestId('content-header').textContent).toContain('bots.groupChat.header.planning:咪咪');
+  });
+
+  it('pins a progress strip above the composer while a plan step runs', async () => {
+    const running = plan({
+      status: 'running',
+      currentStep: 0,
+      updatedAt: Date.now() - 125_000,
+      steps: [{ ...plan().steps[0]!, status: 'running' }, plan().steps[1]!],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: withPlan(running, [], {
+      speakingBotIds: ['mimi'],
+      round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: 'plan-mimi', activity: 'step' }], canContinue: false },
+    }) });
+    renderView();
+    const strip = await screen.findByTestId('bot-group-progress');
+    expect(strip.textContent).toContain('bots.groupChat.progress.step');
+    expect(strip.textContent).toContain('想清楚这页讲什么');
+    expect(strip.textContent).toContain('bots.groupChat.progress.elapsed');
+    // The strip stands in for the step's speaking line; its confirmations stay in the timeline.
+    expect(screen.queryByTestId('bot-group-speaking')).toBeNull();
+    expect(screen.getByTestId('pending-interaction').textContent).toBe('plan-mimi');
+    // It sits between the timeline and the composer.
+    expect(strip.compareDocumentPosition(screen.getByRole('textbox')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('content-header').textContent).toContain('bots.groupChat.header.stepRunning:咪咪');
+    // The running step shows how long it has been going.
+    expect(screen.getByTestId('bot-group-plan').textContent).toContain('bots.groupChat.elapsed.minutes');
+    fireEvent.click(within(strip).getByRole('button', { name: 'bots.groupChat.progress.stop' }));
+    await waitFor(() => expect(mocks.stopBotGroupRound).toHaveBeenCalledWith('g1'));
+  });
+
+  it('highlights @mentions of members in teammates’ messages too', async () => {
+    const registry = new Map<string, { ranges: Range[] }>();
+    vi.stubGlobal('Highlight', class { ranges: Range[]; constructor(...ranges: Range[]) { this.ranges = ranges; } });
+    const originalCss = globalThis.CSS;
+    vi.stubGlobal('CSS', { ...(originalCss ?? {}), highlights: registry });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
+      msg({ id: 'u1', sequence: 1, content: '@小满 帮我查余票' }),
+      msg({ id: 'b1', sequence: 2, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '@咪咪 你来订 `@nobody`' }),
+    ] }) });
+    renderView();
+    await screen.findByText('@小满 帮我查余票');
+    await waitFor(() => expect(registry.get('bot-group-mention')?.ranges.map((range) => range.toString()).sort()).toEqual(['@咪咪', '@小满']));
+  });
+
+  it('shows a 话题 reply at once and keeps one copy when the server’s reply arrives', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const sent = deferred<{ ok: true; messageId: string }>();
+    const reply = vi.fn(() => sent.promise);
+    Object.assign((window.electronAPI as unknown as { maker: { chatServer: Record<string, unknown> } }).maker.chatServer, { reply });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true }) });
+    const user = userEvent.setup();
+    renderView();
+    await user.click((await screen.findAllByRole('button', { name: 'bots.groupChat.server.startTopic' }))[0]!);
+    const panel = screen.getByRole('complementary');
+    await within(panel).findByText('Reply to u1');
+    const input = within(panel).getByRole('textbox') as HTMLTextAreaElement;
+    await user.type(input, '我也去{Enter}');
+    expect(input.value).toBe('');
+    expect(within(panel).getByText('我也去')).toBeTruthy();
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'g1', rootId: 'u1', text: '我也去' }));
+    mocks.thread.mockResolvedValue({ ok: true, root: msg({ id: 'u1', content: 'Thread root u1' }),
+      replies: [msg({ id: 'reply-u1', content: 'Reply to u1' }), msg({ id: 'r9', sequence: 2, content: '我也去', isSelf: true })], hasMore: false });
+    await act(async () => sent.resolve({ ok: true, messageId: 'r9' }));
+    await waitFor(() => expect(panel.querySelector('[data-bot-group-message-id="r9"]')).toBeTruthy());
+    expect(within(panel).getAllByText('我也去')).toHaveLength(1);
+  });
 });

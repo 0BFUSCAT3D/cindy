@@ -742,11 +742,18 @@ export function createBotGroupChatService(deps: BotGroupChatServiceDeps) {
       .where(and(eq(botGroupMessages.groupId, groupId), eq(botGroupMessages.authorKind, 'bot'),
         eq(botGroupMessages.kind, 'message')))
       .orderBy(desc(botGroupMessages.sequence)).limit(1);
-    return { latest, latestSpoken, lastReplyAt: latestReply?.createdAt ?? 0 };
+    // A local group's only person is its owner, so incoming messages are the Bots' messages.
+    const incoming = await db.select({ createdAt: botGroupMessages.createdAt })
+      .from(botGroupMessages)
+      .where(and(eq(botGroupMessages.groupId, groupId), eq(botGroupMessages.authorKind, 'bot'),
+        inArray(botGroupMessages.kind, ['message', 'plan'])))
+      .orderBy(desc(botGroupMessages.sequence)).limit(99);
+    return { latest, latestSpoken, lastReplyAt: latestReply?.createdAt ?? 0,
+      incomingMessageTimes: incoming.reverse().map((row) => new Date(row.createdAt).toISOString()) };
   };
 
   const summarize = async (group: GroupRow): Promise<BotGroupSummary> => {
-    const [members, { latestSpoken, lastReplyAt }, openPlan] = await Promise.all([
+    const [members, { latestSpoken, lastReplyAt, incomingMessageTimes }, openPlan] = await Promise.all([
       readMembers(group.id),
       latestMessages(group.id),
       readOpenPlan(group.id),
@@ -776,6 +783,7 @@ export function createBotGroupChatService(deps: BotGroupChatServiceDeps) {
         : null,
       planningBotId: planning && !planning.cancelled ? planning.organizerBotId : null,
       lastReplyAt,
+      incomingMessageTimes,
       lastMessage: latestSpoken
         ? {
             authorKind: latestSpoken.authorKind,

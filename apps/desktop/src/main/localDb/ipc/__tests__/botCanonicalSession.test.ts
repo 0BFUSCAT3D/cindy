@@ -8210,6 +8210,9 @@ describe('Bot Session task end-to-end runtime', () => {
       const trace = readMessage('session-1', `bot-delegation-interject-mirror:${started.delegationId}:follow-up-1`);
       expect(trace).toMatchObject({ role: 'assistant', content: '' });
       expect(JSON.parse(trace.agentMeta).botCollaboration.role).toBe('interjection');
+      // Only the bounded first line reaches the parent timeline; the rest stays in the child task.
+      expect(JSON.parse(trace.agentMeta).botCollaboration.interjectionPreview).toBe('补充：最后必须带风险清单。');
+      expect(trace.agentMeta).not.toContain('AGENTS.md');
       expect(readMessage('session-1', `bot-delegation-request:${started.delegationId}`).content).toBe('');
       // Status queries return context to the caller without appending it to the timeline.
       const timelineBeforeCheck = h.sqlite!.prepare("SELECT * FROM messages WHERE session_id = 'session-1'").all();
