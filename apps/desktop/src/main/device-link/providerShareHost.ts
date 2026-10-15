@@ -12,7 +12,6 @@
  * 窗口期内的新申请在本机只进管理页与提示点；那台电脑在同一窗口期关注本机的分享，由它弹审批窗。
  */
 import {
-  PROVIDER_SHARE_LINK_TTL_MS,
   parseProviderSharePeer,
   type ProviderShareOwned,
   type ProviderShareRequestItem,
@@ -22,8 +21,16 @@ import { isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getAuthState, getDeviceId } from '../authManager.js';
 import { createLogger } from '../logger.js';
 import { isRemoteProviderInvocationAllowed } from '../maker-host/remote-provider-access-store.js';
+import { throwIpcError } from '../utils/ipcValidate.js';
 import { providerShareApi, providerShareOwnerKey } from './providerShareApi.js';
+import {
+  PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS,
+  readProviderShareApprovalWindows,
+  updateProviderShareApprovalWindows,
+} from './providerShareApprovalWindows.js';
 import { readDeviceLinkSettings } from './settings-store.js';
+
+export { PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS } from './providerShareApprovalWindows.js';
 
 const log = createLogger('provider-share:host');
 
@@ -32,12 +39,6 @@ const SLOW_POLL_MS = 60_000;
 /** 生成链接后保持快速拉取的时长：链接 5 分钟有效，再留出申请到达的余量。 */
 const HOT_AFTER_LINK_MS = 6 * 60_000;
 const ON_DEMAND_MIN_INTERVAL_MS = 5_000;
-/**
- * 另一台电脑生成链接后由它弹审批窗的窗口期：申请须在链接 5 分钟有效期内发出，再留出拉取的余量。
- * 两侧用同一时长：窗口期内本机静默、那台弹；过了窗口期才发现的申请照旧由本机弹。
- */
-export const PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS = PROVIDER_SHARE_LINK_TTL_MS + 2 * 60_000;
-
 export interface ProviderShareGuestAccess {
   shareId: string;
   memberId: string;
@@ -120,7 +121,7 @@ const snapshotListeners = new Set<() => void>();
 
 /**
  * 远程管理生成链接后，host runtime 可能因设备互联断开、重新接管或账号边界重建。
- * 这段短期归属只需存活到 7 分钟窗口结束，不写入磁盘；按账号作用域隔离，避免换账号时串用。
+ * 同进程重建时保留回调与去重；完整进程重启则从按账号保存的七分钟窗口恢复，不存申请或链接口令。
  */
 const retainedQuietUntilByScope = new Map<string, Map<string, number>>();
 const retainedRemoteLinkStateByScope = new Map<string, RetainedRemoteLinkState>();
@@ -287,10 +288,24 @@ function applyWatched(rt: Runtime, hostDeviceId: string, shares: readonly Provid
   }
 }
 
-export function startProviderShareHost(events: ProviderShareHostEvents): void {
+export function startProviderShareHost(events: ProviderShareHostEvents, options: {
+  readWatchedShares?: (hostDeviceId: string) => Promise<readonly ProviderShareWatchedSnapshot[]>;
+} = {}): void {
   stopProviderShareHost();
   const scope = providerShareOwnerKey();
   const remoteLinkState = restoreRemoteLinkState(scope);
+  const saved = scope === null ? null : readProviderShareApprovalWindows();
+  const retainedQuiet = restoreQuietUntil(scope);
+  // 启动的第一轮快照之前恢复两侧归属。读远端的函数由新运行时接线提供，不能从磁盘恢复旧账号闭包。
+  if (saved) {
+    remoteLinkState.watches = saved.watches.flatMap((watch) => {
+      const retained = remoteLinkState.watches.find((item) => item.hostDeviceId === watch.hostDeviceId && item.providerId === watch.providerId);
+      const readShares = options.readWatchedShares
+        ? () => options.readWatchedShares!(watch.hostDeviceId)
+        : retained?.readShares;
+      return readShares ? [{ ...watch, readShares }] : [];
+    });
+  }
   const rt: Runtime = {
     events,
     scope,
@@ -304,7 +319,7 @@ export function startProviderShareHost(events: ProviderShareHostEvents): void {
     knownRequests: new Set(),
     reconciled: false,
     stopped: false,
-    quietUntil: restoreQuietUntil(scope),
+    quietUntil: saved ? new Map(Object.entries(saved.quietUntil)) : retainedQuiet,
     quietRequests: new Set(),
     watches: remoteLinkState.watches,
     watched: remoteLinkState.watched,
@@ -383,30 +398,57 @@ export function getProviderShareHostSnapshot(): readonly ProviderShareOwned[] {
 }
 
 /** 同账号另一台电脑经管理为本机的这个供应商生成了链接：窗口期内的新申请由那台弹窗。 */
-export function quietProviderShareRequests(providerId: string): void {
+export async function quietProviderShareRequests(providerId: string): Promise<void> {
   const rt = runtime;
   if (!rt) return;
-  rt.quietUntil.set(providerId, Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
+  const assertCurrent = () => assertApprovalWindowCurrent(rt);
+  assertCurrent();
+  const until = Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
+  await updateProviderShareApprovalWindows((value) => ({
+    ...value, quietUntil: { ...value.quietUntil, [providerId]: until },
+  }), assertCurrent);
+  rt.quietUntil.set(providerId, until);
 }
 
 /** 本机自己生成了链接：本机的人在场，新申请恢复由本机弹窗。 */
-export function clearProviderShareRequestQuiet(providerId: string): void {
-  runtime?.quietUntil.delete(providerId);
+export async function clearProviderShareRequestQuiet(providerId: string): Promise<void> {
+  const rt = runtime;
+  if (!rt) return;
+  const assertCurrent = () => assertApprovalWindowCurrent(rt);
+  assertCurrent();
+  await updateProviderShareApprovalWindows((value) => {
+    const quietUntil = { ...value.quietUntil };
+    delete quietUntil[providerId];
+    return { ...value, quietUntil };
+  }, assertCurrent);
+  rt.quietUntil.delete(providerId);
 }
 
 /** 本机为另一台电脑上的分享生成了链接：窗口期内关注那条分享，新申请由本机弹窗。 */
-export function watchProviderShareRequests(
+export async function watchProviderShareRequests(
   hostDeviceId: string,
   providerId: string,
   readShares: RemoteLinkWatch['readShares'],
-): void {
+): Promise<void> {
   const rt = runtime;
   if (!rt) return;
+  const assertCurrent = () => assertApprovalWindowCurrent(rt);
+  assertCurrent();
+  const until = Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS;
+  await updateProviderShareApprovalWindows((value) => ({
+    ...value,
+    watches: [...value.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId),
+      { hostDeviceId, providerId, until }],
+  }), assertCurrent);
   rt.watches = [
     ...rt.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId),
-    { hostDeviceId, providerId, until: Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS, readShares },
+    { hostDeviceId, providerId, until, readShares },
   ];
   markProviderShareHostActive(PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
+}
+
+function assertApprovalWindowCurrent(rt: Runtime): void {
+  if (!current(rt)) throwIpcError('PRECONDITION_FAILED', 'The account or runtime changed during provider share approval setup');
 }
 
 /** 本机经管理处理了关注到的申请：立即移除，不等下一次拉取。 */

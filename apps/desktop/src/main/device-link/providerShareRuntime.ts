@@ -41,6 +41,7 @@ import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage
 import { rememberIssuedClipboardText } from '../textClipboard.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
 import { captureProviderManagementScope } from '../provider-group/managementScope.js';
+import { readProviderManagementShares } from '../provider-group/managementClient.js';
 import type { ProviderShareManagementCommand } from '../../shared/providerManagement.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
@@ -52,6 +53,7 @@ import {
 } from './dispatch.js';
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
+import { configureProviderShareApprovalWindows } from './providerShareApprovalWindows.js';
 import {
   findReceivedShare,
   getReceivedShares,
@@ -106,7 +108,7 @@ const log = createLogger('provider-share');
 
 type Broadcast = (channel: string, payload: unknown) => void;
 /** 经设备互联读分享者电脑的目录(index.ts 注入 remoteBackgroundInvoke，避免循环依赖)。 */
-type ShareInvoke = (agentDeviceId: string, channel: string, args: unknown[]) => Promise<InvokeResultPayload>;
+type ShareInvoke = (agentDeviceId: string, channel: string, args: unknown[], options?: { preSend?: () => void }) => Promise<InvokeResultPayload>;
 
 let broadcastFn: Broadcast | null = null;
 let shareInvoke: ShareInvoke | null = null;
@@ -219,9 +221,18 @@ const reshareEvents: ProviderShareReshareEvents = {
 
 /** 设备互联连上(本实例持有连接)时启动；断开、登出或失去持有权时停止。 */
 export function startProviderShareRuntime(broadcast: Broadcast, options: { invoke?: ShareInvoke } = {}): void {
+  // 启动仲裁可能早于 IPC 注册；必须在 host 的第一轮快照前配置持久归属。
+  configureProviderShareApprovalWindows({
+    filePath: () => ownerScopedUserDataPath('provider-share-approval-windows.json'),
+    scopeKey: () => {
+      captureProviderManagementScope();
+      return ownerScopedUserDataPath();
+    },
+  });
   invalidateProviderShareGuestPrefsCache();
   broadcastFn = broadcast;
   shareInvoke = options.invoke ?? null;
+  const readInvoke = options.invoke;
   running = true;
   setProviderShareReshareEvents(reshareEvents);
   startProviderShareHost({
@@ -267,7 +278,7 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
       // 转分享记录按账号存放，只会属于这台电脑上的分享：已不在快照里的成员与分享一并删掉。
       pruneReshares((record) => !owned.get(record.shareId)?.has(record.memberId));
     },
-  });
+  }, { readWatchedShares: readInvoke ? (hostDeviceId) => readProviderManagementShares(readInvoke, hostDeviceId) : undefined });
   startProviderShareGuest({
     changed(received) {
       emit(PROVIDER_SHARE_IPC.RECEIVED_CHANGED, received);
@@ -507,7 +518,8 @@ async function execute(command: ProviderShareCommand, assertCurrent: () => void 
       return ownUsage(command.providerId, command.range);
     case 'create-link': {
       const created = await createLink(command.providerId, assertCurrent);
-      clearProviderShareRequestQuiet(command.providerId);
+      await clearProviderShareRequestQuiet(command.providerId);
+      assertCurrent();
       return created;
     }
     case 'approve':
@@ -584,7 +596,8 @@ export async function executeProviderShareManagementCommand(command: ProviderSha
   if (command.action === 'create-link') {
     const created = await createLink(command.providerId, assertCurrent);
     assertCurrent();
-    quietProviderShareRequests(command.providerId);
+    await quietProviderShareRequests(command.providerId);
+    assertCurrent();
     return created;
   }
   const result = await execute(command, assertCurrent);

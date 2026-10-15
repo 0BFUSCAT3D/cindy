@@ -43,21 +43,23 @@ export async function invokeProviderManagement(
       - Math.max(0, Date.now() - startedAt));
     const expiresAt = new Date(Date.now() + remaining).toISOString();
     rememberIssuedClipboardText(created.link, expiresAt);
-    watchProviderShareRequests(deviceId, request.command.providerId, async () => {
-      // 申请属于供应商所在电脑，不能轮询本机 REST 列表来找它的申请。沿用同账号
-      // 管理调用的发送前/返回后账号检查；这里只读 owned，不重放任何写操作。
-      const snapshot = await invokeProviderManagement(readInvoke, deviceId, {
-        action: 'manage-share', command: { action: 'owned', range: '7d' },
-      }) as ProviderShareOwnerState | null;
-      if (!snapshot?.ready || !Array.isArray(snapshot.shares)) {
-        throwIpcError('PRECONDITION_FAILED', 'Provider share snapshot is not available on the managing computer');
-      }
-      return snapshot.shares;
-    });
+    await watchProviderShareRequests(deviceId, request.command.providerId, () => readProviderManagementShares(readInvoke, deviceId));
+    assertOwner();
     return { link: created.link, expiresAt };
   }
   if (request.action === 'manage-share' && (request.command.action === 'approve' || request.command.action === 'reject')) {
     forgetWatchedProviderShareRequest(request.command.requestId);
   }
   return reply.result;
+}
+
+/** 原始生成和重启恢复共用同一只读通道；仍在发送前与回包后核对当前账号。 */
+export async function readProviderManagementShares(invoke: ProviderGroupRemoteInvoke, deviceId: string) {
+  const snapshot = await invokeProviderManagement(invoke, deviceId, {
+    action: 'manage-share', command: { action: 'owned', range: '7d' },
+  }) as ProviderShareOwnerState | null;
+  if (!snapshot?.ready || !Array.isArray(snapshot.shares)) {
+    throwIpcError('PRECONDITION_FAILED', 'Provider share snapshot is not available on the managing computer');
+  }
+  return snapshot.shares;
 }

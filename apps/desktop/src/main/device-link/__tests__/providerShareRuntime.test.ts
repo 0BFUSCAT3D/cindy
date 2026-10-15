@@ -254,7 +254,7 @@ describe('provider share approval follows the computer that generated the link',
     startProviderShareHost(ev);
     await refreshProviderShareHost('test');
 
-    quietProviderShareRequests('anthropic');
+    await quietProviderShareRequests('anthropic');
     state.owned = [share([member('m1')], [pendingRequest('r1')])];
     await refreshProviderShareHost('remote-link');
     expect(ev.requested).toHaveBeenLastCalledWith(pendingRequest('r1'), expect.objectContaining({ shareId: 'share-1' }), true);
@@ -277,8 +277,8 @@ describe('provider share approval follows the computer that generated the link',
     const ev = events();
     startProviderShareHost(ev);
     await refreshProviderShareHost('test');
-    quietProviderShareRequests('anthropic');
-    clearProviderShareRequestQuiet('anthropic');
+    await quietProviderShareRequests('anthropic');
+    await clearProviderShareRequestQuiet('anthropic');
     state.owned = [share([member('m1')], [pendingRequest('r1')])];
     await refreshProviderShareHost('local-link');
     expect(ev.requested).toHaveBeenLastCalledWith(pendingRequest('r1'), expect.anything(), false);
@@ -292,7 +292,7 @@ describe('provider share approval follows the computer that generated the link',
     const first = events();
     startProviderShareHost(first);
     await refreshProviderShareHost('test');
-    quietProviderShareRequests('anthropic');
+    await quietProviderShareRequests('anthropic');
 
     stopProviderShareHost();
     const restarted = events();
@@ -321,7 +321,7 @@ describe('provider share approval follows the computer that generated the link',
     const first = events();
     startProviderShareHost(first);
     await refreshProviderShareHost('test');
-    watchShare('group-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
 
     state.remoteOwned = [otherShare([pendingRequest('before-restart')])];
     await refreshProviderShareHost('before-restart');
@@ -353,7 +353,7 @@ describe('provider share approval follows the computer that generated the link',
     // 没有生成过链接：别的电脑上的申请这里不弹。
     expect(ev.watchedRequested).not.toHaveBeenCalled();
 
-    watchShare('group-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
     state.remoteOwned = [otherShare([pendingRequest('w0'), pendingRequest('w1')]), otherShare([pendingRequest('o1')], 'openai')];
     await refreshProviderShareHost('watch');
     await refreshProviderShareHost('again');
@@ -390,7 +390,7 @@ describe('provider share approval follows the computer that generated the link',
     vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
     startProviderShareHost(events());
     await refreshProviderShareHost('start');
-    watchShare('group-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
     stopProviderShareHost();
 
     const restarted = events();
@@ -411,7 +411,7 @@ describe('provider share approval follows the computer that generated the link',
     const ev = events();
     startProviderShareHost(ev);
     await refreshProviderShareHost('start');
-    watchShare('group-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
     state.ownedError = true;
     state.remoteOwned = [otherShare([pendingRequest('remote-only')])];
     await refreshProviderShareHost('local-offline');
@@ -426,7 +426,7 @@ describe('provider share approval follows the computer that generated the link',
       new Promise((resolve) => { finishLocal = resolve; }));
     const ev = events();
     startProviderShareHost(ev);
-    watchShare('group-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
     state.remoteOwned = [otherShare([pendingRequest('local-still-pending')])];
     try {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -446,8 +446,8 @@ describe('provider share approval follows the computer that generated the link',
     const ev = events();
     startProviderShareHost(ev);
     await refreshProviderShareHost('start');
-    watchShare('group-host', 'anthropic');
-    watchShare('another-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
+    await watchShare('another-host', 'anthropic');
     state.remoteOwned = [
       otherShare([pendingRequest('keep-offline')]),
       { ...otherShare([pendingRequest('remove-online')]), hostDeviceId: 'another-host' },
@@ -467,8 +467,8 @@ describe('provider share approval follows the computer that generated the link',
     const ev = events();
     startProviderShareHost(ev);
     await refreshProviderShareHost('start');
-    watchShare('group-host', 'anthropic');
-    watchShare('another-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
+    await watchShare('another-host', 'anthropic');
     let finishOffline!: (shares: ProviderShareOwned[]) => void;
     let onlineRequest = 'online';
     readWatchedShares.mockImplementation((hostDeviceId) => hostDeviceId === 'group-host'
@@ -499,7 +499,7 @@ describe('provider share approval follows the computer that generated the link',
     const ev = events();
     startProviderShareHost(ev);
     await refreshProviderShareHost('start');
-    watchShare('group-host', 'anthropic');
+    await watchShare('group-host', 'anthropic');
     let finish!: (shares: ProviderShareOwned[]) => void;
     readWatchedShares.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     const refreshing = refreshProviderShareHost('before-switch');
