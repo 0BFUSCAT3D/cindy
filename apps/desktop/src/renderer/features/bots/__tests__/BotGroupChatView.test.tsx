@@ -2314,6 +2314,24 @@ describe('Telegram / Slack-grade timeline', () => {
     expect(screen.getByTestId('content-header').textContent).toContain('bots.groupChat.header.planning:咪咪');
   });
 
+  it('does not pin the progress strip for an organizer still deciding about a split', async () => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({
+      speakingBotIds: ['mimi'],
+      planningBotId: 'mimi',
+      round: { status: 'running', speakers: [{ botId: 'mimi', sessionId: null, activity: 'planning' }], canContinue: false },
+    }) });
+    // Well past the few seconds after which a speaking teammate would pin the strip.
+    mocks.activity = { compactDetail: '', startedAtMs: Date.now() - 5_000, phase: 'running' };
+    try {
+      renderView();
+      const row = await screen.findByTestId('bot-group-speaking');
+      expect(row.getAttribute('data-activity')).toBe('planning');
+      expect(screen.queryByTestId('bot-group-progress')).toBeNull();
+    } finally {
+      mocks.activity = null;
+    }
+  });
+
   it('pins a progress strip above the composer while a plan step runs', async () => {
     const running = plan({
       status: 'running',

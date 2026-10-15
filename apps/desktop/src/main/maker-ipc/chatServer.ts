@@ -296,6 +296,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     if (previousSourceId) await cancelPlanning(roomId, previousSourceId);
     for (const [sourceId, failed] of pendingPlanCancels.get(roomId) ?? []) await cancelPlanning(roomId, sourceId, failed);
   }
+  /** A failed cancel stays pending and is retried once here (and by the next intent). */
+  async function cancelPlanningWithRetry(roomId: string, cancel: () => Promise<void>) {
+    try { await cancel(); }
+    catch (error) {
+      deps.log?.warn('Group arrangement cancel will retry', { groupId: roomId, ...chatErrorDiagnostic(error) });
+      await flushPlanCancels(roomId).catch(retryError => deps.log?.warn('Group arrangement cancel failed', { groupId: roomId, ...chatErrorDiagnostic(retryError) }));
+    }
+  }
   async function replacePlanIntent(roomId: string, version = ++nextIntentVersion) {
     const { intent, previousSourceId } = installPlanIntent(roomId, version);
     await flushPlanCancels(roomId, previousSourceId);
@@ -1758,17 +1766,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       // Installing the intent is synchronous, so a newer send or control action still
       // supersedes this one in order; only the cancels of replaced decisions are awaited.
       const installed = intentVersion > (acceptedIntentVersions.get(roomId) ?? 0) ? installPlanIntent(roomId, intentVersion) : null;
-      if (installed) {
-        try { await flushPlanCancels(roomId, installed.previousSourceId); }
-        catch (error) {
-          // A failed cancel stays pending and is retried once here (and by the next intent).
-          deps.log?.warn('Group arrangement cancel will retry', { groupId: roomId, ...chatErrorDiagnostic(error) });
-          await flushPlanCancels(roomId).catch(retryError => deps.log?.warn('Group arrangement cancel failed', { groupId: roomId, ...chatErrorDiagnostic(retryError) }));
-        }
-      }
+      if (installed) await cancelPlanningWithRetry(roomId, () => flushPlanCancels(roomId, installed.previousSourceId));
       const intent = installed?.intent ?? null;
       if (shouldPlan) {
-        if (!intent || planIntents.get(roomId) !== intent) await cancelPlanning(roomId, messageId);
+        // Overtaken by a newer message or control action: this message must not stay deferred,
+        // so its cancel gets the same immediate retry as a replaced decision's.
+        if (!intent || planIntents.get(roomId) !== intent) await cancelPlanningWithRetry(roomId, () => cancelPlanning(roomId, messageId));
         else {
           intent.sourceId = messageId;
           void decideArrangement(s, messageId, i.text, i.division === true, prepared?.ok ? prepared.attachments : [], intent, quote).catch(() => undefined);

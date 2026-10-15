@@ -1667,6 +1667,41 @@ describe('Chat Server result delivery and refresh', () => {
       expect(deps.decidePlan).toHaveBeenCalledTimes(2);
     });
 
+    it('retries at once when cancelling a send that a newer send overtook fails', async () => {
+      const base = fixture.handle.getMockImplementation()!;
+      let finishFirst!: () => void;
+      const cancels: string[] = [];
+      let posts = 0;
+      fixture.handle.mockImplementation((route, method, data) => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { groupDiscussionParity: 1 } } };
+        if (route.endsWith('/messages') && method === 'POST') {
+          posts += 1;
+          const body = { id: `5000000${posts}-0000-4000-8000-000000000001` };
+          // The first send is answered only after the second one has installed its intent.
+          return posts === 1 ? new Promise(resolve => { finishFirst = () => resolve({ body }); }) : { body };
+        }
+        if (route.endsWith('/cancel-planning')) {
+          cancels.push(route);
+          return cancels.length === 1 ? { status: 503, body: { error: { code: 'UNAVAILABLE' } } } : { body: {} };
+        }
+        return base(route, method, data);
+      });
+      deps.decidePlan = vi.fn(() => new Promise(() => {})) as typeof deps.decidePlan;
+      const first = send('latency-plan-d');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await send('latency-plan-e')).toMatchObject({ ok: true, messageId: '50000002-0000-4000-8000-000000000001' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.decidePlan).toHaveBeenCalledOnce();
+      finishFirst();
+      expect(await first).toMatchObject({ ok: true, messageId: '50000001-0000-4000-8000-000000000001' });
+      await vi.advanceTimersByTimeAsync(0);
+      // The overtaken message is cancelled; the transient failure is retried right away, and
+      // the overtaken message never starts an arrangement of its own.
+      const cancel = `/conversations/${roomId}/messages/50000001-0000-4000-8000-000000000001/cancel-planning`;
+      expect(cancels).toEqual([cancel, cancel]);
+      expect(deps.decidePlan).toHaveBeenCalledOnce();
+    });
+
     it('shows the organizer as a planning speaker while the decision runs and removes it after', async () => {
       let decide!: (value: null) => void;
       deps.decidePlan = vi.fn(() => new Promise(resolve => { decide = resolve; })) as typeof deps.decidePlan;

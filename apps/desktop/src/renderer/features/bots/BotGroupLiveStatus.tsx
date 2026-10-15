@@ -114,7 +114,9 @@ export function BotGroupProgressStrip({
     ? speakers.find((speaker) => speaker.activity === 'step' && speaker.member.botId === step.step.botId)
       ?? speakers.find((speaker) => speaker.member.botId === step.step.botId)
     : undefined;
-  const lead = step ? stepSpeaker : speakers.find((speaker) => speaker.activity !== 'planning') ?? speakers[0];
+  // Deciding about a split is 「正在安排」 in the header and timeline, not speaking: it never
+  // pins the strip, so an organizer still deciding after a few seconds is not shown as talking.
+  const lead = step ? stepSpeaker : speakers.find((speaker) => speaker.activity !== 'planning');
   const sessionId = lead?.sessionId ?? null;
   const live = useAgentIslandActivity(sessionId ?? '');
   const since = live?.startedAtMs ?? (step ? step.plan.updatedAt : mountedAt);
