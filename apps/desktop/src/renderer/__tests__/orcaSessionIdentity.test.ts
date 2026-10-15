@@ -123,13 +123,15 @@ describe('orcaSessionIdentity', () => {
         { id: 'bot-main', role: 'canonical', kind: 'chat' },
         { id: 'bot-old', role: 'history', kind: 'history' },
         { id: 'bot-task', role: 'delegation', kind: 'worker' },
-        { id: 'bot-lane', role: 'group', kind: 'group' },
+        { id: 'bot-lane', role: 'group', kind: 'group', groupId: 'group/1' },
+        { id: 'bot-legacy-lane', role: 'group', kind: 'group' },
       ],
     }];
     await expect(resolveSessionRoute('bot-main', { orcaRole: null, source: 'bot' })).resolves.toBe('/bots/bot-a');
     await expect(resolveSessionRoute('bot-old', { orcaRole: null })).resolves.toBe('/bots/bot-a/history/bot-old');
     await expect(resolveSessionRoute('bot-task', { orcaRole: null, source: 'desktop' })).resolves.toBe('/cc-agent/bot-task');
-    await expect(resolveSessionRoute('bot-lane', { orcaRole: null })).resolves.toBe('/cc-agent/bot-lane');
+    await expect(resolveSessionRoute('bot-lane', { orcaRole: null })).resolves.toBe('/bots/groups/group%2F1');
+    await expect(resolveSessionRoute('bot-legacy-lane', { orcaRole: null })).resolves.toBe('/bots/bot-a');
     await expect(resolveSessionRoute('plain-3', { orcaRole: null })).resolves.toBe('/cc-agent/plain-3');
   });
 

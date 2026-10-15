@@ -41,7 +41,7 @@ export function getSessionRouteOwnerId(route: string): string | null {
 function loadedBotChatRoute(sessionId: string): string | null {
   const profiles = readLoadedBotProfiles();
   if (!profiles) return null;
-  const route = botRouteForOwnedSession(profiles, sessionId);
+  const route = botRouteForOwnedSession(profiles, sessionId)?.route;
   return route && !route.startsWith('/cc-agent/') ? route : null;
 }
 

@@ -4,6 +4,7 @@
  * card, confirmations and result are posted there as the teammate's own messages,
  * each carrying one of these cards. Older clients read the `fallback` line.
  */
+import type { BotGroupMessageView } from './botGroupChat';
 import { readBotCollaborationMeta, type BotCollaborationMeta } from './botCollaboration';
 
 export const BOT_GROUP_TASK_NAMESPACE = 'cindy.task';
@@ -29,6 +30,11 @@ export interface BotGroupTaskCard {
   schemaRevision: typeof BOT_GROUP_TASK_SCHEMA_REVISION;
   fallback: string;
   data: { meta: BotCollaborationMeta; state: BotGroupTaskCardState; title: string; summary?: string };
+}
+
+/** Preview/quote text without duplicating a task card in the message body. */
+export function botGroupMessageSummaryText(message: Pick<BotGroupMessageView, 'content' | 'task' | 'deleted'>): string {
+  return message.content.trim() || (message.deleted ? '' : message.task?.title.trim() ?? '');
 }
 
 const TITLE_MAX = 120;

@@ -765,6 +765,26 @@ describe('Chat Server result delivery and refresh', () => {
       expect(fixture.handle.mock.calls.some(([route, method]) => route.endsWith('/messages') && method === 'POST')).toBe(false);
     });
 
+    it.each(['started', 'waiting'] as const)('keeps a %s card-only message readable in previews and posted quotes', async state => {
+      const card = buildBotGroupTaskCard({ meta: taskMeta, state, title: 'Launch post' }, taskLabels);
+      const original = { id: '90000000-0000-4000-8000-000000000003', seq: '3', authorId: botId, author: { kind: 'bot', name: 'Bot' }, origin: 'bot',
+        deleted: false, threadRootId: null, createdAt: '2026-10-03T00:00:00Z', content: [card] };
+      fixture.handle.mockImplementation((route, method) => route.endsWith(`/messages/${original.id}`) ? { body: original }
+        : route.endsWith('/members') ? { body: [joined(botId, 'bot'), joined(selfId, 'human')] }
+        : route.endsWith('/messages') && method === 'POST' ? { body: { id: 'quoted-task' } }
+        : route.includes('/messages?') ? { body: [original] }
+        : route.endsWith('/snapshot') ? { body: { room: room(roomId), members: [joined(botId, 'bot'), joined(selfId, 'human')], messages: [original], cursor: '3' } }
+        : response(route));
+      const result = await service.getGroup(roomId);
+      if (!result.ok) throw new Error('Expected group');
+      expect(result.group.messages[0]).toMatchObject({ content: '', task: { state, title: 'Launch post' } });
+      expect(result.group.lastMessage?.preview).toBe('Launch post');
+      expect(await service.sendMessage({ groupId: roomId, text: 'Follow up', clientId: `quote-task-${state}`, mentions: { all: false, botIds: [] },
+        quote: { messageId: original.id } })).toMatchObject({ ok: true });
+      const posted = fixture.handle.mock.calls.find(([route, method]) => route.endsWith('/messages') && method === 'POST')![2];
+      expect(posted.content[0]).toMatchObject({ namespace: 'cindy.quote', data: { excerpt: 'Launch post' } });
+    });
+
     it('projects the card as the message\'s task, not as body text, and only on the teammate\'s own message', async () => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
       const at = '2026-10-03T00:00:00Z';
