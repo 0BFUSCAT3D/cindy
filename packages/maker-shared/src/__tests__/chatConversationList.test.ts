@@ -2,6 +2,34 @@ import { expect, it, vi } from 'vitest';
 import { createConversationListState } from '../chatConversationList';
 const id = '00000000-0000-4000-8000-000000000001';
 
+it('shares concurrent reads and avoids full-page downloads until an explicit reconnect', async () => {
+  const list = createConversationListState();
+  let resolve!: (value: unknown) => void;
+  const request = vi.fn().mockImplementation(() => new Promise(done => { resolve = done; }));
+  const first = list.ensureSynced(request);
+  const concurrent = list.sync(request);
+  expect(request).toHaveBeenCalledTimes(1);
+  resolve([]); await Promise.all([first, concurrent]);
+  await list.ensureSynced(request);
+  expect(request).toHaveBeenCalledTimes(1);
+  request.mockResolvedValue([{ conversationId: id, hidden: true, revision: 1 }]);
+  await list.sync(request);
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(list.hidden(id)).toBe(true);
+});
+
+it('retries a failed reconnect before allowing an ordinary refresh to trust the cache', async () => {
+  const list = createConversationListState();
+  const request = vi.fn().mockResolvedValue([]);
+  await list.ensureSynced(request);
+  request.mockRejectedValueOnce(new Error('offline'));
+  await expect(list.sync(request)).rejects.toThrow('offline');
+  request.mockResolvedValue([{ conversationId: id, hidden: true, revision: 2 }]);
+  await list.ensureSynced(request);
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(list.hidden(id)).toBe(true);
+});
+
 it('keeps newer account events over a delayed startup/reconnect page', async () => {
   const list = createConversationListState();
   let resolve!: (value: unknown) => void;

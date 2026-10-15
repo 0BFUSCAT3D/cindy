@@ -212,7 +212,10 @@ export function createChatServerClient(request: ChatRequest, personalList = crea
   return {
     personalList,
     lifecycleCapabilities: () => ({ supportsDissolve, supportsListRemoval }),
-    async syncListState() { await identity(); if (supportsListRemoval) await personalList.sync(request); },
+    async syncListState(force = false) {
+      await identity();
+      if (supportsListRemoval) await (force ? personalList.sync(request) : personalList.ensureSynced(request));
+    },
     async hide(roomId: string, operationId: string) {
       await identity();
       if (!supportsListRemoval) throw new Error('LIFECYCLE_UNAVAILABLE');

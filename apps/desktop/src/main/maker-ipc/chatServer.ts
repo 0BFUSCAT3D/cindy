@@ -179,7 +179,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let supportsDissolve = false;
   let supportsListRemoval = false;
   const personalList = createConversationListState();
-  const syncPersonalList = async () => { if (supportsListRemoval) await personalList.sync(api); };
+  const syncPersonalList = async (force = false) => {
+    if (supportsListRemoval) await (force ? personalList.sync(api) : personalList.ensureSynced(api));
+  };
   personalList.subscribe(row => {
     if (!current()) return;
     deps.onChanged?.({ groupId: row.conversationId, change: 'list', listState: row }, scope);
@@ -568,7 +570,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           reconnectDelay = 500; connected = true;
           ws.send(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '0' }));
           for (const [roomId, cursor] of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
-          void syncPersonalList().then(() => { if (current() && socket === ws) { for (const roomId of rooms.keys()) changed(roomId); changed(''); } }).catch(() => ws.close());
+          void syncPersonalList(true).then(() => { if (current() && socket === ws) { for (const roomId of rooms.keys()) changed(roomId); changed(''); } }).catch(() => ws.close());
         } else if (event.type === 'changes') {
           // This adapter stores no client history. Each invalidation re-reads authoritative
           // state; a reconnect resumes after the last cursor this process has read or acked.

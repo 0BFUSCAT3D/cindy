@@ -371,5 +371,10 @@ it('merges a computer-confirmed personal removal without requiring direct server
   expect(chat.state.kind).toBe('missing');
   expect(h.auth.apiFetch).not.toHaveBeenCalled();
   expect(h.link.invoke.mock.calls.find(call => call[1] === 'maker:remote-resources:invoke')?.[2][0]).toMatchObject({ actionId: 'hide', resourceRef: { id } });
+  await act(async () => root!.unmount()); root = undefined;
+  h.targets = [target]; h.legacy.isOnline.mockReturnValue(true);
+  h.legacy.items = [{ host: target, item: { ref: { id, kind: 'bot-group', collectionId: 'bot-groups' } } }];
+  await render();
+  expect(roster.items).toEqual([]);
   h.link.status = 'offline'; h.link.getPresenceAvailability = () => false;
 });

@@ -40,6 +40,8 @@ Desktop 收到终态后还会中止本机未完成的规划，沿原 lease 链�
 `GET /conversation-list-state` 获取状态，无需先读已无权限的群快照。启动及重连先取个人状态，
 只合入更新的修订；成功回包或本人 human actor scope 的 `conversation.list.changed` 才清理本地
 列表、选择与未读镜像，失败保留列表。手机同时订阅群和本人 human scope，代演不替换账号订阅。
+同账号并发全量同步共用一次请求；普通聊天刷新复用已同步状态与事件，启动、重连及手机主动刷新重新读取。
+同步失败不把缓存标记为已就绪。手机列表重新挂载时先纳入已有个人状态，直连离线也不恢复旧电脑回包。
 
 现有 `bot-group-chat` 投影可选追加 supportsDissolve、supportsListRemoval、supportsGroupLeave、dissolvedAt；远程资源
 动作 `dissolve` / `leave` / `hide` 分别转发相同的服务端动作。hide 的 opaque result 返回

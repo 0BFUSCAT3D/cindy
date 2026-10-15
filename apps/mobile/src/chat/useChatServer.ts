@@ -64,13 +64,15 @@ export function useChatServerRoster(enabled: boolean) {
   const api = useChatClient();
   const known = useRef({ owner: api.owner, ids: new Set<string>() });
   if (known.current.owner !== api.owner) known.current = { owner: api.owner, ids: new Set() };
+  // A remounted roster must suppress already-known hidden rooms even if HTTP is offline.
+  for (const id of api.client.personalList.ids()) known.current.ids.add(id);
   const snapshots = useRef(new Map<string, { owner: string; head: string | undefined; value: ChatSnapshot }>());
   const [state, setState] = useState({ owner: api.owner, rooms: [] as ReturnType<typeof chatRoomRow>[], loading: true, refreshing: false, error: null as string | null });
   const read = useRemoteSyncCoordinator(async run => {
     if (!api.enabled || !enabled) return;
     setState(old => ({ ...old, refreshing: run.reasons.includes('visible') }));
     try {
-      await api.client.syncListState();
+      await api.client.syncListState(run.reasons.some(reason => ['focus', 'visible', 'connected'].includes(reason)));
       const [rooms, self] = await Promise.all([api.client.list(), api.client.me()]);
       const rows: ReturnType<typeof chatRoomRow>[] = [];
       const fresh = new Map<string, { owner: string; head: string | undefined; value: ChatSnapshot }>();
@@ -174,7 +176,7 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
     const generation = accessGeneration.current;
     freshRead.current = false;
     try {
-      await api.client.syncListState();
+      await api.client.syncListState(run.reasons.some(reason => ['focus', 'visible', 'connected'].includes(reason)));
       const previous = page.current?.identity === identity ? page.current.page : null;
       const oldest = previous?.messages.reduce<string | undefined>((oldest, message) => !oldest || BigInt(message.seq) < BigInt(oldest) ? message.seq : oldest, undefined);
       const [next, self] = await Promise.all([api.client.load(groupId, oldest), api.client.me()]);
@@ -213,7 +215,6 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
             if ((error as { code?: string }).code !== 'RESET_REQUIRED') throw error;
             return '0';
           }) : null;
-          await api.client.syncListState();
           await request({ reason: 'connected' });
           const latest = page.current;
           if (!freshRead.current || !latest || latest.identity !== identity) throw new Error('CHAT_READ_FAILED');

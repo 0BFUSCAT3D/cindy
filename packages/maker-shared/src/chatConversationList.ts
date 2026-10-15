@@ -13,20 +13,21 @@ function state(value: unknown): ConversationListState {
 export function createConversationListState() {
   const rows = new Map<string, ConversationListState>();
   const listeners = new Set<(row: ConversationListState) => void>();
+  let synced = false;
+  let syncing: Promise<void> | null = null;
   const merge = (value: unknown) => {
     const row = state(value);
     if ((rows.get(row.conversationId)?.revision ?? 0) >= row.revision) return;
     rows.set(row.conversationId, row);
     for (const notify of listeners) notify(row);
   };
-  return {
-    merge,
-    hidden: (id: string) => rows.get(id)?.hidden === true,
-    get: (id: string) => rows.get(id),
-    revision: (id: string) => rows.get(id)?.revision ?? 0,
-    ids: () => [...rows.keys()],
-    subscribe(notify: (row: ConversationListState) => void) { listeners.add(notify); return () => { listeners.delete(notify); }; },
-    async sync(request: Request) {
+  // Reconnects force a full authoritative read; ordinary refreshes share the initial
+  // read and then rely on account events, rather than downloading every page again.
+  const sync = (request: Request, force = true): Promise<void> => {
+    if (syncing) return syncing;
+    if (!force && synced) return Promise.resolve();
+    synced = false;
+    syncing = (async () => {
       let after: string | undefined;
       do {
         const page = await request<unknown[]>(`/conversation-list-state?limit=100${after ? `&after=${after}` : ''}`);
@@ -36,7 +37,19 @@ export function createConversationListState() {
         if (next && after && next <= after) throw new Error('INVALID_CHAT_PAGE');
         after = next;
       } while (after);
-    },
+      synced = true;
+    })().finally(() => { syncing = null; });
+    return syncing;
+  };
+  return {
+    merge,
+    hidden: (id: string) => rows.get(id)?.hidden === true,
+    get: (id: string) => rows.get(id),
+    revision: (id: string) => rows.get(id)?.revision ?? 0,
+    ids: () => [...rows.keys()],
+    subscribe(notify: (row: ConversationListState) => void) { listeners.add(notify); return () => { listeners.delete(notify); }; },
+    sync,
+    ensureSynced: (request: Request) => sync(request, false),
     async setHidden(request: Request, id: string, hidden: boolean, operationId: string) {
       if (!uuid.test(id)) throw new Error('INVALID_CHAT_ID');
       // Read first, including after leaving. A lost acknowledgement is safe to retry.
