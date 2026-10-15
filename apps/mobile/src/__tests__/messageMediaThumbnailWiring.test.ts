@@ -15,6 +15,17 @@ describe('mobile message media thumbnail wiring', () => {
   const rendererSource = readTextLf(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
   const screenSource = readTextLf(resolve(process.cwd(), 'app/sessions/[sessionId].tsx'), 'utf8');
 
+  it('captures remote and settling queue identities before building their visible rows, without requesting pixels', () => {
+    const pendingItems = screenSource.slice(
+      screenSource.indexOf('const pendingSendItems = useMemo('),
+      screenSource.indexOf('const messageListItems = useMemo('),
+    );
+    expect(pendingItems).toContain('for (const item of [...settlingItemsForRender, ...inputProjection.pendingQueue])');
+    const capture = pendingItems.indexOf('rememberSentAttachmentPreviews(item.clientId, item.files ?? [], () => null)');
+    expect(capture).toBeGreaterThan(-1);
+    expect(capture).toBeLessThan(pendingItems.indexOf('return buildPendingSendItems('));
+  });
+
   it('threads onResolveRemoteMedia from actions through both media blocks into MediaPreview', () => {
     expect(rendererSource).toContain('onResolveRemoteMedia={actions.onResolveRemoteMedia}');
     const attachmentStrip = rendererSource.slice(

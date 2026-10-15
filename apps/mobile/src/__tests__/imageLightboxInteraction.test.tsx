@@ -423,6 +423,63 @@ describe('pending image gallery updates', () => {
   });
 
   it.each([
+    ['hash', false], ['hash', true], ['url', false], ['url', true],
+  ] as const)('keeps a remote queued image through formal history without a local preview (%s, gap: %s)', async (proof, gap) => {
+    const files: RemoteSerializedAttachment[] = [0, 1].map((index) => ({ id: `photo-${index}`, name: `photo-${index}.jpg`,
+      category: 'image', path: index === 0 ? 'cindy-oss-attach://unreadable' : 'cindy-media://blobs/queued-1.jpg',
+      mimeType: 'image/jpeg', ext: 'jpg', size: 100, ...(proof === 'hash' ? { sha256: String(index).repeat(64) } : {}) }));
+    const previews: SentMessageImagePreviews = new Map();
+    const getPreview: GetSentMessageImagePreview = (...args) => getSentMessageImagePreview(previews, 's', ...args);
+    // The session observes a remote/reopened queue, with no local outbox or preview URI.
+    rememberSentMessageImagePreviews(previews, 's', 'pending', files, () => null);
+    const initial = collectMobileMessageGalleryImages(buildPendingSendItems({
+      queue: [{ clientId: 'pending', text: '', chatMessage: {}, files } as unknown as QueuedRemoteMessage],
+      settling: [], outbox: [], hiddenClientIds: new Set(), sendingClientIds: new Set(), editingClientId: null,
+      steeringClientIds: new Set(), presentationByClientId: new Map(), getImagePreview: getPreview,
+    }));
+    expect(initial).toHaveLength(1);
+    expect(initial[0].previewUri).toBeUndefined();
+    const clicked = initial[0].payload;
+    const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, initialImageKey: initial[0].key,
+      annotation: { submitLabel: 'Send', onSubmit },
+      onResolveRemoteMedia: async (media) => ({ url: `file:///${media.url.split('/').at(-1)}`, ossKey: '',
+        mimeType: 'image/jpeg', size: 100, expiresAt: '9999-01-01', previewable: true }) });
+    await act(async () => { await Promise.resolve(); });
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    press('message.imageLightboxAnnotateButton');
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    fire(draw(), 'onFinalize', {}, true);
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    if (gap) {
+      props.images = lightboxImagesForPayload([], clicked, 'message-pending', props.images, false);
+      render();
+    }
+    const formalUrls = ['cindy-media://blobs/formal-0.jpg', proof === 'hash'
+      ? 'cindy-media://blobs/formal-1.jpg' : files[1].path];
+    const formal = collectMobileMessageGalleryImages(buildMobileMessageRenderItems([{
+      id: 'server-id', clientId: 'pending', sessionId: 's', role: 'user', toolUseId: null,
+      agentMeta: null, createdAt: '2026-01-01T00:00:00.000Z', content: { images: files.map((file, index) => ({
+        name: file.name, sha256: file.sha256, url: formalUrls[index],
+      })) },
+    }]), undefined, undefined, 's', getPreview);
+    props.images = lightboxImagesForPayload(formal, clicked, 'message-pending', props.images, true);
+    await act(async () => { render(); });
+    expect(props.images[1].key).toBe(initial[0].key);
+    const page = runtime.nodes.get('FlatList').renderItem({ item: props.images[1], index: 1 }).props;
+    expect(page.active).toBe(true);
+    expect(page.annotationStrokes).toEqual([{ points: [{ x: 0.25, y: 0.25 }] }]);
+    expect(page.annotationDraftStroke).toEqual({ points: [{ x: 0.5, y: 0.5 }] });
+    expect(page.naturalSize).toEqual({ width: 400, height: 800 });
+    press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit.mock.calls[0]).toEqual([props.images[1], `file:///${formalUrls[1].split('/').at(-1)}`,
+      [{ points: [{ x: 0.25, y: 0.25 }] }, { points: [{ x: 0.5, y: 0.5 }] }],
+      { mimeType: 'image/jpeg', naturalWidth: 400, naturalHeight: 800 }]);
+  });
+
+  it.each([
     ['image', false], ['image', true], ['pdf', false], ['pdf', true],
   ] as const)('keeps an unchanged image when an earlier %s is removed (local preview: %s)', (category, local) => {
     const first: RemoteSerializedAttachment = { id: 'first', name: 'first', category,

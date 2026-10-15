@@ -19,7 +19,7 @@ const messageKey = (sessionId: string, clientId: string) => JSON.stringify([sess
 /** Known attachments keep their identity when a queue edit changes their position. */
 export const sentImageGalleryKey = (clientId: string, attachmentId: string): string => `${clientId}-attachment:${attachmentId}`;
 
-/** Presentation-only snapshot. Host materialization changes URLs, but preserves message/image order. */
+/** Presentation-only attachment identities, with optional local pixels for immediate previews. */
 export function rememberSentMessageImagePreviews(
   previews: SentMessageImagePreviews,
   sessionId: string,
@@ -35,14 +35,14 @@ export function rememberSentMessageImagePreviews(
     const prior = previous?.find((entry) => entry?.attachmentId === attachment.id);
     // Preserve the outbox identity through URL materialization; a replaced file ID cannot inherit it.
     const galleryImageKey = galleryKeyOf?.(attachment) ?? prior?.galleryImageKey;
-    if (!uri && !galleryImageKey) return prior ?? null;
     return { attachmentId: attachment.id, name: attachment.originalName ?? attachment.name,
-      sourceRef: uri ? attachment.url ?? attachment.path : prior?.sourceRef ?? attachment.url ?? attachment.path,
+      sourceRef: uri || !prior?.uri ? attachment.url ?? attachment.path : prior.sourceRef,
       sha256: attachment.sha256, uri: uri || prior?.uri || null,
       ...(galleryImageKey ? { galleryImageKey } : {}) };
   });
   // Replace the complete snapshot on edit, including removed images and missing previews.
   previews.delete(key);
+  if (images.length === 0) return;
   previews.set(key, images);
   while (previews.size > 64) previews.delete(previews.keys().next().value!);
 }

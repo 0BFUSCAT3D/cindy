@@ -6005,6 +6005,12 @@ function SessionScreenContent() {
   // diff 计数只认已落库的消息。
   const pendingSendItems = useMemo(
     () => {
+      // Remote/reopened queues have no local send snapshot. Remember identities without
+      // fetching pixels so formal history can inherit their open viewer pages too.
+      // The authoritative queue wins over a stale settling copy of the same message.
+      for (const item of [...settlingItemsForRender, ...inputProjection.pendingQueue]) {
+        rememberSentAttachmentPreviews(item.clientId, item.files ?? [], () => null);
+      }
       const presentationByClientId = new Map<
         string,
         { actions: MobilePendingSendActions; hint: string | null }
@@ -6038,6 +6044,7 @@ function SessionScreenContent() {
     [
       i18nInstance.language,
       getSentImagePreview,
+      rememberSentAttachmentPreviews,
       inputProjection,
       outboxDisplayItems,
       queueBusy,

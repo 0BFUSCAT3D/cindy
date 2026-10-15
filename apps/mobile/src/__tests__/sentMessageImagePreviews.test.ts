@@ -53,6 +53,27 @@ describe('sent image preview handoff', () => {
     expect(getSentMessageImagePreview(previews, 's', '0', 0, 'a.jpg')).toBeUndefined();
   });
 
+  it('remembers observed queue identity without local pixels and replaces it on remote edits', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const file = image('a');
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, file.id)).toMatchObject({
+      attachmentId: file.id, uri: null, sourceRef: file.url, sha256: file.sha256,
+    });
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, file.sha256)?.attachmentId).toBe(file.id);
+    const replacement = { ...image('b'), name: file.name };
+    rememberSentMessageImagePreviews(previews, 's', 'm', [replacement], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, file.id)).toBeUndefined();
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, file.sha256)).toBeUndefined();
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, replacement.sha256)?.attachmentId).toBe(replacement.id);
+    rememberSentMessageImagePreviews(previews, 's', 'm', [], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, replacement.id)).toBeUndefined();
+    // Text-only queue traffic must not evict image identities from this bounded store.
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => null);
+    for (let n = 0; n < 65; n++) rememberSentMessageImagePreviews(previews, 's', String(n), [], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, file.id)?.attachmentId).toBe(file.id);
+  });
+
   it('finds an unchanged attachment by ID after a remote edit moves its image index', () => {
     const previews: SentMessageImagePreviews = new Map();
     const files = [image('a'), image('b')];
@@ -64,6 +85,18 @@ describe('sent image preview handoff', () => {
     // Formal history omits IDs. Reconnect a moved image only after checking its pixels.
     expect(getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', undefined, files[1].sha256)).toEqual(moved);
     expect(getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', undefined, 'changed')).toBeUndefined();
+  });
+
+  it('refreshes a metadata-only source reference as a queue attachment materializes without a hash', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const file = { ...image('a'), sha256: undefined };
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => null);
+    const materialized = { ...file, url: 'cindy-media://blobs/a.jpg' };
+    rememberSentMessageImagePreviews(previews, 's', 'm', [materialized], () => null);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, undefined, materialized.url))
+      .toMatchObject({ attachmentId: file.id, sourceRef: materialized.url, uri: null });
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, file.name, undefined, undefined, 'cindy-media://blobs/replaced.jpg'))
+      .toBeUndefined();
   });
 
   it('does not choose an ambiguous formal image after its position changes', () => {
