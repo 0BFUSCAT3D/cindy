@@ -26,7 +26,7 @@ describe('sent image preview handoff', () => {
       hiddenClientIds: new Set(), sendingClientIds: new Set(), editingClientId: null,
       steeringClientIds: new Set(), presentationByClientId: new Map(), getImagePreview: getPreview });
     expect(pending.thumbs.map((thumb) => [thumb.key, thumb.uri])).toEqual([
-      ['message-slot-0:a', 'file:///a.jpg'], ['message-slot-2:b', 'file:///b.jpg'],
+      ['message-attachment:a', 'file:///a.jpg'], ['message-attachment:b', 'file:///b.jpg'],
     ]);
     expect(pending.thumbs[0].previewRef).toBe(files[0].url);
     // Formal messages have no file ID; the accepted message and image position remain stable.
@@ -51,6 +51,27 @@ describe('sent image preview handoff', () => {
     for (let n = 0; n < 65; n++) rememberSentMessageImagePreviews(previews, 's', String(n), [image('a')], () => 'file:///a.jpg');
     expect(previews.size).toBe(64);
     expect(getSentMessageImagePreview(previews, 's', '0', 0, 'a.jpg')).toBeUndefined();
+  });
+
+  it('finds an unchanged attachment by ID after a remote edit moves its image index', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const files = [image('a'), image('b')];
+    rememberSentMessageImagePreviews(previews, 's', 'm', files, (file) => `file:///${file.id}.jpg`,
+      (file) => `m-slot-${files.indexOf(file)}`);
+    const moved = getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', 'b');
+    expect(moved).toMatchObject({ attachmentId: 'b', uri: 'file:///b.jpg', galleryImageKey: 'm-slot-1' });
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', 'replacement')).toBeUndefined();
+    // Formal history omits IDs. Reconnect a moved image only after checking its pixels.
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', undefined, files[1].sha256)).toEqual(moved);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 0, 'b.jpg', undefined, 'changed')).toBeUndefined();
+  });
+
+  it('does not choose an ambiguous formal image after its position changes', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const first = image('a', 'same.jpg');
+    rememberSentMessageImagePreviews(previews, 's', 'm', [first, { ...first, id: 'b' }], () => 'file:///same.jpg',
+      (file) => `key-${file.id}`);
+    expect(getSentMessageImagePreview(previews, 's', 'm', 2, 'same.jpg', undefined, first.sha256)).toBeUndefined();
   });
 
   it.each([null, 'file:///durable.jpg'])('retains outbox identity with preview %s and rejects a real replacement', (uri) => {

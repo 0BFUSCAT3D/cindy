@@ -11,6 +11,8 @@ import { mobileMarkdownImageUrlForWorkdir, mobileMarkdownManagedImagePreviewUrl 
 import { buildMediaPayload } from '@/session/messagePayload';
 import { buildOutboxItem, outboxDisplayItem, type MobileOutboxThumb } from '@/session/sessionOutbox';
 import { buildPendingSendItems } from '@/session/pendingSendItems';
+import { getSentMessageImagePreview, rememberSentMessageImagePreviews, type GetSentMessageImagePreview,
+  type SentMessageImagePreviews } from '@/session/sentMessageImagePreviews';
 
 const durableThumbs = vi.hoisted(() => new Map<string, string>());
 vi.mock('@/session/sentAttachmentThumbStore', async (importOriginal) => ({
@@ -172,6 +174,38 @@ describe('message gallery', () => {
     expect(lightboxImagesForPayload(current, previous[0].payload, row.key, previous, true)).toEqual([]);
     // Actual row departure still preserves the open snapshot during handoff.
     expect(lightboxImagesForPayload([], previous[0].payload, row.key, previous, false)).toEqual(previous);
+  });
+
+  it('keeps proven attachment identities in formal history while deduplicating their Markdown reference', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const files = ['a', 'b'].map((id) => ({ id, name: `${id}.jpg`, category: 'image' as const,
+      path: `cindy-oss-attach://${id}`, sha256: 'c'.repeat(64), size: 100, mimeType: 'image/jpeg', ext: 'jpg' }));
+    rememberSentMessageImagePreviews(previews, 's', 'm', files, () => null, (file) => `m-slot-${file.id}`);
+    const getPreview: GetSentMessageImagePreview = (...args) => getSentMessageImagePreview(previews, 's', ...args);
+    const url = 'https://example.invalid/same.jpg';
+    const rows = buildMobileMessageRenderItems([{ id: 'server', clientId: 'm', sessionId: 's', role: 'user',
+      toolUseId: null, agentMeta: null, createdAt: '2026-01-01T00:00:00.000Z', content: {
+        text: `![body copy](${url})`, images: files.map((file) => ({ name: file.name, sha256: file.sha256, url })),
+      } }]);
+    const gallery = collectMobileMessageGalleryImages(rows, undefined, undefined, 's', getPreview);
+    expect(gallery.map((image) => image.key)).toEqual(['m-slot-a', 'm-slot-b']);
+    expect(gallery.every((image) => image.payload.galleryImageKey === image.key)).toBe(true);
+  });
+
+  it('does not copy a pending identity to a same-name formal replacement with different pixels', () => {
+    const previews: SentMessageImagePreviews = new Map();
+    const file = { id: 'old', name: 'same.jpg', category: 'image' as const, path: 'cindy-oss-attach://old',
+      sha256: 'a'.repeat(64), size: 100, mimeType: 'image/jpeg', ext: 'jpg' };
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => 'file:///old.jpg', () => 'm-slot-old');
+    const getPreview: GetSentMessageImagePreview = (...args) => getSentMessageImagePreview(previews, 's', ...args);
+    const rows = buildMobileMessageRenderItems([{ id: 'server', clientId: 'm', sessionId: 's', role: 'user',
+      toolUseId: null, agentMeta: null, createdAt: '2026-01-01T00:00:00.000Z', content: {
+        images: [{ name: file.name, sha256: 'b'.repeat(64), url: 'cindy-media://blobs/new.jpg' }],
+      } }]);
+    const [replacement] = collectMobileMessageGalleryImages(rows, undefined, undefined, 's', getPreview);
+    expect(replacement.key).not.toBe('m-slot-old');
+    expect(replacement.previewUri).toBeUndefined();
+    expect(replacement.payload.galleryImageKey).toBeUndefined();
   });
 
   it.each([1, 2])('uses the current pending message when the clicked attachment is replaced (%i images)', (count) => {

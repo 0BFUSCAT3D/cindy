@@ -16,6 +16,9 @@ export type GetSentMessageImagePreview = (
 
 const messageKey = (sessionId: string, clientId: string) => JSON.stringify([sessionId, clientId]);
 
+/** Known attachments keep their identity when a queue edit changes their position. */
+export const sentImageGalleryKey = (clientId: string, attachmentId: string): string => `${clientId}-attachment:${attachmentId}`;
+
 /** Presentation-only snapshot. Host materialization changes URLs, but preserves message/image order. */
 export function rememberSentMessageImagePreviews(
   previews: SentMessageImagePreviews,
@@ -54,10 +57,17 @@ export function getSentMessageImagePreview(
   sha256?: string,
   sourceRef?: string,
 ): SentMessageImagePreview | undefined {
-  const preview = previews.get(messageKey(sessionId, clientId))?.[imageIndex];
-  if (!preview || (attachmentId ? preview.attachmentId !== attachmentId : preview.name !== name)) return undefined;
+  const entries = previews.get(messageKey(sessionId, clientId));
+  if (attachmentId) return entries?.find((entry) => entry?.attachmentId === attachmentId) ?? undefined;
   // Formal content omits file IDs. Prove the pixels still match before reusing a local image;
   // a same-name queue edit on another device must never resurrect the old preview.
-  if (!attachmentId && !(sha256 && preview.sha256 === sha256) && preview.sourceRef !== sourceRef) return undefined;
-  return preview;
+  const matches = (entry: SentMessageImagePreview | null | undefined): entry is SentMessageImagePreview => (
+    !!entry && entry.name === name && (!!sha256 && entry.sha256 === sha256 || entry.sourceRef === sourceRef)
+  );
+  const indexed = entries?.[imageIndex];
+  if (matches(indexed)) return indexed;
+  // Remote queue edits can move an image without updating this local snapshot. Only a unique,
+  // proven content match may reconnect it; ambiguous same-name images cannot share identity.
+  const candidates = entries?.filter(matches);
+  return candidates?.length === 1 ? candidates[0] : undefined;
 }

@@ -10,7 +10,7 @@ import { buildAttachmentPayload, buildMediaPayload, payloadMediaKindLabel } from
 import type { MobileMessageRenderItem, MobileWorkChildItem } from '@/session/messageRenderModel';
 import { logUnhandledRenderItem } from '@/session/assertNever';
 import { applySentAttachmentThumbOverlay, getSentAttachmentThumbUri } from '@/session/sentAttachmentThumbStore';
-import type { GetSentMessageImagePreview } from '@/session/sentMessageImagePreviews';
+import { sentImageGalleryKey, type GetSentMessageImagePreview } from '@/session/sentMessageImagePreviews';
 import { i18n } from '@/i18n';
 import { svgAttachmentForDisplay } from '@/session/messageAttachments';
 import { pendingSendGalleryImage } from '@/session/pendingSendImages';
@@ -71,6 +71,8 @@ export function collectMobileMessageGalleryImages(
     const dedupeKey = `${currentGroupKey}::${payload.galleryImageKey ? `slot:${payload.galleryImageKey}` : `url:${url}`}`;
     if (seenUrls.has(dedupeKey)) return;
     seenUrls.add(dedupeKey);
+    // Distinct attachment identities remain separate pages; body references to their URL still dedupe.
+    seenUrls.add(`${currentGroupKey}::url:${url}`);
     images.push({ key, title, url, payload, groupKey: currentGroupKey, ...(previewUri ? { previewUri } : {}) });
   };
 
@@ -106,7 +108,13 @@ export function collectMobileMessageGalleryImages(
       const previewUri = attachment.kind === 'image' && displayAttachment.uri
         ? getSentAttachmentThumbUri(localPreview?.sourceRef ?? displayAttachment.uri) ?? localPreview?.uri
         : null;
-      push(`${keyPrefix}:attachment:${index}`, attachment.name, payload, previewUri);
+      // The verified send snapshot bridges outbox/queue keys to formal history, even when
+      // an earlier unreadable upload first enters the gallery at this exact handoff.
+      const galleryImageKey = localPreview && clientId
+        ? localPreview.galleryImageKey ?? sentImageGalleryKey(clientId, localPreview.attachmentId)
+        : undefined;
+      push(galleryImageKey ?? `${keyPrefix}:attachment:${index}`, attachment.name,
+        galleryImageKey ? { ...payload, galleryImageKey } : payload, previewUri);
     });
     message.media?.forEach((media, index) => pushMedia(media, `${keyPrefix}:media:${index}`));
     // 正文 Markdown 图片(![](url) / 安全 <img>)也纳入图集,点开后可与附件图片一起横滑翻页。
