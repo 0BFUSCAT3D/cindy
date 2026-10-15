@@ -6253,37 +6253,34 @@ function gitUsesConfigOverride(tokens: readonly string[]): boolean {
  * 前置段按只读命令执行时，才允许把这次读取交给执行器做本机凭证豁免；认不出的段一律
  * 按可能有副作用处理，保持 fail-closed。
  */
-function priorShellSegmentsMayMutate(
+function shellSegmentMutation(
   segments: readonly ExecutableSegment[],
-  segmentIndex: number,
+  index: number,
   workspaceRoots: string[],
   opts: ShellReviewOptions,
   segmentCwds: readonly (string | undefined)[],
-  allowResolvedDirectoryChanges = false,
-): boolean {
-  for (let index = 0; index < segmentIndex; index += 1) {
-    const segmentCwd = segmentCwds[index];
-    const segmentOpts: ShellReviewOptions = {
-      ...opts,
-      cwd: segmentCwd ?? opts.cwd,
-      cwdUnknown: segmentCwd === undefined ? true : opts.cwdUnknown,
-    };
-    // git status may refresh the index, so it cannot establish a stable pre-read state
-    // for a later credential exemption even though its output is otherwise read-only.
-    const tokens = stripShellControlTokens(tokenize(segments[index].text));
-    const unwrapped = unwrapCommand(tokens, segmentOpts.cwd ?? workspaceRoots[0], segmentOpts.cwdUnknown === true);
-    if (allowResolvedDirectoryChanges && !process.env.CDPATH
-      && tokens[0] === 'cd' && tokens.length === 2 && !tokens[1].startsWith('-')
-      && segments[index].separatorAfter === 'and' && segmentCwds[index + 1] !== undefined
-      && !segmentHasSideEffectRedirectOrSubstitution(segments[index].text)) continue;
-    const invocation = unwrapped.tokens[0] && executableName(unwrapped.tokens[0]) === 'git'
-      ? parseGitInvocation(unwrapped.tokens, workspaceRoots, segmentOpts)
-      : undefined;
-    if (invocation?.sub === 'status' || classifyShellSegment(segments[index].text, workspaceRoots, segmentOpts) !== 'auto-approve') {
-      return true;
-    }
-  }
-  return false;
+): { mayMutate: boolean; mayMutateFiles: boolean } {
+  const segment = segments[index];
+  const segmentCwd = segmentCwds[index];
+  const segmentOpts: ShellReviewOptions = {
+    ...opts,
+    cwd: segmentCwd ?? opts.cwd,
+    cwdUnknown: segmentCwd === undefined ? true : opts.cwdUnknown,
+  };
+  // git status may refresh the index, so it cannot establish a stable pre-read state
+  // for a later credential exemption even though its output is otherwise read-only.
+  const tokens = stripShellControlTokens(tokenize(segment.text));
+  const unwrapped = unwrapCommand(tokens, segmentOpts.cwd ?? workspaceRoots[0], segmentOpts.cwdUnknown === true);
+  const resolvedDirectoryChange = !process.env.CDPATH
+    && tokens[0] === 'cd' && tokens.length === 2 && !tokens[1].startsWith('-')
+    && segment.separatorAfter === 'and' && segmentCwds[index + 1] !== undefined
+    && !segmentHasSideEffectRedirectOrSubstitution(segment.text);
+  const invocation = unwrapped.tokens[0] && executableName(unwrapped.tokens[0]) === 'git'
+    ? parseGitInvocation(unwrapped.tokens, workspaceRoots, segmentOpts)
+    : undefined;
+  const mayMutate = invocation?.sub === 'status'
+    || classifyShellSegment(segment.text, workspaceRoots, segmentOpts) !== 'auto-approve';
+  return { mayMutate, mayMutateFiles: mayMutate && !resolvedDirectoryChange };
 }
 
 /**
@@ -6312,7 +6309,19 @@ function shellCommandReadsDotenv(
   // 调用方核实 Git 或文件读取时需要各段的实际目录。
   const segmentCwds = opts.gitContentRead || opts.gitConfigRead || opts.fileReadRequiresConsent
     ? segmentWorkingDirs(segments, workspaceRoots, opts) : [];
+  const sharesGitCredentialChecks = opts.gitContentRead !== undefined || opts.gitConfigRead !== undefined;
+  let previousMayMutate = false;
+  let previousMayMutateFiles = false;
   for (const [segmentIndex, { text: segment }] of segments.entries()) {
+    // Accumulate the prefix once, instead of reclassifying all prior segments for
+    // every read. Updating at entry also covers earlier segments that continued.
+    // File checks may accept a resolved cd; Git checks retain the stricter state.
+    if (segmentIndex > 0 && (sharesGitCredentialChecks || opts.fileReadRequiresConsent)
+      && (!previousMayMutate || (opts.fileReadRequiresConsent && !previousMayMutateFiles))) {
+      const previous = shellSegmentMutation(segments, segmentIndex - 1, workspaceRoots, opts, segmentCwds);
+      previousMayMutate ||= previous.mayMutate;
+      previousMayMutateFiles ||= previous.mayMutateFiles;
+    }
     const inputRedirections = parseShellInputRedirections(segment);
     if (inputRedirections.hasUnresolvedTarget) return true;
     const inspectionCommand = inputRedirections.targets.length > 0
@@ -6326,15 +6335,14 @@ function shellCommandReadsDotenv(
     );
     const tokens = unwrapped.tokens;
     const bin = executableName(tokens[0] ?? '');
-    const sharesGitCredentialChecks = opts.gitContentRead !== undefined || opts.gitConfigRead !== undefined;
     const configOverride = bin === 'git' && gitUsesConfigOverride(tokens);
     const priorMutation = sharesGitCredentialChecks || opts.fileReadRequiresConsent
-      ? priorShellSegmentsMayMutate(segments, segmentIndex, workspaceRoots, opts, segmentCwds)
+      ? previousMayMutate
         || segmentHasSideEffectRedirectOrSubstitution(segment)
         || configOverride
       : false;
     const priorFileMutation = opts.fileReadRequiresConsent
-      ? priorShellSegmentsMayMutate(segments, segmentIndex, workspaceRoots, opts, segmentCwds, true)
+      ? previousMayMutateFiles
         || segmentHasSideEffectRedirectOrSubstitution(segment)
         || rawTokens[0] !== tokens[0]
       : false;

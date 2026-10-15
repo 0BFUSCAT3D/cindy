@@ -269,6 +269,23 @@ describe('secrets written in the command', () => {
 
 
 describe('long development commands', () => {
+  describe.each([false, true])('shared gate with path resolver: %s', (withResolver) => {
+    it.each([500, 1000, 2000, 4000])('scans %i small segments in under a second and still checks the tail', (count) => {
+      const prefix = 'echo a;'.repeat(count);
+      const resolveFilePath = vi.fn((operand: string, cwd: string) => `${cwd}/${operand}`);
+      const opts = {
+        cwd: '/repo',
+        ...(withResolver ? { resolveFilePath } : {}),
+      };
+      for (const [tail, expected] of [['echo done', false], ['cat README.md', false], ['cat .env', true], ['cat ~/.ssh/id_rsa', true]] as const) {
+        const start = performance.now();
+        expect(isShareCredentialCommand(prefix + tail, ['/repo'], opts), tail).toBe(expected);
+        expect(performance.now() - start, tail).toBeLessThan(1000);
+      }
+      if (withResolver) expect(resolveFilePath).toHaveBeenCalledOnce();
+    });
+  });
+
   it('scans beyond the model review budget without treating script length as a credential read', () => {
     const script = "python3 - <<'PY'\n" + '# ordinary edit\n'.repeat(500)
       + "p='main.ts'\ns=open(p).read()\nopen(p,'w').write(s.replace('true','false'))\nPY";

@@ -4752,6 +4752,37 @@ describe('shellCommandReadsCredentials — 只认凭证那一部分红线', () =
 
 // 两个附加选项只供供应商分享的受邀者任务用(apps/desktop/src/main/remote-agent/credentials.ts)。
 describe('shellCommandReadsCredentials — 分享任务的附加选项', () => {
+  it('accumulates prior mutations without tainting earlier reads or losing the file-only cd exemption', () => {
+    vi.stubEnv('CDPATH', undefined);
+    try {
+      const files: boolean[] = [];
+      const git: boolean[] = [];
+      expect(shellCommandReadsCredentials(
+        'echo a;cd /repo/examples && cat example.pub;git diff;touch generated;cat example.pub;git diff', roots, {
+          cwd: '/repo',
+          platform: 'linux',
+          fileReadRequiresConsent: (read) => { files.push(read.priorSegmentsMayMutate === true); return false; },
+          gitContentRead: (read) => { git.push(read.priorSegmentsMayMutate === true); return true; },
+        },
+      )).toBe(false);
+      expect(files).toEqual([false, true]);
+      expect(git).toEqual([true, true]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps a mutation sticky across later read-only segments for both Git read callbacks', () => {
+    const reads: boolean[] = [];
+    const record = (read: GitRead) => { reads.push(read.priorSegmentsMayMutate === true); return true; };
+    expect(shellCommandReadsCredentials(
+      'echo a;git config --list;git diff;git add -A;echo done;git config --list;git diff', roots, {
+        cwd: '/repo', gitContentRead: record, gitConfigRead: record,
+      },
+    )).toBe(false);
+    expect(reads).toEqual([false, false, true, true]);
+  });
+
   it.each([
     "bash -c 'cat .env'",
     "python -c 'open(\".env\").read()'",
