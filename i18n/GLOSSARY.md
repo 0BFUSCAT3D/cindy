@@ -215,6 +215,10 @@ Cindy AI 个人账号的免费会员身份标签。只在服务端明确下发 a
 
 用户通过 /cindy-make 显式开启的本机定制流程。输入区承接准备与每轮完成选择；修改时使用普通输入框。完成后可继续修改、启动隔离测试或生成个人版，版本切换由原生客户端处理。Doctor 自身只检查。
 
+### Submit to Cindy
+
+把 Cindy Make 的一项修改整理成 Pull Request 提交到官方仓库。面向普通用户写「提交给官方」，对话框说明里才出现 Pull Request；状态写「等待审核 / 已被官方采纳 / 官方未采纳」，不写 open / merged / closed。
+
 ### Make history
 
 Cindy Make 设置中保留全部制作、修改轮次与合入记录的列表；结束制作及清理工作目录后仍可回看。
@@ -222,6 +226,10 @@ Cindy Make 设置中保留全部制作、修改轮次与合入记录的列表；
 ### Add back to personal version
 
 重新应用之前明确撤销的制作改动，区别于把尚未合入的新修改首次加入个人源码。
+
+### Saved in
+
+Cindy Make 版本控制概览中的一行，说明个人版保存在哪里：只在这台电脑，或用户自己 GitHub 上官方仓库的公开副本（fork）。面向普通用户不写 fork，写「你的 GitHub」。
 
 ### Remove from personal version
 
@@ -238,6 +246,10 @@ Cindy Make 中与个人版对应的来源应用。用户明确要求 Dev 和正�
 ### Personal Version
 
 Cindy Make 生成的本机定制应用成品。可与原版切换并沿用同一份日常数据，与使用独立数据的隔离测试版区分。
+
+### Main computer
+
+云端伙伴运行的那台电脑（docs/product-rules/cloud-companions.md §3）：伙伴的 Agent、工作目录与连接只在这台电脑上，其他电脑与手机是查看和发消息的入口。手机与桌面同一叫法，伙伴设置行名、离线横幅与侧栏状态共用。英文行名用 Title Case（Main Computer），句中小写 main computer，故 checkCase 为 false。不要写成「主设备」「宿主机」或 home device（代码字段 homeDeviceId 不是界面用语）。先登记为 proposed，待桌面与手机实机走查后再定。
 
 ### Content Update
 
@@ -309,7 +321,7 @@ Chat Server 的群角色，可由人或伙伴担任；不要与伙伴主人或�
 
 ### Group Strategy
 
-供应商组为新任务选择组内电脑的规则：最少占用、轮询、按顺序、按权重、用量均衡。只决定新任务分到哪台，正常运行的任务不因均衡迁移。
+供应商组为新任务选择组内电脑的规则：最少占用、轮询、按顺序、按权重。读得到 Claude 订阅用量时先按配额筛（快重置的先用、用量低的先用），组策略只在用量相近的几台里挑。只决定新任务分到哪台，正常运行的任务不因均衡迁移。
 
 ### Thread (in a group chat)
 
@@ -599,7 +611,7 @@ Cindy 里的**持久 AI 助手实体**（原名 Bot）：有长期身份、自�
 
 ### Usage Balancing
 
-Claude 订阅供应商组的分配策略：先排除5小时或周配额耗尽的账号，再优先分给用量较低的可用账号；不迁移正常运行的任务。
+原 Claude 订阅供应商组的分配策略。2026-10-15 起配额排序（先用快重置的配额：周配额5小时内、5小时配额1小时内重置的；再选用量较低的账号）对所有组策略生效，设置里不再单列此选项，旧组存的此值按最少占用挑；不迁移正常运行的任务。
 
 ### Use my browser logins
 
