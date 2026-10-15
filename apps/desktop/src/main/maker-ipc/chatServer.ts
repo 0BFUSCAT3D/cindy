@@ -120,7 +120,10 @@ export function splitChatMessageText(text: string, max = CHAT_MESSAGE_TEXT_MAX):
   let rest = text;
   while (rest.length > max) {
     const cut = rest.lastIndexOf('\n', max);
-    const at = cut > max / 2 ? cut : max;
+    let at = cut > max / 2 ? cut : max;
+    // Never split a surrogate pair (emoji and other astral characters are two UTF-16 units).
+    const high = rest.charCodeAt(at - 1);
+    if (high >= 0xd800 && high <= 0xdbff) at -= 1;
     pieces.push(rest.slice(0, at));
     rest = rest.slice(at).replace(/^\n/, '');
   }

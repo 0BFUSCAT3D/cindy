@@ -852,32 +852,46 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   };
 
   const groupPostTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Start-card posts still on their way, by task: a later card waits for them (see `afterGroupTaskStart`). */
+  const groupStartPosts = new Map<string, Promise<void>>();
   /** The start card is best effort with backoff; the result message carries the card again. */
-  const postGroupTaskStart = async (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
-    try {
-      if (attempt > 0) {
-        // A retry after the task already ended would put a stale 「进行中」 card under its result.
-        const current = await getDbClient().drizzle.select({ status: botDelegations.status }).from(botDelegations)
-          .where(eq(botDelegations.id, row.id)).get();
-        if (!current || !isActiveDelegation(current.status as DelegationStatus)) return;
+  const postGroupTaskStart = (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
+    const run = (async () => {
+      try {
+        if (attempt > 0) {
+          // A retry after the task already ended would put a stale 「进行中」 card under its result.
+          const current = await getDbClient().drizzle.select({ status: botDelegations.status }).from(botDelegations)
+            .where(eq(botDelegations.id, row.id)).get();
+          if (!current || !isActiveDelegation(current.status as DelegationStatus)) return;
+        }
+        const posted = await postGroupTaskEvent(home, row, { clientId: `bot-delegation-task:${row.id}:started`, text: '', state: 'started' });
+        if (posted.ok) return;
+        if (!posted.retryable) {
+          log.warn('group refused the task card', { delegationId: row.id, groupId: home.groupId, errorCode: posted.errorCode });
+          return;
+        }
+      } catch (error) {
+        log.warn('Bot task group card deferred', { delegationId: row.id, error: error instanceof Error ? error.message : String(error) });
       }
-      const posted = await postGroupTaskEvent(home, row, { clientId: `bot-delegation-task:${row.id}:started`, text: '', state: 'started' });
-      if (posted.ok) return;
-      if (!posted.retryable) {
-        log.warn('group refused the task card', { delegationId: row.id, groupId: home.groupId, errorCode: posted.errorCode });
-        return;
-      }
-    } catch (error) {
-      log.warn('Bot task group card deferred', { delegationId: row.id, error: error instanceof Error ? error.message : String(error) });
-    }
-    if (attempt >= 6) return;
-    const timer = setTimeout(() => {
-      groupPostTimers.delete(timer);
-      void postGroupTaskStart(home, row, attempt + 1);
-    }, Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt));
-    timer.unref?.();
-    groupPostTimers.add(timer);
+      if (attempt >= 6) return;
+      const timer = setTimeout(() => {
+        groupPostTimers.delete(timer);
+        void postGroupTaskStart(home, row, attempt + 1);
+      }, Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt));
+      timer.unref?.();
+      groupPostTimers.add(timer);
+    })().finally(() => {
+      if (groupStartPosts.get(row.id) === run) groupStartPosts.delete(row.id);
+    });
+    groupStartPosts.set(row.id, run);
+    return run;
   };
+  /**
+   * A task that ends or asks at once must not have its 「等你确认」 or terminal card land in the
+   * group before the 「进行中」 card still in flight: later cards wait for that post to settle.
+   * A retry scheduled for later re-checks the task state itself and stays away once it ended.
+   */
+  const afterGroupTaskStart = (delegationId: string): Promise<void> => groupStartPosts.get(delegationId) ?? Promise.resolve();
 
   const collaborationMeta = async (
     row: Pick<DelegationRow,
@@ -1092,6 +1106,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
         .select({ snapshot: botDelegations.permissionSnapshotJson }).from(botDelegations)
         .where(eq(botDelegations.id, params.id)).get())?.snapshot);
       if (home) {
+        await afterGroupTaskStart(params.id);
         const posted = await postGroupTaskEvent(home, params, {
           clientId: `bot-delegation-task:${params.id}:${params.runSequence}:result`,
           text: params.resultSummary ?? '',
@@ -1603,6 +1618,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     let privateFallback = !home;
     if (home) {
       try {
+        await afterGroupTaskStart(row.id);
         const posted = await postGroupTaskEvent(home, row, {
           clientId: `bot-delegation-task:${row.id}:interaction:${pending.requestId}`,
           text: '',

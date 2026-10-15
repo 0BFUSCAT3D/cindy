@@ -41,12 +41,25 @@ vi.mock('ws', async () => {
     close() { this.emit('close'); }
   } };
 });
-import { ChatResponseError, withChatServer } from '../chatServer.js';
+import { ChatResponseError, splitChatMessageText, withChatServer } from '../chatServer.js';
 import { projectBotGroupExecutionFailures } from '@cindy/maker-shared/botGroupPresentation';
 import { botGroupRuntimeFailureCode, settleUndispatchedBotGroupTurn } from '../botGroupRuntimeFailure.js';
 import { authorizeGroupTool } from '../botGroupToolAuthorization.js';
 import { botGroupQuoteFromMessage, buildBotGroupQuoteCard, buildBotGroupTaskCard } from '../../../shared/botGroupChat.js';
 import type { BotGroupChatService, BotGroupChatServiceDeps } from '../botGroupChatService.js';
+
+describe('splitChatMessageText', () => {
+  it('breaks at the last line before the limit, else at the limit, never inside a surrogate pair', () => {
+    expect(splitChatMessageText('short')).toEqual(['short']);
+    expect(splitChatMessageText(`${'a'.repeat(10)}\n${'b'.repeat(5)}`, 12)).toEqual(['a'.repeat(10), 'b'.repeat(5)]);
+    // 7999 ASCII characters then an emoji (two UTF-16 units): the emoji moves whole to the next piece.
+    const pieces = splitChatMessageText(`${'a'.repeat(7999)}😀${'b'.repeat(10)}`);
+    expect(pieces).toEqual(['a'.repeat(7999), `😀${'b'.repeat(10)}`]);
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(pieces.some(piece => loneSurrogate.test(piece))).toBe(false);
+    expect(pieces.join('')).toBe(`${'a'.repeat(7999)}😀${'b'.repeat(10)}`);
+  });
+});
 
 describe('Chat Server production connection', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });

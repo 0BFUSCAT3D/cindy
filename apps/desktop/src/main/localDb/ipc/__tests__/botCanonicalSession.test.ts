@@ -4260,6 +4260,34 @@ describe('Bot Session task end-to-end runtime', () => {
     } finally { release(); runtime.dispose(); }
   });
 
+  it('never lets the result card overtake a start card still on its way to the group', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    let releaseStart: () => void = () => {};
+    const startLanded = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const landed: string[] = [];
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => {
+      // The start card's request is slow; the task completes while it is still in flight.
+      if (input.clientId.endsWith(':started')) await startLanded;
+      landed.push(input.clientId);
+      return { ok: true as const, messageId: `posted:${input.clientId}` };
+    });
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Quick work' });
+      if (!task.ok) throw new Error(task.message);
+      const settled = runtime.runPendingTurns();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The result waits: nothing has landed yet, and the result request has not even been made.
+      expect(landed).toEqual([]);
+      expect(postGroupTaskMessage.mock.calls.map(([input]) => input.clientId)).toEqual([`bot-delegation-task:${task.delegationId}:started`]);
+      releaseStart();
+      await settled;
+      expect(landed).toEqual([`bot-delegation-task:${task.delegationId}:started`, `bot-delegation-task:${task.delegationId}:1:result`]);
+      expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).not.toBeNull();
+    } finally { release(); runtime.dispose(); }
+  });
+
   it('posts a timed-out group task to the group as timed out, in the sender\'s language, not as failed', async () => {
     await seedPair(); seedGroupLane();
     vi.useFakeTimers();
