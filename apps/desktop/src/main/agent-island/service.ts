@@ -2495,8 +2495,9 @@ export class AgentIslandService {
   /**
    * 处置用户最近一次点的那张卡,且只处置那一张:不是这次点击(被新点击取代,含同一任务的
    * 再次点击)、已过期、或点击后又有新活动(新一轮 / 新报错 / 新完成)都不动,新的提醒照常
-   * 留着。一次点击只处置一次。走 appBadge 的 explicit 清除,让 Dock 角标、侧栏红点与远程
-   * 回执一起收敛。
+   * 留着。一次点击只处置一次。走 appBadge 的 explicit 清除:岛卡、Dock 角标与远程回执即刻
+   * 收掉,重打点也唤不回这张卡;按 cindy-bots-runtime.md 6.2 的合同,任务记录、失败状态与
+   * 错误行都不动 —— 错误尾行派生的侧栏红点在报错被横幅 / 重试真正处理前仍会如实出现。
    */
   consumeIslandEntryAlert(sessionId: string, entryId: string, now = Date.now()): boolean {
     const entry = this.islandEntryAlert;
