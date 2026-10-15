@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { SendButton } from '@/components/new-chat/SendButton';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/input';
 import { Tip } from '@/components/ui/tooltip';
 import { MarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { ShareSelectionBar } from '@/components/chat/ShareSelectionBar';
@@ -18,6 +18,10 @@ import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
+import {
+  BOT_GROUP_COMPOSER_CARD, BOT_GROUP_COMPOSER_COLUMN, BOT_GROUP_COMPOSER_DOCK, BOT_GROUP_COMPOSER_FOOTER, BOT_GROUP_COMPOSER_FOOTER_START, BOT_GROUP_COMPOSER_INPUT,
+  fitBotGroupComposerInput, keepBotGroupComposerInputFocus, useRefitBotGroupComposerInputOnResize,
+} from './botGroupComposerChrome';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
@@ -164,6 +168,8 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     setText(value);
     if (attempt.current?.text !== value) attempt.current = null;
   } });
+  useLayoutEffect(() => { if (inputRef.current) fitBotGroupComposerInput(inputRef.current); }, [text, sharing]);
+  useRefitBotGroupComposerInputOnResize(inputRef, !sharing);
   /** `onAccepted` runs only when this read's result is the one shown. */
   const load = useCallback(async (before?: number, onAccepted?: () => void) => {
     const version = ++request.current, owner = getDataOwnerGeneration();
@@ -292,35 +298,43 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
           })}
         </div>
         {sharing ? <ShareSelectionBar sessionId={shareScope} barWidth="100%"
-          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className="space-y-3 border-t border-[var(--border-default)] p-4">
-          {error && <p role="alert" className="text-13 text-[var(--error-fg)]">{error}</p>}
+          getContentWidth={() => contentRef.current?.querySelector('article')?.getBoundingClientRect().width ?? 400} /> : <div className={BOT_GROUP_COMPOSER_DOCK}><div className={BOT_GROUP_COMPOSER_COLUMN}>
+          {error && <p role="alert" className="mb-2 px-1 text-13 leading-5 text-[var(--error-fg)]">{error}</p>}
           {/* Kept apart from read errors: a thread refresh must not hide the retry. */}
-          {unposted.size > 0 && <div role="alert" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-13 text-[var(--error-fg)]">
+          {unposted.size > 0 && <div role="alert" className="mb-2 px-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-13 text-[var(--error-fg)]">
             <span className="min-w-0">{t(key('thread.alsoSendFailed'), { count: unposted.size })}</span>
             <Button variant="secondary" size="sm" compact loading={[...unposted].some(id => posting.has(id))} onClick={() => void retryUnposted()}>
               {t(key('thread.retryPost'))}</Button>
           </div>}
-          <div className="relative">
-            {mention.list}
-            <Textarea textareaRef={inputRef} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
-              {...mention.textareaProps} onChange={mention.onChange}
-              rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
-                if (e.nativeEvent.isComposing || e.keyCode === 229 || mention.onKeyDown(e)) return;
+          {/* Read-only also means no @ picks while sending. */}
+          {busy ? null : mention.list}
+          {/* Same card as the main group's composer; a sending reply stays read-only (and focused) until main answers. */}
+          <div className={BOT_GROUP_COMPOSER_CARD} aria-busy={busy || undefined}>
+            <textarea ref={inputRef} rows={1} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
+              {...mention.textareaProps} onChange={e => mention.onChange(e.target.value)}
+              maxLength={8000} readOnly={busy} disabled={group.archived} className={BOT_GROUP_COMPOSER_INPUT} onKeyDown={e => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || (!busy && mention.onKeyDown(e))) return;
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
               }} />
-          </div>
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <button type="button" role="checkbox" aria-checked={alsoSend} disabled={busy || group.archived}
-              onClick={() => setAlsoSend(value => !value)}
-              className="-ml-1.5 inline-flex min-h-7 min-w-0 select-none items-center gap-2 rounded-full px-1.5 text-13 text-[var(--text-secondary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50">
-              <span aria-hidden className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--motion-fast)]',
-                alsoSend ? 'bg-[var(--accent-cta-bg-pure)] text-[var(--accent-pure-cta-fg)]' : 'border border-[var(--border-default)]')}>
-                {alsoSend ? <Check size={10} strokeWidth={3} /> : null}
+            <div className={BOT_GROUP_COMPOSER_FOOTER}>
+              <div className={BOT_GROUP_COMPOSER_FOOTER_START}>
+                <button type="button" role="checkbox" aria-checked={alsoSend} disabled={busy || group.archived}
+                  onClick={() => setAlsoSend(value => !value)}
+                  className="-ml-1.5 inline-flex min-h-7 min-w-0 select-none items-center gap-2 rounded-full px-1.5 text-13 text-[var(--text-secondary)] outline-none transition-colors duration-[var(--motion-fast)] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50">
+                  <span aria-hidden className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--motion-fast)]',
+                    alsoSend ? 'bg-[var(--accent-cta-bg-pure)] text-[var(--accent-pure-cta-fg)]' : 'border border-[var(--border-default)]')}>
+                    {alsoSend ? <Check size={10} strokeWidth={3} /> : null}
+                  </span>
+                  <span className="min-w-0 truncate">{t(key('thread.alsoSend'))}</span>
+                </button>
+              </div>
+              <span className="inline-flex rounded-full" onMouseDown={keepBotGroupComposerInputFocus(inputRef)}>
+                <Tip text={t(key('sendReply'))}>
+                  <SendButton ariaLabel={t(key('sendReply'))} disabled={group.archived || busy || !text.trim()} onClick={() => void send()} />
+                </Tip>
               </span>
-              <span className="min-w-0 truncate">{t(key('thread.alsoSend'))}</span>
-            </button>
-            <Button variant="cta" size="sm" loading={busy} disabled={group.archived || !text.trim()} onClick={() => void send()}>{t(key('sendReply'))}</Button>
+            </div>
           </div>
-        </div>}
+        </div></div>}
   </aside>;
 }
