@@ -28,6 +28,8 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { PiAgent } from '../index.js';
+import { PiRpcProcess } from '../rpc-client.js';
+import * as sessionJsonlScan from '../session-jsonl-scan.js';
 import { providerCatalogForPi, BUNDLED_CATALOG } from '@cindy/model-providers';
 import { TurnPermissionPolicyUnsupportedError, type AgentDeps, type AgentSessionHandle } from '../../base-agent.js';
 import type { AgentEvent } from '../../../types/events.js';
@@ -1630,14 +1632,16 @@ describe.skipIf(!piAvailable)('PiAgent integration (real pi binary + fake gatewa
     },
   );
 
-  it(
-    're-syncs plan mode from pi persisted state on resume (no mirror desync)',
+  it.each([false, true])(
+    're-syncs plan mode from pi persisted state on resume (scan initially unavailable=%s)',
     { timeout: 60_000 },
-    async () => {
+    async (scanUnavailable) => {
       const agent = new PiAgent(buildDeps());
       const workingDir = mkdtempSync(path.join(tmpdir(), 'pi-plan-resume-cwd-'));
       let handle: AgentSessionHandle | null = null;
       let resumed: AgentSessionHandle | null = null;
+      let restoreScan = () => {};
+      let restoreRpc = () => {};
       try {
         handle = await agent.startSession({
           sessionId: 'plan-resume-session',
@@ -1659,6 +1663,21 @@ describe.skipIf(!piAvailable)('PiAgent integration (real pi binary + fake gatewa
         await handle.close();
         handle = null;
 
+        if (scanUnavailable) {
+          // Fault only the host's two state-read paths; Pi still restores its
+          // actual plan-mode extension and executes real prompts after recovery.
+          const scan = vi.spyOn(sessionJsonlScan, 'scanPiSessionJsonl').mockResolvedValue(null);
+          const request = PiRpcProcess.prototype.request;
+          const rpc = vi.spyOn(PiRpcProcess.prototype, 'request').mockImplementation(function (this: PiRpcProcess, command, options) {
+            if (command.type === 'get_entries') {
+              return Promise.resolve({ type: 'response', command: 'get_entries', success: false, error: 'scan unavailable' });
+            }
+            return request.call(this, command, options);
+          });
+          restoreScan = () => scan.mockRestore();
+          restoreRpc = () => rpc.mockRestore();
+        }
+
         // resume 同一会话:pi 的 plan-mode 扩展自恢复 planModeEnabled=true,新会话的
         // planModeActive 必须从 get_entries 校正回 true(而非默认 false),否则 /plan toggle 会锁死。
         resumed = await agent.startSession({
@@ -1667,8 +1686,35 @@ describe.skipIf(!piAvailable)('PiAgent integration (real pi binary + fake gatewa
           model: 'pi-test-model',
           resumeSessionId: resumeKey,
         });
-        expect(resumed.getPlanMode?.()).toBe(true);
+        if (scanUnavailable) {
+          expect(resumed.getPlanMode?.()).toBeNull();
+          const requestsBefore = seenRequests.length;
+          await expect(resumed.send({ type: 'user', content: 'continue planning' }))
+            .rejects.toMatchObject({ code: 'TURN_DISPATCH_REJECTED' });
+          expect(seenRequests).toHaveLength(requestsBefore);
+          restoreScan();
+          restoreRpc();
+          for (const expectedPlan of [true, false]) {
+            const before = seenRequests.length;
+            const done = (async () => {
+              for await (const event of resumed!.events()) if (event.type === 'done') break;
+            })();
+            await resumed.send({ type: 'user', content: 'continue the task' });
+            await done;
+            const requests = seenRequests.slice(before);
+            expect(requests).toHaveLength(1);
+            const payload = JSON.parse(requests[0]!.body) as { tools: Array<{ name: string }> };
+            expect(payload.tools.some((tool) => tool.name === 'write')).toBe(!expectedPlan);
+            expect(payload.tools.some((tool) => tool.name === 'edit')).toBe(!expectedPlan);
+            expect(resumed.getPlanMode?.()).toBe(false);
+            expect(resumed.getExecutionPlanMode?.()).toBe(expectedPlan);
+          }
+        } else {
+          expect(resumed.getPlanMode?.()).toBe(true);
+        }
       } finally {
+        restoreScan();
+        restoreRpc();
         await handle?.close();
         await resumed?.close();
         rmSync(workingDir, { recursive: true, force: true });

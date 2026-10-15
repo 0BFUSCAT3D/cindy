@@ -7225,7 +7225,7 @@ export class PiAgent extends BaseAgent {
       },
 
       async send(message: UserMessage, sendOpts?: SendOptions): Promise<void> {
-        const requestedPlanTurn = !reviewMode && (sendOpts?.planMode ?? armedPlanMode);
+        let requestedPlanTurn = !reviewMode && (sendOpts?.planMode ?? armedPlanMode);
         rejectIfCancelled(sendOpts, 'send');
         await waitForSessionRpcIdle();
         updateRequestPrefs();
@@ -7259,7 +7259,19 @@ export class PiAgent extends BaseAgent {
           setAutoReviewIntent(appendAutoReviewUserIntent(priorAutoReviewIntent(), message.content, sendOpts), { authority: autoReviewContext() });
           reviewIntentUpdated = true;
           const applyRequestedPlanMode = async () => {
-            if (requestedPlanTurn === null) return;
+            if (requestedPlanTurn === null) {
+              // A failed startup/resume scan is not ordinary-mode intent. Recover
+              // the native choice before either a prompt or a host mutation.
+              const revision = ++planModeRevision;
+              planModeActive = null;
+              const restoredPlanMode = await readPersistedPlanMode();
+              if (restoredPlanMode === null || revision !== planModeRevision) {
+                throw new TurnDispatchRejectedError('Pi plan-mode state is unavailable before prompt dispatch');
+              }
+              planModeActive = restoredPlanMode;
+              requestedPlanTurn = restoredPlanMode;
+              if (armedPlanMode === null) armedPlanMode = restoredPlanMode;
+            }
             if (ctx.isStreaming && requestedPlanTurn !== planModeActive) {
               throw new TurnDispatchRejectedError('Cannot change Pi plan mode while a turn is active');
             }

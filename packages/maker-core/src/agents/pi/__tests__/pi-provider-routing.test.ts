@@ -5703,7 +5703,7 @@ describe("Pi provider-aware model routing", () => {
   });
 
   it.each(["pi install npm:fixture-extension", "pi update --all"].flatMap((command) =>
-    ["missing", "sync", "toggle"].map((failure) => ({ command, failure })),
+    ["missing", "sync", "sync-no-intent", "toggle"].map((failure) => ({ command, failure })),
   ))("rejects $command before mutation when plan setup fails: $failure", async ({ command, failure }) => {
     if (failure !== "missing") installPlanModeExtension();
     const mutatePiManagedPackage = vi.fn(async () => ({ changed: true }));
@@ -5713,16 +5713,16 @@ describe("Pi provider-aware model routing", () => {
     captured.requestHandler = async (request) => request.message === "/plan" || request.type === "get_entries"
       ? { success: false, error: "plan setup failed" }
       : { success: true, data: {} };
-    if (failure === "sync") {
+    if (failure.startsWith("sync")) {
       // A failed native switch makes the mirror unknown; the send must resync.
       await expect(handle.setPlanMode!(true)).rejects.toThrow("plan setup failed");
     }
     captured.requests = [];
     await expect(handle.send({ type: "user", content: command }, {
-      planMode: true,
+      ...(failure === "sync-no-intent" ? {} : { planMode: true }),
       [MAIN_OWNED_SEND_CONTEXT]: { origin: { kind: "desktop" }, rawChannelText: command },
     })).rejects.toThrow(failure === "missing" ? "extension is unavailable"
-      : failure === "sync" ? "persisted plan-mode state is unavailable" : "plan setup failed");
+      : failure.startsWith("sync") ? "plan-mode state is unavailable" : "plan setup failed");
     expect(mutatePiManagedPackage).not.toHaveBeenCalled();
     expect(captured.requests.filter((request) => request.type === "prompt" && request.message !== "/plan")).toHaveLength(0);
     await handle.close();
@@ -5839,6 +5839,54 @@ describe("Pi provider-aware model routing", () => {
     ).toHaveLength(1);
     expect(handle.getPlanMode!()).toBe(false);
     await handle.close();
+  });
+
+  it.each([true, false])("refuses sends with unknown plan state and recovers persisted=%s without a blind toggle", async (enabled) => {
+    installPlanModeExtension();
+    let entriesAvailable = false;
+    let rejectPrompt = true;
+    captured.requestHandler = async (command) => {
+      if (command.type === "get_state") {
+        return { success: true, data: { sessionFile: "/mock/s.jsonl", model: { contextWindow: 200_000 } } };
+      }
+      if (command.type === "get_entries") {
+        return entriesAvailable
+          ? { success: true, data: { entries: [{ customType: "plan-mode", data: { enabled } }] } }
+          : { success: false, error: "temporary rpc failure" };
+      }
+      if (command.type === "prompt" && rejectPrompt) return { command: "prompt", success: false, error: "prompt rejected" };
+      return { success: true, data: {} };
+    };
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: `plan-unknown-send-${enabled}`, workingDir: cwd, model: "local-model",
+    });
+    const message = { type: "user" as const, content: "continue the task" };
+    try {
+      expect(handle.getPlanMode!()).toBeNull();
+      expect(handle.getExecutionPlanMode!()).toBeNull();
+      await expect(handle.send(message)).rejects.toMatchObject({ code: "TURN_DISPATCH_REJECTED" });
+      expect(captured.requests.filter((request) => request.type === "prompt")).toHaveLength(0);
+      expect(handle.getExecutionPlanMode!()).toBeNull();
+      expect(captured.closes).toBe(0);
+
+      // A later retry recovers the native choice, including an existing plan.
+      entriesAvailable = true;
+      await expect(handle.send(message)).rejects.toThrow("prompt rejected");
+      expect(handle.getPlanMode!()).toBe(enabled);
+      expect(handle.getExecutionPlanMode!()).toBe(enabled);
+      rejectPrompt = false;
+      await handle.send(message);
+      expect(captured.requests.filter((request) => request.message === "/plan")).toHaveLength(0);
+      expect(handle.getPlanMode!()).toBe(false);
+      expect(handle.getExecutionPlanMode!()).toBe(enabled);
+
+      captured.onEvent?.({ type: "agent_end", messages: [] });
+      await handle.send({ type: "user", content: "next ordinary turn" });
+      expect(handle.getExecutionPlanMode!()).toBe(false);
+      expect(captured.requests.filter((request) => request.message === "/plan")).toHaveLength(enabled ? 1 : 0);
+    } finally {
+      await handle.close();
+    }
   });
 
   it("marks plan mode unknown when a toggle transport failure may have happened after execution", async () => {
