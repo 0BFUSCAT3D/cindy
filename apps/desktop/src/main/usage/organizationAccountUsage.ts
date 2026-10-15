@@ -8,6 +8,7 @@ export async function readOrganizationAccountUsage(): Promise<ClaudeAccountUsage
     const data = await serverApiFetch<unknown>('/api/model-access/quota', {
       baseUrl: () => getClientEndpoint('modelAccessApiBaseUrl'),
       timeoutMs: 8000, redactErrorDetails: true,
+      allowedRedactedErrorCodes: ['MODEL_ACCESS_QUOTA_NOT_SUPPORTED'],
     });
     if (!data || typeof data !== 'object') return null;
     const row = data as Record<string, unknown>;
