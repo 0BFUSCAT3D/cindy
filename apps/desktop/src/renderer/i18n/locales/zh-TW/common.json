@@ -8719,6 +8719,7 @@
     "list": {
       "createMenu": "新增",
       "createTeammate": "新增夥伴",
+      "joinWithLink": "輸入邀請連結…",
       "startChat": "開始對話",
       "selectChat": "選擇夥伴或群聊，開始對話",
       "typing": "正在輸入…",
@@ -9138,6 +9139,15 @@
       "files": {
         "openFailed": "檔案沒能開啟，可能已被移動或刪除"
       },
+      "addFromChat": {
+        "triggerFor": "將 {{name}} 新增至群聊",
+        "addTo": "將 {{name}} 新增至",
+        "newGroup": "發起群聊…",
+        "existingGroup": "新增至現有群聊",
+        "added": "已將 {{name}} 加入「{{group}}」",
+        "openGroup": "開啟群組",
+        "unavailable": "{{name}} 暫時無法加入群聊"
+      },
       "server": {
         "quoteReply": "引用回覆",
         "startTopic": "建立話題",
@@ -9166,8 +9176,11 @@
         "copied": "已複製邀請連結",
         "createLink": "產生邀請連結",
         "accept": "接受並加入",
-        "openGroup": "開啟群組",
         "previewInvite": "查看邀請",
+        "linkDescription": "確認後你會成為群組成員，可閱讀群聊記錄。",
+        "loadingInvite": "正在讀取邀請…",
+        "retryInvite": "重新讀取邀請",
+        "malformedInvite": "邀請連結不完整或格式不正確，請向邀請人重新取得連結。",
         "invalidInvite": "邀請無效、已使用、已過期或已撤銷，請取得新的邀請連結。",
         "notAllowed": "目前帳號沒有權限，請檢查帳號或聯絡群主。",
         "loginRequired": "請先登入目前帳號，再重試。",
