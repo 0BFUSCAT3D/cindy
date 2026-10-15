@@ -226,13 +226,40 @@ export function isQuotaExhaustionFailure(data: unknown): boolean {
 /**
  * 额度类终态错误 -> 渠道可读的失败说明; 不是这类错误返回 null。
  *
- * 说清三件事: 哪个供应商、什么原因、怎么处理。**不自动更换模型或供应商**(与 openSession
+ * 说清三件事: 哪个供应商、什么原因、怎么处理(按入口指到对的设置, 见 surface)。**不自动更换模型或供应商**(与 openSession
  * 模型准入「不会自动更换模型或供应商」同一口径): 换哪个供应商、花不花钱由用户决定。
  * 上游原文(脱敏、截断)附在最后, 用户转给工作区管理员或排查时用得上。
  */
+export interface QuotaFailureNoticeOptions {
+  providerLabel?: string | null;
+  /**
+   * 哪个入口的任务 —— 「怎么处理」要指到对的地方:
+   * - `personal`(默认): 个人 bot / 个人 IM 渠道, `/model` 直接改这个任务, 默认模型在
+   *   这个 bot 自己的卡片(如「Telegram 机器人」)的「新对话配置」里;
+   * - `official`: 官方 bot, `/model` 与官方卡片工作目录里的模型改的是**目录默认**,
+   *   已有任务保持原模型, 所以要接着 `/new` 开新任务, 或在 Cindy 里直接给任务换模型。
+   */
+  surface?: 'personal' | 'official';
+}
+
+function quotaRecoveryHint(surface: 'personal' | 'official'): string {
+  if (surface === 'official') {
+    return (
+      'Cindy 不会自动更换模型或供应商。可以发 /model，或在 Cindy 的 设置 → IM 机器人 →' +
+      '「Telegram」等官方 bot 卡片的工作目录里换一个模型（改的是这个目录的默认，已有任务保持原模型），' +
+      '然后发 /new 开新任务；也可以在 Cindy 里直接给这个任务换模型。额度恢复后也可以直接重发这条消息。'
+    );
+  }
+  return (
+    'Cindy 不会自动更换模型或供应商。可以发 /model 给这个任务换一个供应商或模型；' +
+    '以后新任务的默认模型在 Cindy 的 设置 → IM 机器人 里这个 bot 自己的卡片' +
+    '（如「Telegram 机器人」）的「新对话配置」中修改。额度恢复后也可以直接重发这条消息。'
+  );
+}
+
 export function quotaFailureNotice(
   data: unknown,
-  options?: { providerLabel?: string | null },
+  options?: QuotaFailureNoticeOptions,
 ): string | null {
   if (!isQuotaExhaustionFailure(data)) return null;
   const { message, codexErrorInfo } = terminalErrorRecord(data);
@@ -246,8 +273,7 @@ export function quotaFailureNotice(
   const upstream = redactSensitiveText(message.replace(/\s+/g, ' ').trim()).slice(0, 300);
   return [
     `${QUOTA_FAILURE_NOTICE_PREFIX}：${who}${reason}，这个任务暂时无法继续。`,
-    'Cindy 不会自动更换模型或供应商。可以发 /model 给这个任务换一个供应商或模型，' +
-      '或在 Cindy 的 设置 → IM 机器人 里修改这个渠道的默认模型；额度恢复后也可以直接重发这条消息。',
+    quotaRecoveryHint(options?.surface ?? 'personal'),
     ...(upstream ? [`上游原文：${upstream}`] : []),
   ].join('\n');
 }
@@ -262,10 +288,7 @@ export function quotaFailureNotice(
  * P1)。两边共用本函数, 顺带保证 errorStatus(Anthropic 529 只有状态码、message 里
  * 不一定带 529)不被丢掉。
  */
-export function terminalErrorText(
-  data: unknown,
-  options?: { providerLabel?: string | null },
-): string {
+export function terminalErrorText(data: unknown, options?: QuotaFailureNoticeOptions): string {
   if (data && typeof data === 'object' && 'reason' in data && data.reason === 'output-limit') {
     return '模型已达到输出长度上限，本轮回复可能不完整。可以直接发送下一条消息继续。';
   }

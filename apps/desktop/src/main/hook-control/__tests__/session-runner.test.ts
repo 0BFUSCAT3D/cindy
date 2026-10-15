@@ -365,32 +365,12 @@ vi.mock('../../maker-host/index.js', () => ({
   getMaker: () => fakeMaker,
   withRehydrateCloseSuppressed: h.withRehydrateCloseSuppressed,
 }));
-
-/** 跟随默认: 判定与切换由 channelDefaultRouteSync 的单测覆盖, 这里只验 hook 接线。 */
-const follow = vi.hoisted(() => ({
-  policy: null as null | { fingerprint: (ctx: unknown) => string },
-  follower: {
-    previewSwitchTarget: vi.fn(async () => null),
-    syncUnderLock: vi.fn(async (_id: string, _ctx: unknown) => false),
-    syncBeforeWiring: vi.fn(async () => undefined),
-    takeNotice: vi.fn((_id: string): unknown => null),
-  },
-  writeRecord: vi.fn(async (_id: string, _fp: string) => undefined),
-}));
-vi.mock('../../im/shared/channelDefaultRouteSync.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../im/shared/channelDefaultRouteSync.js')>()),
-  createDefaultRouteFollower: (policy: { fingerprint: (ctx: unknown) => string }) => {
-    follow.policy = policy;
-    return follow.follower;
-  },
-}));
-vi.mock('../defaultRouteFollow.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../defaultRouteFollow.js')>()),
-  writeHookDefaultRouteRecord: follow.writeRecord,
+// 供应商显示名按任务实际来源读(查库 + 供应商目录), 这里只验失败说明带上了它。
+vi.mock('../../im/shared/sessionProviderLabel.js', () => ({
+  resolveSessionProviderLabel: vi.fn(async () => 'OpenAI'),
 }));
 
 import { createMakerHookSessionRunner, extractToolResultImageUrls } from '../session-runner.js';
-import { IM_DEFAULT_SETTINGS } from '../../../shared/imDefaultSettings.js';
 import { MAIN_OWNED_SEND_CONTEXT, Session, type AgentSessionHandle, type Capabilities } from '@cindy/maker-core';
 import { observeHookTurn } from '../turnObserver.js';
 import { buildHookPromptNote, SLACK_HOOK_PROMPT_NOTE } from '../outbound.js';
@@ -765,77 +745,6 @@ describe('hook session-runner 的 userSendAt 时序(未分类误判回归)', () 
     expect(h.touchUserSendInDb).toHaveBeenCalledTimes(2);
     // user 消息仍先于第二次 bump 落库
     expect(h.calls.indexOf('createMessage')).toBeLessThan(h.calls.lastIndexOf('touch:sess-new'));
-  });
-
-  it('复用任务先按任务所在目录的默认对齐路由, 再读路由开跑', async () => {
-    follow.follower.syncUnderLock.mockClear();
-    const runner = createMakerHookSessionRunner({ log });
-    const outcome = await runner.run(baseReq({
-      sessionId: 'sess-old',
-      isNew: false,
-      workspaceAlias: 'proj',
-      source: { im: 'telegram', teamId: null } as never,
-    }));
-
-    expect(outcome.status).toBe('ok');
-    expect(follow.follower.syncUnderLock).toHaveBeenCalledWith('sess-old', expect.objectContaining({
-      sourceIm: 'telegram',
-      workspaceCtx: { alias: 'proj', teamId: null },
-    }));
-    expect(follow.writeRecord).not.toHaveBeenCalled();
-  });
-
-  it('没跟随新默认的复用任务: 提示附在这一轮回复末尾', async () => {
-    follow.follower.takeNotice.mockReturnValueOnce({
-      current: { agentKind: 'codex', model: 'gpt-6-astra', providerId: 'openai', effort: 'high' },
-      currentProviderLabel: 'OpenAI',
-      target: { agentKind: 'claude-code', model: 'claude-opus-5-5', providerId: 'anthropic', effort: 'high' },
-      targetProviderLabel: 'Anthropic',
-    });
-    const runner = createMakerHookSessionRunner({ log });
-    const outcome = await runner.run(baseReq({ sessionId: 'sess-old', isNew: false }));
-
-    expect(outcome.status).toBe('ok');
-    expect(outcome.finalText).toContain('这个任务仍在使用 Codex · gpt-6-astra（OpenAI）');
-    expect(outcome.finalText).toContain('Claude Code · claude-opus-5-5（Anthropic）');
-    expect(outcome.finalText).not.toContain('/model');
-  });
-
-  it('跟随对齐失败不挡这条消息', async () => {
-    follow.follower.syncUnderLock.mockRejectedValueOnce(new Error('db busy'));
-    const runner = createMakerHookSessionRunner({ log });
-    const outcome = await runner.run(baseReq({ sessionId: 'sess-old', isNew: false }));
-
-    expect(outcome.status).toBe('ok');
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('hook default route sync failed'));
-  });
-
-  it('新任务记下它是按哪一版默认建的(广播之前), 指纹与跟随用的同一份', async () => {
-    h.readImDefaultSettings.mockReturnValue(structuredClone(IM_DEFAULT_SETTINGS));
-    follow.writeRecord.mockImplementationOnce(async (id: string) => {
-      h.calls.push(`record:${id}`);
-    });
-    const runner = createMakerHookSessionRunner({ log });
-    await runner.run(baseReq({ workspaceAlias: 'proj', source: { im: 'telegram', teamId: null } as never }));
-
-    expect(follow.follower.syncUnderLock).not.toHaveBeenCalledWith('sess-new', expect.anything());
-    expect(follow.writeRecord).toHaveBeenCalledWith(
-      'sess-new',
-      follow.policy!.fingerprint({
-        overrides: { agentKind: null, model: null, effort: null, permissionMode: null },
-        sourceIm: 'telegram',
-        workspaceCtx: { alias: 'proj', teamId: null },
-      }),
-    );
-    expect(h.calls.indexOf('record:sess-new')).toBeLessThan(h.calls.indexOf('created:sess-new'));
-  });
-
-  it('/new 只建任务时同样记下默认', async () => {
-    h.readImDefaultSettings.mockReturnValue(structuredClone(IM_DEFAULT_SETTINGS));
-    const runner = createMakerHookSessionRunner({ log });
-    await runner.run(baseReq({ createOnly: true }));
-
-    expect(follow.writeRecord).toHaveBeenCalledWith('sess-new', expect.any(String));
   });
 
   it('复用/接管(isNew=false): 不广播 created, 但 onAccepted 仍 bump userSendAt', async () => {
@@ -2682,6 +2591,30 @@ describe('上游过载自动重试期间的渠道进度(零产出窗口)', () =>
     expect(outcome.errorMessage).toContain('无效的工具调用');
     expect(outcome.errorMessage).not.toContain('missing_required_field');
     expect(outcome.errorMessage).not.toContain('tool_use_loop_detected');
+  });
+
+  it('额度类终态错误: 写清供应商与原因, 处理方式指向官方 bot 的设置', async () => {
+    fakeMaker.createSession.mockImplementationOnce(async (opts: { id?: string }) =>
+      makeManualSession(opts.id ?? 'sess-x'),
+    );
+    const runner = createMakerHookSessionRunner({ log });
+    const p = runner.run(baseReq({ source: { im: 'telegram', userText: 'hello' } }));
+    await new Promise((r) => setTimeout(r, 0));
+    const cb = h.eventCbs.get('sess-new')!;
+    cb({
+      type: 'error',
+      data: {
+        message: 'You hit your spend cap set by the owner of your workspace.',
+        isTerminal: true,
+      },
+    });
+    const outcome = await p;
+    expect(outcome.status).toBe('error');
+    expect(outcome.errorMessage).toContain('⚠️ 供应商额度不足：「OpenAI」已达到工作区所有者设置的花费上限');
+    // 官方 bot 的 /model 与官方卡片改的是目录默认: 必须接着 /new, 或在 Cindy 里给任务换模型。
+    expect(outcome.errorMessage).toContain('官方 bot 卡片的工作目录');
+    expect(outcome.errorMessage).toContain('/new');
+    expect(outcome.errorMessage).not.toContain('Telegram 机器人');
   });
 
   it('非过载的终态错误仍原样上报(不误改其它失败的诊断信息)', async () => {

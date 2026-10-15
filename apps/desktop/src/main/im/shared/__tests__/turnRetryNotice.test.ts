@@ -307,6 +307,18 @@ describe('额度类终态错误', () => {
     expect(text).toContain(`上游原文：${SPEND_CAP}`);
   });
 
+  it('处理方式按入口指到对的设置: 个人 bot 指自己的卡片, 官方 bot 指工作目录并接 /new', () => {
+    const personal = terminalErrorText({ message: SPEND_CAP });
+    expect(personal).toContain('「Telegram 机器人」');
+    expect(personal).toContain('新对话配置');
+    expect(personal).not.toContain('工作目录');
+    const official = terminalErrorText({ message: SPEND_CAP }, { surface: 'official' });
+    expect(official).toContain('官方 bot 卡片的工作目录');
+    expect(official).toContain('已有任务保持原模型');
+    expect(official).toContain('/new');
+    expect(official).not.toContain('Telegram 机器人');
+  });
+
   it('拿不到供应商名时退回「当前供应商」', () => {
     expect(terminalErrorText({ message: SPEND_CAP })).toContain('当前供应商已达到工作区所有者设置的花费上限');
   });

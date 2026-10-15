@@ -6,7 +6,6 @@ import {
   buildImManualRouteOverrideRecord,
   decideImDefaultRoute,
   fingerprintImDefaultSettings,
-  formatImDefaultRouteNotice,
   imDefaultRouteMayNeedSync,
   parseImDefaultRouteRecord,
   sameImDefaultRoute,
@@ -56,18 +55,6 @@ describe('im default route record', () => {
       fp: '',
       route: OLD,
       manual: true,
-    });
-    expect(parseImDefaultRouteRecord(buildImManualRouteOverrideRecord(OLD, 'fp-seen'))).toEqual({
-      v: 1,
-      fp: '',
-      route: OLD,
-      manual: true,
-      noticeFp: 'fp-seen',
-    });
-    expect(parseImDefaultRouteRecord(JSON.stringify({ v: 1, fp: 'fp', route: OLD, noticeFp: 3 }))).toEqual({
-      v: 1,
-      fp: 'fp',
-      route: OLD,
     });
     expect(parseImDefaultRouteRecord(null)).toBeNull();
     expect(parseImDefaultRouteRecord('not json')).toBeNull();
@@ -236,25 +223,5 @@ describe('decideImDefaultRoute', () => {
     expect(
       decide({ record: record(), current: pinnedOld, target: NEW, normalizeProvider }),
     ).toEqual({ kind: 'switch' });
-  });
-});
-
-describe('formatImDefaultRouteNotice', () => {
-  const notice = { current: PICKED, currentProviderLabel: 'Cindy AI', target: NEW, targetProviderLabel: 'OpenAI' };
-
-  it('names the route the task keeps and the default it did not follow', () => {
-    const text = formatImDefaultRouteNotice(notice, 'personal');
-    expect(text).toContain('Claude Code · claude-sonnet-5（Cindy AI）');
-    expect(text).toContain('Codex · gpt-5.5（OpenAI）');
-    expect(text).toContain('/model');
-    expect(text).toContain('/new');
-  });
-
-  it('points official bot users to /new or Cindy (their /model edits the directory default)', () => {
-    const text = formatImDefaultRouteNotice({ ...notice, currentProviderLabel: null }, 'official');
-    expect(text).toContain('Claude Code · claude-sonnet-5，');
-    expect(text).not.toContain('/model');
-    expect(text).toContain('/new');
-    expect(text).toContain('在 Cindy 里给这个任务换模型');
   });
 });

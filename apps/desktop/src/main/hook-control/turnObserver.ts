@@ -321,7 +321,7 @@ export function observeHookTurn(
         // 等于把内部串丢给用户, 且没说清"怎么才能真的重试"。换成可读说明,
         // 原文留在本地日志里供排查。结构化 tag 一并传: 只认文案时 codex 改措辞
         // 会让这条终态说明退回裸英文原文(#1022)。
-        const friendly = terminalErrorText(data);
+        const friendly = terminalErrorText(data, { surface: 'official' });
         if (friendly !== raw) {
           log.warn(`hook turn failed (mapped channel error): ${raw}`);
         }

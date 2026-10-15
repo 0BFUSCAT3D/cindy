@@ -98,7 +98,6 @@ const {
   backfillLegacyImDefaultRoutesAtStartup,
   createImChannelDefaultRouteSync,
   resetImSessionToChannelDefaults,
-  createDefaultRouteFollower,
 } = await import('../channelDefaultRouteSync');
 const { markImSessionManualRouteOverride } = await import('../manualRouteOverride');
 const { buildImDefaultRouteRecord, buildImManualRouteOverrideRecord, parseImDefaultRouteRecord } = await import('../channelDefaultRoute');
@@ -380,67 +379,23 @@ describe('syncUnderLock', () => {
     await expect(sync().syncUnderLock('t1')).resolves.toBe(false);
   });
 
-  it('leaves a task the user changed alone, and tells the user once per default change', async () => {
-    const SONNET = { ...OLD, model: 'claude-sonnet-5' };
-    await insertTask('t1', SONNET);
-    const s = sync();
-    await s.syncUnderLock('t1');
+  it('leaves a task the user changed alone', async () => {
+    await insertTask('t1', { ...OLD, model: 'claude-sonnet-5' });
+    await sync().syncUnderLock('t1');
 
     expect(mocks.applyRoute).not.toHaveBeenCalled();
-    // 路由与记录的跟随状态原样, 只多记「已就 fp-new 提示过」。
-    expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)).toEqual({
-      v: 1,
-      fp: 'fp-old',
-      route: OLD,
-      noticeFp: 'fp-new',
-    });
-    expect(s.takeNotice('t1')).toEqual({
-      current: SONNET,
-      currentProviderLabel: null,
-      target: NEW,
-      targetProviderLabel: null,
-    });
-    expect(s.takeNotice('t1')).toBeNull();
-
-    // 同一版默认不再提示; 默认再改一次才再提示。
-    await s.syncUnderLock('t1');
-    expect(s.takeNotice('t1')).toBeNull();
-    mocks.fingerprint.mockReturnValue('fp-newer');
-    mocks.resolveDefaults.mockResolvedValue({ ...NEW, permissionMode: 'auto', fastMode: false, fingerprint: 'fp-newer' });
-    await s.syncUnderLock('t1');
-    expect(s.takeNotice('t1')?.current).toEqual(SONNET);
-    expect(mocks.applyRoute).not.toHaveBeenCalled();
+    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
   });
 
-  it('never switches a task carrying the manual override marker', async () => {
-    // 同值重选落地时立的墓碑: 不再跟随(greptile P1 补充, PR #5155)。墓碑没有提示基线时
-    // 先记下此刻的设置指纹, 不解析新默认、不提示 —— 用户刚自己挑过。
+  it('never touches a task carrying the manual override marker', async () => {
+    // 同值重选落地时立的墓碑: 不再跟随, 也不必解析新默认(greptile P1 补充, PR #5155)。
     const tombstone = buildImManualRouteOverrideRecord(OLD);
     await insertTask('t1', OLD, { record: tombstone });
-    const s = sync();
-    await s.syncUnderLock('t1');
+    await sync().syncUnderLock('t1');
 
     expect(mocks.resolveDefaults).not.toHaveBeenCalled();
     expect(mocks.applyRoute).not.toHaveBeenCalled();
-    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImManualRouteOverrideRecord(OLD, 'fp-new'));
-    expect(s.takeNotice('t1')).toBeNull();
-
-    // 之后默认再改: 仍不切换, 但提示一次。
-    mocks.fingerprint.mockReturnValue('fp-newer');
-    await s.syncUnderLock('t1');
-    expect(mocks.applyRoute).not.toHaveBeenCalled();
-    expect(s.takeNotice('t1')).toMatchObject({ current: OLD, target: NEW });
-    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImManualRouteOverrideRecord(OLD, 'fp-newer'));
-  });
-
-  it('does not tell the user while their own pick is about to land', async () => {
-    await insertTask('t1', { ...OLD, model: 'claude-sonnet-5' });
-    mocks.readPendingRoute.mockReturnValue({ ...NEW, model: 'gpt-5.4', rev: 7 });
-    const s = sync();
-    await s.syncUnderLock('t1');
-
-    expect(mocks.applyRoute).not.toHaveBeenCalled();
-    expect(s.takeNotice('t1')).toBeNull();
+    expect((await rowOf('t1')).imDefaultRoute).toBe(tombstone);
   });
 
   it('treats a pinned native source as the recorded implicit default', async () => {
@@ -478,13 +433,10 @@ describe('syncUnderLock', () => {
   it('does not re-adopt a manual pick that happens to equal the new default', async () => {
     // 记录的路由是 OLD, 任务当前跑 NEW(用户单独挑的, 恰好与新默认一致): 不能洗成跟随。
     await insertTask('t1', NEW);
-    const s = sync();
-    await s.syncUnderLock('t1');
+    await sync().syncUnderLock('t1');
 
     expect(mocks.applyRoute).not.toHaveBeenCalled();
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
-    // 已经在新默认上, 没什么可提示的。
-    expect(s.takeNotice('t1')).toBeNull();
   });
 
   it('does nothing while the settings fingerprint is unchanged', async () => {
@@ -508,61 +460,6 @@ describe('syncUnderLock', () => {
     await sync().syncUnderLock('t1');
 
     expect(mocks.applyRoute).not.toHaveBeenCalled();
-  });
-});
-
-describe('createDefaultRouteFollower with adoptUnrecorded (official hook)', () => {
-  function follower() {
-    return createDefaultRouteFollower<string>({
-      label: 'hook',
-      ownsRow: (row) => row.status === 'active' && !row.imBotContextId,
-      fingerprint: (ctx) => ctx,
-      resolveTarget: async (ctx) => ({ route: NEW, fingerprint: ctx }),
-      isRouteUsable: async () => true,
-      adoptUnrecorded: true,
-    });
-  }
-
-  it('starts following an unrecorded task that already runs the default', async () => {
-    await insertTask('t1', NEW, { source: 'telegram', marker: false, record: null });
-    const f = follower();
-    await f.syncUnderLock('t1', 'fp-hook');
-
-    expect(mocks.applyRoute).not.toHaveBeenCalled();
-    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-hook', NEW));
-    expect(f.takeNotice('t1')).toBeNull();
-  });
-
-  it('keeps an unrecorded task off the default, marks it and tells the user once', async () => {
-    // 证明不了是用户改过还是默认在本功能之前就改了: 不动路由, 立碑并提示一次。
-    await insertTask('t1', OLD, { source: 'telegram', marker: false, record: null });
-    const f = follower();
-    await f.syncUnderLock('t1', 'fp-hook');
-
-    expect(mocks.applyRoute).not.toHaveBeenCalled();
-    expect((await rowOf('t1')).imDefaultRoute).toBe(buildImManualRouteOverrideRecord(OLD, 'fp-hook'));
-    expect(f.takeNotice('t1')).toMatchObject({ current: OLD, target: NEW });
-
-    await f.syncUnderLock('t1', 'fp-hook');
-    expect(f.takeNotice('t1')).toBeNull();
-  });
-
-  it('follows a recorded task to the new default on the next message', async () => {
-    await insertTask('t1', OLD, { source: 'telegram', marker: false, record: buildImDefaultRouteRecord('fp-hook-old', OLD) });
-    await follower().syncUnderLock('t1', 'fp-hook');
-
-    expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, fastMode: false }, 'claude-code');
-    expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)).toEqual({ v: 1, fp: 'fp-hook', route: NEW });
-  });
-
-  it('leaves an unrecorded task alone while the user\'s own pick is pending', async () => {
-    await insertTask('t1', OLD, { source: 'telegram', marker: false, record: null });
-    mocks.readPendingRoute.mockReturnValue({ ...NEW, rev: 3 });
-    const f = follower();
-    await f.syncUnderLock('t1', 'fp-hook');
-
-    expect((await rowOf('t1')).imDefaultRoute).toBeNull();
-    expect(f.takeNotice('t1')).toBeNull();
   });
 });
 
@@ -814,17 +711,6 @@ describe('markImSessionManualRouteOverride', () => {
 
     await expect(markImSessionManualRouteOverride('t1')).rejects.toThrow(/retry the selection/);
     expect((await rowOf('t1')).imDefaultRoute).toBe(buildImDefaultRouteRecord('fp-old', OLD));
-  });
-
-  it('marks an official hook task that follows the default', async () => {
-    await insertTask('hook', OLD, { source: 'telegram', marker: false });
-    await insertTask('hook-legacy', OLD, { source: 'telegram', marker: false, record: null });
-    await markImSessionManualRouteOverride('hook');
-    await markImSessionManualRouteOverride('hook-legacy');
-
-    expect(parseImDefaultRouteRecord((await rowOf('hook')).imDefaultRoute)?.manual).toBe(true);
-    // 没有跟随记录的老任务不在这里立碑: 下一条消息按值认领时自会判定。
-    expect((await rowOf('hook-legacy')).imDefaultRoute).toBeNull();
   });
 
   it('does not touch tasks outside the channel follow surface', async () => {
