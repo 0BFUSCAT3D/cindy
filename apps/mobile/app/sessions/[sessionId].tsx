@@ -181,6 +181,7 @@ import {
 } from '@/session/ConversationShareSvg';
 import {
   buildConversationShareHtml,
+  buildConversationShareContentWidth,
   type ConversationShareMessage,
   type ConversationShareWebViewColors,
 } from '@/session/conversationShareWebViewHtml';
@@ -732,6 +733,8 @@ import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-lin
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/i18n';
 import { useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { resolveMobileUserBubbleColors, useUserBubbleAppearance } from '@/theme/userBubblePreference';
+import { isOwnUserBubble } from '@/session/userBubbleOwnership';
 import { fontWeight, iconSize, iconStroke, lineHeight, navigationChrome, radius, spacing, typeScale } from '@/theme/tokens';
 
 const SESSION_ACTION_TEST_IDS = {
@@ -6156,17 +6159,21 @@ function SessionScreenContent() {
     [messageListItems, shareSelectionActive],
   );
   const shareExpansionSnapshot = useFoldableExpandedBlocksSnapshot(shareExpandableBlockIds);
+  const viewerAccountId = auth.user?.id;
   const shareMessages = useMemo(() => {
     if (!shareSelectionActive) return [];
     return collectConversationShareMessages(
       messageListItems,
       isFoldableBlockExpanded,
+      (message) => isOwnUserBubble(message, { accountId: viewerAccountId, remoteDeviceId: deviceId }),
     );
   }, [
+    deviceId,
     i18nInstance.language,
     messageListItems,
     shareExpansionSnapshot,
     shareSelectionActive,
+    viewerAccountId,
   ]);
   const shareMessageById = useMemo(
     () => new Map(shareMessages.map((message) => [message.clientId, message])),
@@ -6189,9 +6196,17 @@ function SessionScreenContent() {
       .map((clientId) => shareMessageById.get(clientId))
       .filter((message): message is ConversationShareMessage => message !== undefined);
   }, [allShareableIds, shareMessageById, shareSelectionActive, shareSelectionRevision]);
+  const { preference: userBubblePreference } = useUserBubbleAppearance();
+  // 分享图与聊天气泡共用「我的消息气泡颜色」;按偏好 memo,避免每次渲染换新对象重排分享图。
+  const userBubbleColors = useMemo(
+    () => resolveMobileUserBubbleColors(userBubblePreference, mode, colors),
+    [colors, mode, userBubblePreference],
+  );
+  const conversationShareWidth = buildConversationShareContentWidth(detailViewport);
   const conversationShareColors = useMemo<ConversationShareWebViewColors>(() => ({
     background: colors.surface,
     border: colors.border,
+    ownUserBubble: userBubbleColors,
     codeSurface: colors.chatCodeSurface,
     inlineCode: colors.chatInlineCodeText,
     surfaceChip: colors.surfaceChip,
@@ -6208,7 +6223,7 @@ function SessionScreenContent() {
     textSecondary: colors.textSecondary,
     textTertiary: colors.textTertiary,
     dark: mode === 'dark',
-  }), [colors, mode]);
+  }), [colors, mode, userBubbleColors]);
   const shareImages = useConversationShareImages(selectedShareMessages, resolveRemoteMedia, {
     workdir: currentSession?.workingDir ?? undefined,
     remoteHostId: currentSession?.remoteHostId ?? undefined,
@@ -6242,11 +6257,11 @@ function SessionScreenContent() {
             allShareableIds,
             characterSrc: shareCharacterSrc ?? undefined,
             colors: conversationShareColors,
-            contentWidth: windowDimensions.width,
+            contentWidth: conversationShareWidth,
             logoSrc: shareLogoSrc ?? undefined,
             selectedMessages: messages,
           }),
-          width: windowDimensions.width,
+          width: conversationShareWidth,
         });
         if (nativeBase64) {
           console.info('[conversation-share] native webview export succeeded');
@@ -6259,7 +6274,7 @@ function SessionScreenContent() {
     const svg = conversationShareSvgRef.current;
     if (!svg) throw new Error('conversation share svg renderer is unavailable');
     return svg.exportPng();
-  }, [shareImages.prepare, allShareableIds, conversationShareColors, mode, shareCharacterSrc, shareLogoSrc, windowDimensions.width]);
+  }, [shareImages.prepare, allShareableIds, conversationShareColors, conversationShareWidth, mode, shareCharacterSrc, shareLogoSrc]);
   const shareSelectedConversation = useCallback(async () => {
     if (
       conversationShareBusy
@@ -10725,7 +10740,7 @@ function SessionScreenContent() {
           colors={conversationShareColors}
           messages={shareImages.messages}
           ref={conversationShareSvgRef}
-          width={windowDimensions.width}
+          width={conversationShareWidth}
         />
       ) : null}
       <SessionTransientNotice
