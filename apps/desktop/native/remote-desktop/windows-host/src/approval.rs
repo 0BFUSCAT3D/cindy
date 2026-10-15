@@ -341,12 +341,16 @@ pub fn remove(clean_vault: bool) -> Result<()> {
     let _ = legacy_cleanup::remove_provider_registration(&installation.name);
     let ancestors = security::pin_ancestors(&installation.directory)?;
     security::check_paths(vec![installation.directory.clone()])?;
-    let application = Approval::read().ok().map(|approval| approval.application);
+    // The restore boundary must be bound to the approved application root. If
+    // the authorization record is missing or invalid, stop after service
+    // removal but keep the protected directory and restore record for a
+    // subsequent repair; restoring with no root could skip upgrade-created
+    // descendants and then delete the only recovery data.
+    let application = Approval::read()?.application;
     let snapshot = read_restore_record(&installation.directory)?;
     if let Some(snapshot) = &snapshot {
-        snapshot.restore_in(application.as_deref(), |path| match &application {
-            Some(root) => security::path_is_within(path, root),
-            None => installation::is_local_application_path(path),
+        snapshot.restore_in(Some(&application), |path| {
+            security::path_is_within(path, &application)
         })?;
     }
     for name in [
@@ -621,5 +625,22 @@ mod tests {
             .unwrap();
         assert!(!install.contains("cleanup_current_installation"));
         assert!(!install.contains("let _ = legacy_cleanup::remove_saved_credentials"));
+    }
+    #[test]
+    fn uninstall_requires_the_approved_root_before_restoring_or_removing_records() {
+        let remove = include_str!("approval.rs")
+            .split("pub fn remove(")
+            .nth(1)
+            .unwrap()
+            .split("pub fn reprotect(")
+            .next()
+            .unwrap();
+        let approval = remove.find("let application = Approval::read()?").unwrap();
+        let restore = remove.find("let snapshot = read_restore_record").unwrap();
+        let deletion = remove.find("installation::ACL_RESTORE").unwrap();
+        assert!(approval < restore);
+        assert!(restore < deletion);
+        assert!(!remove.contains("Approval::read().ok()"));
+        assert!(remove.contains("snapshot.restore_in(Some(&application)"));
     }
 }
