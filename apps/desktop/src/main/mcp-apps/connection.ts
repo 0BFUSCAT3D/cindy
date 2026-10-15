@@ -82,7 +82,8 @@ export class AppConnection {
     },
   ) {}
 
-  async getClient(): Promise<Client> {
+  async getClient(signal?: AbortSignal): Promise<Client> {
+    signal?.throwIfAborted();
     if (this.closed) throw new Error('MCP_APP_CONNECTION_CLOSED');
     if (!this.connecting) {
       const client = this.createClient();
@@ -131,11 +132,32 @@ export class AppConnection {
         throw error;
       });
     }
-    return this.connecting;
+    if (!signal) return this.connecting;
+    const connecting = this.connecting;
+    // Initialization is shared. Cancel only this waiter, leaving peers and the
+    // bounded connection attempt intact; observe late failures after cancellation.
+    return new Promise<Client>((resolve, reject) => {
+      const abort = () => {
+        signal.removeEventListener('abort', abort);
+        reject(signal.reason);
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      connecting.then(
+        (client) => {
+          signal.removeEventListener('abort', abort);
+          resolve(client);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', abort);
+          reject(error);
+        },
+      );
+      if (signal.aborted) abort();
+    });
   }
 
   async tools(signal?: AbortSignal): Promise<Tool[]> {
-    const client = await this.getClient();
+    const client = await this.getClient(signal);
     const tools: Tool[] = [];
     let cursor: string | undefined;
     const seen = new Set<string>();
@@ -162,7 +184,7 @@ export class AppConnection {
   }
 
   async resource(uri: string, signal?: AbortSignal) {
-    const client = await this.getClient();
+    const client = await this.getClient(signal);
     const result = await client.readResource({ uri }, { signal });
     if (result.contents.some((item) => item.uri === uri && item._meta?.ui !== undefined))
       return { result };

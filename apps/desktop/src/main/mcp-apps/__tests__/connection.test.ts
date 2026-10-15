@@ -55,3 +55,53 @@ describe('MCP App connection recovery', () => {
     await expect(connection.getClient()).rejects.toThrow('MCP_APP_CONNECTION_CLOSED');
   });
 });
+
+describe.each(['http', 'sse'] as const)('MCP App %s discovery cancellation', (transport) => {
+  it('does not establish an authenticated connection for an already cancelled request', async () => {
+    const connect = vi.spyOn(Client.prototype, 'connect').mockResolvedValue(undefined);
+    vi.spyOn(Client.prototype, 'close').mockResolvedValue(undefined);
+    vi.spyOn(Client.prototype, 'listTools').mockResolvedValue({ tools: [] });
+    const connection = new AppConnection({ ...config, transport });
+    const cancelled = new AbortController();
+    const reason = new Error('discovery cancelled before connect');
+    cancelled.abort(reason);
+    try {
+      await expect(connection.tools(cancelled.signal)).rejects.toBe(reason);
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it.each([false, true])('cancels one initialization waiter without cancelling its peer (reconnect=%s)', async (reconnect) => {
+    let finish!: () => void;
+    const connect = vi.spyOn(Client.prototype, 'connect').mockResolvedValue(undefined);
+    vi.spyOn(Client.prototype, 'close').mockResolvedValue(undefined);
+    const list = vi.spyOn(Client.prototype, 'listTools').mockResolvedValue({ tools: [] });
+    const connection = new AppConnection({ ...config, transport });
+    if (reconnect) (await connection.getClient()).onclose?.();
+    connect.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const cancelled = new AbortController();
+    const reason = new Error('discovery cancelled during connect');
+    const pending = connection.tools(cancelled.signal);
+    const peer = connection.tools();
+    try {
+      const settled = pending.then(() => 'resolved', (error: unknown) => error);
+      cancelled.abort(reason);
+      // Initialization deliberately stays pending: no wall-clock timeout can mask it.
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(await Promise.race([settled, Promise.resolve('still waiting')])).toBe(reason);
+      expect(list).not.toHaveBeenCalled();
+      finish();
+      await expect(peer).resolves.toEqual([]);
+      expect(list).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledTimes(reconnect ? 2 : 1);
+      await expect(connection.tools()).resolves.toEqual([]);
+      expect(connect).toHaveBeenCalledTimes(reconnect ? 2 : 1);
+    } finally {
+      finish();
+      await Promise.allSettled([pending, peer]);
+      await connection.close();
+    }
+  });
+});
