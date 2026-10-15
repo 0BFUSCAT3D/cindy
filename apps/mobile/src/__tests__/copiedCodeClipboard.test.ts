@@ -70,6 +70,17 @@ it("keeps a later iOS copy, including one that lands before the version read", a
   expect(h.getString).not.toHaveBeenCalled();
 });
 
+it("keeps the latest iOS copy clearable when the user taps copy twice quickly", async () => {
+  const [first, second] = await Promise.all([
+    copyCode("CODE-1"),
+    copyCode("CODE-1"),
+  ]);
+  expect(first.version).toBe("6");
+  expect(second.version).toBe("7");
+  await clearCopiedCode(second);
+  expect(h.text).toBe("");
+});
+
 it("compares contents on Android, so returning from the browser still clears the code", async () => {
   h.os = "android";
   const copied = await copyCode("CODE-1");

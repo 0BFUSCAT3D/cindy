@@ -12,8 +12,18 @@ const iosVersion = () =>
   remotePresentation?.clipboardVersion?.().catch(() => undefined) ??
   Promise.resolve(undefined);
 
+// Our own copies run one at a time, so their writes never fall between
+// another copy's version reads.
+let copying: Promise<unknown> = Promise.resolve();
+
 /** Copy a device code and remember enough to clear it later only if it is still ours. */
-export async function copyCode(code: string): Promise<CopiedCode> {
+export function copyCode(code: string): Promise<CopiedCode> {
+  const result = copying.then(() => writeCode(code));
+  copying = result.catch(() => {});
+  return result;
+}
+
+async function writeCode(code: string): Promise<CopiedCode> {
   if (Platform.OS !== "ios") {
     await Clipboard.setStringAsync(code);
     return { code };
