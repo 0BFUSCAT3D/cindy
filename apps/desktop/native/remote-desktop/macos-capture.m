@@ -325,8 +325,8 @@ int main(int argc, const char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
     // stdin is a private parent pipe: one byte asks for one latest frame. EOF
     // and a stalled parent both terminate capture without retaining any pixels.
-    // A parent still waiting for its first frame is not stalled; it bounds that
-    // wait itself and kills this helper when it gives up.
+    // A parent still waiting for its first frame gets a longer bound; it
+    // normally gives up and kills this helper first.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
       char byte;
       while (read(STDIN_FILENO, &byte, 1) == 1) {
@@ -340,7 +340,9 @@ int main(int argc, const char *argv[]) {
     dispatch_source_t watchdog = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
     dispatch_source_set_timer(watchdog, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, 0);
     dispatch_source_set_event_handler(watchdog, ^{
-      if (!atomic_load(&awaitingFrame) && time(NULL) - atomic_load(&lastRequest) > 5) _exit(0);
+      // A pending frame extends the idle limit beyond the parent's cold-start
+      // wait, but never indefinitely: a parent that stopped reading is stalled.
+      if (time(NULL) - atomic_load(&lastRequest) > (atomic_load(&awaitingFrame) ? 15 : 5)) _exit(0);
     });
     dispatch_resume(watchdog);
     dispatch_main();
