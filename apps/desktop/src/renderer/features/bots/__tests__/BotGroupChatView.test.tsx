@@ -13,6 +13,7 @@ import { FeatureSidebarSlotProvider, useFeatureContentHeader } from '../../featu
 import { markBotRead, getBotLastReadAt, botGroupReadKey, resetBotReadStateForTests } from '../botReadState';
 import { botGroupAttachmentScope } from '../botGroupAttachments';
 import { getBotGroupListSnapshot, refreshBotGroups, resetBotGroupStoreForTests } from '../botGroupStore';
+import { getBotGroupOutbox, getBotGroupOutboxPreviews, resetBotGroupOutboxForTests } from '../botGroupOutbox';
 import { BotGroupChatView } from '../BotGroupChatView';
 import { ControlledBanner, __resetControlledBannerForTests } from '../../remote-device/ControlledBanner';
 import type {
@@ -259,6 +260,7 @@ beforeEach(() => {
   mocks.cacheImageFromBuffer.mockReset().mockResolvedValue({ url: 'cindy-media://blobs/pasted.png', filename: 'pasted.png' });
   mocks.cacheImageFromPath.mockReset().mockResolvedValue({ url: 'cindy-media://blobs/photo.png', filename: 'photo.png' });
   resetBotReadStateForTests();
+  resetBotGroupOutboxForTests();
   mocks.groupId = 'g1';
   __resetControlledBannerForTests();
   mocks.controlledPush = null;
@@ -1269,6 +1271,349 @@ describe('BotGroupChatView', () => {
     expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
   });
 
+  describe('乐观显示', () => {
+    /** A send main has not answered yet; the test decides when and how. */
+    function pendingSend() {
+      let resolve!: (result: unknown) => void;
+      const promise = new Promise((res) => {
+        resolve = res;
+      });
+      mocks.sendBotGroupMessage.mockImplementationOnce(() => promise);
+      return { resolve: (result: unknown) => act(async () => { resolve(result); await promise; }) };
+    }
+    const outboxItems = () => screen.queryAllByTestId('bot-group-outbox');
+    const withSelf = (id: string, sequence: number, content: string) =>
+      detail({ messages: [...detail().messages, msg({ id, sequence, content })] });
+    const pushMessages = (groupId = 'g1') =>
+      act(() => mocks.pushes.forEach((push) => push({ groupId, change: 'messages' })));
+
+    it('shows and settles the message when an older local route opens a migrated group', async () => {
+      // The route still carries the local id; main answers with the group's server room id.
+      const send = pendingSend();
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'room-1' }) });
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '迁移后的群' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(outboxItems()).toHaveLength(1);
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      expect((mocks.sendBotGroupMessage.mock.calls[0]![0] as { groupId: string }).groupId).toBe('room-1');
+
+      mocks.getBotGroup.mockResolvedValue({
+        ok: true,
+        group: detail({ id: 'room-1', messages: [...detail().messages, msg({ id: 'u2', sequence: 5, content: '迁移后的群' })] }),
+      });
+      await send.resolve({ ok: true, messageId: 'u2' });
+      await waitFor(() => expect(getBotGroupOutbox('room-1')).toHaveLength(0));
+      expect(screen.getAllByText('迁移后的群')).toHaveLength(1);
+    });
+
+    it('shows the message as soon as it is sent and swaps in the real one without a duplicate', async () => {
+      const send = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '@咪咪 慢一点', selectionStart: 7 } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      expect(input.value).toBe('');
+      expect(outboxItems()).toHaveLength(1);
+      expect(outboxItems()[0]!.textContent).toContain('慢一点');
+      // The mention keeps its chip in the pending bubble too.
+      expect(within(outboxItems()[0]!).getByText('@咪咪')).toBeTruthy();
+      expect(within(outboxItems()[0]!).queryByRole('status')).toBeNull();
+      expect(await screen.findByText('bots.groupChat.outbox.sending', {}, { timeout: 2000 })).toBeTruthy();
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withSelf('u2', 5, '@咪咪 慢一点') });
+      await send.resolve({ ok: true, messageId: 'u2' });
+      pushMessages();
+      await waitFor(() => expect(outboxItems()).toHaveLength(0));
+      expect(screen.getAllByText('慢一点')).toHaveLength(1);
+      expect(screen.queryByText('bots.groupChat.outbox.sending')).toBeNull();
+    });
+
+    it('does not show the message twice when a push re-read lands before the receipt', async () => {
+      const send = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '早到的推送' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withSelf('u2', 5, '早到的推送') });
+      pushMessages();
+      await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(outboxItems()).toHaveLength(0));
+      expect(screen.getAllByText('早到的推送')).toHaveLength(1);
+
+      // The receipt settles against the timeline already on screen, with no further push.
+      await send.resolve({ ok: true, messageId: 'u2' });
+      await waitFor(() => expect(getBotGroupOutbox('g1')).toHaveLength(0));
+      pushMessages();
+      await waitFor(() => expect(mocks.getBotGroup).toHaveBeenCalledTimes(3));
+      expect(screen.getAllByText('早到的推送')).toHaveLength(1);
+      expect(outboxItems()).toHaveLength(0);
+    });
+
+    it('keeps a failed message where it was sent, above messages that came after it', async () => {
+      const first = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '先发的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      fireEvent.change(input, { target: { value: '后发的' } });
+      await first.resolve({ ok: false, errorCode: 'SERVICE_ERROR', message: '' });
+      expect(outboxItems()[0]!.getAttribute('data-status')).toBe('failed');
+
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: true, messageId: 'u2' });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withSelf('u2', 5, '后发的') });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(screen.getAllByText('后发的')).toHaveLength(1));
+      await waitFor(() => expect(outboxItems()).toHaveLength(1));
+      const order = [...document.querySelectorAll('article')]
+        .map((article) => article.textContent ?? '')
+        .filter((text) => text.includes('先发的') || text.includes('后发的'))
+        .map((text) => (text.includes('先发的') ? '先发的' : '后发的'));
+      expect(order).toEqual(['先发的', '后发的']);
+    });
+
+    it('keeps a later failed message below an earlier one that went out', async () => {
+      const first = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '先发的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      fireEvent.change(input, { target: { value: '后发的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      // New text in the input keeps the failed message on the timeline.
+      fireEvent.change(input, { target: { value: '还在写' } });
+
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR', message: '' });
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withSelf('u2', 5, '先发的') });
+      await first.resolve({ ok: true, messageId: 'u2' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.getAllByText('先发的')).toHaveLength(1));
+      await waitFor(() => expect(outboxItems().map((item) => item.getAttribute('data-status'))).toEqual(['failed']));
+      const order = [...document.querySelectorAll('article')]
+        .map((article) => article.textContent ?? '')
+        .filter((text) => text.includes('先发的') || text.includes('后发的'))
+        .map((text) => (text.includes('先发的') ? '先发的' : '后发的'));
+      expect(order).toEqual(['先发的', '后发的']);
+    });
+
+    it('takes the next message while the first is still out, and sends them in order', async () => {
+      const first = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '同一句' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.change(input, { target: { value: '同一句' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      expect(outboxItems().map((item) => item.textContent)).toEqual(['同一句', '同一句']);
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: true, messageId: 'u3' });
+      await first.resolve({ ok: true, messageId: 'u2' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
+      const [firstSend, secondSend] = mocks.sendBotGroupMessage.mock.calls.map(([call]) => call as Record<string, unknown>);
+      // Same text, two messages: each keeps its own identity.
+      expect(firstSend!.clientId).not.toBe(secondSend!.clientId);
+
+      mocks.getBotGroup.mockResolvedValue({
+        ok: true,
+        group: detail({ messages: [...detail().messages, msg({ id: 'u2', sequence: 5, content: '同一句' }), msg({ id: 'u3', sequence: 6, content: '同一句' })] }),
+      });
+      pushMessages();
+      await waitFor(() => expect(outboxItems()).toHaveLength(0));
+      expect(screen.getAllByText('同一句')).toHaveLength(2);
+    });
+
+    it('keeps a failed message in place while new text is in the input; 重试 reuses its clientId and 编辑 waits for an empty input', async () => {
+      const send = pendingSend();
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '第一条' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      fireEvent.change(input, { target: { value: '正在写的' } });
+      await send.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+
+      expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.composer.sendFailed');
+      expect(input.value).toBe('正在写的');
+      const failed = await screen.findByTestId('bot-group-outbox');
+      expect(failed.getAttribute('data-status')).toBe('failed');
+      expect(within(failed).getByText('bots.groupChat.outbox.failed')).toBeTruthy();
+      // Nothing goes out again on its own.
+      expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(within(failed).getByRole('button', { name: 'bots.groupChat.outbox.edit' }));
+      expect(mocks.toastWarning).toHaveBeenCalledWith('bots.groupChat.outbox.editBlocked');
+      expect(input.value).toBe('正在写的');
+
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      fireEvent.click(within(failed).getByRole('button', { name: /bots\.retry/ }));
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
+      const [firstAttempt, retry] = mocks.sendBotGroupMessage.mock.calls.map(([call]) => call as Record<string, unknown>);
+      expect(retry!.clientId).toBe(firstAttempt!.clientId);
+      await waitFor(() => expect(screen.getByTestId('bot-group-outbox').getAttribute('data-status')).toBe('failed'));
+
+      fireEvent.change(input, { target: { value: '' } });
+      fireEvent.click(screen.getByRole('button', { name: 'bots.groupChat.outbox.edit' }));
+      expect(input.value).toBe('第一条');
+      expect(outboxItems()).toHaveLength(0);
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: true, messageId: 'u2' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(3));
+      expect(lastSend().clientId).toBe(firstAttempt!.clientId);
+    });
+
+    it('keeps the local image on screen while the server copy of a confirmed message is still loading', async () => {
+      const send = pendingSend();
+      renderView();
+      await screen.findByRole('textbox');
+      pickFiles([diskFile('photo.png', 'image/png')]);
+      await screen.findByAltText('photo.png');
+      fireEvent.click(screen.getByRole('button', { name: 'bots.send' }));
+      // Out of the tray and into the pending bubble at once.
+      expect(within(outboxItems()[0]!).getByAltText('photo.png')).toBeTruthy();
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+
+      const image = { id: 's1', name: 'photo.png', category: 'image' as const, mimeType: 'image/png', size: 7 };
+      mocks.getBotGroup.mockResolvedValue({
+        ok: true,
+        group: detail({ messages: [...detail().messages, msg({ id: 'u2', sequence: 5, attachments: [{ ...image, url: null, path: null }] })] }),
+      });
+      await send.resolve({ ok: true, messageId: 'u2' });
+      pushMessages();
+      await waitFor(() => expect(outboxItems()).toHaveLength(0));
+      expect(screen.getAllByAltText('photo.png')).toHaveLength(1);
+      expect(screen.getByAltText('photo.png').getAttribute('src')).toContain('photo.png');
+
+      mocks.getBotGroup.mockResolvedValue({
+        ok: true,
+        group: detail({ messages: [...detail().messages, msg({ id: 'u2', sequence: 5, attachments: [{ ...image, url: 'cindy-media://blobs/server.png', path: null }] })] }),
+      });
+      pushMessages();
+      await waitFor(() => expect(screen.getByAltText('photo.png').getAttribute('src')).toContain('server.png'));
+      expect(screen.getAllByAltText('photo.png')).toHaveLength(1);
+    });
+
+    it('puts a message that failed while the group was closed back into its empty composer on return', async () => {
+      const send = pendingSend();
+      const view = renderView();
+      const tree = () => (
+        <Tooltip.Provider>
+          <FeatureSidebarSlotProvider isCollapsed={false}>
+            <HeaderSlot />
+            <BotGroupChatView />
+          </FeatureSidebarSlotProvider>
+        </Tooltip.Provider>
+      );
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '离开时失败的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      mocks.groupId = 'g2';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'g2', name: '另一个群' }) });
+      view.rerender(tree());
+      await screen.findByText('另一个群');
+      await send.resolve({ ok: false, errorCode: 'INTERNAL', message: '' });
+      // Nothing of g1 shows here, and g2's composer is not touched.
+      expect(outboxItems()).toHaveLength(0);
+      expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
+
+      mocks.groupId = 'g1';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail() });
+      view.rerender(tree());
+      await screen.findByText('周六 8:10 有票');
+      await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('离开时失败的'));
+      expect(outboxItems()).toHaveLength(0);
+      expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.composer.sendFailed');
+      // Sending it again is the same attempt.
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: true, messageId: 'u2' });
+      fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(2));
+      expect(mocks.sendBotGroupMessage.mock.calls[1]![0].clientId).toBe(mocks.sendBotGroupMessage.mock.calls[0]![0].clientId);
+    });
+
+    it('settles the local preview of a message pushed off the latest page once an older page shows it', async () => {
+      const send = pendingSend();
+      renderView();
+      await screen.findByRole('textbox');
+      pickFiles([diskFile('photo.png', 'image/png')]);
+      await screen.findByAltText('photo.png');
+      fireEvent.click(screen.getByRole('button', { name: 'bots.send' }));
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+      // The receipt comes back; the next read's latest page no longer holds the message.
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ hasMoreBefore: true }) });
+      await send.resolve({ ok: true, messageId: 'u-old' });
+      pushMessages();
+      await waitFor(() => expect(getBotGroupOutbox('g1')).toEqual([]));
+      expect(getBotGroupOutboxPreviews('g1').size).toBe(1);
+
+      const image = { id: 's1', name: 'photo.png', category: 'image' as const, mimeType: 'image/png', size: 7, url: 'cindy-media://blobs/server.png', path: null };
+      mocks.getBotGroup.mockResolvedValueOnce({
+        ok: true,
+        group: detail({ messages: [msg({ id: 'u-old', sequence: 0, attachments: [image] })], hasMoreBefore: false }),
+      });
+      fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+      await waitFor(() => expect(getBotGroupOutboxPreviews('g1').size).toBe(0));
+    });
+
+    it('drops the outbox of a group that reads as gone', async () => {
+      renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      mocks.sendBotGroupMessage.mockResolvedValueOnce({ ok: false, errorCode: 'INTERNAL', message: '' });
+      fireEvent.change(input, { target: { value: '没发出去' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.change(input, { target: { value: '正在写' } });
+      await waitFor(() => expect(getBotGroupOutbox('g1').map((entry) => entry.status)).toEqual(['failed']));
+      mocks.getBotGroup.mockResolvedValue({ ok: false, errorCode: 'NOT_FOUND', message: '' });
+      pushMessages();
+      expect(await screen.findByText('bots.groupChat.unavailableTitle')).toBeTruthy();
+      expect(getBotGroupOutbox('g1')).toEqual([]);
+    });
+
+    it('keeps a late receipt out of the next group and shows the message when coming back', async () => {
+      const send = pendingSend();
+      const view = renderView();
+      const input = (await screen.findByRole('textbox')) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: '离开前发的' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledTimes(1));
+
+      mocks.groupId = 'g2';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ id: 'g2', name: '另一个群' }) });
+      view.rerender(
+        <Tooltip.Provider>
+          <FeatureSidebarSlotProvider isCollapsed={false}>
+            <HeaderSlot />
+            <BotGroupChatView />
+          </FeatureSidebarSlotProvider>
+        </Tooltip.Provider>,
+      );
+      await screen.findByText('另一个群');
+      await send.resolve({ ok: true, messageId: 'u2' });
+      expect(outboxItems()).toHaveLength(0);
+      expect(screen.queryByText('离开前发的')).toBeNull();
+
+      mocks.groupId = 'g1';
+      mocks.getBotGroup.mockResolvedValue({ ok: true, group: withSelf('u2', 5, '离开前发的') });
+      view.rerender(
+        <Tooltip.Provider>
+          <FeatureSidebarSlotProvider isCollapsed={false}>
+            <HeaderSlot />
+            <BotGroupChatView />
+          </FeatureSidebarSlotProvider>
+        </Tooltip.Provider>,
+      );
+      await waitFor(() => expect(screen.getAllByText('离开前发的')).toHaveLength(1));
+      expect(outboxItems()).toHaveLength(0);
+    });
+  });
+
   describe('引用回复', () => {
     const quoteOf = (messageId: string, overrides: Partial<NonNullable<BotGroupMessageView['quote']>> = {}) => ({
       messageId, authorName: '小满', authorKind: 'bot' as const, excerpt: '周六 8:10 有票', attachmentCount: 0, attachmentName: null, sequence: 2, ...overrides,
@@ -1347,6 +1692,18 @@ describe('BotGroupChatView', () => {
       expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
     });
 
+    it('shows the quote on the message while it is still on its way', async () => {
+      const user = userEvent.setup();
+      mocks.sendBotGroupMessage.mockImplementation(() => new Promise(() => undefined));
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      const pending = await screen.findByTestId('bot-group-outbox');
+      expect(within(pending).getByTestId('bot-group-quote').textContent).toContain('周六 8:10 有票');
+      expect(pending.textContent).toContain('就这班');
+      expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
     it('puts the text back without an unavailable quote', async () => {
       const user = userEvent.setup();
       mocks.sendBotGroupMessage.mockResolvedValue({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
@@ -1356,6 +1713,24 @@ describe('BotGroupChatView', () => {
       await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('bots.groupChat.errors.quoteUnavailable'));
       expect((screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }) as HTMLTextAreaElement).value).toBe('就这班');
       expect(screen.queryByTestId('bot-group-quote-preview')).toBeNull();
+    });
+
+    it('keeps a message whose original became unavailable for 编辑 only, never 重试', async () => {
+      const user = userEvent.setup();
+      let refuse!: () => void;
+      mocks.sendBotGroupMessage.mockImplementation(() => new Promise((resolve) => {
+        refuse = () => resolve({ ok: false, errorCode: 'QUOTE_UNAVAILABLE' });
+      }));
+      renderView();
+      await user.click(await quoteButton());
+      await user.keyboard('就这班{Enter}');
+      await waitFor(() => expect(mocks.sendBotGroupMessage).toHaveBeenCalledOnce());
+      await user.type(screen.getByRole('textbox', { name: 'bots.groupChat.composer.label' }), '另一件事');
+      await act(async () => refuse());
+      const failed = await screen.findByTestId('bot-group-outbox');
+      await waitFor(() => expect(failed.getAttribute('data-status')).toBe('failed'));
+      expect(within(failed).getByRole('button', { name: 'bots.groupChat.outbox.edit' })).toBeTruthy();
+      expect(within(failed).queryByRole('button', { name: /bots\.retry/ })).toBeNull();
     });
 
     it('offers no 引用回复 on a local group, a notice or a round divider', async () => {
