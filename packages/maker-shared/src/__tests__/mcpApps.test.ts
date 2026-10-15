@@ -115,13 +115,13 @@ describe('MCP Apps cross-platform document contract', () => {
       private: { arguments: 'input' },
     };
     const expected = { mcpAppHistory: { version: 1, title: 'Draft', text: 'Saved' } };
-    expect(projectMcpAppContent(content)).toEqual(expected);
+    expect(projectMcpAppContent(content, true)).toEqual(expected);
     expect(projectMcpAppContent(JSON.stringify(content), true)).toEqual(expected);
     expect(content.mcpAppHistory.private).toBe('view-only');
   });
   it.each([
-    { content: { mcpApp: { version: 2, private: 'view-only' } }, marked: false },
-    { content: { mcpAppHistory: { version: 2, private: 'view-only' } }, marked: false },
+    { content: { mcpApp: { version: 2, private: 'view-only' } }, marked: true },
+    { content: { mcpAppHistory: { version: 2, private: 'view-only' } }, marked: true },
     { content: { private: 'view-only' }, marked: true },
     { content: '{malformed private record', marked: true },
   ])('fails closed for malformed or unknown marked cards: %j', ({ content, marked }) => {
@@ -131,5 +131,18 @@ describe('MCP Apps cross-platform document contract', () => {
     const content = { text: 'A user message', images: [{ url: 'example.png' }] };
     expect(projectMcpAppContent(content)).toBe(content);
     expect(projectMcpAppContent('ordinary text')).toBe('ordinary text');
+  });
+  it.each([
+    { text: 'Ordinary structured result', mcpApp: null },
+    { mcpApp: { version: 2, data: 'ordinary data' }, extra: 'preserve me' },
+    { mcpAppHistory: { version: 1, title: 'User data', text: 'Saved', extra: 'preserve me' } },
+    { mcpApp: {
+      version: 1, serverId: 'example', serverRevision: 'revision', resourceUri: 'ui://example/app',
+      tool: { name: 'draft', inputSchema: { type: 'object' } }, arguments: { ordinary: 'data' },
+    } },
+  ])('preserves App-shaped ordinary content without the Main-written marker: %j', (content) => {
+    expect(projectMcpAppContent(content)).toBe(content);
+    expect(projectMcpAppContent(content, false)).toBe(content);
+    expect(projectMcpAppContent(JSON.stringify(content), false)).toBe(JSON.stringify(content));
   });
 });

@@ -59,4 +59,11 @@ describe('shared guest MCP App history projection', () => {
     const row = { role: 'assistant', content: 'Ordinary result', agentMeta: {} };
     expect(redactMessageRowForSharedGuest(row)).toBe(row);
   });
+  it.each([
+    { mcpApp: null, text: 'Ordinary result' },
+    { mcpAppHistory: { version: 1, title: 'User data', text: 'Saved', extra: 'preserve me' } },
+  ])('keeps unmarked App-shaped ordinary results intact for guests: %j', (content) => {
+    const row = { role: 'assistant', content, agentMeta: { mcpApp: false } };
+    expect(redactMessageRowForSharedGuest(row)).toBe(row);
+  });
 });

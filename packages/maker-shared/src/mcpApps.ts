@@ -95,13 +95,13 @@ export function parseMcpAppHistory(content: unknown): McpAppHistory | undefined 
 
 /** Only public history may leave Main outside an authorized sandboxed View. */
 export function projectMcpAppContent(content: unknown, marked = false): unknown {
+  // Only Main's marker identifies App rows; ordinary structured data may use
+  // these property names too and must retain its original content.
+  if (!marked) return content;
   let value = content;
-  if (marked && typeof value === 'string') {
+  if (typeof value === 'string') {
     try { value = JSON.parse(value); } catch { value = undefined; }
   }
-  const hasCard = value && typeof value === 'object' && !Array.isArray(value) &&
-    ('mcpApp' in value || 'mcpAppHistory' in value);
-  if (!marked && !hasCard) return content;
   // Unknown/malformed cards must not fall back to sending the private original.
   const history = parseMcpAppHistory(value);
   return { mcpAppHistory: { version: 1, title: history?.title ?? '', text: history?.text ?? '' } };
