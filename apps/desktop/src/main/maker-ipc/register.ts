@@ -157,12 +157,7 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 import { createId } from '@paralleldrive/cuid2';
-import {
-  GATEWAY_PROXY_TOKEN_INVALID_REASON,
-  isCindyGatewayProviderId,
-  isGatewayProxyTokenInvalidError,
-  redactSensitiveText,
-} from '@cindy/maker-shared/error-redaction';
+import { redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { permissionModeOrAsk } from '@cindy/maker-shared/permission-mode';
 import {
   isProductTurnCompletionTailEvent,
@@ -1122,6 +1117,8 @@ import {
   storeCustomProviderHeaders,
   storeCustomProviderKey,
 } from '../secrets/providerSecretStore.js';
+import { reportCindyGatewayKeyRejectedForCurrentKey } from '../model-access/gatewayKeyRejection.js';
+import { isGatewayProxyTokenRecoveryErrorEventForProvider } from './gatewayProxyTokenRecovery.js';
 import {
   getSessionEffort,
   getSessionFastMode,
@@ -4713,13 +4710,7 @@ function isRemoteAuthRetryErrorEvent(
 }
 
 function isGatewayProxyTokenRecoveryErrorEvent(sessionId: string, event: AgentEvent): boolean {
-  if (event.type !== 'error' || !isTerminalTurnErrorEvent(event)) return false;
-  const data = event.data as { message?: unknown; reason?: unknown } | undefined;
-  return (
-    isCindyGatewayProviderId(getSessionProvider(sessionId)) &&
-    (data?.reason === GATEWAY_PROXY_TOKEN_INVALID_REASON ||
-      isGatewayProxyTokenInvalidError(typeof data?.message === 'string' ? data.message : ''))
-  );
+  return isGatewayProxyTokenRecoveryErrorEventForProvider(getSessionProvider(sessionId), event);
 }
 
 function handleAgentIslandInteractionAfterBroadcast(
@@ -5592,6 +5583,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   get handleAgentIslandEventAfterBroadcast() {
     return handleAgentIslandEventAfterBroadcast;
   },
+  // 智能体不回报所用 Key:走「按当前 Key、不占用触发机会」的入口(见 gatewayKeyRejection.ts)。
+  reportAgentCindyGatewayKeyRejected: reportCindyGatewayKeyRejectedForCurrentKey,
   get notifyGoalIdleAfterTurnSettled() {
     return notifyGoalIdleAfterTurnSettled;
   },
