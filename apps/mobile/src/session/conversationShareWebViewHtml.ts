@@ -8,6 +8,7 @@ import {
   type SelectableMarkdownHtmlOptions,
 } from "@/session/selectableMarkdownHtml";
 import { buildMessageContentLayout } from "@/session/messageContentLayout";
+import { buildMobileReadableViewportLayout } from "@/session/responsiveViewportLayout";
 import { collectMobileMarkdownImages } from "@/session/messageMarkdown";
 import { lineHeight, radius, spacing, typeScale } from "@/theme/tokens";
 
@@ -71,6 +72,14 @@ export const CONVERSATION_SHARE_PADDING_X = spacing.lg;
 export const CONVERSATION_SHARE_PADDING_Y = spacing.xl;
 /** 气泡与 chip 描边对应聊天里的 StyleSheet.hairlineWidth。 */
 export const CONVERSATION_SHARE_HAIRLINE = 0.5;
+
+/** 使用聊天面板的视口（双栏时不是整个窗口），两种出图路径共用可读宽度。 */
+export function buildConversationShareContentWidth(viewport: { width: number; height: number }): number {
+  return Math.max(280, Math.round(buildMobileReadableViewportLayout({
+    screenWidth: viewport.width,
+    screenHeight: viewport.height,
+  }).contentWidth));
+}
 
 export function buildConversationShareHtml({
   allShareableIds,

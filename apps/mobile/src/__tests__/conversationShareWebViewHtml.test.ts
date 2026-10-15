@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildConversationShareHtml,
+  buildConversationShareContentWidth,
   type ConversationShareWebViewColors,
 } from "@/session/conversationShareWebViewHtml";
 import { i18n } from "@/i18n";
@@ -51,6 +52,28 @@ function buildRichConversationHtml(): string {
 }
 
 describe("buildConversationShareHtml 富内容导出", () => {
+  it.each([
+    { width: 390, height: 844, expectedWidth: 390 },
+    { width: 660, height: 390, expectedWidth: 564 },
+    { width: 1024, height: 1366, expectedWidth: 760 },
+    // 双栏右侧面板的宽度；不可用整个窗口宽度代替。
+    { width: 704, height: 768, expectedWidth: 608 },
+  ])("两条出图路径使用聊天可读宽度（$width × $height）", ({ width, height, expectedWidth }) => {
+    const contentWidth = buildConversationShareContentWidth({ width, height });
+    expect(contentWidth).toBe(expectedWidth);
+    const messages = [{ clientId: "user", kind: "user" as const, body: "正文 ".repeat(200) }];
+    const html = buildConversationShareHtml({
+      allShareableIds: ["user"], colors, contentWidth, selectedMessages: messages,
+    });
+    const svg = buildConversationShareSvgLayout({
+      allShareableIds: ["user"], colors, width: contentWidth, messages,
+    });
+    expect(html).toMatch(new RegExp(`#xdt-content\\.share-stage \\{[^}]*width: ${expectedWidth}px`));
+    expect(svg.width).toBe(expectedWidth);
+    expect(svg.bubbles[0]!.width).toBe(Math.round((expectedWidth - 32) * 0.86));
+    expect(svg.bubbles[0]!.x + svg.bubbles[0]!.width).toBe(expectedWidth - 16);
+  });
+
   it.each([
     { contentWidth: 360, dark: false },
     { contentWidth: 360, dark: true },
