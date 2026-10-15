@@ -1,17 +1,24 @@
 /**
  * An independent task a teammate started from this group (bot-group-chat.md §10).
  *
- * My own teammate's task: the live task link (status icon, click to open), read from the
- * delegation row on this computer. Someone else's teammate: the card as it was posted —
- * title and state — because that task runs on their computer.
+ * My own teammate's task, when this computer is its home: the live task link (status icon,
+ * click to open), read from the delegation row here. Someone else's teammate, or mine opened on
+ * another of my computers: the card as it was posted — title and state — because that task runs
+ * on the companion's home computer.
  */
 import { ListTodo } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { BotGroupTaskCardView } from '../../../shared/botGroupChat';
 import { BotSessionTaskLink } from './BotSessionTaskLink';
+import { useBotProfiles } from './botStore';
+import { companionRunsHere } from './companionCloudPresentation';
+import { useCompanionCloud } from './companionCloudStore';
 
-export function BotGroupTaskCard({ task, owned }: { task: BotGroupTaskCardView; owned: boolean }) {
+export function BotGroupTaskCard({ task, owned, botId }: { task: BotGroupTaskCardView; owned: boolean; botId: string | null }) {
   const { t } = useTranslation();
+  const profiles = useBotProfiles();
+  const cloud = useCompanionCloud();
+  const live = owned && botId !== null && companionRunsHere(cloud, profiles.map((bot) => bot.id), botId);
   const state = t(`bots.groupChat.task.state.${task.state}`);
   return (
     <div
@@ -21,7 +28,7 @@ export function BotGroupTaskCard({ task, owned }: { task: BotGroupTaskCardView; 
     >
       <ListTodo size={14} aria-hidden className="mt-[5px] shrink-0 text-[var(--text-tertiary)]" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        {owned ? (
+        {live ? (
           <BotSessionTaskLink card={task.meta} sessionId={task.meta.parentSessionId ?? undefined} />
         ) : (
           <span className="truncate text-14 leading-6 text-[var(--text-primary)]">{task.title}</span>
