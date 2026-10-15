@@ -47,11 +47,8 @@ import {
 
 export type AgentIslandInteractionRequest =
   | InteractionRequest
-  | {
-      kind: 'plugin_setup';
-      requestId: string;
-      detail: string;
-    };
+  | { kind: 'plugin_setup'; requestId: string; detail: string }
+  | { kind: 'input_handoff'; requestId: string; detail: string };
 
 export const AGENT_ISLAND_COMPLETION_DWELL_MS = 5_000;
 export const AGENT_ISLAND_ERROR_DWELL_MS = 12_000;
@@ -122,6 +119,7 @@ interface ApplyAgentIslandEventOptions {
 }
 
 interface AgentIslandSessionState {
+  completionNotification?: 'silent';
   pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
@@ -232,6 +230,7 @@ export interface AgentIslandState {
 }
 
 export interface AgentIslandRemoteUnreadTerminal {
+  completionNotification?: 'silent';
   sessionId: string;
   phase: 'completed' | 'error';
   lastActivityAt: number;
@@ -1216,7 +1215,8 @@ function applyDeviceSessionPhase(
       return { changed, event: entering && previous !== null ? 'needs-reply' : null };
     }
     case 'completed': {
-      if (previous === 'completed') {
+      const silent = input.completionNotification === 'silent';
+      if (previous === 'completed' && (!silent || session.completionNotification === 'silent')) {
         return { changed: mirrorDeviceSessionSummary(session, input.detail), event: null };
       }
       clearDeviceSessionInteraction(session);
@@ -1227,10 +1227,10 @@ function applyDeviceSessionPhase(
       mirrorDeviceSessionSummary(session, input.detail);
       // 对方设备已经仲裁过终态,这里不再套本机「报错后的配对 done」保护。
       session.completionAllowedAfterTerminalError = true;
-      completeAgentIslandSession(state, session, now, observed
+      completeAgentIslandSession(state, session, now, observed && !silent
         ? { suppressAttention: false, preserveAttention: false }
         : { suppressAttention: true, preserveAttention: true });
-      return { changed: true, event: observed ? 'done' : null };
+      return { changed: true, event: observed && !silent ? 'done' : null };
     }
     case 'error': {
       if (previous === 'error') return { changed: false, event: null };
@@ -1691,6 +1691,7 @@ function markSessionRunning(
   now: number,
 ): void {
   if (!session.running) session.startedAt = now;
+  session.completionNotification = undefined;
   session.running = true;
   session.completedUntil = null;
   session.errorUntil = null;
@@ -1721,6 +1722,7 @@ function completeAgentIslandSession(
   if (session.phase === 'error' && !session.completionAllowedAfterTerminalError) return;
 
   session.phase = 'completed';
+  session.completionNotification = options.suppressAttention ? 'silent' : undefined;
   session.interactionKind = undefined;
   session.interactionRevealDismissed = false;
   session.detail = '';
@@ -2586,6 +2588,7 @@ function applyMeta(session: AgentIslandSessionState, meta: AgentIslandSessionMet
 function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapshot {
   const reconnectStatus = session.phase === 'running' ? session.reconnectStatus : null;
   return {
+    ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
     sessionId: session.sessionId,
     title: session.title || session.projectName || session.sessionId.slice(0, 8),
     projectName: session.projectName,
@@ -2646,6 +2649,7 @@ function syncRemoteUnreadTerminal(state: AgentIslandState, session: AgentIslandS
   if (session.sourceDeviceId !== null) return;
   if (isUnreadTerminalLedger(session)) {
     state.remoteUnreadTerminals.set(session.sessionId, {
+      ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
       sessionId: session.sessionId,
       phase: session.phase,
       lastActivityAt: session.lastActivityAt,
@@ -2672,6 +2676,7 @@ function unreadIslandTtlAt(session: AgentIslandSessionState): number | null {
 
 function toRemoteUnreadSnapshot(unread: AgentIslandRemoteUnreadTerminal): AgentIslandSessionSnapshot {
   return {
+    ...(unread.completionNotification ? { completionNotification: unread.completionNotification } : {}),
     sessionId: unread.sessionId,
     title: unread.sessionId.slice(0, 8),
     projectName: null,
@@ -2791,7 +2796,7 @@ function detailForInteraction(
   request: AgentIslandInteractionRequest,
   wording: ToolRowWording,
 ): string {
-  if (request.kind === 'plugin_setup') return request.detail;
+  if (request.kind === 'plugin_setup' || request.kind === 'input_handoff') return request.detail;
   if (request.kind === 'permission') {
     // 权限确认:requireCommandVisible 保证用户批准的真实命令始终可见。
     return formatIslandToolDetail(request.toolName, request.input, { wording, requireCommandVisible: true }, {

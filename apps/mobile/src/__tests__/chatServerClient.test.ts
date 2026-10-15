@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { i18n } from '@/i18n';
 import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
+import { buildBotGroupQuoteCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const room = (n = 1, state = 'joined'): ChatRoom => ({ id: id(n), name: 'Discussion', kind: 'group', state, archived: false,
   revision: 1, created_at: '2026-10-01', updated_at: '2026-10-09', response_mode: 'all', speaking_mode: 'auto' });
@@ -11,6 +13,23 @@ const snapshot = (): ChatSnapshot => ({ room: room(), cursor: '9007199254741099'
 ] });
 
 describe('direct Chat Server client', () => {
+  it('reads a 引用回复 card as the quote, keeps it out of text and previews, and marks a deleted original', () => {
+    const card = buildBotGroupQuoteCard({ messageId: id(20), authorName: 'Other member', authorKind: 'user', excerpt: 'original words',
+      attachmentCount: 0, attachmentName: null, sequence: 20 });
+    const replying = { ...message(21), content: [card, { type: 'text', text: 'Agreed' }] };
+    const future = { ...message(22), content: [{ ...card, schemaRevision: 2 }, { type: 'text', text: 'Later' }] };
+    const page = { snapshot: snapshot(), messages: [message(20), replying, future], before: null };
+    const view = chatGroupView(page, id(11));
+    expect(view.messages[1]).toMatchObject({ content: 'Agreed', quote: { messageId: id(20), excerpt: 'original words' } });
+    expect(view.messages[1].quote?.originalDeleted).toBeUndefined();
+    expect(view.messages[2].quote).toBeUndefined();
+    expect(view.messages[2].content).toBe(`${card.fallback}\nLater`);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [replying] }, id(11)).item.display.preview).toBe('Agreed');
+    const deleted = chatGroupView({ ...page, messages: [{ ...message(20), deleted: true, content: [] }, replying] }, id(11));
+    expect(deleted.messages).toHaveLength(1);
+    expect(deleted.messages[0].quote).toMatchObject({ messageId: id(20), originalDeleted: true });
+  });
+
   it('reconciles all loaded message pages in bounded requests and clears an old-source failure on refresh', async () => {
     const latest = Array.from({ length: 100 }, (_, n) => message(200 - n));
     const older = Array.from({ length: 100 }, (_, n) => message(100 - n));
@@ -52,6 +71,26 @@ describe('direct Chat Server client', () => {
       expect(JSON.stringify(view.messages)).not.toContain('cindy-runtime-error:');
       expect(chatRoomRow(room(), { ...snapshot(), messages: [source] }, id(11)).item.display.preview).not.toContain('cindy-runtime-error:');
     }
+  });
+  it('names a media block the server sent without a caption, in the attachment and the list preview', () => {
+    const untitled = i18n.t('groupChat.files.untitled');
+    expect(untitled).not.toBe('groupChat.files.untitled');
+    const unnamed = { ...message(22), content: [{ type: 'media', mediaId: id(33) }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [unnamed], before: null }, id(11));
+    expect(view.messages[0]!.attachments.map(attachment => attachment.name)).toEqual([untitled]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [unnamed] }, id(11)).item.display.preview).toBe(untitled);
+  });
+  it('shows media as the message attachments, not as caption text, and keeps typed look-alike text', () => {
+    const withText = { ...message(20), content: [{ type: 'text', text: '我写的 [附件: a.png]' }, { type: 'media', mediaId: id(30), caption: 'clipboard-1.png' }] };
+    const onlyMedia = { ...message(21), content: [{ type: 'media', mediaId: id(31), caption: 'a.png' }, { type: 'media', mediaId: id(32), caption: 'b.pdf' }] };
+    const view = chatGroupView({ snapshot: snapshot(), messages: [onlyMedia, withText], before: null }, id(11));
+    expect(view.messages.map(({ content, attachments }) => ({ content, names: attachments.map(attachment => attachment.name) }))).toEqual([
+      { content: '我写的 [附件: a.png]', names: ['clipboard-1.png'] },
+      { content: '', names: ['a.png', 'b.pdf'] },
+    ]);
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [onlyMedia] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
+    const blankText = { ...onlyMedia, content: [{ type: 'text', text: ' \n' }, ...onlyMedia.content] };
+    expect(chatRoomRow(room(), { ...snapshot(), messages: [blankText] }, id(11)).item.display.preview).toBe('a.png, b.pdf');
   });
   it.each(['AUTH_REQUIRED', 'private diagnostic', undefined])('reads executions and projects a safe notice beside its visible source: %s', async failure_code => {
     const source = message(20);

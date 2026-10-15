@@ -17,7 +17,9 @@ import {
 import { setRemoteAgentHandler } from '../../device-link/dispatch.js';
 import { remoteBackgroundInvoke } from '../../device-link/index.js';
 import { providerShareGuestAccess } from '../../device-link/providerShareHost.js';
+import { handleProviderShareReshare, providerShareReshareAllows } from '../../device-link/providerShareReshare.js';
 import { createProviderGroupGuestRelay } from '../../provider-group/guestRelay.js';
+import { providerGroupReshare } from '../../provider-group/reshareRuntime.js';
 import { getProviderGroupOwnerScope } from '../../provider-group/runtime.js';
 import { readProviderGroup } from '../../provider-group/store.js';
 import { remoteAgentPollerFor } from '../controller/service';
@@ -98,6 +100,23 @@ function guestAllows(controller: string, providerId: string): boolean {
 export function installRemoteAgentHost(options: { getMaker: () => Maker; userDataDir: string }): void {
   if (host) return;
   const usage = installProviderShareUsageStore(options.userDataDir);
+  // 同一份受邀者分配器同时提供匿名状态，沿用实际分配时记录的版本兼容情况。
+  const groupRelay = createProviderGroupGuestRelay({
+    scope: getProviderGroupOwnerScope,
+    readGroup: readProviderGroup,
+    connect: (agentDeviceId) => {
+      const poller = remoteAgentPollerFor(agentDeviceId, remoteBackgroundInvoke, log);
+      return { invoke: poller.invoke, poller };
+    },
+    // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
+    readResetAt: (failure) => readTurnUsageResetAt(failure, Date.now(), { localTimeZoneTrusted: false }),
+    // 转分享(provider-sharing.md §4.3)：分享来的电脑只给它的主人同意过的人。
+    reshareAllows: providerGroupReshare.allows,
+    noteReshareDenied: providerGroupReshare.noteDenied,
+    reshareNeedsUpdate: providerGroupReshare.needsUpdate,
+    now: () => Date.now(),
+    log,
+  });
   host = createRemoteAgentHost({
     isAgentAvailable: (kind) => {
       try {
@@ -159,18 +178,9 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     },
     recordOwnerUsage: (controller, sample) => recordDeviceUsage(controller, sample, 'device'),
     // 供应商组(本机是组所在电脑)：受邀者的任务按组分给组内电脑，本机中转(provider-groups.md §4)。
-    groupRelay: createProviderGroupGuestRelay({
-      scope: getProviderGroupOwnerScope,
-      readGroup: readProviderGroup,
-      connect: (agentDeviceId) => {
-        const poller = remoteAgentPollerFor(agentDeviceId, remoteBackgroundInvoke, log);
-        return { invoke: poller.invoke, poller };
-      },
-      // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
-      readResetAt: (failure) => readTurnUsageResetAt(failure, Date.now(), { localTimeZoneTrusted: false }),
-      now: () => Date.now(),
-      log,
-    }),
+    groupRelay,
+    // 转分享(本机是分享者)：受邀者的组替它分享的人转来的任务，只在本机主人同意过那个人时运行。
+    reshare: { sync: handleProviderShareReshare, allows: providerShareReshareAllows },
     captureOwner: captureDataOwnerBroadcastScope,
     isOwnerCurrent: (owner) => isDataOwnerBroadcastScopeCurrent(owner as DataOwnerBroadcastScope),
     runsRoot: path.join(options.userDataDir, 'remote-agent'),
@@ -183,9 +193,11 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
       void current.abortAll();
     },
     abortControllers: (match) => current.abortControllers(match),
+    abortReshare: (match, reshareKey) => current.abortReshare(match, reshareKey),
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),
     turnRunningControllers: () => current.turnRunningControllers(),
+    sharedGroupStatus: (providerId, guestController) => groupRelay.sharedStatus(providerId, guestController),
   });
 }
 

@@ -1,5 +1,5 @@
 import { drainPendingDeepLinks } from '@/lib/pendingDeepLinks';
-import { ChatInviteHost, requestChatInvite } from '@/features/bots/ChatInviteHost';
+import { ChatInviteHost, reportMalformedChatInvite, requestChatInvite } from '@/features/bots/ChatInviteHost';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { buildSharedTaskInvitationLink } from '@cindy/device-link';
 import { JoinSharedTaskDialog } from '@/features/device-link/JoinSharedTaskDialog';
@@ -509,7 +509,7 @@ export function MainLayout() {
       // redirect 到 orca 路由时会丢 searchJump 锚点。传入远程镜像的 session 对象,
       // 让 Orca 路由一步到位(Codex review P2,与 SessionLinkChip 同款处理)。
       const remoteSession =
-        remoteProjectsStore.getMergedRemoteSessions().find((s) => s.id === sessionId) ?? null;
+        remoteProjectsStore.getVisibleMergedRemoteSessions().find((s) => s.id === sessionId) ?? null;
       void resolveSessionRoute(sessionId, remoteSession).then((target) => {
         if (!isLatest()) return;
         const visibleSession = resolveAgentIslandVisibleSessionFromRouteTarget(target);
@@ -640,11 +640,16 @@ export function MainLayout() {
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
         | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
         | { type: 'provider-share-join'; link: string }
         | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => {
       if (payload.type === 'chat-invite') {
         requestChatInvite(payload.token);
+        return;
+      }
+      if (payload.type === 'chat-invite-malformed') {
+        reportMalformedChatInvite();
         return;
       }
       if (payload.type === 'provider-share-join') {
@@ -711,7 +716,7 @@ export function MainLayout() {
 
   useEffect(() => {
     const unsubscribe = window.electronAPI.onDeepLinkNavigate((payload) => {
-      if (payload.type === 'chat-invite') {
+      if (payload.type === 'chat-invite' || payload.type === 'chat-invite-malformed') {
         void pullChatInvitations();
         return;
       }

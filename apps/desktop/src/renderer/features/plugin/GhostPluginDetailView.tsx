@@ -28,8 +28,8 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { CindyCapabilityPrefs } from '@/cindy-brain/CindyCapabilityPrefs';
 import { GhostLibrarySection } from './GhostLibrarySection';
+import { PluginBackgroundTasksSection } from './PluginBackgroundTasksSection';
 import { PluginTaskPrefs } from '@/cindy-brain/PluginTaskPrefs';
 import { GhostSettingsWebview } from '@/cindy-brain/GhostSettingsWebview';
 import { WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
@@ -45,8 +45,9 @@ import { Switch } from '@/components/ui/switch';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import {
-  isOfficialGhostId,
+  ghostDeclaresHiddenTasks,
   ghostTrustLabelKey,
+  isUserInstallReservedGhostId,
   type GhostPermissionItem,
   type GhostToolDecl,
   type InstalledGhost,
@@ -137,11 +138,10 @@ export function GhostPluginDetailView({
     enabled &&
     (primaryAction === 'panel' ||
       (primaryAction === 'command' && detail.canUse));
-  const cindyCapabilities = detail.cindyCapabilities;
   // Local imports with the same id cannot use the host gh credential. Match the
   // official receipt before advertising that connection in this plugin's UI.
   const hasGithubConnection =
-    detail.id === 'cindy-github' &&
+    detail.ghostId === 'cindy-github' &&
     Boolean(ghost) &&
     ghost?.trust?.level === 'cindy-official' &&
     ghost.trust.publisherSigned &&
@@ -152,11 +152,10 @@ export function GhostPluginDetailView({
     hasGithubConnection ||
     detail.hasMainView ||
     detail.hasSettingsUi ||
-    cindyCapabilities.length > 0 ||
     detail.hasTaskPreferences;
   const summary = hasGithubConnection
     ? t('ccAgent.gitContext.pr.setup.account.summary')
-    : ghostPluginSummary(detail.description, detail.id);
+    : ghostPluginSummary(detail.description, detail.ghostId);
   /**
    * 「从 .cindy 文件更新」是否可用。官方保留前缀(cindy- / filo- / xd-)在**非 dev
    * 构建**上会被 Main 的用户装入通道以 GHOST_ID_RESERVED 直接拒绝(见
@@ -168,7 +167,7 @@ export function GhostPluginDetailView({
    * 会多隐藏一次入口——方向保守(少一个入口 vs 给用户一个必失败按钮),可接受。
    * 普通第三方插件不受影响。
    */
-  const localUpdateAvailable = import.meta.env.DEV || !isOfficialGhostId(detail.id);
+  const localUpdateAvailable = import.meta.env.DEV || !isUserInstallReservedGhostId(detail.ghostId);
   const hasAdditionalActions = localUpdateAvailable || onExport !== undefined;
 
   useLayoutEffect(() => {
@@ -512,20 +511,20 @@ export function GhostPluginDetailView({
                   {t('routines.pluginCapability')}
                 </p>
               ) : null}
-              {cindyCapabilities.length > 0 ? (
-                <CindyCapabilityPrefs
-                  ghostId={detail.id}
-                  capabilities={cindyCapabilities}
-                  appearance="plugin"
-                />
-              ) : null}
               {detail.hasTaskPreferences ? (
                 <PluginTaskPrefs ghostId={detail.id} appearance="plugin"
+                  showTaskRows={detail.hasPluginTasks}
                   legacyDefault={ghost?.manifest.agent?.errand === true && !ghost.manifest.agent?.tasks && !ghost.manifest.workspace} />
               ) : null}
             </div>
           </section>
         ) : null}
+
+        <PluginBackgroundTasksSection
+          ghostId={detail.id}
+          installed={ghost !== null}
+          hiddenTasksDeclared={ghostDeclaresHiddenTasks(ghost?.manifest)}
+        />
 
         {detail.tools.length > 0 ? <ToolsSection tools={detail.tools} /> : null}
 
@@ -842,7 +841,7 @@ export function DetailsSection({
     {
       key: 'identifier',
       label: t('settings.ghosts.detail.infoId'),
-      value: detail.id,
+      value: detail.ghostId,
       monospace: true,
     },
     ...(detail.contents.length > 0

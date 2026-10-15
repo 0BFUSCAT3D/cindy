@@ -22,10 +22,12 @@ import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from '@cindy/m
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
 import { CompanionEntering } from '@/session/CompanionEntering';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
+import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactElement, type ReactNode, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Image as ExpoImage } from 'expo-image';
+import { MessageLoadingImage, MessageImagePlaceholder } from './MessageLoadingImage';
+import { InputHandoffRecordRow } from '@/inputHandoff/InputHandoffRecordRow';
 import {
   ArrowLeftRight,
   Bot,
@@ -77,6 +79,7 @@ import {
   type GestureResponderEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewProps,
   type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
@@ -256,6 +259,7 @@ import {
   useRemoteSessions,
 } from '@/session/remoteSessionStore';
 import {
+  isCrossDeviceSourceSessionId,
   shouldShowSourceDevice,
   type MessageSourceDevice,
   type MessageSourcePlugin,
@@ -766,8 +770,10 @@ export function MessageRenderer({
   busyAction,
   canLoadEarlier,
   emptyTestID,
+  emptyMessage,
   bottomOverlayHeight,
   contentBottomInset,
+  renderScrollComponent,
   isSessionStreaming,
   makerTurnRunning,
   continuationTurnClientId,
@@ -792,6 +798,8 @@ export function MessageRenderer({
   /** Offscreen preload and disappearing native screens must not replace the user's bookmark. */
   isReadingPositionActive?: () => boolean;
   bottomOverlayHeight?: number;
+  /** 列表滚动容器；任务页用它让聊天记录往下拖到输入框顶边时交给输入框（composerPullThrough）。 */
+  renderScrollComponent?: (props: ScrollViewProps) => ReactElement<ScrollViewProps>;
   /** Floating composers reserve a stable tail gap while their expanded surface overlays history. */
   contentBottomInset?: number;
   /** 顶部 chrome(绝对定位半透明工具栏)实测高度:内容顶部按此让位,详见 mobileMessageListTopPadding。 */
@@ -805,6 +813,7 @@ export function MessageRenderer({
   /** Oldest loaded host cursor; synthetic cards must not mask successful history prepends. */
   loadEarlierProgressKey?: string | null;
   emptyTestID?: string;
+  emptyMessage?: string;
   /** 排队消息 inline 区(InlineQueueSection),渲染在最后一条消息之后、随内容滚动。 */
   queueFooter?: ReactNode;
   scrollResetKey?: string;
@@ -942,6 +951,7 @@ export function MessageRenderer({
   // LegendList updates getState().scroll optimistically before an imperative native scroll lands.
   // Only native ScrollView scroll/end-drag samples advance this ack source for Android prepend.
   const nativeScrollEventSequenceRef = useRef(0);
+  const [sampleScrollDebug] = useState(createScrollDebugSampler);
   const scrollMetricsRef = useRef<MessageScrollMetrics>({
     contentHeight: 0,
     offsetY: 0,
@@ -2252,7 +2262,9 @@ export function MessageRenderer({
     }
     // Preloads need real geometry, but must not publish bookmarks or trigger user work.
     if (!historyActiveRef.current) return;
-    if (mobileDebugEnabled()) mobileDebugLog('debug', 'scroll', 'list scroll', {
+    const debugFlags = Number(isDragSample) | (Number(isMomentumScrollingRef.current) << 1)
+      | (Number(readingOlderRef.current) << 2) | (Number(nearBottomRef.current) << 3);
+    if (mobileDebugEnabled() && sampleScrollDebug(debugFlags, isFinalDragSample)) mobileDebugLog('debug', 'scroll', 'list scroll', {
       ...metrics, dragging: isDragSample, momentum: isMomentumScrollingRef.current,
       readingOlder: readingOlderRef.current, nearBottom: nearBottomRef.current,
     });
@@ -2822,7 +2834,7 @@ export function MessageRenderer({
         ]}
         ListEmptyComponent={syncingWhileEmpty
           ? <SyncingMessages />
-          : <EmptyMessages testID={emptyTestID} />}
+          : <EmptyMessages testID={emptyTestID} copy={emptyMessage} />}
         ListHeaderComponent={
           loadEarlierAction.visible ? (
             <MessageListActionButton
@@ -2853,6 +2865,7 @@ export function MessageRenderer({
         testID={testID ?? 'message.list'}
         viewabilityConfig={viewabilityConfigRef.current}
         onViewableItemsChanged={handleViewableItemsChanged}
+        renderScrollComponent={renderScrollComponent}
       />
       </Animated.View>
       {shareSelectionActive && stickyShareClientId ? (
@@ -3175,7 +3188,9 @@ function SessionOriginLabel({
       idText={sourceIdText(sourceMeta)
         ?? (senderSessionId ? t('message.renderer.sourceSessionId', { id: senderSessionId }) : undefined)}
       label={sessionOriginLabel(origin)}
-      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined}
+      onPress={onOpen && senderSessionId && !isCrossDeviceSourceSessionId(senderSessionId)
+        ? () => onOpen(senderSessionId)
+        : undefined}
       openHint={t('message.renderer.openSessionOrigin')}
       testID="message.sessionOrigin"
     />
@@ -3276,12 +3291,12 @@ function ForkOriginMarker({ onOpenForkOrigin }: { onOpenForkOrigin?: () => void 
   );
 }
 
-function EmptyMessages({ testID }: { testID?: string }) {
+function EmptyMessages({ testID, copy }: { testID?: string; copy?: string }) {
   const styles = useThemedStyles(makeStyles);
   const { t } = useTranslation();
   return (
     <View style={styles.emptyCard} testID={testID ?? 'message.empty'}>
-      <Text style={styles.emptyTitle}>{t('message.renderer.emptyMessages')}</Text>
+      <Text style={styles.emptyTitle}>{copy ?? t('message.renderer.emptyMessages')}</Text>
     </View>
   );
 }
@@ -5378,6 +5393,7 @@ function MobileSystemCard({
   }
   // agent-switch 走专用「分隔线 + 药丸」渲染(对齐桌面),不落通用盒子卡片。
   if (type === 'agent-switch') return <MobileAgentSwitchCard data={data} />;
+  if (type === 'input-handoff') return <InputHandoffRecordRow data={data} />;
   // auto-resume 复用桌面 AgentActionRow 的单行状态布局:默认只显示当前状态和压缩后的
   // 中断原因,完整诊断按需展开,避免底层错误全文把手机消息流撑成一张大卡片。
   if (type === 'auto-resume') {
@@ -6505,7 +6521,7 @@ function renderInline(
           testID="message.markdownInlineImage"
         >
           <View style={size}>
-            <ExpoImage
+            <MessageLoadingImage
               accessibilityLabel={inline.alt || i18n.t('message.renderer.imageFallbackTitle')}
               contentFit="cover"
               recyclingKey={inline.url}
@@ -6581,6 +6597,7 @@ export function AttachmentStrip({
   align,
   layout,
   onOpen,
+  onOpenFile,
   onResolveRemoteMedia,
   usePreviewState = useRecyclingState,
 }: {
@@ -6591,6 +6608,8 @@ export function AttachmentStrip({
   align: 'left' | 'right';
   layout: MessageContentLayout;
   onOpen?: (payload: MessagePayload) => void;
+  /** Index within this strip's file chips, for callers that resolve files by ID on tap. */
+  onOpenFile?: (index: number) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   usePreviewState?: MediaPreviewStateHook;
 }) {
@@ -6636,7 +6655,7 @@ export function AttachmentStrip({
               key={`${item.kind}:${item.path ?? item.name}:${index}`}
               layout={layout}
               name={item.name}
-              onOpen={onOpen ? () => onOpen(buildAttachmentPayload(item)) : undefined}
+              onOpen={onOpenFile ? () => onOpenFile(index) : onOpen ? () => onOpen(buildAttachmentPayload(item)) : undefined}
               path={item.path}
             />
           ))}
@@ -6765,7 +6784,7 @@ function PendingAttachmentImage({ layout, uri, sourceUri = uri, onError, onSize,
   );
   return (
     <View style={styles.attachmentImageWrap}>
-      <ExpoImage
+      <MessageLoadingImage
         source={{ uri }}
         recyclingKey={uri}
         contentFit="contain"
@@ -6940,7 +6959,7 @@ function MediaPreview({
             <Text style={styles.mediaHint} numberOfLines={2}>{fallbackDetail}</Text>
           </View>
         ) : thumbUri ? (
-          <ExpoImage
+          <MessageLoadingImage
             // 尺寸未知时先 contain 进最大框，解码后收敛到真实比例。
             contentFit="contain"
             recyclingKey={thumbUri}
@@ -6950,7 +6969,7 @@ function MediaPreview({
             style={[styles.attachmentImage, displaySize]}
           />
         ) : (
-          <View style={[styles.attachmentImagePending, displaySize]} testID="message.mediaThumbLoading" />
+          <MessageImagePlaceholder style={displaySize} />
         )}
       </MessageContentOpenButton>
     );
@@ -6972,7 +6991,7 @@ function MediaPreview({
         testID="message.mediaPreviewButton"
       >
         {uri ? (
-          <ExpoImage
+          <MessageLoadingImage
             contentFit="cover"
             recyclingKey={uri}
             source={{ uri }}
@@ -6980,7 +6999,7 @@ function MediaPreview({
             style={[styles.imagePreview, frameSize]}
           />
         ) : phase.kind === 'resolving' ? (
-          <View style={[styles.imagePreview, frameSize]} testID="message.mediaThumbLoading" />
+          <MessageImagePlaceholder style={[styles.imagePreview, frameSize]} />
         ) : (
           <View
             style={[styles.imagePreview, styles.imagePreviewFallback, frameSize]}

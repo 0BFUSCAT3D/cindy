@@ -138,7 +138,7 @@ describe('file chip names keep their width when the chip is content-sized (#5875
   it.each([
     ['server group', 'right', 'short', shortName], ['server group', 'left', 'short', shortName],
     ['server group', 'right', 'long', longName], ['server group', 'left', 'long', longName],
-    ['server group', 'right', 'empty caption', ''], ['task message', 'left', 'short', shortName], ['task message', 'left', 'long', longName],
+    ['task message', 'left', 'short', shortName], ['task message', 'left', 'long', longName],
   ] as const)('%s, %s aligned, %s name', async (surface, align, _label, name) => {
     const chip = surface === 'server group' ? await renderServerGroup(align, name) : await renderSessionStrip(align, name);
     const width = contentSizedChip(chip);

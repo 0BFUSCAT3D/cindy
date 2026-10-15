@@ -80,7 +80,14 @@ import { extractDisplayParam } from '@/lib/agent-actions/actionPresentation';
 import { SUPPORTED_IMAGE_EXTS, extractExt } from '@/lib/fileTypes';
 import { toLocalFileUrl, resolveToolFilePath } from '@/lib/localPathResolver';
 import { isBrowserOpenablePath } from '../../../shared/browserOpenableExts';
-import { isGhostCallToolName } from '../../../shared/ghost';
+import { isGhostCallToolName, isValidGhostId } from '../../../shared/ghost';
+import {
+  createPluginLogicalIdentity,
+  findInstalledGhostByIdentity,
+  findInstalledGhostByInstanceId,
+  resolveInstalledGhost,
+} from '../../../shared/pluginIdentity';
+import { isValidPluginNamespace } from '@cindy/plugin-protocol';
 import { shouldOpenTextLightboxForOrigin } from '@/lib/filePreview';
 import { toRemoteMediaOrigin } from '@/lib/sessionFileOrigin';
 import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
@@ -798,7 +805,22 @@ export function AgentActionRow({
   const ghostInfo = useMemo(() => {
     if (!isGhostCallToolName(toolName) || !inp) return null;
     const gid = typeof inp.ghost_id === 'string' ? inp.ghost_id : '';
-    const hit = installedGhosts.find((g) => g.manifest.id === gid);
+    const namespace = inp.namespace;
+    const identity = isValidGhostId(gid) &&
+      (namespace === null || (typeof namespace === 'string' && isValidPluginNamespace(namespace)))
+      ? createPluginLogicalIdentity(namespace, gid)
+      : null;
+    // 裸 ID 与 main 侧一样按唯一逻辑身份解析；实例键才按物理键精确查找。
+    const bareIdResult = namespace === undefined && isValidGhostId(gid)
+      ? resolveInstalledGhost(installedGhosts, gid)
+      : null;
+    const hit = identity
+      ? findInstalledGhostByIdentity(installedGhosts, identity)
+      : bareIdResult?.status === 'unique'
+        ? bareIdResult.ghost
+        : namespace === undefined && !isValidGhostId(gid)
+          ? findInstalledGhostByInstanceId(installedGhosts, gid)
+          : undefined;
     return {
       name: hit?.manifest.name ?? (gid || 'ghost'),
       tool: typeof inp.tool === 'string' ? inp.tool : '',

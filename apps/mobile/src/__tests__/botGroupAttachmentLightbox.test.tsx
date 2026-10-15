@@ -175,12 +175,6 @@ describe('Chat Server group image attachments (#5875)', () => {
     expect(openBrowserAsync).toHaveBeenCalledWith(fileUrl);
     expect(container.querySelector('[data-testid="message.imageLightbox"]')).toBeNull();
   });
-
-  it('names an attachment whose message has no caption', async () => {
-    const container = await render({ resolveServerMedia: vi.fn(), attachments: [{ ...serverAttachment, name: '' }] });
-    const chip = container.querySelector('[data-testid="message.filePreviewButton"]');
-    expect(chip?.textContent).toBe('groupChat.server.attachmentName');
-  });
 });
 
 describe('computer-hosted group image attachments', () => {
