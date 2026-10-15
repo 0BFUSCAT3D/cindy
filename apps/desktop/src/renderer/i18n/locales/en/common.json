@@ -161,8 +161,8 @@
     "runsOnThisDevice": "Runs on this device",
     "inviteNotice": "Anyone holding the invitation link can join after signing in, with the same Agent access as the host.",
     "offlineAutoClose": "Sharing ends automatically if the host computer stays offline.",
-    "inviteBoxHint": "Send the link to your teammate to join. On mobile, they can also copy the link and open Cindy.",
-    "invitationMessage": "You’re invited to join “{{title}}”\n{{link}}\nOpen the link to join. On mobile, you can also copy the link, open Cindy, and confirm to join.",
+    "inviteBoxHint": "Send the link to your teammate. They can open it to join, or paste it into Join Shared Task in Cindy.",
+    "invitationMessage": "You’re invited to join “{{title}}”\n{{link}}\nOpen the link to join. If Cindy doesn’t open, choose Join Shared Task in Cindy and paste this link.",
     "membersWithLimit": "Members · {{count}} (up to 2 guests)",
     "me": "Me",
     "thisDevice": "This device",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "This invitation belongs to another Cindy service. Open the link in the matching app.",
     "managementIntro": "Manage the tasks you share and join.",
     "returnToTasks": "Back to Tasks",
-    "invitationDetected": "Shared task invitation found",
-    "notNow": "Not Now",
     "closeAllLabel": "Stop All Sharing",
     "closeAllDescription": "Guests will lose access. Task history is kept."
   },
@@ -9296,7 +9294,10 @@
         "planning": "Splitting the work…"
       },
       "files": {
-        "openFailed": "Couldn’t open the file. It may have been moved or deleted."
+        "openFailed": "Couldn’t open the file. It may have been moved or deleted.",
+        "untitled": "Attachment",
+        "loading": "Loading…",
+        "unavailable": "Unavailable right now"
       },
       "addFromChat": {
         "triggerFor": "Add {{name}} to a Group Chat",

@@ -161,8 +161,8 @@
     "runsOnThisDevice": "运行在这台电脑",
     "inviteNotice": "持有邀请链接的用户登录后即可加入，拥有与房主相同的 Agent 使用权限。",
     "offlineAutoClose": "房主电脑持续离线后，共享会自动结束。",
-    "inviteBoxHint": "将链接发送给伙伴，对方点击即可加入。手机端也可复制链接后打开 Cindy。",
-    "invitationMessage": "邀请你加入「{{title}}」\n{{link}}\n点击链接加入；手机端也可复制链接后打开 Cindy，确认加入。",
+    "inviteBoxHint": "将链接发送给伙伴，对方点击即可加入，也可在 Cindy 中点「加入共享任务」粘贴链接。",
+    "invitationMessage": "邀请你加入「{{title}}」\n{{link}}\n点击链接加入；如果没能打开 Cindy，可在 Cindy 中点「加入共享任务」并粘贴这条链接。",
     "membersWithLimit": "成员 · {{count}} 人（最多 2 位访客）",
     "me": "我",
     "thisDevice": "这台电脑",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "此邀请属于其他 Cindy 服务，请用对应的客户端打开链接",
     "managementIntro": "管理你发起和加入的共享。",
     "returnToTasks": "返回任务列表",
-    "invitationDetected": "发现共享任务邀请",
-    "notNow": "暂不加入",
     "closeAllLabel": "取消全部共享",
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
@@ -9257,7 +9255,10 @@
         "planning": "正在安排…"
       },
       "files": {
-        "openFailed": "文件没能打开，可能已被移动或删除"
+        "openFailed": "文件没能打开，可能已被移动或删除",
+        "untitled": "附件",
+        "loading": "加载中…",
+        "unavailable": "暂时无法加载"
       },
       "addFromChat": {
         "triggerFor": "将 {{name}} 添加到群聊",
