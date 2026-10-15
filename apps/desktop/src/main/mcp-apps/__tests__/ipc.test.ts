@@ -64,7 +64,6 @@ vi.mock('../../localDb/ipc/messages.js', () => ({
   broadcastMessageRow: state.broadcast,
   createMessage: (...args: unknown[]) => state.create(...args),
 }));
-vi.mock('../../localDb/mapper.js', () => ({ messageToCamel: (row: unknown) => row }));
 vi.mock('../../device-link/broadcast-tap.js', () => ({
   captureDataOwnerBroadcastScope: () => ({ owner: state.owner }),
 }));
@@ -214,6 +213,24 @@ describe('MCP App persistence and IPC wiring', () => {
     ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
     expect(state.create).not.toHaveBeenCalled();
     expect(state.broadcast).not.toHaveBeenCalled();
+  });
+  it('keeps View-only MCP App results in Main while broadcasting public history', async () => {
+    const full = { ...record,
+      arguments: { private: 'app-input' },
+      result: {
+        content: [{ type: 'text', text: 'Saved result', _meta: { private: 'block' } }],
+        structuredContent: { private: 'structured' },
+        _meta: { private: 'view-only' },
+      },
+    };
+    state.row!.content = JSON.stringify({ mcpApp: full });
+    state.updateResult = [state.row!];
+    await state.deps!.writeCard('task', 'card', full);
+    expect(state.broadcast.mock.calls[0]![1].content).toEqual({
+      mcpAppHistory: { version: 1, title: 'form', text: 'Saved result' },
+    });
+    expect(await state.deps!.readCard('task', 'card')).toEqual(full);
+    expect(JSON.parse(state.row!.content as string)).toEqual({ mcpApp: full });
   });
   it('allows a new pending card to be created before tool execution', async () => {
     state.row = null;

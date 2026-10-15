@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Script } from 'node:vm';
-import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord, parseMcpAppHistory } from '../mcpApps.js';
+import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord, parseMcpAppHistory, projectMcpAppContent } from '../mcpApps.js';
 describe('MCP Apps cross-platform document contract', () => {
   function proxy(resourceUrl: string, requestedUrl = resourceUrl) {
     const frame = { setAttribute() {}, style: {}, src: '', srcdoc: '' };
@@ -108,5 +108,28 @@ describe('MCP Apps cross-platform document contract', () => {
     { version: 1, title: 'Draft', text: {} },
   ])('rejects malformed public history %j', (mcpAppHistory) => {
     expect(parseMcpAppHistory({ mcpAppHistory })).toBeUndefined();
+  });
+  it('rebuilds public history without unknown private fields at any level', () => {
+    const content = {
+      mcpAppHistory: { version: 1, title: 'Draft', text: 'Saved', private: 'view-only' },
+      private: { arguments: 'input' },
+    };
+    const expected = { mcpAppHistory: { version: 1, title: 'Draft', text: 'Saved' } };
+    expect(projectMcpAppContent(content)).toEqual(expected);
+    expect(projectMcpAppContent(JSON.stringify(content), true)).toEqual(expected);
+    expect(content.mcpAppHistory.private).toBe('view-only');
+  });
+  it.each([
+    { content: { mcpApp: { version: 2, private: 'view-only' } }, marked: false },
+    { content: { mcpAppHistory: { version: 2, private: 'view-only' } }, marked: false },
+    { content: { private: 'view-only' }, marked: true },
+    { content: '{malformed private record', marked: true },
+  ])('fails closed for malformed or unknown marked cards: %j', ({ content, marked }) => {
+    expect(projectMcpAppContent(content, marked)).toEqual({ mcpAppHistory: { version: 1, title: '', text: '' } });
+  });
+  it('leaves ordinary message content untouched', () => {
+    const content = { text: 'A user message', images: [{ url: 'example.png' }] };
+    expect(projectMcpAppContent(content)).toBe(content);
+    expect(projectMcpAppContent('ordinary text')).toBe('ordinary text');
   });
 });

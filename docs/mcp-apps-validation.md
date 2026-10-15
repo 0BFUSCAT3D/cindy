@@ -55,7 +55,12 @@ Pi 和 Codex 的 App 输入与来源说明，历史仍保留原文；读取任�
 官方 App SDK 另验证发送准备期间撤销卡片、账号和服务器后没有派发。
 
 前序另新增 26 项回归：排队后撤销卡片会阻止 drain 和排队插话；活 guard 留在 Main，
-公开投影和 JSON/IPC 丢弃它，恢复快照及无活授权的旧版 App 队列行明确失败。
+公开投影和 JSON/IPC 丢弃它。恢复快照时丢弃无活授权的 App 队列行（含旧版
+来源标记），走正常 discard 结算并清理持久快照；不重造授权、不阻塞后续用户消息。
+消息创建返回、历史回读和本机／同账号控制端广播均只下发公开标题与文本摘要，
+完整参数、schema、structuredContent 和结果 metadata 仍留在 Main，只有授权后的
+sandboxed App View 可读取；共享访客复用同一摘要白名单。回归见 `ipc.test.ts`、
+`messagesWriteReadback.test.ts`、`agent-input-coordinator.test.ts` 与 `mcpApps.test.ts`。
 Session 插话复用发送前的私有钩子，在异步准备后再核验；钩子不传给 provider，
 钩子等待期间结束、替换或关闭的 turn 都不能接收迟到消息。
 普通 MCP facade 继承下游实际 client capabilities，HTTP/SSE 的 roots、sampling、

@@ -1,6 +1,6 @@
 import { readMessageSourceGroup } from '@cindy/maker-shared/message-source';
 import { queueItemVisibleText } from '@cindy/maker-shared/queue';
-import { parseMcpAppHistory } from '@cindy/maker-shared/mcp-apps';
+import { projectMcpAppContent } from '@cindy/maker-shared/mcp-apps';
 
 const HOOK_SCHEDULE_ID_PREFIX = 'hook:';
 
@@ -53,26 +53,12 @@ export function redactMessageOriginForSharedGuest(agentMeta: unknown): unknown {
   return hidden ? rest : agentMeta;
 }
 
-/** Only public card text crosses the guest wire; persisted owner records stay intact. */
-function redactMcpAppContentForSharedGuest(content: unknown, marked: boolean): unknown {
-  let value = content;
-  if (marked && typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { value = undefined; }
-  }
-  const hasCard = value && typeof value === 'object' && !Array.isArray(value) &&
-    ('mcpApp' in value || 'mcpAppHistory' in value);
-  if (!marked && !hasCard) return content;
-  // Unknown/malformed cards must not fall back to sending the private original.
-  const history = parseMcpAppHistory(value);
-  return { mcpAppHistory: { version: 1, title: history?.title ?? '', text: history?.text ?? '' } };
-}
-
 /** Strip private attribution and MCP App data from message rows; never mutate stored history. */
 export function redactMessageRowForSharedGuest<T>(message: T): T {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return message;
   const record = message as Record<string, unknown>;
   let agentMeta = redactMessageOriginForSharedGuest(record.agentMeta);
-  const content = redactMcpAppContentForSharedGuest(record.content,
+  const content = projectMcpAppContent(record.content,
     !!record.agentMeta && typeof record.agentMeta === 'object' &&
     (record.agentMeta as Record<string, unknown>).mcpApp === true);
   // Preserve independent reply visibility without disclosing source identity

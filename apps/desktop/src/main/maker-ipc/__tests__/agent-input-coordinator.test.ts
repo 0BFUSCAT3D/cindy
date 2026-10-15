@@ -129,17 +129,37 @@ describe('MCP App queued message grants', () => {
     expect(h.dispatched).not.toHaveBeenCalled();
   });
 
-  it('does not recreate a live App grant from a crash-restored snapshot', async () => {
+  it.each([false, true])('drops crash-restored App grants and lets the following message run (legacy=%s)', async (legacy) => {
     const h = guardedHarness(), sid = 'app-restored';
     const guard = vi.fn(async () => {});
     const restored = JSON.parse(JSON.stringify(appItem(guard)));
-    h.setLoadQueueSnapshot(async () => [restored]);
+    if (legacy) restored.clientId = 'legacy-app-row';
+    else delete restored.sourcePlugin;
+    h.setLoadQueueSnapshot(async () => [restored, makeItem('following', 'Next user message')]);
     await h.coordinator.ensureQueueRestored(sid);
+    expect(h.coordinator.getProjection(sid).pendingQueue.map(item => item.clientId)).toEqual(['following']);
+    expect(h.onDiscardedQueuedMessage).toHaveBeenCalledExactlyOnceWith(sid, restored);
     h.coordinator.resume(sid);
     await flush();
-    expect(h.dispatched).not.toHaveBeenCalled();
+    expect(h.dispatched).toHaveBeenCalledOnce();
+    expect(h.sendToAgent.mock.calls[0]![3].persistUserMessage?.clientId).toBe('following');
     expect(guard).not.toHaveBeenCalled();
-    expect(h.coordinator.getProjection(sid).error).toContain('MCP_APP_CARD_UNAVAILABLE');
+    expect(h.coordinator.getProjection(sid)).toMatchObject({ error: null, recovery: null, pendingQueue: [] });
+    expect(latestSnapshotClientIds(h.persistQueueSnapshot)).not.toContain(restored.clientId);
+  });
+
+  it('drops crash-restored App-only snapshots without pausing or creating retry recovery', async () => {
+    const h = guardedHarness(), sid = 'app-restored-only';
+    const restored = JSON.parse(JSON.stringify(appItem(async () => {})));
+    h.setLoadQueueSnapshot(async () => [restored]);
+    await h.coordinator.ensureQueueRestored(sid);
+    await flush();
+    expect(h.coordinator.getProjection(sid)).toMatchObject({
+      error: null, recovery: null, pendingQueue: [], queuePaused: false,
+    });
+    expect(h.onDiscardedQueuedMessage).toHaveBeenCalledExactlyOnceWith(sid, restored);
+    expect(latestSnapshotClientIds(h.persistQueueSnapshot)).toEqual([]);
+    expect(h.dispatched).not.toHaveBeenCalled();
   });
 
   it('dispatches a live App queue grant while keeping it out of queue snapshots', async () => {

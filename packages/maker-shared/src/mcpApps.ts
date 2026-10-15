@@ -78,7 +78,7 @@ export interface McpAppHistory {
   text: string;
 }
 
-/** Display full owner records and data-only guest summaries without minting a View grant. */
+/** Display persisted records and public summaries without minting a View grant. */
 export function parseMcpAppHistory(content: unknown): McpAppHistory | undefined {
   const record = parseMcpAppRecord(content);
   if (record) return {
@@ -91,6 +91,20 @@ export function parseMcpAppHistory(content: unknown): McpAppHistory | undefined 
   const summary = value as Record<string, unknown>;
   if (summary.version === 1 && typeof summary.title === 'string' && typeof summary.text === 'string')
     return { title: summary.title, text: summary.text };
+}
+
+/** Only public history may leave Main outside an authorized sandboxed View. */
+export function projectMcpAppContent(content: unknown, marked = false): unknown {
+  let value = content;
+  if (marked && typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { value = undefined; }
+  }
+  const hasCard = value && typeof value === 'object' && !Array.isArray(value) &&
+    ('mcpApp' in value || 'mcpAppHistory' in value);
+  if (!marked && !hasCard) return content;
+  // Unknown/malformed cards must not fall back to sending the private original.
+  const history = parseMcpAppHistory(value);
+  return { mcpAppHistory: { version: 1, title: history?.title ?? '', text: history?.text ?? '' } };
 }
 
 /** Trusted proxy. No privileged host API; relay only the actual inner window. */
