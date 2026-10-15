@@ -149,6 +149,23 @@ describe('chat interaction controls', () => {
     expect(screen.getByText('Root message')).toBeTruthy();
   });
 
+  it('starts the Thread over from a latest page that no longer reaches the replies on screen', async () => {
+    const early = { ...message, id: 'early', sequence: 5, content: 'Early reply' };
+    const far = { ...message, id: 'far', sequence: 200, content: 'Far reply' };
+    mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: [early], hasMore: false })
+      .mockResolvedValue({ ok: true, root: message, replies: [far], hasMore: true });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    await screen.findByText('Early reply');
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeNull();
+    // More than a page arrived at once: replies may sit between 5 and 200.
+    const root = screen.getByText('Root message').closest('article')!;
+    fireEvent.click(within(root).getByRole('button', { name: k('reactionCount') }));
+    await screen.findByText('Far reply');
+    expect(screen.queryByText('Early reply')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    await waitFor(() => expect(mocks.thread.mock.calls.at(-1)?.[0]).toMatchObject({ before: 200 }));
+  });
+
   it('clears a retried failure on an older loaded Thread page without dropping its reply', async () => {
     const latest = { ...message, id: 'latest', sequence: 100, content: 'Latest reply' };
     const older = { ...message, id: 'older', sequence: 4, content: 'Earlier reply' };

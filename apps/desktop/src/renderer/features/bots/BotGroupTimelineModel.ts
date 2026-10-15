@@ -84,6 +84,20 @@ export function mergeBotGroupLatestPage(
 ): BotGroupLoadedTimeline {
   const page = next.messages;
   const floor = page.reduce((min, message) => Math.min(min, message.sequence), Number.POSITIVE_INFINITY);
+  const ceiling = previous.group.messages.reduce((max, message) => Math.max(max, message.sequence), Number.NEGATIVE_INFINITY);
+  // More than a page arrived at once (e.g. while the window was in the background): the new page
+  // does not reach the one on screen, and messages may sit between them. Keeping the old rows
+  // would hide that gap for good, so start over from the new page, as on first load; 「查看更早」
+  // then reads on from right below it.
+  if (next.hasMoreBefore && page.length > 0 && previous.group.messages.length > 0 && floor > ceiling) {
+    return {
+      group: { ...next, messages: stabilizeById(previous.group.messages, page, previous.older),
+        plans: stabilizeById(previous.group.plans, next.plans, previous.olderPlans) },
+      older: [],
+      olderPlans: [],
+      olderHasMore: next.hasMoreBefore,
+    };
+  }
   // A page that says nothing comes before it is the whole recent history: whatever the last
   // latest page showed below it is gone. Pages opened through 「查看更早」 stay as they were;
   // their quoted originals are re-checked separately.

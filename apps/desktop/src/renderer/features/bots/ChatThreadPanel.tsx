@@ -99,9 +99,14 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       setRoot(previous => (previous && JSON.stringify(previous) === JSON.stringify(result.root) ? previous : result.root));
       setError('');
       setExecutionFailures(result.executionFailures ?? []);
-      setReplies(previous => stabilizeById(previous, mergeBotGroupMessages(previous, result.replies)));
-      if (!before) latestFloorRef.current = result.replies.reduce((min, reply) => Math.min(min, reply.sequence), Number.POSITIVE_INFINITY);
-      if (!rereadOnly && (before || shown.length === 0)) setHasMore(result.hasMore);
+      const floor = result.replies.reduce((min, reply) => Math.min(min, reply.sequence), Number.POSITIVE_INFINITY);
+      // A latest page that does not reach the replies on screen may leave replies between them:
+      // start over from it, as on first load, so 「查看更早」 reads on from right below it.
+      const gap = !before && result.hasMore && result.replies.length > 0 && shown.length > 0
+        && floor > shown.reduce((max, reply) => Math.max(max, reply.sequence), Number.NEGATIVE_INFINITY);
+      setReplies(previous => stabilizeById(previous, gap ? result.replies : mergeBotGroupMessages(previous, result.replies)));
+      if (!before) latestFloorRef.current = floor;
+      if (!rereadOnly && (before || shown.length === 0 || gap)) setHasMore(result.hasMore);
     } catch { if (current()) setError(t(key('requestFailed'))); }
   }, [group.id, rootId, t]);
   const readRef = useRef(read);

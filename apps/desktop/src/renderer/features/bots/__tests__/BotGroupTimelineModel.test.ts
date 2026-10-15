@@ -70,6 +70,19 @@ describe('push refresh merge', () => {
     expect(merged.older).toBe(first.older);
   });
 
+  it('starts over from a latest page that no longer reaches the rows on screen, so no gap hides between them', () => {
+    // Opened older pages and the old latest page; then more than a page arrives at once (4-6 never seen).
+    const first: BotGroupLoadedTimeline = { group: detail(page(10, 12), true), older: page(1, 3), olderPlans: [], olderHasMore: true };
+    const merged = mergeBotGroupLatestPage(first, detail(page(16, 18), true));
+    expect(merged.group.messages.map((message) => message.id)).toEqual(['m16', 'm17', 'm18']);
+    // As on first load: 「查看更早」 reads on from right below the new page (13-15 included).
+    expect(merged.older).toEqual([]);
+    expect(merged.olderHasMore).toBe(true);
+    // A page that still reaches the one on screen keeps the rows below it.
+    expect(mergeBotGroupLatestPage(first, detail(page(12, 14), true)).older.map((message) => message.id))
+      .toEqual(['m1', 'm2', 'm3', 'm10', 'm11']);
+  });
+
   it('reuses an unchanged array as is', () => {
     const items = page(1, 2);
     expect(stabilizeById(items, items.map((item) => ({ ...item })))).toBe(items);
