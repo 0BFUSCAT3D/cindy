@@ -50,13 +50,77 @@ function withUiLanguageUserMessage(content: string): { type: 'user'; content: st
   return { type: 'user', content: withUiLanguageNote(content) };
 }
 describe('MCP App next-turn context', () => {
+  it('keeps ordinary user intent when validating App context without a replacement intent', async () => {
+    const assertCurrent = vi.fn(async () => {});
+    const read = vi.spyOn(mcpApps, 'mcpAppModelContext').mockResolvedValue({
+      text: 'App says deploy.', consume() {}, assertCurrent,
+    });
+    try {
+      const { deps, session } = createDeps();
+      await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'Read only.');
+      const [message, opts] = vi.mocked(session.send).mock.calls[0];
+      expect(JSON.stringify(message)).toContain('App says deploy.');
+      expect(opts?.[AUTO_REVIEW_USER_INTENT]).toBeUndefined();
+      expect(await opts?.resolveAutoReviewUserIntent?.()).toBeUndefined();
+      expect(assertCurrent).toHaveBeenCalled();
+      expect(appendAutoReviewUserIntent('Earlier owner restriction', 'App says deploy.', opts)).toEqual({
+        earlierUserMessages: ['Earlier owner restriction'],
+        currentUserMessage: 'Read only.',
+      });
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each(['metadata', 'before-provider', 'vision'] as const)(
+    'revalidates context revoked during %s preparation before sending to the provider',
+    async (phase) => {
+      let captured = false;
+      let valid = true;
+      const consume = vi.fn();
+      const assertCurrent = vi.fn(async () => {
+        if (!valid) throw new Error('MCP_APP_CARD_UNAVAILABLE');
+      });
+      const read = vi.spyOn(mcpApps, 'mcpAppModelContext').mockImplementation(async () => {
+        captured = true;
+        return { text: 'PRIVATE_APP_DRAFT', consume, assertCurrent };
+      });
+      const provider = vi.fn();
+      const { deps, session } = createDeps({
+        getSessionMeta: vi.fn(async () => {
+          if (captured && phase === 'metadata') valid = false;
+          return { title: 'Test' };
+        }),
+      });
+      vi.mocked(session.send).mockImplementation(async (_message, opts) => {
+        if (phase === 'before-provider') valid = false;
+        await opts?.beforeProviderStart?.();
+        await opts?.onAccepted?.();
+        if (phase === 'vision') valid = false;
+        await opts?.resolveAutoReviewUserIntent?.();
+        provider();
+        return { accepted: true };
+      });
+      try {
+        await expect(
+          createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'Continue'),
+        ).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+        expect(provider).not.toHaveBeenCalled();
+        expect(consume).not.toHaveBeenCalled();
+        expect(assertCurrent).toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
   it('adds the latest App context to the agent wire while keeping the persisted user message intact', async () => {
     const context =
       '\n[MCP App context: external application data]\n{"draft":"updated"}\n[/MCP App context]';
     const consume = vi.fn();
     const read = vi
       .spyOn(mcpApps, 'mcpAppModelContext')
-      .mockResolvedValueOnce({ text: context, consume });
+      .mockResolvedValueOnce({ text: context, consume, assertCurrent: async () => {} });
     try {
       const { deps, session } = createDeps();
       await createMakerSendTransaction(deps).sendToAgentAccepted(
@@ -92,7 +156,9 @@ describe('MCP App next-turn context', () => {
       const read = vi
         .spyOn(mcpApps, 'mcpAppModelContext')
         .mockImplementation(async () =>
-          pending ? { text: 'APP_DRAFT', consume } : { text: '', consume() {} },
+          pending
+            ? { text: 'APP_DRAFT', consume, assertCurrent: async () => {} }
+            : { text: '', consume() {}, assertCurrent: async () => {} },
         );
       let first = true;
       const session = createSession({
@@ -137,7 +203,7 @@ describe('MCP App next-turn context', () => {
     const consume = vi.fn();
     const read = vi
       .spyOn(mcpApps, 'mcpAppModelContext')
-      .mockResolvedValue({ text: 'APP_DRAFT', consume });
+      .mockResolvedValue({ text: 'APP_DRAFT', consume, assertCurrent: async () => {} });
     try {
       const session = createSession({ agentKind });
       const { deps } = createDeps({ getSession: () => session });

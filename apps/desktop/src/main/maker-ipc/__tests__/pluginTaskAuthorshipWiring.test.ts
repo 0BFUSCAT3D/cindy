@@ -17,7 +17,7 @@ it.each(['Do not publish.', '', undefined])('keeps live authority through the fi
   expect(start).toBeGreaterThan(0);
   const end = source.indexOf('\n      });', start) + '\n      });'.length;
   const deliver = new Function('sess', 'steerPayload', 'so', 'meta', 'restoredSteerIntent',
-    'MAIN_OWNED_SEND_CONTEXT', 'AUTO_REVIEW_SOURCE_CONTENT', 'AUTO_REVIEW_USER_INTENT', 'AUTO_REVIEW_DELEGATED_CONTINUATION', 'MCP_APP_MESSAGE_GUARD',
+    'MAIN_OWNED_SEND_CONTEXT', 'AUTO_REVIEW_SOURCE_CONTENT', 'AUTO_REVIEW_USER_INTENT', 'AUTO_REVIEW_DELEGATED_CONTINUATION', 'MCP_APP_MESSAGE_GUARD', 'appContext',
     compile(`return (async () => { ${source.slice(start, end)} })();`));
   const invoke = async (delegated: boolean) => {
     let result;
@@ -33,6 +33,51 @@ it.each(['Do not publish.', '', undefined])('keeps live authority through the fi
   expect(await invoke(true)).toEqual(previous ?? 'Old persisted permission');
   expect(await invoke(false)).toEqual('Old persisted permission');
 });
+
+it.each(['context', 'message', 'none'] as const)(
+  'revalidates App steer authority after async preparation (%s revocation)',
+  async (revocation) => {
+    const start = source.indexOf('await sess.steer(steerPayload as never, {');
+    const marker = '      appContext?.consume();';
+    const end = source.indexOf(marker, start) + marker.length;
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const deliver = new Function('sess', 'steerPayload', 'so', 'meta', 'restoredSteerIntent',
+      'MAIN_OWNED_SEND_CONTEXT', 'AUTO_REVIEW_SOURCE_CONTENT', 'AUTO_REVIEW_USER_INTENT', 'AUTO_REVIEW_DELEGATED_CONTINUATION', 'MCP_APP_MESSAGE_GUARD', 'appContext',
+      compile(`return (async () => { ${source.slice(start, end)} })();`));
+    let prepared = false;
+    const provider = vi.fn();
+    const messageGuard = vi.fn(async () => {
+      if (prepared && revocation === 'message') throw new Error('MCP_APP_CARD_UNAVAILABLE');
+    });
+    const context = {
+      text: 'PRIVATE_APP_DRAFT',
+      assertCurrent: vi.fn(async () => {
+        if (prepared && revocation === 'context') throw new Error('MCP_APP_CARD_UNAVAILABLE');
+      }),
+      consume: vi.fn(),
+    };
+    const steer = vi.fn(async (_content: unknown, opts: { beforeProviderStart?: () => Promise<void> }) => {
+      await Promise.resolve();
+      prepared = true;
+      await opts.beforeProviderStart?.();
+      provider();
+    });
+    const pending = deliver({ steer }, 'Continue', { [MCP_APP_MESSAGE_GUARD]: messageGuard }, {}, '',
+      MAIN_OWNED_SEND_CONTEXT, AUTO_REVIEW_SOURCE_CONTENT, AUTO_REVIEW_USER_INTENT, AUTO_REVIEW_DELEGATED_CONTINUATION, MCP_APP_MESSAGE_GUARD, context);
+    if (revocation === 'none') {
+      await pending;
+      expect(provider).toHaveBeenCalledOnce();
+      expect(context.consume).toHaveBeenCalledOnce();
+      expect(context.assertCurrent).toHaveBeenCalledOnce();
+    } else {
+      await expect(pending).rejects.toThrow('MCP_APP_CARD_UNAVAILABLE');
+      expect(provider).not.toHaveBeenCalled();
+      expect(context.consume).not.toHaveBeenCalled();
+    }
+    expect(messageGuard).toHaveBeenCalledOnce();
+  },
+);
 
 it('restores human authorization for both live and cold internal delegated sends', () => {
   for(const target of ['live','session']) {

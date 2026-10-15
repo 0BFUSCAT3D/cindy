@@ -35,6 +35,8 @@ function contextJson(text: string) {
 
 function fixture() {
   let owner = {};
+  let visible = true;
+  let enabled = true;
   const config = { id: 'example', url: 'https://mcp.example.invalid', transport: 'http' as const };
   const tool = {
     name: 'form',
@@ -75,10 +77,14 @@ function fixture() {
   });
   // Context budgeting does not exercise the separate teardown handshake.
   vi.spyOn(AppBridge.prototype, 'teardownResource').mockResolvedValue({});
+  const readCard = vi.fn(async () => {
+    if (!visible) throw new Error('MCP_APP_CARD_UNAVAILABLE');
+    return record;
+  });
   const host = new McpAppsHost({
     owner: () => owner,
-    config: () => config,
-    readCard: async () => record,
+    config: () => (enabled ? config : undefined),
+    readCard,
     writeCard: async () => {},
     authorizeTool: async () => {},
     sendMessage: async () => {},
@@ -88,8 +94,15 @@ function fixture() {
   let requestId = 0;
   return {
     host,
+    readCard,
     changeOwner() {
       owner = {};
+    },
+    revoke(kind: 'card' | 'owner' | 'server' | 'config') {
+      if (kind === 'card') visible = false;
+      if (kind === 'owner') owner = {};
+      if (kind === 'server') enabled = false;
+      if (kind === 'config') config.url = 'https://changed.example.invalid';
     },
     async open(clientId: string, sessionId = 'task') {
       const document = await host.open('renderer:1', sessionId, clientId, {});
@@ -119,6 +132,62 @@ function fixture() {
 }
 
 describe('MCP App UTF-8 model-context budgets', () => {
+  it.each(['card', 'owner', 'server', 'config'] as const)(
+    'rejects a captured context after %s revocation',
+    async (kind) => {
+      const f = fixture();
+      const update = await f.open('card');
+      expect(await update({ structuredContent: { draft: 'private draft' } })).toHaveProperty(
+        'result',
+      );
+      const snapshot = await f.host.modelContext('task');
+      f.revoke(kind);
+      await expect(snapshot.assertCurrent()).rejects.toThrow('MCP_APP_');
+    },
+  );
+
+  it.each(['owner', 'server', 'config'] as const)(
+    'rejects %s revocation while the final context validation is reading its cards',
+    async (kind) => {
+      const f = fixture();
+      const update = await f.open('card');
+      expect(await update({ structuredContent: { draft: 'private draft' } })).toHaveProperty(
+        'result',
+      );
+      const snapshot = await f.host.modelContext('task');
+      const read = f.readCard.getMockImplementation()!;
+      let finish!: () => void;
+      f.readCard.mockImplementationOnce(async () => {
+        const card = await read();
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return card;
+      });
+      const rejected = expect(snapshot.assertCurrent()).rejects.toThrow('MCP_APP_');
+      await vi.waitFor(() => expect(finish).toBeDefined());
+      f.revoke(kind);
+      finish();
+      await rejected;
+    },
+  );
+
+  it('validates a captured value without consuming or replacing a newer App update', async () => {
+    const f = fixture();
+    const update = await f.open('card');
+    expect(await update({ structuredContent: { draft: 'first' } })).toHaveProperty('result');
+    const snapshot = await f.host.modelContext('task');
+    expect(await update({ structuredContent: { draft: 'second' } })).toHaveProperty('result');
+    await expect(snapshot.assertCurrent()).resolves.toBeUndefined();
+    expect(JSON.parse(contextJson(snapshot.text))).toEqual([
+      contextValue({ structuredContent: { draft: 'first' } }),
+    ]);
+    snapshot.consume();
+    expect(JSON.parse(contextJson((await f.host.modelContext('task')).text))).toEqual([
+      contextValue({ structuredContent: { draft: 'second' } }),
+    ]);
+  });
+
   it.each(['汉', '🧩', '"', '\u0001'])(
     'counts serialized UTF-8 bytes for %j at the per-update boundary',
     async (unit) => {

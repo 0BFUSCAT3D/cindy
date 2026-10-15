@@ -1365,6 +1365,12 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       if (appContext?.text) {
         outgoing = prependNoteToWireUserMessage(outgoing as HandoffWireMessage, appContext.text);
       }
+      const assertAppCurrent = so[MCP_APP_MESSAGE_GUARD] || appContext?.text
+        ? async () => {
+            await so[MCP_APP_MESSAGE_GUARD]?.();
+            await appContext?.assertCurrent();
+          }
+        : undefined;
       const meta = await deps.getSessionMeta(sessionId).catch(() => null);
       let persistUserMessage = readPersistUserMessageOption(so);
       const trustedDesktopQueueReceipt = readTrustedDesktopQueueReceipt(persistUserMessage);
@@ -1560,16 +1566,18 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           persistUserMessage?.botTaskCoordination !== undefined,
         ), () => sess.send(outgoing as never, {
           ...(retryTranscriptUserEntryId ? { retryTranscriptUserEntryId } : {}),
-          ...(so[MCP_APP_MESSAGE_GUARD]
+          ...(assertAppCurrent
             ? {
-                beforeProviderStart: so[MCP_APP_MESSAGE_GUARD],
+                beforeProviderStart: assertAppCurrent,
                 resolveAutoReviewUserIntent: async () => {
                   const intent = resolveScheduledIntent
                     ? await resolveScheduledIntent()
-                    : restoredAutoReviewIntent ?? restoreAutoReviewUserIntent([]);
+                    : restoredAutoReviewIntent ?? (so[MCP_APP_MESSAGE_GUARD]
+                      ? restoreAutoReviewUserIntent([])
+                      : undefined);
                   // Session awaits this existing authorization hook after all
                   // preparation (including vision), immediately before dispatch.
-                  await so[MCP_APP_MESSAGE_GUARD]!();
+                  await assertAppCurrent();
                   return intent;
                 },
               }

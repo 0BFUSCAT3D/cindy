@@ -230,6 +230,7 @@ export function createAppServerProxy(
       (candidate) => candidate.name === request.params.name,
     );
     extra.signal.throwIfAborted();
+    assertCurrent();
     if (!tool || !toolVisibleTo(tool, 'model')) throw new Error('MCP_APP_TOOL_NOT_VISIBLE');
     if (request.params.task) {
       const client = await currentClient(extra.signal);
@@ -264,9 +265,9 @@ export function createAppServerProxy(
         record = undefined;
       }
     }
-    assertCurrent();
     let result: CallToolResult;
     try {
+      assertCurrent();
       const client = await currentClient(extra.signal);
       result = (await client.callTool(
         request.params,

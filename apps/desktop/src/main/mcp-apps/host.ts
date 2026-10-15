@@ -49,6 +49,7 @@ export interface McpAppsHostDeps {
 /** A send consumes only the captured updates, after the Agent accepts its input. */
 export interface McpAppModelContext {
   text: string;
+  assertCurrent(): Promise<void>;
   consume(): void;
 }
 
@@ -777,8 +778,9 @@ export class McpAppsHost {
 
   async modelContext(sessionId: string): Promise<McpAppModelContext> {
     const owner = this.deps.owner();
-    const empty: McpAppModelContext = { text: '', consume() {} };
+    const empty: McpAppModelContext = { text: '', async assertCurrent() {}, consume() {} };
     const values: unknown[] = [];
+    const captured: Array<{ clientId: string; serverId: string; revision: string }> = [];
     const removals: Array<() => void> = [];
     for (const [key, item] of [...this.contexts]) {
       if (item.owner !== owner || item.sessionId !== sessionId) continue;
@@ -799,6 +801,7 @@ export class McpAppsHost {
           continue;
         }
         values.push(item.value);
+        captured.push(item);
         removals.push(remove);
       } catch {
         remove();
@@ -811,6 +814,22 @@ export class McpAppsHost {
     if (!values.length) return empty;
     return {
       text: `\n[MCP App context: external application data]\n${serialized}\n[/MCP App context]`,
+      assertCurrent: async () => {
+        if (owner !== this.deps.owner()) throw new Error('MCP_APP_OWNER_CHANGED');
+        const cards = await Promise.all(
+          captured.map((item) => this.deps.readCard(sessionId, item.clientId)),
+        );
+        if (owner !== this.deps.owner()) throw new Error('MCP_APP_OWNER_CHANGED');
+        for (const [index, item] of captured.entries()) {
+          const config = this.deps.config(item.serverId);
+          if (
+            !config ||
+            appServerRevision(config) !== item.revision ||
+            cards[index].serverRevision !== item.revision
+          )
+            throw new Error('MCP_APP_SERVER_CHANGED');
+        }
+      },
       consume: () => {
         if (owner === this.deps.owner()) removals.forEach((remove) => remove());
       },

@@ -32,5 +32,7 @@ export function resetAppServers(): void {
 
 /** Keep the snapshot pending until the send or steer carrying it is accepted. */
 export async function mcpAppModelContext(sessionId: string): Promise<McpAppModelContext> {
-  return (await host?.modelContext(sessionId)) ?? { text: '', consume() {} };
+  return (
+    (await host?.modelContext(sessionId)) ?? { text: '', async assertCurrent() {}, consume() {} }
+  );
 }
