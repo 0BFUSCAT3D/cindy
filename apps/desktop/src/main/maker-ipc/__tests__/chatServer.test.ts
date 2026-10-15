@@ -1975,6 +1975,32 @@ describe('Chat Server result delivery and refresh', () => {
       expect(writes()).toEqual([]);
     });
 
+    it.each([directId, channelId, futureId])('fails a claimed execution in %s instead of running it as a group', async other => {
+      fixture.handle.mockImplementation((route, method) => {
+        if (route === '/executions/claim') { const next = claimed ? null : { ...execution, conversation_id: other }; claimed = true; return { body: { execution: next } }; }
+        if (route.endsWith('/snapshot')) return { body: { room: roomOf(route.split('/')[2]), cursor: '1', messages: [], members: [
+          { id: selfId, kind: 'human', ownerActorId: selfId, state: 'joined', role: 'owner' },
+          { id: botId, kind: 'bot', ownerActorId: selfId, state: 'joined', role: 'member' }] } };
+        if (method !== 'GET') return { body: { id: '80000000-0000-4000-8000-000000000001' } };
+        return response(route);
+      });
+      fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', status: 'active' }];
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.ensureLane).not.toHaveBeenCalled();
+      expect(deps.dispatch).not.toHaveBeenCalled();
+      const results = fixture.handle.mock.calls.filter(([route, , body]) => route === `/conversations/${other}/executions/${execution.id}`
+        && ['complete', 'fail'].includes(body?.action));
+      expect(results.map(call => call[2].action)).toEqual(['fail']);
+      // The rejected room was never subscribed, so a reconnect has nothing to resubscribe.
+      const socket = fixture.sockets[0];
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      await vi.advanceTimersByTimeAsync(0);
+      const scopes = vi.mocked(socket.send).mock.calls.map(([raw]) => JSON.parse(String(raw)))
+        .filter(m => m.type === 'subscribe' && String(m.scope).startsWith('conversation:')).map(m => m.scope);
+      expect(scopes).toEqual([]);
+    });
+
     it('never subscribes to a rejected room, so its traffic cannot invalidate the group list', async () => {
       await service.getGroup(roomId);
       await vi.advanceTimersByTimeAsync(2000);

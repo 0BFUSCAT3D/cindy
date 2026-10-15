@@ -1095,7 +1095,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         || execution.trigger_type != null && execution.trigger_type !== 'member.joined'
         || run.context.trigger.messageId !== execution.source_message_id
         || run.context.trigger.actorId !== execution.requester_id)) throw new Error('INVALID_EXECUTION_TRIGGER');
-      const s = await snapshot(execution.conversation_id);
+      const s = await readSnapshot(execution.conversation_id);
+      // A companion's own 1:1 room is not a group: hand the message to its main task instead.
+      const joined = new Set(s.members.filter(m => m.state === 'joined').map(m => m.id));
+      const ownDirectRoom = companionHome && (companion?.isDirectRoom(s.room.id)
+        || (s.room.kind === 'direct' && joined.size === 2 && joined.has(selfId) && joined.has(execution.bot_id)));
+      // Every other room must be a group. Someone else's 1:1 room, a channel or an unknown kind is never
+      // answered as a group and never subscribed: nothing may run without a visible group entry to watch or stop it.
+      if (!ownDirectRoom && !isGroupRoom(s.room)) throw new Error('INVALID_EXECUTION_TRIGGER');
+      subscribe(execution.conversation_id, s.cursor);
       // Claim metadata and the persisted source must agree before creating a lane.
       // Reading this exact ID also covers sources outside the bounded history page.
       let eventSource: Message | undefined;
@@ -1111,13 +1119,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           throw new Error('INVALID_EXECUTION_TRIGGER');
       }
       if (!current() || running.get(execution.bot_id) !== run) throw new Error('STALE_EXECUTOR');
-      // A companion's own 1:1 room is not a group: hand the message to its main task instead.
-      const joined = new Set(s.members.filter(m => m.state === 'joined').map(m => m.id));
-      const ownDirectRoom = companionHome && (companion?.isDirectRoom(s.room.id)
-        || (s.room.kind === 'direct' && joined.size === 2 && joined.has(selfId) && joined.has(execution.bot_id)));
       if (ownDirectRoom) { await runDirectExecution(run, bot.id, s.room.id); return; }
-      // Any other 1:1 room is never answered as a group.
-      if (s.room.kind === 'direct') throw new Error('INVALID_EXECUTION_TRIGGER');
       // Metadata only: the server remains the sole message store and scheduler.
       if (!metadata.has(s.room.id)) metadata.set(s.room.id, (async () => {
         const client = getDbClient();
