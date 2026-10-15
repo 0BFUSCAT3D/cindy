@@ -5,7 +5,8 @@ export interface SentMessageImagePreview {
   name: string;
   sourceRef: string;
   sha256?: string;
-  uri: string;
+  uri: string | null;
+  galleryImageKey?: string;
 }
 
 export type SentMessageImagePreviews = Map<string, readonly (SentMessageImagePreview | null)[]>;
@@ -22,14 +23,20 @@ export function rememberSentMessageImagePreviews(
   clientId: string,
   attachments: readonly RemoteSerializedAttachment[],
   previewOf: (attachment: RemoteSerializedAttachment) => string | null | undefined,
+  galleryKeyOf?: (attachment: RemoteSerializedAttachment) => string | undefined,
 ): void {
   const key = messageKey(sessionId, clientId);
   const previous = previews.get(key);
   const images = attachments.filter((attachment) => attachment.category === 'image').map((attachment) => {
     const uri = previewOf(attachment);
-    return uri ? { attachmentId: attachment.id, name: attachment.originalName ?? attachment.name,
-      sourceRef: attachment.url ?? attachment.path, sha256: attachment.sha256, uri }
-      : previous?.find((entry) => entry?.attachmentId === attachment.id) ?? null;
+    const prior = previous?.find((entry) => entry?.attachmentId === attachment.id);
+    // Preserve the outbox identity through URL materialization; a replaced file ID cannot inherit it.
+    const galleryImageKey = galleryKeyOf?.(attachment) ?? prior?.galleryImageKey;
+    if (!uri && !galleryImageKey) return prior ?? null;
+    return { attachmentId: attachment.id, name: attachment.originalName ?? attachment.name,
+      sourceRef: uri ? attachment.url ?? attachment.path : prior?.sourceRef ?? attachment.url ?? attachment.path,
+      sha256: attachment.sha256, uri: uri || prior?.uri || null,
+      ...(galleryImageKey ? { galleryImageKey } : {}) };
   });
   // Replace the complete snapshot on edit, including removed images and missing previews.
   previews.delete(key);

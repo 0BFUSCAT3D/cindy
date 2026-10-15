@@ -1709,7 +1709,8 @@ export function MessageRenderer({
       return null;
     }
     const prev = lightboxImagesRef.current;
-    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev);
+    const sourceGroupPresent = listData.some((item) => item.key === payloadSourceGroupKey);
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent);
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
       return p.key === n.key
@@ -1722,7 +1723,7 @@ export function MessageRenderer({
     }
     lightboxImagesRef.current = next;
     return next;
-  }, [galleryImages, imageLightboxOpen, payload, payloadSourceGroupKey]);
+  }, [galleryImages, imageLightboxOpen, listData, payload, payloadSourceGroupKey]);
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;

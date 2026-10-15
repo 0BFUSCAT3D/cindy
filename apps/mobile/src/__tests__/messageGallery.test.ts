@@ -35,7 +35,7 @@ function messageItem(key: string, message: Partial<MobileMessageRenderItem & { m
   } as MobileMessageRenderItem;
 }
 
-function pendingItem(key: string, thumbs: MobileOutboxThumb[]): MobileMessageRenderItem {
+function pendingItem(key: string, thumbs: MobileOutboxThumb[]): Extract<MobileMessageRenderItem, { type: 'pending_send' }> {
   return {
     type: 'pending_send', key, clientId: key, text: '', sentInlineTokens: [], phase: 'queued',
     queueIndex: 1, thumbs, fileCount: 0, attachmentCount: thumbs.length, uploadedCount: thumbs.length,
@@ -126,6 +126,21 @@ describe('message gallery', () => {
     expect(lightboxImagesForPayload([], opened, 'pending', previous)).toEqual(previous);
     // A different click must not inherit a previous viewer's pending gallery.
     expect(lightboxImagesForPayload(unrelated, unrelated[0].payload, 'other', previous)).toEqual(unrelated);
+  });
+
+  it.each(['text only', 'non-image files', 'unreadable replacement'])('does not retain deleted pending images when the source row remains (%s)', (edit) => {
+    const previous = collectMobileMessageGalleryImages([pendingItem('pending', [
+      { key: 'pending-slot-0:old', uri: 'file:///removed.jpg', ossRef: null, uploading: false },
+    ])]);
+    const row = pendingItem('pending', edit === 'unreadable replacement' ? [
+      { key: 'pending-slot-0:new', uri: null, ossRef: null, uploading: true },
+    ] : []);
+    row.text = 'edited on another device';
+    row.fileCount = edit === 'non-image files' ? 1 : 0;
+    const current = collectMobileMessageGalleryImages([row]);
+    expect(lightboxImagesForPayload(current, previous[0].payload, row.key, previous, true)).toEqual([]);
+    // Actual row departure still preserves the open snapshot during handoff.
+    expect(lightboxImagesForPayload([], previous[0].payload, row.key, previous, false)).toEqual(previous);
   });
 
   it.each([1, 2])('uses the current pending message when the clicked attachment is replaced (%i images)', (count) => {

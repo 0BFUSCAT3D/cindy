@@ -1579,8 +1579,9 @@ function SessionScreenContent() {
     clientId: string,
     attachments: readonly RemoteSerializedAttachment[],
     previewOf: (attachment: RemoteSerializedAttachment) => string | null | undefined,
+    galleryKeyOf?: (attachment: RemoteSerializedAttachment) => string | undefined,
   ) => {
-    rememberSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, clientId, attachments, previewOf);
+    rememberSentMessageImagePreviews(sentImagePreviewsRef.current, sessionId, clientId, attachments, previewOf, galleryKeyOf);
   }, [sessionId]);
   const getSentImagePreview = useCallback((clientId: string, imageIndex: number, name: string, attachmentId?: string, sha256?: string, sourceRef?: string) => (
     getSentMessageImagePreview(sentImagePreviewsRef.current, sessionId, clientId, imageIndex, name, attachmentId, sha256, sourceRef)
@@ -1715,6 +1716,9 @@ function SessionScreenContent() {
       const slot = record.item.attachmentSlots.findIndex((item) => item?.id === attachment.id);
       const upload = record.uploads.find((item) => item.slot === slot);
       return upload ? durableOutboxUploadUri(record, upload) : record.item.slotMeta[slot]?.previewUri;
+    }, (attachment) => {
+      const slot = record.item.attachmentSlots.findIndex((item) => item?.id === attachment.id);
+      return slot >= 0 ? `${record.item.clientId}-slot-${slot}` : undefined;
     });
   }, (clientId) => {
     setSendingQueueClientIds((current) => {
@@ -6594,6 +6598,9 @@ function SessionScreenContent() {
             const slot = readyAttachments.findIndex((a) => a.id === attachment.id);
             const upload = record?.uploads.find((u) => u.slot === slot);
             return record && upload ? durableOutboxUploadUri(record, upload) : readyPreviews[slot] ?? null;
+          }, (attachment) => {
+            const slot = item.attachmentSlots.findIndex((entry) => entry?.id === attachment.id);
+            return slot >= 0 ? `${item.clientId}-slot-${slot}` : undefined;
           });
           releaseUploadedSources(readyAttachments.map((a) => a.id));
         // 本批映射清理(与原发送成功路径同口径):附件已随消息离开 composer 域。

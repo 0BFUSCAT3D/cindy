@@ -238,11 +238,13 @@ export function lightboxImagesForPayload(
   payload: Extract<MessagePayload, { kind: 'media' }>,
   sourceGroupKey?: string | null,
   previousImages?: readonly MobileMessageGalleryImage[] | null,
+  sourceGroupPresent = false,
 ): MobileMessageGalleryImage[] {
   // 待发送消息仍在时跟随该消息的当前图集：编辑可替换最初点开的附件身份。
   if (payload.galleryImageKey && sourceGroupKey) {
     const currentGroup = images.filter((image) => image.groupKey === sourceGroupKey);
-    if (currentGroup.length > 0) return currentGroup;
+    // A present row with no readable images is an edit, not a row handoff. Never revive its old payload.
+    if (currentGroup.length > 0 || sourceGroupPresent) return currentGroup;
   }
   const url = payload.media.url.trim();
   // 待发送附件的临时文件、持久副本、远端原图地址会变化，匹配应跟随附件身份。

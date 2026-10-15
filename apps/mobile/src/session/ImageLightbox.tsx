@@ -278,6 +278,9 @@ export const ImageLightbox = memo(function ImageLightbox({
   const [sharing, setSharing] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  useEffect(() => {
+    if (images.length === 0) onCloseRef.current();
+  }, [images.length]);
   const [strokes, setStrokes] = useState<AnnotationStroke[]>([]);
   // 取消 / 返回回调经 ref 读最新笔迹与文案:它们进入手势 deps(onRequestClose),
   // 不能因每次作画 / 父层重渲染而让整张手势图重建。

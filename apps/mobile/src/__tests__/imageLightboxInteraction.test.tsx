@@ -6,9 +6,11 @@ import { buildAttachmentPayload } from '@/session/messagePayload';
 import { svgAttachmentForDisplay } from '@/session/messageAttachments';
 import { collectMobileMessageGalleryImages, galleryImageIndexForPayload, lightboxImagesForPayload } from '@/session/messageGallery';
 import type { MobileMessageRenderItem } from '@/session/messageRenderModel';
-import type { MobileOutboxThumb } from '@/session/sessionOutbox';
+import { buildOutboxItem, outboxDisplayItem, outboxItemAttachments, outboxItemWithUpload,
+  type MobileOutboxThumb } from '@/session/sessionOutbox';
 import { buildPendingSendItems } from '@/session/pendingSendItems';
-import type { QueuedRemoteMessage } from '@/session/types';
+import { getSentMessageImagePreview, rememberSentMessageImagePreviews, type SentMessageImagePreviews } from '@/session/sentMessageImagePreviews';
+import type { QueuedRemoteMessage, RemoteSerializedAttachment } from '@/session/types';
 import {
   ImageLightbox,
   type ImageLightboxProps,
@@ -86,7 +88,7 @@ vi.mock("react-native", async () => {
         () => ({ scrollToOffset: runtime.scrollToOffset }),
         [],
       );
-      return props.renderItem({ item: props.data[0], index: 0 });
+      return props.data.length ? props.renderItem({ item: props.data[0], index: 0 }) : null;
     },
   };
 });
@@ -258,6 +260,89 @@ describe('pending image gallery updates', () => {
   }]);
   const thumbs = [0, 1].map((index) => ({ key: `pending-slot-${index}`, uri: `file:///temporary-${index}.jpg`,
     ossRef: null, uploading: true }));
+
+  it.each([false, true])('closes and cannot submit an old image after its source row loses all images (annotating: %s)', async (annotating) => {
+    const initial = collect(thumbs);
+    const onClose = vi.fn();
+    const onShareImage = vi.fn();
+    const onSubmit = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, onClose, onShareImage,
+      annotation: { submitLabel: 'Send', onSubmit } });
+    if (annotating) {
+      act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+      press('message.imageLightboxAnnotateButton');
+      const draw = gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+      fire(draw, 'onStart', { x: 100, y: 200 });
+      fire(draw, 'onFinalize', {}, true);
+    }
+    props.images = lightboxImagesForPayload(collect([]), initial[0].payload, 'pending', props.images, true);
+    render();
+    expect(props.images).toEqual([]);
+    expect(onClose).toHaveBeenCalledOnce();
+    if (annotating) press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onShareImage).not.toHaveBeenCalled();
+  });
+
+  it.each(['ready', 'uploading', 'remote-only'])('preserves annotations through the real %s outbox-to-queue handoff', (phase) => {
+    const file: RemoteSerializedAttachment = { id: 'photo', name: 'same.jpg', category: 'image',
+      path: 'cindy-oss-attach://photo', url: phase === 'remote-only' ? 'https://example.invalid/original.jpg' : 'cindy-oss-attach://photo',
+      mimeType: 'image/jpeg', ext: 'jpg', size: 100 };
+    const pdf = { ...file, id: 'pdf', category: 'pdf' as const, name: 'doc.pdf' };
+    let item = buildOutboxItem({ sessionId: 's', clientId: 'pending', text: '', permissionModeAtSend: 'ask',
+      readyAttachments: phase === 'uploading' ? [pdf] : [pdf, file],
+      readyPreviews: [null, phase === 'remote-only' ? null : 'file:///temporary.jpg'],
+      claimedUploads: phase !== 'uploading' ? [] : [
+        { localId: 'upload', failed: false, kind: 'image', previewUri: 'file:///temporary.jpg' },
+      ] });
+    const previews: SentMessageImagePreviews = new Map();
+    const input = { settling: [], hiddenClientIds: new Set<string>(), sendingClientIds: new Set<string>(),
+      editingClientId: null, steeringClientIds: new Set<string>(), presentationByClientId: new Map() };
+    const initial = collectMobileMessageGalleryImages(buildPendingSendItems({ ...input,
+      queue: [], outbox: [outboxDisplayItem(item)] }));
+    const clicked = initial[0].payload;
+    const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url,
+      annotation: { submitLabel: 'Send', onSubmit } });
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    press('message.imageLightboxAnnotateButton');
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    fire(draw(), 'onFinalize', {}, true);
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    if (phase === 'uploading') item = outboxItemWithUpload(item, 'upload', file);
+    props.images = collectMobileMessageGalleryImages(buildPendingSendItems({ ...input,
+      queue: [], outbox: [outboxDisplayItem(item)] }));
+    render();
+    // Production's synchronous dispatch observer captures the slot identity before queue materialization.
+    rememberSentMessageImagePreviews(previews, 's', item.clientId, outboxItemAttachments(item),
+      () => phase === 'remote-only' ? null : 'file:///durable.jpg', (attachment) => {
+        const slot = item.attachmentSlots.findIndex((entry) => entry?.id === attachment.id);
+        return `${item.clientId}-slot-${slot}`;
+      });
+    const collectQueued = (attachment: RemoteSerializedAttachment) => collectMobileMessageGalleryImages(buildPendingSendItems({
+      ...input, outbox: [], queue: [{ clientId: 'pending', text: '', chatMessage: {}, files: [pdf, attachment] } as unknown as QueuedRemoteMessage],
+      getImagePreview: (clientId, index, name, id) => getSentMessageImagePreview(previews, 's', clientId, index, name, id),
+    }));
+    const queued = collectQueued({ ...file, url: 'https://example.invalid/materialized.jpg' });
+    props.images = lightboxImagesForPayload(queued, clicked, 'message-pending', props.images, true);
+    render();
+    const page = () => runtime.nodes.get('FlatList').renderItem({ item: props.images[0], index: 0 }).props;
+    expect(queued[0].key).toBe(initial[0].key);
+    expect(queued[0].previewUri).toBe(phase === 'remote-only' ? undefined : 'file:///durable.jpg');
+    expect(page().annotationStrokes).toEqual([{ points: [{ x: 0.25, y: 0.25 }] }]);
+    expect(page().annotationDraftStroke).toEqual({ points: [{ x: 0.5, y: 0.5 }] });
+    expect(page().naturalSize).toEqual({ width: 400, height: 800 });
+    // Keeping a slot/URL while changing the actual attachment must still discard the old image's state.
+    const replaced = collectQueued({ ...file, id: 'replacement', url: queued[0].url });
+    props.images = lightboxImagesForPayload(replaced, clicked, 'message-pending', props.images, true);
+    render();
+    expect(replaced[0].key).not.toBe(initial[0].key);
+    expect(page().annotationStrokes).toEqual([]);
+    expect(page().annotationDraftStroke).toBeNull();
+    expect(page().naturalSize).toBeNull();
+  });
 
   it('keeps the current page, paging and sharing after URLs settle and the pending row leaves', async () => {
     const initial = collect(thumbs);

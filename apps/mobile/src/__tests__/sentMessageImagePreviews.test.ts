@@ -53,6 +53,24 @@ describe('sent image preview handoff', () => {
     expect(getSentMessageImagePreview(previews, 's', '0', 0, 'a.jpg')).toBeUndefined();
   });
 
+  it.each([null, 'file:///durable.jpg'])('retains outbox identity with preview %s and rejects a real replacement', (uri) => {
+    const previews: SentMessageImagePreviews = new Map();
+    const file = image('a');
+    const key = 'm-slot-2';
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => uri, () => key);
+    const getPreview = (id: string) => getSentMessageImagePreview(previews, 's', 'm', 0, file.name, id);
+    expect(getPreview(file.id)).toMatchObject({ uri, galleryImageKey: key });
+    // A text-only edit may refresh the URI or lack a new local preview.
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => 'file:///refreshed.jpg');
+    expect(getPreview(file.id)).toMatchObject({ uri: 'file:///refreshed.jpg', galleryImageKey: key });
+    rememberSentMessageImagePreviews(previews, 's', 'm', [file], () => null);
+    expect(getPreview(file.id)?.galleryImageKey).toBe(key);
+    const replacement = { ...file, id: 'replacement' };
+    expect(getPreview(replacement.id)).toBeUndefined();
+    rememberSentMessageImagePreviews(previews, 's', 'm', [replacement], () => 'file:///new.jpg');
+    expect(getPreview(replacement.id)?.galleryImageKey).toBeUndefined();
+  });
+
   it('preserves previews on text-only edits and matches the persisted original name', () => {
     const previews: SentMessageImagePreviews = new Map();
     const attachment = { ...image('a', 'upload.jpg'), originalName: 'photo.jpg' };
