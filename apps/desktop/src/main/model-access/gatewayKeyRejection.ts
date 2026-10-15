@@ -41,11 +41,14 @@ export interface GatewayKeyRejectionDeps {
 }
 
 /**
- * 上报器。两个入口共用同一份「已触发过的 Key 指纹」:
- *  - `reportUsedKey`:调用方知道请求实际携带的 Key(规则 A + 规则 B,触发即标记);
- *  - `reportCurrentKey`:调用方不知道用的是哪把 Key(智能体回合终态)。它只在当前 Key
- *    尚未被准确上报触发过时同步,且**不标记**——否则旧 Key 进程(未重启的 Codex、老任务)
- *    的迟到 401 会把新 Key 唯一的触发机会用掉,新 Key 真失效时准确上报反被忽略。
+ * 上报器,两个入口:
+ *  - `reportUsedKey`:调用方知道请求实际携带的 Key(规则 A + 规则 B,触发即标记
+ *    `lastTriggeredFingerprint`);
+ *  - `reportCurrentKey`:调用方不知道用的是哪把 Key(智能体回合终态)。当前 Key 已被
+ *    准确上报触发过,或已被本入口触发过,都跳过;本入口只标记自己的
+ *    `lastCurrentKeyTriggeredFingerprint`,**不标记**准确上报的记录——否则旧 Key 进程
+ *    (未重启的 Codex、老任务)的迟到 401 会把新 Key 唯一的触发机会用掉,新 Key 真失效时
+ *    准确上报反被忽略。单独记录则保证卡在旧 Key 上的任务对同一把当前 Key 只多触发 1 次。
  */
 export interface GatewayKeyRejectionReporter {
   reportUsedKey(usedKey: string | null | undefined): void;
@@ -61,6 +64,8 @@ export function createGatewayKeyRejectionReporter(
   deps: GatewayKeyRejectionDeps,
 ): GatewayKeyRejectionReporter {
   let lastTriggeredFingerprint: string | null = null;
+  /** 只供 reportCurrentKey 读写;reportUsedKey 既不读也不写它。 */
+  let lastCurrentKeyTriggeredFingerprint: string | null = null;
 
   const warn = (prefix: string, error: unknown): void => {
     deps.log?.warn(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
@@ -105,8 +110,12 @@ export function createGatewayKeyRejectionReporter(
     reportCurrentKey: () => guarded(() => {
       const currentKey = currentServerKey();
       if (!currentKey) return;
-      // 当前 Key 已被准确上报同步过一次:不再重复请求(服务端故障时避免每个失败回合都打一次)。
-      if (keyFingerprint(currentKey) === lastTriggeredFingerprint) return;
+      // 当前 Key 已被准确上报或本入口同步过一次:不再重复请求。旧 Key 进程在当前 Key 有效时
+      // 会每轮失败,服务端每次都原样返回当前 Key,不单独记录就会每条消息都请求一次。
+      const fingerprint = keyFingerprint(currentKey);
+      if (fingerprint === lastTriggeredFingerprint) return;
+      if (fingerprint === lastCurrentKeyTriggeredFingerprint) return;
+      lastCurrentKeyTriggeredFingerprint = fingerprint;
       triggerSync();
     }),
   };

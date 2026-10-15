@@ -144,6 +144,23 @@ describe('reportCurrentKey (agent turns that do not reveal the key they used)', 
     }
   });
 
+  it('triggers only once per current key across repeated agent failures', () => {
+    const h = harness();
+    h.reportCurrent();
+    h.reportCurrent();
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('can trigger again once the current key changes', () => {
+    const h = harness();
+    h.reportCurrent();
+    h.setCurrentKey(KEY_B);
+    h.reportCurrent();
+    h.reportCurrent();
+    expect(h.requestSync).toHaveBeenCalledTimes(2);
+  });
+
   it('skips once the current key was already re-synced by an accurate report', () => {
     const h = harness();
     h.report(KEY_A);
@@ -171,16 +188,16 @@ describe('reportCurrentKey (agent turns that do not reveal the key they used)', 
     expect(h.requestSync).toHaveBeenCalledTimes(1);
     // 2. 同步写入 K2。
     h.setCurrentKey(KEY_B);
-    // 3. 仍带旧 Key 的智能体回合失败若干次:每次都同步,但不标记 K2。
+    // 3. 仍带旧 Key 的智能体回合失败若干次:只同步 1 次,且不标记准确上报的 K2 记录。
     h.reportCurrent();
     h.reportCurrent();
     h.reportCurrent();
-    expect(h.requestSync).toHaveBeenCalledTimes(4);
+    expect(h.requestSync).toHaveBeenCalledTimes(2);
     // 4. K2 真正失效时的准确上报仍触发一次。
     h.report(KEY_B);
-    expect(h.requestSync).toHaveBeenCalledTimes(5);
+    expect(h.requestSync).toHaveBeenCalledTimes(3);
     h.report(KEY_B);
-    expect(h.requestSync).toHaveBeenCalledTimes(5);
+    expect(h.requestSync).toHaveBeenCalledTimes(3);
   });
 
   it('swallows a rejected or throwing sync', async () => {
