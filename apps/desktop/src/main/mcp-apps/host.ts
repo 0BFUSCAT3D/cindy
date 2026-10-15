@@ -70,7 +70,8 @@ class ViewTransport implements Transport {
     this.enqueue({ seq: ++this.seq, openLink: { id, url } });
   }
   private enqueue(event: (typeof this.events)[number]): void {
-    const bytes = this.bytes + Buffer.byteLength(JSON.stringify(event)) + (this.events.length ? 1 : 0);
+    const bytes =
+      this.bytes + Buffer.byteLength(JSON.stringify(event)) + (this.events.length ? 1 : 0);
     if (this.failed || bytes > this.maxBytes || this.events.length >= 256) {
       this.failed = true;
       this.wake?.();
@@ -137,7 +138,10 @@ export function appServerRevision(config: AppServerConfig): string {
 /** One official AppBridge per View; all requests are bound to a host-verified card. */
 export class McpAppsHost {
   private readonly views = new Map<string, View>();
-  private readonly opening = new Map<string, { owner: object; caller: string; abort: AbortController }>();
+  private readonly opening = new Map<
+    string,
+    { owner: object; caller: string; abort: AbortController }
+  >();
   private readonly cancelledOpens = new Map<string, { owner: object; until: number }>();
   private readonly connections = new Map<
     string,
@@ -225,14 +229,19 @@ export class McpAppsHost {
     this.pruneCancelledOpens();
     // Cancellation may win the IPC authorization race before open reaches Host.
     // Keep a bounded tombstone longer than the complete control-side budget.
-    if (this.cancelledOpens.size >= 512) this.cancelledOpens.delete(this.cancelledOpens.keys().next().value!);
+    if (this.cancelledOpens.size >= 512)
+      this.cancelledOpens.delete(this.cancelledOpens.keys().next().value!);
     this.cancelledOpens.set(key, { owner: this.captureOwner(), until: Date.now() + 180_000 });
     const pending = this.opening.get(key);
     if (pending && pending.owner === this.deps.owner())
       pending.abort.abort(new Error('MCP_APP_OPEN_CANCELLED'));
     for (const [id, view] of this.views) {
-      if (view.owner === this.deps.owner() && view.caller === caller &&
-          view.sessionId === sessionId && view.openId === openId)
+      if (
+        view.owner === this.deps.owner() &&
+        view.caller === caller &&
+        view.sessionId === sessionId &&
+        view.openId === openId
+      )
         await this.disposeView(id, view);
     }
   }
@@ -251,7 +260,8 @@ export class McpAppsHost {
 
   private pruneCancelledOpens(): void {
     for (const [key, entry] of this.cancelledOpens)
-      if (entry.owner !== this.deps.owner() || entry.until <= Date.now()) this.cancelledOpens.delete(key);
+      if (entry.owner !== this.deps.owner() || entry.until <= Date.now())
+        this.cancelledOpens.delete(key);
   }
 
   private async openView(
@@ -443,7 +453,8 @@ export class McpAppsHost {
       };
       bridge.onupdatemodelcontext = async (params) => {
         await assertCurrent();
-        if (JSON.stringify(params).length > 128_000) throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
+        if (Buffer.byteLength(JSON.stringify(params), 'utf8') > 128_000)
+          throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
         const { content, structuredContent } = params;
         if (content?.some((block) => block.type !== 'text'))
           throw new Error('MCP_APP_CONTEXT_CONTENT_UNSUPPORTED');
@@ -454,15 +465,14 @@ export class McpAppsHost {
           content,
           structuredContent,
         };
-        const total = [...this.contexts.entries()]
+        const values = [...this.contexts.entries()]
           .filter(
             ([id, item]) => id !== key && item.owner === owner && item.sessionId === sessionId,
           )
-          .reduce(
-            (size, [, item]) => size + JSON.stringify(item.value).length,
-            JSON.stringify(next).length,
-          );
-        if (total > 512_000) throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
+          .map(([, item]) => item.value);
+        values.push(next);
+        if (Buffer.byteLength(JSON.stringify(values), 'utf8') > 512_000)
+          throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
         if (this.contexts.size >= 256 && !this.contexts.has(`${sessionId}:${clientId}`))
           throw new Error('MCP_APP_CONTEXT_LIMIT');
         this.contexts.set(key, {
@@ -795,10 +805,12 @@ export class McpAppsHost {
       }
     }
     if (owner !== this.deps.owner()) return empty;
-    if (JSON.stringify(values).length > 512_000) throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
+    const serialized = JSON.stringify(values);
+    if (Buffer.byteLength(serialized, 'utf8') > 512_000)
+      throw new Error('MCP_APP_CONTEXT_TOO_LARGE');
     if (!values.length) return empty;
     return {
-      text: `\n[MCP App context: external application data]\n${JSON.stringify(values)}\n[/MCP App context]`,
+      text: `\n[MCP App context: external application data]\n${serialized}\n[/MCP App context]`,
       consume: () => {
         if (owner === this.deps.owner()) removals.forEach((remove) => remove());
       },
