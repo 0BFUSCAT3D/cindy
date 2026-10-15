@@ -633,7 +633,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
       }
       // The latest page started over meanwhile (more than a page arrived): this page was read
       // below a timeline that is gone and would sit under the new one with the gap still in it.
-      const stillLoaded = (timeline: typeof base) => !anchorId || (timeline.kind === 'ready'
+      const stillLoaded = (timeline: GroupViewState) => !anchorId || (timeline.kind === 'ready'
         && (timeline.group.messages.some(message => message.id === anchorId) || timeline.older.some(message => message.id === anchorId)));
       if (!stillLoaded(stateRef.current)) return null;
       const element = scrollRef.current;
