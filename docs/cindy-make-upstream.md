@@ -628,7 +628,10 @@ Settings 的「同步」继续可用。创建制作任务前的同步仍为固�
   检查并产出用户要运行的应用），它覆盖到该内容后，后续任务恢复正常执行安装脚本。脚本被跳过时写入任务准备
   日志；任务确实需要时由 Agent 在任务里自行安装，那是可见的正常工作。
   安装前还按 pnpm 实际解析位置检查路径：importer 的 `link:` 相对该 importer，锁文件中的 `file:` 版本、
-  包快照链接与 resolution 相对锁文件目录，不借用其他 importer 或虚拟 store 放行越界路径。归档中的清单按
+  包快照链接与 resolution 相对锁文件目录，不借用其他 importer 或虚拟 store 放行越界路径。`git+file:`
+  依赖按文件 URL 解码为本机路径后检查范围，提交或分支片段不算路径；锁文件 Git resolution 的 `repo`
+  同样检查，缓存预热前也核对根锁文件，避免静默复制工作区外的本地仓库。回归见
+  [pnpmWriteRoots.test.ts](../apps/desktop/src/main/cindy-make/__tests__/pnpmWriteRoots.test.ts)。归档中的清单按
   解包目标规范化后校验，同一清单经不同路径别名重复出现时拒绝安装；回归见 `taskWorkspace.test.ts`。
   未验证来源超过账本上限时保留溢出标记；只有已生成版本能证明覆盖当前任务的整个基线时才恢复该基线的脚本。
   不清掉溢出标记，之后未被生成版本覆盖的新基线仍受保护；回归见 `installScriptsTrust.test.ts`。

@@ -1,5 +1,6 @@
 import { lstat, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import yaml from 'js-yaml';
 import { list as tarList, type ReadEntry } from 'tar';
@@ -144,19 +145,28 @@ function isPnpmConfigName(name: string): boolean {
     name === '.npmrc' ||
     name === 'pnpm-workspace.yaml' ||
     name === 'pnpm-workspace.yml' ||
+    name === 'pnpm-lock.yaml' ||
+    name === 'pnpm-lock.yml' ||
     name === 'package.json' ||
     /pnpmfile\.(?:c|m)?js$/i.test(name)
   );
 }
 
 /**
- * The root configuration pnpm reads before anything else, checked without
- * walking the tree: cache warming (`pnpm fetch`) runs this and skips entirely
- * when the content configures its own code (`configDependencies`) or redirects
- * writes. Installs run the full `assertPnpmInstallContained` walk.
+ * The root configuration and frozen dependency graph pnpm reads first, checked
+ * without walking the tree: cache warming (`pnpm fetch`) skips entirely when
+ * content configures its own code (`configDependencies`), redirects writes or
+ * reads outside the tree. Installs run the full `assertPnpmInstallContained` walk.
  */
 export async function assertPnpmConfigContained(root: string): Promise<void> {
-  for (const name of ['.npmrc', 'pnpm-workspace.yaml', 'pnpm-workspace.yml', 'package.json']) {
+  for (const name of [
+    '.npmrc',
+    'pnpm-workspace.yaml',
+    'pnpm-workspace.yml',
+    'package.json',
+    'pnpm-lock.yaml',
+    'pnpm-lock.yml',
+  ]) {
     const full = path.join(root, name);
     let entry;
     try {
@@ -168,6 +178,8 @@ export async function assertPnpmConfigContained(root: string): Promise<void> {
     if (!entry.isFile()) continue;
     if (name === '.npmrc') checkIni(full, await readConfig(full));
     else if (name === 'package.json') checkPackageJson(full, root, await readConfig(full));
+    else if (name === 'pnpm-lock.yaml' || name === 'pnpm-lock.yml')
+      checkLockfile(full, root, await readConfig(full), new Set());
     else checkWorkspaceYaml(full, root, await readConfig(full));
   }
 }
@@ -330,13 +342,19 @@ function checkLockfileNode(
     }
     if (key === 'resolution' && typeof nested === 'object' && nested !== null) {
       const resolution = nested as Record<string, unknown>;
-      for (const field of ['directory', 'tarball']) {
+      for (const field of ['directory', 'tarball', 'repo']) {
         const value = resolution[field];
-        if (typeof value === 'string')
-          checkDependencySpec(file, base, `${where}#resolution#${field}`, value, {
+        if (typeof value === 'string') {
+          // Git resolutions omit the `git+` prefix. Their file URLs still
+          // need URL decoding, not relative dependency-path interpretation.
+          const spec = field === 'repo' && /^file:/i.test(value.trim())
+            ? `git+${value.trim()}`
+            : value;
+          checkDependencySpec(file, base, `${where}#resolution#${field}`, spec, {
             archives,
             directory: path.dirname(file),
           });
+        }
       }
     }
     checkLockfileNode(file, base, directory, `${where}#${key}`, nested, depth + 1, archives);
@@ -376,6 +394,16 @@ function checkSpecMap(
 /** The path a dependency spec names, or undefined for registry specs. */
 function specPathTarget(spec: string): string | undefined {
   const value = spec.trim();
+  if (/^git\+file:/i.test(value)) {
+    try {
+      // Git refs are URL fragments, not part of the filesystem path. Node also
+      // decodes escaped names and Windows drive/UNC paths; slicing `file:`
+      // would check a different path from the one Git clones.
+      return fileURLToPath(new URL(value.slice('git+'.length)));
+    } catch {
+      throw refuse('pnpm dependency has an invalid local Git URL');
+    }
+  }
   const linked = /^(?:link|file):/i.exec(value);
   const target = linked ? value.slice(linked[0].length) : value;
   const namedPath =
@@ -391,8 +419,8 @@ function specPathTarget(spec: string): string | undefined {
 }
 
 /**
- * A path dependency (`link:`, `file:`, a relative or absolute path) makes pnpm
- * symlink or copy whatever it names — including outside the worktree, where a
+ * A path dependency (`link:`, `file:`, `git+file:`, a relative or absolute path)
+ * makes pnpm symlink or copy whatever it names — including outside the worktree, where a
  * collaborator can point at credentials or user data. Unverified content may
  * depend on registry packages or on paths that stay inside the tree only.
  * `file:` targets are collected for the archive check below: pnpm reads the
