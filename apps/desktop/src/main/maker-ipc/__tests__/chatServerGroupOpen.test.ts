@@ -165,6 +165,7 @@ describe('Chat Server group open latency (simulated 100ms per request)', () => {
     fixture.sockets[0].emit('message', JSON.stringify({ type: 'ready' }));
     expect(sent()).toContainEqual({ type: 'subscribe', scope: `conversation:${rooms[0]}`, after: '58' });
     // A reconnect still re-reads every followed room once.
+    await vi.advanceTimersByTimeAsync(0);
     expect(onChanged).toHaveBeenCalledWith({ groupId: rooms[0], change: 'messages' }, undefined);
   });
 
