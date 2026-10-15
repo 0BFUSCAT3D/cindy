@@ -104,10 +104,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
       setError('');
       setExecutionFailures(result.executionFailures ?? []);
       const floor = result.replies.reduce((min, reply) => Math.min(min, reply.sequence), Number.POSITIVE_INFINITY);
-      // A latest page that does not reach the replies on screen may leave replies between them:
+      // A latest page that neither overlaps nor directly adjoins the shown replies may leave a gap:
       // start over from it, as on first load, so 「查看更早」 reads on from right below it.
       const gap = !before && result.hasMore && result.replies.length > 0 && shown.length > 0
-        && floor > shown.reduce((max, reply) => Math.max(max, reply.sequence), Number.NEGATIVE_INFINITY);
+        && floor > shown.reduce((max, reply) => Math.max(max, reply.sequence), Number.NEGATIVE_INFINITY) + 1;
       if (!anchored(repliesRef.current)) return;
       setReplies(previous => (anchored(previous)
         ? stabilizeById(previous, gap ? result.replies : mergeBotGroupMessages(previous, result.replies))

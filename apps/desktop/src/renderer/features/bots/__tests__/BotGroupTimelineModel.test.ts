@@ -71,6 +71,16 @@ describe('push refresh merge', () => {
     expect(merged.older).toBe(first.older);
   });
 
+  it('retains loaded history when exactly one full latest page arrives with no missing sequence', () => {
+    const first: BotGroupLoadedTimeline = { group: detail(page(101, 200), true), older: page(1, 100), olderPlans: [], olderHasMore: false };
+    const merged = mergeBotGroupLatestPage(first, detail(page(201, 300), true));
+    expect(merged.older).toEqual([...first.older, ...first.group.messages]);
+    expect(merged.older[0]).toBe(first.older[0]);
+    expect(merged.older[199]).toBe(first.group.messages[99]);
+    expect(merged.olderHasMore).toBe(false);
+    expect(merged.group.messages).toEqual(page(201, 300));
+  });
+
   it('starts over from a latest page that no longer reaches the rows on screen, so no gap hides between them', () => {
     // Opened older pages and the old latest page; then more than a page arrives at once (4-6 never seen).
     const first: BotGroupLoadedTimeline = { group: detail(page(10, 12), true), older: page(1, 3), olderPlans: [], olderHasMore: true };

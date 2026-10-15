@@ -150,6 +150,22 @@ describe('chat interaction controls', () => {
     expect(screen.getByText('Root message')).toBeTruthy();
   });
 
+  it('retains the loaded Thread when a full adjacent page of replies arrives', async () => {
+    const replies = (start: number) => Array.from({ length: 50 }, (_, i) => ({
+      ...message, id: `reply-${start + i}`, sequence: start + i, content: `Reply ${start + i}`, reactions: [],
+    }));
+    mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: replies(2), hasMore: false })
+      .mockResolvedValue({ ok: true, root: message, replies: replies(52), hasMore: true });
+    render(<ChatThreadPanel group={group} rootId="root" onClose={vi.fn()} />);
+    const oldRow = (await screen.findByText('Reply 2')).closest('article');
+    const root = screen.getByText('Root message').closest('article')!;
+    fireEvent.click(within(root).getByRole('button', { name: k('reactionCount') }));
+    await screen.findByText('Reply 101');
+    expect(screen.getByText('Reply 2').closest('article')).toBe(oldRow);
+    expect(screen.getByText('Reply 51')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' })).toBeNull();
+  });
+
   it('starts the Thread over from a latest page that no longer reaches the replies on screen', async () => {
     const early = { ...message, id: 'early', sequence: 5, content: 'Early reply' };
     const far = { ...message, id: 'far', sequence: 200, content: 'Far reply' };
