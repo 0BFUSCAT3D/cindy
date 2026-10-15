@@ -85,6 +85,11 @@ vi.mock('../BotGroupPendingInteraction', () => ({
     <div data-testid="pending-interaction">{sessionId}</div>
   ),
 }));
+vi.mock('../BotGroupTaskCard', () => ({
+  BotGroupTaskCard: ({ task, owned }: { task: { title: string }; owned: boolean }) => (
+    <div data-testid="bot-group-task" data-owned={String(owned)}>{task.title}</div>
+  ),
+}));
 vi.mock('../BotAvatar', () => ({
   BotAvatar: ({ bot }: { bot: { name: string } }) => <span data-avatar={bot.name} />,
 }));
@@ -374,6 +379,18 @@ describe('BotGroupChatView', () => {
       } else expect(motion.animate).not.toHaveBeenCalled();
       expect(screen.queryByRole('complementary')).toBeNull();
     } finally { cleanup(); motion.restore(); }
+  });
+
+  it('shows a task card live only for a member of this group; an author who left is a snapshot', async () => {
+    const task = { state: 'running', title: '整理行程', summary: null, meta: { role: 'delegation-request', objective: '整理行程', parentSessionId: 'p1', childSessionId: 'c1' } } as never;
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: detail({ messages: [
+      msg({ id: 'b1', sequence: 2, authorKind: 'bot', authorBotId: 'xiaoman', authorName: '小满', content: '开了一条任务', task }),
+      msg({ id: 'b2', sequence: 3, authorKind: 'bot', authorBotId: 'gone', authorName: '离开的伙伴', content: '我也开了', task }),
+    ] }) });
+    renderView();
+    const cards = await screen.findAllByTestId('bot-group-task');
+    // Only a current member's teammate is looked up on this computer; unknown authors stay snapshots.
+    expect(cards.map((card) => card.getAttribute('data-owned'))).toEqual(['true', 'false']);
   });
 
   it('cancels an interrupted close and does not animate or later close the newly selected thread', async () => {
