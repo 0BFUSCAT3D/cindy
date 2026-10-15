@@ -8720,6 +8720,7 @@
       "createMenu": "新增",
       "createTeammate": "新增夥伴",
       "startChat": "開始對話",
+      "selectChat": "選擇夥伴或群聊，開始對話",
       "typing": "正在輸入…",
       "unread": "{{count}} 則未讀訊息",
       "search": "搜尋夥伴或群聊",
@@ -8736,7 +8737,8 @@
       "duplicate": "複製夥伴",
       "moreActions": "{{name}} 的更多操作",
       "sectionExpand": "展開夥伴",
-      "sectionCollapse": "收起夥伴"
+      "sectionCollapse": "收起夥伴",
+      "noResults": "找不到符合的夥伴或群組"
     },
     "cancel": "取消",
     "save": "儲存",
@@ -9205,8 +9207,9 @@
           "addCompanion": "邀請我的夥伴",
           "leave": "退出群組",
           "leaveHint": "你和你帶來的夥伴將退出群組。群主需要先轉讓身分。",
+          "soleOwnerHint": "群組裡只剩你。可以封存群組，保留歷史記錄，以後再恢復使用。",
           "archive": "封存群組",
-          "archiveHint": "封存後保留群聊記錄，停止新訊息和夥伴執行。",
+          "archiveHint": "封存會對所有成員停用本群組，停止新訊息與夥伴執行。歷史記錄保留，之後可透過搜尋找到本群組、查看歷史並取消封存。",
           "confirm": "確認",
           "lastOwner": "請先將群主轉讓給其他成員，再退出或移除目前的群主。",
           "conflict": "群組設定已更新，請重新整理後再試。",
@@ -9217,7 +9220,7 @@
           "auto": "同時發言",
           "sequential": "依序發言",
           "unarchive": "取消封存",
-          "unarchiveHint": "恢復新訊息與夥伴執行。",
+          "unarchiveHint": "取消封存後，本群組對所有成員恢復新訊息與夥伴執行。",
           "archived": "本群已封存，可繼續查看歷史記錄。",
           "noneHint": "本群只有夥伴的主人可以讓夥伴回應。",
           "companionPermissions": "夥伴權限",
@@ -10832,7 +10835,8 @@
       "downloadExtracting": "正在解壓縮…",
       "downloadUnsupported": "遠端電腦暫不支援下載資料夾，請更新該電腦上的 Cindy 後重試",
       "downloadNoSpace": "磁碟空間不足，無法完成下載",
-      "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載"
+      "downloadSkipped": "已下載到「下載項目」資料夾，但有部分檔案未能下載",
+      "cancelTransfer": "取消"
     },
     "mivoAction": {
       "promptPlaceholder": "輸入提示詞，按 Enter 傳送",

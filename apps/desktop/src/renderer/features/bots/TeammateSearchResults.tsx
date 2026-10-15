@@ -15,6 +15,8 @@ export interface TeammateSearchMatch {
   key: string;
   kind: 'bot' | 'group';
   name: string;
+  /** 已归档的群:段内不再列出,只能从这里找回。 */
+  archived?: boolean;
   detail: string;
   route: string;
   avatar: Parameters<typeof BotAvatar>[0]['bot'] | null;
@@ -23,7 +25,7 @@ export interface TeammateSearchMatch {
 /**
  * 侧栏总搜索里的伙伴 / 群聊命中(2026-10-13:伙伴段不再有独立搜索框)。
  * 本机伙伴按名字、简介、技能匹配,含已隐藏、不含已停止;远程伙伴按名字、简介、电脑名;
- * 群聊按群名与成员名。只读已有的名册投影,不发起额外查询。
+ * 群聊按群名与成员名,含已归档的群(段内不列出,在这里找回)。只读已有的名册投影,不发起额外查询。
  */
 export function useTeammateSearchMatches(rawQuery: string): TeammateSearchMatch[] {
   const cloud = useCompanionCloud();
@@ -65,6 +67,7 @@ export function useTeammateSearchMatches(rawQuery: string): TeammateSearchMatch[
         key: `group:${group.id}`,
         kind: 'group',
         name: group.name,
+        archived: Boolean(group.archived),
         detail: group.members.map((member) => member.name).join('、'),
         route: `/bots/groups/${encodeURIComponent(group.id)}`,
         avatar: group.members[0] ?? null,
@@ -107,6 +110,9 @@ export function TeammateSearchResults({
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-13 font-medium text-[var(--text-primary)]">{match.name}</span>
+              {match.archived ? (
+                <span className="shrink-0 text-10 leading-none text-[var(--text-tertiary)]">{t('bots.archived')}</span>
+              ) : null}
               <span className="shrink-0 rounded-full bg-[var(--surface-chip)] px-1.5 py-0.5 text-10 leading-none text-[var(--text-tertiary)]">
                 {match.kind === 'group' ? t('bots.groupChat.sidebar.title') : t('bots.title')}
               </span>

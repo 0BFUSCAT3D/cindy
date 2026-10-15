@@ -1,15 +1,22 @@
 // @vitest-environment jsdom
 import { transferableAbortController } from 'node:util';
+import { createInstance } from 'i18next';
+import { I18nextProvider } from 'react-i18next';
 import { cleanup, render, screen, act, fireEvent } from '@testing-library/react';
 import { createMemoryRouter, Outlet, RouterProvider, useLocation } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MainViewHistoryProvider } from '@/contexts/MainViewHistoryContext';
 import { readMainEntryRoute, rememberMainEntry } from '@/lib/mainEntryPreference';
 import { useActiveMainView } from '@/hooks/useActiveMainView';
+import en from '@/i18n/locales/en/common.json';
 import { MainEntryRedirect, useRememberMainEntry } from '../MainEntryRedirect';
 
 const auth = vi.hoisted(() => ({ dataOwnerId: 'account-a' as string | null }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => auth }));
+const i18n = createInstance();
+beforeAll(async () => {
+  await i18n.init({ lng: 'en', resources: { en: { translation: en } } });
+});
 
 function Layout() {
   useRememberMainEntry();
@@ -24,9 +31,9 @@ function launch(path = '/') {
     { path: '/bots', children: [{ index: true, element: <div data-testid="teammate-entry" /> }] },
     { path: '*', element: <div /> },
   ] }], { initialEntries: [path] });
-  const tree = () => <MainViewHistoryProvider ownerKey={auth.dataOwnerId ?? 'signed-out'} locationKey={router.state.location.key}>
+  const tree = () => <I18nextProvider i18n={i18n}><MainViewHistoryProvider ownerKey={auth.dataOwnerId ?? 'signed-out'} locationKey={router.state.location.key}>
     <RouterProvider key={auth.dataOwnerId} router={router} />
-  </MainViewHistoryProvider>;
+  </MainViewHistoryProvider></I18nextProvider>;
   const view = render(tree());
   return { router, rerender: () => view.rerender(tree()) };
 }

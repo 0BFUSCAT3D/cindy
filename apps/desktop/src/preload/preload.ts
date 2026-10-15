@@ -2939,6 +2939,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
           message?: string;
         }
     > => ipcRenderer.invoke('maker:chat-file:download', params),
+    /** 取消进行中的 chatFetch / chatDownload(按发起时的 requestId);已结束时无操作。 */
+    chatCancel: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke('maker:chat-file:cancel', requestId),
     /** 聊天流文件 chip 点亮预检:远端精确 stat。file=点亮;nonfile=保持纯文本;unknown=乐观点亮。 */
     chatStat: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };

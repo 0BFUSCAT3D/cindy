@@ -8757,6 +8757,7 @@
       "createMenu": "Create",
       "createTeammate": "New teammate",
       "startChat": "Start the conversation",
+      "selectChat": "Select a teammate or group chat to start chatting",
       "typing": "Typing…",
       "unread": "{{count}} unread messages",
       "search": "Search teammates or group chats",
@@ -8773,7 +8774,8 @@
       "duplicate": "Duplicate teammate",
       "moreActions": "More actions for {{name}}",
       "sectionExpand": "Expand teammates",
-      "sectionCollapse": "Collapse teammates"
+      "sectionCollapse": "Collapse teammates",
+      "noResults": "No matching teammates or groups"
     },
     "cancel": "Cancel",
     "save": "Save",
@@ -9242,8 +9244,9 @@
           "addCompanion": "Invite my companion",
           "leave": "Leave group",
           "leaveHint": "You and your companions will leave. Transfer ownership first if you own the group.",
-          "archive": "Archive group",
-          "archiveHint": "Keep history, stop new messages and companion activity.",
+          "soleOwnerHint": "You’re the only member left. Archive this group to keep its history and restore it later.",
+          "archive": "Archive Group",
+          "archiveHint": "Archiving disables this group for all members, stopping new messages and teammate runs. History is kept. Search for the group to view its history or unarchive it.",
           "confirm": "Confirm",
           "lastOwner": "Transfer ownership to another member before leaving or removing the current owner.",
           "conflict": "Someone updated this group. Refresh and try again.",
@@ -9253,8 +9256,8 @@
           "mentioned": "Only when mentioned",
           "auto": "Together",
           "sequential": "One at a time",
-          "unarchive": "Unarchive group",
-          "unarchiveHint": "Resume messages and companion activity.",
+          "unarchive": "Unarchive Group",
+          "unarchiveHint": "Unarchiving resumes messages and teammate activity for everyone in this group.",
           "archived": "This group is archived. History is still available.",
           "noneHint": "Only the companion’s owner can ask it to respond in this group.",
           "companionPermissions": "Companion permissions",
@@ -10874,7 +10877,8 @@
       "downloadExtracting": "Unpacking…",
       "downloadUnsupported": "The remote computer can't download folders yet. Update Cindy on that computer and try again",
       "downloadNoSpace": "Not enough disk space to finish the download",
-      "downloadSkipped": "Saved to Downloads, but some files could not be downloaded"
+      "downloadSkipped": "Saved to Downloads, but some files could not be downloaded",
+      "cancelTransfer": "Cancel"
     },
     "mivoAction": {
       "promptPlaceholder": "Type a prompt, press Enter to send",

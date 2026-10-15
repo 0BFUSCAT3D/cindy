@@ -58,6 +58,20 @@ describe('teammates in the sidebar-wide search', () => {
     expect(names('周报')).toEqual(['Writer']);
   });
 
+  it('finds archived group chats, which the teammates section no longer lists, and marks them', () => {
+    mocks.groups = [
+      { id: 'trip', name: '周末出游', members: [] },
+      { id: 'saved', name: '已完成的旅行', archived: true, members: [{ botId: 'lead', name: 'Trip Planner', avatar: '', avatarColor: '' }] },
+    ];
+    expect(names('旅行')).toEqual(['已完成的旅行']);
+    expect(names('  PLANNER  ')).toEqual(['已完成的旅行']);
+    const matches = renderHook(() => useTeammateSearchMatches('旅行')).result.current;
+    render(<TeammateSearchResults matches={matches} />);
+    expect(screen.getByText('bots.archived')).toBeTruthy();
+    fireEvent.click(screen.getByText('已完成的旅行'));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/saved');
+  });
+
   it('leaves out local copies handed to another computer, like the teammates section', () => {
     mocks.cloud = { ...mocks.cloud, demotedBotIds: ['writer'] };
     expect(names('周报')).toEqual([]);
