@@ -223,6 +223,48 @@ it('names a change whose edits a resolved rebase kept only half of', async () =>
   }
 }, 60_000);
 
+it.each([
+  ['line comment', ['// deleteData()']],
+  ['hash comment', ['# deleteData()']],
+  ['SQL comment', ['-- deleteData()']],
+  ['block comment', ['/* deleteData() */']],
+  ['multiline block comment', ['/*', 'deleteData()', '*/']],
+  ['HTML comment', ['<!--', 'deleteData()', '-->']],
+  ['quoted text', ["const note = ' deleteData() ';"]],
+  ['template literal', ['const note = `', 'deleteData()', '`;']],
+  ['multiline quoted text', ['const note = "', 'deleteData()', '";']],
+] as const)(
+  'does not vouch for an added call kept only inside %s',
+  async (_kind, resolution) => {
+    const h = await repos();
+    try {
+      await h.write(h.source, 'feature.txt', replace(0, 'deleteData()'));
+      const disabled = await h.commit(h.source, '', 4_050);
+      await h.write(h.official, 'feature.txt', replace(0, 'official'));
+      const target = await h.commit(h.official, 'official v2');
+      const state = await prepareUpstreamMerge(
+        h.userData,
+        update(h, target),
+        h.git,
+        async () => {},
+      );
+      expect(state.status).toBe('conflict');
+      const worktree = mergeWorktree(h.userData, state.id);
+      await h.write(worktree, 'feature.txt', [...resolution, ...LINES.slice(1)]);
+      await h.git(['add', '-A'], worktree);
+      await h.git([...h.identity(true), 'rebase', '--continue'], worktree);
+      await expect(applyUpstreamMerge(h.userData, state, h.git)).rejects.toMatchObject({
+        code: 'checksFailed',
+        missing: { count: 1, commits: [disabled] },
+      });
+      expect((await h.git(['rev-parse', 'HEAD'], h.source)).trim()).toBe(disabled);
+    } finally {
+      await h.clean();
+    }
+  },
+  60_000,
+);
+
 it('names a change whose added line a resolved rebase only reordered', async () => {
   const h = await repos();
   try {

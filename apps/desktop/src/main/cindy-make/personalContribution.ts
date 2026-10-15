@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 
 import {
@@ -262,14 +262,32 @@ export class PersonalContribution {
   }
 
   private async changedFiles(change: ContributionChange): Promise<string[]> {
+    let temporary: string | undefined;
     try {
-      return (
-        await this.git(['diff', '--name-only', '--no-renames', '-z', change.baseTree, change.tree])
-      )
-        .split('\0')
-        .filter(Boolean);
+      // The confirmation must describe the whole patch, including UI paths past
+      // runSourceGit's stdout capture limit. Keep the NUL-delimited list on disk
+      // so neither truncation nor stdout trimming can hide submitted paths.
+      temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-make-contribution-files-'));
+      const file = path.join(temporary, 'paths');
+      await this.git([
+        'diff',
+        '--name-only',
+        '--no-renames',
+        '--no-ext-diff',
+        '--no-textconv',
+        '-z',
+        '--output=' + file,
+        change.baseTree,
+        change.tree,
+        '--',
+      ]);
+      const output = await readFile(file, 'utf8');
+      if (output && !output.endsWith('\0')) throw fail('unavailable');
+      return output.split('\0').filter(Boolean);
     } catch {
       throw fail('unavailable');
+    } finally {
+      if (temporary) await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

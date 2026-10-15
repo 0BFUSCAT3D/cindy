@@ -472,6 +472,13 @@ async function editsSurvive(
     if (!added.length && !removed.length) return false;
     if (touched > added.length + removed.length) return false;
     const content = await git(['show', `${result}:${name}`], cwd).catch(() => '');
+    if (content.length >= 60 * 1024) return false;
+    // A word subsequence cannot prove that code is still active inside a string
+    // or a block comment (including wrappers on other lines). This fallback is
+    // deliberately conservative across languages: strict patch/application
+    // checks may prove preservation, otherwise the existing missing-change flow
+    // asks for a decision instead of guessing the file's syntax.
+    if (added.length && /['"\x60]|\/\*|\*\/|<!--|-->/.test(content)) return false;
     const lines = content.split(/\r?\n/);
     const wordsOf = (line: string) => line.split(/\s+/).filter(Boolean);
     // One line carries another's content by an ordered, multiplicity-preserving
@@ -498,12 +505,17 @@ async function editsSurvive(
         .filter(Boolean);
     const possiblyWithin = (content: string, line: string) =>
       within(bareWordsOf(content).join(' '), bareWordsOf(line).join(' '));
+    // Ignore line-comment tails only for added-line evidence. Deletions below
+    // still inspect raw text and must not use this weaker absence proof.
+    const carriesAddition = (content: string, line: string) =>
+      within(content, line.split(/\/\/|#|--/)[0]);
     const carriers = (content: string, among: string[]) =>
-      among.filter((line) => within(content, line)).length;
+      among.filter((line) => carriesAddition(content, line)).length;
     // Occurrences must survive: one pre-existing line never vouches for an added
     // copy, and a line added twice must be there twice.
     const before = await git(['show', `${commit}^:${name}`], cwd).catch(() => '');
     const beforeLines = before.split(/\r?\n/);
+    if (before.length >= 60 * 1024) return false;
     // Keep baseline carriers out of the ordering proof. Without this reservation
     // a file that already had the same guard/call pair can vouch for a newly added
     // pair whose copies were reordered by conflict resolution. A carrier that
@@ -512,12 +524,12 @@ async function editsSurvive(
     const baselineIndexes = new Set<number>();
     for (const content of new Set(added)) {
       let after = -1;
-      for (const baselineLine of beforeLines.filter((line) => within(content, line))) {
+      for (const baselineLine of beforeLines.filter((line) => carriesAddition(content, line))) {
         const at = lines.findIndex(
           (line, index) =>
             index > after &&
             !baselineIndexes.has(index) &&
-            within(content, line) &&
+            carriesAddition(content, line) &&
             within(baselineLine, line),
         );
         if (at < 0) return false;
@@ -542,7 +554,9 @@ async function editsSurvive(
     if (added.length > 1) {
       let after = -1;
       for (const content of added) {
-        const at = available.findIndex((line, index) => index > after && within(content, line));
+        const at = available.findIndex(
+          (line, index) => index > after && carriesAddition(content, line),
+        );
         if (at < 0) return false;
         after = at;
       }

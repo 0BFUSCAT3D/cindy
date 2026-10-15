@@ -1,3 +1,5 @@
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   PersonalContribution,
@@ -29,7 +31,17 @@ function harness(overrides: Partial<ContributionDeps> = {}) {
     identity: async () => ({ status: 'connected', identity: { login: 'octo', token: TOKEN } }),
     inspectFork: async () => ({ repository: 'octo/cindy', archived: false, canPush: true }),
     git: vi.fn(async (args: string[]) => {
-      if (args[0] === 'diff') return ['apps/desktop/src/renderer/x.tsx', 'docs/a.md'].join('\0');
+      if (args[0] === 'diff') {
+        const output = args.find((arg) => arg.startsWith('--output='));
+        if (output) {
+          await writeFile(
+            output.slice('--output='.length),
+            'apps/desktop/src/renderer/x.tsx\0docs/a.md\0',
+          );
+          return '';
+        }
+        return 'apps/desktop/src/renderer/x.tsx\0docs/a.md\0';
+      }
       throw new Error('unexpected git ' + args.join(' '));
     }),
     change: (runId) =>
@@ -89,6 +101,57 @@ describe('contributionBody', () => {
 });
 
 describe('PersonalContribution', () => {
+  it('reads every contribution path beyond the Git capture limit before deciding its UI scope', async () => {
+    const files = [
+      ...Array.from(
+        { length: 2_000 },
+        (_, i) => 'docs/' + String(i).padStart(4, '0') + '-' + 'x'.repeat(45) + '.md',
+      ),
+      'apps/desktop/src/renderer/last.tsx',
+      'docs/trailing space ',
+      'docs/line\nbreak.md',
+    ];
+    const listed = files.join('\0') + '\0';
+    expect(listed.length).toBeGreaterThan(64 * 1024);
+    let outputFile = '';
+    const { contribution } = harness({
+      git: vi.fn(async (args: string[]) => {
+        const output = args.find((arg) => arg.startsWith('--output='));
+        if (!output) return listed.slice(0, 64 * 1024);
+        outputFile = output.slice('--output='.length);
+        await writeFile(outputFile, listed);
+        return '';
+      }),
+    });
+    const draft = await contribution.draft('run');
+    expect(draft.files).toEqual(files);
+    expect(draft.touchesUi).toBe(true);
+    expect(draft.body).toContain('引用的设计规范：docs/design-rules/DESIGN.md');
+    expect(outputFile).not.toBe('');
+    await expect(stat(path.dirname(outputFile))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each(['git failure', 'missing output', 'incomplete output'] as const)(
+    'refuses a contribution draft and cleans its temporary directory after %s',
+    async (failure) => {
+      let outputFile = '';
+      const { contribution } = harness({
+        git: vi.fn(async (args: string[]) => {
+          const output = args.find((arg) => arg.startsWith('--output='));
+          if (!output) return 'docs/a.md\0';
+          outputFile = output.slice('--output='.length);
+          if (failure !== 'missing output') await writeFile(outputFile, 'docs/a.md');
+          if (failure === 'git failure') throw new Error('git failed');
+          return '';
+        }),
+      });
+      await expect(contribution.draft('run')).rejects.toMatchObject({ code: 'unavailable' });
+      expect(outputFile).not.toBe('');
+      await expect(readFile(outputFile)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(path.dirname(outputFile))).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
   it('prefills a draft with the author identity from the GitHub profile when Git has none', async () => {
     const fetchFn = vi.fn(
       async () =>
