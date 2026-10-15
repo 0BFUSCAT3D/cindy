@@ -442,7 +442,18 @@ export function noteBotGroupTimeline(groupId: string, messages: readonly BotGrou
     changed = true;
   }
   if (group.entries.some(settled)) {
-    group.entries = group.entries.filter((entry) => !settled(entry));
+    // Messages sent later stay below the settled ones: their anchors move past the real message.
+    let floor = -Infinity;
+    const kept: BotGroupOutboxEntry[] = [];
+    for (const entry of group.entries) {
+      if (!settled(entry)) {
+        kept.push(floor > entry.after ? { ...entry, after: floor } : entry);
+        continue;
+      }
+      const sequence = entry.messageId ? byId.get(entry.messageId)?.sequence : undefined;
+      if (sequence !== undefined) floor = Math.max(floor, sequence);
+    }
+    group.entries = kept;
     changed = true;
   }
   if (changed) emit();
@@ -600,15 +611,28 @@ export function projectBotGroupOutbox(
 ): BotGroupOutboxProjection {
   const localAttachments = new Map(previews);
   if (entries.length === 0) return { pending: [], localAttachments };
-  const ids = new Set(messages.map((message) => message.id));
   const claimedIds = new Set(claimed);
-  const pending = entries.filter((entry) => {
+  const sequenceOf = new Map(messages.map((message) => [message.id, message.sequence]));
+  // A message sent later never shows above an earlier one the timeline already has.
+  let floor = -Infinity;
+  const pending: BotGroupOutboxEntry[] = [];
+  const shown = (entry: BotGroupOutboxEntry) => {
+    pending.push(floor > entry.after ? { ...entry, after: floor } : entry);
+  };
+  const replaced = (messageId: string, entry: BotGroupOutboxEntry) => {
+    floor = Math.max(floor, sequenceOf.get(messageId) ?? -Infinity);
+    if (entry.attachments.length > 0) localAttachments.set(messageId, entry.attachments);
+  };
+  for (const entry of entries) {
     if (entry.status === 'sent') {
-      if (!(entry.messageId && ids.has(entry.messageId))) return true;
-      if (entry.attachments.length > 0) localAttachments.set(entry.messageId, entry.attachments);
-      return false;
+      if (entry.messageId && sequenceOf.has(entry.messageId)) replaced(entry.messageId, entry);
+      else shown(entry);
+      continue;
     }
-    if (entry.status !== 'sending' || entry.baseline === undefined) return true;
+    if (entry.status !== 'sending' || entry.baseline === undefined) {
+      shown(entry);
+      continue;
+    }
     const baseline = entry.baseline;
     const copy = messages.find(
       (message) =>
@@ -620,10 +644,9 @@ export function projectBotGroupOutbox(
         message.content.trim() === entry.input.text &&
         message.attachments.length === entry.files.length,
     );
-    if (!copy) return true;
-    if (entry.attachments.length > 0) localAttachments.set(copy.id, entry.attachments);
-    return false;
-  });
+    if (copy) replaced(copy.id, entry);
+    else shown(entry);
+  }
   return { pending, localAttachments };
 }
 

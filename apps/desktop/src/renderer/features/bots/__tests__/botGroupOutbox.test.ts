@@ -469,6 +469,18 @@ describe('botGroupOutbox', () => {
       expect(getBotGroupOutboxPreviews('g1').size).toBe(0);
     });
 
+    it('keeps a later message below the copy a re-read shows of an earlier one', async () => {
+      const pending = deferred();
+      mocks.send.mockReturnValueOnce(pending.promise);
+      noteBotGroupTimeline('g1', [], beginBotGroupTimelineRead());
+      enqueueBotGroupSend(draft({ text: '先发的', clientId: 'a' }));
+      enqueueBotGroupSend(draft({ text: '后发的', clientId: 'b' }));
+      await flush();
+      // Both were sent on the same timeline; the copy of the first lands before its receipt.
+      const projected = project('g1', [msg({ id: 'm1', sequence: 1, content: '先发的' })]);
+      expect(projected.pending.map((entry) => [entry.input.clientId, entry.after])).toEqual([['b', 1]]);
+    });
+
     it('lays the previews over the copy a re-read shows before the receipt', async () => {
       const pending = deferred();
       mocks.send.mockReturnValueOnce(pending.promise);
