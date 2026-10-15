@@ -124,6 +124,16 @@ describe('applyWorkingMemoryProposal', () => {
       { now, coveredThroughRowid: 5, coveredThroughMessageId: 'a1' },
     );
     expect(remapped).toMatchObject({ coveredThroughRowid: 5, coveredThroughMessageId: 'a1' });
+    expect(remapped).not.toHaveProperty('coveredThroughOffset');
+    // 长消息分块中:偏移随 client_id 一起写入;补完后不再传偏移即清掉。
+    const chunked = applyWorkingMemoryProposal(
+      previous,
+      { threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [], resolved: [] },
+      messages,
+      { now, coveredThroughRowid: 12, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 },
+    );
+    expect(chunked).toMatchObject({ coveredThroughRowid: 12, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 });
+    expect(parseWorkingMemory({ version: 1, ...chunked }).coveredThroughOffset).toBe(6000);
   });
 
   it('requires evidence to change a field of an existing item, allows evidenced clearing, and bumps time only on real change', () => {
@@ -388,6 +398,10 @@ describe('store', () => {
     expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
     await writeBotWorkingMemory(root, 'bot-legacy', { ...emptyWorkingMemory(), updatedAt: 1, coveredThroughRowid: 12 }, 0);
     db.queue.push([{ botId: 'bot-legacy' }]);
+    expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
+    // 水位停在一条长消息中间(分块未补完):同样不算新鲜。
+    await writeBotWorkingMemory(root, 'bot-chunk', { ...emptyWorkingMemory(), updatedAt: 1, coveredThroughRowid: 12, coveredThroughMessageId: 'r12', coveredThroughOffset: 6000 }, 0);
+    db.queue.push([{ botId: 'bot-chunk' }]);
     expect(await isWorkingMemoryFreshForSession('s-bot', root)).toBe(false);
   });
 

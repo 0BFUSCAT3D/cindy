@@ -72,6 +72,11 @@ export interface BotWorkingMemory {
    * 按不新鲜处理,下一次复盘写入后自愈。
    */
   coveredThroughMessageId?: string;
+  /**
+   * 水位消息只覆盖到的字符偏移:用户 / 伙伴的长消息按 6000 字分块复盘,没补完整条时记下
+   * 已覆盖到哪里,下一次复盘从这里接着取。缺省 = 整条已覆盖。有偏移即不算新鲜。
+   */
+  coveredThroughOffset?: number;
   updatedAt: number;
   threads: WorkingThread[];
   commitments: WorkingCommitment[];
@@ -139,6 +144,9 @@ export function parseWorkingMemory(raw: unknown): BotWorkingMemory {
     coveredThroughRowid: typeof raw.coveredThroughRowid === 'number' && raw.coveredThroughRowid >= 0 ? Math.floor(raw.coveredThroughRowid) : 0,
     ...(typeof raw.coveredThroughMessageId === 'string' && raw.coveredThroughMessageId
       ? { coveredThroughMessageId: raw.coveredThroughMessageId }
+      : {}),
+    ...(typeof raw.coveredThroughOffset === 'number' && raw.coveredThroughOffset > 0
+      ? { coveredThroughOffset: Math.floor(raw.coveredThroughOffset) }
       : {}),
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : 0,
     threads: list('threads', WORKING_MEMORY_LIMITS.threads, (item, src) => ({
@@ -278,7 +286,7 @@ export function applyWorkingMemoryProposal(
   previous: BotWorkingMemory | null,
   proposal: WorkingMemoryProposal,
   messages: ProposalMessage[],
-  opts: { now: number; coveredThroughRowid: number; coveredThroughMessageId?: string },
+  opts: { now: number; coveredThroughRowid: number; coveredThroughMessageId?: string; coveredThroughOffset?: number },
 ): Omit<BotWorkingMemory, 'revision' | 'version'> {
   const prev = previous ?? emptyWorkingMemory();
   const resolvedTexts = new Set(
@@ -337,7 +345,11 @@ export function applyWorkingMemoryProposal(
   // 旧式只带 rowid 的调用保持"只前进不后退"。
   const watermark =
     opts.coveredThroughMessageId !== undefined
-      ? { coveredThroughRowid: opts.coveredThroughRowid, coveredThroughMessageId: opts.coveredThroughMessageId }
+      ? {
+          coveredThroughRowid: opts.coveredThroughRowid,
+          coveredThroughMessageId: opts.coveredThroughMessageId,
+          ...(opts.coveredThroughOffset !== undefined ? { coveredThroughOffset: opts.coveredThroughOffset } : {}),
+        }
       : opts.coveredThroughRowid > prev.coveredThroughRowid
         ? { coveredThroughRowid: opts.coveredThroughRowid }
         : {
@@ -666,7 +678,8 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
     const botId = await resolveCanonicalBotIdForSession(sessionId);
     if (!botId) return false;
     const stored = await readBotWorkingMemory(userDataDir, botId);
-    if (!stored?.coveredThroughMessageId) return false;
+    // 没有 client_id(旧账本)或水位消息只覆盖了一部分(长消息分块中):都不算新鲜。
+    if (!stored?.coveredThroughMessageId || stored.coveredThroughOffset !== undefined) return false;
     const db = getDbClient().drizzle;
     const [covered] = await db
       .select({ rowid: sql<number | null>`rowid` })

@@ -301,6 +301,45 @@ it('advances the ledger watermark only through the contiguous backfilled prefix 
   h.floorRowid = null;
 });
 
+it('walks an over-long user message in chunks and only counts it covered once the whole text was reviewed', async () => {
+  const ledger = { version: 1, revision: 4, coveredThroughRowid: 1, coveredThroughMessageId: 'r1', updatedAt: 0, threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [] };
+  const longRow = { id: 'long', role: 'user', content: JSON.stringify('x'.repeat(9000)), order: 2 };
+  const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
+  // 缺口里有一条 9000 字的用户消息:第一次只看前 6000 字,水位停在这条消息的 6000 偏移,不算整条覆盖。
+  h.working = { ...ledger };
+  h.floorRowid = 1;
+  h.gapRows = [longRow];
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply');
+  let input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
+  expect(input.messages.find((m: { id: string }) => m.id === 'long').text).toHaveLength(6000);
+  expect(input.messages.find((m: { id: string }) => m.id === 'long')).not.toHaveProperty('partial');
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 2, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 }), 4);
+  // 下一次从同一条消息的 6000 偏移接着取(查询下界 rowid > 2-1 以把它本身取回来),剩余 3000 字看完:整条覆盖,水位推进到当前回复且不再带偏移。
+  h.meta = { turnCompleted: true };
+  h.working = { ...ledger, coveredThroughRowid: 2, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 };
+  h.floorRowid = 2;
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply2');
+  expect(query.mock.calls.at(-1)![1]).toEqual(['session', 1, 3, 'session', 41]);
+  input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
+  expect(input.messages.find((m: { id: string }) => m.id === 'long').text).toHaveLength(3000);
+  const written = h.writeWorking.mock.calls.at(-1)![2] as { coveredThroughRowid: number; coveredThroughMessageId?: string; coveredThroughOffset?: number };
+  expect(written).toMatchObject({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply2' });
+  expect(written.coveredThroughOffset).toBeUndefined();
+  // 本轮取材里的长用户消息同样算截断:水位停在上一条完成回复,交给下一次分块回补。
+  h.meta = { turnCompleted: true };
+  h.working = { ...ledger, coveredThroughRowid: 3, coveredThroughMessageId: 'prev' };
+  h.floorRowid = 3;
+  h.turnRows = [{ id: 'user', role: 'user', content: JSON.stringify('y'.repeat(7000)), order: 4 }];
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply3');
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 3, coveredThroughMessageId: 'prev' }), 4);
+  h.turnRows = null;
+  h.gapRows = [];
+  h.floorRowid = null;
+});
+
 it('resolves the ledger floor by client_id so a VACUUM-renumbered rowid cannot fake freshness, and starts a brand-new ledger from the beginning', async () => {
   const query = (getDbClient() as unknown as { query: ReturnType<typeof vi.fn> }).query;
   // 瘦身后 rowid 重排:账本存的 500 已经没有意义,按 client_id 解析回当前的 1 接上,写回当前库的水位(5)而不是保留 500。

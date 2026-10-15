@@ -29,6 +29,9 @@ import {
 const running = new Map<string, Promise<void>>();
 /** 本轮取材最多取多少条消息;超出即视为截断,水位不推进到当前回复。 */
 const TURN_REVIEW_ROWS = 80;
+/** 单条正文每块多少字;用户 / 伙伴的长消息按块分多次复盘,整条补完才算覆盖。 */
+const MESSAGE_CHUNK_CHARS = 6000;
+const TEXT_ROLES = new Set(['user', 'assistant']);
 /** 模型省略 working(本轮没改动)时用的空提案:不加不删,只让水位跟上。 */
 const EMPTY_WORKING_PROPOSAL: WorkingMemoryProposal = {
   threads: [],
@@ -94,12 +97,20 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 工作记忆账本随同一次复盘维护(不另起模型调用);读不到按空账本,写入 CAS 失败放弃本轮。
       const workingBefore = await readBotWorkingMemory(root, row.botId);
       type Record_ = { id: string; role: string; content: string; order: number };
-      const toSnapshot = (m: Record_) => ({
-        id: m.id,
-        role: m.role,
-        order: m.order,
-        text: (typeof JSON.parse(m.content) === 'string' ? JSON.parse(m.content) : m.content).slice(0, 6000),
-      });
+      // 单条正文按 MESSAGE_CHUNK_CHARS 分块。用户 / 伙伴的消息被截尾即 partial——它们是账本新条目
+      // 的证据来源,纠正 / 承诺可能就在长消息的尾部,没看完不能算覆盖;工具结果不是新条目的来源,
+      // 截尾只影响 resolved 证据(条目多留一阵),按已覆盖处理,不为它逐块回补。
+      const toSnapshot = (m: Record_, offset = 0) => {
+        const full: string = typeof JSON.parse(m.content) === 'string' ? JSON.parse(m.content) : m.content;
+        return {
+          id: m.id,
+          role: m.role,
+          order: m.order,
+          text: full.slice(offset, offset + MESSAGE_CHUNK_CHARS),
+          offset,
+          partial: TEXT_ROLES.has(m.role) && full.length > offset + MESSAGE_CHUNK_CHARS,
+        };
+      };
       // /clear 之前的消息始终不取。
       const clearedAtFilter = `AND created_at > COALESCE((SELECT cleared_at FROM sessions WHERE id=?), 0)`;
       const prev = await db.queryOne<{ id: string; rowid: number }>(
@@ -118,10 +129,14 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
     `,
         [sessionId, row.rowid, prevCompleted, sessionId],
       );
-      const turnMessages = learningSnapshotBudget(records.map(toSnapshot), 40000);
-      // 本轮本身被 LIMIT / 预算截断(工具密集的大轮次)时,漏掉的中间承诺 / 工具结果同样不能
-      // 算"已覆盖":水位停在上一条完成回复,下一次复盘由缺口回补路径按序补齐。
-      const turnTruncated = records.length >= TURN_REVIEW_ROWS || turnMessages.length < records.length;
+      const turnMessages = learningSnapshotBudget(records.map((m) => toSnapshot(m)), 40000);
+      // 本轮本身被 LIMIT / 预算截断(工具密集的大轮次)、或某条用户 / 伙伴消息被截尾时,漏掉的
+      // 中间承诺 / 工具结果 / 长消息尾部同样不能算"已覆盖":水位停在上一条完成回复,下一次复盘
+      // 由缺口回补路径按序(含分块)补齐。
+      const turnTruncated =
+        records.length >= TURN_REVIEW_ROWS ||
+        turnMessages.length < records.length ||
+        turnMessages.some((m) => m.partial);
       // 缺口回补:账本上次覆盖到的行落后于上一条完成回复(某轮复盘 claim 后失败、CAS 冲突、
       // 模型漏回 working),那段内容不会再被单独复盘;按 rowid 升序分批补进本次取材,覆盖水位
       // 只推进到连续处理过的前缀末尾——补不完就不推进到当前回复,账本在补完前不算新鲜,换窗线
@@ -131,7 +146,8 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 存下的 rowid 数字在任何情况下都不拿来当下界:旧账本没有 client_id、或水位消息已被删 /
       // 撤回解析不到,以及根本没有账本(老对话第一次建账本、首轮复盘 claim 后失败),一律从对话
       // 开头(/clear 之后)起算——整段历史按缺口分批回补,补完之前不算新鲜,不跳过任何一轮。
-      type Watermark = { rowid: number; id: string | undefined };
+      // 水位可以停在一条长消息中间(offset = 已覆盖的字符数):下一次从同一条消息的这个偏移接着取。
+      type Watermark = { rowid: number; id: string | undefined; offset?: number };
       const resolvedFloor = workingBefore?.coveredThroughMessageId
         ? (
             await db.queryOne<{ rowid: number }>(
@@ -142,26 +158,41 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
         : undefined;
       const floor: Watermark =
         resolvedFloor !== undefined
-          ? { rowid: resolvedFloor, id: workingBefore!.coveredThroughMessageId }
+          ? { rowid: resolvedFloor, id: workingBefore!.coveredThroughMessageId, offset: workingBefore!.coveredThroughOffset }
           : { rowid: 0, id: undefined };
       let covered: Watermark = turnTruncated ? { rowid: prevCompleted, id: prev?.id } : { rowid: row.rowid, id: replyId };
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
       if (floor.rowid < prevCompleted) {
+        // 水位停在半条消息里时把那条消息本身也取回来(rowid > x-1 即 rowid >= x)。
+        const gapAfter = floor.offset !== undefined ? floor.rowid - 1 : floor.rowid;
         const gapRows = await db.query<Record_>(
           `
       SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
       WHERE session_id=? AND rewind_at IS NULL AND rowid > ? AND rowid <= ? ${clearedAtFilter}
       AND ${REVIEW_ROLES} ORDER BY rowid ASC LIMIT ?
     `,
-          [sessionId, floor.rowid, prevCompleted, sessionId, GAP_BACKFILL_ROWS + 1],
+          [sessionId, gapAfter, prevCompleted, sessionId, GAP_BACKFILL_ROWS + 1],
         );
-        gapMessages = learningSnapshotPrefix(gapRows.slice(0, GAP_BACKFILL_ROWS).map(toSnapshot), GAP_BACKFILL_CHARS);
-        if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapRows.length) {
+        gapMessages = learningSnapshotPrefix(
+          gapRows
+            .slice(0, GAP_BACKFILL_ROWS)
+            .map((m) => toSnapshot(m, floor.offset !== undefined && m.order === floor.rowid ? floor.offset : 0)),
+          GAP_BACKFILL_CHARS,
+        );
+        const partialAt = gapMessages.findIndex((m) => m.partial);
+        if (partialAt >= 0) {
+          // 连续前缀停在这条长消息的当前块:水位记到块尾,后面的消息留给下一次。
+          gapMessages = gapMessages.slice(0, partialAt + 1);
+          const cut = gapMessages[partialAt]!;
+          covered = { rowid: cut.order, id: cut.id, offset: cut.offset + MESSAGE_CHUNK_CHARS };
+        } else if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapRows.length) {
           const last = gapMessages[gapMessages.length - 1];
           covered = last ? { rowid: last.order, id: last.id } : floor;
         }
       }
-      const messages = [...gapMessages, ...turnMessages].sort((a, b) => a.order - b.order);
+      const messages = [...gapMessages, ...turnMessages]
+        .map(({ id, role, order, text }) => ({ id, role, order, text }))
+        .sort((a, b) => a.order - b.order);
       if (!messages.some((m) => m.role === 'user') || !current()) return;
       const [{ getMaker }, { requestUtilityText }] = await Promise.all([
         import('../maker-host/index.js'),
@@ -255,6 +286,7 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
               now: Date.now(),
               coveredThroughRowid: covered.rowid,
               ...(covered.id ? { coveredThroughMessageId: covered.id } : {}),
+              ...(covered.offset !== undefined ? { coveredThroughOffset: covered.offset } : {}),
             }),
             workingBefore?.revision ?? 0,
           );
