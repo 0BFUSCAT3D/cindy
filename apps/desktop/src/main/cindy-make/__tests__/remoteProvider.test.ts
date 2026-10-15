@@ -30,6 +30,40 @@ const project = (state: MakeRemoteSnapshot, dictionary: Record<string, unknown> 
   });
 
 describe('portable Cindy Make cards', () => {
+  it.each([en, zh, tw, ja, ko])(
+    'keeps read-only sync and PR status visible without workflow controls',
+    (dictionary) => {
+      for (const busy of [false, true]) {
+        const state = snapshot();
+        state.busy = busy;
+        state.completion = undefined;
+        state.personal = {
+          remote: { sync: 'synced' },
+          contributions: [{ number: 42, state: 'open' }],
+        };
+        const card = project(state, dictionary);
+        const body = card.blocks?.map((block) => block.fallbackMarkdown).join('\n\n');
+        expect(body).toContain(dictionary.cindyMake.storage.status.synced);
+        expect(body).toContain(
+          dictionary.cindyMake.contribution.state.open.replace('{{number}}', '42'),
+        );
+        expect(card.display.title).toBe(
+          busy ? dictionary.cindyMake.history.lifecycle.running : dictionary.cindyMake.title,
+        );
+        expect(card.blocks?.every((block) => block.primitive !== 'session-controls')).toBe(true);
+        expect(card.actions).toEqual([]);
+      }
+    },
+  );
+
+  it('does not add a status card when there is no personal status or workflow', () => {
+    const state = snapshot();
+    state.completion = undefined;
+    state.personal = {};
+    expect(project(state).blocks).toEqual([]);
+    expect(project(state).actions).toEqual([]);
+  });
+
   it('projects personal sync and contribution status without adding remote write actions', () => {
     const state = snapshot();
     state.personal = {

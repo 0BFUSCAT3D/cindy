@@ -893,6 +893,12 @@ Settings 的「同步」继续可用。创建制作任务前的同步仍为固�
   时须同步更新该条并完成 Light/Dark。
 - 手机只读显示同步状态与 PR 状态，不新增远控写操作；投影新增字段按
   `docs/dev-rules/protocol-compatibility.md` 保证旧客户端可忽略。
+  已通过现有 Remote Resource 接入；没有准备、测试或生成流程卡片时，仍以只读 Markdown 块
+  显示状态，避免通用手机卡片过滤只有摘要的资源。空闲时标题为 Cindy Make，不误报正在运行；
+  有流程时沿用原卡片及其输入状态与操作。实现与回归见
+  [remoteProjection](../apps/desktop/src/main/cindy-make/remoteProjection.ts)、
+  [remoteProvider.test](../apps/desktop/src/main/cindy-make/__tests__/remoteProvider.test.ts) 与
+  [SessionResourceCards.test](../apps/mobile/src/__tests__/SessionResourceCards.test.tsx)。
 
 ### 简单创建的配套改进
 

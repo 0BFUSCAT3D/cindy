@@ -279,6 +279,8 @@ export function projectMakeRemoteCard(source: MakeRemoteSnapshot, t: Translate):
   }
   if (personalDetails.length)
     description = [description, ...personalDetails].filter(Boolean).join('\n\n');
+  const hasWorkflow = blocked || (!source.busy && source.recoverable);
+  if (!hasWorkflow && personalDetails.length && !source.busy) title = t('cindyMake.title');
   const fallbackMarkdown = [title, description, ...details].filter(Boolean).join('\n\n');
   return {
     ref: makeRemoteRef(source.sessionId),
@@ -290,7 +292,7 @@ export function projectMakeRemoteCard(source: MakeRemoteSnapshot, t: Translate):
     },
     links,
     blocks:
-      blocked || (!source.busy && source.recoverable)
+      hasWorkflow
         ? [
             {
               id: 'workflow',
@@ -299,7 +301,9 @@ export function projectMakeRemoteCard(source: MakeRemoteSnapshot, t: Translate):
               data: { input: blocked ? 'blocked' : 'available', busy },
             },
           ]
-        : [],
+        : personalDetails.length
+          ? [{ id: 'personal-status', primitive: 'markdown', fallbackMarkdown }]
+          : [],
     actions,
   };
 }
