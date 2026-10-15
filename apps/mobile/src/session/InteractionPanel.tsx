@@ -72,9 +72,10 @@ import {
   type RemotePluginSetupStep,
 } from '@/session/interactionModel';
 import {
+  askQuestionsIdentity,
   clearAskUserDraft,
   clearPlanReviewDraft,
-  readAskUserDraft,
+  readAskUserDraftFor,
   readPlanReviewDraft,
   saveAskUserDraft,
   savePlanReviewDraft,
@@ -927,12 +928,7 @@ function AskUserQuestionCard(props: AskUserQuestionCardProps) {
   const questions = useMemo(() => normalizeAskQuestions(props.item.request.questions), [props.item.request.questions]);
   // 与桌面 AskUserQuestionPrompt 同口径:内容相同的重新拉取保持挂载与输入;
   // 同一 requestId 的问题内容真变了,则重挂并丢弃旧内容的草稿。
-  const questionsIdentity = JSON.stringify(questions.map((question) => [
-    question.question,
-    question.header,
-    question.multiSelect,
-    (question.options ?? []).map((option) => [option.label, option.description]),
-  ]));
+  const questionsIdentity = askQuestionsIdentity(questions);
   return <AskUserQuestionForm key={questionsIdentity} {...props} questions={questions} questionsIdentity={questionsIdentity} />;
 }
 
@@ -952,10 +948,7 @@ function AskUserQuestionForm({
   const draftCompletedRef = useRef(false);
   // 表单按 requestId + 问题内容挂载,草稿在首帧同步恢复,
   // 避免先渲染空状态再被同步 effect 覆盖。
-  const [initialDraft] = useState(() => {
-    const draft = readAskUserDraft(requestId);
-    return draft?.questionsIdentity === questionsIdentity ? draft : null;
-  });
+  const [initialDraft] = useState(() => readAskUserDraftFor(requestId, questionsIdentity));
   const [currentIndex, setCurrentIndex] = useState(() =>
     Math.min(initialDraft?.currentIndex ?? 0, Math.max(0, questions.length - 1)));
   const [answers, setAnswers] = useState<Record<string, string>>(() => initialDraft?.answers ?? {});

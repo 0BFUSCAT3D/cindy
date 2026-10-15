@@ -1,3 +1,5 @@
+import type { AskQuestion } from '@cindy/maker-shared/interaction';
+
 export interface AskUserDraft {
   answers: Record<string, string>;
   currentIndex: number;
@@ -20,6 +22,22 @@ const planReviewDrafts = new Map<string, PlanReviewDraft>();
 export function readAskUserDraft(requestId: string): AskUserDraft | null {
   const draft = askUserDrafts.get(requestId);
   return draft ? cloneDraft(draft) : null;
+}
+
+/** 与桌面 AskUserQuestionPrompt 同口径的问题内容标识(字段顺序固定,缺省 options 等同空)。 */
+export function askQuestionsIdentity(questions: AskQuestion[]): string {
+  return JSON.stringify(questions.map((question) => [
+    question.question,
+    question.header,
+    question.multiSelect,
+    (question.options ?? []).map((option) => [option.label, option.description]),
+  ]));
+}
+
+/** 只返回与当前问题内容一致的草稿:同一 requestId 的问题变了,旧草稿视为不存在。 */
+export function readAskUserDraftFor(requestId: string, questionsIdentity: string): AskUserDraft | null {
+  const draft = readAskUserDraft(requestId);
+  return draft?.questionsIdentity === questionsIdentity ? draft : null;
 }
 
 export function saveAskUserDraft(requestId: string, draft: AskUserDraft): void {
