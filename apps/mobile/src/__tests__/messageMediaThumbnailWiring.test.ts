@@ -234,6 +234,8 @@ describe('mobile message media thumbnail wiring', () => {
     expect(lightboxSource).toContain('onPress={onToggleChrome}');
     // lightbox images 引用稳定,父层流式重渲染不空转取件 effect / FlatList
     expect(rendererSource).toContain('const lightboxImages = useMemo');
+    // Removing an unreadable thumbnail changes the slot even if visible keys/URLs do not change.
+    expect(rendererSource.includes('p.payload.galleryImageSlot === n.payload.galleryImageSlot')).toBe(true);
     // 语义未变时复用上一份数组;关闭回调稳定化,流式期间不重建手势图
     expect(rendererSource).toContain('lightboxImagesRef');
     expect(rendererSource).toContain('onClose={closePayload}');

@@ -801,6 +801,78 @@ describe('pending image gallery updates', () => {
     ]);
   });
 
+  it.each([false, true])('follows the pending slot when replacement and an earlier upload settle together (paged: %s)', async (paged) => {
+    const waiting = [{ ...thumbs[0], uri: null }, thumbs[1]];
+    const initial = collect(paged ? thumbs : waiting);
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, onShareImage });
+    if (paged) {
+      act(() => runtime.nodes.get('FlatList').onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 400 } } }));
+      props.images = collect(waiting);
+      render();
+    }
+    const replacement = { ...thumbs[1], key: 'replacement', uri: thumbs[0].uri };
+    // One update inserts an earlier readable page and replaces the active identity.
+    props.images = collect([thumbs[0], replacement]);
+    render();
+    const page = runtime.nodes.get('FlatList').renderItem({ item: props.images[1], index: 1 }).props;
+    expect(page.active).toBe(true);
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    expect(runtime.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 400 });
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0]).toBe(props.images[1].payload.media);
+  });
+
+  it('clears old strokes and dimensions on a replacement that arrives with an earlier readable page', async () => {
+    const initial = collect([{ ...thumbs[0], uri: null }, thumbs[1]]);
+    const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url,
+      annotation: { submitLabel: 'Send', onSubmit } });
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    press('message.imageLightboxAnnotateButton');
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    fire(draw(), 'onFinalize', {}, true);
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    const replacement = { ...thumbs[1], key: 'replacement', uri: 'file:///replacement.jpg' };
+    props.images = collect([thumbs[0], replacement]);
+    render();
+    const page = runtime.nodes.get('FlatList').renderItem({ item: props.images[1], index: 1 }).props;
+    expect(page.active).toBe(true);
+    expect(page.annotating).toBe(true);
+    expect(page.annotationStrokes).toEqual([]);
+    expect(page.annotationDraftStroke).toBeNull();
+    expect(page.naturalSize).toBeNull();
+    // The FlatList mock mounts page zero only; deliver the active page's decoder/draw callbacks.
+    const activePage = () => runtime.nodes.get('FlatList').renderItem({ item: props.images[1], index: 1 }).props;
+    act(() => activePage().onNaturalSize(props.images[1].key, { width: 800, height: 400 }));
+    act(() => activePage().onDrawPoint('start', 200, 400, 0, 0, 1));
+    act(() => activePage().onDrawPoint('end', 200, 400, 0, 0, 1));
+    press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit.mock.calls[0]).toEqual([
+      props.images[1], replacement.uri, [{ points: [{ x: 0.5, y: 0.5 }] }],
+      { mimeType: undefined, naturalWidth: 800, naturalHeight: 400 },
+    ]);
+  });
+
+  it('refreshes the pending slot when removing an unreadable thumbnail leaves the readable page unchanged', async () => {
+    const waiting = [{ ...thumbs[0], uri: null },
+      { ...thumbs[0], key: 'another-waiting', uri: null }, thumbs[1]];
+    const initial = collect(waiting);
+    const onShareImage = vi.fn();
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, onShareImage });
+    // Same key, URL and readable index, but the active thumbnail's slot changes from 2 to 1.
+    props.images = collect(waiting.slice(1));
+    render();
+    const replacement = { ...thumbs[1], key: 'replacement', uri: 'file:///replacement.jpg' };
+    props.images = collect([{ ...waiting[1], uri: 'file:///earlier.jpg' }, replacement]);
+    render();
+    expect(runtime.nodes.get('message.imageLightboxPageLabel').children).toBe('2 / 2');
+    await act(async () => runtime.nodes.get('message.imageLightboxShareButton').onPress());
+    expect(onShareImage.mock.lastCall?.[0]).toBe(props.images[1].payload.media);
+  });
+
   it('keeps sharing the replacement when the original page later reappears', async () => {
     const initial = collect(thumbs);
     const replacement = { ...thumbs[0], key: `${thumbs[0].key}:replacement`, uri: 'file:///replacement.jpg' };

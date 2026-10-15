@@ -1721,6 +1721,7 @@ export function MessageRenderer({
         && p.url === n.url
         && p.payload.media.url === n.payload.media.url
         && p.payload.media.previewable === n.payload.media.previewable
+        && p.payload.galleryImageSlot === n.payload.galleryImageSlot
         && p.previewUri === n.previewUri;
     })) {
       return prev;
