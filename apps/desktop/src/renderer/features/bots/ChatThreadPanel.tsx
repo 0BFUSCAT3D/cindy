@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Check, CornerDownRight, MessageSquareShare, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -14,7 +14,6 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { BotGroupDetail, BotGroupExecutionFailureView, BotGroupMention, BotGroupMessageView } from '../../../shared/botGroupChat';
 import { isBotGroupRuntimeFailureCode, resolveBotGroupQuote } from '../../../shared/botGroupChat';
-import { resolveBotGroupMentions } from './botGroupMentions';
 import { refreshBotGroups } from './botGroupStore';
 import { mergeBotGroupMessages, projectBotGroupExecutionFailures } from './botGroupPresentation';
 import { BotAvatar } from './BotAvatar';
@@ -22,7 +21,10 @@ import { BotGroupQuoteBlock } from './BotGroupQuote';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
 import { BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { ChatMessageActions, chatErrorKey } from './ChatServerControls';
+import { useBotGroupMentionPicker } from './useBotGroupMentionPicker';
 const key = (name: string) => `bots.groupChat.server.${name}`;
+const sameBotGroupMentions = (a: BotGroupMention, b: BotGroupMention) =>
+  a.all === b.all && a.botIds.length === b.botIds.length && a.botIds.every((botId, index) => botId === b.botIds[index]);
 const api = () => window.electronAPI.maker.chatServer;
 /** Earlier pages read while looking for a reply opened from the main chat. */
 const FOCUS_PAGE_LIMIT = 5;
@@ -152,8 +154,16 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
   /** Shares confirmed in this panel (reply → main-chat message, null when unknown). */
   const [posted, setPosted] = useState<ReadonlyMap<string, string | null>>(new Map());
   const request = useRef(0);
-  const attempt = useRef<{ text: string; id: string; mentions: BotGroupMention } | null>(null);
+  const attempt = useRef<{ text: string; roster: BotGroupDetail['members']; id: string; mentions: BotGroupMention } | null>(null);
   const sending = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const allLabel = t('bots.groupChat.mention.all');
+  const allLabels = useMemo(() => [allLabel, '所有人', 'all', 'everyone'], [allLabel]);
+  // Same @ picker as the main composer.
+  const mention = useBotGroupMentionPicker({ text, members: group.members, textareaRef: inputRef, allLabels, onTextChange: value => {
+    setText(value);
+    if (attempt.current?.text !== value) attempt.current = null;
+  } });
   /** `onAccepted` runs only when this read's result is the one shown. */
   const load = useCallback(async (before?: number, onAccepted?: () => void) => {
     const version = ++request.current, owner = getDataOwnerGeneration();
@@ -227,17 +237,20 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     sending.current = true; setBusy(true); setError('');
     const owner = getDataOwnerGeneration();
     const toMain = alsoSend;
-    if (!attempt.current || attempt.current.text !== text) attempt.current = {
-      text, id: crypto.randomUUID(),
-      mentions: resolveBotGroupMentions(text, { members: group.members, allLabels: [t('bots.groupChat.mention.all'), '所有人', 'all', 'everyone'] }),
-    };
+    // A retry reuses the attempt only for the same text and the same targets (bot-group-chat.md).
+    // Targets are re-resolved against the attempt's own roster: a roster refresh alone changes nothing
+    // and the host still rejects a departed target; re-picking someone else gets a new clientId.
+    const previous = attempt.current;
+    const current = previous && previous.text === text && sameBotGroupMentions(mention.resolve(text, previous.roster), previous.mentions)
+      ? previous : { text, roster: group.members, id: crypto.randomUUID(), mentions: mention.resolve(text) };
+    attempt.current = current;
     try {
-      const result = await api().reply({ groupId: group.id, rootId, text: attempt.current.text, clientId: attempt.current.id,
-        mentions: attempt.current.mentions });
+      const result = await api().reply({ groupId: group.id, rootId, text: current.text, clientId: current.id,
+        mentions: current.mentions });
       if (!isDataOwnerGenerationCurrent(owner)) return;
       if (!result.ok) { setError(t(chatErrorKey(result.errorCode))); return; }
       // The reply exists now; only its main-chat copy may still need a retry.
-      setText(''); attempt.current = null; setAlsoSend(false);
+      setText(''); mention.reset(); attempt.current = null; setAlsoSend(false);
       if (toMain) await postToMain(result.messageId, true);
       void loadRef.current(); refreshBotGroups();
     } catch { if (isDataOwnerGenerationCurrent(owner)) setError(t(key('requestFailed'))); }
@@ -287,13 +300,15 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
             <Button variant="secondary" size="sm" compact loading={[...unposted].some(id => posting.has(id))} onClick={() => void retryUnposted()}>
               {t(key('thread.retryPost'))}</Button>
           </div>}
-          <Textarea aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text} onChange={value => {
-            setText(value);
-            if (attempt.current?.text !== value) attempt.current = null;
-          }}
-            rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); void send(); }
-            }} />
+          <div className="relative">
+            {mention.list}
+            <Textarea textareaRef={inputRef} aria-label={t(key('replyPlaceholder'))} placeholder={t(key('replyPlaceholder'))} value={text}
+              {...mention.textareaProps} onChange={mention.onChange}
+              rows={3} maxLength={8000} disabled={busy || group.archived} onKeyDown={e => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || mention.onKeyDown(e)) return;
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+              }} />
+          </div>
           <div className="flex min-w-0 items-center justify-between gap-3">
             <button type="button" role="checkbox" aria-checked={alsoSend} disabled={busy || group.archived}
               onClick={() => setAlsoSend(value => !value)}
