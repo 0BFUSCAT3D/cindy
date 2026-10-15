@@ -9,8 +9,9 @@
  * (`provider-group-remote-bindings.json`，多记组所在电脑)。分开存放，降级到旧版本时旧版本只读得到
  * 本机的那份，不会把另一台电脑上的组误当成本机的同名组。
  *
- * 另记一份「因组内电脑被移出或组被删除而解除过」的任务(`provider-group-released.json`)：没归过组、
- * 正用着组那一项的老任务会被纳入组(service.ts)，这些任务不纳入(§9.4)。旧版本不读它，也不改写它。
+ * 本机删组或移出组员时，在绑定文件的 `released` 中同时记下解除过的任务，避免两次落盘之间切换账号
+ * 丢掉解除记录。其他解除路径仍写 `provider-group-released.json`，两处记录共同阻止老任务自动纳入(§9.4)。
+ * 旧文件缺少 `released` 视为空；旧版本写绑定时保留这个未知根字段。
  */
 import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
@@ -31,6 +32,8 @@ export interface ProviderGroupBinding {
 
 interface BindingFile {
   sessions: Record<string, ProviderGroupBinding>;
+  /** 本机组的解除记录，与对应绑定的删除在同一次原子替换中提交。 */
+  released?: Record<string, ProviderGroupRelease>;
 }
 
 /** 哪个组：组所属的供应商，组在另一台电脑上时再加那台的设备 id(本机的组为 null)。 */
@@ -85,15 +88,22 @@ function prune<T extends { at: number }>(sessions: Record<string, T>): Record<st
 }
 
 function normalizeFile(raw: unknown, remote: boolean): BindingFile {
-  const sessions = (raw as Partial<BindingFile> | null)?.sessions;
-  if (!sessions || typeof sessions !== 'object' || Array.isArray(sessions)) return { sessions: {} };
+  const rawSessions = (raw as Partial<BindingFile> | null)?.sessions;
+  const sessions = rawSessions && typeof rawSessions === 'object' && !Array.isArray(rawSessions) ? rawSessions : {};
   const out: Record<string, ProviderGroupBinding> = {};
   for (const [sessionId, value] of Object.entries(sessions)) {
     if (!SESSION_ID_PATTERN.test(sessionId)) continue;
     const binding = normalizeBinding(value, remote);
     if (binding) out[sessionId] = binding;
   }
-  return { sessions: prune(out) };
+  const released = remote ? {} : Object.fromEntries(Object.entries(normalizeReleased({
+    sessions: (raw as Partial<BindingFile> | null)?.released,
+  }).sessions).filter(([, release]) => !release.groupDeviceId));
+  // 旧版本保留未知字段，但可能重新写入已解除任务的绑定；升级后仍以解除记录为准。
+  for (const [sessionId, release] of Object.entries(released)) {
+    if (out[sessionId] && sameGroup(release, out[sessionId])) delete out[sessionId];
+  }
+  return { sessions: prune(out), ...(Object.keys(released).length > 0 ? { released } : {}) };
 }
 
 const normalize = (raw: unknown) => normalizeFile(raw, false);
@@ -124,6 +134,7 @@ const store = createOverrideSettingsFile<BindingFile>({
   log,
   label: 'provider-group-bindings',
   maxBytes: 2 * 1024 * 1024,
+  preserveUnreadableFile: true,
   logLoadedValue: false,
 });
 const remoteStore = createOverrideSettingsFile<BindingFile>({
@@ -173,6 +184,13 @@ async function writeIn(
     if (binding) sessions[sessionId] = binding;
     else if (sessionId in sessions) delete sessions[sessionId];
     else return {};
+    const release = value.released?.[sessionId];
+    if (binding && release && sameGroup(release, binding)) {
+      // 显式重新分配给这个组时，同一次提交清除本机解除记录；其他组的记录仍保留。
+      const released = { ...value.released };
+      delete released[sessionId];
+      return { sessions: prune(sessions), released };
+    }
     return { sessions: prune(sessions) };
   });
 }
@@ -208,6 +226,8 @@ export async function writeProviderGroupBinding(
 /** 这个任务曾因组内电脑被移出或这个组被删除而解除过这个组的绑定：不再自动纳入这个组(§9.4)。 */
 export function isProviderGroupReleased(sessionId: string, group: ProviderGroupRef): boolean {
   if (!SESSION_ID_PATTERN.test(sessionId)) return false;
+  const localRelease = store.read().released?.[sessionId];
+  if (localRelease && sameGroup(localRelease, group)) return true;
   const release = releasedStore.read().sessions[sessionId];
   return release !== undefined && sameGroup(release, group);
 }
@@ -251,24 +271,21 @@ export async function pruneProviderGroupBindings(
   now: number = Date.now(),
 ): Promise<void> {
   const assertCurrent = captureProviderManagementScope();
-  const owner = activeOwnerScopeKey();
-  const released: string[] = [];
   await store.updateAtomic(({ value }) => {
     assertCurrent();
     const sessions = { ...value.sessions };
-    released.length = 0;
+    const released = { ...value.released };
+    let changed = false;
     for (const [sessionId, binding] of Object.entries(sessions)) {
       if (binding.providerId !== providerId) continue;
       if (keepMemberKeys?.has(binding.memberKey)) continue;
       delete sessions[sessionId];
-      released.push(sessionId);
+      released[sessionId] = { providerId, at: now };
+      changed = true;
     }
-    return released.length > 0 ? { sessions } : {};
+    // 删除绑定与阻止自动恢复的记录共用一份文件、一把锁；提交后无需再写另一份文件。
+    return changed ? { sessions, released: prune(released) } : {};
   });
-  // 原子写落盘后的锁释放也会等待；旧账号的解除记录不能落到此时切入的新账号。
-  if (activeOwnerScopeKey() !== owner) return;
-  assertCurrent();
-  await writeReleases(released, { providerId }, now, assertCurrent);
 }
 
 export const __testing = { normalize, normalizeRemote, normalizeReleased, prune };

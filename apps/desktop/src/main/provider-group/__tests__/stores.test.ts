@@ -219,6 +219,43 @@ describe('provider group bindings', () => {
     expect(bindings.isProviderGroupReleased('scope-task', { providerId: 'anthropic' })).toBe(false);
     activeOwner = 'owner-test';
     expect(bindings.readProviderGroupBinding('scope-task')).toBeNull();
+    expect(bindings.isProviderGroupReleased('scope-task', { providerId: 'anthropic' })).toBe(true);
+    // 切回原账号并重建运行时，解除记录仍须保留，不能把任务重新自动纳入。
+    vi.resetModules();
+    const restarted = await import('../bindings.js');
+    expect(restarted.readProviderGroupBinding('scope-task')).toBeNull();
+    expect(restarted.isProviderGroupReleased('scope-task', { providerId: 'anthropic' })).toBe(true);
+  });
+
+  it('persists the release with binding removal if teardown begins during lock release', async () => {
+    await bindings.writeProviderGroupBinding('teardown-release', { providerId: 'boundary-release', memberKey: 'local' }, 1);
+    const withLock = locks.withCrossProcessLock;
+    vi.spyOn(locks, 'withCrossProcessLock').mockImplementationOnce(async (...args) => {
+      const result = await withLock(...args);
+      scope.boundaryPending = true;
+      return result;
+    });
+    await bindings.pruneProviderGroupBindings('boundary-release', null, 10);
+    expect(bindings.readProviderGroupBinding('teardown-release')).toBeNull();
+    expect(bindings.isProviderGroupReleased('teardown-release', { providerId: 'boundary-release' })).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'provider-group-bindings.json'), 'utf8'));
+    expect(persisted.sessions?.['teardown-release']).toBeUndefined();
+    expect(persisted.released['teardown-release']).toEqual({ providerId: 'boundary-release', at: 10 });
+  });
+
+  it('keeps the binding and release unchanged if the atomic replacement fails', async () => {
+    await bindings.writeProviderGroupBinding('failed-release', { providerId: 'failed-release', memberKey: 'local' }, 1);
+    const file = path.join(tmpDir, 'provider-group-bindings.json');
+    const before = fs.readFileSync(file, 'utf8');
+    const rename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (target === file) throw new Error('disk unavailable');
+      rename(source, target);
+    });
+    await expect(bindings.pruneProviderGroupBindings('failed-release', null, 10)).rejects.toThrow('disk unavailable');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(bindings.readProviderGroupBinding('failed-release')).toMatchObject({ providerId: 'failed-release', at: 1 });
+    expect(bindings.isProviderGroupReleased('failed-release', { providerId: 'failed-release' })).toBe(false);
   });
 
   it('remembers, per group, the tasks released by removing a computer or deleting the group', async () => {
@@ -258,6 +295,52 @@ describe('provider group bindings', () => {
         b: { providerId: 'anthropic', groupDeviceId: 'mini', at: 2 },
       },
     });
+  });
+
+  it('normalizes inline local releases without accepting another computer’s group', () => {
+    expect(bindings.__testing.normalize({
+      sessions: { valid: { providerId: 'anthropic', memberKey: 'local', at: 20 } },
+      released: {
+        valid: { providerId: 'anthropic', at: 10 },
+        remote: { providerId: 'anthropic', groupDeviceId: 'mini', at: 10 },
+        invalid: { providerId: 'bad id', at: 10 },
+      },
+    })).toEqual({ sessions: {}, released: { valid: { providerId: 'anthropic', at: 10 } } });
+  });
+
+  it('retains inline releases through an older writer and clears them on explicit reassignment', async () => {
+    await bindings.writeProviderGroupBinding('legacy-release', { providerId: 'legacy-group', memberKey: 'local' }, 1);
+    await bindings.pruneProviderGroupBindings('legacy-group', null, 10);
+    const { createOverrideSettingsFile } = await import('../../maker-host/override-settings-file.js');
+    // 旧版本只认识 sessions；共享存储基座仍须原样保留未知 released 根字段。
+    const legacy = createOverrideSettingsFile<{ sessions: Record<string, unknown> }>({
+      filePath: () => path.join(tmpDir, 'provider-group-bindings.json'),
+      defaults: { sessions: {} },
+      normalize: (raw) => ({ sessions: (raw as { sessions?: Record<string, unknown> }).sessions ?? {} }),
+      label: 'legacy-bindings',
+      log: { info: () => {}, warn: () => {} },
+    });
+    legacy.writePatch({ sessions: { ...legacy.read().sessions, 'legacy-release': { providerId: 'legacy-group', memberKey: 'local', at: 20 } } });
+    vi.resetModules();
+    const restarted = await import('../bindings.js');
+    expect(restarted.readProviderGroupBinding('legacy-release')).toBeNull();
+    expect(restarted.isProviderGroupReleased('legacy-release', { providerId: 'legacy-group' })).toBe(true);
+    await restarted.writeProviderGroupBinding('legacy-release', { providerId: 'legacy-group', memberKey: 'local' }, 30);
+    expect(restarted.readProviderGroupBinding('legacy-release')).toMatchObject({ providerId: 'legacy-group', at: 30 });
+    expect(restarted.isProviderGroupReleased('legacy-release', { providerId: 'legacy-group' })).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'provider-group-bindings.json'), 'utf8')).released?.['legacy-release']).toBeUndefined();
+  });
+
+  it('preserves an unreadable binding file and refuses to overwrite its release records', async () => {
+    const file = path.join(tmpDir, 'provider-group-bindings.json');
+    const previous = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '{broken-json');
+    try {
+      await expect(bindings.writeProviderGroupBinding('unreadable-release', { providerId: 'anthropic', memberKey: 'local' })).rejects.toThrow(/unreadable/);
+      expect(fs.readFileSync(file, 'utf8')).toBe('{broken-json');
+    } finally {
+      fs.writeFileSync(file, previous);
+    }
   });
 
   it('keeps bindings to a group on another computer in their own file, one group per task', async () => {

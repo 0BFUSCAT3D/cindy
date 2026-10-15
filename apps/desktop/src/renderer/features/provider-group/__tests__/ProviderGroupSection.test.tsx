@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderGroupConfig, ProviderGroupView } from '../../../../shared/providerGroup';
 import zhCN from '../../../i18n/locales/zh-CN/common.json';
 import { memberStatusText, ProviderGroupSection } from '../ProviderGroupSection';
+import { ProviderGroupAddDialog } from '../ProviderGroupAddDialog';
 import { toast } from '@/lib/toast';
 import { __testing as localGroupsTesting, useLocalProviderGroupsState } from '../useLocalProviderGroups';
 import { __testing as groupViewTesting } from '../useProviderGroup';
@@ -341,6 +342,30 @@ describe('ProviderGroupSection', () => {
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
     await screen.findAllByTestId('provider-group-member');
     expect(screen.getByText('providerGroup.strategy.quotaFirst')).toBeTruthy();
+  });
+});
+
+describe('ProviderGroupAddDialog share links', () => {
+  it('guides remote managers to the group computer without starting a local share request', async () => {
+    command.mockResolvedValue([]);
+    render(<ProviderGroupAddDialog providerId="anthropic" providerName="Claude" deviceId="owner-computer" config={null} onSave={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(command).toHaveBeenCalledWith({
+      action: 'remote-manage', deviceId: 'owner-computer', request: { action: 'manage-group', command: { action: 'candidates', providerId: 'anthropic' } },
+    }));
+    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.add.tabLink' }));
+    expect(screen.getByText('providerGroup.add.remoteLinkDescription')).toBeTruthy();
+    const paste = screen.getByRole('button', { name: 'providerGroup.add.pasteLink' }) as HTMLButtonElement;
+    expect(paste.disabled).toBe(true);
+    fireEvent.click(paste);
+    expect(screen.queryByTestId('provider-share-paste-dialog')).toBeNull();
+  });
+
+  it('keeps the share-link input available on the group computer', async () => {
+    render(<ProviderGroupAddDialog providerId="anthropic" providerName="Claude" config={null} onSave={vi.fn()} onClose={vi.fn()} />);
+    await screen.findAllByTestId('provider-group-candidate');
+    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.add.tabLink' }));
+    fireEvent.click(screen.getByRole('button', { name: 'providerGroup.add.pasteLink' }));
+    expect(await screen.findByTestId('provider-share-paste-dialog')).toBeTruthy();
   });
 });
 

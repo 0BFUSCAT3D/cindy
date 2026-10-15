@@ -597,6 +597,7 @@
       "confirm": "加入供應商組",
       "cancel": "取消",
       "linkDescription": "貼上別人分享的 {{provider}} 連結，對方同意後，回到「已經能用的」裡勾選加入。",
+      "remoteLinkDescription": "請在群組所在電腦的「模型供應商」設定中輸入分享連結。對方同意後，再回到「已經能用的」勾選加入。",
       "pasteLink": "貼上分享連結"
     },
     "toast": {

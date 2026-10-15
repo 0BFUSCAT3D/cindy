@@ -597,6 +597,7 @@
       "confirm": "加入供应商组",
       "cancel": "取消",
       "linkDescription": "粘贴别人分享的 {{provider}} 链接，对方同意后，回到「已经能用的」里勾选加入。",
+      "remoteLinkDescription": "请在组所在电脑的「模型供应商」设置中输入分享链接。对方同意后，再回到「已经能用的」勾选加入。",
       "pasteLink": "粘贴分享链接"
     },
     "toast": {

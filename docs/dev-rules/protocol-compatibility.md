@@ -1038,7 +1038,10 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **本地数据**：C 上经另一台电脑的组分配的任务绑定存 `provider-group-remote-bindings.json`(按账号，与本机组的
   `provider-group-bindings.json` 分开，降级后旧版本读不到它，不会误认成本机的同名组)。因组内电脑被移出或组被删除而
   解除过绑定的任务按组记在 `provider-group-released.json`(按账号，2026-10-10)，老任务纳入组时据此跳过(provider-groups.md
-  §6、§9.4)；旧版本不读也不改写它，降级再升级后记录仍在。组所在电脑的冷却按账号存 `provider-group-cooling.json`
+  §6、§9.4)；旧版本不读也不改写它，降级再升级后记录仍在。本机删组或移出组员时，解除记录改为与绑定删除一起
+  原子写入 `provider-group-bindings.json` 的可选 `released` 字段，避免账号切换或中断造成半完成；读方合并两处记录，
+  显式重新分配给同一个组时清除该组记录。旧文件缺字段视为空，旧版本写绑定仍保留未知根字段；旧版本运行期间不识别
+  这些新增的内联记录，升级后解除记录优先于旧版恢复的同组绑定。损坏绑定文件保留并拒绝覆写。组所在电脑的冷却按账号存 `provider-group-cooling.json`
   (`{ cooling: { [providerId]: { [memberKey]: until } } }`，只存未到期的，2026-10-11)，重启后照样避开；旧版本不读它。
   不改数据库与服务端。
 - 实现：`apps/desktop/src/main/provider-group/`(`remoteHandler.ts`、`remoteClient.ts`、`externalLoad.ts`、`leaseReporter.ts`、
@@ -1325,6 +1328,8 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
     旧 O 不认识该动作时明确拒绝，C 不重试、不改为在本机执行；完整转分享管理需要 O 更新。
     远程修改组后由 O 刷新转分享名单，逐人同意明细仍只附在 O 本机设置页的组视图里。
   - C 不重放写请求；生成的链接在 C 的 Main 登记后才能复制。
+  - 添加组所在电脑已可用的供应商仍经 `candidates` 查询；受邀者预览和申请不在管理通道内。远程管理页的分享链接入口
+    禁用并引导在 O 的模型供应商设置中输入，获批后回到可用列表添加，避免申请与跨区启用记录误落到 C。
   - 组保存与删除必须携带编辑时的 `expectedConfig`（完整组配置，`null` = 当时尚未建组）。O 在已有跨进程文件写锁内
     重读并比较，不一致回 `[PROVIDER_GROUP_CHANGED]`，不写入、不清理任务绑定。C 重新读取详情、提示本次操作未执行，
     不自动重试写入。建组电脑自己的设置页使用同一条件写入，存储格式不变。
@@ -1340,7 +1345,7 @@ G 与 O 之间不变。受邀者能调用的 channel 不变(仍是 `maker:remote
   这两个字段只在本机 Main → Renderer 之间，不跨设备；本机 `owned` 结果另带 `quietRequestIds` / `watchedRequests` 供审批宿主重载时使用。
 - **兼容**：旧 O 回 `CHANNEL_NOT_ALLOWED` 或 `[INVALID_PARAMS] unknown provider group action`，C 显示「建组电脑需要更新」，
   不影响组的分配与使用。旧 C 不发这两个动作，仍只能只读查看。O 只在执行过 `manage-share` 的 `create-link` 后才静默，
-  旧 C 管不到 O，弹窗行为与之前相同。不改服务端、数据库与本地持久数据。
+  旧 C 管不到 O，弹窗行为与之前相同。不改服务端与数据库；本机绑定的可选解除记录见上方 P2a「本地数据」。
 - 实现：`apps/desktop/src/main/provider-group/management.ts`(O)、`managementClient.ts`(C)、`remoteRegistration.ts`，
   `apps/desktop/src/main/device-link/providerShareHost.ts`(静默与关注)、`providerShareRuntime.ts`；回归见
   `provider-group/__tests__/{managementClient,ipc,stores}.test.ts`、`device-link/__tests__/providerShareRuntime.test.ts`、

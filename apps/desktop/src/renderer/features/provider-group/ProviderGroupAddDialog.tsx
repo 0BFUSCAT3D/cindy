@@ -3,7 +3,7 @@
  *
  * - 「已经能用的」：这台电脑已经能用的同一个供应商——你的其他电脑(已开「允许被远程调用」)和
  *   别人分享给你的，与模型列表里的远程供应商同一个来源，勾选即可加入，不需要再申请；
- * - 「分享链接」：还不能用的别人的电脑，粘贴分享链接走现有申请流程，对方同意后回到这里勾选。
+ * - 「分享链接」：在组所在电脑走现有申请流程；远程管理时引导去那台电脑申请，避免在查看端领用。
  */
 import { Check } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -225,10 +225,12 @@ export function ProviderGroupAddDialog({
         ) : (
           <>
             <p className="mt-3 text-13 leading-[1.5] text-[var(--confirm-desc)]">
-              {t('providerGroup.add.linkDescription', { provider: providerName })}
+              {deviceId
+                ? t('providerGroup.add.remoteLinkDescription')
+                : t('providerGroup.add.linkDescription', { provider: providerName })}
             </p>
             <ProviderShareDialogFooter>
-              <Button variant="cta" size="md" onClick={() => setPasteOpen(true)}>
+              <Button variant="cta" size="md" disabled={Boolean(deviceId)} onClick={() => setPasteOpen(true)}>
                 {t('providerGroup.add.pasteLink')}
               </Button>
               <Button variant="secondary" size="md" onClick={onClose}>
@@ -238,7 +240,7 @@ export function ProviderGroupAddDialog({
           </>
         )}
       </ProviderShareDialog>
-      {pasteOpen && (
+      {pasteOpen && !deviceId && (
         <ProviderSharePasteDialog
           onClose={() => {
             setPasteOpen(false);

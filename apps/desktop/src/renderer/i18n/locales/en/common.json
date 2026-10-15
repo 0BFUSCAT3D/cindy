@@ -604,6 +604,7 @@
       "confirm": "Add to Group",
       "cancel": "Cancel",
       "linkDescription": "Paste a {{provider}} share link from someone else. After they approve, come back to “Already Available” and select it.",
+      "remoteLinkDescription": "Enter the share link in the provider settings on the computer with this group. After the owner approves, come back to “Already Available” and select it.",
       "pasteLink": "Paste Share Link"
     },
     "toast": {
