@@ -126,6 +126,8 @@ export interface BotGroupMemberView {
   ownerActorId?: string;
   ownerName?: string;
   isOwned?: boolean;
+  /** The computer running this owned companion (its Chat Server actor home); live task cards read there. */
+  homeDeviceId?: string | null;
   avatarUrl?: string | null;
   guestAccess?: 'none' | 'chat' | 'tools';
   accessRevision?: number;

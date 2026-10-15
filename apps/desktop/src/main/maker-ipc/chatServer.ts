@@ -95,6 +95,15 @@ const retryableResponse = (error: ChatResponseError) => recoverableAuth(error)
   || error.status >= 500 || [408, 429].includes(error.status);
 /** A file this computer will never be able to send (chatServerMedia): retrying cannot help. */
 const LOCAL_FILE_REFUSALS = new Set(['ATTACHMENT_TOO_LARGE', 'ATTACHMENT_UNAVAILABLE']);
+/** Filesystem failures that may clear on their own; any other local read failure is permanent for this delivery. */
+const TRANSIENT_FS_CODES = new Set(['EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE', 'ENOMEM', 'EIO']);
+/** A delivery file this computer cannot read or send: refused once, never retried. */
+function fileRefusedHere(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof ChatResponseError) return false;
+  if (LOCAL_FILE_REFUSALS.has(error.message)) return true;
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown };
+  return typeof syscall === 'string' && typeof code === 'string' && !TRANSIENT_FS_CODES.has(code);
+}
 const id = z.string().uuid();
 const memberJoinedTrigger = z.object({ type: z.literal('member.joined'), messageId: id, actorId: id,
   displayName: z.string().min(1).refine(value => value.trim().length > 0) }).strict();
@@ -1596,15 +1605,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           } catch { /* a file deleted since the task finished is simply not delivered */ }
         }
         // Files go up one at a time so a refused file never holds back the others: a file this
-        // computer cannot send (empty, over the size limit) or the server definitely refuses is
-        // left out with a warning, while a transient failure keeps the whole message for a retry.
+        // computer cannot send (empty, over the size limit, unreadable) or the server definitely
+        // refuses is left out with a warning, while a transient failure keeps the whole message for a retry.
         const uploaded: ChatContentBlock[] = [];
         for (const file of produced) {
           try {
             uploaded.push(...await media.upload(roomId, input.clientId, [file], actor.id));
           } catch (error) {
-            const refusedHere = error instanceof Error && !(error instanceof ChatResponseError) && LOCAL_FILE_REFUSALS.has(error.message);
-            if (!refusedHere && (!(error instanceof ChatResponseError) || retryableResponse(error))) throw error;
+            if (!fileRefusedHere(error) && (!(error instanceof ChatResponseError) || retryableResponse(error))) throw error;
             deps.log?.warn('Chat task delivery file refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
           }
         }

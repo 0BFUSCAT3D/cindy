@@ -8,7 +8,7 @@ import { getActiveMobileSessionRealm, getMobileEndpointForRealm, loadMobileEndpo
 import { markRemoteResourceRead } from '@/device-link/remoteResourceCache';
 import { useRemoteSyncCoordinator } from '@/device-link/remoteSyncTask';
 import type { BotGroupChatState } from '@/session/useBotGroupChat';
-import { chatAccessLost, chatCursor, chatGroupView, chatHttpsUrl, chatRoomRow, chatReadAt, chatReadSequence, chatLastReplyAt, chatLastReplySequence, createChatServerClient, type ChatPage, type ChatRequest, type ChatSnapshot } from './chatServerClient';
+import { chatAccessLost, chatCursor, chatGroupView, chatHttpsUrl, chatRoomRow, chatReadAt, chatReadSequence, chatLastReplyAt, chatLastReplySequence, createChatServerClient, type ChatActor, type ChatPage, type ChatRequest, type ChatSnapshot } from './chatServerClient';
 import { subscribeChatServer } from './chatServerSubscription';
 
 /** The account's Chat Server client, fenced to the current account, realm and mount. */
@@ -143,7 +143,7 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
   const identity = `${api.owner}:${groupId}`;
   const active = useRef(identity); active.current = identity;
   const [state, setState] = useState<{ identity: string; value: BotGroupChatState; online: boolean; loadingOlder: boolean }>({ identity, value: { kind: 'loading' }, online: true, loadingOlder: false });
-  const page = useRef<{ identity: string; page: ChatPage; self: string } | null>(null);
+  const page = useRef<{ identity: string; page: ChatPage; self: string; actors: ChatActor[] } | null>(null);
   const accessGeneration = useRef(0);
   const freshRead = useRef(false);
   const olderPending = useRef(false);
@@ -159,12 +159,14 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
     try {
       const previous = page.current?.identity === identity ? page.current.page : null;
       const oldest = previous?.messages.reduce<string | undefined>((oldest, message) => !oldest || BigInt(message.seq) < BigInt(oldest) ? message.seq : oldest, undefined);
-      const [next, self] = await Promise.all([api.client.load(groupId, oldest), api.client.me()]);
+      // The account's actors say which computer runs each owned companion (live task cards);
+      // the group still reads when that list is unavailable.
+      const [next, self, actors] = await Promise.all([api.client.load(groupId, oldest), api.client.me(), api.client.actors().catch((): ChatActor[] => [])]);
       if (run.isStale() || !valid() || generation !== accessGeneration.current) return;
       // Replace the reauthorized window; no stale history survives changed access.
       freshRead.current = true;
-      page.current = { identity, page: next, self };
-      setState({ identity, value: { kind: 'ready', group: chatGroupView(next, self) }, online: true, loadingOlder: false });
+      page.current = { identity, page: next, self, actors };
+      setState({ identity, value: { kind: 'ready', group: chatGroupView(next, self, actors) }, online: true, loadingOlder: false });
     } catch (error) {
       if (run.isStale() || !valid() || generation !== accessGeneration.current) return;
       if (chatAccessLost(error)) loseAccess();
@@ -210,7 +212,7 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
       const next = await api.client.older(groupId, previous.page);
       if (!valid() || page.current !== previous) return;
       page.current = { ...previous, page: next };
-      setState({ identity, value: { kind: 'ready', group: chatGroupView(next, previous.self) }, online: true, loadingOlder: false });
+      setState({ identity, value: { kind: 'ready', group: chatGroupView(next, previous.self, previous.actors) }, online: true, loadingOlder: false });
     } catch (error) {
       if (valid() && page.current === previous && chatAccessLost(error)) loseAccess();
       throw error;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
+import { chatGroupView, chatRoomRow, chatReadAt, createChatServerClient, type ChatMessage, type ChatPage, type ChatRoom, type ChatSnapshot } from '@/chat/chatServerClient';
 import { buildBotGroupQuoteCard, buildBotGroupTaskCard } from '@cindy/maker-shared/botGroupChat';
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const room = (n = 1, state = 'joined'): ChatRoom => ({ id: id(n), name: 'Discussion', kind: 'group', state, archived: false,
@@ -27,6 +27,18 @@ describe('direct Chat Server client', () => {
     const deleted = chatGroupView({ ...page, messages: [{ ...message(20), deleted: true, content: [] }, replying] }, id(11));
     expect(deleted.messages).toHaveLength(1);
     expect(deleted.messages[0].quote).toMatchObject({ messageId: id(20), originalDeleted: true });
+  });
+
+  it('names the home computer of my own companions from the account actors, never of other members', () => {
+    const mine = { id: id(12), kind: 'bot' as const, name: 'Mine', state: 'joined', ownerActorId: id(11), ownerName: '', avatar: null, role: 'member' as const };
+    const theirs = { id: id(13), kind: 'bot' as const, name: 'Theirs', state: 'joined', ownerActorId: id(10), ownerName: '', avatar: null, role: 'member' as const };
+    const page: ChatPage = { snapshot: { ...snapshot(), members: [...snapshot().members, mine, theirs] }, messages: [], before: null };
+    const actors = [{ id: id(12), kind: 'bot', externalId: 'mine', name: 'Mine', avatar: null, homeDeviceId: 'pc' }];
+    const members = chatGroupView(page, id(11), actors).members;
+    expect(members.find(member => member.botId === id(12))).toMatchObject({ isOwned: true, homeDeviceId: 'pc' });
+    expect(members.find(member => member.botId === id(13))).not.toHaveProperty('homeDeviceId');
+    // Without the actor list (older or failed read) an owned companion has no known computer.
+    expect(chatGroupView(page, id(11)).members.find(member => member.botId === id(12))).toMatchObject({ homeDeviceId: null });
   });
 
   it('reads a task card on a teammate message as its task, and only there (bot-group-chat.md §10)', () => {

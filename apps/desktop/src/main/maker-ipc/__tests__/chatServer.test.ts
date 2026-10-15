@@ -625,6 +625,10 @@ describe('Chat Server result delivery and refresh', () => {
       ['a transient upload failure is retried with the message', new Error('ECONNRESET'), { ok: false, retryable: true }, 0],
       ['a file the server refuses is left out, the result still posts', new ChatResponseError('PAYLOAD_TOO_LARGE', 413), { ok: true }, 1],
       ['a file too large to ever send is left out, the result still posts', new Error('ATTACHMENT_TOO_LARGE'), { ok: true }, 1],
+      ['a file this computer cannot read is left out, the result still posts',
+        Object.assign(new Error('EACCES: permission denied, open'), { code: 'EACCES', syscall: 'open', errno: -13 }), { ok: true }, 1],
+      ['a file read that may succeed shortly is retried with the message',
+        Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY', syscall: 'open', errno: -16 }), { ok: false, retryable: true }, 0],
     ])('%s', async (_label, failure, expected, posts) => {
       fixture.profiles = [{ id: 'local-bot', displayName: 'Bot', avatar: null, status: 'active' }];
       fixture.upload.mockRejectedValueOnce(failure);

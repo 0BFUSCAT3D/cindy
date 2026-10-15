@@ -2,8 +2,9 @@
  * An independent task a teammate started from this group (bot-group-chat.md §10).
  *
  * My own teammate's task: the live task card read from the computer that runs it (same card
- * as a teammate chat). Someone else's teammate: the card as it was posted — title and state —
- * because that task runs on their computer.
+ * as a teammate chat); `deviceId` is that computer — the group's, or for a group opened straight
+ * from the Chat Server the companion's home computer. Someone else's teammate, or a companion
+ * whose computer is unknown: the card as it was posted — title and state.
  */
 import { ListTodo } from 'lucide-react-native';
 import { StyleSheet, View } from 'react-native';

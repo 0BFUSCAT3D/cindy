@@ -124,13 +124,18 @@ function chatMemberIdentity(member: ChatMember) {
   return { botId: member.id, name: memberName(member), ...chatMemberAvatar(member.avatar), avatarColor: '' };
 }
 
-/** Sequence strings stay on the wire; numeric positions below are presentation order only. */
-export function chatGroupView(page: ChatPage, selfId: string): BotGroupRemoteChatData {
+/**
+ * Sequence strings stay on the wire; numeric positions below are presentation order only.
+ * `actors` (the account's own, from `/actors`) tell which computer runs each owned companion.
+ */
+export function chatGroupView(page: ChatPage, selfId: string, actors: readonly ChatActor[] = []): BotGroupRemoteChatData {
   const { room, members } = page.snapshot;
   const active = members.filter(member => member.state === 'joined');
   const memberViews: BotGroupMemberView[] = active.map(member => ({
     ...chatMemberIdentity(member), actorId: member.id, actorKind: member.kind, isSelf: member.id === selfId,
     isOwned: member.ownerActorId === selfId, role: member.role,
+    ...(member.ownerActorId === selfId && member.kind === 'bot'
+      ? { homeDeviceId: actors.find(actor => actor.id === member.id)?.homeDeviceId ?? null } : {}),
     status: 'active',
   }));
   const deletedIds = new Set(page.messages.filter(message => message.deleted).map(message => message.id));
