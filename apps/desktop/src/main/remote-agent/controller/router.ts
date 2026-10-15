@@ -39,6 +39,7 @@ const PATH_ARGUMENTS = new Set([
   'savedir', 'outpath', 'htmlpath', 'imagepath', 'iconsource', 'attachments', 'extradirs', 'writabledirs',
   'debugimageout',
 ]);
+const WORKBENCH_PROJECT_TOOLS = new Set(['set_workbench_task', 'set_workbench_tasks']);
 
 function json(status: number, value: unknown): Extract<RemoteAgentReply, { type: 'http' }> {
   return {
@@ -72,15 +73,26 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
   const doFetch = deps.fetch ?? fetch;
   const workspace = deps.executor.workspace;
 
-  const mapArguments = (value: unknown, key = ''): unknown => {
+  const mapArguments = (value: unknown, key = '', toolName = ''): unknown => {
     if (typeof value === 'string') {
+      if (key === 'args') {
+        try {
+          const parsed = JSON.parse(value);
+          if (parsed && typeof parsed === 'object') return JSON.stringify(mapArguments(parsed, '', toolName));
+        } catch { /* 普通字符串参数保持原样。 */ }
+      }
       if (/^(?:cmd|command)$/.test(key)) return workspace.mapCommand(value, resolveExecutorShell().dialect);
-      if (isPathTextField(key) || PATH_ARGUMENTS.has(key.replace(/_/g, '').toLowerCase())) return workspace.mapAlias(value);
+      if (isPathTextField(key)
+        || PATH_ARGUMENTS.has(key.replace(/_/g, '').toLowerCase())
+        || (key === 'project' && WORKBENCH_PROJECT_TOOLS.has(toolName))) return workspace.mapAlias(value);
       return value;
     }
-    if (Array.isArray(value)) return value.map((item) => mapArguments(item, key));
+    if (Array.isArray(value)) return value.map((item) => mapArguments(item, key, toolName));
     if (!value || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, mapArguments(item, name)]));
+    const effectiveToolName = toolName === 'call_tool' && typeof (value as Record<string, unknown>).name === 'string'
+      ? (value as Record<string, unknown>).name as string
+      : toolName;
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, mapArguments(item, name, effectiveToolName)]));
   };
   const projectResult = (value: unknown, key = ''): unknown => {
     if (typeof value === 'string') {
@@ -121,7 +133,9 @@ export function createReverseHttpRouter(deps: ReverseHttpRouterDeps) {
       ...(body && method !== 'GET' && method !== 'HEAD' ? { body: new Uint8Array((() => {
         try {
           const message = JSON.parse(body.toString('utf8'));
-          if (message.method === 'tools/call' && message.params?.arguments) message.params.arguments = mapArguments(message.params.arguments);
+          if (message.method === 'tools/call' && message.params?.arguments) {
+            message.params.arguments = mapArguments(message.params.arguments, '', message.params.name ?? '');
+          }
           return Buffer.from(JSON.stringify(message));
         } catch { return body; }
       })()) } : {}),

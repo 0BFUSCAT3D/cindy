@@ -437,14 +437,19 @@ describe('virtual workspace', () => {
       mcpTarget: () => ({ url: 'http://unused', headers: {} }),
       fetch: async (_url, options) => {
         const request = JSON.parse(Buffer.from(options!.body as Uint8Array).toString());
-        const result = await registry.call(request.params.arguments.name, request.params.arguments.args);
+        const rawArgs = request.params.arguments.args;
+        // The real MCP entry schema applies jsonObjectArg's stringified-JSON
+        // preprocessing before dispatching to the registry. Mirror that here
+        // so this router regression exercises the same downstream boundary.
+        const args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+        const result = await registry.call(request.params.arguments.name, args);
         const message = JSON.stringify({ jsonrpc: '2.0', id: request.id, result });
         return new Response(sse ? 'data: ' + message + '\n\n' : message, {
           headers: { 'content-type': sse ? 'text/event-stream' : 'application/json' },
         });
       },
     });
-    const call = async (name: string, args: Record<string, unknown>) => {
+    const call = async (name: string, args: Record<string, unknown> | string) => {
       const reply = await router({ method: 'POST', path: '/mcp/cindy_helper', headers: [], body: Buffer.from(JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: { name, args } },
       })).toString('base64') });
@@ -458,6 +463,7 @@ describe('virtual workspace', () => {
       const current = await call('get_current_session_id', {});
       expect(current).toEqual({ ok: true, session_id: 'local-task', agent_kind: 'codex', working_dir: virtual });
       expect(await call('workspace_probe', { working_dir: current.working_dir })).toEqual({ ok: true, working_dir: virtual });
+      expect(await call('workspace_probe', JSON.stringify({ working_dir: virtual }))).toEqual({ ok: true, working_dir: virtual });
       expect(receivedDirectory).toBe(project);
       expect(context.workingDir).toBe(project);
       expect(workspace.workingDir).toBe(project);
@@ -551,6 +557,43 @@ describe('virtual workspace', () => {
     } finally {
       await client.close();
       await server.close();
+      await executor.close();
+    }
+  });
+
+  it('maps workbench project paths in direct and stringified generic-tool arguments', async () => {
+    const virtual = '/Users/agent/workspace';
+    const { project, executor } = setup(virtual);
+    const forwarded: Array<Record<string, unknown>> = [];
+    const router = createReverseHttpRouter({
+      executor,
+      mcpTarget: () => ({ url: 'http://unused', headers: {} }),
+      fetch: async (_url, options) => {
+        const request = JSON.parse(Buffer.from(options!.body as Uint8Array).toString()) as { params: { arguments: Record<string, unknown> } };
+        forwarded.push(request.params.arguments);
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    try {
+      for (const args of [
+        { project: virtual },
+        JSON.stringify({ project: virtual }),
+        { items: [{ project: virtual }] },
+      ]) {
+        await router({ method: 'POST', path: '/mcp/cindy_helper', headers: [], body: Buffer.from(JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'call_tool', arguments: {
+            name: args && typeof args === 'object' && !Array.isArray(args) && 'items' in args ? 'set_workbench_tasks' : 'set_workbench_task', args,
+          } },
+        })).toString('base64') });
+      }
+      expect(forwarded).toEqual([
+        { name: 'set_workbench_task', args: { project } },
+        { name: 'set_workbench_task', args: JSON.stringify({ project }) },
+        { name: 'set_workbench_tasks', args: { items: [{ project }] } },
+      ]);
+    } finally {
       await executor.close();
     }
   });
