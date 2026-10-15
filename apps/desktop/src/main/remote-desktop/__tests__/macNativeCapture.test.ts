@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { REMOTE_DESKTOP_OFFER_BUDGET } from '@cindy/device-link';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: h.spawn, execFile: vi.fn() }));
@@ -59,6 +60,42 @@ it('accepts frames up to the tier budget and stops capture beyond it', async () 
   await vi.waitFor(() => expect(auto.child.kill).toHaveBeenCalledOnce());
   auto.owner.stop();
   await expect(rejected).resolves.toBeNull();
+});
+
+it('waits out a slow helper start but bounds later frames to the steady-state wait', async () => {
+  vi.useFakeTimers();
+  const { child, owner } = setup();
+  const settings = { fps: 30, quality: 'auto', audio: false } as const;
+  const frame = { jpeg: 'abcd', cursor: null };
+  const first = owner.frame('1', true, settings);
+  await vi.advanceTimersByTimeAsync(REMOTE_DESKTOP_OFFER_BUDGET.captureReadyMs - 1000);
+  expect(child.kill).not.toHaveBeenCalled();
+  child.stdout.write(JSON.stringify(frame) + '\n');
+  await expect(first).resolves.toEqual(frame);
+
+  const next = owner.frame('1', true, settings);
+  await vi.advanceTimersByTimeAsync(3000);
+  await expect(next).resolves.toBeNull();
+  expect(child.kill).toHaveBeenCalledOnce();
+  expect(h.spawn).toHaveBeenCalledOnce();
+  vi.useRealTimers();
+});
+
+it('restarts quietly when the helper exits for an unlock, but reports other exits', async () => {
+  const settings = { fps: 30, quality: 'auto', audio: false } as const;
+  const unlocked = setup();
+  const pending = unlocked.owner.frame('1', true, settings);
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledOnce());
+  unlocked.child.emit('exit', 6);
+  await expect(pending).resolves.toBeNull();
+  void unlocked.owner.frame('1', true, settings);
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+
+  const crashed = setup();
+  const failing = crashed.owner.frame('1', true, settings);
+  await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(3));
+  crashed.child.emit('exit', 5);
+  await expect(failing).rejects.toThrow('DESKTOP_VIDEO_UNAVAILABLE');
 });
 
 it('captures only the 代输入 window, never the display, and returns to the display after', async () => {
