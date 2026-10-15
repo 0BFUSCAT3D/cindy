@@ -41,24 +41,30 @@ export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseL
     getAccountDeletionStatus,
     clearAccountDeletionReceipt,
     listAccounts,
-    enterLocalMode,
+    enterLocalMode: enterLocalModeFromAuth,
   } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const loadingRef = useRef(false);
+  const operationRef = useRef(0);
 
   useEffect(() => {
     if (!autoLoad || loginState || loadingRef.current) return;
+    const operation = ++operationRef.current;
     loadingRef.current = true;
     setIsLoading(true);
     void loadLoginState()
       .then((result) => {
+        if (operation !== operationRef.current) return;
         if (!result.success) {
           setErrorCode(result.code);
         }
       })
-      .catch(() => setErrorCode('AUTH_SERVICE_UNAVAILABLE'))
+      .catch(() => {
+        if (operation === operationRef.current) setErrorCode('AUTH_SERVICE_UNAVAILABLE');
+      })
       .finally(() => {
+        if (operation !== operationRef.current) return;
         loadingRef.current = false;
         setIsLoading(false);
       });
@@ -66,25 +72,30 @@ export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseL
 
   const dispatchWithResult = useCallback(
     async (action: DesktopLoginAction): Promise<{ success: boolean; code: string | null }> => {
-      if (loadingRef.current && action.type !== 'cancel-browser') {
+      if (loadingRef.current && action.type !== 'cancel-browser' && action.type !== 'back') {
         return { success: false, code: null };
       }
+      const operation = ++operationRef.current;
       loadingRef.current = true;
       setIsLoading(true);
       setErrorCode(null);
       try {
         const result = await dispatchLoginAction(action);
+        if (operation !== operationRef.current) return { success: false, code: null };
         if (!result.success) {
           setErrorCode(result.code === 'USER_CANCELLED' ? null : result.code);
           return { success: false, code: result.code };
         }
         return { success: true, code: null };
       } catch {
+        if (operation !== operationRef.current) return { success: false, code: null };
         setErrorCode('AUTH_REQUEST_FAILED');
         return { success: false, code: 'AUTH_REQUEST_FAILED' };
       } finally {
-        loadingRef.current = false;
-        setIsLoading(false);
+        if (operation === operationRef.current) {
+          loadingRef.current = false;
+          setIsLoading(false);
+        }
       }
     },
     [dispatchLoginAction],
@@ -95,6 +106,21 @@ export function useLogin({ autoLoad = true }: { autoLoad?: boolean } = {}): UseL
       (await dispatchWithResult(action)).success,
     [dispatchWithResult],
   );
+
+  const enterLocalMode = useCallback(async () => {
+    const operation = ++operationRef.current;
+    loadingRef.current = true;
+    setIsLoading(true);
+    setErrorCode(null);
+    try {
+      await enterLocalModeFromAuth();
+    } finally {
+      if (operation === operationRef.current) {
+        loadingRef.current = false;
+        setIsLoading(false);
+      }
+    }
+  }, [enterLocalModeFromAuth]);
 
   return {
     isLoading,

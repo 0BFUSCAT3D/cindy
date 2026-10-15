@@ -149,6 +149,8 @@ export function LoginPage({
       (loginState?.step === 'error' && loginState.code === 'RATE_LIMITED'));
   const handoff = useLoginHandoff();
   const isAddAccount = intent === 'add-account';
+  const canLeaveProviderLoad =
+    !loginState || loginState.step === 'error' || loginState.step === 'entry';
   const accountListRef = useRef<HTMLDivElement>(null);
   const accountCount = loginState?.step === 'account-selection' ? loginState.accounts.length : 0;
 
@@ -187,13 +189,13 @@ export function LoginPage({
    * `requireConsent(..., { deferConsentPersist: true })` 包裹:同意记录由**本函数**
    * 在会话切过去之后落,不能由 requireConsent 提前落(竞态原因见那里的注释)。
    *
-   * 这里**不看 isLoading**:error 步的逃生入口在「返回 / 重试」请求进行中也必须可用,
+   * 登录方式请求等待期间仍允许从准备态、error 步和离线入口离开,
    * 否则登录服务连不上时每点一次就把用户锁到超时。main 的 enter-local 会推进
    * loginFlowEpoch,在途登录动作迟到时以 AUTH_FLOW_SUPERSEDED 作废,不会回写状态。
    * 面板内入口仍由按钮 disabled 与协议门的 busy 复验挡住 in-flight。
    */
   const openLocalMode = async () => {
-    if (localModePendingRef.current || !enterLocalMode) return;
+    if ((isLoading && !canLeaveProviderLoad) || localModePendingRef.current || !enterLocalMode) return;
     markLocalModeTransition(true);
     try {
       // 必须走 AuthContext.enterLocalMode():它调同一条 IPC,并用返回值立刻改
@@ -208,9 +210,8 @@ export function LoginPage({
       persistPrivacyConsent();
     } catch (error) {
       // 两个调用点都是 requireConsent(() => void openLocalMode()):抛出去没人接,
-      // 会变成 unhandled rejection。IPC 失败(main 未就绪/通道异常)时停在登录页
-      // 就是正确兜底——用户可重试或改走正常登录;这里只记日志,不自造错误 UI
-      // (登录页的 errorCode 归 main 的 loginFlowState 所有,renderer 不旁路写)。
+      // 会变成 unhandled rejection。AuthContext 在 IPC 失败时保留可用表单，
+      // 或把已废弃请求的准备态转成既有错误页；这里仅记录失败，允许用户重试。
       log.error('enter not-signed-in session failed', error);
     } finally {
       markLocalModeTransition(false);
@@ -239,9 +240,19 @@ export function LoginPage({
     stamp: ConsentStamp;
     // true = 同意时不在弹窗回调里落同意记录,由 action 自己落(见 requireConsent)
     deferConsentPersist: boolean;
-    // true = 续接复验不看 in-flight(见 requireConsent)
-    allowDuringLoginRequest: boolean;
+    // Only a skip opened during provider loading may survive its completion.
+    awaitingProviders: boolean;
   } | null>(null);
+  const pendingConsent = pendingConsentAction.current;
+  const providerLoadSettled =
+    pendingConsent?.awaitingProviders &&
+    !credentialStoreFailed &&
+    (canLeaveProviderLoad || loginState?.step === 'identifier');
+  const currentConsentStamp = makeConsentStamp(
+    providerLoadSettled ? pendingConsent.stamp.step : loginState?.step,
+    isLoading && !(pendingConsent?.deferConsentPersist && (canLeaveProviderLoad || providerLoadSettled)),
+    loginState?.step === 'completed',
+  );
 
   /* 把「用户明示同意《隐私政策》」这个事实落到 main。
      它是 TapDB 采集的前置条件(见 main/analytics-settings-store.ts):没有这条
@@ -268,14 +279,11 @@ export function LoginPage({
    *   会当场发出 device_login),等 enter-local 完成再广播 allowed:false 已经晚了。
    *   于是「未登录态不上报」这条承诺在正式包上会被破一个窗口。让 openLocalMode
    *   先切会话、再落同意即可关掉这个窗口(此时 allowed 恒为 false)。
-   * @param options.allowDuringLoginRequest
-   *   true = 登录请求进行中也可过门续接。只有 error 步逃生入口用它:进入未登录状态
-   *   不是登录派发,「in-flight 时不追加并发派发」那条复验不适用;照常复验的话,
-   *   用户在重试转圈时点「跳过登录」并同意协议,动作会被静默丢弃。
+   *   登录方式等待期间的跳过入口不受登录派发的 busy 复验限制；其他入口仍照常复验。
    */
   const requireConsent = (
     action: () => void,
-    options?: { deferConsentPersist?: boolean; allowDuringLoginRequest?: boolean },
+    options?: { deferConsentPersist?: boolean },
   ) => {
     /* 会话切换进行中一律不接新的过门动作(codex 审查 P1 第二条,#907)。
        `auth:enter-local` 的 handler 要 await waitForSessionInvalidation() 与
@@ -288,7 +296,6 @@ export function LoginPage({
        杜绝了 persist 与派发 —— 会话都在切了,任何登录动作本来就该作废。 */
     if (localModePendingRef.current) return;
     const deferConsentPersist = options?.deferConsentPersist === true;
-    const allowDuringLoginRequest = options?.allowDuringLoginRequest === true;
     if (consentAccepted) {
       if (!deferConsentPersist) persistPrivacyConsent();
       action();
@@ -298,11 +305,11 @@ export function LoginPage({
       action,
       stamp: makeConsentStamp(
         loginState?.step,
-        allowDuringLoginRequest ? false : isLoading,
+        isLoading && !(deferConsentPersist && canLeaveProviderLoad),
         loginState?.step === 'completed',
       ),
       deferConsentPersist,
-      allowDuringLoginRequest,
+      awaitingProviders: deferConsentPersist && canLeaveProviderLoad && isLoading,
     };
     setConsentDialogOpen(true);
   };
@@ -319,12 +326,8 @@ export function LoginPage({
     if (!pending?.deferConsentPersist) persistPrivacyConsent();
     if (!pending) return;
     // 复验:弹窗期间 auth 状态被异步推进(登录完成/步骤切换/in-flight)则丢弃动作
-    const current = makeConsentStamp(
-      loginState?.step,
-      pending.allowDuringLoginRequest ? false : isLoading,
-      loginState?.step === 'completed',
-    );
-    if (canResumePendingConsent(pending.stamp, current)) pending.action();
+    if (pending.deferConsentPersist && credentialStoreFailed) return;
+    if (canResumePendingConsent(pending.stamp, currentConsentStamp)) pending.action();
   };
   const dismissConsent = () => {
     // 不同意 = 退回登录页,radio 保持未勾选
@@ -335,12 +338,13 @@ export function LoginPage({
   useEffect(() => {
     if (!consentDialogOpen) return;
     const pending = pendingConsentAction.current;
-    const step = loginState?.step ?? 'unknown';
-    if (step === 'completed' || (pending && step !== pending.stamp.step)) {
+    const step = currentConsentStamp.step;
+    if (step === 'completed' || (pending && step !== pending.stamp.step) ||
+      (pending?.deferConsentPersist && credentialStoreFailed)) {
       pendingConsentAction.current = null;
       setConsentDialogOpen(false);
     }
-  }, [consentDialogOpen, loginState?.step]);
+  }, [consentDialogOpen, currentConsentStamp.step, credentialStoreFailed]);
   const openLegalLink = (kind: 'terms' | 'privacy') => {
     // 链接经系统默认浏览器打开(shell:open-external 只放行 http(s),未登录可用);
     // URL 按构建区域分流(国内 protocol.xd.cn / 国际 protocol.xd.com)。
@@ -358,11 +362,9 @@ export function LoginPage({
     return () => reportLoginPanelUnmounted();
   }, [reportLoginPanelMounted, reportLoginPanelUnmounted]);
   // 「跳过登录」常驻入口在面板内(identifier 视图 SKIP_ENTRY 文字链);footer 仅保留
-  // error 步的逃生入口——登录服务不可用时用户仍能进入本地模式(既有产品保证)。
-  // 「返回 / 重试」都要重新连登录服务,连不上时会一直等到超时;逃生入口不随这次
-  // 等待禁用,否则用户每点一次返回就被锁在这一屏。
+  // 准备态、离线入口和 error 步的逃生入口，不依赖登录服务恢复。
   const showLocalModeFooter =
-    !isAddAccount && loginState?.step === 'error' && !credentialStoreFailed;
+    !isAddAccount && canLeaveProviderLoad && !credentialStoreFailed;
   // 面板底部预留恒取全流程最大值(footer 124;协议行 48 被其覆盖):step 切换时
   // 面板/品牌层零跳位(规则 7,codex 审查 P1)。browser-redirect/completed 维持 0,
   // 与迁移前 main 口径一致(该两步由品牌 overlay/跳转态接管)。
@@ -1276,15 +1278,47 @@ export function LoginPage({
   };
 
   const renderContent = (): { node: ReactNode; ssoOrgGroupY: boolean } => {
+    const backToEntry = () => {
+      if (localModePendingRef.current) return;
+      setCredentialHelpOpen(false);
+      clearError();
+      setIdentifierFormatError(null);
+      if (isAddAccount && onClose) onClose();
+      else void dispatch({ type: 'back' });
+    };
+    if (loginState?.step === 'entry') {
+      // No provider config has arrived yet. Offer an explicit retry without
+      // inventing server-enabled login methods or automatically starting a load.
+      return {
+        ssoOrgGroupY: false,
+        node: (
+          <LoginPanel testId="login-panel-entry">
+            {isLoading && (
+              <LoginBackButton
+                label={t('login.back')}
+                disabled={localModePending}
+                onClick={backToEntry}
+              />
+            )}
+            <LoginTitleBlock title={t('login.title')} subtitle={t('login.subtitle')} />
+            <LoginPrimaryButton loading={isLoading} onClick={reset} testId="login-entry-continue">
+              {t(isLoading ? 'login.working' : 'login.continue')}
+            </LoginPrimaryButton>
+          </LoginPanel>
+        ),
+      };
+    }
     // preparing 伪态(loginState 尚未就绪;figma 5.2 准备态:loading 64 @(308,193))
     if (!loginState) {
       return {
         ssoOrgGroupY: false,
         node: (
           <LoginPanel testId="login-panel-preparing">
-            {isAddAccount && onClose ? (
-              <LoginBackButton label={t('login.back')} onClick={onClose} />
-            ) : null}
+            <LoginBackButton
+              label={t('login.back')}
+              disabled={localModePending}
+              onClick={backToEntry}
+            />
             <LoginTitleBlock title={t('login.preparing')} subtitle={t('login.preparingSubtitle')} />
             <LoginLoadingRing y={LOADING_RING.yPreparing} label={t('login.working')} />
           </LoginPanel>
@@ -1295,19 +1329,25 @@ export function LoginPage({
       // A rate limit can cover a still-valid form. Dismiss only the notice:
       // resetting main's flow would discard its ticket and require another code.
       const resumeForm = rateLimited && loginState.step !== 'error';
-      const returnFromError = resumeForm
-        ? () => {
-            if (localModePendingRef.current) return;
-            setCredentialHelpOpen(false);
-            clearError();
-          }
-        : reset;
+      const returnFromError = () => {
+        if (localModePendingRef.current) return;
+        if (isAddAccount && onClose) {
+          backToEntry();
+        } else if (credentialStoreFailed) {
+          reset();
+        } else if (resumeForm) {
+          setCredentialHelpOpen(false);
+          clearError();
+        } else {
+          backToEntry();
+        }
+      };
       return {
         ssoOrgGroupY: false,
         node: (
           <LoginPanel testId="login-panel-error">
             <LoginBackButton
-              disabled={isLoading || localModePending}
+              disabled={localModePending || (credentialStoreFailed && isLoading && !isAddAccount)}
               label={t('login.back')}
               onClick={returnFromError}
             />
@@ -1330,7 +1370,7 @@ export function LoginPage({
             {(credentialStoreFailed || rateLimited) && (
               <LoginTextLink
                 disabled={isLoading}
-                onClick={returnFromError}
+                onClick={resumeForm ? returnFromError : reset}
                 testId="login-credential-recheck"
               >
                 {t(resumeForm ? 'login.back' : 'credentialStore.recheck')}
@@ -1426,7 +1466,6 @@ export function LoginPage({
           onClick={() =>
             requireConsent(() => void openLocalMode(), {
               deferConsentPersist: true,
-              allowDuringLoginRequest: true,
             })
           }
           aria-describedby="login-local-mode-description"
