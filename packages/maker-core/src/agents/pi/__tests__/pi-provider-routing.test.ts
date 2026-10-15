@@ -222,6 +222,7 @@ import { PiAgent } from "../index.js";
 import { PiRpcRequestTimeoutError } from "../rpc-client.js";
 import {
   PiNativeProviderProxyNotReadyError,
+  MAIN_OWNED_SEND_CONTEXT,
   type AgentDeps,
   type PiNativeProvidersResult,
 } from "../../base-agent.js";
@@ -5698,6 +5699,57 @@ describe("Pi provider-aware model routing", () => {
     // Retrying must not toggle the native read-only turn back to ordinary mode.
     expect(captured.requests.filter((request) => request.message === "/plan")).toHaveLength(1);
     expect(captured.requests.filter((request) => request.message === message.content)).toHaveLength(2);
+    await handle.close();
+  });
+
+  it.each(["pi install npm:fixture-extension", "pi update --all"].flatMap((command) =>
+    ["missing", "sync", "toggle"].map((failure) => ({ command, failure })),
+  ))("rejects $command before mutation when plan setup fails: $failure", async ({ command, failure }) => {
+    if (failure !== "missing") installPlanModeExtension();
+    const mutatePiManagedPackage = vi.fn(async () => ({ changed: true }));
+    const handle = await new PiAgent({
+      ...byomDeps(async () => ({ providers: [], env: {} })), mutatePiManagedPackage,
+    }).startSession({ sessionId: `plan-package-${failure}`, workingDir: cwd, model: "local-model" });
+    captured.requestHandler = async (request) => request.message === "/plan" || request.type === "get_entries"
+      ? { success: false, error: "plan setup failed" }
+      : { success: true, data: {} };
+    if (failure === "sync") {
+      // A failed native switch makes the mirror unknown; the send must resync.
+      await expect(handle.setPlanMode!(true)).rejects.toThrow("plan setup failed");
+    }
+    captured.requests = [];
+    await expect(handle.send({ type: "user", content: command }, {
+      planMode: true,
+      [MAIN_OWNED_SEND_CONTEXT]: { origin: { kind: "desktop" }, rawChannelText: command },
+    })).rejects.toThrow(failure === "missing" ? "extension is unavailable"
+      : failure === "sync" ? "persisted plan-mode state is unavailable" : "plan setup failed");
+    expect(mutatePiManagedPackage).not.toHaveBeenCalled();
+    expect(captured.requests.filter((request) => request.type === "prompt" && request.message !== "/plan")).toHaveLength(0);
+    await handle.close();
+  });
+
+  it("finishes plan setup before accepting a managed package mutation", async () => {
+    installPlanModeExtension();
+    const order: string[] = [];
+    const mutatePiManagedPackage = vi.fn(async () => {
+      order.push("mutation");
+      return { changed: true };
+    });
+    const handle = await new PiAgent({
+      ...byomDeps(async () => ({ providers: [], env: {} })), mutatePiManagedPackage,
+    }).startSession({ sessionId: "plan-package-order", workingDir: cwd, model: "local-model" });
+    captured.requestHandler = async (request) => {
+      if (request.type === "prompt") order.push(request.message === "/plan" ? "plan" : "receipt");
+      return { success: true, data: {} };
+    };
+    const command = "pi install npm:fixture-extension";
+    await handle.send({ type: "user", content: command }, {
+      planMode: true,
+      [MAIN_OWNED_SEND_CONTEXT]: { origin: { kind: "desktop" }, rawChannelText: command },
+    });
+    expect(order).toEqual(["plan", "mutation", "receipt"]);
+    expect(mutatePiManagedPackage).toHaveBeenCalledOnce();
+    expect(handle.getExecutionPlanMode!()).toBe(true);
     await handle.close();
   });
 

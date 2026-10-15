@@ -6138,6 +6138,7 @@ export class PiAgent extends BaseAgent {
       imageCount: number,
       hasAdditionalContent: boolean,
       mainOwnedContext?: MainOwnedSendContext,
+      beforeAccept?: () => Promise<void>,
     ): Promise<{ text: string; accepted: boolean }> => {
       if (!allowPiPackageManagement || imageCount > 0 || hasAdditionalContent) {
         return { text, accepted: false };
@@ -6163,6 +6164,7 @@ export class PiAgent extends BaseAgent {
         }
       }
       if (parsed && ('error' in parsed || parsed.action === 'command')) {
+        await beforeAccept?.();
         let receipt: Record<string, unknown>;
         try {
           receipt = 'error' in parsed ? { ok: false, error: parsed.error } : {
@@ -6181,6 +6183,7 @@ export class PiAgent extends BaseAgent {
       }
       const command = commandText === undefined ? undefined : parsePiManagedPackageCommand(commandText);
       if (!command) return { text, accepted: false };
+      await beforeAccept?.();
       const uiStrings = resolvePiExtensionUiStrings(this.deps);
       let outcome: PiManagedPackageCommandOutcome;
       let shouldInvalidateRuntimes = false;
@@ -7253,12 +7256,25 @@ export class PiAgent extends BaseAgent {
           assertImageInputSupported(images);
           setAutoReviewIntent(appendAutoReviewUserIntent(priorAutoReviewIntent(), message.content, sendOpts), { authority: autoReviewContext() });
           reviewIntentUpdated = true;
-          const managedPackageRoute = await routeManagedPackageCommand(
+          const applyRequestedPlanMode = async () => {
+            if (requestedPlanTurn === null) return;
+            if (ctx.isStreaming && requestedPlanTurn !== planModeActive) {
+              throw new TurnDispatchRejectedError('Cannot change Pi plan mode while a turn is active');
+            }
+            await applyPlanMode(requestedPlanTurn);
+          };
+          const managedPackageRoute = await runExclusivePiRpc(() => routeManagedPackageCommand(
             text,
             images.length,
             Array.isArray(message.content) && message.content.some((block) => block.type !== 'text'),
             sendOpts?.[MAIN_OWNED_SEND_CONTEXT],
-          );
+            async () => {
+              // Native plan setup can fail. Finish it before a host command's
+              // irreversible acceptance boundary, while holding the RPC chain.
+              await applyRequestedPlanMode();
+              rejectIfCancelled(sendOpts, 'send');
+            },
+          ));
           text = managedPackageRoute.text;
           // Starting a host-owned package mutation is this transaction's
           // acceptance boundary. A Stop that races after that point must not
@@ -7359,12 +7375,11 @@ export class PiAgent extends BaseAgent {
                   throw new TurnDispatchRejectedError('Pi RPC is unavailable before prompt dispatch');
                 }
               }
-              if (requestedPlanTurn !== null) {
-                if (ctx.isStreaming && requestedPlanTurn !== planModeActive) {
-                  throw new TurnDispatchRejectedError('Cannot change Pi plan mode while a turn is active');
-                }
-                await applyPlanMode(requestedPlanTurn);
-                if (!managedPackageRoute.accepted) rejectIfCancelled(sendOpts, 'send');
+              // Accepted host commands already passed plan setup before the
+              // mutation. A later toggle failure must not make them replayable.
+              if (!managedPackageRoute.accepted) {
+                await applyRequestedPlanMode();
+                rejectIfCancelled(sendOpts, 'send');
               }
               const pendingTurnStartToken = markPiHostTurnStartPending(ctx);
               promptRequestStarted = true;
