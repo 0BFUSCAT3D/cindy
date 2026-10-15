@@ -164,7 +164,7 @@ describe('Chat Server membership notices', () => {
     expect((await service.continueRound(roomId)).ok).toBe(false);
     expect(fixture.handle.mock.calls.some(([route]) => route.endsWith('/continue'))).toBe(false);
   });
-  function lifecycle(options: { supported?: boolean; kind?: string; role?: string; ownedBot?: boolean; failHide?: boolean; left?: boolean } = {}) {
+  function lifecycle(options: { supported?: boolean; kind?: string; role?: string; ownedBot?: boolean; failHide?: boolean; left?: boolean; dissolvedAt?: string } = {}) {
     const previous = fixture.handle.getMockImplementation()!;
     fixture.handle.mockImplementation((route, method, body) => {
       if (route === '/me') return { body: { actor: { id: selfId }, ...(options.supported === false ? {} : { capabilities: { groupLifecycleVersion: 1, conversationListStateVersion: 1 } }) } };
@@ -175,7 +175,7 @@ describe('Chat Server membership notices', () => {
       if (route.endsWith('/snapshot')) {
         if (options.left) return { status: 403, body: { error: { code: 'NOT_MEMBER' } } };
         const result = previous(route, method, body);
-        result.body.room = { ...result.body.room, kind: options.kind ?? 'group', revision: 1 };
+        result.body.room = { ...result.body.room, kind: options.kind ?? 'group', revision: 1, archived: false, dissolved_at: options.dissolvedAt ?? null };
         result.body.members = [{ id: options.ownedBot ? memberId : selfId, kind: options.ownedBot ? 'bot' : 'human', name: 'Fixture',
           ownerActorId: selfId, state: 'joined', role: options.role ?? 'owner' }];
         return result;
@@ -183,6 +183,14 @@ describe('Chat Server membership notices', () => {
       return previous(route, method, body);
     });
   }
+  it('projects dissolved lifecycle and reaction versions together without enabling invitations', async () => {
+    const dissolvedAt = '2026-10-15T00:00:00Z';
+    lifecycle({ dissolvedAt });
+    expect(await service.getGroup(roomId)).toMatchObject({ ok: true, group: {
+      archived: false, dissolvedAt, supportsGroupLeave: true, supportsDissolve: true, supportsListRemoval: true,
+      canInvite: false, reactionRevision: expect.any(Number), reactionRevisions: {},
+    } });
+  });
   it('never substitutes archive or delete on an old server', async () => {
     lifecycle({ supported: false });
     expect(await service.chatServer!.manage({ groupId: roomId, action: { type: 'dissolve', expectedRevision: 1 } })).toMatchObject({ ok: false, errorCode: 'LIFECYCLE_UNAVAILABLE' });

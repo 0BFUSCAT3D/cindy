@@ -12,7 +12,7 @@ import { shareSelectionStore } from '@/components/chat/shareSelectionStore';
 import { queryShareableMessageIds, stripInteractiveElements } from '@/lib/shareConversationImage';
 
 const mocks = vi.hoisted(() => ({
-  status: vi.fn(), react: vi.fn(), thread: vi.fn(), reply: vi.fn(), createInvite: vi.fn(), previewInvite: vi.fn(), acceptInvite: vi.fn(),
+  status: vi.fn(), react: vi.fn(), reactors: vi.fn(), thread: vi.fn(), reply: vi.fn(), createInvite: vi.fn(), previewInvite: vi.fn(), acceptInvite: vi.fn(),
   refresh: vi.fn(), ownerCurrent: true,
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
@@ -33,6 +33,7 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   mocks.status.mockResolvedValue({ enabled: true, connected: true });
   mocks.react.mockResolvedValue({ ok: true });
+  mocks.reactors.mockResolvedValue({ ok: true, reactors: [] });
   mocks.thread.mockResolvedValue({ ok: true, root: message, replies: [], hasMore: false });
   mocks.createInvite.mockResolvedValue({ ok: true, link: 'cindy://chat-invite/test', expiresAt: '' });
   mocks.previewInvite.mockResolvedValue({ ok: true, groupId: 'room', name: 'Invited group', inviterName: 'Host' });
@@ -211,6 +212,26 @@ describe('chat interaction controls', () => {
     expect(mocks.react).toHaveBeenCalledWith({ groupId: 'room', messageId: 'root', emoji: '👍', present: false });
   });
 
+  it('re-reads Thread reactors only when this message or the whole room changed, even if the page is not reloaded', async () => {
+    const thread = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
+      <ChatThreadPanel group={{ ...group, ...revisions }} rootId="root" onClose={vi.fn()} />;
+    const view = render(thread({ reactionRevision: 0, reactionRevisions: { root: 1 } }));
+    const rerender = (revisions: Pick<BotGroupDetail, 'reactionRevision' | 'reactionRevisions'>) =>
+      view.rerender(<Tooltip.Provider>{thread(revisions)}</Tooltip.Provider>);
+    await screen.findByRole('button', { name: k('reactionCount') });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(1));
+    // Someone reacted to another message: this badge keeps its reactors.
+    rerender({ reactionRevision: 0, reactionRevisions: { root: 1, other: 1 } });
+    await act(async () => {});
+    expect(mocks.reactors).toHaveBeenCalledTimes(1);
+    // Who reacted to this message changed.
+    rerender({ reactionRevision: 0, reactionRevisions: { root: 2, other: 1 } });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(2));
+    // A reset counts every message as changed.
+    rerender({ reactionRevision: 1, reactionRevisions: {} });
+    await waitFor(() => expect(mocks.reactors).toHaveBeenCalledTimes(3));
+  });
+
   it('uses the refreshed Thread root reaction state while the main timeline remains stale', async () => {
     mocks.thread.mockResolvedValueOnce({ ok: true, root: message, replies: [], hasMore: false })
       .mockResolvedValue({ ok: true, root: { ...message, reactions: [{ emoji: '👍', count: 1, me: false }] }, replies: [], hasMore: false });
@@ -219,7 +240,8 @@ describe('chat interaction controls', () => {
     expect(reaction.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(reaction);
     await waitFor(() => expect(screen.getByRole('button', { name: k('reactionCount') }).getAttribute('aria-pressed')).toBe('false'));
-    expect(screen.getByRole('button', { name: k('reactionCount') }).textContent).toContain('1');
+    // One reactor: the badge settles on its count once the reactor read disagrees (mock returns none).
+    await waitFor(() => expect(screen.getByRole('button', { name: k('reactionCount') }).textContent).toContain('1'));
     expect(group.messages[0].reactions?.[0].me).toBe(true);
   });
 
