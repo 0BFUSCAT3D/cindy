@@ -50,7 +50,14 @@ export function McpAppCard(props: McpAppCardProps) {
   return <InteractiveMcpAppCard {...props} />;
 }
 
-function InteractiveMcpAppCard({ deviceId, sessionId, clientId, title, active = true }: McpAppCardProps) {
+function InteractiveMcpAppCard({
+  deviceId,
+  sessionId,
+  clientId,
+  title,
+  active = true,
+  fallbackText,
+}: McpAppCardProps) {
   const { invoke } = useDeviceLink();
   const { colors, mode } = useTheme();
   const { t, i18n } = useTranslation();
@@ -196,6 +203,11 @@ function InteractiveMcpAppCard({ deviceId, sessionId, clientId, title, active = 
         )}
       </View>
       {error && <Text style={[styles.error, { color: colors.textSecondary }]}>{t(error)}</Text>}
+      {error && fallbackText ? (
+        <Text selectable style={[styles.historyText, { color: colors.textPrimary }]}>
+          {fallbackText}
+        </Text>
+      ) : null}
       {active && document && webSource ? (
         <WebView
           ref={webview}

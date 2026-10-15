@@ -5,7 +5,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { sharedTaskHostPeer } from '@cindy/device-link';
 const state = vi.hoisted(() => ({
   deviceId: undefined as string | undefined,
-  controllers: [] as Array<{ open: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>,
+  openError: undefined as Error | undefined,
+  controllers: [] as Array<{
+    open: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+    fail: (error: unknown) => void;
+  }>,
   intersections: new Map<Element, (entries: Array<{ isIntersecting: boolean }>) => void>(),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({
@@ -13,20 +18,41 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
   i18n: { language: 'en' },
 }) }));
 vi.mock('@/features/device-link/stickySessionOrigin', () => ({ getStickySessionDeviceId: () => state.deviceId }));
-vi.mock('@/components/ui/button', () => ({ Button: ({ children }: { children: React.ReactNode }) => <button>{children}</button> }));
+vi.mock('@/components/ui/button', () => ({
+  Button: ({ children, onClick }: React.ComponentProps<'button'>) => (
+    <button onClick={onClick}>{children}</button>
+  ),
+}));
 vi.mock('@/components/ui/spinner', () => ({ Spinner: () => null }));
 vi.mock('@cindy/maker-shared/mcp-app-controller', () => ({
   mcpAppFailureKey: () => 'mcpApps.loadFailed',
   McpAppController: class {
-    open = vi.fn(async () => ({ viewId: `view-${state.controllers.length}`, prefersBorder: true }));
+    open = vi.fn(async () => {
+      if (state.openError) throw state.openError;
+      return { viewId: `view-${state.controllers.length}`, prefersBorder: true };
+    });
     close = vi.fn(async () => {});
     context = vi.fn(async () => {});
     prepareNativeClose = vi.fn();
-    constructor() { state.controllers.push(this); }
+    constructor(
+      _invoke: unknown,
+      _session: string,
+      _client: string,
+      _post: unknown,
+      _message: unknown,
+      readonly fail: (error: unknown) => void,
+    ) { state.controllers.push(this); }
   },
 }));
 import { McpAppCard } from '../McpAppCard';
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); state.controllers = []; state.intersections.clear(); state.deviceId = undefined; });
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  state.controllers = [];
+  state.intersections.clear();
+  state.deviceId = undefined;
+  state.openError = undefined;
+});
 it.each([undefined, 'owner-device'])('releases offscreen history and opens visible owner cards on %s', async (deviceId) => {
   state.deviceId = deviceId;
   vi.stubGlobal('electronAPI', { maker: { mcpApps: vi.fn(async () => 'mounted-view') } });
@@ -87,6 +113,48 @@ it.each(['light', 'dark'])('shows saved text without mounting an interactive gue
     expect(container.textContent).toContain('mcpApps.sharedTaskReadOnly');
   } finally {
     await act(async () => root.unmount());
+    document.documentElement.classList.remove('dark');
+  }
+});
+
+it.each(['light', 'dark'])('keeps saved text readable after App failures and retry in %s mode', async (mode) => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  document.documentElement.classList.toggle('dark', mode === 'dark');
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  vi.stubGlobal('matchMedia', () => ({ matches: false }));
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(private callback: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+    observe(element: Element) { state.intersections.set(element, this.callback); }
+    disconnect() {}
+  });
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  state.openError = new Error('MCP_APP_SERVER_CHANGED');
+  const saved = 'Saved result\n<script>window.attack=true</script>';
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(
+      <McpAppCard sessionId="task" clientId="card" title="Saved form" fallbackText={saved} />,
+    ));
+    const [observed, intersect] = [...state.intersections.entries()][0];
+    await act(async () => intersect([{ isIntersecting: true }]));
+    expect(container.textContent).toContain(saved);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('mcpApps.loadFailed');
+    expect(container.querySelector('iframe, script')).toBeNull();
+    // Retry must remain observable even after the empty iframe area collapses.
+    expect(observed).toBe(container.querySelector('section'));
+    state.openError = undefined;
+    await act(async () => container.querySelector('button')!.click());
+    expect(container.textContent).not.toContain(saved);
+    expect(container.querySelector('iframe')).not.toBeNull();
+    expect(state.controllers).toHaveLength(2);
+    await act(async () => state.controllers[1].fail(new Error('offline')));
+    expect(container.textContent).toContain(saved);
+    expect(container.querySelector('iframe, script')).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
     document.documentElement.classList.remove('dark');
   }
 });

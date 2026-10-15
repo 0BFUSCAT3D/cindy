@@ -74,9 +74,10 @@ export function McpAppCard(props: McpAppCardProps) {
 }
 
 /** Untrusted HTML always sits across an origin boundary, without Cindy's preload. */
-function InteractiveMcpAppCard({ sessionId, clientId, title }: McpAppCardProps) {
+function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: McpAppCardProps) {
   const { t, i18n } = useTranslation();
   const appTitle = title || t('mcpApps.appName');
+  const card = useRef<HTMLElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<McpAppController | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
@@ -91,7 +92,8 @@ function InteractiveMcpAppCard({ sessionId, clientId, title }: McpAppCardProps) 
   localeRef.current = locale;
 
   useEffect(() => {
-    const element = root.current;
+    // A failed View collapses; observe the card so its retry stays visible.
+    const element = card.current;
     if (!element) return;
     let intersecting = false;
     const update = () => setVisible(intersecting && document.visibilityState !== 'hidden');
@@ -263,6 +265,7 @@ function InteractiveMcpAppCard({ sessionId, clientId, title }: McpAppCardProps) 
   }, [mode]);
   return (
     <section
+      ref={card}
       className={
         mode === 'fullscreen'
           ? 'fixed inset-4 z-50 flex flex-col rounded-xl border border-border bg-[var(--surface-elevated)] p-3'
@@ -296,10 +299,15 @@ function InteractiveMcpAppCard({ sessionId, clientId, title }: McpAppCardProps) 
           {t(error)}
         </p>
       )}
+      {error && fallbackText && (
+        <p className="whitespace-pre-wrap break-words px-3 pb-3 text-14 text-[var(--text-primary)]">
+          {fallbackText}
+        </p>
+      )}
       <div
         ref={root}
         style={{
-          height: mode === 'fullscreen' ? undefined : height,
+          height: error ? 0 : mode === 'fullscreen' ? undefined : height,
           flex: mode === 'fullscreen' ? 1 : undefined,
         }}
       />

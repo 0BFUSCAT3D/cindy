@@ -13,7 +13,8 @@ const state = vi.hoisted(() => ({
 vi.mock('react-native', () => ({
   View: ({ children }: { children: React.ReactNode }) => createElement('div', null, children),
   ActivityIndicator: () => null,
-  Pressable: () => createElement('button'),
+  Pressable: ({ children, onPress }: { children?: React.ReactNode; onPress?: () => void }) =>
+    createElement('button', { onClick: onPress }, children),
   Linking: { openURL: vi.fn() },
   StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 },
 }));
@@ -250,4 +251,22 @@ it.each(['light', 'dark'])('renders read-only guest history without invoking the
   await act(async () => root.render(<McpAppCard deviceId={deviceId} sessionId="task" clientId="pending" title="Pending form" />));
   expect(container.textContent).toContain('Pending form');
   expect(container.textContent).toContain('mcpApps.sharedTaskReadOnly');
+});
+
+it.each(['light', 'dark'])('keeps saved text readable after App failures and retry in %s mode', async (mode) => {
+  state.mode = mode;
+  state.invoke.mockRejectedValueOnce(new Error('MCP_APP_SERVER_CHANGED'));
+  const saved = 'Saved result\n<script>window.attack=true</script>';
+  await act(async () => root.render(
+    <McpAppCard deviceId="device" sessionId="task" clientId="card" title="Saved form" fallbackText={saved} />,
+  ));
+  expect(container.textContent).toContain(saved);
+  expect(container.textContent).toContain('mcpApps.loadFailed');
+  expect(container.querySelector('[data-testid="mcp-webview"], script')).toBeNull();
+  await act(async () => container.querySelector('button')!.click());
+  expect(container.textContent).not.toContain(saved);
+  expect(container.querySelector('[data-testid="mcp-webview"]')).not.toBeNull();
+  await act(async () => state.props.onError());
+  expect(container.textContent).toContain(saved);
+  expect(container.querySelector('[data-testid="mcp-webview"], script')).toBeNull();
 });
