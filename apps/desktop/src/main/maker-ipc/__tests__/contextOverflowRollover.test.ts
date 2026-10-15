@@ -17,6 +17,7 @@ import {
   shouldRebuildForContextPressure,
   shouldRebuildForModelWindowSwitch,
   shouldRebuildPiNativeSession,
+  type ContextOverflowRolloverDeps,
   type OverflowSourceMessage,
   withReplaySourceNotes,
 } from '../contextOverflowRollover';
@@ -359,7 +360,7 @@ describe('createContextOverflowRollover', () => {
       commitRebuild: vi.fn(async () => undefined),
       setPendingHandoff: vi.fn(),
       readPendingHandoffGeneration: vi.fn(() => 3),
-      replayUserMessage: vi.fn(async () => ({ accepted: true })),
+      replayUserMessage: vi.fn<ContextOverflowRolloverDeps['replayUserMessage']>(async () => ({ accepted: true })),
       readPiNativeCompatOverride: vi.fn((): Record<string, unknown> | undefined => undefined),
       recordPiNativeCompatOverride: vi.fn(async () => true),
       hasExternalRecoveryOwner: vi.fn(() => false),
@@ -1160,6 +1161,38 @@ describe('createContextOverflowRollover', () => {
       // 不发布 context-overflow 式的手递手重建文案。
       expect(deps.commitRebuild).not.toHaveBeenCalled();
       expect(deps.setPendingHandoff).not.toHaveBeenCalled();
+    });
+
+    it('preserves shared-member and device source notes on cache recovery', async () => {
+      const source = msg('user', 'original text', 'u1', 1);
+      source.agentMeta = { sharedTaskAuthor: { memberId: 'm-1', displayName: '张三' }, sourceDevice: { deviceId: 'phone-1', name: 'iPhone', platform: 'mobile' } };
+      const deps = makePiDeps([source]);
+      const rollover = createContextOverflowRollover(deps);
+      rollover.claim('s1');
+      expect(await rollover.tryRecover('s1', { ...receipt, reason: 'unsupported-request-option', message: rejection })).toBe(true);
+      const call = deps.replayUserMessage.mock.calls[0];
+      expect(call?.[1]).toBe('original text');
+      expect(JSON.stringify(call?.[2])).toContain('本条由共享任务成员「张三」');
+      expect(JSON.stringify(call?.[2])).toContain('[客户端说明]');
+      expect(JSON.stringify(call?.[2])).toContain('phone-1');
+      expect(call?.[3]).toMatchObject({ continueFromHistory: true, sourceCapabilitySelectionText: 'original text' });
+    });
+
+    it.each([{ instanceId: 'i2', generation: 1 }, { instanceId: 'i1', generation: 2 }])('keeps a fast replay failure after a new terminal aborts old recovery: %j', async next => {
+      const deps = makePiDeps([msg('user', 'original', 'u1', 1)]);
+      deps.getLiveSession.mockReturnValue({ instanceId: 'i1', getTurnGeneration: () => 1, isTurnRunning: () => false });
+      const rollover = createContextOverflowRollover(deps);
+      const old = { instanceId: 'i1', generation: 1 };
+      deps.replayUserMessage.mockImplementation(async () => {
+        expect(rollover.claim('s1', old)).toBe('in-flight');
+        expect(rollover.claim('s1', next)).toBe('idle');
+        return { accepted: true };
+      });
+      expect(rollover.claim('s1', old)).toBe('claimed');
+      expect(await rollover.tryRecover('s1', { ...receipt, reason: 'unsupported-request-option', message: rejection }, old)).toBe(true);
+      expect(deps.replayUserMessage).toHaveBeenCalledTimes(1);
+      expect(deps.onRebuilt).not.toHaveBeenCalled();
+      expect(rollover.claim('s1', next)).toBe('claimed');
     });
 
     it('leaves non-target 400s to the normal error surface', async () => {
@@ -2057,7 +2090,7 @@ describe('createContextOverflowRollover', () => {
           cancelAt('commit');
         },
         replayUserMessage: async (...args) => {
-          await deps.replayUserMessage();
+          await deps.replayUserMessage(...args);
           cancelAt('dispatch');
           expect(args[3]?.signal?.aborted).toBe(true);
           throw new Error('dispatch cancelled');
@@ -2279,4 +2312,11 @@ describe('withReplaySourceNotes', () => {
       withReplaySourceNotes('继续', { sourcePlugin: { pluginId: 'p' }, autoResume: true }),
     ).toBe('继续');
   });
+});
+
+it.each([undefined, { instanceId: 'i1', generation: 1 }])('keeps ordinary errors visible during recovery without starting a second claim: %j', identity => {
+  const rollover = createContextOverflowRollover({} as never);
+  expect(rollover.claim('s1', identity)).toBe('claimed');
+  expect(rollover.claim('s1', identity, false)).toBe('idle');
+  expect(rollover.claim('s1', identity)).toBe('in-flight');
 });

@@ -3,6 +3,7 @@ import type { TurnUsageContext } from '../turnUsageContext.js';
 import { Session, type AgentEvent, type AgentSessionHandle } from '@cindy/maker-core';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { handleSessionEvent, type SessionEventDependencies } from '../sessionEventPipeline.js';
+import { createContextOverflowRollover } from '../contextOverflowRollover.js';
 import { setMainLocale } from '../../i18n.js';
 import { installSessionTurnObserver } from '../sessionTurnObserver.js';
 import { onChannelTurn } from '../channelTurnSignal.js';
@@ -1972,5 +1973,55 @@ it('captures task completion inputs before queue advancement and binds only a su
   effects.fn('consumeLastTopLevelAssistantPersistId').mockReturnValueOnce('summary');
   h.emit(event('done', { status: 'completed', result: 'Summary' }));
   expect(effects.fn('markAssistantTurnCompleted')).toHaveBeenCalledWith('task', 'summary', undefined, ['bot-delegation-completion:a']);
+  await h.dispose();
+});
+
+
+it.each([
+  { sessionInstanceId: 'rebuilt', sessionTurnGeneration: 1, nonCache: false },
+  { sessionInstanceId: 'old', sessionTurnGeneration: 2, nonCache: false },
+  { sessionInstanceId: 'rebuilt', sessionTurnGeneration: 1, nonCache: true },
+])('surfaces a new retry terminal while recovery acceptance is pending: %j', async identity => {
+  const h = harness();
+  h.activity.setSessionInTurn('task', true);
+  const replayAccepted = deferred<boolean>();
+  const rollover = createContextOverflowRollover({} as never);
+  rollover.tryRecover = vi.fn(() => replayAccepted.promise);
+  (h.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = rollover;
+  const rejection = { reason: 'unsupported-request-option', message: '400: Unsupported parameter(s): prompt_cache_key' };
+  h.emit(event('error', rejection, { sessionInstanceId: 'old', sessionTurnGeneration: 1 }));
+  h.emit(event('error', rejection, { sessionInstanceId: 'old', sessionTurnGeneration: 1 }));
+  expect(effects.fn('onTurnErrorEvent')).not.toHaveBeenCalled();
+  h.emit(event('error', identity.nonCache ? { isTerminal: true, message: 'Network failure' } : rejection, identity));
+  replayAccepted.resolve(true);
+  await microtasks();
+  expect(effects.fn('onTurnErrorEvent')).toHaveBeenCalledTimes(1);
+  expect(effects.fn('broadcast').mock.calls.some(call => call[1]?.event?.sessionInstanceId === identity.sessionInstanceId
+    && call[1]?.event?.sessionTurnGeneration === identity.sessionTurnGeneration)).toBe(true);
+  expect(rollover.tryRecover).toHaveBeenCalledTimes(1);
+  expect(h.deps.overflowSuppressedBroadcasts.size).toBe(0);
+  await h.dispose();
+});
+
+
+it.each([true, false])('settles only the claimed broadcast after duplicate terminals (recovered=%s)', async recovered => {
+  const h = harness();
+  h.activity.setSessionInTurn('task', true);
+  const result = deferred<boolean>();
+  const rollover = createContextOverflowRollover({} as never);
+  rollover.tryRecover = vi.fn(() => result.promise);
+  (h.deps as { contextOverflowRolloverHolder: unknown }).contextOverflowRolloverHolder = rollover;
+  const rejection = { reason: 'unsupported-request-option', message: '400: Unsupported parameter(s): prompt_cache_key' };
+  const identity = { sessionInstanceId: 'old', sessionTurnGeneration: 1 };
+  h.emit(event('error', rejection, identity));
+  h.emit(event('error', rejection, identity));
+  // Another owner may have stashed its event before the old promise settles.
+  const other = { event: event('error', rejection, { sessionInstanceId: 'other', sessionTurnGeneration: 2 }) };
+  h.deps.overflowSuppressedBroadcasts.set('task', other as never);
+  result.resolve(recovered);
+  await microtasks();
+  expect(h.deps.overflowSuppressedBroadcasts.get('task')).toBe(other);
+  expect(effects.fn('onTurnErrorEvent')).toHaveBeenCalledTimes(recovered ? 0 : 1);
+  if (!recovered) expect(effects.fn('broadcast').mock.calls.some(call => call[1]?.event?.sessionInstanceId === 'old')).toBe(true);
   await h.dispose();
 });

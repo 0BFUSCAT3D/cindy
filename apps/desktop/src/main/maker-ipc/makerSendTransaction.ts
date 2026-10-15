@@ -1546,6 +1546,10 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         const retryTranscriptUserEntryId = sess.agentKind === 'pi' && so.retryUserClientId
           ? await deps.readPiUserEntry?.(sessionId, so.retryUserClientId)
           : undefined;
+        // Automatic cache replay replaces the native user entry without adding
+        // another Cindy row. Keep later manual Retry attached to the active entry.
+        const transcriptUserClientId = persistUserMessage?.clientId
+          ?? (so[PI_CACHE_RECOVERY_EXPECTATION] ? so.retryUserClientId : undefined);
         // Other-task mail is the only non-scheduler turn whose reply IM relays (channelTurnSignal).
         const sendResult = await withChannelTurnSource(sess.id, channelTurnSourceFor(
           persistUserMessage?.origin,
@@ -1591,20 +1595,20 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
             ? { planMode: (createOpts as { planMode: boolean }).planMode }
             : {}),
           ...(sess.agentKind === 'pi' &&
-          persistUserMessage &&
+          transcriptUserClientId &&
           deps.linkPiUserEntry
             ? {
                 onTranscriptUserEntry: async (piEntryId: string) => {
                   try {
                     const linked = await deps.linkPiUserEntry?.(
                       sessionId,
-                      persistUserMessage.clientId,
+                      transcriptUserClientId,
                       piEntryId,
                     );
                     if (linked === false) {
                       deps.log.warn('send: Pi transcript entry target row missing', {
                         sessionId,
-                        clientId: persistUserMessage.clientId,
+                        clientId: transcriptUserClientId,
                         piEntryId,
                       });
                     }
@@ -1613,7 +1617,7 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
                     // 把发送结果翻成 rejected，避免 UI 重发同一条消息。
                     deps.log.warn('send: Pi transcript entry link failed (non-fatal)', {
                       sessionId,
-                      clientId: persistUserMessage.clientId,
+                      clientId: transcriptUserClientId,
                       piEntryId,
                       err: err instanceof Error ? err.message : String(err),
                     });

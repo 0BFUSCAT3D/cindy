@@ -511,6 +511,8 @@ export function canContinueContextRecovery(row: { source?: string | null; botRol
   return row.source === 'desktop' || isCanonicalBotContext(row);
 }
 
+type RecoveryTurnIdentity = { instanceId?: string; generation?: number };
+
 export type OverflowClaimResult = 'claimed' | 'in-flight' | 'idle';
 
 export type ModelWindowSwitchPreparationResult =
@@ -553,7 +555,7 @@ export function shouldRebuildForModelWindowSwitch(input: {
 }
 
 export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps): {
-  claim(sessionId: string): OverflowClaimResult;
+  claim(sessionId: string, turnIdentity?: RecoveryTurnIdentity, recoverable?: boolean): OverflowClaimResult;
   cancelRecovery(sessionId: string): void;
   tryRecover(
     sessionId: string,
@@ -582,6 +584,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
   ): Promise<ModelWindowSwitchPreparationResult>;
 } {
   const inFlight = new Map<string, AbortController | undefined>();
+  const claimTurns = new WeakMap<AbortController, RecoveryTurnIdentity>();
   // One automatic continuation per source input, not one per replacement thread.
   const continuedInputs = new Map<string, string>();
   // 自愈成功时那一轮的 turn 身份：同身份再次到达 = 同一轮的重复终态投递（丢弃）；
@@ -720,7 +723,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         const replay = await deps.replayUserMessage(
           sessionId,
           plan.sourceUserContent,
-          plan.sourceUserAgentFacingWireContent,
+          replayWireWithSourceNotes(sourceWire, plan),
           {
             signal,
             // 保留同一 Pi 会话历史：失败轮的 error assistant 会被 pi-ai 序列化时
@@ -1189,9 +1192,30 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       }
     },
 
-    claim(sessionId: string): OverflowClaimResult {
-      if (inFlight.has(sessionId)) return 'in-flight';
-      inFlight.set(sessionId, new AbortController());
+    claim(sessionId: string, turnIdentity?: RecoveryTurnIdentity, recoverable = true): OverflowClaimResult {
+      if (inFlight.has(sessionId)) {
+        const controller = inFlight.get(sessionId);
+        const previous = controller && claimTurns.get(controller);
+        const changedTurn = previous && turnIdentity && (
+          (previous.instanceId !== undefined && turnIdentity.instanceId !== undefined
+            && previous.instanceId !== turnIdentity.instanceId)
+          || (previous.generation !== undefined && turnIdentity.generation !== undefined
+            && previous.generation !== turnIdentity.generation)
+        );
+        if (changedTurn) {
+          // The replay already ended. Preserve its error and prevent the older
+          // acceptance callback from clearing it; never start another recovery.
+          controller?.abort();
+          return 'idle';
+        }
+        // Non-recoverable errors keep their existing normal error path.
+        // They are observed here only to abort a known older recovery.
+        return recoverable ? 'in-flight' : 'idle';
+      }
+      if (!recoverable) return 'idle';
+      const controller = new AbortController();
+      if (turnIdentity) claimTurns.set(controller, turnIdentity);
+      inFlight.set(sessionId, controller);
       return 'claimed';
     },
 
@@ -1217,6 +1241,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
           && (deps.hasExternalRecoveryOwner?.(sessionId) ?? false);
         const claim = inFlight.get(sessionId) ?? new AbortController();
         inFlight.set(sessionId, claim);
+        if (turnIdentity && !claimTurns.has(claim)) claimTurns.set(claim, turnIdentity);
         const inputSignal = deps.getRecoveryAbortSignal?.(sessionId);
         signal = inputSignal ? AbortSignal.any([claim.signal, inputSignal]) : claim.signal;
         if (deps.withSessionLock) {

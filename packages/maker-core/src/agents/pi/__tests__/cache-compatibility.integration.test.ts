@@ -13,7 +13,7 @@ const binary = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..
 const logger: Logger = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, fatal() {}, child: () => logger };
 
 describe.skipIf(!existsSync(binary))('Pi cache learning over real HTTP and native RPC', () => {
-  it.each(['normal', 'api.openai.com'])('rebuilds with a learned fix and preserves one active input: %s', async (suffix) => {
+  it.each(['normal', 'api.openai.com', 'retry-failure'])('rebuilds with a learned fix and preserves one active input: %s', async (suffix) => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'cindy-cache-integration-'));
     const received: Array<Record<string, unknown>> = [];
     let rejectCacheFields = true;
@@ -25,6 +25,11 @@ describe.skipIf(!existsSync(binary))('Pi cache learning over real HTTP and nativ
       if (rejectCacheFields && (data.prompt_cache_key !== undefined || data.prompt_cache_retention !== undefined)) {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ message: 'Validation: Unsupported parameter(s): prompt_cache_key', type: 'invalid_request_error' }));
+        return;
+      }
+      if (suffix === 'retry-failure' && received.length === 2) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Non-cache provider validation failure', type: 'invalid_request_error' }));
         return;
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -71,7 +76,21 @@ describe.skipIf(!existsSync(binary))('Pi cache learning over real HTTP and nativ
       handle = await agent.startSession({ ...opts, sessionId: 'rebuilt', resumeSessionId });
       await expect(handle.send({ type: 'user', content: 'Reply OK' }, { [PI_CACHE_RECOVERY_EXPECTATION]: { ...learned, routeKey: '0'.repeat(64) }, retryTranscriptUserEntryId: userEntry })).rejects.toThrow(/not applied to the expected route/);
       expect(received).toHaveLength(1);
-      const succeeded = await run({ [PI_CACHE_RECOVERY_EXPECTATION]: learned, retryTranscriptUserEntryId: userEntry });
+      const originalUserEntry = userEntry;
+      const succeeded = await run({
+        [PI_CACHE_RECOVERY_EXPECTATION]: learned, retryTranscriptUserEntryId: userEntry,
+        // Desktop relinks the existing user row to this replacement entry.
+        onTranscriptUserEntry: async id => { userEntry = id; },
+      });
+      expect(userEntry).not.toBe(originalUserEntry);
+      if (suffix === 'retry-failure') {
+        expect(succeeded.some(event => event.type === 'error')).toBe(true);
+        const manual = await run({ retryTranscriptUserEntryId: userEntry });
+        expect(manual.some(event => event.type === 'error')).toBe(false);
+        expect(received).toHaveLength(3);
+        expect((received[2].messages as Array<{ role: string }>).filter(m => m.role === 'user')).toHaveLength(1);
+        return;
+      }
       expect(succeeded.some((event) => event.type === 'error')).toBe(false);
       expect(succeeded.find((event) => event.type === 'done')?.data).toMatchObject({ result: 'OK' });
       expect(received).toHaveLength(2);
