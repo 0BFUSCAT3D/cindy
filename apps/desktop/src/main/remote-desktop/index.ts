@@ -465,9 +465,9 @@ async function offer(
     nativeOverlay =
       Boolean(handoff) ||
       (cursorOverlay === true &&
-        (process.platform === 'darwin' ||
-          (process.platform === 'win32' && nativeAvailable) ||
-          (hyprland && (await readLinuxCursorSupport()))));
+      (process.platform === 'darwin' ||
+        (process.platform === 'win32' && nativeAvailable) ||
+        (hyprland && (await readLinuxCursorSupport()))));
     if (!current() || host !== currentHost || currentHost.isDestroyed())
       throw new Error('DESKTOP_LEASE_EXPIRED');
     nativeSettings = settings;
@@ -1026,9 +1026,7 @@ export function registerRemoteDesktopIpc(
   let sessionTransition = 0;
   const sessionChanged = (unlock = false) => {
     const transition = ++sessionTransition;
-    // Do not retain pixels from the previous OS session state; a pending first
-    // frame continues on a helper started for the new state.
-    nativeCapture.restart();
+    nativeCapture.stop(); // do not retain pixels from the previous OS session state
     hyprlandCapture.stop();
     linuxAudio.stop(); // Clear buffered PCM as well as pixels across lock transitions.
     if (remoteDesktop.state?.controlling) {

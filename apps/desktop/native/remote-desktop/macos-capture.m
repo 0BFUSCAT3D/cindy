@@ -114,15 +114,6 @@ static NSDictionary *readCursor(CGRect bounds) {
   };
 }
 
-static BOOL sessionLocked(void) {
-  CFDictionaryRef session = CGSessionCopyCurrentDictionary();
-  if (!session) return NO;
-  CFBooleanRef locked = CFDictionaryGetValue(session, CFSTR("CGSSessionScreenIsLocked"));
-  BOOL result = locked && CFGetTypeID(locked) == CFBooleanGetTypeID() && CFBooleanGetValue(locked);
-  CFRelease(session);
-  return result;
-}
-
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     // Overlay: <display> cursor-overlay <fps> <quality> <physical max edge, 0 = logical> <max JPEG bytes> [excluded | window:<id>]
@@ -159,13 +150,7 @@ int main(int argc, const char *argv[]) {
     StartStream start = (StartStream)dlsym(RTLD_DEFAULT, "CGDisplayStreamStart");
     const CFStringRef *intervalKey = dlsym(RTLD_DEFAULT, "kCGDisplayStreamMinimumFrameTime");
     const CFStringRef *cursorKey = dlsym(RTLD_DEFAULT, "kCGDisplayStreamShowCursor");
-    BOOL legacy = create && start && intervalKey && cursorKey;
-    // ScreenCaptureKit delivers no frames while the session is locked. The lock
-    // screen covers every app window, so the excluded Cindy windows cannot appear
-    // in the display stream; exit on unlock so the parent restarts with the filter.
-    BOOL lockedStart = excluded.length && legacy && sessionLocked();
-    if (lockedStart) excluded = @"";
-    if (!excluded.length && !onlyWindow && !legacy) return 4;
+    if (!excluded.length && !onlyWindow && (!create || !start || !intervalKey || !cursorKey)) return 4;
     CGDirectDisplayID display = (uint32_t)value;
     size_t width = CGDisplayPixelsWide(display), height = CGDisplayPixelsHigh(display);
     if (!width || !height) return 2;
@@ -215,8 +200,6 @@ int main(int argc, const char *argv[]) {
     };
     void (^reply)(void) = ^{
       if (!requested || !latest) return;
-      // An unfiltered lock-screen stream must never deliver a frame after unlock.
-      if (lockedStart && !sessionLocked()) _exit(6);
       requested = NO;
       NSData *data;
       if (overlay) {
@@ -303,8 +286,7 @@ int main(int argc, const char *argv[]) {
     } else if (excluded.length) {
       NSArray<NSString *> *ids = [excluded componentsSeparatedByString:@","];
       // Explicit exclusion is mandatory: NSWindowSharingNone alone is ignored
-      // by modern ScreenCaptureKit. Never fall back to an unfiltered stream
-      // while unlocked; the locked case is handled before reaching this path.
+      // by modern ScreenCaptureKit. Never fall back to an unfiltered stream.
       [SCShareableContent getShareableContentExcludingDesktopWindows:NO onScreenWindowsOnly:NO
         completionHandler:^(SCShareableContent *content, NSError *error) {
           if (error) _exit(5);
@@ -359,7 +341,6 @@ int main(int argc, const char *argv[]) {
     dispatch_source_set_timer(watchdog, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), NSEC_PER_SEC, 0);
     dispatch_source_set_event_handler(watchdog, ^{
       if (!atomic_load(&awaitingFrame) && time(NULL) - atomic_load(&lastRequest) > 5) _exit(0);
-      if (lockedStart && !sessionLocked()) _exit(6);
     });
     dispatch_resume(watchdog);
     dispatch_main();

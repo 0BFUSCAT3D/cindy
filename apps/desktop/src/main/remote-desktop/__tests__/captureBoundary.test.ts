@@ -41,7 +41,6 @@ const h = vi.hoisted(() => ({
   releaseControl: vi.fn(),
   inputFailure: null as null | (() => void),
   nativeStop: vi.fn(),
-  nativeRestart: vi.fn(),
   nativeFrame: vi.fn(async () => 'frame'),
   setWindow: vi.fn(),
   handoff: null as null | { windowId: number; pid: number },
@@ -201,7 +200,6 @@ vi.mock('../controller', () => ({
 vi.mock('../nativeCapture', () => ({
   NativeDesktopCapture: class {
     stop = h.nativeStop;
-    restart = h.nativeRestart;
     frame = h.nativeFrame;
     setWindow = h.setWindow;
   },
@@ -287,7 +285,6 @@ beforeEach(() => {
   h.stop.mockClear();
   h.releaseControl.mockClear();
   h.nativeStop.mockClear();
-  h.nativeRestart.mockClear();
   h.nativeFrame.mockClear();
   h.setWindow.mockClear();
   h.handoff = null;
@@ -1122,14 +1119,10 @@ it('does not start Linux audio while locked or unknown, and denies samples after
   await expect(read(event(), 'lease')).rejects.toThrow('PERMISSION_DENIED');
   expect(h.audioRead).not.toHaveBeenCalled();
   h.audioStop.mockClear();
-  h.nativeStop.mockClear();
   h.powerHandlers.get('lock-screen')!();
   expect(h.audioStop).toHaveBeenCalledOnce();
   h.powerHandlers.get('unlock-screen')!();
   expect(h.audioStop).toHaveBeenCalledTimes(2);
-  // Native capture restarts rather than stops, so a pending first frame survives.
-  expect(h.nativeRestart).toHaveBeenCalledTimes(2);
-  expect(h.nativeStop).not.toHaveBeenCalled();
   expect(h.audioStart).not.toHaveBeenCalled();
 });
 
