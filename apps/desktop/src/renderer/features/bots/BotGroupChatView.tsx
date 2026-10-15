@@ -76,7 +76,7 @@ import { BotGroupAvatarStack } from './BotGroupAvatars';
 import { botGroupAttachmentScope, splitBotGroupMessageAttachments } from './botGroupAttachments';
 import { BotGroupComposer } from './BotGroupComposer';
 import { BotGroupQuoteBlock } from './BotGroupQuote';
-import { ChatInviteButton, ChatMessageActions } from './ChatServerControls';
+import { ChatInviteButton, ChatMessageActions, messageReactionRevision } from './ChatServerControls';
 import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
@@ -907,7 +907,7 @@ function BotGroupChatContent({ groupId }: { groupId: string }) {
                   quoteDisplay={message.quote ? resolveBotGroupQuote(message.quote, quoteSources) : undefined}
                   onLocateQuote={message.quote ? () => void locateQuoted(message.quote!) : undefined}
                   actions={message.kind === 'message' ? <ChatMessageActions
-                    groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message}
+                    groupId={group.serverBacked ? group.id : undefined} shareScope={shareScope} message={message} members={group.members} reactionRevision={messageReactionRevision(group, message.id)}
                     align={message.authorKind === 'user' && message.isSelf !== false ? 'right' : 'left'}
                     onQuote={group.serverBacked && !group.archived && isBotGroupMessageQuotable(message)
                       ? () => setQuoteDraft(botGroupQuoteFromMessage(message)) : undefined}
