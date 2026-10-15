@@ -214,7 +214,11 @@ export function BotGroupComposer({
   // Same @ picker in the group and in a 话题; the 话题 also resolves the server's aliases.
   const mention = useBotGroupMentionPicker({
     text,
-    onTextChange: setText,
+    onTextChange: (value) => {
+      // A 话题 reply is a new attempt as soon as its text changes (even if typed back the same).
+      if (thread && attemptRef.current && attemptRef.current.text !== value.trim()) attemptRef.current = null;
+      setText(value);
+    },
     members,
     textareaRef,
     allLabels: thread ? threadAllLabels : undefined,
