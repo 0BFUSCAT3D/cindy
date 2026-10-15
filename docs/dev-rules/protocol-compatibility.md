@@ -863,18 +863,20 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `agentDeviceId`(null = A)。共享任务访客不能换电脑。
   桌面远程控制 A 上的已建任务(2026-10-09)与手机同口径：A 投影的任务带 `agentDeviceId` 字段(含 null)才开放，
   控制端直接经 device-link 读第三台电脑的 `maker:provider:list`，A 自己的目录照远程控制列全部供应商，换位置同样
-  带 `agentDeviceId`(null = A)，换后档位记在控制端为那台电脑单独记的一份(改回 A 时写 A 的镜像)。A 收到的分享与
-  控制端自己作为新的落点暂不在桌面控制端列出；Agent 正在控制端读不到目录的位置上时维持原有的 A 目录列表。
-  例外(2026-10-10)：Agent 当前 / 挂着的位置是分享(`share:<id>`)、且控制端自己的已收到列表里也有这条(分享按账号
-  授予，同账号电脑收到的是同一份)时，控制端经自己的分享通道读那份目录与 Agent 能力，模型按钮按分享显示，候选里
-  只并进这一条分享；不经 A、不新增 channel。控制端没收到时维持原样。
+  带 `agentDeviceId`(null = A)，换后档位记在控制端为那台电脑单独记的一份(改回 A 时写 A 的镜像)。
+  同账号收到的可用分享全部列为候选(2026-10-14)，不要求任务已在分享上运行；已暂停或已移除的分享仅保留当前 /
+  待切换位置，沿用既有不可用提示。分享按账号授予，控制端复用自己的已收到列表、分享目录与 Agent 能力通道，
+  新落点再经既有 `maker:provider-share:received-catalogs` 核对被控端已加载且未暂停该分享；
+  跨区启用标记是设备本地状态，不能仅凭控制端名单放行，也不触发新的跨区授权。查询失败时仅保留当前 / 待切换位置。
+  创建、换位置和发送仍交给任务所在的 A 校验与执行，不新增 channel 或授权。控制端自己暂不作为新落点列出；
+  Agent 正在控制端读不到目录的位置上时维持原有的 A 目录列表。控制端尚未收到的分享不凭任务记录授予访问。
   实现见 `apps/desktop/src/renderer/lib/controlledTaskAgentLocation.ts`，回归见
   `controlledTaskRemoteAgentPanel.test.tsx` 与 `remoteAgentRelocationWiring.test.ts`。
   桌面远程控制下新建任务(建到 A 上，2026-10-09)同样开放：判据与手机新建相同(A 的 `maker:provider:list` 带
   `remoteInvocationEnabled` 布尔标记，共享任务访客与 SSH 不开放)，模型面板先列 A 的全部供应商、再列其他同账号电脑
   已开放的供应商；选中后草稿的模型目录改按那台，`maker:create-session` 带 `agentDeviceId`，权限档沿用 A 的草稿值，
   不把那台的模型写进 A 的新建草稿记忆；默认来源解析、提交的来源与协同 Worker 收窄都只用那台已开放的供应商。
-  落点范围与已建任务相同(A 收到的分享与控制端自己暂不列出)；协同草稿与它不互斥(与桌面本机新建一致)。回归见
+  落点范围与已建任务相同(包括同账号可用分享，控制端自己暂不列出)；协同草稿与它不互斥(与桌面本机新建一致)。回归见
   `controlledDraftRemoteAgentWiring.test.ts`。
   Mobile 新建任务(2026-10-08)同样列出这些供应商与分享来的供应商，选中后 `maker:create-session` 带
   `agentDeviceId`(与桌面新建同一参数，A 已接受)；只有 A 的 `maker:provider:list` 带 `remoteInvocationEnabled`

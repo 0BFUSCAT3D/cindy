@@ -141,7 +141,7 @@ describe('被控电脑上的任务:换 Agent 所在电脑', () => {
     expect(chatInputSource).toContain('device: deviceLinkDeviceName || deviceLinkDeviceId,');
   });
 
-  it('会话视图:候选电脑去掉被控电脑本身,不并入本机收到的分享;目录跟随 Agent 所在电脑', () => {
+  it('会话视图:候选电脑去掉被控电脑本身,并入全部可用分享;目录跟随 Agent 所在电脑', () => {
     expect(sessionViewSource).toContain('controlledTaskSupportsAgentLocation(session) &&');
     expect(sessionViewSource).toContain('!isSharedTaskPeer(remoteDeviceId) &&');
     const branch = sessionViewSource.indexOf(
@@ -153,14 +153,14 @@ describe('被控电脑上的任务:换 Agent 所在电脑', () => {
       sessionViewSource.indexOf(': undefined;', branch),
     );
     expect(remoteBranch).toContain('selectControlledTaskAgentDevices({');
-    expect(remoteBranch).not.toContain('providerShareDevices');
+    expect(remoteBranch).toContain('shareDevices: providerShareDevices,');
     expect(sessionViewSource).toContain(
       'const catalogDeviceId = controlledAgentDeviceId ?? remoteDeviceId ?? agentDeviceId;',
     );
     expect(sessionViewSource).toContain('deviceLinkDeviceName={controlledDeviceName}');
   });
 
-  it('Agent 在本机也收到了的分享上:按分享目录显示,只把那一条分享并进候选', () => {
+  it('Agent 在分享上:按分享目录显示,暂停的当前位置仍保留,其他可用分享也能选', () => {
     // 2026-10-10 用户反馈:A 远控 B 上用分享供应商的任务,模型按钮显示「模型信息暂不可用」。
     const start = sessionViewSource.indexOf('const controlledShareIds = useMemo(');
     expect(start).toBeGreaterThan(0);
@@ -178,7 +178,8 @@ describe('被控电脑上的任务:换 Agent 所在电脑', () => {
       branch,
       sessionViewSource.indexOf(': undefined;', branch),
     );
-    expect(remoteBranch).toContain('shareDevices: [...(controlledShareIds ?? [])]');
+    expect(remoteBranch).toContain('shareDevices: providerShareDevices,');
+    expect(sessionViewSource).toContain('useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId], remoteDeviceId)');
     // ChatInput 只认调用方放进候选的分享。
     const inputStart = chatInputSource.indexOf('const deviceLinkAgentLocation =');
     expect(chatInputSource.slice(inputStart, inputStart + 800)).toContain(
