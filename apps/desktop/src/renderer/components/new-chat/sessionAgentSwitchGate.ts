@@ -1,8 +1,8 @@
 /**
  * 会话换 Agent / 换电脑的入口门控。
  *
- * 协同任务默认不开放跨电脑切换(handler 对 orcaRole 拒 UNSUPPORTED_CAPABILITY)。
- * 唯一产品例外:Orca Lead 的 Agent 落在另一台电脑、且那台目录读取失败时,只开放切回本机。
+ * Orca Lead/Worker 可在当前 Agent 位置使用切换事务；用户发起的位置迁移仍受 main 限制。
+ * Lead 的远端目录读取失败时，额外开放只回任务本机的入口。
  */
 
 export type RemoteCatalogStatus = 'idle' | 'loading' | 'error' | 'ready';
@@ -22,12 +22,14 @@ export function orcaLeadLocalFallbackOpen(input: {
 
 export function sessionAgentSwitchSupported(input: {
   sessionOrcaRole: string | null | undefined;
+  runtimeAgentKind: string | null | undefined;
   hostSwitchCapable: boolean;
-  orcaLeadLocalFallback: boolean;
 }): boolean {
-  if (!input.hostSwitchCapable) return false;
-  if (input.sessionOrcaRole === null) return true;
-  return input.orcaLeadLocalFallback;
+  return (
+    input.sessionOrcaRole !== undefined &&
+    input.runtimeAgentKind != null &&
+    input.hostSwitchCapable
+  );
 }
 
 /** 离线回落只露出本机格,不把其它电脑列进左栏。 */

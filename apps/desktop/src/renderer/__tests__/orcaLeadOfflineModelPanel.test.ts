@@ -43,33 +43,47 @@ describe('orcaLeadLocalFallbackOpen', () => {
 });
 
 describe('sessionAgentSwitchSupported', () => {
-  it('非协同会话保持原能力位;协同 Lead 仅离线回落时开放切换事务', () => {
+  it('仅在角色、运行时引擎和被控端能力都确认后开放切换事务', () => {
     expect(
       sessionAgentSwitchSupported({
         sessionOrcaRole: null,
+        runtimeAgentKind: 'codex',
         hostSwitchCapable: true,
-        orcaLeadLocalFallback: false,
       }),
     ).toBe(true);
     expect(
       sessionAgentSwitchSupported({
         sessionOrcaRole: 'lead',
+        runtimeAgentKind: 'codex',
         hostSwitchCapable: true,
-        orcaLeadLocalFallback: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       sessionAgentSwitchSupported({
-        sessionOrcaRole: 'lead',
+        sessionOrcaRole: 'worker',
+        runtimeAgentKind: 'codex',
         hostSwitchCapable: true,
-        orcaLeadLocalFallback: true,
       }),
     ).toBe(true);
     expect(
       sessionAgentSwitchSupported({
         sessionOrcaRole: undefined,
+        runtimeAgentKind: 'codex',
         hostSwitchCapable: true,
-        orcaLeadLocalFallback: false,
+      }),
+    ).toBe(false);
+    expect(
+      sessionAgentSwitchSupported({
+        sessionOrcaRole: 'lead',
+        runtimeAgentKind: undefined,
+        hostSwitchCapable: true,
+      }),
+    ).toBe(false);
+    expect(
+      sessionAgentSwitchSupported({
+        sessionOrcaRole: 'lead',
+        runtimeAgentKind: 'codex',
+        hostSwitchCapable: false,
       }),
     ).toBe(false);
   });
