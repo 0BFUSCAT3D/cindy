@@ -7,6 +7,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { READ_SHEET_RUNTIME_PACKAGES } from '../../../../../../packages/lizi-mcps/src/cindy-docs/readSheetRuntimeDeps';
+import { prunePackagedRuntime } from '../../../../forge-prune-runtime';
 
 const desktopRoot = path.resolve(process.cwd());
 const workspaceRequire = createRequire(import.meta.url);
@@ -70,6 +71,8 @@ describe('read_sheet XLSX worker packaging contract', () => {
       for (const runtimePackage of READ_SHEET_RUNTIME_PACKAGES) {
         stageDependencyTree(runtimePackage, stagedModules, undefined, seen);
       }
+      prunePackagedRuntime(temp);
+      expect(fs.existsSync(path.join(stagedModules, 'exceljs', 'dist'))).toBe(false);
       const probeRequirePath = path.join(temp, 'probe.cjs');
       const probe = spawnSync(
         process.execPath,

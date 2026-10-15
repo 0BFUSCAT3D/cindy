@@ -21,6 +21,7 @@ import {
   resolveCindyRegion,
 } from '@cindy/maker-shared/brand-identity';
 import { preparePackagedNodePty } from './forge-node-pty';
+import { prunePackagedRuntime } from './forge-prune-runtime';
 import { stagePackagedThirdPartyNotices } from './forge-third-party-notices';
 import {
   swiftTargetTriple,
@@ -463,6 +464,7 @@ async function rebuildNativeDepsInPackage(
   }
 
   console.log(`[forge:afterCopy] rebuild ok: ${sqliteNative}, ${ptyNative}`);
+  prunePackagedRuntime(buildPath);
 }
 
 const isDev =
@@ -1156,8 +1158,11 @@ function buildRemoteDesktopInput(platform: ForgePlatform, arch: ForgeArch): void
         if (location.error || location.status !== 0)
           throw new Error('Remote credentials output unavailable');
         outputs.push(path.join(location.stdout.trim(), 'cindy-macos-remote-credentials'));
-        fs.cpSync(path.join(location.stdout.trim(), 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
-          path.join(destDir, 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'), { recursive: true });
+        fs.cpSync(
+          path.join(location.stdout.trim(), 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
+          path.join(destDir, 'CindyRemoteCredentials_CindyRemoteCredentials.bundle'),
+          { recursive: true },
+        );
       }
       const credential = path.join(destDir, 'cindy-macos-remote-credentials');
       if (outputs.length === 1) fs.copyFileSync(outputs[0], credential);
