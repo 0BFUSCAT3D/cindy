@@ -354,6 +354,22 @@ describe('chat interaction controls', () => {
       expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['all-bot'] });
     });
 
+    it('never offers or resolves the current user, as on mobile', async () => {
+      mocks.reply.mockResolvedValue({ ok: true, messageId: 'reply' });
+      const members = [{ botId: 'me', name: 'Dash', status: 'active', isSelf: true }, { botId: 'bo', name: 'Bo', status: 'active' }];
+      render(<ChatThreadPanel group={{ ...group, members } as unknown as BotGroupDetail} rootId="root" onClose={vi.fn()} />);
+      const input = screen.getByRole('textbox', { name: k('replyPlaceholder') }) as HTMLTextAreaElement;
+      type(input, '@');
+      expect(labels()).toEqual(['bots.groupChat.mention.allbots.groupChat.mention.allHint', 'Bo']);
+      type(input, '@Da');
+      expect(screen.queryByRole('listbox')).toBeNull();
+      // A typed own name is plain text, not a target the host would drop to nothing.
+      type(input, '@Dash @Bo 看下');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(mocks.reply).toHaveBeenCalledOnce());
+      expect(mocks.reply.mock.calls[0]![0].mentions).toEqual({ all: false, botIds: ['bo'] });
+    });
+
     // One retry rule (bot-group-chat.md): a failed reply is retried with the same clientId only when the
     // text and its targets are unchanged. Each row edits the draft between attempts without changing the text.
     // Comparing only the text fails rows 1 and 4; comparing the pick records fails row 3; re-resolving

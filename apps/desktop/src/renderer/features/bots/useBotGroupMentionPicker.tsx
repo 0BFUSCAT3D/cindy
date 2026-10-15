@@ -47,6 +47,8 @@ type MentionOption =
   | { kind: 'all'; label: string }
   | { kind: 'member'; label: string; member: BotGroupMemberView };
 
+const withoutSelf = (members: readonly BotGroupMemberView[]) => members.filter((member) => member.isSelf !== true);
+
 export function useBotGroupMentionPicker({
   text,
   onTextChange,
@@ -57,7 +59,7 @@ export function useBotGroupMentionPicker({
   text: string;
   /** Every text change from typing or picking goes through here. */
   onTextChange: (value: string) => void;
-  /** Full roster: active members are offered, everyone still resolves. */
+  /** Full roster: active members other than you are offered; everyone but you still resolves. */
   members: readonly BotGroupMemberView[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   /** Labels that mean 「所有人」 when resolving; the first is the one offered. Defaults to the UI label. */
@@ -84,7 +86,9 @@ export function useBotGroupMentionPicker({
 
   const allLabel = t('bots.groupChat.mention.all');
   const resolveLabels = useMemo(() => allLabels ?? [allLabel], [allLabels, allLabel]);
-  const activeMembers = useMemo(() => members.filter(isActiveBotGroupMember), [members]);
+  // You never name yourself: the host drops you from the targets (as on mobile).
+  const mentionMembers = useMemo(() => withoutSelf(members), [members]);
+  const activeMembers = useMemo(() => mentionMembers.filter(isActiveBotGroupMember), [mentionMembers]);
   const query = focused ? findBotGroupMentionQuery(text, caret) : null;
   const options = useMemo<MentionOption[]>(() => {
     if (!query || activeMembers.length === 0) return [];
@@ -140,7 +144,7 @@ export function useBotGroupMentionPicker({
     setHighlight(0);
     setTracked((current) => {
       const remaining = retainBotGroupTrackedMentions(text, next.text, {
-        members,
+        members: mentionMembers,
         allLabels: resolveLabels,
         tracked: current,
         editStart: query.start,
@@ -161,7 +165,7 @@ export function useBotGroupMentionPicker({
     onTextChange(value);
     setTracked((current) =>
       retainBotGroupTrackedMentions(text, value, {
-        members,
+        members: mentionMembers,
         allLabels: resolveLabels,
         tracked: current,
         editStart,
@@ -277,6 +281,6 @@ export function useBotGroupMentionPicker({
     reset,
     /** Resolve who the text addresses, using the picks; `roster` defaults to the current members. */
     resolve: (value: string, roster: readonly BotGroupMemberView[] = members) =>
-      resolveBotGroupMentions(value, { members: roster, allLabels: resolveLabels, tracked }),
+      resolveBotGroupMentions(value, { members: withoutSelf(roster), allLabels: resolveLabels, tracked }),
   };
 }
