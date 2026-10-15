@@ -106,6 +106,75 @@ afterEach(cleanup);
 const renderSettings = (botId = 'bot') =>
   render(<CompanionVoiceSettings botId={botId} sessionId="canonical" />);
 
+it('defaults to sentence playback, persists a toggle without a model, and restores the default', async () => {
+  const view = renderSettings();
+  const toggle = screen.getByRole('switch', { name: 'bots.voiceMode.sentencePlayback' });
+  await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
+  vi.mocked(window.electronAPI.voiceConversation.setPreference).mockResolvedValueOnce({
+    selection: null,
+    customized: true,
+    sentencePlayback: false,
+  });
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+    'bot',
+    undefined,
+    false,
+  );
+  view.unmount();
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValueOnce({
+    selection: null,
+    customized: true,
+    sentencePlayback: false,
+  });
+  renderSettings();
+  await waitFor(() =>
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false'),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resetPreference' }));
+  await waitFor(() => expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true'));
+  expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenLastCalledWith(
+    'bot',
+    null,
+    null,
+  );
+  expect(start).not.toHaveBeenCalled();
+});
+
+it('retains the saved toggle and reports a save failure', async () => {
+  renderSettings();
+  const toggle = screen.getByRole('switch');
+  await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+  vi.mocked(window.electronAPI.voiceConversation.setPreference).mockRejectedValueOnce(
+    new Error('disk'),
+  );
+  fireEvent.click(toggle);
+  await screen.findByRole('alert');
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
+});
+
+it('does not erase an unsaved manual voice when only changing playback', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  renderSettings();
+  const voice = await screen.findByLabelText('bots.voiceMode.voiceId');
+  await waitFor(() => expect((voice as HTMLInputElement).disabled).toBe(false));
+  fireEvent.change(voice, { target: { value: 'unfinished-voice' } });
+  vi.mocked(window.electronAPI.voiceConversation.setPreference).mockResolvedValueOnce({
+    selection: null,
+    customized: true,
+    sentencePlayback: false,
+  });
+  fireEvent.click(screen.getByRole('switch'));
+  await waitFor(() =>
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false'),
+  );
+  expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+    'unfinished-voice',
+  );
+});
+
 it('shows a useful empty state without requesting a microphone or inventing models', async () => {
   renderSettings();
   await screen.findByText('bots.voiceMode.noModels');
@@ -372,7 +441,11 @@ it('preserves an unavailable saved connection until the user restores defaults',
   expect(screen.queryByRole('button', { name: 'bots.voiceMode.preview' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resetPreference' }));
   await waitFor(() =>
-    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith('bot', null),
+    expect(window.electronAPI.voiceConversation.setPreference).toHaveBeenCalledWith(
+      'bot',
+      null,
+      null,
+    ),
   );
   await waitFor(() =>
     expect(

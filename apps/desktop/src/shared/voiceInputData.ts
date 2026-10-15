@@ -1,4 +1,4 @@
-import { normalizeVoiceConversationPreferences, normalizeVoiceConversationSelection, type VoiceConversationSelection } from './voiceConversation';
+import { normalizeVoiceConversationPreferences, normalizeVoiceConversationSelection, normalizeSentencePlaybackOverrides, type VoiceConversationSelection } from './voiceConversation';
 import type {
   DictationDictionaryAdviceInput,
   DictationDictionaryLearningAction,
@@ -83,6 +83,8 @@ export interface VoiceInputSettings {
   conversationSelection?: VoiceConversationSelection | null;
   /** Per-companion overrides; absence inherits the default without copying it. */
   conversationSelections?: Record<string, VoiceConversationSelection | null>;
+  /** Missing entries follow the enabled default; false waits for the complete reply. */
+  conversationSentencePlayback?: Record<string, boolean>;
   language: VoiceInputLanguage;
   microphoneDeviceId: string | null;
   muteSystemAudio: boolean;
@@ -524,6 +526,7 @@ export function normalizeVoiceInputSettings(
   if (!raw || typeof raw !== 'object') return defaults;
   const candidate = raw as Partial<VoiceInputSettings>;
   const conversationSelections = normalizeVoiceConversationPreferences(candidate.conversationSelections);
+  const conversationSentencePlayback = normalizeSentencePlaybackOverrides(candidate.conversationSentencePlayback);
   const legacyPlayStartSound = (candidate as { playStartSound?: unknown }).playStartSound;
   const shortcut =
     'shortcut' in candidate
@@ -533,6 +536,7 @@ export function normalizeVoiceInputSettings(
     ...(normalizeVoiceConversationSelection(candidate.conversationSelection)
       ? { conversationSelection: normalizeVoiceConversationSelection(candidate.conversationSelection) } : {}),
     ...(Object.keys(conversationSelections).length ? { conversationSelections } : {}),
+    ...(Object.keys(conversationSentencePlayback).length ? { conversationSentencePlayback } : {}),
     language: isVoiceInputLanguage(candidate.language) ? candidate.language : defaults.language,
     microphoneDeviceId:
       typeof candidate.microphoneDeviceId === 'string' && candidate.microphoneDeviceId.trim().length > 0

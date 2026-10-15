@@ -19,6 +19,7 @@ vi.mock('electron', () => ({
 vi.mock('../../security/trustedAppRenderer.js', () => ({
   assertTrustedAppRendererEvent: h.trusted,
 }));
+vi.mock('../../cindy-brain/index.js', () => ({ hasEnabledGhostAssistantHook: () => false }));
 vi.mock('../../maker-host/active-catalog.js', () => ({
   getActiveCatalog: () => ({
     providers: [
@@ -98,15 +99,57 @@ const start = () =>
     voice: 'alloy',
   });
 
+it('patches playback without replacing the saved route and validates boolean overrides', async () => {
+  const choice = { modelId: 'voice-test', voice: 'alloy' };
+  await call('set-preference', 'bot-a', choice);
+  await call('set-preference', 'bot-a', undefined, false);
+  expect(await call('preference', 'bot-a')).toEqual({
+    selection: choice,
+    customized: true,
+    sentencePlayback: false,
+  });
+  await expect(call('set-preference', 'bot-a', undefined, 'false')).rejects.toThrow();
+  expect(await call('preference', 'bot-a')).toMatchObject({ sentencePlayback: false });
+  await call('set-preference', 'bot-a', null, null);
+  expect(await call('preference', 'bot-a')).toEqual({
+    selection: null,
+    customized: false,
+    sentencePlayback: true,
+  });
+  await start();
+  await expect(
+    call('speak', { callId: 'call', requestId: 'a', text: 'hi', streaming: 'true' }),
+  ).rejects.toThrow();
+});
+
 it('rejects an untrusted sender before returning models or opening a connection', async () => {
   h.trusted.mockImplementation(() => {
     throw new Error('untrusted frame');
   });
   await expect(call('models')).rejects.toThrow('untrusted frame');
   await expect(start()).rejects.toThrow('untrusted frame');
-  for (const name of ['voices', 'preview', 'read-preview', 'stop-preview']) {
+  for (const name of ['voices', 'preview', 'read-preview', 'stop-preview', 'start-playback']) {
     await expect(call(name, {})).rejects.toThrow('untrusted frame');
   }
+});
+
+it('validates playback-only starts with the same canonical, account and selection boundaries', async () => {
+  const input = {
+    callId: 'call',
+    botId: 'bot',
+    sessionId: 'canonical',
+    modelId: 'voice-test',
+    voice: 'alloy',
+  };
+  await expect(call('start-playback', { ...input, voice: 'bad\nvoice' })).rejects.toThrow();
+  await expect(call('start-playback', { ...input, sessionId: 'not-canonical' })).rejects.toThrow();
+  await expect(call('start-playback', { ...input, callId: 'x'.repeat(65) })).rejects.toThrow();
+  h.boundary = true;
+  await expect(call('start-playback', input)).rejects.toThrow();
+  h.boundary = false;
+  expect(await call('start-playback', input)).toEqual({ callId: 'call' });
+  await expect(call('set-input-muted', 'call', false)).rejects.toThrow();
+  expect(outboundFetch).not.toHaveBeenCalled();
 });
 
 it('validates preview boundaries before synthesis and cleans up when its sender is destroyed', async () => {
@@ -183,9 +226,17 @@ it('saves and resets one companion without overwriting another, and guards setti
   };
   await call('set-preference', 'bot-a', choice);
   await call('set-preference', 'bot-b', { ...choice, voice: 'alloy' });
-  expect(await call('preference', 'bot-a')).toEqual({ selection: choice, customized: true });
+  expect(await call('preference', 'bot-a')).toEqual({
+    selection: choice,
+    customized: true,
+    sentencePlayback: true,
+  });
   await call('set-preference', 'bot-a', null);
-  expect(await call('preference', 'bot-a')).toEqual({ selection: null, customized: false });
+  expect(await call('preference', 'bot-a')).toEqual({
+    selection: null,
+    customized: false,
+    sentencePlayback: true,
+  });
   expect(await call('preference', 'bot-b')).toMatchObject({ selection: { voice: 'alloy' } });
   h.boundary = true;
   await expect(call('preference', 'bot-b')).rejects.toThrow();
@@ -196,4 +247,27 @@ it('saves and resets one companion without overwriting another, and guards setti
   });
   await expect(call('preference', 'bot-b')).rejects.toThrow('untrusted');
   await expect(call('set-preference', 'bot-b', null)).rejects.toThrow('untrusted');
+});
+
+it('validates microphone mute ownership and drops PCM from previous input generations', async () => {
+  await start();
+  await expect(call('set-input-muted', 'call', 'true')).rejects.toThrow();
+  await expect(
+    h.handlers.get('voice-conversation:set-input-muted')!(sender(2), 'call', true),
+  ).rejects.toThrow();
+  expect(await call('set-input-muted', 'call', true)).toEqual({ inputGeneration: 1 });
+  h.boundary = true;
+  await expect(call('set-input-muted', 'call', false)).rejects.toThrow();
+  h.boundary = false;
+  expect(await call('set-input-muted', 'call', false)).toEqual({ inputGeneration: 2 });
+  const audio = h.listeners.get('voice-conversation:audio')!;
+  for (const inputGeneration of [undefined, 0, -1, 0.5, '2', NaN, Infinity])
+    audio(sender(), { callId: 'call', inputGeneration, pcm: new ArrayBuffer(2) });
+  expect(h.append).not.toHaveBeenCalled();
+  audio(sender(), { callId: 'call', inputGeneration: 2, pcm: new ArrayBuffer(2) });
+  expect(h.append).toHaveBeenCalledOnce();
+  h.trusted.mockImplementation(() => {
+    throw new Error('untrusted frame');
+  });
+  await expect(call('set-input-muted', 'call', true)).rejects.toThrow('untrusted frame');
 });

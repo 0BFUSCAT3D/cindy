@@ -1,12 +1,20 @@
 import type { ChatMessage } from '@/lib/makerChatStore';
+import { completeSpeechPrefix, streamingSpeechText } from './SpeechTextBuffer';
 
-/** Only the completed, top-level answer to a voice input belongs to this call. */
+export type VoiceReply = { id: string; text: string; complete: boolean; invalidated?: true };
+
+/** Correlate one voice input with its final answer, emitting each stable prefix once. */
 export class VoiceReplyTracker {
   private waitingFor: string | null = null;
-  private consumed = new Set<string>();
+  private replyId: string | null = null;
+  private emitted = '';
+  private deferred = false;
 
   expect(clientId: string): void {
     this.waitingFor = clientId;
+    this.replyId = null;
+    this.emitted = '';
+    this.deferred = false;
   }
   interrupt(): void {
     this.waitingFor = null;
@@ -15,7 +23,14 @@ export class VoiceReplyTracker {
     return this.waitingFor !== null;
   }
 
-  take(messages: readonly ChatMessage[]): { id: string; text: string } | null {
+  /** Main can defer a reply before any audio starts, e.g. for an outgoing hook. */
+  deferUntilComplete(): void {
+    this.replyId = null;
+    this.emitted = '';
+    this.deferred = true;
+  }
+
+  take(messages: readonly ChatMessage[], sentencePlayback = false): VoiceReply | null {
     if (!this.waitingFor) return null;
     const index = messages.findIndex((message) => message.clientId === this.waitingFor);
     if (index < 0) return null; // A queued input has not entered the task yet.
@@ -23,12 +38,13 @@ export class VoiceReplyTracker {
       this.interrupt();
       return null;
     }
-    for (const message of messages.slice(index + 1)) {
-      // An input from another surface/automation owns the subsequent answer.
-      if (message.role === 'user') {
-        this.interrupt();
-        return null;
-      }
+    const following = messages.slice(index + 1);
+    // Supersession applies even when the previous answer precedes the new input.
+    if (following.some((message) => message.role === 'user')) {
+      this.interrupt();
+      return null;
+    }
+    for (const message of following) {
       if (
         message.role !== 'assistant' ||
         message.parentToolUseId ||
@@ -36,16 +52,37 @@ export class VoiceReplyTracker {
         message.sourceGroup ||
         message.botPrivateReply ||
         message.assistantPhase === 'commentary' ||
-        message.isStreaming ||
-        message.ghostReplyPending ||
-        message.turnCompleted !== true
+        message.ghostReplyPending
       )
         continue;
-      if (this.consumed.has(message.clientId)) continue;
-      const text = speechText(message.content);
-      this.consumed.add(message.clientId);
-      this.interrupt();
-      return { id: message.clientId, text };
+      const complete = !message.isStreaming && message.turnCompleted === true;
+      if (
+        !complete &&
+        (!sentencePlayback || this.deferred || message.assistantPhase !== 'final_answer')
+      )
+        continue;
+      const text = sentencePlayback
+        ? streamingSpeechText(message.content, complete)
+        : speechText(message.content);
+      // Full-text reconciliation can replace a streamed prefix. Already spoken
+      // words cannot be undone; cancel this reply instead of reading it twice.
+      if ((this.replyId && this.replyId !== message.clientId) || !text.startsWith(this.emitted)) {
+        this.interrupt();
+        return { id: message.clientId, text: '', complete: true, invalidated: true };
+      }
+      const remaining = text.slice(this.emitted.length);
+      const next = complete ? remaining : completeSpeechPrefix(remaining);
+      if (!next.trim() && !complete) continue;
+      this.replyId = message.clientId;
+      this.emitted += next;
+      if (complete) this.interrupt();
+      // Closing quotes or ellipses may arrive after the spoken sentence. Consume
+      // that suffix for reconciliation without paying for punctuation-only TTS.
+      return {
+        id: message.clientId,
+        text: sentencePlayback && /^[\s\p{P}]*$/u.test(next) ? '' : next.trim(),
+        complete,
+      };
     }
     return null;
   }
@@ -78,6 +115,7 @@ export function speechChunks(text: string, limit = 3_500): string[] {
       prefix.lastIndexOf('\n'),
     );
     let end = boundary > limit / 2 ? boundary + 1 : limit;
+    if (end === limit && prefix.lastIndexOf(' ') > limit / 2) end = prefix.lastIndexOf(' ');
     if (/^[\uDC00-\uDFFF]/.test(text.slice(end))) end--;
     chunks.push(text.slice(0, end).trim());
     text = text.slice(end).trim();

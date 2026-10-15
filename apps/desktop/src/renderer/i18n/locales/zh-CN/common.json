@@ -9388,6 +9388,10 @@
         "complete": "试听完成。",
         "error": "试听失败。请检查接口、模型权限和音色 ID 后重试。"
       },
+      "readAloud": "朗读",
+      "stopReadAloud": "停止朗读",
+      "finishBeforeReadAloud": "请先结束语音模式，再朗读消息。",
+      "readAloudFailed": "朗读失败，请在伙伴设置中检查模型和音色后重试。",
       "finishBeforeDictation": "请先结束语音模式，再开始听写。",
       "title": "语音模式",
       "close": "关闭语音模式",
@@ -9403,20 +9407,23 @@
       "retrySend": "重新连接并发送",
       "mute": "静音",
       "interrupt": "停止朗读",
-      "send": "结束本句",
+      "send": "发送",
       "end": "结束",
       "unsent": "尚未发送 · 可选中文字复制",
       "hint": "停顿后自动发送，回复由 AI 语音朗读。随时开口即可插话。",
       "status": {
         "idle": "准备好就开始",
-        "connecting": "正在连接…",
+        "connecting": "正在连接语音识别…",
         "listening": "正在听 · 停顿后发送",
-        "thinking": "正在思考 · 可以继续说",
-        "speaking": "正在朗读 · 随时开口插话",
+        "thinking": "正在思考…",
+        "speaking": "正在朗读…",
         "paused": "已暂停 · 麦克风已关闭",
         "error": "已暂停 · 麦克风已关闭",
         "confirmation": "等待你的确认 · 麦克风已关闭",
-        "preparing": "正在准备语音…"
+        "preparing": "正在准备语音…",
+        "loading": "正在读取语音设置…",
+        "microphone": "正在开启麦克风…",
+        "muted": "麦克风已关闭 · 可以继续收听"
       },
       "errors": {
         "connection": "语音连接中断，未发送的文字已保留。",
@@ -9425,13 +9432,18 @@
         "speech": "回复朗读失败，文字回复仍保留在对话中。请检查朗读模型和音色。"
       },
       "voiceIdHint": "填写该供应商账号可用的音色 ID。",
-      "preferenceHint": "模型和音色仅为当前伙伴保存。",
+      "sentencePlayback": "按句朗读",
+      "sentencePlaybackHint": "回复生成时，尽早按完整句子朗读；关闭后等完整回复再朗读。需要等待回复处理时，会自动延后。",
+      "preferenceHint": "语音设置仅为当前伙伴保存。",
       "resetPreference": "恢复默认",
       "preferenceError": "未能读取或保存语音设置，请重试。",
       "protocol": "语音接口",
       "protocolOpenai": "OpenAI 兼容",
       "protocolHint": "选择此地址实际支持的语音接口；切换接口不会更换供应商。",
-      "protocolCorrectedHint": "已按官方地址修正接口，请重新选择音色。"
+      "protocolCorrectedHint": "已按官方地址修正接口，请重新选择音色。",
+      "unmute": "取消静音",
+      "mutedHint": "麦克风已关闭，伙伴回复仍会朗读。取消静音后可继续说话。",
+      "microphoneResumeError": "未能开启麦克风，仍可继续收听。请检查权限和设备后重试取消静音。"
     }
   },
   "common": {

@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { FormField } from '@/components/ui/form-field';
 import { Select } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { makerChatStore, EMPTY_LIGHT_STATE } from '@/lib/makerChatStore';
 import type {
@@ -27,6 +36,7 @@ type Props = {
 /** Per-companion settings. Opening this page never starts ASR or submits a message. */
 export function CompanionVoiceSettings(props: Props) {
   const { t } = useTranslation();
+  const sentencePlaybackId = useId();
   const session = useSyncExternalStore(
     useCallback(
       (notify) =>
@@ -52,6 +62,7 @@ export function CompanionVoiceSettings(props: Props) {
   const [preference, setPreference] = useState<VoiceConversationSelection | null>(null);
   const [voice, setVoice] = useState<string>();
   const [customized, setCustomized] = useState(false);
+  const [sentencePlayback, setSentencePlayback] = useState(true);
   const [preferenceOwner, setPreferenceOwner] = useState<string>();
   const [preferenceError, setPreferenceError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -103,6 +114,7 @@ export function CompanionVoiceSettings(props: Props) {
     setPreference(null);
     setVoice(undefined);
     setCustomized(false);
+    setSentencePlayback(true);
     setSaving(false);
     dirty.current = false;
     pendingSave.current = null;
@@ -112,6 +124,7 @@ export function CompanionVoiceSettings(props: Props) {
         if (version !== preferenceVersion.current) return;
         setPreference(result.selection);
         setCustomized(result.customized);
+        setSentencePlayback(result.sentencePlayback ?? true);
         setPreferenceOwner(props.botId);
       })
       .catch(() => {
@@ -156,19 +169,30 @@ export function CompanionVoiceSettings(props: Props) {
     };
   }, [preview]);
   const persist = useCallback(
-    (next: VoiceConversationSelection | null): Promise<boolean> => {
+    (
+      next: VoiceConversationSelection | null | undefined,
+      playback?: boolean | null,
+    ): Promise<boolean> => {
       if (pendingSave.current) return pendingSave.current;
       const version = preferenceVersion.current;
       setSaving(true);
       setPreferenceError(false);
-      const pending = window.electronAPI.voiceConversation
-        .setPreference(props.botId, next)
+      const api = window.electronAPI.voiceConversation;
+      const operation =
+        playback === undefined
+          ? api.setPreference(props.botId, next)
+          : api.setPreference(props.botId, next, playback);
+      const pending = operation
         .then((result) => {
           if (version !== preferenceVersion.current) return false;
-          setPreference(result.selection);
+          // A playback-only change must not erase an unfinished model/voice draft.
+          if (next !== undefined) {
+            setPreference(result.selection);
+            setVoice(undefined);
+            dirty.current = false;
+          }
           setCustomized(result.customized);
-          setVoice(undefined);
-          dirty.current = false;
+          setSentencePlayback(result.sentencePlayback ?? true);
           return true;
         })
         .catch(() => {
@@ -358,6 +382,30 @@ export function CompanionVoiceSettings(props: Props) {
           {t('bots.voiceMode.previewNeedsChat')}
         </p>
       ) : null}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 space-y-2">
+          <label
+            htmlFor={sentencePlaybackId}
+            className="text-13 font-medium text-[var(--settings-section-title)]"
+          >
+            {t('bots.voiceMode.sentencePlayback')}
+          </label>
+          <p
+            id={`${sentencePlaybackId}-hint`}
+            className="text-12 leading-snug text-[var(--form-field-hint)]"
+          >
+            {t('bots.voiceMode.sentencePlaybackHint')}
+          </p>
+        </div>
+        <Switch
+          id={sentencePlaybackId}
+          aria-describedby={`${sentencePlaybackId}-hint`}
+          className="shrink-0"
+          checked={sentencePlayback}
+          disabled={!ready || saving}
+          onCheckedChange={(enabled) => void persist(undefined, enabled)}
+        />
+      </div>
       {preferenceError ? (
         <p role="alert" className="text-13 text-[var(--error-fg)]">
           {t('bots.voiceMode.preferenceError')}
@@ -371,7 +419,7 @@ export function CompanionVoiceSettings(props: Props) {
           variant="secondary"
           size="sm"
           disabled={!ready || saving || (!customized && !dirty.current)}
-          onClick={() => void persist(null)}
+          onClick={() => void persist(null, null)}
         >
           {t('bots.voiceMode.resetPreference')}
         </Button>

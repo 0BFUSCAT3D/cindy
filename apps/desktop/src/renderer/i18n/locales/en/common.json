@@ -9425,6 +9425,10 @@
         "complete": "Preview complete.",
         "error": "Preview failed. Check the interface, model access and voice ID, then retry."
       },
+      "readAloud": "Read aloud",
+      "stopReadAloud": "Stop reading",
+      "finishBeforeReadAloud": "End voice mode before reading a message aloud.",
+      "readAloudFailed": "Could not read this reply aloud. Check the model and voice in teammate settings, then try again.",
       "finishBeforeDictation": "End voice mode before starting dictation.",
       "title": "Voice Mode",
       "close": "Close voice mode",
@@ -9440,20 +9444,23 @@
       "retrySend": "Reconnect and send",
       "mute": "Mute",
       "interrupt": "Stop reading",
-      "send": "Finish sentence",
+      "send": "Send",
       "end": "End",
       "unsent": "Not sent · select the text to copy it",
       "hint": "Pause to send. Replies are read aloud with an AI voice. Speak at any time to interrupt.",
       "status": {
         "idle": "Ready when you are",
-        "connecting": "Connecting…",
+        "connecting": "Connecting to speech recognition…",
         "listening": "Listening · pause to send",
-        "thinking": "Thinking · you can keep talking",
-        "speaking": "Speaking · interrupt at any time",
+        "thinking": "Thinking…",
+        "speaking": "Speaking…",
         "paused": "Paused · microphone off",
         "error": "Paused · microphone off",
         "confirmation": "Waiting for your confirmation · microphone off",
-        "preparing": "Preparing voice…"
+        "preparing": "Preparing voice…",
+        "loading": "Loading voice settings…",
+        "microphone": "Turning on the microphone…",
+        "muted": "Microphone off · You can still listen"
       },
       "errors": {
         "connection": "Voice connection interrupted. Your unsent text is kept below.",
@@ -9462,13 +9469,18 @@
         "speech": "Could not read the reply aloud. The text reply remains in the conversation. Check the speech model and voice."
       },
       "voiceIdHint": "Enter a voice ID available to this provider account.",
-      "preferenceHint": "The model and voice are saved for this companion only.",
+      "sentencePlayback": "Read by sentence",
+      "sentencePlaybackHint": "Start reading complete sentences as the reply arrives. Disable this option to wait for the full reply. Reading waits when reply processing is required.",
+      "preferenceHint": "Voice settings are saved for this teammate only.",
       "resetPreference": "Use defaults",
       "preferenceError": "Could not load or save voice settings. Please try again.",
       "protocol": "Speech API",
       "protocolOpenai": "OpenAI compatible",
       "protocolHint": "Choose the speech API this address supports. This does not switch providers.",
-      "protocolCorrectedHint": "The API now matches the official address. Choose a voice again."
+      "protocolCorrectedHint": "The API now matches the official address. Choose a voice again.",
+      "unmute": "Unmute",
+      "mutedHint": "Your microphone is off. Replies will still play. Unmute to keep talking.",
+      "microphoneResumeError": "Could not enable the microphone. You can still listen. Check permissions and your device, then try unmuting again."
     }
   },
   "common": {

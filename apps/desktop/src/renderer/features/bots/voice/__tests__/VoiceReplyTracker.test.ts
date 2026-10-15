@@ -19,7 +19,7 @@ describe('voice reply correlation', () => {
     ];
     expect(tracker.take(messages)).toBeNull();
     messages.push(message('answer', 'assistant', { content: '**Done**', turnCompleted: true }));
-    expect(tracker.take(messages)).toEqual({ id: 'answer', text: 'Done' });
+    expect(tracker.take(messages)).toEqual({ id: 'answer', text: 'Done', complete: true });
     expect(tracker.take(messages)).toBeNull();
   });
   it('waits for a queued input and abandons speech ownership when another input takes over', () => {

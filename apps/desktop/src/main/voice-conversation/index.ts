@@ -17,7 +17,12 @@ import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js
 import { requireObject, requireString, throwIpcError } from '../utils/ipcValidate.js';
 import { VoiceConversationService } from './service.js';
 import { resolveSpeechConnection, speechModels, type SpeechCatalogDeps } from './models.js';
-import { companionVoicePreference, updateCompanionVoicePreference } from './preferences.js';
+import {
+  companionVoicePreference,
+  updateCompanionVoicePreference,
+  updateSentencePlaybackPreference,
+} from './preferences.js';
+import { hasEnabledGhostAssistantHook } from '../cindy-brain/index.js';
 import type { VoiceInputSettings } from '../../shared/voiceInputData.js';
 import { createLogger } from '../logger.js';
 
@@ -61,6 +66,7 @@ export function registerVoiceConversationIpc(deps: {
     models: () => speechModels(catalogDeps()),
     connection: (selection) => resolveSpeechConnection(catalogDeps(), selection),
     fetch: outboundFetch,
+    hasReplyHook: hasEnabledGhostAssistantHook,
     emit: (sender, event) => {
       const target = webContents.fromId(sender);
       if (target && !target.isDestroyed()) target.send('voice-conversation:event', event);
@@ -132,27 +138,45 @@ export function registerVoiceConversationIpc(deps: {
   handle('preference', (_event, raw) =>
     preferenceBot(raw, (botId) => companionVoicePreference(deps.getSettings(), botId)),
   );
-  handle('set-preference', (_event, raw, value) =>
+  handle('set-preference', (_event, raw, value, sentencePlayback) =>
     preferenceBot(raw, (botId) => {
-      const selection = value === null ? null : normalizeVoiceConversationSelection(value);
-      if (selection === undefined) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
-      const map = updateCompanionVoicePreference(deps.getSettings(), botId, selection);
-      return companionVoicePreference(deps.updateSettings({ conversationSelections: map }), botId);
+      const settings = deps.getSettings();
+      const patch: Partial<VoiceInputSettings> = {};
+      if (value !== undefined) {
+        const selection = value === null ? null : normalizeVoiceConversationSelection(value);
+        if (selection === undefined) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
+        patch.conversationSelections = updateCompanionVoicePreference(settings, botId, selection);
+      }
+      if (sentencePlayback !== undefined) {
+        if (sentencePlayback !== null && typeof sentencePlayback !== 'boolean')
+          throwIpcError('INVALID_PARAMS', 'Invalid speech preference');
+        patch.conversationSentencePlayback = updateSentencePlaybackPreference(
+          settings,
+          botId,
+          sentencePlayback,
+        );
+      }
+      return companionVoicePreference(deps.updateSettings(patch), botId);
     }),
   );
-  handle('start', async (event, raw) => {
-    if (isAppSessionBoundaryPending()) throw new Error('changing_account');
-    const value = requireObject(raw);
-    const selection = normalizeVoiceConversationSelection(value);
-    if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
-    observe(event);
-    return service.start(event.sender.id, {
-      ...selection,
-      callId: boundedString(value.callId, 'callId', 64),
-      botId: boundedString(value.botId, 'botId', 256),
-      sessionId: boundedString(value.sessionId, 'sessionId', 256),
+  for (const operation of ['start', 'start-playback'] as const) {
+    handle(operation, async (event, raw) => {
+      if (isAppSessionBoundaryPending()) throw new Error('changing_account');
+      const value = requireObject(raw);
+      const selection = normalizeVoiceConversationSelection(value);
+      if (!selection) throwIpcError('INVALID_PARAMS', 'Invalid speech selection');
+      observe(event);
+      const input = {
+        ...selection,
+        callId: boundedString(value.callId, 'callId', 64),
+        botId: boundedString(value.botId, 'botId', 256),
+        sessionId: boundedString(value.sessionId, 'sessionId', 256),
+      };
+      return operation === 'start'
+        ? service.start(event.sender.id, input)
+        : service.startPlayback(event.sender.id, input);
     });
-  });
+  }
   ipcMain.on('voice-conversation:audio', (event, raw: unknown) => {
     try {
       assertTrustedAppRendererEvent(event);
@@ -164,7 +188,20 @@ export function registerVoiceConversationIpc(deps: {
         value.pcm.byteLength % 2
       )
         return;
-      service.audio(event.sender.id, boundedString(value.callId, 'callId', 64), value.pcm);
+      if (
+        value.inputGeneration !== undefined &&
+        (typeof value.inputGeneration !== 'number' ||
+          !Number.isSafeInteger(value.inputGeneration) ||
+          value.inputGeneration < 0)
+      )
+        return;
+      service.audio(
+        event.sender.id,
+        boundedString(value.callId, 'callId', 64),
+        value.pcm,
+        undefined,
+        value.inputGeneration,
+      );
     } catch {
       /* Untrusted or late frames are ignored; no payload is logged. */
     }
@@ -172,17 +209,25 @@ export function registerVoiceConversationIpc(deps: {
   handle('finish-utterance', (event, id) =>
     service.finishUtterance(event.sender.id, boundedString(id, 'callId', 64)),
   );
+  handle('set-input-muted', (event, id, muted) => {
+    if (typeof muted !== 'boolean') throwIpcError('INVALID_PARAMS', 'Invalid microphone state');
+    if (!muted && isAppSessionBoundaryPending()) throw new Error('changing_account');
+    return service.setInputMuted(event.sender.id, boundedString(id, 'callId', 64), muted);
+  });
   handle('end', (event, id) => service.end(event.sender.id, boundedString(id, 'callId', 64)));
   handle('interrupt', (event, id) =>
     service.interrupt(event.sender.id, boundedString(id, 'callId', 64)),
   );
   handle('speak', (event, raw) => {
     const value = requireObject(raw);
+    if (value.streaming !== undefined && typeof value.streaming !== 'boolean')
+      throwIpcError('INVALID_PARAMS', 'Invalid speech state');
     return service.speak(
       event.sender.id,
       boundedString(value.callId, 'callId', 64),
       boundedString(value.requestId, 'requestId', 128),
       boundedString(value.text, 'text', 4_096),
+      value.streaming === true,
     );
   });
   handle('read-speech', (event, id, requestId) =>

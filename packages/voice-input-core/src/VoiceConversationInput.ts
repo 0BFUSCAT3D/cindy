@@ -1,7 +1,9 @@
 import type { AsrProvider, AsrSegment, AudioTrace } from "./types.js";
 import { ConversationActivity } from "./conversationActivity.js";
 
-const AUTO_SEND_QUIET_MS = 1_500;
+// Endpointing only: prolonged silence does not end voice mode. The host ends it
+// on an explicit exit or lifecycle/error boundary; ASR transport rotation is separate.
+const AUTO_SEND_QUIET_MS = 1_250;
 const FINAL_STABLE_MS = 350;
 
 export type ConversationInputEvent =
@@ -63,7 +65,7 @@ export class VoiceConversationInput {
     const activity = this.activity.push(pcm);
     this.speaking = activity.active;
     // The 900ms acoustic release only commits ASR buffers. Sending always uses
-    // the same 1.5-second quiet window, including soft speech seen only by ASR.
+    // the same 1.25-second quiet window, including soft speech seen only by ASR.
     if (activity.sound) {
       this.quietAfter = Date.now() + AUTO_SEND_QUIET_MS;
       if (!this.manual) clearTimeout(this.settleTimer);

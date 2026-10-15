@@ -1,4 +1,6 @@
 import { CompanionVoicePanel } from '../bots/voice/CompanionVoicePanel';
+import { useMessageReadAloud } from '../bots/voice/useMessageReadAloud';
+import { MessageReadAloudContext } from '@/components/chat/MessageReadAloudContext';
 import { formatSessionDuration } from '@/lib/sessionDurationFormat';
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { shouldShowFailedScheduleNotice } from '@cindy/maker-shared/schedule-model';
@@ -1003,7 +1005,6 @@ function CCAgentSessionContent({
   // Bot route gates have already checked durable ownership. The async runtime
   // snapshot may be absent during load/reconnect; it must never change the skin.
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
-  const startVoiceMode = useCallback(() => setVoiceModeOpen(true), []);
   const closeVoiceMode = useCallback(() => setVoiceModeOpen(false), []);
   const botChatIdentity = resolveBotChatIdentity(botIdentity, sessionId);
   const companionSettingsOpen = new URLSearchParams(location.search).get('settings') === '1';
@@ -4102,6 +4103,22 @@ function CCAgentSessionContent({
     || pendingPluginSetup || pendingIssueConfirm || pendingRenameSessionsConfirm
     || pendingGhostGrantConfirm || pendingRemoteDesktopConfirmation || sessionBinding.attached
     || remoteHandoffPreparing || cindyMakeInputLocked || queuePaused);
+  const messageReadAloud = useMessageReadAloud({
+    botId: botChatIdentity?.id,
+    sessionId: sessionId ?? '',
+    enabled: voiceModeAvailable,
+    voiceModeOpen,
+  });
+  const voiceEntryRef = useRef({ sessionId, available: voiceModeAvailable });
+  voiceEntryRef.current = { sessionId, available: voiceModeAvailable };
+  const startVoiceMode = useCallback(() => {
+    const target = sessionId;
+    // Release message playback before the panel starts its exclusive voice lease.
+    void messageReadAloud.stopForVoiceMode().then((current) => {
+      if (current && voiceEntryRef.current.sessionId === target && voiceEntryRef.current.available)
+        setVoiceModeOpen(true);
+    });
+  }, [sessionId, messageReadAloud.stopForVoiceMode]);
   const sendVoiceMessage = useCallback(async (text: string, onCreated: (id: string) => void, isCurrent: () => boolean) => {
     if (!session?.workingDir || !session.model || voiceModeBlocked || !isCurrent()) return false;
     const accepted = await handleSend(text, session.model, session.effort ?? '', session.permissionMode ?? 'default', undefined, undefined, {
@@ -4900,6 +4917,7 @@ function CCAgentSessionContent({
   // MessageStream 提成变量:perf/session-switch 的 <Profiler> 是纯诊断,只在 DEV
   // 包裹(见下方渲染处),生产直接渲染此 el,不引入多余 Profiler fiber。
   const messageStreamEl = (
+    <MessageReadAloudContext.Provider value={messageReadAloud.value}>
     <MessageStream
       key={sessionId}
       sessionId={sessionId}
@@ -4946,6 +4964,7 @@ function CCAgentSessionContent({
       ownsHardwareScrollActions={ownsHardwareTaskActions}
       onInlinePlanVisibilityChange={handleInlinePlanVisibilityChange}
     />
+    </MessageReadAloudContext.Provider>
   );
 
   const composerRuntimeVisible =

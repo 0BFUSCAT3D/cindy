@@ -10,6 +10,7 @@ import {
 import { AudioLines, Mic, MicOff, PhoneOff, Send, Settings2, VolumeX, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { getVoiceInputSettings } from '@/hooks/useVoiceInputSettings';
 import type { ChatMessage } from '@/lib/makerChatStore';
@@ -48,7 +49,7 @@ export function CompanionVoicePanel(props: Props) {
         botId: props.bot.id,
         sessionId: props.sessionId,
         send: (...args) => latest.current.onSend(...args),
-        microphone: (onInterrupted) =>
+        microphone: (onInterrupted, onStateChange) =>
           new WebMicAudioEngine({
             workletUrl: getVoiceInputWorkletUrl(),
             deviceId: getVoiceInputSettings().microphoneDeviceId ?? undefined,
@@ -61,15 +62,19 @@ export function CompanionVoicePanel(props: Props) {
               autoGainControl: false,
             },
             onInterrupted,
+            onStateChange,
           }),
         player: (onLevel) => new PcmSpeechPlayer(onLevel),
       }),
     [props.bot.id, props.sessionId],
   );
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-  const active = ['connecting', 'listening', 'thinking', 'preparing', 'speaking'].includes(
-    state.phase,
-  );
+  const active =
+    !props.blocked &&
+    (loading ||
+      ['connecting', 'microphone', 'listening', 'thinking', 'preparing', 'speaking'].includes(
+        state.phase,
+      ));
   const start = useCallback(async () => {
     const version = ++launchVersion.current;
     setLoading(true);
@@ -86,7 +91,7 @@ export function CompanionVoicePanel(props: Props) {
         return;
       }
       controller.setBlocked(false);
-      await controller.start(selection);
+      await controller.start(selection, preference.sentencePlayback ?? true);
       if (version === launchVersion.current && !latest.current.blocked) controller.retryUnsent();
     } catch {
       if (version === launchVersion.current) setConfigurationError(true);
@@ -131,7 +136,15 @@ export function CompanionVoicePanel(props: Props) {
       removePower();
     };
   }, [controller]);
-  const status = props.blocked ? 'confirmation' : loading ? 'connecting' : state.phase;
+  const status = props.blocked
+    ? 'confirmation'
+    : loading && state.phase === 'idle'
+      ? 'loading'
+      : state.muted && state.phase === 'listening'
+        ? 'muted'
+        : state.phase;
+  const waiting = ['loading', 'connecting', 'microphone', 'thinking', 'preparing'].includes(status);
+  const wave = status === 'listening' || status === 'speaking';
   return (
     <section
       className="companion-voice-panel flex max-h-[min(36rem,65vh)] w-full flex-col rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-4 text-[var(--text-primary)]"
@@ -174,17 +187,27 @@ export function CompanionVoicePanel(props: Props) {
           <div className="flex items-center gap-5">
             <BotAvatar bot={props.bot} size="xl" />
             <div
-              className="companion-voice-meter flex h-10 items-center gap-1"
+              className="flex h-10 w-14 items-center justify-center text-[var(--text-secondary)]"
               aria-hidden="true"
-              data-active={active}
+              data-activity={status}
             >
-              {[0.4, 0.7, 1, 0.65, 0.9, 0.5, 0.75].map((weight, index) => (
-                <span
-                  key={index}
-                  className="h-8 w-1 rounded-full bg-[var(--text-secondary)]"
-                  style={{ transform: `scaleY(${0.12 + state.level * weight * 0.88})` }}
-                />
-              ))}
+              {waiting ? (
+                <Spinner size={24} />
+              ) : wave ? (
+                <div
+                  className={`companion-voice-meter flex items-center gap-1 ${status === 'speaking' ? 'text-[var(--text-primary)]' : ''}`}
+                >
+                  {[0.4, 0.7, 1, 0.65, 0.9, 0.5, 0.75].map((weight, index) => (
+                    <span
+                      key={index}
+                      className="h-8 w-1 rounded-full bg-current"
+                      style={{ transform: `scaleY(${0.12 + state.level * weight * 0.88})` }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <MicOff size={24} />
+              )}
             </div>
           </div>
           <div className="text-center">
@@ -219,6 +242,11 @@ export function CompanionVoicePanel(props: Props) {
             {t(`bots.voiceMode.errors.${state.error}`)}
           </p>
         ) : null}
+        {state.microphoneError ? (
+          <p role="alert" className="mb-3 text-13 text-[var(--error-fg)]">
+            {t('bots.voiceMode.microphoneResumeError')}
+          </p>
+        ) : null}
 
         {configurationError ? (
           <p role="alert" className="mb-3 text-13 text-[var(--error-fg)]">
@@ -242,11 +270,13 @@ export function CompanionVoicePanel(props: Props) {
             <Button
               variant="secondary"
               size="lg"
-              onClick={() => controller.toggleMute()}
-              disabled={state.phase === 'connecting'}
+              onClick={() => void controller.toggleMute()}
+              aria-pressed={state.muted}
+              loading={state.microphonePending}
+              disabled={loading || state.phase === 'connecting' || state.phase === 'microphone'}
             >
-              <MicOff size={16} />
-              {t('bots.voiceMode.mute')}
+              {state.muted ? <Mic size={16} /> : <MicOff size={16} />}
+              {t(state.muted ? 'bots.voiceMode.unmute' : 'bots.voiceMode.mute')}
             </Button>
             {state.phase === 'speaking' || state.phase === 'preparing' ? (
               <Button variant="secondary" size="lg" onClick={() => controller.interrupt()}>
@@ -254,8 +284,16 @@ export function CompanionVoicePanel(props: Props) {
                 {t('bots.voiceMode.interrupt')}
               </Button>
             ) : null}
-            {state.transcript ? (
-              <Button variant="secondary" size="lg" onClick={() => controller.finishUtterance()}>
+            {state.transcript || state.unsent ? (
+              <Button
+                variant="secondary"
+                tone="quiet"
+                size="lg"
+                disabled={state.microphonePending}
+                onClick={() =>
+                  state.transcript ? controller.finishUtterance() : controller.retryUnsent()
+                }
+              >
                 <Send size={16} />
                 {t('bots.voiceMode.send')}
               </Button>
@@ -268,7 +306,7 @@ export function CompanionVoicePanel(props: Props) {
         )}
       </div>
       <p className="mt-3 shrink-0 text-center text-12 leading-relaxed text-[var(--text-tertiary)]">
-        {t('bots.voiceMode.hint')}
+        {t(state.muted ? 'bots.voiceMode.mutedHint' : 'bots.voiceMode.hint')}
       </p>
     </section>
   );

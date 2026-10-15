@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { type VoiceConversationModel } from '@/../shared/voiceConversation';
+import {
+  type VoiceConversationModel,
+  type VoiceConversationEvent,
+} from '@/../shared/voiceConversation';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('@/lib/logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn() }) }));
 vi.mock('@/hooks/useVoiceInputSettings', () => ({
   getVoiceInputSettings: () => ({ microphoneDeviceId: null }),
 }));
@@ -35,6 +39,7 @@ vi.mock('../PcmSpeechPlayer', () => ({
 
 import { CompanionVoicePanel } from '../CompanionVoicePanel';
 let models: VoiceConversationModel[];
+let inputEvent: (event: VoiceConversationEvent) => void;
 const start = vi.fn(async () => ({ callId: 'call' }));
 const refresh = vi.fn(async () => undefined);
 beforeEach(() => {
@@ -52,8 +57,15 @@ beforeEach(() => {
         preference: vi.fn(async () => ({ selection: null, customized: false })),
         setPreference: vi.fn(async (_botId, selection) => ({ selection, customized: !!selection })),
         start,
+        setInputMuted: vi.fn(async () => ({ inputGeneration: 2 })),
+        finishUtterance: vi.fn(async () => {}),
         end: vi.fn(async () => {}),
-        onEvent: () => () => {},
+        onEvent: (callback: typeof inputEvent) => {
+          inputEvent = callback;
+          return () => {
+            inputEvent = () => {};
+          };
+        },
       },
       maker: { refreshBuiltinProviderModels: refresh },
       voiceInput: { updateSettings: vi.fn(async () => ({})), onPowerStateChange: () => () => {} },
@@ -198,4 +210,97 @@ it('keeps a load failure visible and retries without silently switching provider
   expect(configure).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.resume' }));
   await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+});
+
+it('distinguishes ASR connection from microphone startup, with explicit microphone-only controls', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  let connected!: (value: { callId: string }) => void;
+  let capturing!: () => void;
+  start.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        connected = resolve;
+      }),
+  );
+  audio.start.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        capturing = resolve;
+      }),
+  );
+  const view = render(panel());
+  await waitFor(() => expect(start).toHaveBeenCalledOnce());
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.connecting');
+  expect(screen.getByRole('button', { name: 'bots.voiceMode.mute' }).hasAttribute('disabled')).toBe(
+    true,
+  );
+  await act(async () => {
+    connected({ callId: 'call' });
+  });
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.microphone');
+  expect(
+    view.container.querySelector('[data-activity="microphone"] .animate-spinner'),
+  ).not.toBeNull();
+  expect(view.container.querySelector('.companion-voice-meter')).toBeNull();
+  await act(async () => {
+    capturing();
+  });
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.listening');
+  expect(view.container.querySelector('.companion-voice-meter')).not.toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.mute' }));
+  await waitFor(() =>
+    expect(window.electronAPI.voiceConversation.setInputMuted).toHaveBeenCalledWith('call', true),
+  );
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.muted');
+  expect(
+    screen.getByRole('button', { name: 'bots.voiceMode.unmute' }).getAttribute('aria-pressed'),
+  ).toBe('true');
+  expect(screen.getByText('bots.voiceMode.mutedHint')).toBeTruthy();
+  expect(view.container.querySelector('.companion-voice-meter')).toBeNull();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.unmute' }));
+  await waitFor(() => expect(audio.start).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.listening');
+  expect(start).toHaveBeenCalledOnce();
+});
+
+it('keeps Send secondary and preserves a visible unsent draft when the microphone is muted', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  render(panel());
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+  act(() => inputEvent({ callId: 'call', event: { type: 'draft', text: 'unfinished thought' } }));
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.send' }));
+  expect(window.electronAPI.voiceConversation.finishUtterance).toHaveBeenCalledWith('call');
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.mute' }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'bots.voiceMode.unmute' }).hasAttribute('disabled'),
+    ).toBe(false),
+  );
+  expect(screen.getByText('bots.voiceMode.unsent')).toBeTruthy();
+  expect(screen.getByText('unfinished thought')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'bots.voiceMode.send' })).toBeTruthy();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
+});
+
+it('offers unmute again after capture fails without replacing the call with a full reconnect', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  render(panel());
+  await waitFor(() => expect(audio.start).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.mute' }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'bots.voiceMode.unmute' }).hasAttribute('disabled'),
+    ).toBe(false),
+  );
+  audio.start.mockRejectedValueOnce(new Error('device unavailable'));
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.unmute' }));
+  await screen.findByText('bots.voiceMode.microphoneResumeError');
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'bots.voiceMode.unmute' }).hasAttribute('disabled'),
+    ).toBe(false),
+  );
+  expect(screen.queryByRole('button', { name: 'bots.voiceMode.resume' })).toBeNull();
+  expect(window.electronAPI.voiceConversation.end).not.toHaveBeenCalled();
 });

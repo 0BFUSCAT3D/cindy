@@ -1,5 +1,6 @@
 import {
   normalizeVoiceConversationPreferences,
+  normalizeSentencePlaybackOverrides,
   type VoiceConversationPreference,
   type VoiceConversationSelection,
 } from '../../shared/voiceConversation.js';
@@ -13,7 +14,30 @@ export function companionVoicePreference(
   const selection = Object.hasOwn(map, botId)
     ? map[botId]
     : (settings.conversationSelection ?? null);
-  return { selection, customized: !!selection };
+  const playback = normalizeSentencePlaybackOverrides(settings.conversationSentencePlayback);
+  const hasOverride = Object.hasOwn(playback, botId);
+  return {
+    selection,
+    customized: !!selection || hasOverride,
+    sentencePlayback: hasOverride ? playback[botId] : true,
+  };
+}
+
+export function updateSentencePlaybackPreference(
+  settings: VoiceInputSettings,
+  botId: string,
+  enabled: boolean | null,
+): Record<string, boolean> {
+  const map = normalizeSentencePlaybackOverrides(settings.conversationSentencePlayback);
+  if (enabled === null) delete map[botId];
+  else
+    Object.defineProperty(map, botId, {
+      value: enabled,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  return map;
 }
 
 /** Read the latest map in Main before changing one key; windows never overwrite each other. */

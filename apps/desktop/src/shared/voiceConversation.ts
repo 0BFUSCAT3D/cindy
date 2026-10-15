@@ -39,7 +39,10 @@ export type VoiceConversationModel = {
 export type VoiceConversationPreference = {
   selection: VoiceConversationSelection | null;
   customized: boolean;
+  /** Absent on older local bridges; the current default is enabled. */
+  sentencePlayback?: boolean;
 };
+export type SpeechStartResult = { sampleRate: number } | { deferred: true };
 export function voiceModelKey(model: {
   providerId?: string;
   agent?: AgentKind;
@@ -50,6 +53,8 @@ export function voiceModelKey(model: {
 }
 export type VoiceConversationEvent = {
   callId: string;
+  /** Identifies the ASR capture generation; ended events have no input generation. */
+  inputGeneration?: number;
   event: ConversationInputEvent | { type: 'ended' };
 };
 export type VoiceConversationStart = VoiceConversationSelection & {
@@ -66,17 +71,29 @@ export interface VoiceConversationApi {
   preference(botId: string): Promise<VoiceConversationPreference>;
   setPreference(
     botId: string,
-    selection: VoiceConversationSelection | null,
+    selection: VoiceConversationSelection | null | undefined,
+    /** undefined preserves this override; null restores the current default. */
+    sentencePlayback?: boolean | null,
   ): Promise<VoiceConversationPreference>;
   start(input: VoiceConversationStart): Promise<{ callId: string }>;
-  audio(input: { callId: string; pcm: ArrayBuffer; trace?: AudioTrace }): void;
+  /** Explicit message read-aloud: the same TTS lease and queue, without ASR or microphone input. */
+  startPlayback(input: VoiceConversationStart): Promise<{ callId: string }>;
+  audio(input: {
+    callId: string;
+    pcm: ArrayBuffer;
+    inputGeneration?: number;
+    trace?: AudioTrace;
+  }): void;
+  setInputMuted(callId: string, muted: boolean): Promise<{ inputGeneration: number }>;
   finishUtterance(callId: string): Promise<void>;
   end(callId: string): Promise<void>;
   speak(input: {
     callId: string;
     requestId: string;
     text: string;
-  }): Promise<{ sampleRate: number }>;
+    /** Main defers unfinished replies while an outgoing reply hook is enabled. */
+    streaming?: boolean;
+  }): Promise<SpeechStartResult>;
   readSpeech(callId: string, requestId: string): Promise<{ pcm: ArrayBuffer; done: boolean }>;
   interrupt(callId: string): Promise<void>;
   onEvent(callback: (event: VoiceConversationEvent) => void): () => void;
@@ -139,4 +156,14 @@ export function normalizeVoiceConversationPreferences(
       return id.trim() && id.length <= 256 && selection !== undefined ? [[id, selection]] : [];
     }),
   );
+}
+
+/** Only explicit per-companion choices are stored, never copies of the default. */
+export function normalizeSentencePlaybackOverrides(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([id, enabled]) => id.trim() && id.length <= 256 && typeof enabled === 'boolean',
+    ),
+  ) as Record<string, boolean>;
 }
