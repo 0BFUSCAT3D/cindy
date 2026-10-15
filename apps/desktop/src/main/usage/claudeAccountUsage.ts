@@ -203,7 +203,7 @@ function resolveDailyActivitySpend(activity: LiteLlmDailyActivity): { todaySpend
   return { todaySpend: Number.isFinite(totalSpend) ? totalSpend : 0 };
 }
 
-async function fetchOnce(authenticatedUserId?: string): Promise<ClaudeAccountUsageSnapshot | null> {
+async function fetchOnce(authenticatedUserId?: string): Promise<ClaudeAccountUsageSnapshot | 'unlimited' | null> {
   // Enterprise AIGateway inference endpoints need not expose LiteLLM management APIs.
   // Resolve the signed-in member's tenant in Model Access. Nova/older servers keep
   // the existing direct query; authorization/network errors never trigger fallback.
@@ -274,8 +274,15 @@ export async function triggerClaudeAccountUsageRefresh(force = false): Promise<v
   lastFetchAt = Date.now();
   try {
     const next = await fetchOnce(owner.authenticatedUserId);
-    if (!next) return;
     if (currentQuotaOwner()?.key !== owner.key) return;
+    if (next === 'unlimited') {
+      snapshot = null;
+      snapshotOwnerKey = owner.key;
+      broadcast(null);
+      ensureIdlePoll();
+      return;
+    }
+    if (!next) return;
     snapshot = next;
     snapshotOwnerKey = owner.key;
     broadcast(next);
@@ -310,7 +317,7 @@ export function readClaudeAccountUsageSnapshot(): ClaudeAccountUsageSnapshot | n
   return owner && snapshotOwnerKey === owner.key ? snapshot : null;
 }
 
-function broadcast(payload: ClaudeAccountUsageSnapshot): void {
+function broadcast(payload: ClaudeAccountUsageSnapshot | null): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(USAGE_CLAUDE_ACCOUNT_CHANGED, payload);

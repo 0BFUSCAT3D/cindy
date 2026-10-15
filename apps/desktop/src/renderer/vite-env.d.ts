@@ -6944,7 +6944,7 @@ interface ElectronAPI {
           budgetResetAt?: string | null;
           todaySpend: number | null;
           fetchedAt: number;
-        }) => void,
+        } | null) => void,
       ) => () => void;
       onCodexAccountChanged: (
         cb: (p: {

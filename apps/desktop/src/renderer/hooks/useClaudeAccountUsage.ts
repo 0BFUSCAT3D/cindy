@@ -101,6 +101,11 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
       .getAccount('claude-code')
       .then((res) => {
         if (cancelled) return;
+        if (res === null) {
+          if (lastSnapshot?.ownerKey === ownerKey) lastSnapshot = null;
+          setSnapshot(null);
+          return;
+        }
         if (!isSnapshot(res)) return;
         lastSnapshot = { ownerKey, cachedAt: Date.now(), usage: res };
         setSnapshot(lastSnapshot);
@@ -120,6 +125,11 @@ export function useClaudeAccountUsageResult(enabled: boolean) {
   useEffect(() => {
     if (!ownerKey) return;
     return window.electronAPI.maker.usage.onClaudeAccountChanged((p) => {
+      if (p === null) {
+        if (lastSnapshot?.ownerKey === ownerKey) lastSnapshot = null;
+        setSnapshot(null);
+        return;
+      }
       if (!isSnapshot(p)) return;
       lastSnapshot = { ownerKey, cachedAt: Date.now(), usage: p };
       setSnapshot(lastSnapshot);

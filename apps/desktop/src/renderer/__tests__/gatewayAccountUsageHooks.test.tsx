@@ -112,3 +112,24 @@ for (const kind of ['quota', 'credit'] as const) {
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
   });
 }
+
+
+it('clears the mounted and warm quota cache when the main process reports no limit', async () => {
+  state.owner = 'quota-unlimited';
+  state.membership = 'org';
+  let changed!: Parameters<typeof window.electronAPI.maker.usage.onClaudeAccountChanged>[0];
+  window.electronAPI.maker.usage.onClaudeAccountChanged = (listener) => {
+    changed = listener;
+    return () => {};
+  };
+  state.quota.mockResolvedValue({ spend: 100, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 });
+  const view = renderHook(() => useClaudeAccountUsageResult(true));
+  await waitFor(() => expect(view.result.current.usage?.maxBudget).toBe(100));
+  state.quota.mockResolvedValue(null);
+  act(() => changed(null));
+  expect(view.result.current.usage).toBeNull();
+  view.unmount();
+  const reopened = renderHook(() => useClaudeAccountUsageResult(true));
+  expect(reopened.result.current.usage).toBeNull();
+  await waitFor(() => expect(reopened.result.current.loading).toBe(false));
+});

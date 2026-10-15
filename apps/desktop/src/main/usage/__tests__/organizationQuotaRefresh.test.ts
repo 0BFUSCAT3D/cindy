@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   auth: { mode: 'cloud', dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } },
-  managed: vi.fn(), outbound: vi.fn(),
+  managed: vi.fn(), outbound: vi.fn(), broadcast: vi.fn(),
 }));
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
 vi.mock('../../authManager', () => ({ getAuthState: () => mocks.auth }));
-vi.mock('../../device-link/broadcast-tap.js', () => ({ tapWindowBroadcast: vi.fn() }));
+vi.mock('../../device-link/broadcast-tap.js', () => ({ tapWindowBroadcast: mocks.broadcast }));
 vi.mock('../../logger', () => ({ createLogger: () => ({ info: vi.fn(), debug: vi.fn() }) }));
 vi.mock('../../maker-host/auth-adapters', () => ({ readClaudeApiKey: () => 'fixture-key' }));
 vi.mock('../../maker-host/outbound-fetch', () => ({ outboundFetch: mocks.outbound }));
@@ -50,6 +50,16 @@ describe('Cindy AI enterprise quota refresh', () => {
     mocks.auth = { ...mocks.auth, dataOwnerId: 'owner-b' };
     resolve(quota); await pending;
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+  });
+  it('clears and broadcasts an unlimited result after a finite quota was cached', async () => {
+    const api = await import('../claudeAccountUsage');
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(api.readClaudeAccountUsageSnapshot()).toEqual(quota);
+    mocks.managed.mockResolvedValue('unlimited');
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    expect(mocks.broadcast).toHaveBeenLastCalledWith('usage:claude-account-changed', null);
+    expect(mocks.outbound).not.toHaveBeenCalled();
   });
   it('keeps local gateway reads on the original endpoint', async () => {
     mocks.auth.mode = 'local';

@@ -19,7 +19,11 @@ describe('organization account usage', () => {
     fetch.mockRejectedValue(new ServerApiError('ERROR', status, 'safe'));
     expect(await readOrganizationAccountUsage()).toBeNull();
   });
-  it.each([{ ...valid, spend: NaN }, { ...valid, currency: 'unknown' }, { ...valid, maxBudget: null }])('does not invent a finite quota for malformed or unlimited data', async data => {
+  it('distinguishes unlimited from an unavailable response', async () => {
+    fetch.mockResolvedValue({ ...valid, maxBudget: null });
+    expect(await readOrganizationAccountUsage()).toBe('unlimited');
+  });
+  it.each([{ ...valid, spend: NaN }, { ...valid, currency: 'unknown' }])('does not invent a finite quota for malformed or unlimited data', async data => {
     fetch.mockResolvedValue(data);
     expect(await readOrganizationAccountUsage()).toBeNull();
   });
