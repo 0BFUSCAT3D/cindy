@@ -1094,6 +1094,7 @@ describe('CodexAgent spawn configuration', () => {
       const session = await agent.startSession({ sessionId: 'gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
       const original = createdTransports[0];
       expect(createdStdioOptions[0].env?.XDT_CODEX_API_KEY).toBe(key);
+      key = 'test-new-gateway-key';
       const guard = await agent.beginLocalHostCredentialChange('gateway key rotation', {
         allLocalHosts: true, credentialMode: 'gateway-key',
       });
@@ -1104,7 +1105,6 @@ describe('CodexAgent spawn configuration', () => {
         guard.assertIdle();
         await guard.retireActiveHost();
         expect(original.closed).toBe(true);
-        key = 'test-new-gateway-key';
         await guard.finalize();
       } finally { guard.release(); }
       const restored = await agent.startSession({ sessionId: 'gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo', resumeSessionId: session.id });
@@ -1152,7 +1152,34 @@ describe('CodexAgent spawn configuration', () => {
     } finally { await agent.dispose(); }
   });
 
-  it('defers gateway key rotation while an isolated host is starting', async () => {
+  it('retires only the selected gateway host while another gateway host remains active', async () => {
+    const deps = createDeps({}, {
+      resolveCodexLocalAuthPolicy: () => 'isolated',
+      resolveCodexThreadContextWindow: () => 700_000,
+      prepareCodexExtraSpawnConfig: async () => ({ extraArgs: [], extraEnv: {}, codexProxyActive: true }),
+    });
+    deps.auth.getState = async () => ({ authenticated: true, authSource: 'api-key' });
+    const agent = new CodexAgent(deps);
+    try {
+      const first = await agent.startSession({ sessionId: 'first-gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+      const second = await agent.startSession({ sessionId: 'second-gateway', providerId: 'xd', model: 'gpt-5.4', workingDir: '/repo' });
+      expect(agent.getLocalHostKeysForCredentialMode('gateway-key')).toEqual([first.codexHostKey, second.codexHostKey]);
+      const guard = await agent.beginLocalHostCredentialChange('saved gateway key', {
+        allLocalHosts: true, credentialMode: 'gateway-key', targetHostKey: first.codexHostKey,
+      });
+      try {
+        expect(guard.affectedHostKeys).toEqual([first.codexHostKey]);
+        await first.close();
+        guard.assertIdle();
+        await guard.finalize();
+        expect(createdTransports[0].closed).toBe(true);
+        expect(createdTransports[1].closed).toBe(false);
+      } finally { guard.release(); }
+      await second.close();
+    } finally { await agent.dispose(); }
+  });
+
+  it('defers gateway host retirement while an isolated host is starting', async () => {
     const started = deferred<void>();
     const finish = deferred<void>();
     const agent = new CodexAgent(createDeps({}, {

@@ -52,6 +52,7 @@ export interface DeliverSessionEventDeps {
   readonly settlePendingSessionRuntimeControlHolder:
     ((sessionId: string, reason: string) => void) | null;
   readonly deferredCodexRestartHolder: Pick<DeferredCodexRestartService, 'onSessionSettled'> | null;
+  readonly gatewayCodexRestartHolder?: Pick<DeferredCodexRestartService, 'onSessionSettled'> | null;
   readonly refreshRemoteCodexMcpOnTurnSettledHolder: ((sessionId: string) => void) | null;
   readonly markTurnEndedAfterPersistDrain: (sessionId: string) => void;
   readonly gitSnapshotCoordinator: Pick<GitSnapshotCoordinator, 'onTurnEnd' | 'onTurnAbort'> | null;
@@ -161,6 +162,7 @@ export function deliverSessionEvent(
     deps.settlePendingCredentialSwitch(session.id, `event:${event.type}`);
     deps.settlePendingSessionRuntimeControlHolder?.(session.id, `event:${event.type}`);
     deps.deferredCodexRestartHolder?.onSessionSettled();
+    deps.gatewayCodexRestartHolder?.onSessionSettled();
     deps.agentInputCoordinatorHolder?.onExternalTurnSettled(session.id);
     deps.refreshRemoteCodexMcpOnTurnSettledHolder?.(session.id);
   } else if (shouldMarkTurnStatusIdleAfterBroadcast) {
