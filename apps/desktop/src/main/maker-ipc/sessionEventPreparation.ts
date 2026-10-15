@@ -129,6 +129,11 @@ export interface PrepareSessionEventDeps {
     event: AgentEvent,
   ) => boolean;
   readonly isGatewayProxyTokenRecoveryErrorEvent: (sessionId: string, event: AgentEvent) => boolean;
+  /**
+   * 伙伴工作记忆刷新登记(botWorkingMemory):原生自动压缩后,下一次发送前置一次账本。
+   * 对所有会话登记,发送时再按伙伴主对话 / 有无账本决定是否真的注入。
+   */
+  readonly workingMemoryRefresh?: { markCompacted(sessionId: string): void };
 }
 
 export function prepareSessionEvent(
@@ -141,6 +146,7 @@ export function prepareSessionEvent(
   // potentially multi-megabyte payload to every renderer and device-link controller.
   if (event.type === 'turn_diff') return;
   if (event.type === 'compact_boundary') deps.botCompactRuntimeRefreshCoordinator.noteBoundary(session);
+  if (event.type === 'compact_boundary') deps.workingMemoryRefresh?.markCompacted(session.id);
   if (
     event.turnScope === 'background' &&
     Object.prototype.hasOwnProperty.call(event, 'backgroundTurnStartedAt') &&

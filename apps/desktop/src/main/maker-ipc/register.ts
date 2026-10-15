@@ -595,6 +595,11 @@ import {
   type BotCompactRuntimeRefreshOutcome,
   type BotCompactRuntimeSession,
 } from './botCompactRuntimeRefresh.js';
+import {
+  buildWorkingMemoryRefreshNote,
+  createWorkingMemoryRefreshRegistry,
+  readWorkingMemoryNoteForSession,
+} from './botWorkingMemory.js';
 import { isBotCanonicalReplacementBusy } from './botCanonicalReplacementGuard.js';
 import { configureBotCanonicalReplacementCoordinator } from './botCanonicalReplacementCoordinator.js';
 import { botSessionInputBlockReason, isShadowedCompanionCanonical, SHADOWED_COMPANION_INPUT_MESSAGE } from './botSessionInputGuard.js';
@@ -3254,6 +3259,13 @@ type BotCompactRuntimeRefreshHandler = (
  * and let the instance-scoped coordinator own all compact settle signals.
  */
 let botCompactRuntimeRefreshHandler: BotCompactRuntimeRefreshHandler | null = null;
+/**
+ * 伙伴工作记忆账本(botWorkingMemory):换窗交接带账本;原生压缩后下一次发送补一份。
+ * 登记对所有会话生效,真正注入只在伙伴主对话且有账本时发生。
+ */
+const workingMemoryRefresh = createWorkingMemoryRefreshRegistry();
+const readWorkingMemoryNote = (sessionId: string): Promise<string | null> =>
+  readWorkingMemoryNoteForSession(sessionId, ownerScopedUserDataPath());
 const botCompactRuntimeRefreshCoordinator = createBotCompactRuntimeRefreshCoordinator({
   hasPendingInteraction: hasPendingAgentInteractionForSession,
   refresh: (session, boundary) =>
@@ -5469,6 +5481,7 @@ const sessionEventDependencies: SessionEventDependencies = {
   onUnsuccessfulProductTurn: interruptProductTurn,
   deferUnsuccessfulProductTurn: (owner) => deferredProductTurnFailureGate.defer(owner),
   get botCompactRuntimeRefreshCoordinator() { return botCompactRuntimeRefreshCoordinator; },
+  get workingMemoryRefresh() { return workingMemoryRefresh; },
   get attemptBotCompactRuntimeRefresh() { return attemptBotCompactRuntimeRefresh; },
   get botDelegationServiceHolder() { return botDelegationServiceHolder; },
   get botGroupChatServiceHolder() { return botGroupChatServiceHolder; },
@@ -9979,6 +9992,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     closeSession: (sessionId) => maker.closeSession(sessionId, 'agent-switch'),
     listMessagesForHandoff: (sessionId, after) =>
       listMessagesForAgentHandoff(sessionId, 400, after),
+    readWorkingMemoryNote,
     findParkedEngineSession: (sessionId, targetDbKind) =>
       findParkedEngineSession(sessionId, targetDbKind),
     applyAgentSwitchToDb: async (sessionId, patch) => {
@@ -10219,6 +10233,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     getMessage: getMessageDeletionTarget,
     listMessagesForContext: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
+    readWorkingMemoryNote,
     getLiveSession: (sessionId) => maker.getSession(sessionId),
     hasBackgroundActivity: getClaudeSessionBackgroundActivity,
     closeSession: (sessionId) => maker.closeSession(sessionId),
@@ -16154,6 +16169,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     isCindyMakeSession: async (sessionId) =>
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
+    // 原生压缩后的账本刷新:只对伙伴主对话且有账本的会话真正注入;读不到按无。
+    peekWorkingMemoryRefreshNote: async (sessionId) => {
+      if (!workingMemoryRefresh.isPending(sessionId)) return null;
+      const rendered = await readWorkingMemoryNote(sessionId);
+      if (!rendered) {
+        workingMemoryRefresh.consume(sessionId);
+        return null;
+      }
+      return buildWorkingMemoryRefreshNote(rendered);
+    },
+    consumeWorkingMemoryRefreshNote: (sessionId) => workingMemoryRefresh.consume(sessionId),
     applyPendingAgentSwitch: async (sessionId, options) => {
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
       // 已归组的任务所在那台现在不能用时，先换到组里下一台再发(失败不影响这次发送)；离线时先等它恢复，
@@ -16300,6 +16326,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return resolveConfiguredContextWindow(catalog, makerAgentKind, providerId, modelId);
     },
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
+    readWorkingMemoryNote,
     findLatestUser: findLatestUserMessageForRebuild,
     findLatestRebuildMeta: findLatestContextRebuildMeta,
     getLiveSession: (sessionId) => maker.getSession(sessionId),

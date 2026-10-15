@@ -46,6 +46,8 @@ export interface MessageDeleteHandlerDeps {
     clientId: string,
   ): Promise<MessageDeletionTarget | null>;
   listMessagesForContext(sessionId: string): Promise<ContextSourceMessage[]>;
+  /** 伙伴工作记忆账本渲染段(botWorkingMemory);删除消息后的重建交接同样带上。 */
+  readWorkingMemoryNote?(sessionId: string): Promise<string | null>;
   getLiveSession(sessionId: string): { isTurnRunning(): boolean } | null | undefined;
   hasBackgroundActivity(sessionId: string): boolean;
   closeSession(sessionId: string): Promise<void>;
@@ -138,6 +140,7 @@ export async function performMessageDeletion(
       toLabel: label,
       sessionId,
       reason: 'message-deletion',
+      workingMemory: (await deps.readWorkingMemoryNote?.(sessionId)) ?? null,
     });
 
     const committed = await deps.commitDeletion(

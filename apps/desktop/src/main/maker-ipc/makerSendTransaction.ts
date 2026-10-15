@@ -509,6 +509,12 @@ export interface MakerSendTransactionDeps {
   readWorkingDirectoryRecoveryCreateOpts(sessionId: string): Promise<CreateOpts>;
   consumeWorkingDirectoryRecoveryNote?(sessionId: string, note: string): void;
   /**
+   * 伙伴工作记忆刷新(botWorkingMemory):原生自动压缩之后的下一次发送前置一次账本,
+   * 只进 wire payload;交接首条(pending handoff)已含账本时不重复。accepted 后 consume。
+   */
+  peekWorkingMemoryRefreshNote?(sessionId: string): Promise<string | null>;
+  consumeWorkingMemoryRefreshNote?(sessionId: string): void;
+  /**
    * 计划对账:会话里若有待处理计划,返回一段只进 wire payload 的指示文本。
    * sealedTurnId 只用于已完成计划的一次性保护,跨过 accepted 后才消费。
    */
@@ -1218,9 +1224,17 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         ? prependNoteToWireUserMessage(normalized as HandoffWireMessage, workdirRecoveryNote)
         : normalized;
       const pendingHandoff = (await deps.peekPendingHandoff?.(sessionId)) ?? null;
-      const withHandoff = pendingHandoff
-        ? prependHandoffToUserMessage(withRecoveryNote as HandoffWireMessage, pendingHandoff)
+      // 原生压缩后的账本刷新:交接首条已含账本时不重复(但同样在 accepted 后消费)。
+      const workingMemoryRefreshNote =
+        !pendingHandoff && shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+          ? ((await deps.peekWorkingMemoryRefreshNote?.(sessionId).catch(() => null)) ?? null)
+          : null;
+      const withWorkingMemoryRefresh = workingMemoryRefreshNote
+        ? prependNoteToWireUserMessage(withRecoveryNote as HandoffWireMessage, workingMemoryRefreshNote)
         : withRecoveryNote;
+      const withHandoff = pendingHandoff
+        ? prependHandoffToUserMessage(withWorkingMemoryRefresh as HandoffWireMessage, pendingHandoff)
+        : withWorkingMemoryRefresh;
       // 计划对账:旧的未收口计划让 agent 顺手交代(更新/修订/清掉)。位置在交接段
       // 之前——两段各自带"以下是用户的新消息"式结束标记,对账在外层不破坏交接正文。
       // 只对"用户真的开口"的普通新轮次注入,判定用白名单而非枚举内部来源
@@ -1743,6 +1757,10 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
         }
         if (workdirRecoveryNote && sendResult.accepted) {
           deps.consumeWorkingDirectoryRecoveryNote?.(sessionId, workdirRecoveryNote);
+        }
+        // 交接首条已经带了账本;刷新标记一并消费,避免下一轮再补一份。
+        if ((workingMemoryRefreshNote || pendingHandoff) && sendResult.accepted) {
+          deps.consumeWorkingMemoryRefreshNote?.(sessionId);
         }
         if (planReconcile?.sealedTurnId && sendResult.accepted) {
           try {
