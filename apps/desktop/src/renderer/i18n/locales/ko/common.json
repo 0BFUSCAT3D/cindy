@@ -161,8 +161,8 @@
     "runsOnThisDevice": "이 PC에서 실행 중",
     "inviteNotice": "초대 링크를 가진 사용자는 로그인 후 참여할 수 있으며, 호스트와 동일한 Agent 권한을 갖습니다.",
     "offlineAutoClose": "호스트 컴퓨터가 계속 오프라인 상태이면 공유가 자동으로 종료됩니다.",
-    "inviteBoxHint": "동료에게 링크를 보내면 클릭하여 참여할 수 있습니다. 모바일에서는 링크를 복사한 뒤 Cindy를 열어도 됩니다.",
-    "invitationMessage": "“{{title}}”에 초대합니다\n{{link}}\n링크를 열어 참여하세요. 모바일에서는 링크를 복사한 뒤 Cindy를 열고 참여를 확인할 수도 있습니다.",
+    "inviteBoxHint": "동료에게 링크를 보내면 클릭하여 참여할 수 있습니다. Cindy의 ‘공유 세션 참여’에 링크를 붙여 넣어 참여할 수도 있습니다.",
+    "invitationMessage": "“{{title}}”에 초대합니다\n{{link}}\n링크를 열어 참여하세요. Cindy가 열리지 않으면 Cindy에서 ‘공유 세션 참여’를 선택하고 이 링크를 붙여 넣으세요.",
     "membersWithLimit": "멤버 · {{count}}명 (최대 게스트 2명)",
     "me": "나",
     "thisDevice": "이 PC",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "다른 Cindy 서비스의 초대입니다. 해당 앱에서 링크를 여세요.",
     "managementIntro": "시작하거나 참여한 공유를 관리합니다.",
     "returnToTasks": "작업 목록으로 돌아가기",
-    "invitationDetected": "공유 작업 초대를 찾았습니다",
-    "notNow": "나중에",
     "closeAllLabel": "모든 공유 중지",
     "closeAllDescription": "모든 게스트의 접근이 차단됩니다. 작업 기록은 유지됩니다."
   },
@@ -523,6 +521,8 @@
       "sourceShare": "{{name}}님의 공유",
       "shareComputer": "{{name}}님의 컴퓨터",
       "shareComputerUnknown": "공유된 컴퓨터",
+      "accountCount_other": "계정 {{count}}개",
+      "accountFallback": "계정 {{index}}",
       "quota": {
         "loading": "할당량을 불러오는 중…",
         "unavailable": "지금은 이 컴퓨터의 할당량을 읽을 수 없습니다",
@@ -602,6 +602,7 @@
     },
     "toast": {
       "added_other": "컴퓨터 {{count}}대를 {{provider}} 제공자 그룹에 추가했습니다",
+      "addedAccounts_other": "계정 {{count}}개를 {{provider}} 제공자 그룹에 추가했습니다",
       "removed": "{{name}}을(를) 제공자 그룹에서 제외했습니다",
       "deleted": "{{provider}} 제공자 그룹을 삭제했습니다"
     }
@@ -770,6 +771,7 @@
     "clipboardSyncFailed": "동기화가 일시적으로 실패했습니다. 자동으로 재시도하며 설정은 켜진 상태로 유지됩니다.",
     "clipboardSyncSkipped": "현재 콘텐츠를 동기화할 수 없어 건너뛰었습니다. 붙여넣기 권한을 확인하거나 텍스트 또는 이미지를 복사한 후 다시 시도해 주세요.",
     "clipboardSyncPermission": "동기화가 일시 중지되었습니다. 붙여넣기를 허용한 후 다시 시도해 주세요. 설정은 켜진 상태로 유지됩니다.",
+    "clipboardSyncWaiting": "원격 컴퓨터의 클립보드에 지금은 접근할 수 없습니다(잠겨 있을 수 있음). 자동으로 동기화를 재개합니다.",
     "lockingOnExit": "컴퓨터를 잠그는 중…",
     "lockOnExit": "종료 시 컴퓨터 잠금",
     "lockOnExitHint": "원격 데스크톱을 종료하면 잠급니다. 재연결이나 앱 전환 시에는 잠그지 않습니다.",
@@ -9126,6 +9128,12 @@
         "attachmentsFailed": "첨부 파일을 보내지 못했습니다. 파일이 아직 있는지 확인하거나, 제거한 후 다시 시도하세요",
         "folderNotSupported": "폴더는 첨부할 수 없습니다. 폴더 안의 파일을 선택하세요"
       },
+      "outbox": {
+        "sending": "보내는 중…",
+        "failed": "보내지 못했습니다",
+        "edit": "편집",
+        "editBlocked": "입력란에 내용이 있습니다. 먼저 보내거나 지운 다음 이 메시지를 편집하세요"
+      },
       "quote": {
         "replyingTo": "{{name}} 인용",
         "remove": "인용 취소",
@@ -9262,7 +9270,10 @@
         "planning": "역할을 나누는 중…"
       },
       "files": {
-        "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다"
+        "openFailed": "파일을 열지 못했습니다. 이동되었거나 삭제되었을 수 있습니다",
+        "untitled": "첨부 파일",
+        "loading": "불러오는 중…",
+        "unavailable": "지금 불러올 수 없음"
       },
       "addFromChat": {
         "triggerFor": "{{name}}을(를) 그룹 채팅에 추가",
@@ -9283,6 +9294,11 @@
         "sendReply": "답글 보내기",
         "addReaction": "이모지 반응 추가",
         "reactionCount": "{{emoji}} · 반응 {{count}}개",
+        "reactionWho": "{{emoji}} · 반응 {{count}}개: {{names}}",
+        "reactorSelf": "나",
+        "reactorFormer": "{{name}}(현재 그룹에 없음)",
+        "reactorsUnavailable_one": "외 {{count}}명의 멤버 정보를 표시할 수 없습니다",
+        "reactorsUnavailable_other": "외 {{count}}명의 멤버 정보를 표시할 수 없습니다",
         "invite": "그룹에 초대",
         "join": "그룹 참여",
         "inviteDescription": "초대를 수락하면 그룹 구성원이 되어 대화 기록을 볼 수 있습니다.",

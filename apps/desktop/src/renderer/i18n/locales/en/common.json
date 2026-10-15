@@ -161,8 +161,8 @@
     "runsOnThisDevice": "Runs on this device",
     "inviteNotice": "Anyone holding the invitation link can join after signing in, with the same Agent access as the host.",
     "offlineAutoClose": "Sharing ends automatically if the host computer stays offline.",
-    "inviteBoxHint": "Send the link to your teammate to join. On mobile, they can also copy the link and open Cindy.",
-    "invitationMessage": "You’re invited to join “{{title}}”\n{{link}}\nOpen the link to join. On mobile, you can also copy the link, open Cindy, and confirm to join.",
+    "inviteBoxHint": "Send the link to your teammate. They can open it to join, or paste it into Join Shared Task in Cindy.",
+    "invitationMessage": "You’re invited to join “{{title}}”\n{{link}}\nOpen the link to join. If Cindy doesn’t open, choose Join Shared Task in Cindy and paste this link.",
     "membersWithLimit": "Members · {{count}} (up to 2 guests)",
     "me": "Me",
     "thisDevice": "This device",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "This invitation belongs to another Cindy service. Open the link in the matching app.",
     "managementIntro": "Manage the tasks you share and join.",
     "returnToTasks": "Back to Tasks",
-    "invitationDetected": "Shared task invitation found",
-    "notNow": "Not Now",
     "closeAllLabel": "Stop All Sharing",
     "closeAllDescription": "Guests will lose access. Task history is kept."
   },
@@ -526,6 +524,9 @@
       "sourceShare": "Shared by {{name}}",
       "shareComputer": "{{name}}'s computer",
       "shareComputerUnknown": "Shared computer",
+      "accountCount_one": "{{count}} account",
+      "accountCount_other": "{{count}} accounts",
+      "accountFallback": "Account {{index}}",
       "quota": {
         "loading": "Reading quota…",
         "unavailable": "Can’t read this computer’s quota right now",
@@ -610,6 +611,8 @@
     "toast": {
       "added_one": "Added {{count}} computer to the {{provider}} provider group",
       "added_other": "Added {{count}} computers to the {{provider}} provider group",
+      "addedAccounts_one": "Added {{count}} account to the {{provider}} provider group",
+      "addedAccounts_other": "Added {{count}} accounts to the {{provider}} provider group",
       "removed": "Removed {{name}} from the provider group",
       "deleted": "Deleted the {{provider}} provider group"
     }
@@ -778,6 +781,7 @@
     "clipboardSyncFailed": "Sync temporarily failed. Retrying automatically; your setting stays on.",
     "clipboardSyncSkipped": "This content could not be synced and was skipped. Check paste access, or copy text or an image to try again.",
     "clipboardSyncPermission": "Sync is paused. Allow paste access, then retry. Your setting stays on.",
+    "clipboardSyncWaiting": "The remote computer’s clipboard is not available right now (it may be locked). Sync resumes automatically.",
     "lockingOnExit": "Locking computer…",
     "lockOnExit": "Lock Computer on Exit",
     "lockOnExitHint": "Locks when you leave remote desktop. Reconnecting or switching apps does not lock the computer.",
@@ -9165,6 +9169,12 @@
         "attachmentsFailed": "Attachments not sent. Check that the files still exist, or remove them and try again.",
         "folderNotSupported": "Folders can’t be attached. Choose the files inside instead."
       },
+      "outbox": {
+        "sending": "Sending…",
+        "failed": "Not sent",
+        "edit": "Edit",
+        "editBlocked": "Send or clear what’s in the input first, then edit this message."
+      },
       "quote": {
         "replyingTo": "Quoting {{name}}",
         "remove": "Remove quote",
@@ -9301,7 +9311,10 @@
         "planning": "Splitting the work…"
       },
       "files": {
-        "openFailed": "Couldn’t open the file. It may have been moved or deleted."
+        "openFailed": "Couldn’t open the file. It may have been moved or deleted.",
+        "untitled": "Attachment",
+        "loading": "Loading…",
+        "unavailable": "Unavailable right now"
       },
       "addFromChat": {
         "triggerFor": "Add {{name}} to a Group Chat",
@@ -9322,6 +9335,11 @@
         "sendReply": "Send reply",
         "addReaction": "Add reaction",
         "reactionCount": "{{emoji}} · {{count}} reactions",
+        "reactionWho": "{{emoji}} · {{count}} reactions: {{names}}",
+        "reactorSelf": "You",
+        "reactorFormer": "{{name}} (no longer in group)",
+        "reactorsUnavailable_one": "Name unavailable for {{count}} more member",
+        "reactorsUnavailable_other": "Names unavailable for {{count}} more members",
         "invite": "Invite to group",
         "join": "Join group",
         "inviteDescription": "People who accept the invitation join the group and can read its chat history.",

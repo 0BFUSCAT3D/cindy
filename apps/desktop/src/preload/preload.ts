@@ -3805,6 +3805,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   //   - { type: 'project', workingDir }    : 聚焦已有 project 节点
   //   - { type: 'new-session', workingDir }: 新建对话且预填 workingDir (右键 "通过 Cindy 打开")
   //   - { type: 'share-import', filePath } : 打开 .cshare/.xdtshare 会话导入向导
+  //   - { type: 'provider-share-join', link } : 打开供应商分享申请弹窗
   //   - { type: 'settings', tab, connect? }: 打开设置页 (connect 为可选 provider / preset id,
   //     来自 cindy://settings/providers?connect=<providerId> 深链, per-type 白名单再校验)
   onDeepLinkNavigate: (
@@ -3816,6 +3817,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         | { type: 'share-import'; filePath: string }
         | { type: 'provider-import'; importId: string }
         | { type: 'shared-task-join'; invitation: string; server: string }
+        | { type: 'provider-share-join'; link: string }
         | { type: 'chat-invite'; token: string }
         | { type: 'chat-invite-malformed' }
         | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
@@ -3832,6 +3834,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         invitation?: unknown;
         token?: unknown;
         server?: unknown;
+        link?: unknown;
         tab?: unknown;
         connect?: unknown;
         messageClientId?: unknown;
@@ -3863,6 +3866,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
         callback({ type: 'chat-invite-malformed' });
       } else if (p.type === 'shared-task-join' && typeof p.invitation === 'string' && /^[A-Za-z0-9_-]{43}$/.test(p.invitation) && typeof p.server === 'string' && p.server.length <= 2048) {
         callback({ type: 'shared-task-join', invitation: p.invitation, server: p.server });
+      } else if (
+        p.type === 'provider-share-join' &&
+        typeof p.link === 'string' &&
+        p.link.length > 0 &&
+        p.link.length <= 4096
+      ) {
+        callback({ type: 'provider-share-join', link: p.link });
       } else if (
         p.type === 'provider-import' &&
         typeof p.importId === 'string' &&
@@ -3900,6 +3910,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     | { type: 'share-import'; filePath: string }
     | { type: 'provider-import'; importId: string }
     | { type: 'shared-task-join'; invitation: string; server: string }
+    | { type: 'provider-share-join'; link: string }
     | { type: 'chat-invite'; token: string }
     | { type: 'chat-invite-malformed' }
     | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string }
@@ -6011,6 +6022,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:chat-server:reply', input),
       react: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['react']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['react']> =>
         ipcRenderer.invoke('maker:chat-server:react', input),
+      reactors: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['reactors']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['reactors']> =>
+        ipcRenderer.invoke('maker:chat-server:reactors', input),
       createInvite: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['createInvite']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['createInvite']> =>
         ipcRenderer.invoke('maker:chat-server:createInvite', input),
       revokeInvite: (input: Parameters<import('../shared/botGroupChat').ChatServerApi['revokeInvite']>[0]): ReturnType<import('../shared/botGroupChat').ChatServerApi['revokeInvite']> =>

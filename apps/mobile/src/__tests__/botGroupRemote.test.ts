@@ -120,6 +120,9 @@ describe('parseBotGroupChatData', () => {
       { id: 'x1', name: 'shot.png', category: 'image', mimeType: 'image/png', size: 12, url: 'cindy-media://blobs/abc.png', path: '/Users/me/shot.png' },
       { id: 'x2', name: 'brief.pdf', category: 'pdf', mimeType: 'application/pdf', size: 30, url: null, path: null, annotated: 'yes' },
       { id: 'x3', name: 'odd.bin', category: 'future', mimeType: 7, size: -1, url: 'https://elsewhere.example/x.png' },
+      { id: 'x4', name: 'late.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' },
+      { id: 'x5', name: 'gone.md', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' },
+      { id: 'x6', name: 'odd-state.txt', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'future' },
       { id: '', name: 'no-id.png' },
       'garbage',
     ];
@@ -129,6 +132,10 @@ describe('parseBotGroupChatData', () => {
       { id: 'x1', name: 'shot.png', category: 'image', mimeType: 'image/png', size: 12, url: 'cindy-media://blobs/abc.png', path: null },
       { id: 'x2', name: 'brief.pdf', category: 'pdf', mimeType: 'application/pdf', size: 30, url: null, path: null },
       { id: 'x3', name: 'odd.bin', category: 'file', mimeType: '', size: 0, url: null, path: null },
+      // The computer's loading / unavailable state survives; an unknown state is dropped.
+      { id: 'x4', name: 'late.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' },
+      { id: 'x5', name: 'gone.md', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' },
+      { id: 'x6', name: 'odd-state.txt', category: 'file', mimeType: '', size: 0, url: null, path: null },
     ]);
     // Older computers: no attachments, no flag.
     const old = parseBotGroupChatData(chatData())!;

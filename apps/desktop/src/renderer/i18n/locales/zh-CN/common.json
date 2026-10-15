@@ -161,8 +161,8 @@
     "runsOnThisDevice": "运行在这台电脑",
     "inviteNotice": "持有邀请链接的用户登录后即可加入，拥有与房主相同的 Agent 使用权限。",
     "offlineAutoClose": "房主电脑持续离线后，共享会自动结束。",
-    "inviteBoxHint": "将链接发送给伙伴，对方点击即可加入。手机端也可复制链接后打开 Cindy。",
-    "invitationMessage": "邀请你加入「{{title}}」\n{{link}}\n点击链接加入；手机端也可复制链接后打开 Cindy，确认加入。",
+    "inviteBoxHint": "将链接发送给伙伴，对方点击即可加入，也可在 Cindy 中点「加入共享任务」粘贴链接。",
+    "invitationMessage": "邀请你加入「{{title}}」\n{{link}}\n点击链接加入；如果没能打开 Cindy，可在 Cindy 中点「加入共享任务」并粘贴这条链接。",
     "membersWithLimit": "成员 · {{count}} 人（最多 2 位访客）",
     "me": "我",
     "thisDevice": "这台电脑",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "此邀请属于其他 Cindy 服务，请用对应的客户端打开链接",
     "managementIntro": "管理你发起和加入的共享。",
     "returnToTasks": "返回任务列表",
-    "invitationDetected": "发现共享任务邀请",
-    "notNow": "暂不加入",
     "closeAllLabel": "取消全部共享",
     "closeAllDescription": "所有访客将无法继续访问，任务记录保留。"
   },
@@ -523,6 +521,8 @@
       "sourceShare": "来自 {{name}} 的分享",
       "shareComputer": "{{name}} 的电脑",
       "shareComputerUnknown": "分享来的电脑",
+      "accountCount_other": "{{count}} 个账号",
+      "accountFallback": "账号 {{index}}",
       "quota": {
         "loading": "正在读取配额…",
         "unavailable": "暂时读不到这台电脑的配额",
@@ -602,6 +602,7 @@
     },
     "toast": {
       "added_other": "已把 {{count}} 台电脑加入 {{provider}} 的供应商组",
+      "addedAccounts_other": "已把 {{count}} 个账号加入 {{provider}} 的供应商组",
       "removed": "已把 {{name}} 移出供应商组",
       "deleted": "已删除 {{provider}} 的供应商组"
     }
@@ -770,6 +771,7 @@
     "clipboardSyncFailed": "同步暂时失败，正在自动重试。开关保持开启。",
     "clipboardSyncSkipped": "当前内容无法同步，已跳过。请检查粘贴权限，或复制文字、图片后重试。",
     "clipboardSyncPermission": "同步已暂停，请允许粘贴权限后重试。开关保持开启。",
+    "clipboardSyncWaiting": "远程电脑的剪贴板暂时无法访问（可能已锁屏），解锁后会自动继续同步。",
     "lockingOnExit": "正在锁定电脑…",
     "lockOnExit": "退出后锁定电脑",
     "lockOnExitHint": "退出远程桌面时锁屏。重连或切换 App 不会触发。",
@@ -9126,6 +9128,12 @@
         "attachmentsFailed": "附件没能发出去，请检查文件是否还在，或移除后重试",
         "folderNotSupported": "文件夹不能作为附件，请选择其中的文件"
       },
+      "outbox": {
+        "sending": "发送中…",
+        "failed": "没发出去",
+        "edit": "编辑",
+        "editBlocked": "输入框里还有内容，先发出或清空，再编辑这条消息"
+      },
       "quote": {
         "replyingTo": "引用 {{name}}",
         "remove": "取消引用",
@@ -9262,7 +9270,10 @@
         "planning": "正在安排…"
       },
       "files": {
-        "openFailed": "文件没能打开，可能已被移动或删除"
+        "openFailed": "文件没能打开，可能已被移动或删除",
+        "untitled": "附件",
+        "loading": "加载中…",
+        "unavailable": "暂时无法加载"
       },
       "addFromChat": {
         "triggerFor": "将 {{name}} 添加到群聊",
@@ -9283,6 +9294,11 @@
         "sendReply": "发送回复",
         "addReaction": "添加表情回应",
         "reactionCount": "{{emoji}} · {{count}} 人回应",
+        "reactionWho": "{{emoji}} · {{count}} 人回应：{{names}}",
+        "reactorSelf": "你",
+        "reactorFormer": "{{name}}（已不在群中）",
+        "reactorsUnavailable_one": "另有 {{count}} 位成员的信息暂不可用",
+        "reactorsUnavailable_other": "另有 {{count}} 位成员的信息暂不可用",
         "invite": "邀请加入群聊",
         "join": "加入群聊",
         "inviteDescription": "对方接受邀请后会成为群成员，可阅读群聊记录。",

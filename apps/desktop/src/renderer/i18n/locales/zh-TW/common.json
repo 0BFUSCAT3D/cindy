@@ -161,8 +161,8 @@
     "runsOnThisDevice": "執行在這台電腦",
     "inviteNotice": "持有邀請連結的使用者登入後即可加入，擁有與房主相同的 Agent 使用權限。",
     "offlineAutoClose": "房主電腦持續離線後，共享會自動結束。",
-    "inviteBoxHint": "將連結傳送給夥伴，對方點擊即可加入。手機端也可複製連結後開啟 Cindy。",
-    "invitationMessage": "邀請你加入「{{title}}」\n{{link}}\n點擊連結加入；手機端也可複製連結後開啟 Cindy，確認加入。",
+    "inviteBoxHint": "將連結傳送給夥伴，對方點擊即可加入，也可在 Cindy 中點「加入共享任務」貼上連結。",
+    "invitationMessage": "邀請你加入「{{title}}」\n{{link}}\n點擊連結加入；如果沒能開啟 Cindy，可在 Cindy 中點「加入共享任務」並貼上這條連結。",
     "membersWithLimit": "成員 · {{count}} 人（最多 2 位訪客）",
     "me": "我",
     "thisDevice": "這台電腦",
@@ -197,8 +197,6 @@
     "invitationDifferentServer": "此邀請屬於其他 Cindy 服務，請用對應的用戶端開啟連結",
     "managementIntro": "管理你發起和加入的共享。",
     "returnToTasks": "返回任務清單",
-    "invitationDetected": "發現共享任務邀請",
-    "notNow": "暫不加入",
     "closeAllLabel": "取消全部共享",
     "closeAllDescription": "所有訪客將無法繼續存取，任務記錄保留。"
   },
@@ -523,6 +521,8 @@
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
       "shareComputerUnknown": "分享來的電腦",
+      "accountCount_other": "{{count}} 個帳號",
+      "accountFallback": "帳號 {{index}}",
       "quota": {
         "loading": "正在讀取配額…",
         "unavailable": "暫時讀不到這台電腦的配額",
@@ -602,6 +602,7 @@
     },
     "toast": {
       "added_other": "已把 {{count}} 臺電腦加入 {{provider}} 的供應商組",
+      "addedAccounts_other": "已把 {{count}} 個帳號加入 {{provider}} 的供應商組",
       "removed": "已把 {{name}} 移出供應商組",
       "deleted": "已刪除 {{provider}} 的供應商組"
     }
@@ -770,6 +771,7 @@
     "clipboardSyncFailed": "同步暫時失敗，正在自動重試。開關保持開啟。",
     "clipboardSyncSkipped": "目前內容無法同步，已略過。請檢查貼上權限，或複製文字、圖片後重試。",
     "clipboardSyncPermission": "同步已暫停，請允許貼上權限後重試。開關保持開啟。",
+    "clipboardSyncWaiting": "遠端電腦的剪貼簿暫時無法存取（可能已鎖定螢幕），解鎖後會自動繼續同步。",
     "lockingOnExit": "正在鎖定電腦…",
     "lockOnExit": "退出後鎖定電腦",
     "lockOnExitHint": "離開遠端桌面時鎖定螢幕。重新連線或切換 App 不會觸發。",
@@ -9126,6 +9128,12 @@
         "attachmentsFailed": "附件沒能送出，請檢查檔案是否還在，或移除後重試",
         "folderNotSupported": "資料夾不能作為附件，請選擇其中的檔案"
       },
+      "outbox": {
+        "sending": "傳送中…",
+        "failed": "沒有送出",
+        "edit": "編輯",
+        "editBlocked": "輸入框裡還有內容，先送出或清空，再編輯這則訊息"
+      },
       "quote": {
         "replyingTo": "引用 {{name}}",
         "remove": "取消引用",
@@ -9262,7 +9270,10 @@
         "planning": "正在安排…"
       },
       "files": {
-        "openFailed": "檔案沒能開啟，可能已被移動或刪除"
+        "openFailed": "檔案沒能開啟，可能已被移動或刪除",
+        "untitled": "附件",
+        "loading": "載入中…",
+        "unavailable": "暫時無法載入"
       },
       "addFromChat": {
         "triggerFor": "將 {{name}} 新增至群聊",
@@ -9283,6 +9294,11 @@
         "sendReply": "傳送回覆",
         "addReaction": "新增表情回應",
         "reactionCount": "{{emoji}} · {{count}} 人回應",
+        "reactionWho": "{{emoji}} · {{count}} 人回應：{{names}}",
+        "reactorSelf": "你",
+        "reactorFormer": "{{name}}（已不在群組中）",
+        "reactorsUnavailable_one": "另有 {{count}} 位成員的資訊暫不可用",
+        "reactorsUnavailable_other": "另有 {{count}} 位成員的資訊暫不可用",
         "invite": "邀請加入群聊",
         "join": "加入群聊",
         "inviteDescription": "對方接受邀請後會成為群組成員，可閱讀群聊記錄。",
