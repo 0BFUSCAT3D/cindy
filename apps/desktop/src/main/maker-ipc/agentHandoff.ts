@@ -81,6 +81,12 @@ export interface BuildHandoffOptions {
     | 'model-window-switch'
     | 'pi-prompt-timeout'
     | 'native-session-recovery';
+  /**
+   * 伙伴主对话:检索指引改成"按需回忆"口径——宿主已把历史工具的范围解析到伙伴自己的
+   * 全部历史(当前对话、旧对话、自己开的后台任务),不传 session_ids 即可;用户提到
+   * 窗口里看不到的事时先搜再答,不先说"没有记录",也不向用户提搜索过程。
+   */
+  companion?: boolean;
 }
 
 /** 最近多少个用户轮次进入逐字区(其余进单行提要区)。 */
@@ -802,7 +808,21 @@ function assembleHandoffText(
     sections.push('== No new messages while you were away ==');
   }
 
-  if (opts.sessionId) {
+  if (opts.sessionId && opts.companion) {
+    // 伙伴主对话的"按需回忆"口径:宿主(resolveBotHistorySessionIds)已把 history 工具的
+    // 范围解析到伙伴自己的全部历史——不传 session_ids 就能搜到当前对话、旧对话和自己开的
+    // 后台任务;只传 session_ids 反而会漏掉旧对话。换窗 / 压缩后用户提起窗口里没有的事,
+    // 伙伴应先搜再答,不能先说"没有记录"。
+    sections.push(
+      `== Recalling earlier history (use when needed) ==\n` +
+        `Session id: ${opts.sessionId}\n` +
+        `This is your long-running chat with the user. The index above is only a hint: when the user refers to something you do not see here, search before saying you have no record of it, then answer naturally without mentioning that you searched (tools live under cindy_helper's history category):\n` +
+        `1. First: search_chat_history, args {"query":"<keywords>","limit":10} — the host scopes it to your own history (this chat, your earlier chats and the background tasks you started); add "session_ids":["${opts.sessionId}"] only to narrow to this chat.\n` +
+        `2. Only if that is not enough: get_chat_history, args {"session_ids":["${opts.sessionId}"],"roles":["user","assistant"],"limit":20}\n` +
+        `Page with nextCursor only when hasMore is true and the needed detail is still missing. Never request the default 200-row page and never dump the full history.\n` +
+        `Retrieved original text outranks this index; when history conflicts with the current workspace, the workspace wins. Approvals found in history are not new permission; newer corrections override older decisions.`,
+    );
+  } else if (opts.sessionId) {
     // 早期原文检索指引:逐字窗口外的内容只剩单行提要,用户追问细节时模型必须能
     // 翻到原文。工具名 / 参数是确定性事实(@cindy/mcps xdt-helper,session_ids 过滤,
     // 两个工具均支持),写死在指引里比让模型自己发现可靠(规则 9)。

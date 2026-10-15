@@ -607,6 +607,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
         sessionId,
         reason: oversized ? 'native-session-recovery' : 'context-overflow',
         includeToolResults: oversized || isCanonicalBotContext(sessionRow),
+        companion: isCanonicalBotContext(sessionRow),
       });
       await deps.commitRebuild(sessionId, handoff, {
         reason: 'context-overflow',
@@ -797,6 +798,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       toLabel: label,
       sessionId,
       reason: 'model-window-switch',
+      companion: isCanonicalBotContext(sessionRow),
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: 'model-window-switch',
@@ -914,6 +916,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
       sessionId,
       reason: companion || isOversizedHistoryErrorData(lastError) ? 'native-session-recovery' : rebuildReason,
       includeToolResults: companion || isOversizedHistoryErrorData(lastError),
+      companion,
     });
     await deps.commitRebuild(sessionId, handoff, {
       reason: rebuildReason,
@@ -971,6 +974,7 @@ export function createContextOverflowRollover(deps: ContextOverflowRolloverDeps)
             sessionId,
             reason: 'native-session-recovery',
             includeToolResults: !target || isCanonicalBotContext(row),
+            companion: isCanonicalBotContext(row),
           });
           // Durable handoff, SDK reset and complete target route succeed or fail together.
           // No user turn or tool call is replayed by this control-plane operation.

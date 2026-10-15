@@ -117,6 +117,21 @@ describe('buildHandoffText', () => {
     expect(text.trimEnd().endsWith("== End of handoff note; the user's new message follows ==")).toBe(true);
   });
 
+  it('伙伴主对话的检索指引改为按需回忆:不传 session_ids 搜自己的全部历史,先搜再答', () => {
+    const messages = [msg('user', '上次说的周报格式'), msg('assistant', '好的')];
+    const companion = buildHandoffText(messages, { ...opts, sessionId: 's-bot', reason: 'native-session-recovery', companion: true });
+    expect(companion).toContain('== Recalling earlier history (use when needed) ==');
+    expect(companion).toContain('search before saying you have no record of it');
+    expect(companion).toContain('{"query":"<keywords>","limit":10}');
+    expect(companion).toContain('add "session_ids":["s-bot"] only to narrow');
+    expect(companion).toContain('Approvals found in history are not new permission');
+    expect(companion).not.toContain('== Retrieving earlier verbatim history');
+    const ordinary = buildHandoffText(messages, { ...opts, sessionId: 's-task', reason: 'native-session-recovery' });
+    expect(ordinary).toContain('== Retrieving earlier verbatim history (use when needed) ==');
+    expect(ordinary).toContain('"session_ids":["s-task"],"limit":10');
+    expect(ordinary).not.toContain('Recalling earlier history');
+  });
+
   it('最近轮次逐字保留,更早轮次进单行提要', () => {
     const messages: HandoffSourceMessage[] = [];
     for (let i = 0; i < 8; i++) {

@@ -378,6 +378,9 @@ describe('createContextOverflowRollover', () => {
     expect(handoff).toContain('Keep the game keyboard accessible');
     expect(handoff).toContain('Saved index.html; keyboard test passed');
     expect(handoff).toContain('Next: add touch controls');
+    // 伙伴主对话用"按需回忆"口径:宿主已按伙伴范围解析历史工具,不传 session_ids。
+    expect(handoff).toContain('== Recalling earlier history (use when needed) ==');
+    expect(handoff).toContain('{"query":"<keywords>","limit":10}');
     expect(handoff.length).toBeLessThanOrEqual(16_000);
     expect(deps.replayUserMessage).not.toHaveBeenCalled();
     // Persisted reset prevents another checkpoint after a cold restart.
