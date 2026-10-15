@@ -290,6 +290,57 @@ describe('pending image gallery updates', () => {
     expect(runtime.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 400 });
   });
 
+  it('preserves completed and in-progress annotation strokes when the same pending image shifts pages', async () => {
+    const initial = collect([{ ...thumbs[0], uri: null }, thumbs[1]]);
+    const onSubmit = vi.fn(() => new Promise<void>(() => undefined));
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url,
+      annotation: { submitLabel: 'Send', onSubmit } });
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    press('message.imageLightboxAnnotateButton');
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    fire(draw(), 'onFinalize', {}, true);
+    fire(draw(), 'onStart', { x: 200, y: 400 });
+    fire(draw(), 'onUpdate', { x: 240, y: 440 });
+    const completed = [{ points: [{ x: 0.25, y: 0.25 }] }];
+    const draft = { points: [{ x: 0.5, y: 0.5 }, { x: 0.6, y: 0.55 }] };
+    // Inserting/removing an earlier page changes only this image's index, not its identity.
+    for (const images of [collect(thumbs), initial]) {
+      props.images = images;
+      render();
+      const list = runtime.nodes.get('FlatList');
+      const index = images.findIndex((image) => image.key === initial[0].key);
+      const page = list.renderItem({ item: images[index], index }).props;
+      expect(page.active).toBe(true);
+      expect(page.annotating).toBe(true);
+      expect(page.annotationStrokes).toEqual(completed);
+      expect(page.annotationDraftStroke).toEqual(draft);
+    }
+    press('message.imageLightboxAnnotationSubmit');
+    await act(async () => { await Promise.resolve(); });
+    expect(onSubmit.mock.calls[0]).toEqual([
+      initial[0], initial[0].url, [...completed, draft],
+      { mimeType: undefined, naturalWidth: 400, naturalHeight: 800 },
+    ]);
+  });
+
+  it('loads the replacement image strokes when the active image changes without changing index', () => {
+    const initial = collect([thumbs[1]]);
+    const replacement = collect([thumbs[0]]);
+    const existing = [{ points: [{ x: 0.1, y: 0.2 }] }];
+    const { props, render } = mount({ images: initial, initialUrl: initial[0].url, autoAnnotate: true,
+      annotation: { submitLabel: 'Save', onSubmit: vi.fn(),
+        initialStrokesFor: (image) => image.key === replacement[0].key ? existing : [] } });
+    act(() => runtime.nodes.get('Image').onLoad({ source: { width: 400, height: 800 } }));
+    const draw = () => gestures().find((gesture) => gesture.kind === 'Pan' && gesture.options.minDistance === 0)!;
+    fire(draw(), 'onStart', { x: 100, y: 200 });
+    props.images = replacement;
+    render();
+    const page = runtime.nodes.get('FlatList').renderItem({ item: replacement[0], index: 0 }).props;
+    expect(page.annotationStrokes).toEqual(existing);
+    expect(page.annotationDraftStroke).toBeNull();
+  });
+
   it('opens the clicked second slot even if its preview URL changed before the viewer mounted', () => {
     const clicked = collect(thumbs)[1].payload;
     const updated = collect(thumbs.map((thumb) => ({ ...thumb, uri: thumb.uri.replace('temporary', 'durable') })));

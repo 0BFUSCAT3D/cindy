@@ -294,15 +294,15 @@ export const ImageLightbox = memo(function ImageLightbox({
     });
   }, []);
 
-  // 打开/翻页时装载该页既有笔迹(托盘再编辑);标注模式中禁翻页,不会中途换页。
-  // 依赖「活跃图 key」而非 images 数组引用:父层因附件上传落定 / 流式回复等
-  // 原因重建图集(语义未变)时,不能把用户正在画的笔迹重置掉(review P1);
+  // 打开/换图时装载该图既有笔迹(托盘再编辑)，标注模式中禁用手动翻页。
+  // 只依赖「活跃图 key」，不依赖数组引用或页码：附件就绪可能让同一张图前移/后移，
+  // 不能因此重置已画笔迹或正在画的一笔；
   // 真正换图(翻页 / 打开另一张)时 key 变化,照常重载。images 经 ref 读最新。
   const activeImageKeyForStrokes = images[activeIndex]?.key ?? null;
   const imagesRef = useRef(images);
   imagesRef.current = images;
   useEffect(() => {
-    const image = imagesRef.current[activeIndex];
+    const image = imagesRef.current.find((entry) => entry.key === activeImageKeyForStrokes);
     const initial = image ? annotation?.initialStrokesFor?.(image) : undefined;
     setStrokes(initial ? [...initial] : []);
     draftStrokeRef.current = null;
@@ -311,7 +311,7 @@ export const ImageLightbox = memo(function ImageLightbox({
     setDraftStroke(null);
     // annotation 语义上只在打开时取一次快照,翻页时按新页(key)重取
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndex, activeImageKeyForStrokes]);
+  }, [activeImageKeyForStrokes]);
 
   /**
    * 画笔落点(容器坐标 + 当页 transform 状态,LightboxPage 手势经 runOnJS 上抛)。
