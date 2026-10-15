@@ -246,10 +246,11 @@ type ForgeOutsideGrantOptions = {
   isCurrent?: () => boolean;
 };
 
-function staleOutsideForgeGrant(
+function staleForgeGrant(
   options?: ForgeOutsideGrantOptions,
 ): { ok: false; errorCode: 'PERMISSION_DENIED'; message: string } | null {
-  if (!options?.allowOutsideWorkdir || !options.authorizedDir) return null;
+  // Live authority also guards in-workdir writes after async preparation.
+  if (!options?.isCurrent && (!options?.allowOutsideWorkdir || !options.authorizedDir)) return null;
   if (options.isCurrent?.() === true) return null;
   return { ok: false, errorCode: 'PERMISSION_DENIED', message: FORGE_OUTSIDE_GRANT_STALE_MESSAGE };
 }
@@ -615,7 +616,7 @@ export async function scaffoldGhostDir(
       message: '会话工作目录不存在,无法确定骨架输出位置',
     };
   }
-  const staleGrant = staleOutsideForgeGrant(options);
+  const staleGrant = staleForgeGrant(options);
   if (staleGrant) return staleGrant;
   let realTarget: string;
   try {
@@ -780,7 +781,7 @@ export async function scaffoldGhostDir(
       message: 'Forge scaffold stable-directory capability is unavailable',
     };
   }
-  const staleBeforeWrite = staleOutsideForgeGrant(options);
+  const staleBeforeWrite = staleForgeGrant(options);
   if (staleBeforeWrite) return staleBeforeWrite;
   const writeResult = await options.writeScaffold({
     parentDir,
@@ -1423,7 +1424,7 @@ export async function packGhostDir(
       message: 'The current session workdir does not exist',
     };
   }
-  const staleGrant = staleOutsideForgeGrant(options);
+  const staleGrant = staleForgeGrant(options);
   if (staleGrant) return staleGrant;
   let realSourceDir: string;
   try {
@@ -1480,7 +1481,7 @@ export async function packGhostDir(
     realSourceDir,
     `${built.manifest.id}-${built.manifest.version}.cindy`,
   );
-  const staleBeforeWrite = staleOutsideForgeGrant(options);
+  const staleBeforeWrite = staleForgeGrant(options);
   if (staleBeforeWrite) return staleBeforeWrite;
   try {
     await fs.promises.writeFile(cindyPath, built.buf);
