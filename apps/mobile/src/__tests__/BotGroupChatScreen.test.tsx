@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   alert: vi.fn(),
   confirm: vi.fn(),
   leave: vi.fn(),
+  closeSettings: null as null | (() => void),
   row: null as any,
   inputs: {} as Record<string, any>,
   teammates: { rows: [] as any[], loading: false, failed: false },
@@ -117,7 +118,8 @@ vi.mock('@/session/HomeHeaderGlassButton', () => ({
   HomeHeaderGlassButton: ({ onPress, testID, disabled, children }: any) => el('button', { 'data-testid': testID, disabled, onClick: onPress }, children),
 }));
 vi.mock('@/session/CompanionSheet', () => ({
-  CompanionSheet: ({ visible, children, onClosed, testID }: any) => {
+  CompanionSheet: ({ visible, children, onClose, onClosed, testID }: any) => {
+    if (testID === 'botGroup.settings') h.closeSettings = onClose;
     const was = useRef(visible);
     useEffect(() => { if (was.current && !visible) onClosed?.(); was.current = visible; }, [visible]);
     return visible ? el('div', { 'data-testid': testID }, children) : null;
@@ -850,6 +852,49 @@ describe('group settings', () => {
     await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
     await click('botGroup.settings.hide');
     expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])('leaves once for authoritative hide without a local action (direct=%s)', async direct => {
+    h.chat.server = direct;
+    await render(group({ serverBacked: true }));
+    h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+    expect(h.chat.act).not.toHaveBeenCalled();
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('does not navigate twice when the authoritative event precedes the local hide receipt', async () => {
+    let finish!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ effects: [] }); }));
+    await openSettings(group({ serverBacked: true, supportsListRemoval: true }));
+    await click('botGroup.settings.hide');
+    h.chat.listHidden = true;
+    await render(null, 'missing');
+    expect(h.leave).toHaveBeenCalledOnce();
+    await act(async () => { finish(); });
+    expect(h.leave).toHaveBeenCalledOnce();
+  });
+
+  it('resets lifecycle busy on reopen and keeps an old reply out of a new request', async () => {
+    const data = group({ serverBacked: true, supportsDissolve: true, revision: 1,
+      members: [{ botId: 'mimi', actorId: 'mimi', name: 'Mimi', avatar: '', avatarColor: '', status: 'active', isOwned: true, role: 'owner' }] });
+    let finishOld!: () => void, finishNew!: () => void;
+    h.chat.act.mockImplementationOnce(() => new Promise(resolve => { finishOld = () => resolve({ effects: [] }); }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishNew = () => resolve({ effects: [] }); }));
+    await openSettings(data);
+    await click('botGroup.settings.dissolve');
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(true);
+    await act(async () => h.closeSettings!());
+    await click('botGroup.settingsButton');
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(false);
+    await click('botGroup.settings.dissolve');
+    expect(h.chat.act).toHaveBeenCalledTimes(2);
+    await act(async () => { finishOld(); });
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(true);
+    await act(async () => { finishNew(); });
+    expect(byId('botGroup.settings.dissolve')?.disabled).toBe(false);
   });
 
   it('does not navigate from an old hide acknowledgement after leaving the screen', async () => {

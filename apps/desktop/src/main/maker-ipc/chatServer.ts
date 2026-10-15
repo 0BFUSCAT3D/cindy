@@ -1249,6 +1249,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     }).finally(() => { polling = false; });
   }, 2000);
   const checking = new Set<Running>();
+  const recheck = new Set<Running>();
   async function checkLease(run: Running) {
     if (run.settlement) {
       // Auth/rate-limit waits need lease renewal; ordinary lost-response retries
@@ -1268,7 +1269,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       }
       await deliverSettlement(run); return;
     }
-    if (checking.has(run) || running.get(run.execution.bot_id) !== run) return;
+    if (running.get(run.execution.bot_id) !== run) return;
+    if (checking.has(run)) { recheck.add(run); return; }
     checking.add(run);
     try {
       // Ordinary group replies can wait for approval too, just like plan steps.
@@ -1289,7 +1291,12 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (run.sessionId) await deps.abortLane(run.sessionId).catch(() => undefined);
         changed(run.execution.conversation_id);
       }
-    } finally { checking.delete(run); }
+    } finally {
+      checking.delete(run);
+      // A dissolve or change can arrive while an older heartbeat is in flight.
+      // Check the new authority once that response settles, without waiting 15s.
+      if (recheck.delete(run) && running.get(run.execution.bot_id) === run) void checkLease(run);
+    }
   }
   const heartbeat = setInterval(() => { for (const run of running.values()) void checkLease(run); }, 15000);
   timer.unref(); heartbeat.unref();

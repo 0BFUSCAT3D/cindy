@@ -1,5 +1,5 @@
 /** 群设置由管理电脑保存；项目文件夹仅可查看。 */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { ChevronDown, Ellipsis, Folder, Plus } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
@@ -75,15 +75,17 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
   const lifecycleProps = lifecycle ?? { visible, group, host, online, act, onDeleted };
   const lifecycleGroup = lifecycleProps.group;
   const membership = chatGroupMembership(lifecycleGroup);
-  const scope = `${accountGeneration}:${lifecycleGroup.id}:${lifecycleProps.host.deviceId}:${visible}`;
-  const active = useRef(scope); active.current = scope;
-  useEffect(() => () => { active.current = ''; }, []);
+  const scope = useMemo(() => ({ accountGeneration, groupId: lifecycleGroup.id, deviceId: lifecycleProps.host.deviceId, visible }),
+    [accountGeneration, lifecycleGroup.id, lifecycleProps.host.deviceId, visible]);
+  const active = useRef<typeof scope | null>(scope); active.current = scope;
+  useEffect(() => () => { active.current = null; }, []);
   const { colors } = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [name, setName] = useState(group.name);
   const [busy, setBusy] = useState<Busy>(null);
   const busyRef = useRef<Busy>(null);
   const [errors, setErrors] = useState<Partial<Record<Exclude<Busy, null>, string>>>({});
+  useEffect(() => { busyRef.current = null; setBusy(null); setErrors({}); }, [scope]);
   const [picking, setPicking] = useState(false);
   const [memberQuery, setMemberQuery] = useState('');
   const serverManaged = group.serverBacked === true && group.supportsSettingsManagement === true;
@@ -114,18 +116,19 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
   const run = async (section: Exclude<Busy, null>, actionId: BotGroupRemoteActionId, input: Record<string, unknown>, fallbackKey: string) => {
     const leaving = actionId === 'delete' && leavesGroup;
     if (readOnly || (permissionLocked && !leaving) || !online || busyRef.current) return false;
+    const captured = scope;
     busyRef.current = section;
     setBusy(section);
     setErrors((current) => ({ ...current, [section]: undefined }));
     try {
       await act(actionId, serverManaged && !leaving ? { expectedRevision: group.revision, ...input } : input);
+      // Legacy deletion reports success to the owning screen even if this sheet unmounted.
       return true;
     } catch (error) {
-      setErrors((current) => ({ ...current, [section]: botGroupActionErrorText(t, error, fallbackKey) }));
+      if (active.current === captured) setErrors((current) => ({ ...current, [section]: botGroupActionErrorText(t, error, fallbackKey) }));
       return false;
     } finally {
-      busyRef.current = null;
-      setBusy(null);
+      if (active.current === captured) { busyRef.current = null; setBusy(null); }
     }
   };
 
@@ -169,7 +172,7 @@ function BotGroupSettingsContent({ visible, group, host, identityFor, online, ac
       // The owning screen completes hide/leave navigation even if this sheet unmounted.
     } catch (error) {
       if (active.current === captured) setErrors(current => ({ ...current, lifecycle: botGroupActionErrorText(t, error, 'groupChat.lifecycle.failed') }));
-    } finally { busyRef.current = null; if (active.current === captured) setBusy(null); }
+    } finally { if (active.current === captured) { busyRef.current = null; setBusy(null); } }
   };
 
   const error = (section: Exclude<Busy, null>) => errors[section]

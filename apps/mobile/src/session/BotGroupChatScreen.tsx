@@ -198,12 +198,21 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
   const currentHideScope = `${groupId}:${deviceId}:${accountGeneration}`;
   hideScope.current = currentHideScope;
   useEffect(() => () => { hideScope.current = ''; }, []);
+  const leftScope = useRef('');
+  const leaveCurrentChat = useCallback((captured: string) => {
+    if (hideScope.current !== captured || leftScope.current === captured) return;
+    leftScope.current = captured;
+    leave();
+  }, [leave]);
+  useEffect(() => {
+    if (chat.listHidden) leaveCurrentChat(currentHideScope);
+  }, [chat.listHidden, currentHideScope, leaveCurrentChat]);
   const actFromSettings: typeof chat.act = async (action, input) => {
     const captured = currentHideScope;
     const receipt = await chat.act(action, input);
     // The list listener may already have unmounted settings; the screen still
     // owns this route and can complete navigation after the acknowledgement.
-    if ((action === 'hide' || action === 'leave') && hideScope.current === captured) leave();
+    if (action === 'hide' || action === 'leave') leaveCurrentChat(captured);
     return receipt;
   };
   const removeFromList = async () => {
@@ -214,7 +223,7 @@ export function BotGroupChatScreen({ deviceId, deviceName, groupId }: { deviceId
       if (!await showConfirm({ title: t('groupChat.lifecycle.hide'), message: t('groupChat.lifecycle.hideNote'),
         cancelLabel: t('devices.common.cancel'), confirmLabel: t('groupChat.lifecycle.hide'), destructive: true }) || hideScope.current !== captured) return;
       await chat.act('hide');
-      if (hideScope.current === captured) leave();
+      leaveCurrentChat(captured);
     } catch (error) { if (hideScope.current === captured) Alert.alert(botGroupActionErrorText(t, error, 'groupChat.lifecycle.failed')); }
     finally { hidePending.current = false; }
   };

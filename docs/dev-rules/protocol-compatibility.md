@@ -45,6 +45,9 @@ Desktop 收到终态后还会中止本机未完成的规划，沿原 lease 链�
 actor scope 遇到 RESET_REQUIRED 时，在在途读取完成后重新读取个人状态，再按服务端 head 续订；
 Desktop 与 Mobile 均受当前账号、socket 身份保护。个人移除成功时由仍挂载的聊天页完成返回列表，
 设置面板因列表更新先卸载不会吞掉成功导航，离开页面后的旧回包也不能改变新页面。
+手机收到跨设备本人 hidden 事件也由当前聊天页返回列表，本机回执与事件共用一次导航；
+设置面板每次关闭/身份切换都会清空 busy，旧打开周期的请求不能覆盖新周期状态。
+Desktop 解散或变更期间遇到在途 heartbeat，会合并排队一次后续租约检查，避免漏掉权威终止。
 
 现有 `bot-group-chat` 投影可选追加 supportsDissolve、supportsListRemoval、supportsGroupLeave、dissolvedAt；远程资源
 动作 `dissolve` / `leave` / `hide` 分别转发相同的服务端动作。hide 的 opaque result 返回

@@ -311,6 +311,37 @@ it('rebuilds realtime after membership returns while the same group page remains
   expect(chat.state.kind).toBe('ready');
 });
 
+it('exposes an actor-scope personal hide to the current screen and clears it after an account switch', async () => {
+  vi.useFakeTimers();
+  h.auth.accountGeneration = 105;
+  const sockets: any[] = [];
+  vi.stubGlobal('WebSocket', class {
+    readyState = 1; onopen?: Function; onmessage?: Function; onclose?: Function; onerror?: Function;
+    send = vi.fn();
+    constructor() { sockets.push(this); }
+    close() { this.onclose?.({}); }
+  });
+  const allowed = h.auth.apiFetch.getMockImplementation()!;
+  h.auth.apiFetch.mockImplementation(async (path, options) => {
+    if (path === '/v1/me') return { actor: { id: self, kind: 'human' }, capabilities: { conversationListStateVersion: 1 } };
+    if (path.startsWith('/v1/conversation-list-state?')) return [];
+    if (path.startsWith('/v1/changes?')) return { head: '10' };
+    return allowed(path, options);
+  });
+  showChat = true; await render();
+  await act(async () => { sockets[0].onmessage({ data: JSON.stringify({ type: 'ready', actorId: self }) }); });
+  expect(chat.listHidden).toBe(false);
+  await act(async () => { sockets[0].onmessage({ data: JSON.stringify({ type: 'changes', scope: `actor:${self}`, cursor: '11', changes: [
+    { type: 'conversation.list.changed', data: { conversationId: id, hidden: true, revision: 1 } },
+  ] }) }); });
+  expect(chat.state.kind).toBe('missing');
+  expect(chat.listHidden).toBe(true);
+  expect(h.auth.apiFetch.mock.calls.some(([path, options]) => path.endsWith('/list-state') && options.method === 'POST')).toBe(false);
+  h.auth.accountGeneration++;
+  await render();
+  expect(chat.listHidden).toBe(false);
+});
+
 it('supports direct leave, then personal removal independently without a readable snapshot', async () => {
   h.auth.accountGeneration = 101;
   const allowed = h.auth.apiFetch.getMockImplementation()!;

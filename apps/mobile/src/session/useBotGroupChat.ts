@@ -115,5 +115,5 @@ export function useBotGroupChat(host: RemoteResourceHostTarget, groupId: string)
   void presenceVersion;
   // Unknown presence still allows actions; the host answers or the link reports offline.
   const online = status === 'online' && !!host.deviceId && getPresenceAvailability(host.deviceId) !== false;
-  return !host.deviceId ? { ...server, server: true } : { state: value, reload, act, online, server: false, loadOlder: undefined, loadingOlder: false, media: undefined, markRead: undefined };
+  return !host.deviceId ? { ...server, server: true } : { state: value, reload, act, online, server: false, listHidden: server.listHidden, loadOlder: undefined, loadingOlder: false, media: undefined, markRead: undefined };
 }

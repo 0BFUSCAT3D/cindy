@@ -320,6 +320,7 @@ export function useChatServerGroup(groupId: string, enabled: boolean) {
     if (api.current() && api.client.personalList.hidden(groupId)) await forgetRemoteResource(api.userId, groupId);
   }, [api, groupId]);
   return { state: state.identity === identity ? state.value : { kind: 'loading' } as BotGroupChatState,
+    listHidden: api.current() && api.client.personalList.hidden(groupId),
     online: state.identity === identity && state.online, reload, act,
     acceptListState, isListHidden: () => api.client.personalList.hidden(groupId), loadOlder, loadingOlder: state.loadingOlder, media, markRead };
 }
