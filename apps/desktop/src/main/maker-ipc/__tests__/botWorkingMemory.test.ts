@@ -321,6 +321,9 @@ describe('store', () => {
     // 来源校验查询失败:不退回"未过滤",按没有账本返回 null(提前换窗也随之取消)。
     db.queue.push([{ botId: 'bot-1' }], new Error('db down'));
     expect(await readWorkingMemoryNoteForSession('s-bot', root)).toBeNull();
+    // 后台任务状态查询失败:不渲染"没有任务区"的账本(新上下文会以为旧任务不在跑),同样按 null。
+    db.queue.push([{ botId: 'bot-1' }], [{ clearedAt: null }], dbRows, new Error('db down'));
+    expect(await readWorkingMemoryNoteForSession('s-bot', root)).toBeNull();
   });
 
   it('treats items whose source message predates /clear as withdrawn, and prunes them after the clear is persisted', async () => {

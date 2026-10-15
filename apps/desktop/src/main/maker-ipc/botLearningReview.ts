@@ -26,6 +26,8 @@ import {
 } from './botWorkingMemory.js';
 
 const running = new Map<string, Promise<void>>();
+/** 本轮取材最多取多少条消息;超出即视为截断,水位不推进到当前回复。 */
+const TURN_REVIEW_ROWS = 80;
 /** 缺口回补每批最多取多少条消息 / 多少字符;单条正文已截到 6000 字,所以每批至少前进一条。 */
 const GAP_BACKFILL_ROWS = 40;
 const GAP_BACKFILL_CHARS = 16000;
@@ -103,18 +105,21 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
         `
       SELECT client_id AS id, role, content, rowid AS 'order' FROM messages
       WHERE session_id=? AND rewind_at IS NULL AND rowid <= ? AND rowid > ? ${clearedAtFilter}
-      AND ${REVIEW_ROLES} ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT 80
+      AND ${REVIEW_ROLES} ORDER BY CASE WHEN role='user' THEN 0 ELSE 1 END, rowid DESC LIMIT ${TURN_REVIEW_ROWS}
     `,
         [sessionId, row.rowid, prevCompleted, sessionId],
       );
       const turnMessages = learningSnapshotBudget(records.map(toSnapshot), 40000);
+      // 本轮本身被 LIMIT / 预算截断(工具密集的大轮次)时,漏掉的中间承诺 / 工具结果同样不能
+      // 算"已覆盖":水位停在上一条完成回复,下一次复盘由缺口回补路径按序补齐。
+      const turnTruncated = records.length >= TURN_REVIEW_ROWS || turnMessages.length < records.length;
       // 缺口回补:账本上次覆盖到的行落后于上一条完成回复(某轮复盘 claim 后失败、CAS 冲突、
       // 模型漏回 working),那段内容不会再被单独复盘;按 rowid 升序分批补进本次取材,覆盖水位
       // 只推进到连续处理过的前缀末尾——补不完就不推进到当前回复,账本在补完前不算新鲜,换窗线
       // 不会因为一份有缺口的账本提前。每批有界且至少前进一条,几轮即收敛。没有账本时从上一条
       // 完成回复接起,不回溯整段历史。
       const ledgerFloor = workingBefore ? workingBefore.coveredThroughRowid : prevCompleted;
-      let coveredThroughRowid = row.rowid;
+      let coveredThroughRowid = turnTruncated ? prevCompleted : row.rowid;
       let gapMessages: ReturnType<typeof toSnapshot>[] = [];
       if (ledgerFloor < prevCompleted) {
         const gapRows = await db.query<Record_>(

@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   prevCompleted: 3 as number | null,
   /** 缺口回补查询(ORDER BY rowid ASC)返回的行。 */
   gapRows: [] as any[],
+  /** 本轮取材查询返回的行;null = 默认一条用户消息。 */
+  turnRows: null as any[] | null,
 }));
 vi.mock('../../appSessionState.js', () => ({
   activeOwnerScopeKey: () => h.owner,
@@ -42,7 +44,7 @@ vi.mock('../../localDb/client/current.js', () => {
     query: vi.fn(async (sql: string) =>
       sql.includes('ORDER BY rowid ASC')
         ? h.gapRows
-        : [
+        : h.turnRows ?? [
             {
               id: 'user',
               role: 'user',
@@ -283,4 +285,17 @@ it('advances the ledger watermark only through the contiguous backfilled prefix 
   expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 102 }), 4);
   h.prevCompleted = 3;
   h.gapRows = [];
+});
+
+it('does not advance the watermark past the previous completed reply when the current turn itself was truncated', async () => {
+  // 本轮取材取满 80 条 = 可能被 LIMIT 截断:水位停在上一条完成回复(3),留给下一次的缺口回补。
+  h.working = null;
+  h.turnRows = [
+    { id: 'user', role: 'user', content: JSON.stringify('Please always summarize the conclusion first.'), order: 4 },
+    ...Array.from({ length: 79 }, (_, i) => ({ id: `t${i}`, role: 'tool_result', content: JSON.stringify(`result ${i}`), order: 4 + i })),
+  ];
+  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  await reviewTeammateLearning('session', 'reply');
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 3 }), 0);
+  h.turnRows = null;
 });

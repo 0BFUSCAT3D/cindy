@@ -573,9 +573,10 @@ export async function listWithdrawnSourceMessageIds(
 /**
  * 换窗交接 / 压缩后刷新用的渲染段;非伙伴主对话或没有账本时返回 null。
  * 任何读取失败都按"没有账本"处理——账本是增强,不能挡住换窗。来源校验(rewind / 删除 /
- * clear 对账)失败同样按没有账本:退回"未过滤"会让已撤回的承诺 / 纠正借交接回到新上下文,
- * 70% 提前换窗也只接受校验成功的快照。`excludeMessageIds` 是正在删除、还没落库的那批
- * (持久清理在删除提交后另做,见 pruneWorkingMemoryForSession)。
+ * clear 对账)和后台任务状态读取失败同样按没有账本:退回"未过滤"会让已撤回的承诺 / 纠正
+ * 借交接回到新上下文,少了任务区会让新上下文不知道旧任务还在跑而重复派发;70% 提前换窗也
+ * 只接受完整渲染成功的快照。`excludeMessageIds` 是正在删除、还没落库的那批(持久清理在
+ * 删除提交后另做,见 pruneWorkingMemoryForSession)。
  */
 export async function readWorkingMemoryNoteForSession(
   sessionId: string,
@@ -590,7 +591,7 @@ export async function readWorkingMemoryNoteForSession(
     const withdrawn = await listWithdrawnSourceMessageIds(sessionId, stored);
     for (const id of opts.excludeMessageIds ?? []) withdrawn.add(id);
     const memory = withdrawn.size > 0 ? pruneWorkingMemoryForMessages(stored, withdrawn).memory : stored;
-    const openTasks = await listOpenTasks(botId).catch(() => []);
+    const openTasks = await listOpenTasks(botId);
     return renderWorkingMemory(memory, { openTasks });
   } catch {
     return null;
