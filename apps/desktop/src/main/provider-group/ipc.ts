@@ -16,7 +16,7 @@ import {
   type ProviderGroupView,
 } from '../../shared/providerGroup.js';
 import { tapWindowBroadcast } from '../device-link/broadcast-tap.js';
-import { broadcast, getSelfDeviceId, remoteInvoke } from '../device-link/index.js';
+import { broadcast, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke } from '../device-link/index.js';
 import { isProviderManagementRequest } from '../../shared/providerManagement.js';
 import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { createLogger } from '../logger.js';
@@ -243,7 +243,7 @@ export function registerProviderGroupIpc(): void {
     if (getDeviceLinkInvokeContext()) throwIpcError('PERMISSION_DENIED', 'Provider groups are local only');
     assertTrustedAppRendererEvent(event);
     const command = parseProviderGroupCommand(raw);
-    if (command.action === 'remote-manage') return invokeProviderManagement(remoteInvoke, command.deviceId, command.request);
+    if (command.action === 'remote-manage') return invokeProviderManagement(remoteInvoke, command.deviceId, command.request, remoteBackgroundInvoke);
     return executeProviderGroupCommand(deps, command);
   });
 }

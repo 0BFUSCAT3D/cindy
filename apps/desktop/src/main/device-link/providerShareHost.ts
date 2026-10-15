@@ -74,10 +74,14 @@ export interface ProviderShareWatchedRequest {
   hostDeviceId: string;
 }
 
+/** 同账号管理的 owned 回包；只把申请用于本机弹窗，不作为受邀者准入快照。 */
+export type ProviderShareWatchedSnapshot = Pick<ProviderShareOwned, 'shareId' | 'providerId' | 'providerLabel' | 'requests'>;
+
 interface RemoteLinkWatch {
   hostDeviceId: string;
   providerId: string;
   until: number;
+  readShares(): Promise<readonly ProviderShareWatchedSnapshot[]>;
 }
 
 interface Runtime {
@@ -88,6 +92,7 @@ interface Runtime {
   hotUntil: number;
   timer: ReturnType<typeof setTimeout> | null;
   refreshing: Promise<void> | null;
+  remoteRefreshing: Map<string, Promise<void>>;
   lastOnDemandAt: number;
   knownRequests: Set<string>;
   reconciled: boolean;
@@ -185,7 +190,7 @@ function schedule(rt: Runtime): void {
   // 暂时不可用(账号边界切换中等)时照常排下一次，拉取本身会核对作用域；只有停掉运行时才断链。
   if (runtime !== rt || rt.stopped) return;
   const pending = rt.shares.some((share) => share.requests.length > 0) || rt.watched.size > 0;
-  const hot = Date.now() < rt.hotUntil || pending;
+  const hot = Date.now() < rt.hotUntil || pending || rt.watches.some((watch) => watch.until > Date.now());
   if (!hot && rt.shares.length === 0 && rt.fetchedAt > 0) return;
   rt.timer = setTimeout(() => { void refreshProviderShareHost('poll'); }, hot ? FAST_POLL_MS : SLOW_POLL_MS);
   (rt.timer as { unref?: () => void }).unref?.();
@@ -229,18 +234,17 @@ function applySnapshot(rt: Runtime, next: ProviderShareOwned[]): void {
  * 同账号其他电脑上的分享：窗口期内关注的那条分享出现的申请由本机弹窗；已关注的申请从快照里消失
  * (在任一台电脑上处理、撤回或过期)时移除。只用于弹窗，不进入本机快照，不影响受邀者准入。
  */
-function applyWatched(rt: Runtime, others: readonly ProviderShareOwned[]): void {
+function applyWatched(rt: Runtime, hostDeviceId: string, shares: readonly ProviderShareWatchedSnapshot[]): void {
   const now = Date.now();
-  rt.watches = rt.watches.filter((watch) => watch.until > now);
   const present = new Set<string>();
-  for (const share of others) {
+  for (const share of shares) {
     for (const request of share.requests) present.add(request.requestId);
   }
-  for (const requestId of rt.watched.keys()) {
-    if (!present.has(requestId)) rt.watched.delete(requestId);
+  for (const [requestId, item] of rt.watched) {
+    if (item.hostDeviceId === hostDeviceId && !present.has(requestId)) rt.watched.delete(requestId);
   }
-  for (const share of others) {
-    if (!rt.watches.some((watch) => watch.hostDeviceId === share.hostDeviceId && watch.providerId === share.providerId)) continue;
+  for (const share of shares) {
+    if (!rt.watches.some((watch) => watch.hostDeviceId === hostDeviceId && watch.providerId === share.providerId && watch.until > now)) continue;
     for (const request of share.requests) {
       // 弹过一次的不再弹(本机处理后，处理前发出的那次拉取可能还带着它)。
       if (rt.watchedSeen.has(request.requestId)) continue;
@@ -248,7 +252,7 @@ function applyWatched(rt: Runtime, others: readonly ProviderShareOwned[]): void 
       const item: ProviderShareWatchedRequest = {
         request,
         share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
-        hostDeviceId: share.hostDeviceId,
+        hostDeviceId,
       };
       rt.watched.set(request.requestId, item);
       rt.events.watchedRequested(item);
@@ -268,6 +272,7 @@ export function startProviderShareHost(events: ProviderShareHostEvents): void {
     hotUntil: 0,
     timer: null,
     refreshing: null,
+    remoteRefreshing: new Map(),
     lastOnDemandAt: 0,
     knownRequests: new Set(),
     reconciled: false,
@@ -292,17 +297,15 @@ export function stopProviderShareHost(): void {
   runtime = null;
 }
 
-/** 拉一次分享快照。并发调用合并为一次。 */
+/** 拉一次分享快照。本机与每台关注电脑各自合并在途读取，不让一个 peer 卡住下一轮。 */
 export function refreshProviderShareHost(reason: string): Promise<void> {
   const rt = runtime;
   if (!rt) return Promise.resolve();
-  if (rt.refreshing) return rt.refreshing;
-  const run = (async () => {
+  const readLocal = async () => {
     try {
       const shares = await providerShareApi.listOwned();
       if (!current(rt)) return;
       const self = getDeviceId();
-      applyWatched(rt, self ? shares.filter((share) => share.hostDeviceId !== self) : []);
       applySnapshot(rt, shares.filter((share) => !self || share.hostDeviceId === self));
       if (!rt.reconciled) {
         rt.reconciled = true;
@@ -310,13 +313,34 @@ export function refreshProviderShareHost(reason: string): Promise<void> {
       }
     } catch (error) {
       if (current(rt)) log.warn('provider share snapshot refresh failed', { reason, error: error instanceof Error ? error.message : String(error) });
-    } finally {
-      rt.refreshing = null;
-      schedule(rt);
     }
-  })();
-  rt.refreshing = run;
-  return run;
+  };
+  // REST 只返回本机分享。远端申请经已有同账号管理通道读取，每台电脑最多一次在途；
+  // 拉取本机或某个 peer 仍在途时只跳过它，不延迟其它电脑。
+  const local = rt.refreshing ?? readLocal().finally(() => {
+    rt.refreshing = null;
+    schedule(rt);
+  });
+  rt.refreshing = local;
+  schedule(rt);
+  const pendingHosts = new Set([...rt.watched.values()].map((item) => item.hostDeviceId));
+  rt.watches = rt.watches.filter((watch) => watch.until > Date.now() || pendingHosts.has(watch.hostDeviceId));
+  const readers = new Map(rt.watches.map((watch) => [watch.hostDeviceId, watch.readShares]));
+  const remote = [...readers].flatMap(([hostDeviceId, readShares]) => {
+    if (rt.remoteRefreshing.has(hostDeviceId)) return [];
+    const read = (async () => {
+      try {
+        if (!current(rt)) return;
+        const shares = await readShares();
+        if (current(rt)) applyWatched(rt, hostDeviceId, shares);
+      } catch {
+        if (current(rt)) log.warn('provider share watched snapshot refresh failed', { reason, hostDeviceId });
+      }
+    })().finally(() => { rt.remoteRefreshing.delete(hostDeviceId); });
+    rt.remoteRefreshing.set(hostDeviceId, read);
+    return [read];
+  });
+  return Promise.all([local, ...remote]).then(() => undefined);
 }
 
 /** 生成链接、打开管理页时进入快速拉取。 */
@@ -344,12 +368,16 @@ export function clearProviderShareRequestQuiet(providerId: string): void {
 }
 
 /** 本机为另一台电脑上的分享生成了链接：窗口期内关注那条分享，新申请由本机弹窗。 */
-export function watchProviderShareRequests(hostDeviceId: string, providerId: string): void {
+export function watchProviderShareRequests(
+  hostDeviceId: string,
+  providerId: string,
+  readShares: RemoteLinkWatch['readShares'],
+): void {
   const rt = runtime;
   if (!rt) return;
   rt.watches = [
     ...rt.watches.filter((watch) => watch.hostDeviceId !== hostDeviceId || watch.providerId !== providerId),
-    { hostDeviceId, providerId, until: Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS },
+    { hostDeviceId, providerId, until: Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS, readShares },
   ];
   markProviderShareHostActive(PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS);
 }

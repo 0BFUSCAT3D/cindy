@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   remoteControl: true,
   allowed: new Set<string>(['anthropic']),
   owned: [] as ProviderShareOwned[],
+  ownedError: false,
+  remoteOwned: [] as ProviderShareOwned[],
   received: [] as ProviderShareReceived[],
   receivedError: false,
 }));
@@ -38,7 +40,10 @@ vi.mock('../../maker-host/remote-provider-access-store.js', () => ({
 vi.mock('../settings-store.js', () => ({ readDeviceLinkSettings: () => ({ remoteControlEnabled: state.remoteControl }) }));
 vi.mock('../providerShareApi.js', () => ({
   providerShareApi: {
-    listOwned: async () => state.owned,
+    listOwned: async () => {
+      if (state.ownedError) throw new Error('offline');
+      return state.owned;
+    },
     listReceived: async () => {
       if (state.receivedError) throw new Error('offline');
       return state.received;
@@ -112,6 +117,9 @@ const otherShare = (requests: ProviderShareOwned['requests'], providerId = 'anth
   shareId: `share-${providerId}-group`, providerId, providerLabel: 'Anthropic', hostDeviceId: 'group-host',
   createdAt: '2026-10-01T00:00:00.000Z', members: [member('g1')], requests,
 });
+const readWatchedShares = vi.fn(async (hostDeviceId: string) => state.remoteOwned.filter((item) => item.hostDeviceId === hostDeviceId));
+const watchShare = (hostDeviceId: string, providerId: string) =>
+  watchProviderShareRequests(hostDeviceId, providerId, () => readWatchedShares(hostDeviceId));
 
 beforeEach(() => {
   state.authenticated = true;
@@ -119,6 +127,10 @@ beforeEach(() => {
   state.remoteControl = true;
   state.allowed = new Set(['anthropic']);
   state.owned = [];
+  state.ownedError = false;
+  state.remoteOwned = [];
+  readWatchedShares.mockReset().mockImplementation(async (hostDeviceId) =>
+    state.remoteOwned.filter((item) => item.hostDeviceId === hostDeviceId));
   state.received = [];
   state.receivedError = false;
   vi.mocked(crossRegionLeave).mockReset().mockResolvedValue(false);
@@ -302,13 +314,14 @@ describe('provider share approval follows the computer that generated the link',
   it('keeps watched approval ownership and de-duplication across a host runtime restart', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
-    state.owned = [share([member('m1')]), otherShare([])];
+    state.owned = [share([member('m1')])];
+    state.remoteOwned = [otherShare([])];
     const first = events();
     startProviderShareHost(first);
     await refreshProviderShareHost('test');
-    watchProviderShareRequests('group-host', 'anthropic');
+    watchShare('group-host', 'anthropic');
 
-    state.owned = [share([member('m1')]), otherShare([pendingRequest('before-restart')])];
+    state.remoteOwned = [otherShare([pendingRequest('before-restart')])];
     await refreshProviderShareHost('before-restart');
     expect(first.watchedRequested).toHaveBeenCalledTimes(1);
 
@@ -318,7 +331,7 @@ describe('provider share approval follows the computer that generated the link',
     await refreshProviderShareHost('restart');
     expect(restarted.watchedRequested).not.toHaveBeenCalled();
 
-    state.owned = [share([member('m1')]), otherShare([pendingRequest('before-restart'), pendingRequest('after-restart')])];
+    state.remoteOwned = [otherShare([pendingRequest('before-restart'), pendingRequest('after-restart')])];
     await refreshProviderShareHost('after-restart');
     expect(restarted.watchedRequested.mock.calls.map(([item]) => item.request.requestId)).toEqual(['after-restart']);
 
@@ -330,15 +343,16 @@ describe('provider share approval follows the computer that generated the link',
   it('prompts here for a watched share on another computer without letting it into this computer\'s snapshot', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
-    state.owned = [share([member('m1')]), otherShare([pendingRequest('w0')]), otherShare([pendingRequest('o1')], 'openai')];
+    state.owned = [share([member('m1')])];
+    state.remoteOwned = [otherShare([pendingRequest('w0')]), otherShare([pendingRequest('o1')], 'openai')];
     const ev = events();
     startProviderShareHost(ev);
     await refreshProviderShareHost('test');
     // 没有生成过链接：别的电脑上的申请这里不弹。
     expect(ev.watchedRequested).not.toHaveBeenCalled();
 
-    watchProviderShareRequests('group-host', 'anthropic');
-    state.owned = [share([member('m1')]), otherShare([pendingRequest('w0'), pendingRequest('w1')]), otherShare([pendingRequest('o1')], 'openai')];
+    watchShare('group-host', 'anthropic');
+    state.remoteOwned = [otherShare([pendingRequest('w0'), pendingRequest('w1')]), otherShare([pendingRequest('o1')], 'openai')];
     await refreshProviderShareHost('watch');
     await refreshProviderShareHost('again');
     expect(ev.watchedRequested.mock.calls.map(([item]) => item.request.requestId)).toEqual(['w0', 'w1']);
@@ -358,15 +372,140 @@ describe('provider share approval follows the computer that generated the link',
     expect(ev.watchedRequested).toHaveBeenCalledTimes(2);
 
     // 在别处处理、撤回或过期：从快照里消失即移除。
-    state.owned = [share([member('m1')]), otherShare([])];
+    state.remoteOwned = [otherShare([])];
     await refreshProviderShareHost('gone');
     expect(getProviderShareWatchedRequests()).toEqual([]);
 
     // 窗口期过后不再关注。
     vi.setSystemTime(new Date(Date.now() + PROVIDER_SHARE_REMOTE_LINK_WINDOW_MS + 1));
-    state.owned = [share([member('m1')]), otherShare([pendingRequest('w2')])];
+    state.remoteOwned = [otherShare([pendingRequest('w2')])];
     await refreshProviderShareHost('late');
     expect(ev.watchedRequested).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues polling a watched computer after reconnect even when this computer owns no shares', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    startProviderShareHost(events());
+    await refreshProviderShareHost('start');
+    watchShare('group-host', 'anthropic');
+    stopProviderShareHost();
+
+    const restarted = events();
+    startProviderShareHost(restarted);
+    await refreshProviderShareHost('restart');
+    state.remoteOwned = [otherShare([pendingRequest('after-reconnect')])];
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(restarted.watchedRequested).toHaveBeenCalledWith(expect.objectContaining({
+      request: pendingRequest('after-reconnect'), hostDeviceId: 'group-host',
+    }));
+    expect(getProviderShareHostSnapshot()).toEqual([]);
+    stopProviderShareHost();
+  });
+
+  it('reads watched requests even when the local REST snapshot cannot be fetched', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('start');
+    watchShare('group-host', 'anthropic');
+    state.ownedError = true;
+    state.remoteOwned = [otherShare([pendingRequest('remote-only')])];
+    await refreshProviderShareHost('local-offline');
+    expect(ev.watchedRequested).toHaveBeenCalledWith(expect.objectContaining({ request: pendingRequest('remote-only') }));
+  });
+
+  it('continues remote polling while a local REST read is still pending', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    let finishLocal!: (shares: ProviderShareOwned[]) => void;
+    const localRead = vi.spyOn(providerShareApi, 'listOwned').mockImplementation(() =>
+      new Promise((resolve) => { finishLocal = resolve; }));
+    const ev = events();
+    startProviderShareHost(ev);
+    watchShare('group-host', 'anthropic');
+    state.remoteOwned = [otherShare([pendingRequest('local-still-pending')])];
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ev.watchedRequested).toHaveBeenCalledWith(expect.objectContaining({ request: pendingRequest('local-still-pending') }));
+      expect(localRead).toHaveBeenCalledTimes(1);
+    } finally {
+      finishLocal([]);
+      await refreshProviderShareHost('finish-local');
+      localRead.mockRestore();
+      stopProviderShareHost();
+    }
+  });
+
+  it('keeps pending requests on a failed computer while applying successful updates from another computer', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('start');
+    watchShare('group-host', 'anthropic');
+    watchShare('another-host', 'anthropic');
+    state.remoteOwned = [
+      otherShare([pendingRequest('keep-offline')]),
+      { ...otherShare([pendingRequest('remove-online')]), hostDeviceId: 'another-host' },
+    ];
+    await refreshProviderShareHost('both-online');
+    readWatchedShares.mockImplementation(async (hostDeviceId) => {
+      if (hostDeviceId === 'group-host') throw new Error('offline');
+      return [{ ...otherShare([pendingRequest('new-online')]), hostDeviceId }];
+    });
+    await refreshProviderShareHost('one-offline');
+    expect(getProviderShareWatchedRequests().map((item) => item.request.requestId).sort()).toEqual(['keep-offline', 'new-online']);
+  });
+
+  it('does not let one pending remote read delay local requests or another watched computer', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('start');
+    watchShare('group-host', 'anthropic');
+    watchShare('another-host', 'anthropic');
+    let finishOffline!: (shares: ProviderShareOwned[]) => void;
+    let onlineRequest = 'online';
+    readWatchedShares.mockImplementation((hostDeviceId) => hostDeviceId === 'group-host'
+      ? new Promise((resolve) => { finishOffline = resolve; })
+      : Promise.resolve([{ ...otherShare([pendingRequest(onlineRequest)]), hostDeviceId }]));
+    state.owned = [share([], [pendingRequest('local')])];
+    const refreshing = refreshProviderShareHost('slow-peer');
+    try {
+      await vi.waitFor(() => {
+        expect(ev.requested).toHaveBeenCalledWith(pendingRequest('local'), expect.anything(), false);
+        expect(ev.watchedRequested).toHaveBeenCalledWith(expect.objectContaining({ request: pendingRequest('online') }));
+      });
+      state.owned = [share([], [pendingRequest('local-next')])];
+      onlineRequest = 'online-next';
+      await refreshProviderShareHost('next-round-with-slow-peer');
+      expect(ev.requested).toHaveBeenLastCalledWith(pendingRequest('local-next'), expect.anything(), false);
+      expect(ev.watchedRequested).toHaveBeenLastCalledWith(expect.objectContaining({ request: pendingRequest('online-next') }));
+      expect(readWatchedShares.mock.calls.filter(([hostDeviceId]) => hostDeviceId === 'group-host')).toHaveLength(1);
+    } finally {
+      finishOffline([]);
+      await refreshing;
+    }
+  });
+
+  it('discards a watched snapshot that completes after an account switch', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-14T08:00:00.000Z'));
+    const ev = events();
+    startProviderShareHost(ev);
+    await refreshProviderShareHost('start');
+    watchShare('group-host', 'anthropic');
+    let finish!: (shares: ProviderShareOwned[]) => void;
+    readWatchedShares.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const refreshing = refreshProviderShareHost('before-switch');
+    state.scope = 'cloud:other:2';
+    finish([otherShare([pendingRequest('old-owner')])]);
+    await refreshing;
+    expect(ev.watchedRequested).not.toHaveBeenCalled();
+    expect(getProviderShareWatchedRequests()).toEqual([]);
   });
 });
 

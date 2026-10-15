@@ -13,7 +13,7 @@ vi.mock('../runtime.js', () => ({
 vi.mock('../store.js', () => ({ readProviderGroup: vi.fn(), writeProviderGroup: vi.fn() }));
 vi.mock('../bindings.js', () => ({ pruneProviderGroupBindings: vi.fn() }));
 vi.mock('../../appSessionState.js', () => ({ activeOwnerScopeKey: () => 'owner-a' }));
-vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self'), remoteInvoke: vi.fn() }));
+vi.mock('../../device-link/index.js', () => ({ broadcast: vi.fn(), getSelfDeviceId: vi.fn(() => 'self'), remoteInvoke: vi.fn(), remoteBackgroundInvoke: vi.fn() }));
 // 同账号管理的转发另有 managementClient.test.ts；这里只测本机命令，不拉进分享运行时。
 vi.mock('../managementClient.js', () => ({ invokeProviderManagement: vi.fn() }));
 vi.mock('../../device-link/providerShareRuntime.js', () => ({
@@ -150,8 +150,8 @@ describe('executeProviderGroupCommand reads', () => {
       ],
     };
     // 这台电脑读不到 mini 的目录(连不上)。
-    const readDeviceCatalog = vi.fn(async (_agentDeviceId: string): Promise<never[]> => {
-      throw new Error('[DEVICE_LINK_DEVICE_UNRESPONSIVE] target device mini is unresponsive (circuit open)');
+    const readDeviceCatalog = vi.fn(async (agentDeviceId: string): Promise<never[]> => {
+      throw new Error('[DEVICE_LINK_DEVICE_UNRESPONSIVE] target device ' + agentDeviceId + ' is unresponsive (circuit open)');
     });
     const marked = await markMembersUnreachableHere(view, { readDeviceCatalog }, 'self');
     // 只核对组所在电脑看着能用、由这台直连的「我的其他电脑」：组所在电脑自己、本机这台、冷却中的都不读。

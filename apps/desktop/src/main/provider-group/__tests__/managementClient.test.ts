@@ -37,11 +37,21 @@ describe('provider management client', () => {
   it('watches the group computer\'s share after generating a link there, so the request prompts here', async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     const invoke = replying({ link: 'https://cindy.app/s#token', expiresAt });
-    const created = await invokeProviderManagement(invoke, 'group-host', createLink) as { link: string };
+    const snapshot = { ready: true, shares: [{ shareId: 'share-1', providerId: 'anthropic', providerLabel: 'Anthropic', requests: [] }] };
+    const readInvoke = replying(snapshot);
+    const created = await invokeProviderManagement(invoke, 'group-host', createLink, readInvoke) as { link: string };
     expect(invoke).toHaveBeenCalledWith('group-host', PROVIDER_GROUP_REMOTE_CHANNEL, [createLink], expect.anything());
     expect(created.link).toBe('https://cindy.app/s#token');
     expect(clipboard.remember).toHaveBeenCalledWith('https://cindy.app/s#token', expect.any(String));
-    expect(host.watch).toHaveBeenCalledWith('group-host', 'anthropic');
+    expect(host.watch).toHaveBeenCalledWith('group-host', 'anthropic', expect.any(Function));
+    const readShares = host.watch.mock.calls[0][2];
+    await expect(readShares()).resolves.toEqual(snapshot.shares);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(readInvoke).toHaveBeenCalledWith('group-host', PROVIDER_GROUP_REMOTE_CHANNEL, [
+      { action: 'manage-share', command: { action: 'owned', range: '7d' } },
+    ], expect.anything());
+    vi.mocked(readInvoke).mockResolvedValue({ ok: true, result: { result: { ready: false, shares: [] }, respondedAt: Date.now() } });
+    await expect(readShares()).rejects.toThrow(/PRECONDITION_FAILED/);
   });
 
   it('does not watch when the link response is invalid or the account changed on the way', async () => {

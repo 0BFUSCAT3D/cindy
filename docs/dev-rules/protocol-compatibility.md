@@ -1259,8 +1259,12 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
     独立动作名保证旧 O 明确拒绝，不能忽略新增条件后无条件写入；新 O 拒绝旧 C 的 `save` / `delete`，回
     `[UNSUPPORTED_CAPABILITY]`。完整编辑需两端更新；只读查询、分享者操作与组的分配使用不受影响。
 - **审批弹窗跟着生成链接的电脑**：O 执行 `manage-share` 的 `create-link` 后，7 分钟窗口内这个供应商的新申请在 O 上只推
-  `REQUESTED { quiet: true }`(进管理页与提示点，不弹窗、不发系统通知)；O 本机生成链接时取消静默。C 在同一窗口内照常拉取
-  账号的分享列表、关注 O 的那条分享，新申请经 `REQUESTED { hostDeviceId }` 在 C 上弹窗，同意 / 拒绝经 `manage-share` 转交 O。
+  `REQUESTED { quiet: true }`(进管理页与提示点，不弹窗、不发系统通知)；O 本机生成链接时取消静默。C 在同一窗口内经
+  `manage-share owned` 向 O 读取分享申请，不能从 C 的 REST 分享列表找 O 的申请（服务端按当前设备隔离列表）。
+  新申请经 `REQUESTED { hostDeviceId }` 在 C 上弹窗，同意 / 拒绝经 `manage-share` 转交 O。
+  本机与每台关注电脑各自只保留一个在途读取；一台离线或迟迟不回包时，其他电脑与本机照常继续拉取，不重建 link 或 relay。
+  失败或 `ready=false` 不当作空名单清理待审批申请，成功快照只清理对应电脑的申请；账号切换或运行时重建后的旧回包作废。
+  同账号重连保留窗口期内的关注与去重状态，即使 C 本机没有分享也继续拉取。
   这两个字段只在本机 Main → Renderer 之间，不跨设备；本机 `owned` 结果另带 `quietRequestIds` / `watchedRequests` 供审批宿主重载时使用。
 - **兼容**：旧 O 回 `CHANNEL_NOT_ALLOWED` 或 `[INVALID_PARAMS] unknown provider group action`，C 显示「建组电脑需要更新」，
   不影响组的分配与使用。旧 C 不发这两个动作，仍只能只读查看。O 只在执行过 `manage-share` 的 `create-link` 后才静默，

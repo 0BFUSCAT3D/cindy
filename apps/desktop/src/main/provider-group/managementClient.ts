@@ -5,6 +5,7 @@
 import { PROVIDER_GROUP_REMOTE_CHANNEL, PROVIDER_SHARE_LINK_TTL_MS } from '@cindy/device-link';
 
 import type { ProviderManagementReply, ProviderManagementRequest } from '../../shared/providerManagement.js';
+import type { ProviderShareOwnerState } from '../../shared/providerShare.js';
 import { activeOwnerScopeKey } from '../appSessionState.js';
 import { forgetWatchedProviderShareRequest, watchProviderShareRequests } from '../device-link/providerShareHost.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
@@ -15,6 +16,7 @@ export async function invokeProviderManagement(
   invoke: ProviderGroupRemoteInvoke,
   deviceId: string,
   request: ProviderManagementRequest,
+  readInvoke: ProviderGroupRemoteInvoke = invoke,
 ): Promise<unknown> {
   const owner = activeOwnerScopeKey();
   const assertOwner = () => {
@@ -44,7 +46,17 @@ export async function invokeProviderManagement(
       - Math.max(0, Date.now() - startedAt));
     const expiresAt = new Date(Date.now() + remaining).toISOString();
     rememberIssuedClipboardText(created.link, expiresAt);
-    watchProviderShareRequests(deviceId, request.command.providerId);
+    watchProviderShareRequests(deviceId, request.command.providerId, async () => {
+      // 申请属于供应商所在电脑，不能轮询本机 REST 列表来找它的申请。沿用同账号
+      // 管理调用的发送前/返回后账号检查；这里只读 owned，不重放任何写操作。
+      const snapshot = await invokeProviderManagement(readInvoke, deviceId, {
+        action: 'manage-share', command: { action: 'owned', range: '7d' },
+      }) as ProviderShareOwnerState | null;
+      if (!snapshot?.ready || !Array.isArray(snapshot.shares)) {
+        throwIpcError('PRECONDITION_FAILED', 'Provider share snapshot is not available on the managing computer');
+      }
+      return snapshot.shares;
+    });
     return { link: created.link, expiresAt };
   }
   if (request.action === 'manage-share' && (request.command.action === 'approve' || request.command.action === 'reject')) {
