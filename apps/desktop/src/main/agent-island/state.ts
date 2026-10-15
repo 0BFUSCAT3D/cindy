@@ -172,8 +172,9 @@ interface AgentIslandSessionState {
   sortActivityAt: number;
   lastActivityAt: number;
   /**
-   * 无碰撞的活动代数(全局单调不复用):卡片身份用它而不是毫秒时间戳 —— 同一毫秒内
-   * 再落新终态时时间戳会撞上(review P1),旧点击会误处置新提醒。
+   * 无碰撞的卡片身份代数(全局单调不复用):只在真正换卡(新一轮 / 新失败 / 新完成)时
+   * 推进,记账 / 样式事件不推进 —— 毫秒时间戳同毫秒会撞(review P1),无差别推进又会把
+   * 收尾记账当成换卡(review P1 后续)。
    */
   activityGeneration: number;
   /**
@@ -249,8 +250,13 @@ function nextActivityGeneration(): number {
   return ++agentIslandActivityGeneration;
 }
 
-/** 任何活动都推进代数(卡片身份随之变化);仅重挂注意力等非活动路径不得调用。 */
+/** 活动时间戳照常推进;卡片身份不动 —— 记账 / 样式事件不得驱逐被点击的卡(review P1)。 */
 function touchSessionActivity(session: AgentIslandSessionState, now: number): void {
+  session.lastActivityAt = now;
+}
+
+/** 新一轮 / 新失败 / 新完成真正换卡时推进身份代数,被点击的旧卡随之失效。 */
+function replaceAgentIslandCard(session: AgentIslandSessionState, now: number): void {
   session.lastActivityAt = now;
   session.activityGeneration = nextActivityGeneration();
 }
@@ -530,7 +536,7 @@ export function applyAgentIslandUserPrompt(
   const line = appendActivityLine(session, 'user', text);
   if (line) enqueueMessagePreview(session, line, now);
   session.sortActivityAt = now;
-  touchSessionActivity(session, now);
+  replaceAgentIslandCard(session, now);
   return true;
 }
 
@@ -769,7 +775,7 @@ export function applyAgentIslandEvent(
         : session.detail;
       session.detailSource = 'interaction';
       session.completedUntil = null;
-      touchSessionActivity(session, now);
+      replaceAgentIslandCard(session, now);
       return true;
     }
     session.permissionRequestId = null;
@@ -833,6 +839,8 @@ export function applyAgentIslandEvent(
     // 真实展示给用户)清除,否则条目会在 errorUntil 过期后被 prune 静默删除。
     requestAttentionReveal(state, session, now, AGENT_ISLAND_ERROR_REVEAL_DWELL_MS, { forceUnread: true });
     syncRemoteUnreadTerminal(state, session);
+    // 新失败真正换卡:被点击的旧卡随之失效。
+    replaceAgentIslandCard(session, now);
     return true;
   }
 
@@ -883,7 +891,7 @@ export function applyAgentIslandInteractionRequest(
   deferActiveTransientReveal(state, 'queued');
   requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
   syncVisibleInteractionSuppression(state, now);
-  touchSessionActivity(session, now);
+  replaceAgentIslandCard(session, now);
 }
 
 export function applyAgentIslandInteractionDismissed(
@@ -974,9 +982,10 @@ function dismissPendingInteraction(
 export type AgentIslandSessionReadAckResult = 'cleared' | 'noop' | 'not-found' | 'error-immune';
 
 /**
- * 灵动岛上一张未读完成 / 报错卡的身份。点击时记下,导航落地后再比对:任何后续活动
- * (新一轮开始、新的报错或完成)都会改变它,旧点击因此不会处置后来的提醒。身份用
- * 无碰撞的活动代数而非毫秒时间戳,同毫秒内的新终态也拉得开。
+ * 灵动岛上一张未读完成 / 报错卡的身份。点击时记下,导航落地后再比对:新一轮、新的失败
+ * 或新的完成(真正换卡)都会改变它,旧点击因此不会处置后来的提醒;失败 turn 的收尾记账
+ * 事件保留同一张卡、不改身份。身份用无碰撞的活动代数而非毫秒时间戳,同毫秒内的新终态
+ * 也拉得开。
  * 只认本机会话当前展示的未读终态;运行中、等待交互或只剩远程账本时返回 null。
  */
 export function readAgentIslandUnreadTerminalStamp(
@@ -1724,7 +1733,11 @@ function markSessionRunning(
   session: AgentIslandSessionState,
   now: number,
 ): void {
-  if (!session.running) session.startedAt = now;
+  if (!session.running) {
+    // 新一轮真正换卡:被点击的旧卡随之失效(记账 / 样式事件不走这条路)。
+    replaceAgentIslandCard(session, now);
+    session.startedAt = now;
+  }
   session.completionNotification = undefined;
   session.running = true;
   session.completedUntil = null;
@@ -1755,6 +1768,9 @@ function completeAgentIslandSession(
   // terminal error belongs to a verified flow that intentionally pairs a done.
   if (session.phase === 'error' && !session.completionAllowedAfterTerminalError) return;
 
+  // 旧卡被真正的完成替换才换身份;失败 turn 的收尾记账 done / 重复 done 保留同一张
+  // 卡,不得驱逐被点击的那张(review P1)。
+  if (session.phase !== 'completed') replaceAgentIslandCard(session, now);
   session.phase = 'completed';
   session.completionNotification = options.suppressAttention ? 'silent' : undefined;
   session.interactionKind = undefined;

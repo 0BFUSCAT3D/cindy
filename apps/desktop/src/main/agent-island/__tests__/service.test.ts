@@ -6274,6 +6274,19 @@ describe('AgentIslandService island-entry alert disposal', () => {
     }
   });
 
+  // Review P1 后续:失败 turn 的收尾记账 done 保留同一张错误卡(completeAgentIslandSession
+  // 主动 early-return),不得驱逐被点击的那张,否则迟到的处置会失败、卡留着。
+  it('a trailing bookkeeping done keeps the clicked error card disposable', async () => {
+    const { service, click, consume, island } = await setup();
+    service.handleAgentEvent(lane, terminalErrorEvent('boom'));
+    const entryId = click('lane');
+    // 配对的收尾 done 不换卡(未获准替换报错)。
+    service.handleAgentEvent(lane, doneEvent());
+    expect(island.sessions.get('lane')).toMatchObject({ phase: 'error', unread: true });
+    expect(consume('lane', entryId)).toEqual({ ok: true, consumed: true });
+    expect(island.sessions.has('lane')).toBe(false);
+  });
+
   // The read-only history page reports its session as visible; a click on that card
   // must still reach the renderer, whose navigator disposes it on the open target.
   it('delivers the click id even when the target is the visible, focused session', async () => {
