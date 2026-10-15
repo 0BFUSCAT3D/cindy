@@ -73,6 +73,13 @@ const MAX_ARTIFACTS = 64;
 const messageRowid = sql<number>`"messages"."rowid"`;
 const log = createLogger('bot-delegation');
 
+/** First `max` UTF-16 units, stepping back rather than splitting an emoji (a stored half becomes "\ufffd"). */
+function sliceWhole(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const high = text.charCodeAt(max - 1);
+  return text.slice(0, high >= 0xd800 && high <= 0xdbff ? max - 1 : max);
+}
+
 type DelegationStatus = BotDelegationStatus;
 type DelegationRow = typeof botDelegations.$inferSelect;
 
@@ -847,7 +854,8 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     const card = buildBotGroupTaskCard({
       meta,
       state: event.state,
-      title: child?.title?.trim() || row.objective.split('\n')[0]!.slice(0, 120),
+      // The card builder clips the title on a character boundary; clipping here could split an emoji.
+      title: child?.title?.trim() || row.objective.split('\n')[0]!,
       ...(event.summary ? { summary: event.summary } : {}),
     }, groupTaskCardLabels());
     return deps.postGroupTaskMessage({
@@ -2703,7 +2711,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           : {}),
         ...(taskRuntime.providerId ? { providerId: taskRuntime.providerId } : {}),
         agentKind: taskRuntime.agentKind as 'cc' | 'codex' | 'pi',
-        title: input.title?.trim() || objective.split('\n')[0]!.slice(0, 60),
+        title: input.title?.trim() || sliceWhole(objective.split('\n')[0]!, 60),
         source: 'desktop',
       },
     });
