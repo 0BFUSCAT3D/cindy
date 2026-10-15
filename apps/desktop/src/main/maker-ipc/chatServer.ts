@@ -89,6 +89,8 @@ const THREAD_BACKGROUND_LIMIT = 30;
 const ATTACHMENT_REFRESH_COALESCE_MS = 200;
 /** Messages per group with their own reaction version; past this the group re-versions as a whole, like a reset. */
 export const REACTION_REVISION_MESSAGE_LIMIT = 500;
+// Room reaction versions come from one process-wide sequence, so they never repeat across chat runtimes.
+let reactionRevisionSequence = 0;
 const CHAT_REFRESHABLE_ERROR_CODES = new Set(['TOKEN_EXPIRED', 'INVALID_TOKEN', 'AUTH_REQUIRED']);
 const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
@@ -185,12 +187,15 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   let actorsStale = false;
   // Who reacted can change while counts stay the same. A realtime reaction change versions only its
   // message; a reset that skipped events versions the whole room (and makes per-message versions moot).
-  // Both ride on the group, so every loaded page and the Thread see them on refresh.
+  // Both ride on the group, so every loaded page and the Thread see them on refresh. A recreated runtime
+  // (same owner, badges still mounted) may have missed changes while switching, so its rooms start above
+  // every version handed out before.
+  const runtimeReactionRevision = ++reactionRevisionSequence;
   const reactionRevisions = new Map<string, { room: number; messages: Record<string, number> }>();
-  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: (reactionRevisions.get(roomId)?.room ?? 0) + 1, messages: {} });
+  const resetReactions = (roomId: string) => reactionRevisions.set(roomId, { room: ++reactionRevisionSequence, messages: {} });
   // A long-open group stays bounded: once too many messages carry their own version, the group re-versions instead.
   const bumpMessageReactions = (roomId: string, messageId: string) => {
-    const revisions = reactionRevisions.get(roomId) ?? { room: 0, messages: {} };
+    const revisions = reactionRevisions.get(roomId) ?? { room: runtimeReactionRevision, messages: {} };
     if (!(messageId in revisions.messages) && Object.keys(revisions.messages).length >= REACTION_REVISION_MESSAGE_LIMIT) return resetReactions(roomId);
     revisions.messages[messageId] = (revisions.messages[messageId] ?? 0) + 1;
     reactionRevisions.set(roomId, revisions);
@@ -744,7 +749,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const messages = summaryOnly ? [] : (await messageViews(roomId, page, s.members)).sort((a, b) => a.sequence - b.sequence);
     const last = s.messages[0];
     const lastView = last ? messageView(last, s.members) : null;
-    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? 0, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
+    return { serverBacked: true, reactionRevision: reactionRevisions.get(roomId)?.room ?? runtimeReactionRevision, reactionRevisions: { ...reactionRevisions.get(roomId)?.messages }, migrationPending: [...upgradeErrors.keys()].some(source => upgradedGroups.get(source) === roomId), archived: s.room.archived, selfActorId: selfId, topic: s.room.topic, description: s.room.description, revision: s.room.revision, canInvite: s.members.some(m => m.ownerActorId === selfId && m.state === 'joined' && ['owner', 'admin'].includes(m.role)), id: s.room.id, name: s.room.name, replyMode: s.room.response_mode, speakingMode: s.room.speaking_mode,
       members: s.members.filter(m => m.state === 'joined').map(m => {
         const p = localBot(m.id);
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,

@@ -1100,7 +1100,8 @@ describe('Chat Server result delivery and refresh', () => {
       const r = await service.getGroup(roomId);
       return r.ok ? { room: r.group.reactionRevision, messages: r.group.reactionRevisions } : undefined;
     };
-    expect(await revisions()).toEqual({ room: 0, messages: {} });
+    const initial = (await revisions())!.room!;
+    expect(await revisions()).toEqual({ room: initial, messages: {} });
     await vi.advanceTimersByTimeAsync(2000);
     const socket = fixture.sockets[0];
     // One member removes 👍 and another adds it in one batch: same count, different reactor.
@@ -1109,30 +1110,50 @@ describe('Chat Server result delivery and refresh', () => {
       { type: 'reaction.changed', entityId: message.id, data: { emoji: '👍', present: true } },
       { type: 'message.updated', entityId: message.id },
     ] }));
-    expect(await revisions()).toEqual({ room: 0, messages: { [message.id]: 2 } });
+    expect(await revisions()).toEqual({ room: initial, messages: { [message.id]: 2 } });
     // A reaction elsewhere leaves this message's version alone; other changes do not invalidate reactor reads.
     socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor: '6', changes: [
       { type: 'reaction.changed', entityId: 'other-message', data: { emoji: '🎉', present: true } },
       { type: 'message.updated', entityId: message.id },
     ] }));
-    expect(await revisions()).toEqual({ room: 0, messages: { [message.id]: 2, 'other-message': 1 } });
+    expect(await revisions()).toEqual({ room: initial, messages: { [message.id]: 2, 'other-message': 1 } });
     // A reset skips whatever changed while disconnected: the whole room counts as changed once.
     Object.defineProperty(socket, 'readyState', { value: 1 });
     socket.emit('message', JSON.stringify({ type: 'scope_error', scope: `conversation:${roomId}`, error: { code: 'RESET_REQUIRED' } }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(await revisions()).toEqual({ room: 1, messages: {} });
+    const reset = (await revisions())!.room!;
+    expect(reset).toBeGreaterThan(initial);
+    expect(await revisions()).toEqual({ room: reset, messages: {} });
     // Per-message versions stay bounded: one more message past the limit re-versions the whole room instead.
     const reacted = (ids: string[], cursor: string) => socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor,
       changes: ids.map(id => ({ type: 'reaction.changed', entityId: id, data: { emoji: '👍', present: true } })) }));
     const ids = Array.from({ length: REACTION_REVISION_MESSAGE_LIMIT }, (_, i) => `m${i}`);
     reacted(ids, '7');
     const state = await revisions();
-    expect(state?.room).toBe(1);
+    expect(state?.room).toBe(reset);
     expect(Object.keys(state?.messages ?? {})).toHaveLength(REACTION_REVISION_MESSAGE_LIMIT);
     reacted(['m0'], '8');
     expect((await revisions())?.messages?.m0).toBe(2);
     reacted(['one-more'], '9');
-    expect(await revisions()).toEqual({ room: 2, messages: {} });
+    const capped = (await revisions())!.room!;
+    expect(capped).toBeGreaterThan(reset);
+    expect(await revisions()).toEqual({ room: capped, messages: {} });
+  });
+  it('starts a recreated chat runtime above every reaction version the previous one handed out', async () => {
+    // A same-owner repair replaces the runtime while mounted badges keep their read; whatever changed in between
+    // must not look unchanged just because the new runtime's counters start over.
+    let generation = 0;
+    deps.captureOwnerScope = () => ({ generation }) as unknown as ReturnType<NonNullable<typeof deps.captureOwnerScope>>;
+    deps.isOwnerScopeCurrent = scope => (scope as unknown as { generation: number }).generation === generation;
+    service.dispose();
+    service = withChatServer({ listGroups: async () => ({ ok: true, groups: [] }), dispose: vi.fn() } as unknown as BotGroupChatService, deps);
+    const room = async () => { const r = await service.getGroup(roomId); return r.ok ? r.group.reactionRevision : undefined; };
+    const before = (await room())!;
+    expect(await room()).toBe(before);
+    generation += 1;
+    const after = (await room())!;
+    expect(after).toBeGreaterThan(before);
+    expect(await room()).toBe(after);
   });
   it('refreshes a reset room and resumes realtime from the authorized snapshot cursor', async () => {
     await service.getGroup(roomId);
