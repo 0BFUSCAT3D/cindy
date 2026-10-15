@@ -109,6 +109,13 @@ export class ViewerSafety {
   }
   private recordClipboardFailure(error: unknown): void {
     const failure = viewerClipboardFailure(error, this.failures);
+    if (failure.code === 'CLIPBOARD_CONFLICT') {
+      // Preserve counters so an idle poll cannot choose a winner. Forget the
+      // conflicting digests so the next copy selects that side even when its
+      // content is unchanged; a successful transfer restores normal deduping.
+      delete this.baseline.localDigest;
+      delete this.baseline.remoteDigest;
+    }
     if (!failure.transient) this.failures++;
     // Only the computer refusing sync needs it re-enabled; a local helper failure does not.
     if (failure.code === 'DESKTOP_CLIPBOARD_UNAVAILABLE') this.applied.delete('clipboardSync');

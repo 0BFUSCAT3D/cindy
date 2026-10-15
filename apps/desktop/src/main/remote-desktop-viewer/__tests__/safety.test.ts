@@ -1,5 +1,9 @@
 import { expect, it, vi } from 'vitest';
-import { ClipboardSync, type RemoteDesktopCapabilities } from '@cindy/device-link';
+import {
+  ClipboardSync,
+  type RemoteDesktopCapabilities,
+  type RemoteDesktopRequest,
+} from '@cindy/device-link';
 import { DEFAULT_VIEWER_PREFERENCES } from '../../../shared/remoteDesktopViewer';
 import { ViewerSafety } from '../safety';
 
@@ -265,3 +269,89 @@ it('keeps conflict feedback until content is actually synchronized', async () =>
     tick.mockRestore();
   }
 });
+
+it.each([
+  ['none', 'local'],
+  ['none', 'remote'],
+  ['remote', 'local'],
+  ['local', 'remote'],
+] as const)(
+  'after a conflict with %s unreadable, recopying identical %s content selects it',
+  async (unreadable, chosen) => {
+    const { safety, sync } = syncFixture();
+    const local = {
+      version: 1,
+      json: JSON.stringify({ text: 'local initial' }),
+      unreadable: false,
+    };
+    const remote = {
+      version: 1,
+      json: JSON.stringify({ text: 'remote initial' }),
+      unreadable: false,
+    };
+    const write = vi.fn(async (json: string, version: string | undefined) => {
+      expect(version).toBe(String(local.version));
+      local.json = json;
+      local.unreadable = false;
+      return String(++local.version);
+    });
+    const paste = vi.fn((json: string) => {
+      remote.json = json;
+      remote.unreadable = false;
+      return { version: String(++remote.version) };
+    });
+    const request = vi.fn(async (message: RemoteDesktopRequest): Promise<unknown> => {
+      if (message.op === 'clipboardVersion') return { version: String(remote.version) };
+      if (message.op === 'clipboardContent' && message.action === 'copy') {
+        if (remote.unreadable) throw new Error('CLIPBOARD_UNSUPPORTED');
+        return { length: remote.json.length, data: remote.json };
+      }
+      if (message.op === 'clipboardContent' && message.action === 'paste')
+        return paste(message.data);
+      return { enabled: true };
+    });
+    const options: Parameters<ViewerSafety['tick']>[0] = {
+      ...sync,
+      caps: { ...sync.caps, clipboardInline: true },
+      request: request as Parameters<ViewerSafety['tick']>[0]['request'],
+      clipboard: {
+        version: async () => String(local.version),
+        read: async () => {
+          if (local.unreadable) throw new Error('CLIPBOARD_UNSUPPORTED');
+          return local.json;
+        },
+        write,
+      },
+    };
+    await safety.tick(options);
+    local.version++;
+    remote.version++;
+    local.json = JSON.stringify({ text: 'local choice' });
+    remote.json = JSON.stringify({ text: 'remote choice' });
+    local.unreadable = unreadable === 'local';
+    remote.unreadable = unreadable === 'remote';
+    expect((await safety.tick(options)).notice).toBe('clipboardSyncConflict');
+
+    // An idle poll cannot pick a winner or clear the conflict on its own.
+    safety.wake();
+    expect((await safety.tick(options)).notice).toBe('clipboardSyncConflict');
+    expect(write).not.toHaveBeenCalled();
+    expect(paste).not.toHaveBeenCalled();
+
+    const source = chosen === 'local' ? local : remote;
+    const selected = source.json;
+    source.version++; // Recopy exactly the same readable content, changing only its counter.
+    safety.wake();
+    expect((await safety.tick(options)).notice).toBeNull();
+    expect(local.json).toBe(selected);
+    expect(remote.json).toBe(selected);
+    expect(write).toHaveBeenCalledTimes(chosen === 'remote' ? 1 : 0);
+    expect(paste).toHaveBeenCalledTimes(chosen === 'local' ? 1 : 0);
+
+    // Once resolved, normal identical-content deduplication is restored.
+    source.version++;
+    await safety.tick(options);
+    expect(write).toHaveBeenCalledTimes(chosen === 'remote' ? 1 : 0);
+    expect(paste).toHaveBeenCalledTimes(chosen === 'local' ? 1 : 0);
+  },
+);
