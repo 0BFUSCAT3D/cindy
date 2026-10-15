@@ -36,6 +36,7 @@ type PushListener = (
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn<(deviceId: string, channel: string, args: unknown[]) => Promise<unknown>>(),
   pushListeners: [] as PushListener[],
+  statusListeners: [] as Array<(value: { status: 'online' | 'connecting' | 'stopped' }) => void>,
   presenceListeners: [] as Array<(value: { deviceId: string; online: boolean }) => void>,
 }));
 
@@ -59,6 +60,7 @@ beforeEach(() => {
   mocks.invoke.mockReset();
   mocks.pushListeners.length = 0;
   mocks.presenceListeners.length = 0;
+  mocks.statusListeners.length = 0;
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
@@ -68,7 +70,10 @@ beforeEach(() => {
           mocks.presenceListeners.push(listener);
           return () => { mocks.presenceListeners = mocks.presenceListeners.filter(item => item !== listener); };
         },
-        onStatusChanged: () => () => {},
+        onStatusChanged: (listener: (value: { status: 'online' | 'connecting' | 'stopped' }) => void) => {
+          mocks.statusListeners.push(listener);
+          return () => { mocks.statusListeners = mocks.statusListeners.filter(item => item !== listener); };
+        },
         onRemotePush: (cb: PushListener) => {
           mocks.pushListeners.push(cb);
           return () => {
@@ -411,4 +416,25 @@ it('queues a recovery read when a previous quota request is still in flight', as
   await flushMicrotasks();
   expect(mocks.invoke).toHaveBeenCalledTimes(2);
   expect(a.result.current).toBeNull();
+});
+
+it('rereads when the target comes online after an early relay recovery read fails', async () => {
+  const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
+  mocks.invoke.mockResolvedValue(quota);
+  const view = renderHook(() => useRemoteClaudeAccountUsage('peer-late'));
+  await flushMicrotasks();
+  act(() => mocks.statusListeners.forEach(cb => cb({ status: 'online' })));
+  act(() => mocks.presenceListeners.forEach(cb => cb({ deviceId: 'peer-late', online: true })));
+  await flushMicrotasks();
+  mocks.invoke.mockRejectedValue(new Error('target offline'));
+  act(() => mocks.statusListeners.forEach(cb => cb({ status: 'connecting' })));
+  act(() => mocks.statusListeners.forEach(cb => cb({ status: 'online' })));
+  await flushMicrotasks();
+  expect(view.result.current).toEqual(quota);
+  mocks.invoke.mockClear();
+  mocks.invoke.mockResolvedValue({ quotaState: 'unlimited' });
+  act(() => mocks.presenceListeners.forEach(cb => cb({ deviceId: 'peer-late', online: true })));
+  await flushMicrotasks();
+  expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  expect(view.result.current).toBeNull();
 });
