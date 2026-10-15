@@ -29,6 +29,21 @@ interface LocalViewDeps {
   assertCaller(id: string, caller: string): void;
   openLink(url: string): Promise<void>;
 }
+/** Called only by the protocol's frame-verified channel, with Host-bound task and View IDs. */
+export async function handleMcpAppFrameOperation(
+  host: McpAppsHost, caller: string, sessionId: string, viewId: string, raw: unknown,
+  openLink: (url: string) => Promise<void>,
+): Promise<unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('MCP_APP_INVALID_REQUEST');
+  const input = raw as Record<string, unknown>;
+  if (input.op === 'open-link') {
+    if (typeof input.url !== 'string' || input.url.length > 8192) throw new Error('MCP_APP_INVALID_LINK');
+    await openLink(safeAppLink(input.url));
+    return {};
+  }
+  if (!['message', 'poll', 'link-result'].includes(String(input.op))) throw new Error('MCP_APP_INVALID_REQUEST');
+  return handleMcpAppOperation(host, caller, sessionId, { ...input, viewId });
+}
 export async function handleMcpAppOperation(
   host: McpAppsHost,
   caller: string,
@@ -51,15 +66,17 @@ export async function handleMcpAppOperation(
     case 'open': {
       const document = await host.open(caller, sessionId, input.clientId, input.context, input.openId);
       local?.supply(document, caller);
-      return document;
+      return local ? { ...document, transport: 'sandbox' } : document;
     }
     case 'cancel-open':
       await host.cancelOpen(caller, sessionId, input.openId);
       return {};
     case 'message':
+      if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
       await host.dispatch(caller, sessionId, input.viewId, input.message);
       return {};
     case 'poll':
+      if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
       return await host.poll(caller, sessionId, input.viewId, input.after);
     case 'context':
       host.context(caller, sessionId, input.viewId, input.context);
@@ -71,6 +88,7 @@ export async function handleMcpAppOperation(
       host.displayMode(caller, sessionId, input.viewId, input.mode);
       return {};
     case 'link-result':
+      if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
       host.linkResult(caller, sessionId, input.viewId, input.linkId, input.success);
       return {};
     case 'mount-remote':

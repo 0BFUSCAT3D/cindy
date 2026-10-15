@@ -53,12 +53,12 @@ export class McpAppController {
       () => this.fail(new Error('MCP_APP_INITIALIZATION_TIMEOUT')),
       45_000,
     );
-    void this.poll();
+    if (document.transport !== 'sandbox') void this.poll();
     return document;
   }
 
   sandboxReady(resourceUrl?: string): void {
-    if (!this.document || this.ready || this.closing) return;
+    if (!this.document || this.document.transport === 'sandbox' || this.ready || this.closing) return;
     this.ready = true;
     this.post({
       jsonrpc: '2.0',
@@ -72,6 +72,20 @@ export class McpAppController {
 
   receive(message: AppRpc): void {
     if (this.stopped || !this.document || !message || message.jsonrpc !== '2.0') return;
+    if (this.document.transport === 'sandbox') {
+      if (message.method === 'ui/notifications/sandbox-failed')
+        this.fail(new Error('MCP_APP_SANDBOX_FAILED'));
+      if (this.closing) return;
+      if (message.method === 'ui/notifications/sandbox-escape')
+        void this.displayMode('inline').catch((error) => this.fail(error));
+      if (message.method === 'ui/notifications/initialized') {
+        clearTimeout(this.startupTimer);
+        this.startupTimer = undefined;
+      }
+      if (['ui/notifications/initialized', 'ui/notifications/size-changed', 'ui/notifications/host-context-changed'].includes(message.method ?? ''))
+        this.onState(message);
+      return;
+    }
     if (this.teardownId !== undefined && message.id === this.teardownId) {
       if (message.method === undefined && ('result' in message || 'error' in message))
         this.finishTeardown?.();
@@ -181,7 +195,7 @@ export class McpAppController {
 
   /** Notify before native disposal; close() waits at most one second for the response. */
   prepareNativeClose(): void {
-    if (!this.ready || this.closing || this.teardownId) return;
+    if (!this.ready || this.document?.transport === 'sandbox' || this.closing || this.teardownId) return;
     this.teardownId = `cindy-teardown:${Date.now()}:${this.clientId}`;
     this.teardownDone = new Promise<void>((resolve) => {
       const timer = setTimeout(() => this.finishTeardown?.(), 1_000);

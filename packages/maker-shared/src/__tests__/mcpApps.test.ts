@@ -1,6 +1,37 @@
 import { describe, expect, it } from 'vitest';
+import { Script } from 'node:vm';
 import { mcpAppSandboxDocument, mcpAppFrameUrlAllowed, mcpAppHistoryText, parseMcpAppRecord } from '../mcpApps.js';
 describe('MCP Apps cross-platform document contract', () => {
+  function proxy(resourceUrl: string, requestedUrl = resourceUrl) {
+    const frame = { setAttribute() {}, style: {}, src: '', srcdoc: '' };
+    let receive!: (event: unknown) => void;
+    let mounted = false;
+    const window = {
+      location: { href: 'http://127.0.0.1:5002/proxy.html' },
+      parent: { postMessage() {} },
+      addEventListener: (name: string, listener: (event: unknown) => void) => {
+        if (name === 'message') receive = listener;
+      },
+    };
+    const document = { createElement: () => frame, body: { appendChild: () => { mounted = true; } } };
+    const html = mcpAppSandboxDocument('', resourceUrl);
+    const script = html.slice(html.indexOf('<script>') + 8, html.indexOf('</script>'));
+    new Script(script).runInNewContext({ window, document, URL });
+    receive({ source: window.parent, data: { jsonrpc: '2.0',
+      method: 'ui/notifications/sandbox-resource-ready',
+      params: { resourceUrl: requestedUrl, html: '<script>untrusted</script>' } } });
+    return { frame, mounted };
+  }
+  it('pins the proxy resource URL to its Host-generated cross-origin document', () => {
+    const result = proxy('http://127.0.0.1:5001/resource.html', 'http://127.0.0.1:5002/attack.html');
+    expect(result.mounted).toBe(true);
+    expect(result.frame.src).toBe('http://127.0.0.1:5001/resource.html');
+    expect(result.frame.srcdoc).toBe('');
+  });
+  it.each(['http://127.0.0.1:5002/app.html', 'javascript:alert(1)', 'file:///private'])
+    ('refuses a same-origin or privileged resource URL: %s', (url) => {
+      expect(proxy(url).mounted).toBe(false);
+    });
   it('escapes native bridge keys without changing their JavaScript value', () => {
     const key = '</script><script>attack</script>';
     const html = mcpAppSandboxDocument(key);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handleMcpAppOperation } from '../operations.js';
+import { handleMcpAppOperation, handleMcpAppFrameOperation } from '../operations.js';
 import type { McpAppsHost } from '../host.js';
 function fixture() {
   const document = { viewId: 'view', html: '<!doctype html>', csp: '', prefersBorder: true };
@@ -34,7 +34,7 @@ describe('task-bound MCP App operations', () => {
         { op: 'open', clientId: 'card', context: { theme: 'dark' } },
         f.local,
       ),
-    ).toBe(f.document);
+    ).toEqual({ ...f.document, transport: 'sandbox' });
     expect(f.api.open).toHaveBeenCalledWith('renderer:1', 'task', 'card', { theme: 'dark' }, undefined);
     expect(f.local.supply).toHaveBeenCalledWith(f.document, 'renderer:1');
     await handleMcpAppOperation(f.host, 'device:phone', 'task', {
@@ -52,6 +52,26 @@ describe('task-bound MCP App operations', () => {
     expect(f.api.linkResult).toHaveBeenCalledWith('device:phone', 'task', 'view', 'link', false);
     await handleMcpAppOperation(f.host, 'device:phone', 'task', { op: 'cancel-open', openId: 'attempt' });
     expect(f.api.cancelOpen).toHaveBeenCalledWith('device:phone', 'task', 'attempt');
+  });
+  it.each([
+    { op: 'message', viewId: 'view', message: { jsonrpc: '2.0', id: 1, method: 'tools/call' } },
+    { op: 'poll', viewId: 'view' },
+    { op: 'link-result', viewId: 'view', linkId: 'link', success: true },
+  ])('rejects top-Renderer access to the App transport: %j', async (input) => {
+    const f = fixture();
+    await expect(handleMcpAppOperation(f.host, 'renderer:1', 'task', input, f.local))
+      .rejects.toThrow('MCP_APP_FRAME_REQUIRED');
+    Object.values(f.api).forEach((call) => expect(call).not.toHaveBeenCalled());
+  });
+  it('binds frame messages to the Main-held View and limits the channel to transport operations', async () => {
+    const f = fixture();
+    const message = { jsonrpc: '2.0', id: 1, method: 'tools/list' };
+    await handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', 'view',
+      { op: 'message', viewId: 'forged-view', sessionId: 'forged-task', message }, f.local.openLink);
+    expect(f.api.dispatch).toHaveBeenCalledWith('renderer:1', 'task', 'view', message);
+    await expect(handleMcpAppFrameOperation(f.host, 'renderer:1', 'task', 'view',
+      { op: 'open', clientId: 'other-card' }, f.local.openLink)).rejects.toThrow('MCP_APP_INVALID_REQUEST');
+    expect(f.api.open).not.toHaveBeenCalled();
   });
   it.each([
     { op: 'poll', viewId: 'view', after: -1 },

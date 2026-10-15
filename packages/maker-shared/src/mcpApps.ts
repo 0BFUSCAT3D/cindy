@@ -29,6 +29,8 @@ export interface McpAppRecord {
 }
 export interface McpAppDocument {
   viewId: string;
+  /** Local Desktop only: the Main-authenticated proxy owns both RPC directions. */
+  transport?: 'sandbox';
   html: string;
   csp: string;
   prefersBorder: boolean;
@@ -91,20 +93,28 @@ window.addEventListener('message',event=>{
  }
  if(event.source!==window.parent&&event.source!==window)return;
  if(message.method==='ui/notifications/sandbox-resource-ready'){
-  if(loaded)return;loaded=true;
-  if(message.params.resourceUrl){frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=message.params.resourceUrl;}
+  if(loaded)return;
+  const resourceUrl=typeof expectedResourceUrl==='string'?expectedResourceUrl:message.params.resourceUrl;
+  if(resourceUrl){
+   const resource=new URL(resourceUrl),proxy=new URL(window.location.href);
+   if(!['http:','https:','cindy-mcp-app:'].includes(resource.protocol)||resource.username||resource.password||
+    resource.protocol===proxy.protocol&&resource.host===proxy.host)return;
+   frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=resource.href;
+  }
   else{frame.srcdoc=message.params.html;}
+  loaded=true;
   document.body.appendChild(frame);return;
  }
  frame.contentWindow?.postMessage(message,'*');
 });
 post({jsonrpc:'2.0',method:'ui/notifications/sandbox-proxy-ready',params:{}});
 `;
-export function mcpAppSandboxDocument(nativeBridgeKey = ''): string {
+export function mcpAppSandboxDocument(nativeBridgeKey = '', resourceUrl?: string): string {
   const key = JSON.stringify(nativeBridgeKey).replace(/</g, '\\u003c');
-  return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}</style></head><body><script>const bridgeKey=${key};${MCP_APP_SANDBOX_SCRIPT}</script></body></html>`;
+  const resource = JSON.stringify(resourceUrl ?? null).replace(/</g, '\\u003c');
+  return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}</style></head><body><script>const bridgeKey=${key};const expectedResourceUrl=${resource};${MCP_APP_SANDBOX_SCRIPT}</script></body></html>`;
 }
-/** Native WebViews cannot serve headers; CSP precedes every byte of App content. */
+/** Legacy inline wrapper; served native Views receive CSP headers from their resource server. */
 export function mcpAppNativeResource(html: string, csp: string): string {
   const escaped = csp.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${escaped}">${html}`;

@@ -43,6 +43,12 @@ Host capabilities；不支持的调用明确失败，不静默丢内容。工具
 这项授权只适用于资源的后代 frame；App 自身和外层 proxy 仍保持原导航边界。
 未声明域、不同协议、其他 App 的供片地址和本地文件不会因此获得访问权限。
 
+本机 Desktop 的 App RPC 双向传输由可信 proxy 直接发给 Main，不经过顶层 Renderer。
+Main 按 Chromium 的真实请求 frame、所属窗口、账号与供片记录验证通道，内部鉴别值不进入
+HTML、preload 返回值或 JavaScript Request。顶层 Renderer 的 message/poll/link-result
+操作被拒绝；它只观察初始化、尺寸、显示模式等界面状态，不能伪造 App 调用或 Host 结果。
+回归见 `sandboxProtocol.test.ts`、`sandboxBridge.test.ts` 与真实 Electron 沙箱验证。
+
 Mobile 的可信外层 proxy 不跳转页面，App 通过只有 `allow-scripts` 的不透明来源 iframe
 加载；App 与其后代都不能跳转顶层页面或打开弹窗。Android 的 WebView 导航回调没有
 `isTopFrame`，因此声明的 `frameDomains` 仍按域校验，不把缺失字段当成顶层导航；

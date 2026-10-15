@@ -11,11 +11,17 @@ vi.mock('electron', async (original) => {
         ...electron.session.defaultSession,
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
+        webRequest: { onBeforeSendHeaders: vi.fn((_filter: unknown, listener: typeof state.beforeHeaders) => {
+          state.beforeHeaders = listener;
+        }) },
       },
     },
   };
 });
-const state = vi.hoisted(() => ({ owner: {} as object | null }));
+const state = vi.hoisted(() => ({ owner: {} as object | null,
+  beforeHeaders: undefined as ((details: Electron.OnBeforeSendHeadersListenerDetails,
+    callback: (response: Electron.BeforeSendResponse) => void) => void) | undefined,
+}));
 vi.mock('../../localDb/client/current.js', () => ({
   getCurrentDbClientSnapshot: () => state.owner,
 }));
@@ -42,6 +48,52 @@ const document = {
   prefersBorder: true,
 };
 describe('MCP App local protocol isolation', () => {
+  it('authenticates the real sandbox frame, never the top Renderer or a forged channel key', async () => {
+    let handler!: (request: Request) => Promise<Response> | Response;
+    vi.spyOn(protocol, 'handle').mockImplementation((_scheme, callback) => { handler = callback; });
+    registerMcpAppProtocol();
+    const beforeHeaders = state.beforeHeaders!;
+    const invoke = vi.fn(async () => ({ ok: true }));
+    supplyMcpAppDocument(document, 'renderer:1', invoke);
+    const frame = { url: 'cindy-mcp-app://untrusted-id/sandbox' };
+    const details = { url: 'cindy-mcp-app://untrusted-id/bridge', method: 'POST',
+      webContentsId: 1, frame, requestHeaders: { 'x-cindy-mcp-app-frame': 'forged' } };
+    for (const invalid of [null, { url: 'file:///host.html' },
+      { url: 'cindy-mcp-app://untrusted-id-view/resource' }]) {
+      const callback = vi.fn();
+      beforeHeaders({ ...details, frame: invalid } as never, callback);
+      expect(callback).toHaveBeenCalledWith({ cancel: true });
+    }
+    const otherWindow = vi.fn();
+    beforeHeaders({ ...details, webContentsId: 2 } as never, otherWindow);
+    expect(otherWindow).toHaveBeenCalledWith({ cancel: true });
+    const callback = vi.fn();
+    beforeHeaders(details as never, callback);
+    const headers = callback.mock.calls[0][0].requestHeaders;
+    expect(headers['X-Cindy-Mcp-App-Frame']).not.toBe('forged');
+    expect(headers['x-cindy-mcp-app-frame']).toBeUndefined();
+    const request = (key: string) => new Request(details.url, { method: 'POST',
+      headers: { 'X-Cindy-Mcp-App-Frame': key }, body: JSON.stringify({ op: 'message', message: {} }) });
+    expect((await handler(request('forged'))).status).toBe(403);
+    expect(invoke).not.toHaveBeenCalled();
+    const html = await (await handler(new Request('cindy-mcp-app://untrusted-id/sandbox'))).text();
+    expect(html).not.toContain(headers['X-Cindy-Mcp-App-Frame']);
+    const response = await handler(request(headers['X-Cindy-Mcp-App-Frame']));
+    expect(await response.json()).toEqual({ ok: true });
+    expect(invoke).toHaveBeenCalledOnce();
+    frame.url = 'https://navigated.example.org';
+    expect((await handler(request(headers['X-Cindy-Mcp-App-Frame']))).status).toBe(403);
+    expect(invoke).toHaveBeenCalledOnce();
+    frame.url = 'cindy-mcp-app://untrusted-id/sandbox';
+    const oversized = new Request(details.url, { method: 'POST',
+      headers: { 'X-Cindy-Mcp-App-Frame': headers['X-Cindy-Mcp-App-Frame'] },
+      body: 'x'.repeat(4 * 1024 * 1024 + 1) });
+    expect((await handler(oversized)).status).toBe(400);
+    expect(invoke).toHaveBeenCalledOnce();
+    state.owner = {};
+    expect((await handler(request(headers['X-Cindy-Mcp-App-Frame']))).status).toBe(404);
+    expect(invoke).toHaveBeenCalledOnce();
+  });
   it('installs both permission handlers and denies App and opaque subframe requests', () => {
     registerMcpAppProtocol();
     const request = vi

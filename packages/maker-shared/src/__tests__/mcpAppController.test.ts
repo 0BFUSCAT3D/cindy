@@ -24,6 +24,24 @@ function fixture(poll: () => Promise<unknown> = never) {
   return { controller, invoke, post, state, error, link };
 }
 describe('MCP App transport lifecycle', () => {
+  it('keeps local Desktop RPC out of the Renderer while retaining UI state and Host-owned teardown', async () => {
+    const f = fixture();
+    f.invoke.mockImplementation(async (_session, input) => input.op === 'open'
+      ? { ...document, transport: 'sandbox' } : {});
+    await f.controller.open({});
+    f.controller.sandboxReady('cindy-mcp-app://forged/resource');
+    f.controller.receive({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {} });
+    f.controller.receive({ jsonrpc: '2.0', method: 'ui/notifications/initialized' });
+    f.controller.receive({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: 420 } });
+    expect(f.invoke.mock.calls.map(([, input]) => input.op)).toEqual(['open']);
+    expect(f.post).not.toHaveBeenCalled();
+    expect(f.state.mock.calls.map(([message]) => message.method)).toEqual([
+      'ui/notifications/initialized', 'ui/notifications/size-changed',
+    ]);
+    f.controller.prepareNativeClose();
+    await f.controller.close();
+    expect(f.invoke).toHaveBeenLastCalledWith('task', { op: 'teardown', viewId: 'view', alreadyNotified: false });
+  });
   it('relays initialization and complete HTML only after sandbox ready', async () => {
     const f = fixture();
     await f.controller.open({});

@@ -1,4 +1,4 @@
-import { app, protocol, session, type WebContents } from 'electron';
+import { app, protocol, session, type WebContents, type WebFrameMain } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { getCurrentDbClientSnapshot } from '../localDb/client/current.js';
 import { appCsp, MCP_APPS_MAX_BYTES } from './protocol.js';
@@ -7,17 +7,46 @@ import {
   mcpAppFrameUrlAllowed,
   type McpAppDocument,
 } from '../../shared/mcpApps.js';
+import { mcpAppDirectSandboxDocument } from './sandboxBridge.js';
 
 export const mcpAppSchemePrivilege = {
   scheme: 'cindy-mcp-app',
-  privileges: { standard: true, secure: true, supportFetchAPI: true },
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
 };
+const frameHeader = 'X-Cindy-Mcp-App-Frame';
 const documents = new Map<
   string,
-  { document: McpAppDocument; owner: object | null; caller?: string }
+  {
+    document: McpAppDocument; owner: object | null; caller?: string;
+    bridge?: { key: string; frame?: WebFrameMain; invoke(input: unknown): Promise<unknown> };
+  }
 >();
-export function supplyMcpAppDocument(document: McpAppDocument, caller?: string): void {
-  documents.set(document.viewId, { document, owner: getCurrentDbClientSnapshot(), caller });
+async function readBridgeBody(request: Request): Promise<string> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error('MCP_APP_INVALID_REQUEST');
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MCP_APPS_MAX_BYTES) {
+        await reader.cancel();
+        throw new Error('MCP_APP_MESSAGE_TOO_LARGE');
+      }
+      chunks.push(value);
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+  } finally { reader.releaseLock(); }
+}
+export function supplyMcpAppDocument(
+  document: McpAppDocument, caller?: string, invoke?: (input: unknown) => Promise<unknown>,
+): void {
+  documents.set(document.viewId, {
+    document, owner: getCurrentDbClientSnapshot(), caller,
+    bridge: invoke ? { key: randomUUID(), invoke } : undefined,
+  });
 }
 export function removeMcpAppDocument(id: string): void {
   documents.delete(id);
@@ -51,6 +80,28 @@ export function assertMcpAppDocumentCaller(id: string, caller: string): void {
     throw new Error('MCP_APP_VIEW_UNAVAILABLE');
 }
 export function registerMcpAppProtocol(): void {
+  // Only Chromium's actual requesting frame can acquire this Main-only channel key.
+  // It never appears in HTML, a renderer IPC response, or a JavaScript Request object.
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['cindy-mcp-app://*/*'] },
+    (details, callback) => {
+      const url = new URL(details.url);
+      if (url.pathname !== '/bridge') { callback({ requestHeaders: details.requestHeaders }); return; }
+      const entry = documents.get(url.hostname);
+      const frame = details.frame;
+      if (details.method !== 'POST' || !entry?.bridge || !frame ||
+        entry.owner !== getCurrentDbClientSnapshot() ||
+        entry.caller !== `renderer:${details.webContentsId}` ||
+        frame.url !== `cindy-mcp-app://${url.hostname}/sandbox` ||
+        (entry.bridge.frame && entry.bridge.frame !== frame)) {
+        callback({ cancel: true }); return;
+      }
+      entry.bridge.frame = frame;
+      const headers = Object.fromEntries(Object.entries(details.requestHeaders)
+        .filter(([key]) => key.toLowerCase() !== frameHeader.toLowerCase()));
+      callback({ requestHeaders: { ...headers, [frameHeader]: entry.bridge.key } });
+    },
+  );
   // The main window shares the default session. Preserve its existing permission
   // behavior, but never grant undeclared capabilities to an App or its descendants.
   session.defaultSession.setPermissionRequestHandler((contents, _permission, callback, details) => {
@@ -120,13 +171,30 @@ export function registerMcpAppProtocol(): void {
       if (!isMcpAppFrameNavigationAllowed(source, event.url, nestedDomains)) event.preventDefault();
     });
   });
-  protocol.handle('cindy-mcp-app', (request) => {
+  protocol.handle('cindy-mcp-app', async (request) => {
     const url = new URL(request.url);
     const id = url.hostname.replace(/-view$/, '');
     const entry = documents.get(id);
     const doc = entry?.document;
-    if (!doc || entry?.owner !== getCurrentDbClientSnapshot() || request.method !== 'GET')
+    if (!doc || entry?.owner !== getCurrentDbClientSnapshot())
       return new Response(null, { status: 404 });
+    if (url.pathname === '/bridge' && url.hostname === id) {
+      const bridge = entry.bridge;
+      if (request.method !== 'POST' || !bridge ||
+        request.headers.get(frameHeader) !== bridge.key ||
+        bridge.frame?.url !== `cindy-mcp-app://${id}/sandbox`)
+        return new Response(null, { status: 403 });
+      try {
+        const text = await readBridgeBody(request);
+        // The document can be revoked while its body is arriving.
+        if (documents.get(id) !== entry || entry.owner !== getCurrentDbClientSnapshot())
+          return new Response(null, { status: 403 });
+        return Response.json(await bridge.invoke(JSON.parse(text)), { headers: { 'Cache-Control': 'no-store' } });
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+    }
+    if (request.method !== 'GET') return new Response(null, { status: 404 });
     const isSandbox = url.pathname === '/sandbox';
     if (
       isSandbox
@@ -134,12 +202,17 @@ export function registerMcpAppProtocol(): void {
         : url.pathname !== '/resource' || url.hostname !== `${id}-view`
     )
       return new Response(null, { status: 404 });
-    return new Response(isSandbox ? mcpAppSandboxDocument() : doc.html, {
+    const resourceUrl = `cindy-mcp-app://${id}-view/resource`;
+    return new Response(isSandbox
+      ? entry.bridge
+        ? mcpAppDirectSandboxDocument(resourceUrl, `cindy-mcp-app://${id}/bridge`)
+        : mcpAppSandboxDocument('', resourceUrl)
+      : doc.html, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
         'Content-Security-Policy': isSandbox
-          ? `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src cindy-mcp-app://${id}-view; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`
+          ? `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src cindy-mcp-app://${id}-view; connect-src ${entry.bridge ? "'self'" : "'none'"}; object-src 'none'; base-uri 'none'; form-action 'none'`
           : doc.csp,
         'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), clipboard-write=()',
         'X-Content-Type-Options': 'nosniff',

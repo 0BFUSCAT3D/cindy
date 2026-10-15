@@ -15,6 +15,9 @@ App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必�
 撤销后旧操作失效。轮询可有界重试，工具调用、消息发送与创建申请不自动重放。
 远程外链动作单独传给控制端，在当前查看设备打开，不在执行电脑打开。
 兼容矩阵、可选能力声明与验证入口见 [MCP Apps 接入](../mcp-apps.md)。
+本机 Desktop 的 open 结果可选携带 `transport: "sandbox"`，只用于同版本 Main/Renderer
+切换到 Main 验证真实 frame 的直连通道，不向远程设备返回该字段。远程 v1 消息与原有
+channel 不变。
 
 > **状态**：权威开发规则（authoritative）
 > **读取时机**：修改插件分发来源边界、device-link 协议／relay／隧道 payload／IPC

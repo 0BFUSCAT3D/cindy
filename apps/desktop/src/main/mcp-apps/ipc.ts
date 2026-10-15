@@ -14,7 +14,7 @@ import { getDeviceLinkInvokeContext } from '../device-link/invoke-context.js';
 import { McpAppsHost, type McpAppsHostDeps } from './host.js';
 import { readAppServer, setMcpAppsHost } from './runtime.js';
 import { MCP_APPS_INVOKE, parseMcpAppRecord } from '../../shared/mcpApps.js';
-import { handleMcpAppOperation } from './operations.js';
+import { handleMcpAppOperation, handleMcpAppFrameOperation } from './operations.js';
 import {
   supplyMcpAppDocument,
   removeMcpAppDocument,
@@ -159,7 +159,11 @@ export function registerMcpAppsIpc(
         remote
           ? undefined
           : {
-              supply: supplyMcpAppDocument,
+              supply: (document, boundCaller) => supplyMcpAppDocument(document, boundCaller, (input) =>
+                handleMcpAppFrameOperation(host, boundCaller, sessionId, document.viewId, input, async (url) => {
+                  assertMcpAppDocumentCaller(document.viewId, boundCaller);
+                  await shell.openExternal(url);
+                })),
               mount: mountRemoteAppDocument,
               unmount: unmountRemoteAppDocument,
               assertCaller: assertMcpAppDocumentCaller,

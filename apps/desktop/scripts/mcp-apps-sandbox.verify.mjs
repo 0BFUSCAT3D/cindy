@@ -111,6 +111,7 @@ try {
     import { McpAppsHost, appServerRevision } from '../src/main/mcp-apps/host.ts';
     import { AppConnection } from '../src/main/mcp-apps/connection.ts';
     import { appCsp } from '../src/main/mcp-apps/protocol.ts';
+    import { handleMcpAppOperation, handleMcpAppFrameOperation } from '../src/main/mcp-apps/operations.ts';
     import { mcpAppSchemePrivilege, registerMcpAppProtocol, supplyMcpAppDocument, removeMcpAppDocument } from '../src/main/mcp-apps/sandboxProtocol.ts';
     app.setPath('userData',process.env.CINDY_MCP_APP_TEST_DIR+'/profile');
     protocol.registerSchemesAsPrivileged([mcpAppSchemePrivilege]);
@@ -135,13 +136,11 @@ try {
       registerMcpAppProtocol();
       ipcMain.handle('test:mcp-app',async(event,input)=>{
         assert.equal(event.senderFrame,event.sender.mainFrame);
-        if(input.op==='open'){const doc=await host.open('renderer:1','task','card',input.context);supplyMcpAppDocument(doc);return doc;}
-        if(input.op==='poll')return host.poll('renderer:1','task',input.viewId,input.after).catch(error=>{if(error.message==='MCP_APP_VIEW_UNAVAILABLE')return [];throw error;});
-        if(input.op==='message')return host.dispatch('renderer:1','task',input.viewId,input.message);
-        if(input.op==='context')return host.context('renderer:1','task',input.viewId,input.context);
-        if(input.op==='display-mode')return host.displayMode('renderer:1','task',input.viewId,input.mode);
-        if(input.op==='teardown')return host.teardown('renderer:1','task',input.viewId,input.alreadyNotified);
-        throw new Error('Unexpected test operation');
+        const caller='renderer:'+event.sender.id;
+        return handleMcpAppOperation(host,caller,'task',input,{
+          supply:(doc)=>supplyMcpAppDocument(doc,caller,raw=>handleMcpAppFrameOperation(host,caller,'task',doc.viewId,raw,async()=>{})),
+          mount:()=>{throw new Error('Unexpected mount');},unmount:()=>{},assertCaller:()=>{},openLink:async()=>{},
+        });
       });
       window=new BrowserWindow({show:false,width:800,height:700,webPreferences:{preload:process.env.CINDY_MCP_APP_TEST_DIR+'/preload.cjs',sandbox:true,contextIsolation:true,nodeIntegration:false,nodeIntegrationInSubFrames:false,nodeIntegrationInWorker:false,webSecurity:true,allowRunningInsecureContent:false,experimentalFeatures:false,plugins:false,navigateOnDragDrop:false}});
       window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -149,6 +148,8 @@ try {
       try { await wait(()=>window.webContents.executeJavaScript('window.testState.initialized===true')); }
       catch (error) { console.log('Frame state',window.webContents.mainFrame.framesInSubtree.map(frame=>frame.url),await window.webContents.executeJavaScript('window.testState')); throw error; }
       const inner=()=>window.webContents.mainFrame.framesInSubtree.find(frame=>frame.url.includes('-view/resource'));
+      assert.equal(await window.webContents.executeJavaScript(
+        "window.testHost.invoke({op:'message',viewId:window.testController.document.viewId,message:{jsonrpc:'2.0',id:'forged',method:'tools/list'}}).then(()=>false,()=>true)"),true);
       stage='tool input and result';
       await wait(()=>inner()?.executeJavaScript(independent?"document.querySelector('#status').textContent==='Metrics ready'":"document.querySelector('#status').textContent.includes('核对')"));
       if(independent){
