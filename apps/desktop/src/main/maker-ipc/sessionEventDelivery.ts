@@ -55,6 +55,11 @@ export interface DeliverSessionEventDeps {
   readonly refreshRemoteCodexMcpOnTurnSettledHolder: ((sessionId: string) => void) | null;
   readonly markTurnEndedAfterPersistDrain: (sessionId: string) => void;
   readonly gitSnapshotCoordinator: Pick<GitSnapshotCoordinator, 'onTurnEnd' | 'onTurnAbort'> | null;
+  /**
+   * 智能体回合因 Cindy AI Key 失效终止时调用(按本机当前 Key 上报,触发凭据重新同步)。
+   * 智能体不会回报自己用的是哪把 Key。
+   */
+  readonly reportAgentCindyGatewayKeyRejected?: () => void;
 }
 
 export function deliverSessionEvent(
@@ -77,6 +82,9 @@ export function deliverSessionEvent(
   } = prepared;
   let { persistId } = stream;
   const { resolvedContent } = stream;
+  // 所有会话的终态事件都经过这里(不受 Agent Island 的会话过滤影响):回合因 Cindy AI
+  // Key 失效结束时,让 model-access 重新拉取凭据。判定复用 isGatewayProxyTokenRecoveryErrorEvent。
+  if (isGatewayProxyTokenRecovery) deps.reportAgentCindyGatewayKeyRejected?.();
   // 先 broadcast 保 UI 实时性,再 flush(flush 只入队、不阻塞)。
   // Keep the raw event for main-side coordination/persistence, but only
   // cross renderer/device-link boundaries with the redacted copy.

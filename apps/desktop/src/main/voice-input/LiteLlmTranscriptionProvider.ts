@@ -1,6 +1,7 @@
 import type { AsrEvent, AsrProvider } from '@cindy/voice-input-core';
 
 import { outboundFetch } from '../maker-host/outbound-fetch.js';
+import { reportCindyGatewayKeyRejected } from '../model-access/gatewayKeyRejection.js';
 import { elevenLabsLanguageCode } from './language.js';
 
 type LiteLlmTranscriptionProviderOptions = {
@@ -123,6 +124,8 @@ export async function transcribeLiteLlmAudioFile(input: LiteLlmAudioFileTranscri
   }
 
   if (!response.ok) {
+    // proxyApiKey is the Cindy AI key sent to the Cindy gateway.
+    if (response.status === 401) reportCindyGatewayKeyRejected(input.proxyApiKey);
     throw new Error(transcriptionErrorMessage(parsed, text, response.status));
   }
 
