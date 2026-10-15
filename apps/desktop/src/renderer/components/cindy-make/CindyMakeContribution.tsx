@@ -172,13 +172,28 @@ export function CindyMakeContributionDialog({
     setSubmitting(true);
     setSubmitError(undefined);
     try {
-      const view = await invoke({ action: 'submit', runId, title, body, name, email });
+      const view = await invoke({
+        action: 'submit',
+        runId,
+        snapshotId: draft.snapshotId,
+        title,
+        body,
+        name,
+        email,
+      });
       if (!isDataOwnerGenerationCurrent(owner.current)) return;
       toast.success(t(`${key}.submitted`, { number: view.number }));
       onSubmitted(view);
       onOpenChange(false);
     } catch (error) {
-      if (mounted.current) setSubmitError(contributionError(error));
+      if (mounted.current && isDataOwnerGenerationCurrent(owner.current)) {
+        const reason = contributionError(error);
+        if (reason === 'changed') {
+          setSigned(false);
+          setDraft(undefined);
+          setLoadError(reason);
+        } else setSubmitError(reason);
+      }
     } finally {
       busy.current = false;
       if (mounted.current) setSubmitting(false);

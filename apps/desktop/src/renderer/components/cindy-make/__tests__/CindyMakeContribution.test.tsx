@@ -35,6 +35,7 @@ async function i18nFor(locale: string, resource: object) {
 
 const draft: CindyMakeContributionDraft = {
   runId: 'run-1',
+  snapshotId: 'confirmed-snapshot',
   title: 'feat: 加一个按钮',
   body: '## 这次改了什么',
   name: 'Ada',
@@ -106,6 +107,7 @@ describe('CindyMakeContributionDialog', () => {
     expect(invoke).toHaveBeenLastCalledWith({
       action: 'submit',
       runId: 'run-1',
+      snapshotId: draft.snapshotId,
       title: draft.title,
       body: draft.body,
       name: 'Ada',
@@ -150,6 +152,24 @@ describe('CindyMakeContributionDialog', () => {
     expect(
       (screen.getByRole('button', { name: copy.dialog.submit }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  it('withdraws an expired confirmation instead of resubmitting unseen content', async () => {
+    const invoke = vi.fn(async (request: { action: string }) => {
+      if (request.action === 'draft') return { ...draft, email: 'ada@example.com' };
+      throw new Error('[PRECONDITION_FAILED] changed');
+    });
+    const { onOpenChange, onSubmitted } = await renderDialog(invoke);
+    await screen.findByDisplayValue(draft.title);
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: copy.dialog.submit }));
+    expect((await screen.findByRole('alert')).textContent).toBe(copy.errors.changed);
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('button', { name: copy.dialog.submit })).toBeNull();
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: copy.dialog.close }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it('opens a new pull request when the earlier one was closed', async () => {

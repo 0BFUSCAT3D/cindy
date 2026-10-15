@@ -15748,6 +15748,7 @@
         "github": "Your GitHub connection is no longer valid. Reconnect GitHub in Settings and try again.",
         "account": "The connected GitHub account isn't the one your personal version is saved to. Switch back and try again.",
         "unavailable": "This change's content is no longer on this computer, so it can't be submitted.",
+        "changed": "Review the submission again. Close this window, reopen it, and check the file list before submitting.",
         "conflict": "This change touches the same place as the latest official code, so it can’t be turned into a submission with only this change. Make the change again on your latest personal version, then submit it.",
         "empty": "The latest official code already includes this change. There is nothing to submit.",
         "invalid": "Check the title, name and email. The title must be a single line.",

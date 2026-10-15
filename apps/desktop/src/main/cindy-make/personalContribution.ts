@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 import {
   CONTRIBUTION_LIMITS,
@@ -88,6 +89,15 @@ export interface ContributionChange {
   request: string;
   baseTree: string;
   tree: string;
+}
+
+interface ContributionSnapshot {
+  scope: string;
+  ledger: string;
+  runId: string;
+  repository: string;
+  login: string;
+  change: ContributionChange;
 }
 
 export interface ContributionDeps {
@@ -209,6 +219,8 @@ export function contributionBody(input: {
  */
 export class PersonalContribution {
   private statusCache: { at: number; states: Map<number, CindyMakeContributionState> } | undefined;
+  /** Only Main can issue a confirmation for the exact source shown in a draft. */
+  private readonly snapshots = new Map<string, ContributionSnapshot>();
 
   constructor(private readonly deps: ContributionDeps) {}
 
@@ -254,7 +266,25 @@ export class PersonalContribution {
     if (!change || !HASH.test(change.baseTree) || !HASH.test(change.tree))
       throw fail('unavailable');
     if (change.baseTree === change.tree) throw fail('empty');
-    return change;
+    return { ...change };
+  }
+
+  private assertSnapshot(snapshot: ContributionSnapshot): void {
+    this.assertScope(snapshot.scope);
+    const binding = this.deps.binding();
+    const current = this.deps.change(snapshot.runId);
+    if (
+      this.deps.ledgerPath() !== snapshot.ledger ||
+      binding.choice !== 'github' ||
+      binding.repository?.toLowerCase() !== snapshot.repository.toLowerCase() ||
+      !sameGithubLogin(binding.login, snapshot.login) ||
+      !current ||
+      current.baseTree !== snapshot.change.baseTree ||
+      current.tree !== snapshot.change.tree ||
+      current.title !== snapshot.change.title ||
+      current.request !== snapshot.change.request
+    )
+      throw fail('changed');
   }
 
   private git(args: string[], options?: PersonalRemoteGitOptions): Promise<string> {
@@ -345,8 +375,16 @@ export class PersonalContribution {
     this.assertScope(scope);
     const existing = this.deps.readStore(ledger)[runId];
     const state = existing && (await this.pullState(existing, githubHeaders(identity.token)));
+    const snapshot = { scope, ledger, runId, repository, login: identity.login, change };
+    this.assertSnapshot(snapshot);
+    const snapshotId = randomUUID();
+    this.snapshots.set(snapshotId, snapshot);
+    // A closed dialog need not retain its confirmation forever. Evicted drafts
+    // fail closed and can be reopened; no source or author data is persisted here.
+    if (this.snapshots.size > 64) this.snapshots.delete(this.snapshots.keys().next().value!);
     return {
       runId,
+      snapshotId,
       title,
       body: contributionBody({ title, request: change.request, files, touchesUi }),
       ...author,
@@ -402,6 +440,7 @@ export class PersonalContribution {
 
   async submit(input: {
     runId: string;
+    snapshotId: string;
     title: string;
     body: string;
     name: string;
@@ -423,14 +462,22 @@ export class PersonalContribution {
       throw fail('invalid');
     const scope = this.deps.ownerScope();
     const ledger = this.deps.ledgerPath();
+    const snapshot = this.snapshots.get(input.snapshotId);
+    if (!snapshot || snapshot.runId !== input.runId) throw fail('changed');
+    this.assertSnapshot(snapshot);
     const { repository, identity } = await this.requireBinding();
-    const change = this.requireChange(input.runId, scope);
+    if (
+      repository.toLowerCase() !== snapshot.repository.toLowerCase() ||
+      !sameGithubLogin(identity.login, snapshot.login)
+    )
+      throw fail('changed');
+    const change = snapshot.change;
     const auth = { repository, token: identity.token };
     return this.deps.withSourceUse(async () => {
       // 1. What an earlier submission's branch may receive is decided *before* any
       //    Git work: a pull request the maintainers closed keeps its branch and its
       //    commits exactly as they are, and the resubmission starts a new branch.
-      this.assertScope(scope);
+      this.assertSnapshot(snapshot);
       const store = this.deps.readStore(ledger);
       const existing = store[input.runId];
       const prior = existing
@@ -503,8 +550,12 @@ export class PersonalContribution {
         // 5. Push the branch to the author's fork, never rewriting an earlier one.
         this.assertScope(scope);
         const base = `cindy-make-pr/${input.runId.slice(0, 36)}`;
-        const push = (branch: string, lease: string) =>
-          this.git(
+        const push = (branch: string, lease: string) => {
+          // A task can finish another round while this operation awaits Git or
+          // GitHub, including while it waits for the source lock or retries a
+          // taken branch name. Never publish beyond the confirmed snapshot.
+          this.assertSnapshot(snapshot);
+          return this.git(
             [
               'push',
               '--porcelain',
@@ -516,7 +567,9 @@ export class PersonalContribution {
             ],
             { auth },
           );
+        };
         const pushFailed = (error: unknown) => {
+          if (error instanceof ContributionError) return error;
           const code = classifyRemoteGitError(error);
           return fail(
             code === 'workflowScope' || code === 'github' || code === 'network' ? code : 'failed',
@@ -530,6 +583,7 @@ export class PersonalContribution {
           try {
             await push(branch, updating.commit);
           } catch (error) {
+            if (error instanceof ContributionError) throw error;
             if (classifyRemoteGitError(error) !== 'failed') throw pushFailed(error);
             // The lease only fails when the branch moved; retry once if it no longer exists.
             const current = await this.git(
@@ -582,6 +636,7 @@ export class PersonalContribution {
               branch = candidate;
               break;
             } catch (error) {
+              if (error instanceof ContributionError) throw error;
               // The name is taken — for example by the earlier submission's own
               // branch, which is never rewritten — or the push failed; a taken
               // name is retried under a new one.

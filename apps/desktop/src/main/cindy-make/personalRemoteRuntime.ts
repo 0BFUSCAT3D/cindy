@@ -359,6 +359,8 @@ export async function actCindyMakeContribution(
   if (typeof input.runId !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(input.runId))
     throwIpcError('INVALID_PARAMS', 'Invalid contribution change');
   const runId = input.runId;
+  if (input.action === 'submit' && !textField(input.snapshotId, 128))
+    throwIpcError('PRECONDITION_FAILED', 'changed');
   const submit =
     input.action === 'submit' &&
     textField(input.title, CONTRIBUTION_LIMITS.title) &&
@@ -372,6 +374,7 @@ export async function actCindyMakeContribution(
       ? await service.draft(runId)
       : await service.submit({
           runId,
+          snapshotId: input.snapshotId as string,
           title: input.title as string,
           body: input.body as string,
           name: input.name as string,

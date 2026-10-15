@@ -13,6 +13,13 @@ import { PersonalRemoteError } from '../personalRemote';
 const TOKEN = 'gho_fake-token-for-tests';
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
+
+async function fakeDiff(args: string[]): Promise<string> {
+  const output = args.find((arg) => arg.startsWith('--output='));
+  if (args.includes('--name-only') && output)
+    await writeFile(output.slice('--output='.length), 'app.txt\0');
+  return '';
+}
 const record = (runId: string, number: number): ContributionRecord => ({
   runId,
   number,
@@ -101,6 +108,102 @@ describe('contributionBody', () => {
 });
 
 describe('PersonalContribution', () => {
+  it('rejects a submission when the recorded source changed after the draft was shown', async () => {
+    const change = { title: 'reviewed', request: 'reviewed', baseTree: A, tree: B };
+    const { contribution, deps } = harness({ change: () => change });
+    const draft = await contribution.draft('run');
+    vi.mocked(deps.git).mockClear();
+    // Mutating the original record must not mutate the issued confirmation.
+    change.tree = 'c'.repeat(40);
+    await expect(contribution.submit({ ...draft, email: 'ada@example.com' })).rejects.toMatchObject(
+      { code: 'changed' },
+    );
+    expect(deps.git).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'forged', 'another run'] as const)(
+    'requires the exact Main-issued confirmation: %s',
+    async (kind) => {
+      const { contribution, deps } = harness();
+      const draft = await contribution.draft('run');
+      vi.mocked(deps.git).mockClear();
+      await expect(
+        contribution.submit({
+          ...draft,
+          email: 'ada@example.com',
+          ...(kind === 'another run'
+            ? { runId: 'other' }
+            : {
+                snapshotId: kind === 'missing' ? undefined! : 'not-issued',
+              }),
+        }),
+      ).rejects.toMatchObject({ code: 'changed' });
+      expect(deps.git).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['account', 'fork'] as const)('binds the draft to its %s', async (kind) => {
+    let scope = 'owner-1';
+    let repository = 'octo/cindy';
+    const { contribution, deps } = harness({
+      ownerScope: () => scope,
+      binding: () => ({ schema: 1, choice: 'github', login: 'octo', repository }),
+    });
+    const draft = await contribution.draft('run');
+    vi.mocked(deps.git).mockClear();
+    if (kind === 'account') scope = 'owner-2';
+    else repository = 'octo/another-fork';
+    await expect(contribution.submit({ ...draft, email: 'ada@example.com' })).rejects.toMatchObject(
+      {
+        code: kind === 'account' ? 'account' : 'changed',
+      },
+    );
+    expect(deps.git).not.toHaveBeenCalled();
+  });
+
+  it.each(['source lock', 'commit', 'retry'] as const)(
+    'rechecks the confirmed snapshot after awaiting the %s',
+    async (phase) => {
+      const change = { title: 't', request: 'r', baseTree: A, tree: B };
+      const drift = () => {
+        change.tree = 'c'.repeat(40);
+      };
+      const pushes: string[][] = [];
+      const git = vi.fn(async (args: string[]) => {
+        if (args[0] === 'diff') return fakeDiff(args);
+        if (args[0] === 'rev-parse') return args[1].includes('{tree}') ? A : B;
+        if (args[0] === 'write-tree') return B;
+        if (args.includes('commit-tree')) {
+          if (phase === 'commit') drift();
+          return B;
+        }
+        if (args[0] === 'push') {
+          pushes.push(args);
+          drift();
+          throw new Error('remote ref already exists');
+        }
+        if (args[0] === 'ls-remote') return A + '\trefs/heads/cindy-make-pr/run';
+        return '';
+      });
+      const fetchFn = vi.fn(async () => new Response('[]', { status: 200 }));
+      const { contribution, deps } = harness({
+        change: () => change,
+        git,
+        fetch: fetchFn,
+        gitIdentity: async () => ({ name: 'Ada', email: 'ada@example.com' }),
+        withSourceUse: async (run) => {
+          if (phase === 'source lock') drift();
+          return run();
+        },
+      });
+      const draft = await contribution.draft('run');
+      await expect(contribution.submit(draft)).rejects.toMatchObject({ code: 'changed' });
+      expect(pushes).toHaveLength(phase === 'retry' ? 1 : 0);
+      expect(deps.readStore('ledger.json')).toEqual({});
+      expect(fetchFn).toHaveBeenCalledTimes(phase === 'retry' ? 1 : 0);
+    },
+  );
+
   it('reads every contribution path beyond the Git capture limit before deciding its UI scope', async () => {
     const files = [
       ...Array.from(
@@ -222,7 +325,9 @@ describe('PersonalContribution', () => {
       { title: 'feat: x', body: '', name: 'Ada', email: 'not-an-email' },
       { title: 'feat:\nx', body: '', name: 'Ada', email: 'ada@example.com' },
     ])
-      await expect(contribution.submit({ runId: 'run', ...input })).rejects.toMatchObject({
+      await expect(
+        contribution.submit({ runId: 'run', snapshotId: 'unissued', ...input }),
+      ).rejects.toMatchObject({
         code: 'invalid',
       });
     expect(deps.git).not.toHaveBeenCalled();
@@ -243,7 +348,7 @@ describe('PersonalContribution', () => {
         case 'push':
           return '';
         case 'diff':
-          return args.includes('--name-only') ? 'app.txt\0' : '';
+          return fakeDiff(args);
         case 'ls-files':
           return '';
         case 'rev-parse':
@@ -274,6 +379,7 @@ describe('PersonalContribution', () => {
     });
     await expect(
       contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -300,7 +406,7 @@ describe('PersonalContribution', () => {
         case 'apply':
           return '';
         case 'diff':
-          return args.includes('--name-only') ? 'app.txt\0' : '';
+          return fakeDiff(args);
         case 'ls-files':
           return '';
         case 'rev-parse':
@@ -324,6 +430,7 @@ describe('PersonalContribution', () => {
     });
     await expect(
       contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -360,7 +467,7 @@ describe('PersonalContribution', () => {
         case 'push':
           return '';
         case 'diff':
-          return args.includes('--name-only') ? 'app.txt\0' : '';
+          return fakeDiff(args);
         case 'ls-files':
           return '';
         case 'rev-parse':
@@ -397,6 +504,7 @@ describe('PersonalContribution', () => {
     });
     await expect(
       contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -438,7 +546,7 @@ describe('PersonalContribution', () => {
           scope = 'owner-2';
           return '';
         case 'diff':
-          return args.includes('--name-only') ? 'app.txt\0' : '';
+          return fakeDiff(args);
         case 'ls-files':
           return '';
         case 'rev-parse':
@@ -476,6 +584,7 @@ describe('PersonalContribution', () => {
     });
     await expect(
       contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -503,7 +612,7 @@ describe('PersonalContribution', () => {
         case 'push':
           throw Object.assign(new Error('rejected'), { stderr: ' ! [rejected] stale info' });
         case 'diff':
-          return args.includes('--name-only') ? 'app.txt\0' : '';
+          return fakeDiff(args);
         case 'ls-files':
           return '';
         case 'rev-parse':
@@ -524,6 +633,7 @@ describe('PersonalContribution', () => {
     });
     await expect(
       contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -537,7 +647,8 @@ describe('PersonalContribution', () => {
 
   it('never guesses a new pull request when the earlier state is unknown', async () => {
     let store: Record<string, ContributionRecord> = { run: record('run', 3) };
-    const git = vi.fn(async () => {
+    const git = vi.fn(async (args: string[]) => {
+      if (args[0] === 'diff') return fakeDiff(args);
       throw new Error('unexpected git');
     });
     const fetchFn = vi.fn(async () => {
@@ -552,8 +663,11 @@ describe('PersonalContribution', () => {
         store = structuredClone(next);
       },
     });
+    const { snapshotId } = await contribution.draft('run');
+    git.mockClear();
     await expect(
       contribution.submit({
+        snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -589,7 +703,7 @@ describe('PersonalContribution', () => {
         case 'push':
           return '';
         case 'diff':
-          return args.includes('--name-only') ? 'app.txt\0' : '';
+          return fakeDiff(args);
         case 'ls-files':
           return '';
         case 'rev-parse':
@@ -610,7 +724,7 @@ describe('PersonalContribution', () => {
             number: 3,
             html_url: 'https://github.com/makecindy/cindy/pull/3',
             // Open when the submission checked, closed before it could update.
-            state: reads === 1 ? 'open' : 'closed',
+            state: reads <= 2 ? 'open' : 'closed',
           }),
           { status: 200 },
         );
@@ -628,6 +742,7 @@ describe('PersonalContribution', () => {
     });
     await expect(
       contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',
@@ -672,7 +787,7 @@ describe('PersonalContribution', () => {
           case 'ls-remote':
             return `${HASH_TIP}\trefs/heads/${args.at(-1)}\n`;
           case 'diff':
-            return args.includes('--name-only') ? 'app.txt\0' : '';
+            return fakeDiff(args);
           case 'ls-files':
             return '';
           case 'rev-parse':
@@ -722,6 +837,7 @@ describe('PersonalContribution', () => {
       });
       await expect(
         contribution.submit({
+          snapshotId: (await contribution.draft('run')).snapshotId,
           runId: 'run',
           title: 'feat: x',
           body: '',
@@ -752,6 +868,7 @@ describe('PersonalContribution', () => {
       const refs = new Map(oldBranches.map((branch) => [branch, A]));
       const attempts: string[] = [];
       const git = vi.fn(async (args: string[]) => {
+        if (args[0] === 'diff') return fakeDiff(args);
         if (args.includes('commit-tree') || args[0] === 'write-tree') return B;
         if (args[0] === 'rev-parse') return A;
         if (args[0] === 'ls-remote') {
@@ -794,6 +911,7 @@ describe('PersonalContribution', () => {
       });
       setStore({ run: { ...record('run', 4), branch: 'cindy-make-pr/run-4' } });
       const result = contribution.submit({
+        snapshotId: (await contribution.draft('run')).snapshotId,
         runId: 'run',
         title: 'feat: x',
         body: '',

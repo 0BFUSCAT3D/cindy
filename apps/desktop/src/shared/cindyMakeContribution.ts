@@ -16,6 +16,8 @@ export interface CindyMakeContributionView {
 /** Prefilled pull request; the user reviews and edits every field before submitting. */
 export interface CindyMakeContributionDraft {
   runId: string;
+  /** Opaque Main-issued confirmation, bound to this source, account and fork. */
+  snapshotId: string;
   title: string;
   body: string;
   /** Commit author and DCO sign-off identity. */
@@ -32,7 +34,15 @@ export interface CindyMakeContributionDraft {
 export type CindyMakeContributionRequest =
   | { action: 'status' }
   | { action: 'draft'; runId: string }
-  | { action: 'submit'; runId: string; title: string; body: string; name: string; email: string };
+  | {
+      action: 'submit';
+      runId: string;
+      snapshotId: string;
+      title: string;
+      body: string;
+      name: string;
+      email: string;
+    };
 
 export const CINDY_MAKE_CONTRIBUTION_ERRORS = [
   /** The personal version is not saved to the user's GitHub yet. */
@@ -41,6 +51,8 @@ export const CINDY_MAKE_CONTRIBUTION_ERRORS = [
   'account',
   /** The change or its saved content is no longer available on this computer. */
   'unavailable',
+  /** The shown source or its confirmation is no longer current. Review a new draft. */
+  'changed',
   /** The change does not apply cleanly to the latest official code. */
   'conflict',
   /** The change has no difference from the latest official code. */
