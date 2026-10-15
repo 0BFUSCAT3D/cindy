@@ -3,7 +3,26 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../localDb/client/current.js', () => ({ getDbClient: () => ({ drizzle: {} }) }));
+/**
+ * 最小 drizzle 假链:每次 select() 按顺序弹出一组行;链上任何方法都返回自身并可 await。
+ * 读取路径依次 select:伙伴归属 → 来源消息存活 → 进行中的后台任务。
+ */
+const db = vi.hoisted(() => ({ queue: [] as unknown[][] }));
+vi.mock('../../localDb/client/current.js', () => ({
+  getDbClient: () => ({
+    drizzle: {
+      select: () => {
+        const rows = db.queue.shift() ?? [];
+        const chain: Record<string, unknown> = {
+          then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+            Promise.resolve(rows).then(resolve, reject),
+        };
+        for (const name of ['from', 'innerJoin', 'where', 'limit']) chain[name] = () => chain;
+        return chain;
+      },
+    },
+  }),
+}));
 
 import {
   applyWorkingMemoryProposal,
@@ -12,8 +31,10 @@ import {
   emptyWorkingMemory,
   isWorkingMemoryFresh,
   parseWorkingMemory,
+  pruneWithdrawnWorkingMemoryForSession,
   pruneWorkingMemoryForMessages,
   readBotWorkingMemory,
+  readWorkingMemoryNoteForSession,
   renderWorkingMemory,
   WORKING_MEMORY_HEADING,
   WORKING_MEMORY_LIMITS,
@@ -253,6 +274,48 @@ describe('store', () => {
     await expect(writeBotWorkingMemory(root, 'bot-1', emptyWorkingMemory(), 0)).rejects.toBeInstanceOf(WorkingMemoryRevisionConflict);
     await expect(writeBotWorkingMemory(root, 'bot-1', emptyWorkingMemory(), 1)).resolves.toMatchObject({ revision: 2 });
     expect((await fs.readdir(path.join(root, 'bots', 'bot-1'))).filter((f) => f.includes('.tmp-'))).toEqual([]);
+  });
+
+  it('drops items whose source message was rewound or tombstoned at render time, and prunes them after a rewind', async () => {
+    await writeBotWorkingMemory(
+      root,
+      'bot-1',
+      {
+        ...emptyWorkingMemory(),
+        updatedAt: 1,
+        commitments: [
+          { id: 'c-live', text: '仍在时间线上的承诺', messageId: 'live', updatedAt: 3 },
+          { id: 'c-rewound', text: '被编辑上一条消息撤回的承诺', messageId: 'rewound', updatedAt: 2 },
+          { id: 'c-gone', text: '来源已成墓碑的承诺', messageId: 'tomb', updatedAt: 1 },
+        ],
+        corrections: [{ id: 'x', text: '被撤回轮次里的纠正', messageId: 'rewound', updatedAt: 2 }],
+      },
+      0,
+    );
+    const dbRows = [
+      { clientId: 'live', rewindAt: null, role: 'assistant' },
+      { clientId: 'rewound', rewindAt: 1_700_000_000_000, role: 'user' },
+      { clientId: 'tomb', rewindAt: null, role: 'message_tombstone' },
+    ];
+    // 渲染:伙伴归属 → 来源存活 → 后台任务。
+    db.queue.push([{ botId: 'bot-1' }], dbRows, []);
+    const note = (await readWorkingMemoryNoteForSession('s-bot', root))!;
+    expect(note).toContain('仍在时间线上的承诺');
+    expect(note).not.toContain('撤回');
+    expect(note).not.toContain('墓碑');
+    // 磁盘上还没清;rewind 提交后对账持久清掉。
+    expect((await readBotWorkingMemory(root, 'bot-1'))!.commitments).toHaveLength(3);
+    db.queue.push([{ botId: 'bot-1' }], dbRows);
+    expect(await pruneWithdrawnWorkingMemoryForSession('s-bot', root)).toBe(3);
+    const after = (await readBotWorkingMemory(root, 'bot-1'))!;
+    expect(after.commitments.map((c) => c.id)).toEqual(['c-live']);
+    expect(after.corrections).toEqual([]);
+    expect(after.revision).toBe(2);
+    // 非伙伴主对话:不渲染也不清。
+    db.queue.push([]);
+    expect(await readWorkingMemoryNoteForSession('s-task', root)).toBeNull();
+    db.queue.push([]);
+    expect(await pruneWithdrawnWorkingMemoryForSession('s-task', root)).toBe(0);
   });
 
   it('treats a corrupt or foreign file as no ledger', async () => {

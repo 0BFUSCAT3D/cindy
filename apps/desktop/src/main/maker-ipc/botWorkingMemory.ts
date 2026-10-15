@@ -20,7 +20,7 @@ import path from 'node:path';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current.js';
-import { botDelegations, botProfiles, botSessionLinks, sessions } from '../localDb/schema.js';
+import { botDelegations, botProfiles, botSessionLinks, messages, sessions } from '../localDb/schema.js';
 import { botSkillRootDir } from './botSkillStore.js';
 
 export const WORKING_MEMORY_FILE = 'working-memory.json';
@@ -526,11 +526,40 @@ async function listOpenTasks(botId: string): Promise<WorkingMemoryOpenTask[]> {
   return rows.map((row) => ({ id: row.id, objective: row.objective, status: String(row.status) }));
 }
 
+function sourceMessageIds(memory: BotWorkingMemory): string[] {
+  const ids = new Set<string>();
+  for (const list of [memory.threads, memory.commitments, memory.waiting, memory.corrections, memory.recentlyDone]) {
+    for (const item of list) if (item.messageId) ids.add(item.messageId);
+  }
+  return [...ids];
+}
+
+/**
+ * 账本条目的来源消息里,已经不在会话可见时间线上的那些:被 rewind(含「编辑上一条消息」)
+ * 软删(`rewind_at` 非空)、被删除成墓碑、或根本找不到。这些条目和被删消息产生的条目一样,
+ * 不能再借交接回到新上下文。
+ */
+export async function listWithdrawnSourceMessageIds(
+  sessionId: string,
+  memory: BotWorkingMemory,
+): Promise<Set<string>> {
+  const ids = sourceMessageIds(memory);
+  if (ids.length === 0) return new Set();
+  const rows = await getDbClient()
+    .drizzle.select({ clientId: messages.clientId, rewindAt: messages.rewindAt, role: messages.role })
+    .from(messages)
+    .where(and(eq(messages.sessionId, sessionId), inArray(messages.clientId, ids)));
+  const live = new Set(
+    rows.filter((row) => row.rewindAt === null && row.role !== 'message_tombstone').map((row) => row.clientId),
+  );
+  return new Set(ids.filter((id) => !live.has(id)));
+}
+
 /**
  * 换窗交接 / 压缩后刷新用的渲染段;非伙伴主对话或没有账本时返回 null。
  * 任何读取失败都按"没有账本"处理——账本是增强,不能挡住换窗。
- * `excludeMessageIds`:正在删除的消息,渲染时先把它们产生的条目排除(持久清理在删除
- * 提交后另做,见 pruneWorkingMemoryForSession)。
+ * 渲染前统一排除来源已撤回(rewind / 删除)的条目;`excludeMessageIds` 是正在删除、
+ * 还没落库的那批(持久清理在删除提交后另做,见 pruneWorkingMemoryForSession)。
  */
 export async function readWorkingMemoryNoteForSession(
   sessionId: string,
@@ -542,9 +571,9 @@ export async function readWorkingMemoryNoteForSession(
     if (!botId) return null;
     const stored = await readBotWorkingMemory(userDataDir, botId);
     if (!stored) return null;
-    const memory = opts.excludeMessageIds
-      ? pruneWorkingMemoryForMessages(stored, opts.excludeMessageIds).memory
-      : stored;
+    const withdrawn = await listWithdrawnSourceMessageIds(sessionId, stored).catch(() => new Set<string>());
+    for (const id of opts.excludeMessageIds ?? []) withdrawn.add(id);
+    const memory = withdrawn.size > 0 ? pruneWorkingMemoryForMessages(stored, withdrawn).memory : stored;
     const openTasks = await listOpenTasks(botId).catch(() => []);
     return renderWorkingMemory(memory, { openTasks });
   } catch {
@@ -563,6 +592,27 @@ export async function pruneWorkingMemoryForSession(
     if (botId) await pruneBotWorkingMemoryForMessages(userDataDir, botId, deletedMessageIds);
   } catch {
     /* 账本是增强;清理失败不影响删除本身。 */
+  }
+}
+
+/**
+ * rewind 提交成功后调用:按数据库现状持久清掉来源已撤回的条目。rewind 不返回被软删的
+ * 消息清单,所以直接对账而不是接收 id 列表;失败不抛,渲染时的统一过滤仍兜底。
+ */
+export async function pruneWithdrawnWorkingMemoryForSession(
+  sessionId: string,
+  userDataDir: string,
+): Promise<number> {
+  try {
+    const botId = await resolveCanonicalBotIdForSession(sessionId);
+    if (!botId) return 0;
+    const stored = await readBotWorkingMemory(userDataDir, botId);
+    if (!stored) return 0;
+    const withdrawn = await listWithdrawnSourceMessageIds(sessionId, stored);
+    if (withdrawn.size === 0) return 0;
+    return await pruneBotWorkingMemoryForMessages(userDataDir, botId, withdrawn);
+  } catch {
+    return 0;
   }
 }
 
