@@ -200,6 +200,11 @@ export interface BotDelegationServiceDeps {
    * refusal (not retryable) falls back to the owner's private chat so no result is lost.
    */
   postGroupTaskMessage?: (input: BotGroupTaskPostInput) => Promise<BotGroupTaskPostResult>;
+  /**
+   * Whether a group can carry a teammate's own task messages (a Chat Server room). An old
+   * local-only group cannot: its task's confirmations and result go to the owner's private chat.
+   */
+  groupHasTaskChannel?: (groupId: string) => Promise<boolean>;
   now?: () => number;
   createId?: () => string;
   maxActiveChildren?: number;
@@ -854,7 +859,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
   const groupPostTimers = new Set<ReturnType<typeof setTimeout>>();
   /** Start-card posts still on their way, by task: a later card waits for them (see `afterGroupTaskStart`). */
   const groupStartPosts = new Map<string, Promise<void>>();
-  /** The start card is best effort with backoff; the result message carries the card again. */
+  /**
+   * The 「进行中」 card is posted with backoff for as long as the task runs (a group outage may
+   * outlast any fixed number of tries); `restore` posts it again after a restart. The post is
+   * idempotent by client id, so a card already in the group is never repeated, and a retry
+   * after the task ended stays away. The result message carries the card again.
+   */
   const postGroupTaskStart = (home: { groupId: string }, row: GroupTaskRow, attempt = 0): Promise<void> => {
     const run = (async () => {
       try {
@@ -873,11 +883,10 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       } catch (error) {
         log.warn('Bot task group card deferred', { delegationId: row.id, error: error instanceof Error ? error.message : String(error) });
       }
-      if (attempt >= 6) return;
       const timer = setTimeout(() => {
         groupPostTimers.delete(timer);
         void postGroupTaskStart(home, row, attempt + 1);
-      }, Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** attempt));
+      }, Math.min(MAX_RETRY_DELAY_MS, 1_000 * 2 ** Math.min(attempt, 10)));
       timer.unref?.();
       groupPostTimers.add(timer);
     })().finally(() => {
@@ -1537,7 +1546,14 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     return link ?? null;
   };
 
-  const resolveCaller = async (callerSessionId: string) => {
+  /**
+   * `ownerUi`: the owner's own UI (the desktop, or the phone over device-link) stopping a task
+   * from its card. A group lane still only scopes which tasks it may touch (`callerTaskScope`),
+   * but the live execution authority a group tool call needs is not required, since the group
+   * reply that started the task is usually long over while the task still runs
+   * (bot-group-chat.md §10).
+   */
+  const resolveCaller = async (callerSessionId: string, { ownerUi = false }: { ownerUi?: boolean } = {}) => {
     const link = await resolveLinkedSession(callerSessionId);
     if (
       !link
@@ -1548,7 +1564,7 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       || !['canonical', 'delegation', 'group'].includes(link.role)
     ) return null;
     // Delegating full independent work is an owner action, not a guest tool grant.
-    const groupAuthority = link.role === 'group'
+    const groupAuthority = link.role === 'group' && !ownerUi
       ? await authorizeGroupTool(callerSessionId, link.botId, 'owner-action') : null;
     return { ...link, groupAuthority };
   };
@@ -2557,8 +2573,12 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     input: SessionTaskInput,
   ): Promise<BotDelegationResult<{
     modelRoute: BotModelRoute;
-    /** `group`: the card, confirmations and result stay in the group this was started from. */
-    completionDestination?: 'group';
+    /**
+     * `group`: the card, confirmations and result stay in the group this was started from.
+     * `private`: started from an old local-only group, which cannot carry them; they go to the
+     * owner's private chat with the teammate instead (bot-group-chat.md §10).
+     */
+    completionDestination?: 'group' | 'private';
     delegationId: string;
     childSessionId: string;
     /**
@@ -2688,13 +2708,16 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
       },
     });
     if (!started.ok) return started;
+    const groupId = caller.role === 'group' ? /^group:([^:]+)/.exec(caller.routeKey ?? '')?.[1] ?? null : null;
+    const completionDestination = groupId === null ? null
+      : await deps.groupHasTaskChannel?.(groupId).catch(() => true) === false ? 'private' as const : 'group' as const;
     return {
       ok: true,
       delegationId: started.delegationId,
       childSessionId: started.childSessionId,
       status: started.status,
       deadlineAt: started.deadlineAt,
-      ...(caller.role === 'group' ? { completionDestination: 'group' as const } : {}),
+      ...(completionDestination ? { completionDestination } : {}),
       modelRoute: {
         harness: taskRuntime.agentKind === 'codex' ? 'codex' : taskRuntime.agentKind === 'pi' ? 'pi' : 'claude',
         model: taskRuntime.model,
@@ -2877,8 +2900,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     callerSessionId: string,
     delegationId: string,
     inheritedAuthority?: Awaited<ReturnType<typeof authorizeGroupTool>> | null,
+    { ownerUi = false }: { ownerUi?: boolean } = {},
   ): Promise<BotDelegationResult<{ delegationId: string; childSessionId: string | null; control?: { state: string; queue_held: boolean; stop_status: string } }>> => {
-    const caller = await resolveCaller(callerSessionId);
+    const caller = await resolveCaller(callerSessionId, { ownerUi });
     if (!caller) {
       return { ok: false, errorCode: 'NOT_A_BOT_SESSION', message: '当前任务不属于任何伙伴' };
     }
@@ -4438,6 +4462,10 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
           }
           return;
         }
+        // A running task's 「进行中」 card may still be on its way when the app stopped: post it
+        // again (idempotent by client id), with the same backoff as at creation.
+        const groupHome = groupHomeOf(row.permissionSnapshotJson);
+        if (groupHome) void postGroupTaskStart(groupHome, row);
         if (readTaskPause(row)) {
           if (row.childSessionId) holdTaskInput(row.childSessionId, true);
           return;
@@ -4506,6 +4534,9 @@ export function createBotDelegationService(deps: BotDelegationServiceDeps) {
     stopSessionTask: expose(stopSessionTask),
     cancelDelegation: expose((callerSessionId: string, delegationId: string) => withTaskOperation(delegationId, () => cancelDelegation(callerSessionId, delegationId))),
     traceOwnerNote: expose(traceOwnerNote),
+    /** The owner stopping a task from its card (IPC / device-link), from any lane that shows the card. */
+    cancelDelegationFromOwner: expose((callerSessionId: string, delegationId: string) => withTaskOperation(delegationId,
+      () => cancelDelegation(callerSessionId, delegationId, undefined, { ownerUi: true }))),
     cancelDelegationsForParentSession,
     cancelDelegationsForBot,
     settleSession,

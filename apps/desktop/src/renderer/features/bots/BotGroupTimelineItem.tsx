@@ -444,11 +444,12 @@ function BotGroupTimelineItemImpl(props: BotGroupTimelineItemProps) {
           ) : (
             <div className="flex min-w-0 flex-col gap-1">
               {quote}
-              {/* A task this teammate started from the group; mine is live, another owner's is a snapshot.
-                  An author no longer in the group is unknown: its task may run on another computer, so
-                  it stays a snapshot rather than a lookup on this one. */}
+              {/* A task this teammate started from the group; mine is live where it runs, another owner's
+                  is a snapshot. An author no longer in the group is unknown: its task may run on another
+                  computer, so it stays a snapshot rather than a lookup on this one. */}
               {message.task ? (
-                <BotGroupTaskCard task={message.task} owned={botGroupTaskOwned(message.authorBotId, members)} />
+                <BotGroupTaskCard task={message.task} owned={botGroupTaskOwned(message.authorBotId, members)}
+                  botId={message.authorBotId} />
               ) : null}
               {hasText ? (
                 <div className={`min-w-0 text-[var(--msg-assistant-text)] ${BOT_GROUP_BODY_CLASS}`}>

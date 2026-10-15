@@ -12031,6 +12031,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     postGroupTaskMessage: async (input) => botGroupChatServiceHolder
       ? botGroupChatServiceHolder.postCompanionTaskMessage(input)
       : { ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: true },
+    groupHasTaskChannel: async (groupId) => botGroupChatServiceHolder
+      ? botGroupChatServiceHolder.hasCompanionTaskChannel(groupId) : true,
   });
   registerBotLifecycleHandlers({
     maker,
@@ -12258,7 +12260,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       ) {
         throwIpcError('INVALID_PARAMS', 'parentSessionId + delegationId required');
       }
-      return delegationForRestore.cancelDelegation(parentSessionId, delegationId);
+      // The owner's own stop button: not a group tool call, so no live group execution is needed.
+      return delegationForRestore.cancelDelegationFromOwner(parentSessionId, delegationId);
     },
   );
   ipcMain.handle(

@@ -2178,6 +2178,7 @@ export function createBotGroupChatService(deps: BotGroupChatServiceDeps) {
     /** Only a server room has a message channel a teammate can post into outside a turn. */
     postCompanionTaskMessage: async (_input: BotGroupTaskPostInput): Promise<BotGroupTaskPostResult> =>
       ({ ok: false, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: false }),
+    hasCompanionTaskChannel: async (_groupId: string): Promise<boolean> => false,
     dispose,
   };
 }

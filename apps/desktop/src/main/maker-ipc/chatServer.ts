@@ -238,6 +238,7 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
     editPlanStep: (...args) => service().editPlanStep(...args),
     settleLaneTurn: (...args) => service().settleLaneTurn(...args),
     postCompanionTaskMessage: (...args) => service().postCompanionTaskMessage(...args),
+    hasCompanionTaskChannel: (...args) => service().hasCompanionTaskChannel(...args),
     dispose: () => { active.dispose(); local.dispose(); },
   };
 }
@@ -936,6 +937,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
           role: m.role, nickname: m.nickname, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.ownerName,
           isOwned: m.ownerActorId === selfId, guestAccess: m.guestAccess, accessRevision: m.accessRevision,
+          // Which computer runs my companion: a phone reaching this group through this computer
+          // reads the companion's tasks there, not here (bot-group-chat.md §10).
+          ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: lastView ? {
@@ -1870,6 +1874,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     },
     // A teammate's own message about an independent task it started from this group
     // (bot-group-chat.md §10): posted outside any execution, as that teammate, never as the owner.
+    /** A server room (or an old local group already upgraded to one) carries task messages. */
+    hasCompanionTaskChannel: async (groupId: string): Promise<boolean> => (await taskRoomFor(groupId)) !== null,
     postCompanionTaskMessage: async (input: BotGroupTaskPostInput): Promise<BotGroupTaskPostResult> => {
       const refused = (errorCode: string): BotGroupTaskPostResult => ({ ok: false, errorCode, retryable: false });
       try {

@@ -430,6 +430,18 @@ describe("cindy_helper MCP server", () => {
         }),
       );
 
+      // An old local-only group cannot carry the task's messages: the teammate must not promise them there.
+      startSessionTask.mockResolvedValueOnce({ ok: true as const, delegationId: "session-task-2", childSessionId: "desktop-child-2",
+        status: "running", completionDestination: 'private', deadlineAt: 1_788_000_000_000 });
+      const privateTask = parsePayload(
+        await client.callTool({ name: "call_tool", arguments: { name: "start_session_task", args: {
+            instruction: "Build and verify a standalone HTML demo.",
+          } } }),
+      ) as { completion_destination?: string; guidance?: string };
+      expect(privateTask.completion_destination).toBe('private');
+      expect(privateTask.guidance).toContain("private chat");
+      expect(privateTask.guidance).not.toContain("will arrive here");
+
       const replied = parsePayload(
         await client.callTool({ name: "call_tool", arguments: { name: "message_session_task", args: {
             task_id: "session-task-1",

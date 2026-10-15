@@ -3859,6 +3859,7 @@ describe('Bot Session task end-to-end runtime', () => {
     onInteractionDispatched?: () => Promise<void>;
     /** The group message channel for tasks started from a group (bot-group-chat.md §10). */
     postGroupTaskMessage?: Parameters<typeof createBotDelegationService>[0]['postGroupTaskMessage'];
+    groupHasTaskChannel?: Parameters<typeof createBotDelegationService>[0]['groupHasTaskChannel'];
   } = {}) {
     const accountReady = options.accountReady ?? (() => true);
     const started: StartedTurn[] = [];
@@ -4074,6 +4075,7 @@ describe('Bot Session task end-to-end runtime', () => {
     const delegation = createBotDelegationService({
       maxActiveChildren: options.maxActiveChildren,
       postGroupTaskMessage: options.postGroupTaskMessage,
+      groupHasTaskChannel: options.groupHasTaskChannel,
       readSessionExecution: options.readSessionExecution,
       collectArtifacts: options.collectArtifacts,
       discardDelegationQueuedInputs: options.discardDelegationQueuedInputs ?? (coordinator
@@ -4285,6 +4287,88 @@ describe('Bot Session task end-to-end runtime', () => {
       await settled;
       expect(landed).toEqual([`bot-delegation-task:${task.delegationId}:started`, `bot-delegation-task:${task.delegationId}:1:result`]);
       expect(h.sqlite!.prepare('SELECT completion_delivered_at FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).not.toBeNull();
+    } finally { release(); runtime.dispose(); }
+  });
+
+  it('tells the teammate a task from an old local-only group reports to the owner privately', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const groupHasTaskChannel = vi.fn(async () => false);
+    const runtime = createDelegationRuntime({ groupHasTaskChannel });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Local group work' });
+      expect(task).toMatchObject({ ok: true, completionDestination: 'private' });
+      expect(groupHasTaskChannel).toHaveBeenCalledWith('fixture');
+    } finally { release(); runtime.dispose(); }
+  });
+
+  it('lets the owner stop a group task from its card after the group reply that started it has ended', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => ({ ok: true as const, messageId: `posted:${input.clientId}` }));
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Long-running work' });
+      if (!task.ok) throw new Error(task.message);
+      // The group reply that started the task has ended: its execution authority is gone.
+      release();
+      // A group tool call still needs a live execution; the owner's stop button does not.
+      expect(await runtime.delegation.cancelDelegation('group-lane', task.delegationId)).toMatchObject({ ok: false, errorCode: 'GROUP_AUTHORIZATION_REQUIRED' });
+      // Another group's lane cannot reach the task either way.
+      seedGroupLane('other-group', 'group:other:access:owner:2');
+      expect(await runtime.delegation.cancelDelegationFromOwner('other-group', task.delegationId)).toMatchObject({ ok: false, errorCode: 'NOT_FOUND' });
+      expect(await runtime.delegation.cancelDelegationFromOwner('group-lane', task.delegationId)).toMatchObject({ ok: true, delegationId: task.delegationId });
+      expect(h.sqlite!.prepare('SELECT status FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).toBe('cancelled');
+    } finally { release(); runtime.dispose(); }
+  });
+
+  it('keeps re-posting the start card while the group task runs, and stops once it has ended', async () => {
+    await seedPair(); seedGroupLane();
+    vi.useFakeTimers();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    // The group channel is down for the whole run; only the start card is affected here.
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => input.clientId.endsWith(':started')
+      ? { ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: true }
+      : { ok: true as const, messageId: `posted:${input.clientId}` });
+    const runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Long work', timeoutMs: 60 * 60_000 });
+      if (!task.ok) throw new Error(task.message);
+      const startAttempts = () => postGroupTaskMessage.mock.calls.filter(([input]) => input.clientId.endsWith(':started')).length;
+      // Backoff 1, 2, 4, 8, 16, 32 s, then once a minute: the outage outlasts the former seven tries.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(startAttempts()).toBeGreaterThanOrEqual(14);
+      await runtime.runPendingTurns();
+      const afterEnd = startAttempts();
+      // The task ended: no 「进行中」 card may land under its result.
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(startAttempts()).toBe(afterEnd);
+    } finally { release(); runtime.dispose(); vi.useRealTimers(); }
+  });
+
+  it('posts a running group task\'s start card again after a restart when it never reached the group', async () => {
+    await seedPair(); seedGroupLane();
+    const release = registerGroupToolAuthority('group-lane', { botId: 'bot-a', mode: 'owner', isCurrent: () => true, validate: async () => {} });
+    let groupDown = true;
+    const postGroupTaskMessage = vi.fn(async (input: { clientId: string }) => groupDown
+      ? { ok: false as const, errorCode: 'GROUP_CHANNEL_UNAVAILABLE', retryable: true }
+      : { ok: true as const, messageId: `posted:${input.clientId}` });
+    let runtime = createDelegationRuntime({ postGroupTaskMessage });
+    try {
+      const task = await runtime.delegation.startSessionTask({ callerSessionId: 'group-lane', objective: 'Long work' });
+      if (!task.ok) throw new Error(task.message);
+      expect(postGroupTaskMessage).toHaveBeenCalledTimes(1);
+      runtime.dispose();
+      groupDown = false;
+      runtime = createDelegationRuntime({ postGroupTaskMessage });
+      await runtime.delegation.restore();
+      // A second post, from the restored runtime: the same idempotent card, now accepted.
+      await vi.waitFor(() => expect(postGroupTaskMessage).toHaveBeenCalledTimes(2));
+      expect(postGroupTaskMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+        groupId: 'fixture', clientId: `bot-delegation-task:${task.delegationId}:started`,
+        card: expect.objectContaining({ data: expect.objectContaining({ state: 'started' }) }),
+      }));
+      expect(h.sqlite!.prepare('SELECT status FROM bot_delegations WHERE id=?').pluck().get(task.delegationId)).toBe('running');
     } finally { release(); runtime.dispose(); }
   });
 
