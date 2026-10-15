@@ -1845,11 +1845,23 @@
         "nameHint": "空欄にすると現在の名前を維持します",
         "changeAvatar": "アバターを変更",
         "resetAvatar": "デフォルトのアバターに戻す",
+        "adjustAvatar": "アバターを調整",
         "save": "プロフィールを保存",
         "cancel": "キャンセル",
         "syncHint": "名前とアバターはアカウントに保存され、すべてのデバイスに同期されます。",
-        "avatarInvalid": "5MB 以下の PNG / JPG / WebP 画像を選択してください",
-        "saveFailed": "保存に失敗しました。もう一度お試しください"
+        "avatarInvalid": "20MB 以下の PNG / JPG / WebP 画像を選択してください",
+        "saveFailed": "保存に失敗しました。もう一度お試しください",
+        "crop": {
+          "title": "アバターを調整",
+          "description": "ドラッグで位置を調整し、スクロールまたはピンチで拡大・縮小します",
+          "done": "アバターの調整を完了",
+          "stageLabel": "アバターの表示範囲。矢印キーで移動し、プラスまたはマイナスキーで拡大・縮小します",
+          "zoomLabel": "ズーム",
+          "zoomValue": "{{percent}}%",
+          "zoomIn": "拡大",
+          "zoomOut": "縮小",
+          "exportFailed": "調整したアバターを書き出せませんでした"
+        }
       }
     },
     "help": {
@@ -8794,6 +8806,7 @@
     "list": {
       "createMenu": "新規作成",
       "createTeammate": "パートナーを作成",
+      "joinWithLink": "招待リンクを入力…",
       "startChat": "会話を始める",
       "selectChat": "パートナーやグループチャットを選んで、会話を始めましょう",
       "typing": "入力中…",
@@ -9210,6 +9223,15 @@
       "files": {
         "openFailed": "ファイルを開けませんでした。移動または削除された可能性があります"
       },
+      "addFromChat": {
+        "triggerFor": "{{name}} をグループチャットに追加",
+        "addTo": "{{name}} の追加先",
+        "newGroup": "グループチャットを作成…",
+        "existingGroup": "既存のグループに追加",
+        "added": "{{name}} を「{{group}}」に追加しました",
+        "openGroup": "グループを開く",
+        "unavailable": "{{name}} は現在グループチャットに参加できません"
+      },
       "server": {
         "quoteReply": "引用して返信",
         "startTopic": "スレッドを作成",
@@ -9238,8 +9260,11 @@
         "copied": "招待リンクをコピーしました",
         "createLink": "招待リンクを作成",
         "accept": "承諾して参加",
-        "openGroup": "グループを開く",
         "previewInvite": "招待を確認",
+        "linkDescription": "参加するとメンバーになり、チャット履歴を閲覧できます。",
+        "loadingInvite": "招待を読み込んでいます…",
+        "retryInvite": "招待を再読み込み",
+        "malformedInvite": "招待リンクが不完全か、形式が正しくありません。招待した人に新しいリンクを依頼してください。",
         "invalidInvite": "招待が無効、使用済み、期限切れ、または無効化されています。新しいリンクを取得してください。",
         "notAllowed": "このアカウントに権限がありません。アカウントを確認するか、グループ管理者に連絡してください。",
         "loginRequired": "ログインしてから再試行してください。",

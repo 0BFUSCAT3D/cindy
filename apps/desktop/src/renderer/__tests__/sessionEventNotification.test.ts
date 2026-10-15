@@ -32,6 +32,35 @@ const markAttention = vi.fn(() => Promise.resolve());
 const showSessionEvent = vi.fn(() => Promise.resolve());
 
 describe('shared session event notifications', () => {
+  it.each(['before-clear', 'after-clear'])('does not notify for a cleared remote completion (%s)', order => {
+    gates.feishu = true;
+    const relay = new SessionActivityRelay(payload => applyRemoteSessionActivity('host', payload));
+    const running = { sessionId: 'remote-silent', phase: 'running', recordStatus: 'active', compactDetail: 'Working', startedAtMs: 1, lastActivityAtMs: 1, currentActionSummary: 'Working', attention: false, workflow: null, turnGeneration: null, gracefulStopState: 'none', source: 'live' } as const;
+    const notify = () => sendSessionEventNotification('remote-silent', 'Silent task', 'done', { remoteDevice: true, remoteDeviceId: 'host' });
+    relay.publish([running]);
+    if (order === 'before-clear') notify();
+    relay.publish([{ ...running, phase: 'completed', attention: false }]);
+    expect(getRemoteSessionActivity('remote-silent', 'host')).toBeUndefined();
+    if (order === 'after-clear') notify();
+    relay.dispose();
+    expect(showSessionEvent).not.toHaveBeenCalled();
+  });
+
+  it.each(['before-done', 'after-done'])('preserves remote unread without notifying for a silent completion (%s)', order => {
+    gates.feishu = true;
+    const notify = () => sendSessionEventNotification('remote-silent', 'Task', 'done', { remoteDevice: true, remoteDeviceId: 'host' });
+    applyRemoteSessionActivity('host', { sessionId: 'remote-silent', phase: 'running', attention: true });
+    if (order === 'after-done') notify();
+    applyRemoteSessionActivity('host', { sessionId: 'remote-silent', phase: 'completed', attention: true, completionNotification: 'silent' });
+    if (order === 'before-done') notify();
+    expect(showSessionEvent).not.toHaveBeenCalled();
+    expect(getRemoteSessionActivity('remote-silent', 'host')).toMatchObject({ attention: true, completionNotification: 'silent' });
+    applyRemoteSessionActivity('host', { sessionId: 'remote-silent', phase: 'running', attention: true });
+    notify();
+    applyRemoteSessionActivity('host', { sessionId: 'remote-silent', phase: 'completed', attention: true });
+    expect(showSessionEvent).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     clearRemoteSessionActivity();
     gates.desktop = true;
