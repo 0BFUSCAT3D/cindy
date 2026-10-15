@@ -147,6 +147,52 @@ describe('SpeakerGate', () => {
     );
   });
 
+  it.each(['different speaker', 'unusable embedding'] as const)(
+    'does not pad the owner\'s next short phrase with a rejected %s', async rejection => {
+      const engine = new FakeEngine();
+      if (rejection === 'unusable embedding') {
+        const embed = engine.embed.bind(engine);
+        engine.embed = async samples => {
+          const result = await embed(samples);
+          return result?.[1] === 1 ? null : result;
+        };
+      }
+      const { gate, emitted, decisions, passthrough } = startGate(engine);
+      // Exact VAD frames: a rejected full window and remainder, a brief pause,
+      // then an owner's phrase too short to fill minVerifySec on its own.
+      const audio = makeAudio([[BYSTANDER, 1.6], [0, 0.064], [OWNER, 0.256]]);
+      pushAll(gate, audio);
+      await gate.finish();
+
+      expect(decisions[0].accepted).toBe(false);
+      const last = decisions[decisions.length - 1];
+      expect(last.accepted).toBe(true);
+      const current = Float32Array.from(audio.slice(last.startSample, last.endSample), sample => sample / 32768);
+      expect(engine.embedInputs[engine.embedInputs.length - 1]).toEqual(current);
+      const out = joined(emitted);
+      expect(out.length).toBe(audio.length);
+      expect(countLevel(out, 0, 1.6, BYSTANDER)).toBe(0);
+      expect(countLevel(out, 1.664, 1.92, OWNER)).toBe(Math.round(0.256 * SPEAKER_GATE_SAMPLE_RATE));
+      expect(passthrough).toEqual([]);
+    },
+  );
+
+  it('clears older accepted context when a different speaker interrupts', async () => {
+    const engine = new FakeEngine();
+    const { gate, emitted, decisions } = startGate(engine);
+    const audio = makeAudio([[OWNER, 1.6], [0, 0.064], [BYSTANDER, 1.6], [0, 0.064], [BYSTANDER, 0.256]]);
+    pushAll(gate, audio);
+    await gate.finish();
+
+    expect(decisions[0].accepted).toBe(true);
+    expect(decisions[decisions.length - 1].accepted).toBe(false);
+    expect(engine.embedInputs[engine.embedInputs.length - 1].some(sample => sample > 0)).toBe(false);
+    const out = joined(emitted);
+    expect(out.length).toBe(audio.length);
+    expect(countLevel(out, 0, 1.6, OWNER)).toBe(Math.round(1.6 * SPEAKER_GATE_SAMPLE_RATE));
+    expect(out.some(sample => sample === BYSTANDER)).toBe(false);
+  });
+
   it('does not release new audio when an aborted finish resumes', async () => {
     let release!: (value: Float32Array) => void;
     const engine = new FakeEngine();

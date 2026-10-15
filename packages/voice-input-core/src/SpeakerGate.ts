@@ -156,7 +156,7 @@ export class SpeakerGate implements AudioGate {
   private inSpeech = false;
   private pendingStart = 0;
   private lastAcceptedEnd = -1;
-  // Most recent judged speech, used as embedding context across short pauses.
+  // Most recent accepted speech, used as context until a window is rejected.
   private speechTail: Float32Array;
   private speechTailLength = 0;
 
@@ -291,12 +291,12 @@ export class SpeakerGate implements AudioGate {
 
   private async decide(token: number, start: number, end: number): Promise<void> {
     const speech = this.readHeld(start, end);
-    this.appendSpeechTail(speech);
     // VAD frame boundaries can make this window longer than speechTail's
-    // capacity. Preserve the whole window; history only pads short windows.
+    // capacity. Preserve the whole window; only accepted history may pad a
+    // short one. Do not commit the current speech until it has been judged.
     const context = speech.length >= this.minVerifySamples
       ? speech
-      : this.speechTailSlice(this.minVerifySamples);
+      : concatFloat(this.speechTailSlice(this.minVerifySamples - speech.length), speech);
     const startedAt = now();
     const embedding = await this.withTimeout(this.engine.embed(context));
     if (token !== this.runToken || this.passthrough) return;
@@ -304,8 +304,15 @@ export class SpeakerGate implements AudioGate {
     const score = embedding ? cosineSimilarity(embedding, this.enrolled) : -1;
     const continuing = this.lastAcceptedEnd >= 0 && start <= this.lastAcceptedEnd;
     const accepted = score >= (continuing ? this.continueThreshold : this.threshold);
-    if (accepted) this.lastAcceptedEnd = end;
-    else this.muteHeld(start, end);
+    if (accepted) {
+      this.lastAcceptedEnd = end;
+      this.appendSpeechTail(speech);
+    } else {
+      // A rejected speaker breaks continuity, including older accepted audio.
+      this.lastAcceptedEnd = -1;
+      this.speechTailLength = 0;
+      this.muteHeld(start, end);
+    }
     this.onDecision?.({ startSample: start, endSample: end, score, accepted, computeMs });
     this.pendingStart = end;
     this.releaseUpTo(end);
