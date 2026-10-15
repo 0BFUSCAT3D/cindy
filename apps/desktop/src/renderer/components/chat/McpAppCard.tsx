@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import {
@@ -8,6 +8,7 @@ import {
   type AppInvoker,
 } from '@cindy/maker-shared/mcp-app-controller';
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 
@@ -54,8 +55,13 @@ interface McpAppCardProps {
 
 export function McpAppCard(props: McpAppCardProps) {
   const { t } = useTranslation();
+  const deviceId = useSyncExternalStore(
+    remoteProjectsStore.subscribe,
+    () => getStickySessionDeviceId(props.sessionId),
+    () => undefined,
+  );
   // Shared-task peers can read history, but must not create an interactive View.
-  if (isSharedTaskPeer(getStickySessionDeviceId(props.sessionId))) {
+  if (isSharedTaskPeer(deviceId)) {
     const title = props.title ? t('mcpApps.cardTitle', { title: props.title }) : t('mcpApps.appName');
     return (
       <section className="my-3 rounded-xl border border-border p-3" aria-label={title}>
@@ -69,11 +75,11 @@ export function McpAppCard(props: McpAppCardProps) {
       </section>
     );
   }
-  return <InteractiveMcpAppCard {...props} />;
+  return <InteractiveMcpAppCard {...props} deviceId={deviceId} />;
 }
 
 /** Untrusted HTML always sits across an origin boundary, without Cindy's preload. */
-function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: McpAppCardProps) {
+function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText, deviceId }: McpAppCardProps & { deviceId?: string }) {
   const { t, i18n } = useTranslation();
   const appTitle = title || t('mcpApps.appName');
   const card = useRef<HTMLDialogElement>(null);
@@ -114,7 +120,6 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
     let disposed = false;
     let frame: HTMLIFrameElement | undefined;
     let localViewId: string | undefined;
-    const deviceId = getStickySessionDeviceId(sessionId);
     const invoke: AppInvoker = (id, input) =>
       window.electronAPI.maker.mcpApps(id, deviceId ? { ...input, deviceId } : input);
     const post = (message: AppRpc) => frame?.contentWindow?.postMessage(message, '*');
@@ -215,7 +220,7 @@ function InteractiveMcpAppCard({ sessionId, clientId, title, fallbackText }: Mcp
           window.removeEventListener('message', receive);
         });
     };
-  }, [sessionId, clientId, attempt, appTitle, visible]);
+  }, [sessionId, clientId, attempt, appTitle, visible, deviceId]);
 
   useEffect(() => {
     if (root.current)

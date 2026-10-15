@@ -6,6 +6,7 @@ import { sharedTaskHostPeer } from '@cindy/device-link';
 const state = vi.hoisted(() => ({
   deviceId: undefined as string | undefined,
   openError: undefined as Error | undefined,
+  originListeners: new Set<() => void>(),
   controllers: [] as Array<{
     open: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -21,6 +22,12 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({
   i18n: { language: 'en' },
 }) }));
 vi.mock('@/features/device-link/stickySessionOrigin', () => ({ getStickySessionDeviceId: () => state.deviceId }));
+vi.mock('@/features/device-link/remoteProjectsStore', () => ({ remoteProjectsStore: {
+  subscribe: (listener: () => void) => {
+    state.originListeners.add(listener);
+    return () => { state.originListeners.delete(listener); };
+  },
+} }));
 vi.mock('@/components/ui/button', () => ({
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
@@ -58,6 +65,43 @@ afterEach(() => {
   state.intersections.clear();
   state.deviceId = undefined;
   state.openError = undefined;
+  state.originListeners.clear();
+});
+it('reopens when device ownership is restored but ignores unchanged ownership', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  vi.stubGlobal('matchMedia', () => ({ matches: false }));
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(private callback: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+    observe(element: Element) { state.intersections.set(element, this.callback); }
+    disconnect() {}
+  });
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const invoke = vi.fn(async () => ({}));
+  vi.stubGlobal('electronAPI', { maker: { mcpApps: invoke } });
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<McpAppCard sessionId="task" clientId="card" title="App" />));
+    await act(async () => [...state.intersections.values()][0]([{ isIntersecting: true }]));
+    const original = state.controllers[0];
+    await act(async () => original.fail(new Error('MCP_APP_CARD_UNAVAILABLE')));
+    await act(async () => {
+      state.deviceId = 'restored-device';
+      state.originListeners.forEach((listener) => listener());
+    });
+    expect(original.close).toHaveBeenCalledOnce();
+    expect(state.controllers).toHaveLength(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await state.controllers[1].invoke('task', { op: 'open', clientId: 'card' });
+    expect(invoke).toHaveBeenLastCalledWith('task', { op: 'open', clientId: 'card', deviceId: 'restored-device' });
+    await act(async () => state.originListeners.forEach((listener) => listener()));
+    expect(state.controllers).toHaveLength(2);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
 });
 it.each([undefined, 'owner-device'])('releases offscreen history and opens visible owner cards on %s', async (deviceId) => {
   state.deviceId = deviceId;
