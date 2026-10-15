@@ -226,7 +226,10 @@ export function ChatThreadPanel({ group, rootId, quoteSources = group.messages, 
     const owner = getDataOwnerGeneration();
     const failed = (code?: string) => {
       if (!isDataOwnerGenerationCurrent(owner)) return;
-      if (fromComposer) setUnposted(previous => new Set(previous).add(messageId));
+      if (code === 'SHARE_UNAVAILABLE') {
+        setUnposted(previous => { const next = new Set(previous); next.delete(messageId); return next; });
+        toast.error(t(chatErrorKey(code)));
+      } else if (fromComposer) setUnposted(previous => new Set(previous).add(messageId));
       else toast.error(t(code ? chatErrorKey(code) : key('requestFailed')));
     };
     try {

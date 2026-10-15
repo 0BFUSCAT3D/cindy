@@ -303,6 +303,32 @@ describe('recovering from a failed read in a quiet room', () => {
     expect(projection.shareSources(room, [share], []).get(sourceId)?.id).toBe(sourceId);
   });
 
+  it.each(['source', 'preview'] as const)('invalidates failed %s reads immediately without waking another room early', async kind => {
+    const io = makeIo();
+    const projection = createThreadProjection(io);
+    const root = message({ id: rootA, replyCount: 1 });
+    const read = (id: string) => kind === 'source'
+      ? projection.shareSources(id, [share], []) : projection.previews(id, [root], fullWindow([]));
+    io.message.mockRejectedValue(new Error('offline'));
+    io.threadPage.mockRejectedValue(new Error('offline'));
+    read(room); read('other-room');
+    await projection.settled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    projection.invalidate(room, sourceId);
+    io.message.mockResolvedValue(null); // The source was deleted.
+    io.threadPage.mockResolvedValue([reply(sourceId, rootA, { content: [{ type: 'text', text: 'edited' }] })]);
+    read(room); read('other-room');
+    await projection.settled();
+    const requests = kind === 'source' ? io.message.mock.calls : io.threadPage.mock.calls;
+    expect(requests.map(([id]) => id)).toEqual([room, 'other-room', room]);
+    if (kind === 'source') expect(read(room).get(sourceId)).toBeNull();
+    else expect(read(room).get(rootA)).toEqual([expect.objectContaining({ content: [{ type: 'text', text: 'edited' }] })]);
+    io.filled.mockClear();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(io.filled.mock.calls).toEqual([['other-room']]);
+    projection.dispose();
+  });
+
   it('backs off and stops retrying by itself after a bounded number of attempts', async () => {
     const io = makeIo();
     const projection = createThreadProjection(io);

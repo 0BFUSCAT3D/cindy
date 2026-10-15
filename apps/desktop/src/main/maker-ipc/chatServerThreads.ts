@@ -91,7 +91,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     armRetry(roomId);
   }
   function settledRetry(roomId: string, cacheKey: string) {
-    failures.delete(cacheKey);
+    retryAt.delete(cacheKey); failures.delete(cacheKey);
     if (pendingRetries.get(roomId)?.delete(cacheKey)) armRetry(roomId);
   }
   function cancelRetries() {
@@ -119,7 +119,7 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
         // dropped, and the reader is asked to read again: the refresh in between skipped it.
         try {
           const store = await read(item);
-          retryAt.delete(cacheKey); settledRetry(roomId, cacheKey);
+          settledRetry(roomId, cacheKey);
           if (store) { if (generation(roomId) === started) store(); wrote = true; }
         } catch { if (generation(roomId) === started) scheduleRetry(roomId, cacheKey); else wrote = true; }
         finally { inFlight.delete(cacheKey); }
@@ -205,6 +205,9 @@ export function createThreadProjection<M extends ThreadMessage>(io: {
     invalidate(roomId: string, messageId: string) {
       roomGenerations.set(roomId, (roomGenerations.get(roomId) ?? 0) + 1);
       sources.delete(key(roomId, messageId));
+      // Failed preview pages have no cached replies to identify their root. Invalidate
+      // their backoff with this room generation too; other rooms keep their deadlines.
+      for (const cacheKey of failures.keys()) if (cacheKey.startsWith(`${roomId}:`)) settledRetry(roomId, cacheKey);
       for (const [cacheKey, entry] of previews)
         if (cacheKey.startsWith(`${roomId}:`) && entry.replies.some(reply => reply.id === messageId)) previews.delete(cacheKey);
     },

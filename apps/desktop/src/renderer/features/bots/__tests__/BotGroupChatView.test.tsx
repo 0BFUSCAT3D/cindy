@@ -2376,6 +2376,23 @@ describe('thread previews and posting to the main chat', () => {
     expect(mocks.reply).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('drops an unavailable main-chat copy and reports why (after transient failure: %s)', async retrying => {
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
+    if (retrying) mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
+    mocks.shareToMain.mockResolvedValueOnce({ ok: false, errorCode: 'SHARE_UNAVAILABLE' });
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByRole('button', { name: 'bots.groupChat.server.startTopic' }));
+    const panel = await screen.findByRole('complementary');
+    await user.click(within(panel).getByRole('checkbox', { name: t('alsoSend') }));
+    await user.type(within(panel).getByRole('textbox'), 'both{Enter}');
+    if (retrying) await user.click(await within(panel).findByRole('button', { name: t('retryPost') }));
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith(t('shareUnavailable')));
+    expect(within(panel).queryByRole('button', { name: t('retryPost') })).toBeNull();
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
+    expect(mocks.shareToMain).toHaveBeenCalledTimes(retrying ? 2 : 1);
+  });
+
   it('keeps one send identity across a failed reply and never posts to the main chat before it lands', async () => {
     mocks.getBotGroup.mockResolvedValue({ ok: true, group: group([msg({ id: 'u1', content: '去哪玩' })]) });
     mocks.reply.mockResolvedValueOnce({ ok: false, errorCode: 'SERVICE_ERROR' });
