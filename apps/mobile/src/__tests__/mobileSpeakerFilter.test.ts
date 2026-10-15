@@ -362,6 +362,82 @@ describe('mobile speaker filter', () => {
     expect(loadSpeakerModels).not.toHaveBeenCalled(); // State only; native load stays lazy.
   });
 
+  it.each(['preferences', 'voiceprint'] as const)('retries a transient %s read on the next recording', async source => {
+    installModels();
+    const key = accountVaultKey('global', 'user-a');
+    storeProfile(key);
+    const prefsKey = service.__testing.prefsKey(key);
+    asyncStore.set(prefsKey, JSON.stringify({ version: 1, enabled: true, strictnessOverride: 'strict' }));
+    const storage = vi.mocked(source === 'preferences' ? AsyncStorage.getItem : getSecureItem);
+    const read = storage.getMockImplementation()!;
+    const failedKey = source === 'preferences' ? prefsKey : service.__testing.profileKey(key);
+    storage.mockImplementation(async name => {
+      if (name === failedKey) throw new Error('storage temporarily unavailable');
+      return read(name);
+    });
+    try {
+      setMobileAuthOwner('user-a', 'global');
+      expect(await service.createMobileSpeakerGate()).toBeUndefined();
+      expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ hydrated: false, enabled: false, enrolled: false });
+    } finally {
+      storage.mockImplementation(read);
+    }
+
+    // No process reset or account switch: the next recording must read again.
+    expect(await service.createMobileSpeakerGate()).toBeInstanceOf(SpeakerGate);
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({
+      hydrated: true, enabled: true, enrolled: true, strictness: 'strict', strictnessCustomized: true,
+    });
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    expect(setSecureItem).not.toHaveBeenCalled();
+    expect(FileSystem.createDownloadResumable).not.toHaveBeenCalled();
+  });
+
+  it.each(['enabled', 'strictness'] as const)('rejects changes to %s until saved state can be read', async setting => {
+    installModels();
+    const key = accountVaultKey('global', 'user-a');
+    const prefsKey = service.__testing.prefsKey(key);
+    const saved = JSON.stringify({ version: 1, enabled: true, strictnessOverride: 'strict' });
+    asyncStore.set(prefsKey, saved);
+    const read = vi.mocked(AsyncStorage.getItem).getMockImplementation()!;
+    vi.mocked(AsyncStorage.getItem).mockImplementation(async name => {
+      if (name === prefsKey) throw new Error('storage temporarily unavailable');
+      return read(name);
+    });
+    const edit = () => setting === 'enabled'
+      ? service.setMobileSpeakerFilterEnabled(false)
+      : service.setMobileSpeakerFilterStrictness('relaxed');
+    try {
+      setMobileAuthOwner('user-a', 'global');
+      await expect(edit()).rejects.toThrow();
+      expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ hydrated: false, enabled: false, strictnessCustomized: false });
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+      expect(asyncStore.get(prefsKey)).toBe(saved);
+    } finally {
+      vi.mocked(AsyncStorage.getItem).mockImplementation(read);
+    }
+
+    await edit();
+    expect(JSON.parse(asyncStore.get(prefsKey)!)).toEqual({
+      version: 1,
+      enabled: setting !== 'enabled',
+      strictnessOverride: setting === 'enabled' ? 'strict' : 'relaxed',
+    });
+  });
+
+  it.each(['{', 'null'])('uses defaults for unreadable JSON (%s) without retrying storage', async raw => {
+    const key = accountVaultKey('global', 'user-a');
+    asyncStore.set(service.__testing.prefsKey(key), raw);
+    secureStore.set(service.__testing.profileKey(key), raw);
+    await signIn('user-a');
+    expect(service.getMobileSpeakerFilterSnapshot()).toMatchObject({ hydrated: true, enabled: false, enrolled: false });
+    vi.mocked(AsyncStorage.getItem).mockClear();
+    vi.mocked(getSecureItem).mockClear();
+    await service.hydrateMobileSpeakerFilter();
+    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    expect(getSecureItem).not.toHaveBeenCalled();
+  });
+
   it('does not give an old startup the next account\'s gate', async () => {
     installModels();
     for (const key of [accountVaultKey('global', 'user-a'), accountVaultKey('global', 'user-b')]) {

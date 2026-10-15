@@ -189,9 +189,11 @@ export function hydrateMobileSpeakerFilter(): Promise<void> {
 }
 
 async function readPrefs(accountKey: string): Promise<{ enabled: boolean; strictnessOverride?: SpeakerGateStrictness }> {
+  // Storage failures must reach hydration so the next call retries. Only a
+  // missing or invalid record should count as successfully loaded defaults.
+  const raw = await AsyncStorage.getItem(prefsKey(accountKey));
+  if (!raw) return { enabled: false };
   try {
-    const raw = await AsyncStorage.getItem(prefsKey(accountKey));
-    if (!raw) return { enabled: false };
     const parsed = JSON.parse(raw) as Partial<StoredPrefs>;
     return {
       enabled: parsed.enabled === true,
@@ -228,9 +230,9 @@ function restoreSavedPrefs(): void {
 }
 
 async function readProfile(accountKey: string): Promise<Profile | null> {
+  const raw = await getSecureItem(profileKey(accountKey));
+  if (!raw) return null;
   try {
-    const raw = await getSecureItem(profileKey(accountKey));
-    if (!raw) return null;
     const stored = JSON.parse(raw) as Partial<StoredProfile>;
     // A voiceprint from another embedding model cannot be compared: re-enroll.
     if (stored.version !== 1 || stored.modelSha256 !== speakerModelAsset('embedding').sha256) return null;
@@ -247,6 +249,7 @@ export async function setMobileSpeakerFilterEnabled(enabled: boolean): Promise<v
   const owner = getMobileAuthOwner();
   await hydrateMobileSpeakerFilter();
   if (!owner.accountKey || !isMobileAuthOwnerCurrent(owner)) return;
+  if (hydratedFor !== owner.accountKey) throw new Error('speaker preferences not hydrated');
   const revision = ++prefsRevision;
   update({ enabled });
   try {
@@ -267,6 +270,7 @@ export async function setMobileSpeakerFilterStrictness(strictness: SpeakerGateSt
   const owner = getMobileAuthOwner();
   await hydrateMobileSpeakerFilter();
   if (!owner.accountKey || !isMobileAuthOwnerCurrent(owner)) return;
+  if (hydratedFor !== owner.accountKey) throw new Error('speaker preferences not hydrated');
   const revision = ++prefsRevision;
   update(
     strictness === null
