@@ -40,6 +40,11 @@ export const AVATAR_FILE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp'];
 export interface ProfileEditDeps {
   /** 当前登录用户 id;未登录 null。 */
   getCurrentUserId(): string | null;
+  /**
+   * 当前账号会话的不透明标识(appSessionState.activeOwnerScopeKey):模式、账号或
+   * 区域任一切换都会变化,跨 await 的账号副作用前后比对它。
+   */
+  getAccountScopeKey(): string;
   /** 当前展示资料(authManager.getServerProfile,弹窗预填 + 改名去重用)。 */
   getServerProfile(): { name: string; avatar: string | null } | null;
   /** 弹系统文件选择器,返回所选路径;取消返回 null。 */
@@ -103,10 +108,10 @@ function requireUserId(deps: ProfileEditDeps): string {
 
 /**
  * 保存过程中每次 await 之后、触达账号的副作用(上传 / PATCH)之前复查:上传与 PATCH
- * 都按调用时的登录态取 token,中途切换账号会把资料写到新账号上。
+ * 都按调用时的登录态取 token,中途切换账号(含同 id 换区域)会把资料写到新账号上。
  */
-function requireSameUser(deps: ProfileEditDeps, userId: string): void {
-  if (deps.getCurrentUserId() !== userId) {
+function requireSameAccount(deps: ProfileEditDeps, accountScope: string): void {
+  if (deps.getAccountScopeKey() !== accountScope) {
     throwIpcError('PRECONDITION_FAILED', 'account changed while saving profile');
   }
 }
@@ -179,7 +184,8 @@ export async function updateProfile(
   deps: ProfileEditDeps,
   rawParams: unknown,
 ): Promise<{ ok: true }> {
-  const userId = requireUserId(deps);
+  requireUserId(deps);
+  const accountScope = deps.getAccountScopeKey();
   const profile = deps.getServerProfile();
   if (!profile) throwIpcError('PRECONDITION_FAILED', 'not logged in');
 
@@ -223,7 +229,7 @@ export async function updateProfile(
     if (image.buffer.byteLength > AVATAR_MAX_BYTES) {
       throwIpcError('INVALID_PARAMS', `avatar file size out of range: ${image.buffer.byteLength}`);
     }
-    requireSameUser(deps, userId);
+    requireSameAccount(deps, accountScope);
     const uploaded = await deps.uploadAvatar(image);
     if (!uploaded.ok) {
       throwIpcError(
@@ -240,7 +246,7 @@ export async function updateProfile(
   if (nextDisplayName === undefined && nextAvatarUrl === undefined) {
     return { ok: true };
   }
-  requireSameUser(deps, userId);
+  requireSameAccount(deps, accountScope);
   const patched = await deps.patchProfile({
     ...(nextDisplayName !== undefined ? { displayName: nextDisplayName } : {}),
     ...(nextAvatarUrl !== undefined ? { avatarUrl: nextAvatarUrl } : {}),

@@ -31,6 +31,7 @@ function makeDeps(overrides: Partial<ProfileEditDeps> = {}): {
   const patches: ProfilePatch[] = [];
   const deps: ProfileEditDeps = {
     getCurrentUserId: () => 'u1',
+    getAccountScopeKey: () => 'cloud:u1:1',
     getServerProfile: () => ({ name: 'Server Name', avatar: null }),
     showAvatarOpenDialog: vi.fn(async () => null),
     readFile: vi.fn(async () => Buffer.from([1, 2, 3])),
@@ -223,14 +224,14 @@ describe('HDR 头像转 SDR 后再预览 / 上传', () => {
 });
 
 describe('保存途中切换账号', () => {
-  // 每次读取当前用户时推进一步:前 n 次仍是 u1,之后变成 u2,模拟在第 n 个 await 前后切号。
-  const switchAfter = (reads: number) => {
+  // 每次读取账号会话标识时推进一步:前 n 次仍是原会话,之后换成新会话,模拟在第 n 个 await 前后切号。
+  const switchAfter = (reads: number, next = 'cloud:u2:2') => {
     let count = 0;
-    return () => (++count <= reads ? 'u1' : 'u2');
+    return () => (++count <= reads ? 'cloud:u1:1' : next);
   };
 
   it('HDR 转换(或排队)期间切号 → PRECONDITION_FAILED,不上传也不 PATCH', async () => {
-    const { deps } = makeDeps({ getCurrentUserId: switchAfter(1) });
+    const { deps } = makeDeps({ getAccountScopeKey: switchAfter(1) });
     await expect(
       updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } }),
     ).rejects.toSatisfy((e) => ipcCode(e) === 'PRECONDITION_FAILED');
@@ -240,7 +241,7 @@ describe('保存途中切换账号', () => {
   });
 
   it('上传期间切号 → PRECONDITION_FAILED,不把头像与旧名字 PATCH 到新账号', async () => {
-    const { deps } = makeDeps({ getCurrentUserId: switchAfter(2) });
+    const { deps } = makeDeps({ getAccountScopeKey: switchAfter(2) });
     await expect(
       updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } }),
     ).rejects.toSatisfy((e) => ipcCode(e) === 'PRECONDITION_FAILED');
@@ -248,8 +249,17 @@ describe('保存途中切换账号', () => {
     expect(deps.patchProfile).not.toHaveBeenCalled();
   });
 
+  it('同一用户 id 切到另一区域(会话代次变化)同样拦下,不 PATCH 到新区域', async () => {
+    // getCurrentUserId 始终是 u1:只比较用户 id 的检查会放行。
+    const { deps } = makeDeps({ getAccountScopeKey: switchAfter(2, 'cloud:u1:2') });
+    await expect(
+      updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } }),
+    ).rejects.toSatisfy((e) => ipcCode(e) === 'PRECONDITION_FAILED');
+    expect(deps.patchProfile).not.toHaveBeenCalled();
+  });
+
   it('账号不变时照常上传并 PATCH', async () => {
-    const { deps, patches } = makeDeps({ getCurrentUserId: switchAfter(Infinity) });
+    const { deps, patches } = makeDeps({ getAccountScopeKey: switchAfter(Infinity) });
     await updateProfile(deps, { name: 'Lizi', avatar: { type: 'set', filePath: '/a/b.png' } });
     expect(patches).toEqual([{ displayName: 'Lizi', avatarUrl: PUBLIC_URL }]);
   });

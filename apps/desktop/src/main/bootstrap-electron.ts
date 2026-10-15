@@ -5975,6 +5975,7 @@ const registerIpcHandlers = () => {
   const profileEditLog = createLogger('profileEdit');
   const profileEditDeps: profileEdit.ProfileEditDeps = {
     getCurrentUserId: () => authManager.getCurrentUserId(),
+    getAccountScopeKey: activeOwnerScopeKey,
     getServerProfile: () => authManager.getServerProfile(),
     showAvatarOpenDialog: async () => {
       const result = await dialog.showOpenDialog({
