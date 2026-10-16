@@ -238,11 +238,17 @@ function createMaterializer(input: {
       const images = files.flatMap(file => file.url ? [{ url: file.url, mimeType: file.mimeType, originalName: file.name, size: file.size }] : []);
       const others = files.flatMap(file => !file.url && file.path ? [{ name: file.name, path: file.path }] : []);
       const names = row.role === 'assistant' ? files.map(file => `[附件: ${file.name}]`) : [];
+      // The room's image copies were cached only: they belong to this task before the message is
+      // written. A failed commit fails the import while the message is still absent, so the retry
+      // downloads and commits again instead of treating it as imported with recyclable images.
+      if (images.length) {
+        const commit = await commitChatImageUrls({ sessionId, urls: images.map(image => image.url) });
+        if (commit.failed > 0) throw new Error('HISTORY_IMAGE_COMMIT_FAILED');
+        fence.assertCurrent();
+      }
       await createMessage(sessionId, { clientId: row.clientId, role: row.role, createdAt: row.createdAt,
         content: row.role === 'user' ? { text: row.text, images, files: others }
           : [{ type: 'text', text: [row.text, ...names].filter(Boolean).join('\n') }] });
-      // The room's image copies were cached only; now they belong to this message.
-      if (images.length) await commitChatImageUrls({ sessionId, urls: images.map(image => image.url) });
     },
     rebuildContext: sessionId => input.rebuildContext(sessionId),
   };
