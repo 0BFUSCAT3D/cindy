@@ -66,6 +66,7 @@ vi.mock('../../maker-host/active-catalog.js', () => ({
 
 vi.mock('../../maker-host/provider-route.js', () => ({
   isProviderRouteMutationInProgress: vi.fn(() => false),
+  getProviderRouteCredentialRevision: vi.fn(() => 0),
 }));
 
 vi.mock('../../maker-host/model-disable-store.js', () => ({
@@ -111,7 +112,7 @@ import {
   isXdGatewayPaymentRequiredRoute,
 } from '../../maker-host/active-catalog.js';
 import { readModelDisableOverrides } from '../../maker-host/model-disable-store.js';
-import { isProviderRouteMutationInProgress } from '../../maker-host/provider-route.js';
+import { getProviderRouteCredentialRevision, isProviderRouteMutationInProgress } from '../../maker-host/provider-route.js';
 import { readCustomProviderKey } from '../../secrets/providerSecretStore.js';
 import { reportCindyGatewayKeyRejected } from '../../model-access/gatewayKeyRejection.js';
 import { getUtilityModelChainProfiles } from '../UtilityModelSelection.js';
@@ -138,6 +139,7 @@ const activeCatalog = vi.mocked(getActiveCatalog);
 const xdPaymentRequiredRoute = vi.mocked(isXdGatewayPaymentRequiredRoute);
 const readDisableOverrides = vi.mocked(readModelDisableOverrides);
 const providerRouteMutationInProgress = vi.mocked(isProviderRouteMutationInProgress);
+const providerRouteCredentialRevision = vi.mocked(getProviderRouteCredentialRevision);
 const readCustomKey = vi.mocked(readCustomProviderKey);
 const reportKeyRejected = vi.mocked(reportCindyGatewayKeyRejected);
 
@@ -163,6 +165,7 @@ describe('utility one-shot candidates', () => {
     readGrokToken.mockRejectedValue(new Error('not authenticated'));
     readGenericOAuthToken.mockReturnValue(null);
     providerRouteMutationInProgress.mockReturnValue(false);
+    providerRouteCredentialRevision.mockReturnValue(0);
     readCustomKey.mockReturnValue(null);
     readDisableOverrides.mockReturnValue({ disabledModels: {}, disabledProviders: {} });
     activeCatalog.mockReturnValue({ providers: [] } as never);
@@ -321,6 +324,43 @@ describe('utility one-shot candidates', () => {
       if (change === 'boundary') ownerState.pending = true;
       await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: false });
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['endpoint', 'headers', 'credential', 'recreated', 'mutation'])
+      ('rejects a provider %s change while dedicated candidates run', async (change) => {
+        const fallback = createCustomAutoReviewFallback()!;
+        const provider = getActiveCatalog().providers[0]!;
+        if (change === 'endpoint') provider.routing.codex!.upstream = 'https://replacement.example/v1';
+        if (change === 'headers') provider.routing.codex!.headerOverride = { 'X-Tenant': 'other-tenant' };
+        // Credential edits and delete/recreate commit monotonic revisions even
+        // when the provider id, endpoint and visible descriptors stay identical.
+        if (change === 'credential') providerRouteCredentialRevision.mockReturnValue(1);
+        if (change === 'recreated') providerRouteCredentialRevision.mockReturnValue(2);
+        if (change === 'mutation') providerRouteMutationInProgress.mockReturnValue(true);
+        await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: false });
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+    it.each(['endpoint', 'credential'])('discards a valid late result after a provider %s change', async (change) => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        text: async () => {
+          if (change === 'endpoint') getActiveCatalog().providers[0]!.routing.codex!.upstream = 'https://replacement.example/v1';
+          else providerRouteCredentialRevision.mockReturnValue(1);
+          return JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}' } }] });
+        },
+      } as never);
+      await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps unrelated provider changes and display metadata out of the routing identity', async () => {
+      const fallback = createCustomAutoReviewFallback()!;
+      getActiveCatalog().providers[0]!.name = 'Updated label';
+      providerRouteCredentialRevision.mockImplementation((id) => id === 'unrelated' ? 1 : 0);
+      fetchMock.mockResolvedValueOnce(response('{"verdict":"allow"}'));
+      await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: true, providerId: 'review-a' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it.each(['owner', 'chain'])('discards a response and stops the chain if the %s changes in flight', async (change) => {

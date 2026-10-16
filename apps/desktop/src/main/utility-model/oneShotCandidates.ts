@@ -24,7 +24,7 @@ import {
 } from '../maker-host/active-catalog.js';
 import { readModelDisableOverrides } from '../maker-host/model-disable-store.js';
 import { isModelDisabled, isProviderDisabled } from '@cindy/model-providers';
-import { isProviderRouteMutationInProgress } from '../maker-host/provider-route.js';
+import { getProviderRouteCredentialRevision, isProviderRouteMutationInProgress } from '../maker-host/provider-route.js';
 import { withOpenCodeGoSessionHeader } from '../maker-host/opencode-go-session.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { reportCindyGatewayKeyRejected } from '../model-access/gatewayKeyRejection.js';
@@ -436,9 +436,28 @@ export function createCustomAutoReviewFallback(): AutoReviewAuxiliaryFallback | 
   if (chain.source !== 'custom' || chain.refs.length === 0) return undefined;
   const ownerScopeKey = activeOwnerScopeKey();
   const chainSnapshot = stableSnapshot(chain);
+  const snapshotRoute = (route: UtilityTextDispatchRoute): string => {
+    const provider = getActiveCatalog().providers.find((item) => item.id === route.providerId);
+    return stableSnapshot({
+      source: provider?.source,
+      auth: provider?.auth,
+      routing: provider?.routing[route.agentKind],
+      // The existing revision survives delete/recreate and covers secret-only edits.
+      credentialRevision: getProviderRouteCredentialRevision(route.providerId),
+    });
+  };
+  const routes = chain.refs.flatMap((ref) => {
+    const parsed = parseAuxiliaryModelRef(ref);
+    if (!parsed) return [];
+    const route = auxiliaryRefDispatchRoute(parsed);
+    return [{ route, snapshot: snapshotRoute(route) }];
+  });
   const stillCurrent = (): boolean => !isAppSessionBoundaryPending()
     && activeOwnerScopeKey() === ownerScopeKey
-    && stableSnapshot(getEffectiveAuxiliaryModelChain()) === chainSnapshot;
+    && stableSnapshot(getEffectiveAuxiliaryModelChain()) === chainSnapshot
+    && routes.every(({ route, snapshot }) =>
+      !isProviderRouteMutationInProgress(route.providerId) && snapshotRoute(route) === snapshot,
+    );
 
   return async (prompt, opts) => {
     const { systemPrompt, evidence } = splitAutoReviewPrompt(prompt);
