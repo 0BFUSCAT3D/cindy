@@ -3301,13 +3301,15 @@ describe('utility one-shot candidates', () => {
     });
 
     // The automatic chain's first request must stay byte-identical to the
-    // pre-plan Chat body, whether or not the Gateway declared efforts.
-    it.each([
-      { id: 'deepseek/deepseek-v4-flash', efforts: ['low', 'high', 'max'] },
-      { id: 'tencent/hy3', efforts: ['low', 'medium', 'high'] },
-      { id: 'qwen/qwen3.8-flash', efforts: ['low', 'medium', 'xhigh'] },
-      { id: 'deepseek/deepseek-v4-flash', efforts: [] },
-    ])('keeps the automatic chain first Chat request unchanged for $id (efforts: $efforts)', async ({ id, efforts }) => {
+    // pre-plan Chat body however the Gateway describes efforts: omitted
+    // (projected as `[]` with no discovered declaration), an explicit `[]`,
+    // or a declared list.
+    const AUTO_CHAT_MODELS = ['deepseek/deepseek-v4-flash', 'tencent/hy3', 'qwen/qwen3.8-flash'];
+    it.each(AUTO_CHAT_MODELS.flatMap((id) => [
+      { id, case: 'omitted', efforts: [] as string[], discovered: undefined },
+      { id, case: 'explicit []', efforts: [] as string[], discovered: [] as string[] },
+      { id, case: 'declared', efforts: ['low', 'high', 'max'], discovered: ['low', 'high', 'max'] },
+    ]))('keeps the automatic chain first Chat request unchanged for $id (efforts $case)', async ({ id, efforts, discovered }) => {
       const autoRef = AUTO_AUXILIARY_MODEL_CHAIN.find((ref) => ref.endsWith(`:${id}`));
       expect(autoRef).toBeDefined();
       chainState.source = 'auto';
@@ -3316,8 +3318,7 @@ describe('utility one-shot candidates', () => {
         id,
         nativeApi: 'openai-completions',
         efforts,
-        // Gateway omitted efforts: the catalog projects `[]` without a discovered declaration.
-        ...(efforts.length > 0 ? { discoveredMetadata: { efforts } } : {}),
+        ...(discovered !== undefined ? { discoveredMetadata: { efforts: discovered } } : {}),
       }]) as never);
       readKey.mockReturnValue('xd-key');
       fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
@@ -3445,7 +3446,7 @@ describe('utility one-shot candidates', () => {
       expect(urlOf(3)).toBe(`${GATEWAY}/v1/chat/completions`);
     });
 
-    it('climbs a declared Chat ladder and never sends a request without reasoning parameters', async () => {
+    it('climbs a declared Chat ladder with reasoning parameters, then only the legacy minimal body', async () => {
       activeCatalog.mockReturnValue(customChatCatalog({
         upstream: 'https://custom.example/v1',
         model: { id: 'custom-thinker', efforts: ['high', 'low', 'medium'] },
@@ -3465,7 +3466,7 @@ describe('utility one-shot candidates', () => {
         ok: false,
         attempts: [expect.objectContaining({ reason: 'http_error', httpStatus: 400 })],
       });
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
       expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'low' });
       expect(bodyOf(1)).not.toHaveProperty('thinking');
@@ -3474,14 +3475,15 @@ describe('utility one-shot candidates', () => {
         expect(bodyOf(index)).toHaveProperty('reasoning_effort');
         expect(bodyOf(index)).toHaveProperty('max_tokens', 64);
       }
+      expect(bodyOf(3)).toEqual({ model: 'custom-thinker', messages: [{ role: 'user', content: 'hello' }] });
     });
 
-    it('sends no reasoning parameters and does not retry when the catalog declares none', async () => {
+    it('sends no reasoning parameters and does not retry when the catalog says reasoning:false', async () => {
       activeCatalog.mockReturnValue(xdCatalog('codex', [{
         id: 'plain-chat',
         nativeApi: 'openai-completions',
         efforts: [],
-        discoveredMetadata: { efforts: [] },
+        reasoning: false,
       }]) as never);
       readKey.mockReturnValue('xd-key');
       fetchMock.mockResolvedValueOnce(rejected(400) as never);
@@ -3517,15 +3519,19 @@ describe('utility one-shot candidates', () => {
       expect(bodyOf(0)).not.toHaveProperty('reasoning_effort');
     });
 
-    it('walks an undeclared custom model from off to low to the minimal body', async () => {
+    it.each([
+      { case: 'effortsUnknown', model: { id: 'mystery', efforts: [], effortsUnknown: true } },
+      { case: 'empty list', model: { id: 'mystery', efforts: [] } },
+    ])('walks a custom model without tiers ($case) from off to low to no reasoning to the minimal body', async ({ model }) => {
       activeCatalog.mockReturnValue(customChatCatalog({
         upstream: 'https://custom.example/v1',
-        model: { id: 'mystery', efforts: [], effortsUnknown: true },
+        model,
       }) as never);
       readCustomKey.mockReturnValue('custom-secret');
       fetchMock
         .mockResolvedValueOnce(rejected(400) as never)
         .mockResolvedValueOnce(rejected(422) as never)
+        .mockResolvedValueOnce(rejected(400) as never)
         .mockResolvedValueOnce(chatOk('ok') as never);
 
       const result = await requestExplicitUtilityText('hello', {
@@ -3537,11 +3543,150 @@ describe('utility one-shot candidates', () => {
       });
 
       expect(result).toMatchObject({ ok: true, text: 'ok' });
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(bodyOf(0)).toMatchObject({ max_tokens: 48, thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
       expect(bodyOf(1)).toMatchObject({ max_tokens: 48, reasoning_effort: 'low' });
       expect(bodyOf(1)).not.toHaveProperty('thinking');
-      expect(bodyOf(2)).toEqual({ model: 'mystery', messages: [{ role: 'user', content: 'hello' }] });
+      expect(bodyOf(2)).toEqual({ model: 'mystery', max_tokens: 48, messages: [{ role: 'user', content: 'hello' }] });
+      expect(bodyOf(3)).toEqual({ model: 'mystery', messages: [{ role: 'user', content: 'hello' }] });
+    });
+
+    it('walks a Cindy AI chat model without tiers from off to low to no reasoning', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [{
+        id: 'tencent/hy3',
+        nativeApi: 'openai-completions',
+        efforts: [],
+        discoveredMetadata: { efforts: [] },
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(chatOk('ok') as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'tencent/hy3',
+        maxTokens: 32,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'ok' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
+      expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'low' });
+      expect(bodyOf(2)).toEqual({ model: 'tencent/hy3', max_tokens: 32, messages: [{ role: 'user', content: 'hello' }] });
+    });
+
+    // R1 regression matrix: custom routes keep origin/main's minimal-body
+    // fallback as their last step, declared tiers or not.
+    describe('custom-route minimal-body fallback', () => {
+      type Rule = 'rejectsMaxTokens' | 'rejectsAnyReasoning' | 'rejectsOffButAcceptsLow';
+      const rejectsBody = (rule: Rule, body: Record<string, unknown>): boolean => {
+        switch (rule) {
+          case 'rejectsMaxTokens':
+            return 'max_tokens' in body || 'max_output_tokens' in body;
+          case 'rejectsAnyReasoning':
+            return 'reasoning_effort' in body || 'thinking' in body || 'reasoning' in body;
+          case 'rejectsOffButAcceptsLow':
+            return 'thinking' in body
+              || body.reasoning_effort === 'minimal'
+              || body.reasoning_effort === 'none';
+        }
+      };
+      const cases = (['openai-chat', 'openai-responses'] as const).flatMap((wireProtocol) =>
+        (['declared', 'no tiers'] as const).flatMap((tiers) =>
+          (['rejectsMaxTokens', 'rejectsAnyReasoning', 'rejectsOffButAcceptsLow'] as const).map((rule) =>
+            ({ wireProtocol, tiers, rule }))));
+
+      it.each(cases)('$wireProtocol / $tiers / $rule', async ({ wireProtocol, tiers, rule }) => {
+        activeCatalog.mockReturnValue({
+          providers: [{
+            id: 'custom-route',
+            name: 'Custom Route',
+            source: 'user',
+            agents: ['codex'],
+            auth: { method: 'apiKey' },
+            routing: {
+              codex: { upstream: 'https://custom.example/v1', wireProtocol, authStrategy: 'api-key-header' },
+            },
+            models: {
+              codex: [{
+                id: 'custom-model',
+                name: 'Custom Model',
+                contextWindow: 100_000,
+                ...(tiers === 'declared'
+                  ? { efforts: ['low', 'medium', 'high'] }
+                  : { efforts: [], effortsUnknown: true }),
+              }],
+            },
+          }],
+        } as never);
+        readCustomKey.mockReturnValue('custom-secret');
+        fetchMock.mockImplementation(async (_url, init) => {
+          const body = JSON.parse(String((init as { body: string }).body)) as Record<string, unknown>;
+          if (rejectsBody(rule, body)) return rejected(400) as never;
+          return (wireProtocol === 'openai-chat' ? chatOk('ok') : responsesOk('ok')) as never;
+        });
+
+        const result = await requestExplicitUtilityText('hello', {
+          providerId: 'custom-route',
+          agentKind: 'codex',
+          model: 'custom-model',
+          maxTokens: 384,
+          disableReasoning: true,
+        });
+
+        expect(result).toMatchObject({ ok: true, text: 'ok' });
+        const last = bodyOf(fetchMock.mock.calls.length - 1);
+        const reasoningField = wireProtocol === 'openai-chat' ? 'reasoning_effort' : 'reasoning';
+        const minimalBody = wireProtocol === 'openai-chat'
+          ? { model: 'custom-model', messages: [{ role: 'user', content: 'hello' }] }
+          : {
+            model: 'custom-model',
+            input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+          };
+        if (rule === 'rejectsOffButAcceptsLow') {
+          // Stops at the lowest tier instead of dropping everything.
+          expect(last).toMatchObject(
+            wireProtocol === 'openai-chat' ? { reasoning_effort: 'low' } : { reasoning: { effort: 'low' } },
+          );
+        } else if (rule === 'rejectsAnyReasoning' && tiers === 'no tiers') {
+          // Models without tiers reach "no reasoning parameters" (output budget kept) first.
+          expect(last).not.toHaveProperty(reasoningField);
+          expect(last).not.toHaveProperty('thinking');
+          expect(last).toHaveProperty(wireProtocol === 'openai-chat' ? 'max_tokens' : 'max_output_tokens', 384);
+        } else {
+          expect(last).toEqual(minimalBody);
+        }
+        expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(4);
+      });
+
+      it('never remembers the minimal body', async () => {
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream: 'https://custom.example/v1',
+          model: { id: 'custom-thinker', efforts: ['low', 'medium'] },
+        }) as never);
+        readCustomKey.mockReturnValue('custom-secret');
+        fetchMock.mockImplementation(async (_url, init) => {
+          const body = JSON.parse(String((init as { body: string }).body)) as Record<string, unknown>;
+          return ('max_tokens' in body ? rejected(400) : chatOk('ok')) as never;
+        });
+        const request = () => requestExplicitUtilityText('hello', {
+          providerId: 'custom-chat',
+          agentKind: 'codex',
+          model: 'custom-thinker',
+          maxTokens: 384,
+          disableReasoning: true,
+        });
+
+        await expect(request()).resolves.toMatchObject({ ok: true });
+        fetchMock.mockClear();
+        await expect(request()).resolves.toMatchObject({ ok: true });
+        // Starts from the reasoning ladder again, not from the remembered minimal body.
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, max_tokens: 384 });
+      });
     });
 
     it('remembers the accepted step and continues down when it is later rejected', async () => {

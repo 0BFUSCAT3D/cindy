@@ -29,13 +29,15 @@ export type UtilityReasoningRung =
 /**
  * 目录对该模型思考档位的说法:
  * - declared:声明了档位(按强弱升序);
- * - empty:明确声明没有档位(或厂商档案标为不思考);
- * - unknown:没有任何来源声明过。
+ * - undeclared:没有档位——空列表与 `effortsUnknown` 一并按此处理。目录(尤其 Cindy AI
+ *   网关的下发)不表达「能不能关掉思考」,空列表不能当成「不思考」;
+ * - no-reasoning:明确已知不收思考参数(厂商档案 noReasoningModels、
+ *   `supportsReasoning === false`、目录显式 `reasoning: false`)。
  */
 export type UtilityReasoningDeclaration =
   | { kind: 'declared'; efforts: readonly string[] }
-  | { kind: 'empty' }
-  | { kind: 'unknown' };
+  | { kind: 'undeclared' }
+  | { kind: 'no-reasoning' };
 
 export type UtilityRequestStep = {
   wire: UtilityProviderWire;
@@ -46,32 +48,17 @@ export type UtilityRequestStep = {
   gatewayNative?: boolean;
 };
 
-/** 写死的档位兜底只用于目录没声明的模型,与改动前 Responses 的取值一致。 */
+/** 写死的档位兜底只用于目录没有档位的模型,与改动前 Responses 的取值一致。 */
 const UNKNOWN_MODEL_EFFORT = 'low';
 
 /** 每次辅助请求因参数类错误而发出的请求总数上限(不含 #6098 的预算重试)。 */
 export const MAX_REASONING_REQUESTS = 4;
 
-/**
- * Cindy AI 网关的模型档位由网关下发;下发里缺了 efforts 时目录会落成 `[]`,
- * 与「明确声明为空」不可区分。网关的原始声明保留在 discoveredMetadata 里,
- * 据此把「没下发」识别为未声明,而不是当成「这个模型不思考」。
- */
 export function utilityReasoningDeclaration(
-  providerId: string,
-  agentKind: string,
-  model: Pick<CatalogModel, 'efforts' | 'effortsUnknown' | 'discoveredMetadata' | 'reasoning'> | undefined,
+  model: Pick<CatalogModel, 'efforts' | 'reasoning'> | undefined,
 ): UtilityReasoningDeclaration {
-  if (!model || model.effortsUnknown || !Array.isArray(model.efforts)) return { kind: 'unknown' };
-  if (model.efforts.length === 0) {
-    if (providerId === 'xd') {
-      return Array.isArray(model.discoveredMetadata?.efforts) ? { kind: 'empty' } : { kind: 'unknown' };
-    }
-    // 自定义 Pi 模型从不打「未声明」标记,`[]` 只是 Pi 运行时的占位(见
-    // model-providers user-provider.ts);只有显式 reasoning:false 才算声明为空。
-    if (agentKind === 'pi' && model.reasoning !== false) return { kind: 'unknown' };
-    return { kind: 'empty' };
-  }
+  if (model?.reasoning === false) return { kind: 'no-reasoning' };
+  if (!model || !Array.isArray(model.efforts) || model.efforts.length === 0) return { kind: 'undeclared' };
   const efforts = [...new Set(model.efforts)].sort(
     (a, b) => effortRank(a as Effort) - effortRank(b as Effort),
   );
@@ -118,17 +105,25 @@ export function compatHasReasoningOff(input: {
   return typeof wireMap === 'object' && wireMap !== null && Object.hasOwn(wireMap, 'none');
 }
 
-/** 同一声明在某个请求格式上的退让顺序:关掉(协议支持时)→ 最低档 → 高一档。 */
+/**
+ * 同一声明在某个请求格式上的退让顺序。「关掉」由协议决定,与目录写了什么无关:
+ * - 声明了档位:关掉(Chat / Messages)→ 最低档 → 高一档;
+ * - 没有档位:关掉(Chat / Messages)→ low → 不带思考参数;
+ * - 明确不收思考参数:一开始就不带。
+ */
 export function utilityReasoningRungs(
   wire: UtilityProviderWire,
   declaration: UtilityReasoningDeclaration,
 ): UtilityReasoningRung[] {
-  if (declaration.kind === 'empty') return [{ kind: 'omit' }];
+  if (declaration.kind === 'no-reasoning') return [{ kind: 'omit' }];
   const off: UtilityReasoningRung[] = wire === 'responses' ? [] : [{ kind: 'off' }];
-  const efforts = declaration.kind === 'declared'
-    ? declaration.efforts.slice(0, 2)
-    : [UNKNOWN_MODEL_EFFORT];
-  return [...off, ...efforts.map((effort) => ({ kind: 'effort' as const, effort }))];
+  if (declaration.kind === 'declared') {
+    return [
+      ...off,
+      ...declaration.efforts.slice(0, 2).map((effort) => ({ kind: 'effort' as const, effort })),
+    ];
+  }
+  return [...off, { kind: 'effort', effort: UNKNOWN_MODEL_EFFORT }, { kind: 'omit' }];
 }
 
 export function utilityReasoningRungKey(rung: UtilityReasoningRung): string {
@@ -150,8 +145,9 @@ export type UtilityReasoningMode =
  *
  * - `chatFallback`:Cindy AI 按模型原生格式发,原生格式出参数 / 格式类错误时退回 Chat,
  *   Chat 从原生格式起步的那一档接着往下退(思考档位照常带上,不会丢)。
- * - `minimalBodyFallback`:自定义供应商沿用的「去掉所有可选参数」兜底;档位模式下
- *   只给目录没声明档位(或声明为空)的模型,声明了档位的绝不退到不带思考参数。
+ * - `minimalBodyFallback`:自定义供应商沿用的「去掉所有可选参数」兜底,内容与触发条件
+ *   (400 / 422)和改动前一致,不论有没有声明档位都作为最后一步;它是旧保底,
+ *   「声明了档位就不退到不带思考参数」只约束上面新增的几步。
  */
 export function buildUtilityRequestPlan(input: {
   wire: UtilityProviderWire;
@@ -180,8 +176,7 @@ export function buildUtilityRequestPlan(input: {
       for (const rung of chatRungs.slice(start)) steps.push({ wire: 'chat-completions', rung });
     }
   }
-  const minimalAllowed = mode.kind === 'fixed' || mode.declaration.kind !== 'declared';
-  if (input.minimalBodyFallback && minimalAllowed && wire !== 'anthropic-messages') {
+  if (input.minimalBodyFallback && wire !== 'anthropic-messages') {
     steps.push({ wire, rung: { kind: 'omit' }, minimalBody: true });
   }
   return steps;

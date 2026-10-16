@@ -16,27 +16,20 @@ const keys = (steps: ReturnType<typeof buildUtilityRequestPlan>) => steps.map(ut
 
 describe('utilityReasoningDeclaration', () => {
   it('sorts declared efforts from least to most thinking', () => {
-    expect(utilityReasoningDeclaration('custom', 'codex', { efforts: ['max', 'low', 'high'] })).toEqual({
+    expect(utilityReasoningDeclaration({ efforts: ['max', 'low', 'high'] })).toEqual({
       kind: 'declared',
       efforts: ['low', 'high', 'max'],
     });
   });
 
-  it('treats an explicit empty list as declared-empty and a missing one as unknown', () => {
-    expect(utilityReasoningDeclaration('anthropic', 'claude-code', { efforts: [] })).toEqual({ kind: 'empty' });
-    expect(utilityReasoningDeclaration('custom', 'codex', { efforts: [], effortsUnknown: true })).toEqual({ kind: 'unknown' });
-    expect(utilityReasoningDeclaration('custom', 'codex', undefined)).toEqual({ kind: 'unknown' });
+  it('treats an empty list and a missing model alike', () => {
+    expect(utilityReasoningDeclaration({ efforts: [] })).toEqual({ kind: 'undeclared' });
+    expect(utilityReasoningDeclaration(undefined)).toEqual({ kind: 'undeclared' });
   });
 
-  it('only trusts an empty Cindy AI list that the Gateway actually sent', () => {
-    expect(utilityReasoningDeclaration('xd', 'codex', { efforts: [] })).toEqual({ kind: 'unknown' });
-    expect(utilityReasoningDeclaration('xd', 'codex', { efforts: [], discoveredMetadata: { efforts: [] } }))
-      .toEqual({ kind: 'empty' });
-  });
-
-  it('does not read a custom Pi placeholder list as declared-empty', () => {
-    expect(utilityReasoningDeclaration('custom-pi', 'pi', { efforts: [] })).toEqual({ kind: 'unknown' });
-    expect(utilityReasoningDeclaration('custom-pi', 'pi', { efforts: [], reasoning: false })).toEqual({ kind: 'empty' });
+  it('only an explicit reasoning:false means no reasoning parameters at all', () => {
+    expect(utilityReasoningDeclaration({ efforts: [], reasoning: false })).toEqual({ kind: 'no-reasoning' });
+    expect(utilityReasoningDeclaration({ efforts: ['low'], reasoning: false })).toEqual({ kind: 'no-reasoning' });
   });
 });
 
@@ -68,26 +61,40 @@ describe('buildUtilityRequestPlan', () => {
     ]);
   });
 
-  it('never adds the minimal body to a declared ladder', () => {
+  it('keeps the legacy minimal body as the last custom-route step for declared models', () => {
     expect(keys(buildUtilityRequestPlan({
       wire: 'chat-completions',
       mode: { kind: 'ladder', declaration: declared },
       minimalBodyFallback: true,
-    }))).not.toContain('chat-completions|omit|minimal');
+    }))).toEqual([
+      'chat-completions|off',
+      'chat-completions|effort:low',
+      'chat-completions|effort:medium',
+      'chat-completions|omit|minimal',
+    ]);
   });
 
-  it('walks an unknown model from off to low to the minimal body', () => {
+  it('walks a model without tiers from off to low to no reasoning parameters', () => {
     expect(keys(buildUtilityRequestPlan({
       wire: 'chat-completions',
-      mode: { kind: 'ladder', declaration: { kind: 'unknown' } },
+      mode: { kind: 'ladder', declaration: { kind: 'undeclared' } },
       minimalBodyFallback: true,
-    }))).toEqual(['chat-completions|off', 'chat-completions|effort:low', 'chat-completions|omit|minimal']);
-  });
-
-  it('sends nothing for a declared-empty model', () => {
+    }))).toEqual([
+      'chat-completions|off',
+      'chat-completions|effort:low',
+      'chat-completions|omit',
+      'chat-completions|omit|minimal',
+    ]);
     expect(keys(buildUtilityRequestPlan({
       wire: 'responses',
-      mode: { kind: 'ladder', declaration: { kind: 'empty' } },
+      mode: { kind: 'ladder', declaration: { kind: 'undeclared' } },
+    }))).toEqual(['responses|effort:low', 'responses|omit']);
+  });
+
+  it('sends nothing to a model known not to take reasoning parameters', () => {
+    expect(keys(buildUtilityRequestPlan({
+      wire: 'responses',
+      mode: { kind: 'ladder', declaration: { kind: 'no-reasoning' } },
       chatFallback: true,
     }))).toEqual(['responses|omit', 'chat-completions|omit']);
   });
@@ -147,7 +154,7 @@ describe('remembered steps', () => {
   it('never remembers the minimal body', () => {
     const steps = buildUtilityRequestPlan({
       wire: 'chat-completions',
-      mode: { kind: 'ladder', declaration: { kind: 'unknown' } },
+      mode: { kind: 'ladder', declaration: { kind: 'undeclared' } },
       minimalBodyFallback: true,
     });
     rememberUtilityStep('route', steps.at(-1)!);

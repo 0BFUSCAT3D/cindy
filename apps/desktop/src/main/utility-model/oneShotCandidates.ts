@@ -168,6 +168,13 @@ type UtilityTextExecutionFailure =
 
 /** Credential-safe error raised by a concrete utility transport. */
 class UtilityTextExecutionError extends Error {
+  /**
+   * Request format actually used when an HTTP route failed. Logs only: the
+   * shared UtilityTextAttempt.transport crosses IPC and scheduler MCP, and its
+   * two-value union cannot describe the Cindy AI native Responses / Messages wires.
+   */
+  wire?: string;
+
   constructor(readonly failure: UtilityTextExecutionFailure) {
     super(failure.reason);
     this.name = 'UtilityTextExecutionError';
@@ -1371,6 +1378,8 @@ async function executeCandidates(
         providerId: candidate.providerId,
         model: candidate.model,
         transport: candidate.transport,
+        // The wire actually used; `transport` above is the coarse shared label.
+        wire: error instanceof UtilityTextExecutionError ? error.wire : undefined,
         reason: failure.reason,
         httpStatus: failure.httpStatus,
       });
@@ -1702,6 +1711,7 @@ async function requestProviderHttpText(input: {
   if (input.signal?.aborted) abortFromParent();
   else input.signal?.addEventListener('abort', abortFromParent, { once: true });
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let currentWire: ProviderWire | undefined;
   try {
     const instructions = [input.systemPrompt, input.responseInstructions]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -1806,6 +1816,7 @@ async function requestProviderHttpText(input: {
     let index = rememberedUtilityStepIndex(input.memoryKey, input.steps);
     let step = input.steps[index];
     if (!step) throw new UtilityTextExecutionError({ reason: 'request_failed' });
+    currentWire = step.wire;
     let body = buildBody(step);
     let response = await send(step, body);
     let requests = 1;
@@ -1832,6 +1843,7 @@ async function requestProviderHttpText(input: {
       });
       index = next;
       step = input.steps[index]!;
+      currentWire = step.wire;
       body = nextBody;
       response = await send(step, body);
       requests += 1;
@@ -1875,6 +1887,11 @@ async function requestProviderHttpText(input: {
     // The step was accepted by the provider; remember it even when the model
     // produced no usable text, because the wording itself was not rejected.
     if (input.steps.length > 1) rememberUtilityStep(input.memoryKey, step);
+    log.info('utility text request accepted', {
+      wire: step.wire,
+      step: utilityRequestStepKey(step),
+      requests,
+    });
     if (!text) {
       if (step.wire === 'chat-completions') {
         log.warn('utility text chat-completions empty content', chatCompletionEmptyFingerprint(parsed));
@@ -1883,11 +1900,13 @@ async function requestProviderHttpText(input: {
     }
     return text;
   } catch (error) {
-    if (error instanceof UtilityTextExecutionError) throw error;
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new UtilityTextExecutionError({ reason: 'timeout' });
-    }
-    throw new UtilityTextExecutionError({ reason: 'request_failed' });
+    const failure = error instanceof UtilityTextExecutionError
+      ? error
+      : new UtilityTextExecutionError({
+        reason: error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'request_failed',
+      });
+    failure.wire ??= currentWire;
+    throw failure;
   } finally {
     clearTimeout(timeout);
     input.signal?.removeEventListener('abort', abortFromParent);
@@ -1925,8 +1944,8 @@ function utilityRequestPlan(input: {
         upstreamBase: input.upstreamBase,
         model: input.model,
       })
-        ? { kind: 'empty' }
-        : utilityReasoningDeclaration(input.providerId, input.agentKind, input.catalogModel);
+        ? { kind: 'no-reasoning' }
+        : utilityReasoningDeclaration(input.catalogModel);
     mode = { kind: 'ladder', declaration };
   } else {
     mode = {
