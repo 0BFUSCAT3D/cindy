@@ -11,6 +11,10 @@ import { clearAllInteractionDrafts, readAskUserDraft, readPlanReviewDraft } from
 import { forwardNavigationLock } from '@/utils/navigationLock';
 
 const { resolveInteraction, invoke, push } = vi.hoisted(() => ({ resolveInteraction: vi.fn(), invoke: vi.fn(), push: vi.fn() }));
+const asyncReply = vi.hoisted(() => ({
+  getSession: vi.fn(), aroundMessagesByClientId: vi.fn(),
+  input: { steer: vi.fn(), enqueue: vi.fn(), resume: vi.fn() },
+}));
 const { routeParams } = vi.hoisted(() => ({ routeParams: {} as { deviceId?: string; sessionId?: string } }));
 const { textLayouts } = vi.hoisted(() => ({ textLayouts: new Map<string, (event: { nativeEvent: { lines: unknown[] } }) => void>() }));
 vi.mock('expo-router', async () => {
@@ -21,7 +25,7 @@ vi.mock('expo-router', async () => {
 });
 vi.mock('@/device-link/DeviceLinkContext', () => ({ useDeviceLink: () => ({ invoke }) }));
 vi.mock('@/device-link/useMobileMakerTransport', () => ({
-  useMobileMakerTransport: () => ({ resolveInteraction }),
+  useMobileMakerTransport: () => ({ resolveInteraction, ...asyncReply }),
 }));
 // 代输入 card has its own tests; its native modules (clipboard, secure store) are out of scope here.
 vi.mock('@/inputHandoff/InputHandoffCard', () => ({ InputHandoffCard: () => null }));
@@ -95,6 +99,68 @@ async function type(id: string, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+
+it.each(['send', 'close', 'stopped', 'stopped-empty', 'already-answered', 'unconfirmed', 'unknown-steer'])('retains edited async answers across expiry and new questions: %s', async (action) => {
+  remoteSessionStore.setPendingInteractions('s1', [{
+    persistId: 'original-row',
+    request: { kind: 'ask_user_question', requestId, delivery: 'async', questions: [{ question: 'Original?' }] },
+  }]);
+  await act(async () => root.render(<Harness />));
+  await type('interaction.ask.textInput', 'Writing');
+  await type('interaction.ask.textInput', '');
+  const input = host.querySelector('[data-testid="interaction.ask.textInput"]');
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{
+    request: { kind: 'ask_user_question', requestId: 'new-question', questions: [{ question: 'New?' }] },
+  }]));
+  expect(host.querySelector('[data-testid="interaction.ask.textInput"]')).toBe(input);
+  expect(host.textContent).toContain('Original?');
+  await type('interaction.ask.textInput', 'Finished');
+  resolveInteraction.mockResolvedValue({ accepted: false });
+  asyncReply.aroundMessagesByClientId.mockResolvedValue([{
+    clientId: 'original-row', role: 'ask_user', content: {
+      requestId, status: action === 'already-answered' ? 'answered' : action === 'unconfirmed' ? 'pending' : 'cancelled',
+    },
+  }]);
+  asyncReply.getSession.mockResolvedValue({ id: 's1', agentKind: 'codex', model: 'test', effort: 'medium',
+    permissionMode: 'ask', workingDir: '/repo' });
+  asyncReply.input.steer.mockResolvedValue(action === 'unknown-steer' ? undefined : false);
+  const projection = remoteSessionStore.getInputProjection('s1');
+  asyncReply.input.enqueue.mockResolvedValue({ ...projection, queuePaused: action === 'stopped' });
+  asyncReply.input.resume.mockResolvedValue({ ...projection, queuePaused: false });
+  if (action === 'stopped') {
+    await act(async () => remoteSessionStore.setInputProjection('s1', { ...projection, queuePaused: true }));
+    expect(host.textContent).toContain('interaction.panel.sendAndContinue');
+  }
+  if (action === 'stopped-empty') {
+    expect(host.textContent).toContain('interaction.panel.sendAndContinue');
+    expect(asyncReply.input.enqueue).not.toHaveBeenCalled();
+  }
+  await click(action === 'close' ? 'interaction.ask.closeButton' : 'interaction.ask.submitButton');
+  if (action === 'unconfirmed' || action === 'unknown-steer') {
+    expect(host.textContent).toContain('Original?');
+    expect(readAskUserDraft(requestId)?.customInput).toBe('Finished');
+    expect(onError).toHaveBeenLastCalledWith('interaction.panel.decisionNotAccepted');
+  } else {
+    expect(onError.mock.calls).toEqual([[null]]);
+    expect(host.textContent).toContain('New?');
+  }
+  if (action === 'send' || action === 'stopped' || action === 'stopped-empty') {
+    expect(asyncReply.input.enqueue).toHaveBeenCalledOnce();
+    expect(asyncReply.input.enqueue.mock.calls[0][1]).toMatchObject({
+      clientId: expect.stringMatching(/^question-reply:codex:test:0:[a-f0-9]{64}$/), text: '> Original?\n\nFinished',
+    });
+    expect(asyncReply.input.resume).toHaveBeenCalledTimes(action === 'stopped' ? 1 : 0);
+  } else expect(asyncReply.input.enqueue).not.toHaveBeenCalled();
+});
+
+it('does not retain an untouched async card', async () => {
+  remoteSessionStore.setPendingInteractions('s1', [{
+    request: { kind: 'ask_user_question', requestId, delivery: 'async', questions: [{ question: 'Original?' }] },
+  }]);
+  await act(async () => root.render(<Harness />));
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', []));
+  expect(host.querySelector('[data-testid="interaction.ask.card"]')).toBeNull();
+});
 
 it.each(['permission', 'ask_user_question', 'plan_review'])('lets a shared guest submit %s through its decision button', async (kind) => {
   remoteSessionStore.setPendingInteractions('s1', [{ request: {

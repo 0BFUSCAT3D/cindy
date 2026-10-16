@@ -53,6 +53,32 @@ async function fillBothQuestions(view: ReturnType<typeof render>) {
 }
 
 describe('AskUserQuestionPrompt identity', () => {
+  it('starts protection on IME composition, but not focus or opening the text field', () => {
+    const props = makeProps();
+    const view = render(createElement(AskUserQuestionPrompt, props));
+    fireEvent.click(view.getByText('Type something else…'));
+    const input = view.getByPlaceholderText('Type your answer…');
+    fireEvent.focus(input);
+    expect(props.onDraftChange.mock.lastCall?.[0]?.started).not.toBe(true);
+    fireEvent.compositionStart(input);
+    expect(props.onDraftChange.mock.lastCall?.[0]?.started).toBe(true);
+    fireEvent.change(input, { target: { value: '正在输入' } });
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    expect(props.onDraftChange.mock.lastCall?.[0]).toMatchObject({ started: true, customInput: '' });
+  });
+
+  it('restores an unfinished field after leaving and returning to the task', () => {
+    const props = makeProps();
+    const view = render(createElement(AskUserQuestionPrompt, props));
+    fireEvent.click(view.getByText('Type something else…'));
+    fireEvent.change(view.getByPlaceholderText('Type your answer…'), { target: { value: 'Not finished' } });
+    const draft = props.onDraftChange.mock.lastCall?.[0];
+    view.unmount();
+    const restored = render(createElement(AskUserQuestionPrompt, { ...props, draft }));
+    expect((restored.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement).value).toBe('Not finished');
+  });
+
   it('keeps text, selections and question progress when the same card is synchronized', async () => {
     const props = makeProps();
     const view = render(createElement(AskUserQuestionPrompt, props));
@@ -103,6 +129,7 @@ describe('AskUserQuestionPrompt identity', () => {
     expect(view.queryByPlaceholderText('Type your answer…')).toBeNull();
     expect(props.onDraftChange).toHaveBeenLastCalledWith({
       requestId: 'request-1', currentIndex: 0, answers: {},
+      started: false, customInput: '', selectedLabels: [], showCustomInput: false,
     });
 
     fireEvent.click(view.getByText('First option'));
@@ -140,7 +167,8 @@ describe('AskUserQuestionPrompt identity', () => {
     expect(view.queryByText('First question')).not.toBeNull();
     expect(view.queryByText('1/2')).not.toBeNull();
     expect(view.queryByPlaceholderText('Type your answer…')).toBeNull();
-    expect(props.onDraftChange).toHaveBeenCalledWith({ requestId, currentIndex: 0, answers: {} });
+    expect(props.onDraftChange).toHaveBeenCalledWith({ requestId, currentIndex: 0, answers: {},
+      started: false, customInput: '', selectedLabels: [], showCustomInput: false });
 
     fireEvent.click(view.getByText('First option'));
     await waitFor(() => expect(view.queryByText('Second question')).not.toBeNull());

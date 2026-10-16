@@ -10737,6 +10737,8 @@
       "skip": "跳过",
       "next": "下一题",
       "submit": "提交",
+      "sendAndContinue": "发送并继续",
+      "close": "关闭",
       "customAnswer": "输入其他回答…",
       "answerPlaceholder": "请输入回答…"
     },
