@@ -66,6 +66,23 @@ describe('FolderPickerPopover project search', () => {
     expect(screen.queryByPlaceholderText(SEARCH)).toBeNull();
   });
 
+  it('focuses the search box when projects arrive after the menu opened', () => {
+    const props = { open: true, onOpenChange: vi.fn(), onSelect: vi.fn() };
+    const { rerender } = render(
+      <FolderPickerPopover {...props} projectOptions={[]}>
+        <button type="button">trigger</button>
+      </FolderPickerPopover>,
+    );
+    expect(screen.queryByPlaceholderText(SEARCH)).toBeNull();
+
+    rerender(
+      <FolderPickerPopover {...props} projectOptions={manyProjects}>
+        <button type="button">trigger</button>
+      </FolderPickerPopover>,
+    );
+    expect(document.activeElement).toBe(screen.getByPlaceholderText(SEARCH));
+  });
+
   it('filters projects, picks the first match on Enter, and shows an empty result', () => {
     const { onSelect } = renderPicker(manyProjects);
     const input = screen.getByPlaceholderText(SEARCH);

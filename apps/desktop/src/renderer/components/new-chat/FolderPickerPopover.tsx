@@ -197,6 +197,23 @@ export function FolderPickerPopover({
     if (!open) setProjectQuery('');
   }, [open]);
 
+  // 项目异步到达(远程设备首读、本机首次加载)时搜索框晚于弹层出现,onOpenAutoFocus 已错过。
+  // 本次打开内搜索框首次出现时补一次聚焦;只接管仍停在弹层内的焦点,不抢用户已移走的焦点。
+  const searchAutoFocusedRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      searchAutoFocusedRef.current = false;
+      return;
+    }
+    const input = projectSearchRef.current;
+    if (!showProjectSearch || !input || searchAutoFocusedRef.current) return;
+    searchAutoFocusedRef.current = true;
+    const active = document.activeElement;
+    if (active === input) return;
+    const content = input.closest('[role="dialog"]');
+    if (!active || active === document.body || content?.contains(active)) input.focus();
+  }, [open, showProjectSearch]);
+
   const updateScrollFade = useCallback(() => {
     const el = projectScrollEl;
     const next = el
