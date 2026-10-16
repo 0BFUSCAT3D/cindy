@@ -74,10 +74,16 @@ describe('Cindy AI enterprise quota refresh', () => {
     const api = await import('../claudeAccountUsage');
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountUsageSnapshot()).toEqual(quota);
+    const cleared = vi.fn();
+    const offClear = api.observeClaudeQuotaClears(cleared);
+    const revision = api.readClaudeQuotaClearRevision();
     mocks.managed.mockResolvedValue('unlimited');
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
     expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'unlimited' });
+    expect(cleared).toHaveBeenCalledTimes(1);
+    expect(api.readClaudeQuotaClearRevision()).toBe(revision + 1);
+    offClear();
     mocks.managed.mockResolvedValue(null);
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'unlimited' });
