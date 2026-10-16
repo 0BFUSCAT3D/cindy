@@ -78,6 +78,29 @@ export async function awaitWithStartupTimeout<T>(
 }
 
 /**
+ * 判断冷启动 refresh 流程的迟到结果是否「只被它自己的启动闸超时兜底」超越。
+ *
+ * 背景(2026-10-17 实机):splash 的启动闸超时后,兜底路径会把 owner 收敛回
+ * signed-out —— 那是流程自己的安全网,不是用户手动登录/登出。但它同样推进了
+ * authStateEpoch,于是流程稍后**成功**(token 已轮换并落盘)时,`epochChanged`
+ * 把它误判为「用户改过登录态」而整体丢弃:进程停在未登录,每次启动都重现。
+ *
+ * 只有「当前代际恰好等于兜底记下的那一代」才豁免;之后任何用户登录/登出都会再
+ * 推进一次代际,流程重新被正常作废(旧 token family 已被新登录取代)。
+ */
+export function supersededOnlyByOwnStartupFallback(input: {
+  /** 流程开跑时快照的代际。 */
+  epochAtStart: number;
+  /** 当前的 authStateEpoch。 */
+  currentEpoch: number;
+  /** 启动闸超时兜底自己推进到的代际;未发生兜底时为 null。 */
+  startupFallbackEpoch: number | null;
+}): boolean {
+  if (input.currentEpoch === input.epochAtStart) return false;
+  return input.startupFallbackEpoch === null || input.currentEpoch !== input.startupFallbackEpoch;
+}
+
+/**
  * 登录准备态(「正在连接登录服务」)最多阻塞 UI 的时长。getProviders 走
  * CindyAuthClient 默认 15s AbortController,但黑洞 / captive-portal 下 Electron
  * `net.fetch` 可能无视 abort,请求永不 settle → renderer 的 preparing 转圈永不

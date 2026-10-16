@@ -16,6 +16,7 @@ import {
   awaitLoginProvidersWithPreparingGate,
   awaitWithStartupTimeout,
   mapLoginProvidersLoadFailure,
+  supersededOnlyByOwnStartupFallback,
 } from '../authStartupGate';
 
 describe('awaitWithStartupTimeout', () => {
@@ -180,6 +181,48 @@ describe('awaitWithStartupTimeout', () => {
     resolveFlow('ok');
     await expect(p).resolves.toBe('ok');
     expect(onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe('supersededOnlyByOwnStartupFallback', () => {
+  it('keeps a cold-start flow alive when only its own timeout fallback advanced the epoch', () => {
+    expect(
+      supersededOnlyByOwnStartupFallback({
+        epochAtStart: 7,
+        currentEpoch: 8,
+        startupFallbackEpoch: 8,
+      }),
+    ).toBe(false);
+  });
+
+  it('still supersedes the flow after a later user auth change', () => {
+    expect(
+      supersededOnlyByOwnStartupFallback({
+        epochAtStart: 7,
+        currentEpoch: 9,
+        startupFallbackEpoch: 8,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not treat an unrelated change as the flow\'s own fallback', () => {
+    expect(
+      supersededOnlyByOwnStartupFallback({
+        epochAtStart: 7,
+        currentEpoch: 8,
+        startupFallbackEpoch: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('reports no supersession while the epoch is unchanged', () => {
+    expect(
+      supersededOnlyByOwnStartupFallback({
+        epochAtStart: 7,
+        currentEpoch: 7,
+        startupFallbackEpoch: null,
+      }),
+    ).toBe(false);
   });
 });
 

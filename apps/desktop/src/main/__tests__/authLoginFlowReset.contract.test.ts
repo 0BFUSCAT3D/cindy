@@ -889,6 +889,37 @@ describe('auth login-flow reset', () => {
     expect(getLoginBody).toContain('mapLoginProvidersLoadFailure(error)');
   });
 
+  it('does not run the signed-out timeout recovery while a cloud owner transition is already pending', () => {
+    const initializeStart = source.indexOf('export async function initialize(');
+    const initializeEnd = source.indexOf('\n}\n\n/**\n * 冷启动 refresh 流程本体', initializeStart);
+    const initializeBody = source.slice(initializeStart, initializeEnd);
+    const timeoutRecovery = initializeBody.indexOf("recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery')");
+    expect(timeoutRecovery).toBeGreaterThan(-1);
+    const recoveryGuard = initializeBody.lastIndexOf('ownerChangeShellGate.isPending()', timeoutRecovery);
+    expect(recoveryGuard).toBeGreaterThan(-1);
+    const recoveryWait = initializeBody.indexOf('await ownerChangeShellGate.waitForSettled();', recoveryGuard);
+    expect(recoveryWait).toBeGreaterThan(recoveryGuard);
+    expect(recoveryWait).toBeLessThan(timeoutRecovery);
+    // The fallback must mark the epoch it raised; otherwise the in-flight refresh
+    // that already rotated a valid token is discarded as a user auth change and
+    // every launch falls back to the login page.
+    expect(initializeBody.indexOf('coldStartTimeoutFallbackEpoch = authStateEpoch;', timeoutRecovery))
+      .toBeGreaterThan(timeoutRecovery);
+  });
+
+  it('lets a cold-start refresh outlive its own startup-gate timeout fallback', () => {
+    const coldStart = source.indexOf('async function runColdStartRefreshFlow(');
+    const coldStartEnd = source.indexOf('\n}\n\n/**\n * Called on system resume', coldStart);
+    const body = source.slice(coldStart, coldStartEnd);
+    expect(body).toContain('supersededOnlyByOwnStartupFallback({');
+    expect(body).toContain('startupFallbackEpoch: coldStartTimeoutFallbackEpoch,');
+    // The real-supersession log stays exactly where it was, after the exemption.
+    const exemption = body.indexOf('supersededOnlyByOwnStartupFallback({');
+    const warn = body.indexOf('cold-start refresh flow superseded by manual auth change');
+    expect(exemption).toBeGreaterThan(-1);
+    expect(warn).toBeGreaterThan(exemption);
+  });
+
   it('drops a runtime refresh result after logout or a newer login changes auth generation', () => {
     const refreshStart = source.indexOf('export async function refresh(');
     const refreshEnd = source.indexOf('\n}\n\nexport async function logout()', refreshStart);

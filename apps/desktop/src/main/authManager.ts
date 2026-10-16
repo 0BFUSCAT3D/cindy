@@ -65,6 +65,7 @@ import {
   awaitLoginProvidersWithPreparingGate,
   awaitWithStartupTimeout,
   mapLoginProvidersLoadFailure,
+  supersededOnlyByOwnStartupFallback,
 } from './authStartupGate';
 import { syncCanaryFlagAfterAuth } from './canaryFlagSync';
 import {
@@ -3164,6 +3165,16 @@ const COLD_START_AUTH_GATE_TIMEOUT_MS = 20_000;
 let authStateEpoch = 0;
 
 /**
+ * 启动闸超时兜底(`cold-start-timeout-recovery`)自己推进到的 authStateEpoch。
+ *
+ * 该兜底是冷启动流程自己的安全网,不是用户动作,但它同样会推进 authStateEpoch。
+ * 把这个代际记下来,让同一轮冷启动的 refresh 迟到成功时不被误判成「用户改过登录态」
+ * 而丢弃(token 已轮换,丢弃就等于每次启动都回落登录页)。
+ * 见 authStartupGate 的 supersededOnlyByOwnStartupFallback。
+ */
+let coldStartTimeoutFallbackEpoch: number | null = null;
+
+/**
  * 登录态落地后异步同步灰度标记，不阻塞 renderer 进入主界面。
  *
  * expectedAuthEpoch + expectedUserId 防止慢响应在登出或换账号之后覆盖新身份；
@@ -4678,7 +4689,20 @@ export async function initialize(options: AuthInitializeOptions = {}): Promise<A
       // A signed-out fallback is not safe until the shared Ghost projection
       // has been swept. Otherwise the previous cloud owner's links remain
       // available to local/anonymous Agent processes during a slow refresh.
+      // The refresh may already have crossed into its owner teardown while the
+      // startup deadline fires. Wait for that boundary to settle first: starting
+      // signed-out recovery concurrently would invalidate the successful refresh
+      // and make every subsequent launch appear logged out.
+      if (ownerChangeShellGate.isPending()) {
+        await ownerChangeShellGate.waitForSettled();
+        return snapshotAuthState();
+      }
       await recoverAccountFreeOwnerAtStartup('signed-out', 'cold-start-timeout-recovery');
+      // This fallback is the cold-start flow's own safety net, not a user auth
+      // action. Record the epoch it raised so the still-running refresh — which
+      // already rotated a valid token — can still publish its result instead of
+      // being discarded as "superseded by manual auth change".
+      coldStartTimeoutFallbackEpoch = authStateEpoch;
       return snapshotLoggedOutAuthState();
     },
     onLateResult: (state) =>
@@ -4708,10 +4732,21 @@ async function runColdStartRefreshFlow(
   attemptedOwnershipTokens.add(storedToken);
   const epochAtStart = authStateEpoch;
   const epochChanged = (point: string): boolean => {
-    if (authStateEpoch === epochAtStart) return false;
+    if (
+      !supersededOnlyByOwnStartupFallback({
+        epochAtStart,
+        currentEpoch: authStateEpoch,
+        startupFallbackEpoch: coldStartTimeoutFallbackEpoch,
+      })
+    ) {
+      return false;
+    }
     log.warn(
       `cold-start refresh flow superseded by manual auth change (${point}) — discarding late result`,
     );
+    // A real user auth change landed on top of the fallback: this flow's epoch is
+    // now stale for good, so stop exempting it.
+    coldStartTimeoutFallbackEpoch = null;
     return true;
   };
 
