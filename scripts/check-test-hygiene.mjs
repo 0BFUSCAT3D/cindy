@@ -101,13 +101,19 @@ function hasJustification(lines, line, marker) {
 
 /** A per-test hook cannot turn repeated module loading into an exemption. */
 function countModuleResets(code, lines) {
-  const resets = [...code.matchAll(/\bvi\.resetModules\s*\(/g)];
-  if (resets.length === 0) return 0;
+  if (!/\bresetModules\b/.test(code)) return 0;
   const ts = typescript ??= requireDesktop('typescript');
   const source = parseTestSource(ts, code);
   const nodeScopes = new WeakMap();
-  const hooks = [];
-  const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+  const calls = [];
+  const writes = new Map();
+  const isFunction = node => ts.isFunctionLike(node) && Boolean(node.body);
+  function declare(name, declaration, scope) {
+    if (ts.isIdentifier(name)) scope.bindings.set(name.text, declaration);
+    else for (const element of name.elements) {
+      if (ts.isBindingElement(element)) declare(element.name, element, scope);
+    }
+  }
   function collect(node, scope) {
     if (ts.isFunctionDeclaration(node) && node.name) scope.bindings.set(node.name.text, node);
     if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node)) {
@@ -115,25 +121,117 @@ function countModuleResets(code, lines) {
     }
     nodeScopes.set(node, scope);
     if (isFunction(node)) {
-      if (node.name) scope.bindings.set(node.name.text, node);
-      for (const parameter of node.parameters) {
-        if (ts.isIdentifier(parameter.name)) scope.bindings.set(parameter.name.text, null);
-      }
+      if (node.name && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node))) scope.bindings.set(node.name.text, node);
+      for (const parameter of node.parameters) declare(parameter.name, parameter, scope);
     }
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-      scope.bindings.set(node.name.text, node.initializer && isFunction(node.initializer) ? node.initializer : null);
-    }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
-      && /^(?:beforeEach|afterEach)$/.test(node.expression.text)) hooks.push(...node.arguments);
+    if (ts.isVariableDeclaration(node)) declare(node.name, node, scope);
+    if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportClause(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isCallExpression(node)) calls.push(node);
     ts.forEachChild(node, child => collect(child, scope));
   }
   collect(source, null);
-  function resolveHelper(identifier) {
+  function binding(identifier) {
     for (let scope = nodeScopes.get(identifier); scope; scope = scope.parent) {
       if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
     }
     return null;
   }
+  function unwrap(node) {
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+    return node;
+  }
+  function propertyName(node) {
+    return node && (ts.isIdentifier(node) || ts.isStringLiteral(node)) ? node.text : null;
+  }
+  function recordWrite(target, expression, property = null) {
+    target = unwrap(target);
+    if (ts.isIdentifier(target)) {
+      const bound = binding(target);
+      if (bound) {
+        if (!writes.has(bound)) writes.set(bound, []);
+        writes.get(bound).push({ expression, property });
+      }
+    } else if (ts.isObjectLiteralExpression(target)) {
+      for (const member of target.properties) {
+        if (ts.isShorthandPropertyAssignment(member)) recordWrite(member.name, expression, member.name.text);
+        else if (ts.isPropertyAssignment(member)) recordWrite(member.initializer, expression, propertyName(member.name));
+      }
+    }
+  }
+  function collectWrites(node) {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) recordWrite(node.left, node.right);
+    ts.forEachChild(node, collectWrites);
+  }
+  collectWrites(source);
+  function importedFromVitest(bound) {
+    let declaration = bound;
+    while (declaration && !ts.isImportDeclaration(declaration)) declaration = declaration.parent;
+    return declaration && !declaration.importClause?.isTypeOnly && !bound.isTypeOnly
+      && ts.isStringLiteral(declaration.moduleSpecifier) && declaration.moduleSpecifier.text === 'vitest';
+  }
+  function propertyMatches(expression, property, kind, seen) {
+    if (kind === 'mock' && /^(?:vi|vitest)$/.test(property)) return matches(expression, 'namespace', seen);
+    if (kind === 'reset' && property === 'resetModules') return matches(expression, 'mock', seen);
+    if (kind === 'hook' && /^(?:beforeEach|afterEach)$/.test(property)) return matches(expression, 'namespace', seen);
+    return false;
+  }
+  function boundMatches(bound, kind, seen) {
+    if (!bound || seen.has(bound)) return false;
+    seen = new Set(seen).add(bound);
+    if (importedFromVitest(bound)) {
+      if (kind === 'namespace') return ts.isNamespaceImport(bound);
+      if (ts.isImportSpecifier(bound)) {
+        const name = bound.propertyName?.text ?? bound.name.text;
+        return kind === 'mock' && /^(?:vi|vitest)$/.test(name)
+          || kind === 'hook' && /^(?:beforeEach|afterEach)$/.test(name);
+      }
+    }
+    if (ts.isBindingElement(bound) && ts.isObjectBindingPattern(bound.parent) && !bound.dotDotDotToken) {
+      const property = propertyName(bound.propertyName ?? bound.name);
+      const owner = bound.parent.parent;
+      if (kind === 'mock' && /^(?:vi|vitest)$/.test(property) && boundMatches(owner, 'namespace', seen)
+        || kind === 'reset' && property === 'resetModules' && boundMatches(owner, 'mock', seen)
+        || kind === 'hook' && /^(?:beforeEach|afterEach)$/.test(property) && boundMatches(owner, 'namespace', seen)) return true;
+    }
+    if (ts.isVariableDeclaration(bound) && bound.initializer && matches(bound.initializer, kind, seen)) return true;
+    // Follow only local static aliases, not arbitrary returned objects or callbacks.
+    return (writes.get(bound) ?? []).some(write => write.property
+      ? propertyMatches(write.expression, write.property, kind, seen) : matches(write.expression, kind, seen));
+  }
+  function matches(node, kind, seen = new Set()) {
+    node = unwrap(node);
+    if (ts.isIdentifier(node)) {
+      const bound = binding(node);
+      if (bound) return boundMatches(bound, kind, seen);
+      return kind === 'mock' && /^(?:vi|vitest)$/.test(node.text)
+        || kind === 'hook' && /^(?:beforeEach|afterEach)$/.test(node.text);
+    }
+    if (ts.isPropertyAccessExpression(node)) return propertyMatches(node.expression, node.name.text, kind, seen);
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression)) return propertyMatches(node.expression, node.argumentExpression.text, kind, seen);
+    return false;
+  }
+  function resolveHelper(node, seen = new Set()) {
+    node = unwrap(node);
+    if (isFunction(node)) return node;
+    if (!ts.isIdentifier(node)) return null;
+    const bound = binding(node);
+    if (!bound || seen.has(bound)) return null;
+    seen = new Set(seen).add(bound);
+    if (isFunction(bound)) return bound;
+    if (ts.isVariableDeclaration(bound) && bound.initializer) {
+      const helper = resolveHelper(bound.initializer, seen);
+      if (helper) return helper;
+    }
+    for (const write of writes.get(bound) ?? []) {
+      if (!write.property) {
+        const helper = resolveHelper(write.expression, seen);
+        if (helper) return helper;
+      }
+    }
+    return null;
+  }
+  const resets = new Map(calls.filter(call => matches(call.expression, 'reset')).map(call => [call.getStart(source), call]));
+  const hooks = calls.filter(call => matches(call.expression, 'hook')).flatMap(call => [...call.arguments]);
   const perTest = new Set();
   const visitedFunctions = new Set();
   function visitFunction(node) {
@@ -147,21 +245,19 @@ function countModuleResets(code, lines) {
     if (isFunction(node)) return;
     if (ts.isCallExpression(node)) {
       const expression = node.expression;
-      if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)
-        && expression.expression.text === 'vi' && expression.name.text === 'resetModules') {
-        perTest.add(expression.getStart(source));
-      }
-      if (ts.isIdentifier(expression)) visitFunction(resolveHelper(expression));
-      else if (isFunction(expression)) visitFunction(expression);
+      if (matches(expression, 'reset')) perTest.add(node.getStart(source));
+      visitFunction(resolveHelper(expression));
     }
     ts.forEachChild(node, visit);
   }
   for (const hook of hooks) {
-    if (isFunction(hook)) visitFunction(hook);
-    else if (ts.isIdentifier(hook)) visitFunction(resolveHelper(hook));
+    if (matches(hook, 'reset')) {
+      resets.set(hook.getStart(source), hook);
+      perTest.add(hook.getStart(source));
+    } else visitFunction(resolveHelper(hook));
   }
-  return resets.filter(match => perTest.has(match.index)
-    || !hasJustification(lines, lineOf(code, match.index), 'reset-modules')).length;
+  return [...resets.keys()].filter(index => perTest.has(index)
+    || !hasJustification(lines, lineOf(code, index), 'reset-modules')).length;
 }
 
 /** Mask string contents while preserving line numbers and call-site punctuation. */
@@ -737,7 +833,7 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   const code = stripComments(source);
   const lines = source.split(/\r?\n/);
   const executableCode = maskStrings(code);
-  const resetModules = countModuleResets(executableCode, lines);
+  const resetModules = countModuleResets(code, lines);
   const realWaits = countRealWaits(executableCode, lines, code);
   let sourceReads = 0;
   if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw/.test(code)) {
