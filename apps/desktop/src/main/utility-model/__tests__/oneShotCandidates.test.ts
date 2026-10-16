@@ -317,6 +317,26 @@ describe('utility one-shot candidates', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      ['provider', 'before dispatch'], ['model', 'before dispatch'],
+      ['provider', 'after dispatch'], ['model', 'after dispatch'],
+    ])('rejects a %s disabled %s instead of accepting its decision', async (kind, phase) => {
+      const disable = () => readDisableOverrides.mockReturnValue(kind === 'provider'
+        ? { disabledModels: {}, disabledProviders: { 'review-a': true } }
+        : { disabledModels: { 'review-a:small': true }, disabledProviders: {} });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        text: async () => {
+          if (phase === 'after dispatch') disable();
+          return JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}' } }] });
+        },
+      } as never);
+      const fallback = createCustomAutoReviewFallback()!;
+      if (phase === 'before dispatch') disable();
+      await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(phase === 'after dispatch' ? 1 : 0);
+    });
+
     it.each(['owner', 'chain', 'boundary'])('rejects a stale %s captured before the dedicated phase', async (change) => {
       const fallback = createCustomAutoReviewFallback()!;
       if (change === 'owner') ownerState.key = 'owner-b';
@@ -358,6 +378,7 @@ describe('utility one-shot candidates', () => {
       const fallback = createCustomAutoReviewFallback()!;
       getActiveCatalog().providers[0]!.name = 'Updated label';
       providerRouteCredentialRevision.mockImplementation((id) => id === 'unrelated' ? 1 : 0);
+      readDisableOverrides.mockReturnValue({ disabledModels: { 'unrelated:small': true }, disabledProviders: { unrelated: true } });
       fetchMock.mockResolvedValueOnce(response('{"verdict":"allow"}'));
       await expect(fallback(prompt, options)).resolves.toMatchObject({ ok: true, providerId: 'review-a' });
       expect(fetchMock).toHaveBeenCalledTimes(1);

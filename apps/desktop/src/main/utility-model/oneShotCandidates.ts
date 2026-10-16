@@ -442,6 +442,7 @@ export function createCustomAutoReviewFallback(): AutoReviewAuxiliaryFallback | 
       source: provider?.source,
       auth: provider?.auth,
       routing: provider?.routing[route.agentKind],
+      disabled: isProviderModelRouteDisabled(route.providerId, route.model),
       // The existing revision survives delete/recreate and covers secret-only edits.
       credentialRevision: getProviderRouteCredentialRevision(route.providerId),
     });
