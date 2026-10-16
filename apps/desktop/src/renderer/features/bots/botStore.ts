@@ -17,6 +17,7 @@ import {
   NEW_BOT_DEFAULT_HARNESS,
 } from '../../../shared/botDefaults';
 import { getBotLastReadAtMap, pruneBotReadState, seedMissingBotReadState } from './botReadState';
+import { registerLoadedBotProfilesReader } from './botSessionOwners';
 import type { BotGender } from '../../../shared/botGender';
 import { BOT_FAILURE_REASONS, type BotFailureReason } from '../../../shared/botFailureReason';
 import type { BotCapabilityBaseline } from '../../../shared/botCapabilitySelection';
@@ -859,6 +860,8 @@ export function getBotProfiles(): BotProfile[] {
   ensureProfileOwner();
   return profiles;
 }
+// Route helpers in lib/ read the loaded projection through this registry (no store import).
+registerLoadedBotProfilesReader(() => (hasLoadedBotProfiles() ? getBotProfiles() : null));
 
 export function subscribeBotProfiles(listener: () => void): () => void {
   listeners.add(listener);

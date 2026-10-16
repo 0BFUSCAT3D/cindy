@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 
 const ghostFixtures = vi.hoisted(() => ({ ghosts: [] as unknown[] }));
+const openFileMenuAt = vi.hoisted(() => vi.fn());
 vi.mock('@/cindy-brain/useInstalledGhosts', () => ({
   useInstalledGhosts: () => ghostFixtures.ghosts,
 }));
@@ -51,7 +52,8 @@ vi.mock('@/components/chat/useFileChipContextMenu', () => ({
   useFileChipContextMenu: () => ({
     menu: null,
     onContextMenu: () => {},
-    openAt: () => {},
+    onActivate: (_event: unknown, openDefault: () => void) => openDefault(),
+    openAt: openFileMenuAt,
   }),
 }));
 vi.mock('@/lib/filePreview', () => ({ shouldOpenTextLightbox: async () => false }));
@@ -68,6 +70,7 @@ afterEach(cleanup);
 beforeEach(() => {
   expandMemory.reset();
   ghostFixtures.ghosts = [];
+  openFileMenuAt.mockClear();
 });
 
 const mkTool = (id: string, toolName: string, toolInput: unknown): ChatMessage => ({
@@ -77,6 +80,16 @@ const mkTool = (id: string, toolName: string, toolInput: unknown): ChatMessage =
   toolUseId: `tu-${id}`,
   toolName,
   toolInput,
+});
+
+it.each(['ContextMenu', 'F10'])('passes the focused tool row to its file menu (%s)', (key) => {
+  render(createElement(AgentActionRow, {
+    message: mkTool('read-file', 'Read', { file_path: '/repo/example.ts' }),
+  }));
+  const row = screen.getByRole('button');
+  row.focus();
+  fireEvent.keyDown(row, { key, shiftKey: key === 'F10' });
+  expect(openFileMenuAt).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), row);
 });
 
 describe('AgentActionRow — ghost_call 插件名称', () => {

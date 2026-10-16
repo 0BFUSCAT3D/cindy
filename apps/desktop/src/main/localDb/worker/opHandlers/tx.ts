@@ -1,3 +1,4 @@
+import { runPluginUsageTransaction } from './pluginUsageTx.js';
 import { runTaskTagsTransaction } from './taskTagsTx.js';
 import { batchAutoReviewProjection, readAutoReviewProjectionTransaction } from '../../autoReviewProjection.js';
 import { CLOSE_SHARED_TASKS_FOR_SESSION_SQL } from '../../sharedTaskClosureSql.js';
@@ -106,6 +107,7 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
       return recentWorkdirsMergeWindowsIdentity(db, txArgs);
     case 'recentWorkdirs.removeWindowsIdentity':
       return recentWorkdirsRemoveWindowsIdentity(db, txArgs);
+    case 'pluginUsage.execute': return runPluginUsageTransaction(db, txArgs);
     case 'taskTags.execute':
       return runTaskTagsTransaction(db, txArgs);
     case 'projectAliases.replaceIdentity':

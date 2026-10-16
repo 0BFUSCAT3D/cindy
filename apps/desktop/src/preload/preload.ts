@@ -1479,6 +1479,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reload: (id: string): Promise<{ state: string }> => ipcRenderer.invoke('ghosts:reload', id),
     // Library(持久作品库)设置面:概览/选位置(宿主弹原生选择器)/绑定/
     // 迁移/回默认/解绑/删除。删除的破坏性确认在 Renderer 完成。
+    usageSummary: (id: string): Promise<import('../shared/pluginUsage').PluginUsageSummary | null> => ipcRenderer.invoke('ghosts:usage-summary', id),
+    usageHistory: (): Promise<{ subjectId: string; ghostId: string; displayName: string; sourceKind: string }[]> => ipcRenderer.invoke('ghosts:usage-history'),
+    usageHistorySummary: (subjectId: string): Promise<import('../shared/pluginUsage').PluginUsageSummary | null> => ipcRenderer.invoke('ghosts:usage-history-summary', subjectId),
+    clearUsage: (subjectId: string | null): Promise<void> => ipcRenderer.invoke('ghosts:usage-clear', subjectId),
     libraryOverview: (id: string): Promise<import('../shared/ghost').GhostLibraryOverview> =>
       ipcRenderer.invoke('ghosts:library-overview', id),
     libraryPickLocation: (
@@ -6013,6 +6017,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       delegationId: string,
     ): Promise<import('../shared/botDelegation').BotDelegationCancelResult> =>
       ipcRenderer.invoke('maker:bot-delegation:cancel', parentSessionId, delegationId),
+    traceBotDelegationNote: (
+      parentSessionId: string,
+      delegationId: string,
+      text: string,
+    ): Promise<import('../shared/botDelegation').BotDelegationNoteTraceResult> =>
+      ipcRenderer.invoke('maker:bot-delegation:note-trace', parentSessionId, delegationId, text),
     onBotDelegationChanged: fanOutBotDelegationChanged,
     getBotDirectMessageThread: (
       threadId: string,
@@ -6506,8 +6516,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:model-context-limit:reset', target, owner),
 
     // 「在新窗口打开」会话多开 —— 新建一个完整窗口定位到该 session。
-    openSessionInNewWindow: (sessionId: string, deviceId?: string | null): Promise<void> =>
-      ipcRenderer.invoke('maker:open-session-in-new-window', sessionId, deviceId),
+    openSessionInNewWindow: (
+      sessionId: string, deviceId?: string | null, messageClientId?: string | null,
+    ): Promise<void> =>
+      ipcRenderer.invoke('maker:open-session-in-new-window', sessionId, deviceId, messageClientId),
     openSessionInNewWindowIfDroppedOutside: (
       sessionId: string,
       deviceId?: string | null,

@@ -28,6 +28,9 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { PluginUsageCard } from './PluginUsageCard';
+import { PluginSharedUsage } from './PluginSharedUsage';
+import type { PluginMarketItem } from '../../../shared/pluginMarket';
 import { GhostLibrarySection } from './GhostLibrarySection';
 import { PluginBackgroundTasksSection } from './PluginBackgroundTasksSection';
 import { PluginTaskPrefs } from '@/cindy-brain/PluginTaskPrefs';
@@ -63,9 +66,12 @@ import './plugin-motion.css';
 interface GhostPluginDetailViewProps {
   ghost: InstalledGhost | null;
   detail: GhostPluginDetail;
+  marketItem?: PluginMarketItem | null;
   panelStatus: string | null;
   enabledOverride?: boolean;
   onBack: () => void;
+  usageOwnerKey?: string;
+  confirmClearUsage?: () => Promise<boolean>;
   onToggle: (enabled: boolean) => void;
   /** 主动作:面板型「使用」/ 指令或 Host 能力型「对话」;纯工具型不渲染主按钮。 */
   onUse: () => void;
@@ -109,6 +115,9 @@ export function GhostPluginDetailView({
   onBack,
   onToggle,
   onUse,
+  marketItem,
+  usageOwnerKey,
+  confirmClearUsage,
   mainViewSidebarVisible = true,
   onMainViewSidebarVisibleChange,
   onUpdate,
@@ -232,11 +241,11 @@ export function GhostPluginDetailView({
               size="detail"
               onIconLoadError={onIconLoadError}
             />
-            <div className="min-w-0">
+            <div className="plugin-detail-heading min-w-0">
               <h1 className="truncate text-28 font-medium leading-[1.214] text-[var(--text-primary)]">
                 {detail.name}
               </h1>
-              <GhostPluginMetadata author={detail.author} version={detail.version} />
+              <GhostPluginMetadata author={detail.author} version={detail.version} marketItem={marketItem} />
             </div>
 
             <div
@@ -419,6 +428,14 @@ export function GhostPluginDetailView({
           ) : null}
         </header>
 
+        {ghost ? (
+          <PluginUsageCard
+            key={`${usageOwnerKey ?? 'local'}:${detail.id}`}
+            ghostId={detail.id}
+            confirmClear={confirmClearUsage}
+          />
+        ) : null}
+
         {hasConfiguration ? (
           <section
             className={hasGithubConnection ? 'mt-6' : DETAIL_SECTION_CLASS}
@@ -570,13 +587,15 @@ export function OauthScopeStaleBadge() {
 export function GhostPluginMetadata({
   author,
   version,
+  marketItem,
 }: {
   author?: string | null;
   version: string;
+  marketItem?: PluginMarketItem | null;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="plugin-detail-metadata mt-2 flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden whitespace-nowrap text-13 leading-5 text-[var(--text-tertiary)]">
+    <div className="plugin-detail-metadata mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-13 leading-5 text-[var(--text-tertiary)]">
       {author ? (
         <>
           <span className="min-w-0 truncate">
@@ -586,6 +605,7 @@ export function GhostPluginMetadata({
         </>
       ) : null}
       <span className="shrink-0">v{version}</span>
+      {marketItem ? <PluginSharedUsage detail={marketItem} /> : null}
     </div>
   );
 }

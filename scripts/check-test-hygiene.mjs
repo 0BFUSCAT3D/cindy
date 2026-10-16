@@ -191,8 +191,8 @@ const SOURCE_EXT = /\.(?:tsx?|mts|cts|css|mjs|cjs|jsx?)$/;
 // usually hold an mkdtemp() directory whose fake source files are test input.
 const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
 
-function findEnclosingReadCall(code, index) {
-  const starts = [...code.matchAll(/\breadFile(?:Sync)?\s*\(/g)];
+function findEnclosingReadCall(code, index, pattern = /\breadFile(?:Sync)?\s*\(/g) {
+  const starts = [...code.matchAll(pattern)];
   for (let n = starts.length - 1; n >= 0; n -= 1) {
     const start = starts[n].index;
     if (start == null || start >= index) continue;
@@ -244,6 +244,16 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
   if (helperCall && sourceReadHelpers.has(helperCall)) return true;
   // resolve(__dirname, '..', 'Sidebar.tsx') or new URL('../x.ts', import.meta.url).
   if (REPO_ANCHOR.test(line)) return true;
+  // A separately declared sourcePath may be formatted over several lines before
+  // it is passed to readFileSync. Keep that equivalent to the inline path form.
+  const pathStart = findEnclosingReadCall(code, match.index, /\b(?:resolve|join)\s*\(/g);
+  if (pathStart >= 0) {
+    const pathContext = code.slice(pathStart, match.index + match[0].length);
+    const binding = code.slice(Math.max(0, pathStart - 150), pathStart)
+      .match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[A-Za-z_$][\w$]*\.)?$/)?.[1];
+    const readBinding = binding && new RegExp('\\breadFile(?:Sync)?\\s*\\(\\s*' + binding + '\\b').test(code);
+    if (readBinding && REPO_ANCHOR.test(pathContext) && !/fixture/i.test(pathContext)) return true;
+  }
   // Keep the same decision for a formatted multi-line readFileSync call. The
   // current line may only contain the final path segment, while the repository
   // anchor and read call live on the preceding lines.

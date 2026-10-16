@@ -34,8 +34,7 @@ export function findBotProfileForSession(
  * clicked Agent Island card itself.
  *
  * Targets that render no disposal control for this Session's error dispose the
- * clicked card instead: a hidden group lane lives inside its group chat and a
- * delegation run lands on the Bot task page's unavailable gate (`consumesAlert`,
+ * clicked card instead: a hidden group lane lives inside its group chat (`consumesAlert`,
  * once the route commits); a read-only history transcript re-checks ownership
  * after it commits and may redirect away, so its gate disposes it once shown
  * (`gateConsumesAlert`). Unread errors are immune to passive visibility acks,
@@ -56,8 +55,8 @@ export interface BotSessionEntryTarget {
  * Resolve the public Bot route for a notification or other session-only entry.
  * The stable main task stays on the short Bot route; history keeps its own
  * read-only route and a group lane returns to its group.
- * `/bots/:botId/session/:sessionId` only mounts a live chat; other roles (a
- * delegation run) still land on its unavailable gate.
+ * Background tasks keep their ordinary `/cc-agent/:sessionId` route with its
+ * message anchors and error controls; other live chats use the Bot session route.
  */
 export function botRouteForOwnedSession(
   profiles: readonly BotProfile[],
@@ -82,12 +81,28 @@ export function botRouteForOwnedSession(
     (session) => session.role === 'canonical' || session.kind === 'chat',
   )?.id;
   if (canonicalSessionId === sessionId) return { route: botRoute, consumesAlert: false };
-  return {
-    route: `${botRoute}/session/${encodeURIComponent(sessionId)}`,
-    // Only a live chat mounts there; a delegation run lands on the unavailable
-    // gate, which has nothing to dispose the error with.
-    consumesAlert: projection?.kind === 'worker' || projection?.role === 'delegation',
-  };
+  if (projection?.kind === 'worker' || projection?.role === 'delegation') {
+    return { route: `/cc-agent/${encodeURIComponent(sessionId)}`, consumesAlert: false };
+  }
+  return { route: `${botRoute}/session/${encodeURIComponent(sessionId)}`, consumesAlert: false };
+}
+
+type LoadedBotProfilesReader = () => readonly BotProfile[] | null;
+let loadedBotProfilesReader: LoadedBotProfilesReader | null = null;
+
+/**
+ * botStore registers a reader for its loaded projection when its module loads, so
+ * route helpers in `lib/` (notification clicks, sidebar) read it synchronously without
+ * importing the store graph — and without a dynamic import on a click, which made the
+ * shared-task dialog tests time out on slow CI runners.
+ */
+export function registerLoadedBotProfilesReader(reader: LoadedBotProfilesReader | null): void {
+  loadedBotProfilesReader = reader;
+}
+
+/** The loaded Bot profiles, or null while the store is not loaded for this account. */
+export function readLoadedBotProfiles(): readonly BotProfile[] | null {
+  return loadedBotProfilesReader?.() ?? null;
 }
 
 export interface BotSessionEntryRouteDeps {
@@ -158,7 +173,8 @@ export function createSessionEntryNavigator(
     const isLatest = () => sequence === entry;
     void deps.resolveBotRoute(sessionId).then((target) => {
       if (!isLatest()) return;
-      if (!target) {
+      // Ordinary task navigation preserves message anchors and visible-session reporting.
+      if (!target || target.route.startsWith('/cc-agent/')) {
         deps.openOrdinary(sessionId, messageClientId, isLatest);
         return;
       }

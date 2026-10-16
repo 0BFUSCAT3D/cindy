@@ -814,9 +814,6 @@
     "apps/desktop/src/renderer/__tests__/markdownCjkStrongDelimiter.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/renderer/__tests__/markdownDiffBlock.test.ts": {
-      "sourceReads": 2
-    },
     "apps/desktop/src/renderer/__tests__/markdownFencedCodeInline.test.ts": {
       "sourceReads": 1
     },

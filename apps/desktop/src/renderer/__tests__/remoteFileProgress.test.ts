@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { downloadRemoteChatEntry, fetchChatFileWithToasts } from '../lib/remoteFileOpen';
+import { downloadRemoteChatEntry, fetchChatFileWithToasts, openRemoteChatFile } from '../lib/remoteFileOpen';
 import { getToastSnapshot, toast } from '../lib/toast';
 import messages from '../i18n/locales/en/common.json';
 import {
@@ -29,6 +29,7 @@ const chatFetch = vi.fn();
 const chatDownload = vi.fn();
 const chatCancel = vi.fn();
 const showItemInFolder = vi.fn();
+const openPath = vi.fn();
 const success = { ok: true as const, cachePath: '/cache/file.zip', stale: false, size: 4096 };
 
 function deferred<T>() {
@@ -60,6 +61,7 @@ beforeEach(() => {
   chatDownload.mockReset();
   chatCancel.mockReset().mockResolvedValue(undefined);
   showItemInFolder.mockReset().mockResolvedValue({ success: true });
+  openPath.mockReset().mockResolvedValue({ success: true });
   vi.stubGlobal('window', {
     electronAPI: {
       fileBrowser: {
@@ -72,6 +74,7 @@ beforeEach(() => {
         },
       },
       showItemInFolder,
+      openPath,
     },
   });
 });
@@ -86,6 +89,58 @@ afterEach(() => {
 });
 
 describe('remote file transfer toasts', () => {
+  describe.each([origin, { kind: 'ssh' as const, remoteHostId: 'ssh-host' }])(
+    'default application safety (%j)',
+    (remote) => {
+      it.each(['/remote/file.js', '/remote/file.bat', 'C:\\remote\\file.PS1'])(
+        'downloads dangerous file %s without opening it',
+        async (path) => {
+          chatDownload.mockResolvedValue({ ok: true, path: '/downloads/file', stale: false, skipped: 0 });
+          await openRemoteChatFile(remote, workdir, path);
+          expect(chatFetch).not.toHaveBeenCalled();
+          expect(chatDownload).toHaveBeenCalledWith(expect.objectContaining({ origin: remote, absPath: path }));
+          expect(showItemInFolder).toHaveBeenCalledTimes(1);
+          expect(openPath).not.toHaveBeenCalled();
+        },
+      );
+
+      it('opens only a safe cache path after successful fetch', async () => {
+        chatFetch.mockResolvedValue(success);
+        await openRemoteChatFile(remote, workdir, absPath);
+        expect(openPath).toHaveBeenCalledWith(success.cachePath);
+        expect(chatDownload).not.toHaveBeenCalled();
+      });
+
+      it('also refuses an executable cache path for a safe original name', async () => {
+        chatFetch.mockResolvedValue({ ...success, cachePath: '/cache/payload.js' });
+        chatDownload.mockResolvedValue({ ok: true, path: '/downloads/file.zip', stale: false, skipped: 0 });
+        await openRemoteChatFile(remote, workdir, absPath);
+        expect(openPath).not.toHaveBeenCalled();
+        expect(chatDownload).toHaveBeenCalledWith(expect.objectContaining({ absPath }));
+      });
+
+      it('does not open or download after fetch failure', async () => {
+        chatFetch.mockRejectedValue(new Error('offline'));
+        await openRemoteChatFile(remote, workdir, absPath);
+        expect(openPath).not.toHaveBeenCalled();
+        expect(chatDownload).not.toHaveBeenCalled();
+      });
+
+      it('does not open a late successful fetch after cancellation', async () => {
+        const result = deferred<typeof success>();
+        chatFetch.mockReturnValue(result.promise);
+        const pending = openRemoteChatFile(remote, workdir, absPath);
+        await vi.advanceTimersByTimeAsync(600);
+        active()[0].action?.onClick();
+        result.resolve(success);
+        await pending;
+        expect(openPath).not.toHaveBeenCalled();
+        expect(chatDownload).not.toHaveBeenCalled();
+        expect(listeners.size).toBe(0);
+      });
+    },
+  );
+
   it('preview observers ignore other requests and stop immediately on unmount', () => {
     const a = vi.fn();
     const b = vi.fn();

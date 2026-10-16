@@ -36,7 +36,12 @@ pnpm benchmark:desktop-workers -- --workers 1,2,4,8 --runs 1 --output <report.js
 2026-10-16 调整：Windows 与 Linux unit 都从 2 个分片改为 4 个；Windows runner 自测和伴侣 DB 回归
 移到独立并行 job `windows-runner-checks`，由原必需检查 `Windows unit tests` 一并阻断。本仓是公开仓，
 标准 runner 不计费。按上表估算，Windows 每片约为准备 3 分钟 + Desktop 9–11 分钟 + Mobile 与其余包
-2–3 分钟，整条 CI 约 17–20 分钟。**这是估算，必须用首次 4 分片 CI 的实测替换。**
+2–3 分钟，整条 CI 约 17–20 分钟。
+
+首次四分片实测：PR #6196、head `433248f7ff` 的 client-ci run `38856774589` 全部通过。
+Windows 四片为 809／1,006／812／661 秒，关键路径 16 分 46 秒，较原 34.1–34.2 分钟减少约 51%；
+Linux 四片为 783／539／691／718 秒；独立 Windows runner/DB job 387 秒。此轮先于审查恢复必要
+契约与同步主干，最终合并版本的 CI 还须单独核验，不能用这次结果代替。
 
 Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时，文件少的包末尾分片可能为空（6 个文件
 分 4 片是 2、2、2、0）。runner 原来只在「文件数少于分片数」时补 `--passWithNoTests`，本机 4/4 分片因此
@@ -58,7 +63,7 @@ Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时
 
 每片的 worker 时间里，收集（导入模块）约 325–350 秒，执行测试 250–480 秒，环境初始化 105–127 秒，
 准备约 46 秒；后三项主要来自逐文件隔离。整体切换隔离方式会破坏正确性，所以改为逐个修掉开销最大的
-文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 450 个
+文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 449 个
 文件，只减不增，见 engineering-conventions.md §3.2「性能预算」）。修完 `codexProxyHost` 后，最慢的
 单个文件从 138 秒降到约 32 秒，不再由一个文件决定分片下限。
 
@@ -82,15 +87,16 @@ CI 时长仍要用首次 4 分片 CI 实测确认。
 对 499 个候选文件逐一审计：
 
 - 初始删除 81 个文件（488 条用例）；独立审查发现其中包含缺少等价覆盖的权限、竞态、远程路由
-  和设计契约，已恢复 30 个文件，并从 `homeUsageDashboardSource.test.ts` 保留账号隔离的 3 条
-  契约。最终相对原始基线删除 50 个文件，不能沿用最初的「488 条无效用例」结论。
+  和设计契约，已恢复 30 个完整文件，并从 `homeUsageDashboardSource.test.ts` 保留账号隔离的 3 条
+  契约（含同步主干时保留的 `botChatSurface.test.ts`）。最终相对原始基线删除 49 个文件，
+  不能沿用最初的「488 条无效用例」结论。
   `FileTreeView.horizontalScroll.test.tsx` 真实挂载组件并断言可见宽度，已恢复。
 - 207 个 PARTIAL 文件（2,874 条用例，其中约 991 条是静态或重复接线候选）保留：它们与续跑、设备链、
   账户切换、Pi、权限和竞速回归混在一起，只能在补上等价的生产入口测试后逐项替换，不能按字符串模式
   批量删除。
 - 最初迁移 27 个静态契约文件；审查恢复与扫描器补漏后，Desktop 和 Mobile 的跨文件安全、权限、
   主题或文案契约统一迁到各自 `guard` allowlist，由 CI 的 `pnpm test:guard` 执行。最终名单只在
-  `scripts/test-workspaces.config.mjs` 维护，由 runner 从 unit 排除；
+  `scripts/test-workspaces.config.mjs` 维护（Desktop 84、Mobile 28），由 runner 从 unit 排除；
   不要在 `apps/desktop/vitest.config.ts` 的项目 exclude 里重复排除，否则 guard 层自己也收集不到这些
   文件（2026-10-16 发现 29 个 allowlist 文件实际只跑了 2 个，已修复）。
 - 缺少 timing 的文件是 `src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts`。

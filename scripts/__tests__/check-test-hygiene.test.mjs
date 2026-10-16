@@ -66,6 +66,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ sourceReads: 0 },
 		],
 		[
+			"multi-line source path declared before the read",
+			"const sourcePath = resolve(\n  __dirname,\n  '..',\n  'Image.tsx',\n);\nconst source = readFileSync(sourcePath, 'utf8');",
+			{ sourceReads: 1 },
+		],
+		[
+			"a separately executed test script is not a source read",
+			"const script = join(\n dirname(fileURLToPath(import.meta.url)),\n '../scripts/test-share.mjs',\n);\nspawnSync(process.execPath, [script]);\nreadFileSync(template, 'utf8');",
+			{ sourceReads: 0 },
+		],
+		[
 			"source read through a typed helper",
 			"const read = (relative: string): string => readFileSync(resolve(__dirname, relative), 'utf8');\nconst source = read('../ChatInput.tsx');",
 			{ sourceReads: 1 },

@@ -12323,6 +12323,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return delegationForRestore.cancelDelegationFromOwner(parentSessionId, delegationId);
     },
   );
+  ipcMain.handle(
+    MAKER_INVOKE.BOT_DELEGATION_NOTE_TRACE,
+    async (event, parentSessionId: unknown, delegationId: unknown, text: unknown) => {
+      // Local only: the card offers 补一句 for tasks on this computer and the channel
+      // stays out of the device-link allowlist, so the sender is always the app renderer.
+      assertTrustedAppRendererEvent(event);
+      if (
+        typeof parentSessionId !== 'string'
+        || (parentSessionId.length === 0 || parentSessionId.length > 128)
+        || typeof delegationId !== 'string'
+        || (delegationId.length === 0 || delegationId.length > 128)
+        || typeof text !== 'string'
+        || (text.trim().length === 0 || text.length > 4_000)
+      ) {
+        throwIpcError('INVALID_PARAMS', 'parentSessionId + delegationId + text required');
+      }
+      return delegationForRestore.traceOwnerNote(parentSessionId, delegationId, text);
+    },
+  );
   const captureSessionOwner = () => {
     const owner = getCurrentDbClientSnapshot();
     return () => {
