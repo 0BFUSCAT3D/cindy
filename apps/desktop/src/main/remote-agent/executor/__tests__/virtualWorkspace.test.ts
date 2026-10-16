@@ -156,6 +156,15 @@ describe('virtual workspace', () => {
     await executor.close();
   });
 
+  it('does not treat the leading backslashes of a network share path as an escaped separator', () => {
+    const aliases = [{ from: '//server/share/project', to: 'C:\\Agent\\workspace' }];
+    // 本机 → Agent：不认转义写法的方向保持原行为。
+    expect(projectPathText('cat \\\\server\\share\\project\\file', aliases)).toBe('cat C:\\Agent\\workspace\\file');
+    // Agent → 本机方向即使认转义，UNC 开头的 `\\server` 也不是转义。
+    expect(projectPathText('cat \\\\server\\share\\project\\file', aliases, 'text', undefined, { escapedSeparators: true }))
+      .toBe('cat C:\\Agent\\workspace\\file');
+  });
+
   it.skipIf(process.platform === 'win32')('keeps Windows paths in local output intact when the task computer uses POSIX paths', () => {
     const mirror = 'C:\\Users\\XD\\AppData\\Roaming\\Cindy\\remote-agent\\workspaces\\c\\s\\fs';
     const shadow = mirror + '\\workspace\\p\\p';

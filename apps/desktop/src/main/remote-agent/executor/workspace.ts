@@ -176,13 +176,14 @@ const PATH_SUFFIX = /[/\\][^\s\x60'";:|&)<>}\]*?$%]*/y;
  */
 export type SeparatorStyle = 'target' | 'source';
 
-function joinMapped(to: string, matched: string, suffix: string, style: SeparatorStyle): string {
+function joinMapped(to: string, matched: string, suffix: string, style: SeparatorStyle, escapedSeparators = false): string {
   const base = to.replace(/[\\/]+$/, '');
-  // Agent 写的是转义的 `\\` 时，后缀里的 `\\` 是一个分隔符；目标端仍用反斜杠时保持转义写法。
-  const escaped = separatorToken(matched) === '\\\\';
+  // 只在认转义写法的方向(Agent 写回本机)：Agent 写的是转义的 `\\` 时，后缀里的 `\\` 是一个分隔符，
+  // 目标端仍用反斜杠时保持转义写法。网络共享路径开头的 `\\server` 不是转义。
+  const escaped = escapedSeparators && separatorToken(matched.replace(/^[\\/]{2}(?=[^\\/])/, '')) === '\\\\';
   const suffixSeparators = escaped ? /\\\\|[\\/]/g : /[\\/]/g;
   if (style === 'source' && WINDOWS_PATH.test(base)) {
-    const separator = separatorToken(matched) ?? '\\';
+    const separator = escaped ? '\\\\' : /[\\/]/.exec(matched)?.[0] ?? '\\';
     return base.replace(/[\\/]/g, separator) + suffix.replace(suffixSeparators, separator);
   }
   const separator = to.includes('\\') ? (escaped ? '\\\\' : '\\') : '/';
@@ -324,7 +325,7 @@ export function projectPathText(
       for (const alias of entries) {
         if (stripAliasPrefix(pathValue, alias.from) === null) continue;
         const suffix = pathValue.slice(alias.from.replace(/[\\/]+$/, '').length);
-        const mapped = joinMapped(alias.to, pathValue, suffix, options.wholeSeparators ?? 'target');
+        const mapped = joinMapped(alias.to, pathValue, suffix, options.wholeSeparators ?? 'target', options.escapedSeparators);
         // 明确的路径字段可整体映射；歧义字段(如 script)只有现存完整路径才整体映射，
         // 否则按正文逐 token 投影，避免把脚本源码里的 /api/v1 等内容当成路径。
         if (valueContext === 'path' || isCompletePath?.(mapped)) return replace(pathValue, () => mapped, offset) + lineEnd;
@@ -339,7 +340,7 @@ export function projectPathText(
       const suffix = PATH_SUFFIX.exec(value)?.[0] ?? '';
       const input = value.slice(hit.index, hit.end + suffix.length);
       const { to } = hit.alias;
-      result += value.slice(position, hit.index) + replace(input, () => joinMapped(to, input, suffix, options.separators ?? 'target'), offset === null ? null : offset + hit.index);
+      result += value.slice(position, hit.index) + replace(input, () => joinMapped(to, input, suffix, options.separators ?? 'target', options.escapedSeparators), offset === null ? null : offset + hit.index);
       position = hit.end + suffix.length;
     }
     return result + value.slice(position);
