@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { RotateCcw, ImagePlus, Film } from 'lucide-react';
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import { extractIpcError } from '@/utils/ipcError';
 import { DownloadMeter } from './DownloadMeter';
 
@@ -16,12 +16,15 @@ import {
   DEFAULT_APPEARANCE_SETTINGS,
   isCustomWallpaperVideo,
   SELECTABLE_WALLPAPER_IDS,
+  type WallpaperId,
 } from '@/../shared/appearanceSettings';
 
 export function WallpaperSection() {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const buttons = useRef(new Map<WallpaperId, HTMLButtonElement>());
+  const [focusedWallpaperId, setFocusedWallpaperId] = useState<WallpaperId | null>(null);
   const {
     wallpaperId,
     wallpaperOverlay,
@@ -42,6 +45,10 @@ export function WallpaperSection() {
     setMotion,
     resetWallpaper,
   } = useWallpaperSettings();
+  const entryId =
+    focusedWallpaperId ??
+    SELECTABLE_WALLPAPER_IDS.find((id) => id === wallpaperId) ??
+    SELECTABLE_WALLPAPER_IDS[0];
   // The shared slider restores its starting value during cancellation. Clear
   // that temporary preview after its handler, returning to the latest saved value.
   const cancelBlurPreview = useCallback(() => {
@@ -129,8 +136,11 @@ export function WallpaperSection() {
         className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] gap-2"
         role="radiogroup"
         aria-label={t('settings.appearance.wallpaper.aria')}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setFocusedWallpaperId(null);
+        }}
       >
-        {SELECTABLE_WALLPAPER_IDS.map((id) => {
+        {SELECTABLE_WALLPAPER_IDS.map((id, index) => {
           const selected = wallpaperId === id;
           const label = t('settings.appearance.wallpaper.options.' + id);
           const background =
@@ -140,11 +150,52 @@ export function WallpaperSection() {
           return (
             <Tip key={id} text={label}>
               <button
+                ref={(button) => {
+                  if (button) buttons.current.set(id, button);
+                  else buttons.current.delete(id);
+                }}
                 type="button"
                 role="radio"
                 aria-checked={selected}
                 aria-label={label}
                 disabled={busy}
+                tabIndex={!busy && id === entryId ? 0 : -1}
+                onFocus={() => setFocusedWallpaperId(id)}
+                onKeyDown={(event) => {
+                  if (busy || event.altKey || event.ctrlKey || event.metaKey) return;
+                  const rtl = getComputedStyle(event.currentTarget).direction === 'rtl';
+                  let next: number;
+                  switch (event.key) {
+                    case 'ArrowRight':
+                      next = index + (rtl ? -1 : 1);
+                      break;
+                    case 'ArrowLeft':
+                      next = index + (rtl ? 1 : -1);
+                      break;
+                    case 'ArrowDown':
+                      next = index + 1;
+                      break;
+                    case 'ArrowUp':
+                      next = index - 1;
+                      break;
+                    case 'Home':
+                      next = 0;
+                      break;
+                    case 'End':
+                      next = SELECTABLE_WALLPAPER_IDS.length - 1;
+                      break;
+                    default:
+                      return;
+                  }
+                  event.preventDefault();
+                  const count = SELECTABLE_WALLPAPER_IDS.length;
+                  const target = SELECTABLE_WALLPAPER_IDS[(next + count) % count];
+                  buttons.current.get(target)?.focus();
+                  // An empty custom tile needs explicit activation to open the file picker.
+                  if (target !== wallpaperId && (target !== 'custom' || customWallpaperUrl)) {
+                    setWallpaper(target);
+                  }
+                }}
                 onClick={() =>
                   id === 'custom' && !customWallpaperUrl ? void chooseWallpaper() : setWallpaper(id)
                 }

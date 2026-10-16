@@ -102,6 +102,10 @@ and a 4px gap before each readable name. At the standard 1280px window width thi
 shows eight columns; narrower windows naturally show fewer. Keep direct click-to-apply
 selection, the existing selected/focus treatment, and full names in accessible labels
 and hover/focus tooltips when the visible label is truncated.
+The grid has one Tab entry, using the selected visible tile or the first tile for
+a hidden saved selection. Arrow keys move focus and selection with wrapping; Home /
+End reach the first / last tile. An empty Custom tile only receives focus during
+arrow navigation; Enter / Space explicitly opens the file picker.
 Custom wallpaper is available through Choose Wallpaper, Replace Wallpaper and Remove Wallpaper
 in the same section (user addition, 2026-10-01; video support, 2026-10-05). Accept local PNG/JPEG/WebP up to
 20 MB and 40 megapixels, store a metadata-free static image up to 3840 pixels
