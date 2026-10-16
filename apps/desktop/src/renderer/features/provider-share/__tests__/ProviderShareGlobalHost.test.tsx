@@ -418,6 +418,30 @@ describe('ProviderShareGlobalHost', () => {
     expect(screen.getByTestId('provider-share-approve-dialog').textContent).toContain('providerShare.approve.calloutGroup:');
   });
 
+  it('disables approval while a group change refresh is pending and updates the callout before re-enabling it', async () => {
+    let finish!: (groups: Record<string, unknown>) => void;
+    let changed: () => void = () => undefined;
+    const groups = vi.fn().mockResolvedValueOnce({}).mockImplementationOnce(
+      () => new Promise((resolve) => { finish = resolve; }),
+    );
+    Object.assign(window.electronAPI, {
+      providerGroup: { command: groups, onChanged: (listener: () => void) => { changed = listener; return () => undefined; } },
+    });
+    renderHost();
+    await screen.findByTestId('provider-share-approve-dialog');
+    const approve = screen.getByRole('button', { name: 'providerShare.approve.approve' }) as HTMLButtonElement;
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    expect(screen.getByTestId('provider-share-approve-dialog').textContent).toContain('providerShare.approve.callout:');
+    await act(async () => changed());
+    expect(approve.disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'providerShare.approve.reject' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(approve);
+    expect(bus.command).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'approve' }));
+    await act(async () => finish({ xd: groupConfig }));
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    expect(screen.getByTestId('provider-share-approve-dialog').textContent).toContain('providerShare.approve.calloutGroup:');
+  });
+
   it('keeps approval disabled after a failed group read and recovers when settings reload', async () => {
     const groups = vi.fn().mockRejectedValue(new Error('group settings unavailable'));
     let changed: () => void = () => undefined;

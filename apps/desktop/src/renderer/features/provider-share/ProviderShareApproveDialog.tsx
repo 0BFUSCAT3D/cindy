@@ -52,7 +52,9 @@ export function ProviderShareApproveDialog({
     : localGroups.groups[share.providerId] !== undefined;
   // 请求成功不代表目录里有目标供应商；找到它并确认类型、有没有组后才能同意，避免漏掉 Claude 邮箱告知或说错 Agent 在哪运行。
   const providerClassificationReady = providerForApproval !== undefined
-    && (hostDeviceId ? !remote.loading && remote.error === null : localGroups.ready && !localGroups.failed);
+    && (hostDeviceId
+      ? !remote.loading && remote.error === null
+      : localGroups.ready && !localGroups.loading && !localGroups.failed);
 
   const decide = async (action: 'approve' | 'reject') => {
     if (busy) return;

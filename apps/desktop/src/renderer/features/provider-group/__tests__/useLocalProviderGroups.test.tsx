@@ -77,27 +77,30 @@ describe('useLocalProviderGroups', () => {
 
   it('keeps showing the groups while re-reading after a same-account refresh', async () => {
     command.mockResolvedValueOnce(group('A'));
-    const first = renderHook(() => useLocalProviderGroups());
-    await waitFor(() => expect(first.result.current.anthropic?.members[0].label).toBe('A'));
+    const first = renderHook(() => useLocalProviderGroupsState());
+    await waitFor(() => expect(first.result.current.groups.anthropic?.members[0].label).toBe('A'));
     first.unmount();
 
     const again = deferred<Record<string, ProviderGroupConfig>>();
     command.mockReturnValueOnce(again.promise);
     setDataOwnerGeneration('owner-a', 2);
-    const second = renderHook(() => useLocalProviderGroups());
-    expect(second.result.current.anthropic?.members[0].label).toBe('A');
+    const second = renderHook(() => useLocalProviderGroupsState());
+    expect(second.result.current.groups.anthropic?.members[0].label).toBe('A');
+    expect(second.result.current.ready).toBe(true);
+    expect(second.result.current.loading).toBe(true);
     await act(async () => {
       again.resolve(group('A2'));
       await again.promise;
     });
-    await waitFor(() => expect(second.result.current.anthropic?.members[0].label).toBe('A2'));
+    await waitFor(() => expect(second.result.current.groups.anthropic?.members[0].label).toBe('A2'));
+    expect(second.result.current.loading).toBe(false);
   });
 
   it('is not ready until the first read finishes, and stays ready for the next component', async () => {
     const first = deferred<Record<string, ProviderGroupConfig>>();
     command.mockReturnValueOnce(first.promise);
     const view = renderHook(() => useLocalProviderGroupsState());
-    expect(view.result.current).toEqual({ groups: {}, ready: false, failed: false });
+    expect(view.result.current).toEqual({ groups: {}, ready: false, failed: false, loading: true });
     await act(async () => {
       first.resolve(group('A'));
       await first.promise;
@@ -114,7 +117,7 @@ describe('useLocalProviderGroups', () => {
   it('reports a failed read and retries when reopened without a group change event', async () => {
     command.mockRejectedValueOnce(new Error('boom'));
     const view = renderHook(() => useLocalProviderGroupsState());
-    await waitFor(() => expect(view.result.current).toEqual({ groups: {}, ready: true, failed: true }));
+    await waitFor(() => expect(view.result.current).toEqual({ groups: {}, ready: true, failed: true, loading: false }));
     view.unmount();
 
     const retry = deferred<Record<string, ProviderGroupConfig>>();
@@ -139,6 +142,6 @@ describe('useLocalProviderGroups', () => {
     command.mockReturnValueOnce(new Promise(() => undefined));
     setDataOwnerGeneration('owner-b', 2);
     const second = renderHook(() => useLocalProviderGroupsState());
-    expect(second.result.current).toEqual({ groups: {}, ready: false, failed: false });
+    expect(second.result.current).toEqual({ groups: {}, ready: false, failed: false, loading: true });
   });
 });
