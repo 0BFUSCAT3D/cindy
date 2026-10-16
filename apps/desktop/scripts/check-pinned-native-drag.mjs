@@ -120,6 +120,7 @@ try {
   const order = async () => JSON.parse(await page.getByTestId('order').textContent());
   const initial = ['project-a', 'task', 'project-b', 'project-c'];
   for (const theme of ['light', 'dark']) {
+    let textRowHeight;
     for (const [mode, columns] of [
       ['text', 1],
       ['list', 1],
@@ -130,6 +131,17 @@ try {
       const url = `http://fixture.local/?theme=${theme}&mode=${mode}&columns=${columns}`;
       await page.goto(url);
       await page.getByTestId('order').waitFor();
+      const rowHeight = (await page.getByTestId('task').boundingBox()).height;
+      const preview = page.getByTestId('task-preview');
+      if (mode === 'text') {
+        assert.equal(await preview.count(), 0, 'compact text rows must not have a preview');
+        textRowHeight = rowHeight;
+      } else {
+        assert.equal(await preview.textContent(), 'Latest task message preview');
+        if (mode === 'list') {
+          assert(rowHeight > textRowHeight, 'list rows must include a separate preview line');
+        }
+      }
       const title = page.getByTestId('project-a-title');
       await drag(title, page.getByTestId('project-c-title'));
       await page.waitForFunction(
@@ -139,6 +151,20 @@ try {
         await order(),
         initial,
         `${theme}/${mode}/${columns}: project must reorder`,
+      );
+
+      await page.goto(url);
+      await drag(
+        page.getByTestId(mode === 'text' ? 'task-title' : 'task-preview'),
+        page.getByTestId('project-c-title'),
+      );
+      await page.waitForFunction(
+        () => Number(document.querySelector('[data-testid="writes"]').textContent) > 0,
+      );
+      assert.notEqual(
+        (await order()).indexOf('task'),
+        initial.indexOf('task'),
+        `${theme}/${mode}/${columns}: task title/preview must start a reorder`,
       );
 
       await page.goto(url);
@@ -160,7 +186,7 @@ try {
       assert.deepEqual(await order(), initial, 'outside drops must not save');
       assert.equal(await page.getByTestId('writes').textContent(), '0');
       console.log(
-        `PASS ${theme}/${mode}/${columns}: reorder, controls, child boundary, Escape, outside drop`,
+        `PASS ${theme}/${mode}/${columns}: row structure, project/task reorder, controls, child boundary, Escape, outside drop`,
       );
     }
   }
