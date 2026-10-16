@@ -52,6 +52,7 @@ async function requestRemote<T>(device: string, request: unknown, check: () => v
   if (!getAppCapabilities().canUseDeviceLink || isAppSessionBoundaryPending())
     throw new Error('DESKTOP_STOPPED');
   const startedAt = Date.now();
+  const startedMonotonic = performance.now();
   try {
     const result = await remoteInvoke(device, REMOTE_DESKTOP_CHANNEL, [request], {
       preSend: () => {
@@ -70,7 +71,7 @@ async function requestRemote<T>(device: string, request: unknown, check: () => v
       log.debug('desktop request failed', {
         at: Date.now(),
         startedAt,
-        elapsedMs: Date.now() - startedAt,
+        elapsedMs: performance.now() - startedMonotonic,
         operation: parsed.op,
         session: lease ? createHash('sha256').update(lease).digest('hex').slice(0, 16) : null,
         code: desktopDiagnosticCode(

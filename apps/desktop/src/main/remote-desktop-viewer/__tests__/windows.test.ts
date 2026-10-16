@@ -120,6 +120,7 @@ afterEach(() => {
   fixture.handlers.clear();
   fixture.owner = 'a:1';
   fixture.debug.mockClear();
+  vi.restoreAllMocks();
 });
 const event = (win: any) => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
 const call = (channel: string, win: any, ...args: unknown[]) =>
@@ -156,6 +157,39 @@ it.each([
   expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('private computer');
   expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('private-text');
 });
+
+it.each([-3600000, 3600000])(
+  'measures request duration independently of a %s ms clock correction',
+  async (jump) => {
+    const sender: any = { id: 100 };
+    manager = new RemoteDesktopViewerWindows((value) => value === sender);
+    manager.register();
+    manager.open(sender, { deviceId: 'a', name: 'A' });
+    const win = fixture.windows[0];
+    call(REMOTE_VIEWER.READY, win);
+    call(REMOTE_VIEWER.PRESENTED, win);
+    const { generation } = call(REMOTE_VIEWER.STATE, win);
+    await call(REMOTE_VIEWER.REQUEST, win, generation, { op: 'start', displayId: 'screen' });
+    const wall = vi.spyOn(Date, 'now').mockReturnValue(10000000);
+    const monotonic = vi.spyOn(performance, 'now').mockReturnValue(100);
+    vi.mocked(remoteInvoke).mockImplementationOnce(async () => {
+      wall.mockReturnValue(10000000 + jump);
+      monotonic.mockReturnValue(350);
+      throw new Error('INVOKE_TIMEOUT');
+    });
+    await expect(
+      call(REMOTE_VIEWER.REQUEST, win, generation, { op: 'heartbeat', lease: 'lease-a' }),
+    ).rejects.toThrow('INVOKE_TIMEOUT');
+    expect(fixture.debug).toHaveBeenCalledWith(
+      'desktop request failed',
+      expect.objectContaining({
+        startedAt: 10000000,
+        at: 10000000 + jump,
+        elapsedMs: 250,
+      }),
+    );
+  },
+);
 
 it.each(['resolve', 'reject'])(
   'closes immediately while stop is pending and ignores its late %s',

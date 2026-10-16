@@ -63,9 +63,8 @@ it('records bounded received heartbeats and the unchanged expiration deadline wi
   expect(data).toMatchObject({
     reason: 'heartbeat-expired',
     at: 43000,
-    ageMs: 42000,
-    lastHeartbeatAgeMs: 12000,
-    expiresInMs: 0,
+    startedAt: 1000,
+    expiresAt: 43000,
     session: createHash('sha256').update(lease).digest('hex').slice(0, 16),
   });
   expect(data.heartbeats).toHaveLength(8);

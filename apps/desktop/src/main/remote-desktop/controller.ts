@@ -374,11 +374,10 @@ export class RemoteDesktopController {
           lockScreen,
           controlling: active.controlling,
           backgroundViewing: active.backgroundViewing === true,
-          ageMs: at - active.diagnostics.startedAt,
-          expiresInMs: active.expires - at,
-          lastHeartbeatAgeMs: heartbeats.length
-            ? at - heartbeats[heartbeats.length - 1].receivedAt!
-            : null,
+          // Wall timestamps correlate events and expose the existing lease deadline;
+          // subtracting them would misreport durations when the system clock changes.
+          startedAt: active.diagnostics.startedAt,
+          expiresAt: active.expires,
           heartbeats,
         });
       } catch {
