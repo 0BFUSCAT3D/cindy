@@ -973,8 +973,8 @@ function ProjectCapsules({
 }) {
   const { t } = useTranslation();
   const remove = useCallback(
-    (dirPath: string) => {
-      void window.electronAPI?.localDb?.bots?.workbench?.removeDirectory(botId, dirPath).catch(() => {});
+    (dirPath: string, deviceId?: string) => {
+      void window.electronAPI?.localDb?.bots?.workbench?.removeDirectory(botId, dirPath, deviceId).catch(() => {});
     },
     [botId],
   );
@@ -995,7 +995,7 @@ function ProjectCapsules({
           <Tip text={t('bots.workbench.removeProject', { name: botName, project: dir.name })}>
             <button
               type="button"
-              onClick={() => remove(dir.path)}
+              onClick={() => remove(dir.path, dir.deviceId)}
               aria-label={t('bots.workbench.removeProject', { name: botName, project: dir.name })}
               className={cn(ICON_BUTTON_CLASS, 'size-6 text-[var(--text-tertiary)]')}
             >

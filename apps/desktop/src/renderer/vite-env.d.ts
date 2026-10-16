@@ -4858,7 +4858,8 @@ interface ElectronAPI {
           botId: string,
           path: string,
         ) => Promise<{ ok: true } | { ok: false; errorCode: 'NOT_A_DIRECTORY' | 'TOO_MANY' }>;
-        removeDirectory: (botId: string, path: string) => Promise<void>;
+        /** `deviceId`: the folder is on that computer (cloud companions); absent for this computer's. */
+        removeDirectory: (botId: string, path: string, deviceId?: string) => Promise<void>;
         readTask: (
           botId: string,
           taskId: string,

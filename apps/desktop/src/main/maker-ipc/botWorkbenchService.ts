@@ -343,13 +343,13 @@ export async function addBotWorkbenchDirectory(
   });
 }
 
-export async function removeBotWorkbenchDirectory(userDataDir: string, botId: string, dirPath: string): Promise<void> {
-  // 与 add 同口径归一:add 存的是 path.resolve 后的路径, remove 若按原始串比较,
-  // 等价但写法不同的路径(尾分隔符、./、../ 段)会静默漏删, 且广播后 UI 里项目
-  // 仍在。resolve 后比较。
-  const resolved = path.resolve(dirPath);
+export async function removeBotWorkbenchDirectory(userDataDir: string, botId: string, dirPath: string, deviceId?: string): Promise<void> {
+  // 目录的身份是「所在电脑 + 路径」。本机目录与 add 同口径归一:add 存的是 path.resolve 后的路径,
+  // remove 若按原始串比较,等价但写法不同的路径(尾分隔符、./、../ 段)会静默漏删。另一台电脑的目录
+  // 按原样比较(本机规则会改写别的平台的路径),且只删那台电脑的那一条,不连带同路径的本机目录。
+  const target = deviceId ? dirPath : path.resolve(dirPath);
   await mutate(userDataDir, botId, (stored) => ({
-    next: { ...stored, directories: stored.directories.filter((dir) => dir.path !== resolved) },
+    next: { ...stored, directories: stored.directories.filter((dir) => !((dir.deviceId ?? undefined) === (deviceId || undefined) && dir.path === target)) },
     result: undefined,
   }));
 }

@@ -283,4 +283,24 @@ describe('workbench moving with the companion', () => {
     await writeFile(path.join(botProfileDir(root, 'bot-1'), 'workbench.json'), '{not json', 'utf8');
     await expect(readCompanionWorkbench(root, 'bot-1', 'desk')).rejects.toThrow();
   });
+
+  it('removes a folder by its computer and path, never another computer\'s same path, and never rewrites a foreign path', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'bot-workbench-'));
+    const here = path.join(root, 'here');
+    await mkdir(here);
+    expect(await addBotWorkbenchDirectory(root, 'bot-1', here)).toEqual({ ok: true });
+    const windows = 'C:\\work\\game';
+    await mergeCompanionWorkbench(root, 'bot-1', 'desk', { directories: [
+      { path: windows, addedAt: '2026-10-01T00:00:00.000Z', deviceId: 'pc' },
+      { path: here, addedAt: '2026-10-01T00:00:00.000Z', deviceId: 'laptop' }], tasks: {} });
+    const dir0 = root;
+    const listed = async () => (await readBotWorkbench(dir0, 'bot-1')).directories.map((dir) => `${dir.deviceId ?? 'here'}:${dir.path}`).sort();
+    expect(await listed()).toEqual([`here:${here}`, `laptop:${here}`, `pc:${windows}`].sort());
+    await removeBotWorkbenchDirectory(root, 'bot-1', windows, 'pc');
+    expect(await listed()).toEqual([`here:${here}`, `laptop:${here}`].sort());
+    await removeBotWorkbenchDirectory(root, 'bot-1', here);
+    expect(await listed()).toEqual([`laptop:${here}`]);
+    await removeBotWorkbenchDirectory(root, 'bot-1', here, 'laptop');
+    expect(await listed()).toEqual([]);
+  });
 });
