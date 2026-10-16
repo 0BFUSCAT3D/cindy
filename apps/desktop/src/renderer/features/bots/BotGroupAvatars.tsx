@@ -11,7 +11,7 @@ import { BotAvatar } from './BotAvatar';
 
 type AvatarMember = Pick<BotGroupMemberView, 'botId' | 'name' | 'avatar' | 'avatarColor'>;
 
-/** 固定头像区域：双人斜向叠放，多人错位重叠，描边区分前后层次。 */
+/** 固定头像区域：双人斜向叠放，多人沿圆周聚拢，描边区分前后层次。 */
 export function BotGroupSidebarAvatar({
   members,
   selected = false,
@@ -38,32 +38,35 @@ export function BotGroupSidebarAvatar({
   }
   if (!second) return <BotAvatar bot={first} size={compact ? 'sm' : 'md'} />;
   if (members.length >= 3) {
-    const positions =
-      members.length === 3
-        ? ['left-0 top-0', 'right-0 top-[15%]', 'bottom-0 left-[15%]']
-        : ['left-0 top-0', 'right-0 top-[5%]', 'bottom-[5%] left-0', 'bottom-0 right-0'];
+    const visible = members.slice(0, 5);
+    // 以 40px 头像区为基准：3/4/5 人分别用 24/22/20px，收起时同比缩放。
+    const diameter = visible.length === 3 ? 60 : visible.length === 4 ? 55 : 50;
+    const radius = (100 - diameter) / 2;
     return (
       <span aria-hidden className={cn('relative flex shrink-0', frameClass)}>
-        {members.slice(0, 4).map((member, index) => (
-          <span
-            key={member.botId}
-            className={cn(
-              'absolute flex rounded-full',
-              compact ? 'border-[1.5px]' : 'border-2',
-              members.length === 3 ? 'h-[65%] w-[65%]' : 'h-[60%] w-[60%]',
-              selected
-                ? 'border-sidebar-item-active'
-                : 'border-sidebar group-hover:border-sidebar-item-hover',
-              positions[index],
-            )}
-          >
-            <BotAvatar
-              bot={member}
-              size="xs"
-              className={cn('h-full w-full', compact ? 'text-10' : 'text-12')}
-            />
-          </span>
-        ))}
+        {visible.map((member, index) => {
+          const angle = (-3 * Math.PI) / 4 + (index * 2 * Math.PI) / visible.length;
+          return (
+            <span
+              key={member.botId}
+              className={cn(
+                'absolute flex rounded-full',
+                compact ? 'border-[1.5px]' : 'border-2',
+                selected
+                  ? 'border-sidebar-item-active'
+                  : 'border-sidebar group-hover:border-sidebar-item-hover',
+              )}
+              style={{
+                width: `${diameter}%`,
+                height: `${diameter}%`,
+                left: `${radius * (1 + Math.cos(angle))}%`,
+                top: `${radius * (1 + Math.sin(angle))}%`,
+              }}
+            >
+              <BotAvatar bot={member} size="xs" className="h-full w-full text-11" />
+            </span>
+          );
+        })}
       </span>
     );
   }
