@@ -179,11 +179,14 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
       // 开头(/clear 之后)起算——整段历史按缺口分批回补,补完之前不算新鲜,不跳过任何一轮。
       // 水位可以停在一条长消息中间(offset = 已覆盖的字符数):下一次从同一条消息的这个偏移接着取。
       type Watermark = { rowid: number; id: string | undefined; offset?: number };
+      // 只认仍在可见时间线上的行:被 rewind 软删、被删成墓碑、/clear 之前的水位消息都按
+      // 解析不到——否则一条已撤回的回复会把下界撑在上一条完成回复之上,跳过幸存历史的回补。
       const resolvedFloor = workingBefore?.coveredThroughMessageId
         ? (
             await db.queryOne<{ rowid: number }>(
-              `SELECT rowid FROM messages WHERE session_id=? AND client_id=? /* ledger-floor */`,
-              [sessionId, workingBefore.coveredThroughMessageId],
+              `SELECT rowid FROM messages WHERE session_id=? AND client_id=? AND rewind_at IS NULL
+               AND role != 'message_tombstone' ${clearedAtFilter} /* ledger-floor */`,
+              [sessionId, workingBefore.coveredThroughMessageId, sessionId],
             )
           )?.rowid
         : undefined;

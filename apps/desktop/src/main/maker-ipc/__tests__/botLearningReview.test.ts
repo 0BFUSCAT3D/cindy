@@ -31,7 +31,7 @@ vi.mock('../../appSessionState.js', () => ({
 }));
 vi.mock('../../localDb/client/current.js', () => {
   const db = {
-    queryOne: async (sql: string) =>
+    queryOne: vi.fn(async (sql: string) =>
       sql.includes('prev-completed')
         ? h.prevCompleted ? { id: 'prev', rowid: h.prevCompleted } : undefined
         : sql.includes('ledger-floor')
@@ -44,7 +44,7 @@ vi.mock('../../localDb/client/current.js', () => {
               rowid: (h.prevCompleted ?? 0) + 2,
               meta: JSON.stringify(h.meta),
             }
-          : undefined,
+          : undefined),
     query: vi.fn(async (sql: string) =>
       sql.includes('ORDER BY rowid ASC')
         ? h.gapRows
@@ -367,6 +367,12 @@ it('resolves the ledger floor by client_id so a VACUUM-renumbered rowid cannot f
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
   await reviewTeammateLearning('session', 'reply-gone');
   expect(query.mock.calls.at(-1)![1]).toEqual(['session', 0, 3, 'session', 41]);
+  // 游标解析只认可见时间线上的行:被 rewind / 删成墓碑 / 落在 /clear 之前的都算解析不到。
+  const queryOne = (getDbClient() as unknown as { queryOne: ReturnType<typeof vi.fn> }).queryOne;
+  const floorSql = String(queryOne.mock.calls.find((call) => String(call[0]).includes('ledger-floor'))![0]);
+  expect(floorSql).toContain('rewind_at IS NULL');
+  expect(floorSql).toContain("role != 'message_tombstone'");
+  expect(floorSql).toContain('cleared_at');
   // 没有账本:从对话开头起算,整段历史按缺口分批回补,而不是从上一条完成回复直接跳过去。
   h.meta = { turnCompleted: true };
   h.working = null;

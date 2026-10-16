@@ -17,7 +17,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current.js';
 import { botDelegations, botProfiles, botSessionLinks, messages, sessions } from '../localDb/schema.js';
@@ -681,10 +681,19 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
     // 没有 client_id(旧账本)或水位消息只覆盖了一部分(长消息分块中):都不算新鲜。
     if (!stored?.coveredThroughMessageId || stored.coveredThroughOffset !== undefined) return false;
     const db = getDbClient().drizzle;
+    // 水位消息必须仍在可见时间线上(未 rewind、非墓碑、在 /clear 之后),否则按不新鲜。
     const [covered] = await db
       .select({ rowid: sql<number | null>`rowid` })
       .from(messages)
-      .where(and(eq(messages.sessionId, sessionId), eq(messages.clientId, stored.coveredThroughMessageId)))
+      .where(
+        and(
+          eq(messages.sessionId, sessionId),
+          eq(messages.clientId, stored.coveredThroughMessageId),
+          isNull(messages.rewindAt),
+          ne(messages.role, 'message_tombstone'),
+          sql`${messages.createdAt} > COALESCE((SELECT cleared_at FROM sessions WHERE id = ${sessionId}), 0)`,
+        ),
+      )
       .limit(1);
     if (typeof covered?.rowid !== 'number') return false;
     const [row] = await db
