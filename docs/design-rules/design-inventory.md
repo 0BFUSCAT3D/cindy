@@ -147,7 +147,7 @@
 | apps/mobile/app/settings/device-name.tsx | RenameSelfDeviceScreen | `mobile.settings` |
 | apps/mobile/app/settings/user-bubble.tsx | UserBubblePage | `mobile.settings` |
 | apps/mobile/app/settings/voice-dictionary.tsx | VoiceDictionaryScreen | `mobile.settings` |
-| apps/mobile/app/settings/voice-speaker-filter.tsx | VoiceSpeakerFilterScreen | `mobile.settings` |
+| apps/mobile/app/settings/voice-speaker-filter.tsx | VoiceSpeakerFilterRoute | `mobile.settings` |
 | apps/mobile/app/settings.tsx | SettingsScreen | `mobile.settings` |
 | apps/mobile/app/shared-session.tsx | SharedSessionScreen | `mobile.chat.sharing` |
 
