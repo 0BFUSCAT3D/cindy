@@ -124,6 +124,8 @@ import {
   requestUtilityText,
   toAnthropicApiModelId,
 } from '../oneShotCandidates.js';
+import { resetUtilityReasoningMemory } from '../utilityReasoningPlan.js';
+import { AUTO_AUXILIARY_MODEL_CHAIN } from '../../../shared/auxiliaryModelChain.js';
 
 const getProfiles = vi.mocked(getUtilityModelChainProfiles);
 const appCapabilities = vi.mocked(getAppCapabilities);
@@ -151,6 +153,7 @@ describe('utility one-shot candidates', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchMock.mockReset();
+    resetUtilityReasoningMemory();
     chainState.source = 'auto';
     chainState.refs = ['codex-gpt-5.4-mini', 'litellm-gpt-5.4-mini'];
     ownerState.key = 'owner-a';
@@ -3172,6 +3175,641 @@ describe('utility one-shot candidates', () => {
       expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ Authorization: 'Bearer review-key-sent' });
       expect(reportKeyRejected).toHaveBeenCalledTimes(1);
       expect(reportKeyRejected).toHaveBeenCalledWith('review-key-sent');
+    });
+  });
+
+  describe('least-thinking reasoning plan', () => {
+    const GATEWAY = 'https://gateway.test.invalid';
+    const rejected = (status: number) => ({
+      ok: false,
+      status,
+      body: { cancel: vi.fn(async () => undefined) },
+    });
+    const chatOk = (content: string) => ({
+      ok: true,
+      text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+    });
+    const responsesOk = (text: string) => ({
+      ok: true,
+      text: async () => `data: {"type":"response.output_text.delta","delta":"${text}"}\ndata: [DONE]\n`,
+    });
+    const messagesOk = (text: string) => ({
+      ok: true,
+      text: async () => JSON.stringify({ content: [{ type: 'text', text }] }),
+    });
+    const urlOf = (index: number) => fetchMock.mock.calls[index]?.[0];
+    const bodyOf = (index: number) =>
+      JSON.parse(String(fetchMock.mock.calls[index]?.[1]?.body)) as Record<string, unknown>;
+
+    function xdCatalog(agent: 'codex' | 'claude-code', models: Array<Record<string, unknown>>) {
+      return {
+        providers: [{
+          id: 'xd',
+          name: 'XD Gateway',
+          source: 'builtin',
+          agents: [agent],
+          auth: { method: 'managed' },
+          routing: { [agent]: { upstream: 'https://ignored.invalid', authStrategy: 'gateway-key' } },
+          models: { [agent]: models.map((model) => ({ name: String(model.id), contextWindow: 200_000, ...model })) },
+        }],
+      };
+    }
+
+    function customChatCatalog(input: { upstream: string; model: Record<string, unknown> }) {
+      return {
+        providers: [{
+          id: 'custom-chat',
+          name: 'Custom Chat',
+          source: 'user',
+          agents: ['codex'],
+          auth: { method: 'apiKey' },
+          routing: {
+            codex: { upstream: input.upstream, wireProtocol: 'openai-chat', authStrategy: 'api-key-header' },
+          },
+          models: { codex: [{ name: 'Custom', contextWindow: 100_000, ...input.model }] },
+        }],
+      };
+    }
+
+    const GPT_SOL = {
+      id: 'gpt-6.1-sol',
+      nativeApi: 'openai-responses',
+      efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      defaultEffort: 'medium',
+    };
+
+    it('sends a Cindy AI GPT model to /v1/responses with the lowest catalog effort', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValueOnce(responsesOk('done') as never);
+
+      const result = await requestExplicitUtilityText('summarize', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        maxTokens: 256,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'done', providerId: 'xd', model: 'gpt-6.1-sol' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(urlOf(0)).toBe(`${GATEWAY}/v1/responses`);
+      expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ Authorization: 'Bearer xd-key' });
+      expect(bodyOf(0)).toEqual({
+        model: 'gpt-6.1-sol',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'summarize' }] }],
+        store: false,
+        stream: true,
+        max_output_tokens: 256,
+        reasoning: { effort: 'low' },
+      });
+    });
+
+    it('sends a Cindy AI Claude model to /v1/messages with thinking turned off', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('claude-code', [{
+        id: 'claude-sonnet-4-6',
+        nativeApi: 'anthropic-messages',
+        efforts: ['low', 'medium', 'high', 'max'],
+        defaultEffort: 'medium',
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValueOnce(messagesOk('title') as never);
+
+      const result = await requestExplicitUtilityText('name it', {
+        providerId: 'xd',
+        agentKind: 'claude-code',
+        model: 'claude-sonnet-4-6',
+        maxTokens: 64,
+        systemPrompt: 'SYSTEM',
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'title' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(urlOf(0)).toBe(`${GATEWAY}/v1/messages`);
+      expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+        Authorization: 'Bearer xd-key',
+        'anthropic-version': '2023-06-01',
+      });
+      expect(bodyOf(0)).toEqual({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 64,
+        system: 'SYSTEM',
+        thinking: { type: 'disabled' },
+        messages: [{ role: 'user', content: 'name it' }],
+      });
+    });
+
+    // The automatic chain's first request must stay byte-identical to the
+    // pre-plan Chat body, whether or not the Gateway declared efforts.
+    it.each([
+      { id: 'deepseek/deepseek-v4-flash', efforts: ['low', 'high', 'max'] },
+      { id: 'tencent/hy3', efforts: ['low', 'medium', 'high'] },
+      { id: 'qwen/qwen3.8-flash', efforts: ['low', 'medium', 'xhigh'] },
+      { id: 'deepseek/deepseek-v4-flash', efforts: [] },
+    ])('keeps the automatic chain first Chat request unchanged for $id (efforts: $efforts)', async ({ id, efforts }) => {
+      const autoRef = AUTO_AUXILIARY_MODEL_CHAIN.find((ref) => ref.endsWith(`:${id}`));
+      expect(autoRef).toBeDefined();
+      chainState.source = 'auto';
+      chainState.refs = [autoRef!];
+      activeCatalog.mockReturnValue(xdCatalog('codex', [{
+        id,
+        nativeApi: 'openai-completions',
+        efforts,
+        // Gateway omitted efforts: the catalog projects `[]` without a discovered declaration.
+        ...(efforts.length > 0 ? { discoveredMetadata: { efforts } } : {}),
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
+
+      const result = await requestUtilityText(makerMock(false), 'hello', {
+        maxTokens: 32,
+        systemPrompt: 'SYSTEM',
+      });
+
+      expect(result).toMatchObject({ ok: true, providerId: 'xd', model: id });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(urlOf(0)).toBe(`${GATEWAY}/v1/chat/completions`);
+      expect(bodyOf(0)).toEqual({
+        model: id,
+        max_tokens: 32,
+        thinking: { type: 'disabled' },
+        reasoning_effort: 'minimal',
+        messages: [
+          { role: 'system', content: 'SYSTEM' },
+          { role: 'user', content: 'hello' },
+        ],
+      });
+    });
+
+    it('falls back from a missing native endpoint to Chat and keeps the effort', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock
+        .mockResolvedValueOnce(rejected(404) as never)
+        .mockResolvedValueOnce(chatOk('chat text') as never);
+
+      const result = await requestExplicitUtilityText('summarize', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        maxTokens: 128,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'chat text' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(urlOf(0)).toBe(`${GATEWAY}/v1/responses`);
+      expect(urlOf(1)).toBe(`${GATEWAY}/v1/chat/completions`);
+      // Carries the Responses effort instead of Chat's "off" pair, which the
+      // Gateway translated into the rejected `none` for this model.
+      expect(bodyOf(1)).toEqual({
+        model: 'gpt-6.1-sol',
+        max_tokens: 128,
+        reasoning_effort: 'low',
+        messages: [{ role: 'user', content: 'summarize' }],
+      });
+    });
+
+    it('falls back from a rejected Messages request to Chat with thinking still off', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('claude-code', [{
+        id: 'claude-sonnet-4-6',
+        nativeApi: 'anthropic-messages',
+        efforts: ['low', 'medium'],
+        defaultEffort: 'medium',
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock
+        .mockResolvedValueOnce(rejected(404) as never)
+        .mockResolvedValueOnce(chatOk('chat text') as never);
+
+      const result = await requestExplicitUtilityText('name it', {
+        providerId: 'xd',
+        agentKind: 'claude-code',
+        model: 'claude-sonnet-4-6',
+        maxTokens: 64,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'chat text' });
+      expect(urlOf(1)).toBe(`${GATEWAY}/v1/chat/completions`);
+      expect(bodyOf(1)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
+    });
+
+    it('climbs a declared native ladder before falling back to Chat at the lowest effort', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(chatOk('chat text') as never);
+
+      const result = await requestExplicitUtilityText('summarize', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'chat text' });
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+        `${GATEWAY}/v1/responses`,
+        `${GATEWAY}/v1/responses`,
+        `${GATEWAY}/v1/chat/completions`,
+      ]);
+      expect(bodyOf(0)).toMatchObject({ reasoning: { effort: 'low' } });
+      expect(bodyOf(1)).toMatchObject({ reasoning: { effort: 'medium' } });
+      expect(bodyOf(2)).toMatchObject({ reasoning_effort: 'low' });
+      expect(bodyOf(2)).not.toHaveProperty('thinking');
+    });
+
+    it('caps the number of requests a single call can spend on parameter errors', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('claude-code', [{
+        id: 'claude-sonnet-4-6',
+        nativeApi: 'anthropic-messages',
+        efforts: ['low', 'medium', 'high', 'max'],
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValue(rejected(400) as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'xd',
+        agentKind: 'claude-code',
+        model: 'claude-sonnet-4-6',
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: false });
+      // Messages off / low / medium, then Chat off: four requests, not the full six-step plan.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(urlOf(3)).toBe(`${GATEWAY}/v1/chat/completions`);
+    });
+
+    it('climbs a declared Chat ladder and never sends a request without reasoning parameters', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://custom.example/v1',
+        model: { id: 'custom-thinker', efforts: ['high', 'low', 'medium'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValue(rejected(400) as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'custom-thinker',
+        maxTokens: 64,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        attempts: [expect.objectContaining({ reason: 'http_error', httpStatus: 400 })],
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
+      expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'low' });
+      expect(bodyOf(1)).not.toHaveProperty('thinking');
+      expect(bodyOf(2)).toMatchObject({ reasoning_effort: 'medium' });
+      for (let index = 0; index < 3; index += 1) {
+        expect(bodyOf(index)).toHaveProperty('reasoning_effort');
+        expect(bodyOf(index)).toHaveProperty('max_tokens', 64);
+      }
+    });
+
+    it('sends no reasoning parameters and does not retry when the catalog declares none', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [{
+        id: 'plain-chat',
+        nativeApi: 'openai-completions',
+        efforts: [],
+        discoveredMetadata: { efforts: [] },
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValueOnce(rejected(400) as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'plain-chat',
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: false });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(bodyOf(0)).toEqual({ model: 'plain-chat', messages: [{ role: 'user', content: 'hello' }] });
+    });
+
+    it('sends no reasoning parameters to a model the vendor profile marks as non-reasoning', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://api.moonshot.ai/v1',
+        model: { id: 'kimi-k2.6', efforts: ['low', 'high'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
+
+      await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'kimi-k2.6',
+        disableReasoning: true,
+      });
+
+      expect(bodyOf(0)).not.toHaveProperty('thinking');
+      expect(bodyOf(0)).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('walks an undeclared custom model from off to low to the minimal body', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://custom.example/v1',
+        model: { id: 'mystery', efforts: [], effortsUnknown: true },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(rejected(422) as never)
+        .mockResolvedValueOnce(chatOk('ok') as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'mystery',
+        maxTokens: 48,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'ok' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(bodyOf(0)).toMatchObject({ max_tokens: 48, thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
+      expect(bodyOf(1)).toMatchObject({ max_tokens: 48, reasoning_effort: 'low' });
+      expect(bodyOf(1)).not.toHaveProperty('thinking');
+      expect(bodyOf(2)).toEqual({ model: 'mystery', messages: [{ role: 'user', content: 'hello' }] });
+    });
+
+    it('remembers the accepted step and continues down when it is later rejected', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://custom.example/v1',
+        model: { id: 'custom-thinker', efforts: ['low', 'medium', 'high'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      const request = () => requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'custom-thinker',
+        disableReasoning: true,
+      });
+
+      fetchMock
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(chatOk('first') as never);
+      await expect(request()).resolves.toMatchObject({ ok: true, text: 'first' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      fetchMock.mockClear();
+      fetchMock.mockResolvedValueOnce(chatOk('second') as never);
+      await expect(request()).resolves.toMatchObject({ ok: true, text: 'second' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
+      expect(bodyOf(0)).not.toHaveProperty('thinking');
+
+      fetchMock.mockClear();
+      fetchMock
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(chatOk('third') as never);
+      await expect(request()).resolves.toMatchObject({ ok: true, text: 'third' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
+      expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'medium' });
+    });
+
+    it.each([401, 403, 429, 500, 503])('does not walk the plan after HTTP %i', async (status) => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValue(rejected(status) as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        attempts: [expect.objectContaining({ reason: 'http_error', httpStatus: status })],
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(reportKeyRejected).toHaveBeenCalledTimes(status === 401 ? 1 : 0);
+    });
+
+    it('does not walk the plan after a timeout', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://custom.example/v1',
+        model: { id: 'custom-thinker', efforts: ['low', 'medium'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'custom-thinker',
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: false, reason: 'timeout' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the output-budget retry on the accepted native step', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key');
+      const truncated = {
+        ok: true,
+        text: async () => 'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"output":[]}}\n',
+      };
+      fetchMock
+        .mockResolvedValueOnce(truncated as never)
+        .mockResolvedValueOnce(responsesOk('full answer') as never);
+
+      const result = await requestExplicitUtilityText('summarize', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        maxTokens: 200,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'full answer' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(urlOf(1)).toBe(`${GATEWAY}/v1/responses`);
+      expect(bodyOf(1)).toMatchObject({ reasoning: { effort: 'low' } });
+      expect(Number(bodyOf(1).max_output_tokens)).toBeGreaterThan(200);
+    });
+
+    it('reports the Cindy AI key when a Chat fallback or budget retry is rejected with 401', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key-sent');
+      fetchMock
+        .mockResolvedValueOnce(rejected(404) as never)
+        .mockResolvedValueOnce(rejected(401) as never);
+
+      await requestExplicitUtilityText('summarize', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        disableReasoning: true,
+      });
+      expect(reportKeyRejected).toHaveBeenCalledTimes(1);
+      expect(reportKeyRejected).toHaveBeenCalledWith('xd-key-sent');
+
+      reportKeyRejected.mockClear();
+      fetchMock.mockReset();
+      resetUtilityReasoningMemory();
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          text: async () => 'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"output":[]}}\n',
+        } as never)
+        .mockResolvedValueOnce(rejected(401) as never);
+      await requestExplicitUtilityText('summarize', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        maxTokens: 200,
+        disableReasoning: true,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(reportKeyRejected).toHaveBeenCalledTimes(1);
+      expect(reportKeyRejected).toHaveBeenCalledWith('xd-key-sent');
+    });
+
+    it('lets model-compat translate the off request for a thinking-toggle vendor', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://open.bigmodel.cn/api/paas/v4',
+        model: { id: 'glm-5', efforts: ['low', 'medium', 'high'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock
+        .mockResolvedValueOnce(rejected(400) as never)
+        .mockResolvedValueOnce(chatOk('ok') as never);
+
+      await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'glm-5',
+        disableReasoning: true,
+      });
+
+      // Zhipu maps both "off" and `low` to `thinking: disabled`; the identical
+      // `low` request is skipped and the next distinct step is `medium`.
+      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+      expect(bodyOf(0)).not.toHaveProperty('reasoning_effort');
+      expect(bodyOf(1)).toMatchObject({ thinking: { type: 'enabled' } });
+      expect(bodyOf(1)).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('keeps the off pair untranslated when the vendor profile has no off spelling', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://api.deepseek.com',
+        model: { id: 'deepseek-v4-flash', efforts: ['low', 'high', 'max'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
+
+      await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'deepseek-v4-flash',
+        disableReasoning: true,
+      });
+
+      // Effort mapping would turn `minimal` into `low`, i.e. ask for some thinking.
+      expect(bodyOf(0)).toEqual({
+        model: 'deepseek-v4-flash',
+        thinking: { type: 'disabled' },
+        reasoning_effort: 'minimal',
+        messages: [{ role: 'user', content: 'hello' }],
+      });
+    });
+
+    it('uses the vendor off spelling when the profile maps `none`', async () => {
+      activeCatalog.mockReturnValue(customChatCatalog({
+        upstream: 'https://inference.baseten.co/v1',
+        model: { id: 'openai/gpt-oss-120b', efforts: ['low', 'medium', 'high'] },
+      }) as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
+
+      await requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model: 'openai/gpt-oss-120b',
+        disableReasoning: true,
+      });
+
+      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'none' });
+    });
+
+    it('caps a Cindy AI Messages request without a caller budget at the model output limit', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('claude-code', [{
+        id: 'claude-sonnet-4-6',
+        nativeApi: 'anthropic-messages',
+        efforts: ['low', 'medium'],
+        maxOutput: 64_000,
+      }]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValueOnce(messagesOk('answer') as never);
+
+      await requestExplicitUtilityText('question', {
+        providerId: 'xd',
+        agentKind: 'claude-code',
+        model: 'claude-sonnet-4-6',
+        disableReasoning: true,
+      });
+
+      expect(bodyOf(0)).toMatchObject({ max_tokens: 64_000 });
+    });
+
+    it('raises a tiny Responses output budget to the protocol minimum', async () => {
+      activeCatalog.mockReturnValue(xdCatalog('codex', [GPT_SOL]) as never);
+      readKey.mockReturnValue('xd-key');
+      fetchMock.mockResolvedValueOnce(responsesOk('yes') as never);
+
+      await requestExplicitUtilityText('page?', {
+        providerId: 'xd',
+        agentKind: 'codex',
+        model: 'gpt-6.1-sol',
+        maxTokens: 8,
+        disableReasoning: true,
+      });
+
+      expect(bodyOf(0)).toMatchObject({ max_output_tokens: 16 });
+    });
+
+    it('still turns thinking off first for a custom Pi model with a placeholder effort list', async () => {
+      activeCatalog.mockReturnValue({
+        providers: [{
+          id: 'custom-pi',
+          name: 'Custom Pi',
+          source: 'user',
+          agents: ['pi'],
+          auth: { method: 'apiKey' },
+          routing: {
+            pi: { upstream: 'https://custom.example/v1', wireProtocol: 'openai-chat', authStrategy: 'api-key-header' },
+          },
+          models: { pi: [{ id: 'pi-model', name: 'Pi Model', contextWindow: 100_000, efforts: [] }] },
+        }],
+      } as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
+
+      await requestExplicitUtilityText('hello', {
+        providerId: 'custom-pi',
+        agentKind: 'pi',
+        model: 'pi-model',
+        disableReasoning: true,
+      });
+
+      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
     });
   });
 });
