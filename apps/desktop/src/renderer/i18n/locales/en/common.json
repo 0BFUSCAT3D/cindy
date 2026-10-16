@@ -5322,6 +5322,7 @@
         "online": "Connected"
       },
       "connectionIssue": {
+        "device-removed": "This device was removed from your account. Sign out and sign in again on this device.",
         "auth-failed": "Sign-in expired — please sign in again",
         "replaced": "Connection replaced by another instance of this device",
         "too-many-connections": "Connection limit reached for this account",
@@ -5344,7 +5345,9 @@
       "renameConfirm": "Confirm",
       "renameCancel": "Cancel",
       "delete": "Delete",
-      "deleteOnlineHint": "Online devices cannot be deleted",
+      "deleteTitle": "Delete “{{name}}”?",
+      "deleteMessage": "Remove this device from your account and disconnect remote access. Its sessions and files are kept. Sign in again on that device to rejoin.",
+      "deleteOnlineHint": "This server does not yet support removing online devices. Retry after the service is upgraded.",
       "error": {
         "unavailable": "Device Link service is unavailable (not enabled on server or network error)",
         "listFailed": "Failed to load device list"
@@ -5361,7 +5364,7 @@
         "keepAwakeToggleFailed": "Failed to toggle keep awake",
         "renameFailed": "Rename failed",
         "deleted": "Device deleted",
-        "deleteOnline": "Device is online and cannot be deleted",
+        "deleteOnline": "This server does not yet support removing online devices. Retry after the service is upgraded.",
         "deleteFailed": "Delete failed",
         "disconnected": "Disconnected all remote connections",
         "disconnectFailed": "Failed to disconnect remote connection",

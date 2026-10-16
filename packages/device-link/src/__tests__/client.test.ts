@@ -10303,3 +10303,25 @@ describe('confirmed duplicate-open gap repair', () => {
     } finally { f.h.client.stop(); vi.useRealTimers(); }
   });
 });
+
+
+it('stops automatic reconnect after device removal and permits a new login lifecycle', async () => {
+  const h = makeHarness();
+  h.client.start();
+  await tick();
+  h.current().ack();
+  h.current().emit('close', 4410, 'device removed');
+  expect(h.client.getStatus()).toBe('stopped');
+  expect(h.client.getConnectionIssue()?.kind).toBe('device-removed');
+  h.client.connectNow('foreground');
+  h.client.restartConnection('token-refresh');
+  await tick(50);
+  expect(h.sockets).toHaveLength(1);
+  h.client.start();
+  await tick();
+  expect(h.sockets).toHaveLength(2);
+  h.current().ack();
+  expect(h.client.getStatus()).toBe('online');
+  expect(h.client.getConnectionIssue()).toBeNull();
+  h.client.stop();
+});
