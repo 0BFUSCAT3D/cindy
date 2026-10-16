@@ -53,7 +53,7 @@ export async function removeVersionedRemoteFile(source: string, version: string)
 }
 
 export async function writeVersionedRemoteFile(
-  source: string, version: string, from: string, size: number, assertCurrent: () => void,
+  source: string, version: string, from: string | Buffer, size: number, assertCurrent: () => void,
 ): Promise<void> {
   if (size > MAX_CACHE_BYTES) return;
   const destination = versionedCachePath(source, version);
@@ -65,7 +65,8 @@ export async function writeVersionedRemoteFile(
   assertCurrent();
   const temporary = path.join(cacheDir(), `${randomUUID()}.part`);
   try {
-    await fs.copyFile(from, temporary, constants.COPYFILE_FICLONE);
+    if (typeof from === 'string') await fs.copyFile(from, temporary, constants.COPYFILE_FICLONE);
+    else await fs.writeFile(temporary, from, { flag: 'wx', mode: 0o600 });
     if ((await fs.stat(temporary)).size !== size) return;
     await fs.chmod(temporary, 0o600);
     assertCurrent();

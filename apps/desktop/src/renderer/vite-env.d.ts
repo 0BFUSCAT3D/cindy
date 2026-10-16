@@ -3778,6 +3778,7 @@ interface ElectronAPI {
       success: boolean;
       error?: string;
       blobs: { totalCount: number; totalBytes: number; cacheCount: number; cacheBytes: number };
+      remoteMedia?: { bytes: number; fileCount: number };
       legacy: { bytes: number; fileCount: number };
       fixedCaches: {
         legacyImages: { bytes: number; fileCount: number };
@@ -3792,7 +3793,7 @@ interface ElectronAPI {
         eligible: boolean;
       }>;
     }>;
-    scan: (params: { draftUrls: string[] }) => Promise<{
+    scan: (params: { draftUrls: string[]; scope?: 'remote-media' }) => Promise<{
       success: boolean;
       error?: string;
       zeroRef: { count: number; bytes: number; hashes: string[]; protectedCount: number };
@@ -3815,6 +3816,7 @@ interface ElectronAPI {
     }>;
     cleanup: (params: {
       draftUrls: string[];
+      scope?: 'remote-media';
       zeroRefHashes: string[];
       evictCacheHashes: string[];
       deadDirNames: string[];

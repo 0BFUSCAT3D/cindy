@@ -1232,7 +1232,8 @@ describe('ModelSelector trigger variants', () => {
         name: /Next message: Codex · GPT-5\.5, effort: medium/,
       });
       expect(trigger.textContent).toContain('GPT-5.5');
-      expect(trigger.textContent).toContain('Next: Codex');
+      expect(trigger.textContent).toContain('Codex');
+      expect(trigger.textContent).not.toContain('Next:');
       expect(trigger.getAttribute('aria-label')).not.toContain('Current');
       // 切换失败时 intent 会保留供重试；重复渲染仍明确标成“下条消息”，不会隐藏身份。
       view.rerender(React.createElement(IntentTrigger, { refresh: 2 }));

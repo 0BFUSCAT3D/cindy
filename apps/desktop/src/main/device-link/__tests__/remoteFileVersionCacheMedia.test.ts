@@ -20,7 +20,7 @@ vi.mock('../broadcast-tap', () => ({
   isDataOwnerBroadcastScopeCurrent: () => true,
 }));
 import * as schema from '../../localDb/schema';
-import { getStorageStats, pinBlob, removeRefs } from '../../cindy-media/ledger';
+import { addRef, getStorageStats, pinBlob, removeRefs } from '../../cindy-media/ledger';
 import { integrationCacheGet, integrationCachePut } from '../../cindy-media/integrationCache';
 import { CACHE_LIMIT_BYTES } from '../../cindy-media/recycler';
 import { remoteFileVersionCache } from '../remoteFileVersionCache';
@@ -53,11 +53,11 @@ afterEach(async () => {
   await fs.rm(state.root, { recursive: true, force: true });
 });
 
-async function seedOtherCache(bytes: number) {
+async function seedOtherCache(bytes: number, integration = 'other') {
   const other = await integrationCachePut(
     {
-      cacheKey: 'other:full',
-      integration: 'other',
+      cacheKey: `${integration}:full`,
+      integration,
       buffer: Buffer.from('other'),
       mimeType: 'image/png',
     },
@@ -71,6 +71,21 @@ async function seedOtherCache(bytes: number) {
     .run();
   return other;
 }
+
+it.each([false, true])('excludes long-lived remote images from the automatic budget (shared=%s)', async (shared) => {
+  const retained = await seedOtherCache(CACHE_LIMIT_BYTES * 2, 'remote-media');
+  if (shared) await addRef({
+    hash: retained.hash, refKind: 'integration-cache', refId: 'other:shared',
+    originId: 'other', originKind: 'integration',
+  }, state.db);
+  const cache = remoteFileVersionCache('device', 'mutable-path', metadata)!;
+  await cache.put(png);
+  const cached = await cache.get();
+  expect(cached).not.toBeNull();
+  expect(await fs.readFile(cached!)).toEqual(png);
+  expect((await getStorageStats(state.db)).cacheBytes).toBe(CACHE_LIMIT_BYTES * 2 + png.length);
+  expect(await fs.readFile(retained.absPath)).toEqual(Buffer.from('other'));
+});
 
 it.each([
   { otherBytes: CACHE_LIMIT_BYTES - png.length, retained: true },

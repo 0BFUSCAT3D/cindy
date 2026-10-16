@@ -91,6 +91,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it('does not cache an OSS upload under a version when the source changed during upload', async () => {
+  const url = 'xdt-file://local?path=' + encodeURIComponent(path.resolve('work/report.pdf'));
+  uploadLocalFile.mockImplementation(async () => {
+    statMock.mockResolvedValue({ isFile: () => true, size: 42, mtimeMs: 2000 });
+    return { key: 'changed-source', size: 42, contentType: 'application/pdf' };
+  });
+  const result = await fetchLocalMediaToOss({ url });
+  expect(result.ossKey).toBe('changed-source');
+  expect(result.version).toBeUndefined();
+});
+
 describe('fetchLocalMediaToOss — scheme 路由', () => {
   const sharedTask: SharedTaskPeerCapture = {
     author: { sharedTaskId: 'shared', sessionId: 'task', memberId: 'guest', accountId: 'user', displayName: 'Guest' },
@@ -249,6 +260,7 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
       ossKey: 'cindy/device-link/u/uuid.ext',
       mimeType: 'image/png',
       size: 42,
+      version: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
   });
 
