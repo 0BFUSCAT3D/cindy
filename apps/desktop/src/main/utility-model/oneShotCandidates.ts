@@ -12,8 +12,8 @@ import { createLogger } from '../logger.js';
 import { getAppCapabilities } from '../appCapabilities.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { readClaudeApiKey } from '../maker-host/auth-adapters.js';
-import { getChatgptBridgeAuth } from '../maker-host/anthropic-responses-bridge-host.js';
-import { getGrokAccessToken } from '../maker-host/grok-oauth-login.js';
+import { getChatgptBridgeAuth, getChatgptBridgeAuthForDispatch } from '../maker-host/anthropic-responses-bridge-host.js';
+import { getGrokAccessToken, getGrokOAuthCredentialGeneration } from '../maker-host/grok-oauth-login.js';
 import { readCachedGenericOAuthAccessToken } from '../maker-host/generic-oauth.js';
 // undici 的 fetch,但 per-request 现取系统代理(裸 undici 不吃代理设置)。
 import { outboundUndiciFetch as undiciFetch } from '../maker-host/outbound-fetch.js';
@@ -1240,8 +1240,15 @@ async function requestBuiltinProviderText(
 
   if (isOpenAiSubscriptionProvider(input.provider)) {
     let creds: Awaited<ReturnType<typeof getChatgptBridgeAuth>>;
+    let credentialStillCurrent: (() => boolean) | undefined;
     try {
-      creds = await (input.provider.id === 'openai' ? getChatgptBridgeAuth() : getChatgptBridgeAuth(input.provider.id));
+      if (input.beforeDispatch) {
+        const auth = await getChatgptBridgeAuthForDispatch(input.provider.id);
+        creds = auth;
+        credentialStillCurrent = auth.canDispatch;
+      } else {
+        creds = await (input.provider.id === 'openai' ? getChatgptBridgeAuth() : getChatgptBridgeAuth(input.provider.id));
+      }
     } catch {
       return { ok: false, reason: 'no_candidate', attempts: [skippedAttempt(profile, 'not_authenticated')] };
     }
@@ -1286,22 +1293,15 @@ async function requestBuiltinProviderText(
               model: input.model,
             })
           : undefined,
-        credentialStillCurrent: requestOpts?.beforeDispatch
-          ? async () => {
-              try {
-                const current = await (input.provider.id === 'openai' ? getChatgptBridgeAuth() : getChatgptBridgeAuth(input.provider.id));
-                return current.accountId === accountId && current.accessToken === creds.accessToken;
-              } catch {
-                return false;
-              }
-            }
-          : undefined,
+        credentialStillCurrent: requestOpts?.beforeDispatch ? credentialStillCurrent : undefined,
         routeStillCurrent: requestOpts?.beforeDispatch ? input.routeStillCurrent : undefined,
       }),
     }], prompt, [], input);
   }
 
   if (providerCatalogId(input.provider) === 'xai') {
+    const credentialGeneration = input.beforeDispatch
+      ? getGrokOAuthCredentialGeneration(input.provider.id) : undefined;
     let accessToken: string;
     try {
       accessToken = await (input.provider.id === 'xai' ? getGrokAccessToken() : getGrokAccessToken(input.provider.id));
@@ -1337,8 +1337,12 @@ async function requestBuiltinProviderText(
           : undefined,
         credentialStillCurrent: requestOpts?.beforeDispatch
           ? async () => {
+              if (getGrokOAuthCredentialGeneration(input.provider.id) !== credentialGeneration) return false;
               try {
-                return (await (input.provider.id === 'xai' ? getGrokAccessToken() : getGrokAccessToken(input.provider.id))) === accessToken;
+                await (input.provider.id === 'xai' ? getGrokAccessToken() : getGrokAccessToken(input.provider.id));
+                // Token refresh stays within the same login. Logout/reconnect must
+                // invalidate the request even when a cached token is unchanged.
+                return getGrokOAuthCredentialGeneration(input.provider.id) === credentialGeneration;
               } catch {
                 return false;
               }
@@ -1854,6 +1858,12 @@ async function requestProviderHttpText(input: {
       }
       throw new UtilityTextExecutionError({ reason: 'empty_response' });
     }
+    // A valid response cannot outlive the route or authorization that sent it.
+    // Recheck credentials and routing after the complete response, including retries.
+    if (
+      (input.credentialStillCurrent && !(await input.credentialStillCurrent()))
+      || (input.routeStillCurrent && !input.routeStillCurrent())
+    ) throw new UtilityTextExecutionError({ reason: 'request_failed' });
     return text;
   } catch (error) {
     if (error instanceof UtilityTextExecutionError) throw error;

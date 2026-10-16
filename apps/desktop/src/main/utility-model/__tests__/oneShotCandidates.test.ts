@@ -49,10 +49,12 @@ vi.mock('../../maker-host/auth-adapters.js', () => ({
 
 vi.mock('../../maker-host/anthropic-responses-bridge-host.js', () => ({
   getChatgptBridgeAuth: vi.fn(),
+  getChatgptBridgeAuthForDispatch: vi.fn(),
 }));
 
 vi.mock('../../maker-host/grok-oauth-login.js', () => ({
   getGrokAccessToken: vi.fn(),
+  getGrokOAuthCredentialGeneration: vi.fn(() => 0),
 }));
 
 vi.mock('../../maker-host/generic-oauth.js', () => ({
@@ -104,8 +106,8 @@ import { fetch as undiciFetch } from 'undici';
 
 import { getAppCapabilities } from '../../appCapabilities.js';
 import { readClaudeApiKey } from '../../maker-host/auth-adapters.js';
-import { getChatgptBridgeAuth } from '../../maker-host/anthropic-responses-bridge-host.js';
-import { getGrokAccessToken } from '../../maker-host/grok-oauth-login.js';
+import { getChatgptBridgeAuth, getChatgptBridgeAuthForDispatch } from '../../maker-host/anthropic-responses-bridge-host.js';
+import { getGrokAccessToken, getGrokOAuthCredentialGeneration } from '../../maker-host/grok-oauth-login.js';
 import { readCachedGenericOAuthAccessToken } from '../../maker-host/generic-oauth.js';
 import {
   getActiveCatalog,
@@ -132,7 +134,10 @@ const getProfiles = vi.mocked(getUtilityModelChainProfiles);
 const appCapabilities = vi.mocked(getAppCapabilities);
 const readKey = vi.mocked(readClaudeApiKey);
 const readCodexCreds = vi.mocked(getChatgptBridgeAuth);
+const readCodexDispatchAuth = vi.mocked(getChatgptBridgeAuthForDispatch);
+const codexAuthorizationCurrent = vi.fn((_providerId: string) => true);
 const readGrokToken = vi.mocked(getGrokAccessToken);
+const grokCredentialGeneration = vi.mocked(getGrokOAuthCredentialGeneration);
 const readGenericOAuthToken = vi.mocked(readCachedGenericOAuthAccessToken);
 const fetchMock = vi.mocked(undiciFetch);
 const activeCatalog = vi.mocked(getActiveCatalog);
@@ -162,7 +167,13 @@ describe('utility one-shot candidates', () => {
     appCapabilities.mockReturnValue({ canUseCindyGateway: true } as never);
     readKey.mockReturnValue(null);
     readCodexCreds.mockRejectedValue(new Error('not authenticated'));
+    codexAuthorizationCurrent.mockReturnValue(true);
+    readCodexDispatchAuth.mockImplementation(async (providerId = 'openai') => ({
+      ...await (providerId === 'openai' ? readCodexCreds() : readCodexCreds(providerId)),
+      canDispatch: () => codexAuthorizationCurrent(providerId),
+    }));
     readGrokToken.mockRejectedValue(new Error('not authenticated'));
+    grokCredentialGeneration.mockReturnValue(0);
     readGenericOAuthToken.mockReturnValue(null);
     providerRouteMutationInProgress.mockReturnValue(false);
     providerRouteCredentialRevision.mockReturnValue(0);
@@ -306,6 +317,64 @@ describe('utility one-shot candidates', () => {
       readCustomKey.mockReturnValue(null);
       await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    describe('subscription authorization', () => {
+      const providers = ['openai', 'openai-work', 'xai', 'xai-work'];
+      const configureSubscription = (providerId: string) => {
+        const openai = providerId.startsWith('openai');
+        const model = openai ? 'gpt-5.4-nano' : 'xai/grok-4.3';
+        chainState.refs = [`cat:${providerId}:codex:${model}`];
+        activeCatalog.mockReturnValue({ providers: [{
+          id: providerId, name: providerId, source: providerId.endsWith('-work') ? 'user' : 'builtin',
+          agents: ['codex'], auth: { method: 'oauth', native: openai ? 'codex' : 'xai' },
+          routing: { codex: { upstream: 'https://subscription.example/v1', authStrategy: 'provider-oauth-header' } },
+          models: { codex: [{ id: model, name: model, contextWindow: 272_000 }] },
+        }] } as never);
+        readCodexCreds.mockResolvedValue({ accessToken: 'selected-token', accountId: 'selected-account' });
+        readGrokToken.mockResolvedValue('selected-token');
+      };
+
+      it.each(providers)('discards a late allow after %s authorization changes, even with the same cached credentials', async (providerId) => {
+        configureSubscription(providerId);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          text: async () => {
+            // Logout/reconnect may leave the same token in a reader cache. The
+            // native authorization proof/generation must still invalidate it.
+            codexAuthorizationCurrent.mockImplementation((id) => id !== providerId);
+            grokCredentialGeneration.mockImplementation((id) => id === providerId ? 1 : 0);
+            return JSON.stringify({ output_text: '{"verdict":"allow"}' });
+          },
+        } as never);
+        await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: false });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(providers)('accepts %s decisions when only another subscription changes', async (providerId) => {
+        configureSubscription(providerId);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          text: async () => {
+            codexAuthorizationCurrent.mockImplementation((id) => id !== 'unrelated');
+            grokCredentialGeneration.mockImplementation((id) => id === 'unrelated' ? 1 : 0);
+            return JSON.stringify({ output_text: '{"verdict":"allow"}' });
+          },
+        } as never);
+        await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: true, providerId });
+      });
+
+      it.each(['xai', 'xai-work'])('preserves an in-flight %s decision across ordinary access-token refresh', async (providerId) => {
+        configureSubscription(providerId);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          text: async () => {
+            readGrokToken.mockResolvedValue('refreshed-token');
+            return JSON.stringify({ output_text: '{"verdict":"ask"}' });
+          },
+        } as never);
+        await expect(createCustomAutoReviewFallback()!(prompt, options)).resolves.toMatchObject({ ok: true, providerId });
+      });
     });
 
     it('skips a disabled route and uses only the next selected route', async () => {
