@@ -51,7 +51,7 @@ describe('server group feature parity', () => {
   const execution = { id: '40000000-0000-4000-8000-000000000001', conversation_id: roomId,
     source_message_id: '50000000-0000-4000-8000-000000000001', bot_id: botId,
     context_seq: '100', epoch: 1, status: 'running', access_mode: 'chat', access_revision: 1 };
-  const room = (id: string) => ({ id, name: 'Room', state: 'joined', response_mode: 'all', speaking_mode: 'auto',
+  const room = (id: string) => ({ id, kind: 'group', name: 'Room', state: 'joined', response_mode: 'all', speaking_mode: 'auto',
     created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z', revision: 1, archived: false });
   let service: BotGroupChatService;
   let deps: BotGroupChatServiceDeps;

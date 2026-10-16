@@ -905,8 +905,10 @@ describe('ChatInput 的入口门控与调用路由', () => {
     const body = hostSource.slice(start, end);
     expect(body).toContain('effort: sessions.effort,');
     expect(body).toContain('fastMode: sessions.fastMode,');
+    expect(body).toContain('permissionMode: sessions.permissionMode,');
     expect(body).toContain("co.effort = (row.effort ?? undefined) as CreateOpts['effort'];");
     expect(body).toContain('co.fastMode = !!row.fastMode;');
+    expect(body).toContain('co.permissionMode = permissionModeOrAsk(row.permissionMode);');
   });
 
   it('Orca 会话复用切换入口，角色未加载仍保留未知态', () => {
