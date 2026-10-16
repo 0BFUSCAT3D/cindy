@@ -2024,13 +2024,12 @@ describe('Chat Server result delivery and refresh', () => {
       expect(routesSince(plain).sort()).toEqual([`GET /conversations/${roomId}/plans`, `GET /conversations/${roomId}/snapshot`, `POST /conversations/${roomId}/messages`]);
     });
 
-    it('reuses the snapshot a live subscription vouches for and pushes the send once, on its echo', async () => {
+    it('reuses the live snapshot and coalesces local send notices with their echoes', async () => {
       const socket = await live();
       const from = fixture.handle.mock.calls.length;
       expect(await send('latency-send-3')).toMatchObject({ ok: true });
       expect(routesSince(from)).toEqual([`GET /conversations/${roomId}/plans`, `POST /conversations/${roomId}/messages`]);
-      await vi.advanceTimersByTimeAsync(150);
-      // The followed room reports the stored message itself: no local push before the echo.
+      // Nearby server echoes share the local write's existing refresh window.
       expect(pushes()).toBe(0);
       for (const cursor of ['2', '3']) socket.emit('message', JSON.stringify({ type: 'changes', scope: `conversation:${roomId}`, cursor,
         changes: [{ type: 'message.created', entityId: '90000000-0000-4000-8000-000000000001' }] }));
@@ -2040,6 +2039,36 @@ describe('Chat Server result delivery and refresh', () => {
       const next = fixture.handle.mock.calls.length;
       expect(await send('latency-send-4')).toMatchObject({ ok: true });
       expect(routesSince(next)).toContain(`GET /conversations/${roomId}/snapshot`);
+    });
+
+    it.each([
+      ['initial subscription', false, false],
+      ['initial subscription, thread reply', false, true],
+      ['reconnection', true, false],
+      ['reconnection, thread reply', true, true],
+    ] as const)('refreshes after %s even when no server echo arrives', async (_label, reconnect, thread) => {
+      let socket = await live();
+      if (reconnect) {
+        socket.emit('close');
+        await vi.advanceTimersByTimeAsync(500);
+        socket = fixture.sockets.at(-1)!;
+        Object.defineProperty(socket, 'readyState', { value: 1 });
+        socket.emit('message', JSON.stringify({ type: 'ready' }));
+        await vi.advanceTimersByTimeAsync(150);
+        vi.mocked(deps.onChanged!).mockClear();
+      }
+      // Sending subscribe does not mean the server has registered it yet.
+      expect(socket.send).toHaveBeenCalledWith(expect.stringContaining(`conversation:${roomId}`));
+      const sent = thread
+        ? await service.chatServer!.reply({ groupId: roomId, rootId: '70000000-0000-4000-8000-000000000002',
+          text: 'A reply', clientId: 'unconfirmed-reply', mentions: { all: false, botIds: [] } })
+        : await send('unconfirmed-send');
+      expect(sent).toMatchObject({ ok: true });
+      expect(pushes()).toBe(0);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(pushes()).toBe(1);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(pushes()).toBe(1);
     });
 
     it('still pushes a send locally while the realtime connection is down', async () => {

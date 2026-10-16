@@ -428,6 +428,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     snapshots.delete(roomId);
     summaries.delete(roomId);
   };
+  // Local writes always notify: HTTP can finish before the server handles subscribe,
+  // even on an open socket. Nearby realtime echoes join the same bounded window.
   const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
   const changed = (roomId: string) => {
     if (!current()) return;
@@ -442,13 +444,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         if (targetId === roomId) deps.onChanged?.({ groupId: sourceId, change: 'messages' }, scope);
     }, CHANGE_COALESCE_MS));
   };
-  /** True when the room's realtime subscription will report a server write made now. */
-  const echoes = (roomId: string) => connected && socket?.readyState === WebSocket.OPEN && rooms.has(roomId);
-  /**
-   * A server write whose own change event the followed room delivers: that event is the one
-   * push. Without a live subscription the local notice stays, so nothing waits for a reconnect.
-   */
-  const changedUnlessEchoed = (roomId: string) => { if (echoes(roomId)) invalidate(roomId); else changed(roomId); };
+  /** Live transport used for snapshot reuse; sending subscribe is not a server acknowledgement. */
+  const hasLiveSubscription = (roomId: string) => connected && socket?.readyState === WebSocket.OPEN && rooms.has(roomId);
   // TLS for production; explicit loopback is only enabled by the isolated fixture.
   // Redirects are never followed and every retry remains in the captured account.
   function refreshRejectedToken(token: string): Promise<boolean> {
@@ -908,7 +905,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
   function recentSnapshot(roomId: string, groupOnly = false) {
     id.parse(roomId);
     const known = snapshots.get(roomId);
-    if (known && echoes(roomId) && known.generation === generation(roomId) && Date.now() - known.at < SNAPSHOT_REUSE_MS) {
+    if (known && hasLiveSubscription(roomId) && known.generation === generation(roomId) && Date.now() - known.at < SNAPSHOT_REUSE_MS) {
       if (groupOnly && !isGroupRoom(known.value.room)) return Promise.reject(new Error('NOT_A_GROUP'));
       void ensureRegistered();
       return Promise.resolve(known.value);
@@ -1275,7 +1272,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const pending = run.settlement;
     if (!pending || !current() || running.get(run.execution.bot_id) !== run || Date.now() < pending.retryAt) return Promise.resolve();
     run.delivery = (async () => {
-      let delivered = false;
       try {
         if (!pending.payload) {
           const terminal = pending.terminal;
@@ -1301,7 +1297,6 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         }
         if (!current() || running.get(run.execution.bot_id) !== run) return;
         await updateExecution(run, pending.terminal.outcome === 'error' ? 'fail' : 'complete', pending.payload);
-        delivered = true;
         if (run.plan && deps.onStepSettled) {
           const s = await snapshot(run.execution.conversation_id);
           const step = run.plan.steps[run.execution.plan_step!];
@@ -1327,10 +1322,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (running.get(run.execution.bot_id) === run) {
         run.releaseToolAuthority?.();
         running.delete(run.execution.bot_id);
-        // A delivered terminal result is an execution change the followed room reports itself;
-        // a rejected one changed nothing on the server, so only the local notice shows it.
-        if (delivered) changedUnlessEchoed(run.execution.conversation_id);
-        else changed(run.execution.conversation_id);
+        // Refresh both delivered results and local failures without waiting for an echo.
+        changed(run.execution.conversation_id);
       }
     })();
     return run.delivery;
@@ -1918,7 +1911,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const posted = await api<{ id: string }>(`/conversations/${i.groupId}/messages`, 'POST', {
         operationId: i.clientId, threadRootId: i.rootId, content: [{ type: 'text', text: i.text }], mentions: await mentionIds(i.groupId, i.mentions),
       });
-      changedUnlessEchoed(i.groupId); return { messageId: posted.id };
+      changed(i.groupId); return { messageId: posted.id };
     }),
     react: input => result(async () => {
       const i = z.object({ groupId: id, messageId: id, emoji: z.string().min(1).max(128), present: z.boolean() }).parse(input);
@@ -2087,8 +2080,8 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         }
       }
     })().catch(error => deps.log?.warn('Group send bookkeeping failed', { groupId: roomId, ...chatErrorDiagnostic(error) }));
-    // The followed room reports the new message itself; otherwise announce it here.
-    changedUnlessEchoed(roomId);
+    // Acknowledge the write locally even if the room subscription has no server echo yet.
+    changed(roomId);
     return { ok: true as const, messageId };
   });
   // A lost controller ACK must not consume the phone upload or submit the same message twice.
