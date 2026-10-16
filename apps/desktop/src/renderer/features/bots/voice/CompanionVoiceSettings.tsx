@@ -31,6 +31,7 @@ type Props = {
   botId: string;
   sessionId?: string;
   beforeLeaveRef?: { current: (() => Promise<boolean>) | null };
+  onOpenProviders(): void;
 };
 
 /** Per-companion settings. Opening this page never starts ASR or submits a message. */
@@ -249,15 +250,57 @@ export function CompanionVoiceSettings(props: Props) {
       void persist(next);
   };
 
+  // Keep unavailable controls out of the empty state, including while its first
+  // catalog request is pending. This only changes presentation, not saved preferences.
+  if (models.length === 0) {
+    return (
+      <div className="space-y-4 pt-3">
+        {loading ? (
+          <p role="status" className="text-13 text-[var(--text-secondary)]">
+            {t('bots.voiceMode.status.loading')}
+          </p>
+        ) : catalogError ? (
+          <>
+            <p className="text-13 text-[var(--text-secondary)]">
+              {t('bots.voiceMode.catalogError')}
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              compact
+              onClick={() => {
+                void refresh(true);
+                if (!ready) loadPreference();
+              }}
+            >
+              {t('bots.voiceMode.refresh')}
+            </Button>
+          </>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-13 text-[var(--text-secondary)]">{t('bots.voiceMode.noModels')}</p>
+            <p className="text-12 leading-relaxed text-[var(--text-secondary)]">
+              {t('bots.voiceMode.noModelsSupportedProtocols')}
+            </p>
+            <p className="text-12 leading-relaxed text-[var(--text-secondary)]">
+              {t('bots.voiceMode.noModelsSetupHint')}
+            </p>
+            <Button variant="secondary" size="sm" compact onClick={props.onOpenProviders}>
+              {t('bots.voiceMode.openProviders')}
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4 pt-3">
       <p className="text-13 leading-relaxed text-[var(--text-secondary)]">
         {t('bots.voiceMode.settingsHint')}
       </p>
-      {catalogError || (!loading && models.length === 0) ? (
-        <p className="text-13 text-[var(--text-secondary)]">
-          {t(catalogError ? 'bots.voiceMode.catalogError' : 'bots.voiceMode.noModels')}
-        </p>
+      {catalogError ? (
+        <p className="text-13 text-[var(--text-secondary)]">{t('bots.voiceMode.catalogError')}</p>
       ) : null}
       <div className="flex flex-wrap items-start gap-3">
         <FormField label={t('bots.voiceMode.model')} className="min-w-52 flex-[2]">

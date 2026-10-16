@@ -733,7 +733,12 @@ export function BotSettings({
         ) : null}
         {page === 'voice' ? (
           <CompanionVoiceSettings botId={bot.id} sessionId={canonicalBotSessionId(bot) ?? undefined}
-            beforeLeaveRef={voiceLeaveRef} />
+            beforeLeaveRef={voiceLeaveRef}
+            onOpenProviders={() => {
+              void canLeave().then((allowed) => {
+                if (allowed) navigate('/settings?tab=providers');
+              });
+            }} />
         ) : null}
         {page === 'memory' ? (
           <BotMemorySettings

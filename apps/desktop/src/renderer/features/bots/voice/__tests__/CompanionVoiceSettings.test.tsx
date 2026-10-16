@@ -75,6 +75,7 @@ vi.mock('@/lib/makerChatStore', () => ({
 let models: VoiceConversationModel[];
 const start = vi.fn(async () => ({ callId: 'call' }));
 const refresh = vi.fn(async () => undefined);
+const openProviders = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
@@ -104,11 +105,14 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 const renderSettings = (botId = 'bot') =>
-  render(<CompanionVoiceSettings botId={botId} sessionId="canonical" />);
+  render(
+    <CompanionVoiceSettings botId={botId} sessionId="canonical" onOpenProviders={openProviders} />,
+  );
 
-it('defaults to sentence playback, persists a toggle without a model, and restores the default', async () => {
+it('defaults to sentence playback, persists a playback-only change, and restores the default', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   const view = renderSettings();
-  const toggle = screen.getByRole('switch', { name: 'bots.voiceMode.sentencePlayback' });
+  const toggle = await screen.findByRole('switch', { name: 'bots.voiceMode.sentencePlayback' });
   await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
   expect(toggle.getAttribute('aria-checked')).toBe('true');
   vi.mocked(window.electronAPI.voiceConversation.setPreference).mockResolvedValueOnce({
@@ -144,8 +148,9 @@ it('defaults to sentence playback, persists a toggle without a model, and restor
 });
 
 it('retains the saved toggle and reports a save failure', async () => {
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   renderSettings();
-  const toggle = screen.getByRole('switch');
+  const toggle = await screen.findByRole('switch');
   await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
   vi.mocked(window.electronAPI.voiceConversation.setPreference).mockRejectedValueOnce(
     new Error('disk'),
@@ -176,13 +181,60 @@ it('does not erase an unsaved manual voice when only changing playback', async (
 });
 
 it('shows a useful empty state without requesting a microphone or inventing models', async () => {
-  renderSettings();
+  const savedSelection = { modelId: 'tts', voice: 'nova' };
+  vi.mocked(window.electronAPI.voiceConversation.preference).mockResolvedValue({
+    selection: savedSelection,
+    customized: true,
+    sentencePlayback: false,
+  });
+  const view = renderSettings();
+  expect(screen.getByRole('status').textContent).toBe('bots.voiceMode.status.loading');
+  expect(screen.queryByLabelText('bots.voiceMode.model')).toBeNull();
+  expect(screen.queryByRole('switch')).toBeNull();
   await screen.findByText('bots.voiceMode.noModels');
+  expect(screen.getByText('bots.voiceMode.noModelsSupportedProtocols')).toBeTruthy();
+  expect(screen.getByText('bots.voiceMode.noModelsSetupHint')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.openProviders' }));
+  expect(openProviders).toHaveBeenCalledOnce();
   expect(screen.queryByRole('button', { name: 'bots.voiceMode.preview' })).toBeNull();
+  expect(screen.queryByText('bots.voiceMode.settingsHint')).toBeNull();
+  expect(screen.queryByText('bots.voiceMode.preferenceHint')).toBeNull();
+  expect(screen.queryByLabelText('bots.voiceMode.model')).toBeNull();
+  expect(screen.queryByRole('switch')).toBeNull();
+  expect(screen.getAllByRole('button')).toHaveLength(1);
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
   expect(start).not.toHaveBeenCalled();
   expect(audio.start).not.toHaveBeenCalled();
+  view.unmount();
+  models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
+  renderSettings();
+  await screen.findByRole('option', { name: 'Speech' });
+  expect(screen.queryByText('bots.voiceMode.noModelsSupportedProtocols')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'bots.voiceMode.openProviders' })).toBeNull();
+  expect(screen.getByText('bots.voiceMode.settingsHint')).toBeTruthy();
+  await waitFor(() =>
+    expect((screen.getByLabelText('bots.voiceMode.voiceId') as HTMLInputElement).value).toBe(
+      'nova',
+    ),
+  );
+  expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false');
+  expect(window.electronAPI.voiceConversation.setPreference).not.toHaveBeenCalled();
+});
+
+it('does not present a catalog failure as missing models or suggest adding a connection', async () => {
+  window.electronAPI.voiceConversation.models = vi.fn(async () => {
+    throw new Error('catalog unavailable');
+  });
+  renderSettings();
+  await screen.findByText('bots.voiceMode.catalogError');
+  expect(screen.queryByText('bots.voiceMode.noModelsSupportedProtocols')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'bots.voiceMode.openProviders' })).toBeNull();
+  expect(screen.queryByLabelText('bots.voiceMode.model')).toBeNull();
+  expect(screen.queryByRole('switch')).toBeNull();
+  window.electronAPI.voiceConversation.models = vi.fn(async () => models);
   fireEvent.click(screen.getByRole('button', { name: 'bots.voiceMode.refresh' }));
-  await waitFor(() => expect(refresh).toHaveBeenCalledWith('xd'));
+  await screen.findByText('bots.voiceMode.noModels');
+  expect(refresh).toHaveBeenCalledWith('xd');
 });
 
 it('selects the exact BYOK connection for duplicate IDs and persists it for this companion', async () => {
@@ -806,7 +858,12 @@ it('flushes a manually typed voice before leaving and keeps the page open on sav
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
   const beforeLeaveRef = { current: null as null | (() => Promise<boolean>) };
   render(
-    <CompanionVoiceSettings botId="bot" sessionId="canonical" beforeLeaveRef={beforeLeaveRef} />,
+    <CompanionVoiceSettings
+      botId="bot"
+      sessionId="canonical"
+      beforeLeaveRef={beforeLeaveRef}
+      onOpenProviders={openProviders}
+    />,
   );
   const input = await screen.findByLabelText('bots.voiceMode.voiceId');
   await waitFor(() => expect((input as HTMLInputElement).disabled).toBe(false));
@@ -833,7 +890,7 @@ it('flushes a manually typed voice before leaving and keeps the page open on sav
 
 it('allows model configuration but disables preview before a canonical conversation exists', async () => {
   models = [{ id: 'tts', name: 'Speech', defaultVoice: 'alloy' }];
-  render(<CompanionVoiceSettings botId="bot" />);
+  render(<CompanionVoiceSettings botId="bot" onOpenProviders={openProviders} />);
   await waitFor(() =>
     expect((screen.getByLabelText('bots.voiceMode.model') as HTMLSelectElement).disabled).toBe(
       false,
