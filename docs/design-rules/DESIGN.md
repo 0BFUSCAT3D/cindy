@@ -76,8 +76,36 @@ align with the same wallpaper instead of introducing an opaque footer rectangle.
 Built-in SVG wallpapers are decorative assets, not new semantic UI colors.
 Verify actual Light/Dark screenshots across host pages and the expanded tool pane.
 
-The built-in wallpaper catalog contains only Window Companion, Future Atelier and Dream
-Wander, plus None to restore the theme canvas (user decision, 2026-10-01).
+The built-in picker retains Window Companion, Future Atelier and Dream Wander,
+with their Static / Dynamic choice, alongside 26 supplied still images: character,
+cat, landscape, space and abstract artworks (user curation, 2026-10-16). The supplied
+stills ship as metadata-free WebP at their source resolution, with separate lightweight
+thumbnails. Blue Gaze and Amber Light are hidden from the picker.
+Previously saved selections keep their artwork and motion behavior;
+removing a catalog choice does not rewrite appearance preferences or delete source images.
+The original three scenes retain mainline on-demand image/video downloads, verified
+cache reuse, and preview fallback. Their download progress and retry action appear
+below the grid when needed while the thumbnails remain available for selection.
+Reuse the settings DownloadMeter; keep all new stills offline
+and do not request CDN assets for IDs absent from the download manifest.
+The original three scenes lead the Cindy group, followed by Whisper, Crimson Realm, Night Glance, Scarlet Stroll,
+Neon Silhouette, Prism Shards, followed by the two cat wallpapers Wheatfield Watch
+and Teacup Cat. Other artwork follows this group; Moon Gazer (formerly Giant Moon Platform) sits
+directly after the two cat wallpapers, and Cloud Roaming follows Indigo Folds. Six
+supplied stills were dropped from the picker before release (Palm Shadows, Dusk Arrow,
+Rainy Stop, Window Rest, Golden Tides, Forest River) and are not shipped.
+The new artwork uses the existing continuous cover fit, theme-derived visibility
+and blur controls. None remains the default and restores the theme canvas.
+The picker remains an inline compact grid (user choice, 2026-10-15): use
+container-width-driven columns with a 6rem minimum, 8px grid gaps, 16:9 previews,
+and a 4px gap before each readable name. At the standard 1280px window width this
+shows eight columns; narrower windows naturally show fewer. Keep direct click-to-apply
+selection, the existing selected/focus treatment, and full names in accessible labels
+and hover/focus tooltips when the visible label is truncated.
+The grid has one Tab entry, using the selected visible tile or the first tile for
+a hidden saved selection. Arrow keys move focus and selection with wrapping; Home /
+End reach the first / last tile. An empty Custom tile only receives focus during
+arrow navigation; Enter / Space explicitly opens the file picker.
 Custom wallpaper is available through Choose Wallpaper, Replace Wallpaper and Remove Wallpaper
 in the same section (user addition, 2026-10-01; video support, 2026-10-05). Accept local PNG/JPEG/WebP up to
 20 MB and 40 megapixels, store a metadata-free static image up to 3840 pixels
@@ -144,15 +172,19 @@ viewing angle and field of view must stay constant throughout the entire loop,
 including Dream Wander and Future Atelier (user correction, 2026-10-02). No pans,
 tilts, dolly movement, zooms or perspective drift; matching first and last frames
 alone is insufficient. Built-in static artwork
-uses 3584×2240 WebP. All three official 2304×1440 videos are bundled, fully offline,
-with no duplicate low-resolution assets or resolution switching on window resize.
+uses 3584×2240 WebP. The three official scenes use bundled 640×400 previews and
+download the full WebP or 2304×1440 MP4 on demand (2026-10-15 decision), with no
+resolution switching on window resize. Only the previews enter the Renderer bundle.
 The motion approved on 2026-10-02 is preserved frame for frame at its original
-24fps. The bundled 2304×1440 delivery is Real-ESRGAN anime-video super-resolution
+24fps. The 2304×1440 delivery is Real-ESRGAN anime-video super-resolution
 of the approved 1214×758 sources, not native 2K generation; do not regenerate,
 retime or reverse the accepted motion while preparing higher-resolution assets.
-The CDN mechanism remains opt-in for future catalog entries marked as CDN-delivered;
-those entries can use a bundled fallback while downloading verified HD bytes into
-the managed media store. Official scenes never request CDN resources.
+Download only selected, visible assets and request video only for active dynamic
+mode without reduced motion. Verify byte length and SHA-256 before placing assets
+in the existing client-wallpaper media scope. Valid cached content is reused across
+restarts, upgrades and accounts without another download; failures retain the preview
+and permit retry. The download and cache contract is defined in
+[`media-storage-and-protocols.md`](../dev-rules/media-storage-and-protocols.md).
 Decode one local video
 per window, suspend playback while hidden/minimized, and use the original still for
 reduced motion or playback failure. Static / Dynamic switches crossfade the video
