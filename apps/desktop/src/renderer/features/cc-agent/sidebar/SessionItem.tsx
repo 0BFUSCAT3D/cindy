@@ -24,8 +24,7 @@ import { Button } from '@/components/ui/button';
  *   - 选中态 bg-sidebar-item-active + font-semibold
  *
  * 关于 indented prop（缩进控制）：
- *   - indented=true（ProjectNode 内子 session）：`pl-[22px]`(2026-07 用户定稿,
- *     tech_spec ADR 原 18px 基础上 +4px 加深层级)。
+ *   - indented=true（分组内子 session）：`pl-5`，在普通行 12px 内边距上增加 8px 层级缩进。
  *   - indented=false（Pinned / Unclassified / Dialogue 顶层 session）：`pl-3`。
  *   2026-07 用户定稿的文字列对齐:状态图标包在 15px 定宽槽内;普通会话行使用
  *   gap-2.5(10px),与顶部导航行 / 项目行同构。自动任务行因中间还有 Timer,
@@ -969,11 +968,10 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
         !isEditing && hasAutomationMeta ? 'gap-1.5' : 'gap-2.5',
         'select-none',
         // 缩进 + padding(见文件头注释的文字列对齐口径):
-        //   indented=true → 左 22px（Project Sessions 缩进,比顶层深一档;
-        //     2026-07 用户定稿在 18px 基础上再 +4px 加深层级)
+        //   indented=true → 左 20px（普通行 12px + 子层级缩进 8px）
         //   indented=false → 左 12px（Pinned / Unclassified / Dialogue 段）
         // 右侧信息槽按内容收缩；hover 时 archive 快捷按钮覆盖同一槽位。
-        indented ? 'pl-[22px] pr-2' : 'pl-3 pr-2',
+        indented ? 'pl-5 pr-2' : 'pl-3 pr-2',
         // 注意:不加 transition-colors —— 行 bg 的 hover/active 变化要瞬时,
         // 否则归档/取消归档后 DOM 列表重排,原 hover bg 在前一个屏幕位置上要
         // 跑完 150ms 渐变才褪掉,视觉上像是"旧行仍然选中,延迟才切到新行"。
