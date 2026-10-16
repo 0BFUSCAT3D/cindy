@@ -45,7 +45,7 @@ export function desktopUnitPool(
 }
 
 /**
- * Split every Vitest workspace by the same CI shard so the two Windows jobs
+ * Split every Vitest workspace by the same CI shard so the parallel shard jobs
  * still form one complete unit gate. The runner adds `passWithNoTests` only
  * when a workspace has fewer selected files than the configured shard count.
  */
@@ -94,6 +94,38 @@ const makerPiManagerIntegrationInclude = [
 ];
 const desktopE2eInclude = [
   'src/main/maker-host/__tests__/*.e2e.test.ts',
+];
+// Static source-contract checks (security, permission, and design rules) run
+// in the explicit guard tier. Keeping an exact allowlist makes it impossible
+// for a new source scan to silently become part of the ordinary unit gate.
+const desktopGuardInclude = [
+  'src/main/__tests__/authCaptchaIpcSecurity.test.ts',
+  'src/main/__tests__/browserRuntimeDirStartup.test.ts',
+  'src/main/__tests__/dbSlimmingIpcSecurity.test.ts',
+  'src/main/__tests__/deviceLinkInputSteerDedupeWiring.test.ts',
+  'src/main/__tests__/endpointEnvUsageGuard.test.ts',
+  'src/main/__tests__/gitContextIpcSecurity.test.ts',
+  'src/main/__tests__/isolatedOnProductionProfileStartup.test.ts',
+  'src/main/__tests__/windowThemeVibrancyIpcSecurity.test.ts',
+  'src/main/cindy-brain/__tests__/forgeOidcInstallEntry.test.ts',
+  'src/main/cindy-brain/__tests__/ghostDevRuntimeContract.test.ts',
+  'src/main/cindy-brain/__tests__/ghostIpcMutationLease.test.ts',
+  'src/main/cindy-brain/__tests__/ghostIpcSenderTrust.test.ts',
+  'src/main/cindy-brain/__tests__/ghostLocalUpdateSource.wiring.test.ts',
+  'src/main/cindy-brain/__tests__/librarySaveAsDialogParent.test.ts',
+  'src/main/cindy-brain/__tests__/marketGhostSessionBoundary.test.ts',
+  'src/main/cindy-media/__tests__/ccAgentWriteGuard.test.ts',
+  'src/main/im/telegram/__tests__/uiText.test.ts',
+  'src/main/maker-ipc/__tests__/botMainDependencies.test.ts',
+  'src/main/maker-ipc/__tests__/scheduleProviderDiscoveryWiring.test.ts',
+  'src/main/maker-ipc/__tests__/sendToSessionLazyResumePermission.test.ts',
+  'src/renderer/__tests__/compactComposerTypography.test.ts',
+  'src/renderer/__tests__/dialogScrimDismissal.test.ts',
+  'src/renderer/__tests__/disabledCursorVisualContract.test.ts',
+  'src/renderer/__tests__/makerExperimentalThemeContract.test.ts',
+  'src/renderer/__tests__/modalSurfaceContract.test.ts',
+  'src/renderer/__tests__/sessionContentHeaderDragRegion.test.ts',
+  'src/renderer/__tests__/toastZIndex.test.ts',
 ];
 
 export function desktopUnitWorkerCount(
@@ -169,6 +201,7 @@ export default {
             'src/main/scheduler-host/__tests__/*.db.test.ts',
             'src/main/__tests__/directSessionSendGuard.test.ts',
             'src/main/__tests__/makerSendToSessionOrdering.test.ts',
+            ...desktopGuardInclude,
             '**/*.bench.ts',
           ],
         },
@@ -228,6 +261,7 @@ export default {
           include: [
             'src/main/__tests__/directSessionSendGuard.test.ts',
             'src/main/__tests__/makerSendToSessionOrdering.test.ts',
+            ...desktopGuardInclude,
           ],
         },
       },
@@ -235,26 +269,12 @@ export default {
     // Mobile has enough test files to become the critical path at one worker.
     // Give it the full worker budget, but never overlap it with other workspaces.
     requiredUnitWorkspace('mobile', 'apps/mobile', { workers: 4, execution: 'exclusive' }),
-    requiredUnitWorkspace('@cindy/anthropic-compat-proxy', 'packages/anthropic-compat-proxy'),
-    requiredUnitWorkspace('@cindy/anthropic-responses-bridge', 'packages/anthropic-responses-bridge'),
-    requiredUnitWorkspace('@cindy/responses-anthropic-bridge', 'packages/responses-anthropic-bridge'),
-    requiredUnitWorkspace('@cindy/model-compat', 'packages/model-compat'),
-    requiredUnitWorkspace('@cindy/responses-chat-bridge', 'packages/responses-chat-bridge'),
-    requiredUnitWorkspace('@cindy/auth-client', 'packages/auth-client'),
-    requiredUnitWorkspace('@cindy/browser-control-runtime', 'packages/browser-control-runtime'),
-    requiredUnitWorkspace('cindy-tools', 'packages/cindy-tools'),
-    requiredUnitWorkspace('@cindy/device-link', 'packages/device-link'),
-    noCollectableWorkspace('@cindy/embedding-client', 'packages/embedding-client'),
-    requiredUnitWorkspace('@cindy/file-browser-core', 'packages/file-browser-core'),
-    noCollectableWorkspace('@cindy/github-client', 'packages/github-client'),
-    noCollectableWorkspace('@cindy/gitlab-client', 'packages/gitlab-client'),
-    noCollectableWorkspace('@cindy/heartbeat-client', 'packages/heartbeat-client'),
-    requiredUnitWorkspace('@cindy/im', 'packages/lizi-im'),
-    requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
-    requiredUnitWorkspace('@cindy/maker-cc-manager', 'packages/maker-cc-manager'),
     // Stays on forks: palette-scanner's tests stub HOME and the scanner resolves
     // it through os.homedir(), which a worker thread cannot see (see
     // UNIT_POOL_DEFAULT above).
+    // At one worker it was the last workspace still running in every CI shard;
+    // it scales linearly (2026-10-16: 248s / 125s / 65s at 1 / 2 / 4 workers),
+    // so it runs exclusively with the full worker budget, like mobile.
     {
       name: '@cindy/maker-core',
       cwd: 'packages/maker-core',
@@ -262,7 +282,8 @@ export default {
       tiers: {
         unit: {
           status: 'required',
-          command: unitVitestCommand(1, 'forks'),
+          execution: 'exclusive',
+          command: unitVitestCommand(desktopUnitWorkerCount(), 'forks'),
           exclude: ['**/*.integration.test.ts', '**/*.e2e.test.ts', '**/*.git-integration.test.ts'],
         },
         'git-integration': {
@@ -282,6 +303,23 @@ export default {
         },
       },
     },
+    requiredUnitWorkspace('@cindy/anthropic-compat-proxy', 'packages/anthropic-compat-proxy'),
+    requiredUnitWorkspace('@cindy/anthropic-responses-bridge', 'packages/anthropic-responses-bridge'),
+    requiredUnitWorkspace('@cindy/responses-anthropic-bridge', 'packages/responses-anthropic-bridge'),
+    requiredUnitWorkspace('@cindy/model-compat', 'packages/model-compat'),
+    requiredUnitWorkspace('@cindy/responses-chat-bridge', 'packages/responses-chat-bridge'),
+    requiredUnitWorkspace('@cindy/auth-client', 'packages/auth-client'),
+    requiredUnitWorkspace('@cindy/browser-control-runtime', 'packages/browser-control-runtime'),
+    requiredUnitWorkspace('cindy-tools', 'packages/cindy-tools'),
+    requiredUnitWorkspace('@cindy/device-link', 'packages/device-link'),
+    noCollectableWorkspace('@cindy/embedding-client', 'packages/embedding-client'),
+    requiredUnitWorkspace('@cindy/file-browser-core', 'packages/file-browser-core'),
+    noCollectableWorkspace('@cindy/github-client', 'packages/github-client'),
+    noCollectableWorkspace('@cindy/gitlab-client', 'packages/gitlab-client'),
+    noCollectableWorkspace('@cindy/heartbeat-client', 'packages/heartbeat-client'),
+    requiredUnitWorkspace('@cindy/im', 'packages/lizi-im'),
+    requiredUnitWorkspace('@cindy/mcps', 'packages/lizi-mcps'),
+    requiredUnitWorkspace('@cindy/maker-cc-manager', 'packages/maker-cc-manager'),
     requiredUnitWorkspace('@cindy/maker-remote-ssh', 'packages/maker-remote-ssh'),
     // 轮 42:新包 maker-pi-manager(TS 单例 pi daemon)已随 SSH remote 交付;
     // 漏登记会让 test-workspaces 的 manifest 覆盖校验失败(全量门禁拒跑)。

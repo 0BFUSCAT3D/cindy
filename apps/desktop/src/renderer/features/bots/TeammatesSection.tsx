@@ -685,8 +685,8 @@ export function TeammatesSection() {
                   {/* 定稿原型 `.row-open{padding:8px 10px;gap:10px}`:整行只有这一个
                       可点区域,左右内边距对称。行尾曾经还挂过一列齿轮/状态图标,
                       它下线后 `pr-2` 的占位残留了下来 —— 右边比左边窄一截,
-                      单看不出问题,和左侧头像一比就是歪的。数值基线见
-                      __tests__/botsSidebarSpacing.test.ts。 */}
+                      单看不出问题,和左侧头像一比就是歪的。这里的行内边距与下方按钮样式
+                      保持同一套几何基线。 */}
                   <button
                     type="button"
                     onClick={() => navigate(`/bots/${bot.id}`)}

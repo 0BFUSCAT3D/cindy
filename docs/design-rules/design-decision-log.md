@@ -432,7 +432,7 @@
   代码内部标识(`AuthState mode='local'`、`authEnterLocal` IPC、data owner)不受影响,仍用 local。
   术语已登记 `not-signed-in` / `skip-sign-in` 两条 proposed(`i18n/glossary.json`)。
   (→ `DESIGN.md §16` 协议门表 + 协议行整行热区条 / `LoginPage.consent.test.tsx`
-  与 `LoginPage.region.harness.test.tsx` 的过门断言 / `userInfoSectionHover.test.ts` 头像契约)
+  与 `LoginPage.region.harness.test.tsx` 的过门断言 / UserInfoSection 的组件行为测试)
 - **07-29** **手机端功能区落位改回新稿标注值(拍板人 = 用户,依据 = 实机比例对照图)**——
   本条**修正**下方 07-28 记录里「功能区落位保持 main 原值不动」那一句(该句作废,原记录
   保留在册)。**背景**:07-28 剥离手机端跳过登录时,把功能区落位一并退回 main

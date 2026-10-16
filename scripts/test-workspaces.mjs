@@ -485,8 +485,13 @@ function undersizedVitestShardArgs(commandSpec, selectedFiles) {
 		return [];
 
 	// Vitest rejects every shard when there are fewer files than shards, before
-	// it assigns the files. Limit the compatibility flag to that known case.
-	return selectedFiles.length < count ? ["--passWithNoTests"] : [];
+	// it assigns the files. Otherwise it slices ceil(files / count) files per
+	// shard, so trailing shards can still be empty (6 files over 4 shards gives
+	// 2, 2, 2, 0). Limit the compatibility flag to those two known cases.
+	const fileCount = selectedFiles.length;
+	if (fileCount < count) return ["--passWithNoTests"];
+	const shardStart = Math.ceil(fileCount / count) * (index - 1);
+	return shardStart >= fileCount ? ["--passWithNoTests"] : [];
 }
 
 function toWorkspaceRelativeFile(workspace, file) {

@@ -15,6 +15,88 @@ pnpm benchmark:desktop-workers -- --workers 1,2,4,8 --runs 1 --output <report.js
 或分池前后必须使用同一 checkout、同一机器和同一测试范围比较；单次数据需同时保留稳定性
 结果，不得只挑最快的一次。
 
+## 2026-10-16 CI 关键路径与分片调整
+
+数据来自 main 上两次成功的 client-ci（run 38819825618、38805666371，当时为 2 个分片）：
+
+| Job | 总耗时 | 主要组成 |
+| --- | --- | --- |
+| Windows 分片 1/2 | 34.1–34.2 分钟 | 准备约 3；runner 自测 3.1–3.2；Desktop unit 20.9（1,253 秒）；Mobile 2.5；其余包 3.4；伴侣 DB 回归 0.9 |
+| Windows 分片 2/2 | 21.9–25.7 分钟 | Desktop unit 16.9（1,013 秒） |
+| Linux 分片 | 13.8–23.9 分钟 | Desktop unit 547–890 秒 |
+| verify-checks | 7.7–8.4 分钟 | Desktop typecheck 3.4–3.8 |
+
+- 关键路径是 Windows 分片 1，比分片 2 多 8–12 分钟：约 4 分钟来自只在分片 1 执行的 runner 自测和
+  DB 回归，其余来自 Vitest 按文件路径哈希均分（不看耗时）造成的 Desktop 不均衡。
+- 每个分片里 runner 先独占跑 Desktop，再独占跑 Mobile，最后并发跑其余包；Desktop 在 4 vCPU 的
+  `windows-latest` 上用 4 个 worker。
+- 删除 488 条无效用例只占约 5.4 万条的 0.9%，旧 timing 估算约 7 秒 worker time，对墙钟的影响是
+  个位数秒。删测试解决的是维护成本，不是 CI 时长。
+
+2026-10-16 调整：Windows 与 Linux unit 都从 2 个分片改为 4 个；Windows runner 自测和伴侣 DB 回归
+移到独立并行 job `windows-runner-checks`，由原必需检查 `Windows unit tests` 一并阻断。本仓是公开仓，
+标准 runner 不计费。按上表估算，Windows 每片约为准备 3 分钟 + Desktop 9–11 分钟 + Mobile 与其余包
+2–3 分钟，整条 CI 约 17–20 分钟。**这是估算，必须用首次 4 分片 CI 的实测替换。**
+
+Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时，文件少的包末尾分片可能为空（6 个文件
+分 4 片是 2、2、2、0）。runner 原来只在「文件数少于分片数」时补 `--passWithNoTests`，本机 4/4 分片因此
+有 6 个包报 `NO_TESTS_REQUIRED`；现已按 Vitest 的切分方式判断空分片。
+
+### 2026-10-16 实验与落地
+
+本机 Windows、32 CPU、Desktop 8 worker。隔离方式三组用同一分片（869 个文件）连续对照：
+
+| 实验 | 结果 | 结论 |
+| --- | --- | --- |
+| 基线：forks + 逐文件隔离 | 108.3 秒，0 失败 | — |
+| `--no-isolate` | 83.0 秒（−23%），150 个文件／1,283 条用例失败 | 不采用：测试之间互相污染状态。**不要在真实 checkout 里用 `--no-isolate` 跑 Desktop 单测**：这次实验中 git／HOME 的 mock 泄漏，某个 worktree 测试在真实仓库对 `apps/desktop` 执行了 checkout，把未提交改动全部还原，还生成了 `apps/desktop/unused-test-home/` |
+| `--pool=vmForks` | 80.0 秒（−26%），41 个文件失败 | 不采用：要逐个修复 VM 上下文差异 |
+| `codexProxyHost.test.ts`：逐用例 `vi.resetModules()` 改为生产 `disposeCodexProxy()` 加启动注入复位 | 105 秒 → 6.7 秒，285/285；3 个随机顺序全过 | 已落地。原版在随机种子 1 下就失败（logger mock 跨用例累计），一并修复 |
+| `maker-core` 用 1／2／4 个 worker | 248／125／65 秒，全过 | 已落地：独占运行、用满 worker，排在 Mobile 之后 |
+| 单测分片 checkout 不拉全部历史 | 静态确认单测不读仓库历史 | 已落地，CI 每片约省 0.5 分钟（待 CI 实测） |
+| 声明 jsdom 但没用 DOM 的文件 | 仅约 20 个，约 10 秒 worker 时间 | 不单独处理，写进性能预算 |
+
+每片的 worker 时间里，收集（导入模块）约 325–350 秒，执行测试 250–480 秒，环境初始化 105–127 秒，
+准备约 46 秒；后三项主要来自逐文件隔离。整体切换隔离方式会破坏正确性，所以改为逐个修掉开销最大的
+文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 516 个
+文件，只减不增，见 engineering-conventions.md §3.2「性能预算」）。修完 `codexProxyHost` 后，最慢的
+单个文件从 138 秒降到约 32 秒，不再由一个文件决定分片下限。
+
+优化后按 CI 方式（runner、4 分片、Windows tar、无 `XDT_*`）完整重跑：门禁、`test:runner`、guard、typecheck
+全部通过；4 个分片只有 `taskWorkspace.test.ts` 1 条 symlink 能力失败。各片 `maker-core` 从 71／21／54／108 秒
+降到 34／5／27／55 秒；含 `codexProxyHost` 的 Desktop 分片从 144 秒降到 117 秒。代码没动的 Desktop 分片同时
+慢了约 20%，说明本机（同时运行其他重负载程序）整片墙钟有 ±20% 的波动，收益以上表的同机连续对照为准，
+CI 时长仍要用首次 4 分片 CI 实测确认。
+
+后续候选（每项都要在同一 runner、同一分片配置下实测后才能声称收益）：
+
+- 按历史耗时分配分片（自定义 Vitest sequencer），拉平哈希均分造成的不均衡。
+- 把 Windows checkout 与临时目录放到 Dev Drive（ReFS），降低大量小文件 IO 的开销。
+- 基线中逐用例重置最多的 `newMakerDraft.test.ts`（54 处）、`modelVisibilityPrefs.test.ts`（18 处）、
+  `pi-package-store-security.test.ts`（17 处）按 `codexProxyHost` 的方式改；真实 I/O 重的
+  `llamaCppService`、`proxy-auth`、`updateService` 评估是否迁到专用 tier。
+- PR 阶段只跑受影响的 workspace、合并队列跑全量：需要先修改上面「PR 门禁完整覆盖」的规则，由维护者决定。
+
+## 2026-10-15 测试审计结果
+
+对 499 个候选文件逐一审计：
+
+- 删除 81 个没有生产入口行为的文件（488 条用例）。`FileTreeView.horizontalScroll.test.tsx` 真实挂载
+  组件并断言可见宽度，已恢复。
+- 207 个 PARTIAL 文件（2,874 条用例，其中约 991 条是静态或重复接线候选）保留：它们与续跑、设备链、
+  账户切换、Pi、权限和竞速回归混在一起，只能在补上等价的生产入口测试后逐项替换，不能按字符串模式
+  批量删除。
+- 27 个只保护跨文件安全、权限、主题或文案契约的文件（80 条用例）迁到 Desktop `guard` allowlist，由 CI
+  的 `pnpm test:guard` 执行。名单只在 `scripts/test-workspaces.config.mjs` 维护，由 runner 从 unit 排除；
+  不要在 `apps/desktop/vitest.config.ts` 的项目 exclude 里重复排除，否则 guard 层自己也收集不到这些
+  文件（2026-10-16 发现 29 个 allowlist 文件实际只跑了 2 个，已修复）。
+- 缺少 timing 的文件是 `src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts`。
+
+本机（Windows、32 CPU）按当时的 Desktop unit tier 实跑：3,448 个文件／53,987 条测试，53,814 通过、
+168 跳过，墙钟 414.5 秒。5 条失败都是当前账户无法创建目录 symlink 的 EPERM 能力探测路径
+（`taskWorkspace.test.ts` 1 条、`pluginNamespaceMigration.manager.test.ts` 4 条），需要在支持 symlink 的
+Windows CI 或 Developer Mode 下复验，不能 skip 或删除。本机未分片的结果不能直接和 CI 分片耗时比较。
+
 ## 2026-07-26 Windows 基线
 
 环境：Windows x64、Node v24.15.0、32 available CPUs、63.8 GiB RAM。测试范围为

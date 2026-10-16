@@ -216,7 +216,9 @@ test("unit workspace concurrency reserves the full worker budget for heavy works
 		"--maxWorkers=4",
 		...unitTestShardArgs(),
 	]);
-	assert.equal(makerCore.tiers.unit.execution, undefined);
+	// maker-core scales linearly with workers, so it must not overlap the
+	// one-worker package pool where it used to finish last in every shard.
+	assert.equal(makerCore.tiers.unit.execution, "exclusive");
 	assert.deepEqual(makerCore.tiers.unit.exclude, [
 		"**/*.integration.test.ts",
 		"**/*.e2e.test.ts",
@@ -225,7 +227,12 @@ test("unit workspace concurrency reserves the full worker budget for heavy works
 	assert.deepEqual(makerCore.tiers.unit.command, {
 		type: "packageBin",
 		bin: "vitest",
-		args: ["run", "--pool=forks", "--maxWorkers=1", ...unitTestShardArgs()],
+		args: [
+			"run",
+			"--pool=forks",
+			`--maxWorkers=${desktopUnitWorkerCount()}`,
+			...unitTestShardArgs(),
+		],
 	});
 });
 
@@ -505,6 +512,7 @@ test("desktop unit excludes integration, migration, direct db-tier, and source-c
 			"src/main/scheduler-host/__tests__/*.db.test.ts",
 			"src/main/__tests__/directSessionSendGuard.test.ts",
 			"src/main/__tests__/makerSendToSessionOrdering.test.ts",
+			"src/main/__tests__/authCaptchaIpcSecurity.test.ts",
 			"**/*.bench.ts",
 		],
 	};
@@ -524,6 +532,7 @@ test("desktop unit excludes integration, migration, direct db-tier, and source-c
 			"apps/desktop/src/main/scheduler-host/__tests__/storage.test.ts",
 			"apps/desktop/src/main/__tests__/directSessionSendGuard.test.ts",
 			"apps/desktop/src/main/__tests__/makerSendToSessionOrdering.test.ts",
+			"apps/desktop/src/main/__tests__/authCaptchaIpcSecurity.test.ts",
 			"apps/desktop/src/main/__tests__/lifecycle.test.ts",
 		]),
 		[
@@ -693,16 +702,33 @@ test("desktop guard selects source-contract tests only", () => {
 	const tier = workspace.tiers.guard;
 	assert.equal(tier.status, "required");
 	assert.equal(tier.coverage, "allowlist");
+	// Allowlist entries are exact paths: a renamed or deleted guard file would
+	// otherwise drop out of the gate silently, and one not excluded from unit
+	// would run twice in CI.
+	for (const file of tier.include) {
+		assert.ok(
+			fs.existsSync(path.join(ROOT, workspace.cwd, file)),
+			`guard allowlist entry does not exist: ${file}`,
+		);
+		assert.ok(
+			workspace.tiers.unit.exclude.includes(file),
+			`guard file must be excluded from desktop unit: ${file}`,
+		);
+	}
 	assert.deepEqual(
 		selectFilesForTier(workspace, tier, [
 			"apps/desktop/src/main/__tests__/directSessionSendGuard.test.ts",
 			"apps/desktop/src/main/__tests__/makerSendToSessionOrdering.test.ts",
+			"apps/desktop/src/main/__tests__/authCaptchaIpcSecurity.test.ts",
+			"apps/desktop/src/main/cindy-brain/__tests__/ghostIpcSenderTrust.test.ts",
 			"apps/desktop/src/main/__tests__/lifecycle.test.ts",
 			"apps/desktop/src/main/localDb/ipc/messages.test.ts",
 		]),
 		[
 			"apps/desktop/src/main/__tests__/directSessionSendGuard.test.ts",
 			"apps/desktop/src/main/__tests__/makerSendToSessionOrdering.test.ts",
+			"apps/desktop/src/main/__tests__/authCaptchaIpcSecurity.test.ts",
+			"apps/desktop/src/main/cindy-brain/__tests__/ghostIpcSenderTrust.test.ts",
 		],
 	);
 });
@@ -2117,6 +2143,15 @@ test("buildPnpmArgs only loosens Vitest sharding for undersized workspaces", () 
 		]).includes("--passWithNoTests"),
 		false,
 	);
+
+	// Vitest slices ceil(6 / 4) = 2 files per shard, leaving shard 4 empty even
+	// though the workspace has more files than shards.
+	const sixFiles = Array.from(
+		{ length: 6 },
+		(_, i) => `packages/example/src/case-${i}.test.ts`,
+	);
+	assert.equal(buildShard("3/4", sixFiles).includes("--passWithNoTests"), false);
+	assert.equal(buildShard("4/4", sixFiles).includes("--passWithNoTests"), true);
 });
 
 test("runPlannedTests all mode runs required configured tiers and skips manual tiers", async () => {
