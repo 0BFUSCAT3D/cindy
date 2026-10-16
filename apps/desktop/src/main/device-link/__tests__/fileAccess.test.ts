@@ -8,11 +8,25 @@ vi.mock('../broadcast-tap', () => ({
   isDataOwnerBroadcastScopeCurrent: () => true,
 }));
 import { readRemoteDeviceFile } from '../fileAccess';
+import { invalidateFilePeerScopes } from '../filePeerScope';
 beforeEach(() => {
   vi.clearAllMocks();
   peer.mockResolvedValue(null);
 });
 describe('desktop shared file access', () => {
+  it('cancels a late file preparation after unlink without starting peer or OSS', async () => {
+    let answer!: (value: unknown) => void;
+    const invoke = vi.fn(() => new Promise<any>(resolve => { answer = resolve; }));
+    const fallback = vi.fn();
+    const read = readRemoteDeviceFile('d', 'xdt-file://test', invoke, { fallback });
+    const cancelled = expect(read).rejects.toThrow('FILE_PEER_CANCELLED');
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    invalidateFilePeerScopes('d');
+    answer({ ok: true, result: { ossKey: '', size: 100, mimeType: 'text/plain', transferRequired: true } });
+    await cancelled;
+    expect(peer).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
+  });
   it.each([false, true])(
     'forwards direct progress for workdir and media reads (workdir=%s)',
     async (workdir) => {

@@ -158,6 +158,22 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
       expect(logDebug.mock.calls.flat().join('\n')).not.toMatch(/xdt-|path=|\/cache\//);
     },
   );
+  it('revalidates source identity without reading/uploading bytes, including restored mtime', async () => {
+    let ctimeMs = 1;
+    const read = vi.fn();
+    openMock.mockResolvedValue({
+      stat: async () => ({ isFile: () => true, size: 100_000, mtimeMs: 1, ctimeMs, ino: 2, dev: 3 }),
+      read, close: vi.fn(),
+    });
+    imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
+    const args = { url: 'xdt-image://sess/a.png', prepareOnly: true };
+    const first = await fetchLocalMediaToOss(args);
+    expect(first.version).toMatch(/^[a-f0-9]{64}$/);
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    ctimeMs++;
+    expect((await fetchLocalMediaToOss(args)).version).not.toBe(first.version);
+    expect(read).not.toHaveBeenCalled(); expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
   it('xdt-image:// → imageCacheStore.resolveSafe,mime 透传给上传', async () => {
     imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
     const r = await fetchLocalMediaToOss({ url: 'xdt-image://sess/a.png' });

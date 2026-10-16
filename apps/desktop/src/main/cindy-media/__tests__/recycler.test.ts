@@ -277,3 +277,26 @@ describe('cleanupTmpFiles(.tmp 残留)', () => {
     expect(fs.existsSync(newTmp)).toBe(true);
   });
 });
+
+it('scopes automatic remote-file cleanup to its own unpinned cache, rechecking new borrowers at deletion', async () => {
+  const own = await seedBlob('remote-only', { isCache: true });
+  const shared = await seedBlob('shared-cache', { isCache: true });
+  const pinned = await seedBlob('chat-attachment', { isCache: false });
+  for (const entry of [own, shared, pinned]) await ledger.addRef({
+    hash: entry.hash, refKind: 'integration-cache', refId: `remote-file:${entry.hash}`,
+    originKind: 'integration', originId: 'remote-file',
+  }, db);
+  await ledger.addRef({ hash: shared.hash, refKind: 'integration-cache', refId: 'feishu:key',
+    originKind: 'integration', originId: 'feishu' }, db);
+  const scan = await recycler.scanCache({ live: new Set(), integration: 'remote-file', limitBytes: 0 }, db);
+  expect(scan.evictable.map(entry => entry.hash)).toEqual([own.hash]);
+  // A new borrower after scanning must also be protected by the DELETE predicate.
+  await ledger.addRef({ hash: own.hash, refKind: 'integration-cache', refId: 'other:key',
+    originKind: 'integration', originId: 'other' }, db);
+  const result = await recycler.evictCacheBlobs({ hashes: [own.hash, shared.hash, pinned.hash],
+    live: new Set(), integration: 'remote-file' }, db);
+  expect(result.deleted).toBe(0);
+  for (const entry of [own, shared, pinned]) expect(fs.existsSync(blobPath(entry.hash, entry.ext))).toBe(true);
+  await ledger.removeRefs({ refKind: 'integration-cache', refId: 'other:key' }, db);
+  expect((await recycler.evictCacheBlobs({ hashes: [own.hash], live: new Set(), integration: 'remote-file' }, db)).deleted).toBe(1);
+});

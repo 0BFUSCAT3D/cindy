@@ -5,6 +5,7 @@ import {
   type DeviceFileResult,
 } from '@cindy/device-link';
 import { tryPeerFile } from './filePeer';
+import { captureFilePeerScope } from './filePeerScope';
 import { removeRemote } from './mediaTransfer';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './broadcast-tap';
 
@@ -29,8 +30,9 @@ export function readRemoteDeviceFile(
   } = {},
 ) {
   const owner = captureDataOwnerBroadcastScope();
+  const isCurrent = captureFilePeerScope(device);
   const invoke: Invoke = async (...args) => {
-    if (options.signal?.aborted || !isDataOwnerBroadcastScopeCurrent(owner))
+    if (options.signal?.aborted || !isCurrent())
       throw new Error('FILE_PEER_CANCELLED');
     return rawInvoke(...args);
   };
@@ -47,7 +49,7 @@ export function readRemoteDeviceFile(
   return readDeviceFile<LocalFileResult>({
     stream: options.stream,
     signal: options.signal,
-    isCurrent: () => isDataOwnerBroadcastScopeCurrent(owner),
+    isCurrent,
     discard: async (result) => {
       if ('dispose' in result && typeof result.dispose === 'function') await result.dispose();
       else if (result.ossKey && isDataOwnerBroadcastScopeCurrent(owner))
@@ -58,7 +60,7 @@ export function readRemoteDeviceFile(
         const caps = await invoke(device, 'file-browser:remote-op', [
           { op: 'caps', workdir: options.workdir },
         ]);
-        if (options.signal?.aborted || !isDataOwnerBroadcastScopeCurrent(owner))
+        if (options.signal?.aborted || !isCurrent())
           throw new Error('FILE_PEER_CANCELLED');
         if (!caps.ok) throw new Error('FILE_CAPABILITY_FAILED');
         if (!(caps.result as { fileRead?: boolean })?.fileRead) return options.fallback();
@@ -84,10 +86,11 @@ export function readRemoteDeviceFile(
         metadata.size > Math.min(options.maxPeerBytes ?? FILE_PEER_MAX_BYTES, FILE_PEER_MAX_BYTES)
       )
         return null;
-      const result = await tryPeerFile(device, url, invoke, options.signal, options.onProgress);
+      const result = await tryPeerFile(device, url, invoke, options.signal, options.onProgress,
+        options.skipCache ? { ...metadata, skipCache: true } : metadata);
       // A failed direct attempt is discarded before OSS starts; do not leave its partial
       // percentage/speed on screen during the fallback preparation.
-      if (!result && !options.signal?.aborted && isDataOwnerBroadcastScopeCurrent(owner)) {
+      if (!result && !options.signal?.aborted && isCurrent()) {
         try {
           options.onProgress?.(0, metadata.size);
         } catch {

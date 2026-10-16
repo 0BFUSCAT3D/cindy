@@ -39,6 +39,7 @@ import { createLogger } from '../logger.js';
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { sharedTaskMediaId, withSharedTaskMedia } from './sharedTaskMediaContext.js';
 import { assertSharedTaskMedia } from './sharedTaskMediaAccess.js';
+import { fileVersion } from './fileVersion.js';
 
 const log = createLogger('device-link:mediaFetch');
 
@@ -73,6 +74,7 @@ export interface MediaFetchResult {
    */
   inlineBase64?: string;
   transferRequired?: boolean;
+  version?: string;
 }
 
 /** 缩略图最长边:手机聊天气泡最宽 ~360pt@3x≈1080px,1024 足够清晰;点开查看器仍取原图。 */
@@ -449,6 +451,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
       const result = {
         ossKey: '',
         size: before.size,
+        version: fileVersion(absPath, before),
         mimeType:
           mimeType ??
           mimeOf((uploadExtHint ?? path.extname(absPath)).replace(/^\./, '').toLowerCase()),
