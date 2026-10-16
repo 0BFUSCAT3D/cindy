@@ -423,6 +423,9 @@ function createProgramWithSources(
     noResolve: true,
   };
   const defaultHost = ts.createCompilerHost(options, true);
+  // This guard needs receiver type information, not JSDoc diagnostics. Let
+  // TypeScript skip comment ASTs while preserving type info and every root.
+  defaultHost.jsDocParsingMode = ts.JSDocParsingMode.ParseForTypeInfo;
   const originalFileExists = defaultHost.fileExists.bind(defaultHost);
   const originalReadFile = defaultHost.readFile.bind(defaultHost);
   const originalGetSourceFile = defaultHost.getSourceFile.bind(defaultHost);

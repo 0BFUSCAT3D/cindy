@@ -17,6 +17,9 @@ import { clearDraft, saveDraft } from '@/lib/composerDraftStore';
 import type { AtMentionPanel } from '../AtMentionPanel';
 import type { scanAtResources } from '@/lib/atResourceService';
 import type { ExtraDirsButton } from '../ExtraDirsButton';
+import type { PermissionSelector } from '../PermissionSelector';
+import type { UseVoiceInputResult } from '@/voice-input/useVoiceInput';
+import { useAttachments } from '@/hooks/useAttachments';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), remoteProviders: [] as ProviderView[],
@@ -24,6 +27,8 @@ const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor:
   scan: vi.fn<typeof scanAtResources>(),
   atPanel: null as ComponentProps<typeof AtMentionPanel> | null,
   documentChanged: vi.fn(),
+  voiceState: null as UseVoiceInputResult['state'] | null,
+  cancel: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
@@ -55,8 +60,8 @@ vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof impo
   return <span data-testid="model-selector">{modelId}</span>;
 } }));
 vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: () => ({ providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} }) }));
-vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: ({ open, onOpenChange, panel }: ComponentProps<typeof ExtraDirsButton>) => <><button aria-label="test-suggestions" onClick={() => onOpenChange?.(!open)} />{open && panel}</> }));
-vi.mock('../PermissionSelector', () => ({ PermissionSelector: () => <span data-testid="permission-selector" /> }));
+vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: ({ open, onOpenChange, panel, disabled }: ComponentProps<typeof ExtraDirsButton>) => <><button aria-label="test-suggestions" disabled={disabled} onClick={() => onOpenChange?.(!open)} />{open && panel}</> }));
+vi.mock('../PermissionSelector', () => ({ PermissionSelector: ({ disabled }: ComponentProps<typeof PermissionSelector>) => <button data-testid="permission-selector" disabled={disabled} /> }));
 vi.mock('../NewGoalDialog', () => ({ NewGoalDialog: () => null }));
 vi.mock('../FolderPickerPopover', () => ({ FolderPickerPopover: () => null, addRecentFolder: vi.fn() }));
 vi.mock('../AtMentionPanel', () => ({ AtMentionPanel: (props: ComponentProps<typeof AtMentionPanel>) => { h.atPanel = props; return null; } }));
@@ -69,7 +74,8 @@ vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor |
   // replacement on initial mount cannot hide from the regression assertion.
   if (editor && editor !== h.editor) editor.on('transaction', ({ transaction }) => { if (transaction.docChanged) h.documentChanged(); });
   h.editor = editor;
-  return { state: h.listening ? 'listening' : 'idle', isListening: h.listening, isBusy: h.listening, draftText: '', start: vi.fn(), stop: h.stop, cancel: vi.fn() };
+  const state = h.voiceState ?? (h.listening ? 'listening' : 'idle');
+  return { state, isListening: state === 'listening', isBusy: state === 'listening' || state === 'submitting' || state === 'refining', draftText: '', start: vi.fn(), stop: h.stop, cancel: h.cancel };
 } }));
 vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], loading: false }) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }) }));
@@ -107,6 +113,8 @@ beforeEach(() => {
   h.editor = null;
   h.documentChanged.mockClear();
   h.listening = false;
+  h.voiceState = null;
+  h.cancel.mockReset().mockResolvedValue(undefined);
   h.atPanel = null;
   h.scan.mockReset().mockResolvedValue({ success: true, items: [], truncated: false });
   window.electronAPI = api;
@@ -160,6 +168,46 @@ it('does not rehydrate an empty stored document when voice busy state changes', 
   expect(h.editor!.state.selection.from).toBe(1);
 });
 
+// Replaces voiceInputEditorEditability's source guard (PR #6196, section 3.2).
+// The voice hook is an external boundary; the editor and ChatInput lock effects
+// are real. Existing hydration tests never observe editability, attachment
+// controls, permission availability or Escape ownership. Minimal unit inputs:
+// one idle -> listening -> submitting -> refining -> idle run and Escape on
+// two top-level surfaces followed by the same editor. Reuse this jsdom harness.
+it('locks editor and attachments for the whole voice run, but keeps permissions available', async () => {
+  const view = renderComposer();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  for (const state of ['idle', 'listening', 'submitting', 'refining', 'idle'] as const) {
+    h.voiceState = state;
+    view.rerender(<ChatInput {...view.props} />);
+    const busy = state !== 'idle';
+    expect(h.editor!.isEditable, state).toBe(!busy);
+    expect((screen.getByRole('button', { name: 'test-suggestions' }) as HTMLButtonElement).disabled, state).toBe(busy);
+    expect((screen.getByTestId('permission-selector') as HTMLButtonElement).disabled, state).toBe(false);
+  }
+});
+
+it('defers Escape on top-level surfaces and cancels voice once from the editor', async () => {
+  h.listening = true;
+  renderComposer();
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  const surfaces = render(<>
+    <div role="alertdialog"><button>Dialog action</button></div>
+    <div data-morph-side="bottom"><button>Permission action</button></div>
+  </>);
+  for (const name of ['Dialog action', 'Permission action']) {
+    expect(fireEvent.keyDown(screen.getByRole('button', { name }), { key: 'Escape', code: 'Escape' })).toBe(true);
+    expect(h.cancel).not.toHaveBeenCalled();
+  }
+  surfaces.unmount();
+  let allowed = true;
+  await act(async () => {
+    allowed = fireEvent.keyDown(h.editor!.view.dom, { key: 'Escape', code: 'Escape' });
+  });
+  expect(allowed).toBe(false);
+  expect(h.cancel).toHaveBeenCalledExactlyOnceWith();
+});
+
 // A prompt preview hides the old draft. Its first key must only dismiss the
 // preview; dispatch tests without a preview cannot catch this accidental send.
 it('dismisses a preview on Enter without sending or changing the hidden draft', async () => {
@@ -196,6 +244,43 @@ it.each(['Enter', 'Tab'])('consumes %s for an empty slash result without sending
   expect(view.props.onSend).not.toHaveBeenCalled();
   expect(h.editor!.getText()).toBe(text);
   expect(screen.queryByTestId('test-slash-palette')).toBeNull();
+});
+
+// PR #6196 / pendingFolderMention: the hook-only drag test proves enqueueing,
+// but not that an already-mounted editor wakes and consumes the queue. Reuse
+// this unit harness with the real hook; choosing another folder must append
+// once without reinserting the first. Paths are serialized mention targets.
+it('inserts queued folders into the mounted editor when the real attachment hook changes', async () => {
+  // jsdom has no layout; ProseMirror measures a Range when insertion focuses
+  // and scrolls the editor. Supply geometry without replacing its selection.
+  const createRange = document.createRange.bind(document);
+  vi.spyOn(document, 'createRange').mockImplementation(() => {
+    const range = createRange();
+    const rect = new DOMRect();
+    range.getClientRects = () => Object.assign([rect], { item: (index: number) => index === 0 ? rect : null });
+    range.getBoundingClientRect = () => rect;
+    return range;
+  });
+  function AttachmentComposer() {
+    const attachmentState = useAttachments(undefined, 'composer-regression');
+    return <>
+      <button onClick={() => attachmentState.addFolderPath('/workspace/docs')}>Choose docs</button>
+      <button onClick={() => attachmentState.addFolderPath('/workspace/src')}>Choose src</button>
+      <ChatInput draftKey="composer-regression" deviceLinkDeviceId={null}
+        attachmentState={attachmentState} hideRuntimeControls showFolderPicker={false}
+        disableAutofocus onSend={vi.fn().mockResolvedValue(true)} />
+    </>;
+  }
+  const view = render(<AttachmentComposer />);
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'Choose docs' }));
+  await waitFor(() => expect(screen.getByText('docs/')).toBeTruthy());
+  fireEvent.click(screen.getByRole('button', { name: 'Choose src' }));
+  await waitFor(() => expect(screen.getByText('src/')).toBeTruthy());
+  const chips = view.container.querySelectorAll('[data-mention-chip][data-kind="dir"]');
+  expect(Array.from(chips, chip => chip.getAttribute('data-path'))).toEqual([
+    '/workspace/docs', '/workspace/src',
+  ]);
 });
 
 it('does not let a pending local resource scan repopulate an SSH composer', async () => {
