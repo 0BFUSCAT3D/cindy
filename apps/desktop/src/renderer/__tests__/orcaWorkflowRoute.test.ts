@@ -501,16 +501,23 @@ describe('OrcaWorkflowRoute source invariants', () => {
       sessionViewSource.indexOf('const prevCollabEnabledRef'),
       sessionViewSource.indexOf('// F-COLLAB: 关闭协同复用'),
     );
-    const mountGuard = edgeEffect.indexOf('if (prevCollabEnabledRef.current === null) {');
+    // 边沿判定(同任务、数据已就绪)见 collabEnabledEdge 的单测；这里只钉住接线。
+    const knownGuard = edgeEffect.indexOf(
+      'const knownCollabEnabled = session?.id === collabSessionId ? collabEnabled : null;',
+    );
+    const edgeCall = edgeEffect.indexOf('nextCollabEnabledEdge(');
+    const mountGuard = edgeEffect.indexOf('if (!edge) return;');
     const compactGuard = edgeEffect.indexOf('if (isCompactRail) return;');
-    const revealEdge = edgeEffect.indexOf('if (!prev && collabEnabled) {');
+    const revealEdge = edgeEffect.indexOf("if (edge === 'enabled') {");
     const revealCall = edgeEffect.indexOf('revealOrcaWorkersTab(collabSessionId)');
-    const closeEdge = edgeEffect.indexOf('if (prev && !collabEnabled) {');
+    const closeEdge = edgeEffect.indexOf("if (edge === 'disabled') {");
     const closeCall = edgeEffect.indexOf('closeOrcaWorkersTabAfterTeamEnd(collabSessionId)');
 
-    expect(mountGuard).toBeGreaterThanOrEqual(0);
+    expect(knownGuard).toBeGreaterThanOrEqual(0);
+    expect(edgeCall).toBeGreaterThan(knownGuard);
+    expect(edgeEffect.slice(edgeCall, mountGuard)).toContain('knownCollabEnabled');
+    expect(mountGuard).toBeGreaterThan(edgeCall);
     expect(compactGuard).toBeGreaterThan(mountGuard);
-    expect(edgeEffect.slice(mountGuard, compactGuard)).toContain('return;');
     expect(revealEdge).toBeGreaterThan(compactGuard);
     expect(revealCall).toBeGreaterThan(revealEdge);
     expect(edgeEffect.slice(revealCall, closeEdge)).toContain('return;');
