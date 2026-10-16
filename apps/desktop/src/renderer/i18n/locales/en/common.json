@@ -2558,7 +2558,7 @@
         },
         "profile": {
           "missing": "No voiceprint yet",
-          "missingHint": "Record your voiceprint to enable filtering. It takes about 20 seconds.",
+          "missingHint": "Record your voiceprint to enable filtering.",
           "enrolled": "Voiceprint recorded",
           "enrolledAt": "Recorded {{date}}",
           "enroll": "Record voiceprint",
@@ -2583,10 +2583,11 @@
         },
         "enroll": {
           "title": "Record voiceprint",
-          "description": "Where you usually use voice input, read the {{clips}} passages below in your normal voice. Each recording lasts {{seconds}} seconds. Make sure no one else is talking.",
+          "description": "Read the {{clips}} passages below in your normal voice. Each recording lasts up to {{seconds}} seconds; stop recording when you finish reading. Record where you usually use voice input, with no one else talking.",
           "stepsAriaLabel": "Passages to read",
           "step": "{{current}} of {{total}}",
           "record": "Start reading",
+          "stop": "Stop Recording",
           "rerecord": "Record this one again",
           "recording": "Recording, {{seconds}} s left",
           "recorded": "Recorded",
@@ -2599,7 +2600,7 @@
             "p3": "Please make this text more concise, keep the key numbers and conclusions, and then sum up the main points in three to five sentences."
           },
           "errors": {
-            "too_short": "Passage {{index}} has too little speech. Record it again without long pauses.",
+            "too_short": "Too little speech was detected in passage {{index}}. Record it again.",
             "no_embedding": "No voiceprint could be read from passage {{index}}. Record it again.",
             "inconsistent": "Passage {{index}} does not sound like the same person as the others; another voice or noise may have been picked up. Record it again.",
             "models_missing": "The recognition model has not finished downloading. Try again shortly.",

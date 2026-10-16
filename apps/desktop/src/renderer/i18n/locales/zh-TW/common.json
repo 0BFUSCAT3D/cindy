@@ -2531,7 +2531,7 @@
         },
         "profile": {
           "missing": "尚未錄製聲紋",
-          "missingHint": "錄製聲紋後才會生效，大約需要 20 秒。",
+          "missingHint": "錄入聲紋後才會生效。",
           "enrolled": "已錄製聲紋",
           "enrolledAt": "{{date}} 錄製",
           "enroll": "錄製聲紋",
@@ -2556,10 +2556,11 @@
         },
         "enroll": {
           "title": "錄製聲紋",
-          "description": "請在平常使用語音輸入的地方，用平常的語氣朗讀下面 {{clips}} 段文字，每段錄音 {{seconds}} 秒。錄音時請不要讓別人說話。",
+          "description": "請用平常的語氣朗讀下面 {{clips}} 段文字。每段最多錄音 {{seconds}} 秒，讀完點選結束錄音。請在平時使用語音輸入的地方錄製，避免其他人同時說話。",
           "stepsAriaLabel": "朗讀段落",
           "step": "第 {{current}} / {{total}} 段",
           "record": "開始朗讀",
+          "stop": "結束錄音",
           "rerecord": "重錄這段",
           "recording": "正在錄音，還剩 {{seconds}} 秒",
           "recorded": "這段已錄好",
@@ -2572,7 +2573,7 @@
             "p3": "請幫我把這段內容改得更簡潔一些，保留關鍵數字和結論，然後用三到五句話總結重點。"
           },
           "errors": {
-            "too_short": "第 {{index}} 段裡說話的時間太短，請重錄這段，朗讀時不要停頓太久。",
+            "too_short": "第 {{index}} 段偵測到的語音不足，請重新錄製。",
             "no_embedding": "第 {{index}} 段沒能辨識出聲紋，請重錄這段。",
             "inconsistent": "第 {{index}} 段和其他幾段不像同一個人，可能混入了別人的聲音或噪音，請重錄這段。",
             "models_missing": "辨識模型尚未下載完成，請稍後再試。",
