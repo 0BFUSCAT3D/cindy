@@ -224,6 +224,19 @@ describe('Local copies of avatars held elsewhere', () => {
     expect(next.container.querySelector('img')?.getAttribute('src')).toBe(copy);
   });
 
+  it('asks again on a later display when keeping a copy failed', async () => {
+    let online = false;
+    const resolve = install(async (request) => (request.fetch && online ? copy : null));
+    render(<BotAvatar bot={{ name: 'Miao', avatar: cloud, avatarColor: 'violet' }} />);
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledWith({ avatar: cloud, deviceId: null, fetch: true }));
+    await vi.waitFor(() => expect(resolve.mock.results.length).toBe(2));
+    await resolve.mock.results[1]!.value;
+    cleanup();
+    online = true;
+    render(<BotAvatar bot={{ name: 'Miao', avatar: cloud, avatarColor: 'violet' }} />);
+    await vi.waitFor(() => expect(resolve.mock.calls.filter(([request]) => request.fetch)).toHaveLength(2));
+  });
+
   it('falls back to the original address when the local copy cannot load', async () => {
     install(async () => copy);
     const { container } = render(<BotAvatar bot={{ name: 'Miao', avatar: cloud, avatarColor: 'violet' }} />);

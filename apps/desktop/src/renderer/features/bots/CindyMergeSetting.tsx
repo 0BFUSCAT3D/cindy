@@ -17,6 +17,7 @@ import { ensureBotProfilesLoaded } from './botStore';
 import { companionCloudApi, refreshCompanionCloud, useCompanionCloud } from './companionCloudStore';
 
 const MERGE_ERROR_KEYS: Partial<Record<CompanionCloudFailureCode, string>> = {
+  BUSY: 'bots.cloud.mergeBusy',
   OFFLINE: 'bots.cloud.mergeOffline',
   HOME_OUTDATED: 'bots.cloud.mergeOutdated',
 };

@@ -52,8 +52,11 @@ export interface CompanionMaterializeHost {
   applyTodos?: (botId: string, items: unknown[], remove: string[], fence: CompanionWriteFence) => Promise<void>;
   /** Its routines from the cloud are created or updated with their ids; `remove` ids are deleted. */
   applyRoutines?: (botId: string, routines: unknown[], remove: string[], fence: CompanionWriteFence) => Promise<void>;
-  /** Its workbench folders and portable judgments join this computer's. */
-  applyWorkbench?: (botId: string, value: unknown, fence: CompanionWriteFence) => Promise<void>;
+  /**
+   * Its workbench folders and portable judgments join this computer's, or with `replace` take their
+   * place (`null`: the companion has none).
+   */
+  applyWorkbench?: (botId: string, value: unknown, fence: CompanionWriteFence, options?: { replace?: boolean }) => Promise<void>;
   ensureCanonicalSession: (botId: string, fence: CompanionWriteFence) => Promise<string>;
   /**
    * Local rows created at or after `fromMs`, including rewound and deleted ones (`removed`):
@@ -201,26 +204,32 @@ export async function materializeCompanion(input: {
   }
 
   // Todos, routines and the workbench move with the companion: applied in one batch each (the
-  // cloud wins; a tombstone removes the item here).
+  // cloud wins; a routine tombstone removes it here). A todo is deleted by marking it (the mark
+  // travels as a value); its tombstone only means it left the travelling window (closed long ago),
+  // so this computer keeps its own copy.
   const batches = [
-    { prefix: COMPANION_TODO_PREFIX, kind: 'todo', run: host.applyTodos },
-    { prefix: COMPANION_ROUTINE_PREFIX, kind: 'routine', run: host.applyRoutines },
+    { prefix: COMPANION_TODO_PREFIX, kind: 'todo', run: host.applyTodos, removes: false },
+    { prefix: COMPANION_ROUTINE_PREFIX, kind: 'routine', run: host.applyRoutines, removes: true },
   ] as const;
   for (const batch of batches) {
     const rows = [...prefs].filter(([key]) => key.startsWith(batch.prefix));
     if (!rows.length || !batch.run) continue;
     await apply(batch.kind, async () => {
       const values = rows.flatMap(([, row]) => (row.value === null ? [] : [row.value]));
-      const removed = rows.flatMap(([key, row]) => (row.value === null ? [key.slice(batch.prefix.length)] : []));
+      const removed = batch.removes ? rows.flatMap(([key, row]) => (row.value === null ? [key.slice(batch.prefix.length)] : [])) : [];
       await step(() => batch.run!(botId, values, removed, fence));
       for (const [key, row] of rows) applied.set(key, { hash: row.value === null ? TOMBSTONE_HASH : valueHash(row.value), revision: row.revision });
     });
   }
+  // A workbench this computer synced before is the cloud's from back then: the cloud replaces it, so
+  // a folder or judgment removed meanwhile (or all of them) stays removed. One that never synced
+  // (an old copy of its own) joins, and goes up with the rest.
   const workbench = prefs.get(COMPANION_WORKBENCH_KEY);
-  if (workbench && workbench.value !== null && host.applyWorkbench) {
+  const replaceWorkbench = !!knownPrefs[COMPANION_WORKBENCH_KEY];
+  if (workbench && host.applyWorkbench && (workbench.value !== null || replaceWorkbench)) {
     await apply('workbench', async () => {
-      await step(() => host.applyWorkbench!(botId, workbench.value, fence));
-      applied.set(COMPANION_WORKBENCH_KEY, { hash: valueHash(workbench.value), revision: workbench.revision });
+      await step(() => host.applyWorkbench!(botId, workbench.value, fence, { replace: replaceWorkbench }));
+      applied.set(COMPANION_WORKBENCH_KEY, { hash: workbench.value === null ? TOMBSTONE_HASH : valueHash(workbench.value), revision: workbench.revision });
     });
   }
 

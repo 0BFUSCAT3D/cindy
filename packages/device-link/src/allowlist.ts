@@ -37,6 +37,7 @@ import {
 import { TASK_MIGRATION_CHANNEL } from './taskMigration.js';
 import {
   COMPANION_CLOUD_CAPS_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
   COMPANION_CLOUD_HAND_OVER_CHANNEL,
   COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
   COMPANION_CLOUD_MERGE_CHANNEL,
@@ -455,8 +456,9 @@ const EXTENDED_INVOKE_CHANNELS: readonly string[] = [
   COMPANION_CLOUD_TARGETS_CHANNEL,
   COMPANION_CLOUD_HAND_OVER_CHANNEL,
   // 云端伙伴：请保留的那个 Cindy 所在电脑合并其他 Cindy（写；同账号远控，准入同上，业务 handler 只在
-  // 本机运行保留的那个 Cindy 时执行）。
+  // 本机运行保留的那个 Cindy 时执行）。合并前请各来源 Cindy 的主力电脑先同步（写，只上传、不改主力电脑）。
   COMPANION_CLOUD_MERGE_CHANNEL,
+  COMPANION_CLOUD_FLUSH_CHANNEL,
   // —— Rewind / Fork / Title / Context ——
   'maker:rewind:preview',
   'maker:rewind:commit',
@@ -856,6 +858,7 @@ export const INVOKE_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {
   // 交出伙伴先把积压对话与全部资料传到服务器，再改主力电脑。
   [COMPANION_CLOUD_HAND_OVER_CHANNEL]: COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
   [COMPANION_CLOUD_MERGE_CHANNEL]: COMPANION_CLOUD_MERGE_TIMEOUT_MS,
+  [COMPANION_CLOUD_FLUSH_CHANNEL]: COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS,
   // listing tier 轻量 DB 读:毫秒级查询,12s 仍等不到只能是链路问题,快速失败喂给熔断器。
   // 12s 同时覆盖被控端冷启动 DB 迁移的常见时长(那类失败是快速返回的 DbClient not ready,
   // 不吃满超时),不会误伤首拉重试。

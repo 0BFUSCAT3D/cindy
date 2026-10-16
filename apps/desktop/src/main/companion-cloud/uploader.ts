@@ -18,11 +18,6 @@ export const COMPANION_ROUTINE_PREFIX = 'companion.routine.v1:';
 export const COMPANION_WORKBENCH_KEY = 'companion.workbench.v1';
 const OWNED_PREFIXES = [COMPANION_PROFILE_KEY, COMPANION_MEMORY_PREFIX, COMPANION_SKILL_PREFIX,
   COMPANION_TODO_PREFIX, COMPANION_ROUTINE_PREFIX, COMPANION_WORKBENCH_KEY];
-/**
- * Todos are deleted by marking them (the mark travels as a value); one that only left the
- * travelling window (closed long ago) is not deleted, so it is never tombstoned.
- */
-const NEVER_TOMBSTONED_PREFIXES = [COMPANION_TODO_PREFIX];
 const MAX_KEY_LENGTH = 160;
 export const COMPANION_VALUE_MAX_BYTES = 60 * 1024;
 /** A value over the size limit was not uploaded (thrown only when every value is required). */
@@ -136,7 +131,7 @@ export function createCompanionUploader(deps: {
     // Only keys this device itself had are tombstoned; never what merely exists on the server,
     // nor anything under a part that could not be read this time.
     for (const [key, entry] of Object.entries(deps.state.bot(botId)?.prefs ?? {})) {
-      if ([...unread, ...NEVER_TOMBSTONED_PREFIXES].some(prefix => key.startsWith(prefix))) continue;
+      if (unread.some(prefix => key.startsWith(prefix))) continue;
       if (!desired.has(key) && entry.local && entry.hash !== TOMBSTONE_HASH) desired.set(key, null);
     }
     let writes = 0;

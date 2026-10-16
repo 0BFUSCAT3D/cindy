@@ -291,6 +291,8 @@ export function createCompanionMirror(deps: {
       const from = eligible.length > COMPANION_BACKFILL_LIMIT ? eligible[eligible.length - COMPANION_BACKFILL_LIMIT]! : 0;
       if (rows.length) await importRows(botId, actorId, roomId, sessionId, rows.slice(from));
       else deps.state.update(botId, actorId, entry => { entry.mirror = { sessionId, createdAt: 0, id: '' }; });
+      // Before a hand-over the older history goes up too: this copy stops mirroring once demoted.
+      if (options.drain) await backfillBot(botId, actorId, roomId, sessionId, true);
       return;
     }
     // Assistant rows are stamped when they start and persisted later, and imported history can

@@ -368,5 +368,37 @@ describe('todos moving with the companion', () => {
     expect(after.items.find((item) => item.id === keep.id)?.title).toBe('从另一台电脑来的标题');
     expect(after.cursors).toEqual(before.cursors);
   });
-});
 
+  it('gives another companion\'s todo with a taken key a stable key of its own', async () => {
+    const { file } = await fixture();
+    const store = createBotTodoStore(file, async () => ({}));
+    const mine = await store.patch({ ...p, key: 'quote:1' });
+    const theirs = { ...mine, id: 'todo:theirs', title: '另一个 Cindy 的' };
+    await store.importItems([theirs], []);
+    await store.importItems([theirs], []);
+    const items = (await store.read()).items;
+    expect(items).toHaveLength(2);
+    const merged = items.find((item) => item.id === 'todo:theirs')!;
+    expect(merged.key).toMatch(/^quote:1~[0-9a-f]{10}$/);
+    expect(items.find((item) => item.id === mine.id)!.key).toBe('quote:1');
+    // Still a valid store for the next write.
+    await store.patch({ id: mine.id, expectedRevision: mine.revision, progress: '继续' });
+  });
+
+  it('links a travelled legacy todo back to its workbench entry instead of adding a twin', async () => {
+    const { file } = await fixture();
+    const j = { project: '/cindy', title: '旧工具创建', verdict: 'unfinished' as const, next: '准备草稿',
+      ref: 'https://example.test/legacy', updatedAt: '2026-10-01T00:00:00Z' };
+    // On the old computer: the legacy entry became a todo, which travels without its link.
+    const old = createBotTodoStore((await fixture()).file, async () => ({ 'idea:later': j }));
+    const original = (await old.read()).items[0]!;
+    const { legacyId: _id, legacyFingerprint: _fp, legacyVerdict: _v, ...travelled } = original;
+    const store = createBotTodoStore(file, async () => ({ 'idea:later': j }));
+    await store.importItems([{ ...travelled, title: '新电脑上看到的标题' } as typeof original], []);
+    const items = (await store.read()).items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: original.id, legacyId: 'idea:later', title: '新电脑上看到的标题' });
+    await store.patch({ id: items[0]!.id, expectedRevision: items[0]!.revision, progress: '继续' });
+    expect((await store.read()).items).toHaveLength(1);
+  });
+});

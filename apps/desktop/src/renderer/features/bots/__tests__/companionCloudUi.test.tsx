@@ -25,7 +25,7 @@ vi.mock('../botStore', () => ({ ensureBotProfilesLoaded: h.ensureLoaded, useBotP
 vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({ useDeviceLinkDeviceList: () => h.devices }));
 vi.mock('@/lib/toast', () => ({ toast: { info: h.toast, error: h.toast } }));
 
-import { CloudCompanionOfflineView } from '../CloudCompanionOfflineView';
+import { CLOUD_ATTACHMENT_LOADS, CloudCompanionOfflineView } from '../CloudCompanionOfflineView';
 import { BotHomeComputerSetting, companionArrivedHere } from '../BotHomeComputerSetting';
 import { resetCompanionCloudStoreForTests, useCompanionCloud } from '../companionCloudStore';
 import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudCompanionRemote, withoutCloudCompanions, withoutShadowedBots } from '../companionCloudPresentation';
@@ -130,6 +130,22 @@ describe('CloudCompanionOfflineView', () => {
     expect(await screen.findByText('cat.png:loading')).toBeTruthy();
     expect(await screen.findByText('cat.png:cindy-media://blobs/a.png')).toBeTruthy();
     expect(maker.getCompanionAttachment).toHaveBeenCalledWith('mia', 'media-1');
+  });
+
+  it('brings a long conversation\'s files down a few at a time, never all at once', async () => {
+    const files = Array.from({ length: 5 }, (_, i) => ({ mediaId: `media-${i}`, name: `f${i}.txt` }));
+    maker.getCompanionTranscript.mockResolvedValue({ messages: [{ id: 'm1', seq: '1', role: 'user', text: '', createdAt: 1, attachments: files }] });
+    const pending: Array<() => void> = [];
+    maker.getCompanionAttachment.mockImplementation((_bot: string, mediaId: string) => new Promise((resolve) => {
+      pending.push(() => resolve({ id: mediaId, name: mediaId, category: 'file', mimeType: 'text/plain', size: 1, url: null, path: `/tmp/${mediaId}` }));
+    }));
+    renderView();
+    await waitFor(() => expect(maker.getCompanionAttachment).toHaveBeenCalledTimes(CLOUD_ATTACHMENT_LOADS));
+    await act(async () => { pending.shift()!(); });
+    await waitFor(() => expect(maker.getCompanionAttachment).toHaveBeenCalledTimes(CLOUD_ATTACHMENT_LOADS + 1));
+    while (pending.length) await act(async () => { pending.shift()!(); });
+    await waitFor(() => expect(maker.getCompanionAttachment).toHaveBeenCalledTimes(5));
+    while (pending.length) await act(async () => { pending.shift()!(); });
   });
 
   it('loads older messages on request', async () => {

@@ -178,6 +178,15 @@ describe('companion conversation mirror', () => {
     expect(t.imported().length).toBe(first + 2);
   });
 
+  it('uploads the older history in the same pass when the first sync is a hand-over', async () => {
+    const rows = Array.from({ length: 260 }, (_, i) => (i % 2 ? reply(`r${i}`) : user(`u${i}`)));
+    const t = setup(rows);
+    await t.mirror.syncBot('bot', 'actor', 'Mia', { drain: true });
+    const texts = t.imported().flat().map(message => message.content[0]!.text);
+    expect(new Set(texts).size).toBe(260);
+    expect(t.state.bot('bot')?.backfill?.done).toBe(true);
+  });
+
   it('uploads history from before the mirror started, also when the cursor came from a take-over', async () => {
     const old = [user('before'), reply('long ago')];
     const t = setup([...old]);

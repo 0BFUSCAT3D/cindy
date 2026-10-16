@@ -160,11 +160,11 @@ function createMaterializer(input: {
         && Array.isArray((routine as { input: { triggers?: unknown } }).input.triggers));
       await importCompanionRoutines(botId, valid, remove, input.selfDeviceId?.() ?? null);
     },
-    applyWorkbench: async (botId, value, fence) => {
+    applyWorkbench: async (botId, value, fence, options) => {
       const self = input.selfDeviceId?.();
       if (!self) throw new Error('DEVICE_UNKNOWN');
       fence.assertCurrent();
-      await mergeCompanionWorkbench(ownerScopedUserDataPath(), botId, self, value);
+      await mergeCompanionWorkbench(ownerScopedUserDataPath(), botId, self, value, options);
     },
     readProfile: async botId => {
       const [row] = await getDbClient().drizzle

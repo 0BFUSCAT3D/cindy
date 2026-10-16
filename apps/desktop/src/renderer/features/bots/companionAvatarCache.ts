@@ -46,8 +46,9 @@ function lookup(source: CompanionAvatarSource): Promise<string | null> {
   const run = resolve({ avatar: source.avatar, deviceId: source.deviceId }).catch(() => null).then((url) => {
     if (scoped() === map) map.set(key, url);
     // Not cached yet: keep a copy for next time; this mount keeps the original address.
+    // A failed copy is forgotten, so a later display asks again (the main process paces retries).
     if (!url) void resolve({ avatar: source.avatar, deviceId: source.deviceId, fetch: true }).catch(() => null)
-      .then((copy) => { if (copy && scoped() === map) map.set(key, copy); });
+      .then((copy) => { if (scoped() !== map) return; if (copy) map.set(key, copy); else map.delete(key); });
     return url;
   }).finally(() => { pending.delete(key); });
   pending.set(key, run);

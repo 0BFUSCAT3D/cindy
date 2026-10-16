@@ -648,3 +648,52 @@ describe('installation guard', () => {
     expect(t.runtime.isShadowed('bot_mia')).toBe(false);
   });
 });
+
+describe('merging copies of Cindy', () => {
+  function mergeSetup(options: { sourceHome: string; flush?: ReturnType<typeof vi.fn>; turnActive?: () => boolean }) {
+    const order: string[] = [];
+    const flush = options.flush ?? vi.fn(async () => { order.push('flush'); return { ok: true as const }; });
+    const homeLink = { version: vi.fn(async () => 2), targets: vi.fn(async () => []), handOver: vi.fn(async () => ({ ok: true as const })), flush };
+    const t = setup({ home: 'desk', homeLink, ...(options.turnActive ? { turnActive: options.turnActive } : {}), handler: (route, method) => {
+      if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: { ...MIA, templateId: 'cindy' }, revision: 1 }] : { revision: 1 };
+      if (route === '/conversations') return { id: ROOM };
+      if (route.includes('/messages?')) return [];
+      if (route.endsWith('/import')) return {};
+      if (method === 'PATCH') { order.push(`patch ${route}`); return {}; }
+      throw new Error(`unexpected ${method} ${route}`);
+    } });
+    t.actors.splice(0, t.actors.length,
+      { id: 'actor-keep', kind: 'bot', externalId: 'cindy-default', name: 'Cindy', avatar: null, homeDeviceId: 'desk' },
+      { id: 'actor-from', kind: 'bot', externalId: 'bot_lap', name: 'Cindy', avatar: null, homeDeviceId: options.sourceHome });
+    return { ...t, order, flush };
+  }
+
+  it('has the other copy\'s computer send what it has not sent yet before reading it, and retires it last', async () => {
+    const t = mergeSetup({ sourceHome: 'laptop' });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: true, merged: 1 });
+    expect(t.flush).toHaveBeenCalledWith('laptop', 'bot_lap');
+    expect(t.order).toEqual(['flush', 'patch /actors/actor-from']);
+  });
+
+  it('does not merge while the other copy is still replying, and leaves it active', async () => {
+    const flush = vi.fn(async () => ({ ok: false as const, code: 'BUSY' }));
+    const t = mergeSetup({ sourceHome: 'laptop', flush });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'BUSY' });
+    expect(t.order).toEqual([]);
+  });
+
+  it('sends a copy homed here itself, and waits while it is busy', async () => {
+    let busy = true;
+    const t = mergeSetup({ sourceHome: 'desk', turnActive: () => busy });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'BUSY' });
+    busy = false;
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: true, merged: 1 });
+    expect(t.flush).not.toHaveBeenCalled();
+  });
+
+  it('answers a flush request only as the copy\'s home', async () => {
+    const t = mergeSetup({ sourceHome: 'laptop' });
+    expect(await t.runtime.flushHere('bot_lap')).toEqual({ ok: false, code: 'HOME_CONFLICT' });
+    expect(await t.runtime.flushHere('cindy-default')).toEqual({ ok: true });
+  });
+});

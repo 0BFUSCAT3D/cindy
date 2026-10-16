@@ -9734,7 +9734,7 @@
       "switchTo": "換到「{{device}}」",
       "switchHere": "換到這台電腦",
       "switchTitle": "把 {{name}} 換到「{{device}}」執行？",
-      "switchDescription": "從現在起 {{name}} 在「{{device}}」上執行，聊天紀錄一起帶過去。工作目錄、連線和本機檔案留在原來的電腦上。",
+      "switchDescription": "從現在起 {{name}} 在「{{device}}」上執行，對話紀錄一起帶過去。工作目錄、連線和本機檔案留在原來的電腦上。",
       "switchAction": "換到「{{device}}」",
       "switched": "{{name}} 已換到「{{device}}」執行",
       "switchConflict": "{{name}} 的主力電腦已經變了，這次沒有更換",
@@ -9750,12 +9750,13 @@
       "mergeLabel": "合併重複的 Cindy",
       "mergeHint": "你有 {{count}} 個 Cindy：{{devices}}",
       "mergeTitle": "把 {{count}} 個 Cindy 合成一個？",
-      "mergeDescription": "合併後只留下一個 Cindy。其他 Cindy 的聊天紀錄、記憶、技能、待辦和例行任務會併進來；同名但內容不同的記憶和技能另存一份，不會覆蓋。其他 Cindy 會停用，它們的資料仍保留在雲端和原來的電腦上。",
+      "mergeDescription": "合併後只留下一個 Cindy。其他 Cindy 的對話紀錄、記憶、技能、待辦和例行任務會併進來；同名但內容不同的記憶和技能另存一份，不會覆蓋。其他 Cindy 會停用，它們的資料仍保留在雲端和原來的電腦上。",
       "mergeKeep": "保留哪一個的名字、個性和設定",
       "mergeAction": "合成一個",
       "merged": "{{count}} 個 Cindy 已合成一個，帶過來 {{messages}} 則訊息",
       "mergedRenamed": "{{count}} 個 Cindy 已合成一個，帶過來 {{messages}} 則訊息；同名的內容另存為：{{renamed}}",
       "mergeFailed": "沒能合併，可以稍後再試一次（已合併的部分不會重複）",
+      "mergeBusy": "有一個 Cindy 還在回覆，等它回覆完再合併",
       "mergeOffline": "「{{device}}」現在連不上，它上線後再合併",
       "mergeOutdated": "「{{device}}」上的 Cindy 版本較舊，請先更新它再合併"
     }

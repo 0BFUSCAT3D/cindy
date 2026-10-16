@@ -207,7 +207,40 @@ export function CloudCompanionOfflineView({ botId, deviceId, name, avatar, avata
   );
 }
 
-/** Files of a cloud message, brought to this computer from the companion's room when shown. */
+/** At most this many room files come down at once (each can be up to 25 MB). */
+export const CLOUD_ATTACHMENT_LOADS = 2;
+let attachmentLoads = 0;
+const attachmentQueue: Array<() => void> = [];
+
+/** Run `load` when a slot is free; a load whose message left the view before its turn is skipped. */
+function queuedAttachmentLoad(load: () => Promise<void>, wanted: () => boolean): void {
+  const start = () => {
+    if (!wanted()) { attachmentQueue.shift()?.(); return; }
+    attachmentLoads += 1;
+    void load().finally(() => { attachmentLoads -= 1; attachmentQueue.shift()?.(); });
+  };
+  if (attachmentLoads < CLOUD_ATTACHMENT_LOADS) start();
+  else attachmentQueue.push(start);
+}
+
+/** True once the element is near the visible part of the conversation (always, without an observer). */
+function useNearView(ref: { current: Element | null }): boolean {
+  const [near, setNear] = useState(() => typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    if (near || !ref.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setNear(true);
+    }, { rootMargin: '600px 0px' });
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [near, ref]);
+  return near;
+}
+
+/**
+ * Files of a cloud message, brought to this computer from the companion's room once the message
+ * is near the view, a few at a time: opening a long conversation never starts every download.
+ */
 function CloudMessageAttachments({ botId, files, align }: {
   botId: string;
   files: ReadonlyArray<{ mediaId: string; name: string }>;
@@ -215,7 +248,10 @@ function CloudMessageAttachments({ botId, files, align }: {
 }) {
   const [loaded, setLoaded] = useState<Record<string, BotGroupAttachment | 'unavailable'>>({});
   const key = files.map((file) => file.mediaId).join(',');
+  const box = useRef<HTMLDivElement | null>(null);
+  const near = useNearView(box);
   useEffect(() => {
+    if (!near) return;
     const api = companionCloudApi();
     let live = true;
     const owner = getDataOwnerGeneration();
@@ -224,16 +260,18 @@ function CloudMessageAttachments({ botId, files, align }: {
         if (live && isDataOwnerGenerationCurrent(owner)) setLoaded((current) => ({ ...current, [file.mediaId]: value }));
       };
       if (!api || typeof api.getCompanionAttachment !== 'function') { settle('unavailable'); continue; }
-      void api.getCompanionAttachment(botId, file.mediaId).then((value) => settle({ ...value, id: file.mediaId }), () => settle('unavailable'));
+      queuedAttachmentLoad(() => api.getCompanionAttachment(botId, file.mediaId)
+        .then((value) => settle({ ...value, id: file.mediaId }), () => settle('unavailable')),
+      () => live && isDataOwnerGenerationCurrent(owner));
     }
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the files' ids
-  }, [botId, key]);
+  }, [botId, key, near]);
   const attachments: BotGroupAttachment[] = files.map((file) => {
     const value = loaded[file.mediaId];
     if (value && value !== 'unavailable') return value;
     return { id: file.mediaId, name: file.name, category: 'file', mimeType: '', size: 0, url: null, path: null,
       state: value === 'unavailable' ? 'unavailable' : 'loading' };
   });
-  return <BotGroupMessageAttachments attachments={attachments} align={align} />;
+  return <div ref={box} className="min-w-0 max-w-full"><BotGroupMessageAttachments attachments={attachments} align={align} /></div>;
 }

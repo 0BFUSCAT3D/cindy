@@ -262,5 +262,17 @@ describe('workbench moving with the companion', () => {
     expect(travelling.directories.find((dir) => dir.path === here)?.deviceId).toBe('desk');
     expect(travelling.directories.find((dir) => dir.path.startsWith('C:'))?.deviceId).toBe('laptop');
   });
-});
 
+  it('lets the cloud replace a workbench this computer synced before, keeping judgments that never travel', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'bot-workbench-'));
+    const here = path.join(root, 'here');
+    await mkdir(here);
+    expect(await addBotWorkbenchDirectory(root, 'bot-1', here)).toEqual({ ok: true });
+    await setBotWorkbenchJudgment(root, 'bot-1', 'session:abc', { title: 'Local task', verdict: 'unfinished', next: null, project: here });
+    await setBotWorkbenchJudgment(root, 'bot-1', 'pr:makecindy/cindy#1', { title: 'Review', verdict: 'unfinished', next: null, project: here });
+    await mergeCompanionWorkbench(root, 'bot-1', 'desk', null, { replace: true });
+    const workbench = await readBotWorkbench(root, 'bot-1');
+    expect(workbench.directories).toEqual([]);
+    expect(Object.keys(workbench.tasks)).toEqual(['session:abc']);
+  });
+});

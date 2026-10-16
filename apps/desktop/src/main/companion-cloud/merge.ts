@@ -4,8 +4,9 @@
  * memories, own skills, todos, routines, workbench and conversation join it; their profile does
  * not (the kept one is the user's chosen base). Nothing is overwritten silently: a memory or skill
  * that exists on both sides with different content is kept as a second, renamed entry. The merged
- * copies are then retired in the cloud; their own data stays there and on their computers.
- * Every step is idempotent, so a failed merge is simply run again.
+ * copies are retired in the cloud only once everything, the kept task's history included, is in;
+ * their own data stays there and on their computers. Every step is idempotent, so a failed merge
+ * (sources still active) is simply run again.
  */
 import { createHash } from 'node:crypto';
 import { inferBotTemplatePresetId } from '../../shared/botTemplatePreset.js';
@@ -48,11 +49,36 @@ const BATCH_BYTES = 200_000;
 const text = (value: unknown) => typeof value === 'string' ? value : undefined;
 const record = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
-/** `name.md` → `name-<suffix>.md`; skills are slugs without an extension. */
-export function renamedEntry(name: string, suffix: string): string {
+/** `name.md` → `name-<suffix>.md` (then `-2`, `-3`…); skills are slugs without an extension. */
+export function renamedEntry(name: string, suffix: string, attempt = 1): string {
   const dot = name.lastIndexOf('.');
-  const safe = suffix.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'merged';
+  const safe = (suffix.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'merged')
+    + (attempt > 1 ? `-${attempt}` : '');
   return dot > 0 ? `${name.slice(0, dot)}-${safe}${name.slice(dot)}` : `${name}-${safe}`;
+}
+
+const RENAME_ATTEMPTS = 50;
+
+/**
+ * Where a source entry goes in the kept companion: its own name when free, else the first renamed
+ * name that is free or already holds the same content (a rerun); null when it is already there.
+ */
+async function mergeTarget(name: string, suffix: string, content: string, read: (name: string) => Promise<string | null>): Promise<string | null> {
+  const current = await read(name);
+  if (current === null) return name;
+  if (current === content) return null;
+  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt += 1) {
+    const target = renamedEntry(name, suffix, attempt);
+    const existing = await read(target);
+    if (existing === content) return null;
+    if (existing === null) return target;
+  }
+  throw new Error('MERGE_NAME_EXHAUSTED');
+}
+
+/** A routine joining another companion gets its own stable id (the source may still own the original here). */
+export function mergedRoutineId(keepBotId: string, routineId: string): string {
+  return `m${createHash('sha256').update(`${keepBotId}\n${routineId}`).digest('hex').slice(0, 40)}`;
 }
 
 export async function mergeCompanionsInto(input: {
@@ -82,15 +108,10 @@ export async function mergeCompanionsInto(input: {
       const filename = row.key.slice(COMPANION_MEMORY_PREFIX.length);
       const content = text(record(row.value)?.content);
       if (content === undefined) continue;
-      const current = await host.readMemory(keep.externalId, filename);
-      if (current === content) continue;
-      let target = filename;
-      if (current !== null) {
-        target = renamedEntry(filename, suffix);
-        // A second run finds the renamed copy already there.
-        if (await host.readMemory(keep.externalId, target) === content) continue;
-        summary.renamed.push(target);
-      }
+      // A second run finds the (renamed) copy already there.
+      const target = await mergeTarget(filename, suffix, content, name => host.readMemory(keep.externalId, name));
+      if (target === null) continue;
+      if (target !== filename) summary.renamed.push(target);
       fence.assertCurrent();
       await host.restoreMemory(keep.externalId, target, content, fence);
       summary.memories += 1;
@@ -100,34 +121,36 @@ export async function mergeCompanionsInto(input: {
       const slug = row.key.slice(COMPANION_SKILL_PREFIX.length);
       const content = text(record(row.value)?.content);
       if (content === undefined) continue;
-      const current = await host.readSkill(keep.externalId, slug);
-      if (current === content) continue;
-      let target = slug;
-      if (current !== null) {
-        target = renamedEntry(slug, suffix);
-        if (await host.readSkill(keep.externalId, target) === content) continue;
-        summary.renamed.push(target);
-      }
+      const target = await mergeTarget(slug, suffix, content, name => host.readSkill(keep.externalId, name));
+      if (target === null) continue;
+      if (target !== slug) summary.renamed.push(target);
       fence.assertCurrent();
       await host.saveSkill(keep.externalId, target, content, record(row.value)?.enabled !== false, fence);
       summary.skills += 1;
     }
 
-    // Ids are unique per companion, so these join without conflicts; a rerun replaces the same ids.
+    // Todo ids are unique per companion (the store gives a same-key todo its own key); a rerun
+    // replaces the same ids. Routines get ids of their own in the kept companion.
     const todos = prefs.filter(row => row.key.startsWith(COMPANION_TODO_PREFIX)).map(row => row.value);
     if (todos.length && host.applyTodos) await host.applyTodos(keep.externalId, todos, [], fence);
-    const routines = prefs.filter(row => row.key.startsWith(COMPANION_ROUTINE_PREFIX)).map(row => row.value);
+    const routines = prefs.filter(row => row.key.startsWith(COMPANION_ROUTINE_PREFIX)).map(row => row.value).flatMap(value => {
+      const routine = record(value);
+      return routine && typeof routine.id === 'string' ? [{ ...routine, id: mergedRoutineId(keep.externalId, routine.id) }] : [];
+    });
     if (routines.length && host.applyRoutines) await host.applyRoutines(keep.externalId, routines, [], fence);
     const workbench = prefs.find(row => row.key === COMPANION_WORKBENCH_KEY);
     if (workbench && host.applyWorkbench) await host.applyWorkbench(keep.externalId, workbench.value, fence);
 
     summary.messages += await mergeConversation({ ...input, source, keepRoom });
+  }
+  await input.importHistory();
+  // Only now are the merged copies no longer companions: other computers hide and stop their copy.
+  // Until here a failure leaves every source active, so the merge can run again.
+  for (const source of input.from) {
     fence.assertCurrent();
-    // The merged copy is no longer a companion: other computers hide and stop their copy of it.
     await api(`/actors/${source.id}`, 'PATCH', { disabled: true });
     summary.merged += 1;
   }
-  await input.importHistory();
   return summary;
 }
 

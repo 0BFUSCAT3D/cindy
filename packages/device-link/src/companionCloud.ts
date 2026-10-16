@@ -3,7 +3,7 @@
  * Cindy 支持接手云端伙伴。只读能力探测，返回 `{ companionCloud: <版本> }`；老版本没有该 channel →
  * CHANNEL_NOT_ALLOWED，交出方据此拒绝目标（不把伙伴交给接不住它的电脑）。
  *
- * 版本：1 = 能接手伙伴；2 = 另外接受其他电脑发来的「换主力电脑」请求（下面两个 channel）。
+ * 版本：1 = 能接手伙伴；2 = 另外接受其他电脑发来的「换主力电脑」、合并 Cindy 与合并前同步的请求（下面几个 channel）。
  */
 export const COMPANION_CLOUD_CAPS_CHANNEL = 'maker:companion-cloud:caps';
 export const COMPANION_CLOUD_VERSION = 2;
@@ -34,6 +34,13 @@ export const COMPANION_CLOUD_HAND_OVER_TIMEOUT_MS = 7 * 60_000;
  */
 export const COMPANION_CLOUD_MERGE_CHANNEL = 'maker:companion-cloud:merge';
 export const COMPANION_CLOUD_MERGE_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * 合并前请某个 Cindy 的主力电脑把它的对话积压与全部资料传到服务器（写，不改主力电脑）。入参 `[botId]`；
+ * 只在本机是它的主力电脑时执行（否则 `HOME_CONFLICT`），伙伴还在回复时 `BUSY`，返回
+ * `CompanionCloudRemoteActionResult`。与交出同一套同步，给同样的预算。
+ */
+export const COMPANION_CLOUD_FLUSH_CHANNEL = 'maker:companion-cloud:flush';
 
 export interface CompanionCloudCaps {
   companionCloud: number;

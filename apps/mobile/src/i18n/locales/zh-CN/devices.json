@@ -915,7 +915,7 @@
     "homeTitle": "主力电脑",
     "moveTo": "换到「{{device}}」",
     "moveTitle": "把 {{name}} 换到「{{device}}」运行？",
-    "moveDescription": "从现在起 {{name}} 在「{{device}}」上运行，聊天记录一起带过去。工作目录、连接和本机文件留在原来的电脑上。",
+    "moveDescription": "从现在起 {{name}} 在「{{device}}」上运行，对话记录一起带过去。工作目录、连接和本机文件留在原来的电脑上。",
     "moveAction": "换到「{{device}}」",
     "moving": "正在把 {{name}} 换到「{{device}}」…",
     "busyTitle": "{{name}} 还在回复",

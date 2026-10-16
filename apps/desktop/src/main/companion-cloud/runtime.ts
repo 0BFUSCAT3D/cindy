@@ -53,6 +53,8 @@ export interface CompanionCloudHost {
     handOver: (deviceId: string, botId: string, targetDeviceId: string, options?: CompanionSwitchOptions) => Promise<CompanionCloudActionResult>;
     /** Ask the kept Cindy's home to merge the other copies into it. */
     merge?: (deviceId: string, keepBotId: string, fromBotIds: string[]) => Promise<CompanionMergeResult>;
+    /** Ask a copy's home to send everything it has not sent yet (before a merge reads the cloud). */
+    flush?: (deviceId: string, botId: string) => Promise<CompanionCloudActionResult>;
   };
   /** Stop every running or queued turn of the companion (its main task, group lanes, delegations). */
   stopBotTurns?: (botId: string) => Promise<void>;
@@ -96,6 +98,8 @@ export interface CompanionCloudRuntime {
   mergeCindy: (keepBotId: string, fromBotIds: string[]) => Promise<CompanionMergeResult>;
   /** The same merge, asked by another computer: only when this computer runs the kept copy. */
   mergeCindyHere: (keepBotId: string, fromBotIds: string[]) => Promise<CompanionMergeResult>;
+  /** Before a merge on another computer: send everything of a companion homed here to the server. */
+  flushHere: (botId: string) => Promise<CompanionCloudActionResult>;
   /** One of the files in the companion's room, brought to this computer. */
   attachment: (botId: string, mediaId: string) => Promise<CompanionHistoryAttachment>;
   /** The companion was deleted on its home (this computer): retire its cloud actor (retried until it succeeds). */
@@ -301,6 +305,12 @@ export function startCompanionCloud(input: {
     });
     if (!from.length || !copies.some(copy => copy.botId === keepBotId)) return { ok: false, code: 'FAILED' };
     const roomOf = (actor: { id: string; externalId: string; name: string }) => mirror.ensureRoom(actor.externalId, actor.id, actor.name);
+    // The merge reads the cloud: each copy's own computer first sends what it has not sent yet
+    // (conversation backlog, a memory just edited). A busy copy waits; a failed sync stops the merge.
+    for (const actor of from) {
+      const synced = await syncCopy(actor);
+      if (!synced.ok) return synced as CompanionMergeResult;
+    }
     const devices = await input.host.listDevices?.().catch(() => []) ?? [];
     const labelled = from.map(actor => ({ ...actor, label: devices.find(device => device.deviceId === actor.homeDeviceId)?.name?.trim() || '' }));
     try {
@@ -472,6 +482,40 @@ export function startCompanionCloud(input: {
     await input.syncProfile?.(bot.botId);
   }
 
+  /** A sync that must be complete (a hand-over, a merge) did not finish: why, as an action result. */
+  function syncFailure(error: unknown): CompanionCloudActionResult {
+    const code = errorCode(error);
+    return [COMPANION_VALUE_TOO_LARGE, COMPANION_READ_INCOMPLETE, 'COMPANION_STILL_CHANGING', 'INVALID_AVATAR', 'AVATAR_UPLOAD_FAILED'].includes(code)
+      ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
+  }
+
+  /** Everything of a companion homed here reaches the server, without moving it. */
+  async function flushOwn(botId: string): Promise<CompanionCloudActionResult> {
+    if (!input.selfDeviceId || actorOf(botId)?.homeDeviceId !== input.selfDeviceId) return { ok: false, code: 'HOME_CONFLICT' };
+    if (await input.host.isBotBusy?.(botId)) return { ok: false, code: 'BUSY' };
+    try { await flush(botId); return { ok: true }; }
+    catch (error) {
+      input.log?.warn('Companion sync before a merge did not finish', { code: errorCode(error) });
+      return syncFailure(error);
+    }
+  }
+
+  /**
+   * A copy about to be merged: its home sends what it has not sent yet. A home that cannot be
+   * reached (or predates the request) keeps the rest on that computer; the cloud has what it last sent.
+   */
+  async function syncCopy(actor: CompanionRuntimeActor): Promise<CompanionCloudActionResult> {
+    const home = actor.homeDeviceId;
+    if (!home) return { ok: true };
+    if (home === input.selfDeviceId) return flushOwn(actor.externalId);
+    const link = input.host.homeLink;
+    if (!link?.flush) return { ok: true };
+    const version = await link.version(home).catch(() => 0);
+    if (version < REMOTE_HAND_OVER_VERSION) return { ok: true };
+    try { return await link.flush(home, actor.externalId); }
+    catch (error) { return actionFailure(error, 'OFFLINE'); }
+  }
+
   /** True once the companion has no running or queued turn; `wait` / `stop` give it time to get there. */
   async function settleBusy(botId: string, whenBusy: CompanionSwitchOptions['whenBusy']): Promise<boolean> {
     const busy = async () => !!(await input.host.isBotBusy?.(botId));
@@ -497,9 +541,7 @@ export function startCompanionCloud(input: {
     try { await flush(actor.externalId); }
     catch (error) {
       input.log?.warn('Companion hand-over stopped: sync did not finish', { actorId: actor.id, code: errorCode(error) });
-      const code = errorCode(error);
-      return [COMPANION_VALUE_TOO_LARGE, COMPANION_READ_INCOMPLETE, 'COMPANION_STILL_CHANGING', 'INVALID_AVATAR', 'AVATAR_UPLOAD_FAILED'].includes(code)
-        ? { ok: false, code: 'FAILED' } : actionFailure(error, 'OFFLINE');
+      return syncFailure(error);
     }
     // Checked again right before the move: a turn may have started during the flush.
     if (await turnActive()) return { ok: false, code: 'BUSY' };
@@ -735,6 +777,11 @@ export function startCompanionCloud(input: {
       if (!input.selfDeviceId || !live()) return { ok: false, code: 'NOT_ENABLED' };
       if (actorOf(keepBotId)?.homeDeviceId !== input.selfDeviceId) return { ok: false, code: 'HOME_CONFLICT' };
       return mergeHere(keepBotId, fromBotIds);
+    },
+
+    async flushHere(botId) {
+      if (!input.selfDeviceId || !live()) return { ok: false, code: 'NOT_ENABLED' };
+      return flushOwn(botId);
     },
 
     async attachment(botId, mediaId) {

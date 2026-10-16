@@ -120,13 +120,13 @@ describe('companion profile uploader', () => {
     await expect(t.uploader.syncBot('bot', 'actor', Number.POSITIVE_INFINITY, { requireAll: true })).rejects.toThrow('COMPANION_READ_INCOMPLETE');
   });
 
-  it('never tombstones a todo that only left the travelling window', async () => {
+  it('clears a todo that left the travelling window from the cloud', async () => {
     const t = setup();
     t.setValues([profile('soul'), { key: 'companion.todo.v1:todo:1', value: { id: 'todo:1' } }]);
     await t.uploader.syncBot('bot', 'actor');
     t.setValues([profile('soul')]);
     await t.uploader.syncBot('bot', 'actor');
-    expect(t.writes().filter(w => w.key === 'companion.todo.v1:todo:1').map(w => w.value)).toEqual([{ id: 'todo:1' }]);
+    expect(t.writes().filter(w => w.key === 'companion.todo.v1:todo:1').map(w => w.value)).toEqual([{ id: 'todo:1' }, null]);
   });
 
   it('spreads a large first upload over cycles', async () => {

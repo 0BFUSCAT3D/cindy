@@ -317,23 +317,38 @@ describe('materializeCompanion', () => {
     expect(local.rows[0]!.content).toBe('oldest');
   });
 
-  it('brings todos, routines and the workbench along in one batch each, tombstones removing items here', async () => {
+  it('brings todos, routines and the workbench along in one batch each; a routine tombstone removes it, a todo one keeps it', async () => {
     const todo = { id: 'todo:1', title: 'Compare quotes', history: [] };
     const routine = { id: 'routine-1', input: { name: 'Daily', prompt: 'p', enabled: true, triggers: [] }, originDeviceId: 'laptop' };
     const workbench = { directories: [{ path: '/projects/game', addedAt: 'x', deviceId: 'laptop' }], tasks: {} };
     const { api } = cloud([profilePref, { key: 'companion.todo.v1:todo:1', value: todo }, { key: 'companion.todo.v1:todo:gone', value: null },
-      { key: 'companion.routine.v1:routine-1', value: routine }, { key: 'companion.workbench.v1', value: workbench }]);
+      { key: 'companion.routine.v1:routine-1', value: routine }, { key: 'companion.routine.v1:routine-gone', value: null },
+      { key: 'companion.workbench.v1', value: workbench }]);
     const applyTodos = vi.fn(async () => undefined);
     const applyRoutines = vi.fn(async () => undefined);
     const applyWorkbench = vi.fn(async () => undefined);
     const local = fakeLocal({ applyTodos, applyRoutines, applyWorkbench });
     const { state } = memoryState();
     await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
-    expect(applyTodos).toHaveBeenCalledWith('bot_mia', [todo], ['todo:gone'], expect.anything());
-    expect(applyRoutines).toHaveBeenCalledWith('bot_mia', [routine], [], expect.anything());
-    expect(applyWorkbench).toHaveBeenCalledWith('bot_mia', workbench, expect.anything());
+    // A todo tombstone only means it left the travelling window: this computer keeps its copy.
+    expect(applyTodos).toHaveBeenCalledWith('bot_mia', [todo], [], expect.anything());
+    expect(applyRoutines).toHaveBeenCalledWith('bot_mia', [routine], ['routine-gone'], expect.anything());
+    expect(applyWorkbench).toHaveBeenCalledWith('bot_mia', workbench, expect.anything(), { replace: false });
     // Applied keys may be tombstoned later by this computer.
     expect(state.bot('bot_mia')?.prefs['companion.todo.v1:todo:1']?.local).toBe(true);
+  });
+
+  it('lets the cloud workbench replace one this computer synced before, a tombstone included; an unsynced one joins', async () => {
+    const { api } = cloud([profilePref, { key: 'companion.workbench.v1', value: null }]);
+    const applyWorkbench = vi.fn(async () => undefined);
+    const synced = memoryState();
+    synced.state.update('bot_mia', actor.id, entry => { entry.prefs['companion.workbench.v1'] = { hash: 'old', revision: 2, local: true }; });
+    await materializeCompanion({ api, state: synced.state, host: fakeLocal({ applyWorkbench }).host, actor, roomId: async () => ROOM });
+    expect(applyWorkbench).toHaveBeenCalledWith('bot_mia', null, expect.anything(), { replace: true });
+    expect(synced.state.bot('bot_mia')?.prefs['companion.workbench.v1']?.hash).not.toBe('old');
+    applyWorkbench.mockClear();
+    await materializeCompanion({ api, state: memoryState().state, host: fakeLocal({ applyWorkbench }).host, actor, roomId: async () => ROOM });
+    expect(applyWorkbench).not.toHaveBeenCalled();
   });
 
   it('stays demoted and retries when the routines cannot be restored', async () => {

@@ -230,9 +230,12 @@ export async function readCompanionWorkbench(userDataDir: string, botId: string,
 
 /**
  * The companion moved here: its folders (this computer's become local again, others stay on
- * their computer) and portable judgments from the cloud join what is here; the cloud wins.
+ * their computer) and portable judgments from the cloud join what is here; the cloud wins. With
+ * `replace` (this computer synced them before) they take the place of what is here, so what was
+ * removed meanwhile stays removed; judgments that never travel stay.
  */
-export async function mergeCompanionWorkbench(userDataDir: string, botId: string, selfDeviceId: string, cloud: unknown): Promise<void> {
+export async function mergeCompanionWorkbench(userDataDir: string, botId: string, selfDeviceId: string, cloud: unknown,
+  options: { replace?: boolean } = {}): Promise<void> {
   const value = cloud && typeof cloud === 'object' ? cloud as { directories?: unknown; tasks?: unknown } : {};
   const incoming = normalizeDirectories((Array.isArray(value.directories) ? value.directories : []).map((dir) => {
     const entry = dir && typeof dir === 'object' ? dir as Record<string, unknown> : {};
@@ -241,6 +244,10 @@ export async function mergeCompanionWorkbench(userDataDir: string, botId: string
   const tasks = Object.fromEntries(Object.entries(normalizeTasks(value.tasks)).filter(([key]) => PORTABLE_JUDGMENT.test(key)));
   await mutate(userDataDir, botId, (stored) => {
     const key = (dir: StoredDirectory) => `${dir.deviceId ?? ''}\0${dir.path}`;
+    if (options.replace) {
+      const local = Object.fromEntries(Object.entries(stored.tasks).filter(([taskId]) => !PORTABLE_JUDGMENT.test(taskId)));
+      return { next: { directories: incoming.slice(0, BOT_WORKBENCH_MAX_DIRECTORIES), tasks: boundJudgments({ ...local, ...tasks }) }, result: undefined };
+    }
     const known = new Set(stored.directories.map(key));
     const directories = [...stored.directories, ...incoming.filter((dir) => !known.has(key(dir)))].slice(0, BOT_WORKBENCH_MAX_DIRECTORIES);
     return { next: { directories, tasks: boundJudgments({ ...stored.tasks, ...tasks }) }, result: undefined };
