@@ -17,6 +17,7 @@ import {
   type CompatibilityHarness,
 } from '@cindy/model-compat';
 import { effortRank, type CatalogModel, type Effort } from '@cindy/model-providers';
+import { createHash } from 'node:crypto';
 
 export type UtilityProviderWire = 'chat-completions' | 'anthropic-messages' | 'responses';
 
@@ -234,8 +235,8 @@ export function utilityReasoningMemoryKey(parts: {
 
 /**
  * 把记忆限定到当前路由:本次计划用到的各请求格式的有效地址,加上计划签名(各步骤
- * 的 key)。地址或目录档位一变,旧端点记住的写法就不再沿用。地址只取 origin + path,
- * 不含 userinfo、查询参数与片段——这些位置可能带凭证;请求头也不进键。
+ * 的 key)。地址或目录档位一变,旧端点记住的写法就不再沿用。地址取完整 URL(含查询
+ * 参数、不含片段)的 sha256 摘要,不以明文保存;请求头也不进键。
  */
 export function scopeUtilityMemoryKey(
   memoryKey: string,
@@ -246,19 +247,17 @@ export function scopeUtilityMemoryKey(
   const routes = wires.map((wire) => {
     const endpoint = endpoints[wire];
     if (!endpoint) return [wire, ''];
-    try {
-      const url = new URL(endpoint);
-      return [wire, `${url.origin}${url.pathname}`];
-    } catch {
-      return [wire, ''];
-    }
+    // 查询参数可能是路由的一部分(appendProviderRequestPath 会保留它),所以取完整
+    // URL;只去掉片段。用摘要而不是原文,URL 里可能带的凭证不会明文进键。
+    const withoutFragment = endpoint.split('#', 1)[0]!;
+    return [wire, createHash('sha256').update(withoutFragment).digest('hex')];
   });
   return JSON.stringify([memoryKey, routes, steps.map(utilityRequestStepKey)]);
 }
 
 /**
  * 记住的写法若仍在本次计划里,就从它开始。它后来被参数类错误拒绝时,调用方清掉这条
- * 记忆并从计划第一步重走(见 forgetUtilityStep),上游变了也能自动修正。
+ * 记忆,从这一步所在请求格式的第一步重走(见 forgetUtilityStep),上游变了也能自动修正。
  */
 export function rememberedUtilityStepIndex(
   memoryKey: string | undefined,

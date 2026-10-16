@@ -4227,6 +4227,62 @@ describe('utility one-shot candidates', () => {
         expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
       });
 
+      it('does not reuse a remembered step after only the query string changes', async () => {
+        await rememberLow('https://custom.example/v1?tenant=a', ['low', 'medium']);
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream: 'https://custom.example/v1?tenant=b',
+          model: { id: 'custom-thinker', efforts: ['low', 'medium'] },
+        }) as never);
+        fetchMock.mockResolvedValueOnce(chatOk('fresh') as never);
+
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'fresh' });
+        expect(urlOf(0)).toBe('https://custom.example/v1/chat/completions?tenant=b');
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+      });
+
+      it('restarts a remembered Chat fallback on the Chat steps, not on the rejected native wire', async () => {
+        activeCatalog.mockReturnValue(xdCatalog('claude-code', [{
+          id: 'claude-sonnet-4-6',
+          nativeApi: 'anthropic-messages',
+          efforts: ['low', 'medium'],
+        }]) as never);
+        readKey.mockReturnValue('xd-key');
+        const xdRequest = () => requestExplicitUtilityText('hello', {
+          providerId: 'xd',
+          agentKind: 'claude-code',
+          model: 'claude-sonnet-4-6',
+          disableReasoning: true,
+        });
+        let acceptChat: (body: Record<string, unknown>) => boolean = (body) => Boolean(body.thinking);
+        fetchMock.mockImplementation(async (url, init) => {
+          const body = JSON.parse(String((init as { body: string }).body)) as Record<string, unknown>;
+          const isChat = String(url).endsWith('/v1/chat/completions');
+          return (isChat && acceptChat(body) ? chatOk('ok') : rejected(400)) as never;
+        });
+
+        // Messages off / low / medium are rejected; Chat "off" succeeds and is remembered.
+        await expect(xdRequest()).resolves.toMatchObject({ ok: true });
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(urlOf(3)).toBe(`${GATEWAY}/v1/chat/completions`);
+
+        // The upstream now only accepts Chat `low`.
+        fetchMock.mockClear();
+        acceptChat = (body) => !body.thinking && body.reasoning_effort === 'low';
+        await expect(xdRequest()).resolves.toMatchObject({ ok: true });
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+          `${GATEWAY}/v1/chat/completions`,
+          `${GATEWAY}/v1/chat/completions`,
+        ]);
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+        expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'low' });
+
+        // Chat `low` is remembered now.
+        fetchMock.mockClear();
+        await expect(xdRequest()).resolves.toMatchObject({ ok: true });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
+      });
+
       it('keeps a restarted walk within the request cap', async () => {
         activeCatalog.mockReturnValue(customChatCatalog({
           upstream: 'https://custom.example/v1',

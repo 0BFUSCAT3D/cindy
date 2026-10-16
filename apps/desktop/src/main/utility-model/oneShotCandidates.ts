@@ -1929,7 +1929,8 @@ async function requestProviderHttpText(input: {
       : undefined;
     let index = rememberedUtilityStepIndex(memoryKey, input.steps);
     // A remembered step rejected on its first try means the upstream changed:
-    // forget it and walk the plan from the start instead of only moving on.
+    // forget it and walk its wire's steps again from the first one instead of
+    // only moving on.
     let restartFromFirst = index > 0;
     const tried = new Set<number>([index]);
     let step = input.steps[index];
@@ -1946,10 +1947,12 @@ async function requestProviderHttpText(input: {
       if (requests < MAX_REASONING_REQUESTS && isUtilityParameterRejection(step, response.status)) {
         if (restartFromFirst) {
           forgetUtilityStep(memoryKey);
-          // A missing native endpoint stays missing; restart on the Chat steps.
-          const restart = response.status === 404
-            ? input.steps.findIndex((candidate) => candidate.wire === 'chat-completions')
-            : 0;
+          // Restart at the first step of the rejected step's wire: a remembered
+          // Chat fallback means the native wire was already rejected, so keep the
+          // request budget for Chat. A missing native endpoint stays missing, so
+          // a native 404 restarts on the Chat steps as well.
+          const restartWire = response.status === 404 ? 'chat-completions' : step.wire;
+          const restart = input.steps.findIndex((candidate) => candidate.wire === restartWire);
           next = restart >= 0 ? restart : null;
         } else {
           next = nextUtilityRequestStep(input.steps, index, response.status);

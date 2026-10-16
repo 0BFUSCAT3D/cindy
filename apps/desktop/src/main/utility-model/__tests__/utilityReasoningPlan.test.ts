@@ -178,9 +178,20 @@ describe('scopeUtilityMemoryKey', () => {
       responses: 'https://user:secret-pass@gateway.example/v1/responses?api_key=secret-query#frag',
       'chat-completions': 'https://gateway.example/v1/chat/completions',
     });
-    expect(key).toContain('https://gateway.example/v1/responses');
+    expect(key).not.toContain('gateway.example');
+    expect(key).not.toContain('user:');
     expect(key).not.toContain('secret');
+    expect(key).not.toContain('api_key');
     expect(key).not.toContain('frag');
+    // The fragment never reaches the provider; the query string may be part of the route.
+    expect(scopeUtilityMemoryKey('base', steps, {
+      responses: 'https://user:secret-pass@gateway.example/v1/responses?api_key=secret-query#other',
+      'chat-completions': 'https://gateway.example/v1/chat/completions',
+    })).toBe(key);
+    expect(scopeUtilityMemoryKey('base', steps, {
+      responses: 'https://user:secret-pass@gateway.example/v1/responses?api_key=secret-query-2#frag',
+      'chat-completions': 'https://gateway.example/v1/chat/completions',
+    })).not.toBe(key);
     expect(scopeUtilityMemoryKey('base', steps, {
       responses: 'https://other.example/v1/responses',
       'chat-completions': 'https://gateway.example/v1/chat/completions',
