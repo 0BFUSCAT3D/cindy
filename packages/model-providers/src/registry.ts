@@ -18,6 +18,7 @@ import {
   isModelSelectableForNewRoute,
 } from './classification.js';
 import type { ProviderLogoKind } from './providerBranding.js';
+import { isCindyAutoModelId, isCindyDistributedProvider } from './provider-identity.js';
 import {
   isModelDisabled,
   isProviderDisabled,
@@ -318,8 +319,9 @@ export function nativeDefaultSourceId(rail: ProviderView[], agent: AgentKind | n
  * 来源选择必须先收窄到「已连接且确实提供当前模型」的集合，再应用显式选择 / 原生默认：
  * 否则当 XD key 被清除、但 OpenAI 仍连接时，Claude 会话会把 OpenAI 当成 agent 级兜底，
  * 拼出「OpenAI 图标 + Opus」这种不可能路由。显式来源失效时返回 null，不替换账号；
- * 当前模型没有任何已连接且可用于新路由的来源时返回 null。retired tombstone 与本地
- * disabled 都不参与本函数；运行中会话的真实来源展示必须改用 actualSourceIdForModel。
+ * 唯一例外是 Auto（见 relocatedAutoSourceId）。当前模型没有任何已连接且可用于新路由的
+ * 来源时返回 null。retired tombstone 与本地 disabled 都不参与本函数；运行中会话的真实
+ * 来源展示必须改用 actualSourceIdForModel。
  */
 export function effectiveSourceIdForModel(
   views: ProviderView[],
@@ -334,8 +336,32 @@ export function effectiveSourceIdForModel(
       isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })
     );
   });
-  if (providerId) return sources.some((provider) => provider.id === providerId) ? providerId : null;
+  if (providerId) {
+    return sources.some((provider) => provider.id === providerId)
+      ? providerId
+      : relocatedAutoSourceId(views, providerId, modelId, agent, sources);
+  }
   return nativeDefaultSourceId(sources, agent);
+}
+
+/**
+ * Auto（isCindyAutoModelId）只按模型 ID 认：服务端可以把同一个 Auto 在 Cindy AI 与
+ * 企业号池供应商之间挪动（平台模型 ↔ 号池模型）。记住的来源是这两类之一、且已不再提供
+ * 该 Auto 时，改用当前提供它的那一家（同样限于这两类），不判失效。记住的来源仍列着该
+ * 模型（只是断连 / 停用）或是用户自己接的供应商时不改道，仍按显式来源失效处理。
+ */
+function relocatedAutoSourceId(
+  views: readonly ProviderView[],
+  providerId: string,
+  modelId: string,
+  agent: AgentKind,
+  sources: ProviderView[],
+): string | null {
+  if (!isCindyAutoModelId(modelId)) return null;
+  const remembered = views.find((provider) => provider.id === providerId);
+  if (!remembered || !isCindyDistributedProvider(remembered)) return null;
+  if (providerOffersModel(remembered, modelId, agent)) return null;
+  return nativeDefaultSourceId(sources.filter(isCindyDistributedProvider), agent);
 }
 
 /**

@@ -370,7 +370,16 @@ export function resolveDraftSessionProviderId({
   effectiveProviderId,
 }: DraftSessionProviderResolutionInput): string | null {
   if (explicitProviderId) {
-    return explicitProviderId;
+    // 显式来源原样提交；唯一例外是服务端把 Auto 挪到了另一家 Cindy 来源，此时来源解析
+    // 已改指新来源，提交旧来源只会让首条请求落到不再提供该模型的连接上。
+    const explicitProvider = providers.find((provider) => provider.id === explicitProviderId);
+    const effectiveProvider = providers.find((provider) => provider.id === effectiveProviderId);
+    return effectiveProvider &&
+      effectiveProvider.id !== explicitProviderId &&
+      isCindyDistributedProvider(explicitProvider) &&
+      isCindyDistributedProvider(effectiveProvider)
+      ? effectiveProvider.id
+      : explicitProviderId;
   }
   if (!effectiveProviderId) return null;
   // 预设通过「添加供应商」落地后同样属于 user provider。即使它是当前模型唯一的

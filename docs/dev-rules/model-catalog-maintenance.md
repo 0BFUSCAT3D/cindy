@@ -142,6 +142,11 @@ Claude 订阅 Opus 5.5（Claude Code）、服务端指定的 Cindy Auto（Pi）�
 没指定模型时同样按新建任务口径解析（`apps/desktop/src/shared/draftModelCalibration.ts`
 的 `resolveNewTaskDefaultRoute`），不在代码里写死型号；一个可用来源都没有时明确失败或留空让用户选。
 
+Auto 只按模型 ID 认（`isCindyAutoModelId`）：服务端可以把同一个 Auto 在 Cindy AI 与企业号池
+之间挪动。记住的来源是这两类之一且已不再提供它时，`effectiveSourceIdForModel` 改用当前提供它
+的那一家（同样限于这两类），新建任务提交与手机端 `resolveRecentModelAndProvider` 复用同一规则；
+记住的来源仍列着它（只是断连或停用）、或是用户自己接的供应商时不改道。
+
 设置页管理列表组内与选择器同序：组内每项都带 `sortOrder` 时按它排；只要有一项缺失，退回
 按系列名 A–Z、同系列版本号降序，避免局部权重把新型号压到旧策展位置之后。
 

@@ -963,4 +963,39 @@ describe('模型组 Auto：服务端决定默认与来源', () => {
       draft: { model: 'auto', providerId: 'xd', chosenByUser: false } })).toEqual(expected);
     expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi' })).toEqual(expected);
   });
+
+  it('组 Auto 从号池挪到 Cindy AI 后，按新来源继续，不退成号池里的其它模型', () => {
+    const gateway = provider('xd', true, { pi: [model('auto'), groupAuto(true)] });
+    const byok = pool('org-pool', [model('pool-model')]);
+    const providers = [gateway, byok];
+    const expected = { model: 'auto/group-1', providerId: 'xd' };
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'auto/group-1', chosenByUser: false,
+      preferredProviderId: 'org-pool', providersLoading: false })).toEqual(expected);
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi',
+      draft: { model: 'auto/group-1', providerId: 'org-pool', chosenByUser: false } })).toEqual(expected);
+    // 用户手动选的 Auto 同样按 ID 认：记住的号池已不提供它，改用当前提供它的 Cindy AI。
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi',
+      draft: { model: 'auto/group-1', providerId: 'org-pool', chosenByUser: true } })).toEqual(expected);
+  });
+
+  it('用户自己接的供应商不参与 Cindy 来源之间的改道', () => {
+    const gateway = provider('xd', true, { pi: [model('auto'), groupAuto(true)] });
+    const custom = pool('custom-litellm', [model('custom-model')], 'user');
+    expect(calibrateDraftModel({ providers: [gateway, custom], agent: 'pi', model: 'custom-model',
+      chosenByUser: false, preferredProviderId: 'custom-litellm', providersLoading: false }))
+      .toEqual({ model: 'custom-model', providerId: 'custom-litellm' });
+  });
+
+  it('新建任务提交时，Auto 已挪走的旧来源换成解析出的新来源；其它显式来源原样提交', () => {
+    const gateway = provider('xd', true, { pi: [model('auto'), groupAuto(true)] });
+    const byok = pool('org-pool', [model('pool-model')]);
+    const custom = pool('custom-litellm', [model('custom-model')], 'user');
+    const providers = [gateway, byok, custom];
+    expect(resolveDraftSessionProviderId({ providers, agent: 'pi', model: 'auto/group-1',
+      explicitProviderId: 'org-pool', effectiveProviderId: 'xd' })).toBe('xd');
+    expect(resolveDraftSessionProviderId({ providers, agent: 'pi', model: 'auto/group-1',
+      explicitProviderId: 'org-pool', effectiveProviderId: null })).toBe('org-pool');
+    expect(resolveDraftSessionProviderId({ providers, agent: 'pi', model: 'auto/group-1',
+      explicitProviderId: 'custom-litellm', effectiveProviderId: 'xd' })).toBe('custom-litellm');
+  });
 });
