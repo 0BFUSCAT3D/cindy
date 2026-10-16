@@ -12,6 +12,11 @@ const source = ts.createSourceFile('adapter.ts', content, ts.ScriptTarget.Latest
 const owner = source.statements.find(n => ts.isClassDeclaration(n) && n.name?.text === 'ElectronSandboxHandle');
 const destroy = owner?.members.find(n => ts.isMethodDeclaration(n) && n.name.getText(source) === 'destroy');
 if (!destroy?.body || source.parseDiagnostics.length) throw new Error('Cannot extract production destroy method');
+const ctor = owner.members.find(ts.isConstructorDeclaration);
+const statements = ctor?.body?.statements || [];
+const compact = n => n.getText(source).replace(/\s+/g, '');
+const index = statements.findIndex(n => compact(n) === 'this.webContentsId=this.win.webContents.id;');
+assert.ok(index > 0 && compact(statements[index - 1]).startsWith('this.win=newBrowserWindow('), 'constructor must cache the created window ID');
 const logicWebContentsToGhost = new Map();
 const compiled = ts.transpileModule('class Handle { ' + destroy.getText(source) + ' }', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const Handle = new Function('logicWebContentsToGhost', compiled + '; return Handle;')(logicWebContentsToGhost);
