@@ -95,6 +95,29 @@ afterEach(() => {
 });
 
 describe('ImageLightbox annotate mode', () => {
+  // Normal viewing must leave image clicks available for double-click zoom,
+  // while background clicks close exactly once after the exit animation.
+  it('keeps image clicks open and closes once for repeated background clicks', () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    render(<ImageLightbox src={SRC} onClose={onClose} />);
+    const image = lightboxImage();
+    loadImage(image);
+    // viewBox-only SVGs also need an explicit fitted box after natural-size load.
+    expect(image.style.width).toBe('200px');
+    expect(image.style.height).toBe('100px');
+    act(() => vi.advanceTimersByTime(200));
+    const overlay = document.activeElement!;
+    expect(overlay.contains(image)).toBe(true);
+    fireEvent.click(image);
+    act(() => vi.advanceTimersByTime(250));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(overlay);
+    fireEvent.click(overlay);
+    act(() => vi.advanceTimersByTime(250));
+    expect(onClose).toHaveBeenCalledExactlyOnceWith();
+  });
+
   // Replaces the deleted source scan: a background misclick during annotation
   // must preserve unsaved strokes (engineering-conventions §3.2, user data).
   it('keeps unsaved strokes and the lightbox open after a background click', () => {
