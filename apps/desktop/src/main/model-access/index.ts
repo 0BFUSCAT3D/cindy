@@ -1,4 +1,4 @@
-import { noteQuotaCredentialStatus } from './quotaCredentialState.js';
+import { cloudQuotaOwnerKey, noteQuotaCredentialStatus } from './quotaCredentialState.js';
 import { createByokCache } from './byokCache.js';
 import { byokSnapshotSecretIo } from '../secrets/providerSecretStore.js';
 import { registerByokIpc } from './byokIpc.js';
@@ -408,7 +408,7 @@ function getSync(): CredentialsSync {
       onStatusChange: (status) => {
         const auth = authManager.getAuthState();
         noteQuotaCredentialStatus(
-          auth.mode === 'cloud' && auth.dataOwnerId ? `cloud:${auth.dataOwnerId}` : null,
+          cloudQuotaOwnerKey(auth),
           status,
         );
         if (['failed', 'disabled', 'unsupported', 'idle'].includes(status.state)) {

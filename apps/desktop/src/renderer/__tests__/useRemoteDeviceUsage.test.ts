@@ -36,6 +36,7 @@ type PushListener = (
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn<(deviceId: string, channel: string, args: unknown[]) => Promise<unknown>>(),
   pushListeners: [] as PushListener[],
+  reopenedListeners: [] as Array<(value: { deviceId: string }) => void>,
   peerResetListeners: [] as Array<(value: { deviceId: string }) => void>,
   statusListeners: [] as Array<(value: { status: 'online' | 'connecting' | 'stopped' }) => void>,
   presenceListeners: [] as Array<(value: { deviceId: string; online: boolean }) => void>,
@@ -63,11 +64,16 @@ beforeEach(() => {
   mocks.presenceListeners.length = 0;
   mocks.statusListeners.length = 0;
   mocks.peerResetListeners.length = 0;
+  mocks.reopenedListeners.length = 0;
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       deviceLink: {
         invoke: mocks.invoke,
+        onPeerLinkReopened: (listener: (value: { deviceId: string }) => void) => {
+          mocks.reopenedListeners.push(listener);
+          return () => { mocks.reopenedListeners = mocks.reopenedListeners.filter(item => item !== listener); };
+        },
         onPeerLinkReset: (listener: (value: { deviceId: string }) => void) => {
           mocks.peerResetListeners.push(listener);
           return () => { mocks.peerResetListeners = mocks.peerResetListeners.filter(item => item !== listener); };
@@ -462,4 +468,26 @@ it('rereads only the reset peer without needing relay or presence changes', asyn
   a.unmount();
   b.unmount();
   expect(mocks.peerResetListeners).toHaveLength(0);
+});
+
+it('rereads the recovered peer after the initial reset read failed, leaving its neighbor untouched', async () => {
+  const finite = { spend: 1, maxBudget: 10, currency: 'CNY', fetchedAt: 1 };
+  mocks.invoke.mockResolvedValue(finite);
+  const a = renderHook(() => useRemoteClaudeAccountUsage('retry-a'));
+  const b = renderHook(() => useRemoteClaudeAccountUsage('retry-b'));
+  await flushMicrotasks();
+  mocks.invoke.mockRejectedValueOnce(new Error('first open failed'));
+  act(() => mocks.peerResetListeners.forEach(cb => cb({ deviceId: 'retry-a' })));
+  await flushMicrotasks();
+  expect(a.result.current).toEqual(finite);
+  mocks.invoke.mockClear();
+  mocks.invoke.mockResolvedValue({ quotaState: 'invalidated' });
+  act(() => mocks.reopenedListeners.forEach(cb => cb({ deviceId: 'retry-a' })));
+  await flushMicrotasks();
+  expect(a.result.current).toBeNull();
+  expect(b.result.current).toEqual(finite);
+  expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  expect(mocks.invoke.mock.calls[0]?.[0]).toBe('retry-a');
+  a.unmount(); b.unmount();
+  expect(mocks.reopenedListeners).toHaveLength(0);
 });

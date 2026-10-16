@@ -1,4 +1,4 @@
-import { quotaCredentialsReady, quotaCredentialGeneration, onQuotaCredentialSourceChanged } from '../model-access/quotaCredentialState.js';
+import { cloudQuotaOwnerKey, quotaCredentialsReady, quotaCredentialGeneration, onQuotaCredentialSourceChanged } from '../model-access/quotaCredentialState.js';
 import type { ClaudeQuotaClear } from '../../shared/claudeQuotaState.js';
 import { readOrganizationAccountUsage } from './organizationAccountUsage.js';
 /**
@@ -125,7 +125,7 @@ function currentQuotaOwner(): QuotaOwner | null {
   const auth = getAuthState();
   if (auth.mode === 'cloud') {
     if (auth.user?.membershipKind !== 'org' || !auth.dataOwnerId) return null;
-    return { key: `cloud:${auth.dataOwnerId}`, authenticatedUserId: auth.user.id };
+    return { key: cloudQuotaOwnerKey(auth)!, authenticatedUserId: auth.user.id };
   }
   if (auth.mode === 'local' && auth.dataOwnerId) {
     return { key: `local:${auth.dataOwnerId}` };

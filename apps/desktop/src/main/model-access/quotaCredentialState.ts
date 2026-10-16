@@ -1,3 +1,4 @@
+import type { AuthState } from '../authManager.js';
 import type { ModelAccessStatus } from '../../shared/modelAccess.js';
 
 // Process-local readiness only: persisted credentials never count as a successful
@@ -29,4 +30,10 @@ export function quotaCredentialGeneration(): number { return generation; }
 export function onQuotaCredentialSourceChanged(listener: (ownerKey: string | null) => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+
+/** Owner generation also fences same-membership realm switches and repairs. */
+export function cloudQuotaOwnerKey(auth: Pick<AuthState, 'mode' | 'dataOwnerId' | 'ownerGeneration'>): string | null {
+  return auth.mode === 'cloud' && auth.dataOwnerId
+    ? `cloud:${auth.dataOwnerId}:${auth.ownerGeneration}` : null;
 }

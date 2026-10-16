@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
-  auth: { mode: 'cloud', dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } },
+  auth: { mode: 'cloud', ownerGeneration: 1, dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } },
   endpoint: 'https://gateway.example.test',
   managed: vi.fn(), outbound: vi.fn(), broadcast: vi.fn(),
 }));
@@ -17,10 +17,10 @@ vi.mock('../organizationAccountUsage.js', () => ({ readOrganizationAccountUsage:
 const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
-  mocks.auth = { mode: 'cloud', dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } };
+  mocks.auth = { mode: 'cloud', ownerGeneration: 1, dataOwnerId: 'owner-a', user: { id: 'member-a', membershipKind: 'org' } };
   mocks.endpoint = 'https://gateway.example.test';
   const state = await import('../../model-access/quotaCredentialState');
-  state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+  state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
   mocks.managed.mockResolvedValue(quota);
   mocks.outbound.mockResolvedValue({ ok: true, json: async () => ({ spend: 2, max_budget: 20, results: [] }) });
 });
@@ -55,6 +55,21 @@ describe('Cindy AI enterprise quota refresh', () => {
     resolve(quota); await pending;
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
   });
+  it('rejects an old realm response with the same membership and endpoint after sync fails', async () => {
+    let resolve!: (value: unknown) => void;
+    mocks.managed.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+    const api = await import('../claudeAccountUsage');
+    const pending = api.triggerClaudeAccountUsageRefresh(true);
+    mocks.auth.ownerGeneration++;
+    const state = await import('../../model-access/quotaCredentialState');
+    state.noteQuotaCredentialStatus('cloud:owner-a:2', { state: 'failed', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    mocks.managed.mockResolvedValue(null);
+    resolve(quota); await pending;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'invalidated' });
+    expect(state.quotaCredentialsReady('cloud:owner-a:2', mocks.endpoint)).toBe(false);
+  });
   it('clears and broadcasts an unlimited result after a finite quota was cached', async () => {
     const api = await import('../claudeAccountUsage');
     await api.triggerClaudeAccountUsageRefresh(true);
@@ -83,19 +98,19 @@ describe('Cindy AI enterprise quota refresh', () => {
 describe('quota gateway migration boundary', () => {
   it('blocks persisted legacy credentials before this process completes credential sync', async () => {
     const state = await import('../../model-access/quotaCredentialState');
-    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
     mocks.managed.mockResolvedValue(undefined);
     const api = await import('../claudeAccountUsage');
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(mocks.outbound).not.toHaveBeenCalled();
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
-    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
     await vi.waitFor(() => expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20));
   });
 
   it('reads managed quota before credential sync without contacting the persisted gateway', async () => {
     const state = await import('../../model-access/quotaCredentialState');
-    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
     const api = await import('../claudeAccountUsage');
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountUsageSnapshot()).toEqual(quota);
@@ -110,7 +125,7 @@ describe('quota gateway migration boundary', () => {
     mocks.managed.mockResolvedValue(null);
     mocks.endpoint = 'https://new-gateway.example.test';
     const state = await import('../../model-access/quotaCredentialState');
-    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
     expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'invalidated' });
     expect(mocks.broadcast).toHaveBeenLastCalledWith('usage:claude-account-changed', null);
@@ -128,7 +143,7 @@ describe('quota gateway migration boundary', () => {
     mocks.managed.mockResolvedValue(null);
     mocks.endpoint = 'https://new-gateway.example.test';
     const state = await import('../../model-access/quotaCredentialState');
-    state.noteQuotaCredentialStatus('cloud:owner-a', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'ok', source: 'server', endpoint: mocks.endpoint, accountTier: null });
     complete({ ok: true, json: async () => ({ spend: 99, max_budget: 100 }) });
     await pending;
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
