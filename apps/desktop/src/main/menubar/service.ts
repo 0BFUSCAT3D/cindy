@@ -338,7 +338,15 @@ export class MenubarService {
       activities: () => getAgentIslandService()?.getSessionActivitySnapshots() ?? [],
       sessionRow: async (sessionId) => {
         const row = await getSessionRowSnapshot(sessionId);
-        return row ? { title: row.title, model: row.model ?? null, agentKind: row.agentKind ?? null, source: row.source ?? null } : null;
+        return row
+          ? {
+              title: row.title,
+              model: row.model ?? null,
+              agentKind: row.agentKind ?? null,
+              source: row.source ?? null,
+              providerId: row.providerId ?? null,
+            }
+          : null;
       },
       selfDeviceName: deviceName(),
       onError: (scope, error) => log.warn('menu bar source failed', { scope, error: errorMessage(error) }),

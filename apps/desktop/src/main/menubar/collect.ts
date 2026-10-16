@@ -64,6 +64,8 @@ export interface MenubarSessionRow {
   model: string | null;
   agentKind: string | null;
   source?: string | null;
+  /** Provider the session sends to; marks the source a running task is drawing on. */
+  providerId?: string | null;
 }
 
 export interface MenubarCollectDeps {
@@ -152,6 +154,10 @@ export async function collectMenubarInputs(deps: MenubarCollectDeps): Promise<Me
   };
 
   const tasks = await collectTasks(deps, localUsage, today, safe);
+  const consuming = consumingSourceIds(tasks, providers);
+  for (const source of sources) {
+    if (consuming.has(source.id)) source.consuming = true;
+  }
 
   let updatedAtMs: number | null = null;
   for (const source of sources) {
@@ -444,6 +450,23 @@ export function paygSource(provider: ProviderView): MenubarPaygInput | null {
   };
 }
 
+/**
+ * Sources a running task on this computer is drawing on: the subscription or provider it
+ * sends to, or the Cindy balance for Cindy-managed providers (the ones `paygSource` hides
+ * because they bill the balance).
+ */
+export function consumingSourceIds(tasks: readonly MenubarTaskInput[], providers: readonly ProviderView[]): Set<string> {
+  const ids = new Set<string>();
+  for (const task of tasks) {
+    if (!task.running || !task.providerId) continue;
+    const provider = providers.find((candidate) => candidate.id === task.providerId);
+    if (!provider) continue;
+    const managed = provider.auth.method === 'managed' || provider.access?.kind === 'managed' || provider.id === 'xd';
+    ids.add(managed ? MENUBAR_BALANCE_SOURCE_ID : provider.id);
+  }
+  return ids;
+}
+
 // ── Usage ────────────────────────────────────────────────────────────────────
 
 function clampPercent(value: number): number {
@@ -598,6 +621,7 @@ async function collectTasks(
           running,
           startedAtMs: running ? (activity?.startedAtMs ?? null) : null,
           lastActiveAtMs: activity?.lastActivityAtMs ?? info?.lastActiveAt ?? deps.nowMs,
+          providerId: row?.providerId ?? null,
         };
       }),
     );

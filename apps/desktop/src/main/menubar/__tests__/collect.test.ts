@@ -218,6 +218,41 @@ describe('collectMenubarInputs', () => {
     expect(collected.tasks.map((entry) => entry.sessionId)).toEqual(['ordinary']);
   });
 
+  it('marks the source a running task draws on, and the Cindy balance for managed providers', async () => {
+    const collected = await collectMenubarInputs(
+      deps({
+        listProviders: async () => [
+          provider({ id: 'openai', auth: { method: 'oauth', native: 'codex' } } as never),
+          provider({ id: 'anthropic' }),
+          provider({ id: 'cindy-gateway', auth: { method: 'managed' }, access: { kind: 'managed' } } as never),
+        ],
+        readBalance: async () => ({ available: 5, fullAmount: 10, burnPerDay: 1, observedAtMs: NOW, currency: 'USD', quota: null }),
+        activities: () => [
+          { sessionId: 'on-codex', phase: 'running', startedAtMs: NOW - 1000 } as never,
+          { sessionId: 'on-cindy', phase: 'running', startedAtMs: NOW - 1000 } as never,
+        ],
+        sessionRow: async (sessionId) => ({
+          title: sessionId,
+          model: 'gpt-5.5',
+          agentKind: 'codex',
+          providerId: sessionId === 'on-codex' ? 'openai' : 'cindy-gateway',
+        }),
+      }),
+    );
+    const consuming = collected.sources.filter((source) => source.consuming).map((source) => source.id);
+    expect(consuming).toEqual(['cindy', 'openai']);
+  });
+
+  it('leaves every source still when nothing is running', async () => {
+    const collected = await collectMenubarInputs(
+      deps({
+        readUsage: async () => usage([task('done')]),
+        sessionRow: async () => ({ title: 'done', model: 'gpt-5.5', agentKind: 'codex', providerId: 'openai' }),
+      }),
+    );
+    expect(collected.sources.some((source) => source.consuming)).toBe(false);
+  });
+
   it('applies the visible task limit after filtering live sources', async () => {
     const hiddenIds = Array.from({ length: 35 }, (_, index) => 'hidden-' + index);
     const ordinaryIds = Array.from({ length: 31 }, (_, index) => 'ordinary-' + index);
