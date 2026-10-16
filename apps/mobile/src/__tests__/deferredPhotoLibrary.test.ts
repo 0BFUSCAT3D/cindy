@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { i18n } from '@/i18n';
 import { pickDeferredLibraryPhotos } from '@/session/deferredPhotoLibrary';
 import { createMobileLocalAttachmentUploadController } from '@/session/mobileLocalAttachmentUpload';
 import type { PendingLocalAttachmentUpload } from '@/session/mobileLocalAttachmentUpload';
@@ -15,6 +16,9 @@ vi.mock('expo-file-system/legacy', () => ({ deleteAsync: mock.deleteAsync }));
 const selection = (id: string) => ({ id, name: `${id}.jpg`, previewUri: `data:image/jpeg;base64,${id}` });
 const file = (id: string) => ({ uri: `file:///cache/${id}.jpg`, fileName: `${id}.jpg`, mimeType: 'image/jpeg', fileSize: 100 });
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const initialLanguage = i18n.language;
+
+afterEach(async () => { await i18n.changeLanguage(initialLanguage); });
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -44,6 +48,25 @@ function makeController() {
 }
 
 describe('deferred photo library', () => {
+  it.each([
+    ['zh-CN', '没有读取到可上传的图片。', '附件上传已取消。'],
+    ['en', 'No uploadable image was read.', 'Attachment upload cancelled.'],
+  ])('localizes native failures using the current %s app language', async (locale, failed, cancelled) => {
+    const candidates = (await pickDeferredLibraryPhotos(1))!;
+    // A language change after selection must also apply to a later load/retry.
+    await i18n.changeLanguage(locale);
+    for (const code of ['ERR_PHOTO_PICKER_BUSY', 'ERR_PHOTO_PICKER_PRESENTER']) {
+      mock.native.pick.mockRejectedValueOnce(Object.assign(new Error('Native English message'), { code }));
+      await expect(pickDeferredLibraryPhotos(1)).rejects.toThrow(failed);
+    }
+    for (const code of ['ERR_PHOTO_LOAD', 'ERR_PHOTO_LOAD_BUSY', 'ERR_PHOTO_SELECTION_RELEASED', 'ERR_PHOTO_CANCELLED', undefined]) {
+      mock.native.load.mockRejectedValueOnce(Object.assign(new Error('Provider failure at /private/photo.jpg'), { code }));
+      await expect(candidates[0].resolve!()).rejects.toThrow(code === 'ERR_PHOTO_CANCELLED' ? cancelled : failed);
+    }
+    expect(mock.native.release).not.toHaveBeenCalled();
+    await expect(candidates[0].resolve!()).resolves.toMatchObject({ uri: file('cloud').uri });
+  });
+
   it('returns every preview before downloading, and a local image completes while iCloud is pending', async () => {
     let finishCloud!: (value: ReturnType<typeof file>) => void;
     mock.native.load.mockImplementation((id: string) => id === 'cloud'
