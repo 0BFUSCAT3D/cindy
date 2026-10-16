@@ -224,6 +224,7 @@ test("unit workspace concurrency reserves the full worker budget for heavy works
 		"**/*.integration.test.ts",
 		"**/*.e2e.test.ts",
 		"**/*.git-integration.test.ts",
+		"src/agents/shared/auto-review-remote-wiring.test.ts",
 	]);
 	assert.deepEqual(makerCore.tiers.unit.command, {
 		type: "packageBin",
@@ -963,6 +964,7 @@ test("planRuns keeps required guard tiers from competing with the typed-send sca
 		[
 			["apps/desktop", "guard"],
 			["apps/mobile", "guard"],
+			["packages/maker-core", "guard"],
 		],
 	);
 	// PR #6196: CI ran both default CPU-sized pools beside the 1 GiB TS

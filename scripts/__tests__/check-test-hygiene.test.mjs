@@ -307,6 +307,13 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			"function read(relative: string): string { return readFileSync(resolve(__dirname, relative), 'utf8'); }\nconst source = read('../ChatInput.tsx');",
 			{ sourceReads: 1 },
 		],
+		[
+			"source read through an anchor-derived descriptive binding",
+			"const agentsRoot = resolve(__dirname, '..'); const source = readFileSync(resolve(agentsRoot, 'agents', 'index.ts'), 'utf8');",
+			{ sourceReads: 1 },
+		],
+		["domain object pause is not a real wait", "const meter = { pause(ms) {} }; meter.pause(1_000);", { realWaits: 0 }],
+		["domain object sleep is not a real wait", "const sleeper = { sleep(ms) {} }; sleeper.sleep(1_000);", { realWaits: 0 }],
 	];
 	for (const [name, source, expected] of cases) {
 		const result = scanTestSource(source);

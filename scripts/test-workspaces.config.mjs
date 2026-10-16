@@ -89,6 +89,9 @@ const makerCoreIntegrationInclude = [
   'src/agents/claude-code/__tests__/*.integration.test.ts',
   'src/agents/pi/__tests__/*.integration.test.ts',
 ];
+const makerCoreGuardInclude = [
+  'src/agents/shared/auto-review-remote-wiring.test.ts',
+];
 const makerPiManagerIntegrationInclude = [
   'src/__tests__/pi-manager.integration.test.ts',
 ];
@@ -147,6 +150,14 @@ const mobileGuardInclude = [
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
   'src/renderer/__tests__/sessionAgentSwitchRemoteRouting.contract.test.ts',
+  'src/main/__tests__/deviceLinkVoiceCredentialBootstrap.test.ts',
+  'src/main/__tests__/discordExternalization.test.ts',
+  'src/main/__tests__/sessionRuntimeControlWiring.test.ts',
+  'src/main/localDb/ipc/__tests__/sessionCreatedBroadcast.test.ts',
+  'src/renderer/__tests__/promptRecommendationBadge.test.ts',
+  'src/renderer/__tests__/sessionHeaderMenuParity.test.ts',
+  'src/renderer/__tests__/typographyDiscipline.test.ts',
+  'src/renderer/__tests__/windowBackdropAcrylic.test.ts',
   // Existing credential/permission/protocol contracts, separated from runtime units.
   'src/main/__tests__/analyticsConsentMigrationGuards.test.ts',
   'src/main/__tests__/authAccountDeletionLifecycle.test.ts',
@@ -445,7 +456,14 @@ export default {
           status: 'required',
           execution: 'exclusive',
           command: unitVitestCommand(desktopUnitWorkerCount(), 'forks'),
-          exclude: ['**/*.integration.test.ts', '**/*.e2e.test.ts', '**/*.git-integration.test.ts'],
+          exclude: ['**/*.integration.test.ts', '**/*.e2e.test.ts', '**/*.git-integration.test.ts', ...makerCoreGuardInclude],
+        },
+        guard: {
+          status: 'required',
+          coverage: 'allowlist',
+          execution: 'exclusive',
+          command: vitestBin('run', '--maxWorkers=1'),
+          include: makerCoreGuardInclude,
         },
         'git-integration': {
           status: 'manual',

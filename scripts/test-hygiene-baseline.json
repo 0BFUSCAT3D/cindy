@@ -1106,9 +1106,6 @@
       "realWaits": 3,
       "sourceReads": 2
     },
-    "packages/maker-core/src/agents/shared/token-speed.test.ts": {
-      "realWaits": 6
-    },
     "packages/maker-core/src/session.origin.test.ts": {
       "realWaits": 3
     },

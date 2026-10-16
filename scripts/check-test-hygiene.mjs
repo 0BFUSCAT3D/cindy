@@ -484,7 +484,9 @@ function staticWaitCalls(code) {
       duration = number(call.arguments[1]);
       clockIndex = callback.clockIndex;
     }
-    else if (REAL_WAIT_NAMES.has(name) && !shadowedPromiseTimer) duration = number(call.arguments[0]);
+    // Generic wait names are only meaningful as direct local calls. A method
+    // such as meter.pause(1_000) is ordinary domain data, not a real wait.
+    else if (ts.isIdentifier(call.expression) && REAL_WAIT_NAMES.has(name) && !shadowedPromiseTimer) duration = number(call.arguments[0]);
     else {
       if (!ts.isIdentifier(call.expression)) continue;
       const bound = binding(call.expression);
@@ -741,6 +743,39 @@ const SOURCE_LITERAL = new RegExp('\\.' + SOURCE_EXTENSION + '[\'"]', 'i');
 // usually hold an mkdtemp() directory whose fake source files are test input.
 const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s*\)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
 
+/** Follow simple local path bindings so an anchor-derived directory cannot be
+ * hidden behind a descriptive variable name (for example agentsRoot).
+ * This intentionally stays local and syntax-only; it does not evaluate
+ * arbitrary expressions or cross module boundaries.
+ */
+function findRepoAnchorNames(code) {
+  const names = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const declarations = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)/g;
+    for (const match of code.matchAll(declarations)) {
+      const rhs = match[2];
+      const identifiers = rhs.match(/\b[A-Za-z_$][\w$]*\b/g) ?? [];
+      const pathFactory = /^\s*(?:new\s+)?(?:resolve|join|URL)\s*\(/.test(rhs);
+      const directAnchor = /^\s*(?:__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s*\)|REPO_ROOT|repoRoot|desktopRoot)\b/.test(rhs);
+      const alias = /^\s*[A-Za-z_$][\w$]*\s*$/.test(rhs);
+      if ((directAnchor || pathFactory && (REPO_ANCHOR.test(rhs) || identifiers.some(identifier => names.has(identifier)))
+        || alias && identifiers.some(identifier => names.has(identifier)))
+        && !names.has(match[1])) {
+        names.add(match[1]);
+        changed = true;
+      }
+    }
+  }
+  return names;
+}
+
+function hasRepoAnchor(text, anchorNames = new Set()) {
+  if (REPO_ANCHOR.test(text)) return true;
+  return (text.match(/\b[A-Za-z_$][\w$]*\b/g) ?? []).some(identifier => anchorNames.has(identifier));
+}
+
 /** Normalize only calls bound to fs reads, leaving strings and local shadows
  * untouched. All path/execution offsets below come from this same final text.
  * This is static local alias tracking, not arbitrary inter-module evaluation.
@@ -932,7 +967,7 @@ function findSourceReadHelpers(code) {
   return helpers;
 }
 
-function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
+function isSourcePathLiteral(code, match, sourceReadHelpers = new Set(), anchorNames = new Set()) {
   const value = match[2];
   if (!SOURCE_EXT.test(value) || /fixture|:\/\//i.test(value)) return false;
   if (IMPORT_CONTEXT.test(code.slice(Math.max(0, match.index - 24), match.index))) return false;
@@ -945,7 +980,7 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
   const helperCall = prefix.match(/\b([A-Za-z_$][\w$]*)\s*\(\s*$/)?.[1];
   if (helperCall && sourceReadHelpers.has(helperCall)) return true;
   // resolve(__dirname, '..', 'Sidebar.tsx') or new URL('../x.ts', import.meta.url).
-  if (REPO_ANCHOR.test(line) && findEnclosingReadCall(code, match.index) >= 0) return true;
+  if (hasRepoAnchor(line, anchorNames) && findEnclosingReadCall(code, match.index) >= 0) return true;
   // A separately declared sourcePath may be formatted over several lines before
   // it is passed to readFileSync. Keep that equivalent to the inline path form.
   const pathStart = findEnclosingReadCall(code, match.index, /\b(?:resolve|join|URL)\s*\(/g);
@@ -955,7 +990,7 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
     const binding = code.slice(Math.max(0, pathStart - 150), pathStart)
       .match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:new\s+)?(?:[A-Za-z_$][\w$]*\.)?$/)?.[1];
     const readBinding = binding && new RegExp('\\breadFile(?:Sync)?\\s*\\(\\s*' + binding + '\\b').test(code);
-    if (readBinding && REPO_ANCHOR.test(pathContext) && !/fixture/i.test(pathContext)) return true;
+    if (readBinding && hasRepoAnchor(pathContext, anchorNames) && !/fixture/i.test(pathContext)) return true;
   }
   // Keep the same decision for a formatted multi-line readFileSync call. The
   // current line may only contain the final path segment, while the repository
@@ -965,7 +1000,7 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
     const callContext = code.slice(callStart, match.index + match[0].length);
     const previousContext = callContext.slice(0, -match[0].length);
     const hasPriorSourceLiteral = SOURCE_LITERAL.test(previousContext);
-    if (/\n/.test(callContext) && !hasPriorSourceLiteral && !/[;{}]/.test(callContext) && REPO_ANCHOR.test(callContext) && !/fixture/i.test(callContext)) return true;
+    if (/\n/.test(callContext) && !hasPriorSourceLiteral && !/[;{}]/.test(callContext) && hasRepoAnchor(callContext, anchorNames) && !/fixture/i.test(callContext)) return true;
   }
   // readFileSync('../x.ts') reads relative to the test process, i.e. the checkout.
   return callStart >= 0 && (value.startsWith('./') || value.startsWith('../'));
@@ -1163,10 +1198,11 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   if (!isGuard && /\breadFile(?:Sync)?\b|\?raw/.test(code)) {
     const normalized = normalizeSourceReads(code);
     const sourceReadHelpers = findSourceReadHelpers(normalized.code);
+    const anchorNames = findRepoAnchorNames(normalized.code);
     const executablePaths = /\bFunction\b|\brunIn(?:New)?Context\b/.test(normalized.code) ? executedSourcePaths(normalized.code) : new Set();
     for (const match of normalized.literals) {
       if (executablePaths.has(match.index)) continue;
-      if (match[2].endsWith('?raw') || isSourcePathLiteral(normalized.code, match, sourceReadHelpers)) sourceReads += 1;
+      if (match[2].endsWith('?raw') || isSourcePathLiteral(normalized.code, match, sourceReadHelpers, anchorNames)) sourceReads += 1;
     }
   }
   return { resetModules, realWaits, sourceReads };
