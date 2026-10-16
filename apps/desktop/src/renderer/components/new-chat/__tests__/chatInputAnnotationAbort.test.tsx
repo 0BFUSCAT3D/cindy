@@ -61,7 +61,7 @@ vi.mock('../NewGoalDialog', () => ({ NewGoalDialog: () => null }));
 vi.mock('../FolderPickerPopover', () => ({ FolderPickerPopover: () => null, addRecentFolder: vi.fn() }));
 vi.mock('../AtMentionPanel', () => ({ AtMentionPanel: (props: ComponentProps<typeof AtMentionPanel>) => { h.atPanel = props; return null; } }));
 vi.mock('@/lib/atResourceService', async (original) => ({ ...await original<typeof import('@/lib/atResourceService')>(), scanAtResources: h.scan }));
-vi.mock('../SlashCommandPalette', () => ({ SlashCommandPalette: () => null }));
+vi.mock('../SlashCommandPalette', () => ({ SlashCommandPalette: ({ query }: { query: string }) => <div data-testid="test-slash-palette" data-query={query} /> }));
 vi.mock('@/voice-input/VoiceInputPointerHintLayer', () => ({ VoiceInputPointerHintLayer: ({ children }: { children: import('react').ReactNode }) => <>{children}</> }));
 vi.mock('@/voice-input/VoiceInputStatusNotice', () => ({ VoiceInputStatusNotice: () => null }));
 vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor | null) => {
@@ -172,6 +172,30 @@ it('dismisses a preview on Enter without sending or changing the hidden draft', 
   expect(view.props.onSend).not.toHaveBeenCalled();
   expect(h.editor!.getText()).toBe('unsent draft');
   expect(screen.queryByText('preview suggestion')).toBeNull();
+});
+
+// The removed source guard did not prove the editor consumed the key. Mount the
+// real composer with send enabled: an unmatched slash must close its palette
+// without submitting or changing the draft. Reuse this editor/host harness.
+it.each(['Enter', 'Tab'])('consumes %s for an empty slash result without sending or editing', async key => {
+  h.remoteProviders = [sshNativeCodexProvider([sshModel('remote-only')])];
+  const view = renderComposer({ sessionId: 'slash-empty', remoteHostId: 'builder',
+    runtimeAgentKind: 'codex', vendorKey: 'codex', initialModel: 'remote-only',
+    initialProviderId: 'openai', initialEffort: 'low' });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  const text = '/zzzz-no-such-command';
+  await act(async () => {
+    h.editor!.commands.setContent('<p>' + text + '</p>');
+    h.editor!.commands.setTextSelection(text.length + 1);
+  });
+  await waitFor(() => expect(screen.getByTestId('test-slash-palette').getAttribute('data-query')).toBe(text.slice(1)));
+  expect((screen.getByRole('button', { name: 'newChat.sendButton.send' }) as HTMLButtonElement).disabled).toBe(false);
+  let allowed = true;
+  await act(async () => { allowed = fireEvent.keyDown(h.editor!.view.dom, { key, code: key }); });
+  expect(allowed).toBe(false);
+  expect(view.props.onSend).not.toHaveBeenCalled();
+  expect(h.editor!.getText()).toBe(text);
+  expect(screen.queryByTestId('test-slash-palette')).toBeNull();
 });
 
 it('does not let a pending local resource scan repopulate an SSH composer', async () => {
