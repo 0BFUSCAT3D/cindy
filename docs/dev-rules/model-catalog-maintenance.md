@@ -126,10 +126,13 @@ xAI 保留 Registry 声明顺序，XD 以 Gateway `/models` 为准，均不受�
 同名字段不进入活动目录。未标记时取排序第一的默认可见模型，即账号返回的第一个可见模型。
 
 未手动选择模型时，客户端出厂来源顺序为 Codex 订阅 GPT-6.1 Sol（Codex）、
-Claude 订阅 Opus 5.5（Claude Code）、Cindy AI 下发的 Auto（Pi），最后保留 xAI 回退。
-订阅按认证身份识别独立账号，始终保留实际账号 ID；Auto 必须存在于 Cindy AI 的可用 Pi
-目录，不依赖旧 GLM 默认标记，也不在客户端将其替换成固定型号。草稿发送校准与无人值守
-默认解析复用同一策略，避免初始化选中 Auto 后又被旧标记改回 GLM。
+Claude 订阅 Opus 5.5（Claude Code）、服务端指定的 Cindy Auto（Pi），最后保留 xAI 回退。
+订阅按认证身份识别独立账号，始终保留实际账号 ID。Cindy Auto 由服务端决定：在 Cindy AI 与
+企业号池供应商（`source: organization`）中跟随被标为 Pi 新任务默认的 Auto 系列模型
+（预设 `auto` 或模型组 Auto `auto/<组ID>`），没有标记时（旧服务端）回退 Cindy AI 的预设 `auto`。
+只认 Auto 系列的标记：个人目录仍把旧 GLM 标为 Pi 默认，客户端不采纳，也不把 Auto 替换成固定型号。
+上次自动落点不钉住默认：草稿记着的来源是这两类之一时，校准仍在两类来源中整体寻找。
+草稿发送校准与无人值守默认解析复用同一策略，避免初始化选中 Auto 后又被旧标记改回 GLM。
 同一订阅策略先在全部匹配账号中寻找推荐型号，再取该来源按目录排序可见的其他型号；
 无人值守入口没有本地显示开关时按 `defaultEnabled` 判断，不能因缺少推荐型号提前换到下一供应商。
 策略在 `apps/desktop/src/shared/newMakerDefaultTuple.ts`；连接、型号和对应引擎必须实际可用，

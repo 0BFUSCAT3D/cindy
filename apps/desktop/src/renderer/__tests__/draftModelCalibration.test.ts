@@ -945,3 +945,22 @@ describe('factory defaults survive send-time calibration', () => {
       .toEqual({ model: 'auto', providerId: 'xd' });
   });
 });
+
+describe('模型组 Auto：服务端决定默认与来源', () => {
+  const pool = (id: string, models: CatalogModel[], source: ProviderView['source'] = 'organization') =>
+    ({ ...provider(id, true, { pi: models }), source }) as ProviderView;
+  const groupAuto = (marked: boolean) =>
+    model('auto/group-1', marked ? { newSessionDefault: ['pi'] } : {});
+
+  it('上次自动落点不钉住默认：服务端改标号池里的组 Auto 后，校准与无人值守入口同步跟随', () => {
+    const gateway = provider('xd', true, { pi: [model('auto')] });
+    const byok = pool('org-pool', [model('pool-model'), groupAuto(true)]);
+    const providers = [gateway, byok];
+    const expected = { model: 'auto/group-1', providerId: 'org-pool' };
+    expect(calibrateDraftModel({ providers, agent: 'pi', model: 'auto', chosenByUser: false,
+      preferredProviderId: 'xd', providersLoading: false })).toEqual(expected);
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi',
+      draft: { model: 'auto', providerId: 'xd', chosenByUser: false } })).toEqual(expected);
+    expect(resolveNewTaskDefaultRoute({ providers, agent: 'pi' })).toEqual(expected);
+  });
+});
