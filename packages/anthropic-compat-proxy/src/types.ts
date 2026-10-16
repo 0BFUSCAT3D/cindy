@@ -168,6 +168,7 @@ export interface ResponseObserverCtx {
    */
   readonly outboundHeaders?: Readonly<Record<string, string>>;
   readonly responseHeaders: Readonly<Record<string, string>>;
+  /** Logical outbound body, before optional transport gzip (observers parse JSON). */
   readonly requestBody: Buffer;
 }
 

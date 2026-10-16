@@ -176,7 +176,7 @@ known 是消息 ID 与主机提供的 SHA-256 正文指纹对。支持的主机�
 
 控制端 `invoke` payload 可选携带 `transfer: { gzip?: 1, ifNoneMatch?: string }`：注入了解压
 能力就声明 `gzip: 1`；本机持有同一被控端、同一 channel 与 args 的上一份大结果时，带上它的
-内容标签。被控端照常执行 handler，只改写发出的 ok 结果：序列化后不小于 4 KiB 的结果附带
+内容标签。被控端照常执行 handler，只改写发出的 ok 结果：序列化后不小于 4096 个 UTF-16 code unit 的结果附带
 `transfer.tag`（SHA-256）；标签与 `ifNoneMatch` 相同时回 `{ result: null, transfer: { tag,
 notModified: true } }`；否则在控制端声明可解且压缩确有收益时回 `{ result: null, transfer:
 { tag, gzipBase64 } }`。共享 DeviceLinkClient 在交给调用方之前还原成普通结果，并只用发请求
@@ -192,6 +192,28 @@ handler 每次都执行，`notModified` 只省略字节完全相同的结果，�
 relay 不解析隧道 payload，无服务端改动、数据库 migration 或部署顺序要求。实现见
 `packages/device-link/src/invokeTransfer.ts`，回归见同目录 `__tests__/invokeTransfer.test.ts`
 与 `client.test.ts`「invoke 结果传输编码」。
+
+Desktop 的压缩保持 gzip level 4 与同步发送／错误处理契约，手机与电脑、电脑与电脑
+共用这一实现。收益按 gzip 的 base64 长度与原始 JSON 的 UTF-8 **字节数**比较，缩小超过
+10% 才采用；大小门槛、解压上限与缓存预算仍按原有字符数计。Node 编解码及数字统计复用
+`@cindy/anthropic-compat-proxy/compression` 独立入口，不把 Node 依赖引入 Mobile／device-link。
+
+## 模型 HTTP 代理的出站压缩
+
+`anthropic-compat-proxy` 在路由、正文转换与请求头改写之后，仅对最终目标为
+`https://api.anthropic.com:443/v1/messages` 的 JSON POST 启用 gzip：正文至少 64 KiB、
+没有既存 `Content-Encoding`，使用异步 level 1，压缩字节数减少超过 10% 才发送。
+目标按精确协议、主机、端口和路径判断，不按供应商名或兼容 API 格式猜测；本地端点、
+Cindy 网关与未经确认的第三方默认保持原样。原生订阅直连、WebSocket 与 localHandler
+自己发出的请求不经过这个出口，不因本改动强制压缩。
+
+保留逻辑 JSON 给观察器与已有语义错误恢复，只对 wire 副本压缩并重算 Content-Length。
+压缩等待后重新检查客户端连接与原有派发授权。压缩本身失败可在首次发送前回退原文；
+上游拒绝压缩不触发自动重放或支持探测，避免重复推理。成功响应仍流式透传。
+两类链路共用 Node gzip 原语与原始／gzip／wire 字节、压缩耗时的统计口径，业务门槛
+和封装各自保留。DEBUG 统计只记数字，不记录正文、凭证或完整目标 URL。
+回归见 `packages/anthropic-compat-proxy/src/request-compression.test.ts` 与 Desktop
+`device-link/__tests__/transferCodec.test.ts`（实际 zlib／pako 解码）。
 
 ## 群执行终态与错误展示
 
