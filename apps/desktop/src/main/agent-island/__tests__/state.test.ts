@@ -2052,7 +2052,7 @@ describe('Agent Island display state', () => {
     expect(display.pillSnapshot.unreadCompletedCount).toBe(1);
   });
 
-  it('protects the active completion with another queued before outside click can collapse them', () => {
+  it('protects the active completion before outside click advances to the queued reminder', () => {
     const state = createAgentIslandState();
     applyAgentIslandEvent(state, { sessionId: 'first', title: 'First' }, doneEvent(), 2_000);
     applyAgentIslandEvent(state, { sessionId: 'second', title: 'Second' }, doneEvent(), 2_100);
@@ -2066,10 +2066,31 @@ describe('Agent Island display state', () => {
     expect(dismissAgentIslandActiveReveal(state, 3_300)).toBe(true);
     const display = buildAgentIslandDisplayState(state, 3_350);
 
-    expect(display.mode).toBe('compact');
+    expect(display.mode).toBe('expanded');
     expect(display.displayPolicy).toBe('transient');
-    expect(display.sessions.map((session) => session.sessionId)).toEqual(['second', 'first']);
+    expect(display.displaySurface).toBe('completionCard');
+    expect(display.sessions.map((session) => session.sessionId)).toEqual(['second']);
     expect(display.pillSnapshot.unreadCompletedCount).toBe(2);
+  });
+
+  it.each(['completed', 'error'] as const)('keeps queued reminders after opening the current %s card', (phase) => {
+    const state = createAgentIslandState();
+    applyAgentIslandEvent(state, { sessionId: 'first' }, phase === 'completed' ? doneEvent() : terminalErrorEvent('Failed'), 1_000);
+    applyAgentIslandEvent(state, { sessionId: 'second' }, doneEvent(), 1_050);
+    expect(buildAgentIslandDisplayState(state, 1_100).sessions.map((session) => session.sessionId)).toEqual(['first']);
+
+    requestAgentIslandSessionFocus(state, 'first', 1_200);
+    // Errors keep the existing navigation-ack behavior; completion closes immediately.
+    if (phase === 'error') setAgentIslandVisibleSession(state, 'first', 1_250);
+    const next = buildAgentIslandDisplayState(state, 1_300);
+    expect(next.displaySurface).toBe('completionCard');
+    expect(next.sessions.map((session) => session.sessionId)).toEqual(['second']);
+    expect(state.sessions.get('first')?.unread).toBe(true);
+
+    // A late route report for the previous card must not close the new one.
+    setAgentIslandVisibleSession(state, 'first', 1_400);
+    expect(buildAgentIslandDisplayState(state, 1_450).sessions.map((session) => session.sessionId)).toEqual(['second']);
+    expect(buildAgentIslandDisplayState(state, 20_000).mode).toBe('compact');
   });
 
   it('collapses hover-expanded unread completion lists without clearing automatic reveals', () => {

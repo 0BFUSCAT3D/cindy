@@ -1388,7 +1388,11 @@ export function requestAgentIslandSessionFocus(
   let completionDismissed = false;
   const isCompletion = state.sessions.get(nextSessionId)?.phase === 'completed';
   if (isCompletion) {
-    completionDismissed = dismissTransientReveals(state);
+    // The manual list exposes the whole queue; a single card only disposes itself.
+    completionDismissed = dismissTransientReveals(
+      state,
+      state.lastDisplayPolicy === 'manualExpanded' ? undefined : nextSessionId,
+    );
     completionDismissed = collapseAgentIslandToCompact(state, now) || completionDismissed;
   }
   if (state.visibleSessionIds.has(nextSessionId)) {
@@ -1921,19 +1925,23 @@ function deferActiveTransientReveal(
 
 function dismissPublishedTransientReveal(state: AgentIslandState): boolean {
   if (state.lastDisplayMode !== 'expanded' || state.lastDisplayPolicy !== 'transient') return false;
-  return dismissTransientReveals(state);
+  if (!state.lastDisplaySessionId) return false;
+  return dismissTransientReveals(state, state.lastDisplaySessionId);
 }
 
-function dismissTransientReveals(state: AgentIslandState): boolean {
+function dismissTransientReveals(state: AgentIslandState, onlySessionId?: string): boolean {
   const transientSessionIds = [
     state.activeTransientSessionId,
     ...state.transientRevealQueue,
-  ].filter((sessionId): sessionId is string => Boolean(sessionId));
+  ].filter((sessionId): sessionId is string => Boolean(sessionId)
+    && (onlySessionId === undefined || sessionId === onlySessionId));
 
   if (transientSessionIds.length === 0) return false;
 
-  state.activeTransientSessionId = null;
-  state.transientRevealQueue = [];
+  if (state.activeTransientSessionId && transientSessionIds.includes(state.activeTransientSessionId)) {
+    state.activeTransientSessionId = null;
+  }
+  state.transientRevealQueue = state.transientRevealQueue.filter((sessionId) => !transientSessionIds.includes(sessionId));
 
   let changed = false;
   for (const sessionId of transientSessionIds) {
