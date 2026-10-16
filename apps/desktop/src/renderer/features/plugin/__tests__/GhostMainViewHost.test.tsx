@@ -3,6 +3,8 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InstalledGhost } from '../../../../shared/ghost';
+import { CONTENT_HEADER_HEIGHT_PX, ContentHeaderSlot } from '@/components/layout/ContentHeader';
+import { FeatureSidebarSlotProvider } from '@/features/feature-context';
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -12,8 +14,12 @@ const mocks = vi.hoisted(() => ({
   registerSidebar: vi.fn(),
   mode: 'cloud' as 'signed-out' | 'local' | 'cloud',
   dataOwnerId: 'owner-a' as string | null,
+  isMac: true,
 }));
 
+vi.mock('@/hooks/useMacFullscreen', () => ({
+  useMacFullscreen: () => ({ isMac: mocks.isMac, isFullscreen: false }),
+}));
 vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-router-dom')>()),
   useNavigate: () => mocks.navigate,
@@ -53,6 +59,29 @@ const manifest = {
   mainView: { html: 'main-view.html' },
 };
 
+function renderInHeaderSlot({
+  sidebarVisible = true,
+  isSidebarRail = false,
+  rightSidebarAvailable = false,
+}: {
+  sidebarVisible?: boolean;
+  isSidebarRail?: boolean;
+  rightSidebarAvailable?: boolean;
+} = {}) {
+  return render(
+    <FeatureSidebarSlotProvider isCollapsed={!sidebarVisible}>
+      <ContentHeaderSlot
+        sidebarVisible={sidebarVisible}
+        showCollapsedActions={!sidebarVisible}
+        isSidebarRail={isSidebarRail}
+        rightSidebarAvailable={rightSidebarAvailable}
+      >
+        <GhostMainViewHost />
+      </ContentHeaderSlot>
+    </FeatureSidebarSlotProvider>,
+  );
+}
+
 beforeEach(() => {
   mocks.navigate.mockReset();
   mocks.registerSidebar.mockReset();
@@ -60,6 +89,7 @@ beforeEach(() => {
   mocks.runtimeState = 'running';
   mocks.mode = 'cloud';
   mocks.dataOwnerId = 'owner-a';
+  mocks.isMac = true;
   mocks.routeCapable = [
     {
       ghostId: 'workspace',
@@ -83,19 +113,80 @@ describe('GhostMainViewHost', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
-  it('reserves a transparent in-flow drag band before the webview', () => {
-    render(<GhostMainViewHost />);
-    const band = screen.getByTestId('ghost-main-view-drag-band');
-    const webview = screen.getByTestId('webview');
+  // Production entry: ContentHeaderSlot + routed GhostMainViewHost. Electron uses
+  // WebkitAppRegion to register drag rectangles; zero owners loses window dragging,
+  // while a second band beneath a visible header reserves an unwanted blank row.
+  // The previous host test rendered without the shell and missed that visible-header case.
+  // Minimal unit matrix: mac expanded/hidden, Windows visible, mac collapsed or rail,
+  // and mac with the right sidebar toggle keeping the header visible.
+  it.each([
+    {
+      name: 'mac expanded',
+      isMac: true,
+      sidebarVisible: true,
+      isSidebarRail: false,
+      rightSidebarAvailable: false,
+      hidden: true,
+    },
+    {
+      name: 'Windows expanded',
+      isMac: false,
+      sidebarVisible: true,
+      isSidebarRail: false,
+      rightSidebarAvailable: false,
+      hidden: false,
+    },
+    {
+      name: 'mac collapsed',
+      isMac: true,
+      sidebarVisible: false,
+      isSidebarRail: false,
+      rightSidebarAvailable: false,
+      hidden: false,
+    },
+    {
+      name: 'mac rail',
+      isMac: true,
+      sidebarVisible: false,
+      isSidebarRail: true,
+      rightSidebarAvailable: false,
+      hidden: false,
+    },
+    {
+      name: 'mac right sidebar',
+      isMac: true,
+      sidebarVisible: true,
+      isSidebarRail: false,
+      rightSidebarAvailable: true,
+      hidden: false,
+    },
+  ])(
+    'keeps exactly one top window drag owner for $name',
+    ({ isMac, sidebarVisible, isSidebarRail, rightSidebarAvailable, hidden }) => {
+      mocks.isMac = isMac;
+      const { container } = renderInHeaderSlot({
+        sidebarVisible,
+        isSidebarRail,
+        rightSidebarAvailable,
+      });
+      const header = container.querySelector('header');
+      const band = screen.queryByTestId('ghost-main-view-drag-band');
+      const owners = [header, band].filter((owner): owner is HTMLElement => owner != null);
 
-    expect(band.parentElement).toBe(webview.parentElement);
-    expect(band.nextElementSibling).toBe(webview);
-    expect(band.classList.contains('shrink-0')).toBe(true);
-    expect(band.classList.contains('absolute')).toBe(false);
-    expect(band.getAttribute('aria-hidden')).toBe('true');
-    expect(band.style.height).toBe('calc(46px - var(--content-header-h, 46px))');
-    expect((band.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion).toBe('drag');
-  });
+      expect(header === null).toBe(hidden);
+      expect(band !== null).toBe(hidden);
+      expect(owners).toHaveLength(1);
+      expect(
+        (owners[0].style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion,
+      ).toBe('drag');
+      if (band) {
+        expect(band.getAttribute('aria-hidden')).toBe('true');
+        // The replacement reserves the same row height before the webview.
+        expect(band.style.height).toBe(`${CONTENT_HEADER_HEIGHT_PX}px`);
+        expect(band.nextElementSibling).toBe(screen.getByTestId('webview'));
+      }
+    },
+  );
 
   it('replaces an unavailable route with the Plugin page before mounting a webview', () => {
     mocks.routeCapable = [];
@@ -183,7 +274,7 @@ describe('GhostMainViewHost', () => {
 
   it.each(['crashed', 'fused'])('reuses the existing %s recovery state', (state) => {
     mocks.runtimeState = state;
-    render(<GhostMainViewHost />);
+    renderInHeaderSlot();
     const band = screen.getByTestId('ghost-main-view-drag-band');
     const error = screen.getByTestId('error');
     expect(band.parentElement).toBe(error.parentElement);

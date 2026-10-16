@@ -4,6 +4,10 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useGhostMainViews } from '@/cindy-brain/ghostMainViews';
 import { GhostPanelError, GhostWebviewBody } from '@/cindy-brain/ghostPanelBody';
 import { useGhostRuntimeState } from '@/cindy-brain/runtimeStates';
+import {
+  CONTENT_HEADER_HEIGHT_PX,
+  useIsContentHeaderHidden,
+} from '@/components/layout/ContentHeader';
 import { WINDOW_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 
@@ -16,6 +20,7 @@ export function GhostMainViewHost() {
   const runtimeState = useGhostRuntimeState(
     item ? item.instanceId : ghostId,
   );
+  const isContentHeaderHidden = useIsContentHeaderHidden();
 
   useEffect(() => {
     if (!item) navigate('/plugins', { replace: true });
@@ -30,15 +35,16 @@ export function GhostMainViewHost() {
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-content-area"
       aria-label={item.title}
     >
-      {/* ContentHeaderSlot broadcasts its h-[46px] height: a hidden mac header leaves
-          46px to drag; a visible header (or missing variable) leaves 0px.
-          ContentHeader handles the rail button's no-drag holes when visible. */}
-      <div
-        aria-hidden="true"
-        data-testid="ghost-main-view-drag-band"
-        className="shrink-0"
-        style={{ height: 'calc(46px - var(--content-header-h, 46px))', ...WINDOW_DRAG_STYLE }}
-      />
+      {/* The webview consumes its entire rectangle, so replace the missing header's
+          drag area only when hidden. The shared header owns rail no-drag holes. */}
+      {isContentHeaderHidden && (
+        <div
+          aria-hidden="true"
+          data-testid="ghost-main-view-drag-band"
+          className="shrink-0"
+          style={{ height: CONTENT_HEADER_HEIGHT_PX, ...WINDOW_DRAG_STYLE }}
+        />
+      )}
       {broken ? (
         <GhostPanelError ghost={installedGhost} state={runtimeState} />
       ) : (
