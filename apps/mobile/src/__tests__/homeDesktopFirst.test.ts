@@ -725,7 +725,7 @@ describe('mobile home desktop-first surface', () => {
     // Home remains mounted across saved-account activation, so clearing the shared DeviceLink
     // stores is insufficient: page-local refs/state must disappear before the next paint too.
     expect(source).toContain('const { accountGeneration, deviceId: selfDeviceId, user } = auth;');
-    expect(source).toContain('return readDeviceList();');
+    expect(source).toContain('return readDeviceList({ fresh: true });');
     expect(source).toContain('const homeAccountGenerationRef = useRef(accountGeneration);');
     expect(source).toContain('useLayoutEffect(() => {');
     expect(source).toContain('syncInFlightRef.current = null;');
@@ -809,14 +809,16 @@ describe('mobile home desktop-first surface', () => {
 describe('home menu native header ownership', () => {
   it('hosts the Duo top-left menu inside the native bar instead of under its touch surface', () => {
     const home = readSource('src/session/HomeSurface.tsx');
-    const header = readSource('src/platform/chrome/HomeNativeStackHeader.tsx');
+    const header = readSource('src/platform/chrome/HomeStackHeader.tsx');
+    expect(readSource('src/platform/chrome/HomeNativeStackHeader.tsx')).toContain('<HomeStackHeader');
     expect(home).toContain("nativeHomeHeader && homeGeometry.barEdge !== 'none'");
     expect(home).toContain('keepMenuTopLeft={keepMenuTopLeft}');
     expect(home).not.toContain('{keepMenuTopLeft ? (');
     const leftToolbar = header.split('<Stack.Toolbar placement="left">')[1].split('</Stack.Toolbar>')[0];
     expect(leftToolbar).toContain('<Stack.Toolbar.View hidesSharedBackground>');
     expect(leftToolbar).toContain('onPress={onOpenMenu}');
-    expect(leftToolbar).toContain('testID="home.chromeMenu"');
+    expect(leftToolbar).toContain('testID={menuTestID}');
+    expect(readSource('src/platform/chrome/HomeNativeStackHeader.tsx')).toContain('menuTestID="home.chromeMenu"');
     // Ordinary system toolbar actions keep their native adaptation.
     expect(leftToolbar).toContain('<Stack.Toolbar.Button');
   });

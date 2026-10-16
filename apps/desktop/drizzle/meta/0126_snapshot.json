@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "8e5032cb-8b2c-41b1-8d92-7b18a9ac1c7a",
+  "id": "690c9c45-3fc0-4ff8-84d4-ed935c3850bd",
   "prevId": "713a8a25-ebe4-441d-abaf-13a07bd1bda9",
   "tables": {
     "account_usage_snapshots": {
@@ -3820,253 +3820,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "plugin_usage_events": {
-      "name": "plugin_usage_events",
-      "columns": {
-        "call_id": {
-          "name": "call_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "subject_id": {
-          "name": "subject_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "history_generation": {
-          "name": "history_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "occurred_at": {
-          "name": "occurred_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "tool_name": {
-          "name": "tool_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "version": {
-          "name": "version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "release_id": {
-          "name": "release_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'unknown'"
-        },
-        "report_target": {
-          "name": "report_target",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "report_state": {
-          "name": "report_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'not-applicable'"
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "attempt_count": {
-          "name": "attempt_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {
-        "plugin_usage_events_time_idx": {
-          "name": "plugin_usage_events_time_idx",
-          "columns": [
-            "subject_id",
-            "occurred_at"
-          ],
-          "isUnique": false
-        },
-        "plugin_usage_events_task_idx": {
-          "name": "plugin_usage_events_task_idx",
-          "columns": [
-            "subject_id",
-            "session_id",
-            "occurred_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "plugin_usage_events_subject_id_plugin_usage_subjects_id_fk": {
-          "name": "plugin_usage_events_subject_id_plugin_usage_subjects_id_fk",
-          "tableFrom": "plugin_usage_events",
-          "tableTo": "plugin_usage_subjects",
-          "columnsFrom": [
-            "subject_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "plugin_usage_subjects": {
-      "name": "plugin_usage_subjects",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "stable_key": {
-          "name": "stable_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "plugin_id": {
-          "name": "plugin_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "source_key": {
-          "name": "source_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "server_root": {
-          "name": "server_root",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "ghost_id": {
-          "name": "ghost_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "binding_revision": {
-          "name": "binding_revision",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "recording_started_at": {
-          "name": "recording_started_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "history_generation": {
-          "name": "history_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {
-        "plugin_usage_subjects_source_idx": {
-          "name": "plugin_usage_subjects_source_idx",
-          "columns": [
-            "stable_key"
-          ],
-          "isUnique": true
-        },
-        "plugin_usage_subjects_binding_idx": {
-          "name": "plugin_usage_subjects_binding_idx",
-          "columns": [
-            "ghost_id",
-            "binding_revision"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "project_aliases": {
       "name": "project_aliases",
       "columns": {
@@ -5379,6 +5132,13 @@
         },
         "pinned_at": {
           "name": "pinned_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "hidden_at": {
+          "name": "hidden_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,

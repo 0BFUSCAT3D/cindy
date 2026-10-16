@@ -24,9 +24,10 @@ import { CompanionEntering } from '@/session/CompanionEntering';
 import { mobileDebugEnabled, mobileDebugLog } from '@/debug/mobileDebugLog';
 import { createScrollDebugSampler } from '@/debug/scrollDebugSampler';
 import { errorText, resolvedUrlKind } from '@/debug/fileDiagnostics';
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactElement, type ReactNode, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageLoadingImage, MessageImagePlaceholder } from './MessageLoadingImage';
+import { InputHandoffRecordRow } from '@/inputHandoff/InputHandoffRecordRow';
 import {
   ArrowLeftRight,
   Bot,
@@ -78,6 +79,7 @@ import {
   type GestureResponderEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewProps,
   type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
@@ -178,6 +180,7 @@ import {
 } from '@/session/userMessageCollapse';
 import {
   collectMobileMessageGalleryImages,
+  galleryImageIndexForPayload,
   isLightboxMediaKind,
   lightboxImagesForPayload,
   type MobileMessageGalleryImage,
@@ -257,6 +260,7 @@ import {
   useRemoteSessions,
 } from '@/session/remoteSessionStore';
 import {
+  isCrossDeviceSourceSessionId,
   shouldShowSourceDevice,
   type MessageSourceDevice,
   type MessageSourcePlugin,
@@ -757,6 +761,7 @@ export function MessageRenderer({
   shareSelectionBusy,
   onQuoteSelection,
   pendingSend,
+  pendingSendGroupKeys,
   getSentImagePreview,
   onReadTextFilePreview,
   onReleaseRemoteMedia,
@@ -770,6 +775,7 @@ export function MessageRenderer({
   emptyMessage,
   bottomOverlayHeight,
   contentBottomInset,
+  renderScrollComponent,
   isSessionStreaming,
   makerTurnRunning,
   continuationTurnClientId,
@@ -794,6 +800,8 @@ export function MessageRenderer({
   /** Offscreen preload and disappearing native screens must not replace the user's bookmark. */
   isReadingPositionActive?: () => boolean;
   bottomOverlayHeight?: number;
+  /** 列表滚动容器；任务页用它让聊天记录往下拖到输入框顶边时交给输入框（composerPullThrough）。 */
+  renderScrollComponent?: (props: ScrollViewProps) => ReactElement<ScrollViewProps>;
   /** Floating composers reserve a stable tail gap while their expanded surface overlays history. */
   contentBottomInset?: number;
   /** 顶部 chrome(绝对定位半透明工具栏)实测高度:内容顶部按此让位,详见 mobileMessageListTopPadding。 */
@@ -802,6 +810,8 @@ export function MessageRenderer({
   focusedRequestKey?: number | string | null;
   followLatestRequestKey?: number | string | null;
   items: readonly MobileMessageRenderItem[];
+  /** Live outbox, queued and settling rows; an absent source cannot retain its viewer forever. */
+  pendingSendGroupKeys?: ReadonlySet<string>;
   /** Stable while streaming only changes row content; structural list derivations key off this. */
   itemsStructureKey?: unknown;
   /** Oldest loaded host cursor; synthetic cards must not mask successful history prepends. */
@@ -1702,22 +1712,31 @@ export function MessageRenderer({
   // 避免取件 effect / FlatList / LightboxPage memo 每帧全部失效。
   const lightboxImagesRef = useRef<readonly MobileMessageGalleryImage[] | null>(null);
   const lightboxImages = useMemo(() => {
-    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) return null;
-    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey);
+    if (!(payload?.kind === 'media' && isLightboxMediaKind(payload.media.kind)) || !galleryImages) {
+      lightboxImagesRef.current = null;
+      return null;
+    }
     const prev = lightboxImagesRef.current;
+    const sourceGroupPresent = listData.some((item) => item.key === payloadSourceGroupKey);
+    const retainPendingSnapshot = !!payloadSourceGroupKey && pendingSendGroupKeys?.has(payloadSourceGroupKey) === true;
+    const next = lightboxImagesForPayload(galleryImages, payload, payloadSourceGroupKey, prev, sourceGroupPresent, retainPendingSnapshot);
     if (prev && prev.length === next.length && prev.every((p, i) => {
       const n = next[i];
       return p.key === n.key
         && p.url === n.url
         && p.payload.media.url === n.payload.media.url
         && p.payload.media.previewable === n.payload.media.previewable
+        && p.payload.galleryImageSlot === n.payload.galleryImageSlot
         && p.previewUri === n.previewUri;
     })) {
       return prev;
     }
     lightboxImagesRef.current = next;
     return next;
-  }, [galleryImages, imageLightboxOpen, payload, payloadSourceGroupKey]);
+  }, [galleryImages, imageLightboxOpen, listData, payload, payloadSourceGroupKey, pendingSendGroupKeys]);
+  const initialLightboxImage = lightboxImages
+    ? lightboxImages[galleryImageIndexForPayload(lightboxImages, payload)]
+    : undefined;
   const bottomPadding = mobileMessageListBottomPadding(bottomOverlayHeight, contentBottomInset);
   const topPadding = mobileMessageListTopPadding(topOverlayHeight);
   listBottomPaddingRef.current = bottomPadding;
@@ -2859,6 +2878,7 @@ export function MessageRenderer({
         testID={testID ?? 'message.list'}
         viewabilityConfig={viewabilityConfigRef.current}
         onViewableItemsChanged={handleViewableItemsChanged}
+        renderScrollComponent={renderScrollComponent}
       />
       </Animated.View>
       {shareSelectionActive && stickyShareClientId ? (
@@ -2897,7 +2917,8 @@ export function MessageRenderer({
         <ImageLightbox
           annotation={imageAnnotation}
           images={lightboxImages}
-          initialUrl={payload.media.url}
+          initialImageKey={initialLightboxImage?.key ?? payload.galleryImageKey}
+          initialUrl={initialLightboxImage?.url ?? payload.media.url}
           onClose={closePayload}
           onReleaseRemoteMedia={onReleaseRemoteMedia}
           onResolveRemoteMedia={onResolveRemoteMedia}
@@ -3028,6 +3049,7 @@ const RenderItemView = memo(function RenderItemView({
           <PendingSendBubble
             actions={actions.pendingSend}
             item={item}
+            onOpenImage={actions.onOpenPayload}
             screenWidth={actions.screenWidth}
             viewerDeviceId={actions.viewerDeviceId}
             renderImage={(uri, sourceUri, onError) => uri ? (
@@ -3181,7 +3203,9 @@ function SessionOriginLabel({
       idText={sourceIdText(sourceMeta)
         ?? (senderSessionId ? t('message.renderer.sourceSessionId', { id: senderSessionId }) : undefined)}
       label={sessionOriginLabel(origin)}
-      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined}
+      onPress={onOpen && senderSessionId && !isCrossDeviceSourceSessionId(senderSessionId)
+        ? () => onOpen(senderSessionId)
+        : undefined}
       openHint={t('message.renderer.openSessionOrigin')}
       testID="message.sessionOrigin"
     />
@@ -5384,6 +5408,7 @@ function MobileSystemCard({
   }
   // agent-switch 走专用「分隔线 + 药丸」渲染(对齐桌面),不落通用盒子卡片。
   if (type === 'agent-switch') return <MobileAgentSwitchCard data={data} />;
+  if (type === 'input-handoff') return <InputHandoffRecordRow data={data} />;
   // auto-resume 复用桌面 AgentActionRow 的单行状态布局:默认只显示当前状态和压缩后的
   // 中断原因,完整诊断按需展开,避免底层错误全文把手机消息流撑成一张大卡片。
   if (type === 'auto-resume') {
@@ -6587,6 +6612,7 @@ export function AttachmentStrip({
   align,
   layout,
   onOpen,
+  onOpenFile,
   onResolveRemoteMedia,
   usePreviewState = useRecyclingState,
 }: {
@@ -6597,6 +6623,8 @@ export function AttachmentStrip({
   align: 'left' | 'right';
   layout: MessageContentLayout;
   onOpen?: (payload: MessagePayload) => void;
+  /** Index within this strip's file chips, for callers that resolve files by ID on tap. */
+  onOpenFile?: (index: number) => void;
   onResolveRemoteMedia?: ResolveRemoteMediaFn;
   usePreviewState?: MediaPreviewStateHook;
 }) {
@@ -6642,7 +6670,7 @@ export function AttachmentStrip({
               key={`${item.kind}:${item.path ?? item.name}:${index}`}
               layout={layout}
               name={item.name}
-              onOpen={onOpen ? () => onOpen(buildAttachmentPayload(item)) : undefined}
+              onOpen={onOpenFile ? () => onOpenFile(index) : onOpen ? () => onOpen(buildAttachmentPayload(item)) : undefined}
               path={item.path}
             />
           ))}
@@ -9297,7 +9325,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  fileText: { flex: 1, minWidth: 0 },
+  // Basis auto, not `flex: 1`: a content-sized chip (left-aligned strip, group wrapper) would give the name zero width.
+  fileText: { flexGrow: 1, flexShrink: 1, minWidth: 0 },
   fileName: { color: colors.textPrimary, fontSize: typeScale.caption, lineHeight: lineHeight.caption, fontWeight: fontWeight.medium },
   diffCard: {
     backgroundColor: colors.chatCodeSurface,

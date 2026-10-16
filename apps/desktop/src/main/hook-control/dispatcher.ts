@@ -79,6 +79,7 @@ import { HOOK_CHAT_WORKSPACE_ALIAS } from '../../shared/hookControlIpc.js';
 import { captureImContext, type ImContextSnapshot } from '../../shared/imMessageSource.js';
 import type { GroupHistoryAccessScope } from '../im/shared/groupHistoryAccess.js';
 import { hookReplyTarget } from '../im/shared/autoReviewReferences.js';
+import { QUOTA_FAILURE_NOTICE_PREFIX } from '../im/shared/turnRetryNotice.js';
 import { groupHistoryAccessForExternalKey } from './groupHistoryScope.js';
 import { isPathWithin } from './paths.js';
 import { createAckReactions, type AckReactionTask } from './ackReactions.js';
@@ -253,7 +254,10 @@ export interface HookRunRequest {
    * 连接不在线时直接丢弃, 不缓存不重发(与 turn.end 的离线补发相反)。
    */
   onProgress?: (text: string) => void;
-  /** Independent, acknowledged channel notice after runtime retirement fails. */
+  /**
+   * Independent, acknowledged channel notice outside the turn result: runtime
+   * retirement failures and the fixed 代输入 pointer.
+   */
   onRuntimeRecovery?: (text: string) => Promise<boolean>;
   /**
    * 执行中交互卡回调(interaction.request 链路)。runner 把 maker 的
@@ -484,6 +488,8 @@ export const HOOK_ROUTE_UNAVAILABLE_PREFIX = 'hook session route unavailable:';
 
 function hookFailureReasonForLog(errorMessage: string | null | undefined): string {
   const message = errorMessage ?? '';
+  // 额度说明里带供应商名与上游原文, 日志只记类别。
+  if (message.startsWith(QUOTA_FAILURE_NOTICE_PREFIX)) return 'provider-quota-exhausted';
   if (!message.startsWith(HOOK_ROUTE_UNAVAILABLE_PREFIX)) return 'unclassified';
   return message.replace(/\s+/g, ' ').slice(0, 300);
 }

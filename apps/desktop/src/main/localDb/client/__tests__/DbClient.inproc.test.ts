@@ -138,7 +138,7 @@ describe('DbClient in-proc fallback', () => {
       }),
     ]);
 
-    const usageMigration = fs.readFileSync(new URL('../../../../../drizzle/0126_dazzling_pyro.sql', import.meta.url), 'utf8');
+    const usageMigration = fs.readFileSync(new URL('../../../../../drizzle/0128_demonic_odin.sql', import.meta.url), 'utf8');
     for (const statement of usageMigration.split('--> statement-breakpoint').filter(s => s.trim())) await client.exec(statement);
     const identity = { ghostId: 'inproc-plugin', displayName: 'Test', revision: 'revision', sourceKind: 'manual' as const,
       stableKey: null, pluginId: null, organizationId: null, sourceKey: null, serverRoot: null, version: '1.0', releaseId: null };

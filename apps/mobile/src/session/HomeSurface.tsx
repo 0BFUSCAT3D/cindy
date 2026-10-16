@@ -9,7 +9,6 @@ import { useRetainedHomeState, getHomeViewSession } from './homeViewSession';
 import { rememberRecentTask } from './recentTasks';
 import { homeListStyles, SESSION_ROW_LONG_PRESS_MS, SessionStatusMark, SessionStatusPulse } from '@/session/HomeListVisuals';
 import { useOptionalHeaderHeight } from '@/session/useOptionalHeaderHeight';
-import { SessionHeaderNativeBlur } from "@/session/SessionHeaderNativeControls";
 import { rememberComposerEntry } from './composerMorph';
 import type { ComposerMorphOrigin } from './composerGeometry';
 import { RemoteTaskSuggestions } from '@/session/RemoteTaskSuggestions';
@@ -1167,7 +1166,10 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
           if (homeAccountGenerationRef.current !== accountGenerationAtStart) {
             throw new Error('Home account generation superseded');
           }
-          return readDeviceList();
+          // Provider connection recovery may already own an older roster request. Home's
+          // presence fence is captured above, so joining that earlier request could let its
+          // stale empty snapshot erase a desktop presence delta that will not be replayed.
+          return readDeviceList({ fresh: true });
         },
         { maxAttempts: 3 },
       );
@@ -3114,7 +3116,6 @@ function HomeScreenContent({ active = true, onModeChange, width, newSessionInSys
       style={[styles.safeArea, { paddingLeft: embedded ? 0 : edgePadding.paddingLeft, paddingRight: embedded ? 0 : edgePadding.paddingRight }]}
       testID="devices.screen"
     >
-      {nativeHomeHeader ? <SessionHeaderNativeBlur height={nativeHeaderHeight} /> : null}
       {nativeHomeHeader && active ? (
         <HomeNativeStackHeader
           keepMenuTopLeft={keepMenuTopLeft}

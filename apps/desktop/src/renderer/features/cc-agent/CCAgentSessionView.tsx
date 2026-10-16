@@ -93,6 +93,7 @@ import { PermissionPrompt } from '@/components/new-chat/PermissionPrompt';
 import { IssueConfirmCard } from './IssueConfirmCard';
 import { RenameSessionsConfirmCard } from './RenameSessionsConfirmCard';
 import { GhostGrantConfirmCard } from './GhostGrantConfirmCard';
+import { InputHandoffCard } from '@/features/input-handoff/InputHandoffCard';
 import { RemoteDesktopConfirmationNotice } from './RemoteDesktopConfirmationNotice';
 import { AskUserQuestionPrompt } from '@/components/new-chat/AskUserQuestionPrompt';
 import { PluginSetupPrompt } from '@/components/new-chat/PluginSetupPrompt';
@@ -1792,6 +1793,7 @@ function CCAgentSessionContent({
     respondToRenameSessionsConfirm,
     pendingGhostGrantConfirm,
     pendingRemoteDesktopConfirmation,
+    pendingInputHandoff,
     respondToGhostGrantConfirm,
     lastExpandedPlanViewerState,
     updatePlanContent,
@@ -2099,7 +2101,7 @@ function CCAgentSessionContent({
     devices: providerShareDevices,
     nameFor: providerShareDeviceName,
     isReceived: isReceivedProviderShare,
-  } = useProviderShareAgentDevices([agentDeviceId, pendingAgentDeviceId]);
+  } = useProviderShareAgentDevices([session?.agentDeviceId, pendingAgentDeviceId], remoteDeviceId);
   // 被控电脑上的任务 Agent 现在 / 挂着的位置是分享时:分享按账号授予,本机也收到了同一条就经本机
   // 的分享通道读它的目录,模型按钮按分享显示(否则只能读到被控电脑自己的目录,显示「模型信息暂
   // 不可用」)。本机没收到的分享读不到,维持原样。
@@ -2140,10 +2142,8 @@ function CCAgentSessionContent({
             devices: selectableDevices,
             controlledDeviceId: remoteDeviceId,
             keepDeviceIds: [controlledAgentDeviceId, pendingAgentDeviceId],
-            shareDevices: [...(controlledShareIds ?? [])].map((deviceId) => ({
-              deviceId,
-              name: providerShareDeviceName(deviceId) ?? deviceId,
-            })),
+            // 新分享落点须由被控端名单确认；不要求任务先使用它。
+            shareDevices: providerShareDevices,
           })
         : undefined;
     }
@@ -5262,7 +5262,8 @@ function CCAgentSessionContent({
                       pendingIssueConfirm ||
                       pendingRenameSessionsConfirm ||
                       pendingGhostGrantConfirm ||
-                      pendingRemoteDesktopConfirmation
+                      pendingRemoteDesktopConfirmation ||
+                      pendingInputHandoff
                     )
                   }
                   className="mb-0"
@@ -5486,7 +5487,8 @@ function CCAgentSessionContent({
                     pendingIssueConfirm ||
                     pendingRenameSessionsConfirm ||
                     pendingGhostGrantConfirm ||
-                    pendingRemoteDesktopConfirmation
+                    pendingRemoteDesktopConfirmation ||
+                    pendingInputHandoff
                   )
                 }
                 placeholder={
@@ -5564,6 +5566,13 @@ function CCAgentSessionContent({
                     pending={pendingGhostGrantConfirm}
                     onRespond={respondToGhostGrantConfirm}
                   />
+                ) : pendingInputHandoff && sessionId && !isSharedTaskPeer(remoteDeviceId ?? '') ? (
+                  <InputHandoffCard
+                    key={pendingInputHandoff.requestId}
+                    sessionId={sessionId}
+                    snapshot={pendingInputHandoff}
+                    remote={!!remoteDeviceId}
+                  />
                 ) : pendingRemoteDesktopConfirmation ? (
                   <RemoteDesktopConfirmationNotice
                     key={pendingRemoteDesktopConfirmation.requestId}
@@ -5640,9 +5649,9 @@ function CCAgentSessionContent({
                   runtimeAgentKind={session ? dbToMakerAgentKind(session.agentKind) : null}
                   runtimeEffective={session?.runtimeEffective}
                   runtimePending={session?.runtimePending}
-                  // 协同会话不参与跨引擎切换；session 未加载时保留 undefined 未知态，
-                  // 仅在完整元数据确认非 Orca 后传 null 开放入口。
+                  // session 未加载时保留 undefined 未知态；Orca 原地切换与换电脑分别门控。
                   sessionOrcaRole={session ? (session.orcaRole ?? null) : undefined}
+                  sessionOrcaRemoteWorker={!!session?.orcaRemoteLead}
                   initialWorkingDir={session?.workingDir}
                   remoteHostId={session?.remoteHostId ?? null}
                   deviceLinkDeviceId={rightSidebarDeviceLinkDeviceId}

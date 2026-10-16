@@ -28,7 +28,7 @@ const identity: PluginUsageIdentity = {
   releaseId: null,
 };
 const migration = readFileSync(
-  new URL('../../../../drizzle/0126_dazzling_pyro.sql', import.meta.url),
+  new URL('../../../../drizzle/0128_demonic_odin.sql', import.meta.url),
   'utf8',
 );
 const now = Date.UTC(2026, 9, 12, 12);
