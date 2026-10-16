@@ -1866,11 +1866,12 @@ async function requestProviderHttpText(input: {
           ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
           // Keep both off signals: OpenAI-compatible gateways honour one or the
           // other, and Cindy AI's chat-native models have always received this pair.
-          // A vendor profile with its own "off" spelling translates `none` instead.
+          // A vendor profile with its own "off" spelling gets only `none` and lets
+          // model-compat write the vendor fields, so no generic `thinking` rides along.
           ...(rung.kind === 'off'
-            ? input.isOllama === true
+            ? input.isOllama === true || chatOffViaCompat
               ? { reasoning_effort: 'none' }
-              : { thinking: { type: 'disabled' }, reasoning_effort: chatOffViaCompat ? 'none' : 'minimal' }
+              : { thinking: { type: 'disabled' }, reasoning_effort: 'minimal' }
             : {}),
           ...(effort ? { reasoning_effort: effort } : {}),
           messages: [

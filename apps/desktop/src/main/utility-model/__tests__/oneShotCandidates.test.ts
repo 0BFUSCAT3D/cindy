@@ -101,6 +101,10 @@ vi.mock('../../model-access/gatewayKeyRejection.js', () => ({
 
 import type { Maker } from '@cindy/maker-core';
 import { buildUserProvider } from '@cindy/model-providers';
+// model-compat's own profile table; one test adds a temporary gateway-object
+// profile because the only real one (cline-pass) shares its address with a
+// conflicting profile and never resolves.
+import upstreamProfiles from '../../../../../../packages/model-compat/src/upstream-profiles.json';
 import { DictationDictionaryAdvisor } from '@cindy/voice-input-core';
 import { DictionaryLearningTextModelClient } from '../../voice-input/DictionaryLearningTextModelClient.js';
 import { fetch as undiciFetch } from 'undici';
@@ -4429,8 +4433,11 @@ describe('utility one-shot candidates', () => {
 
       // Zhipu maps both "off" and `low` to `thinking: disabled`; the identical
       // `low` request is skipped and the next distinct step is `medium`.
-      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
-      expect(bodyOf(0)).not.toHaveProperty('reasoning_effort');
+      expect(bodyOf(0)).toEqual({
+        model: 'glm-5',
+        messages: [{ role: 'user', content: 'hello' }],
+        thinking: { type: 'disabled' },
+      });
       expect(bodyOf(1)).toMatchObject({ thinking: { type: 'enabled' } });
       expect(bodyOf(1)).not.toHaveProperty('reasoning_effort');
     });
@@ -4474,7 +4481,48 @@ describe('utility one-shot candidates', () => {
         disableReasoning: true,
       });
 
-      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'none' });
+      // Only `none`: no generic `thinking` rides along with the vendor spelling.
+      expect(bodyOf(0)).toEqual({
+        model: 'openai/gpt-oss-120b',
+        reasoning_effort: 'none',
+        messages: [{ role: 'user', content: 'hello' }],
+      });
+    });
+
+    it('lets a gateway-object profile write the off request without the generic thinking field', async () => {
+      const profiles = upstreamProfiles as Array<Record<string, unknown>>;
+      const testProfile = {
+        id: 'test-gateway-object',
+        adapter: 'openai-chat',
+        baseUrl: 'https://gateway-object.test.invalid/v1',
+        authKind: 'key',
+        reasoningWireFormat: 'gateway-object',
+      };
+      profiles.push(testProfile);
+      try {
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream: 'https://gateway-object.test.invalid/v1',
+          model: { id: 'routed-model', efforts: ['low', 'medium'] },
+        }) as never);
+        readCustomKey.mockReturnValue('custom-secret');
+        fetchMock.mockResolvedValueOnce(chatOk('ok') as never);
+
+        await requestExplicitUtilityText('hello', {
+          providerId: 'custom-chat',
+          agentKind: 'codex',
+          model: 'routed-model',
+          disableReasoning: true,
+        });
+      } finally {
+        profiles.splice(profiles.indexOf(testProfile), 1);
+      }
+
+      const body = bodyOf(0);
+      expect(body).toMatchObject({ reasoning: { enabled: false } });
+      expect(body).not.toHaveProperty('thinking');
+      // model-compat's gateway-object rule adds `reasoning` but leaves the
+      // `reasoning_effort: 'none'` it translated from (same as the chat path).
+      expect(body).toMatchObject({ reasoning_effort: 'none' });
     });
 
     it('caps a Cindy AI Messages request without a caller budget at the model output limit', async () => {
