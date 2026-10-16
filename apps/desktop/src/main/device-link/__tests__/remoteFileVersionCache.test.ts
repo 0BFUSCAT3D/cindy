@@ -24,6 +24,13 @@ afterEach(async () => {
   await fs.rm(state.root, { recursive: true, force: true });
 });
 const metadata = { version: 'a'.repeat(64), size: 5, mimeType: 'text/html' };
+it('retains a complete fallback download for a later version-validated read', async () => {
+  await remoteFileVersionCache('device', 'url', metadata)!.put(Buffer.from('hello'));
+  state.generation++;
+  const file = await remoteFileVersionCache('device', 'url', metadata)!.get();
+  expect(await fs.readFile(file!, 'utf8')).toBe('hello');
+  expect(await remoteFileVersionCache('device', 'url', { ...metadata, version: 'b'.repeat(64) })!.get()).toBeNull();
+});
 it('keeps large files across new cache instances and login generations, with independent owner/device/url identities', async () => {
   const file = path.join(state.root, 'original');
   const size = 17 * 1024 * 1024;

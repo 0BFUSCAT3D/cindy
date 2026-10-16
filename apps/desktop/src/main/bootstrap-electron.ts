@@ -414,6 +414,7 @@ import {
   isCindyPersonalRuntime,
 } from './cindy-make/versionRuntimeIdentity.js';
 import { createStorageIpcHandlers } from './cindy-media/storageIpc';
+import { clearLocalEntries } from './device-link/remoteMediaCacheStore';
 import {
   collectDatabaseSizeWarningStatus,
   type DatabaseSizeWarningStatus,
@@ -8418,6 +8419,7 @@ const registerIpcHandlers = () => {
     });
 
     const storageHandlers = createStorageIpcHandlers({
+      clearRemoteMediaMemory: clearLocalEntries,
       getQueueScanTexts: collectAgentInputQueueScanTexts,
       loadSnapshotPayloads: loadAllQueueSnapshotPayloads,
       getRegisteredDraftUrls: getAllRegisteredDraftUrls,
@@ -8438,22 +8440,30 @@ const registerIpcHandlers = () => {
           ? Promise.resolve({ bytes: 0, fileCount: 0 })
           : withActiveChatAttachmentRoot((rootDir) => getFixedDirectoryStats(rootDir)),
     });
-    ipcMain.handle('cindy-media:storage-stats', () => storageHandlers.stats());
-    ipcMain.handle('cindy-media:storage-scan', (_event, params: { draftUrls: string[] }) =>
-      storageHandlers.scan(params),
-    );
+    ipcMain.handle('cindy-media:storage-stats', (event) => {
+      assertTrustedAppRendererEvent(event);
+      return storageHandlers.stats();
+    });
+    ipcMain.handle('cindy-media:storage-scan', (event, params: { draftUrls: string[]; scope?: 'remote-media' }) => {
+      assertTrustedAppRendererEvent(event);
+      return storageHandlers.scan(params);
+    });
     ipcMain.handle(
       'cindy-media:storage-cleanup',
       (
-        _event,
+        event,
         params: {
           draftUrls: string[];
+          scope?: 'remote-media';
           zeroRefHashes: string[];
           evictCacheHashes: string[];
           deadDirNames: string[];
           cleanTmpFiles: boolean;
         },
-      ) => storageHandlers.cleanup(params),
+      ) => {
+        assertTrustedAppRendererEvent(event);
+        return storageHandlers.cleanup(params);
+      },
     );
     ipcMain.handle('cindy-media:storage-reconcile', () => storageHandlers.reconcile());
     ipcMain.handle('cindy-media:legacy-images-open-dir', (event) => {

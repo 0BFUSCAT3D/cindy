@@ -81,6 +81,13 @@
   引用与 pin，不能清理聊天附件或其他集成的共享字节。其他媒体清理维持原手动流程。
   普通 HTML 等非媒体仍走 `remote-file-cache`。完整身份、复验与平台清理策略见
   [`protocol-compatibility.md`](protocol-compatibility.md)「远程文件连接复用与版本缓存」。
+- 桌面聊天的不可变远程图片通过 `device-link/remoteMediaPersistentCache.ts` 复用媒体总仓，
+  `remote-media` 索引包含账号、来源设备和原始地址。先查内存、再查磁盘，缓存命中不取件；
+  重启和断连不清理，不增加自动到期或容量淘汰。设置中的「远程图片缓存」复用账本扫描和
+  条件删除，只清该命名空间独占的缓存，保护草稿、已保存附件及其他集成共享字节。
+  普通路径不按 URL 永久缓存：继续由主机复核版本，完整中转下载也可写入已有版本缓存；
+  音视频仍走流式播放。旧主机不返回版本时不把可修改文件登记为长期有效。
+  回归见 `remoteMediaPersistentCache.test.ts`、`remoteMediaProtocol.test.ts` 与 `storageIpc.test.ts`。
 - 零引用入仓只适用于已有草稿或生成结果提交链路。新增零引用窗口时，必须证明内容在消息
   落库前不会被回收，并用测试覆盖成功、失败、取消和重试。
 - 三款官方壁纸改为 OSS/CDN 按需分发（2026-10-15 用户裁决，替代此前全部随包的决定）。

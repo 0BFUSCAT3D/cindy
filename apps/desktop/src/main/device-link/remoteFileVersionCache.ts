@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { constants, promises as fs } from 'node:fs';
 import { validFileVersion, type DeviceFileResult } from '@cindy/device-link';
 import { getActiveAppSession } from '../appSessionState';
 import { getDbClient } from '../localDb/client/current';
@@ -17,6 +17,7 @@ import {
 } from '../file-browser/remote-file-cache';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './broadcast-tap';
 import { removeRefs } from '../cindy-media/ledger';
+import { captureRemoteMediaCacheValidity, isImmutableRemoteMedia, REMOTE_MEDIA_INTEGRATION } from './remoteMediaPersistentCache';
 
 const INTEGRATION = 'remote-file';
 export type FileVersionMetadata = Pick<DeviceFileResult, 'version' | 'size' | 'mimeType'> & {
@@ -39,11 +40,16 @@ export function remoteFileVersionCache(
   const source = createHash('sha256')
     .update(JSON.stringify([session.mode, session.dataOwnerId, device, url]))
     .digest('hex');
-  const key = `${INTEGRATION}:${source}:${version}`;
+  // Direct and OSS image downloads share one index and one cleanup owner.
+  const retained = mimeType.startsWith('image/') && isImmutableRemoteMedia(url);
+  const integration = retained ? REMOTE_MEDIA_INTEGRATION : INTEGRATION;
+  const key = retained ? `${integration}:${source}` : `${integration}:${source}:${version}`;
+  const assertRetained = retained ? captureRemoteMediaCacheValidity() : () => {};
   const media = /^(image|audio|video|model)\//.test(mimeType);
   const db = media ? getDbClient().drizzle : undefined;
   const assertCurrent = () => {
     if (!isDataOwnerBroadcastScopeCurrent(owner)) throw new Error('FILE_PEER_CANCELLED');
+    assertRetained();
   };
   return {
     async invalidate(): Promise<void> {
@@ -56,7 +62,7 @@ export function remoteFileVersionCache(
           {
             hashes: [hit.hash],
             live: new Set(),
-            integration: INTEGRATION,
+            integration,
             assertStillValid: assertCurrent,
           },
           db,
@@ -74,40 +80,68 @@ export function remoteFileVersionCache(
       }
       const hit = await integrationCacheGet(key, db);
       assertCurrent();
-      if (!hit) return null;
+      if (!hit || (retained && url.startsWith('cindy-media://')
+        && hit.hash !== url.split('/').pop()!.split('.')[0])) return null;
       const stat = await fs.lstat(hit.absPath).catch(() => null);
       assertCurrent();
-      return stat?.isFile() && stat.size === size ? hit.absPath : null;
+      if (!stat?.isFile() || stat.size !== size) return null;
+      if (retained) {
+        // A preview miss must not hit the same corrupt bytes through filePeer.
+        const file = await fs.open(hit.absPath, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+        if (!file) return null;
+        try {
+          const hash = createHash('sha256');
+          for await (const chunk of file.createReadStream({ autoClose: false })) {
+            assertCurrent();
+            hash.update(chunk);
+          }
+          if (hash.digest('hex') !== hit.hash) return null;
+        } finally {
+          await file.close();
+        }
+        assertCurrent();
+      }
+      return hit.absPath;
     },
-    async put(file: string): Promise<void> {
+    async put(file: string | Buffer): Promise<void> {
       assertCurrent();
+      if (Buffer.isBuffer(file) && file.length !== size) return;
       if (!media) return writeVersionedRemoteFile(source, version, file, size, assertCurrent);
       // A copy that cannot fit the existing cache budget would evict everything
       // else and immediately be evicted itself. It remains available to its consumer.
-      if (size > CACHE_LIMIT_BYTES) return;
+      if (!retained && size > CACHE_LIMIT_BYTES) return;
       // Bounded sniff; never load a large media file into main-process memory.
-      const handle = await fs.open(file, 'r');
       let verified: string | null;
-      try {
-        const probe = Buffer.alloc(Math.min(size, 4096));
-        const { bytesRead } = await handle.read(probe, 0, probe.length, 0);
-        verified = sniffMediaMime(probe.subarray(0, bytesRead), mimeType);
-      } finally {
-        await handle.close();
+      if (Buffer.isBuffer(file)) {
+        verified = sniffMediaMime(file.subarray(0, 4096), mimeType);
+      } else {
+        const handle = await fs.open(file, 'r');
+        try {
+          const probe = Buffer.alloc(Math.min(size, 4096));
+          const { bytesRead } = await handle.read(probe, 0, probe.length, 0);
+          verified = sniffMediaMime(probe.subarray(0, bytesRead), mimeType);
+        } finally {
+          await handle.close();
+        }
       }
       assertCurrent();
       if (!verified || !supportedMime(verified)) return;
-      await integrationCachePut(
+      const written = await integrationCachePut(
         {
           cacheKey: key,
-          integration: INTEGRATION,
-          filePath: file,
+          integration,
+          ...(typeof file === 'string' ? { filePath: file } : { buffer: file }),
           mimeType: verified,
           assertStillValid: assertCurrent,
         },
         db,
       );
       assertCurrent();
+      if (retained) {
+        if (url.startsWith('cindy-media://') && written.hash !== url.split('/').pop()!.split('.')[0])
+          await written.rollbackRef();
+        return;
+      }
       // Use the warehouse's existing byte budget. Only this integration's cache
       // is eligible: attachments, pinned media and other integrations stay protected.
       // The consumer owns the input file, not this warehouse copy. Even the

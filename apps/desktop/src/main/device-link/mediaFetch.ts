@@ -512,9 +512,11 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
 
   // cindy-media 地址=内容指纹,永不变更,是最理想的上传去重键。
   const cacheable = url.startsWith('xdt-image://') || url.startsWith('cindy-media://');
-  let st: { size: number; mtimeMs: number } | null = null;
-  if (cacheable) {
-    st = await stat(absPath);
+  const versioned = !cacheable && !/^(audio|video)\//.test(
+    mimeType ?? mimeOf((uploadExtHint ?? path.extname(absPath)).replace(/^\./, '').toLowerCase()),
+  );
+  const st = cacheable || versioned ? await stat(absPath) : null;
+  if (cacheable && st) {
     if (!skipCache) {
       const hit = lookupUploadCache(cacheKey, st.size, st.mtimeMs, Date.now());
       if (hit) {
@@ -541,7 +543,13 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
     });
   }
   log.debug(`media:fetch ${url.slice(0, 40)} → ossKey=${uploaded.key} size=${uploaded.size}`);
-  return { ossKey: uploaded.key, mimeType: uploaded.contentType, size: uploaded.size };
+  // Fallback downloads can join the same durable version cache as direct transfers.
+  // A changing source remains viewable but must never be indexed under an old version.
+  const afterUpload = versioned ? await stat(absPath).catch(() => null) : null;
+  const version = st && afterUpload && uploaded.size === st.size
+    && fileVersion(absPath, st, sourceVersion) === fileVersion(absPath, afterUpload, sourceVersion)
+    ? fileVersion(absPath, st, sourceVersion) : undefined;
+  return { ossKey: uploaded.key, mimeType: uploaded.contentType, size: uploaded.size, ...(version ? { version } : {}) };
 }
 
 export const __testing = {
