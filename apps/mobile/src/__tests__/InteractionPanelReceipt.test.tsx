@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react';
+import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { sharedTaskHostPeer } from '@cindy/device-link';
@@ -70,6 +70,12 @@ const onError = vi.fn();
 function Harness({ companion = false, deviceId = 'd1' }: { companion?: boolean; deviceId?: string }) {
   const interactions = useSessionPendingInteractions('s1');
   return <InteractionPanel companion={companion} deviceId={deviceId} sessionId="s1" interactions={interactions} onError={onError} />;
+}
+function CollapsibleHarness() {
+  const interactions = useSessionPendingInteractions('s1');
+  const [requestIds, setRequestIds] = useState<readonly string[]>([]);
+  return <InteractionPanel deviceId="d1" sessionId="s1" interactions={interactions} onError={onError}
+    collapse={{ requestIds, onToggle: (id) => setRequestIds((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id]) }} />;
 }
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -147,6 +153,30 @@ it.each(['plugin_setup', 'issue_confirm', 'ghost_grant_confirm', 'rename_session
   await act(async () => root.render(<Harness deviceId={sharedTaskHostPeer('shared', 'd1')} />));
   expect(host.querySelector('[data-testid="interaction.readOnlyCard"]')).not.toBeNull();
   expect(resolveInteraction).not.toHaveBeenCalled();
+});
+
+// Bug #1493: collapse belongs to the caller and must survive a card being replaced.
+it('collapses through the supplied intent, restores that intent after queue churn, and expands again', async () => {
+  const ask = { request: { kind: 'ask_user_question', requestId: 'ask-collapse', questions: [{ question: 'Continue?' }] } };
+  remoteSessionStore.setPendingInteractions('s1', [ask]);
+  await act(async () => root.render(<CollapsibleHarness />));
+  await click('interaction.panel.collapseButton');
+  expect(host.querySelector('[data-testid="interaction.panel.collapsedBar"]')).not.toBeNull();
+  expect(host.querySelector('[data-testid="interaction.ask.submitButton"]')).toBeNull();
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [{ request: { kind: 'plugin_setup', requestId: 'setup-switch', revision: 1 } }]));
+  expect(host.querySelector('[data-testid="interaction.panel.collapsedBar"]')).toBeNull();
+  expect(host.querySelector('[data-testid="interaction.panel.collapseButton"]')).toBeNull();
+  await act(async () => remoteSessionStore.setPendingInteractions('s1', [ask]));
+  await click('interaction.panel.collapsedBar');
+  expect(host.querySelector('[data-testid="interaction.ask.submitButton"]')).not.toBeNull();
+});
+
+// Remote kinds must not become i18next key paths. Observe the actual rendered title.
+it.each(['permission.extra', '__proto__', 'constructor', 'unknown'])('normalizes remote kind %s to its translated fallback', async (kind) => {
+  remoteSessionStore.setPendingInteractions('s1', [{ request: { kind, requestId: 'foreign-kind' } }]);
+  await act(async () => root.render(<Harness />));
+  expect(host.textContent).toContain('interaction.kinds.fallback.title');
+  expect(host.textContent).not.toContain('interaction.kinds.' + kind + '.title');
 });
 
 it('keeps multiple selections and the free answer when moving back, remounting, and retrying', async () => {
