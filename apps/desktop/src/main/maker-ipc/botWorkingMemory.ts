@@ -280,19 +280,30 @@ function resolveOptionalField(
  *    无证据的字段改动按"未提"处理,旧值保留;
  *  - 旧条目不在提案里时**保留**——漏写不等于完成;要删除走 `resolved`,同样要证据
  *    (用户 / 伙伴 / 工具结果均可);
- *  - 各区按上限保留最新的;只有真正变过的条目才更新时间,排序才有意义。
+ *  - 各区按上限保留最新的;只有真正变过的条目才更新时间,排序才有意义;
+ *  - `additiveOnly`(本轮取材没完整覆盖、水位停在之前):只追加新条目,不删(resolved)也不
+ *    改写旧条目——这些破坏性变更等这一轮被完整回补时再提交,免得用户随后 rewind 这一轮后
+ *    水位仍指着可见的旧回复、账本却已按撤回分支删改过且无法回滚。
  */
 export function applyWorkingMemoryProposal(
   previous: BotWorkingMemory | null,
   proposal: WorkingMemoryProposal,
   messages: ProposalMessage[],
-  opts: { now: number; coveredThroughRowid: number; coveredThroughMessageId?: string; coveredThroughOffset?: number },
+  opts: {
+    now: number;
+    coveredThroughRowid: number;
+    coveredThroughMessageId?: string;
+    coveredThroughOffset?: number;
+    additiveOnly?: boolean;
+  },
 ): Omit<BotWorkingMemory, 'revision' | 'version'> {
   const prev = previous ?? emptyWorkingMemory();
   const resolvedTexts = new Set(
-    proposal.resolved
-      .filter((item) => evidenceHolds(item.evidence, messages, RESOLVE_ROLES))
-      .map((item) => clampText(item.text)),
+    opts.additiveOnly
+      ? []
+      : proposal.resolved
+          .filter((item) => evidenceHolds(item.evidence, messages, RESOLVE_ROLES))
+          .map((item) => clampText(item.text)),
   );
   let seq = 0;
   const nextId = () => `wm_${opts.now.toString(36)}_${(seq += 1)}`;
@@ -317,8 +328,9 @@ export function applyWorkingMemoryProposal(
       const evidenced = evidenceHolds(item.evidence, messages, NEW_ITEM_ROLES);
       if (prior) {
         const candidate = build(prior, item, { ...prior, updatedAt: opts.now });
-        // 完整内容没变:原样沿用,时间也不动。字段变了:要证据,没证据就当没提。
-        if (sameItem(candidate, prior) || !evidenced) kept.set(text, prior);
+        // 完整内容没变:原样沿用,时间也不动。字段变了:要证据,没证据就当没提;只追加模式下
+        // 改写一律延后。
+        if (opts.additiveOnly || sameItem(candidate, prior) || !evidenced) kept.set(text, prior);
         else kept.set(text, candidate);
         continue;
       }

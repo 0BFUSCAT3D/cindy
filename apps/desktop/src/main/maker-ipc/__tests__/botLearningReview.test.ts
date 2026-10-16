@@ -314,16 +314,17 @@ it('walks an over-long user message in chunks and only counts it covered once th
   let input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
   expect(input.messages.find((m: { id: string }) => m.id === 'long').text).toHaveLength(6000);
   expect(input.messages.find((m: { id: string }) => m.id === 'long')).not.toHaveProperty('partial');
-  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 2, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 }), 4);
-  // 下一次从同一条消息的 6000 偏移接着取(查询下界 rowid > 2-1 以把它本身取回来),剩余 3000 字看完:整条覆盖,水位推进到当前回复且不再带偏移。
+  // 水位记到块尾往回 200 字(重叠),跨块句子和短尾段都能在下一块里完整出现。
+  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 2, coveredThroughMessageId: 'long', coveredThroughOffset: 5800 }), 4);
+  // 下一次从同一条消息的 5800 偏移接着取(查询下界 rowid > 2-1 以把它本身取回来),剩余 3200 字看完:整条覆盖,水位推进到当前回复且不再带偏移。
   h.meta = { turnCompleted: true };
-  h.working = { ...ledger, coveredThroughRowid: 2, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 };
+  h.working = { ...ledger, coveredThroughRowid: 2, coveredThroughMessageId: 'long', coveredThroughOffset: 5800 };
   h.floorRowid = 2;
   h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
   await reviewTeammateLearning('session', 'reply2');
   expect(query.mock.calls.at(-1)![1]).toEqual(['session', 1, 3, 'session', 41]);
   input = JSON.parse(h.model.mock.calls.at(-1)![1] as string);
-  expect(input.messages.find((m: { id: string }) => m.id === 'long').text).toHaveLength(3000);
+  expect(input.messages.find((m: { id: string }) => m.id === 'long').text).toHaveLength(3200);
   const written = h.writeWorking.mock.calls.at(-1)![2] as { coveredThroughRowid: number; coveredThroughMessageId?: string; coveredThroughOffset?: number };
   expect(written).toMatchObject({ coveredThroughRowid: 5, coveredThroughMessageId: 'reply2' });
   expect(written.coveredThroughOffset).toBeUndefined();
@@ -425,15 +426,41 @@ it('feeds interaction answers (AskUserQuestion / plan review) to the review as u
   h.floorRowid = null;
 });
 
-it('does not advance the watermark past the previous completed reply when the current turn itself was truncated', async () => {
+it('does not advance the watermark past the previous completed reply when the current turn itself was truncated, and defers deletions/rewrites', async () => {
   // 本轮取材取满 80 条 = 可能被 LIMIT 截断:水位停在上一条完成回复(3),留给下一次的缺口回补。
-  h.working = null;
+  h.working = {
+    version: 1, revision: 4, coveredThroughRowid: 3, coveredThroughMessageId: 'prev', updatedAt: 0,
+    threads: [], waiting: [], corrections: [], recentlyDone: [],
+    commitments: [{ id: 'c-old', text: 'Old promise still open', messageId: 'u-old', updatedAt: 1, trigger: 'Friday' }],
+  };
+  h.floorRowid = 3;
   h.turnRows = [
     { id: 'user', role: 'user', content: JSON.stringify('Please always summarize the conclusion first.'), order: 4 },
     ...Array.from({ length: 79 }, (_, i) => ({ id: `t${i}`, role: 'tool_result', content: JSON.stringify(`result ${i}`), order: 4 + i })),
   ];
-  h.model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ memories: [], skills: [], working: { commitments: [] } }) });
+  const evidence = { messageId: 'user', quote: 'summarize the conclusion first' };
+  h.model.mockResolvedValueOnce({
+    ok: true,
+    text: JSON.stringify({
+      memories: [],
+      skills: [],
+      // 截断轮次里的删除(resolved)与改写(trigger)都延后;新条目照常追加。
+      working: {
+        commitments: [
+          { text: 'Old promise still open', trigger: 'Monday', evidence },
+          { text: 'New promise from this turn', evidence },
+        ],
+        resolved: [{ text: 'Old promise still open', evidence }],
+      },
+    }),
+  });
   await reviewTeammateLearning('session', 'reply');
-  expect(h.writeWorking).toHaveBeenLastCalledWith('/test-owner', 'bot', expect.objectContaining({ coveredThroughRowid: 3, coveredThroughMessageId: 'prev' }), 0);
+  const written = h.writeWorking.mock.calls.at(-1)![2] as { coveredThroughRowid: number; coveredThroughMessageId?: string; commitments: Array<{ text: string; trigger?: string }> };
+  expect(written).toMatchObject({ coveredThroughRowid: 3, coveredThroughMessageId: 'prev' });
+  expect(written.commitments.map((c) => [c.text, c.trigger])).toEqual([
+    ['New promise from this turn', undefined],
+    ['Old promise still open', 'Friday'],
+  ]);
   h.turnRows = null;
+  h.floorRowid = null;
 });

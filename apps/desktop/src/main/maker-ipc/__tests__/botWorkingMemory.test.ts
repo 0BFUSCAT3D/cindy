@@ -134,6 +134,27 @@ describe('applyWorkingMemoryProposal', () => {
     );
     expect(chunked).toMatchObject({ coveredThroughRowid: 12, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 });
     expect(parseWorkingMemory({ version: 1, ...chunked }).coveredThroughOffset).toBe(6000);
+    // 只追加模式(本轮没完整覆盖):有证据的 resolved 与字段改写都延后,新条目照常进账。
+    const additive = applyWorkingMemoryProposal(
+      previous,
+      {
+        threads: [],
+        commitments: [
+          { text: '周五前改完周报模板', trigger: '下周一', evidence: { messageId: 'a1', quote: '改完发你确认' } },
+          { text: '新承诺', evidence: { messageId: 'a1', quote: '改完发你确认' } },
+        ],
+        waiting: [],
+        corrections: [],
+        recentlyDone: [],
+        resolved: [{ text: '把测试补上', evidence: { messageId: 't1', quote: 'report-template.md written' } }],
+      },
+      messages,
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', additiveOnly: true },
+    );
+    // 旧条目一个都不少(含本该被 resolved 的 c3),按更新时间降序;新条目在最前。
+    expect(additive.commitments.map((c) => c.text)).toEqual(['新承诺', '把测试补上', '给设计稿加暗色模式', '周五前改完周报模板']);
+    expect(additive.commitments.find((c) => c.id === 'c1')).toMatchObject({ messageId: 'old', updatedAt: 1 });
+    expect(additive.commitments.find((c) => c.id === 'c1')).not.toHaveProperty('trigger');
   });
 
   it('requires evidence to change a field of an existing item, allows evidenced clearing, and bumps time only on real change', () => {

@@ -31,6 +31,8 @@ const running = new Map<string, Promise<void>>();
 const TURN_REVIEW_ROWS = 80;
 /** 单条正文每块多少字;用户 / 伙伴的长消息按块分多次复盘,整条补完才算覆盖。 */
 const MESSAGE_CHUNK_CHARS = 6000;
+/** 相邻块的重叠字数:跨块的句子和不足证据最短长度(8 字)的尾段都能在某一块里完整出现。 */
+const MESSAGE_CHUNK_OVERLAP = 200;
 const TEXT_ROLES = new Set(['user', 'assistant']);
 /** 交互答复行(AskUserQuestion 的答案、计划审阅的批准 / 反馈):正文是用户的决定,按用户消息复盘。 */
 const INTERACTION_ROLES = new Set(['ask_user', 'plan_review']);
@@ -219,7 +221,8 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
           // 连续前缀停在这条长消息的当前块:水位记到块尾,后面的消息留给下一次。
           gapMessages = gapMessages.slice(0, partialAt + 1);
           const cut = gapMessages[partialAt]!;
-          covered = { rowid: cut.order, id: cut.id, offset: cut.offset + MESSAGE_CHUNK_CHARS };
+          // 下一块从块尾往回留一段重叠:跨块的句子、很短的尾段都能在某一块里完整出现并被引用。
+          covered = { rowid: cut.order, id: cut.id, offset: cut.offset + MESSAGE_CHUNK_CHARS - MESSAGE_CHUNK_OVERLAP };
         } else if (gapRows.length > GAP_BACKFILL_ROWS || gapMessages.length < gapCandidates.length) {
           const last = gapMessages[gapMessages.length - 1];
           covered = last ? { rowid: last.order, id: last.id } : floor;
@@ -322,6 +325,9 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
               coveredThroughRowid: covered.rowid,
               ...(covered.id ? { coveredThroughMessageId: covered.id } : {}),
               ...(covered.offset !== undefined ? { coveredThroughOffset: covered.offset } : {}),
+              // 水位没推进到当前回复(本轮被截断 / 缺口未补完):这一轮之后还会被完整回补,
+              // 删除与改写留到那时;现在只追加,免得 rewind 这一轮后账本已按撤回分支删改。
+              additiveOnly: covered.rowid < row.rowid,
             }),
             workingBefore?.revision ?? 0,
           );
