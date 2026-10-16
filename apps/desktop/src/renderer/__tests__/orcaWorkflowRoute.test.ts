@@ -420,8 +420,12 @@ describe('OrcaWorkflowRoute source invariants', () => {
   it('reports the visible right-sidebar collaboration worker sessions to Agent Island', () => {
     expect(workerPanelSource).toContain("import { isAgentIslandSupported } from '@/hooks/useAgentIslandSettings';");
     expect(workerPanelSource).toContain('if (!isAgentIslandSupported()) return;');
-    expect(workerPanelSource).toContain('viewVisible && workerSessionId && workerSessionId !== leadSessionId');
+    expect(workerPanelSource).toContain(
+      'workerConversationVisible && workerSessionId && workerSessionId !== leadSessionId',
+    );
     expect(workerPanelSource).toContain('[leadSessionId, workerSessionId]');
+    // 分离窗只显示占位,不能把 Worker 上报为可见。
+    expect(workerPanelSource).toContain('const workerConversationVisible = viewVisible && !isSidebarWindow();');
     expect(workerPanelSource).toContain('window.electronAPI.agentIsland?.setVisibleSession?.(visibleSessionIds)');
   });
 

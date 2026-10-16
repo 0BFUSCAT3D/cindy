@@ -174,15 +174,16 @@ export function OrcaWorkerPanel({
     if (!isAgentIslandSupported()) return;
     // 可见性归属契约:协同 tab 真正可见时由 worker panel 上报 [lead, worker]；
     // 隐藏、切 tab 或折叠 RSB 时回落为 lead,避免和主 Lead 视图靠 effect 时序抢归属。
+    // 分离窗只显示占位,Worker 对话不可见,同样回落为 lead。
     const visibleSessionIds =
-      viewVisible && workerSessionId && workerSessionId !== leadSessionId
+      workerConversationVisible && workerSessionId && workerSessionId !== leadSessionId
         ? [leadSessionId, workerSessionId]
         : leadSessionId;
     if (!sameVisibleSessionPayload(lastAgentIslandPayloadRef.current, visibleSessionIds)) {
       lastAgentIslandPayloadRef.current = visibleSessionIds;
       void window.electronAPI.agentIsland?.setVisibleSession?.(visibleSessionIds);
     }
-  }, [leadSessionId, viewVisible, workerSessionId]);
+  }, [leadSessionId, workerConversationVisible, workerSessionId]);
 
   useEffect(() => {
     return () => {
