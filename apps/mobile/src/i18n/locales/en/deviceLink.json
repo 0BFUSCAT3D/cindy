@@ -26,6 +26,8 @@
   "sectionAccessRevoked": "Approve Access Again",
   "retryAccess": "Retry Access",
   "recheck": "Check Again",
+  "deviceRemovedTitle": "Device removed",
+  "deviceRemovedHint": "Sign out and sign in again to rejoin the device list.",
   "authFailedTitle": "Sign-in expired",
   "authFailedHint": "Your sign-in has expired. Sign out and sign in again.",
   "replacedTitle": "Connection replaced",
