@@ -204,6 +204,10 @@ function timerStateAt(index, timerEvents, scopes) {
   const inherited = events.filter(({ event, scope }) => event.index < index && belongsToWait(scope));
   for (const { event } of inherited) fake = event[1] === 'useFakeTimers';
   if (waitScope && /^(?:it|test)$/.test(waitScope.kind)) {
+    // Registration-time setup, like beforeAll, runs only once. An afterEach
+    // restoring real timers can invalidate it before a later test runs.
+    const restoresRealTimers = events.some(entry => entry.scope?.kind === 'afterEach' && entry.event[1] === 'useRealTimers' && belongsToWait(describeAt(entry.scope)));
+    if (restoresRealTimers) fake = false;
     const hooks = events.filter(({ scope }) => scope && /^(?:beforeAll|beforeEach)$/.test(scope.kind) && belongsToWait(describeAt(scope)))
       .sort((a, b) => {
         const depthA = scopes.filter(s => s.kind === 'describe' && s.start < a.scope.start && a.scope.end < s.end).length;
@@ -214,7 +218,7 @@ function timerStateAt(index, timerEvents, scopes) {
     for (const { event, scope } of hooks) {
       // An afterEach restoring real timers invalidates beforeAll-only setup
       // for subsequent tests. Be conservative rather than exempt a real wait.
-      if (scope.kind === 'beforeAll' && events.some(entry => entry.scope?.kind === 'afterEach' && entry.event[1] === 'useRealTimers' && belongsToWait(describeAt(entry.scope)))) continue;
+      if (scope.kind === 'beforeAll' && restoresRealTimers) continue;
       fake = event[1] === 'useFakeTimers';
     }
   }

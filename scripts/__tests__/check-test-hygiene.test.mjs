@@ -46,6 +46,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ realWaits: 1 },
 		],
 		[
+			"afterEach invalidates file registration-time fake timers for later tests",
+			"vi.useFakeTimers(); afterEach(() => vi.useRealTimers()); it('first', () => {}); it('later', () => setTimeout(done, 100));",
+			{ realWaits: 1 },
+		],
+		[
+			"afterEach invalidates describe registration-time fake timers for later tests",
+			"describe('timers', () => { vi.useFakeTimers(); afterEach(() => vi.useRealTimers()); it('first', () => {}); it('later', () => setTimeout(done, 100)); });",
+			{ realWaits: 1 },
+		],
+		[
 			"beforeEach fake timers apply to their own describe, not a sibling suite",
 			"describe('fake', () => { beforeEach(() => vi.useFakeTimers()); afterEach(() => vi.useRealTimers()); it('one', () => setTimeout(done, 100)); });\ndescribe('real', () => { it('two', () => setTimeout(done, 100)); });",
 			{ realWaits: 1 },
