@@ -52,6 +52,8 @@ export interface DurableOutboxRecord {
     cancelled?: true;
     /** Creation was handed back to the editor; restore its entry after restart. */
     editReady?: true;
+    /** Content that could not be carried back, shown beside the restored attachments. */
+    notice?: string;
     deviceName: string;
     planModeArm: boolean;
     restorePermissionMode: string | null;

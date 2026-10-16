@@ -150,3 +150,32 @@ it('does not lose an in-flight recovery result when the connection changes', asy
   await act(async () => reject(error));
   expect(props.onError).toHaveBeenCalledExactlyOnceWith(error);
 });
+
+it('waits for current composer ownership to transfer before automatic navigation', async () => {
+  let saved!: () => void;
+  const preserve = vi.fn(() => new Promise<void>(resolve => { saved = resolve; }));
+  props = { ...props, beforeNavigate: preserve } as Props;
+  state.recover.mockImplementation(async (options: Recovery) => {
+    await options.onReady({ deviceId: 'device', deviceName: 'PC', recoverySessionId: 'task' });
+  });
+  await render();
+  expect(props.onReady).not.toHaveBeenCalled();
+  expect(preserve).toHaveBeenCalledOnce();
+  await act(async () => saved());
+  expect(props.onReady).toHaveBeenCalledOnce();
+});
+
+it.each(['save-fails', 'leaves'])('does not navigate after composer handoff %s', async outcome => {
+  let finishSave!: () => void;
+  props.beforeNavigate = () => new Promise<void>((resolve, reject) => {
+    finishSave = () => outcome === 'save-fails' ? reject(new Error('disk full')) : resolve();
+  });
+  state.recover.mockImplementation(async (options: Recovery) => {
+    await options.onReady({ deviceId: 'device', deviceName: 'PC', recoverySessionId: 'task' });
+  });
+  await render();
+  if (outcome === 'leaves') { props.focused = false; await render(); }
+  await act(async () => finishSave());
+  expect(props.onReady).not.toHaveBeenCalled();
+  expect(props.onError).toHaveBeenCalledTimes(outcome === 'save-fails' ? 1 : 0);
+});

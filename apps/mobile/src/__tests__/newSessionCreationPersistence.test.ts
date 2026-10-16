@@ -26,7 +26,7 @@ import { completeNewSessionDurableEdit, getNewSessionCreationTask, hasLiveNewSes
 import { remoteSessionStore } from '../session/remoteSessionStore';
 import { listPendingPrecreatedWorktrees, recoverPendingPrecreatedWorktrees, registerPendingPrecreatedWorktree } from '../session/precreatedWorktreeRecovery';
 import { completePrecreatedWorktreeRecovery } from '../session/completePrecreatedWorktreeRecovery';
-import { findNewSessionEditDraft, withNewSessionCreationRemoval } from '../session/newSessionCreation';
+import { appendNewSessionEditComposer, findNewSessionEditDraft, withNewSessionCreationRemoval } from '../session/newSessionCreation';
 
 // Run the page's actual recovery -> durable save -> worktree creation statements.
 // Extract AST nodes, as in newSessionWorktreeSync, so ordering is tested without
@@ -412,6 +412,32 @@ it('keeps a saved draft if durable deletion fails', async () => {
   await expect(withNewSessionCreationRemoval(saved.item.sessionId, 'pc', 'deleted', vi.fn())).rejects.toThrow('disk unavailable');
   disk.fail = false;
   expect(findNewSessionEditDraft('pc')).toEqual(saved);
+});
+
+it.each([false, true])('preserves the current composer in the durable recovery before handoff (save fails: %s)', async fails => {
+  await harness().run();
+  const original = getCurrentMobileOutboxRecords()[0];
+  const saved = await mobileDurableOutbox.update(original, cancelledCreationDraft(original));
+  const file = { ...saved.item.attachmentSlots[0]!, id: 'new-file', name: 'new.png' };
+  disk.fail = fails;
+  const transfer = appendNewSessionEditComposer(saved.item.sessionId, 'pc', {
+    text: 'also keep my unsent input', attachments: [file], notice: 'one upload needs to be selected again',
+  });
+  if (fails) {
+    await expect(transfer).rejects.toThrow('disk unavailable');
+    expect(getCurrentMobileOutboxRecords()[0]).toEqual(saved);
+    disk.fail = false;
+    return;
+  }
+  expect(await transfer).toEqual([]);
+  await mobileDurableOutbox.activate('');
+  await mobileDurableOutbox.activate(getMobileAuthOwner().accountKey);
+  const restored = findNewSessionEditDraft('pc')!;
+  expect(restored.creation?.draft.firstMessage).toBe('keep my input\n\nalso keep my unsent input');
+  expect(restored.creation?.notice).toBe('one upload needs to be selected again');
+  expect(restored.item.attachmentSlots.map(file => file?.id)).toEqual(['photo', 'new-file']);
+  expect(restored.uploads).toEqual(saved.uploads);
+  expect(restored.item.slotMeta).toHaveLength(2);
 });
 
 it.each(['success', 'not-found', 'network-error', 'superseded', 'account-change'] as const)(

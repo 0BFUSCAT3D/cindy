@@ -92,6 +92,17 @@ const imageCandidate = (name: string, onAbandoned: () => void): MobileLocalAttac
 const flush = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
 describe('useMobileLocalAttachments abandonment on scope change', () => {
+  it.each(['paste', 'upload'])('reports %s input synchronously before React commits the tray', async kind => {
+    const harness = mount('session-a');
+    expect(harness.first.hasAttachmentInput()).toBe(false);
+    act(() => {
+      if (kind === 'paste') harness.first.beginPastePlaceholders(1);
+      else harness.first.enqueueUploads([imageCandidate('a.png', vi.fn())], { token: 'token' });
+      expect(harness.first.hasAttachmentInput()).toBe(true);
+    });
+    act(() => harness.first.discardAllPendingUploadsForScopeChange());
+    expect(harness.first.hasAttachmentInput()).toBe(false);
+  });
   it('abandons a candidate enqueued from a stale scope without starting an upload', async () => {
     const harness = mount('session-a');
     act(() => harness.first.discardAllPendingUploadsForScopeChange());

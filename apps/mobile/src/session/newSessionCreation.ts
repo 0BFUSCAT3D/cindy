@@ -53,6 +53,7 @@ import { remoteSessionStore } from '@/session/remoteSessionStore';
 import { getCurrentMobileOutboxRecords, holdDurableOutboxCreation, isDurableOutboxCreationHeld, mobileDurableOutbox, persistCancelledCreationDraft, suspendCreationDraftForCleanup } from './mobileDurableOutbox';
 import { isDurableOutboxSettled, type DurableOutboxRecord } from './durableOutbox';
 import { isExplicitRemoteNotFoundError } from './newSessionWorktree';
+import { mergeAttachmentsWithinLimit } from './attachments';
 import {
   forgetPendingPrecreatedWorktree,
   parseDiscardPrecreatedAck,
@@ -797,6 +798,45 @@ export function drainStashedNewSessionDraft(sessionId?: string, deviceId?: strin
   const { value } = task.editDraft;
   dismissNewSessionCreation(sessionId, { removeSyntheticRow: true });
   return value;
+}
+
+/** Save the visible, unsent composer before the failed chat is unmounted. */
+export async function appendNewSessionEditComposer(sessionId: string, deviceId: string, input: {
+  text: string;
+  attachments: readonly RemoteSerializedAttachment[];
+  notice?: string | null;
+}): Promise<RemoteSerializedAttachment[]> {
+  const task = tasks.get(sessionId);
+  const memory = task?.deviceId === deviceId && isTaskOwnerCurrent(task) ? task.editDraft?.value : undefined;
+  const record = getCurrentMobileOutboxRecords().find(record => record.deviceId === deviceId
+    && record.item.sessionId === sessionId && isDurableEditRecord(record));
+  const draft = record?.creation?.draft ?? memory?.draft;
+  if (!draft) throw new Error(i18n.t('session.outbox.restoreFailed'));
+  const original = record ? record.item.attachmentSlots.filter(
+    (file): file is RemoteSerializedAttachment => file !== null) : memory!.attachments;
+  const { merged, dropped } = mergeAttachmentsWithinLimit(original, input.attachments);
+  const nextDraft = { ...draft, firstMessage: [draft.firstMessage, input.text].filter(Boolean).join('\n\n') };
+  const notice = [record?.creation?.notice ?? memory?.notice, input.notice,
+    dropped.length ? i18n.t('session.screen.attachmentsNotCarriedBack', { count: dropped.length }) : null,
+  ].filter(Boolean).join('\n') || undefined;
+  if (record?.creation) {
+    // Keep existing upload slot numbers and retained bytes intact. New files
+    // already have uploaded references; only their ownership moves here.
+    const added = merged.filter(file => !original.some(existing => existing.id === file.id));
+    await mobileDurableOutbox.update(record, {
+      creation: { ...record.creation, draft: nextDraft, notice },
+      item: { ...record.item,
+        text: [record.item.text, input.text].filter(Boolean).join('\n\n'),
+        attachmentSlots: [...record.item.attachmentSlots, ...added],
+        slotMeta: [...record.item.slotMeta, ...added.map(file => ({
+          kind: file.category === 'image' ? 'image' as const : 'file' as const, previewUri: null,
+        }))],
+      },
+    });
+  } else {
+    stashNewSessionDraftForEdit(task!, { draft: nextDraft, attachments: merged, notice });
+  }
+  return dropped;
 }
 
 /** Saving the durable draft does not transfer ownership to a form that has left. */

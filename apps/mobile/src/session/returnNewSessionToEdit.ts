@@ -11,7 +11,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   sessionId: string;
   deviceId: string;
   isCurrent: () => boolean;
-  onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string; editSessionId?: string }) => void;
+  onReady: (params: { deviceId: string; deviceName: string; recoverySessionId?: string; editSessionId?: string }) => void | Promise<void>;
   stashDraft?: (task: NewSessionCreationTask) => void;
 }): Promise<void> {
   const owner = getMobileAuthOwner();
@@ -19,7 +19,7 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
   const task = getNewSessionCreationTask(sessionId);
   if (!ownerCurrent() || !isCurrent() || task?.deviceId !== deviceId) return;
   if (task.readyForEdit && !task.returningToEdit) {
-    onReady({ deviceId, deviceName: task.deviceName,
+    await onReady({ deviceId, deviceName: task.deviceName,
       ...(task.readyForEdit === 'durable' ? { recoverySessionId: sessionId } : { editSessionId: sessionId }) });
     return;
   }
@@ -41,12 +41,12 @@ export async function returnNewSessionToEdit({ sessionId, deviceId, isCurrent, o
       });
       if (!taskCurrent()) return;
       markNewSessionDurableEditReady(sessionId, deviceId);
-      if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });
+      if (isCurrent()) await onReady({ deviceId, deviceName: prepared.deviceName, recoverySessionId: sessionId });
       return;
     }
     stashDraft(prepared);
     // Keep the failed row reachable until the matching form takes ownership.
-    if (isCurrent()) onReady({ deviceId, deviceName: prepared.deviceName, editSessionId: sessionId });
+    if (isCurrent()) await onReady({ deviceId, deviceName: prepared.deviceName, editSessionId: sessionId });
   } finally {
     release();
   }

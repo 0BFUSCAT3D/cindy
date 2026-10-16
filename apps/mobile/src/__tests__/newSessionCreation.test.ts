@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import type { MobileMakerTransport } from '@/device-link/mobileMakerTransport';
+import type { RemoteSerializedAttachment } from '@/session/types';
 import { createDurableOutbox, isDurableOutboxHandedOff, isDurableOutboxSettled, type DurableOutboxRecord } from '@/session/durableOutbox';
 import { buildOutboxItem, outboxItemAttachments } from '@/session/sessionOutbox';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
@@ -49,6 +50,8 @@ vi.mock('expo-crypto', () => ({
 }));
 import {
   completeNewSessionDurableEdit,
+  findNewSessionEditDraft,
+  appendNewSessionEditComposer,
   dismissNewSessionCreation,
   dismissRecoveredPrecreatedSession,
   drainStashedNewSessionDraft,
@@ -205,7 +208,59 @@ async function flushPipeline(): Promise<void> {
   }
 }
 
+// Reuse the existing native-page effect harness for both explicit recovery and
+// blank-form resume; execute production callbacks, never duplicate their guards.
+const recoveryPage = ts.createSourceFile('new.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+function runRecoveryEffect(marker: string, bindings: Record<string, unknown>): (() => void) | undefined {
+  let effect = '';
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && node.expression.getText(recoveryPage) === 'useEffect'
+      && node.arguments[0]?.getText(recoveryPage).includes(marker)) effect = node.arguments[0].getText(recoveryPage);
+    ts.forEachChild(node, visit);
+  }
+  visit(recoveryPage);
+  if (!effect) throw new Error('Missing production creation recovery effect');
+  const compiled = ts.transpileModule(`function run(bindings) { const { ${Object.keys(bindings).join(', ')} } = bindings; return (${effect})(); }`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function(`${compiled}; return run;`)()(bindings);
+}
+
 describe('newSessionCreation pipeline', () => {
+  it.each(['blank', 'upload', 'paste', 'received-share', 'input-before-ready'])('blank form recovery respects active input: %s', async scenario => {
+    const original = recoveryOutboxRecord('s1');
+    editOutbox.records.mockReturnValue([{ ...original, accountId: getMobileAuthOwner().accountKey,
+      suspended: true, creation: { ...original.creation!, editReady: true } }]);
+    let pendingInput = scenario === 'upload' || scenario === 'paste';
+    let ready!: () => void;
+    const router = { setParams: vi.fn() };
+    const cleanup = runRecoveryEffect('findNewSessionEditDraft(', {
+      params: {}, visualInitialDraft: null, newSessionPreferencesLoaded: true, selectedDeviceId: 'dev-1',
+      outboxOwner: getMobileAuthOwner(), isMobileAuthOwnerCurrent, outboxRecoveryRef: { current: null },
+      firstMessageRef: { current: '' }, attachmentsRef: { current: [] },
+      userTouchedRuntimeRef: { current: false }, userTouchedWorkspaceRef: { current: false },
+      hasAttachmentInput: () => pendingInput, incomingShareReceivedRef: { current: scenario === 'received-share' },
+      findNewSessionEditDraft, initialWorkingDir: null, router,
+      mobileDurableOutbox: { subscribe: () => () => {}, ready: () => new Promise<void>(resolve => { ready = resolve; }) },
+    });
+    if (scenario === 'input-before-ready') pendingInput = true;
+    ready();
+    await flushPipeline();
+    expect(router.setParams).toHaveBeenCalledTimes(scenario === 'blank' ? 1 : 0);
+    cleanup?.();
+  });
+
+  it('carries unsent composer text and files through legacy memory recovery', async () => {
+    const maker = makeMaker({ createSession: vi.fn(async () => { throw new Error('[MODEL_UNAVAILABLE] unavailable'); }) });
+    startNewSessionCreation(makeParams('s1', maker));
+    await flushPipeline();
+    await returnNewSessionToEdit({ sessionId: 's1', deviceId: 'dev-1', isCurrent: () => true, onReady: vi.fn() });
+    const file = { id: 'new-file', path: 'oss://new-file', category: 'image', name: 'new.png', ext: 'png', size: 1 } as RemoteSerializedAttachment;
+    await appendNewSessionEditComposer('s1', 'dev-1', { text: 'unsent addition', attachments: [file], notice: 'one pending upload' });
+    const restored = drainStashedNewSessionDraft('s1', 'dev-1')!;
+    expect(restored.draft.firstMessage).toBe(`${DRAFT.firstMessage}\n\nunsent addition`);
+    expect(restored.attachments).toEqual([file]);
+    expect(restored.notice).toBe('one pending upload');
+  });
   it.each([false, true])('deletes a failed local task only after worktree cleanup (cleanup fails: %s)', async fails => {
     const maker = makeMaker();
     startNewSessionCreation(makeParams('s1', maker, {
@@ -608,15 +663,6 @@ describe('newSessionCreation pipeline', () => {
     if (scope === 'not-ready') editOutbox.records.mockReturnValue([]);
     if (scope === 'switched-owner') setMobileAuthOwner('owner-b');
     // Execute the real form effect, including readiness and ownership guards.
-    const page = ts.createSourceFile('new.tsx', readFileSync(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    let effect = '';
-    function findEffect(node: ts.Node) {
-      if (ts.isCallExpression(node) && node.expression.getText(page) === 'useEffect'
-        && node.arguments[0]?.getText(page).includes('completeNewSessionDurableEdit(')) effect = node.arguments[0].getText(page);
-      ts.forEachChild(node, findEffect);
-    }
-    findEffect(page);
-    if (!effect) throw new Error('Missing production creation recovery effect');
     const restore = vi.fn(() => expect(getNewSessionCreationTask('s1')?.readyForEdit).toBe('durable'));
     const bindings = {
       outboxOwner: owner, params: { recoverySessionId: 's1' }, routeDeviceId: scope === 'device' ? 'dev-2' : 'dev-1',
@@ -626,9 +672,7 @@ describe('newSessionCreation pipeline', () => {
       setSelectedDeviceId: vi.fn(), setSelectedDeviceName: vi.fn(), completeNewSessionDurableEdit,
       mobileDurableOutbox: { subscribe: () => () => {}, ready: async () => {} },
     };
-    const compiled = ts.transpileModule(`function run(bindings) { const { ${Object.keys(bindings).join(', ')} } = bindings; return (${effect})(); }`,
-      { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    const cleanup = (new Function(`${compiled}; return run;`)() as (b: typeof bindings) => () => void)(bindings);
+    const cleanup = runRecoveryEffect('completeNewSessionDurableEdit(', bindings)!;
     await flushPipeline();
     if (scope === 'matching') {
       expect(restore).toHaveBeenCalledWith(DRAFT, [], { enabled: false, restorePermissionMode: null }, 'dev-1');

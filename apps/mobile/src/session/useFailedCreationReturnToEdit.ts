@@ -6,16 +6,17 @@ import { returnNewSessionToEdit } from './returnNewSessionToEdit';
 type RecoveryOptions = Parameters<typeof returnNewSessionToEdit>[0];
 
 /** A failed creation has one next step: restore its draft in the new-task form. */
-export function useFailedCreationReturnToEdit({ task, focused, connectionEpoch, stashDraft, onReady, onError }: {
+export function useFailedCreationReturnToEdit({ task, focused, connectionEpoch, stashDraft, beforeNavigate, onReady, onError }: {
   task: NewSessionCreationTask | null;
   focused: boolean;
   connectionEpoch: number;
   stashDraft: RecoveryOptions['stashDraft'];
+  beforeNavigate?: () => Promise<void>;
   onReady: RecoveryOptions['onReady'];
   onError: (error: unknown) => void;
 }) {
-  const callbacks = useRef({ stashDraft, onReady, onError });
-  callbacks.current = { stashDraft, onReady, onError };
+  const callbacks = useRef({ stashDraft, beforeNavigate, onReady, onError });
+  callbacks.current = { stashDraft, beforeNavigate, onReady, onError };
   const navigated = useRef<string | null>(null);
   const sessionId = task?.sessionId;
   const deviceId = task?.deviceId;
@@ -40,10 +41,17 @@ export function useFailedCreationReturnToEdit({ task, focused, connectionEpoch, 
     void returnNewSessionToEdit({
       sessionId, deviceId, isCurrent,
       stashDraft: callbacks.current.stashDraft,
-      onReady: params => {
+      onReady: async params => {
         if (!isCurrent() || navigated.current === identity) return;
         navigated.current = identity;
-        callbacks.current.onReady(params);
+        try {
+          await callbacks.current.beforeNavigate?.();
+          if (isCurrent()) await callbacks.current.onReady(params);
+          else if (navigated.current === identity) navigated.current = null;
+        } catch (error) {
+          if (navigated.current === identity) navigated.current = null;
+          throw error;
+        }
       },
     }).catch(error => {
       if (isCurrent()) callbacks.current.onError(error);
