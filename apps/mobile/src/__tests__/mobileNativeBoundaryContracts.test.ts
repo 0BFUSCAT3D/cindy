@@ -3,6 +3,17 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
+// guard: Reanimated serializes worklet captures across UI/JS native runtimes.
+// A Node mock cannot reproduce a captured runOnJS wrapper becoming a non-callable
+// RemoteFunction; retain the original cross-runtime regression in required guard.
+it('invokes the composer attach bridge inline inside the worklet', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'src/session/composerPullThrough.tsx'), 'utf8',
+  ).replace(/\r\n/g, '\n');
+  expect(source).toContain('runOnJS(setAttach)(');
+  expect(source).not.toMatch(/=\s*runOnJS\(setAttach\)/);
+});
+
 // guard: export spans Swift rendering, a hidden WebView, and the system share
 // extension's deferred file read. These contracts cannot run in the JS unit host.
 it('bounds native export and preserves the hidden document and system share boundaries', () => {
