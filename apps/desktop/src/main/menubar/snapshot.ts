@@ -144,8 +144,11 @@ export interface MenubarTaskInput {
   running: boolean;
   startedAtMs: number | null;
   lastActiveAtMs: number;
-  /** Provider the session sends to; only used to mark the source it is drawing on. */
+  /** Provider the session sends to (null = the implicit default route); only used to mark
+   * the source it is drawing on, together with the raw model and agent kind below. */
   providerId?: string | null;
+  routeModel?: string | null;
+  routeAgentKind?: string | null;
 }
 
 export interface MenubarUsageDeviceInput {

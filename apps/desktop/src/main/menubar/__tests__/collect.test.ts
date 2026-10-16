@@ -243,6 +243,22 @@ describe('collectMenubarInputs', () => {
     expect(consuming).toEqual(['cindy', 'openai']);
   });
 
+  it('resolves the implicit default route of a running task to the source it draws on', async () => {
+    const codexRoute = { agents: ['codex'], routing: { codex: {} }, models: { codex: [{ id: 'gpt-5.5', mode: 'chat' }] } };
+    const collected = await collectMenubarInputs(
+      deps({
+        listProviders: async () => [
+          provider({ id: 'openai', auth: { method: 'oauth', native: 'codex' }, ...codexRoute } as never),
+          provider({ id: 'anthropic', agents: ['claude-code'], routing: { 'claude-code': {} }, models: {} } as never),
+        ],
+        activities: () => [{ sessionId: 'default-route', phase: 'running', startedAtMs: NOW - 1000 } as never],
+        // No explicit provider: the session runs on Codex's native default.
+        sessionRow: async () => ({ title: 'default route', model: 'gpt-5.5', agentKind: 'codex', providerId: null }),
+      }),
+    );
+    expect(collected.sources.filter((source) => source.consuming).map((source) => source.id)).toEqual(['openai']);
+  });
+
   it('leaves every source still when nothing is running', async () => {
     const collected = await collectMenubarInputs(
       deps({

@@ -1117,6 +1117,7 @@ struct InkPillButton: View {
 }
 
 private struct InkPillStyle: ButtonStyle {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let title: String
   let shortcut: String?
   let height: CGFloat
@@ -1129,8 +1130,8 @@ private struct InkPillStyle: ButtonStyle {
     HStack(spacing: 8) {
       if brandMark {
         BrandPromptMark(replayToken: replayToken)
-          .offset(x: configuration.isPressed ? 4 : hovering ? 2 : 0)
-          .scaleEffect(x: configuration.isPressed ? 0.8 : 1, anchor: .trailing)
+          .offset(x: reduceMotion ? 0 : configuration.isPressed ? 4 : hovering ? 2 : 0)
+          .scaleEffect(x: !reduceMotion && configuration.isPressed ? 0.8 : 1, anchor: .trailing)
           .animation(configuration.isPressed ? .easeOut(duration: 0.12) : .spring(response: 0.35, dampingFraction: 0.6), value: configuration.isPressed)
           .animation(.spring(response: 0.35, dampingFraction: 0.6), value: hovering)
           .padding(.trailing, -2)
@@ -2098,9 +2099,11 @@ private struct CountUpModifier: ViewModifier, Animatable {
     set { progress = newValue }
   }
 
+  /// The visible count is laid out in the hidden final text's frame and inherits the same
+  /// line limit and scale factor, so a long value shrinks together with its placeholder.
   func body(content: Content) -> some View {
     content.overlay(alignment: .trailing) {
-      Text(parts.render(progress)).fixedSize().accessibilityHidden(true)
+      Text(parts.render(progress)).accessibilityHidden(true)
     }
   }
 }
@@ -2150,9 +2153,11 @@ struct CountUpParts: Equatable {
 
 /// Pressing a source squeezes it a little, then it springs back as the detail page opens.
 struct CellPressStyle: ButtonStyle {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .scaleEffect(configuration.isPressed ? 0.95 : 1)
+      .scaleEffect(!reduceMotion && configuration.isPressed ? 0.95 : 1)
       .animation(configuration.isPressed ? .easeOut(duration: 0.1) : .spring(response: 0.35, dampingFraction: 0.55), value: configuration.isPressed)
   }
 }

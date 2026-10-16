@@ -46,6 +46,7 @@ import { getResolvedMainLocale, mainStringKeysUnder, rawMainString } from '../i1
 import { getSessionRowSnapshot } from '../localDb/ipc/sessions.js';
 import { createLogger } from '../logger.js';
 import { getDesktopProviderService } from '../maker-host/createDesktopProviderService.js';
+import { getSessionProvider, hasSessionProvider } from '../maker-host/session-provider-store.js';
 import { inspectAppDefaultModel } from '../maker-ipc/appDefaultModelControl.js';
 import { applyNewMakerDraftRoute } from '../maker-ipc/register.js';
 import {
@@ -344,7 +345,8 @@ export class MenubarService {
               model: row.model ?? null,
               agentKind: row.agentKind ?? null,
               source: row.source ?? null,
-              providerId: row.providerId ?? null,
+              // The in-memory route is newer than the row (a provider switched this turn).
+              providerId: hasSessionProvider(sessionId) ? getSessionProvider(sessionId) : (row.providerId ?? null),
             }
           : null;
       },
