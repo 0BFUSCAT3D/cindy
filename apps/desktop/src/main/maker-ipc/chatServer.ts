@@ -12,12 +12,13 @@ import { parseChatInvitationToken } from '@cindy/device-link';
 import { existsSync, readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { migrateLocalGroups } from './chatServerMigration.js';
+import { migrateLocalGroups, type ChatContentBlock } from './chatServerMigration.js';
 import { chatErrorDiagnostic, chatGroupFailure, missingGroupCode } from './chatServerErrors.js';
 import { createChatMedia } from './chatServerMedia.js';
 import { chatServerWorkspaces } from './chatServerWorkspaces.js';
 import { buildPlanStepBrief } from './botGroupDivision.js';
 import { chatMigrationReceipts } from './chatMigrationReceipts.js';
+import { prepareBotGroupTaskPost, type BotGroupTaskPostSnapshot } from './botGroupTaskPostSnapshot.js';
 import { registerGroupToolAuthority, GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -29,7 +30,7 @@ import { botGroups, botProfiles, botGroupMembers, botGroupMessages, botGroupPlan
 import { UI_ACTION_TRIGGER_PREFIX } from '../../shared/interruptedTurn.js';
 import { untrustedJsonBlock } from '../../shared/untrustedPrompt.js';
 import {
-  BOT_GROUP_CLIENT_ID, isBotGroupNoReplyText,
+  BOT_GROUP_ATTACHMENTS_MAX, BOT_GROUP_CLIENT_ID, isBotGroupNoReplyText,
   isBotGroupRuntimeFailureCode, type BotGroupRuntimeFailureCode,
   readImportedBotGroupRuntimeFailureCode,
   readBotGroupExecutionFailure, type BotGroupExecutionFailureView,
@@ -37,8 +38,9 @@ import {
   type BotGroupThreadShareView,
   type BotGroupDetail, type BotGroupPlanView, type BotGroupFailure, type BotGroupMessageView, type BotGroupAttachment, type ChatServerApi,
   botGroupQuoteAttachmentName, botGroupQuoteExcerpt, botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuote, readBotGroupQuoteCard, type BotGroupQuoteView,
+  readBotGroupTaskCard, botGroupMessageSummaryText,
 } from '../../shared/botGroupChat.js';
-import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal } from './botGroupChatService.js';
+import type { BotGroupChatService, BotGroupChatServiceDeps, BotGroupLaneTerminal, BotGroupTaskPostInput, BotGroupTaskPostResult } from './botGroupChatService.js';
 import { readPersistedReplyText } from './botGroupChatService.js';
 import { botGroupRuntimeFailureCode, botGroupRuntimeFailureDetail } from './botGroupRuntimeFailure.js';
 import { botGroupExecutionFailureBatches } from '@cindy/maker-shared/botGroupPresentation';
@@ -86,7 +88,7 @@ interface Running {
   pauseStarted?: number;
   releaseToolAuthority?: () => void;
 }
-class ChatResponseError extends Error {
+export class ChatResponseError extends Error {
   constructor(code: string, readonly status: number, readonly retryAt?: number, readonly details?: unknown) { super(code); }
 }
 const CHAT_AUTH_RETRY_MS = 60_000;
@@ -102,6 +104,17 @@ const recoverableAuth = (error: ChatResponseError) => error.status === 401
   && (CHAT_REFRESHABLE_ERROR_CODES.has(error.message) || error.message === 'INVALID_CHAT_RESPONSE');
 const retryableResponse = (error: ChatResponseError) => recoverableAuth(error)
   || error.status >= 500 || [408, 429].includes(error.status);
+/** A file this computer will never be able to send (chatServerMedia): retrying cannot help. */
+const LOCAL_FILE_REFUSALS = new Set(['ATTACHMENT_TOO_LARGE', 'ATTACHMENT_UNAVAILABLE']);
+/** Filesystem failures that may clear on their own; any other local read failure is permanent for this delivery. */
+const TRANSIENT_FS_CODES = new Set(['EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE', 'ENOMEM', 'EIO']);
+/** A delivery file this computer cannot read or send: refused once, never retried. */
+function fileRefusedHere(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof ChatResponseError) return false;
+  if (LOCAL_FILE_REFUSALS.has(error.message)) return true;
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown };
+  return typeof syscall === 'string' && typeof code === 'string' && !TRANSIENT_FS_CODES.has(code);
+}
 const id = z.string().uuid();
 const memberJoinedTrigger = z.object({ type: z.literal('member.joined'), messageId: id, actorId: id,
   displayName: z.string().min(1).refine(value => value.trim().length > 0) }).strict();
@@ -111,7 +124,10 @@ const isGroupRoom = (room: Pick<Room, 'kind'>) => room.kind === 'group';
 const ordinaryExecution = (execution: Execution) => execution.trigger === undefined && execution.trigger_type == null;
 const groupInput = z.object({ name: z.string().trim().min(1).max(40), botIds: z.array(z.string().min(1)).max(6) });
 // A recognized quote card is shown as the quote, not as body text; unknown revisions keep their fallback.
-const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy.local-history' || b.data?.activity === true) && !readBotGroupQuoteCard(b));
+// A task card is the message's task only on a teammate's own message; a human may not post one for it.
+const taskCardOf = (m: Message) => m.author.kind === 'bot' ? m.content.map(readBotGroupTaskCard).find(Boolean) ?? null : null;
+const bodyBlocks = (m: Message) => m.content.filter(b => (b.namespace !== 'cindy.local-history' || b.data?.activity === true) && !readBotGroupQuoteCard(b)
+  && !(m.author.kind === 'bot' && readBotGroupTaskCard(b)));
 const contentText = (m: Message, forModel: boolean) => m.deleted ? '（消息已删除）' : readImportedBotGroupRuntimeFailureCode(m) ? '' : bodyBlocks(m)
   .flatMap(b => b.type !== 'media' ? [b.text ?? b.fallback ?? ''] : forModel ? [b.text ?? b.fallback ?? `[附件: ${b.caption ?? '文件'}]`] : []).join('\n');
 /** What a Bot reads: each attachment stays a `[附件: …]` line beside the text. */
@@ -122,8 +138,34 @@ const displayText = (m: Message) => contentText(m, false);
 // The server makes a caption optional; an unnamed attachment still needs a visible name.
 const attachmentName = (b: Message['content'][number]) => b.caption?.trim() || t('bots.groupChat.files.untitled');
 const mediaNames = (m: Message) => m.deleted ? '' : m.content.flatMap(b => b.type === 'media' ? [attachmentName(b)] : []).join(', ');
+/**
+ * docs/product-rules/bot-group-chat.md §4.4 / §7.4: a reply or step may run tools for as long as
+ * two hours; time waiting on the user is not counted. A hung lane is ended by its own idle watchdog.
+ */
+const TURN_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+/** One server message holds this much text. */
+const CHAT_MESSAGE_TEXT_MAX = 8000;
+/** Splits long text into message-sized pieces, preferring a line break near the limit; '' → []. */
+export function splitChatMessageText(text: string, max = CHAT_MESSAGE_TEXT_MAX): string[] {
+  const pieces: string[] = [];
+  let rest = text;
+  while (rest.length > max) {
+    const cut = rest.lastIndexOf('\n', max);
+    let at = cut > max / 2 ? cut : max;
+    // Never split a surrogate pair (emoji and other astral characters are two UTF-16 units).
+    const high = rest.charCodeAt(at - 1);
+    if (high >= 0xd800 && high <= 0xdbff) at -= 1;
+    pieces.push(rest.slice(0, at));
+    rest = rest.slice(at).replace(/^\n/, '');
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
+}
 /** Words of a message for a quote excerpt; attachments are summarized separately. */
-const quotedText = (m: Message) => bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n');
+const quotedText = (m: Message) => botGroupMessageSummaryText({
+  content: bodyBlocks(m).filter(b => b.type !== 'media').map(b => b.text ?? b.fallback ?? '').join('\n'),
+  task: taskCardOf(m) ?? undefined, deleted: m.deleted,
+});
 const quotedAttachments = (m: Message) => m.content.flatMap(b => b.type === 'media' ? [{ name: b.caption?.trim() || '…' }] : []);
 /** A quote's attachment summary as model input: how many, and which file it names. */
 const quoteAttachments = (count: number, name: string | null) => count ? { attachments: count, ...(name ? { attachmentName: name } : {}) } : {};
@@ -183,6 +225,8 @@ export function withChatServer(local: BotGroupChatService, deps: BotGroupChatSer
     retryPlan: (...args) => service().retryPlan(...args),
     editPlanStep: (...args) => service().editPlanStep(...args),
     settleLaneTurn: (...args) => service().settleLaneTurn(...args),
+    postCompanionTaskMessage: (...args) => service().postCompanionTaskMessage(...args),
+    hasCompanionTaskChannel: (...args) => service().hasCompanionTaskChannel(...args),
     dispose: () => { active.dispose(); local.dispose(); },
   };
 }
@@ -468,6 +512,27 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     const mirrors = new Set(links.flatMap(link => /^group:([^:]+):access:/.exec(link.routeKey ?? '')?.[1] ?? []));
     return result.groups.filter(group => !mirrors.has(group.id) && !workspaces().read(group.id));
   }
+  /**
+   * The server room a task started from `groupId` posts into: the upgraded room of an old
+   * local group, or the id itself for a server room. Before returning `null` for a local source,
+   * recover its account-scoped migration receipt; background migration may not have run yet.
+   */
+  const taskRoomFor = async (groupId: string): Promise<string | null> => {
+    if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
+    if (!id.safeParse(groupId).success) return null;
+    const [localRow] = await getDbClient().drizzle.select({ id: botGroups.id }).from(botGroups).where(eq(botGroups.id, groupId)).limit(1);
+    if (localRow && (await localSources()).some(group => group.id === groupId)) {
+      // Registration identifies the receipt's actor/endpoint scope. Transient failure leaves delivery
+      // retryable rather than permanently falling back to private chat before we know the route.
+      await register();
+      if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
+      const receipt = chatMigrationReceipts(config.baseUrl, selfId, current).read(groupId);
+      if (!receipt) return null;
+      upgradedGroups.set(groupId, receipt.roomId);
+      return receipt.roomId;
+    }
+    return groupId;
+  };
   const resolveGroup = async (groupId: string) => {
     await register();
     if (upgradedGroups.has(groupId)) return upgradedGroups.get(groupId)!;
@@ -745,8 +810,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       noticeCode: runtimeFailureCode === 'RUNTIME_TIMEOUT' ? 'member-timeout' : 'member-failed', runtimeFailureCode,
       planId: null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
     const quote = m.deleted || planCard ? null : readBotGroupQuote(m.content);
+    const task = m.deleted || planCard ? null : taskCardOf(m);
     return { id: m.id, sequence: Number(m.seq), deleted: m.deleted, kind: planCard ? 'plan' : 'message', authorKind: legacy?.authorKind === 'system' ? 'system' : m.author.kind === 'human' ? 'user' : 'bot',
-      isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}),
+      isSelf: m.authorId === selfId, threadRootId: m.threadRootId, replyCount: m.replyCount ?? 0, reactions: m.reactions ?? [], ...(quote ? { quote } : {}), ...(task ? { task } : {}),
       authorBotId: localBot(m.authorId)?.id ?? m.authorId, authorName: legacy?.authorKind === 'system' && typeof legacy.authorName === 'string' ? legacy.authorName : member ? memberName(member) : m.author.name, content: displayText(m),
       mentions: { all: false, botIds: [] }, noticeCode: null, planId: typeof planCard?.data?.planId === 'string' ? planCard.data.planId : null, files: [], attachments: [], createdAt: Date.parse(m.createdAt) };
   }
@@ -898,11 +964,14 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
         return { botId: p?.id ?? m.id, actorId: m.id, actorKind: m.kind, isSelf: m.id === selfId,
           role: m.role, nickname: m.nickname, displayName: m.displayName, ownerActorId: m.ownerActorId, ownerName: m.ownerName,
           isOwned: m.ownerActorId === selfId, guestAccess: m.guestAccess, accessRevision: m.accessRevision,
+          // Which computer runs my companion: a phone reaching this group through this computer
+          // reads the companion's tasks there, not here (bot-group-chat.md §10).
+          ...(m.ownerActorId === selfId && m.kind === 'bot' ? { homeDeviceId: actors.find(a => a.id === m.id)?.homeDeviceId ?? null } : {}),
           avatarUrl: m.avatar?.startsWith('https://') ? m.avatar : null,
           name: memberName(m), avatar: p?.avatar ?? (m.avatar?.startsWith('https://') ? '' : m.avatar) ?? '', avatarColor: p?.avatarColor ?? 'violet', status: p?.status ?? 'active' };
       }), organizerBotId: s.room.organizer_id ? localBot(s.room.organizer_id)?.id ?? s.room.organizer_id : s.members.find(m => m.kind === 'bot' && m.state === 'joined')?.id ?? null, projectDir: workspace?.projectDir ?? null, lastMessage: last && lastView ? {
         isSelf: lastView.isSelf, authorKind: lastView.authorKind, authorName: lastView.authorName, noticeCode: lastView.noticeCode,
-        preview: lastIsShare ? '' : (lastView.content.trim() || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
+        preview: lastIsShare ? '' : (botGroupMessageSummaryText(lastView) || mediaNames(last)).slice(0, 80), createdAt: lastView.createdAt, ...(lastIsShare ? { threadShare: true } : {}),
       } : null, speakingBotIds: speakers.map(s => s.botId), planningBotId: planning.get(roomId)?.botId ?? null, openPlan: open ? { id: open.id, status: open.status, currentStep: open.currentStep, stepCount: open.steps.length, currentBotName: open.steps[open.currentStep ?? 0]?.botName ?? null, currentStepStatus: open.steps[open.currentStep ?? 0]?.status ?? null } : null,
       lastReplyAt: s.messages.reduce((latest, m) => !m.deleted && m.origin !== 'system' && m.authorId !== selfId
         ? Math.max(latest, Date.parse(m.createdAt)) : latest, 0),
@@ -1418,7 +1487,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       const paused = !!deps.hasPendingInteraction?.(run.sessionId);
       if (paused) run.pauseStarted ??= Date.now();
       else if (run.pauseStarted !== undefined) { run.started += Date.now() - run.pauseStarted; run.pauseStarted = undefined; }
-      const timedOut = !paused && Date.now() - run.started > (run.plan ? 2 * 60 * 60 * 1000 : 300000);
+      const timedOut = !paused && Date.now() - run.started > TURN_TIMEOUT_MS;
       if (timedOut) {
         await settleExecution(run, { sessionId: run.sessionId, activeInputClientId: run.clientId,
           outcome: 'error', resultText: '', failureCode: 'RUNTIME_TIMEOUT' }, true);
@@ -1792,6 +1861,85 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
       if (terminal.activeInputClientId ? terminal.activeInputClientId !== run.clientId : !run.accepted) return false;
       await settleExecution(run, terminal, terminal.undispatched);
       return true;
+    },
+    // A teammate's own message about an independent task it started from this group
+    // (bot-group-chat.md §10): posted outside any execution, as that teammate, never as the owner.
+    /** A server room (or an old local group already upgraded to one) carries task messages. */
+    hasCompanionTaskChannel: async (groupId: string): Promise<boolean> => (await taskRoomFor(groupId)) !== null,
+    postCompanionTaskMessage: async (input: BotGroupTaskPostInput): Promise<BotGroupTaskPostResult> => {
+      const refused = (errorCode: string): BotGroupTaskPostResult => ({ ok: false, errorCode, retryable: false });
+      try {
+        if (!current()) return refused('OWNER_CHANGED');
+        // An old local-only group has a UUID too: it is told from a server room by its local
+        // history row and upgrade mapping, never by id shape. Such a group cannot carry a
+        // teammate's own message, so the local service refuses for good and the result falls
+        // back to the owner's private chat instead of retrying forever (bot-group-chat.md §10).
+        const roomId = await taskRoomFor(input.groupId);
+        if (!roomId) return local.postCompanionTaskMessage(input);
+        await register();
+        const actor = actors.find(a => a.kind === 'bot' && a.externalId === input.botId);
+        if (!actor) return refused('BOT_UNAVAILABLE');
+        const s = await snapshot(roomId);
+        if (s.room.archived || !s.members.some(m => m.id === actor.id && m.state === 'joined')) return refused('MEMBER_UNAVAILABLE');
+        const frozen = await prepareBotGroupTaskPost(input.card.data.meta.delegationId,
+          { endpoint: config.baseUrl, selfId, roomId, clientId: input.clientId }, async () => {
+            const produced: BotGroupAttachment[] = [];
+            const fs = await import('node:fs/promises');
+            for (const file of input.files ?? []) {
+              try {
+                const stat = await fs.lstat(file.absolutePath);
+                if (stat.isFile()) produced.push({ id: file.absolutePath, name: path.basename(file.absolutePath), category: 'file',
+                  mimeType: 'application/octet-stream', size: stat.size, path: file.absolutePath, url: null });
+              } catch (error) {
+                // Gone or unreadable for good (deleted since the task finished): simply not delivered.
+                // A transient filesystem failure keeps the whole message for a retry.
+                if (!fileRefusedHere(error)) throw error;
+              }
+            }
+            // Files go up one at a time so a refused file never holds back the others: a file this
+            // computer cannot send (empty, over the size limit, unreadable) or the server definitely
+            // refuses is left out with a warning, while a transient failure keeps the whole message for a retry.
+            const uploaded: ChatContentBlock[] = [];
+            for (const file of produced) {
+              try {
+                uploaded.push(...await media.upload(roomId, input.clientId, [file], actor.id));
+              } catch (error) {
+                if (!fileRefusedHere(error) && (!(error instanceof ChatResponseError) || retryableResponse(error))) throw error;
+                deps.log?.warn('Chat task delivery file refused', { groupId: roomId, ...chatErrorDiagnostic(error) });
+              }
+            }
+            // The server takes 8000 characters and BOT_GROUP_ATTACHMENTS_MAX files per message: a longer
+            // result and further files continue in follow-up messages (same idempotent operation id
+            // family), never silently cut.
+            const [first = '', ...rest] = splitChatMessageText(input.text.trim());
+            const fileBatches: ChatContentBlock[][] = [];
+            for (let at = 0; at < uploaded.length; at += BOT_GROUP_ATTACHMENTS_MAX) fileBatches.push(uploaded.slice(at, at + BOT_GROUP_ATTACHMENTS_MAX));
+            const [firstFiles = [], ...moreFiles] = fileBatches;
+            const messages: BotGroupTaskPostSnapshot['messages'] = [{
+              operationId: input.clientId, content: [...(first ? [{ type: 'text', text: first }] : []), input.card, ...firstFiles], mentions: [],
+            }];
+            for (const [index, text] of rest.entries()) messages.push({
+              operationId: `${input.clientId}:${index + 2}`, content: [{ type: 'text', text }], mentions: [],
+            });
+            for (const [index, files] of moreFiles.entries()) messages.push({
+              operationId: `${input.clientId}:files:${index + 2}`, content: files, mentions: [],
+            });
+            return { actorId: actor.id, messages };
+          });
+        // Persist every part before the first POST. Retries (including after restart) use the
+        // same card, localized fallback, text and media references even if their sources change.
+        let messageId = '';
+        for (const body of frozen.messages) {
+          const posted = await api<{ id: string }>(`/conversations/${roomId}/messages`, 'POST', body, frozen.actorId);
+          messageId ||= posted.id;
+        }
+        changed(roomId);
+        return { ok: true, messageId };
+      } catch (error) {
+        deps.log?.warn('Chat task message post failed', { groupId: input.groupId, ...chatErrorDiagnostic(error) });
+        return { ok: false, errorCode: error instanceof Error ? error.message : 'REQUEST_FAILED',
+          retryable: !(error instanceof ChatResponseError) || retryableResponse(error) };
+      }
     },
     setMembers: input => safe(async () => {
       const i = z.object({ groupId: id, botIds: z.array(z.string()).max(6), addOnly: z.boolean().optional() }).parse(input);

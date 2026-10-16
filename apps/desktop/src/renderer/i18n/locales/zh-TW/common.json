@@ -9268,6 +9268,17 @@
       "speaking": {
         "planning": "正在安排…"
       },
+      "task": {
+        "label": "任務",
+        "state": {
+          "started": "進行中",
+          "waiting": "等你確認",
+          "completed": "已完成",
+          "failed": "失敗了",
+          "cancelled": "已取消",
+          "timed-out": "已逾時"
+        }
+      },
       "files": {
         "openFailed": "檔案沒能開啟，可能已被移動或刪除",
         "untitled": "附件",
