@@ -10320,6 +10320,8 @@
       "browseProjectFolder": "다른 프로젝트 폴더 선택",
       "dialogue": "대화",
       "dialogueOrSelectProject": "대화 또는 프로젝트 선택",
+      "searchProjects": "프로젝트 검색",
+      "noMatchingProjects": "일치하는 프로젝트가 없습니다",
       "remoteProjectsLoadFailed": "{{device}}의 프로젝트를 불러오지 못했습니다. 연결을 확인한 후 다시 시도하세요.",
       "retryRemoteProjects": "프로젝트 다시 불러오기",
       "removeFromList": "목록에서 제거",

@@ -10320,6 +10320,8 @@
       "browseProjectFolder": "選擇其他專案資料夾",
       "dialogue": "對話",
       "dialogueOrSelectProject": "對話或選擇專案",
+      "searchProjects": "搜尋專案",
+      "noMatchingProjects": "沒有符合的專案",
       "remoteProjectsLoadFailed": "無法讀取 {{device}} 上的專案。請檢查連線後重試。",
       "retryRemoteProjects": "重新讀取專案",
       "removeFromList": "從列表中移除",
