@@ -112,6 +112,9 @@ const desktopGuardInclude = [
   // guard tier rather than letting its source extraction enter ordinary unit tests.
   'src/main/mcp-apps/__tests__/remoteViews.test.ts',
   'src/renderer/features/cc-agent/sidebar/__tests__/sessionCardReviewRegressions.test.ts',
+  'src/renderer/__tests__/orcaModelWindowSelection.test.ts',
+  'src/renderer/__tests__/workdirBrowseRemoteSafety.test.ts',
+  'src/renderer/features/bots/__tests__/botPermissionSwitch.test.ts',
   'src/main/cindy-brain/__tests__/forgeOidcInstallEntry.test.ts',
   'src/main/cindy-brain/__tests__/ghostDevRuntimeContract.test.ts',
   'src/main/cindy-brain/__tests__/ghostIpcMutationLease.test.ts',

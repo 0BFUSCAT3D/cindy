@@ -7,7 +7,15 @@ import test from "node:test";
 import {
 	compareWithBaseline,
 	scanTestSource,
+	TEST_FILE,
 } from "../check-test-hygiene.mjs";
+
+test("hygiene scans both test and spec files", () => {
+	assert.equal(TEST_FILE.test("src/example.test.ts"), true);
+	assert.equal(TEST_FILE.test("src/example.spec.tsx"), true);
+	assert.equal(TEST_FILE.test("src/example.integration.spec.ts"), true);
+	assert.equal(TEST_FILE.test("src/example.ts"), false);
+});
 
 test("scanTestSource counts only unjustified hits for each rule", () => {
 	const cases = [
@@ -28,6 +36,11 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 		[
 			"source text read",
 			"const src = readFileSync(resolve(__dirname, '..', 'Sidebar.tsx'), 'utf8');",
+			{ sourceReads: 1 },
+		],
+		[
+			"multi-line source text read",
+			"const src = readFileSync(\n  resolve(__dirname, '..', 'Sidebar.tsx'),\n  'utf8',\n);",
 			{ sourceReads: 1 },
 		],
 		[

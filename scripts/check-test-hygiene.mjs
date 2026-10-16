@@ -27,8 +27,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(ROOT, 'scripts', 'test-hygiene-baseline.json');
 const SCAN_ROOTS = ['apps', 'packages'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'out', 'build', 'coverage', '.vite', '.expo', '.turbo']);
-const TEST_FILE = /\.test\.(?:ts|tsx|mts|mjs)$/;
-const NON_UNIT_TEST = /\.(?:integration|e2e|git-integration)\.test\.|\.bench\./;
+export const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|mts|mjs)$/;
+const NON_UNIT_TEST = /\.(?:integration|e2e|git-integration)\.(?:test|spec)\.|\.bench\./;
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
 
@@ -98,6 +98,36 @@ const SOURCE_EXT = /\.(?:tsx?|mts|cts|css|mjs|cjs|jsx?)$/;
 // usually hold an mkdtemp() directory whose fake source files are test input.
 const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
 
+function findEnclosingReadCall(code, index) {
+  const starts = [...code.matchAll(/\breadFile(?:Sync)?\s*\(/g)];
+  for (let n = starts.length - 1; n >= 0; n -= 1) {
+    const start = starts[n].index;
+    if (start == null || start >= index) continue;
+    let depth = 1;
+    let quote = null;
+    let escaped = false;
+    for (let i = start + starts[n][0].length; i < index; i += 1) {
+      const ch = code[i];
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === String.fromCharCode(96)) {
+        quote = ch;
+      } else if (ch === '(') {
+        depth += 1;
+      } else if (ch === ')') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (depth > 0) return start;
+  }
+  return -1;
+}
+
 function isSourcePathLiteral(code, match) {
   const value = match[2];
   if (!SOURCE_EXT.test(value) || /fixture|:\/\//i.test(value)) return false;
@@ -109,6 +139,16 @@ function isSourcePathLiteral(code, match) {
   if (/fixture/i.test(line)) return false;
   // resolve(__dirname, '..', 'Sidebar.tsx') or new URL('../x.ts', import.meta.url).
   if (REPO_ANCHOR.test(line)) return true;
+  // Keep the same decision for a formatted multi-line readFileSync call. The
+  // current line may only contain the final path segment, while the repository
+  // anchor and read call live on the preceding lines.
+  const callStart = findEnclosingReadCall(code, match.index);
+  if (callStart >= 0) {
+    const callContext = code.slice(callStart, match.index + match[0].length);
+    const previousContext = callContext.slice(0, -match[0].length);
+    const hasPriorSourceLiteral = /\.(?:tsx?|mts|cts|css|mjs|cjs|jsx?)['"]/.test(previousContext);
+    if (/\n/.test(callContext) && !hasPriorSourceLiteral && !/[;{}]/.test(callContext) && REPO_ANCHOR.test(callContext) && !/fixture/i.test(callContext)) return true;
+  }
   // readFileSync('../x.ts') reads relative to the test process, i.e. the checkout.
   return /\breadFile(?:Sync)?\s*\(/.test(line) && (value.startsWith('./') || value.startsWith('../'));
 }
