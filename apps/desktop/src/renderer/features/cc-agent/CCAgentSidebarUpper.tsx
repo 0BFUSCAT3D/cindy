@@ -3009,7 +3009,7 @@ function ExpandedView({
    */
   // includeArchived 跟随当前列表桶（filter.status）—— archived / all 桶里
   // 删除后要刷对应桶，否则已删行残留（见 hook 文件头注释）。
-  const { runSessionAction, unarchiveSession } = useSessionLifecycleActions({
+  const { runSessionAction, unarchiveSession, archiveBlockedByRunning } = useSessionLifecycleActions({
     includeArchived: filter.status,
   });
 
@@ -3044,10 +3044,7 @@ function ExpandedView({
       }
       const isArchiveLike = action === 'archive' || action === 'archive-now';
       // 执行中的 session 不允许归档 —— 让用户先停下当前任务
-      if (isArchiveLike && runningSessionIds.has(sessionId)) {
-        toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
-        return;
-      }
+      if (isArchiveLike && archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) return;
       // 被 IM 接管中的 session 不允许归档 —— 接管方还在操控，先收回再归档。
       // sidebar 常驻订阅的 attached 集合与 binding:resolve-session 同源
       // (binding:list-attached = 全量 resolve, binding:changed 驱动 refresh),
@@ -3113,6 +3110,8 @@ function ExpandedView({
         // 重定向判定用 viewedSessionId:files 路由下归档「正在浏览的会话」也要
         // 跳离失效的文件视图(codex review;正常路由下两者恒等)。经 ref 读:它随
         // 路由切换而变,留在 deps 里会让本 handler 每次切换都重建、打穿整表 memo。
+        // Preflight may have outlived the idle state; sharing must stay open when blocked.
+        if (archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) return;
         if (!(await closeOwnedSharedTask(sharedTaskId))) {
           return;
         }
@@ -3140,7 +3139,7 @@ function ExpandedView({
     },
     [
       closeOwnedSharedTask,
-      runningSessionIds,
+      archiveBlockedByRunning,
       runSessionAction,
       unarchiveSession,
       t,
@@ -3152,6 +3151,10 @@ function ExpandedView({
     const session = sessionsById.get(sessionId);
     if (isRemoteSessionWriteBlocked(session)) {
       toast.warning(t('ccAgent.remoteSession.actionsUnavailable'));
+      setConfirm(CONFIRM_INITIAL);
+      return;
+    }
+    if (action === 'archive' && archiveBlockedByRunning(sessionId, session?.deviceLinkDeviceId)) {
       setConfirm(CONFIRM_INITIAL);
       return;
     }
@@ -3170,7 +3173,7 @@ function ExpandedView({
       deleteRedirectRoute,
     });
     setConfirm(CONFIRM_INITIAL);
-  }, [closeOwnedSharedTask, viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
+  }, [closeOwnedSharedTask, archiveBlockedByRunning, viewedSessionId, confirm, resolveSessionRemovalRedirect, runSessionAction, sessionsById, t]);
 
   const handleCancelConfirm = useCallback(() => {
     setConfirm(CONFIRM_INITIAL);

@@ -27,20 +27,23 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
   const runSessionAction = vi.fn();
   const setConfirm = vi.fn();
   const toast = { error: vi.fn(), warning: vi.fn() };
-  const session = { id: 'task' };
+  const session = { id: 'task', deviceLinkDeviceId: 'device-1' };
+  const archiveBlockedByRunning = vi.fn(() => false);
+  const preflight = vi.fn(async () => 'clean');
   const bindings = {
     window: { electronAPI: { sharedTask: { account }, binding: { resolveSession: async () => ({ attached: false }) } } },
     toast, t: (key: string) => key, sharedTaskErrorKey: () => 'sharedTask.retry',
     sessionsById: new Map([['task', session]]), sessionsByIdRef: { current: new Map([['task', session]]) },
     runningSessionIds: new Set(), attachedSessionIdsRef: { current: new Set() },
-    isRemoteSessionWriteBlocked: () => false, resolveWorktreeRemovalPreflight: async () => 'clean',
+    isRemoteSessionWriteBlocked: () => false, resolveWorktreeRemovalPreflight: preflight,
+    archiveBlockedByRunning,
     viewedSessionIdRef: { current: 'other' }, viewedSessionId: 'other',
     resolveSessionRemovalRedirect: vi.fn(), unarchiveSession: vi.fn(),
     runSessionAction, setConfirm, CONFIRM_INITIAL: { open: false },
   };
   const closeOwnedSharedTask = callback('closeOwnedSharedTask', bindings);
   return {
-    account, runSessionAction, toast, setConfirm,
+    account, runSessionAction, toast, setConfirm, archiveBlockedByRunning, preflight,
     archive: () => callback('handleActionClick', { ...bindings, closeOwnedSharedTask })('task', 'archive', sharedTaskId),
     confirm: (action: string) => callback('handleConfirm', { ...bindings, closeOwnedSharedTask,
       confirm: { sessionId: 'task', action, sharedTaskId },
@@ -49,6 +52,32 @@ function harness(result: unknown, reject = false, sharedTaskId: string | undefin
 }
 
 describe('sidebar shared-task archive/delete guard', () => {
+  it.each(['clean', 'dirty', 'unknown'])('preserves sharing when a task starts during %s preflight or confirmation', async (preflight) => {
+    const h = harness({ closed: ['share'] });
+    const pending = deferred<string>();
+    h.preflight.mockReturnValueOnce(pending.promise);
+    const archive = h.archive();
+    await vi.waitFor(() => expect(h.preflight).toHaveBeenCalled());
+    if (preflight === 'clean') h.archiveBlockedByRunning.mockReturnValue(true);
+    pending.resolve(preflight);
+    await archive;
+    if (preflight !== 'clean') {
+      expect(h.setConfirm).toHaveBeenCalledWith(expect.objectContaining({ open: true, sharedTaskId: 'share' }));
+      h.archiveBlockedByRunning.mockReturnValue(true);
+      await h.confirm('archive');
+    }
+    expect(h.archiveBlockedByRunning).toHaveBeenLastCalledWith('task', 'device-1');
+    expect(h.account).not.toHaveBeenCalled();
+    expect(h.runSessionAction).not.toHaveBeenCalled();
+  });
+  it('keeps confirmed deletion independent from the archive running guard', async () => {
+    const h = harness({ closed: ['share'] });
+    h.archiveBlockedByRunning.mockReturnValue(true);
+    await h.confirm('delete');
+    expect(h.archiveBlockedByRunning).not.toHaveBeenCalled();
+    expect(h.account).toHaveBeenCalledOnce();
+    expect(h.runSessionAction).toHaveBeenCalledWith('task', 'delete', expect.anything());
+  });
   it.each(['archive', 'confirmed-archive', 'delete'])('blocks %s on a resolved close failure', async (action) => {
     const h = harness({ closed: [], failed: [{ sharedTaskId: 'share' }] });
     if (action === 'archive') await h.archive();
@@ -123,6 +152,7 @@ describe('archive preserves the current task until preflight and confirmation fi
       runSessionAction, setConfirm, CONFIRM_INITIAL: { open: false },
       beginRemoteArchive, cancelRemoteArchive: vi.fn(),
       closeOwnedSharedTask: async () => true,
+      archiveBlockedByRunning: () => false,
       confirm: { sessionId: 'task', action: 'archive' },
       session, sessionId: session.id, deviceLinkDeviceId: session.deviceLinkDeviceId,
       confirmDialog,

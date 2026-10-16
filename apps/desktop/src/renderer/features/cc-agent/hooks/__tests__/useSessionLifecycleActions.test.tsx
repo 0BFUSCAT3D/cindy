@@ -144,6 +144,19 @@ beforeEach(() => {
 });
 
 describe('archive uses current state after asynchronous checks', () => {
+  it('shares a live running guard with callers before they close sharing', () => {
+    const { result } = renderHook(() => useSessionLifecycleActions());
+    const guard = result.current.archiveBlockedByRunning;
+    expect(guard('session-1', 'device-1')).toBe(false);
+    mocks.getRunningSnapshot.mockReturnValue(new Map([['session-1', { isRunning: true }]]));
+    expect(guard('session-1')).toBe(true);
+    mocks.getRunningSnapshot.mockReturnValue(new Map());
+    applyRemoteSessionActivity('device-1', { sessionId: 'session-1', phase: 'needs-interaction' });
+    expect(guard('session-1', 'device-1')).toBe(true);
+    expect(guard('session-1', 'other-device')).toBe(false);
+    clearRemoteSessionActivity();
+    expect(guard('session-1', 'device-1')).toBe(false);
+  });
   it.each(['local', 'device-link'] as const)('does not interrupt a newly running %s task', async (kind) => {
     let finishTarget!: (target: unknown) => void;
     mocks.resolveStatusWriteTarget.mockImplementationOnce(() => new Promise((resolve) => {

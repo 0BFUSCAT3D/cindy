@@ -7,7 +7,8 @@
  *
  * 本 hook 只封装"确认之后的执行序列"（关子进程 / 写库 / 乐观补丁 / 释放内存 /
  * 清 composer draft / refresh 列表与 worktree / 必要时跳转）。**前置检查
- * （running / IM 接管拦截）和确认弹窗留在调用方** —— 两处的确认交互形态不同
+ * （IM 接管拦截）和确认弹窗留在调用方**；运行态判据由本 hook 统一提供，
+ * 调用方在关闭共享前复用，执行层在异步等待后复核。两处的确认交互形态不同
  * （sidebar 是受控 ConfirmDialog + 行内两步确认，header 是 imperative
  * confirmDialog），强行收进来反而耦合。
  *
@@ -98,6 +99,14 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
   // (行渲染隔离不变量,见 SessionItem.tsx)。
   const listFilter: ListStatusFilter = options?.includeArchived ?? 'active';
 
+  // Read stores at the side-effect boundary, never the render-time running set.
+  const archiveBlockedByRunning = useCallback((sessionId: string, deviceId?: string | null) => {
+    const running = makerChatStore.getRunningSnapshot().get(sessionId)?.isRunning ||
+      (deviceId && isRemoteSessionActivityActive(getRemoteSessionActivity(sessionId, deviceId)));
+    if (running) toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
+    return Boolean(running);
+  }, [t]);
+
   /**
    * 远程任务归档的乐观起点:叠加层把行移出 active 桶,并按 runSessionAction 同一顺序
    * 跳离(行留在列表时先跳再换桶,否则先换桶再跳,理由见下方 archive 段注释)。
@@ -140,15 +149,8 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
       const statusWriteTarget = await sessionService.resolveStatusWriteTarget(sessionId);
       const isDeviceLinkSession = statusWriteTarget.kind === 'device-link';
       // Preflight/confirmation and write-target resolution may outlive the initial running check.
-      const archiveBlockedByRunning = () => {
-        const running = makerChatStore.getRunningSnapshot().get(sessionId)?.isRunning ||
-          (statusWriteTarget.kind === 'device-link' && isRemoteSessionActivityActive(
-            getRemoteSessionActivity(sessionId, statusWriteTarget.deviceId),
-          ));
-        if (running) toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
-        return Boolean(running);
-      };
-      if (action === 'archive' && archiveBlockedByRunning()) return;
+      const deviceId = statusWriteTarget.kind === 'device-link' ? statusWriteTarget.deviceId : undefined;
+      if (action === 'archive' && archiveBlockedByRunning(sessionId, deviceId)) return;
       let statusTransition: SessionStatusTransitionToken | null = null;
       // device-link 远程会话:status 写经隧道(setStatus 内部按来源路由 patch-meta)。归档走
       // remoteProjectsStore 的状态迁移叠加层乐观换桶,写库成功即落被控端返回的行,不等
@@ -195,7 +197,7 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
           },
           (begin) => {
             // A previous local status write can keep us waiting after the check above.
-            if (archiveBlockedByRunning()) return null;
+            if (archiveBlockedByRunning(sessionId, deviceId)) return null;
             if (archivedRowStaysInList) flushSync(leaveArchivedSession);
             let transition: SessionStatusTransitionToken | null = null;
             flushSync(() => {
@@ -302,7 +304,7 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
         navigate(deleteRedirectRoute ?? '/cc-agent');
       }
     },
-    [navigate, patchLocal, listFilter, beginRemoteArchive, t],
+    [navigate, patchLocal, listFilter, beginRemoteArchive, archiveBlockedByRunning, t],
   );
 
   /**
@@ -342,5 +344,5 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
     [refreshSessions, t],
   );
 
-  return { runSessionAction, unarchiveSession };
+  return { runSessionAction, unarchiveSession, archiveBlockedByRunning };
 }
