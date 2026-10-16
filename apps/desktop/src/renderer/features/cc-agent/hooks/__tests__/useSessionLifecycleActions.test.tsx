@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   completeStatusTransition: vi.fn(),
   rollbackStatusTransition: vi.fn(),
   closeSessionQuery: vi.fn(),
+  getRunningSnapshot: vi.fn(),
   purgeSession: vi.fn(),
   releaseRemoteArchivedTombstone: vi.fn(),
   beginPendingStatus: vi.fn(),
@@ -24,12 +25,14 @@ const mocks = vi.hoisted(() => ({
   cleanupSessionLayoutPrefs: vi.fn(),
   cleanupSessionImages: vi.fn(),
   toastError: vi.fn(),
+  toastWarning: vi.fn(),
   logInfo: vi.fn(),
   logWarn: vi.fn(),
   logError: vi.fn(),
 }));
 
-vi.mock('react-router-dom', () => ({
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...await importOriginal<typeof import('react-router-dom')>(),
   useNavigate: () => mocks.navigate,
 }));
 
@@ -38,7 +41,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/lib/toast', () => ({
-  toast: { error: mocks.toastError },
+  toast: { error: mocks.toastError, warning: mocks.toastWarning },
 }));
 
 vi.mock('@/lib/sessionService', () => ({
@@ -48,6 +51,7 @@ vi.mock('@/lib/sessionService', () => ({
 
 vi.mock('@/lib/makerChatStore', () => ({
   makerChatStore: {
+    getRunningSnapshot: mocks.getRunningSnapshot,
     closeSessionQuery: mocks.closeSessionQuery,
     purgeSession: mocks.purgeSession,
     releaseRemoteArchivedTombstone: mocks.releaseRemoteArchivedTombstone,
@@ -99,9 +103,14 @@ vi.mock('@/lib/logger', () => ({
 }));
 
 import { useSessionLifecycleActions } from '../useSessionLifecycleActions';
+import { isSessionRemovalRouteCurrent } from '../../lib/sessionRemovalNavigation';
+import { clearRemoteSessionActivity, applyRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.history.replaceState(null, '', '#/cc-agent/session-1');
+  mocks.getRunningSnapshot.mockReturnValue(new Map());
+  clearRemoteSessionActivity();
   mocks.setStatus.mockImplementation(async (id: string, status: string) => ({
     id,
     status,
@@ -131,6 +140,98 @@ beforeEach(() => {
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: { cleanupSessionImages: mocks.cleanupSessionImages },
+  });
+});
+
+describe('archive uses current state after asynchronous checks', () => {
+  it.each(['local', 'device-link'] as const)('does not interrupt a newly running %s task', async (kind) => {
+    let finishTarget!: (target: unknown) => void;
+    mocks.resolveStatusWriteTarget.mockImplementationOnce(() => new Promise((resolve) => {
+      finishTarget = resolve;
+    }));
+    const { result } = renderHook(() => useSessionLifecycleActions());
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = result.current.runSessionAction('session-1', 'archive', { activeSessionId: 'session-1' });
+    });
+    mocks.getRunningSnapshot.mockReturnValue(new Map([['session-1', { isRunning: true }]]));
+    await act(async () => {
+      finishTarget({ kind, deviceId: 'device-1' });
+      await pending;
+    });
+    expect(mocks.toastWarning).toHaveBeenCalledWith('ccAgent.sidebar.archiveBlocked.running');
+    expect(mocks.beginStatusTransition).not.toHaveBeenCalled();
+    expect(mocks.beginPendingStatus).not.toHaveBeenCalled();
+    expect(mocks.closeSessionQuery).not.toHaveBeenCalled();
+    expect(mocks.setStatus).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each(['running', 'needs-interaction'])('also blocks a remote %s activity without a local chat mirror', async (phase) => {
+    mocks.resolveStatusWriteTarget.mockResolvedValue({ kind: 'device-link', deviceId: 'device-1' });
+    applyRemoteSessionActivity('device-1', { sessionId: 'session-1', phase });
+    const { result } = renderHook(() => useSessionLifecycleActions());
+    await act(async () => {
+      await result.current.runSessionAction('session-1', 'archive', { activeSessionId: 'session-1' });
+    });
+    expect(mocks.toastWarning).toHaveBeenCalledWith('ccAgent.sidebar.archiveBlocked.running');
+    expect(mocks.closeSessionQuery).not.toHaveBeenCalled();
+    expect(mocks.setStatus).not.toHaveBeenCalled();
+    expect(mocks.beginPendingStatus).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('rechecks running state after waiting for a previous local status transition', async () => {
+    mocks.beginStatusTransitionWhenReady.mockImplementationOnce(async (_id, _patch, apply) => {
+      mocks.getRunningSnapshot.mockReturnValue(new Map([['session-1', { isRunning: true }]]));
+      return apply(() => mocks.beginStatusTransition('session-1'));
+    });
+    const { result } = renderHook(() => useSessionLifecycleActions({ includeArchived: 'all' }));
+    await act(async () => {
+      await result.current.runSessionAction('session-1', 'archive', { activeSessionId: 'session-1' });
+    });
+    expect(mocks.beginStatusTransition).not.toHaveBeenCalled();
+    expect(mocks.closeSessionQuery).not.toHaveBeenCalled();
+    expect(mocks.setStatus).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each(['active', 'all'] as const)('keeps the new route when the old view unmounts before archive (%s)', async (includeArchived) => {
+    mocks.resolveStatusWriteTarget.mockResolvedValue({ kind: 'device-link', deviceId: 'device-1' });
+    const { result, unmount } = renderHook(() => useSessionLifecycleActions({ includeArchived }));
+    const runSessionAction = result.current.runSessionAction;
+    unmount();
+    window.history.replaceState(null, '', '#/cc-agent/other-session');
+    await act(async () => {
+      await runSessionAction('session-1', 'archive', { activeSessionId: 'session-1' });
+    });
+    expect(mocks.setStatus).toHaveBeenCalledWith('session-1', 'archived', expect.anything());
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps a route changed while resolving the status write target', async () => {
+    mocks.resolveStatusWriteTarget.mockImplementationOnce(async () => {
+      window.history.replaceState(null, '', '#/settings');
+      return { kind: 'device-link', deviceId: 'device-1' };
+    });
+    const { result } = renderHook(() => useSessionLifecycleActions());
+    await act(async () => {
+      await result.current.runSessionAction('session-1', 'archive', { activeSessionId: 'session-1' });
+    });
+    expect(mocks.setStatus).toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/cc-agent/session-1',
+    '/cc-agent/files/session-1?path=src',
+    '/cc-agent/orca/session-1',
+    '/bots/bot/session/session-1',
+    '/bots/bot/history/session-1',
+  ])('recognizes the currently viewed task at %s', (route) => {
+    window.history.replaceState(null, '', '#' + route);
+    expect(isSessionRemovalRouteCurrent('session-1')).toBe(true);
+    expect(isSessionRemovalRouteCurrent('other-session')).toBe(false);
   });
 });
 
@@ -313,6 +414,7 @@ describe('useSessionLifecycleActions archive optimistic ordering', () => {
   });
 
   it('hides a device-link row through the remote overlay before the write and completes it', async () => {
+    window.history.replaceState(null, '', '#/cc-agent/remote-session');
     mocks.resolveStatusWriteTarget.mockResolvedValueOnce({
       kind: 'device-link',
       deviceId: 'device-1',
@@ -421,6 +523,7 @@ describe('useSessionLifecycleActions archive optimistic ordering', () => {
   });
 
   it('navigates before moving an archived remote row in the all bucket', async () => {
+    window.history.replaceState(null, '', '#/cc-agent/remote-session');
     mocks.resolveStatusWriteTarget.mockResolvedValue({ kind: 'device-link', deviceId: 'device-1' });
     const { result } = renderHook(() => useSessionLifecycleActions({ includeArchived: 'all' }));
     await act(async () => {

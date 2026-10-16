@@ -11,8 +11,8 @@
  * （sidebar 是受控 ConfirmDialog + 行内两步确认，header 是 imperative
  * confirmDialog），强行收进来反而耦合。
  *
- * activeSessionId 由调用方传入：sidebar 是当前路由解析出的活跃会话（可能
- * 操作非活跃行）；header 操作的恒为当前打开的会话（传 session.id 即可）。
+ * activeSessionId 表示调用方原先浏览的会话；归档跳转前还会读取实时路由，
+ * 防止预检或确认期间切换任务后，旧操作把新页面带走。
  *
  * 远程(device-link)任务的归档 / 恢复走 remoteProjectsStore 的状态迁移叠加层,与本机
  * sessionsStore 状态事务对称:行当帧换桶,写库成功后落被控端返回的行,失败回滚。
@@ -27,6 +27,7 @@
 import { useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import { useSidebarNavigate } from '../sidebar/sidebarNavigation';
+import { isSessionRemovalRouteCurrent } from '../lib/sessionRemovalNavigation';
 import { useTranslation } from 'react-i18next';
 
 import { toast } from '@/lib/toast';
@@ -40,6 +41,10 @@ import {
   remoteProjectsStore,
   type RemotePendingStatusToken,
 } from '@/features/device-link/remoteProjectsStore';
+import {
+  getRemoteSessionActivity,
+  isRemoteSessionActivityActive,
+} from '@/features/device-link/remoteSessionActivityStore';
 import { createLogger } from '@/lib/logger';
 import type { ListStatusFilter } from '@/lib/sessionService';
 import type { Session, SessionStatus } from '@/lib/ccAgent.types';
@@ -106,7 +111,9 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
     ): RemotePendingStatusToken => {
       const archivedRowStaysInList = listFilter === 'all';
       const leaveArchivedSession = () => {
-        if (sessionId === activeSessionId) navigate('/cc-agent/new');
+        if (sessionId === activeSessionId && isSessionRemovalRouteCurrent(sessionId)) {
+          navigate('/cc-agent/new');
+        }
       };
       if (archivedRowStaysInList) flushSync(leaveArchivedSession);
       let token!: RemotePendingStatusToken;
@@ -132,6 +139,16 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
       const targetStatus: SessionStatus = action === 'delete' ? 'deleted' : 'archived';
       const statusWriteTarget = await sessionService.resolveStatusWriteTarget(sessionId);
       const isDeviceLinkSession = statusWriteTarget.kind === 'device-link';
+      // Preflight/confirmation and write-target resolution may outlive the initial running check.
+      const archiveBlockedByRunning = () => {
+        const running = makerChatStore.getRunningSnapshot().get(sessionId)?.isRunning ||
+          (statusWriteTarget.kind === 'device-link' && isRemoteSessionActivityActive(
+            getRemoteSessionActivity(sessionId, statusWriteTarget.deviceId),
+          ));
+        if (running) toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
+        return Boolean(running);
+      };
+      if (action === 'archive' && archiveBlockedByRunning()) return;
       let statusTransition: SessionStatusTransitionToken | null = null;
       // device-link 远程会话:status 写经隧道(setStatus 内部按来源路由 patch-meta)。归档走
       // remoteProjectsStore 的状态迁移叠加层乐观换桶,写库成功即落被控端返回的行,不等
@@ -166,11 +183,10 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
         // 后再用 patchLocal 从所有桶移除。
         const archivedRowStaysInList = listFilter === 'all';
         const leaveArchivedSession = () => {
-          if (sessionId === activeSessionId) navigate('/cc-agent/new');
+          if (sessionId === activeSessionId && isSessionRemovalRouteCurrent(sessionId)) {
+            navigate('/cc-agent/new');
+          }
         };
-        if (archivedRowStaysInList) {
-          flushSync(leaveArchivedSession);
-        }
         statusTransition = await sessionsStore.beginStatusTransitionWhenReady(
           sessionId,
           {
@@ -178,6 +194,9 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
             pinnedAt: null,
           },
           (begin) => {
+            // A previous local status write can keep us waiting after the check above.
+            if (archiveBlockedByRunning()) return null;
+            if (archivedRowStaysInList) flushSync(leaveArchivedSession);
             let transition: SessionStatusTransitionToken | null = null;
             flushSync(() => {
               transition = begin();
