@@ -23,14 +23,18 @@ export function projectRemoteUsers<T extends LocalUserHandoff>(
   const historical = (row: T) => historyClientIds.has(row.clientId) && !row.localSendPrecedingClientIds;
   const result = [...messages.filter(historical), ...messages.filter((row) => !historical(row))];
   const reservations = messages.filter((row) => row.role === 'user'
-    && (row.localSendPrecedingClientIds || row.isPendingPersist));
+    && (row.localSendPrecedingClientIds || row.isPendingPersist)).map((row) => ({
+      row,
+      // Local sends retain insertion order until their echo creates a reservation.
+      preceding: new Set(row.localSendPrecedingClientIds
+        ?? messages.slice(0, messages.indexOf(row)).map((message) => message.clientId)),
+    }));
   // Place earlier sends first: the raw timestamp order may put a later send first.
-  reservations.sort((a, b) => b.localSendPrecedingClientIds?.includes(a.clientId) ? -1
-    : a.localSendPrecedingClientIds?.includes(b.clientId) ? 1 : 0);
-  for (const row of reservations) {
-    // Local sends retain insertion order until their echo creates a reservation.
-    const preceding = new Set(row.localSendPrecedingClientIds
-      ?? messages.slice(0, messages.indexOf(row)).map((message) => message.clientId));
+  reservations.sort((a, b) => b.preceding.has(a.row.clientId) ? -1
+    : a.preceding.has(b.row.clientId) ? 1 : 0);
+  for (let index = 0; index < reservations.length; index++) {
+    const { row, preceding } = reservations[index];
+    const nextSend = reservations[index + 1];
     result.splice(
       result.findIndex((message) => message.clientId === row.clientId),
       1,
@@ -43,7 +47,10 @@ export function projectRemoteUsers<T extends LocalUserHandoff>(
     }
     // Switching is applied after enqueue but before this send. Its boundary
     // belongs before the reserved bubble; never cross ordinary turn activity.
-    while (result[after + 1]?.systemCardType === 'agent-switch') after++;
+    // A boundary not observed by the next send belongs to that later send,
+    // even when this row already has a DB echo and no reply has arrived yet.
+    while (result[after + 1]?.systemCardType === 'agent-switch'
+      && (!nextSend || nextSend.preceding.has(result[after + 1].clientId))) after++;
     result.splice(after + 1, 0, row);
   }
   // Command cards never acquire a history row. Keep their slots even after a

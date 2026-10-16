@@ -73,6 +73,24 @@ describe('sent message handoff', () => {
       .toEqual(['sent', 'reply', 'switch', 'next']);
   });
 
+  it.each([false, true])('keeps consecutive switches with their sends without a reply (next echoed=%s)', (echoed) => {
+    const firstSwitch: RemoteMessage = { ...echo, id: 'switch-first', clientId: 'switch-first', role: 'agent_switch' };
+    const secondSwitch: RemoteMessage = { ...firstSwitch, id: 'switch-next', clientId: 'switch-next' };
+    const nextEcho: RemoteMessage = { ...echo, id: 'db-next', clientId: 'next' };
+    const first = reconcileOptimisticUserMessages(appendOptimisticUserMessage([], [], queued, 's'), [echo], none, none);
+    let slots = appendOptimisticUserMessage(first, [firstSwitch, echo], { ...queued, clientId: 'next' }, 's');
+    const raw = [firstSwitch, echo, secondSwitch, ...(echoed ? [nextEcho] : [])];
+    const expected = ['switch-first', 'sent', 'switch-next', 'next'];
+    expect(projectOptimisticUserMessages(raw, slots).map((message) => message.clientId)).toEqual(expected);
+    // A stale history page can still omit the first echo held by its reservation.
+    expect(projectOptimisticUserMessages(raw.filter((message) => message.clientId !== 'sent'), slots)
+      .map((message) => message.clientId)).toEqual(expected);
+    const history = [firstSwitch, echo, secondSwitch, nextEcho];
+    slots = reconcileOptimisticUserMessages(slots, history, none, new Set(expected));
+    expect(slots).toEqual([]);
+    expect(projectOptimisticUserMessages(history, slots).map((message) => message.clientId)).toEqual(expected);
+  });
+
   it.each([false, true])('keeps a new send after history-only replies (echo=%s)', async (hasEcho) => {
     const previousUser = { ...echo, id: 'previous-user', clientId: 'previous-user', createdAt: '2026-09-16T23:59:00Z' };
     const previousReply: RemoteMessage = { ...echo, id: 'previous-reply', clientId: 'previous-reply', role: 'assistant', createdAt: '2026-09-16T23:59:10Z' };

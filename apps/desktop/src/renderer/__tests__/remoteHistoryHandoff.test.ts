@@ -89,6 +89,22 @@ describe('desktop remote history uses the shared live-to-history handoff', () =>
       .toEqual(['user', 'sent', 'reply', 'switch', 'next']);
   });
 
+  it.each([false, true])('keeps consecutive switches with their sends without a reply (next echoed=%s)', (echoed) => {
+    const previous = row('user');
+    const firstSwitch = { ...row('switch-first'), systemCardType: 'agent-switch' as const };
+    const secondSwitch = { ...row('switch-next'), systemCardType: 'agent-switch' as const };
+    // The first DB echo has arrived, but history has not retired its reservation.
+    const first = reserveRemoteUser({ ...row('first'), role: 'user' as const }, [previous]);
+    const next = reserveRemoteUser({ ...row('next'), role: 'user' as const,
+      isPendingPersist: !echoed }, [previous, firstSwitch, first]);
+    const raw = [previous, firstSwitch, first, secondSwitch, next];
+    const expected = ['user', 'switch-first', 'first', 'switch-next', 'next'];
+    expect(projectRemoteUsers(raw).map((message) => message.clientId)).toEqual(expected);
+    expect(projectRemoteUsers(raw, new Set(['user', 'switch-first'])).map((message) => message.clientId)).toEqual(expected);
+    const confirmedIds = new Set(expected);
+    expect(projectRemoteUsers(confirmRemoteUsers(raw, confirmedIds), confirmedIds).map((message) => message.clientId)).toEqual(expected);
+  });
+
   it('shows a list-pushed reply after a restored snapshot until the page read covers it', async () => {
     const { view, render, setSource } = fixture();
     const reply = { ...row('reply'), content: 'prefetched reply', createdAt: '2026-09-08T00:00:09Z' };
