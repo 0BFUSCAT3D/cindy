@@ -325,9 +325,10 @@ export async function reviewTeammateLearning(sessionId: string, replyId: string)
               coveredThroughRowid: covered.rowid,
               ...(covered.id ? { coveredThroughMessageId: covered.id } : {}),
               ...(covered.offset !== undefined ? { coveredThroughOffset: covered.offset } : {}),
-              // 水位没推进到当前回复(本轮被截断 / 缺口未补完):这一轮之后还会被完整回补,
-              // 删除与改写留到那时;现在只追加,免得 rewind 这一轮后账本已按撤回分支删改。
-              additiveOnly: covered.rowid < row.rowid,
+              // 水位没推进到当前回复(本轮被截断 / 缺口未补完):当前这一轮之后还会被完整回补,
+              // 以它为证据的删除与改写留到那时、现在只追加,免得 rewind 这一轮后账本已按撤回
+              // 分支删改。回补前缀(水位之内)里的证据照常提交——它们不会再被回放第二次。
+              ...(covered.rowid < row.rowid ? { deferEvidenceFrom: new Set(turnMessages.map((m) => m.id)) } : {}),
             }),
             workingBefore?.revision ?? 0,
           );

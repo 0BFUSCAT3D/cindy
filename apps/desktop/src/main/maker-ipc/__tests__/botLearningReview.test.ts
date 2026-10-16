@@ -464,3 +464,44 @@ it('does not advance the watermark past the previous completed reply when the cu
   h.turnRows = null;
   h.floorRowid = null;
 });
+
+it('commits deletions evidenced inside the backfilled prefix even while the gap is incomplete, but still defers those evidenced by the current turn', async () => {
+  // 缺口 (1,100] 有 41 条、分两批回补:取消旧承诺的用户消息只出现在第一批,错过就补不上。
+  h.working = {
+    version: 1, revision: 4, coveredThroughRowid: 1, coveredThroughMessageId: 'r1', updatedAt: 0,
+    threads: [], waiting: [], corrections: [], recentlyDone: [],
+    commitments: [
+      { id: 'c-cancelled', text: 'Ship the weekly report template', messageId: 'u-old', updatedAt: 1 },
+      { id: 'c-current', text: 'Add dark mode to the mockup', messageId: 'u-old', updatedAt: 2 },
+    ],
+  };
+  h.floorRowid = 1;
+  h.prevCompleted = 100;
+  h.gapRows = [
+    { id: 'g2', role: 'user', content: JSON.stringify('Forget the weekly report template, we dropped it.'), order: 2 },
+    ...Array.from({ length: 40 }, (_, i) => ({ id: `g${3 + i}`, role: 'assistant', content: JSON.stringify(`gap ${3 + i}`), order: 3 + i })),
+  ];
+  h.model.mockResolvedValueOnce({
+    ok: true,
+    text: JSON.stringify({
+      memories: [],
+      skills: [],
+      working: {
+        commitments: [],
+        resolved: [
+          { text: 'Ship the weekly report template', evidence: { messageId: 'g2', quote: 'we dropped it' } },
+          { text: 'Add dark mode to the mockup', evidence: { messageId: 'user', quote: 'summarize the conclusion first' } },
+        ],
+      },
+    }),
+  });
+  await reviewTeammateLearning('session', 'reply');
+  const written = h.writeWorking.mock.calls.at(-1)![2] as { coveredThroughRowid: number; coveredThroughMessageId?: string; commitments: Array<{ text: string }> };
+  // 水位停在第一批末尾(rowid 41),没推进到当前回复。
+  expect(written).toMatchObject({ coveredThroughRowid: 41, coveredThroughMessageId: 'g41' });
+  // 前缀内证据的删除照常生效;当前轮证据的删除延后到这一轮被完整回补时。
+  expect(written.commitments.map((c) => c.text)).toEqual(['Add dark mode to the mockup']);
+  h.prevCompleted = 3;
+  h.gapRows = [];
+  h.floorRowid = null;
+});

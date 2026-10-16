@@ -281,9 +281,11 @@ function resolveOptionalField(
  *  - 旧条目不在提案里时**保留**——漏写不等于完成;要删除走 `resolved`,同样要证据
  *    (用户 / 伙伴 / 工具结果均可);
  *  - 各区按上限保留最新的;只有真正变过的条目才更新时间,排序才有意义;
- *  - `additiveOnly`(本轮取材没完整覆盖、水位停在之前):只追加新条目,不删(resolved)也不
- *    改写旧条目——这些破坏性变更等这一轮被完整回补时再提交,免得用户随后 rewind 这一轮后
- *    水位仍指着可见的旧回复、账本却已按撤回分支删改过且无法回滚。
+ *  - `deferEvidenceFrom`(本轮取材没完整覆盖、水位停在之前时,水位之后那一轮的消息 id):
+ *    以这些消息为证据的删除(resolved)/ 改写延后,只追加新条目——这些破坏性变更等那一轮被
+ *    完整回补时再提交,免得用户随后 rewind 那一轮后水位仍指着可见的旧回复、账本却已按撤回
+ *    分支删改过且无法回滚。以回补前缀(水位之内)消息为证据的删改照常提交:缺口分多批回放
+ *    时,取消某承诺的证据只会出现在它所在的那一批,错过就再也补不上。
  */
 export function applyWorkingMemoryProposal(
   previous: BotWorkingMemory | null,
@@ -294,16 +296,16 @@ export function applyWorkingMemoryProposal(
     coveredThroughRowid: number;
     coveredThroughMessageId?: string;
     coveredThroughOffset?: number;
-    additiveOnly?: boolean;
+    deferEvidenceFrom?: ReadonlySet<string>;
   },
 ): Omit<BotWorkingMemory, 'revision' | 'version'> {
   const prev = previous ?? emptyWorkingMemory();
+  const deferred = (item: ProposedItem): boolean =>
+    !!item.evidence && !!opts.deferEvidenceFrom?.has(item.evidence.messageId);
   const resolvedTexts = new Set(
-    opts.additiveOnly
-      ? []
-      : proposal.resolved
-          .filter((item) => evidenceHolds(item.evidence, messages, RESOLVE_ROLES))
-          .map((item) => clampText(item.text)),
+    proposal.resolved
+      .filter((item) => !deferred(item) && evidenceHolds(item.evidence, messages, RESOLVE_ROLES))
+      .map((item) => clampText(item.text)),
   );
   let seq = 0;
   const nextId = () => `wm_${opts.now.toString(36)}_${(seq += 1)}`;
@@ -329,16 +331,16 @@ export function applyWorkingMemoryProposal(
       const evidenced = evidenceHolds(item.evidence, messages, NEW_ITEM_ROLES);
       if (prior) {
         const candidate = build(prior, item, { ...prior, updatedAt: opts.now });
-        // 完整内容没变:原样沿用,时间也不动。字段变了:要证据,没证据就当没提;只追加模式下
-        // 改写一律延后。
-        if (opts.additiveOnly || sameItem(candidate, prior) || !evidenced) kept.set(text, prior);
+        // 完整内容没变:原样沿用,时间也不动。字段变了:要证据,没证据就当没提;证据来自水位
+        // 之后那一轮的改写延后。
+        if (deferred(item) || sameItem(candidate, prior) || !evidenced) kept.set(text, prior);
         else kept.set(text, candidate);
         continue;
       }
       if (!evidenced) continue;
-      // 只追加模式下新条目不能把旧条目挤出容量:区满了就延后新增(这一轮之后会被完整回补),
-      // 否则 rewind 这一轮时来源清理只能删掉新条目,被挤掉的旧承诺回不来。
-      if (opts.additiveOnly && existing.length + added >= cap) continue;
+      // 证据来自水位之后那一轮的新条目不能把旧条目挤出容量:区满了就延后新增(那一轮之后
+      // 会被完整回补),否则 rewind 那一轮时来源清理只能删掉新条目,被挤掉的旧承诺回不来。
+      if (deferred(item) && existing.length + added >= cap) continue;
       added += 1;
       kept.set(text, build(null, item, { id: nextId(), text, messageId: item.evidence!.messageId, updatedAt: opts.now }));
     }
@@ -713,8 +715,10 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
       )
       .limit(1);
     if (typeof covered?.rowid !== 'number') return false;
-    // 必须覆盖的水位 = 最近一条完成回复,或更晚落库的交互答复(计划审阅的批准 / 打回、提问卡
-    // 答案在回复完成之后才写入):它们承载用户决定,没被复盘过就不能算新鲜。
+    // 必须覆盖的水位 = 最近一条完成回复,或更晚落库、**带内容**的交互答复(已回答的提问卡、
+    // 批准 / 打回的计划审阅,状态与 botLearningReview.interactionText 的取材口径一致):它们
+    // 承载用户决定,没被复盘过就不能算新鲜。取消 / 未回答的空交互行没有内容,不抬水位——
+    // 否则一次取消就让账本永远不新鲜。
     const [row] = await db
       .select({ rowid: sql<number | null>`MAX(rowid)` })
       .from(messages)
@@ -727,7 +731,14 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
               eq(messages.role, 'assistant'),
               sql`json_valid(${messages.agentMeta}) AND json_extract(${messages.agentMeta}, '$.turnCompleted') = 1`,
             ),
-            inArray(messages.role, ['ask_user', 'plan_review']),
+            and(
+              inArray(messages.role, ['ask_user', 'plan_review']),
+              sql`json_valid(${messages.content}) AND CASE json_extract(${messages.content}, '$.status')
+                WHEN 'answered' THEN json_type(${messages.content}, '$.answers') = 'object' AND json_extract(${messages.content}, '$.answers') <> '{}'
+                WHEN 'approved' THEN trim(coalesce(json_extract(${messages.content}, '$.plan'), '')) <> ''
+                WHEN 'revised' THEN trim(coalesce(json_extract(${messages.content}, '$.feedback'), '')) <> ''
+                ELSE 0 END`,
+            ),
           ),
         ),
       );

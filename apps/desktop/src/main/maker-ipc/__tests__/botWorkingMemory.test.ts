@@ -134,7 +134,7 @@ describe('applyWorkingMemoryProposal', () => {
     );
     expect(chunked).toMatchObject({ coveredThroughRowid: 12, coveredThroughMessageId: 'long', coveredThroughOffset: 6000 });
     expect(parseWorkingMemory({ version: 1, ...chunked }).coveredThroughOffset).toBe(6000);
-    // 只追加模式(本轮没完整覆盖):有证据的 resolved 与字段改写都延后,新条目照常进账。
+    // 本轮没完整覆盖:以水位之后那一轮(a1 / t1)为证据的 resolved 与字段改写都延后,新条目照常进账。
     const additive = applyWorkingMemoryProposal(
       previous,
       {
@@ -149,12 +149,23 @@ describe('applyWorkingMemoryProposal', () => {
         resolved: [{ text: '把测试补上', evidence: { messageId: 't1', quote: 'report-template.md written' } }],
       },
       messages,
-      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', additiveOnly: true },
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', deferEvidenceFrom: new Set(['a1', 't1']) },
     );
     // 旧条目一个都不少(含本该被 resolved 的 c3),按更新时间降序;新条目在最前。
     expect(additive.commitments.map((c) => c.text)).toEqual(['新承诺', '把测试补上', '给设计稿加暗色模式', '周五前改完周报模板']);
     expect(additive.commitments.find((c) => c.id === 'c1')).toMatchObject({ messageId: 'old', updatedAt: 1 });
     expect(additive.commitments.find((c) => c.id === 'c1')).not.toHaveProperty('trigger');
+    // 延后只针对水位之后那一轮的证据:回补前缀里的证据(t1 不在集合里)照常删除。
+    const prefixEvidenced = applyWorkingMemoryProposal(
+      previous,
+      {
+        threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [],
+        resolved: [{ text: '把测试补上', evidence: { messageId: 't1', quote: 'report-template.md written' } }],
+      },
+      messages,
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', deferEvidenceFrom: new Set(['a1']) },
+    );
+    expect(prefixEvidenced.commitments.map((c) => c.text)).not.toContain('把测试补上');
     // 只追加模式下分区已满:新条目延后,不把最旧的旧条目挤出去。
     const fullWaiting = Array.from({ length: WORKING_MEMORY_LIMITS.waiting }, (_, i) => ({
       id: `w${i}`, text: `等第${i}个回复`, on: 'user' as const, updatedAt: i + 1,
@@ -166,7 +177,7 @@ describe('applyWorkingMemoryProposal', () => {
         waiting: [{ text: '等新的回复', on: 'user', evidence: { messageId: 'a1', quote: '改完发你确认' } }],
       },
       messages,
-      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', additiveOnly: true },
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', deferEvidenceFrom: new Set(['a1']) },
     );
     expect(crowded.waiting.map((w) => w.id).sort()).toEqual(fullWaiting.map((w) => w.id).sort());
     // 非只追加模式照旧:新条目进账,最旧的被容量裁掉。
