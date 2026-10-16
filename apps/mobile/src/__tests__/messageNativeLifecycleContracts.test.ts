@@ -2,18 +2,17 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// 消息列表容器契约:LegendList(替代 FlatList —— 滚动 mount 卡顿的实测解,见 listperf profiling:
-// windowSize=21 的大挂载树 p95≈167ms/jank46,换 LegendList 小预渲窗口后 p95≈20ms/jank4)。
-// 关键 prop 不可回退:估高 + 小 drawDistance(挂载集小)+ iOS 原生 / Android 应用层 prepend 锚定。
-describe('mobile message list container', () => {
-  it('uses LegendList virtualization with platform-scoped history anchoring', () => {
+// Guard: JS/native lifecycle contracts for Fabric cell ownership, asynchronous
+// MVCP/gesture handoff, native reveal and UITextView selection. Node component
+// tests cannot exercise the native commit/measurement or system selection menu.
+// Regressions cause blank historical pages, stale recycled media or lost Copy.
+// Entry/reopening/tail controller behavior stays in messageEntryPositioning,
+// messageReadingRestore and messageTailFollower unit tests. Pure geometry and
+// duplicated controller source checks are deliberately not retained here.
+describe('native message lifecycle contracts', () => {
+it('uses LegendList virtualization with platform-scoped history anchoring', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const perfHarness = readFileSync(resolve(process.cwd(), 'app/listperf.tsx'), 'utf8');
-
-    // 已完全迁出 FlatList:不再出现 FlatList 容器,也不再有其虚拟化专有 prop。
-    expect(source).not.toContain('<FlatList');
-    expect(source).not.toContain('windowSize={');
-    expect(source).not.toContain('getItemLayout={');
 
     const listStart = source.search(/<LegendList\s/);
     expect(listStart).toBeGreaterThan(-1);
@@ -22,8 +21,6 @@ describe('mobile message list container', () => {
     const listSource = source.slice(listStart, listEnd);
 
     // 估高 + 小预渲窗口:挂载集小、mount 帧压进一帧(不可退回大挂载树)。
-    expect(listSource).toContain('estimatedItemSize={MOBILE_MESSAGE_ESTIMATED_ITEM_SIZE}');
-    expect(listSource).toContain('drawDistance={MOBILE_MESSAGE_DRAW_DISTANCE}');
     // 与 main 一致，完整历史从首次挂载起就在列表中；不可退回只挂末尾几条的业务尾窗，
     // 否则短尾窗未撑满首屏时 Android 无法拖动历史。
     expect(listSource).toContain('data={listData}');
@@ -70,15 +67,6 @@ describe('mobile message list container', () => {
     expect(source).toContain('useRecyclingState');
     // 可见性必须由 cell 自己订阅。把可见 key 集合放进 React Context 会在每个
     // onViewableItemsChanged 回调里广播给所有已挂载长消息，快滑时造成整窗重渲染、GC 和白屏。
-    expect(source).not.toContain('MessageListVisibleKeysContext');
-    expect(source).not.toContain('visibleMessageKeys');
-    expect(source).toContain("const MESSAGE_LIST_VIEWABILITY_CONFIG_ID = 'message-heavy-content';");
-    expect(source).toContain('id: MESSAGE_LIST_VIEWABILITY_CONFIG_ID');
-    expect(source).toContain('useMessageListItemVisible(item.key)');
-    expect(source).toContain('useMemo(() => new MessageListVisibility(), [scrollResetKey])');
-    expect(source).toContain('messageListVisibility.update(info.viewableItems)');
-    expect(source).toContain('maxTextRunInlineFragments: ANDROID_SELECTABLE_TEXT_RUN_MAX_INLINE_FRAGMENTS');
-    expect(listSource).not.toContain('onFirstVisibleItemChanged');
     // Companion receipts observe visible rows through a ref, without broadcasting cell visibility.
     // Both modes publish visibility, but only companion chats acknowledge read receipts.
     expect(listSource).toContain('onViewableItemsChanged={handleViewableItemsChanged}');
@@ -224,52 +212,18 @@ describe('mobile message list container', () => {
     expect(focusEffectSource).toContain('lastAutoLoadEarlierKeyRef.current = null');
   });
 
-  it('bounds the hidden initial correction while keeping full history mounted', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    expect(source).toContain('programmaticScrollInFlight: programmaticScrollInFlightRef.current');
-    expect(source).toContain('createMobileTailFollower({');
-    expect(source).not.toContain('initialAnchorVerifyFrameRef');
-    expect(source).toContain('scrollToEndProgrammatically(false)');
-    // mVCP 只对 size 常开；流式 resize 仍需记 settle 安静窗，跟随 verifier 不能只依赖
-    // readingOlderRef 判断是否等待。
-    expect(source).toContain('mvcpSettleAtRef.current = mobileMvcpSettleDeadline(');
-    expect(source).toContain('markMobileMvcpSettle();');
-    expect(source).toContain('mobileMessageListKeysSignature(itemKeys)');
-    expect(source).toContain('[itemKeysSignature, markMobileMvcpSettle]');
-    expect(source).not.toContain('[itemKeys, markMobileMvcpSettle]');
-    expect(source).toContain('layoutSettleAt: mvcpSettleAtRef.current');
-    expect(source).toContain('const nextStableFrames = settled ? stableFrames + 1 : 0;');
+it('hands the bounded initial reveal to the native animation driver', () => {
+  const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+  const start = source.indexOf('// 首次落底：完整历史已经在列表里');
+  const end = source.indexOf('// 会话切换(scrollResetKey)', start);
+  const reveal = source.slice(start, end);
+  expect(reveal).toContain('Animated.timing(initialRevealProgress, {');
+  expect(reveal).toContain('useNativeDriver: true');
+  expect(reveal).toContain('easing: Easing.step1');
+  expect(reveal).not.toContain('setTimeout(');
+});
 
-    expect(source).toContain('key={scrollResetKey}');
-    expect(source).not.toContain('tailWindowAnchor');
-    expect(source).not.toContain('previousUserButton');
-    // 首次校正仍会命令式落底，但 opacity 揭示必须立即交给 UI-thread native driver；
-    // 复杂消息占满 JS 时不能把 300ms 隐藏窗拖成长达数秒的白屏。
-    expect(source).not.toContain('onLoad={handleListLoad}');
-    expect(source).toContain('const [listRevealed, setListRevealed] = useState(false);');
-    expect(source).toContain('setListRevealed(true);');
-    expect(source).toContain('const initialRevealProgress = useMemo(');
-    expect(source).toContain('const initialRevealOpacity = listRevealed ? 1 : initialRevealProgress;');
-    expect(source).toContain('<Animated.View style={[styles.messageList, { opacity: initialRevealOpacity }]}>');
-    expect(source).toContain('const MOBILE_INITIAL_REVEAL_MAX_MS = 300;');
-    expect(source).not.toContain('MOBILE_INITIAL_REVEAL_FADE_MS');
-    expect(source).toContain('onSettled: revealPositionedHistory');
-    expect(source).toContain('tailFollowerRef.current = null;');
-    const initialAnchorEffectStart = source.indexOf('// 首次落底：完整历史已经在列表里');
-    const initialAnchorEffectEnd = source.indexOf('// 会话切换(scrollResetKey)', initialAnchorEffectStart);
-    const initialAnchorEffectSource = source.slice(initialAnchorEffectStart, initialAnchorEffectEnd);
-    expect(initialAnchorEffectSource).toContain('Animated.timing(initialRevealProgress, {');
-    expect(initialAnchorEffectSource).toContain('useNativeDriver: true');
-    expect(initialAnchorEffectSource).toContain('easing: Easing.step1');
-    expect(initialAnchorEffectSource).not.toContain('const verify =');
-    expect(initialAnchorEffectSource).not.toContain('setTimeout(');
-    expect(initialAnchorEffectSource).toContain('scrollToEndProgrammatically(false);');
-    expect(initialAnchorEffectSource).not.toContain('requestAnimationFrame(');
-    expect(source).not.toContain('initialRevealTimerRef');
-    expect(source).not.toContain('messageListSettling');
-  });
-
-  it('resets identity-bound row state before a recycled cell displays another item', () => {
+it('resets identity-bound row state before a recycled cell displays another item', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const expandedStateSource = readFileSync(
       resolve(process.cwd(), 'src/session/expandedBlockMemory.ts'),
@@ -306,72 +260,7 @@ describe('mobile message list container', () => {
     expect(expandedStateSource).toContain('blockId ? store.subscribe(listener) : () => {}');
   });
 
-  it('uses the same explicit action for sending and jumping to the latest message', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const effectStart = source.indexOf('// Sending and the jump button');
-    const effectEnd = source.indexOf('// 自动加载更早', effectStart);
-    expect(source.slice(effectStart, effectEnd)).toContain('scrollToBottom();');
-    const jump = source.slice(source.indexOf('const scrollToBottom'), source.indexOf('// A retained list must not replay requests'));
-    expect(jump.indexOf('userScrollForOlderRef.current = false')).toBeLessThan(
-      jump.indexOf("scrollToEndProgrammatically(true, 'explicit')"),
-    );
-  });
-
-  it('routes manual jump-to-latest through the controller that owns seek and verification', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const callbackStart = source.indexOf('const scrollToBottom = useCallback');
-    const callbackEnd = source.indexOf('// A retained list must not replay requests', callbackStart);
-    const callbackSource = source.slice(callbackStart, callbackEnd);
-    const scrollAt = callbackSource.indexOf("scrollToEndProgrammatically(true, 'explicit');");
-
-    expect(callbackStart).toBeGreaterThan(-1);
-    expect(callbackEnd).toBeGreaterThan(callbackStart);
-    expect(scrollAt).toBeGreaterThan(-1);
-    expect(callbackSource).not.toContain('runStickToLatestVerify();');
-    expect(callbackSource).toContain(
-      '}, [cancelHistoryPrependTransaction, scrollToEndProgrammatically]);',
-    );
-  });
-
-  it('passes native geometry and animation ownership into the tail controller', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const adapter = source.slice(source.indexOf('const getTailFollower'), source.indexOf('const scrollToEndProgrammatically'));
-    expect(adapter).toContain('metrics: scrollMetricsRef.current');
-    expect(adapter).toContain('programmaticAnimatedScrollInFlightRef.current');
-    expect(adapter).toContain('programmaticScrollSettleAtRef.current');
-    expect(adapter).toContain('scrollToOffset({ animated: false, offset })');
-    expect(source).not.toContain('followVerifyFrameRef');
-    expect(source).not.toContain('followEndPinRecoveryTimerRef');
-  });
-
-  it('clears stale history intent when a manual downward scroll re-pins at the bottom', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const scrollStart = source.indexOf('// 近底/跟随态迁移');
-    const scrollEnd = source.indexOf('// 用户开始拖动', scrollStart);
-    const scrollSource = source.slice(scrollStart, scrollEnd);
-
-    expect(scrollStart).toBeGreaterThan(-1);
-    expect(scrollEnd).toBeGreaterThan(scrollStart);
-    expect(scrollSource).toContain('const wasNearBottom = nearBottomRef.current');
-    expect(scrollSource).toContain('if (!wasNearBottom && nearBottom && scrollDelta > 0)');
-    expect(scrollSource).toContain('userScrollForOlderRef.current = false');
-  });
-
-  it('keeps follow verification enabled for a dead-zone drag that never actually unpins', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
-    const verifyStart = source.indexOf('const getTailFollower');
-    const verifyEnd = source.indexOf('const scrollToEndProgrammatically', verifyStart);
-    const verifySource = source.slice(verifyStart, verifyEnd);
-
-    expect(verifyStart).toBeGreaterThan(-1);
-    expect(verifyEnd).toBeGreaterThan(verifyStart);
-    expect(verifySource).toContain('stickToLatest: nearBottomRef.current');
-    expect(verifySource).not.toContain(
-      'stickToLatest: nearBottomRef.current && !userScrollForOlderRef.current',
-    );
-  });
-
-  it('measures every mounted shareable message, including expanded group children', () => {
+it('measures every mounted shareable message, including expanded group children', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
     const readerStart = source.indexOf('const readActuallyVisibleShareableMessageIds');
     const readerEnd = source.indexOf('useEffect(() => {', readerStart);
@@ -385,5 +274,92 @@ describe('mobile message list container', () => {
     expect(source).toContain(
       'itemVisiblePercentThreshold: MESSAGE_LIST_VISIBLE_PERCENT_THRESHOLD',
     );
+  });
+
+it('renders message bodies natively with in-place per-block selectable text', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/session/MessageRenderer.tsx'), 'utf8');
+    const flowSource = readFileSync(resolve(process.cwd(), 'e2e/maestro/message_selection.yaml'), 'utf8');
+    const bubbleStart = source.indexOf('function MessageBubble');
+    const bubbleEnd = source.indexOf('function copyActionLabel', bubbleStart);
+    const bubbleSource = source.slice(bubbleStart, bubbleEnd);
+    const markdownBodyStart = source.indexOf('function MarkdownBody');
+    const markdownBodyEnd = source.indexOf('function renderInline', markdownBodyStart);
+    const markdownBodySource = source.slice(markdownBodyStart, markdownBodyEnd);
+
+    // 完成态才可选中;正文与 secondaryBody 都走原生 selectable。
+    expect(source).toContain('const canSelectVisibleText = canUseCompletedActions && copyText.trim().length > 0;');
+    expect(bubbleSource).toContain('selectable={canSelectVisibleText}');
+    expect(bubbleSource).toContain('<MarkdownSelectableText selectable={canSelectVisibleText} style={styles.detailText}>');
+
+    // iOS 部分选择:RN Text 底层是 UILabel 只能整块拷贝(facebook/react-native#13938),
+    // 可选中块在 iOS 换用 react-native-uitextview(真 UITextView,系统选择手柄);
+    // Android 维持 AppText selectable(本身有手柄)。嵌套 span 必须同为 UITextView 家族。
+    expect(source).toContain("from 'react-native-uitextview'");
+    expect(source).toContain('function MarkdownSelectableText({');
+    expect(source).toContain("if (selectable && allowIosUITextView && Platform.OS === 'ios') {");
+    expect(source).toContain('uiTextView');
+    expect(source).toContain('function MarkdownSelectableSpan(');
+    expect(source).toContain('const SpanText = ctx.SpanText ?? MessageBodyText;');
+    expect(markdownBodySource).toContain('blockSelectable && allowIosUITextView && Platform.OS === \'ios\'');
+
+    // 气泡是纯 View,不挂 Pressable/onLongPress(避免干扰横向 ScrollView 手势)。
+    expect(bubbleSource).not.toContain('<Pressable');
+    expect(bubbleSource).not.toContain('onLongPress');
+
+    // 列表内正文只有原生渲染路径:无选择 WebView、无全屏选择查看器。
+    expect(markdownBodySource).toContain('testID="message.markdownBody"');
+    // Agent 回复二次测宽:stretch 量到像素宽后钉死,避免 UITextView 首帧偏矮被列表裁切。
+    expect(markdownBodySource).toContain('nextSettledContentWidth');
+    expect(markdownBodySource).toContain('collapsable={false}');
+    expect(markdownBodySource).toContain('onLayout={handleSettledWidthLayout}');
+    expect(markdownBodySource).toContain('pinContentWidth');
+    expect(markdownBodySource).toContain('pinSettledWidth');
+    expect(markdownBodySource).toContain("pinContentWidth ? { alignSelf: 'stretch' } : null");
+    expect(markdownBodySource).toContain(
+      'style={pinSettledWidth ? { width: contentWidth, maxWidth: \'100%\' } : null}',
+    );
+    expect(markdownBodySource).toContain(
+      "key={`${group.key}:${pinSettledWidth ? contentWidth : 'hug'}`}",
+    );
+    expect(markdownBodySource).not.toContain('SelectableMarkdownWebView');
+    expect(source).not.toContain('SelectableMarkdownWebView');
+    expect(source).not.toContain('MessageTextSelectionModal');
+    expect(source).not.toContain('InlineSelectableMessageText');
+
+    // 各块 Text 开原生选中,含内嵌图片 View 的块除外(Android 上 selectable+内嵌 View 有风险)。
+    expect(markdownBodySource).toContain('const inlinesSelectable = useCallback((inlines: readonly MobileMarkdownInline[]) => (');
+    expect(markdownBodySource).toContain("inline.type === 'image' && imageRendersPreview(inline)");
+    expect(markdownBodySource).toContain('isMobileMarkdownImageDirectUrl(inline.url) || managedImagePreviewUrl(inline.url) !== null');
+    expect(markdownBodySource).toContain('selectable={inlinesSelectable(block.inlines)}');
+
+    // 跨段选择:连续纯文本块合并进同一个原生文本视图(text_run),原生选择手柄可横跨段落。
+    // Android 上长 selectable Text 分块,避免单个超高原生文本视图干扰列表测高/滚动。
+    expect(markdownBodySource).toContain('ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS');
+    expect(markdownBodySource).toContain("...(Platform.OS === 'android' ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {})");
+    expect(markdownBodySource).toMatch(/const textRunGroupingOptions = useMemo[(][\s\S]*?imageRendersPreview,/);
+    expect(markdownBodySource).not.toContain("selectable === true && Platform.OS === 'android'");
+    expect(markdownBodySource).toContain('groupMobileMarkdownSelectableBlocks(blocks, textRunGroupingOptions)');
+    expect(markdownBodySource).toContain('testID="message.markdownTextRun"');
+    expect(markdownBodySource).toContain("lineHeight: layout.markdownBodyGap");
+    expect(markdownBodySource).toContain('!block.textRunContinuation');
+    expect(markdownBodySource).toContain('isTextRunContinuationGroup(group)');
+    expect(markdownBodySource).toContain('height: layout.markdownBodyGap');
+    expect(markdownBodySource).not.toContain('{ gap: layout.markdownBodyGap }');
+    expect(source).toContain('mobileMarkdownImageAltChipText(inline.alt)');
+    expect(markdownBodySource).toContain('selectable={inlinesSelectable(cell)}');
+    expect(markdownBodySource).toContain('selectable={selectable === true}');
+
+    // WebView 独有的用户气泡宽度估算 hack 不复活(原生 Text 自适应宽度)。
+    expect(source).not.toContain('estimateSelectableUserBubbleWidth');
+
+    // 列表滚动不被选择态钳制(原生选择手柄由系统处理,与列表滚动无关)。
+    expect(source).not.toContain('scrollEnabled={!textSelectionActive}');
+
+    // e2e 流程与新交互对齐:长按正文文字 → 系统选择菜单 → Copy。
+    expect(flowSource).toContain('id: "message.markdownBody"');
+    expect(flowSource).toContain('visible: "Copy"');
+    expect(flowSource).toContain('- tapOn: "Copy"');
+    expect(flowSource).not.toContain('message.textSelectionModal');
+    expect(flowSource).not.toContain('message.selectableMarkdownBody');
   });
 });

@@ -47,6 +47,18 @@ Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时
 分 4 片是 2、2、2、0）。runner 原来只在「文件数少于分片数」时补 `--passWithNoTests`，本机 4/4 分片因此
 有 6 个包报 `NO_TESTS_REQUIRED`；现已按 Vitest 的切分方式判断空分片。
 
+审查恢复到 92 个 Desktop guard 文件后，Windows CI 暴露了另一个启动边界：逐项传递
+exclude 会超过 `vitest.cmd` 的 8,191 字符限制，Desktop 尚未收集测试便退出。runner 和
+`benchmark:desktop-workers` 现共用 Windows 的直接 Node 启动器，保留完整参数和工具 PATH；
+Linux 及 package script 的启动方式不变。回归测试通过真实 runner 传入超过 8,191 字符的
+排除列表并执行已有小型测试，同时验证空格、中文、引号与 shell 特殊字符原样到达子进程。
+
+同轮审查补齐了 workspace `process.cwd()` 源码路径、本地 timeout 包装和常量时长检测，
+并修正 `afterEach` 不应追溯影响首例的假时钟判断。源码读取按各自绑定区分用途：
+送入 Function／VM 执行的生产回调继续留在 unit；同一读取还用于源码文字断言时仍须分层，
+无关的执行不能豁免它。device-link client 的四处 ≥100ms 等待改用假时钟，288 条原有
+用例整份通过，约 17.2 秒；未通过新增基线或删除结果断言来放行。
+
 ### 2026-10-16 实验与落地
 
 本机 Windows、32 CPU、Desktop 8 worker。隔离方式三组用同一分片（869 个文件）连续对照：
@@ -63,15 +75,15 @@ Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时
 
 每片的 worker 时间里，收集（导入模块）约 325–350 秒，执行测试 250–480 秒，环境初始化 105–127 秒，
 准备约 46 秒；后三项主要来自逐文件隔离。整体切换隔离方式会破坏正确性，所以改为逐个修掉开销最大的
-文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 438 个
-文件，只减不增，见 engineering-conventions.md §3.2「性能预算」）。修完 `codexProxyHost` 后，最慢的
+文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（存量计数
+只减不增，见 engineering-conventions.md §3.2「性能预算」）。修完 `codexProxyHost` 后，最慢的
 单个文件从 138 秒降到约 32 秒，不再由一个文件决定分片下限。
 
 优化后按 CI 方式（runner、4 分片、Windows tar、无 `XDT_*`）完整重跑：门禁、`test:runner`、guard、typecheck
 全部通过；4 个分片只有 `taskWorkspace.test.ts` 1 条 symlink 能力失败。各片 `maker-core` 从 71／21／54／108 秒
 降到 34／5／27／55 秒；含 `codexProxyHost` 的 Desktop 分片从 144 秒降到 117 秒。代码没动的 Desktop 分片同时
 慢了约 20%，说明本机（同时运行其他重负载程序）整片墙钟有 ±20% 的波动，收益以上表的同机连续对照为准，
-CI 时长仍要用首次 4 分片 CI 实测确认。
+这是初始实现的本机对照；最终合并版本以 PR CI 的完整复跑为准。
 
 后续候选（每项都要在同一 runner、同一分片配置下实测后才能声称收益）：
 
@@ -89,19 +101,21 @@ CI 时长仍要用首次 4 分片 CI 实测确认。
 - 初始删除 81 个文件（488 条用例）；独立审查发现其中包含缺少等价覆盖的权限、竞态、远程路由
   和设计契约，已恢复 30 个完整文件，并从 `homeUsageDashboardSource.test.ts` 保留账号隔离的 3 条
   契约（含同步主干时保留的 `botChatSurface.test.ts`）。后续逐文件复核另保留分享脱敏的两条契约、
-  侧栏折叠时通知订阅归属的一条契约。最终相对原始基线删除 47 个文件，
+  侧栏折叠时通知订阅归属的一条契约。随后将 Mobile 混合文件逐项行为化、合并必要原生契约，
+  最终相对原始基线删除 54 个文件（包含已迁入其他文件的覆盖），
   不能沿用最初的「488 条无效用例」结论。
   `FileTreeView.horizontalScroll.test.tsx` 真实挂载组件并断言可见宽度，已恢复。
   IM 启动补全、空草稿水合与语音切换、预览误发送、远程扫描旧回包、图片标注误关闭、
   Orca 隐藏／可见时的通知生命周期，改由真实生产入口或组件行为回归覆盖。
   原生源码检测包含 Swift、C/C++、Rust 等；必要的跨原生协议、权限与生命周期契约进入
   required guard，执行脚本和 JSON／二进制资源不作为源码字面量断言。
-- 207 个 PARTIAL 文件（2,874 条用例，其中约 991 条是静态或重复接线候选）保留：它们与续跑、设备链、
+- 初始审计的 207 个 PARTIAL 文件（2,874 条用例，其中约 991 条是静态或重复接线候选）与续跑、设备链、
   账户切换、Pi、权限和竞速回归混在一起，只能在补上等价的生产入口测试后逐项替换，不能按字符串模式
-  批量删除。
+  批量删除。后续识别 workspace cwd 后，逐项将这类混合文件改为真实回调、组件或脚本执行；
+  跨原生／JS、权限、凭证与竞态契约合并进已有 guard，纯布局字面量和已有真实覆盖的重复项才删除。
 - 最初迁移 27 个静态契约文件；审查恢复与扫描器补漏后，Desktop 和 Mobile 的跨文件安全、权限、
   主题或文案契约统一迁到各自 `guard` allowlist，由 CI 的 `pnpm test:guard` 执行。最终名单只在
-  `scripts/test-workspaces.config.mjs` 维护（Desktop 92、Mobile 29），由 runner 从 unit 排除；
+  `scripts/test-workspaces.config.mjs` 维护，由 runner 从 unit 排除；
   不要在 `apps/desktop/vitest.config.ts` 的项目 exclude 里重复排除，否则 guard 层自己也收集不到这些
   文件（2026-10-16 发现 29 个 allowlist 文件实际只跑了 2 个，已修复）。
 - 缺少 timing 的文件是 `src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts`。

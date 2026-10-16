@@ -33,11 +33,18 @@ export const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const NON_UNIT_TEST = /(?:^|[-.])(?:integration|e2e|git-integration)\.(?:test|spec)\.|\.bench\./;
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
-const REAL_WAIT_PATTERN = /\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g;
+const REAL_WAIT_NAMES = new Set(['sleep', 'delay', 'wait', 'waitMs', 'pause']);
 // Reuse Desktop's declared parser to locate test/hook callbacks and local helpers.
 // No type checking or module loading is needed.
 const requireDesktop = createRequire(new URL('../apps/desktop/package.json', import.meta.url));
 let typescript;
+
+function parseTestSource(ts, code) {
+  const tsx = ts.createSourceFile('test.tsx', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  if (tsx.parseDiagnostics.length === 0) return tsx;
+  const plain = ts.createSourceFile('test.ts', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  return plain.parseDiagnostics.length < tsx.parseDiagnostics.length ? plain : tsx;
+}
 
 /** Replace comments with spaces (keeping newlines) so matches ignore commented-out code. */
 export function stripComments(source) {
@@ -95,7 +102,7 @@ function countModuleResets(code, lines) {
   const resets = [...code.matchAll(/\bvi\.resetModules\s*\(/g)];
   if (resets.length === 0) return 0;
   const ts = typescript ??= requireDesktop('typescript');
-  const source = ts.createSourceFile('test.tsx', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const source = parseTestSource(ts, code);
   const nodeScopes = new WeakMap();
   const hooks = [];
   const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
@@ -186,72 +193,191 @@ function maskStrings(source) {
   return out;
 }
 
-function setTimeoutCalls(code) {
+function staticWaitCalls(code) {
+  if (!/\b(?:setTimeout|sleep|delay|wait|waitMs|pause)\s*\(/.test(code)) return [];
+  const ts = typescript ??= requireDesktop('typescript');
+  const source = parseTestSource(ts, code);
+  const nodeScopes = new WeakMap();
   const calls = [];
-  for (const match of code.matchAll(/\bsetTimeout\s*\(/g)) {
-    const start = match.index + match[0].length;
-    let depth = 1;
-    let quote = null;
-    let escaped = false;
-    const commas = [];
-    let end = -1;
-    for (let i = start; i < code.length; i += 1) {
-      const ch = code[i];
-      if (quote) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === quote) quote = null;
-        continue;
+  const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+  function collect(node, scope) {
+    if (ts.isFunctionDeclaration(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node)) scope = { parent: scope, bindings: new Map() };
+    nodeScopes.set(node, scope);
+    if (isFunction(node)) {
+      for (const parameter of node.parameters) {
+        if (ts.isIdentifier(parameter.name)) scope.bindings.set(parameter.name.text, parameter);
       }
-      if (ch === '"' || ch === "'" || ch === String.fromCharCode(96)) quote = ch;
-      else if (ch === '(' || ch === '[' || ch === '{') depth += 1;
-      else if (ch === ')' || ch === ']' || ch === '}') {
-        depth -= 1;
-        if (ch === ')' && depth === 0) {
-          end = i;
-          break;
-        }
-      } else if (ch === ',' && depth === 1) commas.push(i);
     }
-    if (end < 0 || commas.length === 0) continue;
-    const durationStart = commas[0] + 1;
-    const durationEnd = commas[1] ?? end;
-    const duration = code.slice(durationStart, durationEnd).trim();
-    if (/^\d[\d_]*$/.test(duration)) calls.push({ index: match.index, duration });
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) scope.bindings.set(node.name.text, node);
+    if (ts.isCallExpression(node)) calls.push(node);
+    ts.forEachChild(node, child => collect(child, scope));
   }
-  return calls;
+  collect(source, null);
+  function binding(identifier) {
+    for (let scope = nodeScopes.get(identifier); scope; scope = scope.parent) {
+      if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
+    }
+    return null;
+  }
+  function number(node, parameters = new Map(), seen = new Set()) {
+    if (!node || seen.has(node)) return undefined;
+    seen = new Set(seen).add(node);
+    if (ts.isNumericLiteral(node)) return Number(node.text.replaceAll('_', ''));
+    if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node)) return number(node.expression, parameters, seen);
+    if (ts.isIdentifier(node)) {
+      const bound = binding(node);
+      if (!bound) return undefined;
+      if (parameters.has(bound)) return parameters.get(bound);
+      if (ts.isVariableDeclaration(bound) && (bound.parent.flags & ts.NodeFlags.Const)) return number(bound.initializer, parameters, seen);
+      return undefined;
+    }
+    if (ts.isPrefixUnaryExpression(node)) {
+      const value = number(node.operand, parameters, seen);
+      if (node.operator === ts.SyntaxKind.MinusToken) return -value;
+      if (node.operator === ts.SyntaxKind.PlusToken) return value;
+    }
+    if (ts.isBinaryExpression(node)) {
+      const left = number(node.left, parameters, seen);
+      const right = number(node.right, parameters, seen);
+      if (left === undefined || right === undefined) return undefined;
+      switch (node.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken: return left + right;
+        case ts.SyntaxKind.MinusToken: return left - right;
+        case ts.SyntaxKind.AsteriskToken: return left * right;
+        case ts.SyntaxKind.SlashToken: return left / right;
+      }
+    }
+    return undefined;
+  }
+  // Recognize direct local wrappers returning a timeout or Promise containing
+  // one. Do not follow arbitrary control flow, callbacks or external helpers.
+  function wrapperTimer(fn) {
+    if (!fn?.body) return null;
+    const body = ts.isBlock(fn.body)
+      ? fn.body.statements.find(ts.isReturnStatement)?.expression : fn.body;
+    if (!body) return null;
+    if (ts.isCallExpression(body) && body.expression.getText(source) === 'setTimeout') return body;
+    if (!ts.isNewExpression(body) || body.expression.getText(source) !== 'Promise') return null;
+    const executor = body.arguments?.[0];
+    if (!executor || !isFunction(executor)) return null;
+    const candidates = ts.isBlock(executor.body) ? executor.body.statements.map(statement => statement.expression) : [executor.body];
+    return candidates.find(node => node && ts.isCallExpression(node) && node.expression.getText(source) === 'setTimeout') ?? null;
+  }
+  const waits = [];
+  for (const call of calls) {
+    const name = ts.isIdentifier(call.expression) ? call.expression.text
+      : ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : '';
+    let duration;
+    if (name === 'setTimeout') duration = number(call.arguments[1]);
+    else if (REAL_WAIT_NAMES.has(name)) duration = number(call.arguments[0]);
+    else {
+      if (!ts.isIdentifier(call.expression)) continue;
+      const bound = binding(call.expression);
+      const fn = bound && ts.isVariableDeclaration(bound) ? bound.initializer : bound;
+      if (!fn || !isFunction(fn)) continue;
+      const timer = wrapperTimer(fn);
+      if (!timer) continue;
+      const parameters = new Map(fn.parameters.map((parameter, index) => [parameter, number(call.arguments[index] ?? parameter.initializer)]));
+      // Constant waits inside a helper are already counted at their own site.
+      if (number(timer.arguments[1]) !== undefined) continue;
+      duration = number(timer.arguments[1], parameters);
+    }
+    if (Number.isFinite(duration)) waits.push({ index: call.getStart(source), duration });
+  }
+  return waits;
 }
 
-function timerScopes(code) {
+function timerScopes(code, timerEvents) {
   const ts = typescript ??= requireDesktop('typescript');
-  const source = ts.createSourceFile('test.tsx', code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const source = parseTestSource(ts, code);
   const scopes = [];
+  const nodeScopes = new WeakMap();
+  const callbackKinds = new WeakMap();
+  const registeredHelpers = [];
+  const calls = [];
+  const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
   function rootName(expression) {
     if (ts.isIdentifier(expression)) return expression.text;
     if (ts.isPropertyAccessExpression(expression) || ts.isCallExpression(expression)) return rootName(expression.expression);
     if (ts.isTaggedTemplateExpression(expression)) return rootName(expression.tag);
     return '';
   }
-  function visit(node) {
+  function visit(node, lexicalScope) {
+    if (ts.isFunctionDeclaration(node) && node.name) lexicalScope.bindings.set(node.name.text, node);
+    if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node)) lexicalScope = { parent: lexicalScope, bindings: new Map() };
+    nodeScopes.set(node, lexicalScope);
+    if (isFunction(node)) {
+      scopes.push({ kind: callbackKinds.get(node) ?? 'helper', start: node.getStart(source), end: node.end });
+      for (const parameter of node.parameters) {
+        if (ts.isIdentifier(parameter.name)) lexicalScope.bindings.set(parameter.name.text, null);
+      }
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) lexicalScope.bindings.set(node.name.text, node.initializer && isFunction(node.initializer) ? node.initializer : null);
     if (ts.isCallExpression(node)) {
+      calls.push(node);
       const kind = rootName(node.expression);
       if (/^(?:describe|it|test|beforeEach|beforeAll|afterEach|afterAll)$/.test(kind)) {
         for (const argument of node.arguments) {
-          if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) {
-            scopes.push({ kind, start: argument.getStart(source), end: argument.end });
+          if (isFunction(argument)) callbackKinds.set(argument, kind);
+          else if (ts.isIdentifier(argument)) {
+            const scope = { kind, start: argument.getStart(source), end: argument.end };
+            scopes.push(scope);
+            registeredHelpers.push({ argument, scope });
           }
         }
       }
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, child => visit(child, lexicalScope));
   }
-  visit(source);
-  return scopes.sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  visit(source, null);
+  scopes.sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  function helper(expression) {
+    if (isFunction(expression)) return expression;
+    if (!ts.isIdentifier(expression)) return null;
+    for (let scope = nodeScopes.get(expression); scope; scope = scope.parent) {
+      if (scope.bindings.has(expression.text)) return scope.bindings.get(expression.text);
+    }
+    return null;
+  }
+  function helperEvents(fn, seen = new Set()) {
+    if (!fn?.body || seen.has(fn)) return [];
+    seen = new Set(seen).add(fn);
+    const events = [];
+    function inspect(node) {
+      if (isFunction(node)) return;
+      if (ts.isCallExpression(node)) {
+        const expression = node.expression;
+        if (ts.isPropertyAccessExpression(expression) && expression.expression.getText(source) === 'vi'
+          && /^(?:useFakeTimers|useRealTimers)$/.test(expression.name.text)) events.push(expression.name.text);
+        else events.push(...helperEvents(helper(expression), seen));
+      }
+      ts.forEachChild(node, inspect);
+    }
+    inspect(fn.body);
+    return events;
+  }
+  function addEvents(names, index) {
+    names.forEach((name, order) => timerEvents.push({ 1: name, index: index + (order + 1) / 1e6 }));
+  }
+  // A helper definition does not change timer mode. Apply its reachable timer
+  // calls only where it is actually invoked or registered as a framework hook.
+  for (const call of calls) {
+    const index = call.getStart(source);
+    if (scopes.find(scope => scope.start <= index && index < scope.end)?.kind === 'helper') continue;
+    addEvents(helperEvents(helper(call.expression)), index);
+  }
+  for (const { argument, scope } of registeredHelpers) addEvents(helperEvents(helper(argument)), scope.start);
+  timerEvents.sort((a, b) => a.index - b.index);
+  return scopes;
 }
 
 function timerStateAt(index, timerEvents, scopes) {
   const scopeAt = (position) => scopes.find(s => s.start <= position && position < s.end);
-  const waitScope = scopeAt(index);
+  const localWaitScope = scopeAt(index);
+  // Inline executors (for example a Promise around setTimeout) still run in
+  // the surrounding test and inherit its hooks, unlike an uncalled definition.
+  const waitScope = scopes.find(s => s.kind !== 'helper' && s.start <= index && index < s.end) ?? localWaitScope;
   const describeAt = (scope) => scopes.find(s => s.kind === 'describe' && s.start < scope.start && scope.end < s.end);
   const belongsToWait = (scope) => !scope || scope.kind === 'describe' && scope.start < index && index < scope.end;
   const events = timerEvents.map(event => ({ event, scope: scopeAt(event.index) }));
@@ -263,7 +389,13 @@ function timerStateAt(index, timerEvents, scopes) {
   if (waitScope && /^(?:it|test)$/.test(waitScope.kind)) {
     // Registration-time setup, like beforeAll, runs only once. An afterEach
     // restoring real timers can invalidate it before a later test runs.
-    const restoresRealTimers = events.some(entry => entry.scope?.kind === 'afterEach' && entry.event[1] === 'useRealTimers' && belongsToWait(describeAt(entry.scope)));
+    const earlierTests = scopes.filter(scope => /^(?:it|test)$/.test(scope.kind) && scope.end < waitScope.start);
+    const containsTest = (suite, test) => !suite || suite.start < test.start && test.end < suite.end;
+    const restoringHooks = events.filter(entry => entry.scope?.kind === 'afterEach'
+      && entry.event[1] === 'useRealTimers' && belongsToWait(describeAt(entry.scope)));
+    const hasRestoredTimers = (suite) => restoringHooks.some(entry => earlierTests.some(test =>
+      containsTest(suite, test) && containsTest(describeAt(entry.scope), test)));
+    const restoresRealTimers = hasRestoredTimers(null);
     if (restoresRealTimers) fake = false;
     const hooks = events.filter(({ scope }) => scope && /^(?:beforeAll|beforeEach)$/.test(scope.kind) && belongsToWait(describeAt(scope)))
       .sort((a, b) => {
@@ -275,30 +407,24 @@ function timerStateAt(index, timerEvents, scopes) {
     for (const { event, scope } of hooks) {
       // An afterEach restoring real timers invalidates beforeAll-only setup
       // for subsequent tests. Be conservative rather than exempt a real wait.
-      if (scope.kind === 'beforeAll' && restoresRealTimers) continue;
+      if (scope.kind === 'beforeAll' && hasRestoredTimers(describeAt(scope))) continue;
       fake = event[1] === 'useFakeTimers';
     }
   }
   for (const { event, scope } of events) {
-    if (scope === waitScope && event.index < index) fake = event[1] === 'useFakeTimers';
+    if ((scope === waitScope || scope === localWaitScope) && event.index < index) fake = event[1] === 'useFakeTimers';
   }
   return fake;
 }
 
 function countRealWaits(code, lines) {
   const timerEvents = [...code.matchAll(/\bvi\.(useFakeTimers|useRealTimers)\s*\(/g)];
-  const scopes = timerEvents.length > 0 ? timerScopes(code) : [];
+  const scopes = timerEvents.length > 0 ? timerScopes(code, timerEvents) : [];
   let count = 0;
-  const waits = [
-    ...setTimeoutCalls(code).map(({ index, duration }) => ({ index, duration })),
-    ...[...code.matchAll(REAL_WAIT_PATTERN)].map((match) => ({
-      index: match.index,
-      duration: match[1] ?? match[2],
-    })),
-  ].sort((a, b) => a.index - b.index);
+  const waits = staticWaitCalls(code).sort((a, b) => a.index - b.index);
   for (const wait of waits) {
     if (timerStateAt(wait.index, timerEvents, scopes)) continue;
-    if (Number(wait.duration.replaceAll('_', '')) < REAL_WAIT_MIN_MS) continue;
+    if (wait.duration < REAL_WAIT_MIN_MS) continue;
     const line = lineOf(code, wait.index);
     if (!hasJustification(lines, line, 'real-wait')) count += 1;
   }
@@ -311,7 +437,7 @@ const SOURCE_EXT = new RegExp('\\.' + SOURCE_EXTENSION + '$', 'i');
 const SOURCE_LITERAL = new RegExp('\\.' + SOURCE_EXTENSION + '[\'"]', 'i');
 // Only anchors that point into the checkout count; generic names such as `root`
 // usually hold an mkdtemp() directory whose fake source files are test input.
-const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
+const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s*\)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
 
 function findEnclosingReadCall(code, index, pattern = /\breadFile(?:Sync)?\s*\(/g) {
   const starts = [...code.matchAll(pattern)];
@@ -391,6 +517,187 @@ function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
   return callStart >= 0 && (value.startsWith('./') || value.startsWith('../'));
 }
 
+/** Source compiled and executed by a behavior harness is not a text assertion.
+ * Follow each read's local bindings to execution and assertion sites separately:
+ * an unrelated new Function must never exempt a source-literal assertion.
+ */
+function executedSourcePaths(code) {
+  const ts = typescript ??= requireDesktop('typescript');
+  const source = parseTestSource(ts, code);
+  const scopes = new WeakMap();
+  const reads = [];
+  const calls = [];
+  const strings = [];
+  const isFunction = node => ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+  function collect(node, scope) {
+    if (ts.isFunctionDeclaration(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node) || ts.isForOfStatement(node)) scope = { parent: scope, bindings: new Map() };
+    scopes.set(node, scope);
+    if (isFunction(node)) for (const parameter of node.parameters) {
+      if (ts.isIdentifier(parameter.name)) scope.bindings.set(parameter.name.text, parameter);
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) scope.bindings.set(node.name.text, node);
+    if (ts.isVariableDeclaration(node) && ts.isArrayBindingPattern(node.name)) {
+      const loop = node.parent.parent;
+      if (ts.isForOfStatement(loop)) {
+        for (const element of node.name.elements) {
+          if (ts.isBindingElement(element) && ts.isIdentifier(element.name)) scope.bindings.set(element.name.text, element);
+        }
+      }
+    }
+    if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportClause(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isStringLiteralLike(node)) strings.push(node);
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      calls.push(node);
+      const name = ts.isIdentifier(node.expression) ? node.expression.text
+        : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : '';
+      if (name === 'readFileSync' || name === 'readFile') reads.push(node);
+    }
+    ts.forEachChild(node, child => collect(child, scope));
+  }
+  collect(source, null);
+  function binding(identifier) {
+    for (let scope = scopes.get(identifier); scope; scope = scope.parent) {
+      if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
+    }
+    return null;
+  }
+  function vmNamespace(node, seen = new Set()) {
+    if (!ts.isIdentifier(node) || seen.has(node)) return false;
+    seen.add(node);
+    const bound = binding(node);
+    if (bound && ts.isVariableDeclaration(bound) && bound.initializer) return vmNamespace(bound.initializer, seen);
+    const declaration = bound && (ts.isNamespaceImport(bound) ? bound.parent.parent
+      : ts.isImportClause(bound) ? bound.parent : null);
+    return declaration && ts.isImportDeclaration(declaration) && ts.isStringLiteral(declaration.moduleSpecifier)
+      && /^(?:node:)?vm$/.test(declaration.moduleSpecifier.text);
+  }
+  function execution(node) {
+    if (!ts.isNewExpression(node) && !ts.isCallExpression(node)) return false;
+    if (ts.isPropertyAccessExpression(node.expression)) return /^runIn(?:New)?Context$/.test(node.expression.name.text)
+      && vmNamespace(node.expression.expression);
+    if (!ts.isIdentifier(node.expression)) return false;
+    const bound = binding(node.expression);
+    if (!bound) return node.expression.text === 'Function';
+    if (!ts.isImportSpecifier(bound)) return false;
+    const imported = bound.propertyName?.text ?? bound.name.text;
+    const declaration = bound.parent.parent.parent;
+    return /^runIn(?:New)?Context$/.test(imported) && ts.isImportDeclaration(declaration)
+      && ts.isStringLiteral(declaration.moduleSpecifier) && /^(?:node:)?vm$/.test(declaration.moduleSpecifier.text);
+  }
+  const writes = new Map();
+  function addWrite(bound, value) {
+    if (bound && value) writes.set(bound, [...(writes.get(bound) ?? []), value]);
+  }
+  function collectWrites(node) {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+      addWrite(binding(node.left), node.right);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const bound = binding(node.expression);
+      const fn = bound && ts.isVariableDeclaration(bound) ? bound.initializer : bound;
+      if (fn && isFunction(fn)) fn.parameters.forEach((parameter, index) => addWrite(parameter, node.arguments[index]));
+    }
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && /^(?:set|push|unshift|add)$/.test(node.expression.name.text) && ts.isIdentifier(node.expression.expression)) {
+      for (const argument of node.arguments) addWrite(binding(node.expression.expression), argument);
+    }
+    ts.forEachChild(node, collectWrites);
+  }
+  collectWrites(source);
+  const returnCache = new WeakMap();
+  function returns(fn) {
+    if (returnCache.has(fn)) return returnCache.get(fn);
+    if (!fn.body) return [];
+    if (!ts.isBlock(fn.body)) return [fn.body];
+    const result = [];
+    function visit(node) {
+      if (isFunction(node)) return;
+      if (ts.isReturnStatement(node) && node.expression) result.push(node.expression);
+      ts.forEachChild(node, visit);
+    }
+    visit(fn.body);
+    returnCache.set(fn, result);
+    return result;
+  }
+  const readSet = new Set(reads);
+  function dependencies(node, seen = new Set(), paths = false) {
+    if (!node || seen.has(node)) return new Set();
+    seen.add(node);
+    if (paths && ts.isStringLiteralLike(node)) return new Set([node.getStart(source)]);
+    if (!paths && readSet.has(node)) return new Set([node]);
+    if (isFunction(node)) {
+      const result = new Set();
+      for (const value of returns(node)) for (const dependency of dependencies(value, seen, paths)) result.add(dependency);
+      return result;
+    }
+    if (ts.isIdentifier(node)) {
+      // A property label is not a read of a same-named local source variable.
+      // Shorthand and computed properties are expressions and still propagate.
+      if (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node
+        || ts.isPropertyAssignment(node.parent) && node.parent.name === node) return new Set();
+      const bound = binding(node);
+      const values = [...(writes.get(bound) ?? [])];
+      if (bound && (ts.isVariableDeclaration(bound) || ts.isParameter(bound))) values.push(bound.initializer);
+      if (bound && ts.isBindingElement(bound)) values.push(bound.parent.parent.parent.parent.expression);
+      if (bound && isFunction(bound)) values.push(...returns(bound));
+      const result = new Set();
+      for (const value of values) for (const dependency of dependencies(value, seen, paths)) result.add(dependency);
+      return result;
+    }
+    // Once the compiled function is invoked, its return value is behavior, not
+    // source text. Its code input is inspected independently at the sink below.
+    if (!paths && (ts.isCallExpression(node) || ts.isNewExpression(node)) && execution(node)) return new Set();
+    if (ts.isCallExpression(node)) {
+      const callee = ts.isIdentifier(node.expression) ? binding(node.expression) : null;
+      const fn = callee && ts.isVariableDeclaration(callee) ? callee.initializer : callee;
+      if (fn && isFunction(fn)) {
+        // Parameters already carry their actual writes. A local helper's
+        // output depends on its returns, not every unrelated input argument.
+        const result = new Set();
+        for (const value of returns(fn)) for (const dependency of dependencies(value, seen, paths)) result.add(dependency);
+        return result;
+      }
+      const initializer = callee && ts.isVariableDeclaration(callee) ? callee.initializer : node.expression;
+      if (!paths && initializer && execution(initializer)) return new Set();
+    }
+    const result = new Set();
+    ts.forEachChild(node, child => {
+      for (const dependency of dependencies(child, seen, paths)) result.add(dependency);
+    });
+    return result;
+  }
+  const executed = new Set();
+  const asserted = new Set();
+  for (const call of calls) {
+    if (execution(call)) {
+      for (const argument of call.arguments ?? []) for (const read of dependencies(argument)) executed.add(read);
+      if (ts.isPropertyAccessExpression(call.expression)) {
+        for (const read of dependencies(call.expression.expression)) executed.add(read);
+      }
+    }
+    let assertionExpression = call.expression;
+    while (ts.isPropertyAccessExpression(assertionExpression)) assertionExpression = assertionExpression.expression;
+    const assertion = ts.isIdentifier(assertionExpression) ? assertionExpression.text : '';
+    if (/^(?:expect|expectTypeOf|assert)$/.test(assertion)) {
+      for (const argument of call.arguments ?? []) for (const read of dependencies(argument)) asserted.add(read);
+    }
+  }
+  const exempt = new Set();
+  const readHelpers = findSourceReadHelpers(code);
+  for (const read of executed) {
+    if (asserted.has(read)) continue;
+    for (const position of dependencies(read.arguments[0], new Set(), true)) exempt.add(position);
+    // readSource('../x.ts') helpers keep their path at the call site. Only
+    // calls whose result actually depends on this executed read qualify.
+    for (const call of calls) {
+      if (!ts.isIdentifier(call.expression) || !readHelpers.has(call.expression.text) || !dependencies(call).has(read)) continue;
+      for (const argument of call.arguments ?? []) for (const position of dependencies(argument, new Set(), true)) exempt.add(position);
+    }
+  }
+  return exempt;
+}
+
 /** Count unjustified rule hits in one unit test file. */
 export function scanTestSource(source, { isGuard = false } = {}) {
   const code = stripComments(source);
@@ -401,7 +708,9 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   let sourceReads = 0;
   if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw/.test(code)) {
     const sourceReadHelpers = findSourceReadHelpers(code);
+    const executablePaths = /\bFunction\b|\brunIn(?:New)?Context\b/.test(code) ? executedSourcePaths(code) : new Set();
     for (const match of code.matchAll(/(['"`])([^'"`\n$]+)\1/g)) {
+      if (executablePaths.has(match.index)) continue;
       if (match[2].endsWith('?raw') || isSourcePathLiteral(code, match, sourceReadHelpers)) sourceReads += 1;
     }
   }

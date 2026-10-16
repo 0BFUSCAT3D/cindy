@@ -96,6 +96,21 @@ const desktopE2eInclude = [
   'src/main/maker-host/__tests__/*.e2e.test.ts',
 ];
 const mobileGuardInclude = [
+  // Swift/delegate authorization, recording lifecycle, and native clipping are cross-runtime contracts.
+  'src/__tests__/mobileNativeBoundaryContracts.test.ts',
+  'src/__tests__/messageNativeLifecycleContracts.test.ts',
+  'src/__tests__/nativeE2eContracts.test.ts',
+  // Credential ownership, retry protocol, and cross-file design contracts:
+  // these read production sources to cover call-site boundaries, not runtime behavior.
+  'src/__tests__/authWeakNetworkBootstrap.test.ts',
+  'src/__tests__/mobileAuthServerLogin.test.ts',
+  'src/__tests__/messageSelectionHighlight.test.ts',
+  'src/__tests__/precreatedWorktreeRecoveryBridge.test.ts',
+  'src/__tests__/remoteListIncludePinned.test.ts',
+  'src/__tests__/revokedAccessTipDismissal.test.ts',
+  'src/__tests__/sendEnqueueRetry.test.ts',
+  'src/__tests__/sessionScreenshotShare.test.ts',
+  'src/auth/__tests__/xdOrgBetaWiring.test.ts',
   // CSP must be applied at the WebView and download call sites, not only in its helper.
   'src/__tests__/htmlPreviewCsp.test.ts',
   'src/auth/__tests__/loginHandoffState.test.ts',
@@ -131,6 +146,28 @@ const mobileGuardInclude = [
 // in the explicit guard tier. Keeping an exact allowlist makes it impossible
 // for a new source scan to silently become part of the ordinary unit gate.
 const desktopGuardInclude = [
+  'src/renderer/__tests__/sessionAgentSwitchRemoteRouting.contract.test.ts',
+  // Existing credential/permission/protocol contracts, separated from runtime units.
+  'src/main/__tests__/analyticsConsentMigrationGuards.test.ts',
+  'src/main/__tests__/authAccountDeletionLifecycle.test.ts',
+  'src/main/__tests__/authLegacyTokenMirror.test.ts',
+  'src/main/__tests__/authPassiveSharedInstance.test.ts',
+  'src/main/__tests__/authSessionExpiredDetection.test.ts',
+  'src/main/ghost-panel-window/__tests__/preload-contract.test.ts',
+  'src/main/right-sidebar-window/__tests__/preload-contract.test.ts',
+  'src/main/maker-ipc/__tests__/piPackageEnableConfirmationIpc.test.ts',
+  'src/main/plugin-market/__tests__/ipcErrorBoundary.test.ts',
+  'src/renderer/__tests__/xUsageGuideRiskContrast.test.ts',
+  'src/main/__tests__/authHostedCallback.contract.test.ts',
+  'src/main/__tests__/loginScenarioHarness.contract.test.ts',
+  'src/main/__tests__/officialProfileMigrationPolicy.contract.test.ts',
+  'src/renderer/__tests__/authContextRace.contract.test.ts',
+  'src/main/__tests__/mobileClientPromptNote.contract.test.ts',
+  'src/main/cindy-brain/__tests__/legacyGhostRecoveryOrchestration.contract.test.ts',
+  'src/main/cindy-brain/__tests__/codexImageAuthBinding.contract.test.ts',
+  'src/main/__tests__/authCredentialStoreHealth.contract.test.ts',
+  'src/main/__tests__/authLoginFlowReset.contract.test.ts',
+  'src/main/maker-ipc/__tests__/messageDeleteHandler.contract.test.ts',
   'src/renderer/__tests__/orcaWorkerAttentionWatcherMount.test.ts',
   'src/renderer/__tests__/userMessageSourceLabels.test.ts',
   // These native host suites also protect cross-runtime privacy/permission

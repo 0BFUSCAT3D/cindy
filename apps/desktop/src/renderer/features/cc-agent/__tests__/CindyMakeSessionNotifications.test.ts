@@ -123,27 +123,4 @@ describe('disabled Make notification dispatch', () => {
     await Promise.resolve();
     expect(send).toHaveBeenCalledWith('unknown', 'Unnamed task', 'error');
   });
-
-  it('passes unfiltered local and remote metadata to notification dispatch', () => {
-    let rawRemote: string | undefined;
-    const props = new Map<string, string>();
-    function visit(node: ts.Node): void {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'remoteProjectSessionsRaw' && !rawRemote) {
-        rawRemote = node.initializer?.getText(source);
-      }
-      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'ExpandedView') {
-        for (const attribute of node.attributes.properties) {
-          if (ts.isJsxAttribute(attribute) && attribute.initializer && ts.isJsxExpression(attribute.initializer)) {
-            props.set(attribute.name.getText(source), attribute.initializer.expression?.getText(source) ?? '');
-          }
-        }
-      }
-      ts.forEachChild(node, visit);
-    }
-    visit(source);
-    expect(rawRemote).toContain('useSyncExternalStore');
-    expect(rawRemote).toContain('remoteProjectsStore.getMergedRemoteSessions');
-    expect(props.get('allSessionsForNotification')).toBe('allSessionsForAttentionRaw');
-    expect(props.get('remoteSessionsForNotification')).toBe('remoteProjectSessionsRaw');
-  });
 });

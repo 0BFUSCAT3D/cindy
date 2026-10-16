@@ -46,6 +46,7 @@ import {
 	printSummary,
 	readAllFiles,
 	resolveOutputStream,
+	resolveTestInvocation,
 	runCommand,
 	runPlannedTests,
 	runWithExclusiveBarriers,
@@ -2069,14 +2070,14 @@ test("runPlannedTests passes selected include files to packageBin commands", asy
 			return { exitCode: 0, output: "PASS" };
 		},
 	});
-	// Windows 上 resolvePnpmInvocation 会通过 cmd.exe 包装，实际 pnpm 参数
-	// 放在 env 的 CINDY_PNPM_CMD_ARG_N 里。其他平台参数直接在 args 里。
+	// Non-Vitest wrappers may carry arguments through cmd environment slots;
+	// directly launched Vitest keeps them in the argv array on every platform.
 	const call = calls[0];
-	const pnpmArgs = call.options?.env
-		? Object.keys(call.options.env)
-				.filter((k) => k.startsWith("CINDY_PNPM_CMD_ARG_"))
-				.sort()
-				.map((k) => call.options.env[k])
+	const cmdEnvKeys = Object.keys(call.options?.env ?? {})
+		.filter((k) => k.startsWith("CINDY_PNPM_CMD_ARG_"))
+		.sort();
+	const pnpmArgs = cmdEnvKeys.length
+		? cmdEnvKeys.map((k) => call.options.env[k])
 		: call.args;
 	assert.deepEqual(pnpmArgs.slice(-1), [
 		"src/__tests__/orca-bridge-mcp.test.ts",
@@ -2096,6 +2097,56 @@ test("buildPnpmArgs rejects selected files outside the workspace", () => {
 			),
 		/Selected test file is outside workspace packages\/orca-workflow: packages\/other\/src\/foo\.test\.ts/,
 	);
+});
+
+// PR #6196: the guard exclusion list crossed cmd.exe's 8191-character limit
+// inside pnpm exec on Windows. Exercise the real runner and a small existing
+// suite; nonmatching exclusions reproduce the launch failure without changing
+// test selection or creating another Vitest harness.
+test("Windows long Vitest arguments reach the test process without cmd truncation", async () => {
+	const values = ["a space", "中文", 'a"quote', "%TEMP%", "a&b", "a^b", "long-".repeat(1800)];
+	const echoArgs = ["--dir", ROOT, "exec", "vitest", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", "--", ...values];
+	const options = { platform: "win32", execPath: process.execPath, vitestEntry: "-e", env: { ...process.env, Path: "original-path", PATH: "duplicate-path" } };
+	for (const npmExecPath of [undefined, "pnpm.cmd"]) {
+		const invocation = resolveTestInvocation(echoArgs, { ...options, npmExecPath });
+		assert.equal(invocation.command, process.execPath);
+		assert.equal(invocation.shell, false);
+		assert.equal(Object.keys(invocation.env).filter((key) => key.toLowerCase() === "path").length, 1);
+		const echoed = await runCommand(invocation.command, invocation.args, { env: invocation.env, shell: false, stdout: null, stderr: null });
+		assert.equal(echoed.exitCode, 0, echoed.output);
+		assert.deepEqual(JSON.parse(echoed.output), values);
+	}
+	for (const [args, platform] of [[echoArgs, "linux"], [["--dir", ROOT, "run", "test"], "win32"], [["--dir", ROOT, "exec", "other-tool"], "win32"]]) {
+		const fallbackOptions = { platform, npmExecPath: "/tools/pnpm.cjs", execPath: process.execPath };
+		assert.deepEqual(resolveTestInvocation(args, fallbackOptions), resolvePnpmInvocation(args, fallbackOptions));
+	}
+	const file = "src/main/agent-island/__tests__/nativeContracts.test.ts";
+	const workspace = {
+		name: "desktop",
+		cwd: "apps/desktop",
+		status: "required",
+		tiers: {
+			guard: {
+				status: "required",
+				coverage: "allowlist",
+				command: { type: "packageBin", bin: "vitest", args: ["run", "--pool=forks", "--maxWorkers=1"] },
+				include: [file],
+				exclude: Array.from({ length: 90 }, (_, i) => "src/never-selected/" + "long-path-".repeat(10) + i + ".test.ts"),
+			},
+		},
+	};
+	const files = ["apps/desktop/" + file];
+	const pnpmArgs = buildPnpmArgs(ROOT, workspace, workspace.tiers.guard.command, workspace.tiers.guard, files);
+	assert.ok(pnpmArgs.join(" ").length > 8191);
+	const [result] = await runPlannedTests({
+		root: ROOT,
+		workspaceCwds: [workspace.cwd],
+		manifest: { workspaces: [workspace] },
+		allFiles: files,
+		tier: "guard",
+	});
+	assert.equal(result.exitCode, 0, result.output);
+	assert.match(result.output, /nativeContracts\.test\.ts/);
 });
 
 test("buildPnpmArgs switches vitest to related mode when related files are provided", () => {
