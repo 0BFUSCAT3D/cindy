@@ -9,7 +9,7 @@ import { APP_BINARY_VERSION } from '@/config/env';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
 import { NativeSheetContext } from '@/session/NativeSheetContext';
 import { SheetModal } from '@/session/SheetModal';
-import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
+import { FloatingSheetContext, usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import {
   fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors,
 } from '@/theme';
@@ -69,6 +69,7 @@ function AndroidUpdateCard({ state }: { state: AndroidInstallState }) {
   const insets = useSafeAreaInsets();
   const nativeSheet = useContext(NativeSheetContext);
   const viewport = usePaneViewport();
+  const floating = useContext(FloatingSheetContext);
   const view = presentAndroidUpdate(state.phase, state.progress);
   const version = state.target?.version ?? '';
   const notes = state.target?.releaseNotes?.trim();
@@ -81,6 +82,8 @@ function AndroidUpdateCard({ state }: { state: AndroidInstallState }) {
       style={[
         styles.card,
         !nativeSheet && styles.cardCompatible,
+        // Centered floating windows are a free-standing card, not a bottom-attached sheet.
+        !nativeSheet && floating && styles.cardFloating,
         // The Material container already pads for the navigation bar (same rule as SheetSurface).
         { paddingBottom: nativeSheet ? spacing.lg : Math.max(insets.bottom, spacing.md) + spacing.sm },
         // Short windows (landscape, split screen): the details scroll and the actions stay reachable.
@@ -234,6 +237,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     paddingTop: spacing.xl,
   },
   body: { flexGrow: 0, flexShrink: 1 },
+  cardFloating: { borderRadius: radius.container },
   header: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
   appIcon: {
     borderColor: colors.border,
