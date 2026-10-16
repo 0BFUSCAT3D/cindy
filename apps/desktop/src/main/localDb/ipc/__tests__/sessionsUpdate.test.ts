@@ -17,6 +17,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import type { InvokeResultPayload } from '@cindy/device-link';
 
 import { messages, recentWorkdirs, sessions } from '../../schema';
 import type { SessionRouteLock } from '../../sessionRouteLock';
@@ -925,7 +926,7 @@ describe('local-db:sessions:update handler wiring', () => {
       .mockRejectedValueOnce(new Error('db worker RPC queue overloaded'));
     try {
       let handlerError: unknown;
-      const invoke = vi.fn(async (_device: string, _channel: string, args: unknown[]) => {
+      const invoke = vi.fn(async (_device: string, _channel: string, args: unknown[]): Promise<InvokeResultPayload> => {
         try {
           return { ok: true as const, result: await invokePatchMeta(args[0] as string, args[1] as Record<string, unknown>) };
         } catch (error) {

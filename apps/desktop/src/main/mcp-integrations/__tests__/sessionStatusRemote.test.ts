@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceLinkError, type InvokeResultPayload } from '@cindy/device-link';
 import { createRemoteSessionsStatusSetter } from '../sessionStatusRemote.js';
+import { createDeviceUnresponsiveError } from '../../device-link/responsivenessTracker.js';
 
 const request = { deviceId: 'studio', sessionIds: ['s1', 's2', 's3'], status: 'active' as const };
 const row = (id: string) => ({ ok: true as const, result: { id, status: 'active', title: 'remote title', workingDir: null } });
@@ -28,7 +29,6 @@ describe('remote session archive status', () => {
     ['CHANNEL_NOT_ALLOWED', '', 'REMOTE_UNSUPPORTED'],
     ['VERSION_MISMATCH', '', 'REMOTE_UNSUPPORTED'],
     ['NOT_CONNECTED', '', 'REMOTE_UNAVAILABLE'],
-    ['DEVICE_UNRESPONSIVE', '', 'REMOTE_UNAVAILABLE'],
     ['BACKPRESSURE', 'db worker RPC queue overloaded', 'REMOTE_RESULT_UNKNOWN'],
     ['IPC_ERROR', '[BACKPRESSURE] db worker RPC queue overloaded', 'REMOTE_RESULT_UNKNOWN'],
     ['IPC_ERROR', '[DEVICE_LINK_CONTROL_DISABLED] off', 'REMOTE_DISABLED'],
@@ -42,6 +42,15 @@ describe('remote session archive status', () => {
   ] as const)('classifies %s / %s without retry or local fallback', async (code, message, expected) => {
     const s = setup({ ok: false, error: { code, message } });
     expect(await s.setStatus(request)).toMatchObject({ ok: false, errorCode: expected, changed: [], failedSessionId: 's1', remainingSessionIds: ['s2', 's3'] });
+    expect(s.invoke).toHaveBeenCalledOnce();
+  });
+
+  it('classifies the local responsiveness breaker rejection without sending another item', async () => {
+    const s = setup(createDeviceUnresponsiveError('studio'));
+    expect(await s.setStatus(request)).toMatchObject({
+      ok: false, errorCode: 'REMOTE_UNAVAILABLE', changed: [],
+      failedSessionId: 's1', remainingSessionIds: ['s2', 's3'],
+    });
     expect(s.invoke).toHaveBeenCalledOnce();
   });
 
