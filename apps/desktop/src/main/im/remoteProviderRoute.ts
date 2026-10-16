@@ -1,5 +1,5 @@
 import type { AgentKind } from '@cindy/maker-core';
-import { getModel, isModelSelectableForNewRoute } from '@cindy/model-providers';
+import { effectiveSourceIdForModel, getModel, isModelSelectableForNewRoute } from '@cindy/model-providers';
 
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog';
 
@@ -12,7 +12,10 @@ export async function readImRemoteProviderRoute(route: {
 }) {
   const { remoteBackgroundInvoke } = await import('../device-link');
   const providers = await readDeviceProviderViews(remoteBackgroundInvoke, route.agentDeviceId);
-  const provider = providers.find((p) => p.id === route.providerId && p.connected && !p.suspended && p.agents.includes(route.agentKind));
+  // 已有远程任务可以未指定来源；只在执行端授权目录内按原生默认规则解析。
+  // 显式来源失效仍拒绝，不换到另一个同名模型账号。
+  const providerId = route.providerId ?? effectiveSourceIdForModel(providers, null, route.model, route.agentKind);
+  const provider = providers.find((p) => p.id === providerId && p.connected && !p.suspended && p.agents.includes(route.agentKind));
   const model = provider && getModel(provider, route.model, route.agentKind);
   if (!provider || !model || !isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' })) {
     throw new Error('[REMOTE_AGENT_UNAVAILABLE] Selected remote provider or model is unavailable.');

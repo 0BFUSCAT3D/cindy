@@ -95,7 +95,7 @@ function toPrefsCaps(caps: AgentCapabilities | null): PrefsAgentCaps | null {
 export interface HookWorkspacePrefsState {
   /** 按别名查该目录偏好(无行返回全 null 缺省; multi-team 下按选中 team 过滤)。 */
   prefsFor: (alias: string) => HookWorkspacePrefs;
-  /** 该目录的模型来源偏好(纯本地; null = 未设置, 跟随默认路由)。 */
+  /** 目录显式来源优先，否则继承当前引擎的 IM 默认来源。 */
   providerSourceFor: (alias: string) => string | null;
   agentDeviceFor: (alias: string) => string | null;
   /** 写/清该目录的模型来源偏好(providerId = null 清除)。 */
@@ -351,25 +351,20 @@ export function useHookWorkspacePrefs(
     [activePrefsView, multiTeam, selectedTeamId],
   );
 
-  // 目录来源偏好: teamId 精确匹配优先、null 行兜底 —— 与 prefsFor 同语义。
-  const providerSourceFor = useCallback(
-    (alias: string): string | null => {
-      const teamId = multiTeam ? selectedTeamId : null;
-      const match = (want: string | null) =>
-        providerSources.find(
-          (e) => e.channel === provider && e.teamId === want && e.workspace === alias,
-        )?.providerId ?? null;
-      return match(teamId) ?? (teamId !== null ? match(null) : null);
-    },
-    [providerSources, provider, multiTeam, selectedTeamId],
-  );
-
-  const agentDeviceFor = useCallback((alias: string): string | null => {
+  // 与派发端同口径：有目录来源时整组覆盖(缺省位置表示明确选本机)，
+  // 无目录来源才继承该引擎的默认来源及执行位置，不能逐字段混用。
+  const providerRouteFor = useCallback((alias: string) => {
     const teamId = multiTeam ? selectedTeamId : null;
     const entry = providerSources.find((e) => e.channel === provider && e.teamId === teamId && e.workspace === alias)
       ?? providerSources.find((e) => e.channel === provider && e.teamId === null && e.workspace === alias);
-    return entry?.agentDeviceId ?? null;
-  }, [providerSources, provider, multiTeam, selectedTeamId]);
+    if (entry) return entry;
+    const agentKind = prefsFor(alias).agentKind;
+    return imDefaults?.agents[isKnownAgent(agentKind) ? agentKind : imDefaults.agentKind] ?? null;
+  }, [providerSources, provider, multiTeam, selectedTeamId, prefsFor, imDefaults]);
+  const providerSourceFor = useCallback((alias: string): string | null =>
+    providerRouteFor(alias)?.providerId ?? null, [providerRouteFor]);
+  const agentDeviceFor = useCallback((alias: string): string | null =>
+    providerRouteFor(alias)?.agentDeviceId ?? null, [providerRouteFor]);
 
   const applyProviderSource = useCallback(
     (alias: string, providerId: string | null, agentDeviceId?: string | null) => {

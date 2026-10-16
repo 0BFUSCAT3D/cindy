@@ -25,6 +25,26 @@ it('uses the authorized sharing catalog', async () => {
   await expect(readImRemoteProviderRoute(route)).resolves.toMatchObject({ provider: { id: 'openai' }, model: { id: 'shared-model' } });
   expect(invoke).toHaveBeenCalledWith('share:owner', 'maker:provider:list', expect.any(Array));
 });
+it('resolves an existing task without an explicit provider using only the authorized remote catalog', async () => {
+  invoke.mockResolvedValue({ ok: true, result: { providers: [
+    { ...provider, id: 'not-shared', remoteInvocationEnabled: false }, provider,
+  ] } });
+  await expect(readImRemoteProviderRoute({ ...route, agentDeviceId: 'remote-device', providerId: null }))
+    .resolves.toMatchObject({ provider: { id: 'openai' } });
+  expect(invoke).toHaveBeenCalledWith('remote-device', 'maker:provider:list', expect.any(Array));
+});
+it('does not replace an explicitly selected missing provider with the remote default', async () => {
+  invoke.mockResolvedValue({ ok: true, result: { providers: [provider] } });
+  await expect(readImRemoteProviderRoute({ ...route, providerId: 'missing' }))
+    .rejects.toThrow('REMOTE_AGENT_UNAVAILABLE');
+});
+it('rejects an implicit route when no authorized remote provider offers the model', async () => {
+  invoke.mockResolvedValue({ ok: true, result: { providers: [
+    { ...provider, remoteInvocationEnabled: false },
+  ] } });
+  await expect(readImRemoteProviderRoute({ ...route, providerId: null }))
+    .rejects.toThrow('REMOTE_AGENT_UNAVAILABLE');
+});
 it.each([
   { connected: false }, { suspended: true }, { remoteInvocationEnabled: false },
   { models: { codex: [{ id: 'shared-model', disabled: true }] } },
