@@ -478,6 +478,7 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
     <div ref={rootRef} className="flex h-full w-full flex-col bg-content-area">
       <BrowserChrome
         ref={chromeRef}
+        visible={tabVisible}
         url={state.url || 'about:blank'}
         isLoading={browser.isLoading}
         canGoBack={browser.canGoBack}

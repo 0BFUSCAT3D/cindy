@@ -378,6 +378,101 @@ describe('RightSidebarShell empty state', () => {
     }
   });
 
+  it.each(['task switch', 'sidebar hide'] as const)(
+    'closes the retained browser More portal on %s without restoring hidden focus',
+    async (transition) => {
+      Object.assign(window.electronAPI, { onRsbBrowserFocusUrlBar: () => () => undefined });
+      registerTabKind({
+        kind: 'web-browser',
+        menu: { kind: 'web-browser', labelKey: 'browser', icon: Globe, order: 1, enabled: true },
+        TabPillTitle: () => createElement('span', null, 'browser'),
+        TabBody: (props: TabKindBodyProps) =>
+          createElement(BrowserTabBody, { ...props, state: props.state as WebBrowserState }),
+        defaultState: () => ({
+          url: 'https://example.test/',
+          title: '',
+          favicon: null,
+          isAudible: false,
+        }),
+      });
+      const entry = browserWebviewPool.acquire('browser-a');
+      // Supply only the Electron boundary; the host, menu portal and focus
+      // handling are real, as in the retained-browser regression above.
+      Object.assign(entry.webview, {
+        getURL: () => 'https://example.test/',
+        getTitle: () => '',
+        canGoBack: () => false,
+        canGoForward: () => false,
+        getWebContentsId: () => 101,
+        setAudioMuted: () => undefined,
+        executeJavaScript: async () => undefined,
+      });
+      tabsIpc.list.mockImplementation(async ({ sessionId }: { sessionId: string }) =>
+        sessionId === 'task-a'
+          ? {
+              tabs: [{ id: 'browser-a', kind: 'web-browser', state: { url: 'https://example.test/' } }],
+              activeTabId: 'browser-a',
+            }
+          : { tabs: [], activeTabId: null },
+      );
+      const props = {
+        sessionId: 'task-a',
+        workdir: '/tmp/task-a',
+        remoteHostId: null,
+        isMac: true,
+        shellVisible: true,
+      };
+      const view = render(createElement(RightSidebarShell, props));
+      const nextTaskInput = document.createElement('input');
+      document.body.append(nextTaskInput);
+      try {
+        await waitFor(() => expect(entry.wrapper.parentElement?.id).not.toBe('browser-webview-pool'));
+        const slot = entry.wrapper.parentElement;
+        const trigger = screen.getByRole('button', { name: 'rightSidebar.browser.moreTools' });
+        act(() => trigger.focus());
+        fireEvent.keyDown(trigger, { key: 'Enter' });
+        const firstMenu = await screen.findByRole('menu');
+        expect(view.container.contains(firstMenu)).toBe(false);
+        fireEvent.keyDown(firstMenu, { key: 'Escape' });
+        await waitFor(() => expect(firstMenu.isConnected).toBe(false));
+        await waitFor(() => expect(document.activeElement).toBe(trigger));
+
+        fireEvent.keyDown(trigger, { key: 'Enter' });
+        const menu = await screen.findByRole('menu');
+        // Change the task without a pointer event that could independently
+        // dismiss the menu, matching keyboard task switching.
+        view.rerender(createElement(
+          RightSidebarShell,
+          transition === 'task switch'
+            ? { ...props, sessionId: 'task-b', workdir: '/tmp/task-b' }
+            : { ...props, shellVisible: false },
+        ));
+        act(() => nextTaskInput.focus());
+        await waitFor(() => expect(menu.isConnected).toBe(false));
+        // Radix defers close autofocus with a zero-delay timer. Drain that
+        // callback before checking that the hidden opener cannot steal focus.
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(document.activeElement).toBe(nextTaskInput);
+        expect(entry.wrapper.parentElement).toBe(slot);
+        expect(entry.wrapper.isConnected).toBe(true);
+
+        view.rerender(createElement(RightSidebarShell, props));
+        expect(screen.queryByRole('menu')).toBeNull();
+        expect(trigger.getAttribute('data-state')).toBe('closed');
+        expect(entry.wrapper.parentElement).toBe(slot);
+        fireEvent.keyDown(trigger, { key: 'Enter' });
+        expect(await screen.findByRole('menu')).toBeTruthy();
+      } finally {
+        view.unmount();
+        nextTaskInput.remove();
+        browserWebviewPool.releaseAll();
+        unregisterTabKind('web-browser');
+      }
+    },
+  );
+
   it('clears the active browser session only when a visible detached shell is hidden', async () => {
     const setActiveSession = window.electronAPI.rsbBrowserBridge.setActiveSession;
     const view = render(

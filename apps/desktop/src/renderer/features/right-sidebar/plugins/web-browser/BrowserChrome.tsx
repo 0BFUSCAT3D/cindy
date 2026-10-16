@@ -59,6 +59,8 @@ import { cn } from '@/lib/utils';
 import { parseOmnibox } from './lib/parseOmnibox';
 
 export interface BrowserChromeProps {
+  /** 保活宿主失活/隐藏时，关闭挂在 body 上的菜单。 */
+  visible?: boolean;
   url: string;
   isLoading: boolean;
   canGoBack: boolean;
@@ -99,6 +101,7 @@ export interface BrowserChromeHandle {
 export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>(
   function BrowserChrome(
     {
+      visible = true,
       url,
       isLoading,
       canGoBack,
@@ -120,6 +123,17 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
     ref,
   ) {
     const { t } = useTranslation();
+    const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+    const handleMoreMenuOpenChange = useCallback(
+      (open: boolean) => {
+        setMoreMenuOpen(open);
+        onOverlayOpenChange?.(open);
+      },
+      [onOverlayOpenChange],
+    );
+    useLayoutEffect(() => {
+      if (!visible) handleMoreMenuOpenChange(false);
+    }, [visible, handleMoreMenuOpenChange]);
 
     // URL pill 编辑态 —— 点 / focus 进入,Enter / Esc / blur 退出。
     // editingValue 是编辑态的临时 buffer,提交才 onNavigate 出去。
@@ -303,7 +317,7 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
         )}
         {/* 更多菜单:trigger 复用 chrome 图标按钮视觉(默认态 + 菜单打开时 active 高亮,
           走 data-[state=open])。菜单项在无有效链接(新标签空白态)时置灰。 */}
-        <DropdownMenu onOpenChange={onOverlayOpenChange}>
+        <DropdownMenu open={visible && moreMenuOpen} onOpenChange={handleMoreMenuOpenChange}>
           <DropdownMenuTrigger asChild>
             <Tip text={t('rightSidebar.browser.moreTools')} side="bottom">
               <button
@@ -320,7 +334,15 @@ export const BrowserChrome = forwardRef<BrowserChromeHandle, BrowserChromeProps>
               </button>
             </Tip>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[9rem]">
+          <DropdownMenuContent
+            align="end"
+            className="min-w-[9rem]"
+            onCloseAutoFocus={(event) => {
+              // A task switch must not pull focus back to its hidden trigger.
+              // Ordinary dismissal keeps Radix's default focus restoration.
+              if (!visible) event.preventDefault();
+            }}
+          >
             <DropdownMenuItem
               disabled={!hasValidLink || !canOpenInSystemBrowser}
               onSelect={onOpenInSystemBrowser}
