@@ -396,7 +396,11 @@ export default {
         guard: {
           status: 'required',
           coverage: 'allowlist',
-          command: vitestBin('run'),
+          // The typed-send guard builds a ~1 GiB TypeScript Program. Give it
+          // the workspace budget and keep other Desktop files out of its CPU
+          // slot rather than letting two default-sized guard pools contend.
+          execution: 'exclusive',
+          command: vitestBin('run', '--maxWorkers=1'),
           include: [
             'src/main/__tests__/directSessionSendGuard.test.ts',
             'src/main/__tests__/makerSendToSessionOrdering.test.ts',

@@ -36,6 +36,20 @@ const NON_UNIT_TEST = /(?:^|[-.])(?:integration|e2e|git-integration)\.(?:test|sp
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
 const REAL_WAIT_NAMES = new Set(['sleep', 'delay', 'wait', 'waitMs', 'pause']);
+// These exact root-runner suites own cross-file contracts that cannot execute
+// the full application in node:test. New scripts tests receive no exemption.
+const ROOT_SOURCE_CONTRACTS = new Map([
+  // TS brand identity and executable/userData names mirrored by build scripts.
+  ['scripts/__tests__/brand-identity-sync.test.mjs', 'cross-runtime brand identity'],
+  // Documented commands, required CI gates and locale-aware QA artifact wiring.
+  ['scripts/__tests__/dev-docs-contract.test.mjs', 'developer/CI and QA artifact contracts'],
+  // Dev startup must prepare every supported Agent runtime before it can launch.
+  ['scripts/__tests__/ensure-agent-binaries.test.mjs', 'runtime preparation startup wiring'],
+  // Restart scripts and app bootstrap must agree on isolation/process boundaries.
+  ['scripts/__tests__/restart-desktop-remote.test.mjs', 'restart and bootstrap isolation contracts'],
+  // Packaged notice generation and both application entry points must stay wired.
+  ['scripts/__tests__/third-party-notices.test.mjs', 'cross-platform bundled license contracts'],
+]);
 // Reuse Desktop's declared parser to locate test/hook callbacks and local helpers.
 // No type checking or module loading is needed.
 const requireDesktop = createRequire(new URL('../apps/desktop/package.json', import.meta.url));
@@ -569,6 +583,158 @@ const SOURCE_LITERAL = new RegExp('\\.' + SOURCE_EXTENSION + '[\'"]', 'i');
 // usually hold an mkdtemp() directory whose fake source files are test input.
 const REPO_ANCHOR = /__dirname|import\.meta\.(?:url|dirname)|process\.cwd\s*\(\s*\)|\b(?:REPO_ROOT|repoRoot|desktopRoot)\b/;
 
+/** Normalize only calls bound to fs reads, leaving strings and local shadows
+ * untouched. All path/execution offsets below come from this same final text.
+ * This is static local alias tracking, not arbitrary inter-module evaluation.
+ */
+function normalizeSourceReads(code) {
+  const ts = typescript ??= requireDesktop('typescript');
+  const source = parseTestSource(ts, code);
+  const scopes = new WeakMap();
+  const calls = [];
+  const writes = new Map();
+  const isFunction = node => ts.isFunctionLike(node) && Boolean(node.body);
+  function declare(name, declaration, scope) {
+    if (ts.isIdentifier(name)) scope.bindings.set(name.text, declaration);
+    else for (const element of name.elements) {
+      if (ts.isBindingElement(element)) declare(element.name, element, scope);
+    }
+  }
+  function collect(node, scope) {
+    if (ts.isFunctionDeclaration(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isSourceFile(node) || ts.isBlock(node) || isFunction(node) || ts.isCatchClause(node)) scope = { parent: scope, bindings: new Map() };
+    scopes.set(node, scope);
+    if (isFunction(node)) {
+      if (node.name && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node))) scope.bindings.set(node.name.text, node);
+      for (const parameter of node.parameters) declare(parameter.name, parameter, scope);
+    }
+    if (ts.isVariableDeclaration(node)) declare(node.name, node, scope);
+    if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportClause(node) && node.name) scope.bindings.set(node.name.text, node);
+    if (ts.isCallExpression(node)) calls.push(node);
+    ts.forEachChild(node, child => collect(child, scope));
+  }
+  collect(source, null);
+  function binding(identifier) {
+    for (let scope = scopes.get(identifier); scope; scope = scope.parent) {
+      if (scope.bindings.has(identifier.text)) return scope.bindings.get(identifier.text);
+    }
+    return null;
+  }
+  function unwrap(node) {
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isAwaitExpression(node)) node = node.expression;
+    return node;
+  }
+  const propertyName = node => node && (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) ? node.text : null;
+  function recordWrite(target, expression, property = null) {
+    target = unwrap(target);
+    if (ts.isIdentifier(target)) {
+      const bound = binding(target);
+      if (bound) writes.set(bound, [...(writes.get(bound) ?? []), { expression, property }]);
+    } else if (ts.isObjectLiteralExpression(target)) {
+      for (const member of target.properties) {
+        if (ts.isShorthandPropertyAssignment(member)) recordWrite(member.name, expression, member.name.text);
+        else if (ts.isPropertyAssignment(member)) recordWrite(member.initializer, expression, propertyName(member.name));
+      }
+    }
+  }
+  function collectWrites(node) {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) recordWrite(node.left, node.right);
+    ts.forEachChild(node, collectWrites);
+  }
+  collectWrites(source);
+  function propertyMatches(expression, property, kind, seen) {
+    return kind === 'promises' && property === 'promises' && matches(expression, 'fs', seen)
+      || kind === 'read' && (property === 'readFileSync' && matches(expression, 'fs', seen)
+        || property === 'readFile' && (matches(expression, 'fs', seen) || matches(expression, 'promises', seen)));
+  }
+  function boundMatches(bound, kind, seen) {
+    if (!bound || seen.has(bound)) return false;
+    seen = new Set(seen).add(bound);
+    let declaration = bound;
+    while (declaration && !ts.isImportDeclaration(declaration)) declaration = declaration.parent;
+    const module = declaration && !declaration.importClause?.isTypeOnly && !bound.isTypeOnly
+      && ts.isStringLiteral(declaration.moduleSpecifier) ? declaration.moduleSpecifier.text : '';
+    if (/^(?:node:)?fs(?:\/promises)?$/.test(module)) {
+      const namespace = module.endsWith('/promises') ? 'promises' : 'fs';
+      if (ts.isNamespaceImport(bound) || ts.isImportClause(bound)) return kind === namespace;
+      if (ts.isImportSpecifier(bound)) {
+        const name = bound.propertyName?.text ?? bound.name.text;
+        return kind === 'read' && (name === 'readFile' || namespace === 'fs' && name === 'readFileSync')
+          || kind === 'promises' && namespace === 'fs' && name === 'promises';
+      }
+    }
+    if (ts.isBindingElement(bound) && ts.isObjectBindingPattern(bound.parent) && !bound.dotDotDotToken) {
+      const owner = bound.parent.parent;
+      const property = propertyName(bound.propertyName ?? bound.name);
+      if (ts.isVariableDeclaration(owner) && owner.initializer && propertyMatches(owner.initializer, property, kind, seen)) return true;
+      if (ts.isBindingElement(owner) && propertyMatches(owner, property, kind, seen)) return true;
+      if ((writes.get(owner) ?? []).some(write => !write.property && propertyMatches(write.expression, property, kind, seen))) return true;
+    }
+    if (ts.isVariableDeclaration(bound) && bound.initializer && matches(bound.initializer, kind, seen)) return true;
+    return (writes.get(bound) ?? []).some(write => write.property
+      ? propertyMatches(write.expression, write.property, kind, seen) : matches(write.expression, kind, seen));
+  }
+  function matches(node, kind, seen = new Set()) {
+    node = unwrap(node);
+    if (ts.isBindingElement(node)) return boundMatches(node, kind, seen);
+    if (ts.isIdentifier(node)) {
+      const bound = binding(node);
+      return bound ? boundMatches(bound, kind, seen)
+        : kind === 'read' && /^(?:readFileSync|readFile)$/.test(node.text);
+    }
+    if (ts.isPropertyAccessExpression(node)) return propertyMatches(node.expression, node.name.text, kind, seen);
+    if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) return propertyMatches(node.expression, node.argumentExpression.text, kind, seen);
+    if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+      || ts.isIdentifier(node.expression) && node.expression.text === 'require' && !binding(node.expression))) {
+      const module = node.arguments[0];
+      return module && ts.isStringLiteral(module) && /^(?:node:)?fs(?:\/promises)?$/.test(module.text)
+        && kind === (module.text.endsWith('/promises') ? 'promises' : 'fs');
+    }
+    return false;
+  }
+  const wrapperReads = new WeakMap();
+  function localReadWrapper(bound) {
+    const value = bound && ts.isVariableDeclaration(bound) ? bound.initializer : bound;
+    const fn = value && unwrap(value);
+    if (!fn || !isFunction(fn)) return false;
+    if (!wrapperReads.has(fn)) wrapperReads.set(fn, calls.some(call => {
+      if (!matches(call.expression, 'read')) return false;
+      for (let owner = call.parent; owner; owner = owner.parent) {
+        if (isFunction(owner)) return owner === fn;
+      }
+      return false;
+    }));
+    return wrapperReads.get(fn);
+  }
+  const edits = [];
+  for (const call of calls) {
+    const expression = call.expression;
+    const name = ts.isIdentifier(expression) ? expression.text
+      : ts.isPropertyAccessExpression(expression) ? expression.name.text : '';
+    // Retain the old read-shaped wrapper behavior for all local function forms,
+    // but a same-named passthrough or shadow must not masquerade as an fs read.
+    const actualRead = matches(expression, 'read') || /^(?:readFileSync|readFile)$/.test(name)
+      && ts.isIdentifier(expression) && localReadWrapper(binding(expression));
+    if (actualRead && /^(?:readFileSync|readFile)$/.test(name)) continue;
+    if (actualRead || /^(?:readFileSync|readFile)$/.test(name)) {
+      edits.push({ start: expression.getStart(source), end: expression.end, text: actualRead ? 'readFileSync' : '__nonFsRead' });
+    }
+  }
+  for (const edit of edits.sort((a, b) => b.start - a.start)) code = code.slice(0, edit.start) + edit.text + code.slice(edit.end);
+  const normalizedSource = edits.length ? parseTestSource(ts, code) : source;
+  const literals = [];
+  function collectLiterals(node) {
+    if (ts.isStringLiteralLike(node)) {
+      const literal = [node.getText(normalizedSource), null, node.text];
+      literal.index = node.getStart(normalizedSource);
+      literals.push(literal);
+    }
+    ts.forEachChild(node, collectLiterals);
+  }
+  collectLiterals(normalizedSource);
+  return { code, literals };
+}
+
 function findEnclosingReadCall(code, index, pattern = /\breadFile(?:Sync)?\s*\(/g) {
   const starts = [...code.matchAll(pattern)];
   for (let n = starts.length - 1; n >= 0; n -= 1) {
@@ -836,12 +1002,13 @@ export function scanTestSource(source, { isGuard = false } = {}) {
   const resetModules = countModuleResets(code, lines);
   const realWaits = countRealWaits(executableCode, lines, code);
   let sourceReads = 0;
-  if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw/.test(code)) {
-    const sourceReadHelpers = findSourceReadHelpers(code);
-    const executablePaths = /\bFunction\b|\brunIn(?:New)?Context\b/.test(code) ? executedSourcePaths(code) : new Set();
-    for (const match of code.matchAll(/(['"`])([^'"`\n$]+)\1/g)) {
+  if (!isGuard && /\breadFile(?:Sync)?\b|\?raw/.test(code)) {
+    const normalized = normalizeSourceReads(code);
+    const sourceReadHelpers = findSourceReadHelpers(normalized.code);
+    const executablePaths = /\bFunction\b|\brunIn(?:New)?Context\b/.test(normalized.code) ? executedSourcePaths(normalized.code) : new Set();
+    for (const match of normalized.literals) {
       if (executablePaths.has(match.index)) continue;
-      if (match[2].endsWith('?raw') || isSourcePathLiteral(code, match, sourceReadHelpers)) sourceReads += 1;
+      if (match[2].endsWith('?raw') || isSourcePathLiteral(normalized.code, match, sourceReadHelpers)) sourceReads += 1;
     }
   }
   return { resetModules, realWaits, sourceReads };
@@ -882,9 +1049,9 @@ export async function scanRepository(root = ROOT) {
   const counts = {};
   for (const file of files.sort()) {
     const rel = path.relative(root, file).split(path.sep).join('/');
-    // Root runner tests are a dedicated infrastructure/contract tier. Their
-    // source contracts remain valid; the performance rules still apply.
-    const result = scanTestSource(readFileSync(file, 'utf8'), { isGuard: guard.has(rel) || rel.startsWith('scripts/') });
+    // Only explicitly registered contracts may inspect application source;
+    // their reload/wait rules still run, just like workspace guard suites.
+    const result = scanTestSource(readFileSync(file, 'utf8'), { isGuard: guard.has(rel) || ROOT_SOURCE_CONTRACTS.has(rel) });
     if (RULES.some((rule) => result[rule] > 0)) counts[rel] = result;
   }
   return counts;

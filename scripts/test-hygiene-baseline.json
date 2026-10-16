@@ -1044,9 +1044,6 @@
     "apps/mobile/src/debug/localDiagnostics.test.ts": {
       "resetModules": 1
     },
-    "packages/design-tokens/src/__tests__/zero-wiring.test.ts": {
-      "sourceReads": 8
-    },
     "packages/lizi-im/src/feishu/__tests__/outboundFile.test.ts": {
       "sourceReads": 1
     },

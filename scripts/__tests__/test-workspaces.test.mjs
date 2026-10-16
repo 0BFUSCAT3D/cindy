@@ -956,7 +956,7 @@ test("planRuns includes manual tiers only for explicit tier runs", () => {
 	assert.equal(planRuns(workspaces, { tier: "db", explicit: false }).length, 0);
 });
 
-test("planRuns includes the required source-contract guard tiers", () => {
+test("planRuns keeps required guard tiers from competing with the typed-send scan", async () => {
 	const runs = planRuns(manifest.workspaces, { tier: "guard" });
 	assert.deepEqual(
 		runs.map((run) => [run.workspace.cwd, run.tier]),
@@ -965,6 +965,21 @@ test("planRuns includes the required source-contract guard tiers", () => {
 			["apps/mobile", "guard"],
 		],
 	);
+	// PR #6196: CI ran both default CPU-sized pools beside the 1 GiB TS
+	// Program and twice hit its existing 15s limit. Use the real manifest and
+	// scheduler: two guard runs plus one microtask must never overlap Desktop.
+	// This observes scheduling, not source text or host-dependent timings.
+	let active = 0;
+	await runWithExclusiveBarriers(runs, 2, async (run) => {
+		assert.equal(active, 0, "Desktop's runtime guard must have the workspace budget");
+		active += 1;
+		await Promise.resolve();
+		active -= 1;
+		if (run.workspace.cwd === "apps/desktop") {
+			assert.ok(run.tierConfig.command.args.includes("--maxWorkers=1"),
+				"other Desktop guards must not compete with the TypeScript Program");
+		}
+	});
 });
 
 test("filterRunsByWorkspace selects by manifest name or cwd and supports exclude", () => {

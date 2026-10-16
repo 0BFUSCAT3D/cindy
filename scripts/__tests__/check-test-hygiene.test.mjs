@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -185,6 +186,31 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ sourceReads: 0 },
 		],
 		["workspace cwd source", "readFileSync(resolve(process.cwd(), 'src/helper.ts'), 'utf8');", { sourceReads: 1 }],
+		// PR #6196: aliases must reach the same source-read decision as the real
+		// fs API, while lexical shadows and executable-source harnesses stay valid.
+		// Minimal unit inputs exercise scanTestSource directly; no files are read.
+		["named fs read alias", "import { readFileSync as readText } from 'node:fs'; readText(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["namespace and function aliases", "import * as files from 'fs'; const disk = files; const load = disk.readFileSync; load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["promise fs named read alias", "import { readFile as load } from 'node:fs/promises'; await load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["promise namespace destructuring", "import files from 'fs/promises'; const { readFile: load } = files; await load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["fs promises export alias", "import { promises as files } from 'node:fs'; const { readFile: load } = files; await load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["fs promises property", "import files from 'node:fs'; const load = files.promises['readFile']; await load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["nested fs promises destructuring", "import fs from 'node:fs'; const { promises: { readFile } } = fs; const source = await readFile(new URL('../Component.tsx', import.meta.url)); expect(source).toContain('className');", { sourceReads: 1 }],
+		["CommonJS destructured fs alias", "const { readFileSync: load } = require('node:fs'); load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["dynamic import destructured fs alias", "const { readFileSync: load } = await import('node:fs'); load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["dynamic import promise namespace alias", "const files = await import('node:fs/promises'); const load = files.readFile; await load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["assigned fs read alias", "import files from 'node:fs'; let load; ({ readFileSync: load } = files); load(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["read alias parameter shadow", "import { readFileSync as load } from 'node:fs'; function check(load) { load(new URL('../Component.tsx', import.meta.url)); }", { sourceReads: 0 }],
+		["fs namespace method parameter shadow", "import files from 'node:fs'; const check = { run(files) { files.readFileSync(new URL('../Component.tsx', import.meta.url)); } };", { sourceReads: 0 }],
+		["local read-shaped helper is not fs", "function readFileSync(value) { return value; } readFileSync(new URL('../Component.tsx', import.meta.url));", { sourceReads: 0 }],
+		["local read-shaped wrapper forwards to fs", "import fs from 'node:fs'; function readFileSync(file) { return fs.readFileSync(file, 'utf8'); } readFileSync(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["block arrow read-shaped wrapper forwards to fs", "import fs from 'node:fs'; const readFileSync = file => { return fs.readFileSync(file, 'utf8'); }; readFileSync(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["function expression read-shaped wrapper forwards to fs", "import fs from 'node:fs'; const readFileSync = function(file) { return fs.readFileSync(file, 'utf8'); }; readFileSync(new URL('../Component.tsx', import.meta.url));", { sourceReads: 1 }],
+		["another module's read API is not fs", "import { readFileSync } from 'test-double'; readFileSync(new URL('../Component.tsx', import.meta.url));", { sourceReads: 0 }],
+		["alias helper reads production source", "import { readFileSync as load } from 'node:fs'; const read = (relative: string) => load(resolve(__dirname, relative), 'utf8'); read('../Component.tsx');", { sourceReads: 1 }],
+		["aliased read follows execution exemption", "import { readFileSync as load } from 'node:fs'; const source = load(new URL('../Component.tsx', import.meta.url)); expect(new Function(source)()).toBe(true);", { sourceReads: 0 }],
+		["aliased read keeps mixed text assertion", "import { readFileSync as load } from 'node:fs'; const source = load(new URL('../Component.tsx', import.meta.url)); new Function(source)(); expect(source).toContain('return true');", { sourceReads: 1 }],
+		["embedded source code is only a fixture string", String.raw`const example = "readFileSync(new URL('../Component.tsx', import.meta.url));";`, { sourceReads: 0 }],
 		["cwd fixture stays test data", "readFileSync(resolve(process.cwd(), 'fixtures/helper.ts'), 'utf8');", { sourceReads: 0 }],
 		["executed source is a behavior harness", "const source = readFileSync(resolve(process.cwd(), 'src/helper.ts'), 'utf8'); const run = new Function(source); expect(run()).toBe(true);", { sourceReads: 0 }],
 		["a local factory returns executed behavior", "const source = readFileSync(resolve(process.cwd(), 'src/helper.ts'), 'utf8'); function make(code) { return new Function(code); } const run = make(source); expect(run()).toBe(true);", { sourceReads: 0 }],
@@ -252,15 +278,24 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 	);
 });
 
-test("repository scan covers runner performance without rejecting its source contracts", async () => {
+test("repository scan grants source exemptions only to explicit script contracts", async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "cindy-hygiene-scan-"));
 	try {
 		fs.mkdirSync(path.join(root, "scripts", "__tests__"), { recursive: true });
 		fs.writeFileSync(path.join(root, "scripts", "test-workspaces.config.mjs"), "export default { workspaces: [] };");
 		fs.writeFileSync(path.join(root, "scripts", "__tests__", "runner.test.mjs"),
 			"vi.resetModules(); setTimeout(done, 100); readFileSync(resolve(__dirname, '../runner.mjs'));");
+		// PR #6196: a new ordinary scripts test must not bypass the unit rule
+		// by its directory. The registered docs/CI contract retains only the
+		// source exemption; module reloads and real waits must still be rejected.
+		const appRead = "import { readFileSync as readText } from 'node:fs'; readText(new URL('../../apps/desktop/src/Component.tsx', import.meta.url));";
+		fs.writeFileSync(path.join(root, "scripts", "__tests__", "ordinary.test.mjs"), appRead);
+		fs.writeFileSync(path.join(root, "scripts", "__tests__", "dev-docs-contract.test.mjs"),
+			appRead + "vi.resetModules(); setTimeout(done, 100);");
 		assert.deepEqual(await scanRepository(root), {
-			"scripts/__tests__/runner.test.mjs": { resetModules: 1, realWaits: 1, sourceReads: 0 },
+			"scripts/__tests__/dev-docs-contract.test.mjs": { resetModules: 1, realWaits: 1, sourceReads: 0 },
+			"scripts/__tests__/ordinary.test.mjs": { resetModules: 0, realWaits: 0, sourceReads: 1 },
+			"scripts/__tests__/runner.test.mjs": { resetModules: 1, realWaits: 1, sourceReads: 1 },
 		});
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
@@ -295,7 +330,11 @@ test("compareWithBaseline only lets counts stay or shrink", () => {
 	const testPath = path.join(root, "apps", "sample", "sample.test.ts");
 	const relativeTestPath = "apps/sample/sample.test.ts";
 	const scriptPath = path.join(root, "scripts", "check-test-hygiene.mjs");
-	const environment = { ...process.env, CI: "", GITHUB_EVENT_PATH: "", GITHUB_EVENT_NAME: "", GITHUB_BASE_REF: "", GITHUB_SHA: "", NODE_PATH: "" };
+	// The copied CLI still uses Desktop's declared TypeScript parser; make that
+	// existing dependency available in this deliberately dependency-free repo.
+	const requireDesktop = createRequire(new URL("../../apps/desktop/package.json", import.meta.url));
+	const parserModules = path.dirname(path.dirname(path.dirname(requireDesktop.resolve("typescript"))));
+	const environment = { ...process.env, CI: "", GITHUB_EVENT_PATH: "", GITHUB_EVENT_NAME: "", GITHUB_BASE_REF: "", GITHUB_SHA: "", NODE_PATH: parserModules };
 	for (const key of Object.keys(environment)) if (key.startsWith("GIT_")) delete environment[key];
 	const git = (...args) => execFileSync("git", args, { cwd: root, env: environment, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 	const commit = () => { git("add", "."); git("-c", "user.name=Hygiene Test", "-c", "user.email=hygiene@example.invalid", "commit", "-s", "-qm", "fixture"); return git("rev-parse", "HEAD"); };
