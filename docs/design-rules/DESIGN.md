@@ -1178,7 +1178,8 @@ Only the two registered chart members inside Usage History may enlarge their non
 不修改偏好。文件链接普通点击沿用预览／审查等原行为，修饰键和中键交给默认应用，
 HTML 则交给系统浏览器；远程文件复用现有下载缓存／HTML 预览通道，不读取本机同名路径。
 安全降级附件仍只允许另存，不因快捷键扩大打开能力。项目链接提供「定位到项目」与
-复制链接菜单；文内标题和媒体链接保留各自定位／预览动作，并可复制链接。
+复制链接菜单；嵌入式项目引用只保留复制菜单，不带按钮语义、手形指针或下划线，
+仍可聚焦并用 Shift+F10／菜单键打开菜单。文内标题和媒体链接保留各自定位／预览动作，并可复制链接。
 
 菜单按对象精简并平铺，不使用「更多」或「打开方式」子菜单。HTML 的标准菜单为
 「在侧边栏打开」「在浏览器打开」「查看源代码」／「在文件夹中显示」「复制路径」；
@@ -1376,7 +1377,7 @@ PR #1144 的两轮 review 各捉到一个**同族**缺陷:「有下划线却点�
 | 桌面聊天正文            | 已解析本地文件(chip / 散文 label)           | ✅                                     | ✅                                          |
 | 桌面聊天正文            | 未解析路径、行内 code                       | ❌                                     | ❌                                          |
 | 桌面聊天正文            | **远程**会话里 stat 回 `unknown` 的引用     | 仅非歧义形状                           | 由 `isAmbiguousPathShape` 门槛裁决          |
-| 桌面聊天正文 / 用户气泡 | 会话 / 项目深链 chip(`InlineReferenceChip`) | 取决于是否注入 onClick / onContextMenu | **与 `interactive` 同源**                   |
+| 桌面聊天正文 / 用户气泡 | 会话 / 项目深链 chip(`InlineReferenceChip`) | 取决于是否注入 onClick | **与 `interactive` 同源**                   |
 | 桌面用户气泡            | URL / 图片路径                              | ✅                                     | ✅（改前只有 hover 下划线）                 |
 | 手机聊天正文            | 外链 / 图片 chip / 会话 chip                | 取决于 handler 是否注入                | **与 handler 同源**(`clickableInlineStyle`) |
 | 手机聊天正文            | 路径 chip                                   | 取决于远端 verdict                     | 由 `ChatPathChipSpan.lit` 单点裁决          |

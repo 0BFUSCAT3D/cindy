@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ navigate: vi.fn(), focus: vi.fn(), writeText: vi.fn() }));
@@ -44,17 +44,41 @@ describe('ProjectLinkChip actions', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
-  it('offers copy in embedded content without exposing host-route actions', async () => {
-    render(
-      <SessionNavigationModeProvider mode="sidebar-embedded">
-        <ProjectLinkChip href={href} />
-      </SessionNavigationModeProvider>,
-    );
-    fireEvent.contextMenu(screen.getByRole('button', { name: 'My Project' }));
-    expect(
-      await screen.findByRole('menuitem', { name: 'chat.markdownRenderer.copyLink' }),
-    ).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: 'chat.markdownRenderer.locateProject' })).toBeNull();
-    expect(mocks.navigate).not.toHaveBeenCalled();
-  });
+  it.each(['pointer', 'ContextMenu', 'Shift+F10'])(
+    'offers embedded copy via %s without advertising a primary action',
+    async (gesture) => {
+      render(
+        <SessionNavigationModeProvider mode="sidebar-embedded">
+          <ProjectLinkChip href={href} />
+        </SessionNavigationModeProvider>,
+      );
+      const chip = screen
+        .getByText('My Project')
+        .closest('[data-inline-reference-chip]') as HTMLElement;
+      expect(screen.queryByRole('button', { name: 'My Project' })).toBeNull();
+      expect(chip.classList.contains('underline')).toBe(false);
+      expect(chip.classList.contains('cursor-pointer')).toBe(false);
+      expect(chip.tabIndex).toBe(0);
+      act(() => chip.focus());
+      fireEvent.click(chip);
+      fireEvent.keyDown(chip, { key: 'Enter' });
+      fireEvent.keyDown(chip, { key: ' ' });
+      expect(screen.queryByRole('menu')).toBeNull();
+      if (gesture === 'pointer') fireEvent.contextMenu(chip);
+      else
+        fireEvent.keyDown(chip, {
+          key: gesture === 'ContextMenu' ? 'ContextMenu' : 'F10',
+          shiftKey: gesture === 'Shift+F10',
+        });
+      const copy = await screen.findByRole('menuitem', { name: 'chat.markdownRenderer.copyLink' });
+      expect(
+        screen.queryByRole('menuitem', { name: 'chat.markdownRenderer.locateProject' }),
+      ).toBeNull();
+      fireEvent.click(copy);
+      await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith(href));
+      await waitFor(() => expect(document.activeElement).toBe(chip));
+      expect(mocks.focus).not.toHaveBeenCalled();
+      expect(mocks.navigate).not.toHaveBeenCalled();
+    },
+  );
 });
