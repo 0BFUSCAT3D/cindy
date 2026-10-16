@@ -39,7 +39,7 @@ describe('remote session archive status', () => {
     ['IPC_ERROR', '[NOT_FOUND] Session does not exist', 'REMOTE_RESULT_UNKNOWN'],
     ['IPC_ERROR', '[INTERNAL] failure after write', 'REMOTE_RESULT_UNKNOWN'],
     ['INVOKE_TIMEOUT', '', 'REMOTE_RESULT_UNKNOWN'],
-  ])('classifies %s / %s without retry or local fallback', async (code, message, expected) => {
+  ] as const)('classifies %s / %s without retry or local fallback', async (code, message, expected) => {
     const s = setup({ ok: false, error: { code, message } });
     expect(await s.setStatus(request)).toMatchObject({ ok: false, errorCode: expected, changed: [], failedSessionId: 's1', remainingSessionIds: ['s2', 's3'] });
     expect(s.invoke).toHaveBeenCalledOnce();
