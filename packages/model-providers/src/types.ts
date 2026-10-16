@@ -1,3 +1,4 @@
+import type { ModelDisplayPricing } from './modelDisplayPricing.js';
 import type { ModelMetadata } from "./modelMetadataLayers.js";
 /**
  * @cindy/model-providers — 类型定义。
@@ -305,6 +306,11 @@ export interface ModelCost {
  * 跨 provider(如 gpt-5.5 同时由 openai 与 xd 提供)则必须元数据一致(见 catalog.ts 校验)。
  */
 export interface CatalogModel {
+  /** Same-provider display-only pricing; never inherited through public model metadata. */
+  displayPricing?: ModelDisplayPricing;
+  currency?: 'USD' | 'CNY';
+  costDiscount?: number;
+
   supportsToolCalls?: boolean;
   reasoningRequired?: boolean;
   userModelConfig?: ProviderRuntimeModelConfig;
@@ -313,7 +319,7 @@ export interface CatalogModel {
   discoveredCost?: ModelCost;
   nameExplicit?: boolean;
   /** Canonical model API from the accepted Registry; null explicitly means unverified. */
-  nativeApi?: PiModelApi | null;
+  nativeApi?: PiModelApi | import('./modelAccessBean.js').ModelNativeApi | null;
   /** 与 maker-core 现有 model id 一致（如 'claude-opus-4-8' / 'gpt-5.5' / 'codex/gpt-5.5'）。 */
   id: string;
   /** Server entitlement state. Paid-locked models remain present for UI but are never routable. */
@@ -513,6 +519,10 @@ export interface ProviderMediaModel extends Pick<
   discoveredMetadata?: ModelMetadata;
   /** Local projection provenance; not part of the public Registry metadata. */
   sourceAgent?: AgentKind;
+  /** Same-provider display-only pricing; never inherited through public model metadata. */
+  displayPricing?: ModelDisplayPricing;
+  currency?: 'USD' | 'CNY';
+  costDiscount?: number;
   id: string;
   name: string;
   availability?: "available" | "requires_payment";

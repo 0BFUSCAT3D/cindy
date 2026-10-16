@@ -1,3 +1,4 @@
+import { readImRemoteProviderRoute } from '../remoteProviderRoute';
 import { createLocalImSource, type ImContextSnapshot } from '../../../shared/imMessageSource';
 /**
  * main/im/shared/turnRunner.ts
@@ -35,6 +36,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { isImAccountScopeClosedError } from '../accountBoundary';
 import { bindRuntimeRecoveryNotice } from './runtimeRecoveryNotice';
+import { bindInputHandoffChannelNotice } from './inputHandoffChannelNotice';
 import { isImSubagentEvent } from './agentEventScope';
 import { isExpiredPermissionDecision, type SharedPermission } from '../../maker-ipc/sharedPermission';
 import { presentSharedPermissionCard } from './permissionPresentation';
@@ -124,7 +126,7 @@ import { prependHandoffToUserMessage, prependNoteToWireUserMessage } from '../..
 import { buildPlanReconcileNote, summarizeOpenPlan } from '../../maker-ipc/planReconcile';
 import { peekGoalInactiveNote } from '../../goal-host/inactiveNote';
 import { isSilencedSchedulerTurn } from '../../scheduler-host/silent-output';
-import type { ChannelTurnSource } from '../../maker-ipc/channelTurnSignal';
+import { isRelayedChannelTurnSource, type ChannelTurnSource } from '../../maker-ipc/channelTurnSignal';
 import { listMessagesForAgentHandoff } from '../../localDb/ipc/messages';
 import {
   enqueueDurableWrite,
@@ -154,14 +156,19 @@ import {
 } from './fbotTitle';
 import { materializeLocalMarkdownImages } from './localMarkdownImages';
 import {
+  applyStatusTokenRate,
+  clearRunningIndicators,
   createTurnActivity,
   markActivityWriting,
   pushToolStep,
   renderActivity,
   setActivityNotice,
+  setActivityTokenRate,
+  tokenRateFromStatus,
   type TurnActivityState,
 } from './turnActivity';
-import { terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { isQuotaExhaustionFailure, terminalErrorText, turnRetryNotice } from './turnRetryNotice';
+import { resolveSessionErrorContext } from './sessionProviderLabel';
 import { createTurnPresenter, DEFAULT_PRESENTER_POLICY, type TurnPresenter } from './turnPresenter';
 import {
   toCoreAgentKind,
@@ -372,13 +379,19 @@ interface SessionState {
    * 接管任务的 scheduler 输出。与正常入站 TurnState 分开，避免重复发送。
    */
   scheduledTranspond: ScheduledTranspond | null;
+  /**
+   * 转播卡开出之前收到的最新 tok/s 读数(先调工具的自动任务, 生成工具参数时就有读数)。
+   * 开卡时写进卡片头部并清空；不因它开卡，一轮结束(isRunning=false)即作废。
+   */
+  pendingTranspondTokenRate: number | null;
   /** Agent execution ended, but its background output is still being delivered. */
   pendingTranspondFinals: number;
   /**
-   * 正在开始的非 IM 轮次由其它任务的可见来信发起(channelTurnSignal 盖章)。桌面输入等
-   * 其它来源不回传；在该轮终态清除，避免沿用到下一轮。
+   * 正在开始的非 IM 轮次需要回传(`isRelayedChannelTurnSource`)：其它任务的可见来信
+   * (channelTurnSignal 盖章)，或 Agent 自己唤醒、没有任何发送的轮次(后台任务完成通知)。
+   * 桌面输入等其它来源不回传；在该轮终态清除，避免沿用到下一轮。
    */
-  otherTaskTurn: boolean;
+  relayedTurn: boolean;
 }
 
 /**
@@ -541,6 +554,11 @@ export interface ImTurnRunner {
     route?: { attached: boolean; scopeKey?: string },
     source?: ChannelTurnSource,
   ): void;
+  /**
+   * 同步标记已接好输出的会话正在开始的轮次来源，不查库、不新建监听。Agent 自己唤醒的
+   * 轮次没有发送前的等待窗口，首个事件紧随其后，只有已接线的会话来得及完整回传。
+   */
+  noteChannelTurnSource(session: MakerSession, source: ChannelTurnSource): void;
   runAgentTurn(args: ImRunAgentTurnArgs): Promise<void>;
   /**
    * 把渠道用户消息**提前**写进本地 messages 表 —— 只给「dispatch 之前还有重活」
@@ -579,9 +597,9 @@ export interface ImTurnRunner {
     userId: string,
     scopeKey?: string,
   ): Promise<RouteTarget | null>;
-  hasAuthForRoute(row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId'>): Promise<boolean>;
+  hasAuthForRoute(row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'agentDeviceId'>): Promise<boolean>;
   getAuthStatusForRoute?: (
-    row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId'>,
+    row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'agentDeviceId'>,
   ) => Promise<ImAuthRouteStatus>;
   prewireAttachedSession(botContextId: string, userId: string, scopeKey?: string): Promise<void>;
   /** 接管 detach 清理(原 detachFeishuFromSession)— binding cleanup hook 调用。 */
@@ -621,9 +639,10 @@ export interface ImTurnRunner {
 
 /** row 的路由快照 —— 跟随切换的实际落点比对用。 */
 function routeOfRow(
-  row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'effort'>,
+  row: Pick<ImSessionRow, 'agentKind' | 'model' | 'providerId' | 'agentDeviceId' | 'effort'>,
 ): ImDefaultRoute {
   return {
+    agentDeviceId: row.agentDeviceId ?? null,
     agentKind: row.agentKind,
     model: row.model,
     providerId: row.providerId,
@@ -732,7 +751,8 @@ export function createTurnRunner(
     return {
       row: { id: row.id, agentKind: toCoreAgentKind(row.agentKind), workingDir: row.workingDir,
         model: row.model, effort: row.effort, permissionMode: row.permissionMode, fastMode: row.fastMode,
-        sdkSessionId: row.sdkSessionId, remoteHostId: row.remoteHostId ?? null, providerId: row.providerId ?? null },
+        sdkSessionId: row.sdkSessionId, remoteHostId: row.remoteHostId ?? null, providerId: row.providerId ?? null,
+        agentDeviceId: row.agentDeviceId ?? null },
       attached: false, notificationReply: true, scopeKey,
     };
   }
@@ -800,6 +820,7 @@ export function createTurnRunner(
             sdkSessionId: row.sdkSessionId,
             remoteHostId: row.remoteHostId ?? null,
             providerId: row.providerId ?? null,
+            agentDeviceId: row.agentDeviceId ?? null,
           },
           attached: true,
           scopeKey,
@@ -883,6 +904,7 @@ export function createTurnRunner(
             agentKind: followTarget.agentKind,
             model: followTarget.model,
             providerId: followTarget.providerId,
+            agentDeviceId: followTarget.agentDeviceId ?? null,
           }
         : row;
       const auth = await checkImRouteAuthDetailed(authRow, undefined, authCheckDeps());
@@ -1030,6 +1052,7 @@ export function createTurnRunner(
             effort: refreshed.effort,
             fastMode: refreshed.fastMode,
             providerId: refreshed.providerId,
+            agentDeviceId: refreshed.agentDeviceId ?? null,
             sdkSessionId: refreshed.sdkSessionId,
           },
         };
@@ -1406,6 +1429,11 @@ export function createTurnRunner(
             if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
             return im.sendText(userId, text, { threadTs: noticeScope });
           }, log);
+          // 代输入: one fixed pointer in this chat when a card opens for the task.
+          bindInputHandoffChannelNotice(noticeSession, async (text) => {
+            if (sessionStates.get(rowId)?.makerSession !== noticeSession) return false;
+            return im.sendText(userId, text, { threadTs: noticeScope });
+          });
           // 策略轮持一张 host turn lease:期间 setPermissionMode 切到 agent 声明为
           // turnPermissionPolicy-unsupported 的档位(如 Pi Full Access)会被阻塞到本轮
           // 终态,堵死"热切到 bypass 让 bridge 直接放行、策略连冒泡机会都没有"的绕过。
@@ -1703,6 +1731,7 @@ export function createTurnRunner(
         fastMode: row.fastMode,
         // 保留 DB 的 null 语义：Pi 用 null 表示清除显式 provider，不能退化为 undefined。
         providerId: row.providerId,
+        agentDeviceId: row.agentDeviceId ?? undefined,
         remoteHostId: row.remoteHostId ?? undefined,
         resumeSessionId: row.sdkSessionId ?? undefined,
         vendorOptions: state.preserveSessionConfig
@@ -1894,6 +1923,7 @@ export function createTurnRunner(
 
   function authCheckDeps(): ImAuthCheckDeps {
     return {
+      checkRemoteRoute: readImRemoteProviderRoute,
       readXdGatewayApiKey,
       hasCustomProviderKey,
       getAgentAuthState: (agentKind) => getMaker().getAgentAuthState(agentKind),
@@ -1942,6 +1972,7 @@ export function createTurnRunner(
       fastMode: row.fastMode,
       // 保留 DB 的 null 语义：Pi 用 null 表示清除显式 provider，不能退化为 undefined。
       providerId: row.providerId,
+      agentDeviceId: row.agentDeviceId ?? undefined,
       remoteHostId: row.remoteHostId ?? undefined,
       // 行总是先由 repo 建好, maker 复用已有 row 时该 title 不会生效 —
       // 仅作防御兜底(原 feishu 实现传 '飞书会话' 字面量, 语义等价)。
@@ -1976,8 +2007,9 @@ export function createTurnRunner(
       resolveDetachDrain: null,
       attached,
       scheduledTranspond: null,
+      pendingTranspondTokenRate: null,
       pendingTranspondFinals: 0,
-      otherTaskTurn: false,
+      relayedTurn: false,
     };
     sessionStates.set(row.id, state);
 
@@ -2174,7 +2206,7 @@ export function createTurnRunner(
         {
           owner: pendingOwner,
           ...(req.kind === 'permission'
-            ? { toolName: req.toolName, permissionCard: { title: spec.title ?? '', body: spec.body } }
+            ? { permissionRequest: req, permissionCard: { title: spec.title ?? '', body: spec.body } }
             : askMultiExtras(req)),
         },
       );
@@ -2438,14 +2470,15 @@ export function createTurnRunner(
       if (!state) return;
       const turn = state.queue[0];
       if (!turn) {
-        // 只回传自动执行：scheduler 轮次，以及渠道自有任务里其它任务来信触发的轮次。
-        // 桌面输入留在桌面。通知回复只临时使用普通任务，不建立持续转播；接管普通任务
-        // 仍仅转播 scheduler。已开始的转播持续到收口(含 silent-stop 自动续跑)。
+        // 只回传自动执行：scheduler 轮次，以及渠道自有任务里其它任务来信或 Agent 自己唤醒
+        // (后台任务完成通知，没有任何发送)触发的轮次。桌面输入留在桌面。通知回复只临时
+        // 使用普通任务，不建立持续转播；接管普通任务仍仅转播 scheduler。已开始的转播持续到
+        // 收口(含 silent-stop 自动续跑)。
         const channelOwned = !state.preserveSessionConfig;
         if (
           state.scheduledTranspond !== null ||
           (event.turnOrigin?.kind === 'scheduler' && (channelOwned || state.attached)) ||
-          (channelOwned && state.otherTaskTurn)
+          (channelOwned && state.relayedTurn)
         ) {
           transpondScheduledEvent(state, event);
         }
@@ -2453,7 +2486,7 @@ export function createTurnRunner(
         // 非终止 error 表示底层仍在自动恢复，不能抢跑下一条消息（放行排队消息会让
         // 下一条撞上 SESSION_RUNNING）。
         if (isProductTurnDoneEvent(event) || isTerminalAgentErrorEvent(event)) {
-          state.otherTaskTurn = false;
+          state.relayedTurn = false;
           maybeDispatchNextQueued(state, userId);
           return;
         }
@@ -2499,7 +2532,11 @@ export function createTurnRunner(
           return handleTurnErrorAsync(state, userId, event.data);
         case 'session_id':
           return persistSdkSessionId(localSessionId, event.data);
-        // tool_result (summary) / status / thinking / etc. → not surfaced
+        case 'status':
+          // 只记头部 tok/s; 由 activity ticker 带出, 不为速度读数单独刷卡片。
+          turn.presenter.applyStatus(event);
+          return;
+        // tool_result (summary) / thinking / etc. → not surfaced
         default:
           return;
       }
@@ -2745,8 +2782,20 @@ export function createTurnRunner(
   function transpondScheduledEvent(state: SessionState, event: AgentEvent): void {
     // Lifecycle status is not user-facing scheduler content. In particular,
     // the claim-bearing status(false) paired with an SDK boundary must not
-    // create or close a projection card.
-    if (event.type === 'status') return;
+    // create or close a projection card. It only feeds the header tok/s; the
+    // activity ticker carries it out. Before the card exists the latest reading
+    // is kept on the session so a tool-first turn shows it from the first frame.
+    if (event.type === 'status') {
+      if (state.scheduledTranspond) {
+        applyStatusTokenRate(state.scheduledTranspond.activity, event.data);
+      } else {
+        const running = (event.data as { isRunning?: unknown } | null)?.isRunning !== false;
+        state.pendingTranspondTokenRate = running
+          ? tokenRateFromStatus(event.data, state.pendingTranspondTokenRate)
+          : null;
+      }
+      return;
+    }
     if (event.type === 'done' && isTurnContinuationBoundaryEvent(event)) return;
     if (!['text', 'tool_use', 'tool_result_full', 'done', 'error'].includes(event.type)) return;
     // 首条事件惰性建转播态(避免给空 turn 开卡)。
@@ -2766,6 +2815,8 @@ export function createTurnRunner(
         streamingHandle: null,
         streamingHandlePromise: null,
       };
+      setActivityTokenRate(state.scheduledTranspond.activity, state.pendingTranspondTokenRate);
+      state.pendingTranspondTokenRate = null;
     }
     const t = state.scheduledTranspond;
     switch (event.type) {
@@ -2864,7 +2915,7 @@ export function createTurnRunner(
     // 所以这行不是收口正确性的依赖; 留着是为了让这块转播态在收口后不残留瞬态字段
     // (万一将来 final 视图改成包含过程区)。真正必须显式清的是 handleTurnErrorAsync ——
     // 它不置 turn.done, composeStreamingView 会把 activity 一起写进正文。
-    setActivityNotice(t.activity, null);
+    clearRunningIndicators(t.activity);
     try {
       // 没产出任何内容(无文本无步骤)且无错 → 不留空卡。
       if (!t.streamingHandle && t.buffer.length === 0 && t.mediaAbsPaths.length === 0 && t.activity.totalSteps === 0 && !errMsg) {
@@ -3502,7 +3553,6 @@ export function createTurnRunner(
     // 或内部英文 SDK 串——从本地化文案回归英文实现细节(review #844 codex P1)。
     // hook runner 与调度转播共用同一个 helper，三条渠道链路口径一致；上游原文留在
     // 本地日志。
-    const msg = terminalErrorText(errData);
     if (turn) clearSilentStopSettleWait(turn);
     if (turn) clearActivityTicker(turn);
     if (turn) {
@@ -3510,10 +3560,10 @@ export function createTurnRunner(
       turn.terminalErrorCode = 'agent_turn_error';
     }
     if (turn) completeTurnCallback(turn);
-    // 清掉"正在自动重试"这类瞬态说明：重试耗尽后走到这里时它还挂在 activity 上，
-    // 而下面 composeStreamingView 会把它一起写进 finalize 的正文——最终卡片会在
-    // 失败说明的正上方永久显示"仍在重试"（review #844 codex P1）。
-    if (turn) setActivityNotice(turn.presenter.activity, null);
+    // 清掉"正在自动重试"与当前 tok/s 这类只在运行中成立的指示：走到这里时它们还挂在
+    // activity 上，而下面 composeStreamingView 会把它们一起写进 finalize 的正文——
+    // 失败卡片会永久显示"仍在重试"（review #844 codex P1）或一个已不存在的速度。
+    if (turn) clearRunningIndicators(turn.presenter.activity);
     if (turn) await materializeTurnLocalImages(state, turn);
     // 建卡请求可能还在飞: 过载重试提示会惰性建一张进度卡(handleRetryNoticeEvent),
     // 而终态错误可能恰好在 startStreamingText 回来之前到达。此时 streamingHandle
@@ -3528,6 +3578,18 @@ export function createTurnRunner(
         // 建卡失败 → 下面按"没有输出面"处理(另发一条消息)。
       }
     }
+    const msg = terminalErrorText(
+      errData,
+      isQuotaExhaustionFailure(errData) ? {
+        ...(await resolveSessionErrorContext(state.makerSession.id)),
+        botLabel: [
+          channel === 'telegram' ? 'Telegram 个人 bot' : `${channel} 个人 bot`,
+          adapter.getBotDisplayName?.(),
+        ].filter(Boolean).join(' · '),
+        surface: 'personal',
+        supportsModelCommand: richIm !== null,
+      } : undefined,
+    );
     if (turn?.streamingHandle) {
       const view = composeStreamingView(turn);
       const body = view ? `${view}\n\n❌ 错误：${msg}` : `❌ 错误：${msg}`;
@@ -3730,7 +3792,7 @@ export function createTurnRunner(
         const permissionUi = adapter.ui.cards.permission;
         return presentSharedPermissionCard({
           requestId: req.requestId,
-          toolName: req.toolName,
+          permissionRequest: req,
           owner: pendingOwner,
           permission: sharedPermission,
           send: async () => {
@@ -3816,13 +3878,12 @@ export function createTurnRunner(
           req.requestId,
           req.kind as InteractionDecision['kind'],
           messageId,
-          // Stash toolName for permission requests so cardActionHandler can
-          // build permissionUpdates when the user picks 'allow:always'.
+          // Preserve the permission scope for the 'allow:always' decision.
           // permissionCard 留着收口时恢复原始正文(工具名 + 参数预览)。
           {
             owner: pendingOwner,
             ...(req.kind === 'permission'
-              ? { toolName: req.toolName, permissionCard: { title: spec.title ?? '', body: spec.body } }
+              ? { permissionRequest: req, permissionCard: { title: spec.title ?? '', body: spec.body } }
               : askMultiExtras(req)),
           },
         );
@@ -4141,7 +4202,7 @@ export function createTurnRunner(
     attachSessionOutput: (session, userId, route, source) => {
       const existing = sessionStates.get(session.id);
       if (existing) {
-        existing.otherTaskTurn = source === 'other-task';
+        existing.relayedTurn = isRelayedChannelTurnSource(source);
         const userChanged = existing.userId !== userId;
         if (route?.attached) {
           existing.attached = true;
@@ -4167,11 +4228,18 @@ export function createTurnRunner(
         resolveDetachDrain: null,
         attached: route?.attached === true,
         scheduledTranspond: null,
+        pendingTranspondTokenRate: null,
         pendingTranspondFinals: 0,
-        otherTaskTurn: source === 'other-task',
+        relayedTurn: isRelayedChannelTurnSource(source),
       };
       sessionStates.set(session.id, state);
       state.unsubscribers.push(session.onEvent(handleEventFor(session.id, userId)));
+    },
+    noteChannelTurnSource: (session, source) => {
+      const state = sessionStates.get(session.id);
+      // An IM turn still in the queue owns whatever runs now; it is delivered once, as itself.
+      if (state?.makerSession !== session || state.queue.length > 0) return;
+      state.relayedTurn = isRelayedChannelTurnSource(source);
     },
     runAgentTurn,
     persistInboundUserMessageEarly,

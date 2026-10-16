@@ -61,6 +61,8 @@ export const DEVICE_LINK_INVOKE = {
 export const DEVICE_LINK_PUSH = {
   /** Local peer recovery invalidates content readiness; payload: { deviceId }. Not a wire push. */
   PEER_LINK_RESET: 'device-link:peer-link-reset',
+  /** Local recovery succeeded; payload: { deviceId }. Not a wire push. */
+  PEER_LINK_REOPENED: 'device-link:peer-link-reopened',
   /** 同账号某设备 presence 变化(上线/下线/开关/busy),payload: PresenceSnapshot */
   PRESENCE_CHANGED: 'device-link:presence-changed',
   /** 本机 relay 连接状态变化,payload: { status: 'stopped'|'connecting'|'online' } */

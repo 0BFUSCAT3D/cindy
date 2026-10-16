@@ -1,13 +1,14 @@
 /**
  * 「远程与分享」页的「用量」块(供应商组 §7、§10)：按人列出这个供应商的用量——你自己(当前登录的账号，
- * 本机与你其他电脑的合计)、分享的人(按人分开)，共用一个时间段切换。收起时是这个人的总量；展开后建了组的
- * 按组内每台电脑分开(每台下面列模型)，没有组的按模型列。
+ * 本机与你其他电脑的合计)、分享的人(按人分开)，共用一个时间段切换。收起时是这个人的总量；展开后按电脑分开
+ * (每台下面列模型)。没有组的供应商当成只有本机一台的组，与建了组的走同一套显示(2026-10-12 用户要求)：
+ * 账本里不经组、就在本机运行的用量本来就记在本机(`local`)上。
  *
  * 自己的用量来自这台电脑的账本(main 的 own-usage，含你其他电脑经组在别的组内电脑上运行、报告过来的部分)，
  * 分享的人来自分享服务的成员用量。
  */
 import { ChevronRight, History, Monitor } from 'lucide-react';
-import { Fragment, useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -18,7 +19,7 @@ import { useLocalProviderGroups } from '@/features/provider-group/useLocalProvid
 import { formatModelShort } from '@/lib/usageFormat';
 import { cn } from '@/lib/utils';
 
-import { PROVIDER_GROUP_LOCAL_MEMBER_KEY } from '../../../shared/providerGroup';
+import { providerGroupPhysicalDeviceKey, PROVIDER_GROUP_LOCAL_MEMBER_KEY, type ProviderGroupConfig } from '../../../shared/providerGroup';
 import type {
   ProviderOwnUsageView,
   ProviderShareMemberView,
@@ -63,6 +64,8 @@ export function ProviderUsageSection({
   members,
   membersLoading,
   selfDeviceName,
+  ownerDeviceId,
+  groupConfig,
   range,
   onRangeChange,
   time,
@@ -76,6 +79,9 @@ export function ProviderUsageSection({
   /** 分享服务的成员还没读到。 */
   membersLoading: boolean;
   selfDeviceName: string | null;
+  ownerDeviceId?: string;
+  /** 远程管理时由页面传入建组电脑上的组；不传时读本机组设置。 */
+  groupConfig?: ProviderGroupConfig | null;
   range: ProviderShareUsageRange;
   onRangeChange: (range: ProviderShareUsageRange) => void;
   time: ShareTimeFormat;
@@ -84,8 +90,16 @@ export function ProviderUsageSection({
   const user = useOptionalAuthUser();
   const devices = useDeviceLinkDeviceList();
   const ownerNameOf = useProviderShareOwnerNameOf();
-  const group = useLocalProviderGroups()[providerId] ?? null;
-  const memberKeys = useMemo(() => group?.members.map((member) => member.key) ?? [], [group]);
+  const localGroups = useLocalProviderGroups();
+  const group = groupConfig === undefined ? localGroups[providerId] ?? null : groupConfig;
+  const memberKeys = useMemo(
+    () => group ? [...new Set(group.members.map(providerGroupPhysicalDeviceKey))] : [PROVIDER_GROUP_LOCAL_MEMBER_KEY],
+    [group],
+  );
+  const memberKeyAliases = useMemo(
+    () => group ? new Map(group.members.map((member) => [member.key, providerGroupPhysicalDeviceKey(member)])) : undefined,
+    [group],
+  );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   const parties = useMemo<UsageParty[]>(() => {
@@ -139,9 +153,10 @@ export function ProviderUsageSection({
       if (memberKey === null) return { name: t('providerGroup.usage.unattributed'), source: t('providerGroup.usage.unattributedSource') };
       const removed = inGroup ? null : t('providerGroup.usage.removedMember');
       if (memberKey === PROVIDER_GROUP_LOCAL_MEMBER_KEY) {
-        return { name: t('providerGroup.member.local'), source: removed ?? selfDeviceName };
+        return { name: ownerDeviceId ? selfDeviceName ?? t('providerGroup.usage.unknownDevice') : t('providerGroup.member.local'), source: removed ?? (ownerDeviceId ? null : selfDeviceName) };
       }
-      const member = group?.members.find((item) => item.key === memberKey);
+      const member = group?.members.find((item) => item.key === memberKey)
+        ?? group?.members.find((item) => providerGroupPhysicalDeviceKey(item) === memberKey);
       const deviceId = member?.kind === 'device' ? member.agentDeviceId : deviceIdOfMemberKey(memberKey);
       if (deviceId) {
         return {
@@ -157,7 +172,7 @@ export function ProviderUsageSection({
         source: removed ?? (owner ? t('providerGroup.member.sourceShare', { name: owner }) : null),
       };
     },
-    [devices, group, ownerNameOf, selfDeviceName, t],
+    [devices, group, ownerNameOf, ownerDeviceId, selfDeviceName, t],
   );
 
   const toggle = (key: string) =>
@@ -187,7 +202,7 @@ export function ProviderUsageSection({
 
   return (
     <section className="mt-8 shrink-0" aria-labelledby="provider-usage-title">
-      <div className={cn(group ? 'mb-3 flex flex-wrap items-start gap-3' : 'mb-2 flex flex-wrap items-center gap-2')}>
+      <div className="mb-3 flex flex-wrap items-start gap-3">
         <div className="flex min-w-[240px] flex-1 flex-col gap-1">
           <h3 id="provider-usage-title" className="text-13 font-medium text-[var(--settings-section-title)]">
             {t('providerGroup.usage.title')}
@@ -203,7 +218,7 @@ export function ProviderUsageSection({
           options={RANGES.map((value) => ({ value, label: t(`providerShare.manage.members.range.${value}`) }))}
         />
       </div>
-      {group && parties.length > 0 && (
+      {parties.length > 0 && (
         <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4" data-testid="provider-usage-summary">
           <UsageSummaryCell
             value={summary.tokens > 0 ? formatShareTokens(summary.tokens) : '—'}
@@ -236,9 +251,10 @@ export function ProviderUsageSection({
               first={index === 0}
               open={expanded.has(party.key)}
               unavailable={party.key === 'self' && ownFailed && !own}
-              enhanced={Boolean(group)}
-              totalTokens={group ? summary.tokens : 0}
-              memberKeys={group ? memberKeys : null}
+              totalTokens={summary.tokens}
+              memberKeys={memberKeys}
+              memberKeyAliases={memberKeyAliases}
+              showComputerCount={Boolean(group)}
               memberLabel={memberLabel}
               time={time}
               onToggle={() => toggle(party.key)}
@@ -264,9 +280,10 @@ function UsagePartyRow({
   first,
   open,
   unavailable,
-  enhanced,
   totalTokens,
   memberKeys,
+  memberKeyAliases,
+  showComputerCount,
   memberLabel,
   time,
   onToggle,
@@ -276,12 +293,14 @@ function UsagePartyRow({
   open: boolean;
   /** 自己的账本没读出来：不写 0，免得被当成没用过。 */
   unavailable: boolean;
-  /** 供应商组专属的摘要、占比和内层明细视觉。普通供应商保持原有用量界面。 */
-  enhanced: boolean;
   /** 所选时间段所有已读使用方的 token 总量，用来画轻量占比条。 */
   totalTokens: number;
-  /** 供应商组的组内电脑(按组里的顺序)；没有组为 null。 */
-  memberKeys: readonly string[] | null;
+  /** 组内电脑(按组里的顺序)；没有组时只有本机。 */
+  memberKeys: readonly string[];
+  /** 同一台电脑上的多个账号映射到一个物理电脑键。 */
+  memberKeyAliases?: ReadonlyMap<string, string>;
+  /** 收起时写「用了几台电脑」：没有组时只有本机一台，这句没有信息量。 */
+  showComputerCount: boolean;
   memberLabel: (memberKey: string | null, inGroup: boolean) => MemberLabel;
   time: ShareTimeFormat;
   onToggle: () => void;
@@ -290,10 +309,12 @@ function UsagePartyRow({
   const totals = summarizeShareUsage(party.models);
   const share = totals.tokens > 0 && totalTokens > 0 ? Math.max(3, Math.round((totals.tokens / totalTokens) * 100)) : 0;
   const breakdown = useMemo(
-    () => (memberKeys ? groupUsageByMember(party.models, memberKeys) : null),
-    [memberKeys, party.models],
+    () => groupUsageByMember(party.models, memberKeys, memberKeyAliases),
+    [memberKeyAliases, memberKeys, party.models],
   );
-  const usedOn = breakdown?.filter((item) => item.memberKey !== null && summarizeShareUsage(item.models).tokens > 0).length ?? 0;
+  const usedOn = showComputerCount
+    ? breakdown.filter((item) => item.memberKey !== null && summarizeShareUsage(item.models).tokens > 0).length
+    : 0;
   const breakdownId = `provider-usage-${party.key}`;
   const toggleLabel = t(open ? 'providerGroup.usage.collapseAria' : 'providerGroup.usage.expandAria', { name: party.name });
   const lastUsed = unavailable
@@ -307,11 +328,7 @@ function UsagePartyRow({
       data-usage-party={party.key}
       className={cn(!first && 'border-t border-[var(--settings-theme-card-border)]')}
     >
-      <div className={cn(
-        enhanced
-          ? 'flex flex-wrap items-center gap-3 px-4 py-3.5 transition-colors motion-reduce:transition-none hover:bg-[var(--surface-hover)]'
-          : 'flex flex-wrap items-center gap-3 px-4 py-3',
-      )}>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3.5 transition-colors motion-reduce:transition-none hover:bg-[var(--surface-hover)]">
         <Tip text={toggleLabel}>
           <button
             type="button"
@@ -351,11 +368,7 @@ function UsagePartyRow({
           </span>
         </div>
         {!unavailable && (
-          <div className={cn(
-            enhanced
-              ? 'flex min-w-[108px] shrink-0 flex-col items-end text-12 text-[var(--text-secondary)]'
-              : 'flex shrink-0 flex-col items-end text-12 text-[var(--text-secondary)]',
-          )}>
+          <div className="flex min-w-[108px] shrink-0 flex-col items-end text-12 text-[var(--text-secondary)]">
             <span className="text-13 font-medium text-[var(--text-primary)] [font-variant-numeric:tabular-nums]">
               {t('providerShare.manage.members.tokens', { tokens: formatShareTokens(totals.tokens) })}
             </span>
@@ -364,7 +377,7 @@ function UsagePartyRow({
                 {t('providerShare.manage.members.amount', { amount: formatShareMoney(totals.amount) })}
               </span>
             )}
-            {enhanced && share > 0 && (
+            {share > 0 && (
               <span aria-hidden="true" className="mt-1.5 h-1 w-16 overflow-hidden rounded-full bg-[var(--surface-chip)]">
                 <span
                   className="block h-full rounded-full bg-[var(--text-secondary)]"
@@ -379,27 +392,20 @@ function UsagePartyRow({
       {open && !unavailable && (
         <div
           id={breakdownId}
-          className={cn(
-            enhanced
-              ? 'border-t border-[var(--border-default)] bg-[var(--surface)] px-3 py-3.5 sm:ml-12 sm:mr-3 sm:rounded-lg sm:border'
-              : 'px-4 pb-3.5 sm:pl-12',
-          )}
+          className="border-t border-[var(--border-default)] bg-[var(--surface)] px-3 py-3.5 sm:ml-12 sm:mr-3 sm:rounded-lg sm:border"
         >
-          <div className={enhanced ? 'overflow-x-auto' : undefined}>
-            <table className={cn('w-full border-collapse text-12', enhanced && 'min-w-[560px]')}>
-            <thead>
-              <tr className="border-b border-[var(--border-default)] text-left text-[var(--text-secondary)]">
-                <th scope="col" className="py-1.5 pr-3 font-medium">
-                  {t(breakdown ? 'providerGroup.usage.table.member' : 'providerShare.manage.members.table.model')}
-                </th>
-                <th scope="col" className="w-[72px] py-1.5 pr-3 text-right font-medium">{t('providerShare.manage.members.table.turns')}</th>
-                <th scope="col" className="w-[88px] py-1.5 pr-3 text-right font-medium">{t('providerShare.manage.members.table.input')}</th>
-                <th scope="col" className="w-[88px] py-1.5 pr-3 text-right font-medium">{t('providerShare.manage.members.table.output')}</th>
-                <th scope="col" className="w-[96px] py-1.5 text-right font-medium">{t('providerShare.manage.members.table.amount')}</th>
-              </tr>
-            </thead>
-            {breakdown ? (
-              breakdown.map((item, index) => (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] border-collapse text-12">
+              <thead>
+                <tr className="border-b border-[var(--border-default)] text-left text-[var(--text-secondary)]">
+                  <th scope="col" className="py-1.5 pr-3 font-medium">{t('providerGroup.usage.table.member')}</th>
+                  <th scope="col" className="w-[72px] py-1.5 pr-3 text-right font-medium">{t('providerShare.manage.members.table.turns')}</th>
+                  <th scope="col" className="w-[88px] py-1.5 pr-3 text-right font-medium">{t('providerShare.manage.members.table.input')}</th>
+                  <th scope="col" className="w-[88px] py-1.5 pr-3 text-right font-medium">{t('providerShare.manage.members.table.output')}</th>
+                  <th scope="col" className="w-[96px] py-1.5 text-right font-medium">{t('providerShare.manage.members.table.amount')}</th>
+                </tr>
+              </thead>
+              {breakdown.map((item, index) => (
                 <MemberUsageRows
                   key={item.memberKey ?? '\u0000unattributed'}
                   item={item}
@@ -407,27 +413,7 @@ function UsagePartyRow({
                   label={memberLabel(item.memberKey, item.inGroup)}
                   partyTokens={totals.tokens}
                 />
-              ))
-            ) : (
-              <tbody className="text-[var(--text-primary)] [font-variant-numeric:tabular-nums]">
-                {party.models.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="py-2 text-[var(--text-secondary)]">
-                      {t('providerShare.manage.members.noUsage')}
-                    </td>
-                  </tr>
-                ) : (
-                  mergeModelUsage([party.models], { ignoreMember: true }).map((model) => (
-                    <tr
-                      key={`${model.kind}:${model.providerId ?? ''}:${model.model}`}
-                      className="border-b border-[var(--border-default)] last:border-b-0"
-                    >
-                      <ModelCells model={model} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            )}
+              ))}
             </table>
           </div>
           <p className="mt-2 text-12 text-[var(--text-tertiary)]">{t('providerShare.manage.members.estimateNote')}</p>
@@ -494,24 +480,14 @@ function MemberUsageRows({
       </tr>
       {item.models.map((model) => (
         <tr key={`${model.kind}:${model.providerId ?? ''}:${model.model}`} className="text-[var(--text-secondary)]">
-          <ModelCells model={model} indent />
+          {/* 模型行收紧(py-1)，缩进与上一行的电脑名对齐：图标 14 + gap-2。 */}
+          <td className="py-1 pl-[22px] pr-3">{formatModelShort(model.model)}</td>
+          <td className="py-1 pr-3 text-right">{model.turns}</td>
+          <td className="py-1 pr-3 text-right">{formatShareTokens(model.inputTokens)}</td>
+          <td className="py-1 pr-3 text-right">{formatShareTokens(model.outputTokens)}</td>
+          <td className="py-1 text-right">{model.amount ? formatShareMoney(model.amount) : '—'}</td>
         </tr>
       ))}
     </tbody>
-  );
-}
-
-function ModelCells({ model, indent = false }: { model: ProviderShareModelUsageView; indent?: boolean }) {
-  // 组内电脑下的模型行收紧(py-1)；没有组时的按模型表照旧(py-1.5)。
-  const cell = indent ? 'py-1' : 'py-1.5';
-  return (
-    <Fragment>
-      {/* 缩进与上一行的电脑名对齐：图标 14 + gap-2。 */}
-      <td className={cn(cell, 'pr-3', indent && 'pl-[22px]')}>{formatModelShort(model.model)}</td>
-      <td className={cn(cell, 'pr-3 text-right')}>{model.turns}</td>
-      <td className={cn(cell, 'pr-3 text-right')}>{formatShareTokens(model.inputTokens)}</td>
-      <td className={cn(cell, 'pr-3 text-right')}>{formatShareTokens(model.outputTokens)}</td>
-      <td className={cn(cell, 'text-right')}>{model.amount ? formatShareMoney(model.amount) : '—'}</td>
-    </Fragment>
   );
 }

@@ -26,6 +26,7 @@ import {
 } from '@cindy/maker-core';
 
 import { createLogger } from '../../logger';
+import { readImRemoteProviderRoute } from '../remoteProviderRoute';
 import { getMaker } from '../../maker-host';
 import {
   resolveLenientSessionRoute,
@@ -350,6 +351,18 @@ export function createCardActionHandler(
       const sessionAgentKind = liveBeforePick?.agentKind ??
         (await getMaker().getSessionMeta?.(sessionId))?.agentKind;
       const isPiSession = sessionAgentKind === 'pi';
+      if (previousRoute?.agentDeviceId && sessionAgentKind) {
+        try {
+          await readImRemoteProviderRoute({
+            agentDeviceId: previousRoute.agentDeviceId,
+            agentKind: sessionAgentKind,
+            providerId: providerId === undefined ? previousRoute.providerId : providerId,
+            model: modelId,
+          });
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
       const restorePersistentRoute = async (reason: string): Promise<void> => {
         if (!previousRoute) return;
         try {
@@ -1446,18 +1459,15 @@ export function createCardActionHandler(
       case 'permission:allow:once':
         return buildPermissionAllowOnceDecision();
       case 'permission:allow:always': {
-        // "Allow always for this session": ask the SDK to add a session-scoped
-        // allow rule for the same toolName so subsequent calls of the same tool
-        // skip the canUseTool callback. toolName comes from the original
-        // InteractionRequest (stashed in pendingInteractions at register time).
+        // 授权范围只从本机保存的原请求恢复，不采信按钮回传的授权标记。
         const entry = requestId ? lookupPending(requestId) : null;
-        const toolName = entry?.toolName;
-        if (!toolName) {
-          // No toolName recoverable — degrade to plain allow (one-shot). User
+        const request = entry?.permissionRequest;
+        if (!request) {
+          // No request recoverable — degrade to plain allow (one-shot). User
           // sees the same outcome as "allow once" for this single call.
           return buildPermissionAllowOnceDecision();
         }
-        return buildPermissionAllowAlwaysDecision(toolName);
+        return buildPermissionAllowAlwaysDecision(request);
       }
       case 'permission:deny':
         return buildPermissionDenyDecision(PERMISSION_USER_DENIED_REASON);

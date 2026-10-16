@@ -13,20 +13,20 @@ function addMoney(a: ProviderShareMoney | null, b: ProviderShareMoney | null): P
 
 /**
  * 合并几份按模型的用量：同一 Agent、供应商、模型、组内电脑的行相加。
- * `ignoreMember` 时不分组内电脑(没有组的供应商按模型列)。金额币种不一致的那一行不给金额，不伪造合计。
+ * 金额币种不一致的那一行不给金额，不伪造合计。
  */
 export function mergeModelUsage(
   lists: ReadonlyArray<readonly ProviderShareModelUsageView[]>,
-  options: { ignoreMember?: boolean } = {},
+  mergeAcrossProviders = false,
 ): ProviderShareModelUsageView[] {
-  const merged = new Map<string, ProviderShareModelUsageView & { mixed?: boolean }>();
+  const merged = new Map<string, ProviderShareModelUsageView>();
+  const mixedKeys = new Set<string>();
   for (const list of lists) {
     for (const row of list) {
-      const memberKey = options.ignoreMember ? null : row.memberKey;
-      const key = JSON.stringify([row.kind, row.providerId, row.model, memberKey]);
+      const key = JSON.stringify([row.kind, mergeAcrossProviders ? null : row.providerId, row.model, row.memberKey]);
       const existing = merged.get(key);
       if (!existing) {
-        merged.set(key, { ...row, memberKey, amount: row.amount ? { ...row.amount } : null });
+        merged.set(key, { ...row, amount: row.amount ? { ...row.amount } : null });
         continue;
       }
       existing.turns += row.turns;
@@ -34,10 +34,10 @@ export function mergeModelUsage(
       existing.outputTokens += row.outputTokens;
       existing.cacheReadTokens += row.cacheReadTokens;
       existing.cacheCreateTokens += row.cacheCreateTokens;
-      if (existing.mixed) continue;
+      if (mixedKeys.has(key)) continue;
       const amount = addMoney(existing.amount, row.amount);
       if (amount === 'mixed') {
-        existing.mixed = true;
+        mixedKeys.add(key);
         existing.amount = null;
       } else {
         existing.amount = amount;
@@ -45,7 +45,6 @@ export function mergeModelUsage(
     }
   }
   return [...merged.values()]
-    .map(({ mixed: _mixed, ...row }) => row)
     .sort((a, b) => b.turns - a.turns || a.model.localeCompare(b.model));
 }
 
@@ -64,25 +63,29 @@ export interface MemberUsageGroup {
 export function groupUsageByMember(
   models: readonly ProviderShareModelUsageView[],
   memberKeys: readonly string[],
+  memberKeyAliases?: ReadonlyMap<string, string>,
 ): MemberUsageGroup[] {
   const byKey = new Map<string | null, ProviderShareModelUsageView[]>();
   for (const row of models) {
-    const list = byKey.get(row.memberKey);
-    if (list) list.push(row);
-    else byKey.set(row.memberKey, [row]);
+    const memberKey = row.memberKey === null ? null : memberKeyAliases?.get(row.memberKey) ?? row.memberKey;
+    const normalized = memberKey === row.memberKey ? row : { ...row, memberKey };
+    const list = byKey.get(memberKey);
+    if (list) list.push(normalized);
+    else byKey.set(memberKey, [normalized]);
   }
   const groups: MemberUsageGroup[] = memberKeys.map((memberKey) => ({
     memberKey,
     inGroup: true,
-    models: byKey.get(memberKey) ?? [],
+    // 展开按物理电脑展示：同一台电脑上的多个账号，同一个 Agent/模型只保留一行。
+    models: mergeModelUsage([byKey.get(memberKey) ?? []], true),
   }));
   const known = new Set(memberKeys);
   for (const [memberKey, list] of byKey) {
     if (memberKey === null || known.has(memberKey)) continue;
-    groups.push({ memberKey, inGroup: false, models: list });
+    groups.push({ memberKey, inGroup: false, models: mergeModelUsage([list], true) });
   }
   const unattributed = byKey.get(null);
-  if (unattributed?.length) groups.push({ memberKey: null, inGroup: false, models: unattributed });
+  if (unattributed?.length) groups.push({ memberKey: null, inGroup: false, models: mergeModelUsage([unattributed], true) });
   return groups;
 }
 

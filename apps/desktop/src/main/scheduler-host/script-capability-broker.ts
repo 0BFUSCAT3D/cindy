@@ -2,9 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 
 import type { Schedule, ScriptCapability } from '@cindy/maker-scheduler';
+import { AUTO_REVIEW_DELEGATED_CONTINUATION } from '@cindy/maker-core';
 
 import type { GhostToolCallResult } from '../../shared/ghost.js';
-import { getGhostCardService, getGhostPipeDispatcher } from '../cindy-brain/index.js';
+import { hasDeliveryNamespace, installedGhostStoragePart } from '../../shared/pluginIdentity.js';
+import {
+  findTrustedXdGhostForScript,
+  getGhostCardService,
+  getGhostPipeDispatcher,
+} from '../cindy-brain/index.js';
 import { validateFsRelPath } from '../cindy-brain/fsSlot.js';
 import { tryGetOrcaCollabService } from '../maker-ipc/register.js';
 import type { ScriptCapabilityBroker, ScriptCapabilityCall } from './script-runner';
@@ -72,6 +78,15 @@ async function callGhostForScript(
   active: Map<string, Set<string>>,
   writePath: string | null,
 ): Promise<GhostToolCallResult> {
+  const ghost = findTrustedXdGhostForScript(request.ghostId);
+  const pendingLegacy = ghost?.namespaceState === 'pending'
+    && !hasDeliveryNamespace(ghost) && ghost.approval.state === 'approved';
+  // Unconfirmed still projects the last namespace. That is not a grant.
+  if (!ghost || ghost.manifest.id !== request.ghostId || ghost.namespaceState === 'unconfirmed' ||
+      (ghost.namespace !== 'xd' && !pendingLegacy)) {
+    fail('GHOST_NOT_FOUND', 'XD plugin ' + request.ghostId + ' is not available in the current session');
+  }
+  const ghostId = installedGhostStoragePart(ghost);
   const callId = randomUUID();
   // 登记值与 script-runner 的 spawn cwd 严格同源(同一字符串,不 trim 改写):
   // POSIX 允许首尾空白的目录名,trim 后登记会让授权根与脚本实际 cwd 分叉
@@ -86,7 +101,7 @@ async function callGhostForScript(
   const scriptWorkdir = writePath !== null && rawWorkdir.trim() && isAbsolute(rawWorkdir) ? rawWorkdir : null;
   const cardService = getGhostCardService();
   cardService.registerCall(callId, {
-    ghostId: request.ghostId,
+    ghostId,
     toolUseId: null,
     sessionId: null,
     scriptWorkdir,
@@ -100,7 +115,7 @@ async function callGhostForScript(
   }
   bucket.add(callId);
   try {
-    return await getGhostPipeDispatcher().callGhostTool({ ...request, callId });
+    return await getGhostPipeDispatcher().callGhostTool({ ...request, ghostId, callId });
   } finally {
     bucket.delete(callId);
     if (bucket.size === 0) active.delete(runId);
@@ -387,7 +402,9 @@ export class SchedulerScriptCapabilityBroker implements ScriptCapabilityBroker {
           title: typeof params.title === 'string' ? params.title : undefined,
           useWorktree: false,
           // 投递到已有任务时沿用该任务自己的配置,只有新建任务才需要默认路由。
-          ...(targetSessionId ? {} : { createDefaults: await this.createDefaultsFor(schedule) }),
+          ...(targetSessionId
+            ? { [AUTO_REVIEW_DELEGATED_CONTINUATION]: true as const }
+            : { createDefaults: await this.createDefaultsFor(schedule) }),
         });
         if (!result.ok) fail(result.errorCode, result.message);
         return {

@@ -34,12 +34,9 @@ describe('mergeModelUsage', () => {
     ]);
   });
 
-  it('can ignore the computer, and never adds amounts in different currencies', () => {
-    const merged = mergeModelUsage(
-      [[usage({}), usage({ memberKey: 'device:studio:xd', amount: { amount: 7, currency: 'CNY' } })]],
-      { ignoreMember: true },
-    );
-    expect(merged).toEqual([expect.objectContaining({ memberKey: null, turns: 2, inputTokens: 20, amount: null })]);
+  it('never adds amounts in different currencies', () => {
+    const merged = mergeModelUsage([[usage({}), usage({ amount: { amount: 7, currency: 'CNY' } })]]);
+    expect(merged).toEqual([expect.objectContaining({ memberKey: 'local', turns: 2, inputTokens: 20, amount: null })]);
   });
 });
 
@@ -55,6 +52,34 @@ describe('groupUsageByMember', () => {
       ['device:gone:xd', false, 1],
       [null, false, 1],
     ]);
+  });
+
+  it('treats a provider without a group as a group of just this computer', () => {
+    const groups = groupUsageByMember([usage({}), usage({ memberKey: null, model: 'sonnet' })], ['local']);
+    expect(groups.map((group) => [group.memberKey, group.inGroup, group.models.length])).toEqual([
+      ['local', true, 1],
+      [null, false, 1],
+    ]);
+  });
+
+  it('merges accounts that share one physical computer', () => {
+    const aliases = new Map([
+      ['share:kai-1:xd', 'share-host:kai-pc'],
+      ['share:kai-2:xd', 'share-host:kai-pc'],
+    ]);
+    const groups = groupUsageByMember(
+      [
+        usage({ memberKey: 'share:kai-1:xd' }),
+        usage({ memberKey: 'share:kai-2:xd', providerId: 'xd-2', turns: 2, inputTokens: 20 }),
+      ],
+      ['local', 'share-host:kai-pc'],
+      aliases,
+    );
+    expect(groups.map((group) => [group.memberKey, group.models.length])).toEqual([
+      ['local', 0],
+      ['share-host:kai-pc', 1],
+    ]);
+    expect(groups[1]!.models[0]).toMatchObject({ turns: 3, inputTokens: 30, memberKey: 'share-host:kai-pc' });
   });
 });
 
