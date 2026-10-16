@@ -10324,6 +10324,8 @@
       "browseProjectFolder": "別のプロジェクトフォルダを選択",
       "dialogue": "対話",
       "dialogueOrSelectProject": "対話またはプロジェクトを選択",
+      "searchProjects": "プロジェクトを検索",
+      "noMatchingProjects": "一致するプロジェクトはありません",
       "remoteProjectsLoadFailed": "{{device}} のプロジェクトを読み込めませんでした。接続を確認して再試行してください。",
       "retryRemoteProjects": "プロジェクトを再読み込み",
       "removeFromList": "リストから削除",

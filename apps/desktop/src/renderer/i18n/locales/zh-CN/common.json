@@ -10324,6 +10324,8 @@
       "browseProjectFolder": "选择其他项目文件夹",
       "dialogue": "对话",
       "dialogueOrSelectProject": "对话或选择项目",
+      "searchProjects": "搜索项目",
+      "noMatchingProjects": "没有匹配的项目",
       "remoteProjectsLoadFailed": "无法读取 {{device}} 上的项目。请检查连接后重试。",
       "retryRemoteProjects": "重新读取项目",
       "removeFromList": "从列表中移除",

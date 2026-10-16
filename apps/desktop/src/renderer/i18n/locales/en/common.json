@@ -10368,6 +10368,8 @@
       "browseProjectFolder": "Choose another project folder",
       "dialogue": "Chat",
       "dialogueOrSelectProject": "Chat or select project",
+      "searchProjects": "Search projects",
+      "noMatchingProjects": "No matching projects",
       "remoteProjectsLoadFailed": "Couldn't load projects from {{device}}. Check the connection and try again.",
       "retryRemoteProjects": "Reload projects",
       "removeFromList": "Remove from list",
