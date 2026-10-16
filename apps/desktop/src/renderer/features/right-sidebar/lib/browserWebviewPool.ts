@@ -5,8 +5,9 @@
  * 一旦被 React unmount(切到别的 tab / 切 RSB 整体卸载/重挂),guest webContents
  * 会被 detach + 销毁,下次切回来要重新加载,Cookie / form state / 浏览历史全丢。
  * 业界做法:把 webview DOM 节点保活在脱离当前 tab 子树的"停车区" container 里,
- * 切 tab 时用 vanilla `appendChild` 把同一个 DOM 节点搬到目标 slot —— 浏览器 DOM
- * 移动不会 detach iframe / webview 内部的 webContents,实现"切 tab 不重载"。
+ * 首次物化时把 wrapper 放进目标 slot，之后由 Shell 保持仍存活的浏览器 body
+ * 挂载。跨父节点搬动即使用 vanilla DOM 也会重建 Electron guest；池里保留同一个
+ * DOM 对象不等于保留页面运行上下文，正常切换不能经过停车区。
  *
  * **关键:不要用 React Portal**。Portal 内部跨 reconcile 的搬动会触发 React 把
  * 节点 remove + insert,这中间一帧会让 webview detach 丢 webContents。所以

@@ -4,7 +4,7 @@ import { createElement, useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AppShortcutOverrides } from '../../../../shared/appShortcuts';
-import type { LucideIcon } from 'lucide-react';
+import { Globe, type LucideIcon } from 'lucide-react';
 
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: vi.fn() },
@@ -41,6 +41,10 @@ vi.mock('../lib/rsbBrowserBridge', async () => {
 });
 
 import { RightSidebarShell } from '../RightSidebarShell';
+import { BrowserTabBody } from '../plugins/web-browser/BrowserTabBody';
+import type { WebBrowserState } from '../plugins/web-browser';
+import type { TabKindBodyProps } from '../types';
+import { browserWebviewPool } from '../lib/browserWebviewPool';
 import { registerTabKind, unregisterTabKind } from '../registry';
 import { _resetRsbBrowserBridgeForTests } from '../lib/rsbBrowserBridge';
 import { _resetPopupRouterForTests } from '../lib/popupRouter';
@@ -274,6 +278,104 @@ describe('RightSidebarShell empty state', () => {
     _resetPopupRouterForTests();
     _resetNativePopupTabsForTests();
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  });
+
+  it.each([
+    { otherBrowser: false, release: 'close' },
+    { otherBrowser: true, release: 'close' },
+    { otherBrowser: false, release: 'evict' },
+    { otherBrowser: true, release: 'evict' },
+  ])('keeps a live browser connected across task switches ($otherBrowser) until $release', async ({ otherBrowser, release }) => {
+    Object.assign(window.electronAPI, { onRsbBrowserFocusUrlBar: () => () => undefined });
+    registerTabKind({
+      kind: 'web-browser',
+      menu: { kind: 'web-browser', labelKey: 'browser', icon: Globe, order: 1, enabled: true },
+      TabPillTitle: () => createElement('span', null, 'browser'),
+      TabBody: (props: TabKindBodyProps) => createElement(BrowserTabBody, { ...props, state: props.state as WebBrowserState }),
+      defaultState: () => ({ url: 'https://example.test/', title: '', favicon: null, isAudible: false }),
+    });
+    const entry = browserWebviewPool.acquire('browser-a');
+    // jsdom has no Electron guest APIs. Keep the real pool, hook and bodies;
+    // only supply the native boundary used to observe a loaded guest.
+    Object.assign(entry.webview, {
+      getURL: () => 'https://example.test/',
+      getTitle: () => '',
+      canGoBack: () => false,
+      canGoForward: () => false,
+      getWebContentsId: () => 101,
+      setAudioMuted: () => undefined,
+      executeJavaScript: async () => undefined,
+    });
+    if (otherBrowser) {
+      const b = browserWebviewPool.acquire('browser-b');
+      Object.assign(b.webview, {
+        getURL: () => 'https://other.test/', getTitle: () => '',
+        canGoBack: () => false, canGoForward: () => false,
+        getWebContentsId: () => 102, setAudioMuted: () => undefined,
+        executeJavaScript: async () => undefined,
+      });
+    }
+    tabsIpc.list.mockImplementation(async ({ sessionId }: { sessionId: string }) => sessionId === 'task-a' ? {
+      tabs: [{ id: 'browser-a', kind: 'web-browser', state: { url: 'https://example.test/' } }],
+      activeTabId: 'browser-a',
+    } : otherBrowser ? {
+      tabs: [{ id: 'browser-b', kind: 'web-browser', state: { url: 'https://other.test/' } }],
+      activeTabId: 'browser-b',
+    } : { tabs: [], activeTabId: null });
+    const props = { workdir: '/tmp/task-a', remoteHostId: null, isMac: true };
+    const view = render(createElement(RightSidebarShell, { ...props, sessionId: 'task-a' }));
+    try {
+      await waitFor(() => expect(entry.wrapper.parentElement?.id).not.toBe('browser-webview-pool'));
+      const slot = entry.wrapper.parentElement!;
+      expect(slot.isConnected).toBe(true);
+      const removedAncestors: Node[] = [];
+      const observer = new MutationObserver((records) => {
+        for (const record of records) for (const node of record.removedNodes) {
+          if (node.contains(entry.wrapper)) removedAncestors.push(node);
+        }
+      });
+      observer.observe(view.container, { childList: true, subtree: true });
+      for (let i = 0; i < 3; i++) {
+        view.rerender(createElement(RightSidebarShell, { ...props, workdir: '/tmp/task-b', sessionId: 'task-b' }));
+        await waitFor(() => expect(getBucket('task-b').hydrated).toBe(true));
+        expect(entry.wrapper.parentElement).toBe(slot);
+        expect(slot.isConnected).toBe(true);
+        expect(slot.closest('[aria-hidden="true"]')).not.toBeNull();
+        view.rerender(createElement(RightSidebarShell, { ...props, sessionId: 'task-a' }));
+        expect(entry.wrapper.parentElement).toBe(slot);
+        expect(slot.closest('[aria-hidden="true"]')).toBeNull();
+      }
+      await act(async () => { await Promise.resolve(); });
+      observer.disconnect();
+      expect(removedAncestors).toHaveLength(0);
+      // A's event writes to A's bucket even while B is the foreground task.
+      view.rerender(createElement(RightSidebarShell, { ...props, workdir: '/tmp/task-b', sessionId: 'task-b' }));
+      await act(async () => {
+        entry.webview.dispatchEvent(Object.assign(new Event('page-title-updated'), { title: 'A in background' }));
+      });
+      expect(getBucket('task-a').tabs[0].state).toMatchObject({ title: 'A in background' });
+      if (otherBrowser) expect(getBucket('task-b').tabs[0].state).not.toMatchObject({ title: 'A in background' });
+      if (release === 'close') {
+        await act(async () => { await closeTab('task-a', 'browser-a'); });
+      } else {
+        act(() => { for (let i = 0; i < 5; i++) browserWebviewPool.acquire('pressure-' + i); });
+      }
+      expect(browserWebviewPool.peek('browser-a')).toBeNull();
+      expect(entry.wrapper.isConnected).toBe(false);
+      expect(slot.isConnected).toBe(false);
+      if (release === 'evict') {
+        view.rerender(createElement(RightSidebarShell, { ...props, sessionId: 'task-a' }));
+        await waitFor(() => expect(browserWebviewPool.peek('browser-a')).not.toBeNull());
+        const restored = browserWebviewPool.peek('browser-a')!;
+        expect(restored.wrapper).not.toBe(entry.wrapper);
+        expect(restored.webview.getAttribute('src')).toBe('https://example.test/');
+        expect(browserWebviewPool.inspectTabIds().length).toBeLessThanOrEqual(5);
+      }
+    } finally {
+      view.unmount();
+      browserWebviewPool.releaseAll();
+      unregisterTabKind('web-browser');
+    }
   });
 
   it('clears the active browser session only when a visible detached shell is hidden', async () => {
