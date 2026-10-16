@@ -1,14 +1,21 @@
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
+/** Cached/unknown connectivity must never be presented as offline. */
+export function isBotKnownOffline(online?: boolean | null, connectionKnown?: boolean): boolean {
+  return online === false && connectionKnown !== false;
+}
+
 export function BotConnectionStatus({
   online = true,
+  connectionKnown,
   deviceName,
   inline = false,
   homeOffline = false,
   className,
 }: {
   online?: boolean | null;
+  connectionKnown?: boolean;
   /** The device is this companion's main computer (cloud companions): say so when offline. */
   homeOffline?: boolean;
   deviceName?: string;
@@ -16,7 +23,7 @@ export function BotConnectionStatus({
   className?: string;
 }) {
   const { t } = useTranslation();
-  const offline = online === false;
+  const offline = isBotKnownOffline(online, connectionKnown);
   const status = offline ? t(homeOffline ? 'bots.cloud.homeOfflineShort' : 'bots.remote.offline') : '';
   const name = deviceName?.trim();
   const label = [status, name].filter(Boolean).join(' · ');

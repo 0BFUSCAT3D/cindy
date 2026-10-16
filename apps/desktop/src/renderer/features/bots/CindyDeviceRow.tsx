@@ -59,7 +59,8 @@ export function CindyDeviceRow({
       <span className="pointer-events-none relative flex shrink-0">
         <BotAvatar bot={bot} size="md" />
         <BotConnectionStatus
-          online={'deviceId' in bot && bot.connectionKnown === false ? null : current.online}
+          online={current.online}
+          connectionKnown={'deviceId' in bot ? bot.connectionKnown : undefined}
           deviceName={current.label}
         />
       </span>
