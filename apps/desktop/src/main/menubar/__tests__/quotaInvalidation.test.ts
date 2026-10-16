@@ -24,7 +24,7 @@ vi.mock('../../maker-ipc/register.js', () => ({}));
 vi.mock('../../maker-ipc/usage.js', () => ({}));
 vi.mock('../../notificationService.js', () => ({}));
 vi.mock('../../serverApiClient.js', () => ({}));
-vi.mock('../../usage/claudeAccountUsage.js', () => ({ readClaudeQuotaClearRevision: () => mocks.revision, observeClaudeQuotaClears: (listener: () => void) => { mocks.listeners.add(listener); return () => { mocks.listeners.delete(listener); }; }, triggerClaudeAccountUsageRefresh: () => mocks.refresh(), readClaudeAccountUsageSnapshot: () => mocks.quota }));
+vi.mock('../../usage/claudeAccountUsage.js', () => ({ readClaudeAccountUsageRevision: () => mocks.revision, observeClaudeAccountUsage: (listener: () => void) => { mocks.listeners.add(listener); return () => { mocks.listeners.delete(listener); }; }, triggerClaudeAccountUsageRefresh: () => mocks.refresh(), readClaudeAccountUsageSnapshot: () => mocks.quota }));
 vi.mock('../../usage/ledgerCurrency.js', () => ({}));
 vi.mock('../../usage/usageHistory.js', () => ({}));
 vi.mock('../../usageBroadcaster.js', () => ({ observeUsageChanges: () => () => {} }));
@@ -79,5 +79,21 @@ it('does not publish a view collected before clear', async () => {
   const pending = service['collectAndPublish'](Date.now(), false, () => {});
   clearQuota(); resolve({}); await pending;
   expect(publish).not.toHaveBeenCalled(); expect(schedule).toHaveBeenCalledWith(0);
+  service.stop();
+});
+
+it('rebuilds when finite quota arrives after invalidation cached a temporary null', async () => {
+  const service = new MenubarService({ openNewTask() {} });
+  const schedule = vi.spyOn(service as never, 'scheduleRebuild' as never).mockImplementation(() => undefined);
+  service.init();
+  expect((await service['readBalance'](false, Date.now()))?.available).toBe(8);
+  clearQuota();
+  expect(await service['readBalance'](false, Date.now())).toBeNull();
+  schedule.mockClear();
+  mocks.quota = { spend: 3, maxBudget: 20, currency: 'CNY', fetchedAt: Date.now(), todaySpend: null };
+  mocks.revision++;
+  for (const listener of mocks.listeners) listener();
+  expect(schedule).toHaveBeenCalledWith(0);
+  expect((await service['readBalance'](false, Date.now()))?.available).toBe(17);
   service.stop();
 });

@@ -58,7 +58,7 @@ import {
 } from '../maker-ipc/usage.js';
 import { getDesktopNotificationsEnabled } from '../notificationService.js';
 import { serverApiFetch } from '../serverApiClient.js';
-import { observeClaudeQuotaClears, readClaudeQuotaClearRevision, readClaudeAccountUsageSnapshot, triggerClaudeAccountUsageRefresh } from '../usage/claudeAccountUsage.js';
+import { observeClaudeAccountUsage, readClaudeAccountUsageRevision, readClaudeAccountUsageSnapshot, triggerClaudeAccountUsageRefresh } from '../usage/claudeAccountUsage.js';
 import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import { readUsageHistory, type UsageHistoryPayload } from '../usage/usageHistory.js';
 import { observeUsageChanges, readCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
@@ -209,7 +209,7 @@ export class MenubarService {
     this.host.prepare();
     this.disposers.push(
       observeUsageChanges(() => this.scheduleRebuild()),
-      observeClaudeQuotaClears(() => {
+      observeClaudeAccountUsage(() => {
         if (!this.balanceAccountKey()?.startsWith('quota:')) return;
         this.balance = null;
         this.scheduleRebuild(0);
@@ -320,7 +320,7 @@ export class MenubarService {
 
   private async collectAndPublish(nowMs: number, force: boolean, markStale: () => void): Promise<void> {
     const generation = getActiveAppSession().generation;
-    const quotaRevision = readClaudeQuotaClearRevision();
+    const quotaRevision = readClaudeAccountUsageRevision();
     const collected = await collectMenubarInputs({
       nowMs,
       listProviders: () => getDesktopProviderService().listProviders({ allowSideEffects: false }),
@@ -346,7 +346,7 @@ export class MenubarService {
     // An owner switch that started during the reads makes them the old owner's data.
     const after = getActiveAppSession();
     if (!this.started || isAppSessionBoundaryPending() || after.generation !== generation) return;
-    if (readClaudeQuotaClearRevision() !== quotaRevision) {
+    if (readClaudeAccountUsageRevision() !== quotaRevision) {
       this.scheduleRebuild(0);
       return;
     }
@@ -495,11 +495,11 @@ export class MenubarService {
    */
   private balanceAccountKey(): string | null {
     const auth = authManager.getAuthState();
-    if (auth.mode === 'local') return auth.dataOwnerId ? `quota:local:${auth.dataOwnerId}:${auth.ownerGeneration}:${readClaudeQuotaClearRevision()}` : null;
+    if (auth.mode === 'local') return auth.dataOwnerId ? `quota:local:${auth.dataOwnerId}:${auth.ownerGeneration}:${readClaudeAccountUsageRevision()}` : null;
     if (!getAppCapabilities().canUseCindyAccountServices) return null;
     const user = auth.user;
     if (!user) return null;
-    if (user.membershipKind === 'org') return auth.dataOwnerId ? `quota:cloud:${auth.dataOwnerId}:${auth.ownerGeneration}:${readClaudeQuotaClearRevision()}` : null;
+    if (user.membershipKind === 'org') return auth.dataOwnerId ? `quota:cloud:${auth.dataOwnerId}:${auth.ownerGeneration}:${readClaudeAccountUsageRevision()}` : null;
     if (user.membershipKind !== 'personal') return null;
     return `${user.id}:${CURRENT_CINDY_REGION}`;
   }

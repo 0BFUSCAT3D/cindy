@@ -75,14 +75,14 @@ describe('Cindy AI enterprise quota refresh', () => {
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountUsageSnapshot()).toEqual(quota);
     const cleared = vi.fn();
-    const offClear = api.observeClaudeQuotaClears(cleared);
-    const revision = api.readClaudeQuotaClearRevision();
+    const offClear = api.observeClaudeAccountUsage(cleared);
+    const revision = api.readClaudeAccountUsageRevision();
     mocks.managed.mockResolvedValue('unlimited');
     await api.triggerClaudeAccountUsageRefresh(true);
     expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
     expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'unlimited' });
     expect(cleared).toHaveBeenCalledTimes(1);
-    expect(api.readClaudeQuotaClearRevision()).toBe(revision + 1);
+    expect(api.readClaudeAccountUsageRevision()).toBe(revision + 1);
     offClear();
     mocks.managed.mockResolvedValue(null);
     await api.triggerClaudeAccountUsageRefresh(true);
@@ -171,4 +171,19 @@ describe('quota gateway migration boundary', () => {
     expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'invalidated' });
     expect(mocks.broadcast.mock.calls.some(([, value]) => value?.spend === 99)).toBe(false);
   });
+});
+
+it('notifies main-process consumers when finite quota recovers after a source change', async () => {
+  const api = await import('../claudeAccountUsage');
+  await api.triggerClaudeAccountUsageRefresh(true);
+  let resolve!: (value: unknown) => void;
+  mocks.managed.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const snapshots: unknown[] = [];
+  const off = api.observeClaudeAccountUsage(() => snapshots.push(api.readClaudeAccountUsageSnapshot()));
+  const state = await import('../../model-access/quotaCredentialState');
+  state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'ok', source: 'server', endpoint: 'https://new.example.test', accountTier: null });
+  expect(snapshots).toEqual([null]);
+  resolve(quota);
+  await vi.waitFor(() => expect(snapshots).toEqual([null, quota]));
+  off();
 });

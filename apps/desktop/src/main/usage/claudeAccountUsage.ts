@@ -333,19 +333,17 @@ export function readClaudeAccountQuotaClear(): ClaudeQuotaClear | null {
     ? { quotaState: clearReason } : null;
 }
 
-let quotaClearRevision = 0;
-const quotaClearListeners = new Set<() => void>();
-export function readClaudeQuotaClearRevision(): number { return quotaClearRevision; }
-export function observeClaudeQuotaClears(listener: () => void): () => void {
-  quotaClearListeners.add(listener);
-  return () => { quotaClearListeners.delete(listener); };
+let quotaSnapshotRevision = 0;
+const quotaSnapshotListeners = new Set<() => void>();
+export function readClaudeAccountUsageRevision(): number { return quotaSnapshotRevision; }
+export function observeClaudeAccountUsage(listener: () => void): () => void {
+  quotaSnapshotListeners.add(listener);
+  return () => { quotaSnapshotListeners.delete(listener); };
 }
 
 function broadcast(payload: ClaudeAccountUsageSnapshot | null): void {
-  if (payload === null) {
-    quotaClearRevision++;
-    for (const listener of quotaClearListeners) listener();
-  }
+  quotaSnapshotRevision++;
+  for (const listener of quotaSnapshotListeners) listener();
 
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
