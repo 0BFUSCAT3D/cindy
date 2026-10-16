@@ -8,7 +8,7 @@ const unknownOutcome = (): Failure => ({
 });
 
 /** Only classify proven pre-write rejections as definite failures. */
-function failure(code: string, message: string): Failure {
+function failure(code: string, message: string, beforeSend = false): Failure {
   const actual = code === 'IPC_ERROR'
     ? /(?:^|:\s*(?:Error:\s*)?)\[([A-Z0-9_]+)]/.exec(message)?.[1] ?? code
     : code;
@@ -24,9 +24,12 @@ function failure(code: string, message: string): Failure {
     case 'REMOTE_DISABLED':
     case 'DEVICE_LINK_CONTROL_DISABLED':
       return { errorCode: 'REMOTE_DISABLED', message: '未允许远程控制目标电脑。' };
+    case 'BACKPRESSURE':
+      // The target can overload while querying its receipt after committing the write.
+      if (!beforeSend) return unknownOutcome();
+      return { errorCode: 'REMOTE_UNAVAILABLE', message: '发送队列拥塞，尚未发送到目标电脑。' };
     case 'LINK_NOT_OPEN':
     case 'NOT_CONNECTED':
-    case 'BACKPRESSURE':
     case 'DEVICE_LINK_NOT_CONNECTED':
     case 'DEVICE_LINK_STANDBY':
     case 'DEVICE_UNRESPONSIVE':
@@ -34,7 +37,12 @@ function failure(code: string, message: string): Failure {
     case 'INVALID_PARAMS':
       return { errorCode: 'INVALID_ARGS', message: '目标电脑拒绝了归档状态参数。' };
     case 'PRECONDITION_FAILED':
-      return { errorCode: 'PRECONDITION_FAILED', message: '目标任务已删除或由专属生命周期管理，不能通过此工具恢复或归档。' };
+      if (message.includes('[PRECONDITION_FAILED] 已删除的任务不能恢复或归档') ||
+          message.includes('[PRECONDITION_FAILED] Bot task lifecycle is managed by teammate recovery and history controls')) {
+        return { errorCode: 'PRECONDITION_FAILED', message: '目标任务已删除或由专属生命周期管理，不能通过此工具恢复或归档。' };
+      }
+      // The worktree mutation wrapper can also replace a post-write query error with this code.
+      return unknownOutcome();
     case 'NOT_FOUND':
       // dispatch also emits NOT_FOUND *after* the handler on owner/visibility changes.
       if (message.includes('[NOT_FOUND] Session 不存在')) {
@@ -89,7 +97,7 @@ export function createRemoteSessionsStatusSetter(deps: {
           changed.forEach((item) => { item.title = null; item.workingDir = null; });
         }
         const reason = error instanceof DeviceLinkError
-          ? (error.inFlight ? unknownOutcome() : failure(error.code, error.message))
+          ? (error.inFlight ? unknownOutcome() : failure(error.code, error.message, true))
           : failure('IPC_ERROR', error instanceof Error ? error.message : '');
         return fail(index, reason);
       }

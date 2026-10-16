@@ -432,6 +432,9 @@ allowlist、数据库 migration 或第三台电脑转发。复合 ID 不交给�
 目标服务的不存在与已删除/专属生命周期限制返回 `NOT_FOUND` / `PRECONDITION_FAILED`；
 隧道在处理后复核账号/可见性的 NOT_FOUND、超时、在途断连、错误回执与内部错误均按
 `REMOTE_RESULT_UNKNOWN`，说明该项可能已生效，调用方先查状态再决定是否重试。
+本机发送前的 `BACKPRESSURE` 返回 `REMOTE_UNAVAILABLE`；目标返回的 `BACKPRESSURE` 或
+无法确认为写入前拒绝的 `PRECONDITION_FAILED` 也返回 `REMOTE_RESULT_UNKNOWN`，因为写入后的
+回执查询可能失败（后者可能由 worktree mutation 包装查询错误）。即使 `changed` 为空也标记 `partial: true`。
 同一账号快照覆盖整个远程批次，切账号后停止并不返回旧账号的标题/目录。
 
 取消归档不发送旧消息、不启动任务执行、不恢复暂停自动化。成功后另调既有 `send_to_session`

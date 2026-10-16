@@ -183,6 +183,7 @@ import { retireDeletedPiSubagentState } from '../piSubagentDeletion';
 import { setSessionRouteLockImplementation } from '../../sessionRouteLock';
 import { assertTrustedAppRendererEvent } from '../../../security/trustedAppRenderer.js';
 import { createRemoteSessionsStatusSetter } from '../../../mcp-integrations/sessionStatusRemote.js';
+import * as sessionQueries from '../../sessionQueries';
 
 function createDb(): void {
   const sqlite = new Database(':memory:');
@@ -916,6 +917,39 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
     expect(invoke).toHaveBeenCalledOnce();
     expect(h.closeSharedTask).not.toHaveBeenCalled();
+  });
+
+  it('reports an unknown remote result when the receipt query overloads after the status write', async () => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    const receiptQuery = vi.spyOn(sessionQueries, 'selectSessionWithCount')
+      .mockRejectedValueOnce(new Error('db worker RPC queue overloaded'));
+    try {
+      let handlerError: unknown;
+      const invoke = vi.fn(async (_device: string, _channel: string, args: unknown[]) => {
+        try {
+          return { ok: true as const, result: await invokePatchMeta(args[0] as string, args[1] as Record<string, unknown>) };
+        } catch (error) {
+          handlerError = error;
+          // Preserve the handler error as dispatch does: newer hosts may wrap it first.
+          const message = error instanceof Error ? error.message : String(error);
+          const code = message.includes('db worker RPC queue overloaded') ? 'BACKPRESSURE' : 'IPC_ERROR';
+          return { ok: false as const, error: { code, message } };
+        }
+      });
+      const restore = createRemoteSessionsStatusSetter({ captureAccess: () => () => {}, invoke });
+      expect(await restore({ deviceId: 'studio', sessionIds: ['codex-local', 'unattempted'], status: 'active' })).toMatchObject({
+        ok: false, errorCode: 'REMOTE_RESULT_UNKNOWN', changed: [],
+        message: expect.stringContaining('请先查询目标任务状态'),
+        failedSessionId: 'codex-local', remainingSessionIds: ['unattempted'],
+      });
+      expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+      expect(handlerError).toBeInstanceOf(Error);
+      expect((handlerError as Error).message).toBe('[PRECONDITION_FAILED] Worktree is busy or its recovery record could not be saved');
+      expect(receiptQuery).toHaveBeenCalledOnce();
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      receiptQuery.mockRestore();
+    }
   });
 
   it.each(['active', 'archived'] as const)('remote patch-meta cannot change a deleted task to %s', async (status) => {

@@ -226,4 +226,18 @@ describe('unarchive_sessions tool', () => {
     } });
     expect(setSessionsStatus).not.toHaveBeenCalled();
   });
+
+  it('marks an unknown first write as partial even without a confirmed receipt', async () => {
+    const remote = vi.fn(async () => ({
+      ok: false as const, errorCode: 'REMOTE_RESULT_UNKNOWN', message: 'check status first',
+      changed: [], failedSessionId: 's1', remainingSessionIds: ['s2'],
+    }));
+    const { registry, setSessionsStatus } = setup({ remote });
+    const res = await registry.call('unarchive_sessions', { session_ids: ['studio::s1', 'studio::s2'] });
+    expect(res.isError).toBe(true);
+    expect(parse(res)).toMatchObject({ ok: false, errorCode: 'REMOTE_RESULT_UNKNOWN', data: {
+      partial: true, changed: [], failed_session_id: 'studio::s1', remaining_session_ids: ['studio::s2'],
+    } });
+    expect(setSessionsStatus).not.toHaveBeenCalled();
+  });
 });
