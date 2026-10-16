@@ -9697,7 +9697,7 @@ app.on('ready', async () => {
   registerSharedTaskIpc(isSharedTaskAvailable, () => getDeviceLinkStatus() === 'online');
   registerProviderShareIpc();
   registerProviderGroupIpc({ reshare: providerGroupReshare });
-  registerProviderGroupRemoteHandler();
+  registerProviderGroupRemoteHandler({ onGroupChanged: () => providerGroupReshare.kick('group') });
   registerProviderGroupReshare();
   registerFilePeerIpc();
   registerRemoteDesktopIpc(isGlobalVoiceInputOverlaySender, {

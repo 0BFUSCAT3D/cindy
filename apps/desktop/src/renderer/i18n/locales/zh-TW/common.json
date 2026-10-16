@@ -448,6 +448,10 @@
     }
   },
   "providerGroup": {
+    "management": {
+      "note": "正在管理 {{device}} 上的供應商組。修改會儲存到那台電腦，請保持它在線。",
+      "unsupported": "建立組的電腦上的 Cindy 版本暫不支援遠端管理。請先更新那台電腦上的 Cindy。"
+    },
     "page": {
       "title": "{{provider}} · 遠端與分享",
       "shareTitle": "分享"
@@ -593,6 +597,7 @@
       "confirm": "加入供應商組",
       "cancel": "取消",
       "linkDescription": "貼上別人分享的 {{provider}} 連結，對方同意後，回到「已經能用的」裡勾選加入。",
+      "remoteLinkDescription": "請在供應商組所在電腦的「模型供應商」設定中輸入分享連結。對方同意後，再回到「已經能用的」勾選加入。",
       "pasteLink": "貼上分享連結"
     },
     "toast": {
@@ -800,6 +805,7 @@
     "DEVICE_LINK_BUSY": "遠端忙碌中，請稍後再試。",
     "INVALID_PARAMS": "引數無效，請檢查後重試。",
     "PRECONDITION_FAILED": "目前狀態下無法執行此操作，請稍後再試。",
+    "PROVIDER_GROUP_CHANGED": "供應商組已在別處修改，本次操作未執行。請查看最新設定後重新操作",
     "MODEL_CONTEXT_USAGE_UNKNOWN": "模型未切換：無法確認目前任務已使用的上下文。請保留目前模型，或新增任務後再選擇",
     "MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN": "模型未切換：無法確認目前模型的上下文視窗。請檢查自訂模型的視窗設定；若無法修改，請保留目前模型或新增任務",
     "MODEL_WINDOW_TARGET_CONTEXT_UNKNOWN": "模型未切換：無法確認目標模型的上下文視窗。請檢查自訂模型的視窗設定；若無法修改，請選擇其他模型或新增任務",
@@ -3319,7 +3325,7 @@
         "modelsEmpty": "這個供應商在那台電腦上還沒有開放可用的模型。",
         "rowLabelGroup": "{{provider}} · {{device}} · 供應商組",
         "groupBadge_other": "供應商組 · {{count}} 台電腦",
-        "groupNote": "{{device}} 把這個供應商建成了供應商組。在模型列表裡選它新建任務時，{{device}} 會依組策略把任務分給下面的一台電腦執行，那台出問題時自動換一台繼續。要修改組，請到 {{device}} 的「設定 → 模型供應商」。",
+        "groupNote": "{{device}} 把這個供應商建成了供應商組。在模型列表裡選它新建任務時，{{device}} 會依組策略把任務分給下面的一台電腦執行，那台出問題時自動換一台繼續。{{device}} 在線時，你可以從這裡的「遠端與分享」管理這個組和分享。",
         "groupMembersTitle": "組內電腦",
         "groupMembersFailed": "暫時讀不到組內電腦的狀態。"
       },
