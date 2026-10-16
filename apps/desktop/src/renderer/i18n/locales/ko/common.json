@@ -14544,6 +14544,7 @@
       "scrollWorkersRightEdge": "이미 마지막 Worker 를 표시하고 있습니다",
       "errorBadge": "오류",
       "errorBadgeAria": "오류가 발생한 Worker 가 있습니다",
+      "awaitingBadgeAria": "회신을 기다리는 Worker 가 있습니다",
       "executionDevice": "{{device}}에서 실행",
       "deviceUnreachable": "상태를 가져올 수 없음",
       "unknownDevice": "다른 컴퓨터",

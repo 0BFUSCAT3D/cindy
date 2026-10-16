@@ -14544,6 +14544,7 @@
       "scrollWorkersRightEdge": "すでに末尾の Worker を表示しています",
       "errorBadge": "エラー",
       "errorBadgeAria": "エラーが発生した Worker があります",
+      "awaitingBadgeAria": "返信を待っている Worker があります",
       "executionDevice": "{{device}} で実行",
       "deviceUnreachable": "状態を取得できません",
       "unknownDevice": "別のコンピューター",

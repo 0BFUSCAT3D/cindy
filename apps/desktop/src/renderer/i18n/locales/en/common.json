@@ -14603,6 +14603,7 @@
       "scrollWorkersRightEdge": "Already at the latest worker",
       "errorBadge": "ERR",
       "errorBadgeAria": "A worker has an error",
+      "awaitingBadgeAria": "A worker is awaiting your reply",
       "executionDevice": "Runs on {{device}}",
       "deviceUnreachable": "Status unavailable",
       "unknownDevice": "Another computer",

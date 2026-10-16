@@ -14544,6 +14544,7 @@
       "scrollWorkersRightEdge": "已是最右侧的 Worker",
       "errorBadge": "错误",
       "errorBadgeAria": "有 Worker 出错",
+      "awaitingBadgeAria": "有 Worker 等待你回复",
       "executionDevice": "在 {{device}} 运行",
       "deviceUnreachable": "暂时无法获取状态",
       "unknownDevice": "另一台电脑",
