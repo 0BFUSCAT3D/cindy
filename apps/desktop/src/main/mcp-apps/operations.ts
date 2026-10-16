@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { McpUiHostContextSchema } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { McpAppsHost } from './host.js';
 import type { McpAppDocument, McpAppSandboxView } from '../../shared/mcpApps.js';
+import { isMcpAppLinkAuthorizationCurrent } from '../../shared/mcpApps.js';
 import { MCP_APPS_MAX_BYTES, safeAppLink } from './protocol.js';
 
 const id = z.string().min(1).max(256);
@@ -39,7 +40,10 @@ export async function handleMcpAppFrameOperation(
       throw new Error('MCP_APP_INVALID_LINK');
     const url = safeAppLink(input.url);
     // A queued event is not a grant: its card or pending link may have expired.
-    await host.authorizeLink(caller, sessionId, viewId, linkId.data, url);
+    const requestedAt = performance.now();
+    const authorization = await host.authorizeLink(caller, sessionId, viewId, linkId.data, url);
+    if (!isMcpAppLinkAuthorizationCurrent(authorization, performance.now() - requestedAt))
+      throw new Error('MCP_APP_LINK_NOT_AUTHORIZED');
     await openLink(url);
     return {};
   }
@@ -94,8 +98,7 @@ export async function handleMcpAppOperation(
       return {};
     case 'authorize-link':
       if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
-      await host.authorizeLink(caller, sessionId, input.viewId, input.linkId);
-      return { authorized: true };
+      return await host.authorizeLink(caller, sessionId, input.viewId, input.linkId);
     case 'link-result':
       if (local) throw new Error('MCP_APP_FRAME_REQUIRED');
       host.linkResult(caller, sessionId, input.viewId, input.linkId, input.success);

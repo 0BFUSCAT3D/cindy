@@ -11,6 +11,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpAppRecord, McpAppDocument } from '../../shared/mcpApps.js';
+import { MCP_APP_LINK_GRANT_MS, type McpAppLinkAuthorization } from '../../shared/mcpApps.js';
 import type { McpAppMessageGuard } from './message.js';
 import { AppConnection, type AppServerConfig } from './connection.js';
 import {
@@ -134,7 +135,7 @@ interface View {
   context: McpUiHostContext;
   lastUsed: number;
   unlisten: (() => void)[];
-  links: Map<string, { url: string; resolve: (success: boolean) => void }>;
+  links: Map<string, { url: string; claim: () => void; resolve: (success: boolean) => void }>;
 }
 
 // Standalone, non-persistent Hosts still need a private key. Desktop supplies
@@ -530,17 +531,23 @@ export class McpAppsHost {
         if (view.links.size >= 4) throw new Error('MCP_APP_LINK_LIMIT');
         const id = randomUUID();
         const success = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => {
+          const finish = (success: boolean) => {
+            clearTimeout(timer);
             view.links.delete(id);
-            resolve(false);
-          }, 10_000);
+            resolve(success);
+          };
+          let timer = setTimeout(() => finish(false), 10_000);
+          let claimed = false;
           view.links.set(id, {
             url,
-            resolve: (success) => {
+            claim: () => {
+              if (claimed) throw new Error('MCP_APP_LINK_ALREADY_AUTHORIZED');
+              claimed = true;
               clearTimeout(timer);
-              view.links.delete(id);
-              resolve(success);
+              // The pending request cannot fail at its old deadline while the grant travels.
+              timer = setTimeout(() => finish(false), MCP_APP_LINK_GRANT_MS);
             },
+            resolve: finish,
           });
           transport.openLink(id, url);
         });
@@ -774,12 +781,14 @@ export class McpAppsHost {
     id: string,
     linkId: string,
     url?: string,
-  ): Promise<void> {
+  ): Promise<McpAppLinkAuthorization> {
     const view = this.view(caller, sessionId, id);
     await this.assertCurrentView(id, view);
     const link = view.links.get(linkId);
     if (!link) throw new Error('MCP_APP_LINK_UNAVAILABLE');
     if (url !== undefined && link.url !== url) throw new Error('MCP_APP_INVALID_LINK');
+    link.claim();
+    return { authorized: true, validForMs: MCP_APP_LINK_GRANT_MS };
   }
 
   linkResult(

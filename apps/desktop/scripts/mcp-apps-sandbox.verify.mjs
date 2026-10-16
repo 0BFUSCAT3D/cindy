@@ -17,6 +17,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'cindy-mcp-app-sandbox-'));
 const independent = process.argv.includes('--raw');
 const remoteView = process.argv.includes('--remote');
+const measureMetrics = process.argv.includes('--metrics');
 const assets = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.url === '/asset.js') {
@@ -111,6 +112,11 @@ try {
     import { app, BrowserWindow, protocol, ipcMain, net } from 'electron';
     import { McpAppsHost, appServerRevision } from '../src/main/mcp-apps/host.ts';
     import { AppConnection } from '../src/main/mcp-apps/connection.ts';
+    import { createAppServerProxy } from '../src/main/mcp-apps/serverProxy.ts';
+    import { setMcpAppsHost, registerAppServer } from '../src/main/mcp-apps/runtime.ts';
+    import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+    import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+    import { createHash } from 'node:crypto';
     import { appCsp } from '../src/main/mcp-apps/protocol.ts';
     import { handleMcpAppOperation, handleMcpAppFrameOperation } from '../src/main/mcp-apps/operations.ts';
     import { RemoteMcpAppViews } from '../src/main/mcp-apps/remoteViews.ts';
@@ -118,7 +124,7 @@ try {
     app.setPath('userData',process.env.CINDY_MCP_APP_TEST_DIR+'/profile');
     protocol.registerSchemesAsPrivileged([mcpAppSchemePrivilege]);
     globalThis.mcpTestOwner={};
-    let window, host, connection, forbidden, requests=0, stage='initialize';
+    let window, host, connection, forbidden, modelFacade, modelClient, stableCatalog, stableInstructions, runtimeMetrics, requests=0, stage='initialize';
     const wait=async predicate=>{const end=Date.now()+10000;while(Date.now()<end){if(await predicate())return;await new Promise(resolve=>setTimeout(resolve,25));}throw new Error('MCP App browser check timed out: '+stage);};
     void app.whenReady().then(async()=>{
       forbidden=http.createServer((_req,res)=>{requests++;res.setHeader('Access-Control-Allow-Origin','*');res.end('forbidden');});
@@ -134,6 +140,35 @@ try {
       let record={version:1,serverId:'example',serverRevision:appServerRevision(config),resourceUri:tool._meta.ui.resourceUri,tool,arguments:args,result};
       let turns=0;
       host=new McpAppsHost({owner:()=>globalThis.mcpTestOwner,config:()=>config,readCard:async()=>record,writeCard:async(_s,_c,value)=>{record=value;},authorizeTool:async()=>{},sendMessage:async()=>{turns++;},disposeDocument:removeMcpAppDocument});
+      if(process.env.CINDY_MCP_APP_TEST_METRICS==='1'){
+        setMcpAppsHost(host);registerAppServer(config.id,()=>config);
+        const initialRecord=record;
+        modelFacade=createAppServerProxy(()=>config,{agentKind:'codex',sessionId:'task',workingDir:''});
+        modelClient=new Client({name:'metrics-model-boundary',version:'1'},{});
+        const [modelTransport,facadeTransport]=InMemoryTransport.createLinkedPair();
+        const initializedAt=performance.now();
+        await modelFacade.connect(facadeTransport);await modelClient.connect(modelTransport);
+        const facadeInitializeMs=performance.now()-initializedAt;
+        stableCatalog=JSON.stringify(await modelClient.listTools());stableInstructions=modelClient.getInstructions();
+        assert.equal(stableInstructions,client.getInstructions());
+        const times={direct:[],facade:[]};let modelResultBytes=0,directResultBytes=0;
+        for(let i=0;i<30;i++){
+          let started=performance.now();
+          const direct=await client.callTool({name:tool.name,arguments:args});times.direct.push(performance.now()-started);
+          started=performance.now();
+          const viaFacade=await modelClient.callTool({name:tool.name,arguments:args});times.facade.push(performance.now()-started);
+          const expected={...direct};delete expected._meta;assert.deepEqual(viaFacade,expected);
+          assert.equal(JSON.stringify(await modelClient.listTools()),stableCatalog);
+          assert.equal(modelClient.getInstructions(),stableInstructions);
+          directResultBytes=Buffer.byteLength(JSON.stringify(direct));modelResultBytes=Buffer.byteLength(JSON.stringify(viaFacade));
+        }
+        const stats=samples=>{const sorted=[...samples].sort((a,b)=>a-b);return {n:samples.length,meanMs:samples.reduce((a,b)=>a+b,0)/samples.length,p95Ms:sorted[Math.ceil(samples.length*.95)-1]};};
+        runtimeMetrics={fixture:independent?'raw':'official-sdk',transport:'loopback HTTP plus SDK InMemory caller',storage:'in-memory callbacks',facadeInitializeMs,
+          direct:stats(times.direct),facade:stats(times.facade),stableCatalogBytes:Buffer.byteLength(stableCatalog),
+          stableCatalogSha256:createHash('sha256').update(stableCatalog).digest('hex'),catalogComparisons:30,resultComparisons:30,directResultBytes,modelResultBytes,
+          actualModelCacheRate:null,actualModelTokenUsage:null};
+        record=initialRecord;
+      }
       record.connectionId=host.registerConnection(connection);
       registerMcpAppProtocol();
       const remoteViews=new RemoteMcpAppViews({owner:()=>globalThis.mcpTestOwner,closeEpoch:()=>0,
@@ -215,6 +250,16 @@ try {
         await inner().executeJavaScript("document.querySelector('#submit').click()");
         await wait(()=>inner().executeJavaScript("document.querySelector('#status').textContent.includes('已创建模拟申请')"));assert.equal(turns,0);
       }
+      if(runtimeMetrics){
+        const currentContext=await host.modelContext('task');await currentContext.assertCurrent();
+        runtimeMetrics.appContextBytes=Buffer.byteLength(currentContext.text);
+        assert.ok(currentContext.text);assert.equal(turns,independent?1:0);
+        runtimeMetrics.contextUpdatesStartedModelTurns=0;runtimeMetrics.explicitMessageTurns=turns;
+        currentContext.consume();assert.equal((await host.modelContext('task')).text,'');runtimeMetrics.contextConsumedOnce=true;
+        assert.equal(JSON.stringify(await modelClient.listTools()),stableCatalog);assert.equal(modelClient.getInstructions(),stableInstructions);
+        runtimeMetrics.catalogStableAfterAppUpdates=true;
+        console.log('MCP_APPS_RUNTIME_METRICS='+JSON.stringify(runtimeMetrics));
+      }
       assert.equal(await inner().executeJavaScript('fetch('+JSON.stringify(denied)+').then(()=>false,()=>true)'),true);
       await inner().executeJavaScript("window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/sandbox-resource-ready',params:{html:'forged'}},'*')");
       const appFrame=inner();
@@ -229,7 +274,7 @@ try {
       if(process.env.CINDY_MCP_APP_TEST_REMOTE==='1')console.log('MCP_APPS_REMOTE_FRAME_VERDICT=passed (Main-bound remote View, authenticated frame RPC, rejected Renderer forgery, remote teardown)');
       console.log(independent?'MCP_APPS_RAW_SANDBOX_VERDICT=passed (SDK-free dashboard, blob/list, tool/message/context, display/size, Light/Dark, declared CSP domains, teardown, owner)':'MCP_APPS_SANDBOX_VERDICT=passed (official App, edit/create, Light/Dark, origins, preload, CSP, navigation, teardown, owner)');
     }).catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{
-      await host?.reset();await connection?.close();forbidden?.close();window?.destroy();app.exit(process.exitCode??0);
+      await modelClient?.close();await modelFacade?.close();await host?.reset();await connection?.close();forbidden?.close();window?.destroy();app.exit(process.exitCode??0);
     });
   `,
     },
@@ -240,6 +285,7 @@ try {
     CINDY_MCP_APP_TEST_URL: endpoint.url,
     CINDY_MCP_APP_TEST_RAW: independent ? '1' : '0',
     CINDY_MCP_APP_TEST_REMOTE: remoteView ? '1' : '0',
+    CINDY_MCP_APP_TEST_METRICS: measureMetrics ? '1' : '0',
     CINDY_MCP_APP_TEST_ALLOWED: allowed,
   };
   delete environment.ELECTRON_RUN_AS_NODE;

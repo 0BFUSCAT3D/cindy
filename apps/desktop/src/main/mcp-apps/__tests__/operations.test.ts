@@ -14,7 +14,7 @@ function fixture() {
     cancelOpen: vi.fn(),
     displayMode: vi.fn(),
     linkResult: vi.fn(),
-    authorizeLink: vi.fn(async () => {}),
+    authorizeLink: vi.fn(async () => ({ authorized: true, validForMs: 30_000 })),
   };
   const host = api as unknown as McpAppsHost;
   const local = {

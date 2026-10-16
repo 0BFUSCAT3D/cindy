@@ -4,8 +4,8 @@ import type { AppConnection } from '../connection.js';
 
 const hosts: McpAppsHost[] = [];
 afterEach(async () => {
-  await Promise.all(hosts.splice(0).map((host) => host.reset()));
   vi.useRealTimers();
+  await Promise.all(hosts.splice(0).map((host) => host.reset()));
 });
 function fixture() {
   const owner = {};
@@ -26,7 +26,66 @@ function fixture() {
   hosts.push(host);
   return { host, resource, disposeDocument, connection };
 }
+async function initialize(host: McpAppsHost, viewId: string) {
+  await host.dispatch('device:phone', 'task', viewId, {
+    jsonrpc: '2.0', id: 1, method: 'ui/initialize', params: {
+      protocolVersion: '2026-01-26', appInfo: { name: 'link-test', version: '1' }, appCapabilities: {},
+    },
+  });
+  await host.dispatch('device:phone', 'task', viewId, { jsonrpc: '2.0', method: 'ui/notifications/initialized' });
+  await vi.advanceTimersByTimeAsync(0);
+}
 describe('MCP App open cancellation', () => {
+  it('reserves a pending link before its original timeout and accepts its delayed result once', async () => {
+    const f = fixture();
+    const doc = await f.host.open('device:phone', 'task', 'card', {});
+    vi.useFakeTimers();
+    await initialize(f.host, doc.viewId);
+    await f.host.dispatch('device:phone', 'task', doc.viewId, {
+      jsonrpc: '2.0', id: 2, method: 'ui/open-link', params: { url: 'https://example.org/' },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const events = await f.host.poll('device:phone', 'task', doc.viewId, 0);
+    const link = events.find((event) => event.openLink)!;
+    expect(link.openLink).toBeDefined();
+    await vi.advanceTimersByTimeAsync(9_999);
+    await f.host.authorizeLink('device:phone', 'task', doc.viewId, link.openLink!.id);
+    await vi.advanceTimersByTimeAsync(2);
+    const delivered = vi.fn();
+    const pending = f.host.poll('device:phone', 'task', doc.viewId, link.seq).then(delivered);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(delivered).not.toHaveBeenCalled();
+    f.host.linkResult('device:phone', 'task', doc.viewId, link.openLink!.id, true);
+    await vi.advanceTimersByTimeAsync(0);
+    await pending;
+    expect(delivered.mock.calls[0][0]).toContainEqual(expect.objectContaining({
+      message: expect.objectContaining({ id: 2, result: {} }),
+    }));
+    await expect(f.host.authorizeLink('device:phone', 'task', doc.viewId, link.openLink!.id))
+      .rejects.toThrow('MCP_APP_LINK_UNAVAILABLE');
+  });
+  it('grants a pending link once and expires the bounded reservation if no result arrives', async () => {
+    const f = fixture();
+    const doc = await f.host.open('device:phone', 'task', 'card', {});
+    vi.useFakeTimers();
+    await initialize(f.host, doc.viewId);
+    await f.host.dispatch('device:phone', 'task', doc.viewId, {
+      jsonrpc: '2.0', id: 2, method: 'ui/open-link', params: { url: 'https://example.org/' },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const link = (await f.host.poll('device:phone', 'task', doc.viewId, 0)).find((event) => event.openLink)!;
+    expect(await f.host.authorizeLink('device:phone', 'task', doc.viewId, link.openLink!.id))
+      .toEqual({ authorized: true, validForMs: 30_000 });
+    await expect(f.host.authorizeLink('device:phone', 'task', doc.viewId, link.openLink!.id))
+      .rejects.toThrow('MCP_APP_LINK_ALREADY_AUTHORIZED');
+    await vi.advanceTimersByTimeAsync(30_000);
+    const events = await f.host.poll('device:phone', 'task', doc.viewId, link.seq);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: expect.objectContaining({ id: 2, error: expect.objectContaining({ message: expect.stringContaining('MCP_APP_LINK_OPEN_FAILED') }) }),
+    }));
+    await expect(f.host.authorizeLink('device:phone', 'task', doc.viewId, link.openLink!.id))
+      .rejects.toThrow('MCP_APP_LINK_UNAVAILABLE');
+  });
   it('reclaims a reloaded caller quota immediately without closing shared connections', async () => {
     const f = fixture();
     const old = [];

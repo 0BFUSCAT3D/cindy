@@ -1,4 +1,4 @@
-import { MCP_APPS_INVOKE, type McpAppOpenResult, type McpAppHostEvent } from './mcpApps.js';
+import { MCP_APPS_INVOKE, isMcpAppLinkAuthorizationCurrent, type McpAppOpenResult, type McpAppHostEvent } from './mcpApps.js';
 
 export type AppRpc = {
   jsonrpc: '2.0';
@@ -159,15 +159,14 @@ export class McpAppController {
               let success = false;
               try {
                 if (this.openLink && !this.closing) {
+                  const requestedAt = performance.now();
                   const authorization = await this.invoke(this.sessionId, {
                     op: 'authorize-link',
                     viewId,
                     linkId: event.openLink.id,
                   });
                   if (
-                    !authorization ||
-                    typeof authorization !== 'object' ||
-                    (authorization as { authorized?: unknown }).authorized !== true
+                    !isMcpAppLinkAuthorizationCurrent(authorization, performance.now() - requestedAt)
                   )
                     throw new Error('MCP_APP_LINK_NOT_AUTHORIZED');
                   // Closing can win while the execution Host checks the current card.

@@ -61,7 +61,7 @@ function fixture() {
   return { invoke, openLink, views, control, open, link, changeOwner: () => { owner = {}; } };
 }
 beforeEach(() => { state.mounts.clear(); state.next = 0; });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('Main-bound remote MCP App Views', () => {
   it.each(['sleeping', 'in-flight failure', 'in-flight success'])(
@@ -175,7 +175,10 @@ describe('Main-bound remote MCP App Views', () => {
     // Old Hosts/missing receipts cannot grant the browser action.
     await expect(frame({ op: 'open-link', linkId: 'link', url: link.url })).rejects.toThrow('MCP_APP_LINK_NOT_AUTHORIZED');
     expect(f.openLink).not.toHaveBeenCalled();
-    f.invoke.mockResolvedValueOnce({ authorized: true });
+    await expect(frame({ op: 'open-link', linkId: 'link', url: link.url })).rejects.toThrow('MCP_APP_INVALID_LINK');
+    f.invoke.mockResolvedValueOnce([{ seq: 2, openLink: link }]);
+    await frame({ op: 'poll' });
+    f.invoke.mockResolvedValueOnce({ authorized: true, validForMs: 30_000 });
     await frame({ op: 'open-link', linkId: 'link', url: link.url });
     expect(f.invoke).toHaveBeenLastCalledWith('device-a', 'task',
       { op: 'authorize-link', viewId: 'remote-view', linkId: 'link' }, expect.any(Function));
@@ -189,9 +192,29 @@ describe('Main-bound remote MCP App Views', () => {
     const frame = state.mounts.get(local.viewId)!.frame;
     f.invoke.mockResolvedValueOnce([{ seq: 1, openLink: { id: 'link', url: 'https://example.org/' } }]);
     await frame({ op: 'poll' });
-    f.invoke.mockImplementationOnce(async () => { f.changeOwner(); return { authorized: true }; });
+    f.invoke.mockImplementationOnce(async () => { f.changeOwner(); return { authorized: true, validForMs: 30_000 }; });
     await expect(frame({ op: 'open-link', linkId: 'link', url: 'https://example.org/' })).rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE');
     expect(f.openLink).not.toHaveBeenCalled();
+  });
+  it('rejects an expired authorization response and never retries the browser action', async () => {
+    let elapsed = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    const f = fixture();
+    const local = await f.open();
+    const frame = state.mounts.get(local.viewId)!.frame;
+    f.invoke.mockResolvedValueOnce([{ seq: 1, openLink: { id: 'link', url: 'https://example.org/' } }]);
+    await frame({ op: 'poll' });
+    f.invoke.mockImplementationOnce(async () => {
+      elapsed = 30_000;
+      return { authorized: true, validForMs: 30_000 };
+    });
+    await expect(frame({ op: 'open-link', linkId: 'link', url: 'https://example.org/' }))
+      .rejects.toThrow('MCP_APP_LINK_NOT_AUTHORIZED');
+    expect(f.openLink).not.toHaveBeenCalled();
+    await expect(frame({ op: 'open-link', linkId: 'link', url: 'https://example.org/' }))
+      .rejects.toThrow('MCP_APP_INVALID_LINK');
+    expect(f.openLink).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
   });
   it('retains the local frame during remote teardown and releases it once', async () => {
     const f = fixture();
@@ -220,7 +243,7 @@ describe('Main-bound remote MCP App Views', () => {
     f.invoke.mockImplementationOnce(() => new Promise((resolve) => { finishClose = resolve; }));
     const closing = f.control({ op: 'teardown', viewId: local.viewId });
     expect(state.mounts.has(local.viewId)).toBe(true);
-    authorize({ authorized: true });
+    authorize({ authorized: true, validForMs: 30_000 });
     await expect(late).rejects.toThrow('MCP_APP_VIEW_UNAVAILABLE');
     expect(f.openLink).not.toHaveBeenCalled();
     finishClose({});

@@ -1,6 +1,19 @@
 /** Data-only, additive MCP Apps contract shared by Desktop and Mobile. */
 export const MCP_APPS_INVOKE = 'maker:mcp-apps:v1';
 export const MCP_APP_CARD = 'mcp-app';
+export const MCP_APP_LINK_GRANT_MS = 30_000;
+export interface McpAppLinkAuthorization {
+  authorized: true;
+  validForMs: number;
+}
+/** Count the whole round trip against the Host's reservation; no clock sync is required. */
+export function isMcpAppLinkAuthorizationCurrent(value: unknown, elapsedMs: number): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const grant = value as Partial<McpAppLinkAuthorization>;
+  return grant.authorized === true && typeof grant.validForMs === 'number' &&
+    Number.isFinite(grant.validForMs) && grant.validForMs > 0 &&
+    grant.validForMs <= MCP_APP_LINK_GRANT_MS && elapsedMs >= 0 && elapsedMs < grant.validForMs;
+}
 /** Host-to-controller actions never enter the App's standard JSON-RPC transport. */
 export type McpAppHostEvent<T> =
   | { seq: number; message: T; openLink?: never }

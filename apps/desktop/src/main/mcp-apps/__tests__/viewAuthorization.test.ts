@@ -216,6 +216,7 @@ describe('MCP App upstream result authorization', () => {
     ).rejects.toThrow('MCP_APP_LINK_UNAVAILABLE');
     await expect(handleMcpAppOperation(f.host, 'device:phone', 'task', input)).resolves.toEqual({
       authorized: true,
+      validForMs: 30_000,
     });
     f.host.linkResult('device:phone', 'task', f.viewId, link.linkId, false);
     await expect(handleMcpAppOperation(f.host, 'device:phone', 'task', input)).rejects.toThrow(

@@ -10,12 +10,12 @@ const never = () => new Promise<unknown>(() => {});
 const flush = async () => {
   for (let i = 0; i < 12; i++) await Promise.resolve();
 };
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 function fixture(poll: () => Promise<unknown> = never) {
   const invoke = vi.fn(
     async (_session: string, input: Record<string, unknown>): Promise<unknown> =>
       input.op === 'open' ? document : input.op === 'poll' ? poll()
-        : input.op === 'authorize-link' ? { authorized: true } : {},
+        : input.op === 'authorize-link' ? { authorized: true, validForMs: 30_000 } : {},
   );
   const post = vi.fn(),
     state = vi.fn(),
@@ -290,7 +290,8 @@ describe('MCP App transport lifecycle', () => {
     expect(f.error).not.toHaveBeenCalled();
     await f.controller.close();
   });
-  it.each([{}, { authorized: false }, null])(
+  it.each([{}, { authorized: false }, { authorized: true },
+    { authorized: true, validForMs: 0 }, { authorized: true, validForMs: 30_001 }, null])(
     'requires an explicit Host authorization receipt before opening a link: %j',
     async (authorization) => {
       const f = linkFixture(async () => authorization);
@@ -312,7 +313,7 @@ describe('MCP App transport lifecycle', () => {
       op: 'authorize-link', viewId: 'view', linkId: 'link',
     });
     expect(f.link).not.toHaveBeenCalled();
-    authorize({ authorized: true });
+    authorize({ authorized: true, validForMs: 30_000 });
     await flush();
     expect(f.link).toHaveBeenCalledExactlyOnceWith('https://example.org/');
     expect(f.invoke).toHaveBeenCalledWith('task', {
@@ -326,10 +327,27 @@ describe('MCP App transport lifecycle', () => {
     await f.controller.open({});
     await flush();
     await f.controller.close();
-    authorize({ authorized: true });
+    authorize({ authorized: true, validForMs: 30_000 });
     await flush();
     expect(f.link).not.toHaveBeenCalled();
     expect(f.invoke.mock.calls.some(([, input]) => input.op === 'link-result')).toBe(false);
+  });
+  it('rejects an authorization response whose lease elapsed in transit', async () => {
+    let elapsed = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    let authorize!: (value: unknown) => void;
+    const f = linkFixture(() => new Promise((resolve) => { authorize = resolve; }));
+    await f.controller.open({});
+    await flush();
+    elapsed = 30_000;
+    authorize({ authorized: true, validForMs: 30_000 });
+    await flush();
+    expect(f.link).not.toHaveBeenCalled();
+    expect(f.invoke).toHaveBeenCalledWith('task', {
+      op: 'link-result', viewId: 'view', linkId: 'link', success: false,
+    });
+    await f.controller.close();
+    vi.restoreAllMocks();
   });
   it('host display changes never synthesize View request IDs', async () => {
     const f = fixture();

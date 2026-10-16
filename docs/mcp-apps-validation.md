@@ -262,6 +262,58 @@ Desktop 声明 inline/fullscreen，Mobile 声明 inline；不声明 pip 或任�
 尚未联调真实模型账号与完整 Cindy React 卡片，不等同于完整产品 UI 的 Light/Dark 实机目检。
 大小检查只约束本版本的新卡片写入，不批量改写此前已经保存的历史记录。
 上游 instructions 透传恢复模型既有的服务器说明，并在 facade 初始化时建立认证连接；
-本地协议 fixture 验证字段与失败语义，未实测真实模型的缓存率、启动耗时、用量或调用准确率。
+本地协议 fixture 验证字段与失败语义；修改边界的运行期测量见下节，
+真实模型的缓存率、完整启动耗时、token 用量或调用决策准确率未测量。
 Mobile 真机、真实 SSH 主机、真实 GM endpoint 仍待端到端验收。
 本地模拟与自动验证不修改用户 MCP 设置，不连接生产业务接口。
+
+## 外链授权有效期回归（2026-10-16）
+
+Host 的 `authorize-link` 现在一次性认领待处理外链，把原 10 秒待授权计时替换为
+30 秒结果等待，并返回 `validForMs`。Desktop Main 和 Mobile 共享控制器用单调时钟
+把整个授权往返计入期限，在调用系统浏览器前拒绝过期回包。重复认领不延长期限，
+结果丢失、撤权和 View 销毁按失败收尾；不重放浏览器动作，不重置 link 或 relay。
+
+新增回归复现了旧代码在授权后原计时到期、过期授权回包仍打开浏览器的情况。
+修复后 Desktop 4 文件 / 96 项、共享包 2 文件 / 61 项、Mobile 2 文件 / 26 项通过；
+Desktop、Mobile 类型检查及 maker-shared 的 `tsc --noEmit` 通过，定向 ESLint 通过。
+随后完整 MCP Apps 回归 19 文件 / 354 项通过，文档合同 10 项通过。
+测试初始化夹具最初未完成握手，随后补齐；fake timer 清理顺序导致的 hook 超时也已修正，
+未将这两类夹具错误作为产品问题或通过证据。
+
+## 核心指标的运行期边界测量（2026-10-16）
+
+影响评估：新增 MCP facade 可能影响稳定工具目录／instructions（缓存前缀输入）、
+初始化与工具返回速度、发给模型的内容与额外轮次（用量），以及参数／结果／事件的准确性。
+本 PR 未改 system 段、模型映射或 usage 计量；App 上下文只作为外部数据进入用户消息。
+
+复跑命令：
+
+```powershell
+node apps/desktop/scripts/mcp-apps-sandbox.verify.mjs --metrics
+node apps/desktop/scripts/mcp-apps-sandbox.verify.mjs --raw --remote --metrics
+```
+
+方法：真实隔离 Electron 加载生产 Host、facade、controller 与不同 App，
+上游使用真实 loopback HTTP MCP server，下游使用 SDK InMemory transport，存储与消息发送
+使用内存回调。每种 App 交替执行 30 次直接工具调用和 30 次 facade 调用，逐次比较结果
+（只移除有意不交给模型的根 `_meta`），并比较工具目录与 instructions；App 编辑上下文后再比较。
+没有真实模型请求、生产业务调用或用户数据库访问。
+
+| 运行测量 | 官方 SDK 申请表 | 独立 raw 看板 |
+| --- | ---: | ---: |
+| facade 初始化 | 11.85 ms | 8.44 ms |
+| 直接调用 mean / p95 | 12.99 / 16.40 ms | 13.63 / 17.72 ms |
+| facade 调用 mean / p95 | 28.02 / 32.90 ms | 50.52 / 64.45 ms |
+| 稳定工具目录 | 699 bytes，30 次及编辑后完全相同 | 310 bytes，30 次及编辑后完全相同 |
+| 工具结果比较 | 30/30 相同（仅根 `_meta` 按边界剔除） | 30/30 相同（仅根 `_meta` 按边界剔除） |
+| 直接／模型可见结果 | 225 / 127 bytes | 863 / 759 bytes |
+| 最新 App 上下文 | 231 bytes，接受后消费一次 | 239 bytes，接受后消费一次 |
+| 编辑上下文启动模型轮次 | 0 | 0 |
+| 明确发送消息启动回调 | 0（此检查未点击发送） | 1 |
+
+结论：修改边界未引入易变工具定义、未丢失模型可见结果，App 编辑不会启动多余轮次。
+facade 比直接调用增加了约 15.03 / 36.89 ms 的本地平均耗时，包含调用前工具发现与校验；
+raw 服务器使用三页目录，不能把这组本地测量外推为 SSH、真实网络或数据库性能。
+两项完整沙箱检查均退出 0。真实供应商的 prompt cache 命中率、token 用量和模型决策准确率
+仍未测量，输出对应值为 `null`；本记录只证明实际修改的 MCP／上下文边界，不宣称线上指标通过。

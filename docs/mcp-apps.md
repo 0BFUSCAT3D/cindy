@@ -159,8 +159,10 @@ Host 资源加载最多 90 秒，远程打开
 长轮询等待前后均复核当前卡片、账号与配置；撤权后不交付已排队或晚到的外链与通知。
 本机 Desktop 在实际打开外链前再次复核 Host 的 View/card。远程 Desktop 由查看端 Main、
 Mobile 由共享控制器，在调用当前查看设备的浏览器前通过 `authorize-link` 复核执行 Host 的
-View/card 及仍在等待的 `linkId`，收到显式授权回执后还会检查查看端 View 未关闭。
-拒绝、超时、未知操作或缺少回执均不打开、不自动重试该动作，并向 Host 报告外链失败；
+View/card 及仍在等待的 `linkId`。Host 一次性认领请求，将原 10 秒待授权计时替换为
+30 秒结果等待；回执携带 `validForMs`，控制端用单调时钟计入整个往返时间，
+打开前再检查有效期及查看端 View 未关闭。重复认领、过期回包、拒绝、超时、
+未知操作或缺少有效期回执均不打开、不自动重试该动作，并向 Host 报告外链失败；
 旧执行端需更新才能为新查看端完成复核，旧查看端需更新才会执行这一步。
 回归见 `viewAuthorization.test.ts` 与 `mcpAppController.test.ts`。
 App 消息排队期间只在 Main 保留当前卡片/View 的私有 guard；正常 drain 和排队插话

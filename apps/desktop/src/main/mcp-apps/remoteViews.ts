@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import type { McpAppSandboxView } from '../../shared/mcpApps.js';
+import { isMcpAppLinkAuthorizationCurrent } from '../../shared/mcpApps.js';
 import { MCP_APPS_MAX_BYTES, MCP_APPS_MAX_REMOTE_BYTES, safeAppLink } from './protocol.js';
 import { mcpAppOperationSchema } from './operations.js';
 import { assertMcpAppDocumentCaller, mountRemoteAppDocument, unmountRemoteAppDocument } from './sandboxProtocol.js';
@@ -151,11 +152,13 @@ export class RemoteMcpAppViews {
       if (view.closing) throw new Error('MCP_APP_VIEW_UNAVAILABLE');
       if (typeof value.linkId !== 'string' || typeof value.url !== 'string' ||
           view.links.get(value.linkId) !== safeAppLink(value.url)) throw new Error('MCP_APP_INVALID_LINK');
+      view.links.delete(value.linkId);
+      const requestedAt = performance.now();
       const authorization = await this.forward(view, { op: 'authorize-link', linkId: value.linkId });
-      if (!authorization || typeof authorization !== 'object' ||
-          (authorization as { authorized?: unknown }).authorized !== true) throw new Error('MCP_APP_LINK_NOT_AUTHORIZED');
       this.assertView(view);
       if (view.closing) throw new Error('MCP_APP_VIEW_UNAVAILABLE');
+      if (!isMcpAppLinkAuthorizationCurrent(authorization, performance.now() - requestedAt))
+        throw new Error('MCP_APP_LINK_NOT_AUTHORIZED');
       await this.deps.openLink(safeAppLink(value.url));
       return {};
     }
