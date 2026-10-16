@@ -9,6 +9,7 @@ import { tryPeerFile } from './filePeer';
 import { captureFilePeerScope } from './filePeerScope';
 import { removeRemote } from './mediaTransfer';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './broadcast-tap';
+import { captureRemoteMediaCacheValidity } from './remoteMediaPersistentCache';
 
 type Invoke = Parameters<typeof tryPeerFile>[2];
 type LocalFileResult = DeviceFileResult & { path: string; dispose(): Promise<void> };
@@ -28,9 +29,11 @@ export function readRemoteDeviceFile(
     workdir?: string;
     relPath?: string;
     fallback?: () => Promise<DeviceFileResult>;
+    assertCacheCurrent?: () => void;
   } = {},
 ) {
   const owner = captureDataOwnerBroadcastScope();
+  const assertCacheCurrent = options.assertCacheCurrent ?? captureRemoteMediaCacheValidity();
   const isCurrent = captureFilePeerScope(device);
   const invoke: Invoke = async (target, channel, args) => {
     // A connection can outlive this read, including an offer answered after cancellation.
@@ -94,7 +97,7 @@ export function readRemoteDeviceFile(
       )
         return null;
       const result = await tryPeerFile(device, url, invoke, options.signal, options.onProgress,
-        options.skipCache ? { ...metadata, skipCache: true } : metadata);
+        { ...metadata, ...(options.skipCache ? { skipCache: true } : {}), assertCacheCurrent });
       // A failed direct attempt is discarded before OSS starts; do not leave its partial
       // percentage/speed on screen during the fallback preparation.
       if (!result && !options.signal?.aborted && isCurrent()) {

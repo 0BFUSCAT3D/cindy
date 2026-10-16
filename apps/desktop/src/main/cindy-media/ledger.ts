@@ -509,6 +509,13 @@ export async function removeGhostDepositRef(
   return result.changes > 0;
 }
 
+/** Local attachment reuse must not bypass a remote cache's owner/device index. */
+export async function hasNonCacheBlob(hash: string, db: LedgerDb = defaultDb()): Promise<boolean> {
+  const rows = await db.select({ hash: mediaBlobs.hash }).from(mediaBlobs)
+    .where(and(eq(mediaBlobs.hash, hash), eq(mediaBlobs.isCache, false))).limit(1).all();
+  return rows.length > 0;
+}
+
 /** 查某指纹的落盘元数据(改图代办等"手里只有指纹"的调用方用);无账即 null。 */
 export async function getBlobInfo(
   hash: string,
@@ -599,6 +606,16 @@ export interface CacheBlobRow {
   ext: string;
   bytes: number;
   lastAccessAt: number;
+}
+
+/** Count shared blobs once, including bytes also referenced by other integrations. */
+export async function getIntegrationCacheBytes(integration: string, db: LedgerDb = defaultDb()): Promise<number> {
+  const [row] = await db.select({ bytes: sql<number>`COALESCE(SUM(${mediaBlobs.bytes}), 0)` })
+    .from(mediaBlobs).where(and(eq(mediaBlobs.isCache, true), sql`EXISTS (
+      SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
+      AND ${mediaRefs.refKind} = 'integration-cache' AND ${mediaRefs.originId} = ${integration}
+    )`)).all();
+  return row.bytes;
 }
 
 /** cache 性质 blob 按 LRU 升序(最久未用在前),供逐出候选规划。 */

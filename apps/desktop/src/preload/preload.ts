@@ -4414,6 +4414,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       success: boolean;
       error?: string;
       blobs: { totalCount: number; totalBytes: number; cacheCount: number; cacheBytes: number };
+      remoteMedia?: { bytes: number; fileCount: number };
       legacy: { bytes: number; fileCount: number };
       fixedCaches: {
         legacyImages: { bytes: number; fileCount: number };
@@ -4431,6 +4432,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     scan: (params: {
       draftUrls: string[];
+      scope?: 'remote-media';
     }): Promise<{
       success: boolean;
       error?: string;
@@ -4455,6 +4457,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     cleanup: (params: {
       draftUrls: string[];
+      scope?: 'remote-media';
       zeroRefHashes: string[];
       evictCacheHashes: string[];
       deadDirNames: string[];
