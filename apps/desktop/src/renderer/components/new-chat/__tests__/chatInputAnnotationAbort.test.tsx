@@ -18,22 +18,24 @@ import type { AtMentionPanel } from '../AtMentionPanel';
 import type { scanAtResources } from '@/lib/atResourceService';
 import type { ExtraDirsButton } from '../ExtraDirsButton';
 import type { PermissionSelector } from '../PermissionSelector';
+import type { ModelSelector } from '../ModelSelector';
 import type { UseVoiceInputResult } from '@/voice-input/useVoiceInput';
 import { useAttachments } from '@/hooks/useAttachments';
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
-  setModel: vi.fn(), selectModel: undefined as undefined | ((id: string) => Promise<void | boolean>), remoteProviders: [] as ProviderView[],
+  setModel: vi.fn(), selectModel: undefined as ComponentProps<typeof ModelSelector>['onModelChange'] | undefined, remoteProviders: [] as ProviderView[],
   remoteStatus: 'ready' as 'ready' | 'loading' | 'error',
   scan: vi.fn<typeof scanAtResources>(),
   atPanel: null as ComponentProps<typeof AtMentionPanel> | null,
   documentChanged: vi.fn(),
   voiceState: null as UseVoiceInputResult['state'] | null,
   cancel: vi.fn().mockResolvedValue(undefined),
+  realModelSelector: false,
 }));
 
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
-vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: h.confirm }) }));
+vi.mock('@/components/ui/confirm-dialog-provider', async (original) => ({ ...await original<typeof import('@/components/ui/confirm-dialog-provider')>(), useConfirmDialog: () => ({ confirm: h.confirm }) }));
 vi.mock('@/components/sidebar/SortableList', () => ({
   SortableList: ({
     items,
@@ -55,10 +57,13 @@ vi.mock('@/components/sidebar/SortableList', () => ({
     </div>
   ),
 }));
-vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof import('../ModelSelector')>(), ModelSelector: ({ modelId, onModelChange }: { modelId: string; onModelChange: typeof h.selectModel }) => {
-  h.selectModel = onModelChange;
-  return <span data-testid="model-selector">{modelId}</span>;
-} }));
+vi.mock('../ModelSelector', async (original) => {
+  const real = await original<typeof import('../ModelSelector')>();
+  return { ...real, ModelSelector: (props: ComponentProps<typeof ModelSelector>) => {
+    h.selectModel = props.onModelChange;
+    return h.realModelSelector ? <real.ModelSelector {...props} /> : <span data-testid="model-selector">{props.modelId}</span>;
+  } };
+});
 vi.mock('@/hooks/useSshCodexProviders', () => ({ useSshCodexProviders: () => ({ providers: h.remoteProviders, status: h.remoteStatus, refresh: () => {} }) }));
 vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: ({ open, onOpenChange, panel, disabled }: ComponentProps<typeof ExtraDirsButton>) => <><button aria-label="test-suggestions" disabled={disabled} onClick={() => onOpenChange?.(!open)} />{open && panel}</> }));
 vi.mock('../PermissionSelector', () => ({ PermissionSelector: ({ disabled }: ComponentProps<typeof PermissionSelector>) => <button data-testid="permission-selector" disabled={disabled} /> }));
@@ -77,7 +82,7 @@ vi.mock('@/voice-input/useVoiceInput', () => ({ useVoiceInput: (editor: Editor |
   const state = h.voiceState ?? (h.listening ? 'listening' : 'idle');
   return { state, isListening: state === 'listening', isBusy: state === 'listening' || state === 'submitting' || state === 'refining', draftText: '', start: vi.fn(), stop: h.stop, cancel: h.cancel };
 } }));
-vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], loading: false }) }));
+vi.mock('@/hooks/useProviders', () => ({ useProviders: () => ({ providers: [], providerOrder: [], loading: false }) }));
 vi.mock('@/hooks/useDeviceProviders', () => ({ useDeviceProviders: () => ({ providers: [], loading: false, unsupported: false }) }));
 vi.mock('@/hooks/useConnectedSource', () => ({ useConnectedSource: () => ({ hasConnectedSource: true, loading: false }) }));
 vi.mock('@/hooks/useAvailableAgents', () => ({ useAvailableAgents: () => ({ agents: [], loading: false }) }));
@@ -91,6 +96,7 @@ const api: any = new Proxy({}, { get: (_obj, key) => {
   if (key === 'getDataSnapshot') return () => { throw new Error('test bridge unavailable'); };
   if (key === 'setGlobalShortcut') return () => Promise.resolve({ ok: true });
   if (key === 'platform') return 'darwin';
+  if (key === 'modelAccess') return undefined;
   if (key === 'then') return undefined;
   if (String(key).startsWith('on')) return () => noOp;
   return new Proxy(() => Promise.resolve(undefined), { get: (_fn, nested) => api[nested] });
@@ -114,6 +120,8 @@ beforeEach(() => {
   h.documentChanged.mockClear();
   h.listening = false;
   h.voiceState = null;
+  h.stop.mockClear();
+  h.realModelSelector = false;
   h.cancel.mockReset().mockResolvedValue(undefined);
   h.atPanel = null;
   h.scan.mockReset().mockResolvedValue({ success: true, items: [], truncated: false });
@@ -171,7 +179,8 @@ it('does not rehydrate an empty stored document when voice busy state changes', 
 // Replaces voiceInputEditorEditability's source guard (PR #6196, section 3.2).
 // The voice hook is an external boundary; the editor and ChatInput lock effects
 // are real. Existing hydration tests never observe editability, attachment
-// controls, permission availability or Escape ownership. Minimal unit inputs:
+// controls, permission availability or Escape ownership; #1663 also requires
+// the real stop button to stay usable under the recording's own lock. Minimal unit inputs:
 // one idle -> listening -> submitting -> refining -> idle run and Escape on
 // two top-level surfaces followed by the same editor. Reuse this jsdom harness.
 it('locks editor and attachments for the whole voice run, but keeps permissions available', async () => {
@@ -184,7 +193,38 @@ it('locks editor and attachments for the whole voice run, but keeps permissions 
     expect(h.editor!.isEditable, state).toBe(!busy);
     expect((screen.getByRole('button', { name: 'test-suggestions' }) as HTMLButtonElement).disabled, state).toBe(busy);
     expect((screen.getByTestId('permission-selector') as HTMLButtonElement).disabled, state).toBe(false);
+    if (state === 'listening') {
+      // #1663: the recording's own lock must still leave its stop control usable.
+      const stop = screen.getByRole('button', { name: 'newChat.chatInput.voiceInput.stop' }) as HTMLButtonElement;
+      expect(stop.disabled).toBe(false);
+      await act(async () => { fireEvent.click(stop); });
+      expect(h.stop).toHaveBeenCalledExactlyOnceWith({ waitForRefinement: true, onReadyForEndCue: expect.any(Function) });
+    }
   }
+});
+
+// 9bc20cf894 / composerMorphScope: choosing a model used to drop focus to body.
+// Generic MorphPopover tests supply their own target and miss ChatInput's wiring.
+// Minimal unit input: one real selector choice, then focus returns to the live editor.
+it('returns focus to the editor after choosing a model from the real selector', async () => {
+  h.realModelSelector = true;
+  h.remoteProviders = [sshNativeCodexProvider([sshModel('remote-old'), sshModel('remote-new')])];
+  const onModelDidChange = vi.fn();
+  vi.stubGlobal('matchMedia', () => ({ matches: true, addListener: noOp, removeListener: noOp, addEventListener: noOp, removeEventListener: noOp }));
+  renderComposer({ hideRuntimeControls: false, sessionId: 'model-focus', remoteHostId: 'builder',
+    runtimeAgentKind: 'codex', vendorKey: 'codex', initialModel: 'remote-old',
+    initialProviderId: 'openai', initialEffort: 'low', onModelDidChange });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'newChat.modelSelector.trigger.ariaWithEffort' }));
+  const nextModel = await screen.findByRole('option', { name: /remote-new/ });
+  await act(async () => {
+    fireEvent.pointerDown(nextModel);
+    nextModel.focus();
+    fireEvent.click(nextModel);
+  });
+  await waitFor(() => expect(screen.queryByRole('listbox', { name: 'newChat.modelSelector.modelListAria' })).toBeNull());
+  await waitFor(() => expect(onModelDidChange).toHaveBeenCalledExactlyOnceWith('remote-new'));
+  await waitFor(() => expect(document.activeElement).toBe(h.editor!.view.dom));
 });
 
 it('defers Escape on top-level surfaces and cancels voice once from the editor', async () => {
