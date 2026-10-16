@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron';
 import { REMOTE_RESOURCE_CHANGED_CHANNEL } from '@cindy/device-link';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import {
   BOT_REMOTE_RESOURCE_KIND,
@@ -20,8 +20,19 @@ import {
 
 const log = createLogger('maker-ipc:bot-remote-resource');
 
+const localListeners = new Set<(botId: string) => void>();
+
+/** In-process observers of the same invalidation (e.g. cloud companion sync). */
+export function onBotRemoteResourceChanged(listener: (botId: string) => void): () => void {
+  localListeners.add(listener);
+  return () => { localListeners.delete(listener); };
+}
+
 /** Notify every controller that a host-owned teammate projection must be re-read. */
 export function broadcastBotRemoteResourceChanged(botId: string): void {
+  for (const listener of localListeners) {
+    try { listener(botId); } catch { /* observers never block the broadcast */ }
+  }
   const payload = {
     collectionId: TEAMMATES_REMOTE_COLLECTION_ID,
     resourceRefs: [{
@@ -82,7 +93,7 @@ export function scheduleBotRemoteResourceChangedForSession(
       .from(botSessionLinks)
       .where(and(
         eq(botSessionLinks.sessionId, sessionId),
-        eq(botSessionLinks.role, 'canonical'),
+        inArray(botSessionLinks.role, ['canonical', 'delegation']),
         isNull(botSessionLinks.archivedAt),
       ))
       .limit(1)

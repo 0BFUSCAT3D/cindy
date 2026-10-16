@@ -37,6 +37,17 @@ beforeEach(() => {
   root = createRoot(document.createElement('div'));
 });
 afterEach(() => act(() => root.unmount()));
+it('does not refresh for an opened or administratively cleared breaker', async () => {
+  await act(async () => root.render(createElement(Probe, {})));
+  invoke.mockClear();
+  await act(async () => {
+    responsive({ deviceId: 'a', unresponsive: true, recovered: false });
+    responsive({ deviceId: 'a', unresponsive: false, recovered: false });
+  });
+  expect(invoke).not.toHaveBeenCalled();
+  await act(async () => responsive({ deviceId: 'a', unresponsive: false, recovered: true }));
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
 it.each(['status', 'peer', 'responsive'])('retains keyed favorites on failed %s refresh and replaces only on success', async event => {
   await act(async () => root.render(createElement(Probe, {})));
   const refresh = () => event === 'status' ? statusChanged()
@@ -49,6 +60,20 @@ it.each(['status', 'peer', 'responsive'])('retains keyed favorites on failed %s 
   await act(async () => refresh());
   expect(view.items).toEqual([]);
   expect(view.error).toBe(false);
+});
+it('records DEVICE_LINK connection error codes and clears them after a successful refresh', async () => {
+  await act(async () => root.render(createElement(Probe, {})));
+  invoke.mockRejectedValueOnce(new Error('[DEVICE_LINK_NOT_CONNECTED] offline'));
+  await act(async () => statusChanged());
+  expect(view.error).toBe(true);
+  expect(view.errorCode).toBe('DEVICE_LINK_NOT_CONNECTED');
+  invoke.mockRejectedValueOnce(new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] old host'));
+  await act(async () => statusChanged());
+  expect(view.errorCode).toBe('DEVICE_LINK_CHANNEL_NOT_ALLOWED');
+  invoke.mockResolvedValue([]);
+  await act(async () => statusChanged());
+  expect(view.error).toBe(false);
+  expect(view.errorCode).toBeNull();
 });
 it('remote favorite add/update/remove use remote operations, never browser storage', async () => {
   const local = vi.spyOn(Storage.prototype, 'setItem');

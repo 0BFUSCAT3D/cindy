@@ -43,7 +43,7 @@ try {
     config: {
       appId: 'app.cindy.installer-test',
       productName: 'CindyInstallerProbe',
-      electronVersion: '41.10.3',
+      electronVersion: '42.11.12',
       compression: 'store',
       directories: { output: path.join(root, 'out'), buildResources: resources },
       win: { signAndEditExecutable: false, sign: async () => {} },
@@ -67,6 +67,7 @@ try {
       '/WX',
       '/V2',
       `/DTEST_ROOT=${root}`,
+      `/DBUILD_RESOURCES_DIR=${resources}`,
       `/X!addincludedir "${resources}"`,
       `/X!addincludedir "${path.join(nsisTemplatesDir, 'include')}"`,
       path.join(desktop, 'scripts', 'fixtures', 'installer-directory-check.nsi'),

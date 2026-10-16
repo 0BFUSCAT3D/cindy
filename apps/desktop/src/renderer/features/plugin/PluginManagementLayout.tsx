@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { Search, X } from 'lucide-react';
 
 import { WINDOW_DRAG_STYLE, WINDOW_NO_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 import { cn } from '@/lib/utils';
 import './plugin-motion.css';
 
@@ -86,7 +87,7 @@ export function PluginManagementLayout({
   return (
     <div
       className={cn(
-        'plugin-management-layout-root plugin-motion-root flex h-full min-h-0 w-full flex-col',
+        'app-wallpaper-surface plugin-management-layout-root plugin-motion-root flex h-full min-h-0 w-full flex-col',
         embedded ? 'bg-transparent' : 'bg-[var(--surface)]',
       )}
     >
@@ -145,29 +146,26 @@ export function PluginManagementHeader({
   }, []);
 
   const tabs = showPrimaryTabs ? (
-    <div
+    <SegmentedControl
       key="plugin-management-tabs"
-      className="plugin-motion-tabs inline-flex shrink-0 rounded-full border p-0.5 backdrop-blur-md"
+      className="plugin-motion-tabs shrink-0"
       role="tablist"
       aria-label={t('sidebar.horizontalTabbarAria')}
-      style={{
-        ...WINDOW_NO_DRAG_STYLE,
-        background: 'color-mix(in srgb, var(--surface-chip) 62%, transparent)',
-        borderColor: 'color-mix(in srgb, var(--border-default) 52%, transparent)',
-        boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--surface-elevated) 24%, transparent)',
-      }}
-    >
-      <TabButton
-        active={activeTab === 'plugins'}
-        label={t('settings.ghosts.title')}
-        onClick={() => (onSelectTab ? onSelectTab('plugins') : navigate('/plugins'))}
-      />
-      <TabButton
-        active={activeTab === 'skills'}
-        label={t('skillhub.home.title')}
-        onClick={() => (onSelectTab ? onSelectTab('skills') : navigate('/skillhub/local'))}
-      />
-    </div>
+      style={WINDOW_NO_DRAG_STYLE}
+      height={38}
+      optionHeight={32}
+      optionClassName="plugin-management-tab min-w-[88px] px-4 text-13"
+      value={activeTab}
+      onValueChange={(tab) =>
+        onSelectTab
+          ? onSelectTab(tab)
+          : navigate(tab === 'plugins' ? '/plugins' : '/skillhub/local')
+      }
+      options={[
+        { value: 'plugins', label: t('settings.ghosts.title') },
+        { value: 'skills', label: t('skillhub.home.title') },
+      ]}
+    />
   ) : null;
 
   const tools =
@@ -205,6 +203,10 @@ export function PluginManagementHeader({
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
                 if (event.key !== 'Escape') return;
+                // 认领这一下 Esc：外层（设置页）不再接着失焦或退出。
+                event.preventDefault();
+                // 按住不放的自动连发不算新的一下：清空后不能接着失焦。
+                if (event.repeat) return;
                 if (query) {
                   onQueryChange('');
                 } else {
@@ -265,33 +267,5 @@ export function PluginManagementPage({ children, className }: PluginManagementPa
     >
       {children}
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={cn(
-        'plugin-management-tab h-8 min-w-[88px] select-none rounded-full border border-transparent px-4 text-13 font-medium transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
-        active
-          ? 'plugin-motion-selected text-[var(--text-primary)]'
-          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
-      )}
-    >
-      {label}
-    </button>
   );
 }

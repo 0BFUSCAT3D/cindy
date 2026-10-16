@@ -8,6 +8,8 @@ export interface DeviceFileResult {
   inlineBase64?: string;
   /** Only emitted when the caller explicitly requests preparation. */
   transferRequired?: boolean;
+  /** Opaque source identity, emitted only after current authorization and stat. */
+  version?: string;
 }
 
 export function assertFileReadActive(signal?: AbortSignal): void {
@@ -42,9 +44,13 @@ export async function readDeviceFile<T extends DeviceFileResult>(options: {
   assertActive();
   const prepared = await options.prepare();
   if (!active()) return discardCancelled(prepared);
-  if (prepared.transferRequired !== true) return prepared;
-  const needsFallback = options.stream &&
-    (options.peerResultIsTransient || /^(audio|video)\//i.test(prepared.mimeType));
+  const mediaStream = options.stream && /^(audio|video)\//i.test(prepared.mimeType);
+  // Small audio/video files arrive inline too, but playback still needs a retained
+  // URL. Reuse the streaming path without re-uploading an old host's OSS result.
+  const inlineMediaStream = mediaStream && !prepared.ossKey &&
+    typeof prepared.inlineBase64 === "string";
+  if (prepared.transferRequired !== true && !inlineMediaStream) return prepared;
+  const needsFallback = mediaStream || (options.stream && options.peerResultIsTransient);
   const direct = needsFallback ? null : await options.peer(prepared);
   if (direct && !active()) return discardCancelled(direct);
   else assertActive();
@@ -72,6 +78,8 @@ export async function exportDeviceFile(
   workdir: string,
   relPath: string,
   signal?: AbortSignal,
+  /** Host-reported upload bytes; hosts that omit `uploaded` simply report no progress. */
+  onProgress?: (uploaded: number, total: number) => void,
 ): Promise<DeviceFileResult> {
   assertFileReadActive(signal);
   const start = await invoke<{
@@ -90,10 +98,21 @@ export async function exportDeviceFile(
       state: string;
       key?: string;
       message?: string;
+      uploaded?: number;
     }>({ op: "exportFileStatus", workdir, transferId: start.transferId });
     assertFileReadActive(signal);
     if (!status.ok || status.state === "error")
       throw new Error(status.message ?? "FILE_EXPORT_FAILED");
+    if (
+      status.state === "uploading" &&
+      typeof status.uploaded === "number" &&
+      Number.isFinite(status.uploaded) &&
+      start.size > 0
+    )
+      onProgress?.(
+        Math.min(Math.max(0, status.uploaded), start.size),
+        start.size,
+      );
     if (status.state === "done" && status.key)
       return {
         ossKey: status.key,

@@ -14,6 +14,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { app } from 'electron';
+import { setCindyPersonalRuntime, setCindyVersionEndpointOverride } from '../cindy-make/versionRuntimeIdentity';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -261,6 +263,27 @@ describe('resolveEndpointSource(清单来源三选一)', () => {
 });
 
 describe('localhost 开发端点的 realm 固定', () => {
+  it('a packaged personal version keeps the verified local Dev services instead of sending credentials to production', async () => {
+    const previousPackaged = app.isPackaged;
+    (app as { isPackaged: boolean }).isPackaged = true;
+    setCindyPersonalRuntime(true);
+    setCindyVersionEndpointOverride({ manifestText: LOCAL_MANIFEST, local: true });
+    netRequest.mockClear();
+    try {
+      await expect(initClientEndpoints()).resolves.toBe(true);
+      const local = getClientEndpoint('authApiBaseUrl');
+      expect(local.startsWith('http://localhost')).toBe(true);
+      activateClientEndpointRealm('global');
+      expect(getClientEndpoint('authApiBaseUrl')).toBe(local);
+      activateClientEndpointRealm('cn');
+      expect(getClientEndpoint('authApiBaseUrl')).toBe(local);
+      expect(netRequest).not.toHaveBeenCalled();
+    } finally {
+      setCindyPersonalRuntime(false);
+      setCindyVersionEndpointOverride(undefined);
+      (app as { isPackaged: boolean }).isPackaged = previousPackaged;
+    }
+  });
   it('登录恢复切换 realm 时仍复用本地文件清单，不加载线上清单', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'client-endpoints-local-realm-'));
     const manifestPath = path.join(root, 'endpoint.local.json');
@@ -1485,6 +1508,24 @@ describe('netlog 产物事后核对(verifyEndpointNetLogCapture)', () => {
 });
 
 describe('getter / IPC', () => {
+  it('aborts a non-200 endpoint response instead of draining without a deadline', async () => {
+    resetClientEndpointsForTest(TEST_CLIENT_ENDPOINTS, {
+      buildRegion: 'cn',
+      realmManifestBaseUrls: {
+        cn: 'https://manifest.cn.example.com/app',
+        global: 'https://manifest.global.example.com/app',
+      },
+    });
+    const response = Object.assign(new EventEmitter(), { statusCode: 404 });
+    const request = Object.assign(new EventEmitter(), {
+      end: vi.fn(() => request.emit('response', response)),
+      abort: vi.fn(() => response.emit('error', new Error('cancelled'))),
+    });
+    netRequest.mockReturnValueOnce(request);
+    await expect(loadClientEndpointsForRealm('global')).rejects.toThrow('http-404');
+    expect(request.abort).toHaveBeenCalledTimes(1);
+  });
+
   it('默认不是离线缓存启动', () => {
     expect(isUsingCachedClientEndpoints()).toBe(false);
   });

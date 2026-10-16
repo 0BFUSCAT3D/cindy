@@ -52,17 +52,50 @@
   提的，提交者身份不构成例外。
 - 新增或调整产品功能、判断能力应进入 Core / Skill / 插件、设计人机交互或多端体验
   前，必须先读 `docs/product-rules/core-product-principles.md`。
+- 新增或修改 Agent 管理用户自己的任务、定时任务、项目、伙伴的工具（`cindy_helper` /
+  `cindy_scheduler` 等），或调整工具索引、工具的作用范围说明前，必须先读
+  `docs/product-rules/agent-user-parity.md`：用户本人能做的（含跨电脑）Agent 也要能做并能在
+  索引第一步发现；改完把现状台账写回去。
+- 修改共享任务、跨账号访客邀请、共享上下文或共享成员权限前，必须先读
+  `docs/product-rules/shared-task-mode.md`；复用 device-link，同账号远控行为不变。
+- 修改 IM 工具授权、来源消息、多端确认或暂停期间的确认回执，或新增 IM 渠道前，
+  必须先读 `docs/product-rules/im-permission-confirmation.md`；Desktop、Mobile 与共享
+  packages 共用同一最终决定，渠道收到回答不代表执行已恢复。
+- 新增或修改代输入（`request_input_handoff`、宿主步骤读取与执行、代输入卡、终端 askpass、
+  单窗口实时画面、设备码识别，或任何经手主人填写值的路径）前，必须先读
+  `docs/product-rules/input-handoff.md`：主人填写的值只交给宿主执行，不进模型、记录、日志、IM 与推送。
+- 修改账号用量上限的判定、重置时刻来源，或普通任务／目标模式撞上限额后的等待与自动继续前，
+  必须先读 `docs/product-rules/usage-limit-auto-continue.md`。
+- 新增或修改自动发送／远程发送消息的路径、消息来源标签，或发给模型的来源说明前，必须先读
+  `docs/product-rules/message-source.md`：界面标签与模型说明同源，两侧一起改。
 - 修改伙伴（Bot）的身份、Session 生命周期、模型 fallback、工作目录、Skill / MCP 装配、
   委派协作或伙伴设置前，必须先读 `docs/product-rules/cindy-bots-runtime.md`。
+- 修改伙伴的跨电脑身份、主力电脑（登记、接管、交出、降级）、云端对话层与资料上传，或
+  `apps/desktop/src/main/companion-cloud/`、Chat Server 的伙伴 actor／1:1 房间合同前，必须先读
+  `docs/product-rules/cloud-companions.md`。
+- 新增或修改伙伴群聊的数据、发言编排、群专线 Session、分工（负责人、安排、分工 Session、群工作目录）、
+  群聊界面或手机端群聊（`bot-groups` 远程资源、群推送深链）前，必须先读 `docs/product-rules/bot-group-chat.md`。
 - 新增或修改 `/review`、Reviewer 任务、成果快照、Finding 协议、复核入口、结果呈现或
   复核生命周期前，必须先读 `docs/product-rules/review-product-direction.md`。
 - 新增或修改按区域（`cn` / `global`）分支的逻辑、构建身份与命名、端点选择、区域相关
   UI 标注，或涉及两个版本关系的对外文案前，必须先读
   `docs/product-rules/region-and-editions.md`：**无限定词身份归 Global，未显式指定
   区域一律落在 `global`，只标注中国大陆版**。
+- 新增或修改供应商分享（把远程供应商分享给其他账号）、分享链接、分享申请与审批、
+  分享管理页，或受邀者使用分享供应商的任何路径前，必须先读
+  `docs/product-rules/provider-sharing.md`；它为远程 Agent 通道新增跨账号授权，并允许
+  中国大陆版与 Global 互享，与共享任务是两套独立授权。
+- 新增或修改供应商组（把多台电脑上的同一个供应商合成一组）、组策略、组内电脑的添加与状态、
+  经供应商组的任务分配或转发，或「远程与分享」页的组与用量前，必须先读
+  `docs/product-rules/provider-groups.md`：Agent 始终在被选中的组内电脑上运行，组所在电脑
+  只选电脑与转发，并负责按使用方隔离。
 - 新增或修改任何界面、组件、布局、样式、动效或 UI 文案前，必须先读权威设计规范
   `docs/design-rules/DESIGN.md`；设计文档索引见
   `docs/design-rules/cindy-design-system.md`。
+- 新增或修改 Mobile（`apps/mobile`）界面上的文字前，必须先查
+  `apps/mobile/docs/mobile-design-guide.md` §3「文字规范速查」：先定角色，再整行照抄字号、
+  行高、字重、字色；五档中性字色、浅色字不配粗字重、11 档字号、必须配行高四条由
+  `typographyTokenDiscipline.test.ts` 守护，角色是否选对靠 review。
 - 做 UI 圆角分类或点击目标尺寸审查时，必须同时读 `docs/design-rules/DESIGN.md §5` 与
   `docs/design-rules/design-governance.md §13`；普通 UI 改动同样适用，不限于设计系统迁移 PR。
 - 新增或修改设计 Token、主题系统、标准 UI 组件（primitive / pattern）、视觉类门禁脚本，
@@ -73,6 +106,9 @@
   的术语照用，不自造译法；表里没有或拿不准的，在 `i18n/glossary.json` 加
   `status: "proposed"` 条目再讨论。门禁为 `pnpm check:i18n-glossary`，规则见
   `docs/dev-rules/engineering-conventions.md` §5.1。
+- 修改个人 IM 渠道（`apps/desktop/src/main/im/**`）或官方 hook（`hook-control/**`）的
+  找/建任务、命令、排队与插话、输入拼装、事件观察、交互、收尾或停止逻辑前，必须先读
+  `docs/dev-rules/im-turn-flow.md`（入口账本、状态清单、不变量与迁移批次）。
 - 新增或修改**任一 Telegram bot 的用户可见行为**（命令、消息呈现、收口策略、群行为、
   权限口径、附件与表情）前，必须先读能力台账 `docs/product-rules/telegram-bot-parity.md`：
   两个 bot 是两套架构，差异可以有但必须登记在表里；表里标「有意不同」的行**不要去
@@ -120,6 +156,15 @@
 - 新增或修改 Desktop 日志、IPC 错误处理、main 侧业务逻辑与测试、跨平台（macOS／
   Windows）行为，或任何 UI 文案的 i18n 落地前，必须先读
   `docs/dev-rules/engineering-conventions.md`。
+- 新增或改写任一测试前，必须先读
+  `docs/dev-rules/engineering-conventions.md` §3.2「新增测试的价值门槛」。测试必须通过
+  真实生产入口验证可观察结果，并说明 Bug／规则依据、现有覆盖缺口、最小失败输入和 tier；
+  没有新的结果、错误、权限、持久化、协议或时序差异时停止增加用例。纯跨文件安全、
+  权限、协议或设计契约才进入 guard；不得为了覆盖率、测试数量或复制常量／JSX／CSS／
+  源码字面量而新增测试。同时遵守该节「性能预算」：新文件单独运行本机 5 秒内并在 PR
+  填实测耗时；被测模块只加载一次，不在 `beforeEach`／逐用例 helper 里 `vi.resetModules()`；
+  不做 ≥100ms 真实等待；同一模块的用例并入已有文件。`pnpm check:test-hygiene` 在 CI
+  阻断违规，基线只减不增，不得手改基线放行。
 - 修改客户端日志采集／脱敏／上报链路（`apps/desktop/src/main/log-upload/**`）、`logger.ts`
   的 main 日志行格式、崩溃判定或待补传标记前，必须先读
   `docs/dev-rules/log-upload-and-redaction.md`。其中三条是**不变量**：**记录边界**（写侧
@@ -174,16 +219,14 @@
   瞬时 commit（不存在于本仓库、GitHub 上查不到该 SHA）；对这类合成 SHA 跑
   `check:dco` 的失败结果不构成缺签证据，不要据此报告 DCO 问题。判定 DCO 是否通过，
   一律以 PR 上的 DCO App check 与真实提交范围（`origin/main..PR head`）的结果为准。
-- **提交前测试门禁（硬性要求）**：无论是提 PR 还是直接 commit，提交前都必须在本地
-  跑完仓库根 `pnpm test:unit:related`（只跑这次改动能影响到的单测；改到测试调度、
-  依赖清单、workspace 配置、Vitest 配置或单测 CI 时会自动退回全量 `pnpm test:unit`），
-  并对本次改动涉及的每个 package 跑
-  `pnpm --filter <包名> run --if-present typecheck`（`<包名>` 用该 package 在
-  `package.json` 里的 `name`，如 `desktop`、`@cindy/maker-core`；没有 `typecheck`
-  script 的 package 该步自动跳过），全部通过后才允许提交；任何一项失败都不得提交，
-  必须先修复。GitHub CI 仍跑完整 `pnpm test:unit`。细则与唯一例外（防丢数据的兜底保存）见
-  `docs/dev-rules/development-workflow.md`。
-- 在上述门禁之上按风险追加验证：跨模块、高风险或基础设施改动追加更广泛验证（如
+- **提交前验证**：提交前必须完成与改动风险匹配的测试和相关 package 的类型检查。
+  默认使用根 `pnpm test:unit:related` 选测；已按影响面完成等效定向验证时，不要求为了
+  commit 重跑整仓测试。相关 package 运行
+  `pnpm --filter <包名> run --if-present typecheck`（包名以该 package 的 `package.json`
+  为准）。已执行检查的失败必须修复或明确说明既有故障，未执行项和原因须如实记录。
+  本机资源预算、并发与跨任务排队由使用者或宿主决定，仓库不强制多个 session 串行。
+  GitHub CI 保留完整单测与合并门禁；细则见 `docs/dev-rules/development-workflow.md`。
+- 按风险追加验证：跨模块、高风险或基础设施改动追加更广泛验证（如
   `pnpm test:all`），最终以 CI 门禁为准。不得通过跳过、删除或弱化测试制造通过。
 
 ## 绝对安全底线

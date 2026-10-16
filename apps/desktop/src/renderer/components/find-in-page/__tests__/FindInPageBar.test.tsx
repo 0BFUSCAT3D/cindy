@@ -25,8 +25,10 @@ vi.mock('@/components/find-in-page/findInPageOwnership', () => ({
 }));
 
 import { FindInPageBar } from '../FindInPageBar';
+import { isPageTextAccessActive, PAGE_TEXT_NAVIGATION_EVENT } from '@/lib/pageTextAccess';
 
 class MockHighlight {
+  priority = 0;
   readonly ranges: AbstractRange[];
 
   constructor(...ranges: AbstractRange[]) {
@@ -56,6 +58,30 @@ function getHighlight(name: string): MockHighlight | undefined {
 }
 
 describe('FindInPageBar', () => {
+  it('lets the owning message scroller coordinate a match jump', async () => {
+    const page = document.createElement('main');
+    page.textContent = 'owned search target';
+    const navigate = vi.fn((event: Event) => {
+      expect((event as CustomEvent<Range>).detail.toString()).toBe('search target');
+      event.preventDefault();
+    });
+    page.addEventListener(PAGE_TEXT_NAVIGATION_EVENT, navigate);
+    const input = await openFindBar(page);
+    fireEvent.change(input, { target: { value: 'search target' } });
+    expect(screen.getByText('1/1')).toBeTruthy();
+    expect(navigate).toHaveBeenCalled();
+  });
+  it('requests full logical text only while open and releases on close or unmount', async () => {
+    expect(isPageTextAccessActive()).toBe(false);
+    await openFindBar();
+    expect(isPageTextAccessActive()).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'findInPage.close' }));
+    expect(isPageTextAccessActive()).toBe(false);
+    await act(async () => { mocks.shortcutHandler?.(new KeyboardEvent('keydown')); });
+    expect(isPageTextAccessActive()).toBe(true);
+    cleanup();
+    expect(isPageTextAccessActive()).toBe(false);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.shortcutHandler = null;
@@ -105,6 +131,9 @@ describe('FindInPageBar', () => {
     expect(getHighlight(MATCH_HIGHLIGHT_NAME)?.ranges).toHaveLength(2);
     expect(getHighlight(MATCH_HIGHLIGHT_NAME)?.ranges[0].toString()).toBe('foo');
     expect(getHighlight(ACTIVE_HIGHLIGHT_NAME)?.ranges).toHaveLength(1);
+    expect(getHighlight(ACTIVE_HIGHLIGHT_NAME)?.priority).toBeGreaterThan(
+      getHighlight(MATCH_HIGHLIGHT_NAME)!.priority,
+    );
   });
 
   it('matches case-insensitively and keeps element-boundary matches explicit', async () => {
@@ -434,6 +463,14 @@ describe('FindInPageBar', () => {
 
     details.open = false;
     await waitFor(() => expect(screen.getByText('0/0')).toBeTruthy());
+  });
+
+  it('opts out of window drag regions so page drag strips cannot swallow its buttons', async () => {
+    await openFindBar();
+    const dialog = screen.getByRole('dialog');
+    expect(
+      (dialog.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion,
+    ).toBe('no-drag');
   });
 
   it('clears highlights when the query is cleared or the bar closes', async () => {

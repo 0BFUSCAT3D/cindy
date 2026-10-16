@@ -33,6 +33,8 @@ const declarations = new Set([
   'patchDraft', 'selectWorkingDir', 'rememberWorkingDirForDevice', 'selectDialogueWorkspace',
   'selectRecentProject', 'openProjectBrowse',
   'firstMessageRef', 'firstMessageSelectionRef', 'firstMessageSelection',
+  'restoreCreationDraft', 'userTouchedRuntimeRef', 'appliedPermissionMemoryRef',
+  'runtimeActionSeqRef', 'attachments', 'attachmentsRef', 'planModeDraftOn', 'prePlanPermissionModeRef', 'remoteAgentChoice',
 ]);
 const effectMarkers = new Set([
   'drainStashedNewSessionDraft', 'readNewSessionPreferences',
@@ -83,10 +85,14 @@ const bindingNames = [
   'isRemoteTaskSuggestionId', 'params', 't',
   'initialWorkingDir', 'visualInitialDraft', 'sessions', 'readNewSessionPreferences',
   'saveNewSessionPreferences', 'drainStashedNewSessionDraft', 'loadBrowsePath', 'setDevicePickerOpen',
-  'setAttachments', 'setAttachmentError', 'setBrowseOpen', 'setBrowseError',
+  'setAttachmentError', 'setBrowseOpen', 'setBrowseError',
   'setShowHiddenDirectories', 'setWorkspacePickerOpen',
 ];
-const compiled = ts.transpileModule(`function usePageWorkspace(bindings) {
+const readRouteString = source.statements.find((node): node is ts.FunctionDeclaration =>
+  ts.isFunctionDeclaration(node) && node.name?.text === 'readRouteString');
+if (!readRouteString) throw new Error('readRouteString not found');
+const compiled = ts.transpileModule(`${readRouteString.getText(source)}
+function usePageWorkspace(bindings) {
   const { ${bindingNames.join(', ')} } = bindings;
   ${selected.map((statement) => statement.getText(source)).join('\n')}
   const switchDevice = (deviceId) => {
@@ -105,13 +111,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; });
 
-function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: NewSessionWorkspaceKind; suggestion?: string; deviceExplicit?: boolean } = {}) {
+function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: NewSessionWorkspaceKind; suggestion?: string; routeDraft?: string | string[]; deviceExplicit?: boolean } = {}) {
   let resolveRead!: (value: NewSessionStoredPreferences) => void;
   const pendingRead = new Promise<NewSessionStoredPreferences>((resolve) => { resolveRead = resolve; });
   const deviceOptions = [{ deviceId: 'a', name: 'A' }, { deviceId: 'b', name: 'B' }];
   const initialWorkingDir = options.initialWorkingDir ?? null;
   const bindings = {
-    isRemoteTaskSuggestionId, params: { suggestion: options.suggestion }, t: i18n.getFixedT('zh-CN'),
+    isRemoteTaskSuggestionId, params: { suggestion: options.suggestion, draft: options.routeDraft, editSessionId: options.restoredKind ? 'failed-task' : undefined }, t: i18n.getFixedT('zh-CN'),
     useState, useRef, useMemo, useEffect, useCallback, DEFAULT_NEW_SESSION_DRAFT,
     pickNewSessionDefaultDevice, buildRecentWorkspaceOptions,
     pickInitialNewSessionWorkspace: vi.fn(pickInitialNewSessionWorkspace),
@@ -123,7 +129,7 @@ function mountWorkspace(options: { initialWorkingDir?: string; restoredKind?: Ne
     })),
     readNewSessionPreferences: vi.fn(() => pendingRead),
     saveNewSessionPreferences: vi.fn(async () => {}),
-    drainStashedNewSessionDraft: vi.fn(() => options.restoredKind ? {
+    drainStashedNewSessionDraft: vi.fn((sessionId?: string, deviceId?: string) => options.restoredKind && sessionId === 'failed-task' && deviceId === 'a' ? {
       draft: { ...DEFAULT_NEW_SESSION_DRAFT, workspaceKind: options.restoredKind,
         workingDir: options.restoredKind === 'project' ? '/restored/project' : '',
         firstMessage: 'restored draft' },
@@ -177,8 +183,16 @@ describe('new session workspace page effects', () => {
     expect(page.current.draft.firstMessage).toBe(prompt);
   });
 
+  it('preserves the plugin route draft over recommendations and late preferences', async () => {
+    const page = mountWorkspace({ suggestion: 'findFile', routeDraft: '使用练习场学习 DJ' });
+    expect(page.current.draft.firstMessage).toBe('使用练习场学习 DJ');
+    await page.resolvePreferences('project', 'b');
+    expect(page.current.draft.firstMessage).toBe('使用练习场学习 DJ');
+  });
+
   it('leaves an unknown recommendation empty and keeps recovery drafts authoritative', async () => {
     const page = mountWorkspace({ suggestion: 'unknown' });
+    expect(page.bindings.drainStashedNewSessionDraft).toHaveBeenCalledExactlyOnceWith(undefined, 'a');
     expect(page.current.draft.firstMessage).toBe(DEFAULT_NEW_SESSION_DRAFT.firstMessage);
     await page.resolvePreferences('dialogue');
     expect(page.current.draft.firstMessage).toBe(DEFAULT_NEW_SESSION_DRAFT.firstMessage);
@@ -207,6 +221,7 @@ describe('new session workspace page effects', () => {
 
   it.each(['project', 'dialogue'] as const)('preserves a restored %s draft over a late default', async (kind) => {
     const page = mountWorkspace({ restoredKind: kind, suggestion: 'findFile' });
+    expect(page.bindings.drainStashedNewSessionDraft).toHaveBeenCalledExactlyOnceWith('failed-task', 'a');
     await page.resolvePreferences(kind === 'project' ? 'dialogue' : 'project', 'b');
     expect(page.current.draft).toMatchObject({ workspaceKind: kind,
       workingDir: kind === 'project' ? '/restored/project' : '' });

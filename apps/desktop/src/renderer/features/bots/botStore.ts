@@ -17,6 +17,7 @@ import {
   NEW_BOT_DEFAULT_HARNESS,
 } from '../../../shared/botDefaults';
 import { getBotLastReadAtMap, pruneBotReadState, seedMissingBotReadState } from './botReadState';
+import { registerLoadedBotProfilesReader } from './botSessionOwners';
 import type { BotGender } from '../../../shared/botGender';
 import { BOT_FAILURE_REASONS, type BotFailureReason } from '../../../shared/botFailureReason';
 import type { BotCapabilityBaseline } from '../../../shared/botCapabilitySelection';
@@ -41,6 +42,8 @@ export interface BotCapabilities {
   modelChain: BotModelRoute[];
   /** null follows the global Bot default; an array is this Bot's explicit chain. */
   modelChainOverride?: BotModelRoute[] | null;
+  /** Independent background-task route; absent/null inherits the live primary model. */
+  taskModelOverride?: BotModelRoute | null;
   skillMode: 'inherit' | 'allowlist';
   /**
    * @deprecated 旧版“跟随全局”配置的兼容字段。Bot 已不继承全局 Skill，
@@ -53,6 +56,8 @@ export interface BotCapabilities {
   mcpServers: string[];
   memory: boolean;
   permissions: 'ask' | 'auto' | 'trusted';
+  /** 代输入: may this companion ask the owner to finish an on-screen step. Missing = allowed. */
+  inputHandoff?: boolean;
 }
 
 export interface BotModelOverride {
@@ -115,8 +120,10 @@ function normalizeSkillMode(
   return Array.isArray(configuredSkills) && configuredSkills.length > 0 ? 'allowlist' : 'inherit';
 }
 
-function normalizeCapabilityMode(_value: unknown, _configured: unknown): 'inherit' | 'allowlist' {
-  return 'allowlist';
+function normalizeCapabilityMode(value: unknown): 'inherit' | 'allowlist' {
+  // Main already migrates legacy grants. Preserve its mode so the settings
+  // editor can distinguish inherited access from an explicit (even empty) list.
+  return value === 'allowlist' ? 'allowlist' : 'inherit';
 }
 
 function normalizeStringList(value: unknown): string[] {
@@ -135,10 +142,13 @@ function normalizeStringList(value: unknown): string[] {
 export interface BotSessionProjection {
   id: string;
   title: string;
-  kind: 'chat' | 'worker' | 'history';
+  /** `group` is a hidden group-chat lane; see botGroupLane.ts before counting sessions. */
+  kind: 'chat' | 'worker' | 'history' | 'group';
   updatedAt: number;
   status?: 'active' | 'archived' | 'deleted';
-  role?: 'canonical' | 'delegation' | 'history';
+  role?: 'canonical' | 'delegation' | 'history' | 'group';
+  /** Group-lane only: the group whose chat owns this hidden Session. */
+  groupId?: string;
   profileVersion?: number;
   runtimeSnapshot?: {
     profileVersion: number;
@@ -454,15 +464,15 @@ function defaultCapabilities(
     harness: primary.harness,
     modelChain: globalChain,
     modelChainOverride: null,
-    // A Bot starts with its own/profile capabilities, not the entire Cindy
-    // environment. Explicit grants remain available through the advanced UI.
+    // Share ordinary Agent tools; retain the companion’s own learned Skills.
     skillMode: 'allowlist',
     skillsExcluded: [],
-    toolsetMode: 'allowlist',
+    toolsetMode: 'inherit',
     toolsets: [],
-    mcpMode: 'allowlist',
+    mcpMode: 'inherit',
     mcpServers: [],
     memory: true,
+    inputHandoff: true,
     // 新建伙伴默认放手做(产品裁决 2026-08-18)。**只作用于「新建」**:读取既有
     // profile 的两条路径都显式跑 normalizeBotPermissions,缺字段的历史数据仍落
     // 'ask',与 main 侧投影一致,不会因为默认值变了就把老伙伴悄悄升成信任。
@@ -661,9 +671,9 @@ function normalizeDbProfile(value: unknown): BotProfile | null {
         resolvedModel.model ||
         normalizeBotModel(item.capabilities?.model, harness),
       modelOverride: rawCapabilities?.modelOverride === null ? null : modelOverride,
-      toolsetMode: normalizeCapabilityMode(rawCapabilities?.toolsetMode, toolsets),
+      toolsetMode: normalizeCapabilityMode(rawCapabilities?.toolsetMode),
       toolsets,
-      mcpMode: normalizeCapabilityMode(rawCapabilities?.mcpMode, rawCapabilities?.mcpServers),
+      mcpMode: normalizeCapabilityMode(rawCapabilities?.mcpMode),
       mcpServers: normalizeStringList(rawCapabilities?.mcpServers),
     },
     canonicalSessionId:
@@ -787,6 +797,19 @@ export function refreshBotProfiles(): void {
   trackHydration();
 }
 
+/**
+ * Wait for the current owner's profiles outside the Bots views. The module-level
+ * hydration can run before sign-in, and an owner change clears the projection
+ * without reloading it; `refresh` also re-reads a projection that is already loaded.
+ */
+export async function ensureBotProfilesLoaded(refresh = false): Promise<BotProfile[]> {
+  ensureProfileOwner();
+  if (refresh) refreshBotProfiles();
+  else if (!profileListLoaded && !hydrated) trackHydration();
+  await waitForHydration();
+  return getBotProfiles();
+}
+
 /** Replaces an avatar using gallery bytes, or the host file chooser when omitted. */
 export async function chooseBotAvatar(botId: string, avatarImageBase64?: string): Promise<BotProfile | null> {
   const api = botsApi();
@@ -837,6 +860,8 @@ export function getBotProfiles(): BotProfile[] {
   ensureProfileOwner();
   return profiles;
 }
+// Route helpers in lib/ read the loaded projection through this registry (no store import).
+registerLoadedBotProfilesReader(() => (hasLoadedBotProfiles() ? getBotProfiles() : null));
 
 export function subscribeBotProfiles(listener: () => void): () => void {
   listeners.add(listener);

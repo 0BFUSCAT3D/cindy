@@ -11,6 +11,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import { messages, sessions } from '../../schema';
+import * as trustedRenderer from '../../../security/trustedAppRenderer.js';
 import type { SessionRouteLock } from '../../sessionRouteLock';
 
 type SessionRouteLockMock = SessionRouteLock &
@@ -84,6 +85,8 @@ function createDb(): void {
   h.sqlite?.close();
   const sqlite = new Database(':memory:');
   sqlite.exec(`
+    CREATE TABLE task_tags(id TEXT PRIMARY KEY,name TEXT,color TEXT,favorite_order INTEGER,sort_order INTEGER,revision INTEGER,name_customized INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE session_task_tags(session_id TEXT,tag_id TEXT);
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL DEFAULT 'New CCS',
@@ -104,6 +107,7 @@ function createDb(): void {
       fast_mode INTEGER NOT NULL DEFAULT 0,
       cleared_at INTEGER,
       pinned_at INTEGER,
+      hidden_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       agent_kind TEXT NOT NULL DEFAULT 'cc',
@@ -121,10 +125,13 @@ function createDb(): void {
       workspace_kind TEXT NOT NULL DEFAULT 'project',
       orca_role TEXT,
       remote_host_id TEXT,
+      agent_device_id TEXT,
+      orca_remote_lead TEXT,
       codex_history_has_product_prompt INTEGER,
       codex_plan_json TEXT,
       im_bot_context_id TEXT,
       im_user_id TEXT,
+      im_default_route TEXT,
       summary TEXT,
       provider_id TEXT,
       plan_mode_enabled INTEGER NOT NULL DEFAULT 0,
@@ -385,5 +392,36 @@ describe('bounded reconciliation read', () => {
     await expect(batch({}, ['target'])).rejects.toThrow();
     await expect(runDeviceLinkInvokeContext({ controllerDeviceId: 'phone', channel: 'local-db:sessions:get-many' },
       () => batch({}, Array.from({ length: 33 }, () => 'target')))).rejects.toThrow('INVALID_PARAMS');
+  });
+});
+
+describe('exact-subset task pagination', () => {
+  it('selects newest responsible rows before limiting and preserves stable tied-time continuation', async () => {
+    const trust = vi.spyOn(trustedRenderer, 'assertTrustedAppRendererEvent').mockImplementation(() => {});
+    try {
+      const insert = h.sqlite!.prepare("INSERT INTO sessions (id,status,source,created_at,updated_at,list_preview,list_message_count) VALUES (?,'archived','desktop',1,?,'cached',0)");
+      const ids = Array.from({ length: 205 }, (_, n) => `owned-${String(n).padStart(3, '0')}`);
+      for (let n = 0; n < ids.length; n++) insert.run(ids[n], Math.floor(n / 3));
+      insert.run('unrelated', 1000);
+      h.sqlite!.prepare("INSERT INTO sessions (id,status,source,created_at,updated_at) VALUES ('hidden','archived','bot',1,2000),('active','active','desktop',1,3000)").run();
+      const list = h.handlers.get('local-db:sessions:list')!;
+      const wanted = [...ids, 'hidden', 'active'];
+      const first = await list({}, 200, 'archived', { ids: wanted, fresh: true }) as Array<{id: string; updatedAt: string}>;
+      expect(first.map(row => row.id)).toEqual(ids.slice(5).reverse());
+      const tail = first.at(-1)!;
+      const second = await list({}, 200, 'archived', { ids: wanted, fresh: true, before: { id: tail.id, updatedAt: Date.parse(tail.updatedAt) } }) as Array<{id: string}>;
+      expect(second.map(row => row.id)).toEqual(ids.slice(0, 5).reverse());
+      expect(await list({}, 200, 'archived', { ids: [] })).toEqual([]);
+      for (const options of [{ ids: ['target'], includePinned: true }, { ids: [123] }, { ids: ['x'.repeat(257)] }, { ids: Array(10001).fill('target') }]) {
+        await expect(list({}, 200, 'archived', options)).rejects.toThrow('INVALID_PARAMS');
+      }
+    } finally { trust.mockRestore(); }
+  });
+  it('rejects remote and untrusted exact-subset calls rather than broadening discovery', async () => {
+    const list = h.handlers.get('local-db:sessions:list')!;
+    await expect(list({}, 200, 'archived', { ids: ['target'] })).rejects.toThrow();
+    const { runDeviceLinkInvokeContext } = await import('../../../device-link/invoke-context.js');
+    await expect(runDeviceLinkInvokeContext({ controllerDeviceId: 'phone', channel: 'local-db:sessions:list' },
+      () => list({}, 200, 'archived', { ids: ['target'] }))).rejects.toThrow();
   });
 });

@@ -13,15 +13,30 @@ beforeEach(() => vi.stubGlobal('AbortController', NativeAbortController));
 afterEach(() => vi.unstubAllGlobals());
 
 const guard = vi.hoisted(() => vi.fn(async () => true));
-beforeEach(() => guard.mockReset().mockResolvedValue(true));
+const nativeAbortController = transferableAbortController();
+beforeEach(() => {
+  guard.mockReset().mockResolvedValue(true);
+  // React Router uses Node Request; its signal must come from the same realm.
+  vi.stubGlobal('AbortController', nativeAbortController.constructor);
+  vi.stubGlobal('AbortSignal', nativeAbortController.signal.constructor);
+  const controller = new AbortController();
+  const request = new Request('https://example.invalid', { signal: controller.signal });
+  expect(request.signal.aborted).toBe(false);
+  controller.abort('realm-probe');
+  expect(request.signal.aborted).toBe(true);
+  expect(request.signal.reason).toBe('realm-probe');
+});
 
 vi.mock('../botPronounContext', () => ({
   useBotTranslation: () => ({ t: (key: string) => key }),
   BotPronounProvider: ({ children }: { children: ReactNode }) => children,
 }));
+vi.mock('../useRemoteBots', () => ({ useRemoteBots: () => [{ id: 'remote-bot', deviceId: 'other-mac', name: 'Remote' }] }));
+vi.mock('../RemoteBotSettings', () => ({ RemoteBotSettings: ({ bot }: { bot: { deviceId: string } }) => <div data-testid="remote-settings">{bot.deviceId}</div> }));
 vi.mock('../botStore', () => ({
   useBotProfiles: () => [
     { id: 'bot-1', name: 'Filo', status: 'active', sessions: [], capabilities: {}, skills: [] },
+    { id: 'bot-paused', name: 'Paused', status: 'paused', sessions: [], capabilities: {}, skills: [] },
   ],
 }));
 vi.mock('../BotsHomeView', async () => {
@@ -56,6 +71,12 @@ vi.mock('../BotsHomeView', async () => {
   };
 });
 
+const cloud = vi.hoisted(() => ({ demotedBotIds: [] as string[] }));
+vi.mock('../companionCloudStore', () => ({
+  useCompanionCloud: () => ({ enabled: true, selfDeviceId: 'desk', humanActorId: 'human', actors: [], demotedBotIds: cloud.demotedBotIds }),
+}));
+beforeEach(() => { cloud.demotedBotIds = []; });
+
 import { BotSettingsDrawer } from '../BotSettingsDrawer';
 
 function LocationProbe() {
@@ -63,9 +84,25 @@ function LocationProbe() {
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>;
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  try {
+    cleanup();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 describe('BotSettingsDrawer', () => {
+  it('does not open editable settings for a copy demoted to another computer', async () => {
+    cloud.demotedBotIds = ['bot-1'];
+    const router = createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }],
+      { initialEntries: ['/bots/bot-1?settings=1'] });
+    render(<RouterProvider router={router} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId('simple-bot-settings')).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it.each(['query', 'sidebar', 'back'])(
     'protects drafts when %s navigation removes settings',
     async (kind) => {
@@ -168,6 +205,8 @@ describe('BotSettingsDrawer', () => {
     expect(dialog.className).toContain('right-0');
     expect(dialog.className).toContain('w-full');
     expect(dialog.className).toContain('max-w-md');
+    // Portaled after the page's title-bar drag strip, so this no-drag wins under the close button.
+    expect((dialog.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion).toBe('no-drag');
     expect(screen.getByTestId('chat-underlay')).toBeTruthy();
     expect(screen.getByTestId('simple-bot-settings')).toBeTruthy();
 
@@ -176,4 +215,41 @@ describe('BotSettingsDrawer', () => {
     expect(screen.getByTestId('location').textContent).toBe('/bots/bot-1/session/chat-1');
     expect(screen.getByTestId('chat-underlay')).toBeTruthy();
   });
+});
+
+it('keeps the drawer open while Escape only cancels an IME candidate', async () => {
+  render(
+    <RouterProvider
+      router={createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }], {
+        initialEntries: ['/bots/bot-1?settings=1'],
+      })}
+    />,
+  );
+  const dialog = screen.getByRole('dialog');
+  fireEvent.keyDown(dialog, { key: 'Escape', isComposing: true });
+  fireEvent.keyDown(dialog, { key: 'Escape', keyCode: 229 });
+  await act(async () => {});
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  expect(guard).not.toHaveBeenCalled();
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(guard).toHaveBeenCalledOnce();
+});
+
+it.each(['close button', 'Escape'])('closes a paused teammate\'s settings to the list via %s instead of bouncing back', async (kind) => {
+  const router = createMemoryRouter([{ path: '*', element: <><LocationProbe /><BotSettingsDrawer /></> }], {
+    initialEntries: ['/bots/bot-paused?settings=1'],
+  });
+  render(<RouterProvider router={router} />);
+  if (kind === 'Escape') fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+  else fireEvent.click(screen.getByRole('button', { name: 'bots.close' }));
+  await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/bots/list'));
+  // The save / routine-draft guard still runs before leaving.
+  expect(guard).toHaveBeenCalledOnce();
+});
+
+it('opens remote settings for the route device instead of searching the local bot store', () => {
+  render(<RouterProvider router={createMemoryRouter([{ path: '*', element: <BotSettingsDrawer /> }], { initialEntries: ['/bots/remote/other-mac/remote-bot?settings=1'] })} />);
+  expect(screen.getByTestId('remote-settings').textContent).toBe('other-mac');
+  expect(screen.queryByTestId('simple-bot-settings')).toBeNull();
 });

@@ -59,6 +59,7 @@ function openUpgrade(
     const socket = connect(Number(endpoint.port), endpoint.hostname);
     sockets.add(socket);
     const chunks: Buffer[] = [];
+    // real-wait: bound the websocket handshake if the proxy never replies.
     const timeout = setTimeout(() => {
       socket.destroy();
       reject(new Error('timed out waiting for upgrade response'));
@@ -97,6 +98,7 @@ async function readUpgradeFailure(
   const { socket, head, rest } = await openUpgrade(proxyUrl, path, Buffer.alloc(0), extraHeaders);
   const chunks = [rest];
   await new Promise<void>((resolve, reject) => {
+    // real-wait: bound the failed-upgrade close wait if the peer hangs.
     const timeout = setTimeout(() => {
       socket.destroy();
       reject(new Error('timed out waiting for failed upgrade to close'));
@@ -123,6 +125,7 @@ function waitForSocketText(socket: Socket, initial: Buffer, expected: string): P
       resolve(collected);
       return;
     }
+    // real-wait: bound waiting for the expected socket response text.
     const timeout = setTimeout(() => {
       reject(new Error(`timed out waiting for socket text ${expected}`));
     }, 2_000);
@@ -539,6 +542,7 @@ describe('anthropic-compat-proxy websocket upgrades', () => {
       await new Promise<void>((resolve, reject) => {
         const socket = connect(Number(endpoint.port), endpoint.hostname);
         sockets.add(socket);
+        // real-wait: bound the simulated failed-upgrade socket close wait.
         const timeout = setTimeout(() => {
           socket.destroy();
           reject(new Error('timed out waiting for failed upgrade socket to close'));
@@ -736,6 +740,58 @@ describe('anthropic-compat-proxy websocket upgrades', () => {
     threadB.socket.write('PING');
     await expect(waitForSocketText(threadB.socket, threadB.rest, 'PONG')).resolves.toContain('PONG');
     expect(proxy.disconnectWebSocketsForThread?.('thread-missing')).toBe(0);
+  });
+
+  it('remembers a proven thread handshake after the client closes, until it is forgotten', async () => {
+    const upstream = await startUpgradeUpstream();
+    proxy = await createAnthropicCompatProxy({
+      upstream: 'http://unused.invalid',
+      transformRequest: [],
+      resolveWebSocketUpstream: () => upstream.url,
+      retryProvenWebSocketUpgrades: true,
+    });
+    expect(proxy.hasProvenWebSocketForThread?.('thread-proven')).toBe(false);
+
+    const proven = await openUpgrade(
+      proxy.url,
+      '/v1/responses',
+      Buffer.alloc(0),
+      ['Thread-Id: thread-proven'],
+    );
+    expect(proven.head).toContain('HTTP/1.1 101 Switching Protocols');
+    expect(proxy.hasProvenWebSocketForThread?.('thread-proven')).toBe(true);
+    expect(proxy.hasProvenWebSocketForThread?.('thread-other')).toBe(false);
+    expect(proxy.hasProvenWebSocketForThread?.('')).toBe(false);
+
+    // Codex closing its own socket (client-close) leaves nothing to disconnect,
+    // but the proof that this thread runs on a thread-scoped socket stays.
+    proven.socket.destroy();
+    // The proxy tears the upstream half down once it sees the client close.
+    await vi.waitFor(() => {
+      expect(upstream.connections.every((connection) => connection.destroyed)).toBe(true);
+    });
+    expect(proxy.disconnectWebSocketsForThread?.('thread-proven')).toBe(0);
+    expect(proxy.hasProvenWebSocketForThread?.('thread-proven')).toBe(true);
+
+    expect(proxy.forgetWebSocketStateForThread?.('thread-proven')).toBe(0);
+    expect(proxy.hasProvenWebSocketForThread?.('thread-proven')).toBe(false);
+  });
+
+  it('keeps no handshake proof when proven reconnects are disabled', async () => {
+    const upstream = await startUpgradeUpstream();
+    proxy = await createAnthropicCompatProxy({
+      upstream: 'http://unused.invalid',
+      transformRequest: [],
+      resolveWebSocketUpstream: () => upstream.url,
+    });
+    const opened = await openUpgrade(
+      proxy.url,
+      '/v1/responses',
+      Buffer.alloc(0),
+      ['Thread-Id: thread-unproven'],
+    );
+    expect(opened.head).toContain('HTTP/1.1 101 Switching Protocols');
+    expect(proxy.hasProvenWebSocketForThread?.('thread-unproven')).toBe(false);
   });
 
   it('does not evict a genuinely unscoped generic socket for another thread', async () => {

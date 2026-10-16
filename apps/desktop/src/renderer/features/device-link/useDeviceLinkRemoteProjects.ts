@@ -1,3 +1,4 @@
+import { evictTaskTagCatalog } from '../task-tags/taskTagEvents';
 /**
  * useDeviceLinkRemoteProjects —— device-link「自动常驻」接入器(listing tier,push 驱动)。
  * ---------------------------------------------------------------------------
@@ -32,9 +33,12 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { isSharedTaskPeer } from '@cindy/device-link';
+import { projectScheduleEvent } from '@cindy/maker-shared/schedule-events';
 import { useAuth } from '@/contexts/AuthContext';
 import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { createLogger } from '@/lib/logger';
+import { makerChatStore } from '@/lib/makerChatStore';
 import {
   requestRemoteSessionStatus,
   remoteProjectsStore,
@@ -49,6 +53,7 @@ import {
 } from './remoteSessionActivityStore';
 import { revokedDevicesStore } from './revokedDevicesStore';
 import { unresponsiveDevicesStore } from './unresponsiveDevicesStore';
+import { subscribeDeviceLinkDeviceRemoval } from './useDeviceLinkDeviceList';
 import { collectSessionListSnapshot, refreshRemoteDeviceSessions } from './refreshRemoteSessions';
 import {
   cancelSessionListPersist,
@@ -241,9 +246,10 @@ export function startRemoteSessionsReconciler(
   // 同一个在途 Promise,若每个 tick 都挂 then,一次 gave-up 会被重复记账、退避直接跳档
   // (review P2)。per-device 在途标记保证一次合并请求只记一次。
   const inFlight = new Set<string>();
+  let stopped = false;
   const runPass = (opts?: { ignoreBackoff?: boolean }) => {
     // Hidden auxiliary windows retain their push mirror and failure backoff, but do no polling.
-    if (!isActive()) return;
+    if (stopped || !isActive()) return;
     const seen = new Set<string>();
     for (const [deviceId, name] of getEligibleDevices()) {
       seen.add(deviceId);
@@ -252,12 +258,14 @@ export function startRemoteSessionsReconciler(
       inFlight.add(deviceId);
       void refresh(deviceId, name)
         .then((result) => {
+          if (stopped) return;
           backoff.report(
             deviceId,
             result === 'gave-up' ? 'failure' : result === 'ok' ? 'success' : 'neutral',
           );
         })
         .catch((err) => {
+          if (stopped) return;
           backoff.report(deviceId, 'failure');
           log.debug(`periodic sessions reconcile failed for ${deviceId.slice(0, 8)}`, err);
         })
@@ -270,6 +278,7 @@ export function startRemoteSessionsReconciler(
   const timer = setInterval(runPass, intervalMs);
   return {
     stop() {
+      stopped = true;
       clearInterval(timer);
       inFlight.clear();
     },
@@ -279,6 +288,8 @@ export function startRemoteSessionsReconciler(
     },
   };
 }
+
+type BootstrapMode = 'full' | 'resubscribe';
 
 type IneligibleRemoteProjectAction = 'disconnect' | 'remove' | 'ignore';
 
@@ -299,7 +310,10 @@ export function resolveIneligibleRemoteProjectAction(input: {
   return 'remove';
 }
 
-export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, windowRole: 'main' | 'sidebar' = 'main'): void {
+export function useDeviceLinkRemoteProjects(
+  periodicReconcileActive = true,
+  windowRole: 'main' | 'sidebar' = 'main',
+): void {
   const { isAuthenticated, deviceId: selfDeviceId, dataOwnerId } = useAuth();
   const periodicReconcileActiveRef = useRef(periodicReconcileActive);
   periodicReconcileActiveRef.current = periodicReconcileActive;
@@ -360,11 +374,12 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
 
     let disposed = false;
     /**
-     * 「已明确离场、不许被冷缓存种回来」的设备 id。撤销访问 / 关闭被控 / 本机停用控制这三条
+     * 「已明确离场、不许被冷缓存种回来」的设备 id。删除 / 撤销访问 / 关闭被控 / 本机停用控制
      * 路径都会往里加 —— 它们清盘是异步的,而 mount 时那次 readCachedSessionList 可能早已
      * 读到旧快照(review: codex P1)。
      */
     const cacheHydrationBlocked = new Set<string>();
+    let directoryGeneration = 0;
     /** relay 在线时才跑 anti-entropy；初始状态未知时保守暂停，避免离线失败重试。 */
     let linkOnline: boolean | null = null;
     /** push 一旦到达即权威：迟到的 getState 快照不得覆盖更新的 link status。 */
@@ -373,19 +388,53 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
     const eligible = new Map<string, string>();
     /** 本机主动关闭控制的目标设备(控制端本地偏好)。 */
     let disabledControlDeviceIds = new Set<string>();
+    let controlTargetPushSeen = false;
     /** sessions:created / archived 按需加载的 per-device+status 防抖 timer */
     const reseedTimers = new Map<string, ReturnType<typeof setTimeout>>();
     /** archived 读取终态失败后的 per-device 自动重试。 */
     const archivedRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const archivedRetryDelayMs = new Map<string, number>();
+    /**
+     * 每设备一条串行任务:full = subscribe + 拉列表 + 预取;resubscribe = 只补 sessions 订阅。
+     * 补订也走这里,保证同一设备同一时刻只有一路 subscribe,迟到结果由 lifecycleEpoch 挡掉。
+     */
     const bootstrapTasks = new Map<
       string,
-      { promise: Promise<void>; rerun: boolean; name: string }
+      {
+        promise: Promise<void>;
+        rerun: boolean;
+        name: string;
+        lifecycleEpoch: number;
+        mode: BootstrapMode;
+      }
     >();
+    /**
+     * sessions 订阅瞬时失败(如重连瞬间 DEVICE_LINK_BUSY)、待周期对账补订的设备。
+     * 列表靠周期 sessions:list 仍会刷新,但运行活动(侧栏运行图标、灵动岛)只走 sessions push;
+     * 不补订就会一直「列表可见、运行状态全无」,直到下一次重连 / 熔断恢复重跑 bootstrap。
+     */
+    const sessionsSubscribeRetry = new Set<string>();
 
     /** 隧道调用是否因「访问权限已被撤销」失败(被控端逐设备黑名单)。 */
     const isAccessRevoked = (err: unknown): boolean =>
       extractIpcError(err)?.code === 'DEVICE_LINK_ACCESS_REVOKED';
+    /** 被控端明确不支持 / 已关闭被控时,重试 sessions 订阅没有意义。 */
+    const isPermanentSubscribeError = (err: unknown): boolean => {
+      const code = extractIpcError(err)?.code;
+      return (
+        code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED' ||
+        code === 'DEVICE_LINK_REMOTE_DISABLED' ||
+        code === 'DEVICE_LINK_VERSION_MISMATCH'
+      );
+    };
+
+    const cancelDeviceReseeds = (deviceId: string): void => {
+      for (const [key, pending] of reseedTimers) {
+        if (!key.startsWith(`${deviceId}\u0000`)) continue;
+        clearTimeout(pending);
+        reseedTimers.delete(key);
+      }
+    };
 
     const clearArchivedSessionRetry = (deviceId: string): void => {
       const timer = archivedRetryTimers.get(deviceId);
@@ -420,8 +469,11 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
      * subscribeAndBootstrap 重试 —— 被控端恢复后即自动接回。
      */
     const handleRevoked = (deviceId: string): void => {
+      cancelDeviceReseeds(deviceId);
+      evictTaskTagCatalog(deviceId);
       clearArchivedSessionRetry(deviceId);
       eligible.delete(deviceId);
+      sessionsSubscribeRetry.delete(deviceId);
       revokedDevicesStore.markRevoked(deviceId);
       remoteProjectsStore.removeDevice(deviceId);
       removeRemoteSessionActivityForDevice(deviceId);
@@ -435,29 +487,56 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
 
     /**
      * 订阅 sessions topic(push 驱动列表)+ bootstrap 拉一次全量。subscribe 失败不阻断
-     * bootstrap(退化为「快照可见、live 更新缺失」;被控端/控制端同版本时不会发生)。
+     * bootstrap(暂时退化为「快照可见、live 更新缺失」);瞬时失败记入 sessionsSubscribeRetry,
+     * 由周期对账补订,永久不支持的被控端不重试。
      * 任一步返回 ACCESS_REVOKED → 标记已撤销并移除该设备;全程无撤销 → 清掉残留标记(恢复收尾)。
      */
-    const canBootstrap = (deviceId: string): boolean =>
-      !disposed && linkOnline !== false && eligible.has(deviceId);
-    const runSubscribeAndBootstrap = async (deviceId: string, name: string): Promise<void> => {
-      if (!canBootstrap(deviceId)) return;
-      log.debug(`sessions refresh trigger=bootstrap window=${windowRole} peer=${deviceId.slice(0, 8)} visible=${periodicReconcileActiveRef.current}`);
-      // 新一轮 bootstrap 是有意义的重试：即使还保留旧 shard 也要显式进入
-      // loading，直到本轮落下 snapshot 或再次终态失败。
-      remoteProjectsStore.markBootstrapLoading(deviceId);
+    const canBootstrap = (deviceId: string, lifecycleEpoch: number): boolean =>
+      !disposed && linkOnline !== false && eligible.has(deviceId) && !unresponsiveDevicesStore.has(deviceId) &&
+      remoteProjectsStore.getDeviceLifecycleEpoch(deviceId) === lifecycleEpoch;
+    const runSubscribeAndBootstrap = async (
+      deviceId: string,
+      name: string,
+      lifecycleEpoch: number,
+      mode: BootstrapMode,
+    ): Promise<void> => {
+      if (!canBootstrap(deviceId, lifecycleEpoch)) return;
+      if (mode === 'full') {
+        log.debug(`sessions refresh trigger=bootstrap window=${windowRole} peer=${deviceId.slice(0, 8)} visible=${periodicReconcileActiveRef.current}`);
+        // 新一轮 bootstrap 是有意义的重试：即使还保留旧 shard 也要显式进入
+        // loading，直到本轮落下 snapshot 或再次终态失败。补订不进 loading:列表一直可用。
+        remoteProjectsStore.markBootstrapLoading(deviceId);
+      }
+      const canContinue = (): boolean => {
+        if (canBootstrap(deviceId, lifecycleEpoch)) return true;
+        // An open circuit can interrupt bootstrap between reads. Settle its
+        // loading marker without clearing the last successful mirror.
+        if (!disposed && eligible.has(deviceId) && unresponsiveDevicesStore.has(deviceId)
+          && remoteProjectsStore.getDeviceLifecycleEpoch(deviceId) === lifecycleEpoch) {
+          remoteProjectsStore.markBootstrapFailed(deviceId);
+        }
+        return false;
+      };
       try {
         await window.electronAPI.deviceLink.subscribe(deviceId, ['sessions']);
+        if (sessionsSubscribeRetry.delete(deviceId) && mode === 'resubscribe') {
+          log.debug(`subscribe(sessions) recovered for ${deviceId.slice(0, 8)}`);
+        }
       } catch (err) {
+        if (!canContinue()) return;
         if (isAccessRevoked(err)) return void handleRevoked(deviceId);
+        if (isPermanentSubscribeError(err)) sessionsSubscribeRetry.delete(deviceId);
+        else sessionsSubscribeRetry.add(deviceId);
         if (!disposed) log.debug(`subscribe(sessions) failed for ${deviceId.slice(0, 8)}`, err);
       }
-      if (!canBootstrap(deviceId)) return;
+      // 补订成功后被控端会定向重放当前活动快照,运行图标与灵动岛随之恢复;列表由周期对账负责。
+      if (mode === 'resubscribe') return;
+      if (!canContinue()) return;
       // bootstrap 期间被撤销(subscribe 成功、list 被拒)→ refreshRemoteDeviceSessions 返 'revoked'
       // (而非静默 give-up)→ 这里 handleRevoked,而不是继续预取能力 / 清撤销标记无视拒绝。
       const result = await refreshRemoteDeviceSessions(deviceId, name, { scope: 'both' });
+      if (!canContinue()) return;
       if (result === 'revoked') return void handleRevoked(deviceId);
-      if (!canBootstrap(deviceId)) return;
       if (result === 'gave-up') {
         // 永久错误（如旧被控端 CHANNEL_NOT_ALLOWED）或瞬态重试耗尽：不是权威空列表，
         // 即使还有旧 shard 也必须标明本轮读取失败，不能把缓存伪装成刚返回的结果。
@@ -469,29 +548,51 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
         remoteProjectsStore.clearBootstrapLoading(deviceId);
       }
       // 预取被控端能力(model/effort/fast/permission/fork/rewind),使首次打开远程会话时
-      // 模型下拉等不为空、modelDefinitions 同步层已热。fire-and-forget,失败不阻断。
-      void prefetchDeviceCapabilities(deviceId);
-      void prefetchDeviceProviders(deviceId);
-      void prefetchDeviceGitSafetySettings(deviceId);
+      // 模型下拉等不为空、modelDefinitions 同步层已热。成功后逐项预取，避免弱网突发。
+      if (result === 'ok') {
+        await prefetchDeviceCapabilities(deviceId);
+        if (!canBootstrap(deviceId, lifecycleEpoch)) return;
+        await prefetchDeviceProviders(deviceId);
+        if (!canBootstrap(deviceId, lifecycleEpoch)) return;
+        await prefetchDeviceGitSafetySettings(deviceId);
+        if (!canBootstrap(deviceId, lifecycleEpoch)) return;
+        // Bootstrap follows a gap in live pushes (start, reconnect). Read changed tasks ahead
+        // so opening them shows what the list already shows; one window does it for all.
+        if (windowRole === 'main') void makerChatStore.prefetchRemoteHistories(deviceId);
+      }
       // 未被撤销(ok 或普通失败):清掉可能残留的「已撤销」标记(被控端恢复 → 自动接回的收尾)。
       revokedDevicesStore.clearRevoked(deviceId);
     };
 
-    const subscribeAndBootstrap = (deviceId: string, name: string): Promise<void> => {
+    const subscribeAndBootstrap = (
+      deviceId: string,
+      name: string,
+      refreshAfterCurrent = false,
+      mode: BootstrapMode = 'full',
+    ): Promise<void> => {
+      const lifecycleEpoch = remoteProjectsStore.getDeviceLifecycleEpoch(deviceId);
       const existing = bootstrapTasks.get(deviceId);
       if (existing) {
         existing.name = name;
-        existing.rerun = true;
+        // Repeated discovery notifications share the current bootstrap. A real
+        // recovery/user retry still requests one fresh follow-up, as does a new lifecycle.
+        existing.rerun ||= refreshAfterCurrent || existing.lifecycleEpoch !== lifecycleEpoch;
+        existing.lifecycleEpoch = lifecycleEpoch;
+        // A full bootstrap requested while only a resubscribe runs must still run in full.
+        if (mode === 'full' && existing.mode === 'resubscribe') {
+          existing.rerun = true;
+          existing.mode = 'full';
+        }
         return existing.promise;
       }
 
-      const task = { promise: Promise.resolve(), rerun: false, name };
+      const task = { promise: Promise.resolve(), rerun: false, name, lifecycleEpoch, mode };
       task.promise = (async () => {
         try {
           do {
             task.rerun = false;
-            await runSubscribeAndBootstrap(deviceId, task.name);
-          } while (!disposed && eligible.has(deviceId) && task.rerun);
+            await runSubscribeAndBootstrap(deviceId, task.name, task.lifecycleEpoch, task.mode);
+          } while (canBootstrap(deviceId, task.lifecycleEpoch) && task.rerun);
         } finally {
           if (bootstrapTasks.get(deviceId) === task) bootstrapTasks.delete(deviceId);
         }
@@ -529,6 +630,7 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
         }
       } else {
         const wasEligible = eligible.delete(d.deviceId);
+        sessionsSubscribeRetry.delete(d.deviceId);
         const action = resolveIneligibleRemoteProjectAction({
           wasEligible,
           hasCachedShard: remoteProjectsStore.hasDevice(d.deviceId),
@@ -538,6 +640,7 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
           disabledControl: disabledControlDeviceIds.has(d.deviceId),
         });
         if (action === 'ignore') return;
+        cancelDeviceReseeds(d.deviceId);
         clearArchivedSessionRetry(d.deviceId);
         if (wasEligible) {
           window.electronAPI.deviceLink.unsubscribe(d.deviceId, ['sessions']).catch(() => {});
@@ -560,10 +663,11 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
 
     /** 全量重播(初始 + WS 重连):listDevices 带 isSelf,权威。 */
     const reseed = (): void => {
+      const generation = directoryGeneration;
       void window.electronAPI.deviceLink
         .listDevices()
         .then(({ devices }) => {
-          if (disposed) return;
+          if (disposed || generation !== directoryGeneration) return;
           for (const d of devices) {
             applyDevice({
               deviceId: d.deviceId,
@@ -584,8 +688,11 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
           // 要收的那些分片(review: codex 指出上一轮的修复因此无效)。
           const authoritative = new Set(devices.map((d) => d.deviceId));
           for (const deviceId of remoteProjectsStore.getAllDeviceIds()) {
+            // SharedTask shards are reconciled against membership, not the own-device directory.
+            if (isSharedTaskPeer(deviceId)) continue;
             if (authoritative.has(deviceId) || eligible.has(deviceId)) continue;
             log.debug(`removing cached shard absent from listDevices: ${deviceId.slice(0, 8)}`);
+            cancelDeviceReseeds(deviceId);
             clearArchivedSessionRetry(deviceId);
             remoteProjectsStore.removeDevice(deviceId);
             removeRemoteSessionActivityForDevice(deviceId);
@@ -623,7 +730,7 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
     setRemoteSessionBootstrapRetryImpl((deviceId) => {
       const name = eligible.get(deviceId);
       if (!name || disposed) return;
-      void subscribeAndBootstrap(deviceId, name);
+      void subscribeAndBootstrap(deviceId, name, true);
     });
 
     // sessions:created / applyPatch 状态迁移 / 侧栏归档筛选 → 按设备+状态防抖重拉。
@@ -668,9 +775,14 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
       );
     });
     const periodicReconcile = startRemoteSessionsReconciler(
-      () => (linkOnline ? eligible : []),
+      () => (linkOnline ? [...eligible].filter(([id]) => !unresponsiveDevicesStore.has(id)) : []),
       async (deviceId, name) => {
         log.debug(`sessions refresh trigger=periodic window=${windowRole} peer=${deviceId.slice(0, 8)} visible=${periodicReconcileActiveRef.current}`);
+        if (sessionsSubscribeRetry.has(deviceId)) {
+          // 与 bootstrap 同一串行任务:在途的 bootstrap 直接复用,不并发第二路 subscribe。
+          await subscribeAndBootstrap(deviceId, name ?? eligible.get(deviceId) ?? deviceId, false, 'resubscribe');
+          if (disposed || !eligible.has(deviceId)) return 'superseded';
+        }
         // sessions:list 是 200 条有界窗口；refresh 层会保留窗口外 active 行，并有界补查
         // 缺席缓存 id 的终态，不能直接把响应缺席解释成删除。
         const result = await refreshRemoteDeviceSessions(deviceId, name, {
@@ -698,9 +810,9 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
       if (disposed) return;
       responsivenessPushedDeviceIds.add(p.deviceId);
       unresponsiveDevicesStore.apply(p.deviceId, p.unresponsive);
-      if (!p.unresponsive) {
+      if (!p.unresponsive && p.recovered !== false) {
         const name = eligible.get(p.deviceId);
-        if (name) void subscribeAndBootstrap(p.deviceId, name);
+        if (name) void subscribeAndBootstrap(p.deviceId, name, true);
       }
     });
 
@@ -712,7 +824,7 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
         // Presence can start bootstrap before this initial snapshot settles.
         // Reuse disconnect cleanup to clear loading and invalidate in-flight snapshots.
         if (!linkStatusPushSeen && !linkOnline) remoteProjectsStore.markAllDisconnected();
-        disabledControlDeviceIds = new Set(state.disabledControlDeviceIds ?? []);
+        if (!controlTargetPushSeen) disabledControlDeviceIds = new Set(state.disabledControlDeviceIds ?? []);
         // 「无响应」熔断镜像的初值:按设备合并,已被 push 覆盖的设备以 push 为准
         // (store 初始为空,快照只需补写 unresponsive 的未覆盖设备)。
         for (const deviceId of state.unresponsiveDeviceIds ?? []) {
@@ -747,6 +859,10 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
         const watching =
           periodicReconcileActiveRef.current && (mainPresenceRef.current?.isActive() ?? true);
         if (!watching) return;
+        // 与手机同一份事件投影：运行诊断、静默提醒这类不改索引的事件不重拉，
+        // 否则 run 进行期间高频推送会反复取消在途的列表 / 索引读取。
+        const { refresh } = projectScheduleEvent(push.payload);
+        if (!refresh.sessionIndex && !refresh.scheduleList && !refresh.unreadSummary) return;
         void refreshRemoteDeviceSessions(push.deviceId, eligible.get(push.deviceId), { scope: 'schedule' }).then((result) => {
           if (result === 'revoked' && !disposed) handleRevoked(push.deviceId);
         });
@@ -797,8 +913,10 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
 
     const offControlTarget = window.electronAPI.deviceLink.onControlTargetChanged((p) => {
       if (disposed) return;
+      controlTargetPushSeen = true;
       disabledControlDeviceIds = new Set(p.disabledControlDeviceIds ?? []);
       if (!p.enabled) {
+        cancelDeviceReseeds(p.deviceId);
         clearArchivedSessionRetry(p.deviceId);
         const wasEligible = eligible.delete(p.deviceId);
         if (wasEligible) {
@@ -827,6 +945,24 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
       if (eligible.has(deviceId)) eligible.set(deviceId, name);
     });
 
+    const offRemoval = subscribeDeviceLinkDeviceRemoval((deviceId) => {
+      // Deletion is authoritative even if the directory is unavailable or a cold read is in flight.
+      directoryGeneration += 1;
+      cacheHydrationBlocked.add(deviceId);
+      clearCachedDevice(deviceId);
+      cancelDeviceReseeds(deviceId);
+      clearArchivedSessionRetry(deviceId);
+      sessionsSubscribeRetry.delete(deviceId);
+      if (eligible.delete(deviceId)) {
+        window.electronAPI.deviceLink.unsubscribe(deviceId, ['sessions']).catch(() => {});
+      }
+      removeRemoteSessionActivityForDevice(deviceId);
+      evictTaskTagCatalog(deviceId);
+      evictDeviceCapabilities(deviceId);
+      evictDeviceProviders(deviceId);
+      evictDeviceGitSafetySettings(deviceId);
+    });
+
     // 冷缓存回写由「分片变更」驱动,而不是只在一次成功 refresh 之后:
     // 被控端推来的 archived / deleted 增量(applyPatch)只改内存,若 app 在下一次 10 秒对账
     // 之前退出,下次离线冷启动就会把那条已归档 / 已删除的会话又 hydrate 回侧边栏
@@ -853,6 +989,7 @@ export function useDeviceLinkRemoteProjects(periodicReconcileActive = true, wind
       offAccessRevoked();
       offControlTarget();
       offRename();
+      offRemoval();
       offShardChange();
       offResponsiveness();
       unresponsiveDevicesStore.clearAll();

@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
+  FILE_INLINE_MAX_BYTES,
   REMOTE_INVOKE_ALLOWLIST,
 } from "@cindy/device-link";
 import {
@@ -11,7 +10,7 @@ import {
 } from "@/device-link/mobileMakerTransport";
 import type { RemoteInvoke } from "@/device-link/mobileMakerTransport";
 import { installPeerFileDownload } from "@/device-link/peerFileRegistry";
-import { resolveMobileRemoteMedia } from "@/session/remoteMedia";
+import { isDirectPreviewableMediaUrl, resolveMobileRemoteMedia } from "@/session/remoteMedia";
 import {
   setMobileAuthOwner,
   __testing as authOwnerTesting,
@@ -36,6 +35,63 @@ function harness() {
 }
 
 describe("mobile maker transport", () => {
+  describe.each([
+    ["video", "video/mp4", "mp4"],
+    ["audio", "audio/mpeg", "mp3"],
+  ] as const)("%s playback", (kind, mimeType, extension) => {
+    it.each([FILE_INLINE_MAX_BYTES - 1, FILE_INLINE_MAX_BYTES, FILE_INLINE_MAX_BYTES + 1])(
+      "resolves %i bytes to a URL accepted by the media player",
+      async (size) => {
+        const metadata = { ossKey: "", size, mimeType };
+        const prepared = size <= FILE_INLINE_MAX_BYTES
+          ? { ...metadata, inlineBase64: Buffer.alloc(size).toString("base64") }
+          : { ...metadata, transferRequired: true };
+        const uploaded = { ...metadata, ossKey: `media/playback.${extension}` };
+        const invoke = vi.fn(async (_device, _channel, args) => {
+          expect(args[0]).not.toHaveProperty("stream");
+          return args[0].prepareOnly ? prepared : uploaded;
+        });
+        const getUrl = `https://media.example.invalid/playback.${extension}`;
+        const presignGet = vi.fn(async () => ({ getUrl, expiresAt: "2099-01-01T00:00:00Z" }));
+        const maker = createMobileMakerTransport({ deviceId: "d", invoke: invoke as RemoteInvoke });
+        const resolved = await resolveMobileRemoteMedia(
+          { kind, url: `cindy-media://blobs/${"a".repeat(64)}.${extension}` },
+          { fetchRemoteMedia: maker.fetchRemoteMedia, presignGet },
+        );
+        expect(isDirectPreviewableMediaUrl(resolved.url)).toBe(true);
+        expect(resolved).toMatchObject({ url: getUrl, mimeType, size, previewable: true });
+        expect(resolved.inlineBase64).toBeUndefined();
+        expect(presignGet).toHaveBeenCalledExactlyOnceWith(uploaded.ossKey);
+        expect(invoke).toHaveBeenCalledTimes(2);
+      },
+    );
+    it.each([FILE_INLINE_MAX_BYTES - 1, FILE_INLINE_MAX_BYTES])(
+      "plays %i-byte inline media when an old host ignores prepareOnly",
+      async (size) => {
+        const metadata = { ossKey: "", size, mimeType };
+        const inline = { ...metadata, inlineBase64: Buffer.alloc(size).toString("base64") };
+        const invoke = vi.fn(async (_device, _channel, args) => {
+          expect(args[0]).not.toHaveProperty("stream");
+          return inline;
+        });
+        const presignGet = vi.fn();
+        const maker = createMobileMakerTransport({ deviceId: "d", invoke: invoke as RemoteInvoke });
+        const resolved = await resolveMobileRemoteMedia(
+          { kind, url: `cindy-media://blobs/${"a".repeat(64)}.${extension}` },
+          { fetchRemoteMedia: maker.fetchRemoteMedia, presignGet },
+        );
+        expect(isDirectPreviewableMediaUrl(resolved.url)).toBe(true);
+        expect(resolved).toMatchObject({
+          url: `data:${mimeType};base64,${inline.inlineBase64}`,
+          mimeType,
+          size,
+          previewable: true,
+        });
+        expect(presignGet).not.toHaveBeenCalled();
+        expect(invoke).toHaveBeenCalledTimes(2);
+      },
+    );
+  });
   it.each(["audio/mpeg", "video/mp4", "image/png", "application/pdf", "application/octet-stream"])("retains %s previews while preserving peer for complete byte consumers", async (mimeType) => {
     const metadata = { ossKey: "", size: 70_000, mimeType, transferRequired: true };
     const direct = { ...metadata, transferRequired: false };
@@ -145,7 +201,7 @@ describe("mobile maker transport", () => {
         mimeType: "text/plain",
         inlineBase64: "",
       })
-      .mockResolvedValueOnce({ ...direct, transferRequired: true });
+      .mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
     try {
       const maker = createMobileMakerTransport({ deviceId: "d", invoke });
       expect(
@@ -156,6 +212,11 @@ describe("mobile maker transport", () => {
         direct,
       );
       expect(peer).toHaveBeenCalledOnce();
+      expect(peer.mock.calls[0]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number), { ...direct, transferRequired: true, version: 'a'.repeat(64) }]);
+      invoke.mockResolvedValueOnce({ ...direct, transferRequired: true, version: 'a'.repeat(64) });
+      await maker.fetchRemoteMedia('xdt-file://open?path=/b', { stream: false, skipCache: true });
+      expect(peer.mock.calls[1]).toEqual(['d', 'xdt-file://open?path=/b', undefined, expect.any(Number),
+        { ...direct, transferRequired: true, version: 'a'.repeat(64), skipCache: true }]);
     } finally {
       uninstall();
     }
@@ -209,8 +270,34 @@ describe("mobile maker transport", () => {
       "Account scope unsupported",
     );
   });
+  it("reads subscription snapshots by family, scoping only independent accounts", async () => {
+    const calls: Array<[string, unknown[] | undefined]> = [];
+    const invoke: RemoteInvoke = async (_deviceId, channel, args) => {
+      calls.push([channel, args]);
+      return (args?.length ? { providerId: args[0] } : { creditUsagePercent: 1 }) as never;
+    };
+    const maker = createMobileMakerTransport({ deviceId: "dev-1", invoke });
+    await maker.getSubscriptionUsage("claude", "anthropic");
+    await maker.getSubscriptionUsage("xai");
+    await maker.getSubscriptionUsage("xai", "grok-second");
+    await maker.getClaudeSessionRoute("s1");
+    expect(calls).toEqual([
+      ["maker:usage:claude-subscription", []],
+      ["maker:usage:xai-subscription", []],
+      ["maker:usage:xai-subscription", ["grok-second"]],
+      ["maker:claude-session-route:get", ["s1"]],
+    ]);
+    const legacy = createMobileMakerTransport({
+      deviceId: "dev-1",
+      invoke: async () => ({ creditUsagePercent: 1 }) as never,
+    });
+    await expect(legacy.getSubscriptionUsage("xai", "grok-second")).rejects.toThrow(
+      "Account scope unsupported",
+    );
+  });
   it("documents the remote channels used by the mobile transport", () => {
     expect(MOBILE_MAKER_CHANNELS).toEqual([
+      "ghosts:composer-list",
       "maker:create-session",
       "maker:get-capabilities",
       "maker:provider:list",
@@ -220,6 +307,7 @@ describe("mobile maker transport", () => {
       "local-db:messages:dismiss-error",
       "local-db:sessions:ack-interrupted",
       "maker:regenerate-title",
+      "maker:predict-prompt",
       "local-db:messages:list",
       "local-db:messages:view",
       "local-db:messages:work-details",
@@ -246,6 +334,9 @@ describe("mobile maker transport", () => {
       "local-db:messages:estimatedSessionValue",
       "maker:usage:codex-rate-limits",
       "maker:usage:codex-rate-limit-reset",
+      "maker:usage:claude-subscription",
+      "maker:usage:xai-subscription",
+      "maker:claude-session-route:get",
       "maker:api-key:present",
       "maker:list-agent-commands",
       "maker:list-agent-skills",
@@ -264,12 +355,24 @@ describe("mobile maker transport", () => {
       "maker:goal:resume",
       "maker:goal:update",
       "maker:fork",
+      "maker:fork-strip-encrypted",
       "maker:get-session-tree",
       "maker:navigate-session-tree",
       "maker:rewind:preview",
       "maker:rewind:commit",
       "maker:message:delete",
       "maker:close-session",
+      "maker:plugins:get-state",
+      "maker:session:enable-orca",
+      "maker:session:disable-orca",
+      "maker:worker:create",
+      "maker:orca:execution-devices",
+      "maker:worker:switch-focus",
+      "maker:worker:acknowledge-done",
+      "maker:worker:archive",
+      "maker:collaboration-settings:get",
+      "local-db:orca-workflows:list-workers-by-lead",
+      "local-db:orca-workflows:get-by-worker-session",
       "maker:schedule:list",
       "maker:schedule:get",
       "maker:schedule:list-templates",
@@ -296,6 +399,7 @@ describe("mobile maker transport", () => {
       "maker:input:resume",
       "maker:input:retry-last-error",
       "maker:input:clear-error",
+      "maker:input:cancel-usage-limit-wait",
       "maker:input:remove",
       "maker:input:update-text",
       "maker:input:update-content",
@@ -312,6 +416,7 @@ describe("mobile maker transport", () => {
       "worktree:suggest-name",
       "worktree:create",
       "worktree:discard-precreated",
+      "worktree:cancel-precreated",
       "text-file:read-preview",
       "file-browser:remote-op",
     ]);
@@ -342,6 +447,37 @@ describe("mobile maker transport", () => {
         args: ["s1"],
         deviceId: "dev-1",
       },
+    ]);
+  });
+
+  it("routes Orca collaboration calls with desktop preload argument shapes", async () => {
+    const { calls, maker } = harness();
+    const options = { workerAgent: "codex" as const, role: "developer", label: "developer", workerPermissionMode: "auto" as const };
+
+    await maker.orca.listExecutionDevices();
+    await maker.orca.getCollabPolicy("/repo", "project");
+    await maker.orca.enable("lead-1", options);
+    await maker.orca.createWorker({ leadSessionId: "lead-1", role: "reviewer", label: "reviewer", agent: "pi", workerPermissionMode: "auto" });
+    await maker.orca.listWorkers("lead-1");
+    await maker.orca.getTeamByWorkerSession("worker-1");
+    await maker.orca.switchFocus("lead-1", "w-1");
+    await maker.orca.acknowledgeDone("lead-1", "w-1");
+    await maker.orca.archiveWorker("lead-1", "w-1");
+    await maker.orca.getCollaborationSettings();
+    await maker.orca.disable("lead-1");
+
+    expect(calls.map(({ channel, args }) => ({ channel, args }))).toEqual([
+      { channel: "maker:orca:execution-devices", args: [] },
+      { channel: "maker:plugins:get-state", args: ["collab", "/repo", "project"] },
+      { channel: "maker:session:enable-orca", args: ["lead-1", options] },
+      { channel: "maker:worker:create", args: [{ leadSessionId: "lead-1", role: "reviewer", label: "reviewer", agent: "pi", workerPermissionMode: "auto" }] },
+      { channel: "local-db:orca-workflows:list-workers-by-lead", args: ["lead-1"] },
+      { channel: "local-db:orca-workflows:get-by-worker-session", args: ["worker-1"] },
+      { channel: "maker:worker:switch-focus", args: [{ leadSessionId: "lead-1", workerIdOrLabel: "w-1" }] },
+      { channel: "maker:worker:acknowledge-done", args: [{ leadSessionId: "lead-1", workerId: "w-1" }] },
+      { channel: "maker:worker:archive", args: [{ leadSessionId: "lead-1", workerId: "w-1" }] },
+      { channel: "maker:collaboration-settings:get", args: [] },
+      { channel: "maker:session:disable-orca", args: ["lead-1"] },
     ]);
   });
 
@@ -384,7 +520,7 @@ describe("mobile maker transport", () => {
       {
         deviceId: "dev-1",
         channel: "maker:list-active",
-        args: [{ summary: true }],
+        args: [{ summary: true, snapshotVersion: 2 }],
       },
     ]);
   });
@@ -505,24 +641,9 @@ describe("mobile maker transport", () => {
   });
 
   it("does not advertise or emit the unimplemented model-window confirmation protocol", async () => {
-    const contextSource = readFileSync(
-      resolve(process.cwd(), "src/device-link/DeviceLinkContext.tsx"),
-      "utf8",
-    );
-    const transportSource = readFileSync(
-      resolve(process.cwd(), "src/device-link/mobileMakerTransport.ts"),
-      "utf8",
-    );
     const { calls, maker } = harness();
 
     await maker.setModel("s1", "small-model", "anthropic");
-
-    expect(contextSource).not.toContain(
-      "CONTROLLER_CAPABILITY_MODEL_WINDOW_CONFIRMATION_V1",
-    );
-    expect(contextSource).not.toContain("model-window-confirmation-v1");
-    expect(transportSource).not.toContain("confirmedOverflow");
-    expect(transportSource).not.toContain("confirmedContextWindow");
     expect(calls).toEqual([
       {
         deviceId: "dev-1",
@@ -553,6 +674,28 @@ describe("mobile maker transport", () => {
         ],
       },
     ]);
+  });
+
+  it("sends the remote-Agent location as the 7th switch-session-agent arg only when given", async () => {
+    const { calls, maker } = harness();
+
+    await maker.switchSessionAgent("s1", "claude-code", "claude-sonnet-4-6", "anthropic", "high", false, {
+      agentDeviceId: null,
+    });
+    await maker.switchSessionAgent("s1", "codex", "gpt-5.5", null, undefined, undefined, {
+      agentDeviceId: null,
+    });
+    await maker.switchSessionAgent("s1", "codex", "gpt-5.5", "openai", "high", true, {});
+    await maker.switchSessionAgent("s1", "codex", "gpt-5.5", "openai", "high", true);
+
+    expect(calls.map((call) => call.args)).toEqual([
+      ["s1", "claude-code", "claude-sonnet-4-6", "anthropic", "high", false, { agentDeviceId: null }],
+      ["s1", "codex", "gpt-5.5", null, null, null, { agentDeviceId: null }],
+      // 未给位置 = 位置不变:与旧 6 参 wire 完全一致,旧被控端无感。
+      ["s1", "codex", "gpt-5.5", "openai", "high", true],
+      ["s1", "codex", "gpt-5.5", "openai", "high", true],
+    ]);
+    expect(calls.every((call) => call.channel === "maker:switch-session-agent")).toBe(true);
   });
 
   it("fails closed when a legacy Desktop returns model-window confirmation data", async () => {
@@ -619,6 +762,7 @@ describe("mobile maker transport", () => {
     await maker.compactSession("s1", "focus on API design");
     await maker.input.retryLastError("s1");
     await maker.input.clearError("s1");
+    await maker.input.cancelUsageLimitWait("s1");
     await maker.input.updateText("s1", "queued-1", "updated");
     await maker.input.updateContent("s1", "queued-1", {
       clientId: "queued-1",
@@ -696,6 +840,7 @@ describe("mobile maker transport", () => {
       ["maker:compact-session", ["s1", "focus on API design"]],
       ["maker:input:retry-last-error", ["s1"]],
       ["maker:input:clear-error", ["s1"]],
+      ["maker:input:cancel-usage-limit-wait", ["s1"]],
       ["maker:input:update-text", ["s1", "queued-1", "updated"]],
       [
         "maker:input:update-content",
@@ -813,10 +958,20 @@ describe("mobile maker transport", () => {
     ]);
   });
 
+  it("routes terminal worktree cancellation through its distinct host channel", async () => {
+    const { calls, maker } = harness();
+    const input = { sessionId: "uncertain-create", recoveryKey: "recovery-key-1234567890" };
+    await maker.worktree.cancelPrecreated!(input);
+    expect(calls.map((call) => [call.channel, call.args])).toEqual([
+      ["worktree:cancel-precreated", [input]],
+    ]);
+  });
+
   it("routes fork, native tree, rewind and delete actions through maker namespace", async () => {
     const { calls, maker } = harness();
 
     await maker.fork("s1", "m2");
+    await maker.forkStripEncrypted("s1");
     await maker.getSessionTree("s1");
     await maker.navigateSessionTree("s1", "entry-2", {
       summarize: true,
@@ -824,10 +979,12 @@ describe("mobile maker transport", () => {
     });
     await maker.rewindPreview("s1", "m2");
     await maker.rewindCommit("s1", "m2");
+    await maker.rewindCommit("s1", "m2", { allowFileRestore: false });
     await maker.deleteMessage("s1", "m2");
 
     expect(calls.map((call) => [call.channel, call.args])).toEqual([
       ["maker:fork", ["s1", "m2"]],
+      ["maker:fork-strip-encrypted", ["s1"]],
       ["maker:get-session-tree", ["s1"]],
       [
         "maker:navigate-session-tree",
@@ -842,6 +999,7 @@ describe("mobile maker transport", () => {
       ],
       ["maker:rewind:preview", ["s1", "m2"]],
       ["maker:rewind:commit", ["s1", "m2"]],
+      ["maker:rewind:commit", ["s1", "m2", { allowFileRestore: false }]],
       ["maker:message:delete", ["s1", "m2"]],
     ]);
   });

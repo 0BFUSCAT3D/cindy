@@ -1,9 +1,15 @@
+import { builtInSkillsRoot, sharedBuiltInSkillsRoot } from '../maker-host/built-in-skill-activation';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import { createLogger } from '../logger';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file';
+import {
+  BUILT_IN_LEARN_SKILL_NAME,
+  builtInSkillDescriptors,
+  canonicalBuiltInSkillActivationPath,
+} from '../maker-host/built-in-skills';
 
 /** Device/profile-local user intent; independent of cloud installs and account changes. */
 interface SkillActivationPreferences {
@@ -16,6 +22,11 @@ export function skillActivationKey(source: string): string {
   let resolved = path.resolve(source);
   try { resolved = fs.realpathSync.native(resolved); } catch { /* Allow cleanup after removal. */ }
   if (path.basename(resolved).toLowerCase() === 'skill.md') resolved = path.dirname(resolved);
+  resolved = canonicalBuiltInSkillActivationPath(
+    resolved,
+    app.getPath('userData'),
+    app.getPath('appData'),
+  );
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
@@ -44,16 +55,59 @@ const store = createOverrideSettingsFile<SkillActivationPreferences>({
 export function readDisabledSkillPaths(): readonly string[] {
   store.invalidateIfChanged();
   const value = store.read();
-  return [...new Set(value.disabledPaths.flatMap((source) => [source,
+  const paths = value.disabledPaths.flatMap((source) => [source,
     ...(value.discoveryPaths?.[source] ?? []).filter((alias) => {
       try { return fs.existsSync(alias) && skillActivationKey(alias) === source; }
       catch { return false; }
     }),
-  ]))];
+  ]);
+  // Cindy's bundled copy normally wins through ~/.agents/skills. Claude uses an
+  // isolated config directory in Desktop dev, so mirror the same user preference
+  // to that runtime projection. Codex's own /skill-creator remains independent.
+  for (const descriptor of builtInSkillDescriptors(
+    app.getPath('userData'),
+    app.getPath('appData'),
+  )) {
+    if (value.disabledPaths.includes(skillActivationKey(descriptor.absolutePath))) {
+      try {
+        if (
+          skillActivationKey(descriptor.nativeClaudePath) ===
+          skillActivationKey(descriptor.absolutePath)
+        ) paths.push(descriptor.nativeClaudePath);
+      } catch {
+        // A missing or user-owned projection must not disable a same-name user Skill.
+      }
+    }
+  }
+  return [...new Set(paths)];
+}
+
+/** Listing receives stored intent; resolving user aliases happens in its worker. */
+export function readDisabledSkillPathsForListing(): readonly string[] {
+  store.invalidateIfChanged();
+  return [...store.read().disabledPaths];
 }
 
 export function isCindySkillEnabled(source: string): boolean {
   return !readDisabledSkillPaths().includes(skillActivationKey(source));
+}
+
+/** Listing fallback reads stored intent only; never walks user discovery aliases. */
+export function isCindyLearnSkillEnabledForListing(descriptors: readonly { name: string }[]): boolean {
+  if (!descriptors.some((skill) => skill.name === BUILT_IN_LEARN_SKILL_NAME)) return false;
+  const disabled = readDisabledSkillPathsForListing();
+  return ![
+    path.join(builtInSkillsRoot(app.getPath('userData')), BUILT_IN_LEARN_SKILL_NAME),
+    path.join(sharedBuiltInSkillsRoot(app.getPath('appData')), BUILT_IN_LEARN_SKILL_NAME),
+  ].some((value) => disabled.includes(process.platform === 'win32' ? value.toLowerCase() : value));
+}
+
+export function isCindyLearnSkillEnabled(): boolean {
+  const descriptor = builtInSkillDescriptors(
+    app.getPath('userData'),
+    app.getPath('appData'),
+  ).find((skill) => skill.name === BUILT_IN_LEARN_SKILL_NAME);
+  return descriptor ? isCindySkillEnabled(descriptor.absolutePath) : false;
 }
 
 export interface SkillActivationSnapshot { key: string; revision?: string; aliases: string[] }

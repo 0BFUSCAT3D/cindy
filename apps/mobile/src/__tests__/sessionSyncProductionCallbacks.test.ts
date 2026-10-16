@@ -6,7 +6,12 @@ import { createRemoteSyncCoordinator } from '@/device-link/remoteSyncTask';
 import { runConnectionScopedSessionMetadataRead, waitForIndependentSnapshotReads } from '@/device-link/sessionSnapshotSingleFlight';
 import { syncSessionMessageWindow } from '@/session/sessionMessageWindowSync';
 import { shouldClearOperationErrorAfterSync } from '@/session/sessionSyncErrorRecovery';
-import { hasOlderMessagesAfterReopen, shouldKeepOlderMessagesAffordance } from '@/session/messagePaging';
+import { resolveEffectiveConnectionError } from '@/components/connectionBannerVisibility';
+import {
+  bridgeLatestMessagePage,
+  hasOlderMessagesAfterReopen,
+  shouldKeepOlderMessagesAffordance,
+} from '@/session/messagePaging';
 import { HistoryViewController, isHistoryViewUnavailable, projectHistoryView } from '@cindy/maker-shared/message-window';
 
 // Execute the actual page callbacks, not a duplicate orchestration written for tests.
@@ -36,9 +41,25 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+function historyAvailable(status: string, presence: boolean | null): boolean {
+  let expression: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'remoteHistoryAvailable') {
+      expression = node.initializer;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (!expression) throw new Error('Missing production history availability gate');
+  return new Function('status', 'getPresenceAvailability', 'deviceId',
+    `return ${expression.getText(source)};`)(status, () => presence, 'd1');
+}
 const tick = () => new Promise((done) => setTimeout(done, 0));
 const session = { id: 's1', updatedAt: '2026-09-06T00:00:00Z', _count: { messages: 100 } };
-const page = { messages: [{ id: 'm1' }], limit: 1, reducedByPayloadTooLarge: false };
+const page = {
+  messages: [{ id: 'm1' }] as { id: string; clientId?: string }[], limit: 1, reducedByPayloadTooLarge: false,
+};
 
 function fixture(reopen = false, remoteHistoryAvailable = true) {
   const state = {
@@ -58,6 +79,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     captureSessionMessageAuthority: () => ({ generation: 1 }),
     isSessionMessageAuthorityCurrent: () => true,
     upsertDeviceSession: vi.fn(),
+    getSessionDeviceId: vi.fn((): string | undefined => undefined),
     getMessages: () => state.rows,
     getSessions: () => reopen ? [session] : [],
     captureActiveSessionSnapshotEpoch: () => 0,
@@ -66,6 +88,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     isSessionMessageWindowSynced: vi.fn(() => false),
     setMessages: vi.fn((_id, rows) => { state.rows = rows; }),
     setLatestMessageWindow: vi.fn((_id, rows) => { state.rows = rows; }),
+    latestMessageWindowNeedsBridge: vi.fn(() => false),
     markSessionMessagesSynced: vi.fn(),
     setPendingInteractions: vi.fn(), setInputProjectionIfCurrent: vi.fn(),
     setActiveSessionSnapshots: vi.fn(),
@@ -79,6 +102,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     listActiveSessions: vi.fn(async () => []),
   };
   const bindings = {
+    params: { resourceKind: '' }, readRouteParam: (value: string) => value, t: (key: string) => key,
     mobileDebugLog: vi.fn(),
     remoteHistoryAvailable,
     deviceId: 'd1', deviceName: 'test', sessionId: 's1',
@@ -101,6 +125,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     getSubscriptionIdentity: (): number | null => null, notificationResponse: null,
     syncedNotificationResponseRef: { current: null },
     shouldKeepOlderMessagesAffordance, hasOlderMessagesAfterReopen,
+    bridgeLatestMessagePage,
     messageWindowReconciledRef: { current: false },
     setHasOlderMessages: (value: boolean) => { state.older = value; },
     setLoading: (value: boolean) => { state.loading = value; },
@@ -128,6 +153,40 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
 }
 
 describe('production session recovery callbacks', () => {
+  it.each([null, true])('recovers cached history with an online relay and presence=%s', async (presence) => {
+    // A failed roster request leaves presence unknown even after link/subscription
+    // recovery. Evaluate the real page gate and then execute its real sync callback.
+    const f = fixture(true, historyAvailable('online', presence));
+    await f.sync();
+    expect(f.maker.getSession).toHaveBeenCalledTimes(1);
+    expect(f.maker.listMessages).toHaveBeenCalledTimes(1);
+    expect(f.state.rows).toEqual(page.messages);
+    expect(f.state.readAck).not.toBeNull();
+  });
+
+  it.each([
+    ['online', false], ['connecting', null], ['connecting', true],
+    ['stopped', null], ['stopped', true],
+  ] as const)('preserves cached history without remote reads when status=%s presence=%s', async (status, presence) => {
+    const f = fixture(true, historyAvailable(status, presence));
+    const rows = f.state.rows;
+    await f.sync();
+    await f.earlier();
+    expect(f.state.rows).toBe(rows);
+    expect(f.maker.getSession).not.toHaveBeenCalled();
+    expect(f.maker.listMessages).not.toHaveBeenCalled();
+    expect(f.state.readAck).toBeNull();
+  });
+
+  it.each(['id', 'source', 'host'])('rejects a roster-linked task with the wrong %s before authorizing controls', async (mismatch) => {
+    const f = fixture(); f.bindings.params.resourceKind = 'bot';
+    f.maker.getSession.mockResolvedValue({ ...session, id: mismatch === 'id' ? 'other' : 's1', source: mismatch === 'source' ? 'manual' : 'bot' } as typeof session);
+    if (mismatch === 'host') f.store.getSessionDeviceId.mockReturnValue('another-device');
+    await expect(f.sync()).rejects.toThrow('devices.resources.noConversation');
+    expect(f.store.upsertDeviceSession).not.toHaveBeenCalled();
+    expect(f.bindings.setSessionMetadataSyncedKey).not.toHaveBeenCalled();
+    expect(f.state.syncError).toContain('devices.resources.noConversation');
+  });
   it('keeps cached rows offline without fetching metadata, projection, history or earlier pages', async () => {
     const f = fixture(true, false);
     const rows = f.state.rows;
@@ -197,6 +256,34 @@ describe('production session recovery callbacks', () => {
     expect(f.state.rows).toEqual(page.messages);
     expect(f.store.markSessionMessagesSynced).toHaveBeenCalled();
   });
+  it('reads before the latest page until it joins the verified window, then commits once', async () => {
+    const f = fixture(true);
+    f.store.latestMessageWindowNeedsBridge.mockReturnValueOnce(true).mockReturnValue(false);
+    f.maker.listMessages
+      .mockResolvedValueOnce({ ...page, messages: [{ id: 'm2', clientId: 'm2' }], limit: 1 })
+      .mockResolvedValueOnce({ ...page, messages: [{ id: 'm1', clientId: 'm1' }], limit: 1 });
+    await f.sync();
+    expect(f.maker.listMessages.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      { limit: 20 },
+      { limit: 20, before: 'm2' },
+    ]);
+    expect(f.store.setLatestMessageWindow).toHaveBeenCalledTimes(1);
+    expect(f.state.rows.map((row) => row.id)).toEqual(['m1', 'm2']);
+  });
+
+  it('does not commit an unbridged window when a bridge read fails', async () => {
+    const f = fixture(true);
+    const cached = f.state.rows;
+    f.store.latestMessageWindowNeedsBridge.mockReturnValue(true);
+    f.maker.listMessages
+      .mockResolvedValueOnce({ ...page, messages: [{ id: 'm2', clientId: 'm2' }], limit: 1 })
+      .mockRejectedValueOnce(new Error('INVOKE_TIMEOUT'));
+    await f.sync().catch(() => undefined);
+    expect(f.store.setLatestMessageWindow).not.toHaveBeenCalled();
+    expect(f.state.rows).toBe(cached);
+    expect(f.state.syncError).not.toBeNull();
+  });
+
   it('accepts a history view without certifying sparse rows as a complete raw window', async () => {
     const f = fixture();
     f.bindings.historyView.view.getSnapshot = () => ({ ready: true, error: null });
@@ -209,14 +296,47 @@ describe('production session recovery callbacks', () => {
   });
 
   it('routes the visible history retry to pagination rather than full sync', () => {
-    const screen = source.getFullText().replace(/\r\n/g, '\n');
-    expect(screen).toContain('const bannerError = connectionRecoveryError ?? historyError;');
-    expect(screen).toContain('const bannerRetriesHistory = connectionRecoveryError === null && historyError !== null;');
-    expect(screen).toContain('requestErrorAutoRecovering={bannerRetriesHistory ? false : undefined}');
-    expect(screen).toContain('loading={loading || loadingEarlier}');
-    expect(screen).toMatch(/onSync=\{\(\) => bannerRetriesHistory\s+\? void loadEarlierMessages\(\)\s+: void requestSync\(/);
-    const errorSources = screen.slice(screen.indexOf('const connectionError ='), screen.indexOf('const bannerError ='));
-    expect(errorSources).not.toContain('historyError');
+    const values = new Map<string, ts.Expression>();
+    const props = new Map<string, ts.Expression>();
+    let onSync: ts.Expression | undefined;
+    const find = (node: ts.Node) => {
+      if (ts.isVariableDeclaration(node) && node.initializer) values.set(node.name.getText(source), node.initializer);
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'ConnectionBanner') {
+        for (const prop of node.attributes.properties) {
+          if (ts.isJsxAttribute(prop) && prop.initializer && ts.isJsxExpression(prop.initializer) && prop.initializer.expression) {
+            props.set(prop.name.getText(source), prop.initializer.expression);
+          }
+        }
+        onSync = props.get('onSync');
+      }
+      ts.forEachChild(node, find);
+    };
+    find(source); if (!onSync) throw new Error('Missing banner retry');
+    const loadEarlierMessages = vi.fn(), requestSync = vi.fn(), retry = vi.fn();
+    const run = new Function('bannerRetriesHistory', 'companionEntry', 'loadEarlierMessages', 'requestSync', `return (${onSync.getText(source)})();`);
+    run(true, { error: null, retry }, loadEarlierMessages, requestSync);
+    expect(loadEarlierMessages).toHaveBeenCalledOnce(); expect(requestSync).not.toHaveBeenCalled(); expect(retry).not.toHaveBeenCalled();
+    run(false, { error: 'lookup failed', retry }, loadEarlierMessages, requestSync);
+    expect(retry).toHaveBeenCalledOnce(); expect(requestSync).toHaveBeenCalledExactlyOnceWith({ reason: 'manual', replaceMessages: false });
+    function evaluate(expression: ts.Expression | undefined, bindings: Record<string, unknown>) {
+      if (!expression) throw new Error('Missing production banner expression');
+      return new Function(...Object.keys(bindings), `return (${expression.getText(source)});`)(...Object.values(bindings));
+    }
+    for (const historyError of [null, 'earlier page failed']) {
+      for (const connectionFailure of [null, 'connection failed']) {
+        const connectionError = evaluate(values.get('connectionError'), { historyError, isDeviceAccessRevoked: false, syncError: connectionFailure, error: null, isDeviceUnresponsive: false, resolveEffectiveConnectionError });
+        expect(connectionError).toBe(connectionFailure);
+        const connectionRecoveryError = evaluate(values.get('connectionRecoveryError'), { companionEntry: { error: null }, activeOutboxTransportError: null, connectionError });
+        const bannerError = evaluate(values.get('bannerError'), { connectionRecoveryError, historyError });
+        const bannerRetriesHistory = evaluate(values.get('bannerRetriesHistory'), { connectionRecoveryError, historyError });
+        expect(bannerError).toBe(connectionFailure ?? historyError);
+        expect(bannerRetriesHistory).toBe(connectionFailure === null && historyError !== null);
+        expect(evaluate(props.get('requestErrorAutoRecovering'), { bannerRetriesHistory })).toBe(bannerRetriesHistory ? false : undefined);
+      }
+    }
+    for (const loading of [false, true]) for (const loadingEarlier of [false, true]) {
+      expect(evaluate(props.get('loading'), { loading, loadingEarlier })).toBe(loading || loadingEarlier);
+    }
   });
 
   it.each([false, true])('keeps late history and pagination after projection rejects (reopen=%s)', async (reopen) => {

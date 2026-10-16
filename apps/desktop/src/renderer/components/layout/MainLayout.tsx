@@ -1,4 +1,8 @@
+import { drainPendingDeepLinks } from '@/lib/pendingDeepLinks';
+import { ChatInviteHost, reportMalformedChatInvite, requestChatInvite } from '@/features/bots/ChatInviteHost';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { buildSharedTaskInvitationLink } from '@cindy/device-link';
+import { JoinSharedTaskDialog } from '@/features/device-link/JoinSharedTaskDialog';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useRememberMainEntry } from './MainEntryRedirect';
 import { useTranslation } from 'react-i18next';
@@ -31,6 +35,7 @@ import { SessionShareImportWizard } from '@/components/settings/SessionShareImpo
 import { ControlledBanner } from '@/features/remote-device/ControlledBanner';
 import { CredentialStoreBanner } from '@/components/layout/CredentialStoreBanner';
 import { useDeviceLinkRemoteProjects } from '@/features/device-link/useDeviceLinkRemoteProjects';
+import { useAgentIslandRemoteSessionsSync } from '@/features/device-link/agentIslandRemoteSessions';
 import { pluginScheduleNavigationState } from '@/features/scheduler/lib/pluginScheduleCreateIntent';
 import { ScheduleSessionIndexOwner } from '@/features/scheduler/components/ScheduleSessionIndexOwner';
 import { AppBadgeAttentionSync } from '@/components/layout/AppBadgeAttentionSync';
@@ -100,8 +105,12 @@ import { requestSessionSwitch } from '@/features/cc-agent/lib/sessionSwitchComma
 import { makeFolderPickerNewMakerRouteState } from '@/features/cc-agent/lib/newMakerRouteState';
 import { makeGenericNewMakerRouteState } from '@/features/cc-agent/lib/genericNewMakerRouteState';
 import { resolveSessionRoute } from '@/lib/orcaSessionIdentity';
-import { getBotProfiles } from '@/features/bots/botStore';
-import { botRouteForOwnedSession } from '@/features/bots/botSessionOwners';
+import { ensureBotProfilesLoaded, getBotProfiles } from '@/features/bots/botStore';
+import { createSessionEntryNavigator, resolveBotRouteForSessionEntry } from '@/features/bots/botSessionOwners';
+import { useSessionEntryLocationCommits } from '@/features/bots/useSessionEntryLocationCommits';
+import { islandEntryRouteState, requestIslandEntryAlertDisposal } from '@/features/bots/islandEntryAlert';
+import { requestProviderShareJoin } from '@/features/provider-share/joinIntent';
+import { ProviderShareGlobalHost } from '@/features/provider-share/ProviderShareGlobalHost';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import {
   isAgentIslandVisibleSessionOwnedByWorkdirBrowseRoute,
@@ -227,6 +236,8 @@ export function MainLayout() {
   usePendingAlertAttention();
   const splitGroup = useSplitGroup();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialCollapsed);
+  const [sharedTaskInvitation, setSharedTaskInvitation] = useState<{ link: string; id: number } | null>(null);
+  const invitationSequence = useRef(0);
   const [shareImportRequest, setShareImportRequest] = useState<{
     id: number;
     filePath: string;
@@ -482,6 +493,8 @@ export function MainLayout() {
   usePluginRemovalNoticeToast();
   // device-link 跨设备远程控制:同账号在线 + 开了被控的设备,其项目自动并入侧边栏
   useDeviceLinkRemoteProjects();
+  // 范围内的远程任务进本机灵动岛 / 桌面通知(main 只认主窗的这份输入)。
+  useAgentIslandRemoteSessionsSync();
 
   // 系统通知点击回调：主进程把窗口拉到前台后广播 sessionId，这里跳路由。
   // 挂在 MainLayout 而不是 App 顶层——这里在 ProtectedRoute + LocalDbGate 之内，
@@ -491,21 +504,16 @@ export function MainLayout() {
   // 防止 HMR listener 累积或 Electron click 异常多次触发时反复 navigate。
   const currentPathRef = useRef(`${location.pathname}${location.search}`);
   currentPathRef.current = `${location.pathname}${location.search}`;
-  const navigateToSession = useCallback(
-    (sessionId: string, messageClientId?: string) => {
-      const botRoute = botRouteForOwnedSession(getBotProfiles(), sessionId);
-      if (botRoute) {
-        const target = botRoute;
-        if (currentPathRef.current !== target) navigate(target);
-        return;
-      }
+  const navigateToOrdinarySession = useCallback(
+    (sessionId: string, messageClientId?: string, isLatest: () => boolean = () => true) => {
       // device-link 远程会话本地无 row:resolveSessionRoute 内部的 sessionService.get
       // 会 miss → 远程 Orca lead/worker 被当普通会话路由,CCAgentSessionView 再
       // redirect 到 orca 路由时会丢 searchJump 锚点。传入远程镜像的 session 对象,
       // 让 Orca 路由一步到位(Codex review P2,与 SessionLinkChip 同款处理)。
       const remoteSession =
-        remoteProjectsStore.getMergedRemoteSessions().find((s) => s.id === sessionId) ?? null;
+        remoteProjectsStore.getVisibleMergedRemoteSessions().find((s) => s.id === sessionId) ?? null;
       void resolveSessionRoute(sessionId, remoteSession).then((target) => {
+        if (!isLatest()) return;
         const visibleSession = resolveAgentIslandVisibleSessionFromRouteTarget(target);
         if (messageClientId) {
           // 带消息锚点:即使已在目标路由也要 navigate——新的 location.state 才能
@@ -539,7 +547,35 @@ export function MainLayout() {
     },
     [navigate],
   );
+  const sessionEntryDepsRef = useRef({ navigate, navigateToOrdinarySession });
+  sessionEntryDepsRef.current = { navigate, navigateToOrdinarySession };
+  // One navigator for the layout's lifetime: its sequence must span re-renders so a
+  // late lookup for an earlier notification cannot override a newer click.
+  const [navigateToSession] = useState(() => createSessionEntryNavigator({
+    resolveBotRoute: (sessionId) => resolveBotRouteForSessionEntry(sessionId, {
+      readProfiles: getBotProfiles,
+      loadProfiles: ensureBotProfilesLoaded,
+    }),
+    openBotRoute: (route, islandEntryId) => {
+      // 只读历史由自己的归属门禁在显示后处置被点的卡:点击编号随路由状态交过去,已在该页也要重新交一次。
+      if (islandEntryId) {
+        sessionEntryDepsRef.current.navigate(route, {
+          replace: currentPathRef.current === route,
+          state: islandEntryRouteState(islandEntryId),
+        });
+      } else if (currentPathRef.current !== route) {
+        sessionEntryDepsRef.current.navigate(route);
+      }
+    },
+    // 群专线没有可处置报错的横幅:目标地址提交后请 main
+    // 处置这次点击的那张卡(main 只认最近一次点击与当时的卡片身份,见 BotSessionEntryTarget)。
+    consumeAlert: requestIslandEntryAlertDisposal,
+    openOrdinary: (sessionId, messageClientId, isLatest) =>
+      sessionEntryDepsRef.current.navigateToOrdinarySession(sessionId, messageClientId, isLatest),
+  }));
   navigateToSessionRef.current = navigateToSession;
+  // 已提交的地址交给入口导航器:灵动岛卡片的处置等到目标地址真正提交后才发。
+  useSessionEntryLocationCommits(navigateToSession);
   useEffect(() => {
     const unsubscribe = window.electronAPI.onNotificationFocusSession((sessionId) => {
       if (typeof sessionId !== 'string' || !sessionId) return;
@@ -612,15 +648,35 @@ export function MainLayout() {
   const handleDeepLinkPayload = useCallback(
     (
       payload:
-        | { type: 'session'; id: string; messageClientId?: string }
+        | { type: 'session'; id: string; messageClientId?: string; islandEntryId?: string }
         | { type: 'project'; workingDir: string }
         | { type: 'new-session'; workingDir: string }
         | { type: 'share-import'; filePath: string }
         | { type: 'provider-import'; importId: string }
-        | { type: 'settings'; tab: 'voice-input' | 'providers'; connect?: string },
+        | { type: 'shared-task-join'; invitation: string; server: string }
+        | { type: 'chat-invite'; token: string }
+        | { type: 'chat-invite-malformed' }
+        | { type: 'provider-share-join'; link: string }
+        | { type: 'settings'; tab: 'voice-input' | 'providers' | 'billing'; connect?: string; intent?: 'topup' },
     ) => {
+      if (payload.type === 'chat-invite') {
+        requestChatInvite(payload.token);
+        return;
+      }
+      if (payload.type === 'chat-invite-malformed') {
+        reportMalformedChatInvite();
+        return;
+      }
+      if (payload.type === 'provider-share-join') {
+        requestProviderShareJoin(payload.link);
+        return;
+      }
+      if (payload.type === 'shared-task-join') {
+        setSharedTaskInvitation({ link: buildSharedTaskInvitationLink(payload.invitation, payload.server), id: ++invitationSequence.current });
+        return;
+      }
       if (payload.type === 'session') {
-        navigateToSession(payload.id, payload.messageClientId);
+        navigateToSession(payload.id, payload.messageClientId, payload.islandEntryId);
         return;
       }
       if (payload.type === 'project') {
@@ -653,48 +709,49 @@ export function MainLayout() {
           payload.tab === 'providers' && payload.connect
             ? `&connect=${encodeURIComponent(payload.connect)}`
             : '';
-        navigate(`/settings?tab=${payload.tab}${connect}`);
+        const intent = payload.tab === 'billing' && payload.intent === 'topup' ? '&intent=topup' : '';
+        navigate(`/settings?tab=${payload.tab}${connect}${intent}`);
       }
     },
     [navigate, navigateToSession, openShareImport],
   );
+  useEffect(
+    () =>
+      window.electronAPI.ghosts.onRetirementOpen((id) => {
+        navigate(`/plugins?retired=${encodeURIComponent(id)}`);
+      }),
+    [navigate],
+  );
+
+  // The invitation host owns its target outside the account-scoped router. A
+  // response arriving during login/owner unmount is retained for the next host.
+  const pullChatInvitations = useCallback(() => drainPendingDeepLinks(
+    () => window.electronAPI.takePendingDeepLink(), handleDeepLinkPayload,
+  ), [handleDeepLinkPayload]);
+
   useEffect(() => {
     const unsubscribe = window.electronAPI.onDeepLinkNavigate((payload) => {
-      if (payload.type !== 'provider-import') {
+      if (payload.type === 'chat-invite' || payload.type === 'chat-invite-malformed') {
+        void pullChatInvitations();
+        return;
+      }
+      if (payload.type !== 'provider-import' && payload.type !== 'shared-task-join' && payload.type !== 'provider-share-join') {
         handleDeepLinkPayload(payload);
         return;
       }
       // Main retains imports through login. Both this wake-up and the mount pull
       // use the same atomic take, so either ordering navigates only once.
-      void window.electronAPI.takePendingDeepLink().then((pending) => {
-        if (pending) handleDeepLinkPayload(pending);
-      });
+      void pullChatInvitations();
     });
     return unsubscribe;
-  }, [handleDeepLinkPayload]);
+  }, [handleDeepLinkPayload, pullChatInvitations]);
 
-  // pull-on-mount:冷启动期间 (mainWindow 未 ready / renderer 未挂 listener)
-  // 缓存在 main 端的 deep link / --open-folder payload, MainLayout 第一次 mount
-  // 时拉一次消费。导入唤醒事件也会 take，两者只有先到者拿到 payload。
-  //
-  // 关键场景:未登录用户右键 "通过 Cindy 打开" → 冷启动 → LoginPage 接管 →
-  // 用户走完 Feishu OAuth → MainLayout (在 ProtectedRoute 之内) 第一次 mount →
-  // 此 effect 跑一次 take + dispatch → 用户回到 /cc-agent/new 且 workingDir
-  // 已预填,不会因为登录流程跳过而丢失意图。
-  //
-  // 用 ref 锁住"只拉一次":React 严格模式 (dev) 下 effect 会跑两次,如果用
-  // cancelled 标志阻断第二次,会同时阻断第一次还没 resolve 的 dispatch (cleanup
-  // 时第一次 cancelled=true,再也回不到 false),payload 被取走但 dispatch 没跑。
-  // ref 模式让第二次 effect 直接 skip,第一次 take 的 promise 正常 resolve + dispatch。
   const pendingDeepLinkPulledRef = useRef(false);
   useEffect(() => {
     if (pendingDeepLinkPulledRef.current) return;
     pendingDeepLinkPulledRef.current = true;
-    void window.electronAPI.takePendingDeepLink().then((payload) => {
-      if (!payload) return;
-      handleDeepLinkPayload(payload);
-    });
-  }, [handleDeepLinkPayload]);
+    void pullChatInvitations();
+  }, [handleDeepLinkPayload, pullChatInvitations]);
 
   const handleToggleSidebar = useCallback(() => {
     setIsSidebarCollapsed((prev) => {
@@ -1640,6 +1697,11 @@ export function MainLayout() {
       )}
       {/* FeiShu Bot conflict dialog -- subscribes to main process push and surfaces a global modal */}
       <FeishuConflictDialogHost />
+      {/* 供应商分享：分享者的审批弹窗与受邀者的申请弹窗。只挂在主窗口，副窗不重复弹。 */}
+      {!isSecondaryWindow() && <ProviderShareGlobalHost />}
+      {!isSecondaryWindow() && <ChatInviteHost />}
+      {sharedTaskInvitation && <JoinSharedTaskDialog key={sharedTaskInvitation.id} open initialInvitation={sharedTaskInvitation.link}
+        onOpenChange={(open) => { if (!open) setSharedTaskInvitation(null); }} />}
       {/* 窗口级拖拽兜底:拖 .cshare 进窗口空白处 → 会话导入向导 */}
       <GlobalDropImportListener onOpenShareImport={openShareImport} />
       {shareImportRequest && (

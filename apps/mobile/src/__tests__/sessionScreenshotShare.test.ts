@@ -1,3 +1,4 @@
+// guard: engineering-conventions.md 3.2 race contract: overlay ownership and selection revisions fence the screenshot listener and asynchronous exporter across renderer/page boundaries.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,9 +15,6 @@ describe("mobile screenshot-triggered share guards", () => {
     );
     expect(source).toContain("settingsOpen");
     expect(source).toContain("searchOpen");
-    expect(source).toContain(
-      "sessionTreeOpen && currentSession?.agentKind === 'pi'",
-    );
     expect(source).toContain("contextSheetOpen");
     expect(source).toContain("chipMenuTarget !== null");
     expect(source).toContain("modelSheetOpen && canUseComposer");

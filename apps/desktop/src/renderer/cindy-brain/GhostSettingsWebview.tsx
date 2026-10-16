@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CircleAlert, LayoutGrid, MoonStar } from 'lucide-react';
 import type { WebviewTag } from 'electron';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
-import { GHOST_SCHEME, ghostPartition, type InstalledGhost } from '../../shared/ghost';
+import { GHOST_SCHEME, ghostInstallApprovalToken, type InstalledGhost } from '../../shared/ghost';
+import { installedGhostLogicalIdentity, installedGhostWebviewPartitionClaim, pluginStoragePart } from '../../shared/pluginIdentity';
 import {
   buildGhostPluginSettingsThemeCss,
   buildGhostSettingsThemeCss,
@@ -119,16 +121,9 @@ function CrashedHint({
       >
         {t('settings.ghosts.panelError.crashed')}
       </p>
-      <button
-        type="button"
-        onClick={onReload}
-        className={cn(
-          'rounded-full border border-[var(--border-default)] px-3.5 py-1.5 font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-chip)]',
-          appearance === 'plugin' ? 'text-13 leading-5' : 'text-12',
-        )}
-      >
+      <Button variant="secondary" size="sm" compact type="button" onClick={onReload}>
         {t('settings.ghosts.panelError.reload')}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -138,16 +133,20 @@ function SettingsWebviewBody({
   ghost,
   appearance,
   dataOwnerId,
+  hostAccount = false,
 }: {
   ghost: InstalledGhost;
   appearance: 'settings' | 'plugin';
   dataOwnerId: string | null;
+  hostAccount?: boolean;
 }): ReactNode {
   const [crashed, setCrashed] = useState(false);
   const [generation, setGeneration] = useState(0);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { manifest } = ghost;
-  const partitionClaim = ghostPartition(manifest.id);
+  const settingsHeightKey = pluginStoragePart(installedGhostLogicalIdentity(ghost));
+  const partitionClaim = installedGhostWebviewPartitionClaim(ghost);
+  const approvalToken = ghostInstallApprovalToken(ghost.approval);
   const settingsHtml = manifest.settingsHtml;
   const fixedHeight = manifest.settingsHeight;
   const buildSettingsThemeCss =
@@ -155,7 +154,7 @@ function SettingsWebviewBody({
   // 仅复用同 owner、同插件版本的高度;账号文字和菜单由新 guest 实时渲染。
   const [autoHeight, setAutoHeight] = useState(
     () =>
-      loadGhostSettingsHeight(dataOwnerId, manifest.id, manifest.version) ??
+      loadGhostSettingsHeight(dataOwnerId, settingsHeightKey, manifest.version) ??
       AUTO_HEIGHT_PLACEHOLDER,
   );
 
@@ -200,7 +199,7 @@ function SettingsWebviewBody({
         .then((h: unknown) => {
           if (disposed || typeof h !== 'number' || !Number.isFinite(h)) return;
           const clamped = Math.max(AUTO_HEIGHT_MIN, Math.min(AUTO_HEIGHT_MAX, Math.ceil(h)));
-          saveGhostSettingsHeight(dataOwnerId, manifest.id, manifest.version, clamped);
+          saveGhostSettingsHeight(dataOwnerId, settingsHeightKey, manifest.version, clamped);
           setAutoHeight((cur) => (cur === clamped ? cur : clamped));
         })
         .catch(() => {})
@@ -232,6 +231,18 @@ function SettingsWebviewBody({
       }
       const prepareResponsiveLayout = webview
         .executeJavaScript(RESPONSIVE_STYLE_SCRIPT)
+        .then(() => {
+          if (!hostAccount || manifest.id !== 'cindy-github') return;
+          // Compatibility with the official 1.2.7 settings page: the host owns
+          // account status and disclosure; keep the plugin's write-only PAT form.
+          return webview.executeJavaScript(`(() => {
+            const style = document.createElement('style');
+            style.textContent = '#legacy-account,#host-account,body>.label-row,body>.hint,#test{display:none!important} #other-methods>summary{display:none!important}';
+            document.head.appendChild(style);
+            const methods = document.getElementById('other-methods');
+            if (methods) methods.open = true;
+          })()`);
+        })
         .catch(() => {});
       // 结构 CSS 先落地再量(html/body 钉 auto 会改变 body 高,顺序反了首量
       // 就是错值);脚本自带 id 守卫,dom-ready 因 guest 内跳转重入时幂等。
@@ -278,6 +289,9 @@ function SettingsWebviewBody({
     fixedHeight,
     dataOwnerId,
     partitionClaim,
+    settingsHeightKey,
+    approvalToken,
+    hostAccount,
   ]);
 
   if (crashed) {
@@ -309,17 +323,22 @@ export function GhostSettingsWebview({
   ghost,
   title,
   appearance = 'settings',
+  account,
+  reloadKey = 0,
 }: {
   ghost: InstalledGhost;
   /** Product-facing section title; settings keeps the legacy fallback. */
   title?: string;
   /** Plugin detail uses the same shared surface as Tool and Permission cards. */
   appearance?: 'settings' | 'plugin';
+  account?: ReactNode;
+  reloadKey?: number;
 }): ReactNode {
   const { t } = useTranslation();
   const { mode, dataOwnerId } = useAuth();
   const ownerKey = `${mode}:${dataOwnerId ?? ''}`;
   const { manifest } = ghost;
+  const settingsHeightKey = pluginStoragePart(installedGhostLogicalIdentity(ghost));
   if (!manifest.settingsHtml) return null;
   return (
     <div
@@ -330,20 +349,36 @@ export function GhostSettingsWebview({
           : 'border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]',
       )}
     >
-      <div className="flex items-center gap-2">
-        <LayoutGrid size={14} className="text-[var(--text-tertiary)]" />
-        <p
-          className={cn(
-            'font-medium text-[var(--text-primary)]',
-            appearance === 'plugin' ? 'text-14 leading-[1.571]' : 'text-13',
-          )}
-        >
-          {title ?? t('settings.ghosts.detail.customSlotTitle')}
-        </p>
-      </div>
-      {ghost.enabled ? (
+      {!account && (
+        <div className="flex items-center gap-2">
+          <LayoutGrid size={14} className="text-[var(--text-tertiary)]" />
+          <p
+            className={cn(
+              'font-medium text-[var(--text-primary)]',
+              appearance === 'plugin' ? 'text-14 leading-[1.571]' : 'text-13',
+            )}
+          >
+            {title ?? t('settings.ghosts.detail.customSlotTitle')}
+          </p>
+        </div>
+      )}
+      {ghost.enabled && <Fragment key={`account:${ownerKey}`}>{account}</Fragment>}
+      {ghost.enabled && account ? (
+        <details key={`methods:${ownerKey}`} className="group">
+          <summary className="w-fit cursor-pointer rounded-full py-2 text-12 text-[var(--text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
+            {t('ccAgent.gitContext.pr.setup.account.otherMethods')}
+          </summary>
+          <SettingsWebviewBody
+            key={JSON.stringify([ownerKey, settingsHeightKey, manifest.version, reloadKey])}
+            ghost={ghost}
+            appearance={appearance}
+            dataOwnerId={dataOwnerId}
+            hostAccount
+          />
+        </details>
+      ) : ghost.enabled ? (
         <SettingsWebviewBody
-          key={JSON.stringify([ownerKey, manifest.id, manifest.version])}
+          key={JSON.stringify([ownerKey, settingsHeightKey, manifest.version, reloadKey])}
           ghost={ghost}
           appearance={appearance}
           dataOwnerId={dataOwnerId}

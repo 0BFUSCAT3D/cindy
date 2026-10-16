@@ -5,8 +5,21 @@ import {
   isPayloadDirectPreviewableUrl,
 } from "@cindy/maker-shared/payload-summary";
 import { i18n } from "@/i18n";
+import { errorText } from "@/debug/fileDiagnostics";
+import { mobileDebugLog } from "@/debug/mobileDebugLog";
 
 const EXPIRY_SAFETY_WINDOW_MS = 60 * 1000;
+
+/** Match stable Host/transport codes, never expose raw errors containing local paths. */
+export function mediaLoadFailureKey(error: unknown): 'message.lightbox.sourceMissing' | 'message.lightbox.deviceOffline' | 'message.lightbox.loadFailed' {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (code === 'MEDIA_SOURCE_MISSING' || message.includes('[MEDIA_SOURCE_MISSING]')) return 'message.lightbox.sourceMissing';
+  const offlineCodes = ['NOT_CONNECTED', 'DEVICE_LINK_NOT_CONNECTED', 'DEVICE_OFFLINE', 'PEER_OFFLINE'];
+  if ((typeof code === 'string' && offlineCodes.includes(code))
+    || /\b(?:NOT_CONNECTED|DEVICE_LINK_NOT_CONNECTED|DEVICE_OFFLINE|PEER_OFFLINE)\b/.test(message)) return 'message.lightbox.deviceOffline';
+  return 'message.lightbox.loadFailed';
+}
 
 export interface MobileRemoteMediaFetchResult {
   /** inline 缩略图回包(新被控端)时为空串。 */
@@ -83,7 +96,8 @@ export const REMOTE_MEDIA_NEVER_EXPIRES = "9999-12-31T00:00:00.000Z";
  * 按不同键隔离,查看器取原图不会命中缩略图缓存。
  */
 export type ResolveRemoteMediaFn = (
-  media: Pick<NormalizedToolMedia, "kind" | "url" | "previewable"> & {
+  media: Pick<NormalizedToolMedia, "url" | "previewable"> & {
+    kind: NormalizedToolMedia["kind"] | "file";
     thumbnail?: boolean;
   },
   opts?: {
@@ -99,11 +113,14 @@ export function isDesktopLocalMediaUrl(url: unknown): url is string {
 }
 
 export function isDirectPreviewableMediaUrl(url: unknown): url is string {
-  return isPayloadDirectPreviewableUrl(url);
+  return (
+    isPayloadDirectPreviewableUrl(url)
+    || (typeof url === "string" && (url.startsWith("data:audio/") || url.startsWith("data:video/")))
+  );
 }
 
 export function canPreviewResolvedRemoteMedia(
-  kind: NormalizedToolMedia["kind"],
+  kind: NormalizedToolMedia["kind"] | "file",
   mimeType: string,
 ): boolean {
   if (kind === "image") return mimeType.startsWith("image/");
@@ -155,7 +172,7 @@ export function isResolvedRemoteMediaFresh(
 }
 
 export async function resolveMobileRemoteMedia(
-  media: Pick<NormalizedToolMedia, "kind" | "url">,
+  media: { kind: NormalizedToolMedia["kind"] | "file"; url: string },
   deps: MobileRemoteMediaResolverDeps,
   opts?: MobileRemoteMediaResolveOptions,
 ): Promise<MobileResolvedRemoteMedia> {
@@ -183,8 +200,9 @@ export async function resolveMobileRemoteMedia(
       expiresAt: peerMediaExpiry(fetched)!,
       previewable: canPreviewResolvedRemoteMedia(media.kind, fetched.mimeType),
     };
-  // inline 缩略图回包:字节已随 invoke 帧到手,无 OSS 对象,跳过 presign。
-  // url 先给 data URI 保证任何情况下可渲染;宿主(会话屏)会把字节落盘并换成 file://。
+  // inline 回包:字节已随 invoke 帧到手,无 OSS 对象,跳过 presign。
+  // 缩略图给 data:image;小音视频若仍以内联回包到达,也走 data URI,由播放器直接打开。
+  // 图片宿主(会话屏)会把字节落盘并换成 file://。
   if (isValidInlineResult(fetched)) {
     return {
       url: `data:${fetched.mimeType};base64,${fetched.inlineBase64}`,
@@ -206,10 +224,26 @@ export async function resolveMobileRemoteMedia(
   if (!isValidFetchResult(fetched)) {
     throw new Error(i18n.t("composer.attachments.mediaResultInvalid"));
   }
-  const signed = await deps.presignGet(fetched.ossKey);
+  // Image thumbnails are high-volume; trace presign timing for full files, failures always.
+  const presignStartedAt = Date.now();
+  const signed = await deps.presignGet(fetched.ossKey).catch((error: unknown) => {
+    mobileDebugLog("warn", "files", "remote media presign failed", {
+      kind: media.kind,
+      ms: Date.now() - presignStartedAt,
+      error: errorText(error),
+    });
+    throw error;
+  });
   if (!isValidPresignResult(signed)) {
+    mobileDebugLog("warn", "files", "remote media presign invalid", { kind: media.kind });
     throw new Error(i18n.t("composer.attachments.mediaUrlInvalid"));
   }
+  if (media.kind !== "image")
+    mobileDebugLog("debug", "files", "remote media presigned", {
+      kind: media.kind,
+      ms: Date.now() - presignStartedAt,
+      size: fetched.size,
+    });
   return {
     url: signed.getUrl,
     ossKey: fetched.ossKey,

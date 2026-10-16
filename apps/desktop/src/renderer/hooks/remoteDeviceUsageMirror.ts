@@ -8,18 +8,21 @@ import { isDeviceLinkRemotePushCurrent } from '@/lib/remoteDataOwnerPushFence';
 import { extractIpcError } from '@/utils/ipcError';
 
 const UNSUPPORTED_RETRY_AFTER_MS = 15 * 60_000;
+/** A mount may reuse a live consumer's snapshot no older than this instead of re-reading. */
+const MOUNT_REUSE_MS = 60_000;
 function isSnapshotShape(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export interface RemoteDeviceUsageMirror<T> {
   useMirror(deviceId: string | null, providerId?: string): T | null;
-  request(deviceId: string, providerId?: string): void;
+  request(deviceId: string, providerId?: string, queueIfPending?: boolean): void;
   resetForTest(): void;
 }
 
 export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
   invokeChannel: string | null;
+  decodeRead?: (value: unknown) => T | null | undefined;
   invokeArgs?: unknown[];
   pushChannel: string;
   defaultProviderId?: string;
@@ -30,6 +33,9 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     revision: number;
     unsupportedUntil: number;
     pending: boolean;
+    refreshQueued: boolean;
+    /** Last time a read or push settled this entry; 0 = never. */
+    settledAt: number;
     owner: ReturnType<typeof getDataOwnerGeneration>;
     listeners: Set<() => void>;
   };
@@ -48,6 +54,8 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
         revision: 0,
         unsupportedUntil: 0,
         pending: false,
+        refreshQueued: false,
+        settledAt: 0,
         owner: cacheOwner,
         listeners: new Set(),
       };
@@ -58,12 +66,17 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
   function apply(entry: Entry, snapshot: T | null): void {
     entry.snapshot = snapshot;
     entry.revision++;
+    entry.settledAt = Date.now();
     for (const notify of entry.listeners) notify();
   }
-  function request(deviceId: string, providerId?: string): void {
+  function request(deviceId: string, providerId?: string, queueIfPending = false): void {
     if (!cfg.invokeChannel) return;
     const entry = entryFor(deviceId, providerId);
-    if (entry.pending || Date.now() < entry.unsupportedUntil) return;
+    if (entry.pending) {
+      if (queueIfPending) entry.refreshQueued = true;
+      return;
+    }
+    if (Date.now() < entry.unsupportedUntil) return;
     const revision = entry.revision;
     const args = [...(cfg.invokeArgs ?? [])];
     // Keep the legacy builtin call shape; scoped reads must explicitly name their provider.
@@ -82,7 +95,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
           (!isSnapshotShape(value) || value.providerId !== providerId)
         )
           return;
-        if (value === null || isSnapshotShape(value)) apply(entry, value as T | null);
+        if (cfg.decodeRead) {
+          const decoded = cfg.decodeRead(value);
+          if (decoded !== undefined) apply(entry, decoded);
+        } else if (value === null || isSnapshotShape(value)) apply(entry, value as T | null);
       })
       .catch((error: unknown) => {
         if (!isDataOwnerGenerationCurrent(entry.owner) || entry.revision !== revision) return;
@@ -95,6 +111,10 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
       })
       .finally(() => {
         entry.pending = false;
+        if (entry.refreshQueued) {
+          entry.refreshQueued = false;
+          if (isDataOwnerGenerationCurrent(entry.owner) && entry.listeners.size > 0) request(deviceId, providerId);
+        }
       });
   }
   function useMirror(deviceId: string | null, providerId?: string): T | null {
@@ -103,8 +123,16 @@ export function createRemoteDeviceUsageMirror<T extends object>(cfg: {
     useEffect(() => {
       if (!deviceId || !entry) return;
       const notify = () => rerender((value) => value + 1);
+      // Consumers of one device/account (session chip, model picker rail and rows) share this
+      // entry, so a mount beside a live consumer reuses its fresh snapshot. With no listener a
+      // clear push (logout, account switch) may have been missed, and pushes are also lost while
+      // the link is down; both cases read the device again. Explicit request() always reads.
+      const settled =
+        entry.listeners.size > 0 &&
+        entry.settledAt > 0 &&
+        Date.now() - entry.settledAt < MOUNT_REUSE_MS;
       entry.listeners.add(notify);
-      request(deviceId, providerId);
+      if (!settled) request(deviceId, providerId);
       const off = window.electronAPI.deviceLink.onRemotePush((push, ownerStamp) => {
         if (
           push.deviceId !== deviceId ||

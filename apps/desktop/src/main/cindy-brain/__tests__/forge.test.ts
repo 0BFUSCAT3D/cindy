@@ -166,6 +166,18 @@ async function makeSrcDir(files: Record<string, string | Buffer>): Promise<strin
 }
 
 describe('packGhostDir', () => {
+  it.each([null, 'xd'])('rejects author-declared namespace %s before v2 normalization', async (namespace) => {
+    const dir = await makeSrcDir({
+      'ghost.json': JSON.stringify({ ...GOOD_MANIFEST, namespace }),
+      'main.js': 'export default {};',
+    });
+    await expect(packGhostDir(dir)).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'MANIFEST_INVALID',
+      message: expect.stringContaining('ghost.json 不允许作者声明 namespace'),
+    });
+  });
+
   it('rejects a new tokenBroker package without redirectPort but accepts the declared-port shape', async () => {
     const brokerManifest = {
       ...GOOD_MANIFEST,
@@ -435,6 +447,25 @@ describe('packGhostDir', () => {
     } finally {
       await fs.promises.rm(managedRoot, { recursive: true, force: true });
     }
+  });
+
+  it.each([0, 1])('does not write an in-workdir package after live Plan authority expires at check %s', async (remainingChecks) => {
+    const dir = await makeSrcDir({ 'ghost.json': JSON.stringify(GOOD_MANIFEST), 'main.js': 'export default {}' });
+    let remaining = remainingChecks;
+    expect(await packGhostDirRaw(dir, { sessionWorkdir: workDir, isCurrent: () => remaining-- > 0 }))
+      .toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+    expect(fs.existsSync(path.join(dir, 'demo-1.0.0.cindy'))).toBe(false);
+  });
+
+  it.each([0, 1])('does not scaffold inside workdir after live Plan authority expires at check %s', async (remainingChecks) => {
+    const dir = path.join(workDir, 'plan-blocked-plugin');
+    const writeScaffold = vi.fn(testScaffoldWriter);
+    let remaining = remainingChecks;
+    expect(await scaffoldGhostDirRaw({ dir, template: 'plain', id: 'plan-blocked-plugin', name: 'Plan test', minCindyVersion: '1.2.3' },
+      { sessionWorkdir: workDir, isCurrent: () => remaining-- > 0, writeScaffold }))
+      .toMatchObject({ ok: false, errorCode: 'PERMISSION_DENIED' });
+    expect(writeScaffold).not.toHaveBeenCalled();
+    expect(fs.existsSync(dir)).toBe(false);
   });
 
   it('does not write a package after the outside grant expires', async () => {
@@ -1704,7 +1735,7 @@ describe('FORGE_GUIDE', () => {
 
   it('documents library capabilities as a sessionless support list with stable failure reasons', () => {
     expect(FORGE_GUIDE).toContain("op: 'capabilities'");
-    expect(FORGE_GUIDE).toContain("operations:['clipboardWrite','saveAs']");
+    expect(FORGE_GUIDE).toContain("operations:['clipboardWrite','saveAs','staging.begin'");
     expect(FORGE_GUIDE).toContain('不等于此刻有窗口 / 已授权 / 库可用');
     expect(FORGE_GUIDE).toContain('全部字符串');
     expect(FORGE_GUIDE).toContain('数组内混入');
@@ -1724,9 +1755,7 @@ describe('FORGE_GUIDE', () => {
       '个人身份下的 Forge 安装绝不会仅凭自测标记取得 Broker 或 Connection 权限',
     );
     expect(FORGE_GUIDE).toContain('受组织默认插件自动接管保护');
-    expect(FORGE_GUIDE).toContain(
-      '仅 `ghostId` 精确等于 `mivo-canvas` 且精确 oidc-token host 仅为 `mivo-canvas.dsworks.cn` 的组织成员本地安装可解析 audience',
-    );
+    expect(FORGE_GUIDE).toContain('仅 `ghostId` 精确等于 `mivo-canvas`、namespace 为 null 或尚未确认，且精确 oidc-token host 仅为 `mivo-canvas.dsworks.cn` 的组织成员本地安装可解析 audience');
   });
 
   it('开场白要求读完沙箱红线与打包测试两章', () => {
@@ -1792,27 +1821,14 @@ describe('FORGE_GUIDE', () => {
     }
   });
 
-  it('Manual-only 插件可发现，iOS 标准形态使用 Manual 与 Host MCP', () => {
+  it('Manual-only 插件可发现，已下线 Host 能力不再宣传', () => {
     const manualSection = FORGE_GUIDE.slice(
       FORGE_GUIDE.indexOf('## 3.6 manual:'), FORGE_GUIDE.indexOf('## 4. main.js'),
     );
     expect(manualSection).toContain('Manual-only');
     expect(manualSection).toContain('不需要声明虚假工具');
     expect(manualSection).toContain('首个支持 Manual-only 发现与读取的 Cindy 正式版本');
-    const iosSection = FORGE_GUIDE.slice(
-      FORGE_GUIDE.indexOf('## 4.19'), FORGE_GUIDE.indexOf('## 4.20'),
-    );
-    for (const marker of [
-      '`manual + iosSimulator`',
-      'ghost_manual({ ghost_id: "ios-simulator", path: "ios-simulator" })',
-      '`cindy_ios_simulator` MCP',
-      '运行时 capability 检查',
-      '插件拿不到视频帧、viewer lease、触控入口',
-      '普通权限规则改走外部 Xcode、Simulator.app、`simctl`',
-      '未知 v3 顶层字段',
-    ]) expect(iosSection).toContain(marker);
-    expect(iosSection).not.toContain('Skill');
-    expect(iosSection).not.toContain('skill + iosSimulator');
+    expect(FORGE_GUIDE).not.toContain('cindy_ios_simulator');
   });
 
   it('manual 发布契约按顺序锁定 Cindy 版本门槛与旧客户端回退', () => {
@@ -2065,6 +2081,8 @@ describe('FORGE_GUIDE', () => {
       'gh-cli',
       'gh auth token',
       'hostAvailable',
+      'hostManagedSetup',
+      '字段缺失或为 false 时保留旧版设置页的连接提示',
       // 多连接(connections,2026-07-14):声明形态 / 设置页协议 / 主机受信确认。
       'connections',
       '/connections',
@@ -2142,19 +2160,13 @@ describe('FORGE_GUIDE', () => {
       '捆绑 Agent Skills(skill 能力)',
       'skill.items',
       'SKILL.md',
-      '~/.agents/skills',
+      '不写入用户的全局技能目录',
       '逐字一致',
       '不受插件沙箱约束',
       // 工作区会话(workspace):目录亲选/确认卡授权,判重复用。
       '创建工作区会话(workspace 能力)',
       'cindy.workspace',
       "kind: 'ensure-session'",
-      // 2026-08-06 iOS Simulator 插件能力:只读脱敏状态与 Host 面板入口。
-      '内置 iOS 模拟器(iosSimulator 能力)',
-      'cindy.iosSimulator.request',
-      'caps.capabilities.pluginVideo === false',
-      'caps.capabilities.pluginInput === false',
-      '如果插件整体离开 `iosSimulator` 就无法完成任何工作',
       // 一级插件主视图:v3 直接字段、locale 与沙箱边界。
       '一级主视图(mainView 能力)',
       '"mainView": { "title": "工作台", "icon": "puzzle", "html": "main-view.html" }',

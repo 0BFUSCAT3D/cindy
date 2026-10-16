@@ -31,7 +31,7 @@ import {
   type ReactNode,
 } from 'react';
 import { ChevronRight, Layers, Sparkles } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 
 import { cn } from '@/lib/utils';
 import type { ChatMessage } from '@/lib/makerChatStore';
@@ -85,15 +85,11 @@ export type LiveWorkActivity = ProjectedWorkActivity;
 export const MAX_LIVE_WORK_ACTIVITIES = 5;
 
 /** 把一段可见 thinking 投影成单行动作;empty / redacted 不生成内容行。 */
-function thinkingActivityForMessage(
-  message: ChatMessage,
-): ProjectedThinkingActivity | null {
+function thinkingActivityForMessage(message: ChatMessage): ProjectedThinkingActivity | null {
   if (message.thinkingRedacted) return null;
   const rawContent = message.content.trim();
   const content = rawContent.replace(/\s+/g, ' ');
-  return content
-    ? { kind: 'thinking', key: message.clientId, rawContent, content }
-    : null;
+  return content ? { kind: 'thinking', key: message.clientId, rawContent, content } : null;
 }
 
 /** 把完整 work_group 历史投影成轻量 live preview。rendered assistant 文本
@@ -136,11 +132,7 @@ function ToolActivityRow({ activity }: { activity: ProjectedToolActivity }) {
   );
 }
 
-function ThinkingActivityRow({
-  activity,
-}: {
-  activity: ProjectedThinkingActivity;
-}) {
+function ThinkingActivityRow({ activity }: { activity: ProjectedThinkingActivity }) {
   const rawContent = activity.rawContent;
   const hasExplicitLineBreak = /[\r\n]/.test(rawContent);
   const textRef = useRef<HTMLSpanElement>(null);
@@ -155,9 +147,7 @@ function ThinkingActivityRow({
     const textElement = textRef.current;
     if (!textElement) return;
     const updateOverflow = () => {
-      setCanExpand(
-        hasExplicitLineBreak || textElement.scrollWidth > textElement.clientWidth + 1,
-      );
+      setCanExpand(hasExplicitLineBreak || textElement.scrollWidth > textElement.clientWidth + 1);
     };
     updateOverflow();
     if (typeof ResizeObserver === 'undefined') return;
@@ -209,12 +199,84 @@ function ThinkingActivityRow({
         {canExpand ? (
           <ChevronRight
             size={13}
-            className={cn(
-              CHAT_CHEVRON_TRANSITION_CLASS,
-              expanded && 'rotate-90',
-            )}
+            className={cn(CHAT_CHEVRON_TRANSITION_CLASS, expanded && 'rotate-90')}
           />
         ) : null}
+      </span>
+    </button>
+  );
+}
+
+type HistoryWorkLine = import('@cindy/maker-shared/message-window').HistoryWorkLine;
+
+/** Remote running line: the Host already resolved the descriptor from the full input. */
+function ToolLineRow({
+  line,
+  onActivate,
+}: {
+  line: Extract<HistoryWorkLine, { kind: 'tool' }>;
+  onActivate: () => void;
+}) {
+  const message = useMemo<ChatMessage>(
+    () => ({
+      clientId: line.key,
+      role: 'tool_use',
+      content: '',
+      toolName: line.toolName,
+      toolInput: line.ghost ? { ghost_id: line.ghost.id, tool: line.ghost.tool } : null,
+    }),
+    [line.key, line.toolName, line.ghost],
+  );
+  return (
+    <div data-live-work-activity="tool" className="w-full min-w-0">
+      <AgentActionRow
+        message={message}
+        showRawCommand
+        status={line.status}
+        descriptorOverride={line.descriptor}
+        onActivateOverride={onActivate}
+      />
+    </div>
+  );
+}
+
+/** Remote running thought: only its opening is on this device; the full text opens with the group. */
+function ThinkingLineRow({
+  line,
+  onActivate,
+}: {
+  line: Extract<HistoryWorkLine, { kind: 'thinking' }>;
+  onActivate: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-live-work-activity="thinking"
+      data-message-client-id={line.key}
+      data-scroll-disclosure-header=""
+      onClick={onActivate}
+      className={cn(
+        'group flex w-full min-w-0 cursor-pointer select-none items-center gap-1.5 px-2 py-[3px] text-left outline-none',
+        'focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]',
+        ACTIVITY_ROW_RADIUS_CLASS,
+        ACTIVITY_ROW_COLOR_TRANSITION_CLASS,
+        ACTIVITY_ROW_HOVER_SURFACE_CLASS,
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className="inline-flex h-[18px] w-4 shrink-0 items-center justify-center text-[var(--msg-tool-card-chevron)]"
+      >
+        <Sparkles size={13} />
+      </span>
+      <span
+        className="min-w-0 flex-1 truncate text-14 italic text-[var(--thinking-body-text)]"
+        title={line.text}
+      >
+        <ThinkingText content={line.text} />
+      </span>
+      <span aria-hidden="true" className={ACTIVITY_ROW_CHEVRON_SLOT_CLASS}>
+        <ChevronRight size={13} />
       </span>
     </button>
   );
@@ -228,11 +290,7 @@ function ExpandedThinkingRow({ message }: { message: ChatMessage }) {
     if (!message.thinkingRedacted) return null;
     return (
       <div data-message-client-id={message.clientId}>
-        <ThinkingCard
-          blockKey={message.clientId}
-          content={message.content}
-          isRedacted
-        />
+        <ThinkingCard blockKey={message.clientId} content={message.content} isRedacted />
       </div>
     );
   }
@@ -289,14 +347,23 @@ export function WorkGroupBlock({
 }: WorkGroupBlockProps) {
   const { t } = useTranslation();
   const { expanded: rememberedExpanded, setExpanded } = useExpandedBlockMemory(blockId);
-  const expanded = deferred?.setVisible ? rememberedExpanded : deferred?.expanded ?? rememberedExpanded;
+  const expanded = deferred?.setVisible
+    ? rememberedExpanded
+    : (deferred?.expanded ?? rememberedExpanded);
   const deferredRef = useRef(deferred);
   deferredRef.current = deferred;
-  useEffect(() => {
+  // A Host that projects running lines makes the folded preview need no detail read.
+  // Older Hosts omit them and keep the latest-five detail tail below.
+  const workLines = !compact && isStreaming ? deferred?.lines : undefined;
+  const lineMode = workLines !== undefined;
+  // Register before paint. Switching back to a running task remounts this group;
+  // a passive effect can lag 50–300ms behind the stream's mount, showing a
+  // preview-less header until the cached tail reappears and the pinned list jumps.
+  useLayoutEffect(() => {
     const current = deferredRef.current;
-    current?.setVisible?.(expanded, !compact && isStreaming);
+    current?.setVisible?.(expanded, !compact && isStreaming && !lineMode);
     return () => current?.setVisible?.(false, false);
-  }, [deferred?.owner, deferred?.key, expanded, isStreaming, compact]);
+  }, [deferred?.owner, deferred?.key, expanded, isStreaming, compact, lineMode]);
   const [elapsedMs, setElapsedMs] = useState(0);
 
   useEffect(() => {
@@ -310,8 +377,11 @@ export function WorkGroupBlock({
 
   // 多取一条即可判断展开是否能露出更多活动，显示仍只取最近 5 条。
   const recentActivities = useMemo(
-    () => compact ? [] : projectRecentWorkActivities(childItems, isStreaming, MAX_LIVE_WORK_ACTIVITIES + 1),
-    [childItems, isStreaming, compact],
+    () =>
+      !compact && isStreaming && !lineMode
+        ? projectRecentWorkActivities(childItems, true, MAX_LIVE_WORK_ACTIVITIES + 1)
+        : [],
+    [childItems, isStreaming, compact, lineMode],
   );
   const liveActivities = useMemo(
     () => recentActivities.slice(-MAX_LIVE_WORK_ACTIVITIES),
@@ -323,20 +393,27 @@ export function WorkGroupBlock({
     () =>
       childItems.some(
         (child) =>
-          child.kind === 'group'
-          || child.kind === 'rendered'
-          || (child.kind === 'thinking' && child.message.thinkingRedacted === true),
+          child.kind === 'group' ||
+          child.kind === 'rendered' ||
+          (child.kind === 'thinking' && child.message.thinkingRedacted === true),
       ),
     [childItems],
   );
   // 运行中预览已经等于全部内容时，折叠/展开是视觉空操作 — 组头不提供交互。
   const canToggle =
-    compact || (!!deferred && !deferred.previewComplete) || !isStreaming
-    || hasBeyondPreviewChild
-    || recentActivities.length > MAX_LIVE_WORK_ACTIVITIES;
+    compact ||
+    lineMode ||
+    (!!deferred && !deferred.previewComplete) ||
+    !isStreaming ||
+    hasBeyondPreviewChild ||
+    recentActivities.length > MAX_LIVE_WORK_ACTIVITIES;
   const effectiveExpanded = expanded && canToggle;
+  // Expanding keeps the running lines on screen until the detail read has rows to replace them.
+  // The body opens right away (spinner only), so the handoff swaps rows inside an open Collapse.
+  const holdLines = effectiveExpanded && deferred?.awaitingDetails === true && !!workLines?.length;
   const isLivePreviewVisible =
-    !compact && isStreaming && !effectiveExpanded && liveActivities.length > 0;
+    !compact && isStreaming && (!effectiveExpanded || holdLines)
+    && (workLines ? workLines.length > 0 : liveActivities.length > 0);
   // 完成态只计算一次完整摘要；运行态保持折叠时走上面的反向 latest-five
   // 热路径，用户主动展开后才投影全部历史。
   const activityProjection = useMemo(
@@ -350,7 +427,10 @@ export function WorkGroupBlock({
   // 外层完成态组展开成文字 + 内层动作组;内层动作组与运行态组复用本组件,
   // 展开后直接渲染 thinking /工具行,不再多套一层子卡摘要。
   const onToggle = useCallback(() => {
-    if (deferred && !deferred.setVisible) { deferred.toggle(); return; }
+    if (deferred && !deferred.setVisible) {
+      deferred.toggle();
+      return;
+    }
     setExpanded((v) => !v);
   }, [deferred, setExpanded]);
 
@@ -361,29 +441,32 @@ export function WorkGroupBlock({
   const baseSummaryText = compact
     ? t('chat.workGroup.workDetails')
     : isStreaming
-    ? t('chat.workGroup.working')
-    : durationMs !== undefined
-      ? t('chat.workGroup.worked', { duration: formatDuration(durationMs) })
-      : t('chat.workGroup.workDetails');
-  const explorationSummary = !compact && activityProjection?.isPureExploration
-    ? [
-        activityProjection.explorationCounts.read > 0
-          ? t('chat.workGroup.exploration.read', {
-              count: activityProjection.explorationCounts.read,
-            })
-          : null,
-        activityProjection.explorationCounts.search > 0
-          ? t('chat.workGroup.exploration.search', {
-              count: activityProjection.explorationCounts.search,
-            })
-          : null,
-        activityProjection.explorationCounts.list > 0
-          ? t('chat.workGroup.exploration.list', {
-              count: activityProjection.explorationCounts.list,
-            })
-          : null,
-      ].filter((part): part is string => part !== null).join(' · ')
-    : '';
+      ? t('chat.workGroup.working')
+      : durationMs !== undefined
+        ? t('chat.workGroup.worked', { duration: formatDuration(durationMs, t) })
+        : t('chat.workGroup.workDetails');
+  const explorationSummary =
+    !compact && activityProjection?.isPureExploration
+      ? [
+          activityProjection.explorationCounts.read > 0
+            ? t('chat.workGroup.exploration.read', {
+                count: activityProjection.explorationCounts.read,
+              })
+            : null,
+          activityProjection.explorationCounts.search > 0
+            ? t('chat.workGroup.exploration.search', {
+                count: activityProjection.explorationCounts.search,
+              })
+            : null,
+          activityProjection.explorationCounts.list > 0
+            ? t('chat.workGroup.exploration.list', {
+                count: activityProjection.explorationCounts.list,
+              })
+            : null,
+        ]
+          .filter((part): part is string => part !== null)
+          .join(' · ')
+      : '';
   const summaryText = explorationSummary
     ? `${baseSummaryText} · ${explorationSummary}`
     : baseSummaryText;
@@ -404,9 +487,7 @@ export function WorkGroupBlock({
             canToggle && 'cursor-pointer hover:opacity-80 transition-opacity',
             !canToggle && 'cursor-default',
           )}
-          aria-expanded={
-            canToggle ? effectiveExpanded || isLivePreviewVisible : undefined
-          }
+          aria-expanded={canToggle ? effectiveExpanded || isLivePreviewVisible : undefined}
         >
           <span className="inline-flex h-[1lh] items-center shrink-0">
             {isStreaming ? (
@@ -421,7 +502,7 @@ export function WorkGroupBlock({
           <div className="flex-1" />
           {!compact && isStreaming && startedAtMs !== undefined && (
             <span className="font-mono text-12 text-[var(--msg-tool-card-chevron)]">
-              {formatDuration(elapsedMs)}
+              {formatDuration(elapsedMs, t)}
             </span>
           )}
           {canToggle && (
@@ -444,13 +525,21 @@ export function WorkGroupBlock({
               'flex flex-col',
             )}
           >
-            {liveActivities.map((activity) =>
-              activity.kind === 'tool' ? (
-                <ToolActivityRow key={activity.key} activity={activity} />
-              ) : (
-                <ThinkingActivityRow key={activity.key} activity={activity} />
-              ),
-            )}
+            {workLines
+              ? workLines.map((line) =>
+                  line.kind === 'tool' ? (
+                    <ToolLineRow key={line.key} line={line} onActivate={onToggle} />
+                  ) : (
+                    <ThinkingLineRow key={line.key} line={line} onActivate={onToggle} />
+                  ),
+                )
+              : liveActivities.map((activity) =>
+                  activity.kind === 'tool' ? (
+                    <ToolActivityRow key={activity.key} activity={activity} />
+                  ) : (
+                    <ThinkingActivityRow key={activity.key} activity={activity} />
+                  ),
+                )}
           </div>
         )}
 
@@ -462,19 +551,20 @@ export function WorkGroupBlock({
               'flex flex-col gap-2',
             )}
           >
-            {childItems.map((child) => (
-              <Fragment key={child.key}>
-                <ExpandedWorkGroupChild
-                  child={child}
-                  compact={compact}
-                  toolActivities={
-                    child.kind === 'tools'
-                      ? activityProjection?.toolActivitiesByChildKey.get(child.key)
-                      : undefined
-                  }
-                />
-              </Fragment>
-            ))}
+            {effectiveExpanded && !holdLines &&
+              childItems.map((child) => (
+                <Fragment key={child.key}>
+                  <ExpandedWorkGroupChild
+                    child={child}
+                    compact={compact}
+                    toolActivities={
+                      child.kind === 'tools'
+                        ? activityProjection?.toolActivitiesByChildKey.get(child.key)
+                        : undefined
+                    }
+                  />
+                </Fragment>
+              ))}
             {deferred?.loading && <Spinner size={14} />}
             {deferred?.failed && (
               <Button variant="secondary" disabled={deferred.loading} onClick={deferred.retry}>

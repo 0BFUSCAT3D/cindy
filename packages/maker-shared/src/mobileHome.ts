@@ -1,4 +1,5 @@
 import {
+  compareSessionListStrings,
   groupAutomationListItems,
   remoteSessionDisplayTitle,
   sessionRowMessagePreview,
@@ -13,6 +14,7 @@ import type { PresentationLocalizer } from './presentationLocalization.js';
 import { stripTrailingPathSeparators } from './pathText.js';
 import { normalizeProjectOrderPath } from './projectOrderSync.js';
 import { collapseWorktreeDirForGrouping } from './worktreePaths.js';
+import { CINDY_MAKE_ENABLED, isCindyMakeSource } from './cindyMakeFeature.js';
 
 export const MOBILE_HOME_ALL_DEVICES = 'all';
 
@@ -51,6 +53,8 @@ export function canBrowseMobileHomeDevice(item: MobileHomeDeviceFilterItem): boo
 }
 
 export interface MobileHomeProjectGroup {
+  /** A virtual task folder, with no shared filesystem directory. */
+  kind?: 'cindy-make';
   deviceId: string | null;
   deviceName: string;
   key: string;
@@ -146,15 +150,18 @@ export function buildMobileHomePresentation({
   unnamedLabel,
   localizer,
 }: MobileHomeOptions): MobileHomePresentation {
+  const visibleSessions = CINDY_MAKE_ENABLED
+    ? sessions
+    : sessions.filter((session) => !isCindyMakeSource(session.source));
   // 设备身份归一化在管线源头对每个会话算出 canonicalDeviceId(写入字段,不改 deviceLinkDeviceId):
   // 后续设备筛选统计、matchesSelectedDevice 过滤、项目分组、概览、卡片 deviceId 全部按 canonicalDeviceId
   // 判断,保证「首页卡片 / 设备筛选 / 跳转参数」的设备维度一致;deviceLinkDeviceId 保持物理路由 key,
   // openSession / applySessionPatch 仍按它路由,不受归并影响。
   const deviceIdentity = buildDeviceIdentity(
     devices,
-    sessions.map((session) => ({ deviceId: session.deviceLinkDeviceId, name: session.deviceLinkDeviceName })),
+    visibleSessions.map((session) => ({ deviceId: session.deviceLinkDeviceId, name: session.deviceLinkDeviceName })),
   );
-  const normalizedSessions = sessions.map((session) => canonicalizeSessionDevice(session, deviceIdentity));
+  const normalizedSessions = visibleSessions.map((session) => canonicalizeSessionDevice(session, deviceIdentity));
   const deviceFilters = buildDeviceFilters(devices, normalizedSessions, pendingInteractionIndex, selectedDeviceId);
   const normalizedSelectedDeviceId = normalizeSelectedDeviceId(deviceFilters, selectedDeviceId);
   const query = normalizeSearchQuery(searchQuery);
@@ -343,33 +350,36 @@ function buildProjectGroups(
       const first = group[0];
       const firstSession = first.session as MobileHomeSessionLike;
       const deviceId = sessionDeviceKey(firstSession) ?? null;
-      const workingDir = normalizeProjectWorkingDir(firstSession.workingDir);
+      const cindyMake = isCindyMakeSession(firstSession);
+      const workingDir = cindyMake ? '' : normalizeProjectWorkingDir(firstSession.workingDir);
       const deviceName = firstSession.deviceLinkDeviceName
         ?? (deviceId ? deviceNames.get(deviceId) : null)
         ?? '未知电脑';
       return {
+        ...(cindyMake ? { kind: 'cindy-make' as const } : {}),
         deviceId,
         deviceName,
         key,
         // 用列表项的 lastActivityAt 而非 item.session 的时间:自动化组行的 session 是
         // primary(可能是较旧的未读 run),但其 lastActivityAt 已被共享层修正为组内最新。
         latestActivityAt: group.reduce((latest, item) =>
-          item.lastActivityAt.localeCompare(latest) > 0 ? item.lastActivityAt : latest,
+          compareSessionListStrings(item.lastActivityAt, latest) > 0 ? item.lastActivityAt : latest,
         first.lastActivityAt),
         pendingInteractionCount: group.reduce((sum, item) => sum + item.pendingInteractionCount, 0),
         sessionCount: group.reduce((sum, item) => sum + (item.automationGroup?.sessionCount ?? 1), 0),
         sessions: group,
         subtitle: [deviceName, workingDir].filter(Boolean).join(' · '),
-        title: projectTitle(workingDir),
+        title: cindyMake ? 'Cindy Make' : projectTitle(workingDir),
         workingDir,
       };
     })
-    .sort((a, b) => b.latestActivityAt.localeCompare(a.latestActivityAt));
+    .sort((a, b) => compareSessionListStrings(b.latestActivityAt, a.latestActivityAt));
 }
 
 function projectGroupKey(session: RemoteSessionListSessionLike): string {
   // 分组用 canonicalDeviceId(设备归并结果),只补空值兜底 + workingDir 归一化(去尾斜杠 / Windows 大小写)。
   const deviceId = sessionDeviceKey(session as MobileHomeSessionLike)?.trim() || '__unknown_device__';
+  if (isCindyMakeSession(session)) return `cindy-make:${encodeURIComponent(deviceId)}`;
   return `device:${encodeURIComponent(deviceId)}:${normalizePathKey(session.workingDir ?? '__unknown_project__')}`;
 }
 
@@ -553,7 +563,7 @@ function matchesSearchQuery(
 function compareSessionsByStatusThenActivityDesc(a: MobileHomeSessionLike, b: MobileHomeSessionLike): number {
   const statusDiff = sessionStatusRank(a.status) - sessionStatusRank(b.status);
   if (statusDiff !== 0) return statusDiff;
-  return lastActivityTime(b).localeCompare(lastActivityTime(a));
+  return compareSessionListStrings(lastActivityTime(b), lastActivityTime(a));
 }
 
 function sessionStatusRank(status: string): number {
@@ -563,7 +573,11 @@ function sessionStatusRank(status: string): number {
 }
 
 function isDialogueSession(session: RemoteSessionListSessionLike): boolean {
-  return session.workspaceKind === 'dialogue' || !session.workingDir;
+  return !isCindyMakeSession(session) && (session.workspaceKind === 'dialogue' || !session.workingDir);
+}
+
+function isCindyMakeSession(session: RemoteSessionListSessionLike): boolean {
+  return session.source === 'cindy-make' || session.source === 'cindy-make-merge';
 }
 
 function isAutomationSession(

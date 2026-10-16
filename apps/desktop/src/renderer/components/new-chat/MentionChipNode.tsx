@@ -1,3 +1,4 @@
+import { FileTypeIcon } from '@/components/ui/file-type-icon';
 /**
  * Atomic Tiptap node for file, directory, Agent, command, conversation and
  * project references in the composer. The React NodeView keeps all reference
@@ -10,7 +11,6 @@ import { useEffect, useState } from 'react';
 import {
   Bot,
   CornerDownRight,
-  File,
   Folder,
   FolderOpen,
   Globe2,
@@ -22,6 +22,7 @@ import {
 
 import { InlineReferenceChip } from '@/components/chat/InlineReferenceChip';
 import { useInstalledGhosts } from '@/cindy-brain/useInstalledGhosts';
+import { findInstalledGhostByInstanceId } from '../../../shared/pluginIdentity';
 import { GhostPluginIcon } from '@/features/plugin/GhostPluginIcon';
 import { parseSessionDeepLinkHref } from '@/lib/deepLink';
 
@@ -67,7 +68,7 @@ function displayLabel(attrs: MentionChipAttrs): string {
 function MentionIcon({ attrs }: { attrs: MentionChipAttrs }) {
   if (attrs.kind === 'plugin-capability') return <PluginCapabilityIcon attrs={attrs} />;
   if (attrs.kind === 'slash') return null;
-  if (attrs.kind === 'file') return <File aria-hidden />;
+  if (attrs.kind === 'file') return <FileTypeIcon name={attrs.path} />;
   if (attrs.kind === 'dir') return <Folder aria-hidden />;
   if (attrs.kind === 'agent') return <Sparkles aria-hidden />;
   if (attrs.kind === 'project') return <FolderOpen aria-hidden />;
@@ -85,7 +86,7 @@ function MentionIcon({ attrs }: { attrs: MentionChipAttrs }) {
 function PluginCapabilityIcon({ attrs }: { attrs: MentionChipAttrs }) {
   const installedGhosts = useInstalledGhosts();
   const pluginId = attrs.pluginId?.trim() || attrs.label;
-  const ghost = installedGhosts.find((candidate) => candidate.manifest.id === pluginId);
+  const ghost = findInstalledGhostByInstanceId(installedGhosts, pluginId);
 
   return (
     <GhostPluginIcon

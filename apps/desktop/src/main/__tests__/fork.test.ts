@@ -20,6 +20,7 @@ import { CodexResumePreparationBlockedError } from '@cindy/maker-core';
 import { CODEX_RESUME_NOT_READY_WIRE_MESSAGE } from '@cindy/maker-shared/agent-input-projection';
 import { projectSessionContextWindow } from '../../shared/sessionContextWindow';
 import { computeForkSourceMessagesDigest } from '../localDb/forkRecoverySnapshot.js';
+import { MAKER_INVOKE } from '../maker-ipc/channels.js';
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -28,6 +29,24 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 // maker.forkSdkSession 内部已包含 SDK 调用 + uuidMap 构建; 业务测试只关心其入参
 // (确认 fork 把对的 sourceSdkSessionId / upToMessageId / title / workingDir 传下去)
 // 和返回值 (uuidMap 决定 messages.agentMeta remap 结果)。
+const { ipcHandlers, sessionCreatedMock } = vi.hoisted(() => ({
+  ipcHandlers: new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>(),
+  sessionCreatedMock: vi.fn(),
+}));
+vi.mock('electron', () => ({
+  ipcMain: {
+    handle: (
+      channel: string,
+      handler: (event: unknown, ...args: unknown[]) => Promise<unknown>,
+    ) => {
+      ipcHandlers.set(channel, handler);
+    },
+  },
+}));
+vi.mock('../localDb/ipc/sessionCreatedBroadcast.js', () => ({
+  emitSessionCreated: sessionCreatedMock,
+}));
+
 const forkSdkSessionMock = vi.fn();
 vi.mock('../maker-host/index.js', () => ({
   getMaker: () => ({
@@ -95,6 +114,8 @@ const originalXdtUserDataDir = process.env.XDT_USER_DATA_DIR;
 const tempDirs: string[] = [];
 
 beforeEach(async () => {
+  ipcHandlers.clear();
+  sessionCreatedMock.mockClear();
   if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   if (originalXdtUserDataDir === undefined) delete process.env.XDT_USER_DATA_DIR;
@@ -124,6 +145,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (vi.isMockFunction(os.homedir)) vi.mocked(os.homedir).mockRestore();
   if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   if (originalXdtUserDataDir === undefined) delete process.env.XDT_USER_DATA_DIR;
@@ -203,6 +225,49 @@ async function writeClaudeJsonlInConfigDir(
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────
+
+describe('disabled Cindy Make fork boundaries', () => {
+  const cases = ['cindy-make', 'cindy-make-merge'].flatMap((source) =>
+    [MAKER_INVOKE.FORK, MAKER_INVOKE.FORK_STRIP_ENCRYPTED].flatMap((channel) =>
+      ['orchestration', 'legacy IPC'].map((entryPoint) => ({ source, channel, entryPoint })),
+    ),
+  );
+
+  it.each(cases)(
+    'rejects $source through $entryPoint $channel before reading history or creating a child',
+    async ({ source, channel, entryPoint }) => {
+      selectQueue.push(
+        [makeSourceRow({ source, agentKind: 'codex' })],
+        [makeMessageRow({ clientId: 'legacy-message' })],
+      );
+      const args =
+        channel === MAKER_INVOKE.FORK
+          ? ['src-session', 'legacy-message']
+          : ['src-session'];
+      let operation: Promise<unknown>;
+      if (entryPoint === 'legacy IPC') {
+        const { registerMakerForkIpc } = await import('../maker-ipc/fork.js');
+        registerMakerForkIpc();
+        operation = ipcHandlers.get(channel)!({}, ...args);
+      } else {
+        operation =
+          channel === MAKER_INVOKE.FORK
+            ? forkSessionAtMessage('src-session', 'legacy-message')
+            : forkSessionStripEncrypted('src-session');
+      }
+
+      await expect(operation).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+      expect(selectQueue).toHaveLength(1);
+      expect(forkSdkSessionMock).not.toHaveBeenCalled();
+      expect(txMock).not.toHaveBeenCalled();
+      expect(queryOneMock).not.toHaveBeenCalled();
+      expect(queryMock).not.toHaveBeenCalled();
+      expect(createMessageMock).not.toHaveBeenCalled();
+      expect(commitContextRebuildMock).not.toHaveBeenCalled();
+      expect(sessionCreatedMock).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('forkSessionAtMessage', () => {
   it.each([
@@ -987,6 +1052,25 @@ describe('forkSessionAtMessage', () => {
       ['old-asst-uuid', 'new-asst-uuid'],
     ]);
     expect(txArgs.newMessageIds).toHaveLength(2);
+  });
+
+  it('refuses to fork a task whose agent runs on another computer (its agent record is there)', async () => {
+    selectQueue.push([makeSourceRow({ agentDeviceId: 'device-b' })]);
+
+    await expect(forkSessionAtMessage('src-session', 'any-msg')).rejects.toMatchObject({
+      code: 'REMOTE_NOT_SUPPORTED',
+    });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
+    expect(txCalls).toHaveLength(0);
+  });
+
+  it('refuses the encrypted-content fork for a Codex task whose agent runs on another computer', async () => {
+    selectQueue.push([makeSourceRow({ agentKind: 'codex', agentDeviceId: 'device-b' })]);
+
+    await expect(forkSessionStripEncrypted('src-session')).rejects.toMatchObject({
+      code: 'REMOTE_NOT_SUPPORTED',
+    });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
   });
 
   it('throws SOURCE_NEVER_RAN when source.sdkSessionId is null; maker not invoked', async () => {
@@ -1908,9 +1992,12 @@ describe('forkSessionAtMessage', () => {
     });
   });
 
-  it('claude path: locates JSONL under XDT_USER_DATA_DIR claude-home when main env has no CLAUDE_CONFIG_DIR', async () => {
+  it('claude path: falls back to the legacy dev XDT_USER_DATA_DIR/claude-home when ~/.claude lacks the JSONL', async () => {
     const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-user-data-'));
     tempDirs.push(userDataDir);
+    const emptyHome = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-empty-home-'));
+    tempDirs.push(emptyHome);
+    vi.spyOn(os, 'homedir').mockReturnValue(emptyHome);
     delete process.env.CLAUDE_CONFIG_DIR;
     process.env.XDT_USER_DATA_DIR = userDataDir;
     await writeClaudeJsonlInConfigDir(
@@ -2122,5 +2209,73 @@ describe('forkSessionAtMessage', () => {
 
     expect(forkSdkSessionMock).not.toHaveBeenCalled();
     expect(txCalls).toHaveLength(0);
+  });
+});
+
+describe('isCodexNativeThreadStart (#4994)', () => {
+  const user = (createdAt: number) => ({ role: 'user', content: '', agentMeta: null, createdAt });
+  const agentSwitch = (createdAt: number, fromAgentKind: 'cc' | 'codex', fromSdkSessionId: string | null) => ({
+    role: 'agent_switch',
+    content: JSON.stringify({ fromAgentKind, toAgentKind: fromAgentKind === 'cc' ? 'codex' : 'cc', fromSdkSessionId }),
+    agentMeta: null,
+    createdAt,
+  });
+  const contextRebuild = (createdAt: number) => ({ role: 'context_rebuild', content: '{}', agentMeta: null, createdAt });
+
+  it('treats an empty timeline as the thread start', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([], 'thread-x')).toBe(true);
+  });
+
+  it('rejects when the current thread already has an earlier user turn', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([user(1000)], 'thread-x')).toBe(false);
+  });
+
+  it('ignores turns of the engine the session switched away from', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([user(1000), agentSwitch(2000, 'cc', 'claude-sdk')], 'thread-x')).toBe(true);
+  });
+
+  it('counts earlier turns of a resumed parked thread across switch boundaries', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([
+      user(1000),
+      agentSwitch(2000, 'codex', 'thread-x'),
+      user(3000),
+      agentSwitch(4000, 'cc', 'claude-sdk'),
+    ], 'thread-x')).toBe(false);
+  });
+
+  it('ignores turns before a context rebuild', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([user(1000), contextRebuild(2000)], 'thread-x')).toBe(true);
+  });
+
+  it('does not let a pre-rebuild switch restore the current thread', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([
+      user(1000),
+      agentSwitch(2000, 'codex', 'thread-x'),
+      user(3000),
+      agentSwitch(4000, 'cc', 'claude-sdk'),
+      contextRebuild(5000),
+    ], 'thread-x')).toBe(true);
+  });
+
+  it('withholds thread start when a switch boundary is unparseable', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([
+      user(1000),
+      { role: 'agent_switch', content: '{not-json', agentMeta: null, createdAt: 2000 },
+    ], 'thread-x')).toBe(false);
+  });
+
+  it('withholds thread start when a switch boundary has no fromSdkSessionId', async () => {
+    const { isCodexNativeThreadStart } = await import('../maker-orchestration/fork');
+    expect(isCodexNativeThreadStart([
+      user(1000),
+      agentSwitch(2000, 'cc', null),
+    ], 'thread-x')).toBe(false);
   });
 });

@@ -22,13 +22,19 @@ import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from '
 
 import type { AgentKind } from './types/common.js';
 import type { Capabilities } from './types/capabilities.js';
-import type { AgentEvent, ForkSdkSessionOptions, ForkSdkSessionResult } from './types/events.js';
+import {
+  isTerminalAgentErrorEvent,
+  type AgentEvent,
+  type ForkSdkSessionOptions,
+  type ForkSdkSessionResult,
+} from './types/events.js';
 import type {
   ScanAtResourcesOptions,
   ScanAtResourcesResult,
   AgentBuiltinCommand,
   ListAgentSkillsOptions,
   ListAgentSkillsResult,
+  ListRuntimeSkillsOptions,
 } from './types/palette.js';
 import type {
   ListCustomizationsOptions,
@@ -38,6 +44,7 @@ import type { PiRuntimeCapabilityManifest } from './types/pi-runtime-capabilitie
 import { piExplicitSkillRuntimePath } from './agents/pi/skill-runtime-provenance.js';
 import { fingerprintPiProjectSkillEntrypoint } from './agents/pi/project-resource-assembly.js';
 import { Session, generateSessionId, type SessionStartupPreferences } from './session.js';
+import { NotSupportedError } from './types/capabilities.js';
 import {
   AgentNotAuthenticatedError,
   AgentStartupCleanupPendingError,
@@ -119,6 +126,15 @@ export interface SessionLifecycleHooks {
 
 export interface MakerDeps {
   agents: Partial<Record<AgentKind, BaseAgent>>;
+  /**
+   * 可选：在同账号另一台电脑上启动 Agent(CreateSessionOptions.agentDeviceId)。返回的句柄由
+   * host 实现(对方运行 Agent、本机执行文件与命令)。缺省时这类会话无法创建。
+   */
+  startDeviceAgentSession?: (input: {
+    agentKind: AgentKind;
+    deviceId: string;
+    options: StartSessionOptions;
+  }) => Promise<AgentSessionHandle>;
   storage: SessionStorage;
   logger: Logger;
   /** 可选: session 生命周期副作用钩子 (host 层注入)。详见 SessionLifecycleHooks。 */
@@ -136,6 +152,11 @@ export interface MakerDeps {
    * 零干扰（见 docs/vision-bridge-design.md 层 B）。
    */
   visionBridge?: import('./types/vision-bridge.js').VisionBridgeHook;
+  /**
+   * 可选: Pi / Codex 工具循环疑似命中时的辅助模型复核入口。Claude Code 在 agent 内
+   * 检测,由 AgentDeps.toolLoopReviewer 注入同一实现。缺省 = 疑似即中断。
+   */
+  toolLoopReviewer?: import('./agents/shared/tool-loop-review.js').ToolLoopReviewer;
 }
 
 export interface CreateSessionOptions extends StartSessionOptions {
@@ -151,6 +172,12 @@ export interface CreateSessionOptions extends StartSessionOptions {
   visionBridge?: import('./types/vision-bridge.js').VisionBridgeHook;
   /** 可选：父会话 id，用于 fork / orchestration 等会话关系。 */
   parentSessionId?: string;
+  /**
+   * 可选：Agent 在同账号的另一台电脑上运行(那台电脑的设备 id)。任务、项目文件与命令留在本机，
+   * Agent 用那台电脑的程序、登录、供应商与网络。由 MakerDeps.startDeviceAgentSession 启动；
+   * 持久化到 SessionMeta.agentDeviceId，恢复时据此找回那台电脑。与 remoteHostId 互斥。
+   */
+  agentDeviceId?: string;
   /**
    * 可选：调用方提供的 sessionId(通常来自外部 DB row)。提供后:
    *   - storage 已有同 id 的 row → 跳过 create, 直接复用
@@ -178,11 +205,31 @@ export type MakerEvent =
 
 export type MakerEventListener = (event: MakerEvent) => void;
 
+/** Codex thread 归属键：SSH 主机或运行 Agent 的另一台电脑(两者的 thread 都不在本机)。 */
+function codexThreadOwnerKey(opts: { remoteHostId?: string; agentDeviceId?: string }): string | undefined {
+  return opts.remoteHostId ?? (opts.agentDeviceId ? `device:${opts.agentDeviceId}` : undefined);
+}
+
 function capabilitiesForSession(
   agentKind: AgentKind,
   base: Capabilities,
   remoteHostId?: string | null,
+  agentDeviceId?: string | null,
+  handle?: AgentSessionHandle,
 ): Capabilities {
+  if (agentDeviceId) {
+    // Agent 在另一台电脑上：对话在那台截断(handle 转发 commitRewindFiles)，文件由本机按保存点
+    // 回退。那台的 Cindy 不支持转发时不提供。
+    if (base.rewind.supported && typeof handle?.commitRewindFiles === 'function') return base;
+    return {
+      ...base,
+      rewind: {
+        supported: false,
+        reason: 'platform-limited',
+        message: 'Update Cindy on the computer running the agent to rewind this task',
+      },
+    };
+  }
   if (agentKind !== 'codex' || !remoteHostId) return base;
   return {
     ...base,
@@ -388,6 +435,37 @@ interface FailedHandleCleanup {
   onCleaned?: () => void;
 }
 
+/**
+ * 在另一台电脑上运行的 Claude Code 会话，其新 vendor id（fork / 重建出的 id）要等这一轮
+ * 成功结束才写成持久编号。`pending` 只在同一 session 的持久化队列里读写，保证与事件同序。
+ */
+interface DeferredSdkSessionCommit {
+  pending?: string;
+}
+
+/**
+ * 这一轮没有正常落地：与对方电脑失联，或对方的 Claude 流中途崩溃 / resume 失败。
+ * 这类回合里新 fork 出的编号可能还没有对话记录，不能写成持久编号。
+ * 用户主动 Stop 等其它收尾不在此列：Claude 已经收下输入并写了记录，下一轮应接着它走。
+ */
+const UNFINISHED_TURN_REASONS = new Set([
+  'remote_agent_closed',
+  'remote_agent_lost',
+  'sdk_stream_crashed',
+  'bridge_sdk_stream_crashed',
+  'resume_session_not_found',
+  'resume_session_recovery_failed',
+]);
+
+function isUnfinishedRemoteTurnEvent(evt: AgentEvent): boolean {
+  const data = evt.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const { reason, message } = data as { reason?: unknown; message?: unknown };
+  if (typeof reason === 'string' && UNFINISHED_TURN_REASONS.has(reason)) return true;
+  return typeof message === 'string'
+    && /\[REMOTE_AGENT_(EXPIRED|DEVICE_UNREACHABLE|NOT_FOUND|UNAVAILABLE)\]/.test(message);
+}
+
 export class Maker {
   protected readonly agents: Partial<Record<AgentKind, BaseAgent>>;
   protected readonly storage: SessionStorage;
@@ -441,11 +519,15 @@ export class Maker {
   public readonly makerMemory: MakerMemoryManager | undefined;
   /** 视觉桥钩子（层 B）全局默认（可选）。见 MakerDeps.visionBridge。 */
   protected readonly visionBridge: import('./types/vision-bridge.js').VisionBridgeHook | undefined;
+  private readonly toolLoopReviewer: import('./agents/shared/tool-loop-review.js').ToolLoopReviewer | undefined;
+  private readonly startDeviceAgentSession: MakerDeps['startDeviceAgentSession'];
 
   constructor(deps: MakerDeps) {
     this.agents = deps.agents;
     this.storage = deps.storage;
+    this.startDeviceAgentSession = deps.startDeviceAgentSession;
     this.visionBridge = deps.visionBridge;
+    this.toolLoopReviewer = deps.toolLoopReviewer;
     // 不 child 自己名字 — host 传进来的 logger 通常已经命名(如 'maker'),
     // 再 child 'maker' 会变成 'maker/maker'。host 自己决定 root scope 名字。
     this.logger = deps.logger;
@@ -705,12 +787,37 @@ export class Maker {
         codexThreadClaim = this.claimCodexThread({
           sessionId: id,
           sessionInstanceId,
-          remoteHostId: startOpts.remoteHostId,
+          remoteHostId: codexThreadOwnerKey(startOpts),
           threadId: startOpts.resumeSessionId,
         });
       }
       agentStartAttempted = true;
-      handle = await agent.startSession({
+      if (startOpts.agentDeviceId) {
+        if (startOpts.remoteHostId) {
+          throw new Error('A session cannot run its agent on another computer and on an SSH host at the same time');
+        }
+        if (!this.startDeviceAgentSession) {
+          throw new NotSupportedError('remoteSession', {
+            supported: false,
+            reason: 'not-implemented',
+            message: 'Running the agent on another computer is not available in this host',
+          });
+        }
+        handle = await this.startDeviceAgentSession({
+          agentKind: opts.agentKind,
+          deviceId: startOpts.agentDeviceId,
+          options: {
+            ...startOpts,
+            sessionId: id,
+            sessionInstanceId,
+            onInvalidResumeSession:
+              opts.agentKind === 'claude-code' || opts.agentKind === 'pi'
+                ? (expectedSdkSessionId) =>
+                    this.invalidateAndClearSdkSessionId(id, expectedSdkSessionId)
+                : undefined,
+          },
+        });
+      } else handle = await agent.startSession({
         ...startOpts,
         sessionId: id,
         sessionInstanceId,
@@ -757,7 +864,7 @@ export class Maker {
           codexThreadClaim = this.claimCodexThread({
             sessionId: id,
             sessionInstanceId,
-            remoteHostId: startOpts.remoteHostId,
+            remoteHostId: codexThreadOwnerKey(startOpts),
             threadId: handle.id,
           });
         }
@@ -837,11 +944,13 @@ export class Maker {
           effort: opts.effort,
           permissionMode: opts.permissionMode,
           fastMode: opts.fastMode,
+          ...(typeof opts.planMode === 'boolean' ? { planMode: opts.planMode } : {}),
           reviewMode: opts.reviewMode,
           parentSessionId: opts.parentSessionId,
           // remoteHostId: 远端 session 把目标机器持久化, 之后 resume / list 都能识别。
           // 本地 session 留 undefined (sqlite 落空), 跟历史行为兼容。
           remoteHostId: opts.remoteHostId,
+          ...(opts.agentDeviceId ? { agentDeviceId: opts.agentDeviceId } : {}),
           sdkSessionId: handle.id !== '<pending>' ? handle.id : undefined,
         });
         createdMetadata = true;
@@ -979,15 +1088,29 @@ export class Maker {
       workDir: startOpts.workingDir,
       handle,
       hostStartupPreferences: opts.hostStartupPreferences,
-      capabilities: capabilitiesForSession(meta.agentKind, agent.capabilities, meta.remoteHostId),
+      capabilities: capabilitiesForSession(
+        meta.agentKind,
+        agent.capabilities,
+        meta.remoteHostId,
+        meta.agentDeviceId ?? startOpts.agentDeviceId,
+        handle,
+      ),
       logger: this.logger,
       permissionMode: startOpts.permissionMode,
       // 透传 remoteHostId 让 host 层在 hot path 上能 O(1) 判 local/remote
       // (不用每次 send 回 DB 读 SessionMeta — register.ts checkWorkDirExists 走这条)。
       remoteHostId: meta.remoteHostId ?? null,
+      // 取实际决定启动分支的 startOpts：任务记录事后读回的旧值不能把本机启动的会话标成远端。
+      agentDeviceId: startOpts.agentDeviceId || null,
       // 层 B：视觉桥钩子（per-session 优先，否则全局默认；缺省不传 = 零干扰）。
       visionBridge: startOpts.visionBridge ?? this.visionBridge,
+      toolLoopReviewer: this.toolLoopReviewer,
     });
+
+    // 另一台电脑上的 Claude Code：新编号等这一轮成功结束才落库。失联的回合里，对方可能还没写出
+    // 这个编号的对话记录，提前落库会让下次发送 resume 到一个空会话，丢掉全部历史。
+    const deferredSdkSessionCommit: DeferredSdkSessionCommit | undefined =
+      opts.agentKind === 'claude-code' && startOpts.agentDeviceId ? {} : undefined;
 
     // 当 SDK 回填 sdkSessionId 时持久化
     session.onEvent((evt) => {
@@ -1000,7 +1123,7 @@ export class Maker {
               codexThreadClaim = this.claimCodexThread({
                 sessionId: id,
                 sessionInstanceId,
-                remoteHostId: startOpts.remoteHostId,
+                remoteHostId: codexThreadOwnerKey(startOpts),
                 threadId: evt.data,
               });
             }
@@ -1014,14 +1137,24 @@ export class Maker {
             return;
           }
         }
-        void this.persistSdkSessionId(meta.id, evt.data).catch((e) => {
+        void this.persistSdkSessionId(meta.id, evt.data, deferredSdkSessionCommit).catch((e) => {
           this.logger.warn('failed to persist sdkSessionId', { error: String(e) });
         });
+        return;
+      }
+      if (!deferredSdkSessionCommit) return;
+      if (evt.type === 'done' && !isUnfinishedRemoteTurnEvent(evt)) {
+        void this.commitDeferredSdkSessionId(meta.id, deferredSdkSessionCommit).catch((e) => {
+          this.logger.warn('failed to commit deferred sdkSessionId', { error: String(e) });
+        });
+      } else if (evt.type === 'done' || (isTerminalAgentErrorEvent(evt) && isUnfinishedRemoteTurnEvent(evt))) {
+        void this.discardDeferredSdkSessionId(meta.id, deferredSdkSessionCommit);
       }
     });
 
     session.onStatusChange((status) => {
       if (status === 'closed') {
+        if (deferredSdkSessionCommit) void this.discardDeferredSdkSessionId(meta.id, deferredSdkSessionCommit);
         codexThreadClaim?.release();
         // 不再持久化运行态: 'closed' 是 SDK 子进程的瞬态, 重启即灭, 无意义存盘。
         this.activeSessions.delete(meta.id);
@@ -1087,8 +1220,16 @@ export class Maker {
     );
   }
 
-  /** 串行持久化有效 vendor id，并屏蔽已判失效 query 的晚到事件。 */
-  private persistSdkSessionId(sessionId: string, sdkSessionId: string): Promise<void> {
+  /**
+   * 串行持久化有效 vendor id，并屏蔽已判失效 query 的晚到事件。
+   * 传入 `deferred` 时：库里已有另一个编号，就先只记在 `deferred.pending`，等这一轮成功再提交；
+   * 库里还没有编号（首轮）时没有可回退的对象，仍立即落库。
+   */
+  private persistSdkSessionId(
+    sessionId: string,
+    sdkSessionId: string,
+    deferred?: DeferredSdkSessionCommit,
+  ): Promise<void> {
     return this.enqueueSdkSessionPersistence(sessionId, async () => {
       if (this.invalidSdkSessionIds.get(sessionId)?.has(sdkSessionId)) {
         this.logger.debug('ignored stale sdkSessionId event after invalid-resume recovery', {
@@ -1097,7 +1238,43 @@ export class Maker {
         });
         return;
       }
+      if (deferred) {
+        const current = (await this.storage.get(sessionId))?.sdkSessionId;
+        if (current && current !== sdkSessionId) {
+          deferred.pending = sdkSessionId;
+          this.logger.debug('deferred sdkSessionId until the remote turn succeeds', {
+            sessionId,
+            sdkSessionId,
+          });
+          return;
+        }
+        deferred.pending = undefined;
+      }
       await this.storage.update(sessionId, { sdkSessionId });
+    });
+  }
+
+  /** 这一轮成功结束：把暂存的新 vendor id 写成持久编号（与 persistSdkSessionId 同一条队列，保序）。 */
+  private commitDeferredSdkSessionId(sessionId: string, deferred: DeferredSdkSessionCommit): Promise<void> {
+    return this.enqueueSdkSessionPersistence(sessionId, async () => {
+      const sdkSessionId = deferred.pending;
+      deferred.pending = undefined;
+      if (!sdkSessionId) return;
+      if (this.invalidSdkSessionIds.get(sessionId)?.has(sdkSessionId)) return;
+      await this.storage.update(sessionId, { sdkSessionId });
+    });
+  }
+
+  /** 这一轮失联结束或会话关闭：丢掉暂存编号，库里保持上一个成功的编号。 */
+  private discardDeferredSdkSessionId(sessionId: string, deferred: DeferredSdkSessionCommit): Promise<void> {
+    return this.enqueueSdkSessionPersistence(sessionId, async () => {
+      if (deferred.pending) {
+        this.logger.warn('dropped uncommitted sdkSessionId after the remote turn did not finish', {
+          sessionId,
+          sdkSessionId: deferred.pending,
+        });
+      }
+      deferred.pending = undefined;
     });
   }
 
@@ -1353,6 +1530,17 @@ export class Maker {
   }
 
   /**
+   * 设备托管：同账号另一台电脑上的任务让 Agent 在本机运行。直接用本机的 agent 启动会话，
+   * 不建本机 Session 与持久化记录(任务、消息与状态都在对方电脑上)；opts.deviceHosted 必填。
+   */
+  async startHostedAgentSession(kind: AgentKind, opts: StartSessionOptions): Promise<AgentSessionHandle> {
+    if (this.shutdownStarted) throw new Error('Maker is shutting down; refusing to start a hosted session');
+    if (!opts.deviceHosted) throw new Error('hosted sessions require deviceHosted');
+    if (opts.remoteHostId) throw new Error('hosted sessions cannot target an SSH host');
+    return this.requireAgent(kind).startSession(opts);
+  }
+
+  /**
    * Agent 内置 command (palette 'agent-builtin' 类目) —— 同步硬编码白名单。
    * 见 agents/<kind>/commands.ts。
    */
@@ -1394,6 +1582,22 @@ export class Maker {
       return result;
     }
     return filter(await mergePiRuntimeSkillStatuses(result, session.getRuntimeCapabilities()));
+  }
+
+  /** Host-only runtime view used when a capability must match the live engine winner. */
+  async listAgentRuntimeSkills(
+    agentKind: AgentKind,
+    opts: ListRuntimeSkillsOptions & { sessionId?: string },
+  ): Promise<ListAgentSkillsResult> {
+    const { sessionId, ...agentOpts } = opts;
+    const agent = this.requireAgent(agentKind);
+    const session = sessionId ? this.getSession(sessionId) : undefined;
+    const result = await agent.listRuntimeSkills(agentOpts);
+    return agent.filterActiveSkillCommands(
+      result,
+      agentOpts.remoteHostId ?? session?.remoteHostId ?? undefined,
+      session?.agentKind === agentKind ? session.getDisabledSkillPaths() : undefined,
+    );
   }
 
   /** ChatInput `@` palette entries, routed by agent kind. */
@@ -1462,6 +1666,12 @@ export class Maker {
    */
   async forkSdkSession(agentKind: AgentKind, opts: ForkSdkSessionOptions): Promise<ForkSdkSessionResult> {
     return this.requireAgent(agentKind).forkSdkSession(opts);
+  }
+
+  async requiresCodexThreadHostTransfer(
+    opts: Parameters<BaseAgent['requiresCodexThreadHostTransfer']>[0],
+  ): Promise<boolean> {
+    return this.requireAgent('codex').requiresCodexThreadHostTransfer(opts);
   }
 
   // ── Agent 鉴权 ───────────────────────────────────────────────────────────

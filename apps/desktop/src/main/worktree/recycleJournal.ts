@@ -5,6 +5,7 @@ import path from 'node:path';
 import { app } from 'electron';
 
 import { physicalWorktreeKey, worktreeResourceId } from './resourceLock';
+import type { WorktreeRecyclePolicy } from './recyclePolicy';
 import type { WorktreeMeta } from './types';
 import type { WorktreeRecoveryArchive } from './recoveryArchive';
 import { createLogger } from '../logger';
@@ -23,6 +24,7 @@ export interface WorktreeRecycleRecord {
   attempts: number;
   nextAttemptAt: number;
   reason?: string;
+  retryPolicy?: WorktreeRecyclePolicy;
   /** null is a durable marker that recovery has reserved a previously absent directory. */
   directoryIdentity?: string | null;
   snapshot?: { head: string; headRef?: string | null; tree: string; indexTree: string; commit: string; ref: string; indexHash: string };
@@ -34,6 +36,18 @@ export interface WorktreeRecycleRecord {
 
 export function recycleJournalRoot(): string {
   return path.join(app.getPath('userData'), 'worktree-recycle');
+}
+
+function sharedJournalLocationsRoot(): string {
+  return path.join(app.getPath('appData'), 'Cindy', 'shared-worktree-recycle-journals');
+}
+
+/** Keep publishing locators for older clients that may still borrow across profiles. */
+async function publishJournalLocation(root: string): Promise<void> {
+  const directory = sharedJournalLocationsRoot();
+  const id = createHash('sha256').update(root).digest('hex');
+  await fs.mkdir(directory, { recursive: true });
+  await writeRecordFile(path.join(directory, `${id}.json`), { version: 1, root });
 }
 
 export function worktreeGeneration(meta: WorktreeMeta): string {
@@ -51,6 +65,10 @@ function parseRecord(raw: string, id: string): WorktreeRecycleRecord {
       && (typeof record.restoreCheckoutPath !== 'string' || !path.isAbsolute(record.restoreCheckoutPath)))
     || typeof record.requestedAt !== 'string' || !Number.isFinite(Date.parse(record.requestedAt))
     || !Number.isInteger(record.attempts) || record.attempts < 0
+    || (record.retryPolicy !== undefined && (!record.retryPolicy
+      || !['retrying', 'waiting', 'paused', 'kept'].includes(record.retryPolicy.state)
+      || !Number.isInteger(record.retryPolicy.failures) || record.retryPolicy.failures < 0
+      || !Number.isFinite(record.retryPolicy.failedWorkMs) || record.retryPolicy.failedWorkMs < 0))
     || !Number.isFinite(record.nextAttemptAt)
     || !['pending', 'snapshotted', 'removing', 'removed', 'restoring', 'restored'].includes(record.phase)) {
     throw new Error('invalid worktree recycle record');
@@ -86,6 +104,8 @@ export async function writeRecycleRecord(record: WorktreeRecycleRecord): Promise
   if (!/^[a-f0-9]{64}$/.test(record.id)) throw new Error('invalid worktree resource id');
   const root = recycleJournalRoot();
   await fs.mkdir(root, { recursive: true });
+  // Must be discoverable before committing an intent that permits destructive I/O.
+  await publishJournalLocation(root);
   if (record.archive && record.snapshot && record.phase === 'removed') {
     const history = path.join(root, 'history');
     await fs.mkdir(history, { recursive: true });
@@ -100,6 +120,8 @@ export async function writeRecycleRecord(record: WorktreeRecycleRecord): Promise
 export async function watchRecycleJournal(onChange: () => void, onError: (error: unknown) => void): Promise<() => void> {
   const root = recycleJournalRoot();
   await fs.mkdir(root, { recursive: true });
+  // Expose pre-upgrade requests too, even when their retry deadline is in the future.
+  await publishJournalLocation(root);
   const watcher = watch(root, { persistent: false }, (_event, filename) => {
     if (filename === null || /^[a-f0-9]{64}\.json$/.test(filename.toString())) onChange();
   });
@@ -107,7 +129,7 @@ export async function watchRecycleJournal(onChange: () => void, onError: (error:
   return () => watcher.close();
 }
 
-async function writeRecordFile(target: string, record: WorktreeRecycleRecord): Promise<void> {
+async function writeRecordFile(target: string, record: WorktreeRecycleRecord | { version: 1; root: string }): Promise<void> {
   const temp = `${target}.${randomUUID()}.tmp`;
   try {
     const handle = await fs.open(temp, 'wx', 0o600);

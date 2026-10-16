@@ -7,6 +7,8 @@ export interface InteractionRequestLike {
 }
 
 export interface PendingInteractionLike {
+  /** Local presentation only: an answer already being edited keeps focus. */
+  retainedDraft?: boolean;
   request: InteractionRequestLike;
   persistId?: string;
 }
@@ -16,6 +18,50 @@ export interface AskQuestion {
   header?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+}
+
+/** A late answer is ordinary user input, with the original question attached. */
+export function formatAsyncQuestionSupplement(
+  questions: readonly AskQuestion[],
+  answers: Record<string, string>,
+): string {
+  const replies = questions.flatMap((q) => {
+    const answer = answers[q.question] ?? (q.header ? answers[q.header] : undefined);
+    return typeof answer === 'string' && answer.trim()
+      ? [{ question: q.question, answer: answer.trim() }] : [];
+  });
+  return replies.map(({ question, answer }) => `${question.split('\n').map((line) => `> ${line}`).join('\n')}\n\n${answer}`).join('\n\n');
+}
+
+/** Only a confirmed cancellation permits delivery as a new user message. A
+ * missing pending request alone cannot distinguish expiry from an accepted
+ * answer whose receipt was lost (including an answer on another device). */
+export async function asyncQuestionNeedsSupplement(
+  resolve: () => Promise<{ accepted: boolean } | void>,
+  readMessage: () => Promise<unknown>,
+  requestId: string,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const receipt = await Promise.race([
+      resolve(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Interaction receipt timeout')), 15_000);
+      }),
+    ]);
+    if (receipt && receipt.accepted === true) return false;
+  } catch {
+    // Read the original Host row before deciding whether another delivery is safe.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const raw = await readMessage();
+  const content = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (content && typeof content === 'object' && 'requestId' in content && content.requestId === requestId && 'status' in content) {
+    if (content.status === 'answered') return false;
+    if (content.status === 'cancelled') return true;
+  }
+  throw new Error('Interaction decision was not confirmed');
 }
 
 export interface IssueDraft {
@@ -39,6 +85,7 @@ export interface IssueConfirmPayload {
 }
 
 export interface PermissionReviewPresentation {
+  sourceDescription?: string;
   autoReviewUnavailable: boolean;
   canAlwaysAllow: boolean;
   code: string;
@@ -206,12 +253,22 @@ export function buildPermissionReviewPresentation(
   const input = permissionInput(request);
   const riskSummary = permissionRiskSummary(request, localizer);
   const canAlwaysAllow = sessionScopedPermissionSuggestions(request.suggestions).length > 0;
+  const sourceDescription = permissionSourceDescription(request);
+  let description = permissionDescription(request);
+  // IM retains its combined body; UI titles must describe the operation only.
+  if (sourceDescription && description?.startsWith(sourceDescription)) {
+    if (description === sourceDescription) description = null;
+    else if (description.startsWith(`${sourceDescription}\n\n`)) {
+      description = readString(description.slice(sourceDescription.length + 2));
+    }
+  }
 
   return {
     autoReviewUnavailable: permissionAutoReviewUnavailable(request),
+    ...(sourceDescription ? { sourceDescription } : {}),
     canAlwaysAllow,
     code: formatPermissionInput(toolName, input),
-    description: permissionDescription(request),
+    description,
     riskSummary,
     summary: buildPermissionDecisionSummary({ toolName, riskSummary, canAlwaysAllow }, localizer),
     title: permissionTitle(request, localizer),
@@ -379,7 +436,7 @@ export function interactionKind(item: PendingInteractionLike): string {
 }
 
 export function interactionDisplayTitle(kind: string, localizer?: PresentationLocalizer): string {
-  const known = ['plan_review', 'permission', 'ask_user_question', 'issue_confirm', 'plugin_setup'];
+  const known = ['plan_review', 'permission', 'ask_user_question', 'issue_confirm', 'plugin_setup', 'input_handoff'];
   const key = known.includes(kind) ? kind : 'fallback';
   const fallback: Record<string, string> = {
     plan_review: '需要确认执行计划',
@@ -387,6 +444,7 @@ export function interactionDisplayTitle(kind: string, localizer?: PresentationLo
     ask_user_question: '需要回答 Agent 问题',
     issue_confirm: '需要确认 Issue 内容',
     plugin_setup: '需要在电脑端配置插件',
+    input_handoff: '需要你代为输入',
     fallback: '需要处理远程请求',
   };
   return presentationText(localizer, `interaction.kinds.${key}.title`, fallback[key]);
@@ -413,7 +471,7 @@ export function interactionDisplayHint(
 }
 
 export function interactionKindLabel(kind: string, localizer?: PresentationLocalizer): string {
-  const known = ['plan_review', 'permission', 'ask_user_question', 'issue_confirm', 'plugin_setup'];
+  const known = ['plan_review', 'permission', 'ask_user_question', 'issue_confirm', 'plugin_setup', 'input_handoff'];
   const key = known.includes(kind) ? kind : 'fallback';
   const fallback: Record<string, string> = {
     plan_review: '计划',
@@ -421,6 +479,7 @@ export function interactionKindLabel(kind: string, localizer?: PresentationLocal
     ask_user_question: '问题',
     issue_confirm: 'Issue',
     plugin_setup: '插件',
+    input_handoff: '代输入',
     fallback: '请求',
   };
   return presentationText(localizer, `interaction.kinds.${key}.label`, fallback[key]);
@@ -445,6 +504,9 @@ const REMOTE_RESOLVABLE_KINDS = new Set(['permission', 'ask_user_question', 'pla
 export function remoteInteractionHandling(item: PendingInteractionLike): RemoteInteractionHandling {
   const kind = interactionKind(item);
   if (REMOTE_RESOLVABLE_KINDS.has(kind)) return 'resolvable';
+  // 代输入: the controller fills each step through the signed per-step channel
+  // and sends value-less decisions (done / cancel / stay / refresh) through resolve.
+  if (kind === 'input_handoff') return item.request.terminal === true ? 'desktop-only' : 'resolvable';
   // `cancel-only` 必须与 buildPluginSetupCancelDecision 判定一致,否则调用方只看
   // handling 就以为「能取消」,而实际拿不到 decision(#530 review):
   // - terminal 快照是被控端收尾展示用的最后一帧,已经不 actionable;
@@ -464,6 +526,8 @@ export function remoteInteractionHandling(item: PendingInteractionLike): RemoteI
  * 死锁:任何被控端新增的 interaction kind 默认都落进「不阻塞」这一侧。
  */
 export function interactionBlocksRemoteComposer(item: PendingInteractionLike | null | undefined): boolean {
+  // 代输入 is a Host-owned wait that outlives the turn; the owner keeps the composer.
+  if (item && interactionKind(item) === 'input_handoff') return false;
   return !!item && remoteInteractionHandling(item) === 'resolvable';
 }
 
@@ -774,6 +838,8 @@ const INTERACTION_PRIORITY: Record<string, number> = {
   // 只能回电脑端处理的卡上(手机侧另有不阻塞输入框的兜底,见
   // interactionBlocksRemoteComposer)。
   plugin_setup: 4,
+  // Answerable on the controller, but never ahead of a question the turn is blocked on.
+  input_handoff: 3,
 };
 
 export function interactionPriority(item: PendingInteractionLike): number {
@@ -785,7 +851,8 @@ export function sortPendingInteractions(
 ): PendingInteractionLike[] {
   return interactions
     .map((item, index) => ({ item, index }))
-    .sort((a, b) => interactionPriority(a.item) - interactionPriority(b.item) || a.index - b.index)
+    .sort((a, b) => Number(b.item.retainedDraft === true) - Number(a.item.retainedDraft === true)
+      || interactionPriority(a.item) - interactionPriority(b.item) || a.index - b.index)
     .map(({ item }) => item);
 }
 
@@ -836,6 +903,13 @@ export function permissionTitle(
   const toolName = readString(request.toolName) || 'tool';
   const tool = displayName || toolName;
   return presentationText(localizer, 'interaction.presentation.permission.title', `允许使用 ${tool}?`, { tool });
+}
+
+export function permissionSourceDescription(request: InteractionRequestLike): string | null {
+  const metadata = request.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const source = (metadata as Record<string, unknown>).imSourceDescription;
+  return typeof source === 'string' ? source : null;
 }
 
 export function permissionDescription(request: InteractionRequestLike): string | null {
@@ -969,6 +1043,44 @@ export function selectionFromAnswer(question: AskQuestion, answer: string | unde
     return { selectedLabels: new Set(), customInput: answer, showCustomInput: true };
   }
   return { selectedLabels: new Set([answer]), customInput: '', showCustomInput: false };
+}
+
+/**
+ * Option labels that are really the model's own "none of these fit" escape
+ * hatch. Claude Code's native AskUserQuestion prompt tells the model not to add
+ * an "Other" option (the host UI provides a free-text entry automatically), but
+ * harnesses whose tool schema carries no such note still produce labels like
+ * "其他（回复说明）" or "Other (please specify)".
+ *
+ * A host question card must replace such an option with its own free-text
+ * entry instead of rendering (and submitting) the literal label: the model wrote
+ * the option expecting the user's explanation, so receiving only the label back
+ * reads as an empty answer. See `visibleAskOptions`.
+ *
+ * Only a leading "other"-style token is recognized, so labels that merely
+ * mention an explanation inside a substantive choice (e.g. "sensor_height 要改
+ * （回复说明数值）" or "其他任务") are not escape hatches and stay selectable.
+ */
+export function isFreeTextAskOptionLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return false;
+  // "Other" / "Other (please specify)" / "其他（回复说明）" are escape hatches;
+  // "Other tasks" / "その他の質問" are substantive options. A bare space must not
+  // count as the boundary — only end-of-label or a separator/parenthesis does.
+  return /^(?:其他(?:答案|选项)?|其它(?:答案|选项)?|other|others|something else|その他|기타)(?=$|\s*[（(【[：:，,、.。\-—－…])/.test(normalized);
+}
+
+/**
+ * Options one host question card should render.
+ *
+ * Model-authored free-text entries are dropped: they mean the same thing as the
+ * host's own "type your own answer" row, so rendering both would show duplicate
+ * escape hatches and let a click submit the placeholder label as an answer. The
+ * host row is the single entry that remains (it also covers the case where the
+ * filtered list becomes empty — callers fall back to free-form input).
+ */
+export function visibleAskOptions<T extends { label: string }>(options: readonly T[] | undefined): T[] {
+  return (options ?? []).filter((option) => !isFreeTextAskOptionLabel(option.label));
 }
 
 export function buildAskUserQuestionDecision(answers: Record<string, string>): Record<string, unknown> {
