@@ -1820,12 +1820,13 @@ export function getMaker(): Maker {
             extraEnv: {},
             codexProxyActive: false,
             codexBrowserUseAvailable: true,
-            buildSessionMcpConfig: (instance: string) =>
+            buildSessionMcpConfig: (instance: string, session?: { vendorOptions?: Record<string, unknown> }) =>
               buildRemoteCodexSessionMcpConfig(ctx.remoteHostId!, instance, {
                 bridgeInstanceId: getActiveCodexBridgeInstanceId(),
                 serverNames: getActiveCodexBridgeServerNames() ?? [],
                 collabEnabled: pluginRegistry.isEnabled('collab'),
                 makerMemoryEnabled: _maker?.makerMemory?.isEnabled() ?? false,
+                vendorOptions: session?.vendorOptions,
               }),
           };
         }

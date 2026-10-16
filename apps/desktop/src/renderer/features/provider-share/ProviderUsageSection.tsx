@@ -19,7 +19,7 @@ import { useLocalProviderGroups } from '@/features/provider-group/useLocalProvid
 import { formatModelShort } from '@/lib/usageFormat';
 import { cn } from '@/lib/utils';
 
-import { providerGroupPhysicalDeviceKey, PROVIDER_GROUP_LOCAL_MEMBER_KEY } from '../../../shared/providerGroup';
+import { providerGroupPhysicalDeviceKey, PROVIDER_GROUP_LOCAL_MEMBER_KEY, type ProviderGroupConfig } from '../../../shared/providerGroup';
 import type {
   ProviderOwnUsageView,
   ProviderShareMemberView,
@@ -64,6 +64,8 @@ export function ProviderUsageSection({
   members,
   membersLoading,
   selfDeviceName,
+  ownerDeviceId,
+  groupConfig,
   range,
   onRangeChange,
   time,
@@ -77,6 +79,9 @@ export function ProviderUsageSection({
   /** 分享服务的成员还没读到。 */
   membersLoading: boolean;
   selfDeviceName: string | null;
+  ownerDeviceId?: string;
+  /** 远程管理时由页面传入建组电脑上的组；不传时读本机组设置。 */
+  groupConfig?: ProviderGroupConfig | null;
   range: ProviderShareUsageRange;
   onRangeChange: (range: ProviderShareUsageRange) => void;
   time: ShareTimeFormat;
@@ -85,7 +90,8 @@ export function ProviderUsageSection({
   const user = useOptionalAuthUser();
   const devices = useDeviceLinkDeviceList();
   const ownerNameOf = useProviderShareOwnerNameOf();
-  const group = useLocalProviderGroups()[providerId] ?? null;
+  const localGroups = useLocalProviderGroups();
+  const group = groupConfig === undefined ? localGroups[providerId] ?? null : groupConfig;
   const memberKeys = useMemo(
     () => group ? [...new Set(group.members.map(providerGroupPhysicalDeviceKey))] : [PROVIDER_GROUP_LOCAL_MEMBER_KEY],
     [group],
@@ -147,7 +153,7 @@ export function ProviderUsageSection({
       if (memberKey === null) return { name: t('providerGroup.usage.unattributed'), source: t('providerGroup.usage.unattributedSource') };
       const removed = inGroup ? null : t('providerGroup.usage.removedMember');
       if (memberKey === PROVIDER_GROUP_LOCAL_MEMBER_KEY) {
-        return { name: t('providerGroup.member.local'), source: removed ?? selfDeviceName };
+        return { name: ownerDeviceId ? selfDeviceName ?? t('providerGroup.usage.unknownDevice') : t('providerGroup.member.local'), source: removed ?? (ownerDeviceId ? null : selfDeviceName) };
       }
       const member = group?.members.find((item) => item.key === memberKey)
         ?? group?.members.find((item) => providerGroupPhysicalDeviceKey(item) === memberKey);
@@ -166,7 +172,7 @@ export function ProviderUsageSection({
         source: removed ?? (owner ? t('providerGroup.member.sourceShare', { name: owner }) : null),
       };
     },
-    [devices, group, ownerNameOf, selfDeviceName, t],
+    [devices, group, ownerNameOf, ownerDeviceId, selfDeviceName, t],
   );
 
   const toggle = (key: string) =>

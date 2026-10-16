@@ -80,6 +80,7 @@ import { animateThreadPanelWidth, ChatThreadPanel } from './ChatThreadPanel';
 import { BotGroupThreadPreview, BotGroupThreadShareQuote, botGroupThreadShareLabel, findThreadMessageElement, flashThreadTarget } from './BotGroupThreadViews';
 import { BotGroupPendingInteraction } from './BotGroupPendingInteraction';
 import { BotGroupRuntimeFailureNotice } from './BotGroupRuntimeFailureNotice';
+import { BotGroupTaskCard } from './BotGroupTaskCard';
 import { isBotGroupRuntimeFailureCode } from '../../../shared/botGroupChat';
 import {
   BotGroupHandoffFiles,
@@ -1296,6 +1297,11 @@ function BotGroupTimelineItem({
         ) : (
           <>
             {quoteDisplay ? <BotGroupQuoteBlock display={quoteDisplay} onLocate={onLocateQuote} /> : null}
+            {/* A task this teammate started from the group; mine is live where it runs, another owner's is
+                a snapshot. An author no longer in the group is unknown: its task may run on another
+                computer, so it stays a snapshot rather than a lookup on this one. */}
+            {message.task ? <BotGroupTaskCard task={message.task} owned={member !== undefined && member.isOwned !== false}
+              botId={member?.botId ?? null} /> : null}
             {shareBody ? <div className="flex min-w-0 flex-col gap-1.5">{shareBody}</div> : hasText ? (
               <div className={`min-w-0 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
                 <MarkdownRenderer workingDir="" content={message.content} allowPrivilegedLinks={false} />

@@ -618,6 +618,7 @@ import { countMobileRenderItemDiffs } from '@/session/messagePresentation';
 import {
   buildMobileSessionMessageDeepLink,
   parseSessionDeepLinkUrl,
+  resolveSessionLinkDeviceId,
 } from '@/session/sessionLinks';
 import {
   extractMobileSessionReferences,
@@ -9386,11 +9387,16 @@ function SessionScreenContent() {
       }
       return;
     }
-    // 设备口径与 devices/index openSession 一致:可达优先(canonical → 物理 → 注册表)。
+    // 设备口径与 devices/index openSession 一致:可达优先(canonical → 物理 → 注册表);
+    // 列表里没有的(已归档 / 尚未同步)退回深链冻结设备、当前任务所在设备。
     const targetSession = remoteSessionStore.getSessions().find((item) => item.id === target.sessionId);
-    const targetDeviceId = targetSession?.canonicalDeviceId
-      ?? targetSession?.deviceLinkDeviceId
-      ?? remoteSessionStore.getSessionDeviceId(target.sessionId);
+    const targetDeviceId = resolveSessionLinkDeviceId({
+      listedDeviceId: targetSession?.canonicalDeviceId
+        ?? targetSession?.deviceLinkDeviceId
+        ?? remoteSessionStore.getSessionDeviceId(target.sessionId),
+      linkedDeviceId: target.deviceId,
+      currentDeviceId: deviceId,
+    });
     if (!targetDeviceId) {
       setError(t('session.screen.sessionDeviceNotFound'));
       return;
@@ -9400,7 +9406,9 @@ function SessionScreenContent() {
       params: {
         sessionId: target.sessionId,
         deviceId: targetDeviceId,
-        deviceName: targetSession?.deviceLinkDeviceName ?? targetDeviceId,
+        deviceName: targetSession?.deviceLinkDeviceName
+          ?? (targetDeviceId === deviceId ? deviceName : undefined)
+          ?? targetDeviceId,
         ...(target.messageClientId
           ? {
               focusClientId: target.messageClientId,
@@ -9409,13 +9417,14 @@ function SessionScreenContent() {
           : {}),
       },
     });
-  }, [router, sessionId]);
+  }, [deviceId, deviceName, router, sessionId, setError, t]);
 
   // 长按/操作条「复制消息链接」:复制带消息锚点的会话深链,可跨端粘贴跳转。
+  // 冻结当前任务所在设备:目标归档 / 未同步后,从别的电脑的任务里点开也能找到它。
   const copyMessageLink = useCallback((clientId: string) => {
     if (!sessionId) return;
-    void copyMessageText(buildMobileSessionMessageDeepLink(sessionId, clientId));
-  }, [sessionId]);
+    void copyMessageText(buildMobileSessionMessageDeepLink(sessionId, clientId, { session: currentSession, deviceId }));
+  }, [currentSession, deviceId, sessionId]);
 
   const resolvePastedSessionLinkLabel = useCallback(async (href: string) => {
     const target = parseSessionDeepLinkUrl(href);
@@ -9423,9 +9432,13 @@ function SessionScreenContent() {
     const targetSession = remoteSessionStore.getSessions().find((item) => (
       item.id === target.sessionId
     ));
-    const targetDeviceId = targetSession?.canonicalDeviceId
-      ?? targetSession?.deviceLinkDeviceId
-      ?? remoteSessionStore.getSessionDeviceId(target.sessionId);
+    const targetDeviceId = resolveSessionLinkDeviceId({
+      listedDeviceId: targetSession?.canonicalDeviceId
+        ?? targetSession?.deviceLinkDeviceId
+        ?? remoteSessionStore.getSessionDeviceId(target.sessionId),
+      linkedDeviceId: target.deviceId,
+      currentDeviceId: deviceId,
+    });
     const targetMaker = targetDeviceId
       ? (targetDeviceId === deviceId
           ? maker
@@ -9478,7 +9491,7 @@ function SessionScreenContent() {
     const summary = target ? mobileSessionMessageDisplayText(target) : null;
     const bounded = summary ? boundAgentReferenceText(summary) : null;
     const node = sessionLinkComposerNode({
-      href: buildMobileSessionMessageDeepLink(sessionId, clientId),
+      href: buildMobileSessionMessageDeepLink(sessionId, clientId, { session: currentSession, deviceId }),
       label: compactSessionMessageLabel(summary ?? clientId),
       titled: true,
       ...(bounded?.text ? { agentText: bounded.text } : {}),
@@ -9488,7 +9501,7 @@ function SessionScreenContent() {
     if (editor) editor.insertNode(node);
     else applyComposerDocument(appendComposerNode(composerDocumentRef.current, node));
     requestAnimationFrame(() => composerInputRef.current?.focus());
-  }, [applyComposerDocument, canUseComposer, messages, sessionId]);
+  }, [applyComposerDocument, canUseComposer, currentSession, deviceId, messages, sessionId]);
 
   const deleteMessage = useCallback((clientId: string) => {
     if (!deviceId || messageActionBusy) return;

@@ -90,6 +90,25 @@ describe('parseBotGroupChatData', () => {
     expect(parseBotGroupChatData(chatData())!.messages.every(message => !message.quote && !message.deleted)).toBe(true);
   });
 
+  it('keeps a validated task card only on a teammate message (bot-group-chat.md §10)', () => {
+    const meta = { v: 1, role: 'delegation-request', delegationId: 'task-1', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-1', objective: '写官网首页' };
+    const task = { meta, state: 'started', title: '官网首页' };
+    const posted = (id: string, authorKind: 'bot' | 'user', value: unknown) => ({ id, sequence: 7, kind: 'message', authorKind,
+      authorBotId: authorKind === 'bot' ? 'mimi' : null, authorName: '', content: '', noticeCode: null, planId: null, files: [], createdAt: 70, task: value });
+    const parsed = parseBotGroupChatData(chatData({ messages: [
+      posted('t1', 'bot', task),
+      posted('t2', 'bot', { ...task, state: 'paused' }),
+      posted('t3', 'bot', { ...task, meta: { ...meta, role: 'delegation-result' } }),
+      posted('t4', 'user', task),
+    ] }))!;
+    const byId = new Map(parsed.messages.map(message => [message.id, message]));
+    expect(byId.get('t1')?.task).toEqual(task);
+    expect(byId.get('t2')?.task).toBeUndefined();
+    expect(byId.get('t3')?.task).toBeUndefined();
+    expect(byId.get('t4')?.task).toBeUndefined();
+  });
+
   it('preserves a server join notice through the phone projection', () => {
     const joined = { id: 'joined', sequence: 20, kind: 'notice', authorKind: 'system', authorBotId: null,
       authorName: 'Taylor', content: 'Taylor joined the group', noticeCode: 'member-joined',
