@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { presentAndroidUpdate } from './androidUpdatePresentation';
+import { indeterminateSweepRange, presentAndroidUpdate } from './androidUpdatePresentation';
 
 describe('Android update card presentation', () => {
   it('offers the update with a single primary action and no detour links', () => {
@@ -21,6 +21,10 @@ describe('Android update card presentation', () => {
     });
     expect(presentAndroidUpdate('downloading', null).progress).toEqual({ value: null, label: 'downloading' });
     expect(presentAndroidUpdate('installing', 1)).toMatchObject({ progress: { value: 1, label: 'installing' }, primary: null });
+  });
+  it('keeps the unknown-size segment visible inside the track when motion is reduced', () => {
+    expect(indeterminateSweepRange(false, 36, 100)).toEqual([0, 0]);
+    expect(indeterminateSweepRange(true, 36, 100)).toEqual([-36, 100]);
   });
   it('failures and a cancelled system installer can be retried or finished in the browser', () => {
     expect(presentAndroidUpdate('error', null)).toMatchObject({ note: 'error', primary: { label: 'retry' }, browser: true });

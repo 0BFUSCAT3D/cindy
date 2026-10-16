@@ -37,3 +37,8 @@ export function presentAndroidUpdate(phase: AndroidInstallPhase, progress: numbe
       return base;
   }
 }
+
+/** translateX range for the unknown-size sweep; held at the start of the track when not animating. */
+export function indeterminateSweepRange(animating: boolean, segment: number, width: number): [number, number] {
+  return animating ? [-segment, width] : [0, 0];
+}

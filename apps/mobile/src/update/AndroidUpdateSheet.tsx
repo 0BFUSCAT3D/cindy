@@ -9,12 +9,13 @@ import { APP_BINARY_VERSION } from '@/config/env';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
 import { NativeSheetContext } from '@/session/NativeSheetContext';
 import { SheetModal } from '@/session/SheetModal';
+import { usePaneViewport } from '@/platform/AdaptiveWindowContext';
 import {
   fontWeight, iconSize, iconStroke, lineHeight, radius, spacing, typeScale, useTheme, useThemedStyles, type ThemeColors,
 } from '@/theme';
 import { androidInstaller } from './androidInstaller';
 import type { AndroidInstallState } from './androidInstallController';
-import { presentAndroidUpdate, type AndroidUpdatePresentation } from './androidUpdatePresentation';
+import { indeterminateSweepRange, presentAndroidUpdate, type AndroidUpdatePresentation } from './androidUpdatePresentation';
 
 const APP_ICON = require('../../assets/update/app-icon.jpg');
 const APP_ICON_SIZE = 48;
@@ -67,6 +68,7 @@ function AndroidUpdateCard({ state }: { state: AndroidInstallState }) {
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const nativeSheet = useContext(NativeSheetContext);
+  const viewport = usePaneViewport();
   const view = presentAndroidUpdate(state.phase, state.progress);
   const version = state.target?.version ?? '';
   const notes = state.target?.releaseNotes?.trim();
@@ -81,60 +83,64 @@ function AndroidUpdateCard({ state }: { state: AndroidInstallState }) {
         !nativeSheet && styles.cardCompatible,
         // The Material container already pads for the navigation bar (same rule as SheetSurface).
         { paddingBottom: nativeSheet ? spacing.lg : Math.max(insets.bottom, spacing.md) + spacing.sm },
+        // Short windows (landscape, split screen): the details scroll and the actions stay reachable.
+        { maxHeight: nativeSheet ? nativeSheet.height : viewport.height - insets.top },
       ]}
       testID="update.android"
     >
-      <View style={styles.header}>
-        <Image accessibilityIgnoresInvertColors source={APP_ICON} style={styles.appIcon} />
-        <View style={styles.headerText}>
-          <Text accessibilityRole="header" numberOfLines={2} style={styles.title}>{t('update.newVersionTitle')}</Text>
-          <Text numberOfLines={1} style={styles.version}>{versionLine}</Text>
+      <ScrollView nestedScrollEnabled style={styles.body}>
+        <View style={styles.header}>
+          <Image accessibilityIgnoresInvertColors source={APP_ICON} style={styles.appIcon} />
+          <View style={styles.headerText}>
+            <Text accessibilityRole="header" numberOfLines={2} style={styles.title}>{t('update.newVersionTitle')}</Text>
+            <Text numberOfLines={1} style={styles.version}>{versionLine}</Text>
+          </View>
         </View>
-      </View>
 
-      {notes ? (
-        <View style={styles.notes}>
-          <Text style={styles.notesSectionLabel}>{t('update.android.notesLabel')}</Text>
-          <ScrollView nestedScrollEnabled style={styles.notesScroll}>
-            <Text style={styles.notesBody}>{notes}</Text>
-          </ScrollView>
-        </View>
-      ) : null}
-
-      <View accessibilityLiveRegion="polite">
-        {view.note ? (
-          <View style={styles.note} testID={`update.android.note.${view.note}`}>
-            <NoteIcon color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} style={styles.noteIcon} />
-            <View style={styles.noteText}>
-              <Text style={styles.noteTitle}>{t(NOTE_COPY[view.note].title)}</Text>
-              <Text style={styles.noteBody}>{t(NOTE_COPY[view.note].body)}</Text>
-            </View>
+        {notes ? (
+          <View style={styles.notes}>
+            <Text style={styles.notesSectionLabel}>{t('update.android.notesLabel')}</Text>
+            <ScrollView nestedScrollEnabled style={styles.notesScroll}>
+              <Text style={styles.notesBody}>{notes}</Text>
+            </ScrollView>
           </View>
         ) : null}
 
-        {view.progress ? (
-          <View style={styles.progress} testID="update.android.progress">
-            <ProgressTrack value={view.progress.value} />
-            <View style={styles.progressLine}>
-              <Text style={styles.progressText}>
-                {t(view.progress.label === 'installing' ? 'update.android.installing' : 'update.android.downloading')}
-              </Text>
-              {view.progress.value !== null && view.progress.label === 'downloading' ? (
+        <View accessibilityLiveRegion="polite">
+          {view.note ? (
+            <View style={styles.note} testID={`update.android.note.${view.note}`}>
+              <NoteIcon color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} style={styles.noteIcon} />
+              <View style={styles.noteText}>
+                <Text style={styles.noteTitle}>{t(NOTE_COPY[view.note].title)}</Text>
+                <Text style={styles.noteBody}>{t(NOTE_COPY[view.note].body)}</Text>
+              </View>
+            </View>
+          ) : null}
+
+          {view.progress ? (
+            <View style={styles.progress} testID="update.android.progress">
+              <ProgressTrack value={view.progress.value} />
+              <View style={styles.progressLine}>
                 <Text style={styles.progressText}>
-                  {t('update.android.percent', { percent: Math.floor(view.progress.value * 100) })}
+                  {t(view.progress.label === 'installing' ? 'update.android.installing' : 'update.android.downloading')}
                 </Text>
-              ) : null}
+                {view.progress.value !== null && view.progress.label === 'downloading' ? (
+                  <Text style={styles.progressText}>
+                    {t('update.android.percent', { percent: Math.floor(view.progress.value * 100) })}
+                  </Text>
+                ) : null}
+              </View>
             </View>
-          </View>
-        ) : null}
+          ) : null}
 
-        {view.ready ? (
-          <View style={styles.ready}>
-            <CircleCheck color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} />
-            <Text style={styles.readyText}>{t('update.android.ready')}</Text>
-          </View>
-        ) : null}
-      </View>
+          {view.ready ? (
+            <View style={styles.ready}>
+              <CircleCheck color={colors.textSecondary} size={iconSize.md} strokeWidth={iconStroke.regular} />
+              <Text style={styles.readyText}>{t('update.android.ready')}</Text>
+            </View>
+          ) : null}
+        </View>
+      </ScrollView>
 
       <View style={styles.actions}>
         <MainWindowActionButton
@@ -180,9 +186,10 @@ function ProgressTrack({ value }: { value: number | null }) {
   const reduceMotion = useReduceMotionEnabled();
   const [width, setWidth] = useState(0);
   const sweep = useRef(new Animated.Value(0)).current;
-  const indeterminate = value === null;
+  // Reduced motion (or not yet known) holds the segment still inside the track.
+  const animating = value === null && reduceMotion === false && width > 0;
   useEffect(() => {
-    if (!indeterminate || reduceMotion !== false || width === 0) return;
+    if (!animating) return;
     sweep.setValue(0);
     const loop = Animated.loop(Animated.timing(sweep, {
       duration: 1200,
@@ -192,7 +199,7 @@ function ProgressTrack({ value }: { value: number | null }) {
     }));
     loop.start();
     return () => loop.stop();
-  }, [indeterminate, reduceMotion, sweep, width]);
+  }, [animating, sweep]);
   const segment = width * INDETERMINATE_FRACTION;
   return (
     <View
@@ -205,7 +212,7 @@ function ProgressTrack({ value }: { value: number | null }) {
         <Animated.View
           style={[styles.fill, {
             width: segment,
-            transform: [{ translateX: sweep.interpolate({ inputRange: [0, 1], outputRange: [-segment, width] }) }],
+            transform: [{ translateX: sweep.interpolate({ inputRange: [0, 1], outputRange: indeterminateSweepRange(animating, segment, width) }) }],
           }]}
         />
       ) : (
@@ -226,6 +233,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingTop: spacing.xl,
   },
+  body: { flexGrow: 0, flexShrink: 1 },
   header: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
   appIcon: {
     borderColor: colors.border,
