@@ -177,6 +177,7 @@ import {
   broadcastSessionPatched,
   deleteBotProfileAndDetachSessionsInDb,
   patchSessionMetaInDb,
+  restoreArchivedSessionForSend,
   persistSessionFields,
   registerSessionIpc,
   resumeDeletedPiSubagentCleanup,
@@ -761,6 +762,51 @@ describe('local-db:sessions:update handler wiring', () => {
     expect(persisted.status).toBe('deleted');
     expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
     expect(h.routeLock).toHaveBeenCalledWith('codex-local', expect.any(Function));
+  });
+
+  it('restores an archived task for send through the normal locked status writer and broadcast', async () => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    await restoreArchivedSessionForSend('codex-local');
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'active' });
+    expect(h.routeLock).toHaveBeenCalledWith('codex-local', expect.any(Function));
+    expect(h.tapWindowBroadcast).toHaveBeenCalledWith('local-db:sessions:patched', expect.objectContaining({
+      sessionId: 'codex-local', patch: { status: 'active' },
+    }));
+  });
+
+  it.each(['deleted', 'bot', 'worker', 'remote-worker'] as const)('does not restore %s tasks through ordinary send', async kind => {
+    h.sqlite!.prepare('UPDATE sessions SET status = ?, source = ?, orca_role = ?, orca_remote_lead = ? WHERE id = ?')
+      .run(kind === 'deleted' ? 'deleted' : 'archived', kind === 'bot' ? 'bot' : 'desktop',
+        kind === 'worker' ? 'worker' : null, kind === 'remote-worker' ? '{}' : null, 'codex-local');
+    await expect(restoreArchivedSessionForSend('codex-local')).rejects.toThrow(
+      kind === 'deleted' ? '[NOT_FOUND]' : '[PRECONDITION_FAILED]',
+    );
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local'))
+      .toEqual({ status: kind === 'deleted' ? 'deleted' : 'archived' });
+    expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
+  });
+
+  it('does not write or broadcast for an already active task', async () => {
+    await restoreArchivedSessionForSend('codex-local');
+    expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
+  });
+
+  it('rechecks task status after acquiring the route lock', async () => {
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    h.routeLock.mockImplementationOnce(async (_id, task) => {
+      h.sqlite!.prepare("UPDATE sessions SET status = 'deleted' WHERE id = ?").run('codex-local');
+      return task();
+    });
+    await expect(restoreArchivedSessionForSend('codex-local')).rejects.toThrow('[NOT_FOUND]');
+    expect(h.tapWindowBroadcast).not.toHaveBeenCalled();
+  });
+
+  it('does not restore after the task owner changes', async () => {
+    h.captureOwnerScope = true;
+    h.ownerCurrent = false;
+    h.sqlite!.prepare("UPDATE sessions SET status = 'archived' WHERE id = ?").run('codex-local');
+    await expect(restoreArchivedSessionForSend('codex-local')).rejects.toThrow('Task owner changed');
+    expect(h.sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get('codex-local')).toEqual({ status: 'archived' });
   });
 
   it('keeps the last legal sessions.effort when a fixed-effort model switch patches null', async () => {
