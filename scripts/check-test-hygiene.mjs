@@ -453,22 +453,41 @@ function staticWaitCalls(code) {
   // one. Do not follow arbitrary control flow, callbacks or external helpers.
   function wrapperTimer(fn) {
     if (!fn?.body) return null;
-    const body = ts.isBlock(fn.body)
-      ? fn.body.statements.find(ts.isReturnStatement)?.expression : fn.body;
-    if (!body) return null;
     const timerCall = node => {
       if (!node || !ts.isCallExpression(node)) return null;
       if (callbackTimer(node.expression)) return { call: node, kind: 'callback' };
       if (isPromiseTimer(node.expression)) return { call: node, kind: 'promise' };
       return null;
     };
+    const body = ts.isBlock(fn.body)
+      ? fn.body.statements.find(ts.isReturnStatement)?.expression : fn.body;
+    if (!body && !ts.isBlock(fn.body)) return null;
     const direct = timerCall(body);
     if (direct) return direct;
-    if (!ts.isNewExpression(body) || body.expression.getText(source) !== 'Promise') return null;
-    const executor = body.arguments?.[0];
-    if (!executor || !isFunction(executor)) return null;
-    const candidates = ts.isBlock(executor.body) ? executor.body.statements.map(statement => statement.expression) : [executor.body];
-    return candidates.map(timerCall).find(Boolean) ?? null;
+    const promiseTimer = node => {
+      if (!node || !ts.isNewExpression(node) || node.expression.getText(source) !== 'Promise') return null;
+      const executor = node.arguments?.[0];
+      if (!executor || !isFunction(executor)) return null;
+      const candidates = ts.isBlock(executor.body) ? executor.body.statements.map(statement => statement.expression) : [executor.body];
+      return candidates.map(timerCall).find(Boolean) ?? null;
+    };
+    const directPromise = promiseTimer(body);
+    if (directPromise) return directPromise;
+    if (!ts.isBlock(fn.body)) return null;
+    // A common async wrapper awaits a timer in an expression statement rather
+    // than returning it. Follow only awaits in this wrapper body, never nested
+    // functions, and let the outer call map its parameter to the timer delay.
+    let awaited = null;
+    const visit = node => {
+      if (awaited || isFunction(node)) return;
+      if (ts.isAwaitExpression(node)) {
+        awaited = timerCall(node.expression) ?? promiseTimer(node.expression);
+        if (awaited) return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(fn.body);
+    return awaited;
   }
   const waits = [];
   for (const call of calls) {

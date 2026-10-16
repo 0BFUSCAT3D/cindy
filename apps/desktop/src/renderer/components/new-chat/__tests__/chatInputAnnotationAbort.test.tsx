@@ -203,6 +203,38 @@ it('locks editor and attachments for the whole voice run, but keeps permissions 
   }
 });
 
+// #374 / voiceInputButtonAnchor: the real toolbar must keep the voice control
+// immediately beside the main action while listening, submitting, refining,
+// and returning to idle. A source-text guard could miss a misplaced rendered
+// control or a state branch that reintroduces the button jump.
+it('keeps the voice button anchored beside the main action through its lifecycle', async () => {
+  const view = renderComposer({ isAgentBusy: true });
+  await waitFor(() => expect(h.editor).not.toBeNull());
+
+  for (const state of ['listening', 'submitting', 'refining', 'idle'] as const) {
+    h.voiceState = state;
+    await act(async () => { view.rerender(<ChatInput {...view.props} isAgentBusy />); });
+    const root = document.querySelector<HTMLElement>('[data-chat-input-root]')!;
+    expect(root).not.toBeNull();
+    const voice = root.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+    expect(voice).not.toBeNull();
+    const actions = [...root.querySelectorAll('button')]
+      .filter((button) => {
+        const label = button.getAttribute('aria-label') ?? '';
+        return button === voice || label.startsWith('newChat.sendButton.');
+      });
+    const voiceIndex = actions.indexOf(voice);
+    expect(voiceIndex, state).toBeGreaterThanOrEqual(0);
+    expect(actions.slice(voiceIndex + 1), state).toHaveLength(1);
+    expect(actions[voiceIndex + 1]?.getAttribute('aria-label'), state)
+      .toMatch(/^newChat\.sendButton\.(queue|send|stop)$/);
+    if (state !== 'idle') {
+      expect(actions[voiceIndex - 1]?.getAttribute('aria-label'), state)
+        .toBe('newChat.sendButton.stop');
+    }
+  }
+});
+
 // 9bc20cf894 / composerMorphScope: choosing a model used to drop focus to body.
 // Generic MorphPopover tests supply their own target and miss ChatInput's wiring.
 // Minimal unit input: one real selector choice, then focus returns to the live editor.
