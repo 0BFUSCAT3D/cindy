@@ -145,7 +145,7 @@ const CATEGORY_ENUM = ['cindy', 'auth', 'control', 'history', 'feedback', 'hando
 export const HELPER_CATEGORY_DESCRIPTIONS: Record<(typeof CATEGORY_ENUM)[number], string> = {
   cindy: `${BRAND_NAME} 能力说明与当前任务信息；get_capabilities({key:"self-management"}) 是管理自己的任务、定时任务、项目、伙伴的工具索引。本机。`,
   auth: '供应商授权登录（Grok 设备码）。本机。',
-  control: '管理任务与项目：改名、归档、移动、标签、排队消息、插话、停止、运行设置、项目列表与增删改。本机。',
+  control: '管理任务与项目：归档/取消归档支持本机与跨电脑（deviceId::sessionId）；改名、移动、标签、排队消息、插话、停止、运行设置、项目列表与增删改仅本机。',
   history: '查询任务、工作目录、聊天记录与输入队列。任务列表、搜索、读取聊天记录可跨电脑（device 参数 / deviceId::sessionId）；其余本机。',
   feedback: `向 ${BRAND_NAME} 官方提交反馈。`,
   handoff: '给已有任务发消息，或新建任务。发给已有任务可跨电脑（deviceId::sessionId）；新建只在本机。',
@@ -839,6 +839,7 @@ export interface XdtHelperMcpDeps {
    * unarchive_sessions 会被注册。host 负责存在性校验(全有才写)、写库并广播 sessions:patched。
    */
   setSessionsStatus?: ArchiveSessionsDeps['setSessionsStatus'];
+  setRemoteSessionsStatus?: ArchiveSessionsDeps['setRemoteSessionsStatus'];
 }
 
 /**
@@ -945,6 +946,7 @@ export function createXdtHelperMcpServer(
     const archiveDeps = {
       getSessionContext: () => resolveLiziMcpSessionContext(sessionCtx),
       setSessionsStatus: deps.setSessionsStatus,
+      setRemoteSessionsStatus: deps.setRemoteSessionsStatus,
     };
     registerArchiveSessionsTool(registry, archiveDeps);
     registerUnarchiveSessionsTool(registry, archiveDeps);
