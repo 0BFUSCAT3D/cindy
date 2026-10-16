@@ -30,6 +30,9 @@ describe('utilityReasoningDeclaration', () => {
   it('only an explicit reasoning:false means no reasoning parameters at all', () => {
     expect(utilityReasoningDeclaration({ efforts: [], reasoning: false })).toEqual({ kind: 'no-reasoning' });
     expect(utilityReasoningDeclaration({ efforts: ['low'], reasoning: false })).toEqual({ kind: 'no-reasoning' });
+    expect(utilityReasoningDeclaration({ efforts: [], userModelConfig: { id: 'm', name: 'M', reasoning: false } }))
+      .toEqual({ kind: 'no-reasoning' });
+    expect(utilityReasoningDeclaration({ efforts: [], userModelConfig: { id: 'm', name: 'M' } })).toEqual({ kind: 'undeclared' });
   });
 });
 

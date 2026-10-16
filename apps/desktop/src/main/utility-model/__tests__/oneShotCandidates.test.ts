@@ -97,6 +97,7 @@ vi.mock('../../model-access/gatewayKeyRejection.js', () => ({
 }));
 
 import type { Maker } from '@cindy/maker-core';
+import { buildUserProvider } from '@cindy/model-providers';
 import { DictationDictionaryAdvisor } from '@cindy/voice-input-core';
 import { DictionaryLearningTextModelClient } from '../../voice-input/DictionaryLearningTextModelClient.js';
 import { fetch as undiciFetch } from 'undici';
@@ -3498,6 +3499,65 @@ describe('utility one-shot candidates', () => {
       expect(result).toMatchObject({ ok: false });
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(bodyOf(0)).toEqual({ model: 'plain-chat', messages: [{ role: 'user', content: 'hello' }] });
+    });
+
+    // Built through the real custom-provider projection: the user's
+    // `reasoning: false` only survives in userModelConfig, not CatalogModel.reasoning.
+    it.each([
+      {
+        agent: 'codex' as const,
+        wireProtocol: 'openai-chat' as const,
+        endpoint: 'https://custom.example/v1/chat/completions',
+        success: () => chatOk('ok'),
+      },
+      {
+        agent: 'codex' as const,
+        wireProtocol: 'openai-responses' as const,
+        endpoint: 'https://custom.example/v1/responses',
+        success: () => responsesOk('ok'),
+      },
+      {
+        agent: 'claude-code' as const,
+        wireProtocol: 'anthropic-messages' as const,
+        endpoint: 'https://custom.example/v1/messages',
+        success: () => messagesOk('ok'),
+      },
+    ])('honours a user-configured reasoning:false on $wireProtocol from the first request', async ({
+      agent,
+      wireProtocol,
+      endpoint,
+      success,
+    }) => {
+      const provider = buildUserProvider({
+        id: 'plain-custom',
+        name: 'Plain Custom',
+        runtimes: {
+          [agent]: {
+            baseUrl: 'https://custom.example/v1',
+            wireProtocol,
+            models: [{ id: 'plain-model', name: 'Plain Model', contextWindow: 100_000, reasoning: false }],
+          },
+        },
+      });
+      activeCatalog.mockReturnValue({ providers: [provider] } as never);
+      readCustomKey.mockReturnValue('custom-secret');
+      fetchMock.mockResolvedValueOnce(success() as never);
+
+      const result = await requestExplicitUtilityText('hello', {
+        providerId: provider.id,
+        agentKind: agent,
+        model: 'plain-model',
+        maxTokens: 64,
+        disableReasoning: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, text: 'ok' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(urlOf(0)).toBe(endpoint);
+      const body = bodyOf(0);
+      for (const field of ['thinking', 'reasoning_effort', 'reasoning', 'output_config']) {
+        expect(body).not.toHaveProperty(field);
+      }
     });
 
     it('sends no reasoning parameters to a model the vendor profile marks as non-reasoning', async () => {

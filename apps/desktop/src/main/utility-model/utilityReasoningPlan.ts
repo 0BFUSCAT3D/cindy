@@ -55,9 +55,13 @@ const UNKNOWN_MODEL_EFFORT = 'low';
 export const MAX_REASONING_REQUESTS = 4;
 
 export function utilityReasoningDeclaration(
-  model: Pick<CatalogModel, 'efforts' | 'reasoning'> | undefined,
+  model: Pick<CatalogModel, 'efforts' | 'reasoning' | 'userModelConfig'> | undefined,
 ): UtilityReasoningDeclaration {
-  if (model?.reasoning === false) return { kind: 'no-reasoning' };
+  // 自定义供应商投影成目录模型时,用户填的 reasoning 只保留在 userModelConfig 里
+  // (model-providers user-provider.ts),不会写到 CatalogModel.reasoning。
+  if (model?.reasoning === false || model?.userModelConfig?.reasoning === false) {
+    return { kind: 'no-reasoning' };
+  }
   if (!model || !Array.isArray(model.efforts) || model.efforts.length === 0) return { kind: 'undeclared' };
   const efforts = [...new Set(model.efforts)].sort(
     (a, b) => effortRank(a as Effort) - effortRank(b as Effort),
