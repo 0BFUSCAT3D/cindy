@@ -1511,7 +1511,7 @@ export function buildAgentIslandDisplayState(
   const activeTransient = getActiveTransientSession(state, now);
   const orderedSessions = orderSessionsForCurrentSurface(
     state,
-    orderSessionsForAutomaticTransientStack(sortedSessions, activeTransient, manualExpanded),
+    orderSessionsForAutomaticReveal(sortedSessions, activeTransient, manualExpanded),
     manualExpanded,
     now,
   );
@@ -1521,8 +1521,8 @@ export function buildAgentIslandDisplayState(
   const notchStatus = getNotchStatus(current, mode);
   const displayPolicy = decision.displayPolicy;
   const surfaceOrderedSessions = orderSessionsForDecisionSurface(decision, orderedSessions);
-  const displaySessions = getDisplaySessionsForSurface(decision, surfaceOrderedSessions, now);
-  const displaySurface = getDisplaySurface(decision, displaySessions, now);
+  const displaySessions = getDisplaySessionsForSurface(decision, surfaceOrderedSessions);
+  const displaySurface = getDisplaySurface(decision);
   updateExpandedProtection(state, mode, displayPolicy, displaySurface, current?.sessionId ?? null, now);
   const layoutMode = getLayoutMode(notchStatus);
   const pointerInside = isPointerInsideIsland(state);
@@ -1555,7 +1555,7 @@ export function buildAgentIslandDisplayState(
  * 展示面(getDisplaySessionsForSurface)过滤。
  *
  * 为什么不用 buildAgentIslandDisplayState 的 displaySessions:展示面在岛显示
- * transient 完成/错误卡时只保留可堆叠的 transient 会话,会过滤掉其它运行中/等待中的
+ * transient 完成/错误卡时只保留本次提醒的会话,会过滤掉其它未读/运行中/等待中的
  * 会话;而 renderer 的 agentIslandActivity store 把每次 payload 当**整体替换**,用过滤
  * 后的子集会把这些会话从活动 map 里丢掉、卡片回退陈旧 summary,直到岛面切换
  * (PR #246 review)。侧栏卡片按 sessionId 各取所需,故这里取 state.sessions 全集。
@@ -2116,7 +2116,7 @@ function orderSessionsForCurrentSurface(
   return ordered;
 }
 
-function orderSessionsForAutomaticTransientStack(
+function orderSessionsForAutomaticReveal(
   sortedSessions: AgentIslandSessionState[],
   activeTransient: AgentIslandSessionState | null,
   manualExpanded: boolean,
@@ -2247,8 +2247,6 @@ function orderSessionsForDecisionSurface(
 
 function getDisplaySurface(
   decision: AgentIslandDisplayDecision,
-  displaySessions: AgentIslandSessionState[],
-  now: number,
 ): AgentIslandDisplaySurface {
   if (decision.mode !== 'expanded') return 'collapsed';
   switch (decision.surface.kind) {
@@ -2257,9 +2255,6 @@ function getDisplaySurface(
     case 'blocking':
       return 'interactionCard';
     case 'transient':
-      if (countStackedTransientSessions(displaySessions, now) > 1) {
-        return 'sessionList';
-      }
       return 'completionCard';
     default:
       return 'collapsed';
@@ -2269,27 +2264,11 @@ function getDisplaySurface(
 function getDisplaySessionsForSurface(
   decision: AgentIslandDisplayDecision,
   orderedSessions: AgentIslandSessionState[],
-  now: number,
 ): AgentIslandSessionState[] {
   if (decision.surface.kind !== 'transient') return orderedSessions;
-  const transientSessions = orderedSessions.filter((session) => isStackableTransientSession(session, now));
-  return transientSessions.length > 0 ? transientSessions : orderedSessions;
-}
-
-function countStackedTransientSessions(sessions: AgentIslandSessionState[], now: number): number {
-  let count = 0;
-  for (const session of sessions) {
-    if (isStackableTransientSession(session, now)) count += 1;
-  }
-  return count;
-}
-
-function isStackableTransientSession(session: AgentIslandSessionState, now: number): boolean {
-  if (session.phase !== 'completed' && session.phase !== 'error') return false;
-  return session.unread
-    || Boolean(session.revealUntil && session.revealUntil > now)
-    || Boolean(session.completedUntil && session.completedUntil > now)
-    || Boolean(session.errorUntil && session.errorUntil > now);
+  // Automatic notifications show only the active reveal; unread history stays
+  // available in the manual list and queued notifications get their own turn.
+  return [decision.surface.current];
 }
 
 function isCompactActiveSession(session: AgentIslandSessionState): boolean {
