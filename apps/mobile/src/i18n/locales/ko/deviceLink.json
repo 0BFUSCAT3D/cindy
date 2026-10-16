@@ -37,7 +37,7 @@
   "versionMismatchTitle": "버전이 일치하지 않습니다",
   "versionMismatchHint": "이 앱 버전은 서비스와 호환되지 않습니다. 최신 버전으로 업데이트한 후 다시 시도해 주세요.",
   "unstableTitle": "연결이 반복적으로 끊깁니다",
-  "unstableHint": "연결이 불안정합니다. 네트워크를 확인한 뒤 다시 시도하세요.",
+  "unstableHint": "연결이 불안정합니다. 네트워크를 확인하고 연결이 복구될 때까지 기다려 주세요.",
   "relay": {
     "label": {
       "online": "Relay 연결됨",
