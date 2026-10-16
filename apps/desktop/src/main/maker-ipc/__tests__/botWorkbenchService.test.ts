@@ -275,4 +275,12 @@ describe('workbench moving with the companion', () => {
     expect(workbench.directories).toEqual([]);
     expect(Object.keys(workbench.tasks)).toEqual(['session:abc']);
   });
+
+  it('reads a damaged workbench as unreadable for the cloud, never as an empty one', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'bot-workbench-'));
+    expect(await readCompanionWorkbench(root, 'bot-1', 'desk')).toEqual({ directories: [], tasks: {} });
+    await mkdir(botProfileDir(root, 'bot-1'), { recursive: true });
+    await writeFile(path.join(botProfileDir(root, 'bot-1'), 'workbench.json'), '{not json', 'utf8');
+    await expect(readCompanionWorkbench(root, 'bot-1', 'desk')).rejects.toThrow();
+  });
 });

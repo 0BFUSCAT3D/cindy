@@ -128,6 +128,20 @@ function workbenchPath(userDataDir: string, botId: string): string {
   return path.join(botProfileDir(userDataDir, botId), WORKBENCH_FILE);
 }
 
+/** Only a missing file is an empty workbench; an unreadable or damaged one throws. */
+async function readStoredStrict(userDataDir: string, botId: string): Promise<StoredWorkbench> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(workbenchPath(userDataDir, botId), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { directories: [], tasks: {} };
+    throw error;
+  }
+  const stored = normalizeWorkbench(JSON.parse(raw));
+  if (!stored) throw new Error('WORKBENCH_UNREADABLE');
+  return stored;
+}
+
 async function readStored(userDataDir: string, botId: string): Promise<StoredWorkbench> {
   const empty: StoredWorkbench = { directories: [], tasks: {} };
   try {
@@ -221,7 +235,8 @@ export async function readCompanionWorkbench(userDataDir: string, botId: string,
   directories: Array<{ path: string; addedAt: string; deviceId: string }>;
   tasks: Record<string, WorkbenchTaskJudgment>;
 }> {
-  const stored = await readStored(userDataDir, botId);
+  // Strict: a damaged file must not read as "no workbench" (the cloud copy would be tombstoned).
+  const stored = await readStoredStrict(userDataDir, botId);
   return {
     directories: stored.directories.map((dir) => ({ path: dir.path, addedAt: dir.addedAt, deviceId: dir.deviceId ?? selfDeviceId })),
     tasks: Object.fromEntries(Object.entries(stored.tasks).filter(([key]) => PORTABLE_JUDGMENT.test(key))),
