@@ -1,5 +1,6 @@
 import { readBotTaskResults } from '@cindy/maker-shared/botCollaboration';
 import { asyncQuestionNeedsSupplement, formatAsyncQuestionSupplement } from '@cindy/maker-shared/interaction';
+import { isComposerTypingRecently } from './composerTypingActivity';
 import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { remotePluginSetupErrorCode, type PluginSetupCommandError } from './pluginSetupCommandError';
 export type { PluginSetupCommandError } from './pluginSetupCommandError';
@@ -3235,6 +3236,13 @@ const globalListeners = new Set<() => void>();
 // 工具事件风暴时仍同步写入权威 state，但把 React/sidebar 订阅通知压成每会话每帧一次。
 // Stop、terminal、interaction 等控制路径会取消该会话的待发通知并立即广播最新快照。
 const HIGH_FREQUENCY_NOTIFY_INTERVAL_MS = 32;
+// 用户正在 composer 打字时把通知节奏拉稀：多会话同时流式输出时，32ms 批会让
+// React 在按键间隙反复重渲染重子树，打字延迟被渲染吃掉。打字优先拿主线程。
+// 注意：恢复不是瞬时的——最后一次按键后续窗，已排队的 tick 仍按 250ms 走完
+// 当前窗口（尾部最多滞后 ~1s）才回 32ms；嫌慢可调小
+// composerTypingActivity 的 TYPING_ACTIVITY_WINDOW_MS。控制路径不走这里，
+// 交互卡/权限卡不受影响。
+const TYPING_PRIORITY_NOTIFY_INTERVAL_MS = 250;
 const HIGH_FREQUENCY_NOTIFY_MAX_SESSIONS_PER_TICK = 8;
 const pendingDeferredStateNotifications = new Set<string>();
 const pendingMessageCreatedPatches = new Map<string, string>();
@@ -3254,7 +3262,9 @@ function scheduleDeferredStateNotifications(): void {
   if (deferredStateNotificationTimer) return;
   deferredStateNotificationTimer = setTimeout(
     flushDeferredStateNotifications,
-    HIGH_FREQUENCY_NOTIFY_INTERVAL_MS,
+    isComposerTypingRecently()
+      ? TYPING_PRIORITY_NOTIFY_INTERVAL_MS
+      : HIGH_FREQUENCY_NOTIFY_INTERVAL_MS,
   );
 }
 
@@ -7638,7 +7648,13 @@ function flushAllPendingTextDeltas(): void {
 
 function scheduleTextDeltaFlush(): void {
   if (textDeltaFlushTimer) return;
-  textDeltaFlushTimer = setTimeout(flushAllPendingTextDeltas, TEXT_DELTA_BATCH_INTERVAL_MS);
+  // 与 deferred state 通知同一口径：打字期间拉稀（见 TYPING_PRIORITY_NOTIFY_INTERVAL_MS）。
+  textDeltaFlushTimer = setTimeout(
+    flushAllPendingTextDeltas,
+    isComposerTypingRecently()
+      ? TYPING_PRIORITY_NOTIFY_INTERVAL_MS
+      : TEXT_DELTA_BATCH_INTERVAL_MS,
+  );
 }
 
 function enqueueTextDeltaPayload(
@@ -7952,7 +7968,18 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       return;
     }
     const deferNotification = isHighFrequencyStreamEvent(event);
-    flushPendingTextDelta(sessionId, deferNotification);
+    // status 纯刷新帧（见 status 分支的 isLiveStatusRefreshFrame）在打字窗口内也要拉稀，
+    // 且它入口处的前置 flush 必须带 defer：否则 ~4Hz 的 status 帧会以立即通知把
+    // 排队文本提前冲出去，绕过 text 层的 typing-first 节奏。turnOrigin 不参与判定：
+    // 定时任务的整轮事件都带来源，而 isRunning=true 帧上 turnOrigin 只影响
+    // handleStatusUpdate 内的 state 字段重置，与通知时机无关。
+    const isLiveStatusRefreshFrame =
+      event.type === 'status' &&
+      (event.data as Record<string, unknown> | undefined)?.isRunning === true &&
+      !isTurnContinuationBoundaryEvent(event) &&
+      (event.data as Record<string, unknown> | undefined)?.skipTurnReset !== true &&
+      getOrCreateState(sessionId).agentStatus.isRunning === true;
+    flushPendingTextDelta(sessionId, deferNotification || isLiveStatusRefreshFrame);
 
     // session_id: 老链路是单独 IPC channel, 新链路融进 maker:event (Claude / Codex 同源)
     if (event.type === 'session_id') {
@@ -7992,13 +8019,19 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
       if (!isTurnContinuationBoundaryEvent(event) && !update.skipTurnReset && !update.isRunning) {
         supersedeInputProjectionRequests(sessionId, { supersedeOperations: true });
       }
-      setState(sessionId, (s) => {
-        const next = handleStatusUpdate(s, update);
-        if (isTurnContinuationBoundaryEvent(event) || update.skipTurnReset || update.isRunning) return next;
-        return event.turnOrigin
-          ? { ...next, lastStopWasIm: event.turnOrigin.surface === 'im' }
-          : next;
-      });
+      // typing-first：isLiveStatusRefreshFrame 在事件入口处已算好（前置 flush 与
+      // 本分支共用同一判定）；turn 起止/边界帧保持立即广播。
+      setState(
+        sessionId,
+        (s) => {
+          const next = handleStatusUpdate(s, update);
+          if (isTurnContinuationBoundaryEvent(event) || update.skipTurnReset || update.isRunning) return next;
+          return event.turnOrigin
+            ? { ...next, lastStopWasIm: event.turnOrigin.surface === 'im' }
+            : next;
+        },
+        { deferNotification: isLiveStatusRefreshFrame },
+      );
       scheduleWakeBridgeReconciliation(sessionId);
       return;
     }
