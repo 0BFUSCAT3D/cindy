@@ -67,7 +67,7 @@ export interface ImChannelDefaultRouteSync {
   syncBeforeWiring(sessionId: string): Promise<void>;
 }
 
-interface SessionRouteRow {
+export interface SessionRouteRow {
   agentDeviceId?: string | null;
   source: string | null;
   status: string;
@@ -168,19 +168,37 @@ export function createImChannelDefaultRouteSync(deps: {
   isRouteUsable: RouteAuthCheck;
 }): ImChannelDefaultRouteSync {
   const { source, config } = deps;
+  return createDefaultRouteFollower({
+    label: source,
+    ownsRow: (row) => isChannelOwnedRow(row, source),
+    fingerprint: () => readImDefaultSettingsFingerprint(source),
+    resolveTarget: (providers) => resolveImSessionDefaults(config, providers, source),
+    isRouteUsable: deps.isRouteUsable,
+  });
+}
+
+/** 两类 bot 共用切换判定、待生效意图与发送锁，只由各入口提供默认配置。 */
+export function createDefaultRouteFollower(deps: {
+  label: string;
+  ownsRow(row: SessionRouteRow): boolean;
+  fingerprint(): string;
+  resolveTarget(providers: ProviderView[]): Promise<ImDefaultRoute & { fingerprint: string }>;
+  isRouteUsable: RouteAuthCheck;
+}): ImChannelDefaultRouteSync {
+  const source = deps.label;
 
   async function evaluate(sessionId: string): Promise<Evaluation | 'defer-unknown' | null> {
     const row = await readSessionRouteRow(sessionId);
-    if (!row || !isChannelOwnedRow(row, source)) return null;
+    if (!row || !deps.ownsRow(row)) return null;
     const record = parseImDefaultRouteRecord(row.imDefaultRoute);
     // 用户单独改过路由(墓碑): 永不跟随, 不必解析新默认。
     if (record?.manual) return null;
-    if (!imDefaultRouteMayNeedSync(record, readImDefaultSettingsFingerprint(source))) return null;
+    if (!imDefaultRouteMayNeedSync(record, deps.fingerprint())) return null;
     const providers = await listProviders();
     // 目录拿不到就无法可靠比对来源, 本条消息先按原路由走 —— 但若记录仍认领着在世
     // 的系统意图, 调用方必须暂缓通用意图应用(PR #5155 review P2)。
     if (!providers) return 'defer-unknown';
-    const defaults = await resolveImSessionDefaults(config, providers, source);
+    const defaults = await deps.resolveTarget(providers);
     const target: ImDefaultRoute = {
       agentKind: defaults.agentKind,
       model: defaults.model,
@@ -363,7 +381,7 @@ export function createImChannelDefaultRouteSync(deps: {
   async function followClaimStillPending(sessionId: string): Promise<boolean> {
     try {
       const row = await readSessionRouteRow(sessionId);
-      if (!row || !isChannelOwnedRow(row, source)) return false;
+      if (!row || !deps.ownsRow(row)) return false;
       const pending = readPendingAgentSwitchRoute(sessionId);
       return recordClaimsPendingIntent(
         parseImDefaultRouteRecord(row.imDefaultRoute),
