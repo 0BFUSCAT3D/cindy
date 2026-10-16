@@ -9757,6 +9757,7 @@
       "mergedRenamed": "{{count}} 人の Cindy を1人に統合し、{{messages}} 件のメッセージを引き継ぎました。別名で保存：{{renamed}}",
       "mergeFailed": "統合できませんでした。あとでもう一度お試しください（統合済みの部分は重複しません）",
       "mergeBusy": "まだ返信中の Cindy があります。返信が終わってから統合してください",
+      "mergePaused": "一時停止中の Cindy があります。設定で再開してから統合してください",
       "mergeOffline": "「{{device}}」に接続できません。オンラインになってから統合してください",
       "mergeOutdated": "「{{device}}」の Cindy が古いバージョンです。先に更新してください"
     }

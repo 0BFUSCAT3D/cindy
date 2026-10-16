@@ -18,6 +18,7 @@ import { companionCloudApi, refreshCompanionCloud, useCompanionCloud } from './c
 
 const MERGE_ERROR_KEYS: Partial<Record<CompanionCloudFailureCode, string>> = {
   BUSY: 'bots.cloud.mergeBusy',
+  PAUSED: 'bots.cloud.mergePaused',
   OFFLINE: 'bots.cloud.mergeOffline',
   HOME_OUTDATED: 'bots.cloud.mergeOutdated',
 };

@@ -172,6 +172,8 @@ export function startCompanionCloud(input: {
   current: () => boolean;
   /** Active local companions whose home is this computer (and not demoted). */
   bots: () => CompanionCloudBot[];
+  /** A local companion the owner paused: not synced or moved, and a merge asks to resume it first. */
+  paused?: (botId: string) => boolean;
   /** The account's actors as last read by register(). */
   actors?: () => CompanionRuntimeActor[];
   /** Re-read actors now (forced register). */
@@ -287,6 +289,8 @@ export function startCompanionCloud(input: {
 
   /** Merge here (this computer runs the kept copy). */
   async function mergeHere(keepBotId: string, fromBotIds: string[]): Promise<CompanionMergeResult> {
+    // A paused copy (kept or merged) is not synced: say so instead of failing part way.
+    if (input.paused?.(keepBotId)) return { ok: false, code: 'PAUSED' };
     const keep = pick(null).find(bot => bot.botId === keepBotId);
     const keepActor = actorOf(keepBotId);
     const materializer = input.host.materializer;
@@ -495,6 +499,7 @@ export function startCompanionCloud(input: {
   /** Everything of a companion homed here reaches the server, without moving it. */
   async function flushOwn(botId: string): Promise<CompanionCloudActionResult> {
     if (!input.selfDeviceId || actorOf(botId)?.homeDeviceId !== input.selfDeviceId) return { ok: false, code: 'HOME_CONFLICT' };
+    if (input.paused?.(botId)) return { ok: false, code: 'PAUSED' };
     if (await input.host.isBotBusy?.(botId)) return { ok: false, code: 'BUSY' };
     try {
       await flush(botId);

@@ -9757,6 +9757,7 @@
       "mergedRenamed": "{{count}} 個 Cindy 已合成一個，帶過來 {{messages}} 則訊息；同名的內容另存為：{{renamed}}",
       "mergeFailed": "沒能合併，可以稍後再試一次（已合併的部分不會重複）",
       "mergeBusy": "有一個 Cindy 還在回覆，等它回覆完再合併",
+      "mergePaused": "有一個 Cindy 已暫停，先在它的設定裡恢復，再合併",
       "mergeOffline": "「{{device}}」現在連不上，它上線後再合併",
       "mergeOutdated": "「{{device}}」上的 Cindy 版本較舊，請先更新它再合併"
     }

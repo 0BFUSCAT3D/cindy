@@ -9803,6 +9803,7 @@
       "mergedRenamed": "{{count}} Cindys merged into one, with {{messages}} messages brought along. Kept as copies: {{renamed}}",
       "mergeFailed": "Couldn’t merge. Try again later (what was merged won’t be duplicated)",
       "mergeBusy": "One of the Cindys is still replying. Merge once it finishes",
+      "mergePaused": "One of the Cindys is paused. Resume it in its settings, then merge",
       "mergeOffline": "Can’t reach “{{device}}”. Merge once it’s online",
       "mergeOutdated": "“{{device}}” runs an older Cindy. Update it first"
     }

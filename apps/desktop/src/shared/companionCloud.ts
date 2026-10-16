@@ -41,7 +41,9 @@ export const EMPTY_COMPANION_CLOUD_SNAPSHOT: CompanionCloudSnapshot = Object.fre
 export type CompanionCloudFailureCode =
   | 'HOME_CONFLICT' | 'OFFLINE' | 'NOT_ENABLED' | 'FAILED' | 'TARGET_UNAVAILABLE' | 'BUSY'
   /** The home runs a Cindy that cannot be asked from another computer; change it there. */
-  | 'HOME_OUTDATED';
+  | 'HOME_OUTDATED'
+  /** The companion (one of the copies, for a merge) is paused: resume it first. */
+  | 'PAUSED';
 
 export type CompanionCloudActionResult =
   | { ok: true }

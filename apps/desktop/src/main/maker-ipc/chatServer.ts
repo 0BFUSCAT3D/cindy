@@ -752,6 +752,7 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
     companion ??= startCompanionCloud({ api, host, endpoint: config.baseUrl, humanActorId: selfId, selfDeviceId: self, current, log: deps.log,
       bots: () => actors.filter(a => a.kind === 'bot' && !a.disabled && a.homeDeviceId === self && localBot(a.id)?.status === 'active'
         && !companion?.isShadowed(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
+      paused: botId => profiles.find(p => p.id === botId)?.status === 'paused',
       actors: () => actors, refresh: refreshHomes, publish: publishHomes, syncProfile: syncActorProfiles,
       // The owner's attachments go with the conversation; other devices download them from the room.
       media: { upload: async (room, source, files, author) => {

@@ -21,7 +21,7 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   installationId?: string; probe?: (deviceId: string) => Promise<boolean>; values?: Array<{ key: string; value: unknown }>;
   readValues?: () => Promise<Array<{ key: string; value: unknown }>>; syncProfile?: (botId: string) => Promise<void>;
   turnActive?: () => boolean; homeLink?: CompanionCloudHost['homeLink']; stopBotTurns?: CompanionCloudHost['stopBotTurns'];
-  canonicalSession?: CompanionCloudHost['canonicalSession'] }) {
+  canonicalSession?: CompanionCloudHost['canonicalSession']; paused?: (botId: string) => boolean }) {
   const actors: CompanionRuntimeActor[] = [{ id: 'actor-1', kind: 'bot', externalId: 'bot_mia', name: 'Mia', avatar: null, homeDeviceId: options.home }];
   const { api, calls } = fakeApi(options.handler ?? ((route, method) => {
     // The home has uploaded the profile snapshot a take-over builds from.
@@ -50,7 +50,8 @@ function setup(options: { home: string | null; handler?: ApiHandler; devices?: D
   };
   runtime = startCompanionCloud({ api, host, endpoint: 'https://chat', humanActorId: 'human', selfDeviceId: 'desk', current: () => true,
     bots: () => actors.filter(a => a.homeDeviceId === 'desk' && !state.isDemoted(a.externalId)).map(a => ({ botId: a.externalId, actorId: a.id, name: a.name })),
-    actors: () => actors, refresh, publish, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}) });
+    actors: () => actors, refresh, publish, ...(options.syncProfile ? { syncProfile: options.syncProfile } : {}),
+    ...(options.paused ? { paused: options.paused } : {}) });
   return { runtime, actors, calls, local, state, refresh, publish };
 }
 
@@ -652,12 +653,13 @@ describe('installation guard', () => {
 
 describe('merging copies of Cindy', () => {
   function mergeSetup(options: { sourceHome: string; flush?: ReturnType<typeof vi.fn>; turnActive?: () => boolean;
-    canonicalSession?: CompanionCloudHost['canonicalSession'] }) {
+    canonicalSession?: CompanionCloudHost['canonicalSession']; paused?: (botId: string) => boolean }) {
     const order: string[] = [];
     const flush = options.flush ?? vi.fn(async () => { order.push('flush'); return { ok: true as const }; });
     const homeLink = { version: vi.fn(async () => 2), targets: vi.fn(async () => []), handOver: vi.fn(async () => ({ ok: true as const })), flush };
     const t = setup({ home: 'desk', homeLink, ...(options.turnActive ? { turnActive: options.turnActive } : {}),
-      ...(options.canonicalSession ? { canonicalSession: options.canonicalSession } : {}), handler: (route, method) => {
+      ...(options.canonicalSession ? { canonicalSession: options.canonicalSession } : {}),
+      ...(options.paused ? { paused: options.paused } : {}), handler: (route, method) => {
       if (route === '/preferences') return method === 'GET' ? [{ key: 'companion.profile.v1', value: { ...MIA, templateId: 'cindy' }, revision: 1 }] : { revision: 1 };
       if (route === '/conversations') return { id: ROOM };
       if (route.includes('/messages?')) return [];
@@ -724,6 +726,15 @@ describe('merging copies of Cindy', () => {
     } });
     expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: false });
     expect(t.order.filter(step => step.startsWith('patch'))).toEqual([]);
+  });
+
+  it('asks to resume a paused copy, kept or merged, instead of failing part way', async () => {
+    const source = mergeSetup({ sourceHome: 'desk', paused: (botId) => botId === 'bot_lap' });
+    expect(await source.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'PAUSED' });
+    runtime?.dispose();
+    const kept = mergeSetup({ sourceHome: 'laptop', paused: (botId) => botId === 'cindy-default' });
+    expect(await kept.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'PAUSED' });
+    expect(kept.flush).not.toHaveBeenCalled();
   });
 
   it('answers a flush request only as the copy\'s home', async () => {

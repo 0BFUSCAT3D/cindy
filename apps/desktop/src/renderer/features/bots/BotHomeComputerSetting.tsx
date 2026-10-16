@@ -42,6 +42,7 @@ const SWITCH_ERROR_KEYS: Record<CompanionCloudFailureCode, string> = {
   FAILED: 'bots.cloud.switchFailed',
   BUSY: 'bots.cloud.transferBusy',
   HOME_OUTDATED: 'bots.cloud.homeOutdated',
+  PAUSED: 'bots.cloud.resumeToMove',
 };
 
 /** How long a companion moved here from its online home may take to be built on this computer. */
