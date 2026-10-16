@@ -428,7 +428,11 @@ export async function resolveAuthorizedMedia(arg: unknown, maximumBytes?: number
     }
   }
 
-  return { absPath, mimeType, uploadExtHint, maxBytes: constraints.maxBytes };
+  return {
+    absPath, mimeType, uploadExtHint, maxBytes: constraints.maxBytes,
+    // Only the authorized SSH materializer supplies immutable versioned copies.
+    versionedCache: sshOrigin !== null,
+  };
 }
 
 export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResult> {
@@ -436,7 +440,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
     arg && typeof arg === 'object'
       ? (arg as { url?: unknown; skipCache?: unknown; thumbnail?: unknown; prepareOnly?: unknown })
       : {};
-  const { absPath, mimeType, uploadExtHint, maxBytes } = await resolveAuthorizedMedia(arg);
+  const { absPath, mimeType, uploadExtHint, maxBytes, versionedCache } = await resolveAuthorizedMedia(arg);
   const url = record.url as string;
   const sharedTask = getDeviceLinkInvokeContext()?.sharedTask;
   const mediaScope = sharedTask?.author.sharedTaskId ?? sharedTaskMediaId();
@@ -451,7 +455,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
       const result = {
         ossKey: '',
         size: before.size,
-        version: fileVersion(absPath, before),
+        version: fileVersion(absPath, before, versionedCache),
         mimeType:
           mimeType ??
           mimeOf((uploadExtHint ?? path.extname(absPath)).replace(/^\./, '').toLowerCase()),
@@ -469,7 +473,7 @@ export async function fetchLocalMediaToOss(arg: unknown): Promise<MediaFetchResu
         offset += read.bytesRead;
       }
       const after = await file.stat();
-      if (after.size !== before.size || after.mtimeMs !== before.mtimeMs)
+      if (fileVersion(absPath, after, versionedCache) !== result.version)
         throw new Error('REMOTE_FILE_CHANGED');
       log.debug(`media:fetch prepare → inline size=${before.size} mime=${result.mimeType}`);
       return { ...result, inlineBase64: bytes.toString('base64') };

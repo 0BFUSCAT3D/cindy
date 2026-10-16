@@ -64,6 +64,7 @@ interface Source {
   size: number;
   mtime: number;
   ctime: number;
+  versionedCache: boolean;
   offset: number;
   busy: boolean;
   openedAt: number;
@@ -516,6 +517,7 @@ async function handleFilePeerRequest(
         size: stat.size,
         mtime: stat.mtimeMs,
         ctime: stat.ctimeMs,
+        versionedCache: authorized.versionedCache,
         offset: 0,
         busy: false,
         openedAt: Date.now(),
@@ -523,7 +525,10 @@ async function handleFilePeerRequest(
       sources.set(ticket, source);
       touch(r.connection);
       monitorSend(ticket, source);
-      return { ticket, size: stat.size, mimeType, version: fileVersion(authorized.absPath, stat) };
+      return {
+        ticket, size: stat.size, mimeType,
+        version: fileVersion(authorized.absPath, stat, authorized.versionedCache),
+      };
     } catch (error) {
       await file.close();
       throw error;
@@ -616,7 +621,11 @@ export function registerFilePeerIpc() {
       s.busy = true;
       try {
         const stat = await s.file.stat();
-        if (stat.size !== s.size || stat.mtimeMs !== s.mtime || stat.ctimeMs !== s.ctime) throw new Error('FILE_PEER_CHANGED');
+        // SSH versioned copies can be LRU-touched by another preview while open.
+        if (
+          stat.size !== s.size ||
+          (!s.versionedCache && (stat.mtimeMs !== s.mtime || stat.ctimeMs !== s.ctime))
+        ) throw new Error('FILE_PEER_CHANGED');
         const bytes = Buffer.alloc(Math.min(FILE_PEER_CHUNK_BYTES, s.size - s.offset));
         if (bytes.length) {
           const read = await s.file.read(bytes, 0, bytes.length, s.offset);

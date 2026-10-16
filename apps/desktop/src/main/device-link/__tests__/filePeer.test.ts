@@ -343,7 +343,7 @@ describe('authorized file peer source', () => {
       action: 'open',
       connection,
       url: 'xdt-file://local/?path=/test',
-    })) as { ticket: string; size: number };
+    })) as { ticket: string; size: number; version: string };
   }
   const read = (connection: string, ticket: string, offset: number) =>
     mock.handlers.get('file-peer:host:read')!({}, connection, ticket, offset);
@@ -891,6 +891,24 @@ describe('authorized file peer source', () => {
     await writeFile(file, 'changed');
     await expect(read(connection, ticket, 0)).rejects.toThrow('CHANGED');
     await expect(read(connection, ticket, 0)).rejects.toThrow();
+  });
+  it.each([false, true])('handles LRU touches only for versioned cache sources (%s)', async (versionedCache) => {
+    mock.resolve.mockResolvedValue({ absPath: file, maxBytes: 100, versionedCache });
+    const { connection } = await connect();
+    const first = await open(connection);
+    await fsPromises.utimes(file, new Date(1_000), new Date(1_000));
+    if (!versionedCache) {
+      await expect(read(connection, first.ticket, 0)).rejects.toThrow('CHANGED');
+      return;
+    }
+    expect(await read(connection, first.ticket, 0)).toBe(Buffer.from('hello').toString('base64'));
+    await fsPromises.utimes(file, new Date(2_000), new Date(2_000));
+    expect(await read(connection, first.ticket, 5)).toBe('');
+    const second = await open(connection);
+    expect(second.version).toBe(first.version);
+    // Ignoring LRU timestamps must not hide truncated or corrupt cache copies.
+    await truncate(file, 4);
+    await expect(read(connection, second.ticket, 0)).rejects.toThrow('CHANGED');
   });
   it('rejects revoked or old-owner chunks without affecting a second peer', async () => {
     const a = await connect(),
