@@ -5,18 +5,24 @@ import type { ModelAccessStatus } from '../../shared/modelAccess.js';
 // sync in this process. No keys or endpoint values leave the main process.
 let owner: string | null = null;
 let endpoint: string | null = null;
+let source: ModelAccessStatus['source'] = null;
 let ready = false;
+let synchronized = false;
 let generation = 0;
 const listeners = new Set<(ownerKey: string | null) => void>();
 
 export function noteQuotaCredentialStatus(ownerKey: string | null, status: ModelAccessStatus): void {
   const nextEndpoint = status.endpoint?.trim().replace(/\/+$/, '') || null;
   const reset = owner !== ownerKey || status.state === 'idle';
-  const changed = status.state === 'ok' && endpoint !== nextEndpoint;
-  if (reset) endpoint = null;
+  const nextReady = status.state === 'ok' && status.source === 'server' && !!nextEndpoint;
+  const sourceChanged = source !== status.source || endpoint !== nextEndpoint;
+  if (reset || sourceChanged) synchronized = false;
+  const changed = sourceChanged || (!synchronized && nextReady);
+  if (nextReady) synchronized = true;
   owner = ownerKey;
-  ready = status.state === 'ok' && status.source === 'server' && !!nextEndpoint;
-  if (ready) endpoint = nextEndpoint;
+  ready = nextReady;
+  source = status.source;
+  endpoint = nextEndpoint;
   if (reset || changed) {
     generation++;
     for (const listener of listeners) listener(ownerKey);

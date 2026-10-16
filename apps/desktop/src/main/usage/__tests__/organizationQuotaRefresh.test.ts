@@ -96,6 +96,21 @@ describe('Cindy AI enterprise quota refresh', () => {
 });
 
 describe('quota gateway migration boundary', () => {
+  it.each(['failed', 'disabled'] as const)('clears legacy quota when credentials are removed in %s state', async (syncState) => {
+    mocks.managed.mockResolvedValue(undefined);
+    const api = await import('../claudeAccountUsage');
+    await api.triggerClaudeAccountUsageRefresh(true);
+    expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20);
+    const state = await import('../../model-access/quotaCredentialState');
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: syncState, source: 'server', endpoint: mocks.endpoint, accountTier: null });
+    expect(api.readClaudeAccountUsageSnapshot()?.maxBudget).toBe(20);
+    state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: syncState, source: null, endpoint: null, accountTier: null });
+    expect(api.readClaudeAccountQuotaClear()).toEqual({ quotaState: 'invalidated' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.readClaudeAccountUsageSnapshot()).toBeNull();
+    expect(mocks.outbound).toHaveBeenCalledTimes(2);
+  });
+
   it('blocks persisted legacy credentials before this process completes credential sync', async () => {
     const state = await import('../../model-access/quotaCredentialState');
     state.noteQuotaCredentialStatus('cloud:owner-a:1', { state: 'idle', source: 'server', endpoint: mocks.endpoint, accountTier: null });
