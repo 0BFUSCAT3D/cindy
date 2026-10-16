@@ -278,11 +278,22 @@ describe('ProviderShareManagePage', () => {
     currentOwned.quietRequestIds = ['req-1'];
     renderPage('on', { globalHost: true });
     const row = await screen.findByTestId('provider-share-pending-row');
-    fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
-    await screen.findByTestId('provider-share-approve-dialog');
-    fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.later' }));
-    await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
-    expect(getProviderSharePendingRequests().map((item) => item.request.requestId)).toEqual(['req-1']);
+    const approve = within(row).getByRole('button', { name: 'providerShare.approve.approve' });
+    for (const close of ['later', 'escape']) {
+      approve.focus();
+      fireEvent.click(approve);
+      const dialog = await screen.findByTestId('provider-share-approve-dialog');
+      if (close === 'later') fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.later' }));
+      else {
+        // Escape from an action, after leaving the close icon's nested tooltip.
+        act(() => { within(dialog).getByRole('button', { name: 'providerShare.approve.reject' }).focus(); });
+        await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+        fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+      }
+      await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(approve));
+      expect(getProviderSharePendingRequests().map((item) => item.request.requestId)).toEqual(['req-1']);
+    }
     fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
     await screen.findByTestId('provider-share-approve-dialog');
     currentOwned = owned();

@@ -179,7 +179,12 @@ export function ProviderShareGlobalHost({ manualOnly = false }: { manualOnly?: b
 
   return (
     <>
-      {current && <ProviderShareApproveDialog key={current.request.requestId} item={current} onClose={closeApproval} />}
+      {current && <ProviderShareApproveDialog
+        key={current.request.requestId}
+        item={current}
+        onClose={closeApproval}
+        returnFocusTo={selection?.trigger}
+      />}
       {join && (
         <ProviderShareApplyDialog
           key={join.id}

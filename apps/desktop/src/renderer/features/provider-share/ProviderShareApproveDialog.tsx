@@ -30,10 +30,12 @@ import { useShareTimeFormat } from './useShareTimeFormat';
 export function ProviderShareApproveDialog({
   item,
   onClose,
+  returnFocusTo,
 }: {
   item: ProviderSharePendingRequest;
   /** 处理完或稍后处理：关闭并显示队列里的下一条。 */
   onClose: () => void;
+  returnFocusTo?: HTMLElement | null;
 }) {
   const { t } = useTranslation();
   const time = useShareTimeFormat();
@@ -86,6 +88,7 @@ export function ProviderShareApproveDialog({
       onOpenChange={(open) => { if (!open) onClose(); }}
       closeLabel={t('providerShare.approve.later')}
       busy={busy !== null}
+      returnFocusTo={returnFocusTo}
       testId="provider-share-approve-dialog"
     >
       <ProviderShareDialogTitle className="pr-9">

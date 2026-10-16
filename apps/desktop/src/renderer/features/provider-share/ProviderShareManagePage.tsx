@@ -84,6 +84,7 @@ export function ProviderShareManagePage({
   const [ownFailed, setOwnFailed] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
+  const approvalTriggerRef = useRef<HTMLElement | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const loadSeq = useRef(0);
   const remoteLoadRange = useRef<ProviderShareUsageRange | null>(null);
@@ -171,7 +172,7 @@ export function ProviderShareManagePage({
       setApprovalRequestId(null);
       return;
     }
-    return presentProviderShareApproval(approvalItem, closeApproval);
+    return presentProviderShareApproval(approvalItem, closeApproval, approvalTriggerRef.current);
   }, [approvalItem, closeApproval]);
 
   const withBusy = useCallback(async (key: string, run: () => Promise<void>) => {
@@ -379,7 +380,10 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || !providerClassificationReady || busy.has(item.request.requestId)}
-                    onClick={() => setApprovalRequestId(item.request.requestId)}
+                    onClick={(event) => {
+                      approvalTriggerRef.current = event.currentTarget;
+                      setApprovalRequestId(item.request.requestId);
+                    }}
                   >
                     {t('providerShare.approve.approve')}
                   </Button>

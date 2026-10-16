@@ -286,6 +286,7 @@ export function useProviderSharePendingRequests(): readonly ProviderSharePending
 interface ProviderShareApprovalSelection {
   item: ProviderSharePendingRequest;
   onClose: () => void;
+  trigger: HTMLElement | null;
 }
 let approvalSelection: ProviderShareApprovalSelection | null = null;
 const approvalSubscribers = new Set<() => void>();
@@ -296,8 +297,12 @@ function setApprovalSelection(next: ProviderShareApprovalSelection | null): void
 }
 
 /** 页面用最新列表中的申请维护展示意图；刷新后申请消失或离开页面时撤销，不修改申请本身。 */
-export function presentProviderShareApproval(item: ProviderSharePendingRequest, onClose: () => void): () => void {
-  const selection = { item, onClose };
+export function presentProviderShareApproval(
+  item: ProviderSharePendingRequest,
+  onClose: () => void,
+  trigger: HTMLElement | null,
+): () => void {
+  const selection = { item, onClose, trigger };
   setApprovalSelection(selection);
   return () => { if (approvalSelection === selection) setApprovalSelection(null); };
 }
