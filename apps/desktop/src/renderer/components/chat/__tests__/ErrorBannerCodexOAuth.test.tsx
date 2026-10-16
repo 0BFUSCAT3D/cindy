@@ -15,6 +15,18 @@ import {
   CLAUDE_SUBSCRIPTION_OPUS_PLAN_MISMATCH_REASON,
 } from '../../../../shared/claudeGatewayError';
 
+// jsdom 没有布局引擎，也尚未实现 checkVisibility；只补本组需要的 CSS 显隐语义。
+Object.defineProperty(HTMLElement.prototype, 'checkVisibility', {
+  configurable: true,
+  value(this: HTMLElement) {
+    for (let element: HTMLElement | null = this; element; element = element.parentElement) {
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    return true;
+  },
+});
+
 type AuthStateChangedPayload = {
   agentKind: 'claude-code' | 'codex';
   authenticated: boolean;
@@ -92,6 +104,29 @@ describe('ErrorBanner OpenAI connection recovery', () => {
     expect(recover).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'chat.errorBanner.readableHistoryRecovery' }));
     expect(recover).toHaveBeenCalledOnce();
+  });
+
+  it.each(['live', 'persisted'])('preserves a hidden %s error when Escape exits sidebar maximize', (kind) => {
+    const dismiss = vi.fn();
+    const retry = vi.fn();
+    const exitMaximize = vi.fn();
+    const banner = kind === 'live'
+      ? <ErrorBanner error="hidden error" onRetry={retry} onCancel={dismiss} dismissOnEscape />
+      : <ErrorTailErrorBanner errorText="hidden error" onContinue={retry} onDismiss={dismiss} dismissOnEscape />;
+    const { rerender } = render(<main style={{ display: 'none' }}>{banner}</main>);
+    // 与 MainLayout 一样，退出最大化的监听不 preventDefault，且晚于横幅注册。
+    window.addEventListener('keydown', exitMaximize);
+    try {
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(exitMaximize).toHaveBeenCalledOnce();
+      expect(dismiss).not.toHaveBeenCalled();
+      expect(retry).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', exitMaximize);
+    }
+    rerender(<main>{banner}</main>);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
   });
 
   it.each([

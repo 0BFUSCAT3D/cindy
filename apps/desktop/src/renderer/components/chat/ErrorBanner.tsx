@@ -18,7 +18,7 @@ import { useProviders } from '@/hooks/useProviders';
  *   (auth 缺失场景 Retry 立刻重发等于撞同一个 401,所以同步前先把 Retry 隐藏。)
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
 import { canOfferCodexHistoryRecovery, isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import { chatRemoteErrorGuidanceKey } from '@/lib/autoReviewUnavailableGuidance';
@@ -161,6 +161,7 @@ export function ErrorBanner({
   className,
 }: ErrorBannerProps) {
   const { t, i18n } = useTranslation();
+  const bannerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!dismissOnEscape || !onCancel) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -179,6 +180,8 @@ export function ErrorBanner({
       ) {
         return;
       }
+      // 右栏最大化等布局会用 CSS 隐藏仍挂载的聊天区；隐藏的报错不认领 Esc。
+      if (!bannerRef.current?.checkVisibility({ checkVisibilityCSS: true })) return;
       // 弹层优先；MorphPopover 关闭时不 preventDefault，但会保留到收合动画结束。
       if (
         document.querySelector(
@@ -657,6 +660,7 @@ export function ErrorBanner({
   // **API mode 不在 hide 列表里** — gateway key 自动 refresh, retry 大概率成功。
   return (
     <div
+      ref={bannerRef}
       className={cn(
         'mx-auto flex items-start gap-2 border px-3 py-2',
         isOpenAiConnectionExpired
