@@ -10,8 +10,8 @@
 //                  新增调用必须在上一行写 `// reset-modules: <被隔离的模块状态>`。
 //   real-wait      单测里 ≥100ms 的真实 setTimeout / sleep 既拖慢 CI 又制造时序抖动；
 //                  改用 vi.useFakeTimers() 或等待真实事件。确需真实等待时上一行写
-//                  `// real-wait: <原因>`。调用 vi.useFakeTimers() 的文件不计。
-//   source-read    普通单测读取生产源码文本做字面量断言。这类静态契约只能进 Desktop
+//                  `// real-wait: <原因>`。已切换为 fake timers 的区间不计。
+//   source-read    普通单测读取生产源码文本做字面量断言。这类静态契约只能进对应包的
 //                  guard tier（scripts/test-workspaces.config.mjs），不接受理由豁免。
 //
 // 存量计数记在 scripts/test-hygiene-baseline.json，只允许减少：某文件的计数超过基线、
@@ -27,11 +27,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(ROOT, 'scripts', 'test-hygiene-baseline.json');
 const SCAN_ROOTS = ['apps', 'packages'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'out', 'build', 'coverage', '.vite', '.expo', '.turbo']);
-export const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|mts|mjs)$/;
-const NON_UNIT_TEST = /\.(?:integration|e2e|git-integration)\.(?:test|spec)\.|\.bench\./;
+export const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const NON_UNIT_TEST = /(?:^|[-.])(?:integration|e2e|git-integration)\.(?:test|spec)\.|\.bench\./;
 export const RULES = ['resetModules', 'realWaits', 'sourceReads'];
 const REAL_WAIT_MIN_MS = 100;
-const REAL_WAIT_PATTERN = /\bsetTimeout\s*\([^;\n]*?,\s*(\d[\d_]*)\s*\)|\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g;
+const REAL_WAIT_PATTERN = /\b(?:sleep|delay|wait|waitMs|pause)\s*\(\s*(\d[\d_]*)\s*\)/g;
 
 /** Replace comments with spaces (keeping newlines) so matches ignore commented-out code. */
 export function stripComments(source) {
@@ -93,19 +93,93 @@ function countMatches(code, lines, pattern, marker, accept = () => true) {
   return count;
 }
 
+/** Mask string contents while preserving line numbers and call-site punctuation. */
+function maskStrings(source) {
+  let out = '';
+  let quote = null;
+  let escaped = false;
+  for (const ch of source) {
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        out += ch === '\n' ? '\n' : ' ';
+      } else if (ch === '\\') {
+        escaped = true;
+        out += ' ';
+      } else if (ch === quote) {
+        quote = null;
+        out += ch;
+      } else {
+        out += ch === '\n' ? '\n' : ' ';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === String.fromCharCode(96)) {
+      quote = ch;
+      out += ch;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function setTimeoutCalls(code) {
+  const calls = [];
+  for (const match of code.matchAll(/\bsetTimeout\s*\(/g)) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    let quote = null;
+    let escaped = false;
+    const commas = [];
+    let end = -1;
+    for (let i = start; i < code.length; i += 1) {
+      const ch = code[i];
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === String.fromCharCode(96)) quote = ch;
+      else if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+      else if (ch === ')' || ch === ']' || ch === '}') {
+        depth -= 1;
+        if (ch === ')' && depth === 0) {
+          end = i;
+          break;
+        }
+      } else if (ch === ',' && depth === 1) commas.push(i);
+    }
+    if (end < 0 || commas.length === 0) continue;
+    const durationStart = commas[0] + 1;
+    const durationEnd = commas[1] ?? end;
+    const duration = code.slice(durationStart, durationEnd).trim();
+    if (/^\d[\d_]*$/.test(duration)) calls.push({ index: match.index, duration });
+  }
+  return calls;
+}
+
 function countRealWaits(code, lines) {
   const timerEvents = [...code.matchAll(/\bvi\.(useFakeTimers|useRealTimers)\s*\(/g)];
   let timerIndex = 0;
   let fakeTimers = false;
   let count = 0;
-  for (const match of code.matchAll(REAL_WAIT_PATTERN)) {
-    while (timerIndex < timerEvents.length && timerEvents[timerIndex].index < match.index) {
+  const waits = [
+    ...setTimeoutCalls(code).map(({ index, duration }) => ({ index, duration })),
+    ...[...code.matchAll(REAL_WAIT_PATTERN)].map((match) => ({
+      index: match.index,
+      duration: match[1] ?? match[2],
+    })),
+  ].sort((a, b) => a.index - b.index);
+  for (const wait of waits) {
+    while (timerIndex < timerEvents.length && timerEvents[timerIndex].index < wait.index) {
       fakeTimers = timerEvents[timerIndex][1] === 'useFakeTimers';
       timerIndex += 1;
     }
     if (fakeTimers) continue;
-    if (Number((match[1] ?? match[2]).replaceAll('_', '')) < REAL_WAIT_MIN_MS) continue;
-    const line = lineOf(code, match.index);
+    if (Number(wait.duration.replaceAll('_', '')) < REAL_WAIT_MIN_MS) continue;
+    const line = lineOf(code, wait.index);
     if (!hasJustification(lines, line, 'real-wait')) count += 1;
   }
   return count;
@@ -147,7 +221,16 @@ function findEnclosingReadCall(code, index) {
   return -1;
 }
 
-function isSourcePathLiteral(code, match) {
+function findSourceReadHelpers(code) {
+  const helpers = new Set();
+  const arrowPattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=>[^;{}]{0,500}\breadFile(?:Sync)?\s*\(/g;
+  for (const match of code.matchAll(arrowPattern)) helpers.add(match[1]);
+  const functionPattern = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::[^{;\n]+)?\{[^{}]{0,500}\breadFile(?:Sync)?\s*\(/g;
+  for (const match of code.matchAll(functionPattern)) helpers.add(match[1]);
+  return helpers;
+}
+
+function isSourcePathLiteral(code, match, sourceReadHelpers = new Set()) {
   const value = match[2];
   if (!SOURCE_EXT.test(value) || /fixture|:\/\//i.test(value)) return false;
   if (IMPORT_CONTEXT.test(code.slice(Math.max(0, match.index - 24), match.index))) return false;
@@ -156,6 +239,9 @@ function isSourcePathLiteral(code, match) {
   const line = code.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
   // Test data under a fixtures directory is input, not production source.
   if (/fixture/i.test(line)) return false;
+  const prefix = line.slice(0, match.index - lineStart);
+  const helperCall = prefix.match(/\b([A-Za-z_$][\w$]*)\s*\(\s*$/)?.[1];
+  if (helperCall && sourceReadHelpers.has(helperCall)) return true;
   // resolve(__dirname, '..', 'Sidebar.tsx') or new URL('../x.ts', import.meta.url).
   if (REPO_ANCHOR.test(line)) return true;
   // Keep the same decision for a formatted multi-line readFileSync call. The
@@ -176,12 +262,14 @@ function isSourcePathLiteral(code, match) {
 export function scanTestSource(source, { isGuard = false } = {}) {
   const code = stripComments(source);
   const lines = source.split(/\r?\n/);
-  const resetModules = countMatches(code, lines, /\bvi\.resetModules\s*\(/g, 'reset-modules');
-  const realWaits = countRealWaits(code, lines);
+  const executableCode = maskStrings(code);
+  const resetModules = countMatches(executableCode, lines, /\bvi\.resetModules\s*\(/g, 'reset-modules');
+  const realWaits = countRealWaits(executableCode, lines);
   let sourceReads = 0;
-  if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw['"`]/.test(code)) {
+  if (!isGuard && /\breadFileSync\b|\breadFile\s*\(|\?raw/.test(code)) {
+    const sourceReadHelpers = findSourceReadHelpers(code);
     for (const match of code.matchAll(/(['"`])([^'"`\n$]+)\1/g)) {
-      if (match[2].endsWith('?raw') || isSourcePathLiteral(code, match)) sourceReads += 1;
+      if (match[2].endsWith('?raw') || isSourcePathLiteral(code, match, sourceReadHelpers)) sourceReads += 1;
     }
   }
   return { resetModules, realWaits, sourceReads };
@@ -249,7 +337,7 @@ export function compareWithBaseline(counts, baseline) {
 const HINTS = {
   resetModules: '只在被测的模块级状态确实需要重建的边界调用，上一行写 `// reset-modules: <原因>`；优先用生产代码的 dispose/reset 或依赖注入',
   realWaits: '改用 vi.useFakeTimers() 或等待真实事件；确需真实等待时上一行写 `// real-wait: <原因>`',
-  sourceReads: '普通单测不得读取源码文本做字面量断言；改为经生产入口验证行为，纯跨文件契约移入 Desktop guard tier',
+  sourceReads: '普通单测不得读取源码文本做字面量断言；改为经生产入口验证行为，纯跨文件契约移入对应包的 guard tier',
 };
 
 function readBaseline() {
@@ -287,10 +375,11 @@ export async function main(args = process.argv.slice(2)) {
     return 0;
   }
   if (violations.length === 0) {
-    console.log(`[test-hygiene] PASS (${Object.keys(counts).length} files within baseline)`);
     if (tightenable.length > 0) {
-      console.log(`[test-hygiene] ${tightenable.length} baseline entries can be tightened: node scripts/check-test-hygiene.mjs --update`);
+      console.error(`[test-hygiene] FAIL — ${tightenable.length} baseline entries can be tightened; run node scripts/check-test-hygiene.mjs --update`);
+      return 1;
     }
+    console.log(`[test-hygiene] PASS (${Object.keys(counts).length} files within baseline)`);
     return 0;
   }
   for (const v of violations) {

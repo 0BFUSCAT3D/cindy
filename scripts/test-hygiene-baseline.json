@@ -119,9 +119,6 @@
     "apps/desktop/src/main/__tests__/permissionInteractionPause.test.ts": {
       "sourceReads": 1
     },
-    "apps/desktop/src/main/__tests__/piSubagentUpdateRelaunchGate.test.ts": {
-      "realWaits": 1
-    },
     "apps/desktop/src/main/__tests__/projectOrderStore.test.ts": {
       "resetModules": 1
     },
@@ -265,7 +262,7 @@
       "resetModules": 1
     },
     "apps/desktop/src/main/device-link/__tests__/crossProcessLock.test.ts": {
-      "realWaits": 2
+      "realWaits": 1
     },
     "apps/desktop/src/main/device-link/__tests__/deviceName.test.ts": {
       "resetModules": 1
@@ -328,7 +325,6 @@
       "resetModules": 1
     },
     "apps/desktop/src/main/maker-host/__tests__/codex-browser-companion.test.ts": {
-      "realWaits": 1,
       "sourceReads": 1
     },
     "apps/desktop/src/main/maker-host/__tests__/codexAuthTokenReaderBoundary.test.ts": {
@@ -566,7 +562,7 @@
       "sourceReads": 7
     },
     "apps/desktop/src/main/scheduler-host/__tests__/preRunHook.test.ts": {
-      "realWaits": 3
+      "realWaits": 1
     },
     "apps/desktop/src/main/skillhub/__tests__/activationPreferences.test.ts": {
       "resetModules": 2
@@ -723,9 +719,6 @@
     },
     "apps/desktop/src/renderer/__tests__/deviceLinkDraftFlow.test.ts": {
       "resetModules": 1
-    },
-    "apps/desktop/src/renderer/__tests__/deviceLinkInteractionScenarios.test.ts": {
-      "sourceReads": 3
     },
     "apps/desktop/src/renderer/__tests__/deviceLinkProjectsConcurrency.test.tsx": {
       "resetModules": 1
@@ -1227,12 +1220,6 @@
     "apps/mobile/src/__tests__/iosAppDistribution.test.ts": {
       "resetModules": 2
     },
-    "apps/mobile/src/__tests__/mathWebViewHtml.test.ts": {
-      "realWaits": 1
-    },
-    "apps/mobile/src/__tests__/mermaidWebView.test.ts": {
-      "realWaits": 1
-    },
     "apps/mobile/src/__tests__/messageActionDesktopFirst.test.ts": {
       "sourceReads": 3
     },
@@ -1282,9 +1269,6 @@
     "apps/mobile/src/debug/localDiagnostics.test.ts": {
       "resetModules": 1
     },
-    "packages/anthropic-compat-proxy/src/server.test.ts": {
-      "realWaits": 2
-    },
     "packages/design-tokens/src/__tests__/classification.test.ts": {
       "sourceReads": 1
     },
@@ -1328,10 +1312,10 @@
       "sourceReads": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentForeground.test.ts": {
-      "realWaits": 4
+      "realWaits": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentParentWatchdog.test.ts": {
-      "realWaits": 4
+      "realWaits": 2
     },
     "packages/maker-core/src/agents/pi/__tests__/cindySubagentRunner.test.ts": {
       "realWaits": 2
@@ -1346,7 +1330,7 @@
       "sourceReads": 1
     },
     "packages/maker-core/src/agents/pi/__tests__/pi-startsession-cleanup.test.ts": {
-      "realWaits": 22,
+      "realWaits": 21,
       "sourceReads": 3
     },
     "packages/maker-core/src/agents/pi/__tests__/pi-subagent-runs.test.ts": {

@@ -355,7 +355,7 @@ test("client CI runs Linux checks and complete unit shards in parallel behind st
 	assert.match(checks, /^        run: pnpm test:runner$/m);
 	assert.match(
 		checks,
-		/^      - name: Run desktop source-contract guards\r?\n        run: pnpm test:guard$/m,
+		/^      - name: Run Desktop and Mobile source-contract guards\r?\n        run: pnpm test:guard$/m,
 	);
 	// engineering-conventions.md §3.2 performance budget is only binding while CI
 	// blocks on the hygiene ratchet; without this step the baseline stops mattering.

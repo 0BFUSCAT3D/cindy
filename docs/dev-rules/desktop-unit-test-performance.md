@@ -30,8 +30,8 @@ pnpm benchmark:desktop-workers -- --workers 1,2,4,8 --runs 1 --output <report.js
   DB 回归，其余来自 Vitest 按文件路径哈希均分（不看耗时）造成的 Desktop 不均衡。
 - 每个分片里 runner 先独占跑 Desktop，再独占跑 Mobile，最后并发跑其余包；Desktop 在 4 vCPU 的
   `windows-latest` 上用 4 个 worker。
-- 删除 488 条无效用例只占约 5.4 万条的 0.9%，旧 timing 估算约 7 秒 worker time，对墙钟的影响是
-  个位数秒。删测试解决的是维护成本，不是 CI 时长。
+- 初始删除候选只有约 7 秒 worker time；独立审查随后恢复了必要契约（见下文），最终删除范围
+  更小。清理的目标是维护成本，不能把 CI 提速归因于减少测试条数。
 
 2026-10-16 调整：Windows 与 Linux unit 都从 2 个分片改为 4 个；Windows runner 自测和伴侣 DB 回归
 移到独立并行 job `windows-runner-checks`，由原必需检查 `Windows unit tests` 一并阻断。本仓是公开仓，
@@ -58,7 +58,7 @@ Vitest 每片切 `ceil(文件数 / 分片数)` 个文件，分片多于 2 个时
 
 每片的 worker 时间里，收集（导入模块）约 325–350 秒，执行测试 250–480 秒，环境初始化 105–127 秒，
 准备约 46 秒；后三项主要来自逐文件隔离。整体切换隔离方式会破坏正确性，所以改为逐个修掉开销最大的
-文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 516 个
+文件，并用 `pnpm check:test-hygiene` 阻止新增逐用例重置、真实等待和普通单测读源码文本（基线 450 个
 文件，只减不增，见 engineering-conventions.md §3.2「性能预算」）。修完 `codexProxyHost` 后，最慢的
 单个文件从 138 秒降到约 32 秒，不再由一个文件决定分片下限。
 
@@ -81,13 +81,16 @@ CI 时长仍要用首次 4 分片 CI 实测确认。
 
 对 499 个候选文件逐一审计：
 
-- 删除 81 个没有生产入口行为的文件（488 条用例）。`FileTreeView.horizontalScroll.test.tsx` 真实挂载
-  组件并断言可见宽度，已恢复。
+- 初始删除 81 个文件（488 条用例）；独立审查发现其中包含缺少等价覆盖的权限、竞态、远程路由
+  和设计契约，已恢复 30 个文件，并从 `homeUsageDashboardSource.test.ts` 保留账号隔离的 3 条
+  契约。最终相对原始基线删除 50 个文件，不能沿用最初的「488 条无效用例」结论。
+  `FileTreeView.horizontalScroll.test.tsx` 真实挂载组件并断言可见宽度，已恢复。
 - 207 个 PARTIAL 文件（2,874 条用例，其中约 991 条是静态或重复接线候选）保留：它们与续跑、设备链、
   账户切换、Pi、权限和竞速回归混在一起，只能在补上等价的生产入口测试后逐项替换，不能按字符串模式
   批量删除。
-- 27 个只保护跨文件安全、权限、主题或文案契约的文件（80 条用例）迁到 Desktop `guard` allowlist，由 CI
-  的 `pnpm test:guard` 执行。名单只在 `scripts/test-workspaces.config.mjs` 维护，由 runner 从 unit 排除；
+- 最初迁移 27 个静态契约文件；审查恢复与扫描器补漏后，Desktop 和 Mobile 的跨文件安全、权限、
+  主题或文案契约统一迁到各自 `guard` allowlist，由 CI 的 `pnpm test:guard` 执行。最终名单只在
+  `scripts/test-workspaces.config.mjs` 维护，由 runner 从 unit 排除；
   不要在 `apps/desktop/vitest.config.ts` 的项目 exclude 里重复排除，否则 guard 层自己也收集不到这些
   文件（2026-10-16 发现 29 个 allowlist 文件实际只跑了 2 个，已修复）。
 - 缺少 timing 的文件是 `src/main/cindy-brain/__tests__/pluginModelPrefsIpc.test.ts`。

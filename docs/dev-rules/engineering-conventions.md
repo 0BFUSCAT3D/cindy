@@ -101,7 +101,7 @@ UI 文案的语气与措辞另见 [`DESIGN.md`](../design-rules/DESIGN.md) 的 V
 - **回归测试先红后绿**：修 bug 时先用最小用例复现修复前的失败，再验证修复后的通过。若
   只能测试静态契约，必须写出规则编号和保留原因，并把它放进明确的 guard／静态检查位置，
   不要把普通布局、类名、import 或调用顺序扫描伪装成 unit test。只包含跨文件静态契约的
-  Desktop 测试文件必须加入 `scripts/test-workspaces.config.mjs` 的 guard allowlist，并由
+  Desktop / Mobile 测试文件必须加入 `scripts/test-workspaces.config.mjs` 的 guard allowlist，并由
   CI 的 `pnpm test:guard` 执行；混合文件中的静态断言只有在保护权限、凭证、协议或竞态
   规则且无法从生产入口隔离时才保留，并在测试名或注释中写明失效后果。没有对应规则或
   失效后果的源码字面量断言直接删除。

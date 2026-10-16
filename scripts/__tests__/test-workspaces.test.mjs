@@ -955,11 +955,14 @@ test("planRuns includes manual tiers only for explicit tier runs", () => {
 	assert.equal(planRuns(workspaces, { tier: "db", explicit: false }).length, 0);
 });
 
-test("planRuns includes the required desktop guard tier", () => {
+test("planRuns includes the required source-contract guard tiers", () => {
 	const runs = planRuns(manifest.workspaces, { tier: "guard" });
 	assert.deepEqual(
 		runs.map((run) => [run.workspace.cwd, run.tier]),
-		[["apps/desktop", "guard"]],
+		[
+			["apps/desktop", "guard"],
+			["apps/mobile", "guard"],
+		],
 	);
 });
 

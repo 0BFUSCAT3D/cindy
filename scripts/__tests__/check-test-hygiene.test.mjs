@@ -13,6 +13,8 @@ import {
 test("hygiene scans both test and spec files", () => {
 	assert.equal(TEST_FILE.test("src/example.test.ts"), true);
 	assert.equal(TEST_FILE.test("src/example.spec.tsx"), true);
+	assert.equal(TEST_FILE.test("src/example.test.js"), true);
+	assert.equal(TEST_FILE.test("src/example.spec.cjs"), true);
 	assert.equal(TEST_FILE.test("src/example.integration.spec.ts"), true);
 	assert.equal(TEST_FILE.test("src/example.ts"), false);
 });
@@ -39,6 +41,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			{ realWaits: 1 },
 		],
 		[
+			"multi-line real wait",
+			"await new Promise((resolve) => setTimeout(\n  resolve,\n  250,\n));",
+			{ realWaits: 1 },
+		],
+		[
+			"source text in fixture string is not executable",
+			"expect(output).toContain('vi.resetModules()'); expect(output).toContain('setTimeout(done, 500)');",
+			{ resetModules: 0, realWaits: 0 },
+		],
+		[
 			"source text read",
 			"const src = readFileSync(resolve(__dirname, '..', 'Sidebar.tsx'), 'utf8');",
 			{ sourceReads: 1 },
@@ -52,6 +64,16 @@ test("scanTestSource counts only unjustified hits for each rule", () => {
 			"import specifiers are not reads",
 			"import { x } from '../x.ts';\nvi.mock('../y.ts');\nreadFileSync(join(__dirname, 'fixtures', 'a.ts'));",
 			{ sourceReads: 0 },
+		],
+		[
+			"source read through a typed helper",
+			"const read = (relative: string): string => readFileSync(resolve(__dirname, relative), 'utf8');\nconst source = read('../ChatInput.tsx');",
+			{ sourceReads: 1 },
+		],
+		[
+			"source read through a typed function",
+			"function read(relative: string): string { return readFileSync(resolve(__dirname, relative), 'utf8'); }\nconst source = read('../ChatInput.tsx');",
+			{ sourceReads: 1 },
 		],
 	];
 	for (const [name, source, expected] of cases) {

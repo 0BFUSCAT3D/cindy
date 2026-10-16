@@ -67,7 +67,7 @@ jobs:
 
       # Cross-file security, permission, and design contracts are intentionally
       # outside the ordinary behavior-test pool, but remain a required gate.
-      - name: Run desktop source-contract guards
+      - name: Run Desktop and Mobile source-contract guards
         run: pnpm test:guard
 
       # No private service checkout or secrets: exercise production clients over real
