@@ -13,7 +13,7 @@ import { inferBotTemplatePresetId } from '../../shared/botTemplatePreset.js';
 import type { CompanionHistoryAttachment, CompanionMaterializeHost, CompanionWriteFence } from './materialize.js';
 import type { CompanionMediaUpload, CompanionMirrorAttachment } from './mirror.js';
 import { readAllRoomMessages, readRoomPage } from './room.js';
-import type { CompanionApi, CompanionLog } from './types.js';
+import { isTransientAttachmentFailure, type CompanionApi, type CompanionLog } from './types.js';
 import {
   COMPANION_MEMORY_PREFIX, COMPANION_PROFILE_KEY, COMPANION_ROUTINE_PREFIX, COMPANION_SKILL_PREFIX, COMPANION_TODO_PREFIX,
   COMPANION_WORKBENCH_KEY,
@@ -196,6 +196,8 @@ async function mergeConversation(input: {
           mimeType: local.mimeType, size: local.size, url: local.url, path: local.path };
         media.push(...await input.media.upload(input.keepRoom, sourceId, [attachment], authorId));
       } catch (error) {
+        // A file that may still come fails the merge (every copy stays active, so it can run again).
+        if (isTransientAttachmentFailure(error)) throw error;
         missing.push(file.name);
         input.log?.warn('Merged attachment kept as its name', { code: error instanceof Error ? error.message.slice(0, 80) : 'UNKNOWN' });
       }
@@ -225,13 +227,17 @@ async function mergeConversation(input: {
   return imported;
 }
 
-/** The newest preference revision and room message of a copy: changes whenever it adds anything. */
+/**
+ * What a copy has in the cloud: every preference with its revision (revisions count per key, so a
+ * new, changed or removed one changes the list) and the newest room message (room order). Any
+ * difference means it added something.
+ */
 async function cloudMark(api: CompanionApi, actor: CompanionMergeActor, roomOf: (actor: CompanionMergeActor) => Promise<string>): Promise<string> {
   const rows = await api<PrefRow[]>('/preferences', 'GET', undefined, actor.id);
-  const revision = (Array.isArray(rows) ? rows : []).reduce((max, row) => Math.max(max, Number(row.revision) || 0), 0);
+  const prefs = (Array.isArray(rows) ? rows : []).map(row => `${row.key}\u0000${row.revision}`).sort();
   const page = await readRoomPage(api, await roomOf(actor));
   const seq = page.reduce((max, message) => (BigInt(message.seq) > max ? BigInt(message.seq) : max), 0n);
-  return `${revision}:${seq}`;
+  return createHash('sha256').update(JSON.stringify([prefs, String(seq)])).digest('hex');
 }
 
 /** The profile snapshot of a companion actor, for telling the copies of Cindy apart. */

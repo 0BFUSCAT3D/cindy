@@ -165,6 +165,22 @@ describe('companion conversation mirror', () => {
     expect(failing.imported()[0]![0]!.content).toEqual([{ type: 'text', text: 'look\n[附件: cat.png]\n[附件: a.pdf]' }]);
   });
 
+  it('stops the pass while a file may still go up, and sends it with its message on the retry', async () => {
+    const withFile = user('look');
+    withFile.content = JSON.stringify({ text: 'look', files: [{ name: 'a.pdf', path: '/tmp/a.pdf' }] });
+    let online = false;
+    const upload = vi.fn(async () => {
+      if (!online) throw Object.assign(new Error('MEDIA_UPLOAD_FAILED'), { status: 503 });
+      return [{ type: 'media', mediaId: 'm-2', caption: 'a.pdf' }];
+    });
+    const t = setup([withFile], undefined, upload);
+    await expect(t.mirror.syncBot('bot', 'actor', 'Mia')).rejects.toThrow('MEDIA_UPLOAD_FAILED');
+    expect(t.imported()).toEqual([]);
+    online = true;
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported()[0]![0]!.content).toEqual([{ type: 'text', text: 'look' }, { type: 'media', mediaId: 'm-2', caption: 'a.pdf' }]);
+  });
+
   it('uploads the older history on later passes, oldest first, without re-sending', async () => {
     const rows = Array.from({ length: 260 }, (_, i) => (i % 2 ? reply(`r${i}`) : user(`u${i}`)));
     const t = setup(rows);

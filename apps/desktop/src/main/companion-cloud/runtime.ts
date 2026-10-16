@@ -22,7 +22,7 @@ import { readAllRoomMessages, transcriptPageOf } from './room.js';
 import { isCindyCompanion, mergeCompanionsInto, readProfileSnapshot } from './merge.js';
 import { importCloudHistory } from './materialize.js';
 import type { CompanionCloudState } from './state.js';
-import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from './types.js';
+import { chatRejection, errorCode, isUnreachable, type CompanionApi, type CompanionLog } from './types.js';
 import { COMPANION_PROFILE_KEY, COMPANION_READ_INCOMPLETE, COMPANION_VALUE_TOO_LARGE, createCompanionUploader, isCompanionProfileSnapshot, type CompanionPreferenceValue } from './uploader.js';
 
 /** Electron/database side of the feature, wired in register.ts. */
@@ -129,15 +129,7 @@ type Only = Set<string> | null | undefined;
 const union = (left: Only, right: Set<string> | null): Only =>
   left === null || right === null ? null : new Set([...(left ?? []), ...right]);
 
-const TRANSPORT_CODES = /^(REQUEST_TIMEOUT|CHAT_ENDPOINT_UNAVAILABLE|ECONN\w*|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|EPIPE)$/;
-/** The server could not be reached (or is temporarily failing): retry later. */
-export function isUnreachable(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const status = (error as { status?: unknown }).status;
-  if (typeof status === 'number') return status >= 500 || status === 408 || status === 429;
-  const code = (error as { code?: unknown }).code;
-  return TRANSPORT_CODES.test(error.message) || (typeof code === 'string' && TRANSPORT_CODES.test(code));
-}
+export { isUnreachable };
 
 function actionFailure(error: unknown, fallback: 'FAILED' | 'OFFLINE' = 'FAILED'): CompanionCloudActionResult {
   const conflict = chatRejection(error, 409, 'HOME_DEVICE_CONFLICT');

@@ -9,7 +9,7 @@ import { messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source'
 import { imChannelDisplayName } from '../../shared/imMessageSource.js';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
 import type { CompanionCloudState } from './state.js';
-import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from './types.js';
+import { chatRejection, errorCode, isTransientAttachmentFailure, type CompanionApi, type CompanionLog } from './types.js';
 
 export interface CompanionMirrorRow {
   id: string;
@@ -214,7 +214,11 @@ export function createCompanionMirror(deps: {
       for (const file of deps.uploadMedia ? mirrorAttachments(row) : []) {
         if (file.size > MIRROR_ATTACHMENT_MAX_BYTES) continue;
         try { media.push(...await deps.uploadMedia!(roomId, sourceId, [file], authorId)); uploaded.push(file.name); }
-        catch (error) { deps.log?.warn('Companion attachment upload skipped; name only', { code: errorCode(error) }); }
+        catch (error) {
+          // A file that may still go up stops this pass (the cursor stays), so the retry sends it.
+          if (isTransientAttachmentFailure(error)) throw error;
+          deps.log?.warn('Companion attachment upload skipped; name only', { code: errorCode(error) });
+        }
       }
       // Every attachment that did not go up (as listed in the row) keeps its name in the text.
       const names = attachmentNames(parse(row.content));

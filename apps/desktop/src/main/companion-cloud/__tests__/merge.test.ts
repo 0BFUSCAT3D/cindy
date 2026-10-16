@@ -26,6 +26,7 @@ describe('merging copies of Cindy', () => {
   function setup() {
     const imports: Array<{ room: string; messages: Array<{ sourceId: string; authorId: string; createdAt: string; content: unknown[] }> }> = [];
     const added: Array<{ key: string; value: unknown; revision: number }> = [];
+    const files: Array<{ type: string; mediaId: string; caption: string }> = [];
     const { api, calls } = fakeApi((route, method, data, actorId) => {
       if (route === '/preferences' && method === 'GET' && actorId === 'actor-from') return [...added, 
         { key: 'companion.profile.v1', value: { name: 'Cindy', soul: 'theirs' }, revision: 1 },
@@ -38,7 +39,7 @@ describe('merging copies of Cindy', () => {
       ];
       if (route.startsWith(`/conversations/${FROM_ROOM}/messages?`)) return [
         { id: 'm2', seq: '2', authorId: 'actor-from', createdAt: new Date(2_000).toISOString(), content: [{ type: 'text', text: 'hello back' }] },
-        { id: 'm1', seq: '1', authorId: 'human', createdAt: new Date(1_000).toISOString(), content: [{ type: 'text', text: 'hi' }] },
+        { id: 'm1', seq: '1', authorId: 'human', createdAt: new Date(1_000).toISOString(), content: [{ type: 'text', text: 'hi' }, ...files] },
       ];
       if (route.endsWith('/import')) { imports.push({ room: route.split('/')[2]!, messages: (data as { messages: never[] }).messages }); return {}; }
       if (method === 'PATCH') return {};
@@ -50,8 +51,9 @@ describe('merging copies of Cindy', () => {
     const importHistory = vi.fn<() => Promise<void>>(async () => undefined);
     const run = () => mergeCompanionsInto({ api, host: local.host, keep, from: [from], humanActorId: 'human',
       roomOf: async (actor) => (actor.id === keep.id ? KEEP_ROOM : FROM_ROOM), importHistory, fence: { assertCurrent: () => undefined } });
-    const addPreference = (n: number) => { added.push({ key: `companion.memory.v1:late-${n}.md`, value: { content: 'late' }, revision: 100 + n }); };
-    return { run, api, local, calls, imports, importHistory, addPreference };
+    const addPreference = (n: number) => { added.push({ key: `companion.memory.v1:late-${n}.md`, value: { content: 'late' }, revision: Math.max(1, 100 + n) }); };
+    const withAttachment = () => { files.push({ type: 'media', mediaId: 'media-1', caption: 'cat.png' }); };
+    return { run, api, local, calls, imports, importHistory, addPreference, withAttachment };
   }
 
   it('brings memories, todos and the conversation over, keeping a different same-name memory as a copy', async () => {
@@ -118,5 +120,24 @@ describe('merging copies of Cindy', () => {
     await expect(run()).rejects.toThrow('COMPANION_STILL_CHANGING');
     expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
   });
-});
 
+  it('notices a copy that changed a preference without raising the newest revision', async () => {
+    const t = setup();
+    // Revisions count per key: a new memory at revision 1 leaves the highest revision (7) as it was.
+    const run = () => mergeCompanionsInto({ api: t.api, host: t.local.host, keep, from: [from], humanActorId: 'human',
+      roomOf: async (actor) => (actor.id === keep.id ? KEEP_ROOM : FROM_ROOM), importHistory: t.importHistory,
+      fence: { assertCurrent: () => undefined }, beforeRetire: async () => { t.addPreference(-99); } });
+    await expect(run()).rejects.toThrow('COMPANION_STILL_CHANGING');
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('fails with the copies active while a file of the conversation may still come', async () => {
+    const t = setup();
+    const media = { upload: vi.fn(), download: vi.fn(async () => { throw new Error('MEDIA_DOWNLOAD_FAILED'); }) };
+    t.withAttachment();
+    await expect(mergeCompanionsInto({ api: t.api, host: t.local.host, keep, from: [from], humanActorId: 'human', media,
+      roomOf: async (actor) => (actor.id === keep.id ? KEEP_ROOM : FROM_ROOM), importHistory: t.importHistory,
+      fence: { assertCurrent: () => undefined } })).rejects.toThrow('MEDIA_DOWNLOAD_FAILED');
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
+});

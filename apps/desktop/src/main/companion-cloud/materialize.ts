@@ -11,7 +11,7 @@ import { COMPANION_HISTORY_CLIENT_PREFIX } from './mirror.js';
 import { directRoomSourceId } from './directRoom.js';
 import { readAllRoomMessages } from './room.js';
 import type { CompanionCloudState } from './state.js';
-import { errorCode, type CompanionApi, type CompanionLog } from './types.js';
+import { errorCode, isTransientAttachmentFailure, type CompanionApi, type CompanionLog } from './types.js';
 import {
   COMPANION_MEMORY_PREFIX, COMPANION_PROFILE_KEY, COMPANION_ROUTINE_PREFIX, COMPANION_SKILL_PREFIX, COMPANION_TODO_PREFIX,
   COMPANION_WORKBENCH_KEY, TOMBSTONE_HASH, isCompanionProfileSnapshot, valueHash,
@@ -306,6 +306,8 @@ export async function importCloudHistory(input: {
         if (!input.download) throw new Error('DOWNLOAD_UNAVAILABLE');
         attachments.push(await input.download(input.roomId, file.mediaId));
       } catch (error) {
+        // A file that may still come fails the take-over (retried); this message is not inserted yet.
+        if (isTransientAttachmentFailure(error)) throw error;
         missing.push(file.name);
         input.log?.warn('Companion history attachment not brought over', { code: errorCode(error) });
       }

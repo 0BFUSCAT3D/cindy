@@ -292,13 +292,33 @@ describe('materializeCompanion', () => {
     const local = fakeLocal();
     const { state } = memoryState();
     const download = vi.fn(async (_room: string, mediaId: string) => {
-      if (mediaId === 'media-2') throw new Error('MEDIA_DOWNLOAD_FAILED');
+      if (mediaId === 'media-2') throw Object.assign(new Error('NOT_FOUND'), { status: 404 });
       return { name: 'cat.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://blobs/x.png', path: null };
     });
     await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, download });
     expect(download).toHaveBeenCalledWith(ROOM, 'media-1');
     expect(local.host.insertHistory).toHaveBeenCalledWith('session-1', expect.objectContaining({
       text: 'look\n[附件: gone.pdf]', attachments: [expect.objectContaining({ url: 'cindy-media://blobs/x.png' })] }), expect.anything());
+  });
+
+  it('fails the take-over while a file may still come, and brings it on the retry', async () => {
+    const withFile = { ...roomMessage('m1', 1, 'human', 'look', 1_000), content: [{ type: 'text', text: 'look' },
+      { type: 'media', mediaId: 'media-1', caption: 'cat.png' }] };
+    const { api } = cloud([profilePref], [withFile]);
+    const local = fakeLocal();
+    const { state } = memoryState();
+    let online = false;
+    const download = vi.fn(async () => {
+      if (!online) throw new Error('MEDIA_DOWNLOAD_FAILED');
+      return { name: 'cat.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://blobs/x.png', path: null };
+    });
+    await expect(materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, download })).rejects.toThrow('MEDIA_DOWNLOAD_FAILED');
+    expect(local.host.insertHistory).not.toHaveBeenCalled();
+    expect(state.bot('bot_mia')?.demoted).toBe(true);
+    online = true;
+    await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, download });
+    expect(local.host.insertHistory).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      text: 'look', attachments: [expect.objectContaining({ url: 'cindy-media://blobs/x.png' })] }), expect.anything());
   });
 
   it('imports the whole room, in message-time order', async () => {
