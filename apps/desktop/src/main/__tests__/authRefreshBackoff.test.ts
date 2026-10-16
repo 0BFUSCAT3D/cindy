@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { AuthRefreshBackoff } from '../authRefreshBackoff';
 
 describe('runtime auth refresh backoff', () => {
+  it('releases only a transport failure after a real response from the same login generation', () => {
+    const backoff = new AuthRefreshBackoff(() => 1_000_000);
+    backoff.defer(1, undefined, true);
+    backoff.networkRecovered(2);
+    expect(backoff.remaining(1)).toBe(60_000);
+    backoff.networkRecovered(1);
+    expect(backoff.remaining(1)).toBe(0);
+    backoff.defer(1);
+    backoff.networkRecovered(1);
+    expect(backoff.remaining(1)).toBe(60_000);
+  });
+
+  it.each([undefined, 1_030_000, 1_120_000])('never bypasses server failure or rate limiting (%s)', retryAt => {
+    const backoff = new AuthRefreshBackoff(() => 1_000_000);
+    const delay = backoff.defer(1, retryAt);
+    backoff.networkRecovered(1);
+    expect(backoff.remaining(1)).toBe(delay);
+  });
+
   it('keeps an absolute deadline across two-second explicit calls and resumes at expiry', () => {
     let now = 1_000_000;
     const backoff = new AuthRefreshBackoff(() => now);
