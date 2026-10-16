@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useGhostMainViews } from '@/cindy-brain/ghostMainViews';
 import { GhostPanelError, GhostWebviewBody } from '@/cindy-brain/ghostPanelBody';
 import { useGhostRuntimeState } from '@/cindy-brain/runtimeStates';
+import { WINDOW_DRAG_STYLE } from '@/components/layout/windowDrag';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 
 /** Route boundary that resolves only an approved, enabled manifest main-view entry. */
@@ -29,6 +30,15 @@ export function GhostMainViewHost() {
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-content-area"
       aria-label={item.title}
     >
+      {/* ContentHeaderSlot broadcasts its h-[46px] height: a hidden mac header leaves
+          46px to drag; a visible header (or missing variable) leaves 0px.
+          ContentHeader handles the rail button's no-drag holes when visible. */}
+      <div
+        aria-hidden="true"
+        data-testid="ghost-main-view-drag-band"
+        className="shrink-0"
+        style={{ height: 'calc(46px - var(--content-header-h, 46px))', ...WINDOW_DRAG_STYLE }}
+      />
       {broken ? (
         <GhostPanelError ghost={installedGhost} state={runtimeState} />
       ) : (

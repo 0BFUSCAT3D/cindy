@@ -83,10 +83,25 @@ describe('GhostMainViewHost', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
+  it('reserves a transparent in-flow drag band before the webview', () => {
+    render(<GhostMainViewHost />);
+    const band = screen.getByTestId('ghost-main-view-drag-band');
+    const webview = screen.getByTestId('webview');
+
+    expect(band.parentElement).toBe(webview.parentElement);
+    expect(band.nextElementSibling).toBe(webview);
+    expect(band.classList.contains('shrink-0')).toBe(true);
+    expect(band.classList.contains('absolute')).toBe(false);
+    expect(band.getAttribute('aria-hidden')).toBe('true');
+    expect(band.style.height).toBe('calc(46px - var(--content-header-h, 46px))');
+    expect((band.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion).toBe('drag');
+  });
+
   it('replaces an unavailable route with the Plugin page before mounting a webview', () => {
     mocks.routeCapable = [];
     render(<GhostMainViewHost />);
     expect(screen.queryByTestId('webview')).toBeNull();
+    expect(screen.queryByTestId('ghost-main-view-drag-band')).toBeNull();
     expect(mocks.navigate).toHaveBeenCalledWith('/plugins', { replace: true });
   });
 
@@ -169,7 +184,11 @@ describe('GhostMainViewHost', () => {
   it.each(['crashed', 'fused'])('reuses the existing %s recovery state', (state) => {
     mocks.runtimeState = state;
     render(<GhostMainViewHost />);
-    expect(screen.getByTestId('error').textContent).toBe(state);
+    const band = screen.getByTestId('ghost-main-view-drag-band');
+    const error = screen.getByTestId('error');
+    expect(band.parentElement).toBe(error.parentElement);
+    expect(band.nextElementSibling).toBe(error);
+    expect(error.textContent).toBe(state);
     expect(screen.queryByTestId('webview')).toBeNull();
   });
 
