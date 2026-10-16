@@ -222,7 +222,6 @@ export class ViewerSafety {
         trace: (stage, code) => {
           if (!valid()) return;
           if (stage === 'content-skipped') {
-            this.clipboardNoticeVersion++;
             this.notices.set(
               'clipboardSync',
               code === 'CLIPBOARD_TOO_LONG' ? 'clipboardSyncTooLarge' : 'clipboardSyncSkipped',
@@ -248,6 +247,7 @@ export class ViewerSafety {
     );
     // Authority changes stop pending reads. Their late results must not count
     // as sync failures for the next control session.
+    const { local: previousLocal, remote: previousRemote } = this.baseline;
     try {
       await engine.tick();
       if (current()) {
@@ -263,6 +263,16 @@ export class ViewerSafety {
       if (!current()) return this.snapshot();
       this.recordClipboardFailure(error);
     }
+    // Count accepted snapshots once, after skipped-content can become a conflict.
+    // Idle polls, backoff and rejected/stale reads must not replay the old toast.
+    if (
+      current() &&
+      (this.baseline.local !== previousLocal || this.baseline.remote !== previousRemote) &&
+      ['clipboardSyncSkipped', 'clipboardSyncTooLarge', 'clipboardSyncConflict'].includes(
+        this.notices.get('clipboardSync') ?? '',
+      )
+    )
+      this.clipboardNoticeVersion++;
     return this.snapshot();
   }
 }

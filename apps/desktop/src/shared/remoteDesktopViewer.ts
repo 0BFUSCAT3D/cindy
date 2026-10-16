@@ -55,7 +55,7 @@ export const DEFAULT_VIEWER_PREFERENCES: RemoteViewerPreferences = {
 export interface RemoteViewerSafety {
   privacyActive: boolean;
   notice: string | null;
-  /** New skipped clipboard item; idle polls retain the same occurrence. Local IPC only. */
+  /** New skipped/conflicting snapshot; idle polls keep the occurrence. Local IPC only. */
   clipboardNoticeVersion?: number;
   clipboardProgress: number | null;
 }

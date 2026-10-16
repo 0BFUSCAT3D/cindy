@@ -62,7 +62,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it('shows clipboard status as a transient toast without retry and keeps privacy failures visible', async () => {
+const clipboardNotices = ['clipboardSyncSkipped', 'clipboardSyncConflict'] as const;
+it.each(clipboardNotices)('shows %s briefly without retry', async (notice) => {
   await i18n.changeLanguage('zh-CN');
   Object.assign(window, {
     electronAPI: {
@@ -101,7 +102,7 @@ it('shows clipboard status as a transient toast without retry and keeps privacy 
       clipboardSync: true,
       lockOnExit: false,
     },
-    safety: { privacyActive: false, notice: 'clipboardSyncSkipped', clipboardProgress: null },
+    safety: { privacyActive: false, notice, clipboardProgress: null },
     credential: null,
     credentialBusy: false,
     credentialNotice: null,
@@ -109,7 +110,7 @@ it('shows clipboard status as a transient toast without retry and keeps privacy 
   };
   try {
     act(() => lifecycle.update?.(snapshot));
-    const text = i18n.t('remoteDesktop.clipboardSyncSkipped');
+    const text = i18n.t(`remoteDesktop.${notice}`);
     expect(screen.getByText(text)).toBeDefined();
     expect(screen.queryByRole('button', { name: i18n.t('remoteDesktop.retry') })).toBeNull();
     expect(document.querySelector('.remote-viewer-feedback')).toBeNull();
@@ -143,7 +144,10 @@ it('shows clipboard status as a transient toast without retry and keeps privacy 
     expect(getToastSnapshot()).toHaveLength(0);
 
     act(() =>
-      lifecycle.update?.({ ...snapshot, safety: { ...snapshot.safety, notice: 'privacyFailed' } }),
+      lifecycle.update?.({
+        ...snapshot,
+        safety: { ...snapshot.safety, notice: 'privacyFailed' },
+      }),
     );
     await act(async () => vi.advanceTimersByTimeAsync(5000));
     expect(screen.getByRole('button', { name: i18n.t('remoteDesktop.retry') })).toBeDefined();

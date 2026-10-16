@@ -378,10 +378,19 @@ it.each([
     local.unreadable = unreadable === 'local';
     remote.unreadable = unreadable === 'remote';
     expect((await safety.tick(options)).notice).toBe('clipboardSyncConflict');
+    expect(safety.snapshot().clipboardNoticeVersion).toBe(1);
 
     // An idle poll cannot pick a winner or clear the conflict on its own.
     safety.wake();
     expect((await safety.tick(options)).notice).toBe('clipboardSyncConflict');
+    expect(safety.snapshot().clipboardNoticeVersion).toBe(1);
+    // Another pair of copies is a new conflict, even if its notice is identical.
+    local.version++;
+    remote.version++;
+    expect((await safety.tick(options)).notice).toBe('clipboardSyncConflict');
+    expect(safety.snapshot().clipboardNoticeVersion).toBe(2);
+    safety.wake();
+    expect((await safety.tick(options)).clipboardNoticeVersion).toBe(2);
     expect(write).not.toHaveBeenCalled();
     expect(paste).not.toHaveBeenCalled();
 

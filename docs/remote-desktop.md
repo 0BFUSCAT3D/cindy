@@ -92,8 +92,10 @@ alone, but copying the same content again can restore the cleared side. Successf
 sync restores normal deduplication; an initially empty clipboard only establishes
 the baseline and does not import old content. Desktop clipboard sync notices
 use the shared transient toast (4 seconds, no retry action); unchanged status
-polls do not reopen it, while a newly skipped item gets a fresh notice even when
-its failure type matches the previous one. The occurrence counter stays in local
+polls do not reopen it, while a newly skipped item or conflict gets a fresh notice
+even when its failure type matches the previous one. A pass counts at most once,
+after accepting new version tokens; stale reads and backoff do not count.
+The occurrence counter stays in local
 Main-to-Renderer status; it does not change the device-link protocol. Unsupported
 formats and size limits have distinct copy, including when the other peer was
 cleared in the same pass.
