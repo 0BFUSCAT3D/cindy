@@ -43,6 +43,7 @@ import { isDefaultDraftSessionTitle } from '@cindy/maker-shared/session-title';
 import { CINDY_MAKE_ENABLED, isCindyMakeSource } from '@cindy/maker-shared/cindy-make-feature';
 import { EMPTY_INPUT_PROJECTION, normalizeInputProjection } from '@/session/inputProjection';
 import { sortPendingInteractions } from '@/session/interactionModel';
+import { clearAskUserDraft } from '@/session/interactionDraftStore';
 import { applySessionModelPrefPush } from '@/session/sessionModelMirror';
 import {
   createLatestWriteGuard,
@@ -4786,7 +4787,7 @@ export const remoteSessionStore = {
       const requestId = readString(payload, 'requestId');
       if (sessionId && requestId) {
         if (payload.reason === 'resolved' && !(isRecord(payload.decision) && payload.decision.dismissed === true)) {
-          this.releaseProtectedQuestion(sessionId, requestId);
+          this.confirmProtectedQuestion(sessionId, requestId);
         }
         // 注意:这里**不**提前回收延长抑制条目——push 到达只说明被控端已确认,
         // 不排除仍有「决定提交前发出、此刻还在途」的旧 getPendingInteractions
@@ -5586,6 +5587,16 @@ export const remoteSessionStore = {
     protectedQuestions.delete(sessionId);
     visibleInteractionCache.delete(sessionId);
     emit();
+  },
+
+  /** Both the resolve receipt and a resolved push complete the same draft. */
+  confirmProtectedQuestion(sessionId: string, requestId: string): void {
+    if (protectedQuestions.get(sessionId)?.request.requestId !== requestId) return;
+    // Register the existing stale-snapshot suppression before publishing removal.
+    this.settleOptimisticInteractionDismiss(sessionId, requestId, { kind: 'confirmed' });
+    clearAskUserDraft(requestId);
+    this.dismissInteraction(sessionId, requestId);
+    this.releaseProtectedQuestion(sessionId, requestId);
   },
 
   getVisiblePendingInteractions(sessionId: string): PendingInteraction[] {

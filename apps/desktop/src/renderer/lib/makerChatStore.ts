@@ -3659,14 +3659,7 @@ function _evictLruIfNeeded(): void {
       // 驱逐会丢 taskUpdates 让 sidebar spinner 熄灭。远程会话豁免(同折算口径)。
       return (
         s &&
-        !s.isStreaming &&
-        !s.agentStatus.isRunning &&
-        !hasBackgroundAgentWork(id, s) &&
-        !remoteOptimisticSends.has(id) &&
-        ![...remoteOptimisticMaterializationRecoveries.values()].some(
-          (recovery) =>
-            recovery.sessionId === id && isRemoteOptimisticMaterializationRecoveryActive(recovery),
-        ) &&
+        !_isSessionBusy(id, s) &&
         !_activeViewSessions.has(id)
       );
     });

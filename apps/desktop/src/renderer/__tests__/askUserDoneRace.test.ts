@@ -262,6 +262,23 @@ describe('ask_user 与 done 的时序', () => {
     expect(makerChatStore.getLightSnapshot(SESSION_ID).pendingAskUser?.requestId).toBe('new');
   });
 
+  it('keeps an edited question when more than 20 other tasks enter the cache', () => {
+    emitAskUserRequest('async-1', [{ question: 'Original?' }], 'async');
+    const draft = { requestId: 'async-1', currentIndex: 0, answers: {}, started: true, customInput: 'Still typing' };
+    makerChatStore.setAskUserDraft(SESSION_ID, draft);
+    onInteractionDismissed?.({ sessionId: SESSION_ID, requestId: 'async-1', reason: 'turn_completed' });
+    const others = Array.from({ length: 25 }, (_, i) => `draft-lru-${i}`);
+    try {
+      for (const id of others) makerChatStore.insertSystemCard(id, 'status', { label: id });
+      expect(makerChatStore.getLightSnapshot(SESSION_ID).askUserDraft).toBe(draft);
+      expect(makerChatStore.getLightSnapshot(SESSION_ID).pendingAskUser?.requestId).toBe('async-1');
+      // Ordinary inactive tasks still get evicted.
+      expect(makerChatStore.getSnapshot(others[0]).messages).toHaveLength(0);
+    } finally {
+      for (const id of others) makerChatStore.purgeSession(id);
+    }
+  });
+
   it('does not protect untouched cards or synchronous drafts', () => {
     emitAskUserRequest('untouched', [{ question: 'Q?' }], 'async');
     makerChatStore.setAskUserDraft(SESSION_ID, { requestId: 'untouched', currentIndex: 0, answers: {} });

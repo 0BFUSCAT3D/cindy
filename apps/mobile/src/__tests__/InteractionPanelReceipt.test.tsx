@@ -100,6 +100,41 @@ async function type(id: string, value: string) {
   });
 }
 
+it.each(['push-first', 'receipt-first', 'lost-receipt', 'other-client'] as const)(
+  'finalizes retained answers without stale snapshot resurrection: %s',
+  async (order) => {
+    const item = { persistId: 'original-row', request: {
+      kind: 'ask_user_question', requestId, delivery: 'async', questions: [{ question: 'Original?' }],
+    } };
+    remoteSessionStore.setPendingInteractions('s1', [item]);
+    await act(async () => root.render(<Harness />));
+    await type('interaction.ask.textInput', 'Finished');
+    let accept!: (value: { accepted: boolean }) => void;
+    let reject!: (error: Error) => void;
+    resolveInteraction.mockImplementationOnce(() => new Promise((resolve, fail) => {
+      accept = resolve; reject = fail;
+    }));
+    if (order !== 'other-client') await click('interaction.ask.submitButton');
+    if (order === 'receipt-first') await act(async () => accept({ accepted: true }));
+    await act(async () => {
+      remoteSessionStore.applyRemotePush('d1', 'maker:interaction-dismissed', {
+        sessionId: 's1', requestId, reason: 'resolved',
+        decision: { kind: 'ask_user_question', answers: { 'Original?': 'Finished' } },
+      });
+      // A snapshot requested before the answer may arrive after its push.
+      remoteSessionStore.setPendingInteractions('s1', [item]);
+    });
+    expect(remoteSessionStore.getVisiblePendingInteractions('s1')).toEqual([]);
+    expect(readAskUserDraft(requestId)).toBeNull();
+    expect(host.querySelector('[data-testid="interaction.ask.card"]')).toBeNull();
+    if (order === 'push-first') await act(async () => accept({ accepted: true }));
+    if (order === 'lost-receipt') await act(async () => reject(new Error('receipt lost')));
+    expect(asyncReply.input.enqueue).not.toHaveBeenCalled();
+    expect(readAskUserDraft(requestId)).toBeNull();
+    expect(onError.mock.calls.every(([error]) => error === null)).toBe(true);
+  },
+);
+
 it.each(['send', 'close', 'stopped', 'stopped-empty', 'already-answered', 'unconfirmed', 'unknown-steer'])('retains edited async answers across expiry and new questions: %s', async (action) => {
   remoteSessionStore.setPendingInteractions('s1', [{
     persistId: 'original-row',

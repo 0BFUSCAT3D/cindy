@@ -606,8 +606,7 @@ function InteractionItem({
         await resolveInteractionResilient(maker, sessionId, currentRequestId, decision);
       }
       if (item.retainedDraft) {
-        remoteSessionStore.dismissInteraction(sessionId, currentRequestId);
-        remoteSessionStore.settleOptimisticInteractionDismiss(sessionId, currentRequestId, { kind: 'confirmed' });
+        remoteSessionStore.confirmProtectedQuestion(sessionId, currentRequestId);
       }
       remoteSessionStore.releaseProtectedQuestion(sessionId, currentRequestId);
       if (kind === 'ask_user_question') clearAskUserDraft(currentRequestId);
