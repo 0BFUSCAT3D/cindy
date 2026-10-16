@@ -149,6 +149,7 @@ async function insertTask(
     agentKind: dbAgentKind(route.agentKind),
     model: route.model,
     providerId: route.providerId,
+    agentDeviceId: route.agentDeviceId ?? null,
     effort: route.effort,
     fastMode: opts.fastMode === true,
     permissionMode: 'auto',
@@ -176,6 +177,7 @@ async function setRoute(id: string, route: ImDefaultRoute): Promise<void> {
       agentKind: dbAgentKind(route.agentKind),
       model: route.model,
       providerId: route.providerId,
+      agentDeviceId: route.agentDeviceId ?? null,
       effort: route.effort as typeof sessions.$inferInsert.effort,
     })
     .where(eq(sessions.id, id));
@@ -209,11 +211,24 @@ beforeEach(() => {
 });
 
 describe('syncUnderLock', () => {
+  it('moves a following task to a share and back even when provider and model are identical', async () => {
+    await insertTask('t1', OLD);
+    const shared = { ...OLD, agentDeviceId: 'share:owner' };
+    mocks.resolveDefaults.mockResolvedValue({ ...shared, fingerprint: 'fp-new' });
+    await sync().syncUnderLock('t1');
+    expect((await rowOf('t1')).agentDeviceId).toBe('share:owner');
+    expect(parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute)?.route).toEqual(shared);
+    mocks.fingerprint.mockReturnValue('fp-back');
+    mocks.resolveDefaults.mockResolvedValue({ ...OLD, fingerprint: 'fp-back' });
+    await sync().syncUnderLock('t1');
+    expect((await rowOf('t1')).agentDeviceId).toBeNull();
+    expect(mocks.applyRoute).toHaveBeenLastCalledWith('t1', { ...OLD, agentDeviceId: null, fastMode: false }, 'claude-code');
+  });
   it('switches a following task and records the read-back route under the new fingerprint', async () => {
     await insertTask('t1', OLD);
     await expect(sync().syncUnderLock('t1')).resolves.toBe(false);
 
-    expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, fastMode: false }, 'claude-code');
+    expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, agentDeviceId: null, fastMode: false }, 'claude-code');
     const record = parseImDefaultRouteRecord((await rowOf('t1')).imDefaultRoute);
     expect(record).toEqual({ v: 1, fp: 'fp-new', route: NEW });
   });
@@ -246,7 +261,7 @@ describe('syncUnderLock', () => {
     await insertTask('t1', OLD, { fastMode: true });
     await sync().syncUnderLock('t1');
 
-    expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, fastMode: true }, 'claude-code');
+    expect(mocks.applyRoute).toHaveBeenCalledWith('t1', { ...NEW, agentDeviceId: null, fastMode: true }, 'claude-code');
   });
 
   it('still defers the generic apply when the staged claim write fails', async () => {
@@ -804,7 +819,7 @@ describe('official bot follows defaults without an extra control', () => {
     await insertTask('official', OLD, { source: 'telegram', marker: false, record: null, fastMode: true });
     await writeHookDefaultRouteRecord('official', hookFp);
     await (await officialFollower()).syncUnderLock('official');
-    expect(mocks.applyRoute).toHaveBeenCalledWith('official', { ...NEW, fastMode: true }, 'claude-code');
+    expect(mocks.applyRoute).toHaveBeenCalledWith('official', { ...NEW, agentDeviceId: null, fastMode: true }, 'claude-code');
     expect((await rowOf('official')).permissionMode).toBe('auto');
     expect(parseImDefaultRouteRecord((await rowOf('official')).imDefaultRoute)?.fp).toBe(nextHookFp);
     mocks.fingerprint.mockReturnValue(hookFp);
@@ -826,6 +841,18 @@ describe('official bot follows defaults without an extra control', () => {
     await (await officialFollower()).syncUnderLock('new-task');
     expect(mocks.applyRoute).toHaveBeenCalledTimes(1);
     expect((await rowOf('official')).model).toBe(OLD.model);
+  });
+
+  it('records the actual remote device and follows device changes without treating them as manual choices', async () => {
+    const { writeHookDefaultRouteRecord } = await import('../../../hook-control/defaultRouteFollow');
+    const remote = { ...OLD, agentDeviceId: 'share:owner' };
+    await insertTask('official', remote, { source: 'telegram', marker: false, record: null });
+    await writeHookDefaultRouteRecord('official', hookFp);
+    expect(parseImDefaultRouteRecord((await rowOf('official')).imDefaultRoute)?.route).toMatchObject(remote);
+    mocks.resolveDefaults.mockResolvedValue({ ...remote, agentDeviceId: 'share:other', fingerprint: nextHookFp });
+    await (await officialFollower()).syncUnderLock('official');
+    expect(mocks.applyRoute).toHaveBeenCalledWith('official', { ...remote, agentDeviceId: 'share:other', fastMode: false }, 'claude-code');
+    expect((await rowOf('official')).agentDeviceId).toBe('share:other');
   });
 
   it('does not claim historical official tasks, personal bot tasks, or remote tasks', async () => {

@@ -22,6 +22,7 @@ export async function writeHookDefaultRouteRecord(sessionId: string, fingerprint
       agentKind: sessions.agentKind,
       model: sessions.model,
       providerId: sessions.providerId,
+      agentDeviceId: sessions.agentDeviceId,
       effort: sessions.effort,
       imDefaultRoute: sessions.imDefaultRoute,
     })
@@ -36,6 +37,7 @@ export async function writeHookDefaultRouteRecord(sessionId: string, fingerprint
         agentKind: dbToMakerAgentKind(row.agentKind),
         model: row.model,
         providerId: row.providerId?.trim() || null,
+        agentDeviceId: row.agentDeviceId ?? null,
         effort: row.effort ?? null,
       }),
     })

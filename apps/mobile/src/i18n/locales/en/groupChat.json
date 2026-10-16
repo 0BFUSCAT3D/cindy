@@ -140,6 +140,16 @@
     "planning": "Splitting the work…",
     "step": "Working on it…"
   },
+  "task": {
+    "state": {
+      "started": "In progress",
+      "waiting": "Waiting for your confirmation",
+      "completed": "Done",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "timed-out": "Timed out"
+    }
+  },
   "files": {
     "onComputer": "These files are on your computer. Open them there.",
     "loading": "Loading…",

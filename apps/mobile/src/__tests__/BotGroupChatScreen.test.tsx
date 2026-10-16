@@ -77,7 +77,7 @@ vi.mock('react-i18next', async (importOriginal) => ({
 vi.mock('expo-crypto', () => ({ randomUUID: () => `uuid-${++h.uuid}` }));
 vi.mock('lucide-react-native', () => Object.fromEntries(
   ['ChevronLeft', 'Settings2', 'Plus', 'Square', 'Users', 'X', 'Check', 'CircleAlert', 'CircleCheck', 'CircleDashed', 'FileText', 'Sparkles', 'Folder', 'Camera', 'Image',
-    'Layers', 'ListChecks', 'Ellipsis', 'ChevronRight', 'ChevronDown']
+    'Layers', 'ListChecks', 'ListTodo', 'Ellipsis', 'ChevronRight', 'ChevronDown']
     .map((name) => [name, () => null]),
 ));
 vi.mock('@/theme', async () => ({
@@ -206,6 +206,9 @@ vi.mock('@/session/useBotGroupSettingsManagement', () => ({ useBotGroupSettingsM
 vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
 vi.mock('@/session/CompanionPresenceRing', () => ({ CompanionPresenceRing: () => null }));
 vi.mock('@/session/ThinkingDots', () => ({ ThinkingDots: () => null }));
+// The live card of my own teammate's task reads the computer over device-link; only which computer is under test.
+const taskCardDevices = vi.hoisted(() => [] as string[]);
+vi.mock('@/session/CompanionMessageCard', () => ({ CompanionTaskCard: ({ deviceId }: { deviceId: string }) => { taskCardDevices.push(deviceId); return null; } }));
 import { BotGroupChatScreen } from '@/session/BotGroupChatScreen';
 import { parseBotGroupChatData } from '@/session/botGroupRemote';
 
@@ -307,6 +310,71 @@ describe('group timeline', () => {
     await render(parseBotGroupChatData(deleted)!);
     expect(byId('botGroup.quote')!.textContent).toContain('groupChat.quote.deleted');
     expect(node.textContent).not.toContain('私密的原文');
+  });
+
+  it('shows a task another owner\'s teammate started from the group as its posted title and state', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-1', fromBotId: 'abu', fromBotName: '阿布', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-1', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: false },
+    ] });
+    data.messages.push(message('t1', 20, { authorBotId: 'abu', authorName: '阿布', content: '我开了个任务',
+      task: { meta, state: 'waiting', title: '官网首页', summary: '首页要放几个案例？' } }));
+    await render(parseBotGroupChatData(data)!);
+    const card = byId('botGroup.task')!;
+    expect(card.textContent).toContain('官网首页');
+    expect(card.textContent).toContain('groupChat.task.state.waiting');
+    expect(card.textContent).toContain('首页要放几个案例？');
+    expect(byId('botGroup.task.live')).toBeNull();
+  });
+
+  it('opens my own teammate\'s task live in a group entered straight from the Chat Server, via the companion\'s home computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-3', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-3', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true, homeDeviceId: 'pc' },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: true, homeDeviceId: null },
+    ] });
+    data.messages.push(message('t3', 22, { authorBotId: 'mimi', authorName: '咪咪', content: '我开了个任务', task: { meta, state: 'started', title: '官网首页' } }),
+      message('t4', 23, { authorBotId: 'abu', authorName: '阿布', content: '我也开了', task: { meta: { ...meta, delegationId: 'task-4', fromBotId: 'abu' }, state: 'started', title: '整理行程' } }));
+    h.chat = { ...h.chat, server: true, state: { kind: 'ready', group: data } };
+    // No computer on the route: the direct Chat Server entry.
+    await act(async () => root.render(el(BotGroupChatScreen, { deviceId: '', deviceName: '', groupId: 'g1' })));
+    expect(all('botGroup.task.live')).toHaveLength(1);
+    // A companion whose computer the account does not know stays a snapshot.
+    expect(byId('botGroup.task')!.textContent).toContain('整理行程');
+  });
+
+  it('reads my own teammate\'s live task on its home computer when the group is opened through another computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-5', fromBotId: 'mimi', fromBotName: '咪咪', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-5', objective: '写官网首页' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true, homeDeviceId: 'pc' },
+      { botId: 'abu', name: '阿布', avatar: '🦉', avatarColor: 'blue', status: 'active', isOwned: true, homeDeviceId: null },
+    ] });
+    data.messages.push(message('t5', 24, { authorBotId: 'mimi', authorName: '咪咪', content: '我开了个任务', task: { meta, state: 'started', title: '官网首页' } }),
+      message('t6', 25, { authorBotId: 'abu', authorName: '阿布', content: '我也开了', task: { meta: { ...meta, delegationId: 'task-6', fromBotId: 'abu' }, state: 'started', title: '整理行程' } }));
+    taskCardDevices.length = 0;
+    // Opened through 'mac', which is not 咪咪's home; 阿布's home is unknown, so it stays on 'mac'.
+    await render(parseBotGroupChatData(data)!);
+    expect(all('botGroup.task.live')).toHaveLength(2);
+    expect([...new Set(taskCardDevices)].sort()).toEqual(['mac', 'pc']);
+  });
+
+  it('shows a task from an author who has left the group as a snapshot, never a lookup on this phone\'s computer', async () => {
+    const meta = { v: 1 as const, role: 'delegation-request' as const, delegationId: 'task-2', fromBotId: 'gone', fromBotName: '离开的伙伴', toBotId: null,
+      toBotName: 'Cindy', parentSessionId: 'group-lane', childSessionId: 'child-2', objective: '整理行程' };
+    const data = group({ serverBacked: true, members: [
+      { botId: 'mimi', name: '咪咪', avatar: '🐱', avatarColor: 'red', status: 'active', isOwned: true },
+    ] });
+    data.messages.push(message('t2', 21, { authorBotId: 'gone', authorName: '离开的伙伴', content: '我也开了',
+      task: { meta, state: 'started', title: '整理行程' } }));
+    await render(parseBotGroupChatData(data)!);
+    const card = byId('botGroup.task')!;
+    expect(card.textContent).toContain('整理行程');
+    expect(card.textContent).toContain('groupChat.task.state.started');
+    expect(byId('botGroup.task.live')).toBeNull();
   });
 
   it('uses the shared Android keyboard avoidance behavior for the group composer', async () => {

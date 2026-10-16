@@ -5167,6 +5167,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getWorkspaceProviderSources: (): Promise<{ entries: unknown }> =>
       ipcRenderer.invoke('maker:hook-control:workspace-provider-source-get'),
     setWorkspaceProviderSource: (payload: {
+      agentDeviceId?: string | null;
       channel: 'slack' | 'telegram' | 'x';
       teamId: string | null;
       workspace: string;
