@@ -1001,6 +1001,12 @@ export function setSessionTextSnapshotReader(reader: typeof readSessionTextSnaps
   readSessionTextSnapshot = reader;
 }
 
+// Ordinary same-account inbound links only; shared/provider guests never notify.
+let onOrdinaryPeerLinkAccepted: ((deviceId: string) => void) | null = null;
+export function setOrdinaryPeerLinkAcceptedListener(cb: typeof onOrdinaryPeerLinkAccepted): void {
+  onOrdinaryPeerLinkAccepted = cb;
+}
+
 export function setControllersChangedListener(cb: ControllersChangedListener | null): void {
   onControllersChanged = cb;
 }
@@ -2811,6 +2817,7 @@ function handleLinkOpen(
     flushMakerEventBatchesFor(src);
     drainOfflinePushQueueTo(src, [LEGACY_TOPIC]);
   }
+  onOrdinaryPeerLinkAccepted?.(src);
   log.info(`control link opened by ${shortId(src)} (${name})`);
 }
 
@@ -4782,6 +4789,7 @@ export const __testing = {
     controllerDisplayNameByDevice.clear();
     reportedControllerNameByDevice.clear();
     onSessionsSubscribed = null;
+    onOrdinaryPeerLinkAccepted = null;
     readSessionTextSnapshot = null;
     activeClient = null;
     offlinePushQueue.clear();
