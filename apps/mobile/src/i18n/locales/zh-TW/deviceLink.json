@@ -37,7 +37,7 @@
   "versionMismatchTitle": "版本不匹配",
   "versionMismatchHint": "當前 App 版本與服務端協議不一致，請升級到最新版本。",
   "unstableTitle": "連線反覆斷開",
-  "unstableHint": "本機連線反覆斷開又重連，遠端操作可能一直超時。請檢查網路；若持續如此，重啟 App 後重試。",
+  "unstableHint": "連線不穩定，請檢查網路並等待連線恢復",
   "relay": {
     "label": {
       "online": "Relay 已連線",

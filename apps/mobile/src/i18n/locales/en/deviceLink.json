@@ -37,7 +37,7 @@
   "versionMismatchTitle": "Version mismatch",
   "versionMismatchHint": "This app version is incompatible with the service. Update to the latest version and try again.",
   "unstableTitle": "Connection keeps dropping",
-  "unstableHint": "Connection keeps dropping and reconnecting — check the network, or restart the app if it persists.",
+  "unstableHint": "Connection is unstable. Check your network and wait for the connection to recover.",
   "relay": {
     "label": {
       "online": "Relay connected",
