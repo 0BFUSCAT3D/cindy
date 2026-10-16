@@ -3007,7 +3007,7 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
           expect(text).not.toContain('新对话配置');
         } else {
           expect(text).toContain('/model');
-          expect(text).toContain('新对话配置');
+          expect(text).not.toContain('新对话配置');
         }
       });
     } finally {

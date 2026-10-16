@@ -88,6 +88,7 @@ import { createDnsFallbackLookup } from './dnsFallbackLookup';
 import {
   wireInboundDispatch,
   setControllersChangedListener,
+  setOrdinaryPeerLinkAcceptedListener,
   setRemoteInvokeBusyChangedListener,
   dropAllControllers,
   deactivateAllControllers,
@@ -388,6 +389,7 @@ let sharedHostSourceEpoch = 0;
 const transportTimeoutReopen = createTransportTimeoutReopenLoop({
   // Local Main→Renderer projection only; the relay and neighboring peers remain online.
   onReset: (deviceId) => broadcast(DEVICE_LINK_PUSH.PEER_LINK_RESET, { deviceId }),
+  onReopened: (deviceId) => broadcast(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, { deviceId }),
   reopen: async (deviceId) => {
     await openRemoteLink(deviceId);
     // link 重建成功后定向补一次订阅重放:transport-timeout 场景被控端保留了
@@ -970,6 +972,9 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
   });
 
   // 被控端:接线入站隧道(link-open / invoke / link-close → 本机 handler dispatch)
+  setOrdinaryPeerLinkAcceptedListener((deviceId) => {
+    broadcast(DEVICE_LINK_PUSH.PEER_LINK_REOPENED, { deviceId });
+  });
   wireInboundDispatch(client);
   // outbox flush 的 presence 显式离线门禁(运行期接线,模块顶层会撞 import 环 TDZ)
   setDispatchPresenceOfflineCheck(isPresenceExplicitlyOffline);
@@ -1209,6 +1214,7 @@ export function initDeviceLinkService(options: DeviceLinkServiceOptions = {}): v
     // 已由上面 stop() 的 onDemote 执行过一次,linkTornDown 标记拦截重复清理。
     teardownActiveLink();
     setControllersChangedListener(null);
+    setOrdinaryPeerLinkAcceptedListener(null);
     setRemoteInvokeBusyChangedListener(null);
     client = null;
   });

@@ -4056,6 +4056,7 @@ interface ElectronAPI {
     /** 「保持电脑唤醒」在其它共享 userData 实例被翻转后推送 */
     onKeepAwakeChanged: (cb: (payload: { keepAwake: boolean }) => void) => () => void;
     /** Main 本地投影:单个 peer 的恢复作废旧内容就绪证据，不代表 relay 离线。 */
+    onPeerLinkReopened?: (cb: (payload: { deviceId: string }) => void) => () => void;
     onPeerLinkReset?: (cb: (payload: { deviceId: string }) => void) => () => void;
     /** 控制端:目标设备「无响应」熔断状态翻转(弱网 / 对端卡死;presence 可能仍在线) */
     onResponsivenessChanged: (
@@ -5802,7 +5803,9 @@ interface ElectronAPI {
     ) => Promise<import('../shared/modelContextLimit').ModelContextLimitView>;
 
     // 「在新窗口打开」会话多开
-    openSessionInNewWindow: (sessionId: string, deviceId?: string | null) => Promise<void>;
+    openSessionInNewWindow: (
+      sessionId: string, deviceId?: string | null, messageClientId?: string | null,
+    ) => Promise<void>;
     openSessionInNewWindowIfDroppedOutside: (
       sessionId: string,
       deviceId?: string | null,
@@ -6947,7 +6950,7 @@ interface ElectronAPI {
           budgetResetAt?: string | null;
           todaySpend: number | null;
           fetchedAt: number;
-        }) => void,
+        } | null) => void,
       ) => () => void;
       onCodexAccountChanged: (
         cb: (p: {

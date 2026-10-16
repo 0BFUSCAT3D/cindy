@@ -30,6 +30,10 @@ const h = vi.hoisted(() => {
   const calls: string[] = [];
   return {
     calls,
+    followPolicy: vi.fn(),
+    syncDefaultRoute: vi.fn(async () => false),
+    writeDefaultRecord: vi.fn(async (_id: string, _fingerprint: string) => undefined),
+    acquirePendingAgentSwitch: vi.fn(async (_id: string, _sync: () => Promise<boolean>): Promise<() => void> => () => {}),
     touchUserSendInDb: vi.fn(async (id: string) => {
       calls.push(`touch:${id}`);
     }),
@@ -147,6 +151,7 @@ vi.mock('../../device-link/broadcast-tap.js', () => ({
   tapWindowBroadcast: h.tapWindowBroadcast,
 }));
 vi.mock('../../maker-ipc/register.js', () => ({
+  acquirePendingAgentSwitchForImSend: h.acquirePendingAgentSwitch,
   beginTurnChangeSetAtDispatch: h.beginTurnChangeSetAtDispatch,
   prepareUnhealthySessionForSend: vi.fn(async () => undefined),
   wireSessionToIpc: vi.fn(),
@@ -154,6 +159,13 @@ vi.mock('../../maker-ipc/register.js', () => ({
   installDesktopInteractionListener: h.installDesktopInteractionListener,
   noteSilentStopUserSend: vi.fn(),
   onSilentStopSettled: vi.fn(() => () => {}),
+}));
+vi.mock('../../im/shared/channelDefaultRouteSync.js', () => ({
+  createDefaultRouteFollower: (policy: unknown) => { h.followPolicy(policy); return { syncUnderLock: h.syncDefaultRoute }; },
+}));
+vi.mock('../defaultRouteFollow.js', () => ({
+  isHookDefaultRouteRow: vi.fn(),
+  writeHookDefaultRouteRecord: h.writeDefaultRecord,
 }));
 vi.mock('../../turn-change-set/store.js', () => ({
   clearPendingTurnChangeSets: h.clearPendingTurnChangeSets,
@@ -379,7 +391,7 @@ vi.mock('../../maker-host/index.js', () => ({
 }));
 // 供应商显示名按任务实际来源读(查库 + 供应商目录), 这里只验失败说明带上了它。
 vi.mock('../../im/shared/sessionProviderLabel.js', () => ({
-  resolveSessionProviderLabel: vi.fn(async () => 'OpenAI'),
+  resolveSessionErrorContext: vi.fn(async () => ({ providerLabel: 'OpenAI', modelLabel: 'GPT-6 Astra', taskLabel: '测试任务（sess-new）' })),
 }));
 
 import { createMakerHookSessionRunner, extractToolResultImageUrls } from '../session-runner.js';
@@ -449,6 +461,8 @@ function baseReq(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.acquirePendingAgentSwitch.mockReset();
+  h.acquirePendingAgentSwitch.mockResolvedValue(() => {});
   h.calls.length = 0;
   h.eventCbs.clear();
   h.headlessDuringSend.length = 0;
@@ -457,6 +471,7 @@ beforeEach(() => {
   h.listProviders.mockResolvedValue([]);
   h.getModelVisibilityOverride.mockReset();
   h.getModelVisibilityOverride.mockReturnValue(undefined);
+  h.readImDefaultSettings.mockReturnValue({ agentKind: 'claude-code', agents: {} });
   h.useActualDefaults = false;
   h.resolvedConfig.permissionMode = 'bypassPermissions';
   h.resolvedConfig.providerId = null;
@@ -475,6 +490,178 @@ beforeEach(() => {
   h.peekPendingHandoff.mockResolvedValue(null);
   h.listMessagesForAgentHandoff.mockReset();
   h.listMessagesForAgentHandoff.mockResolvedValue([]);
+});
+
+describe('hook task model selection on next send', () => {
+  it('runs default following under the send lock before reading metadata', async () => {
+    const readMeta = fakeMaker.getSessionMeta.getMockImplementation()!;
+    h.acquirePendingAgentSwitch.mockImplementationOnce(async (id, sync) => {
+      expect(id).toBe('sess-new');
+      await sync();
+      return () => {};
+    });
+    fakeMaker.getSessionMeta.mockImplementationOnce(async () => {
+      expect(h.syncDefaultRoute).toHaveBeenCalledWith('sess-new');
+      return readMeta();
+    });
+    await createMakerHookSessionRunner({ log }).run(baseReq({ isNew: false }));
+  });
+
+  it('uses current local workspace defaults instead of stale dispatch model hints', async () => {
+    h.useActualDefaults = true;
+    const providers = [connectedProvider('xd', [catalogModel('test-model')])];
+    h.getWorkspacePref.mockReturnValue({
+      channel: 'telegram', teamId: null, workspace: 'repo',
+      agentKind: 'claude-code', model: 'test-model', effort: 'high', permissionMode: null,
+    });
+    await createMakerHookSessionRunner({ log }).run(baseReq({
+      isNew: false, model: 'stale-model', workspaceAlias: 'repo',
+      source: { im: 'telegram', userText: 'hello' },
+    }));
+    const policy = h.followPolicy.mock.calls[0][0];
+    const target = await policy.resolveTarget(providers);
+    expect(target).toMatchObject({ agentKind: 'claude-code', model: 'test-model', providerId: 'xd' });
+    expect(target.fingerprint).toBe(policy.fingerprint());
+    expect(h.getWorkspacePref).toHaveBeenCalledWith('telegram', null, 'repo');
+    expect(h.readImDefaultSettings).toHaveBeenCalledWith(undefined);
+  });
+
+  it.each([false, true])('records new official tasks with their creation defaults (createOnly=%s)', async (createOnly) => {
+    const outcome = await createMakerHookSessionRunner({ log }).run(baseReq({
+      createOnly, source: { im: 'telegram', userText: 'hello' },
+    }));
+    expect(outcome.status).toBe('ok');
+    expect(h.writeDefaultRecord).toHaveBeenCalledWith('sess-new', expect.stringContaining('hook'));
+    expect(h.acquirePendingAgentSwitch).not.toHaveBeenCalled();
+  });
+
+  it.each(['telegram', 'slack', 'x'])('preserves %s dispatch defaults until workspace migration completes', async (channel) => {
+    h.useActualDefaults = true;
+    h.isWorkspacePrefsMigrated.mockReturnValue(false);
+    h.readImDefaultSettings.mockReturnValue({
+      agentKind: 'claude-code',
+      agents: { 'claude-code': { providerId: null, model: 'global-model', effort: 'high' } },
+    });
+    const providers = [connectedProvider('xd', [catalogModel('test-model'), catalogModel('global-model')])];
+    h.listProviders.mockResolvedValue(providers);
+    const req = baseReq({
+      agentKind: 'claude-code', model: 'test-model', effort: 'high',
+      workspaceAlias: 'repo', source: { im: channel, userText: 'hello' },
+    });
+    const runner = createMakerHookSessionRunner({ log });
+    expect((await runner.run({ ...req, createOnly: true })).status).toBe('ok');
+    const creationFingerprint = h.writeDefaultRecord.mock.calls[0][1];
+    await runner.run({ ...req, isNew: false });
+    const policy = h.followPolicy.mock.calls[0][0];
+    expect(policy.fingerprint()).toBe(creationFingerprint);
+    expect(await policy.resolveTarget(providers)).toMatchObject({
+      model: 'test-model', providerId: 'xd', fingerprint: creationFingerprint,
+    });
+
+    // 迁移后，缺省本机目录偏好表示继承全局，不再消费旧服务端值。
+    h.isWorkspacePrefsMigrated.mockReturnValue(true);
+    expect(await policy.resolveTarget(providers)).toMatchObject({ model: 'global-model' });
+  });
+
+  it('keeps the current route when the task workspace alias is unknown', async () => {
+    await createMakerHookSessionRunner({ log }).run(baseReq({
+      isNew: false, source: { im: 'telegram', userText: 'hello' },
+    }));
+    const policy = h.followPolicy.mock.calls[0][0];
+    expect(policy.ownsRow({})).toBe(false);
+  });
+
+  it.each(['workspace', 'global'])('tracks changes to the %s default execution device', async (scope) => {
+    h.useActualDefaults = true;
+    h.readRemoteRoute.mockResolvedValue({ model: catalogModel('test-model') });
+    const selectDevice = (agentDeviceId: string) => {
+      if (scope === 'workspace') {
+        h.getWorkspaceProviderSource.mockReturnValue('owner-provider');
+        h.agentDeviceId = agentDeviceId;
+      } else {
+        h.readImDefaultSettings.mockReturnValue({
+          agentKind: 'claude-code', agents: {
+            'claude-code': { providerId: 'owner-provider', model: 'test-model', effort: 'high', agentDeviceId },
+          },
+        });
+      }
+    };
+    selectDevice('share:owner');
+    const runner = createMakerHookSessionRunner({ log });
+    const req = baseReq({ workspaceAlias: 'chat', source: { im: 'telegram' } });
+    expect((await runner.run({ ...req, createOnly: true })).status).toBe('ok');
+    const creationFingerprint = h.writeDefaultRecord.mock.calls[0][1];
+    await runner.run({ ...req, isNew: false });
+    const policy = h.followPolicy.mock.calls[0][0];
+    expect(policy.fingerprint()).toBe(creationFingerprint);
+    expect(await policy.resolveTarget([])).toMatchObject({ agentDeviceId: 'share:owner', fingerprint: creationFingerprint });
+    selectDevice('share:other');
+    expect(policy.fingerprint()).not.toBe(creationFingerprint);
+    expect(await policy.resolveTarget([])).toMatchObject({ agentDeviceId: 'share:other', fingerprint: policy.fingerprint() });
+  });
+
+  it.each(['claude-code', 'codex'] as const)('applies the selected %s route before reading metadata and sending', async (agentKind) => {
+    let applied = false;
+    const release = vi.fn();
+    h.acquirePendingAgentSwitch.mockImplementationOnce(async () => {
+      applied = true;
+      return release;
+    });
+    fakeMaker.getSessionMeta.mockImplementationOnce(async () => {
+      expect(applied).toBe(true);
+      return { workDir: 'D:/repo', model: 'selected-model', sdkSessionId: 'selected-sdk',
+        agentKind, permissionMode: undefined } as never;
+    });
+    const selected = makeFakeSession('sess-new');
+    const send = selected.send.getMockImplementation()!;
+    selected.send.mockImplementation(async (...args) => {
+      expect(release).not.toHaveBeenCalled();
+      return send(...args);
+    });
+    fakeMaker.createSession.mockImplementationOnce(async (opts) => {
+      expect(opts).toMatchObject({ agentKind, model: 'selected-model' });
+      return selected;
+    });
+
+    const result = await createMakerHookSessionRunner({ log }).run(baseReq({ isNew: false }));
+    expect(result.status).toBe('ok');
+    expect(selected.send).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('releases the send lock before waiting for the model to finish', async () => {
+    const release = vi.fn();
+    h.acquirePendingAgentSwitch.mockResolvedValueOnce(release);
+    const session = makeFakeSession('sess-new');
+    session.send.mockResolvedValue({ accepted: true });
+    fakeMaker.createSession.mockResolvedValueOnce(session);
+    const run = createMakerHookSessionRunner({ log }).run(baseReq({ isNew: false }));
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    h.eventCbs.get('sess-new')!({ type: 'done', data: null });
+    expect((await run).status).toBe('ok');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each(['create', 'directory', 'send'] as const)('releases the send lock on %s failure', async (stage) => {
+    const release = vi.fn();
+    h.acquirePendingAgentSwitch.mockResolvedValueOnce(release);
+    const session = makeFakeSession('sess-new');
+    if (stage === 'create') fakeMaker.createSession.mockRejectedValueOnce(new Error('create failed'));
+    else fakeMaker.createSession.mockResolvedValueOnce(session);
+    if (stage === 'send') session.send.mockRejectedValueOnce(new Error('send failed'));
+    const result = await createMakerHookSessionRunner({ log }).run(baseReq({
+      isNew: false, ...(stage === 'directory' ? { isDirAuthorized: () => false } : {}),
+    }));
+    expect(result.status).toBe('error');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('does not send with the old model when applying the choice fails', async () => {
+    h.acquirePendingAgentSwitch.mockRejectedValueOnce(new Error('selection failed'));
+    await expect(createMakerHookSessionRunner({ log }).run(baseReq({ isNew: false })))
+      .rejects.toThrow('selection failed');
+    expect(fakeMaker.createSession).not.toHaveBeenCalled();
+  });
 });
 
 describe('hook session 精确接管边界', () => {
@@ -2632,10 +2819,11 @@ describe('上游过载自动重试期间的渠道进度(零产出窗口)', () =>
     const outcome = await p;
     expect(outcome.status).toBe('error');
     expect(outcome.errorMessage).toContain('⚠️ 供应商额度不足：「OpenAI」已达到工作区所有者设置的花费上限');
-    // 官方 bot 的 /model 与官方卡片改的是目录默认: 必须接着 /new, 或在 Cindy 里给任务换模型。
-    expect(outcome.errorMessage).toContain('官方 bot 卡片的工作目录');
-    expect(outcome.errorMessage).toContain('/new');
-    expect(outcome.errorMessage).not.toContain('Telegram 机器人');
+    expect(outcome.errorMessage).toContain('Telegram 官方 bot');
+    expect(outcome.errorMessage).toContain('GPT-6 Astra');
+    expect(outcome.errorMessage).toContain('测试任务（sess-new）');
+    expect(outcome.errorMessage).toContain('在 Cindy 里打开这个任务');
+    expect(outcome.errorMessage).not.toContain('/new');
   });
 
   it('非过载的终态错误仍原样上报(不误改其它失败的诊断信息)', async () => {

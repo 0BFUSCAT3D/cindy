@@ -65,7 +65,7 @@ type PullThroughScrollViewProps = ScrollViewProps & {
 /**
  * 聊天记录列表的滚动容器（LegendList renderScrollComponent）。
  *
- * 原生滚动照常进行：Native 手势只让列表加入 RNGH 编排；追踪手势 manualActivation 永不激活，
+ * 原生滚动照常进行：Native 手势只让列表加入 RNGH 编排；Manual 追踪手势永不激活，
  * 只读触摸位置，不认领手势、不取消行内点击。接手时把列表滚动关掉（输入框接管这次拖动，
  * 两边不同时动）；抬手后恢复。追踪不依赖 Native 手势存活——关掉滚动会让原生滚动手势取消。
  */
@@ -96,8 +96,10 @@ export function ComposerPullThroughScrollView({ bridge, ref, ...props }: PullThr
       }
       phase.value = PHASE_IDLE;
     };
-    const tracker = Gesture.Pan()
-      .manualActivation(true)
+    // A manual-activation Pan still installs a UIPanGestureRecognizer. iOS's
+    // interactive-pop recognizer waits for that pending pan, so even an unarmed
+    // composer blocks edge-back. Manual observes touches without a competing pan.
+    const tracker = Gesture.Manual()
       .onTouchesDown((touches) => {
         'worklet';
         phase.value = PHASE_IDLE;
