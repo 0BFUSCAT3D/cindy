@@ -128,16 +128,26 @@ export interface ProviderShareOwnerState {
   /** 分享服务可用(已登录、设备互联已连上本区域服务)。 */
   ready: boolean;
   shares: ProviderShareOwnedView[];
+  /** 本机分享里、链接由同账号另一台电脑生成的申请：由那台弹审批窗，本机只在管理页与提示点显示。 */
+  quietRequestIds?: string[];
+  /** 本机为同账号另一台电脑上的分享生成链接后收到的申请：由本机弹审批窗，处理转交那台电脑。 */
+  watchedRequests?: ProviderShareRequestedEvent[];
 }
 
 export interface ProviderShareLinkCreated {
   link: string;
   expiresAt: string;
+  /** Non-secret per-link identifier; absent when the host or server predates exact approval routing. */
+  linkId?: string;
 }
 
 export interface ProviderShareRequestedEvent {
   request: ProviderShareRequestItem;
   share: { shareId: string; providerId: string; providerLabel: string };
+  /** 分享在同账号另一台电脑上(本机生成了链接，由本机弹窗)；本机的分享不带。 */
+  hostDeviceId?: string;
+  /** true = 链接由同账号另一台电脑生成，由那台弹窗，本机不弹。 */
+  quiet?: boolean;
 }
 
 export interface ProviderShareSettledEvent {

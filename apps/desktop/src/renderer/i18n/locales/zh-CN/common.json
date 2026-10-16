@@ -448,6 +448,10 @@
     }
   },
   "providerGroup": {
+    "management": {
+      "note": "正在管理 {{device}} 上的供应商组。修改会保存到那台电脑，请保持它在线。",
+      "unsupported": "建组电脑的 Cindy 版本暂不支持远程管理。请先更新那台电脑上的 Cindy。"
+    },
     "page": {
       "title": "{{provider}} · 远程与分享",
       "shareTitle": "分享"
@@ -593,6 +597,7 @@
       "confirm": "加入供应商组",
       "cancel": "取消",
       "linkDescription": "粘贴别人分享的 {{provider}} 链接，对方同意后，回到「已经能用的」里勾选加入。",
+      "remoteLinkDescription": "请在组所在电脑的「模型供应商」设置中输入分享链接。对方同意后，再回到「已经能用的」勾选加入。",
       "pasteLink": "粘贴分享链接"
     },
     "toast": {
@@ -800,6 +805,7 @@
     "DEVICE_LINK_BUSY": "远端繁忙，请稍后重试。",
     "INVALID_PARAMS": "参数无效，请检查后重试。",
     "PRECONDITION_FAILED": "当前状态下无法执行此操作，请稍后重试。",
+    "PROVIDER_GROUP_CHANGED": "供应商组已在别处修改，本次操作未执行。请查看最新设置后重新操作",
     "MODEL_CONTEXT_USAGE_UNKNOWN": "模型未切换：无法确认当前任务已使用的上下文。请保留当前模型，或新建任务后再选择",
     "MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN": "模型未切换：无法确认当前模型的上下文窗口。请检查自定义模型的窗口设置；若无法修改，请保留当前模型或新建任务",
     "MODEL_WINDOW_TARGET_CONTEXT_UNKNOWN": "模型未切换：无法确认目标模型的上下文窗口。请检查自定义模型的窗口设置；若无法修改，请选择其他模型或新建任务",
@@ -3319,7 +3325,7 @@
         "modelsEmpty": "这个供应商在那台电脑上还没有开放可用的模型。",
         "rowLabelGroup": "{{provider}} · {{device}} · 供应商组",
         "groupBadge_other": "供应商组 · {{count}} 台电脑",
-        "groupNote": "{{device}} 把这个供应商建成了供应商组。在模型列表里选它新建任务时，{{device}} 会按组策略把任务分给下面的一台电脑运行，那台出问题时自动换一台继续。要修改组，请到 {{device}} 的「设置 → 模型供应商」。",
+        "groupNote": "{{device}} 把这个供应商建成了供应商组。在模型列表里选它新建任务时，{{device}} 会按组策略把任务分给下面的一台电脑运行，那台出问题时自动换一台继续。{{device}} 在线时，你可以从这里的「远程与分享」管理这个组和分享。",
         "groupMembersTitle": "组内电脑",
         "groupMembersFailed": "暂时读不到组内电脑的状态。"
       },
@@ -11403,6 +11409,7 @@
       "pluginSent": "由插件发送",
       "pluginViewDetail": "查看插件",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "任务 ID：{{id}}",
         "teammate": "伙伴 ID：{{id}}",
         "automation": "自动化 ID：{{id}}",
@@ -16214,5 +16221,16 @@
     "offerExpired": "账号或重置状态已变化，请刷新用量后再使用重置",
     "resetFailed": "无法确认重置结果，请刷新用量查看额度是否已恢复",
     "limitAction": "使用重置 · 剩余 {{count}} 次"
+  },
+  "mcpApps": {
+    "sharedTaskReadOnly": "此卡片仅任务主人可操作。",
+    "retry": "重新加载",
+    "loadFailed": "应用加载失败。请检查连接后重新加载。",
+    "updateRequired": "这台电脑暂不支持 MCP Apps，请更新电脑上的 Cindy 后再试。",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "由 $t(mcpApps.appName)「{{name}}」发送",
+    "serverId": "MCP 服务器 ID：{{id}}",
+    "exitFullscreen": "退出全屏"
   }
 }

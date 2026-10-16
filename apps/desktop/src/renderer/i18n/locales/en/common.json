@@ -450,6 +450,10 @@
     }
   },
   "providerGroup": {
+    "management": {
+      "note": "Managing the provider group on {{device}}. Changes are saved on that computer; keep it online.",
+      "unsupported": "The Cindy version on the computer with this group does not support remote management yet. Update Cindy on that computer first."
+    },
     "page": {
       "title": "{{provider}} · Remote & Sharing",
       "shareTitle": "Sharing"
@@ -601,6 +605,7 @@
       "confirm": "Add to Group",
       "cancel": "Cancel",
       "linkDescription": "Paste a {{provider}} share link from someone else. After they approve, come back to “Already Available” and select it.",
+      "remoteLinkDescription": "Enter the share link in the provider settings on the computer with this group. After the owner approves, come back to “Already Available” and select it.",
       "pasteLink": "Paste Share Link"
     },
     "toast": {
@@ -810,6 +815,7 @@
     "DEVICE_LINK_BUSY": "The remote computer is busy. Please try again shortly.",
     "INVALID_PARAMS": "Invalid input. Please check and try again.",
     "PRECONDITION_FAILED": "This action is unavailable in the current state. Please try again.",
+    "PROVIDER_GROUP_CHANGED": "The provider group changed elsewhere, so this action was not applied. Review the latest settings and try again.",
     "MODEL_CONTEXT_USAGE_UNKNOWN": "Model not switched: Cindy can’t verify how much context this task uses. Keep the current model or start a new task.",
     "MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN": "Model not switched: Cindy can’t verify the current model’s context window. Check the window setting for a custom model. If it can’t be changed, keep the current model or start a new task.",
     "MODEL_WINDOW_TARGET_CONTEXT_UNKNOWN": "Model not switched: Cindy can’t verify the target model’s context window. Check the window setting for a custom model. If it can’t be changed, choose another model or start a new task.",
@@ -3348,7 +3354,7 @@
         "rowLabelGroup": "{{provider}} · {{device}} · Provider Group",
         "groupBadge_one": "Provider Group · {{count}} computer",
         "groupBadge_other": "Provider Group · {{count}} computers",
-        "groupNote": "{{device}} made this provider a provider group. When you start a task with it, {{device}} assigns the task to one of the computers below by its group strategy, and moves it to another one if that computer runs into a problem. To change the group, go to Settings → Providers on {{device}}.",
+        "groupNote": "{{device}} made this provider a provider group. When you start a task with it, {{device}} assigns the task to one of the computers below by its group strategy, and moves it to another one if that computer runs into a problem. While {{device}} is online, use Remote & Sharing here to manage the group and its shares.",
         "groupMembersTitle": "Computers in the Group",
         "groupMembersFailed": "Couldn’t get the status of the computers in the group right now."
       },
@@ -11448,6 +11454,7 @@
       "pluginSent": "Sent by plugin",
       "pluginViewDetail": "View plugin",
       "sourceIds": {
+        "mcpApp": "$t(mcpApps.serverId)",
         "session": "Session ID: {{id}}",
         "teammate": "Teammate ID: {{id}}",
         "automation": "Automation ID: {{id}}",
@@ -16274,5 +16281,16 @@
     "offerExpired": "The account or reset offer changed. Refresh usage before resetting.",
     "resetFailed": "Could not confirm the reset result. Refresh usage to check whether limits were restored.",
     "limitAction": "Use Reset · {{count}} Available"
+  },
+  "mcpApps": {
+    "sharedTaskReadOnly": "Only the session owner can interact with this card.",
+    "retry": "Reload",
+    "loadFailed": "The app could not load. Check the connection and reload.",
+    "updateRequired": "This computer does not support MCP Apps yet. Update Cindy on that computer and try again.",
+    "appName": "MCP App",
+    "cardTitle": "{{title}} · $t(mcpApps.appName)",
+    "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
+    "serverId": "MCP Server ID: {{id}}",
+    "exitFullscreen": "Exit Fullscreen"
   }
 }

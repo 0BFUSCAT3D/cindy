@@ -21,6 +21,10 @@ import { createHash as pluginTaskConfigHash } from 'node:crypto';
 import { finishCompanionEnvironmentRemoval } from '../bot-import/runtime.js';
 import { setImportProbeConfirmation } from '../bot-import/probeAuthorization.js';
 import { requestHostInteraction } from './interactionRouter.js';
+import { registerMcpAppsIpc } from '../mcp-apps/ipc.js';
+import { createAppMessageSender } from '../mcp-apps/messageSender.js';
+import { MCP_APP_MESSAGE_GUARD, type McpAppMessageGuard } from '../mcp-apps/message.js';
+import { mcpAppModelContext } from '../mcp-apps/runtime.js';
 import { prepareCompanionImportDeletion } from '../bot-import/host.js';
 import { createBotMessageTransport } from './botMessageTransport.js';
 import { MANAGED_LLAMACPP_PROVIDER_ID, llamaCppModelPreset, llamaCppMaxContextSize } from '../../shared/llamaCpp.js';
@@ -4091,6 +4095,7 @@ let cancelPendingAgentSwitchHolder: ((sessionId: string) => void) | null = null;
 
 /** 会话级完整路由选择(引擎 + 模型 + 来源 + 档位 + Fast)。 */
 export interface SessionRouteSelection {
+  agentDeviceId?: string | null;
   agentKind: AgentKind;
   model: string;
   providerId: string | null;
@@ -14801,13 +14806,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     route: SessionRouteSelection,
     currentAgentKind: AgentKind,
   ): Promise<void> => {
-    // 自动跟随(渠道默认 / 伙伴模型)给的是本机目录里的路由；Agent 在另一台电脑运行的任务
-    // 用那台的目录，不跟随。
-    if (await readSessionAgentDeviceId(sessionId)) return;
-    if (route.agentKind !== currentAgentKind) {
+    // 未指定位置的调用方(伙伴模型)仍只管本机；IM 默认携带明确位置，允许跨电脑跟随。
+    const currentDeviceId = await readSessionAgentDeviceId(sessionId);
+    if (route.agentDeviceId === undefined && currentDeviceId) return;
+    if (route.agentKind !== currentAgentKind || currentDeviceId !== (route.agentDeviceId ?? null)) {
       await performSessionAgentSwitch(agentSwitchDeps, {
         sessionId, targetAgentKind: route.agentKind, model: route.model,
         providerId: route.providerId, effort: route.effort, fastMode: route.fastMode,
+        ...(route.agentDeviceId !== undefined ? { agentDeviceId: route.agentDeviceId } : {}),
         configStaged: true,
       });
     } else {
@@ -14895,6 +14901,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           agentKind: intent.targetAgentKind,
           model: intent.model,
           providerId: intent.providerId ?? null,
+          agentDeviceId: intent.targetAgentDeviceId,
           effort: intent.effort ?? null,
           rev: agentSwitchPending.revision?.(sessionId),
         }
@@ -16708,6 +16715,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       readonly [AUTO_REVIEW_SOURCE_CONTENT]?: string;
       readonly [AUTO_REVIEW_DELEGATED_CONTINUATION]?: true;
       readonly [AUTO_REVIEW_USER_INTENT]?: string;
+      readonly [MCP_APP_MESSAGE_GUARD]?: McpAppMessageGuard;
     };
     const readCurrentSteerSession = () => {
       const current = maker.getSession(sessionId);
@@ -16812,9 +16820,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const withSteerNote = steerPlannedNotes['client-environment']
       ? prependNoteToWireUserMessage(withSteerSourceNote as HandoffWireMessage, steerPlannedNotes['client-environment'])
       : withSteerSourceNote;
-    const steerPayload = steerPlannedNotes['ui-language']
+    let steerPayload = steerPlannedNotes['ui-language']
       ? prependNoteToWireUserMessage(withSteerNote as HandoffWireMessage, steerPlannedNotes['ui-language'])
       : withSteerNote;
+    const appContext = shouldPrependMobileClientPromptNote(normalized, sess.agentKind)
+      ? await mcpAppModelContext(sessionId)
+      : undefined;
+    if (appContext?.text) {
+      steerPayload = prependNoteToWireUserMessage(steerPayload as HandoffWireMessage, appContext.text);
+    }
     try {
       const remote = isDeviceLinkInvoke();
       assertRemoteInputClearNotInFlight(sessionId, remote);
@@ -16823,6 +16837,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         assertCurrentInputClearBoundary(sessionId, precondition.expected);
       }
       assertCurrentInputGeneration(sessionId, readExpectedInputGeneration(sendOpts));
+      if (so[MCP_APP_MESSAGE_GUARD]) await so[MCP_APP_MESSAGE_GUARD]!();
       sess = readCurrentSteerSession();
       // 同轮插话也属于新输入。必须在 vendor await 前通知，旧轮可能先于 steer ack 结束。
       // 共用入口同时覆盖 INPUT_STEER、队列提升和旧 STEER IPC。
@@ -16830,6 +16845,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // A channel route vouches only for its triggering sender; steered input ends that.
       noteInteractionRouteSteer(sess);
       await sess.steer(steerPayload as never, {
+        ...(so[MCP_APP_MESSAGE_GUARD] || appContext?.text ? {
+          beforeProviderStart: async () => {
+            await so[MCP_APP_MESSAGE_GUARD]?.();
+            await appContext?.assertCurrent();
+          },
+        } : {}),
         logTitle: meta?.title,
         messageUuid: so.messageUuid,
         userName: so.userName,
@@ -16839,6 +16860,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         [AUTO_REVIEW_DELEGATED_CONTINUATION]: so[AUTO_REVIEW_DELEGATED_CONTINUATION],
         [AUTO_REVIEW_USER_INTENT]: restoredSteerIntent,
       });
+      appContext?.consume();
       steerNotePlan?.commit();
       log.info('steer: delivered', { sessionId, agentKind: sess.agentKind });
     } catch (err) {
@@ -16896,6 +16918,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     sendToAgentAccepted(sessionId, message, createOpts, attachTrustedDesktopSendContext(message, sendOpts)),
     (sessionId) => inputCoordinator.getClearBoundaryMs(sessionId),
   );
+  registerMcpAppsIpc(createAppMessageSender({
+    owner: getCurrentDbClientSnapshot,
+    readClearBoundary: async (sessionId) => normalizeAgentInputClearBoundaryMs(
+      (await getSessionRowSnapshotStrict(sessionId))?.clearedAt,
+    ),
+    restoreQueue: (sessionId) => inputCoordinator.ensureQueueRestored(sessionId),
+    clearBoundary: (sessionId) => inputCoordinator.getClearBoundaryMs(sessionId),
+    shouldQueue: (sessionId) => inputCoordinator.shouldQueueNewTurn(sessionId),
+    getSessionMeta: (sessionId) => maker.getSessionMeta(sessionId),
+    createClientId: createId,
+    buildQueueItem: buildSessionControlInputItem,
+    enqueue: (sessionId, item) => { inputCoordinator.enqueue(sessionId, item); },
+    sendToAgentAccepted,
+  }), async (sessionId, request, signal) => {
+    const session = maker.getSession(sessionId) ?? { id: sessionId, setInteractionListener: () => {} };
+    // Historical Apps use the same permission cards without starting an Agent turn.
+    installDesktopInteractionListener(session);
+    return requestHostInteraction(session, request, signal);
+  });
   registerMakerSessionSendHandler(
     {
       handle(channel, handler) {

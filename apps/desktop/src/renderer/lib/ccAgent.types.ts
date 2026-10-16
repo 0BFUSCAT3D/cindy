@@ -100,6 +100,8 @@ export type StoredMessageOrigin =
  * 只接受 SDK 自己分配的 uuid，所以这是 fork 的唯一主键。
  */
 export interface CcMeta {
+  /** Host-authored official MCP App snapshot; not an assistant prose reply. */
+  mcpApp?: boolean;
   botLearning?: import('@cindy/maker-shared/bot-learning').BotLearningReceipt[];
   /** Provider text phase, retained to exclude commentary from notification previews. */
   assistantPhase?: string;
