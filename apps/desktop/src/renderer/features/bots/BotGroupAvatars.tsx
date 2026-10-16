@@ -38,7 +38,8 @@ export function BotGroupSidebarAvatar({
   }
   if (!second) return <BotAvatar bot={first} size={compact ? 'sm' : 'md'} />;
   if (members.length >= 3) {
-    const visible = members.slice(0, 5);
+    // 先取群里的前五位，再从后向前绘制：第一位最后绘制，完整露在最前层。
+    const visible = members.slice(0, 5).reverse();
     // 以 40px 头像区为基准：3/4/5 人分别用 24/22/20px，收起时同比缩放。
     const diameter = visible.length === 3 ? 60 : visible.length === 4 ? 55 : 50;
     const radius = (100 - diameter) / 2;
@@ -73,7 +74,7 @@ export function BotGroupSidebarAvatar({
   return (
     <span aria-hidden className={cn('relative flex shrink-0', frameClass)}>
       <BotAvatar
-        bot={first}
+        bot={second}
         size="xs"
         className={cn(
           'absolute',
@@ -90,7 +91,7 @@ export function BotGroupSidebarAvatar({
         )}
       >
         <BotAvatar
-          bot={second}
+          bot={first}
           size="xs"
           className={compact ? 'h-[18px] w-[18px] text-10' : 'h-6 w-6 text-12'}
         />
