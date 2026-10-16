@@ -51,6 +51,17 @@ export class ClipboardSync {
   private check() {
     if (!this.deps.current()) throw new Error("DESKTOP_LEASE_EXPIRED");
   }
+  private conflict(local: string, remote: string): never {
+    // Preserve counters so idle polls cannot pick a winner. Both adapters must
+    // allow the next explicit copy, even when it repeats the conflicting content.
+    Object.assign(this.baseline, {
+      local,
+      remote,
+      localDigest: undefined,
+      remoteDigest: undefined,
+    });
+    throw new Error("CLIPBOARD_CONFLICT");
+  }
   private async remoteVersion() {
     const { version } = await this.deps.request<{ version: string }>({
       op: "clipboardVersion",
@@ -347,15 +358,7 @@ export class ClipboardSync {
         localChanged = false;
         remoteChanged = false;
       }
-      if (localChanged && remoteChanged) {
-        Object.assign(this.baseline, {
-          local,
-          remote,
-          localDigest,
-          remoteDigest,
-        });
-        throw new Error("CLIPBOARD_CONFLICT");
-      }
+      if (localChanged && remoteChanged) this.conflict(local, remote);
       if (localChanged && localContent) {
         const version = await this.writeRemote(
           localContent.json,
@@ -430,7 +433,7 @@ export class ClipboardSync {
         // simultaneous change, both copies are kept, but the user is told so
         // instead of the readable copy silently never arriving.
         if (bothChanged && code !== "CLIPBOARD_EMPTY")
-          throw new Error("CLIPBOARD_CONFLICT");
+          this.conflict(local, remote);
         return;
       }
       throw error;

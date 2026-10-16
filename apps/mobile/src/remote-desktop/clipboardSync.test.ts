@@ -223,7 +223,7 @@ describe("automatic clipboard synchronization", () => {
       await expect(h.engine.tick()).rejects.toThrow("CLIPBOARD_CONFLICT");
       expect(h.write).not.toHaveBeenCalled();
       await h.engine.tick();
-      h[direction]("4");
+      h[direction]("4", JSON.stringify({ text: `${direction}-2` }));
       await h.engine.tick();
       await h.engine.tick();
       expect(h.write).toHaveBeenCalledTimes(direction === "remote" ? 1 : 0);
@@ -413,7 +413,7 @@ it.each(["local", "remote"] as const)(
     ).toBe(1);
   },
 );
-it("retains a successfully read new local digest when the remote read is unsupported", async () => {
+it("clears both conflict digests so recopying identical local content can recover", async () => {
   const h = harness();
   const baseline: ClipboardSyncBaseline = { local: "", remote: "" };
   const engine = new ClipboardSync(h.deps, baseline);
@@ -429,11 +429,17 @@ it("retains a successfully read new local digest when the remote read is unsuppo
   // Both changed: both copies are kept, and the user is told rather than the
   // readable copy silently never arriving.
   await expect(engine.tick()).rejects.toThrow("CLIPBOARD_CONFLICT");
-  expect(baseline.localDigest).toBe(
-    clipboardDigest(JSON.stringify({ text: "local-2" })),
-  );
+  expect(baseline.localDigest).toBeUndefined();
   expect(baseline.remoteDigest).toBeUndefined();
   expect(h.write).not.toHaveBeenCalled();
+  h.request.mockImplementation(original);
+  h.local("4", JSON.stringify({ text: "local-2" }));
+  await engine.tick();
+  expect(
+    h.request.mock.calls.filter(
+      ([m]) => m.op === "clipboardContent" && m.action === "commit",
+    ),
+  ).toHaveLength(1);
 });
 
 it("an unreadable local item next to a new computer copy is a conflict; the next copy on either side syncs", async () => {
@@ -461,7 +467,7 @@ it("an unreadable local item next to a new computer copy is a conflict; the next
   expect(h.write).not.toHaveBeenCalled();
   await expect(engine.tick()).resolves.toBeUndefined();
   // Copying again on the computer brings that copy over.
-  h.remote("4");
+  h.remote("4", JSON.stringify({ text: "remote-2" }));
   await engine.tick();
   expect(h.write).toHaveBeenCalledTimes(1);
 });

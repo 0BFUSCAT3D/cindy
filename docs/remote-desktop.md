@@ -78,8 +78,9 @@ notice); unexplained failures back off to at most 5 s and reset on focus or a
 shortcut. A multi-item local clipboard (several files) is skipped rather than
 failing the pass; if the computer copied something in the same interval, that is
 reported as a conflict like any simultaneous change, and copying again on either
-side syncs, even when that copy repeats identical readable content. The desktop
-adapter retains conflict counters but clears their content digests: idle polls
+side syncs, even when that copy repeats identical readable content. The shared
+synchronizer retains conflict counters but clears both content digests for Desktop
+and Mobile, including when either peer is unreadable: idle polls
 preserve both clipboards, and the next copy chooses the source. A successful
 transfer restores ordinary content deduplication. Contents stay in Main/native code and do not cross the viewer
 Renderer bridge.

@@ -46,6 +46,62 @@ function fixture() {
   return { engine, local, remote, trace, write, read, request };
 }
 
+it.each([
+  ["", "local"],
+  ["", "remote"],
+  ["CLIPBOARD_UNSUPPORTED", "local"],
+  ["CLIPBOARD_UNSUPPORTED", "remote"],
+  ["CLIPBOARD_TOO_LONG", "local"],
+  ["CLIPBOARD_TOO_LONG", "remote"],
+] as const)(
+  "after a conflict with peer error %s, an identical %s recopy selects the source",
+  async (code, chosen) => {
+    const h = fixture();
+    await h.engine.tick();
+    const other = chosen === "local" ? "remote" : "local";
+    h.local.version++;
+    h.remote.version++;
+    h.local.json = '{"text":"local choice"}';
+    h.remote.json = '{"text":"remote choice"}';
+    h[other].error = code;
+    await expect(h.engine.tick()).rejects.toThrow("CLIPBOARD_CONFLICT");
+    h.trace.mockClear();
+    await h.engine.tick();
+    expect(h.trace).not.toHaveBeenCalled();
+    expect(h.write).not.toHaveBeenCalled();
+    expect(
+      h.request.mock.calls.some(
+        ([m]) => m.op === "clipboardContent" && m.action === "paste",
+      ),
+    ).toBe(false);
+    const selected = h[chosen].json;
+    h[chosen].version++;
+    await h.engine.tick();
+    expect(h.local.json).toBe(selected);
+    expect(h.remote.json).toBe(selected);
+    expect(h[other].error).toBe("");
+    expect(h.trace).toHaveBeenLastCalledWith(
+      chosen === "local"
+        ? "phone-to-computer-complete"
+        : "computer-to-phone-complete",
+    );
+    const writes = h.write.mock.calls.length;
+    const pastes = h.request.mock.calls.filter(
+      ([m]) => m.op === "clipboardContent" && m.action === "paste",
+    ).length;
+    // A completed transfer restores deduplication, including its delayed echoes.
+    h.local.version++;
+    h.remote.version++;
+    await h.engine.tick();
+    expect(h.write).toHaveBeenCalledTimes(writes);
+    expect(
+      h.request.mock.calls.filter(
+        ([m]) => m.op === "clipboardContent" && m.action === "paste",
+      ),
+    ).toHaveLength(pastes);
+  },
+);
+
 it.each(["CLIPBOARD_EMPTY", "CLIPBOARD_UNSUPPORTED", "CLIPBOARD_TOO_LONG"])(
   "silently establishes both initial %s baselines, then syncs a new copy",
   async (code) => {
