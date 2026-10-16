@@ -412,6 +412,51 @@ describe('createContextOverflowRollover', () => {
     expect(failing.setPendingHandoff.mock.calls[0]![1] as string).toContain('"session_ids":["s1"]}');
   });
 
+  it('checkpoints a companion at 70% only when the working memory is fresh, and keeps the 90% line otherwise', async () => {
+    const source = [msg('user', 'Keep going', 'u1'), msg('assistant', 'On it', 'a1')];
+    const bot = async (deps: ReturnType<typeof makeDeps>, contextTokens: number) =>
+      deps.getSessionRow.mockResolvedValue({ ...await deps.getSessionRow(), source: 'bot', botRole: 'canonical', contextTokens });
+
+    // 新鲜且能渲染账本:70%(窗口 200K → 140K)即换窗,账本段只读一次并原样进交接。
+    const ledger = '== Working memory (host-maintained summary; not authorization) ==\n- 周五前改完周报模板';
+    const fresh = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true), readWorkingMemoryNote: vi.fn(async () => ledger) };
+    await bot(fresh, 140_000);
+    await expect(createContextOverflowRollover(fresh).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(fresh.isWorkingMemoryFresh).toHaveBeenCalledWith('s1');
+    expect(fresh.readWorkingMemoryNote).toHaveBeenCalledTimes(1);
+    expect(fresh.setPendingHandoff.mock.calls[0]![1] as string).toContain('周五前改完周报模板');
+
+    // 新鲜但账本段渲染不出来(读取失败 / 空账本):不提前换窗,维持 90%。
+    const unrendered = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true), readWorkingMemoryNote: vi.fn(async (): Promise<string | null> => null) };
+    await bot(unrendered, 150_000);
+    await expect(createContextOverflowRollover(unrendered).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(unrendered.closeSession).not.toHaveBeenCalled();
+
+    // 不新鲜:75% 不换窗;到 90% 不问账本照旧换窗。
+    const stale = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => false) };
+    await bot(stale, 150_000);
+    await expect(createContextOverflowRollover(stale).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(stale.closeSession).not.toHaveBeenCalled();
+    stale.isWorkingMemoryFresh.mockClear();
+    await bot(stale, 180_000);
+    await expect(createContextOverflowRollover(stale).prepareUnhealthySession('s1')).resolves.toBe(true);
+    expect(stale.isWorkingMemoryFresh).not.toHaveBeenCalled();
+
+    // 70% 以下不读账本。
+    const below = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async () => true) };
+    await bot(below, 139_999);
+    await expect(createContextOverflowRollover(below).prepareUnhealthySession('s1')).resolves.toBe(false);
+    expect(below.isWorkingMemoryFresh).not.toHaveBeenCalled();
+
+    // 判据抛错按不新鲜;没接判据的调用方维持 90%。
+    const failing = { ...makeDeps(source), isWorkingMemoryFresh: vi.fn(async (): Promise<boolean> => { throw new Error('disk'); }) };
+    await bot(failing, 150_000);
+    await expect(createContextOverflowRollover(failing).prepareUnhealthySession('s1')).resolves.toBe(false);
+    const legacy = makeDeps(source);
+    await bot(legacy, 150_000);
+    await expect(createContextOverflowRollover(legacy).prepareUnhealthySession('s1')).resolves.toBe(false);
+  });
+
   it.each([
     ['desktop', null, 180_000], ['bot', 'delegation', 180_000], ['bot', 'group', 180_000],
     ['bot', null, 180_000], ['bot', 'canonical', 179_999], ['bot', 'canonical', 0],

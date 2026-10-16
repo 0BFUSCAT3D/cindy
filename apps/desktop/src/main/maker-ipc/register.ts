@@ -602,6 +602,7 @@ import {
 import {
   buildWorkingMemoryRefreshNote,
   createWorkingMemoryRefreshRegistry,
+  isWorkingMemoryFreshForSession,
   pruneWithdrawnWorkingMemoryForSession,
   pruneWorkingMemoryForSession,
   readWorkingMemoryNoteForSession,
@@ -16495,6 +16496,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     listMessages: (sessionId) => listMessagesForAgentHandoff(sessionId, 400),
     readWorkingMemoryNote,
+    isWorkingMemoryFresh: (sessionId) => isWorkingMemoryFreshForSession(sessionId, ownerScopedUserDataPath()),
     // 伙伴自有会话(当前 + 恢复前旧对话整体优先,后台任务补足),写进回忆指引限定 history 工具范围。
     listCompanionSessionIds: (sessionId) => listBotRecallSessionIds(sessionId, COMPANION_SESSION_IDS_LIMIT),
     findLatestUser: findLatestUserMessageForRebuild,

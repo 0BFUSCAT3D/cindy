@@ -5304,6 +5304,7 @@ function CCAgentSessionContent({
               ) : (
                 <ErrorTailErrorBanner
                   errorText={errorTailText}
+                  dismissOnEscape={viewVisible && ownsHardwareTaskActions}
                   errorReason={errorTailMsg?.errorReason}
                   toolLoop={errorTailMsg?.toolLoop}
                   onContinue={handleErrorTailContinue}
@@ -5376,6 +5377,7 @@ function CCAgentSessionContent({
             }) && (
               <ErrorBanner
                 error={error}
+                dismissOnEscape={viewVisible && ownsHardwareTaskActions}
                 errorReason={errorReason}
                 toolLoop={toolLoop}
                 isRecoverable={errorIsRecoverable}

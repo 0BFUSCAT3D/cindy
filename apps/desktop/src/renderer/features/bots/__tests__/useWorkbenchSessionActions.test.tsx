@@ -17,11 +17,13 @@ const m = vi.hoisted(() => ({
   changed: vi.fn(),
   warning: vi.fn(),
   error: vi.fn(),
+  archiveBlockedByRunning: vi.fn(),
 }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (s: string) => s }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
 vi.mock('@/features/cc-agent/hooks/useSessionLifecycleActions', () => ({
-  useSessionLifecycleActions: () => ({ runSessionAction: m.run, unarchiveSession: m.unarchive }),
+  useSessionLifecycleActions: () => ({ runSessionAction: m.run, unarchiveSession: m.unarchive,
+    archiveBlockedByRunning: m.archiveBlockedByRunning }),
 }));
 vi.mock('@/hooks/useSessionRunningStatus', () => ({
   useSessionRunningStatus: () => ({ runningSessionIds: m.running, clearNotification: vi.fn() }),
@@ -57,6 +59,11 @@ function setup(rows = [archivedRow, activeRow]) {
 beforeEach(() => {
   vi.clearAllMocks();
   m.running = new Set();
+  m.archiveBlockedByRunning.mockImplementation((id: string) => {
+    if (!m.running.has(id)) return false;
+    m.warning('ccAgent.sidebar.archiveBlocked.running');
+    return true;
+  });
   m.attached = new Set();
   m.confirm.mockResolvedValue(true);
   m.preflight.mockResolvedValue('clean');
@@ -69,6 +76,25 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+
+it.each(['clean', 'dirty', 'unknown'])('keeps sharing when a task starts during %s preflight or confirmation', async (preflight) => {
+  let finish!: (value: any) => void;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  m.preflight.mockReturnValue(preflight === 'clean' ? pending : Promise.resolve(preflight));
+  m.confirm.mockReturnValue(pending);
+  const result = setup();
+  let action!: Promise<void>;
+  act(() => { action = result.current.action('live', 'archive', 'shared'); });
+  await waitFor(() => expect(preflight === 'clean' ? m.preflight : m.confirm).toHaveBeenCalled());
+  m.running.add('live');
+  await act(async () => {
+    finish(preflight === 'clean' ? 'clean' : true);
+    await action;
+  });
+  expect(m.warning).toHaveBeenCalledWith('ccAgent.sidebar.archiveBlocked.running');
+  expect(m.close).not.toHaveBeenCalled();
+  expect(m.run).not.toHaveBeenCalled();
+});
 
 it('opens the original archived session in the task page without restoring it', async () => {
   const result = setup();

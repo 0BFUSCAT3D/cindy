@@ -101,7 +101,8 @@ export interface BuildHandoffOptions {
   companionSessionIdsTruncated?: boolean;
   /**
    * 伙伴工作记忆账本的渲染段(botWorkingMemory.renderWorkingMemory):承诺、纠正、
-   * 等待、线索。它是代码摘录之外唯一的语义交接载体,排在工作状态区之后、提要之前;
+   * 等待、线索。它是代码摘录之外唯一的语义交接载体,排在提要 / 近期对话之后、检索指引之前,
+   * 与检索指引同属硬截断时必须整段保住的尾部;
    * 非伙伴主对话或没有账本时不传。
    */
   workingMemory?: string | null;
@@ -663,18 +664,25 @@ const RECALL_SECTION_HEADING = '== Recalling earlier history';
  */
 export const COMPANION_SESSION_IDS_LIMIT = 50;
 
+/**
+ * 伙伴工作记忆账本段的标题前缀(botWorkingMemory.WORKING_MEMORY_HEADING;这里不引那个模块,
+ * 交接构造保持纯函数)。账本段排在检索指引之前,硬截断时从它起整段保住:账本本身有 6K 预算,
+ * 加上检索指引与结束标记仍远小于硬上限,正文总有余量。
+ */
+const WORKING_MEMORY_SECTION_HEADING = '== Working memory (host-maintained summary';
+
 function splitMandatoryHandoffTail(text: string, opts: BuildHandoffOptions): {
   body: string;
   tail: string;
 } {
-  const retrievalAt = Math.max(
-    text.lastIndexOf(RETRIEVAL_SECTION_HEADING),
-    text.lastIndexOf(RECALL_SECTION_HEADING),
-  );
-  if (retrievalAt >= 0) {
+  const starts = [WORKING_MEMORY_SECTION_HEADING, RETRIEVAL_SECTION_HEADING, RECALL_SECTION_HEADING]
+    .map((heading) => text.lastIndexOf(heading))
+    .filter((at) => at >= 0);
+  if (starts.length > 0) {
+    const tailAt = Math.min(...starts);
     return {
-      body: text.slice(0, retrievalAt).trimEnd(),
-      tail: text.slice(retrievalAt),
+      body: text.slice(0, tailAt).trimEnd(),
+      tail: text.slice(tailAt),
     };
   }
   const [body, terminatorTail] = splitTrailingTerminator(text);
@@ -787,9 +795,6 @@ function assembleHandoffText(
     sections.push(`== Work ledger (auto-extracted) ==\n${lines.join('\n')}`);
   }
 
-  // 工作记忆账本:宿主维护的语义状态,逐字段已自带标题与"不是授权"说明。
-  if (opts.workingMemory) sections.push(opts.workingMemory);
-
   if (earlier.length > 0) {
     const lines: string[] = [];
     for (const t of earlier) {
@@ -839,6 +844,11 @@ function assembleHandoffText(
     // 切走后一条消息都没发就切回:显式说明,避免引擎误以为漏了记录。
     sections.push('== No new messages while you were away ==');
   }
+
+  // 工作记忆账本:宿主维护的语义状态,逐字段已自带标题与"不是授权"说明。放在提要 / 近期
+  // 对话之后、检索指引之前:它和检索指引、结束标记一样属于硬截断时必须整段保住的尾部
+  // (splitMandatoryHandoffTail 从它的标题起算),正文再长也只会裁掉前面的摘录。
+  if (opts.workingMemory) sections.push(opts.workingMemory);
 
   if (opts.sessionId && opts.companion) {
     // 伙伴主对话的"按需回忆"口径。history 工具不传 session_ids 时搜的是本机账号下的全部

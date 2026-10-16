@@ -26,9 +26,9 @@ export function useWorkbenchSessionActions(sessions: readonly Session[], onChang
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { confirm } = useConfirmDialog();
-  const { runningSessionIds, clearNotification } = useSessionRunningStatus(undefined);
+  const { clearNotification } = useSessionRunningStatus(undefined);
   const attached = useAttachedSessionIds();
-  const { runSessionAction, unarchiveSession } = useSessionLifecycleActions({ includeArchived: 'all' });
+  const { runSessionAction, unarchiveSession, archiveBlockedByRunning } = useSessionLifecycleActions({ includeArchived: 'all' });
   const byId = useMemo(() => new Map(sessions.map((row) => [row.id, row])), [sessions]);
 
   const open = useCallback(
@@ -52,10 +52,7 @@ export function useWorkbenchSessionActions(sessions: readonly Session[], onChang
           return;
         }
         const archive = kind === 'archive';
-        if (archive && runningSessionIds.has(id)) {
-          toast.warning(t('ccAgent.sidebar.archiveBlocked.running'));
-          return;
-        }
+        if (archive && archiveBlockedByRunning(id, byId.get(id)?.deviceLinkDeviceId)) return;
         if (
           archive &&
           (attached.has(id) ||
@@ -77,6 +74,7 @@ export function useWorkbenchSessionActions(sessions: readonly Session[], onChang
           }))
         )
           return;
+        if (archive && archiveBlockedByRunning(id, byId.get(id)?.deviceLinkDeviceId)) return;
         if (sharedTaskId) {
           const result = (await window.electronAPI.sharedTask.account({ action: 'close', sharedTaskId })) as {
             closed?: string[];
@@ -92,7 +90,7 @@ export function useWorkbenchSessionActions(sessions: readonly Session[], onChang
         toast.error(t(kind === 'delete' ? 'ccAgent.sidebar.deleteFailed' : 'ccAgent.sidebar.archiveFailed'));
       }
     },
-    [byId, attached, confirm, onChanged, runSessionAction, runningSessionIds, t, unarchiveSession],
+    [byId, attached, confirm, onChanged, runSessionAction, archiveBlockedByRunning, t, unarchiveSession],
   );
 
   const togglePin = useCallback(
