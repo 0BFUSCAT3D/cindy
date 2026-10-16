@@ -183,6 +183,8 @@ IM bot 的渠道默认模型，以及官方 Slack / Telegram / X 的工作目录
 分享模型不要求发起电脑有同名供应商或登录；暂停、撤销、离线或模型不可用时拒绝执行，
 不回退到本机同名账号。权限确认、分享凭证确认和工具执行沿用现有远程 Agent 通道，不扩大
 IM 发言者或分享者的权限。手机查看已有任务时沿用主机保存的执行位置。
+官方 bot 的显式权限档必须属于本机已知档位，且分享方声明支持该档；不支持时拒绝启动，
+不按分享方返回顺序选择回退档位。未显式设置时保留官方 bot 既有默认。
 实现见 `im/remoteProviderRoute.ts`、`im/shared/turnRunner.ts` 与 `hook-control/session-runner.ts`
 （相对 `apps/desktop/src/main/`）；回归覆盖各自同目录的 `__tests__`。
 

@@ -101,6 +101,7 @@ import { resolveSafe as resolveCindyMediaUrl } from '../cindy-media/blobStore.js
 import { ingestMedia, supportedMime as isCindyMediaMime } from '../cindy-media/ingest.js';
 import { worktreeStore, WorktreeManager } from '../worktree/index.js';
 import { readImDefaultSettings } from '../im/defaultSettingsStore.js';
+import { isImDefaultPermissionMode } from '../../shared/imDefaultSettings.js';
 import { readImRemotePermissionModes, readImRemoteProviderRoute } from '../im/remoteProviderRoute.js';
 import { getWorkspaceProviderRoute } from './workspaceProviderSourceStore.js';
 import {
@@ -220,10 +221,19 @@ async function resolveNewSessionConfig(
     const { model } = await readImRemoteProviderRoute({ agentDeviceId, agentKind: requestedAgent, providerId, model: requestedModel });
     const permissionModes = mergedOverrides.permissionMode !== null
       ? await readImRemotePermissionModes(agentDeviceId, requestedAgent) : [];
+    // 远端能力只用于确认支持，不是权限强弱的权威。不能把对方的首项当作“最严档”，
+    // 也不能让未知档位进入本机执行器；显式选择必须原样保留，否则拒绝启动。
+    const requestedPermissionMode = mergedOverrides.permissionMode;
+    if (requestedPermissionMode !== null && (
+      !isImDefaultPermissionMode(requestedPermissionMode) ||
+      !permissionModes.includes(requestedPermissionMode)
+    )) {
+      throw new Error('Selected permission mode is unavailable for the remote agent' + ROUTE_RESELECT_HINT);
+    }
     const remote = resolveHookSessionConfig({
       readDefaults: () => defaults,
       getModels: () => [model],
-      getPermissionModes: () => permissionModes,
+      getPermissionModes: () => requestedPermissionMode === null ? [] : [requestedPermissionMode],
       log,
     }, { ...mergedOverrides, agentKind: requestedAgent, model: requestedModel });
     return { ...remote, agentDeviceId, providerId };
