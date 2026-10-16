@@ -40,7 +40,7 @@ import type {
 import { ProviderShareLinkDialog } from './ProviderShareLinkDialog';
 import { pendingResharesFromOwned, sharesClaudeLoginEmail, type ProviderShareGate, type ProviderSharePendingRequest } from './providerShareFormat';
 import { ProviderUsageSection } from './ProviderUsageSection';
-import { publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
+import { presentProviderShareApproval, publishProviderShareOwnerState, removeProviderSharePendingRequest } from './providerShareStore';
 import { ShareAvatar } from './ShareAvatar';
 import { useShareTimeFormat } from './useShareTimeFormat';
 
@@ -83,6 +83,8 @@ export function ProviderShareManagePage({
   const [own, setOwn] = useState<ProviderOwnUsageView | null>(null);
   const [ownFailed, setOwnFailed] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
+  const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
+  const approvalTriggerRef = useRef<HTMLElement | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const loadSeq = useRef(0);
   const remoteLoadRange = useRef<ProviderShareUsageRange | null>(null);
@@ -147,6 +149,7 @@ export function ProviderShareManagePage({
         pending.push({
           request,
           share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
+          ...(deviceId ? { hostDeviceId: deviceId } : {}),
         });
       }
     }
@@ -157,7 +160,20 @@ export function ProviderShareManagePage({
       // 转分享请求(provider-sharing.md §4.3)：成员想经自己的供应商组把这里分享的供应商转给别人用。
       reshares: pendingResharesFromOwned(shares),
     };
-  }, [providerId, state]);
+  }, [providerId, deviceId, state]);
+
+  const approvalItem = requests.find((item) => item.request.requestId === approvalRequestId);
+  const closeApproval = useCallback(() => {
+    setApprovalRequestId(null);
+    void load();
+  }, [load]);
+  useEffect(() => {
+    if (!approvalItem) {
+      setApprovalRequestId(null);
+      return;
+    }
+    return presentProviderShareApproval(approvalItem, closeApproval, approvalTriggerRef.current);
+  }, [approvalItem, closeApproval]);
 
   const withBusy = useCallback(async (key: string, run: () => Promise<void>) => {
     setBusy((current) => new Set(current).add(key));
@@ -172,24 +188,20 @@ export function ProviderShareManagePage({
     }
   }, []);
 
-  const decide = useCallback(
-    (item: ProviderSharePendingRequest, action: 'approve' | 'reject') =>
+  const reject = useCallback(
+    (item: ProviderSharePendingRequest) =>
       withBusy(item.request.requestId, async () => {
         try {
-          await providerShareManagementCommand({ action, requestId: item.request.requestId }, deviceId);
+          await providerShareManagementCommand({ action: 'reject', requestId: item.request.requestId }, deviceId);
           // 远程管理时，本机生成链接带来的申请也在待审批里(由本机弹窗)，一并移除。
           removeProviderSharePendingRequest(item.request.requestId);
-          toast.success(
-            action === 'approve'
-              ? t('providerShare.toast.approved', { name: item.request.displayName, provider: providerName })
-              : t('providerShare.toast.rejected', { name: item.request.displayName }),
-          );
+          toast.success(t('providerShare.toast.rejected', { name: item.request.displayName }));
         } catch (error) {
           toast.error(t(providerManagementErrorKey(error, Boolean(deviceId))));
         }
         void load();
       }),
-    [load, providerName, deviceId, t, withBusy],
+    [load, deviceId, t, withBusy],
   );
 
   const setMember = useCallback(
@@ -278,7 +290,7 @@ export function ProviderShareManagePage({
         {t('settings.providers.title')}
       </button>
 
-      {/* 标题已经说明这页是什么；这台电脑的名字由本机那行与下方「分享」说明承载，不在这里重复一遍。 */}
+      {/* 标题已经说明这页是什么；这台电脑的名字由组里本机那一行承载，不在这里重复一遍。 */}
       <div className="flex shrink-0 flex-wrap items-center gap-3">
         <div
           aria-hidden="true"
@@ -289,6 +301,9 @@ export function ProviderShareManagePage({
         <h2 className="min-w-0 flex-1 text-16 font-medium leading-[1.3] text-[var(--settings-section-title)]">
           {t('providerGroup.page.title', { provider: providerName })}
         </h2>
+        <Button variant="cta" size="md" disabled={!canCreateLink} onClick={() => setLinkOpen(true)}>
+          {t('providerShare.manage.createLink')}
+        </Button>
       </div>
 
       {deviceId && (
@@ -296,42 +311,6 @@ export function ProviderShareManagePage({
           {t('providerGroup.management.note', { device: selfDeviceName ?? deviceId })}
         </p>
       )}
-      <ProviderGroupSection
-        providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
-        initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
-      />
-
-      <ProviderUsageSection
-        providerId={providerId}
-        providerName={providerName}
-        own={own}
-        ownFailed={ownFailed}
-        members={members}
-        membersLoading={!state && !loadFailed}
-        selfDeviceName={selfDeviceName}
-        ownerDeviceId={deviceId}
-        groupConfig={deviceId ? remoteGroup : undefined}
-        range={range}
-        onRangeChange={setRange}
-        time={time}
-      />
-
-      <div className="mt-8 flex shrink-0 flex-wrap items-start gap-3">
-        <div className="flex min-w-[240px] flex-1 flex-col gap-1">
-          <h3 className="text-13 font-medium text-[var(--settings-section-title)]">
-            {t('providerGroup.page.shareTitle')}
-          </h3>
-          <p className="text-12 leading-[1.5] text-[var(--settings-section-desc)]">
-            {selfDeviceName
-              ? t('providerShare.manage.descriptionWithDevice', { provider: providerName, device: selfDeviceName })
-              : t('providerShare.manage.description', { provider: providerName })}
-          </p>
-        </div>
-        <Button variant="cta" size="md" disabled={!canCreateLink} onClick={() => setLinkOpen(true)}>
-          {t('providerShare.manage.createLink')}
-        </Button>
-      </div>
-
       {(gate !== 'on' || (state && !ready) || loadFailed) && (
         <p
           role="status"
@@ -392,7 +371,7 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || busy.has(item.request.requestId)}
-                    onClick={() => void decide(item, 'reject')}
+                    onClick={() => void reject(item)}
                   >
                     {t('providerShare.approve.reject')}
                   </Button>
@@ -401,7 +380,10 @@ export function ProviderShareManagePage({
                     size="sm"
                     compact
                     disabled={loadFailed || !providerClassificationReady || busy.has(item.request.requestId)}
-                    onClick={() => void decide(item, 'approve')}
+                    onClick={(event) => {
+                      approvalTriggerRef.current = event.currentTarget;
+                      setApprovalRequestId(item.request.requestId);
+                    }}
                   >
                     {t('providerShare.approve.approve')}
                   </Button>
@@ -456,6 +438,26 @@ export function ProviderShareManagePage({
           </div>
         </section>
       )}
+
+      <ProviderGroupSection
+        providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
+        initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
+      />
+
+      <ProviderUsageSection
+        providerId={providerId}
+        providerName={providerName}
+        own={own}
+        ownFailed={ownFailed}
+        members={members}
+        membersLoading={!state && !loadFailed}
+        selfDeviceName={selfDeviceName}
+        ownerDeviceId={deviceId}
+        groupConfig={deviceId ? remoteGroup : undefined}
+        range={range}
+        onRangeChange={setRange}
+        time={time}
+      />
 
       <section className="mt-6 shrink-0" aria-labelledby="provider-share-members-title">
         <div className="mb-2 flex flex-wrap items-center gap-2">

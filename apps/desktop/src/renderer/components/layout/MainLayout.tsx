@@ -1697,8 +1697,8 @@ export function MainLayout() {
       )}
       {/* FeiShu Bot conflict dialog -- subscribes to main process push and surfaces a global modal */}
       <FeishuConflictDialogHost />
-      {/* 供应商分享：分享者的审批弹窗与受邀者的申请弹窗。只挂在主窗口，副窗不重复弹。 */}
-      {!isSecondaryWindow() && <ProviderShareGlobalHost />}
+      {/* 副窗支持管理页手动审批；自动提醒与受邀申请仍只由主窗口处理。 */}
+      <ProviderShareGlobalHost manualOnly={isSecondaryWindow()} />
       {!isSecondaryWindow() && <ChatInviteHost />}
       {sharedTaskInvitation && <JoinSharedTaskDialog key={sharedTaskInvitation.id} open initialInvitation={sharedTaskInvitation.link}
         onOpenChange={(open) => { if (!open) setSharedTaskInvitation(null); }} />}
