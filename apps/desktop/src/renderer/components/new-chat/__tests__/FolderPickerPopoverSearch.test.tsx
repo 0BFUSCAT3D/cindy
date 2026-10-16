@@ -58,6 +58,22 @@ describe('filterFolderPickerOptions', () => {
     ]);
     expect(filterFolderPickerOptions(manyProjects, '')).toBe(manyProjects);
   });
+
+  it('folds case the same way regardless of the system locale', () => {
+    // 模拟土耳其语区域:按区域折叠时 I → ı,ASCII 项目名会搜不到。
+    const turkish = vi.spyOn(String.prototype, 'toLocaleLowerCase').mockImplementation(function (
+      this: string,
+    ) {
+      return this.replace(/I/g, 'ı').toLowerCase();
+    });
+    try {
+      expect(filterFolderPickerOptions([project('INVOICE')], 'invoice').map((p) => p.name)).toEqual(
+        ['INVOICE'],
+      );
+    } finally {
+      turkish.mockRestore();
+    }
+  });
 });
 
 describe('FolderPickerPopover project search', () => {

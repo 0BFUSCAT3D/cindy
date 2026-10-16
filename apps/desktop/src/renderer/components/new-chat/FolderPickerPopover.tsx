@@ -71,11 +71,11 @@ export function filterFolderPickerOptions(
   options: readonly FolderPickerOption[],
   query: string,
 ): readonly FolderPickerOption[] {
-  const needle = query.trim().toLocaleLowerCase();
+  const needle = query.trim().toLowerCase();
   if (!needle) return options;
   return options.filter((option) =>
     [option.name, option.description, option.path].some((field) =>
-      field?.toLocaleLowerCase().includes(needle),
+      field?.toLowerCase().includes(needle),
     ),
   );
 }
