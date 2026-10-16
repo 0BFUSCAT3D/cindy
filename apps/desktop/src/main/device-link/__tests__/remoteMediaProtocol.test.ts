@@ -83,6 +83,7 @@ vi.mock('../../lightboxMediaActions', async (importOriginal) => {
 
 import { __testing, fetchRemoteMediaImageBytes } from '../remoteMediaProtocol';
 import { buildRemoteMediaUrl } from '../../../shared/remoteMediaUrl';
+import { invalidateRemoteMediaPersistentWrites } from '../remoteMediaPersistentCache';
 
 const { handleRemoteMedia } = __testing;
 const URL_IMG = buildRemoteMediaUrl({ kind: 'device', deviceId: 'dev-1' }, 'xdt-image://s/a.png');
@@ -106,6 +107,45 @@ beforeEach(() => {
 });
 
 describe('handleRemoteMedia', () => {
+  it.each(['prepare', 'inline', 'peer', 'download', 'retry'])('does not refill caches after clearing during %s', async (phase) => {
+    let invokes = 0;
+    remoteInvoke.mockImplementation(async () => {
+      invokes++;
+      if (phase === 'prepare' || phase === 'inline' || (phase === 'retry' && invokes === 2)) invalidateRemoteMediaPersistentWrites();
+      return { ok: true, result: phase === 'peer'
+        ? { ossKey: '', size: 3, mimeType: 'image/png', transferRequired: true }
+        : phase === 'inline' ? { ossKey: '', size: 3, mimeType: 'image/png', inlineBase64: 'aW1n' }
+        : { ossKey: 'image', size: 3, mimeType: 'image/png' } };
+    });
+    const dispose = vi.fn(async () => {});
+    if (phase === 'peer') {
+      tryPeerFile.mockImplementationOnce(async () => {
+        invalidateRemoteMediaPersistentWrites();
+        return { path: '/temporary', size: 3, mimeType: 'image/png', dispose };
+      });
+      fsReadFile.mockResolvedValueOnce(Buffer.from('img'));
+    }
+    downloadToBuffer.mockImplementation(async () => {
+      if (phase === 'retry' && invokes === 1) throw new Error('stale OSS key');
+      if (phase === 'download') invalidateRemoteMediaPersistentWrites();
+      return { bytes: Buffer.from('img') };
+    });
+    expect((await handleRemoteMedia(URL_IMG, null)).status).toBe(502);
+    expect(recordLocal).not.toHaveBeenCalled();
+    expect(persistentPut).not.toHaveBeenCalled();
+    if (phase === 'peer') expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('does not restore warm bytes from a disk read completed after cleanup', async () => {
+    persistentGet.mockImplementationOnce(async () => {
+      invalidateRemoteMediaPersistentWrites();
+      return { bytes: Buffer.from('img'), mimeType: 'image/png' } as never;
+    });
+    expect((await handleRemoteMedia(URL_IMG, null)).status).toBe(502);
+    expect(recordLocal).not.toHaveBeenCalled();
+    expect(remoteInvoke).not.toHaveBeenCalled();
+  });
+
   it('serves a persisted image after the memory cache is empty without contacting the host', async () => {
     const bytes = Buffer.from('saved');
     persistentGet.mockResolvedValueOnce({ bytes, mimeType: 'image/png' } as never);
@@ -328,10 +368,10 @@ describe('handleRemoteMedia', () => {
     expect(r.status).toBe(200);
   });
 
-  it('未命中 + 视频 → recordStream → OSS range 206 透传,不整下、不删 OSS', async () => {
-    remoteInvoke.mockResolvedValue({
-      ok: true,
-      result: { ossKey: 'oss/v.mp4', mimeType: 'video/mp4', size: 1000 },
+  it.each([false, true])('视频保持流式播放，清理图片缓存不影响取件 (clear=%s)', async (clear) => {
+    remoteInvoke.mockImplementation(async () => {
+      if (clear) invalidateRemoteMediaPersistentWrites();
+      return { ok: true, result: { ossKey: 'oss/v.mp4', mimeType: 'video/mp4', size: 1000 } };
     });
     recordStream.mockReturnValue({
       kind: 'stream',

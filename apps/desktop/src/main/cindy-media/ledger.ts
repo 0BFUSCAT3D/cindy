@@ -608,6 +608,16 @@ export interface CacheBlobRow {
   lastAccessAt: number;
 }
 
+/** Count shared blobs once, including bytes also referenced by other integrations. */
+export async function getIntegrationCacheBytes(integration: string, db: LedgerDb = defaultDb()): Promise<number> {
+  const [row] = await db.select({ bytes: sql<number>`COALESCE(SUM(${mediaBlobs.bytes}), 0)` })
+    .from(mediaBlobs).where(and(eq(mediaBlobs.isCache, true), sql`EXISTS (
+      SELECT 1 FROM ${mediaRefs} WHERE ${mediaRefs.hash} = ${mediaBlobs.hash}
+      AND ${mediaRefs.refKind} = 'integration-cache' AND ${mediaRefs.originId} = ${integration}
+    )`)).all();
+  return row.bytes;
+}
+
 /** cache 性质 blob 按 LRU 升序(最久未用在前),供逐出候选规划。 */
 export async function listCacheBlobsByLru(db: LedgerDb = defaultDb(), integration?: string): Promise<CacheBlobRow[]> {
   return await db

@@ -16,12 +16,14 @@ import {
   writeVersionedRemoteFile,
 } from '../file-browser/remote-file-cache';
 import { captureDataOwnerBroadcastScope, isDataOwnerBroadcastScopeCurrent } from './broadcast-tap';
-import { removeRefs } from '../cindy-media/ledger';
+import { getIntegrationCacheBytes, removeRefs } from '../cindy-media/ledger';
 import { captureRemoteMediaCacheValidity, isImmutableRemoteMedia, REMOTE_MEDIA_INTEGRATION } from './remoteMediaPersistentCache';
 
 const INTEGRATION = 'remote-file';
 export type FileVersionMetadata = Pick<DeviceFileResult, 'version' | 'size' | 'mimeType'> & {
   skipCache?: boolean;
+  /** Local-only guard captured before host preparation, never sent over the wire. */
+  assertCacheCurrent?: () => void;
 };
 
 /** An adapter to the existing media warehouse / ordinary-file LRU, not another byte store.
@@ -48,6 +50,7 @@ export function remoteFileVersionCache(
   const media = /^(image|audio|video|model)\//.test(mimeType);
   const db = media ? getDbClient().drizzle : undefined;
   const assertCurrent = () => {
+    metadata.assertCacheCurrent?.();
     if (!isDataOwnerBroadcastScopeCurrent(owner)) throw new Error('FILE_PEER_CANCELLED');
     assertRetained();
   };
@@ -147,7 +150,10 @@ export function remoteFileVersionCache(
       // The consumer owns the input file, not this warehouse copy. Even the
       // newest copy must be evictable when other integrations fill the budget.
       const live = new Set<string>();
-      const scan = await scanCache({ live, integration: INTEGRATION }, db);
+      // Long-lived copies are manually managed and must not consume the automatic budget.
+      const retainedBytes = await getIntegrationCacheBytes(REMOTE_MEDIA_INTEGRATION, db);
+      assertCurrent();
+      const scan = await scanCache({ live, integration: INTEGRATION, limitBytes: CACHE_LIMIT_BYTES + retainedBytes }, db);
       assertCurrent();
       await evictCacheBlobs(
         {

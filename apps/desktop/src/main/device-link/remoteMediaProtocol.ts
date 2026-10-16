@@ -36,7 +36,7 @@ import * as cache from './remoteMediaCacheStore';
 import type { RemoteMediaEntry, StreamEntry } from './remoteMediaCacheStore';
 import { activeOwnerScopeKey } from '../appSessionState';
 import { remoteFileVersionCache } from './remoteFileVersionCache';
-import { captureRemoteMediaOwner, isImmutableRemoteMedia, remoteMediaPersistentCache } from './remoteMediaPersistentCache';
+import { captureRemoteMediaCacheValidity, captureRemoteMediaOwner, isImmutableRemoteMedia, remoteMediaPersistentCache } from './remoteMediaPersistentCache';
 
 const log = createLogger('device-link:remoteMediaProtocol');
 
@@ -115,15 +115,23 @@ async function ensureEntry(deviceId: string, origUrl: string): Promise<RemoteMed
   const pending = inflight.get(k);
   if (pending) return pending;
   const assertCurrent = captureRemoteMediaOwner();
+  const assertCacheCurrent = captureRemoteMediaCacheValidity();
   const p = (async () => {
     let disk: ReturnType<typeof remoteMediaPersistentCache> = null;
     try { disk = remoteMediaPersistentCache(deviceId, origUrl); } catch { /* Cache is optional. */ }
     const saved = await disk?.get(LOCAL_BUFFER_MAX).catch(() => null);
     assertCurrent();
-    if (saved) return cache.recordLocal(deviceId, origUrl, saved.bytes, saved.mimeType);
-    const entry = await fetchAndCache(deviceId, origUrl);
+    if (saved) {
+      assertCacheCurrent();
+      return cache.recordLocal(deviceId, origUrl, saved.bytes, saved.mimeType);
+    }
+    const entry = await fetchAndCache(deviceId, origUrl, assertCacheCurrent);
     assertCurrent();
-    if (entry.kind === 'local') await disk?.put(entry.bytes, entry.mimeType).catch(() => undefined);
+    if (entry.kind === 'local') {
+      assertCacheCurrent();
+      await disk?.put(entry.bytes, entry.mimeType).catch(() => undefined);
+      assertCacheCurrent();
+    }
     assertCurrent();
     return entry;
   })().finally(() => inflight.delete(k));
@@ -150,10 +158,10 @@ async function downloadLocalEntry(
   deviceId: string,
   origUrl: string,
   fetched: MediaFetchResult,
+  assertCurrent: () => void,
 ): Promise<RemoteMediaEntry> {
-  const assertCurrent = captureRemoteMediaOwner();
   let versioned: ReturnType<typeof remoteFileVersionCache> = null;
-  try { versioned = remoteFileVersionCache(deviceId, origUrl, fetched); } catch { /* Optional cache. */ }
+  try { versioned = remoteFileVersionCache(deviceId, origUrl, { ...fetched, assertCacheCurrent: assertCurrent }); } catch { /* Optional cache. */ }
   try {
     const { bytes } = await downloadToBuffer(fetched.ossKey);
     assertCurrent();
@@ -169,8 +177,10 @@ function toEntry(
   deviceId: string,
   origUrl: string,
   fetched: MediaFetchResult,
+  assertCurrent: () => void,
 ): Promise<RemoteMediaEntry> {
   if (fetched.inlineBase64 !== undefined) {
+    assertCurrent();
     return Promise.resolve(
       cache.recordLocal(
         deviceId,
@@ -186,19 +196,20 @@ function toEntry(
       cache.recordStream(deviceId, origUrl, fetched.ossKey, fetched.mimeType, fetched.size),
     );
   }
-  return downloadLocalEntry(deviceId, origUrl, fetched);
+  return downloadLocalEntry(deviceId, origUrl, fetched, assertCurrent);
 }
 
-async function fetchAndCache(deviceId: string, origUrl: string): Promise<RemoteMediaEntry> {
+async function fetchAndCache(deviceId: string, origUrl: string, assertCacheCurrent: () => void): Promise<RemoteMediaEntry> {
   const assertCurrent = captureRemoteMediaOwner();
   const fetched = await readRemoteDeviceFile(deviceId, origUrl, remoteInvoke, {
     maxPeerBytes: LOCAL_BUFFER_MAX,
     stream: true,
+    assertCacheCurrent,
   });
   if ('path' in fetched) {
     try {
       const bytes = await fs.readFile(fetched.path);
-      assertCurrent();
+      assertCacheCurrent();
       return cache.recordLocal(
         deviceId,
         origUrl,
@@ -211,15 +222,15 @@ async function fetchAndCache(deviceId: string, origUrl: string): Promise<RemoteM
   }
   assertCurrent();
   try {
-    return await toEntry(deviceId, origUrl, fetched);
+    return await toEntry(deviceId, origUrl, fetched, assertCacheCurrent);
   } catch (err) {
-    assertCurrent();
+    assertCacheCurrent();
     // 下载失败的常见根因:被控端图片上传去重缓存返回了悬空 key(对象已被消费方用后删)。
     // 带 skipCache 重取一次强制重传;仍失败按原语义抛给上层(renderer 占位 + 可重试)。
     log.warn(`remote media download failed, retrying with skipCache: ${String(err)}`);
     const refetched = await invokeMediaFetch(deviceId, origUrl, true);
     assertCurrent();
-    return toEntry(deviceId, origUrl, refetched);
+    return toEntry(deviceId, origUrl, refetched, assertCacheCurrent);
   }
 }
 
@@ -416,9 +427,10 @@ async function handleRemoteMedia(
       // cache miss 窗口):否则窗口期的并发请求会发起**不带 skipCache** 的普通取件,
       // 被控端去重缓存可能把同一把 stale key 再记回缓存、覆盖掉新对象。
       const p = (async () => {
+        const assertCacheCurrent = captureRemoteMediaCacheValidity();
         const refetched = await invokeMediaFetch(deviceId, parsed.origUrl, true);
         assertCurrent();
-        return toEntry(deviceId, parsed.origUrl, refetched);
+        return toEntry(deviceId, parsed.origUrl, refetched, assertCacheCurrent);
       })().finally(() => inflight.delete(k));
       inflight.set(k, p);
       const fresh = await p;

@@ -13,6 +13,9 @@ const state = vi.hoisted(() => ({
   generation: 1,
   db: undefined as LedgerDb | undefined,
 }));
+const peer = vi.hoisted(() => vi.fn());
+vi.mock('../filePeer', () => ({ tryPeerFile: peer }));
+vi.mock('../mediaTransfer', () => ({ removeRemote: vi.fn() }));
 vi.mock('electron', () => ({ app: { getPath: () => state.root } }));
 vi.mock('../../appSessionState', () => ({
   getActiveAppSession: () => ({ mode: 'cloud', dataOwnerId: state.owner }),
@@ -31,6 +34,7 @@ import {
   remoteMediaPersistentCache,
 } from '../remoteMediaPersistentCache';
 import { remoteFileVersionCache } from '../remoteFileVersionCache';
+import { readRemoteDeviceFile } from '../fileAccess';
 
 const { default: migration0071 } =
   (await import('../../../../drizzle/scripts/0071_bright_ultron')) as {
@@ -45,6 +49,7 @@ function reopen() {
   state.db = drizzle(raw, { schema }) as unknown as LedgerDb;
 }
 beforeEach(async () => {
+  peer.mockReset();
   state.root = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-image-cache-'));
   state.owner = 'alice';
   state.generation = 1;
@@ -56,6 +61,24 @@ beforeEach(async () => {
   for (const statement of sql.split('--> statement-breakpoint'))
     if (statement.trim()) raw.exec(statement);
   migration0071.run(raw);
+});
+
+it.each(['prepare', 'peer-queue'])('does not recreate the disk index after clearing during %s', async (phase) => {
+  const metadata = { ossKey: '', transferRequired: true, version: 'b'.repeat(64), size: png.length, mimeType: 'image/png' };
+  const invoke = vi.fn(async () => {
+    if (phase === 'prepare') invalidateRemoteMediaPersistentWrites();
+    return { ok: true, result: metadata };
+  });
+  peer.mockImplementationOnce(async (device, source, _invoke, _signal, _progress, captured) => {
+    if (phase === 'peer-queue') invalidateRemoteMediaPersistentWrites();
+    // The cache adapter is created only after the delayed host reply / queue slot.
+    const cache = remoteFileVersionCache(device, source, captured)!;
+    await expect(cache.put(png)).rejects.toThrow('REMOTE_MEDIA_CACHE_CLEARED');
+    return { ...metadata, path: '/consumer-copy', dispose: async () => {} };
+  });
+  await readRemoteDeviceFile('computer', url, invoke);
+  expect(peer).toHaveBeenCalledOnce();
+  expect(await listCacheBlobsByLru(state.db, 'remote-media')).toEqual([]);
 });
 afterEach(async () => {
   raw.close();
