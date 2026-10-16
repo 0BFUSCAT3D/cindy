@@ -1,6 +1,6 @@
 /**
  * cindyPrefsStore.test.ts — cindy 槽隐藏配置(在途并发上限)的 normalize 单测。
- * 旧 `overrides` 为按插件迁移保留原始记录;迁移读写链路见
+ * 旧 `overrides` 只为一次性迁移保留快问快答钉值;迁移读写链路见
  * pluginModelPrefsMigration.test.ts。
  */
 
@@ -29,7 +29,7 @@ describe('normalize(坏形态清洗)', () => {
     expect(__testing.normalize({ inflightLimits: 'nope' })).toEqual({ inflightLimits: {} });
   });
 
-  it('旧 overrides 保留尚未迁移插件的完整记录，丢弃非对象条目', () => {
+  it('旧 overrides 只留快问快答钉值供迁移,媒体/向量覆盖与坏条目不再读取', () => {
     expect(
       __testing.normalize({
         overrides: {
@@ -43,9 +43,9 @@ describe('normalize(坏形态清洗)', () => {
     ).toEqual({
       inflightLimits: {},
       overrides: {
-        art: { 'image.generate': 'gpt-image-2', 'text.oneshot': 'cat:xd:codex:gpt-5.5' },
-        media: { 'video.generate': 'vid-pro', 'embed.text': 'emb-1' },
-        blank: { 'text.oneshot': '' },
+        art: { 'text.oneshot': 'cat:xd:codex:gpt-5.5' },
+        media: {},
+        blank: {},
       },
     });
   });

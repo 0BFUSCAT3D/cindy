@@ -136,16 +136,11 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   但当前 Host 不展示、不授权、也不因此阻止安装或发布。
   未来 Host 识别该字段后，才按正常的能力展示和运行时守门链路启用。不能把
   未知字段猜成现有权限，也不能让它意外获得能力。
-- 顶层 `taskPreferences?: boolean` 选择是否使用宿主的「模型与任务」配置管理，默认启用。
-  `false` 时由插件自行存储配置，Desktop/手机隐藏配置卡、拒绝宿主配置写入，所有任务/
-  快问快答入口不再读取旧的逐插件模型、权限与目录。旧数据不删除、关闭期间不参与执行；
-  恢复启用后重新生效。不填或 `true` 时存量插件完全沿用原行为，无相应能力不创建卡片。
-  任务能力批准不变；新普通任务仍以 ask 创建，插件用 route 和现有目录 API 表达配置，
-  权限提升仍经用户确认，只修改该任务、不写回已停用的宿主配置；发送/协同以任务自身
-  的已授权权限与 Plan 状态守门。不开 Full access，不绕过目录亲选或模型准入。
-  旧客户端忽略字段并继续使用旧配置；依赖此语义须要求客户端版本支持。不要求 settingsHtml。
-  实现见 `pluginTaskPrefsStore.ts`、`pluginTaskService.ts`、`ghostPluginViewModel.ts` 与
-  `mobilePageService.ts`；作者用法见 `FORGE_GUIDE` §4.8，回归覆盖协议、存储、任务授权与两端入口。
+- 顶层 `showTaskPreferences?: boolean` 仅控制宿主「模型与任务」默认配置卡的显示。
+  省略或 `true` 沿用原有能力条件；`false` 隐藏 Desktop 和手机上的该卡，由插件提供自己的配置界面。
+  任务 API、已有配置的读取和执行规则、权限检查及安装确认均不改变。此字段不是能力授权，
+  无相应能力时设为 `true` 也不会新增卡片。旧客户端不识别时仍显示原卡片。
+  实现见 `ghostPluginViewModel.ts`、`mobilePageService.ts`；作者用法见 `FORGE_GUIDE` §4.8。
 - `agent.tasks` 另需 Host receipt 的显式任务能力批准事实；旧 receipt 没有该事实时，
   只在首次任务能力调用通过既有宿主权限界面确认，原插件的启用态、其它能力、凭证和
   设置保持不变。拒绝、窗口不可用、账号或安装版本变化均不授予任务权限；同能力更新
@@ -233,9 +228,6 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
     全部条目。首次安装展示全部权限并确认；更新相对当前已装版本按 `diffInstalledGhostPermissionItems`
     比较，新增条目、同 key 条目内容变化或内置 OAuth 客户端变化才算权限变多，只删除不算；
     已装版本没有有效批准基线时按全部权限新增处理。
-    顶层 `taskPreferences: false` 以独立条目参与此投影：退出宿主管理会移除既有任务上的
-    插件默认权限上限，不能通过静默更新重新启用旧任务授权。缺省／`true` → `false`
-    需要扩权确认；保持 `false` 不重复确认，恢复宿主管理不算扩权。不新增独立批准状态。
   - 入口与确认界面：插件页、拖入、双击 `.cindy` 与设置页导入由发起窗口弹确认框
     （`GhostInstallConsentWindowBridge` → `GhostInstallConsentHost`，只投给、也只接受发起安装
     的那个 webContents）；Agent 调用 `ghost_market_install`／`ghost_forge_install` 不论任务权限档
@@ -301,7 +293,6 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
   自定义市场以发现并规范化的 manifest 为能力上限。超出能力上限按包内容不一致拒绝并留待
   来源修复，不转成用户审批流程；上限内的新版声明仍按上一条判断是否需要用户确认。能力上限按 Host 实际消费语义
   比较：真实包不得从无到有增加 `settingsHtml` 设置 WebView 或扩大固定 `settingsHeight`；
-  `taskPreferences` 缺省或为 `true` 时，真实包不能改为 `false` 退出宿主配置管理；
   OAuth `scopes` 换序或取子集属于收权，其它 OAuth、凭证标签与注入字段仍须保持在清单上限内；
   `setup.requires` 只能保留或删除市场已有的完整需求组，不能增加组、收紧 `anyOf` 或更换引用；
   真实包同名工具的 `parameters` JSON Schema 必须与市场规范值一致（仅对象键顺序可不同）。

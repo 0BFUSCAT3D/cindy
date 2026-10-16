@@ -10,8 +10,8 @@
  *
  * 旧版这里还有 `overrides`(插件详情「Cindy 能力」逐项钉的模型)。2026-10 起
  * 插件只有一个「模型」字段,存在 pluginTaskPrefsStore;旧 `overrides` 只留给
- * 迁移读取(见 readLegacyOneshotPins / clearLegacyOverrides)，只清理已处理的插件；
- * 退出宿主管理的旧记录保留，全部迁移后删掉该键。旧版本读到缺键视为无覆盖。
+ * 一次性迁移读取(见 readLegacyOneshotPins / clearLegacyOverrides),迁移后
+ * 从文件里删掉该键。旧版本回退读到缺键视为无覆盖,不会判损坏。
  */
 
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
@@ -34,10 +34,10 @@ interface GhostCindyPrefs {
   /** ghostId → 在途代办并发上限(正整数;缺项 = 不限并发)。 */
   inflightLimits: Record<string, number>;
   /**
-   * 旧版逐能力钉档，只供迁移；尚未迁移的记录原样保留。
-   * 运行时只读取快问快答钉值，其它能力键没有消费者。
+   * 旧版逐能力钉档里的快问快答钉值(ghostId → 原始字符串),只供一次性迁移;
+   * 其它能力键(图像/视频/向量)不再有消费者,读取时直接忽略。
    */
-  overrides?: Record<string, Record<string, unknown>>;
+  overrides?: Record<string, { 'text.oneshot'?: string }>;
 }
 
 const DEFAULTS: GhostCindyPrefs = { inflightLimits: {} };
@@ -57,8 +57,8 @@ function normalize(raw: unknown): GhostCindyPrefs {
   const overrides: NonNullable<GhostCindyPrefs['overrides']> = {};
   for (const [ghostId, capsRaw] of Object.entries(overridesRaw as Record<string, unknown>)) {
     if (!capsRaw || typeof capsRaw !== 'object') continue;
-    // 迁移可能暂时跳过退出宿主管理的插件，其旧记录必须原样休眠。
-    overrides[ghostId] = { ...capsRaw as Record<string, unknown> };
+    const pin = (capsRaw as Record<string, unknown>)['text.oneshot'];
+    overrides[ghostId] = typeof pin === 'string' && pin.length > 0 ? { 'text.oneshot': pin } : {};
   }
   return { inflightLimits, overrides };
 }
@@ -111,23 +111,17 @@ export function readLegacyOneshotPins(): Record<string, string | null> | null {
   const overrides = store.read().overrides;
   if (!overrides) return null;
   return Object.fromEntries(
-    Object.entries(overrides).map(([ghostId, caps]) => {
-      const pin = caps['text.oneshot'];
-      return [ghostId, typeof pin === 'string' && pin.length > 0 ? pin : null];
-    }),
+    Object.entries(overrides).map(([ghostId, caps]) => [ghostId, caps['text.oneshot'] ?? null]),
   );
 }
 
-/** 只清理本次已处理的旧记录，其余插件继续休眠；全部处理后删除 overrides 键。 */
-export function clearLegacyOverrides(ghostIds: readonly string[]): void {
+/** 迁移完成后删除旧 `overrides` 键(保留其它键;文件随之为空则整份删除)。 */
+export function clearLegacyOverrides(): void {
   assertGhostPrefsWritable(GHOST_CINDY_PREFS_FILE);
   store.invalidateIfChanged();
-  const current = store.read().overrides;
-  if (!current) return;
-  const overrides = { ...current };
-  for (const ghostId of ghostIds) delete overrides[ghostId];
-  store.writePatch({ overrides: Object.keys(overrides).length > 0 ? overrides : undefined });
-  log.info('legacy ghost cindy overrides removed after migration', { ghostIds });
+  if (!store.read().overrides) return;
+  store.writePatch({ overrides: undefined });
+  log.info('legacy ghost cindy overrides removed after migration');
 }
 
 export const __testing = {

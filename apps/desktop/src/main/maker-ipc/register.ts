@@ -1373,8 +1373,6 @@ import {
 } from '../cindy-brain/index.js';
 import {
   readPluginTaskConfig,
-  readPluginTaskPermissionMode,
-  isPluginTaskPreferencesEnabled,
   clampPluginTaskPermissionMode,
   setPluginTaskConfigValidator,
   writePluginTaskConfig,
@@ -12522,7 +12520,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     pluginTaskEpoch = snapshot;
     pluginTasks = createPluginTaskService({
       store: createPluginTaskStore(snapshot.client), assertCurrent, assertAuthorized: assertPlugin, resolveRoute,
-      readPermissionMode: readPluginTaskPermissionMode,
+      readPermissionMode: pluginId => clampPluginTaskPermissionMode(readPluginTaskConfig(pluginId).permissionMode),
       readLiveSession: taskId => maker.getSession(taskId),
       setModel: async (taskId, route, assertUnchanged) => {
         const current = await sessionControlService.getSessionRuntime({ targetSessionId: taskId });
@@ -12761,7 +12759,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const mode = request.mode ?? 'acceptEdits';
         const cfg = readPluginTaskConfig(pluginId);
         assertCallerCurrent();
-        if (isPluginTaskPermissionAllowed(task.permissionMode, readPluginTaskPermissionMode(pluginId)) && (mode === 'acceptEdits' ? task.permissionMode === 'acceptEdits' || task.permissionMode === 'auto' : task.permissionMode === 'auto')) return { granted: true, task };
+        if (isPluginTaskPermissionAllowed(task.permissionMode, cfg.permissionMode) && (mode === 'acceptEdits' ? task.permissionMode === 'acceptEdits' || task.permissionMode === 'auto' : task.permissionMode === 'auto')) return { granted: true, task };
         if (pluginPermissionRequests.size) throw new PluginTaskError('TASK_BUSY', 'A permission request is already open');
         const identity = pluginWriteAccessIdentity(pluginId);
         const assertRequestCurrent = () => {
@@ -12795,18 +12793,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           assertRequestCurrent();
           // Busy/preflight failures have not asked the user anything; do not consume an attempt.
           return await pluginWriteAccessGate.request(JSON.stringify([pluginId, task.taskId]), identity, mode, explicitWriteAccess, async () => {
-          const detail = t(isPluginTaskPreferencesEnabled(pluginId)
-            ? mode === 'auto' ? 'pluginTaskWriteAccess.autoDetail' : 'pluginTaskWriteAccess.detail'
-            : mode === 'auto' ? 'pluginTaskWriteAccess.autoTaskOnlyDetail' : 'pluginTaskWriteAccess.taskOnlyDetail');
           const result = request.mobilePageId ? { response: await showMobilePluginTaskPermission(pluginId, request.mobilePageId, {
             title: t(mode === 'auto' ? 'pluginTaskWriteAccess.autoTitle' : 'pluginTaskWriteAccess.title'),
             message: t(mode === 'auto' ? 'pluginTaskWriteAccess.autoMessage' : 'pluginTaskWriteAccess.message').replace('{{name}}', getInstalledGhostName(pluginId) ?? pluginId),
-            detail: `${task.title}\n\n${detail}`,
+            detail: `${task.title}\n\n${t(mode === 'auto' ? 'pluginTaskWriteAccess.autoDetail' : 'pluginTaskWriteAccess.detail')}`,
             allow: t('pluginTaskWriteAccess.allow'), cancel: t('pluginTaskWriteAccess.cancel'),
           }) ? 0 : 1 } : await dialog.showMessageBox({
             type: 'question', title: t(mode === 'auto' ? 'pluginTaskWriteAccess.autoTitle' : 'pluginTaskWriteAccess.title'),
             message: t(mode === 'auto' ? 'pluginTaskWriteAccess.autoMessage' : 'pluginTaskWriteAccess.message').replace('{{name}}', getInstalledGhostName(pluginId) ?? pluginId),
-            detail,
+            detail: t(mode === 'auto' ? 'pluginTaskWriteAccess.autoDetail' : 'pluginTaskWriteAccess.detail'),
             buttons: [t('pluginTaskWriteAccess.allow'), t('pluginTaskWriteAccess.cancel')], defaultId: 1, cancelId: 1,
           });
           if (result.response !== 0) return { granted: false };
@@ -12839,7 +12834,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               assertPlanInactive();
               const currentConfig = readPluginTaskConfig(pluginId);
               if (currentConfig.permissionMode !== cfg.permissionMode) throw new PluginTaskError('PERMISSION_DENIED', 'Permission settings changed');
-              if (isPluginTaskPreferencesEnabled(pluginId) && (mode === 'auto' || ['ask', 'plan'].includes(clampPluginTaskPermissionMode(currentConfig.permissionMode)))) writePluginTaskConfig(pluginId, {...currentConfig, permissionMode: mode});
+              if (mode === 'auto' || ['ask', 'plan'].includes(clampPluginTaskPermissionMode(currentConfig.permissionMode))) writePluginTaskConfig(pluginId, {...currentConfig, permissionMode: mode});
               broadcastSessionPatched(task.taskId, {permissionMode: mode});
               return { granted: true, task: updatedTask };
             } catch (error) {
@@ -14196,8 +14191,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (task.status !== 'active') {
       throw new PluginTaskError('TASK_BUSY', 'Archived tasks cannot create Workers');
     }
-    const configuredMode = readPluginTaskPermissionMode(pluginId);
-    if (!isPluginTaskAuthorized(pluginId) || task.planModeEnabled || task.permissionMode !== 'auto' || (configuredMode !== null && configuredMode !== 'auto')) {
+    if (!isPluginTaskAuthorized(pluginId) || task.planModeEnabled || task.permissionMode !== 'auto' || readPluginTaskConfig(pluginId).permissionMode !== 'auto') {
       throw new PluginTaskError('PERMISSION_DENIED', 'Authorize Auto for the plugin coordinator before creating Workers');
     }
   };
@@ -16071,12 +16065,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       projection.revision,
     ]);
     if (epoch !== getCurrentDbClientSnapshot()) throw new Error('Account changed');
-    const configuredMode = readPluginTaskPermissionMode(receipt.pluginId);
+    const config = readPluginTaskConfig(receipt.pluginId);
     const approvalRevision = pluginTaskAuthorizationRevision(receipt.pluginId);
     return {
       pluginId: receipt.pluginId,
-      authorized: !!unchanged && approvalRevision !== null && isPluginTaskAuthorized(receipt.pluginId) && (configuredMode === null || configuredMode === 'auto'),
-      revision: [epoch.userId, epoch.clientEpoch, approvalRevision, configuredMode, link],
+      authorized: !!unchanged && approvalRevision !== null && isPluginTaskAuthorized(receipt.pluginId) && config.permissionMode === 'auto',
+      revision: [epoch.userId, epoch.clientEpoch, approvalRevision, config.permissionMode, link],
       plan: data.teamPlan, settledLabels: data.settledLabels,
       registeredRoute: data.route,
       session: { workingDir: session.workingDir, permissionMode: session.permissionMode, planModeEnabled: !!session.planModeEnabled, status: session.status,

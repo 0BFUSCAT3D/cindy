@@ -82,7 +82,7 @@ describe('Host provenance across Orca creation waits', () => {
         if (!receipt || receipt.pluginId !== pluginId || JSON.parse(receipt.payload).ownershipRevoked) throw new PluginTaskError('TASK_NOT_FOUND', 'Revoked');
         return { ...task };
       } }),
-      isPluginTaskAuthorized: () => enabled, readPluginTaskConfig: () => ({ permissionMode: 'auto', workingDir: directoryCase ? configured : task.workingDir }), readPluginTaskPermissionMode: () => 'auto',
+      isPluginTaskAuthorized: () => enabled, readPluginTaskConfig: () => ({ permissionMode: 'auto', workingDir: directoryCase ? configured : task.workingDir }),
       resolvePluginWorkerDirectory: vi.fn(async () => {
         directoryResolved = true; directoryReads = 0;
         if (directoryCase && !configured && !picked) throw new PluginTaskError('PERMISSION_DENIED', 'Directory revoked');
@@ -3503,7 +3503,7 @@ describe('production plugin Auto admission after reservation', () => {
         if (JSON.parse(receipt.payload).ownershipRevoked) throw new PluginTaskError('TASK_NOT_FOUND', 'Not owned');
         return { ...task };
       } }),
-      readPluginTaskConfig: () => ({ permissionMode: 'auto', workingDir: task.workingDir }), readPluginTaskPermissionMode: () => 'auto',
+      readPluginTaskConfig: () => ({ permissionMode: 'auto', workingDir: task.workingDir }),
       isPluginTaskAuthorized: () => enabled,
       resolvePluginWorkerDirectory: async () => task.workingDir,
       isGhostPickedDir: () => false, PluginTaskError,
@@ -3567,7 +3567,7 @@ describe('production plugin Auto admission after reservation', () => {
     const callbackDeps = { getCurrentDbClientSnapshot: () => epoch, PluginTaskError, assertPluginWorkerDirectoryScope,
       createPluginTaskStore: () => ({ get: async () => ({ operation: 'create', pluginId: 'plugin', payload: state === 'malformed' ? '{' : JSON.stringify({ ownershipRevoked: true, teamPlan: { items: [] } }) }) }),
       pluginTaskServiceForCurrentOwner: () => ({ get }), isPluginTaskAuthorized: () => state === 'reinstalled',
-      readPluginTaskConfig: () => ({ permissionMode: 'auto' }), readPluginTaskPermissionMode: () => 'auto',
+      readPluginTaskConfig: () => ({ permissionMode: 'auto' }),
     };
     const validateCreationPlan = new Function(...Object.keys(callbackDeps), js)(...Object.values(callbackDeps));
     const { deps, service } = createDeps({ validateCreationPlan });
@@ -3622,7 +3622,7 @@ describe('production plugin Auto admission after reservation', () => {
         }
         return task();
       } }),
-      readPluginTaskConfig: () => ({ permissionMode: mode, workingDir: path.resolve('repo') }), readPluginTaskPermissionMode: () => mode,
+      readPluginTaskConfig: () => ({ permissionMode: mode, workingDir: path.resolve('repo') }),
       isPluginTaskAuthorized: () => enabled,
       resolvePluginWorkerDirectory: async ({requested}: {requested: string}) => { if (reserved && point === 'directory') revoke(); return requested === path.resolve('other') ? requested : path.resolve('repo'); },
       realpathWorkingDirectory: async (dir: string) => dir === path.resolve('other') ? dir : path.resolve('repo'),

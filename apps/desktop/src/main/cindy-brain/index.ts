@@ -124,7 +124,6 @@ import {
   ghostNodeSecretAuthorizationWithinCap,
   ghostSetupAuthorizationWithinCap,
   ghostSettingsUiWithinCap,
-  ghostTaskPreferencesWithinCap,
   ghostSubscribeAuthorizationWithinCap,
   ghostToolParametersWithinCap,
   ghostUnknownV3FieldsWithinCap,
@@ -360,7 +359,7 @@ import {
 } from './cindySlot.js';
 import { GhostAgentSlot, type GhostAgentTurnRunner } from './agentSlot.js';
 import { GhostErrandSlot, type GhostErrandRunner } from './errandSlot.js';
-import { readPluginTaskConfig, writePluginTaskConfig, validatePluginTaskConfig, relocateGhostErrandPrefs, setPluginTaskPreferencesResolver } from './pluginTaskPrefsStore.js';
+import { readPluginTaskConfig, writePluginTaskConfig, validatePluginTaskConfig, relocateGhostErrandPrefs } from './pluginTaskPrefsStore.js';
 import {
   GhostNodeRuntimeBroker,
   type NodeRuntimeStartAttemptContext,
@@ -727,8 +726,6 @@ function currentGhostAppContext() {
 
 let managerSingleton: GhostManager | null = null;
 let ghostSetupManifestTrackerSingleton: GhostSetupManifestTracker | null = null;
-
-setPluginTaskPreferencesResolver(id => findGhostForInstanceId(id)?.manifest.taskPreferences !== false);
 
 function getGhostSetupManifestTracker(): GhostSetupManifestTracker {
   if (!ghostSetupManifestTrackerSingleton) {
@@ -7355,7 +7352,6 @@ async function installOrUpdateMarketGhostPackageLocked(
         !ghostNodeSecretAuthorizationWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostSetupAuthorizationWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostSettingsUiWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
-        !ghostTaskPreferencesWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostSubscribeAuthorizationWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostToolParametersWithinCap(expected.manifestCap, inspected.canonicalManifest) ||
         !ghostUnknownV3FieldsWithinCap(expected.manifestCap, inspected.canonicalManifest)
@@ -8941,7 +8937,6 @@ export function registerGhostIpc(): void {
     try {
       const ghost = findGhostForInstanceId(ghostId);
       if (!ghost) throwIpcError('NOT_FOUND', '插件实例已变化，请刷新后重试');
-      if (ghost.manifest.taskPreferences === false) throwIpcError('PERMISSION_DENIED', 'PLUGIN_TASK_PREFERENCES_DISABLED');
       return { config: writePluginTaskConfig(installedGhostStoragePart(ghost), config) };
     }
     finally { release(); }

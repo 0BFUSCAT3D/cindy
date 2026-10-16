@@ -1472,11 +1472,8 @@ export interface GhostManifest {
    * 页用它避免抖动)。须与 settingsHtml 成对声明。
    */
   settingsHeight?: number;
-  /**
-   * 是否使用宿主「模型与任务」配置管理；缺省或 true 沿用原行为。
-   * false 由插件维护配置：不显示卡片，也不读写宿主的逐插件默认值。
-   */
-  taskPreferences?: boolean;
+  /** 是否显示宿主「模型与任务」默认配置卡；缺省或 true 显示，false 仅隐藏卡片。 */
+  showTaskPreferences?: boolean;
   /**
    * 卡片能力；空对象表示基础卡片渲染。
    * externalLinks: true 时卡片内可声明 data-ghost-link,点击经宿主确认框后打开浏览器。
@@ -1951,17 +1948,6 @@ export function ghostDeclaresHiddenTasks(manifest: Pick<GhostManifest, 'agent'> 
 
 export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionItem[] {
   const items: GhostPermissionItem[] = [];
-  // Opting out also removes the host's per-plugin permission cap from existing
-  // tasks. Keep this in the existing install/update consent projection so an
-  // automatic update cannot silently restore an older task grant.
-  if (manifest.taskPreferences === false) {
-    items.push({
-      key: 'task-preferences:self-managed',
-      kind: 'agent',
-      labelKey: 'selfManagedTaskPreferences',
-      detailKey: 'selfManagedTaskPreferencesDetail',
-    });
-  }
   for (const [category, actions] of Object.entries(manifest.cindy ?? {})) {
     if (category === 'oneshotModel') continue; // 偏好模型是标量意图,不是能力键
     if (!Array.isArray(actions)) continue;
@@ -2701,14 +2687,6 @@ export function ghostSettingsUiWithinCap(
   return actual.settingsHeight <= reviewed.settingsHeight;
 }
 
-/** 真实包不能未经市场声明就退出宿主任务配置管理。缺省与 true 等价。 */
-export function ghostTaskPreferencesWithinCap(
-  reviewed: GhostManifest,
-  actual: GhostManifest,
-): boolean {
-  return actual.taskPreferences !== false || reviewed.taskPreferences === false;
-}
-
 /**
  * 市场清单对真实包的 network 授权语义上限。
  *
@@ -3016,7 +2994,7 @@ const GHOST_MANIFEST_KNOWN_TOP_LEVEL_FIELDS = new Set([
   'node',
   'settingsHtml',
   'settingsHeight',
-  'taskPreferences',
+  'showTaskPreferences',
   'slots',
   'card',
   'tools',
@@ -4134,8 +4112,8 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
   if (raw.settingsHtml !== undefined && !isSafeGhostRelativePath(raw.settingsHtml)) {
     return { ok: false, reason: 'settingsHtml 必须是安装目录内的安全相对路径' };
   }
-  if (raw.taskPreferences !== undefined && typeof raw.taskPreferences !== 'boolean') {
-    return { ok: false, reason: 'taskPreferences 必须是布尔值' };
+  if (raw.showTaskPreferences !== undefined && typeof raw.showTaskPreferences !== 'boolean') {
+    return { ok: false, reason: 'showTaskPreferences 必须是布尔值' };
   }
   if (raw.settingsHeight !== undefined) {
     if (raw.settingsHtml === undefined) {
@@ -6048,8 +6026,8 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       ...(raw.settingsHtml !== undefined ? { settingsHtml: raw.settingsHtml as string } : {}),
       ...(raw.mobile !== undefined ? { mobile: raw.mobile as GhostManifest['mobile'] } : {}),
       ...(raw.settingsHeight !== undefined ? { settingsHeight: raw.settingsHeight as number } : {}),
-      ...(raw.taskPreferences !== undefined
-        ? { taskPreferences: raw.taskPreferences as boolean }
+      ...(raw.showTaskPreferences !== undefined
+        ? { showTaskPreferences: raw.showTaskPreferences as boolean }
         : {}),
       ...(tools !== undefined ? { tools } : {}),
       ...(card !== undefined || prepared.v3BaseCard || slots.includes('card')

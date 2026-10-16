@@ -17,7 +17,6 @@ import {
   ghostNodeSecretAuthorizationWithinCap,
   ghostSetupAuthorizationWithinCap,
   ghostSettingsUiWithinCap,
-  ghostTaskPreferencesWithinCap,
   ghostSubscribeAuthorizationWithinCap,
   ghostToolParametersWithinCap,
   ghostUnknownV3FieldsWithinCap,
@@ -3760,7 +3759,7 @@ describe('ghost · 交互卡 action id 形状(v2)', () => {
 });
 
 describe('ghost · settingsHtml 自绘设置区 + settingsHeight', () => {
-  it.each([2, 3])('taskPreferences 在 schema v%s 中保留配置管理选择，缺省不新增字段或权限', (schemaVersion) => {
+  it.each([2, 3])('showTaskPreferences 在 schema v%s 中只声明卡片显示，不改变任务能力或权限', (schemaVersion) => {
     const base = {
       ...goodManifest(),
       schemaVersion,
@@ -3772,24 +3771,20 @@ describe('ghost · settingsHtml 自绘设置区 + settingsHeight', () => {
     const original = validateGhostManifest(base);
     expect(original.ok).toBe(true);
     if (!original.ok) return;
-    for (const taskPreferences of [undefined, true, false]) {
-      const result = validateGhostManifest({ ...base, taskPreferences });
+    for (const showTaskPreferences of [undefined, true, false]) {
+      const result = validateGhostManifest({ ...base, showTaskPreferences });
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
-      expect(result.manifest.taskPreferences).toBe(taskPreferences);
-      expect(Object.hasOwn(result.manifest, 'taskPreferences')).toBe(taskPreferences !== undefined);
+      expect(result.manifest.showTaskPreferences).toBe(showTaskPreferences);
+      expect(Object.hasOwn(result.manifest, 'showTaskPreferences')).toBe(showTaskPreferences !== undefined);
       expect(result.manifest.agent?.tasks).toBe(true);
-      const permissions = ghostPermissionItems(result.manifest);
-      expect(permissions.filter(item => item.key !== 'task-preferences:self-managed'))
-        .toEqual(ghostPermissionItems(original.manifest));
-      expect(permissions.some(item => item.key === 'task-preferences:self-managed'))
-        .toBe(taskPreferences === false);
+      expect(ghostPermissionItems(result.manifest)).toEqual(ghostPermissionItems(original.manifest));
       expect(validateNormalizedGhostManifest(result.manifest)).toEqual(result);
     }
-    for (const taskPreferences of [null, 0, 1, 'false', {}, []]) {
-      expect(validateGhostManifest({ ...base, taskPreferences })).toMatchObject({
+    for (const showTaskPreferences of [null, 0, 1, 'false', {}, []]) {
+      expect(validateGhostManifest({ ...base, showTaskPreferences })).toMatchObject({
         ok: false,
-        reason: 'taskPreferences 必须是布尔值',
+        reason: 'showTaskPreferences 必须是布尔值',
       });
     }
   });
@@ -4601,29 +4596,6 @@ describe('ghostPermissionProjectionFingerprint', () => {
     expect(
       unreviewedGhostPermissionItems(reviewed.manifest, undefined, changedLabel.manifest),
     ).toEqual([expect.objectContaining({ key: 'network:secret:oauth_token' })]);
-  });
-
-  it.each([2, 3])('v%s market cap rejects an undisclosed task-preferences opt-out', schemaVersion => {
-    const manifest = (taskPreferences: boolean | undefined) => validateGhostManifest({
-      schemaVersion,
-      id: 'task-prefs-helper',
-      name: 'Task preferences helper',
-      version: '1.0.0',
-      entry: 'main.js',
-      ...(schemaVersion === 2 ? { slots: ['agent'] } : {}),
-      ...(schemaVersion === 3 ? { minCindyVersion: '0.1.0' } : {}),
-      ...(taskPreferences === undefined ? {} : { taskPreferences }),
-    });
-    for (const reviewed of [undefined, true, false]) {
-      for (const actual of [undefined, true, false]) {
-        const cap = manifest(reviewed);
-        const downloaded = manifest(actual);
-        expect(cap.ok && downloaded.ok).toBe(true);
-        if (!cap.ok || !downloaded.ok) continue;
-        expect(ghostTaskPreferencesWithinCap(cap.manifest, downloaded.manifest))
-          .toBe(actual !== false || reviewed === false);
-      }
-    }
   });
 
   it('market cap requires settings UI presence and only allows its height to stay or shrink', () => {

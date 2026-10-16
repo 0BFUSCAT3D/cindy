@@ -1705,13 +1705,10 @@ describe('scaffoldGhostDir', () => {
 });
 
 describe('FORGE_GUIDE', () => {
-  it('documents opting out of Host task configuration without bypassing user task authorization', () => {
-    expect(FORGE_GUIDE).toContain('"taskPreferences": false');
-    expect(FORGE_GUIDE).toContain('旧配置不参与执行');
-    expect(FORGE_GUIDE).toContain('仅更新该任务');
-    expect(FORGE_GUIDE).toContain('旧客户端忽略此字段，继续使用原卡片及配置');
-    expect(FORGE_GUIDE).toContain('"taskPreferences": true');
-    expect(FORGE_GUIDE).toContain('此声明只作用于当前插件，不关闭任务 API，也不影响其他插件');
+  it('documents optional Host task card visibility separately from task capabilities', () => {
+    expect(FORGE_GUIDE).toContain('"showTaskPreferences": false');
+    expect(FORGE_GUIDE).toContain('"showTaskPreferences": true');
+    expect(FORGE_GUIDE).toContain('任务 API、已有配置的读取和执行规则、权限检查均保持原样');
   });
 
   it('账号业务元数据使用插件 KV，不声明 Host 昵称接口', () => {

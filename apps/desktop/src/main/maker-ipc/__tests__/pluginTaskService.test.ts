@@ -30,7 +30,7 @@ it('rejects oversized plans before saving and refuses oversized legacy receipts 
 });
 
 it.each([false,true])('production Auto context checks uninstall after its projection await (worker=%s)', async worker => {
-  for (const revoked of [false,true]) for (const configuredMode of ['auto', 'ask', null]) {
+  for (const revoked of [false,true]) {
     const f=fixture(),task=await f.create();
     const session={...f.route,source:'plugin',workingDir:'/answer',permissionMode:'auto',status:'active'};
     const results=[[session],worker?[{leadId:task.taskId,label:'w',teamId:'team',teamStatus:'active'}]:[],[session]];
@@ -40,7 +40,7 @@ it.each([false,true])('production Auto context checks uninstall after its projec
     const deps={setAutoReviewContextResolver:(callback:typeof load)=>{load=callback;},createPluginTaskReviewResolver:(callback:typeof load)=>callback,
       getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,
       createPluginTaskStore:()=>f.deps.store,drainPersistQueue:async()=>{},
-      pluginTaskServiceForCurrentOwner:()=>f.service,readPluginTaskPermissionMode:()=>configuredMode,
+      pluginTaskServiceForCurrentOwner:()=>f.service,readPluginTaskConfig:()=>({permissionMode:'auto'}),
       readPluginTaskPlanReceipt,pluginTaskAuthorizationRevision:()=> 'new-install',isPluginTaskAuthorized:()=>true};
     const source=readFileSync(new URL('../register.ts',import.meta.url),'utf8');
     const start=source.indexOf('  setAutoReviewContextResolver(createPluginTaskReviewResolver(async sessionId => {');
@@ -48,7 +48,7 @@ it.each([false,true])('production Auto context checks uninstall after its projec
     const js=ts.transpileModule(block,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
     new Function(...Object.keys(deps),js)(...Object.values(deps));
     if(revoked)await expect(load(worker?'worker':task.taskId)).rejects.toMatchObject({code:'TASK_NOT_FOUND'});
-    else await expect(load(worker?'worker':task.taskId)).resolves.toMatchObject({authorized:configuredMode !== 'ask',pluginId:'p'});
+    else await expect(load(worker?'worker':task.taskId)).resolves.toMatchObject({authorized:true,pluginId:'p'});
   }
 });
 
@@ -865,21 +865,6 @@ it('a rejected operation does not poison subsequent drain', async () => {
 
 
 describe('current plugin dispatch authority', () => {
-  it.each(['ask', 'acceptEdits', 'auto'])('uses the task-granted %s permission when Host preferences are disabled', async permissionMode => {
-    const f = fixture(), task = await f.create();
-    f.tasks.get(task.taskId)!.permissionMode = permissionMode;
-    f.deps.readPermissionMode = () => null;
-    const run = await f.service.send('p', {taskId:task.taskId,expectedRevision:task.revision,requestKey:'self-managed',text:'input'});
-    expect(run.status).toBe('queued');
-    expect(f.deps.dispatch).toHaveBeenCalledOnce();
-    await expect(f.service.accept(task.taskId,{clientId:run.inputMessageId},f.execution)).resolves.toBeUndefined();
-    expect(JSON.parse(f.rows.get(run.runId)!.payload)).toMatchObject({status:'running', execution:f.execution});
-  });
-  it('keeps Plan Mode and invalid task permissions blocked without a Host preference cap', () => {
-    expect(isPluginTaskPermissionAllowed('auto', null, true)).toBe(false);
-    for (const mode of ['bypassPermissions', 'unknown', undefined, null])
-      expect(isPluginTaskPermissionAllowed(mode, null)).toBe(false);
-  });
   it.each(['before', 'route', 'insert'])('blocks independent Plan Mode before dispatch at %s', async point => {
     const f=fixture(), task=await f.create();
     const enable=()=>Object.assign(f.tasks.get(task.taskId)!,{permissionMode:'auto',planModeEnabled:true});

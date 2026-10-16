@@ -31,7 +31,7 @@ const validManifest = {
 } as const;
 
 describe('Ghost manifest contract', () => {
-  it.each([2, 3])('preserves the optional Host task preferences flag in schema v%s', (schemaVersion) => {
+  it.each([2, 3])('preserves the optional Host task card visibility flag in schema v%s', (schemaVersion) => {
     const base = {
       ...validManifest,
       schemaVersion,
@@ -40,19 +40,19 @@ describe('Ghost manifest contract', () => {
       tools: undefined,
       agent: { tasks: true },
     };
-    for (const taskPreferences of [undefined, true, false]) {
-      const result = validateGhostManifest({ ...base, taskPreferences });
+    for (const showTaskPreferences of [undefined, true, false]) {
+      const result = validateGhostManifest({ ...base, showTaskPreferences });
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
-      expect(result.manifest.taskPreferences).toBe(taskPreferences);
-      expect(Object.hasOwn(result.manifest, 'taskPreferences')).toBe(taskPreferences !== undefined);
+      expect(result.manifest.showTaskPreferences).toBe(showTaskPreferences);
+      expect(Object.hasOwn(result.manifest, 'showTaskPreferences')).toBe(showTaskPreferences !== undefined);
       expect(result.manifest.agent?.tasks).toBe(true);
       expect(validateGhostManifest(result.manifest)).toEqual(result);
     }
-    for (const taskPreferences of [null, 0, 1, 'false', {}, []]) {
-      expect(validateGhostManifest({ ...base, taskPreferences })).toMatchObject({
+    for (const showTaskPreferences of [null, 0, 1, 'false', {}, []]) {
+      expect(validateGhostManifest({ ...base, showTaskPreferences })).toMatchObject({
         ok: false,
-        reason: 'taskPreferences 必须是布尔值',
+        reason: 'showTaskPreferences 必须是布尔值',
       });
     }
   });

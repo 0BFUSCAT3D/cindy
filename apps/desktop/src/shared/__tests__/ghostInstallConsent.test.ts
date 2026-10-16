@@ -51,36 +51,6 @@ describe('plugin install consent', () => {
     expect(ghostUpdateNeedsConsent(current, manifest({ version: '1.1.0' }))).toBe(false);
   });
 
-  it.each([2, 3])('reviews opting out of host task preferences in schema v%s', (schemaVersion) => {
-    const base = {
-      schemaVersion,
-      ...(schemaVersion === 2 ? { slots: ['agent'] } : {}),
-      agent: { tasks: true },
-      tools: undefined,
-      network: undefined,
-    };
-    for (const previous of [undefined, true, false]) {
-      const current = installed(manifest({ ...base, taskPreferences: previous }));
-      for (const next of [undefined, true, false]) {
-        const candidate = manifest({ ...base, version: '1.1.0', taskPreferences: next });
-        const facts = evaluateGhostInstallConsent(current, candidate);
-        if (next === false && previous !== false) {
-          expect(facts?.kind).toBe('update');
-          if (facts?.kind !== 'update') throw new Error('expected update facts');
-          expect(facts.added.map(item => item.key)).toEqual(['task-preferences:self-managed']);
-          expect(facts.removed).toEqual([]);
-          expect(ghostUpdateNeedsConsent(current, candidate)).toBe(true);
-        } else {
-          expect(facts).toBeNull();
-          expect(ghostUpdateNeedsConsent(current, candidate)).toBe(false);
-        }
-      }
-    }
-    const facts = evaluateGhostInstallConsent(null, manifest({ ...base, taskPreferences: false }));
-    if (facts?.kind !== 'install') throw new Error('expected install facts');
-    expect(facts.permissions.map(item => item.key)).toContain('task-preferences:self-managed');
-  });
-
   it('keeps an update silent when it only removes permissions or changes tools', () => {
     const current = installed(manifest({ network: { hosts: ['api.weather.test', 'maps.weather.test'] } }));
     expect(evaluateGhostInstallConsent(current, manifest({ version: '1.1.0' }))).toBeNull();

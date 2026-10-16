@@ -855,12 +855,12 @@ describe('Ghost plugin detail sections', () => {
     { name: 'plugin tasks', manifest: { agent: { tasks: true } }, taskRows: true, showCard: true },
     { name: 'legacy errands', manifest: { agent: { errand: true } }, taskRows: true, showCard: true },
     { name: 'workspaces', manifest: { workspace: true }, taskRows: true, showCard: true },
-    { name: 'explicitly enabled tasks', manifest: { agent: { tasks: true }, taskPreferences: true }, taskRows: true, showCard: true },
-    { name: 'opted-out tasks', manifest: { agent: { tasks: true }, taskPreferences: false }, taskRows: true, showCard: false },
-    { name: 'opted-out quick answers', manifest: { cindy: { text: ['oneshot'] }, taskPreferences: false }, taskRows: false, showCard: false },
-    { name: 'opted-out legacy errands', manifest: { agent: { errand: true }, taskPreferences: false }, taskRows: true, showCard: false },
-    { name: 'opted-out workspaces', manifest: { workspace: true, taskPreferences: false }, taskRows: true, showCard: false },
-  ])('respects the Host task preferences choice for $name', ({ manifest, taskRows, showCard }) => {
+    { name: 'explicitly enabled tasks', manifest: { agent: { tasks: true }, showTaskPreferences: true }, taskRows: true, showCard: true },
+    { name: 'opted-out tasks', manifest: { agent: { tasks: true }, showTaskPreferences: false }, taskRows: true, showCard: false },
+    { name: 'opted-out quick answers', manifest: { cindy: { text: ['oneshot'] }, showTaskPreferences: false }, taskRows: false, showCard: false },
+    { name: 'opted-out legacy errands', manifest: { agent: { errand: true }, showTaskPreferences: false }, taskRows: true, showCard: false },
+    { name: 'opted-out workspaces', manifest: { workspace: true, showTaskPreferences: false }, taskRows: true, showCard: false },
+  ])('respects Host task card visibility for $name', ({ manifest, taskRows, showCard }) => {
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     Object.assign(window.electronAPI, {
       ghosts: {
@@ -918,7 +918,7 @@ describe('Ghost plugin detail sections', () => {
       manifest: {
         schemaVersion: 3, minCindyVersion: '0.1.0', kind: 'chip', id: 'art', name: 'Art',
         version: '1.0.0', entry: 'main.js', cindy: { image: ['generate', 'edit'], embed: ['text'] },
-        taskPreferences: true,
+        showTaskPreferences: true,
       },
       dir: '/plugins/art',
       namespace: null,
