@@ -97,6 +97,7 @@ const {
   backfillLegacyImDefaultRoutes,
   backfillLegacyImDefaultRoutesAtStartup,
   createImChannelDefaultRouteSync,
+  createDefaultRouteFollower,
   resetImSessionToChannelDefaults,
 } = await import('../channelDefaultRouteSync');
 const { markImSessionManualRouteOverride } = await import('../manualRouteOverride');
@@ -777,5 +778,73 @@ describe('createSession', () => {
     await db.update(sessions).set({ status: 'archived', imDefaultRoute: 'kept' }).where(eq(sessions.id, created.id));
     await repo.createSession('cli_bot', 'ou_user');
     expect((await rowOf(created.id)).imDefaultRoute).toBe('kept');
+  });
+});
+
+
+describe('official bot follows defaults without an extra control', () => {
+  const hookFp = JSON.stringify(['hook', 'telegram', 'old-default']);
+  const nextHookFp = JSON.stringify(['hook', 'telegram', 'new-default']);
+  beforeEach(() => {
+    mocks.fingerprint.mockReturnValue(nextHookFp);
+    mocks.resolveDefaults.mockResolvedValue({ ...NEW, fingerprint: nextHookFp });
+  });
+  const hookRecord = buildImDefaultRouteRecord(hookFp, OLD);
+  async function officialFollower() {
+    const { isHookDefaultRouteRow } = await import('../../../hook-control/defaultRouteFollow');
+    return createDefaultRouteFollower({
+      label: 'hook', ownsRow: isHookDefaultRouteRow,
+      fingerprint: mocks.fingerprint, resolveTarget: mocks.resolveDefaults,
+      isRouteUsable: async () => true,
+    });
+  }
+
+  it('records a new official task and follows on its next message, preserving Fast and permissions', async () => {
+    const { writeHookDefaultRouteRecord } = await import('../../../hook-control/defaultRouteFollow');
+    await insertTask('official', OLD, { source: 'telegram', marker: false, record: null, fastMode: true });
+    await writeHookDefaultRouteRecord('official', hookFp);
+    await (await officialFollower()).syncUnderLock('official');
+    expect(mocks.applyRoute).toHaveBeenCalledWith('official', { ...NEW, fastMode: true }, 'claude-code');
+    expect((await rowOf('official')).permissionMode).toBe('auto');
+    expect(parseImDefaultRouteRecord((await rowOf('official')).imDefaultRoute)?.fp).toBe(nextHookFp);
+    mocks.fingerprint.mockReturnValue(hookFp);
+    mocks.resolveDefaults.mockResolvedValue({ ...OLD, fingerprint: hookFp });
+    await (await officialFollower()).syncUnderLock('official');
+    expect((await rowOf('official')).model).toBe(OLD.model);
+  });
+
+  it('a same-value manual selection permanently stops following; a new task follows again', async () => {
+    const { writeHookDefaultRouteRecord } = await import('../../../hook-control/defaultRouteFollow');
+    await insertTask('official', OLD, { source: 'telegram', marker: false, record: hookRecord });
+    await markImSessionManualRouteOverride('official');
+    await writeHookDefaultRouteRecord('official', hookFp);
+    await (await officialFollower()).syncUnderLock('official');
+    expect(mocks.applyRoute).not.toHaveBeenCalled();
+    expect(parseImDefaultRouteRecord((await rowOf('official')).imDefaultRoute)?.manual).toBe(true);
+    await insertTask('new-task', OLD, { source: 'telegram', marker: false, record: null });
+    await writeHookDefaultRouteRecord('new-task', hookFp);
+    await (await officialFollower()).syncUnderLock('new-task');
+    expect(mocks.applyRoute).toHaveBeenCalledTimes(1);
+    expect((await rowOf('official')).model).toBe(OLD.model);
+  });
+
+  it('does not claim historical official tasks, personal bot tasks, or remote tasks', async () => {
+    await insertTask('historical', OLD, { source: 'telegram', marker: false, record: null });
+    await insertTask('personal', OLD, { source: 'telegram' });
+    await insertTask('remote', OLD, { source: 'telegram', marker: false, remoteHostId: 'other' });
+    await insertTask('rotated-personal', OLD, { source: 'telegram', marker: false });
+    const follower = await officialFollower();
+    for (const id of ['historical', 'personal', 'remote', 'rotated-personal']) await follower.syncUnderLock(id);
+    expect(mocks.applyRoute).not.toHaveBeenCalled();
+    expect(mocks.resolveDefaults).not.toHaveBeenCalled();
+  });
+
+  it('defers a busy follow switch so generic pending application cannot interrupt it', async () => {
+    await insertTask('official', OLD, { source: 'telegram', marker: false, record: hookRecord });
+    mocks.applyRoute.mockResolvedValue('staged');
+    mocks.readPendingRoute.mockReturnValue({ ...NEW, rev: 7 });
+    mocks.readPendingRoute.mockReturnValueOnce(undefined);
+    expect(await (await officialFollower()).syncUnderLock('official')).toBe(true);
+    expect(parseImDefaultRouteRecord((await rowOf('official')).imDefaultRoute)?.pendingRev).toBe(7);
   });
 });
