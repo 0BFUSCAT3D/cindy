@@ -215,6 +215,62 @@ describe('ErrorBanner OpenAI connection recovery', () => {
     };
   });
 
+  it.each(['live', 'persisted'])('dismisses only the active %s error from the composer with Escape', (kind) => {
+    const dismiss = vi.fn();
+    const inactiveDismiss = vi.fn();
+    const retry = vi.fn();
+    const { unmount } = render(<>
+      <textarea aria-label="composer" />
+      <ErrorBanner error="inactive error" onRetry={retry} onCancel={inactiveDismiss} />
+      {kind === 'live'
+        ? <ErrorBanner error="active error" onRetry={retry} onCancel={dismiss} dismissOnEscape />
+        : <ErrorTailErrorBanner errorText="active error" onContinue={retry} onDismiss={dismiss} dismissOnEscape />}
+    </>);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(inactiveDismiss).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+    unmount();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { key: 'Enter' }, { key: 'Escape', repeat: true },
+    { key: 'Escape', isComposing: true }, { key: 'Escape', keyCode: 229 },
+    { key: 'Escape', altKey: true }, { key: 'Escape', ctrlKey: true },
+    { key: 'Escape', metaKey: true }, { key: 'Escape', shiftKey: true },
+  ])('does not dismiss errors for an unrelated or composing key: %s', (event) => {
+    const dismiss = vi.fn();
+    render(<ErrorBanner error="error" onRetry={vi.fn()} onCancel={dismiss} dismissOnEscape />);
+    fireEvent.keyDown(window, event);
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('lets a composer consume Escape before dismissing the error', () => {
+    const dismiss = vi.fn();
+    render(<>
+      <textarea onKeyDown={(event) => event.preventDefault()} />
+      <ErrorBanner error="error" onRetry={vi.fn()} onCancel={dismiss} dismissOnEscape />
+    </>);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it.each(['dialog', 'alertdialog', 'menu', 'listbox', 'morph'])('lets the %s layer handle Escape first', (layer) => {
+    const dismiss = vi.fn();
+    const banner = <ErrorBanner error="error" onRetry={vi.fn()} onCancel={dismiss} dismissOnEscape />;
+    const { rerender } = render(<>
+      {banner}
+      {layer === 'morph' ? <div data-morph-side="bottom" /> : <div role={layer} />}
+    </>);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).not.toHaveBeenCalled();
+    rerender(banner);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(dismiss).toHaveBeenCalledOnce();
+  });
+
   it('localizes the Codex resume preflight marker without exposing the host envelope', () => {
     const error = `LAZY_CREATE_FAILED: ${CODEX_RESUME_NOT_READY_WIRE_MESSAGE}`;
     render(
