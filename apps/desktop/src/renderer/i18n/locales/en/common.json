@@ -3936,7 +3936,7 @@
         },
         "step4": {
           "title": "Copy your user ID",
-          "body": "Enable Developer Mode, right-click your avatar, and choose Copy User ID."
+          "body": "Enable Developer Mode in Discord user settings, then right-click your avatar and choose Copy User ID."
         }
       }
     },
@@ -4727,7 +4727,7 @@
         "description": "Let agents inspect and operate a connected Android device over ADB",
         "toggleAria": "Toggle Android automation",
         "refresh": "Recheck",
-        "toggleHint": "Applies only to new Agent sessions.",
+        "toggleHint": "Applies machine-wide to new Agent sessions only.",
         "status": {
           "checking": "Checking ADB status…",
           "disabled": "Android automation is off. Turn it on to detect ADB and devices.",
@@ -9341,7 +9341,7 @@
         "speakingMode": "Speaking order",
         "speakingModeAuto": "Automatic",
         "speakingModeSequential": "One at a time",
-        "speakingModeAutoNote": "No mentions or @Everyone: think simultaneously on the first pass, then take turns. Mentioned teammates reply in mention order.",
+        "speakingModeAutoNote": "No mentions or @Everyone: think simultaneously on the first pass, then reply one by one. Mentioned teammates reply in mention order.",
         "speakingModeSequentialNote": "One teammate speaks at a time, and each one sees the replies before it.",
         "speakingModeSaveFailed": "Couldn't save the speaking order. Try again.",
         "setOrganizer": "Make Organizer",

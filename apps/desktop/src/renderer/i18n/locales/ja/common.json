@@ -3907,7 +3907,7 @@
         },
         "step4": {
           "title": "ユーザー ID をコピー",
-          "body": "Developer Mode を有効にし、自分のアバターを右クリックして Copy User ID を選択します。"
+          "body": "Discord のユーザー設定で Developer Mode を有効にしてから、自分のアバターを右クリックし、Copy User ID を選択します。"
         }
       }
     },
@@ -4698,7 +4698,7 @@
         "description": "エージェントが ADB 経由で接続済み Android デバイスを確認し、操作できます",
         "toggleAria": "Android 自動操作を切り替える",
         "refresh": "再確認",
-        "toggleHint": "新しく開始する Agent セッションにのみ適用されます。",
+        "toggleHint": "このパソコン全体に適用され、新しく開始する Agent セッションでのみ有効です。",
         "status": {
           "checking": "ADB の状態を確認しています…",
           "disabled": "Android 自動操作はオフです。オンにすると ADB とデバイスを検出します。",

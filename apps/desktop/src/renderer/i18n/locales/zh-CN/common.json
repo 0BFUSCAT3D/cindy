@@ -3907,7 +3907,7 @@
         },
         "step4": {
           "title": "复制用户 ID",
-          "body": "开启 Developer Mode，右键自己的头像并选择 Copy User ID"
+          "body": "在 Discord 用户设置开启 Developer Mode，右键自己的头像并选择 Copy User ID"
         }
       }
     },
@@ -4698,7 +4698,7 @@
         "description": "让 Agent 通过 ADB 检查并操作已连接的 Android 设备",
         "toggleAria": "切换 Android 自动化",
         "refresh": "重新检查",
-        "toggleHint": "仅对新建的 Agent 会话生效",
+        "toggleHint": "影响这台电脑，仅对新建的 Agent 会话生效",
         "status": {
           "checking": "正在检查 ADB 状态…",
           "disabled": "Android 自动化未启用。启用后将检测 ADB 与设备。",
