@@ -66,6 +66,7 @@ beforeEach(() => {
   materializeSshRemoteMedia.mockResolvedValue({
     ok: true,
     cachePath: '/cache/ssh/plot.png',
+    sourceVersion: 'ssh-source-a',
     size: 42,
     mime: 'image/png',
     relPath: 'artifacts/plot.png',
@@ -158,12 +159,50 @@ describe('fetchLocalMediaToOss — scheme 路由', () => {
       expect(logDebug.mock.calls.flat().join('\n')).not.toMatch(/xdt-|path=|\/cache\//);
     },
   );
+  it('revalidates source identity without reading/uploading bytes, including restored mtime', async () => {
+    let ctimeMs = 1;
+    const read = vi.fn();
+    openMock.mockResolvedValue({
+      stat: async () => ({ isFile: () => true, size: 100_000, mtimeMs: 1, ctimeMs, ino: 2, dev: 3 }),
+      read, close: vi.fn(),
+    });
+    imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
+    const args = { url: 'xdt-image://sess/a.png', prepareOnly: true };
+    const first = await fetchLocalMediaToOss(args);
+    expect(first.version).toMatch(/^[a-f0-9]{64}$/);
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    ctimeMs++;
+    expect((await fetchLocalMediaToOss(args)).version).not.toBe(first.version);
+    expect(read).not.toHaveBeenCalled(); expect(uploadLocalFile).not.toHaveBeenCalled();
+  });
   it('xdt-image:// → imageCacheStore.resolveSafe,mime 透传给上传', async () => {
     imageResolve.mockReturnValue({ absPath: '/cache/a.png', mimeType: 'image/png' });
     const r = await fetchLocalMediaToOss({ url: 'xdt-image://sess/a.png' });
     expect(imageResolve).toHaveBeenCalledWith('xdt-image://sess/a.png');
     expect(uploadLocalFile).toHaveBeenCalledWith('/cache/a.png', { contentType: 'image/png' });
     expect(r).toEqual({ ossKey: 'cindy/device-link/u/uuid.ext', mimeType: 'image/png', size: 42 });
+  });
+
+  it.each([5, 100_000])('keeps SSH version stable across LRU touches and cache relocation (%s bytes)', async (size) => {
+    let clock = 1;
+    let sourceVersion = 'remote-version-a';
+    let cachePath = path.join(os.tmpdir(), 'ssh-version-a.png');
+    materializeSshRemoteMedia.mockImplementation(async () => ({
+      ok: true, cachePath, sourceVersion, size, mime: 'image/png', relPath: 'artifacts/plot.png',
+    }));
+    openMock.mockResolvedValue({
+      stat: async () => ({ isFile: () => true, size, mtimeMs: clock++, ctimeMs: clock++, ino: clock++, dev: 1 }),
+      read: async (bytes: Buffer) => { bytes.fill(7); return { bytesRead: bytes.length }; },
+      close: vi.fn(),
+    });
+    const args = { url: 'xdt-file://open?path=%2Fhome%2Fu%2Fproj%2Fartifacts%2Fplot.png&sessionId=session-ssh&remoteHostId=host-1&workdir=%2Fhome%2Fu%2Fproj', prepareOnly: true };
+    const first = await fetchLocalMediaToOss(args);
+    expect(first.version).toMatch(/^[a-f0-9]{64}$/);
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    cachePath = path.join(os.tmpdir(), 'ssh-version-b.png');
+    expect((await fetchLocalMediaToOss(args)).version).toBe(first.version);
+    sourceVersion = 'remote-version-b';
+    expect((await fetchLocalMediaToOss(args)).version).not.toBe(first.version);
   });
 
   it('xdt-video:// → videoCacheStore.resolveSafe', async () => {

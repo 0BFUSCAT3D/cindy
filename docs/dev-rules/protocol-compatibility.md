@@ -405,12 +405,43 @@ handler 完成后复核可见性与账号失败（`[NOT_FOUND] Session does not 
 
 **审批。** `cindy_scheduler` 与 `cindy_helper` 是整体静默的可信 server；跨电脑写操作
 （`schedule_update` / `pause` / `resume` / `delete` / `run_now` 带非本机 `device`，以及
-`send_to_session` 的 `deviceId::sessionId` 目标）在 `mcp-tool-approval-policy.ts` 里按内层动作
+`send_to_session` 的 `deviceId::sessionId` 目标，以及 `archive_sessions` / `unarchive_sessions`
+含非本机设备前缀的 ID）在 `mcp-tool-approval-policy.ts` 里按内层动作
 判为逐次审批，交给任务权限档；本机调用与跨电脑读取仍静默。
 
 手机与 IM 通过所在电脑的 Agent 使用这些能力，无新增界面。实现与回归见
 `packages/lizi-mcps/src/scheduler/_devices.ts`、`mcp-integrations/schedulerDevices.ts`、
 `mcp-integrations/sessionHandoffRemote.ts`、`maker-ipc/sessionHandoffIpc.ts` 及各自的测试。
+
+### Agent 跨电脑归档与取消归档
+
+`archive_sessions` / `unarchive_sessions` 原位接受 `deviceId::sessionId`。本机批次仍调用
+`setSessionsStatusInDb`，保持原子性；`local::sessionId` 是本机别名，先规范化再检查重复和当前任务保护，
+不允许嵌套设备前缀。远程复用已有 `local-db:sessions:patch-meta(id, { status })`
+与目标电脑的 `patchSessionMetaInDb` 生命周期服务，状态仅为 `archived` / `active`。没有新 channel、
+allowlist、数据库 migration 或第三台电脑转发。复合 ID 不交给本机服务，无本机回退。
+
+最小批次合同：一次只能指定同一台电脑，混合本机/远程或多设备批次写入前返回 `INVALID_ARGS`。
+远程按输入顺序执行，首次失败停止，无回滚、无自动重放。失败 `data` 中 `changed` 为已确认完成项，
+`failed_session_id` 为失败或结果未知项，`remaining_session_ids` 为未执行项；各 ID 保留设备前缀。
+`partial` 表示已有确认完成项或失败项结果未知，不能把整个远程批次当作事务。
+
+沿用同账号远控、双方允许控制、owner 检查与目标可见性。跨电脑写入进入当前任务权限档，
+本机操作保持原样。离线、禁用、撤权、不支持分别明确返回；旧宿主拒绝 `patch-meta` 时返回
+`REMOTE_UNSUPPORTED`。已支持这个 channel 和生命周期保护的旧宿主无需新增协议即可执行。
+目标服务的不存在与已删除/专属生命周期限制返回 `NOT_FOUND` / `PRECONDITION_FAILED`；
+隧道在处理后复核账号/可见性的 NOT_FOUND、超时、在途断连、错误回执与内部错误均按
+`REMOTE_RESULT_UNKNOWN`，说明该项可能已生效，调用方先查状态再决定是否重试。
+本机发送前的 `BACKPRESSURE` 返回 `REMOTE_UNAVAILABLE`；目标返回的 `BACKPRESSURE` 或
+无法确认为写入前拒绝的 `PRECONDITION_FAILED` 也返回 `REMOTE_RESULT_UNKNOWN`，因为写入后的
+回执查询可能失败（后者可能由 worktree mutation 包装查询错误）。即使 `changed` 为空也标记 `partial: true`。
+同一账号快照覆盖整个远程批次，切账号后停止并不返回旧账号的标题/目录。
+
+取消归档不发送旧消息、不启动任务执行、不恢复暂停自动化。成功后另调既有 `send_to_session`
+继续投递；该通道仍按目标当前状态与已保存权限执行。手机/IM 经执行电脑的 Agent 使用同一工具，
+没有新增 UI；SSH 工作目录任务仍由其所属 Desktop 管理状态，不将 SSH 主机视为 device-link 设备。
+不改变共享连接的重试、超时或恢复策略。回归见 `archiveSessionsTool.test.ts`、
+`sessionStatusRemote.test.ts`、`sessionsUpdate.test.ts` 和 `mcpToolApprovalPolicy.test.ts`。
 
 ## Desktop 设备互联 Review
 
@@ -778,6 +809,52 @@ link-accept 双向声明，不改 relay）。Desktop 控制端在本机没有订
 `apps/desktop/src/main/usage/usageDeviceRows.ts` 与 `peerUsageSync.ts`。
 
 ## 图片交付与缺失源文件
+
+### 远程文件连接复用与版本缓存
+
+`device-link:file-peer` 的 `caps` 追加可选 `idleMs`、`sessionBound: true`。新控制端
+仅在 Host 明确声明后，于 `offer` 携带 `sessionBound: true`，双方取消空闲倒计时，
+按远程会话生命周期释放独立文件连接。不主动预热：普通读取只复用已建立的文件通道，
+首次需要传文件时才建立。运行时断开通知宿主回收，下次取件按需重建，不新增应用层心跳。
+传输期间的路径采样独立于调试记录开关，供慢链路回退使用；关闭调试只省略详细进度日志。
+采样随传输结束停止，不在空闲文件连接上循环探测。
+Desktop 显式断链、账号变化、共享连接离线，以及 Mobile 退后台、设备切换、断链时释放。
+取消同时覆盖排队与尚未拿到连接 ID 的请求；迟到的协商结果不能重新建立连接或触发 OSS。
+Desktop 取件取消后仍允许原账号发送已有 `close` 清理通知，包括迟到的 offer 回包与
+已完成读取留下的空闲连接；其他请求继续受取消和设备代次限制。切账号后旧通知不发送，
+不借新账号清理旧连接，不增加重试、心跳或共享 relay 重连。
+
+旧控制端未发送 `sessionBound` 时，新 Host 仍按 5 分钟空闲关闭；新控制端面对未声明
+该能力的 Host，按 `idleMs` 提前一个命令预算（15 秒）关闭，最长 4 分 45 秒，未声明
+`idleMs` 时仍按 30 秒处理。正在传输的源文件仍保持 60 秒无进展清理，
+不因延长空闲复用而延长。服务端无需改动，不更改旧端必填字段或 Mobile 原生指纹。
+
+`device-link:media:fetch` 的 `prepareOnly` 结果和文件 `open` 结果追加可选 `version`
+（64 位十六进制摘要）。Host 每次先走原授权解析，再从打开的文件句柄取
+dev/ino/size/mtime/ctime，连同解析后的路径生成不透明版本。SSH 的不可变本地副本
+例外：由 materializer 用远端主机、工作目录、相对路径及远端 size/mtime 生成源版本，
+prepare/open 复用该源版本并校验副本大小，不使用带登录代次的本地路径或 LRU 时间。
+缓存仍按稳定账号隔离，原有代次取消校验保留；不把版本当作授权凭据。
+新版控制端只有两次版本一致且传输成功才保留私有缓存副本；读取缓存前仍执行
+prepare 授权与版本查询。缺失／非法版本的旧端不启用此缓存，旧控制端忽略新增字段。
+缓存按稳定账号、目标设备、完整媒体 URL 隔离（含 SSH 与目录约束），跨重启保留，
+不设时间 TTL、16 MiB 单文件门槛或条目数门槛。账号代次用于拒绝迟到结果，不能进入
+持久缓存键。Desktop 图片等媒体复用 `cindy-media` 的 `integration-cache` 索引和
+既有 512 MiB 缓存预算，真实文件探测后流式入仓；超过预算的单份媒体不额外缓存。
+只对 `remote-file` 独占的可再生缓存按 LRU 自动回收，SQL 删除时复验 pin 和其他引用。
+HTML 等普通文件复用 `remote-file-cache` 的 4 GiB 总量上限、LRU 与启动残片清扫；
+同源新版本成功保存后清旧版本，不在媒体目录另存字节。
+
+Mobile 复用 `remote-media` 磁盘缓存，放入 realm/账号 SHA-256 命名空间；无固定容量
+门槛，仅在现有传输空间预留不足时按 LRU 清理（保留 256 MiB，并考虑下载与消费者副本）。
+访问顺序落盘、版本不同删除旧条目；版本进入物理文件名，避免异步复制撞上覆盖写。
+系统清掉目录后，下一次取件自动重建。两端消费者均拿独立副本，清缓存不删正在预览的副本。
+强制刷新只跳过旧副本的读取，成功后仍更新缓存，避免下次普通打开又命中损坏副本。
+已有 OSS 和流式媒体缓存维持原生命周期；此缓存只保存已完成的 peer 整文件下载。
+
+网络帧仍是旧版可读的 16 KiB，不增加 wire 通道。新版接收运行时仅在本地桥接声明
+批量写入时，把已到达帧合为至多 256 KiB 后串行写盘；仍按实际写入块数归还流控额度，
+EOF 必须等全部写入完成。桌面与手机使用同一实现；不改 Mobile 原生指纹。
 
 媒体取件沿用既有 `MEDIA_FETCH_FAILED` 错误包；源图片不存在时，Host 在消息中附加
 `[MEDIA_SOURCE_MISSING]` 稳定标记，不回传本机路径。新版 Mobile 据此提示重新导入，

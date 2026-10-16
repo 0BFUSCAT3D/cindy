@@ -175,8 +175,10 @@ export async function withDownloadedRemoteMediaFile<T>(
   }
 }
 
-export function createExpoRemoteMediaDiskCacheIO(): RemoteMediaDiskCacheIO {
-  const dir = new Directory(Paths.cache, CACHE_DIR_NAME);
+export function createExpoRemoteMediaDiskCacheIO(namespace?: string): RemoteMediaDiskCacheIO {
+  if (namespace && !/^files-[a-f0-9]{64}$/.test(namespace)) throw new Error('INVALID_CACHE_NAMESPACE');
+  const root = new Directory(Paths.cache, CACHE_DIR_NAME);
+  const dir = namespace ? new Directory(root, namespace) : root;
   return {
     ensureDir() {
       dir.create({ intermediates: true, idempotent: true });
@@ -195,6 +197,9 @@ export function createExpoRemoteMediaDiskCacheIO(): RemoteMediaDiskCacheIO {
     },
     fileExists(name) {
       return new File(dir, name).exists;
+    },
+    fileSize(name) {
+      return new File(dir, name).size ?? -1;
     },
     fileUri(name) {
       return new File(dir, name).uri;

@@ -10222,6 +10222,7 @@
         "railSameEngine": "{{agent}} のみ",
         "crossEngineWarning": "エンジンを切り替えるとコンテキストが再構築され、内容が失われる場合があります",
         "favoritesSyncFailed": "お気に入りを同期できません。選択画面を開き直してください。接続先の更新が必要な場合があります。",
+        "favoritesSyncFailedUnreachable": "お気に入りはまだ同期されていません。そのパソコンに現在接続できません。接続が戻ってから開き直してください。",
         "railRemoteProviderGroup": "{{provider}} · {{device}} · {{group}}",
         "providerGroupLabel": "{{provider}} · {{group}}",
         "providerGroupRunningOn": "現在 {{device}} で実行中",
