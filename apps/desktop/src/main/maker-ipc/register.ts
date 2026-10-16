@@ -172,7 +172,7 @@ import {
   DL_SESSION_REFERENCE_CAPABILITY_CHANNEL,
   readInputDeliveryClientIds,
 } from '@cindy/device-link';
-import { and, asc, desc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
 import { applyScheduledModelSelection, ScheduledModelSelectionBusyError, type ScheduledModelSelection, type ScheduledModelSelectionLease } from './scheduledModelSelection';
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import {
@@ -508,6 +508,7 @@ import {
 } from '../localDb/schema.js';
 import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
+import { followMovedCindyAutoRoutes } from './cindyAutoRouteFollow.js';
 import { readEffectiveBotModelChain, readEffectiveBotModelSelection } from '../maker-host/bot-model-chain-settings-store.js';
 import {
   isOrcaWorkerPermissionMode,
@@ -5896,9 +5897,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     async () => { throw new Error('Pi model settings refresh is not ready'); };
   let applyPiPendingSelection: NonNullable<PendingCredentialSwitchDeps['applyPiPending']> =
     async () => { throw new Error('Pi pending model switch is not ready'); };
+  let followMovedCindyAutoRoutesNow: () => Promise<void> = async () => {};
   const refreshContextSettings = (targets?: readonly { agent: AgentKind; providerId: string; modelId: string }[]) => {
     const owner = getActiveAppSession();
-    const next = contextRefresh.then(() => refreshActiveModelContextSettings({
+    const next = contextRefresh.then(async () => {
+      // 目录刷新先登记被服务端挪走的 Auto：之后的上下文刷新会跳过已登记切换的任务，
+      // 不再按旧来源重载一个已不提供该模型的连接。
+      if (!targets) {
+        await followMovedCindyAutoRoutesNow().catch((error) => log.warn('Cindy Auto provider follow failed', {
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }).then(() => refreshActiveModelContextSettings({
       targets, inferProviderId: (model, agent) => resolveDesktopModelContextProviderId(getActiveCatalog(), agent, null, model),
       withSessionLock: withSendToSessionLock,
       applyPiRefresh: applyPiModelSettingsRefresh,
@@ -14854,6 +14864,53 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ...(confirmedContextWindow === undefined ? {} : { confirmedContextWindow }) },
           { source: 'user', deferWhileRunning: true, sessionLockHeld: true, configStaged: true }));
     }
+  };
+  followMovedCindyAutoRoutesNow = async () => {
+    const owner = getActiveAppSession();
+    await followMovedCindyAutoRoutes({
+      // 远程主机 / 另一台电脑上运行的任务，路由由那一端的目录决定，不在本机改道。
+      listCandidates: async () => (await getDbClient().drizzle.select({
+        sessionId: sessions.id,
+        agentKind: sessions.agentKind,
+        model: sessions.model,
+        providerId: sessions.providerId,
+        effort: sessions.effort,
+        fastMode: sessions.fastMode,
+      }).from(sessions).where(and(
+        eq(sessions.status, 'active'),
+        or(eq(sessions.model, 'auto'), like(sessions.model, 'auto/%')),
+        isNull(sessions.remoteHostId),
+        isNull(sessions.agentDeviceId),
+      ))).map((row) => ({
+        sessionId: row.sessionId,
+        agentKind: dbToMakerAgentKind(row.agentKind),
+        model: row.model,
+        providerId: row.providerId?.trim() || null,
+        effort: row.effort ?? null,
+        fastMode: row.fastMode === true,
+      })),
+      listProviders: () => getDesktopProviderService().listProviders({
+        allowSideEffects: false,
+        catalog: getActiveCatalog(),
+      }),
+      withSessionLock: withSendToSessionLock,
+      readRoute: async (sessionId) => {
+        // 用户或系统已登记的切换、运行时改道都是更晚的决定，不覆盖。
+        if (agentSwitchPending.get(sessionId)) return null;
+        const credentialSwitch = getPendingCredentialSwitchTarget(sessionId);
+        if (credentialSwitch && credentialSwitch.selectionSource !== 'agent') return null;
+        const profiles = await readSessionRuntimeProfiles(sessionId);
+        if (!profiles || profiles.pendingMutation || profiles.control.effectiveOverride) return null;
+        return profiles.effective;
+      },
+      stage: (sessionId, route) => stageSessionRouteSelection(sessionId, route, route.agentKind),
+      assertCurrent: () => {
+        if (getActiveAppSession().generation !== owner.generation) {
+          throw new Error('Account changed during Cindy Auto provider follow');
+        }
+      },
+      logger: log,
+    });
   };
   const isSessionIdleForRouteApply = (sessionId: string): boolean => {
     const live = maker.getSession(sessionId) as WiredSession | undefined;
