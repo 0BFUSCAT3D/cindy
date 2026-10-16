@@ -16,24 +16,26 @@ export function BotConnectionStatus({
   className?: string;
 }) {
   const { t } = useTranslation();
-  const status = t(homeOffline && !online ? 'bots.cloud.homeOfflineShort'
-    : online === null ? 'bots.remote.unknown' : online ? 'bots.remote.online' : 'bots.remote.offline');
+  const offline = online === false;
+  const status = offline ? t(homeOffline ? 'bots.cloud.homeOfflineShort' : 'bots.remote.offline') : '';
   const name = deviceName?.trim();
-  const label = name ? `${status} · ${name}` : status;
+  const label = [status, name].filter(Boolean).join(' · ');
   if (inline) {
+    if (!label) return null;
     return (
       <span title={label} className={cn('min-w-0 truncate text-11 leading-normal', className)}>
         {label}
       </span>
     );
   }
+  if (!offline) return null;
   return (
     <span
       aria-hidden="true"
       title={label}
       className={cn(
         'absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-sidebar',
-        online === null ? 'bg-[var(--text-tertiary)]' : online ? 'bg-[var(--remote-status-ready)]' : 'bg-[var(--remote-status-failed)]',
+        'bg-[var(--remote-status-failed)]',
       )}
     />
   );
