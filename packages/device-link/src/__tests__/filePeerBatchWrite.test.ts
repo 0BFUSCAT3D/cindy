@@ -76,11 +76,12 @@ it.each([false, true])(
     });
     channel.frame(new Uint8Array());
     await receive;
-    expect(Buffer.concat(output)).toEqual(
-      Buffer.concat(
-        Array.from({ length: 64 }, (_, n) => Buffer.alloc(16384, n)),
-      ),
+    // Compare every byte natively; generic deep equality enumerates a million
+    // Buffer indices and can consume the whole test timeout on Windows runners.
+    const expected = Buffer.concat(
+      Array.from({ length: 64 }, (_, n) => Buffer.alloc(16384, n)),
     );
+    expect(Buffer.concat(output).equals(expected)).toBe(true);
     expect(write.mock.calls.length).toBe(batching ? 5 : 64);
     runtime.dispose();
   },
