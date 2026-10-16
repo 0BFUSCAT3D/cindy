@@ -90,13 +90,14 @@ export function RemoteDesktopViewerWindow() {
   const activePanel = useRef(settings);
   const safetyNotice = state?.safety.notice;
   const clipboardNotice = safetyNotice?.startsWith('clipboardSync') ? safetyNotice : null;
+  const clipboardNoticeVersion = state?.safety.clipboardNoticeVersion;
   const persistentSafetyNotice = clipboardNotice ? null : safetyNotice;
   useEffect(() => {
     if (!clipboardNotice) return;
     // Same status from idle polls does not reopen or prolong a notification.
     const id = toast.info(t(`remoteDesktop.${clipboardNotice}`), { duration: 4000 });
     return () => toast.dismiss(id);
-  }, [clipboardNotice, t]);
+  }, [clipboardNotice, clipboardNoticeVersion, t]);
   // Only the latest clipboard click reports; queued earlier transfers stay silent.
   const clipboardAttempt = useRef(0);
   activePanel.current = settings;

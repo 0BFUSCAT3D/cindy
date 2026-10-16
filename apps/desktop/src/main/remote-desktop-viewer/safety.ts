@@ -79,6 +79,7 @@ export class ViewerSafety {
   private localReadCache: LocalClipboardReadCache = {};
   private applied = new Map<string, boolean>();
   private notices = new Map<string, string>();
+  private clipboardNoticeVersion = 0;
   private retryAt = 0;
   private failures = 0;
   private privacyActive = false;
@@ -104,6 +105,7 @@ export class ViewerSafety {
         this.notices.get('clipboardSync') ??
         null,
       clipboardProgress: null,
+      clipboardNoticeVersion: this.clipboardNoticeVersion,
     };
   }
   private recordClipboardFailure(error: unknown): void {
@@ -219,12 +221,13 @@ export class ViewerSafety {
         localReadCache: this.localReadCache,
         trace: (stage, code) => {
           if (!valid()) return;
-          if (stage === 'content-skipped')
+          if (stage === 'content-skipped') {
+            this.clipboardNoticeVersion++;
             this.notices.set(
               'clipboardSync',
               code === 'CLIPBOARD_TOO_LONG' ? 'clipboardSyncTooLarge' : 'clipboardSyncSkipped',
             );
-          else if (
+          } else if (
             [
               'phone-to-computer-complete',
               'computer-to-phone-complete',

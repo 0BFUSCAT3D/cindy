@@ -88,7 +88,11 @@ Connecting establishes both clipboard baselines silently, including empty,
 unsupported or oversized existing items. Empty later snapshots do not erase
 the other clipboard or compete with a real copy. Desktop clipboard sync notices
 use the shared transient toast (4 seconds, no retry action); unchanged status
-polls do not reopen it. Unsupported formats and size limits have distinct copy.
+polls do not reopen it, while a newly skipped item gets a fresh notice even when
+its failure type matches the previous one. The occurrence counter stays in local
+Main-to-Renderer status; it does not change the device-link protocol. Unsupported
+formats and size limits have distinct copy, including when the other peer was
+cleared in the same pass.
 Permission denials pause background attempts, but focus and copy/paste wakeups
 check again so returning after granting access resumes without a retry button.
 

@@ -226,6 +226,7 @@ export class ClipboardSync {
     let remote: string | undefined;
     let readLocalDigest: string | undefined;
     let readRemoteDigest: string | undefined;
+    const readErrors: { local?: string; remote?: string } = {};
     try {
       this.check();
       local = await this.deps.localVersion();
@@ -274,13 +275,18 @@ export class ClipboardSync {
       let localChanged = local !== this.baseline.local;
       let remoteChanged = remote !== this.baseline.remote;
       if (!localChanged && !remoteChanged) return;
-      const empty = (error: unknown): undefined => {
-        if (clipboardSyncErrorCode(error) !== "CLIPBOARD_EMPTY") throw error;
-        return undefined;
-      };
+      // Read both changed peers even when one is unsupported. Only a proven
+      // non-empty change can compete with the other side's copy.
+      const skipped =
+        (side: "local" | "remote") =>
+        (error: unknown): undefined => {
+          if (!skippableContent(error)) throw error;
+          readErrors[side] = clipboardSyncErrorCode(error);
+          return undefined;
+        };
       const localContent = localChanged
         ? await this.readLocal(local)
-            .catch(empty)
+            .catch(skipped("local"))
             .then((content) => {
               if (!content) return undefined;
               readLocalDigest = content.digest;
@@ -289,7 +295,7 @@ export class ClipboardSync {
         : undefined;
       const remoteContent = remoteChanged
         ? await this.readRemote(remote)
-            .catch(empty)
+            .catch(skipped("remote"))
             .then((content) => {
               if (!content) return undefined;
               readRemoteDigest = content.digest;
@@ -306,6 +312,10 @@ export class ClipboardSync {
       )
         throw new Error("CLIPBOARD_CHANGED");
       this.check();
+      const skippedCode = [readErrors.local, readErrors.remote].find(
+        (code) => code && code !== "CLIPBOARD_EMPTY",
+      );
+      if (skippedCode) throw new Error(skippedCode);
       // Empty is not a copy to propagate or a competing edit. A real copy on
       // the other side may still sync; never erase it with an empty clipboard.
       const localDigest = localChanged
@@ -379,7 +389,10 @@ export class ClipboardSync {
       ) {
         this.check();
         const bothChanged =
-          local !== this.baseline.local && remote !== this.baseline.remote;
+          local !== this.baseline.local &&
+          remote !== this.baseline.remote &&
+          readErrors.local !== "CLIPBOARD_EMPTY" &&
+          readErrors.remote !== "CLIPBOARD_EMPTY";
         Object.assign(this.baseline, {
           local,
           remote,

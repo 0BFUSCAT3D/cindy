@@ -36,7 +36,17 @@ it.each([
     expect((await safety.tick(options)).notice).toBeNull();
     version = '2';
     expect((await safety.tick(options)).notice).toBe(notice);
+    const first = safety.snapshot().clipboardNoticeVersion;
+    expect(first).toBeGreaterThan(0);
+    expect((await safety.tick(options)).clipboardNoticeVersion).toBe(first);
     version = '3';
+    const repeated = await safety.tick(options);
+    expect(repeated.notice).toBe(notice);
+    expect(repeated.clipboardNoticeVersion).toBe(first! + 1);
+    expect((await safety.tick(options)).clipboardNoticeVersion).toBe(
+      repeated.clipboardNoticeVersion,
+    );
+    version = '4';
     error = 'CLIPBOARD_EMPTY';
     expect((await safety.tick(options)).notice).toBeNull();
   },

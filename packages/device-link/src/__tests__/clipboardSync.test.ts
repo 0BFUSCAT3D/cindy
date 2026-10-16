@@ -122,3 +122,75 @@ it("does not accept an empty remote read whose version changed during the read",
   await expect(h.engine.tick()).rejects.toThrow("CLIPBOARD_CHANGED");
   expect(h.write).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["local", "CLIPBOARD_UNSUPPORTED"],
+  ["remote", "CLIPBOARD_UNSUPPORTED"],
+  ["local", "CLIPBOARD_TOO_LONG"],
+  ["remote", "CLIPBOARD_TOO_LONG"],
+] as const)(
+  "an empty %s peer does not conflict with %s on the other peer",
+  async (side, code) => {
+    const h = fixture();
+    await h.engine.tick();
+    const other = side === "local" ? "remote" : "local";
+    h[side].version++;
+    h[side].error = "CLIPBOARD_EMPTY";
+    h[other].version++;
+    h[other].error = code;
+    await h.engine.tick();
+    expect(h.trace).toHaveBeenLastCalledWith("content-skipped", code);
+    expect(h.write).not.toHaveBeenCalled();
+    expect(
+      h.request.mock.calls.some(
+        ([m]) => m.op === "clipboardContent" && m.action === "paste",
+      ),
+    ).toBe(false);
+    h.trace.mockClear();
+    const reads = h.read.mock.calls.length;
+    const requests = h.request.mock.calls.length;
+    await h.engine.tick();
+    expect(h.trace).not.toHaveBeenCalled();
+    expect(h.read).toHaveBeenCalledTimes(reads);
+    expect(h.request).toHaveBeenCalledTimes(requests + 1); // Version only.
+    // The next supported copy still reaches the cleared peer.
+    h[other].version++;
+    h[other].error = "";
+    h[other].json = '{"text":"next copy"}';
+    await h.engine.tick();
+    expect(h.local.json).toBe(h.remote.json);
+    expect(h[side].error).toBe("");
+  },
+);
+
+it.each(["local", "remote"] as const)(
+  "does not consume skipped snapshots when the empty %s peer changes during its read",
+  async (side) => {
+    const h = fixture();
+    await h.engine.tick();
+    const other = side === "local" ? "remote" : "local";
+    h[side].version++;
+    h[side].error = "CLIPBOARD_EMPTY";
+    h[other].version++;
+    h[other].error = "CLIPBOARD_TOO_LONG";
+    if (side === "local") {
+      const read = h.read.getMockImplementation()!;
+      h.read.mockImplementationOnce(async () => {
+        h.local.version++;
+        return read();
+      });
+    } else {
+      const request = h.request.getMockImplementation()!;
+      h.request.mockImplementation(async (message) => {
+        if (message.op === "clipboardContent" && message.action === "copy")
+          h.remote.version++;
+        return request(message);
+      });
+    }
+    await expect(h.engine.tick()).rejects.toThrow("CLIPBOARD_CHANGED");
+    expect(
+      h.trace.mock.calls.some(([stage]) => stage === "content-skipped"),
+    ).toBe(false);
+    expect(h.write).not.toHaveBeenCalled();
+  },
+);

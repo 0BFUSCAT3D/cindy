@@ -121,6 +121,15 @@ it('shows clipboard status as a transient toast without retry and keeps privacy 
     act(() => lifecycle.update?.({ ...snapshot }));
     expect(getToastSnapshot()).toHaveLength(0);
 
+    // A new item with the same failure is visible; idle polls still do not extend it.
+    const next = { ...snapshot, safety: { ...snapshot.safety, clipboardNoticeVersion: 2 } };
+    act(() => lifecycle.update?.(next));
+    expect(screen.getByText(text)).toBeDefined();
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    act(() => lifecycle.update?.({ ...next }));
+    await act(async () => vi.advanceTimersByTimeAsync(1400));
+    expect(getToastSnapshot()).toHaveLength(0);
+
     // A distinct size failure gets its own short notice; recovery removes it early.
     act(() =>
       lifecycle.update?.({
