@@ -567,7 +567,7 @@ export function MainLayout() {
         sessionEntryDepsRef.current.navigate(route);
       }
     },
-    // 群专线 / 不可用的委派任务没有可处置报错的横幅:目标地址提交后请 main
+    // 群专线没有可处置报错的横幅:目标地址提交后请 main
     // 处置这次点击的那张卡(main 只认最近一次点击与当时的卡片身份,见 BotSessionEntryTarget)。
     consumeAlert: requestIslandEntryAlertDisposal,
     openOrdinary: (sessionId, messageClientId, isLatest) =>

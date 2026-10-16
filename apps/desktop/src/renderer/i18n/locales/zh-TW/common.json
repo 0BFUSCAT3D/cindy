@@ -8765,11 +8765,22 @@
         "ref": "參考",
         "noRef": "沒有附參考連結。",
         "openPr": "在 GitHub 開啟 PR #{{number}}",
-        "refBlocked": "這個路徑不在交給夥伴的專案裡，沒有開啟。"
+        "refBlocked": "這個路徑不在交給夥伴的專案裡，沒有開啟。",
+        "stopLabel": "停止",
+        "doing": "正在做",
+        "outputs": "到現在的產出",
+        "recent": "最近內容"
       },
       "openTask": "開啟「{{title}}」（{{state}}）",
       "outputs": "產出",
       "outputsEmpty": "{{name}}做出的檔案會放在這裡。",
+      "outputsAll": "全部",
+      "outputsLess": "收起",
+      "summary": {
+        "waiting_other": "{{count}} 件等你",
+        "running_other": "{{count}} 件在做",
+        "todo_other": "{{count}} 件待做"
+      },
       "state": {
         "running": "在做",
         "waiting": "等你",
@@ -8809,6 +8820,11 @@
       },
       "line": {
         "waiting": "等你回覆",
+        "waitingPermission": "等你確認",
+        "waitingQuestion": "等你回答",
+        "waitingPlan": "等你看方案",
+        "waitingAction": "等你操作",
+        "waitingFor": "{{label}}：{{text}}",
         "queued": "排隊中",
         "interrupted": "上次沒跑完",
         "errored": "上次出錯了",
@@ -9030,6 +9046,10 @@
       "description": "和伙伴有關的通用設定。單個伙伴的設定在{{pronoun}}自己的頁面裡。",
       "rosterNote": "預置陣容會隨版本更新。"
     },
+    "session": {
+      "ownedByBot": "{{name}} 的背景任務",
+      "backToBot": "回到 {{name}}"
+    },
     "collab": {
       "backgroundTask": "背景任務",
       "trackedTask": "獨立執行並自動回傳結果",
@@ -9063,7 +9083,21 @@
         "daysHoursMinutes": "{{d}} 天 {{h}} 小時 {{m}} 分"
       },
       "viewResult": "查看結果",
-      "noWrittenResult": "沒有文字結果。"
+      "noWrittenResult": "沒有文字結果。",
+      "addNote": "補一句",
+      "addNotePlaceholder": "補充給背景任務的話，按 Enter 傳送",
+      "addNoteSent": "已傳給背景任務",
+      "stop": "停止",
+      "lookAt": "看看",
+      "awaitingConfirm": "等你確認：{{summary}}",
+      "awaitingConfirmGeneric": "等你確認",
+      "elapsed": "已做 {{duration}}",
+      "tookTime": "用時 {{duration}}",
+      "expandResult": "展開結果",
+      "collapseResult": "收起結果",
+      "expandDetails": "展開詳情",
+      "collapseDetails": "收起詳情",
+      "messageSentWithText": "已告訴背景任務：「{{text}}」"
     },
     "directMessage": {
       "sentTo": "已傳訊息給 {{name}}",
@@ -9074,11 +9108,40 @@
       "close": "關閉對話",
       "unavailable": "這則夥伴對話已無法使用。",
       "empty": "還沒有可查看的訊息。",
-      "limitReached": "本輪夥伴對話已達上限，雙方已回到各自的主任務"
+      "limitReached": "本輪夥伴對話已達上限，雙方已回到各自的主任務",
+      "sentHeader": "傳給 {{name}}",
+      "receivedHeader": "{{name}} 傳來",
+      "expandThread": "展開往來",
+      "exchangeCountShort": "{{count}} 則往來",
+      "exchangeCountShort_one": "{{count}} 則往來",
+      "exchangeCountShort_other": "{{count}} 則往來",
+      "expand": "展開",
+      "collapse": "收起",
+      "fullThread": "完整對話",
+      "threadClosed": "本輪夥伴對話已結束 · 僅供查看"
     },
     "groupChat": {
       "migrationPending": "部分舊記錄尚未上傳完成，將自動重試。目前群聊可繼續使用。",
       "memberSeparator": "、",
+      "ownerOf": "{{name}} 的主人",
+      "elapsed": {
+        "seconds": "{{count}} 秒",
+        "minutes": "{{count}} 分鐘",
+        "hours": "{{hours}} 小時 {{minutes}} 分"
+      },
+      "progress": {
+        "step": "第 {{step}}/{{total}} 步",
+        "speaking": "{{name}} 正在說…",
+        "elapsed": "已做 {{time}}",
+        "viewProcess": "看過程",
+        "hideProcess": "收起過程",
+        "stop": "停止"
+      },
+      "header": {
+        "stepRunning": "{{name}} 正在做第 {{step}} 步",
+        "speaking": "{{name}} 正在說…",
+        "planning": "{{name}} 正在安排…"
+      },
       "memberCount_one": "{{count}} 位夥伴",
       "memberCount_other": "{{count}} 位夥伴",
       "nameLabel": "群聊名稱",
@@ -9168,6 +9231,8 @@
         "emptyTitle": "群聊裡還沒有訊息",
         "emptyDescription": "說一句話開始，夥伴們會接著聊。@ 某位夥伴就只讓它回答。",
         "roundEnded": "夥伴們說完了",
+        "stepTag": "第 {{count}} 步",
+        "sending": "傳送中",
         "continue": "繼續討論",
         "continueFailed": "沒能繼續討論，請再試一次",
         "nextStep": "下一步：",
@@ -9273,7 +9338,7 @@
         "missing": "這個安排已經讀不到了",
         "start": "開始",
         "dismiss": "不用了",
-        "editHint": "想換人或改步驟，直接說",
+        "editHint": "點某一步可以換人",
         "pauseNote": "每做完一步會停下來，等你點「繼續」。",
         "superseded": "已更新",
         "dismissed": "不用了",
@@ -9419,7 +9484,6 @@
           "transfer": "轉讓群主",
           "transferTitle": "將群主轉讓給 {{name}}？",
           "transferHint": "對方成為群主，你將成為管理員。夥伴也可以擔任群主。",
-          "remove": "移出群組",
           "removeTitle": "將 {{name}} 移出群組？",
           "removeHint": "該成員將無法繼續查看或傳送訊息；其夥伴也會退出。",
           "addCompanion": "邀請我的夥伴",
@@ -9431,12 +9495,6 @@
           "confirm": "確認",
           "lastOwner": "請先將群主轉讓給其他成員，再退出或移除目前的群主。",
           "conflict": "群組設定已更新，請重新整理後再試。",
-          "replyMode": "沒有 @ 時",
-          "speakingMode": "發言方式",
-          "all": "夥伴都可接話",
-          "mentioned": "僅被 @ 時接話",
-          "auto": "同時發言",
-          "sequential": "依序發言",
           "unarchive": "取消封存",
           "unarchiveHint": "取消封存後，本群組對所有成員恢復新訊息與夥伴執行。",
           "archived": "本群已封存，可繼續查看歷史記錄。",
@@ -16161,7 +16219,6 @@
     "suggested": "建議",
     "candidate": "待確認",
     "overdue": "已逾期",
-    "today": "今天",
     "next": "下一步",
     "outcome": "完成條件",
     "value": "為何值得處理",
@@ -16191,7 +16248,6 @@
     "name": "標題",
     "progress": "目前進度",
     "link": "依據連結（選填）",
-    "saved": "已儲存",
     "page": "{{start}}–{{end}} / {{count}}",
     "previous": "上一頁",
     "following": "下一頁",
@@ -16203,17 +16259,16 @@
     "close": "關閉",
     "laterConflict": "稍後處理不延長真實期限",
     "legacyEvidence": "舊記錄的完成依據待核實",
-    "noPermission": "此來源未連接或尚未授權",
-    "copy": "複製",
-    "undo": "復原",
     "history": "完成記錄",
-    "clockNote": "僅日期按所示時區當天結束；確切時刻保留時區。",
     "deleted": "已刪除",
     "muted": "不再提示",
     "deferred": "稍後處理",
     "continue": "繼續",
-    "addTime": "新增時間",
-    "dateOnly": "僅日期"
+    "filter": "篩選",
+    "deleteConfirmTitle": "刪除這條待辦？",
+    "deleteConfirmBody": "刪除後不再顯示，同一問題也不會再被提起；可以在「已忽略 / 稍後」裡恢復。",
+    "muteConfirmTitle": "此問題不再提示？",
+    "muteConfirmBody": "同一問題以後不會再出現在待辦裡；可以在「已忽略 / 稍後」裡恢復。"
   },
   "codexResets": {
     "retryReset": "重試重置",

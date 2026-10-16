@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BotGroupOpenPlanSummary, BotGroupSummary } from '../../../../shared/botGroupChat';
+import { botGroupReadKey, markBotRead, resetBotReadStateForTests } from '../botReadState';
 
 vi.mock('@/hooks/useProviderOnboarding', () => ({
   useProviderOnboarding: () => ({ visible: false }),
@@ -502,6 +503,25 @@ it('localizes the join preview without presenting its subject as a chat author',
   expect(screen.queryByText(/Fallback text/)).toBeNull();
 });
 
+it('badges the real number of unread group messages, falling back to one on older hosts', async () => {
+  window.localStorage.clear();
+  resetBotReadStateForTests();
+  markBotRead(botGroupReadKey('g1'), 15);
+  markBotRead(botGroupReadKey('g2'), 15);
+  const at = (ms: number) => new Date(ms).toISOString();
+  mocks.groups = [
+    group({ lastReplyAt: 30, incomingMessageTimes: [at(10), at(20), at(30)] } as Partial<BotGroupSummary>),
+    group({ id: 'g2', name: '读书会', lastReplyAt: 30 }),
+  ];
+  try {
+    await renderSidebar();
+    expect(screen.getByLabelText('sidebar.teammateUnreadCount:{"count":2}').textContent).toBe('2');
+    expect(screen.getByLabelText('sidebar.teammateUnreadCount:{"count":1}').textContent).toBe('1');
+  } finally {
+    resetBotReadStateForTests();
+    window.localStorage.clear();
+  }
+});
 it.each([[false, 'bots.groupChat.sidebar.sharedReply:{"name":"Alice"}'], [true, 'bots.groupChat.sidebar.sharedReplyYou']] as const)(
   'names who shared a thread reply without quoting any card text (self: %s)', async (isSelf, label) => {
     mocks.groups = [group({ lastMessage: { authorKind: 'user', isSelf, authorName: 'Alice', threadShare: true,
