@@ -9,6 +9,7 @@ import {
   useIsContentHeaderHidden,
 } from '@/components/layout/ContentHeader';
 import { WINDOW_DRAG_STYLE } from '@/components/layout/windowDrag';
+import { useMacFullscreen } from '@/hooks/useMacFullscreen';
 import { installedGhostStoragePart } from '../../../shared/pluginIdentity';
 
 /** Route boundary that resolves only an approved, enabled manifest main-view entry. */
@@ -21,6 +22,7 @@ export function GhostMainViewHost() {
     item ? item.instanceId : ghostId,
   );
   const isContentHeaderHidden = useIsContentHeaderHidden();
+  const { isFullscreen } = useMacFullscreen();
 
   useEffect(() => {
     if (!item) navigate('/plugins', { replace: true });
@@ -35,9 +37,10 @@ export function GhostMainViewHost() {
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-content-area"
       aria-label={item.title}
     >
-      {/* The webview consumes its entire rectangle, so replace the missing header's
-          drag area only when hidden. The shared header owns rail no-drag holes. */}
-      {isContentHeaderHidden && (
+      {/* Replace a hidden header's drag area only outside fullscreen. A fullscreen
+          window cannot be dragged, and the band would waste webview height.
+          The shared header owns rail no-drag holes. */}
+      {isContentHeaderHidden && !isFullscreen && (
         <div
           aria-hidden="true"
           data-testid="ghost-main-view-drag-band"

@@ -15,10 +15,11 @@ const mocks = vi.hoisted(() => ({
   mode: 'cloud' as 'signed-out' | 'local' | 'cloud',
   dataOwnerId: 'owner-a' as string | null,
   isMac: true,
+  isFullscreen: false,
 }));
 
 vi.mock('@/hooks/useMacFullscreen', () => ({
-  useMacFullscreen: () => ({ isMac: mocks.isMac, isFullscreen: false }),
+  useMacFullscreen: () => ({ isMac: mocks.isMac, isFullscreen: mocks.isFullscreen }),
 }));
 vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-router-dom')>()),
@@ -59,7 +60,7 @@ const manifest = {
   mainView: { html: 'main-view.html' },
 };
 
-function renderInHeaderSlot({
+function HeaderSlotView({
   sidebarVisible = true,
   isSidebarRail = false,
   rightSidebarAvailable = false,
@@ -68,7 +69,7 @@ function renderInHeaderSlot({
   isSidebarRail?: boolean;
   rightSidebarAvailable?: boolean;
 } = {}) {
-  return render(
+  return (
     <FeatureSidebarSlotProvider isCollapsed={!sidebarVisible}>
       <ContentHeaderSlot
         sidebarVisible={sidebarVisible}
@@ -78,8 +79,12 @@ function renderInHeaderSlot({
       >
         <GhostMainViewHost />
       </ContentHeaderSlot>
-    </FeatureSidebarSlotProvider>,
+    </FeatureSidebarSlotProvider>
   );
+}
+
+function renderInHeaderSlot(options: Parameters<typeof HeaderSlotView>[0] = {}) {
+  return render(<HeaderSlotView {...options} />);
 }
 
 beforeEach(() => {
@@ -90,6 +95,7 @@ beforeEach(() => {
   mocks.mode = 'cloud';
   mocks.dataOwnerId = 'owner-a';
   mocks.isMac = true;
+  mocks.isFullscreen = false;
   mocks.routeCapable = [
     {
       ghostId: 'workspace',
@@ -114,11 +120,11 @@ describe('GhostMainViewHost', () => {
   });
 
   // Production entry: ContentHeaderSlot + routed GhostMainViewHost. Electron uses
-  // WebkitAppRegion to register drag rectangles; zero owners loses window dragging,
-  // while a second band beneath a visible header reserves an unwanted blank row.
+  // WebkitAppRegion to register drag rectangles; a second band beneath a visible
+  // header reserves an unwanted blank row. Fullscreen needs no drag owner.
   // The previous host test rendered without the shell and missed that visible-header case.
   // Minimal unit matrix: mac expanded/hidden, Windows visible, mac collapsed or rail,
-  // and mac with the right sidebar toggle keeping the header visible.
+  // mac with the right sidebar toggle keeping the header visible, and mac fullscreen.
   it.each([
     {
       name: 'mac expanded',
@@ -126,7 +132,7 @@ describe('GhostMainViewHost', () => {
       sidebarVisible: true,
       isSidebarRail: false,
       rightSidebarAvailable: false,
-      hidden: true,
+      dragOwner: 'band',
     },
     {
       name: 'Windows expanded',
@@ -134,7 +140,7 @@ describe('GhostMainViewHost', () => {
       sidebarVisible: true,
       isSidebarRail: false,
       rightSidebarAvailable: false,
-      hidden: false,
+      dragOwner: 'header',
     },
     {
       name: 'mac collapsed',
@@ -142,7 +148,7 @@ describe('GhostMainViewHost', () => {
       sidebarVisible: false,
       isSidebarRail: false,
       rightSidebarAvailable: false,
-      hidden: false,
+      dragOwner: 'header',
     },
     {
       name: 'mac rail',
@@ -150,7 +156,7 @@ describe('GhostMainViewHost', () => {
       sidebarVisible: false,
       isSidebarRail: true,
       rightSidebarAvailable: false,
-      hidden: false,
+      dragOwner: 'header',
     },
     {
       name: 'mac right sidebar',
@@ -158,12 +164,22 @@ describe('GhostMainViewHost', () => {
       sidebarVisible: true,
       isSidebarRail: false,
       rightSidebarAvailable: true,
-      hidden: false,
+      dragOwner: 'header',
+    },
+    {
+      name: 'mac fullscreen expanded',
+      isMac: true,
+      isFullscreen: true,
+      sidebarVisible: true,
+      isSidebarRail: false,
+      rightSidebarAvailable: false,
+      dragOwner: 'none',
     },
   ])(
-    'keeps exactly one top window drag owner for $name',
-    ({ isMac, sidebarVisible, isSidebarRail, rightSidebarAvailable, hidden }) => {
+    'uses the expected top window drag owner for $name',
+    ({ isMac, isFullscreen, sidebarVisible, isSidebarRail, rightSidebarAvailable, dragOwner }) => {
       mocks.isMac = isMac;
+      mocks.isFullscreen = isFullscreen ?? false;
       const { container } = renderInHeaderSlot({
         sidebarVisible,
         isSidebarRail,
@@ -173,20 +189,42 @@ describe('GhostMainViewHost', () => {
       const band = screen.queryByTestId('ghost-main-view-drag-band');
       const owners = [header, band].filter((owner): owner is HTMLElement => owner != null);
 
-      expect(header === null).toBe(hidden);
-      expect(band !== null).toBe(hidden);
-      expect(owners).toHaveLength(1);
-      expect(
-        (owners[0].style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion,
-      ).toBe('drag');
+      expect(header !== null).toBe(dragOwner === 'header');
+      expect(band !== null).toBe(dragOwner === 'band');
+      expect(owners).toHaveLength(dragOwner === 'none' ? 0 : 1);
+      if (owners[0]) {
+        expect(
+          (owners[0].style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion,
+        ).toBe('drag');
+      }
       if (band) {
         expect(band.getAttribute('aria-hidden')).toBe('true');
         // The replacement reserves the same row height before the webview.
         expect(band.style.height).toBe(`${CONTENT_HEADER_HEIGHT_PX}px`);
         expect(band.nextElementSibling).toBe(screen.getByTestId('webview'));
       }
+      if (dragOwner === 'none') {
+        // A fullscreen window cannot be dragged; the webview should reach the top.
+        const webview = screen.getByTestId('webview');
+        expect(webview.parentElement?.firstElementChild).toBe(webview);
+      }
     },
   );
+
+  it('removes and restores the drag band as mac fullscreen changes in place', () => {
+    const { rerender } = renderInHeaderSlot();
+    const webview = screen.getByTestId('webview');
+    expect(screen.getByTestId('ghost-main-view-drag-band').nextElementSibling).toBe(webview);
+
+    mocks.isFullscreen = true;
+    rerender(<HeaderSlotView />);
+    expect(screen.queryByTestId('ghost-main-view-drag-band')).toBeNull();
+    expect(webview.parentElement?.firstElementChild).toBe(webview);
+
+    mocks.isFullscreen = false;
+    rerender(<HeaderSlotView />);
+    expect(screen.getByTestId('ghost-main-view-drag-band').nextElementSibling).toBe(webview);
+  });
 
   it('replaces an unavailable route with the Plugin page before mounting a webview', () => {
     mocks.routeCapable = [];
