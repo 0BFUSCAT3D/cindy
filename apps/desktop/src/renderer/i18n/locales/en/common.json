@@ -210,8 +210,6 @@
       "descriptionOff": "When on, your other computers and the people you share with can use this provider’s models. While it’s off, existing shares are paused, not deleted."
     },
     "manage": {
-      "description": "People you share with can pick {{provider}} models in their own sessions. The Agent runs on this computer and usage counts toward your {{provider}}; their files and commands still run on their own computer.",
-      "descriptionWithDevice": "People you share with can pick {{provider}} models in their own sessions. The Agent runs on this computer ({{device}}) and usage counts toward your {{provider}}; their files and commands still run on their own computer.",
       "createLink": "Create Share Link",
       "loading": "Loading sharing…",
       "notReady": "Sharing isn’t available right now. Make sure you’re signed in and online; it will retry automatically.",
@@ -313,7 +311,8 @@
       "title": "{{name}} Requested Access to {{provider}}",
       "requestedAt": "Requested {{time}} with your share link",
       "pairingHint": "Before approving, you can ask them over the channel you sent the link through: “What pairing code do you see?” Approve if it matches.",
-      "callout": "Once approved, {{name}} can use {{provider}} models in their own sessions. The Agent runs on this computer and usage counts toward your {{provider}}. You can pause or remove access anytime in “Share {{provider}}”.",
+      "callout": "Once approved, {{name}} can use {{provider}} models in their own sessions. The Agent runs on this computer and usage counts toward your {{provider}}. You can pause or remove access anytime in “{{provider}} · Remote & Sharing”.",
+      "calloutGroup": "Once approved, {{name}} can use {{provider}} models in their own sessions. The provider group picks the computer that runs the Agent, and usage counts toward your {{provider}}. You can pause or remove access anytime in “{{provider}} · Remote & Sharing”.",
       "calloutClaudeEmail": "While {{name}} uses it, the Agent can see the email address you sign in to Claude with.",
       "calloutUnknown": "If you don’t recognize this person, decline; the link stops working once declined.",
       "approve": "Approve Sharing",
@@ -459,8 +458,7 @@
       "unsupported": "The Cindy version on the computer with this group does not support remote management yet. Update Cindy on that computer first."
     },
     "page": {
-      "title": "{{provider}} · Remote & Sharing",
-      "shareTitle": "Sharing"
+      "title": "{{provider}} · Remote & Sharing"
     },
     "usage": {
       "title": "Usage",

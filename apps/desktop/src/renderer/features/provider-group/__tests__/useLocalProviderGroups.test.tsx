@@ -97,7 +97,7 @@ describe('useLocalProviderGroups', () => {
     const first = deferred<Record<string, ProviderGroupConfig>>();
     command.mockReturnValueOnce(first.promise);
     const view = renderHook(() => useLocalProviderGroupsState());
-    expect(view.result.current).toEqual({ groups: {}, ready: false });
+    expect(view.result.current).toEqual({ groups: {}, ready: false, failed: false });
     await act(async () => {
       first.resolve(group('A'));
       await first.promise;
@@ -114,7 +114,7 @@ describe('useLocalProviderGroups', () => {
   it('becomes ready without groups when the read fails', async () => {
     command.mockRejectedValueOnce(new Error('boom'));
     const view = renderHook(() => useLocalProviderGroupsState());
-    await waitFor(() => expect(view.result.current).toEqual({ groups: {}, ready: true }));
+    await waitFor(() => expect(view.result.current).toEqual({ groups: {}, ready: true, failed: true }));
   });
 
   it('forgets readiness after switching accounts', async () => {
@@ -126,6 +126,6 @@ describe('useLocalProviderGroups', () => {
     command.mockReturnValueOnce(new Promise(() => undefined));
     setDataOwnerGeneration('owner-b', 2);
     const second = renderHook(() => useLocalProviderGroupsState());
-    expect(second.result.current).toEqual({ groups: {}, ready: false });
+    expect(second.result.current).toEqual({ groups: {}, ready: false, failed: false });
   });
 });

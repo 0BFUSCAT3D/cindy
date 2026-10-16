@@ -24,6 +24,8 @@ export interface LocalProviderGroupsState {
   groups: LocalGroups;
   /** 当前账号至少读完过一次(读失败也算，按没有组处理)。 */
   ready: boolean;
+  /** 最近一次未能读取设置；需要准确告知运行位置的审批不能把它当成没有组。 */
+  failed: boolean;
 }
 
 const EMPTY: LocalGroups = Object.freeze({});
@@ -32,12 +34,13 @@ interface GroupsState {
   owner: DataOwnerGeneration | null;
   snapshot: LocalGroups;
   ready: boolean;
+  failed: boolean;
   loaded: Promise<void> | null;
   /** 每次重读或换账号加一，只认最后一次读取的结果。 */
   revision: number;
 }
 
-const state: GroupsState = { owner: null, snapshot: EMPTY, ready: false, loaded: null, revision: 0 };
+const state: GroupsState = { owner: null, snapshot: EMPTY, ready: false, failed: false, loaded: null, revision: 0 };
 let offChanged: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
@@ -51,6 +54,7 @@ function stateFor(owner: DataOwnerGeneration): GroupsState {
     if (state.owner?.dataOwnerId !== owner.dataOwnerId) {
       state.snapshot = EMPTY;
       state.ready = false;
+      state.failed = false;
     }
     state.owner = owner;
     state.loaded = null;
@@ -70,6 +74,7 @@ function reload(owner: DataOwnerGeneration): Promise<void> {
     // 读不到(旧窗口 / 测试)就当没有组，不让等 ready 的界面一直不出现。
     if (!state.ready) {
       state.ready = true;
+      state.failed = true;
       notify();
     }
     return Promise.resolve();
@@ -79,6 +84,7 @@ function reload(owner: DataOwnerGeneration): Promise<void> {
     if (revision !== state.revision || !sameOwner(state.owner, owner) || !isDataOwnerGenerationCurrent(owner)) return;
     if (groups) state.snapshot = groups;
     state.ready = true;
+    state.failed = groups === null;
     notify();
   };
   state.loaded = Promise.resolve()
@@ -107,7 +113,7 @@ export function peekLocalProviderGroup(providerId: string): { ready: boolean; co
 }
 
 function current(source: GroupsState): LocalProviderGroupsState {
-  return { groups: source.snapshot, ready: source.ready };
+  return { groups: source.snapshot, ready: source.ready, failed: source.failed };
 }
 
 export function useLocalProviderGroupsState(): LocalProviderGroupsState {
@@ -130,6 +136,7 @@ export const __testing = {
     state.owner = null;
     state.snapshot = EMPTY;
     state.ready = false;
+    state.failed = false;
     state.loaded = null;
     state.revision = 0;
     offChanged?.();

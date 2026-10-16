@@ -201,6 +201,20 @@ function renderPage(
 }
 
 describe('ProviderShareManagePage', () => {
+  it('places link creation in the title row and pending requests before group and usage', async () => {
+    renderPage();
+    await screen.findAllByTestId('provider-share-member-row');
+    const title = screen.getByRole('heading', { name: /providerGroup\.page\.title/ });
+    expect(within(title.parentElement!).getByRole('button', { name: 'providerShare.manage.createLink' })).toBeTruthy();
+    expect(screen.queryByText('providerGroup.page.shareTitle')).toBeNull();
+    expect(screen.queryByText(/providerShare\.manage\.description/)).toBeNull();
+    const pending = screen.getByRole('region', { name: 'providerShare.manage.pending.title' });
+    const usage = screen.getByRole('heading', { name: 'providerGroup.usage.title' });
+    expect(pending.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const group = screen.getByRole('heading', { name: 'providerGroup.section.title' });
+    expect(pending.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('lists pending requests and members for this provider only, and publishes pending requests', async () => {
     renderPage();
     expect(await screen.findAllByTestId('provider-share-member-row')).toHaveLength(1);
@@ -208,7 +222,7 @@ describe('ProviderShareManagePage', () => {
     expect(command).toHaveBeenCalledWith({ action: 'owned', range: 'month' });
     expect(getProviderSharePendingRequests().map((item) => item.request.requestId)).toEqual(['req-1']);
     expect(screen.getByText(/providerShare\.manage\.members\.statusRunning/)).toBeTruthy();
-    expect(screen.getByText(/providerShare\.manage\.descriptionWithDevice/)).toBeTruthy();
+    expect(screen.queryByText(/providerShare\.manage\.descriptionWithDevice/)).toBeNull();
   });
 
   it('lists usage by person: you first (this computer and your other computers together), then the people shared with', async () => {

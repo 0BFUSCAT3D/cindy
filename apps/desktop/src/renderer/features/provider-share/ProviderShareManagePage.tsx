@@ -278,7 +278,7 @@ export function ProviderShareManagePage({
         {t('settings.providers.title')}
       </button>
 
-      {/* 标题已经说明这页是什么；这台电脑的名字由本机那行与下方「分享」说明承载，不在这里重复一遍。 */}
+      {/* 标题已经说明这页是什么；这台电脑的名字由组里本机那一行承载，不在这里重复一遍。 */}
       <div className="flex shrink-0 flex-wrap items-center gap-3">
         <div
           aria-hidden="true"
@@ -289,6 +289,9 @@ export function ProviderShareManagePage({
         <h2 className="min-w-0 flex-1 text-16 font-medium leading-[1.3] text-[var(--settings-section-title)]">
           {t('providerGroup.page.title', { provider: providerName })}
         </h2>
+        <Button variant="cta" size="md" disabled={!canCreateLink} onClick={() => setLinkOpen(true)}>
+          {t('providerShare.manage.createLink')}
+        </Button>
       </div>
 
       {deviceId && (
@@ -296,42 +299,6 @@ export function ProviderShareManagePage({
           {t('providerGroup.management.note', { device: selfDeviceName ?? deviceId })}
         </p>
       )}
-      <ProviderGroupSection
-        providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
-        initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
-      />
-
-      <ProviderUsageSection
-        providerId={providerId}
-        providerName={providerName}
-        own={own}
-        ownFailed={ownFailed}
-        members={members}
-        membersLoading={!state && !loadFailed}
-        selfDeviceName={selfDeviceName}
-        ownerDeviceId={deviceId}
-        groupConfig={deviceId ? remoteGroup : undefined}
-        range={range}
-        onRangeChange={setRange}
-        time={time}
-      />
-
-      <div className="mt-8 flex shrink-0 flex-wrap items-start gap-3">
-        <div className="flex min-w-[240px] flex-1 flex-col gap-1">
-          <h3 className="text-13 font-medium text-[var(--settings-section-title)]">
-            {t('providerGroup.page.shareTitle')}
-          </h3>
-          <p className="text-12 leading-[1.5] text-[var(--settings-section-desc)]">
-            {selfDeviceName
-              ? t('providerShare.manage.descriptionWithDevice', { provider: providerName, device: selfDeviceName })
-              : t('providerShare.manage.description', { provider: providerName })}
-          </p>
-        </div>
-        <Button variant="cta" size="md" disabled={!canCreateLink} onClick={() => setLinkOpen(true)}>
-          {t('providerShare.manage.createLink')}
-        </Button>
-      </div>
-
       {(gate !== 'on' || (state && !ready) || loadFailed) && (
         <p
           role="status"
@@ -456,6 +423,26 @@ export function ProviderShareManagePage({
           </div>
         </section>
       )}
+
+      <ProviderGroupSection
+        providerId={providerId} providerName={providerName} deviceId={deviceId} deviceName={deviceName}
+        initialConfig={initialGroup} remoteProvider={remoteProvider} onConfigChange={setRemoteGroup}
+      />
+
+      <ProviderUsageSection
+        providerId={providerId}
+        providerName={providerName}
+        own={own}
+        ownFailed={ownFailed}
+        members={members}
+        membersLoading={!state && !loadFailed}
+        selfDeviceName={selfDeviceName}
+        ownerDeviceId={deviceId}
+        groupConfig={deviceId ? remoteGroup : undefined}
+        range={range}
+        onRangeChange={setRange}
+        time={time}
+      />
 
       <section className="mt-6 shrink-0" aria-labelledby="provider-share-members-title">
         <div className="mb-2 flex flex-wrap items-center gap-2">

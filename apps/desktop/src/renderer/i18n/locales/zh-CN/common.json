@@ -209,8 +209,6 @@
       "descriptionOff": "开启后，你的其他电脑和你分享的人可以用这个供应商的模型。关闭期间，已有的分享暂时不可用，不会被删除。"
     },
     "manage": {
-      "description": "分享给他人后，对方可以在自己的任务里选用 {{provider}} 的模型。Agent 在这台电脑上运行，用量计入你的 {{provider}}；对方的文件和命令仍在对方电脑上执行。",
-      "descriptionWithDevice": "分享给他人后，对方可以在自己的任务里选用 {{provider}} 的模型。Agent 在这台电脑（{{device}}）上运行，用量计入你的 {{provider}}；对方的文件和命令仍在对方电脑上执行。",
       "createLink": "生成分享链接",
       "loading": "正在读取分享…",
       "notReady": "分享服务暂时不可用。确认已登录、网络正常后会自动重试。",
@@ -309,7 +307,8 @@
       "title": "{{name}} 申请使用你分享的 {{provider}}",
       "requestedAt": "{{time}}通过你的分享链接申请",
       "pairingHint": "同意前可以通过发链接的渠道问对方一句：「你看到的配对码是多少？」一致再同意。",
-      "callout": "同意后，{{name}} 可以在自己的任务里使用 {{provider}} 的模型。Agent 在这台电脑上运行，用量计入你的 {{provider}}。你可以随时在「分享 {{provider}}」里关闭或删除。",
+      "callout": "同意后，{{name}} 可以在自己的任务里使用 {{provider}} 的模型。Agent 在这台电脑上运行，用量计入你的 {{provider}}。你可以随时在「{{provider}} · 远程与分享」里关闭或删除。",
+      "calloutGroup": "同意后，{{name}} 可以在自己的任务里使用 {{provider}} 的模型。由供应商组选一台电脑运行 Agent，用量计入你的 {{provider}}。你可以随时在「{{provider}} · 远程与分享」里关闭或删除。",
       "calloutClaudeEmail": "{{name}} 使用时，Agent 能看到你登录 Claude 用的邮箱。",
       "calloutUnknown": "如果你不认识申请人，请拒绝；拒绝后这条链接作废。",
       "approve": "同意分享",
@@ -455,8 +454,7 @@
       "unsupported": "建组电脑的 Cindy 版本暂不支持远程管理。请先更新那台电脑上的 Cindy。"
     },
     "page": {
-      "title": "{{provider}} · 远程与分享",
-      "shareTitle": "分享"
+      "title": "{{provider}} · 远程与分享"
     },
     "usage": {
       "title": "用量",
