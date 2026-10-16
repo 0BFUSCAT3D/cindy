@@ -95,6 +95,8 @@ export function BotGroupDuoAvatar({ deviceId, members, online, variant = 'row', 
     // Match Desktop: take the first five, then paint back-to-front so the first is unobscured.
     const visible = members.slice(0, 5).reverse();
     const diameter = box * (visible.length === 3 ? 0.6 : visible.length === 4 ? 0.55 : 0.5);
+    // Image geometry excludes the page-colored border; this is not a toolbar icon size.
+    const imageDiameter = diameter - STACK_RING * 2;
     const orbit = (box - diameter) / 2;
     return <View style={frame} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {visible.map((member, index) => {
@@ -103,7 +105,7 @@ export function BotGroupDuoAvatar({ deviceId, members, online, variant = 'row', 
           position: 'absolute', width: diameter, height: diameter,
           left: orbit * (1 + Math.cos(angle)), top: orbit * (1 + Math.sin(angle)),
         }]}>
-          <BotGroupAvatar deviceId={deviceId} identity={member} size={diameter - STACK_RING * 2} online={online} />
+          <BotGroupAvatar deviceId={deviceId} identity={member} size={imageDiameter} online={online} />
           {index === visible.length - 1 ? <CompanionPresenceRing active={working} gap={0} width={STACK_RING} /> : null}
         </View>;
       })}
