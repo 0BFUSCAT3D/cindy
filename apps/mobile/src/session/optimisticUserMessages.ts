@@ -89,6 +89,9 @@ export function projectOptimisticUserMessages(
     for (let index = 0; index < result.length; index++) {
       if (entry.precedingClientIds.has(result[index].clientId)) after = index;
     }
+    // Switching is applied after enqueue but before this send. Its boundary
+    // belongs before the reserved bubble; never cross ordinary turn activity.
+    while (result[after + 1]?.role === 'agent_switch') after++;
     result.splice(after + 1, 0, message);
   }
   return result;

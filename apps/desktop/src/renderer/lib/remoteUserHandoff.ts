@@ -2,6 +2,8 @@
 export interface LocalUserHandoff {
   clientId: string;
   role: string;
+  systemCardType?: string;
+  isPendingPersist?: boolean;
   localSendPrecedingClientIds?: readonly string[];
   isLocalSystemCard?: boolean;
 }
@@ -20,12 +22,15 @@ export function projectRemoteUsers<T extends LocalUserHandoff>(
   // after history confirms the last local user and retires its reservation.
   const historical = (row: T) => historyClientIds.has(row.clientId) && !row.localSendPrecedingClientIds;
   const result = [...messages.filter(historical), ...messages.filter((row) => !historical(row))];
-  const reservations = messages.filter((row) => row.role === 'user' && row.localSendPrecedingClientIds);
+  const reservations = messages.filter((row) => row.role === 'user'
+    && (row.localSendPrecedingClientIds || row.isPendingPersist));
   // Place earlier sends first: the raw timestamp order may put a later send first.
-  reservations.sort((a, b) => b.localSendPrecedingClientIds!.includes(a.clientId) ? -1
-    : a.localSendPrecedingClientIds!.includes(b.clientId) ? 1 : 0);
+  reservations.sort((a, b) => b.localSendPrecedingClientIds?.includes(a.clientId) ? -1
+    : a.localSendPrecedingClientIds?.includes(b.clientId) ? 1 : 0);
   for (const row of reservations) {
-    const preceding = new Set(row.localSendPrecedingClientIds);
+    // Local sends retain insertion order until their echo creates a reservation.
+    const preceding = new Set(row.localSendPrecedingClientIds
+      ?? messages.slice(0, messages.indexOf(row)).map((message) => message.clientId));
     result.splice(
       result.findIndex((message) => message.clientId === row.clientId),
       1,
@@ -36,6 +41,9 @@ export function projectRemoteUsers<T extends LocalUserHandoff>(
       // arrived. The whole authoritative prefix is still before this local send.
       if (preceding.has(result[index].clientId) || historical(result[index])) after = index;
     }
+    // Switching is applied after enqueue but before this send. Its boundary
+    // belongs before the reserved bubble; never cross ordinary turn activity.
+    while (result[after + 1]?.systemCardType === 'agent-switch') after++;
     result.splice(after + 1, 0, row);
   }
   // Command cards never acquire a history row. Keep their slots even after a
