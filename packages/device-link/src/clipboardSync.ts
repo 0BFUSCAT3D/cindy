@@ -227,6 +227,7 @@ export class ClipboardSync {
     let readLocalDigest: string | undefined;
     let readRemoteDigest: string | undefined;
     const readErrors: { local?: string; remote?: string } = {};
+    let cleared = false;
     try {
       this.check();
       local = await this.deps.localVersion();
@@ -312,6 +313,10 @@ export class ClipboardSync {
       )
         throw new Error("CLIPBOARD_CHANGED");
       this.check();
+      // A validated clear breaks content deduplication for both peers: the
+      // next version change may explicitly copy the same content back. Keep
+      // counters so clearing alone (or an idle poll) never initiates a write.
+      cleared = Object.values(readErrors).includes("CLIPBOARD_EMPTY");
       const skippedCode = [readErrors.local, readErrors.remote].find(
         (code) => code && code !== "CLIPBOARD_EMPTY",
       );
@@ -326,9 +331,17 @@ export class ClipboardSync {
         : this.baseline.remoteDigest;
       if (localChanged && !localContent) localChanged = false;
       if (remoteChanged && !remoteContent) remoteChanged = false;
-      if (localContent && localContent.digest === this.baseline.localDigest)
+      if (
+        !cleared &&
+        localContent &&
+        localContent.digest === this.baseline.localDigest
+      )
         localChanged = false;
-      if (remoteContent && remoteContent.digest === this.baseline.remoteDigest)
+      if (
+        !cleared &&
+        remoteContent &&
+        remoteContent.digest === this.baseline.remoteDigest
+      )
         remoteChanged = false;
       if (localDigest && localDigest === remoteDigest) {
         localChanged = false;
@@ -374,8 +387,8 @@ export class ClipboardSync {
         Object.assign(this.baseline, {
           local,
           remote,
-          localDigest,
-          remoteDigest,
+          localDigest: cleared ? undefined : localDigest,
+          remoteDigest: cleared ? undefined : remoteDigest,
         });
         this.deps.trace?.("unchanged-content");
       }
@@ -391,19 +404,20 @@ export class ClipboardSync {
         const bothChanged =
           local !== this.baseline.local &&
           remote !== this.baseline.remote &&
-          readErrors.local !== "CLIPBOARD_EMPTY" &&
-          readErrors.remote !== "CLIPBOARD_EMPTY";
+          !cleared;
         Object.assign(this.baseline, {
           local,
           remote,
-          // Keep evidence for an unchanged or successfully read peer. Only
-          // an unreadable new version loses its digest, never both peers.
-          localDigest:
-            local === this.baseline.local
+          // Unsupported content alone preserves the other peer's evidence;
+          // a validated clear invalidates deduplication for both peers.
+          localDigest: cleared
+            ? undefined
+            : local === this.baseline.local
               ? this.baseline.localDigest
               : readLocalDigest,
-          remoteDigest:
-            remote === this.baseline.remote
+          remoteDigest: cleared
+            ? undefined
+            : remote === this.baseline.remote
               ? this.baseline.remoteDigest
               : readRemoteDigest,
         });

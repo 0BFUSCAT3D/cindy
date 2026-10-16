@@ -86,7 +86,11 @@ Renderer bridge.
 
 Connecting establishes both clipboard baselines silently, including empty,
 unsupported or oversized existing items. Empty later snapshots do not erase
-the other clipboard or compete with a real copy. Desktop clipboard sync notices
+the other clipboard or compete with a real copy. A version-checked clear resets
+both content digests while retaining counters: idle polls leave the other side
+alone, but copying the same content again can restore the cleared side. Successful
+sync restores normal deduplication; an initially empty clipboard only establishes
+the baseline and does not import old content. Desktop clipboard sync notices
 use the shared transient toast (4 seconds, no retry action); unchanged status
 polls do not reopen it, while a newly skipped item gets a fresh notice even when
 its failure type matches the previous one. The occurrence counter stays in local

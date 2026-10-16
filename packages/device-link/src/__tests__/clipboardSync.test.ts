@@ -107,6 +107,61 @@ it.each(["CLIPBOARD_UNSUPPORTED", "CLIPBOARD_TOO_LONG"])(
   },
 );
 
+it.each([
+  ["local", false],
+  ["remote", false],
+  ["local", true],
+  ["remote", true],
+] as const)(
+  "restores identical content to cleared %s (same pass: %s), then resumes deduplication",
+  async (destination, samePass) => {
+    const h = fixture();
+    const source = destination === "local" ? "remote" : "local";
+    const transfers = () =>
+      h.write.mock.calls.length +
+      h.request.mock.calls.filter(
+        ([m]) => m.op === "clipboardContent" && m.action === "paste",
+      ).length;
+    await h.engine.tick();
+    h[destination].version++;
+    h[destination].error = "CLIPBOARD_EMPTY";
+    if (!samePass) {
+      await h.engine.tick();
+      await h.engine.tick();
+      expect(transfers()).toBe(0);
+    }
+    h[source].version++; // Explicitly recopy exactly its previous content.
+    await h.engine.tick();
+    expect(h[destination].error).toBe("");
+    expect(h[destination].json).toBe(h[source].json);
+    expect(transfers()).toBe(1);
+    await h.engine.tick();
+    h[source].version++;
+    h[destination].version++; // Identical rewrites after restoration are deduped.
+    await h.engine.tick();
+    expect(transfers()).toBe(1);
+  },
+);
+
+it.each(["local", "remote"] as const)(
+  "does not import old identical content into an initially empty %s clipboard",
+  async (destination) => {
+    const h = fixture();
+    const source = destination === "local" ? "remote" : "local";
+    h[destination].error = "CLIPBOARD_EMPTY";
+    await h.engine.tick();
+    h[source].version++;
+    await h.engine.tick();
+    expect(h[destination].error).toBe("CLIPBOARD_EMPTY");
+    expect(h.write).not.toHaveBeenCalled();
+    expect(
+      h.request.mock.calls.some(
+        ([m]) => m.op === "clipboardContent" && m.action === "paste",
+      ),
+    ).toBe(false);
+  },
+);
+
 it("does not accept an empty remote read whose version changed during the read", async () => {
   const h = fixture();
   await h.engine.tick();
