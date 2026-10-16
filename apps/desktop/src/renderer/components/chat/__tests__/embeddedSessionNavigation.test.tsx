@@ -283,10 +283,9 @@ describe('sidebar-embedded session navigation boundary', () => {
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
-  it('keeps the anchored pill on a single line without a context range summary', async () => {
-    const { container } = render(
-      <SessionLinkChip href="cindy://session/session-a?message=message-1" label="Session A" />,
-    );
+  it.each([false, true])('keeps the anchored pill visibly clickable and on a single line (embedded=%s)', async (isEmbedded) => {
+    const chip = <SessionLinkChip href="cindy://session/session-a?message=message-1" label="Session A" />;
+    const { container } = render(isEmbedded ? embedded(chip) : chip);
     await act(async () => {
       await Promise.resolve();
     });
@@ -295,6 +294,7 @@ describe('sidebar-embedded session navigation boundary', () => {
     const link = container.querySelector('button[data-session-message-link]');
     expect(link?.className).toContain('items-center');
     expect(link?.textContent).toBe('Session A');
+    expect(container.querySelector('[data-inline-reference-chip]')?.className).toContain('underline');
     expect(
       container.querySelector('[data-inline-reference-chip]')?.parentElement?.className,
     ).toContain('max-w-[min(240px,55vw)]');

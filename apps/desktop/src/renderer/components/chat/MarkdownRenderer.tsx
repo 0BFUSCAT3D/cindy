@@ -1020,6 +1020,7 @@ function FileTargetChip({
     localKind !== 'directory' && isHtmlFilePath(resolvedAbsPath) && sessionId ? sessionId : undefined;
   const sidebarTargetSessionId = useSidebarTargetSessionId(htmlWithSession);
   const ctxMenu = useFileChipContextMenu({
+    fileName: resolvedAbsPath,
     getAbsPath: async () => resolvedAbsPath,
     location: { absPath: resolvedAbsPath, line, column },
     canOpenInBrowser: localKind !== 'directory' && isBrowserOpenablePath(resolvedAbsPath),
@@ -1133,6 +1134,7 @@ function ResolvedLocalLink({
     localKind !== 'directory' && isHtmlFilePath(resolvedAbsPath) && sessionId ? sessionId : undefined;
   const sidebarTargetSessionId = useSidebarTargetSessionId(htmlWithSession);
   const ctxMenu = useFileChipContextMenu({
+    fileName: resolvedAbsPath,
     getAbsPath: () => resolvedAbsPath,
     location: { absPath: resolvedAbsPath, line, column },
     canOpenInBrowser: localKind !== 'directory' && isBrowserOpenablePath(resolvedAbsPath),

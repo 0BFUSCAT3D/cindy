@@ -50,6 +50,7 @@ function TurnChangeFileRow({
   const absolutePath = resolveToolFilePath(file.path, cwd);
   const htmlWithSession = isHtmlFilePath(absolutePath) ? sessionId : undefined;
   const contextMenu = useFileChipContextMenu({
+    fileName: absolutePath,
     getAbsPath: () => absolutePath,
     canOpenInBrowser: isBrowserOpenablePath(absolutePath),
     sidebarOpenSessionId: htmlWithSession,

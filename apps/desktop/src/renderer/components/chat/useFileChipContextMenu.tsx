@@ -1,4 +1,5 @@
 import { shouldShowOpenPathError } from '../../../shared/openPathResult';
+import { isDangerousAttachmentName } from '../../../shared/attachmentSafety';
 /** Shared flat menus for message file references. HTML exposes page/source actions;
  * other files retain file operations. Local reveal and remote download occupy
  * the same slot. Path resolution stays lazy until an action is selected. */
@@ -62,6 +63,7 @@ export interface UseFileChipContextMenu {
 /** sidebarOpenSessionId overrides the browser target, never the file origin.
  * onViewSource reuses a caller's preview; other HTML references use TextLightbox. */
 export function useFileChipContextMenu({
+  fileName,
   getAbsPath,
   canOpenInBrowser = false,
   sidebarFileBrowserKind = 'file',
@@ -69,6 +71,8 @@ export function useFileChipContextMenu({
   onViewSource,
   location,
 }: {
+  /** Menu eligibility only; remote opening also checks the resolved path. */
+  fileName: string;
   getAbsPath: () => Promise<string> | string;
   canOpenInBrowser?: boolean;
   sidebarFileBrowserKind?: 'file' | 'directory';
@@ -244,8 +248,11 @@ export function useFileChipContextMenu({
     void action().catch(() => toast.error(t('chat.markdownRenderer.openLinkFailed')));
   };
   const canLocateInSidebar = Boolean(sidebarFileTargetSessionId && sessionFileCtx.workingDir);
+  const canOpenWithDefault =
+    sidebarFileBrowserKind === 'file' &&
+    !(remoteOrigin && isDangerousAttachmentName(fileName));
   const hasOpenActions =
-    canOpenInBrowser || canLocateInSidebar || sidebarFileBrowserKind === 'file';
+    canOpenInBrowser || canLocateInSidebar || canOpenWithDefault;
   const menu = (
     <>
       <DropdownMenu
@@ -305,7 +312,7 @@ export function useFileChipContextMenu({
                   {t('chat.markdownRenderer.openInSidebarFileBrowser')}
                 </DropdownMenuItem>
               ) : null}
-              {sidebarFileBrowserKind === 'file' ? (
+              {canOpenWithDefault ? (
                 <DropdownMenuItem onClick={run(handleOpenWithDefault)}>
                   <AppWindow className="mr-2 h-4 w-4" />
                   {t('chat.media.openWithApp')}

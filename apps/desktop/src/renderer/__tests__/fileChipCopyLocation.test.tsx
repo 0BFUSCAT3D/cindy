@@ -63,12 +63,15 @@ function FileReference({
   location,
   directory = false,
   html = false,
+  fileName = 'example.ts',
 }: {
   location?: FileLocation;
   directory?: boolean;
   html?: boolean;
+  fileName?: string;
 }) {
   const { onContextMenu, onActivate, openAt, menu } = useFileChipContextMenu({
+    fileName,
     getAbsPath: mocks.getAbsPath,
     sidebarFileBrowserKind: directory ? 'directory' : 'file',
     location,
@@ -129,6 +132,20 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('file chip Copy Location action', () => {
+  it.each([
+    { kind: 'device', deviceId: 'remote-computer' },
+    { kind: 'ssh', remoteHostId: 'ssh-host' },
+  ])('hides default-app opening for remote scripts (%j)', async (origin) => {
+    mocks.context.origin = origin;
+    render(<FileReference fileName="script.PS1" />);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'file reference' }));
+    const download = await screen.findByRole('menuitem', { name: 'chat.remoteFile.downloadToLocal' });
+    expect(screen.queryByRole('menuitem', { name: /chat.media.openWithApp/ })).toBeNull();
+    fireEvent.click(download);
+    await waitFor(() => expect(mocks.download).toHaveBeenCalled());
+    expect(mocks.openPath).not.toHaveBeenCalled();
+  });
+
   it.each(['ContextMenu', 'F10'])('restores focus to the latest keyboard trigger (%s)', async (key) => {
     render(<FileReference />);
     const file = screen.getByRole('button', { name: 'file reference' });

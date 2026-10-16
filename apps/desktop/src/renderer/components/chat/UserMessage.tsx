@@ -246,6 +246,7 @@ function UserFileChip({
   // 按 workdir 风格直接 join(与 useResolvedMarkdownTarget 的 remote 分支同策)。
   const chipRemote = isRemoteFileOrigin(useChatSessionFile().origin);
   const ctxMenu = useFileChipContextMenu({
+    fileName: refText,
     getAbsPath: async () => {
       if (chipRemote) return resolveLocalPath(refText, workingDir);
       const r = await resolveLocalPathSmart(refText, workingDir);

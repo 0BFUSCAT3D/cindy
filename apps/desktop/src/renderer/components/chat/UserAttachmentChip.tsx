@@ -42,6 +42,7 @@ export function UserAttachmentChip({
   const downloadOnly = isSafetyDowngradedAttachment(file);
   // Rules-of-hooks:两个菜单 hook/状态都无条件建,按 downloadOnly 选用其一。
   const ctxMenu = useFileChipContextMenu({
+    fileName: file.name,
     getAbsPath: () => file.path,
     canOpenInBrowser: isBrowserOpenablePath(file.path),
   });

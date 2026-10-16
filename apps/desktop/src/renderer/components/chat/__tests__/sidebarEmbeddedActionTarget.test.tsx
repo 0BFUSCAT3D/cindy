@@ -61,6 +61,7 @@ import { useOpenWithMenu } from '../useOpenWithMenu';
 
 function ActionProbe({ html = false }: { html?: boolean }) {
   const menu = useFileChipContextMenu({
+    fileName: html ? 'index.html' : 'index.md',
     getAbsPath: () => (html ? '/repo/src/index.html' : '/repo/src/index.md'),
     canOpenInBrowser: html,
     sidebarOpenSessionId: 'worker-a',
@@ -77,6 +78,7 @@ function ActionProbe({ html = false }: { html?: boolean }) {
 
 function ExternalFileActionProbe() {
   const menu = useFileChipContextMenu({
+    fileName: 'outside.md',
     getAbsPath: () => 'C:\\tmp\\outside.md',
   });
   return (

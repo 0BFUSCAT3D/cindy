@@ -10,7 +10,7 @@ export function UserMessageImageLink({
   path: string;
   onOpen?: (url: string) => void;
 }) {
-  const fileMenu = useFileChipContextMenu({ getAbsPath: () => path });
+  const fileMenu = useFileChipContextMenu({ fileName: path, getAbsPath: () => path });
   const open = () => onOpen?.(toLocalFileUrl(path));
   return (
     <>

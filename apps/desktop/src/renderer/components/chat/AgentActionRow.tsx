@@ -1010,6 +1010,7 @@ export function AgentActionRow({
   // Claude 取 file_path，Codex 单文件 change 取目标路径 —— 模型可能给相对
   // 路径(见 onActivate 注释),菜单动作统一经 resolveToolFilePath 补成绝对路径。
   const fileChipMenu = useFileChipContextMenu({
+    fileName: chipFilePath,
     getAbsPath: () => resolveToolFilePath(chipFilePath, fileCtx.workingDir),
     canOpenInBrowser: isBrowserOpenablePath(chipFilePath),
   });

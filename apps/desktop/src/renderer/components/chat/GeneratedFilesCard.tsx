@@ -264,6 +264,7 @@ function GeneratedFileChip({
   const htmlWithSession = isHtmlFilePath(file.path) ? fileCtx.sessionId : undefined;
   const sidebarTargetSessionId = useSidebarTargetSessionId(htmlWithSession);
   const ctxMenu = useFileChipContextMenu({
+    fileName: file.path,
     getAbsPath: () => file.path,
     // HTML 左键看渲染结果；源码仍可从右键菜单进入。其它生成文件沿用原菜单。
     canOpenInBrowser: isBrowserOpenablePath(file.path),
