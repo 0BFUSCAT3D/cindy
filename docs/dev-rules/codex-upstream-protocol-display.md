@@ -16,8 +16,8 @@ Codex 页签上方的说明写死为 settings.providers.custom.protocol.codexDes
 
 pnpm --filter desktop exec vitest run src/renderer/components/settings/__tests__/CustomProviderDialogAccessibility.test.tsx
 
-64 项通过。其中 keeps the outer Codex summary on the saved upstream protocol 覆盖了：保存为 Chat 后重开，外层与按钮都是 Chat；切回 Responses 后两边都是 Responses；再切回 Chat 后仍一致；新建 Codex 默认仍是 Responses。
+64 项通过。其中 keeps the outer Codex summary on the saved upstream protocol 覆盖的是组件行为：用已保存的 Chat 初次挂载时，外层说明与协议按钮都是 Chat；在同一个对话框实例里切到 Responses、再切回 Chat，两边即时一致。新建 Codex 默认仍是 Responses。这条测试没有点击保存，没有卸载，也没有用保存结果重新挂载。
 
-## 未验证
+## 实机
 
-2026-10-15 在隔离开发版 Cindy-dev2-issue6015 里打开 Electron。新建供应商后切到 Codex：默认外层和按钮都是 OpenAI Responses（原生）。改成 Chat Completions 后外层立刻变成 Chat Completions（Cindy 桥接）。保存、回到供应商列表、再编辑连接，两边仍是 Chat。再改回 Responses 并保存重开，两边都是 Responses。没有发真实上游请求，没有改模型级显式覆盖。Windows 未测。
+2026-10-15 在隔离开发版 Cindy-dev2-issue6015 里打开 Electron。新建供应商后切到 Codex：默认外层和按钮都是 OpenAI Responses（原生）。改成 Chat Completions 后外层立刻变成 Chat Completions（Cindy 桥接）。保存、回到供应商列表、再编辑连接，两边仍是 Chat。再改回 Responses 并保存重开，两边都是 Responses。没有发真实上游请求，没有改模型级显式覆盖。以上是当天记录，2026-10-16 没有重测。Windows 未测。
