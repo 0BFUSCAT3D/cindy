@@ -5794,7 +5794,9 @@ interface ElectronAPI {
     ) => Promise<import('../shared/modelContextLimit').ModelContextLimitView>;
 
     // 「在新窗口打开」会话多开
-    openSessionInNewWindow: (sessionId: string, deviceId?: string | null) => Promise<void>;
+    openSessionInNewWindow: (
+      sessionId: string, deviceId?: string | null, messageClientId?: string | null,
+    ) => Promise<void>;
     openSessionInNewWindowIfDroppedOutside: (
       sessionId: string,
       deviceId?: string | null,

@@ -18,6 +18,7 @@ import {
 import { isBrowserOpenablePath } from '../../../shared/browserOpenableExts';
 import { useChatSessionFile } from './ChatSessionFileContext';
 import { useFileChipContextMenu } from './useFileChipContextMenu';
+import { activateInlineLinkFromKeyboard, linkMenuPosition } from './linkInteraction';
 
 /**
  * UserAttachmentChip — 用户消息下方的文件附件 chip(与正文里的 `@file` 引用
@@ -88,20 +89,30 @@ export function UserAttachmentChip({
         aria-label={
           downloadOnly ? t('chat.userMessage.saveAttachmentAs', { name: file.name }) : undefined
         }
+        onKeyDown={activateInlineLinkFromKeyboard}
         onClick={async (e) => {
           if (downloadOnly) {
             await saveChatAttachmentWithToasts(sessionFileCtx, file);
             return;
           }
           const chip = e.currentTarget;
-          if (!(await shouldOpenTextLightboxForOrigin(sessionFileCtx, file.path))) return;
-          onOpenTextPreview(chip);
+          ctxMenu.onActivate(e, async () => {
+            if (!(await shouldOpenTextLightboxForOrigin(sessionFileCtx, file.path))) return;
+            onOpenTextPreview(chip);
+          });
+        }}
+        onAuxClick={(event) => {
+          if (event.button !== 1 || downloadOnly) return;
+          const chip = event.currentTarget;
+          ctxMenu.onActivate(event, async () => {
+            if (await shouldOpenTextLightboxForOrigin(sessionFileCtx, file.path)) onOpenTextPreview(chip);
+          });
         }}
         onContextMenu={(e) => {
           if (downloadOnly) {
             e.preventDefault();
             e.stopPropagation();
-            setSaveMenuPos({ x: e.clientX, y: e.clientY });
+            setSaveMenuPos(linkMenuPosition(e));
             return;
           }
           ctxMenu.onContextMenu(e);

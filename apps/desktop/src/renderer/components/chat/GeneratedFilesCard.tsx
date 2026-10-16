@@ -62,6 +62,7 @@ import { rewriteToRemoteMediaOrigin } from '../../../shared/remoteMediaUrl';
 import { isBrowserOpenablePath } from '../../../shared/browserOpenableExts';
 import { useChatSessionFile } from './ChatSessionFileContext';
 import { useFileChipContextMenu } from './useFileChipContextMenu';
+import { activateInlineLinkFromKeyboard } from './linkInteraction';
 import { ImageLightbox } from './ImageLightbox';
 import { TextLightbox } from './TextLightbox';
 import { ModelLightbox } from './ModelLightbox';
@@ -355,7 +356,11 @@ function GeneratedFileChip({
         type="button"
         title={file.path}
         disabled={pending}
-        onClick={pending ? undefined : () => void open()}
+        onClick={pending ? undefined : (event) => ctxMenu.onActivate(event, open)}
+        onKeyDown={pending ? undefined : activateInlineLinkFromKeyboard}
+        onAuxClick={pending ? undefined : (event) => {
+          if (event.button === 1) ctxMenu.onActivate(event, open);
+        }}
         onContextMenu={pending ? undefined : ctxMenu.onContextMenu}
         className={cn(
           CHAT_FOCUS_CLASS,

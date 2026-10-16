@@ -14,6 +14,9 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
   DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DropdownMenuSeparator: () => <hr />,
+  DropdownMenuShortcut: ({ children }: { children: ReactNode }) => (
+    <span aria-hidden>{children}</span>
+  ),
   DropdownMenuItem: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
     <button type="button" onClick={onClick}>
       {children}
@@ -56,9 +59,10 @@ import { ChatSessionFileProvider } from '../ChatSessionFileContext';
 import { useFileChipContextMenu } from '../useFileChipContextMenu';
 import { useOpenWithMenu } from '../useOpenWithMenu';
 
-function ActionProbe() {
+function ActionProbe({ html = false }: { html?: boolean }) {
   const menu = useFileChipContextMenu({
-    getAbsPath: () => '/repo/src/index.html',
+    getAbsPath: () => (html ? '/repo/src/index.html' : '/repo/src/index.md'),
+    canOpenInBrowser: html,
     sidebarOpenSessionId: 'worker-a',
   });
   return (
@@ -99,10 +103,7 @@ function LinkActionProbe() {
 
 function wrapper(children: ReactNode) {
   return (
-    <SessionNavigationModeProvider
-      mode="sidebar-embedded"
-      sidebarTargetSessionId="lead-a"
-    >
+    <SessionNavigationModeProvider mode="sidebar-embedded" sidebarTargetSessionId="lead-a">
       <ChatSessionFileProvider
         value={{
           sessionId: 'worker-a',
@@ -119,27 +120,30 @@ function wrapper(children: ReactNode) {
 describe('sidebar-embedded action target', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
-      fileBrowser: { previewHtml: vi.fn(async () => ({ ok: true, url: 'http://127.0.0.1:12345/preview/' })) },
-    } });
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        fileBrowser: {
+          previewHtml: vi.fn(async () => ({ ok: true, url: 'http://127.0.0.1:12345/preview/' })),
+        },
+      },
+    });
   });
 
   it('opens file-browser and web-browser tabs in the visible Lead bucket', async () => {
-    render(wrapper(<ActionProbe />));
+    const { rerender } = render(wrapper(<ActionProbe />));
 
     fireEvent.click(screen.getByText('open-menu'));
     fireEvent.click(screen.getByText('chat.markdownRenderer.openInSidebarFileBrowser'));
     await waitFor(() =>
-      expect(openFileInSidebarFileBrowser).toHaveBeenCalledWith('lead-a', 'src/index.html'),
+      expect(openFileInSidebarFileBrowser).toHaveBeenCalledWith('lead-a', 'src/index.md'),
     );
 
+    rerender(wrapper(<ActionProbe html />));
     fireEvent.click(screen.getByText('open-menu'));
     fireEvent.click(screen.getByText('chat.markdownRenderer.openInSidebarBrowser'));
     await waitFor(() =>
-      expect(openUrlInSidebarBrowser).toHaveBeenCalledWith(
-        'lead-a',
-        'file:///repo/src/index.html',
-      ),
+      expect(openUrlInSidebarBrowser).toHaveBeenCalledWith('lead-a', 'file:///repo/src/index.html'),
     );
   });
 

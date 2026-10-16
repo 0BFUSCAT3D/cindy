@@ -95,6 +95,7 @@ import { UserMessageEditBox } from './UserMessageEditBox';
 import HookTaskCard from './HookTaskCard';
 import { useFileChipContextMenu } from './useFileChipContextMenu';
 import { UserAttachmentChip } from './UserAttachmentChip';
+import { UserMessageImageLink } from './UserMessageImageLink';
 import {
   AUTOMATION_USER_MESSAGE_VISUAL_LINE_THRESHOLD,
   LONG_USER_MESSAGE_VISUAL_LINE_THRESHOLD,
@@ -262,7 +263,10 @@ function UserFileChip({
         tooltip={refText}
         tooltipMono
         ariaLabel={fileName}
-        onClick={onClick}
+        onClick={(event) => ctxMenu.onActivate(event, () => onClick(event))}
+        onAuxClick={(event) => {
+          if (event.button === 1) ctxMenu.onActivate(event, () => onClick(event));
+        }}
         onContextMenu={ctxMenu.onContextMenu}
         className="relative top-[-1px] -my-[1px] max-w-[min(240px,55vw)] align-middle"
       />
@@ -327,15 +331,11 @@ function renderTextWithLinks(
     } else {
       const p = match.text;
       result.push(
-        <button
+        <UserMessageImageLink
           key={`${keyPrefix}-img-${match.index}`}
-          type="button"
-          onClick={() => onImageClick?.(toLocalFileUrl(p))}
-          // 同 UserMessageUrlLink:可点 = 正文色 + 常显下划线,不再靠 --msg-link 颜色。
-          className="underline underline-offset-2 cursor-pointer break-all"
-        >
-          {p}
-        </button>,
+          path={p}
+          onOpen={onImageClick}
+        />,
       );
     }
     lastIndex = match.index + match.length;

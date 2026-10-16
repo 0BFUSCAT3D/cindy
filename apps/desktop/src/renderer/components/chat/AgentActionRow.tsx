@@ -103,6 +103,7 @@ import { ImageLightbox } from './ImageLightbox';
 import { TextLightbox } from './TextLightbox';
 import { ToolPayloadLightbox, type ToolPayloadMode } from './ToolPayloadLightbox';
 import { useFileChipContextMenu } from './useFileChipContextMenu';
+import { activateInlineLinkFromKeyboard } from './linkInteraction';
 import {
   formatToolResultCompactionBytes,
   parseToolResultCompactionMarker,
@@ -1078,6 +1079,10 @@ export function AgentActionRow({
 
   const onRowKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (!chipFilePath) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      activateInlineLinkFromKeyboard(e);
+      return;
+    }
     if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1091,7 +1096,16 @@ export function AgentActionRow({
     <div className="flex flex-col" data-message-client-id={message.clientId}>
       <button
         type="button"
-        onClick={(e) => void onActivate(e.currentTarget)}
+        onClick={(e) => {
+          const anchor = e.currentTarget;
+          if (chipFilePath) fileChipMenu.onActivate(e, () => onActivate(anchor));
+          else void onActivate(anchor);
+        }}
+        onAuxClick={(e) => {
+          if (e.button !== 1 || !chipFilePath) return;
+          const anchor = e.currentTarget;
+          fileChipMenu.onActivate(e, () => onActivate(anchor));
+        }}
         onContextMenu={onRowContextMenu}
         onKeyDown={onRowKeyDown}
         aria-expanded={isInlineExpand && !onActivateOverride ? expanded : undefined}

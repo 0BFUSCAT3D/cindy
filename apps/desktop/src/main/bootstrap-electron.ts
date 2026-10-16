@@ -4449,14 +4449,19 @@ const registerIpcHandlers = () => {
   // 「在新窗口打开」会话多开 —— 新建一个完整窗口定位到该 session, 初始 bounds 取主窗。
   ipcMain.handle(
     MAKER_IPC_INVOKE.OPEN_SESSION_IN_NEW_WINDOW,
-    (event, sessionId: unknown, deviceIdRaw: unknown) => {
+    (event, sessionId: unknown, deviceIdRaw: unknown, messageClientId: unknown) => {
       assertTrustedAppRendererEvent(event);
       if (typeof sessionId !== 'string' || sessionId.length === 0) {
         throwIpcError('INVALID_PARAMS', 'sessionId required');
       }
       const deviceId = parseOptionalDeviceLinkDeviceId(deviceIdRaw);
+      if (messageClientId != null && (
+        typeof messageClientId !== 'string' || !messageClientId.trim() || messageClientId.length > 1024
+      )) {
+        throwIpcError('INVALID_PARAMS', 'messageClientId must be a non-empty string of at most 1024 characters');
+      }
       const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-      openSessionInNewWindow(sessionId, sourceWindow ?? mainWindowRef, deviceId);
+      openSessionInNewWindow(sessionId, sourceWindow ?? mainWindowRef, deviceId, undefined, messageClientId);
     },
   );
 

@@ -19,6 +19,7 @@ import type { KeyboardEventHandler, MouseEventHandler, ReactNode, Ref } from 're
 
 import { Tip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { activateInlineLinkFromKeyboard } from './linkInteraction';
 
 export interface InlineReferenceChipProps {
   label: string;
@@ -28,6 +29,7 @@ export interface InlineReferenceChipProps {
   tooltipContentClassName?: string;
   selected?: boolean;
   onClick?: MouseEventHandler<HTMLSpanElement>;
+  onAuxClick?: MouseEventHandler<HTMLSpanElement>;
   onContextMenu?: MouseEventHandler<HTMLSpanElement>;
   chipRef?: Ref<HTMLSpanElement>;
   ariaLabel?: string;
@@ -52,6 +54,7 @@ export function InlineReferenceChip({
   tooltipContentClassName,
   selected = false,
   onClick,
+  onAuxClick,
   onContextMenu,
   chipRef,
   ariaLabel,
@@ -93,10 +96,8 @@ export function InlineReferenceChip({
   // `<span role="button">` 换掉原生 `<button>` 后要自己补键盘激活:走 native
   // click(),让 onClick 收到一个正常的合成鼠标事件,调用方无需区分入口。
   const handleKeyDown: KeyboardEventHandler<HTMLSpanElement> = (e) => {
-    if (!onClick) return;
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    e.preventDefault();
-    e.currentTarget.click();
+    if (!onClick && e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
+    activateInlineLinkFromKeyboard(e);
   };
   const trigger = (
     <span
@@ -105,6 +106,7 @@ export function InlineReferenceChip({
       tabIndex={interactive ? 0 : undefined}
       aria-label={ariaLabel}
       onClick={onClick}
+      onAuxClick={onAuxClick}
       onContextMenu={onContextMenu}
       onKeyDown={interactive ? handleKeyDown : undefined}
       className={sharedClassName}
