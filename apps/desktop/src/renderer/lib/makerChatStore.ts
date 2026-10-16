@@ -4227,23 +4227,38 @@ function applyErrorPersistedDirtySignal(sessionId: string, persistId?: string): 
     _pendingErrorClearOnLeave.add(sessionId);
     return;
   }
-  setState(sessionId, handOffPersistedLiveErrorToHistory);
+  handOffPersistedLiveErrorToHistory(sessionId);
 }
 
 /**
- * 已落库的终态错误改由历史里的错误卡呈现：清掉 live 横幅并让历史重载，但保留
- * errorPersistId。main 的输入投影仍带着这次错误(还没有人处置)，之后任何一次投影
- * (打开任务、队列变化、协同派活等)都会把 live 横幅重新点亮；applyInputProjection
- * 只在 error 仍在时沿用已有绑定。绑定若随横幅一起清掉，重新点亮的横幅点关闭就标不了
- * dismissed，重载后尾部错误卡又出现(Orca Worker 的错误多在 Lead 视图里发生，最常见)。
- * 绑定照旧由新一轮启动、投影 error 清空或新的 persistId 收掉。
+ * 已落库的终态错误改由历史里的错误卡呈现：清掉 live 横幅并让历史重载。
+ *
+ * 本机任务保留 errorPersistId。main 的输入投影仍带着这次错误(还没有人处置)，之后任何一次
+ * 投影(打开任务、队列变化、协同派活等)都会把 live 横幅重新点亮；applyInputProjection 只在
+ * error 仍在时沿用已有绑定。绑定若随横幅一起清掉，重新点亮的横幅点关闭就标不了 dismissed，
+ * 重载后尾部错误卡又出现(Orca Worker 的错误多在 Lead 视图里发生，最常见)。本机任务与 main
+ * 同机，新一轮启动、投影 error 清空或新的 persistId 都会及时到达并收掉这份绑定。
+ *
+ * device-link 远程任务照旧连绑定一起清。控制端断线期间会漏收被控端的新一轮启动、新错误事件
+ * 与落库信号，重连后的投影只带错误文案、不带它对应的行；若保留旧绑定，关闭新错误标记的会是
+ * 旧行，新错误重载后仍复现。宁可维持「关闭后可能复现」也不标错行。彻底修好需要投影携带当前
+ * 错误的 persistId(device-link 协议改动)，不在这里做。远程判定与 dismissErrorMessageFor
+ * 同源(会话来源设备)，取粘滞值：relay 重连会暂时清空来源映射，恰好是要防的断线窗口。
  */
-function handOffPersistedLiveErrorToHistory(s: SessionChatState): SessionChatState {
-  return {
+function handOffPersistedLiveErrorToHistory(sessionId: string): void {
+  const keepPersistId = getStickySessionDeviceId(sessionId) === undefined;
+  setState(sessionId, (s) => ({
     ...s,
     ...(s.historyLoaded ? { historyLoaded: false } : {}),
-    ...(s.error ? { error: null, usageLimitRecovery: null, errorRetryText: null } : {}),
-  };
+    ...(s.error
+      ? {
+          error: null,
+          usageLimitRecovery: null,
+          errorRetryText: null,
+          ...(keepPersistId ? {} : { errorPersistId: null }),
+        }
+      : {}),
+  }));
 }
 
 function leaveView(sessionId: string): void {
@@ -4260,7 +4275,7 @@ function leaveView(sessionId: string): void {
   _lastViewedAt.set(sessionId, Date.now());
   if (_pendingErrorClearOnLeave.has(sessionId)) {
     _pendingErrorClearOnLeave.delete(sessionId);
-    setState(sessionId, handOffPersistedLiveErrorToHistory);
+    handOffPersistedLiveErrorToHistory(sessionId);
   }
   _trimMessagesIfNeeded();
   _softEvictIdleSessions();

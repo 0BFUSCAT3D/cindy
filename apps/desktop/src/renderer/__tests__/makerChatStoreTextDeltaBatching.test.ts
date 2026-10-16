@@ -3126,7 +3126,7 @@ describe('makerChatStore text delta batching', () => {
     makerChatStore.leaveView(SESSION_ID);
   });
 
-  it('投影清掉错误或新一轮启动后不再沿用旧绑定', () => {
+  it('投影清掉错误后不再沿用旧绑定', () => {
     const message = 'worker turn failed';
     onInputProjection?.(projection(SESSION_ID, { error: message }));
     onEvent?.({
@@ -3142,6 +3142,74 @@ describe('makerChatStore text delta batching', () => {
 
     onInputProjection?.(projection(SESSION_ID, { error: message }));
     expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+  });
+
+  it('交给历史后保留的旧绑定在新一轮启动时清掉', () => {
+    const message = 'worker turn failed';
+    onInputProjection?.(projection(SESSION_ID, { error: message }));
+    onEvent?.({
+      sessionId: SESSION_ID,
+      persistId: 'err-persist-old',
+      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
+    });
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-old' });
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-old');
+
+    emitStatus({ status: 'Thinking…', isRunning: true });
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+  });
+
+  // 控制端断线期间会漏收被控端的新一轮启动与新错误事件；重连投影带来的错误 B 不能沿用错误 A
+  // 的绑定，否则关闭 B 标记的是 A 的行。
+  it('device-link 远程任务交给历史时清掉绑定，重连投影带来的新错误不沿用旧行', async () => {
+    remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
+    deviceLinkInvoke.mockResolvedValue(projection(SESSION_ID));
+    onRemotePush?.({
+      deviceId: 'device-1',
+      channel: 'maker:input:projection',
+      payload: projection(SESSION_ID, { error: 'remote error A' }),
+    });
+    onRemotePush?.({
+      deviceId: 'device-1',
+      channel: 'maker:event',
+      payload: {
+        sessionId: SESSION_ID,
+        persistId: 'err-persist-remote-A',
+        event: {
+          type: 'error',
+          source: 'claude-code',
+          data: { isTerminal: true, message: 'remote error A' },
+        },
+      },
+    });
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-remote-A');
+
+    onRemotePush?.({
+      deviceId: 'device-1',
+      channel: 'local-db:session:error-persisted',
+      payload: { sessionId: SESSION_ID, persistId: 'err-persist-remote-A' },
+    });
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+
+    // 断线期间被控端又跑了一轮并失败(错误 B)；控制端只在重连后收到投影。
+    onRemotePush?.({
+      deviceId: 'device-1',
+      channel: 'maker:input:projection',
+      payload: projection(SESSION_ID, { error: 'remote error B' }),
+    });
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe('remote error B');
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    expect(deviceLinkInvoke).not.toHaveBeenCalledWith(
+      'device-1',
+      'local-db:messages:dismiss-error',
+      [SESSION_ID, 'err-persist-remote-A'],
+    );
+    expect(messageService.dismissError).not.toHaveBeenCalled();
   });
 
   it('does not treat a custom LiteLLM provider token error as Cindy credentials', async () => {
