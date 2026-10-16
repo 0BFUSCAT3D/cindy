@@ -70,6 +70,7 @@ export class McpAppView {
     try {
       const document = await this.controller.open(context);
       if (!document || this.closing) return;
+      if (document.transport === 'sandbox') throw new Error('MCP_APP_INVALID_DOCUMENT');
       const nativeDocument = await prepareMcpAppNativeDocument(document, this.bridgeKey);
       if (this.closing) { await nativeDocument.close(); return; }
       this.document = document;

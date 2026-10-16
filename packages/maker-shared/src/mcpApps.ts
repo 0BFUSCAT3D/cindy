@@ -29,8 +29,7 @@ export interface McpAppRecord {
 }
 export interface McpAppDocument {
   viewId: string;
-  /** Local Desktop only: the Main-authenticated proxy owns both RPC directions. */
-  transport?: 'sandbox';
+  transport?: undefined;
   html: string;
   csp: string;
   prefersBorder: boolean;
@@ -41,6 +40,13 @@ export interface McpAppDocument {
     baseUriDomains?: string[];
   };
 }
+/** Desktop UI metadata only; credential-backed App content stays in Main. */
+export interface McpAppSandboxView {
+  viewId: string;
+  transport: 'sandbox';
+  prefersBorder: boolean;
+}
+export type McpAppOpenResult = McpAppDocument | McpAppSandboxView;
 export function parseMcpAppRecord(content: unknown): McpAppRecord | undefined {
   if (!content || typeof content !== 'object') return;
   const value = (content as { mcpApp?: unknown }).mcpApp;

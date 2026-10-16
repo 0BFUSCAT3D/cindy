@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import type { McpAppDocument } from '../../../shared/mcpApps.js';
+import type { McpAppDocument, McpAppSandboxView } from '../../../shared/mcpApps.js';
 const state = vi.hoisted(() => ({
   next: 0,
   mounts: new Map<string, { caller: string; document: McpAppDocument; frame: (raw: unknown) => Promise<unknown>; dispose: () => void }>(),
@@ -23,7 +23,9 @@ vi.mock('../sandboxProtocol.js', () => ({
   },
 }));
 import { RemoteMcpAppViews } from '../remoteViews.js';
-const document = { viewId: 'remote-view', html: '<p>Server-authored App</p>', csp: '', prefersBorder: true };
+const document = { viewId: 'remote-view', html: '<p>Private server-authored App</p>',
+  csp: "default-src 'none'; connect-src https://private-app.example.invalid", prefersBorder: true,
+  policy: { connectDomains: ['https://private-app.example.invalid'] } };
 // Exercise the production close generation without starting Electron's device-link singleton.
 const linkSource = ts.createSourceFile('index.ts', readFileSync(new URL('../../device-link/index.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
 const closeCode = ts.transpileModule(linkSource.statements.filter((node): node is ts.FunctionDeclaration =>
@@ -55,7 +57,7 @@ function fixture() {
   const views = new RemoteMcpAppViews({ owner: () => owner, closeEpoch: link.closeEpoch, invoke, openLink });
   const control = (input: Record<string, unknown>, caller = 'renderer:1', device = 'device-a', session = 'task') =>
     views.control(caller, device, session, input);
-  const open = async () => await control({ op: 'open', clientId: 'card', openId: 'attempt', context: {} }) as McpAppDocument;
+  const open = async () => await control({ op: 'open', clientId: 'card', openId: 'attempt', context: {} }) as McpAppSandboxView;
   return { invoke, openLink, views, control, open, link, changeOwner: () => { owner = {}; } };
 }
 beforeEach(() => { state.mounts.clear(); state.next = 0; });
@@ -66,7 +68,7 @@ describe('Main-bound remote MCP App Views', () => {
     'never reconnects an explicitly closed View after a %s poll, including later frame calls and cleanup', async (stage) => {
       const f = fixture();
       const local = await f.open();
-      const other = await f.control({ op: 'open', clientId: 'other' }, 'renderer:2', 'device-b') as McpAppDocument;
+      const other = await f.control({ op: 'open', clientId: 'other' }, 'renderer:2', 'device-b') as McpAppSandboxView;
       const frame = state.mounts.get(local.viewId)!.frame;
       const otherFrame = state.mounts.get(other.viewId)!.frame;
       vi.useFakeTimers();
@@ -133,10 +135,10 @@ describe('Main-bound remote MCP App Views', () => {
     await expect(f.control(input)).rejects.toThrow('MCP_APP_FRAME_REQUIRED');
     expect(f.invoke).not.toHaveBeenCalled();
   });
-  it('supplies only the remote document and binds frame RPCs to Main-held device/task/View IDs', async () => {
+  it('keeps private documents in Main, exposes only UI metadata, and binds frame RPCs to Main-held IDs', async () => {
     const f = fixture();
     const local = await f.open();
-    expect(local).toEqual({ ...document, viewId: 'local-1', transport: 'sandbox' });
+    expect(local).toEqual({ viewId: 'local-1', transport: 'sandbox', prefersBorder: true });
     expect(state.mounts.get(local.viewId)?.document).toEqual(document);
     const frame = state.mounts.get(local.viewId)!.frame;
     const message = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'app-only' } };
@@ -232,7 +234,7 @@ describe('Main-bound remote MCP App Views', () => {
     const rejected = expect(pending).rejects.toThrow('MCP_APP_OPEN_CANCELLED');
     const remoteOpenId = f.invoke.mock.calls[0][2].openId;
     expect(remoteOpenId).not.toBe('attempt');
-    const other = await f.control({ op: 'open', clientId: 'other', openId: 'attempt' }, 'renderer:2') as McpAppDocument;
+    const other = await f.control({ op: 'open', clientId: 'other', openId: 'attempt' }, 'renderer:2') as McpAppSandboxView;
     await f.views.releaseCaller('renderer:1');
     finish(document);
     await rejected;
@@ -244,7 +246,7 @@ describe('Main-bound remote MCP App Views', () => {
   it('retries only the failing View read while another controller continues without interruption', async () => {
     const f = fixture();
     const local = await f.open();
-    const other = await f.control({ op: 'open', clientId: 'card' }, 'renderer:2', 'device-b') as McpAppDocument;
+    const other = await f.control({ op: 'open', clientId: 'card' }, 'renderer:2', 'device-b') as McpAppSandboxView;
     const frame = state.mounts.get(local.viewId)!.frame;
     const otherFrame = state.mounts.get(other.viewId)!.frame;
     vi.useFakeTimers();

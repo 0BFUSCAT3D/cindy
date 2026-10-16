@@ -1,4 +1,4 @@
-import { MCP_APPS_INVOKE, type McpAppDocument, type McpAppHostEvent } from './mcpApps.js';
+import { MCP_APPS_INVOKE, type McpAppOpenResult, type McpAppHostEvent } from './mcpApps.js';
 
 export type AppRpc = {
   jsonrpc: '2.0';
@@ -12,7 +12,7 @@ let nextOpenId = 0;
 
 /** The UI is a transport only; official negotiation, schemas and permissions live on the Host. */
 export class McpAppController {
-  document?: McpAppDocument;
+  document?: McpAppOpenResult;
   private after = 0;
   private stopped = false;
   private closing = false;
@@ -35,13 +35,13 @@ export class McpAppController {
     private readonly openLink?: (url: string) => Promise<void>,
   ) {}
 
-  async open(context: Record<string, unknown>): Promise<McpAppDocument | undefined> {
+  async open(context: Record<string, unknown>): Promise<McpAppOpenResult | undefined> {
     const document = (await this.invoke(this.sessionId, {
       op: 'open',
       openId: this.openId,
       clientId: this.clientId,
       context,
-    })) as McpAppDocument;
+    })) as McpAppOpenResult;
     this.document = document;
     if (this.closing) {
       await this.invoke(this.sessionId, { op: 'teardown', viewId: document.viewId });

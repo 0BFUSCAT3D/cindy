@@ -44,6 +44,8 @@ Host capabilities；不支持的调用明确失败，不静默丢内容。工具
 未声明域、不同协议、其他 App 的供片地址和本地文件不会因此获得访问权限。
 
 Desktop（本机和远程卡片）的 App RPC 双向传输由可信 proxy 直接发给 Main，不经过顶层 Renderer。
+open IPC 只返回 `viewId`、`transport: "sandbox"` 与 `prefersBorder`；私有 HTML、CSP 和
+资源策略只由 Main 供给隔离 frame。远程 v1 仍向 Mobile 与查看端 Main 发送完整文档。
 Main 按 Chromium 的真实请求 frame、所属窗口、账号与供片记录验证通道，内部鉴别值不进入
 HTML、preload 返回值或 JavaScript Request。顶层 Renderer 的 message/poll/link-result
 操作被拒绝；它只观察初始化、尺寸、显示模式等界面状态，不能伪造 App 调用或 Host 结果。

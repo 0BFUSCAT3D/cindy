@@ -38,8 +38,8 @@ describe('MCP App transport lifecycle', () => {
   it('keeps local Desktop RPC out of the Renderer while retaining UI state and Host-owned teardown', async () => {
     const f = fixture();
     f.invoke.mockImplementation(async (_session, input) => input.op === 'open'
-      ? { ...document, transport: 'sandbox' } : {});
-    await f.controller.open({});
+      ? { viewId: 'view', transport: 'sandbox', prefersBorder: true } : {});
+    expect(await f.controller.open({})).toEqual({ viewId: 'view', transport: 'sandbox', prefersBorder: true });
     f.controller.sandboxReady('cindy-mcp-app://forged/resource');
     f.controller.receive({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {} });
     f.controller.receive({ jsonrpc: '2.0', method: 'ui/notifications/initialized' });

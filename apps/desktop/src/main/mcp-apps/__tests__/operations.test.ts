@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleMcpAppOperation, handleMcpAppFrameOperation } from '../operations.js';
 import type { McpAppsHost } from '../host.js';
 function fixture() {
-  const document = { viewId: 'view', html: '<!doctype html>', csp: '', prefersBorder: true };
+  const document = { viewId: 'view', html: '<!doctype html><p>Private App content</p>',
+    csp: "default-src 'none'; connect-src https://private-app.example.invalid", prefersBorder: true,
+    policy: { connectDomains: ['https://private-app.example.invalid'] } };
   const api = {
     open: vi.fn(async () => document),
     dispatch: vi.fn(),
@@ -35,7 +37,7 @@ describe('task-bound MCP App operations', () => {
         { op: 'open', clientId: 'card', context: { theme: 'dark' } },
         f.local,
       ),
-    ).toEqual({ ...f.document, transport: 'sandbox' });
+    ).toEqual({ viewId: 'view', transport: 'sandbox', prefersBorder: true });
     expect(f.api.open).toHaveBeenCalledWith('renderer:1', 'task', 'card', { theme: 'dark' }, undefined);
     expect(f.local.supply).toHaveBeenCalledWith(f.document, 'renderer:1');
     await handleMcpAppOperation(f.host, 'device:phone', 'task', {
@@ -53,6 +55,14 @@ describe('task-bound MCP App operations', () => {
     expect(f.api.linkResult).toHaveBeenCalledWith('device:phone', 'task', 'view', 'link', false);
     await handleMcpAppOperation(f.host, 'device:phone', 'task', { op: 'cancel-open', openId: 'attempt' });
     expect(f.api.cancelOpen).toHaveBeenCalledWith('device:phone', 'task', 'attempt');
+  });
+  it('keeps the complete document on the authenticated device transport for Mobile', async () => {
+    const f = fixture();
+    expect(await handleMcpAppOperation(f.host, 'device:phone', 'task', {
+      op: 'open', clientId: 'card',
+    })).toEqual(f.document);
+    expect(f.api.open).toHaveBeenCalledWith('device:phone', 'task', 'card', {}, undefined);
+    expect(f.local.supply).not.toHaveBeenCalled();
   });
   it.each([
     { op: 'message', viewId: 'view', message: { jsonrpc: '2.0', id: 1, method: 'tools/call' } },

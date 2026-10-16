@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { McpUiHostContextSchema } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { McpAppsHost } from './host.js';
-import type { McpAppDocument } from '../../shared/mcpApps.js';
+import type { McpAppDocument, McpAppSandboxView } from '../../shared/mcpApps.js';
 import { MCP_APPS_MAX_BYTES, safeAppLink } from './protocol.js';
 
 const id = z.string().min(1).max(256);
@@ -67,8 +67,11 @@ export async function handleMcpAppOperation(
   switch (input.op) {
     case 'open': {
       const document = await host.open(caller, sessionId, input.clientId, input.context, input.openId);
-      local?.supply(document, caller);
-      return local ? { ...document, transport: 'sandbox' } : document;
+      if (!local) return document;
+      local.supply(document, caller);
+      // Main supplies the private document directly to the isolated frame.
+      return { viewId: document.viewId, transport: 'sandbox',
+        prefersBorder: document.prefersBorder } satisfies McpAppSandboxView;
     }
     case 'cancel-open':
       await host.cancelOpen(caller, sessionId, input.openId);

@@ -291,7 +291,8 @@ describe('MCP App persistence and IPC wiring', () => {
     expect(state.invoke).not.toHaveBeenCalled();
   });
   it('keeps remote RPCs in Main while preserving the incoming Mobile Host contract', async () => {
-    const document = { viewId: 'remote-view', html: '<p>App</p>', csp: '', prefersBorder: true };
+    const document = { viewId: 'remote-view', html: '<p>Private App</p>', csp: "default-src 'none'",
+      prefersBorder: true, policy: { connectDomains: ['https://private-app.example.invalid'] } };
     state.invoke.mockImplementation(async (_device, _channel, _args, options) => {
       options.preSend();
       return { ok: true, result: document };
@@ -299,12 +300,16 @@ describe('MCP App persistence and IPC wiring', () => {
     vi.mocked(mountRemoteAppDocument).mockReturnValueOnce('local-view');
     expect(await state.handle!({ sender: { id: 1 } }, 'task', {
       deviceId: 'other-computer', op: 'open', clientId: 'card', openId: 'attempt',
-    })).toEqual({ ...document, viewId: 'local-view', transport: 'sandbox' });
+    })).toEqual({ viewId: 'local-view', transport: 'sandbox', prefersBorder: true });
     const message = { jsonrpc: '2.0', id: 2, method: 'tools/call' };
     const frame = vi.mocked(mountRemoteAppDocument).mock.calls.at(-1)![2]!;
     await frame({ op: 'message', viewId: 'forged', message });
     expect(state.invoke).toHaveBeenLastCalledWith('other-computer', 'maker:mcp-apps:v1',
       ['task', { op: 'message', viewId: 'remote-view', message }], { preSend: expect.any(Function) });
+
+    state.open.mockResolvedValue(document);
+    expect(await state.handle!({ sender: { id: 1 } }, 'task', { op: 'open', clientId: 'card' }))
+      .toEqual({ viewId: 'remote-view', transport: 'sandbox', prefersBorder: true });
 
     // Mobile still reaches the execution Host over the existing same-account channel.
     state.remote = { controllerDeviceId: 'phone' };

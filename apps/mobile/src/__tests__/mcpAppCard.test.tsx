@@ -208,6 +208,17 @@ it('binds a served resource origin and gates declared frame navigation', async (
   expect(JSON.parse(nativePost.mock.calls[0][0]).message).toEqual(message);
 });
 
+it('rejects a Desktop-only descriptor without starting a native document or leaving a View open', async () => {
+  state.invoke.mockResolvedValueOnce({ viewId: 'view', transport: 'sandbox', prefersBorder: true });
+  await act(async () => render(<McpAppCard deviceId="device" sessionId="task" clientId="card" title="App" />));
+  expect(state.prepare).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-testid="mcp-webview"]')).toBeNull();
+  expect(container.textContent).toContain('mcpApps.loadFailed');
+  expect(state.invoke).toHaveBeenCalledWith('device', 'maker:mcp-apps:v1', [
+    'task', { op: 'teardown', viewId: 'view', alreadyNotified: false },
+  ]);
+});
+
 it('closes late native servers without mounting them after the card has left the screen', async () => {
   let prepared!: (value: typeof nativeDocument) => void;
   const close = vi.fn(async () => {});

@@ -136,7 +136,7 @@ try {
       host=new McpAppsHost({owner:()=>globalThis.mcpTestOwner,config:()=>config,readCard:async()=>record,writeCard:async(_s,_c,value)=>{record=value;},authorizeTool:async()=>{},sendMessage:async()=>{turns++;},disposeDocument:removeMcpAppDocument});
       record.connectionId=host.registerConnection(connection);
       registerMcpAppProtocol();
-      const remoteViews=new RemoteMcpAppViews({owner:()=>globalThis.mcpTestOwner,
+      const remoteViews=new RemoteMcpAppViews({owner:()=>globalThis.mcpTestOwner,closeEpoch:()=>0,
         invoke:async(device,session,input,preSend)=>{
           assert.equal(device,'fixture-device');preSend();
           return handleMcpAppOperation(host,'device:fixture-controller',session,input);
@@ -154,6 +154,10 @@ try {
       await window.loadFile(process.env.CINDY_MCP_APP_TEST_DIR+'/host.html');
       try { await wait(()=>window.webContents.executeJavaScript('window.testState.initialized===true')); }
       catch (error) { console.log('Frame state',window.webContents.mainFrame.framesInSubtree.map(frame=>frame.url),await window.webContents.executeJavaScript('window.testState')); throw error; }
+      assert.deepEqual(await window.webContents.executeJavaScript(
+        'Object.keys(window.testController.document).sort()'),['prefersBorder','transport','viewId']);
+      assert.equal(await window.webContents.executeJavaScript(
+        'window.testController.document.transport'),'sandbox');
       const inner=()=>window.webContents.mainFrame.framesInSubtree.find(frame=>frame.url.includes('-view/resource'));
       assert.equal(await window.webContents.executeJavaScript(
         "window.testHost.invoke({op:'message',viewId:window.testController.document.viewId,message:{jsonrpc:'2.0',id:'forged',method:'tools/list'}}).then(()=>false,()=>true)"),true);

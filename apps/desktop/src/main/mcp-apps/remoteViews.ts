@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { isSharedTaskPeer } from '@cindy/device-link';
-import type { McpAppDocument } from '../../shared/mcpApps.js';
+import type { McpAppSandboxView } from '../../shared/mcpApps.js';
 import { MCP_APPS_MAX_BYTES, MCP_APPS_MAX_REMOTE_BYTES, safeAppLink } from './protocol.js';
 import { mcpAppOperationSchema } from './operations.js';
 import { assertMcpAppDocumentCaller, mountRemoteAppDocument, unmountRemoteAppDocument } from './sandboxProtocol.js';
@@ -109,7 +109,7 @@ export class RemoteMcpAppViews {
   private async open(
     caller: string, deviceId: string, sessionId: string,
     input: Extract<z.infer<typeof mcpAppOperationSchema>, { op: 'open' }>,
-  ): Promise<McpAppDocument> {
+  ): Promise<McpAppSandboxView> {
     const owner = this.deps.owner();
     if (!owner) throw new Error('MCP_APP_OWNER_UNAVAILABLE');
     const count = [...this.opening, ...this.views.values()].filter((entry) => entry.caller === caller && entry.owner === owner).length;
@@ -132,7 +132,7 @@ export class RemoteMcpAppViews {
       const view: RemoteView = { ...entry, localId: '', remoteId, links: new Map() };
       view.localId = mountRemoteAppDocument(document, caller, (raw) => this.frame(view, raw), () => this.dispose(view));
       this.views.set(view.localId, view);
-      return { ...document, viewId: view.localId, transport: 'sandbox' };
+      return { viewId: view.localId, transport: 'sandbox', prefersBorder: document.prefersBorder };
     } catch (error) {
       // No writes are replayed. An old Host may reject cancel-open; its idle lease remains the fallback.
       await this.call(entry, remoteId ? { op: 'teardown', viewId: remoteId } :

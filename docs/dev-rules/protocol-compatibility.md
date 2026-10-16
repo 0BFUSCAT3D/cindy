@@ -30,9 +30,11 @@ Desktop 远程卡片复用查看端 Main 验证真实 frame 的通道；本机 I
 目标 View。新查看端 Main 可连接既有 v1 Host，外链仍要求 `authorize-link` 明确回执；
 Mobile 和旧查看端的 wire 保持原样，完整 frame 边界需更新 Desktop 查看端。
 没有新增 channel、allowlist、relay 或原生配置。回归见 `remoteViews.test.ts`。
-本机 Desktop 的 open 结果可选携带 `transport: "sandbox"`，只用于同版本 Main/Renderer
-切换到 Main 验证真实 frame 的直连通道，不向远程设备返回该字段。远程 v1 消息与原有
-channel 不变。Mobile 在原生 HTML 资源模块增加独立 App 资源额度和内联承载视图，
+本机与远控 Desktop 的 open IPC 只返回 `viewId`、`transport: "sandbox"` 与 `prefersBorder`，
+用于同版本 Main/Renderer 切换到 Main 验证真实 frame 的直连通道。凭证读取的 HTML、CSP 与
+资源策略只由 Main 供给隔离 frame，不进入顶层 Renderer。该描述符不向远程设备返回；
+Mobile 和 Desktop Main 之间的远程 v1 仍传完整文档，原有 channel 不变。Mobile 在原生
+HTML 资源模块增加独立 App 资源额度和内联承载视图，
 以不同来源隔离 proxy/App，并保留卸载后的有界 teardown；这改变 iOS/Android runtime
 fingerprint，须遵守 [冷更边界](mobile-development.md#原生配置与-runtime-fingerprint冷更边界)。
 旧 Mobile binary 保留卡片文本并提示更新手机，不回退到同源或 opaque-origin srcdoc。
