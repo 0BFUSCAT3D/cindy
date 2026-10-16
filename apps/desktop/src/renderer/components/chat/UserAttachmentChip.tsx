@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -46,6 +46,7 @@ export function UserAttachmentChip({
     canOpenInBrowser: isBrowserOpenablePath(file.path),
   });
   const [saveMenuPos, setSaveMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const saveMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const saveOnlyMenu = (
     <DropdownMenu
@@ -68,7 +69,17 @@ export function UserAttachmentChip({
           }}
         />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={2} onClick={(e) => e.stopPropagation()}>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={2}
+        onClick={(e) => e.stopPropagation()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (saveMenuTriggerRef.current?.isConnected) {
+            saveMenuTriggerRef.current.focus({ preventScroll: true });
+          }
+        }}
+      >
         <DropdownMenuItem
           onClick={() => {
             setSaveMenuPos(null);
@@ -112,6 +123,7 @@ export function UserAttachmentChip({
           if (downloadOnly) {
             e.preventDefault();
             e.stopPropagation();
+            saveMenuTriggerRef.current = e.currentTarget;
             setSaveMenuPos(linkMenuPosition(e));
             return;
           }

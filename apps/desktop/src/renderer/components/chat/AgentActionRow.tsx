@@ -1089,7 +1089,7 @@ export function AgentActionRow({
     const chipRect = fileChipRef.current?.getBoundingClientRect();
     const rowRect = e.currentTarget.getBoundingClientRect();
     const rect = chipRect ?? rowRect;
-    fileChipMenu.openAt(rect.left, rect.bottom + 2);
+    fileChipMenu.openAt(rect.left, rect.bottom + 2, e.currentTarget);
   };
 
   return (

@@ -51,7 +51,7 @@ const SourcePreview = lazy(() =>
 
 export interface UseFileChipContextMenu {
   onContextMenu: (e: React.MouseEvent) => void;
-  openAt: (x: number, y: number) => void;
+  openAt: (x: number, y: number, trigger: HTMLElement) => void;
   onActivate: (
     event: React.MouseEvent<HTMLElement>,
     openDefault: () => void | Promise<void>,
@@ -219,16 +219,16 @@ export function useFileChipContextMenu({
       toast.error(res.error ?? t('chat.markdownRenderer.openWithAppFailed'));
   }
 
-  const openAt = (x: number, y: number): void => {
+  const openAt: UseFileChipContextMenu['openAt'] = (x, y, trigger) => {
+    triggerRef.current = trigger;
     setMenuPos({ x, y });
   };
 
   const onContextMenu = (e: React.MouseEvent): void => {
     e.preventDefault();
     e.stopPropagation();
-    triggerRef.current = e.currentTarget as HTMLElement;
     const { x, y } = linkMenuPosition(e as React.MouseEvent<HTMLElement>);
-    openAt(x, y);
+    openAt(x, y, e.currentTarget as HTMLElement);
   };
   const onActivate: UseFileChipContextMenu['onActivate'] = (event, openDefault) => {
     event.preventDefault();

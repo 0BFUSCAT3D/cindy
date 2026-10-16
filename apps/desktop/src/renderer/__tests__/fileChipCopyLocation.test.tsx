@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   openRemoteChatFile: vi.fn(),
   reveal: vi.fn(async () => ({ success: true })),
   download: vi.fn(async () => undefined),
+  saveAttachment: vi.fn(async () => undefined),
   context: {
     sessionId: undefined as string | undefined,
     workingDir: '/repo',
@@ -23,6 +24,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/toast', () => ({ toast: { success: mocks.success, error: mocks.error } }));
+vi.mock('@/lib/chatAttachmentSave', () => ({
+  isSafetyDowngradedAttachment: () => true,
+  saveChatAttachmentWithToasts: mocks.saveAttachment,
+}));
+vi.mock('@/lib/filePreview', () => ({ shouldOpenTextLightboxForOrigin: vi.fn() }));
 vi.mock('@/components/chat/ChatSessionFileContext', () => ({
   useChatSessionFile: () => mocks.context,
 }));
@@ -50,6 +56,7 @@ vi.mock('../components/chat/TextLightbox', () => ({
 }));
 
 import { useFileChipContextMenu } from '../components/chat/useFileChipContextMenu';
+import { UserAttachmentChip } from '../components/chat/UserAttachmentChip';
 import type { FileLocation } from '../lib/fileLocation';
 
 function FileReference({
@@ -61,7 +68,7 @@ function FileReference({
   directory?: boolean;
   html?: boolean;
 }) {
-  const { onContextMenu, onActivate, menu } = useFileChipContextMenu({
+  const { onContextMenu, onActivate, openAt, menu } = useFileChipContextMenu({
     getAbsPath: mocks.getAbsPath,
     sidebarFileBrowserKind: directory ? 'directory' : 'file',
     location,
@@ -74,6 +81,16 @@ function FileReference({
         onContextMenu={onContextMenu}
       >
         file reference
+      </button>
+      <button
+        onKeyDown={(event) => {
+          if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault();
+            openAt(10, 20, event.currentTarget);
+          }
+        }}
+      >
+        tool row
       </button>
       {menu}
     </>
@@ -112,6 +129,34 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('file chip Copy Location action', () => {
+  it.each(['ContextMenu', 'F10'])('restores focus to the latest keyboard trigger (%s)', async (key) => {
+    render(<FileReference />);
+    const file = screen.getByRole('button', { name: 'file reference' });
+    const row = screen.getByRole('button', { name: 'tool row' });
+    file.focus();
+    fireEvent.contextMenu(file);
+    fireEvent.keyDown(await screen.findByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(file));
+    row.focus();
+    fireEvent.keyDown(row, { key, shiftKey: key === 'F10' });
+    fireEvent.keyDown(await screen.findByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(row));
+  });
+
+  it.each(['escape', 'save'])('restores attachment focus when the save-only menu closes via %s', async (action) => {
+    render(<UserAttachmentChip file={{ name: 'installer.exe', path: '/repo/attachment.bin' }} onOpenTextPreview={vi.fn()} />);
+    const attachment = screen.getByRole('button');
+    attachment.focus();
+    fireEvent.keyDown(attachment, { key: 'F10', shiftKey: true });
+    const item = await screen.findByRole('menuitem', { name: 'chat.media.saveAs' });
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    if (action === 'escape') fireEvent.keyDown(item, { key: 'Escape' });
+    else fireEvent.click(item);
+    await waitFor(() => expect(document.activeElement).toBe(attachment));
+    expect(mocks.saveAttachment).toHaveBeenCalledTimes(action === 'save' ? 1 : 0);
+    expect(mocks.openPath).not.toHaveBeenCalled();
+  });
+
   it.each(['local', 'device'] as const)(
     'keeps the HTML menu flat and replaces reveal with download for %s files',
     async (kind) => {

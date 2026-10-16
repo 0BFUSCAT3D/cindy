@@ -67,7 +67,7 @@ function ActionProbe({ html = false }: { html?: boolean }) {
   });
   return (
     <>
-      <button type="button" onClick={() => menu.openAt(10, 20)}>
+      <button type="button" onClick={(event) => menu.openAt(10, 20, event.currentTarget)}>
         open-menu
       </button>
       {menu.menu}
@@ -81,7 +81,7 @@ function ExternalFileActionProbe() {
   });
   return (
     <>
-      <button type="button" onClick={() => menu.openAt(10, 20)}>
+      <button type="button" onClick={(event) => menu.openAt(10, 20, event.currentTarget)}>
         open-external-menu
       </button>
       {menu.menu}
