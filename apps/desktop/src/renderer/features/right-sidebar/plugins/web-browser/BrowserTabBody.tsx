@@ -13,8 +13,9 @@ import { Button } from '@/components/ui/button';
  *
  * webview slot 是一个 `<div ref>` —— useBrowserWebview 给我们 wrapper(模块级
  * pool 持有的同一个 DOM 节点),useLayoutEffect 里用 vanilla `appendChild` 把
- * wrapper 搬过来。TabBody 卸载时 cleanup 把 wrapper 挪回 pool container(
- * off-screen),保证 webContents 不被销毁。
+ * wrapper 首次附着到 slot。之后由 Shell 保持池内存活浏览器的宿主与祖先位置，
+ * 切换只隐藏宿主。真正卸载时 cleanup 把仍归 pool 的 wrapper 停回 container
+ * 暂存 DOM；这次跨父节点移动可能重建 guest，不保证页面运行上下文保留。
  *
  * webview 事件 → 同步 plugin state:
  *   - did-navigate / did-navigate-in-page → state.url
@@ -137,8 +138,8 @@ export function BrowserTabBody({ state, ctx, active, shellVisible }: BrowserTabB
   });
 
   // 把 pool 的 wrapper 挂进 slot —— useLayoutEffect(在 paint 前移 DOM,避免闪)。
-  // Shell 会常驻挂载所有 TabBody，并用父节点 display:none 隐藏后台 tab；wrapper
-  // 一旦进入自己的 slot 就不要再随 active 切换搬回 parking。Electron 的 webview
+  // Shell 常驻挂载池内存活的浏览器 TabBody，后台仅隐藏；wrapper 一旦进入
+  // 自己的 slot 就不要再随 active 切换搬回 parking。Electron 的 webview
   // 在跨父节点 reparent 时可能重建 guest WebContents，这会销毁 window.open 的
   // opener browsing context，连带 outlivesOpener:false 的原生 popup 一起销毁。
   // 只有 TabBody 真正卸载或 wrapper 代际变化时 effect cleanup 才停回 parking。
