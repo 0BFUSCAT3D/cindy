@@ -32,6 +32,11 @@ const WORKBENCH_FILE = 'workbench.json';
 interface StoredDirectory {
   path: string;
   addedAt: string;
+  /**
+   * The computer the folder is on when it is not this one (cloud-companions.md §2): the companion
+   * moved here and the folder stayed on its old computer. Never an authorization scope here.
+   */
+  deviceId?: string;
 }
 
 interface StoredWorkbench {
@@ -99,10 +104,15 @@ function normalizeDirectories(raw: unknown): StoredDirectory[] {
   for (const entry of Array.isArray(raw) ? raw : []) {
     if (out.length >= BOT_WORKBENCH_MAX_DIRECTORIES) break;
     if (!entry || typeof entry !== 'object') continue;
-    const dir = entry as { path?: unknown; addedAt?: unknown };
-    if (typeof dir.path !== 'string' || !path.isAbsolute(dir.path) || seen.has(dir.path)) continue;
-    seen.add(dir.path);
-    out.push({ path: dir.path, addedAt: typeof dir.addedAt === 'string' ? dir.addedAt : new Date(0).toISOString() });
+    const dir = entry as { path?: unknown; addedAt?: unknown; deviceId?: unknown };
+    const deviceId = typeof dir.deviceId === 'string' && dir.deviceId && dir.deviceId.length <= 200 ? dir.deviceId : undefined;
+    // Another computer's path may use another platform's form; it is only shown, never opened here.
+    const valid = typeof dir.path === 'string' && (deviceId ? !!dir.path.trim() && dir.path.length <= 4096 : path.isAbsolute(dir.path));
+    const key = `${deviceId ?? ''}\0${String(dir.path)}`;
+    if (!valid || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ path: dir.path as string, addedAt: typeof dir.addedAt === 'string' ? dir.addedAt : new Date(0).toISOString(),
+      ...(deviceId ? { deviceId } : {}) });
   }
   return out;
 }
@@ -169,6 +179,10 @@ function mutate<T>(
 }
 
 async function describeDirectory(dir: StoredDirectory): Promise<BotWorkbenchDirectory> {
+  // On another computer: shown as such, never looked up on this disk.
+  // Its path may use the other computer's separators.
+  if (dir.deviceId) return { path: dir.path, name: dir.path.split(/[\\/]/).filter(Boolean).at(-1) || dir.path,
+    addedAt: dir.addedAt, exists: false, deviceId: dir.deviceId };
   let exists = false;
   try {
     exists = (await fs.stat(dir.path)).isDirectory();
@@ -192,7 +206,46 @@ export async function readBotWorkbenchState(
   botId: string,
 ): Promise<{ directories: string[]; tasks: Record<string, WorkbenchTaskJudgment> }> {
   const stored = await readStored(userDataDir, botId);
-  return { directories: stored.directories.map((dir) => dir.path), tasks: stored.tasks };
+  // Only this computer's folders are the companion's scope here.
+  return { directories: stored.directories.flatMap((dir) => (dir.deviceId ? [] : [dir.path])), tasks: stored.tasks };
+}
+
+/** Task judgments that mean the same on any computer (pull requests, issues, ideas). */
+const PORTABLE_JUDGMENT = /^(pr|issue|idea):/;
+
+/**
+ * The workbench as it travels with the companion (cloud-companions.md §2): every folder with the
+ * computer it is on, and the portable judgments. `selfDeviceId` names this computer's folders.
+ */
+export async function readCompanionWorkbench(userDataDir: string, botId: string, selfDeviceId: string): Promise<{
+  directories: Array<{ path: string; addedAt: string; deviceId: string }>;
+  tasks: Record<string, WorkbenchTaskJudgment>;
+}> {
+  const stored = await readStored(userDataDir, botId);
+  return {
+    directories: stored.directories.map((dir) => ({ path: dir.path, addedAt: dir.addedAt, deviceId: dir.deviceId ?? selfDeviceId })),
+    tasks: Object.fromEntries(Object.entries(stored.tasks).filter(([key]) => PORTABLE_JUDGMENT.test(key))),
+  };
+}
+
+/**
+ * The companion moved here: its folders (this computer's become local again, others stay on
+ * their computer) and portable judgments from the cloud join what is here; the cloud wins.
+ */
+export async function mergeCompanionWorkbench(userDataDir: string, botId: string, selfDeviceId: string, cloud: unknown): Promise<void> {
+  const value = cloud && typeof cloud === 'object' ? cloud as { directories?: unknown; tasks?: unknown } : {};
+  const incoming = normalizeDirectories((Array.isArray(value.directories) ? value.directories : []).map((dir) => {
+    const entry = dir && typeof dir === 'object' ? dir as Record<string, unknown> : {};
+    return { ...entry, deviceId: entry.deviceId === selfDeviceId ? undefined : entry.deviceId };
+  }));
+  const tasks = Object.fromEntries(Object.entries(normalizeTasks(value.tasks)).filter(([key]) => PORTABLE_JUDGMENT.test(key)));
+  await mutate(userDataDir, botId, (stored) => {
+    const key = (dir: StoredDirectory) => `${dir.deviceId ?? ''}\0${dir.path}`;
+    const known = new Set(stored.directories.map(key));
+    const directories = [...stored.directories, ...incoming.filter((dir) => !known.has(key(dir)))].slice(0, BOT_WORKBENCH_MAX_DIRECTORIES);
+    return { next: { directories, tasks: boundJudgments({ ...stored.tasks, ...tasks }) }, result: undefined };
+  });
+  broadcastBotWorkbenchChanged(botId);
 }
 
 /** 整条替换一件任务的判断(上限与淘汰见 `boundJudgments`)。 */

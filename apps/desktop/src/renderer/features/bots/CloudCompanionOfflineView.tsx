@@ -14,7 +14,9 @@ import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { toast } from '@/lib/toast';
 import type { CompanionTranscriptMessage } from '../../../shared/companionCloud';
+import type { BotGroupAttachment } from '../../../shared/botGroupChat';
 import { BotAvatar } from './BotAvatar';
+import { BotGroupMessageAttachments } from './BotGroupMessageAttachments';
 import { BotSessionContentHeaderRegistration, type BotChatIdentity } from './BotSessionContentHeader';
 import { ensureBotProfilesLoaded } from './botStore';
 import { companionCloudApi, refreshCompanionCloud } from './companionCloudStore';
@@ -182,14 +184,18 @@ export function CloudCompanionOfflineView({ botId, deviceId, name, avatar, avata
             <p className="text-center text-13 text-[var(--text-tertiary)]">{t('bots.cloud.empty')}</p>
           ) : null}
           {messages.map((message) => message.role === 'user' ? (
-            <article key={message.id} className="flex justify-end">
-              <div className={`max-w-[72%] whitespace-pre-wrap break-words rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2.5 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}>
-                {message.text}
-              </div>
+            <article key={message.id} className="flex flex-col items-end gap-2">
+              {message.text ? (
+                <div className={`max-w-[72%] whitespace-pre-wrap break-words rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-3.5 py-2.5 text-[var(--msg-user-text)] ${CHAT_BODY_CLASS}`}>
+                  {message.text}
+                </div>
+              ) : null}
+              {message.attachments?.length ? <CloudMessageAttachments botId={botId} files={message.attachments} align="end" /> : null}
             </article>
           ) : (
-            <article key={message.id} className={`min-w-0 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
-              <MarkdownRenderer workingDir="" content={message.text} allowPrivilegedLinks={false} />
+            <article key={message.id} className={`flex min-w-0 flex-col gap-2 text-[var(--msg-assistant-text)] ${CHAT_BODY_CLASS}`}>
+              {message.text ? <MarkdownRenderer workingDir="" content={message.text} allowPrivilegedLinks={false} /> : null}
+              {message.attachments?.length ? <CloudMessageAttachments botId={botId} files={message.attachments} align="start" /> : null}
             </article>
           ))}
         </div>
@@ -199,4 +205,35 @@ export function CloudCompanionOfflineView({ botId, deviceId, name, avatar, avata
       </p>
     </main>
   );
+}
+
+/** Files of a cloud message, brought to this computer from the companion's room when shown. */
+function CloudMessageAttachments({ botId, files, align }: {
+  botId: string;
+  files: ReadonlyArray<{ mediaId: string; name: string }>;
+  align: 'start' | 'end';
+}) {
+  const [loaded, setLoaded] = useState<Record<string, BotGroupAttachment | 'unavailable'>>({});
+  const key = files.map((file) => file.mediaId).join(',');
+  useEffect(() => {
+    const api = companionCloudApi();
+    let live = true;
+    const owner = getDataOwnerGeneration();
+    for (const file of files) {
+      const settle = (value: BotGroupAttachment | 'unavailable') => {
+        if (live && isDataOwnerGenerationCurrent(owner)) setLoaded((current) => ({ ...current, [file.mediaId]: value }));
+      };
+      if (!api || typeof api.getCompanionAttachment !== 'function') { settle('unavailable'); continue; }
+      void api.getCompanionAttachment(botId, file.mediaId).then((value) => settle({ ...value, id: file.mediaId }), () => settle('unavailable'));
+    }
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the files' ids
+  }, [botId, key]);
+  const attachments: BotGroupAttachment[] = files.map((file) => {
+    const value = loaded[file.mediaId];
+    if (value && value !== 'unavailable') return value;
+    return { id: file.mediaId, name: file.name, category: 'file', mimeType: '', size: 0, url: null, path: null,
+      state: value === 'unavailable' ? 'unavailable' : 'loading' };
+  });
+  return <BotGroupMessageAttachments attachments={attachments} align={align} />;
 }

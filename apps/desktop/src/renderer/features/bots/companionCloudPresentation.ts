@@ -2,13 +2,27 @@ import type { CompanionCloudActor, CompanionCloudSnapshot } from '../../../share
 import type { RemoteBot } from './remoteBotRoster';
 
 /**
- * Local copies whose home moved to another computer stay out of the roster and entry choice.
- * The shadow list is persisted in main, so it applies offline and with the feature off too.
+ * Local copies whose home moved to another computer stay out of the roster and entry choice:
+ * the companion is listed once, where it runs. The shadow list is persisted in main, so it
+ * applies offline and with the feature off too; a known cloud home elsewhere hides the copy
+ * even before its demotion is published.
  */
 export function withoutShadowedBots<T extends { id: string }>(bots: readonly T[], cloud: CompanionCloudSnapshot): T[] {
-  if (cloud.demotedBotIds.length === 0) return [...bots];
   const shadowed = new Set(cloud.demotedBotIds);
-  return bots.filter((bot) => !shadowed.has(bot.id));
+  const elsewhere = new Set(cloud.enabled && cloud.selfDeviceId ? cloud.actors.flatMap((actor) =>
+    actor.homeDeviceId && actor.homeDeviceId !== cloud.selfDeviceId ? [actor.externalId] : []) : []);
+  if (shadowed.size === 0 && elsewhere.size === 0) return [...bots];
+  return bots.filter((bot) => !shadowed.has(bot.id) && !elsewhere.has(bot.id));
+}
+
+/**
+ * Companions the cloud already lists once (their home is known) are not per-computer copies:
+ * leave them out of the older multi-computer Cindy picker.
+ */
+export function withoutCloudCompanions<T extends { id: string }>(bots: readonly T[], cloud: CompanionCloudSnapshot): T[] {
+  if (!cloud.enabled) return [...bots];
+  const homed = new Set(cloud.actors.flatMap((actor) => actor.homeDeviceId ? [actor.externalId] : []));
+  return bots.filter((bot) => !homed.has(bot.id));
 }
 
 /** The cloud companion whose home is `deviceId`, when the feature is on. */

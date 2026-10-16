@@ -284,4 +284,64 @@ describe('materializeCompanion', () => {
     local.setProfile({ status: 'deleting', displayName: 'Mia', description: '' });
     await expect(materializeCompanion({ api, state: memoryState().state, host: local.host, actor, roomId: async () => ROOM })).rejects.toThrow('PROFILE_DELETING');
   });
+
+  it('brings the room\'s files along with the history, and keeps a name for one that cannot come', async () => {
+    const withFiles = { ...roomMessage('m1', 1, 'human', 'look', 1_000), content: [{ type: 'text', text: 'look' },
+      { type: 'media', mediaId: 'media-1', caption: 'cat.png' }, { type: 'media', mediaId: 'media-2', caption: 'gone.pdf' }] };
+    const { api } = cloud([profilePref], [withFiles]);
+    const local = fakeLocal();
+    const { state } = memoryState();
+    const download = vi.fn(async (_room: string, mediaId: string) => {
+      if (mediaId === 'media-2') throw new Error('MEDIA_DOWNLOAD_FAILED');
+      return { name: 'cat.png', category: 'image', mimeType: 'image/png', size: 3, url: 'cindy-media://blobs/x.png', path: null };
+    });
+    await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM, download });
+    expect(download).toHaveBeenCalledWith(ROOM, 'media-1');
+    expect(local.host.insertHistory).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      text: 'look\n[附件: gone.pdf]', attachments: [expect.objectContaining({ url: 'cindy-media://blobs/x.png' })] }), expect.anything());
+  });
+
+  it('imports the whole room, in message-time order', async () => {
+    // The second page holds older history that arrived later (seq after the first page).
+    const page1 = Array.from({ length: 100 }, (_, i) => roomMessage(`n${i}`, 300 - i, 'human', `new ${i}`, 50_000 - i));
+    const page2 = [roomMessage('old', 100, 'human', 'oldest', 1_000)];
+    const { api } = fakeApi((route, method) => {
+      if (route === '/preferences' && method === 'GET') return [{ ...profilePref, revision: 1 }];
+      if (route.startsWith(`/conversations/${ROOM}/messages?`)) return route.includes('before=') ? page2 : page1;
+      throw new Error(`unexpected ${method} ${route}`);
+    });
+    const local = fakeLocal();
+    const { state } = memoryState();
+    const result = await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(result.inserted).toBe(101);
+    expect(local.rows[0]!.content).toBe('oldest');
+  });
+
+  it('brings todos, routines and the workbench along in one batch each, tombstones removing items here', async () => {
+    const todo = { id: 'todo:1', title: 'Compare quotes', history: [] };
+    const routine = { id: 'routine-1', input: { name: 'Daily', prompt: 'p', enabled: true, triggers: [] }, originDeviceId: 'laptop' };
+    const workbench = { directories: [{ path: '/projects/game', addedAt: 'x', deviceId: 'laptop' }], tasks: {} };
+    const { api } = cloud([profilePref, { key: 'companion.todo.v1:todo:1', value: todo }, { key: 'companion.todo.v1:todo:gone', value: null },
+      { key: 'companion.routine.v1:routine-1', value: routine }, { key: 'companion.workbench.v1', value: workbench }]);
+    const applyTodos = vi.fn(async () => undefined);
+    const applyRoutines = vi.fn(async () => undefined);
+    const applyWorkbench = vi.fn(async () => undefined);
+    const local = fakeLocal({ applyTodos, applyRoutines, applyWorkbench });
+    const { state } = memoryState();
+    await materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM });
+    expect(applyTodos).toHaveBeenCalledWith('bot_mia', [todo], ['todo:gone'], expect.anything());
+    expect(applyRoutines).toHaveBeenCalledWith('bot_mia', [routine], [], expect.anything());
+    expect(applyWorkbench).toHaveBeenCalledWith('bot_mia', workbench, expect.anything());
+    // Applied keys may be tombstoned later by this computer.
+    expect(state.bot('bot_mia')?.prefs['companion.todo.v1:todo:1']?.local).toBe(true);
+  });
+
+  it('stays demoted and retries when the routines cannot be restored', async () => {
+    const { api } = cloud([profilePref, { key: 'companion.routine.v1:r', value: { id: 'r', input: { triggers: [] } } }]);
+    const local = fakeLocal({ applyRoutines: vi.fn(async () => { throw new Error('ROUTINES_UNAVAILABLE'); }) });
+    const { state } = memoryState();
+    await expect(materializeCompanion({ api, state, host: local.host, actor, roomId: async () => ROOM })).rejects.toThrow('RESTORE_INCOMPLETE');
+    expect(state.bot('bot_mia')?.demoted).toBe(true);
+  });
 });
+

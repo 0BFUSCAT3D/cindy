@@ -55,6 +55,12 @@ export interface BotTodoStore {
     requestId: string,
     result: { ok: boolean; uncertain?: boolean; error?: string },
   ): Promise<TeammateTodo | null>;
+  /**
+   * The companion moved to this computer (cloud-companions.md §2): its todos from the cloud
+   * replace the items with the same id, `remove` ids are deleted. Per-computer plugin cursors
+   * and receipts stay as they are.
+   */
+  importItems(items: TeammateTodo[], remove: string[]): Promise<void>;
 }
 /** A separate versioned affair store preserves the old task/project file unchanged. */
 export function createBotTodoStore(
@@ -334,6 +340,11 @@ export function createBotTodoStore(
   return {
     read,
     patch: (patch: TodoPatch) => mutate((s) => applyTodoPatch(s, patch, 'todo:' + randomUUID())),
+    importItems: (items: TeammateTodo[], remove: string[]) =>
+      mutate((s) => {
+        const replaced = new Set([...items.map((item) => item.id), ...remove]);
+        s.items = [...s.items.filter((item) => !replaced.has(item.id)), ...structuredClone(items)];
+      }),
     ingest: (params: {
       source: string;
       sequence: number;

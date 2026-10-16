@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { isSubagentParentToolUseId } from '@cindy/maker-shared/message-render';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
 import type { CompanionCloudState } from './state.js';
-import { chatRejection, type CompanionApi } from './types.js';
+import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from './types.js';
 
 export interface CompanionMirrorRow {
   id: string;
@@ -34,6 +34,8 @@ const PART_BYTES = 60_000;
 const RESCAN_WINDOW_MS = 10 * 60_000;
 const RESCAN_LIMIT = 200;
 const RECENT_IDS = 400;
+/** Owner attachments the mirror uploads at most (larger ones stay a name in the room). */
+export const MIRROR_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 
 const parse = (raw: string | null): unknown => {
   if (!raw) return null;
@@ -64,8 +66,34 @@ function attachmentNames(content: unknown): string[] {
 const NON_OWNER_SOURCE_KEYS = ['origin', 'sourcePlugin', 'sharedTaskAuthor', 'imSource', 'hookSource', 'sourceGroup',
   'botTaskCoordination', 'autoReviewUserText', 'autoResume'] as const;
 
+/** A file the owner sent with a message, as the room media upload reads it. */
+export interface CompanionMirrorAttachment {
+  id: string; name: string; category: 'image' | 'file'; mimeType: string; size: number; url: string | null; path: string | null;
+}
+
+/**
+ * The owner's attachments of a mirrored user row (images from the media store, files by path on
+ * this computer). Only rows that are part of the visible conversation have any.
+ */
+export function mirrorAttachments(row: CompanionMirrorRow): CompanionMirrorAttachment[] {
+  if (row.role !== 'user' || mirrorMessageText(row) === null) return [];
+  const content = parse(row.content);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return [];
+  const record = content as Record<string, unknown>;
+  const list = (value: unknown) => (Array.isArray(value) ? value : []).map(item => (item && typeof item === 'object' ? item as Record<string, unknown> : {}));
+  const text = (value: unknown) => (typeof value === 'string' ? value : '');
+  const name = (item: Record<string, unknown>, fallback: string) =>
+    ([item.originalName, item.name].find((value): value is string => typeof value === 'string' && !!value.trim()) ?? fallback).replace(/[\r\n]+/g, ' ').slice(0, 200);
+  return [
+    ...list(record.images).map((item, index) => ({ id: `${row.id}:image:${index}`, name: name(item, '图片'), category: 'image' as const,
+      mimeType: text(item.mimeType) || 'image/png', size: typeof item.size === 'number' ? item.size : 0, url: text(item.url) || null, path: null })),
+    ...list(record.files).map((item, index) => ({ id: `${row.id}:file:${index}`, name: name(item, '文件'), category: 'file' as const,
+      mimeType: text(item.mimeType) || 'application/octet-stream', size: typeof item.size === 'number' ? item.size : 0, url: null, path: text(item.path) || null })),
+  ].filter(attachment => attachment.url || attachment.path);
+}
+
 /** Room text of a canonical row, or null when the row is not part of the visible conversation. */
-export function mirrorMessageText(row: CompanionMirrorRow): string | null {
+export function mirrorMessageText(row: CompanionMirrorRow, options: { placeholders?: boolean } = {}): string | null {
   if (row.role !== 'user' && row.role !== 'assistant') return null;
   if (row.clientId.startsWith(COMPANION_DIRECT_CLIENT_PREFIX) || row.clientId.startsWith(COMPANION_HISTORY_CLIENT_PREFIX)) return null;
   const parsedMeta = parse(row.agentMeta);
@@ -82,7 +110,9 @@ export function mirrorMessageText(row: CompanionMirrorRow): string | null {
   // Hidden synthetic inputs carry no attachments, so they stay out.
   const names = row.role === 'user' ? attachmentNames(parse(row.content)) : [];
   const result = [text, ...names.map(name => `[附件: ${name}]`)].filter(Boolean).join('\n').trim();
-  return result || null;
+  if (!result) return null;
+  // With the files themselves in the room, only the typed text goes along (it may be empty).
+  return options.placeholders === false ? text.trim() : result;
 }
 
 /** Split into room-sized parts without breaking surrogate pairs. */
@@ -100,8 +130,12 @@ export function splitMirrorText(text: string): string[] {
 }
 
 interface ImportMessage {
-  sourceId: string; authorId: string; createdAt: string; content: Array<{ type: 'text'; text: string }>;
+  sourceId: string; authorId: string; createdAt: string; content: Array<{ type: string; text?: string; mediaId?: string; caption?: string }>;
 }
+
+/** Room media blocks of uploaded files, in order (chatServerMedia upload). */
+export type CompanionMediaUpload = (roomId: string, source: string, attachments: CompanionMirrorAttachment[], authorId: string) =>
+  Promise<Array<{ type: string; mediaId?: string; caption?: string }>>;
 
 export function createCompanionMirror(deps: {
   api: CompanionApi;
@@ -112,6 +146,9 @@ export function createCompanionMirror(deps: {
   rowsAfter: (sessionId: string, cursor: CompanionMirrorCursor, limit: number) => Promise<CompanionMirrorRow[]>;
   /** Newest first, same filters as rowsAfter. */
   latestRows: (sessionId: string, limit: number) => Promise<CompanionMirrorRow[]>;
+  /** Uploads the owner's attachments so other devices can open them; absent keeps name placeholders. */
+  uploadMedia?: CompanionMediaUpload;
+  log?: CompanionLog;
 }) {
   async function ensureRoom(botId: string, actorId: string, name: string): Promise<string> {
     const known = deps.state.bot(botId);
@@ -137,20 +174,37 @@ export function createCompanionMirror(deps: {
    */
   async function importRows(botId: string, actorId: string, roomId: string, sessionId: string, rows: CompanionMirrorRow[], advance = true) {
     const parts: Array<{ message: ImportMessage; row: number; last: boolean; bytes: number }> = [];
-    rows.forEach((row, index) => {
-      const text = mirrorMessageText(row);
-      if (!text) return;
-      const pieces = splitMirrorText(text);
+    for (const [index, row] of rows.entries()) {
+      if (!mirrorMessageText(row)) continue;
+      const sourceId = `cindy:${sessionId}:${row.id}`;
+      const authorId = row.role === 'user' ? deps.humanActorId() : actorId;
+      // The files themselves when they can be uploaded; a file that cannot (too large, gone, an old
+      // address form) keeps its name in the text, as before.
+      const media: Array<{ type: string; mediaId?: string; caption?: string }> = [];
+      const uploaded: string[] = [];
+      for (const file of deps.uploadMedia ? mirrorAttachments(row) : []) {
+        if (file.size > MIRROR_ATTACHMENT_MAX_BYTES) continue;
+        try { media.push(...await deps.uploadMedia!(roomId, sourceId, [file], authorId)); uploaded.push(file.name); }
+        catch (error) { deps.log?.warn('Companion attachment upload skipped; name only', { code: errorCode(error) }); }
+      }
+      // Every attachment that did not go up (as listed in the row) keeps its name in the text.
+      const names = attachmentNames(parse(row.content));
+      for (const name of uploaded) { const at = names.indexOf(name); if (at >= 0) names.splice(at, 1); }
+      const text = media.length
+        ? [mirrorMessageText(row, { placeholders: false }) ?? '', ...names.map(name => `[附件: ${name}]`)].filter(Boolean).join('\n')
+        : mirrorMessageText(row) ?? '';
+      const pieces = text ? splitMirrorText(text) : [''];
       pieces.forEach((piece, n) => {
+        const last = n === pieces.length - 1;
         const message: ImportMessage = {
-          sourceId: `cindy:${sessionId}:${row.id}${n ? `:p${n}` : ''}`.slice(0, 200),
-          authorId: row.role === 'user' ? deps.humanActorId() : actorId,
+          sourceId: `${sourceId}${n ? `:p${n}` : ''}`.slice(0, 200),
+          authorId,
           createdAt: new Date(row.createdAt).toISOString(),
-          content: [{ type: 'text', text: piece }],
+          content: [...(piece ? [{ type: 'text', text: piece }] : []), ...(last ? media : [])],
         };
-        parts.push({ message, row: index, last: n === pieces.length - 1, bytes: Buffer.byteLength(JSON.stringify(message)) });
+        parts.push({ message, row: index, last, bytes: Buffer.byteLength(JSON.stringify(message)) });
       });
-    });
+    }
     const moveTo = (upTo: number) => {
       if (!advance) return;
       let index = upTo;
@@ -221,10 +275,39 @@ export function createCompanionMirror(deps: {
     let after: CompanionMirrorCursor = { createdAt: cursor.createdAt, id: cursor.id };
     for (let page = 0; options.drain || page < MAX_PAGES; page += 1) {
       const rows = await deps.rowsAfter(sessionId, after, PAGE);
-      if (!rows.length) return;
+      if (!rows.length) break;
       await importRows(botId, actorId, roomId, sessionId, rows);
       after = rows[rows.length - 1]!;
-      if (rows.length < PAGE) return;
+      if (rows.length < PAGE) break;
+    }
+    await backfillBot(botId, actorId, roomId, sessionId, options.drain === true);
+  }
+
+  /**
+   * Upload the Session's history from before the mirror cursor (older conversation, or this
+   * computer's own history from before it took the companion over), oldest first, a bounded
+   * amount per pass. The room dedupes by source id, so rows already there are no-ops; it orders
+   * by arrival, so readers sort by message time.
+   */
+  async function backfillBot(botId: string, actorId: string, roomId: string, sessionId: string, drain: boolean) {
+    const entry = deps.state.bot(botId);
+    const mirror = entry?.mirror;
+    if (!mirror || mirror.sessionId !== sessionId) return;
+    const progress = entry?.backfill?.sessionId === sessionId ? entry.backfill : { sessionId, createdAt: 0, id: '' };
+    if (progress.done) return;
+    const behindMirror = (row: CompanionMirrorRow) => row.createdAt < mirror.createdAt || (row.createdAt === mirror.createdAt && row.id <= mirror.id);
+    let after: CompanionMirrorCursor = { createdAt: progress.createdAt, id: progress.id };
+    for (let page = 0; drain || page < MAX_PAGES; page += 1) {
+      const fetched = await deps.rowsAfter(sessionId, after, PAGE);
+      const rows = fetched.filter(behindMirror);
+      // Rows this computer imported recently are already in the room.
+      const recent = new Set(deps.state.bot(botId)?.mirror?.recent ?? []);
+      const pending = rows.filter(row => !recent.has(row.id));
+      if (pending.length) await importRows(botId, actorId, roomId, sessionId, pending, false);
+      if (rows.length) after = rows[rows.length - 1]!;
+      const done = rows.length < fetched.length || fetched.length < PAGE;
+      deps.state.update(botId, actorId, next => { next.backfill = { sessionId, createdAt: after.createdAt, id: after.id, ...(done ? { done: true } : {}) }; });
+      if (done) return;
     }
   }
 

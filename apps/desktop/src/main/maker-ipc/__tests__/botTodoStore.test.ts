@@ -351,3 +351,22 @@ it('preserves valid suggested dates and local legacy evidence while rejecting in
     ).rejects.toThrow();
   expect((await store.read()).items[0]).toEqual(saved);
 });
+
+describe('todos moving with the companion', () => {
+  it('replaces items by id and removes tombstoned ones, keeping this computer\'s cursors', async () => {
+    const { file } = await fixture();
+    const store = createBotTodoStore(file, async () => ({}));
+    const keep = await store.patch({ ...p, key: 'keep' });
+    const gone = await store.patch({ ...p, key: 'gone' });
+    await store.ingest({ source: 'plugin:mail', sequence: 3, items: [] } as never).catch(() => undefined);
+    const before = await store.read();
+    const moved = { ...keep, title: '从另一台电脑来的标题', revision: 9 };
+    const arrived = { ...keep, id: 'todo:arrived', key: 'arrived', title: '新的' };
+    await store.importItems([moved, arrived], [gone.id]);
+    const after = await store.read();
+    expect(after.items.map((item) => item.id).sort()).toEqual(['todo:arrived', keep.id].sort());
+    expect(after.items.find((item) => item.id === keep.id)?.title).toBe('从另一台电脑来的标题');
+    expect(after.cursors).toEqual(before.cursors);
+  });
+});
+

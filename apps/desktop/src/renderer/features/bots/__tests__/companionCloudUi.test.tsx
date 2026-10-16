@@ -6,7 +6,8 @@ import type { CompanionCloudSnapshot } from '../../../../shared/companionCloud';
 const h = vi.hoisted(() => ({
   navigate: vi.fn(),
   toast: vi.fn(),
-  ensureLoaded: vi.fn(async () => []),
+  ensureLoaded: vi.fn(async (): Promise<Array<{ id: string; status: string }>> => []),
+  profiles: [] as Array<{ id: string; status: string }>,
   devices: [{ deviceId: 'tablet', name: 'Tablet', isSelf: false }],
 }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => h.navigate }));
@@ -16,23 +17,28 @@ vi.mock('react-i18next', () => ({
 vi.mock('@/components/chat/MarkdownRenderer', () => ({ MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div> }));
 vi.mock('../BotSessionContentHeader', () => ({ BotSessionContentHeaderRegistration: () => null }));
 vi.mock('../BotAvatar', () => ({ BotAvatar: () => <span /> }));
-vi.mock('../botStore', () => ({ ensureBotProfilesLoaded: h.ensureLoaded }));
+vi.mock('../BotGroupMessageAttachments', () => ({
+  BotGroupMessageAttachments: ({ attachments }: { attachments: Array<{ name: string; state?: string; url?: string | null }> }) =>
+    <ul>{attachments.map((file) => <li key={file.name}>{`${file.name}:${file.state ?? file.url}`}</li>)}</ul>,
+}));
+vi.mock('../botStore', () => ({ ensureBotProfilesLoaded: h.ensureLoaded, useBotProfiles: () => h.profiles }));
 vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({ useDeviceLinkDeviceList: () => h.devices }));
 vi.mock('@/lib/toast', () => ({ toast: { info: h.toast, error: h.toast } }));
 
 import { CloudCompanionOfflineView } from '../CloudCompanionOfflineView';
-import { BotHomeComputerSetting } from '../BotHomeComputerSetting';
+import { BotHomeComputerSetting, companionArrivedHere } from '../BotHomeComputerSetting';
 import { resetCompanionCloudStoreForTests, useCompanionCloud } from '../companionCloudStore';
-import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from '../companionCloudPresentation';
+import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudHomeOffline, withoutCloudCompanions, withoutShadowedBots } from '../companionCloudPresentation';
 import { BotConnectionStatus } from '../BotConnectionStatus';
 
 const maker = {
   getCompanionCloudState: vi.fn(),
   onCompanionCloudChanged: vi.fn(() => () => undefined),
   getCompanionTranscript: vi.fn(),
+  getCompanionAttachment: vi.fn(),
   takeOverCompanion: vi.fn(),
-  listCompanionTransferTargets: vi.fn(),
-  transferCompanion: vi.fn(),
+  getCompanionHomeChoices: vi.fn(),
+  switchCompanionHome: vi.fn(),
 };
 
 const snapshot = (home: string | null, enabled = true): CompanionCloudSnapshot => ({
@@ -62,6 +68,19 @@ describe('presentation helpers', () => {
     expect(isCloudHomeOffline(cloud, extra[0])).toBe(true);
     expect(isCloudHomeOffline(cloud, { ...extra[0]!, online: true })).toBe(false);
     expect(isCloudHomeOffline(snapshot('desk'), { id: 'mia', deviceId: 'desk', online: false })).toBe(false);
+  });
+
+  it('hides a local copy as soon as its main computer is known to be elsewhere', () => {
+    expect(withoutShadowedBots([{ id: 'mia' }, { id: 'ada' }], snapshot('laptop'))).toEqual([{ id: 'ada' }]);
+    expect(withoutShadowedBots([{ id: 'mia' }], snapshot('desk'))).toEqual([{ id: 'mia' }]);
+    expect(withoutShadowedBots([{ id: 'mia' }], snapshot(null))).toEqual([{ id: 'mia' }]);
+    // Feature off: per-computer behaviour unchanged.
+    expect(withoutShadowedBots([{ id: 'mia' }], snapshot('laptop', false))).toEqual([{ id: 'mia' }]);
+  });
+
+  it('keeps cloud companions out of the per-computer Cindy merge', () => {
+    expect(withoutCloudCompanions([{ id: 'mia' }, { id: 'ada' }], snapshot('laptop'))).toEqual([{ id: 'ada' }]);
+    expect(withoutCloudCompanions([{ id: 'mia' }], snapshot('laptop', false))).toEqual([{ id: 'mia' }]);
   });
 
   it('lists a companion once, on its main computer, dropping old computers\' cached copies', () => {
@@ -98,6 +117,17 @@ describe('CloudCompanionOfflineView', () => {
     expect(texts).toEqual(['hello', 'hi there']);
     expect(maker.getCompanionTranscript).toHaveBeenCalledWith('mia', undefined);
     expect(screen.getByText('bots.cloud.readOnlyNote')).toBeTruthy();
+  });
+
+  it('shows the files of a cloud message, brought from the room', async () => {
+    maker.getCompanionTranscript.mockResolvedValue({ messages: [
+      { id: 'm1', seq: '1', role: 'user', text: '', createdAt: 1, attachments: [{ mediaId: 'media-1', name: 'cat.png' }] }] });
+    maker.getCompanionAttachment.mockResolvedValue({ id: 'media-1', name: 'cat.png', category: 'image', mimeType: 'image/png', size: 3,
+      url: 'cindy-media://blobs/a.png', path: null });
+    renderView();
+    expect(await screen.findByText('cat.png:loading')).toBeTruthy();
+    expect(await screen.findByText('cat.png:cindy-media://blobs/a.png')).toBeTruthy();
+    expect(maker.getCompanionAttachment).toHaveBeenCalledWith('mia', 'media-1');
   });
 
   it('loads older messages on request', async () => {
@@ -148,63 +178,109 @@ describe('CloudCompanionOfflineView', () => {
 describe('BotHomeComputerSetting', () => {
   const bot = { id: 'mia', name: 'Mia' };
   const openMenu = () => fireEvent.keyDown(screen.getByTestId('bot-home-computer-row'), { key: 'ArrowDown' });
+  const laptop = { deviceId: 'laptop', name: 'Laptop', online: true };
+  const local = (targets = [laptop]) => ({ homeDeviceId: 'desk', mode: 'local', targets });
+  const show = (cloud: CompanionCloudSnapshot, props: Partial<typeof bot & { status: string }> = {}) => {
+    resetCompanionCloudStoreForTests(cloud);
+    maker.getCompanionCloudState.mockResolvedValue(cloud);
+    return render(<BotHomeComputerSetting bot={{ ...bot, ...props }} />);
+  };
+  beforeEach(() => { h.profiles = []; h.ensureLoaded.mockReset(); h.ensureLoaded.mockResolvedValue([]); });
 
   it.each([
     ['the feature is off', snapshot('desk', false)],
-    ['the home is another computer', snapshot('laptop')],
+    ['the companion has no main computer yet', snapshot(null)],
   ])('is hidden when %s', (_name, cloud) => {
-    resetCompanionCloudStoreForTests(cloud);
-    maker.getCompanionCloudState.mockResolvedValue(cloud);
-    render(<BotHomeComputerSetting bot={bot} />);
+    show(cloud);
     expect(screen.queryByTestId('bot-home-computer-row')).toBeNull();
   });
 
   it('confirms before moving the companion, then opens it on the new computer', async () => {
-    resetCompanionCloudStoreForTests(snapshot('desk'));
-    maker.getCompanionCloudState.mockResolvedValue(snapshot('desk'));
-    maker.listCompanionTransferTargets.mockResolvedValue([{ deviceId: 'laptop', name: 'Laptop', online: true }]);
-    maker.transferCompanion.mockResolvedValue({ ok: true });
-    render(<BotHomeComputerSetting bot={bot} />);
+    maker.getCompanionHomeChoices.mockResolvedValue(local());
+    maker.switchCompanionHome.mockResolvedValue({ ok: true });
+    show(snapshot('desk'));
     expect(screen.getByText('bots.cloud.thisComputer')).toBeTruthy();
     openMenu();
-    const item = await screen.findByText('bots.cloud.moveTo:{"device":"Laptop"}');
-    fireEvent.click(item);
-    await screen.findByText('bots.cloud.transferDescription:{"name":"Mia","device":"Laptop"}');
-    expect(maker.transferCompanion).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'bots.cloud.transferAction:{"device":"Laptop"}' }));
+    fireEvent.click(await screen.findByText('bots.cloud.switchTo:{"device":"Laptop"}'));
+    await screen.findByText('bots.cloud.switchDescription:{"name":"Mia","device":"Laptop"}');
+    expect(maker.switchCompanionHome).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'bots.cloud.switchAction:{"device":"Laptop"}' }));
     await waitFor(() => expect(h.navigate).toHaveBeenCalledWith('/bots/remote/laptop/mia'));
-    expect(maker.transferCompanion).toHaveBeenCalledWith('mia', 'laptop');
+    expect(maker.switchCompanionHome).toHaveBeenCalledWith('mia', 'laptop', undefined);
+    expect(maker.getCompanionHomeChoices).toHaveBeenCalledWith('mia');
+  });
+
+  it('shows where a companion homed on another computer runs, and moves it to this one', async () => {
+    maker.getCompanionHomeChoices.mockResolvedValue({ homeDeviceId: 'laptop', mode: 'remote',
+      targets: [{ deviceId: 'desk', name: 'Desk', online: true, isSelf: true }, { deviceId: 'tablet', name: 'Tablet', online: true, isSelf: false }] });
+    maker.switchCompanionHome.mockResolvedValue({ ok: true });
+    const arrived = snapshot('desk');
+    show(snapshot('laptop'));
+    expect(screen.getByText('Laptop')).toBeTruthy();
+    openMenu();
+    expect(await screen.findByText('bots.cloud.switchTo:{"device":"Tablet"}')).toBeTruthy();
+    fireEvent.click(screen.getByText('bots.cloud.switchHere'));
+    // The move reaches this computer, which builds the companion before it opens.
+    h.ensureLoaded.mockImplementation(async () => {
+      resetCompanionCloudStoreForTests(arrived);
+      return [{ id: 'mia', status: 'active' }];
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.cloud.switchAction:{"device":"bots.cloud.thisComputer"}' }));
+    await waitFor(() => expect(h.navigate).toHaveBeenCalledWith('/bots/mia'));
+    expect(maker.switchCompanionHome).toHaveBeenCalledWith('mia', 'desk', undefined);
+  });
+
+  it('explains when the main computer runs an older Cindy', async () => {
+    maker.getCompanionHomeChoices.mockResolvedValue({ homeDeviceId: 'laptop', mode: 'unavailable', reason: 'HOME_OUTDATED', targets: [] });
+    show(snapshot('laptop'));
+    openMenu();
+    expect(await screen.findByText('bots.cloud.homeOutdated:{"name":"Mia","device":"Laptop"}')).toBeTruthy();
   });
 
   it('shows why a move did not happen', async () => {
-    resetCompanionCloudStoreForTests(snapshot('desk'));
-    maker.getCompanionCloudState.mockResolvedValue(snapshot('desk'));
-    maker.listCompanionTransferTargets.mockResolvedValue([{ deviceId: 'laptop', name: 'Laptop', online: true }]);
-    maker.transferCompanion.mockResolvedValue({ ok: false, code: 'OFFLINE' });
-    render(<BotHomeComputerSetting bot={bot} />);
+    maker.getCompanionHomeChoices.mockResolvedValue(local());
+    maker.switchCompanionHome.mockResolvedValue({ ok: false, code: 'OFFLINE' });
+    show(snapshot('desk'));
     openMenu();
-    fireEvent.click(await screen.findByText('bots.cloud.moveTo:{"device":"Laptop"}'));
-    fireEvent.click(await screen.findByRole('button', { name: 'bots.cloud.transferAction:{"device":"Laptop"}' }));
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'bots.cloud.transferOffline:{"name":"Mia","device":"Laptop"}');
+    fireEvent.click(await screen.findByText('bots.cloud.switchTo:{"device":"Laptop"}'));
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.cloud.switchAction:{"device":"Laptop"}' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'bots.cloud.switchOffline:{"name":"Mia","device":"Laptop"}');
     expect(h.navigate).not.toHaveBeenCalled();
   });
 
+  it.each([['busyWait', 'wait'], ['busyStop', 'stop']])('offers to wait for or stop a reply in progress (%s)', async (button, whenBusy) => {
+    maker.getCompanionHomeChoices.mockResolvedValue(local());
+    maker.switchCompanionHome.mockResolvedValueOnce({ ok: false, code: 'BUSY' }).mockResolvedValueOnce({ ok: true });
+    show(snapshot('desk'));
+    openMenu();
+    fireEvent.click(await screen.findByText('bots.cloud.switchTo:{"device":"Laptop"}'));
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.cloud.switchAction:{"device":"Laptop"}' }));
+    await screen.findByText('bots.cloud.busyDescription:{"name":"Mia","device":"Laptop"}');
+    fireEvent.click(screen.getByRole('button', { name: `bots.cloud.${button}` }));
+    await waitFor(() => expect(h.navigate).toHaveBeenCalledWith('/bots/remote/laptop/mia'));
+    expect(maker.switchCompanionHome).toHaveBeenLastCalledWith('mia', 'laptop', { whenBusy });
+  });
+
   it('asks to resume a paused companion before moving it', async () => {
-    resetCompanionCloudStoreForTests(snapshot('desk'));
-    maker.getCompanionCloudState.mockResolvedValue(snapshot('desk'));
-    render(<BotHomeComputerSetting bot={{ ...bot, status: 'paused' }} />);
+    show(snapshot('desk'), { status: 'paused' });
     openMenu();
     expect(await screen.findByText('bots.cloud.resumeToMove:{"name":"Mia"}')).toBeTruthy();
-    expect(maker.listCompanionTransferTargets).not.toHaveBeenCalled();
+    expect(maker.getCompanionHomeChoices).not.toHaveBeenCalled();
   });
 
   it('says when no other computer can take over', async () => {
-    resetCompanionCloudStoreForTests(snapshot('desk'));
-    maker.getCompanionCloudState.mockResolvedValue(snapshot('desk'));
-    maker.listCompanionTransferTargets.mockResolvedValue([]);
-    render(<BotHomeComputerSetting bot={bot} />);
+    maker.getCompanionHomeChoices.mockResolvedValue(local([]));
+    show(snapshot('desk'));
     openMenu();
     expect(await screen.findByText('bots.cloud.noTargets')).toBeTruthy();
+  });
+
+  it('counts a companion as arrived only once it is built here and no longer demoted', () => {
+    const cloud = snapshot('desk');
+    expect(companionArrivedHere(cloud, 'mia', [])).toBe(false);
+    expect(companionArrivedHere({ ...cloud, demotedBotIds: ['mia'] }, 'mia', ['mia'])).toBe(false);
+    expect(companionArrivedHere(snapshot('laptop'), 'mia', ['mia'])).toBe(false);
+    expect(companionArrivedHere(cloud, 'mia', ['mia'])).toBe(true);
   });
 });
 

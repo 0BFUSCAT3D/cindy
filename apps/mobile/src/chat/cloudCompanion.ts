@@ -65,13 +65,21 @@ export function cloudSwitchCandidates(
     .map(row => ({ deviceId: row.device.deviceId, name: row.device.name }));
 }
 
+/** Computers the home offers for the companion (its own view), never the home or this phone. */
+export function cloudHomeTargets<T extends { deviceId: string; online: boolean }>(targets: readonly T[], home: string, self: string | null): T[] {
+  return targets.filter(target => target.online && target.deviceId !== home && target.deviceId !== self);
+}
+
 export interface CloudMessage { id: string; fromCompanion: boolean; text: string; createdAt: number }
 
 /** Oldest first, deduplicated; the companion's actor wrote its replies, everyone else is the owner. */
 export function cloudCompanionMessages(messages: readonly ChatMessage[], actorId: string): CloudMessage[] {
   const unique = [...new Map(messages.map(message => [message.id, message])).values()]
     .filter(message => !message.deleted && !message.threadRootId && message.origin !== 'system');
+  // Message time first: older history uploaded later (backfill, merges) arrives after newer messages.
   unique.sort((a, b) => {
+    const time = Date.parse(a.createdAt) - Date.parse(b.createdAt);
+    if (Number.isFinite(time) && time !== 0) return time;
     const left = BigInt(chatCursor(a.seq)); const right = BigInt(chatCursor(b.seq));
     return left < right ? -1 : left > right ? 1 : 0;
   });

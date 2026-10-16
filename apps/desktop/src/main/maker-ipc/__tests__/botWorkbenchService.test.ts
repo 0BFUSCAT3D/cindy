@@ -18,6 +18,8 @@ import {
   rekeyBotWorkbenchJudgment,
   removeBotWorkbenchDirectory,
   setBotWorkbenchJudgment,
+  mergeCompanionWorkbench,
+  readCompanionWorkbench,
 } from '../botWorkbenchService.js';
 
 let root: string | null = null;
@@ -235,3 +237,30 @@ describe('bot workbench directory removal normalization', () => {
     expect((await readBotWorkbenchState(root, 'bot-1')).directories).toEqual([]);
   });
 });
+
+describe('workbench moving with the companion', () => {
+  it('names each folder\'s computer, keeps other computers\' folders out of the local scope, and brings portable judgments', async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'bot-workbench-'));
+    const here = path.join(root, 'here');
+    await mkdir(here);
+    expect(await addBotWorkbenchDirectory(root, 'bot-1', here)).toEqual({ ok: true });
+    await mergeCompanionWorkbench(root, 'bot-1', 'desk', {
+      directories: [{ path: 'C:\\Users\\dash\\game', addedAt: '2026-10-01T00:00:00.000Z', deviceId: 'laptop' },
+        { path: '/Users/dash/back-home', addedAt: '2026-10-01T00:00:00.000Z', deviceId: 'desk' }],
+      tasks: {
+        'pr:makecindy/cindy#1': { title: 'Review', verdict: 'unfinished', next: null, project: here, updatedAt: '2026-10-01T00:00:00.000Z' },
+        'session:abc': { title: 'Local task', verdict: 'unfinished', next: null, project: here, updatedAt: '2026-10-01T00:00:00.000Z' },
+      },
+    });
+    const workbench = await readBotWorkbench(root, 'bot-1');
+    expect(workbench.directories.find((dir) => dir.deviceId === 'laptop')).toMatchObject({ name: 'game', exists: false });
+    // A folder that was on this computer comes back as local.
+    expect(workbench.directories.find((dir) => dir.path === '/Users/dash/back-home')?.deviceId).toBeUndefined();
+    expect((await readBotWorkbenchState(root, 'bot-1')).directories).not.toContain('C:\\Users\\dash\\game');
+    expect(Object.keys(workbench.tasks)).toEqual(['pr:makecindy/cindy#1']);
+    const travelling = await readCompanionWorkbench(root, 'bot-1', 'desk');
+    expect(travelling.directories.find((dir) => dir.path === here)?.deviceId).toBe('desk');
+    expect(travelling.directories.find((dir) => dir.path.startsWith('C:'))?.deviceId).toBe('laptop');
+  });
+});
+

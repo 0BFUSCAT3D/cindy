@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { UI_ACTION_TRIGGER_PREFIX } from '../../../shared/interruptedTurn.js';
 import { createCompanionMirror, mirrorMessageText, splitMirrorText, type CompanionMirrorCursor, type CompanionMirrorRow } from '../mirror.js';
 import { fakeApi, memoryState, rejection } from './fakes.js';
@@ -67,7 +67,7 @@ describe('splitMirrorText', () => {
   });
 });
 
-function setup(rows: CompanionMirrorRow[], failImport?: (call: number) => boolean) {
+function setup(rows: CompanionMirrorRow[], failImport?: (call: number) => boolean, uploadMedia?: Parameters<typeof createCompanionMirror>[0]['uploadMedia']) {
   let imports = 0;
   const { api, calls } = fakeApi((route, method) => {
     if (route === '/conversations' && method === 'POST') return { id: ROOM };
@@ -87,9 +87,10 @@ function setup(rows: CompanionMirrorRow[], failImport?: (call: number) => boolea
     rowsAfter: async (_sessionId, cursor, limit) => rows.filter(after(cursor))
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)).slice(0, limit),
     latestRows: async (_sessionId, limit) => [...rows].reverse().slice(0, limit),
+    ...(uploadMedia ? { uploadMedia } : {}),
   });
   const imported = () => calls.filter(call => call.route.endsWith('/import'))
-    .map(call => (call.data as { messages: Array<{ sourceId: string; authorId: string; content: Array<{ text: string }> }> }).messages);
+    .map(call => (call.data as { messages: Array<{ sourceId: string; authorId: string; content: Array<{ type?: string; text: string; mediaId?: string }> }> }).messages);
   return { mirror, state, calls, imported, rows };
 }
 
@@ -120,6 +121,56 @@ describe('companion conversation mirror', () => {
     expect(batches.map(batch => batch.length)).toEqual([50, 50, 50, 50]);
     expect(batches.flat()[0]!.content[0]!.text).toBe('u60');
     expect(batches.flat().at(-1)!.content[0]!.text).toBe('r259');
+  });
+
+  it('sends the owner\'s files themselves when they upload, and only their names otherwise', async () => {
+    const withFiles = user('look');
+    withFiles.content = JSON.stringify({ text: 'look', images: [{ url: 'cindy-media://blobs/a.png', mimeType: 'image/png', originalName: 'cat.png', size: 3 }],
+      files: [{ name: 'a.pdf', path: '/tmp/a.pdf' }] });
+    const upload = vi.fn(async (_room: string, _source: string, files: Array<{ name: string }>) =>
+      [{ type: 'media', mediaId: files[0]!.name === 'cat.png' ? 'm-1' : 'm-2', caption: files[0]!.name }]);
+    const t = setup([withFiles], undefined, upload);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(upload).toHaveBeenCalledWith(ROOM, expect.stringContaining(withFiles.id),
+      [expect.objectContaining({ category: 'image', url: 'cindy-media://blobs/a.png', name: 'cat.png' })], 'human');
+    expect(upload).toHaveBeenCalledWith(ROOM, expect.stringContaining(withFiles.id),
+      [expect.objectContaining({ category: 'file', path: '/tmp/a.pdf', name: 'a.pdf' })], 'human');
+    expect(t.imported()[0]![0]!.content).toEqual([{ type: 'text', text: 'look' },
+      { type: 'media', mediaId: 'm-1', caption: 'cat.png' }, { type: 'media', mediaId: 'm-2', caption: 'a.pdf' }]);
+
+    // One file fails: it keeps its name, the other still goes up.
+    const partial = setup([withFiles], undefined, vi.fn(async (_room: string, _source: string, files: Array<{ name: string }>) => {
+      if (files[0]!.name === 'a.pdf') throw new Error('ATTACHMENT_UNAVAILABLE');
+      return [{ type: 'media', mediaId: 'm-1', caption: 'cat.png' }];
+    }));
+    await partial.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(partial.imported()[0]![0]!.content).toEqual([{ type: 'text', text: 'look\n[附件: a.pdf]' }, { type: 'media', mediaId: 'm-1', caption: 'cat.png' }]);
+
+    const failing = setup([withFiles], undefined, vi.fn(async () => { throw new Error('ATTACHMENT_UNAVAILABLE'); }));
+    await failing.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(failing.imported()[0]![0]!.content).toEqual([{ type: 'text', text: 'look\n[附件: cat.png]\n[附件: a.pdf]' }]);
+  });
+
+  it('uploads the older history on later passes, oldest first, without re-sending', async () => {
+    const rows = Array.from({ length: 260 }, (_, i) => (i % 2 ? reply(`r${i}`) : user(`u${i}`)));
+    const t = setup(rows);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    const first = t.imported().length;
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    const older = t.imported().slice(first).flat().map(message => message.content[0]!.text);
+    expect(older).toEqual(Array.from({ length: 60 }, (_, i) => (i % 2 ? `r${i}` : `u${i}`)));
+    expect(t.state.bot('bot')?.backfill?.done).toBe(true);
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported().length).toBe(first + 2);
+  });
+
+  it('uploads history from before the mirror started, also when the cursor came from a take-over', async () => {
+    const old = [user('before'), reply('long ago')];
+    const t = setup([...old]);
+    // Take-over: mirroring continues after the newest own row; older rows are still history.
+    t.state.update('bot', 'actor', entry => { entry.mirror = { sessionId: 'session-1', createdAt: old[1]!.createdAt, id: old[1]!.id }; });
+    await t.mirror.syncBot('bot', 'actor', 'Mia');
+    expect(t.imported().flat().map(message => message.content[0]!.text)).toEqual(['before', 'long ago']);
   });
 
   it('advances the cursor only past successfully imported batches', async () => {
