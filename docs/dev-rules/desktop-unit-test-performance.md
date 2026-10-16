@@ -59,6 +59,12 @@ Linux 及 package script 的启动方式不变。回归测试通过真实 runner
 无关的执行不能豁免它。device-link client 的四处 ≥100ms 等待改用假时钟，288 条原有
 用例整份通过，约 17.2 秒；未通过新增基线或删除结果断言来放行。
 
+最终复跑曾在 `directSessionSendGuard` 的全运行时 TypeScript Program 检查超过原有
+15 秒限制。该 guard 现只装入 ES2022 标准库与显式 Session fixture，避免自动装入约
+80 份无关 `@types` 和 DOM 声明；2,238 个运行时根文件、类型检查器和失败关闭行为
+不变。同机 4 项测试从 7.14 秒降到 4.95 秒，原有超时未提高；别名与 continuation
+方法正反例验证仍能区分 maker Session 与其它同名 send。最终 CI 另行复验。
+
 ### 2026-10-16 实验与落地
 
 本机 Windows、32 CPU、Desktop 8 worker。隔离方式三组用同一分片（869 个文件）连续对照：
