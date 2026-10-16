@@ -449,7 +449,9 @@ describe('OrcaWorkersTabBody Lead Agent context', () => {
   });
 
   // Detached tabs own their watcher even while hidden. Only an actually
-  // visible collaboration view may clear attention or refresh its projection.
+  // visible collaboration view may refresh its projection. The detached window
+  // shows a placeholder instead of the Worker conversation, so even a visible
+  // detached tab must not clear attention.
   // Hook tests alone cannot catch dropping these caller-side lifecycle inputs.
   it('keeps detached attention watching while hidden and refreshes only on visibility', () => {
     mocks.sidebarWindow = true;
@@ -464,7 +466,7 @@ describe('OrcaWorkersTabBody Lead Agent context', () => {
     mocks.windowVisible = true;
     view.rerender(<OrcaWorkersTabBody ctx={ctx} state={{}} active />);
     expect(mocks.watchAttention).toHaveBeenLastCalledWith(['lead-1'], 'lead-1');
-    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(true);
+    expect(mocks.toolbarProps.clearAttentionWhenVisible).toBe(false);
     expect(mocks.refreshProjection).toHaveBeenCalledWith('lead-1');
     expect(mocks.refreshSettings).toHaveBeenCalledWith('lead-1');
 
