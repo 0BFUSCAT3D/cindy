@@ -1163,6 +1163,12 @@ disconnecting invalidates pending work. It does not poll in the background,
 maintain history or log clipboard contents. Private formats and arbitrary files
 remain unsupported; only portable representations are synchronized.
 
+Mobile clears stale skipped/conflict notices when the current sync loop accepts
+an empty or unchanged-content snapshot, or completes a transfer in either
+direction. Idle polls and callbacks from paused loops do not clear these notices;
+clipboard recovery never hides a privacy-screen or host-mute failure. Regression
+coverage lives in `apps/mobile/src/remote-desktop/useRemoteDesktopSafety.test.tsx`.
+
 Only one viewer lease is active. A second viewer sees a busy state and can
 explicitly take over when the host advertises `connectionTakeover`. Ordinary
 starts never evict an existing viewer. Takeover stops the old lease and input;
