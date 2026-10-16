@@ -456,12 +456,19 @@ function staticWaitCalls(code) {
     const body = ts.isBlock(fn.body)
       ? fn.body.statements.find(ts.isReturnStatement)?.expression : fn.body;
     if (!body) return null;
-    if (ts.isCallExpression(body) && callbackTimer(body.expression)) return body;
+    const timerCall = node => {
+      if (!node || !ts.isCallExpression(node)) return null;
+      if (callbackTimer(node.expression)) return { call: node, kind: 'callback' };
+      if (isPromiseTimer(node.expression)) return { call: node, kind: 'promise' };
+      return null;
+    };
+    const direct = timerCall(body);
+    if (direct) return direct;
     if (!ts.isNewExpression(body) || body.expression.getText(source) !== 'Promise') return null;
     const executor = body.arguments?.[0];
     if (!executor || !isFunction(executor)) return null;
     const candidates = ts.isBlock(executor.body) ? executor.body.statements.map(statement => statement.expression) : [executor.body];
-    return candidates.find(node => node && ts.isCallExpression(node) && callbackTimer(node.expression)) ?? null;
+    return candidates.map(timerCall).find(Boolean) ?? null;
   }
   const waits = [];
   for (const call of calls) {
@@ -483,13 +490,15 @@ function staticWaitCalls(code) {
       const bound = binding(call.expression);
       const fn = bound && ts.isVariableDeclaration(bound) ? bound.initializer : bound;
       if (!fn || !isFunction(fn)) continue;
-      const timer = wrapperTimer(fn);
-      if (!timer) continue;
+      const timerInfo = wrapperTimer(fn);
+      if (!timerInfo) continue;
+      const timer = timerInfo.call;
+      const delayArgument = timerInfo.kind === 'promise' ? 0 : 1;
       const parameters = new Map(fn.parameters.map((parameter, index) => [parameter, number(call.arguments[index] ?? parameter.initializer)]));
       // Constant waits inside a helper are already counted at their own site.
-      if (number(timer.arguments[1]) !== undefined) continue;
-      duration = number(timer.arguments[1], parameters);
-      clockIndex = callbackTimer(timer.expression).clockIndex;
+      if (number(timer.arguments[delayArgument]) !== undefined) continue;
+      duration = number(timer.arguments[delayArgument], parameters);
+      if (timerInfo.kind === 'callback') clockIndex = callbackTimer(timer.expression).clockIndex;
       // A wrapper-local capture executes when the wrapper is called.
       if (clockIndex >= fn.getStart(source) && clockIndex < fn.end) clockIndex = undefined;
     }
