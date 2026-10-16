@@ -1578,11 +1578,16 @@ export function createMakerHookSessionRunner(deps: {
     async run(req) {
       if (req.isNew) return runner.run(req);
       // 切换可能重建引擎，必须先应用选择，再读 meta、建会话和挂观察器。
-      const overrides: HookDispatchOverrides = { agentKind: null, model: null, effort: null, permissionMode: null };
+      // 与创建任务共用取值链：迁移前保留 server 偏好，迁移后由本机正本忽略旧便签。
+      const overrides: HookDispatchOverrides = {
+        agentKind: req.agentKind, model: req.model,
+        effort: req.effort, permissionMode: req.permissionMode,
+      };
       const workspace = { alias: req.workspaceAlias, teamId: req.source?.teamId ?? null };
       const follower = createDefaultRouteFollower({
         label: 'hook',
-        ownsRow: isHookDefaultRouteRow,
+        // 找不到任务实际目录对应的别名时，不能把未知目录默认当成已清空。
+        ownsRow: (row) => workspace.alias !== undefined && isHookDefaultRouteRow(row),
         fingerprint: () => hookDefaultsFingerprint(hookDefaultInputs(overrides, req.source?.im, workspace)),
         resolveTarget: async (providers) => {
           const resolved = await resolveNewSessionConfig(overrides, log, req.source?.im, workspace, providers);
