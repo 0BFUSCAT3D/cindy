@@ -4134,7 +4134,7 @@ describe('utility one-shot candidates', () => {
       });
     });
 
-    it('remembers the accepted step and continues down when it is later rejected', async () => {
+    it('remembers the accepted step and walks the plan again from the start when it is later rejected', async () => {
       activeCatalog.mockReturnValue(customChatCatalog({
         upstream: 'https://custom.example/v1',
         model: { id: 'custom-thinker', efforts: ['low', 'medium', 'high'] },
@@ -4160,14 +4160,96 @@ describe('utility one-shot candidates', () => {
       expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
       expect(bodyOf(0)).not.toHaveProperty('thinking');
 
+      // The upstream changed and now only accepts "off": the remembered `low` is
+      // rejected, the plan restarts from its first step, and "off" is remembered.
       fetchMock.mockClear();
-      fetchMock
-        .mockResolvedValueOnce(rejected(400) as never)
-        .mockResolvedValueOnce(chatOk('third') as never);
+      fetchMock.mockImplementation(async (_url, init) => {
+        const body = JSON.parse(String((init as { body: string }).body)) as Record<string, unknown>;
+        return (body.thinking ? chatOk('third') : rejected(400)) as never;
+      });
       await expect(request()).resolves.toMatchObject({ ok: true, text: 'third' });
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
-      expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'medium' });
+      expect(bodyOf(1)).toMatchObject({ thinking: { type: 'disabled' }, reasoning_effort: 'minimal' });
+
+      fetchMock.mockClear();
+      await expect(request()).resolves.toMatchObject({ ok: true, text: 'third' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+    });
+
+    describe('remembered steps are scoped to the current route', () => {
+      const request = (model = 'custom-thinker') => requestExplicitUtilityText('hello', {
+        providerId: 'custom-chat',
+        agentKind: 'codex',
+        model,
+        disableReasoning: true,
+      });
+      const rememberLow = async (upstream: string, efforts: string[]) => {
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream,
+          model: { id: 'custom-thinker', efforts },
+        }) as never);
+        fetchMock
+          .mockResolvedValueOnce(rejected(400) as never)
+          .mockResolvedValueOnce(chatOk('remembered') as never);
+        await expect(request()).resolves.toMatchObject({ ok: true });
+        expect(bodyOf(1)).toMatchObject({ reasoning_effort: 'low' });
+        fetchMock.mockClear();
+      };
+
+      beforeEach(() => {
+        readCustomKey.mockReturnValue('custom-secret');
+      });
+
+      it('does not reuse a step remembered for the old address after the upstream is edited', async () => {
+        await rememberLow('https://old.example/v1', ['low', 'medium']);
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream: 'https://new.example/v1',
+          model: { id: 'custom-thinker', efforts: ['low', 'medium'] },
+        }) as never);
+        fetchMock.mockResolvedValueOnce(chatOk('fresh') as never);
+
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'fresh' });
+        expect(urlOf(0)).toBe('https://new.example/v1/chat/completions');
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+      });
+
+      it('does not reuse a remembered step after the catalog tiers change', async () => {
+        await rememberLow('https://custom.example/v1', ['low', 'medium']);
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream: 'https://custom.example/v1',
+          model: { id: 'custom-thinker', efforts: ['low', 'high'] },
+        }) as never);
+        fetchMock.mockResolvedValueOnce(chatOk('fresh') as never);
+
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'fresh' });
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+      });
+
+      it('keeps a restarted walk within the request cap', async () => {
+        activeCatalog.mockReturnValue(customChatCatalog({
+          upstream: 'https://custom.example/v1',
+          model: { id: 'custom-thinker', efforts: ['low', 'medium'] },
+        }) as never);
+        // Remember `medium` (the third step).
+        fetchMock
+          .mockResolvedValueOnce(rejected(400) as never)
+          .mockResolvedValueOnce(rejected(400) as never)
+          .mockResolvedValueOnce(chatOk('remembered') as never);
+        await expect(request()).resolves.toMatchObject({ ok: true });
+        expect(bodyOf(2)).toMatchObject({ reasoning_effort: 'medium' });
+
+        fetchMock.mockClear();
+        fetchMock.mockResolvedValue(rejected(400) as never);
+        await expect(request()).resolves.toMatchObject({ ok: false });
+        // medium, then off / low (restart, skipping medium), then the minimal body.
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'medium' });
+        expect(bodyOf(1)).toMatchObject({ thinking: { type: 'disabled' } });
+        expect(bodyOf(2)).toMatchObject({ reasoning_effort: 'low' });
+        expect(bodyOf(3)).toEqual({ model: 'custom-thinker', messages: [{ role: 'user', content: 'hello' }] });
+      });
     });
 
     it.each([401, 403, 429, 500, 503])('does not walk the plan after HTTP %i', async (status) => {

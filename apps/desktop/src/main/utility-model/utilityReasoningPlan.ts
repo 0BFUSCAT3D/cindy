@@ -212,6 +212,11 @@ export function nextUtilityRequestStep(
   return index + 1 < steps.length ? index + 1 : null;
 }
 
+/** 参数类拒绝:400 / 422,以及 Cindy AI 原生接口的 404。只有它们才换写法重试。 */
+export function isUtilityParameterRejection(step: UtilityRequestStep | undefined, status: number): boolean {
+  return status === 400 || status === 422 || (status === 404 && step?.gatewayNative === true);
+}
+
 /** 只记成功的写法,进程内有效;重启后清空。 */
 const rememberedSteps = new Map<string, string>();
 const REMEMBERED_STEP_LIMIT = 256;
@@ -227,7 +232,34 @@ export function utilityReasoningMemoryKey(parts: {
   return JSON.stringify([parts.providerId, parts.agentKind, parts.model, parts.wire, mode]);
 }
 
-/** 记住的写法若仍在本次计划里,就从它开始;它后来被拒时照常往下退。 */
+/**
+ * 把记忆限定到当前路由:本次计划用到的各请求格式的有效地址,加上计划签名(各步骤
+ * 的 key)。地址或目录档位一变,旧端点记住的写法就不再沿用。地址只取 origin + path,
+ * 不含 userinfo、查询参数与片段——这些位置可能带凭证;请求头也不进键。
+ */
+export function scopeUtilityMemoryKey(
+  memoryKey: string,
+  steps: readonly UtilityRequestStep[],
+  endpoints: Partial<Record<UtilityProviderWire, string>>,
+): string {
+  const wires = [...new Set(steps.map((step) => step.wire))].sort();
+  const routes = wires.map((wire) => {
+    const endpoint = endpoints[wire];
+    if (!endpoint) return [wire, ''];
+    try {
+      const url = new URL(endpoint);
+      return [wire, `${url.origin}${url.pathname}`];
+    } catch {
+      return [wire, ''];
+    }
+  });
+  return JSON.stringify([memoryKey, routes, steps.map(utilityRequestStepKey)]);
+}
+
+/**
+ * 记住的写法若仍在本次计划里,就从它开始。它后来被参数类错误拒绝时,调用方清掉这条
+ * 记忆并从计划第一步重走(见 forgetUtilityStep),上游变了也能自动修正。
+ */
 export function rememberedUtilityStepIndex(
   memoryKey: string | undefined,
   steps: readonly UtilityRequestStep[],
@@ -248,6 +280,10 @@ export function rememberUtilityStep(memoryKey: string | undefined, step: Utility
     if (oldest !== undefined) rememberedSteps.delete(oldest);
   }
   rememberedSteps.set(memoryKey, utilityRequestStepKey(step));
+}
+
+export function forgetUtilityStep(memoryKey: string | undefined): void {
+  if (memoryKey) rememberedSteps.delete(memoryKey);
 }
 
 /** 测试用:清空进程内记住的写法。 */

@@ -5,6 +5,7 @@ import {
   compatHasReasoningOff,
   compatMarksNoReasoning,
   nextUtilityRequestStep,
+  scopeUtilityMemoryKey,
   rememberUtilityStep,
   rememberedUtilityStepIndex,
   resetUtilityReasoningMemory,
@@ -162,6 +163,32 @@ describe('remembered steps', () => {
     });
     rememberUtilityStep('route', steps.at(-1)!);
     expect(rememberedUtilityStepIndex('route', steps)).toBe(0);
+  });
+});
+
+describe('scopeUtilityMemoryKey', () => {
+  const steps = buildUtilityRequestPlan({
+    wire: 'responses',
+    mode: { kind: 'ladder', declaration: { kind: 'declared', efforts: ['low', 'medium'] } },
+    chatFallback: true,
+  });
+
+  it('separates routes by endpoint and plan, and never keeps credentials', () => {
+    const key = scopeUtilityMemoryKey('base', steps, {
+      responses: 'https://user:secret-pass@gateway.example/v1/responses?api_key=secret-query#frag',
+      'chat-completions': 'https://gateway.example/v1/chat/completions',
+    });
+    expect(key).toContain('https://gateway.example/v1/responses');
+    expect(key).not.toContain('secret');
+    expect(key).not.toContain('frag');
+    expect(scopeUtilityMemoryKey('base', steps, {
+      responses: 'https://other.example/v1/responses',
+      'chat-completions': 'https://gateway.example/v1/chat/completions',
+    })).not.toBe(key);
+    expect(scopeUtilityMemoryKey('base', steps.slice(1), {
+      responses: 'https://user:secret-pass@gateway.example/v1/responses?api_key=secret-query#frag',
+      'chat-completions': 'https://gateway.example/v1/chat/completions',
+    })).not.toBe(key);
   });
 });
 

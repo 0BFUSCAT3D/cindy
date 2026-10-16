@@ -42,9 +42,12 @@ import {
   buildUtilityRequestPlan,
   compatHasReasoningOff,
   compatMarksNoReasoning,
+  forgetUtilityStep,
+  isUtilityParameterRejection,
   nextUtilityRequestStep,
   rememberUtilityStep,
   rememberedUtilityStepIndex,
+  scopeUtilityMemoryKey,
   utilityReasoningDeclaration,
   utilityReasoningMemoryKey,
   utilityRequestStepKey,
@@ -1915,7 +1918,20 @@ async function requestProviderHttpText(input: {
       });
     };
 
-    let index = rememberedUtilityStepIndex(input.memoryKey, input.steps);
+    // Remembered steps are scoped to this route's endpoints and plan, so an
+    // edited address or changed catalog tiers start from the first step again.
+    const memoryKey = input.memoryKey
+      ? scopeUtilityMemoryKey(input.memoryKey, input.steps, {
+        'chat-completions': input.targets['chat-completions']?.endpoint,
+        responses: input.targets.responses?.endpoint,
+        'anthropic-messages': input.targets['anthropic-messages']?.endpoint,
+      })
+      : undefined;
+    let index = rememberedUtilityStepIndex(memoryKey, input.steps);
+    // A remembered step rejected on its first try means the upstream changed:
+    // forget it and walk the plan from the start instead of only moving on.
+    let restartFromFirst = index > 0;
+    const tried = new Set<number>([index]);
     let step = input.steps[index];
     if (!step) throw new UtilityTextExecutionError({ reason: 'request_failed' });
     currentWire = step.wire;
@@ -1923,20 +1939,37 @@ async function requestProviderHttpText(input: {
     let response = await send(step, body);
     let requests = 1;
     while (!response.ok) {
-      // Only parameter-class rejections advance the plan. Bodies identical to
-      // the rejected one (for example a minimal body with nothing to strip)
-      // would only be rejected again.
-      let next: number | null = requests < MAX_REASONING_REQUESTS
-        ? nextUtilityRequestStep(input.steps, index, response.status)
-        : null;
+      // Only parameter-class rejections advance the plan. Steps already tried
+      // in this call, and bodies identical to the rejected one (for example a
+      // minimal body with nothing to strip), would only be rejected again.
+      let next: number | null = null;
+      if (requests < MAX_REASONING_REQUESTS && isUtilityParameterRejection(step, response.status)) {
+        if (restartFromFirst) {
+          forgetUtilityStep(memoryKey);
+          // A missing native endpoint stays missing; restart on the Chat steps.
+          const restart = response.status === 404
+            ? input.steps.findIndex((candidate) => candidate.wire === 'chat-completions')
+            : 0;
+          next = restart >= 0 ? restart : null;
+        } else {
+          next = nextUtilityRequestStep(input.steps, index, response.status);
+        }
+      }
+      restartFromFirst = false;
       let nextBody: Record<string, unknown> | undefined;
       while (next !== null) {
         const candidate = input.steps[next]!;
-        nextBody = buildBody(candidate);
-        if (candidate.wire !== step.wire || stableSnapshot(nextBody) !== stableSnapshot(body)) break;
-        next = nextUtilityRequestStep(input.steps, next, response.status);
+        if (!tried.has(next)) {
+          const candidateBody = buildBody(candidate);
+          if (candidate.wire !== step.wire || stableSnapshot(candidateBody) !== stableSnapshot(body)) {
+            nextBody = candidateBody;
+            break;
+          }
+        }
+        next = next + 1 < input.steps.length ? next + 1 : null;
       }
       if (next === null || !nextBody) break;
+      tried.add(next);
       await response.body?.cancel().catch(() => undefined);
       log.debug('utility text request rejected, trying the next reasoning step', {
         status: response.status,
@@ -1988,7 +2021,7 @@ async function requestProviderHttpText(input: {
     }
     // The step was accepted by the provider; remember it even when the model
     // produced no usable text, because the wording itself was not rejected.
-    if (input.steps.length > 1) rememberUtilityStep(input.memoryKey, step);
+    if (input.steps.length > 1) rememberUtilityStep(memoryKey, step);
     log.info('utility text request accepted', {
       wire: step.wire,
       step: utilityRequestStepKey(step),
