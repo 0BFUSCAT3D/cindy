@@ -2116,6 +2116,7 @@ function utilityRequestPlan(input: {
         wire: input.wire,
         mode,
         routeRevision: getProviderRouteCredentialRevision(input.providerId),
+        ownerScope: activeOwnerScopeKey(),
       })
       : undefined,
     compat: {

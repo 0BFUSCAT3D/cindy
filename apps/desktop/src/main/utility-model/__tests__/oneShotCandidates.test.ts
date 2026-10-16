@@ -4242,6 +4242,27 @@ describe('utility one-shot candidates', () => {
         expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
       });
 
+      it('keeps remembered steps per account scope', async () => {
+        ownerState.key = 'owner-a';
+        await rememberLow('https://custom.example/v1', ['low', 'medium']);
+
+        // Account B: same provider id, model, address and route revision.
+        ownerState.key = 'owner-b';
+        fetchMock.mockResolvedValueOnce(chatOk('account-b') as never);
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'account-b' });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(bodyOf(0)).toMatchObject({ thinking: { type: 'disabled' } });
+
+        // Back to the same account A scope: its remembered `low` is still used.
+        fetchMock.mockClear();
+        ownerState.key = 'owner-a';
+        fetchMock.mockResolvedValueOnce(chatOk('account-a') as never);
+        await expect(request()).resolves.toMatchObject({ ok: true, text: 'account-a' });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(bodyOf(0)).toMatchObject({ reasoning_effort: 'low' });
+        expect(bodyOf(0)).not.toHaveProperty('thinking');
+      });
+
       it('keeps a remembered step while the provider route revision is unchanged', async () => {
         await rememberLow('https://custom.example/v1', ['low', 'medium']);
         fetchMock.mockResolvedValueOnce(chatOk('reused') as never);

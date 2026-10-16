@@ -233,9 +233,22 @@ export function utilityReasoningMemoryKey(parts: {
    * 同 id 删除重建:这些变化不体现在地址和档位上,但旧路由记住的写法不该沿用。
    */
   routeRevision: number;
+  /**
+   * 当前账号作用域:自定义供应商的密钥按账号分别保存,切换账号不经过路由代次,
+   * 另一个账号同 id、同地址的路由不能沿用这里记住的写法。
+   */
+  ownerScope: string;
 }): string {
   const mode = parts.mode.kind === 'ladder' ? 'ladder' : `fixed:${utilityReasoningRungKey(parts.mode.rung)}`;
-  return JSON.stringify([parts.providerId, parts.agentKind, parts.model, parts.wire, mode, parts.routeRevision]);
+  return JSON.stringify([
+    parts.providerId,
+    parts.agentKind,
+    parts.model,
+    parts.wire,
+    mode,
+    parts.routeRevision,
+    parts.ownerScope,
+  ]);
 }
 
 /**
