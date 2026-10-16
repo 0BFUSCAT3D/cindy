@@ -96,5 +96,32 @@
     "firstRunFailure": "Service fixture referenced removed unmerged migration; updated two fixture paths, service 21 tests and DbClient integration then passed",
     "runtimeAcceptance": "Not rerun; stopped sandbox remains stopped",
     "localFullSuite": "Not run; full PR CI required"
+  },
+  "postCommitFixtureRepair20261016": {
+    "failedHead": "c7cd1107f3f28218592aac553bc56f1f4d55effd",
+    "baseBootstrap": "a1fbbb8ec7d1476813b5ae57ef56e86dc3d21260",
+    "sameFixtureAgainstBase": {
+      "passed": 7,
+      "failed": 0
+    },
+    "beforeRepair": {
+      "passed": 4,
+      "failed": 3
+    },
+    "afterRepair": {
+      "files": 4,
+      "passed": 23,
+      "exitCode": 0
+    },
+    "desktopTypecheck": {
+      "exitCode": 0
+    },
+    "fixtureESLint": {
+      "files": 1,
+      "exitCode": 0
+    },
+    "productionChanges": false,
+    "runtimeAcceptance": "Not rerun; stopped sandbox remains stopped",
+    "scopeGuard": "Absolute size STOP from existing full feature/snapshot; this repair only adds fixture dependency/assertions and acceptance notes, within authorized single PR"
   }
 }
