@@ -8,6 +8,9 @@ const state = vi.hoisted(() => ({
   props: {} as any,
   sequence: 0,
   sessionBound: true,
+  status: "online",
+  connectionEpoch: 1,
+  mounted: false,
   app: "active",
   change: (_state: string) => {},
   upload: undefined as any,
@@ -41,10 +44,14 @@ vi.mock("react-native", () => ({
   },
 }));
 vi.mock("react-native-webview", async () => {
-  const { forwardRef, useImperativeHandle } = await import("react");
+  const { forwardRef, useImperativeHandle, useEffect } = await import("react");
   return {
     WebView: forwardRef((props: any, ref) => {
       state.props = props;
+      useEffect(() => {
+        state.mounted = true;
+        return () => { state.mounted = false; };
+      }, []);
       useImperativeHandle(ref, () => ({
         injectJavaScript(script: string) {
           const match = /^window.filePeerMessage\((.*)\);true;$/.exec(script);
@@ -102,7 +109,8 @@ vi.mock("@/auth/AuthContext", () => ({
 }));
 vi.mock("@/device-link/DeviceLinkContext", () => ({
   useDeviceLink: () => ({
-    connectionEpoch: 1,
+    connectionEpoch: state.connectionEpoch,
+    status: state.status,
     invoke: state.rpc,
     openLink: state.open,
   }),
@@ -158,6 +166,9 @@ beforeEach(() => {
   vi.useFakeTimers();
   state.sequence = 0;
   state.sessionBound = true;
+  state.status = "online";
+  state.connectionEpoch = 1;
+  state.mounted = false;
   state.app = "active";
   state.commands = [];
   state.holdReceive = false;
@@ -229,6 +240,48 @@ it("keeps legacy idle expiry when the host has not advertised sessionBound", asy
   expect(await read()).toBeNull();
 });
 
+it.each(["idle", "offer", "receive"])("disposes on relay loss during %s and reconnects only on demand", async (phase) => {
+  let answer!: (value: unknown) => void;
+  const normal = state.rpc.getMockImplementation()!;
+  if (phase === "offer") state.rpc.mockImplementation((...args) =>
+    args[2][0].action === "offer" ? new Promise(resolve => { answer = resolve; }) : normal(...args));
+  state.holdReceive = phase === "receive";
+  const operation = phase === "receive" ? state.download("device", "url") : connect();
+  // Observe rejection immediately, including the intentionally failing old implementation.
+  const result = operation.then(() => "completed", (error: Error) => error.message);
+  await vi.advanceTimersByTimeAsync(0);
+  const oldProps = state.props;
+  const queued = phase === "idle" ? undefined : state.download("device", "queued-url");
+  const queuedResult = queued?.then(() => "completed", (error: Error) => error.message);
+  act(() => {
+    state.status = "reconnecting";
+    root.render(createElement(PeerFileTransport));
+  });
+  expect(state.mounted).toBe(false);
+  expect(state.download).toBeUndefined();
+  expect(state.read).toBeUndefined();
+  if (phase === "offer") answer({ connection: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", sdp: "v=0" });
+  expect(await result).toBe(phase === "idle" ? "completed" : "FILE_PEER_CANCELLED");
+  if (queuedResult) expect(await queuedResult).toBe("FILE_PEER_CANCELLED");
+  const count = offers().length;
+  act(() => oldProps.onMessage({ nativeEvent: { data: JSON.stringify({ type: "ready" }) } }));
+  await vi.advanceTimersByTimeAsync(30 * 60_000);
+  expect(state.download).toBeUndefined();
+  expect(offers()).toHaveLength(count);
+  act(() => {
+    state.status = "online";
+    state.connectionEpoch++;
+    root.render(createElement(PeerFileTransport));
+  });
+  expect(state.download).toBeUndefined();
+  act(() => message({ type: "ready" }));
+  expect(await read()).toBeNull();
+  expect(offers()).toHaveLength(count);
+  state.rpc.mockImplementation(normal);
+  await connect();
+  expect(offers()).toHaveLength(count + 1);
+});
+
 it("releases a late host answer after backgrounding during setup", async () => {
   const normal = state.rpc.getMockImplementation()!;
   let answer!: (value: unknown) => void;
@@ -268,6 +321,7 @@ it("rebuilds only on demand after failure and ignores delayed closure of the old
 it.each([
   ["background", false], ["reset", false], ["abort", false],
   ["background", true], ["reset", true], ["abort", true],
+  ["offline", false], ["offline", true],
 ] as const)("rejects and releases a file cancelled during cache store: %s, store fails=%s", async (cause, fails) => {
   let resume!: () => void;
   state.cache.store.mockImplementation(() => new Promise<void>((resolve, reject) => {
@@ -282,6 +336,9 @@ it.each([
     if (cause === "background") {
       state.app = "background";
       state.change("background");
+    } else if (cause === "offline") {
+      state.status = "reconnecting";
+      root.render(createElement(PeerFileTransport));
     } else if (cause === "reset") state.reset("device");
     else controller.abort();
   });

@@ -116,7 +116,9 @@ export function PeerFileTransport() {
   const cacheOwner = JSON.stringify([getActiveMobileSessionRealm(), auth.user?.id]);
   const fileCache = useMemo(() => createPeerFileCache(cacheOwner).catch(() => null), [cacheOwner]);
   const account = `${auth.user?.id ?? ""}:${getActiveMobileSessionRealm()}:${auth.isAuthenticated}:${auth.accountGeneration}`;
-  const owner = `${account}:${link.connectionEpoch}`;
+  // Epoch advances on reconnect; status also invalidates work at disconnect.
+  const owner = `${account}:${link.connectionEpoch}:${link.status}`;
+  const enabled = foreground && auth.isAuthenticated && link.status === "online";
   const viewKey = `${owner}:${crashes}`;
   const liveView = useRef(viewKey);
   liveView.current = viewKey;
@@ -186,7 +188,7 @@ export function PeerFileTransport() {
     [account],
   );
   useEffect(() => {
-    if (!foreground || ready !== viewKey || !auth.isAuthenticated) return;
+    if (!enabled || ready !== viewKey) return;
     if (!swept) {
       swept = true;
       const dir = new Directory(Paths.cache, "remote-media-share", "file-peer");
@@ -785,7 +787,7 @@ export function PeerFileTransport() {
         "if (typeof runtime !== 'undefined') runtime.dispose();true;",
       );
     };
-  }, [foreground, ready, auth.isAuthenticated, viewKey]);
+  }, [enabled, ready, viewKey]);
   const handleProcessTerminated = () => {
     if (liveView.current !== viewKey) return;
     mobileDebugLog("warn", "files", "direct transfer runtime terminated", {
@@ -794,7 +796,7 @@ export function PeerFileTransport() {
     setReady(null);
     setCrashes((n) => Math.min(2, n + 1));
   };
-  if (!foreground || !auth.isAuthenticated) return null;
+  if (!enabled) return null;
   return (
     <View
       pointerEvents="none"
