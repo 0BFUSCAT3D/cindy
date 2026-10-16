@@ -260,7 +260,8 @@ describe('workbench moving with the companion', () => {
     expect(Object.keys(workbench.tasks)).toEqual(['pr:makecindy/cindy#1']);
     const travelling = await readCompanionWorkbench(root, 'bot-1', 'desk');
     expect(travelling.directories.find((dir) => dir.path === here)?.deviceId).toBe('desk');
-    expect(travelling.directories.find((dir) => dir.path.startsWith('C:'))?.deviceId).toBe('laptop');
+    // By path, not by drive: on Windows this computer's own folder is on C: too.
+    expect(travelling.directories.find((dir) => dir.path !== here && dir.path.startsWith('C:'))?.deviceId).toBe('laptop');
   });
 
   it('lets the cloud replace a workbench this computer synced before, keeping judgments that never travel', async () => {
