@@ -6469,6 +6469,8 @@
         "agentTasksRequest": "确认任务权限",
         "agentTasks": "可创建和管理本插件的 Cindy 任务",
         "agentTasksDetail": "可发送消息、读取结果和停止本插件的执行，任务对你可见。沿用插件的 AI 配置，可能产生模型费用；不授予其他任务的访问权。",
+        "selfManagedTaskPreferences": "自行管理模型与任务配置",
+        "selfManagedTaskPreferencesDetail": "不再使用 Cindy 为此插件保存的模型、权限和工作目录设置。已有任务按自身授权执行，不再受插件默认权限限制；不会自动授予新的任务权限。",
         "agentHiddenTasks": "可创建不显示在任务列表里的后台任务",
         "agentHiddenTasksDetail": "本插件创建的任务可以不出现在任务列表、搜索和通知里。你可以随时在插件详情的「后台任务」中查看、打开，或显示到任务列表；卸载插件时这些任务会恢复显示。",
         "agentErrand": "可以新建任务、执行工作并读取结果",

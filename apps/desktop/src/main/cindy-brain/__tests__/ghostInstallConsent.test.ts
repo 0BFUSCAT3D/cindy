@@ -130,6 +130,36 @@ describe('obtainGhostInstallConsent', () => {
     ).resolves.toEqual({ mode: 'unprompted' });
   });
 
+  it('requires existing update consent before a plugin stops using host task preferences', async () => {
+    const current = installed({ ...manifest(['api.weather.test']), agent: { tasks: true } });
+    const next = { ...current.manifest, version: '1.1.0', taskPreferences: false };
+    await expect(
+      obtainGhostInstallConsent({ mode: 'automatic' }, current, next, reviewedDigest),
+    ).rejects.toMatchObject({
+      facts: { kind: 'update', added: [expect.objectContaining({ key: 'task-preferences:self-managed' })] },
+    });
+    expect(() => assertGhostInstallConsent({ mode: 'unprompted' }, current, next, reviewedDigest))
+      .toThrow(/requires user confirmation/);
+    await expect(
+      obtainGhostInstallConsent(
+        { mode: 'prompt', prompt: userPrompt(false), initiator: 'user', origin: 'market' },
+        current, next, reviewedDigest,
+      ),
+    ).rejects.toMatchObject({ code: 'MUTATION_CANCELLED' });
+    const prompt = userPrompt(true);
+    const decision = await obtainGhostInstallConsent(
+      { mode: 'prompt', prompt, initiator: 'user', origin: 'market' },
+      current, next, reviewedDigest,
+    );
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(() => assertGhostInstallConsent(decision, current, next, reviewedDigest)).not.toThrow();
+    await expect(
+      obtainGhostInstallConsent(
+        { mode: 'automatic' }, installed(next), { ...next, version: '1.2.0' }, reviewedDigest,
+      ),
+    ).resolves.toEqual({ mode: 'unprompted' });
+  });
+
   it('skips confirmation only for server default installs', async () => {
     await expect(
       obtainGhostInstallConsent(

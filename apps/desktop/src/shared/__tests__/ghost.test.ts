@@ -3779,7 +3779,11 @@ describe('ghost · settingsHtml 自绘设置区 + settingsHeight', () => {
       expect(result.manifest.taskPreferences).toBe(taskPreferences);
       expect(Object.hasOwn(result.manifest, 'taskPreferences')).toBe(taskPreferences !== undefined);
       expect(result.manifest.agent?.tasks).toBe(true);
-      expect(ghostPermissionItems(result.manifest)).toEqual(ghostPermissionItems(original.manifest));
+      const permissions = ghostPermissionItems(result.manifest);
+      expect(permissions.filter(item => item.key !== 'task-preferences:self-managed'))
+        .toEqual(ghostPermissionItems(original.manifest));
+      expect(permissions.some(item => item.key === 'task-preferences:self-managed'))
+        .toBe(taskPreferences === false);
       expect(validateNormalizedGhostManifest(result.manifest)).toEqual(result);
     }
     for (const taskPreferences of [null, 0, 1, 'false', {}, []]) {

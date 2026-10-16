@@ -233,6 +233,9 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
     全部条目。首次安装展示全部权限并确认；更新相对当前已装版本按 `diffInstalledGhostPermissionItems`
     比较，新增条目、同 key 条目内容变化或内置 OAuth 客户端变化才算权限变多，只删除不算；
     已装版本没有有效批准基线时按全部权限新增处理。
+    顶层 `taskPreferences: false` 以独立条目参与此投影：退出宿主管理会移除既有任务上的
+    插件默认权限上限，不能通过静默更新重新启用旧任务授权。缺省／`true` → `false`
+    需要扩权确认；保持 `false` 不重复确认，恢复宿主管理不算扩权。不新增独立批准状态。
   - 入口与确认界面：插件页、拖入、双击 `.cindy` 与设置页导入由发起窗口弹确认框
     （`GhostInstallConsentWindowBridge` → `GhostInstallConsentHost`，只投给、也只接受发起安装
     的那个 webContents）；Agent 调用 `ghost_market_install`／`ghost_forge_install` 不论任务权限档

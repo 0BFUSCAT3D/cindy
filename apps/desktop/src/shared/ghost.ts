@@ -1951,6 +1951,17 @@ export function ghostDeclaresHiddenTasks(manifest: Pick<GhostManifest, 'agent'> 
 
 export function ghostPermissionItems(manifest: GhostManifest): GhostPermissionItem[] {
   const items: GhostPermissionItem[] = [];
+  // Opting out also removes the host's per-plugin permission cap from existing
+  // tasks. Keep this in the existing install/update consent projection so an
+  // automatic update cannot silently restore an older task grant.
+  if (manifest.taskPreferences === false) {
+    items.push({
+      key: 'task-preferences:self-managed',
+      kind: 'agent',
+      labelKey: 'selfManagedTaskPreferences',
+      detailKey: 'selfManagedTaskPreferencesDetail',
+    });
+  }
   for (const [category, actions] of Object.entries(manifest.cindy ?? {})) {
     if (category === 'oneshotModel') continue; // 偏好模型是标量意图,不是能力键
     if (!Array.isArray(actions)) continue;
