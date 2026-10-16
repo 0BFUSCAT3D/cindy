@@ -150,6 +150,23 @@ function createStore() {
 
 let store = createStore();
 
+// The installed manifest owns this policy; resolve it live rather than persisting
+// another switch in the preference file. Unchanged plugins keep the old behavior.
+let preferencesEnabled: (ghostId: string) => boolean = () => true;
+export function setPluginTaskPreferencesResolver(resolve: (ghostId: string) => boolean): void {
+  preferencesEnabled = resolve;
+}
+export function isPluginTaskPreferencesEnabled(ghostId: string): boolean {
+  return preferencesEnabled(ghostId);
+}
+
+/** null means the plugin manages settings; only the task's own granted mode applies. */
+export function readPluginTaskPermissionMode(ghostId: string): GhostErrandPermissionMode | null {
+  return isPluginTaskPreferencesEnabled(ghostId)
+    ? clampPluginTaskPermissionMode(readPluginTaskConfig(ghostId).permissionMode)
+    : null;
+}
+
 // Register owns the runtime catalog; configuration persistence never builds another picker.
 let validateSelection: ((config: PluginTaskConfig) => Promise<void>) | null = null;
 export function setPluginTaskConfigValidator(validator: (config: PluginTaskConfig) => Promise<void>): void {
@@ -247,6 +264,7 @@ function migrateLegacyOneshotPins(): void {
 
 /** 读某插件的任务配置(缺省空对象 = 全跟随默认)。 */
 export function readPluginTaskConfig(ghostId: string): PluginTaskConfig {
+  if (!isPluginTaskPreferencesEnabled(ghostId)) return {};
   migrateLegacyOneshotPins();
   // mtime 守卫现读:直接改文件也算配置入口(与 cindy prefs 同契约)。
   store.invalidateIfChanged();
@@ -259,6 +277,7 @@ export function readPluginTaskConfig(ghostId: string): PluginTaskConfig {
  * 形状粗筛,逐字段值域清洗统一在这里(单一执法点)。返回清洗后的落盘值。
  */
 export function writePluginTaskConfig(ghostId: string, config: unknown): PluginTaskConfig {
+  if (!isPluginTaskPreferencesEnabled(ghostId)) throw new Error('PLUGIN_TASK_PREFERENCES_DISABLED');
   assertGhostPrefsWritable('ghost-errand-prefs.json');
   migrateLegacyOneshotPins();
   store.invalidateIfChanged();

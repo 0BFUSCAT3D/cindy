@@ -1473,6 +1473,11 @@ export interface GhostManifest {
    */
   settingsHeight?: number;
   /**
+   * 是否使用宿主「模型与任务」配置管理；缺省或 true 沿用原行为。
+   * false 由插件维护配置：不显示卡片，也不读写宿主的逐插件默认值。
+   */
+  taskPreferences?: boolean;
+  /**
    * 卡片能力；空对象表示基础卡片渲染。
    * externalLinks: true 时卡片内可声明 data-ghost-link,点击经宿主确认框后打开浏览器。
    */
@@ -2992,6 +2997,7 @@ const GHOST_MANIFEST_KNOWN_TOP_LEVEL_FIELDS = new Set([
   'node',
   'settingsHtml',
   'settingsHeight',
+  'taskPreferences',
   'slots',
   'card',
   'tools',
@@ -4108,6 +4114,9 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
   }
   if (raw.settingsHtml !== undefined && !isSafeGhostRelativePath(raw.settingsHtml)) {
     return { ok: false, reason: 'settingsHtml 必须是安装目录内的安全相对路径' };
+  }
+  if (raw.taskPreferences !== undefined && typeof raw.taskPreferences !== 'boolean') {
+    return { ok: false, reason: 'taskPreferences 必须是布尔值' };
   }
   if (raw.settingsHeight !== undefined) {
     if (raw.settingsHtml === undefined) {
@@ -6020,6 +6029,9 @@ function validateGhostManifestInput(value: unknown, preserveHistoricalTasks: boo
       ...(raw.settingsHtml !== undefined ? { settingsHtml: raw.settingsHtml as string } : {}),
       ...(raw.mobile !== undefined ? { mobile: raw.mobile as GhostManifest['mobile'] } : {}),
       ...(raw.settingsHeight !== undefined ? { settingsHeight: raw.settingsHeight as number } : {}),
+      ...(raw.taskPreferences !== undefined
+        ? { taskPreferences: raw.taskPreferences as boolean }
+        : {}),
       ...(tools !== undefined ? { tools } : {}),
       ...(card !== undefined || prepared.v3BaseCard || slots.includes('card')
         ? { card: card ?? {} }

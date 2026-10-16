@@ -2,7 +2,7 @@
  * Plugin list/detail view models derived only from the installed Ghost contract.
  *
  * Inputs: shared Ghost manifests and install records.
- * Outputs: renderer-safe list/detail facts without marketplace or runtime invention.
+ * Outputs: renderer-safe list/detail facts, including the optional Host task settings card.
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
@@ -74,9 +74,9 @@ export interface GhostPluginDetail extends GhostPluginListItem {
   tools: readonly GhostToolDecl[];
   hasSettingsUi: boolean;
   /**
-   * 宿主「模型与任务」卡:插件的唯一模型字段(快问快答与新建任务共用)。声明了
-   * 快问快答(cindy.text 含 oneshot)或任何新建任务能力即展示;图像/视频/向量
-   * 没有逐插件选模,始终跟随系统默认。
+   * 宿主「模型与任务」默认配置卡(快问快答与新建任务共用)。声明了快问快答
+   * 或任何新建任务能力时默认展示；taskPreferences:false 停用宿主配置管理。
+   * 图像/视频/向量没有逐插件选模,始终跟随系统默认。
    */
   hasTaskPreferences: boolean;
   /** 能新建任务(agent.tasks / 旧 agent.errand / workspace):卡片额外展示权限与工作目录。 */
@@ -313,7 +313,9 @@ export function toGhostPluginDetail(
     permissions: ghostPermissionItems(manifest),
     tools: manifest.tools ?? [],
     hasSettingsUi: Boolean(manifest.settingsHtml),
-    hasTaskPreferences: hasPluginTasks || (manifest.cindy?.text ?? []).includes('oneshot'),
+    hasTaskPreferences:
+      manifest.taskPreferences !== false &&
+      (hasPluginTasks || (manifest.cindy?.text ?? []).includes('oneshot')),
     hasPluginTasks,
     panelMinWidth: manifest.panel ? (manifest.panel.minWidth ?? 280) : null,
     installDir: ghost.dir,

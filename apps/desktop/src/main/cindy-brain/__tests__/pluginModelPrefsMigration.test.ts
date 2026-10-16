@@ -42,10 +42,41 @@ beforeEach(() => {
   owner.id = 'owner-a';
   cindy.__testing.resetStore();
   task.__testing.resetLegacyPinMigration();
+  task.setPluginTaskPreferencesResolver(() => true);
 });
 
 afterEach(() => {
+  task.setPluginTaskPreferencesResolver(() => true);
   fs.rmSync(owner.root, { recursive: true, force: true });
+});
+
+describe('per-plugin Host configuration opt-out', () => {
+  it('ignores all saved defaults for the opted-out instance while another instance stays unchanged', () => {
+    const saved = { agentKind: 'codex', model: 'saved', providerId: 'source', effort: 'high', fastMode: true,
+      permissionMode: 'auto', workingDir: path.join(owner.root, 'project') };
+    writeJson(TASK_FILE, { errand: { '_root__ping': saved, '_ns__acme__ping': saved }, sessions: { '_root__ping': 'existing-task' } });
+    task.setPluginTaskPreferencesResolver(id => id !== '_root__ping');
+    expect(task.readPluginTaskConfig('_root__ping')).toEqual({});
+    expect(task.readPluginTaskPermissionMode('_root__ping')).toBeNull();
+    expect(task.readPluginTaskConfig('_ns__acme__ping')).toEqual(saved);
+    expect(task.readPluginTaskPermissionMode('_ns__acme__ping')).toBe('auto');
+    expect(() => task.writePluginTaskConfig('_root__ping', { model: 'replacement' })).toThrow('PLUGIN_TASK_PREFERENCES_DISABLED');
+    expect(() => task.writePluginTaskConfig('_root__ping', null)).toThrow('PLUGIN_TASK_PREFERENCES_DISABLED');
+    expect(task.readGhostErrandSessionId('_root__ping')).toBe('existing-task');
+    expect(readJson(TASK_FILE)).toMatchObject({ errand: { '_root__ping': saved } });
+    task.setPluginTaskPreferencesResolver(() => true);
+    expect(task.readPluginTaskConfig('_root__ping')).toEqual(saved);
+  });
+
+  it('does not create preference files or run legacy migration when the instance opts out', () => {
+    const legacy = { overrides: { ping: { 'text.oneshot': 'cat:xd:codex:old' } } };
+    writeJson(CINDY_FILE, legacy);
+    task.setPluginTaskPreferencesResolver(id => id !== 'ping');
+    expect(task.readPluginTaskConfig('ping')).toEqual({});
+    expect(() => task.writePluginTaskConfig('ping', { permissionMode: 'auto' })).toThrow('PLUGIN_TASK_PREFERENCES_DISABLED');
+    expect(readJson(TASK_FILE)).toBeUndefined();
+    expect(readJson(CINDY_FILE)).toEqual(legacy);
+  });
 });
 
 describe('legacy per-ability pins → plugin model preference', () => {

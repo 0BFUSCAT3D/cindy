@@ -20,7 +20,7 @@ const settingSource = source.slice(source.indexOf('  ipcMain.handle(\n    MAKER_
 const planSource = source.slice(source.indexOf('  ipcMain.handle(\n    MAKER_INVOKE.SET_PLAN_MODE,'), source.indexOf('  ipcMain.handle(MAKER_INVOKE.EXPORT_SESSION_HTML,'));
 const planJs = ts.transpileModule(planSource, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const settingJs = ts.transpileModule(settingSource, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-function fixture() {
+function fixture(preferencesEnabled = true) {
  let identity = 'owner-epoch-install';
  const gate = new PluginWriteAccessGate();
  let cfg: Record<string, unknown> = { permissionMode: 'plan', model: 'old' };
@@ -39,7 +39,10 @@ function fixture() {
  const dialog = { showMessageBox: vi.fn(async () => ({ response: 0 })) };
  const write = vi.fn((_id: string, value: Record<string, unknown>) => { cfg = value; });
  const deps = { isPluginTaskPermissionAllowed, withSessionPermissionChange, withSessionRestartLock, drainPersistQueue:drain,messages,sessions,eq:()=>true,and:()=>true,service, getCurrentDbClientSnapshot: () => ownership.current, readPluginTaskConfig: () => cfg, pluginPermissionRequests: slots, PluginTaskError, maker: { getSession: () => cold ? null : live }, inputCoordinator: queue, dialog, t: (x: string) => x, getInstalledGhostName: () => 'fixture', clampPluginTaskPermissionMode: (x: string) => x, writePluginTaskConfig: write, broadcastSessionPatched: vi.fn() };
- const allDeps = {...deps, pluginWriteAccessGate:gate, pluginWriteAccessIdentity:()=>identity};
+ const allDeps = {...deps, readPluginTaskConfig: () => preferencesEnabled ? cfg : {},
+  readPluginTaskPermissionMode: () => preferencesEnabled ? cfg.permissionMode : null,
+  isPluginTaskPreferencesEnabled: () => preferencesEnabled,
+  pluginWriteAccessGate:gate, pluginWriteAccessIdentity:()=>identity};
  const run = new Function(...Object.keys(allDeps), js)(...Object.values(allDeps));
  let setMode!: (event: unknown, sessionId: string, mode: string) => Promise<unknown>;
  let setPlan!: (event:unknown, sessionId:string, enabled:boolean)=>Promise<unknown>;
@@ -61,6 +64,25 @@ function fixture() {
  });
  return {setPlan:(enabled:boolean)=>setPlan({},'task',enabled),planPersist,forgetGrants,runtimePlan:()=>runtimePlan,nativePlan:(enabled:boolean|null)=>{runtimePlan=enabled;},setImMode, setMode:(mode:string)=>setMode({},'task',mode), persistedResults, remote:()=>{remote=true;}, cold:()=>{cold=true;}, runtimeMode:()=>runtimeMode, changeOwner:()=>{ownership.current={};}, run: (mode = 'acceptEdits', explicit = false) => run('plugin', { kind: 'requestWriteAccess', taskId: 'task', mode }, explicit), queue, gate, identity: (next: string) => {identity=next;}, service, live, epoch, dialog, slots, write, history, drain, config: () => cfg, change: (next: Record<string, unknown>) => { cfg = next; } };
 }
+describe('plugin-managed task configuration', () => {
+ it.each(['acceptEdits', 'auto'])('confirms %s for this task without writing Host defaults', async mode => {
+  const f = fixture(false);
+  await expect(f.run(mode)).resolves.toMatchObject({granted:true});
+  expect(f.dialog.showMessageBox).toHaveBeenCalledOnce();
+  expect(f.history.permissionMode).toBe(mode);
+  expect(f.live.setPermissionMode).toHaveBeenCalledWith(mode);
+  expect(f.write).not.toHaveBeenCalled();
+  expect(f.config()).toEqual({permissionMode:'plan',model:'old'});
+ });
+ it('reuses the task grant without consulting the dormant Host permission preference', async () => {
+  const f = fixture(false);
+  f.service.get.mockResolvedValue({taskId:'task',revision:1,status:'active',permissionMode:'auto'});
+  await expect(f.run('auto')).resolves.toMatchObject({granted:true});
+  expect(f.dialog.showMessageBox).not.toHaveBeenCalled();
+  expect(f.write).not.toHaveBeenCalled();
+ });
+});
+
 describe('shared-provider credential grants on permission changes', () => {
  it('clears the task grant only when permission or Plan mode really changes, even without a running agent', async () => {
   const f=fixture();f.cold();

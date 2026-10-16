@@ -114,6 +114,23 @@ function setup(
   };
 }
 describe('mobile plugin pages', () => {
+  it('disables Host task settings only for the instance declaring taskPreferences:false', async () => {
+    const h = setup();
+    h.ghost.manifest.agent = {tasks:true};
+    h.ghost.manifest.taskPreferences = false;
+    const other = {...h.ghost, manifest:{...h.ghost.manifest, id:'other', taskPreferences:true}};
+    h.ghosts.push(other);
+    const context = {controllerDeviceId:'phone-a'}, client = {protocolVersion:1,primitives:['plugin-capabilities']};
+    const ref = {collectionId:'plugins',kind:'plugin',id:'practice'};
+    const detail = await h.provider.get!(context,{ref,client});
+    expect(detail.blocks?.find(block=>block.id==='capabilities')?.data).toMatchObject({tasks:false});
+    for (const actionId of ['task-settings:get','task-settings:set'])
+      await expect(h.provider.invoke!(context,{collectionId:'plugins',resourceRef:ref,actionId,input:{},client})).rejects.toThrow();
+    expect(h.taskSettings.read).not.toHaveBeenCalled();
+    expect(h.taskSettings.update).not.toHaveBeenCalled();
+    await h.provider.invoke!(context,{collectionId:'plugins',resourceRef:{...ref,id:'other'},actionId:'task-settings:get',input:{},client});
+    expect(h.taskSettings.read).toHaveBeenCalledWith('other','r1');
+  });
   it('adds usage facts to the existing capabilities block and preserves unknown setup on a failed read', async () => {
     const h = setup({
       setupAssessment: () => {

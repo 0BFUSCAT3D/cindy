@@ -74,11 +74,11 @@ export function readPluginTaskPlanReceipt(payload: string): { teamPlan?: PluginT
 export function assertPluginTaskResult(result: { ok: boolean; errorCode?: string }, message: string): void {
   if (!result.ok) throw new PluginTaskError(result.errorCode || 'HOST_NOT_READY', message);
 }
-/** A live task cannot exercise more authority than the plugin's current setting. */
+/** Host-managed preferences cap task authority; null opts out of that cap, never of task/Plan checks. */
 export function isPluginTaskPermissionAllowed(taskMode: unknown, configuredMode: unknown, planModeEnabled = false): boolean {
   const rank = (mode: unknown) => mode === 'plan' ? 0 : mode === 'ask' ? 1 : mode === 'acceptEdits' ? 2 : mode === 'auto' ? 3 : -1;
   const task = rank(taskMode);
-  return !planModeEnabled && task >= 0 && task <= Math.max(0, rank(configuredMode));
+  return !planModeEnabled && task >= 0 && (configuredMode === null || task <= Math.max(0, rank(configuredMode)));
 }
 const fail = (code: string, message: string): never => {
   throw new PluginTaskError(code, message);
