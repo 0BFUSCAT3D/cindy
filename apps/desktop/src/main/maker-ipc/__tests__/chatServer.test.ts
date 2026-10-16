@@ -2071,6 +2071,50 @@ describe('Chat Server result delivery and refresh', () => {
       expect(pushes()).toBe(1);
     });
 
+    it.each([false, true])('uses current members after reconnect before list sync or replay finishes (late snapshot: %s)', async (lateSnapshot) => {
+      const base = fixture.handle.getMockImplementation()!;
+      let holdList = false;
+      let finishList!: () => void;
+      let finishSnapshot!: () => void;
+      let holdSnapshot = false;
+      let newMembers = false;
+      fixture.handle.mockImplementation((route, method, data) => {
+        if (route === '/me') return { body: { actor: { id: selfId }, capabilities: { conversationListStateVersion: 1 } } };
+        if (route.startsWith('/conversation-list-state?')) return holdList
+          ? new Promise(resolve => { finishList = () => resolve({ body: [] }); }) : { body: [] };
+        if (route.endsWith('/snapshot')) {
+          if (holdSnapshot) {
+            holdSnapshot = false;
+            return new Promise(resolve => { finishSnapshot = () => resolve(snapshotOf()); });
+          }
+          if (newMembers) return { body: { ...snapshotOf().body,
+            members: [selfMember, { ...botMember, id: peerId, name: 'New teammate' }] } };
+        }
+        return base(route, method, data);
+      });
+      const previous = await live();
+      previous.emit('close');
+      holdSnapshot = lateSnapshot;
+      const oldRead = lateSnapshot ? service.getGroup(roomId) : undefined;
+      await vi.advanceTimersByTimeAsync(500);
+      holdList = true;
+      newMembers = true;
+      const socket = fixture.sockets.at(-1)!;
+      Object.defineProperty(socket, 'readyState', { value: 1 });
+      socket.emit('message', JSON.stringify({ type: 'ready' }));
+      if (lateSnapshot) { finishSnapshot(); await oldRead; }
+      deps.decidePlan = vi.fn(() => new Promise(() => {})) as typeof deps.decidePlan;
+      const from = fixture.handle.mock.calls.length;
+      expect(await send('reconnect-members')).toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(routesSince(from)).toContain(`GET /conversations/${roomId}/snapshot`);
+      expect(deps.decidePlan).toHaveBeenCalledWith(expect.objectContaining({
+        organizerName: 'New teammate', members: [{ botId: peerId, name: 'New teammate', description: '' }],
+      }), expect.any(AbortSignal));
+      finishList();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
     it('still pushes a send locally while the realtime connection is down', async () => {
       expect(await send('latency-send-5')).toMatchObject({ ok: true });
       expect(pushes()).toBe(0);

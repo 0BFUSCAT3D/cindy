@@ -812,6 +812,9 @@ function createChatServer(local: BotGroupChatService, deps: BotGroupChatServiceD
           memberJoinedClaims = true;
           reconnectDelay = 500; connected = true;
           threads.reset();
+          // Subscription replay and list sync may lag behind ready. Retire cached state
+          // now; advancing the generation also fences reads started before this connection.
+          for (const roomId of rooms.keys()) invalidate(roomId);
           ws.send(JSON.stringify({ type: 'subscribe', scope: `actor:${selfId}`, after: '0' }));
           for (const [roomId, cursor] of rooms) ws.send(JSON.stringify({ type: 'subscribe', scope: `conversation:${roomId}`, after: cursor }));
           void syncPersonalList(true).then(() => { if (current() && socket === ws) { for (const roomId of rooms.keys()) changed(roomId); changed(''); } }).catch(() => ws.close());
