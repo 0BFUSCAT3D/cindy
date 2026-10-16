@@ -7,5 +7,6 @@
   "cardTitle": "{{title}} · $t(mcpApps.appName)",
   "messageSource": "Sent by $t(mcpApps.appName) “{{name}}”",
   "serverId": "MCP Server ID: {{id}}",
-  "exitFullscreen": "Exit Fullscreen"
+  "exitFullscreen": "Exit Fullscreen",
+  "mobileUpdateRequired": "Update Cindy on this phone to open this card."
 }

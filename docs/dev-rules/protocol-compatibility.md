@@ -4,7 +4,7 @@
 
 标准 MCP Apps 使用 `io.modelcontextprotocol/ui` 扩展及官方 `2026-01-26` 协议。
 客户端新增独立 `maker:mcp-apps:v1` channel，复用 device-link 的同账号调用与错误协议，
-不改变已有 channel、relay 帧、服务端 schema 或 Mobile 原生指纹。
+不改变已有 channel、relay 帧或服务端 schema；Mobile 原生承载与指纹影响见本节末尾。
 App 卡片是既有 assistant 消息 content 的可选 `mcpApp` 字段，且必须有 Main 写入的
 `agentMeta.mcpApp` 标记；旧客户端不解析该字段，仍可阅读原工具返回的文本。
 新控制端连接旧 Host 时拒绝该 channel 并提示更新执行电脑，不回退到执行任意 HTML。
@@ -32,7 +32,10 @@ Mobile 和旧查看端的 wire 保持原样，完整 frame 边界需更新 Deskt
 没有新增 channel、allowlist、relay 或原生配置。回归见 `remoteViews.test.ts`。
 本机 Desktop 的 open 结果可选携带 `transport: "sandbox"`，只用于同版本 Main/Renderer
 切换到 Main 验证真实 frame 的直连通道，不向远程设备返回该字段。远程 v1 消息与原有
-channel 不变。
+channel 不变。Mobile 在原生 HTML 资源模块增加独立 App 资源额度和内联承载视图，
+以不同来源隔离 proxy/App，并保留卸载后的有界 teardown；这改变 iOS/Android runtime
+fingerprint，须遵守 [冷更边界](mobile-development.md#原生配置与-runtime-fingerprint冷更边界)。
+旧 Mobile binary 保留卡片文本并提示更新手机，不回退到同源或 opaque-origin srcdoc。
 
 > **状态**：权威开发规则（authoritative）
 > **读取时机**：修改插件分发来源边界、device-link 协议／relay／隧道 payload／IPC

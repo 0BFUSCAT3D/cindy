@@ -144,7 +144,9 @@ maker-shared 没有独立 typecheck script，build 实际执行 `tsc --noEmit`�
 Mobile 与 Desktop 类型检查均通过。
 上述定向 ESLint 和文档合同检查（10 项）通过。
 本次未重跑 Electron 沙箱，也未完成 macOS、Mobile 真机或完整卡片双主题目检。
-Mobile 原生卸载不能保留 WebView 时属于尽力通知，未将单测结果当作原生异步清理完成的证据。
+当时 Mobile 原生卸载不能保留 WebView，属于尽力通知；未将单测结果当作原生异步清理完成的证据。
+2026-10-16 的修复改为根级持有 WebView、原生 slot 内联承载，等待回执或 1 秒后再销毁，
+实现与当前验收边界见 [MCP Apps 接入说明](mcp-apps.md)。原生实际运行仍须单独验收。
 
 ## 共享任务访客历史卡片补充验证（2026-10-15）
 

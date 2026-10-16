@@ -28,7 +28,7 @@ Host 与 View 互操作使用 `@modelcontextprotocol/ext-apps@1.7.5`，MCP SDK �
 | App 调工具                | 只连接产生该卡片的 MCP server；复用任务权限卡；发起审批前、审批后与结果返回前再次核对归属、清空与配置                                              | 可见性 / owner / 撤销 / IPC 回归 |
 | MCP 资源与通知            | 转发 resources/read/list/templates、工具列表、prompts/list 与 list_changed；不开放任意 server 或 endpoint                                          | 官方 SDK、连接和操作测试         |
 | `ui/open-link`            | 仅 http/https，无内嵌凭证；在当前查看设备的系统浏览器打开，失败返回 RPC 错误                                                                       | controller / Host / URL 单测     |
-| `ui/message`              | 支持 text、resourceLink；原生命令转为普通文字，历史保留原文；保留 user role 和真实 App 来源，不作为主人授权；入队及最终派发前重新核验卡片和 View | 官方 SDK 互操作、来源与发送回归  |
+| `ui/message`              | 支持 text、resourceLink；原生命令转为普通文字，历史保留原文；保留 user role 和真实 App 来源，不作为主人授权；入队及最终派发前重新核验卡片和 View   | 官方 SDK 互操作、来源与发送回归  |
 | `ui/update-model-context` | 支持 text、structuredContent；按 View 替换最新值，不启动模型；下次发送或插话附加外部应用上下文，接受后消费这份快照，失败保留；不进入 system prompt | 官方 SDK、发送链回归             |
 | 显示模式 / 尺寸           | Desktop inline+fullscreen，Mobile inline；返回实际模式；size-changed 调整高度；Host context 同步模式变化                                           | 互操作、controller 生命周期      |
 | 主题 / 环境               | Light/Dark、CSS variables、locale、时区、尺寸和设备能力通过 Host context 传递                                                                      | Electron 中主题切换、类型检查    |
@@ -63,10 +63,28 @@ App 发起的工具调用与工具、资源、模板、提示列表及资源读�
 工具发现完成后、发起权限请求前也执行同一复核，避免已撤权的 View 弹出审批。
 回归见 `viewAuthorization.test.ts`。
 
-Mobile 的可信外层 proxy 不跳转页面，App 通过只有 `allow-scripts` 的不透明来源 iframe
-加载；App 与其后代都不能跳转顶层页面或打开弹窗。Android 的 WebView 导航回调没有
+Mobile 扩展已有原生 HTML 资源模块，分别在两个 loopback 端口提供可信 proxy 与 App，
+两者同站但不同源；App iframe 使用 `allow-scripts allow-same-origin`，保留 localStorage /
+IndexedDB 的来源能力，同时不能访问 proxy 或跳转顶层页面、打开弹窗。原生 HTTP 响应提供
+App 的完整 CSP，proxy 的资源地址由宿主固定，不能被普通桥消息替换为同源内容。
+原生 App 资源与普通 HTML 预览分别计数：App 最多 16 个来源服务，容纳 4 个活跃 View 的
+双来源与退出期间的余量，普通预览仍限制为 4 个。原生内联 slot 承载根级 React host 持有的
+同一个 WebView；卡片离屏或实际页面卸载后，先将内容移回屏幕外 host，保留消息回调，
+收到 teardown 响应或满 1 秒后移除 WebView、停止两项资源服务并清理专属缓存。退后台
+关闭旧 View，原生资源最多保留本次后台代次 1 秒；回前台打开新 View，不重放工具调用。
+这改变两端 runtime fingerprint，必须有针对冷更的明确确认并发布原生新包；不能仅 OTA 交付。
+旧安装包缺少 App 承载能力时保留已保存文本并提示更新手机，不回退到同源或 opaque-origin
+`srcdoc`。下次进程首次打开时清理中断遗留的本功能随机目录。iOS 使用非持久 WebView
+数据存储；Android 不使用会清空其他 View cookie 的 incognito 开关，只删除本 View 的
+cookie，并避免本进程重用已发放的 App 端口。资源来源先加载可信初始化页，同步清除
+localStorage/sessionStorage、等待所有旧 IndexedDB 删除成功后才加载原始 App HTML；
+删除失败或被阻塞时不运行 App，由初始化超时报错。实际存储清理与端口重用隔离仍须
+Android 原生验收。Android 的 WebView 导航回调没有
 `isTopFrame`，因此声明的 `frameDomains` 仍按域校验，不把缺失字段当成顶层导航；
-iOS 另保留显式顶层请求拦截。回归见 `apps/mobile/src/__tests__/mcpAppCard.test.tsx`。
+iOS 另保留显式顶层请求拦截；可信 proxy 同时检查实际 `event.origin`，同一 WindowProxy
+导航到声明的第三方 frame 域后也无法获得 App 桥。回归见
+`apps/mobile/src/__tests__/mcpAppCard.test.tsx` 与 `mcpAppNativeDocument.test.ts`。这些测试
+使用 JS mock/VM，不是原生存储、内联 slot、异步 teardown 或系统返回手势的真机证据。
 手机卡片只在消息列表项可见或被定位时打开 View，离屏释放并保留高度占位，重新进入时
 重新读取；打开期间离屏会取消加载并回收晚到的 View，不重放 App 工具调用。
 
@@ -112,8 +130,8 @@ JSON 转义、数组括号和分隔符均计入。超限文档在保留 View 前
 Desktop 卡片仅在可见时打开，离屏或窗口隐藏时释放 View，重新可见后重新加载。
 主动关闭时，控制器先发送标准 `ui/resource-teardown`，从发送时起最多等待 1 秒，
 收到对应 JSON-RPC result/error 或超时后再让 Host 释放 View；并发关闭等待同一次清理。
-Desktop 在此期间保留隐藏 iframe 与回执监听。Mobile 原生 WebView 无法保留到
-异步卸载完成时，只能尽力提前通知，未收到回执仍在同一上限后回收 Host View。
+Desktop 在此期间保留隐藏 iframe 与回执监听。Mobile 由根级 host 保留同一个原生
+WebView 与回执监听，消息卡片卸载时先移回屏幕外，再按同一上限回收；实际原生运行仍待验收。
 回归见 `packages/maker-shared/src/__tests__/mcpAppController.test.ts`。
 承载本地或远端卡片的 Renderer 重载、崩溃或销毁时，Main 同时回收该 Renderer 的 HTML
 供片和 Host View，立即释放额度，并取消该查看端尚未完成的加载，拒绝晚到 View；同文档
