@@ -2973,14 +2973,21 @@ function SessionScreenContent() {
       ? `${mobileAgentLabel(agentSwitchIntent.targetAgentKind)} · ${composerRuntimeSummary.modelSummary}`
       : composerRuntimeSummary.modelSummary
     : '';
+  // 按钮省去时机前缀，读屏仍说明待生效选择，避免被误认为当前运行配置。
+  const composerRuntimeAccessibilitySummary = composerRuntimeSummary && agentSwitchIntent
+    ? t(composerSwitchesAgent ? 'session.screen.nextAgentSwitch' : 'session.screen.nextModelSelection', {
+        agent: mobileAgentLabel(agentSwitchIntent.targetAgentKind),
+        model: composerRuntimeSummary.modelSummary,
+      })
+    : composerRuntimeLabel;
   // 下一条消息时 Agent 所在的另一台电脑名(药丸带远程标记,读屏一并读出);目录在缺名时以 deviceId
   // 兜底,那种情况不读出来。
   const nextAgentDeviceName = nextAgentDeviceId
     ? remoteAgentCatalogs.find((item) => item.deviceId === nextAgentDeviceId)?.name ?? null
     : null;
   const composerRuntimeAccessibilityLabel = nextAgentDeviceName && nextAgentDeviceName !== nextAgentDeviceId
-    ? [composerRuntimeLabel, nextAgentDeviceName].filter(Boolean).join(', ')
-    : composerRuntimeLabel;
+    ? [composerRuntimeAccessibilitySummary, nextAgentDeviceName].filter(Boolean).join(', ')
+    : composerRuntimeAccessibilitySummary;
   // 换电脑确认里的被控电脑名;路由参数缺设备名时会以 deviceId 兜底,那不是给人看的名字。
   const controlledComputerName = (() => {
     const name = currentSession?.deviceLinkDeviceName?.trim();
