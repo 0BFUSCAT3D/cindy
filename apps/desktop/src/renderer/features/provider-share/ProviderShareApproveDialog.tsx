@@ -52,6 +52,9 @@ export function ProviderShareApproveDialog({
   const grouped = hostDeviceId
     ? providerForApproval !== undefined && remoteProviderGroupOf(providerForApproval) !== null
     : localGroups.groups[share.providerId] !== undefined;
+  const calloutKey = grouped
+    ? 'providerShare.approve.calloutGroup'
+    : hostDeviceId ? 'providerShare.approve.calloutRemote' : 'providerShare.approve.callout';
   // 请求成功不代表目录里有目标供应商；找到它并确认类型、有没有组后才能同意，避免漏掉 Claude 邮箱告知或说错 Agent 在哪运行。
   const providerClassificationReady = providerForApproval !== undefined
     && (hostDeviceId
@@ -116,7 +119,7 @@ export function ProviderShareApproveDialog({
       <div className="mt-3.5 flex flex-col gap-1 rounded-lg bg-[var(--surface)] px-3 py-2.5 text-12 leading-[1.5] text-[var(--text-secondary)]">
         {!hostDeviceId && localGroups.failed
           ? <p role="status">{t('providerGroup.section.loadFailed')}</p>
-          : <p>{t(grouped ? 'providerShare.approve.calloutGroup' : 'providerShare.approve.callout', { name, provider })}</p>}
+          : <p>{t(calloutKey, { name, provider })}</p>}
         {claudeEmail ? <p>{t('providerShare.approve.calloutClaudeEmail', { name })}</p> : null}
         <p>{t('providerShare.approve.calloutUnknown')}</p>
       </div>

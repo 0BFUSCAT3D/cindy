@@ -311,6 +311,8 @@ describe('ProviderShareGlobalHost', () => {
     });
     const dialog = await screen.findByTestId('provider-share-approve-dialog');
     expect(dialog.textContent).toContain('Kai');
+    expect(dialog.textContent).toContain('providerShare.approve.calloutRemote:');
+    expect(dialog.textContent).not.toContain('providerShare.approve.callout:');
     fireEvent.click(screen.getByRole('button', { name: 'providerShare.approve.approve' }));
     await waitFor(() => expect(screen.queryByTestId('provider-share-approve-dialog')).toBeNull());
     expect(groupCommand).toHaveBeenCalledWith({

@@ -309,6 +309,7 @@
       "pairingHint": "同意前可以透過傳連結的管道問對方一句：「你看到的配對碼是多少？」一致再同意。",
       "callout": "同意後，{{name}} 可以在自己的任務裡使用 {{provider}} 的模型。Agent 在這臺電腦上執行，用量計入你的 {{provider}}。你可以隨時在「{{provider}} · 遠端與分享」裡關閉或刪除。",
       "calloutGroup": "同意後，{{name}} 可以在自己的任務裡使用 {{provider}} 的模型。由供應商組選一台電腦執行 Agent，用量計入你的 {{provider}}。你可以隨時在「{{provider}} · 遠端與分享」裡關閉或刪除。",
+      "calloutRemote": "同意後，{{name}} 可以在自己的任務裡使用 {{provider}} 的模型。Agent 在供應商所在的電腦上執行，用量計入你的 {{provider}}。你可以隨時在「{{provider}} · 遠端與分享」裡關閉或刪除。",
       "calloutClaudeEmail": "{{name}} 使用時，Agent 能看到你登入 Claude 用的電子郵件地址。",
       "calloutUnknown": "如果你不認識申請人，請拒絕；拒絕後這條連結作廢。",
       "approve": "同意分享",

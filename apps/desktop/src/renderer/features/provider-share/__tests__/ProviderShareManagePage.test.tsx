@@ -248,16 +248,21 @@ describe('ProviderShareManagePage', () => {
 
   // §4.1/§7.2: management approval must show the same disclosure and route as automatic approval.
   // Existing host tests do not click this entry; keep the host real to catch duplicate modal ownership.
-  it.each([undefined, 'studio'])('shows approval disclosure before submitting on the provider’s computer (%s)', async (deviceId) => {
+  it.each([
+    { deviceId: undefined, grouped: true, callout: 'providerShare.approve.calloutGroup' },
+    { deviceId: 'studio', grouped: true, callout: 'providerShare.approve.calloutGroup' },
+    { deviceId: undefined, grouped: false, callout: 'providerShare.approve.callout:' },
+    { deviceId: 'studio', grouped: false, callout: 'providerShare.approve.calloutRemote' },
+  ])('shows approval disclosure before submitting on the provider’s computer ($deviceId, grouped=$grouped)', async ({ deviceId, grouped, callout }) => {
     currentOwned.quietRequestIds = ['req-1'];
-    localGroups = deviceId ? {} : { xd: xdGroup };
-    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' }, group: xdGroup }];
+    localGroups = !deviceId && grouped ? { xd: xdGroup } : {};
+    remoteCatalog.providers = [{ id: 'xd', source: 'builtin', auth: { method: 'apiKey' }, ...(grouped ? { group: xdGroup } : {}) }];
     const remoteCommand = vi.spyOn(window.electronAPI.providerGroup, 'command');
     renderPage('on', { deviceId, globalHost: true });
     const row = await screen.findByTestId('provider-share-pending-row');
     fireEvent.click(within(row).getByRole('button', { name: 'providerShare.approve.approve' }));
     const dialog = await screen.findByTestId('provider-share-approve-dialog');
-    expect(dialog.textContent).toContain('providerShare.approve.calloutGroup');
+    expect(dialog.textContent).toContain(callout);
     const approval = { action: 'approve', requestId: 'req-1' };
     expect(command).not.toHaveBeenCalledWith(approval);
     expect(remoteCommand).not.toHaveBeenCalledWith(expect.objectContaining({
