@@ -36,6 +36,7 @@ type PushListener = (
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn<(deviceId: string, channel: string, args: unknown[]) => Promise<unknown>>(),
   pushListeners: [] as PushListener[],
+  peerResetListeners: [] as Array<(value: { deviceId: string }) => void>,
   statusListeners: [] as Array<(value: { status: 'online' | 'connecting' | 'stopped' }) => void>,
   presenceListeners: [] as Array<(value: { deviceId: string; online: boolean }) => void>,
 }));
@@ -61,11 +62,16 @@ beforeEach(() => {
   mocks.pushListeners.length = 0;
   mocks.presenceListeners.length = 0;
   mocks.statusListeners.length = 0;
+  mocks.peerResetListeners.length = 0;
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       deviceLink: {
         invoke: mocks.invoke,
+        onPeerLinkReset: (listener: (value: { deviceId: string }) => void) => {
+          mocks.peerResetListeners.push(listener);
+          return () => { mocks.peerResetListeners = mocks.peerResetListeners.filter(item => item !== listener); };
+        },
         onPresenceChanged: (listener: (value: { deviceId: string; online: boolean }) => void) => {
           mocks.presenceListeners.push(listener);
           return () => { mocks.presenceListeners = mocks.presenceListeners.filter(item => item !== listener); };
@@ -437,4 +443,23 @@ it('rereads when the target comes online after an early relay recovery read fail
   await flushMicrotasks();
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
   expect(view.result.current).toBeNull();
+});
+
+it('rereads only the reset peer without needing relay or presence changes', async () => {
+  const quota = { spend: 12, maxBudget: 100, currency: 'CNY', todaySpend: null, fetchedAt: 1 };
+  mocks.invoke.mockResolvedValue(quota);
+  const a = renderHook(() => useRemoteClaudeAccountUsage('reset-a'));
+  const b = renderHook(() => useRemoteClaudeAccountUsage('reset-b'));
+  await flushMicrotasks();
+  mocks.invoke.mockClear();
+  mocks.invoke.mockResolvedValue({ quotaState: 'unlimited' });
+  act(() => mocks.peerResetListeners.forEach(cb => cb({ deviceId: 'reset-a' })));
+  await flushMicrotasks();
+  expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  expect(mocks.invoke.mock.calls[0]?.[0]).toBe('reset-a');
+  expect(a.result.current).toBeNull();
+  expect(b.result.current).toEqual(quota);
+  a.unmount();
+  b.unmount();
+  expect(mocks.peerResetListeners).toHaveLength(0);
 });

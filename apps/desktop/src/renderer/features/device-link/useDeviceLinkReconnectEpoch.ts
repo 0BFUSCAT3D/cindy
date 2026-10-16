@@ -32,9 +32,14 @@ export function useDeviceLinkReconnectEpoch(deviceId: string | undefined): numbe
       if (status === 'online' && previous !== 'online') bump();
     });
 
+    const offPeerReset = window.electronAPI.deviceLink.onPeerLinkReset?.((event) => {
+      if (event.deviceId === deviceId) bump();
+    });
+
     return () => {
       offPresence();
       offStatus();
+      offPeerReset?.();
     };
   }, [deviceId]);
 
