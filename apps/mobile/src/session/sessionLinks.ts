@@ -1,5 +1,6 @@
 import { parseSharedTaskPeer } from '@cindy/device-link';
 import { BRAND_IDENTITY, allDeepLinkSchemes } from '@cindy/maker-shared/brand-identity';
+import type { RemoteSession } from '@/session/types';
 
 // 深链双 scheme(身份单点派生):cindy 主 + xdt-maker 永久兼容(存量消息里的
 // 老链接不能死);生成一律用主 scheme。与桌面端 shared/deepLinkSchemes 同源镜像。
@@ -27,6 +28,8 @@ export function isCindyDeepLinkUrl(url: string): boolean {
  * 目标任务归档 / 未同步后,点开与引用仍能按它找到那台电脑,不必猜当前设备。
  */
 export interface MobileSessionDeepLinkOptions {
+  /** 当前同步的任务信息优先于页面保留的设备路由。 */
+  session?: Pick<RemoteSession, 'canonicalDeviceId' | 'deviceLinkDeviceId'> | null;
   deviceId?: string | null;
 }
 
@@ -37,7 +40,10 @@ function sessionDeepLinkQuery(
   const pairs: string[] = [];
   if (messageClientId) pairs.push(`message=${encodeURIComponent(messageClientId)}`);
   // 共享任务句柄只在当前客户端有效;跨端链接携带房主的真实电脑 ID。
-  const deviceId = parseSharedTaskPeer(opts?.deviceId)?.deviceId ?? opts?.deviceId;
+  const sourceDeviceId = opts?.session?.canonicalDeviceId
+    ?? opts?.session?.deviceLinkDeviceId
+    ?? opts?.deviceId;
+  const deviceId = parseSharedTaskPeer(sourceDeviceId)?.deviceId ?? sourceDeviceId;
   if (deviceId) pairs.push(`device=${encodeURIComponent(deviceId)}`);
   return pairs.length > 0 ? `?${pairs.join('&')}` : '';
 }

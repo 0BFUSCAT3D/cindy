@@ -165,9 +165,7 @@ export function removeSessionExtraDir(
 export function sessionMenuCopyLink(
   session: Pick<RemoteSession, 'id' | 'canonicalDeviceId' | 'deviceLinkDeviceId'>,
 ): string {
-  return buildMobileSessionDeepLink(session.id, {
-    deviceId: session.canonicalDeviceId ?? session.deviceLinkDeviceId,
-  });
+  return buildMobileSessionDeepLink(session.id, { session });
 }
 
 /** Android 返回键 / 关闭手势的两段式收敛:info 先回 menu,menu 才关 sheet。 */
@@ -261,4 +259,3 @@ function lastPathPart(path: string): string {
 function readPositiveNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
-
