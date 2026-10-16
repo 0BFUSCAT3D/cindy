@@ -316,6 +316,12 @@ export function startCompanionCloud(input: {
     try {
       const summary = await mergeCompanionsInto({ api: input.api, host: materializer, keep: keepActor, from: labelled, humanActorId: input.humanActorId,
         roomOf, fence, ...(input.media ? { media: input.media } : {}), ...(input.log ? { log: input.log } : {}),
+        beforeRetire: async () => {
+          for (const actor of from) {
+            const synced = await syncCopy(actor);
+            if (!synced.ok) throw Object.assign(new Error(synced.code), { companionResult: synced });
+          }
+        },
         importHistory: async () => {
           // Without its task here the merged conversation would never reach the kept Cindy: fail,
           // so the copies stay active and the merge can run again.
@@ -335,7 +341,9 @@ export function startCompanionCloud(input: {
       input.log?.warn('Merging copies of Cindy will need another try', { code: errorCode(error) });
       await input.refresh?.().catch(() => undefined);
       publish();
-      return actionFailure(error) as CompanionMergeResult;
+      // A copy that got busy (or could not send) right before retiring: say why, as before the merge.
+      const settled = (error as { companionResult?: CompanionCloudActionResult } | null)?.companionResult;
+      return (settled ?? actionFailure(error)) as CompanionMergeResult;
     }
   }
 
@@ -495,7 +503,12 @@ export function startCompanionCloud(input: {
   async function flushOwn(botId: string): Promise<CompanionCloudActionResult> {
     if (!input.selfDeviceId || actorOf(botId)?.homeDeviceId !== input.selfDeviceId) return { ok: false, code: 'HOME_CONFLICT' };
     if (await input.host.isBotBusy?.(botId)) return { ok: false, code: 'BUSY' };
-    try { await flush(botId); return { ok: true }; }
+    try {
+      await flush(botId);
+      // A turn that started during the flush keeps producing: not settled yet (as before a hand-over).
+      if (await input.host.isBotBusy?.(botId)) return { ok: false, code: 'BUSY' };
+      return { ok: true };
+    }
     catch (error) {
       input.log?.warn('Companion sync before a merge did not finish', { code: errorCode(error) });
       return syncFailure(error);

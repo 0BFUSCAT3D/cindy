@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { inferBotTemplatePresetId } from '../../shared/botTemplatePreset.js';
 import type { CompanionHistoryAttachment, CompanionMaterializeHost, CompanionWriteFence } from './materialize.js';
 import type { CompanionMediaUpload, CompanionMirrorAttachment } from './mirror.js';
-import { readAllRoomMessages } from './room.js';
+import { readAllRoomMessages, readRoomPage } from './room.js';
 import type { CompanionApi, CompanionLog } from './types.js';
 import {
   COMPANION_MEMORY_PREFIX, COMPANION_PROFILE_KEY, COMPANION_ROUTINE_PREFIX, COMPANION_SKILL_PREFIX, COMPANION_TODO_PREFIX,
@@ -92,14 +92,19 @@ export async function mergeCompanionsInto(input: {
   media?: { upload: CompanionMediaUpload; download: (roomId: string, mediaId: string) => Promise<CompanionHistoryAttachment> };
   /** After the conversation is in the kept room: bring it into the kept companion's own task. */
   importHistory: () => Promise<void>;
+  /** Right before retiring: each copy's home sends anything it produced meanwhile (throws when it cannot). */
+  beforeRetire?: () => Promise<void>;
   fence: CompanionWriteFence;
   log?: CompanionLog;
 }): Promise<CompanionMergeSummary> {
   const { api, host, keep, fence } = input;
   const summary: CompanionMergeSummary = { merged: 0, messages: 0, memories: 0, skills: 0, renamed: [] };
   const keepRoom = await input.roomOf(keep);
+  // What each copy had in the cloud when the merge read it: anything newer at the end was missed.
+  const seen = new Map<string, string>();
   for (const source of input.from) {
     fence.assertCurrent();
+    seen.set(source.id, await cloudMark(api, source, input.roomOf));
     const rows = await api<PrefRow[]>('/preferences', 'GET', undefined, source.id);
     const prefs = (Array.isArray(rows) ? rows : []).filter(row => row.value !== null);
     const suffix = source.label || (source.name && source.name !== keep.name ? source.name : source.externalId.slice(-8));
@@ -144,6 +149,13 @@ export async function mergeCompanionsInto(input: {
     summary.messages += await mergeConversation({ ...input, source, keepRoom });
   }
   await input.importHistory();
+  // A copy that kept working during the merge (a new turn, a memory saved) has more in the cloud
+  // than was read: stop with every copy active; running the merge again brings the rest.
+  await input.beforeRetire?.();
+  for (const source of input.from) {
+    fence.assertCurrent();
+    if (await cloudMark(api, source, input.roomOf) !== seen.get(source.id)) throw new Error('COMPANION_STILL_CHANGING');
+  }
   // Only now are the merged copies no longer companions: other computers hide and stop their copy.
   // Until here a failure leaves every source active, so the merge can run again.
   for (const source of input.from) {
@@ -211,6 +223,15 @@ async function mergeConversation(input: {
     start = end;
   }
   return imported;
+}
+
+/** The newest preference revision and room message of a copy: changes whenever it adds anything. */
+async function cloudMark(api: CompanionApi, actor: CompanionMergeActor, roomOf: (actor: CompanionMergeActor) => Promise<string>): Promise<string> {
+  const rows = await api<PrefRow[]>('/preferences', 'GET', undefined, actor.id);
+  const revision = (Array.isArray(rows) ? rows : []).reduce((max, row) => Math.max(max, Number(row.revision) || 0), 0);
+  const page = await readRoomPage(api, await roomOf(actor));
+  const seq = page.reduce((max, message) => (BigInt(message.seq) > max ? BigInt(message.seq) : max), 0n);
+  return `${revision}:${seq}`;
 }
 
 /** The profile snapshot of a companion actor, for telling the copies of Cindy apart. */

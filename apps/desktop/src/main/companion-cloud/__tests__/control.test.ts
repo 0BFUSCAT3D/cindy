@@ -675,7 +675,8 @@ describe('merging copies of Cindy', () => {
     const t = mergeSetup({ sourceHome: 'laptop' });
     expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: true, merged: 1 });
     expect(t.flush).toHaveBeenCalledWith('laptop', 'bot_lap');
-    expect(t.order).toEqual(['flush', 'patch /actors/actor-from']);
+    // Once before reading it, once more right before retiring it.
+    expect(t.order).toEqual(['flush', 'flush', 'patch /actors/actor-from']);
   });
 
   it('does not merge while the other copy is still replying, and leaves it active', async () => {
@@ -698,6 +699,22 @@ describe('merging copies of Cindy', () => {
     const t = mergeSetup({ sourceHome: 'laptop', canonicalSession: async () => null });
     expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: false });
     expect(t.order).toEqual(['flush']);
+  });
+
+  it('re-checks every copy right before retiring it, and stops when one got busy meanwhile', async () => {
+    let calls = 0;
+    const flush = vi.fn(async () => (++calls === 1 ? { ok: true as const } : { ok: false as const, code: 'BUSY' }));
+    const t = mergeSetup({ sourceHome: 'laptop', flush });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toEqual({ ok: false, code: 'BUSY' });
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect(t.order.filter(step => step.startsWith('patch'))).toEqual([]);
+  });
+
+  it('does not count a copy as sent when a turn started during its flush', async () => {
+    let checks = 0;
+    // Idle when asked first, busy once the flush is done.
+    const t = mergeSetup({ sourceHome: 'desk', turnActive: () => ++checks > 1 });
+    expect(await t.runtime.flushHere('bot_lap')).toEqual({ ok: false, code: 'BUSY' });
   });
 
   it('answers a flush request only as the copy\'s home', async () => {

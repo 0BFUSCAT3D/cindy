@@ -25,8 +25,9 @@ describe('telling the copies of Cindy apart', () => {
 describe('merging copies of Cindy', () => {
   function setup() {
     const imports: Array<{ room: string; messages: Array<{ sourceId: string; authorId: string; createdAt: string; content: unknown[] }> }> = [];
+    const added: Array<{ key: string; value: unknown; revision: number }> = [];
     const { api, calls } = fakeApi((route, method, data, actorId) => {
-      if (route === '/preferences' && method === 'GET' && actorId === 'actor-from') return [
+      if (route === '/preferences' && method === 'GET' && actorId === 'actor-from') return [...added, 
         { key: 'companion.profile.v1', value: { name: 'Cindy', soul: 'theirs' }, revision: 1 },
         { key: 'companion.memory.v1:user_tea.md', value: { filename: 'user_tea.md', content: 'likes green tea' }, revision: 2 },
         { key: 'companion.memory.v1:user_new.md', value: { filename: 'user_new.md', content: 'only there' }, revision: 3 },
@@ -49,7 +50,8 @@ describe('merging copies of Cindy', () => {
     const importHistory = vi.fn<() => Promise<void>>(async () => undefined);
     const run = () => mergeCompanionsInto({ api, host: local.host, keep, from: [from], humanActorId: 'human',
       roomOf: async (actor) => (actor.id === keep.id ? KEEP_ROOM : FROM_ROOM), importHistory, fence: { assertCurrent: () => undefined } });
-    return { run, local, calls, imports, importHistory };
+    const addPreference = (n: number) => { added.push({ key: `companion.memory.v1:late-${n}.md`, value: { content: 'late' }, revision: 100 + n }); };
+    return { run, api, local, calls, imports, importHistory, addPreference };
   }
 
   it('brings memories, todos and the conversation over, keeping a different same-name memory as a copy', async () => {
@@ -106,4 +108,15 @@ describe('merging copies of Cindy', () => {
     expect(t.local.host.applyRoutines).toHaveBeenCalledWith('cindy-default',
       [{ id, input: { triggers: [] }, originDeviceId: 'laptop' }], [], expect.anything());
   });
+
+  it('stops with the copies active when one added something after it was read', async () => {
+    const t = setup();
+    let extra = 0;
+    const run = () => mergeCompanionsInto({ api: t.api, host: t.local.host, keep, from: [from], humanActorId: 'human',
+      roomOf: async (actor) => (actor.id === keep.id ? KEEP_ROOM : FROM_ROOM), importHistory: t.importHistory,
+      fence: { assertCurrent: () => undefined }, beforeRetire: async () => { extra += 1; t.addPreference(extra); } });
+    await expect(run()).rejects.toThrow('COMPANION_STILL_CHANGING');
+    expect(t.calls.some(call => call.method === 'PATCH')).toBe(false);
+  });
 });
+
