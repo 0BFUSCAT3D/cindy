@@ -21,6 +21,8 @@ export function cloudActorForRow(actors: readonly ChatActor[], row: HostedRemote
 }
 
 const TEAMMATES = 'teammates';
+/** Revision of a row built from the cloud actor alone (its computer never listed it here). */
+export const CLOUD_ROW_REVISION = 'cloud';
 
 function cloudAvatar(actor: ChatActor): RemoteResourceAvatar {
   const fallbackText = Array.from(actor.name.trim())[0] ?? 'C';
@@ -49,7 +51,7 @@ export function cloudCompanionRows(items: readonly HostedRemoteCollectionItem[],
     if (listed.some(row => row.item.ref.kind === 'bot' && row.item.ref.id === actor.externalId && row.host.deviceId === deviceId)) return [];
     const ref = { collectionId: TEAMMATES, kind: 'bot', id: actor.externalId };
     return [{ key: JSON.stringify([deviceId, ref.collectionId, ref.kind, ref.id]), host: { deviceId, deviceName: deviceNames.get(deviceId) ?? deviceId },
-      item: { ref, display: { title: actor.name, avatar: cloudAvatar(actor) }, links: [], revision: 'cloud' } }];
+      item: { ref, display: { title: actor.name, avatar: cloudAvatar(actor) }, links: [], revision: CLOUD_ROW_REVISION } }];
   });
   return [...listed, ...added];
 }

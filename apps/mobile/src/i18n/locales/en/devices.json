@@ -925,6 +925,7 @@
     "transferBusy": "{{name}} is still working on a reply. Move it after the reply finishes",
     "switchConflict": "{{name}}’s main computer has already changed, so it wasn’t moved",
     "homeOutdated": "The main computer “{{device}}” runs an older Cindy. Update it, or change the main computer there",
-    "homeUnreachable": "Can’t reach “{{device}}”. It must be online with “Allow same-account devices to control this machine” turned on"
+    "homeUnreachable": "Can’t reach “{{device}}”. It must be online with “Allow same-account devices to control this machine” turned on",
+    "sendUnreachable": "Your message hasn’t reached the main computer “{{device}}”; it may be offline. You can continue on another computer."
   }
 }

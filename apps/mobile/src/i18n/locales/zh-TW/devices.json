@@ -925,6 +925,7 @@
     "transferBusy": "{{name}} 還在回覆，等這一輪結束再換電腦",
     "switchConflict": "{{name}} 的主力電腦已經變了，這次沒有更換",
     "homeOutdated": "主力電腦「{{device}}」上的 Cindy 版本較舊，請先更新它，或在那台電腦上更換",
-    "homeUnreachable": "現在連不上「{{device}}」，它需要在線並開啟「允許同帳號裝置控制本機」"
+    "homeUnreachable": "現在連不上「{{device}}」，它需要在線並開啟「允許同帳號裝置控制本機」",
+    "sendUnreachable": "訊息還沒送到主力電腦「{{device}}」，它可能已離線。可以換一台電腦繼續。"
   }
 }

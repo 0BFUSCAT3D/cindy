@@ -19,10 +19,8 @@ describe('mirrorMessageText', () => {
       .toBe('look\n[附件: cat.png]\n[附件: a.pdf]');
     expect(mirrorMessageText(reply('hello'))).toBe('hello');
   });
-  it('keeps an attachment-only message as placeholders, but not one from another source', () => {
+  it('keeps an attachment-only message as placeholders', () => {
     expect(mirrorMessageText(row('user', { text: '', images: [{ url: 'x', originalName: 'cat.png' }], files: [] }))).toBe('[附件: cat.png]');
-    expect(mirrorMessageText(row('user', { text: '', images: [{ url: 'x' }], files: [] },
-      { agentMeta: JSON.stringify({ imSource: { channel: 'feishu' } }) }))).toBeNull();
   });
   it.each([
     ['tool rows', row('tool_use', { name: 'Bash' })],
@@ -31,23 +29,39 @@ describe('mirrorMessageText', () => {
     ['messages that came from the room', user('hi', { clientId: 'chat-direct:exec-1' })],
     ['imported cloud history', reply('old', { clientId: 'cloud-history:abc' })],
     ['empty text', reply('   ')],
+    ['automatic continuations', user('继续', { agentMeta: JSON.stringify({ autoResume: true }) })],
+    ['coordination between teammates', user('hand off', { agentMeta: JSON.stringify({ botTaskCoordination: { kind: 'x' } }) })],
+    ['a delegated continuation', user('continue', { agentMeta: JSON.stringify({ autoReviewUserText: { kind: 'delegated-continuation' } }) })],
     ['private coordination replies', reply('internal', { agentMeta: JSON.stringify({ botPrivateReply: true }) })],
     ['progress commentary', reply('checking files', { agentMeta: JSON.stringify({ assistantPhase: 'commentary' }) })],
     ['sub-agent output', reply('sub result', { agentMeta: JSON.stringify({ parentToolUseId: 'toolu_1' }) })],
     ['sub-agent output (snake case)', reply('sub result', { agentMeta: JSON.stringify({ parent_tool_use_id: 'toolu_1' }) })],
     ['Claude sub-agent output (parentUuid)', reply('sub result', { agentMeta: JSON.stringify({ parentUuid: 'toolu_subagent' }) })],
-    ['input sent by another task or teammate', user('do this', { agentMeta: JSON.stringify({ origin: { kind: 'session', senderSessionId: 's' } }) })],
-    ['input from an automation', user('scheduled', { agentMeta: JSON.stringify({ origin: { kind: 'scheduler', scheduleId: 'r' } }) })],
-    ['input from a plugin', user('plugin says', { agentMeta: JSON.stringify({ sourcePlugin: { pluginId: 'p' } }) })],
-    ['input from an IM channel', user('from feishu', { agentMeta: JSON.stringify({ imSource: { channel: 'feishu' } }) })],
-    ['input from a shared-task member', user('guest', { agentMeta: JSON.stringify({ sharedTaskAuthor: { memberId: 'm' } }) })],
-    ['a group-sourced message', user('group', { agentMeta: JSON.stringify({ sourceGroup: { groupId: 'g' } }) })],
   ])('drops %s', (_name, value) => {
     expect(mirrorMessageText(value)).toBeNull();
   });
 });
 
 describe('owner-typed input', () => {
+  it('keeps what the owner typed, which the host marks for the auto reviewer', () => {
+    // Regression: this marker means "the owner said this"; treating it as another source dropped
+    // nearly every message the owner sent.
+    expect(mirrorMessageText(user('发送', { agentMeta: JSON.stringify({ autoReviewUserText: '发送',
+      sourceDevice: { deviceId: 'phone', platform: 'mobile' } }) }))).toBe('发送');
+  });
+
+  it('keeps visible input from other sources, labelled as the chat labels it', () => {
+    const labelled = (meta: unknown, text = 'hi') => mirrorMessageText(user(text, { agentMeta: JSON.stringify(meta) }));
+    expect(labelled({ origin: { kind: 'session', senderSessionId: 's', senderSessionTitle: '整理' } })).toBe('〔来自任务「整理」〕\nhi');
+    expect(labelled({ origin: { kind: 'session', senderSessionId: 's', senderBotId: 'b', senderBotName: 'Mia' } })).toBe('〔来自伙伴「Mia」〕\nhi');
+    expect(labelled({ origin: { kind: 'scheduler', scheduleId: 'r' } })).toBe('〔来自定时任务〕\nhi');
+    expect(labelled({ sourcePlugin: { pluginId: 'p', name: 'Art' } })).toBe('〔来自插件「Art」〕\nhi');
+    expect(labelled({ sharedTaskAuthor: { memberId: 'm', displayName: 'Ann' } })).toBe('〔来自共享任务成员「Ann」〕\nhi');
+    expect(labelled({ sourceGroup: { groupId: 'g' } })).toBe('〔来自群聊〕\nhi');
+    // IM: the person's own words, without the context the host wrapped around them.
+    expect(labelled({ imSource: { im: 'feishu', userText: '取消订单' } }, '<group_chat_context>…</group_chat_context>\n取消订单')).toBe('〔来自飞书〕\n取消订单');
+  });
+
   it('keeps what the owner typed on another device', () => {
     expect(mirrorMessageText(user('from my phone', { agentMeta: JSON.stringify({ sourceDevice: { deviceId: 'phone', platform: 'mobile' } }) })))
       .toBe('from my phone');

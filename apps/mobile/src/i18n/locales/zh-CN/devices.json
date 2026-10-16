@@ -925,6 +925,7 @@
     "transferBusy": "{{name}} 还在回复，等这一轮结束再换电脑",
     "switchConflict": "{{name}} 的主力电脑已经变了，这次没有更换",
     "homeOutdated": "主力电脑「{{device}}」上的 Cindy 版本较旧，请先更新它，或在那台电脑上更换",
-    "homeUnreachable": "现在连不上「{{device}}」，它需要在线并开启「允许同账号设备控制本机」"
+    "homeUnreachable": "现在连不上「{{device}}」，它需要在线并开启「允许同账号设备控制本机」",
+    "sendUnreachable": "消息还没送到主力电脑「{{device}}」，它可能已离线。可以换一台电脑继续。"
   }
 }

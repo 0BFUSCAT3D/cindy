@@ -28,7 +28,7 @@ vi.mock('@/lib/toast', () => ({ toast: { info: h.toast, error: h.toast } }));
 import { CloudCompanionOfflineView } from '../CloudCompanionOfflineView';
 import { BotHomeComputerSetting, companionArrivedHere } from '../BotHomeComputerSetting';
 import { resetCompanionCloudStoreForTests, useCompanionCloud } from '../companionCloudStore';
-import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudHomeOffline, withoutCloudCompanions, withoutShadowedBots } from '../companionCloudPresentation';
+import { cloudOnlyRemoteBots, cloudRemoteBots, isCloudCompanionRemote, withoutCloudCompanions, withoutShadowedBots } from '../companionCloudPresentation';
 import { BotConnectionStatus } from '../BotConnectionStatus';
 
 const maker = {
@@ -65,9 +65,9 @@ describe('presentation helpers', () => {
     const extra = cloudOnlyRemoteBots(cloud, []);
     expect(extra).toMatchObject([{ id: 'mia', deviceId: 'laptop', deviceName: 'Laptop', online: false }]);
     expect(cloudOnlyRemoteBots(cloud, extra)).toEqual([]);
-    expect(isCloudHomeOffline(cloud, extra[0])).toBe(true);
-    expect(isCloudHomeOffline(cloud, { ...extra[0]!, online: true })).toBe(false);
-    expect(isCloudHomeOffline(snapshot('desk'), { id: 'mia', deviceId: 'desk', online: false })).toBe(false);
+    expect(isCloudCompanionRemote(cloud, extra[0]!)).toBe(true);
+    expect(isCloudCompanionRemote(cloud, { id: 'mia', deviceId: 'elsewhere' })).toBe(false);
+    expect(isCloudCompanionRemote(snapshot('desk'), { id: 'mia', deviceId: 'desk' })).toBe(false);
   });
 
   it('hides a local copy as soon as its main computer is known to be elsewhere', () => {
@@ -95,9 +95,11 @@ describe('presentation helpers', () => {
     expect(cloudRemoteBots(snapshot('laptop', false), [row('old-mac')])).toHaveLength(1);
   });
 
-  it('labels an offline main computer in the row status', () => {
-    render(<BotConnectionStatus inline online={false} homeOffline deviceName="Laptop" />);
-    expect(screen.getByText('bots.cloud.homeOfflineShort · Laptop')).toBeTruthy();
+  it('does not announce an unreachable main computer in the row status, like IM', () => {
+    const { container } = render(<><BotConnectionStatus inline online={false} quiet deviceName="Laptop" /><BotConnectionStatus online={false} quiet /></>);
+    expect(container.textContent).toBe('Laptop');
+    expect(container.querySelector('[title]')?.getAttribute('title')).toBe('Laptop');
+    expect(container.querySelectorAll('span')).toHaveLength(1);
   });
 });
 

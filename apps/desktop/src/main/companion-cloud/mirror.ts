@@ -5,6 +5,8 @@
  */
 import { createHash } from 'node:crypto';
 import { isSubagentParentToolUseId } from '@cindy/maker-shared/message-render';
+import { messageSourceSenderFromMeta } from '@cindy/maker-shared/message-source';
+import { imChannelDisplayName } from '../../shared/imMessageSource.js';
 import { visibleMessageText } from '../localDb/conversationSearch.pure.js';
 import type { CompanionCloudState } from './state.js';
 import { chatRejection, errorCode, type CompanionApi, type CompanionLog } from './types.js';
@@ -58,13 +60,34 @@ function attachmentNames(content: unknown): string[] {
 }
 
 /**
- * Host-stamped sender/source metadata (message-source.md). A user row carrying any of these
- * was sent by another task, teammate, plugin, IM channel, automation, Orca or a shared-task
- * member — not typed by the owner — so it never goes up as the owner's words.
- * `sourceDevice` (the owner on another device) is the one source that stays.
+ * User rows the companion's own chat hides (automatic continuations, coordination between
+ * teammates): not part of the visible conversation, so not in the room either.
  */
-const NON_OWNER_SOURCE_KEYS = ['origin', 'sourcePlugin', 'sharedTaskAuthor', 'imSource', 'hookSource', 'sourceGroup',
-  'botTaskCoordination', 'autoReviewUserText', 'autoResume'] as const;
+const HIDDEN_INPUT_KEYS = ['botTaskCoordination', 'autoResume'] as const;
+
+const SCHEDULER_LABEL = '定时任务';
+
+/**
+ * Where a visible user row came from when the owner did not type it here, in the words the chat
+ * shows next to it (message-source.md): the room shows the same conversation as the chat, with the
+ * same attribution. Owner input (also from another device; `autoReviewUserText` marks it) has none.
+ */
+export function mirrorSourceLabel(meta: Record<string, unknown>): string | null {
+  const sender = messageSourceSenderFromMeta(meta);
+  const quote = (name: unknown) => (typeof name === 'string' && name.trim() ? `「${name.trim().slice(0, 80)}」` : '');
+  if (sender?.kind === 'plugin') return `来自插件${quote(sender.name)}`;
+  if (sender?.kind === 'session') return sender.botId ? `来自伙伴${quote(sender.botName)}` : `来自任务${quote(sender.title)}`;
+  if (sender?.kind === 'shared-member') return `来自共享任务成员${quote(sender.name)}`;
+  const origin = meta.origin && typeof meta.origin === 'object' ? meta.origin as Record<string, unknown> : null;
+  if (origin?.kind === 'scheduler') return `来自${SCHEDULER_LABEL}`;
+  if (origin?.kind === 'orca') return '来自协同任务';
+  for (const key of ['imSource', 'hookSource'] as const) {
+    const source = meta[key] && typeof meta[key] === 'object' ? meta[key] as Record<string, unknown> : null;
+    if (source) return `来自${imChannelDisplayName(source.im) ?? '外部渠道'}`;
+  }
+  if (meta.sourceGroup) return '来自群聊';
+  return null;
+}
 
 /** A file the owner sent with a message, as the room media upload reads it. */
 export interface CompanionMirrorAttachment {
@@ -104,8 +127,14 @@ export function mirrorMessageText(row: CompanionMirrorRow, options: { placeholde
     || (meta.parentToolUseId ?? null) !== null || (meta.parent_tool_use_id ?? null) !== null
     // Claude sub-agent rows; same predicate as the renderer (a legacy transcript link is not one).
     || (typeof meta.parentUuid === 'string' && !!meta.parentUuid && isSubagentParentToolUseId(meta.parentUuid)))) return null;
-  if (row.role === 'user' && NON_OWNER_SOURCE_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
-  const text = visibleMessageText(row.role, row.content);
+  if (row.role === 'user' && HIDDEN_INPUT_KEYS.some(key => meta[key] !== undefined && meta[key] !== null && meta[key] !== false)) return null;
+  // A delegated continuation (not something said in this chat) carries this marker as an object.
+  if (row.role === 'user' && meta.autoReviewUserText && typeof meta.autoReviewUserText === 'object') return null;
+  // IM input keeps the person's own words apart from the context the host put around them.
+  const im = row.role === 'user' && meta.imSource && typeof meta.imSource === 'object' ? meta.imSource as Record<string, unknown> : null;
+  const typed = typeof im?.userText === 'string' && im.userText.trim() ? im.userText.trim() : visibleMessageText(row.role, row.content);
+  const label = row.role === 'user' ? mirrorSourceLabel(meta) : null;
+  const text = label && typed ? `〔${label}〕\n${typed}` : typed;
   // Attachments count on their own: an images-only message is still the owner's message.
   // Hidden synthetic inputs carry no attachments, so they stay out.
   const names = row.role === 'user' ? attachmentNames(parse(row.content)) : [];

@@ -31,11 +31,10 @@ export function cloudCompanionAt(cloud: CompanionCloudSnapshot, deviceId: string
   return cloud.actors.find((actor) => actor.externalId === botId && actor.homeDeviceId === deviceId) ?? null;
 }
 
-/** A remote companion whose home computer cannot be reached right now. */
-export function isCloudHomeOffline(cloud: CompanionCloudSnapshot, bot: Pick<RemoteBot, 'id' | 'deviceId' | 'online'> | undefined, deviceId?: string, botId?: string): boolean {
-  const actor = cloudCompanionAt(cloud, bot?.deviceId ?? deviceId, bot?.id ?? botId);
-  if (!actor || actor.homeDeviceId === cloud.selfDeviceId) return false;
-  return !bot?.online;
+/** A remote companion homed on that computer: its connection is not announced (cloud-companions.md §3.1). */
+export function isCloudCompanionRemote(cloud: CompanionCloudSnapshot, bot: Pick<RemoteBot, 'id' | 'deviceId'>): boolean {
+  const actor = cloudCompanionAt(cloud, bot.deviceId, bot.id);
+  return !!actor && actor.homeDeviceId !== cloud.selfDeviceId;
 }
 
 /**

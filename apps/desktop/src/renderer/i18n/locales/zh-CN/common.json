@@ -9705,7 +9705,6 @@
       "homeLabel": "主力电脑",
       "thisComputer": "这台电脑",
       "homeOffline": "主力电脑「{{device}}」离线",
-      "homeOfflineShort": "主力电脑离线",
       "homeUnreachable": "主力电脑「{{device}}」没有开放远程控制",
       "continueHere": "在这台电脑继续",
       "takeOverHint": "在这台电脑继续后，{{name}} 改在这里运行，下面的对话一起带过来。",

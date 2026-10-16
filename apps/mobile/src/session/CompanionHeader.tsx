@@ -50,7 +50,9 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
   const pending = useRef<(() => void) | null>(null);
   const name = resolveRemoteText(resource.display.title, i18n.language);
   const afterProfile = (action: () => void) => { pending.current = action; setProfile(false); };
-  const connection = online ? '' : t('devices.resources.hostOffline');
+  // A cloud companion does not show its computer's presence (it belongs to the account, like an IM
+  // contact); a message that cannot get through is what asks to switch computers.
+  const connection = online || homed ? '' : t('devices.resources.hostOffline');
   return <>
     <ChatIdentityHeader testIDPrefix="companion"
       mark={<>
@@ -59,7 +61,7 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
       </>}
       title={name}
       subtitle={<View style={styles.subtitleRow}>
-        <View style={[styles.presence, online ? styles.presenceOn : styles.presenceOff]} testID="companion.header.presence" />
+        {homed ? null : <View style={[styles.presence, online ? styles.presenceOn : styles.presenceOff]} testID="companion.header.presence" />}
         <ChatIdentitySubtitle>{[connection, homed ? t('devices.cloudCompanion.runsOn', { device: deviceName }) : deviceName].filter(Boolean).join(' · ')}</ChatIdentitySubtitle>
       </View>}
       identityLabel={[name, deviceName, connection].filter(Boolean).join(', ')}

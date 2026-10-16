@@ -9705,7 +9705,6 @@
       "homeLabel": "メインのパソコン",
       "thisComputer": "このパソコン",
       "homeOffline": "メインのパソコン「{{device}}」がオフラインです",
-      "homeOfflineShort": "メインのパソコンがオフライン",
       "homeUnreachable": "メインのパソコン「{{device}}」はリモート操作を許可していません",
       "continueHere": "このパソコンで続ける",
       "takeOverHint": "このパソコンで続けると、{{name}} はこちらで動作し、下の会話も引き継がれます。",
