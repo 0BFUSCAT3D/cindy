@@ -364,6 +364,23 @@ export function remoteErrorMessageForBanner(msg: string): string {
   const key = remoteErrorI18nKey(msg);
   return key && i18n.exists(key) ? msg : decodeRemoteErrorMessage(msg);
 }
+
+/**
+ * 终态 error 事件写进 live 横幅的文案。空响应/无详情失败 banner 文案走 i18n(四语言),不直接
+ * 渲染 maker-core 发来的中文 message(规则 18:UI 文案必须 i18n)。maker-core 用稳定 reason 当
+ * key('empty-response' / 'turn-failed'), message 仅作非 renderer 消费方(IM/orca)的兜底。
+ */
+function liveErrorBannerText(message: string, reason: string | undefined): string {
+  return reason === 'empty-response'
+    ? i18n.t('logic.errors.emptyResponse')
+    : reason === 'turn-failed'
+      ? i18n.t('logic.errors.turnFailed')
+      : reason === 'silent-stop-exhausted'
+        ? i18n.t('logic.errors.silentStopExhausted')
+        : reason === 'codex-auto-review-unavailable'
+          ? i18n.t('logic.errors.codexAutoReviewUnavailable')
+          : remoteErrorMessageForBanner(message);
+}
 // 专门给"出现在用户面前的红色 ErrorBanner"打日志,scope 以 `maker/` 开头
 // 是为了让它落在统一 agent 流(agent-*.ndjson,跟 agent runtime 抛出的底层错误同一份,
 // 且带 sessionId 可按 session 过滤),用户截图反馈时直接拉这一份就能看到完整因果链。
@@ -4227,36 +4244,11 @@ function applyErrorPersistedDirtySignal(sessionId: string, persistId?: string): 
     _pendingErrorClearOnLeave.add(sessionId);
     return;
   }
-  handOffPersistedLiveErrorToHistory(sessionId);
-}
-
-/**
- * 已落库的终态错误改由历史里的错误卡呈现：清掉 live 横幅并让历史重载。
- *
- * 本机任务保留 errorPersistId。main 的输入投影仍带着这次错误(还没有人处置)，之后任何一次
- * 投影(打开任务、队列变化、协同派活等)都会把 live 横幅重新点亮；applyInputProjection 只在
- * error 仍在时沿用已有绑定。绑定若随横幅一起清掉，重新点亮的横幅点关闭就标不了 dismissed，
- * 重载后尾部错误卡又出现(Orca Worker 的错误多在 Lead 视图里发生，最常见)。本机任务与 main
- * 同机，新一轮启动、投影 error 清空或新的 persistId 都会及时到达并收掉这份绑定。
- *
- * device-link 远程任务照旧连绑定一起清。控制端断线期间会漏收被控端的新一轮启动、新错误事件
- * 与落库信号，重连后的投影只带错误文案、不带它对应的行；若保留旧绑定，关闭新错误标记的会是
- * 旧行，新错误重载后仍复现。宁可维持「关闭后可能复现」也不标错行。彻底修好需要投影携带当前
- * 错误的 persistId(device-link 协议改动)，不在这里做。远程判定与 dismissErrorMessageFor
- * 同源(会话来源设备)，取粘滞值：relay 重连会暂时清空来源映射，恰好是要防的断线窗口。
- */
-function handOffPersistedLiveErrorToHistory(sessionId: string): void {
-  const keepPersistId = getStickySessionDeviceId(sessionId) === undefined;
   setState(sessionId, (s) => ({
     ...s,
     ...(s.historyLoaded ? { historyLoaded: false } : {}),
     ...(s.error
-      ? {
-          error: null,
-          usageLimitRecovery: null,
-          errorRetryText: null,
-          ...(keepPersistId ? {} : { errorPersistId: null }),
-        }
+      ? { error: null, usageLimitRecovery: null, errorRetryText: null, errorPersistId: null }
       : {}),
   }));
 }
@@ -4275,7 +4267,13 @@ function leaveView(sessionId: string): void {
   _lastViewedAt.set(sessionId, Date.now());
   if (_pendingErrorClearOnLeave.has(sessionId)) {
     _pendingErrorClearOnLeave.delete(sessionId);
-    handOffPersistedLiveErrorToHistory(sessionId);
+    setState(sessionId, (s) => ({
+      ...s,
+      ...(s.historyLoaded ? { historyLoaded: false } : {}),
+      ...(s.error
+        ? { error: null, usageLimitRecovery: null, errorRetryText: null, errorPersistId: null }
+        : {}),
+    }));
   }
   _trimMessagesIfNeeded();
   _softEvictIdleSessions();
@@ -6389,19 +6387,7 @@ export function handleStreamEvent(
         !new RegExp(`\\b${errorStatus}\\b`).test(safeErrMsgRaw)
           ? `${safeErrMsgRaw} (HTTP ${errorStatus})`
           : safeErrMsgRaw;
-      // 空响应/无详情失败 banner 文案走 i18n(四语言),不直接渲染 maker-core 发来的
-      // 中文 message(规则 18:UI 文案必须 i18n)。maker-core 用稳定 reason 当 key
-      // ('empty-response' / 'turn-failed'), message 仅作非 renderer 消费方(IM/orca)的兜底。
-      const errMsg =
-        reason === 'empty-response'
-          ? i18n.t('logic.errors.emptyResponse')
-          : reason === 'turn-failed'
-            ? i18n.t('logic.errors.turnFailed')
-            : reason === 'silent-stop-exhausted'
-              ? i18n.t('logic.errors.silentStopExhausted')
-              : reason === 'codex-auto-review-unavailable'
-                ? i18n.t('logic.errors.codexAutoReviewUnavailable')
-                : remoteErrorMessageForBanner(safeErrMsg);
+      const errMsg = liveErrorBannerText(safeErrMsg, reason);
       const isTerminalError = isTerminalErrorData(event.data);
       // 终态错误 = turn 收口（含失败）：清掉该 session 的「正在识别图片中」toast，
       // 避免视觉桥未输出就终结时 loading toast 残留（done/abort/terminal error 兜底）。
@@ -15818,23 +15804,67 @@ function popQueueTail(sessionId: string): boolean {
  * 并尽快把即将/已经落库的 error 行标 dismissed。离开视图不会走这里。
  */
 function disposeLiveErrorPersist(sessionId: string): void {
-  const persistId = sessions.get(sessionId)?.errorPersistId;
+  const state = sessions.get(sessionId);
+  const persistId = state?.errorPersistId;
   if (persistId) {
-    setState(sessionId, (s) =>
-      s.disposedErrorPersistId === persistId ? s : { ...s, disposedErrorPersistId: persistId },
-    );
-    void dismissErrorTailMessage(sessionId, persistId);
+    markLiveErrorRowDisposed(sessionId, persistId);
     return;
   }
   const pending = _deferredTurnErrorPersist.get(sessionId);
-  if (!pending) return;
-  void pending.then((id) => {
-    if (!id) return;
-    setState(sessionId, (s) =>
-      s.disposedErrorPersistId === id ? s : { ...s, disposedErrorPersistId: id },
-    );
-    void dismissErrorTailMessage(sessionId, id);
-  });
+  if (pending) {
+    void pending.then((id) => {
+      if (id) markLiveErrorRowDisposed(sessionId, id);
+    });
+    return;
+  }
+  const tailRowId = state ? persistedTailRowIdForLiveError(state) : null;
+  if (tailRowId) markLiveErrorRowDisposed(sessionId, tailRowId);
+}
+
+function markLiveErrorRowDisposed(sessionId: string, clientId: string): void {
+  setState(sessionId, (s) =>
+    s.disposedErrorPersistId === clientId ? s : { ...s, disposedErrorPersistId: clientId },
+  );
+  void dismissErrorTailMessage(sessionId, clientId);
+}
+
+/**
+ * live 横幅没有绑定落库行时，找出它对应的已落库尾部错误行。
+ *
+ * 错误落库后若用户没在看这个任务(或之后离开过)，live 横幅会交给历史错误卡，绑定一并清掉；
+ * main 的输入投影仍带着这次错误，之后任何一次投影(打开任务、队列变化、协同派活等)都会把
+ * live 横幅重新点亮，但投影只有错误文案、没有它对应的行，也没有错误代次。所以不在交接时
+ * 保留绑定：后来的新错误(远程断线期间漏收的新一轮、scheduler 发送前失败直接换掉错误等)
+ * 可能不经过新一轮启动就顶替旧错误，保留的绑定会被错用到新错误上，关闭标掉的是旧行。
+ *
+ * 改在关闭时按当前看到的内容认领：已加载历史的最后一条(与尾部错误卡同一判定)是未处置的
+ * error 行，且文案与 live 横幅一致，才认为是同一次错误。文案口径与两种来源对齐：
+ * - error 事件写入的横幅：liveErrorBannerText(行 message, 行 reason)。行 message 与事件
+ *   message 经同一 redactSensitiveText 落库，事件附带的 errorStatus 不落库，所以横幅末尾的
+ *   「(HTTP 4xx)」后缀去掉再比；
+ * - 投影点亮的横幅：coordinator 记录的是同一条 message 原文，直接等于行 message。
+ * 对不上(历史未加载、尾部不是 error、文案不同)就什么都不标，退回「只清界面」，不会标到
+ * 无关行。剩余边界：两次错误文案完全相同、新错误又还没落库时，会标掉同文案的旧尾行。
+ */
+function persistedTailRowIdForLiveError(state: SessionChatState): string | null {
+  if (!state.error || !state.historyLoaded) return null;
+  const tail = state.messages[state.messages.length - 1];
+  if (
+    !tail ||
+    tail.role !== 'error' ||
+    tail.errorDismissed ||
+    tail.clientId === state.disposedErrorPersistId ||
+    typeof tail.content !== 'string'
+  ) {
+    return null;
+  }
+  const live = state.error;
+  const liveWithoutStatus = live.replace(/ \(HTTP \d{3}\)$/, '');
+  const rowMessage = tail.content;
+  const rowBannerText = liveErrorBannerText(rowMessage, tail.errorReason ?? undefined);
+  return live === rowMessage || live === rowBannerText || liveWithoutStatus === rowBannerText
+    ? tail.clientId
+    : null;
 }
 
 /** 取消账号限额重置后的自动继续:错误与手动重试保留,只撤等待。 */

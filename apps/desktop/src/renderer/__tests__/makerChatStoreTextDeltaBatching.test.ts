@@ -2902,8 +2902,7 @@ describe('makerChatStore text delta batching', () => {
 
     onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-deferred' });
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
-    // 横幅交给历史错误卡，但绑定留着：main 投影仍带着这次错误，重新点亮时要能关掉同一行。
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-deferred');
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
   });
 
   it('迟到的 deferred persist IPC 不得把 A 的 persistId 绑到下一轮 live error B', async () => {
@@ -3044,22 +3043,57 @@ describe('makerChatStore text delta batching', () => {
 
     onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-bg' });
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-bg');
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
   });
 
-  // Orca Worker 的错误多在用户看着 Lead 时落库：横幅先交给历史错误卡，打开 Worker 时 main 投影
-  // 又把同一条错误点亮。点关闭必须标记那一行，切回或重载后尾部错误卡不能再出现。
+  // 错误落库后交给历史(用户没在看、或之后离开过)，绑定随 live 横幅一起清掉；main 投影随后
+  // 又把同一条错误点亮。关闭时按已加载历史的尾部错误行认领：同一次错误才标记，绝不标无关行。
+  const errorTailUserRow = serverMessage({
+    id: 'tail-user-row',
+    clientId: 'tail-user',
+    sessionId: SESSION_ID,
+    role: 'user',
+    content: JSON.stringify({ text: 'hi' }),
+    createdAt: '2026-10-16T00:00:01.000Z',
+  });
+  function persistedErrorRow(
+    clientId: string,
+    message: string,
+    extra: Record<string, unknown> = {},
+    createdAt = '2026-10-16T00:00:02.000Z',
+  ): Message {
+    return serverMessage({
+      id: `${clientId}-row`,
+      clientId,
+      sessionId: SESSION_ID,
+      role: 'error',
+      content: { message, ...extra },
+      createdAt,
+    });
+  }
+  async function reloadHistory(rows: Message[]): Promise<void> {
+    vi.mocked(messageService.list).mockResolvedValueOnce(rows);
+    makerChatStore.ensureInitialMessages(SESSION_ID);
+    await flushPromises();
+    await flushPromises();
+    expect(makerChatStore.getSnapshot(SESSION_ID).historyLoaded).toBe(true);
+  }
+
   it.each([
     ['main 落库的普通错误', 'main'],
     ['界面补写的 Key 失效错误', 'deferred'],
-  ] as const)('后台落库后被投影重新点亮的%s，点关闭仍标记同一行', async (_label, writer) => {
+  ] as const)('后台落库后被投影重新点亮的%s，点关闭标记尾部同一行', async (_label, writer) => {
     const message = LITELLM_INVALID_PROXY_TOKEN;
     if (writer === 'main') {
       onInputProjection?.(projection(SESSION_ID, { error: message }));
       onEvent?.({
         sessionId: SESSION_ID,
         persistId: 'err-persist-worker',
-        event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
+        event: {
+          type: 'error',
+          source: 'claude-code',
+          data: { isTerminal: true, message, errorStatus: 401 },
+        },
       });
     } else {
       vi.mocked(window.electronAPI.modelAccess.retry).mockResolvedValueOnce({
@@ -3085,16 +3119,22 @@ describe('makerChatStore text delta batching', () => {
     }
     await flushPromises();
     await flushPromises();
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-worker');
-
     onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-worker' });
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
 
+    await reloadHistory([
+      errorTailUserRow,
+      persistedErrorRow(
+        'err-persist-worker',
+        message,
+        writer === 'deferred' ? { reason: 'gateway-proxy-token-invalid' } : {},
+      ),
+    ]);
     // 打开 Worker / 任何一次投影推送：main 仍未处置这次错误。
     onInputProjection?.(projection(SESSION_ID, { error: message }));
     makerChatStore.enterView(SESSION_ID);
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe(message);
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-worker');
 
     makerChatStore.clearError(SESSION_ID);
     await flushPromises();
@@ -3103,7 +3143,7 @@ describe('makerChatStore text delta batching', () => {
     makerChatStore.leaveView(SESSION_ID);
   });
 
-  it('看过后离开视图、再被投影点亮的错误，点关闭仍标记同一行', async () => {
+  it('看过后离开视图、再被投影点亮的错误，点关闭标记尾部同一行', async () => {
     const message = 'worker turn failed';
     makerChatStore.enterView(SESSION_ID);
     onInputProjection?.(projection(SESSION_ID, { error: message }));
@@ -3117,7 +3157,9 @@ describe('makerChatStore text delta batching', () => {
 
     makerChatStore.leaveView(SESSION_ID);
     expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
 
+    await reloadHistory([errorTailUserRow, persistedErrorRow('err-persist-viewed', message)]);
     onInputProjection?.(projection(SESSION_ID, { error: message }));
     makerChatStore.enterView(SESSION_ID);
     makerChatStore.clearError(SESSION_ID);
@@ -3126,89 +3168,90 @@ describe('makerChatStore text delta batching', () => {
     makerChatStore.leaveView(SESSION_ID);
   });
 
-  it('投影清掉错误后不再沿用旧绑定', () => {
-    const message = 'worker turn failed';
-    onInputProjection?.(projection(SESSION_ID, { error: message }));
+  it('error 事件带出的 HTTP 状态后缀不影响认领尾部同一行', async () => {
+    // 落库行不存 errorStatus；横幅文案末尾的「(HTTP 500)」要去掉再比。
+    await reloadHistory([errorTailUserRow, persistedErrorRow('err-persist-status', 'upstream failed')]);
     onEvent?.({
       sessionId: SESSION_ID,
-      persistId: 'err-persist-old',
-      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
-    });
-    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-old' });
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-old');
-
-    onInputProjection?.(projection(SESSION_ID, { error: null }));
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
-
-    onInputProjection?.(projection(SESSION_ID, { error: message }));
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
-  });
-
-  it('交给历史后保留的旧绑定在新一轮启动时清掉', () => {
-    const message = 'worker turn failed';
-    onInputProjection?.(projection(SESSION_ID, { error: message }));
-    onEvent?.({
-      sessionId: SESSION_ID,
-      persistId: 'err-persist-old',
-      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message } },
-    });
-    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-old' });
-    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-old');
-
-    emitStatus({ status: 'Thinking…', isRunning: true });
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
-  });
-
-  // 控制端断线期间会漏收被控端的新一轮启动与新错误事件；重连投影带来的错误 B 不能沿用错误 A
-  // 的绑定，否则关闭 B 标记的是 A 的行。
-  it('device-link 远程任务交给历史时清掉绑定，重连投影带来的新错误不沿用旧行', async () => {
-    remoteProjectsStore.pinSessionOrigin('device-1', SESSION_ID);
-    deviceLinkInvoke.mockResolvedValue(projection(SESSION_ID));
-    onRemotePush?.({
-      deviceId: 'device-1',
-      channel: 'maker:input:projection',
-      payload: projection(SESSION_ID, { error: 'remote error A' }),
-    });
-    onRemotePush?.({
-      deviceId: 'device-1',
-      channel: 'maker:event',
-      payload: {
-        sessionId: SESSION_ID,
-        persistId: 'err-persist-remote-A',
-        event: {
-          type: 'error',
-          source: 'claude-code',
-          data: { isTerminal: true, message: 'remote error A' },
-        },
+      event: {
+        type: 'error',
+        source: 'claude-code',
+        data: { isTerminal: true, message: 'upstream failed', errorStatus: 500 },
       },
     });
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBe('err-persist-remote-A');
-
-    onRemotePush?.({
-      deviceId: 'device-1',
-      channel: 'local-db:session:error-persisted',
-      payload: { sessionId: SESSION_ID, persistId: 'err-persist-remote-A' },
-    });
-    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
-    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
-
-    // 断线期间被控端又跑了一轮并失败(错误 B)；控制端只在重连后收到投影。
-    onRemotePush?.({
-      deviceId: 'device-1',
-      channel: 'maker:input:projection',
-      payload: projection(SESSION_ID, { error: 'remote error B' }),
-    });
-    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe('remote error B');
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBe('upstream failed (HTTP 500)');
     expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
 
     makerChatStore.clearError(SESSION_ID);
     await flushPromises();
-    expect(deviceLinkInvoke).not.toHaveBeenCalledWith(
-      'device-1',
-      'local-db:messages:dismiss-error',
-      [SESSION_ID, 'err-persist-remote-A'],
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-status');
+  });
+
+  // Codex review：本机错误 A 交给历史后，scheduler 发送前失败可直接把错误换成 B，中间没有
+  // 新一轮启动，也没有 error:null 投影。关闭 B 只能标 B 的行，不能标 A。
+  it('发送前失败直接换成新错误 B：B 已落库则标 B，未落库则不标 A', async () => {
+    onInputProjection?.(projection(SESSION_ID, { error: 'error A' }));
+    onEvent?.({
+      sessionId: SESSION_ID,
+      persistId: 'err-persist-A',
+      event: { type: 'error', source: 'claude-code', data: { isTerminal: true, message: 'error A' } },
+    });
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-A' });
+    expect(makerChatStore.getSnapshot(SESSION_ID).errorPersistId).toBeNull();
+    await reloadHistory([errorTailUserRow, persistedErrorRow('err-persist-A', 'error A')]);
+
+    // B 还没落库：尾部仍是 A，文案不同。
+    onInputProjection?.(projection(SESSION_ID, { error: 'error B' }));
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    expect(messageService.dismissError).not.toHaveBeenCalled();
+
+    // B 落库后：投影再点亮 B，尾部是 B 的行。
+    onInputProjection?.(projection(SESSION_ID, { error: 'error B' }));
+    onErrorPersisted?.({ sessionId: SESSION_ID, persistId: 'err-persist-B' });
+    expect(makerChatStore.getSnapshot(SESSION_ID).error).toBeNull();
+    await reloadHistory([
+      errorTailUserRow,
+      persistedErrorRow('err-persist-A', 'error A'),
+      persistedErrorRow('err-persist-B', 'error B', {}, '2026-10-16T00:00:03.000Z'),
+    ]);
+    onInputProjection?.(projection(SESSION_ID, { error: 'error B' }));
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+    expect(messageService.dismissError).toHaveBeenCalledTimes(1);
+    expect(messageService.dismissError).toHaveBeenCalledWith(SESSION_ID, 'err-persist-B');
+  });
+
+  it('历史未加载或尾部不是未处置的 error 行时不标记任何行', async () => {
+    // 历史未加载。
+    onInputProjection?.(projection(SESSION_ID, { error: 'error A' }));
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+
+    // 尾部是普通消息。
+    await reloadHistory([persistedErrorRow('err-persist-old', 'error A'), {
+      ...errorTailUserRow,
+      createdAt: '2026-10-16T00:00:05.000Z',
+    }]);
+    onInputProjection?.(projection(SESSION_ID, { error: 'error A' }));
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages.at(-1)?.role).toBe('user');
+
+    // 尾部 error 行已处置。
+    makerChatStore.purgeSession(SESSION_ID);
+    await reloadHistory([
+      errorTailUserRow,
+      persistedErrorRow('err-persist-done', 'error A', { dismissed: true }),
+    ]);
+    expect(makerChatStore.getSnapshot(SESSION_ID).messages.at(-1)).toEqual(
+      expect.objectContaining({ clientId: 'err-persist-done', errorDismissed: true }),
     );
+    onInputProjection?.(projection(SESSION_ID, { error: 'error A' }));
+    makerChatStore.clearError(SESSION_ID);
+    await flushPromises();
+
     expect(messageService.dismissError).not.toHaveBeenCalled();
   });
 
