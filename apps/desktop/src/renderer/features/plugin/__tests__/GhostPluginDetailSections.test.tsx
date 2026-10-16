@@ -82,8 +82,9 @@ vi.mock('react-i18next', () => ({
         'settings.ghosts.detail.oauthScopeStale':
           'This authorization does not include newly added permissions. Reconnect to enable them.',
       };
-      return labels[key] ?? key;
+      return labels[key] ?? (options?.value !== undefined ? `${options.value} ${key}` : key);
     },
+    i18n: { language: 'en' },
   }),
 }));
 
@@ -1101,4 +1102,15 @@ describe('Ghost plugin detail sections', () => {
       within(dialog).getByText((_, element) => element?.textContent === 'scope.read\nscope.write'),
     ).toBeTruthy();
   });
+});
+
+it('adds shared counts to installed detail metadata while preserving author and version', () => {
+  const { container } = render(<GhostPluginMetadata author="Cindy" version="1.7.5" marketItem={{
+    sourceType: 'server', scope: 'organization',
+    downloadStatistics: { requestCount: '1284' },
+    usageStatistics: { usageCount: '8932', usageCountLast7Days: '12', asOf: '2026-10-13T00:00:00Z' },
+  } as import('../../../../shared/pluginMarket').PluginMarketItem} />);
+  expect(container.textContent).toContain('By Cindy·v1.7.5');
+  expect(container.textContent).toContain('1,284 settings.ghosts.usage.downloadsValue');
+  expect(container.textContent).toContain('8,932 settings.ghosts.usage.usesValue');
 });

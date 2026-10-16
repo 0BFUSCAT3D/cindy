@@ -225,6 +225,7 @@ SDK 规则随依赖一起进入应用的最终 R8 配置，不在应用侧重复
 | Expo 原生模块 | 使用 `expo-modules-core` 的 consumer rules，保留模块构造与 `definition()`、Record、视图等动态入口。自定义模块的函数名通过 `ModuleDefinition` 字符串注册。 |
 | 微信 OpenSDK 6.8.38 | Maven AAR 自带 `com.tencent.mm.opensdk` / `com.tencent.wxop` 规则；微信回调 Activity 由 config plugin 写入 manifest，由 Android 构建规则保留。 |
 | TapSDK 4.10.5 | `modules/xdt-tapdb/android/consumer-rules.pro` 按[官方接入要求](https://developer.taptap.io/docs/sdk/access/quickstart/#android-code-obfuscation)保留 `com.taptap` / `com.tapsdk`，覆盖服务发现及反射调用。 |
+| ONNX Runtime Android 1.30.0 | `modules/cindy-speaker-onnx/android/consumer-rules.pro` 保留 `ai.onnxruntime` 的类与成员，覆盖 JNI 按原名查找的 `TensorInfo` 等类型及构造方法。声纹录入与过滤须用开启 R8 的 release 包验证，mock 原生桥的 JS 单测不能替代。 |
 | Nimbus JOSE JWT 10.9.1 | 远控凭证模块直接调用 JOSE API，协议 JSON 使用显式键名的 `JSONObject` / Map，不依赖业务类字段名反射序列化。`cindy-remote-credentials/android/consumer-rules.pro` 仅忽略未启用的 XC20P 算法所需的可选 Tink 类；当前协议创建和接收均限制为 `ECDH-ES + A256GCM`。若扩展算法，须重新核对可选依赖。 |
 
 升级 SDK 时核对其 AAR/JAR 的 consumer rules、应用的最终 `configuration.txt` 和 release
@@ -320,10 +321,16 @@ JS OTA 仍按现有通道检查，设置页手动检查只报告内容更新。�
 这项原生查询改变 Android runtime fingerprint，旧 Play 包必须经一次 Play 冷更后才具备
 可靠的安装来源识别能力；不能把 JS OTA 当作旧包已经修复。
 
-- 已授权直接下载；未授权先显示说明与「去授权 / 浏览器下载 / 稍后」，用户点「去授权」
-  才打开系统设置。返回后读取实际权限；拒绝不会循环申请，可选择浏览器下载。
-- 下载显示进度并支持取消；网络停滞会结束并提供重试。下载在后台完成时，等回到前台
-  再打开安装器。关闭下载面板不会解除原有强制更新闸门。
+- 全程只用一张内容高度的 Material 底部更新卡（`SheetModal.nativePresentation`）：
+  应用图标、版本变化与更新内容固定在上方，授权说明、下载进度、安装与失败在同一张卡内
+  切换，不再叠系统对话框。启动／设置页／回前台发现普通更新时直接呈现该卡，卡上
+  「立即更新」才是用户确认；强更屏的「去更新」本身就是确认，不再出现确认步骤。
+  旧原生包、网页地址与 Play 安装仍走原系统对话框和既有出口。
+- 已授权时确认后直接下载；未授权时卡内先说明权限，用户点「允许并更新」才打开系统设置，
+  返回后读取实际权限，授权成功即继续下载。拒绝不会循环申请，卡上保留「改用浏览器下载」。
+- 下载显示进度条并支持取消，服务器未给大小时显示不定进度（系统减弱动态效果时静止）；
+  网络停滞会结束并提供重试。下载在后台完成时，等回到前台再打开安装器。关闭更新卡不会
+  解除原有强制更新闸门。
 - APK 只写入 app 私有 `cache/cindy-updates/`。原生桥只接受该目录内的 APK，校验包名、
   目标版本与递增的 versionCode；最终签名校验、安装确认和覆盖安装由 Android 负责。
 - 安装器已打开不代表安装完成。取消系统安装后可再次安装已下载的文件；交接后的文件
