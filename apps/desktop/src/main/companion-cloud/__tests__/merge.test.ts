@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CINDY_DEFAULT_IDENTITY } from '../../../shared/botTemplatePreset.js';
-import { isCindyCompanion, mergeCompanionsInto, mergedRoutineId, renamedEntry } from '../merge.js';
+import { isCindyCompanion, mergeCompanionsInto, mergedRoutineId, mergedTodoId, renamedEntry } from '../merge.js';
 import { fakeApi, fakeLocal } from './fakes.js';
 
 const KEEP_ROOM = '10000000-0000-4000-8000-00000000000a';
@@ -63,7 +63,7 @@ describe('merging copies of Cindy', () => {
     expect(t.local.memories.get('user_tea-macbook-pro.md')).toBe('likes green tea');
     expect(t.local.memories.get('user_new.md')).toBe('only there');
     expect(summary).toMatchObject({ merged: 1, messages: 2, memories: 2, renamed: ['user_tea-macbook-pro.md'] });
-    expect(t.local.host.applyTodos).toHaveBeenCalledWith('cindy-default', [{ id: 'todo:1', title: 'x', history: [] }], [], expect.anything());
+    expect(t.local.host.applyTodos).toHaveBeenCalledWith('cindy-default', [{ id: mergedTodoId('cindy-default', 'actor-from', 'todo:1'), title: 'x', history: [] }], [], expect.anything());
     // In message-time order, authored by the kept companion, with the original times.
     expect(t.imports[0]!.room).toBe(KEEP_ROOM);
     expect(t.imports[0]!.messages.map(m => [m.authorId, m.createdAt])).toEqual([['human', new Date(1_000).toISOString()], ['actor-keep', new Date(2_000).toISOString()]]);
@@ -104,9 +104,12 @@ describe('merging copies of Cindy', () => {
   it('gives merged routines ids of their own in the kept Cindy', async () => {
     const t = setup();
     await t.run();
-    const id = mergedRoutineId('cindy-default', 'routine-1');
+    const id = mergedRoutineId('cindy-default', 'actor-from', 'routine-1');
     expect(id).toMatch(/^[a-zA-Z0-9_-]{16,128}$/);
-    expect(id).not.toBe(mergedRoutineId('bot_other', 'routine-1'));
+    expect(id).not.toBe(mergedRoutineId('bot_other', 'actor-from', 'routine-1'));
+    // Two copies holding the same id (e.g. a todo from the same old workbench entry) never collide.
+    expect(mergedTodoId('cindy-default', 'actor-a', 'todo:legacy-x')).not.toBe(mergedTodoId('cindy-default', 'actor-b', 'todo:legacy-x'));
+    expect(mergedTodoId('cindy-default', 'actor-a', 'todo:legacy-x')).toMatch(/^todo:/);
     expect(t.local.host.applyRoutines).toHaveBeenCalledWith('cindy-default',
       [{ id, input: { triggers: [] }, originDeviceId: 'laptop' }], [], expect.anything());
   });

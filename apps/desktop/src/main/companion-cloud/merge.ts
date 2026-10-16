@@ -76,9 +76,20 @@ async function mergeTarget(name: string, suffix: string, content: string, read: 
   throw new Error('MERGE_NAME_EXHAUSTED');
 }
 
-/** A routine joining another companion gets its own stable id (the source may still own the original here). */
-export function mergedRoutineId(keepBotId: string, routineId: string): string {
-  return `m${createHash('sha256').update(`${keepBotId}\n${routineId}`).digest('hex').slice(0, 40)}`;
+/**
+ * Every todo and routine joining another companion gets an id of its own, stable per (kept
+ * companion, source, original id): copies of Cindy can hold the same id (a todo made from the same
+ * old workbench entry, a routine the source still owns here), and nothing merged may replace
+ * another. A rerun derives the same ids, so it replaces only what it brought before.
+ */
+function mergedEntryHash(keepBotId: string, sourceActorId: string, id: string): string {
+  return createHash('sha256').update(`${keepBotId}\n${sourceActorId}\n${id}`).digest('hex').slice(0, 40);
+}
+export function mergedRoutineId(keepBotId: string, sourceActorId: string, routineId: string): string {
+  return `m${mergedEntryHash(keepBotId, sourceActorId, routineId)}`;
+}
+export function mergedTodoId(keepBotId: string, sourceActorId: string, todoId: string): string {
+  return `todo:m-${mergedEntryHash(keepBotId, sourceActorId, todoId)}`;
 }
 
 export async function mergeCompanionsInto(input: {
@@ -134,13 +145,16 @@ export async function mergeCompanionsInto(input: {
       summary.skills += 1;
     }
 
-    // Todo ids are unique per companion (the store gives a same-key todo its own key); a rerun
-    // replaces the same ids. Routines get ids of their own in the kept companion.
-    const todos = prefs.filter(row => row.key.startsWith(COMPANION_TODO_PREFIX)).map(row => row.value);
+    // Todos and routines get ids of their own in the kept companion (the store also gives a
+    // same-key todo its own key).
+    const todos = prefs.filter(row => row.key.startsWith(COMPANION_TODO_PREFIX)).map(row => row.value).flatMap(value => {
+      const todo = record(value);
+      return todo && typeof todo.id === 'string' ? [{ ...todo, id: mergedTodoId(keep.externalId, source.id, todo.id) }] : [];
+    });
     if (todos.length && host.applyTodos) await host.applyTodos(keep.externalId, todos, [], fence);
     const routines = prefs.filter(row => row.key.startsWith(COMPANION_ROUTINE_PREFIX)).map(row => row.value).flatMap(value => {
       const routine = record(value);
-      return routine && typeof routine.id === 'string' ? [{ ...routine, id: mergedRoutineId(keep.externalId, routine.id) }] : [];
+      return routine && typeof routine.id === 'string' ? [{ ...routine, id: mergedRoutineId(keep.externalId, source.id, routine.id) }] : [];
     });
     if (routines.length && host.applyRoutines) await host.applyRoutines(keep.externalId, routines, [], fence);
     const workbench = prefs.find(row => row.key === COMPANION_WORKBENCH_KEY);
