@@ -17,7 +17,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 
 import { getDbClient } from '../localDb/client/current.js';
 import { botDelegations, botProfiles, botSessionLinks, messages, sessions } from '../localDb/schema.js';
@@ -321,6 +321,7 @@ export function applyWorkingMemoryProposal(
   ): T[] {
     const byText = new Map(existing.map((item) => [item.text, item] as const));
     const kept = new Map<string, T>();
+    let added = 0;
     for (const item of proposed) {
       const text = clampText(item.text);
       if (!text || resolvedTexts.has(text)) continue;
@@ -335,6 +336,10 @@ export function applyWorkingMemoryProposal(
         continue;
       }
       if (!evidenced) continue;
+      // 只追加模式下新条目不能把旧条目挤出容量:区满了就延后新增(这一轮之后会被完整回补),
+      // 否则 rewind 这一轮时来源清理只能删掉新条目,被挤掉的旧承诺回不来。
+      if (opts.additiveOnly && existing.length + added >= cap) continue;
+      added += 1;
       kept.set(text, build(null, item, { id: nextId(), text, messageId: item.evidence!.messageId, updatedAt: opts.now }));
     }
     // 提案没提到的旧条目保留(漏写 ≠ 完成),除非被 resolved 点名。
@@ -708,6 +713,8 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
       )
       .limit(1);
     if (typeof covered?.rowid !== 'number') return false;
+    // 必须覆盖的水位 = 最近一条完成回复,或更晚落库的交互答复(计划审阅的批准 / 打回、提问卡
+    // 答案在回复完成之后才写入):它们承载用户决定,没被复盘过就不能算新鲜。
     const [row] = await db
       .select({ rowid: sql<number | null>`MAX(rowid)` })
       .from(messages)
@@ -715,8 +722,13 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
         and(
           eq(messages.sessionId, sessionId),
           isNull(messages.rewindAt),
-          eq(messages.role, 'assistant'),
-          sql`json_valid(${messages.agentMeta}) AND json_extract(${messages.agentMeta}, '$.turnCompleted') = 1`,
+          or(
+            and(
+              eq(messages.role, 'assistant'),
+              sql`json_valid(${messages.agentMeta}) AND json_extract(${messages.agentMeta}, '$.turnCompleted') = 1`,
+            ),
+            inArray(messages.role, ['ask_user', 'plan_review']),
+          ),
         ),
       );
     const latest = row?.rowid;

@@ -155,6 +155,32 @@ describe('applyWorkingMemoryProposal', () => {
     expect(additive.commitments.map((c) => c.text)).toEqual(['新承诺', '把测试补上', '给设计稿加暗色模式', '周五前改完周报模板']);
     expect(additive.commitments.find((c) => c.id === 'c1')).toMatchObject({ messageId: 'old', updatedAt: 1 });
     expect(additive.commitments.find((c) => c.id === 'c1')).not.toHaveProperty('trigger');
+    // 只追加模式下分区已满:新条目延后,不把最旧的旧条目挤出去。
+    const fullWaiting = Array.from({ length: WORKING_MEMORY_LIMITS.waiting }, (_, i) => ({
+      id: `w${i}`, text: `等第${i}个回复`, on: 'user' as const, updatedAt: i + 1,
+    }));
+    const crowded = applyWorkingMemoryProposal(
+      { ...emptyWorkingMemory(), waiting: fullWaiting },
+      {
+        threads: [], commitments: [], corrections: [], recentlyDone: [], resolved: [],
+        waiting: [{ text: '等新的回复', on: 'user', evidence: { messageId: 'a1', quote: '改完发你确认' } }],
+      },
+      messages,
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', additiveOnly: true },
+    );
+    expect(crowded.waiting.map((w) => w.id).sort()).toEqual(fullWaiting.map((w) => w.id).sort());
+    // 非只追加模式照旧:新条目进账,最旧的被容量裁掉。
+    const normal = applyWorkingMemoryProposal(
+      { ...emptyWorkingMemory(), waiting: fullWaiting },
+      {
+        threads: [], commitments: [], corrections: [], recentlyDone: [], resolved: [],
+        waiting: [{ text: '等新的回复', on: 'user', evidence: { messageId: 'a1', quote: '改完发你确认' } }],
+      },
+      messages,
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'a1' },
+    );
+    expect(normal.waiting.map((w) => w.text)).toContain('等新的回复');
+    expect(normal.waiting.map((w) => w.id)).not.toContain('w0');
   });
 
   it('requires evidence to change a field of an existing item, allows evidenced clearing, and bumps time only on real change', () => {
