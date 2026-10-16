@@ -5,6 +5,7 @@ const fixture = vi.hoisted(() => ({
   handlers: new Map<string, Function>(),
   calls: [] as any[],
   owner: 'a:1',
+  debug: vi.fn(),
 }));
 vi.mock('electron', () => ({
   BrowserWindow: { fromWebContents: () => null },
@@ -13,7 +14,7 @@ vi.mock('electron', () => ({
   ipcMain: { handle: (name: string, fn: Function) => fixture.handlers.set(name, fn) },
 }));
 vi.mock('../../logger', () => ({
-  createLogger: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }),
+  createLogger: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: fixture.debug }),
 }));
 vi.mock('../../appSessionState', () => ({
   activeOwnerScopeKey: () => fixture.owner,
@@ -42,6 +43,8 @@ vi.mock('../preferences', () => ({
 vi.mock('../../i18n', () => ({ t: (s: string) => s }));
 vi.mock('../../device-link/index', () => ({
   getSelfDeviceId: () => 'local',
+  getDeviceLinkStatus: () => 'online',
+  getUnresponsiveDeviceIds: () => ['a'],
   remoteInvoke: vi.fn(async (...args: any[]) => {
     args[3]?.preSend?.();
     fixture.calls.push(args);
@@ -116,10 +119,38 @@ afterEach(() => {
   fixture.calls = [];
   fixture.handlers.clear();
   fixture.owner = 'a:1';
+  fixture.debug.mockClear();
 });
 const event = (win: any) => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
 const call = (channel: string, win: any, ...args: unknown[]) =>
   fixture.handlers.get(channel)!(event(win), ...args);
+it('records signaling and peer state on a failed request without leaking its payload', async () => {
+  const sender: any = { id: 100 };
+  manager = new RemoteDesktopViewerWindows((value) => value === sender);
+  manager.register();
+  manager.open(sender, { deviceId: 'a', name: 'private computer' });
+  const win = fixture.windows[0];
+  call(REMOTE_VIEWER.READY, win);
+  call(REMOTE_VIEWER.PRESENTED, win);
+  const { generation } = call(REMOTE_VIEWER.STATE, win);
+  await call(REMOTE_VIEWER.REQUEST, win, generation, { op: 'start', displayId: 'screen' });
+  vi.mocked(remoteInvoke).mockRejectedValueOnce(new Error('DESKTOP_LEASE_EXPIRED'));
+  await expect(
+    call(REMOTE_VIEWER.REQUEST, win, generation, { op: 'heartbeat', lease: 'lease-a' }),
+  ).rejects.toThrow('DESKTOP_LEASE_EXPIRED');
+  expect(fixture.debug).toHaveBeenCalledWith(
+    'desktop request failed',
+    expect.objectContaining({
+      operation: 'heartbeat',
+      code: 'DESKTOP_LEASE_EXPIRED',
+      signaling: 'online',
+      peerUnresponsive: true,
+    }),
+  );
+  expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('lease-a');
+  expect(JSON.stringify(fixture.debug.mock.calls)).not.toContain('private computer');
+});
+
 it.each(['resolve', 'reject'])(
   'closes immediately while stop is pending and ignores its late %s',
   async (outcome) => {
