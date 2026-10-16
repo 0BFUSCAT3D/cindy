@@ -717,6 +717,15 @@ describe('merging copies of Cindy', () => {
     expect(await t.runtime.flushHere('bot_lap')).toEqual({ ok: false, code: 'BUSY' });
   });
 
+  it('stops the merge when a copy\'s main task cannot be told, instead of counting its history as sent', async () => {
+    const t = mergeSetup({ sourceHome: 'desk', canonicalSession: async (botId) => {
+      if (botId === 'bot_lap') throw new Error('COMPANION_TASK_CONFLICT');
+      return 'session-1';
+    } });
+    expect(await t.runtime.mergeCindy('cindy-default', ['bot_lap'])).toMatchObject({ ok: false });
+    expect(t.order.filter(step => step.startsWith('patch'))).toEqual([]);
+  });
+
   it('answers a flush request only as the copy\'s home', async () => {
     const t = mergeSetup({ sourceHome: 'laptop' });
     expect(await t.runtime.flushHere('bot_lap')).toEqual({ ok: false, code: 'HOME_CONFLICT' });

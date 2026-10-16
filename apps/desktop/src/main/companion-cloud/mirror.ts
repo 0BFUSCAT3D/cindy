@@ -170,6 +170,7 @@ export function createCompanionMirror(deps: {
   api: CompanionApi;
   state: CompanionCloudState;
   humanActorId: () => string;
+  /** Null when the companion has no main task yet; throws when it cannot be told, so nothing counts as sent. */
   canonicalSession: (botId: string) => Promise<string | null>;
   /** Strictly after the cursor, ascending by (createdAt, id); user/assistant rows that were not rewound. */
   rowsAfter: (sessionId: string, cursor: CompanionMirrorCursor, limit: number) => Promise<CompanionMirrorRow[]>;

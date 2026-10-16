@@ -30,6 +30,7 @@ export interface CompanionCloudHost {
   homes: CompanionHomeRegistry;
   openState: (endpoint: string, humanActorId: string, current: () => boolean) => CompanionCloudState;
   readValues: (botId: string) => Promise<CompanionPreferenceValue[]>;
+  /** The companion's main task; null when it has none yet. Throws when it cannot be told (conflicting links). */
   canonicalSession: (botId: string) => Promise<string | null>;
   rowsAfter: (sessionId: string, cursor: CompanionMirrorCursor, limit: number) => Promise<CompanionMirrorRow[]>;
   latestRows: (sessionId: string, limit: number, options?: { excludeClientIdPrefix?: string }) => Promise<CompanionMirrorRow[]>;

@@ -329,8 +329,11 @@ export function createCompanionCloudHost(input: {
       current, log: input.log,
     }),
     readValues: botId => readCompanionValues(botId, input.selfDeviceId?.() ?? null),
+    // No main task yet is nothing to sync; conflicting ones are not: syncing, a hand-over and a merge
+    // must stop rather than count this computer's history as sent.
     canonicalSession: async botId => {
       const resolved = await resolveBotCanonicalSession(botId);
+      if (resolved.status === 'conflict') throw new Error('COMPANION_TASK_CONFLICT');
       return resolved.status === 'resolved' ? resolved.sessionId : null;
     },
     rowsAfter: readMirrorRowsAfter,
