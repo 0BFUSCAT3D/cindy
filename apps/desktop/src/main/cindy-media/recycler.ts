@@ -179,10 +179,13 @@ export async function scanCache(
 ): Promise<CacheScan> {
   const limitBytes = params.limitBytes ?? CACHE_LIMIT_BYTES;
   const rows = await ledger.listCacheBlobsByLru(db, params.integration);
-  const totalBytes = rows.reduce((sum, r) => sum + r.bytes, 0);
+  // Integration scoping restricts eviction, not the shared warehouse budget.
+  const { cacheBytes: totalBytes, cacheCount: count } = params.integration
+    ? await ledger.getStorageStats(db)
+    : { cacheBytes: rows.reduce((sum, r) => sum + r.bytes, 0), cacheCount: rows.length };
   const scan: CacheScan = {
     totalBytes,
-    count: rows.length,
+    count,
     limitBytes,
     excessBytes: totalBytes - limitBytes,
     evictable: [],
