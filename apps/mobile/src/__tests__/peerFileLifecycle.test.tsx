@@ -312,7 +312,7 @@ it("releases a cache hit invalidated just before its promise resumes", async () 
   expect(state.open).not.toHaveBeenCalled();
 });
 
-it.each(["unknown", "timeout", "route-change", "debug-enabled"])("samples paths after %s and falls back despite steady progress", async (initial) => {
+it.each(["unknown", "timeout", "route-change", "debug-enabled"])("samples paths after %s without interrupting progress, then detects a stall", async (initial) => {
   state.holdReceive = true;
   state.debug = initial === "debug-enabled";
   const started = Date.now();
@@ -339,16 +339,17 @@ it.each(["unknown", "timeout", "route-change", "debug-enabled"])("samples paths 
     await vi.advanceTimersByTimeAsync(0);
     const receive = state.commands.find((c) => c.action === "receive");
     expect(receive).toBeDefined();
-    for (let offset = 0; offset < 26 && !settled; offset++) {
+    for (let offset = 0; offset < 75; offset++) {
       act(() => message({ type: "write", id: `write-${offset}`, args: [receive.args[0], offset, "YQ=="] }));
       await vi.advanceTimersByTimeAsync(1000);
-      // A route change must restart the rate sample instead of using old-path throughput.
-      if (initial === "route-change" && offset === 15) expect(settled).toBe(false);
+      // Neither an unknown/changing route nor a long total duration ends a live transfer.
+      expect(settled).toBe(false);
     }
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(settled).toBe(true);
     expect(await transfer).toBeNull();
     expect(state.stats.mock.calls.length).toBeGreaterThan(1);
-    expect(state.log).toHaveBeenCalledWith("debug", "files", "slow transfer fallback", expect.objectContaining({ reason: "slow-relay", path: "relay" }));
+    expect(state.log).toHaveBeenCalledWith("debug", "files", "slow transfer fallback", expect.objectContaining({ reason: "stalled", path: "relay" }));
     expect(state.log.mock.calls.some((c) => c[2] === "direct transfer progress")).toBe(state.debug);
     expect(state.deleted).toHaveBeenCalledOnce();
     const samples = state.stats.mock.calls.length;

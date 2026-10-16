@@ -436,13 +436,13 @@ export function PeerFileTransport() {
         target.create();
         const handle = target.open();
         sinks.current.set(id, { handle, size: file.size, offset: 0 });
-        // The watchdog needs current route information even with Debug recording off.
-        // Detailed network/disk progress is recorded only when diagnostics are enabled.
+        // Detect stalled writes even with Debug recording off. Route sampling is
+        // diagnostic only; a slow route must not interrupt a progressing download.
         let sampling = false;
         // Set when the receive settles: an already-issued stats reply must not append
         // a progress line behind the outcome log with a dropped sink offset.
         let ended = false;
-        const watch = createFileTransferWatchdog(file.size, () => connection?.path ?? 'unknown');
+        const watch = createFileTransferWatchdog();
         let slow = false;
         const sampler = setInterval(() => {
           if (ended || !current()) return;

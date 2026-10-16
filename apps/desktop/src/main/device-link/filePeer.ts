@@ -870,7 +870,7 @@ async function receivePeerFile(
     receiving.reportProgress();
     step = 'receive';
     const transferStartedAt = Date.now();
-    const watch = createFileTransferWatchdog(file.size, () => out.path ?? 'unknown');
+    const watch = createFileTransferWatchdog();
     const watchdog = setInterval(() => {
       if (signal?.aborted || !isCurrent()) return;
       const reason = watch(receiving.offset);

@@ -32,48 +32,20 @@ export function filePeerReuseMs(advertised: unknown, sessionBound?: unknown): nu
     : FILE_PEER_RECEIVE_TIMEOUT_MS / 2;
 }
 
-/** Do not assume TURN is slower than OSS or invent a KB/s floor. Sample for one
- * command budget; only abandon a known path when its remaining work is projected
- * to exceed a full receive budget. No progress uses the shorter command budget.
- * A path change discards the old sample. Unknown paths only detect stalls.
- * This bounds a bad attempt; without OSS measurements it cannot promise a faster route. */
-export function createFileTransferWatchdog(
-  size: number,
-  path: FileTransferPath | (() => FileTransferPath),
-  now = Date.now,
-) {
+/** Only abandon stalled transfers. Receive timeouts bound inactivity, not total
+ * duration: large files may take minutes while making steady progress. Without
+ * measuring the fallback route, a completion estimate cannot justify discarding
+ * bytes already received. The same rule applies to direct and relayed traffic. */
+export function createFileTransferWatchdog(now = Date.now) {
   let lastBytes = 0,
-    lastProgress = now(),
-    sampleAt = lastProgress,
-    sampleBytes = 0;
-  const getPath = typeof path === "function" ? path : () => path;
-  let sampledPath = getPath();
-  return (written: number): "stalled" | "slow-relay" | "slow-direct" | null => {
+    lastProgress = now();
+  return (written: number): "stalled" | null => {
     const time = now();
     if (written > lastBytes) {
       lastBytes = written;
       lastProgress = time;
     }
-    if (time - lastProgress >= FILE_PEER_COMMAND_TIMEOUT_MS) return "stalled";
-    const currentPath = getPath();
-    if (currentPath !== sampledPath) {
-      sampledPath = currentPath;
-      sampleAt = time;
-      sampleBytes = written;
-      return null;
-    }
-    const elapsed = time - sampleAt;
-    if (elapsed < FILE_PEER_COMMAND_TIMEOUT_MS) return null;
-    const advanced = written - sampleBytes;
-    sampleAt = time;
-    sampleBytes = written;
-    if (advanced <= 0 || currentPath === "unknown") return null;
-    const remainingMs = ((size - written) * elapsed) / advanced;
-    return remainingMs > FILE_PEER_RECEIVE_TIMEOUT_MS
-      ? currentPath === "relay"
-        ? "slow-relay"
-        : "slow-direct"
-      : null;
+    return time - lastProgress >= FILE_PEER_COMMAND_TIMEOUT_MS ? "stalled" : null;
   };
 }
 
