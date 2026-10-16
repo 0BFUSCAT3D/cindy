@@ -194,6 +194,49 @@ describe('applyWorkingMemoryProposal', () => {
     expect(normal.waiting.map((w) => w.id)).not.toContain('w0');
   });
 
+  it('keeps provisional items from an uncovered turn out of durable capacity across reviews, and settles them once the watermark catches up', () => {
+    // 分区只剩一个空位:水位之后那一轮的新条目按临时条目进账,标记随账本落盘。
+    const durable = Array.from({ length: WORKING_MEMORY_LIMITS.waiting - 1 }, (_, i) => ({
+      id: `w${i}`, text: `等第${i}个回复`, on: 'user' as const, updatedAt: i + 1,
+    }));
+    const first = applyWorkingMemoryProposal(
+      { ...emptyWorkingMemory(), waiting: durable },
+      {
+        threads: [], commitments: [], corrections: [], recentlyDone: [], resolved: [],
+        waiting: [{ text: '等新的回复', on: 'user', evidence: { messageId: 'a1', quote: '改完发你确认' } }],
+      },
+      messages,
+      { now, coveredThroughRowid: 10, coveredThroughMessageId: 'old', deferEvidenceFrom: new Set(['a1']) },
+    );
+    expect(first.waiting).toHaveLength(WORKING_MEMORY_LIMITS.waiting);
+    expect(first.waiting.find((w) => w.text === '等新的回复')).toMatchObject({ provisional: true });
+    const reloaded = parseWorkingMemory({ version: 1, ...first });
+    expect(reloaded.waiting.find((w) => w.text === '等新的回复')).toMatchObject({ provisional: true });
+    // 下一次复盘:老缺口还在分批回补,前缀里一条有证据的新条目进账(不延后)——裁掉的是临时条目,
+    // 正式条目一个不少;否则 rewind 那一轮后被挤掉的正式条目回不来。
+    const second = applyWorkingMemoryProposal(
+      reloaded,
+      {
+        threads: [], commitments: [], corrections: [], recentlyDone: [], resolved: [],
+        waiting: [{ text: '等用户确认模板', on: 'user', evidence: { messageId: 'u1', quote: '周报模板改成先结论后细节' } }],
+      },
+      messages,
+      { now: now + 1, coveredThroughRowid: 11, coveredThroughMessageId: 'u1', deferEvidenceFrom: new Set(['x9']) },
+    );
+    expect(second.waiting.map((w) => w.text)).toContain('等用户确认模板');
+    expect(second.waiting.map((w) => w.text)).not.toContain('等新的回复');
+    expect(second.waiting.map((w) => w.id).sort()).toEqual([...durable.map((w) => w.id), second.waiting.find((w) => w.text === '等用户确认模板')!.id].sort());
+    // 水位推进到当前回复(缺口全部补完):临时条目转正,不再带标记。
+    const settled = applyWorkingMemoryProposal(
+      reloaded,
+      { threads: [], commitments: [], waiting: [], corrections: [], recentlyDone: [], resolved: [] },
+      messages,
+      { now: now + 2, coveredThroughRowid: 12, coveredThroughMessageId: 'a1' },
+    );
+    expect(settled.waiting.find((w) => w.text === '等新的回复')).not.toHaveProperty('provisional');
+    expect(settled.waiting.find((w) => w.text === '等新的回复')).toMatchObject({ updatedAt: now });
+  });
+
   it('requires evidence to change a field of an existing item, allows evidenced clearing, and bumps time only on real change', () => {
     const previous: BotWorkingMemory = {
       ...emptyWorkingMemory(),

@@ -45,6 +45,11 @@ export interface WorkingMemoryItem {
   /** 产生这条记录的消息(用户或伙伴原话),模型可据此用历史工具拉原文。 */
   messageId?: string;
   updatedAt: number;
+  /**
+   * 来自水位之后、尚未被完整回补的那一轮:在那一轮被回补(水位推进到当前回复)之前,它不占
+   * 正式容量——超容量时先裁它,不裁正式条目;回补完成即转正(去掉标记)。
+   */
+  provisional?: true;
 }
 export interface WorkingThread extends WorkingMemoryItem {
   status: 'active' | 'waiting' | 'blocked';
@@ -120,6 +125,7 @@ function readItem(value: unknown): WorkingMemoryItem | null {
     text,
     ...(typeof value.messageId === 'string' && value.messageId ? { messageId: value.messageId } : {}),
     updatedAt: typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt) ? value.updatedAt : 0,
+    ...(value.provisional === true ? { provisional: true as const } : {}),
   };
 }
 
@@ -285,7 +291,9 @@ function resolveOptionalField(
  *    以这些消息为证据的删除(resolved)/ 改写延后,只追加新条目——这些破坏性变更等那一轮被
  *    完整回补时再提交,免得用户随后 rewind 那一轮后水位仍指着可见的旧回复、账本却已按撤回
  *    分支删改过且无法回滚。以回补前缀(水位之内)消息为证据的删改照常提交:缺口分多批回放
- *    时,取消某承诺的证据只会出现在它所在的那一批,错过就再也补不上。
+ *    时,取消某承诺的证据只会出现在它所在的那一批,错过就再也补不上。以这些消息为证据的新
+ *    条目带 `provisional` 标记进账:不占正式容量(超容量先裁它们),跨多次复盘都不会把正式
+ *    条目挤出去;水位推进到当前回复(所有缺口补完)时一并转正。
  */
 export function applyWorkingMemoryProposal(
   previous: BotWorkingMemory | null,
@@ -323,7 +331,6 @@ export function applyWorkingMemoryProposal(
   ): T[] {
     const byText = new Map(existing.map((item) => [item.text, item] as const));
     const kept = new Map<string, T>();
-    let added = 0;
     for (const item of proposed) {
       const text = clampText(item.text);
       if (!text || resolvedTexts.has(text)) continue;
@@ -338,17 +345,30 @@ export function applyWorkingMemoryProposal(
         continue;
       }
       if (!evidenced) continue;
-      // 证据来自水位之后那一轮的新条目不能把旧条目挤出容量:区满了就延后新增(那一轮之后
-      // 会被完整回补),否则 rewind 那一轮时来源清理只能删掉新条目,被挤掉的旧承诺回不来。
-      if (deferred(item) && existing.length + added >= cap) continue;
-      added += 1;
-      kept.set(text, build(null, item, { id: nextId(), text, messageId: item.evidence!.messageId, updatedAt: opts.now }));
+      // 证据来自水位之后那一轮的新条目按临时条目进账:不占正式容量,否则 rewind 那一轮时来源
+      // 清理只能删掉新条目,被它挤掉的旧承诺回不来。
+      kept.set(text, build(null, item, {
+        id: nextId(), text, messageId: item.evidence!.messageId, updatedAt: opts.now,
+        ...(deferred(item) ? { provisional: true as const } : {}),
+      }));
     }
     // 提案没提到的旧条目保留(漏写 ≠ 完成),除非被 resolved 点名。
     for (const item of existing) {
       if (!kept.has(item.text) && !resolvedTexts.has(item.text)) kept.set(item.text, item);
     }
-    return [...kept.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, cap);
+    // 水位推进到当前回复 = 所有缺口已补完,之前的临时条目所在轮次都已被完整回补:转正。
+    const settle = (item: T): T => {
+      if (opts.deferEvidenceFrom || !item.provisional) return item;
+      const { provisional: _p, ...rest } = item;
+      return rest as T;
+    };
+    const sorted = [...kept.values()].map(settle).sort((a, b) => b.updatedAt - a.updatedAt);
+    if (sorted.length <= cap) return sorted;
+    // 超容量:先裁临时条目(最旧的先),正式条目只在临时条目裁完后才按最旧裁——这层保护跨
+    // 多次复盘都成立,不只在新增的那一次。
+    const durable = sorted.filter((item) => !item.provisional);
+    const provisional = sorted.filter((item) => item.provisional);
+    return [...durable, ...provisional].slice(0, cap).sort((a, b) => b.updatedAt - a.updatedAt);
   }
   // seed 由旧条目展开而来,可能已带该字段:值为 undefined 表示清空,要把旧键一并去掉。
   const withField = <T extends WorkingMemoryItem, K extends string>(
@@ -715,10 +735,10 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
       )
       .limit(1);
     if (typeof covered?.rowid !== 'number') return false;
-    // 必须覆盖的水位 = 最近一条完成回复,或更晚落库、**带内容**的交互答复(已回答的提问卡、
-    // 批准 / 打回的计划审阅,状态与 botLearningReview.interactionText 的取材口径一致):它们
-    // 承载用户决定,没被复盘过就不能算新鲜。取消 / 未回答的空交互行没有内容,不抬水位——
-    // 否则一次取消就让账本永远不新鲜。
+    // 必须覆盖的水位 = 最近一条完成回复,或更晚落库、**带内容**的交互答复(至少一条非空白答案
+    // 的提问卡、带计划的批准 / 带反馈的打回,与 botLearningReview.interactionText 的取材口径
+    // 一致):它们承载用户决定,没被复盘过就不能算新鲜。取消 / 未回答 / 答案全空白的交互行
+    // 复盘取不到文本,不抬水位——否则一次取消就让账本永远不新鲜。
     const [row] = await db
       .select({ rowid: sql<number | null>`MAX(rowid)` })
       .from(messages)
@@ -734,7 +754,7 @@ export async function isWorkingMemoryFreshForSession(sessionId: string, userData
             and(
               inArray(messages.role, ['ask_user', 'plan_review']),
               sql`json_valid(${messages.content}) AND CASE json_extract(${messages.content}, '$.status')
-                WHEN 'answered' THEN json_type(${messages.content}, '$.answers') = 'object' AND json_extract(${messages.content}, '$.answers') <> '{}'
+                WHEN 'answered' THEN EXISTS (SELECT 1 FROM json_each(${messages.content}, '$.answers') WHERE type = 'text' AND trim(value) <> '')
                 WHEN 'approved' THEN trim(coalesce(json_extract(${messages.content}, '$.plan'), '')) <> ''
                 WHEN 'revised' THEN trim(coalesce(json_extract(${messages.content}, '$.feedback'), '')) <> ''
                 ELSE 0 END`,
